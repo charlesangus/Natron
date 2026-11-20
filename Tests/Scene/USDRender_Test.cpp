@@ -1312,6 +1312,58 @@ TEST_F(USDRenderAovTest, TheLayersAndHashFollowTheRenderVarsOfTheRenderer)
     EXPECT_TRUE(findLayer(present, "st"));
 }
 
+// A file's own product renders with no USDRenderSettings node: its camera and resolution beat the
+// settings prim's, and each var is a layer under its authored name.
+TEST_F(USDRenderAovTest, AFilesRenderVarsRenderWithoutASettingsNode)
+{
+    if (!CyclesTestUtils::cyclesOrSkip()) {
+        return;
+    }
+    NodePtr reader = createReader(NATRON_TESTS_FIXTURES_DIR "/scene-rendervars.usda");
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
+    ASSERT_TRUE(reader && node);
+    connectNodes(reader, node, 0, true);
+    USDRender* effect = renderOf(node);
+    ASSERT_TRUE(effect);
+    effect->refreshSettingsPrimMenu();
+    ASSERT_TRUE(selectRenderer(rendererKnob(node), kRenderDelegateCyclesId));
+    const RectD rod = rodOf(node);
+    EXPECT_EQ(64., rod.x2);
+    EXPECT_EQ(48., rod.y2);
+
+    std::list<ImageLayerDesc> present = presentLayers(node);
+    const ImageLayerDesc* depth = findLayer(present, "depth");
+    const ImageLayerDesc* normal = findLayer(present, "normal");
+    const ImageLayerDesc* instance = findLayer(present, "instance");
+    ASSERT_TRUE(depth && normal && instance);
+    EXPECT_FALSE(findLayer(present, "instanceId"));
+    EXPECT_EQ(1u, instance->getChannels().size());
+    std::list<ImageLayerDesc> layers;
+    layers.push_back(ImageLayerDesc::getRGBAComponents());
+    layers.push_back(*depth);
+    layers.push_back(*normal);
+    layers.push_back(*instance);
+    std::vector<RenderedPlane> planes;
+    std::string error;
+    ASSERT_TRUE(renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, 64, 48), layers, &planes, &error)) << error;
+    ASSERT_EQ(4u, planes.size());
+    const std::size_t pixels = (std::size_t)64 * 48;
+    ASSERT_EQ(pixels * 4, planes[0].pixels.size());
+    ASSERT_EQ(pixels, planes[1].pixels.size());
+    ASSERT_EQ(pixels * 3, planes[2].pixels.size());
+    ASSERT_EQ(pixels, planes[3].pixels.size());
+    // The settings prim's camera looks away from the box; the product's looks at it.
+    const std::size_t centre = (std::size_t)24 * 64 + 32;
+    EXPECT_NEAR(1.f, planes[0].pixels[centre * 4 + 3], 1e-3f);
+    EXPECT_NEAR(9.f, planes[1].pixels[centre], 0.05f);
+    present = presentLayers(node);
+    EXPECT_TRUE(findLayer(present, "depth"));
+    EXPECT_TRUE(findLayer(present, "normal"));
+    EXPECT_TRUE(findLayer(present, "instance"));
+    int type = -1;
+    EXPECT_EQ(std::string(), persistentMessage(node, &type));
+}
+
 // Free GPU Memory drops USDRender's Storm engines and the device buffers the GPU runtime's pool
 // keeps free, and the next render and allocation make what they need again.
 TEST_F(USDRenderNodeTest, FreeGpuMemoryReleasesEnginesAndPooledBuffers)

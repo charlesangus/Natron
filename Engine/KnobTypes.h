@@ -1765,6 +1765,79 @@ private:
     static const std::string _typeNameStr;
 };
 
+/**
+ * @brief Rows of RenderVars to author: a source name, its source type (raw, primvar or lpe; empty
+ * is raw), an optional data type and an optional layer name. Every cell is edited in place.
+ **/
+class KnobRenderVars
+    : public KnobTable {
+    Q_DECLARE_TR_FUNCTIONS(KnobRenderVars)
+
+public:
+    enum ColumnEnum {
+        eColumnName = 0,
+        eColumnSourceType,
+        eColumnDataType,
+        eColumnLayer,
+        eColumnCount
+    };
+
+    static KnobHelper* BuildKnob(KnobHolder* holder,
+                                 const std::string& label,
+                                 int dimension,
+                                 bool declaredByPlugin = true)
+    {
+        return new KnobRenderVars(holder, label, dimension, declaredByPlugin);
+    }
+
+    KnobRenderVars(KnobHolder* holder,
+                   const std::string& description,
+                   int dimension,
+                   bool declaredByPlugin)
+        : KnobTable(holder, description, dimension, declaredByPlugin)
+    {
+    }
+
+    virtual ~KnobRenderVars()
+    {
+    }
+
+    virtual int getColumnsCount() const OVERRIDE FINAL
+    {
+        return eColumnCount;
+    }
+
+    virtual std::string getColumnLabel(int col) const OVERRIDE FINAL;
+    virtual std::string getColumnTag(int col) const OVERRIDE FINAL;
+
+    virtual bool isCellEnabled(int /*row*/,
+                               int /*col*/,
+                               const QStringList& /*values*/) const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
+    virtual bool isColumnEditable(int /*col*/) OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
+    virtual bool useEditButton() const OVERRIDE FINAL
+    {
+        return false;
+    }
+
+    static const std::string& typeNameStatic() WARN_UNUSED_RETURN;
+
+private:
+    virtual const std::string& typeName() const OVERRIDE FINAL
+    {
+        return typeNameStatic();
+    }
+
+    static const std::string _typeNameStr;
+};
+
 NATRON_NAMESPACE_EXIT
 
 #endif // NATRON_ENGINE_KNOBTYPES_H

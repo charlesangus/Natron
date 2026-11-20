@@ -791,6 +791,32 @@ KnobGuiLayers::getKnob() const
     return _knob.lock();
 }
 
+KnobGuiRenderVars::KnobGuiRenderVars(KnobIPtr knob,
+                                     KnobGuiContainerI* container)
+    : KnobGuiTable(knob, container)
+{
+    _knob = std::dynamic_pointer_cast<KnobRenderVars>(knob);
+}
+
+KnobGuiRenderVars::~KnobGuiRenderVars()
+{
+}
+
+KnobIPtr
+KnobGuiRenderVars::getKnob() const
+{
+    return _knob.lock();
+}
+
+bool
+KnobGuiRenderVars::addNewUserEntry(QStringList& row)
+{
+    row.clear();
+    row << QString::fromUtf8("st") << QString::fromUtf8("primvar") << QString() << QString();
+
+    return true;
+}
+
 NATRON_NAMESPACE_EXIT
 
 NATRON_NAMESPACE_USING

@@ -79,10 +79,12 @@
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Scene/CyclesAovs.h"
 #include "Engine/Nodes/Scene/CyclesSettings.h"
+#include "Engine/Nodes/Scene/DelegateSupport.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/LiveTextureSharedMemory.h"
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/RenderSettingsKnobs.h"
+#include "Engine/Nodes/Scene/RenderSettingsPrim.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
@@ -435,6 +437,27 @@ TEST_F(USDRenderCyclesTest, BeautyAndDepth)
     const std::size_t corner = pixelIndex(0, 0);
     EXPECT_TRUE(std::isinf(depth[corner]) && (depth[corner] > 0.f)) << depth[corner];
     EXPECT_EQ(0.f, rgba[corner * 4 + 3]);
+}
+
+// Until hdCycles publishes an aovNames stat, the checklist offers the AOVs Natron maps for it; a
+// published stat replaces them.
+TEST_F(USDRenderCyclesTest, AvailableAovs)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const std::vector<std::string> aovs = DelegateSupport::availableAovs(kRenderDelegateCyclesId);
+    const std::vector<std::string>& published = CyclesAovs::support().publishedAovs;
+    if (!published.empty()) {
+        EXPECT_EQ(published, aovs);
+
+        return;
+    }
+    EXPECT_EQ(std::vector<std::string>({ "color", "depth", "primId", "instanceId", "normal" }), aovs);
+    EXPECT_EQ(std::string("normal"), RenderSettingsPrim::delegateAovName("cycles:normal", kRenderDelegateCyclesId));
+    EXPECT_EQ(std::string("cycles:ao"), RenderSettingsPrim::delegateAovName("cycles:ao", kRenderDelegateCyclesId));
+    EXPECT_EQ(std::string("moonray:normal"), RenderSettingsPrim::delegateAovName("moonray:normal", kRenderDelegateCyclesId));
+    EXPECT_EQ(std::string("primvars:st"), RenderSettingsPrim::delegateAovName("primvars:st", kRenderDelegateCyclesId));
 }
 
 TEST_F(USDRenderCyclesTest, PrimIdAndNormal)

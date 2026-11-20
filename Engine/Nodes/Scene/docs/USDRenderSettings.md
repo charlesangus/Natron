@@ -49,6 +49,40 @@ the scene, USDWrite writes them out with it and other USD tools can read them.
   off, the node still authors the prim, but whichever prim the input scene
   already made active stays active.
 
+## AOVs tab
+
+The AOVs tab picks the AOVs a render makes besides the colour, depth and ID
+layers it always has. Each pick is authored as a RenderVar under
+`/Render/Products/Vars`, named after its source (`cycles:normal` is
+`/Render/Products/Vars/cycles_normal`), and listed in the `orderedVars` of a
+RenderProduct under `/Render/Products` named after the prim
+(`/Render/Products/rendersettings` by default). The prim lists the product in
+its `products` after any products the input scene gave it, and a render makes
+the vars of all of them. With nothing picked, the node authors no product.
+The vars scope is shared with the input scene's: a var of the same name there
+takes this node's source, data type and layer.
+
+- One group per installed renderer that Natron knows the AOVs of (Cycles AOVs,
+  MoonRay AOVs, Storm AOVs, ...), with a switch per AOV. The list is the
+  renderer's own when its delegate publishes one, else the AOVs Natron knows it
+  renders. A switch's script name is the renderer's prefix, `Aov` and the AOV's
+  name (`cyclesAovNormal`, `moonrayAovP`).
+- A ticked AOV is authored in the renderer's namespace (`cycles:normal`,
+  `moonray:P`), so other renderers leave it out: ticks for several renderers
+  can sit on one node, and each render takes only its own.
+- Custom AOVs (`customAovs`): a table of RenderVars the groups do not list, one
+  per row. Name is the `sourceName`: a primvar, a light path expression, or an
+  AOV in a renderer's namespace (`moonray:albedo`), which only that renderer
+  renders. Source Type is `raw`, `primvar` or `lpe`; empty is `raw`. Data Type
+  (`color3f`, `float`, ...) sets the layer's channels until the renderer has
+  given its own format; empty leaves them to the renderer. Layer names the
+  layer, authored as `natron:layer`; empty names it after the AOV without its
+  namespace.
+
+USDRender renders each RenderVar to a layer of its own. A RenderVar the
+renderer does not render gets a warning on the USDRender, and the other layers
+still render.
+
 ## Renderer tabs
 
 Every render delegate the build has gets a tab, labelled with the delegate's
@@ -145,7 +179,9 @@ on another renderer's tab leaves the refinement alone.
 A USDRender's cached frames depend only on the settings of the renderer it
 renders with. Editing a knob on the MoonRay tab while USDRender renders with
 Cycles keeps the cached Cycles frames. Switching the renderer, or editing a
-knob on the active renderer's tab, renders again. A disabled USDRenderSettings
+knob on the active renderer's tab, renders again. The AOV switches follow
+the same rule: a MoonRay AOV ticked while USDRender renders with Cycles keeps
+the cached frames, and any edit to Custom AOVs renders again. A disabled USDRenderSettings
 authors nothing and adds nothing to the render's hash.
 
 ## RenderSettings prims from files
@@ -157,6 +193,10 @@ and its `renderSettingsPrimPath`.
   renders with the file's active prim.
 - The renderer settings in a prim's attributes (`cycles:samples`, ...) apply
   the same way as the ones this node authors.
+- The RenderProducts the prim lists, and their RenderVars, are rendered as the
+  ones the AOVs tab authors. A product's own camera, resolution and other
+  settings win over the prim's. Products that differ in camera or resolution
+  are an error.
 - `natron:renderer` is Natron's own attribute. A prim from another tool usually
   lacks it, so Scene Default renders such a prim with Storm unless the
   USDRender or the view chooses another renderer.

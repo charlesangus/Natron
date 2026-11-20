@@ -106,7 +106,8 @@ struct StandardAttributes {
     bool disableDepthOfField = false;
 };
 
-// The prim's values, the schema's fallbacks for those it does not author.
+// The prim's values, the schema's fallbacks for those it does not author. The first product
+// with RenderVars overrides each value it authors.
 StandardAttributes standardAttributes(const PXR_NS::UsdRenderSettings& settings);
 
 /**
@@ -172,6 +173,14 @@ PXR_NS::VtDictionary outputSettings(const AovRequest& request);
  **/
 bool isForAnotherDelegate(const std::string& aovName,
                           const std::string& rendererId) WARN_UNUSED_RETURN;
+
+/**
+ * @brief The name rendererId's delegate knows the AOV aovName by: the name after rendererId's own
+ * namespace when the delegate lists that name and not aovName (a checklist tick of Cycles' normal
+ * is authored as cycles:normal, which Cycles calls normal), else aovName.
+ **/
+std::string delegateAovName(const std::string& aovName,
+                            const std::string& rendererId) WARN_UNUSED_RETURN;
 } // namespace RenderSettingsPrim
 
 NATRON_NAMESPACE_EXIT

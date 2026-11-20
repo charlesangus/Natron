@@ -25,6 +25,8 @@
 
 #include "USDRenderSettings.h"
 
+#include <cctype>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -39,6 +41,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Scene/CyclesAovs.h"
+#include "Engine/Nodes/Scene/DelegateSupport.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/RenderSettingsKnobs.h"
 #include "Engine/Nodes/Scene/RenderSettingsPrim.h"
@@ -199,6 +202,65 @@ USDRenderSettings::initializeKnobs()
     page->addKnob(makeActive);
     _makeActive = makeActive;
 
+    KnobPagePtr aovPage = createKnob<KnobPage>(tr("AOVs"));
+    bool firstGroup = true;
+    for (const std::string& id : RenderSettingsKnobs::rendererIds()) {
+        const std::vector<std::string> aovs = DelegateSupport::availableAovs(id);
+        if (aovs.empty()) {
+            continue;
+        }
+        RenderDelegates::Delegate delegate;
+        const QString displayName = QString::fromStdString(RenderDelegates::find(id, &delegate) ? delegate.displayName : id);
+        const std::string prefix = RenderSettingsKnobs::scriptPrefix(id);
+        const std::string ns = RenderSettingsPrim::namespaces(id).front();
+        KnobGroupPtr group = createKnob<KnobGroup>(tr("%1 AOVs").arg(displayName));
+        group->setName(prefix + "Aovs");
+        group->setHintToolTip(tr("The AOVs %1 renders. Each one ticked is a RenderVar of the prim's product, named in the %2 "
+                                 "namespace so that other renderers leave it out.")
+                                  .arg(displayName)
+                                  .arg(QString::fromStdString(ns))
+                                  .toStdString());
+        group->setDefaultValue(firstGroup);
+        aovPage->addKnob(group);
+        firstGroup = false;
+        for (const std::string& aov : aovs) {
+            const std::string sourceName = (aov.find(':') == std::string::npos) ? ns + ":" + aov : aov;
+            std::string camel = RenderSettingsKnobs::camelCaseFromKey(aov, true);
+            if (!camel.empty()) {
+                camel[0] = (char)std::toupper((unsigned char)camel[0]);
+            }
+            const std::string base = prefix + "Aov" + camel;
+            std::string scriptName = base;
+            for (int n = 2; getKnobByName(scriptName); ++n) {
+                scriptName = base + std::to_string(n);
+            }
+            KnobBoolPtr tick = createKnob<KnobBool>(RenderSettingsKnobs::labelFromScriptName(scriptName, prefix + "Aov"));
+            tick->setName(scriptName);
+            tick->setHintToolTip(tr("Renders %1's %2 AOV to a layer of its own, authored as a RenderVar of sourceName %3.")
+                                     .arg(displayName)
+                                     .arg(QString::fromStdString(aov))
+                                     .arg(QString::fromStdString(sourceName))
+                                     .toStdString());
+            tick->setDefaultValue(false);
+            tick->setAnimationEnabled(false);
+            tick->setHashNamespace(ns);
+            group->addKnob(tick);
+            _aovTicks.push_back({ tick, sourceName });
+        }
+    }
+
+    KnobRenderVarsPtr customAovs = createKnob<KnobRenderVars>(tr("Custom AOVs"));
+    customAovs->setName(kUSDRenderSettingsParamCustomAovs);
+    customAovs->setHintToolTip(tr("AOVs the lists above do not name, each authored as a RenderVar. Name is its sourceName: a "
+                                  "primvar's name, a light path expression, or an AOV in a renderer's namespace (moonray:albedo), "
+                                  "which only that renderer renders. Source Type is raw, primvar or lpe; empty is raw. Data Type, "
+                                  "such as color3f or float, sets the layer's channels until the renderer gives its own format; "
+                                  "empty leaves it to the renderer. Layer names the layer, which is otherwise the name without "
+                                  "its namespace."));
+    customAovs->setHashNamespace("natron");
+    aovPage->addKnob(customAovs);
+    _customAovs = customAovs;
+
     _settings.reset(new RenderSettingsKnobs(this));
     for (const std::string& id : RenderSettingsKnobs::rendererIds()) {
         _settings->addRenderer(id, RenderSettingsKnobs::descriptors(id), RenderSettingsKnobs::curatedFor(id));
@@ -324,6 +386,88 @@ USDRenderSettings::refreshCameraMenu()
     }
 }
 
+namespace {
+struct RenderVarPick {
+    std::string sourceName;
+    PXR_NS::TfToken sourceType;
+    PXR_NS::TfToken dataType;
+    std::string layer;
+};
+
+// One RenderVar per pick, ordered by a product the settings prim lists after any products it
+// already has, which a render unions with them.
+bool
+authorRenderVars(const PXR_NS::UsdStageRefPtr& stage,
+                 const PXR_NS::UsdRenderSettings& settings,
+                 const std::vector<RenderVarPick>& picks,
+                 std::string* errorMessage)
+{
+    if (picks.empty()) {
+        return true;
+    }
+    const PXR_NS::SdfPath productsPath(kUSDRenderSettingsProductsPath);
+    const PXR_NS::SdfPath varsPath(kUSDRenderSettingsVarsPath);
+    if (!PXR_NS::UsdGeomScope::Define(stage, productsPath) || !PXR_NS::UsdGeomScope::Define(stage, varsPath)) {
+        *errorMessage = "USD could not define the scopes " + productsPath.GetString() + " and " + varsPath.GetString() + ".";
+
+        return false;
+    }
+    // Named after the settings prim so that two settings prims in one scene keep their own products.
+    std::string productName = settings.GetPath().GetName();
+    if (productName == varsPath.GetName()) {
+        productName += "_product";
+    }
+    const PXR_NS::SdfPath productPath = productsPath.AppendChild(PXR_NS::TfToken(productName));
+    const PXR_NS::UsdRenderProduct product = PXR_NS::UsdRenderProduct::Define(stage, productPath);
+    if (!product) {
+        *errorMessage = "USD could not define a RenderProduct at " + productPath.GetString() + ".";
+
+        return false;
+    }
+    PXR_NS::SdfPathVector vars;
+    std::set<std::string> names;
+    for (const RenderVarPick& pick : picks) {
+        const std::string base = PXR_NS::TfMakeValidIdentifier(pick.sourceName);
+        std::string name = base;
+        for (int n = 2; !names.insert(name).second; ++n) {
+            name = base + "_" + std::to_string(n);
+        }
+        const PXR_NS::SdfPath varPath = varsPath.AppendChild(PXR_NS::TfToken(name));
+        const PXR_NS::UsdRenderVar var = PXR_NS::UsdRenderVar::Define(stage, varPath);
+        bool ok = var && var.CreateSourceNameAttr().Set(pick.sourceName) && var.CreateSourceTypeAttr().Set(pick.sourceType);
+        // Vars share one scope with every other setup's, so a var at this path upstream must not
+        // lend this one a data type or layer the pick leaves unset.
+        if (ok) {
+            const PXR_NS::UsdAttribute dataType = var.CreateDataTypeAttr();
+            ok = dataType && (pick.dataType.IsEmpty() ? dataType.Set(PXR_NS::SdfValueBlock()) : dataType.Set(pick.dataType));
+        }
+        if (ok) {
+            const PXR_NS::UsdAttribute layer = var.GetPrim().CreateAttribute(PXR_NS::TfToken(kRenderVarLayerAttribute), PXR_NS::SdfValueTypeNames->String, true);
+            ok = layer && (pick.layer.empty() ? layer.Set(PXR_NS::SdfValueBlock()) : layer.Set(pick.layer));
+        }
+        if (!ok) {
+            *errorMessage = "USD could not author the RenderVar " + varPath.GetString() + ".";
+
+            return false;
+        }
+        vars.push_back(varPath);
+    }
+    if (!product.CreateOrderedVarsRel().SetTargets(vars) || !settings.CreateProductsRel().AddTarget(productPath)) {
+        *errorMessage = "USD could not list the RenderVars of " + productPath.GetString() + ".";
+
+        return false;
+    }
+
+    return true;
+}
+
+std::string
+trimmed(const std::string& text)
+{
+    return QString::fromStdString(text).trimmed().toStdString();
+}
+} // anon namespace
+
 bool
 USDRenderSettings::authorLayer(const SceneLayerEdit& edit,
                                const std::string& primPath,
@@ -392,6 +536,45 @@ USDRenderSettings::authorLayer(const SceneLayerEdit& edit,
         return false;
     }
     if (_settings && !_settings->author(settings.GetPrim(), errorMessage)) {
+        return false;
+    }
+    std::vector<RenderVarPick> picks;
+    for (const AovTick& tick : _aovTicks) {
+        KnobBoolPtr knob = tick.knob.lock();
+        if (knob && knob->getValue()) {
+            picks.push_back({ tick.sourceName, PXR_NS::UsdRenderTokens->raw, PXR_NS::TfToken(), std::string() });
+        }
+    }
+    if (KnobRenderVarsPtr customAovs = _customAovs.lock()) {
+        std::list<std::vector<std::string>> rows;
+        customAovs->getTable(&rows);
+        int rowNumber = 0;
+        for (const std::vector<std::string>& row : rows) {
+            ++rowNumber;
+            if (row.size() < (std::size_t)KnobRenderVars::eColumnCount) {
+                continue;
+            }
+            RenderVarPick pick;
+            pick.sourceName = trimmed(row[KnobRenderVars::eColumnName]);
+            if (pick.sourceName.empty()) {
+                continue;
+            }
+            const std::string sourceType = trimmed(row[KnobRenderVars::eColumnSourceType]);
+            pick.sourceType = sourceType.empty() ? PXR_NS::UsdRenderTokens->raw : PXR_NS::TfToken(sourceType);
+            if ((pick.sourceType != PXR_NS::UsdRenderTokens->raw) && (pick.sourceType != PXR_NS::UsdRenderTokens->primvar) && (pick.sourceType != PXR_NS::UsdRenderTokens->lpe) && (pick.sourceType != PXR_NS::UsdRenderTokens->intrinsic)) {
+                *errorMessage = tr("Row %1 of Custom AOVs has the source type %2, which is not raw, primvar, lpe or intrinsic.")
+                                    .arg(rowNumber)
+                                    .arg(QString::fromStdString(sourceType))
+                                    .toStdString();
+
+                return false;
+            }
+            pick.dataType = PXR_NS::TfToken(trimmed(row[KnobRenderVars::eColumnDataType]));
+            pick.layer = trimmed(row[KnobRenderVars::eColumnLayer]);
+            picks.push_back(pick);
+        }
+    }
+    if (!authorRenderVars(stage, settings, picks, errorMessage)) {
         return false;
     }
     // After the renderer pages, so that the switch wins over a Cycles page that authors the same attribute.

@@ -557,6 +557,35 @@ TEST_F(RenderSettingsPrimTest, AovRequestsRefuseTwoCameras)
     EXPECT_NE(std::string::npos, error.find("/Render/b")) << error;
 }
 
+// A product that authors its own camera or resolution is rendered with it; the settings prim's
+// values stand where the product authors none.
+TEST_F(RenderSettingsPrimTest, ProductValuesOverrideTheSettingsPrim)
+{
+    UsdStageRefPtr stage = stageFrom(kProducts);
+    ASSERT_TRUE(bool(stage));
+    const UsdRenderSettings prim(stage->GetPrimAtPath(SdfPath("/Render/Settings")));
+    ASSERT_TRUE(prim.CreateResolutionAttr().Set(GfVec2i(320, 240)));
+    ASSERT_TRUE(prim.CreatePixelAspectRatioAttr().Set(2.f));
+
+    RenderSettingsPrim::StandardAttributes before = RenderSettingsPrim::standardAttributes(prim);
+    EXPECT_EQ(SdfPath("/World/Cam"), before.camera);
+    EXPECT_EQ(GfVec2i(320, 240), before.resolution);
+
+    for (const char* path : { "/Render/a", "/Render/b" }) {
+        const UsdRenderProduct product(stage->GetPrimAtPath(SdfPath(path)));
+        ASSERT_TRUE(product.CreateCameraRel().SetTargets({ SdfPath("/World/Other") }));
+        ASSERT_TRUE(product.CreateResolutionAttr().Set(GfVec2i(64, 32)));
+    }
+    const RenderSettingsPrim::StandardAttributes after = RenderSettingsPrim::standardAttributes(prim);
+    EXPECT_EQ(SdfPath("/World/Other"), after.camera);
+    EXPECT_EQ(GfVec2i(64, 32), after.resolution);
+    EXPECT_EQ(2.f, after.pixelAspectRatio);
+
+    RenderSettingsPrim::AovRequests requests;
+    std::string error;
+    EXPECT_TRUE(RenderSettingsPrim::aovRequests(prim, kRenderDelegateCyclesId, UsdTimeCode::Default(), &requests, &error)) << error;
+}
+
 TEST_F(RenderSettingsPrimTest, AovRequestsWithoutProductsAreEmpty)
 {
     UsdStageRefPtr stage = stageFrom(kTwoPrims);

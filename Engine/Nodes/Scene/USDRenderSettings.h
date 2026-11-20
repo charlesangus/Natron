@@ -32,6 +32,7 @@
 #include <list>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
@@ -51,6 +52,11 @@
 #define kUSDRenderSettingsParamTransparentBackground "transparentBackground"
 #define kUSDRenderSettingsParamMakeActive "makeActive"
 #define kUSDRenderSettingsParamDefaultRenderer "defaultRenderer"
+#define kUSDRenderSettingsParamCustomAovs "customAovs"
+// The AOV checklist authors its RenderProduct under the first, named after the settings prim, and
+// its RenderVars under the second, where other render setups look for them.
+#define kUSDRenderSettingsProductsPath "/Render/Products"
+#define kUSDRenderSettingsVarsPath "/Render/Products/Vars"
 
 // The prim path the node authors unless told otherwise.
 #define kUSDRenderSettingsDefaultPrimPath "/Render/rendersettings"
@@ -66,6 +72,8 @@ struct SceneLayerEdit;
  * page per installed renderer that renderer's settings, as attributes in its namespace. Make
  * Active makes it the stage's renderSettingsPrimPath, the prim a USDRender uses unless told
  * otherwise. Every attribute of the schema is uniform, so each is authored as a default value.
+ * The AOVs page lists each renderer's AOVs and a table of custom ones; the picks are authored as
+ * RenderVars of a RenderProduct under the prim.
  **/
 class USDRenderSettings
     : public NativeEffectBase {
@@ -81,7 +89,8 @@ public:
                        "how the camera's aperture is conformed to the resolution, the data window, motion blur and "
                        "depth of field switches, whether the background is transparent, the renderer that renders it by default, and each installed "
                        "renderer's own settings on a page of its own. Make Active makes it the scene's render settings, "
-                       "which USDRender renders with unless it is told otherwise.",
+                       "which USDRender renders with unless it is told otherwise. The AOVs page picks the AOVs each renderer "
+                       "renders, authored as RenderVars of a RenderProduct.",
         .grouping = PLUGIN_GROUP_3D_USD,
         .majorVersion = 1,
         .minorVersion = 0,
@@ -154,6 +163,13 @@ private:
     KnobBoolWPtr _transparentBackground;
     KnobBoolWPtr _makeActive;
     KnobChoiceWPtr _defaultRenderer;
+    // A checklist tick and the RenderVar sourceName it authors.
+    struct AovTick {
+        KnobBoolWPtr knob;
+        std::string sourceName;
+    };
+    std::vector<AovTick> _aovTicks;
+    KnobRenderVarsWPtr _customAovs;
     std::atomic<bool> _cameraMenuRefreshPending;
     std::unique_ptr<RenderSettingsKnobs> _settings;
 };

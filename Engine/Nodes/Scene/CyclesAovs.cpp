@@ -643,6 +643,14 @@ support()
     return cycles;
 }
 
+const std::vector<std::string>&
+catalogue()
+{
+    static const std::vector<std::string> names = { "color", "depth", "primId", "instanceId", "normal" };
+
+    return names;
+}
+
 void
 configureEngine(UsdImagingGLEngine* engine)
 {

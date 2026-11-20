@@ -31,6 +31,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <vector>
 
 #include "Engine/Nodes/Scene/DelegateSupport.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
@@ -82,6 +83,9 @@ PXR_NS::HdSceneIndexBaseRefPtr meshShadingSceneIndex(const PXR_NS::HdSceneIndexB
  * hdCycles builds nodes of. Its prim types are empty when Cycles cannot be loaded.
  **/
 const DelegateSupport::Support& support();
+
+// The AOVs hdCycles renders, for a delegate that publishes no aovNames stat.
+const std::vector<std::string>& catalogue();
 
 /**
  * @brief Sets up a Cycles engine just made, before its first render. Cycles scales the camera and

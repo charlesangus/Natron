@@ -499,17 +499,18 @@ USDRender::specAovs(double time,
         refused = _refusedAovs;
     }
     for (const RenderSettingsPrim::AovRequest& request : requests.requests) {
-        const std::string builtIn = builtInLayer(request.name, active->renderer);
+        const PXR_NS::TfToken aovName(RenderSettingsPrim::delegateAovName(request.name.GetString(), active->renderer));
+        const std::string builtIn = builtInLayer(aovName, active->renderer);
         if (!builtIn.empty()) {
-            spec->builtInLayers[request.name] = builtIn;
+            spec->builtInLayers[aovName] = builtIn;
             continue;
         }
         std::string formatWarning;
         SpecAovs::Entry entry;
-        entry.aov.name = request.name;
+        entry.aov.name = aovName;
         entry.aov.settings = RenderSettingsPrim::outputSettings(request);
         entry.path = request.path;
-        entry.layer = AovLayers::layer(active->renderer, request.name.GetString(), request.dataType.GetString(), request.layer, AovLayers::formatChannels(active->renderer, request.name.GetString()), &formatWarning);
+        entry.layer = AovLayers::layer(active->renderer, aovName.GetString(), request.dataType.GetString(), request.layer, AovLayers::formatChannels(active->renderer, aovName.GetString()), &formatWarning);
         if (!formatWarning.empty()) {
             addWarning(tr("The RenderVar %1: %2").arg(QString::fromStdString(request.path.GetString())).arg(QString::fromStdString(formatWarning)).toStdString());
         }
@@ -520,7 +521,7 @@ USDRender::specAovs(double time,
                            .toStdString());
             continue;
         }
-        entry.declared = !refused.count(std::make_pair(active->renderer, request.name.GetString()));
+        entry.declared = !refused.count(std::make_pair(active->renderer, aovName.GetString()));
         spec->aovs.push_back(entry);
     }
     std::lock_guard<std::mutex> l(_specMutex);

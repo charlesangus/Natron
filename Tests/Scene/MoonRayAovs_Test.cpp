@@ -38,7 +38,10 @@
 #include <pxr/imaging/hd/tokens.h>
 #include <pxr/usd/usdLux/portalLight.h>
 
+#include "Engine/Nodes/Scene/DelegateSupport.h"
 #include "Engine/Nodes/Scene/MoonRayAovs.h"
+#include "Engine/Nodes/Scene/RenderDelegates.h"
+#include "Engine/Nodes/Scene/RenderSettingsPrim.h"
 
 NATRON_NAMESPACE_USING
 
@@ -62,6 +65,52 @@ TEST(MoonRayAovs, AsksForBeautyDepthIdsAndNormal)
     }
     // hdMoonray's depth is remapped to a window depth; the distance is cameraDepth.
     EXPECT_TRUE(std::find(aovs.begin(), aovs.end(), PXR_NS::HdAovTokens->depth) == aovs.end());
+}
+
+// hdMoonray publishes no aovNames stat, so its table is the list; the table leaves out the AOVs
+// that stop a render or that no Hydra render takes. Storm, never made to be asked, lists its own.
+TEST(MoonRayAovs, AvailableAovs)
+{
+    const std::vector<std::string> aovs = DelegateSupport::availableAovs(kMoonRayRendererId);
+    if (MoonRayAovs::publishedAovs().empty()) {
+        EXPECT_EQ(MoonRayAovs::catalogue(), aovs);
+    } else {
+        EXPECT_EQ(MoonRayAovs::publishedAovs(), aovs);
+    }
+    const std::vector<std::string>& table = MoonRayAovs::catalogue();
+    for (const char* name : { "color", "cameraDepth", "primId", "instanceId", "normal", "P", "N", "St", "Z", "motionvec" }) {
+        EXPECT_TRUE(std::find(table.begin(), table.end(), name) != table.end()) << name;
+    }
+    for (const char* name : { "wireframe", "elementId", "depth", "primvars:st" }) {
+        EXPECT_TRUE(std::find(table.begin(), table.end(), name) == table.end()) << name;
+    }
+    EXPECT_EQ(std::string("P"), RenderSettingsPrim::delegateAovName("moonray:P", kMoonRayRendererId));
+    EXPECT_EQ(std::string("moonray:albedo"), RenderSettingsPrim::delegateAovName("moonray:albedo", kMoonRayRendererId));
+
+    const std::vector<std::string> storm = DelegateSupport::availableAovs(kRenderDelegateStormId);
+    for (const char* name : { "color", "depth", "primId", "instanceId", "elementId", "edgeId", "pointId", "Neye" }) {
+        EXPECT_TRUE(std::find(storm.begin(), storm.end(), name) != storm.end()) << name;
+    }
+    for (const char* name : { "normal", "Peye", "depthStencil" }) {
+        EXPECT_TRUE(std::find(storm.begin(), storm.end(), name) == storm.end()) << name;
+    }
+}
+
+// A delegate's aovNames stat, as tokens or strings, is its list over Natron's.
+TEST(MoonRayAovs, PublishedAovsWin)
+{
+    PXR_NS::VtDictionary stats;
+    EXPECT_TRUE(DelegateSupport::publishedAovs(stats).empty());
+    stats["aovNames"] = PXR_NS::VtValue(PXR_NS::VtArray<PXR_NS::TfToken>({ PXR_NS::TfToken("cycles:ao"), PXR_NS::TfToken("color") }));
+    EXPECT_EQ(std::vector<std::string>({ "cycles:ao", "color" }), DelegateSupport::publishedAovs(stats));
+    stats["aovNames"] = PXR_NS::VtValue(std::vector<std::string>({ "beauty" }));
+    EXPECT_EQ(std::vector<std::string>({ "beauty" }), DelegateSupport::publishedAovs(stats));
+
+    DelegateSupport::setAvailableAovsForTests(kMoonRayRendererId, { "beauty", "albedo" });
+    EXPECT_EQ(std::vector<std::string>({ "beauty", "albedo" }), DelegateSupport::availableAovs(kMoonRayRendererId));
+    EXPECT_EQ(std::string("albedo"), RenderSettingsPrim::delegateAovName("moonray:albedo", kMoonRayRendererId));
+    DelegateSupport::setAvailableAovsForTests(kMoonRayRendererId, {});
+    EXPECT_EQ(MoonRayAovs::publishedAovs().empty() ? MoonRayAovs::catalogue() : MoonRayAovs::publishedAovs(), DelegateSupport::availableAovs(kMoonRayRendererId));
 }
 
 TEST(MoonRayAovs, ReservedCoresLeaveTheBudget)

@@ -29,9 +29,11 @@
 #include <set>
 
 #include <pxr/imaging/hd/tokens.h>
+#include <pxr/usd/usdRender/product.h>
 #include <pxr/usd/usdRender/var.h>
 
 #include "Engine/Nodes/Scene/CyclesAovs.h"
+#include "Engine/Nodes/Scene/DelegateSupport.h"
 #include "Engine/Nodes/Scene/MoonRayAovs.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/RenderSettingsKnobs.h"
@@ -256,6 +258,35 @@ standardAttributes(const UsdRenderSettings& settings)
     (void)settings.GetDisableMotionBlurAttr().Get(&out.disableMotionBlur);
     (void)settings.GetDisableDepthOfFieldAttr().Get(&out.disableDepthOfField);
 
+    // A product's authored values override the settings prim's, as UsdRenderComputeSpec does;
+    // aovRequests refuses products that disagree, so the first one with vars speaks for all.
+    const UsdStagePtr stage = settings.GetPrim().GetStage();
+    SdfPathVector productPaths;
+    (void)settings.GetProductsRel().GetForwardedTargets(&productPaths);
+    for (const SdfPath& path : productPaths) {
+        const UsdRenderProduct product(stage->GetPrimAtPath(path));
+        SdfPathVector vars;
+        if (!product || !product.GetOrderedVarsRel().GetForwardedTargets(&vars) || vars.empty()) {
+            continue;
+        }
+        SdfPathVector cameras;
+        if (product.GetCameraRel().HasAuthoredTargets() && product.GetCameraRel().GetForwardedTargets(&cameras)) {
+            out.camera = cameras.empty() ? SdfPath() : cameras.front();
+        }
+        const auto overrideWith = [](const UsdAttribute& attribute, auto* value) {
+            if (attribute.HasAuthoredValue()) {
+                (void)attribute.Get(value);
+            }
+        };
+        overrideWith(product.GetResolutionAttr(), &out.resolution);
+        overrideWith(product.GetPixelAspectRatioAttr(), &out.pixelAspectRatio);
+        overrideWith(product.GetAspectRatioConformPolicyAttr(), &out.aspectRatioConformPolicy);
+        overrideWith(product.GetDataWindowNDCAttr(), &out.dataWindowNDC);
+        overrideWith(product.GetDisableMotionBlurAttr(), &out.disableMotionBlur);
+        overrideWith(product.GetDisableDepthOfFieldAttr(), &out.disableDepthOfField);
+        break;
+    }
+
     return out;
 }
 
@@ -334,6 +365,28 @@ isForAnotherDelegate(const std::string& aovName,
     }
 
     return others.count(ns) > 0;
+}
+
+std::string
+delegateAovName(const std::string& aovName,
+                const std::string& rendererId)
+{
+    const std::string::size_type colon = aovName.find(':');
+
+    if ((colon == std::string::npos) || (colon == 0) || (colon + 1 == aovName.size())) {
+        return aovName;
+    }
+    const std::vector<std::string> own = namespaces(rendererId);
+    if (std::find(own.begin(), own.end(), aovName.substr(0, colon)) == own.end()) {
+        return aovName;
+    }
+    const std::vector<std::string> available = DelegateSupport::availableAovs(rendererId);
+    const std::string bare = aovName.substr(colon + 1);
+    if ((std::find(available.begin(), available.end(), aovName) == available.end()) && (std::find(available.begin(), available.end(), bare) != available.end())) {
+        return bare;
+    }
+
+    return aovName;
 }
 
 bool

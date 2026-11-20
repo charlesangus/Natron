@@ -99,6 +99,8 @@ createDetachedKnob(const std::string& typeName,
         ret = std::make_shared<KnobPath>((KnobHolder*)NULL, std::string(), dimension, false);
     } else if (typeName == KnobLayers::typeNameStatic()) {
         ret = std::make_shared<KnobLayers>((KnobHolder*)NULL, std::string(), dimension, false);
+    } else if (typeName == KnobRenderVars::typeNameStatic()) {
+        ret = std::make_shared<KnobRenderVars>((KnobHolder*)NULL, std::string(), dimension, false);
     } else if (typeName == KnobChannelSet::typeNameStatic()) {
         ret = std::make_shared<KnobChannelSet>((KnobHolder*)NULL, std::string(), dimension, false);
     } else if (typeName == KnobLayerSelect::typeNameStatic()) {

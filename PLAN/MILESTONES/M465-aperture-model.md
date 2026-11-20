@@ -51,3 +51,8 @@ Source: realflare (GPL-3.0-or-later) `flare/engine/tasks/shaders/aperture.frag`,
 
 - 2026-11-16 — **Aperture model in the shared base, used by bokeh too (user):** moved into F30 - Lens Optics Base so M292 - Traced Lens Bokeh draws its iris with it.
 - 2026-11-20 — All tasks were found committed (f752d453a, 52d4c9ec7) but unchecked. Remote gate green on 52d4c9ec7 (run 44767931769). RADV parity and the contact PNGs are collected at F30 - Lens Optics Base's UAT. PR into F30 next.
+- 2026-11-20 — Review round 1 (12 findings, PR #323) fixed in 7692216b5, apart from two:
+  - #9 declined: `GpuKernel::bindAndDispatch` already checks the group limits.
+  - #1 can't be bit-exact: the gradient's division and Vulkan's sqrt aren't correctly rounded. The hard rounded case allows one sample per pixel on at most 16 of 7680 pixels; every other case keeps 1e-5.
+
+  **Size and Image Size get no ratio lock (user):** the knob framework has none, and auto-fold is enough, so that part of the Scope is dropped. Gate re-running.

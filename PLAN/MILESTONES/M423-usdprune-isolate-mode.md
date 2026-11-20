@@ -56,7 +56,7 @@ USDPrune gains a Prune Unselected checkbox. With it on, the node keeps what Prim
 
 ## Phase 423.2: GUI check
 
-- [ ] M423.P2.T1 — Xvfb script for toggling isolate in the viewer
+- [x] M423.P2.T1 — Xvfb script for toggling isolate in the viewer
   - files: new `Tests/gui/scene_prune_isolate.py`
   - approach: model it on an existing `Tests/gui/scene_*.py` script. Build a scene with three prims into USDPrune viewed in a 3D viewer, set the pattern to one prim, toggle Prune Unselected on and off, then switch Mode to Hide. Read what the viewer draws after each knob change with no manual refresh call, and take a screenshot of the properties panel with Prune Unselected on.
   - verify: passes under Xvfb (`build/deeprepro/run-gui.sh`, or remotely with `--gui`): the viewer draws one prim with the checkbox on and three with it off, after each toggle alone; the Keep knobs show enabled only with it on; the screenshot is shared with the user.
@@ -74,3 +74,4 @@ USDPrune gains a Prune Unselected checkbox. With it on, the node keeps what Prim
 - 2026-11-14 — Shipping (user): standalone, not a member of F4 - Heavy Scene Viewer. It waits for F4 - Heavy Scene Viewer to land, then ships as its own PR and UAT. Supersedes the 2026-11-13 Shipping decision.
 - 2026-11-20 — **No loaded match prunes everything (user):** "Matches are deferred, renders are correct, we don't load or look into payloads without explicit user action. If the isolate pattern matches nothing in the loaded scene, then everything is pruned. Viewer doesn't necessarily match render if there are unloaded payloads." This replaces phase 1's exception, which isolated to the reachable unloaded branches when nothing loaded matched. With a loaded match, the 2026-11-13 reach rule still applies. Phase 423.1 is at 48badc8c4; the fix is being implemented, and the gate waits for it.
 - 2026-11-20 — The no-match fix (381480321) is verified on run 44781826470: both ctest legs green; one USDRenderNodeTest segfault in the legacy leg passed on rerun. Packaging failed on the AppStream remote-screenshot fetch (HTTP 429), because feature/f4-heavy-scene-viewer lacks main's #297. Before Phase 423.2's GUI gate, merge milestone/m336-heavy-scene-acceptance (which carries main) into this branch, as M481 does.
+- 2026-11-20 — P2.T1: Tests/gui/scene_prune_isolate.py. **PM call:** the verify line's "three prims with Prune Unselected off" was wrong. With the checkbox off, USDPrune prunes the named prim as before, so /World/A pruned leaves two cubes; three show only with an empty pattern. The script checks one with it on and two with it off. Gate running.

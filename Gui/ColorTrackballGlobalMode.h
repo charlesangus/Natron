@@ -60,6 +60,7 @@ class QWheelEvent;
 
 NATRON_NAMESPACE_ENTER
 
+class ColorTrackballGlobalModeTestAccess;
 class ColorTrackballPointerHud;
 struct ColorTrackballHudState;
 struct ColorTrackballRevealLabels;
@@ -538,6 +539,8 @@ Q_SIGNALS:
     void knobListEndReached(int direction);
 
 private:
+    friend class ColorTrackballGlobalModeTestAccess;
+
     explicit ColorTrackballGlobalMode(Gui* gui);
 
     void setTarget(const std::shared_ptr<GlobalModeTarget>& target);
@@ -552,6 +555,7 @@ private:
     ColorTrackballReveal* ensureReveal();
     void syncReveal();
     void syncPointerHud(const ColorGlobalModeFeedbackState& state, const std::shared_ptr<GlobalModeTarget>& target);
+    void followPointer(const QPoint& globalPos);
     void showChrome();
     void hideChrome();
     ColorTrackballHudState hudState() const;

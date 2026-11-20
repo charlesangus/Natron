@@ -351,7 +351,7 @@ try:
     # ---- global mode readouts ------------------------------------------------------------------
 
     def hud_block():
-        return first_named("ColorTrackballHudWindow", True) or first_named("ColorTrackballHudBlock", True)
+        return first_named("ColorTrackballHudBlock", True)
 
     def hud_knob():
         w = hud_block()

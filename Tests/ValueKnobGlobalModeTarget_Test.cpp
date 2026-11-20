@@ -144,11 +144,11 @@ TEST_F(ValueKnobGlobalModeTargetTest, HudShowsTheLockChipsAndARateLine)
     EXPECT_TRUE(state.knobLabel.contains(QString::fromUtf8(kBlurParamSize)));
 }
 
-} // namespace
-
 TEST_F(ValueKnobGlobalModeTargetTest, DirectionLabelsAreTheKindsRevealLabels)
 {
-    const ColorTrackballRevealLabels expected = valueModeRevealDirectionLabels(_target->getKind());
+    ASSERT_EQ(eGlobalModeKindSize, _target->getKind());
+
+    const ColorTrackballRevealLabels expected = valueModeRevealDirectionLabels(eGlobalModeKindSize);
     const ColorTrackballRevealLabels labels = _target->directionLabels();
 
     EXPECT_FALSE(labels.right.isEmpty());
@@ -157,3 +157,5 @@ TEST_F(ValueKnobGlobalModeTargetTest, DirectionLabelsAreTheKindsRevealLabels)
     EXPECT_EQ(expected.top, labels.top);
     EXPECT_EQ(expected.bottom, labels.bottom);
 }
+
+} // namespace

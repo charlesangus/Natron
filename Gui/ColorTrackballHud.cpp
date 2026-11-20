@@ -50,6 +50,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/AppManager.h"
 #include "Engine/Settings.h"
 
+#include "Gui/ColorTrackballReveal.h"
 #include "Gui/GuiApplicationManager.h"
 
 NATRON_NAMESPACE_ENTER
@@ -192,18 +193,6 @@ sameLayout(const ColorTrackballPointerBadgeRects& a,
     return (a.block == b.block) && (a.bounds == b.bounds);
 }
 
-QRect
-screenRectAt(const QPoint& globalPos)
-{
-    QScreen* screen = QGuiApplication::screenAt(globalPos);
-
-    if (!screen) {
-        screen = QGuiApplication::primaryScreen();
-    }
-
-    return screen ? screen->geometry() : QRect();
-}
-
 void
 paintPanel(QPainter& painter,
            const QRectF& rect,
@@ -275,6 +264,18 @@ colorTrackballHudFollowOffset()
     return QPoint(offset, offset);
 }
 
+QRect
+colorTrackballScreenRectAt(const QPoint& globalPos)
+{
+    QScreen* screen = QGuiApplication::screenAt(globalPos);
+
+    if (!screen) {
+        screen = QGuiApplication::primaryScreen();
+    }
+
+    return screen ? screen->geometry() : QRect();
+}
+
 int
 colorTrackballPointerBadgeReach()
 {
@@ -324,24 +325,9 @@ colorTrackballPointerBadgeLayout(int reach,
         }
     }
 
-    const QSize& right = pillSizes[eRight];
-    const QSize& left = pillSizes[eLeft];
-    const QSize& top = pillSizes[eTop];
+    colorTrackballPlacePills(reach, reachY, pillSizes, r.pills);
+
     const QSize& bottom = pillSizes[eBottom];
-
-    if (!right.isEmpty()) {
-        r.pills[eRight] = QRect(QPoint(reach, -right.height() / 2), right);
-    }
-    if (!left.isEmpty()) {
-        r.pills[eLeft] = QRect(QPoint(-reach - left.width(), -left.height() / 2), left);
-    }
-    if (!top.isEmpty()) {
-        r.pills[eTop] = QRect(QPoint(-top.width() / 2, -reachY - top.height()), top);
-    }
-    if (!bottom.isEmpty()) {
-        r.pills[eBottom] = QRect(QPoint(-bottom.width() / 2, reachY), bottom);
-    }
-
     const int blockTop = (bottom.isEmpty() ? reachY : (reachY + bottom.height())) + blockGap;
 
     if (!blockSize.isEmpty()) {
@@ -369,19 +355,7 @@ colorTrackballPointerHudPosition(const QPoint& cursor,
         return colorTrackballHudFollowPosition(cursor, rects.bounds.size(), screen, rects.bounds.topLeft());
     }
 
-    QPoint p = cursor + rects.bounds.topLeft();
-
-    if (screen.isEmpty()) {
-        return p;
-    }
-
-    const int right = screen.left() + screen.width() - rects.bounds.width();
-    const int bottom = screen.top() + screen.height() - rects.bounds.height();
-
-    p.setX(std::max(screen.left(), std::min(p.x(), right)));
-    p.setY(std::max(screen.top(), std::min(p.y(), bottom)));
-
-    return p;
+    return colorTrackballRevealPosition(cursor, -rects.bounds.topLeft(), rects.bounds.size(), screen);
 }
 
 QRegion
@@ -399,6 +373,55 @@ double
 colorTrackballHudBlockRadius()
 {
     return dpiY(kBlockRadius);
+}
+
+void
+colorTrackballPlacePills(int sideReach,
+                         int verticalReach,
+                         const QSize sizes[4],
+                         QRect rects[4])
+{
+    const QSize& right = sizes[0];
+    const QSize& left = sizes[1];
+    const QSize& top = sizes[2];
+    const QSize& bottom = sizes[3];
+
+    rects[0] = right.isEmpty() ? QRect() : QRect(QPoint(sideReach, -right.height() / 2), right);
+    rects[1] = left.isEmpty() ? QRect() : QRect(QPoint(-sideReach - left.width(), -left.height() / 2), left);
+    rects[2] = top.isEmpty() ? QRect() : QRect(QPoint(-top.width() / 2, -verticalReach - top.height()), top);
+    rects[3] = bottom.isEmpty() ? QRect() : QRect(QPoint(-bottom.width() / 2, verticalReach), bottom);
+}
+
+bool
+colorTrackballSetPillTexts(ColorTrackballPill* const pills[4],
+                           const ColorTrackballRevealLabels& labels)
+{
+    const QString texts[4] = { labels.right, labels.left, labels.top, labels.bottom };
+    bool changed = false;
+
+    for (int i = 0; i < 4; ++i) {
+        if ((pills[i]->text() != texts[i]) || (pills[i]->isHidden() != texts[i].isEmpty())) {
+            pills[i]->setText(texts[i]);
+            pills[i]->setVisible(!texts[i].isEmpty());
+            changed = true;
+        }
+    }
+
+    return changed;
+}
+
+QRegion
+colorTrackballPillsRegion(const ColorTrackballPill* const pills[4])
+{
+    QRegion region;
+
+    for (int i = 0; i < 4; ++i) {
+        if (!pills[i]->isHidden()) {
+            region = region.united(colorTrackballRoundedRegion(pills[i]->geometry(), 0.5 * pills[i]->height()));
+        }
+    }
+
+    return region;
 }
 
 QColor
@@ -459,21 +482,14 @@ ColorTrackballPill::paintEvent(QPaintEvent* /*e*/)
     painter.drawText(rect(), Qt::AlignCenter, _text);
 }
 
-ColorTrackballHudBlock::ColorTrackballHudBlock(QWidget* parent,
-                                               Qt::WindowFlags flags)
-    : QWidget(parent, flags)
+ColorTrackballHudBlock::ColorTrackballHudBlock(QWidget* parent)
+    : QWidget(parent)
     , _state()
-    , _cursor()
-    , _followsCursor(false)
 {
     setAttribute(Qt::WA_TransparentForMouseEvents, true);
     setAttribute(Qt::WA_ShowWithoutActivating, true);
     setFocusPolicy(Qt::NoFocus);
     setObjectName(QString::fromUtf8("ColorTrackballHudBlock"));
-    if (!parent) {
-        // Only the rounded panel shows; without a compositor the corners would paint black.
-        setAttribute(Qt::WA_TranslucentBackground, true);
-    }
     setState(_state);
 }
 
@@ -493,12 +509,6 @@ ColorTrackballHudBlock::setState(const ColorTrackballHudState& state)
 
     if (s != size()) {
         resize(s);
-        if (_followsCursor) {
-            followCursorTo(_cursor);
-        }
-    }
-    if (isWindow()) {
-        setMask(colorTrackballRoundedRegion(QRect(QPoint(0, 0), s), dpiY(kBlockRadius)));
     }
     update();
 }
@@ -741,14 +751,6 @@ ColorTrackballHudBlock::paintEvent(QPaintEvent* /*e*/)
     }
 }
 
-void
-ColorTrackballHudBlock::followCursorTo(const QPoint& globalCursor)
-{
-    _cursor = globalCursor;
-    _followsCursor = true;
-    move(colorTrackballHudFollowPosition(globalCursor, size(), screenRectAt(globalCursor), colorTrackballHudFollowOffset()));
-}
-
 ColorTrackballPointerHud::ColorTrackballPointerHud()
     : QWidget(nullptr, colorTrackballFollowCursorWindowFlags())
     , _pills()
@@ -786,31 +788,17 @@ ColorTrackballPointerHud::getPill(int index) const
 }
 
 void
-ColorTrackballPointerHud::setPillTexts(const QString& right,
-                                       const QString& left,
-                                       const QString& top,
-                                       const QString& bottom)
+ColorTrackballPointerHud::setContent(const ColorTrackballRevealLabels& labels,
+                                     const ColorTrackballHudState& state)
 {
-    const QString* texts[4] = { &right, &left, &top, &bottom };
-    bool changed = false;
-
-    for (int i = 0; i < 4; ++i) {
-        if (_pills[i]->text() != *texts[i]) {
-            _pills[i]->setText(*texts[i]);
-            changed = true;
-        }
-    }
-    if (changed) {
-        relayout();
-    }
+    colorTrackballSetPillTexts(_pills, labels);
+    setState(state);
 }
 
 void
 ColorTrackballPointerHud::setState(const ColorTrackballHudState& state)
 {
     _block->setState(state);
-    setProperty("trackballHudKnob", state.knobLabel);
-    setProperty("trackballHudMode", colorGlobalModeKeyName(state.mode));
     relayout();
 }
 
@@ -819,7 +807,7 @@ ColorTrackballPointerHud::followCursorTo(const QPoint& globalCursor)
 {
     _cursor = globalCursor;
     _followsCursor = true;
-    move(colorTrackballPointerHudPosition(globalCursor, _layout, screenRectAt(globalCursor)));
+    move(colorTrackballPointerHudPosition(globalCursor, _layout, colorTrackballScreenRectAt(globalCursor)));
 }
 
 void
@@ -828,7 +816,7 @@ ColorTrackballPointerHud::relayout()
     QSize pillSizes[4];
 
     for (int i = 0; i < 4; ++i) {
-        if (!_pills[i]->text().isEmpty()) {
+        if (!_pills[i]->isHidden()) {
             pillSizes[i] = _pills[i]->sizeHint();
         }
     }
@@ -843,21 +831,18 @@ ColorTrackballPointerHud::relayout()
     _laidOut = true;
 
     const QPoint shift = -layout.bounds.topLeft();
-    // Without a compositor the translucent background paints black, so only the shapes are let
-    // through.
-    QRegion mask;
 
     for (int i = 0; i < 4; ++i) {
-        if (layout.pills[i].isNull()) {
-            _pills[i]->hide();
-            continue;
+        if (!layout.pills[i].isNull()) {
+            _pills[i]->setGeometry(layout.pills[i].translated(shift));
         }
-        _pills[i]->setGeometry(layout.pills[i].translated(shift));
-        _pills[i]->show();
-        mask = mask.united(colorTrackballRoundedRegion(_pills[i]->geometry(), 0.5 * _pills[i]->height()));
     }
     _block->setGeometry(layout.block.translated(shift));
-    mask = mask.united(colorTrackballRoundedRegion(_block->geometry(), colorTrackballHudBlockRadius()));
+
+    // Without a compositor the translucent background paints black, so only the shapes are let
+    // through.
+    QRegion mask = colorTrackballPillsRegion(_pills).united(colorTrackballRoundedRegion(_block->geometry(), colorTrackballHudBlockRadius()));
+
     _layout = layout;
     setFixedSize(layout.bounds.size());
     setMask(mask);

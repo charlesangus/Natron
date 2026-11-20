@@ -22,7 +22,8 @@ Sections, each with numbers and captioned screenshots (a NOTE "caption" line pre
 
 Screen grabs leave the cursor out, so every pointer screenshot marks the pointer with a thin red
 cross. Edge warps happen only on real (spontaneous) stroke moves, which a script cannot send while
-a synthetic button is held, so they are left to the unit tests.
+a synthetic button is held, so the window following a warp is checked by the GUI unit test
+ColorTrackballGlobalModePointerHud.AnEdgeWarpTakesThePointerWindowToTheScreenCentre instead.
 """
 import os
 import sys
@@ -98,7 +99,7 @@ try:
     faulthandler.dump_traceback_later(WATCHDOG_S, exit=True, file=_watchdog_file)
 
     def dpi_scale():
-        return QGuiApplication.primaryScreen().logicalDotsPerInchX() / 96.0
+        return QGuiApplication.primaryScreen().logicalDotsPerInchY() / 96.0
 
     def dpi_px(v):
         return int(round(v * dpi_scale()))
@@ -264,12 +265,11 @@ try:
         QApplication.processEvents()
         QTest.keyClick(win, Qt.Key_E, Qt.ControlModifier)
         QApplication.processEvents()
-        if not engaged():
+        if not check(engaged(), "the Ctrl+E shortcut engages global mode"):
             a = shortcut_action()
             if a is not None:
                 a.trigger()
             QApplication.processEvents()
-            report("NOTE the Ctrl+E shortcut did not engage; the action was triggered instead")
         return engaged()
 
     def leave():
@@ -313,8 +313,8 @@ try:
             b = w.findChild(QWidget, "ColorTrackballHudBlock")
             return {
                 "shown": w.isVisible(),
-                "knob": w.property("trackballHudKnob"),
-                "mode": w.property("trackballHudMode") or None,
+                "knob": b.property("trackballHudKnob") if b is not None else None,
+                "mode": (b.property("trackballHudMode") or None) if b is not None else None,
                 "window": global_rect(w),
                 "texts": tuple(texts),
                 "visible": tuple(shown),

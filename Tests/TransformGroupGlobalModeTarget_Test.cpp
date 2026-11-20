@@ -249,8 +249,6 @@ TEST_F(TransformGroupGlobalModeTargetTest, HudLightsTheActiveMember)
     EXPECT_FALSE(state.rateLine.isEmpty());
 }
 
-} // namespace
-
 TEST_F(TransformGroupGlobalModeTargetTest, DirectionLabelsFollowTheActiveMember)
 {
     const ColorTrackballRevealLabels rotate = valueModeRevealDirectionLabels(eGlobalModeKindRotate);
@@ -272,3 +270,5 @@ TEST_F(TransformGroupGlobalModeTargetTest, DirectionLabelsFollowTheActiveMember)
     EXPECT_EQ(translate.top, labels.top);
     EXPECT_EQ(translate.bottom, labels.bottom);
 }
+
+} // namespace

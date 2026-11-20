@@ -36,6 +36,7 @@
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QGuiApplication>
+#include <QPointF>
 #include <QRect>
 #include <QScreen>
 #include <QWidget>
@@ -49,6 +50,34 @@
 #include "Gui/ColorTrackballHud.h"
 #include "Gui/ColorTrackballReveal.h"
 #include "Gui/ValueModeDiscWidget.h"
+
+NATRON_NAMESPACE_ENTER
+
+class ColorTrackballGlobalModeTestAccess {
+public:
+    static std::unique_ptr<ColorTrackballGlobalMode> make()
+    {
+        return std::unique_ptr<ColorTrackballGlobalMode>(new ColorTrackballGlobalMode(nullptr));
+    }
+
+    static ColorTrackballPointerHud& pointerHud(ColorTrackballGlobalMode& mode)
+    {
+        return *mode.ensurePointerHud();
+    }
+
+    static bool warpNearScreenEdge(ColorTrackballGlobalMode& mode,
+                                   const QPoint& globalPos)
+    {
+        return mode.warpNearScreenEdge(QPointF(globalPos));
+    }
+
+    static QPoint pointerPos(const ColorTrackballGlobalMode& mode)
+    {
+        return mode._pointerPos;
+    }
+};
+
+NATRON_NAMESPACE_EXIT
 
 NATRON_NAMESPACE_USING
 
@@ -658,7 +687,6 @@ primaryScreenRect()
     return screen ? screen->geometry() : QRect();
 }
 
-// The pointer as the window's layout puts it, in global coordinates.
 QPoint
 layoutPointer(const ColorTrackballPointerHud& hud)
 {
@@ -694,8 +722,8 @@ TEST(ColorTrackballGlobalModePointerHud, IsAClickThroughToolWindowNamedForScript
     ASSERT_TRUE(hud.getHudBlock() != nullptr);
 
     hud.setState(pointerHudState(eColorGlobalModeT));
-    EXPECT_EQ(QString::fromUtf8("Gain"), hud.property("trackballHudKnob").toString());
-    EXPECT_EQ(QString::fromUtf8("T"), hud.property("trackballHudMode").toString());
+    EXPECT_EQ(QString::fromUtf8("Gain"), hud.getHudBlock()->property("trackballHudKnob").toString());
+    EXPECT_EQ(QString::fromUtf8("T"), hud.getHudBlock()->property("trackballHudMode").toString());
     EXPECT_EQ(eColorGlobalModeT, hud.getHudBlock()->litKey());
 }
 
@@ -769,7 +797,7 @@ TEST(ColorTrackballGlobalModePointerHud, AModeSwitchReplacesThePillTexts)
         EXPECT_EQ(labels.left, hud.getPill(1)->text()) << (int)mode;
         EXPECT_EQ(labels.top, hud.getPill(2)->text()) << (int)mode;
         EXPECT_EQ(labels.bottom, hud.getPill(3)->text()) << (int)mode;
-        EXPECT_EQ(colorGlobalModeKeyName(mode), hud.property("trackballHudMode").toString());
+        EXPECT_EQ(colorGlobalModeKeyName(mode), hud.getHudBlock()->property("trackballHudMode").toString());
     }
     hud.hide();
 }
@@ -848,4 +876,34 @@ TEST(ColorTrackballGlobalModePointerHud, WidgetCursorAndExitNeverShowIt)
         syncPointerHud(hud, f, false, false, eColorGlobalModeS, mid);
         EXPECT_FALSE(hud.isVisible()) << (int)f;
     }
+}
+
+TEST(ColorTrackballGlobalModePointerHud, AnEdgeWarpTakesThePointerWindowToTheScreenCentre)
+{
+    const QRect screen = primaryScreenRect();
+
+    ASSERT_FALSE(screen.isEmpty());
+
+    std::unique_ptr<ColorTrackballGlobalMode> mode = ColorTrackballGlobalModeTestAccess::make();
+    ColorTrackballPointerHud& hud = ColorTrackballGlobalModeTestAccess::pointerHud(*mode);
+    const QPoint centre = screen.center();
+    const QPoint inside = centre + QPoint(40, 30);
+
+    syncPointerHud(hud, kCrosshairOnly, true, true, eColorGlobalModeS, inside);
+    waitVisible(hud);
+    ASSERT_TRUE(hud.isVisible());
+
+    QCursor::setPos(inside);
+    EXPECT_FALSE(ColorTrackballGlobalModeTestAccess::warpNearScreenEdge(*mode, inside));
+    EXPECT_EQ(inside, layoutPointer(hud));
+
+    const QPoint edge(screen.left() + screen.width() - 3, centre.y() + 30);
+
+    hud.followCursorTo(edge);
+    QCursor::setPos(edge);
+    ASSERT_TRUE(ColorTrackballGlobalModeTestAccess::warpNearScreenEdge(*mode, edge));
+    EXPECT_EQ(centre, QCursor::pos());
+    EXPECT_EQ(centre, ColorTrackballGlobalModeTestAccess::pointerPos(*mode));
+    EXPECT_EQ(centre, layoutPointer(hud));
+    hud.hide();
 }

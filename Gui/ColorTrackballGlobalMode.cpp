@@ -290,8 +290,7 @@ colorGlobalModeSyncPointerHud(ColorTrackballPointerHud& hud,
 
         return;
     }
-    hud.setPillTexts(labels.right, labels.left, labels.top, labels.bottom);
-    hud.setState(hudState);
+    hud.setContent(labels, hudState);
     hud.followCursorTo(globalPointer);
     if (!hud.isVisible()) {
         hud.show();
@@ -668,7 +667,6 @@ ColorTrackballGlobalMode::ColorTrackballGlobalMode(Gui* gui)
         }
     });
     QObject::connect(this, &ColorTrackballGlobalMode::stateChanged, this, [this]() {
-        updateHud();
         syncReveal();
     });
     SettingsPtr settings = appPTR ? appPTR->getCurrentSettings() : SettingsPtr();
@@ -1137,10 +1135,7 @@ ColorTrackballGlobalMode::warpNearScreenEdge(const QPointF& globalPos)
     _warpTarget = centre;
     _warpSkips = 0;
     _lastPos = QPointF(centre);
-    _pointerPos = centre;
-    if (_pointerHud && _pointerHud->isVisible()) {
-        _pointerHud->followCursorTo(_pointerPos);
-    }
+    followPointer(centre);
 
     return true;
 }
@@ -1292,8 +1287,6 @@ ColorTrackballGlobalMode::syncReveal()
     }
 }
 
-// The direction pills and hint block in their own window, by the pointer while engaged with
-// no graphic up.
 void
 ColorTrackballGlobalMode::syncPointerHud(const ColorGlobalModeFeedbackState& state,
                                          const std::shared_ptr<GlobalModeTarget>& target)
@@ -1308,7 +1301,19 @@ ColorTrackballGlobalMode::syncPointerHud(const ColorGlobalModeFeedbackState& sta
 
     const ColorTrackballRevealLabels labels = target ? target->directionLabels() : ColorTrackballRevealLabels();
 
-    colorGlobalModeSyncPointerHud(*ensurePointerHud(), state, labels, hudState(), QCursor::pos());
+    colorGlobalModeSyncPointerHud(*ensurePointerHud(), state, labels, hudState(), _pointerPos);
+}
+
+void
+ColorTrackballGlobalMode::followPointer(const QPoint& globalPos)
+{
+    _pointerPos = globalPos;
+    if (_pointerHud && _pointerHud->isVisible()) {
+        _pointerHud->followCursorTo(_pointerPos);
+    }
+    if (_reveal && _revealFollowing && _reveal->isVisible()) {
+        _reveal->centreOn(_pointerPos);
+    }
 }
 
 bool
@@ -1377,12 +1382,10 @@ ColorTrackballGlobalMode::handleMouseMove(QObject* watched,
         }
         _warpPending = false;
     }
-    _pointerPos = pos;
-    if (_pointerHud && _pointerHud->isVisible()) {
-        _pointerHud->followCursorTo(_pointerPos);
-    }
-    if (_reveal && _revealFollowing && _reveal->isVisible()) {
-        _reveal->centreOn(_pointerPos);
+    // Mid-stroke, moves queued before an edge warp still carry pre-warp positions; the stroke
+    // drops them, and following them would pull the pointer windows back to the edge.
+    if (!(_warpPending && e->spontaneous() && ((pos - _warpTarget).manhattanLength() > 2))) {
+        followPointer(pos);
     }
     if (_heldButtons == Qt::NoButton) {
         // Buttons held since before the mode was engaged belong to a drag some widget started;
@@ -1415,17 +1418,11 @@ ColorTrackballGlobalMode::handleMouseRelease(QMouseEvent* e)
         // The pointer goes back to where the stroke began, so the next stroke starts on the
         // graphic it just used. Where the platform refuses (Wayland) it stays where it is.
         if (stroked && (QCursor::pos() != _strokeStartPos) && colorGlobalModeReturnPointer(_strokeStartPos)) {
-            _pointerPos = _strokeStartPos;
             _lastPos = QPointF(_strokeStartPos);
             _warpPending = true;
             _warpTarget = _strokeStartPos;
             _warpSkips = 0;
-            if (_reveal && _revealFollowing && _reveal->isVisible()) {
-                _reveal->centreOn(_pointerPos);
-            }
-            if (_pointerHud && _pointerHud->isVisible()) {
-                _pointerHud->followCursorTo(_pointerPos);
-            }
+            followPointer(_strokeStartPos);
         }
     }
 

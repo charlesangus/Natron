@@ -30,25 +30,25 @@ USDPrune gains a Prune Unselected checkbox. With it on, the node keeps what Prim
 
 ## Phase 423.1: Engine
 
-- [ ] M423.P1.T1 — Prune Unselected in both Modes
+- [x] M423.P1.T1 — Prune Unselected in both Modes
   - files: `Engine/Nodes/Scene/USDPrune.h`, `Engine/Nodes/Scene/USDPrune.cpp`, `Tests/Scene/USDMergePrune_Test.cpp`
   - approach: add `kUSDPruneParamPruneUnselected` "pruneUnselected", a KnobBool labelled "Prune Unselected", default off, not animated, after Mode. When it is on and the pattern matches, the kept set is the matches. Walk the matched stage (the lease `matchPattern()` borrowed, or borrow one with `args.context`) from the pseudo-root. A prim in or below the kept set is left alone, a prim above a kept prim is descended into, and any other prim is a prune root. Treat an instance prim as a leaf, so a match below it keeps the instance. In Hide mode, replace a non-imageable prune root by the highest imageable prims below it. Author on the prune roots with the existing Deactivate or Hide authoring. The memo facts take the prune roots and the checkbox in place of the matches. Check the render's abort flag during the walk. No match and an empty pattern keep their current pass-through behaviour.
   - verify: new cases in `USDMergePrune_Test.cpp` on a `/World/{A/{a1,a2},B,C}` scene. Isolating `/World/A/a1` deactivates exactly `/World/A/a2`, `/World/B` and `/World/C` and leaves `/World` and `/World/A` active. The same in Hide makes those three invisible and authors nothing on `/World` or `/World/A`. A match inside an instance keeps the instance prim. A pattern that matches nothing passes the scene through with the warning. Turning the checkbox off restores today's results.
   - size: M
 
-- [ ] M423.P1.T2 — Keep Lights, Cameras, Materials and Render Settings
+- [x] M423.P1.T2 — Keep Lights, Cameras, Materials and Render Settings
   - files: `Engine/Nodes/Scene/USDPrune.h`, `Engine/Nodes/Scene/USDPrune.cpp`, `Tests/Scene/USDMergePrune_Test.cpp`
   - approach: add KnobBools `keepLights` "Keep Lights", `keepCameras` "Keep Cameras", `keepMaterials` "Keep Materials" and `keepRenderSettings` "Keep Render Settings", default on, not animated, enabled only while Prune Unselected is on (follow how another native node enables knobs from a checkbox in `knobChanged`). During T1's walk, a loaded prim of a checked type joins the kept set, with the types the Scope edge cases list. A Material keeps its whole subtree. The checked set goes into the memo facts.
   - verify: on a scene with `/World/Geo/{a,b}`, `/World/Lights/key`, `/World/Cam`, `/World/Looks/mat` (bound to `a`) and `/Render/settings`, isolating `/World/Geo/a` with defaults keeps the light, the camera, the material and the render settings, and `a` still resolves its binding. Clearing each Keep in turn prunes exactly that branch. The four knobs are disabled while Prune Unselected is off.
   - size: M
 
-- [ ] M423.P1.T3 — Isolate on a deferred load set
+- [x] M423.P1.T3 — Isolate on a deferred load set
   - files: `Engine/Nodes/Scene/USDPrune.cpp`, `Tests/Scene/SceneLoadSetCoverage_Test.cpp`
   - approach: in an evaluation whose context leaves payloads unloaded, T1's walk reaches unloaded payload prims without their children. Keep such a prim when a prefix from `PrimSelector::getReach()` is the prim, an ancestor of it, or below it (a reach of "/" keeps all of them), and treat it as a prune root otherwise. The Keep types are not looked for inside it. With Prune Unselected on, set the context's reach to "/" so any load re-evaluates the node, the way M381 - Deferred Matching Coverage's borrowers add theirs.
   - verify: on the CarCity probe, isolating `/World/Block_0//car*` with nothing loaded opens 0 buildings, keeps `Block_0`'s unloaded payloads and prunes every other block's. Loading `Block_0` re-evaluates the node, and the result matches the fully loaded composition (`expectParity`). A pattern `//car*` keeps every unloaded payload. A render (everything loaded) gives the same prims as the parity reference.
   - size: M
 
-- [ ] M423.P1.T4 — Node doc and tooltips
+- [x] M423.P1.T4 — Node doc and tooltips
   - files: `Engine/Nodes/Scene/docs/USDPrune.md`, `Engine/Nodes/Scene/USDPrune.h` (`kNodeSpec.description`), `Engine/Nodes/Scene/USDPrune.cpp` (tooltips)
   - approach: document Prune Unselected and the four Keep knobs: what survives, the highest-prim authoring, Hide's handling of ancestors and non-imageable prims, instances, and that the viewer prunes an unloaded branch only where the pattern cannot reach while renders are exact. Each knob's tooltip says the same in one or two sentences. Update the node description to mention isolating. No mention of other applications.
   - verify: the doc and tooltips match the behaviour T1–T3 tested; each label is the readable script name.
@@ -72,3 +72,4 @@ USDPrune gains a Prune Unselected checkbox. With it on, the node keeps what Prim
 - 2026-11-13 — Shipping (user): a member of F4 - Heavy Scene Viewer, since USDPrune's matching was rewritten there, and it shares F4's UAT.
 - 2026-11-13 — Planner: the Keep types are checked only on loaded prims. Otherwise the default-on Keep Lights would make every unloaded branch reachable and the viewer would never isolate a heavy scene.
 - 2026-11-14 — Shipping (user): standalone, not a member of F4 - Heavy Scene Viewer. It waits for F4 - Heavy Scene Viewer to land, then ships as its own PR and UAT. Supersedes the 2026-11-13 Shipping decision.
+- 2026-11-20 — **No loaded match prunes everything (user):** "Matches are deferred, renders are correct, we don't load or look into payloads without explicit user action. If the isolate pattern matches nothing in the loaded scene, then everything is pruned. Viewer doesn't necessarily match render if there are unloaded payloads." This replaces phase 1's exception, which isolated to the reachable unloaded branches when nothing loaded matched. With a loaded match, the 2026-11-13 reach rule still applies. Phase 423.1 is at 48badc8c4; the fix is being implemented, and the gate waits for it.

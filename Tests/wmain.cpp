@@ -22,6 +22,7 @@
 #include "DataKindTestEffect.h"
 #include "DeepRenderTestEffect.h"
 #include "Engine/Nodes/Test/OverlayTestNode.h"
+#include "Engine/Nodes/Test/PortTestNode.h"
 #include "IdentityHopTestEffect.h"
 #include "InputChangedFetchTestEffect.h"
 #include "MultiplanarTestEffect.h"
@@ -225,6 +226,18 @@ registerOverlayTestPlugins()
 }
 
 void
+registerPortTestPlugins()
+{
+    // The app already registered them when NATRON_GUI_TEST_NODES=1 is set.
+    if (appPTR->getPluginsList().count(PortTestNode::layouts().front().pluginId) == 0) {
+        PortTestNode::registerPlugins();
+    }
+    for (const PortTestLayout& layout : PortTestNode::layouts()) {
+        testRegisteredPluginIds().insert(layout.pluginId);
+    }
+}
+
+void
 registerCacheStressTestPlugins()
 {
     // A source whose render remembers a knob value outside every engine cache, so the cache
@@ -295,6 +308,7 @@ GTEST_API_ int main(int argc, char **argv)
     registerFrameGraphBuildTestPlugins();
     registerNativeParityTestPlugins();
     registerOverlayTestPlugins();
+    registerPortTestPlugins();
     registerNativeMetadataTestPlugins();
     registerCurveHostTestPlugins();
     registerSplineWarpHostTestPlugins();

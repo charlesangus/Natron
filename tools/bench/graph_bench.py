@@ -45,6 +45,9 @@
 #   BENCH_COMP    path of an .ntpz to load instead of building a topology (BENCH_TOPO=ntp); its Write node is
 #                 pointed at BENCH_RENDER_DIR, and BENCH_SIZE other than uhd adds a project format of that size
 #   BENCH_HOLD    seconds to sleep before rendering, so a sampler can attach (default 0)
+#   BENCH_SHADER_NETWORK  knob-first | every-attribute-a-port: before the topology, also builds the
+#                 50-node port network of tools/bench/shader_node_bench.py in an unconnected Group, so the
+#                 comp edits run with a network in the project. Needs NATRON_GUI_TEST_NODES=1
 #   BENCH_DRY_RUN 1 builds the graph against stand-in objects and prints the planned nodes without
 #                 Natron (python3 tools/bench/graph_bench.py on the host); nothing is rendered
 
@@ -155,6 +158,9 @@ HOLD = float(os.environ.get("BENCH_HOLD", "0"))
 SETTINGS = os.environ.get("BENCH_SETTINGS", "")
 WORK = os.environ.get("BENCH_WORK", os.path.join(os.getcwd(), "build", "bench", "work"))
 PLATES = os.environ.get("BENCH_PLATES_DIR") or os.path.join(os.getcwd(), "build", "bench", "fixtures")
+SHADER_NETWORK = os.environ.get("BENCH_SHADER_NETWORK", "")
+if SHADER_NETWORK not in ("", "knob-first", "every-attribute-a-port"):
+    raise SystemExit("BENCH_SHADER_NETWORK must be knob-first or every-attribute-a-port, got %r" % SHADER_NETWORK)
 # Explicit names bypass the default unique-name search; BENCH_NAMED=0 measures that path.
 NAMED = os.environ.get("BENCH_NAMED", "1") != "0"
 LAST_FRAME = 1 + FRAMES + max(RANGE, 0) + 1
@@ -595,6 +601,66 @@ COMP_TWEAKS = {
 }
 
 
+PORT_NODE_PREFIX = "test.natron.built-in.PortNode."
+# Port names whose attribute a texture or map output can feed; the rest are flags, menus and strings.
+VALUE_PORT_STEMS = ("float", "color", "vector", "pair")
+
+
+def is_value_port(port):
+    stem = port.rstrip("0123456789")
+    return stem in VALUE_PORT_STEMS
+
+
+def build_shader_network():
+    """The network of ShaderNodeCost_Test: 5 materials, 10 BSDFs, 5 two-output textures and 30 maps, 40 edges."""
+    if DRY_RUN:
+        log("dry run: shader network %s, 50 port nodes in a Group" % SHADER_NETWORK)
+        return None
+    suffix = ".AllPorts" if SHADER_NETWORK == "every-attribute-a-port" else ""
+    group = app.createNode("Group")
+    if group is None:
+        raise RuntimeError("could not create a Group")
+
+    def kind(name, count):
+        nodes = []
+        for _ in range(count):
+            node = app.createNode(PORT_NODE_PREFIX + name + suffix, -1, group)
+            if node is None:
+                raise RuntimeError("could not create %s%s%s: run with NATRON_GUI_TEST_NODES=1" % (PORT_NODE_PREFIX, name, suffix))
+            nodes.append(node)
+        return nodes
+
+    materials = kind("DwaBaseMaterial", 5)
+    bsdfs = kind("PrincipledBsdf", 10)
+    textures = kind("ImageTexture", 5)
+    maps = kind("Map", 30)
+    next_slot = {}
+    outputs = {}
+
+    def wire(upstream, output, downstream):
+        name = downstream.getScriptName()
+        ports = [p for p in (downstream.getParam("ports").get() or "").split() if is_value_port(p)]
+        slot = next_slot.get(name, 0)
+        next_slot[name] = slot + 1
+        port = ports[slot]
+        index = [downstream.getInputLabel(i) for i in range(downstream.getMaxInputCount())].index(port)
+        downstream.connectInput(index, upstream)
+        if output:
+            outputs.setdefault(name, []).append("%s=%s" % (port, output))
+
+    for i, node in enumerate(maps):
+        wire(node, "", materials[i // 3] if i < 15 else bsdfs[(i - 15) % len(bsdfs)])
+    for i, node in enumerate(textures):
+        wire(node, "Alpha", bsdfs[i])
+        wire(node, "Color", bsdfs[i + 5])
+    for node in bsdfs:
+        entries = outputs.get(node.getScriptName())
+        if entries:
+            node.getParam("inputOutputs").set(" ".join(sorted(entries)))
+    log("shader network %s: %d nodes" % (SHADER_NETWORK, len(materials) + len(bsdfs) + len(textures) + len(maps)))
+    return group
+
+
 def make_tweak(session_app):
     """Returns a function k -> None that changes the knob for the k-th re-render."""
     if COMP:
@@ -830,6 +896,8 @@ def main_session():
         elif fmt == "uhd":
             app.getProjectParam("outputFormat").set("UHD_4K")
         app.getProjectParam("frameRange").set(1, LAST_FRAME)
+        if SHADER_NETWORK:
+            build_shader_network()
         root = {"node": build_node, "gxg": build_gxg}[TOPO]()
         if DRY_RUN:
             log("dry run: session %s %s nodes=%d %s" % (SESSION, TOPO, sum(counts.values()), json.dumps(counts, sort_keys=True)))
@@ -850,7 +918,7 @@ def main_session():
     result = {
         "topo": TOPO, "comp": os.path.basename(COMP) if COMP else None, "bench_node": NODE if TOPO in ("node", "gxg") else None,
         "res": RES, "size": CUSTOM_SIZE, "session": SESSION, "label": LABEL, "setup_s": round(setup_s, 4),
-        "renders": marks, "settings": SETTINGS, "rss_peak_mb": vm("VmHWM"), "cpus": os.cpu_count(),
+        "renders": marks, "settings": SETTINGS, "shader_network": SHADER_NETWORK or None, "rss_peak_mb": vm("VmHWM"), "cpus": os.cpu_count(),
         "mem_total_mb": mem_total_mb(), "output_bytes": output_bytes, "output_frames": output_files,
         "load1_start": pressure_start["load1"],
     }
@@ -885,6 +953,8 @@ def main():
                 "blurchain": build_blurchain, "xfchain": build_xfchain, "mergechain": build_mergechain,
                 "mergesrcchain": build_mergesrcchain, "gtg": build_gtg, "gebg": build_gebg,
                 "node": build_node, "gxg": build_gxg}
+    if SHADER_NETWORK:
+        build_shader_network()
     t0 = time.time()
     root = builders[TOPO]()
     build_s = time.time() - t0
@@ -945,6 +1015,7 @@ def main():
     med = statistics.median(walls) if walls else None
     result = {
         "topo": TOPO,
+        "shader_network": SHADER_NETWORK or None,
         "n": N,
         "nodes": n_nodes,
         "res": RES,

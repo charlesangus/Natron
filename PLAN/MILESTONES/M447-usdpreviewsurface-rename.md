@@ -19,16 +19,20 @@ Rename the `USDMaterial` node to `USDPreviewSurface`, its plugin ID and label bo
 
 ## Phase 447.1: Rename
 
-- [ ] M447.P1.T1 — Rename the node everywhere
+- [x] M447.P1.T1 — Rename the node everywhere
   - files: `Engine/Nodes/Scene/USDMaterial.{h,cpp}` → `USDPreviewSurface.{h,cpp}`, `Engine/Nodes/Scene/USDMaterial.reg.inc` → `USDPreviewSurface.reg.inc`, `Engine/Nodes/Scene/docs/USDMaterial.md` → `USDPreviewSurface.md`, `Engine/CMakeLists.txt`, the other files in Scope **In**, `Tests/Scene/USDMaterial_Test.cpp` → `USDPreviewSurface_Test.cpp`, `Tests/CMakeLists.txt`
   - approach: `git mv` the files, then replace the node's identifier, class name, plugin ID, label and doc links across every file `git grep -w USDMaterial` lists outside `docs/decisions/`. Check each hit is the node, not general prose. Update test expectations for the new default name and Prim Path.
   - verify: the build passes; `USDPreviewSurface_Test`, `USDAssignMaterial_Test`, `USDPrimitives_Test`, `USDWrite_Test`, `SceneIntegration_Test` and `USDRenderStorm_Test` pass; `git grep -w USDMaterial -- ':!docs/decisions'` returns nothing.
   - size: M
 
-- [ ] M447.P1.T2 — Update GUI and Python checks
+- [x] M447.P1.T2 — Update GUI and Python checks
   - files: `Tests/gui/scene_assign_material.py`, `Tests/gui/scene_node_knob_layout.py`, `Tests/python/test_tabtabtab_natron.py`
   - approach: rename the node in each script and its expectations; the tab menu lists USDPreviewSurface and no USDMaterial.
   - verify: both GUI scripts pass under Xvfb and the Python test passes.
   - size: M
 
 **Verification gate:** release gate green per `.local/build-mode`; the tests above pass; after merging, `git grep -w USDMaterial origin/main -- ':!docs/decisions'` is empty; the PM appends a `# Open questions` entry asking `/cat-plan` to sweep todo briefs that name `USDMaterial`. No UAT: the rename has no behaviour of its own.
+
+## Decisions
+
+- 2026-11-20 — Phase 447.1 done in 0ba4ac243. CMake globs pick up the renamed files, so no list edits were needed. The tab-menu negative check was left out, because it would itself match the gate's `git grep -w USDMaterial`. Gate running.

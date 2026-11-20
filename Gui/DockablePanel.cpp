@@ -1042,13 +1042,7 @@ DockablePanel::setClosedInternal(bool c)
         _imp->_isClosed = c;
     }
 
-
-    if (_imp->_floating) {
-        if (!c) {
-            floatPanel();
-
-            return;
-        }
+    if (_imp->_floating && c) {
         // Docking the panel back would reopen it on top of the bin and could evict another panel.
         releaseFloatingWindow();
         if (_imp->_container) {

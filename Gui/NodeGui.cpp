@@ -2634,6 +2634,12 @@ NodeGui::sceneFootprint() const
     return mapToScene(withMessageCaption(boundingRect())).boundingRect();
 }
 
+double
+NodeGui::messageCaptionDrop() const
+{
+    return sceneFootprint().bottom() - mapToScene(boundingRect()).boundingRect().bottom();
+}
+
 bool
 NodeGui::isSelectedInParentMultiInstance(const Node* node) const
 {
@@ -3023,11 +3029,7 @@ NodeGui::onPersistentMessageChanged()
     const bool isPlaceholder = node && node->getPluginID() == PLUGINID_NATRON_MISSING_PLUGIN;
     const bool showMessage = !message.isEmpty() && (isError || isWarning) && !isPlaceholder;
 
-    if ( !node || message.isEmpty() ) {
-        setToolTip( QString() );
-    } else if (isError || isWarning) {
-        setToolTip(message);
-    }
+    setToolTip(node && !message.isEmpty() && (isError || isWarning) ? message : QString());
 
     if (_messageBadge && _messageBorder && _messageCaption) {
         if (showMessage) {

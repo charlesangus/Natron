@@ -377,6 +377,7 @@ public:
        attaching to the body; collision, placement and selection go through these instead.*/
     QRectF withMessageCaption(const QRectF& localRect) const;
     QRectF sceneFootprint() const;
+    double messageCaptionDrop() const;
 
     /*this function does the painting, using QPainter, you can overload it to change the aspect of
        the node.*/

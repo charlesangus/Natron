@@ -574,7 +574,7 @@ TEST_F(USDMergePruneTest, PruneUnselectedKeepsTheInstanceHoldingAMatchWhole)
     EXPECT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Inst/other")).IsActive());
 }
 
-TEST_F(USDMergePruneTest, PruneUnselectedWithNoMatchWarnsAndPassesTheSceneThrough)
+TEST_F(USDMergePruneTest, PruneUnselectedWithNoMatchPrunesEverythingQuietly)
 {
     NodePtr world = worldABC();
     ASSERT_TRUE(bool(world));
@@ -583,17 +583,50 @@ TEST_F(USDMergePruneTest, PruneUnselectedWithNoMatchWarnsAndPassesTheSceneThroug
     setBool(node, kUSDPruneParamPruneUnselected, true);
 
     const ScenePayload input = evaluate(world);
-    EXPECT_TRUE(evaluate(node).isSameStack(input));
-    ASSERT_TRUE(node->hasPersistentMessage());
-    QString message;
-    int type = 0;
-    node->getPersistentMessage(&message, &type, false);
-    EXPECT_EQ((int)eMessageTypeWarning, type);
-    EXPECT_TRUE(message.contains(QString::fromUtf8("/Nowhere"))) << message.toStdString();
+    PXR_NS::UsdStageRefPtr stage = SceneOps::compose(evaluate(node));
+    ASSERT_TRUE(bool(stage));
+    EXPECT_EQ(std::vector<std::string>({ "/World" }), inactivePrims(stage));
+    EXPECT_FALSE(node->hasPersistentMessage());
 
+    NodePtr hide = prune(world, "/Nowhere", "hide");
+    ASSERT_TRUE(bool(hide));
+    setBool(hide, kUSDPruneParamPruneUnselected, true);
+    stage = SceneOps::compose(evaluate(hide));
+    ASSERT_TRUE(bool(stage));
+    EXPECT_TRUE(inactivePrims(stage).empty());
+    EXPECT_EQ(PXR_NS::UsdGeomTokens->invisible, visibilityOf(stage, "/World"));
+    EXPECT_FALSE(hide->hasPersistentMessage());
+
+    // An empty pattern still passes the scene through quietly.
     setString(node, kUSDPruneParamPrimPattern, " ");
     EXPECT_TRUE(evaluate(node).isSameStack(input));
     EXPECT_FALSE(node->hasPersistentMessage());
+}
+
+TEST_F(USDMergePruneTest, PruneUnselectedWithNoMatchKeepsTheKeptTypes)
+{
+    NodePtr source = readUsda("def Xform \"World\"\n{\n"
+                              "    def Xform \"Geo\"\n    {\n        def Cube \"a\"\n        {\n        }\n    }\n"
+                              "    def Xform \"Lights\"\n    {\n        def SphereLight \"key\"\n        {\n        }\n    }\n"
+                              "    def Camera \"Cam\"\n    {\n    }\n"
+                              "    def Scope \"Looks\"\n    {\n        def Material \"mat\"\n        {\n        }\n    }\n}\n"
+                              "def Scope \"Render\"\n{\n    def RenderSettings \"settings\"\n    {\n    }\n}\n");
+    ASSERT_TRUE(bool(source));
+    NodePtr node = prune(source, "/Nowhere", "deactivate");
+    ASSERT_TRUE(bool(node));
+    setBool(node, kUSDPruneParamPruneUnselected, true);
+
+    PXR_NS::UsdStageRefPtr stage = SceneOps::compose(evaluate(node));
+    ASSERT_TRUE(bool(stage));
+    EXPECT_EQ(std::vector<std::string>({ "/World/Geo" }), inactivePrims(stage));
+    EXPECT_FALSE(node->hasPersistentMessage());
+
+    for (const char* keep : { kUSDPruneParamKeepLights, kUSDPruneParamKeepCameras, kUSDPruneParamKeepMaterials, kUSDPruneParamKeepRenderSettings }) {
+        setBool(node, keep, false);
+    }
+    stage = SceneOps::compose(evaluate(node));
+    ASSERT_TRUE(bool(stage));
+    EXPECT_EQ(std::vector<std::string>({ "/Render", "/World" }), inactivePrims(stage));
 }
 
 TEST_F(USDMergePruneTest, PruneUnselectedKeepsLightsCamerasMaterialsAndRenderSettings)

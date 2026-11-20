@@ -35,17 +35,24 @@ by Deactivate or Hide as Mode says.
 - USD cannot author inside an instance, so an instance holding a match is kept
   whole, and an instance off every kept path is pruned as one prim.
 
-In a viewer that leaves payloads unloaded, the node cannot see inside an
-unloaded branch: it keeps one when the pattern could match inside it, judged
-from the pattern's text, and prunes it otherwise. The Keep checkboxes only look
-at loaded prims, so a light inside an unloaded branch the pattern cannot reach
-is pruned in the viewer. Loading or unloading anything re-evaluates the node.
-Renders load everything, so what they prune is exact.
+With Prune Unselected on, a pattern that matches nothing prunes everything,
+without a warning: only what the Keep checkboxes keep survives.
 
-A pattern that matches nothing passes the input scene through unchanged and sets
-a warning on the node, with Prune Unselected on as well; in a viewer, a pattern
-that finds nothing loaded but reaches unloaded branches still isolates them. An empty pattern passes the scene through without a
-warning. A pattern entry that is not an absolute path sets a node error and the
-scene action fails.
+In a viewer that leaves payloads unloaded, the node does not look inside an
+unloaded branch, so only loaded prims can match. Once the pattern matches a
+loaded prim, an unloaded branch is kept when the pattern could match inside it,
+judged from the pattern's text, and pruned otherwise. When nothing loaded
+matches, every unloaded branch is pruned with the rest, even one the pattern
+could match inside, so the viewer may show less than a render until that
+branch is loaded. The Keep checkboxes only look at loaded prims, so a light
+inside an unloaded branch that is pruned stays pruned in the viewer. Loading or
+unloading anything re-evaluates the node. Renders load everything, so what they
+prune is exact.
+
+With Prune Unselected off, a pattern that matches nothing passes the input
+scene through unchanged and sets a warning on the node. An empty pattern passes
+the scene through without a warning, with Prune Unselected on or off. A pattern
+entry that is not an absolute path sets a node error and the scene action
+fails.
 
 Tolerance: none recorded.

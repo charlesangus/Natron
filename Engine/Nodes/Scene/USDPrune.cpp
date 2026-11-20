@@ -280,9 +280,11 @@ USDPrune::initializeKnobs()
     };
     _pruneUnselected = addBool(tr("Prune Unselected"), kUSDPruneParamPruneUnselected, false,
                                tr("Keeps what Prim Pattern selects, with its ancestors and descendants, and prunes the rest "
-                                  "of the scene by Mode, authoring only on the highest prims off every kept path. In a viewer "
-                                  "that leaves payloads unloaded, an unloaded branch is kept only where the pattern could "
-                                  "match inside it; renders load everything and are exact."));
+                                  "of the scene by Mode, authoring only on the highest prims off every kept path; a pattern "
+                                  "that matches nothing prunes all but what the Keep checkboxes keep. In a viewer that leaves "
+                                  "payloads unloaded, only loaded prims match, and an unloaded branch is kept only when a "
+                                  "loaded prim matched and the pattern could match inside the branch; renders load "
+                                  "everything and are exact."));
     _keepLights = addBool(tr("Keep Lights"), kUSDPruneParamKeepLights, true,
                           tr("With Prune Unselected on, also keeps every light and light filter, and their ancestors."));
     _keepCameras = addBool(tr("Keep Cameras"), kUSDPruneParamKeepCameras, true,
@@ -374,17 +376,15 @@ USDPrune::renderScene(const SceneRenderActionArgs& args,
 
         return eStatusFailed;
     }
-    // In a viewer, a pattern that found nothing loaded may still match inside the unloaded
-    // branches it reaches, which isolating keeps.
-    const bool isolateUnsearched = isolate && (found.unsearched > 0);
-    if (found.paths.empty() && !isolateUnsearched && !upstream.isEmpty() && !PrimSelector::isBlank(pattern)) {
+    const bool blank = PrimSelector::isBlank(pattern);
+    if (found.paths.empty() && !isolate && !upstream.isEmpty() && !blank) {
         *outputScene = upstream;
         setPersistentMessage(eMessageTypeWarning,
                              SceneNodeAuthoring::describeNoMatch(pattern, found, tr("the scene is passed through unchanged").toStdString()));
 
         return eStatusOK;
     }
-    if (found.paths.empty() && !isolateUnsearched) {
+    if (found.paths.empty() && (!isolate || blank || upstream.isEmpty())) {
         *outputScene = upstream;
         clearPersistentMessage(false);
 
@@ -393,15 +393,19 @@ USDPrune::renderScene(const SceneRenderActionArgs& args,
 
     std::vector<PXR_NS::SdfPath> targets;
     if (isolate) {
-        PrimSelector::Reach reach;
-        if (!PrimSelector::getReach(pattern, &reach, errorMessage)) {
-            setPersistentMessage(eMessageTypeError, *errorMessage);
-
-            return eStatusFailed;
-        }
+        // A viewer never looks into an unloaded payload for a match, so with no loaded match
+        // the pattern keeps nothing and every unloaded branch is pruned with the rest.
         std::vector<PXR_NS::SdfPath> reachPaths;
-        for (const std::string& prefix : reach.prefixes) {
-            reachPaths.push_back(PXR_NS::SdfPath(prefix));
+        if (!found.paths.empty()) {
+            PrimSelector::Reach reach;
+            if (!PrimSelector::getReach(pattern, &reach, errorMessage)) {
+                setPersistentMessage(eMessageTypeError, *errorMessage);
+
+                return eStatusFailed;
+            }
+            for (const std::string& prefix : reach.prefixes) {
+                reachPaths.push_back(PXR_NS::SdfPath(prefix));
+            }
         }
         if (!lease.isValid()) {
             lease = SceneQueryPool::instance().borrow(upstream, args.context.loadSet, errorMessage);

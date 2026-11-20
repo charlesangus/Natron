@@ -125,3 +125,4 @@ Code facts, read at `origin/main` on 2026-11-08; re-check line numbers before st
 - 2026-11-08 — Copy/paste of user knobs between nodes is in; saved presets are not (user, grill).
 - 2026-11-08 — Engine and editor are two milestones shipped together as F16 - User Knob Editor (user, grill).
 - 2026-11-20 — All tasks were found committed (8f7e34aa0, 03a551b1c) but unchecked. Remote gate green on 03a551b1c (run 44767875165, release, both ctest legs). The GUI bench (Engine/Knob* rule) runs locally next, then the PR into F16.
+- 2026-11-20 — GUI bench (rule: Engine/Knob*), Xvfb on the N100 host: the gate preset flagged only drag_move_50 comp 3000, as over_budget at 3276 ms; the baseline is 2978 ms, already at the 3 s budget. A back-to-back rerun (5 reps) gave main 2711f1634 a median of 2684 ms (p95 3070) and M372 2824 ms (p95 3177). That is +5% with main also past 3 s at p95, so it is host noise at the budget line, not a regression. No other op regressed.

@@ -119,8 +119,6 @@ enum ApertureWord : uint32_t {
     kApertureNdcScaleY,
     kApertureInvSizeX,
     kApertureInvSizeY,
-    // Half the diagonal of a pixel in the shape's scaled space, which culling widens bounds by.
-    kApertureFootprint,
     kApertureBlades,
     kApertureRoundness,
     kApertureShapeCos,
@@ -185,9 +183,38 @@ inline constexpr uint32_t kApertureScratchWords = 6;
 inline constexpr uint32_t kApertureDustWords = 2;
 
 inline constexpr int kApertureSamples = 8;
+inline constexpr uint32_t kApertureMaxBlades = 360;
 inline constexpr uint32_t kApertureMaxGratingBars = 360;
 inline constexpr uint32_t kApertureMaxScratches = 1000;
 inline constexpr uint32_t kApertureMaxDust = 1000;
+
+/**
+ * @brief Whether size words of tables hold a whole header and every section its offsets and counts
+ * describe, with no count above its maximum; neither rasteriser reads tables that fail this.
+ **/
+inline bool
+apertureTablesValid(const uint32_t* tables,
+                    std::size_t size)
+{
+    if (!tables || size < kApertureHeaderWords) {
+        return false;
+    }
+    const auto fits = [&](uint32_t offsetWord, uint32_t count, uint32_t words) {
+        return (uint64_t)tables[offsetWord] + (uint64_t)count * words <= size && tables[offsetWord] >= kApertureHeaderWords;
+    };
+    const uint32_t blades = tables[kApertureBlades];
+    const uint32_t gratingCount = tables[kApertureGratingCount];
+    const uint32_t scratchesCount = tables[kApertureScratchesCount];
+    const uint32_t dustCount = tables[kApertureDustCount];
+    if (blades < 2 || blades > kApertureMaxBlades || gratingCount > kApertureMaxGratingBars) {
+        return false;
+    }
+    if (scratchesCount > kApertureMaxScratches || dustCount > kApertureMaxDust) {
+        return false;
+    }
+
+    return fits(kApertureBladeOffset, blades, kApertureBladeWords) && fits(kApertureGratingOffset, gratingCount, kApertureGratingWords) && fits(kApertureScratchesOffset, scratchesCount, kApertureScratchWords) && fits(kApertureDustOffset, dustCount, kApertureDustWords);
+}
 
 /**
  * @brief The tables of params over frame, the image layer reading an image of imageWidth x
@@ -200,10 +227,11 @@ std::vector<uint32_t> buildApertureTables(const ApertureParams& params,
 
 /**
  * @brief Rasterises rows [y1, y2) of the mask the tables describe, 8 x 8 supersampled, into out,
- * whose rows are outStride floats apart, the first row written being y1's. The image must be the
- * size the tables were built for.
+ * whose rows are outStride floats apart, the first row written being y1's. Empty tables, an empty
+ * frame's, write nothing. Returns false, writing nothing, when the tables are invalid
+ * (apertureTablesValid()) or have an image layer that image is not the size of.
  **/
-void rasteriseApertureRows(const std::vector<uint32_t>& tables,
+bool rasteriseApertureRows(const std::vector<uint32_t>& tables,
                            const ApertureImage& image,
                            int y1,
                            int y2,
@@ -213,7 +241,8 @@ void rasteriseApertureRows(const std::vector<uint32_t>& tables,
 /**
  * @brief The whole mask of params over frame into out (frame.width x frame.height floats, rows packed
  * from the bottom), on up to maxThreads threads of the global pool. Rows stop starting once aborted
- * returns true, and the function then returns false with the mask incomplete.
+ * returns true, and the function then returns false with the mask incomplete. aborted is called
+ * from several pool threads at once, so it must be thread-safe.
  **/
 bool rasteriseAperture(const ApertureParams& params,
                        const ApertureFrame& frame,

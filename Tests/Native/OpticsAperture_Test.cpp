@@ -27,6 +27,8 @@
 
 #include <cmath>
 #include <cstdlib>
+#include <functional>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -289,6 +291,115 @@ TEST(OpticsAperture, AbortStopsTheMask)
     frame.height = 64;
     std::vector<float> out((std::size_t)64 * 64, 0.f);
     EXPECT_FALSE(rasteriseAperture(ApertureParams(), frame, ApertureImage(), out.data(), kThreads, [] { return true; }));
+}
+
+TEST(OpticsAperture, DegenerateParametersGiveAFiniteMask)
+{
+    const double inf = std::numeric_limits<double>::infinity();
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    // A tenth of this is a float denormal, so the edge ramp's reciprocal span overflows a float.
+    const double tiny = 1e-39;
+    std::vector<ApertureParams> cases;
+    const auto add = [&](const std::function<void(ApertureParams&)>& edit) {
+        ApertureParams p;
+        p.gratingStrength = 0.5;
+        p.scratchesStrength = 0.5;
+        p.scratchesDensity = 0.05;
+        p.dustStrength = 0.5;
+        p.dustDensity = 0.05;
+        edit(p);
+        cases.push_back(p);
+    };
+    add([](ApertureParams& p) { p.blades = 1; });
+    add([](ApertureParams& p) { p.blades = -5; });
+    add([](ApertureParams& p) { p.blades = std::numeric_limits<int>::max(); });
+    add([](ApertureParams& p) { p.sizeX = 0.; p.sizeY = -1.; });
+    add([&](ApertureParams& p) { p.sizeX = inf; p.sizeY = nan; });
+    add([&](ApertureParams& p) { p.roundness = nan; p.rotation = inf; });
+    add([](ApertureParams& p) { p.softness = -1.; p.gratingSoftness = -1.; p.scratchesSoftness = -1.; p.dustSoftness = -1.; });
+    add([&](ApertureParams& p) { p.softness = tiny; p.gratingSoftness = tiny; p.scratchesSoftness = tiny; p.dustSoftness = tiny; });
+    add([&](ApertureParams& p) { p.softness = 1e300; p.dustSoftness = inf; p.scratchesSoftness = nan; });
+    add([&](ApertureParams& p) { p.gratingStrength = 1e30; p.dustRadius = nan; p.scratchesWidth = -inf; p.gratingDensity = inf; });
+    add([&](ApertureParams& p) { p.scratchesParallaxX = nan; p.dustParallaxY = inf; p.scratchesRotationVariation = 1e30; });
+    for (std::size_t i = 0; i < cases.size(); ++i) {
+        const std::vector<float> mask = rasterise(cases[i], 48, 40, ApertureImage(), kThreads, 0.3, -0.2);
+        for (float v : mask) {
+            ASSERT_TRUE(std::isfinite(v) && v >= 0.f && v <= 1.f) << "case " << i << ": " << v;
+        }
+    }
+}
+
+TEST(OpticsAperture, BladesAreCappedInTheTables)
+{
+    ApertureFrame frame;
+    frame.width = 16;
+    frame.height = 16;
+    ApertureParams params;
+    params.blades = 100000;
+    const std::vector<uint32_t> tables = buildApertureTables(params, frame, 0, 0);
+    ASSERT_GE(tables.size(), (std::size_t)kApertureHeaderWords);
+    EXPECT_EQ(kApertureMaxBlades, tables[kApertureBlades]);
+    EXPECT_TRUE(apertureTablesValid(tables.data(), tables.size()));
+}
+
+TEST(OpticsAperture, InvalidTablesAreRefused)
+{
+    ApertureFrame frame;
+    frame.width = 16;
+    frame.height = 16;
+    ApertureParams params;
+    params.dustStrength = 0.5;
+    const std::vector<uint32_t> good = buildApertureTables(params, frame, 0, 0);
+    ASSERT_TRUE(apertureTablesValid(good.data(), good.size()));
+    std::vector<float> out((std::size_t)16 * 16, -1.f);
+
+    std::vector<uint32_t> truncated(good.begin(), good.end() - 1);
+    EXPECT_FALSE(apertureTablesValid(truncated.data(), truncated.size()));
+    EXPECT_FALSE(rasteriseApertureRows(truncated, ApertureImage(), 0, 16, out.data(), 16));
+
+    std::vector<uint32_t> tooManyDust = good;
+    tooManyDust[kApertureDustCount] = kApertureMaxDust + 1;
+    EXPECT_FALSE(apertureTablesValid(tooManyDust.data(), tooManyDust.size()));
+
+    std::vector<uint32_t> badOffset = good;
+    badOffset[kApertureGratingOffset] = 0xFFFFFFF0u;
+    EXPECT_FALSE(apertureTablesValid(badOffset.data(), badOffset.size()));
+    EXPECT_FALSE(rasteriseApertureRows(badOffset, ApertureImage(), 0, 16, out.data(), 16));
+
+    std::vector<uint32_t> oneBlade = good;
+    oneBlade[kApertureBlades] = 1;
+    EXPECT_FALSE(apertureTablesValid(oneBlade.data(), oneBlade.size()));
+
+    for (float v : out) {
+        EXPECT_EQ(-1.f, v);
+    }
+}
+
+TEST(OpticsAperture, AMismatchedImageIsRefused)
+{
+    ApertureFrame frame;
+    frame.width = 16;
+    frame.height = 16;
+    ApertureParams params;
+    params.imageStrength = 0.5;
+    const std::vector<float> pixels((std::size_t)8 * 8, 0.5f);
+    const std::vector<uint32_t> tables = buildApertureTables(params, frame, 8, 8);
+    std::vector<float> out((std::size_t)16 * 16, -1.f);
+
+    ApertureImage wrong;
+    wrong.pixels = pixels.data();
+    wrong.width = 4;
+    wrong.height = 16;
+    EXPECT_FALSE(rasteriseApertureRows(tables, wrong, 0, 16, out.data(), 16));
+    EXPECT_FALSE(rasteriseApertureRows(tables, ApertureImage(), 0, 16, out.data(), 16));
+    EXPECT_EQ(-1.f, out[0]);
+
+    ApertureImage right;
+    right.pixels = pixels.data();
+    right.width = 8;
+    right.height = 8;
+    EXPECT_TRUE(rasteriseApertureRows(tables, right, 0, 16, out.data(), 16));
+    EXPECT_NE(-1.f, out[0]);
 }
 
 namespace {

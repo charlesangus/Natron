@@ -50,11 +50,14 @@ using namespace Optics;
 
 // aperture.slang against rasteriseApertureRows() from the same tables. The kernel repeats the CPU's
 // arithmetic statement by statement, so only sqrt and the roundness's one division round
-// differently; soft edges turn those last-bit differences into far less than the bound.
+// differently; soft edges turn those last-bit differences into far less than the bound. Behind a
+// hard rounded edge they can flip a sample, which moves its pixel by 1 / 64, so that case allows
+// one flip in a few pixels.
 
 namespace {
 
 const double kTolerance = 1e-5;
+const double kOneSample = 1. / (kApertureSamples * kApertureSamples);
 const int kWidth = 96;
 const int kHeight = 80;
 const int kImageSize = 24;
@@ -63,6 +66,8 @@ struct ParityCase {
     std::string name;
     ApertureParams params;
     bool image;
+    double tolerance = kTolerance;
+    std::size_t maxPixelsOffByASample = 0;
 };
 
 std::vector<ParityCase>
@@ -81,6 +86,18 @@ parityCases()
         c.params.softness = 0.4;
         c.params.sizeX = 0.8;
         c.params.sizeY = 0.6;
+        cases.push_back(c);
+    }
+    {
+        ParityCase c { "hard rounded polygon", ApertureParams(), false };
+        c.params.blades = 7;
+        c.params.rotation = 23.;
+        c.params.roundness = 0.3;
+        c.params.softness = 0.;
+        c.params.sizeX = 0.8;
+        c.params.sizeY = 0.6;
+        c.tolerance = kOneSample + kTolerance;
+        c.maxPixelsOffByASample = 16;
         cases.push_back(c);
     }
     {
@@ -239,13 +256,14 @@ TEST(OpticsApertureGpu, MatchesTheCpu)
         }
         const std::vector<uint32_t> tables = buildApertureTables(c.params, frame, image.width, image.height);
         std::vector<float> cpu((std::size_t)kWidth * kHeight, -1.f);
-        rasteriseApertureRows(tables, image, 0, kHeight, cpu.data(), kWidth);
+        ASSERT_TRUE(rasteriseApertureRows(tables, image, 0, kHeight, cpu.data(), kWidth)) << c.name;
 
         std::vector<float> gpu;
         ASSERT_TRUE(rasteriseGpu(*runtime, tables, c.image ? &pixels : nullptr, &gpu)) << c.name;
         ASSERT_EQ(cpu.size(), gpu.size());
         double worst = 0.;
         std::size_t worstIndex = 0;
+        std::size_t beyond = 0;
         double sum = 0.;
         for (std::size_t i = 0; i < cpu.size(); ++i) {
             const double d = std::fabs((double)cpu[i] - (double)gpu[i]);
@@ -253,10 +271,14 @@ TEST(OpticsApertureGpu, MatchesTheCpu)
                 worst = d;
                 worstIndex = i;
             }
+            if (d > kTolerance) {
+                ++beyond;
+            }
             sum += cpu[i];
         }
-        EXPECT_LE(worst, kTolerance) << c.name << ": pixel (" << worstIndex % kWidth << ", " << worstIndex / kWidth << ") cpu "
-                                     << cpu[worstIndex] << " gpu " << gpu[worstIndex];
+        EXPECT_LE(beyond, c.maxPixelsOffByASample) << c.name;
+        EXPECT_LE(worst, c.tolerance) << c.name << ": pixel (" << worstIndex % kWidth << ", " << worstIndex / kWidth << ") cpu "
+                                      << cpu[worstIndex] << " gpu " << gpu[worstIndex];
         // A mask of all zeros or ones would match without testing the layers.
         EXPECT_GT(sum, cpu.size() * 0.05) << c.name;
         EXPECT_LT(sum, cpu.size() * 0.95) << c.name;

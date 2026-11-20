@@ -46,7 +46,7 @@ namespace {
     };
 
     constexpr double kUnbounded = DBL_MAX;
-    const Range kFraction = { 0., 1., 0., 1. };
+    const Range kDensity = { 0., 1., 0., 1. };
     const Range kPositive = { 0., kUnbounded, 0., 1. };
 
     class Builder {
@@ -179,31 +179,31 @@ ApertureKnobs::create(KnobHolder* holder,
         const Range range = { -kUnbounded, kUnbounded, 0., 360. };
         k._rotation = b.number(shape, "Rotation", "Rotation", tr("The polygon's rotation, in degrees."), range, defaults.rotation);
     }
-    k._softness = b.number(shape, "Softness", "Softness", tr("How soft the polygon's edge is."), kFraction, defaults.softness);
+    k._softness = b.number(shape, "Softness", "Softness", tr("How soft the polygon's edge is."), kPositive, defaults.softness);
 
     const KnobGroupPtr grating = b.group(page, "Grating", "Grating",
                                          tr("Thin radial bars from the aperture's rim towards its centre, as diffraction from the blade edges makes."), false);
-    k._gratingStrength = b.number(grating, "GratingStrength", "Grating Strength", tr("How much the bars darken the aperture. 0 turns the grating off."), kFraction, defaults.gratingStrength);
-    k._gratingDensity = b.number(grating, "GratingDensity", "Grating Density", tr("How many bars there are: 1 gives 360."), kFraction, defaults.gratingDensity);
-    k._gratingLength = b.number(grating, "GratingLength", "Grating Length", tr("How far the bars reach in from the rim."), kFraction, defaults.gratingLength);
-    k._gratingWidth = b.number(grating, "GratingWidth", "Grating Width", tr("How wide the bars are."), kFraction, defaults.gratingWidth);
-    k._gratingSoftness = b.number(grating, "GratingSoftness", "Grating Softness", tr("How soft the bars' edges are."), kFraction, defaults.gratingSoftness);
+    k._gratingStrength = b.number(grating, "GratingStrength", "Grating Strength", tr("How much the bars darken the aperture. 0 turns the grating off."), kPositive, defaults.gratingStrength);
+    k._gratingDensity = b.number(grating, "GratingDensity", "Grating Density", tr("How many bars there are: 1 gives 360."), kDensity, defaults.gratingDensity);
+    k._gratingLength = b.number(grating, "GratingLength", "Grating Length", tr("How far the bars reach in from the rim."), kPositive, defaults.gratingLength);
+    k._gratingWidth = b.number(grating, "GratingWidth", "Grating Width", tr("How wide the bars are."), kPositive, defaults.gratingWidth);
+    k._gratingSoftness = b.number(grating, "GratingSoftness", "Grating Softness", tr("How soft the bars' edges are."), kPositive, defaults.gratingSoftness);
 
     const KnobGroupPtr scratches = b.group(page, "Scratches", "Scratches", tr("Thin lines scattered over the aperture, as scratches on the front element."), false);
-    k._scratchesStrength = b.number(scratches, "ScratchesStrength", "Scratches Strength", tr("How much the scratches darken the aperture. 0 turns them off."), kFraction,
+    k._scratchesStrength = b.number(scratches, "ScratchesStrength", "Scratches Strength", tr("How much the scratches darken the aperture. 0 turns them off."), kPositive,
                                     defaults.scratchesStrength);
-    k._scratchesDensity = b.number(scratches, "ScratchesDensity", "Scratches Density", tr("How many scratches there are: 1 gives 1000."), kFraction, defaults.scratchesDensity);
-    k._scratchesLength = b.number(scratches, "ScratchesLength", "Scratches Length", tr("How long the scratches are."), kFraction, defaults.scratchesLength);
-    k._scratchesWidth = b.number(scratches, "ScratchesWidth", "Scratches Width", tr("How wide the scratches are."), kFraction, defaults.scratchesWidth);
+    k._scratchesDensity = b.number(scratches, "ScratchesDensity", "Scratches Density", tr("How many scratches there are: 1 gives 1000."), kDensity, defaults.scratchesDensity);
+    k._scratchesLength = b.number(scratches, "ScratchesLength", "Scratches Length", tr("How long the scratches are."), kPositive, defaults.scratchesLength);
+    k._scratchesWidth = b.number(scratches, "ScratchesWidth", "Scratches Width", tr("How wide the scratches are."), kPositive, defaults.scratchesWidth);
     {
         const Range range = { -kUnbounded, kUnbounded, 0., 360. };
         k._scratchesRotation = b.number(scratches, "ScratchesRotation", "Scratches Rotation", tr("The scratches' common direction, in degrees."), range,
                                         defaults.scratchesRotation);
     }
     k._scratchesRotationVariation = b.number(scratches, "ScratchesRotationVariation", "Scratches Rotation Variation",
-                                             tr("How far each scratch turns from the common direction at random: 1 allows any direction."), kFraction,
+                                             tr("How far each scratch turns from the common direction at random: 1 allows any direction."), kPositive,
                                              defaults.scratchesRotationVariation);
-    k._scratchesSoftness = b.number(scratches, "ScratchesSoftness", "Scratches Softness", tr("How soft the scratches' edges are."), kFraction, defaults.scratchesSoftness);
+    k._scratchesSoftness = b.number(scratches, "ScratchesSoftness", "Scratches Softness", tr("How soft the scratches' edges are."), kPositive, defaults.scratchesSoftness);
     {
         const Range range = { 0., kUnbounded, 0., 2. };
         k._scratchesParallax = b.number(scratches, "ScratchesParallax", "Scratches Parallax",
@@ -211,10 +211,10 @@ ApertureKnobs::create(KnobHolder* holder,
     }
 
     const KnobGroupPtr dust = b.group(page, "Dust", "Dust", tr("Small discs scattered over the aperture, as dust on the front element."), false);
-    k._dustStrength = b.number(dust, "DustStrength", "Dust Strength", tr("How much the dust darkens the aperture. 0 turns it off."), kFraction, defaults.dustStrength);
-    k._dustDensity = b.number(dust, "DustDensity", "Dust Density", tr("How many particles there are: 1 gives 1000."), kFraction, defaults.dustDensity);
-    k._dustRadius = b.number(dust, "DustRadius", "Dust Radius", tr("How large the particles are."), kFraction, defaults.dustRadius);
-    k._dustSoftness = b.number(dust, "DustSoftness", "Dust Softness", tr("How soft the particles' edges are."), kFraction, defaults.dustSoftness);
+    k._dustStrength = b.number(dust, "DustStrength", "Dust Strength", tr("How much the dust darkens the aperture. 0 turns it off."), kPositive, defaults.dustStrength);
+    k._dustDensity = b.number(dust, "DustDensity", "Dust Density", tr("How many particles there are: 1 gives 1000."), kDensity, defaults.dustDensity);
+    k._dustRadius = b.number(dust, "DustRadius", "Dust Radius", tr("How large the particles are."), kPositive, defaults.dustRadius);
+    k._dustSoftness = b.number(dust, "DustSoftness", "Dust Softness", tr("How soft the particles' edges are."), kPositive, defaults.dustSoftness);
     {
         const Range range = { 0., kUnbounded, 0., 2. };
         k._dustParallax = b.number(dust, "DustParallax", "Dust Parallax", tr("How far the dust shifts with the light's position, per axis."), range,
@@ -222,11 +222,11 @@ ApertureKnobs::create(KnobHolder* holder,
     }
 
     const KnobGroupPtr image = b.group(page, "Image", "Image", tr("An image multiplied into the aperture, read from its first channel."), false);
-    k._imageStrength = b.number(image, "ImageStrength", "Image Strength", tr("How much the image darkens the aperture where it is dark. 0 turns it off."), kFraction,
+    k._imageStrength = b.number(image, "ImageStrength", "Image Strength", tr("How much the image darkens the aperture where it is dark. 0 turns it off."), kPositive,
                                 defaults.imageStrength);
     k._imageSize = b.number(image, "ImageSize", "Image Size", tr("The image's width and height as fractions of the mask."), kPositive, defaults.imageSizeX, 2);
-    k._imageBlack = b.number(image, "ImageBlack", "Image Black", tr("Image values below this count as 0."), kFraction, defaults.imageBlack);
-    k._imageWhite = b.number(image, "ImageWhite", "Image White", tr("Image values above this count as 1."), kFraction, defaults.imageWhite);
+    k._imageBlack = b.number(image, "ImageBlack", "Image Black", tr("Image values below this count as 0."), kPositive, defaults.imageBlack);
+    k._imageWhite = b.number(image, "ImageWhite", "Image White", tr("Image values above this count as 1."), kPositive, defaults.imageWhite);
 
     return k;
 } // ApertureKnobs::create

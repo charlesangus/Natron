@@ -32,6 +32,7 @@
 #include <atomic>
 #include <bit>
 #include <cmath>
+#include <limits>
 #include <vector>
 
 #include "Engine/PoolParallelFor.h"
@@ -93,16 +94,20 @@ namespace {
     };
 
     // 1 - smoothstep(threshold - softness, threshold + softness, sdf) as edge and 1 / span; at no softness
-    // realflare's smoothstep divides by zero, which is taken as the hard step sdf < threshold.
+    // realflare's smoothstep divides by zero, which is taken as the hard step sdf < threshold. A softness
+    // so small that 1 / span overflows a float is that step too, and one so large that the edge would
+    // overflow is capped where the ramp is already flat to float precision.
     Edge
     makeEdge(double threshold,
              double softness)
     {
-        if (!(softness > 0.)) {
+        const double s = std::min(softness, 1e30);
+        const double invSpan = 1. / (2. * s);
+        if (!(s > 0.) || !(invSpan <= std::numeric_limits<float>::max())) {
             return { (float)threshold, 0.f };
         }
 
-        return { (float)(threshold - softness), (float)(1. / (2. * softness)) };
+        return { (float)(threshold - s), (float)invSpan };
     }
 
     // The margin keeps a skipped entry's coverage at exactly 0 through either side's rounding of its sdf.
@@ -512,7 +517,7 @@ buildApertureTables(const ApertureParams& p,
     if (frame.width <= 0 || frame.height <= 0) {
         return std::vector<uint32_t>();
     }
-    const uint32_t blades = (uint32_t)std::max(p.blades, 2);
+    const uint32_t blades = (uint32_t)std::clamp(p.blades, 2, (int)kApertureMaxBlades);
     const uint32_t gratingCount = p.gratingStrength > 0. ? layerCount(p.gratingDensity, kApertureMaxGratingBars) : 0u;
     const uint32_t scratchesCount = p.scratchesStrength > 0. ? layerCount(p.scratchesDensity, kApertureMaxScratches) : 0u;
     const uint32_t dustCount = p.dustStrength > 0. ? layerCount(p.dustDensity, kApertureMaxDust) : 0u;
@@ -537,7 +542,6 @@ buildApertureTables(const ApertureParams& p,
     w.setFloat(kApertureNdcScaleY, 2. / frame.height);
     w.setFloat(kApertureInvSizeX, invSizeX);
     w.setFloat(kApertureInvSizeY, invSizeY);
-    w.setFloat(kApertureFootprint, footprint);
 
     const double shapeRotation = finiteOr(p.rotation, 0.) * kPi / 180.;
     w.setUint(kApertureBlades, blades);
@@ -656,7 +660,7 @@ buildApertureTables(const ApertureParams& p,
     return words;
 } // buildApertureTables
 
-void
+bool
 rasteriseApertureRows(const std::vector<uint32_t>& tables,
                       const ApertureImage& image,
                       int y1,
@@ -664,20 +668,30 @@ rasteriseApertureRows(const std::vector<uint32_t>& tables,
                       float* out,
                       std::size_t outStride)
 {
-    if (tables.size() < kApertureHeaderWords) {
-        return;
+    if (tables.empty()) {
+        return true;
+    }
+    if (!apertureTablesValid(tables.data(), tables.size())) {
+        return false;
     }
     const Reader t(tables.data());
     const int width = (int)t.u(kApertureWidth);
     const int height = (int)t.u(kApertureHeight);
-    const bool imageMatches = (int)t.u(kApertureImageWidth) == image.width && (int)t.u(kApertureImageHeight) == image.height;
-    const ApertureImage used = imageMatches ? image : ApertureImage();
+    const uint32_t imageWidth = t.u(kApertureImageWidth);
+    const uint32_t imageHeight = t.u(kApertureImageHeight);
+    const bool hasImageLayer = (uint64_t)imageWidth * imageHeight > 0;
+    if (hasImageLayer && (image.empty() || (uint32_t)image.width != imageWidth || (uint32_t)image.height != imageHeight)) {
+        return false;
+    }
+    const ApertureImage used = hasImageLayer ? image : ApertureImage();
     for (int y = std::max(y1, 0); y < std::min(y2, height); ++y) {
         float* row = out + (std::size_t)(y - y1) * outStride;
         for (int x = 0; x < width; ++x) {
             rasterisePixel(t, used, x, y, row + x);
         }
     }
+
+    return true;
 }
 
 bool

@@ -16,16 +16,19 @@ namespace {
     namespace optics = NATRON_NAMESPACE::Optics;
 
     // Kernels/aperture.slang spells out the header's indices.
-    static_assert(optics::kApertureNdcScaleX == 2 && optics::kApertureBlades == 7);
-    static_assert(optics::kApertureGratingStrength == 13 && optics::kApertureGratingBound == 19);
-    static_assert(optics::kApertureScratchesStrength == 20 && optics::kApertureScratchesSin == 28);
-    static_assert(optics::kApertureDustStrength == 29 && optics::kApertureDustBound == 35);
-    static_assert(optics::kApertureImageStrength == 36 && optics::kApertureImageWhite == 44);
-    static_assert(optics::kApertureBladeOffset == 45 && optics::kApertureDustOffset == 48);
-    static_assert(optics::kApertureHeaderWords == 49);
+    static_assert(optics::kApertureNdcScaleX == 2 && optics::kApertureBlades == 6);
+    static_assert(optics::kApertureGratingStrength == 12 && optics::kApertureGratingBound == 18);
+    static_assert(optics::kApertureScratchesStrength == 19 && optics::kApertureScratchesSin == 27);
+    static_assert(optics::kApertureDustStrength == 28 && optics::kApertureDustBound == 34);
+    static_assert(optics::kApertureImageStrength == 35 && optics::kApertureImageWhite == 43);
+    static_assert(optics::kApertureBladeOffset == 44 && optics::kApertureDustOffset == 47);
+    static_assert(optics::kApertureHeaderWords == 48);
     static_assert(optics::kApertureBladeWords == 2 && optics::kApertureGratingWords == 4);
     static_assert(optics::kApertureScratchWords == 6 && optics::kApertureDustWords == 2);
     static_assert(optics::kApertureSamples == 8);
+    // The kernel's per-pixel survivor masks hold one bit per entry, sized for these maxima.
+    static_assert(optics::kApertureMaxGratingBars <= 12 * 32);
+    static_assert(optics::kApertureMaxScratches <= 32 * 32 && optics::kApertureMaxDust <= 32 * 32);
 
     constexpr std::size_t kUpdateChunkBytes = 65536;
 
@@ -42,6 +45,9 @@ recordAperture(GpuRecordContext& ctx, std::span<const uint32_t> tables, const Gp
 {
     if (tables.size() < optics::kApertureHeaderWords) {
         return {};
+    }
+    if (!optics::apertureTablesValid(tables.data(), tables.size())) {
+        return invalid("the tables' sections overrun them or exceed their maxima");
     }
     const uint32_t width = tables[optics::kApertureWidth];
     const uint32_t height = tables[optics::kApertureHeight];

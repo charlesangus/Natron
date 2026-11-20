@@ -72,7 +72,7 @@ Scouting facts (2026-10-11): `Qt::Network` is already linked into Engine, Gui an
   - files: none
   - approach: `NATRON_BUILD_JOBS=4 tools/ci/local/build.sh debug`, then `tools/ci/local/test.sh ctest debug`.
   - verify: green. The build is required.
-  - size: S
+  - size: M
 
 ## Phase 105.2: App integration
 
@@ -98,7 +98,7 @@ Scouting facts (2026-10-11): `Qt::Network` is already linked into Engine, Gui an
   - files: none
   - approach: `NATRON_BUILD_JOBS=4 tools/ci/local/build.sh debug`, then `tools/ci/local/test.sh ctest debug` and `smoke debug`.
   - verify: everything green. The build is required.
-  - size: S
+  - size: M
 
 ## Phase 105.3: Close-out
 

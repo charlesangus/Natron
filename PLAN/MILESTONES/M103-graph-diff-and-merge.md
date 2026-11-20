@@ -141,7 +141,7 @@ an add. Its lessons, which this design avoids:
   - files: none
   - approach: `NATRON_BUILD_JOBS=4 tools/ci/local/build.sh debug`, then `tools/ci/local/test.sh ctest debug`.
   - verify: green. The build is required.
-  - size: S
+  - size: M
 
 ## Phase 103.3: Built-in handlers and conflict persistence
 
@@ -173,7 +173,7 @@ an add. Its lessons, which this design avoids:
   - files: none
   - approach: `NATRON_BUILD_JOBS=4 tools/ci/local/build.sh debug`, then `tools/ci/local/test.sh ctest debug`.
   - verify: green, and the whole corpus matches `expected/`. The build is required.
-  - size: S
+  - size: M
 
 ## Phase 103.4: `natron-merge` CLI and git integration
 
@@ -193,7 +193,7 @@ an add. Its lessons, which this design avoids:
   - files: none
   - approach: `NATRON_BUILD_JOBS=4 tools/ci/local/build.sh debug`, then `tools/ci/local/test.sh ctest debug` and `smoke debug`.
   - verify: everything green. The build is required.
-  - size: S
+  - size: M
 
 **Verification gate:** the user's matching decision is recorded (P1.T4). Every corpus scenario
 merges to its expected graph and conflicts, both through the API and through `natron-merge`.

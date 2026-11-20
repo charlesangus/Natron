@@ -43,7 +43,7 @@ M103's P1.T4 decision before starting.
   - files: none
   - approach: `NATRON_BUILD_JOBS=4 tools/ci/local/build.sh debug`, then `tools/ci/local/test.sh ctest debug`.
   - verify: green. The build is required.
-  - size: S
+  - size: M
 
 ## Phase 104.2: Merge view and actions
 
@@ -63,7 +63,7 @@ M103's P1.T4 decision before starting.
   - files: `Gui/NodeGui.h`, `Gui/NodeGui.cpp`
   - approach: a small warning glyph at the node's top-right corner while the node has unresolved conflicts, in the same style as the existing node-graph glyphs. It is not a label edit, and it updates when the conflict list changes.
   - verify: compiled at P2.T5. A GUI test sees the badge appear on a conflicted node and go away when it is resolved.
-  - size: S
+  - size: M
 
 - [ ] M104.P2.T4 — Import, update and compare menu actions
   - files: `Gui/Gui20.cpp` (menus), `Gui/NodeGraph35.cpp` or the file that builds the node-graph context menu, `Gui/GuiAppInstance.cpp`
@@ -75,7 +75,7 @@ M103's P1.T4 decision before starting.
   - files: none
   - approach: `NATRON_BUILD_JOBS=4 tools/ci/local/build.sh debug`, then `tools/ci/local/test.sh ctest debug`.
   - verify: green. The build is required.
-  - size: S
+  - size: M
 
 ## Phase 104.3: Diff overlay
 
@@ -95,7 +95,7 @@ M103's P1.T4 decision before starting.
   - files: none
   - approach: `NATRON_BUILD_JOBS=4 tools/ci/local/build.sh debug`, then `tools/ci/local/test.sh ctest debug`.
   - verify: green. The build is required.
-  - size: S
+  - size: M
 
 ## Phase 104.4: Close-out
 

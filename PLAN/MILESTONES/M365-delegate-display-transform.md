@@ -22,7 +22,7 @@ Cycles, MoonRay and Natron Utility frames in the viewer get the viewer's display
 
 ## Phase 365.1: Design
 
-- [ ] M365.P1.T1 — Choose the float frame and grading path
+- [x] M365.P1.T1 — Choose the float frame and grading path
   - files: `Engine/Nodes/Scene/HydraRenderImpl.cpp` (`Frame`, `readFrame`), `Gui/SceneViewport.cpp` (`viewerGainTransform` :328, `cachedViewportConfig` :385-410, `setViewerTransform` ~:1960, lighting mode :648/:977), `## Decisions` here
   - approach: compare (a) a half-float `Frame` uploaded as `GL_RGBA16F` and graded by an OCIO GPU shader in the viewer, against (b) grading on the CPU with an OCIO processor before upload. Measure the per-frame cost at 1920x1080 and the cost of a gain drag for both. Write down how each lighting mode maps to Cycles and MoonRay (scene lights, default light, headlight). Send the choice and the mapping to the user before P2 starts.
   - verify: numbers, the chosen path and the lighting table in `## Decisions`, approved by the user.

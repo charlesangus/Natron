@@ -1561,7 +1561,6 @@ SplineWarp::overlayMapKind(double time,
 
 SplineWarpFieldConstPtr
 SplineWarp::computeField(const Warp& warp,
-                         double time,
                          const Settings& settings,
                          const RectI& window,
                          double scaleX,
@@ -1574,13 +1573,13 @@ SplineWarp::computeField(const Warp& warp,
     // Sub-frames have a cache of their own, so they never evict the unblurred fields.
     SplineWarpFieldCache& cache = subFrame ? _subFrameFields : _fields;
     if (warp.mesh) {
-        return cache.get(warp.hash, time, *warp.mesh, warp.samples->boundaries, window, scaleX, scaleY, settings.fieldResolution);
+        return cache.get(warp.hash, *warp.mesh, warp.samples->boundaries, window, scaleX, scaleY, settings.fieldResolution);
     }
     if (!warp.map) {
         return SplineWarpFieldConstPtr();
     }
 
-    return cache.get(warp.hash, time, *warp.map, warp.samples->boundaries, window, scaleX, scaleY, settings.fieldResolution);
+    return cache.get(warp.hash, *warp.map, warp.samples->boundaries, window, scaleX, scaleY, settings.fieldResolution);
 }
 
 double
@@ -1798,7 +1797,7 @@ SplineWarp::getInverseWarpMap(double time,
     const OfxPointD s = scale.toOfxPointD();
     SplineWarpFieldConstPtr field;
     if (!window.isNull()) {
-        field = computeField(warp, time, settings, PassExec::toPixelEnclosing(window, scale, par), s.x / par, s.y, false);
+        field = computeField(warp, settings, PassExec::toPixelEnclosing(window, scale, par), s.x / par, s.y, false);
     }
     if (field && field->isIdentity()) {
         field.reset();
@@ -1999,7 +1998,7 @@ SplineWarp::getRegionsOfInterest(double time,
             if (warps[i].warp.identity) {
                 continue;
             }
-            SplineWarpFieldConstPtr field = computeField(warps[i].warp, warps[i].time, settings, window, s.x / par, s.y, subFrames);
+            SplineWarpFieldConstPtr field = computeField(warps[i].warp, settings, window, s.x / par, s.y, subFrames);
             if (field && !field->isIdentity()) {
                 double scaleX = 1.;
                 double scaleY = 1.;
@@ -2084,7 +2083,7 @@ SplineWarp::renderOp(const RenderActionArgs& args,
     const bool subFrames = warps.size() > 1;
     std::vector<SplineWarpFieldConstPtr> fields;
     for (std::size_t i = 0; i < warps.size(); ++i) {
-        SplineWarpFieldConstPtr field = computeField(warps[i].warp, warps[i].time, settings, roi, s.x / par, s.y, subFrames);
+        SplineWarpFieldConstPtr field = computeField(warps[i].warp, settings, roi, s.x / par, s.y, subFrames);
         fields.push_back(field ? field : std::make_shared<const SplineWarpField>());
     }
     const InverseWarpChainConstPtr chain = (sourceInput >= 0) ? getPreparedWarpChain(sourceInput, args.time, args.view, args.mappedScale, PassExec::toCanonical(roi, args.mappedScale, par)) : InverseWarpChainConstPtr();
@@ -2620,7 +2619,7 @@ SplineWarp::renderOpGpu(const GpuRenderArgs& args)
         SplineWarpFieldGpuLayout layout;
         SplineWarpFieldConstPtr field;
         if (!subFrames) {
-            field = computeField(warps[0].warp, warps[0].time, settings, rect, s.x / par, s.y, false);
+            field = computeField(warps[0].warp, settings, rect, s.x / par, s.y, false);
             if (field) {
                 field->getGpuTables(&words, &layout);
             }
@@ -2630,7 +2629,7 @@ SplineWarp::renderOpGpu(const GpuRenderArgs& args)
             words.assign(count * kSplineWarpGpuSubFrameWords, 0u);
             std::vector<uint32_t> tables;
             for (std::size_t i = 0; i < count; ++i) {
-                SplineWarpFieldConstPtr subField = computeField(warps[i].warp, warps[i].time, settings, rect, s.x / par, s.y, true);
+                SplineWarpFieldConstPtr subField = computeField(warps[i].warp, settings, rect, s.x / par, s.y, true);
                 SplineWarpFieldGpuLayout subLayout;
                 tables.clear();
                 if (subField) {

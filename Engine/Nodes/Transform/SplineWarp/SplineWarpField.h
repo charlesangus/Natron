@@ -238,8 +238,8 @@ private:
 typedef std::shared_ptr<const SplineWarpField> SplineWarpFieldConstPtr;
 
 /**
- * @brief Built fields by solver, warp, time, render scale and window, shared by every render of a
- * node. A window held by a cached field's window is cut from that field rather than solved again.
+ * @brief Built fields by solver, warp, render scale and window, shared by every render of a node.
+ * A window held by a cached field's window is cut from that field rather than solved again.
  **/
 class SplineWarpFieldCache {
 public:
@@ -252,10 +252,10 @@ public:
 
     /**
      * @param warpHash Identifies the map and the boundaries: the sample set's hash combined with
-     * whatever else the map was solved with.
+     * whatever else the map was solved with. A field depends on nothing else, so a warp that holds
+     * still across frames reuses one field for all of them.
      **/
     SplineWarpFieldConstPtr get(U64 warpHash,
-                                double time,
                                 const SplineWarpTps& map,
                                 const std::vector<SplineWarpBoundaryShape>& boundaries,
                                 const RectI& window,
@@ -264,7 +264,6 @@ public:
                                 double fieldResolution);
 
     SplineWarpFieldConstPtr get(U64 warpHash,
-                                double time,
                                 const SplineWarpMesh& mesh,
                                 const std::vector<SplineWarpBoundaryShape>& boundaries,
                                 const RectI& window,
@@ -290,7 +289,6 @@ private:
     struct Key {
         bool mesh;
         U64 hash;
-        double time;
         double scaleX;
         double scaleY;
         double resolution;
@@ -303,7 +301,7 @@ private:
 
         bool sameWarp(const Key& o) const
         {
-            return mesh == o.mesh && hash == o.hash && time == o.time && scaleX == o.scaleX && scaleY == o.scaleY && resolution == o.resolution;
+            return mesh == o.mesh && hash == o.hash && scaleX == o.scaleX && scaleY == o.scaleY && resolution == o.resolution;
         }
     };
 

@@ -460,7 +460,7 @@ private:
     void growUnionRoD(const Warp& warp, const Settings& settings, const RectD& rod, RectD* extra, bool* any);
 
     // The field over window, from the sub-frame cache when the render averages several.
-    SplineWarpFieldConstPtr computeField(const Warp& warp, double time, const Settings& settings, const RectI& window, double scaleX, double scaleY, bool subFrame);
+    SplineWarpFieldConstPtr computeField(const Warp& warp, const Settings& settings, const RectI& window, double scaleX, double scaleY, bool subFrame);
 
     double getOutputPixelAspectRatio(double time, ViewIdx view) const;
 

@@ -429,9 +429,9 @@ TEST(SplineWarpField, TheCacheBuildsOncePerKey)
     const std::vector<SplineWarpBoundaryShape> none;
     SplineWarpFieldCache cache;
 
-    const SplineWarpFieldConstPtr a = cache.get(7, 1., map, none, RectI(0, 0, 32, 32), 1., 1., 4.);
-    const SplineWarpFieldConstPtr b = cache.get(7, 1., map, none, RectI(0, 0, 32, 32), 1., 1., 4.);
-    const SplineWarpFieldConstPtr c = cache.get(7, 2., map, none, RectI(0, 0, 32, 32), 1., 1., 4.);
+    const SplineWarpFieldConstPtr a = cache.get(7, map, none, RectI(0, 0, 32, 32), 1., 1., 4.);
+    const SplineWarpFieldConstPtr b = cache.get(7, map, none, RectI(0, 0, 32, 32), 1., 1., 4.);
+    const SplineWarpFieldConstPtr c = cache.get(8, map, none, RectI(0, 0, 32, 32), 1., 1., 4.);
     ASSERT_TRUE(bool(a));
     ASSERT_TRUE(bool(c));
     EXPECT_EQ(a.get(), b.get());
@@ -451,26 +451,26 @@ TEST(SplineWarpField, TheCacheCutsAWindowFromALargerField)
     for (int b = 0; b < 2; ++b) {
         const std::vector<SplineWarpBoundaryShape>& boundaries = b ? square : none;
         SplineWarpFieldCache cache;
-        const SplineWarpFieldConstPtr large = cache.get(3, 1., map, boundaries, whole, 0.75, 1., 4.);
+        const SplineWarpFieldConstPtr large = cache.get(3, map, boundaries, whole, 0.75, 1., 4.);
         ASSERT_TRUE(bool(large));
         ASSERT_FALSE(large->isIdentity());
         EXPECT_EQ(std::size_t(1), cache.getSolveCount());
         for (const RectI& tile : tiles) {
-            const SplineWarpFieldConstPtr cut = cache.get(3, 1., map, boundaries, tile, 0.75, 1., 4.);
+            const SplineWarpFieldConstPtr cut = cache.get(3, map, boundaries, tile, 0.75, 1., 4.);
             ASSERT_TRUE(bool(cut));
             EXPECT_EQ(std::size_t(1), cache.getSolveCount());
             EXPECT_EQ(tile, cut->getWindow());
             const SplineWarpField fresh(map, boundaries, tile, 0.75, 1., 4.);
             expectSameField(fresh, *cut);
         }
-        EXPECT_TRUE(cache.get(3, 1., map, boundaries, tiles[2], 0.75, 1., 4.)->isIdentity() == bool(b));
+        EXPECT_TRUE(cache.get(3, map, boundaries, tiles[2], 0.75, 1., 4.)->isIdentity() == bool(b));
 
         // A window the cached fields do not hold, or another warp, is solved.
-        cache.get(3, 1., map, boundaries, RectI(100, 100, 260, 220), 0.75, 1., 4.);
+        cache.get(3, map, boundaries, RectI(100, 100, 260, 220), 0.75, 1., 4.);
         EXPECT_EQ(std::size_t(2), cache.getSolveCount());
-        cache.get(3, 2., map, boundaries, tiles[0], 0.75, 1., 4.);
+        cache.get(4, map, boundaries, tiles[0], 0.75, 1., 4.);
         EXPECT_EQ(std::size_t(3), cache.getSolveCount());
-        cache.get(3, 1., map, boundaries, tiles[0], 0.75, 1., 8.);
+        cache.get(3, map, boundaries, tiles[0], 0.75, 1., 8.);
         EXPECT_EQ(std::size_t(4), cache.getSolveCount());
     }
 }

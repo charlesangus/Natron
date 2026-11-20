@@ -756,7 +756,6 @@ SplineWarpFieldCache::get(const Key& key,
 
 SplineWarpFieldConstPtr
 SplineWarpFieldCache::get(U64 warpHash,
-                          double time,
                           const SplineWarpTps& map,
                           const std::vector<SplineWarpBoundaryShape>& boundaries,
                           const RectI& window,
@@ -768,7 +767,6 @@ SplineWarpFieldCache::get(U64 warpHash,
 
     key.mesh = false;
     key.hash = warpHash;
-    key.time = time;
     key.scaleX = scaleX;
     key.scaleY = scaleY;
     key.resolution = fieldResolution;
@@ -781,7 +779,6 @@ SplineWarpFieldCache::get(U64 warpHash,
 
 SplineWarpFieldConstPtr
 SplineWarpFieldCache::get(U64 warpHash,
-                          double time,
                           const SplineWarpMesh& mesh,
                           const std::vector<SplineWarpBoundaryShape>& boundaries,
                           const RectI& window,
@@ -793,7 +790,6 @@ SplineWarpFieldCache::get(U64 warpHash,
 
     key.mesh = true;
     key.hash = warpHash;
-    key.time = time;
     key.scaleX = scaleX;
     key.scaleY = scaleY;
     key.resolution = fieldResolution;

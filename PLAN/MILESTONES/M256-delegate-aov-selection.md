@@ -62,19 +62,19 @@ Sources: `spike/m255/REPORT-P1T1-aov-checklist.md`, `REPORT-P1T2-rendersettings-
 
 ## Phase 256.2: Checklist authoring
 
-- [ ] M256.P2.T1 — Delegate AOV catalogue
+- [x] M256.P2.T1 — Delegate AOV catalogue
   - files: `Engine/Nodes/Scene/DelegateSupport.{h,cpp}`, `Engine/Nodes/Scene/CyclesAovs.cpp`, `Engine/Nodes/Scene/MoonRayAovs.cpp`, `Tests/Scene/USDRenderCycles_Test.cpp`, `Tests/Scene/MoonRayAovs_Test.cpp`
   - approach: `availableAovs(renderer)` returns the delegate's `aovNames` stat when it publishes one, else a Natron-side table per delegate.
   - verify: gtest: Cycles lists its current 5 AOVs (every `cycles:<pass>` once P3.T1 lands); MoonRay lists its table; Storm lists its own.
   - size: M
 
-- [ ] M256.P2.T2 — USDRenderSettings writes RenderProduct and RenderVars
+- [x] M256.P2.T2 — USDRenderSettings writes RenderProduct and RenderVars
   - files: `Engine/Nodes/Scene/USDRenderSettings.{h,cpp}` (authoring near :342-419), `Engine/Nodes/Scene/docs/USDRenderSettings.md`, `Tests/Scene/USDRenderSettings_Test.cpp`
   - approach: an AOV checklist with one collapsible group per available delegate (Cycles, MoonRay, Utility, Storm), filled from P2.T1; ticks in every group are authored. Add a `customAovs` KnobTable labelled "Custom AOVs" (Name, Source Type, Data Type, Layer) for primvar and LPE vars. It writes a `product` RenderProduct, its `orderedVars` and one RenderVar per pick; unticking removes the var. Labels follow script names.
   - verify: gtest: ticking Cycles normal plus a `primvars:st` row gives two correct RenderVars; a MoonRay tick in the same node adds a `moonray:*` var that a Cycles render skips; USDWrite round-trips them; USDRender renders both Cycles layers.
   - size: L
 
-- [ ] M256.P2.T3 — Hand-written RenderVars from a file
+- [x] M256.P2.T3 — Hand-written RenderVars from a file
   - files: `Tests/Scene/USDRenderSettings_Test.cpp`, `Tests/fixtures/scene/rendervars.usda` (new, small)
   - approach: USDRead loads a product with three vars and a renamed `natron:layer`; USDRender renders it with no USDRenderSettings node.
   - verify: the gtest sees the three layers under their authored names.
@@ -111,3 +111,10 @@ Sources: `spike/m255/REPORT-P1T1-aov-checklist.md`, `REPORT-P1T2-rendersettings-
 - 2026-11-16 — **Only the selected renderer's vars are passed (user, grill):** vars namespaced for another delegate are filtered out before `SetRendererAovs`, with no warning; un-namespaced vars go to every delegate.
 - 2026-11-20 — Phase 256.1 in d64b333a7. hdMoonray reads `parameters:moonray:<attr>`, so driver keys are also sent as `parameters:<x>`. Duplicate AOV names and layer-name collisions are rejected with a warning. **PM calls:** an unrecognised one-channel AOV is named `Y` (depth names get Z, id names get id). A product camera that differs from the settings prim's camera is honoured, matching the reference DCC, in Phase 256.2. Build running.
 - 2026-11-20 — Phase 256.1 is gate-green on 432fc93b5. Its test fixes: st is two channels as authored (texCoord2f), and the other-delegate setting nudge uses a stand-in renderer, since Storm declares no settings in the test process.
+- 2026-11-20 — Phase 256.2:
+  - `availableAovs` comes from each delegate's aovNames stat, with Natron tables as the fallback. The Storm table was checked against v26.08 hdSt: color, depth, primId, instanceId, elementId, edgeId, pointId and Neye; no normal or Peye.
+  - The new KnobRenderVars table knob drives the checklist.
+  - Products override the settings prim's camera, resolution, pixel aspect, conform policy, data window, motion blur and depth of field.
+  - The scene-rendervars.usda fixture is added.
+
+  **PM calls, matching the reference DCC:** products live at /Render/Products/<settings prim name>, and vars share /Render/Products/Vars; a shared var's unset data type and layer are blocked so input values can't leak in. Gate running.

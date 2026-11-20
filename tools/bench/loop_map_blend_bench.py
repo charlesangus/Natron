@@ -12,7 +12,7 @@
 #   BENCH_BUILD      recorded in the result only
 #   BENCH_THREADS    recorded in the result only; the thread count is the noRenderThreads setting
 #   BENCH_SIZE       frame width and height (default "1920 1080")
-#   BENCH_ITERATIONS the loop's iterations (default 16)
+#   BENCH_ITERATIONS the loop's iterations (default 32)
 #   BENCH_REPS       timed renders after the untimed first one (default 5); the best is reported
 #   BENCH_RENDER_DIR absolute existing directory for the EXR (default /tmp); removed after each render
 #   BENCH_OUT        JSON-lines file the result is appended to (default none)
@@ -30,7 +30,7 @@ MAP = os.environ.get("BENCH_MAP", "half")
 BUILD = os.environ.get("BENCH_BUILD", "")
 THREADS = os.environ.get("BENCH_THREADS", "")
 WIDTH, HEIGHT = (int(v) for v in os.environ.get("BENCH_SIZE", "1920 1080").split())
-ITERATIONS = int(os.environ.get("BENCH_ITERATIONS", "16"))
+ITERATIONS = int(os.environ.get("BENCH_ITERATIONS", "32"))
 REPS = int(os.environ.get("BENCH_REPS", "5"))
 RENDER_DIR = os.environ.get("BENCH_RENDER_DIR", "/tmp")
 OUT = os.environ.get("BENCH_OUT", "")

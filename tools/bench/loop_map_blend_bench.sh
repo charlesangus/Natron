@@ -8,7 +8,7 @@
 # Environment:
 #   BENCH_THREADS        thread counts (default "1 8"), each passed as --setting noRenderThreads=N
 #   BENCH_SIZE           frame width and height (default "1920 1080")
-#   BENCH_ITERATIONS     the loop's iterations (default 16)
+#   BENCH_ITERATIONS     the loop's iterations (default 32)
 #   BENCH_REPS           timed renders after the untimed first one (default 5); the best is reported
 #   BENCH_APPIMAGE_ARGS  arguments for the AppImage runtime (default "--appimage-extract-and-run", the host has no FUSE)
 #
@@ -45,7 +45,7 @@ for map in full half; do
         log="$OUT/$map-threads-$n.log"
         (cd "$REPO" && with_display env -u LD_LIBRARY_PATH NATRON_CACHE_DISK_TIER=off BENCH_RENDER_DIR="$OUT/render" BENCH_OUT="$OUT/results.jsonl" \
             BENCH_BUILD=branch BENCH_MAP="$map" BENCH_THREADS="$n" BENCH_SIZE="${BENCH_SIZE:-1920 1080}" \
-            BENCH_ITERATIONS="${BENCH_ITERATIONS:-16}" BENCH_REPS="${BENCH_REPS:-5}" \
+            BENCH_ITERATIONS="${BENCH_ITERATIONS:-32}" BENCH_REPS="${BENCH_REPS:-5}" \
             timeout 3600 "$APPIMAGE" "${APPIMAGE_ARGV[@]}" --setting "noRenderThreads=$n" -b tools/bench/loop_map_blend_bench.py) > "$log" 2>&1
         code=$?
         [ "$code" -eq 0 ] || echo "map=$map threads=$n exited with $code, see $log" >&2

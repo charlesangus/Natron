@@ -110,6 +110,7 @@ struct ViewerTabPrivate
     QIcon iconRefreshOff, iconRefreshOn;
     Button* activateRenderScale;
     ComboBox* renderScaleCombo;
+    Button* autoProxyButton;
     Label* firstInputLabel;
     ComboBox* firstInputImage;
     Label* compositingOperatorLabel;
@@ -121,7 +122,6 @@ struct ViewerTabPrivate
     Button* toggleGainButton;
     SpinBox* gainBox;
     ScaleSliderQWidget* gainSlider;
-    Button* autoContrast;
     SpinBox* gammaBox;
     Button* toggleGammaButton;
     ScaleSliderQWidget* gammaSlider;

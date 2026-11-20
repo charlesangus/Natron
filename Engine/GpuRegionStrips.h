@@ -79,6 +79,13 @@ struct GpuStripSlot {
     // Read after the region on the device, by another region or by the viewer as the root: stripping would download it
     // and lose that, so a region holding one is never stripped only to hide its transfer.
     bool keptOnDevice = false;
+
+    // Kept on the device to the end of a region run whole, so its buffer is never reused for a later member.
+    bool held = false;
+
+    // The level the image's bounds are at. A region holding images at several levels, as when stages pulling
+    // full-scale inputs feed one rendering below 100%, has its bands at the finest interior level: see gpuStripBands().
+    unsigned int mipmapLevel = 0;
 };
 
 /**

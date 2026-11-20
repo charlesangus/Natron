@@ -47,6 +47,7 @@
 #endif
 
 #include "Engine/CLArgs.h"
+#include "Global/ThirdPartyTelemetry.h"
 
 NATRON_NAMESPACE_USING
 
@@ -63,6 +64,7 @@ int wmain(int argc, wchar_t** argv)
 int main(int argc, char *argv[])
 #endif
 {
+    disableThirdPartyTelemetry();
 #ifdef DEBUG
     boost_adaptbx::floating_point::exception_trapping trap(boost_adaptbx::floating_point::exception_trapping::division_by_zero |
                                                            boost_adaptbx::floating_point::exception_trapping::invalid |
@@ -144,19 +146,16 @@ int main(int argc, char *argv[])
         return error.value();
     }
 
+    int rc;
     if ( args.isBackgroundMode() ) {
         AppManager manager;
 
         // coverity[tainted_data]
 #ifdef Q_OS_WIN
-        if ( !manager.loadW(argc, argv, args) ) {
+        rc = manager.loadW(argc, argv, args) ? 0 : 1;
 #else
-        if ( !manager.load(argc, argv, args) ) {
+        rc = manager.load(argc, argv, args) ? 0 : 1;
 #endif
-            return 1;
-        } else {
-            return 0;
-        }
     } else {
         GuiApplicationManager manager;
 
@@ -166,13 +165,10 @@ int main(int argc, char *argv[])
 #else
         const bool loaded = manager.load(argc, argv, args);
 #endif
-        if (manager.hasRefusedGLContext()) {
-            return 1;
-        }
-
-        return loaded;
         //exec() is called within the GuiApplicationManager
+        rc = manager.hasRefusedGLContext() ? 1 : (int)loaded;
     }
+    AppManager::exitWithoutLibraryDestructors(rc);
 } // main
 #ifdef Q_OS_WIN
 } // extern "C"

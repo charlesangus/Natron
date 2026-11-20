@@ -50,6 +50,7 @@
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Filter/DirBlur.h"
 #include "Engine/Nodes/Filter/GodRays.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Project.h"
@@ -211,7 +212,7 @@ TEST_F(NativeGodRaysGpuTest, InputRegionIsTheSourceRegionOfInterest)
     ASSERT_TRUE(setKnobValues(node, kGodRaysParamScale, { 1.4, 1.2 }));
     ASSERT_TRUE(setKnobValues(node, kGodRaysParamRotate, { 15. }));
     for (const bool blackOutside : { true, false }) {
-        ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { blackOutside ? 1. : 0. }));
+        ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string(blackOutside ? "black" : "stretch")));
         for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
             const RenderScale scale = RenderScale::fromMipmapLevel(mipmapLevel);
             const GodRaysParams params = effect->getParams(kTime, ViewIdx(0));
@@ -221,7 +222,7 @@ TEST_F(NativeGodRaysGpuTest, InputRegionIsTheSourceRegionOfInterest)
             RectD srcRoD;
             EffectInstancePtr sourceEffect = source->getEffectInstance();
             ASSERT_NE(eStatusFailed, sourceEffect->getRegionOfDefinition(sourceEffect->getRenderHash(), kTime, scale, ViewIdx(0), &srcRoD));
-            const RectD region = DirBlur::sourceRegion(GodRays::canonicalSamples(params), window, scale, 1., params.filter, srcRoD, params.blackOutside);
+            const RectD region = DirBlur::sourceRegion(GodRays::canonicalSamples(params), window, scale, 1., params.filter, srcRoD, params.edgeMode);
             RectI expected = rect;
             if (!region.isNull()) {
                 expected.merge(region.toPixelEnclosing(scale, 1.));
@@ -249,7 +250,7 @@ TEST_F(NativeGodRaysGpuFilterTest, MatchesTheCpuRenderForEveryFilter)
         ASSERT_TRUE(bool(node));
         ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, filters[f].id));
         ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterClamp, { clamp ? 1. : 0. }));
-        ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { blackOutside ? 1. : 0. }));
+        ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string(blackOutside ? "black" : "stretch")));
         ASSERT_TRUE(setKnobValues(node, kGodRaysParamRotate, { 10. }));
         ASSERT_TRUE(setKnobValues(node, kGodRaysParamSamples, { 9. }));
         const std::string name = std::string(filters[f].id) + (clamp ? " clamped" : "") + (blackOutside ? "" : " edge repeat");
@@ -316,7 +317,7 @@ TEST_F(NativeGodRaysGpuTest, UntransformedCopiesReadOnlyTheirOwnPixel)
             ASSERT_TRUE(effect != NULL);
             ASSERT_TRUE(setKnobValues(node, kGodRaysParamScale, { 1., 1. }));
             ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string(filter)));
-            ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { takeMax ? 0. : 1. }));
+            ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string(takeMax ? "stretch" : "black")));
             ASSERT_TRUE(setKnobValues(node, kGodRaysParamSamples, { 6. }));
             ASSERT_TRUE(setKnobValues(node, kGodRaysParamFromColor, { 1., 0.8, 0.5, 1. }));
             ASSERT_TRUE(setKnobValues(node, kGodRaysParamToColor, { 0.1, 0.4, 1.2, 0.5 }));
@@ -437,7 +438,7 @@ TEST_F(NativeGodRaysGpuTest, MatchesTheCpuRenderAtRenderScalesOverABrightSource)
                 NodePtr node = makeGodRays(bright);
                 ASSERT_TRUE(bool(node));
                 ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string(filter.id)));
-                ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { blackOutside ? 1. : 0. }));
+                ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string(blackOutside ? "black" : "stretch")));
                 ASSERT_TRUE(setKnobValues(node, kGodRaysParamRotate, { 12. }));
                 ASSERT_TRUE(setKnobValues(node, kGodRaysParamTranslate, { 4.5, -3.25 }));
                 ASSERT_TRUE(setKnobValues(node, kGodRaysParamSamples, { 9. }));

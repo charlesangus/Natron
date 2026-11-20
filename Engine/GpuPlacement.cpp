@@ -41,7 +41,6 @@
 #include "Engine/GpuRegionStrips.h"
 #include "Engine/GpuTransferModel.h"
 #include "Engine/Image.h"
-#include "Engine/ImageKey.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -296,7 +295,23 @@ judgeByWeight(const FrameGraph& graph,
     return accepted ? 1. : -1.;
 }
 
+// A region downscales a full-scale render on the device only where the request pass put the task's inputs at level 0,
+// which it does for an effect pulling them at scale one; any other one would read inputs at the task's own level.
+bool
+isDownscaleUnsupported(const FrameGraph::Task& task,
+                       const NativeEffectBase& native)
+{
+    return gpuRendersFullScale(task, native) && !native.pullsInputsAtScaleOne();
+}
+
 NATRON_NAMESPACE_ANONYMOUS_EXIT
+
+bool
+gpuRendersFullScale(const FrameGraph::Task& task,
+                    const EffectInstance& effect)
+{
+    return (task.key.mipmapLevel != 0) && (effect.supportsRenderScaleMaybe() != EffectInstance::eSupportsYes);
+}
 
 double
 taskPixelCount(const FrameGraph::Task& task)
@@ -312,7 +327,9 @@ regionTransfersAreFree(const FrameGraph& graph,
                        bool rootOnDevice)
 {
     for (int e : region.externalInputs) {
-        if (graph.tasks[e].device != FrameGraph::Device::Gpu) {
+        const FrameGraph::Task& input = graph.tasks[e];
+        const bool servedFromDevice = input.servedFromCache && (input.servedTier == EffectInstance::OutputCacheTier::Device) && input.deviceMissingRoI.isNull();
+        if ((input.device != FrameGraph::Device::Gpu) && !servedFromDevice) {
             return false;
         }
     }
@@ -349,11 +366,17 @@ placeGraph(FrameGraph& graph,
         task.device = FrameGraph::Device::Cpu;
         task.storage = eStorageModeRAM;
         task.regionId = -1;
+        task.placementReason = FrameGraph::PlacementReason::None;
+        task.placementDetail.clear();
     }
 
     const int n = (int)graph.tasks.size();
     const std::vector<int> order = topologicalOrder(graph);
     if (order.empty()) {
+        for (FrameGraph::Task& task : graph.tasks) {
+            task.placementReason = FrameGraph::PlacementReason::InvalidGraph;
+        }
+
         return;
     }
 
@@ -365,14 +388,31 @@ placeGraph(FrameGraph& graph,
     std::vector<bool> candidate(n, false);
     std::vector<bool> cached(n, false);
     for (int t : order) {
+        FrameGraph::Task& task = graph.tasks[t];
         if (identity[t]) {
+            task.placementReason = FrameGraph::PlacementReason::Identity;
             continue;
         }
-        cached[t] = inputs.isCached && inputs.isCached(graph.tasks[t]);
-        candidate[t] = !cached[t] && inputs.canRenderOnGpu && inputs.canRenderOnGpu(graph.tasks[t]);
+        cached[t] = inputs.isCached && inputs.isCached(task);
+        if (cached[t]) {
+            task.placementReason = FrameGraph::PlacementReason::Cached;
+            continue;
+        }
+        GpuRefusal refusal;
+        candidate[t] = inputs.canRenderOnGpu && inputs.canRenderOnGpu(task, &refusal);
+        if (!candidate[t]) {
+            task.placementReason = refusal.reason;
+            task.placementDetail = std::move(refusal.detail);
+        }
     }
     if (inputs.readsRaw) {
+        const std::vector<bool> candidateBeforeRuns = candidate;
         dropIncompleteRawRuns(graph, inputs.readsRaw, identity, cached, &candidate);
+        for (int i = 0; i < n; ++i) {
+            if (candidateBeforeRuns[i] && !candidate[i]) {
+                graph.tasks[i].placementReason = FrameGraph::PlacementReason::RawRunAllOrNothing;
+            }
+        }
     }
     std::function<double(const FrameGraph&, const FrameGraph::Region&)> regionGain = inputs.regionGain;
     if (!regionGain && inputs.taskWeight) {
@@ -412,7 +452,7 @@ placeGraph(FrameGraph& graph,
     };
 
     for (int t : order) {
-        const FrameGraph::Task& task = graph.tasks[t];
+        FrameGraph::Task& task = graph.tasks[t];
         std::vector<int> depRegions;
         for (int d : task.dependencies) {
             if ((label[d] >= 0) && (std::find(depRegions.begin(), depRegions.end(), label[d]) == depRegions.end())) {
@@ -425,7 +465,9 @@ placeGraph(FrameGraph& graph,
             std::sort(deps.begin(), deps.end());
             deps.erase(std::unique(deps.begin(), deps.end()), deps.end());
             if ((deps.size() == 1) && (label[deps.front()] >= 0)) {
-                tryAssign(t, std::vector<int>(1, label[deps.front()]), label[deps.front()]);
+                task.placementReason = tryAssign(t, std::vector<int>(1, label[deps.front()]), label[deps.front()])
+                    ? FrameGraph::PlacementReason::None
+                    : FrameGraph::PlacementReason::WouldFormCycle;
             }
             continue;
         }
@@ -438,6 +480,7 @@ placeGraph(FrameGraph& graph,
             if (tryAssign(t, depRegions, depRegions.front())) {
                 continue;
             }
+            task.placementReason = FrameGraph::PlacementReason::WouldFormCycle;
             std::stable_sort(depRegions.begin(), depRegions.end(), [&](int a, int b) {
                 return regionMembers[a].size() > regionMembers[b].size();
             });
@@ -582,6 +625,7 @@ placeGraph(FrameGraph& graph,
             if (drop < 0) {
                 for (int m : members) {
                     label[m] = -1;
+                    graph.tasks[m].placementReason = FrameGraph::PlacementReason::CostModel;
                 }
                 regionMembers[q].clear();
                 continue;
@@ -589,6 +633,7 @@ placeGraph(FrameGraph& graph,
 
             ++steps;
             label[drop] = -1;
+            graph.tasks[drop].placementReason = FrameGraph::PlacementReason::CostModel;
             std::vector<int> rest;
             for (int m : members) {
                 if (m != drop) {
@@ -672,13 +717,13 @@ makeGpuQueryForTaskPlane(const FrameGraph::Task& task,
         return false;
     }
 
-    if ((task.key.mipmapLevel != 0) && (native->supportsRenderScaleMaybe() != EffectInstance::eSupportsYes)) {
+    if (isDownscaleUnsupported(task, *native)) {
         return false;
     }
 
     query->time = task.key.time;
     query->view = task.key.view;
-    query->mappedScale = RenderScale::fromMipmapLevel(task.key.mipmapLevel);
+    query->mappedScale = RenderScale::fromMipmapLevel(gpuRendersFullScale(task, *native) ? 0 : task.key.mipmapLevel);
     query->plane = plane;
     query->nComps = plane.getNumComponents();
     query->bitDepth = task.bitdepth;
@@ -993,10 +1038,28 @@ makeRenderPlacementInputs(const FrameRenderContextPtr& context)
 {
     PlacementInputs inputs;
 
-    inputs.canRenderOnGpu = [context](const FrameGraph::Task& task) -> bool {
+    inputs.canRenderOnGpu = [context](const FrameGraph::Task& task, GpuRefusal* refusal) -> bool {
         std::vector<GpuTaskPlane> planes;
 
-        return context && makeGpuTaskPlanes(task, *context, &planes);
+        if (!context) {
+            return false;
+        }
+        const EffectInstancePtr effect = task.key.node ? task.key.node->getEffectInstance() : EffectInstancePtr();
+        if (effect && effect->offersRenderContinuation()) {
+            refusal->reason = FrameGraph::PlacementReason::NoGpuPath;
+            refusal->detail = "the node offers a render continuation, which only CPU tasks are probed for";
+
+            return false;
+        }
+        if (makeGpuTaskPlanes(task, *context, &planes, &refusal->detail)) {
+            return true;
+        }
+        const NativeEffectBase* native = dynamic_cast<const NativeEffectBase*>(effect.get());
+        if (refusal->detail.empty() && native && native->opKind() && isDownscaleUnsupported(task, *native)) {
+            refusal->reason = FrameGraph::PlacementReason::DownscaleUnsupported;
+        }
+
+        return false;
     };
     inputs.readsRaw = taskReadsRaw;
     inputs.taskWeight = taskGpuWeight;
@@ -1014,48 +1077,9 @@ makeRenderPlacementInputs(const FrameRenderContextPtr& context)
         GpuTransferModel::session().setTransferRates(rates);
     }
 
-    // Looks the cache up as renderRoI's first, non-draft, lookup does. Not knowing which full-scale flag renderRoI
-    // will key with, either counts; a false hit only keeps a task on the CPU.
-    inputs.isCached = [](const FrameGraph::Task& task) -> bool {
-        if (!task.sharesCachedOutput || !task.key.node || !appPTR || task.components.empty()) {
-            return false;
-        }
-        for (int fullScaleWithDownscaleInputs = 0; fullScaleWithDownscaleInputs < 2; ++fullScaleWithDownscaleInputs) {
-            ImageKey key(task.key.node.get(), task.nodeHash, task.cacheKeyHasTime, task.key.time, task.key.view, 1., false,
-                         fullScaleWithDownscaleInputs != 0);
-            std::list<ImagePtr> images;
-            if (!appPTR->getImage(key, &images)) {
-                continue;
-            }
-            bool allLayers = true;
-            for (const ImageLayerDesc& layer : task.components) {
-                bool covered = false;
-                for (const ImagePtr& image : images) {
-                    if (!image || (image->getMipmapLevel() != task.cacheMipmapLevel)) {
-                        continue;
-                    }
-                    const ImageLayerDesc& cached = image->getComponents();
-                    if (!((cached == layer) || (cached.isColorLayer() && layer.isColorLayer()))) {
-                        continue;
-                    }
-                    std::list<RectI> rest;
-                    image->getRestToRender(task.renderedRoI, rest);
-                    if (rest.empty()) {
-                        covered = true;
-                        break;
-                    }
-                }
-                if (!covered) {
-                    allLayers = false;
-                    break;
-                }
-            }
-            if (allLayers) {
-                return true;
-            }
-        }
-
-        return false;
+    // A partial hit of the device tier stays a GPU candidate: a region renders what is missing into the cached image.
+    inputs.isCached = [](const FrameGraph::Task& task) {
+        return task.servedFromCache && task.deviceMissingRoI.isNull();
     };
 
     return inputs;
@@ -1063,7 +1087,8 @@ makeRenderPlacementInputs(const FrameRenderContextPtr& context)
 
 bool
 placeRenderGraph(FrameGraph& graph,
-                 const FrameRenderContextPtr& context)
+                 const FrameRenderContextPtr& context,
+                 ShadowPlacement* shadow)
 {
     GpuContext* gpu = appPTR ? appPTR->getGpuContext() : nullptr;
     if (gpu) {
@@ -1073,9 +1098,34 @@ placeRenderGraph(FrameGraph& graph,
     if (!isGpuPlacementAvailable() || graph.tasks.empty() || !context) {
         return false;
     }
-    placeGraph(graph, makeRenderPlacementInputs(context));
+    if (shadow) {
+        *shadow = placeGraphWithShadow(graph, makeRenderPlacementInputs(context));
+    } else {
+        placeGraph(graph, makeRenderPlacementInputs(context));
+    }
 
     return true;
+}
+
+ShadowPlacement
+placeGraphWithShadow(FrameGraph& graph,
+                     const PlacementInputs& inputs)
+{
+    ShadowPlacement result;
+
+    result.graph = graph;
+    placeGraph(graph, inputs);
+
+    result.servedFromCache.resize(graph.tasks.size(), false);
+    for (std::size_t i = 0; i < graph.tasks.size(); ++i) {
+        result.servedFromCache[i] = graph.tasks[i].placementReason == FrameGraph::PlacementReason::Cached;
+    }
+
+    PlacementInputs shadowInputs = inputs;
+    shadowInputs.isCached = nullptr;
+    placeGraph(result.graph, shadowInputs);
+
+    return result;
 }
 
 NATRON_NAMESPACE_EXIT

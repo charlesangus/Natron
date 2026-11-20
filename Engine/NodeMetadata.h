@@ -31,6 +31,7 @@
 #include <memory>
 
 #include "Engine/ImageLayerDesc.h"
+#include "Global/EdgeMode.h"
 #include "Global/GlobalDefines.h"
 
 NATRON_NAMESPACE_ENTER
@@ -75,6 +76,10 @@ public:
     void setIsFrameVarying(bool varying);
 
     bool getIsFrameVarying() const;
+
+    void setEdgeMode(EdgeMode mode);
+
+    EdgeMode getEdgeMode() const;
 
     void setPixelAspectRatio(int inputNb, double par);
 

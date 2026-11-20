@@ -1,3 +1,5 @@
+import edgesample;
+
 // Resampler's filter weights, tap footprints and box integration with the source passed in, so that
 // kernels with their own bindings (resample.slang, and coordmap.slang's callers under pixelwrap.slang)
 // share them. Sample positions are carried in two floats, so that the filter taps and the integer
@@ -32,7 +34,6 @@ struct FilterSpec
 
 // kFlagClamp is only set for the filters Resampler::filterHonoursClamp names.
 static const uint kFlagClamp = 1;
-static const uint kFlagBlackOutside = 2;
 static const uint kFlagSrcValid = 4;
 // The exact entries' matrix rows whose float evaluation Engine/Gpu/GpuResample.cpp found exact
 // over the whole window; the blurred entry has them per matrix.
@@ -190,20 +191,21 @@ Pos toPos(FF a)
         p.f = 0.0;
         return p;
     }
-    float fl = floor(a.hi);
+    // Past 2^24 the low half can exceed 1 and floats no longer step by 1, so the carry is taken
+    // in ints.
+    const float fl = floor(a.hi);
     precise float f = (a.hi - fl) + a.lo;
-    if (f < 0.0)
+    const float carry = floor(f);
+    precise float frac = f - carry;
+    const int i = int(fl) + int(carry);
+    if (i > int(kPosLimit) || i < -int(kPosLimit))
     {
-        fl -= 1.0;
-        f += 1.0;
+        p.i = i > 0 ? int(kPosLimit) : -int(kPosLimit);
+        p.f = 0.0;
+        return p;
     }
-    else if (f >= 1.0)
-    {
-        fl += 1.0;
-        f -= 1.0;
-    }
-    p.i = int(fl);
-    p.f = f;
+    p.i = i;
+    p.f = frac;
     return p;
 }
 
@@ -220,7 +222,7 @@ bool posAbove(Pos p, int n)
 }
 
 // The source: `offset` addresses (x1, y1) in `buf`, rows `stride` floats apart. `valid` false reads
-// zero everywhere.
+// zero everywhere. `edgeMode` is kEdgeStretch or kEdgeBlack.
 struct ResampleSource
 {
     StructuredBuffer<float> buf;
@@ -232,7 +234,7 @@ struct ResampleSource
     int y2;
     uint nComps;
     bool valid;
-    bool blackOutside;
+    uint edgeMode;
 };
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -262,11 +264,6 @@ float4 pixel(ResampleSource src, int x, int y, inout bool any)
     return srcAt(src, x, y);
 }
 
-int clampCoord(int v, int lo, int hiExclusive)
-{
-    return max(lo, min(v, hiExclusive - 1));
-}
-
 
 ///////////////////////////////////////////////////////////////////////////////
 // Impulse and box: the source pixel `cell`, the floor of the position; false (and zero) when it is
@@ -276,16 +273,10 @@ bool cellPixel(ResampleSource src, int2 cell, out float4 result)
     result = float4(0.0, 0.0, 0.0, 0.0);
     if (!src.valid)
         return false;
-    int mx = cell.x;
-    int my = cell.y;
-    if (!src.blackOutside)
-    {
-        mx = clampCoord(mx, src.x1, src.x2);
-        my = clampCoord(my, src.y1, src.y2);
-    }
-    if (!insideSrc(src, mx, my))
+    int2 sampled;
+    if (!edgePixel(cell, int4(src.x1, src.y1, src.x2, src.y2), src.edgeMode, sampled))
         return false;
-    result = srcAt(src, mx, my);
+    result = srcAt(src, sampled.x, sampled.y);
     return true;
 }
 
@@ -299,8 +290,28 @@ float4 srcRel(ResampleSource src, int ix, int iy)
     return srcAt(src, src.x1 + ix, src.y1 + iy);
 }
 
+// p <= 0.
+bool posAtMostZero(Pos p)
+{
+    return p.i < 0 || (p.i == 0 && p.f == 0.0);
+}
+
+// x2 - x1.
+float posSpan(Pos x1, Pos x2)
+{
+    precise float w = float(x2.i - x1.i) + (x2.f - x1.f);
+    return w;
+}
+
 void integrate1d(ResampleSource src, int row, int n, Pos x1, Pos x2, bool zeroOutside, inout float4 v)
 {
+    // A footprint wholly past one end would otherwise keep that end's sample at full weight.
+    if (x1.i >= n || posAtMostZero(x2))
+    {
+        if (!zeroOutside)
+            v += srcRel(src, x1.i >= n ? n - 1 : 0, row) * posSpan(x1, x2);
+        return;
+    }
     int ifirst;
     float fracfirst;
     if (x1.i < 0)
@@ -354,6 +365,13 @@ float4 integrate2d(ResampleSource src, Pos x1, Pos y1, Pos x2, Pos y2, bool zero
 {
     const int awidth = src.x2 - src.x1;
     const int aheight = src.y2 - src.y1;
+    if (y1.i >= aheight || posAtMostZero(y2))
+    {
+        float4 edge = float4(0.0, 0.0, 0.0, 0.0);
+        if (!zeroOutside)
+            integrate1d(src, y1.i >= aheight ? aheight - 1 : 0, awidth, x1, x2, zeroOutside, edge);
+        return edge * posSpan(y1, y2);
+    }
     int ifirst;
     float fracfirst;
     if (y1.i < 0)
@@ -658,66 +676,172 @@ TapAxis tapAxis(FilterSpec spec, FF coord, FF scale)
     return makeTapAxis(centre, reach, scale, toPos(ffAdd(centre, ffNeg(reach))).i, posCeil(toPos(ffAdd(centre, reach))));
 }
 
+// The spread taps, plus one edge run on each side of them.
+static const int kMaxAxisTaps = kMaxTapsPerAxis + 2;
+
 struct AxisTaps
 {
     int count;
     bool any;
-    int nearRead[kMaxTapsPerAxis];
-    int farRead[kMaxTapsPerAxis];
-    float frac[kMaxTapsPerAxis];
-    float weight[kMaxTapsPerAxis];
+    int nearRead[kMaxAxisTaps];
+    int farRead[kMaxAxisTaps];
+    float frac[kMaxAxisTaps];
+    float weight[kMaxAxisTaps];
 };
 
-// Relative to `lo`, -1 for a read that is black.
-int readOffset(int v, int lo, int hiExclusive, bool blackOutside)
+void addRunTap(inout AxisTaps t, int pixel, float w, int lo, int hiExclusive, uint edgeMode)
 {
-    if (v < lo || v >= hiExclusive)
-    {
-        if (blackOutside)
-            return -1;
-        v = clampCoord(v, lo, hiExclusive);
-    }
-    return v - lo;
+    const int n = t.count;
+    t.frac[n] = 0.0;
+    t.weight[n] = w;
+    t.nearRead[n] = readOffset(pixel, lo, hiExclusive, edgeMode);
+    t.farRead[n] = -1;
+    t.any = t.any || t.nearRead[n] >= 0;
+    t.count = n + 1;
 }
 
-void buildAxisTaps(FilterSpec spec, TapAxis a, int lo, int hiExclusive, bool blackOutside, out AxisTaps t)
+// Relative to `lo`, -1 for a read that is black.
+int readOffset(int v, int lo, int hiExclusive, uint edgeMode)
 {
-    t.count = a.count;
+    int sampled;
+    return edgeCoord(v, lo, hiExclusive, edgeMode, sampled) ? sampled - lo : -1;
+}
+
+// The unit pieces of the unscaled kernel that [u0, u1] crosses, as Resampler.cpp's kernelIntegral
+// walks them. Bounds past radius + 1 only add pieces where the kernel is 0, so the count stays
+// bounded by the support.
+int runPieces(float u0, float u1, float radius)
+{
+    if (!(u0 < u1))
+        return 0;
+    return max(int(ceil(min(u1, radius + 1.0)) - floor(max(u0, -radius - 1.0))), 0);
+}
+
+void buildAxisTaps(FilterSpec spec, TapAxis a, int lo, int hiExclusive, uint edgeMode, out AxisTaps t)
+{
+    t.count = 0;
     t.any = false;
+    // Resampler.cpp's buildAxisTaps: past runStart and runEnd every read is the edge pixel or
+    // black, so each side is one run weighted by the kernel's integral over it.
+    const bool black = edgeMode == kEdgeBlack;
+    const FF lowReach = ffNeg(a.reach);
+    const FF runStart = ffAddF(ffNeg(a.centre), float(black ? lo - 1 : lo));
+    const FF runEnd = ffAddF(ffNeg(a.centre), float(black ? hiExclusive : hiExclusive - 1));
+    const bool before = a.spread && ffLess(lowReach, runStart);
+    const bool after = a.spread && ffLess(runEnd, a.reach);
+    const bool runs = before || after;
+    const FF from = before ? ffMin(runStart, a.reach) : lowReach;
+    const FF to = after ? ffMax(runEnd, lowReach) : a.reach;
+    const float scale = a.scale.hi + a.scale.lo;
+    const float radius = filterRadius(spec);
+    const FF uFrom = ffDiv(from, a.scale);
+    const FF uTo = ffDiv(to, a.scale);
+    const float beforeEnd = uFrom.hi + uFrom.lo;
+    const float afterStart = uTo.hi + uTo.lo;
+    const float beforeFirst = floor(-radius);
+    const float afterFirst = floor(max(afterStart, -radius - 1.0));
+    // Three Gauss-Legendre nodes per piece.
+    const int beforeNodes = before ? 3 * runPieces(-radius, beforeEnd, radius) : 0;
+    const int afterNodes = after ? 3 * runPieces(afterStart, radius, radius) : 0;
+    const float node = 0.7745966692414834;
+    const FF one = ffMake(1.0, 0.0);
     FF sum = ffMake(0.0, 0.0);
+    if (before)
+        addRunTap(t, lo - 1, 0.0, lo, hiExclusive, edgeMode);
     // Spread taps need no double positions of their own: bilinear reads are continuous across the
     // pixel a tap falls in, and the clamp range counts that interpolated read.
-    const FF step = a.spread ? ffDivF(ffMulF(a.reach, 2.0), float(kMaxTapsPerAxis)) : ffMake(0.0, 0.0);
+    const FF step = !a.spread ? ffMake(0.0, 0.0)
+                    : runs   ? ffDivF(ffAdd(to, ffNeg(from)), float(kMaxTapsPerAxis))
+                             : ffDivF(ffMulF(a.reach, 2.0), float(kMaxTapsPerAxis));
+    const float unit = runs ? step.hi + step.lo : 1.0;
+    const int count = (!a.spread || ffLess(from, to)) ? a.count : 0;
+    const int afterBegin = beforeNodes + count;
+    // One loop, and so one inlined tapWeight, for the run nodes and the taps: each tapWeight
+    // carries every filter, and a copy per call site multiplies the shader's size.
+    float piece = 0.0;
+    float runBefore = 0.0;
+    float runAfter = 0.0;
     [loop]
-    for (int i = 0; i < a.count; ++i)
+    for (int i = 0; i < afterBegin + afterNodes; ++i)
     {
+        const bool isNode = i < beforeNodes || i >= afterBegin;
+        const bool afterSide = i >= afterBegin;
+        const int tap = i - beforeNodes;
+        int j = 0;
+        float pa = 0.0;
+        float pb = 0.0;
+        float half = 0.0;
         FF offset;
-        int low;
-        float frac;
-        if (a.spread)
+        int low = 0;
+        float frac = 0.0;
+        if (isNode)
         {
-            offset = ffAdd(ffMulF(step, float(i) + 0.5), ffNeg(a.reach));
+            const int q = afterSide ? i - afterBegin : i;
+            const int k = q / 3;
+            j = q - 3 * k;
+            const float pieceStart = (afterSide ? afterFirst : beforeFirst) + float(k);
+            pa = max(afterSide ? afterStart : -radius, pieceStart);
+            pb = min(afterSide ? radius : beforeEnd, pieceStart + 1.0);
+            const float mid = 0.5 * (pa + pb);
+            half = 0.5 * (pb - pa);
+            offset = ffMake(j == 1 ? mid : (j == 0 ? mid - node * half : mid + node * half), 0.0);
+        }
+        else if (a.spread)
+        {
+            offset = ffAdd(ffMulF(step, float(tap) + 0.5), from);
             const Pos p = toPos(ffAdd(a.centre, offset));
             low = p.i;
             frac = p.f;
         }
         else
         {
-            low = a.first + i;
-            offset = ffAddF(ffNeg(a.centre), float(low));
-            frac = 0.0;
+            low = a.first + tap;
+            // A pixel past 2^24 rounds to a float, so the remainder joins as a second term.
+            const float lowHi = float(low);
+            offset = ffAddF(ffAddF(ffNeg(a.centre), lowHi), float(low - int(lowHi)));
         }
-        const float w = tapWeight(spec, offset, a.scale);
-        t.frac[i] = frac;
-        t.weight[i] = w;
+        const float tw = tapWeight(spec, offset, isNode ? one : a.scale);
+        if (isNode)
+        {
+            if (pa < pb)
+            {
+                piece += (j == 1 ? 8.0 : 5.0) * tw;
+                if (j == 2)
+                {
+                    if (afterSide)
+                        runAfter += half * piece / 9.0;
+                    else
+                        runBefore += half * piece / 9.0;
+                }
+            }
+            if (j == 2)
+                piece = 0.0;
+            if (i == beforeNodes - 1)
+            {
+                t.weight[0] = scale * runBefore;
+                sum = ffAddF(sum, t.weight[0]);
+            }
+            continue;
+        }
+        const float w = tw * unit;
+        const int n = t.count;
+        t.frac[n] = frac;
+        t.weight[n] = w;
         sum = ffAddF(sum, w);
-        t.nearRead[i] = readOffset(low, lo, hiExclusive, blackOutside);
-        t.farRead[i] = frac != 0.0 ? readOffset(low + 1, lo, hiExclusive, blackOutside) : -1;
-        t.any = t.any || t.nearRead[i] >= 0 || t.farRead[i] >= 0;
+        t.nearRead[n] = readOffset(low, lo, hiExclusive, edgeMode);
+        t.farRead[n] = frac != 0.0 ? readOffset(low + 1, lo, hiExclusive, edgeMode) : -1;
+        t.any = t.any || t.nearRead[n] >= 0 || t.farRead[n] >= 0;
+        t.count = n + 1;
+    }
+    if (after)
+    {
+        const float w = scale * runAfter;
+        addRunTap(t, hiExclusive, w, lo, hiExclusive, edgeMode);
+        sum = ffAddF(sum, w);
     }
     const float total = sum.hi + sum.lo;
     [loop]
-    for (int i = 0; i < a.count; ++i)
+    for (int i = 0; i < t.count; ++i)
         t.weight[i] = total != 0.0 ? t.weight[i] / total : 0.0;
 }
 
@@ -742,8 +866,8 @@ bool kernelSample(ResampleSource src, FilterSpec spec, bool clampOn, TapAxis ax,
         return false;
     AxisTaps tx;
     AxisTaps ty;
-    buildAxisTaps(spec, ax, src.x1, src.x2, src.blackOutside, tx);
-    buildAxisTaps(spec, ay, src.y1, src.y2, src.blackOutside, ty);
+    buildAxisTaps(spec, ax, src.x1, src.x2, src.edgeMode, tx);
+    buildAxisTaps(spec, ay, src.y1, src.y2, src.edgeMode, ty);
     if (!tx.any || !ty.any)
         return false;
 
@@ -850,7 +974,7 @@ float4 boxIntegrate(ResampleSource src, FF fx, FF fy, FF Jxx, FF Jxy, FF Jyx, FF
     const Pos px2 = toPos(ffAddF(x2, -float(src.x1)));
     const Pos py1 = toPos(ffAddF(y1, -float(src.y1)));
     const Pos py2 = toPos(ffAddF(y2, -float(src.y1)));
-    v = integrate2d(src, px1, py1, px2, py2, src.blackOutside);
+    v = integrate2d(src, px1, py1, px2, py2, src.edgeMode == kEdgeBlack);
     const FF wx = ffAdd(x2, ffNeg(x1));
     const FF wy = ffAdd(y2, ffNeg(y1));
     precise float s = (wx.hi + wx.lo) * (wy.hi + wy.lo);

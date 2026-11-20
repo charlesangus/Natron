@@ -20,7 +20,7 @@ include("${NATRON_GPU_CMAKE_DIR}/FetchSlang.cmake")
 include("${NATRON_GPU_CMAKE_DIR}/FetchGlslang.cmake")
 include("${NATRON_GPU_CMAKE_DIR}/SlangKernels.cmake")
 
-# Each Kernels/*.cmake holds the slang_add_kernel lines of the .slang it is named after.
+# Each Kernels/*.cmake holds the slang_add_kernel or slang_add_raster lines of the .slang it is named after.
 # Sorted so the generated GpuKernelId enum order does not depend on glob order.
 file(GLOB NATRON_GPU_KERNEL_FRAGMENTS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/Kernels/*.cmake")
 list(SORT NATRON_GPU_KERNEL_FRAGMENTS)
@@ -30,6 +30,7 @@ endforeach()
 
 slang_write_kernel_table(NatronGpu OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/gen/GpuKernels.inc")
 get_property(NatronGpu_KERNELS GLOBAL PROPERTY SLANG_REGISTRY_NatronGpu)
+get_property(NatronGpu_RASTERS GLOBAL PROPERTY SLANG_RASTER_REGISTRY_NatronGpu)
 
 add_library(NatronGpu STATIC
     GpuDevice.cpp
@@ -38,12 +39,14 @@ add_library(NatronGpu STATIC
     GpuKernel.cpp
     GpuKernelRegistry.cpp
     GpuPipelineCache.cpp
+    GpuRaster.cpp
     GpuRecord.cpp
     GpuRuntime.cpp
     GpuShaderCompiler.cpp
     GpuTexture.cpp
     GpuTransfer.cpp
     GpuBlur.cpp
+    GpuDownscale.cpp
     GpuMorphology.cpp
     GpuResample.cpp
     GpuWrap.cpp
@@ -55,7 +58,8 @@ target_compile_features(NatronGpu PUBLIC cxx_std_20)
 target_include_directories(NatronGpu PUBLIC "${CMAKE_CURRENT_LIST_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/gen")
 target_include_directories(NatronGpu SYSTEM PUBLIC "${NATRON_VMA_INCLUDE_DIR}")
 target_include_directories(NatronGpu SYSTEM PRIVATE "${NATRON_SPIRV_REFLECT_DIR}")
-# Global/FloatingPointExceptions.h: the FpTrapGuard around Mesa driver work.
+# Global/FloatingPointExceptions.h: the FpTrapGuard around Mesa driver work; Global/EdgeMode.h: the
+# edge mode GpuResample.h takes.
 target_include_directories(NatronGpu PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../..")
 set_source_files_properties("${NATRON_SPIRV_REFLECT_DIR}/spirv_reflect.c" PROPERTIES COMPILE_OPTIONS -w)
 target_link_libraries(NatronGpu
@@ -63,6 +67,7 @@ target_link_libraries(NatronGpu
         Vulkan::Vulkan
         Threads::Threads
         ${NatronGpu_KERNELS}
+        ${NatronGpu_RASTERS}
     PRIVATE
         glslang
         glslang-default-resource-limits

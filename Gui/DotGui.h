@@ -69,6 +69,8 @@ private:
     virtual bool canResize() OVERRIDE FINAL WARN_UNUSED_RETURN { return false; }
 
     virtual QRectF boundingRect() const OVERRIDE FINAL;
+    // A Dot has no rectangular body item; its disk is the body.
+    virtual QRectF bodyRect() const OVERRIDE FINAL;
     virtual QPainterPath shape() const OVERRIDE FINAL;
 
     virtual void refreshExtraLabelColor() OVERRIDE FINAL;

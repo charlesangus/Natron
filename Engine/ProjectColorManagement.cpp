@@ -742,6 +742,7 @@ ProjectColorManagement::DisplayProcessor::applyForEightBitOutput(float* rgba,
     if (!cpu || (width <= 0)) {
         return;
     }
+    const boost_adaptbx::floating_point::FpTrapGuard fpGuard;
     std::call_once(_eightBitLutOnce, [this]() {
         if (eightBitLutAllowed) {
             _eightBitLut = EightBitDisplayLut::bake(cpu);
@@ -966,6 +967,7 @@ ProjectColorManagement::rebuildWorkingColorimetry()
         const std::string xyz = resolveRoleOrName(kCieXyzD65InterchangeRole);
         OCIO::ConstCPUProcessorRcPtr cpu = xyz.empty() ? OCIO::ConstCPUProcessorRcPtr() : getConversionProcessor(working, xyz);
         if (cpu) {
+            const boost_adaptbx::floating_point::FpTrapGuard fpGuard;
             try {
                 // The columns of the working-to-XYZ matrix: the probe's unit vectors are the
                 // working space's basis, so each probed XYZ is the matrix column for that basis
@@ -1106,6 +1108,7 @@ ProjectColorManagement::workingToColorPicking(float* r,
         return;
     }
     float rgb[3] = { *r, *g, *b };
+    const boost_adaptbx::floating_point::FpTrapGuard fpGuard;
     cpu->applyRGB(rgb);
     *r = rgb[0];
     *g = rgb[1];
@@ -1126,6 +1129,7 @@ ProjectColorManagement::colorPickingToWorking(float* r,
         return;
     }
     float rgb[3] = { *r, *g, *b };
+    const boost_adaptbx::floating_point::FpTrapGuard fpGuard;
     cpu->applyRGB(rgb);
     *r = rgb[0];
     *g = rgb[1];

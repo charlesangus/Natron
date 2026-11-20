@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 #include <map>
 #include <optional>
 #include <set>
@@ -45,6 +46,7 @@
 #include "Engine/ChoiceOption.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
@@ -208,6 +210,8 @@ struct StackItem {
     PXR_NS::SdfLayerRefPtr layer;
     PXR_NS::SdfLayerOffset toRoot;
     bool external = false;
+    // What an anonymous item's layer is a copy of.
+    std::string source;
 };
 
 /**
@@ -224,7 +228,7 @@ appendLayerStack(const PXR_NS::SdfLayerHandle& source,
 
     copy->TransferContent(source);
     copy->SetSubLayerPaths(std::vector<std::string>());
-    items->push_back(StackItem { copy, toRoot, false });
+    items->push_back(StackItem { copy, toRoot, false, source->GetIdentifier() });
 
     const std::vector<std::string> paths = source->GetSubLayerPaths();
     const PXR_NS::SdfLayerOffsetVector offsets = source->GetSubLayerOffsets();
@@ -242,7 +246,7 @@ appendLayerStack(const PXR_NS::SdfLayerHandle& source,
         if (sublayer->IsAnonymous()) {
             appendLayerStack(sublayer, sublayerToRoot, items);
         } else {
-            items->push_back(StackItem { sublayer, sublayerToRoot, true });
+            items->push_back(StackItem { sublayer, sublayerToRoot, true, std::string() });
         }
     }
 }
@@ -422,7 +426,7 @@ layOutStack(const std::vector<StackItem>& items,
         } else if (!layout->output && layout->sublayers.empty()) {
             layout->output = flattened;
         } else {
-            layout->sublayers.push_back(StackItem { flattened, PXR_NS::SdfLayerOffset(), false });
+            layout->sublayers.push_back(StackItem { flattened, PXR_NS::SdfLayerOffset(), false, std::string() });
         }
     };
 
@@ -692,6 +696,108 @@ writeLiveTextureFile(const LiveTextureBufferConstPtr& buffer,
     return ok;
 }
 
+// Whether value is an asset path one of uris names, which it returns in *uri.
+bool
+namesOneOf(const PXR_NS::VtValue& value,
+           const std::set<std::string>& uris,
+           std::string* uri)
+{
+    if (!value.IsHolding<PXR_NS::SdfAssetPath>()) {
+        return false;
+    }
+    const std::string& path = value.UncheckedGet<PXR_NS::SdfAssetPath>().GetAssetPath();
+    if (uris.find(path) == uris.end()) {
+        return false;
+    }
+    *uri = path;
+
+    return true;
+}
+
+/**
+ * @brief Removes from layer every texture shader whose file is one of uris, and every connection to
+ * it, so the inputs it fed take the values authored on them. Returns the URIs it found, each with
+ * the path of a prim whose texture read it.
+ **/
+std::map<std::string, PXR_NS::SdfPath>
+removeTexturesReading(const PXR_NS::SdfLayerHandle& layer,
+                      const std::set<std::string>& uris)
+{
+    std::map<std::string, PXR_NS::SdfPath> found;
+
+    if (uris.empty()) {
+        return found;
+    }
+    const PXR_NS::TfToken fileInput("inputs:file");
+    std::set<PXR_NS::SdfPath> textures;
+    layer->Traverse(PXR_NS::SdfPath::AbsoluteRootPath(), [&](const PXR_NS::SdfPath& path) {
+        if (!path.IsPrimPropertyPath() || (path.GetNameToken() != fileInput)) {
+            return;
+        }
+        std::string uri;
+        PXR_NS::VtValue value;
+        bool reads = layer->HasField(path, PXR_NS::SdfFieldKeys->Default, &value) && namesOneOf(value, uris, &uri);
+        for (double time : layer->ListTimeSamplesForPath(path)) {
+            if (reads) {
+                break;
+            }
+            reads = layer->QueryTimeSample(path, time, &value) && namesOneOf(value, uris, &uri);
+        }
+        if (reads) {
+            found[uri] = path.GetPrimPath().GetParentPath();
+            textures.insert(path.GetPrimPath());
+        }
+    });
+    if (textures.empty()) {
+        return found;
+    }
+    const auto intoTexture = [&textures](const PXR_NS::SdfPath& target) {
+        for (const PXR_NS::SdfPath& texture : textures) {
+            if (target.HasPrefix(texture)) {
+                return true;
+            }
+        }
+
+        return false;
+    };
+    std::vector<PXR_NS::SdfAttributeSpecHandle> connected;
+    layer->Traverse(PXR_NS::SdfPath::AbsoluteRootPath(), [&](const PXR_NS::SdfPath& path) {
+        if (!path.IsPrimPropertyPath()) {
+            return;
+        }
+        const PXR_NS::SdfAttributeSpecHandle attribute = layer->GetAttributeAtPath(path);
+        if (attribute && attribute->HasConnectionPaths()) {
+            connected.push_back(attribute);
+        }
+    });
+
+    PXR_NS::SdfChangeBlock block;
+    for (const PXR_NS::SdfAttributeSpecHandle& attribute : connected) {
+        if (textures.count(attribute->GetPath().GetPrimPath())) {
+            continue;
+        }
+        bool changed = false;
+        for (const PXR_NS::SdfPath& target : attribute->GetConnectionPathList().GetAppliedItems()) {
+            if (intoTexture(target)) {
+                attribute->GetConnectionPathList().RemoveItemEdits(target);
+                changed = true;
+            }
+        }
+        if (changed && attribute->GetConnectionPathList().GetAppliedItems().empty()) {
+            attribute->ClearConnectionPaths();
+        }
+    }
+    for (const PXR_NS::SdfPath& texture : textures) {
+        const PXR_NS::SdfPrimSpecHandle prim = layer->GetPrimAtPath(texture);
+        const PXR_NS::SdfPrimSpecHandle parent = layer->GetPrimAtPath(texture.GetParentPath());
+        if (prim && parent) {
+            parent->RemoveNameChild(prim);
+        }
+    }
+
+    return found;
+}
+
 bool
 meshMightVary(const PXR_NS::UsdGeomMesh& mesh)
 {
@@ -712,10 +818,21 @@ struct UnbakedProjection {
     std::string prim;
 };
 
+// Whether prim is a node of the Cycles or MoonRay network USDProject3D authors.
+bool
+isProjectionNetworkNode(const PXR_NS::UsdPrim& prim)
+{
+    const PXR_NS::VtValue mark = prim ? prim.GetCustomDataByKey(PXR_NS::TfToken(kSceneProjectionNetworkMark)) : PXR_NS::VtValue();
+
+    return mark.IsHolding<bool>() && mark.UncheckedGet<bool>();
+}
+
 /**
- * @brief Copies a deferred camera's matrix and origin from the composed scene onto shader's prim in
- * out. A layered export writes the scene's own layers, which name the camera but hold no values
- * for it: compose() resolves those into a layer that is not exported.
+ * @brief Copies a deferred camera's values (SceneProjectionCameras::projectorValues()) from the
+ * composed scene onto the Storm surface of shader's material in out: the delegate networks are
+ * stripped from every export. A layered export writes the
+ * scene's own layers, which name the camera but hold no values for it: compose() resolves those
+ * into a layer that is not exported.
  **/
 bool
 authorResolvedProjector(const PXR_NS::UsdShadeShader& shader,
@@ -726,14 +843,17 @@ authorResolvedProjector(const PXR_NS::UsdShadeShader& shader,
     if (!camera || !camera.Get(&cameraPath) || cameraPath.empty()) {
         return true;
     }
-    const PXR_NS::UsdPrim over = out->OverridePrim(shader.GetPath());
-    if (!over) {
-        return false;
-    }
-    for (const char* name : { kUSDProject3DInputWorldToProjector, kUSDProject3DInputProjectorOrigin }) {
-        const PXR_NS::UsdShadeInput input = shader.GetInput(PXR_NS::TfToken(name));
+    const PXR_NS::SdfPath material = shader.GetPath().GetParentPath();
+    const PXR_NS::UsdStageRefPtr scene = shader.GetPrim().GetStage();
+    for (const SceneProjectionCameras::ShaderValue& projected : SceneProjectionCameras::projectorValues(PXR_NS::GfMatrix4d(0.), PXR_NS::GfVec4f(0.f))) {
+        const PXR_NS::UsdShadeShader owner(scene->GetPrimAtPath(material.AppendChild(projected.shader)));
+        const PXR_NS::UsdShadeInput input = (owner && !isProjectionNetworkNode(owner.GetPrim())) ? owner.GetInput(projected.input) : PXR_NS::UsdShadeInput();
         if (!input) {
             continue;
+        }
+        const PXR_NS::UsdPrim over = out->OverridePrim(owner.GetPath());
+        if (!over) {
+            return false;
         }
         const PXR_NS::UsdAttribute source = input.GetAttr();
         PXR_NS::UsdAttribute target = over.GetAttribute(source.GetName());
@@ -763,6 +883,67 @@ authorResolvedProjector(const PXR_NS::UsdShadeShader& shader,
     return true;
 }
 
+// A spec the export writes: its written stack, and its path in that stack's own namespace.
+typedef std::pair<std::size_t, PXR_NS::SdfPath> WrittenSpec;
+typedef std::set<WrittenSpec> WrittenSpecs;
+
+/**
+ * @brief Where the specs of the composed scene land among the written stacks. A file is written as it
+ * is, so its specs land nowhere. A referenced layer's prims sit at other paths once composed, and one
+ * referenced twice holds a single spec for both, so a layered export has to be told apart by spec, not
+ * by composed path. A flattened export is one stack in the composed namespace.
+ **/
+struct WrittenSpecLocator {
+    bool flattened = false;
+    std::map<std::string, std::vector<std::size_t>> stacksOfLayer;
+
+    template <typename SPEC_HANDLES>
+    void
+    add(const PXR_NS::SdfPath& composedPath,
+        const SPEC_HANDLES& specs,
+        WrittenSpecs* into) const
+    {
+        if (flattened) {
+            into->insert(WrittenSpec(0, composedPath));
+
+            return;
+        }
+        for (const auto& spec : specs) {
+            const std::map<std::string, std::vector<std::size_t>>::const_iterator found = stacksOfLayer.find(spec->GetLayer()->GetIdentifier());
+            if (found != stacksOfLayer.end()) {
+                for (const std::size_t stack : found->second) {
+                    into->insert(WrittenSpec(stack, spec->GetPath()));
+                }
+            }
+        }
+    }
+
+    void
+    addAttribute(const PXR_NS::UsdAttribute& attribute,
+                 WrittenSpecs* into) const
+    {
+        if (attribute) {
+            add(attribute.GetPath(), attribute.GetPropertyStack(), into);
+        }
+    }
+
+    void
+    addPrim(const PXR_NS::UsdPrim& prim,
+            WrittenSpecs* into) const
+    {
+        if (prim) {
+            add(prim.GetPath(), prim.GetPrimStack(), into);
+        }
+    }
+};
+
+// What only a live projection reads, recorded per material and gprim: the Storm surface's
+// placement and the Cycles and MoonRay networks.
+struct ProjectionSpecs {
+    WrittenSpecs properties;
+    WrittenSpecs prims;
+};
+
 struct ProjectionBake {
     std::vector<UnbakedProjection> unbaked;
     std::set<std::string> behind;
@@ -772,6 +953,15 @@ struct ProjectionBake {
     std::map<std::string, QStringList> ignoredControls;
     // The prim whose authoring failed, if one did.
     std::string failed;
+    // The specs the Geometry projections that were baked and those that keep their Storm shader
+    // reach. A baked one's specs are stripped unless a kept one also reaches them, since one
+    // referenced layer can serve both.
+    ProjectionSpecs baked;
+    ProjectionSpecs kept;
+    // The Cycles and MoonRay networks and the primvars only they read, stripped from every
+    // projection: a renderer reading the export takes the baked surface, or the Storm shader of a
+    // kept one, which it ignores, rather than a network nothing outside Natron maintains.
+    ProjectionSpecs networks;
 };
 
 /**
@@ -786,6 +976,7 @@ void
 bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
                 const PXR_NS::SdfLayerRefPtr& output,
                 const std::vector<double>& times,
+                const WrittenSpecLocator& locator,
                 ProjectionBake* result)
 {
     if (!scene || !output || times.empty()) {
@@ -805,6 +996,8 @@ bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
         return;
     }
     std::map<PXR_NS::SdfPath, std::vector<PXR_NS::UsdPrim>> bound;
+    // Every material a gprim shows under any purpose, where bound holds the one it bakes from.
+    std::map<PXR_NS::SdfPath, std::vector<PXR_NS::UsdPrim>> users;
     for (const PXR_NS::UsdPrim& prim : scene->Traverse(everyPrim)) {
         if (!prim.IsA<PXR_NS::UsdGeomGprim>()) {
             continue;
@@ -812,11 +1005,18 @@ bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
         // A material can be bound for one purpose only, and a mesh baked under any of them keeps
         // its projection in the export.
         const PXR_NS::UsdShadeMaterialBindingAPI binding(prim);
+        bool baking = false;
+        PXR_NS::SdfPathSet used;
         for (const PXR_NS::TfToken& purpose : { PXR_NS::UsdShadeTokens->allPurpose, PXR_NS::UsdShadeTokens->full, PXR_NS::UsdShadeTokens->preview }) {
             const PXR_NS::UsdShadeMaterial material = binding.ComputeBoundMaterial(purpose);
             if (material && projections.count(material.GetPath())) {
-                bound[material.GetPath()].push_back(prim);
-                break;
+                if (!baking) {
+                    bound[material.GetPath()].push_back(prim);
+                    baking = true;
+                }
+                if (used.insert(material.GetPath()).second) {
+                    users[material.GetPath()].push_back(prim);
+                }
             }
         }
     }
@@ -832,14 +1032,94 @@ bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
         const PXR_NS::SdfPath& materialPath = entry.first;
         const PXR_NS::UsdShadeShader& shader = entry.second;
         const std::vector<PXR_NS::UsdPrim>& gprims = bound[materialPath];
+        SceneGeometryProjection geometryProjection;
+        SceneNodeAuthoring::readGeometryProjection(scene->GetPrimAtPath(materialPath), &geometryProjection);
         const std::vector<PXR_NS::UsdPrim>::const_iterator instanced = std::find_if(gprims.begin(), gprims.end(), [](const PXR_NS::UsdPrim& prim) {
             return prim.IsInstanceProxy();
         });
-        const std::vector<PXR_NS::UsdPrim>::const_iterator other = std::find_if(gprims.begin(), gprims.end(), [](const PXR_NS::UsdPrim& prim) {
-            return !prim.IsA<PXR_NS::UsdGeomMesh>();
+        // HasValue() on a primvar with no attribute throws instead of answering false, which on the write thread terminates the process.
+        const auto hasValue = [](const PXR_NS::UsdGeomPrimvar& primvar) {
+            return primvar.GetAttr() && primvar.HasValue();
+        };
+        const auto referenceOf = [&geometryProjection](const PXR_NS::UsdPrim& prim) {
+            return geometryProjection.referencePrimvar.empty()
+                ? PXR_NS::UsdGeomPrimvar(PXR_NS::UsdAttribute())
+                : PXR_NS::UsdGeomPrimvarsAPI(prim).GetPrimvar(PXR_NS::TfToken(geometryProjection.referencePrimvar));
+        };
+        const auto frameOf = [&geometryProjection](const PXR_NS::UsdPrim& prim) {
+            return geometryProjection.framePrimvar.empty()
+                ? PXR_NS::UsdGeomPrimvar(PXR_NS::UsdAttribute())
+                : PXR_NS::UsdGeomPrimvarsAPI(prim).FindPrimvarWithInheritance(PXR_NS::TfToken(geometryProjection.framePrimvar));
+        };
+        // By the mark on their nodes, since a network holds nodes no surface reads, such as the
+        // facing test under Project On Both, and the user may author shaders of their own under
+        // the material.
+        const auto recordNetworks = [&](const std::vector<PXR_NS::UsdPrim>& prims) {
+            ProjectionSpecs* specs = &result->networks;
+            const PXR_NS::UsdPrim materialPrim = scene->GetPrimAtPath(materialPath);
+            const PXR_NS::UsdShadeMaterial material(materialPrim);
+            if (materialPrim) {
+                for (const PXR_NS::UsdPrim& child : materialPrim.GetAllChildren()) {
+                    if (isProjectionNetworkNode(child)) {
+                        locator.addPrim(child, &specs->prims);
+                    }
+                }
+            }
+            for (const char* context : { "cycles", "moonray" }) {
+                const PXR_NS::UsdShadeOutput output = material ? material.GetSurfaceOutput(PXR_NS::TfToken(context)) : PXR_NS::UsdShadeOutput();
+                if (output) {
+                    locator.addAttribute(output.GetAttr(), &specs->properties);
+                }
+            }
+            if (geometryProjection.framePrimvar.empty()) {
+                return;
+            }
+            std::vector<std::string> names;
+            for (int column = 0; column < 3; ++column) {
+                names.push_back(SceneProjectionCameras::frameColumnPrimvar(geometryProjection.framePrimvar, column));
+            }
+            for (int part = 0; part < 4; ++part) {
+                names.push_back(SceneProjectionCameras::moonRayFramePrimvar(geometryProjection.framePrimvar, part));
+            }
+            if (!geometryProjection.referencePrimvar.empty()) {
+                names.push_back(SceneProjectionCameras::cyclesReferencePresentPrimvar(geometryProjection.referencePrimvar));
+            }
+            for (const PXR_NS::UsdPrim& prim : prims) {
+                for (const std::string& name : names) {
+                    locator.addAttribute(PXR_NS::UsdGeomPrimvarsAPI(prim).FindPrimvarWithInheritance(PXR_NS::TfToken(name)).GetAttr(), &specs->properties);
+                }
+            }
+        };
+        const auto recordSpecs = [&](const std::vector<PXR_NS::UsdPrim>& prims, ProjectionSpecs* specs) {
+            recordNetworks(prims);
+            if (geometryProjection.framePrimvar.empty()) {
+                return;
+            }
+            for (const PXR_NS::UsdPrim& prim : prims) {
+                locator.addAttribute(frameOf(prim).GetAttr(), &specs->properties);
+                locator.addAttribute(referenceOf(prim).GetAttr(), &specs->properties);
+            }
+            for (const char* name : { kUSDProject3DInputGeometryFrame, kUSDProject3DInputReferencePoints }) {
+                const PXR_NS::UsdShadeInput input = shader.GetInput(PXR_NS::TfToken(name));
+                if (!input) {
+                    continue;
+                }
+                PXR_NS::UsdShadeConnectableAPI reader;
+                PXR_NS::TfToken readerOutput;
+                PXR_NS::UsdShadeAttributeType readerOutputType;
+                if (input.GetConnectedSource(&reader, &readerOutput, &readerOutputType)) {
+                    locator.addPrim(reader.GetPrim(), &specs->prims);
+                }
+                locator.addAttribute(input.GetAttr(), &specs->properties);
+            }
+            locator.addAttribute(shader.GetPrim().GetAttribute(PXR_NS::TfToken(kUSDProject3DAttrFrameHold)), &specs->properties);
+        };
+        const std::vector<PXR_NS::UsdPrim>::const_iterator other = std::find_if(gprims.begin(), gprims.end(), [&referenceOf, &hasValue](const PXR_NS::UsdPrim& prim) {
+            return !prim.IsA<PXR_NS::UsdGeomMesh>() && !hasValue(referenceOf(prim));
         });
         const bool materialInstanced = shader.GetPrim().IsInstanceProxy();
         if (materialInstanced || gprims.empty() || (instanced != gprims.end()) || (other != gprims.end())) {
+            recordSpecs(users[materialPath], &result->kept);
             if (materialInstanced) {
                 result->unbaked.push_back(UnbakedProjection { materialPath.GetString(), UnbakedProjection::eReasonInstanced, materialPath.GetString() });
             } else if (gprims.empty()) {
@@ -878,7 +1158,6 @@ bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
         }
 
         const PXR_NS::UsdShadeInput matrixInput = shader.GetInput(PXR_NS::TfToken(kUSDProject3DInputWorldToProjector));
-        const PXR_NS::UsdShadeInput geometryInput = shader.GetInput(PXR_NS::TfToken(kUSDProject3DInputGeometryFrame));
         const PXR_NS::UsdShadeInput windowInput = shader.GetInput(PXR_NS::TfToken(kUSDProject3DInputPlateTransform));
         const PXR_NS::UsdShadeInput spaceInput = shader.GetInput(PXR_NS::TfToken(kUSDProject3DInputProjectionSpace));
         int space = (int)USDProject3D::eProjectionSpaceWorld;
@@ -894,10 +1173,15 @@ bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
         const auto mightVary = [](const PXR_NS::UsdShadeInput& input) {
             return input && input.GetAttr().ValueMightBeTimeVarying();
         };
-        const bool cameraVaries = mightVary(matrixInput) || mightVary(windowInput) || (geometrySpace && mightVary(geometryInput));
+        const bool cameraVaries = mightVary(matrixInput) || mightVary(windowInput);
         for (const PXR_NS::UsdPrim& prim : gprims) {
             const PXR_NS::UsdGeomMesh mesh(prim);
-            const bool varies = cameraVaries || meshMightVary(mesh);
+            const PXR_NS::UsdGeomPrimvar framePrimvar = frameOf(prim);
+            const bool hasFrame = hasValue(framePrimvar);
+            const PXR_NS::UsdGeomPrimvar referencePrimvar = referenceOf(prim);
+            const bool hasReference = hasValue(referencePrimvar);
+            const bool hasFaces = prim.IsA<PXR_NS::UsdGeomMesh>();
+            const bool varies = cameraVaries || (!hasReference && (meshMightVary(mesh) || (hasFrame && framePrimvar.ValueMightBeTimeVarying())));
             const PXR_NS::UsdPrim over = out->OverridePrim(prim.GetPath());
             if (!over) {
                 result->failed = prim.GetPath().GetString();
@@ -911,7 +1195,7 @@ bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
                     attribute.Clear();
                 }
             }
-            const PXR_NS::UsdGeomPrimvar primvar = PXR_NS::UsdGeomPrimvarsAPI(over).CreatePrimvar(st, PXR_NS::SdfValueTypeNames->TexCoord2fArray, PXR_NS::UsdGeomTokens->faceVarying);
+            const PXR_NS::UsdGeomPrimvar primvar = PXR_NS::UsdGeomPrimvarsAPI(over).CreatePrimvar(st, PXR_NS::SdfValueTypeNames->TexCoord2fArray, hasFaces ? PXR_NS::UsdGeomTokens->faceVarying : PXR_NS::UsdGeomTokens->vertex);
             if (!primvar) {
                 result->failed = prim.GetPath().GetString();
 
@@ -930,8 +1214,8 @@ bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
                 if (matrixInput) {
                     matrixInput.Get(&worldToProjector, time);
                 }
-                if (geometrySpace && geometryInput) {
-                    geometryInput.Get(&geometryFrame, time);
+                if (hasFrame) {
+                    framePrimvar.Get(&geometryFrame, time);
                 }
                 if (windowInput) {
                     windowInput.Get(&window, time);
@@ -939,12 +1223,19 @@ bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
                 if (crop && ((window[0] < 1.f) || (window[1] < 1.f))) {
                     result->overscan.insert(materialPath.GetString());
                 }
-                mesh.GetPointsAttr().Get(&points, time);
-                mesh.GetFaceVertexCountsAttr().Get(&counts, time);
-                mesh.GetFaceVertexIndicesAttr().Get(&indices, time);
+                if (hasReference) {
+                    referencePrimvar.Get(&points);
+                } else {
+                    mesh.GetPointsAttr().Get(&points, time);
+                }
+                if (hasFaces) {
+                    mesh.GetFaceVertexCountsAttr().Get(&counts, time);
+                    mesh.GetFaceVertexIndicesAttr().Get(&indices, time);
+                }
                 // In Geometry space the projection was set up on the geometry as its own node placed
-                // it, wherever it has been moved since.
-                const PXR_NS::GfMatrix4d toReference = geometrySpace ? geometryFrame : PXR_NS::UsdGeomXformCache(time).GetLocalToWorldTransform(prim);
+                // it, wherever it has been moved since. Reference points are already in the world.
+                const PXR_NS::GfMatrix4d toReference = hasReference ? PXR_NS::GfMatrix4d(1.) : geometrySpace ? geometryFrame
+                                                                                                             : PXR_NS::UsdGeomXformCache(time).GetLocalToWorldTransform(prim);
                 const PXR_NS::GfMatrix4d toProjector = toReference * worldToProjector;
 
                 PXR_NS::VtVec2fArray uvs(points.size());
@@ -972,7 +1263,10 @@ bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
                         result->behind.insert(prim.GetPath().GetString());
                     }
                 }
-                if (!primvar.Set(uvs, authored) || !primvar.SetIndices(indices, authored)) {
+                if (!hasFaces && !depths.empty() && (*std::min_element(depths.begin(), depths.end()) <= 0.)) {
+                    result->behind.insert(prim.GetPath().GetString());
+                }
+                if (!primvar.Set(uvs, authored) || (hasFaces && !primvar.SetIndices(indices, authored))) {
                     result->failed = prim.GetPath().GetString();
 
                     return;
@@ -1007,8 +1301,50 @@ bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
 
             return;
         }
+        recordSpecs(gprims, &result->baked);
     }
 } // bakeProjections
+
+// Of baked, what kept does not reach, and all of always, by written stack.
+std::map<std::size_t, std::vector<PXR_NS::SdfPath>>
+getStrippableSpecs(const WrittenSpecs& baked,
+                   const WrittenSpecs& kept,
+                   const WrittenSpecs& always)
+{
+    WrittenSpecs strippable = always;
+
+    for (const WrittenSpec& spec : baked) {
+        if (!kept.count(spec)) {
+            strippable.insert(spec);
+        }
+    }
+    std::map<std::size_t, std::vector<PXR_NS::SdfPath>> byStack;
+    for (const WrittenSpec& spec : strippable) {
+        byStack[spec.first].push_back(spec.second);
+    }
+
+    return byStack;
+}
+
+void
+stripProjectionSpecs(const PXR_NS::SdfLayerRefPtr& layer,
+                     const std::vector<PXR_NS::SdfPath>& properties,
+                     const std::vector<PXR_NS::SdfPath>& prims)
+{
+    for (const PXR_NS::SdfPath& path : properties) {
+        const PXR_NS::SdfPropertySpecHandle property = layer->GetPropertyAtPath(path);
+        if (property) {
+            layer->GetPrimAtPath(path.GetPrimPath())->RemoveProperty(property);
+        }
+    }
+    for (const PXR_NS::SdfPath& path : prims) {
+        const PXR_NS::SdfPrimSpecHandle prim = layer->GetPrimAtPath(path);
+        const PXR_NS::SdfPrimSpecHandle parent = prim ? layer->GetPrimAtPath(path.GetParentPath()) : PXR_NS::SdfPrimSpecHandle();
+        if (parent) {
+            parent->RemoveNameChild(prim);
+        }
+    }
+}
 } // anonymous namespace
 
 USDWrite::USDWrite(NodePtr node)
@@ -1273,6 +1609,20 @@ USDWrite::writeFrameRange(int firstFrame,
     std::set<std::string> unexportedLiveTextures;
     // natron:// URIs no live texture of the scene authors, such as those of a file written earlier.
     std::set<std::string> staleLiveTextures;
+    // The textures of image inputs whose node was deleted, which nothing can render, and the nodes
+    // that author them. Written without them, their materials show their own colour.
+    std::set<std::string> deletedSourceUris;
+    std::map<std::string, std::string> deletedSourceConsumers;
+    for (const std::pair<const std::string, LiveTextureExport>& live : liveTextures) {
+        const NodePtr source = live.second.source.node.lock();
+        if (source && source->isActivated()) {
+            continue;
+        }
+        const NodePtr consumer = live.second.source.consumer.lock();
+        deletedSourceUris.insert(live.first);
+        deletedSourceConsumers[live.first] = consumer ? consumer->getFullyQualifiedName() : std::string();
+    }
+    std::set<std::string> materialsWithoutDeletedSources;
 
     PXR_NS::TfErrorMark mark;
     // What is written, the file itself first, then, in layered mode, the sidecars beside it: the
@@ -1300,6 +1650,8 @@ USDWrite::writeFrameRange(int firstFrame,
         stacks[0].endTime = endTime;
         std::map<std::string, std::size_t> stackOfLayer;
         std::vector<StackArc> arcs;
+        WrittenSpecLocator locator;
+        locator.flattened = (exportMode == eExportModeFlattened);
         int sidecarIndex = 0;
         const auto nextSidecarPath = [&]() {
             return QDir(outputDir).filePath(QString::fromUtf8("%1_layer%2.%3").arg(outputInfo.completeBaseName()).arg(++sidecarIndex).arg(outputInfo.suffix()));
@@ -1335,6 +1687,11 @@ USDWrite::writeFrameRange(int firstFrame,
                     }
                 } else {
                     appendLayerStack(stacks[i].source, PXR_NS::SdfLayerOffset(), &items);
+                }
+                for (const StackItem& item : items) {
+                    if (!item.external) {
+                        locator.stacksOfLayer[item.source].push_back(i);
+                    }
                 }
                 StackLayout layout;
                 if (!layOutStack(items, stacks[i].tcps, &layout)) {
@@ -1385,7 +1742,33 @@ USDWrite::writeFrameRange(int firstFrame,
             for (int frame = firstFrame; frame <= lastFrame; ++frame) {
                 times.push_back(SceneOps::frameToTimeCode(scene, frame, fps));
             }
-            bakeProjections(SceneOps::compose(scene), stacks[0].layout.output, times, &projectionBake);
+            // The bake's overs go through schemas, which see a prim as a material or a shader only
+            // where its definition composes: a layered stack whose strongest layers come from
+            // another node, a USDRead above the geometry, holds those definitions below the output.
+            std::vector<std::string> definitions;
+            for (const StackItem& item : stacks[0].layout.sublayers) {
+                definitions.push_back(item.layer->GetIdentifier());
+            }
+            stacks[0].layout.output->SetSubLayerPaths(definitions);
+            bakeProjections(SceneOps::compose(scene), stacks[0].layout.output, times, locator, &projectionBake);
+            stacks[0].layout.output->SetSubLayerPaths(std::vector<std::string>());
+            if (projectionBake.failed.empty()) {
+                const std::map<std::size_t, std::vector<PXR_NS::SdfPath>> properties = getStrippableSpecs(projectionBake.baked.properties, projectionBake.kept.properties, projectionBake.networks.properties);
+                const std::map<std::size_t, std::vector<PXR_NS::SdfPath>> prims = getStrippableSpecs(projectionBake.baked.prims, projectionBake.kept.prims, projectionBake.networks.prims);
+                const std::vector<PXR_NS::SdfPath> none;
+                for (std::size_t i = 0; i < stacks.size(); ++i) {
+                    const std::map<std::size_t, std::vector<PXR_NS::SdfPath>>::const_iterator stackProperties = properties.find(i);
+                    const std::map<std::size_t, std::vector<PXR_NS::SdfPath>>::const_iterator stackPrims = prims.find(i);
+                    const std::vector<PXR_NS::SdfPath>& propertyPaths = (stackProperties != properties.end()) ? stackProperties->second : none;
+                    const std::vector<PXR_NS::SdfPath>& primPaths = (stackPrims != prims.end()) ? stackPrims->second : none;
+                    stripProjectionSpecs(stacks[i].layout.output, propertyPaths, primPaths);
+                    for (const StackItem& item : stacks[i].layout.sublayers) {
+                        if (!item.external) {
+                            stripProjectionSpecs(item.layer, propertyPaths, primPaths);
+                        }
+                    }
+                }
+            }
             if (!projectionBake.failed.empty()) {
                 const std::string errors = takeUsdErrors(mark);
 
@@ -1396,6 +1779,10 @@ USDWrite::writeFrameRange(int firstFrame,
         const auto finish = [&](const PXR_NS::SdfLayerRefPtr& layer, const WrittenStack& stack) {
             if (stack.hasRange) {
                 clipTimeSamples(layer, stack.startTime, stack.endTime);
+            }
+            for (const std::pair<const std::string, PXR_NS::SdfPath>& removed : removeTexturesReading(layer, deletedSourceUris)) {
+                const std::string& consumer = deletedSourceConsumers[removed.first];
+                materialsWithoutDeletedSources.insert(consumer.empty() ? removed.second.GetString() : consumer);
             }
             PXR_NS::UsdUtilsModifyAssetPaths(layer, [&](const std::string& assetPath) {
                 const std::map<std::string, std::size_t>::const_iterator sidecar = stackOfLayer.find(assetPath);
@@ -1561,6 +1948,10 @@ USDWrite::writeFrameRange(int firstFrame,
                                .arg(outputInfo.fileName())
                                .arg((int)unexportedLiveTextures.size())
                                .arg(QString::fromStdString(*unexportedLiveTextures.begin())));
+    }
+    for (const std::string& material : materialsWithoutDeletedSources) {
+        warnings.push_back(tr("The material %1 is written with its own colour in place of a texture whose node was deleted.")
+                               .arg(QString::fromStdString(material)));
     }
     if (!staleLiveTextures.empty()) {
         warnings.push_back(tr("%1 names %2 live textures, such as %3, whose source is no longer available: "

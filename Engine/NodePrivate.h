@@ -31,6 +31,7 @@
 #include "Node.h"
 #include "Timer.h" // gettimeofday()
 
+#include "Engine/CacheRetention.h"
 #include "Engine/EffectInstance.h"
 
 #include <atomic>
@@ -48,7 +49,7 @@
 NATRON_NAMESPACE_ENTER
 
 /*The output node was connected from inputNumber to this...*/
-typedef std::map<NodeWPtr, int32_t, std::owner_less<NodeWPtr>> DeactivatedState;
+typedef std::multimap<NodeWPtr, int32_t, std::owner_less<NodeWPtr>> DeactivatedState;
 typedef std::list<Node::KnobLink> KnobLinkList;
 typedef std::vector<NodeWPtr> InputsV;
 
@@ -181,6 +182,7 @@ public:
         , inputs()
         , guiInputs()
         , effect()
+        , hostedEffect(nullptr)
         , inputsComponents()
         , outputComponents()
         , inputsLabelsMutex()
@@ -244,8 +246,10 @@ public:
         , lastRenderStartedMutex()
         , lastRenderStartedSlotCallTime()
         , renderStartedCounter(0)
-        , inputIsRenderingCounter(0)
-        , lastInputNRenderStartedSlotCallTime()
+        , executionCounts()
+        , inputExecutionCounts(nullptr)
+        , inputExecutionCountBlocks()
+        , freshOutputStamps()
         , nodeIsDequeuing(false)
         , actionsQueued(false)
         , renderStartsHeldByEdits(0)
@@ -287,6 +291,11 @@ public:
         , currentCanTransform(false)
         , draftModeUsed(false)
         , mustComputeInputRelatedData(true)
+        , inputEditStamp(0)
+        , inputRelatedDataRefreshedAt(0)
+        , upstreamInputEditStamp(0)
+        , upstreamInputEditStampEpoch(0)
+        , upstreamInputEditStampComputing(false)
         , duringPaintStrokeCreation(false)
         , lastStrokeMovementMutex()
         , strokeBitmapCleared(false)
@@ -303,10 +312,12 @@ public:
         , effectiveDataKindCacheSet(false)
         , effectiveDataKindCache(eDataKindPolymorphic)
         , effectiveDataKindCacheAmbiguous(false)
+        , effectiveDataKindCacheEpoch(0)
+        , downstreamDataKindRequirements()
+        , downstreamDataKindRequirementsEpoch(0)
     {
         ///Initialize timers
         gettimeofday(&lastRenderStartedSlotCallTime, 0);
-        gettimeofday(&lastInputNRenderStartedSlotCallTime, 0);
     }
 
     void abortPreview_non_blocking();
@@ -370,6 +381,9 @@ public:
     bool inputsInitialized;
     mutable QMutex outputsMutex;
     NodesWList outputs, guiOutputs;
+    // Under outputsMutex. Never cleared, so that a node still listing this one as an input after
+    // the edges were dropped (a queued disconnect, a deactivated output) is not missed.
+    bool everConnectedAsInput = false;
     mutable QMutex inputsMutex; //< protects guiInputs so the serialization thread can access them
 
     ///The  inputs are the ones used while rendering and guiInputs the ones used by the gui whenever
@@ -397,6 +411,12 @@ public:
     bool cacheIDClaimed; // protected by nameMutex
     std::string nodeId; // protected by nameMutex
     DeactivatedState deactivatedState;
+    // The node's Python object while it is deactivated, put back as is when it is activated again:
+    // declaring it anew would make an object for every one of its parameters.
+    PyObject* deactivatedPythonObject = nullptr; // main thread, owned reference
+    std::string deactivatedPythonObjectName; // the fully qualified name it hung under
+    // Set while a PythonDeclarationBatch is left to declare this created node's Python variable.
+    bool pythonDeclarationDeferred = false; // main thread
     mutable QMutex activatedMutex;
     bool activated;
     Plugin* plugin; //< the plugin which stores the function to instantiate the effect
@@ -425,8 +445,11 @@ public:
     std::atomic<U64> hashCleanEpoch { 0 };
     // Set while a mark of this node waits for its dependents to be marked too.
     std::atomic<bool> hashDirtyQueued { false };
+    const CacheRetentionSignalsPtr retentionSignals = std::make_shared<CacheRetentionSignals>();
     U64 hashFlushVisit = 0; //< the flush pass that last reached the node; only read and written under the flush mutex
     U64 hashFlushRootVisit = 0; //< the flush pass that last walked from the node's own mark; same locking
+    U64 hashFlushLeafVisit = 0; //< the flush pass that last marked the node as a leaf; same locking
+    U64 hashFlushDeferredVisit = 0; //< the flush pass whose leaf mark of the node left a walk from it owed to a later reach; same locking
     QMutex hashRecomputeMutex; //< serializes recomputes of this node; no other node's is taken under it
 
     mutable std::mutex contextReadsMutex; //< protects the two below; no other lock is taken under it
@@ -516,11 +539,32 @@ public:
     bool keyframesDisplayedOnTimeline;
 
     ///This is to avoid the slots connected to the main-thread to be called too much
-    QMutex lastRenderStartedMutex; //< protects lastRenderStartedSlotCallTime & lastInputNRenderStartedSlotCallTime
+    QMutex lastRenderStartedMutex; //< protects lastRenderStartedSlotCallTime & renderStartedCounter
     timeval lastRenderStartedSlotCallTime;
     int renderStartedCounter;
-    std::vector<int> inputIsRenderingCounter;
-    timeval lastInputNRenderStartedSlotCallTime;
+    std::atomic<int> executionCounts[2];
+
+    struct InputExecutionCounts {
+        explicit InputExecutionCounts(int n)
+            : size(n)
+            , counts(new std::atomic<int>[n]())
+        {
+        }
+
+        const int size;
+        const std::unique_ptr<std::atomic<int>[]> counts;
+    };
+
+    // Render threads read the counts with no lock, so a node gaining inputs publishes a larger block rather than
+    // resizing one a reader may hold; the replaced blocks live as long as the node. Grown on the main thread only.
+    std::atomic<InputExecutionCounts*> inputExecutionCounts;
+    std::vector<std::unique_ptr<InputExecutionCounts>> inputExecutionCountBlocks;
+
+    // Each holds the key of a (frame, time, view) the node's output was computed for (see
+    // FrameRenderContext::noteFreshOutput()). Two keys sharing a slot overwrite each other, which can only miss a
+    // fresh output, never invent one.
+    static constexpr std::size_t kFreshOutputSlots = 8;
+    std::atomic<std::uint64_t> freshOutputStamps[kFreshOutputSlots];
 
     ///True when the node is dequeuing the connectionQueue and no render should be started 'til it is empty
     bool nodeIsDequeuing;
@@ -586,6 +630,13 @@ public:
     SequentialPreferenceEnum currentSupportSequentialRender;
     bool currentCanTransform;
     bool draftModeUsed, mustComputeInputRelatedData;
+    // Main thread only. An edit of this node (its inputs, or the metadata it derives from them)
+    // leaves every node below it dirty: a node is dirty while an edit stamp upstream of it is
+    // later than its last refresh. The newest stamp upstream is memoized until an edit or a
+    // connection upstream drops it, or a graph change the memos cannot tell the reach of drops all.
+    U64 inputEditStamp, inputRelatedDataRefreshedAt;
+    mutable U64 upstreamInputEditStamp, upstreamInputEditStampEpoch;
+    mutable bool upstreamInputEditStampComputing;
     bool duringPaintStrokeCreation; // protected by lastStrokeMovementMutex
     mutable QMutex lastStrokeMovementMutex;
     bool strokeBitmapCleared;
@@ -596,6 +647,9 @@ public:
     // Held by the blocking quit/abort while they use the effect, which may run on any watcher thread
     // listing this node, and while the effect is detached: the effect cannot be freed under them.
     QMutex effectTeardownMutex;
+    // effect's pointer, for threads that only compare it: they must not read the shared_ptr that
+    // teardown swaps out, and taking effectTeardownMutex could wait on a render they are part of.
+    std::atomic<const EffectInstance*> hostedEffect;
     /*
        Used to block render emitions while modifying nodes links
        MT-safe: only accessed/used on main thread
@@ -627,6 +681,21 @@ public:
     mutable bool effectiveDataKindCacheSet;
     mutable DataKindEnum effectiveDataKindCache;
     mutable bool effectiveDataKindCacheAmbiguous;
+    // The data-kind cache epoch the cache above was stored under (see Node.cpp).
+    mutable U64 effectiveDataKindCacheEpoch;
+
+    // What Node::collectDownstreamDataKindRequirement() turns each starting constraint into. Without
+    // it every node of a chain re-walks everything below it, so resolving a chain after an edit
+    // costs the square of its length. Guarded by effectiveDataKindMutex and dropped with the cache
+    // above.
+    struct DownstreamDataKindRequirement {
+        DataKindEnum fromKind;
+        bool fromAmbiguous;
+        DataKindEnum kind;
+        bool ambiguous;
+    };
+    mutable std::vector<DownstreamDataKindRequirement> downstreamDataKindRequirements;
+    mutable U64 downstreamDataKindRequirementsEpoch;
 };
 
 

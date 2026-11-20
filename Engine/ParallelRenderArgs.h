@@ -54,6 +54,24 @@
 NATRON_NAMESPACE_ENTER
 
 typedef std::map<EffectInstancePtr, RectD> RoIMap; // RoIs are in canonical coordinates
+
+/**
+ * @brief Whether rois names input and says none of inputRod is read. An input it doesn't name stays read, as does any
+ * input whose region of definition isn't known.
+ **/
+inline bool
+inputRoIMissesRoD(const RoIMap& rois,
+                  const EffectInstancePtr& input,
+                  const RectD& inputRod)
+{
+    const RoIMap::const_iterator found = rois.find(input);
+    if (found == rois.end()) {
+        return false;
+    }
+
+    return found->second.isNull() || (!inputRod.isNull() && !found->second.intersects(inputRod));
+}
+
 typedef std::map<ViewIdx, std::vector<RangeD> > FrameRangesMap;
 typedef std::map<int, FrameRangesMap> FramesNeededMap;
 typedef std::shared_ptr<FramesNeededMap> FramesNeededMapPtr;
@@ -438,6 +456,31 @@ public:
     /// By node, the action-cache states reserved for its entries under nonzero context keys. Each
     /// entry holds its reservation until it is destroyed with the frame.
     std::map<const Node*, int> reservedActionsCacheStates;
+};
+
+/**
+ * @brief Where an incremental request pass starts: node's output under context (restricted to what
+ * node's output reads by the pass) at time/view, over roi in canonical coordinates.
+ **/
+struct RequestPassRoot {
+    NodePtr node;
+    RenderContextPtr context;
+    double time = 0.;
+    ViewIdx view;
+    unsigned int mipmapLevel = 0;
+    RectD roi;
+};
+
+/**
+ * @brief A region an incremental request pass added to an entry's final RoI: the whole request when
+ * the entry is new, otherwise one of the disjoint rectangles the merged final RoI covers and the
+ * previous one did not. A region already inside it is not reported.
+ **/
+struct RequestPassNewWork {
+    NodeCtxKey key;
+    double time = 0.;
+    ViewIdx view;
+    RectD roi;
 };
 
 /**

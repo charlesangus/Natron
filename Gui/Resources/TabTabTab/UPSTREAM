@@ -43,6 +43,24 @@ Local patches:
   colouring from the first open's handles. Re-filtering on a keystroke
   reuses the same menuobjs, so Nuke's per-keystroke cost is unchanged.
   tests/test_node_model_diff.py gains two tests for it.
+- 0004 (no patch file; see git history) — tabtabtab_nuke_core.py's
+  TabTabTabWidget refreshes its items synchronously before it shows, and
+  only when get_items() returns a different list or the weights changed
+  (NodeWeights gains version, dirty and a file mtime check, so a weights
+  file written elsewhere is reloaded), instead of deferring a full refresh
+  to the next event-loop tick after showing. close() no longer writes the
+  weights: a single-shot timer saves them a second later, and
+  flush_weights() saves any not yet written. create() asks the plugin's
+  new invoke_opens_window(thing) hook (default True): when it says False,
+  the choice is invoked before the popup closes, otherwise after, as
+  before. create() no longer sets the input to the choice's name; the
+  next show does, with the input's signals blocked, and filters once as
+  part of its refresh (NodeModel.refresh_items takes the filter text).
+  set_weights_file() repoints the weights.
+  A host whose get_items() builds a new list per call refreshes on every
+  open, as before.
 - tests/test_host_hooks.py is a new test file, added by Natron (not from
   upstream), covering set_main_window_finder(), _find_main_window(),
   set_row_metrics(), _row_height() and _visible_rows().
+- tests/test_create_order.py is a new test file, added by Natron, covering
+  create()'s invoke/close order and the deferred pre-fill on the next show.

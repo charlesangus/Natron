@@ -105,7 +105,6 @@ struct AutoStraightenParams {
     Ashift::CropModeEnum crop = Ashift::eCropLargest;
     Resampler::FilterSpec filter;
     bool clamp = false;
-    bool blackOutside = false;
 };
 
 inline constexpr InputSpec kAutoStraightenInputs[] = {
@@ -136,7 +135,7 @@ struct AutoStraightenOp {
     };
 
     static constexpr ImagePipelineSpec kPipeline = {
-        .stages = {},
+        .stages = { Stage::EdgeMode },
         .layers = LayerPolicy::all(),
         .op = OpKind::Resample,
     };
@@ -173,7 +172,6 @@ struct AutoStraightenOp {
     KnobDoubleWPtr aspectAdjust;
     KnobChoiceWPtr filter;
     KnobBoolWPtr clamp;
-    KnobBoolWPtr blackOutside;
     Resampler::FilterKnobs filterKnobs;
 };
 
@@ -440,8 +438,6 @@ private:
     RotoCurveInteractPtr _ui;
     KnobChoiceWPtr _structure;
     KnobChoiceWPtr _lineOrientation;
-    // Set while setLineOrientation() shows an item's value through the node's knob.
-    bool _settingLineOrientation;
     KnobChoiceWPtr _fitParameters;
     KnobButtonWPtr _fitVertical;
     KnobButtonWPtr _fitHorizontal;

@@ -105,10 +105,10 @@ struct DirBlurParams {
     double toColor[4] = { 1., 1., 1., 1. };
     DirBlurRampEnum ramp = eDirBlurRampLinear;
     bool max = false;
-    // How every copy is resampled, as the Transform node's Filter, Clamp and Black outside.
+    // How every copy is resampled, as the Transform node's Filter, Clamp and Edge Mode.
     Resampler::FilterSpec filter;
     bool clamp = false;
-    bool blackOutside = true;
+    EdgeMode edgeMode = EdgeMode::Black;
 };
 
 /**
@@ -200,7 +200,7 @@ public:
     /**
      * @brief The canonical region of the source the samples read for the canonical window,
      * grown by every sample's footprint for filter at scale, and clipped to srcRoD unless it is
-     * null. Without blackOutside the samples beyond srcRoD read its edge pixels, so the region is
+     * null. Under EdgeMode::Stretch the samples beyond srcRoD read its edge pixels, so the region is
      * clamped into srcRoD instead, keeping at least its nearest row or column of pixels.
      **/
     static RectD sourceRegion(const std::vector<DirBlurSample>& canonical,
@@ -209,7 +209,7 @@ public:
                               double par,
                               const Resampler::FilterSpec& filter,
                               const RectD& srcRoD,
-                              bool blackOutside = true) WARN_UNUSED_RETURN;
+                              EdgeMode edgeMode = EdgeMode::Black) WARN_UNUSED_RETURN;
 
     virtual bool canRenderOpOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
@@ -285,7 +285,6 @@ private:
     KnobBoolWPtr _max;
     KnobChoiceWPtr _filter;
     KnobBoolWPtr _clamp;
-    KnobBoolWPtr _blackOutside;
     Resampler::FilterKnobs _filterKnobs;
 };
 

@@ -34,20 +34,25 @@ NATRON_NAMESPACE_ENTER
 
 namespace VariableBlurKernels {
 namespace {
-    /// The table's integral of the image over [0, u) x [0, v), bilinear between the pixel corners;
-    /// u and v are clamped to the image, outside which it is zero. width and height are at least 1.
+    /// The table's integral of the image over [0, u) x [0, v), bilinear between the pixel corners.
+    /// Under Black u and v are clamped to the image, outside which it is zero; under Stretch the
+    /// edge cell's bilinear form is extrapolated, which is the integral of the repeated edge pixels.
+    /// width and height are at least 1.
     inline double
     integral(const double* sat,
              std::size_t stride,
              int width,
              int height,
+             EdgeMode edgeMode,
              double u,
              double v)
     {
-        u = std::min(std::max(u, 0.), (double)width);
-        v = std::min(std::max(v, 0.), (double)height);
-        const int i = std::min((int)u, width - 1);
-        const int j = std::min((int)v, height - 1);
+        if (edgeMode == EdgeMode::Black) {
+            u = std::min(std::max(u, 0.), (double)width);
+            v = std::min(std::max(v, 0.), (double)height);
+        }
+        const int i = std::min(std::max((int)std::floor(u), 0), width - 1);
+        const int j = std::min(std::max((int)std::floor(v), 0), height - 1);
         const double fu = u - i;
         const double fv = v - j;
         const double* r0 = sat + (std::size_t)j * stride + i;
@@ -135,6 +140,7 @@ boxRow(const double* sat,
        const float* rx,
        const float* ry,
        const float* src,
+       EdgeMode edgeMode,
        float* dst)
 {
     const std::size_t stride = (std::size_t)width + 1;
@@ -151,8 +157,8 @@ boxRow(const double* sat,
         const double u1 = x + 1. + a;
         const double v0 = y - b;
         const double v1 = y + 1. + b;
-        const double sum = integral(sat, stride, width, height, u1, v1) - integral(sat, stride, width, height, u0, v1)
-            - integral(sat, stride, width, height, u1, v0) + integral(sat, stride, width, height, u0, v0);
+        const double sum = integral(sat, stride, width, height, edgeMode, u1, v1) - integral(sat, stride, width, height, edgeMode, u0, v1)
+            - integral(sat, stride, width, height, edgeMode, u1, v0) + integral(sat, stride, width, height, edgeMode, u0, v0);
         dst[x] = (float)(sum / ((2. * a + 1.) * (2. * b + 1.)));
     }
 }
@@ -164,6 +170,7 @@ iteratedBox(const float* src,
             const float* rx,
             const float* ry,
             int iterations,
+            EdgeMode edgeMode,
             float* dst)
 {
     if ((width <= 0) || (height <= 0)) {
@@ -184,7 +191,7 @@ iteratedBox(const float* src,
         }
         for (int y = 0; y < height; ++y) {
             const std::size_t row = (std::size_t)y * width;
-            boxRow(sat.data(), width, height, y, rx + row, ry + row, &from[row], &to[row]);
+            boxRow(sat.data(), width, height, y, rx + row, ry + row, &from[row], edgeMode, &to[row]);
         }
         from.swap(to);
     }

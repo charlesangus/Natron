@@ -363,6 +363,61 @@ try:
         ok = once("after nudging the node") and ok
         return ok
 
+    def pipe_hue(graph, source, dest):
+        """Hue (degrees), saturation and value of the most saturated pixel along the line between
+        two nodes' centres, or None when no pixel stands out from the background. The pipe is
+        sampled at its drawn colour, so only the most saturated pixel is trusted: anti-aliased
+        edges blend towards the background and keep the hue but lose saturation, and the grey
+        pipe label drawn over the middle of the pipe is the strongest pixel by contrast but has
+        none."""
+        frame(graph, [source, dest])
+        _pix, img = viewport_image(graph)
+        bg = img.pixelColor(2, 2)
+        sx, sy, sw, sh = box(source)
+        dx, dy, dw, dh = box(dest)
+        scx, scy = sx + sw / 2.0, sy + sh / 2.0
+        dcx, dcy = dx + dw / 2.0, dy + dh / 2.0
+        best = None
+        for i in range(1, 60):
+            t = i / 60.0
+            wx = scx + (dcx - scx) * t
+            wy = scy + (dcy - scy) * t
+            if point_in_box(wx, wy, sx, sy, sw, sh, pad=6.0) or point_in_box(wx, wy, dx, dy, dw, dh, pad=6.0):
+                continue
+            p = graph.mapFromScene(QPointF(wx, wy))
+            for ddx in range(-1, 2):
+                for ddy in range(-1, 2):
+                    x, y = p.x() + ddx, p.y() + ddy
+                    if not (0 <= x < img.width() and 0 <= y < img.height()):
+                        continue
+                    c = img.pixelColor(x, y)
+                    diff = abs(c.red() - bg.red()) + abs(c.green() - bg.green()) + abs(c.blue() - bg.blue())
+                    if diff <= DIFF_TOLERANCE:
+                        continue
+                    if best is None or c.saturationF() > best[0]:
+                        best = (c.saturationF(), c)
+        if best is None:
+            return None
+        c = best[1]
+        return c.hueF() * 360.0, c.saturationF(), c.valueF()
+
+    def check_scene_pipe_teal(graph, source, dest, label):
+        """A Scene pipe must read as teal -- the USD node colour's hue family -- and bright
+        enough to read against the graph background, in the resting and the hover-away state."""
+        ok = True
+        for phase in ("now", "after hovering away"):
+            if phase != "now":
+                hover_away(graph)
+            res = pipe_hue(graph, source, dest)
+            if res is None:
+                ok = check(False, "%s: a pipe pixel is found %s" % (label, phase)) and ok
+                continue
+            hue, sat, val = res
+            ok = check(160.0 <= hue <= 190.0 and sat >= 0.4 and val >= 0.45,
+                       "%s: the pipe is teal %s (hue %.0f, saturation %.2f, value %.2f)"
+                       % (label, phase, hue, sat, val)) and ok
+        return ok
+
     # ---- steps ------------------------------------------------------------------------------
 
     def steps():
@@ -574,6 +629,18 @@ try:
         report("NOTE controls: setInputVisible()-style hiding through the Python API was not "
                "exercised -- Engine/PyNode.h's Effect class does not expose isInputVisible/"
                "setInputVisible to Python")
+
+        # ---- (f) A Scene pipe is teal, like the USD nodes.
+        gt.section("f-scene-pipe-teal")
+        usd_f = create("USDRead", 4500, 0)
+        prune_f = create("USDPrune", 4500, 200)
+        connect(prune_f, 0, usd_f)
+        app.clearSelection()
+        gt.close_all_panels()
+        yield ("sleep", SETTLE_MS)
+        check_scene_pipe_teal(root_graph(), usd_f, prune_f, "f: USDRead -> USDPrune")
+        report("CAPTION f-scene-pipe-teal: a USD scene pipe between USDRead and USDPrune, drawn teal")
+        graph_shot(root_graph(), "f-scene-pipe-teal")
 
         # ---- (b1) Group holding Constant->Blur->Output, saved, closed and reloaded. Run last:
         # resetProject() wipes every node made above, so nothing after this case can rely on them.

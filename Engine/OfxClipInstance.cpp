@@ -69,6 +69,8 @@
 #include <SequenceParsing.h>
 
 #include "Engine/KnobFile.h"
+#include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Metadata/OfxMetadataBridge.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
@@ -742,8 +744,14 @@ OfxClipInstance::getRegionOfDefinitionInternal(OfxTime time,
 
     bool inputIsMask = _imp->mask;
     RectD rod;
+    // A shape is zero past its outline, so its region keeps a zero border: reading past it
+    // under Stretch then repeats zero instead of the shape.
+    const auto addShapeBorder = [&]() {
+        addOutsideColourBorder(effect->getRenderMetadata(time, view)->getPixelAspectRatio(-1), RenderScale::fromMipmapLevel(mipmapLevel), &rod);
+    };
     if ( attachedStroke && ( inputIsMask || (getName() == CLIP_OFX_ROTO) ) ) {
         effect->getNode()->getPaintStrokeRoD(time, &rod);
+        addShapeBorder();
         ret->x1 = rod.x1;
         ret->x2 = rod.x2;
         ret->y1 = rod.y1;
@@ -754,6 +762,7 @@ OfxClipInstance::getRegionOfDefinitionInternal(OfxTime time,
         RotoCurveContextPtr rotoCtx = effect->getNode()->getCurveContext();
         if ( rotoCtx && (getName() == CLIP_OFX_ROTO) ) {
             rotoCtx->getMaskRegionOfDefinition(time, view, &rod);
+            addShapeBorder();
             ret->x1 = rod.x1;
             ret->x2 = rod.x2;
             ret->y1 = rod.y1;

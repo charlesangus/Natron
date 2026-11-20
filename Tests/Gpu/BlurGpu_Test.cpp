@@ -216,19 +216,25 @@ TEST(BlurGroupCount, VerticalDirectPathCoversColumnBlocks)
 namespace {
 
 // The blur recordSeparableBlur promises: a source resolved against srcValid, filtered over the lines
-// of domain, black outside the source and beyond the domain's edges, zero outside it. In float with half
-// weights it also follows the CPU FIR's order of operations.
+// of domain, zero outside it. Outside the source and beyond the domain's edges a read is black under
+// Black and the nearest source pixel and line end under Stretch. In float with half weights it also
+// follows the CPU FIR's order of operations.
 template <typename T>
 std::vector<double>
 regionReference(const std::vector<float>& src, const GpuBlurImage& srcImage, const GpuBlurRect& valid,
-                const GpuBlurRect& domain, const GpuBlurRect& out, int nc, const std::vector<T>& hw)
+                const GpuBlurRect& domain, const GpuBlurRect& out, int nc, const std::vector<T>& hw,
+                EdgeMode edgeMode)
 {
     const int r = int(hw.size()) - 1;
+    const bool stretch = edgeMode == EdgeMode::Stretch;
     const auto sourceAt = [&](int x, int y, int c) -> T {
         if (valid.empty()) {
             return 0.0;
         }
-        if (x < valid.x1 || x >= valid.x2 || y < valid.y1 || y >= valid.y2) {
+        if (stretch) {
+            x = std::min(std::max(x, valid.x1), valid.x2 - 1);
+            y = std::min(std::max(y, valid.y1), valid.y2 - 1);
+        } else if (x < valid.x1 || x >= valid.x2 || y < valid.y1 || y >= valid.y2) {
             return 0.0;
         }
         return src[srcImage.offsetFloats + size_t(y - srcImage.bounds.y1) * srcImage.strideFloats
@@ -244,6 +250,9 @@ regionReference(const std::vector<float>& src, const GpuBlurImage& srcImage, con
             }
             for (int c = 0; c < nc; ++c) {
                 const auto tap = [&](int p) -> T {
+                    if (stretch) {
+                        return sourceAt(std::min(std::max(p, domain.x1), domain.x2 - 1), y, c);
+                    }
                     return (p >= domain.x1 && p < domain.x2) ? sourceAt(p, y, c) : T(0);
                 };
                 T acc = hw[0] * tap(x);
@@ -263,6 +272,9 @@ regionReference(const std::vector<float>& src, const GpuBlurImage& srcImage, con
         for (int x = out.x1; x < out.x2; ++x) {
             for (int c = 0; c < nc; ++c) {
                 const auto tap = [&](int p) -> T {
+                    if (stretch) {
+                        p = std::min(std::max(p, domain.y1), domain.y2 - 1);
+                    }
                     return (p >= domain.y1 && p < domain.y2) ? mid[(size_t(p - domain.y1) * midW + (x - out.x1)) * nc + c]
                                                              : T(0);
                 };
@@ -288,8 +300,9 @@ struct RegionCase {
 } // namespace
 
 // Sub-rects inside padded buffers at non-zero offsets, outputs reaching past the domain, and a
-// domain reaching past the source, through the record context's scratch buffers. Sigma 11 and up
-// take the shared-tile vertical pass, and the last case's output is taller than its domain.
+// domain reaching past the source, through the record context's scratch buffers, under both edge
+// modes. Sigma 11 and up take the shared-tile vertical pass, and the last case's output is taller
+// than its domain.
 TEST(BlurRegionGpu, SubRectsMatchReference)
 {
     gputest::ValidationCheck validation;
@@ -308,87 +321,90 @@ TEST(BlurRegionGpu, SubRectsMatchReference)
     };
     uint32_t seed = 100;
     for (const RegionCase& rc : cases) {
-        for (double sigma : { 0.5, 3.0, 11.0, 25.0, 100.0 }) {
-            for (int nc : blurfix::kChannelCounts) {
-                GpuBlurImage srcImage;
-                srcImage.bounds = rc.srcBounds;
-                srcImage.offsetFloats = 7;
-                srcImage.strideFloats = uint32_t((rc.srcBounds.x2 - rc.srcBounds.x1 + 3) * nc);
-                const size_t srcFloats = srcImage.offsetFloats
-                    + size_t(rc.srcBounds.y2 - rc.srcBounds.y1) * srcImage.strideFloats;
-                std::vector<float> src = blurfix::makeImage(int(srcFloats), 1, 1, seed++);
+        for (EdgeMode edgeMode : { EdgeMode::Black, EdgeMode::Stretch }) {
+            for (double sigma : { 0.5, 3.0, 11.0, 25.0, 100.0 }) {
+                for (int nc : blurfix::kChannelCounts) {
+                    GpuBlurImage srcImage;
+                    srcImage.bounds = rc.srcBounds;
+                    srcImage.offsetFloats = 7;
+                    srcImage.strideFloats = uint32_t((rc.srcBounds.x2 - rc.srcBounds.x1 + 3) * nc);
+                    const size_t srcFloats = srcImage.offsetFloats
+                        + size_t(rc.srcBounds.y2 - rc.srcBounds.y1) * srcImage.strideFloats;
+                    std::vector<float> src = blurfix::makeImage(int(srcFloats), 1, 1, seed++);
 
-                GpuBlurImage dstImage;
-                dstImage.bounds = rc.dstBounds;
-                dstImage.offsetFloats = 5;
-                dstImage.strideFloats = uint32_t((rc.dstBounds.x2 - rc.dstBounds.x1 + 1) * nc);
-                const size_t dstFloats = dstImage.offsetFloats
-                    + size_t(rc.dstBounds.y2 - rc.dstBounds.y1) * dstImage.strideFloats;
-                std::vector<float> dst(dstFloats, -7.0f);
+                    GpuBlurImage dstImage;
+                    dstImage.bounds = rc.dstBounds;
+                    dstImage.offsetFloats = 5;
+                    dstImage.strideFloats = uint32_t((rc.dstBounds.x2 - rc.dstBounds.x1 + 1) * nc);
+                    const size_t dstFloats = dstImage.offsetFloats
+                        + size_t(rc.dstBounds.y2 - rc.dstBounds.y1) * dstImage.strideFloats;
+                    std::vector<float> dst(dstFloats, -7.0f);
 
-                GpuBufferHandle srcBuf, dstBuf;
-                ASSERT_TRUE(rt->acquire(srcFloats * sizeof(float), srcBuf).ok());
-                ASSERT_TRUE(rt->acquire(dstFloats * sizeof(float), dstBuf).ok());
-                TimelineValue done;
-                ASSERT_TRUE(rt->upload({ src.data(), srcFloats * sizeof(float) }, srcBuf.buffer(), 0, done).ok());
-                ASSERT_TRUE(rt->wait(done).ok());
-                ASSERT_TRUE(rt->upload({ dst.data(), dstFloats * sizeof(float) }, dstBuf.buffer(), 0, done).ok());
-                ASSERT_TRUE(rt->wait(done).ok());
+                    GpuBufferHandle srcBuf, dstBuf;
+                    ASSERT_TRUE(rt->acquire(srcFloats * sizeof(float), srcBuf).ok());
+                    ASSERT_TRUE(rt->acquire(dstFloats * sizeof(float), dstBuf).ok());
+                    TimelineValue done;
+                    ASSERT_TRUE(rt->upload({ src.data(), srcFloats * sizeof(float) }, srcBuf.buffer(), 0, done).ok());
+                    ASSERT_TRUE(rt->wait(done).ok());
+                    ASSERT_TRUE(rt->upload({ dst.data(), dstFloats * sizeof(float) }, dstBuf.buffer(), 0, done).ok());
+                    ASSERT_TRUE(rt->wait(done).ok());
 
-                const std::vector<float> weights = blurfix::halfWeights(sigma);
-                GpuSeparableBlur b;
-                srcImage.buffer = &srcBuf.buffer();
-                dstImage.buffer = &dstBuf.buffer();
-                b.src = srcImage;
-                b.srcValid = rc.valid;
-                b.dst = dstImage;
-                b.output = rc.output;
-                b.domain = rc.domain;
-                b.channels = uint32_t(nc);
-                b.weightsX = weights;
-                b.weightsY = weights;
+                    const std::vector<float> weights = blurfix::halfWeights(sigma);
+                    GpuSeparableBlur b;
+                    srcImage.buffer = &srcBuf.buffer();
+                    dstImage.buffer = &dstBuf.buffer();
+                    b.src = srcImage;
+                    b.srcValid = rc.valid;
+                    b.dst = dstImage;
+                    b.output = rc.output;
+                    b.domain = rc.domain;
+                    b.channels = uint32_t(nc);
+                    b.weightsX = weights;
+                    b.weightsY = weights;
+                    b.edgeMode = edgeMode;
 
-                std::unique_ptr<GpuRecordContext> ctx;
-                ASSERT_TRUE(rt->newRecordContext(ctx).ok());
-                s = recordSeparableBlur(*ctx, b);
-                ASSERT_TRUE(s.ok()) << s.message;
-                s = ctx->submitAndWait();
-                ASSERT_TRUE(s.ok()) << s.message;
-                ctx.reset();
-                ASSERT_TRUE(rt->download(dstBuf.buffer(), 0, { dst.data(), dstFloats * sizeof(float) }, done).ok());
-                ASSERT_TRUE(rt->wait(done).ok());
+                    std::unique_ptr<GpuRecordContext> ctx;
+                    ASSERT_TRUE(rt->newRecordContext(ctx).ok());
+                    s = recordSeparableBlur(*ctx, b);
+                    ASSERT_TRUE(s.ok()) << s.message;
+                    s = ctx->submitAndWait();
+                    ASSERT_TRUE(s.ok()) << s.message;
+                    ctx.reset();
+                    ASSERT_TRUE(rt->download(dstBuf.buffer(), 0, { dst.data(), dstFloats * sizeof(float) }, done).ok());
+                    ASSERT_TRUE(rt->wait(done).ok());
 
-                const std::vector<double> full = blurref::makeWeights(sigma);
-                const std::vector<double> ref = regionReference(src, srcImage, rc.valid, rc.domain, rc.output, nc,
-                                                                std::vector<double>(full.begin() + full.size() / 2, full.end()));
-                const std::vector<double> refF = regionReference(src, srcImage, rc.valid, rc.domain, rc.output, nc, weights);
-                const int outW = rc.output.x2 - rc.output.x1;
-                double worst = 0.0;
-                double worstF = 0.0;
-                size_t untouchedChanged = 0;
-                for (int y = rc.dstBounds.y1; y < rc.dstBounds.y2; ++y) {
-                    for (int x = rc.dstBounds.x1; x < rc.dstBounds.x2; ++x) {
-                        const bool inOut = x >= rc.output.x1 && x < rc.output.x2 && y >= rc.output.y1
-                            && y < rc.output.y2;
-                        for (int c = 0; c < nc; ++c) {
-                            const float got = dst[dstImage.offsetFloats + size_t(y - rc.dstBounds.y1) * dstImage.strideFloats
-                                                  + size_t(x - rc.dstBounds.x1) * nc + c];
-                            if (!inOut) {
-                                untouchedChanged += got != -7.0f;
-                                continue;
+                    const std::vector<double> full = blurref::makeWeights(sigma);
+                    const std::vector<double> ref = regionReference(src, srcImage, rc.valid, rc.domain, rc.output, nc,
+                                                                    std::vector<double>(full.begin() + full.size() / 2, full.end()), edgeMode);
+                    const std::vector<double> refF = regionReference(src, srcImage, rc.valid, rc.domain, rc.output, nc, weights, edgeMode);
+                    const int outW = rc.output.x2 - rc.output.x1;
+                    double worst = 0.0;
+                    double worstF = 0.0;
+                    size_t untouchedChanged = 0;
+                    for (int y = rc.dstBounds.y1; y < rc.dstBounds.y2; ++y) {
+                        for (int x = rc.dstBounds.x1; x < rc.dstBounds.x2; ++x) {
+                            const bool inOut = x >= rc.output.x1 && x < rc.output.x2 && y >= rc.output.y1
+                                && y < rc.output.y2;
+                            for (int c = 0; c < nc; ++c) {
+                                const float got = dst[dstImage.offsetFloats + size_t(y - rc.dstBounds.y1) * dstImage.strideFloats
+                                                      + size_t(x - rc.dstBounds.x1) * nc + c];
+                                if (!inOut) {
+                                    untouchedChanged += got != -7.0f;
+                                    continue;
+                                }
+                                const double want
+                                    = ref[(size_t(y - rc.output.y1) * outW + (x - rc.output.x1)) * nc + c];
+                                worst = std::max(worst, std::abs(double(got) - want));
+                                worstF = std::max(worstF, std::abs(double(got) - refF[(size_t(y - rc.output.y1) * outW + (x - rc.output.x1)) * nc + c]));
                             }
-                            const double want
-                                = ref[(size_t(y - rc.output.y1) * outW + (x - rc.output.x1)) * nc + c];
-                            worst = std::max(worst, std::abs(double(got) - want));
-                            worstF = std::max(worstF, std::abs(double(got) - refF[(size_t(y - rc.output.y1) * outW + (x - rc.output.x1)) * nc + c]));
                         }
                     }
+                    EXPECT_EQ(untouchedChanged, 0u);
+                    EXPECT_LE(worst, blurfix::kTolerance)
+                        << "sigma=" << sigma << " nc=" << nc << " domain x1=" << rc.domain.x1 << " stretch=" << (edgeMode == EdgeMode::Stretch);
+                    EXPECT_LE(worstF, blurfix::kTolerance)
+                        << "float order, sigma=" << sigma << " nc=" << nc << " domain x1=" << rc.domain.x1 << " stretch=" << (edgeMode == EdgeMode::Stretch);
                 }
-                EXPECT_EQ(untouchedChanged, 0u);
-                EXPECT_LE(worst, blurfix::kTolerance)
-                    << "sigma=" << sigma << " nc=" << nc << " domain x1=" << rc.domain.x1;
-                EXPECT_LE(worstF, blurfix::kTolerance)
-                    << "float order, sigma=" << sigma << " nc=" << nc << " domain x1=" << rc.domain.x1;
             }
         }
     }

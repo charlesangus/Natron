@@ -107,9 +107,11 @@ public Q_SLOTS:
 
     void onSelectedBezierAnimationRemoved();
 
-    void onSelectedBezierAboutToClone();
-
     void onSelectedBezierCloned();
+
+    void onStrokeLifeTimeChanged();
+
+    void onItemKnobKeysChanged();
 
     void onTimeChanged(SequenceTime time, int reason);
 

@@ -66,7 +66,6 @@ struct TransformNodeParams {
     bool invert = false;
     Resampler::FilterSpec filter;
     bool clamp = false;
-    bool blackOutside = true;
     Resampler::BlurSettings blur;
 };
 
@@ -89,7 +88,7 @@ inline constexpr NodeSpec kTransformNodeSpec = {
 };
 
 inline constexpr ImagePipelineSpec kTransformPipeline = {
-    .stages = { Stage::MaskMix },
+    .stages = { Stage::EdgeMode, Stage::MaskMix },
     .layers = LayerPolicy::all(),
     .op = OpKind::Resample,
 };
@@ -158,7 +157,6 @@ struct TransformOp {
     KnobBoolWPtr invert;
     KnobChoiceWPtr filter;
     KnobBoolWPtr clamp;
-    KnobBoolWPtr blackOutside;
     Resampler::FilterKnobs filterKnobs;
     KnobDoubleWPtr motionBlur;
     KnobBoolWPtr directionalBlur;

@@ -116,10 +116,9 @@ TEST_F(ViewerKnobsTest, GettersReadTheKnobs)
     KnobBoolPtr enableDownscale = knobOf<KnobBool>(node, kViewerParamEnableDownscale);
     KnobChoicePtr downscaleLevel = knobOf<KnobChoice>(node, kViewerParamDownscaleLevel);
     KnobBoolPtr fullFrame = knobOf<KnobBool>(node, kViewerParamFullFrame);
-    KnobBoolPtr autoContrast = knobOf<KnobBool>(node, kViewerParamAutoContrast);
     ASSERT_TRUE(bool(enableGain) && bool(gain) && bool(enableGamma) && bool(gamma));
     ASSERT_TRUE(bool(channels) && bool(channelsB) && bool(enableDownscale) && bool(downscaleLevel));
-    ASSERT_TRUE(bool(fullFrame) && bool(autoContrast));
+    ASSERT_TRUE(bool(fullFrame));
 
     EXPECT_DOUBLE_EQ(1., viewer->getGain());
     EXPECT_DOUBLE_EQ(1., viewer->getGamma());
@@ -149,8 +148,6 @@ TEST_F(ViewerKnobsTest, GettersReadTheKnobs)
 
     fullFrame->setValue(true);
     EXPECT_TRUE(viewer->isFullFrameProcessingEnabled());
-    autoContrast->setValue(true);
-    EXPECT_TRUE(viewer->isAutoContrastEnabled());
 }
 
 TEST_F(ViewerKnobsTest, SettersWriteTheKnobs)
@@ -436,7 +433,6 @@ TEST_F(ViewerKnobsTest, KnobEditsLeaveHashesUnchanged)
     knobOf<KnobDouble>(node, kViewerParamGain)->setValue(1.5);
     knobOf<KnobBool>(node, kViewerParamEnableGamma)->setValue(true);
     knobOf<KnobDouble>(node, kViewerParamGamma)->setValue(0.5);
-    knobOf<KnobBool>(node, kViewerParamAutoContrast)->setValue(true);
     knobOf<KnobBool>(node, kViewerParamCheckerboard)->setValue(true);
     viewerOf(node)->setDisplayTransform("Some Display", "Some View", "Some Look");
     knobOf<KnobChoice>(node, kViewerParamDisplayChannels)->setValue(2);
@@ -558,7 +554,6 @@ TEST_F(ViewerKnobsTest, ValuesSurviveSaveAndLoad)
     knobOf<KnobDouble>(node, kViewerParamGain)->setValue(1.5);
     knobOf<KnobBool>(node, kViewerParamEnableGamma)->setValue(true);
     knobOf<KnobDouble>(node, kViewerParamGamma)->setValue(0.5);
-    knobOf<KnobBool>(node, kViewerParamAutoContrast)->setValue(true);
     knobOf<KnobBool>(node, kViewerParamCheckerboard)->setValue(true);
     viewerOf(node)->setDisplayTransform("NoSuchDisplay", "NoSuchView", "NoSuchLook");
     knobOf<KnobChoice>(node, kViewerParamDisplayChannels)->setValue(3);
@@ -610,7 +605,6 @@ TEST_F(ViewerKnobsTest, ValuesSurviveSaveAndLoad)
     EXPECT_DOUBLE_EQ(std::pow(2., 1.5), viewer->getGain());
     EXPECT_TRUE(knobOf<KnobBool>(loaded, kViewerParamEnableGamma)->getValue());
     EXPECT_DOUBLE_EQ(0.5, viewer->getGamma());
-    EXPECT_TRUE(viewer->isAutoContrastEnabled());
     EXPECT_TRUE(knobOf<KnobBool>(loaded, kViewerParamCheckerboard)->getValue());
     std::string loadedDisplay, loadedView, loadedLook;
     viewerOf(loaded)->getDisplayTransform(&loadedDisplay, &loadedView, &loadedLook);
@@ -796,4 +790,154 @@ TEST_F(ViewerKnobsTest, SavedInputsWinWhicheverOrderTheInputsReconnect)
     EXPECT_EQ(3, knobOf<KnobInt>(loaded, kViewerParamBInput)->getValue());
     EXPECT_EQ(1, active[0]);
     EXPECT_EQ(3, active[1]);
+}
+
+TEST_F(ViewerKnobsTest, LockedInputKnobsAreHiddenAndHoldNodeNames)
+{
+    NodePtr node = createViewer();
+    NodePtr dot = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
+    ASSERT_TRUE(bool(node) && bool(dot));
+    ViewerInstance* viewer = viewerOf(node);
+    ASSERT_TRUE(viewer != 0);
+    connectNodes(dot, node, 0, true);
+
+    for (int i = 0; i < node->getNInputs(); ++i) {
+        const std::string name = std::string(kViewerParamLockedInputPrefix) + std::to_string(i + 1);
+        KnobStringPtr knob = knobOf<KnobString>(node, name.c_str());
+        ASSERT_TRUE(bool(knob)) << name;
+        EXPECT_TRUE(knob->getIsSecret()) << name;
+        EXPECT_FALSE(knob->isAnimationEnabled()) << name;
+        EXPECT_EQ("Locked Input " + std::to_string(i + 1), knob->getLabel());
+        EXPECT_EQ(std::string(), viewer->getLockedInput(i));
+    }
+
+    const U64 viewerHash = node->getHashValue();
+    const U64 dotHash = dot->getHashValue();
+    const unsigned int renderRequests = viewer->getKnobRenderRequestCount();
+
+    viewer->setLockedInput(2, "Blur1");
+    EXPECT_EQ(std::string("Blur1"), viewer->getLockedInput(2));
+    EXPECT_EQ(std::string("Blur1"), knobOf<KnobString>(node, "lockedInput3")->getValue());
+    EXPECT_EQ(std::string(), viewer->getLockedInput(1));
+
+    viewer->setLockedInput(-1, "Ignored");
+    viewer->setLockedInput(node->getNInputs(), "Ignored");
+    EXPECT_EQ(std::string(), viewer->getLockedInput(-1));
+    EXPECT_EQ(std::string(), viewer->getLockedInput(node->getNInputs()));
+
+    EXPECT_EQ(viewerHash, node->getHashValue());
+    EXPECT_EQ(dotHash, dot->getHashValue());
+    EXPECT_EQ(renderRequests, viewer->getKnobRenderRequestCount());
+}
+
+TEST_F(ViewerKnobsTest, LockedInputsSurviveSaveAndLoad)
+{
+    ProjectPtr project = getApp()->getProject();
+    NodePtr node = createViewer();
+    ASSERT_TRUE(bool(node));
+    const std::string name = node->getScriptName();
+    viewerOf(node)->setLockedInput(0, "Plate");
+    viewerOf(node)->setLockedInput(9, "Grade2");
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("viewer-locks.ntp");
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, 0));
+
+    project->reset(false, true);
+    node.reset();
+
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+    NodePtr loaded = project->getNodeByName(name);
+    ASSERT_TRUE(bool(loaded));
+    ViewerInstance* viewer = viewerOf(loaded);
+    ASSERT_TRUE(viewer != 0);
+    EXPECT_EQ(std::string("Plate"), viewer->getLockedInput(0));
+    EXPECT_EQ(std::string("Grade2"), viewer->getLockedInput(9));
+    EXPECT_EQ(std::string(), viewer->getLockedInput(1));
+    EXPECT_EQ(std::string("Locked input 1 to Plate\nLocked input 10 to Grade2"),
+              knobOf<KnobString>(loaded, kUserLabelKnobName)->getValue());
+    EXPECT_TRUE(loaded->hasUserColor());
+
+    viewer->setLockedInput(0, std::string());
+    viewer->setLockedInput(9, std::string());
+    EXPECT_EQ(std::string(), knobOf<KnobString>(loaded, kUserLabelKnobName)->getValue());
+    EXPECT_FALSE(loaded->hasUserColor());
+}
+
+TEST_F(ViewerKnobsTest, LockLinesLeaveTheRestOfTheLabelAlone)
+{
+    NodePtr node = createViewer();
+    ASSERT_TRUE(bool(node));
+    ViewerInstance* viewer = viewerOf(node);
+    ASSERT_TRUE(viewer != 0);
+    KnobStringPtr label = knobOf<KnobString>(node, kUserLabelKnobName);
+    ASSERT_TRUE(bool(label));
+
+    label->setValue("Hero shot\nLocked input for review");
+    viewer->setLockedInput(2, "Blur1");
+    EXPECT_EQ(std::string("Hero shot\nLocked input for review\nLocked input 3 to Blur1"), label->getValue());
+    viewer->setLockedInput(0, "Plate");
+    EXPECT_EQ(std::string("Hero shot\nLocked input for review\nLocked input 1 to Plate\nLocked input 3 to Blur1"), label->getValue());
+    viewer->setLockedInput(2, "Grade1");
+    EXPECT_EQ(std::string("Hero shot\nLocked input for review\nLocked input 1 to Plate\nLocked input 3 to Grade1"), label->getValue());
+    viewer->setLockedInput(0, std::string());
+    viewer->setLockedInput(2, std::string());
+    EXPECT_EQ(std::string("Hero shot\nLocked input for review"), label->getValue());
+
+    const std::string richLabel = "<font size=\"6\" color=\"#000000\" face=\"Droid Sans\">Hero shot</font>";
+    label->setValue(richLabel);
+    viewer->setLockedInput(1, "Plate");
+    EXPECT_EQ(std::string("<font size=\"6\" color=\"#000000\" face=\"Droid Sans\">Hero shot\nLocked input 2 to Plate</font>"), label->getValue());
+    viewer->setLockedInput(1, std::string());
+    EXPECT_EQ(richLabel, label->getValue());
+
+    const std::string emptyRichLabel = "<font size=\"6\" color=\"#000000\" face=\"Droid Sans\"></font>";
+    label->setValue(emptyRichLabel);
+    viewer->setLockedInput(1, "Plate");
+    EXPECT_EQ(std::string("<font size=\"6\" color=\"#000000\" face=\"Droid Sans\">Locked input 2 to Plate</font>"), label->getValue());
+    viewer->setLockedInput(1, std::string());
+    EXPECT_EQ(emptyRichLabel, label->getValue());
+}
+
+TEST_F(ViewerKnobsTest, OneNodeCanFeedSeveralInputs)
+{
+    ProjectPtr project = getApp()->getProject();
+    NodePtr node = createViewer();
+    NodePtr dot = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
+    ASSERT_TRUE(bool(node) && bool(dot));
+    const std::string name = node->getScriptName();
+    const std::string dotName = dot->getScriptName();
+    ViewerInstance* viewer = viewerOf(node);
+    ASSERT_TRUE(viewer != 0);
+
+    connectNodes(dot, node, 0, true);
+    connectNodes(dot, node, 2, true);
+    EXPECT_EQ(dot, node->getInput(0));
+    EXPECT_EQ(dot, node->getInput(2));
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("viewer-multi-pipe.ntp");
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, 0));
+
+    project->reset(false, true);
+    node.reset();
+    dot.reset();
+
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+    NodePtr loaded = project->getNodeByName(name);
+    NodePtr loadedDot = project->getNodeByName(dotName);
+    ASSERT_TRUE(bool(loaded) && bool(loadedDot));
+    EXPECT_EQ(loadedDot, loaded->getInput(0));
+    EXPECT_EQ(loadedDot, loaded->getInput(2));
+
+    loadedDot->deactivate();
+    EXPECT_FALSE(bool(loaded->getInput(0)));
+    EXPECT_FALSE(bool(loaded->getInput(2)));
+    loadedDot->activate();
+    EXPECT_EQ(loadedDot, loaded->getInput(0));
+    EXPECT_EQ(loadedDot, loaded->getInput(2));
 }

@@ -211,3 +211,12 @@ The git-driver test passes. Full ctest, smoke and CI are green.
   2. **A deleted and recreated node of the same type in the same place is the same node**, flagged in the conflict list.
   3. **The scope rule is MatchedEnclosed.**
   4. **Phase 103.2 makes three provenance changes:** group-from-selection and ungroup keep node IDs (matching across the whole tree); a paste or duplicate drops its origin when the shot already has a node with that origin; each import gets its own key.
+- 2026-11-20 — Compared with the user's proof of concept (charlesangus/nuke_diff, e146baa; read by a consultant, PM-only). Keep all four decisions; it shows nothing against IdPlusAdoption, and its design notes reach the same two-level identity. Additions for Phase 103.2:
+  - **Persist adoption:** P2.T2 writes `origin` onto adopted nodes, so a later update still matches after the artist wires next to them.
+  - **New corpus scenarios:** delete-recreate-adjacent-pair (expect no match, two delete-modify conflicts), cut-paste-template-node, duplicate-then-delete-original, artist-groups-template-nodes, both-sides-reparent and rename-plus-expression.
+  - **P2.T4, structure:** reparent becomes a structural case (moves into different groups on both sides conflict). A supervisor deleting a node the artist only moved or recoloured deletes it silently. Identical additions on both sides give one node (a mine↔theirs pass).
+  - **P2.T3, values:** expressions that name nodes are translated through the match, on import too. Position merges as one (x, y) pair. An adopted node's conflict entry lists the knobs where mine is at default and base is not.
+  - **Base and saves:** after an update, base.yaml equals theirs. Re-saving an unchanged project gives an empty diff.
+  - **M104:** "theirs" on delete-modify recreates the node with mapped wiring. A "split" option for adopted pairs. Resolve-checked as well as resolve-all. Ghosts for artist-deleted nodes still in conflict. Supervisor-added nodes placed relative to their matched neighbours.
+  - **Not to copy:** conflict state in labels, parked duplicate nodes, copy-then-merge with backups, whole-node-only resolution, input-0-only insert detection, and matching on name without the plugin type.
+  - **Open:** the design text contradicts itself on artist-delete vs supervisor-modify ("keeps the node" vs "a conflict takes mine"); settle it before P2.T4.

@@ -25,8 +25,9 @@
 
 #include "RotoPaint.h"
 
-#include <sstream> // stringstream
 #include <cassert>
+#include <optional>
+#include <sstream> // stringstream
 #include <stdexcept>
 
 #include "Engine/AppInstance.h"
@@ -41,6 +42,7 @@
 #include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoDrawableItem.h"
+#include "Engine/RotoLatencyProbe.h"
 #include "Engine/RotoObjectSelect.h"
 #include "Engine/RotoPaintInteract.h"
 #include "Engine/RotoPoint.h"
@@ -821,8 +823,17 @@ RotoPaint::isIdentity(double time,
 StatusEnum
 RotoPaint::render(const RenderActionArgs& args)
 {
+    RotoRenderProfile::Scope profile(RotoRenderProfile::eKindRotoPaint, args.time, args.mappedScale.toMipmapLevel());
+    std::optional<RotoRenderProfile::StageTimer> setupTimer;
+    setupTimer.emplace(RotoRenderProfile::eStageSetup);
     RotoContextPtr roto = getNode()->getRotoContext();
     std::list<RotoDrawableItemPtr> items = roto->getCurvesByRenderOrder(false /*onlyActiveItems*/);
+    setupTimer.reset();
+    if (profile.active()) {
+        profile.setNames(getNode()->getScriptName_mt_safe(), std::string(), std::string());
+        profile.setItems((int)items.size());
+        profile.setPixels((long long)args.roi.area());
+    }
     ImageBitDepthEnum bgDepth = getRenderMetadata(args.time, args.view)->getBitDepth(0);
     std::list<ImageLayerDesc> neededComps;
 
@@ -848,6 +859,7 @@ RotoPaint::render(const RenderActionArgs& args)
         }
     } else {
         NodesList rotoPaintNodes;
+        setupTimer.emplace(RotoRenderProfile::eStageSetup);
         {
             bool ok = getThreadLocalRotoPaintTreeNodes(&rotoPaintNodes);
             if (!ok) {
@@ -855,6 +867,7 @@ RotoPaint::render(const RenderActionArgs& args)
             }
         }
         NodePtr bottomMerge = roto->getRotoPaintBottomMergeNode();
+        setupTimer.reset();
         RenderingFlagSetter flagIsRendering(bottomMerge);
 
         unsigned int mipmapLevel = args.mappedScale.toMipmapLevel();
@@ -872,7 +885,11 @@ RotoPaint::render(const RenderActionArgs& args)
                                     eStorageModeRAM /*returnOpenGLtex*/,
                                     args.time);
         std::map<ImageLayerDesc, ImagePtr> rotoPaintImages;
-        RenderRoIRetCode code = renderInputOrTakeFromStore(bottomMerge->getEffectInstance(), -1, &rotoPaintArgs, &rotoPaintImages, this);
+        RenderRoIRetCode code;
+        {
+            RotoRenderProfile::StageTimer tree(RotoRenderProfile::eStageTree);
+            code = renderInputOrTakeFromStore(bottomMerge->getEffectInstance(), -1, &rotoPaintArgs, &rotoPaintImages, this);
+        }
         if (code == eRenderRoIRetCodeFailed) {
             return eStatusFailed;
         } else if (code == eRenderRoIRetCodeAborted) {

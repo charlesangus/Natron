@@ -150,6 +150,7 @@
 #include "Engine/ProcessHandler.h" // ProcessInputChannel
 #include "Engine/Project.h"
 #include "Engine/RenderScheduler.h"
+#include "Engine/RotoLatencyProbe.h"
 #include "Engine/RotoPaint.h"
 #include "Engine/RotoSmear.h"
 #include "Engine/StandardPaths.h"
@@ -1456,6 +1457,8 @@ openNodeCacheDiskTier(const Settings& settings)
 bool
 AppManager::loadInternalAfterInitGui(const CLArgs& cl)
 {
+    // Never stopped: render threads may still hold it at exit, and each line is flushed as written.
+    RotoRenderProfile::startFromEnvironment();
     try {
         size_t maxCacheRAM = _imp->_settings->getRamMaximumPercent() * getSystemTotalRAM();
         U64 viewerCacheSize = _imp->_settings->getMaximumViewerDiskCacheSize();

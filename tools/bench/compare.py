@@ -33,6 +33,14 @@ RANGE_METRICS = [
     ("range_par", "range_parallelism", False),
 ]
 
+# roto_render_bench.py records; printed only when both files have the field.
+ROTO_METRICS = [
+    ("cold_s", "frame_cold_s", True),
+    ("p95_s", "frame_p95_s", True),
+    ("edit_color_s", "edit_color_s", True),
+    ("edit_grade_s", "edit_grade_s", True),
+]
+
 # Block IO of the timed frames in MB; printed when both files have it and never flagged, since a
 # change in IO volume is a property of the workload rather than a regression.
 IO_METRICS = [
@@ -248,10 +256,10 @@ def main():
         topo, n, res, named, settings = key
         cells = []
         flagged = False
-        for label, field, higher_is_worse in METRICS + RANGE_METRICS:
+        for label, field, higher_is_worse in METRICS + RANGE_METRICS + ROTO_METRICS:
             b = median_of(before[key], field)
             a = median_of(after[key], field)
-            if (b is None or a is None) and (label, field, higher_is_worse) in RANGE_METRICS:
+            if (b is None or a is None) and (label, field, higher_is_worse) not in METRICS:
                 continue
             ratio, bad = compare_metric(b, a, higher_is_worse, args.threshold)
             flagged = flagged or bad

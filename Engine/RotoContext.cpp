@@ -32,6 +32,7 @@
 #include <locale>
 #include <memory>
 #include <new>
+#include <optional>
 #include <sstream>
 #include <sstream> // stringstream
 #include <stdexcept>
@@ -63,6 +64,7 @@
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/RenderStats.h"
 #include "Engine/RotoDrawableItem.h"
+#include "Engine/RotoLatencyProbe.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoStrokeItem.h"
 #include "Engine/Settings.h"
@@ -1231,6 +1233,10 @@ RotoDrawableItem::renderMaskFromStroke(const ImageLayerDesc& components,
 {
     NodePtr node = getContext()->getNode();
     ImagePtr image; // = stroke->getStrokeTimePreview();
+    RotoRenderProfile::Scope profile(RotoRenderProfile::eKindMask, time, mipmapLevel);
+    if (profile.active()) {
+        profile.setNames(node->getScriptName_mt_safe(), getScriptName(), dynamic_cast<RotoStrokeItem*>(this) ? "stroke" : "bezier");
+    }
 
     ///compute an enhanced hash different from the one of the merge node of the item in order to differentiate within the cache
     ///the output image of the node and the mask image.
@@ -1254,11 +1260,15 @@ RotoDrawableItem::renderMaskFromStroke(const ImageLayerDesc& components,
                                                   /*fullScaleWithDownscaleInputs=*/ false) );
 
     {
+        RotoRenderProfile::StageTimer lookup(RotoRenderProfile::eStageCacheLookup);
         QReadLocker k(&_imp->cacheAccessMutex);
         node->getEffectInstance()->getImageFromCacheAndConvertIfNeeded(true, eStorageModeRAM, eStorageModeRAM, *key, mipmapLevel, NULL, NULL, RectI(), depth, components, EffectInstance::InputImagesMap(), RenderStatsPtr(), OSGLContextAttacherPtr(), &image);
     }
 
     if (image) {
+        profile.setHit(true);
+        profile.setPixels((long long)image->getBounds().area());
+
         return image;
     }
     const CleanHashSnapshot clean(mergeNode, mergeNode->getEffectInstance()->getCurrentRestrictedRenderContext());
@@ -1286,8 +1296,10 @@ RotoDrawableItem::renderMaskFromStroke(const ImageLayerDesc& components,
     std::list<std::list<std::pair<Point, double> > > strokes;
 
     if (isStroke) {
+        RotoRenderProfile::StageTimer polygon(RotoRenderProfile::eStagePolygon);
         isStroke->evaluateStroke(mipmapLevel, time, &strokes, &rotoBbox);
     } else if (isBezier) {
+        RotoRenderProfile::StageTimer polygon(RotoRenderProfile::eStagePolygon);
         bool bboxSet = false;
         for (double t = startTime; t <= endTime; t += mbFrameStep) {
             RectD subBbox = isBezier->getBoundingBox(t, false);
@@ -1321,6 +1333,7 @@ RotoDrawableItem::renderMaskFromStroke(const ImageLayerDesc& components,
     }
 
     const RectI pixelRod = rotoBbox.toPixelEnclosing(mipmapLevel, 1.);
+    profile.setPixels((long long)pixelRod.area());
 
     ImageParamsPtr params = Image::makeParams(rotoBbox,
                                               pixelRod,
@@ -1337,7 +1350,13 @@ RotoDrawableItem::renderMaskFromStroke(const ImageLayerDesc& components,
        it once, which is fine.
      */
     QWriteLocker k(&_imp->cacheAccessMutex);
-    appPTR->getImageOrCreate(*key, params, &image);
+    {
+        RotoRenderProfile::StageTimer allocate(RotoRenderProfile::eStageAllocate);
+        appPTR->getImageOrCreate(*key, params, &image);
+        if (image) {
+            image->allocateMemory();
+        }
+    }
     if (!image) {
         std::stringstream ss;
         ss << "Failed to allocate an image of ";
@@ -1347,10 +1366,6 @@ RotoDrawableItem::renderMaskFromStroke(const ImageLayerDesc& components,
 
         return image;
     }
-
-    ///Does nothing if image is already alloc
-    image->allocateMemory();
-
 
     image = renderMaskInternal(pixelRod, components, startTime, endTime, mbFrameStep, time, inverted, depth, mipmapLevel, strokes, image);
     if (image && !clean.allowsStoreUnder(mergeNodeHash)) {
@@ -1384,6 +1399,7 @@ RotoDrawableItem::renderMaskInternal(const RectI& roi,
         getColor(time, shapeColor);
         const double opacity = getOpacity(time);
         const bool rendered = RotoContextPrivate::renderBezier(isBezier, time, startTime, endTime, timeStep, mipmapLevel, 1., 1., roi, [&](const RectI& tile, const float* alpha) {
+            RotoRenderProfile::StageTimer conversion(RotoRenderProfile::eStageConversion);
             switch (depth) {
             case eImageBitDepthFloat:
                 convertAlphaToNatronImage<float, 1>(alpha, image.get(), tile, shapeColor, opacity, inverted);
@@ -1463,7 +1479,10 @@ RotoDrawableItem::renderMaskInternal(const RectI& roi,
         for (std::size_t i = 0; i < dotPatterns.size(); ++i) {
             dotPatterns[i] = (cairo_pattern_t*)0;
         }
-        RotoContextPrivate::renderStroke(imgWrapper.ctx, dotPatterns, strokes, 0, this, doBuildUp, opacity, time, mipmapLevel);
+        {
+            RotoRenderProfile::StageTimer fill(RotoRenderProfile::eStageFill);
+            RotoContextPrivate::renderStroke(imgWrapper.ctx, dotPatterns, strokes, 0, this, doBuildUp, opacity, time, mipmapLevel);
+        }
 
         for (std::size_t i = 0; i < dotPatterns.size(); ++i) {
             if (dotPatterns[i]) {
@@ -1474,7 +1493,7 @@ RotoDrawableItem::renderMaskInternal(const RectI& roi,
     }
 
     bool useOpacityToConvert = (isBezier != 0);
-
+    RotoRenderProfile::StageTimer conversion(RotoRenderProfile::eStageConversion);
 
     switch (depth) {
     case eImageBitDepthFloat:
@@ -1845,6 +1864,7 @@ RotoContextPrivate::renderBezier(const Bezier* bezier,
         std::vector<BezierRenderSample> samples;
         BezierCPs cps;
         if (bezier->isCurveFinished(false) && bezier->isActivated(time) && (bezier->getControlPointsCount(false) > 1)) {
+            RotoRenderProfile::StageTimer setup(RotoRenderProfile::eStageFeatherSetup);
             cps = bezier->getControlPoints_mt_safe(false);
             std::vector<RotoFeatherQuad> quads;
             for (double t = startTime; t <= endTime; t += mbFrameStep) {
@@ -1891,6 +1911,8 @@ RotoContextPrivate::renderBezier(const Bezier* bezier,
                 const BezierRenderSample& sample = samples[si];
                 float* dst = layer.empty() ? &tileAlpha.front() : &layer.front();
 
+                std::optional<RotoRenderProfile::StageTimer> fillTimer;
+                fillTimer.emplace(RotoRenderProfile::eStageFill);
                 cairo_surface_flush(fill.cairoImg);
                 unsigned char* data = cairo_image_surface_get_data(fill.cairoImg);
                 const int stride = cairo_image_surface_get_stride(fill.cairoImg);
@@ -1921,7 +1943,9 @@ RotoContextPrivate::renderBezier(const Bezier* bezier,
                         row[x] = src[x] * (1.f / 255.f);
                     }
                 }
+                fillTimer.reset();
 
+                RotoRenderProfile::StageTimer featherTimer(RotoRenderProfile::eStageFeather);
                 sample.feather->rasterize(tile, dst);
 
                 if (!layer.empty()) {
@@ -1961,6 +1985,8 @@ RotoContextPrivate::computeFeatherQuads(const Bezier* bezier,
 
     featherPolyBBox.setupInfinity();
 
+    std::optional<RotoRenderProfile::StageTimer> polygonTimer;
+    polygonTimer.emplace(RotoRenderProfile::eStagePolygon);
     bezier->evaluateFeatherPointsAtTime_DeCasteljau(false, time, mipmapLevel,
 #ifdef ROTO_BEZIER_EVAL_ITERATIVE
                                                     50,
@@ -1977,6 +2003,7 @@ RotoContextPrivate::computeFeatherQuads(const Bezier* bezier,
                                        &bezierPolygon, NULL);
 
     bool clockWise = bezier->isFeatherPolygonClockwiseOriented(false, time);
+    polygonTimer.reset();
 
     assert( !featherPolygon.empty() && !bezierPolygon.empty() );
     if (featherPolygon.empty() || bezierPolygon.empty()) {

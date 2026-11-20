@@ -39,7 +39,7 @@ mkdir -p "$logs"
 specs=()
 for spec in "$@"; do
     if [ "$spec" = expr ]; then
-        specs+=(exprchain:3,30,300,1000,5000 exprfan:3,30,300,1000,5000 exprmixed:3,30,300,1000,5000,20000)
+        specs+=("exprchain:3,30,300,1000,5000" "exprfan:3,30,300,1000,5000" "exprmixed:3,30,300,1000,5000,20000")
     else
         specs+=("$spec")
     fi

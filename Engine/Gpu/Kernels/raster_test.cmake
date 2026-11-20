@@ -1,0 +1,1 @@
+slang_add_raster(raster_test Kernels/raster_test.slang VERTEX rasterTestVertex FRAGMENT rasterTestFragment REGISTRY NatronGpu)

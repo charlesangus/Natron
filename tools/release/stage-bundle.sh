@@ -439,6 +439,9 @@ copy_tree "$SOURCE_DIR/Gui/Resources/PyPlugs" "$STAGE_DIR/Plugins/PyPlugs"
 # <bin>/../Resources/tabtabtab.
 copy_tree "$SOURCE_DIR/Gui/Resources/TabTabTab" "$STAGE_DIR/Resources/tabtabtab" --exclude='./tests' --exclude='__pycache__'
 
+# GlassCatalogue::defaultPath() looks for <bin>/../Resources/optics/glass.json.
+copy_tree "$SOURCE_DIR/Gui/Resources/Optics" "$STAGE_DIR/Resources/optics"
+
 # fetch-assets.sh writes what it downloads and builds to <repo>/build/assets
 # regardless of where the build directory itself is, so a build tree
 # configured anywhere else still has to be pointed back at that one place.

@@ -30,7 +30,11 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <atomic>
+#include <filesystem>
+#include <fstream>
 #include <string>
+#include <unistd.h>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -41,6 +45,7 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
@@ -49,7 +54,9 @@
 #include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/Nodes/Scene/USDMerge.h"
 #include "Engine/Nodes/Scene/USDPrune.h"
+#include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDXformPrim.h"
+#include "Engine/SceneLoadSet.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/ViewIdx.h"
 
@@ -87,6 +94,55 @@ worldTranslation(const PXR_NS::UsdStageRefPtr& stage,
     return xformable.ComputeLocalToWorldTransform(PXR_NS::UsdTimeCode(1.)).ExtractTranslation();
 }
 
+void
+setBool(const NodePtr& node,
+        const char* name,
+        bool value)
+{
+    KnobBool* knob = dynamic_cast<KnobBool*>(node->getKnobByName(name).get());
+
+    ASSERT_TRUE(knob != NULL) << name;
+    knob->setValue(value);
+}
+
+bool
+isKnobEnabled(const NodePtr& node,
+              const char* name)
+{
+    KnobIPtr knob = node->getKnobByName(name);
+
+    EXPECT_TRUE(bool(knob)) << name;
+
+    return knob && knob->isEnabled(0);
+}
+
+// The inactive prims of stage, sorted.
+std::vector<std::string>
+inactivePrims(const PXR_NS::UsdStageRefPtr& stage)
+{
+    std::vector<std::string> paths;
+
+    for (const PXR_NS::UsdPrim& p : stage->TraverseAll()) {
+        if (!p.IsActive()) {
+            paths.push_back(p.GetPath().GetString());
+        }
+    }
+    std::sort(paths.begin(), paths.end());
+
+    return paths;
+}
+
+PXR_NS::TfToken
+visibilityOf(const PXR_NS::UsdStageRefPtr& stage,
+             const char* path)
+{
+    const PXR_NS::UsdGeomImageable imageable(stage->GetPrimAtPath(PXR_NS::SdfPath(path)));
+
+    EXPECT_TRUE(bool(imageable)) << path;
+
+    return imageable ? imageable.ComputeVisibility(PXR_NS::UsdTimeCode(1.)) : PXR_NS::TfToken();
+}
+
 // The layers of payload, weakest first.
 std::vector<PXR_NS::SdfLayer*>
 layersOf(const ScenePayload& payload)
@@ -107,9 +163,50 @@ protected:
     virtual void TearDown() OVERRIDE
     {
         SceneQueryPool::instance().releaseIdle();
+        std::error_code ignored;
+        for (const std::filesystem::path& file : _files) {
+            std::filesystem::remove(file, ignored);
+        }
 
         BaseTest::TearDown();
     }
+
+    // A USDRead of a file holding body, below a header with the project's up axis and units.
+    NodePtr readUsda(const std::string& body)
+    {
+        static std::atomic<int> counter(0);
+        const std::filesystem::path path = std::filesystem::temp_directory_path()
+            / ("usd_merge_prune_test_" + std::to_string(::getpid()) + "_" + std::to_string(counter++) + ".usda");
+        {
+            std::ofstream file(path);
+            file << "#usda 1.0\n(\n    defaultPrim = \"World\"\n    upAxis = \"Y\"\n    metersPerUnit = 1\n)\n"
+                 << body;
+        }
+        _files.push_back(path);
+        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
+        EXPECT_TRUE(bool(node));
+        if (node) {
+            KnobFilePtr file = std::dynamic_pointer_cast<KnobFile>(node->getKnobByName(kUSDReadParamFile));
+            EXPECT_TRUE(bool(file));
+            if (file) {
+                file->setValue(path.string());
+            }
+        }
+
+        return node;
+    }
+
+    // /World/{A/{a1,a2},B,C}
+    NodePtr worldABC()
+    {
+        NodePtr a = prim("/A", PXR_NS::GfVec3d(0.), { prim("/a1", PXR_NS::GfVec3d(0.)), prim("/a2", PXR_NS::GfVec3d(0.)) });
+        NodePtr b = prim("/B", PXR_NS::GfVec3d(0.));
+        NodePtr c = prim("/C", PXR_NS::GfVec3d(0.));
+
+        return prim("/World", PXR_NS::GfVec3d(0.), { a, b, c });
+    }
+
+    std::vector<std::filesystem::path> _files;
 
     static ScenePayload evaluate(const NodePtr& node)
     {
@@ -383,4 +480,169 @@ TEST_F(USDMergePruneTest, ZeroMatchesWarnAndPassTheSceneThrough)
     setString(node, kUSDPruneParamPrimPattern, " ");
     EXPECT_TRUE(evaluate(node).isSameStack(input));
     EXPECT_FALSE(node->hasPersistentMessage());
+}
+
+TEST_F(USDMergePruneTest, PruneUnselectedDeactivatesTheHighestPrimsOffTheMatches)
+{
+    NodePtr world = worldABC();
+    ASSERT_TRUE(bool(world));
+    NodePtr node = prune(world, "/World/A/a1", "deactivate");
+    ASSERT_TRUE(bool(node));
+    setBool(node, kUSDPruneParamPruneUnselected, true);
+
+    const ScenePayload output = evaluate(node);
+    PXR_NS::UsdStageRefPtr stage = SceneOps::compose(output);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_EQ(std::vector<std::string>({ "/World/A/a2", "/World/B", "/World/C" }), inactivePrims(stage));
+    std::vector<std::string> traversed;
+    for (const PXR_NS::UsdPrim& p : stage->Traverse()) {
+        traversed.push_back(p.GetPath().GetString());
+    }
+    EXPECT_EQ(std::vector<std::string>({ "/World", "/World/A", "/World/A/a1" }), traversed);
+    // Nothing is authored on the kept path.
+    const std::vector<PXR_NS::SdfLayer*> layers = layersOf(output);
+    ASSERT_FALSE(layers.empty());
+    for (const char* path : { "/World", "/World/A", "/World/A/a1" }) {
+        const PXR_NS::SdfPrimSpecHandle spec = layers.back()->GetPrimAtPath(PXR_NS::SdfPath(path));
+        EXPECT_TRUE(!spec || !spec->HasActive()) << path;
+    }
+
+    // Off, the node prunes the match again.
+    setBool(node, kUSDPruneParamPruneUnselected, false);
+    stage = SceneOps::compose(evaluate(node));
+    ASSERT_TRUE(bool(stage));
+    EXPECT_EQ(std::vector<std::string>({ "/World/A/a1" }), inactivePrims(stage));
+}
+
+TEST_F(USDMergePruneTest, PruneUnselectedInHideModeHidesTheHighestPrimsOffTheMatches)
+{
+    NodePtr world = worldABC();
+    ASSERT_TRUE(bool(world));
+    NodePtr node = prune(world, "/World/A/a1", "hide");
+    ASSERT_TRUE(bool(node));
+    setBool(node, kUSDPruneParamPruneUnselected, true);
+
+    const ScenePayload output = evaluate(node);
+    PXR_NS::UsdStageRefPtr stage = SceneOps::compose(output);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_TRUE(inactivePrims(stage).empty());
+    for (const char* path : { "/World/A/a2", "/World/B", "/World/C" }) {
+        EXPECT_EQ(PXR_NS::UsdGeomTokens->invisible, visibilityOf(stage, path)) << path;
+    }
+    for (const char* path : { "/World", "/World/A", "/World/A/a1" }) {
+        EXPECT_EQ(PXR_NS::UsdGeomTokens->inherited, visibilityOf(stage, path)) << path;
+    }
+    const std::vector<PXR_NS::SdfLayer*> layers = layersOf(output);
+    ASSERT_FALSE(layers.empty());
+    for (const char* path : { "/World", "/World/A", "/World/A/a1" }) {
+        EXPECT_FALSE(bool(layers.back()->GetAttributeAtPath(PXR_NS::SdfPath(path).AppendProperty(PXR_NS::UsdGeomTokens->visibility)))) << path;
+    }
+
+    setBool(node, kUSDPruneParamPruneUnselected, false);
+    stage = SceneOps::compose(evaluate(node));
+    ASSERT_TRUE(bool(stage));
+    EXPECT_EQ(PXR_NS::UsdGeomTokens->invisible, visibilityOf(stage, "/World/A/a1"));
+    EXPECT_EQ(PXR_NS::UsdGeomTokens->inherited, visibilityOf(stage, "/World/A/a2"));
+    EXPECT_EQ(PXR_NS::UsdGeomTokens->inherited, visibilityOf(stage, "/World/B"));
+}
+
+TEST_F(USDMergePruneTest, PruneUnselectedKeepsTheInstanceHoldingAMatchWhole)
+{
+    NodePtr source = readUsda("class Xform \"Proto\"\n{\n    def Cube \"part\"\n    {\n    }\n    def Cube \"other\"\n    {\n    }\n}\n"
+                              "def Xform \"World\"\n{\n"
+                              "    def Xform \"Inst\" (\n        instanceable = true\n        prepend references = </Proto>\n    )\n    {\n    }\n"
+                              "    def Xform \"Other\" (\n        instanceable = true\n        prepend references = </Proto>\n    )\n    {\n    }\n"
+                              "    def Xform \"Plain\"\n    {\n    }\n}\n");
+    ASSERT_TRUE(bool(source));
+    NodePtr node = prune(source, "/World/Inst/part", "deactivate");
+    ASSERT_TRUE(bool(node));
+    setBool(node, kUSDPruneParamPruneUnselected, true);
+
+    // A plain path names a prim inside an instance in an evaluation that loads by rules.
+    const SceneLoadSetPtr loadSet = std::make_shared<const SceneLoadSet>(std::vector<SceneLoadSet::Entry>({ { "/World", SceneLoadSet::eRuleAll } }));
+    ScenePayload output;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+              node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0), SceneEvaluationContext(SceneEvaluationContext::makeId(), loadSet)), &output, &error))
+        << error;
+    PXR_NS::UsdStageRefPtr stage = SceneOps::compose(output);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_EQ(std::vector<std::string>({ "/World/Other", "/World/Plain" }), inactivePrims(stage));
+    const PXR_NS::UsdPrim instance = stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Inst"));
+    ASSERT_TRUE(bool(instance));
+    EXPECT_TRUE(instance.IsInstance());
+    EXPECT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Inst/other")).IsActive());
+}
+
+TEST_F(USDMergePruneTest, PruneUnselectedWithNoMatchWarnsAndPassesTheSceneThrough)
+{
+    NodePtr world = worldABC();
+    ASSERT_TRUE(bool(world));
+    NodePtr node = prune(world, "/Nowhere", "deactivate");
+    ASSERT_TRUE(bool(node));
+    setBool(node, kUSDPruneParamPruneUnselected, true);
+
+    const ScenePayload input = evaluate(world);
+    EXPECT_TRUE(evaluate(node).isSameStack(input));
+    ASSERT_TRUE(node->hasPersistentMessage());
+    QString message;
+    int type = 0;
+    node->getPersistentMessage(&message, &type, false);
+    EXPECT_EQ((int)eMessageTypeWarning, type);
+    EXPECT_TRUE(message.contains(QString::fromUtf8("/Nowhere"))) << message.toStdString();
+
+    setString(node, kUSDPruneParamPrimPattern, " ");
+    EXPECT_TRUE(evaluate(node).isSameStack(input));
+    EXPECT_FALSE(node->hasPersistentMessage());
+}
+
+TEST_F(USDMergePruneTest, PruneUnselectedKeepsLightsCamerasMaterialsAndRenderSettings)
+{
+    NodePtr source = readUsda("def Xform \"World\"\n{\n"
+                              "    def Xform \"Geo\"\n    {\n"
+                              "        def Cube \"a\" (\n            prepend apiSchemas = [\"MaterialBindingAPI\"]\n        )\n        {\n"
+                              "            rel material:binding = </World/Looks/mat>\n        }\n"
+                              "        def Cube \"b\"\n        {\n        }\n    }\n"
+                              "    def Xform \"Lights\"\n    {\n        def SphereLight \"key\"\n        {\n        }\n    }\n"
+                              "    def Camera \"Cam\"\n    {\n    }\n"
+                              "    def Scope \"Looks\"\n    {\n        def Material \"mat\"\n        {\n"
+                              "            def Shader \"surface\"\n            {\n                uniform token info:id = \"UsdPreviewSurface\"\n            }\n"
+                              "        }\n    }\n}\n"
+                              "def Scope \"Render\"\n{\n    def RenderSettings \"settings\"\n    {\n    }\n}\n");
+    ASSERT_TRUE(bool(source));
+    NodePtr node = prune(source, "/World/Geo/a", "deactivate");
+    ASSERT_TRUE(bool(node));
+
+    const char* const keeps[] = { kUSDPruneParamKeepLights, kUSDPruneParamKeepCameras, kUSDPruneParamKeepMaterials, kUSDPruneParamKeepRenderSettings };
+    for (const char* keep : keeps) {
+        EXPECT_FALSE(isKnobEnabled(node, keep)) << keep;
+    }
+    setBool(node, kUSDPruneParamPruneUnselected, true);
+    for (const char* keep : keeps) {
+        EXPECT_TRUE(isKnobEnabled(node, keep)) << keep;
+    }
+
+    PXR_NS::UsdStageRefPtr stage = SceneOps::compose(evaluate(node));
+    ASSERT_TRUE(bool(stage));
+    EXPECT_EQ(std::vector<std::string>({ "/World/Geo/b" }), inactivePrims(stage));
+    const PXR_NS::UsdShadeMaterial bound = PXR_NS::UsdShadeMaterialBindingAPI(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Geo/a"))).ComputeBoundMaterial();
+    ASSERT_TRUE(bool(bound));
+    EXPECT_EQ(PXR_NS::SdfPath("/World/Looks/mat"), bound.GetPath());
+    EXPECT_TRUE(bound.GetPrim().IsActive());
+
+    const char* const branches[] = { "/World/Lights", "/World/Cam", "/World/Looks", "/Render" };
+    for (std::size_t i = 0; i < 4; ++i) {
+        setBool(node, keeps[i], false);
+        stage = SceneOps::compose(evaluate(node));
+        ASSERT_TRUE(bool(stage));
+        std::vector<std::string> expected({ "/World/Geo/b", branches[i] });
+        std::sort(expected.begin(), expected.end());
+        EXPECT_EQ(expected, inactivePrims(stage)) << keeps[i];
+        setBool(node, keeps[i], true);
+    }
+
+    setBool(node, kUSDPruneParamPruneUnselected, false);
+    for (const char* keep : keeps) {
+        EXPECT_FALSE(isKnobEnabled(node, keep)) << keep;
+    }
 }

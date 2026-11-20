@@ -20,6 +20,7 @@
 import glob
 import json
 import os
+import random
 import sys
 import time
 
@@ -93,19 +94,26 @@ def main():
     end.connectInput(1, checker_map())
     end.getParam("mode").set("mapBlend")
     end.getParam("iterations").set(ITERATIONS)
+    # The renderer renders the project's range once the script returns; one frame keeps that short.
+    app.getProjectParam("frameRange").set(1, 1)
     writer = app.createWriter(os.path.join(RENDER_DIR, "loop_map_blend_####.exr"))
     writer.connectInput(0, end)
     writer.getParam("colorspace").set(writer.getParam("ocioWorkingSpace").get())
     compression = writer.getParam("compression")
     if compression is not None:
         compression.set("none")
+    # The node cache's disk tier outlives the process, so colours repeated from an earlier run would be
+    # served from it: every run draws its own.
+    base = random.SystemRandom().uniform(0.1, 0.9)
+    color = source.getParam("color0")
+    color.set(base, base, base, 1.)
     first = render(writer)
     log("first render %.3fs" % first)
-    color = source.getParam("color0")
     times = []
     for k in range(1, REPS + 1):
         # A nudged colour changes the hash of everything below, so each render redoes every iteration.
-        color.set(0.001 * k, 0.001 * k, 0.001 * k, 1.)
+        value = base + 1e-4 * k
+        color.set(value, value, value, 1.)
         times.append(render(writer))
         log("render %d %.3fs" % (k, times[-1]))
     result(first_s=round(first, 4), times_s=[round(t, 4) for t in times])

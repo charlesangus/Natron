@@ -34,6 +34,7 @@
 #include "Engine/Image.h"
 #include "Engine/Nodes/Filter/MapInput.h"
 #include "Engine/Nodes/Image/GpuRender.h"
+#include "Engine/PoolParallelFor.h"
 
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuRecord.h"
@@ -272,22 +273,25 @@ accumulate(const MapPlane& map,
     const int comps = std::min(nComps, srcComps);
     const std::size_t rowSize = (std::size_t)roi.width() * (std::size_t)nComps;
     Image::ReadAccess access = src->getReadRights();
-    for (int y = covered.y1; y < covered.y2; ++y) {
-        const float* srcRow = (const float*)access.pixelAt(covered.x1, y);
-        if (!srcRow) {
-            continue;
-        }
-        float* accRow = acc + (std::size_t)(y - roi.y1) * rowSize + (std::size_t)(covered.x1 - roi.x1) * (std::size_t)nComps;
-        for (int x = covered.x1; x < covered.x2; ++x, srcRow += srcComps, accRow += nComps) {
-            const float weight = weightOf(tapsAt(map.at(x, y), count, interpolation), iteration);
-            if (weight == 0.f) {
+    // A pixel is summed by one band only, so its taps still add in iteration order.
+    forEachRowBand(covered, kMinParallelRowBandArea, [&](int bandY1, int bandY2) {
+        for (int y = bandY1; y < bandY2; ++y) {
+            const float* srcRow = (const float*)access.pixelAt(covered.x1, y);
+            if (!srcRow) {
                 continue;
             }
-            for (int c = 0; c < comps; ++c) {
-                accRow[c] += weight * srcRow[c];
+            float* accRow = acc + (std::size_t)(y - roi.y1) * rowSize + (std::size_t)(covered.x1 - roi.x1) * (std::size_t)nComps;
+            for (int x = covered.x1; x < covered.x2; ++x, srcRow += srcComps, accRow += nComps) {
+                const float weight = weightOf(tapsAt(map.at(x, y), count, interpolation), iteration);
+                if (weight == 0.f) {
+                    continue;
+                }
+                for (int c = 0; c < comps; ++c) {
+                    accRow[c] += weight * srcRow[c];
+                }
             }
         }
-    }
+    });
 }
 
 #ifdef NATRON_HAVE_GPU

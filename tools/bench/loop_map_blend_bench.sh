@@ -13,6 +13,8 @@
 #   BENCH_APPIMAGE_ARGS  arguments for the AppImage runtime (default "--appimage-extract-and-run", the host has no FUSE)
 #
 # The AppImage runs with LD_LIBRARY_PATH removed: a host Qt on that path shadows the one inside.
+# The node cache's disk tier is off: it serves renders of earlier runs and its writes land in the
+# timed renders.
 # Results land in <out-dir>/results.jsonl and <out-dir>/<map>-threads-<N>.log.
 set -uo pipefail
 
@@ -41,7 +43,7 @@ with_display() {
 for map in full half; do
     for n in $THREADS; do
         log="$OUT/$map-threads-$n.log"
-        (cd "$REPO" && with_display env -u LD_LIBRARY_PATH BENCH_RENDER_DIR="$OUT/render" BENCH_OUT="$OUT/results.jsonl" \
+        (cd "$REPO" && with_display env -u LD_LIBRARY_PATH NATRON_CACHE_DISK_TIER=off BENCH_RENDER_DIR="$OUT/render" BENCH_OUT="$OUT/results.jsonl" \
             BENCH_BUILD=branch BENCH_MAP="$map" BENCH_THREADS="$n" BENCH_SIZE="${BENCH_SIZE:-1920 1080}" \
             BENCH_ITERATIONS="${BENCH_ITERATIONS:-16}" BENCH_REPS="${BENCH_REPS:-5}" \
             timeout 3600 "$APPIMAGE" "${APPIMAGE_ARGV[@]}" --setting "noRenderThreads=$n" -b tools/bench/loop_map_blend_bench.py) > "$log" 2>&1

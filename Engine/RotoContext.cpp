@@ -1515,7 +1515,7 @@ Bezier::rasterizeCoverage(double time,
 
         return false;
     }
-    if (roi.isNull() || !isCurveFinished() || isOpenBezier() || !isActivated(time) || (getControlPointsCount() <= 1)) {
+    if (roi.isNull() || !isCurveFinished(false) || isOpenBezier() || !isActivated(time) || (getControlPointsCount(false) <= 1)) {
         return false;
     }
 
@@ -1844,8 +1844,8 @@ RotoContextPrivate::renderBezier(const Bezier* bezier,
     try {
         std::vector<BezierRenderSample> samples;
         BezierCPs cps;
-        if (bezier->isCurveFinished() && bezier->isActivated(time) && (bezier->getControlPointsCount() > 1)) {
-            cps = bezier->getControlPoints_mt_safe();
+        if (bezier->isCurveFinished(false) && bezier->isActivated(time) && (bezier->getControlPointsCount(false) > 1)) {
+            cps = bezier->getControlPoints_mt_safe(false);
             std::vector<RotoFeatherQuad> quads;
             for (double t = startTime; t <= endTime; t += mbFrameStep) {
                 const double fallOff = bezier->getFeatherFallOff(t);

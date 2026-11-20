@@ -95,7 +95,10 @@ public:
 
     void setRightBezierPointAtTime(bool useGuiCurves, double time, double x, double y);
 
-    void setBroken(bool broken);
+    /**
+     * @brief Sets the GUI side's flag, and the internal one too unless useGuiCurves.
+     **/
+    void setBroken(bool useGuiCurves, bool broken);
 
     void setStaticPosition(bool useGuiCurves, double x, double y);
 
@@ -127,8 +130,8 @@ public:
 
     bool getRightBezierPointAtTime(bool useGuiCurves, double time, ViewIdx view, double *x, double *y, bool reAlign = true) const;
 
-    bool getBroken() const;
-    
+    bool getBroken(bool useGuiCurves = true) const;
+
     bool hasKeyFrameAtTime(bool useGuiCurves, double time) const;
 
     void getKeyframeTimes(bool useGuiCurves, std::set<double>* times) const;

@@ -86,7 +86,7 @@ BezierCP::toSerialization(Serialization::BezierCPSerialization* serialization) c
     serialization->leftY = _imp->guiLeftY;
     serialization->rightX = _imp->guiRightX;
     serialization->rightY = _imp->guiRightY;
-    serialization->broken = _imp->broken;
+    serialization->broken = _imp->guiBroken;
 }
 
 void
@@ -131,6 +131,7 @@ BezierCP::fromSerialization(const Serialization::BezierCPSerialization& serializ
     _imp->guiRightY = serialization.rightY;
 
     _imp->broken = serialization.broken;
+    _imp->guiBroken = serialization.broken;
 
     // The track is resolved by name once every node exists (see
     // RotoCurveContext::resolveTrackLinks()).
@@ -208,18 +209,18 @@ Bezier::toSerialization(Serialization::BezierSerialization* serialization) const
     {
         QMutexLocker l(&itemMutex);
 
-        serialization->closed = _imp->finished;
+        serialization->closed = _imp->guiFinished;
         serialization->isOpenBezier = _imp->isOpenBezier;
         serialization->controlPoints.clear();
         serialization->featherPoints.clear();
-        assert(_imp->featherPoints.size() == _imp->points.size() || !useFeatherPoints());
+        assert(_imp->guiFeatherPoints.size() == _imp->guiPoints.size() || !useFeatherPoints());
 
         bool useFeather = useFeatherPoints();
-        BezierCPs::const_iterator featherIt = _imp->featherPoints.begin();
-        for (BezierCPs::const_iterator it = _imp->points.begin(); it != _imp->points.end(); ++it) {
+        BezierCPs::const_iterator featherIt = _imp->guiFeatherPoints.begin();
+        for (BezierCPs::const_iterator it = _imp->guiPoints.begin(); it != _imp->guiPoints.end(); ++it) {
             serialization->controlPoints.push_back(Serialization::BezierCPSerialization());
             (*it)->toSerialization(&serialization->controlPoints.back());
-            if (useFeather && (featherIt != _imp->featherPoints.end())) {
+            if (useFeather && (featherIt != _imp->guiFeatherPoints.end())) {
                 serialization->featherPoints.push_back(Serialization::BezierCPSerialization());
                 (*featherIt)->toSerialization(&serialization->featherPoints.back());
                 ++featherIt;
@@ -239,22 +240,23 @@ Bezier::fromSerialization(const Serialization::BezierSerialization& serializatio
     {
         QMutexLocker l(&itemMutex);
         _imp->isOpenBezier = serialization.isOpenBezier;
-        _imp->finished = serialization.closed && !_imp->isOpenBezier;
+        _imp->guiFinished = serialization.closed && !_imp->isOpenBezier;
 
         bool useFeather = useFeatherPoints();
         std::list<Serialization::BezierCPSerialization>::const_iterator featherIt = serialization.featherPoints.begin();
         for (std::list<Serialization::BezierCPSerialization>::const_iterator it = serialization.controlPoints.begin(); it != serialization.controlPoints.end(); ++it) {
             BezierCPPtr controlPoint = std::make_shared<BezierCP>(thisShared);
             controlPoint->fromSerialization(*it);
-            _imp->points.push_back(controlPoint);
+            _imp->guiPoints.push_back(controlPoint);
 
             if (useFeather && (featherIt != serialization.featherPoints.end())) {
                 BezierCPPtr featherPoint = std::make_shared<FeatherPoint>(thisShared);
                 featherPoint->fromSerialization(*featherIt);
-                _imp->featherPoints.push_back(featherPoint);
+                _imp->guiFeatherPoints.push_back(featherPoint);
                 ++featherIt;
             }
         }
+        _imp->copyGuiListsToRenderLists();
         copyInternalPointsToGuiPoints();
     }
     invalidateContentHash();

@@ -1003,7 +1003,7 @@ RotoCurveContext::getItemsRegionOfDefinition(const std::list<RotoItemPtr>& items
             Bezier* isBezier = dynamic_cast<Bezier*>(it2->get());
             RotoStrokeItem* isStroke = dynamic_cast<RotoStrokeItem*>(it2->get());
             if (isBezier && !isStroke) {
-                if (isBezier->isActivated(time) && (isBezier->getControlPointsCount() > 1)) {
+                if (isBezier->isActivated(time) && (isBezier->getControlPointsCount(false) > 1)) {
                     RectD splineRoD = isBezier->getBoundingBox(t);
                     if (splineRoD.isNull()) {
                         continue;

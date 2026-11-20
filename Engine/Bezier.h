@@ -147,7 +147,10 @@ public:
      **/
     virtual bool useFeatherPoints() const { return true; }
 
-
+    /**
+     * @brief Copies other's GUI side, which is never behind its render side. Off the main thread
+     * the copy goes to this shape's GUI side alone and is written back on the main thread.
+     **/
     virtual void clone(const RotoItem* other) OVERRIDE;
 
 
@@ -176,9 +179,10 @@ public:
     BezierCPPtr addControlPointAfterIndex(int index, double t);
 
     /**
-     * @brief Returns the number of control points of the bezier
+     * @brief Returns the number of control points of the bezier. Renders pass false: they read
+     * the list structural edits made during a render leave alone until it is written back.
      **/
-    int getControlPointsCount() const;
+    int getControlPointsCount(bool useGuiCurve = true) const;
 
     /**
      * @brief Given the (x,y) coordinates of a point, this function returns whether a point lies on
@@ -193,8 +197,7 @@ public:
      * and the last control point.
      **/
     void setCurveFinished(bool finished);
-    bool isCurveFinished() const;
-
+    bool isCurveFinished(bool useGuiCurve = true) const;
 
     /**
      * @brief Removes the control point at the given index if any. The feather point will also be removed , at the same position.
@@ -561,15 +564,13 @@ protected:
     std::list<BezierCPPtr> & getControlPoints_internal();
 
 public:
-
-
-    std::list<BezierCPPtr> getControlPoints_mt_safe() const;
+    std::list<BezierCPPtr> getControlPoints_mt_safe(bool useGuiCurve = true) const;
 
     /**
      * @brief Returns a const ref to the feather points of the bezier curve. This can only ever be called on the main thread.
      **/
     const std::list<BezierCPPtr> & getFeatherPoints() const;
-    std::list<BezierCPPtr> getFeatherPoints_mt_safe() const;
+    std::list<BezierCPPtr> getFeatherPoints_mt_safe(bool useGuiCurve = true) const;
     enum ControlPointSelectionPrefEnum
     {
         eControlPointSelectionPrefFeatherFirst = 0,
@@ -738,6 +739,11 @@ private:
      * @brief Erases every cached orientation of one side. itemMutex must be held.
      **/
     void eraseOrientation(bool useGuiCurve);
+
+    /**
+     * @brief The control and feather points of both sides' lists, each once. itemMutex must be held.
+     **/
+    std::list<BezierCPPtr> allPointsLocked() const;
 
     /*
      * @brief If the node is currently involved in a render, returns false, otherwise returns true

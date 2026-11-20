@@ -130,9 +130,16 @@ recordTransform(const Fft::Plan2D& plan,
     return { VK_ERROR_INITIALIZATION_FAILED, "unknown transform" };
 }
 
+enum class DeviceRun {
+    ran,
+    refusedOverLimit,
+    failed,
+};
+
 // Runs the transform on the device, the source and destination in separate buffers or, with inPlace, the same one,
-// and downloads the complex result.
-bool
+// and downloads the complex result. A transform whose transpose scratch the device's storage buffer range cannot bind
+// must be refused rather than run.
+DeviceRun
 deviceRun(GpuParityRuntime& runtime,
           const Fft::Plan2D& plan,
           FftTransform t,
@@ -145,31 +152,38 @@ deviceRun(GpuParityRuntime& runtime,
     gpu::GpuBuffer* src = runtime.buffer(0, inPlace ? complexFloats : input.size());
     gpu::GpuBuffer* dst = inPlace ? src : runtime.buffer(1, complexFloats);
     if (!src || !dst) {
-        return false;
+        return DeviceRun::failed;
     }
     std::vector<float> upload = input;
     if (!transfer(vk, *src, upload.data(), upload.size() * sizeof(float), true)) {
-        return false;
+        return DeviceRun::failed;
     }
     std::unique_ptr<gpu::GpuRecordContext> context;
     const gpu::GpuStatus created = vk.newRecordContext(context);
     EXPECT_TRUE(bool(created)) << created.message;
     if (!created) {
-        return false;
+        return DeviceRun::failed;
     }
     const gpu::GpuStatus recorded = recordTransform(plan, t, *context, *src, *dst);
+    if (plan.sampleCount() * sizeof(Complex) > context->maxScratchBytes()) {
+        EXPECT_FALSE(bool(recorded));
+        EXPECT_EQ(recorded.result, VK_ERROR_FEATURE_NOT_PRESENT) << recorded.message;
+        return recorded ? DeviceRun::failed : DeviceRun::refusedOverLimit;
+    }
     EXPECT_TRUE(bool(recorded)) << recorded.message;
     if (!recorded) {
-        return false;
+        return DeviceRun::failed;
     }
     const gpu::GpuStatus submitted = context->submitAndWait();
     EXPECT_TRUE(bool(submitted)) << submitted.message;
     if (!submitted) {
-        return false;
+        return DeviceRun::failed;
     }
     output.assign(plan.sampleCount(), Complex(0.f, 0.f));
 
-    return transfer(vk, *dst, output.data(), output.size() * sizeof(Complex), false);
+    const bool downloaded = transfer(vk, *dst, output.data(), output.size() * sizeof(Complex), false);
+
+    return downloaded ? DeviceRun::ran : DeviceRun::failed;
 }
 
 void
@@ -219,8 +233,13 @@ TEST(FftGpu, MatchesTheCpuPlan)
             cpuRun(plan, t, input, reference);
             const bool inPlace = (t == FftTransform::inverse) && (size.width == 256);
             std::vector<Complex> got;
-            ASSERT_TRUE(deviceRun(*runtime, plan, t, input, inPlace, got))
-                << size.width << "x" << size.height << " " << transformName(t);
+            const DeviceRun run = deviceRun(*runtime, plan, t, input, inPlace, got);
+            ASSERT_NE(run, DeviceRun::failed) << size.width << "x" << size.height << " " << transformName(t);
+            if (run == DeviceRun::refusedOverLimit) {
+                std::printf("%dx%d %s: refused, the transpose scratch is over the device's storage buffer range\n",
+                            size.width, size.height, transformName(t));
+                continue;
+            }
 
             float peak = 0.f;
             for (const Complex& c : reference) {

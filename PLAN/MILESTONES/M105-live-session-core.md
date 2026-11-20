@@ -134,3 +134,4 @@ full ctest, smoke and CI are green; the user signs off the UAT.
 
   Risk: several apps in one test process; the fallback is NatronRenderer subprocesses. Build running.
 - 2026-11-20 — Build fix de4f9b8d5 (INSTANTIATE_TEST_CASE_P). main is merged into F5 (fast-forward) and into the lane (7703067ce).
+- 2026-11-20 — The convergence and delete-vs-edit tests segfaulted. In background mode every AppInstance's Python id is `app`, so the clients' nodes collided with the host's (`app.Blur1 already exists`) and were left unnamed. **PM call:** clients run as child Tests processes driven over stdin (the `LiveSessionPeerProcess` suite), rather than changing background-mode app naming in the engine. NatronRenderer subprocesses aren't possible yet, because SessionClient isn't exposed to Python. A real use-after-free in `SessionHost::stop()` is also fixed: a flush emitted `disconnected` and erased the peer being iterated. The seed suite's timeout is 900 s. Gate running.

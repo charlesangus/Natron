@@ -30,10 +30,15 @@
 
 #include <atomic>
 #include <list>
+#include <map>
 #include <memory>
+#include <mutex>
+#include <set>
 #include <string>
+#include <utility>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
 // Free of USD: NativeRegistryAll.inc includes every node header into translation units that keep
@@ -53,7 +58,15 @@
 // value's bits as eight lowercase hexadecimal digits.
 #define kUSDRenderMetadataPrimIdPrefix "primId/"
 
+// The frame metadata key of a value the renderer gives for an AOV: this prefix, the AOV's layer, a
+// slash and the value's key in the delegate's "aovMetadata:<aov>" render stat.
+#define kUSDRenderMetadataAovPrefix "aov/"
+
 NATRON_NAMESPACE_ENTER
+
+namespace HydraRender {
+struct Result;
+}
 
 class USDRender
     : public NativeEffectBase {
@@ -198,6 +211,25 @@ private:
     // where USD is included.
     struct ActiveSettings;
 
+    struct SpecAovs;
+
+    typedef std::pair<double, int> FrameKey;
+
+    /**
+     * The AOVs the active prim's RenderVars ask the active renderer for, of the frame, cached until
+     * the node's hash moves. Read from active when it is not null and the frame is not cached; null
+     * when the scene cannot be read.
+     **/
+    std::shared_ptr<const SpecAovs> specAovs(double time, ViewIdx view, const ActiveSettings* active) const;
+
+    void clearSpecAovs();
+
+    // Keeps the layers and metadata to what the render gave, and returns the warning naming the RenderVars that render nothing.
+    std::string followRenderedAovs(double time,
+                                   ViewIdx view,
+                                   const RenderSetup& setup,
+                                   const HydraRender::Result& result);
+
     // False with *error set to the message the node shows if the scene or its prim cannot be read.
     bool readActiveSettings(double time, ViewIdx view, ActiveSettings* active, std::string* error) const;
 
@@ -220,6 +252,12 @@ private:
     KnobBoolWPtr _headlight;
     KnobChoiceWPtr _renderer;
     std::atomic<bool> _settingsPrimMenuRefreshPending;
+    mutable std::mutex _specMutex;
+    mutable std::map<FrameKey, std::shared_ptr<const SpecAovs>> _specAovs;
+    // The AOVs each renderer gave no buffer for in its last render, whose layers are left out.
+    std::set<std::pair<std::string, std::string>> _refusedAovs;
+    // The layer metadata of the last render of each frame, from the delegate's render stats.
+    std::map<FrameKey, ImageMetadata> _aovMetadata;
 };
 
 NATRON_NAMESPACE_EXIT

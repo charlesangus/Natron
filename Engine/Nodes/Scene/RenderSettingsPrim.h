@@ -39,6 +39,9 @@
 // never sent to a delegate.
 #define kRenderSettingsPrimRendererAttribute "natron:renderer"
 
+// The attribute of a RenderVar naming the Natron layer its AOV renders to.
+#define kRenderVarLayerAttribute "natron:layer"
+
 NATRON_NAMESPACE_ENTER
 
 /**
@@ -113,6 +116,62 @@ StandardAttributes standardAttributes(const PXR_NS::UsdRenderSettings& settings)
 bool rendererFor(const PXR_NS::UsdPrim& prim,
                  std::string* rendererId,
                  std::string* errorMessage);
+
+// One RenderVar of the prim's products, as the renderer is asked for it.
+struct AovRequest {
+    PXR_NS::SdfPath path;
+    // The AOV name the delegate is given: the raw sourceName, "primvars:<name>" or "lpe:<expr>".
+    PXR_NS::TfToken name;
+    std::string sourceName;
+    PXR_NS::TfToken sourceType;
+    // Empty when the var authors none: the schema's fallback (color3f) says nothing of the AOV.
+    PXR_NS::TfToken dataType;
+    // The var's natron:layer, empty when it authors none.
+    std::string layer;
+    // The var's attributes in the renderer's namespaces, "driver", "parameters" and "natron", at the time asked for.
+    PXR_NS::VtDictionary settings;
+};
+
+// A var no request is made of, and why.
+struct RejectedVar {
+    PXR_NS::SdfPath path;
+    std::string reason;
+};
+
+struct AovRequests {
+    std::vector<AovRequest> requests;
+    std::vector<RejectedVar> rejected;
+};
+
+/**
+ * @brief The RenderVars of every RenderProduct of the settings prim (UsdRenderComputeSpec), each
+ * once however many products order it, in the order the products first name them. A var with the
+ * intrinsic sourceType, or no sourceName, is rejected. A var whose sourceName is in the namespace
+ * of a delegate other than rendererId ("moonray:..." for Cycles) is left out without a word: the
+ * checklist authors vars for every delegate. False with *error set when two products differ in
+ * camera or resolution, which one render cannot give both.
+ **/
+bool aovRequests(const PXR_NS::UsdRenderSettings& prim,
+                 const std::string& rendererId,
+                 PXR_NS::UsdTimeCode time,
+                 AovRequests* out,
+                 std::string* error) WARN_UNUSED_RETURN;
+
+/**
+ * @brief The aovSettings of the request's AOV descriptor: its "driver:parameters:aov:" and
+ * "parameters:" attributes and those in the renderer's namespaces as they are, each
+ * "driver:parameters:aov:<name>" also as "parameters:<name>" when the var authors no such
+ * attribute (the key a delegate such as MoonRay's reads), and its sourceName, sourceType and
+ * authored dataType. The "natron:" attributes are Natron's own and are left out.
+ **/
+PXR_NS::VtDictionary outputSettings(const AovRequest& request);
+
+/**
+ * @brief Whether the AOV name is in the namespace of a Hydra delegate other than rendererId's.
+ * "primvars:" and "lpe:" names, and names in no namespace, go to every delegate.
+ **/
+bool isForAnotherDelegate(const std::string& aovName,
+                          const std::string& rendererId) WARN_UNUSED_RETURN;
 } // namespace RenderSettingsPrim
 
 NATRON_NAMESPACE_EXIT

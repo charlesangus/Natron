@@ -25,8 +25,11 @@
 
 #include "USDRender.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <limits>
+#include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -45,6 +48,7 @@
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
+#include "Engine/Nodes/Scene/AovLayers.h"
 #include "Engine/Nodes/Scene/CyclesAovs.h"
 #include "Engine/Nodes/Scene/HydraHandoff.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
@@ -56,6 +60,7 @@
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
+#include <pxr/imaging/hd/tokens.h>
 #include <pxr/usd/usd/primRange.h>
 
 #include "Engine/Project.h"
@@ -64,25 +69,9 @@
 NATRON_NAMESPACE_ENTER
 
 namespace {
-ImageLayerDesc
-depthLayer()
-{
-    return ImageLayerDesc("depth", "depth", "", std::vector<std::string>(1, "Z"));
-}
-
-ImageLayerDesc
-primIdLayer()
-{
-    return ImageLayerDesc("primId", "primId", "", std::vector<std::string>(1, "id"));
-}
-
-ImageLayerDesc
-normalLayer()
-{
-    static const char* const channels[] = { "X", "Y", "Z" };
-
-    return ImageLayerDesc("normal", "normal", "", std::vector<std::string>(channels, channels + 3));
-}
+using AovLayers::depthLayer;
+using AovLayers::normalLayer;
+using AovLayers::primIdLayer;
 
 std::string
 primIdKey(std::uint32_t hash)
@@ -109,6 +98,7 @@ void
 USDRender::purgeCaches()
 {
     HydraRender::release(this);
+    clearSpecAovs();
 }
 
 const NodeSpec*
@@ -241,6 +231,11 @@ USDRender::onInputChanged(int inputNo)
 void
 USDRender::onNodeHashChanged(U64 hash)
 {
+    clearSpecAovs();
+    {
+        std::lock_guard<std::mutex> l(_specMutex);
+        _aovMetadata.clear();
+    }
     NativeEffectBase::onNodeHashChanged(hash);
     scheduleSettingsPrimMenuRefresh();
 }
@@ -390,6 +385,158 @@ USDRender::activeRenderer(double time,
     return true;
 }
 
+struct USDRender::SpecAovs {
+    struct Entry {
+        HydraRender::Aov aov;
+        PXR_NS::SdfPath path;
+        ImageLayerDesc layer;
+        // False while the renderer gives no buffer for it: it is asked for, and has no layer.
+        bool declared = true;
+    };
+
+    std::string renderer;
+    std::vector<Entry> aovs;
+    // The layer of each RenderVar that names an AOV every render has, by AOV.
+    std::map<PXR_NS::TfToken, std::string> builtInLayers;
+    std::vector<RenderSettingsPrim::RejectedVar> rejected;
+    std::string warning;
+    std::string error;
+};
+
+namespace {
+// The layer of the AOVs every render of renderer has, which a RenderVar naming one renders to; empty for any other AOV.
+std::string
+builtInLayer(const PXR_NS::TfToken& aov,
+             const std::string& renderer)
+{
+    const bool moonRay = MoonRayAovs::isMoonRay(renderer);
+
+    if (aov == PXR_NS::HdAovTokens->color) {
+        return ImageLayerDesc::getRGBAComponents().getLayerID();
+    } else if ((aov == PXR_NS::HdAovTokens->depth) || (moonRay && (aov == MoonRayAovs::depthAov()))) {
+        return depthLayer().getLayerID();
+    } else if (aov == PXR_NS::HdAovTokens->primId) {
+        return primIdLayer().getLayerID();
+    } else if (!RenderDelegates::isStorm(renderer) && ((aov == PXR_NS::HdAovTokens->normal) || (moonRay && (aov == MoonRayAovs::normalAov())))) {
+        return normalLayer().getLayerID();
+    }
+
+    return std::string();
+}
+
+void
+setMetadataValue(ImageMetadata* metadata,
+                 const std::string& key,
+                 const PXR_NS::VtValue& value)
+{
+    if (value.IsHolding<std::string>()) {
+        metadata->setString(key, value.UncheckedGet<std::string>());
+    } else if (value.IsHolding<PXR_NS::TfToken>()) {
+        metadata->setString(key, value.UncheckedGet<PXR_NS::TfToken>().GetString());
+    } else if (value.IsHolding<bool>()) {
+        metadata->setInt(key, value.UncheckedGet<bool>() ? 1 : 0);
+    } else if (value.IsHolding<int>()) {
+        metadata->setInt(key, value.UncheckedGet<int>());
+    } else if (value.IsHolding<float>()) {
+        metadata->setDouble(key, value.UncheckedGet<float>());
+    } else if (value.IsHolding<double>()) {
+        metadata->setDouble(key, value.UncheckedGet<double>());
+    } else if (value.IsHolding<PXR_NS::VtIntArray>()) {
+        const PXR_NS::VtIntArray& array = value.UncheckedGet<PXR_NS::VtIntArray>();
+        metadata->setIntVector(key, std::vector<int>(array.cbegin(), array.cend()));
+    } else if (value.IsHolding<PXR_NS::VtDoubleArray>()) {
+        const PXR_NS::VtDoubleArray& array = value.UncheckedGet<PXR_NS::VtDoubleArray>();
+        metadata->setDoubleVector(key, std::vector<double>(array.cbegin(), array.cend()));
+    } else if (value.IsHolding<PXR_NS::VtFloatArray>()) {
+        const PXR_NS::VtFloatArray& array = value.UncheckedGet<PXR_NS::VtFloatArray>();
+        metadata->setDoubleVector(key, std::vector<double>(array.cbegin(), array.cend()));
+    } else {
+        std::ostringstream text;
+        text << value;
+        metadata->setString(key, text.str());
+    }
+}
+} // anon namespace
+
+std::shared_ptr<const USDRender::SpecAovs>
+USDRender::specAovs(double time,
+                    ViewIdx view,
+                    const ActiveSettings* active) const
+{
+    const FrameKey key(time, (int)view);
+    {
+        std::lock_guard<std::mutex> l(_specMutex);
+        std::map<FrameKey, std::shared_ptr<const SpecAovs>>::const_iterator found = _specAovs.find(key);
+        if (found != _specAovs.end()) {
+            return found->second;
+        }
+    }
+    ActiveSettings read;
+    if (!active) {
+        std::string error;
+        if (!readActiveSettings(time, view, &read, &error)) {
+            return std::shared_ptr<const SpecAovs>();
+        }
+        active = &read;
+    }
+    std::shared_ptr<SpecAovs> spec = std::make_shared<SpecAovs>();
+    spec->renderer = active->renderer;
+    RenderSettingsPrim::AovRequests requests;
+    if (active->prim && !RenderSettingsPrim::aovRequests(active->prim, active->renderer, active->time, &requests, &spec->error)) {
+        requests = RenderSettingsPrim::AovRequests();
+    }
+    spec->rejected = requests.rejected;
+    std::set<std::string> taken = { ImageLayerDesc::getRGBAComponents().getLayerID(), depthLayer().getLayerID(), primIdLayer().getLayerID() };
+    if (!RenderDelegates::isStorm(active->renderer)) {
+        taken.insert(normalLayer().getLayerID());
+    }
+    auto addWarning = [&spec](const std::string& warning) {
+        spec->warning = spec->warning.empty() ? warning : spec->warning + "\n" + warning;
+    };
+    std::set<std::pair<std::string, std::string>> refused;
+    {
+        std::lock_guard<std::mutex> l(_specMutex);
+        refused = _refusedAovs;
+    }
+    for (const RenderSettingsPrim::AovRequest& request : requests.requests) {
+        const std::string builtIn = builtInLayer(request.name, active->renderer);
+        if (!builtIn.empty()) {
+            spec->builtInLayers[request.name] = builtIn;
+            continue;
+        }
+        std::string formatWarning;
+        SpecAovs::Entry entry;
+        entry.aov.name = request.name;
+        entry.aov.settings = RenderSettingsPrim::outputSettings(request);
+        entry.path = request.path;
+        entry.layer = AovLayers::layer(active->renderer, request.name.GetString(), request.dataType.GetString(), request.layer, AovLayers::formatChannels(active->renderer, request.name.GetString()), &formatWarning);
+        if (!formatWarning.empty()) {
+            addWarning(tr("The RenderVar %1: %2").arg(QString::fromStdString(request.path.GetString())).arg(QString::fromStdString(formatWarning)).toStdString());
+        }
+        if (!taken.insert(entry.layer.getLayerID()).second) {
+            addWarning(tr("The RenderVar %1 renders to the layer %2, which another layer of the render has: it is not rendered.")
+                           .arg(QString::fromStdString(request.path.GetString()))
+                           .arg(QString::fromStdString(entry.layer.getLayerID()))
+                           .toStdString());
+            continue;
+        }
+        entry.declared = !refused.count(std::make_pair(active->renderer, request.name.GetString()));
+        spec->aovs.push_back(entry);
+    }
+    std::lock_guard<std::mutex> l(_specMutex);
+    _specAovs[key] = spec;
+
+    return spec;
+} // USDRender::specAovs
+
+void
+USDRender::clearSpecAovs()
+{
+    std::lock_guard<std::mutex> l(_specMutex);
+
+    _specAovs.clear();
+}
+
 void
 USDRender::appendNodeContentHash(ContentHasher& h) const
 {
@@ -425,7 +572,10 @@ USDRender::appendNodeContentHash(ContentHasher& h) const
     h.appendBool(true);
     h.appendString(path);
     h.appendString(renderer);
-    for (const std::string& ns : RenderSettingsPrim::namespaces(renderer)) {
+    // The RenderVars' AOV settings and layers are authored in these, besides the renderer's.
+    std::vector<std::string> spaces = RenderSettingsPrim::namespaces(renderer);
+    spaces.insert(spaces.end(), { "driver", "natron", "parameters" });
+    for (const std::string& ns : spaces) {
         std::map<std::string, U64>::const_iterator digest = scope->second.digests.find(ns);
         h.appendString(ns);
         h.appendU64((digest == scope->second.digests.end()) ? 0 : digest->second);
@@ -509,13 +659,21 @@ USDRender::getComponentsNeededAndProduced(double time,
     produced.push_back(depthLayer());
     produced.push_back(primIdLayer());
     // Storm renders no normal AOV.
+    const std::shared_ptr<const SpecAovs> spec = specAovs(time, view, nullptr);
     std::string renderer;
     std::string error;
-    if (!activeRenderer(time, view, &renderer, &error)) {
+    if (spec) {
+        renderer = spec->renderer;
+    } else if (!activeRenderer(time, view, &renderer, &error)) {
         renderer = kRenderDelegateStormId;
     }
     if (!RenderDelegates::isStorm(renderer)) {
         produced.push_back(normalLayer());
+    }
+    for (std::size_t i = 0; spec && spec->error.empty() && (i < spec->aovs.size()); ++i) {
+        if (spec->aovs[i].declared) {
+            produced.push_back(spec->aovs[i].layer);
+        }
     }
 }
 
@@ -542,6 +700,13 @@ USDRender::deriveOutputMetadata(double time,
 {
     // Every prim Storm can draw, so that each primId.id value a render gives has its entry.
     ImageMetadata metadata;
+    {
+        std::lock_guard<std::mutex> l(_specMutex);
+        std::map<FrameKey, ImageMetadata>::const_iterator found = _aovMetadata.find(FrameKey(time, (int)view));
+        if (found != _aovMetadata.end()) {
+            metadata = found->second;
+        }
+    }
     EffectInstancePtr input = getInput(0);
     ScenePayload scene;
     std::string error;
@@ -581,6 +746,7 @@ struct USDRender::RenderSetup {
     std::string warning;
     // The URIs of the live textures the render reads, at its time.
     std::vector<std::string> liveTextureUris;
+    std::shared_ptr<const SpecAovs> spec;
 };
 
 namespace {
@@ -708,6 +874,16 @@ USDRender::prepareRender(double time,
     if (active.prim) {
         setup->request.settings = RenderSettingsPrim::settings(active.prim.GetPrim(), active.renderer, active.time);
     }
+    setup->spec = specAovs(time, view, &active);
+    if (setup->spec && !setup->spec->error.empty()) {
+        return failWith(setup->spec->error);
+    }
+    for (std::size_t i = 0; setup->spec && (i < setup->spec->aovs.size()); ++i) {
+        setup->request.aovs.push_back(setup->spec->aovs[i].aov);
+    }
+    if (setup->spec && !setup->spec->warning.empty()) {
+        addWarning(setup->spec->warning);
+    }
     const double aspect = (format.width() * par) / format.height();
     if (!HydraRender::cameraFrustum(stage, cameraPath, active.time, aspect, fit, &setup->request.frustum, error)) {
         return false;
@@ -785,6 +961,18 @@ USDRender::render(const RenderActionArgs& args)
             : (layerID == "primId")                                                           ? ePlanePrimId
             : (layerID == "normal")                                                           ? ePlaneNormal
                                                                                               : ePlaneOther;
+        const HydraRender::AovPlane* aov = nullptr;
+        for (std::size_t i = 0; setup.spec && (plane == ePlaneOther) && !aov && (i < setup.spec->aovs.size()); ++i) {
+            if (setup.spec->aovs[i].layer.getLayerID() != layerID) {
+                continue;
+            }
+            for (const HydraRender::AovPlane& rendered : result.aovs) {
+                if (rendered.name == setup.spec->aovs[i].aov.name) {
+                    aov = &rendered;
+                }
+            }
+        }
+        const std::size_t aovChannels = aov ? (std::size_t)aov->channels : 0;
         const int nComps = (int)image->getComponentsCount();
         const RectI roi = args.roi.intersect(image->getBounds());
         if (roi.isNull()) {
@@ -819,6 +1007,7 @@ USDRender::render(const RenderActionArgs& args)
                         value = (inside && (c < 3) && !result.normal.empty()) ? result.normal[index * 3 + (std::size_t)c] : 0.f;
                         break;
                     case ePlaneOther:
+                        value = (inside && aov && ((std::size_t)c < aovChannels)) ? aov->pixels[index * aovChannels + (std::size_t)c] : 0.f;
                         break;
                     }
                     out[c] = value;
@@ -829,6 +1018,10 @@ USDRender::render(const RenderActionArgs& args)
     // The render stands; what the delegate could not render, or logged as an error naming no prim
     // of the scene, stays on the node until a render without it.
     std::string warning = setup.warning;
+    const std::string aovWarning = followRenderedAovs(args.time, args.view, setup, result);
+    if (!aovWarning.empty()) {
+        warning = warning.empty() ? aovWarning : warning + "\n" + aovWarning;
+    }
     if (!result.warning.empty()) {
         warning = warning.empty() ? result.warning : warning + "\n" + result.warning;
     }
@@ -840,6 +1033,75 @@ USDRender::render(const RenderActionArgs& args)
 
     return eStatusOK;
 } // USDRender::render
+
+std::string
+USDRender::followRenderedAovs(double time,
+                              ViewIdx view,
+                              const RenderSetup& setup,
+                              const HydraRender::Result& result)
+{
+    const std::shared_ptr<const SpecAovs>& spec = setup.spec;
+    if (!spec) {
+        return std::string();
+    }
+    QStringList rejected;
+    for (const RenderSettingsPrim::RejectedVar& var : spec->rejected) {
+        rejected.push_back(tr("%1 (%2)").arg(QString::fromStdString(var.path.GetString())).arg(QString::fromStdString(var.reason)));
+    }
+    bool layersChanged = false;
+    std::map<PXR_NS::TfToken, std::string> layers = spec->builtInLayers;
+    {
+        std::lock_guard<std::mutex> l(_specMutex);
+        for (const SpecAovs::Entry& entry : spec->aovs) {
+            const std::pair<std::string, std::string> key(spec->renderer, entry.aov.name.GetString());
+            const bool refused = std::find(result.rejectedAovs.begin(), result.rejectedAovs.end(), entry.aov.name) != result.rejectedAovs.end();
+            if (refused) {
+                rejected.push_back(tr("%1 (the renderer gives no such AOV)").arg(QString::fromStdString(entry.path.GetString())));
+                layersChanged = _refusedAovs.insert(key).second || layersChanged;
+                continue;
+            }
+            layersChanged = (_refusedAovs.erase(key) > 0) || layersChanged;
+            layers[entry.aov.name] = entry.layer.getLayerID();
+            for (const HydraRender::AovPlane& plane : result.aovs) {
+                // The layer was declared before the renderer's format was known.
+                if ((plane.name == entry.aov.name) && ((std::size_t)plane.channels != entry.layer.getChannels().size())) {
+                    layersChanged = true;
+                }
+            }
+        }
+    }
+    ImageMetadata metadata;
+    for (const std::pair<const PXR_NS::TfToken, PXR_NS::VtDictionary>& aov : result.aovMetadata) {
+        std::map<PXR_NS::TfToken, std::string>::const_iterator layer = layers.find(aov.first);
+        if (layer == layers.end()) {
+            continue;
+        }
+        for (const std::pair<const std::string, PXR_NS::VtValue>& value : aov.second) {
+            setMetadataValue(&metadata, std::string(kUSDRenderMetadataAovPrefix) + layer->second + "/" + value.first, value.second);
+        }
+    }
+    bool metadataChanged = false;
+    {
+        std::lock_guard<std::mutex> l(_specMutex);
+        ImageMetadata& stored = _aovMetadata[FrameKey(time, (int)view)];
+        if (stored != metadata) {
+            stored = metadata;
+            metadataChanged = true;
+        }
+    }
+    if (layersChanged) {
+        clearSpecAovs();
+    }
+    // The layers and metadata change under the same hash, and the readers are refreshed on the main thread.
+    if (layersChanged || metadataChanged) {
+        QMetaObject::invokeMethod(this, [this]() { invalidateOutputMetadata(); }, Qt::QueuedConnection);
+    }
+    if (rejected.isEmpty()) {
+        return std::string();
+    }
+
+    return tr("No layer renders for the RenderVars %1.").arg(rejected.join(QString::fromUtf8(", "))).toStdString();
+} // USDRender::followRenderedAovs
 
 void
 USDRender::showWarning(const std::string& warning)

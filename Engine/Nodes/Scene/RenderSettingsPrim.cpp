@@ -29,6 +29,7 @@
 #include <set>
 
 #include <pxr/imaging/hd/tokens.h>
+#include <pxr/usd/usdRender/var.h>
 
 #include "Engine/Nodes/Scene/CyclesAovs.h"
 #include "Engine/Nodes/Scene/MoonRayAovs.h"
@@ -277,6 +278,162 @@ rendererFor(const UsdPrim& prim,
         return false;
     }
     *rendererId = id.GetString();
+
+    return true;
+}
+
+VtDictionary
+outputSettings(const AovRequest& request)
+{
+    static const std::string driverPrefix = "driver:parameters:aov:";
+    VtDictionary out;
+
+    for (const std::pair<const std::string, VtValue>& entry : request.settings) {
+        if (!startsWithNamespace(entry.first, "natron")) {
+            out[entry.first] = entry.second;
+        }
+    }
+    for (const std::pair<const std::string, VtValue>& entry : request.settings) {
+        if ((entry.first.compare(0, driverPrefix.size(), driverPrefix) == 0) && (entry.first.size() > driverPrefix.size())) {
+            const std::string key = "parameters:" + entry.first.substr(driverPrefix.size());
+            if (!out.count(key)) {
+                out[key] = entry.second;
+            }
+        }
+    }
+    out["sourceName"] = VtValue(request.sourceName);
+    out["sourceType"] = VtValue(request.sourceType);
+    if (!request.dataType.IsEmpty()) {
+        out["dataType"] = VtValue(request.dataType);
+    }
+
+    return out;
+}
+
+bool
+isForAnotherDelegate(const std::string& aovName,
+                     const std::string& rendererId)
+{
+    const std::string::size_type colon = aovName.find(':');
+
+    if ((colon == std::string::npos) || (colon == 0)) {
+        return false;
+    }
+    const std::string ns = aovName.substr(0, colon);
+    if ((ns == "primvars") || (ns == "lpe")) {
+        return false;
+    }
+    for (const std::string& own : namespaces(rendererId)) {
+        if (ns == own) {
+            return false;
+        }
+    }
+    std::set<std::string> others = { "cycles", "moonray", "storm" };
+    for (const RenderDelegates::Delegate& d : RenderDelegates::list()) {
+        others.insert(RenderSettingsKnobs::scriptPrefix(d.id));
+    }
+
+    return others.count(ns) > 0;
+}
+
+bool
+aovRequests(const UsdRenderSettings& prim,
+            const std::string& rendererId,
+            UsdTimeCode time,
+            AovRequests* out,
+            std::string* error)
+{
+    out->requests.clear();
+    out->rejected.clear();
+    if (!prim) {
+        return true;
+    }
+    TfTokenVector spaces;
+    for (const std::string& ns : namespaces(rendererId)) {
+        spaces.push_back(TfToken(ns));
+    }
+    for (const char* ns : { "driver", "parameters", "natron" }) {
+        spaces.push_back(TfToken(ns));
+    }
+    const UsdRenderSpec spec = UsdRenderComputeSpec(prim, spaces);
+    const UsdRenderSpec::Product* first = nullptr;
+    for (const UsdRenderSpec::Product& product : spec.products) {
+        if (product.renderVarIndices.empty()) {
+            continue;
+        }
+        if (!first) {
+            first = &product;
+        } else if ((product.cameraPath != first->cameraPath) || (product.resolution != first->resolution)) {
+            *error = "The render products " + first->renderProductPath.GetString() + " and " + product.renderProductPath.GetString() + " of " + prim.GetPath().GetString() + " differ in camera or resolution, which one render cannot give both. Give them the same camera and resolution, or split them across settings prims.";
+
+            return false;
+        }
+    }
+    std::set<SdfPath> seen;
+    std::set<TfToken> names;
+    for (const UsdRenderSpec::Product& product : spec.products) {
+        for (std::size_t index : product.renderVarIndices) {
+            if (index >= spec.renderVars.size()) {
+                continue;
+            }
+            const UsdRenderSpec::RenderVar& var = spec.renderVars[index];
+            if (!seen.insert(var.renderVarPath).second) {
+                continue;
+            }
+            const UsdRenderVar schema(prim.GetPrim().GetStage()->GetPrimAtPath(var.renderVarPath));
+            std::string name;
+            if (var.sourceName.empty()) {
+                out->rejected.push_back({ var.renderVarPath, "it has no sourceName" });
+                continue;
+            } else if (var.sourceType == UsdRenderTokens->intrinsic) {
+                out->rejected.push_back({ var.renderVarPath, "its sourceType is intrinsic, which no Hydra delegate renders" });
+                continue;
+            } else if (var.sourceType == UsdRenderTokens->primvar) {
+                name = startsWithNamespace(var.sourceName, "primvars") ? var.sourceName : "primvars:" + var.sourceName;
+            } else if (var.sourceType == UsdRenderTokens->lpe) {
+                name = startsWithNamespace(var.sourceName, "lpe") ? var.sourceName : "lpe:" + var.sourceName;
+            } else {
+                name = var.sourceName;
+            }
+            if (isForAnotherDelegate(name, rendererId)) {
+                continue;
+            }
+            AovRequest request;
+            request.path = var.renderVarPath;
+            request.name = TfToken(name);
+            request.sourceName = var.sourceName;
+            request.sourceType = var.sourceType;
+            if (!names.insert(request.name).second) {
+                out->rejected.push_back({ var.renderVarPath, "another RenderVar already asks for the AOV " + name });
+                continue;
+            }
+            if (schema && schema.GetDataTypeAttr().HasAuthoredValue()) {
+                request.dataType = var.dataType;
+            }
+            request.settings = var.namespacedSettings;
+            // UsdRenderComputeSpec reads default values only.
+            if (schema) {
+                for (const UsdAttribute& attribute : schema.GetPrim().GetAuthoredAttributes()) {
+                    const std::string attributeName = attribute.GetName().GetString();
+                    bool inSpace = false;
+                    for (const TfToken& ns : spaces) {
+                        inSpace = inSpace || startsWithNamespace(attributeName, ns.GetString());
+                    }
+                    VtValue atTime;
+                    if (inSpace && attribute.Get(&atTime, time) && !atTime.IsEmpty()) {
+                        request.settings[attributeName] = atTime;
+                    }
+                }
+            }
+            VtDictionary::const_iterator layer = request.settings.find(kRenderVarLayerAttribute);
+            if ((layer != request.settings.end()) && layer->second.IsHolding<std::string>()) {
+                request.layer = layer->second.UncheckedGet<std::string>();
+            } else if ((layer != request.settings.end()) && layer->second.IsHolding<TfToken>()) {
+                request.layer = layer->second.UncheckedGet<TfToken>().GetString();
+            }
+            out->requests.push_back(request);
+        }
+    }
 
     return true;
 }

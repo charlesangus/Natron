@@ -43,6 +43,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <string>
@@ -56,6 +57,7 @@
 
 #include <OpenImageIO/imageio.h>
 
+#include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -80,6 +82,7 @@
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Generator/Ramp.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
+#include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/LiveTextureSharedMemory.h"
@@ -340,6 +343,7 @@ protected:
     virtual void TearDown() OVERRIDE
     {
         HydraRender::setRendererSettings(kMoonRayRendererId, std::map<std::string, PXR_NS::VtValue>());
+        HydraRender::setRenderStatsForTests(kMoonRayRendererId, PXR_NS::VtDictionary());
         HydraRender::releaseAllCpuEngines();
         SceneQueryPool::instance().releaseIdle();
         BaseTest::TearDown();
@@ -1192,6 +1196,81 @@ TEST_F(USDRenderMoonRayTest, CuratedKnobsReachTheDelegate)
     (void)renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, kSize, kSize), allPlanes(), &planes, &error, false);
     EXPECT_EQ(PXR_NS::VtValue(true), moonRayReported(node, denoise)) << error;
     EXPECT_EQ(PXR_NS::VtValue(true), moonRayReported(node, "enableOIDN")) << error;
+}
+
+// A RenderVar of the fixture's settings prim for MoonRay's position AOV, with a render output parameter.
+const char* const kPositionVar = R"(
+def Scope "Render"
+{
+    def RenderSettings "rendersettings"
+    {
+        rel products = </Render/product>
+    }
+
+    def RenderProduct "product"
+    {
+        rel orderedVars = </Render/product/position>
+
+        def RenderVar "position"
+        {
+            uniform string sourceName = "P"
+            int driver:parameters:aov:moonray:math_filter = 0
+        }
+    }
+}
+)";
+
+TEST_F(USDRenderMoonRayTest, RenderVarSettingsReachTheDelegateAndItsStatsTheLayerMetadata)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    QFile base(QString::fromUtf8(kFixture));
+    ASSERT_TRUE(base.open(QIODevice::ReadOnly));
+    const QByteArray scene = base.readAll() + QByteArray(kPositionVar);
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString filePath = tmp.path() + QString::fromUtf8("/position-var.usda");
+    {
+        QFile file(filePath);
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        ASSERT_EQ((qint64)scene.size(), file.write(scene));
+    }
+    PXR_NS::VtDictionary manifest;
+    manifest["manifest"] = PXR_NS::VtValue(std::string("{\"/World/Left\":\"3f800000\"}"));
+    manifest["hash"] = PXR_NS::VtValue(std::string("MurmurHash3_32"));
+    PXR_NS::VtDictionary stats;
+    stats["aovMetadata:P"] = PXR_NS::VtValue(manifest);
+    HydraRender::setRenderStatsForTests(kMoonRayRendererId, stats);
+
+    const std::string path = filePath.toStdString();
+    NodePtr node = createGraph(path.c_str());
+    ASSERT_TRUE(bool(node));
+    std::vector<RenderedPlane> planes;
+    ASSERT_TRUE(renderAll(node, &planes, true));
+
+    PXR_NS::VtDictionary settings;
+    const void* owner = dynamic_cast<USDRender*>(node->getEffectInstance().get());
+    ASSERT_TRUE(HydraRender::engineAovSettings(owner, "P", &settings));
+    auto setting = [&settings](const char* key) {
+        PXR_NS::VtDictionary::const_iterator found = settings.find(key);
+
+        return (found == settings.end()) ? PXR_NS::VtValue() : found->second;
+    };
+    EXPECT_EQ(PXR_NS::VtValue(0), setting("driver:parameters:aov:moonray:math_filter"));
+    // The key hdMoonray reads a render output's attributes from.
+    EXPECT_EQ(PXR_NS::VtValue(0), setting("parameters:moonray:math_filter"));
+    EXPECT_EQ(PXR_NS::VtValue(std::string("P")), setting("sourceName"));
+
+    // The layers and metadata are refreshed on the main thread after the render.
+    QCoreApplication::processEvents();
+    NativeEffectBase* effect = dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get());
+    ASSERT_TRUE(effect);
+    const ImageMetadata metadata = effect->getOutputMetadata(1., ViewIdx(0));
+    const std::optional<std::string> value = metadata.getString(kUSDRenderMetadataAovPrefix "P/manifest");
+    ASSERT_TRUE(value.has_value());
+    EXPECT_EQ(std::string("{\"/World/Left\":\"3f800000\"}"), *value);
+    EXPECT_EQ(std::optional<std::string>("MurmurHash3_32"), metadata.getString(kUSDRenderMetadataAovPrefix "P/hash"));
 }
 
 // Every setting MoonRay declares, but those Natron sets itself, is reached by a knob of the

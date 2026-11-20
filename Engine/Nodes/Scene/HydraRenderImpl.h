@@ -40,6 +40,7 @@
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/ScenePayload.h"
+#include <pxr/base/vt/dictionary.h>
 #include <pxr/base/vt/value.h>
 
 NATRON_NAMESPACE_ENTER
@@ -114,6 +115,25 @@ std::uint32_t primPathHash(const std::string& path) WARN_UNUSED_RETURN;
 // The hash's bits as a float, the value primId.id holds.
 float hashToFloat(std::uint32_t hash) WARN_UNUSED_RETURN;
 
+// An AOV asked of the delegate on top of the ones every render has.
+struct Aov {
+    PXR_NS::TfToken name;
+    // The descriptor's aovSettings the delegate gets for it (HdAovDescriptor::aovSettings).
+    PXR_NS::VtDictionary settings;
+
+    bool operator==(const Aov& other) const
+    {
+        return (name == other.name) && (settings == other.settings);
+    }
+};
+
+// An AOV's pixels, as many floats per pixel as its HdFormat has components.
+struct AovPlane {
+    PXR_NS::TfToken name;
+    int channels = 0;
+    std::vector<float> pixels;
+};
+
 struct Request {
     // Whose stage and engine render it. A request of the owner's last render with the same stack,
     // time, camera, size and headlight, and no barrier write since, reuses that render, so the
@@ -145,6 +165,9 @@ struct Request {
     // defaults. The owner's engine is made again when they change: Cycles restarts a converged
     // render only for some of its settings.
     std::map<std::string, PXR_NS::VtValue> settings;
+    // The AOVs to render besides color, depth, primId, instanceId and the normal. A change of them
+    // makes the owner's engine again.
+    std::vector<Aov> aovs;
 };
 
 // The AOVs, width x height pixels each, the bottom row first as Natron's images.
@@ -161,6 +184,12 @@ struct Result {
     std::string warning;
     // The errors the delegate logged that name no prim of the scene, one per line; empty if none.
     std::string errors;
+    // The request's aovs the delegate rendered, in the request's order.
+    std::vector<AovPlane> aovs;
+    // The request's aovs it gave no buffer for, which elementId always is.
+    std::vector<PXR_NS::TfToken> rejectedAovs;
+    // The dictionary the delegate's render stats hold for an AOV under "aovMetadata:<aov>", by AOV.
+    std::map<PXR_NS::TfToken, PXR_NS::VtDictionary> aovMetadata;
 };
 
 /**
@@ -274,6 +303,18 @@ void setRendererSettings(const std::string& renderer,
 bool engineSetting(const void* owner,
                    const std::string& key,
                    PXR_NS::VtValue* value) WARN_UNUSED_RETURN;
+
+/**
+ * @brief The aovSettings of owner's engine's descriptor for aov, as its task controller holds
+ * them, waiting for the engine's thread. False if owner has no engine.
+ **/
+bool engineAovSettings(const void* owner,
+                       const std::string& aov,
+                       PXR_NS::VtDictionary* settings) WARN_UNUSED_RETURN;
+
+// Render stats laid over those of every engine of renderer when a render reads them; for tests. Empty clears them.
+void setRenderStatsForTests(const std::string& renderer,
+                            const PXR_NS::VtDictionary& stats);
 
 // Drops owner's stage and engine, whichever delegate it is of, without waiting.
 void release(const void* owner);

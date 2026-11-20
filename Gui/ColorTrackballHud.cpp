@@ -435,6 +435,7 @@ void
 ColorTrackballPill::setText(const QString& text)
 {
     _text = text;
+    setProperty("trackballPillText", text);
     resize(sizeHint());
     update();
 }

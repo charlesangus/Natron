@@ -161,7 +161,7 @@ double colorTrackballHudBlockRadius();
 
 /**
  * @brief One direction label outside the trackball reveal's ring, such as "+Hue": a small
- * dark rounded pill sized to its text.
+ * dark rounded pill sized to its text, which scripts read from its "trackballPillText" property.
  **/
 class ColorTrackballPill
     : public QWidget {

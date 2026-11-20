@@ -386,7 +386,7 @@ TEST_P(LiveSessionConvergenceTest, ConcurrentRandomEditsConverge)
     expectChecksumsMatch();
 }
 
-INSTANTIATE_TEST_SUITE_P(Seeds, LiveSessionConvergenceTest, ::testing::Range(1u, 21u));
+INSTANTIATE_TEST_CASE_P(Seeds, LiveSessionConvergenceTest, ::testing::Range(1u, 21u));
 
 class LiveSessionDeleteVersusEditTest
     : public LiveSessionConvergenceTest {

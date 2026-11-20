@@ -822,6 +822,20 @@ private:
     std::shared_ptr<PythonNodeLayout> _after;
 };
 
+// A linked dimension is left alone: clearing it would clear the knobs it is linked to.
+void
+clearUnlinkedExpressions(const KnobIPtr& knob)
+{
+    if (!knob) {
+        return;
+    }
+    for (int i = 0; i < knob->getDimension(); ++i) {
+        if (!knob->isLinked(i) && !knob->getExpression(i).empty()) {
+            knob->clearExpression(i, true);
+        }
+    }
+}
+
 } // anon namespace
 
 //================================================================
@@ -855,6 +869,11 @@ struct PythonUserKnobs {
             if ((*it)->isUserKnob() && !(*it)->isDeclaredByPlugin()) {
                 userKnobs.push_back(*it);
             }
+        }
+        // While every one of them is still on the node: one deleted after another it reads would
+        // unregister from a knob without a holder.
+        for (std::list<KnobIWPtr>::const_iterator it = userKnobs.begin(); it != userKnobs.end(); ++it) {
+            clearUnlinkedExpressions(it->lock());
         }
         node.deleteUserKnobs(userKnobs);
         node.restoreUserKnobs(serialization);
@@ -982,6 +1001,17 @@ struct UserKnobDependentStates {
         return ret;
     }
 
+    // Before the user knobs are rebuilt, while the ones these knobs read are still on the node.
+    void clearExpressions() const
+    {
+        for (std::size_t d = 0; d < dependents.size(); ++d) {
+            KnobIPtr knob = dependents[d].knob.lock();
+            if (knob && (knob->getDimension() == (int)dependents[d].expressions.size())) {
+                clearUnlinkedExpressions(knob);
+            }
+        }
+    }
+
     void apply(const Node& node) const
     {
         EffectInstancePtr effect = node.getEffectInstance();
@@ -1059,6 +1089,7 @@ public:
     {
         NodePtr node = _node.lock();
         if (node) {
+            _beforeDependents->clearExpressions();
             _before->apply(*node);
             _beforeDependents->apply(*node);
         }
@@ -1068,6 +1099,7 @@ public:
     {
         NodePtr node = _node.lock();
         if (node) {
+            _afterDependents->clearExpressions();
             _after->apply(*node);
             _afterDependents->apply(*node);
         }

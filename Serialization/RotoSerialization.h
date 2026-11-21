@@ -94,6 +94,8 @@ struct BezierCPSerialization {
         , trackFrozenY(0.)
     {
     }
+
+    bool operator==(const BezierCPSerialization&) const = default;
 };
 
 /**
@@ -164,6 +166,8 @@ struct RotoStrokeCurvesSerialization {
     CurveSerialization xCurve;
     CurveSerialization yCurve;
     CurveSerialization pressureCurve;
+
+    bool operator==(const RotoStrokeCurvesSerialization&) const = default;
 };
 
 /**

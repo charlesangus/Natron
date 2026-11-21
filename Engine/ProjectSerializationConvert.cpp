@@ -354,6 +354,7 @@ Project::toSerialization(Serialization::ProjectSerialization* serialization) con
 
     nodesToSerialization(&serialization->nodes);
     serialization->templates = _imp->templateImports;
+    serialization->mergeConflicts = _imp->mergeConflicts;
 
     std::list<Format> additionalFormats;
     getAdditionalFormats(&additionalFormats);
@@ -455,6 +456,7 @@ ProjectPrivate::restoreFromSerialization(const Serialization::ProjectSerializati
         projectId = serialization.projectId;
     }
     templateImports = serialization.templates;
+    mergeConflicts = serialization.mergeConflicts;
 
     std::list<Format> serializedAdditionalFormats;
     for (std::list<Serialization::FormatSerialization>::const_iterator it = serialization.additionalFormats.begin(); it != serialization.additionalFormats.end(); ++it) {

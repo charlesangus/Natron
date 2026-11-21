@@ -657,6 +657,12 @@ Project::loadProjectInternal(const QString& path,
     for (const std::string& warning : warnings) {
         addLoadWarning(QString::fromUtf8(warning.c_str()));
     }
+    const std::size_t conflictCount = projectSerialization.mergeConflicts.size();
+    if (conflictCount == 1) {
+        addLoadWarning(tr("1 unresolved merge conflict"));
+    } else if (conflictCount > 1) {
+        addLoadWarning(tr("%1 unresolved merge conflicts").arg(conflictCount));
+    }
 
     const Serialization::BundleManifest& manifest = bundle->manifest();
     projectSerialization.creationDate = manifest.creationDate;
@@ -1446,6 +1452,18 @@ Project::setTemplateImport(const Serialization::TemplateImportSerialization& ent
         }
     }
     _imp->templateImports.push_back(entry);
+}
+
+const std::vector<Serialization::MergeConflict>&
+Project::getMergeConflicts() const
+{
+    return _imp->mergeConflicts;
+}
+
+void
+Project::setMergeConflicts(const std::vector<Serialization::MergeConflict>& conflicts)
+{
+    _imp->mergeConflicts = conflicts;
 }
 
 void
@@ -3751,6 +3769,7 @@ Project::doResetEnd(bool aboutToQuit)
     _imp->runOnProjectCloseCallback();
     _imp->projectId = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
     _imp->templateImports.clear();
+    _imp->mergeConflicts.clear();
 
     QString lockFilePath = getLockAbsoluteFilePath();
     QString projectPath = QString::fromUtf8( _imp->getProjectPath().c_str() );

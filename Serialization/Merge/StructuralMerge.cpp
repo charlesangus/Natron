@@ -70,7 +70,8 @@ namespace MergeDetail {
             return result;
         }
 
-        // Whether a side changed a base node in a way a delete must not drop: its knobs or its inputs.
+        // Whether a side changed a base node in a way a delete must not drop: its knobs, roto items,
+        // tracks or inputs.
         // Names, labels, positions, sizes and colours do not count.
         bool
         changedFromBase(const MergeContext& context,
@@ -82,7 +83,7 @@ namespace MergeDetail {
             const MergeGraph::Node& baseNode = *context.base.find(baseId);
             const MergeGraph::Node& sideNode = *graph.find(sideId);
             const NodeRenames names = sideNames(context.base, graph, theirs ? context.plan.baseToTheirs.baseToOther : context.plan.baseToMine.baseToOther);
-            if (!sameKnobs(renamedKnobs(*baseNode.node, names), sideNode.node->knobs)) {
+            if (!sameKnobs(renamedKnobs(*baseNode.node, names), sideNode.node->knobs) || !sameNodeContent(*baseNode.node, *sideNode.node)) {
                 return true;
             }
 

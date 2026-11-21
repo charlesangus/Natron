@@ -20,27 +20,23 @@
 #include "Serialization/Merge/MergeHandler.h"
 
 #include <algorithm>
+#include <set>
 #include <tuple>
+
+#include "Serialization/Merge/MergeRules.h"
 
 NATRON_NAMESPACE_ENTER
 namespace Serialization {
 
+using MergeDetail::dimensionState;
+using MergeDetail::knobNamed;
+using MergeDetail::knobsByName;
+using MergeDetail::Pick;
+using MergeDetail::pick;
+
 namespace {
 
     typedef std::tuple<std::optional<std::list<CurveSerialization>>, std::optional<std::map<int, std::string>>, std::optional<std::string>> KnobExtras;
-
-    std::optional<KnobDimensionSerialization>
-    dimensionState(const KnobSerialization* knob,
-                   std::size_t index)
-    {
-        if (!knob || (index >= knob->dimensions.size()) || isDefaultDimension(knob->dimensions[index])) {
-            return std::nullopt;
-        }
-        KnobDimensionSerialization state = knob->dimensions[index];
-        state.defaultValue.reset();
-
-        return state;
-    }
 
     KnobExtras
     extrasOf(const KnobSerialization* knob)
@@ -67,31 +63,6 @@ namespace {
         return count;
     }
 
-    enum class Pick {
-        eMine,
-        eTheirs,
-        eConflict,
-    };
-
-    template <typename T>
-    Pick
-    pick(const T& base,
-         const T& mine,
-         const T& theirs)
-    {
-        if (mine == theirs) {
-            return Pick::eMine;
-        }
-        if (mine == base) {
-            return Pick::eTheirs;
-        }
-        if (theirs == base) {
-            return Pick::eMine;
-        }
-
-        return Pick::eConflict;
-    }
-
     KnobDimensionSerialization
     defaultDimension(const KnobSerialization& frame,
                      std::size_t index,
@@ -109,9 +80,138 @@ namespace {
         return dimension;
     }
 
+    MergeConflictValue
+    valueOf(const KnobSerialization* knob)
+    {
+        MergeConflictValue value;
+        if (knob) {
+            value.knob = *knob;
+        }
+
+        return value;
+    }
+
+    MergeConflict
+    valueConflict(const std::string& name,
+                  int dimension,
+                  const KnobSerialization* base,
+                  const KnobSerialization* mine,
+                  const KnobSerialization* theirs)
+    {
+        MergeConflict conflict;
+        conflict.kind = MergeConflictKind::eValue;
+        conflict.knob = name;
+        conflict.dimension = dimension;
+        conflict.base = valueOf(base);
+        conflict.mine = valueOf(mine);
+        conflict.theirs = valueOf(theirs);
+
+        return conflict;
+    }
+
+    void
+    addKeyConflicts(const std::string& name,
+                    int dimension,
+                    const std::vector<CurveKeyConflict>& keys,
+                    std::vector<MergeConflict>* conflicts)
+    {
+        for (const CurveKeyConflict& key : keys) {
+            MergeConflict conflict;
+            conflict.kind = MergeConflictKind::eCurveKey;
+            conflict.knob = name;
+            conflict.dimension = dimension;
+            conflict.time = key.time;
+            conflict.base.key = key.base;
+            conflict.mine.key = key.mine;
+            conflict.theirs.key = key.theirs;
+            conflicts->push_back(conflict);
+        }
+    }
+
+    // Parametric curves merge one by one only when no side added or removed a curve, since a
+    // curve is known by its index alone.
+    bool
+    mergeParametricCurves(const KnobSerialization* base,
+                          const KnobSerialization* mine,
+                          const KnobSerialization* theirs,
+                          std::list<CurveSerialization>* merged,
+                          std::vector<MergeConflict>* conflicts)
+    {
+        if (!mine || !theirs || !mine->parametricCurves || !theirs->parametricCurves) {
+            return false;
+        }
+        const std::size_t count = mine->parametricCurves->size();
+        if ((theirs->parametricCurves->size() != count) || (base && base->parametricCurves && (base->parametricCurves->size() != count))) {
+            return false;
+        }
+        const std::list<CurveSerialization> none(count);
+        const std::list<CurveSerialization>& baseCurves = (base && base->parametricCurves) ? *base->parametricCurves : none;
+        std::list<CurveSerialization>::const_iterator b = baseCurves.begin();
+        std::list<CurveSerialization>::const_iterator m = mine->parametricCurves->begin();
+        std::list<CurveSerialization>::const_iterator t = theirs->parametricCurves->begin();
+        merged->clear();
+        for (int index = 0; m != mine->parametricCurves->end(); ++b, ++m, ++t, ++index) {
+            std::vector<CurveKeyConflict> keys;
+            merged->push_back(mergeCurves(*b, *m, *t, &keys));
+            addKeyConflicts(mine->name, index, keys, conflicts);
+        }
+
+        return true;
+    }
+
+    KnobDimensionSerialization
+    withoutAnimation(const std::optional<KnobDimensionSerialization>& dimension)
+    {
+        KnobDimensionSerialization result = dimension ? *dimension : KnobDimensionSerialization();
+        result.curve.reset();
+        result.value.reset();
+        result.defaultValue.reset();
+
+        return result;
+    }
+
 } // namespace
 
+namespace MergeDetail {
+
+    std::optional<KnobDimensionSerialization>
+    dimensionState(const KnobSerialization* knob,
+                   std::size_t index)
+    {
+        if (!knob || (index >= knob->dimensions.size()) || isDefaultDimension(knob->dimensions[index])) {
+            return std::nullopt;
+        }
+        KnobDimensionSerialization state = knob->dimensions[index];
+        state.defaultValue.reset();
+
+        return state;
+    }
+
+    std::map<std::string, const KnobSerialization*>
+    knobsByName(const std::list<KnobSerialization>& knobs)
+    {
+        std::map<std::string, const KnobSerialization*> result;
+        for (const KnobSerialization& knob : knobs) {
+            result.emplace(knob.name, &knob);
+        }
+
+        return result;
+    }
+
+    const KnobSerialization*
+    knobNamed(const std::map<std::string, const KnobSerialization*>& knobs,
+              const std::string& name)
+    {
+        std::map<std::string, const KnobSerialization*>::const_iterator found = knobs.find(name);
+
+        return (found == knobs.end()) ? nullptr : found->second;
+    }
+
+} // namespace MergeDetail
+
 KnobMergeHandler::~KnobMergeHandler() = default;
+
+NodeMergeHandler::~NodeMergeHandler() = default;
 
 bool
 isDefaultDimension(const KnobDimensionSerialization& dimension)
@@ -152,6 +252,40 @@ sameKnobState(const KnobSerialization* a,
     return extrasOf(a) == extrasOf(b);
 }
 
+bool
+sameKnobLists(const std::list<KnobSerialization>& a,
+              const std::list<KnobSerialization>& b)
+{
+    const std::map<std::string, const KnobSerialization*> left = knobsByName(a);
+    const std::map<std::string, const KnobSerialization*> right = knobsByName(b);
+    for (const std::pair<const std::string, const KnobSerialization*>& entry : left) {
+        if (!sameKnobState(entry.second, knobNamed(right, entry.first))) {
+            return false;
+        }
+    }
+    for (const std::pair<const std::string, const KnobSerialization*>& entry : right) {
+        if (!left.count(entry.first) && !sameKnobState(nullptr, entry.second)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool
+sameNodeContent(const NodeSerialization& a,
+                const NodeSerialization& b)
+{
+    if ((a.hasRotoContext != b.hasRotoContext) || (a.hasTrackerContext != b.hasTrackerContext)) {
+        return false;
+    }
+    if (a.hasRotoContext && !MergeDetail::sameRotoContexts(a.rotoContext, b.rotoContext)) {
+        return false;
+    }
+
+    return !a.hasTrackerContext || MergeDetail::sameTrackerContexts(a.trackerContext, b.trackerContext);
+}
+
 void
 ScalarKnobMergeHandler::merge(const KnobSerialization* base,
                               const KnobSerialization* mine,
@@ -171,32 +305,143 @@ ScalarKnobMergeHandler::merge(const KnobSerialization* base,
     result.dimensions.resize(count);
     for (std::size_t i = 0; i < count; ++i) {
         const Pick choice = pick(dimensionState(base, i), dimensionState(mine, i), dimensionState(theirs, i));
-        if (choice == Pick::eConflict) {
-            MergeConflict conflict;
-            conflict.kind = MergeConflictKind::eValue;
-            conflict.knob = name;
-            conflict.dimension = int(i);
-            conflicts->push_back(conflict);
-        }
         const KnobSerialization* side = (choice == Pick::eTheirs) ? theirs : mine;
         if (dimensionState(side, i)) {
             result.dimensions[i] = side->dimensions[i];
         } else {
             result.dimensions[i] = defaultDimension(*frame, i, side);
         }
+        if (choice == Pick::eConflict) {
+            std::vector<MergeConflict> finer;
+            KnobDimensionSerialization dimension = result.dimensions[i];
+            if (mergeDimension(base, mine, theirs, i, &dimension, &finer)) {
+                result.dimensions[i] = std::move(dimension);
+                conflicts->insert(conflicts->end(), finer.begin(), finer.end());
+            } else {
+                conflicts->push_back(valueConflict(name, int(i), base, mine, theirs));
+            }
+        }
     }
 
-    const Pick extras = pick(extrasOf(base), extrasOf(mine), extrasOf(theirs));
+    const KnobExtras baseExtras = extrasOf(base);
+    const KnobExtras mineExtras = extrasOf(mine);
+    const KnobExtras theirsExtras = extrasOf(theirs);
+    const Pick extras = pick(baseExtras, mineExtras, theirsExtras);
+    std::tie(result.parametricCurves, result.stringAnimation, result.choiceOptionID) = (extras == Pick::eTheirs) ? theirsExtras : mineExtras;
     if (extras == Pick::eConflict) {
-        MergeConflict conflict;
-        conflict.kind = MergeConflictKind::eValue;
-        conflict.knob = name;
-        conflicts->push_back(conflict);
+        const bool onlyCurves = (pick(std::get<1>(baseExtras), std::get<1>(mineExtras), std::get<1>(theirsExtras)) != Pick::eConflict)
+            && (pick(std::get<2>(baseExtras), std::get<2>(mineExtras), std::get<2>(theirsExtras)) != Pick::eConflict);
+        std::list<CurveSerialization> curves;
+        std::vector<MergeConflict> finer;
+        if (onlyCurves && mergeParametricCurves(base, mine, theirs, &curves, &finer)) {
+            result.parametricCurves = std::move(curves);
+            result.stringAnimation = (pick(std::get<1>(baseExtras), std::get<1>(mineExtras), std::get<1>(theirsExtras)) == Pick::eTheirs) ? std::get<1>(theirsExtras) : std::get<1>(mineExtras);
+            result.choiceOptionID = (pick(std::get<2>(baseExtras), std::get<2>(mineExtras), std::get<2>(theirsExtras)) == Pick::eTheirs) ? std::get<2>(theirsExtras) : std::get<2>(mineExtras);
+            conflicts->insert(conflicts->end(), finer.begin(), finer.end());
+        } else {
+            conflicts->push_back(valueConflict(name, -1, base, mine, theirs));
+        }
     }
-    std::tie(result.parametricCurves, result.stringAnimation, result.choiceOptionID) = extrasOf((extras == Pick::eTheirs) ? theirs : mine);
 
     if (!isDefaultKnob(result)) {
         *merged = std::move(result);
+    }
+}
+
+bool
+ScalarKnobMergeHandler::mergeDimension(const KnobSerialization* base,
+                                       const KnobSerialization* mine,
+                                       const KnobSerialization* theirs,
+                                       std::size_t index,
+                                       KnobDimensionSerialization* merged,
+                                       std::vector<MergeConflict>* conflicts) const
+{
+    const std::optional<KnobDimensionSerialization> b = dimensionState(base, index);
+    const std::optional<KnobDimensionSerialization> m = dimensionState(mine, index);
+    const std::optional<KnobDimensionSerialization> t = dimensionState(theirs, index);
+    if (!m || !t || !m->curve || !t->curve) {
+        return false;
+    }
+    // A string knob's animation lives in its string table, which the curve's key values index.
+    for (const KnobSerialization* knob : { base, mine, theirs }) {
+        if (knob && knob->stringAnimation) {
+            return false;
+        }
+    }
+    const Pick rest = pick(withoutAnimation(b), withoutAnimation(m), withoutAnimation(t));
+    if (rest == Pick::eConflict) {
+        return false;
+    }
+
+    std::vector<CurveKeyConflict> keys;
+    const CurveSerialization none;
+    CurveSerialization curve = mergeCurves((b && b->curve) ? *b->curve : none, *m->curve, *t->curve, &keys);
+    *merged = (rest == Pick::eTheirs) ? theirs->dimensions[index] : mine->dimensions[index];
+    merged->curve = std::move(curve);
+    addKeyConflicts(mine->name, int(index), keys, conflicts);
+
+    return true;
+}
+
+std::list<KnobSerialization>
+mergeKnobLists(const MergeHandlerRegistry& handlers,
+               const std::string& pluginID,
+               const std::list<KnobSerialization>* base,
+               const std::list<KnobSerialization>& mine,
+               const std::list<KnobSerialization>& theirs,
+               std::vector<MergeConflict>* conflicts)
+{
+    const std::list<KnobSerialization> none;
+    const std::map<std::string, const KnobSerialization*> baseKnobs = knobsByName(base ? *base : none);
+    const std::map<std::string, const KnobSerialization*> mineKnobs = knobsByName(mine);
+    const std::map<std::string, const KnobSerialization*> theirsKnobs = knobsByName(theirs);
+
+    std::vector<std::string> names;
+    std::set<std::string> seen;
+    for (const std::list<KnobSerialization>* list : { &mine, &theirs, base ? base : &none }) {
+        for (const KnobSerialization& knob : *list) {
+            if (seen.insert(knob.name).second) {
+                names.push_back(knob.name);
+            }
+        }
+    }
+
+    std::list<KnobSerialization> result;
+    for (const std::string& name : names) {
+        const KnobSerialization* b = knobNamed(baseKnobs, name);
+        const KnobSerialization* m = knobNamed(mineKnobs, name);
+        const KnobSerialization* t = knobNamed(theirsKnobs, name);
+        const KnobSerialization* any = m ? m : (t ? t : b);
+        std::optional<KnobSerialization> merged;
+        handlers.handlerFor(pluginID, any->typeName).merge(b, m, t, &merged, conflicts);
+        if (merged) {
+            result.push_back(std::move(*merged));
+        }
+    }
+
+    return result;
+}
+
+void
+ContentNodeMergeHandler::merge(const NodeSerialization* base,
+                               const NodeSerialization& theirs,
+                               const MergeHandlerRegistry& handlers,
+                               NodeSerialization* merged,
+                               std::vector<MergeConflict>* conflicts) const
+{
+    if (merged->hasRotoContext && theirs.hasRotoContext) {
+        const RotoContextSerialization* baseRoto = (base && base->hasRotoContext) ? &base->rotoContext : nullptr;
+        merged->rotoContext = mergeRotoContexts(baseRoto, merged->rotoContext, theirs.rotoContext, handlers, conflicts);
+    } else if (!merged->hasRotoContext && theirs.hasRotoContext && !(base && base->hasRotoContext)) {
+        merged->hasRotoContext = true;
+        merged->rotoContext = theirs.rotoContext;
+    }
+    if (merged->hasTrackerContext && theirs.hasTrackerContext) {
+        const TrackerContextSerialization* baseTracker = (base && base->hasTrackerContext) ? &base->trackerContext : nullptr;
+        merged->trackerContext = mergeTrackerContexts(baseTracker, merged->trackerContext, theirs.trackerContext, handlers, conflicts);
+    } else if (!merged->hasTrackerContext && theirs.hasTrackerContext && !(base && base->hasTrackerContext)) {
+        merged->hasTrackerContext = true;
+        merged->trackerContext = theirs.trackerContext;
     }
 }
 
@@ -204,7 +449,10 @@ MergeHandlerRegistry::MergeHandlerRegistry()
     : _byPlugin()
     , _byKind()
     , _scalar(std::make_shared<ScalarKnobMergeHandler>())
+    , _nodeByPlugin()
+    , _content(std::make_shared<ContentNodeMergeHandler>())
 {
+    _byKind["String"] = std::make_shared<TextKnobMergeHandler>();
 }
 
 void
@@ -221,6 +469,13 @@ MergeHandlerRegistry::setKindHandler(const std::string& typeName,
     _byKind[typeName] = std::move(handler);
 }
 
+void
+MergeHandlerRegistry::setNodeHandler(const std::string& pluginID,
+                                     std::shared_ptr<const NodeMergeHandler> handler)
+{
+    _nodeByPlugin[pluginID] = std::move(handler);
+}
+
 const KnobMergeHandler&
 MergeHandlerRegistry::handlerFor(const std::string& pluginID,
                                  const std::string& typeName) const
@@ -235,6 +490,14 @@ MergeHandlerRegistry::handlerFor(const std::string& pluginID,
     }
 
     return *_scalar;
+}
+
+const NodeMergeHandler&
+MergeHandlerRegistry::nodeHandlerFor(const std::string& pluginID) const
+{
+    std::map<std::string, std::shared_ptr<const NodeMergeHandler>>::const_iterator found = _nodeByPlugin.find(pluginID);
+
+    return (found == _nodeByPlugin.end()) ? *_content : *found->second;
 }
 
 const MergeHandlerRegistry&

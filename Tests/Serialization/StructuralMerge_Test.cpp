@@ -122,7 +122,7 @@ TEST(StructuralMerge, NodeExistence)
     };
     for (const ExistenceCase& c : cases) {
         SCOPED_TRACE(c.name);
-        Scenario scenario = scenarios().at("keyframes-both-sides");
+        Scenario scenario = templateScenario();
         c.editGraphs(&scenario);
         Projects projects(scenario);
         c.editProjects(&projects);
@@ -144,7 +144,7 @@ TEST(StructuralMerge, NodeExistence)
 
 TEST(StructuralMerge, ARestoredNodeTakesTheirsStateAndWiring)
 {
-    Scenario scenario = scenarios().at("keyframes-both-sides");
+    Scenario scenario = templateScenario();
     scenario.mine.remove("Grade1");
     scenario.mine.get("Blur1").inputs["Source"] = "TplIn";
     scenario.theirs.set("Grade1", "gamma", { 1.2 });
@@ -229,7 +229,7 @@ TEST(StructuralMerge, MovesIntoDifferentGroupsConflictAndKeepMine)
 
 TEST(StructuralMerge, NamesAreUniqueWithinTheirGroup)
 {
-    Scenario scenario = scenarios().at("keyframes-both-sides");
+    Scenario scenario = templateScenario();
     wrapIntoGroup(&scenario.mine, "ArtistLook", "m:", false);
     scenario.theirs.add("LookOut", "Output", "t:LookOut");
     const Serialization::MergeResult result = Projects(scenario).merge();
@@ -239,7 +239,7 @@ TEST(StructuralMerge, NamesAreUniqueWithinTheirGroup)
     EXPECT_EQ(added->origin.nodeId, hexId("t:LookOut"));
     EXPECT_TRUE(nodeAt(result.merged, "LookOut2") == nullptr);
 
-    Scenario clash = scenarios().at("keyframes-both-sides");
+    Scenario clash = templateScenario();
     clash.mine.add("Blur2", "Blur", "m:Blur2");
     clash.theirs.add("Blur2", "Blur", "t:Blur2");
     const Serialization::MergeResult renamed = Projects(clash).merge();
@@ -254,7 +254,7 @@ TEST(StructuralMerge, NamesAreUniqueWithinTheirGroup)
 TEST(StructuralMerge, IdenticalAdditionsOnBothSidesGiveOneNode)
 {
     {
-        Scenario scenario = scenarios().at("keyframes-both-sides");
+        Scenario scenario = templateScenario();
         insertBefore(&scenario.mine, "ShotGrade", "Grade", "m:new", "TplOut", "");
         insertBefore(&scenario.theirs, "TplGrade", "Grade", "t:new", "TplOut", "");
         const Serialization::MergeResult result = Projects(scenario).merge();
@@ -266,7 +266,7 @@ TEST(StructuralMerge, IdenticalAdditionsOnBothSidesGiveOneNode)
         EXPECT_EQ(inputOf(result.merged, "TplOut", ""), "ShotGrade");
     }
     {
-        Scenario scenario = scenarios().at("keyframes-both-sides");
+        Scenario scenario = templateScenario();
         wrapIntoGroup(&scenario.mine, "ArtistLook", "m:", false);
         wrapIntoGroup(&scenario.theirs, "Look", "t:", false);
         const Serialization::MergeResult result = Projects(scenario).merge();
@@ -280,7 +280,7 @@ TEST(StructuralMerge, IdenticalAdditionsOnBothSidesGiveOneNode)
 
 TEST(StructuralMerge, NamesLabelsAndAppearanceNeverConflict)
 {
-    Scenario scenario = scenarios().at("keyframes-both-sides");
+    Scenario scenario = templateScenario();
     scenario.mine.rename("Grade1", "KeyGrade");
     scenario.theirs.rename("Grade1", "TplGrade");
     Projects projects(scenario);
@@ -304,7 +304,7 @@ TEST(StructuralMerge, NamesLabelsAndAppearanceNeverConflict)
 
 TEST(StructuralMerge, ASupervisorRenameFollowsTheMatchIntoInputsAndExpressions)
 {
-    Scenario scenario = scenarios().at("keyframes-both-sides");
+    Scenario scenario = templateScenario();
     for (SimGraph* graph : { &scenario.base, &scenario.mine, &scenario.theirs }) {
         graph->expression("ColorCorrect1", "saturation", "Grade1.multiply.getValue(0)");
     }
@@ -327,12 +327,7 @@ TEST(StructuralMerge, EveryScenarioListsTheExpectedConflicts)
         const Serialization::MergeGraph base(projects.base);
         for (const ExpectedMerge& merge : readExpected(std::string(NATRON_TESTS_FIXTURES_DIR) + "/merge-scenarios/expected/" + scenario.first + ".yaml")) {
             SCOPED_TRACE(scenario.first + " [" + merge.templateKey + "]");
-            std::set<ExpectedConflict> expected;
-            for (const ExpectedConflict& conflict : merge.conflicts) {
-                if ((conflict.kind != "curve-key") && (conflict.kind != "roto-shape")) {
-                    expected.insert(conflict);
-                }
-            }
+            const std::set<ExpectedConflict>& expected = merge.conflicts;
             std::set<ExpectedConflict> got;
             for (const Serialization::MergeConflict& conflict : projects.merge(merge.templateKey).conflicts) {
                 ExpectedConflict entry;
@@ -341,13 +336,20 @@ TEST(StructuralMerge, EveryScenarioListsTheExpectedConflicts)
                 entry.kind = std::string(Serialization::mergeConflictKindName(conflict.kind));
                 entry.knob = conflict.knob;
                 entry.dimension = conflict.dimension;
+                entry.time = conflict.time;
+                entry.item = conflict.item;
                 entry.input = conflict.input;
+                entry.defaulted = conflict.defaultedKnobs;
                 got.insert(entry);
             }
             EXPECT_TRUE(got == expected) << [&] {
                 std::string text = "got:";
                 for (const ExpectedConflict& c : got) {
-                    text += " {" + c.node + " " + c.kind + " " + c.knob + " " + std::to_string(c.dimension) + " " + c.input + "}";
+                    text += " {" + c.node + " " + c.kind + " " + c.knob + " " + std::to_string(c.dimension) + " " + (c.time ? std::to_string(*c.time) : std::string()) + " " + c.item + " " + c.input;
+                    for (const std::string& knob : c.defaulted) {
+                        text += " " + knob;
+                    }
+                    text += "}";
                 }
 
                 return text;

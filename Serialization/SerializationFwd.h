@@ -43,6 +43,7 @@ struct KnobMasterSerialization;
 struct KnobSerialization;
 struct LayerRegistryEntrySerialization;
 struct LayerSerialization;
+struct MergeConflict;
 struct NodeCollectionSerialization;
 struct NodeOriginSerialization;
 struct NodeSerialization;

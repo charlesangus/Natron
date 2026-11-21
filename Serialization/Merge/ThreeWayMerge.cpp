@@ -27,10 +27,14 @@
 #include <tuple>
 
 #include "Serialization/Merge/MergePrivate.h"
+#include "Serialization/Merge/MergeRules.h"
 #include "Serialization/Merge/MergeScope.h"
 
 NATRON_NAMESPACE_ENTER
 namespace Serialization {
+
+using MergeDetail::knobNamed;
+using MergeDetail::knobsByName;
 
 namespace {
 
@@ -100,76 +104,6 @@ namespace {
         NodeRenames _renames;
         std::set<std::string> _ambiguous;
     };
-
-    std::map<std::string, const KnobSerialization*>
-    knobsByName(const std::list<KnobSerialization>& knobs)
-    {
-        std::map<std::string, const KnobSerialization*> result;
-        for (const KnobSerialization& knob : knobs) {
-            result.emplace(knob.name, &knob);
-        }
-
-        return result;
-    }
-
-    const KnobSerialization*
-    knobNamed(const std::map<std::string, const KnobSerialization*>& knobs,
-              const std::string& name)
-    {
-        std::map<std::string, const KnobSerialization*>::const_iterator found = knobs.find(name);
-
-        return (found == knobs.end()) ? nullptr : found->second;
-    }
-
-    template <typename T>
-    void
-    takeChanged(const T& base,
-                T* mine,
-                const T& theirs)
-    {
-        if (*mine == base) {
-            *mine = theirs;
-        }
-    }
-
-    std::list<KnobSerialization>
-    mergeKnobLists(const MergeDetail::MergeContext& context,
-                   const std::string& pluginID,
-                   const std::list<KnobSerialization>* base,
-                   const std::list<KnobSerialization>& mine,
-                   const std::list<KnobSerialization>& theirs,
-                   std::vector<MergeConflict>* conflicts)
-    {
-        const std::list<KnobSerialization> none;
-        const std::map<std::string, const KnobSerialization*> baseKnobs = knobsByName(base ? *base : none);
-        const std::map<std::string, const KnobSerialization*> mineKnobs = knobsByName(mine);
-        const std::map<std::string, const KnobSerialization*> theirsKnobs = knobsByName(theirs);
-
-        std::vector<std::string> names;
-        std::set<std::string> seen;
-        for (const std::list<KnobSerialization>* list : { &mine, &theirs, base ? base : &none }) {
-            for (const KnobSerialization& knob : *list) {
-                if (seen.insert(knob.name).second) {
-                    names.push_back(knob.name);
-                }
-            }
-        }
-
-        std::list<KnobSerialization> result;
-        for (const std::string& name : names) {
-            const KnobSerialization* b = knobNamed(baseKnobs, name);
-            const KnobSerialization* m = knobNamed(mineKnobs, name);
-            const KnobSerialization* t = knobNamed(theirsKnobs, name);
-            const KnobSerialization* any = m ? m : (t ? t : b);
-            std::optional<KnobSerialization> merged;
-            context.handlers.handlerFor(pluginID, any->typeName).merge(b, m, t, &merged, conflicts);
-            if (merged) {
-                result.push_back(std::move(*merged));
-            }
-        }
-
-        return result;
-    }
 
     std::vector<std::string>
     defaultedKnobs(const std::list<KnobSerialization>& base,
@@ -359,20 +293,7 @@ namespace MergeDetail {
     sameKnobs(const std::list<KnobSerialization>& a,
               const std::list<KnobSerialization>& b)
     {
-        const std::map<std::string, const KnobSerialization*> left = knobsByName(a);
-        const std::map<std::string, const KnobSerialization*> right = knobsByName(b);
-        for (const std::pair<const std::string, const KnobSerialization*>& entry : left) {
-            if (!sameKnobState(entry.second, knobNamed(right, entry.first))) {
-                return false;
-            }
-        }
-        for (const std::pair<const std::string, const KnobSerialization*>& entry : right) {
-            if (!left.count(entry.first) && !sameKnobState(nullptr, entry.second)) {
-                return false;
-            }
-        }
-
-        return true;
+        return sameKnobLists(a, b);
     }
 
     NodeRenames
@@ -518,7 +439,9 @@ namespace MergeDetail {
                 base = renamedKnobs(*context->base.find(node.baseId)->node, baseNames);
             }
             std::vector<MergeConflict> conflicts;
-            node.node->knobs = mergeKnobLists(*context, node.node->pluginID, node.baseId.empty() ? nullptr : &base, node.node->knobs, theirs, &conflicts);
+            node.node->knobs = mergeKnobLists(context->handlers, node.node->pluginID, node.baseId.empty() ? nullptr : &base, node.node->knobs, theirs, &conflicts);
+            const NodeSerialization* baseNode = node.baseId.empty() ? nullptr : context->base.find(node.baseId)->node.get();
+            context->handlers.nodeHandlerFor(node.node->pluginID).merge(baseNode, *context->theirs.find(node.theirsId)->node, context->handlers, node.node.get(), &conflicts);
             for (MergeConflict& conflict : conflicts) {
                 conflict.baseNodeId = node.baseId;
                 conflict.nodeId = entry.first;
@@ -565,6 +488,9 @@ threeWayMerge(const ProjectSerialization& base,
     MergeResult result;
     result.merged = MergeDetail::assemble(&context);
     result.conflicts = std::move(context.conflicts);
+    for (MergeConflict& conflict : result.conflicts) {
+        conflict.templateKey = plan.templateKey;
+    }
 
     std::shared_ptr<ProjectSerialization> newBase = std::make_shared<ProjectSerialization>(theirs);
     newBase->templates.clear();

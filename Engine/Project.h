@@ -210,6 +210,13 @@ public:
     void setTemplateImport(const Serialization::TemplateImportSerialization& entry);
 
     /**
+     * @brief The conflicts the last update merge left unresolved, saved with the project until
+     * they are resolved. Main thread only.
+     **/
+    const std::vector<Serialization::MergeConflict>& getMergeConflicts() const;
+    void setMergeConflicts(const std::vector<Serialization::MergeConflict>& conflicts);
+
+    /**
      * @brief Writes a project file at filePath without ever leaving a partial one there:
      * writeArchive writes the whole archive to a new file in the same directory, beforeReplace
      * runs once it is complete and synced, then that file replaces filePath. When writeArchive

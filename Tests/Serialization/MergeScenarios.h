@@ -27,11 +27,13 @@
 #include <list>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <tuple>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -58,6 +60,12 @@ hexId(const std::string& label)
     return std::string(text);
 }
 
+struct SimShape {
+    std::string name;
+    std::vector<std::pair<double, double>> points;
+    double opacity = 1.;
+};
+
 struct SimNode {
     std::string name;
     std::string plugin;
@@ -66,6 +74,10 @@ struct SimNode {
     std::map<std::string, std::string> inputs;
     std::map<std::string, std::vector<double>> values;
     std::map<std::string, std::string> expressions;
+    // Knob to the (frame, value) keys of its first dimension.
+    std::map<std::string, std::map<double, double>> keys;
+    // A Roto node's shapes, in its base layer.
+    std::vector<SimShape> shapes;
     std::string originKey;
     std::string originNode;
 };
@@ -150,6 +162,76 @@ struct SimGraph {
         get(name).expressions[knob] = text;
     }
 
+    void key(const std::string& name,
+             const std::string& knob,
+             std::map<double, double> keys)
+    {
+        get(name).keys[knob] = std::move(keys);
+    }
+
+    SimShape& shape(const std::string& node,
+                    const std::string& name)
+    {
+        for (SimShape& shape : get(node).shapes) {
+            if (shape.name == name) {
+                return shape;
+            }
+        }
+        throw std::runtime_error("no shape " + name);
+    }
+
+    void addShape(const std::string& node,
+                  const std::string& name)
+    {
+        SimShape shape;
+        shape.name = name;
+        shape.points = { { 0., 0. }, { 100., 0. }, { 100., 100. }, { 0., 100. } };
+        get(node).shapes.push_back(shape);
+    }
+
+    static Natron::Serialization::CurveSerialization curveOf(const std::map<double, double>& keys)
+    {
+        Natron::Serialization::CurveSerialization curve;
+        for (const std::pair<const double, double>& entry : keys) {
+            Natron::Serialization::KeyFrameSerialization key;
+            key.time = entry.first;
+            key.value = entry.second;
+            key.interpolation = 1;
+            curve.keyframes.push_back(key);
+        }
+
+        return curve;
+    }
+
+    static Natron::Serialization::RotoLayerChildSerialization bezierOf(const SimShape& shape)
+    {
+        using namespace Natron::Serialization;
+        RotoLayerChildSerialization child;
+        child.type = eRotoLayerChildTypeBezier;
+        child.bezier.name = shape.name;
+        child.bezier.label = shape.name;
+        child.bezier.activated = true;
+        child.bezier.parentLayerName = "Layer1";
+        child.bezier.closed = true;
+        for (const std::pair<double, double>& point : shape.points) {
+            BezierCPSerialization cp;
+            cp.x = point.first;
+            cp.y = point.second;
+            child.bezier.controlPoints.push_back(cp);
+            child.bezier.featherPoints.push_back(cp);
+        }
+        KnobSerialization opacity;
+        opacity.name = "opacity";
+        opacity.typeName = "Double";
+        opacity.dimension = 1;
+        opacity.dimensions.resize(1);
+        opacity.dimensions[0].defaultValue = KnobValueSerialization(1.);
+        opacity.dimensions[0].value = KnobValueSerialization(shape.opacity);
+        child.bezier.knobs.push_back(opacity);
+
+        return child;
+    }
+
     Natron::Serialization::ProjectSerialization project() const
     {
         using namespace Natron::Serialization;
@@ -172,6 +254,9 @@ struct SimGraph {
             for (const std::pair<const std::string, std::string>& expression : sim.expressions) {
                 knobNames.insert(expression.first);
             }
+            for (const std::pair<const std::string, std::map<double, double>>& keys : sim.keys) {
+                knobNames.insert(keys.first);
+            }
             for (const std::string& knobName : knobNames) {
                 KnobSerialization knob;
                 knob.name = knobName;
@@ -188,7 +273,18 @@ struct SimGraph {
                 if (expression != sim.expressions.end()) {
                     knob.dimensions[0].expression = expression->second;
                 }
+                std::map<std::string, std::map<double, double>>::const_iterator keys = sim.keys.find(knobName);
+                if (keys != sim.keys.end()) {
+                    knob.dimensions[0].curve = curveOf(keys->second);
+                }
                 node->knobs.push_back(knob);
+            }
+            if (sim.plugin == "Roto") {
+                node->hasRotoContext = true;
+                node->rotoContext.baseLayer.name = "Layer1";
+                for (const SimShape& shape : sim.shapes) {
+                    node->rotoContext.baseLayer.children.push_back(bezierOf(shape));
+                }
             }
             made.emplace_back(node, sim.parent);
             if (sim.parent.empty()) {
@@ -239,6 +335,8 @@ templateGraph(const std::string& idPrefix,
     graph.add(n("TplOut"), "Dot", idPrefix + "TplOut", { { "", n("ColorCorrect1") } });
     if (roto) {
         graph.add(n("Matte"), "Roto", idPrefix + "Matte");
+        graph.addShape(n("Matte"), "Garbage");
+        graph.addShape(n("Matte"), "Core");
         graph.get(n("Merge1")).inputs["Mask"] = n("Matte");
     }
 
@@ -326,17 +424,24 @@ struct Scenario {
     SimGraph theirs;
 };
 
+// The template imported once as grade_tpl, with no edit on either side.
+inline Scenario
+templateScenario(bool roto = false)
+{
+    Scenario scenario;
+    scenario.base = templateGraph("b:", Names(), roto);
+    importTemplate(&scenario.mine, "m:", "grade_tpl", Names(), roto);
+    scenario.theirs = templateGraph("b:", Names(), roto);
+
+    return scenario;
+}
+
 inline std::map<std::string, Scenario>
 scenarios()
 {
     std::map<std::string, Scenario> all;
     const auto make = [](bool roto = false) {
-        Scenario scenario;
-        scenario.base = templateGraph("b:", Names(), roto);
-        importTemplate(&scenario.mine, "m:", "grade_tpl", Names(), roto);
-        scenario.theirs = templateGraph("b:", Names(), roto);
-
-        return scenario;
+        return templateScenario(roto);
     };
     {
         Scenario s = make();
@@ -420,8 +525,22 @@ scenarios()
         s.theirs.get("Merge1").inputs["A"] = "Constant2";
         all["reconnect"] = s;
     }
-    all["keyframes-both-sides"] = make();
-    all["roto-both-sides"] = make(true);
+    {
+        Scenario s = make();
+        s.base.key("Grade1", "multiply", { { 1., 1. }, { 10., 2. } });
+        s.mine.key("Grade1", "multiply", { { 1., 1. }, { 10., 2.5 }, { 20., 3. } });
+        s.theirs.key("Grade1", "multiply", { { 1., 1.2 }, { 10., 1.8 }, { 30., 0.5 } });
+        all["keyframes-both-sides"] = s;
+    }
+    {
+        Scenario s = make(true);
+        s.mine.shape("Matte", "Garbage").points[0].first = 5.;
+        s.mine.addShape("Matte", "ArtistFix");
+        s.theirs.shape("Matte", "Garbage").points[2].first = 120.;
+        s.theirs.shape("Matte", "Core").opacity = 0.5;
+        s.theirs.addShape("Matte", "Edge");
+        all["roto-both-sides"] = s;
+    }
     {
         Scenario s = make();
         insertBefore(&s.mine, "ArtistGrade", "Grade", "m:ag", "Merge1", "B");
@@ -563,16 +682,20 @@ struct ExpectedConflict {
     std::string kind;
     std::string knob;
     int dimension = -1;
+    std::optional<double> time;
+    std::string item;
     std::string input;
+    // Space-separated in the file.
+    std::vector<std::string> defaulted;
 
     bool operator<(const ExpectedConflict& other) const
     {
-        return std::tie(node, kind, knob, dimension, input) < std::tie(other.node, other.kind, other.knob, other.dimension, other.input);
+        return std::tie(node, kind, knob, dimension, time, item, input, defaulted) < std::tie(other.node, other.kind, other.knob, other.dimension, other.time, other.item, other.input, other.defaulted);
     }
 
     bool operator==(const ExpectedConflict& other) const
     {
-        return std::tie(node, kind, knob, dimension, input) == std::tie(other.node, other.kind, other.knob, other.dimension, other.input);
+        return std::tie(node, kind, knob, dimension, time, item, input, defaulted) == std::tie(other.node, other.kind, other.knob, other.dimension, other.time, other.item, other.input, other.defaulted);
     }
 };
 
@@ -644,8 +767,18 @@ readExpected(const std::string& path)
                     conflict.knob = value;
                 } else if (key == "dim") {
                     conflict.dimension = std::stoi(value);
+                } else if (key == "time") {
+                    conflict.time = std::stod(value);
+                } else if (key == "item") {
+                    conflict.item = value;
                 } else if (key == "input") {
                     conflict.input = value;
+                } else if (key == "defaulted") {
+                    std::stringstream names(value);
+                    std::string name;
+                    while (names >> name) {
+                        conflict.defaulted.push_back(name);
+                    }
                 }
             }
             merges.back().conflicts.insert(conflict);

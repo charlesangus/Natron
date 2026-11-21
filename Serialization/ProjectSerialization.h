@@ -26,9 +26,11 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "Serialization/BasicSerialization.h"
 #include "Serialization/KnobSerialization.h"
+#include "Serialization/Merge/MergeConflict.h"
 #include "Serialization/NodeSerialization.h"
 #include "Serialization/SerializationFwd.h"
 
@@ -136,6 +138,10 @@ struct ProjectSerialization {
     std::list<FormatSerialization> additionalFormats;
     std::list<LayerRegistryEntrySerialization> layers;
     std::list<TemplateImportSerialization> templates;
+
+    // The conflicts the last template merge left unresolved, kept in the bundle beside
+    // project.yaml rather than in it.
+    std::vector<MergeConflict> mergeConflicts;
     int timelineCurrentTime;
 
     // Milliseconds since the epoch.
@@ -149,6 +155,7 @@ struct ProjectSerialization {
         , additionalFormats()
         , layers()
         , templates()
+        , mergeConflicts()
         , timelineCurrentTime(0)
         , creationDate(0)
     {

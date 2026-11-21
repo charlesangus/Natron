@@ -133,3 +133,4 @@ This milestone turns Storm's in-pass highlight off and replaces it with a Natron
 - 2026-11-21 — Sign-off screenshots (m278_selection_highlight.py, c978a4373, 39 checks passed) sent to the user. PR opened, with review round 1 running.
 - 2026-11-21 — Review round 1 (#328) fixed. The beauty's colour and depth are 4x MSAA, resolved with GL_NEAREST (hdx renderSetupTask defaults; Storm's colorDepthMSAA), so the pass now matches that sampling and resolve exactly. New tests cover a 60°-tilted plane (≥95% tint coverage, pass and beauty depth within 1e-6). The pass skips itself when no task has draw items, a stale engine is detected after SetRendererPlugin, and per-frame copies are cut. Gate running, including the screenshot script.
 - 2026-11-21 — **Screenshots approved (user).** Merges once review round 1's fixes are green and PR CI passes.
+- 2026-11-21 — Merged as PR #328 (gate green on 68c10a6a4, PR CI green, screenshots approved by the user).

@@ -513,11 +513,12 @@ try:
             gmouse(QEvent.MouseMove, QPoint(start.x() + 6 * k, start.y() - 3 * k), Qt.NoButton, Qt.LeftButton)
         yield ("sleep", SETTLE_MS)
         check(not reveal_shown(), "%s: no reveal mid-stroke" % tag)
-        # Synthetic moves leave the real pointer at the press point, and the window follows the
-        # real pointer on every sync.
-        check_badges(tag + ", mid-stroke", expected, QCursor.pos(), False)
-        shoot_pointer(name, "Crosshair only, %s, mid-stroke 48 px right and 24 px up of the press" % what, QCursor.pos())
-        gmouse(QEvent.MouseButtonRelease, QPoint(start.x() + 48, start.y() - 24), Qt.LeftButton, Qt.NoButton)
+        # The window follows the stroke's moves, not the real pointer, which synthetic moves leave
+        # at the press point.
+        end = QPoint(start.x() + 48, start.y() - 24)
+        check_badges(tag + ", mid-stroke", expected, end, False)
+        shoot_pointer(name, "Crosshair only, %s, mid-stroke 48 px right and 24 px up of the press" % what, end)
+        gmouse(QEvent.MouseButtonRelease, end, Qt.LeftButton, Qt.NoButton)
         yield ("sleep", SETTLE_MS)
         after = read()
         check(after != before, "%s: the stroke edited the knob (%s -> %s)" % (tag, before, after))

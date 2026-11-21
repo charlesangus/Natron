@@ -914,7 +914,7 @@ try:
                     QCursor.setPos(graph_point() + offset)
                     yield ("sleep", 250)
                     block = hud_block()
-                    spots.append(block.frameGeometry().center() if block is not None else None)
+                    spots.append(global_rect(block).center() if block is not None else None)
                 check(all(s is not None for s in spots) and (spots[0] - spots[1]).manhattanLength() > 300,
                       "the hint block follows the pointer (%s, %s)" % (spots[0], spots[1]))
                 lines = block.property("trackballHudLines") if block is not None else None

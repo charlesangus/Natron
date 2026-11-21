@@ -241,3 +241,4 @@ The git-driver test passes. Full ctest, smoke and CI are green.
   - natron-merge goes into the AppImage at F33's ship.
 
   Gate running (P4.T3).
+- 2026-11-21 — The P4.T3 gate failures were in the tests: whole-number values read back from bundles as ints, a defaulted knob diffing as `default → 1.5`, and the API comparison made on in-memory projects rather than the bundles the CLI reads. Fixed in db81e2ba8. **PM call:** knobs read from a bundle have no typeName, so a knob holding multi-line text uses the line-merging handler; single-line strings, choices included, stay scalar. The diff keeps printing `default`, because the standalone CLI has no plugin defaults. Re-gating.

@@ -27,7 +27,7 @@ Notes from M327 - Heavy Scene Spike (2026-11-07), see `PLAN/DESIGN/2026-11-07-he
 
 ## Phase 336.1: Budgets
 
-- [ ] M336.P1.T1 — End-to-end budget run
+- [x] M336.P1.T1 — End-to-end budget run
   - files: `tools/bench/heavy_scene_bench.py`, `tools/bench/README.md`
   - approach: add a scenario chaining the whole workflow on both fixtures: open, twirl into a payload, set Full on one asset, Full + Load on a block, add a pattern node, switch to another node, select in the inspector, save, reopen. Run on a stripped release build on a GPU host and record the JSON under `## Phase 336.4: Bounded fill
 
@@ -262,3 +262,9 @@ From the first valid baseline (VM, cloud-gpu-20261117T045608Z) and its sampled I
   - **Latest commit:** a split inserts the new splitter in place first, so GL widgets never leave the window. Floating-pane splits still detach (FloatingWidget::takeWidget); that's a follow-up.
 
   Gate running, then round 15.
+- 2026-11-21 — **Ship it (user): "don't worry about small residual misses, I want to get it shipping. Finish up what's in progress and fix bugs only."**
+  - Round 14's remaining budget misses are accepted, and P1.T1 is closed on round 14.
+  - P3.T7 closes once its in-progress fixes (f7856e0d7, dd577db69, c46c7ed61) pass the gate, whatever the reopen budget.
+  - No VM round 15 and no new performance work; only bugs get fixed.
+  - Then: PR into F4, one review round (bugs only), merge. P2.T1's real-scene UAT happens at F4's UAT.
+

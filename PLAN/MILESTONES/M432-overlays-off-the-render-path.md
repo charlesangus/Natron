@@ -120,3 +120,9 @@ Scouted 2026-11-14 on `origin/main`:
   - Seen, not touched: key repeat never fills its node list, so overlays get no key-repeat events (predates this milestone).
 - 2026-11-17 — **Mix and overlays (user):** a transform with mix above 0 affects overlays the same as at mix 1; only mix 0 leaves them unmoved. Overlays take the node's transform through an overlay-only query, so render concatenation still refuses a partly mixed transform.
 - 2026-11-18 — Gate 44232092416 green apart from the known MoonRay live-texture exit hang (fix in flight). PR #312 to main, in review. UAT AppImage build/appimages/Natron-m432-overlays-off-the-render-path.{AppImage,md}; screenshots sent.
+- 2026-11-21 — **UAT round 1 (user):**
+  1. Only the active viewer pipe or input counts. Today it seems to consider all pipes, which confuses the display and shows it wrong.
+  2. The text overlay drawn by Roto's AI segmentation tool doesn't get the right transforms.
+  3. Handles don't follow the main/B input of, for example, a Merge.
+
+  Fixes being implemented; the AppImage is rebuilt for round 2.

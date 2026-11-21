@@ -637,6 +637,15 @@ future core work has solid ground to build on.
 
 # Open questions
 
+- **F7 - Natron Utility Core UAT round 1 (user, 2026-11-21):**
+  1. No reflective or refractive materials in this build.
+  2. Performance is so-so: what can be done?
+  3. Motion blur: shouldn't need many samples to avoid steppy blur. Any enabled motion blur interpolates between temporal samples by shutter segments; the default is 1 segment (previous frame → this one → next), with rays distributed in time.
+  4. Crashed on an AMD card rendering Island.
+  5. Island failed on the AMD GPU host: more instances than the 2^24 a ray query can tell apart.
+  6. Consider a GPU shader or rasteriser renderer for maximum speed in simple setups (mostly projections with motion blur); to discuss, probably a follow-up.
+
+  Fixes for 1–5 are being investigated on the F7 branch.
 - **`Project.importTemplate` Python binding, for /cat-plan (PM, 2026-11-21, from M103 - Graph Diff And Merge):** unassigned; deferred from M103. M104 - Merge Resolution UI owns the GUI and undo for template import.
 - **M278 - Translucent Selection Highlight (PM, 2026-11-21):** five sign-off screenshots of selection highlighting sent (files in .worktrees/m278/build/remote/release/gui/m278_selection_highlight/). OK them, or say what to change, including whether the display-colour tint is right.
 - **Deleted-knob listener dependencies, for /cat-plan as an E14 - Architecture stub (PM, 2026-11-20, from M372 - User Knob Engine Edits):** `KnobHelper::deleteKnob` (Engine/Knob.cpp:907–961) marks listener expressions invalid but keeps their dependency on the deleted knob. Its recheck may re-bind them to it. Any later setExpression on such a listener, while the deleted knob is kept alive by Python or a test, asserts in `Node::onKnobSlaved` (`master->getHolder()`). M372 works around it on its own paths.
@@ -644,7 +653,7 @@ future core work has solid ground to build on.
 - **M447 - USDPreviewSurface Rename, for /cat-plan (PM, 2026-11-20):** sweep todo milestone briefs that still name `USDMaterial`; the node is now USDPreviewSurface.
 - **F29 - UI Polish Batch (PM, 2026-11-20):** Feature review round 1 is fixed (f75950a65), and the m421 script's graph lookup is made robust (1c60da022). The gate is green (release, ctest, 8 GUI scripts). The round-2 UAT AppImage is `build/appimages/Natron-f29-ui-polish-batch.AppImage`, with its .md (see "Round 2+").
 - **Deep-chain render segfault, for /cat-plan (PM, 2026-11-20, from M262 - Expression Benchmark For Large Graphs):** NatronRenderer segfaults about 2 s into the first render of a 20000-node Grade chain with an expression on each node (exprmixed). N=5000 works. It is probably a stack overflow in a recursive upstream or expression walk; there is no backtrace yet. The user asked for it to be filed as an E14 - Architecture stub. Repro: tools/bench/graph_bench.py, BENCH_TOPO=exprmixed BENCH_N=20000.
-- **F8 - Motion Vectors UAT round 2 (PM, 2026-11-20):** all eight round-1 fixes are on the Feature branch, and the gate is green on eb69d01ef. The round-2 AppImage is `build/appimages/Natron-f8-motion-vectors.AppImage`, with its steps `.md`.
+- **F8 - Motion Vectors UAT round 2 (user, 2026-11-21):** Blend Between Keyframes doesn't blend. It uses the first keyframe's shape until the second key, then pops. It should smoothly interpolate between the two shapes, following the first keyframe forwards towards the second and the second backwards towards the first. Fix on the F8 branch.
 
 - **M472 - GPU Raster Pipelines post-merge check (PM, 2026-11-20, merged c97bbfcb6 / #318):** record the raster-capable record context's capability report on RADV and NVIDIA on the GPU host (only llvmpipe has run it).
 

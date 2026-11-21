@@ -107,7 +107,7 @@ are from `milestone/m336-heavy-scene-acceptance` as of 2026-11-17. Re-check them
 
 ## Phase 481.3: Viewer
 
-- [ ] M481.P3.T1 — Budget layer in the draw filter
+- [x] M481.P3.T1 — Budget layer in the draw filter
   - files: `Engine/Nodes/Scene/SceneDrawFilter.h`, `Engine/Nodes/Scene/SceneDrawFilter.cpp`, `Tests/SceneDrawFilter_Test.cpp`
   - approach: add a budget layer, kept apart from the rule states, with a call such as `applyBudget(result)`. It holds demoted and culled gprims invisible on the cheapest path P1.T1 measured. It ORs into the instance mask for demoted, culled and fractioned-out instances. It overrides each fractioned mesh's topology `invisibleFaces` with the hashed faces. Clearing the budget restores exactly what the draw states draw. The layer binds only on the Storm engine's filter; delegate engines (M335 - Viewer Render Draw States) never get it.
   - verify: new `SceneDrawFilter_Test` cases:
@@ -200,3 +200,8 @@ are from `milestone/m336-heavy-scene-acceptance` as of 2026-11-17. Re-check them
 
   Noted: the solver keeps about 5 B per instance (about 155 MB at 31M), and the fraction hash uses the instance index, so reordering instances changes the subset. Gate running.
 - 2026-11-21 — Phase 481.2 gate green on 606c04354 (F4 base, no AppImage). Phase 481.3 dispatched, carrying the chunked-bound and PointInstancer-mask requirements.
+- 2026-11-21 — P3.T1 and the worker half of P3.T3 are in 4b2a4d6ab. The draw filter's budget layer holds demoted prims invisible, gives over-budget meshes face subsets, and masks PointInstancer instances by index (requirement 2). The worker computes instancer bounds in 65,536-instance chunks off the stage lock, abandoned on newer edits (requirement 1), and solves off its own mutex. **PM calls:**
+  - Keep the phase-1 probe until its GPU-host JSON is recorded. The cheap visibility path stays, pending those numbers.
+  - A demoted prim under a native instance masks the whole instance, because the prototype is shared. Those instances must still get stand-in boxes.
+
+  The rest of P3.T3, plus P3.T2 and P3.T4, are being implemented. The P1.T1 GPU-host probe run is still owed; it runs on a VM after M336's round 14.

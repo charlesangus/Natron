@@ -47,6 +47,7 @@
 #include <pxr/base/gf/vec3d.h>
 #include <pxr/usd/sdf/layer.h>
 #include <pxr/usd/usd/stage.h>
+#include <pxr/usd/usdGeom/pointInstancer.h>
 #include <pxr/usd/usdGeom/xformable.h>
 
 PXR_NAMESPACE_USING_DIRECTIVE
@@ -457,4 +458,264 @@ def Xform "Asset"
     expectBox(list, "/City/Hinted", GfVec3f(0, 0, 0), GfVec3f(2, 2, 2), SceneDrawBoxes::eKindUnloaded);
     expectBox(list, "/City/Plain", GfVec3f(5, 0, 0), GfVec3f(5, 0, 0), SceneDrawBoxes::eKindMarker);
     EXPECT_FALSE(stage->GetPrimAtPath(SdfPath("/City/Hinted")).IsLoaded());
+}
+
+namespace {
+// /World/Cube is a six-face mesh, /World/Lines two linear curves of 3 and 4 vertices, /World/Bezier
+// one cubic Bezier curve of 7, /World/Cloud three points, and /World/Instancer three instances of a
+// six-face prototype along X.
+const char* const kCountScene = R"(#usda 1.0
+def Xform "World"
+{
+    def Mesh "Cube"
+    {
+        int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+        int[] faceVertexIndices = [0, 1, 3, 2, 2, 3, 5, 4, 4, 5, 7, 6, 6, 7, 1, 0, 1, 7, 5, 3, 6, 0, 2, 4]
+        point3f[] points = [(-1, -1, 1), (1, -1, 1), (-1, 1, 1), (1, 1, 1), (-1, 1, -1), (1, 1, -1), (-1, -1, -1), (1, -1, -1)]
+        float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+    }
+    def BasisCurves "Lines"
+    {
+        uniform token type = "linear"
+        int[] curveVertexCounts = [3, 4]
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (2, 0, 0), (0, 1, 0), (1, 1, 0), (2, 1, 0), (3, 1, 0)]
+        float3[] extent = [(0, 0, 0), (3, 1, 0)]
+    }
+    def BasisCurves "Bezier"
+    {
+        uniform token type = "cubic"
+        uniform token basis = "bezier"
+        int[] curveVertexCounts = [7]
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (2, 0, 0), (3, 0, 0), (4, 0, 0), (5, 0, 0), (6, 0, 0)]
+        float3[] extent = [(0, 0, 0), (6, 0, 0)]
+    }
+    def Points "Cloud"
+    {
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (2, 0, 0)]
+        float3[] extent = [(0, 0, 0), (2, 0, 0)]
+    }
+    def PointInstancer "Instancer"
+    {
+        rel prototypes = [</World/Instancer/Prototypes/Box>]
+        int[] protoIndices = [0, 0, 0]
+        point3f[] positions = [(0, 0, 0), (10, 0, 0), (20, 0, 0)]
+        def Scope "Prototypes"
+        {
+            def Mesh "Box"
+            {
+                int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+                int[] faceVertexIndices = [0, 1, 3, 2, 2, 3, 5, 4, 4, 5, 7, 6, 6, 7, 1, 0, 1, 7, 5, 3, 6, 0, 2, 4]
+                point3f[] points = [(-1, -1, 1), (1, -1, 1), (-1, 1, 1), (1, 1, 1), (-1, 1, -1), (1, 1, -1), (-1, -1, -1), (1, -1, -1)]
+                float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+            }
+        }
+    }
+}
+)";
+
+UsdStageRefPtr
+openCountScene()
+{
+    SdfLayerRefPtr layer = SdfLayer::CreateAnonymous(".usda");
+
+    EXPECT_TRUE(layer->ImportFromString(kCountScene));
+
+    return UsdStage::Open(layer);
+}
+
+SceneDrawBoxes::UnitsPtr
+latestUnits(const SceneDrawBoxes& boxes)
+{
+    EXPECT_TRUE(boxes.waitForUnits(boxes.getGeneration(), kWait));
+
+    return boxes.getUnits();
+}
+
+const SceneDrawBoxes::Unit*
+unitOf(const SceneDrawBoxes::UnitsPtr& units,
+       const std::string& path)
+{
+    if (!units) {
+        return nullptr;
+    }
+    for (const SceneDrawBoxes::Unit& unit : units->units) {
+        if (unit.path == SdfPath(path)) {
+            return &unit;
+        }
+    }
+
+    return nullptr;
+}
+} // anon namespace
+
+TEST(SceneDrawBoxes, NoUnitsAreCountedUntilCountingIsOn)
+{
+    const UsdStageRefPtr stage = openCountScene();
+    const std::unique_ptr<SceneDrawBoxes> boxes = boxesOver(stage);
+
+    boxes->setTime(1.);
+    ASSERT_NE(latest(*boxes), nullptr);
+    EXPECT_EQ(boxes->getUnits(), nullptr);
+
+    boxes->setCounting(true);
+    EXPECT_NE(latestUnits(*boxes), nullptr);
+    boxes->setCounting(false);
+    EXPECT_EQ(boxes->getUnits(), nullptr);
+}
+
+TEST(SceneDrawBoxes, MeshesCountFacesCurvesSegmentsAndPointsPoints)
+{
+    const UsdStageRefPtr stage = openCountScene();
+    const std::unique_ptr<SceneDrawBoxes> boxes = boxesOver(stage);
+
+    boxes->setCounting(true);
+    const SceneDrawBoxes::UnitsPtr units = latestUnits(*boxes);
+    ASSERT_NE(units, nullptr);
+
+    const SceneDrawBoxes::Unit* cube = unitOf(units, "/World/Cube");
+    ASSERT_NE(cube, nullptr);
+    EXPECT_EQ(cube->faces, 6u);
+    EXPECT_TRUE(cube->bounded);
+    EXPECT_EQ(cube->state, SceneViewBudget::eStateDrawn);
+    EXPECT_TRUE(cube->mesh);
+    EXPECT_EQ(cube->min, GfVec3f(-1, -1, -1));
+    EXPECT_EQ(cube->max, GfVec3f(1, 1, 1));
+    EXPECT_EQ(cube->instances, nullptr);
+
+    const SceneDrawBoxes::Unit* lines = unitOf(units, "/World/Lines");
+    ASSERT_NE(lines, nullptr);
+    EXPECT_EQ(lines->faces, 5u);
+    EXPECT_FALSE(lines->mesh);
+    const SceneDrawBoxes::Unit* bezier = unitOf(units, "/World/Bezier");
+    ASSERT_NE(bezier, nullptr);
+    EXPECT_EQ(bezier->faces, 2u);
+    const SceneDrawBoxes::Unit* cloud = unitOf(units, "/World/Cloud");
+    ASSERT_NE(cloud, nullptr);
+    EXPECT_EQ(cloud->faces, 3u);
+    EXPECT_EQ(unitOf(units, "/World"), nullptr);
+}
+
+TEST(SceneDrawBoxes, AnInstancerIsOneUnitWithItsPrototypesAndInstanceArrays)
+{
+    const UsdStageRefPtr stage = openCountScene();
+    const std::unique_ptr<SceneDrawBoxes> boxes = boxesOver(stage);
+
+    boxes->setCounting(true);
+    const SceneDrawBoxes::UnitsPtr units = latestUnits(*boxes);
+    const SceneDrawBoxes::Unit* instancer = unitOf(units, "/World/Instancer");
+    ASSERT_NE(instancer, nullptr);
+    EXPECT_EQ(instancer->faces, 18u);
+    EXPECT_EQ(instancer->min, GfVec3f(-1, -1, -1));
+    EXPECT_EQ(instancer->max, GfVec3f(21, 1, 1));
+    ASSERT_NE(instancer->instances, nullptr);
+    const SceneDrawBoxes::Instances& instances = *instancer->instances;
+    ASSERT_EQ(instances.size(), 3u);
+    ASSERT_EQ(instances.prototypes.size(), 1u);
+    EXPECT_EQ(instances.prototypes[0].path, SdfPath("/World/Instancer/Prototypes/Box"));
+    EXPECT_EQ(instances.prototypes[0].faces, 6u);
+    EXPECT_TRUE(instances.prototypes[0].bounded);
+    EXPECT_EQ(instances.prototypes[0].min, GfVec3f(-1, -1, -1));
+    EXPECT_EQ(instances.prototypes[0].max, GfVec3f(1, 1, 1));
+    EXPECT_TRUE(instances.draws(2));
+    EXPECT_EQ(instances.instanceTransform(1).ExtractTranslation(), GfVec3d(10, 0, 0));
+    // The prototype draws through its instancer alone.
+    EXPECT_EQ(unitOf(units, "/World/Instancer/Prototypes/Box"), nullptr);
+}
+
+TEST(SceneDrawBoxes, AnInstanceTheInstancerTurnsOffCountsNoFaces)
+{
+    const UsdStageRefPtr stage = openCountScene();
+    UsdGeomPointInstancer(stage->GetPrimAtPath(SdfPath("/World/Instancer"))).CreateInvisibleIdsAttr().Set(VtInt64Array { 2 });
+    const std::unique_ptr<SceneDrawBoxes> boxes = boxesOver(stage);
+
+    boxes->setCounting(true);
+    const SceneDrawBoxes::Unit* instancer = unitOf(latestUnits(*boxes), "/World/Instancer");
+    ASSERT_NE(instancer, nullptr);
+    EXPECT_EQ(instancer->faces, 12u);
+    ASSERT_NE(instancer->instances, nullptr);
+    EXPECT_TRUE(instancer->instances->draws(1));
+    EXPECT_FALSE(instancer->instances->draws(2));
+}
+
+TEST(SceneDrawBoxes, OnlyWhatTheRulesDrawIsAUnit)
+{
+    const UsdStageRefPtr stage = openCountScene();
+    const std::unique_ptr<SceneDrawBoxes> boxes = boxesOver(stage);
+
+    boxes->setCounting(true);
+    boxes->setRules(rules({ { "/World/Cube", SceneDrawFilter::eRuleHide }, { "/World/Lines", SceneDrawFilter::eRuleHidden } }));
+    SceneDrawBoxes::UnitsPtr units = latestUnits(*boxes);
+    ASSERT_NE(units, nullptr);
+    EXPECT_EQ(unitOf(units, "/World/Cube"), nullptr);
+    EXPECT_EQ(unitOf(units, "/World/Lines"), nullptr);
+    EXPECT_NE(unitOf(units, "/World/Bezier"), nullptr);
+
+    boxes->setRules(rules({ { "/World", SceneDrawFilter::eRuleExpand }, { "/World/Cube", SceneDrawFilter::eRuleShow } }));
+    units = latestUnits(*boxes);
+    ASSERT_NE(units, nullptr);
+    ASSERT_EQ(units->units.size(), 1u);
+    EXPECT_EQ(units->units[0].path, SdfPath("/World/Cube"));
+}
+
+TEST(SceneDrawBoxes, AnUnloadedPayloadCountsNoFacesUntilItLoads)
+{
+    SdfLayerRefPtr asset = SdfLayer::CreateAnonymous(".usda");
+    ASSERT_TRUE(asset->ImportFromString(R"(#usda 1.0
+(
+    defaultPrim = "Asset"
+)
+def Xform "Asset"
+{
+    def Cube "Cube"
+    {
+        float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+    }
+}
+)"));
+    SdfLayerRefPtr root = SdfLayer::CreateAnonymous(".usda");
+    const std::string payload = "@" + asset->GetIdentifier() + "@";
+    ASSERT_TRUE(root->ImportFromString(std::string("#usda 1.0\n") + "def Xform \"City\" (\n    kind = \"group\"\n)\n{\n"
+                                                                    "    def Xform \"Hinted\" (\n        kind = \"component\"\n        payload = "
+                                       + payload + "\n    )\n    {\n"
+                                                   "        float3[] extentsHint = [(0, 0, 0), (2, 2, 2)]\n    }\n"
+                                                   "}\n"));
+    const UsdStageRefPtr stage = UsdStage::Open(root, UsdStage::LoadNone);
+    ASSERT_TRUE(stage);
+    std::atomic<U64> version { 0 };
+    const std::unique_ptr<SceneDrawBoxes> boxes = boxesOver(stage, &version);
+
+    boxes->setCounting(true);
+    SceneDrawBoxes::UnitsPtr units = latestUnits(*boxes);
+    const SceneDrawBoxes::Unit* hinted = unitOf(units, "/City/Hinted");
+    ASSERT_NE(hinted, nullptr);
+    EXPECT_EQ(hinted->state, SceneViewBudget::eStateUnloaded);
+    EXPECT_TRUE(hinted->bounded);
+    EXPECT_EQ(hinted->faces, 0u);
+    EXPECT_EQ(hinted->min, GfVec3f(0, 0, 0));
+    EXPECT_EQ(hinted->max, GfVec3f(2, 2, 2));
+    EXPECT_EQ(unitOf(units, "/City/Hinted/Cube"), nullptr);
+
+    stage->Load(SdfPath("/City/Hinted"));
+    version = 1;
+    boxes->setStageVersion(1);
+    units = latestUnits(*boxes);
+    EXPECT_EQ(unitOf(units, "/City/Hinted"), nullptr);
+    const SceneDrawBoxes::Unit* cube = unitOf(units, "/City/Hinted/Cube");
+    ASSERT_NE(cube, nullptr);
+    EXPECT_EQ(cube->faces, 6u);
+}
+
+TEST(SceneDrawBoxes, TheCameraIsKeptWithoutStartingAPass)
+{
+    const UsdStageRefPtr stage = openCountScene();
+    const std::unique_ptr<SceneDrawBoxes> boxes = boxesOver(stage);
+
+    const U64 generation = boxes->getGeneration();
+    SceneDrawBoxes::Camera camera;
+    camera.eye = GfVec3d(0, 0, 10);
+    camera.viewProjection = viewProjection();
+    camera.valid = true;
+    boxes->setCamera(camera);
+    EXPECT_TRUE(boxes->getCamera() == camera);
+    EXPECT_EQ(boxes->getGeneration(), generation);
 }

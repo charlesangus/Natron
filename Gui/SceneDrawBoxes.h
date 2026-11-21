@@ -39,6 +39,7 @@
 #include <vector>
 
 #include "Engine/Nodes/Scene/SceneDrawFilter.h"
+#include "Engine/Nodes/Scene/SceneViewBudget.h"
 #include "Global/GlobalDefines.h"
 
 #ifdef emit
@@ -75,6 +76,12 @@ NATRON_NAMESPACE_ENTER
  * to come keeping their old box or showing as pending markers. Rows whose bounds cannot vary keep
  * their box over a time change, and every row keeps it over a rule change, so a frame change
  * recomputes only animated rows while the old boxes stay drawn.
+ *
+ * With counting on, the same thread also lists the units a polygon budget weighs: every gprim and
+ * PointInstancer the rules draw, with its world box and the faces it draws, and every unloaded
+ * payload among them, which draws nothing. A PointInstancer is one unit carrying its prototypes'
+ * boxes and counts and its instances' authored arrays, never a box per instance. The units are
+ * published whole and apart from the boxes, after them, so counting never delays a box.
  */
 class SceneDrawBoxes {
 public:
@@ -110,6 +117,22 @@ public:
     // Calls read once, under the lock that keeps the stage from changing.
     using StageReader = std::function<void(const StageRead& read)>;
 
+    using Prototype = SceneViewBudget::Prototype;
+    using Instances = SceneViewBudget::Instances;
+    using InstancesPtr = SceneViewBudget::InstancesPtr;
+    // Its state is eStateDrawn, or eStateUnloaded for an unloaded payload.
+    using Unit = SceneViewBudget::Unit;
+    using Camera = SceneViewBudget::Camera;
+
+    struct Units {
+        // Of the request it answers, as List's.
+        U64 generation = 0;
+        double time = 0.;
+        std::vector<Unit> units;
+    };
+
+    using UnitsPtr = std::shared_ptr<const Units>;
+
     SceneDrawBoxes(const StageReader& reader,
                    const std::function<bool()>& shouldYield,
                    const std::function<void()>& published);
@@ -119,8 +142,16 @@ public:
     void setRules(const SceneDrawFilter::Rules& rules);
     void setTime(double time);
     void setStageVersion(U64 version);
+    // Off by default. Turning it on starts a pass; turning it off drops the units.
+    void setCounting(bool counting);
+    // Kept for the passes that read it; a camera change alone starts no pass, as counts never
+    // depend on it.
+    void setCamera(const Camera& camera);
+    Camera getCamera() const;
 
     ListPtr getList() const;
+    // Null until counting has published.
+    UnitsPtr getUnits() const;
 
     // The latest request.
     U64 getGeneration() const;
@@ -128,6 +159,14 @@ public:
     // Whether a complete list answering generation or a later request was published within timeout.
     bool waitForList(U64 generation,
                      std::chrono::milliseconds timeout) const;
+    // As waitForList(), for the units.
+    bool waitForUnits(U64 generation,
+                      std::chrono::milliseconds timeout) const;
+
+    // Faces as the budget counts them for one gprim's own geometry at time: a mesh's faces, a
+    // curve's segments, a point cloud's points, and Storm's tessellation for an implicit surface.
+    static U64 gprimFaces(const PXR_NS::UsdPrim& prim,
+                          double time);
 
     /**
      * @brief The index in list of the box or marker nearest the eye under pixel, -1 for none, and
@@ -154,6 +193,7 @@ private:
         double time = 0.;
         U64 generation = 0;
         U64 contentGeneration = 0;
+        bool counting = false;
     };
 
     struct Entry {
@@ -162,13 +202,32 @@ private:
         double time = 0.;
     };
 
+    struct UnitEntry {
+        Unit unit;
+        bool varying = false;
+        double time = 0.;
+    };
+
     void run();
     void compute(const Request& request);
+    // False when the pass was dropped.
+    bool computeBoxes(const Request& request);
+    // Drops what was read of another stage, or of this one before an edit, and sets the bounds'
+    // time. Needs the stage read lock.
+    void syncStage(const PXR_NS::UsdStageRefPtr& stage,
+                   U64 version,
+                   double time);
     Entry computeEntry(const PXR_NS::UsdPrim& prim,
                        double time);
     void publish(const Request& request,
                  std::vector<Box>&& boxes,
                  bool complete);
+    // False when the pass was dropped.
+    bool countUnits(const Request& request);
+    UnitEntry computeUnit(const PXR_NS::UsdPrim& prim,
+                          double time);
+    void publishUnits(const Request& request,
+                      std::vector<Unit>&& units);
 
     SceneDrawBoxes(const SceneDrawBoxes&) = delete;
     SceneDrawBoxes& operator=(const SceneDrawBoxes&) = delete;
@@ -182,14 +241,18 @@ private:
     SceneDrawFilter::Rules _rules;
     double _time = 0.;
     U64 _stageVersion = 0;
+    bool _counting = false;
+    Camera _camera;
     U64 _generation = 0;
     U64 _taken = 0;
     std::atomic<U64> _contentGeneration { 0 };
     std::atomic<bool> _quit { false };
     ListPtr _list;
+    UnitsPtr _units;
 
     // The worker's own.
     std::unordered_map<PXR_NS::SdfPath, Entry, PXR_NS::SdfPath::Hash> _entries;
+    std::unordered_map<PXR_NS::SdfPath, UnitEntry, PXR_NS::SdfPath::Hash> _unitEntries;
     std::unique_ptr<PXR_NS::UsdGeomBBoxCache> _bboxCache;
     const void* _entriesStage = nullptr;
     U64 _entriesVersion = 0;

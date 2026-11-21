@@ -350,7 +350,9 @@ namespace MergeDetail {
                 if (changedFromBase(*context, baseId, mineId, false)) {
                     OutNode& node = context->out[mineId];
                     node.baseId = baseId;
-                    node.node->origin = NodeOriginSerialization();
+                    if (!context->plan.templateKey.empty()) {
+                        node.node->origin = NodeOriginSerialization();
+                    }
                     context->baseToOut[baseId] = mineId;
                     context->addConflict(MergeConflictKind::eDeleteModify, baseId, MergeSide::eTheirs);
                 } else {
@@ -515,7 +517,7 @@ namespace MergeDetail {
                     node.node->inputs[input.first] = source->second.node->scriptName;
                 }
             }
-            if (!node.theirsId.empty()) {
+            if (!node.theirsId.empty() && !context->plan.templateKey.empty()) {
                 node.node->origin.templateKey = context->plan.templateKey;
                 node.node->origin.nodeId = node.theirsId;
             }

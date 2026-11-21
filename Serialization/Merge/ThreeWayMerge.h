@@ -38,6 +38,7 @@ namespace Serialization {
 /**
  * @brief What a merge of one template import works from: the import's key, the matches of the
  * template base against the shot (mine) and the new template (theirs), and the shot nodes in scope.
+ * An empty key, which no template import has, plans a whole-project merge instead.
  **/
 struct MergePlan {
     std::string templateKey;
@@ -50,6 +51,16 @@ MergePlan planMerge(const ProjectSerialization& base,
                     const ProjectSerialization& mine,
                     const ProjectSerialization& theirs,
                     const std::string& templateKey);
+
+/**
+ * @brief Plans a merge of three versions of one project, such as two branches of a shot and their
+ * common ancestor: nodes match by their own IDs, or by structure when a side deleted and recreated
+ * one, and every node of mine is in scope. Origins are not followed, so each template import's
+ * nodes merge like any other.
+ **/
+MergePlan planProjectMerge(const ProjectSerialization& base,
+                           const ProjectSerialization& mine,
+                           const ProjectSerialization& theirs);
 
 struct MergeOptions {
     // Null for MergeHandlerRegistry::defaults().
@@ -76,6 +87,11 @@ struct MergeResult {
  * so a node the artist renamed keeps the supervisor's new expressions that name it. The merged
  * nodes that stand for a template node carry an origin naming theirs, and the import's base
  * becomes theirs, so merging the same theirs again changes nothing.
+ *
+ * A whole-project plan (planProjectMerge()) leaves origins as the sides have them, keeps the ID of
+ * a node taken from theirs unless mine uses it, merges the project knobs per knob, with conflicts
+ * that name no node, and each template import as a whole: theirs' entry when mine left it as base
+ * had it, else mine's. Formats and layers keep mine's.
  **/
 MergeResult threeWayMerge(const ProjectSerialization& base,
                           const ProjectSerialization& mine,

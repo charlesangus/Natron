@@ -23,12 +23,16 @@
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <list>
 #include <random>
 #include <tuple>
 
 #include "Serialization/Merge/MergePrivate.h"
 #include "Serialization/Merge/MergeRules.h"
 #include "Serialization/Merge/MergeScope.h"
+#include "Serialization/Yaml/BlobSink.h"
+#include "Serialization/Yaml/ProjectYaml.h"
+#include "Serialization/Yaml/YamlScalars.h"
 
 NATRON_NAMESPACE_ENTER
 namespace Serialization {
@@ -121,6 +125,72 @@ namespace {
         return result;
     }
 
+    const TemplateImportSerialization*
+    templateImportNamed(const std::list<TemplateImportSerialization>& imports,
+                        const std::string& key)
+    {
+        for (const TemplateImportSerialization& entry : imports) {
+            if (entry.key == key) {
+                return &entry;
+            }
+        }
+
+        return nullptr;
+    }
+
+    std::string
+    templateBaseText(const TemplateImportSerialization& entry)
+    {
+        if (!entry.base) {
+            return std::string();
+        }
+        try {
+            InlineBlobSink sink;
+
+            return encodeProjectYaml(*entry.base, sink);
+        } catch (const YamlError& e) {
+            return std::string("unencodable: ") + e.what();
+        }
+    }
+
+    bool
+    sameTemplateImport(const TemplateImportSerialization* a,
+                       const TemplateImportSerialization* b)
+    {
+        if (!a || !b) {
+            return !a && !b;
+        }
+
+        return (a->path == b->path) && (a->contentHash == b->contentHash) && (a->importedAt == b->importedAt) && (templateBaseText(*a) == templateBaseText(*b));
+    }
+
+    // Each import as a whole: theirs' when mine left it as base had it, else mine's. The result
+    // keeps mine's order, with the imports only theirs has after them.
+    std::list<TemplateImportSerialization>
+    mergeTemplateImports(const std::list<TemplateImportSerialization>& base,
+                         const std::list<TemplateImportSerialization>& mine,
+                         const std::list<TemplateImportSerialization>& theirs)
+    {
+        std::vector<std::string> keys;
+        for (const std::list<TemplateImportSerialization>* side : { &mine, &theirs, &base }) {
+            for (const TemplateImportSerialization& entry : *side) {
+                if (std::find(keys.begin(), keys.end(), entry.key) == keys.end()) {
+                    keys.push_back(entry.key);
+                }
+            }
+        }
+        std::list<TemplateImportSerialization> merged;
+        for (const std::string& key : keys) {
+            const TemplateImportSerialization* mineEntry = templateImportNamed(mine, key);
+            const TemplateImportSerialization* chosen = sameTemplateImport(mineEntry, templateImportNamed(base, key)) ? templateImportNamed(theirs, key) : mineEntry;
+            if (chosen) {
+                merged.push_back(*chosen);
+            }
+        }
+
+        return merged;
+    }
+
 } // namespace
 
 namespace MergeDetail {
@@ -204,9 +274,14 @@ namespace MergeDetail {
         node.node = std::make_shared<NodeSerialization>(*source->node);
         node.node->children.clear();
         node.node->inputs.clear();
-        node.node->id = newNodeId();
-        node.node->origin.templateKey = plan.templateKey;
-        node.node->origin.nodeId = theirsId;
+        if (plan.templateKey.empty()) {
+            // Both sides of a project share its IDs, so the node keeps the one later merges match on.
+            node.node->id = (out.count(theirsId) || mine.find(theirsId)) ? newNodeId() : theirsId;
+        } else {
+            node.node->id = newNodeId();
+            node.node->origin.templateKey = plan.templateKey;
+            node.node->origin.nodeId = theirsId;
+        }
         if (!source->parentId.empty()) {
             std::map<std::string, std::string>::const_iterator parent = theirsToOut.find(source->parentId);
             if (parent != theirsToOut.end()) {
@@ -470,6 +545,24 @@ planMerge(const ProjectSerialization& base,
     return plan;
 }
 
+MergePlan
+planProjectMerge(const ProjectSerialization& base,
+                 const ProjectSerialization& mine,
+                 const ProjectSerialization& theirs)
+{
+    const MergeGraph baseGraph(base);
+    const MergeGraph mineGraph(mine);
+    const MergeGraph theirsGraph(theirs);
+    MergePlan plan;
+    plan.baseToMine = matchNodes(baseGraph, mineGraph, std::string());
+    plan.baseToTheirs = matchNodes(baseGraph, theirsGraph, std::string());
+    for (const std::pair<const std::string, MergeGraph::Node>& entry : mineGraph.nodes()) {
+        plan.scope.insert(entry.first);
+    }
+
+    return plan;
+}
+
 MergeResult
 threeWayMerge(const ProjectSerialization& base,
               const ProjectSerialization& mine,
@@ -487,6 +580,15 @@ threeWayMerge(const ProjectSerialization& base,
 
     MergeResult result;
     result.merged = MergeDetail::assemble(&context);
+    if (plan.templateKey.empty()) {
+        std::vector<MergeConflict> projectConflicts;
+        result.merged.projectKnobs = mergeKnobLists(context.handlers, std::string(), &base.projectKnobs, mine.projectKnobs, theirs.projectKnobs, &projectConflicts);
+        result.merged.templates = mergeTemplateImports(base.templates, mine.templates, theirs.templates);
+        result.conflicts = std::move(context.conflicts);
+        result.conflicts.insert(result.conflicts.end(), projectConflicts.begin(), projectConflicts.end());
+
+        return result;
+    }
     result.conflicts = std::move(context.conflicts);
     for (MergeConflict& conflict : result.conflicts) {
         conflict.templateKey = plan.templateKey;

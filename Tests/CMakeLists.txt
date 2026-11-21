@@ -300,7 +300,9 @@ target_compile_definitions(Tests
         # Tests/Ai loads this ONNX Runtime directly, whatever the Preferences say.
         NATRON_TESTS_ONNXRUNTIME_DIR="${NATRON_ONNXRUNTIME_ROOT}"
         NATRON_TEST_OFX_PLUGIN_DIR="${NATRON_TEST_OFX_PLUGIN_DIR}"
+        NATRON_TESTS_NATRON_MERGE="$<TARGET_FILE:natron-merge>"
 )
+add_dependencies(Tests natron-merge)
 # The Engine binary directory holds the aggregates Engine/CMakeLists.txt generates, such as
 # NativeRegistryAll.inc, which NativePluginList_Test expands itself.
 target_include_directories(Tests
@@ -458,3 +460,12 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME TabTabTabPython
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/Tests/python/run_tabtabtab_tests.py)
 endif()
+
+add_executable(merge_scenario_writer merge/write_scenarios.cpp)
+target_link_libraries(merge_scenario_writer PRIVATE NatronSerialization)
+target_include_directories(merge_scenario_writer PRIVATE .. Serialization)
+set_target_properties(merge_scenario_writer PROPERTIES AUTOMOC OFF)
+add_test(NAME NatronMergeGitDriver
+         COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/merge/git_driver_test.sh $<TARGET_FILE:natron-merge> $<TARGET_FILE:merge_scenario_writer>)
+add_test(NAME NatronMergeLinkCheck
+         COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/merge/link_check.sh $<TARGET_FILE:natron-merge>)

@@ -76,19 +76,19 @@ Scouting facts (2026-10-11): `Qt::Network` is already linked into Engine, Gui an
 
 ## Phase 105.2: App integration
 
-- [ ] M105.P2.T1 — Session-bound project lifecycle
+- [x] M105.P2.T1 — Session-bound project lifecycle
   - files: `Engine/Project.h`, `Engine/Project.cpp`, `Engine/AppInstance.h`, `Engine/AppInstance.cpp`
   - approach: load a project from in-memory bundle bytes. Add a session-bound flag that changes the title and makes save route to `saveRequest` on clients and skip autosave. On disconnect, leave a plain unsaved project with the message from **Design**. Save As on a client leaves the session.
   - verify: compiled at P2.T5. gtests: loading from bytes equals loading from a file; a client save sends `saveRequest` and the host writes the file; after a disconnect, the client project is unsaved and editable.
   - size: M
 
-- [ ] M105.P2.T2 — Host and Join dialogs and the status indicator
+- [x] M105.P2.T2 — Host and Join dialogs and the status indicator
   - files: new `Gui/LiveSessionDialogs.h`, new `Gui/LiveSessionDialogs.cpp`, `Gui/Gui20.cpp` (File menu: Host Live Session…, Join Live Session…, Leave Session), `Gui/CMakeLists.txt`
   - approach: the host dialog takes a bind address, port and display name, and shows the security warning. The join dialog takes host, port and display name, with recent hosts remembered in settings. A status-bar indicator shows the session state and the number of peers connected.
   - verify: compiled at P2.T5, and exercised by P2.T3.
   - size: M
 
-- [ ] M105.P2.T3 — Two-process GUI test of interactive edits
+- [x] M105.P2.T3 — Two-process GUI test of interactive edits
   - files: new `Tests/gui/m98_live_session.py`, `Tests/gui/run-gui-test.sh` (if it needs a two-process mode)
   - approach: start a host and a client Natron on loopback. On the client, drag a knob slider, set a keyframe, move nodes, create and connect a node, draw a roto stroke, and add a user knob. On the host, rename and delete a node. After each step, both sides' canonical `project.yaml` must match. Any GUI edit path that misses the recorder is a bug to fix in M102's hooks, filed as a new task in this phase.
   - verify: passes under the GUI harness. The build is required.
@@ -143,4 +143,7 @@ full ctest, smoke and CI are green; the user signs off the UAT.
 
   Fixes: disconnect-on-deleting-source; waiting failed host edits, retried after confirmations and resyncs; resyncs keep unconfirmed edits; GraphOpApply always refreshes the mask switch. Re-gating. Still open: a hand-set mask switch racing a remote input change, and a resync re-deriving the switch.
 - 2026-11-21 — Phase 105.1 checkpoint green on 8a61def28 (gate m105-p1e, both schedulers). Phase 105.2 dispatched as one unit.
+- 2026-11-21 — Phase 105.2 implemented; P2.T4 is the gate, now running.
+  - **PM calls:** a client's Save asks the host to save; Save As or Save and Increment Version leave the session; joining with work in the current graph opens a new window.
+  - **Still open:** the two Phase-1 mask-switch races; the window title keeps the host's file name after a disconnect (fix before UAT); a client peer count is left to M106.
 

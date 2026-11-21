@@ -158,7 +158,7 @@ public:
     RotoLayerPtr addLayer();
 
 private:
-    RotoLayerPtr addLayerInternal(bool declarePython);
+    RotoLayerPtr addLayerInternal(bool declarePython, bool selectLayer);
 
 public:
     /**

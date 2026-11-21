@@ -198,10 +198,10 @@ RotoCurveContext::isRotoPaint() const
 void
 RotoCurveContext::createBaseLayer()
 {
-    ////Add the base layer
-    RotoLayerPtr base = addLayerInternal(false);
-
-    deselect(base, RotoItem::eSelectionReasonOther);
+    // Selecting the base layer, even briefly, would show its transform on the node's knobs
+    // before they load, and a knob left at its default is not saved.
+    addLayerInternal(false, false);
+    refreshProxyKnobStates();
 }
 
 RotoLayerPtr
@@ -220,7 +220,8 @@ RotoCurveContext::getOrCreateBaseLayer()
 }
 
 RotoLayerPtr
-RotoCurveContext::addLayerInternal(bool declarePython)
+RotoCurveContext::addLayerInternal(bool declarePython,
+                                   bool selectLayer)
 {
     RotoCurveContextPtr this_shared = shared_from_this();
 
@@ -267,8 +268,10 @@ RotoCurveContext::addLayerInternal(bool declarePython)
     }
     Q_EMIT itemInserted(indexInLayer, RotoItem::eSelectionReasonOther);
 
-    clearSelection(RotoItem::eSelectionReasonOther);
-    select(item, RotoItem::eSelectionReasonOther);
+    if (selectLayer) {
+        clearSelection(RotoItem::eSelectionReasonOther);
+        select(item, RotoItem::eSelectionReasonOther);
+    }
 
     return item;
 } // RotoCurveContext::addLayerInternal
@@ -276,7 +279,7 @@ RotoCurveContext::addLayerInternal(bool declarePython)
 RotoLayerPtr
 RotoCurveContext::addLayer()
 {
-    return addLayerInternal(true);
+    return addLayerInternal(true, true);
 } // addLayer
 
 void
@@ -1134,10 +1137,32 @@ linkItemsKnobsRecursively(RotoCurveContext* ctx,
 void
 RotoCurveContext::restoreSavedSelection(const std::list<std::string>& selectedItemNames)
 {
+    const bool layerTransforms = layersOwnTransforms();
+    std::list<RotoItemPtr> saved;
     for (std::list<std::string>::const_iterator it = selectedItemNames.begin(); it != selectedItemNames.end(); ++it) {
         RotoItemPtr item = getItemByName(*it);
-        BezierPtr isBezier = std::dynamic_pointer_cast<Bezier>(item);
-        RotoLayerPtr isLayer = std::dynamic_pointer_cast<RotoLayer>(item);
+        if (item) {
+            saved.push_back(item);
+        }
+    }
+    for (std::list<RotoItemPtr>::const_iterator it = saved.begin(); it != saved.end(); ++it) {
+        BezierPtr isBezier = std::dynamic_pointer_cast<Bezier>(*it);
+        RotoLayerPtr isLayer = std::dynamic_pointer_cast<RotoLayer>(*it);
+        if (layerTransforms) {
+            // Selecting a layer selects its items through it, and saves them before it. Selecting
+            // them directly first would hand the node's transform knobs to them, not the layer.
+            bool insideSavedLayer = false;
+            for (RotoLayerPtr parent = (*it)->getParentLayer(); parent && !insideSavedLayer; parent = parent->getParentLayer()) {
+                insideSavedLayer = std::find(saved.begin(), saved.end(), parent) != saved.end();
+            }
+            if (insideSavedLayer) {
+                continue;
+            }
+            if (isLayer) {
+                select(isLayer, RotoItem::eSelectionReasonOther);
+                continue;
+            }
+        }
         if (isBezier) {
             select(isBezier, RotoItem::eSelectionReasonOther);
         } else if (isLayer) {

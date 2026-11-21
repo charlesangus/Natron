@@ -1,4 +1,4 @@
-# Builds one of the three synthetic UHD float comps (COMP=keying_grade|cg_multipass|defocus_retime) and saves it as .ntpz.
+# Builds one of the five synthetic UHD float comps (COMP=keying_grade|cg_multipass|defocus_retime|warp_spline|warp_lens) and saves it as .ntpz.
 # Run inside NatronRenderer:
 #
 #   COMP=keying_grade COMPS_OUT=tools/bench/comps NatronRenderer -b tools/bench/comps/build_comps.py
@@ -326,7 +326,72 @@ def defocus_retime():
     finish("defocus_retime", comp)
 
 
-BUILDERS = {"keying_grade": keying_grade, "cg_multipass": cg_multipass, "defocus_retime": defocus_retime}
+def warp_chain_transform(name, translate, rotate, scale):
+    xf = make("Transform", name)
+    p(xf, "translate").set(*translate)
+    p(xf, "rotate").set(rotate)
+    p(xf, "scale").set(scale, scale)
+    p(xf, "center").set(1920.0, 1080.0)
+    return xf
+
+
+def warp_chain(comp, middle):
+    """A 4K CheckerBoard, a Transform, the warp that `middle` makes and a second Transform: the
+    chain a distortion-concatenating build resamples once. No motion blur, mask or mix, which would
+    stop the warp from offering or taking a chain."""
+    src = checker("plate_checker", 48)
+    first = wire(warp_chain_transform("xform_before", (24.0, -12.0), 1.5, 1.02), src)
+    warp = middle(first)
+    last = wire(warp_chain_transform("xform_after", (-16.0, 10.0), -1.0, 0.99), warp)
+    finish(comp, last)
+
+
+def spline_middle(src):
+    warp = single("SplineWarp", "spline_warp", src)
+    p(warp, "boundaryBBox").set(False)
+    roto = warp.getRotoContext()
+    sw = warp.getSplineWarp()
+
+    def quad(x, y, size, dx=0.0, dy=0.0, s=1.0):
+        half = size * s / 2.0
+        cx, cy = x + dx, y + dy
+        curve = roto.createBezier(cx - half, cy - half, 1.0)
+        for px, py in ((cx + half, cy - half), (cx + half, cy + half), (cx - half, cy + half)):
+            curve.addControlPoint(px, py)
+        curve.setCurveFinished(True)
+        return curve
+
+    source = quad(1920.0, 1080.0, 1400.0)
+    destination = quad(1920.0, 1080.0, 1400.0, 40.0, -30.0, 1.08)
+    if sw.link(source, destination) is None:
+        raise RuntimeError("SplineWarp refused the curve link")
+    return warp
+
+
+def lens_middle(src):
+    warp = single("LensDistortion", "lens_distortion", src)
+    choice(warp, "model", "nuke")
+    p(warp, "k1").set(0.05)
+    p(warp, "k2").set(0.01)
+    p(warp, "center").set(0.02, -0.01)
+    return warp
+
+
+def warp_spline():
+    warp_chain("warp_spline", spline_middle)
+
+
+def warp_lens():
+    warp_chain("warp_lens", lens_middle)
+
+
+BUILDERS = {
+    "keying_grade": keying_grade,
+    "cg_multipass": cg_multipass,
+    "defocus_retime": defocus_retime,
+    "warp_spline": warp_spline,
+    "warp_lens": warp_lens,
+}
 app.getProjectParam("outputFormat").set("UHD_4K")
 app.getProjectParam("frameRange").set(1, LAST_FRAME)
 BUILDERS[os.environ["COMP"]]()

@@ -905,6 +905,9 @@ public:
     void setCurrentCanTransform(bool support);
     bool getCurrentCanTransform() const;
 
+    void setCurrentCanInverseWarp(bool support);
+    bool getCurrentCanInverseWarp() const;
+
     void setCurrentSupportTiles(bool support);
     bool getCurrentSupportTiles() const;
 

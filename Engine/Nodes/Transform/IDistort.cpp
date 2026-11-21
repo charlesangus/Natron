@@ -37,6 +37,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/Image.h"
+#include "Engine/InverseWarpChain.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -511,6 +512,15 @@ IDistort::renderOp(const RenderActionArgs& args,
     const double uScale = productOrInfinity(settings.uScale, s.x);
     const double vScale = productOrInfinity(settings.vScale, s.y);
 
+    // With warps concatenated into the Source, the image fetched is upstream of them and every
+    // Source coordinate is taken on through them.
+    const NodeMetadataConstPtr metadata = getRenderMetadata(args.time, args.view);
+    const double par = metadata ? metadata->getPixelAspectRatio(-1) : 1.;
+    const InverseWarpChainConstPtr chain = (sourceInput >= 0) ? getPreparedWarpChain(sourceInput, args.time, args.view, args.mappedScale, PassExec::toCanonical(args.roi, args.mappedScale, par)) : InverseWarpChainConstPtr();
+    if (chain && chain->hasError()) {
+        return eStatusFailed;
+    }
+
     // Every image is fetched before any is locked: fetching renders upstream, which may write
     // into a cached image this render would otherwise already hold a read lock on. The Map is
     // copied out over the window grown by one pixel, for the Jacobians.
@@ -649,6 +659,9 @@ IDistort::renderOp(const RenderActionArgs& args,
                 }
                 plane.source = Resampler::SourceImage(plane.converted.empty() ? (const float*)0 : &plane.converted[0], plane.srcBounds, nComps);
             }
+            if (chain) {
+                plane.source = plane.source.cropped(chain->getSourcePixels(plane.src->getPixelAspectRatio()));
+            }
         } else {
             plane.source = Resampler::SourceImage((const float*)0, RectI(), nComps);
         }
@@ -723,6 +736,25 @@ IDistort::renderOp(const RenderActionArgs& args,
         std::vector<float> uRow(gridWidth);
         std::vector<float> vRow(gridWidth);
         std::vector<float> jacobian(impulse ? 0 : (std::size_t)gridWidth * 4);
+        const bool chained = chain && hasSource;
+        const std::size_t chainSize = chained ? (std::size_t)width : 0;
+        Resampler::ChainRowScratch chainRow;
+        chainRow.resize(chainSize, !impulse);
+        // The immediate Source at the pixel centres, which a held or unmixed pixel shows.
+        std::vector<float> heldRow((chained && (mapped || !direct)) ? rowSize : 0);
+        // chainRow's points, with J their Jacobians (null for the identity), through the chain and
+        // sampled into row.
+        const auto sampleChainRow = [&](const float* J, float* row) {
+            chainRow.loadJacobians(chainSize, J);
+            Resampler::sampleRowThroughChain(*chain, chainSize, &chainRow, plane.source, settings.filter, settings.clamp, settings.edgeMode, row, nComps);
+        };
+        const auto sampleCoordsThroughChain = [&](const float* sx, const float* sy, const float* J, float* row) {
+            for (std::size_t k = 0; k < chainSize; ++k) {
+                chainRow.x[k] = sx[k];
+                chainRow.y[k] = sy[k];
+            }
+            sampleChainRow(J, row);
+        };
         CoordRows rows;
         for (int r = 0; r < 3; ++r) {
             rows.sx[r].resize(gridWidth);
@@ -746,8 +778,12 @@ IDistort::renderOp(const RenderActionArgs& args,
                 std::fill(outRow, outRow + rowSize, 0.f);
             } else if (impulse) {
                 coordRow(y, uRow.data(), vRow.data(), rows.sx[1].data(), rows.sy[1].data());
-                Resampler::resampleRowFromCoords(plane.source, rows.sx[1].data() + 1, rows.sy[1].data() + 1, NULL, width, settings.filter, settings.clamp, settings.edgeMode,
-                                                 Resampler::eWrapNone, Resampler::eWrapNone, outRow, nComps);
+                if (chained) {
+                    sampleCoordsThroughChain(rows.sx[1].data() + 1, rows.sy[1].data() + 1, NULL, outRow);
+                } else {
+                    Resampler::resampleRowFromCoords(plane.source, rows.sx[1].data() + 1, rows.sy[1].data() + 1, NULL, width, settings.filter, settings.clamp, settings.edgeMode,
+                                                     Resampler::eWrapNone, Resampler::eWrapNone, outRow, nComps);
+                }
             } else {
                 if (!primed) {
                     coordRow(y - 1, uRow.data(), vRow.data(), rows.sx[0].data(), rows.sy[0].data());
@@ -762,8 +798,19 @@ IDistort::renderOp(const RenderActionArgs& args,
                 coordRow(y + 1, uRow.data(), vRow.data(), rows.sx[2].data(), rows.sy[2].data());
                 Resampler::coordJacobiansWithinBounds(rows.sx[0].data(), rows.sx[1].data(), rows.sx[2].data(), rows.sy[0].data(), rows.sy[1].data(), rows.sy[2].data(),
                                                       gridX0, y, gridWidth, jacobianBounds[0], jacobianBounds[1], 1., 1., jacobian.data());
-                Resampler::resampleRowFromCoords(plane.source, rows.sx[1].data() + 1, rows.sy[1].data() + 1, jacobian.data() + 4, width, settings.filter, settings.clamp, settings.edgeMode,
-                                                 Resampler::eWrapNone, Resampler::eWrapNone, outRow, nComps);
+                if (chained) {
+                    sampleCoordsThroughChain(rows.sx[1].data() + 1, rows.sy[1].data() + 1, jacobian.data() + 4, outRow);
+                } else {
+                    Resampler::resampleRowFromCoords(plane.source, rows.sx[1].data() + 1, rows.sy[1].data() + 1, jacobian.data() + 4, width, settings.filter, settings.clamp,
+                                                     settings.edgeMode, Resampler::eWrapNone, Resampler::eWrapNone, outRow, nComps);
+                }
+            }
+            if (!heldRow.empty()) {
+                for (int i = 0; i < width; ++i) {
+                    chainRow.x[i] = roi.x1 + i + 0.5;
+                    chainRow.y[i] = y + 0.5;
+                }
+                sampleChainRow(NULL, heldRow.data());
             }
             if (mapped && hasSource) {
                 // Where the Map is 0 the output is the Source pixel itself, never filtered, which
@@ -773,7 +820,7 @@ IDistort::renderOp(const RenderActionArgs& args,
                         continue;
                     }
                     float* dst = &outRow[(std::size_t)i * nComps];
-                    const float* pix = plane.source.pixel(roi.x1 + i, y);
+                    const float* pix = chained ? &heldRow[(std::size_t)i * nComps] : plane.source.pixel(roi.x1 + i, y);
                     if (pix) {
                         std::copy(pix, pix + nComps, dst);
                     } else {
@@ -784,13 +831,16 @@ IDistort::renderOp(const RenderActionArgs& args,
             if (direct) {
                 continue;
             }
-            PassExec::readSourceRow(plane.src.get(), plane.srcAccess.get(), plane.srcBounds, plane.src ? plane.srcNComps : nComps, roi.x1, y, width, nComps, &referenceRow[0]);
+            if (!chained) {
+                PassExec::readSourceRow(plane.src.get(), plane.srcAccess.get(), plane.srcBounds, plane.src ? plane.srcNComps : nComps, roi.x1, y, width, nComps, &referenceRow[0]);
+            }
+            const float* const reference = chained ? heldRow.data() : referenceRow.data();
             if (doMask) {
                 PassExec::readChannelRow(mask.get(), maskSource.access.get(), maskSource.bounds, maskSource.nComps, maskChannel, roi.x1, y, width, maskSource.edgeMode, &maskRow[0]);
             }
 
             for (int i = 0; i < width; ++i, dstPix += nComps) {
-                const float* srcPix = &referenceRow[(std::size_t)i * nComps];
+                const float* srcPix = &reference[(std::size_t)i * nComps];
                 const float* outPix = &distortedRow[(std::size_t)i * nComps];
                 float alpha = mix;
                 if (doMask) {
@@ -851,10 +901,34 @@ IDistort::resolveGpuUVLayer(double time,
 }
 
 bool
+IDistort::acceptsInverseWarpChain(int inputNb,
+                                  double /*time*/,
+                                  ViewIdx /*view*/) const
+{
+    return inputNb == kIDistortInputSource;
+}
+
+double
+IDistort::getInverseWarpChainFilterSupport(int /*inputNb*/,
+                                           double time,
+                                           ViewIdx view) const
+{
+    return Resampler::filterRoIExpansion(_filterKnobs.read(time, view)) + 0.5;
+}
+
+std::optional<EdgeMode>
+IDistort::getConcatenationEdgeMode(double time,
+                                   ViewIdx view) const
+{
+    return resolvedEdgeMode(time, view);
+}
+
+bool
 IDistort::canRenderOpOnGpu(const GpuQuery& query) const
 {
 #ifdef NATRON_HAVE_GPU
-    if ((query.bitDepth != eImageBitDepthFloat) || !canRunStagesGpu(resolveGpuPlan(query), query)) {
+    const StagePlan plan = resolveGpuPlan(query);
+    if ((query.bitDepth != eImageBitDepthFloat) || !canRunStagesGpu(plan, query) || (query.hasConcatenatedInput && !warpGpuTakesChain(plan, query))) {
         return false;
     }
     ImageLayerDesc layer;
@@ -965,7 +1039,7 @@ IDistort::renderOpGpu(const GpuRenderArgs& args)
     }
     map.params = _map.bake(KnobReader(query.time, query.view));
 
-    return recordWarpGpu(*this, resolveGpuPlan(query), args, (int)gpu::GpuKernelId::idistort, params, kIDistortInputUV, uvLayer, uChannel, vChannel, map);
+    return recordWarpGpu(*this, resolveGpuPlan(query), args, (int)gpu::GpuKernelId::idistort, (int)gpu::GpuKernelId::idistort_chain, params, kIDistortInputUV, uvLayer, uChannel, vChannel, map);
 #else
     Q_UNUSED(args);
 

@@ -55,7 +55,21 @@ public:
     ValuePtr get(const Key& key,
                  const std::function<Value()>& compute)
     {
+        return get(key, std::function<bool(const Key&)>(), [&compute](const ValuePtr&) {
+            return compute();
+        });
+    }
+
+    /**
+     * @brief On a miss, the most recently used entry that covers() accepts is waited for and passed
+     * to compute(), or null when there is none or it failed.
+     **/
+    ValuePtr get(const Key& key,
+                 const std::function<bool(const Key&)>& covers,
+                 const std::function<Value(const ValuePtr& cover)>& compute)
+    {
         std::shared_future<ValuePtr> future;
+        std::shared_future<ValuePtr> coverFuture;
         std::shared_ptr<std::promise<ValuePtr>> promise;
         {
             std::lock_guard<std::mutex> l(_mutex);
@@ -67,6 +81,15 @@ public:
                 }
             }
             if (!future.valid()) {
+                if (covers) {
+                    for (typename std::list<Entry>::iterator it = _entries.begin(); it != _entries.end(); ++it) {
+                        if (covers(it->first)) {
+                            _entries.splice(_entries.begin(), _entries, it);
+                            coverFuture = it->second;
+                            break;
+                        }
+                    }
+                }
                 promise = std::make_shared<std::promise<ValuePtr>>();
                 future = promise->get_future().share();
                 _entries.push_front(Entry(key, future));
@@ -76,8 +99,16 @@ public:
             }
         }
         if (promise) {
+            ValuePtr cover;
+            if (coverFuture.valid()) {
+                try {
+                    cover = coverFuture.get();
+                } catch (...) {
+                    cover.reset();
+                }
+            }
             try {
-                promise->set_value(std::make_shared<const Value>(compute()));
+                promise->set_value(std::make_shared<const Value>(compute(cover)));
             } catch (...) {
                 promise->set_exception(std::current_exception());
                 remove(key);

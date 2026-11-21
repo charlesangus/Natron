@@ -1,0 +1,1 @@
+slang_add_kernel(resample_chain Kernels/resamplechain.slang ENTRY resample_chain_main REGISTRY NatronGpu)

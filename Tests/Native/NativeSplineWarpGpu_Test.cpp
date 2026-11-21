@@ -51,6 +51,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
 #include "Engine/GpuWeight.h"
+#include "Engine/InverseWarpChain.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Image/EdgeModeKnob.h"
@@ -387,7 +388,8 @@ renderGpu(GpuParityRuntime& runtime,
     wrap.dst.nComps = (uint32_t)c.nComps;
     wrap.output = wrapRect(c.window);
     wrap.nComps = (uint32_t)c.nComps;
-    gpu::GpuWrapView views[2];
+    // The field, the image sampled and the chain of concatenated nodes, which these cases have none of.
+    gpu::GpuWrapView views[3];
     gpu::GpuWrapView& fieldView = views[0];
     if (fieldBuffer) {
         fieldView.buffer = fieldBuffer;
@@ -404,7 +406,7 @@ renderGpu(GpuParityRuntime& runtime,
         return false;
     }
     const gpu::GpuStatus recorded = gpu::recordWrappedInputs(*context, gpu::GpuKernelId::splinewarp, wrap, paramBuffer,
-                                                             std::span<const gpu::GpuWrapView>(views, 2));
+                                                             std::span<const gpu::GpuWrapView>(views, 3));
     EXPECT_TRUE(bool(recorded)) << recorded.message;
     if (!recorded) {
         return false;
@@ -841,7 +843,15 @@ TEST_F(NativeSplineWarpGpuTest, EligibilityFollowsTheSupportedSettings)
     EXPECT_EQ(supported, effect->canRenderOnGpu(draft)) << "draft";
     GpuQuery concatenated = q;
     concatenated.hasConcatenatedInput = true;
-    EXPECT_FALSE(effect->canRenderOnGpu(concatenated)) << "a transform concatenated from upstream";
+    concatenated.concatenatedSteps = { InverseWarpChain::eGpuStepMatrix };
+    EXPECT_EQ(supported, effect->canRenderOnGpu(concatenated)) << "a transform concatenated from upstream";
+    concatenated.concatenatedSteps = { InverseWarpChain::eGpuStepMatrix | InverseWarpChain::eGpuStepSplineWarp | InverseWarpChain::eGpuStepLens };
+    EXPECT_EQ(supported, effect->canRenderOnGpu(concatenated)) << "warps concatenated from upstream";
+    concatenated.concatenatedSteps = { InverseWarpChain::eGpuStepMatrix | InverseWarpChain::eGpuStepUnsupported };
+    EXPECT_FALSE(effect->canRenderOnGpu(concatenated)) << "a warp with no GPU form concatenated from upstream";
+    concatenated.concatenatedSteps = { InverseWarpChain::eGpuStepMatrix };
+    concatenated.mix = 0.5;
+    EXPECT_FALSE(effect->canRenderOnGpu(concatenated)) << "a mix over a transform concatenated from upstream";
 }
 
 // A Filter, heavier the farther a link moves its curve at the rendered scale.
@@ -918,8 +928,8 @@ TEST_F(NativeSplineWarpGpuTest, BoundaryFrameMatchesTheCpu)
     expectWarpRunsOnTheGpu(source, warp, "mesh with a boundary");
 }
 
-// A Transform concatenated into the warp resamples once on the CPU, the GPU path taking no
-// concatenated source; the frame matches the CPU one.
+// A Transform concatenated into the warp is sampled through on the GPU, which never renders it;
+// the frame matches the CPU one.
 TEST_F(NativeSplineWarpGpuTest, ConcatenatingATransformMatchesTheCpuFrame)
 {
     resetProject();
@@ -942,8 +952,45 @@ TEST_F(NativeSplineWarpGpuTest, ConcatenatingATransformMatchesTheCpuFrame)
             return;
         }
         ASSERT_TRUE(result.ok) << result.error;
-        EXPECT_FALSE(result.ranInRegion(warp)) << (mesh ? "mesh" : "TPS");
-        expectFramesMatch(result, mesh ? "Transform -> SplineWarp (mesh)" : "Transform -> SplineWarp (TPS)");
+        const char* what = mesh ? "Transform -> SplineWarp (mesh)" : "Transform -> SplineWarp (TPS)";
+        EXPECT_TRUE(result.ranInRegion(warp)) << what;
+        EXPECT_EQ(1u, result.gpuTasksPerNode.count(warp->getScriptName_mt_safe())) << what << ": the region fell back to the CPU";
+        EXPECT_EQ(0u, result.gpuTasksPerNode.count(transform->getScriptName_mt_safe())) << what << ": the concatenated Transform rendered";
+        EXPECT_TRUE(result.cpuFallbackReasons.empty()) << what;
+        expectFramesMatch(result, what);
+    }
+}
+
+// A SplineWarp, its boundary on and off, concatenated into a second one is sampled through on
+// the GPU as a map chain, and only the second renders.
+TEST_F(NativeSplineWarpGpuTest, ConcatenatingASplineWarpMatchesTheCpuFrame)
+{
+    resetProject();
+    NodePtr source = makeSource();
+    ASSERT_TRUE(bool(source));
+    for (bool boundary : { false, true }) {
+        NodePtr first = makeWarp(source, false);
+        ASSERT_TRUE(bool(first));
+        ASSERT_TRUE(setKnobValues(first, kSplineWarpParamBoundaryBBox, { boundary ? 1. : 0. }));
+        NodePtr second = makeWarp(first, true);
+        ASSERT_TRUE(bool(second));
+        InputMatrixMap transforms;
+        second->getEffectInstance()->tryConcatenateTransforms(kTime, false, ViewIdx(0), RenderScale::identity, &transforms);
+        ASSERT_EQ(1u, transforms.count(kSplineWarpInputSource));
+        ASSERT_TRUE(bool(transforms[kSplineWarpInputSource].warpChain));
+
+        const RectI window = paritySourceWindow(source, kTime, 0);
+        const EndToEndResult result = renderEndToEnd(std::vector<NodePtr>({ first, second }), second, window, kTime);
+        if (result.skipped) {
+            return;
+        }
+        ASSERT_TRUE(result.ok) << result.error;
+        const char* what = boundary ? "SplineWarp (boundary) -> SplineWarp" : "SplineWarp -> SplineWarp";
+        EXPECT_TRUE(result.ranInRegion(second)) << what;
+        EXPECT_EQ(1u, result.gpuTasksPerNode.count(second->getScriptName_mt_safe())) << what << ": the region fell back to the CPU";
+        EXPECT_EQ(0u, result.gpuTasksPerNode.count(first->getScriptName_mt_safe())) << what << ": the concatenated SplineWarp rendered";
+        EXPECT_TRUE(result.cpuFallbackReasons.empty()) << what;
+        expectFramesMatch(result, what);
     }
 }
 

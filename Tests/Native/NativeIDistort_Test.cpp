@@ -40,11 +40,16 @@
 #include "Native/FilterKnobRenderChecks.h"
 #include "NativeParity.h"
 #include "NativePluginIdentity.h"
+#include "RegionIndependenceSupport.h"
 #include "RenderBothWays.h"
+#include "SplineWarpTestCurves.h"
+#include "WarpChainSampling.h"
+#include "WarpChainTestEffects.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
+#include "Engine/InverseWarpChain.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -52,6 +57,7 @@
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Transform/IDistort.h"
+#include "Engine/Nodes/Transform/SplineWarp/SplineWarp.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
@@ -169,6 +175,12 @@ countMismatches(const RenderedPlane& actual,
 class NativeIDistortTest
     : public BaseTest {
 protected:
+    virtual void SetUp() OVERRIDE
+    {
+        registerRegionTestSourcesOnce();
+        BaseTest::SetUp();
+    }
+
     void resetProject()
     {
         ProjectPtr project = getApp()->getProject();
@@ -216,6 +228,41 @@ protected:
         EXPECT_TRUE(setKnobValue(node, kResamplerParamFilterType, filter));
 
         return node;
+    }
+
+    // A SplineWarp on input moving a quad by (2.5, -1.5) and scaling it by 1.1, filtered
+    // bilinearly, with no format boundary pinning the image.
+    NodePtr makeSplineWarp(const NodePtr& input)
+    {
+        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_SPLINEWARP), PLUGIN_MAJOR_NATRON_SPLINEWARP);
+        EXPECT_TRUE(isNative(node));
+        if (!node) {
+            return node;
+        }
+        if (input) {
+            connectNodes(input, node, kSplineWarpInputSource, true);
+        }
+        EXPECT_TRUE(setKnobValues(node, kSplineWarpParamBoundaryBBox, { 0. }));
+        EXPECT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string("bilinear")));
+        EXPECT_TRUE(bool(SplineWarpTestCurves::linkQuad(SplineWarpTestCurves::contextOf(node), 22., 16., 16., 2.5, -1.5, 1.1)));
+
+        return node;
+    }
+
+    NodePtr makeProvider(const NodePtr& input)
+    {
+        NodePtr node = createNode(QString::fromUtf8(kTestPluginIDWarpChainProvider));
+        EXPECT_TRUE(node && providerOf(node));
+        if (node && input) {
+            connectNodes(input, node, 0, true);
+        }
+
+        return node;
+    }
+
+    static WarpChainTestProvider* providerOf(const NodePtr& node)
+    {
+        return node ? dynamic_cast<WarpChainTestProvider*>(node->getEffectInstance().get()) : NULL;
     }
 
     void expectIdentityOnSource(const NodePtr& source,
@@ -518,4 +565,117 @@ TEST_F(NativeIDistortTest, MixBlendsWithTheSource)
 
         return true; }, ParityTolerance::arithmetic(), "mix 0.5");
     EXPECT_EQ(0u, wrong);
+}
+
+// The SplineWarp concatenates into the IDistort: its field is sampled through once, as each node's
+// map applied by hand to the source in a single resample.
+TEST_F(NativeIDistortTest, SamplesAnUpstreamSplineWarpOnce)
+{
+    resetProject();
+    NodePtr source = makeSource();
+    ASSERT_TRUE(bool(source));
+    setParitySourceOrigin(source, 0, 0);
+    NodePtr warp = makeSplineWarp(source);
+    NodePtr uv = makeConstantUV(2., 1.);
+    ASSERT_TRUE(warp && uv);
+    NodePtr node = makeIDistort(warp, uv, "bilinear");
+    ASSERT_TRUE(bool(node));
+    EffectInstancePtr effect = node->getEffectInstance();
+
+    InputMatrixMap transforms;
+    effect->tryConcatenateTransforms(kTime, false, ViewIdx(0), RenderScale::identity, &transforms);
+    ASSERT_EQ(1u, transforms.count(kIDistortInputSource));
+    EXPECT_TRUE(bool(transforms[kIDistortInputSource].warpChain));
+    const std::optional<EdgeMode> edgeMode = effect->getConcatenationEdgeMode(kTime, ViewIdx(0));
+    ASSERT_TRUE(edgeMode.has_value());
+    const InverseWarpMapConstPtr field = WarpChainSampling::offeredMap(warp, kTime, WarpChainSampling::rodOf(warp, kTime));
+    ASSERT_TRUE(bool(field));
+
+    const RectI window(0, 0, kParitySourceWidth, kParitySourceHeight);
+    RenderedPlane image, distorted;
+    ASSERT_TRUE(renderRGBA(source, 0, window, &image));
+    ASSERT_TRUE(renderRGBA(node, 0, window, &distorted));
+    const RenderedPlane reference = WarpChainSampling::sampleThrough([&](std::size_t n, double* sx, double* sy, double* J) {
+        for (std::size_t i = 0; i < n; ++i) {
+            sx[i] += 2.;
+            sy[i] += 1.;
+        }
+        field->mapRow(n, sx, sy, J); }, image, window, Resampler::eFilterBilinear, *edgeMode);
+    const RectI inside(8, 8, 56, 40);
+    EXPECT_LE(WarpChainSampling::maxDiff(distorted, reference, inside), 1e-4);
+    EXPECT_GT(WarpChainSampling::maxDiff(image, reference, inside), 1e-3) << "the warps should move the Source";
+}
+
+// The IDistort reads its Source whole; through the SplineWarp that is the field's pullback of the
+// SplineWarp's region, asked of the Source directly.
+TEST_F(NativeIDistortTest, RequestsTheSplineWarpPullBackOfItsSourceRegion)
+{
+    resetProject();
+    NodePtr source = makeSource();
+    ASSERT_TRUE(bool(source));
+    setParitySourceOrigin(source, 0, 0);
+    NodePtr warp = makeSplineWarp(source);
+    NodePtr uv = makeConstantUV(2., 1.);
+    ASSERT_TRUE(warp && uv);
+    NodePtr node = makeIDistort(warp, uv, "bilinear");
+    ASSERT_TRUE(bool(node));
+
+    const RectD warpRoD = WarpChainSampling::rodOf(warp, kTime);
+    const InverseWarpMapConstPtr field = WarpChainSampling::offeredMap(warp, kTime, warpRoD);
+    ASSERT_TRUE(bool(field));
+    const double support = node->getEffectInstance()->getInverseWarpChainFilterSupport(kIDistortInputSource, kTime, ViewIdx(0));
+    const RectD expected = field->pullBack(warpRoD, support);
+
+    const RectD window = WarpChainSampling::canonicalOf(RectI(0, 0, kParitySourceWidth, kParitySourceHeight));
+    RectD region;
+    ASSERT_TRUE(WarpChainSampling::requestedRegion(node, getApp()->getTimeLine().get(), kTime, window, source, &region));
+    EXPECT_EQ(expected, region);
+    RectD skipped;
+    EXPECT_FALSE(WarpChainSampling::requestedRegion(node, getApp()->getTimeLine().get(), kTime, window, warp, &skipped)) << "the SplineWarp should not render";
+}
+
+// Every tile of a render samples through the one map the request pass built.
+TEST_F(NativeIDistortTest, BuildsAProviderMapOncePerRender)
+{
+    resetProject();
+    NodePtr source = makeSource();
+    ASSERT_TRUE(bool(source));
+    setParitySourceOrigin(source, 224, 232);
+    NodePtr provider = makeProvider(source);
+    NodePtr uv = makeConstantUV(2., 1.);
+    ASSERT_TRUE(provider && uv);
+    NodePtr node = makeIDistort(provider, uv, "bilinear");
+    ASSERT_TRUE(bool(node));
+
+    RenderedPlane distorted;
+    ASSERT_TRUE(renderRGBA(node, 0, paritySourceWindow(source, kTime, 0), &distorted));
+    const std::vector<RectD> windows = providerOf(provider)->getMapWindows();
+    ASSERT_EQ(1u, windows.size());
+    EXPECT_EQ(WarpChainSampling::rodOf(provider, kTime), windows[0]);
+}
+
+// A map over an infinite region could be neither built nor sampled: the render fails, saying why,
+// before the provider is asked for one.
+TEST_F(NativeIDistortTest, InfiniteSourceThroughAWarpFailsTheRender)
+{
+    resetProject();
+    NodePtr source = createNode(QString::fromUtf8(kRegionTestSourceID));
+    RegionTestSource* region = source ? dynamic_cast<RegionTestSource*>(source->getEffectInstance().get()) : NULL;
+    ASSERT_TRUE(region != NULL);
+    region->setFrame(RectI(0, 0, 16, 16), true);
+    NodePtr provider = makeProvider(source);
+    NodePtr uv = makeConstantUV(2., 1.);
+    ASSERT_TRUE(provider && uv);
+    NodePtr node = makeIDistort(provider, uv, "bilinear");
+    ASSERT_TRUE(bool(node));
+
+    std::vector<RenderedPlane> planes;
+    std::string error;
+    EXPECT_FALSE(renderNodePlanesDirect(node, kTime, ViewIdx(0), 0, RectI(0, 0, 16, 16), std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error));
+    QString message;
+    int type = 0;
+    node->getPersistentMessage(&message, &type, false);
+    EXPECT_EQ((int)eMessageTypeError, type);
+    EXPECT_EQ(QString::fromUtf8(InverseWarpChain::getInfiniteWindowError().c_str()), message);
+    EXPECT_TRUE(providerOf(provider)->getMapWindows().empty());
 }

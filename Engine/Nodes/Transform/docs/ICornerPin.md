@@ -30,8 +30,8 @@ amount the Map input gives. CornerPin (`CornerPin.reg.inc`) is its base node in 
   with the Map's gradient, so a steep Map does not alias. The Map is read one pixel past the render window for it.
 - **No Map.** With the Map disconnected it reads 1: the whole pin applies everywhere, as in CornerPin, and the node
   shows a warning badge.
-- **Concatenation.** ICornerPin is a per-pixel warp and never offers a matrix to concatenate: it ends a chain of
-  transforms, so a transform above it and one below it each resample the image.
+- **Concatenation.** ICornerPin is a per-pixel warp and never offers a matrix to concatenate, so a transform
+  below it resamples the image again. Transforms and warps above it fold into its resample, as in ITransform.
 - **Region.** As ITransform: the source's region pushed forward through the pins at every Map value the render may
   see, grown by a pixel with Black Outside, and unioned with the source's under a mask or a mix.
 - **Motion blur.** Motion blur averages the warp over the shutter with the Monte Carlo sampling of
@@ -44,7 +44,8 @@ constant Map of 0.5 renders as CornerPin at Amount 0.5; a disconnected Map warns
 default, impulse, and mask and mix) are compared bit for bit.
 
 GPU: `iwarp.slang` evaluates the same matrix curve from the same knots and reads the Map as an extra input, remapping
-it with `mapremap.slang` as the CPU does. Float images only, with or without a mask, never with motion blur
-(`Tests/Native/NativeIWarpGpu_Test.cpp`).
+it with `mapremap.slang` as the CPU does. Float images only, with or without a mask, never with motion blur.
+Concatenated transforms and warps above it are sampled through by `warpchain.slang`; with a mask or a mix below 1
+they render on the CPU (`Tests/Native/NativeIWarpGpu_Test.cpp`).
 
 It weighs as Heavy, the default for its op kind, so a region holding it always goes to the GPU.

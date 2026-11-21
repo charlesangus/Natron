@@ -26,13 +26,16 @@
 #include "Global/Macros.h"
 
 #include <cmath>
+#include <cstdint>
 #include <vector>
 
 #include <gtest/gtest.h>
 
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpField.h"
+#include "Engine/Nodes/Transform/SplineWarp/SplineWarpMesh.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpSampling.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpTps.h"
+#include "Engine/RectD.h"
 #include "Engine/RectI.h"
 
 NATRON_NAMESPACE_USING
@@ -122,6 +125,87 @@ squareBoundary(double fallOff)
     b.fallOff = fallOff;
 
     return std::vector<SplineWarpBoundaryShape>(1, b);
+}
+
+SplineWarpTps
+bentMap()
+{
+    std::vector<SplineWarpSamplePair> pairs;
+
+    pairs.push_back(makePair(0., 0., 3., 1.));
+    pairs.push_back(makePair(120., 10., 118., 14.));
+    pairs.push_back(makePair(60., 90., 66., 85.));
+    pairs.push_back(makePair(20., 140., 20., 140.));
+    pairs.push_back(makePair(150., 150., 140., 155.));
+
+    return SplineWarpTps::solve(pairs, 0.);
+}
+
+// Every value the field gives over its window matches bit for bit.
+void
+expectSameField(const SplineWarpField& a,
+                const SplineWarpField& b)
+{
+    ASSERT_EQ(a.getWindow(), b.getWindow());
+    ASSERT_EQ(a.isIdentity(), b.isIdentity());
+    const RectI& w = a.getWindow();
+
+    const RectD ba = a.getSourceBounds();
+    const RectD bb = b.getSourceBounds();
+    EXPECT_EQ(ba.x1, bb.x1);
+    EXPECT_EQ(ba.y1, bb.y1);
+    EXPECT_EQ(ba.x2, bb.x2);
+    EXPECT_EQ(ba.y2, bb.y2);
+    double ksa[2], ksb[2];
+    a.getLargestKernelScales(&ksa[0], &ksa[1]);
+    b.getLargestKernelScales(&ksb[0], &ksb[1]);
+    EXPECT_EQ(ksa[0], ksb[0]);
+    EXPECT_EQ(ksa[1], ksb[1]);
+
+    const int width = w.width();
+    std::vector<float> sxa(width), sya(width), ja(4 * width), sxb(width), syb(width), jb(4 * width);
+    std::vector<double> pxa, pya, pja, pxb, pyb, pjb;
+    for (int y = w.y1; y < w.y2; ++y) {
+        a.getRow(y, w.x1, w.x2, &sxa[0], &sya[0], &ja[0]);
+        b.getRow(y, w.x1, w.x2, &sxb[0], &syb[0], &jb[0]);
+        for (int k = 0; k < width; ++k) {
+            ASSERT_EQ(sxa[k], sxb[k]) << w.x1 + k << " " << y;
+            ASSERT_EQ(sya[k], syb[k]) << w.x1 + k << " " << y;
+            for (int m = 0; m < 4; ++m) {
+                ASSERT_EQ(ja[4 * k + m], jb[4 * k + m]) << w.x1 + k << " " << y;
+            }
+            const double px = w.x1 + k + 0.3;
+            const double py = y + 0.7;
+            pxa.push_back(px);
+            pya.push_back(py);
+            pxb.push_back(px);
+            pyb.push_back(py);
+            const double identity[4] = { 1., 0., 0., 1. };
+            pja.insert(pja.end(), identity, identity + 4);
+            pjb.insert(pjb.end(), identity, identity + 4);
+        }
+    }
+    a.mapPoints(pxa.size(), &pxa[0], &pya[0], &pja[0]);
+    b.mapPoints(pxb.size(), &pxb[0], &pyb[0], &pjb[0]);
+    EXPECT_TRUE(pxa == pxb);
+    EXPECT_TRUE(pya == pyb);
+    EXPECT_TRUE(pja == pjb);
+
+    std::vector<uint32_t> wa, wb;
+    SplineWarpFieldGpuLayout la, lb;
+    a.getGpuTables(&wa, &la);
+    b.getGpuTables(&wb, &lb);
+    EXPECT_TRUE(wa == wb);
+    EXPECT_EQ(la.nodes, lb.nodes);
+    EXPECT_EQ(la.columns, lb.columns);
+    EXPECT_EQ(la.rows, lb.rows);
+    EXPECT_EQ(la.feathers, lb.feathers);
+    EXPECT_EQ(la.featherStride, lb.featherStride);
+    EXPECT_EQ(la.nx, lb.nx);
+    EXPECT_EQ(la.ny, lb.ny);
+    EXPECT_EQ(la.i0, lb.i0);
+    EXPECT_EQ(la.j0, lb.j0);
+    EXPECT_EQ(la.window, lb.window);
 }
 } // anonymous namespace
 
@@ -347,11 +431,97 @@ TEST(SplineWarpField, TheCacheBuildsOncePerKey)
     const std::vector<SplineWarpBoundaryShape> none;
     SplineWarpFieldCache cache;
 
-    const SplineWarpFieldConstPtr a = cache.get(7, 1., map, none, RectI(0, 0, 32, 32), 1., 1., 4.);
-    const SplineWarpFieldConstPtr b = cache.get(7, 1., map, none, RectI(0, 0, 32, 32), 1., 1., 4.);
-    const SplineWarpFieldConstPtr c = cache.get(7, 2., map, none, RectI(0, 0, 32, 32), 1., 1., 4.);
+    const SplineWarpFieldConstPtr a = cache.get(7, map, none, RectI(0, 0, 32, 32), 1., 1., 4.);
+    const SplineWarpFieldConstPtr b = cache.get(7, map, none, RectI(0, 0, 32, 32), 1., 1., 4.);
+    const SplineWarpFieldConstPtr c = cache.get(8, map, none, RectI(0, 0, 32, 32), 1., 1., 4.);
     ASSERT_TRUE(bool(a));
     ASSERT_TRUE(bool(c));
     EXPECT_EQ(a.get(), b.get());
     EXPECT_NE(a.get(), c.get());
+}
+
+TEST(SplineWarpField, TheCacheCutsAWindowFromALargerField)
+{
+    const SplineWarpTps map = bentMap();
+    ASSERT_EQ(SplineWarpTps::eModelThinPlate, map.getModel());
+    const std::vector<SplineWarpBoundaryShape> none;
+    const std::vector<SplineWarpBoundaryShape> square = squareBoundary(1.5);
+    const RectI whole(-20, -30, 200, 190);
+    // An anisotropic scale and windows off the lattice, one of them outside every feather.
+    const RectI tiles[] = { RectI(37, 51, 101, 99), RectI(-20, -30, 13, 7), RectI(150, 140, 200, 190), RectI(-17, -21, 197, 183) };
+
+    for (int b = 0; b < 2; ++b) {
+        const std::vector<SplineWarpBoundaryShape>& boundaries = b ? square : none;
+        SplineWarpFieldCache cache;
+        const SplineWarpFieldConstPtr large = cache.get(3, map, boundaries, whole, 0.75, 1., 4.);
+        ASSERT_TRUE(bool(large));
+        ASSERT_FALSE(large->isIdentity());
+        EXPECT_EQ(std::size_t(1), cache.getSolveCount());
+        for (const RectI& tile : tiles) {
+            const SplineWarpFieldConstPtr cut = cache.get(3, map, boundaries, tile, 0.75, 1., 4.);
+            ASSERT_TRUE(bool(cut));
+            EXPECT_EQ(std::size_t(1), cache.getSolveCount());
+            EXPECT_EQ(tile, cut->getWindow());
+            const SplineWarpField fresh(map, boundaries, tile, 0.75, 1., 4.);
+            expectSameField(fresh, *cut);
+        }
+        EXPECT_TRUE(cache.get(3, map, boundaries, tiles[2], 0.75, 1., 4.)->isIdentity() == bool(b));
+
+        // A window the cached fields do not hold, or another warp, is solved.
+        cache.get(3, map, boundaries, RectI(100, 100, 260, 220), 0.75, 1., 4.);
+        EXPECT_EQ(std::size_t(2), cache.getSolveCount());
+        cache.get(4, map, boundaries, tiles[0], 0.75, 1., 4.);
+        EXPECT_EQ(std::size_t(3), cache.getSolveCount());
+        cache.get(3, map, boundaries, tiles[0], 0.75, 1., 8.);
+        EXPECT_EQ(std::size_t(4), cache.getSolveCount());
+    }
+}
+
+// Both lay the grid out from the window and difference the same copied sources, one-sided at the
+// same edge, so a cut window's Jacobians are those a solve over it gives, at its edge too.
+TEST(SplineWarpField, ACutWindowHasTheJacobiansOfADirectSolve)
+{
+    std::vector<SplineWarpSamplePair> pairs;
+    pairs.push_back(makePair(40., 40., 43., 38.));
+    pairs.push_back(makePair(120., 40., 116., 45.));
+    pairs.push_back(makePair(120., 120., 126., 114.));
+    pairs.push_back(makePair(40., 120., 37., 124.));
+    SplineWarpSamplePolyline outline;
+    outline.pairs = { 0, 1, 2, 3 };
+    outline.closed = true;
+    const SplineWarpMesh mesh = SplineWarpMesh::build(pairs, std::vector<SplineWarpSamplePolyline>(1, outline), RectD(-60., -60., 300., 300.));
+    ASSERT_FALSE(mesh.usesFallback());
+    ASSERT_FALSE(mesh.isIdentity());
+    const SplineWarpTps map = bentMap();
+    const std::vector<SplineWarpBoundaryShape> none;
+    const std::vector<SplineWarpBoundaryShape> square = squareBoundary(1.5);
+    const RectI whole(-20, -30, 200, 190);
+    const RectI tiles[] = { RectI(37, 51, 101, 99), RectI(-20, -30, 13, 7), RectI(150, 140, 200, 190), RectI(-17, -21, 197, 183), RectI(64, 64, 65, 66) };
+
+    for (int m = 0; m < 2; ++m) {
+        for (int b = 0; b < 2; ++b) {
+            const std::vector<SplineWarpBoundaryShape>& boundaries = b ? square : none;
+            const SplineWarpField large = m ? SplineWarpField(mesh, boundaries, whole, 0.75, 1., 4.) : SplineWarpField(map, boundaries, whole, 0.75, 1., 4.);
+            ASSERT_FALSE(large.isIdentity());
+            for (const RectI& tile : tiles) {
+                const SplineWarpField cut(large, tile);
+                const SplineWarpField fresh = m ? SplineWarpField(mesh, boundaries, tile, 0.75, 1., 4.) : SplineWarpField(map, boundaries, tile, 0.75, 1., 4.);
+                expectSameField(fresh, cut);
+                // On the window's edges and corners and just inside them; getJacobian() takes
+                // canonical points, the window is in pixels at the 0.75 by 1 scale.
+                const double xs[] = { tile.x1 + 0., tile.x1 + 0.5, tile.x1 + 1.25, 0.5 * (tile.x1 + tile.x2), tile.x2 - 1.25, tile.x2 - 0.5, tile.x2 + 0. };
+                const double ys[] = { tile.y1 + 0., tile.y1 + 0.5, tile.y1 + 1.25, 0.5 * (tile.y1 + tile.y2), tile.y2 - 1.25, tile.y2 - 0.5, tile.y2 + 0. };
+                for (double y : ys) {
+                    for (double x : xs) {
+                        double jf[4], jc[4];
+                        fresh.getJacobian(x / 0.75, y, jf);
+                        cut.getJacobian(x / 0.75, y, jc);
+                        for (int k = 0; k < 4; ++k) {
+                            EXPECT_EQ(jf[k], jc[k]) << (m ? "mesh " : "tps ") << x << " " << y << " " << k;
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

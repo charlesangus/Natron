@@ -227,9 +227,24 @@ private:
     virtual StatusEnum renderOp(const RenderActionArgs& args,
                                 const StagePlan& plan) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    // The Source takes warps concatenated upstream, every warped coordinate taken on through
+    // them, except under a time or directional blur, whose many samples per pixel would each
+    // go through the whole chain.
+    virtual bool acceptsInverseWarpChain(int inputNb,
+                                         double time,
+                                         ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual double getInverseWarpChainFilterSupport(int inputNb,
+                                                    double time,
+                                                    ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual std::optional<EdgeMode> getConcatenationEdgeMode(double time,
+                                                             ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     /**
      * @brief Accepts what the stages accept in float without motion blur, when the Map's channel
-     * resolves in a layer of 1 to 4 channels or the Map is not read.
+     * resolves in a layer of 1 to 4 channels or the Map is not read, and the GPU takes what the
+     * Source concatenated, as warpGpuTakesChain() decides.
      **/
     virtual bool canRenderOpOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 

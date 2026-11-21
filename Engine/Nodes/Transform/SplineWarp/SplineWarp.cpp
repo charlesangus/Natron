@@ -27,10 +27,12 @@
 
 #include <algorithm>
 #include <bitset>
+#include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <list>
 #include <memory>
 #include <span>
@@ -42,7 +44,9 @@
 #include "Engine/ContentHasher.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/InverseWarpChain.h"
 #include "Engine/KnobChannelSelect.h"
+#include "Engine/KnobChannelSet.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
@@ -82,47 +86,6 @@ const std::size_t kTimeCacheSize = kSplineWarpMaxSubFrames + 4;
 
 // Where a coordinate lands outside every image, so it reads black.
 const float kOutsideCoord = -1e9f;
-
-// Maps pixel coordinates of this node's input through inv, the inverse of the concatenated
-// upstream transform, into the upstream image's pixels, and chains jacobian (when not null) with
-// the projective map's derivative.
-void
-mapRowThrough(const Mat3& inv,
-              int n,
-              float* sx,
-              float* sy,
-              float* jacobian)
-{
-    const double* m = inv.m;
-
-    for (int i = 0; i < n; ++i) {
-        const double x = sx[i];
-        const double y = sy[i];
-        const double w = m[6] * x + m[7] * y + m[8];
-        if (!(w > 0.)) {
-            sx[i] = kOutsideCoord;
-            sy[i] = kOutsideCoord;
-            continue;
-        }
-        const double qx = (m[0] * x + m[1] * y + m[2]) / w;
-        const double qy = (m[3] * x + m[4] * y + m[5]) / w;
-        sx[i] = (float)qx;
-        sy[i] = (float)qy;
-        if (!jacobian) {
-            continue;
-        }
-        const double d00 = (m[0] - qx * m[6]) / w;
-        const double d01 = (m[1] - qx * m[7]) / w;
-        const double d10 = (m[3] - qy * m[6]) / w;
-        const double d11 = (m[4] - qy * m[7]) / w;
-        float* J = &jacobian[(std::size_t)i * 4];
-        const double j0 = J[0], j1 = J[1], j2 = J[2], j3 = J[3];
-        J[0] = (float)(d00 * j0 + d01 * j2);
-        J[1] = (float)(d00 * j1 + d01 * j3);
-        J[2] = (float)(d10 * j0 + d11 * j2);
-        J[3] = (float)(d10 * j1 + d11 * j3);
-    }
-}
 
 void
 mergePoint(RectD* r,
@@ -1598,7 +1561,6 @@ SplineWarp::overlayMapKind(double time,
 
 SplineWarpFieldConstPtr
 SplineWarp::computeField(const Warp& warp,
-                         double time,
                          const Settings& settings,
                          const RectI& window,
                          double scaleX,
@@ -1611,13 +1573,13 @@ SplineWarp::computeField(const Warp& warp,
     // Sub-frames have a cache of their own, so they never evict the unblurred fields.
     SplineWarpFieldCache& cache = subFrame ? _subFrameFields : _fields;
     if (warp.mesh) {
-        return cache.get(warp.hash, time, *warp.mesh, warp.samples->boundaries, window, scaleX, scaleY, settings.fieldResolution);
+        return cache.get(warp.hash, *warp.mesh, warp.samples->boundaries, window, scaleX, scaleY, settings.fieldResolution);
     }
     if (!warp.map) {
         return SplineWarpFieldConstPtr();
     }
 
-    return cache.get(warp.hash, time, *warp.map, warp.samples->boundaries, window, scaleX, scaleY, settings.fieldResolution);
+    return cache.get(warp.hash, *warp.map, warp.samples->boundaries, window, scaleX, scaleY, settings.fieldResolution);
 }
 
 double
@@ -1639,6 +1601,238 @@ SplineWarp::getInputsHoldingTransform(std::list<int>* inputs) const
     inputs->push_back(kSplineWarpInputSource);
 
     return true;
+}
+
+namespace {
+
+// cropRowToFormat() for a chain, where no source is NaN.
+void
+cropPointsToFormat(const RectI& format,
+                   EdgeMode edgeMode,
+                   std::size_t n,
+                   double* sx,
+                   double* sy)
+{
+    for (std::size_t i = 0; i < n; ++i) {
+        if (std::isnan(sx[i]) || std::isnan(sy[i])) {
+            continue;
+        }
+        if ((sx[i] >= format.x1) && (sx[i] <= format.x2) && (sy[i] >= format.y1) && (sy[i] <= format.y2)) {
+            continue;
+        }
+        if ((edgeMode == EdgeMode::Black) || format.isNull()) {
+            sx[i] = std::numeric_limits<double>::quiet_NaN();
+            sy[i] = std::numeric_limits<double>::quiet_NaN();
+        } else {
+            sx[i] = std::min(std::max(sx[i], format.x1 + 0.5), format.x2 - 0.5);
+            sy[i] = std::min(std::max(sy[i], format.y1 + 0.5), format.y2 - 0.5);
+        }
+    }
+}
+
+class SplineWarpInverseMap
+    : public InverseWarpMap {
+public:
+    // A null field leaves every point in place; a null format does not crop. With windowed, a
+    // point outside window, the output's region of definition in pixels at scale, has no source
+    // under a black edge and is clamped half a pixel inside it otherwise, as an unchained consumer
+    // reads the output's edge pixel there.
+    SplineWarpInverseMap(const RenderScale& scale,
+                         double par,
+                         const SplineWarpFieldConstPtr& field,
+                         const RectI& format,
+                         bool crop,
+                         EdgeMode edgeMode,
+                         const RectI& window,
+                         bool windowed)
+        : InverseWarpMap(scale, par)
+        , _field(field)
+        , _format(format)
+        , _crop(crop)
+        , _edgeMode(edgeMode)
+        , _window(window)
+        , _windowed(windowed)
+    {
+    }
+
+    virtual void mapRow(std::size_t n,
+                        double* sx,
+                        double* sy,
+                        double* J) const OVERRIDE FINAL
+    {
+        if (_windowed) {
+            cropPointsToFormat(_window, _edgeMode, n, sx, sy);
+        }
+        if (_field) {
+            _field->mapPoints(n, sx, sy, J);
+        }
+        if (_crop) {
+            cropPointsToFormat(_format, _edgeMode, n, sx, sy);
+        }
+    }
+
+    // The block warpchain.slang's warpChainSplineWarp() reads; its table offsets count from the
+    // block's first word.
+    virtual uint32_t packGpu(std::vector<uint32_t>* words) const OVERRIDE FINAL
+    {
+        const bool mapped = _field && !_field->isIdentity();
+        std::vector<uint32_t> tables;
+        SplineWarpFieldGpuLayout layout;
+        if (mapped) {
+            _field->getGpuTables(&tables, &layout);
+            if (tables.empty()) {
+                return 0;
+            }
+        }
+        static constexpr uint32_t kFieldOn = 1;
+        static constexpr std::size_t kHeaderWords = 27;
+        uint32_t flags = 0;
+        if (mapped) {
+            flags |= kFieldOn;
+        }
+        if (_crop) {
+            flags |= InverseWarpChain::kGpuCropFlag;
+        }
+        if (_edgeMode == EdgeMode::Black) {
+            flags |= InverseWarpChain::kGpuEdgeBlackFlag;
+        }
+        const std::size_t start = words->size();
+        words->push_back(flags);
+        words->push_back((uint32_t)_format.x1);
+        words->push_back((uint32_t)_format.y1);
+        words->push_back((uint32_t)_format.x2);
+        words->push_back((uint32_t)_format.y2);
+        words->push_back((uint32_t)(kHeaderWords + layout.nodes));
+        words->push_back(layout.nx);
+        words->push_back(layout.ny);
+        words->push_back((uint32_t)layout.i0);
+        words->push_back((uint32_t)layout.j0);
+        InverseWarp::pushGpuDouble(words, layout.step);
+        InverseWarp::pushGpuDouble(words, layout.scaleX);
+        InverseWarp::pushGpuDouble(words, layout.scaleY);
+        words->push_back((layout.featherStride > 0) ? (uint32_t)(kHeaderWords + layout.feathers) : 0u);
+        words->push_back(layout.featherStride);
+        words->push_back((uint32_t)layout.window.x1);
+        words->push_back((uint32_t)layout.window.y1);
+        words->push_back((uint32_t)layout.window.width());
+        words->push_back((uint32_t)layout.window.height());
+        words->push_back(_windowed ? (InverseWarpChain::kGpuCropFlag | ((_edgeMode == EdgeMode::Black) ? InverseWarpChain::kGpuEdgeBlackFlag : 0u)) : 0u);
+        words->push_back((uint32_t)_window.x1);
+        words->push_back((uint32_t)_window.y1);
+        words->push_back((uint32_t)_window.x2);
+        words->push_back((uint32_t)_window.y2);
+        assert(words->size() - start == kHeaderWords);
+        Q_UNUSED(start);
+        words->insert(words->end(), tables.begin(), tables.end());
+
+        return InverseWarpChain::kGpuTagSplineWarp;
+    }
+
+private:
+    SplineWarpFieldConstPtr _field;
+    RectI _format;
+    bool _crop;
+    EdgeMode _edgeMode;
+    RectI _window;
+    bool _windowed;
+};
+
+} // anonymous namespace
+
+bool
+SplineWarp::hasMotionBlur(double time,
+                          ViewIdx view) const
+{
+    KnobDoublePtr motionBlur = _motionBlur.lock();
+    KnobDoublePtr shutter = _shutter.lock();
+
+    return motionBlur && shutter && (motionBlur->getValueAtTime(time, 0, view) > 0.) && (shutter->getValueAtTime(time, 0, view) > 0.);
+}
+
+bool
+SplineWarp::canOfferInverseWarp(double time,
+                                ViewIdx view,
+                                bool /*draftRender*/,
+                                int* inputNb) const
+{
+    if (!getInput(kSplineWarpInputSource) || isMaskApplied() || (getMixValue(time, view) != 1.) || hasMotionBlur(time, view)) {
+        return false;
+    }
+    KnobChannelSetPtr channels = std::dynamic_pointer_cast<KnobChannelSet>(getKnobByName(kNodeParamChannelSet));
+    if (channels) {
+        bool all = false;
+        for (const ResolvedLayer& layer : channels->resolve(std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()))) {
+            if (layer.desc.isColorLayer()) {
+                all = layer.channels.all();
+                break;
+            }
+        }
+        if (!all) {
+            return false;
+        }
+    }
+    ImageLayerDesc maskLayer;
+    if (getOutputMaskLayer(time, view, &maskLayer)) {
+        return false;
+    }
+    if (inputNb) {
+        *inputNb = kSplineWarpInputSource;
+    }
+
+    return true;
+}
+
+InverseWarpMapConstPtr
+SplineWarp::getInverseWarpMap(double time,
+                              ViewIdx view,
+                              const RenderScale& scale,
+                              bool draftRender,
+                              const RectD& window)
+{
+    Settings settings;
+    readSettings(time, view, &settings, draftRender);
+    Warp warp;
+    computeWarp(time, view, settings, &warp);
+    const double par = getOutputPixelAspectRatio(time, view);
+    const OfxPointD s = scale.toOfxPointD();
+    SplineWarpFieldConstPtr field;
+    if (!window.isNull()) {
+        field = computeField(warp, settings, PassExec::toPixelEnclosing(window, scale, par), s.x / par, s.y, false);
+    }
+    if (field && field->isIdentity()) {
+        field.reset();
+    }
+    const bool crop = !settings.cropFormat.isNull();
+    const RectI format = crop ? settings.cropFormat.toPixelEnclosing(scale, par) : RectI();
+    RectD rod;
+    bool isProjectFormat = false;
+    const bool windowed = (getRegionOfDefinition_public(getRenderHash(), time, scale, view, &rod, &isProjectFormat) != eStatusFailed) && !rod.isInfinite();
+    const RectI outputWindow = (windowed && !rod.isNull()) ? rod.toPixelEnclosing(scale, par) : RectI();
+
+    return std::make_shared<const SplineWarpInverseMap>(scale, par, field, format, crop, settings.edgeMode, outputWindow, windowed);
+}
+
+bool
+SplineWarp::acceptsInverseWarpChain(int inputNb,
+                                    double time,
+                                    ViewIdx view) const
+{
+    return (inputNb == kSplineWarpInputSource) && !hasMotionBlur(time, view);
+}
+
+double
+SplineWarp::getInverseWarpChainFilterSupport(int /*inputNb*/,
+                                             double time,
+                                             ViewIdx view) const
+{
+    return Resampler::filterRoIExpansion(_filterKnobs.read(time, view)) + 0.5;
+}
+
+std::optional<EdgeMode>
+SplineWarp::getConcatenationEdgeMode(double time,
+                                     ViewIdx view) const
+{
+    return resolvedEdgeMode(time, view);
 }
 
 StatusEnum
@@ -1804,7 +1998,7 @@ SplineWarp::getRegionsOfInterest(double time,
             if (warps[i].warp.identity) {
                 continue;
             }
-            SplineWarpFieldConstPtr field = computeField(warps[i].warp, warps[i].time, settings, window, s.x / par, s.y, subFrames);
+            SplineWarpFieldConstPtr field = computeField(warps[i].warp, settings, window, s.x / par, s.y, subFrames);
             if (field && !field->isIdentity()) {
                 double scaleX = 1.;
                 double scaleY = 1.;
@@ -1889,8 +2083,12 @@ SplineWarp::renderOp(const RenderActionArgs& args,
     const bool subFrames = warps.size() > 1;
     std::vector<SplineWarpFieldConstPtr> fields;
     for (std::size_t i = 0; i < warps.size(); ++i) {
-        SplineWarpFieldConstPtr field = computeField(warps[i].warp, warps[i].time, settings, roi, s.x / par, s.y, subFrames);
+        SplineWarpFieldConstPtr field = computeField(warps[i].warp, settings, roi, s.x / par, s.y, subFrames);
         fields.push_back(field ? field : std::make_shared<const SplineWarpField>());
+    }
+    const InverseWarpChainConstPtr chain = (sourceInput >= 0) ? getPreparedWarpChain(sourceInput, args.time, args.view, args.mappedScale, PassExec::toCanonical(roi, args.mappedScale, par)) : InverseWarpChainConstPtr();
+    if (chain && chain->hasError()) {
+        return eStatusFailed;
     }
 
     // Every image is fetched before any is locked: fetching renders upstream, which may write
@@ -1920,6 +2118,8 @@ SplineWarp::renderOp(const RenderActionArgs& args,
         RectI srcBounds;
         Transform::Matrix3x3Ptr inputTransform;
         bool concatenated = false;
+        // The fetched image is the chain's source, which every warped coordinate maps into.
+        bool chained = false;
         // The outputMask plane, which warps the cookie mask instead of the Source.
         bool maskPlane = false;
         Mat3 inverse;
@@ -1958,6 +2158,8 @@ SplineWarp::renderOp(const RenderActionArgs& args,
                 if (!plane->concatenated) {
                     plane->src.reset();
                 }
+            } else if (plane->src && chain) {
+                plane->chained = true;
             }
         }
         planes.push_back(std::move(plane));
@@ -2003,7 +2205,10 @@ SplineWarp::renderOp(const RenderActionArgs& args,
             plane.srcNComps = srcNComps;
             plane.srcAccess = std::make_shared<Image::ReadAccess>(plane.src.get());
             // A concatenated image is in upstream pixels, which the sampling crops by coordinate.
-            const RectI readBounds = (crop && !plane.concatenated) ? plane.srcBounds.intersect(formatPixels) : plane.srcBounds;
+            RectI readBounds = (crop && !plane.concatenated && !plane.chained) ? plane.srcBounds.intersect(formatPixels) : plane.srcBounds;
+            if (plane.chained) {
+                readBounds = readBounds.intersect(chain->getSourcePixels(plane.src->getPixelAspectRatio()));
+            }
             if (readBounds.isNull()) {
                 plane.source = Resampler::SourceImage((const float*)0, RectI(), nComps);
             } else if (srcNComps == nComps) {
@@ -2053,13 +2258,32 @@ SplineWarp::renderOp(const RenderActionArgs& args,
         std::vector<float> sy(width);
         std::vector<float> jacobian(impulse ? 0 : (std::size_t)width * 4);
         float* const jac = impulse ? NULL : jacobian.data();
+        Resampler::ChainRowScratch chainRow;
+        chainRow.resize(plane.chained ? (std::size_t)width : 0, !impulse);
+        // Row y's pixel centres through the field when given, the crop, then the chain, sampled
+        // into row.
+        const auto sampleRowThroughChain = [&](const SplineWarpField* field, int y, float* row) {
+            chainRow.loadPixelCentres((std::size_t)width, roi.x1, y);
+            if (field) {
+                field->mapPoints((std::size_t)width, chainRow.x.data(), chainRow.y.data(), chainRow.jacobianData());
+                if (crop) {
+                    cropPointsToFormat(formatPixels, settings.edgeMode, (std::size_t)width, chainRow.x.data(), chainRow.y.data());
+                }
+            }
+            Resampler::sampleRowThroughChain(*chain, (std::size_t)width, &chainRow, plane.source, settings.filter, settings.clamp, settings.edgeMode, row, nComps);
+        };
         const auto sampleField = [&](const SplineWarpField& field, int y, float* row) {
+            if (plane.chained) {
+                sampleRowThroughChain(&field, y, row);
+
+                return;
+            }
             field.getRow(y, roi.x1, roi.x2, sx.data(), sy.data(), jac);
             if (plane.concatenated) {
                 if (crop) {
                     cropRowToFormat(formatPixels, settings.edgeMode, width, sx.data(), sy.data());
                 }
-                mapRowThrough(plane.inverse, width, sx.data(), sy.data(), jac);
+                InverseWarp::mapRowThroughMatrix(plane.inverse.m, (std::size_t)width, sx.data(), sy.data(), jac);
             }
             Resampler::resampleRowFromCoords(plane.source, sx.data(), sy.data(), jac, width, settings.filter, settings.clamp, settings.edgeMode,
                                              Resampler::eWrapNone, Resampler::eWrapNone, row, nComps);
@@ -2112,7 +2336,11 @@ SplineWarp::renderOp(const RenderActionArgs& args,
             if (direct) {
                 continue;
             }
-            if (plane.concatenated) {
+            if (plane.chained) {
+                // The reference is this node's immediate input: the chain's source through the
+                // chain alone.
+                sampleRowThroughChain(NULL, y, &referenceRow[0]);
+            } else if (plane.concatenated) {
                 // The reference is this node's immediate input: the fetched image through the
                 // concatenated transform alone, read past its region under this node's edge mode,
                 // which concatenation guarantees the transform resolves to as well.
@@ -2127,7 +2355,7 @@ SplineWarp::renderOp(const RenderActionArgs& args,
                         J[3] = 1.f;
                     }
                 }
-                mapRowThrough(plane.inverse, width, sx.data(), sy.data(), jac);
+                InverseWarp::mapRowThroughMatrix(plane.inverse.m, (std::size_t)width, sx.data(), sy.data(), jac);
                 Resampler::resampleRowFromCoords(plane.source, sx.data(), sy.data(), jac, width, settings.filter, settings.clamp, settings.edgeMode,
                                                  Resampler::eWrapNone, Resampler::eWrapNone, &referenceRow[0], nComps);
             } else {
@@ -2194,7 +2422,26 @@ bool
 SplineWarp::canRenderOpOnGpu(const GpuQuery& query) const
 {
 #ifdef NATRON_HAVE_GPU
-    return (query.bitDepth == eImageBitDepthFloat) && !query.hasConcatenatedInput && canRunStagesGpu(resolveGpuPlan(query), query);
+    const StagePlan plan = resolveGpuPlan(query);
+    if ((query.bitDepth != eImageBitDepthFloat) || !canRunStagesGpu(plan, query)) {
+        return false;
+    }
+    if (!query.hasConcatenatedInput) {
+        return true;
+    }
+    // The finishing stages would blend against the Source upstream of the concatenated nodes,
+    // where renderOp() blends against this node's immediate input.
+    if (plan.applyMask || (plan.mix != 1.) || (query.mix != 1.) || !plan.processChannels.all()) {
+        return false;
+    }
+    if (!query.concatenatedStepsWithin(InverseWarpChain::eGpuStepMatrix | InverseWarpChain::eGpuStepSplineWarp | InverseWarpChain::eGpuStepLens)) {
+        return false;
+    }
+    if (!(query.concatenatedStepsOf(kSplineWarpInputSource) & ~(unsigned)InverseWarpChain::eGpuStepMatrix)) {
+        return true;
+    }
+    // Motion blur's fields each map through the chain; only a matrix chain is taken with them.
+    return !hasMotionBlur(query.time, query.view);
 #else
     Q_UNUSED(query);
 
@@ -2287,6 +2534,11 @@ SplineWarp::renderOpGpu(const GpuRenderArgs& args)
     plan.blendSourceFollowsEdgeMode = true;
     GpuRenderArgs cropped = args;
     const int sourceInput = plan.sourceInput;
+    // The cookie mask plane never reads the Source.
+    const GpuInputChain* chain = maskPlane ? nullptr : args.chainOf(sourceInput);
+    if (!maskPlane && !chain && query.concatenatedStepsOf(sourceInput)) {
+        return eStatusFailed;
+    }
     GpuImageView sampleView;
     if (maskPlane) {
         if (query.nComps != 1) {
@@ -2299,7 +2551,8 @@ SplineWarp::renderOpGpu(const GpuRenderArgs& args)
         }
         const GpuImageView& source = cropped.inputs[sourceInput];
         if (source.buffer) {
-            sampleView = crop ? PassExec::cropGpuView(source, source.bounds.intersect(formatPixels)) : source;
+            // A chained Source is in upstream pixels, which the kernel crops by coordinate.
+            sampleView = (crop && !chain) ? PassExec::cropGpuView(source, source.bounds.intersect(formatPixels)) : source;
         }
     }
     if (sampleView.buffer && !sampleView.bounds.isNull()) {
@@ -2310,15 +2563,30 @@ SplineWarp::renderOpGpu(const GpuRenderArgs& args)
     }
 
     GpuImageView fieldView;
+    GpuImageView chainView;
     if (params.flags & kSplineWarpGpuSample) {
         std::vector<TimedWarp> warps;
         computeShutterWarps(query.time, query.view, settings, &warps);
         const bool subFrames = warps.size() > 1;
+        if (chain) {
+            std::vector<uint32_t> chainWords(kSplineWarpGpuChainCropWords, 0u);
+            if (crop) {
+                chainWords[0] = InverseWarpChain::kGpuCropFlag | ((settings.edgeMode == EdgeMode::Black) ? InverseWarpChain::kGpuEdgeBlackFlag : 0u);
+                chainWords[1] = (uint32_t)formatPixels.x1;
+                chainWords[2] = (uint32_t)formatPixels.y1;
+                chainWords[3] = (uint32_t)formatPixels.x2;
+                chainWords[4] = (uint32_t)formatPixels.y2;
+            }
+            if (!stageGpuChainView(args, sourceInput, std::move(chainWords), &chainView) || !chainView.buffer) {
+                return eStatusFailed;
+            }
+            params.flags |= kSplineWarpGpuChain;
+        }
         std::vector<uint32_t> words;
         SplineWarpFieldGpuLayout layout;
         SplineWarpFieldConstPtr field;
         if (!subFrames) {
-            field = computeField(warps[0].warp, warps[0].time, settings, rect, s.x / par, s.y, false);
+            field = computeField(warps[0].warp, settings, rect, s.x / par, s.y, false);
             if (field) {
                 field->getGpuTables(&words, &layout);
             }
@@ -2328,7 +2596,7 @@ SplineWarp::renderOpGpu(const GpuRenderArgs& args)
             words.assign(count * kSplineWarpGpuSubFrameWords, 0u);
             std::vector<uint32_t> tables;
             for (std::size_t i = 0; i < count; ++i) {
-                SplineWarpFieldConstPtr subField = computeField(warps[i].warp, warps[i].time, settings, rect, s.x / par, s.y, true);
+                SplineWarpFieldConstPtr subField = computeField(warps[i].warp, settings, rect, s.x / par, s.y, true);
                 SplineWarpFieldGpuLayout subLayout;
                 tables.clear();
                 if (subField) {
@@ -2362,12 +2630,12 @@ SplineWarp::renderOpGpu(const GpuRenderArgs& args)
     }
 
     PixelKernelGpu op;
-    op.kernel = (int)gpu::GpuKernelId::splinewarp;
+    op.kernel = (int)(chainView.buffer ? gpu::GpuKernelId::splinewarp_chain : gpu::GpuKernelId::splinewarp);
     op.setParams(params);
 
-    const GpuImageView inputs[2] = { fieldView, sampleView };
+    const GpuImageView inputs[3] = { fieldView, sampleView, chainView };
 
-    return recordStagesGpuKernelInputs(plan, cropped, op, std::span<const GpuImageView>(inputs, 2));
+    return recordStagesGpuKernelInputs(plan, cropped, op, std::span<const GpuImageView>(inputs, 3));
 #else
     Q_UNUSED(args);
 

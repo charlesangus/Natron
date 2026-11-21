@@ -152,6 +152,54 @@ public:
      **/
     virtual bool getInputsHoldingTransform(std::list<int>* inputs) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    virtual bool getCanInverseWarp() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
+    virtual unsigned getInverseWarpGpuStep() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return InverseWarpChain::eGpuStepSplineWarp;
+    }
+
+    /**
+     * @brief Offers the field on the Source unless the output is masked, mixed, limited to some
+     * channels, produces the outputMask layer, or averages motion-blur sub-frames: a consumer
+     * sampling through the field alone would render none of those.
+     **/
+    virtual bool canOfferInverseWarp(double time,
+                                     ViewIdx view,
+                                     bool draftRender,
+                                     int* inputNb) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The field over window followed by the crop to the Source's format, as the render
+     * samples it.
+     **/
+    virtual InverseWarpMapConstPtr getInverseWarpMap(double time,
+                                                     ViewIdx view,
+                                                     const RenderScale& scale,
+                                                     bool draftRender,
+                                                     const RectD& window) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The Source, unless the render averages motion-blur sub-frames, whose fields a chain
+     * has no place for.
+     **/
+    virtual bool acceptsInverseWarpChain(int inputNb,
+                                         double time,
+                                         ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual double getInverseWarpChainFilterSupport(int inputNb,
+                                                    double time,
+                                                    ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The mode the field samples the Source under, so a chain through it samples the same.
+     **/
+    virtual std::optional<EdgeMode> getConcatenationEdgeMode(double time,
+                                                             ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     /**
      * @brief The outputMask layer, while a curve is an active cookie cutter and outputMask names
      * a channel of a layer other than colour.
@@ -412,9 +460,12 @@ private:
     void growUnionRoD(const Warp& warp, const Settings& settings, const RectD& rod, RectD* extra, bool* any);
 
     // The field over window, from the sub-frame cache when the render averages several.
-    SplineWarpFieldConstPtr computeField(const Warp& warp, double time, const Settings& settings, const RectI& window, double scaleX, double scaleY, bool subFrame);
+    SplineWarpFieldConstPtr computeField(const Warp& warp, const Settings& settings, const RectI& window, double scaleX, double scaleY, bool subFrame);
 
     double getOutputPixelAspectRatio(double time, ViewIdx view) const;
+
+    // Whether the knobs ask for motion-blur sub-frames, whether or not the warp moves through them.
+    bool hasMotionBlur(double time, ViewIdx view) const;
 
     void updateFilterVisibility(double time, ViewIdx view);
 

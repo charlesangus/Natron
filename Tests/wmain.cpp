@@ -42,6 +42,7 @@
 #include "TestOfxPluginPath.h"
 #include "TestPlaneChoiceTakeOvers.h"
 #include "TestRetiredOfxIds.h"
+#include "WarpChainTestEffects.h"
 
 using namespace NATRON_NAMESPACE;
 
@@ -186,6 +187,15 @@ registerIdentityHopTestPlugins()
 }
 
 void
+registerWarpChainTestPlugins()
+{
+    // Registered so WarpChainConcat_Test.cpp can concatenate through map providers before any
+    // shipped node offers its inverse warp.
+    registerTestBuiltInPlugin<WarpChainTestProvider>();
+    registerTestBuiltInPlugin<WarpChainTestConsumer>();
+}
+
+void
 registerFrameGraphBuildTestPlugins()
 {
     // Registered so FrameGraphBuild_Test.cpp can build a chain thousands of nodes deep whose RoD queries recurse
@@ -313,6 +323,7 @@ GTEST_API_ int main(int argc, char **argv)
     registerGraphScalingTestPlugins();
     registerRenderSchedulerTestPlugins();
     registerIdentityHopTestPlugins();
+    registerWarpChainTestPlugins();
     registerFrameGraphBuildTestPlugins();
     registerNativeParityTestPlugins();
     registerOverlayTestPlugins();

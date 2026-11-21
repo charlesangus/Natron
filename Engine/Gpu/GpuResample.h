@@ -99,6 +99,12 @@ struct GpuResample {
     EdgeMode edgeMode = EdgeMode::Black;
     std::vector<GpuResampleMatrix> matrices;
     GpuResampleBlur blur;
+    // Set, the resample maps each pixel centre through chainMatrix, the op's inverse row-major,
+    // then through these words of InverseWarpChain::packGpu(), and samples there with its
+    // Jacobian and no wrap, as Resampler::resampleRowFromCoords() does; matrices and blur are
+    // ignored.
+    const std::vector<uint32_t>* chain = nullptr;
+    std::array<double, 9> chainMatrix {};
 };
 
 GpuStatus recordResample(GpuRecordContext& ctx, const GpuResample& resample);

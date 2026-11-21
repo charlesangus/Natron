@@ -508,9 +508,9 @@ TEST(SplineWarpMesh, TheCachesKeepSolversApart)
     const SplineWarpTps map = SplineWarpTps::solve(pairs, 0.);
     const std::vector<SplineWarpBoundaryShape> none;
     SplineWarpFieldCache fields;
-    const SplineWarpFieldConstPtr fromMesh = fields.get(7, 1., *a, none, RectI(0, 0, 32, 32), 1., 1., 4.);
-    const SplineWarpFieldConstPtr fromMeshAgain = fields.get(7, 1., *a, none, RectI(0, 0, 32, 32), 1., 1., 4.);
-    const SplineWarpFieldConstPtr fromTps = fields.get(7, 1., map, none, RectI(0, 0, 32, 32), 1., 1., 4.);
+    const SplineWarpFieldConstPtr fromMesh = fields.get(7, *a, none, RectI(0, 0, 32, 32), 1., 1., 4.);
+    const SplineWarpFieldConstPtr fromMeshAgain = fields.get(7, *a, none, RectI(0, 0, 32, 32), 1., 1., 4.);
+    const SplineWarpFieldConstPtr fromTps = fields.get(7, map, none, RectI(0, 0, 32, 32), 1., 1., 4.);
     ASSERT_TRUE(bool(fromMesh));
     ASSERT_TRUE(bool(fromTps));
     EXPECT_EQ(fromMesh.get(), fromMeshAgain.get());

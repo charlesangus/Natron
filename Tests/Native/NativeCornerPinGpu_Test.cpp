@@ -50,6 +50,7 @@
 #include "Engine/Format.h"
 #include "Engine/GpuWeight.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/InverseWarpChain.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -261,8 +262,12 @@ TEST_F(NativeCornerPinGpuTest, EligibilityFollowsTheSupportedSettings)
         EXPECT_EQ(supported, effect->canRenderOnGpu(q)) << pin.name << " draft";
         q.draftMode = false;
         q.hasConcatenatedInput = true;
-        EXPECT_FALSE(effect->canRenderOnGpu(q)) << pin.name << " a transform concatenated from upstream";
+        q.concatenatedSteps = { InverseWarpChain::eGpuStepMatrix };
+        EXPECT_EQ(supported, effect->canRenderOnGpu(q)) << pin.name << " a transform concatenated from upstream";
+        q.concatenatedSteps = { InverseWarpChain::eGpuStepUnsupported };
+        EXPECT_FALSE(effect->canRenderOnGpu(q)) << pin.name << " a warp with no GPU form concatenated from upstream";
         q.hasConcatenatedInput = false;
+        q.concatenatedSteps.clear();
         q.hasMask = true;
         q.mix = 0.5;
         EXPECT_EQ(supported, effect->canRenderOnGpu(q)) << pin.name << " mask and mix";
@@ -793,7 +798,7 @@ TEST_F(NativeCornerPinGpuTest, HomographyFrameRunsOnTheGpu)
 }
 
 // A Transform after a CornerPin concatenates the pin's projective matrix and resamples once on the
-// CPU, the GPU path taking no concatenated source; the frame matches the CPU one.
+// GPU, which never renders the pin; the frame matches the CPU one.
 TEST_F(NativeCornerPinGpuTest, ConcatenatedIntoATransformMatchesTheCpuFrame)
 {
     resetProject();
@@ -814,12 +819,13 @@ TEST_F(NativeCornerPinGpuTest, ConcatenatedIntoATransformMatchesTheCpuFrame)
         return;
     }
     ASSERT_TRUE(result.ok) << result.error;
-    EXPECT_FALSE(result.ranInRegion(transform));
+    EXPECT_TRUE(result.ranInRegion(transform));
+    EXPECT_EQ(0u, result.gpuTasksPerNode.count(pin->getScriptName_mt_safe())) << "the concatenated CornerPin rendered";
     expectFramesMatch(result, "CornerPin -> Transform");
 }
 
-// A CornerPin after a Transform applies the concatenated upstream matrix on the CPU; the frame
-// matches the CPU one.
+// A CornerPin after a Transform applies the concatenated upstream matrix on the GPU, which never
+// renders the Transform; the frame matches the CPU one.
 TEST_F(NativeCornerPinGpuTest, ConcatenatingATransformMatchesTheCpuFrame)
 {
     resetProject();
@@ -840,6 +846,7 @@ TEST_F(NativeCornerPinGpuTest, ConcatenatingATransformMatchesTheCpuFrame)
         return;
     }
     ASSERT_TRUE(result.ok) << result.error;
-    EXPECT_FALSE(result.ranInRegion(pin));
+    EXPECT_TRUE(result.ranInRegion(pin));
+    EXPECT_EQ(0u, result.gpuTasksPerNode.count(transform->getScriptName_mt_safe())) << "the concatenated Transform rendered";
     expectFramesMatch(result, "Transform -> CornerPin");
 }

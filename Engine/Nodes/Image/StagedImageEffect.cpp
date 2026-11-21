@@ -701,6 +701,31 @@ StagedImageEffect::getConcatenationEdgeMode(double time,
     return opResample(time, view, RenderScale::identity).settings.edgeMode;
 }
 
+bool
+StagedImageEffect::acceptsInverseWarpChain(int inputNb,
+                                           double time,
+                                           ViewIdx view) const
+{
+    if (!opHasMatrix() || (inputNb < 0) || (inputNb != getSourceInput())) {
+        return false;
+    }
+    const Resampler::BlurSettings& blur = opResample(time, view, RenderScale::identity).settings.blur;
+
+    return !blur.directionalBlur && ((blur.motionBlur == 0.) || (blur.shutter == 0.));
+}
+
+double
+StagedImageEffect::getInverseWarpChainFilterSupport(int /*inputNb*/,
+                                                    double time,
+                                                    ViewIdx view) const
+{
+    if (!opHasMatrix()) {
+        return 0.;
+    }
+
+    return Resampler::filterRoIExpansion(opResample(time, view, RenderScale::identity).settings.filter) + 0.5;
+}
+
 ResampleRegionStages
 StagedImageEffect::getResampleRegionStages(double time,
                                            ViewIdx view) const

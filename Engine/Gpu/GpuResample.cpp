@@ -278,10 +278,13 @@ recordResample(GpuRecordContext& ctx, const GpuResample& r)
     if (!r.dst.buffer || r.output.empty() || !contains(r.dst.bounds, r.output)) {
         return invalid("invalid destination window");
     }
-    if (r.matrices.empty() || r.matrices.size() > kGpuResampleMaxMatrices) {
+    if (r.chain && r.chain->empty()) {
+        return invalid("the chain is empty");
+    }
+    if (!r.chain && (r.matrices.empty() || r.matrices.size() > kGpuResampleMaxMatrices)) {
         return invalid("the matrix count is out of range");
     }
-    const bool blurred = r.matrices.size() > 1;
+    const bool blurred = !r.chain && (r.matrices.size() > 1);
     for (const GpuResampleMatrix& m : r.matrices) {
         if (GpuStatus s = validateMatrix(m, blurred && r.blur.weighted); !s) {
             return s;
@@ -323,6 +326,24 @@ recordResample(GpuRecordContext& ctx, const GpuResample& r)
     // An invalid source is never read, but the binding still needs a buffer, and so does the
     // matrices' binding when they travel in the push constants.
     const GpuBuffer* src = srcValid ? r.src.buffer : r.dst.buffer;
+    if (r.chain) {
+        // resamplechain.slang's words: the matrix as a warpchain.slang matrix block, then the chain.
+        std::vector<uint32_t> words;
+        words.reserve(18 + r.chain->size());
+        for (double v : r.chainMatrix) {
+            float hi, lo;
+            splitDouble(v, hi, lo);
+            words.push_back(floatBits(hi));
+            words.push_back(floatBits(lo));
+        }
+        words.insert(words.end(), r.chain->begin(), r.chain->end());
+        GpuBuffer* chain = nullptr;
+        if (GpuStatus s = uploadWords(ctx, std::as_bytes(std::span<const uint32_t>(words)), chain); !s) {
+            return s;
+        }
+        p.states = 1u;
+        return ctx.dispatch(GpuKernelId::resample_chain, { src, r.dst.buffer, chain }, p, { p.width, p.height, 1 });
+    }
     // The exact kernels emulate no division, so a projective matrix runs the two-float ones.
     const bool projective
         = std::any_of(r.matrices.begin(), r.matrices.end(), [](const GpuResampleMatrix& m) { return m.isProjective(); });

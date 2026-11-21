@@ -589,6 +589,22 @@ Node::getCurrentCanTransform() const
 }
 
 void
+Node::setCurrentCanInverseWarp(bool support)
+{
+    QMutexLocker k(&_imp->pluginsPropMutex);
+
+    _imp->currentCanInverseWarp = support;
+}
+
+bool
+Node::getCurrentCanInverseWarp() const
+{
+    QMutexLocker k(&_imp->pluginsPropMutex);
+
+    return _imp->currentCanInverseWarp;
+}
+
+void
 Node::refreshDynamicProperties()
 {
     PluginOpenGLRenderSupport pluginGLSupport = ePluginOpenGLRenderSupportNone;
@@ -610,6 +626,7 @@ Node::refreshDynamicProperties()
     setCurrentSupportTiles(multiResSupported && tilesSupported);
     setCurrentSequentialRenderSupport( _imp->effect->getSequentialPreference() );
     setCurrentCanTransform(canTransform);
+    setCurrentCanInverseWarp(_imp->effect->getCanInverseWarp());
 }
 
 bool

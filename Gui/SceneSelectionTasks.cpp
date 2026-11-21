@@ -26,6 +26,7 @@
 #include "SceneSelectionTasks.h"
 
 #include <atomic>
+#include <cstdint>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -78,6 +79,7 @@ class TaskSource
 public:
     HD_DECLARE_DATASOURCE(TaskSource);
 
+    HdLegacyTaskFactorySharedPtr factory;
     HdxRenderTaskParams params;
     HdRprimCollection collection;
     TfTokenVector renderTags;
@@ -97,8 +99,6 @@ public:
     HdDataSourceBaseHandle Get(const TfToken& name) override
     {
         if (name == HdLegacyTaskSchemaTokens->factory) {
-            static const HdLegacyTaskFactorySharedPtr factory = HdMakeLegacyTaskFactory<HdxRenderTask>();
-
             return retained(factory);
         }
         if (name == HdLegacyTaskSchemaTokens->parameters) {
@@ -120,6 +120,57 @@ private:
 
 HD_DECLARE_DATASOURCE_HANDLES(TaskSource);
 
+// HdEngine prepares every task before it executes any, so by Execute() all of them have said
+// whether they have draw items.
+class SelectionRenderTask
+    : public HdxRenderTask {
+public:
+    SelectionRenderTask(HdSceneDelegate* delegate,
+                        const SdfPath& id,
+                        const std::shared_ptr<bool>& drawn)
+        : HdxRenderTask(delegate, id)
+        , _drawn(drawn)
+    {
+    }
+
+    void Prepare(HdTaskContext* ctx,
+                 HdRenderIndex* renderIndex) override
+    {
+        HdxRenderTask::Prepare(ctx, renderIndex);
+        if (_HasDrawItems()) {
+            *_drawn = true;
+        }
+    }
+
+    void Execute(HdTaskContext* ctx) override
+    {
+        if (*_drawn) {
+            HdxRenderTask::Execute(ctx);
+        }
+    }
+
+private:
+    std::shared_ptr<bool> _drawn;
+};
+
+class SelectionRenderTaskFactory
+    : public HdLegacyTaskFactory {
+public:
+    explicit SelectionRenderTaskFactory(const std::shared_ptr<bool>& drawn)
+        : _drawn(drawn)
+    {
+    }
+
+    HdTaskSharedPtr Create(HdSceneDelegate* delegate,
+                           const SdfPath& id) override
+    {
+        return std::make_shared<SelectionRenderTask>(delegate, id, _drawn);
+    }
+
+private:
+    std::shared_ptr<bool> _drawn;
+};
+
 class BufferSource
     : public HdContainerDataSource {
 public:
@@ -127,6 +178,8 @@ public:
 
     GfVec3i dimensions;
     HdFormat format;
+    bool multiSampled;
+    std::uint32_t sampleCount;
 
     TfTokenVector GetNames() override
     {
@@ -134,6 +187,7 @@ public:
             HdRenderBufferSchemaTokens->dimensions,
             HdRenderBufferSchemaTokens->format,
             HdRenderBufferSchemaTokens->multiSampled,
+            HdStRenderBufferTokens->stormMsaaSampleCount,
         };
 
         return names;
@@ -148,7 +202,10 @@ public:
             return retained(format);
         }
         if (name == HdRenderBufferSchemaTokens->multiSampled) {
-            return retained(false);
+            return retained(multiSampled);
+        }
+        if (name == HdStRenderBufferTokens->stormMsaaSampleCount) {
+            return retained(sampleCount);
         }
 
         return HdDataSourceBaseHandle();
@@ -156,9 +213,13 @@ public:
 
 private:
     BufferSource(const GfVec3i& dimensions,
-                 HdFormat format)
+                 HdFormat format,
+                 bool multiSampled,
+                 std::uint32_t sampleCount)
         : dimensions(dimensions)
         , format(format)
+        , multiSampled(multiSampled)
+        , sampleCount(sampleCount)
     {
     }
 };
@@ -195,6 +256,9 @@ struct SceneSelectionTasks::Implementation {
     SdfPath depthPath;
     BufferSourceHandle color;
     BufferSourceHandle depth;
+    std::shared_ptr<bool> drawn = std::make_shared<bool>(false);
+    HdxRenderTaskParams givenParams;
+    bool hasGivenParams = false;
 
     void dirtyTasks(const std::vector<std::size_t>& changed,
                     const HdDataSourceLocator& locator)
@@ -276,9 +340,11 @@ SceneSelectionTasks::SceneSelectionTasks(const SdfPath& prefix)
     _imp->colorPath = buffers.AppendChild(HdAovTokens->color);
     _imp->depthPath = buffers.AppendChild(HdAovTokens->depth);
 
+    const HdLegacyTaskFactorySharedPtr factory = std::make_shared<SelectionRenderTaskFactory>(_imp->drawn);
     HdRetainedSceneIndex::AddedPrimEntries entries;
     for (const TfToken& tag : materialTags()) {
         TaskSourceHandle task = TaskSource::New();
+        task->factory = factory;
         task->collection.SetMaterialTag(tag);
         const SdfPath path = prefix.AppendChild(TfToken("renderTask_" + tag.GetString()));
         entries.push_back({ path, HdPrimTypeTokens->task, HdRetainedContainerDataSource::New(HdLegacyTaskSchema::GetSchemaToken(), task) });
@@ -336,6 +402,9 @@ SceneSelectionTasks::setSelection(const HdRprimCollection& collection)
 void
 SceneSelectionTasks::setRenderTags(const TfTokenVector& renderTags)
 {
+    if (!_imp->tasks.empty() && (_imp->tasks.front()->renderTags == renderTags)) {
+        return;
+    }
     std::vector<std::size_t> changed;
 
     for (std::size_t i = 0; i < _imp->tasks.size(); ++i) {
@@ -351,6 +420,11 @@ SceneSelectionTasks::setRenderTags(const TfTokenVector& renderTags)
 void
 SceneSelectionTasks::setRenderParams(const HdxRenderTaskParams& params)
 {
+    if (_imp->hasGivenParams && (_imp->givenParams == params)) {
+        return;
+    }
+    _imp->givenParams = params;
+    _imp->hasGivenParams = true;
     std::vector<std::size_t> changed;
 
     for (std::size_t i = 0; i < _imp->tasks.size(); ++i) {
@@ -365,8 +439,6 @@ SceneSelectionTasks::setRenderParams(const HdxRenderTaskParams& params)
         own.depthFunc = HdCmpFuncLess;
         own.depthMaskEnable = true;
         own.enableAlphaToCoverage = false;
-        own.useAovMultiSample = false;
-        own.resolveAovMultiSample = false;
         own.aovInputBindings.clear();
         own.aovBindings.clear();
         const bool clears = (i == 0);
@@ -396,11 +468,13 @@ SceneSelectionTasks::setRenderParams(const HdxRenderTaskParams& params)
 void
 SceneSelectionTasks::setSize(const GfVec3i& dimensions,
                              HdFormat colorFormat,
-                             HdFormat depthFormat)
+                             HdFormat depthFormat,
+                             bool multiSampled,
+                             std::uint32_t sampleCount)
 {
     if (!_imp->color) {
-        _imp->color = BufferSource::New(dimensions, colorFormat);
-        _imp->depth = BufferSource::New(dimensions, depthFormat);
+        _imp->color = BufferSource::New(dimensions, colorFormat, multiSampled, sampleCount);
+        _imp->depth = BufferSource::New(dimensions, depthFormat, multiSampled, sampleCount);
         _imp->sceneIndex->AddPrims({
             { _imp->colorPath, HdPrimTypeTokens->renderBuffer, HdRetainedContainerDataSource::New(HdRenderBufferSchema::GetSchemaToken(), _imp->color) },
             { _imp->depthPath, HdPrimTypeTokens->renderBuffer, HdRetainedContainerDataSource::New(HdRenderBufferSchema::GetSchemaToken(), _imp->depth) },
@@ -409,9 +483,9 @@ SceneSelectionTasks::setSize(const GfVec3i& dimensions,
         return;
     }
     HdSceneIndexObserver::DirtiedPrimEntries entries;
-    const auto update = [&entries, &dimensions](const SdfPath& path,
-                                                const BufferSourceHandle& source,
-                                                HdFormat format) {
+    const auto update = [&entries, &dimensions, multiSampled, sampleCount](const SdfPath& path,
+                                                                           const BufferSourceHandle& source,
+                                                                           HdFormat format) {
         HdDataSourceLocatorSet locators;
         if (source->dimensions != dimensions) {
             source->dimensions = dimensions;
@@ -420,6 +494,14 @@ SceneSelectionTasks::setSize(const GfVec3i& dimensions,
         if (source->format != format) {
             source->format = format;
             locators.insert(HdRenderBufferSchema::GetFormatLocator());
+        }
+        if (source->multiSampled != multiSampled) {
+            source->multiSampled = multiSampled;
+            locators.insert(HdRenderBufferSchema::GetMultiSampledLocator());
+        }
+        if (source->sampleCount != sampleCount) {
+            source->sampleCount = sampleCount;
+            locators.insert(HdRenderBufferSchema::GetDefaultLocator().Append(HdStRenderBufferTokens->stormMsaaSampleCount));
         }
         if (!locators.IsEmpty()) {
             entries.push_back(HdSceneIndexObserver::DirtiedPrimEntry(path, locators));
@@ -430,6 +512,18 @@ SceneSelectionTasks::setSize(const GfVec3i& dimensions,
     if (!entries.empty()) {
         _imp->sceneIndex->DirtyPrims(entries);
     }
+}
+
+void
+SceneSelectionTasks::beginPass()
+{
+    *_imp->drawn = false;
+}
+
+bool
+SceneSelectionTasks::hasDrawn() const
+{
+    return *_imp->drawn;
 }
 
 NATRON_NAMESPACE_EXIT

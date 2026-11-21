@@ -314,6 +314,31 @@ projectedCardScene(std::string* error,
     return SceneOps::appendLayer(ScenePayload(), layer, 0x9c0ec7ULL);
 }
 
+/**
+ * @brief /World/Plane, a 4-unit square through the origin turned 60 degrees about Y, its left edge
+ * toward the camera, so its depth changes steeply across the frame. Opaque blue, without a
+ * material. From the fixture's free camera it spans pixels 91..154 across, 53..203 down at its near
+ * edge and 75..181 at its far one.
+ **/
+ScenePayload
+tiltedPlaneScene()
+{
+    PXR_NS::SdfLayerRefPtr layer = SceneOps::createNodeLayer("SceneViewportTiltedPlane");
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(layer);
+    PXR_NS::UsdGeomMesh plane = defineQuad(stage, "/World/Plane", 2.f, 0.f);
+    PXR_NS::VtVec3fArray points;
+
+    plane.GetPointsAttr().Get(&points);
+    for (PXR_NS::GfVec3f& point : points) {
+        const float x = point[0];
+        point[0] = x * 0.5f;
+        point[2] = -x * std::sqrt(3.f) * 0.5f;
+    }
+    plane.GetPointsAttr().Set(points);
+    plane.CreateDisplayColorAttr(PXR_NS::VtValue(PXR_NS::VtVec3fArray(1, PXR_NS::GfVec3f(0.f, 0.f, 1.f))));
+
+    return SceneOps::appendLayer(ScenePayload(), layer, 0x7117edULL);
+}
 struct Rgb {
     int r, g, b;
 };
@@ -723,6 +748,44 @@ TEST_F(SceneViewportStorm, ASelectedPrimTintsThroughATranslucentOne)
         EXPECT_GT(towardTint(before, after), 0.35) << "the backdrop at (" << p.x() << ", " << p.y() << "): " << before << " -> " << after;
     }
     EXPECT_LE(difference(pixel(selected, 20, 128), pixel(unselected, 20, 128)), 6) << "nothing is drawn there";
+}
+
+// The tint covers a plane at 60 degrees as it covers one facing the camera: the selection's depth
+// passes the test against the beauty's across the whole surface, not only where it slopes gently.
+TEST_F(SceneViewportStorm, TheTintCoversASteeplyTiltedSelectedPrim)
+{
+    if (_skip) {
+        return;
+    }
+    std::string error;
+    ASSERT_TRUE(_renderer.setScene(tiltedPlaneScene(), 1., 24., &error)) << error;
+
+    const QImage unselected = render();
+    _renderer.setSelectedPrims({ "/World/Plane" });
+    const QImage selected = render();
+
+    // Pixels two or more away from the plane's edges, where only the plane is drawn.
+    int interior = 0;
+    int tinted = 0;
+    for (int y = 2; y < kSize - 2; ++y) {
+        for (int x = 2; x < kSize - 2; ++x) {
+            bool inside = true;
+            for (int dy = -2; (dy <= 2) && inside; ++dy) {
+                for (int dx = -2; (dx <= 2) && inside; ++dx) {
+                    inside = !isBackground(pixel(unselected, x + dx, y + dy));
+                }
+            }
+            if (!inside) {
+                continue;
+            }
+            ++interior;
+            if (towardTint(pixel(unselected, x, y), pixel(selected, x, y)) > 0.8) {
+                ++tinted;
+            }
+        }
+    }
+    ASSERT_GT(interior, 4000) << "the plane covers about 8000 pixels";
+    EXPECT_GE(tinted, interior * 95 / 100) << tinted << " of " << interior << " interior pixels tinted";
 }
 
 TEST_F(SceneViewportStorm, ClearingTheSelectionRestoresTheColours)
@@ -1319,12 +1382,15 @@ TEST(SceneViewportLighting, ThePreferenceIsSceneLightsByDefaultAndSavesAndLoads)
     settings->setSaveSettings(wasSaving);
 }
 
-// The viewer's own drawing relies on the GL state it set before the scene view drew.
+// The viewer's own drawing relies on the GL state it set before the scene view drew, the selection's
+// tint included.
 TEST_F(SceneViewportStorm, RestoresTheGLStateItChanges)
 {
     if (_skip) {
         return;
     }
+    const QImage unselected = render();
+    _renderer.setSelectedPrims({ "/World/Box" });
     GLuint texture = 0;
     glGenTextures(1, &texture);
     glActiveTexture(GL_TEXTURE0);
@@ -1333,8 +1399,10 @@ TEST_F(SceneViewportStorm, RestoresTheGLStateItChanges)
     glUseProgram(0);
     glViewport(3, 5, 70, 90);
     glEnable(GL_BLEND);
-    glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+    glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_DST_ALPHA, GL_ZERO);
     glDisable(GL_DEPTH_TEST);
+    glDepthMask(GL_FALSE);
+    glDepthFunc(GL_GREATER);
     glEnable(GL_SCISSOR_TEST);
     glScissor(1, 2, 30, 40);
     glMatrixMode(GL_PROJECTION);
@@ -1369,6 +1437,17 @@ TEST_F(SceneViewportStorm, RestoresTheGLStateItChanges)
     EXPECT_FALSE(glIsEnabled(GL_FRAMEBUFFER_SRGB));
     glGetIntegerv(GL_BLEND_SRC_RGB, &value);
     EXPECT_EQ(GL_ONE, value);
+    glGetIntegerv(GL_BLEND_DST_RGB, &value);
+    EXPECT_EQ(GL_ONE_MINUS_SRC_ALPHA, value);
+    glGetIntegerv(GL_BLEND_SRC_ALPHA, &value);
+    EXPECT_EQ(GL_DST_ALPHA, value);
+    glGetIntegerv(GL_BLEND_DST_ALPHA, &value);
+    EXPECT_EQ(GL_ZERO, value);
+    GLboolean depthMask = GL_TRUE;
+    glGetBooleanv(GL_DEPTH_WRITEMASK, &depthMask);
+    EXPECT_EQ(GLboolean(GL_FALSE), depthMask);
+    glGetIntegerv(GL_DEPTH_FUNC, &value);
+    EXPECT_EQ(GL_GREATER, value);
     GLint scissor[4] = { 0, 0, 0, 0 };
     glGetIntegerv(GL_SCISSOR_BOX, scissor);
     EXPECT_EQ(30, scissor[2]);
@@ -1382,7 +1461,11 @@ TEST_F(SceneViewportStorm, RestoresTheGLStateItChanges)
 
     glDisable(GL_SCISSOR_TEST);
     glDisable(GL_BLEND);
+    glDepthMask(GL_TRUE);
+    glDepthFunc(GL_LESS);
     glDeleteTextures(1, &texture);
+    const QImage selected = _fbo->toImage();
+    EXPECT_GT(towardTint(pixel(unselected, 110, 110), pixel(selected, 110, 110)), 0.8) << "the selected box was tinted, away from the grid's line along row 128";
 }
 
 namespace {
@@ -1963,19 +2046,16 @@ texelAt(const std::vector<float>& texels,
 {
     return texels[(std::size_t)((((kSize - 1 - y) * kSize) + x) * channels + channel)];
 }
-} // namespace
 
-// The selection pass draws the card alone, with its own material: the projected half covers its
-// pixels by the plate's alpha, and neither the card's transparent half nor the backdrop behind it
-// is drawn.
-TEST_F(SceneViewportStorm, TheSelectionPassDrawsATranslucentCardByItsOwnAlpha)
+using EngineCheck = std::function<void(SelectionEngine& engine, const PXR_NS::UsdImagingGLRenderParams& params)>;
+
+// Renders scene through a Storm SelectionEngine from the fixture's free camera, shaded and lit,
+// then hands the engine to check while its GL work can still run.
+void
+withRenderedEngine(TestWatchdog& watchdog,
+                   const ScenePayload& scene,
+                   const EngineCheck& check)
 {
-    if (_skip) {
-        return;
-    }
-    std::string error;
-    const ScenePayload scene = projectedCardScene(&error);
-    ASSERT_TRUE(error.empty()) << error;
     SceneStage stage;
     ASSERT_TRUE(stage.isValid());
     ASSERT_TRUE(stage.sync(scene));
@@ -2001,14 +2081,67 @@ TEST_F(SceneViewportStorm, TheSelectionPassDrawsATranslucentCardByItsOwnAlpha)
         params.clearColor = PXR_NS::GfVec4f(0.f, 0.f, 0.f, 0.f);
         params.drawMode = PXR_NS::UsdImagingGLDrawMode::DRAW_SHADED_SMOOTH;
         params.enableLighting = true;
-        _watchdog.setPhase("render");
+        watchdog.setPhase("render");
         engine->Render(stage.getStage()->GetPseudoRoot(), params);
-        EXPECT_FALSE(engine->renderSelection(params, PXR_NS::SdfPathVector())) << "nothing selected";
-        ASSERT_TRUE(engine->renderSelection(params, { PXR_NS::SdfPath("/World/Card") }));
-        const PXR_NS::HgiTextureHandle colorTexture = engine->colorTexture();
-        const PXR_NS::HgiTextureHandle depthTexture = engine->depthTexture();
+        check(*engine, params);
+
+        section.collectWith(nullptr);
+        engine.reset();
+    }
+}
+
+// The largest difference between the pass's depth and the beauty's where the pass covers a pixel
+// whole, and how many such pixels there are.
+float
+largestDepthDifference(SelectionEngine& engine,
+                       int* covered)
+{
+    const std::vector<float> color = readTexture(engine.colorTexture(), false);
+    const std::vector<float> pass = readTexture(engine.depthTexture(), true);
+    const std::vector<float> beauty = readTexture(engine.GetAovTexture(PXR_NS::HdAovTokens->depth), true);
+    float largest = 0.f;
+
+    *covered = 0;
+    for (int y = 0; y < kSize; ++y) {
+        for (int x = 0; x < kSize; ++x) {
+            if (texelAt(color, 4, 3, x, y) < 1.f) {
+                continue;
+            }
+            ++*covered;
+            largest = std::max(largest, std::abs(texelAt(pass, 1, 0, x, y) - texelAt(beauty, 1, 0, x, y)));
+        }
+    }
+
+    return largest;
+}
+
+// Well under the viewport's depth bias: the pass rasterises and resolves as the beauty does.
+const float kDepthParity = 1e-6f;
+
+} // namespace
+
+// The selection pass draws the card alone, with its own material: the projected half covers its
+// pixels by the plate's alpha, and neither the card's transparent half nor the backdrop behind it
+// is drawn. A selection with nothing to draw runs no pass.
+TEST_F(SceneViewportStorm, TheSelectionPassDrawsATranslucentCardByItsOwnAlpha)
+{
+    if (_skip) {
+        return;
+    }
+    std::string error;
+    const ScenePayload scene = projectedCardScene(&error);
+    ASSERT_TRUE(error.empty()) << error;
+
+    withRenderedEngine(_watchdog, scene, [](SelectionEngine& engine, const PXR_NS::UsdImagingGLRenderParams& params) {
+        EXPECT_FALSE(engine.renderSelection(params)) << "nothing selected";
+        engine.setSelection({ PXR_NS::SdfPath("/World/Projection") });
+        EXPECT_FALSE(engine.renderSelection(params)) << "a material, which draws nothing";
+        engine.setSelection({ PXR_NS::SdfPath("/World/Card") });
+        ASSERT_TRUE(engine.renderSelection(params));
+        const PXR_NS::HgiTextureHandle colorTexture = engine.colorTexture();
+        const PXR_NS::HgiTextureHandle depthTexture = engine.depthTexture();
         ASSERT_TRUE(colorTexture && depthTexture);
-        EXPECT_NE(colorTexture.Get(), engine->GetAovTexture(PXR_NS::HdAovTokens->color).Get());
+        EXPECT_NE(colorTexture.Get(), engine.GetAovTexture(PXR_NS::HdAovTokens->color).Get());
 
         const std::vector<float> color = readTexture(colorTexture, false);
         const std::vector<float> depth = readTexture(depthTexture, true);
@@ -2019,8 +2152,41 @@ TEST_F(SceneViewportStorm, TheSelectionPassDrawsATranslucentCardByItsOwnAlpha)
         EXPECT_EQ(1.f, texelAt(depth, 1, 0, 97, 200)) << "the backdrop, not selected";
         EXPECT_EQ(0.f, texelAt(color, 4, 3, 20, 128)) << "nothing drawn";
         EXPECT_EQ(1.f, texelAt(depth, 1, 0, 20, 128)) << "nothing drawn";
+    });
+}
 
-        section.collectWith(nullptr);
-        engine.reset();
+// For an opaque prim facing the camera, the pass's depth is the beauty's. The translucent card in
+// front of it writes no depth in the beauty, so the backdrop's shows through it there too.
+TEST_F(SceneViewportStorm, TheSelectionPassDepthIsTheBeautysForAnOpaquePrim)
+{
+    if (_skip) {
+        return;
     }
+    std::string error;
+    const ScenePayload scene = projectedCardScene(&error);
+    ASSERT_TRUE(error.empty()) << error;
+
+    withRenderedEngine(_watchdog, scene, [](SelectionEngine& engine, const PXR_NS::UsdImagingGLRenderParams& params) {
+        engine.setSelection({ PXR_NS::SdfPath("/World/Backdrop") });
+        ASSERT_TRUE(engine.renderSelection(params));
+        int covered = 0;
+        EXPECT_LE(largestDepthDifference(engine, &covered), kDepthParity);
+        EXPECT_GT(covered, 20000) << "the backdrop covers pixels 44..212 on both axes";
+    });
+}
+
+// Across a plane at 60 degrees, where a surface's depth differs between a pixel's centre and its
+// samples by far more than the viewport's depth bias, the pass's depth is still the beauty's.
+TEST_F(SceneViewportStorm, TheSelectionPassDepthIsTheBeautysForATiltedPrim)
+{
+    if (_skip) {
+        return;
+    }
+    withRenderedEngine(_watchdog, tiltedPlaneScene(), [](SelectionEngine& engine, const PXR_NS::UsdImagingGLRenderParams& params) {
+        engine.setSelection({ PXR_NS::SdfPath("/World/Plane") });
+        ASSERT_TRUE(engine.renderSelection(params));
+        int covered = 0;
+        EXPECT_LE(largestDepthDifference(engine, &covered), kDepthParity);
+        EXPECT_GT(covered, 5000) << "the plane covers about 8000 pixels";
+    });
 }

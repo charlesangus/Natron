@@ -1,5 +1,5 @@
-"""M278 - Translucent Selection Highlight: a selected half-transparent projected card and a selected
-opaque box both tint toward the selection colour in the Storm 3D viewer.
+"""A selected half-transparent projected card and a selected opaque box both tint toward the
+selection colour in the Storm 3D viewer.
 
 Graph: USDRead1 (a backdrop quad, a card quad and a box) into USDAssignMaterial1's Scene input, with
 USDProject3D1 (a half-transparent red Constant projected through USDCamera1) as its Material input,
@@ -31,7 +31,7 @@ sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd
 POLL_TIMEOUT_S = 20.0
 SETTLE_MS = 800
 STARTUP_TIMEOUT_S = 60.0
-NUKE_PRESET = 0
+CTRL_LEFT_TUMBLE_NAVIGATION = 0
 GRID_COLUMNS = 40
 GRID_ROWS = 22
 CARD = "/World/Card"
@@ -122,7 +122,7 @@ try:
     navigation = NatronEngine.natron.getSettings().getParam("viewer3DNavigation")
     require(navigation is not None, "Preferences have a viewer3DNavigation parameter")
     original_navigation = navigation.getValue()
-    navigation.setValue(NUKE_PRESET)
+    navigation.setValue(CTRL_LEFT_TUMBLE_NAVIGATION)
 
     def make(plugin_id, x, y):
         node = app.createNode(plugin_id)

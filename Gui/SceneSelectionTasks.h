@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <cstdint>
 #include <memory>
 
 // See Engine/Nodes/Scene/UsdIncludes.h: oneTBB, which these include, declares members named emit().
@@ -54,7 +55,9 @@ NATRON_NAMESPACE_ENTER
  * Storm material tag (default, masked, additive, translucent), and the colour and depth render
  * buffers they draw into. The tasks draw the selected prims with their own materials, blending
  * off, depth writes on and a LESS test, so a translucent surface leaves its own alpha and depth
- * where an opaque one would. Only the first task clears the buffers.
+ * where an opaque one would. Only the first task clears the buffers. The buffers are multisampled
+ * as the engine's are and resolved as its tasks resolve them, so a surface's resolved depth in the
+ * pass is the one the engine's resolve leaves for it, however steeply it slopes.
  *
  * A scene-index plugin for Storm merges these prims into the render index of the engine being
  * constructed while an Arming is alive on the thread, so the tasks draw that engine's own rprims.
@@ -88,7 +91,6 @@ public:
         std::shared_ptr<SceneSelectionTasks> _tasks;
     };
 
-    // Registers the plugin for Storm, once per process.
     static void registerSceneIndex();
 
     /**
@@ -122,15 +124,28 @@ public:
 
     /**
      * @brief The engine's own render task parameters: camera, framing, lighting, clipping, cull
-     * style and colours. Blending, depth, multisampling and the AOV bindings are the pass's own.
+     * style, colours and multisampling. Blending, depth and the AOV bindings are the pass's own.
      **/
     void setRenderParams(const PXR_NS::HdxRenderTaskParams& params);
 
-    // The buffers' size and formats, those of the engine's colour and depth buffers. The first call
-    // adds the buffers.
+    /**
+     * @brief The buffers' size, formats and multisampling, those of the engine's colour and depth
+     * buffers. The first call adds the buffers.
+     **/
     void setSize(const PXR_NS::GfVec3i& dimensions,
                  PXR_NS::HdFormat colorFormat,
-                 PXR_NS::HdFormat depthFormat);
+                 PXR_NS::HdFormat depthFormat,
+                 bool multiSampled,
+                 std::uint32_t sampleCount);
+
+    // Before each execution of the tasks.
+    void beginPass();
+
+    /**
+     * @brief Whether any task had something to draw since beginPass(). When none had, none ran,
+     * not even to clear, and the buffers hold what they held before.
+     **/
+    bool hasDrawn() const;
 
 private:
     SceneSelectionTasks(const SceneSelectionTasks&) = delete;

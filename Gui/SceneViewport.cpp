@@ -320,8 +320,9 @@ const GLint kFirstLutUnit = 2;
 // The selected surfaces' tint, in display colour as the selected guides are drawn; its alpha is
 // how strongly a fully covered pixel takes it.
 const GLfloat kSelectionTint[4] = { 1.f, 0.8f, 0.1f, 1.f };
-// The selection pass draws the beauty's own rprims with the beauty's camera, so its depth matches
-// the depth drawGrade() wrote but for rounding.
+// The selection pass draws the beauty's own rprims with the beauty's camera, multisampling and
+// resolve, so its depth is the beauty's but for the rounding of drawGrade()'s write into the
+// target's depth buffer.
 const GLfloat kSelectionDepthBias = 1e-5f;
 
 /**
@@ -572,8 +573,10 @@ struct SceneViewportRenderer::Implementation {
     GfMatrix4d lookThroughOverride = GfMatrix4d(1.);
     // The selected prims, the current one last.
     std::vector<std::string> selected;
-    // selected's valid paths, which the selection pass draws. Needs stageMutex.
+    // selected's valid paths, which the selection pass draws, and whether the engine has yet to
+    // be given them. Need stageMutex.
     SdfPathVector selectedPaths;
+    bool selectedPathsChanged = true;
     // Held by its own type: UsdImagingGLEngine's destructor is not virtual.
     std::unique_ptr<SelectionEngine> engine;
     U64 engineCount = 0;
@@ -635,6 +638,7 @@ struct SceneViewportRenderer::Implementation {
     std::vector<GradeLut> gradeLuts;
     // The pass tinting the selection over what drawGrade() drew (kSelectionFragmentShader), a GL
     // object of the context of render(), and whether linking it failed, so that it is not retried.
+    // Its uniforms are set once, when it is linked.
     GLuint selectionProgram = 0;
     bool selectionProgramFailed = false;
     OCIO_NAMESPACE::GpuShaderDescRcPtr gradeShader;
@@ -1135,6 +1139,7 @@ struct SceneViewportRenderer::Implementation {
                 selectedPaths.push_back(SdfPath(path));
             }
         }
+        selectedPathsChanged = true;
     }
 
     // Needs the GL context current, stageMutex and a StormGLSection, as the render that threw has
@@ -1181,6 +1186,7 @@ struct SceneViewportRenderer::Implementation {
             {
                 TfErrorMark mark;
                 engine.reset(new SelectionEngine(parameters));
+                selectedPathsChanged = true;
                 ++engineCount;
                 ++engineConstructionCount;
                 if (engine->GetCurrentRendererId() != parameters.rendererPluginId) {
@@ -1457,6 +1463,13 @@ struct SceneViewportRenderer::Implementation {
                 qWarning() << "SceneViewport: the selection cannot be drawn:" << e.what();
                 selectionProgramFailed = true;
             }
+            if (selectionProgram) {
+                glUseProgram(selectionProgram);
+                glUniform1i(glGetUniformLocation(selectionProgram, "selectionColor"), 0);
+                glUniform1i(glGetUniformLocation(selectionProgram, "selectionDepth"), 1);
+                glUniform4fv(glGetUniformLocation(selectionProgram, "tint"), 1, kSelectionTint);
+                glUniform1f(glGetUniformLocation(selectionProgram, "depthBias"), kSelectionDepthBias);
+            }
         }
         if (!selectionProgram) {
             return;
@@ -1484,13 +1497,9 @@ struct SceneViewportRenderer::Implementation {
         glActiveTexture(GL_TEXTURE0);
         glBindSampler(0, 0);
         glBindTexture(GL_TEXTURE_2D, (GLuint)color->GetRawResource());
-        glUniform1i(glGetUniformLocation(selectionProgram, "selectionColor"), 0);
         glActiveTexture(GL_TEXTURE1);
         glBindSampler(1, 0);
         glBindTexture(GL_TEXTURE_2D, (GLuint)depth->GetRawResource());
-        glUniform1i(glGetUniformLocation(selectionProgram, "selectionDepth"), 1);
-        glUniform4fv(glGetUniformLocation(selectionProgram, "tint"), 1, kSelectionTint);
-        glUniform1f(glGetUniformLocation(selectionProgram, "depthBias"), kSelectionDepthBias);
 
         glDrawArrays(GL_TRIANGLES, 0, 3);
 
@@ -3061,12 +3070,16 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
         converged = _imp->engine->IsConverged();
     }
     _imp->drawGrade(fbo, width, height);
+    if (_imp->selectedPathsChanged) {
+        _imp->engine->setSelection(_imp->selectedPaths);
+        _imp->selectedPathsChanged = false;
+    }
     if (!_imp->selectedPaths.empty()) {
         std::string what;
         bool failed = false;
         bool drawn = false;
         try {
-            drawn = _imp->engine->renderSelection(params, _imp->selectedPaths);
+            drawn = _imp->engine->renderSelection(params);
         } catch (const std::exception& e) {
             failed = true;
             what = e.what();

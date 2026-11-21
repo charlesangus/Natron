@@ -37,6 +37,8 @@
 #define NATRON_SELECTIONENGINE_RESTORE_EMIT
 #undef emit
 #endif
+#include <pxr/imaging/hd/rprimCollection.h>
+#include <pxr/imaging/hd/sceneIndex.h>
 #include <pxr/imaging/hgi/texture.h>
 #include <pxr/usd/sdf/path.h>
 #include <pxr/usdImaging/usdImagingGL/engine.h>
@@ -64,17 +66,22 @@ public:
 
     ~SelectionEngine();
 
-    // Whether the renderer got the selection tasks: true under Storm.
+    /**
+     * @brief Whether the renderer got the selection tasks: true under Storm, until
+     * SetRendererPlugin() replaces the renderer the tasks were merged into.
+     **/
     bool hasSelectionPass() const;
 
+    // The prims renderSelection() draws: those at and under these stage paths.
+    void setSelection(const PXR_NS::SdfPathVector& selection);
+
     /**
-     * @brief Draws the prims at and under the selected paths into the pass's buffers, after a
-     * Render() with the same params: the camera, framing, lighting and draw mode are those the
-     * engine last rendered with, and wireframe draws lines. False, with nothing drawn, when
-     * nothing is selected or there is no pass.
+     * @brief Draws the selected prims into the pass's buffers, after a Render() with the same
+     * params: the camera, framing, lighting and draw mode are those the engine last rendered with,
+     * and wireframe draws lines. False, with the buffers left as they were, when nothing selected
+     * has anything to draw or there is no pass.
      **/
-    bool renderSelection(const PXR_NS::UsdImagingGLRenderParams& params,
-                         const PXR_NS::SdfPathVector& selection);
+    bool renderSelection(const PXR_NS::UsdImagingGLRenderParams& params);
 
     // The selected surfaces' colour; its alpha is how much of each pixel they cover.
     PXR_NS::HgiTextureHandle colorTexture() const;
@@ -89,6 +96,13 @@ private:
     PXR_NS::HgiTextureHandle bufferTexture(const PXR_NS::SdfPath& path) const;
 
     std::shared_ptr<SceneSelectionTasks> _tasks;
+    // The task controller the tasks were merged beside.
+    PXR_NS::HdSceneIndexBasePtr _armedController;
+    // The selection under the engine's scene delegate id, sorted.
+    PXR_NS::SdfPathVector _roots;
+    bool _selectionChanged = false;
+    // The render collection the tasks' collection was last made from.
+    PXR_NS::HdRprimCollection _selectedFrom;
 };
 
 NATRON_NAMESPACE_EXIT

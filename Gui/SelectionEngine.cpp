@@ -26,6 +26,7 @@
 #include "SelectionEngine.h"
 
 #include <algorithm>
+#include <cstdint>
 
 #ifdef emit
 #define NATRON_SELECTIONENGINE_CPP_RESTORE_EMIT
@@ -51,11 +52,11 @@ NATRON_NAMESPACE_ENTER
 
 namespace {
 // The parameters of the engine's render task for the default material tag, which carry the camera,
-// framing and shading it last rendered with.
+// framing, shading and multisampling it last rendered with.
 bool
 beautyParams(const HdSceneIndexBaseRefPtr& controller,
              const SdfPathVector& taskPaths,
-             HdxRenderTaskParams* params)
+             VtValue* params)
 {
     for (const SdfPath& path : taskPaths) {
         const HdLegacyTaskSchema task = HdLegacyTaskSchema::GetFromParent(controller->GetPrim(path).dataSource);
@@ -67,10 +68,8 @@ beautyParams(const HdSceneIndexBaseRefPtr& controller,
         if (!parameters) {
             continue;
         }
-        const VtValue value = parameters->GetValue(0.f);
-        if (value.IsHolding<HdxRenderTaskParams>()) {
-            *params = value.UncheckedGet<HdxRenderTaskParams>();
-
+        *params = parameters->GetValue(0.f);
+        if (params->IsHolding<HdxRenderTaskParams>()) {
             return true;
         }
     }
@@ -78,11 +77,23 @@ beautyParams(const HdSceneIndexBaseRefPtr& controller,
     return false;
 }
 
+struct BufferDescription {
+    GfVec3i dimensions;
+    HdFormat format = HdFormatInvalid;
+    bool multiSampled = false;
+    // HdStRenderBuffer's own, for a buffer that does not say.
+    std::uint32_t sampleCount = 4;
+
+    bool matches(const BufferDescription& other) const
+    {
+        return (dimensions == other.dimensions) && (multiSampled == other.multiSampled) && (sampleCount == other.sampleCount);
+    }
+};
+
 bool
 bufferDescription(const HdSceneIndexBaseRefPtr& controller,
                   const SdfPath& path,
-                  GfVec3i* dimensions,
-                  HdFormat* format)
+                  BufferDescription* description)
 {
     const HdRenderBufferSchema buffer = HdRenderBufferSchema::GetFromParent(controller->GetPrim(path).dataSource);
     const HdVec3iDataSourceHandle dimensionsSource = buffer.GetDimensions();
@@ -91,10 +102,18 @@ bufferDescription(const HdSceneIndexBaseRefPtr& controller,
     if (!dimensionsSource || !formatSource) {
         return false;
     }
-    *dimensions = dimensionsSource->GetTypedValue(0.f);
-    *format = formatSource->GetTypedValue(0.f);
+    description->dimensions = dimensionsSource->GetTypedValue(0.f);
+    description->format = formatSource->GetTypedValue(0.f);
+    if (const HdBoolDataSourceHandle multiSampled = buffer.GetMultiSampled()) {
+        description->multiSampled = multiSampled->GetTypedValue(0.f);
+    }
+    if (const HdContainerDataSourceHandle container = buffer.GetContainer()) {
+        if (const HdTypedSampledDataSource<std::uint32_t>::Handle count = HdTypedSampledDataSource<std::uint32_t>::Cast(container->Get(HdStRenderBufferTokens->stormMsaaSampleCount))) {
+            description->sampleCount = count->GetTypedValue(0.f);
+        }
+    }
 
-    return (*format != HdFormatInvalid) && ((*dimensions)[0] > 0) && ((*dimensions)[1] > 0);
+    return (description->format != HdFormatInvalid) && (description->dimensions[0] > 0) && (description->dimensions[1] > 0);
 }
 } // anonymous namespace
 
@@ -110,6 +129,9 @@ SelectionEngine::SelectionEngine(SceneSelectionTasks::Arming&& arming,
     : UsdImagingGLEngine(parameters)
     , _tasks(arming.take())
 {
+    if (_taskControllerSceneIndex) {
+        _armedController = HdSceneIndexBasePtr(get_pointer(_taskControllerSceneIndex));
+    }
 }
 
 SelectionEngine::~SelectionEngine()
@@ -119,57 +141,58 @@ SelectionEngine::~SelectionEngine()
 bool
 SelectionEngine::hasSelectionPass() const
 {
-    return bool(_tasks) && bool(_renderer) && bool(_taskControllerSceneIndex);
+    return bool(_tasks) && bool(_renderer) && bool(_taskControllerSceneIndex) && bool(_armedController) && (get_pointer(_armedController) == static_cast<HdSceneIndexBase*>(get_pointer(_taskControllerSceneIndex)));
+}
+
+void
+SelectionEngine::setSelection(const SdfPathVector& selection)
+{
+    _roots.clear();
+    _roots.reserve(selection.size());
+    for (const SdfPath& path : selection) {
+        if (path.IsAbsolutePath() && path.IsPrimPath()) {
+            _roots.push_back(path.ReplacePrefix(SdfPath::AbsoluteRootPath(), _sceneDelegateId));
+        }
+    }
+    std::sort(_roots.begin(), _roots.end());
+    _roots.erase(std::unique(_roots.begin(), _roots.end()), _roots.end());
+    _selectionChanged = true;
 }
 
 bool
-SelectionEngine::renderSelection(const UsdImagingGLRenderParams& params,
-                                 const SdfPathVector& selection)
+SelectionEngine::renderSelection(const UsdImagingGLRenderParams& params)
 {
-    if (!hasSelectionPass() || selection.empty()) {
-        return false;
-    }
-    HdLegacyRenderControlInterface* const control = _renderer->GetLegacyRenderControl();
-    if (!control) {
+    if (!hasSelectionPass() || _roots.empty()) {
         return false;
     }
     const HdSceneIndexBaseRefPtr controller = _taskControllerSceneIndex;
-    HdxRenderTaskParams base;
+    VtValue base;
     if (!beautyParams(controller, _taskControllerSceneIndex->GetRenderingTaskPaths(), &base)) {
         return false;
     }
-    GfVec3i dimensions;
-    HdFormat colorFormat = HdFormatInvalid;
-    HdFormat depthFormat = HdFormatInvalid;
-    GfVec3i depthDimensions;
-    if (!bufferDescription(controller, _taskControllerSceneIndex->GetRenderBufferPath(HdAovTokens->color), &dimensions, &colorFormat) || !bufferDescription(controller, _taskControllerSceneIndex->GetRenderBufferPath(HdAovTokens->depth), &depthDimensions, &depthFormat)) {
+    BufferDescription color;
+    BufferDescription depth;
+    if (!bufferDescription(controller, _taskControllerSceneIndex->GetRenderBufferPath(HdAovTokens->color), &color) || !bufferDescription(controller, _taskControllerSceneIndex->GetRenderBufferPath(HdAovTokens->depth), &depth) || !color.matches(depth)) {
         return false;
     }
 
-    SdfPathVector roots;
-    roots.reserve(selection.size());
-    for (const SdfPath& path : selection) {
-        if (path.IsAbsolutePath() && path.IsPrimPath()) {
-            roots.push_back(path.ReplacePrefix(SdfPath::AbsoluteRootPath(), _sceneDelegateId));
-        }
+    if (_selectionChanged || (_renderCollection != _selectedFrom)) {
+        HdRprimCollection collection = _renderCollection;
+        collection.SetRootPaths(_roots);
+        _tasks->setSelection(collection);
+        _selectedFrom = _renderCollection;
+        _selectionChanged = false;
     }
-    if (roots.empty()) {
-        return false;
-    }
-    std::sort(roots.begin(), roots.end());
-    roots.erase(std::unique(roots.begin(), roots.end()), roots.end());
-    HdRprimCollection collection = _renderCollection;
-    collection.SetRootPaths(roots);
     TfTokenVector renderTags;
     _ComputeRenderTags(params, &renderTags);
 
-    _tasks->setSize(dimensions, colorFormat, depthFormat);
+    _tasks->setSize(color.dimensions, color.format, depth.format, color.multiSampled, color.sampleCount);
     _tasks->setRenderTags(renderTags);
-    _tasks->setRenderParams(base);
-    _tasks->setSelection(collection);
+    _tasks->setRenderParams(base.UncheckedGet<HdxRenderTaskParams>());
+    _tasks->beginPass();
     _Execute(params, _tasks->getTaskPaths());
 
-    return true;
+    return _tasks->hasDrawn();
 }
 
 HgiTextureHandle

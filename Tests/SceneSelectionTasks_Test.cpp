@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <memory>
 #include <vector>
 
@@ -207,7 +208,7 @@ TEST(SceneSelectionTasksPlugin, MergesTheTasksBesideTheSceneWhileArmed)
         EXPECT_FALSE(path.HasPrefix(SdfPath("/World"))) << path;
     }
 
-    tasks->setSize(GfVec3i(64, 32, 1), HdFormatFloat16Vec4, HdFormatFloat32);
+    tasks->setSize(GfVec3i(64, 32, 1), HdFormatFloat16Vec4, HdFormatFloat32, true, 4);
     EXPECT_EQ(HdPrimTypeTokens->renderBuffer, merged->GetPrim(tasks->getColorBufferPath()).primType);
     EXPECT_EQ(HdPrimTypeTokens->renderBuffer, merged->GetPrim(tasks->getDepthBufferPath()).primType);
 
@@ -257,7 +258,7 @@ TEST_F(SceneSelectionTasksTest, OneTaskPerStormMaterialTagInDrawOrder)
 }
 
 // Whatever blending and depth state the engine's own task has, the pass draws opaque with a LESS
-// test into its own two buffers, and keeps the engine's camera, framing and shading.
+// test into its own two buffers, and keeps the engine's camera, framing, shading and multisampling.
 TEST_F(SceneSelectionTasksTest, TasksDrawOpaqueIntoTheirOwnBuffersWithTheEnginesCamera)
 {
     HdxRenderTaskParams engine;
@@ -272,6 +273,7 @@ TEST_F(SceneSelectionTasksTest, TasksDrawOpaqueIntoTheirOwnBuffersWithTheEngines
     engine.depthMaskEnable = false;
     engine.enableAlphaToCoverage = true;
     engine.useAovMultiSample = true;
+    engine.resolveAovMultiSample = true;
     HdRenderPassAovBinding engineColor;
     engineColor.aovName = HdAovTokens->color;
     engineColor.renderBufferId = SdfPath("/_Engine/AOVs/color");
@@ -293,7 +295,8 @@ TEST_F(SceneSelectionTasksTest, TasksDrawOpaqueIntoTheirOwnBuffersWithTheEngines
         EXPECT_EQ(HdCmpFuncLess, params.depthFunc) << path;
         EXPECT_TRUE(params.depthMaskEnable) << path;
         EXPECT_FALSE(params.enableAlphaToCoverage) << path;
-        EXPECT_FALSE(params.useAovMultiSample) << path;
+        EXPECT_TRUE(params.useAovMultiSample) << path;
+        EXPECT_TRUE(params.resolveAovMultiSample) << path;
         EXPECT_TRUE(params.aovInputBindings.empty()) << path;
         ASSERT_EQ(2u, params.aovBindings.size()) << path;
         EXPECT_EQ(HdAovTokens->color, params.aovBindings[0].aovName);
@@ -312,7 +315,7 @@ TEST_F(SceneSelectionTasksTest, TasksDrawOpaqueIntoTheirOwnBuffersWithTheEngines
 
 TEST_F(SceneSelectionTasksTest, TheBuffersTakeTheGivenSizeAndFormats)
 {
-    _tasks->setSize(GfVec3i(64, 32, 1), HdFormatFloat16Vec4, HdFormatFloat32);
+    _tasks->setSize(GfVec3i(64, 32, 1), HdFormatFloat16Vec4, HdFormatFloat32, true, 4);
 
     EXPECT_EQ(2u, _recorder.added.size());
     const std::pair<SdfPath, HdFormat> buffers[] = {
@@ -327,7 +330,11 @@ TEST_F(SceneSelectionTasksTest, TheBuffersTakeTheGivenSizeAndFormats)
         EXPECT_EQ(GfVec3i(64, 32, 1), schema.GetDimensions()->GetTypedValue(0.f)) << buffer.first;
         EXPECT_EQ(buffer.second, schema.GetFormat()->GetTypedValue(0.f)) << buffer.first;
         ASSERT_TRUE(schema.GetMultiSampled() != nullptr) << buffer.first;
-        EXPECT_FALSE(schema.GetMultiSampled()->GetTypedValue(0.f)) << buffer.first;
+        EXPECT_TRUE(schema.GetMultiSampled()->GetTypedValue(0.f)) << buffer.first;
+        ASSERT_TRUE(schema.GetContainer() != nullptr) << buffer.first;
+        const HdTypedSampledDataSource<std::uint32_t>::Handle count = HdTypedSampledDataSource<std::uint32_t>::Cast(schema.GetContainer()->Get(HdStRenderBufferTokens->stormMsaaSampleCount));
+        ASSERT_TRUE(count != nullptr) << buffer.first;
+        EXPECT_EQ(4u, count->GetTypedValue(0.f)) << buffer.first;
     }
 }
 
@@ -392,14 +399,14 @@ TEST_F(SceneSelectionTasksTest, ACameraChangeDirtiesOnlyTheParameters)
 
 TEST_F(SceneSelectionTasksTest, AResizeDirtiesOnlyWhatChanged)
 {
-    _tasks->setSize(GfVec3i(64, 32, 1), HdFormatFloat16Vec4, HdFormatFloat32);
+    _tasks->setSize(GfVec3i(64, 32, 1), HdFormatFloat16Vec4, HdFormatFloat32, true, 4);
     _recorder.clear();
 
-    _tasks->setSize(GfVec3i(64, 32, 1), HdFormatFloat16Vec4, HdFormatFloat32);
+    _tasks->setSize(GfVec3i(64, 32, 1), HdFormatFloat16Vec4, HdFormatFloat32, true, 4);
     EXPECT_TRUE(_recorder.added.empty());
     EXPECT_TRUE(_recorder.dirtied.empty()) << "the same size again";
 
-    _tasks->setSize(GfVec3i(128, 32, 1), HdFormatFloat16Vec4, HdFormatFloat32);
+    _tasks->setSize(GfVec3i(128, 32, 1), HdFormatFloat16Vec4, HdFormatFloat32, true, 4);
     EXPECT_TRUE(_recorder.added.empty());
     ASSERT_EQ(2u, _recorder.dirtied.size());
     for (const HdSceneIndexObserver::DirtiedPrimEntry& entry : _recorder.dirtied) {
@@ -407,8 +414,16 @@ TEST_F(SceneSelectionTasksTest, AResizeDirtiesOnlyWhatChanged)
     }
 
     _recorder.clear();
-    _tasks->setSize(GfVec3i(128, 32, 1), HdFormatFloat32Vec4, HdFormatFloat32);
+    _tasks->setSize(GfVec3i(128, 32, 1), HdFormatFloat32Vec4, HdFormatFloat32, true, 4);
     ASSERT_EQ(1u, _recorder.dirtied.size());
     EXPECT_EQ(_tasks->getColorBufferPath(), _recorder.dirtied[0].primPath);
     EXPECT_EQ(HdDataSourceLocatorSet { HdRenderBufferSchema::GetFormatLocator() }, _recorder.dirtied[0].dirtyLocators);
+
+    _recorder.clear();
+    _tasks->setSize(GfVec3i(128, 32, 1), HdFormatFloat32Vec4, HdFormatFloat32, false, 1);
+    ASSERT_EQ(2u, _recorder.dirtied.size());
+    const HdDataSourceLocatorSet sampling { HdRenderBufferSchema::GetMultiSampledLocator(), HdRenderBufferSchema::GetDefaultLocator().Append(HdStRenderBufferTokens->stormMsaaSampleCount) };
+    for (const HdSceneIndexObserver::DirtiedPrimEntry& entry : _recorder.dirtied) {
+        EXPECT_EQ(sampling, entry.dirtyLocators) << entry.primPath;
+    }
 }

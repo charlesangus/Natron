@@ -751,27 +751,40 @@ common dir. The file holds `KEY=value` lines; blank lines and lines starting
 with `#` are skipped:
 
 ```
-# ccache remote_storage URL. It carries the password: keep this file private.
-url=http://USER:PASS@CACHE_SERVICE:PORT|layout=bazel
-# Optional: a docker network the dev container joins to reach the server.
+# Credentials; already embedded in the URLs below. devshell.sh ignores them.
+user=USER
+password=PASS
+# Used by devshell.sh: for containers on the server's docker network.
+docker_url=http://USER:PASS@CACHE_SERVICE:PORT|layout=bazel
+# Ignored by devshell.sh: for processes on the cache host, and for anywhere.
+host_url=http://USER:PASS@HOST:PORT|layout=bazel
+wan_url=https://USER:PASS@cache.example.com|layout=bazel
+# Optional overrides of what devshell.sh picks from the keys above.
+url=...
 network=CACHE_NETWORK
 ```
 
-The values above are placeholders. Two kinds of URL work:
+The values above are placeholders; the file carries the password, so keep it
+private. `devshell.sh` resolves two things from it:
 
-- **Plain HTTP by docker service name**, for a server running in a docker
-  network on the build host. Set `network=` to that network, and `url=` to
-  `http://USER:PASS@CACHE_SERVICE:PORT|layout=bazel`. The default `bridge`
-  network can't reach ports the server only publishes on the host's LAN, so
-  the container has to join the server's network. ccache's built-in client
-  serves `http://` URLs.
-- **Public HTTPS**, from anywhere else: `url=https://USER:PASS@cache.example.com|layout=bazel`
-  with no `network=`. `https://` URLs go through the `ccache-storage-https`
-  helper, which the image installs in `/usr/local/bin`.
+- **The storage URL** is `url` if set, otherwise `docker_url`. With neither,
+  the remote cache is off.
+- **The network** the container joins is `network` if set; otherwise
+  `docker_default`, the generic docker compose default network name, when
+  `docker_url` was chosen; otherwise none. The default `bridge` network can't
+  reach ports the server only publishes on the host's LAN, so a `docker_url`
+  container has to join the server's network.
+
+`user`, `password`, `host_url` and `wan_url` are recognised and silently
+ignored, as other tools read them; any other key draws a warning naming it.
+To use the public HTTPS address from the container, set `url=` to the
+`wan_url` value (and no `network=`). `https://` URLs go through the
+`ccache-storage-https` helper, which the image installs in `/usr/local/bin`;
+ccache's built-in client serves `http://` URLs.
 
 `devshell.sh` reads the file on every call and passes `CCACHE_REMOTE_STORAGE`
 on every `docker exec`, so a running container picks up a new or changed file
-without `--recreate`. When `network=` names a network the container hasn't
+without `--recreate`. When the resolved network is one the container hasn't
 joined, it runs `docker network connect` first; that is live too. The URL and
 the network name are never printed. `build.sh`'s banner says only
 `remote cache: yes` or `no`, and its closing `ccache -s` counts remote hits

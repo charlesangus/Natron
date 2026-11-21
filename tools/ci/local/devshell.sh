@@ -36,8 +36,9 @@
 #   docker volume rm "${NATRON_DEV_CONTAINER:-natron-dev}-home"
 #
 # An optional shared ccache remote storage is read from .local/ccache-remote in
-# the main checkout (see "Remote cache" in tools/ci/local/README.md). Without
-# that file every build stays local-only.
+# the main checkout (see "Remote cache" in tools/ci/local/README.md): the URL is
+# url= or else docker_url=, the network is network= or else, for docker_url,
+# docker_default. Without that file every build stays local-only.
 #
 # The container this script creates always has NATRON_IN_CONTAINER=1 set (see
 # the `docker run -e NATRON_IN_CONTAINER=1 ...` below). build.sh/test.sh use
@@ -111,6 +112,7 @@ else
 fi
 CCACHE_REMOTE_URL=""
 CCACHE_REMOTE_NETWORK=""
+CCACHE_REMOTE_DOCKER_URL=""
 if [[ -f "${CCACHE_REMOTE_FILE}" ]]; then
     if [[ -r "${CCACHE_REMOTE_FILE}" ]]; then
         while IFS= read -r line || [[ -n "${line}" ]]; do
@@ -128,11 +130,21 @@ if [[ -f "${CCACHE_REMOTE_FILE}" ]]; then
             case "${key}" in
                 url) CCACHE_REMOTE_URL="${value}" ;;
                 network) CCACHE_REMOTE_NETWORK="${value}" ;;
+                docker_url) CCACHE_REMOTE_DOCKER_URL="${value}" ;;
+                # Other consumers of the same file read these.
+                user|password|host_url|wan_url) ;;
                 *) echo "devshell.sh: ignoring unknown key '${key}' in .local/ccache-remote" >&2 ;;
             esac
         done <"${CCACHE_REMOTE_FILE}"
+        # docker_url is only reachable from the server's docker network, so it
+        # brings that network's default compose name along unless network= says
+        # otherwise; an explicit url= is taken to need no network by default.
+        if [[ -z "${CCACHE_REMOTE_URL}" && -n "${CCACHE_REMOTE_DOCKER_URL}" ]]; then
+            CCACHE_REMOTE_URL="${CCACHE_REMOTE_DOCKER_URL}"
+            [[ -n "${CCACHE_REMOTE_NETWORK}" ]] || CCACHE_REMOTE_NETWORK="docker_default"
+        fi
         if [[ -z "${CCACHE_REMOTE_URL}" ]]; then
-            echo "devshell.sh: .local/ccache-remote has no url=; the remote cache is off" >&2
+            echo "devshell.sh: .local/ccache-remote has neither url= nor docker_url=; the remote cache is off" >&2
             CCACHE_REMOTE_NETWORK=""
         fi
     else

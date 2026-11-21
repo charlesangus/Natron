@@ -428,6 +428,33 @@ namespace MergeDetail {
         }
 
         void
+        reportDroppedInput(MergeContext* context,
+                           const std::string& nodeId,
+                           const std::string& label)
+        {
+            std::map<std::string, std::size_t>::const_iterator reparent = context->reparentConflicts.find(nodeId);
+            if (reparent != context->reparentConflicts.end()) {
+                std::vector<std::string>& inputs = context->conflicts[reparent->second].inputs;
+                if (std::find(inputs.begin(), inputs.end(), label) == inputs.end()) {
+                    inputs.push_back(label);
+                }
+
+                return;
+            }
+            for (const MergeConflict& conflict : context->conflicts) {
+                if ((conflict.nodeId == nodeId) && (conflict.input == label) && ((conflict.kind == MergeConflictKind::eInput) || (conflict.kind == MergeConflictKind::eStructuralInsert))) {
+                    return;
+                }
+            }
+            MergeConflict conflict;
+            conflict.kind = MergeConflictKind::eInput;
+            conflict.baseNodeId = context->out[nodeId].baseId;
+            conflict.nodeId = nodeId;
+            conflict.input = label;
+            context->conflicts.push_back(conflict);
+        }
+
+        void
         attach(const std::map<std::string, std::vector<std::string>>& children,
                const std::map<std::string, OutNode>& out,
                const std::string& parent,
@@ -649,8 +676,13 @@ namespace MergeDetail {
             node.node->inputs.clear();
             for (const std::pair<const std::string, std::string>& input : node.inputIds) {
                 std::map<std::string, OutNode>::const_iterator source = context->out.find(input.second);
-                if ((source != context->out.end()) && (source->second.parent == node.parent)) {
+                if (source == context->out.end()) {
+                    continue;
+                }
+                if (source->second.parent == node.parent) {
                     node.node->inputs[input.first] = source->second.node->scriptName;
+                } else {
+                    reportDroppedInput(context, id, input.first);
                 }
             }
             if (!node.theirsId.empty() && !context->plan.templateKey.empty()) {

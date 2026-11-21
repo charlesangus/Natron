@@ -259,14 +259,123 @@ TEST(NodeMatcher, MergedAdoptionsMatchByIdentityNextTime)
 
 TEST(NodeMatcher, AnArtistBranchNextToTheTemplateIsNeverAdopted)
 {
-    // The template's Constant1 is gone from the shot, and the artist's own Constant feeds Merge1.A
-    // in its place: it has the right plug-in and neighbours, but nothing of the template feeds it.
-    Scenario scenario = scenarios().at("reconnect");
-    scenario.mine.remove("Constant1");
-    const Serialization::ProjectSerialization baseProject = scenario.base.project();
-    const Serialization::ProjectSerialization mineProject = scenario.mine.project();
-    const Serialization::NodeCorrespondence match = Serialization::matchNodes(Serialization::MergeGraph(baseProject), Serialization::MergeGraph(mineProject), "grade_tpl");
-    EXPECT_TRUE(match.otherFor(hexId("b:Constant1")).empty());
+    // The template's Constant1 is gone from the shot, and the artist's own Constant has its plug-in
+    // but not its place: it feeds the artist's comp after the template, or the wrong input of Merge1.
+    for (const bool onMask : { false, true }) {
+        SCOPED_TRACE(onMask ? "on Merge1.Mask" : "on the artist's comp");
+        Scenario scenario = templateScenario();
+        scenario.mine.remove("Constant1");
+        scenario.mine.add("ArtistMatte", "Constant", "m:new");
+        if (onMask) {
+            scenario.mine.get("Merge1").inputs["Mask"] = "ArtistMatte";
+        } else {
+            insertBefore(&scenario.mine, "ArtistComp", "Merge", "m:comp", "ShotOut", "", "B");
+            scenario.mine.get("ArtistComp").inputs["A"] = "ArtistMatte";
+        }
+        const Serialization::ProjectSerialization baseProject = scenario.base.project();
+        const Serialization::ProjectSerialization mineProject = scenario.mine.project();
+        const Serialization::NodeCorrespondence match = Serialization::matchNodes(Serialization::MergeGraph(baseProject), Serialization::MergeGraph(mineProject), "grade_tpl");
+        EXPECT_TRUE(match.otherFor(hexId("b:Constant1")).empty());
+        EXPECT_TRUE(match.adopted.empty());
+    }
+}
+
+namespace {
+
+// Read1 -> Grade1 -> Transform1 -> Write1.
+SimGraph
+readGradeTransform()
+{
+    SimGraph graph;
+    graph.add("Read1", "Read", "b:Read1");
+    graph.add("Grade1", "Grade", "b:Grade1", { { "Source", "Read1" } });
+    graph.add("Transform1", "Transform", "b:Transform1", { { "Source", "Grade1" } });
+    graph.add("Write1", "Write", "b:Write1", { { "Source", "Transform1" } });
+
+    return graph;
+}
+
+// The template imported as "tpl": fresh IDs, origins naming the template's.
+SimGraph
+importedAs(const SimGraph& graph)
+{
+    SimGraph shot = graph;
+    for (SimNode& node : shot.nodes) {
+        node.originKey = "tpl";
+        node.originNode = node.id;
+        node.id = hexId("m:" + node.name);
+    }
+
+    return shot;
+}
+
+Serialization::NodeCorrespondence
+matchShot(const SimGraph& base,
+          const SimGraph& shot)
+{
+    const Serialization::ProjectSerialization baseProject = base.project();
+    const Serialization::ProjectSerialization shotProject = shot.project();
+
+    return Serialization::matchNodes(Serialization::MergeGraph(baseProject), Serialization::MergeGraph(shotProject), "tpl");
+}
+
+} // namespace
+
+TEST(NodeMatcher, AChainRecreatedFromTheHeadIsAdoptedThroughInsertedNodes)
+{
+    const SimGraph base = readGradeTransform();
+    SimGraph shot = importedAs(base);
+    shot.remove("Read1");
+    shot.remove("Grade1");
+    shot.add("Read2", "Read", "m:read");
+    shot.add("Grade2", "Grade", "m:grade", { { "Source", "Read2" } });
+    shot.add("ArtistBlur", "Blur", "m:blur", { { "Source", "Grade2" } });
+    shot.add("ArtistCC", "ColorCorrect", "m:cc", { { "Source", "ArtistBlur" } });
+    shot.get("Transform1").inputs["Source"] = "ArtistCC";
+    shot.add("Reference", "Read", "m:ref");
+    shot.add("ReferenceView", "Dot", "m:refview", { { "", "Reference" } });
+
+    const Serialization::NodeCorrespondence match = matchShot(base, shot);
+    EXPECT_EQ(match.otherFor(hexId("b:Transform1")), hexId("m:Transform1"));
+    EXPECT_EQ(match.otherFor(hexId("b:Grade1")), hexId("m:grade"));
+    EXPECT_EQ(match.otherFor(hexId("b:Read1")), hexId("m:read"));
+    EXPECT_EQ(match.adopted, std::set<std::string>({ hexId("m:grade"), hexId("m:read") }));
+}
+
+TEST(NodeMatcher, ARecreatedHeadOrTailIsAdopted)
+{
+    const SimGraph base = readGradeTransform();
+    {
+        SimGraph shot = importedAs(base);
+        shot.remove("Read1");
+        shot.add("Read2", "Read", "m:read");
+        shot.get("Grade1").inputs["Source"] = "Read2";
+        const Serialization::NodeCorrespondence match = matchShot(base, shot);
+        EXPECT_EQ(match.otherFor(hexId("b:Read1")), hexId("m:read"));
+        EXPECT_EQ(match.adopted, std::set<std::string>({ hexId("m:read") }));
+    }
+    {
+        SimGraph shot = importedAs(base);
+        shot.remove("Write1");
+        shot.add("Write2", "Write", "m:write", { { "Source", "Transform1" } });
+        const Serialization::NodeCorrespondence match = matchShot(base, shot);
+        EXPECT_EQ(match.otherFor(hexId("b:Write1")), hexId("m:write"));
+        EXPECT_EQ(match.adopted, std::set<std::string>({ hexId("m:write") }));
+    }
+}
+
+TEST(NodeMatcher, TwoCandidatesInOnePlaceAreNeverAdopted)
+{
+    const SimGraph base = readGradeTransform();
+    SimGraph shot = importedAs(base);
+    shot.remove("Read1");
+    shot.add("ReadA", "Read", "m:a");
+    shot.add("ReadB", "Read", "m:b");
+    shot.add("ArtistMerge", "Merge", "m:merge", { { "A", "ReadA" }, { "B", "ReadB" } });
+    shot.get("Grade1").inputs["Source"] = "ArtistMerge";
+    const Serialization::NodeCorrespondence match = matchShot(base, shot);
+    EXPECT_TRUE(match.otherFor(hexId("b:Read1")).empty());
+    EXPECT_EQ(match.otherFor(hexId("b:Grade1")), hexId("m:Grade1"));
     EXPECT_TRUE(match.adopted.empty());
 }
 

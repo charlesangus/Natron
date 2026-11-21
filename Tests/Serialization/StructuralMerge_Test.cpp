@@ -269,6 +269,27 @@ TEST(StructuralMerge, AnInsertWhoseReplacementSourceMovedToAnotherGroupConflicts
     EXPECT_TRUE(reported);
 }
 
+TEST(StructuralMerge, AnInputWhoseSourceMovedToAnotherGroupConflicts)
+{
+    Scenario scenario = templateScenario();
+    scenario.mine.add("ArtistCC", "ColorCorrect", "m:ArtistCC", { { "Source", "Constant1" } });
+    scenario.theirs.add("Mattes", "Group", "t:Mattes");
+    scenario.theirs.get("Constant1").parent = "Mattes";
+    scenario.theirs.add("MatteOut", "Output", "t:Mattes.MatteOut", { { "Source", "Constant1" } }, "Mattes");
+    scenario.theirs.get("Merge1").inputs["A"] = "Mattes";
+    const Serialization::MergeResult result = Projects(scenario).merge();
+    EXPECT_TRUE(nodeAt(result.merged, "Mattes.Constant1") != nullptr);
+    EXPECT_EQ(inputOf(result.merged, "Merge1", "A"), "Mattes");
+    Serialization::NodeSerializationPtr artist = nodeAt(result.merged, "ArtistCC");
+    ASSERT_TRUE(artist != nullptr);
+    EXPECT_EQ(inputOf(result.merged, "ArtistCC", "Source"), "");
+    int reported = 0;
+    for (const Serialization::MergeConflict& conflict : result.conflicts) {
+        reported += ((conflict.kind == Serialization::MergeConflictKind::eInput) && (conflict.nodeId == artist->id) && (conflict.input == "Source")) ? 1 : 0;
+    }
+    EXPECT_EQ(reported, 1);
+}
+
 TEST(StructuralMerge, ARestoredNodeTakesTheirsStateAndWiring)
 {
     Scenario scenario = templateScenario();

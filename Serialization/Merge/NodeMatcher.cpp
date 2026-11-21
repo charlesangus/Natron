@@ -19,9 +19,9 @@
 
 #include "Serialization/Merge/NodeMatcher.h"
 
+#include <deque>
 #include <vector>
 
-#include "Serialization/Merge/MergeScope.h"
 #include "Serialization/Ops/OpsPrivate.h"
 
 NATRON_NAMESPACE_ENTER
@@ -197,17 +197,165 @@ namespace {
         }
     }
 
+    // The matched nodes reached from start against the edges, passing through unmatched nodes.
+    struct UpstreamReach {
+        std::string direct;
+        std::set<std::string> through;
+    };
+
+    UpstreamReach
+    upstreamReach(const MergeGraph& graph,
+                  const std::string& start,
+                  const std::set<std::string>& matched)
+    {
+        UpstreamReach reach;
+        if (start.empty()) {
+            return reach;
+        }
+        if (matched.count(start)) {
+            reach.direct = start;
+
+            return reach;
+        }
+        std::set<std::string> seen;
+        std::deque<std::string> queue(1, start);
+        while (!queue.empty()) {
+            const std::string id = queue.front();
+            queue.pop_front();
+            const MergeGraph::Node* node = graph.find(id);
+            if (!node || !seen.insert(id).second) {
+                continue;
+            }
+            for (const std::pair<const std::string, std::string>& input : node->inputs) {
+                if (matched.count(input.second)) {
+                    reach.through.insert(input.second);
+                } else {
+                    queue.push_back(input.second);
+                }
+            }
+        }
+
+        return reach;
+    }
+
+    // The (consumer, input label) edges into matched nodes, along the edges from node, passing
+    // through unmatched consumers.
+    struct DownstreamReach {
+        std::set<std::pair<std::string, std::string>> direct;
+        std::set<std::pair<std::string, std::string>> through;
+    };
+
+    DownstreamReach
+    downstreamReach(const MergeGraph& graph,
+                    const MergeGraph::Node& node,
+                    const std::set<std::string>& matched)
+    {
+        DownstreamReach reach;
+        std::set<std::string> seen;
+        std::deque<std::string> queue;
+        for (const std::pair<std::string, std::string>& output : node.outputs) {
+            if (matched.count(output.first)) {
+                reach.direct.insert(output);
+            } else {
+                queue.push_back(output.first);
+            }
+        }
+        while (!queue.empty()) {
+            const std::string id = queue.front();
+            queue.pop_front();
+            const MergeGraph::Node* consumer = graph.find(id);
+            if (!consumer || !seen.insert(id).second) {
+                continue;
+            }
+            for (const std::pair<std::string, std::string>& output : consumer->outputs) {
+                if (matched.count(output.first)) {
+                    reach.through.insert(output);
+                } else {
+                    queue.push_back(output.first);
+                }
+            }
+        }
+
+        return reach;
+    }
+
+    // Whether candidate is wired as baseNode is along every matched neighbour of baseNode, looking
+    // through the unmatched nodes between them, with at least one such neighbour, and never directly
+    // to a matched node baseNode is not wired to.
+    bool
+    wiredAsBase(const MergeGraph& other,
+                const MergeGraph::Node& baseNode,
+                const MergeGraph::Node& candidate,
+                const NodeCorrespondence& correspondence,
+                const std::set<std::string>& matchedOther)
+    {
+        int agreeing = 0;
+
+        std::set<std::string> labels;
+        for (const std::pair<const std::string, std::string>& input : baseNode.inputs) {
+            labels.insert(input.first);
+        }
+        for (const std::pair<const std::string, std::string>& input : candidate.inputs) {
+            labels.insert(input.first);
+        }
+        for (const std::string& label : labels) {
+            std::map<std::string, std::string>::const_iterator baseInput = baseNode.inputs.find(label);
+            std::map<std::string, std::string>::const_iterator otherInput = candidate.inputs.find(label);
+            const std::string mapped = (baseInput == baseNode.inputs.end()) ? std::string() : correspondence.otherFor(baseInput->second);
+            const UpstreamReach reach = upstreamReach(other, (otherInput == candidate.inputs.end()) ? std::string() : otherInput->second, matchedOther);
+            if (!mapped.empty()) {
+                if ((reach.direct != mapped) && !(reach.direct.empty() && (reach.through == std::set<std::string> { mapped }))) {
+                    return false;
+                }
+                ++agreeing;
+            } else if (!reach.direct.empty() || (!reach.through.empty() && (baseInput == baseNode.inputs.end()))) {
+                // Reaching past unmatched nodes is only fine where an unmatched base source may stand
+                // for them.
+                return false;
+            }
+        }
+
+        std::set<std::pair<std::string, std::string>> baseDownstream;
+        bool unmatchedConsumer = false;
+        for (const std::pair<std::string, std::string>& output : baseNode.outputs) {
+            const std::string mapped = correspondence.otherFor(output.first);
+            if (mapped.empty()) {
+                unmatchedConsumer = true;
+            } else {
+                baseDownstream.emplace(mapped, output.second);
+            }
+        }
+        const DownstreamReach reach = downstreamReach(other, candidate, matchedOther);
+        for (const std::pair<std::string, std::string>& output : baseDownstream) {
+            if (!reach.direct.count(output) && !reach.through.count(output)) {
+                return false;
+            }
+            ++agreeing;
+        }
+        for (const std::pair<std::string, std::string>& output : reach.direct) {
+            if (!baseDownstream.count(output)) {
+                return false;
+            }
+        }
+        // Likewise, an unmatched base consumer may stand for the nodes the reach passed through.
+        for (const std::pair<std::string, std::string>& output : reach.through) {
+            if (!baseDownstream.count(output) && !unmatchedConsumer) {
+                return false;
+            }
+        }
+
+        return agreeing > 0;
+    }
+
     void
     adoptByStructure(const MergeGraph& base,
                      const MergeGraph& other,
-                     bool enclosedOnly,
                      NodeCorrespondence* correspondence)
     {
         bool progress = true;
         while (progress) {
             progress = false;
             const std::set<std::string> matchedOther = correspondence->matchedOther();
-            const std::set<std::string> enclosed = enclosedOnly ? mergeScope(other, *correspondence) : std::set<std::string>();
             // (plug-in, parent) to the unmatched nodes without an origin, in ID order.
             std::map<std::pair<std::string, std::string>, std::vector<std::string>> unmatched;
             for (const std::pair<const std::string, MergeGraph::Node>& otherEntry : other.nodes()) {
@@ -233,10 +381,7 @@ namespace {
                     continue;
                 }
                 for (const std::string& candidateId : bucket->second) {
-                    if (enclosedOnly && !enclosed.count(candidateId)) {
-                        continue;
-                    }
-                    if (neighbourAgreement(baseEntry.second, *other.find(candidateId), *correspondence, matchedOther).exact) {
+                    if (wiredAsBase(other, baseEntry.second, *other.find(candidateId), *correspondence, matchedOther)) {
                         candidatesOfBase[baseEntry.first].push_back(candidateId);
                         ++claimsOnCandidate[candidateId];
                     }
@@ -324,7 +469,7 @@ matchNodes(const MergeGraph& base,
     const std::map<std::string, std::vector<std::string>> claims = collectClaims(base, other, templateKey);
     NodeCorrespondence result = matchUniqueClaims(claims);
     resolveAmbiguousClaims(base, other, claims, &result);
-    adoptByStructure(base, other, !templateKey.empty(), &result);
+    adoptByStructure(base, other, &result);
 
     return result;
 }

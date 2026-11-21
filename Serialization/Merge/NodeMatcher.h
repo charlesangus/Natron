@@ -92,12 +92,16 @@ struct NodeCorrespondence {
  * In a shot, a node whose origin names templateKey claims the base node the origin names; any other
  * node claims the base node with its own ID. A base node claimed by several nodes goes to the one
  * whose neighbours agree with it best, when one does. Then an unmatched base node adopts an
- * unmatched node without an origin that has the same plug-in, the same parent, and the same matched
- * upstream and downstream neighbours on the same input labels, when each is the other's only
- * candidate. In a shot the adopted node must also lie in the merge scope of the nodes matched so
- * far, so a node of the artist's own branch next to the template is never adopted. Adoption repeats
- * until nothing more is adopted. A merge writes an origin onto each adopted node it keeps, so the
- * next match finds it by identity.
+ * unmatched node without an origin that has the same plug-in and the same parent, when each is the
+ * other's only candidate. A candidate's wiring must agree with the base node's along every one of
+ * its matched neighbours, on the same input labels, with at least one such neighbour; unmatched
+ * nodes between them, such as nodes the artist inserted, are looked through. A head or tail has no
+ * neighbour on one side, and an unmatched base neighbour asks nothing of that side. A candidate
+ * wired directly to a matched node the base node is not wired to, or reaching matched nodes past
+ * unmatched ones where the base node has no unmatched neighbour they could stand for, is not
+ * adopted, so a node of the artist's own branch next to the template is not. Adoption repeats
+ * until nothing more is adopted, so it spreads along a recreated chain from its matched end. A
+ * merge writes an origin onto each adopted node it keeps, so the next match finds it by identity.
  **/
 NodeCorrespondence matchNodes(const MergeGraph& base,
                               const MergeGraph& other,

@@ -69,7 +69,7 @@ What has been checked on the server: a compile in `natron-dev` (ccache 4.13.6) w
     - `bash -n` and shellcheck clean.
   - size: M
 
-- [ ] M493.P1.T3 — Reuse published image layers when building the dev image
+- [x] M493.P1.T3 — Reuse published image layers when building the dev image
   - files: `.github/workflows/dev-image.yml`, `tools/ci/local/devshell.sh`, `tools/ci/local/README.md`
   - approach:
     - Added at the user's request (2026-11-21): a Dockerfile change made the local fallback build recompile Cycles and MoonRay from scratch, because pulled images carry no build-cache metadata.
@@ -138,3 +138,4 @@ Precondition: the user has set the repo secret `CCACHE_REMOTE_STORAGE` to the pu
   - **Docs:** a README section with placeholders only.
 
   Unverified: the end-to-end HTTPS hit, and whether the layout option is written `layout=bazel` or `@layout=bazel`. **Needs the user:** create `.local/ccache-remote`, then a devshell `--recreate` to test. Phase 493.2 needs the repo secret `CCACHE_REMOTE_STORAGE`.
+- 2026-11-21 — M493.P1.T3 code in 85476bc56 (milestone/m493-shared-ccache-remote-storage): BuildKit inline cache plus `--cache-from :latest` in dev-image.yml and the devshell.sh fallback. bash -n, shellcheck and actionlint clean. Layer reuse takes effect only after main publishes an image with inline cache, so it is a post-merge check.

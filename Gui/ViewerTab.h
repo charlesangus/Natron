@@ -489,7 +489,6 @@ public Q_SLOTS:
     void onStaleCueTimeout();
     // Pushes the timing's visibility to the selected style and re-arms the timer at its next deadline.
     void refreshStaleCue();
-    void setStaleSpinnerVisible(bool visible);
 
     void refreshViewerRenderingState();
 

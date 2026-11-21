@@ -366,9 +366,8 @@ ViewerTab::refreshStaleCue()
     const StaleCueStyleEnum style = appPTR->getCurrentSettings()->getStaleCueStyle();
     const bool visible = (style != eStaleCueStyleOff) && _imp->staleCueTiming.visible();
     if (_imp->viewer) {
-        _imp->viewer->setStaleCue(style, visible && (style != eStaleCueStyleToolbarSpinner));
+        _imp->viewer->setStaleCue(style, visible);
     }
-    setStaleSpinnerVisible(visible && (style == eStaleCueStyleToolbarSpinner));
 
     const std::optional<std::int64_t> deadline = _imp->staleCueTiming.nextDeadlineMs();
     if ((style == eStaleCueStyleOff) || !deadline) {
@@ -378,14 +377,6 @@ ViewerTab::refreshStaleCue()
     }
     const std::int64_t wait = std::max<std::int64_t>(0, *deadline - _imp->staleCueClock.elapsed());
     _imp->staleCueTimer.start((int)std::min<std::int64_t>(wait, std::numeric_limits<int>::max()));
-}
-
-void
-ViewerTab::setStaleSpinnerVisible(bool visible)
-{
-    if (_imp->staleSpinner) {
-        _imp->staleSpinner->setSpinning(visible);
-    }
 }
 
 void

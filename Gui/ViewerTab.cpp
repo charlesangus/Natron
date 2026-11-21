@@ -868,10 +868,6 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
 
     _imp->secondRowLayout->addWidget(_imp->pickerButton);
 
-    // Last widget of the row, pinned to the right end by the stretch; its slot is reserved while hidden.
-    _imp->staleSpinner = new ViewerStaleSpinner(buttonSize, buttonIconSize.width(), _imp->secondSettingsRow);
-    _imp->secondRowLayout->addWidget(_imp->staleSpinner);
-
     /*Progressive render row*/
     _imp->sceneRenderRow = new QWidget(this);
     _imp->sceneRenderRow->setObjectName(QString::fromUtf8("sceneRenderRow"));

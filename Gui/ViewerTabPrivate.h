@@ -36,7 +36,6 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QElapsedTimer>
 #include <QMutex>
 #include <QTimer>
-#include <QWidget>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
@@ -58,25 +57,6 @@ CLANG_DIAG_ON(uninitialized)
 NATRON_NAMESPACE_ENTER
 
 class SceneViewport;
-
-// A turning amber arc in the viewer toolbar marking an out-of-date image. It animates only while shown.
-class ViewerStaleSpinner
-    : public QWidget {
-public:
-    ViewerStaleSpinner(const QSize& size,
-                       int arcDiameter,
-                       QWidget* parent);
-
-    void setSpinning(bool spinning);
-
-protected:
-    void paintEvent(QPaintEvent* e) OVERRIDE FINAL;
-
-private:
-    QTimer _frameTimer;
-    int _arcDiameter;
-    int _frame = 0;
-};
 
 struct ViewerTabPrivate
 {
@@ -193,7 +173,6 @@ struct ViewerTabPrivate
     // Fires at the timing's next deadline; never runs while the stale cue style is Off.
     QTimer staleCueTimer;
     QElapsedTimer staleCueClock;
-    ViewerStaleSpinner* staleSpinner = nullptr;
 
     /*frame seeker*/
     TimeLineGui* timeLineGui;

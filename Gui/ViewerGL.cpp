@@ -337,14 +337,7 @@ drawStaleCue(StaleCueStyleEnum style,
         glEnd();
         break;
     }
-    case eStaleCueStyleEdgeLine:
-        glColor4d(1., 0.7, 0., 1.);
-        glBegin(GL_QUADS);
-        fillStaleCueRect(left, top - 3. * py, right, top);
-        glEnd();
-        break;
     case eStaleCueStyleOff:
-    case eStaleCueStyleToolbarSpinner:
         break;
     }
 }

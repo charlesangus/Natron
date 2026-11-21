@@ -52,9 +52,7 @@ enum class AiModelTask;
 enum StaleCueStyleEnum : int {
     eStaleCueStyleOff = 0,
     eStaleCueStyleSubtleOutline,
-    eStaleCueStyleCornerDot,
-    eStaleCueStyleEdgeLine,
-    eStaleCueStyleToolbarSpinner
+    eStaleCueStyleCornerDot
 };
 
 /*The current settings in the preferences menu.*/

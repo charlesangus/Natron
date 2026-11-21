@@ -73,7 +73,7 @@ This milestone turns Storm's in-pass highlight off and replaces it with a Natron
 
 ## Phase 278.3: Viewport highlight
 
-- [ ] M278.P3.T1 — Composite the pass in the Storm viewport and drop Storm's in-pass highlight
+- [x] M278.P3.T1 — Composite the pass in the Storm viewport and drop Storm's in-pass highlight
   - files: Gui/SceneViewport.cpp, Gui/SceneViewport.h
   - approach:
     1. Under Storm, set `renderParams().highlight = false` and stop calling `engine->SetSelected`; `applySelection` feeds the filter instead.
@@ -86,7 +86,7 @@ This milestone turns Storm's in-pass highlight off and replaces it with a Natron
   - verify: The existing highlight tests pass unchanged (Tests/SceneViewport_Test.cpp:535, :907, :1353, and :1134 RestoresTheGLStateItChanges). `getEngineCount()` is still 1.
   - size: L
 
-- [ ] M278.P3.T2 — GL tests: a half-transparent projected card highlights like an opaque prim
+- [x] M278.P3.T2 — GL tests: a half-transparent projected card highlights like an opaque prim
   - files: Tests/SceneViewport_Test.cpp
   - approach: Rewrite PicksAndHighlightsAProjectedCard (:566) so that, with /World/Card selected, (97,128) moves toward yellow by at least the opaque box's margin scaled by 0.5, while (159,128) and the backdrop stay within 6. Then add tests for:
     - an opaque occluder quad at z=+0.5 covering part of the card: the covered part is untinted and the uncovered part tinted;
@@ -127,3 +127,4 @@ This milestone turns Storm's in-pass highlight off and replaces it with a Natron
   - **Wireframe draws lines (user):** the pass follows the draw mode.
 - 2026-11-20 — Phase 278.2 in 54fb9680b: Gui/SceneSelectionTasks.{h,cpp} and Gui/SelectionEngine.{h,cpp}. The camera and framing travel in `setRenderParams`; `setSize` takes the formats. The verify filter is `SceneSelectionTasks*`. Phase 3 must hold the engine as `std::unique_ptr<SelectionEngine>`, because the base destructor isn't virtual. Build running.
 - 2026-11-20 — Phase 278.2 gate green on dd52cfdaf, after the glad/Qt GL include fix. Phase 278.3 dispatched.
+- 2026-11-20 — Phase 278.3 in 36ad8b2ab. `ensureEngine` builds the SelectionEngine; `highlight = false`; `drawSelection` composites after `drawGrade` (pass depth − 1e-5, LEQUAL, tint by alpha × pass alpha). New GL tests cover occlusion, tinting through translucent prims, clearing, and wireframe lines; PicksAndHighlightsAProjectedCard is rewritten. **PM call:** the tint is (1, 0.8, 0.1) in display colour, like the selected guides, rather than graded through the view, so it reads slightly more orange than Storm's old highlight. The user sees it in the sign-off screenshots. Gate running.

@@ -35,6 +35,7 @@ CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
 #include "Gui/GuiFwd.h"
+#include "Gui/ViewerPixelGrid.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -116,6 +117,8 @@ public:
         , _zoomMax(zoomMax)
         , _screenWidth(0)
         , _screenHeight(0)
+        , _deviceWidth(0)
+        , _deviceHeight(0)
     {
     }
 
@@ -135,24 +138,63 @@ public:
         return 1. / _zoomFactor;
     }
 
+    /**
+     * @brief The edges of the projection as drawn and as used by every widget/zoom conversion.
+     * With a device pixel grid set they are the stored edges snapped to it; the stored edges,
+     * which pan and zoom work on, stay unsnapped so snapping never accumulates.
+     **/
     double left() const
     {
-        return _zoomLeft;
+        return snapEdgeToPixelGrid(_zoomLeft, _deviceWidth, _screenWidth * screenPixelWidth());
     }
 
     double right() const
     {
-        return _zoomLeft + _screenWidth * screenPixelWidth();
+        return left() + _screenWidth * screenPixelWidth();
     }
 
     double bottom() const
     {
-        return _zoomBottom;
+        return snapEdgeToPixelGrid(_zoomBottom, _deviceHeight, _screenHeight * screenPixelHeight());
     }
 
     double top() const
     {
-        return _zoomBottom + _screenHeight * screenPixelHeight();
+        return bottom() + _screenHeight * screenPixelHeight();
+    }
+
+    /// the stored left edge, before any snapping to the device pixel grid
+    double unsnappedLeft() const
+    {
+        return _zoomLeft;
+    }
+
+    /// the stored bottom edge, before any snapping to the device pixel grid
+    double unsnappedBottom() const
+    {
+        return _zoomBottom;
+    }
+
+    /**
+     * @brief Snaps left() and bottom() so that zoom coordinate 0 falls on a device pixel edge.
+     * The sizes are those of the GL viewport spanning the whole screen size; 0 turns snapping off.
+     **/
+    void setDevicePixelGrid(double deviceWidth,
+                            double deviceHeight)
+    {
+        assert(std::isfinite(deviceWidth) && std::isfinite(deviceHeight));
+        _deviceWidth = deviceWidth > 0 ? deviceWidth : 0;
+        _deviceHeight = deviceHeight > 0 ? deviceHeight : 0;
+    }
+
+    double deviceWidth() const
+    {
+        return _deviceWidth;
+    }
+
+    double deviceHeight() const
+    {
+        return _deviceHeight;
     }
 
     double factor() const
@@ -211,6 +253,11 @@ public:
         check();
     }
 
+    /**
+     * @brief Zooms about a point given in the snapped mapping. The stored edges move about the
+     * same widget point in the unsnapped mapping, so repeated zooms at a fixed cursor follow
+     * exactly the path they would without snapping instead of drifting by a snap each step.
+     **/
     void zoom(double centerX,
               double centerY,
               double scale)
@@ -228,8 +275,10 @@ public:
             zoomFactor = _zoomMax / _zoomAspectRatio;
         }
         scale = zoomFactor / _zoomFactor;
-        _zoomLeft = centerX - ( centerX - left() ) / scale;
-        _zoomBottom = centerY - ( centerY - bottom() ) / scale;
+        const double offsetX = centerX - left();
+        const double offsetY = centerY - bottom();
+        _zoomLeft += offsetX - offsetX / scale;
+        _zoomBottom += offsetY - offsetY / scale;
         _zoomFactor = zoomFactor;
         check();
     }
@@ -247,7 +296,8 @@ public:
             zoomAspectRatio = _zoomMax / _zoomFactor;
         }
         scale = zoomAspectRatio / _zoomAspectRatio;
-        _zoomLeft = centerX - ( centerX - left() ) / scale;
+        const double offsetX = centerX - left();
+        _zoomLeft += offsetX - offsetX / scale;
         _zoomAspectRatio = zoomAspectRatio;
         check();
     }
@@ -271,7 +321,8 @@ public:
             zoomFactor = _zoomMax / zoomAspectRatio;
         }
         scale = zoomFactor / _zoomFactor;
-        _zoomBottom = centerY - ( centerY - bottom() ) / scale;
+        const double offsetY = centerY - bottom();
+        _zoomBottom += offsetY - offsetY / scale;
         _zoomAspectRatio = zoomAspectRatio;
         _zoomFactor = zoomFactor;
         check();
@@ -370,6 +421,19 @@ public:
     }
 
     /**
+     * @brief The zoom coordinates of the centre of the device pixel under a widget point, for
+     * lookups that name a texel: flooring them gives the texel drawn at that device pixel.
+     **/
+    QPointF toZoomCoordinatesAtPixelCentre(double widgetX,
+                                           double widgetY) const
+    {
+        const double ratioX = (_deviceWidth > 0 && _screenWidth > 0) ? _deviceWidth / _screenWidth : 1.;
+        const double ratioY = (_deviceHeight > 0 && _screenHeight > 0) ? _deviceHeight / _screenHeight : 1.;
+
+        return toZoomCoordinates(devicePixelCentre(widgetX, ratioX), devicePixelCentre(widgetY, ratioY));
+    }
+
+    /**
      *@brief Computes the viewport coordinates of the point passed in parameter.
      * This function actually does the projection to retrieve the position;
      *@param x[in] The x coordinate of the point in image coordinates.
@@ -400,6 +464,8 @@ private:
     double _zoomMax; /// the max zoom factor on both axes
     double _screenWidth; /// window width in screen pixels
     double _screenHeight; /// window height in screen pixels
+    double _deviceWidth; /// viewport width in device pixels, 0 when left() is not snapped
+    double _deviceHeight; /// viewport height in device pixels, 0 when bottom() is not snapped
 };
 
 NATRON_NAMESPACE_EXIT

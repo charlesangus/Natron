@@ -80,8 +80,8 @@ The output has three layers, and a fourth with the renderers other than Storm:
   float. Where nothing was hit it is 0. The frame's metadata maps every value to
   its path under the key `primId/` followed by the value's bits as eight
   lowercase hexadecimal digits, for example `primId/1a2b3c4d` = `/World/Box`.
-- `normal`: the shading normal in camera space, in `normal.X`, `normal.Y` and
-  `normal.Z`. Where nothing was hit it is 0. Storm renders no normal, so the
+- `normal`: the shading normal in camera space, in `normal.x`, `normal.y` and
+  `normal.z`. Where nothing was hit it is 0. Storm renders no normal, so the
   layer is not there with Storm.
 
 Storm renders whole frames, one at a time, so renders of several USDRender

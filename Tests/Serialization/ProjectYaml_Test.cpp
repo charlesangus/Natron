@@ -60,8 +60,8 @@ knobs:
 formats:
   - {name: "Anamorphic", rect: [0, 0, 2048, 858], par: 2}
 layers:
-  diffuse: {label: "diffuse", channelsLabel: "RGB", channels: ["R", "G", "B"], origin: 2}
-  zdepth: {label: "Depth", channelsLabel: "Z", channels: ["Z"], origin: 1}
+  diffuse: {channels: ["R", "G", "B"], origin: 2}
+  zdepth: {channels: ["Z"], origin: 1}
 timeline: {current: 12}
 nodes:
   Blur1:
@@ -218,14 +218,10 @@ exampleProject()
 
     Serialization::LayerRegistryEntrySerialization diffuse;
     diffuse.layer.layerID = "diffuse";
-    diffuse.layer.layerLabel = "diffuse";
-    diffuse.layer.channelsLabel = "RGB";
     diffuse.layer.channels = { "R", "G", "B" };
     diffuse.origin = 2;
     Serialization::LayerRegistryEntrySerialization depth;
     depth.layer.layerID = "zdepth";
-    depth.layer.layerLabel = "Depth";
-    depth.layer.channelsLabel = "Z";
     depth.layer.channels = { "Z" };
     depth.origin = 1;
     project.layers.push_back(diffuse);
@@ -391,8 +387,6 @@ expectProjectsEqual(const ProjectSerialization& expected,
     auto layer = actual.layers.begin();
     for (const Serialization::LayerRegistryEntrySerialization& e : expected.layers) {
         EXPECT_EQ(e.layer.layerID, layer->layer.layerID);
-        EXPECT_EQ(e.layer.layerLabel, layer->layer.layerLabel);
-        EXPECT_EQ(e.layer.channelsLabel, layer->layer.channelsLabel);
         EXPECT_EQ(e.layer.channels, layer->layer.channels);
         EXPECT_EQ(e.origin, layer->origin);
         ++layer;

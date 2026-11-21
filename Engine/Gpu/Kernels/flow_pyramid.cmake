@@ -1,0 +1,5 @@
+slang_add_kernel(flow_extract Kernels/flow_pyramid.slang ENTRY flow_extract REGISTRY NatronGpu)
+slang_add_kernel(flow_blur_rows Kernels/flow_pyramid.slang ENTRY flow_blur_rows REGISTRY NatronGpu)
+slang_add_kernel(flow_blur_columns Kernels/flow_pyramid.slang ENTRY flow_blur_columns REGISTRY NatronGpu)
+slang_add_kernel(flow_gradients Kernels/flow_pyramid.slang ENTRY flow_gradients REGISTRY NatronGpu)
+slang_add_kernel(flow_fill Kernels/flow_pyramid.slang ENTRY flow_fill REGISTRY NatronGpu)

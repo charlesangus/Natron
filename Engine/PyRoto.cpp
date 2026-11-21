@@ -28,6 +28,7 @@
 #include <cassert>
 #include <stdexcept>
 
+#include "Engine/AppInstance.h"
 #include "Engine/Bezier.h"
 #include "Engine/BezierCP.h"
 #include "Engine/EffectInstance.h"
@@ -37,8 +38,15 @@
 #include "Engine/PyNode.h"
 #include "Engine/PyTracker.h"
 #include "Engine/RotoContext.h"
+#include "Engine/RotoCurvePanelHook.h"
+#include "Engine/RotoDrawableItem.h"
+#include "Engine/RotoKeyframeReduce.h"
 #include "Engine/RotoLayer.h"
+#include "Engine/RotoPaint.h"
 #include "Engine/RotoStrokeItem.h"
+#include "Engine/VectorFollowBake.h"
+#include "Engine/VectorFollowKnobs.h"
+#include "Engine/VectorSampler.h"
 
 NATRON_NAMESPACE_ENTER
 NATRON_PYTHON_NAMESPACE_ENTER
@@ -772,6 +780,293 @@ Roto::createRectangle(double x,
     }
 
     return 0;
+}
+
+namespace {
+
+PyObject*
+raiseValueError(const std::string& message)
+{
+    PyErr_SetString(PyExc_ValueError, message.c_str());
+
+    return nullptr;
+}
+
+PyObject*
+frameRangesToPython(const std::vector<VectorFollowFrameRange>& ranges)
+{
+    PyObject* list = PyList_New((Py_ssize_t)ranges.size());
+    Py_ssize_t index = 0;
+    for (const VectorFollowFrameRange& range : ranges) {
+        PyList_SetItem(list, index++, Py_BuildValue("(ii)", range.first, range.last));
+    }
+
+    return list;
+}
+
+const char*
+passEndName(VectorFollowPassEnd reason)
+{
+    switch (reason) {
+    case VectorFollowPassEnd::eLowConfidence:
+        return "lowConfidence";
+    case VectorFollowPassEnd::eUnreadable:
+        return "unreadable";
+    case VectorFollowPassEnd::eNoLayer:
+        return "noLayer";
+    }
+
+    return "";
+}
+
+PyObject*
+passStopsToPython(const std::vector<VectorFollowPassStop>& stops)
+{
+    PyObject* list = PyList_New((Py_ssize_t)stops.size());
+    Py_ssize_t index = 0;
+    for (const VectorFollowPassStop& stop : stops) {
+        PyObject* otherOnly;
+        if (stop.otherOnly.empty()) {
+            otherOnly = Py_None;
+            Py_INCREF(otherOnly);
+        } else {
+            otherOnly = Py_BuildValue("(ii)", stop.otherOnly.first, stop.otherOnly.last);
+        }
+        // N hands the reference to otherOnly over to the dict.
+        PyList_SetItem(list, index++, Py_BuildValue("{s:s,s:s,s:i,s:N}", "direction", stop.direction == VectorFollowDirection::eForward ? "forward" : "backward", "reason", passEndName(stop.reason), "frame", stop.frame, "otherOnly", otherOnly));
+    }
+
+    return list;
+}
+
+PyObject*
+followReportToPython(const VectorFollowReport& report)
+{
+    PyObject* result = PyDict_New();
+    for (const VectorFollowShapeReport& shape : report.shapes) {
+        PyObject* inferred = frameRangesToPython(shape.inferred);
+        PyObject* passStops = passStopsToPython(shape.passStops);
+        PyObject* unfollowed = frameRangesToPython(shape.unfollowed);
+        PyObject* stopFrame;
+        if (shape.stopped) {
+            stopFrame = PyLong_FromLong(shape.stopFrame);
+        } else {
+            stopFrame = Py_None;
+            Py_INCREF(stopFrame);
+        }
+        PyObject* entry = PyDict_New();
+        PyDict_SetItemString(entry, "inferred", inferred);
+        PyDict_SetItemString(entry, "stopFrame", stopFrame);
+        PyDict_SetItemString(entry, "passStops", passStops);
+        PyDict_SetItemString(entry, "unfollowed", unfollowed);
+        PyDict_SetItemString(result, shape.name.c_str(), entry);
+        Py_DECREF(inferred);
+        Py_DECREF(passStops);
+        Py_DECREF(unfollowed);
+        Py_DECREF(stopFrame);
+        Py_DECREF(entry);
+    }
+
+    return result;
+}
+
+const VectorFollowControls*
+followHost(const RotoCurveContextPtr& context)
+{
+    const NodePtr host = context ? context->getNode() : NodePtr();
+    const EffectInstancePtr effect = host ? host->getEffectInstance() : EffectInstancePtr();
+    const RotoCurvePanelHook* hook = effect ? effect->getCurvePanelHook() : nullptr;
+
+    return hook ? hook->getVectorFollowControls() : nullptr;
+}
+
+} // anonymous namespace
+
+PyObject*
+Roto::runFollow(const char* function,
+                const std::list<ItemBase*>& items,
+                int first,
+                int last,
+                int mode,
+                const QString& direction,
+                const QString& model,
+                double confidenceThreshold)
+{
+    if (refusesShapeEdit(_ctx)) {
+        return nullptr;
+    }
+    const NodePtr host = _ctx->getNode();
+    const VectorFollowControls* running = followHost(_ctx);
+    if (running && running->isFollowing()) {
+        PyErr_SetString(PyExc_RuntimeError, "A follow is already running on this node.");
+
+        return nullptr;
+    }
+
+    VectorFollowParams params;
+    params.mode = (VectorFollowMode)mode;
+    for (ItemBase* item : items) {
+        RotoDrawableItemPtr drawable = item ? std::dynamic_pointer_cast<RotoDrawableItem>(item->getInternalItem()) : RotoDrawableItemPtr();
+        if (drawable) {
+            params.items.push_back(drawable);
+        }
+    }
+    if (params.items.empty()) {
+        return raiseValueError(std::string(function) + " needs at least one shape or stroke.");
+    }
+
+    if (direction == QString::fromUtf8("forward")) {
+        params.direction = VectorFollowDirection::eForward;
+    } else if (direction == QString::fromUtf8("backward")) {
+        params.direction = VectorFollowDirection::eBackward;
+    } else {
+        return raiseValueError("direction must be \"forward\" or \"backward\", not \"" + direction.toStdString() + "\".");
+    }
+
+    if (model == QString::fromUtf8("perPoint")) {
+        params.model = VectorFollowModel::ePerPoint;
+    } else if (model == QString::fromUtf8("translate")) {
+        params.model = VectorFollowModel::eTranslate;
+    } else if (model == QString::fromUtf8("affine")) {
+        params.model = VectorFollowModel::eAffine;
+    } else if (model == QString::fromUtf8("perspective")) {
+        params.model = VectorFollowModel::ePerspective;
+    } else {
+        return raiseValueError("model must be \"perPoint\", \"translate\", \"affine\" or \"perspective\", not \"" + model.toStdString() + "\".");
+    }
+
+    params.source = running ? running->getVectorsSource() : NodePtr();
+    if (!params.source) {
+        return raiseValueError("Connect the " kVectorFollowInputLabel " input first.");
+    }
+    params.layers = running->getLayers();
+    std::string error;
+    if (!VectorSampler::checkSource(params.source, host, first, params.direction, params.layers, &error)) {
+        return raiseValueError(params.source->getFullyQualifiedName() + ": " + error);
+    }
+    params.first = first;
+    params.last = last;
+    params.confidenceThreshold = confidenceThreshold;
+
+    const VectorFollowReport report = _ctx->followVectors(params);
+    if (report.shapes.empty() && !report.error.empty()) {
+        return raiseValueError(report.error);
+    }
+    if (!report.error.empty()) {
+        PyErr_SetString(PyExc_RuntimeError, report.error.c_str());
+
+        return nullptr;
+    }
+
+    return followReportToPython(report);
+}
+
+PyObject*
+Roto::followVectors(const std::list<ItemBase*>& items,
+                    int first,
+                    int last,
+                    const QString& direction,
+                    const QString& model,
+                    double confidenceThreshold)
+{
+    return runFollow("followVectors", items, first, last, (int)VectorFollowMode::eFollow, direction, model, confidenceThreshold);
+}
+
+PyObject*
+Roto::blendBetweenKeys(const std::list<ItemBase*>& items,
+                       int first,
+                       int last,
+                       const QString& model,
+                       double confidenceThreshold)
+{
+    return runFollow("blendBetweenKeys", items, first, last, (int)VectorFollowMode::eBlendBetweenKeys, QString::fromUtf8("forward"), model, confidenceThreshold);
+}
+
+PyObject*
+Roto::reduceKeyframes(const std::list<ItemBase*>& items,
+                      int first,
+                      int last,
+                      double tolerance)
+{
+    if (refusesShapeEdit(_ctx)) {
+        return nullptr;
+    }
+    const VectorFollowControls* running = followHost(_ctx);
+    if (running && running->isFollowing()) {
+        PyErr_SetString(PyExc_RuntimeError, "A follow is running on this node.");
+
+        return nullptr;
+    }
+    std::list<RotoDrawableItemPtr> drawables;
+    for (ItemBase* item : items) {
+        RotoDrawableItemPtr drawable = item ? std::dynamic_pointer_cast<RotoDrawableItem>(item->getInternalItem()) : RotoDrawableItemPtr();
+        if (drawable) {
+            drawables.push_back(drawable);
+        }
+    }
+    if (drawables.empty()) {
+        return raiseValueError("reduceKeyframes needs at least one shape or stroke.");
+    }
+    if (first > last) {
+        return raiseValueError("first must not be after last.");
+    }
+    if (!(tolerance >= 0.)) {
+        return raiseValueError("tolerance must not be negative.");
+    }
+
+    const std::vector<RotoReducedItem> reduced = reduceRotoKeyframes(_ctx, drawables, first, last, tolerance);
+    PyObject* result = PyDict_New();
+    for (const RotoReducedItem& item : reduced) {
+        PyObject* frames = PyList_New((Py_ssize_t)item.removed.size());
+        Py_ssize_t index = 0;
+        for (int frame : item.removed) {
+            PyList_SetItem(frames, index++, PyLong_FromLong(frame));
+        }
+        PyDict_SetItemString(result, item.item->getScriptName().c_str(), frames);
+        Py_DECREF(frames);
+    }
+
+    return result;
+}
+
+namespace {
+
+const char*
+followStatusName(const VectorFollowReport& report)
+{
+    if (report.sourceLost) {
+        return "sourceLost";
+    }
+    if (!report.error.empty()) {
+        return "error";
+    }
+
+    return report.aborted ? "aborted" : "done";
+}
+
+} // anonymous namespace
+
+bool
+Roto::isFollowingVectors() const
+{
+    const VectorFollowControls* follow = followHost(_ctx);
+
+    return follow && follow->isFollowing();
+}
+
+PyObject*
+Roto::getLastFollowReport() const
+{
+    const VectorFollowControls* follow = followHost(_ctx);
+    VectorFollowReport report;
+    if (!follow || !follow->getLastReport(&report)) {
+        Py_RETURN_NONE;
+    }
+    PyObject* shapes = followReportToPython(report);
+    const std::string message = formatVectorFollowReport(report);
+
+    // N hands the reference to shapes over to the dict.
+    return Py_BuildValue("{s:s,s:s,s:s,s:N}", "status", followStatusName(report), "error", report.error.c_str(), "message", message.c_str(), "shapes", shapes);
 }
 
 NATRON_PYTHON_NAMESPACE_EXIT

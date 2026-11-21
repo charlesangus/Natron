@@ -41,6 +41,7 @@
 
 #include <QString>
 
+#include <ofxImageEffect.h>
 #include <ofxNatron.h>
 
 #include "BaseTest.h"

@@ -118,3 +118,4 @@ Sources: `spike/m255/REPORT-P1T1-aov-checklist.md`, `REPORT-P1T2-rendersettings-
   - The scene-rendervars.usda fixture is added.
 
   **PM calls, matching the reference DCC:** products live at /Render/Products/<settings prim name>, and vars share /Render/Products/Vars; a shared var's unset data type and layer are blocked so input values can't leak in. Gate running.
+- 2026-11-21 — Phase 256.2 gate green on 481fea51e. Phase 256.3 dispatched.

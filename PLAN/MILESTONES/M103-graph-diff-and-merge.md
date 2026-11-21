@@ -169,7 +169,7 @@ an add. Its lessons, which this design avoids:
   - verify: compiled at P3.T5. Conflicts round-trip; the member is absent when the list is empty; loading gives exactly one warning.
   - size: M
 
-- [ ] M103.P3.T5 — Phase 103.3 build and test checkpoint
+- [x] M103.P3.T5 — Phase 103.3 build and test checkpoint
   - files: none
   - approach: `NATRON_BUILD_JOBS=4 tools/ci/local/build.sh debug`, then `tools/ci/local/test.sh ctest debug`.
   - verify: green, and the whole corpus matches `expected/`. The build is required.
@@ -232,3 +232,4 @@ The git-driver test passes. Full ctest, smoke and CI are green.
   **PM calls:** merged names are unique per group, matching Natron's group-scoped script names. An input conflict on a node that already has a reparent conflict folds into it, one entry per node. Both are being implemented, and the gate is running.
 - 2026-11-20 — Phase 103.2 gate green on eaebaa089. Phase 103.3 dispatched.
 - 2026-11-20 — Phase 103.3 T1–T4 committed. New handlers: per-key curve merge (tangents count only for Free/Broken keys); line-based text merge for String knobs; Roto items matched by name per layer, with one roto-shape conflict per item; Tracker tracks matched by script name, user keys merged as sets. `merge/conflicts.yaml` is saved only when non-empty and gives one load warning. Merge tests 64/64 in a standalone build; NodeMatcher still 310/310. **PM calls:** a saved choice value keeps its option name and M104 maps it onto the live entries; a Roto item moved to another layer is a delete plus an add. Known gaps, left to M104 unless they block it: per-handler options, node renames inside roto and track knobs, side values on roto-shape and input conflicts. Gate running (T5).
+- 2026-11-21 — Phase 103.3 gate green on ac7187f27. Phase 103.4 dispatched.

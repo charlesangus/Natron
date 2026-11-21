@@ -199,3 +199,4 @@ are from `milestone/m336-heavy-scene-acceptance` as of 2026-11-17. Re-check them
   - Phase 3 must extend the draw filter's per-instance mask to PointInstancer instances; today it covers native instances only.
 
   Noted: the solver keeps about 5 B per instance (about 155 MB at 31M), and the fraction hash uses the instance index, so reordering instances changes the subset. Gate running.
+- 2026-11-21 — Phase 481.2 gate green on 606c04354 (F4 base, no AppImage). Phase 481.3 dispatched, carrying the chunked-bound and PointInstancer-mask requirements.

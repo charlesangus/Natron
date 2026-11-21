@@ -38,14 +38,17 @@
 #include <pxr/base/tf/stringUtils.h>
 #include <pxr/base/vt/value.h>
 #include <pxr/imaging/hd/aov.h>
+#include <pxr/imaging/hd/changeTracker.h>
 #include <pxr/imaging/hd/dataSource.h>
 #include <pxr/imaging/hd/dataSourceLocator.h>
 #include <pxr/imaging/hd/legacyTaskFactory.h>
 #include <pxr/imaging/hd/legacyTaskSchema.h>
 #include <pxr/imaging/hd/mergingSceneIndex.h>
 #include <pxr/imaging/hd/renderBufferSchema.h>
+#include <pxr/imaging/hd/renderIndex.h>
 #include <pxr/imaging/hd/retainedDataSource.h>
 #include <pxr/imaging/hd/retainedSceneIndex.h>
+#include <pxr/imaging/hd/sceneDelegate.h>
 #include <pxr/imaging/hd/sceneIndexPluginRegistry.h>
 #include <pxr/imaging/hd/tokens.h>
 #include <pxr/imaging/hdSt/tokens.h>
@@ -121,7 +124,9 @@ private:
 HD_DECLARE_DATASOURCE_HANDLES(TaskSource);
 
 // HdEngine prepares every task before it executes any, so by Execute() all of them have said
-// whether they have draw items.
+// whether they have draw items. HdSt_RenderPass::HasDrawItems() only asks whether any rprim in the
+// index has the collection's material tag and the task's render tags, whatever the root paths, so
+// the selection's own draw items are gathered too.
 class SelectionRenderTask
     : public HdxRenderTask {
 public:
@@ -137,7 +142,7 @@ public:
                  HdRenderIndex* renderIndex) override
     {
         HdxRenderTask::Prepare(ctx, renderIndex);
-        if (_HasDrawItems()) {
+        if (!*_drawn && _HasDrawItems() && !renderIndex->GetDrawItems(_collection, GetRenderTags()).empty()) {
             *_drawn = true;
         }
     }
@@ -149,8 +154,21 @@ public:
         }
     }
 
+protected:
+    void _Sync(HdSceneDelegate* delegate,
+               HdTaskContext* ctx,
+               HdDirtyBits* dirtyBits) override
+    {
+        if (*dirtyBits & HdChangeTracker::DirtyCollection) {
+            const VtValue collection = delegate->Get(GetId(), HdTokens->collection);
+            _collection = collection.IsHolding<HdRprimCollection>() ? collection.UncheckedGet<HdRprimCollection>() : HdRprimCollection();
+        }
+        HdxRenderTask::_Sync(delegate, ctx, dirtyBits);
+    }
+
 private:
     std::shared_ptr<bool> _drawn;
+    HdRprimCollection _collection;
 };
 
 class SelectionRenderTaskFactory

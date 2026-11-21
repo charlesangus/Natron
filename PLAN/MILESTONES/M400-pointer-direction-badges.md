@@ -66,3 +66,4 @@ Code facts (scouted on `main` d07d202ea, 2026-11-12):
 - 2026-11-20 — Phase 400.3 in 986be3f9e: Tests/gui/m400_pointer_badges.py (kept in Tests/gui, not build/m400-gui, so the remote gate can run it), with 16 screenshots. `ColorTrackballPill::setText` now sets a `trackballPillText` property, so the script can read the badges. Gate running; the screenshots go to the user before sign-off.
 - 2026-11-20 — Gate green: release, both ctest legs and m119/m173 on 986be3f9e (run 44802590082). The m400_pointer_badges script passes after 98f332093's wrapper-lifetime fix (run 44831413770). The 16 screenshots went to the user for sign-off. PR #326 opened, with review round 1 running.
 - 2026-11-20 — **Screenshots approved (user)**, the set from 14b38237d and the 41cf374f1 script. Review round 1 is closed and the gate is green (GUI run on 41cf374f1). Merging once PR CI on 41cf374f1 is green.
+- 2026-11-21 — Merged into main (ad65d2bfb, #326) after PR CI went green.

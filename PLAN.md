@@ -328,7 +328,7 @@ future core work has solid ground to build on.
 | M150 | SplineWarp GPU Kernel | done | M147 | bosley-native-nodes | E3 | | | [M150-splinewarp-gpu-kernel.md](PLAN/MILESTONES/M150-splinewarp-gpu-kernel.md) |
 | M151 | SplineWarp Motion Blur | done | M147, M150 | bosley-native-nodes | E3 | | | [M151-splinewarp-motion-blur.md](PLAN/MILESTONES/M151-splinewarp-motion-blur.md) |
 | M152 | Curve Track Links And Roto Copy | done | M148 | bosley-native-nodes | E3 | | | [M152-curve-track-links-and-roto-copy.md](PLAN/MILESTONES/M152-curve-track-links-and-roto-copy.md) |
-| M153 | Distortion Concatenation | doing | M147, M113, M433, M179 | bosley-executor | E14 | | uat | [M153-distortion-concatenation.md](PLAN/MILESTONES/M153-distortion-concatenation.md) |
+| M153 | Distortion Concatenation | doing | M147, M113, M433, M179 | bosley-executor | E14 | F25 | uat | [M153-distortion-concatenation.md](PLAN/MILESTONES/M153-distortion-concatenation.md) |
 | M154 | Fresh Buffer Page Zeroing | done | M109 | gpu | E5 | | | [M154-fresh-buffer-page-zeroing.md](PLAN/MILESTONES/M154-fresh-buffer-page-zeroing.md) |
 | M155 | Per-Suite Test Processes | done | - | bosley-native-nodes | E2 | | | [M155-per-suite-test-processes.md](PLAN/MILESTONES/M155-per-suite-test-processes.md) |
 | M156 | GPU Download Throughput In Comps | done | M109 | gpu | E5 | | | [M156-gpu-download-throughput-in-comps.md](PLAN/MILESTONES/M156-gpu-download-throughput-in-comps.md) |
@@ -522,7 +522,7 @@ future core work has solid ground to build on.
 | M373 | In-Panel Knob Editor | todo | M372 |  | E10 | F16 | | [M373-in-panel-knob-editor.md](PLAN/MILESTONES/M373-in-panel-knob-editor.md) |
 | M374 | Remove Node Magnify On Ctrl-Scroll | done | - | | E10 |  | | [M374-remove-node-magnify-on-ctrl-scroll.md](PLAN/MILESTONES/M374-remove-node-magnify-on-ctrl-scroll.md) |
 | M375 | No CPU Vulkan Auto-Select | done | - | bosley-native-nodes | E5 |  | | [M375-no-cpu-vulkan-auto-select.md](PLAN/MILESTONES/M375-no-cpu-vulkan-auto-select.md) |
-| M400 | Pointer Direction Badges | doing | - | bosley-executor | E10 |  | | [M400-pointer-direction-badges.md](PLAN/MILESTONES/M400-pointer-direction-badges.md) |
+| M400 | Pointer Direction Badges | done | - | bosley-executor | E10 |  | | [M400-pointer-direction-badges.md](PLAN/MILESTONES/M400-pointer-direction-badges.md) |
 | M425 | No ONNX Runtime Telemetry | done | - | bosley-native-nodes | E16 |  | | [M425-no-onnx-runtime-telemetry.md](PLAN/MILESTONES/M425-no-onnx-runtime-telemetry.md) |
 | M426 | UDIM Textures In Delegates | todo | M311, M343 |  | E9 |  | | [M426-udim-textures-in-delegates.md](PLAN/MILESTONES/M426-udim-textures-in-delegates.md) |
 | M432 | Overlays Off The Render Path | doing | - | bosley-executor | E23 |  | uat | [M432-overlays-off-the-render-path.md](PLAN/MILESTONES/M432-overlays-off-the-render-path.md) |

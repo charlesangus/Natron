@@ -82,7 +82,7 @@ Coordination with M370 - Roto Point List Render Isolation, which runs in paralle
 
 ## Phase 299.2: Mask cache reuse
 
-- [ ] M299.P2.T1 — Key masks on the item's own content, not the Merge node's render hash
+- [x] M299.P2.T1 — Key masks on the item's own content, not the Merge node's render hash
   - files: Engine/RotoContext.cpp (renderMaskFromStroke ~1225), Engine/RotoDrawableItem.h/.cpp
   - approach: Build the mask hash from:
     - the item's content hash (`RotoItem::getContentHash` with `appendLiveContentHash`, `Engine/RotoDrawableItem.cpp` ~681);
@@ -98,7 +98,7 @@ Coordination with M370 - Roto Point List Render Isolation, which runs in paralle
     - outputs match a cold render bit for bit.
   - size: M
 
-- [ ] M299.P2.T2 — Reuse masks across frames for items that don't change over time
+- [x] M299.P2.T2 — Reuse masks across frames for items that don't change over time
   - files: Engine/RotoContext.cpp, Engine/RotoDrawableItem.h/.cpp, Engine/RotoStrokeItem.cpp, Engine/Bezier.cpp (read-only query only; see the M370 note)
   - approach: Add `RotoDrawableItem::isMaskFrameInvariant()`. It is true when the item has:
     - no keys on points or feather (`Bezier::getKeyframesCount`);
@@ -114,7 +114,7 @@ Coordination with M370 - Roto Point List Render Isolation, which runs in paralle
     - outputs match per-frame renders bit for bit.
   - size: M
 
-- [ ] M299.P2.T3 — Store masks with their measured raster cost
+- [x] M299.P2.T3 — Store masks with their measured raster cost
   - files: Engine/RotoContext.cpp, Engine/CacheEntry.h (read), Engine/CacheEviction (read)
   - approach: Time `renderMaskInternal` and write `recomputeCostNs` on the entry header, the way `EffectInstanceRenderRoI.cpp` ~177 does, so M300's score keeps expensive masks over cheap upstream tiles.
   - verify: A gtest reads the header after a mask render and finds a cost above zero. RotoMaskCache_Test still passes.
@@ -186,4 +186,4 @@ Coordination with M370 - Roto Point List Render Isolation, which runs in paralle
   - No median slower than 1.10x (run-to-run noise is ±7%).
 
   Before the gate, the bench gets a fresh `NATRON_DISK_CACHE_PATH` per scenario, and make_roto_strokes.py is fixed for the stroke re-run.
-
+- 2026-11-21 — Phase 299.2 committed. The mask key is the item's content hash plus the Merge node's restricted render-context hash. `isMaskFrameInvariant()` is cached per content hash. The measured raster cost goes into recomputeCostNs. The bench turns the disk tier off (`NATRON_DISK_CACHE_PATH` doesn't move the tier). make_roto_strokes.py had never run, because guitest wasn't on sys.path; that's fixed. **PM call:** a point with exactly one keyframe counts as still. Gate running; then the stroke fixtures, then Phase 299.4's P4.T2.

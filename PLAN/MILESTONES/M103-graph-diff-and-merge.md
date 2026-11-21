@@ -247,4 +247,10 @@ The git-driver test passes. Full ctest, smoke and CI are green.
   - **Adoption (user):** it works at the template's head and tail and along recreated chains. For example, with base Read → Grade → Transform, an artist who recreates Read and Grade and inserts nodes before Transform has Read and Grade adopted. It propagates from matched or adopted neighbours through inserted nodes; ambiguous or contradicting candidates are not adopted.
   - **PM call:** every input that assemble drops because its source is in another group raises an input conflict.
   - Implementing now.
+- 2026-11-21 — Adoption along chains, at heads and at tails, and conflicts for cross-group dropped inputs. Corpus 310/310.
+  - **PM calls following the user's chain rule:**
+    - delete-recreate-adjacent-pair now adopts Grade2 and Blur2, reversing the 2026-11-20 PM expectation of two delete-modify conflicts.
+    - 'The only candidate' means the only correctly wired candidate, not the only node of that type in the group.
+  - both-sides-reparent gains one input conflict on Look.LookOut.
+  - Gate running.
 

@@ -365,6 +365,7 @@ set(GuiTests_SOURCES
     SceneGizmo_Test.cpp
     SceneGraphModel_Test.cpp
     SceneGuides_Test.cpp
+    SceneSelectionTasks_Test.cpp
     SceneViewport_Test.cpp
     ShuffleMatrix_Test.cpp
     SpinBox_Test.cpp
@@ -383,7 +384,7 @@ set(GuiTests_SOURCES
 find_package(Qt6 6.8 CONFIG REQUIRED COMPONENTS Test)
 add_executable(GuiTests ${GuiTests_SOURCES})
 # Build their scenes with OpenUSD, whose headers need the full Python API.
-set_source_files_properties(SceneGizmo_Test.cpp SceneGraphModel_Test.cpp SceneGuides_Test.cpp SceneViewport_Test.cpp PROPERTIES COMPILE_OPTIONS -UPy_LIMITED_API)
+set_source_files_properties(SceneGizmo_Test.cpp SceneGraphModel_Test.cpp SceneGuides_Test.cpp SceneSelectionTasks_Test.cpp SceneViewport_Test.cpp PROPERTIES COMPILE_OPTIONS -UPy_LIMITED_API)
 target_link_libraries(GuiTests
     PRIVATE
         NatronGui

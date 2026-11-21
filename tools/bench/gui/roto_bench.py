@@ -87,7 +87,10 @@ def env_list(name, default):
     return [v.strip() for v in os.environ.get(name, default).split(",") if v.strip()]
 
 
-REPS = int(os.environ.get("GUI_BENCH_REPS", "5"))
+# run.sh passes "auto" when no --reps is given; an exception here, before the try below, would leave
+# Natron open and idle until the run's cap with nothing recorded, so "auto" means the default.
+_reps_env = os.environ.get("GUI_BENCH_REPS", "")
+REPS = int(_reps_env) if _reps_env.isdigit() else 5
 ONLY_OPS = set(env_list("GUI_BENCH_OPS", ""))
 OP_TIMEOUT_S = float(os.environ.get("GUI_BENCH_OP_TIMEOUT_S", "120"))
 SEED = int(os.environ.get("GUI_BENCH_SEED", "1"))

@@ -328,6 +328,20 @@ tools/bench/gui/run.sh --xvfb --driver roto --reps 5
 tools/bench/gui/run.sh --host --driver roto --appimage Natron-x86_64.AppImage
 ```
 
+The default roto run does everything (strokes over a 300-node graph, 200-key shapes, then the overlay
+ops) and takes hours on the N100 host. For the M434 overlay gate use the overlay preset:
+
+```
+tools/bench/gui/run.sh --xvfb --preset overlay --appimage PATH
+```
+
+It implies `--driver roto`, runs only `overlay_draw` (1, 30, 100 and 500 shapes, then the 50-track
+Tracker) in one Natron with the shapes grown in place from one count to the next, 3 reps per case
+(43 overlay passes a rep, so about 130 per case for the p95), 120 s per op and a 30 minute cap on the
+whole run. The estimate is 10 to 15 minutes on the N100 host (not yet measured); the cap is there so a run that never starts
+ends in 30 minutes, not 6 hours. `--reps` and `GUI_BENCH_TIMEOUT` still override it. Without `--reps`,
+`--driver roto` runs 5 reps per op.
+
 The result is `<UTC>-<host>-<mode>-roto.jsonl`; its directory also holds `latency.jsonl`, the
 latency probe's log, and `overlay-draw.jsonl`, the overlay draw probe's. `run.sh` sets
 `NATRON_ROTO_LATENCY_LOG` and `NATRON_OVERLAY_DRAW_LOG` for this driver only, and passes

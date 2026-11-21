@@ -334,6 +334,36 @@ TEST_F(USDRenderSettingsTest, EveryDeclaredSettingHasAKnob)
     }
 }
 
+// The delegate declares Device as a token, which the page shows as a menu of its three values.
+TEST_F(USDRenderSettingsTest, NatronUtilityDeviceIsAMenuOfAutoGpuAndCpu)
+{
+    NodePtr node = settings(NodePtr());
+    ASSERT_TRUE(bool(node));
+    USDRenderSettings* effect = dynamic_cast<USDRenderSettings*>(node->getEffectInstance().get());
+    ASSERT_TRUE(effect != nullptr);
+    const RenderSettingsKnobs* knobs = effect->renderSettings();
+    ASSERT_TRUE(knobs != nullptr);
+    ASSERT_TRUE(bool(knobs->page(kRenderDelegateUtilityId)));
+    std::string scriptName;
+    for (const std::pair<std::string, std::string>& r : knobs->audit(kRenderDelegateUtilityId)) {
+        if (r.first == "device") {
+            scriptName = r.second;
+        }
+    }
+    ASSERT_FALSE(scriptName.empty());
+    KnobChoice* device = dynamic_cast<KnobChoice*>(node->getKnobByName(scriptName).get());
+    ASSERT_TRUE(device != nullptr) << scriptName;
+    const std::vector<ChoiceOption> entries = device->getEntries_mt_safe();
+    ASSERT_EQ(3u, entries.size());
+    EXPECT_EQ(std::string("auto"), entries[0].id);
+    EXPECT_EQ(std::string("Auto"), entries[0].label);
+    EXPECT_EQ(std::string("gpu"), entries[1].id);
+    EXPECT_EQ(std::string("GPU"), entries[1].label);
+    EXPECT_EQ(std::string("cpu"), entries[2].id);
+    EXPECT_EQ(std::string("CPU"), entries[2].label);
+    EXPECT_EQ(std::string("auto"), device->getActiveEntry().id);
+}
+
 // Storm declares few settings, each placed by its name: volumes, lights and performance, all open.
 TEST_F(USDRenderSettingsTest, StormSettingsAreGroupedByTheirNames)
 {

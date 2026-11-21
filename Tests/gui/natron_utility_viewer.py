@@ -1,0 +1,745 @@
+"""Natron Utility in the 3D viewer: the scene view's Renderer submenu switches to the delegate, which
+draws the scene, and Display > Purposes > Render shows a render-purpose prim through it.
+
+Graph: USDRead into Viewer1, of a stage with a grey default-purpose box and a blue render-purpose ball
+in front of it. The viewer's purposes start with Render off, so the ball must be absent until the
+toggle and absent again after it, under Natron Utility and then under Storm.
+
+Under Natron Utility it also measures the longest gap between ticks of a main-thread timer while a
+USDXformPrim is edited repeatedly over a heavy mesh in a large view, once the mesh's first sync is done.
+That first sync reads the whole stage under the stage lock and cannot be cut short, so it is not measured.
+
+Last, under Natron Utility with the Scene Lights lighting, a second graph draws a card textured through a
+UsdPreviewSurface and UsdUVTexture beside a USDCard carrying a USDProject3D projection of a CheckerBoard,
+both lit by the stage's distant light: the texture's green, the checker's red and cyan must show, and no
+magenta, which marks a material the delegate cannot shade. The checker pairs red with cyan rather than
+blue because its filtered edges then blend to grey; red and blue blend to magenta. Its shot is natron-utility-materials-lights_view.png.
+
+Only geometry may reach the colour counts: the grid (Ctrl+G) is hidden, as its blue axis line counts as
+blue and its lines as grey, and the view uses the headlight, as the default Scene Lights leaves Storm's
+surfaces black on this stage, which has no light.
+
+Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go to $NATRON_GUI_TEST_OUT
+(default build/gui-test-out/). Exit status 0 only if every check passed.
+"""
+import os
+import sys
+import time
+import traceback
+
+sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd()), "Tests", "gui"))
+
+POLL_TIMEOUT_S = 30.0
+SETTLE_MS = 700
+STARTUP_TIMEOUT_S = 60.0
+CTRL_TUMBLE_NAVIGATION = 0
+SCENE_LIGHTS = 1
+HEADLIGHT = 2
+HUD_MARGIN = 28
+UTILITY_ID = "HdNatronUtilityRendererPlugin"
+STORM_ID = "HdStormRendererPlugin"
+# Pixels of a colour below this count are noise (antialiasing, the HUD).
+MIN_PIXELS = 40
+HEAVY_GRID = 1000
+STALL_BOUND_MS = 500.0
+TICK_MS = 5
+STALL_EDITS = 8
+STALL_EDIT_GAP_MS = 150
+# Storm antialiases its edges and Natron Utility shoots one ray per pixel.
+BBOX_TOLERANCE_PX = 1
+MIN_IOU = 0.98
+CENTROID_TOLERANCE_PX = 1.0
+# Per-channel distance from the background beyond which a pixel belongs to the silhouette.
+SILHOUETTE_DISTANCE = 30
+# The GPU frame is encoded in a shader, the CPU one through a 4096-step table, and the two tracers
+# may part on edge pixels: a few levels anywhere, more on a small share of pixels.
+DEVICE_PIXEL_TOLERANCE = 6
+DEVICE_MAX_DIFFERING = 0.005
+
+# The ball sits inside the box's silhouette because the view frames the box alone while the render
+# purpose is off, and the ball must be in that frame when it appears.
+STAGE = """#usda 1.0
+(
+    defaultPrim = "World"
+    upAxis = "Y"
+)
+
+def Xform "World"
+{
+    def Cube "Box"
+    {
+        double size = 4
+        color3f[] primvars:displayColor = [(0.7, 0.7, 0.7)]
+    }
+
+    def Sphere "RenderBall"
+    {
+        uniform token purpose = "render"
+        double radius = 0.8
+        double3 xformOp:translate = (0, 0, 2.6)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        color3f[] primvars:displayColor = [(0.1, 0.3, 0.9)]
+    }
+}
+"""
+
+# A card textured through UsdPreviewSurface, left of the USDCard at the origin, and the light both see.
+MATERIAL_STAGE = """#usda 1.0
+(
+    defaultPrim = "Lit"
+    upAxis = "Y"
+)
+
+def Xform "Lit"
+{
+    def Material "Textured"
+    {
+        token outputs:surface.connect = </Lit/Textured/Surface.outputs:surface>
+
+        def Shader "Surface"
+        {
+            uniform token info:id = "UsdPreviewSurface"
+            color3f inputs:diffuseColor.connect = </Lit/Textured/Image.outputs:rgb>
+            float inputs:roughness = 0.6
+            token outputs:surface
+        }
+
+        def Shader "Image"
+        {
+            uniform token info:id = "UsdUVTexture"
+            asset inputs:file = @TEXTURE@
+            token inputs:sourceColorSpace = "sRGB"
+            float2 inputs:st.connect = </Lit/Textured/St.outputs:result>
+            float3 outputs:rgb
+        }
+
+        def Shader "St"
+        {
+            uniform token info:id = "UsdPrimvarReader_float2"
+            string inputs:varname = "st"
+            float2 outputs:result
+        }
+    }
+
+    def Mesh "TexturedCard" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        uniform bool doubleSided = 1
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-3.2, -1, 0), (-1.2, -1, 0), (-1.2, 1, 0), (-3.2, 1, 0)]
+        texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1)] (
+            interpolation = "vertex"
+        )
+        rel material:binding = </Lit/Textured>
+    }
+
+    def DistantLight "Key"
+    {
+        float inputs:angle = 0
+        float inputs:intensity = 3
+    }
+}
+"""
+TEXTURE_SIZE = 64
+
+try:
+    import NatronEngine
+    from PySide6.QtCore import Qt, QTimer
+    from PySide6.QtGui import QColor, QContextMenuEvent, QGuiApplication, QImage
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication
+
+    from guitest import (OUT, check, finish, menu_of, plugin_problem, report, require, run, section, shot, viewer_up,
+                         widgets_of)
+
+    if not os.path.isdir(OUT):
+        os.makedirs(OUT)
+    scene_path = os.path.join(OUT, "natron-utility-viewer.usda")
+    with open(scene_path, "w") as f:
+        f.write(STAGE)
+
+    def write_heavy_stage(path, n):
+        with open(path, "w") as out:
+            out.write('#usda 1.0\n(\n    defaultPrim = "Heavy"\n    upAxis = "Y"\n)\n\n')
+            out.write('def Mesh "Heavy"\n{\n')
+            out.write('    uniform token subdivisionScheme = "none"\n')
+            out.write("    int[] faceVertexCounts = [%s]\n" % ", ".join(["4"] * (n * n)))
+            out.write("    int[] faceVertexIndices = [")
+            for y in range(n):
+                row = ["%d, %d, %d, %d" % (c, c + 1, c + n + 2, c + n + 1)
+                       for c in (y * (n + 1) + x for x in range(n))]
+                out.write(("" if y == 0 else ", ") + ", ".join(row))
+            out.write("]\n    point3f[] points = [")
+            for y in range(n + 1):
+                row = ["(%g, %g, 0)" % (-2.0 + 4.0 * x / n, -2.0 + 4.0 * y / n) for x in range(n + 1)]
+                out.write(("" if y == 0 else ", ") + ", ".join(row))
+            out.write("]\n    color3f[] primvars:displayColor = [(0.7, 0.7, 0.7)]\n}\n\n")
+            # Something under the edited prim, or the edit changes no pixel and the delegate keeps its frame.
+            # It must not be named like the USDXformPrim's path: a root there would be grafted inside itself.
+            out.write('def Xform "Anchor"\n{\n    def Cube "Marker"\n    {\n        double size = 1\n    }\n}\n')
+
+    navigation = NatronEngine.natron.getSettings().getParam("viewer3DNavigation")
+    require(navigation is not None, "Preferences have a viewer3DNavigation parameter")
+    original_navigation = navigation.getValue()
+    navigation.setValue(CTRL_TUMBLE_NAVIGATION)
+    lighting = NatronEngine.natron.getSettings().getParam("viewer3DLighting")
+    require(lighting is not None, "Preferences have a viewer3DLighting parameter")
+    original_lighting = lighting.getValue()
+    lighting.setValue(HEADLIGHT)
+
+    usd = app.createNode("USDRead")
+    require(usd is not None, "create USDRead", plugin_problem("USDRead"))
+    usd.setPosition(0, 0)
+    usd.getParam("filename").setValue(scene_path)
+    viewer = app.getNode("Viewer1")
+    if viewer is None:
+        viewer = app.createNode("Viewer")
+    require(viewer is not None, "a Viewer exists")
+    viewer.setPosition(0, 150)
+
+    def view():
+        views = [w for w in widgets_of("SceneViewport") if w.isVisible()]
+        return views[0] if views else None
+
+    def prop(name):
+        v = view()
+        return v.property(name) if v is not None else None
+
+    def scene_drawn():
+        v = view()
+        return (v is not None and bool(v.property("natronSceneSynced")) and bool(v.property("natronSceneShown"))
+                and not v.property("natronSceneError"))
+
+    def show_in_viewer(node):
+        # connectInput refuses an occupied input.
+        if viewer.getInput(0) is not None:
+            viewer.disconnectInput(0)
+        return viewer.connectInput(0, node)
+
+    def key(v, k, modifiers=Qt.NoModifier):
+        v.activateWindow()
+        v.setFocus()
+        QApplication.processEvents()
+        QTest.keyClick(v, k, modifiers)
+        QApplication.processEvents()
+
+    def settle():
+        v = view()
+        if v is not None:
+            v.update()
+        return ("sleep", SETTLE_MS)
+
+    def crop():
+        v = view()
+        if v is None:
+            return None
+        QApplication.processEvents()
+        top_left = v.mapToGlobal(v.rect().topLeft())
+        image = QGuiApplication.primaryScreen().grabWindow(0).toImage()
+        return image.copy(top_left.x(), top_left.y(), v.width(), v.height())
+
+    def save_view(name):
+        shot(name + ".png")
+        image = crop()
+        if image is not None:
+            path = os.path.join(OUT, name + "_view.png")
+            image.save(path)
+            report("SHOT " + path)
+        return image
+
+    def count(image, test, step=2):
+        n = 0
+        if image is None:
+            return n
+        for y in range(HUD_MARGIN, image.height() - HUD_MARGIN, step):
+            for x in range(0, image.width(), step):
+                if test(image.pixelColor(x, y)):
+                    n += 1
+        return n
+
+    def silhouette(image, is_member=None):
+        """Pixels of the view that differ clearly from the background at the left edge of their row, or that
+        pass is_member when given. Returns a set of (x, y)."""
+        pixels = set()
+        # Only the HUD's top rows are skipped: the fitted cube reaches near the bottom edge, and a
+        # bottom margin would clip both renderers' boxes to the same row.
+        for y in range(HUD_MARGIN, image.height()):
+            ref = image.pixelColor(2, y)
+            for x in range(image.width()):
+                c = image.pixelColor(x, y)
+                if is_member is not None:
+                    inside = is_member(c)
+                else:
+                    inside = (abs(c.red() - ref.red()) > SILHOUETTE_DISTANCE
+                              or abs(c.green() - ref.green()) > SILHOUETTE_DISTANCE
+                              or abs(c.blue() - ref.blue()) > SILHOUETTE_DISTANCE)
+                if inside:
+                    pixels.add((x, y))
+        return pixels
+
+    def bounds(pixels):
+        xs = [p[0] for p in pixels]
+        ys = [p[1] for p in pixels]
+        return (min(xs), min(ys), max(xs), max(ys))
+
+    def centroid(pixels):
+        n = float(len(pixels))
+        return (sum(p[0] for p in pixels) / n, sum(p[1] for p in pixels) / n)
+
+    def bluish(c):
+        return c.blue() > 60 and c.blue() > c.red() + 40 and c.blue() > c.green() + 20
+
+    def greyish(c):
+        return c.red() > 100 and abs(c.red() - c.green()) < 12 and abs(c.green() - c.blue()) < 12
+
+    def open_menu(v):
+        state = {}
+
+        def go():
+            centre = v.rect().center()
+            QApplication.sendEvent(v, QContextMenuEvent(QContextMenuEvent.Keyboard, centre, v.mapToGlobal(centre),
+                                                        Qt.NoModifier))
+            state["closed"] = True
+
+        QTimer.singleShot(0, go)
+        return state
+
+    def close_menus():
+        for _ in range(4):
+            popup = QApplication.activePopupWidget()
+            if popup is None:
+                return
+            QTest.keyClick(popup, Qt.Key_Escape)
+            QApplication.processEvents()
+
+    def plain(action):
+        return action.text().replace("&", "")
+
+    def submenu(menu, title):
+        for action in menu.actions():
+            sub = menu_of(action)
+            if sub is not None and plain(action) == title:
+                return sub
+        return None
+
+    def pick_renderer(v, label, renderer_id):
+        state = open_menu(v)
+        ok = yield ("until", lambda: QApplication.activePopupWidget() is not None, POLL_TIMEOUT_S)
+        require(ok, "the context menu opens")
+        popup = QApplication.activePopupWidget()
+        renderers = submenu(popup, "Renderer")
+        require(renderers is not None, "the context menu has a Renderer submenu")
+        entries = [a for a in renderers.actions() if plain(a).startswith(label)]
+        require(bool(entries) and entries[0].isEnabled(), "the Renderer submenu lists %s" % label)
+        renderers.popup(popup.mapToGlobal(popup.rect().topRight()))
+        QApplication.processEvents()
+        yield ("sleep", SETTLE_MS)
+        shot("natron-utility-renderer-menu-%s.png" % renderer_id)
+        entries[0].trigger()
+        QApplication.processEvents()
+        close_menus()
+        yield ("until", lambda: state.get("closed", False), POLL_TIMEOUT_S)
+        ok = yield ("until", lambda: prop("natronSceneRenderer") == renderer_id and scene_drawn(), POLL_TIMEOUT_S)
+        check(ok, "%s draws the scene (renderer %r, scene error %r)" % (label, prop("natronSceneRenderer"), prop("natronSceneError")))
+        check(not prop("natronSceneRendererError"), "%s has no renderer error (%r)" % (label, prop("natronSceneRendererError")))
+        yield settle()
+
+    def set_render_purpose(v, shown):
+        state = open_menu(v)
+        ok = yield ("until", lambda: QApplication.activePopupWidget() is not None, POLL_TIMEOUT_S)
+        require(ok, "the context menu opens")
+        display = submenu(QApplication.activePopupWidget(), "Display")
+        require(display is not None, "the context menu has a Display submenu")
+        purposes = submenu(display, "Purposes")
+        require(purposes is not None, "Display has a Purposes submenu")
+        entries = [a for a in purposes.actions() if a.objectName() == "render"]
+        require(bool(entries), "Purposes has Render")
+        entries[0].trigger()
+        QApplication.processEvents()
+        close_menus()
+        yield ("until", lambda: state.get("closed", False), POLL_TIMEOUT_S)
+        ok = yield ("until", lambda: bool(prop("natronScenePurposes")[1]) == shown and scene_drawn(), POLL_TIMEOUT_S)
+        check(ok, "Display > Purposes > Render turns the render purpose %s" % ("on" if shown else "off"))
+        yield settle()
+
+    frames = {}
+
+    def check_purpose_toggle(v, label, tag):
+        image = save_view("natron-utility-%s-default" % tag)
+        frames[(tag, "default")] = image
+        grey = count(image, greyish)
+        blue = count(image, bluish)
+        report("NOTE %s with Render off: %d grey, %d blue" % (label, grey, blue))
+        check(grey >= MIN_PIXELS, "%s draws the default-purpose box (%d grey pixels)" % (label, grey))
+        check(blue < MIN_PIXELS, "%s hides the render-purpose ball (%d blue pixels)" % (label, blue))
+
+        yield from set_render_purpose(v, True)
+        image = save_view("natron-utility-%s-render-purpose" % tag)
+        frames[(tag, "purpose")] = image
+        blue = count(image, bluish)
+        report("NOTE %s with Render on: %d blue" % (label, blue))
+        check(blue >= MIN_PIXELS, "%s shows the render-purpose ball (%d blue pixels)" % (label, blue))
+
+        yield from set_render_purpose(v, False)
+        blue = count(crop(), bluish)
+        check(blue < MIN_PIXELS, "%s hides the ball again (%d blue pixels)" % (label, blue))
+
+    def compare_with_storm():
+        sizes = {}
+        for tag in ("utility", "storm"):
+            for stage in ("default", "purpose"):
+                image = frames.get((tag, stage))
+                sizes[(tag, stage)] = (image.width(), image.height()) if image is not None else None
+        report("NOTE view sizes: %r" % (sizes,))
+        check(len(set(sizes.values())) == 1 and None not in sizes.values(),
+              "all four shots are taken at one view size (%r)" % (sizes,))
+        if len(set(sizes.values())) != 1 or None in sizes.values():
+            return
+
+        cubes = {tag: silhouette(frames[(tag, "default")]) for tag in ("utility", "storm")}
+        for tag, pixels in cubes.items():
+            check(len(pixels) >= MIN_PIXELS, "%s has a cube silhouette (%d pixels)" % (tag, len(pixels)))
+        if any(len(pixels) < MIN_PIXELS for pixels in cubes.values()):
+            return
+        utility_box = bounds(cubes["utility"])
+        storm_box = bounds(cubes["storm"])
+        union = len(cubes["utility"] | cubes["storm"])
+        iou = len(cubes["utility"] & cubes["storm"]) / float(union)
+        deltas = [abs(a - b) for a, b in zip(utility_box, storm_box)]
+        report("NOTE cube bounding box (x0, y0, x1, y1): Natron Utility %r, Storm %r, differences %r" % (
+            utility_box, storm_box, deltas))
+        report("NOTE cube mask IoU %.4f (%d vs %d pixels)" % (iou, len(cubes["utility"]), len(cubes["storm"])))
+        check(max(deltas) <= BBOX_TOLERANCE_PX,
+              "Natron Utility frames the cube like Storm: bounding box corners within %d px (%r)" % (BBOX_TOLERANCE_PX, deltas))
+        check(iou >= MIN_IOU, "the cube masks overlap (IoU %.4f, at least %.2f)" % (iou, MIN_IOU))
+
+        balls = {tag: silhouette(frames[(tag, "purpose")], bluish) for tag in ("utility", "storm")}
+        for tag, pixels in balls.items():
+            check(len(pixels) >= MIN_PIXELS, "%s has a render-purpose sphere mask (%d pixels)" % (tag, len(pixels)))
+        if any(len(pixels) < MIN_PIXELS for pixels in balls.values()):
+            return
+        utility_centre = centroid(balls["utility"])
+        storm_centre = centroid(balls["storm"])
+        offset = max(abs(utility_centre[0] - storm_centre[0]), abs(utility_centre[1] - storm_centre[1]))
+        report("NOTE sphere mask centroid: Natron Utility (%.2f, %.2f), Storm (%.2f, %.2f)" % (
+            utility_centre + storm_centre))
+        check(offset <= CENTROID_TOLERANCE_PX,
+              "Natron Utility places the sphere like Storm: centroids within %.1f px (%.2f)" % (CENTROID_TOLERANCE_PX, offset))
+
+    class StallMeter:
+        """The longest gap between ticks of a main-thread timer."""
+
+        def __init__(self):
+            self.timer = QTimer()
+            self.timer.setInterval(TICK_MS)
+            self.timer.timeout.connect(self.tick)
+            self.last = 0.0
+            self.longest_ms = 0.0
+
+        def start(self):
+            self.last = time.monotonic()
+            self.longest_ms = 0.0
+            self.timer.start()
+
+        def tick(self):
+            now = time.monotonic()
+            self.longest_ms = max(self.longest_ms, (now - self.last) * 1000.0)
+            self.last = now
+
+        def stop(self):
+            self.tick()
+            self.timer.stop()
+
+    def measure_edit_stall(v):
+        heavy_path = os.path.join(OUT, "natron-utility-viewer-heavy.usda")
+        write_heavy_stage(heavy_path, HEAVY_GRID)
+        rig = app.createNode("USDXformPrim")
+        require(rig is not None, "create USDXformPrim", plugin_problem("USDXformPrim"))
+        rig.setPosition(0, 75)
+        rig.getParam("primPath").setValue("/Rig")
+        require(rig.connectInput(0, usd), "connect the USDRead into the USDXformPrim")
+        require(show_in_viewer(rig), "connect the Viewer to the USDXformPrim")
+        usd.getParam("filename").setValue(heavy_path)
+        before = prop("natronSceneRefineFrames") or 0
+        ok = yield ("until", lambda: (prop("natronSceneRefineFrames") or 0) > before and bool(prop("natronSceneRefineConverged")),
+                    STARTUP_TIMEOUT_S * 5)
+        check(ok, "the heavy mesh's first frame finishes (scene error %r)" % (prop("natronSceneError"),))
+
+        meter = StallMeter()
+        restarts_before = prop("natronSceneRestartCount") or 0
+        frames_before = prop("natronSceneRefineFrames") or 0
+        meter.start()
+        for i in range(STALL_EDITS):
+            rig.getParam("rotate").set(0.0, float(i + 1), 0.0)
+            yield ("sleep", STALL_EDIT_GAP_MS)
+        ok = yield ("until", lambda: (prop("natronSceneRestartCount") or 0) > restarts_before and bool(prop("natronSceneRefineConverged")),
+                    POLL_TIMEOUT_S)
+        meter.stop()
+        check(ok, "the render finishes after the edits")
+        report("NOTE main-thread stall during edits of a %d-triangle render: %.1f ms; %d frames published" % (
+            HEAVY_GRID * HEAVY_GRID * 2, meter.longest_ms, (prop("natronSceneRefineFrames") or 0) - frames_before))
+        check(meter.longest_ms < STALL_BOUND_MS,
+              "edits during a large render stall the main thread under %d ms (longest gap %.1f ms)"
+              % (STALL_BOUND_MS, meter.longest_ms))
+
+        require(show_in_viewer(usd), "connect the Viewer back to the USDRead")
+        usd.getParam("filename").setValue(scene_path)
+        rig.destroy()
+        ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)
+        check(ok, "the view is back on the small stage")
+        yield settle()
+
+    def options(param):
+        return [str(o) for o in param.getOptions()]
+
+    def device_param(settings):
+        """The settings node's Device menu for Natron Utility."""
+        for param in settings.getParams():
+            name = param.getScriptName()
+            if name.lower().startswith("natronutility") and name.lower().endswith("device"):
+                return param
+        return None
+
+    def render_on(device_menu, device, tag):
+        """Sets the Device menu to device and waits for the restart it causes to finish. Returns the
+        view's crop and the renderer error, if any."""
+        ids = options(device_menu)
+        require(device in ids, "the Device menu lists %r (%r)" % (device, ids))
+        frames_before = prop("natronSceneRefineFrames") or 0
+        device_menu.set(ids.index(device))
+        # Natron Utility publishes finished frames only: a new one is the new device's.
+        ok = yield ("until", lambda: bool(prop("natronSceneRendererError")) or (
+            (prop("natronSceneRefineFrames") or 0) > frames_before and bool(prop("natronSceneRefineConverged"))
+            and scene_drawn()), POLL_TIMEOUT_S)
+        error = prop("natronSceneRendererError")
+        if error:
+            return None, error
+        check(ok, "Natron Utility finishes a frame with Device %s" % device)
+        yield settle()
+        return save_view("natron-utility-device-%s" % tag), None
+
+    def frame_difference(a, b, step=2):
+        """The share of sampled pixels whose channels differ by more than DEVICE_PIXEL_TOLERANCE, and
+        the largest difference, below the HUD."""
+        over = 0
+        total = 0
+        largest = 0
+        for y in range(HUD_MARGIN, a.height() - HUD_MARGIN, step):
+            for x in range(0, a.width(), step):
+                ca = a.pixelColor(x, y)
+                cb = b.pixelColor(x, y)
+                d = max(abs(ca.red() - cb.red()), abs(ca.green() - cb.green()), abs(ca.blue() - cb.blue()))
+                largest = max(largest, d)
+                total += 1
+                if d > DEVICE_PIXEL_TOLERANCE:
+                    over += 1
+        return (over / float(total) if total else 1.0), largest
+
+    def check_gpu_frame():
+        settings = app.createNode("USDRenderSettings")
+        require(settings is not None, "create USDRenderSettings", plugin_problem("USDRenderSettings"))
+        settings.setPosition(0, 75)
+        require(settings.connectInput(0, usd), "connect the USDRead into the USDRenderSettings")
+        device_menu = device_param(settings)
+        require(device_menu is not None, "the settings node has a Natron Utility Device menu (%r)" % (
+            [p.getScriptName() for p in settings.getParams()],))
+        require(show_in_viewer(settings), "connect the Viewer to the USDRenderSettings")
+        ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)
+        check(ok, "the view shows the stage with its render settings prim")
+
+        cpu, error = yield from render_on(device_menu, "cpu", "cpu")
+        check(not error, "Natron Utility renders on the CPU (%r)" % (error,))
+        path = prop("natronSceneFramePath")
+        report("NOTE CPU frame path: %r" % (path,))
+        check(path == "upload", "a CPU frame is uploaded from host memory (%r)" % (path,))
+
+        gpu, error = yield from render_on(device_menu, "gpu", "gpu")
+        if error:
+            report("NOTE GPU path not taken: Natron Utility cannot render on the GPU here: %s" % (error,))
+            check(not os.environ.get("NATRON_TEST_REQUIRE_GPU"),
+                  "NATRON_TEST_REQUIRE_GPU is set but Natron Utility cannot render on the GPU (%s)" % (error,))
+        else:
+            path = prop("natronSceneFramePath") or ""
+            unsupported = bool(prop("natronSceneHandoffUnsupported"))
+            best = prop("natronSceneHandoffBest") or ""
+            handoff_error = prop("natronSceneHandoffError") or ""
+            report("NOTE GPU frame path %r; best hand-off the probe found %r; hand-off error %r" % (
+                path, best, handoff_error))
+            check(not os.environ.get("NATRON_VIEWER_HANDOFF"),
+                  "NATRON_VIEWER_HANDOFF is unset, so the viewer picks its own hand-off (it is %r)" % (
+                      os.environ.get("NATRON_VIEWER_HANDOFF"),))
+            # Where the probe allows no path at all, the upload from host memory is the expected one.
+            check(path.startswith("interop:") or (path == "upload" and unsupported),
+                  "the GPU frame is imported through the GL hand-off wherever the probe allows one (path %r, "
+                  "hand-off %s: %s)" % (path, "unavailable" if unsupported else "available",
+                                        handoff_error or "no error"))
+            check(best != "" or unsupported,
+                  "the viewer publishes the best hand-off path its probe found (%r)" % (best,))
+            # lavapipe and llvmpipe share no semaphores, so their best path is hostsync; only a device and a GL
+            # context that share semaphores must take the fastest path rather than any that builds.
+            if best == "zerocopy":
+                check(path == "interop:zerocopy",
+                      "the GPU frame takes the zero-copy hand-off the probe found (path %r, %s)" % (
+                          path, handoff_error or "no error"))
+            if os.environ.get("NATRON_TEST_REQUIRE_INTEROP"):
+                check(path.startswith("interop:"),
+                      "NATRON_TEST_REQUIRE_INTEROP: the GPU frame is imported (path %r, %s)" % (path, handoff_error))
+            check(cpu is not None and gpu is not None and cpu.size() == gpu.size(),
+                  "the CPU and GPU shots have one size")
+            if cpu is not None and gpu is not None and cpu.size() == gpu.size():
+                share, largest = frame_difference(cpu, gpu)
+                report("NOTE CPU against GPU frame: %.4f%% of pixels beyond %d levels, largest difference %d" % (
+                    share * 100.0, DEVICE_PIXEL_TOLERANCE, largest))
+                check(share <= DEVICE_MAX_DIFFERING,
+                      "the GPU frame matches the CPU one: %.4f%% of pixels beyond %d levels (at most %.2f%%)" % (
+                          share * 100.0, DEVICE_PIXEL_TOLERANCE, DEVICE_MAX_DIFFERING * 100.0))
+
+        yield from render_on(device_menu, "auto", "auto")
+        require(show_in_viewer(usd), "connect the Viewer back to the USDRead")
+        settings.destroy()
+        ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)
+        check(ok, "the view is back on the stage without the settings prim")
+
+    def greenish(c):
+        return c.green() > 60 and c.green() > c.red() + 40 and c.green() > c.blue() + 40
+
+    def reddish(c):
+        return c.red() > 60 and c.red() > 2 * c.green() and c.red() > 2 * c.blue()
+
+    def cyanish(c):
+        return c.green() > 60 and c.blue() > 60 and c.green() > 2 * c.red() and c.blue() > 2 * c.red()
+
+    def magenta(c):
+        return c.red() > 120 and c.blue() > 120 and c.green() < 60
+
+    def write_texture(path):
+        """Green and white quadrants, so the texture's green is told apart from the checker's colours."""
+        image = QImage(TEXTURE_SIZE, TEXTURE_SIZE, QImage.Format_RGB32)
+        half = TEXTURE_SIZE // 2
+        for y in range(TEXTURE_SIZE):
+            for x in range(TEXTURE_SIZE):
+                green = (x < half) == (y < half)
+                image.setPixelColor(x, y, QColor(20, 220, 30) if green else QColor(235, 235, 235))
+        return image.save(path)
+
+    def check_materials_and_lights(v):
+        texture_path = os.path.join(OUT, "natron-utility-materials-texture.png")
+        require(write_texture(texture_path), "write the card's texture")
+        stage_path = os.path.join(OUT, "natron-utility-materials.usda")
+        with open(stage_path, "w") as f:
+            f.write(MATERIAL_STAGE.replace("@TEXTURE@", "@" + texture_path + "@"))
+
+        textured = app.createNode("USDRead")
+        require(textured is not None, "create a USDRead for the textured card", plugin_problem("USDRead"))
+        textured.setPosition(300, 0)
+        textured.getParam("filename").setValue(stage_path)
+        checker = app.createNode("CheckerBoard")
+        require(checker is not None, "create CheckerBoard", plugin_problem("CheckerBoard"))
+        checker.setPosition(450, -150)
+        checker.getParam("boxSize").set(240.0, 240.0)
+        for name, colour in (("color0", (1.0, 0.0, 0.0, 1.0)), ("color1", (0.0, 1.0, 1.0, 1.0)),
+                             ("color2", (1.0, 0.0, 0.0, 1.0)), ("color3", (0.0, 1.0, 1.0, 1.0))):
+            checker.getParam(name).set(*colour)
+        checker.getParam("lineWidth").set(0.0)
+        camera = app.createNode("USDCamera")
+        require(camera is not None, "create USDCamera", plugin_problem("USDCamera"))
+        camera.setPosition(600, -150)
+        camera.getParam("translate").set(0.0, 0.0, 5.0)
+        project = app.createNode("USDProject3D")
+        require(project is not None, "create USDProject3D", plugin_problem("USDProject3D"))
+        project.setPosition(450, -75)
+        card = app.createNode("USDCard")
+        require(card is not None, "create USDCard", plugin_problem("USDCard"))
+        card.setPosition(450, 0)
+        merge = app.createNode("USDMerge")
+        require(merge is not None, "create USDMerge", plugin_problem("USDMerge"))
+        merge.setPosition(375, 75)
+        require(project.connectInput(0, checker), "connect the CheckerBoard to USDProject3D's Image input")
+        require(project.connectInput(1, camera), "connect the USDCamera to USDProject3D's Camera input")
+        require(card.connectInput(0, project), "connect USDProject3D to USDCard's Material input")
+        require(merge.connectInput(0, textured), "merge the textured card's stage")
+        require(merge.connectInput(1, card), "merge the projected USDCard")
+
+        lighting.setValue(SCENE_LIGHTS)
+        frames_before = prop("natronSceneRefineFrames") or 0
+        require(show_in_viewer(merge), "connect the Viewer to the USDMerge")
+        ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)
+        check(ok, "the view shows the textured card, the projected card and the light (%r)" % (prop("natronSceneError"),))
+        check(prop("natronSceneLighting") == "scene", "the view uses the scene's lights (%r)" % (prop("natronSceneLighting"),))
+        key(v, Qt.Key_A)
+        ok = yield ("until", lambda: bool(prop("natronSceneRendererError")) or (
+            (prop("natronSceneRefineFrames") or 0) > frames_before and bool(prop("natronSceneRefineConverged"))
+            and scene_drawn()), POLL_TIMEOUT_S)
+        check(ok and not prop("natronSceneRendererError"),
+              "Natron Utility finishes a frame of the materials and the light (%r)" % (prop("natronSceneRendererError"),))
+        check(prop("natronSceneRenderer") == UTILITY_ID, "the view renders with Natron Utility (%r)" % (prop("natronSceneRenderer"),))
+        yield settle()
+
+        image = save_view("natron-utility-materials-lights")
+        green = count(image, greenish)
+        red = count(image, reddish)
+        cyan = count(image, cyanish)
+        pink = count(image, magenta)
+        report("NOTE materials and lights: %d green, %d red, %d cyan, %d magenta" % (green, red, cyan, pink))
+        check(green >= MIN_PIXELS, "the UsdPreviewSurface card shows its texture lit (%d green pixels)" % green)
+        check(red >= MIN_PIXELS and cyan >= MIN_PIXELS,
+              "the USDCard shows the USDProject3D checker lit (%d red, %d cyan pixels)" % (red, cyan))
+        check(pink < MIN_PIXELS, "no material is drawn as unsupported (%d magenta pixels)" % pink)
+
+        require(show_in_viewer(usd), "connect the Viewer back to the USDRead")
+        for node in (merge, card, project, camera, checker, textured):
+            node.destroy()
+        lighting.setValue(HEADLIGHT)
+        ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)
+        check(ok, "the view is back on the first stage")
+
+    def steps():
+        require(viewer.connectInput(0, usd), "connect the Viewer to the USDRead")
+        ok = yield ("until", lambda: viewer_up() or view() is not None, STARTUP_TIMEOUT_S)
+        require(ok, "the viewer is up")
+        ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)
+        v = view()
+        require(ok, "the scene view shows the scene (%r)" % (v.property("natronSceneError") if v else None,))
+        report("NOTE scene view %dx%d" % (v.width(), v.height()))
+        check(prop("natronSceneRenderer") == STORM_ID, "the view starts on Storm (%r)" % (prop("natronSceneRenderer"),))
+        check(not bool(prop("natronScenePurposes")[1]), "the view starts with Render off")
+        check(prop("natronSceneLighting") == "headlight", "the view uses the headlight (%r)" % (prop("natronSceneLighting"),))
+        key(v, Qt.Key_G, Qt.ControlModifier)
+        check(not prop("natronSceneShowGrid"), "the grid is hidden")
+        key(v, Qt.Key_A)
+        yield settle()
+
+        section("Natron Utility")
+        yield from pick_renderer(v, "Natron Utility", UTILITY_ID)
+        yield from check_purpose_toggle(v, "Natron Utility", "utility")
+
+        section("Storm")
+        yield from pick_renderer(v, "Storm", STORM_ID)
+        yield from check_purpose_toggle(v, "Storm", "storm")
+
+        section("Natron Utility frames the scene like Storm")
+        compare_with_storm()
+
+        section("Natron Utility: main-thread stall during an edit in a large render")
+        yield from pick_renderer(v, "Natron Utility", UTILITY_ID)
+        yield from measure_edit_stall(v)
+
+        section("Natron Utility on the GPU: the view imports its frame wherever the GL hand-off builds")
+        yield from check_gpu_frame()
+
+        section("Natron Utility: a textured UsdPreviewSurface, a USDProject3D projection and a light")
+        yield from check_materials_and_lights(v)
+
+        navigation.setValue(original_navigation)
+        lighting.setValue(original_lighting)
+
+    run(steps())
+except Exception:
+    try:
+        check(False, "setup error: " + traceback.format_exc())
+        finish()
+    except NameError:
+        traceback.print_exc()
+        os._exit(1)

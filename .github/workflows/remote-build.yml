@@ -232,6 +232,7 @@ jobs:
             (cd Tests && xvfb-run --auto-servernum timeout 300 ./Tests --gtest_filter="$suite.Golden*") || rc=$?
           done
           test -f "$NATRON_GOLDEN_RECORD_DIR/STAMP" || rc=1
+          xvfb-run --auto-servernum ctest -R '^NatronUtilityGoldenTest$' --timeout 300 --output-on-failure || rc=$?
           exit "$rc"
 
       # Straight after recording, so that a later leg that fails, times out or is cancelled cannot

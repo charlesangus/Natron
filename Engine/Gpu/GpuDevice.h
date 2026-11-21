@@ -132,6 +132,9 @@ struct GpuDeviceInfo {
     bool externalMemoryHost = false;
     bool memoryBudget = false;
     bool pushDescriptor = false;
+    // Acceleration structures, ray queries and buffer device address are all present and enabled; see
+    // GpuDevice::supportsRayQuery().
+    bool rayQuery = false;
     // Vulkan 1.3 dynamic rendering, enabled whenever the device offers it.
     bool dynamicRendering = false;
     // Storage writes and atomics from the vertex and fragment stages, enabled whenever the device offers them.
@@ -147,6 +150,7 @@ struct GpuDeviceInfo {
 
     // Effective values: the device limit, or the GpuDeviceOptions override when that is smaller.
     uint64_t maxStorageBufferRange = 0;
+    uint64_t minStorageBufferOffsetAlignment = 1;
     uint64_t copyChunkSize = 0;
     // 0 when VK_EXT_external_memory_host is absent.
     uint64_t minImportedHostPointerAlignment = 0;
@@ -233,6 +237,11 @@ public:
     VkDevice device() const { return device_; }
     VmaAllocator allocator() const { return allocator_; }
     uint32_t queueFamily(QueueKind kind) const;
+
+    // True when the device exposes VK_KHR_acceleration_structure, VK_KHR_ray_query and
+    // VK_KHR_deferred_host_operations with bufferDeviceAddress, and they were enabled, which also makes VMA allocate
+    // with device addresses. NATRON_GPU_NO_RAY_QUERY=1 forces false.
+    bool supportsRayQuery() const { return info_.rayQuery; }
 
     bool isLost() const { return lost_.load(std::memory_order_acquire); }
 

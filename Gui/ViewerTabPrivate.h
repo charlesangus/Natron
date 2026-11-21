@@ -82,7 +82,8 @@ struct ViewerTabPrivate
     /*Viewer Settings*/
     QWidget* firstSettingsRow, *secondSettingsRow;
     QHBoxLayout* firstRowLayout, *secondRowLayout;
-    // The progressive render's controls, shown while the scene view renders with other than Storm.
+    // The progressive render's controls, shown with the scene view and enabled while it renders with
+    // other than Storm.
     QWidget* sceneRenderRow;
     QHBoxLayout* sceneRenderRowLayout;
     SpinBox* maxSamplesBox;

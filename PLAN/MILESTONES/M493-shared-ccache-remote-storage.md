@@ -69,6 +69,16 @@ What has been checked on the server: a compile in `natron-dev` (ccache 4.13.6) w
     - `bash -n` and shellcheck clean.
   - size: M
 
+- [ ] M493.P1.T3 — Reuse published image layers when building the dev image
+  - files: `.github/workflows/dev-image.yml`, `tools/ci/local/devshell.sh`, `tools/ci/local/README.md`
+  - approach:
+    - Added at the user's request (2026-11-21): a Dockerfile change made the local fallback build recompile Cycles and MoonRay from scratch, because pulled images carry no build-cache metadata.
+    - `dev-image.yml`: build with BuildKit, `--build-arg BUILDKIT_INLINE_CACHE=1`, and `--cache-from ghcr.io/charlesangus/natron-dev:latest`, so pushed images carry inline cache and unchanged layers are reused.
+    - `devshell.sh`: the local fallback `docker build` uses the same inline-cache arg and `--cache-from` the `:latest` image; a missing or uncached `:latest` must not fail the build.
+    - README: one line on why late Dockerfile layers rebuild cheaply.
+  - verify: `bash -n` and shellcheck clean on devshell.sh; actionlint clean on dev-image.yml; after `main` publishes once, a local build of a late-layer change reuses the Cycles layer (post-merge check).
+  - size: M
+
 ## Phase 493.2: CI remote cache
 
 Precondition: the user has set the repo secret `CCACHE_REMOTE_STORAGE` to the public HTTPS URL.

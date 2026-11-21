@@ -181,7 +181,9 @@ try:
 
     def solved():
         b = budget()
-        return (int(b.get("serial", 0)) > 0 and int(b.get("serial", 0)) == int(b.get("requested", 0))
+        # A recount of the units bumps the engine's serial without a new request, so an applied budget
+        # answers the latest request when its serial is at least the requested one.
+        return (int(b.get("serial", 0)) > 0 and int(b.get("serial", 0)) >= int(b.get("requested", 0))
                 and not b.get("idlePending", False))
 
     def resolve(label, edit):
@@ -308,7 +310,7 @@ try:
 
         section("hud")
         b = budget()
-        expected = "Budget: %d / %d polys, %d demoted, %d culled" % (int(b["counted"]), int(b["limit"]), int(b["demoted"]),
+        expected = "Budget: %d / %d polys, %d demoted, %d culled" % (int(b["drawn"]), int(b["limit"]), int(b["demoted"]),
                                                                     int(b["culled"]))
         check(hud() == expected, "the HUD line reads %r (%r)" % (expected, hud()))
         yield from resolve("Polygon Limit 100", set_knob("polygonLimit", 100))

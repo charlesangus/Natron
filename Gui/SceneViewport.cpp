@@ -8893,7 +8893,7 @@ SceneViewport::publishBudget()
     const SceneViewportRenderer::BudgetStats stats = _imp->renderer.getBudgetStats();
     QString hud;
     if (on && (stats.serial != 0)) {
-        hud = tr("Budget: %1 / %2 polys, %3 demoted, %4 culled").arg(stats.counted).arg(stats.limit).arg(stats.demoted).arg(stats.culled);
+        hud = tr("Budget: %1 / %2 polys, %3 demoted, %4 culled").arg(stats.drawn).arg(stats.limit).arg(stats.demoted).arg(stats.culled);
         if (!stats.aloneOverLimit.empty()) {
             QString alone = QString::fromStdString(stats.aloneOverLimit);
             if (stats.aloneOverLimitInstance >= 0) {

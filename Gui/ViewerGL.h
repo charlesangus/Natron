@@ -309,6 +309,18 @@ public:
                             double b,
                             int flags = 0) OVERRIDE FINAL; //!< see http://doc.qt.io/qt-4.8/qpainter.html#drawText-10
 
+    virtual bool renderViewportText(double x,
+                                    double y,
+                                    const std::string& string,
+                                    double r,
+                                    double g,
+                                    double b,
+                                    int flags = 0) OVERRIDE FINAL;
+
+    virtual void drawInViewportSpace(const std::function<void()>& draw) OVERRIDE FINAL;
+
+    virtual void getCursorPositionInOverlay(double& x,
+                                            double& y) const OVERRIDE FINAL;
 
     void renderText(double x,
                     double y,

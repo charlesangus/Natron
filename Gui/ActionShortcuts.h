@@ -318,6 +318,9 @@ CLANG_DIAG_ON(uninitialized)
 #define kShortcutIDActionHideOverlays "hideOverlays"
 #define kShortcutDescActionHideOverlays "Show/Hide Overlays"
 
+#define kShortcutIDActionMapSiblingOverlays "mapSiblingOverlays"
+#define kShortcutDescActionMapSiblingOverlays "Map Sibling Overlays"
+
 #define kShortcutIDActionHidePlayer "hidePlayer"
 #define kShortcutDescActionHidePlayer "Show/Hide Player"
 

@@ -1862,6 +1862,22 @@ protected:
         return eStatusReplyDefault;
     }
 
+    /**
+     * @brief The matrix an overlay drawn upstream follows through this node, in the form
+     * getTransform answers. getTransform refuses wherever the matrix alone would not reproduce the
+     * render, a partial mix for one, since concatenation would drop what it leaves out; an overlay
+     * follows the matrix whenever the node moves the image at all. The default is getTransform.
+     **/
+    virtual StatusEnum getOverlayTransform(double time,
+                                           const RenderScale& renderScale,
+                                           bool draftRender,
+                                           ViewIdx view,
+                                           EffectInstancePtr* inputToTransform,
+                                           Transform::Matrix3x3* transform) WARN_UNUSED_RETURN
+    {
+        return getTransform(time, renderScale, draftRender, view, inputToTransform, transform);
+    }
+
 public:
 
 
@@ -1872,6 +1888,12 @@ public:
                                    ViewIdx view,
                                    EffectInstancePtr* inputToTransform,
                                    Transform::Matrix3x3* transform) WARN_UNUSED_RETURN;
+    StatusEnum getOverlayTransform_public(double time,
+                                          const RenderScale& renderScale,
+                                          bool draftRender,
+                                          ViewIdx view,
+                                          EffectInstancePtr* inputToTransform,
+                                          Transform::Matrix3x3* transform) WARN_UNUSED_RETURN;
 
 protected:
 /**

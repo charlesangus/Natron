@@ -645,6 +645,15 @@ ViewerTab::onCheckerboardButtonClicked()
     refreshFromViewerKnob(kViewerParamCheckerboard);
 }
 
+void
+ViewerTab::onMapSiblingOverlaysButtonClicked(bool mapped)
+{
+    editViewerKnobs(tr("Map Sibling Overlays"), [this, mapped]() {
+        _imp->setViewerValue<bool>(kViewerParamMapSiblingOverlays, mapped);
+    });
+    refreshMapSiblingOverlaysFromKnob();
+}
+
 bool
 ViewerTab::isCheckerboardEnabled() const
 {

@@ -52,7 +52,7 @@ What has been checked on the server: a compile in `natron-dev` (ccache 4.13.6) w
     - `tools/ci/local/check-image-pins.sh` passes.
   - size: M
 
-- [ ] M493.P1.T2 — Opt local builds into the remote cache via `.local/ccache-remote`
+- [x] M493.P1.T2 — Opt local builds into the remote cache via `.local/ccache-remote`
   - files: `tools/ci/local/devshell.sh`, `tools/ci/local/build.sh`, `tools/ci/local/README.md`
   - approach:
     - Read the file in `devshell.sh`, resolved from the main checkout root via the git common dir (as `build.sh` resolves `CCACHE_BASEDIR`), so worktrees share one file. Only `KEY=value` lines count; blank and `#` lines are skipped.
@@ -141,3 +141,4 @@ Precondition: the user has set the repo secret `CCACHE_REMOTE_STORAGE` to the pu
 - 2026-11-21 — M493.P1.T3 code in 85476bc56 (milestone/m493-shared-ccache-remote-storage): BuildKit inline cache plus `--cache-from :latest` in dev-image.yml and the devshell.sh fallback. bash -n, shellcheck and actionlint clean. Layer reuse takes effect only after main publishes an image with inline cache, so it is a post-merge check.
 - 2026-11-21 — **M493.P1.T1 verified:** in the recreated natron-dev (image ada6a1188a9c9f28), two compiles of a fresh file, each with its own empty CCACHE_DIR, over the public HTTPS URL: the first wrote 2 objects remotely, the second got `remote_storage_hit 1`, with no errors or timeouts. check-image-pins.sh passes. **The HTTPS helper needs `@layout=bazel`** (a helper custom attribute); `layout=bazel` is for the built-in http:// client. README fixed in d84d936ea. The user has added the repo secret `CCACHE_REMOTE_STORAGE`, and `.local/ccache-remote` now holds an HTTPS `url=`.
 - 2026-11-21 — M493.P2.T1 code in ab912a864: `remote_ccache` dispatch input (default on; push runs on), `--no-remote-ccache` in tools/ci/remote/build.sh, `CCACHE_COMPILERCHECK: content`; actionlint and shellcheck clean. Remote-off baselines (fast, debug) dispatched on the branch with no actions/cache entries; remote-on runs follow once the local M493.P1.T2 test has filled the server, after deleting the branch caches the baselines save.
+- 2026-11-21 — **M493.P1.T2 verified** on ab912a864's sources in .worktrees/m493 (natron-dev from image ada6a1188a9c9f28, HTTPS remote). Run A, debug, empty local cache: 1779 misses, 3549 remote writes, 0 errors/timeouts, 2 h 18 min at -j3. Run B, fresh build dir, its own empty local cache: **1777/1779 remote hits**, 0 errors, 9 min 27 s. With `.local/ccache-remote` moved away, devshell passes no `CCACHE_REMOTE_STORAGE` and `ccache -p` shows `remote_storage` empty. bash -n and shellcheck clean.

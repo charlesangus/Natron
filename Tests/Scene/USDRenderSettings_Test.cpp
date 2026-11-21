@@ -80,6 +80,7 @@
 #include "Engine/Project.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/ViewIdx.h"
+#include "Engine/ViewerInstance.h"
 #include "RenderBothWays.h"
 #include "RenderSettingsTestUtils.h"
 #include "Serialization/KnobSerialization.h"
@@ -1071,6 +1072,87 @@ TEST_F(USDRenderSettingsTest, TheAovChecklistAuthorsRenderVars)
     }
     EXPECT_TRUE(haveNormal);
     EXPECT_TRUE(haveSt);
+}
+
+// Scripts author custom vars through the Custom AOVs table; a malformed row raises instead of
+// corrupting the table.
+TEST_F(USDRenderSettingsTest, PythonAuthorsCustomAovs)
+{
+    NodePtr cam = camera("/Cam");
+    NodePtr node = settings(cam);
+    ASSERT_TRUE(bool(node));
+    ASSERT_TRUE(RenderSettingsTestUtils::configure(node, "/Cam", 64, 32));
+    KnobRenderVars* custom = knob<KnobRenderVars>(node, kUSDRenderSettingsParamCustomAovs);
+    ASSERT_TRUE(custom != nullptr);
+
+    const std::string param = "param = " + getApp()->getAppIDString() + ".getNode(\"" + node->getScriptName() + "\").getParam(\"" + kUSDRenderSettingsParamCustomAovs + "\")\n";
+    const std::string script = "import NatronEngine\n" + param + "assert isinstance(param, NatronEngine.RenderVarsParam), type(param)\n"
+                                                                 "param.setTable([['st', 'primvar', 'texCoord2f', '']])\n"
+                                                                 "param.appendRow(['C<RD>L', 'lpe', '', 'diffuseLpe'])\n"
+                                                                 "assert param.getTable() == [['st', 'primvar', 'texCoord2f', ''], ['C<RD>L', 'lpe', '', 'diffuseLpe']], param.getTable()\n";
+    std::string error, output;
+    ASSERT_TRUE(NATRON_PYTHON_NAMESPACE::interpretPythonScript(script, &error, &output)) << error;
+
+    std::list<std::vector<std::string>> rows;
+    custom->getTable(&rows);
+    ASSERT_EQ(2u, rows.size());
+    EXPECT_EQ(std::string("SourceType"), custom->getColumnTag(KnobRenderVars::eColumnSourceType));
+    EXPECT_EQ(std::vector<std::string>({ "st", "primvar", "texCoord2f", "" }), rows.front());
+
+    SceneQueryPool::Lease lease;
+    const std::vector<AuthoredVar> vars = productVars(stageOf(node, &lease));
+    lease = SceneQueryPool::Lease();
+    const AuthoredVar* st = findVar(vars, "st");
+    ASSERT_TRUE(st != nullptr);
+    EXPECT_EQ(std::string("primvar"), st->sourceType);
+    const AuthoredVar* lpe = findVar(vars, "C<RD>L");
+    ASSERT_TRUE(lpe != nullptr);
+    EXPECT_EQ(std::string("lpe"), lpe->sourceType);
+
+    const std::string shortRow = "import NatronEngine\n" + param + "param.appendRow(['st', 'primvar'])\n";
+    EXPECT_FALSE(NATRON_PYTHON_NAMESPACE::interpretPythonScript(shortRow, &error, &output));
+    EXPECT_NE(std::string::npos, error.find("ValueError")) << error;
+    rows.clear();
+    custom->getTable(&rows);
+    EXPECT_EQ(2u, rows.size());
+}
+
+// The layers a USDRender produces follow the vars upstream, so a viewer below it re-lists its
+// layer menu on each AOV edit, with no reconnection.
+TEST_F(USDRenderSettingsTest, AovEditsRefreshTheLayerMenuOfAViewerDownstream)
+{
+    const ChecklistRenderers renderers;
+    NodePtr cam = camera("/Cam");
+    NodePtr node = settings(cam);
+    ASSERT_TRUE(bool(node));
+    ASSERT_TRUE(RenderSettingsTestUtils::configure(node, "/Cam", 64, 32));
+    KnobBool* normal = knob<KnobBool>(node, (RenderSettingsKnobs::scriptPrefix(kRenderDelegateCyclesId) + "AovNormal").c_str());
+    KnobRenderVars* custom = knob<KnobRenderVars>(node, kUSDRenderSettingsParamCustomAovs);
+    ASSERT_TRUE(normal && custom);
+
+    NodePtr render = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
+    ASSERT_TRUE(bool(render));
+    ASSERT_TRUE(render->connectInput(node, 0));
+    CreateNodeArgs viewerArgs(PLUGINID_NATRON_VIEWER, getApp()->getProject());
+    viewerArgs.setProperty<bool>(kCreateNodeArgsPropAllowNonUserCreatablePlugins, true);
+    NodePtr viewerNode = getApp()->createNode(viewerArgs);
+    ASSERT_TRUE(bool(viewerNode));
+    ViewerInstance* viewer = viewerNode->isEffectViewer();
+    ASSERT_TRUE(viewer != nullptr);
+    ASSERT_TRUE(viewerNode->connectInput(render, 0));
+    QCoreApplication::processEvents();
+
+    int refreshes = 0;
+    QMetaObject::Connection counter = QObject::connect(viewer, &ViewerInstance::availableComponentsChanged, [&refreshes]() {
+        ++refreshes;
+    });
+    normal->setValue(true);
+    EXPECT_GT(refreshes, 0) << "ticking an AOV left the viewer's layer menu as it was";
+
+    refreshes = 0;
+    custom->setTable({ { "st", "primvar", "texCoord2f", "" } });
+    EXPECT_GT(refreshes, 0) << "a custom AOV left the viewer's layer menu as it was";
+    QObject::disconnect(counter);
 }
 
 // The input scene's product stays listed beside the node's, and a var of the input scene's that

@@ -244,6 +244,8 @@ USDRenderSettings::initializeKnobs()
             tick->setDefaultValue(false);
             tick->setAnimationEnabled(false);
             tick->setHashNamespace(ns);
+            // A tick changes the layers downstream renders produce, and the viewer menus listing them.
+            tick->setIsMetadataSlave(true);
             group->addKnob(tick);
             _aovTicks.push_back({ tick, sourceName });
         }
@@ -258,6 +260,7 @@ USDRenderSettings::initializeKnobs()
                                   "empty leaves it to the renderer. Layer names the layer, which is otherwise the name without "
                                   "its namespace."));
     customAovs->setHashNamespace("natron");
+    customAovs->setIsMetadataSlave(true);
     aovPage->addKnob(customAovs);
     _customAovs = customAovs;
 

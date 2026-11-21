@@ -25,7 +25,9 @@
 
 #include "KnobGuiTable.h"
 
-#include <sstream> // stringstream
+#include <list>
+#include <string>
+#include <vector>
 
 #include <QHBoxLayout>
 #include <QVBoxLayout>
@@ -288,19 +290,17 @@ KnobGuiTable::createWidget(QHBoxLayout* layout)
 std::string
 KnobGuiTablePrivate::encodeTable(const KnobTablePtr& knob) const
 {
-    std::stringstream ss;
+    std::list<std::vector<std::string>> table;
 
     for (Variables::const_iterator it = items.begin(); it != items.end(); ++it) {
-        // In order to use XML tags, the text inside the tags has to be escaped.
+        std::vector<std::string> row;
         for (std::size_t c = 0; c < it->items.size(); ++c) {
-            std::string label = knob->getColumnLabel(c);
-            ss << "<" << label << ">";
-            ss << Project::escapeXML( it->items[c]->text().toStdString() );
-            ss << "</" << label << ">";
+            row.push_back(it->items[c]->text().toStdString());
         }
+        table.push_back(row);
     }
 
-    return ss.str();
+    return knob->encodeToKnobTableFormat(table);
 }
 
 void

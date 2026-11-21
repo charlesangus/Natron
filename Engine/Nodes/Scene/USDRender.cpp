@@ -1095,7 +1095,12 @@ USDRender::followRenderedAovs(double time,
     }
     // The layers and metadata change under the same hash, and the readers are refreshed on the main thread.
     if (layersChanged || metadataChanged) {
-        QMetaObject::invokeMethod(this, [this]() { invalidateOutputMetadata(); }, Qt::QueuedConnection);
+        QMetaObject::invokeMethod(this, [this, layersChanged]() {
+            invalidateOutputMetadata();
+            if (layersChanged) {
+                // The layers moved under an unchanged hash, so nothing else re-lists the layer menus downstream, the viewers' among them.
+                refreshMetadataSideEffects();
+            } }, Qt::QueuedConnection);
     }
     if (rejected.isEmpty()) {
         return std::string();

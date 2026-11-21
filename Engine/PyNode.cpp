@@ -602,6 +602,7 @@ Effect::createParamWrapperForKnob(const KnobIPtr& knob)
     KnobLayerSelectPtr isLayerSelect = std::dynamic_pointer_cast<KnobLayerSelect>(knob);
     KnobChannelSelectPtr isChannelSelect = std::dynamic_pointer_cast<KnobChannelSelect>(knob);
     KnobShuffleMapPtr isShuffleMap = std::dynamic_pointer_cast<KnobShuffleMap>(knob);
+    KnobRenderVarsPtr isRenderVars = std::dynamic_pointer_cast<KnobRenderVars>(knob);
     KnobButtonPtr isButton = std::dynamic_pointer_cast<KnobButton>(knob);
     KnobGroupPtr isGroup = std::dynamic_pointer_cast<KnobGroup>(knob);
     KnobPagePtr isPage = std::dynamic_pointer_cast<KnobPage>(knob);
@@ -664,6 +665,8 @@ Effect::createParamWrapperForKnob(const KnobIPtr& knob)
         return new ChannelSelectParam(isChannelSelect);
     } else if (isShuffleMap) {
         return new ShuffleMapParam(isShuffleMap);
+    } else if (isRenderVars) {
+        return new RenderVarsParam(isRenderVars);
     } else if (isGroup) {
         return new GroupParam(isGroup);
     } else if (isPage) {

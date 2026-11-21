@@ -952,6 +952,11 @@ public:
     mutable U64 knobsHashGeneration = 0;
     mutable bool knobsHashValid = false;
 
+    // isMaskFrameInvariant()'s answer for the content hash it was computed under, 0 for none.
+    mutable QMutex frameInvarianceMutex;
+    mutable U64 frameInvarianceHash = 0;
+    mutable bool frameInvariant = false;
+
     void observeKnob(const KnobIPtr& knob)
     {
         KnobHelper* helper = dynamic_cast<KnobHelper*>(knob.get());

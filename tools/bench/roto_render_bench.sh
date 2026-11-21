@@ -23,6 +23,9 @@
 #   BENCH_APPIMAGE_ARGS  arguments for the AppImage runtime (default "--appimage-extract-and-run", the host has no FUSE)
 #
 # The AppImage runs with LD_LIBRARY_PATH removed: a host Qt on that path shadows the one inside.
+# Every run has the disk cache tier off (NATRON_CACHE_DISK_TIER=off): the tier outlives the process,
+# and its location is a setting rather than NATRON_DISK_CACHE_PATH, so a scenario identical to an
+# earlier one would otherwise be served that one's outputs.
 # Results land in <out-dir>/results.jsonl, one log per scenario in <out-dir>/logs.
 set -uo pipefail
 
@@ -68,7 +71,7 @@ run() {
     if [ "${BENCH_ROTO_PROFILE:-0}" = 1 ]; then
         profile=(NATRON_ROTO_RENDER_PROFILE="$OUT/profile/$name.jsonl")
     fi
-    (cd "$REPO" && with_display env -u LD_LIBRARY_PATH BENCH_RENDER_DIR="$OUT/render" BENCH_OUT="$OUT/results.jsonl" \
+    (cd "$REPO" && with_display env -u LD_LIBRARY_PATH NATRON_CACHE_DISK_TIER=off BENCH_RENDER_DIR="$OUT/render" BENCH_OUT="$OUT/results.jsonl" \
         BENCH_FRAMES="${BENCH_FRAMES:-12}" BENCH_SETTINGS="$SETTINGS" BENCH_LABEL="${BENCH_LABEL:-}" "${profile[@]}" "$@" \
         timeout 3600 "$APPIMAGE" "${APPIMAGE_ARGV[@]}" "${SETTING_ARGV[@]}" -b tools/bench/roto_render_bench.py) > "$log" 2>&1
     code=$?

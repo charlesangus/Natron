@@ -23,9 +23,11 @@ Environment:
 import math
 import os
 import random
+import sys
 import traceback
 
 ROOT = os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd())
+sys.path.insert(0, os.path.join(ROOT, "Tests", "gui"))
 
 
 def env_list(name, default):
@@ -190,5 +192,7 @@ except Exception:
         check(False, "setup error: " + traceback.format_exc())
         gt.finish()
     except NameError:
-        traceback.print_exc()
+        # The GUI sends sys.stderr to the Script Editor, which no log keeps.
+        traceback.print_exc(file=sys.__stderr__)
+        sys.__stderr__.flush()
         os._exit(1)

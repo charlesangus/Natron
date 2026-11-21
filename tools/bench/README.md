@@ -461,7 +461,10 @@ the Grade's multiply changes. Each run appends one JSON line: `frame_cold_s` (fr
 
 `roto_render_bench.sh` runs the matrix against an AppImage (`--appimage-extract-and-run`, no
 `LD_LIBRARY_PATH`, `xvfb-run` when there is no display). It writes the plates first, then runs
-every node x count x feather x motion x resolution, then the stroke projects it finds:
+every node x count x feather x motion x resolution, then the stroke projects it finds. Every run has
+`NATRON_CACHE_DISK_TIER=off`: the disk tier persists across processes (at the `diskTierLocation`
+setting, which `NATRON_DISK_CACHE_PATH` does not move), so a scenario would otherwise reuse the
+outputs of an identical scene run before it.
 
 | Variable | Default | Meaning |
 |---|---|---|

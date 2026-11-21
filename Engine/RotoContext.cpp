@@ -50,6 +50,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/Bezier.h"
 #include "Engine/BezierCP.h"
+#include "Engine/CacheTier.h"
 #include "Engine/ContentHasher.h"
 #include "Engine/CoonsRegularization.h"
 #include "Engine/CreateNodeArgs.h"
@@ -62,6 +63,7 @@
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/MemoryInfo.h" // printAsRAM
 #include "Engine/Nodes/Merge/Merge.h"
+#include "Engine/RenderContext.h"
 #include "Engine/RenderStats.h"
 #include "Engine/RotoDrawableItem.h"
 #include "Engine/RotoLatencyProbe.h"
@@ -1238,26 +1240,44 @@ RotoDrawableItem::renderMaskFromStroke(const ImageLayerDesc& components,
         profile.setNames(node->getScriptName_mt_safe(), getScriptName(), dynamic_cast<RotoStrokeItem*>(this) ? "stroke" : "bezier");
     }
 
-    ///compute an enhanced hash different from the one of the merge node of the item in order to differentiate within the cache
-    ///the output image of the node and the mask image.
-    U64 rotoHash;
+#ifdef NATRON_ROTO_INVERTIBLE
+    const bool inverted = getInverted(time);
+#else
+    const bool inverted = false;
+#endif
+
+    // Keyed on the item's own content rather than its Merge node's hash, which also covers the
+    // tree upstream, so an upstream edit keeps every mask. The Merge hash still guards the store
+    // and decides the salt, as it covers the item's content.
     const NodePtr mergeNode = getMergeNode();
-    const U64 mergeNodeHash = mergeNode->getEffectInstance()->getRenderHash();
+    const EffectInstancePtr mergeEffect = mergeNode->getEffectInstance();
+    const U64 mergeNodeHash = mergeEffect->getRenderHash();
+    const RenderContextPtr mergeContext = mergeEffect->getCurrentRestrictedRenderContext();
+    const U64 contentHash = getContentHash();
+    const bool frameInvariant = isMaskFrameInvariant(contentHash);
+    U64 rotoHash;
     {
         Hash64 hash;
-        hash.append(mergeNodeHash);
+        hash.append<U64>(0x726f746f6d61736bULL);
+        hash.append(contentHash);
+        hash.append<U64>(mergeContext ? mergeContext->hash() : 0);
+        if (inverted) {
+            hash.append(rotoNodeSrcRod.x1);
+            hash.append(rotoNodeSrcRod.y1);
+            hash.append(rotoNodeSrcRod.x2);
+            hash.append(rotoNodeSrcRod.y2);
+        }
         hash.computeHash();
         rotoHash = ContentHasher::withSaltFlag(hash.value(), ContentHasher::isSalted(mergeNodeHash));
-        assert(mergeNodeHash != rotoHash);
     }
-    std::unique_ptr<ImageKey> key( new ImageKey(this,
-                                                  rotoHash,
-                                                  /*frameVaryingOrAnimated=*/ true,
-                                                  time,
-                                                  view,
-                                                  /*pixelAspect=*/ 1.,
-                                                  /*draftMode=*/ false,
-                                                  /*fullScaleWithDownscaleInputs=*/ false) );
+    std::unique_ptr<ImageKey> key(new ImageKey(this,
+                                               rotoHash,
+                                               !frameInvariant,
+                                               time,
+                                               view,
+                                               /*pixelAspect=*/1.,
+                                               /*draftMode=*/false,
+                                               /*fullScaleWithDownscaleInputs=*/false));
 
     {
         RotoRenderProfile::StageTimer lookup(RotoRenderProfile::eStageCacheLookup);
@@ -1271,7 +1291,7 @@ RotoDrawableItem::renderMaskFromStroke(const ImageLayerDesc& components,
 
         return image;
     }
-    const CleanHashSnapshot clean(mergeNode, mergeNode->getEffectInstance()->getCurrentRestrictedRenderContext());
+    const CleanHashSnapshot clean(mergeNode, mergeContext);
 
     RotoStrokeItem* isStroke = dynamic_cast<RotoStrokeItem*>(this);
     Bezier* isBezier = dynamic_cast<Bezier*>(this);
@@ -1284,12 +1304,6 @@ RotoDrawableItem::renderMaskFromStroke(const ImageLayerDesc& components,
             isBezier->getMotionBlurSettings(time, false, &startTime, &endTime, &mbFrameStep);
         }
     }
-#endif
-
-#ifdef NATRON_ROTO_INVERTIBLE
-    const bool inverted = isStroke->getInverted(time);
-#else
-    const bool inverted = false;
 #endif
 
     RectD rotoBbox;
@@ -1367,7 +1381,16 @@ RotoDrawableItem::renderMaskFromStroke(const ImageLayerDesc& components,
         return image;
     }
 
-    image = renderMaskInternal(pixelRod, components, startTime, endTime, mbFrameStep, time, inverted, depth, mipmapLevel, strokes, image);
+    double rasterNs = 0.;
+    {
+        CacheRecomputeStopwatch watch;
+        image = renderMaskInternal(pixelRod, components, startTime, endTime, mbFrameStep, time, inverted, depth, mipmapLevel, strokes, image);
+        rasterNs = watch.ownNs();
+    }
+    if (image) {
+        // Gives eviction the mask's real cost rather than the unmeasured default.
+        image->getEntryHeader()->recomputeCostNs.store(CacheEviction::costAfterRender(0.f, rasterNs, 1., 1.));
+    }
     if (image && !clean.allowsStoreUnder(mergeNodeHash)) {
         // An edit or a mark came while drawing: the mask may be another state's.
         appPTR->removeFromNodeCache(image);

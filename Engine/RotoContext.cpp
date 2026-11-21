@@ -1271,7 +1271,7 @@ RotoDrawableItem::renderMaskFromStroke(const ImageLayerDesc& components,
         int mbType_i = getContext()->getMotionBlurTypeKnob()->getValue();
         bool applyPerShapeMotionBlur = mbType_i == 0;
         if (applyPerShapeMotionBlur) {
-            isBezier->getMotionBlurSettings(time, &startTime, &endTime, &mbFrameStep);
+            isBezier->getMotionBlurSettings(time, false, &startTime, &endTime, &mbFrameStep);
         }
     }
 #endif

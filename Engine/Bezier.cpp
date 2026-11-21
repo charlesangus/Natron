@@ -1301,11 +1301,19 @@ Bezier::clone(const RotoItem* other)
 
     // The render-start hold, and so the choice of side, exists on the main thread only, and
     // main-thread readers iterate the GUI lists without expecting another thread to swap them.
+    // The knobs are cloned here, not in the queued call: Knob::clone needs the live source knob,
+    // and a detached snapshot of it would drop its expressions and links.
     RotoDrawableItem::clone(other);
     std::weak_ptr<Bezier> weakThis = this_shared;
     QMetaObject::invokeMethod(qApp, [weakThis, newPoints, newFeatherPoints, isOpen, finished]() mutable {
         BezierPtr bezier = weakThis.lock();
         if (!bezier) {
+            return;
+        }
+        // A shape whose context or node is gone is being torn down: nothing renders or shows
+        // it, and EditSide needs the node.
+        RotoCurveContextPtr context = bezier->getContext();
+        if (!context || !context->getNode()) {
             return;
         }
         Q_EMIT bezier->aboutToClone();
@@ -3508,6 +3516,7 @@ Bezier::evaluateFeatherPointsAtTime_DeCasteljau(bool useGuiPoints,
 
 void
 Bezier::getMotionBlurSettings(const double time,
+                              bool useGuiCurves,
                               double* startTime,
                               double* endTime,
                               double* timeStep) const
@@ -3516,7 +3525,7 @@ Bezier::getMotionBlurSettings(const double time,
 #ifdef NATRON_ROTO_ENABLE_MOTION_BLUR
 
     double motionBlurAmnt = getMotionBlurAmountKnob()->getValueAtTime(time);
-    if ( isOpenBezier() || (motionBlurAmnt == 0) ) {
+    if (isOpenBezier(useGuiCurves) || (motionBlurAmnt == 0)) {
         return;
     }
     int nbSamples = std::floor(motionBlurAmnt * 10 + 0.5);
@@ -3544,7 +3553,8 @@ Bezier::getMotionBlurSettings(const double time,
         assert(false);
     }
 
-
+#else
+    (void)useGuiCurves;
 #endif
 }
 
@@ -3558,7 +3568,7 @@ Bezier::getBoundingBox(double time,
     int mbType_i = getContext()->getMotionBlurTypeKnob()->getValue();
     bool applyPerShapeMotionBlur = mbType_i == 0;
     if (applyPerShapeMotionBlur) {
-        getMotionBlurSettings(time, &startTime, &endTime, &mbFrameStep);
+        getMotionBlurSettings(time, useGuiCurves, &startTime, &endTime, &mbFrameStep);
     }
 #endif
 

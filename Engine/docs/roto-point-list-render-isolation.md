@@ -61,6 +61,13 @@ flag next to the other dirty marks.
   feather paths in `RotoContext.cpp`, `rasterizeCoverage`, the SplineWarp cookie and Retouch's
   shape collection, and `SplineWarpCurveShape::fromBezier` (which passes its own `useGuiCurves`
   through; the SplineWarp overlay asks for the GUI side).
+  `Retouch.cpp` only reads `finished` on the main thread and keeps the GUI default. This is the
+  same render-path code that is being reworked for render performance; whichever change lands
+  second rebases onto the other. `appendGeometryContentHash` hashes the internal lists and
+  `finished`, as it hashes the internal curves. Track-link bookkeeping walks the union of both
+  lists, so a point deleted during a render keeps its link watched until write-back. The union
+  lists the render lists first, in their order, then GUI-only points, so the live content hash of
+  the linked points does not change when a linked point is deleted from the GUI list alone.
 - **Bounding boxes.** `RotoDrawableItem::getBoundingBox(time, useGuiCurves)` and
   `RotoCurveContext::getItemsRegionOfDefinition(..., useGuiCurves, ...)` take the side
   explicitly. The transform-centre resets (the item's and the context's, including the one
@@ -71,13 +78,6 @@ flag next to the other dirty marks.
   lines and line orientation, the Python group export and the curve editor's control-point
   curves. Reading the GUI list with internal curves would give (0,0) for a point inserted during a
   render.
-  `Retouch.cpp` only reads `finished` on the main thread and keeps the GUI default. This is the
-  same render-path code that is being reworked for render performance; whichever change lands
-  second rebases onto the other. `appendGeometryContentHash` hashes the internal lists and
-  `finished`, as it hashes the internal curves. Track-link bookkeeping walks the union of both
-  lists, so a point deleted during a render keeps its link watched until write-back. The union
-  lists the render lists first, in their order, then GUI-only points, so the live content hash of
-  the linked points does not change when a linked point is deleted from the GUI list alone.
 - **Deleting every point.** `clearAllPoints` during a render empties the GUI lists only; the
   render keeps drawing the old shape and the empty shape lands at write-back.
 - **`finished`.** `setCurveFinished` writes `guiFinished`, and `finished` too under a hold;
@@ -132,7 +132,13 @@ may be reading. The rule:
   target's lists is queued to the main thread, where it takes the main-thread path above.
   Main-thread readers iterate the GUI lists without a lock between calls, so no other thread may
   swap them. This is a runtime branch, not an assert, since asserts are inert in these builds.
-  The target's point lists change only once the main thread runs the queued swap.
+  The target's point lists change only once the main thread runs the queued swap. If the
+  target's context or node is gone by then, the swap is dropped: the shape is being torn down,
+  and `EditSide` needs the node.
+- **Knobs off the main thread** are cloned on the calling thread, before the swap is queued.
+  `Knob::clone` reads the live source knob, and a detached snapshot taken through serialization
+  would lose its expressions and links. So knob values land before the points, and a main-thread
+  edit to the target's points made between the clone and the queued swap loses to the swap.
 
 ## Cost on large shapes
 

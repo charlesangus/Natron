@@ -385,6 +385,7 @@ public:
     void setTangentsBroken(const BezierCPPtr& cp, const BezierCPPtr& fp, double time);
 
     void getMotionBlurSettings(const double time,
+                               bool useGuiCurves,
                                double* startTime,
                                double* endTime,
                                double* timeStep) const;

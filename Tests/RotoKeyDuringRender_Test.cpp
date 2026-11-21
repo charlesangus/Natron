@@ -248,7 +248,7 @@ editPointFive(const BezierPtr& shape,
 
 // What a render reads of a shape: whether it is closed or open, its internal lists in order, each
 // point's internal values and broken flag, and what the render paths make of them: the bounding
-// box, the rasterised coverage and the SplineWarp curve.
+// box, the mask region of definition, the rasterised coverage and the SplineWarp curve.
 struct RenderSide {
     bool finished = false;
     bool open = false;
@@ -257,6 +257,7 @@ struct RenderSide {
     std::vector<std::vector<double>> values;
     std::vector<bool> broken;
     std::vector<double> boxes;
+    std::vector<double> maskRoDs;
     std::vector<bool> covered;
     std::vector<std::vector<float>> coverage;
     std::vector<double> warpCurves;
@@ -289,6 +290,12 @@ readRenderPaths(const BezierPtr& shape,
         side->boxes.push_back(box.y1);
         side->boxes.push_back(box.x2);
         side->boxes.push_back(box.y2);
+        RectD rod;
+        shape->getContext()->getMaskRegionOfDefinition(times[i], ViewIdx(0), &rod);
+        side->maskRoDs.push_back(rod.x1);
+        side->maskRoDs.push_back(rod.y1);
+        side->maskRoDs.push_back(rod.x2);
+        side->maskRoDs.push_back(rod.y2);
     }
     const double rasterTimes[] = { times.front(), times[times.size() / 2] };
     for (int i = 0; i < 2; ++i) {
@@ -339,6 +346,9 @@ describeRenderSideChange(const RenderSide& before,
     }
     if (now.boxes != before.boxes) {
         out << "the render's bounding box changed\n";
+    }
+    if (now.maskRoDs != before.maskRoDs) {
+        out << "the render's mask region of definition changed\n";
     }
     if ((now.covered != before.covered) || (now.coverage != before.coverage)) {
         out << "the render's rasterised coverage changed\n";

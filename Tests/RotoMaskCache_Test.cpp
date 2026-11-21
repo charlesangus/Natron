@@ -66,6 +66,8 @@
 
 NATRON_NAMESPACE_USING
 
+using namespace CacheStress;
+
 namespace {
 
 const RectI kWindow(0, 0, 256, 256);

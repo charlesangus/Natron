@@ -145,25 +145,25 @@ an add. Its lessons, which this design avoids:
 
 ## Phase 103.3: Built-in handlers and conflict persistence
 
-- [ ] M103.P3.T1 — Curve and text merge handlers
+- [x] M103.P3.T1 — Curve and text merge handlers
   - files: new `Serialization/Merge/CurveMerge.cpp`, new `Serialization/Merge/TextMerge.cpp`, new `Tests/Serialization/CurveTextMerge_Test.cpp`
   - approach: curves are merged as maps keyed by key time. A key changed or added on one side applies. Keys at the same time changed differently conflict, per key. An animated-versus-static change conflicts as a whole. Text uses a line-based diff3 in-house (no dependency), and overlapping hunks conflict.
   - verify: compiled at P3.T5. Keyframes added on both sides at different times merge clean; the same key changed differently gives one per-key conflict; non-overlapping text edits merge, and overlapping ones conflict.
   - size: M
 
-- [ ] M103.P3.T2 — Roto per-item merge handler
+- [x] M103.P3.T2 — Roto per-item merge handler
   - files: new `Serialization/Merge/RotoMerge.cpp`, new `Tests/Serialization/RotoMerge_Test.cpp`
   - approach: match items by name within their layer path. Items added or deleted on one side apply. For items changed on both sides, item knobs merge per knob through the generic and curve handlers. Shape control points changed on both sides conflict for the whole shape. Layer order follows theirs, plus mine's additions.
   - verify: compiled at P3.T5. The corpus roto scenario merges as expected; both sides adding different shapes keeps both; both editing one shape's points gives one conflict.
   - size: M
 
-- [ ] M103.P3.T3 — Tracker per-track merge handler
+- [x] M103.P3.T3 — Tracker per-track merge handler
   - files: new `Serialization/Merge/TrackerMerge.cpp`, new `Tests/Serialization/TrackerMerge_Test.cpp`
   - approach: match tracks by script name. Tracks added or deleted on one side apply. A track changed on both sides merges its knob curves per key through the curve handler.
   - verify: compiled at P3.T5. Different tracks added on each side are both kept, and the same track keyed at different frames merges clean.
   - size: M
 
-- [ ] M103.P3.T4 — Persist conflicts in the bundle
+- [x] M103.P3.T4 — Persist conflicts in the bundle
   - files: new `Serialization/Yaml/MergeConflictYaml.cpp`, `Serialization/Bundle/ProjectBundle.cpp`, `Serialization/ProjectSerialization.h`, `Engine/Project.cpp`, new `Tests/Serialization/MergeConflictYaml_Test.cpp`
   - approach: write `merge/conflicts.yaml` when conflicts exist and drop the member when none remain. Base, mine and theirs values use the knob and curve encoders. Loading a project with conflicts adds the load warning "N unresolved merge conflicts". Engine keeps the list on `Project` for M104 - Merge Resolution UI.
   - verify: compiled at P3.T5. Conflicts round-trip; the member is absent when the list is empty; loading gives exactly one warning.
@@ -231,3 +231,4 @@ The git-driver test passes. Full ctest, smoke and CI are green.
 
   **PM calls:** merged names are unique per group, matching Natron's group-scoped script names. An input conflict on a node that already has a reparent conflict folds into it, one entry per node. Both are being implemented, and the gate is running.
 - 2026-11-20 — Phase 103.2 gate green on eaebaa089. Phase 103.3 dispatched.
+- 2026-11-20 — Phase 103.3 T1–T4 committed. New handlers: per-key curve merge (tangents count only for Free/Broken keys); line-based text merge for String knobs; Roto items matched by name per layer, with one roto-shape conflict per item; Tracker tracks matched by script name, user keys merged as sets. `merge/conflicts.yaml` is saved only when non-empty and gives one load warning. Merge tests 64/64 in a standalone build; NodeMatcher still 310/310. **PM calls:** a saved choice value keeps its option name and M104 maps it onto the live entries; a Roto item moved to another layer is a delete plus an add. Known gaps, left to M104 unless they block it: per-handler options, node renames inside roto and track knobs, side values on roto-shape and input conflicts. Gate running (T5).

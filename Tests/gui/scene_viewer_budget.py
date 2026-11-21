@@ -57,7 +57,7 @@ try:
     from PySide6.QtCore import Q_ARG, QEvent, QMetaObject, QPoint, QPointF, Qt, QTimer
     from PySide6.QtGui import QContextMenuEvent, QMouseEvent, QWheelEvent
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication, QMainWindow, QMenu, QSpinBox
+    from PySide6.QtWidgets import QApplication, QMainWindow, QSpinBox, QWidgetAction
     from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
     from guitest import (OUT, check, class_name, finish, menu_of, plugin_problem, report, require, run, section, shot,
@@ -253,9 +253,22 @@ try:
             QTest.keyClick(popup, Qt.Key_Escape)
             QApplication.processEvents()
 
-    def budget_menu():
-        popup = QApplication.activePopupWidget()
-        return popup.findChild(QMenu, "polygonBudgetMenu") if popup is not None else None
+    def open_budget_submenu():
+        """Opens the Polygon Budget submenu from the open context menu with a Right key press and
+        returns it as the active popup. A wrapper from findChild() or menu() is marked deleted once
+        the wrapper it came from is collected, so only the static activePopupWidget() is used."""
+        top = QApplication.activePopupWidget()
+        if top is None:
+            return None
+        entry = next((a for a in top.actions() if a.text().replace("&", "") == "Polygon Budget"), None)
+        if entry is None:
+            return None
+        top.setActiveAction(entry)
+        QApplication.processEvents()
+        QTest.keyClick(top, Qt.Key_Right)
+        QApplication.processEvents()
+        sub = QApplication.activePopupWidget()
+        return sub if sub is not None and sub.objectName() == "polygonBudgetMenu" else None
 
     def edit_menu_action(prefix):
         for w in QApplication.topLevelWidgets():
@@ -450,19 +463,26 @@ try:
         section("menu")
 
         def edit_in_menu():
-            menu = budget_menu()
+            menu = open_budget_submenu()
             if not check(menu is not None, "the context menu has a Polygon Budget submenu"):
                 close_menus()
                 return
-            box = menu.findChild(QSpinBox, "polygonLimit")
             names = set(a.objectName() for a in menu.actions())
             check({"polygonBudget", "countWholeScene"} <= names, "the submenu has the toggles (%r)" % sorted(names))
+            box = menu.findChild(QSpinBox, "polygonLimit")
             if check(box is not None and box.value() == limit, "the submenu's Polygon Limit shows the knob (%r)" %
                      (box.value() if box is not None else None)):
-                menu.popup(QApplication.activePopupWidget().mapToGlobal(QPoint(0, 0)))
-                QApplication.processEvents()
                 shot("scene-budget-menu.png")
-                box.setValue(1234)
+                # The spin box passes Return on to the menu, which triggers its active action: make
+                # that the box's row, as hovering it does, not the Polygon Budget toggle the Right key highlighted.
+                row = box.parentWidget()
+                menu.setActiveAction(next((a for a in menu.actions()
+                                           if isinstance(a, QWidgetAction) and a.defaultWidget() == row), None))
+                QApplication.processEvents()
+                box.setFocus()
+                box.selectAll()
+                QTest.keyClicks(box, "1234")
+                QTest.keyClick(box, Qt.Key_Return)
                 QApplication.processEvents()
             close_menus()
 
@@ -471,6 +491,7 @@ try:
         yield settle()
         check(viewer.getParam("polygonLimit").getValue() == 1234, "the menu edit sets the knob (%r)" %
               viewer.getParam("polygonLimit").getValue())
+        check(viewer.getParam("polygonBudget").getValue(), "the menu edit leaves the budget on")
         undo = edit_menu_action("undo")
         if check(undo is not None and undo.isEnabled(), "Edit > Undo is enabled after the menu edit"):
             undo.trigger()

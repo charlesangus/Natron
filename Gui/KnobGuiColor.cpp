@@ -231,6 +231,9 @@ repolishTree(QWidget* root)
 
     widgets.prepend(root);
     for (QWidget* w : widgets) {
+        if (!w->testAttribute(Qt::WA_WState_Polished)) {
+            continue;
+        }
         w->style()->unpolish(w);
         w->style()->polish(w);
         w->update();

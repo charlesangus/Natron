@@ -117,8 +117,12 @@ AnimatingTextEdit::setAnimation(int v)
 {
     if (v != animation) {
         animation = v;
-        style()->unpolish(this);
-        style()->polish(this);
+        // An unpolished widget gets the new state from its first polish; polishing it here too
+        // would only be paid twice.
+        if (testAttribute(Qt::WA_WState_Polished)) {
+            style()->unpolish(this);
+            style()->polish(this);
+        }
         update();
     }
 }
@@ -129,8 +133,10 @@ AnimatingTextEdit::setReadOnlyNatron(bool ro)
     QTextEdit::setReadOnly(ro);
     if (readOnlyNatron != ro) {
         readOnlyNatron = ro;
-        style()->unpolish(this);
-        style()->polish(this);
+        if (testAttribute(Qt::WA_WState_Polished)) {
+            style()->unpolish(this);
+            style()->polish(this);
+        }
         update();
     }
 }
@@ -149,8 +155,10 @@ AnimatingTextEdit::setDirty(bool b)
 {
     if (dirty != b) {
         dirty = b;
-        style()->unpolish(this);
-        style()->polish(this);
+        if (testAttribute(Qt::WA_WState_Polished)) {
+            style()->unpolish(this);
+            style()->polish(this);
+        }
         update();
     }
 }

@@ -1154,14 +1154,20 @@ try:
             self.armed = False
             self.fired = False
             self.paints = 0
+            # With track_accepted, accepted_at is the time of the last accepted paint, so a settle
+            # can be told apart from repaints elsewhere in the application.
+            self.track_accepted = False
+            self.accepted_at = None
 
         def eventFilter(self, obj, event):
             if event.type() == QEvent.Paint:
                 self.paints += 1
-                if self.armed and not self.fired:
+                if self.armed and (not self.fired or self.track_accepted):
                     try:
                         if self.accepts(obj):
                             self.fired = True
+                            if self.track_accepted:
+                                self.accepted_at = mono_ms()
                     except RuntimeError:
                         pass
             return False
@@ -1205,7 +1211,7 @@ try:
         finally:
             qapp.removeEventFilter(watch)
 
-    def measure_paint(hosts, accepts, send, drain=True, settle=True, watch_after_send=False):
+    def measure_paint(hosts, accepts, send, drain=True, settle=True, watch_after_send=False, detail=None):
         """(t0, t1) in ms: just before send() posts the key event, and the end of the event-loop pass that
         delivered the first accepted paint to one of hosts, or to the whole application when hosts is
         None. With settle, t1 is instead the end of the last pass that painted one of them before
@@ -1213,11 +1219,14 @@ try:
         count; settling stops SETTLE_LIMIT_MS after the first paint. With drain, the work earlier reps
         left queued runs first. A paint taken during send() does not count. With watch_after_send, the
         paint filter is installed only once send() returns: an app-wide Python filter sees every event a
-        synchronous step sends, which would add its own cost to the step. Raises when none arrives in
-        CREATE_PAINT_TIMEOUT_S."""
+        synchronous step sends, which would add its own cost to the step. With a detail dict, it gets
+        first_ms (t0 to the end of the first accepted paint's pass) and accepted_settle_ms (t0 to the
+        last accepted paint), so other widgets' repaints can be told from the target's own. Raises when
+        none arrives in CREATE_PAINT_TIMEOUT_S."""
         if drain:
             drain_events()
         watch = PaintWatch(accepts)
+        watch.track_accepted = detail is not None
         targets = list(hosts) if hosts is not None else [QApplication.instance()]
         if not watch_after_send:
             for target in targets:
@@ -1233,6 +1242,8 @@ try:
             while not watch.fired and mono_ms() < deadline:
                 QApplication.processEvents()
             t1 = mono_ms()
+            if detail is not None:
+                detail["first_ms"] = t1 - t0
             if watch.fired and settle:
                 settle_end = t1 + SETTLE_LIMIT_MS
                 while True:
@@ -1252,6 +1263,8 @@ try:
                     pass
         if not watch.fired:
             raise RuntimeError("no paint showed the result within %.0f s" % CREATE_PAINT_TIMEOUT_S)
+        if detail is not None and watch.accepted_at is not None:
+            detail["accepted_settle_ms"] = watch.accepted_at - t0
         return t0, t1
 
     def focus_graph_for_keys():
@@ -1638,7 +1651,9 @@ try:
 
     def panel_record(entry):
         rec = {"reps": len(entry["paint"]), "build_ms": ms_summary(entry["build"]),
-               "paint_ms": ms_summary(entry["paint"])}
+               "paint_ms": ms_summary(entry["paint"]),
+               "first_paint_ms": ms_summary(entry["first_paint"]),
+               "panel_settle_ms": ms_summary(entry["panel_settle"])}
         if entry["stages"]:
             rec["stages_ms"] = stage_summary(entry["stages"])
         if entry["knobs"]:
@@ -1666,7 +1681,7 @@ try:
             if missing:
                 report("NOTE open_panel skips unregistered plug-ins: %s" % ", ".join(missing))
             st["plugins"] = list(registered)
-            st["panels"] = dict((pid, {"build": [], "paint": [], "stages": [], "knobs": []}) for pid in registered)
+            st["panels"] = dict((pid, {"build": [], "paint": [], "first_paint": [], "panel_settle": [], "stages": [], "knobs": []}) for pid in registered)
             st["record"] = {"headline": "panels", "budget_ms": PANEL_BUDGET_MS, "missing_plugins": list(missing)}
             st["all_knobs"] = {}
 
@@ -1696,12 +1711,15 @@ try:
                 b0 = mono_ms()
                 QMetaObject.invokeMethod(graph, "showSelectedNodeSettingsPanel")
                 built["ms"] = mono_ms() - b0
-            t0, t1 = measure_paint(None, in_visible_panel, send, drain=False, watch_after_send=True)
+            detail = {}
+            t0, t1 = measure_paint(None, in_visible_panel, send, drain=False, watch_after_send=True, detail=detail)
             if len(settings_panels()) != panels_before + 1:
                 raise RuntimeError("opening %s's panel did not build exactly one panel" % st["pid"])
             entry = st["panels"][st["pid"]]
             entry["build"].append(built["ms"])
             entry["paint"].append(t1 - t0)
+            entry["first_paint"].append(detail["first_ms"])
+            entry["panel_settle"].append(detail.get("accepted_settle_ms", detail["first_ms"]))
             st["window"] = (t0, t1)
             yield None
 
@@ -1732,9 +1750,11 @@ try:
                     for t, v in st["all_knobs"].items())
             for pid in st["plugins"]:
                 rec = panels[pid]
-                report("PANEL %-20s paint median %s ms max %s ms, build median %s ms (%d opens)" % (
-                    pid, (rec["paint_ms"] or {}).get("median"), (rec["paint_ms"] or {}).get("max"),
-                    (rec["build_ms"] or {}).get("median"), rec["reps"]))
+                report("PANEL %-20s paint median %s ms max %s ms, build median %s ms, first paint median %s ms, "
+                       "panel-only settle median %s ms (%d opens)" % (
+                           pid, (rec["paint_ms"] or {}).get("median"), (rec["paint_ms"] or {}).get("max"),
+                           (rec["build_ms"] or {}).get("median"), (rec["first_paint_ms"] or {}).get("median"),
+                           (rec["panel_settle_ms"] or {}).get("median"), rec["reps"]))
                 for stage, v in sorted((rec.get("stages_ms") or {}).items(), key=lambda kv: -kv[1]["median"]):
                     report("PANEL %-20s   stage %-28s median %8.3f ms" % (pid, stage, v["median"]))
                 for t, v in sorted((rec.get("knob_types") or {}).items(), key=lambda kv: -kv[1]["total_median_ms"]):

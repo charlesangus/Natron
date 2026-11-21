@@ -76,9 +76,6 @@ public:
         eKnobWarningLoopDriverStale
     };
 
-    // Set on a warning indicator whose icon is not made yet: the logical icon size to make it at.
-    static constexpr const char* warningIconSizeProperty = "_natronWarningIconSize";
-
 public:
     // TODO: enable_shared_from_this
     // constructors should be privatized in any class that derives from std::enable_shared_from_this<>
@@ -170,11 +167,11 @@ public:
     void createGUI(QWidget* fieldContainer,
                    QWidget* labelContainer,
                    KnobClickableLabel* label,
-                   Label* warningIndicator,
+                   int warningIconSize,
                    QHBoxLayout* layout,
                    bool isOnNewLine,
                    int lastKnobSpacing,
-                   const std::vector<KnobIPtr> & knobsOnSameLine);
+                   const std::vector<KnobIPtr>& knobsOnSameLine);
 
     virtual bool shouldAddStretch() const { return true; }
 

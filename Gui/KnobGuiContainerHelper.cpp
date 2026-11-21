@@ -946,7 +946,7 @@ KnobGuiContainerHelper::buildKnobRow(const KnobGuiPtr& ret,
 
     /// Create the label if needed
     KnobClickableLabel* label = 0;
-    Label* warningLabel = 0;
+    int warningIconSize = 0;
     std::string descriptionLabel = ret->getDescriptionLabel();
     const std::string& labelIconFilePath = knob->getIconLabel();
     QWidget* labelContainer = 0;
@@ -963,12 +963,9 @@ KnobGuiContainerHelper::buildKnobRow(const KnobGuiPtr& ret,
 
         QWidget* labelParent = makeNewLine ? labelContainer : fieldContainer;
         label = new KnobClickableLabel(QString(), ret, labelParent);
-        warningLabel = new Label(labelParent);
-        warningLabel->setVisible(false);
         QFontMetrics fm(label->font(), 0);
         int pixSize = fm.height();
-        // Few rows ever show a warning, so the indicator gets its icon when it is first shown.
-        warningLabel->setProperty(KnobGui::warningIconSizeProperty, pixSize);
+        warningIconSize = pixSize;
 
         bool pixmapSet = false;
         if (!labelIconFilePath.empty()) {
@@ -1012,7 +1009,6 @@ KnobGuiContainerHelper::buildKnobRow(const KnobGuiPtr& ret,
         QObject::connect(label, SIGNAL(clicked(bool)), ret.get(), SIGNAL(labelClicked(bool)));
 
         if (makeNewLine) {
-            labelLayout->addWidget(warningLabel);
             labelLayout->addWidget(label);
         }
     } // hasLabel
@@ -1020,7 +1016,7 @@ KnobGuiContainerHelper::buildKnobRow(const KnobGuiPtr& ret,
     // Fill the fieldLayout with the widgets
     {
         NodeCreationStageLog::Scope widgetStage("panelKnobWidgets");
-        ret->createGUI(fieldContainer, labelContainer, label, warningLabel, fieldLayout, makeNewLine, lastKnobLineSpacing, knobsOnSameLine);
+        ret->createGUI(fieldContainer, labelContainer, label, warningIconSize, fieldLayout, makeNewLine, lastKnobLineSpacing, knobsOnSameLine);
     }
 
     ret->setEnabledSlot();
@@ -1146,7 +1142,7 @@ KnobGuiContainerHelper::findKnobGuiOrCreate(const KnobIPtr & knob,
         if ( (it->first.lock() == knob) && it->second ) {
             if (isPage) {
                 return it->second;
-            } else if ( isGroup && ( ( !isGroup->isTab() && it->second->hasWidgetBeenCreated() ) || isGroup->isTab() ) ) {
+            } else if (isGroup && ((!isGroup->isTab() && (it->second->hasWidgetBeenCreated() || it->second->isRowDeferred())) || isGroup->isTab())) {
                 return it->second;
             } else if (it->second->hasWidgetBeenCreated() || it->second->isRowDeferred()) {
                 return it->second;
@@ -1346,7 +1342,17 @@ KnobGuiContainerHelper::findKnobGuiOrCreate(const KnobIPtr & knob,
 
         // A row that starts and ends its own line is left unbuilt while hidden or on a page not yet shown, so
         // the panel pays only for the rows it shows. Its grid rows are kept so it needs no reordering later.
-        const bool deferRow = canDeferKnobRows() && !isGroup && makeNewLine && knob->isNewLineActivated() && knobsOnSameLine.empty() && !knob->isDynamicallyCreated() && (!page->shown || ret->isSecretRecursive());
+        // A group's header can wait like any row, unless a child tab needs its tab widget now.
+        bool deferrableKind = !isGroup;
+        if (isGroup && !isGroup->isTab()) {
+            deferrableKind = true;
+            const KnobsVec groupChildren = isGroup->getChildren();
+            for (std::size_t i = 0; deferrableKind && i < groupChildren.size(); ++i) {
+                KnobGroup* childGroup = dynamic_cast<KnobGroup*>(groupChildren[i].get());
+                deferrableKind = !(childGroup && childGroup->isTab()) && !dynamic_cast<KnobPage*>(groupChildren[i].get());
+            }
+        }
+        const bool deferRow = canDeferKnobRows() && deferrableKind && makeNewLine && knob->isNewLineActivated() && knobsOnSameLine.empty() && !knob->isDynamicallyCreated() && (!page->shown || ret->isSecretRecursive());
         if (deferRow) {
             const int firstRow = closestParentGroupTab ? layout->rowCount() : page->currentRow;
             layout->setRowMinimumHeight(firstRow, 0);

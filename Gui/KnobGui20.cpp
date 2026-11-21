@@ -31,6 +31,7 @@
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QAction>
+#include <QBoxLayout>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
@@ -628,7 +629,7 @@ KnobGui::setWarningValue(KnobWarningEnum warn,
 void
 KnobGui::refreshKnobWarningIndicatorVisibility()
 {
-    if (!_imp->warningIndicator) {
+    if (!_imp->warningIndicator && !_imp->warningIconSize) {
         return;
     }
     QString fullToolTip;
@@ -641,15 +642,28 @@ KnobGui::refreshKnobWarningIndicatorVisibility()
             fullToolTip += QString::fromUtf8("</p>");
         }
     }
-    if (hasWarning) {
-        const QVariant iconSize = _imp->warningIndicator->property(warningIconSizeProperty);
-        if (iconSize.isValid()) {
-            _imp->warningIndicator->setProperty(warningIconSizeProperty, QVariant());
-            ThemedIcon::setLabelIcon(_imp->warningIndicator, ThemedIcon::messageIcon(ThemedIcon::eMessageGlyphError, iconSize.toInt()), iconSize.toInt());
+    if (!hasWarning) {
+        if (_imp->warningIndicator) {
+            _imp->warningIndicator->setVisible(false);
         }
-        _imp->warningIndicator->setToolTip(fullToolTip);
+
+        return;
     }
-    _imp->warningIndicator->setVisible(hasWarning);
+    if (!_imp->warningIndicator) {
+        KnobClickableLabel* label = _imp->descriptionLabel;
+        QWidget* labelParent = label ? label->parentWidget() : 0;
+        QBoxLayout* labelLayout = labelParent ? qobject_cast<QBoxLayout*>(labelParent->layout()) : 0;
+        const int labelIndex = labelLayout ? labelLayout->indexOf(label) : -1;
+        if (labelIndex < 0) {
+            return;
+        }
+        const int iconSize = _imp->warningIconSize;
+        _imp->warningIndicator = new Label(labelParent);
+        ThemedIcon::setLabelIcon(_imp->warningIndicator, ThemedIcon::messageIcon(ThemedIcon::eMessageGlyphError, iconSize), iconSize);
+        labelLayout->insertWidget(labelIndex, _imp->warningIndicator);
+    }
+    _imp->warningIndicator->setToolTip(fullToolTip);
+    _imp->warningIndicator->setVisible(true);
 }
 
 void
@@ -678,7 +692,7 @@ KnobGui::onExprChanged(int dimension)
             }
         }
 
-        if (_imp->warningIndicator) {
+        if (_imp->warningIndicator || _imp->warningIconSize) {
             bool invalid = false;
             QString fullErrToolTip;
             int dims = knob->getDimension();

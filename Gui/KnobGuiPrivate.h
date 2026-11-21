@@ -115,7 +115,10 @@ struct KnobGuiPrivate
     QWidget* field;
     QWidget* labelContainer;
     KnobClickableLabel* descriptionLabel;
+    // Made on the first warning, as few rows ever show one; warningIconSize is 0 for a row
+    // that cannot have one.
     Label* warningIndicator;
+    int warningIconSize;
     std::map<KnobGui::KnobWarningEnum, QString> warningsMapping;
     bool isOnNewLine;
     CustomParamInteract* customInteract;

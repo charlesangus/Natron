@@ -88,14 +88,15 @@ using std::make_pair;
 //=============================GROUP_KNOB_GUI===================================
 
 KnobGuiGroup::KnobGuiGroup(KnobIPtr knob,
-                           KnobGuiContainerI *container)
+                           KnobGuiContainerI* container)
     : KnobGui(knob, container)
     , _checked(false)
     , _button(0)
     , _children()
     , _childrenToEnable()
     , _tabGroup(0)
-    , _knob( std::dynamic_pointer_cast<KnobGroup>(knob) )
+    , _childrenEnableApplied(false)
+    , _knob(std::dynamic_pointer_cast<KnobGroup>(knob))
 {
 }
 
@@ -294,7 +295,10 @@ KnobGuiGroup::setEnabled()
     if (_tabGroup) {
         _tabGroup->setEnabled(enabled);
     }
-    if (enabled) {
+    if (!_childrenEnableApplied) {
+        _childrenEnableApplied = true;
+        _childrenToEnable.clear();
+    } else if (enabled) {
         for (U32 i = 0; i < _childrenToEnable.size(); ++i) {
             for (U32 j = 0; j < _childrenToEnable[i].second.size(); ++j) {
                 KnobGuiPtr k = _childrenToEnable[i].first.lock();

@@ -23,6 +23,10 @@ hiding it again while it has the focus must leave the focus in the same panel wi
 Properties bin; and Shift+Tab from the first widget of a page built when first shown must stay in
 the panel. A second panel is opened after the first, so a misplaced widget would lead into it.
 
+A lazy-page case opens a panel and picks a one-dimensional numeric parameter on a page not shown
+yet whose row is not built: Python must read it and set a new value before the page is shown, and
+showing the page must build the row with that value in its field.
+
 A hide-unmodified case turns on the panel's hide-unmodified button, then shows a page that was not
 shown yet: the unmodified rows of that page (any type with a label) must stay hidden, as they would on
 a page built with the panel, and must show once the button is turned off again.
@@ -75,8 +79,8 @@ try:
     import shiboken6
     from PySide6.QtCore import QMetaObject, QObject, QPoint, QPointF, Qt, QTimer
     from PySide6.QtGui import QCursor, QGuiApplication
-    from PySide6.QtWidgets import (QAbstractButton, QApplication, QLabel, QMainWindow, QScrollArea, QTabWidget,
-                                   QWidget)
+    from PySide6.QtWidgets import (QAbstractButton, QApplication, QLabel, QLineEdit, QMainWindow, QScrollArea,
+                                   QTabWidget, QWidget)
 
     import guitest as gt
     from guitest import check, report, require
@@ -727,6 +731,97 @@ try:
         node.destroy()
         node = None
 
+    def unbuilt_numeric_param(node, tabs):
+        """(param, page label) of a one-dimensional Int or Double parameter with a label, sitting
+        directly on a page other than the current one, whose row has no label widget yet."""
+        params = node.getParams()
+        pages = {}
+        for p in params:
+            if isinstance(p, NatronEngine.PageParam):
+                pages[p.getScriptName()] = p.getLabel()
+        current = tabs.currentIndex()
+        for p in params:
+            if not isinstance(p, (NatronEngine.IntParam, NatronEngine.DoubleParam)) or p.getNumDimensions() != 1:
+                continue
+            parent = p.getParent()
+            page = pages.get(parent.getScriptName()) if parent is not None else None
+            if page is None or not p.getIsVisible() or not p.getLabel():
+                continue
+            i = tab_index(tabs, page)
+            if i in (-1, current):
+                continue
+            if not [w for w in tabs.widget(i).findChildren(QLabel)
+                    if gt.class_name(w) == LABEL_CLASS and label_text(w) == p.getLabel()]:
+                return p, page
+        return None, None
+
+    def lazy_page_steps():
+        tag = "lazy page"
+        gt.section(tag)
+        yield from quiet()
+        node = param = None
+        page = None
+        for pid in UNMODIFIED_PLUGINS:
+            node = app.createNode(pid)
+            if node is None:
+                report("NOTE %s: %s is not available: %s" % (tag, pid, gt.plugin_problem(pid)))
+                continue
+            node.setPosition(-300, -250)
+            ok = yield from open_panel(node)
+            panel = panel_of(node) if ok else None
+            tabs = panel_tabs(panel) if panel is not None else None
+            if tabs is not None:
+                param, page = unbuilt_numeric_param(node, tabs)
+            tabs = panel = None
+            if param is not None:
+                break
+            report("NOTE %s: %s has no unbuilt numeric row on a page not yet shown" % (tag, pid))
+            gt.close_all_panels()
+            node.destroy()
+            node = None
+        if not check(param is not None, "%s: one of %r has an unbuilt numeric row on a page not yet shown"
+                     % (tag, UNMODIFIED_PLUGINS)):
+            return
+        label = param.getLabel()
+        report("NOTE %s: %s page %r, parameter %r" % (tag, node.getPluginID(), page, label))
+
+        before = param.getValue()
+        target = param.getDisplayMaximum(0)
+        if target == before:
+            target = param.getDisplayMinimum(0)
+        param.setValue(target)
+        after = param.getValue()
+        check(after == target, "%s: Python sets %r on the unbuilt row's parameter (%r -> %r, read back %r)"
+              % (tag, label, before, target, after))
+        check(panel_of(node) is not None and not shown_labels(node, page, [label]),
+              "%s: setting the value leaves the row of %r unbuilt" % (tag, label))
+
+        panel = panel_of(node)
+        tabs = panel_tabs(panel) if panel is not None else None
+        if tabs is not None:
+            tabs.setCurrentIndex(tab_index(tabs, page))
+        tabs = panel = None
+        yield ("sleep", SETTLE_MS)
+        check(shown_labels(node, page, [label]) == [label], "%s: showing page %r builds and shows the row of %r"
+              % (tag, page, label))
+        panel = panel_of(node)
+        found = labels_named(panel, label) if panel is not None else []
+        _, _, takers = row_of_label(panel, ptr(found[0])) if found else (None, -1, [])
+        texts = [w.text() for w in takers if isinstance(w, QLineEdit)]
+        found = takers = panel = None
+        shown = None
+        for t in texts:
+            try:
+                shown = float(t)
+                break
+            except ValueError:
+                continue
+        check(shown is not None and abs(shown - after) <= 1e-2 * max(1.0, abs(after)),
+              "%s: the built row's field shows the value Python set (%r, fields %r)" % (tag, after, texts))
+        gt.close_all_panels()
+        node.destroy()
+        node = None
+
     def steps():
         gt.section("setup")
         require(xin.error is None, "XTEST input is available", xin.error or "")
@@ -805,6 +900,8 @@ try:
             check(not visible_panels(), "%s: no panel is left open (%d open)" % (tag, len(visible_panels())))
 
         yield from lazy_focus_steps()
+        gt.close_all_panels()
+        yield from lazy_page_steps()
         gt.close_all_panels()
         yield from hide_unmodified_steps()
 

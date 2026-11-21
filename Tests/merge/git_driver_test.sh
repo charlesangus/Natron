@@ -53,7 +53,7 @@ repo="$work/clean"
 git -C "$repo" merge -q --no-edit theirs || fail "the clean merge failed"
 diff_text=$("$natron_merge" diff "$work/clean-base.ntpz" "$repo/shot.ntpz" || true)
 grep -qF "~ KeyGrade (renamed from Grade1)" <<<"$diff_text" || fail "the merge lost mine's rename: $diff_text"
-grep -qF "multiply: 1 → 1.5" <<<"$diff_text" || fail "the merge lost mine's edit: $diff_text"
+grep -qF "multiply: default → 1.5" <<<"$diff_text" || fail "the merge lost mine's edit: $diff_text"
 grep -qF "size: (2, 2) → (4, 4)" <<<"$diff_text" || grep -qF "size: 2 → 4" <<<"$diff_text" || fail "the merge lost theirs' edit: $diff_text"
 members "$repo/shot.ntpz" | grep -E '(^|/)merge/conflicts\.yaml$' >/dev/null && fail "a clean merge recorded conflicts"
 git -C "$repo" log -1 --format=%s | grep -q "Merge branch 'theirs'" || fail "the clean merge made no merge commit"

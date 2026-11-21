@@ -19,7 +19,7 @@ Prints what changed from `before` to `after`, one section per node:
 
 ```
 ~ KeyGrade (renamed from Grade1)
-  multiply: 1 → 1.5
+  multiply: default → 1.5
   input Source: Read1 → Blur2
 + Blur2 (Blur)
   input Source: KeyGrade
@@ -27,7 +27,8 @@ Prints what changed from `before` to `after`, one section per node:
 ```
 
 `+` is a node that only `after` has, `-` one that only `before` has, and `~` one both have
-that changed; changes to the project's own settings come last, under `~ Project`. Nodes inside groups are shown by their dotted path (`Look.Blur1`). Only the
+that changed; changes to the project's own settings come last, under `~ Project`. A project file
+leaves out knobs at their defaults, so a knob one side leaves at its default shows as `default`. Nodes inside groups are shown by their dotted path (`Look.Blur1`). Only the
 graph is compared: the save date, the Natron version that saved the file and the viewer and
 timeline state are not. Re-saving an unchanged project therefore gives an empty diff.
 

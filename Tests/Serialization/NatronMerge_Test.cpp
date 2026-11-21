@@ -231,6 +231,11 @@ TEST(NatronMerge, EveryScenarioMergesAsThroughTheApi)
         writeBundle(base, dir.file("base.ntpz"));
         writeBundle(mine, dir.file("mine.ntpz"));
         writeBundle(theirs, dir.file("theirs.ntpz"));
+        // The API merges what the CLI reads: a bundle keeps no knob defaults, so a knob the merge
+        // leaves at its default stays in the CLI's result but drops out of a merge of the originals.
+        const Serialization::ProjectSerialization baseRead = readBundle(dir.file("base.ntpz"));
+        const Serialization::ProjectSerialization mineRead = readBundle(dir.file("mine.ntpz"));
+        const Serialization::ProjectSerialization theirsRead = readBundle(dir.file("theirs.ntpz"));
         for (const ExpectedMerge& merge : readExpected(expectedDir + scenario.first + ".yaml")) {
             SCOPED_TRACE(scenario.first + " [" + merge.templateKey + "]");
             const std::string out = dir.file("out-" + merge.templateKey + ".ntpz");
@@ -240,7 +245,7 @@ TEST(NatronMerge, EveryScenarioMergesAsThroughTheApi)
             const Serialization::ProjectSerialization merged = readBundle(out);
             EXPECT_TRUE(conflictsByBasePath(merged.mergeConflicts, base) == merge.conflicts);
 
-            const Serialization::MergeResult api = Serialization::threeWayMerge(base, mine, theirs, Serialization::planMerge(base, mine, theirs, merge.templateKey));
+            const Serialization::MergeResult api = Serialization::threeWayMerge(baseRead, mineRead, theirsRead, Serialization::planMerge(baseRead, mineRead, theirsRead, merge.templateKey));
             const std::string apiOut = dir.file("api-" + merge.templateKey + ".ntpz");
             writeBundle(api.merged, apiOut);
             EXPECT_EQ(graphText(merged), graphText(readBundle(apiOut)));
@@ -333,7 +338,7 @@ TEST(NatronMerge, DiffPrintsChangesPerNode)
     const RunResult run = runNatronMerge({ "diff", dir.file("before.ntpz"), dir.file("after.ntpz") });
     EXPECT_EQ(run.status, 1);
     EXPECT_NE(run.out.find("~ KeyGrade (renamed from Grade1)\n"), std::string::npos) << run.out;
-    EXPECT_NE(run.out.find("  multiply: 1 → 1.5\n"), std::string::npos) << run.out;
+    EXPECT_NE(run.out.find("  multiply: default → 1.5\n"), std::string::npos) << run.out;
     EXPECT_NE(run.out.find("+ Blur2 (Blur)\n"), std::string::npos) << run.out;
     EXPECT_NE(run.out.find("  input B: Blur1 → Blur2\n"), std::string::npos) << run.out;
 

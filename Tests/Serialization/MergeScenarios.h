@@ -661,7 +661,14 @@ valuesOf(const Natron::Serialization::NodeSerialization& node,
     const Natron::Serialization::KnobSerialization* knob = knobOf(node, name);
     if (knob) {
         for (const Natron::Serialization::KnobDimensionSerialization& dimension : knob->dimensions) {
-            values.push_back(dimension.value ? std::get<double>(*dimension.value) : 1.);
+            if (!dimension.value) {
+                values.push_back(1.);
+            } else if (const int* integer = std::get_if<int>(&*dimension.value)) {
+                // A bundle keeps no knob types, so a whole number reads back as an int.
+                values.push_back(*integer);
+            } else {
+                values.push_back(std::get<double>(*dimension.value));
+            }
         }
     }
 

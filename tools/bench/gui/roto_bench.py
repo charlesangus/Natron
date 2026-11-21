@@ -38,7 +38,7 @@ Configured by the environment:
     ROTO_BENCH_PEN_INTERVAL_MS  pause between pen moves, as a tablet's report rate (default 8)
     ROTO_BENCH_DRAG_EVENTS  mouse moves per drag or hover pass (default 20)
     ROTO_BENCH_ADD_SHAPE_TIMEOUT_S  how long add_shape waits for the new shape (default 10)
-    ROTO_BENCH_OVERLAY_SHAPES  shape counts for overlay_draw (default 1,30,100,500)
+    ROTO_BENCH_OVERLAY_SHAPES  shape counts for overlay_draw (default 1,30,100)
     ROTO_BENCH_OVERLAY_KEYS    keyframes per overlay_draw shape (default 1)
     ROTO_BENCH_OVERLAY_TRACKS  tracks for overlay_draw's Tracker (default 50)
     NATRON_OVERLAY_DRAW_LOG the overlay draw probe's log; overlay_draw needs it
@@ -108,7 +108,7 @@ STROKE_EVENTS = int(os.environ.get("ROTO_BENCH_STROKE_EVENTS", "60"))
 PEN_INTERVAL_MS = int(os.environ.get("ROTO_BENCH_PEN_INTERVAL_MS", "8"))
 DRAG_EVENTS = int(os.environ.get("ROTO_BENCH_DRAG_EVENTS", "20"))
 ADD_SHAPE_TIMEOUT_S = float(os.environ.get("ROTO_BENCH_ADD_SHAPE_TIMEOUT_S", "10"))
-OVERLAY_SHAPE_COUNTS = sorted(int(v) for v in env_list("ROTO_BENCH_OVERLAY_SHAPES", "1,30,100,500"))
+OVERLAY_SHAPE_COUNTS = sorted(int(v) for v in env_list("ROTO_BENCH_OVERLAY_SHAPES", "1,30,100"))
 OVERLAY_KEYS = int(os.environ.get("ROTO_BENCH_OVERLAY_KEYS", "1"))
 OVERLAY_TRACKS = int(os.environ.get("ROTO_BENCH_OVERLAY_TRACKS", "50"))
 
@@ -336,6 +336,26 @@ try:
         press(widget, pos, button, modifiers)
         release(widget, pos, button, modifiers)
 
+    def held_drag(gl, start, delta, into):
+        """A press, DRAG_EVENTS moves and a release, each repainted, one event per step."""
+        press(gl, start)
+        pos = start
+        try:
+            timed_repaint(gl, into)
+            yield None
+            for i in range(1, DRAG_EVENTS + 1):
+                pos = start + delta * (i / float(DRAG_EVENTS))
+                move(gl, pos, Qt.LeftButton)
+                timed_repaint(gl, into)
+                yield None
+        finally:
+            # run_op closes a rep cut by the op timeout mid-drag; the release still has to come,
+            # since the overlay edit's undo step stays open, and the Edit menu's Undo disabled,
+            # until it does.
+            release(gl, pos)
+        timed_repaint(gl, into)
+        yield None
+
     def send_key(widget, key, modifiers=Qt.NoModifier):
         QApplication.sendEvent(widget, QKeyEvent(QEvent.KeyPress, key, modifiers))
         QApplication.sendEvent(widget, QKeyEvent(QEvent.KeyRelease, key, modifiers))
@@ -531,8 +551,14 @@ try:
                 windows.append((t0, t1))
                 events_per_rep = count
                 if "after" in op:
-                    for cmd in steps_of(op["after"](st, rep)):
-                        yield cmd
+                    # A rep the timeout cut still restores what it moved, though its checks may fail.
+                    try:
+                        for cmd in steps_of(op["after"](st, rep)):
+                            yield cmd
+                    except Exception:
+                        if status == "ok":
+                            raise
+                        error = "after the cut rep: " + short_error()
                 if status != "ok":
                     break
         except Exception:
@@ -806,18 +832,7 @@ try:
             st["start"], st["delta"] = start, delta
 
         def events(st, rep):
-            gl = sc.gl
-            start, delta = st["start"], st["delta"]
-            press(gl, start)
-            timed_repaint(gl, st["overlay"])
-            yield None
-            for i in range(1, DRAG_EVENTS + 1):
-                move(gl, start + delta * (i / float(DRAG_EVENTS)), Qt.LeftButton)
-                timed_repaint(gl, st["overlay"])
-                yield None
-            release(gl, start + delta)
-            timed_repaint(gl, st["overlay"])
-            yield None
+            yield from held_drag(sc.gl, st["start"], st["delta"], st["overlay"])
 
         def after(st, rep):
             yield ("sleep", SETTLE_MS)
@@ -950,17 +965,9 @@ try:
             start, delta = st["start"], st["delta"]
             move(gl, start)
             d0 = mono_ms()
-            press(gl, start)
-            timed_repaint(gl, st["overlay"])
-            yield None
-            for i in range(1, DRAG_EVENTS + 1):
-                move(gl, start + delta * (i / float(DRAG_EVENTS)), Qt.LeftButton)
-                timed_repaint(gl, st["overlay"])
-                yield None
-            release(gl, start + delta)
-            timed_repaint(gl, st["overlay"])
+            st["drag_window"] = (d0, d0)
+            yield from held_drag(gl, start, delta, st["overlay"])
             st["drag_window"] = (d0, mono_ms())
-            yield None
 
         def after(st, rep):
             hover = overlay_draws(*st["hover_window"])
@@ -1003,6 +1010,13 @@ try:
             return sc.widget_of(top[0], top[1]), QPointF(40.0, 0)
 
         def restore(st):
+            def undo_enabled():
+                a = edit_action("undo")
+                return a is not None and a.isEnabled()
+            # The result of a nested "until" does not reach this generator, so the check is redone.
+            yield ("until", undo_enabled, 5.0)
+            if not undo_enabled():
+                raise RuntimeError("the overlay_draw drag left no undo step in the Edit menu")
             if same_snapshot(sc.snapshot(), st["original"]):
                 raise RuntimeError("the overlay_draw drag did not move the shape")
             for _ in range(DRAG_EVENTS + 3):
@@ -1172,8 +1186,8 @@ try:
         # Written before any wait, so a run that never gets going still leaves a record of having started.
         emit(host_record())
         report("NOTE roto bench started; results in %s" % OUT_PATH)
-        ok = yield ("until", lambda: main_window() is not None and viewer_gl() is not None, STARTUP_TIMEOUT_S)
-        gt.require(ok, "the main window and viewer are up")
+        ok = yield ("until", lambda: main_window() is not None, STARTUP_TIMEOUT_S)
+        gt.require(ok, "the main window is up")
         gt.close_all_panels()
         activate()
         if not STALL_LOG:
@@ -1185,6 +1199,9 @@ try:
             viewer = app.createNode("Viewer")
         gt.require(viewer is not None, "a Viewer node exists")
         _state["viewer"] = viewer
+        # A fresh project has no viewer: its widget exists only once the node does.
+        ok = yield ("until", lambda: viewer_gl() is not None, STARTUP_TIMEOUT_S)
+        gt.require(ok, "the viewer widget is up")
         if any(selected("stroke_%dpx" % b) for b in BRUSHES) or selected("pen_up"):
             for cmd in stroke_phase():
                 yield cmd

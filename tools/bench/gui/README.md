@@ -335,12 +335,18 @@ ops) and takes hours on the N100 host. For the M434 overlay gate use the overlay
 tools/bench/gui/run.sh --xvfb --preset overlay --appimage PATH
 ```
 
-It implies `--driver roto`, runs only `overlay_draw` (1, 30, 100 and 500 shapes, then the 50-track
+It implies `--driver roto`, runs only `overlay_draw` (1, 30 and 100 shapes, then the 50-track
 Tracker) in one Natron with the shapes grown in place from one count to the next, 3 reps per case
-(43 overlay passes a rep, so about 130 per case for the p95), 120 s per op and a 30 minute cap on the
-whole run. The estimate is 10 to 15 minutes on the N100 host (not yet measured); the cap is there so a run that never starts
-ends in 30 minutes, not 6 hours. `--reps` and `GUI_BENCH_TIMEOUT` still override it. Without `--reps`,
-`--driver roto` runs 5 reps per op.
+(43 overlay passes a rep, so about 130 per case for the p95), 300 s per op and a 30 minute cap on the
+whole run. Expect 10 to 15 minutes on the N100 host: the shape cases took about 7 minutes there
+(building the 100 shapes about 80 s, a rep at 100 shapes about 55 s), and the Tracker case is not yet
+measured. The cap is there so a run that never starts ends in 30 minutes, not 6 hours. `--reps` and
+`GUI_BENCH_TIMEOUT` still override it. Without `--reps`, `--driver roto` runs 5 reps per op.
+
+Larger counts are not in the preset, since building the shapes slows down with every shape added:
+going from 100 to 300 shapes took about 23 minutes on the N100 host. Ask for them explicitly, with room
+for the build and for reps several times slower than at 100 shapes, for example
+`--overlay-shapes 1,30,100,300` with `GUI_BENCH_TIMEOUT=5400 GUI_BENCH_OP_TIMEOUT_S=900`.
 
 The result is `<UTC>-<host>-<mode>-roto.jsonl`; its directory also holds `latency.jsonl`, the
 latency probe's log, and `overlay-draw.jsonl`, the overlay draw probe's. `run.sh` sets
@@ -379,7 +385,7 @@ Strokes are paced at `ROTO_BENCH_PEN_INTERVAL_MS` (default 8 ms, a 125 Hz tablet
 stroke the driver waits until the latency log stops growing, then deletes the stroke. Other
 knobs: `ROTO_BENCH_BRUSHES`, `ROTO_BENCH_FORMATS`, `ROTO_BENCH_UPSTREAM`, `ROTO_BENCH_SHAPES`,
 `ROTO_BENCH_POINTS`, `ROTO_BENCH_KEYS`, `ROTO_BENCH_STROKE_EVENTS`, `ROTO_BENCH_DRAG_EVENTS`,
-`ROTO_BENCH_OVERLAY_SHAPES` (default 1,30,100,500), `ROTO_BENCH_OVERLAY_KEYS` (default 1) and
+`ROTO_BENCH_OVERLAY_SHAPES` (default 1,30,100; `--overlay-shapes` sets it), `ROTO_BENCH_OVERLAY_KEYS` (default 1) and
 `ROTO_BENCH_OVERLAY_TRACKS` (default 50). `--ops overlay_draw` runs only the overlay passes.
 `--ops stroke` selects every stroke op.
 

@@ -503,7 +503,7 @@ TEST_F(RotoOverlayHomographyTest, StrokeIsDrawnAndBoundedThroughTheProjectedPoin
 
     // The bounds pad the stroke by its brush radius on every side.
     const double padding = stroke->getBrushSizeKnob()->getValueAtTime(_time) / 2. + 2.;
-    const RectD boxes[2] = { stroke->getBoundingBox(_time), evaluatedBox };
+    const RectD boxes[2] = { stroke->getBoundingBox(_time, false), evaluatedBox };
     for (int k = 0; k < 2; ++k) {
         const RectD& box = boxes[k];
         EXPECT_LE(box.x1, l) << "box " << k;

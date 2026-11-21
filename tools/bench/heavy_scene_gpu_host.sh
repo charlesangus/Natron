@@ -552,6 +552,8 @@ probe_gpu_after() {
         fi
     } >> "$log" 2>&1
     command -v glxinfo > /dev/null 2>&1 || return 0
+    # Both redirections only append to the log; nothing in the pipeline reads it.
+    # shellcheck disable=SC2094
     if ! timeout 10 glxinfo -B 2>> "$log" | tee -a "$log" | grep -q 'OpenGL renderer string: *[^ ]'; then
         GPU_WEDGED_AFTER="$1"
     fi

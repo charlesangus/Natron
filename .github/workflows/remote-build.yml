@@ -67,6 +67,11 @@ on:
         required: false
         type: string
         default: ''
+      remote_ccache:
+        description: 'Use the shared remote ccache storage (the CCACHE_REMOTE_STORAGE secret) beside the actions/cache ccache'
+        required: false
+        type: boolean
+        default: true
       gui_scripts:
         description: 'Space-separated Tests/gui/*.py scripts to run under Xvfb against the AppImage, one job each'
         required: false
@@ -122,6 +127,10 @@ jobs:
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: ${{ (inputs.preset || 'fast') == 'fast' && '2G' || '3G' }}
+      # An empty secret (fork PRs) or an empty value here leaves ccache local-only; push runs have no inputs.
+      CCACHE_REMOTE_STORAGE: ${{ (inputs.remote_ccache || github.event_name == 'push') && secrets.CCACHE_REMOTE_STORAGE || '' }}
+      # Compiler mtimes differ between hosts; hash content so keys match.
+      CCACHE_COMPILERCHECK: content
       # One compile per vCPU of the hosted runner; build.sh's default of 3 suits the dev machine.
       NATRON_BUILD_JOBS: 4
       # Debug links are large enough that several at once, beside the compiles, exhaust the runner's memory.

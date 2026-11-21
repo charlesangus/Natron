@@ -54,7 +54,7 @@ included, not only `release`. Set `NATRON_STAGE_NO_STRIP=1` to opt out.
 ## Usage
 
 ```
-tools/ci/remote/build.sh <fast|release|debug> [--tests] [--record-goldens] [--shuffle-seeds <n,n,...>] [--no-appimage] [--cmake-arg <arg>]... [--gui "<script> ..."]
+tools/ci/remote/build.sh <fast|release|debug> [--tests] [--record-goldens] [--shuffle-seeds <n,n,...>] [--no-appimage] [--no-remote-ccache] [--cmake-arg <arg>]... [--gui "<script> ..."]
 tools/ci/remote/build.sh <fast|release> --from-run <run-id> --gui "<script> ..."
 ```
 
@@ -122,6 +122,28 @@ with the run's failure status (or 1).
 
 A push to `main` also triggers the workflow as a `fast` build with no tests
 and no AppImage. It only keeps the ccache warm for branch runs.
+
+## Shared remote ccache
+
+The build job layers a shared ccache remote storage server on top of the
+`actions/cache` ccache restore. The repo secret `CCACHE_REMOTE_STORAGE` holds
+its URL, in the form
+`https://USER:PASS@cache.example.com|@layout=bazel`. The dev image's
+`ccache-storage-https` helper handles the HTTPS. It is on for pushes and for
+dispatches by default; ccache stats at the end of the build show a "Remote
+storage" block.
+
+To build without it, dispatch with `--no-remote-ccache`, or set the
+`remote_ccache` workflow input to false:
+
+```
+tools/ci/remote/build.sh fast --no-remote-ccache
+gh workflow run remote-build.yml --ref <branch> -f remote_ccache=false
+```
+
+Runs where the secret is empty, such as fork PRs, and runs where the server is
+down or slow, build with the local ccache only; the build never fails because
+of the cache.
 
 ## GUI checks in remote mode
 

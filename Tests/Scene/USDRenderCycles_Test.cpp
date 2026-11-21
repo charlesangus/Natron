@@ -44,8 +44,8 @@
 #include <limits>
 #include <list>
 #include <map>
-#include <mutex>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <string>
@@ -1632,7 +1632,6 @@ TEST_F(USDRenderCyclesTest, RenderEverythingMatchesTheRender)
     EXPECT_EQ(renderStage, viewer.stagePrims());
     EXPECT_EQ(rendered, viewer.pickedPrims());
 }
-
 
 /*
  * A Natron image on a card's material, through Cycles. Rendered off the main thread, where renders

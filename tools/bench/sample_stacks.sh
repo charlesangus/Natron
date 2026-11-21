@@ -88,10 +88,10 @@ while [ "$i" -lt "$count" ]; do
         eu-stack -p "$pid" -m -n 80 "${debuginfo[@]}" > "$sample_out" 2> "$sample_err"
         if [ "$discovery" = 1 ]; then
             next_discovery=$((start + discover_us))
-            for tid in $(awk -v re="$tid_frame" '/^TID /{ tid = $2; sub(":", "", tid) } /^#/ && tid != "" && $0 ~ re { print tid; tid = "" }' "$sample_out"); do
+            while read -r tid; do
                 [ "$tid" = "$pid" ] && continue
                 case " $found_tids " in *" $tid "*) ;; *) found_tids="$found_tids $tid" ;; esac
-            done
+            done < <(awk -v re="$tid_frame" '/^TID /{ tid = $2; sub(":", "", tid) } /^#/ && tid != "" && $0 ~ re { print tid; tid = "" }' "$sample_out")
         fi
     else
         : > "$sample_out"

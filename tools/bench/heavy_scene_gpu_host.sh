@@ -638,7 +638,7 @@ launch() {
     return 0
 }
 
-WARMUP_LABEL=warmup-city
+WARMUP_LABEL="warmup-city"
 # The warm-up is the city's open, the scene the first-frame budget is set on.
 warm_shader_cache() {
     if [ -n "${ONLY_LABELS:-}" ] && [ "$SHADER_CACHE_STATE" = warm ] && ! wanted "$WARMUP_LABEL"; then

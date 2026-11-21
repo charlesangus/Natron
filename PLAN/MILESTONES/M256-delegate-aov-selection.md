@@ -82,19 +82,19 @@ Sources: `spike/m255/REPORT-P1T1-aov-checklist.md`, `REPORT-P1T2-rendersettings-
 
 ## Phase 256.3: Cycles fork AOVs
 
-- [ ] M256.P3.T1 — `cycles:<pass>`, `aovNames`, drop elementId
+- [x] M256.P3.T1 — `cycles:<pass>`, `aovNames`, drop elementId
   - files: charlesangus/cycles `natron/deep-5.2` (`src/hydra/render_delegate.cpp` near :385 and :416-439; `src/hydra/session.cpp` near :21-28 and :149-178), `tools/ci/local/Dockerfile`
   - approach: apply patch steps 1, 2 and 6 from `spike/m255/REPORT-P1T1-aov-checklist.md`; a pass's format follows its channel count. Bump the pin, publish the image and recreate natron-dev.
   - verify: the P1.T1 probe gets non-null `cycles:diffuse_direct`, `cycles:ao` and `cycles:mist`; the stat lists the passes; no elementId warning appears.
   - size: M
 
-- [ ] M256.P3.T2 — Cycles pass kinds in Natron
+- [x] M256.P3.T2 — Cycles pass kinds in Natron
   - files: `Engine/Nodes/Scene/CyclesAovs.{h,cpp}`, `Engine/Nodes/Scene/AovLayers.cpp`, `Tests/Scene/USDRenderCycles_Test.cpp`
   - approach: a table of Cycles pass names to kind, used by P1.T2.
   - verify: gtest: diffuse_direct gives RGB, uv gives UVW, mist gives one channel; the light passes sum to beauty with denoising off.
   - size: M
 
-- [ ] M256.P3.T3 — Light groups and primvar AOVs in the Cycles fork
+- [x] M256.P3.T3 — Light groups and primvar AOVs in the Cycles fork
   - files: charlesangus/cycles (`src/hydra/light.cpp` near :370-398, `material.cpp` near :578-589, :742 and :766, `session.cpp` near :74-85), `tools/ci/local/Dockerfile`, `Tests/Scene/USDRenderCycles_Test.cpp`
   - approach: `cycles:lightgroup:<name>` from an attribute on lights, meshes and the background; `primvars:<name>` built like the instanceId AOV; materials re-sync when the requested set changes.
   - verify: gtest: two light groups sum to the direct lighting; `primvars:st` matches an authored ramp.
@@ -119,3 +119,9 @@ Sources: `spike/m255/REPORT-P1T1-aov-checklist.md`, `REPORT-P1T2-rendersettings-
 
   **PM calls, matching the reference DCC:** products live at /Render/Products/<settings prim name>, and vars share /Render/Products/Vars; a shared var's unset data type and layer are blocked so input values can't leak in. Gate running.
 - 2026-11-21 — Phase 256.2 gate green on 481fea51e. Phase 256.3 dispatched.
+- 2026-11-21 — Phase 256.3:
+  - **Fork:** charlesangus/cycles branch natron/m256-aovs at 172450ba4, off natron/deep-5.2. It adds 22 `cycles:<pass>` buffers, `cycles:lightgroup:<name>` (lights read `inputs:cycles:lightgroup`; geometry reads the `primvars:cycles:lightgroup` primvar) and `primvars:<name>` AOVs, publishes an `aovNames` stat, and drops elementId. The Dockerfile pin is bumped; M257's fork commits go on top of it.
+  - **Natron:** `CyclesAovs::passLayout` sets each pass's kind.
+  - **PM calls:** a 2-channel UV var takes Cycles' 3-channel buffer quietly; derived layer names map ':' to '_' (lightgroup_key); the light-group attribute names follow the reference tools' pattern.
+  - **Noted:** Cycles light groups are direct plus indirect.
+  - **Next:** the gate (with the new dev image), then the Xvfb four-layer check and screenshots.

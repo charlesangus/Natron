@@ -48,6 +48,15 @@ namespace {
         return KnobExtras(knob->parametricCurves, knob->stringAnimation, knob->choiceOptionID);
     }
 
+    bool
+    sameUserDefinition(const KnobSerialization& a,
+                       const KnobSerialization& b)
+    {
+        return (a.label == b.label) && (a.tooltip == b.tooltip) && (a.triggerNewLine == b.triggerNewLine) && (a.evaluatesOnChange == b.evaluatesOnChange)
+            && (a.animationEnabled == b.animationEnabled) && (a.isPersistent == b.isPersistent) && (a.extraData == b.extraData)
+            && (a.useHostOverlayHandle == b.useHostOverlayHandle);
+    }
+
     std::size_t
     dimensionCount(const KnobSerialization* a,
                    const KnobSerialization* b,
@@ -415,7 +424,7 @@ mergeKnobLists(const MergeHandlerRegistry& handlers,
         if (user && (!m || !t)) {
             // A user knob exists only where a side made it, so its absence is a delete.
             const KnobSerialization* kept = m ? m : t;
-            if (!kept || (b && sameKnobState(b, kept))) {
+            if (!kept || (b && sameKnobState(b, kept) && sameUserDefinition(*b, *kept))) {
                 continue;
             }
             if (b) {

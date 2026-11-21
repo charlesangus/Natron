@@ -48,18 +48,20 @@ typedef std::map<std::string, NodeRenames> ScopedNodeRenames;
 /**
  * @brief expression, written by a node inside group, with each reference to a renamed node
  * rewritten. A reference is a dotted chain of names, each followed by '.': it starts at a name of
- * group's children, at thisGroup (group itself) or at app or appN (the top level), and each next
- * name is a child of the node before it, as in Grade1.multiply or thisGroup.Group2.Blur1.size. A
- * variable that happens to share a node's name, an attribute after another '.' and text inside a
- * string literal are left alone.
+ * group's children, at thisGroup (group itself), at thisNode (self, the script name of the node
+ * the expression is on, before the renames) or at app or appN (the top level), and each next
+ * name is a child of the node before it, as in Grade1.multiply, thisGroup.Group2.Blur1.size or
+ * thisNode.Blur1.size. A variable that happens to share a node's name, an attribute after
+ * another '.' and text inside a string literal are left alone.
  **/
-std::string renameNodesInExpression(std::string_view expression, const ScopedNodeRenames& renames, const std::string& group);
+std::string renameNodesInExpression(std::string_view expression, const ScopedNodeRenames& renames, const std::string& group, const std::string& self);
 
 /**
- * @brief Rewrites the node references of the knobs of a node inside group: expressions, and the
+ * @brief Rewrites the node references of the knobs of self, a node inside group, named by its
+ * script name before the renames: expressions, and the
  * masters of links, which name the node by script name and by fully qualified name.
  **/
-void renameNodeReferences(std::list<KnobSerialization>* knobs, const ScopedNodeRenames& renames, const std::string& group);
+void renameNodeReferences(std::list<KnobSerialization>* knobs, const ScopedNodeRenames& renames, const std::string& group, const std::string& self);
 
 /**
  * @brief renameNodeReferences() on the knobs of node, a child of group, and of every node inside

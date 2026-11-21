@@ -249,6 +249,26 @@ TEST(StructuralMerge, AnInsertFedByANodeTheirsDeletedTakesItsReplacement)
     }
 }
 
+TEST(StructuralMerge, AnInsertWhoseReplacementSourceMovedToAnotherGroupConflicts)
+{
+    Scenario scenario = templateScenario();
+    insertBefore(&scenario.mine, "ArtistCC", "ColorCorrect", "m:ArtistCC", "Blur1", "Source");
+    scenario.theirs.remove("Grade1");
+    scenario.theirs.add("Ingest", "Group", "t:Ingest");
+    scenario.theirs.get("TplIn").parent = "Ingest";
+    const Serialization::MergeResult result = Projects(scenario).merge();
+    EXPECT_TRUE(nodeAt(result.merged, "Grade1") == nullptr);
+    EXPECT_TRUE(nodeAt(result.merged, "Ingest.TplIn") != nullptr);
+    Serialization::NodeSerializationPtr inserted = nodeAt(result.merged, "ArtistCC");
+    ASSERT_TRUE(inserted != nullptr);
+    EXPECT_EQ(inputOf(result.merged, "ArtistCC", "Source"), "");
+    bool reported = false;
+    for (const Serialization::MergeConflict& conflict : result.conflicts) {
+        reported = reported || ((conflict.kind == Serialization::MergeConflictKind::eInput) && (conflict.nodeId == inserted->id) && (conflict.input == "Source"));
+    }
+    EXPECT_TRUE(reported);
+}
+
 TEST(StructuralMerge, ARestoredNodeTakesTheirsStateAndWiring)
 {
     Scenario scenario = templateScenario();

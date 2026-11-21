@@ -379,7 +379,7 @@ namespace MergeDetail {
     {
         std::list<KnobSerialization> knobs = node.node->knobs;
         if (!renames.empty()) {
-            renameNodeReferences(&knobs, renames, groupPath(graph, node));
+            renameNodeReferences(&knobs, renames, groupPath(graph, node), node.node->scriptName);
         }
 
         return knobs;
@@ -520,7 +520,8 @@ namespace MergeDetail {
                 continue;
             }
             if (!context->mineRenames.empty()) {
-                renameNodeReferences(&node.node->knobs, context->mineRenames, groupPath(context->mine, *context->mine.find(entry.first)));
+                const MergeGraph::Node& mineNode = *context->mine.find(entry.first);
+                renameNodeReferences(&node.node->knobs, context->mineRenames, groupPath(context->mine, mineNode), mineNode.node->scriptName);
             }
             if (node.theirsId.empty()) {
                 continue;
@@ -626,9 +627,15 @@ threeWayMerge(const ProjectSerialization& base,
     }
     for (TemplateImportSerialization& entry : result.merged.templates) {
         if (entry.key == plan.templateKey) {
-            entry.path = options.templatePath;
-            entry.contentHash = options.templateContentHash;
-            entry.importedAt = options.templateImportedAt;
+            if (!options.templatePath.empty()) {
+                entry.path = options.templatePath;
+            }
+            if (!options.templateContentHash.empty()) {
+                entry.contentHash = options.templateContentHash;
+            }
+            if (!options.templateImportedAt.empty()) {
+                entry.importedAt = options.templateImportedAt;
+            }
             entry.base = newBase;
         }
     }
@@ -637,7 +644,8 @@ threeWayMerge(const ProjectSerialization& base,
 }
 
 std::vector<MergeConflict>
-conflictsToSave(const ProjectSerialization& mine,
+conflictsToSave(const ProjectSerialization& base,
+                const ProjectSerialization& mine,
                 const ProjectSerialization& theirs,
                 const MergePlan& plan,
                 const MergeResult& result)
@@ -646,6 +654,14 @@ conflictsToSave(const ProjectSerialization& mine,
     const auto placeOf = [](const MergeConflict& conflict) {
         return Place(conflict.kind, conflict.templateKey, conflict.nodeId, conflict.knob, conflict.dimension, conflict.item, conflict.input, conflict.time);
     };
+    const auto placesOf = [&](const std::vector<MergeConflict>& conflicts) {
+        std::set<Place> places;
+        for (const MergeConflict& conflict : conflicts) {
+            places.insert(placeOf(conflict));
+        }
+
+        return places;
+    };
     std::set<std::string> present;
     std::map<std::string, int> order;
     walkTree(result.merged.nodes.nodes, &order);
@@ -653,19 +669,25 @@ conflictsToSave(const ProjectSerialization& mine,
         present.insert(entry.first);
     }
 
-    std::set<Place> taken;
-    for (const MergeConflict& conflict : result.conflicts) {
-        taken.insert(placeOf(conflict));
-    }
+    std::set<Place> taken = placesOf(result.conflicts);
     std::vector<MergeConflict> saved;
+    // A template merge's base and theirs are template snapshots, which hold none of the shot's
+    // conflicts, so only mine's are carried.
+    const bool wholeProject = plan.templateKey.empty();
+    const std::set<Place> inBase = wholeProject ? placesOf(base.mergeConflicts) : std::set<Place>();
+    const std::set<Place> inMine = placesOf(mine.mergeConflicts);
+    const std::set<Place> inTheirs = wholeProject ? placesOf(theirs.mergeConflicts) : std::set<Place>();
     std::vector<const std::vector<MergeConflict>*> earlier(1, &mine.mergeConflicts);
-    if (plan.templateKey.empty()) {
+    if (wholeProject) {
         earlier.push_back(&theirs.mergeConflicts);
     }
     for (const std::vector<MergeConflict>* side : earlier) {
+        const std::set<Place>& other = (side == &mine.mergeConflicts) ? inTheirs : inMine;
         for (const MergeConflict& conflict : *side) {
+            const Place place = placeOf(conflict);
+            const bool removedByOther = wholeProject && inBase.count(place) > 0 && other.count(place) == 0;
             const bool open = conflict.nodeId.empty() ? conflict.baseNodeId.empty() : present.count(conflict.nodeId) > 0;
-            if (open && taken.insert(placeOf(conflict)).second) {
+            if (open && !removedByOther && taken.insert(place).second) {
                 saved.push_back(conflict);
             }
         }

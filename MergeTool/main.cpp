@@ -253,7 +253,7 @@ runMerge(const std::string& basePath,
         }
     }
     MergeResult result = threeWayMerge(base.project, mine.project, theirs.project, plan, options);
-    result.merged.mergeConflicts = conflictsToSave(mine.project, theirs.project, plan, result);
+    result.merged.mergeConflicts = conflictsToSave(base.project, mine.project, theirs.project, plan, result);
     save(result.merged, root.empty() ? mine.root : root, mine.manifest, outPath);
     for (const MergeConflict& conflict : result.conflicts) {
         std::cerr << "natron-merge: conflict: " << describeConflict(conflict, base.project, result.merged) << "\n";

@@ -99,7 +99,8 @@ namespace {
 std::string
 renameNodesInExpression(std::string_view expression,
                         const ScopedNodeRenames& renames,
-                        const std::string& group)
+                        const std::string& group,
+                        const std::string& self)
 {
     if (renames.empty()) {
         return std::string(expression);
@@ -145,6 +146,9 @@ renameNodesInExpression(std::string_view expression,
             } else {
                 if (first && (token == "thisGroup")) {
                     result += token;
+                } else if (first && (token == "thisNode")) {
+                    result += token;
+                    scope = childPath(group, self);
                 } else if (first && namesTopLevel(token)) {
                     result += token;
                     scope.clear();
@@ -170,7 +174,8 @@ renameNodesInExpression(std::string_view expression,
 void
 renameNodeReferences(std::list<KnobSerialization>* knobs,
                      const ScopedNodeRenames& renames,
-                     const std::string& group)
+                     const std::string& group,
+                     const std::string& self)
 {
     if (renames.empty()) {
         return;
@@ -178,7 +183,7 @@ renameNodeReferences(std::list<KnobSerialization>* knobs,
     for (KnobSerialization& knob : *knobs) {
         for (KnobDimensionSerialization& dim : knob.dimensions) {
             if (!dim.expression.empty()) {
-                dim.expression = renameNodesInExpression(dim.expression, renames, group);
+                dim.expression = renameNodesInExpression(dim.expression, renames, group, self);
             }
             if (dim.master) {
                 const std::string& full = dim.master->masterNodeNameFull;
@@ -198,7 +203,7 @@ renameNodeReferencesRecursive(NodeSerialization* node,
                               const ScopedNodeRenames& renames,
                               const std::string& group)
 {
-    renameNodeReferences(&node->knobs, renames, group);
+    renameNodeReferences(&node->knobs, renames, group, node->scriptName);
     const std::string inside = childPath(group, node->scriptName);
     for (const NodeSerializationPtr& child : node->children) {
         renameNodeReferencesRecursive(child.get(), renames, inside);

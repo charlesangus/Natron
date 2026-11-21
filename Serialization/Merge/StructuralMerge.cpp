@@ -599,7 +599,8 @@ namespace MergeDetail {
                         continue;
                     }
                     const std::string replacement = replacedSource(*context, source);
-                    if (!replacement.empty()) {
+                    // An input names a sibling, so assemble would drop a replacement in another group.
+                    if (!replacement.empty() && (context->out[replacement].parent == node.parent)) {
                         inputs[input.first] = replacement;
                     } else {
                         MergeConflict conflict;

@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <list>
 #include <optional>
 #include <ostream>
@@ -247,6 +248,45 @@ TEST(MergeKnobLists, AUserKnobMissingFromASideWasDeletedThere)
     }
 }
 
+TEST(MergeKnobLists, AUserKnobDefinitionEditAgainstADeleteConflicts)
+{
+    Serialization::KnobValueRangeSerialization range;
+    range.minimum = 0.;
+    range.maximum = 10.;
+    range.displayMinimum = 0.;
+    range.displayMaximum = 10.;
+    const std::list<Serialization::KnobSerialization> base = [&] {
+        std::list<Serialization::KnobSerialization> knobs = userKnobs(2.);
+        knobs.front().extraData = range;
+        return knobs;
+    }();
+    struct Case {
+        const char* name;
+        std::function<void(Serialization::KnobSerialization*)> edit;
+    };
+    const std::vector<Case> cases = {
+        { "range", [](Serialization::KnobSerialization* knob) { std::get<Serialization::KnobValueRangeSerialization>(knob->extraData).maximum = 100.; } },
+        { "label", [](Serialization::KnobSerialization* knob) { knob->label = "Softness"; } },
+    };
+    for (const Case& c : cases) {
+        SCOPED_TRACE(c.name);
+        std::list<Serialization::KnobSerialization> edited = base;
+        c.edit(&edited.front());
+        for (const Serialization::MergeSide deleted : { Serialization::MergeSide::eMine, Serialization::MergeSide::eTheirs }) {
+            const std::list<Serialization::KnobSerialization> none;
+            const bool mineDeletes = (deleted == Serialization::MergeSide::eMine);
+            std::vector<Serialization::MergeConflict> conflicts;
+            const std::list<Serialization::KnobSerialization> merged = Serialization::mergeKnobLists(Serialization::MergeHandlerRegistry::defaults(), "Blur", &base, mineDeletes ? none : edited, mineDeletes ? edited : none, &conflicts);
+            ASSERT_EQ(merged.size(), 1u);
+            EXPECT_TRUE(merged.front() == edited.front());
+            ASSERT_EQ(conflicts.size(), 1u);
+            EXPECT_EQ(conflicts.front().kind, Serialization::MergeConflictKind::eDeleteModify);
+            EXPECT_EQ(conflicts.front().knob, "size");
+            EXPECT_EQ(conflicts.front().side, deleted);
+        }
+    }
+}
+
 TEST(NodeReferences, OnlyReferencesToTheRenamedNodeOfTheirGroupChange)
 {
     Serialization::ScopedNodeRenames renames;
@@ -276,8 +316,35 @@ TEST(NodeReferences, OnlyReferencesToTheRenamedNodeOfTheirGroupChange)
     };
     for (const Case& c : cases) {
         SCOPED_TRACE(std::string(c.group) + ": " + c.before);
-        EXPECT_EQ(Serialization::renameNodesInExpression(c.before, renames, c.group), c.after);
+        EXPECT_EQ(Serialization::renameNodesInExpression(c.before, renames, c.group, std::string()), c.after);
     }
+}
+
+TEST(NodeReferences, ThisNodeNamesTheNodesOwnChildren)
+{
+    Serialization::ScopedNodeRenames renames;
+    renames["Look"]["Blur1"] = "Soft";
+    struct Case {
+        const char* group;
+        const char* self;
+        const char* before;
+        const char* after;
+    };
+    const std::vector<Case> cases = {
+        { "", "Look", "thisNode.Blur1.size.get()", "thisNode.Soft.size.get()" },
+        { "", "Other", "thisNode.Blur1.size.get()", "thisNode.Blur1.size.get()" },
+        { "Look", "Blur1", "thisNode.size.get()", "thisNode.size.get()" },
+        { "Look", "Grade1", "Blur1.size.get() + thisNode.white.get()", "Soft.size.get() + thisNode.white.get()" },
+    };
+    for (const Case& c : cases) {
+        SCOPED_TRACE(std::string(c.group) + "/" + c.self + ": " + c.before);
+        EXPECT_EQ(Serialization::renameNodesInExpression(c.before, renames, c.group, c.self), c.after);
+    }
+
+    std::list<Serialization::KnobSerialization> knobs(1, *doubleKnob({ 2. }));
+    knobs.front().dimensions[0].expression = "thisNode.Blur1.size.get()";
+    Serialization::renameNodeReferences(&knobs, renames, std::string(), "Look");
+    EXPECT_EQ(knobs.front().dimensions[0].expression, "thisNode.Soft.size.get()");
 }
 
 struct Projects {
@@ -424,6 +491,92 @@ TEST(ThreeWayMerge, NodesOutsideTheScopeKeepMine)
     EXPECT_TRUE(valuesOf(*second, "gamma").empty());
     EXPECT_EQ(valuesOf(*second, "multiply"), std::vector<double>({ 1.4 }));
     EXPECT_EQ(second->origin.templateKey, "grade_tpl_2");
+}
+
+TEST(ThreeWayMerge, ATemplateMergeOverwritesOnlyTheImportFieldsItWasGiven)
+{
+    Projects projects(scenarios().at("rename"));
+    Serialization::TemplateImportSerialization entry;
+    entry.key = "grade_tpl";
+    entry.path = "/templates/grade.ntp";
+    entry.contentHash = "abc123";
+    entry.importedAt = "2026-01-01T00:00:00Z";
+    projects.mine.templates.push_back(entry);
+    const auto importOf = [](const Serialization::MergeResult& result) {
+        for (const Serialization::TemplateImportSerialization& found : result.merged.templates) {
+            if (found.key == "grade_tpl") {
+                return found;
+            }
+        }
+
+        return Serialization::TemplateImportSerialization();
+    };
+
+    const Serialization::TemplateImportSerialization kept = importOf(projects.merge());
+    EXPECT_EQ(kept.key, "grade_tpl");
+    EXPECT_EQ(kept.path, "/templates/grade.ntp");
+    EXPECT_EQ(kept.contentHash, "abc123");
+    EXPECT_EQ(kept.importedAt, "2026-01-01T00:00:00Z");
+    EXPECT_TRUE(kept.base != nullptr);
+
+    Serialization::MergeOptions options;
+    options.templatePath = "/templates/grade_v2.ntp";
+    const Serialization::TemplateImportSerialization moved = importOf(projects.merge(options));
+    EXPECT_EQ(moved.path, "/templates/grade_v2.ntp");
+    EXPECT_EQ(moved.contentHash, "abc123");
+    EXPECT_EQ(moved.importedAt, "2026-01-01T00:00:00Z");
+}
+
+TEST(ConflictsToSave, ASavedConflictMergesThreeWay)
+{
+    const Scenario scenario = scenarios().at("rename");
+    const Serialization::ProjectSerialization project = scenario.mine.project();
+    Serialization::NodeSerializationPtr blur = nodeAt(project, "Blur1");
+    ASSERT_TRUE(blur != nullptr);
+    const auto conflictOn = [&](const std::string& knob) {
+        Serialization::MergeConflict conflict;
+        conflict.kind = Serialization::MergeConflictKind::eValue;
+        conflict.baseNodeId = blur->id;
+        conflict.nodeId = blur->id;
+        conflict.knob = knob;
+        conflict.dimension = 0;
+        return conflict;
+    };
+    const Serialization::MergeConflict resolved = conflictOn("size");
+    const Serialization::MergeConflict open = conflictOn("mix");
+    const Serialization::MergeConflict mineNew = conflictOn("gamma");
+    const Serialization::MergeConflict theirsNew = conflictOn("white");
+    Serialization::MergeConflict gone = conflictOn("multiply");
+    gone.nodeId = hexId("no such node");
+
+    Serialization::ProjectSerialization base = project;
+    Serialization::ProjectSerialization mine = project;
+    Serialization::ProjectSerialization theirs = project;
+    base.mergeConflicts = { resolved, open };
+    mine.mergeConflicts = { open, mineNew, gone };
+    theirs.mergeConflicts = { resolved, open, theirsNew };
+    const Serialization::MergePlan plan = Serialization::planProjectMerge(base, mine, theirs);
+    const Serialization::MergeResult result = Serialization::threeWayMerge(base, mine, theirs, plan);
+    ASSERT_TRUE(result.conflicts.empty());
+
+    const auto knobsOf = [](const std::vector<Serialization::MergeConflict>& conflicts) {
+        std::vector<std::string> knobs;
+        for (const Serialization::MergeConflict& conflict : conflicts) {
+            knobs.push_back(conflict.knob);
+        }
+        return knobs;
+    };
+    std::vector<Serialization::MergeConflict> saved = Serialization::conflictsToSave(base, mine, theirs, plan, result);
+    EXPECT_EQ(knobsOf(saved), std::vector<std::string>({ "mix", "gamma", "white" }));
+
+    // Theirs, unchanged since, still saves size; merging it again must not bring size back.
+    Serialization::ProjectSerialization merged = result.merged;
+    merged.mergeConflicts = saved;
+    const Serialization::MergePlan again = Serialization::planProjectMerge(theirs, merged, theirs);
+    const Serialization::MergeResult second = Serialization::threeWayMerge(theirs, merged, theirs, again);
+    ASSERT_TRUE(second.conflicts.empty());
+    saved = Serialization::conflictsToSave(theirs, merged, theirs, again, second);
+    EXPECT_EQ(knobsOf(saved), std::vector<std::string>({ "mix", "gamma", "white" }));
 }
 
 } // namespace

@@ -37,8 +37,8 @@ enum class MergeConflictKind {
     // Both sides changed one knob dimension differently; the merge kept mine.
     eValue,
     // Both sides connected one input differently; the merge kept mine. Also an input of a node
-    // only mine has whose source theirs deleted without one clear replacement; the merge left it
-    // unconnected.
+    // only mine has whose source theirs deleted without one clear replacement in the node's group;
+    // the merge left it unconnected.
     eInput,
     // Both sides inserted nodes on one base edge; the merge chained theirs, then mine.
     eStructuralInsert,

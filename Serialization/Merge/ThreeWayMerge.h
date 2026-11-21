@@ -69,7 +69,7 @@ struct MergeOptions {
     std::function<std::string()> newNodeId;
     // Where a template merge's theirs came from, recorded on the import with theirs as its new
     // base: the template file, the SHA-256 of its project.yaml, and when it was read (ISO 8601,
-    // UTC).
+    // UTC). An empty field leaves the import's as it was.
     std::string templatePath;
     std::string templateContentHash;
     std::string templateImportedAt;
@@ -111,9 +111,12 @@ MergeResult threeWayMerge(const ProjectSerialization& base,
  * that are still open, then, for a whole-project plan, those theirs saved, then result's own. An
  * earlier conflict is open while the node it names is in the merged snapshot (or it names no
  * node) and the merge raised no conflict of its kind at the same place; one both sides saved is
- * kept once.
+ * kept once. For a whole-project plan the saved lists merge three-way by kind, node, knob and
+ * place: a conflict base saved that either side no longer has was resolved there and stays
+ * resolved.
  **/
-std::vector<MergeConflict> conflictsToSave(const ProjectSerialization& mine,
+std::vector<MergeConflict> conflictsToSave(const ProjectSerialization& base,
+                                           const ProjectSerialization& mine,
                                            const ProjectSerialization& theirs,
                                            const MergePlan& plan,
                                            const MergeResult& result);

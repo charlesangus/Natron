@@ -58,6 +58,7 @@ public struct DeviceTable<T, let alignment : int>
 };
 
 public typealias Float4Table = DeviceTable<float4, 16>;
+public typealias Uint4Table = DeviceTable<uint4, 16>;
 public typealias Float2Table = DeviceTable<float2, 8>;
 public typealias FloatTable = DeviceTable<float, 4>;
 public typealias IntTable = DeviceTable<int, 4>;
@@ -119,6 +120,7 @@ public static const uint kMaterialProject3D = 2;
 public static const uint kMaterialDiffuseFromDisplayColor = 1;
 public static const uint kMaterialOpacityFromDisplayOpacity = 2;
 public static const uint kMaterialEmissiveFromDisplayColor = 4;
+public static const uint kMaterialOpacityPresence = 8;
 
 // The texture slots of a material, UtilityMaterialDesc::Slot.
 public static const uint kSlotDiffuseColor = 0;

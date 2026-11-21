@@ -1,4 +1,4 @@
-# USDMaterial
+# USDPreviewSurface
 
 Authors a UsdPreviewSurface material, as a scene source with no scene input. The
 material prim is at Prim Path, which follows the node's script name
@@ -19,6 +19,16 @@ Diffuse Color, Metallic, Roughness and Emissive Color set the shader's
 the project working space and are written unchanged: the node does no colour
 conversion, and values outside 0 to 1 are kept. Animated knobs are written as
 time samples.
+
+The other knobs set the shader input of the same name: Use Specular Workflow and
+Specular Color (`useSpecularWorkflow`, `specularColor`), Clearcoat and Clearcoat
+Roughness, Opacity, Opacity Mode, Opacity Threshold, IOR, Occlusion and
+Displacement, all at the UsdPreviewSurface defaults. Metallic 1 with Roughness 0
+is a mirror. Opacity below 1 in the Transparent mode is glass: it reflects by
+its IOR and, in a renderer that traces rays, refracts what is behind it; IOR 1
+lets it through unbent. In the Presence mode the missing opacity is a hole, with
+no refraction. Above 0, Opacity Threshold cuts the surface out wherever its
+opacity is below the threshold.
 
 Each input has a texture file knob. A texture that is set replaces the input's
 value with a `UsdUVTexture` shader named after the input (`diffuseColorTexture`,
@@ -53,7 +63,7 @@ alpha is 0, up to 8 pixels from pixels with an alpha, the colour is that of the
 nearest of them, so the texture's filtering blends no black into soft edges;
 farther out it is left as rendered. A surface with
 an opacity is drawn in Storm's translucent pass, which writes no depth or prim
-id. With Use Alpha off, no opacity is written and the surface is opaque.
+id. With Use Alpha off, the Opacity knob is the opacity.
 
 The material only names the images. The viewer and USDRender render them before
 they draw a frame, and USD reads them through Natron's `natron` asset resolver. An

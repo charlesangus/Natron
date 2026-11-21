@@ -55,8 +55,8 @@
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDEmissiveMaterial.h"
-#include "Engine/Nodes/Scene/USDMaterial.h"
 #include "Engine/Nodes/Scene/USDMerge.h"
+#include "Engine/Nodes/Scene/USDPreviewSurface.h"
 #include "Engine/Nodes/Scene/USDXformPrim.h"
 #include "Engine/Project.h"
 #include "Engine/ScenePayload.h"
@@ -92,7 +92,7 @@ warningOf(const NodePtr& node)
 }
 } // anonymous namespace
 
-class USDMaterialTest
+class USDPreviewSurfaceTest
     : public BaseTest {
 protected:
     virtual void TearDown() OVERRIDE
@@ -187,14 +187,14 @@ protected:
     }
 };
 
-TEST_F(USDMaterialTest, TheMaterialIsASourceAtItsOwnPath)
+TEST_F(USDPreviewSurfaceTest, TheMaterialIsASourceAtItsOwnPath)
 {
-    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    NodePtr material = node(PLUGINID_NATRON_USDPREVIEWSURFACE, "Material1");
     ASSERT_TRUE(bool(material));
-    EXPECT_EQ(kUSDMaterialInputCount, material->getNInputs());
+    EXPECT_EQ(kUSDPreviewSurfaceInputCount, material->getNInputs());
     EXPECT_EQ(std::string("/Material1"), dynamic_cast<KnobString*>(material->getKnobByName(kSceneParamPrimPath).get())->getValue());
-    KnobColor* diffuse = dynamic_cast<KnobColor*>(material->getKnobByName(kUSDMaterialParamDiffuseColor).get());
-    KnobDouble* roughness = dynamic_cast<KnobDouble*>(material->getKnobByName(kUSDMaterialParamRoughness).get());
+    KnobColor* diffuse = dynamic_cast<KnobColor*>(material->getKnobByName(kUSDPreviewSurfaceParamDiffuseColor).get());
+    KnobDouble* roughness = dynamic_cast<KnobDouble*>(material->getKnobByName(kUSDPreviewSurfaceParamRoughness).get());
     ASSERT_TRUE(diffuse && roughness);
     diffuse->setValue(0.8, ViewSpec::all(), 0);
     diffuse->setValue(0.1, ViewSpec::all(), 1);
@@ -229,9 +229,76 @@ TEST_F(USDMaterialTest, TheMaterialIsASourceAtItsOwnPath)
     EXPECT_FALSE(material->hasPersistentMessage());
 }
 
-TEST_F(USDMaterialTest, AGeometryBindsTheMaterialGraftedUnderIt)
+TEST_F(USDPreviewSurfaceTest, EveryOtherSurfaceInputHasAKnobAtTheSpecDefault)
 {
-    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    NodePtr material = node(PLUGINID_NATRON_USDPREVIEWSURFACE, "Material1");
+    ASSERT_TRUE(bool(material));
+
+    const struct {
+        const char* name;
+        const char* label;
+        float value;
+    } scalars[] = {
+        { kUSDPreviewSurfaceParamClearcoat, "Clearcoat", 0.f },
+        { kUSDPreviewSurfaceParamClearcoatRoughness, "Clearcoat Roughness", 0.01f },
+        { kUSDPreviewSurfaceParamOpacity, "Opacity", 1.f },
+        { kUSDPreviewSurfaceParamOpacityThreshold, "Opacity Threshold", 0.f },
+        { kUSDPreviewSurfaceParamIor, "IOR", 1.5f },
+        { kUSDPreviewSurfaceParamOcclusion, "Occlusion", 1.f },
+        { kUSDPreviewSurfaceParamDisplacement, "Displacement", 0.f },
+    };
+    PXR_NS::UsdStageRefPtr stage = compose(material);
+    ASSERT_TRUE(bool(stage));
+    PXR_NS::UsdShadeShader surface = PXR_NS::UsdShadeMaterial(stage->GetPrimAtPath(PXR_NS::SdfPath("/Material1"))).ComputeSurfaceSource();
+    ASSERT_TRUE(bool(surface));
+    for (const auto& scalar : scalars) {
+        KnobDouble* knob = dynamic_cast<KnobDouble*>(material->getKnobByName(scalar.name).get());
+        ASSERT_TRUE(knob != NULL) << scalar.name;
+        EXPECT_EQ(std::string(scalar.label), knob->getLabel());
+        float value = -1.f;
+        ASSERT_TRUE(surface.GetInput(PXR_NS::TfToken(scalar.name)).Get(&value)) << scalar.name;
+        EXPECT_FLOAT_EQ(scalar.value, value) << scalar.name;
+    }
+    PXR_NS::GfVec3f color;
+    ASSERT_TRUE(surface.GetInput(PXR_NS::TfToken("specularColor")).Get(&color));
+    EXPECT_EQ(PXR_NS::GfVec3f(0.f), color);
+    int workflow = -1;
+    ASSERT_TRUE(surface.GetInput(PXR_NS::TfToken("useSpecularWorkflow")).Get(&workflow));
+    EXPECT_EQ(0, workflow);
+    PXR_NS::TfToken mode;
+    ASSERT_TRUE(surface.GetInput(PXR_NS::TfToken("opacityMode")).Get(&mode));
+    EXPECT_EQ(PXR_NS::TfToken("transparent"), mode);
+
+    // Glass: half opacity, a lower ior, and the presence mode authored when picked.
+    KnobDouble* opacity = dynamic_cast<KnobDouble*>(material->getKnobByName(kUSDPreviewSurfaceParamOpacity).get());
+    KnobDouble* ior = dynamic_cast<KnobDouble*>(material->getKnobByName(kUSDPreviewSurfaceParamIor).get());
+    KnobChoice* opacityMode = dynamic_cast<KnobChoice*>(material->getKnobByName(kUSDPreviewSurfaceParamOpacityMode).get());
+    KnobBool* useSpecularWorkflow = dynamic_cast<KnobBool*>(material->getKnobByName(kUSDPreviewSurfaceParamUseSpecularWorkflow).get());
+    ASSERT_TRUE(opacity && ior && opacityMode && useSpecularWorkflow);
+    EXPECT_EQ(std::string("Opacity Mode"), opacityMode->getLabel());
+    EXPECT_EQ(std::string("Use Specular Workflow"), useSpecularWorkflow->getLabel());
+    opacity->setValue(0.5);
+    ior->setValue(1.33);
+    opacityMode->setValue(1);
+    useSpecularWorkflow->setValue(true);
+    stage = compose(material);
+    ASSERT_TRUE(bool(stage));
+    surface = PXR_NS::UsdShadeMaterial(stage->GetPrimAtPath(PXR_NS::SdfPath("/Material1"))).ComputeSurfaceSource();
+    ASSERT_TRUE(bool(surface));
+    float value = -1.f;
+    ASSERT_TRUE(surface.GetInput(PXR_NS::TfToken("opacity")).Get(&value));
+    EXPECT_FLOAT_EQ(0.5f, value);
+    ASSERT_TRUE(surface.GetInput(PXR_NS::TfToken("ior")).Get(&value));
+    EXPECT_FLOAT_EQ(1.33f, value);
+    ASSERT_TRUE(surface.GetInput(PXR_NS::TfToken("opacityMode")).Get(&mode));
+    EXPECT_EQ(PXR_NS::TfToken("presence"), mode);
+    ASSERT_TRUE(surface.GetInput(PXR_NS::TfToken("useSpecularWorkflow")).Get(&workflow));
+    EXPECT_EQ(1, workflow);
+}
+
+TEST_F(USDPreviewSurfaceTest, AGeometryBindsTheMaterialGraftedUnderIt)
+{
+    NodePtr material = node(PLUGINID_NATRON_USDPREVIEWSURFACE, "Material1");
     NodePtr card = node(kTestPluginIDSceneGeometry, "Card1", { material });
     ASSERT_TRUE(material && card);
 
@@ -255,9 +322,9 @@ TEST_F(USDMaterialTest, AGeometryBindsTheMaterialGraftedUnderIt)
     EXPECT_TRUE(boundMaterial(stage, "/Card1").IsEmpty());
 }
 
-TEST_F(USDMaterialTest, TheBindingFollowsTheGeometryUnderAnXformPrim)
+TEST_F(USDPreviewSurfaceTest, TheBindingFollowsTheGeometryUnderAnXformPrim)
 {
-    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    NodePtr material = node(PLUGINID_NATRON_USDPREVIEWSURFACE, "Material1");
     NodePtr card = node(kTestPluginIDSceneGeometry, "Card1", { material });
     NodePtr transform = node(PLUGINID_NATRON_USDXFORMPRIM, "Transform1", { card });
     ASSERT_TRUE(material && card && transform);
@@ -270,9 +337,9 @@ TEST_F(USDMaterialTest, TheBindingFollowsTheGeometryUnderAnXformPrim)
     EXPECT_FALSE(transform->hasPersistentMessage());
 }
 
-TEST_F(USDMaterialTest, OneMaterialFeedingTwoGeometriesGivesEachItsOwnCopy)
+TEST_F(USDPreviewSurfaceTest, OneMaterialFeedingTwoGeometriesGivesEachItsOwnCopy)
 {
-    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    NodePtr material = node(PLUGINID_NATRON_USDPREVIEWSURFACE, "Material1");
     NodePtr card = node(kTestPluginIDSceneGeometry, "Card1", { material });
     NodePtr sphere = node(kTestPluginIDSceneGeometry, "Sphere1", { material });
     NodePtr merge = node(PLUGINID_NATRON_USDMERGE, "Merge1", { card, sphere });
@@ -287,14 +354,14 @@ TEST_F(USDMaterialTest, OneMaterialFeedingTwoGeometriesGivesEachItsOwnCopy)
     EXPECT_EQ(PXR_NS::SdfPath("/Sphere1/Material1"), boundMaterial(stage, "/Sphere1"));
 }
 
-TEST_F(USDMaterialTest, AMissingTextureIsAuthoredWithAWarning)
+TEST_F(USDPreviewSurfaceTest, AMissingTextureIsAuthoredWithAWarning)
 {
-    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    NodePtr material = node(PLUGINID_NATRON_USDPREVIEWSURFACE, "Material1");
     ASSERT_TRUE(bool(material));
     QTemporaryDir dir;
     ASSERT_TRUE(dir.isValid());
     const std::string missing = dir.filePath(QString::fromUtf8("missing_albedo.exr")).toStdString();
-    setString(material, kUSDMaterialParamDiffuseTexture, missing);
+    setString(material, kUSDPreviewSurfaceParamDiffuseTexture, missing);
 
     PXR_NS::UsdStageRefPtr stage = compose(material);
     ASSERT_TRUE(bool(stage));
@@ -335,8 +402,8 @@ TEST_F(USDMaterialTest, AMissingTextureIsAuthoredWithAWarning)
         ASSERT_TRUE(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
         f.write("not read");
     }
-    setString(material, kUSDMaterialParamDiffuseTexture, std::string());
-    setString(material, kUSDMaterialParamRoughnessTexture, present);
+    setString(material, kUSDPreviewSurfaceParamDiffuseTexture, std::string());
+    setString(material, kUSDPreviewSurfaceParamRoughnessTexture, present);
     stage = compose(material);
     ASSERT_TRUE(bool(stage));
     const PXR_NS::UsdShadeShader rough = PXR_NS::UsdShadeMaterial(stage->GetPrimAtPath(PXR_NS::SdfPath("/Material1"))).ComputeSurfaceSource();
@@ -347,9 +414,9 @@ TEST_F(USDMaterialTest, AMissingTextureIsAuthoredWithAWarning)
     EXPECT_FALSE(material->hasPersistentMessage()) << warningOf(material);
 }
 
-TEST_F(USDMaterialTest, ThePathFollowsARename)
+TEST_F(USDPreviewSurfaceTest, ThePathFollowsARename)
 {
-    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    NodePtr material = node(PLUGINID_NATRON_USDPREVIEWSURFACE, "Material1");
     ASSERT_TRUE(bool(material));
     material->setScriptName("Chrome");
     EXPECT_EQ(std::string("/Chrome"), dynamic_cast<KnobString*>(material->getKnobByName(kSceneParamPrimPath).get())->getValue());
@@ -358,19 +425,19 @@ TEST_F(USDMaterialTest, ThePathFollowsARename)
     EXPECT_TRUE(bool(PXR_NS::UsdShadeMaterial(stage->GetPrimAtPath(PXR_NS::SdfPath("/Chrome")))));
 }
 
-TEST_F(USDMaterialTest, ADeletedSourceFailsAsAMissingTextureNamingIt)
+TEST_F(USDPreviewSurfaceTest, ADeletedSourceFailsAsAMissingTextureNamingIt)
 {
     NodePtr constant = node(PLUGINID_NATRON_CONSTANT, "Constant1");
-    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    NodePtr material = node(PLUGINID_NATRON_USDPREVIEWSURFACE, "Material1");
     ASSERT_TRUE(constant && material);
-    ASSERT_TRUE(material->connectInput(constant, kUSDMaterialInputDiffuseColor));
+    ASSERT_TRUE(material->connectInput(constant, kUSDPreviewSurfaceInputDiffuseColor));
     const std::string name = constant->getFullyQualifiedName();
     const std::string live = textureFileOf(material, "/Material1", "diffuseColor");
     ASSERT_FALSE(live.empty());
 
     constant->destroyNode(true, false);
     constant.reset();
-    ASSERT_FALSE(material->getInput(kUSDMaterialInputDiffuseColor));
+    ASSERT_FALSE(material->getInput(kUSDPreviewSurfaceInputDiffuseColor));
 
     const std::string uri = LiveTextureSource::makeUri(name, "rgba", 0);
     EXPECT_EQ(uri, textureFileOf(material, "/Material1", "diffuseColor"));
@@ -396,7 +463,7 @@ TEST_F(USDMaterialTest, ADeletedSourceFailsAsAMissingTextureNamingIt)
     EXPECT_NE(std::string::npos, warning.find(name)) << warning;
 }
 
-TEST_F(USDMaterialTest, AnEmissiveMaterialsDeletedSourceFailsTheSameWay)
+TEST_F(USDPreviewSurfaceTest, AnEmissiveMaterialsDeletedSourceFailsTheSameWay)
 {
     NodePtr constant = node(PLUGINID_NATRON_CONSTANT, "Constant1");
     NodePtr material = node(PLUGINID_NATRON_USDEMISSIVEMATERIAL, "Material1");
@@ -410,17 +477,17 @@ TEST_F(USDMaterialTest, AnEmissiveMaterialsDeletedSourceFailsTheSameWay)
     EXPECT_EQ(LiveTextureSource::makeUri(name, "rgba", 0), textureFileOf(material, "/Material1", "emissiveColor"));
 }
 
-TEST_F(USDMaterialTest, AnInputNeverConnectedOrDisconnectedHasNoTexture)
+TEST_F(USDPreviewSurfaceTest, AnInputNeverConnectedOrDisconnectedHasNoTexture)
 {
     NodePtr constant = node(PLUGINID_NATRON_CONSTANT, "Constant1");
-    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    NodePtr material = node(PLUGINID_NATRON_USDPREVIEWSURFACE, "Material1");
     ASSERT_TRUE(constant && material);
     EXPECT_TRUE(textureFileOf(material, "/Material1", "diffuseColor").empty());
 
-    ASSERT_TRUE(material->connectInput(constant, kUSDMaterialInputDiffuseColor));
+    ASSERT_TRUE(material->connectInput(constant, kUSDPreviewSurfaceInputDiffuseColor));
     EXPECT_FALSE(textureFileOf(material, "/Material1", "diffuseColor").empty());
 
-    ignore_result(material->disconnectInput(kUSDMaterialInputDiffuseColor));
+    ignore_result(material->disconnectInput(kUSDPreviewSurfaceInputDiffuseColor));
     EXPECT_TRUE(textureFileOf(material, "/Material1", "diffuseColor").empty());
     EXPECT_FALSE(material->hasPersistentMessage()) << warningOf(material);
 
@@ -430,14 +497,14 @@ TEST_F(USDMaterialTest, AnInputNeverConnectedOrDisconnectedHasNoTexture)
     EXPECT_TRUE(textureFileOf(material, "/Material1", "diffuseColor").empty());
 }
 
-TEST_F(USDMaterialTest, OnlyTheInputThatLostItsSourceHasAMissingTexture)
+TEST_F(USDPreviewSurfaceTest, OnlyTheInputThatLostItsSourceHasAMissingTexture)
 {
     NodePtr deleted = node(PLUGINID_NATRON_CONSTANT, "Constant1");
     NodePtr kept = node(PLUGINID_NATRON_CONSTANT, "Constant2");
-    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    NodePtr material = node(PLUGINID_NATRON_USDPREVIEWSURFACE, "Material1");
     ASSERT_TRUE(deleted && kept && material);
-    ASSERT_TRUE(material->connectInput(deleted, kUSDMaterialInputDiffuseColor));
-    ASSERT_TRUE(material->connectInput(kept, kUSDMaterialInputEmissiveColor));
+    ASSERT_TRUE(material->connectInput(deleted, kUSDPreviewSurfaceInputDiffuseColor));
+    ASSERT_TRUE(material->connectInput(kept, kUSDPreviewSurfaceInputEmissiveColor));
     const std::string keptTexture = textureFileOf(material, "/Material1", "emissiveColor");
     const std::string name = deleted->getFullyQualifiedName();
 
@@ -449,48 +516,48 @@ TEST_F(USDMaterialTest, OnlyTheInputThatLostItsSourceHasAMissingTexture)
     EXPECT_TRUE(textureFileOf(material, "/Material1", "roughness").empty());
 }
 
-TEST_F(USDMaterialTest, ConnectingAnInputThatLostItsSourceClearsTheMissingTexture)
+TEST_F(USDPreviewSurfaceTest, ConnectingAnInputThatLostItsSourceClearsTheMissingTexture)
 {
     NodePtr deleted = node(PLUGINID_NATRON_CONSTANT, "Constant1");
     NodePtr other = node(PLUGINID_NATRON_CONSTANT, "Constant2");
-    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    NodePtr material = node(PLUGINID_NATRON_USDPREVIEWSURFACE, "Material1");
     ASSERT_TRUE(deleted && other && material);
-    ASSERT_TRUE(material->connectInput(deleted, kUSDMaterialInputDiffuseColor));
+    ASSERT_TRUE(material->connectInput(deleted, kUSDPreviewSurfaceInputDiffuseColor));
     deleted->destroyNode(true, false);
     deleted.reset();
     ASSERT_FALSE(textureFileOf(material, "/Material1", "diffuseColor").empty());
 
-    ASSERT_TRUE(material->connectInput(other, kUSDMaterialInputDiffuseColor));
+    ASSERT_TRUE(material->connectInput(other, kUSDPreviewSurfaceInputDiffuseColor));
     const std::string prefix = std::string(kLiveTextureScheme) + "://" + other->getFullyQualifiedName() + "/rgba?v=";
     const std::string connected = textureFileOf(material, "/Material1", "diffuseColor");
     EXPECT_EQ(0u, connected.rfind(prefix, 0)) << connected;
 
-    ignore_result(material->disconnectInput(kUSDMaterialInputDiffuseColor));
+    ignore_result(material->disconnectInput(kUSDPreviewSurfaceInputDiffuseColor));
     EXPECT_TRUE(textureFileOf(material, "/Material1", "diffuseColor").empty());
 }
 
-TEST_F(USDMaterialTest, DeletingANodeWhoseInputTakesItsPlaceLosesNothing)
+TEST_F(USDPreviewSurfaceTest, DeletingANodeWhoseInputTakesItsPlaceLosesNothing)
 {
     NodePtr constant = node(PLUGINID_NATRON_CONSTANT, "Constant1");
     NodePtr dot = node(PLUGINID_NATRON_DOT, "Dot1", std::vector<NodePtr>(1, constant));
-    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    NodePtr material = node(PLUGINID_NATRON_USDPREVIEWSURFACE, "Material1");
     ASSERT_TRUE(constant && dot && material);
-    ASSERT_TRUE(material->connectInput(dot, kUSDMaterialInputDiffuseColor));
+    ASSERT_TRUE(material->connectInput(dot, kUSDPreviewSurfaceInputDiffuseColor));
 
     deleteKeepingUndo(dot, material, true);
 
-    ASSERT_EQ(constant, material->getInput(kUSDMaterialInputDiffuseColor));
+    ASSERT_EQ(constant, material->getInput(kUSDPreviewSurfaceInputDiffuseColor));
     const std::string prefix = std::string(kLiveTextureScheme) + "://" + constant->getFullyQualifiedName() + "/rgba?v=";
     const std::string texture = textureFileOf(material, "/Material1", "diffuseColor");
     EXPECT_EQ(0u, texture.rfind(prefix, 0)) << texture;
 }
 
-TEST_F(USDMaterialTest, UndoingTheDeletionRestoresTheTexture)
+TEST_F(USDPreviewSurfaceTest, UndoingTheDeletionRestoresTheTexture)
 {
     NodePtr constant = node(PLUGINID_NATRON_CONSTANT, "Constant1");
-    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    NodePtr material = node(PLUGINID_NATRON_USDPREVIEWSURFACE, "Material1");
     ASSERT_TRUE(constant && material);
-    ASSERT_TRUE(material->connectInput(constant, kUSDMaterialInputDiffuseColor));
+    ASSERT_TRUE(material->connectInput(constant, kUSDPreviewSurfaceInputDiffuseColor));
     const std::string live = textureFileOf(material, "/Material1", "diffuseColor");
     const std::string missing = LiveTextureSource::makeUri(constant->getFullyQualifiedName(), "rgba", 0);
 
@@ -498,7 +565,7 @@ TEST_F(USDMaterialTest, UndoingTheDeletionRestoresTheTexture)
     EXPECT_EQ(missing, textureFileOf(material, "/Material1", "diffuseColor"));
 
     constant->activate(NodesList(1, material), false, false);
-    EXPECT_EQ(constant, material->getInput(kUSDMaterialInputDiffuseColor));
+    EXPECT_EQ(constant, material->getInput(kUSDPreviewSurfaceInputDiffuseColor));
     EXPECT_EQ(live, textureFileOf(material, "/Material1", "diffuseColor"));
 
     deleteKeepingUndo(constant, material, false);
@@ -508,12 +575,12 @@ TEST_F(USDMaterialTest, UndoingTheDeletionRestoresTheTexture)
     EXPECT_EQ(live, textureFileOf(material, "/Material1", "diffuseColor"));
 }
 
-TEST_F(USDMaterialTest, ALostSourceIsStillMissingWhenTheProjectIsReopened)
+TEST_F(USDPreviewSurfaceTest, ALostSourceIsStillMissingWhenTheProjectIsReopened)
 {
     NodePtr constant = node(PLUGINID_NATRON_CONSTANT, "Constant1");
-    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    NodePtr material = node(PLUGINID_NATRON_USDPREVIEWSURFACE, "Material1");
     ASSERT_TRUE(constant && material);
-    ASSERT_TRUE(material->connectInput(constant, kUSDMaterialInputDiffuseColor));
+    ASSERT_TRUE(material->connectInput(constant, kUSDPreviewSurfaceInputDiffuseColor));
     const std::string name = constant->getFullyQualifiedName();
     const std::string materialName = material->getFullyQualifiedName();
     constant->destroyNode(true, false);
@@ -535,15 +602,15 @@ TEST_F(USDMaterialTest, ALostSourceIsStillMissingWhenTheProjectIsReopened)
     EXPECT_EQ(LiveTextureSource::makeUri(name, "rgba", 0), textureFileOf(loaded, "/Material1", "diffuseColor"));
 }
 
-TEST_F(USDMaterialTest, AConstantIntoDiffuseAuthorsOneLiveTexture)
+TEST_F(USDPreviewSurfaceTest, AConstantIntoDiffuseAuthorsOneLiveTexture)
 {
     NodePtr constant = node(PLUGINID_NATRON_CONSTANT, "Constant1");
-    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    NodePtr material = node(PLUGINID_NATRON_USDPREVIEWSURFACE, "Material1");
     ASSERT_TRUE(bool(constant));
     ASSERT_TRUE(bool(material));
     // The connected input wins over the file.
-    setString(material, kUSDMaterialParamDiffuseTexture, std::string("/nonexistent/albedo.exr"));
-    ASSERT_TRUE(material->connectInput(constant, kUSDMaterialInputDiffuseColor));
+    setString(material, kUSDPreviewSurfaceParamDiffuseTexture, std::string("/nonexistent/albedo.exr"));
+    ASSERT_TRUE(material->connectInput(constant, kUSDPreviewSurfaceInputDiffuseColor));
 
     PXR_NS::UsdStageRefPtr stage = compose(material);
     ASSERT_TRUE(bool(stage));
@@ -581,17 +648,17 @@ TEST_F(USDMaterialTest, AConstantIntoDiffuseAuthorsOneLiveTexture)
     EXPECT_EQ(path.GetAssetPath(), grafted[0].getUri(1.));
 }
 
-TEST_F(USDMaterialTest, AnAnimatedInputAuthorsOneLiveTexturePerFrame)
+TEST_F(USDPreviewSurfaceTest, AnAnimatedInputAuthorsOneLiveTexturePerFrame)
 {
     NodePtr constant = node(PLUGINID_NATRON_CONSTANT, "Constant1");
-    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    NodePtr material = node(PLUGINID_NATRON_USDPREVIEWSURFACE, "Material1");
     ASSERT_TRUE(bool(constant));
     ASSERT_TRUE(bool(material));
     KnobColor* color = dynamic_cast<KnobColor*>(constant->getKnobByName(kConstantParamColor).get());
     ASSERT_TRUE(color != NULL);
     color->setValueAtTime(1., 0., ViewSpec::all(), 0);
     color->setValueAtTime(10., 1., ViewSpec::all(), 0);
-    ASSERT_TRUE(material->connectInput(constant, kUSDMaterialInputRoughness));
+    ASSERT_TRUE(material->connectInput(constant, kUSDPreviewSurfaceInputRoughness));
 
     PXR_NS::UsdStageRefPtr stage = compose(material);
     ASSERT_TRUE(bool(stage));
@@ -618,7 +685,7 @@ TEST_F(USDMaterialTest, AnAnimatedInputAuthorsOneLiveTexturePerFrame)
 // A live texture's coordinates go through a UsdTransform2d from the st reader that maps 0 to 1 onto
 // the format inside the texture, which holds the overscan too: here a rectangle reaching half a
 // format past the format's left edge, in both material nodes.
-TEST_F(USDMaterialTest, ALiveTextureMapsTheFormatToZeroToOneInsideItsOverscan)
+TEST_F(USDPreviewSurfaceTest, ALiveTextureMapsTheFormatToZeroToOneInsideItsOverscan)
 {
     Format format;
     getApp()->getProject()->getProjectDefaultFormat(&format);
@@ -639,10 +706,10 @@ TEST_F(USDMaterialTest, ALiveTextureMapsTheFormatToZeroToOneInsideItsOverscan)
     const PXR_NS::GfVec2f expectedScale((float)(format.width() / width), 1.f);
     const PXR_NS::GfVec2f expectedTranslation((float)(half / width), 0.f);
 
-    NodePtr lit = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    NodePtr lit = node(PLUGINID_NATRON_USDPREVIEWSURFACE, "Material1");
     NodePtr emissive = node(PLUGINID_NATRON_USDEMISSIVEMATERIAL, "Emissive1", { constant });
     ASSERT_TRUE(lit && emissive);
-    ASSERT_TRUE(lit->connectInput(constant, kUSDMaterialInputDiffuseColor));
+    ASSERT_TRUE(lit->connectInput(constant, kUSDPreviewSurfaceInputDiffuseColor));
     const struct {
         NodePtr material;
         const char* path;
@@ -727,24 +794,24 @@ expectNoOpacity(const PXR_NS::UsdStageRefPtr& stage,
     EXPECT_FALSE(opacity && opacity.HasConnectedSource()) << materialPath;
 }
 
-TEST_F(USDMaterialTest, ALiveDiffuseImageDrivesTheOpacityWithItsAlpha)
+TEST_F(USDPreviewSurfaceTest, ALiveDiffuseImageDrivesTheOpacityWithItsAlpha)
 {
     NodePtr diffuse = node(PLUGINID_NATRON_CONSTANT, "Constant1");
     NodePtr emissive = node(PLUGINID_NATRON_CONSTANT, "Constant2");
-    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    NodePtr material = node(PLUGINID_NATRON_USDPREVIEWSURFACE, "Material1");
     ASSERT_TRUE(diffuse && emissive && material);
-    KnobBool* useAlpha = dynamic_cast<KnobBool*>(material->getKnobByName(kUSDMaterialParamUseAlpha).get());
+    KnobBool* useAlpha = dynamic_cast<KnobBool*>(material->getKnobByName(kUSDPreviewSurfaceParamUseAlpha).get());
     ASSERT_TRUE(useAlpha != NULL);
     EXPECT_TRUE(useAlpha->getValue()) << "Use Alpha is on by default";
     EXPECT_EQ(std::string("Use Alpha"), useAlpha->getLabel());
-    ASSERT_TRUE(material->connectInput(emissive, kUSDMaterialInputEmissiveColor));
+    ASSERT_TRUE(material->connectInput(emissive, kUSDPreviewSurfaceInputEmissiveColor));
 
     // With no diffuse image, the emissive image's alpha is the opacity.
     PXR_NS::UsdStageRefPtr stage = compose(material);
     ASSERT_TRUE(bool(stage));
     expectOpacityFromAlphaOf(stage, "/Material1", "emissiveColor");
 
-    ASSERT_TRUE(material->connectInput(diffuse, kUSDMaterialInputDiffuseColor));
+    ASSERT_TRUE(material->connectInput(diffuse, kUSDPreviewSurfaceInputDiffuseColor));
     stage = compose(material);
     ASSERT_TRUE(bool(stage));
     expectOpacityFromAlphaOf(stage, "/Material1", "diffuseColor");
@@ -756,7 +823,7 @@ TEST_F(USDMaterialTest, ALiveDiffuseImageDrivesTheOpacityWithItsAlpha)
     expectNoOpacity(stage, "/Material1");
 }
 
-TEST_F(USDMaterialTest, TheEmissiveMaterialsLiveImageDrivesTheOpacityWithItsAlpha)
+TEST_F(USDPreviewSurfaceTest, TheEmissiveMaterialsLiveImageDrivesTheOpacityWithItsAlpha)
 {
     NodePtr source = node(PLUGINID_NATRON_CONSTANT, "Constant1");
     NodePtr material = node(PLUGINID_NATRON_USDEMISSIVEMATERIAL, "Material1", { source });
@@ -775,14 +842,14 @@ TEST_F(USDMaterialTest, TheEmissiveMaterialsLiveImageDrivesTheOpacityWithItsAlph
     expectNoOpacity(stage, "/Material1");
 }
 
-TEST_F(USDMaterialTest, TheLitMaterialOffersNoShaderChoice)
+TEST_F(USDPreviewSurfaceTest, TheLitMaterialOffersNoShaderChoice)
 {
-    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    NodePtr material = node(PLUGINID_NATRON_USDPREVIEWSURFACE, "Material1");
     ASSERT_TRUE(bool(material));
     EXPECT_FALSE(bool(material->getKnobByName("shader")));
 }
 
-TEST_F(USDMaterialTest, TheEmissiveMaterialHasOneEmissiveImageInput)
+TEST_F(USDPreviewSurfaceTest, TheEmissiveMaterialHasOneEmissiveImageInput)
 {
     NodePtr material = node(PLUGINID_NATRON_USDEMISSIVEMATERIAL, "Material1");
     ASSERT_TRUE(bool(material));
@@ -794,7 +861,7 @@ TEST_F(USDMaterialTest, TheEmissiveMaterialHasOneEmissiveImageInput)
 
 // The emission alone: black diffuse, a black specular colour in the specular workflow, and the
 // input as an untinted live texture that consumers are told to render.
-TEST_F(USDMaterialTest, TheEmissiveMaterialShowsOnlyItsInput)
+TEST_F(USDPreviewSurfaceTest, TheEmissiveMaterialShowsOnlyItsInput)
 {
     NodePtr source = node(PLUGINID_NATRON_CONSTANT, "Constant1");
     NodePtr material = node(PLUGINID_NATRON_USDEMISSIVEMATERIAL, "Material1", { source });
@@ -834,7 +901,7 @@ TEST_F(USDMaterialTest, TheEmissiveMaterialShowsOnlyItsInput)
     EXPECT_EQ(source->getFullyQualifiedName(), sources[0].nodeName);
 }
 
-TEST_F(USDMaterialTest, TheEmissiveMaterialWithoutAnImageEmitsItsColor)
+TEST_F(USDPreviewSurfaceTest, TheEmissiveMaterialWithoutAnImageEmitsItsColor)
 {
     NodePtr material = node(PLUGINID_NATRON_USDEMISSIVEMATERIAL, "Material1");
     ASSERT_TRUE(bool(material));
@@ -856,13 +923,13 @@ TEST_F(USDMaterialTest, TheEmissiveMaterialWithoutAnImageEmitsItsColor)
     EXPECT_EQ(PXR_NS::GfVec3f(0.25f, 0.5f, 0.75f), value);
 }
 
-TEST_F(USDMaterialTest, AnUpstreamImageEditReauthorsOnlyTheMaterialLayer)
+TEST_F(USDPreviewSurfaceTest, AnUpstreamImageEditReauthorsOnlyTheMaterialLayer)
 {
     NodePtr constant = node(PLUGINID_NATRON_CONSTANT, "Constant1");
-    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    NodePtr material = node(PLUGINID_NATRON_USDPREVIEWSURFACE, "Material1");
     ASSERT_TRUE(bool(constant));
     ASSERT_TRUE(bool(material));
-    ASSERT_TRUE(material->connectInput(constant, kUSDMaterialInputEmissiveColor));
+    ASSERT_TRUE(material->connectInput(constant, kUSDPreviewSurfaceInputEmissiveColor));
     NodePtr op = node(kTestPluginIDSceneOp, "Op1", std::vector<NodePtr>(1, material));
     ASSERT_TRUE(bool(op));
     KnobInt* upstreamRead = dynamic_cast<KnobInt*>(op->getKnobByName("upstreamRead").get());

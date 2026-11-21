@@ -51,11 +51,15 @@ class GpuRecordContext;
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief Traces with Vulkan ray queries: one bottom-level structure per geometry under one top-level
- * structure of instances. Ids, distances and barycentrics are those EmbreeTracer reports.
+ * @brief Traces with Vulkan ray queries: one bottom-level structure per geometry under top-level structures of
+ * instances. Ids, distances and barycentrics are those EmbreeTracer reports.
+ *
+ * One top-level structure takes at most 2^24 instances, and fewer where the device's instance count or
+ * allocation size is lower. A scene past that is ordered along a space-filling curve through the instances'
+ * centres and split into consecutive runs of that many, one structure each, which every ray searches in turn.
  *
  * Geometry is built once per topology and refit in place when only its points move. The top-level
- * structure is rebuilt whole whenever the instances or the geometry under them change; stats() still
+ * structures are rebuilt whole whenever the instances or the geometry under them change; stats() still
  * counts a rebuild that only follows moves or refits as an instanceSceneUpdate, as EmbreeTracer does.
  *
  * The geometry's builds, refits and compaction run on a thread of its own, since one structure's build cannot
@@ -118,6 +122,12 @@ public:
                                           const gpu::GpuBuffer& casterMasks,
                                           std::uint32_t maskStride,
                                           std::uint32_t maskOffset) const;
+
+    // Lowers the instances one top-level structure takes, so that tests split small scenes. Never raises it.
+    void limitInstancesPerStructure(std::size_t count);
+
+    // The top-level structures the last update split the scene's instances over.
+    std::size_t instanceStructureCount() const;
 
     // The kernels the record functions dispatch; empty when the tracer cannot run.
     std::vector<std::shared_ptr<gpu::GpuKernel>> kernels() const;

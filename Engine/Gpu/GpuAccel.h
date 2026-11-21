@@ -180,6 +180,11 @@ public:
 
     static GpuStatus querySizes(GpuDevice& dev, uint32_t instanceCount, GpuAccelSizes& out);
 
+    // The most instances one structure takes on `dev`: its maxInstanceCount, the 2^24 custom indices a ray query
+    // tells apart, and as many as keep the instance buffer, the structure and its build scratch each within one
+    // allocation. Zero when the device cannot build structures.
+    static uint32_t maxInstancesPerStructure(GpuDevice& dev);
+
     // Writes the instances into a host-visible buffer the context holds, allocates the structure from `pool` and
     // records its build. A structure `out` already held is handed to the context. `out` is left empty on failure.
     static GpuStatus build(GpuRecordContext& ctx, GpuBufferPool& pool, std::span<const GpuAccelInstance> instances,

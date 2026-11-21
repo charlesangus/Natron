@@ -337,6 +337,40 @@ TEST(NatronUtilityMaterial, PreviewSurfaceConstantsLandInTheRecord)
     EXPECT_EQ(kKernelMaterialDiffuseFromDisplayColor | kKernelMaterialOpacityFromDisplayOpacity, buffers.materials[0].kind[2]);
 }
 
+TEST(NatronUtilityMaterial, PresenceOpacityIsFlaggedAndTransparentIsNot)
+{
+    HdMaterialNetwork2 network = networkOf(TfToken("UsdPreviewSurface"));
+
+    set(network, kSurface, "opacity", VtValue(0.5f));
+    EXPECT_FALSE(utilityMaterialFromNetwork(network).opacityPresence) << "transparent is the default mode";
+    set(network, kSurface, "opacityMode", VtValue(TfToken("transparent")));
+    EXPECT_FALSE(utilityMaterialFromNetwork(network).opacityPresence);
+    set(network, kSurface, "opacityMode", VtValue(TfToken("presence")));
+
+    const UtilityMaterialDesc desc = utilityMaterialFromNetwork(network);
+
+    ASSERT_EQ(UtilityMaterialDesc::eKindPreviewSurface, desc.kind) << desc.unsupportedReason;
+    EXPECT_TRUE(desc.opacityPresence);
+
+    UtilityScene scene;
+    const UtilityScene::GeometryId id = scene.addGeometry(SdfPath("/Mesh"), 1);
+
+    scene.setTopology(id, VtVec3fArray { GfVec3f(0.f), GfVec3f(1.f, 0.f, 0.f), GfVec3f(0.f, 1.f, 0.f) }, VtVec3iArray { GfVec3i(0, 1, 2) });
+    scene.setInstances(id, { GfMatrix4d(1.) });
+    scene.setMaterial(SdfPath("/Material"), std::make_shared<const UtilityMaterialDesc>(desc));
+    scene.setMaterialId(id, SdfPath("/Material"));
+
+    WavefrontShadeTables tables;
+
+    tables.update(scene.snapshot());
+
+    const KernelShadeBuffers buffers = tables.buffers();
+
+    ASSERT_EQ(2u, buffers.materialCount);
+    EXPECT_EQ(kKernelMaterialOpacityPresence, buffers.materials[1].kind[2]);
+    EXPECT_EQ(0u, buffers.materials[0].kind[2] & kKernelMaterialOpacityPresence);
+}
+
 TEST(NatronUtilityMaterial, ATextureDrivenDiffuseGetsASlot)
 {
     const UtilityMaterialDesc desc = utilityMaterialFromNetwork(texturedDiffuse("/textures/wood.png"));

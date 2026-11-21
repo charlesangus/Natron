@@ -736,6 +736,41 @@ TEST_P(NatronUtilityReflect, AGlassSlabShiftsWhatIsBehindItSideways)
     }
 }
 
+TEST_P(NatronUtilityReflect, APresenceSlabIsAHoleThatBendsNothing)
+{
+    if (!available()) {
+        return;
+    }
+
+    const GfVec3d n = toward(45.);
+    UtilityScene scene;
+    UtilityMaterialDesc hole = glass();
+
+    hole.opacityPresence = true;
+
+    const std::string material = materialNamed(scene, "Hole", hole);
+
+    addPlane(scene, "Front", GfVec3d(0.), n, 100., material);
+    addPlane(scene, "Back", -2. * n, -n, 100., material);
+    addQuad(scene, "Light", GfVec3d(0., 30., -40.), GfVec3d(60., 0., 0.), GfVec3d(0., 30., 0.), materialNamed(scene, "White", emitter(GfVec3f(1.f))));
+
+    WavefrontFrame frame = makeFrame(8);
+
+    frame.reflectionDepth = 0;
+
+    const std::vector<GfVec4f> colors = render(scene, frame);
+
+    ASSERT_EQ(static_cast<std::size_t>(kSize * kSize), colors.size());
+    for (int y = 0; y < kSize; ++y) {
+        const double lit = std::clamp(y - kHalfSize + 1., 0., 1.);
+
+        for (int x = 0; x < kSize; x += 5) {
+            EXPECT_NEAR(lit, colors[y * kSize + x][0], lit == 0. || lit == 1. ? kTolerance : 1. / 8. + kTolerance)
+                << "pixel " << x << ", " << y;
+        }
+    }
+}
+
 TEST_P(NatronUtilityReflect, LeavingGlassPastTheCriticalAngleReflectsEverything)
 {
     if (!available()) {

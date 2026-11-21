@@ -258,6 +258,23 @@ protected:
 #endif
     }
 
+#ifdef NATRON_HAVE_GPU
+    // Null off the GPU backend or when it is unavailable.
+    std::shared_ptr<GpuTracer> makeSplitTracer(std::size_t instancesPerStructure)
+    {
+        if (!_available || GetParam() != Backend::Gpu) {
+            return nullptr;
+        }
+
+        const std::shared_ptr<GpuTracer> tracer = std::make_shared<GpuTracer>(*_registry, *_pool);
+
+        tracer->limitInstancesPerStructure(instancesPerStructure);
+        _gpuTracers.push_back(tracer);
+
+        return tracer;
+    }
+#endif
+
 private:
     bool _available = false;
 #ifdef NATRON_HAVE_GPU
@@ -875,5 +892,80 @@ TEST_P(NatronUtilityTracer, AgreesWithEmbree)
         }
     }
 }
+
+#ifdef NATRON_HAVE_GPU
+// Split over one structure per instance, a scene still reports each hit's own instance, the nearest of those
+// stacked along a ray, and the casters a filter names.
+TEST_P(NatronUtilityTracer, InstancesSplitOverStructuresTraceAsOne)
+{
+    UtilityScene scene;
+    const UtilityScene::GeometryId id = addQuad(scene, "/quad");
+
+    scene.setInstances(id, { translation(10., 0., 1.), translation(20., 0., 2.), translation(20., 0., 0.), translation(30., 0., 0.5) });
+
+    const std::shared_ptr<GpuTracer> tracer = makeSplitTracer(1);
+
+    if (!tracer) {
+        return;
+    }
+
+    ASSERT_TRUE(tracer->update(scene.snapshot(), 2));
+    EXPECT_EQ(4u, tracer->instanceStructureCount());
+    EXPECT_EQ(Tracer::kNoHit, shootAt(*tracer, 0.75f, 0.25f).instance[0]);
+
+    const Hits first = shootAt(*tracer, 10.75f, 0.25f);
+
+    EXPECT_EQ(0u, first.instance[0]);
+    EXPECT_EQ(0u, first.geometry[0]);
+    EXPECT_FLOAT_EQ(4.f, first.t[0]);
+    EXPECT_NEAR(0.5f, first.u[0], kBarycentricTolerance);
+
+    const Hits nearest = shootAt(*tracer, 20.75f, 0.25f);
+
+    EXPECT_EQ(1u, nearest.instance[0]);
+    EXPECT_FLOAT_EQ(3.f, nearest.t[0]);
+    EXPECT_EQ(3u, shootAt(*tracer, 30.75f, 0.25f).instance[0]);
+
+    Rays rays;
+
+    rays.add(10.75f, 0.25f);
+    rays.add(0.75f, 0.25f);
+    rays.add(20.75f, 0.25f, 0.f, 2.5f);
+    rays.add(20.75f, 0.25f, 0.f, 3.5f);
+
+    std::vector<std::uint8_t> blocked(4, 7);
+
+    tracer->occluded(rays.batch(), blocked.data());
+    EXPECT_EQ(1, blocked[0]);
+    EXPECT_EQ(0, blocked[1]);
+    EXPECT_EQ(0, blocked[2]);
+    EXPECT_EQ(1, blocked[3]);
+
+    // Only the instance at z = 0 casts, so the full ray at x = 20 is blocked past the one at z = 2.
+    const std::vector<std::uint32_t> rayLights(4, 0u);
+    const std::vector<std::uint32_t> casterMasks = { 0u, 0u, 1u, 0u };
+    OcclusionFilter filter;
+
+    filter.rayLights = rayLights.data();
+    filter.casterMasks = casterMasks.data();
+    filter.stride = 1;
+    filter.casterCount = casterMasks.size();
+
+    Rays filtered;
+
+    filtered.add(10.75f, 0.25f);
+    filtered.add(20.75f, 0.25f);
+    filtered.add(20.75f, 0.25f, 0.f, 3.5f);
+    filtered.add(30.75f, 0.25f);
+
+    std::vector<std::uint8_t> filteredBlocked(4, 7);
+
+    tracer->occluded(filtered.batch(), filteredBlocked.data(), &filter);
+    EXPECT_EQ(0, filteredBlocked[0]);
+    EXPECT_EQ(1, filteredBlocked[1]);
+    EXPECT_EQ(0, filteredBlocked[2]);
+    EXPECT_EQ(0, filteredBlocked[3]);
+}
+#endif
 
 INSTANTIATE_TEST_CASE_P(Backends, NatronUtilityTracer, ::testing::Values(Backend::Embree, Backend::Gpu));

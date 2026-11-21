@@ -26,6 +26,8 @@ struct GpuStatus {
     // Set on an out-of-memory from the buffer pool when the request fits its budget but the buffers held by their
     // owners fill it: the device itself did not refuse, and the room comes back as the owners release them.
     bool budgetContention = false;
+    // Set when a GpuRecordContext stopped recording because its abort check fired; result is VK_INCOMPLETE.
+    bool aborted = false;
 
     bool ok() const { return result == VK_SUCCESS; }
     explicit operator bool() const { return ok(); }
@@ -35,6 +37,8 @@ enum class QueueKind {
     Compute,
     Upload,
     Download,
+    // Only on a device with GpuDeviceInfo::graphicsQueue.
+    Graphics,
 };
 
 using GpuDebugMessageFn = std::function<void(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
@@ -113,6 +117,12 @@ struct GpuDeviceInfo {
     uint32_t downloadQueueIndex = 0;
     // True when uploads and downloads submit to the very VkQueue compute does, so they cannot overlap it.
     bool transferSharesComputeQueue = false;
+    // A family with graphics and compute, which raster record contexts submit to. When it is computeFamily the
+    // graphics queue is the compute queue itself; otherwise it is the first queue of graphicsFamily.
+    bool graphicsQueue = false;
+    uint32_t graphicsFamily = 0;
+    uint32_t graphicsQueueIndex = 0;
+    bool graphicsSharesComputeQueue = false;
 
     bool validationEnabled = false;
     bool debugMessenger = false;
@@ -125,6 +135,18 @@ struct GpuDeviceInfo {
     // Acceleration structures, ray queries and buffer device address are all present and enabled; see
     // GpuDevice::supportsRayQuery().
     bool rayQuery = false;
+    // Vulkan 1.3 dynamic rendering, enabled whenever the device offers it.
+    bool dynamicRendering = false;
+    // Storage writes and atomics from the vertex and fragment stages, enabled whenever the device offers them.
+    bool vertexPipelineStores = false;
+    bool fragmentStores = false;
+    // graphicsQueue, dynamicRendering, vertexPipelineStores and fragmentStores, plus colour-attachment blending of
+    // R32G32B32A32_SFLOAT and R32_SFLOAT. The stores are required because a raster's storage buffers are bound
+    // to both stages and may be written from either. Raster users take their CPU path when it is false.
+    bool rasterFloatBlend = false;
+    // Without it an indirect draw of several commands is recorded as one draw per command.
+    bool multiDrawIndirect = false;
+    uint32_t maxDrawIndirectCount = 1;
 
     // Effective values: the device limit, or the GpuDeviceOptions override when that is smaller.
     uint64_t maxStorageBufferRange = 0;
@@ -175,11 +197,18 @@ struct GpuQueuePlan {
     uint32_t computeQueues = 0;
     uint32_t transferQueues = 0;
     bool transferSharesComputeQueue = false;
+    // graphicsQueues is 0 when there is no graphics family or it is computeFamily, whose compute queue it then shares.
+    bool graphics = false;
+    uint32_t graphicsFamily = 0;
+    uint32_t graphicsQueueIndex = 0;
+    uint32_t graphicsQueues = 0;
+    bool graphicsSharesComputeQueue = false;
 };
 
 // Routes uploads and downloads to the first transfer-only family when there is one, else to extra queues of the
 // compute family, which itself is the first one without graphics, else the first with compute. Empty when no family
-// has compute.
+// has compute. The graphics queue is in the compute family when that has graphics, else in the first family with
+// graphics and compute; the compute choice never depends on it.
 std::optional<GpuQueuePlan> planQueues(std::span<const VkQueueFamilyProperties> families);
 
 // A RADV_PERFTEST-style list (current may be null) with token appended, unless it already holds token.
@@ -275,8 +304,8 @@ private:
 
     // The distinct VkQueues, each with the lock Vulkan's external synchronization of vkQueueSubmit2 needs, and
     // the one each QueueKind submits to.
-    std::array<Queue, 3> queues_;
-    std::array<Queue*, 3> route_ {};
+    std::array<Queue, 4> queues_;
+    std::array<Queue*, 4> route_ {};
 
     // The fault plan, written by injectFault() while other threads count operations; faultAt_ 0 means none.
     std::atomic<GpuFaultPlan::Kind> faultKind_ { GpuFaultPlan::Kind::Off };

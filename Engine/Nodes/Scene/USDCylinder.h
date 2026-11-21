@@ -59,7 +59,7 @@ public:
         .label = "USDCylinder",
         .description = "Create a scene holding a cylinder: a mesh of Radius and Height about the origin along the project's up "
                        "axis, with optional top and bottom caps; with both off it is an open tube. Texture it through a "
-                       "USDMaterial on its Material input. Animated knobs are written as time samples.",
+                       "USDPreviewSurface on its Material input. Animated knobs are written as time samples.",
         .grouping = PLUGIN_GROUP_3D_USD,
         .majorVersion = 1,
         .minorVersion = 0,

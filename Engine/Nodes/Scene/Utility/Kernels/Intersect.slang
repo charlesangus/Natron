@@ -4,12 +4,18 @@ import UtilityTypes;
 // stride values each are traced. With a maskStride, an instance blocks an occlusion ray only where
 // the bit of the ray's light is set in the maskStride words of the casterMasks table from
 // maskOffset + instance * maskStride.
+//
+// The instances are split over structureCount top-level structures, since one tells at most 2^24 instances
+// apart. Each entry of structures holds a structure's address as low and high words and the slot of its first
+// instance; a hit's slot is that plus its custom index. With an order table, slots are listed in it by
+// instance; without one, a slot is its instance.
 struct IntersectParams
 {
-    // The top-level structure's device address as low and high words; zero for a scene with nothing in it.
-    uint2 scene;
+    uint2 structures;
+    uint2 order;
     // The shadow-link masks of the casters, which grow with the instances and the lights.
     uint2 casterMasks;
+    uint structureCount;
     uint stride;
     uint first;
     uint end;
@@ -40,6 +46,16 @@ RaytracingAccelerationStructure sceneAt(uint2 address)
     };
 }
 
+uint4 structureAt(uint index)
+{
+    return Uint4Table(params.structures)[index];
+}
+
+uint instanceAt(uint slot)
+{
+    return any(params.order != uint2(0, 0)) ? UintTable(params.order)[slot] : slot;
+}
+
 float rayValue(uint array, uint ray)
 {
     return rays[array * params.stride + ray];
@@ -59,7 +75,7 @@ bool readRay(uint ray, out RayDesc desc)
     desc.TMin = max(rayValue(kRayTMin, ray), 0.0);
     desc.TMax = rayValue(kRayTMax, ray);
 
-    return any(params.scene != uint2(0, 0)) && allFinite(desc.Origin) && allFinite(desc.Direction)
+    return params.structureCount != 0 && allFinite(desc.Origin) && allFinite(desc.Direction)
         && any(desc.Direction != float3(0.0)) && !isnan(desc.TMax) && desc.TMin <= desc.TMax;
 }
 
@@ -80,17 +96,22 @@ void utilityIntersect(uint3 id : SV_DispatchThreadID)
     RayDesc desc;
 
     if (readRay(ray, desc)) {
-        RayQuery<RAY_FLAG_FORCE_OPAQUE> query;
+        // Each structure's hit bounds the next one's search, which leaves the closest.
+        for (uint s = 0; s < params.structureCount; ++s) {
+            const uint4 structure = structureAt(s);
+            RayQuery<RAY_FLAG_FORCE_OPAQUE> query;
 
-        query.TraceRayInline(sceneAt(params.scene), RAY_FLAG_NONE, 0xff, desc);
-        while (query.Proceed()) {
-        }
-        if (query.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
-            t = query.CommittedRayT();
-            barycentrics = query.CommittedTriangleBarycentrics();
-            instance = query.CommittedInstanceID();
-            geometry = instanceGeometry[instance];
-            primitive = query.CommittedPrimitiveIndex();
+            query.TraceRayInline(sceneAt(structure.xy), RAY_FLAG_NONE, 0xff, desc);
+            while (query.Proceed()) {
+            }
+            if (query.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
+                t = query.CommittedRayT();
+                desc.TMax = t;
+                barycentrics = query.CommittedTriangleBarycentrics();
+                instance = instanceAt(structure.z + query.CommittedInstanceID());
+                geometry = instanceGeometry[instance];
+                primitive = query.CommittedPrimitiveIndex();
+            }
         }
     }
 
@@ -115,33 +136,36 @@ void utilityOccluded(uint3 id : SV_DispatchThreadID)
     RayDesc desc;
 
     const bool valid = readRay(ray, desc);
+    for (uint s = 0; valid && blocked == 0 && s < params.structureCount; ++s) {
+        const uint4 structure = structureAt(s);
 
-    if (valid && params.maskStride == 0) {
-        RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
+        if (params.maskStride == 0) {
+            RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
 
-        query.TraceRayInline(sceneAt(params.scene), RAY_FLAG_NONE, 0xff, desc);
-        while (query.Proceed()) {
-        }
-        if (query.CommittedStatus() != COMMITTED_NOTHING)
-            blocked = 1;
-    } else if (valid) {
-        // Non-opaque, so each candidate comes back here to be kept or passed through.
-        RayQuery<RAY_FLAG_FORCE_NON_OPAQUE> query;
-        const uint light = rayLights[ray];
-        const UintTable casterMasks = UintTable(params.casterMasks);
-
-        query.TraceRayInline(sceneAt(params.scene), RAY_FLAG_NONE, 0xff, desc);
-        while (query.Proceed()) {
-            const uint caster = query.CandidateInstanceID();
-            const uint word = casterMasks[params.maskOffset + caster * params.maskStride + light / 32];
-
-            if (((word >> (light % 32)) & 1) != 0) {
-                query.CommitNonOpaqueTriangleHit();
-                query.Abort();
+            query.TraceRayInline(sceneAt(structure.xy), RAY_FLAG_NONE, 0xff, desc);
+            while (query.Proceed()) {
             }
+            if (query.CommittedStatus() != COMMITTED_NOTHING)
+                blocked = 1;
+        } else {
+            // Non-opaque, so each candidate comes back here to be kept or passed through.
+            RayQuery<RAY_FLAG_FORCE_NON_OPAQUE> query;
+            const uint light = rayLights[ray];
+            const UintTable casterMasks = UintTable(params.casterMasks);
+
+            query.TraceRayInline(sceneAt(structure.xy), RAY_FLAG_NONE, 0xff, desc);
+            while (query.Proceed()) {
+                const uint caster = instanceAt(structure.z + query.CandidateInstanceID());
+                const uint word = casterMasks[params.maskOffset + caster * params.maskStride + light / 32];
+
+                if (((word >> (light % 32)) & 1) != 0) {
+                    query.CommitNonOpaqueTriangleHit();
+                    query.Abort();
+                }
+            }
+            if (query.CommittedStatus() != COMMITTED_NOTHING)
+                blocked = 1;
         }
-        if (query.CommittedStatus() != COMMITTED_NOTHING)
-            blocked = 1;
     }
 
     hitIds[ray] = blocked;

@@ -20,6 +20,7 @@ public struct PreviewSurfaceSample
     public float opacity;
     public float ior;
     public bool useSpecularWorkflow;
+    public bool opacityPresence;
 };
 
 float schlickFresnel(float EdotH)

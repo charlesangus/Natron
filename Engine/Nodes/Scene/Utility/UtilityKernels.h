@@ -165,6 +165,7 @@ const std::uint32_t kKernelColorNoDisplayOpacity = 0x200u;
 const std::uint32_t kKernelMaterialDiffuseFromDisplayColor = 1u;
 const std::uint32_t kKernelMaterialOpacityFromDisplayOpacity = 2u;
 const std::uint32_t kKernelMaterialEmissiveFromDisplayColor = 4u;
+const std::uint32_t kKernelMaterialOpacityPresence = 8u;
 
 // Mirrors MaterialRecord in Kernels/UtilityTypes.slang.
 struct KernelMaterialRecord {

@@ -134,6 +134,8 @@ struct UtilityMaterialDesc {
     float opacity = 1.f;
     float opacityThreshold = 0.f;
     float ior = 1.5f;
+    // opacityMode "presence": what opacity leaves out is a hole that goes straight through, not glass.
+    bool opacityPresence = false;
     // Tangent space, in [-1, 1].
     PXR_NS::GfVec3f normal = PXR_NS::GfVec3f(0.f, 0.f, 1.f);
     // Inputs read from the displayColor and displayOpacity primvars, as for geometry with no material. The

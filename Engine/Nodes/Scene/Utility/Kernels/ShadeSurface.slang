@@ -214,7 +214,7 @@ bool linked(uint instance, uint light, uint mask)
 // Whether what goes through the surface bends at it, rather than going on straight.
 bool refracts(PreviewSurfaceSample surface)
 {
-    return surface.ior > 0.0 && bendsLight(surface.ior);
+    return !surface.opacityPresence && surface.ior > 0.0 && bendsLight(surface.ior);
 }
 
 // One sample of each of the pass's lights, each queued with the shadow ray that decides whether it
@@ -543,6 +543,7 @@ void utilityShadeSurface(uint3 id : SV_DispatchThreadID)
         surface.opacity = opacity;
         surface.ior = floatInput(material, kSlotIor, material.coverage.z, hasSt, st, footprint);
         surface.useSpecularWorkflow = material.specularColor.w != 0.0;
+        surface.opacityPresence = (flags & kMaterialOpacityPresence) != 0;
 
         const float3 radiance = surface.emissiveColor;
         shaded = float4(radiance * opacity, opacity);

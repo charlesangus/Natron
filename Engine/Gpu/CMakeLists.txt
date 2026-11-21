@@ -20,7 +20,7 @@ include("${NATRON_GPU_CMAKE_DIR}/FetchSlang.cmake")
 include("${NATRON_GPU_CMAKE_DIR}/FetchGlslang.cmake")
 include("${NATRON_GPU_CMAKE_DIR}/SlangKernels.cmake")
 
-# Each Kernels/*.cmake holds the slang_add_kernel lines of the .slang it is named after.
+# Each Kernels/*.cmake holds the slang_add_kernel or slang_add_raster lines of the .slang it is named after.
 # Sorted so the generated GpuKernelId enum order does not depend on glob order.
 file(GLOB NATRON_GPU_KERNEL_FRAGMENTS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/Kernels/*.cmake")
 list(SORT NATRON_GPU_KERNEL_FRAGMENTS)
@@ -30,6 +30,7 @@ endforeach()
 
 slang_write_kernel_table(NatronGpu OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/gen/GpuKernels.inc")
 get_property(NatronGpu_KERNELS GLOBAL PROPERTY SLANG_REGISTRY_NatronGpu)
+get_property(NatronGpu_RASTERS GLOBAL PROPERTY SLANG_RASTER_REGISTRY_NatronGpu)
 
 add_library(NatronGpu STATIC
     GpuDevice.cpp
@@ -39,6 +40,7 @@ add_library(NatronGpu STATIC
     GpuKernel.cpp
     GpuKernelRegistry.cpp
     GpuPipelineCache.cpp
+    GpuRaster.cpp
     GpuRecord.cpp
     GpuRuntime.cpp
     GpuShaderCompiler.cpp
@@ -66,6 +68,7 @@ target_link_libraries(NatronGpu
         Vulkan::Vulkan
         Threads::Threads
         ${NatronGpu_KERNELS}
+        ${NatronGpu_RASTERS}
     PRIVATE
         glslang
         glslang-default-resource-limits

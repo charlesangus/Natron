@@ -682,7 +682,8 @@ WavefrontShadeTables::updateMaterials(const UtilityScene::Snapshot& snapshot,
         record.kind[0] = static_cast<std::uint32_t>(desc.kind);
         record.kind[2] = (desc.diffuseFromDisplayColor ? kKernelMaterialDiffuseFromDisplayColor : 0u)
             | (desc.opacityFromDisplayOpacity ? kKernelMaterialOpacityFromDisplayOpacity : 0u)
-            | (desc.emissiveFromDisplayColor ? kKernelMaterialEmissiveFromDisplayColor : 0u);
+            | (desc.emissiveFromDisplayColor ? kKernelMaterialEmissiveFromDisplayColor : 0u)
+            | (desc.opacityPresence ? kKernelMaterialOpacityPresence : 0u);
         for (int slot = 0; slot < 12; ++slot) {
             const int t = slot < UtilityMaterialDesc::eSlotCount ? desc.textures[slot] : -1;
 

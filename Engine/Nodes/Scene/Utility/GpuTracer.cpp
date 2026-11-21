@@ -45,6 +45,7 @@
 #include <utility>
 #include <vector>
 
+#include <pxr/base/gf/range3d.h>
 #include <pxr/base/tf/diagnostic.h>
 
 #include "Engine/Gpu/GpuAccel.h"
@@ -65,10 +66,13 @@ NATRON_NAMESPACE_ENTER
 namespace {
 // Mirrors IntersectParams in Kernels/Intersect.slang.
 struct KernelIntersectParams {
-    std::uint32_t sceneLow;
-    std::uint32_t sceneHigh;
+    std::uint32_t structuresLow;
+    std::uint32_t structuresHigh;
+    std::uint32_t orderLow;
+    std::uint32_t orderHigh;
     std::uint32_t casterMasksLow;
     std::uint32_t casterMasksHigh;
+    std::uint32_t structureCount;
     std::uint32_t stride;
     std::uint32_t first;
     std::uint32_t end;
@@ -95,8 +99,11 @@ const std::uint64_t kMaxDispatchRays = kUtilityMaxDispatchRays;
 // Bounds the host-visible memory one trace call stages.
 const std::size_t kMaxRaysPerSubmit = std::size_t(1) << 20;
 
-// Instance custom indices have 24 bits.
+// Instance custom indices have 24 bits, so past this many a scene's slots are listed in an order table.
 const std::size_t kMaxInstances = std::size_t(1) << 24;
+
+// What the kernels read through device addresses need that usage on top of the binding's.
+const VkBufferUsageFlags kAddressedUsage = gpu::kGpuBufferDefaultUsage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
 
 enum class Entry {
     Intersect,
@@ -208,10 +215,81 @@ sameGeometries(const std::vector<Placement>& a,
 
 // What a trace reads. Contexts that record traces hold it, so an update can replace it under them.
 struct SceneState {
-    gpu::GpuTlas tlas;
+    std::vector<gpu::GpuTlas> structures;
+    // Four words per structure, as Kernels/Intersect.slang reads them.
+    gpu::GpuBuffer structureTable;
+    // The placement in each slot; empty when each slot is its placement.
+    gpu::GpuBuffer order;
     gpu::GpuBuffer instanceGeometry;
     std::vector<GeometryEntryPtr> placed;
 };
+
+// Interleaves the low 21 bits of each coordinate.
+std::uint64_t
+mortonCode(std::uint32_t x,
+           std::uint32_t y,
+           std::uint32_t z)
+{
+    auto spread = [](std::uint64_t v) {
+        v &= 0x1fffffull;
+        v = (v | v << 32) & 0x1f00000000ffffull;
+        v = (v | v << 16) & 0x1f0000ff0000ffull;
+        v = (v | v << 8) & 0x100f00f00f00f00full;
+        v = (v | v << 4) & 0x10c30c30c30c30c3ull;
+        v = (v | v << 2) & 0x1249249249249249ull;
+
+        return v;
+    };
+
+    return spread(x) | spread(y) << 1 | spread(z) << 2;
+}
+
+// Orders the drawn placements along a curve through their centres, so that each structure a split scene gets
+// covers a compact region and a ray's search of the ones it misses ends at their roots.
+void
+sortSpatially(std::vector<std::uint32_t>& drawn,
+              const std::vector<Placement>& placements,
+              const UtilityScene::Snapshot& snapshot)
+{
+    std::map<UtilityScene::GeometryId, GfVec3d> centres;
+
+    for (const auto& item : snapshot.geometries) {
+        GfRange3d bounds;
+
+        for (const GfVec3f& point : item.second.points) {
+            bounds.UnionWith(GfVec3d(point));
+        }
+        centres[item.first] = bounds.IsEmpty() ? GfVec3d(0.) : bounds.GetMidpoint();
+    }
+
+    std::vector<GfVec3d> positions(drawn.size());
+    GfRange3d extent;
+
+    for (std::size_t i = 0; i < drawn.size(); ++i) {
+        const Placement& placement = placements[drawn[i]];
+
+        positions[i] = placement.transform.Transform(centres[placement.geometry]);
+        extent.UnionWith(positions[i]);
+    }
+
+    const GfVec3d size = extent.GetSize();
+    std::vector<std::pair<std::uint64_t, std::uint32_t>> keyed(drawn.size());
+
+    for (std::size_t i = 0; i < drawn.size(); ++i) {
+        std::uint32_t cell[3];
+
+        for (int axis = 0; axis < 3; ++axis) {
+            const double unit = size[axis] > 0. ? (positions[i][axis] - extent.GetMin()[axis]) / size[axis] : 0.;
+
+            cell[axis] = static_cast<std::uint32_t>(std::min(std::max(unit, 0.), 1.) * 2097151.);
+        }
+        keyed[i] = { mortonCode(cell[0], cell[1], cell[2]), drawn[i] };
+    }
+    std::sort(keyed.begin(), keyed.end());
+    for (std::size_t i = 0; i < drawn.size(); ++i) {
+        drawn[i] = keyed[i].second;
+    }
+}
 
 using SceneStatePtr = std::shared_ptr<const SceneState>;
 
@@ -235,8 +313,10 @@ struct GeometrySubmission {
     };
 
     Kind kind = Kind::Builds;
-    // Records the work; on failure returns the status and sets what to the failure's description.
-    std::function<gpu::GpuStatus(gpu::GpuRecordContext& ctx, std::string& what)> record;
+    // Records part `part` of the work, each submitted and waited for before the next is recorded; on failure
+    // returns the status and sets what to the failure's description.
+    std::function<gpu::GpuStatus(gpu::GpuRecordContext& ctx, std::size_t part, std::string& what)> record;
+    std::size_t parts = 1;
     std::vector<std::pair<UtilityScene::GeometryId, GeometryEntryPtr>> built;
     // The entries refit, with the points version they were refit to.
     std::vector<std::pair<GeometryEntryPtr, std::uint64_t>> refitted;
@@ -254,6 +334,30 @@ struct GeometrySubmission {
 
 using GeometrySubmissionPtr = std::shared_ptr<GeometrySubmission>;
 
+// The triangles one geometry submission builds, refits or compacts at most, besides a geometry larger on its
+// own. A device that takes longer than its driver's job timeout over one submission is reset, which a whole
+// large scene in one submission reached on a slower ray-tracing device.
+const std::size_t kTrianglesPerSubmission = std::size_t(1) << 22;
+
+// Consecutive runs of entries, each a submission's worth of triangles.
+std::vector<std::vector<GeometryEntryPtr>>
+submissionParts(const std::vector<GeometryEntryPtr>& entries)
+{
+    std::vector<std::vector<GeometryEntryPtr>> parts;
+    std::size_t triangles = 0;
+
+    for (const GeometryEntryPtr& entry : entries) {
+        if (parts.empty() || (triangles + entry->triangleCount > kTrianglesPerSubmission && !parts.back().empty())) {
+            parts.emplace_back();
+            triangles = 0;
+        }
+        parts.back().push_back(entry);
+        triangles += entry->triangleCount;
+    }
+
+    return parts;
+}
+
 void
 runGeometrySubmission(gpu::GpuKernelRegistry* registry,
                       gpu::GpuBufferPool* pool,
@@ -263,14 +367,14 @@ runGeometrySubmission(gpu::GpuKernelRegistry* registry,
     std::string what;
     bool recorded = false;
 
-    {
+    for (std::size_t part = 0; part < job->parts && status; ++part) {
         std::unique_ptr<gpu::GpuRecordContext> ctx;
 
         status = gpu::GpuRecordContext::create(*registry, ctx, pool);
         if (!status) {
             what = "GpuTracer could not create a record context";
         } else {
-            status = job->record(*ctx, what);
+            status = job->record(*ctx, part, what);
             if (status) {
                 recorded = true;
                 status = ctx->submitAndWait();
@@ -433,6 +537,7 @@ struct GpuTracer::Implementation {
     std::shared_ptr<gpu::GpuKernel> intersectKernel;
     std::shared_ptr<gpu::GpuKernel> occludedKernel;
     bool usable = false;
+    std::size_t maxInstancesPerStructure = 0;
 
     std::map<UtilityScene::GeometryId, GeometryEntryPtr> geometries;
     // Built but not yet compacted, because the update that built them was stopped first.
@@ -463,15 +568,16 @@ GpuTracer::Implementation::recordTrace(gpu::GpuRecordContext& ctx,
         return { VK_ERROR_FEATURE_NOT_PRESENT, outcome.message };
     }
 
-    VkDeviceAddress address = 0;
+    const bool traced = state && !state->structures.empty();
+    const VkDeviceAddress structures = traced ? state->structureTable.deviceAddress(device) : 0;
+    const VkDeviceAddress order = traced && state->order ? state->order.deviceAddress(device) : 0;
 
-    if (state && state->tlas) {
-        address = state->tlas.deviceAddress();
+    if (traced) {
         ctx.hold(std::const_pointer_cast<SceneState>(state));
     }
 
     // Without a scene the kernel reads nothing past the rays, so they stand in for the instance table.
-    const gpu::GpuBuffer& instanceGeometry = address ? state->instanceGeometry : rays;
+    const gpu::GpuBuffer& instanceGeometry = traced ? state->instanceGeometry : rays;
     const bool filtered = filter.maskStride != 0 && filter.rayLights && filter.casterMasks;
     // Unfiltered, the kernel never reads the light tables, so the rays stand in for them.
     const std::array<gpu::GpuBinding, 5> bindings = {
@@ -487,10 +593,13 @@ GpuTracer::Implementation::recordTrace(gpu::GpuRecordContext& ctx,
     for (std::uint64_t first = 0; first < count; first += kMaxDispatchRays) {
         const std::uint64_t end = std::min<std::uint64_t>(count, first + kMaxDispatchRays);
         const KernelIntersectParams params {
-            static_cast<std::uint32_t>(address & 0xffffffffull),
-            static_cast<std::uint32_t>(address >> 32),
+            static_cast<std::uint32_t>(structures & 0xffffffffull),
+            static_cast<std::uint32_t>(structures >> 32),
+            static_cast<std::uint32_t>(order & 0xffffffffull),
+            static_cast<std::uint32_t>(order >> 32),
             static_cast<std::uint32_t>(casterMasks & 0xffffffffull),
             static_cast<std::uint32_t>(casterMasks >> 32),
+            traced ? static_cast<std::uint32_t>(state->structures.size()) : 0u,
             count,
             static_cast<std::uint32_t>(first),
             static_cast<std::uint32_t>(end),
@@ -528,7 +637,7 @@ GpuTracer::Implementation::trace(Entry entry,
         }
     };
 
-    if (!state || !state->tlas) {
+    if (!state || state->structures.empty()) {
         missFrom(0);
 
         return;
@@ -684,7 +793,27 @@ GpuTracer::GpuTracer(gpu::GpuKernelRegistry& registry,
         return;
     }
     imp.occludedKernel = std::move(kernel);
+    imp.maxInstancesPerStructure = gpu::GpuTlas::maxInstancesPerStructure(imp.device);
+    if (imp.maxInstancesPerStructure == 0) {
+        imp.outcome = Outcome { Status::Unsupported, "GpuTracer: the device builds no top-level structure with an instance in it" };
+
+        return;
+    }
     imp.usable = true;
+}
+
+void
+GpuTracer::limitInstancesPerStructure(std::size_t count)
+{
+    _imp->maxInstancesPerStructure = std::max<std::size_t>(1, std::min(_imp->maxInstancesPerStructure, count));
+}
+
+std::size_t
+GpuTracer::instanceStructureCount() const
+{
+    const SceneStatePtr state = _imp->scene;
+
+    return state ? state->structures.size() : 0;
 }
 
 GpuTracer::~GpuTracer()
@@ -839,8 +968,15 @@ GpuTracer::update(const UtilityScene::Snapshot& snapshot,
             return imp.abandonUpdate(stopped);
         }
         job->submitWhat = "GpuTracer could not build its geometry";
-        job->record = [pool = &imp.pool, toBuild, toRefit](gpu::GpuRecordContext& ctx, std::string& what) -> gpu::GpuStatus {
+        const std::vector<std::vector<GeometryEntryPtr>> buildParts = submissionParts(toBuild);
+        const std::vector<std::vector<GeometryEntryPtr>> refitParts = submissionParts(toRefit);
+
+        job->parts = std::max<std::size_t>(1, buildParts.size() + refitParts.size());
+        job->record = [pool = &imp.pool, buildParts, refitParts](gpu::GpuRecordContext& ctx, std::size_t part, std::string& what) -> gpu::GpuStatus {
             gpu::GpuBlasOptions options;
+            static const std::vector<GeometryEntryPtr> none;
+            const std::vector<GeometryEntryPtr>& toBuild = part < buildParts.size() ? buildParts[part] : none;
+            const std::vector<GeometryEntryPtr>& toRefit = part >= buildParts.size() && part - buildParts.size() < refitParts.size() ? refitParts[part - buildParts.size()] : none;
 
             options.allowUpdate = true;
             options.allowCompaction = true;
@@ -882,8 +1018,11 @@ GpuTracer::update(const UtilityScene::Snapshot& snapshot,
         }
         job->kind = GeometrySubmission::Kind::Compaction;
         job->submitWhat = "GpuTracer could not compact its geometry";
-        job->record = [pool = &imp.pool, device = &imp.device, toCompact](gpu::GpuRecordContext& ctx, std::string& what) -> gpu::GpuStatus {
-            for (const GeometryEntryPtr& entry : toCompact) {
+        const std::vector<std::vector<GeometryEntryPtr>> compactParts = submissionParts(toCompact);
+
+        job->parts = compactParts.size();
+        job->record = [pool = &imp.pool, device = &imp.device, compactParts](gpu::GpuRecordContext& ctx, std::size_t part, std::string& what) -> gpu::GpuStatus {
+            for (const GeometryEntryPtr& entry : compactParts[part]) {
                 if (gpu::GpuStatus s = entry->blas.compact(ctx, *pool); !s && classify(s, *device) != Status::OutOfMemory) {
                     what = "GpuTracer could not compact a geometry's structure";
 
@@ -933,48 +1072,77 @@ GpuTracer::update(const UtilityScene::Snapshot& snapshot,
         if (wasStopped(stop)) {
             return imp.abandonUpdate(stopped);
         }
-        if (placements.size() > kMaxInstances) {
-            return imp.abandonUpdate(Failure { Status::Failed, "GpuTracer: " + std::to_string(placements.size()) + " instances exceed the 2^24 a ray query can tell apart" });
+        if (placements.size() >= kNoHit) {
+            return imp.abandonUpdate(Failure { Status::Failed, "GpuTracer: " + std::to_string(placements.size()) + " instances exceed the 32-bit ids a hit reports" });
         }
 
         std::shared_ptr<SceneState> state = std::make_shared<SceneState>();
-        std::vector<gpu::GpuAccelInstance> instances;
         const VkDeviceSize tableBytes = std::max<std::size_t>(1, placements.size()) * sizeof(std::uint32_t);
 
+        if (tableBytes > imp.device.info().maxStorageBufferRange) {
+            return imp.abandonUpdate(Failure { Status::OverStorageRange, "GpuTracer: the " + std::to_string(tableBytes) + "-byte instance table exceeds the GPU's " + std::to_string(imp.device.info().maxStorageBufferRange) + "-byte storage buffer range" });
+        }
         if (gpu::GpuStatus s = gpu::GpuBuffer::createStaging(imp.device, tableBytes, gpu::kGpuBufferDefaultUsage, state->instanceGeometry); !s) {
             return imp.abandonUpdate(imp.failure(("GpuTracer could not hold its " + std::to_string(tableBytes) + "-byte instance table"), s));
         }
 
         std::uint32_t* table = static_cast<std::uint32_t*>(state->instanceGeometry.mapped());
+        std::vector<std::uint32_t> drawn;
 
         table[0] = kNoHit;
         for (std::size_t i = 0; i < placements.size(); ++i) {
             const auto dense = denseIndices.find(placements[i].geometry);
 
             table[i] = dense == denseIndices.end() ? kNoHit : dense->second;
-
-            const GeometryEntry* geometry = drawnBy(i);
-
-            if (!geometry) {
-                continue;
+            if (drawnBy(i)) {
+                drawn.push_back(static_cast<std::uint32_t>(i));
+                state->placed.push_back(imp.geometries[placements[i].geometry]);
             }
-
-            gpu::GpuAccelInstance instance;
-
-            instance.transform = objectToWorld(placements[i].transform);
-            instance.customIndex = static_cast<std::uint32_t>(i);
-            instance.blas = &geometry->blas;
-            instances.push_back(instance);
-            state->placed.push_back(imp.geometries[placements[i].geometry]);
         }
 
-        if (!instances.empty()) {
+        const std::size_t perStructure = imp.maxInstancesPerStructure;
+        // A scene one structure holds keeps each placement's index as its custom index, so it needs no order table.
+        const bool split = placements.size() > kMaxInstances || drawn.size() > perStructure;
+
+        if (split) {
+            sortSpatially(drawn, placements, snapshot);
+            if (wasStopped(stop)) {
+                return imp.abandonUpdate(stopped);
+            }
+
+            const VkDeviceSize orderBytes = drawn.size() * sizeof(std::uint32_t);
+
+            if (gpu::GpuStatus s = gpu::GpuBuffer::createStaging(imp.device, orderBytes, kAddressedUsage, state->order); !s) {
+                return imp.abandonUpdate(imp.failure(("GpuTracer could not hold its " + std::to_string(orderBytes) + "-byte instance order"), s));
+            }
+            std::memcpy(state->order.mapped(), drawn.data(), orderBytes);
+        }
+
+        std::vector<std::uint32_t> firstSlots;
+
+        // One submission per structure, so that only one structure's instances are staged at a time.
+        for (std::size_t first = 0; first < drawn.size(); first += perStructure) {
+            const std::size_t end = std::min(drawn.size(), first + perStructure);
+            std::vector<gpu::GpuAccelInstance> instances;
+
+            instances.reserve(end - first);
+            for (std::size_t slot = first; slot < end; ++slot) {
+                const std::uint32_t i = drawn[slot];
+                gpu::GpuAccelInstance instance;
+
+                instance.transform = objectToWorld(placements[i].transform);
+                instance.customIndex = split ? static_cast<std::uint32_t>(slot - first) : i;
+                instance.blas = &drawnBy(i)->blas;
+                instances.push_back(instance);
+            }
+
             std::unique_ptr<gpu::GpuRecordContext> ctx;
+            gpu::GpuTlas structure;
 
             if (gpu::GpuStatus s = imp.createContext(ctx); !s) {
                 return imp.abandonUpdate(imp.failure("GpuTracer could not create a record context", s));
             }
-            if (gpu::GpuStatus s = gpu::GpuTlas::build(*ctx, imp.pool, instances, state->tlas); !s) {
+            if (gpu::GpuStatus s = gpu::GpuTlas::build(*ctx, imp.pool, instances, structure); !s) {
                 return imp.abandonUpdate(imp.failure("GpuTracer could not build its instance structure", s));
             }
             if (wasStopped(stop)) {
@@ -982,6 +1150,26 @@ GpuTracer::update(const UtilityScene::Snapshot& snapshot,
             }
             if (gpu::GpuStatus s = ctx->submitAndWait(); !s) {
                 return imp.abandonSubmission("GpuTracer could not build its instance structure", s);
+            }
+            state->structures.push_back(std::move(structure));
+            firstSlots.push_back(split ? static_cast<std::uint32_t>(first) : 0u);
+        }
+        if (!state->structures.empty()) {
+            const VkDeviceSize structureBytes = state->structures.size() * 4 * sizeof(std::uint32_t);
+
+            if (gpu::GpuStatus s = gpu::GpuBuffer::createStaging(imp.device, structureBytes, kAddressedUsage, state->structureTable); !s) {
+                return imp.abandonUpdate(imp.failure("GpuTracer could not hold its structure table", s));
+            }
+
+            std::uint32_t* words = static_cast<std::uint32_t*>(state->structureTable.mapped());
+
+            for (std::size_t i = 0; i < state->structures.size(); ++i) {
+                const VkDeviceAddress address = state->structures[i].deviceAddress();
+
+                words[i * 4] = static_cast<std::uint32_t>(address & 0xffffffffull);
+                words[i * 4 + 1] = static_cast<std::uint32_t>(address >> 32);
+                words[i * 4 + 2] = firstSlots[i];
+                words[i * 4 + 3] = 0;
             }
         }
         imp.scene = std::move(state);

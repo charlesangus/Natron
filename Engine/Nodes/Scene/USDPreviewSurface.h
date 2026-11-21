@@ -17,8 +17,8 @@
  * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
  * ***** END LICENSE BLOCK ***** */
 
-#ifndef Engine_Nodes_Scene_USDMaterial_h
-#define Engine_Nodes_Scene_USDMaterial_h
+#ifndef Engine_Nodes_Scene_USDPreviewSurface_h
+#define Engine_Nodes_Scene_USDPreviewSurface_h
 
 // ***** BEGIN PYTHON BLOCK *****
 // from <https://docs.python.org/3/c-api/intro.html#include-files>:
@@ -38,25 +38,35 @@
 // Free of USD: NativeRegistryAll.inc includes every node header into translation units that keep
 // Py_LIMITED_API, which USD's headers cannot be compiled under.
 
-#define PLUGINID_NATRON_USDMATERIAL "USDMaterial"
+#define PLUGINID_NATRON_USDPREVIEWSURFACE "USDPreviewSurface"
 
-#define kUSDMaterialParamDiffuseColor "diffuseColor"
-#define kUSDMaterialParamDiffuseTexture "diffuseTexture"
-#define kUSDMaterialParamMetallic "metallic"
-#define kUSDMaterialParamMetallicTexture "metallicTexture"
-#define kUSDMaterialParamRoughness "roughness"
-#define kUSDMaterialParamRoughnessTexture "roughnessTexture"
-#define kUSDMaterialParamEmissiveColor "emissiveColor"
-#define kUSDMaterialParamEmissiveTexture "emissiveTexture"
-#define kUSDMaterialParamUseAlpha "useAlpha"
+#define kUSDPreviewSurfaceParamDiffuseColor "diffuseColor"
+#define kUSDPreviewSurfaceParamDiffuseTexture "diffuseTexture"
+#define kUSDPreviewSurfaceParamMetallic "metallic"
+#define kUSDPreviewSurfaceParamMetallicTexture "metallicTexture"
+#define kUSDPreviewSurfaceParamRoughness "roughness"
+#define kUSDPreviewSurfaceParamRoughnessTexture "roughnessTexture"
+#define kUSDPreviewSurfaceParamEmissiveColor "emissiveColor"
+#define kUSDPreviewSurfaceParamEmissiveTexture "emissiveTexture"
+#define kUSDPreviewSurfaceParamUseSpecularWorkflow "useSpecularWorkflow"
+#define kUSDPreviewSurfaceParamSpecularColor "specularColor"
+#define kUSDPreviewSurfaceParamClearcoat "clearcoat"
+#define kUSDPreviewSurfaceParamClearcoatRoughness "clearcoatRoughness"
+#define kUSDPreviewSurfaceParamOpacity "opacity"
+#define kUSDPreviewSurfaceParamOpacityMode "opacityMode"
+#define kUSDPreviewSurfaceParamOpacityThreshold "opacityThreshold"
+#define kUSDPreviewSurfaceParamIor "ior"
+#define kUSDPreviewSurfaceParamOcclusion "occlusion"
+#define kUSDPreviewSurfaceParamDisplacement "displacement"
+#define kUSDPreviewSurfaceParamUseAlpha "useAlpha"
 
 // The optional image inputs, each driving the surface input of the same name through a live texture.
-#define kUSDMaterialInputDiffuseColor 0
-#define kUSDMaterialInputRoughness 1
-#define kUSDMaterialInputMetallic 2
-#define kUSDMaterialInputNormal 3
-#define kUSDMaterialInputEmissiveColor 4
-#define kUSDMaterialInputCount 5
+#define kUSDPreviewSurfaceInputDiffuseColor 0
+#define kUSDPreviewSurfaceInputRoughness 1
+#define kUSDPreviewSurfaceInputMetallic 2
+#define kUSDPreviewSurfaceInputNormal 3
+#define kUSDPreviewSurfaceInputEmissiveColor 4
+#define kUSDPreviewSurfaceInputCount 5
 
 NATRON_NAMESPACE_ENTER
 
@@ -67,9 +77,10 @@ typedef std::vector<LiveTextureSource> LiveTextureSourceList;
 /**
  * @brief Authors a UsdPreviewSurface material at its prim path (the node's name under the root by
  * default), as a scene source. A geometry node binds it by taking it on its Material input, which
- * grafts it under the geometry's prim (SceneNodeAuthoring::graftMaterialInput). Diffuse Color,
- * Metallic, Roughness and Emissive Color set the surface's inputs; each has a texture file that,
- * when set, drives the input from a UsdUVTexture read through the "st" primvar instead. Colours
+ * grafts it under the geometry's prim (SceneNodeAuthoring::graftMaterialInput). Every knob sets the
+ * surface input of its name. Diffuse Color, Metallic, Roughness and Emissive Color each have a
+ * texture file that, when set, drives the input from a UsdUVTexture read through the "st" primvar
+ * instead. Colours
  * are in the project working space and written unchanged. A texture path that does not resolve
  * is authored anyway, with a node warning naming it.
  *
@@ -82,10 +93,10 @@ typedef std::vector<LiveTextureSource> LiveTextureSourceList;
  * that does not change over time, which consumers render before Hydra reads it. A connected
  * input wins over the texture file.
  **/
-class USDMaterial
+class USDPreviewSurface
     : public NativeEffectBase {
 public:
-    static constexpr InputSpec kInputs[kUSDMaterialInputCount] = {
+    static constexpr InputSpec kInputs[kUSDPreviewSurfaceInputCount] = {
         InputSpec { .label = "Diffuse Color", .kind = eDataKindImage, .role = InputRole::Aux, .optional = true, .time = InputTime::Any },
         InputSpec { .label = "Roughness", .kind = eDataKindImage, .role = InputRole::Aux, .optional = true, .time = InputTime::Any },
         InputSpec { .label = "Metallic", .kind = eDataKindImage, .role = InputRole::Aux, .optional = true, .time = InputTime::Any },
@@ -94,10 +105,12 @@ public:
     };
 
     static constexpr NodeSpec kNodeSpec = {
-        .id = PLUGINID_NATRON_USDMATERIAL,
-        .label = "USDMaterial",
-        .description = "Author a UsdPreviewSurface material (diffuse colour, metallic, roughness and emissive colour, each "
-                       "optionally from a texture file). Connect it to the Material input of a geometry node, which "
+        .id = PLUGINID_NATRON_USDPREVIEWSURFACE,
+        .label = "USDPreviewSurface",
+        .description = "Author a UsdPreviewSurface material: diffuse colour, metallic, roughness and emissive colour, each "
+                       "optionally from a texture file, and the specular workflow, clearcoat, opacity, index of "
+                       "refraction, occlusion and displacement. Metallic 1 with Roughness 0 is a mirror; Opacity below 1 "
+                       "with an IOR other than 1 is glass. Connect it to the Material input of a geometry node, which "
                        "places the material under its own prim and binds itself to it. Colours are in the project "
                        "working space and written unchanged. An image connected to an input of the same name drives "
                        "it instead, live and animated with no file on disk; the Normal input takes a tangent-space "
@@ -106,7 +119,7 @@ public:
         .grouping = PLUGIN_GROUP_3D_USD,
         .majorVersion = 1,
         .minorVersion = 0,
-        .icon = NATRON_IMAGES_PATH "NativeNodes/USDMaterial.png",
+        .icon = NATRON_IMAGES_PATH "NativeNodes/USDPreviewSurface.png",
         .isWriter = false,
         .outputKind = eDataKindScene,
         .inputs = kInputs,
@@ -115,12 +128,12 @@ public:
 
     static EffectInstance* BuildEffect(NodePtr node)
     {
-        return new USDMaterial(node);
+        return new USDPreviewSurface(node);
     }
 
-    explicit USDMaterial(NodePtr node);
+    explicit USDPreviewSurface(NodePtr node);
 
-    virtual ~USDMaterial();
+    virtual ~USDPreviewSurface();
 
 private:
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -151,9 +164,19 @@ private:
     KnobFileWPtr _roughnessTexture;
     KnobColorWPtr _emissiveColor;
     KnobFileWPtr _emissiveTexture;
+    KnobBoolWPtr _useSpecularWorkflow;
+    KnobColorWPtr _specularColor;
+    KnobDoubleWPtr _clearcoat;
+    KnobDoubleWPtr _clearcoatRoughness;
+    KnobDoubleWPtr _opacity;
+    KnobChoiceWPtr _opacityMode;
+    KnobDoubleWPtr _opacityThreshold;
+    KnobDoubleWPtr _ior;
+    KnobDoubleWPtr _occlusion;
+    KnobDoubleWPtr _displacement;
     KnobBoolWPtr _useAlpha;
 };
 
 NATRON_NAMESPACE_EXIT
 
-#endif // Engine_Nodes_Scene_USDMaterial_h
+#endif // Engine_Nodes_Scene_USDPreviewSurface_h

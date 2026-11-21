@@ -582,6 +582,29 @@ GpuTlas::querySizes(GpuDevice& dev, uint32_t instanceCount, GpuAccelSizes& out)
     return {};
 }
 
+uint32_t
+GpuTlas::maxInstancesPerStructure(GpuDevice& dev)
+{
+    AccelFns fns;
+    if (!ready(dev, "GpuTlas::maxInstancesPerStructure", fns)) {
+        return 0;
+    }
+    const uint64_t allocation = dev.info().maxMemoryAllocationSize;
+    uint64_t count = std::min<uint64_t>(accelProperties(dev).maxInstanceCount, uint64_t(1) << 24);
+    if (allocation != 0) {
+        count = std::min<uint64_t>(count, allocation / sizeof(VkAccelerationStructureInstanceKHR));
+        for (; count > 1; count /= 2) {
+            BuildDesc desc;
+            describeInstances(0, static_cast<uint32_t>(count), desc);
+            const GpuAccelSizes sizes = buildSizes(dev, fns, desc);
+            if (sizes.structureBytes <= allocation && sizes.buildScratchBytes <= allocation) {
+                break;
+            }
+        }
+    }
+    return static_cast<uint32_t>(count);
+}
+
 namespace {
 
     GpuStatus
@@ -620,6 +643,10 @@ namespace {
         // A zero-instance build still needs a valid instance address.
         const VkDeviceSize instanceBytes
             = std::max<size_t>(packed.size(), 1) * sizeof(VkAccelerationStructureInstanceKHR);
+        const uint64_t allocation = dev.info().maxMemoryAllocationSize;
+        if (allocation != 0 && instanceBytes > allocation) {
+            return GpuAccelRecorder::fail(ctx, { VK_ERROR_OUT_OF_DEVICE_MEMORY, std::string(where) + ": the " + std::to_string(instanceBytes) + "-byte instance buffer exceeds the device's " + std::to_string(allocation) + "-byte allocation limit" });
+        }
         auto instanceBuffer = std::make_shared<GpuBuffer>();
         if (GpuStatus s = GpuBuffer::createStaging(dev, instanceBytes, kGpuAccelInputUsage, *instanceBuffer); !s) {
             s.message = std::string(where) + ": instance buffer: " + s.message;
@@ -632,6 +659,9 @@ namespace {
         BuildDesc desc;
         describeInstances(bufferAddress(dev, *instanceBuffer), static_cast<uint32_t>(packed.size()), desc);
         const GpuAccelSizes sizes = buildSizes(dev, fns, desc);
+        if (allocation != 0 && (sizes.structureBytes > allocation || sizes.buildScratchBytes > allocation)) {
+            return GpuAccelRecorder::fail(ctx, { VK_ERROR_OUT_OF_DEVICE_MEMORY, std::string(where) + ": the " + std::to_string(sizes.structureBytes) + "-byte structure or its " + std::to_string(sizes.buildScratchBytes) + "-byte build scratch exceeds the device's " + std::to_string(allocation) + "-byte allocation limit" });
+        }
         GpuAccelStructure structure;
         if (GpuStatus s = GpuAccelRecorder::createStructure(dev, fns, pool, VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
                                                             sizes.structureBytes, structure);

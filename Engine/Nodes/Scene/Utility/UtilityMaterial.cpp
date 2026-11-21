@@ -403,6 +403,9 @@ private:
         if (const VtValue* v = parameter(surface, "opacityThreshold")) {
             readFloat(*v, &_desc.opacityThreshold);
         }
+        if (const VtValue* v = parameter(surface, "opacityMode")) {
+            _desc.opacityPresence = v->IsHolding<TfToken>() && v->UncheckedGet<TfToken>() == TfToken("presence");
+        }
         for (const auto& entry : surface.inputConnections) {
             const std::string& name = entry.first.GetString();
             const bool known = std::any_of(std::begin(kPreviewInputs), std::end(kPreviewInputs), [&name](const InputSpec& s) { return name == s.name; })

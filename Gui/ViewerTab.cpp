@@ -1375,6 +1375,13 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     QObject::connect( engine.get(), SIGNAL(renderFinished(int)), this, SLOT(onEngineStopped()) );
     QObject::connect( engine.get(), SIGNAL(renderStarted(bool)), this, SLOT(onEngineStarted(bool)) );
 
+    _imp->staleCueClock.start();
+    _imp->staleCueTimer.setSingleShot(true);
+    // A coarse timer may fire early, which would cost an extra wake-up before each deadline.
+    _imp->staleCueTimer.setTimerType(Qt::PreciseTimer);
+    QObject::connect(&_imp->staleCueTimer, &QTimer::timeout, this, &ViewerTab::onStaleCueTimeout);
+    QObject::connect(_imp->viewerNode, &ViewerInstance::staleChanged, this, &ViewerTab::onViewerStaleChanged);
+
     _imp->mustSetUpPlaybackButtonsTimer.setSingleShot(true);
     QObject::connect( &_imp->mustSetUpPlaybackButtonsTimer, SIGNAL(timeout()), this, SLOT(onSetDownPlaybackButtonsTimeout()) );
     manageSlotsForInfoWidget(0, true);
@@ -1383,6 +1390,11 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     QObject::connect( _imp->fullFrameProcessingButton, SIGNAL(clicked(bool)), this, SLOT(onFullFrameButtonToggle(bool)) );
     QObject::connect(_imp->autoProxyButton, SIGNAL(clicked(bool)), this, SLOT(onAutoProxyButtonToggle(bool)));
     QObject::connect(appPTR->getCurrentSettings().get(), &Settings::settingChanged, this, [this](KnobI* knob) {
+        if (knob && (knob->getName() == "staleCueStyle")) {
+            refreshStaleCue();
+
+            return;
+        }
         if (!knob || (knob->getName() != "autoProxyScrubbing")) {
             return;
         }

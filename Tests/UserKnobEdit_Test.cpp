@@ -1418,17 +1418,19 @@ TEST_F(UserKnobEdit, AKnobNamedLikeAnInnerNodeCanStillBeEdited)
     groupArgs.setProperty<bool>(kCreateNodeArgsPropNodeGroupDisableCreateInitialNodes, true);
     NodePtr group = getApp()->createNode(groupArgs);
     ASSERT_TRUE(bool(group));
-    KnobIPtr box = add(group, makeSpec(KnobGroup::typeNameStatic(), "shared"));
-    ASSERT_TRUE(box != nullptr);
     NodeGroupPtr collection = std::dynamic_pointer_cast<NodeGroup>(group->getEffectInstance());
     ASSERT_TRUE(bool(collection));
     CreateNodeArgs innerArgs(PLUGINID_NATRON_BLUR, collection);
     innerArgs.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
     NodePtr inner = getApp()->createNode(innerArgs);
     ASSERT_TRUE(bool(inner));
-    // setScriptName() refuses a name a parameter of the group has.
-    inner->setScriptName_no_error_check("shared");
+    inner->setScriptName("shared");
     ASSERT_TRUE(bool(collection->getNodeByName("shared")));
+    // Renaming the node refuses a name a parameter of the group has, and the editor refuses a new
+    // parameter named like a node, but the Python creators do not look at the group's nodes.
+    ASSERT_TRUE(run(getApp()->getAppIDString() + "." + group->getFullyQualifiedName() + ".createGroupParam('shared', 'Shared')\n"));
+    KnobIPtr box = group->getKnobByName("shared");
+    ASSERT_TRUE(box != nullptr);
 
     UserKnobSpec spec = specFromKnob(box);
     spec.label = "Shared Box";

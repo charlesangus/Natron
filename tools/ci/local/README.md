@@ -766,7 +766,7 @@ password=PASS
 docker_url=http://USER:PASS@CACHE_SERVICE:PORT|layout=bazel
 # Ignored by devshell.sh: for processes on the cache host, and for anywhere.
 host_url=http://USER:PASS@HOST:PORT|layout=bazel
-wan_url=https://USER:PASS@cache.example.com|layout=bazel
+wan_url=https://USER:PASS@cache.example.com|@layout=bazel
 # Optional overrides of what devshell.sh picks from the keys above.
 url=...
 network=CACHE_NETWORK
@@ -788,7 +788,7 @@ ignored, as other tools read them; any other key draws a warning naming it.
 To use the public HTTPS address from the container, set `url=` to the
 `wan_url` value (and no `network=`). `https://` URLs go through the
 `ccache-storage-https` helper, which the image installs in `/usr/local/bin`;
-ccache's built-in client serves `http://` URLs.
+ccache's built-in client serves `http://` URLs. The helper takes its layout as a custom attribute, so an `https://` URL needs `@layout=bazel` where an `http://` URL has `layout=bazel`.
 
 `devshell.sh` reads the file on every call and passes `CCACHE_REMOTE_STORAGE`
 on every `docker exec`, so a running container picks up a new or changed file

@@ -637,6 +637,7 @@ future core work has solid ground to build on.
 
 # Open questions
 
+- **`Project.importTemplate` Python binding, for /cat-plan (PM, 2026-11-21, from M103 - Graph Diff And Merge):** unassigned; deferred from M103. M104 - Merge Resolution UI owns the GUI and undo for template import.
 - **M278 - Translucent Selection Highlight (PM, 2026-11-21):** five sign-off screenshots of selection highlighting sent (files in .worktrees/m278/build/remote/release/gui/m278_selection_highlight/). OK them, or say what to change, including whether the display-colour tint is right.
 - **Deleted-knob listener dependencies, for /cat-plan as an E14 - Architecture stub (PM, 2026-11-20, from M372 - User Knob Engine Edits):** `KnobHelper::deleteKnob` (Engine/Knob.cpp:907–961) marks listener expressions invalid but keeps their dependency on the deleted knob. Its recheck may re-bind them to it. Any later setExpression on such a listener, while the deleted knob is kept alive by Python or a test, asserts in `Node::onKnobSlaved` (`master->getHolder()`). M372 works around it on its own paths.
 - **M438 - Lens Distortion In The USD Scene follow-ups, for /cat-plan (PM, 2026-11-20):** the user chose both encodings in a lens prim. File the follow-up milestones A–G from PLAN/DESIGN/2026-11-14-usd-lens-distortion-design.md; M438 is done once they are filed.

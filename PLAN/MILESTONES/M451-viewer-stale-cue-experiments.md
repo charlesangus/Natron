@@ -92,3 +92,4 @@ The milestone has three steps. First it separates **when** the cue shows (a debo
 - 2026-11-17 — Review fixes in 83ab2c2ce (gate 44213436867 green). PR #310 is a draft until the head-to-head pick (user: no PR before choosing). UAT AppImage build/appimages/Natron-m451-viewer-stale-cue-experiments.{AppImage,md}.
 - 2026-11-21 — **UAT pick (user):** ship the preference with Corner Dot (the default) and Subtle Outline; remove the other styles. Default timings stay as in the UAT AppImage (400 ms delay, 500 ms hold). P3.T2 is closed; P4.T1 removes the rest.
 - 2026-11-21 — P4.T1 done (rebased on main): Edge Line and Toolbar Spinner are removed with all their code. The preference is Off / Subtle Outline / Corner Dot, default Corner Dot, 400 ms delay and 500 ms hold. **PM call:** Off stays, so the cue can be disabled. PR #310 is marked ready, and the gate is running.
+- 2026-11-21 — Merged as PR #310 (gate green on 2ab6ef443, PR CI green).

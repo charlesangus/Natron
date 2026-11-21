@@ -744,7 +744,7 @@ KnobGuiPath::createWidget(QHBoxLayout* layout)
         QObject::connect( _lineEdit, SIGNAL(editingFinished()), this, SLOT(onTextEdited()) );
 
         enableRightClickMenu(_lineEdit, 0);
-        _openFileButton = new Button( layout->parentWidget() );
+        _openFileButton = new Button(_mainContainer);
         _openFileButton->setFixedSize(NATRON_MEDIUM_BUTTON_SIZE, NATRON_MEDIUM_BUTTON_SIZE);
         _openFileButton->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Click to select a path to append to/replace this variable."), NATRON_NAMESPACE::WhiteSpaceNormal) );
         QIcon pix;

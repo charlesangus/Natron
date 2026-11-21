@@ -76,6 +76,9 @@ public:
         eKnobWarningLoopDriverStale
     };
 
+    // Set on a warning indicator whose icon is not made yet: the logical icon size to make it at.
+    static constexpr const char* warningIconSizeProperty = "_natronWarningIconSize";
+
 public:
     // TODO: enable_shared_from_this
     // constructors should be privatized in any class that derives from std::enable_shared_from_this<>

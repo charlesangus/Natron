@@ -41,6 +41,8 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/KnobGuiPrivate.h"
 #include "Gui/KnobUndoCommand.h" // SetExpressionCommand...
+#include "Gui/Label.h"
+#include "Gui/ThemedIcon.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -640,6 +642,11 @@ KnobGui::refreshKnobWarningIndicatorVisibility()
         }
     }
     if (hasWarning) {
+        const QVariant iconSize = _imp->warningIndicator->property(warningIconSizeProperty);
+        if (iconSize.isValid()) {
+            _imp->warningIndicator->setProperty(warningIconSizeProperty, QVariant());
+            ThemedIcon::setLabelIcon(_imp->warningIndicator, ThemedIcon::messageIcon(ThemedIcon::eMessageGlyphError, iconSize.toInt()), iconSize.toInt());
+        }
         _imp->warningIndicator->setToolTip(fullToolTip);
     }
     _imp->warningIndicator->setVisible(hasWarning);

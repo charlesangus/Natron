@@ -434,6 +434,26 @@ DockablePanel::~DockablePanel()
 }
 
 bool
+DockablePanel::event(QEvent* e)
+{
+    if (!NodeCreationStageLog::enabled()) {
+        return QFrame::event(e);
+    }
+    if (e->type() == QEvent::LayoutRequest) {
+        NodeCreationStageLog::Scope stage("panelLayout");
+        return QFrame::event(e);
+    }
+    if ((e->type() == QEvent::Paint) && !_firstPaintLogged) {
+        _firstPaintLogged = true;
+        // Rows paint after the panel in the same repaint pass, so the span runs until the event loop is
+        // back: every widget of the first frame plus the flush.
+        NodeCreationStageLog::Scope* paint = new NodeCreationStageLog::Scope("panelFirstPaint");
+        QTimer::singleShot(0, qApp, [paint]() { delete paint; });
+    }
+    return QFrame::event(e);
+}
+
+bool
 DockablePanel::isPagingEnabled() const
 {
     return _imp->_pagesEnabled;

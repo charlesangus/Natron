@@ -292,9 +292,12 @@ private:
         QFrame::mousePressEvent(e);
     }
 
+    virtual bool event(QEvent* e) OVERRIDE FINAL;
+
     QString helpString() const;
 
     std::unique_ptr<DockablePanelPrivate> _imp;
+    bool _firstPaintLogged = false;
 };
 
 NATRON_NAMESPACE_EXIT

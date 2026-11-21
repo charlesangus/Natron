@@ -178,6 +178,11 @@ plug-ins and is not the figure to read.
 | `panelInitPyPlug` | Disabling the interface of a node inside an unedited PyPlug. |
 | `knobToolTip` | Building one row's tooltip text, wherever it is asked for. |
 | `panelDock` | Adding the complete panel to the properties bin and showing it. |
+| `panelDockInsert` | Putting the panel in the properties bin's layout, inside `panelDock`. |
+| `panelDockPolish` | Resolving the style of every widget of the panel before it is shown, inside `panelDock`. |
+| `panelDockShow` | Showing the panel and its rows, inside `panelDock`. |
+| `panelLayout` | One layout pass of the panel. |
+| `panelFirstPaint` | The panel's first paint, from its paint event until the event loop is back: every widget of that frame plus the flush. |
 | `panelBuildTail` | What the panel build runs after the rows and the dock: the viewer interface, curve and dope sheet editors. |
 
 ## The two modes

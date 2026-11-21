@@ -524,7 +524,7 @@ KnobGuiValue::createWidget(QHBoxLayout* layout)
             boxContainerLayout->addWidget(subDesc);
         }
 
-        SpinBox *box = new KnobSpinBox(layout->parentWidget(), type, thisShared, i);
+        SpinBox* box = new KnobSpinBox(boxContainer, type, thisShared, i);
         NumericKnobValidator* validator = new NumericKnobValidator(box, thisShared);
         box->setValidator(validator);
         QObject::connect( box, SIGNAL(valueChanged(double)), this, SLOT(onSpinBoxValueChanged()) );
@@ -619,9 +619,8 @@ KnobGuiValue::createWidget(QHBoxLayout* layout)
             sliderType = ScaleSliderQWidget::eDataTypeInt;
         }
 
-
-        _imp->slider = new ScaleSliderQWidget( dispminGui, dispmaxGui, value0, knob->getEvaluateOnChange(),
-                                               sliderType, getGui(), eScaleTypeLinear, layout->parentWidget() );
+        _imp->slider = new ScaleSliderQWidget(dispminGui, dispmaxGui, value0, knob->getEvaluateOnChange(),
+                                              sliderType, getGui(), eScaleTypeLinear, allSpinBoxesContainer);
 
         _imp->slider->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
         if ( hasToolTip() ) {

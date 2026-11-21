@@ -837,28 +837,20 @@ workAroundGridLayoutBug(QGridLayout* layout)
     // See http://stackoverflow.com/questions/14033902/qt-qgridlayout-automatically-centers-moves-items-to-the-middle for
     // a bug of QGridLayout: basically all items are centered, but we would like to add stretch in the bottom of the layout.
     // To do this we add an empty widget with an expanding vertical size policy.
-    QWidget* foundSpacer = 0;
+    // The spacer is remembered on the layout so placing a row does not scan the whole grid for it.
+    static const char* const spacerProperty = "_natronGridSpacer";
+    QWidget* foundSpacer = qobject_cast<QWidget*>(layout->property(spacerProperty).value<QObject*>());
 
-    for (int i = 0; i < layout->rowCount(); ++i) {
-        QLayoutItem* item = layout->itemAtPosition(i, 0);
-        if (!item) {
-            continue;
-        }
-        QWidget* w = item->widget();
-        if (!w) {
-            continue;
-        }
-        if ( w->objectName() == QString::fromUtf8("emptyWidget") ) {
-            foundSpacer = w;
-            break;
-        }
-    }
     if (foundSpacer) {
         layout->removeWidget(foundSpacer);
     } else {
         foundSpacer = new QWidget( layout->parentWidget() );
         foundSpacer->setObjectName( QString::fromUtf8("emptyWidget") );
         foundSpacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+        layout->setProperty(spacerProperty, QVariant::fromValue<QObject*>(foundSpacer));
+        QObject::connect(foundSpacer, &QObject::destroyed, layout, [layout]() {
+            layout->setProperty(spacerProperty, QVariant());
+        });
     }
 
     ///And add our stretch
@@ -930,9 +922,14 @@ KnobGuiContainerHelper::buildKnobRow(const KnobGuiPtr& ret,
     const int fieldBottomMargin = isSectionBoundary ? TO_DPIY(NATRON_DENSITY_SECTION_GAP) : TO_DPIY(NATRON_DENSITY_ROW_GAP);
     const int labelLeftMargin = (parentIsGroup && !parentIsGroup->isTab()) ? TO_DPIX(NATRON_DENSITY_GROUP_INDENT) : 0;
 
+    // Widgets are made in the widget whose layout places them: re-parenting re-inherits the style of the whole
+    // subtree, and each widget resolves its style sheet rules once more before the panel's polish.
+    assert(layout && layout->parentWidget());
+    QWidget* rowParent = layout->parentWidget();
+
     if (makeNewLine) {
         /// if new line is not turned off, create a new line
-        fieldContainer = createKnobHorizontalFieldContainer(page->tab);
+        fieldContainer = createKnobHorizontalFieldContainer(rowParent);
         fieldLayout = new QHBoxLayout(fieldContainer);
         fieldLayout->setContentsMargins(0, fieldTopMargin, 0, fieldBottomMargin);
         fieldLayout->setSpacing(TO_DPIY(2));
@@ -958,19 +955,20 @@ KnobGuiContainerHelper::buildKnobRow(const KnobGuiPtr& ret,
     if (hasLabel) {
         NodeCreationStageLog::Scope labelStage("panelKnobLabel");
         if (makeNewLine) {
-            labelContainer = new QWidget(page->tab);
+            labelContainer = new QWidget(rowParent);
             labelLayout = new QHBoxLayout(labelContainer);
             labelLayout->setContentsMargins(labelLeftMargin, fieldTopMargin, 0, fieldBottomMargin);
             labelLayout->setSpacing(TO_DPIY(2));
         }
 
-        label = new KnobClickableLabel(QString(), ret, page->tab);
-        warningLabel = new Label(page->tab);
+        QWidget* labelParent = makeNewLine ? labelContainer : fieldContainer;
+        label = new KnobClickableLabel(QString(), ret, labelParent);
+        warningLabel = new Label(labelParent);
         warningLabel->setVisible(false);
         QFontMetrics fm(label->font(), 0);
         int pixSize = fm.height();
-        const QIcon stdErrorIcon = getStandardIcon(QMessageBox::Critical, pixSize);
-        ThemedIcon::setLabelIcon(warningLabel, stdErrorIcon, pixSize);
+        // Few rows ever show a warning, so the indicator gets its icon when it is first shown.
+        warningLabel->setProperty(KnobGui::warningIconSizeProperty, pixSize);
 
         bool pixmapSet = false;
         if (!labelIconFilePath.empty()) {
@@ -982,7 +980,7 @@ KnobGuiContainerHelper::buildKnobRow(const KnobGuiPtr& ret,
             } else if (labelIconFilePath == "dialog-question") {
                 themedLabelIcon = getStandardIcon(QMessageBox::Question, pixSize);
             } else if (labelIconFilePath == "dialog-error") {
-                themedLabelIcon = stdErrorIcon;
+                themedLabelIcon = getStandardIcon(QMessageBox::Critical, pixSize);
             } else if (labelIconFilePath == "dialog-information") {
                 themedLabelIcon = getStandardIcon(QMessageBox::Information, pixSize);
             } else if (ThemedIcon::isSvgPath(iconPath)) {

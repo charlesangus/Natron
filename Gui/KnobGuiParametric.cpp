@@ -123,7 +123,7 @@ KnobGuiParametric::createWidget(QHBoxLayout* layout)
     QVBoxLayout* treeColumnLayout = new QVBoxLayout(treeColumn);
     treeColumnLayout->setContentsMargins(0, 0, 0, 0);
 
-    _tree = new QTreeWidget( layout->parentWidget() );
+    _tree = new QTreeWidget(treeColumn);
     _tree->setSelectionMode(QAbstractItemView::ContiguousSelection);
     _tree->setColumnCount(1);
     _tree->header()->close();

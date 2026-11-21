@@ -1275,3 +1275,166 @@ TEST_F(UserKnobEdit, NoOpEditsAddNoUndoEntry)
     EXPECT_EQ(press, blur->getKnobByName("press"));
     EXPECT_EQ(script.script, press->getScript());
 }
+
+TEST_F(UserKnobEdit, LinkedReadersFollowATypeChangeAndItsUndo)
+{
+    NodePtr blur = createBlur();
+    NodePtr other = createBlur();
+    ASSERT_TRUE(bool(blur && other));
+    KnobIntPtr amount = addTyped<KnobInt>(blur, "amount");
+    KnobDoublePtr m1 = addTyped<KnobDouble>(other, "m1");
+    KnobDoublePtr m2 = addTyped<KnobDouble>(other, "m2");
+    ASSERT_TRUE(bool(amount && m1 && m2));
+    ASSERT_TRUE(m1->linkTo(0, m2, 0));
+    EXPECT_NO_THROW(m1->setExpression(0, blur->getScriptName() + ".amount.get()", false, true));
+    ASSERT_EQ(m1->getExpression(0), m2->getExpression(0));
+
+    const auto follows = [&](const std::string& typeName,
+                             double value) {
+        KnobIPtr current = blur->getKnobByName("amount");
+        ASSERT_TRUE(current != nullptr);
+        EXPECT_EQ(typeName, current->typeName());
+        KnobIntPtr asInt = std::dynamic_pointer_cast<KnobInt>(current);
+        KnobDoublePtr asDouble = std::dynamic_pointer_cast<KnobDouble>(current);
+        if (asInt) {
+            asInt->setValue((int)value, ViewSpec::all(), 0);
+        } else {
+            ASSERT_TRUE(asDouble != nullptr);
+            asDouble->setValue(value, ViewSpec::all(), 0);
+        }
+        EXPECT_TRUE(m1->isLinked(0));
+        EXPECT_TRUE(isLinkedTo(m1, m2));
+        EXPECT_DOUBLE_EQ(value, m1->getValue(0));
+        EXPECT_DOUBLE_EQ(value, m2->getValue(0));
+    };
+    {
+        SCOPED_TRACE("before");
+        follows(KnobInt::typeNameStatic(), 2.);
+    }
+
+    recorder->commands.clear();
+    std::string error;
+    ASSERT_EQ(eUserKnobTypeChangeConverted, changeUserKnobType(holderOf(blur), amount, KnobDouble::typeNameStatic(), 1, false, nullptr, &error)) << error;
+    {
+        SCOPED_TRACE("changed");
+        follows(KnobDouble::typeNameStatic(), 3.5);
+    }
+    undoAll();
+    {
+        SCOPED_TRACE("undone");
+        follows(KnobInt::typeNameStatic(), 4.);
+    }
+    redoAll();
+    {
+        SCOPED_TRACE("redone");
+        follows(KnobDouble::typeNameStatic(), 5.5);
+    }
+}
+
+TEST_F(UserKnobEdit, NodeLinksSurviveATypeChangeAndItsUndo)
+{
+    NodePtr blur = createBlur();
+    NodePtr other = createBlur();
+    ASSERT_TRUE(bool(blur && other));
+    KnobDoublePtr amount = addTyped<KnobDouble>(blur, "amount");
+    KnobDoublePtr partner = addTyped<KnobDouble>(other, "partner");
+    ASSERT_TRUE(bool(amount && partner));
+    ASSERT_TRUE(amount->linkTo(0, partner, 0));
+    KnobLinkGroupPtr group = amount->getLinkGroup(0);
+    ASSERT_TRUE(group != nullptr);
+    group->setMemberNodeLink(amount.get(), 0, true);
+    group->setMemberNodeLink(partner.get(), 0, true);
+
+    const auto check = [&](const std::string& typeName) {
+        KnobIPtr current = blur->getKnobByName("amount");
+        ASSERT_TRUE(current != nullptr);
+        EXPECT_EQ(typeName, current->typeName());
+        EXPECT_TRUE(isLinkedTo(current, partner));
+        KnobLinkGroupPtr currentGroup = current->getLinkGroup(0);
+        ASSERT_TRUE(currentGroup != nullptr);
+        EXPECT_EQ(currentGroup, partner->getLinkGroup(0));
+        EXPECT_TRUE(currentGroup->isMemberLinked(current.get(), 0));
+        EXPECT_TRUE(currentGroup->isMemberLinked(partner.get(), 0));
+        EXPECT_TRUE(currentGroup->isMemberNodeLink(current.get(), 0));
+        EXPECT_TRUE(currentGroup->isMemberNodeLink(partner.get(), 0));
+    };
+
+    recorder->commands.clear();
+    std::string error;
+    ASSERT_EQ(eUserKnobTypeChangeConverted, changeUserKnobType(holderOf(blur), amount, KnobInt::typeNameStatic(), 1, false, nullptr, &error)) << error;
+    {
+        SCOPED_TRACE("changed");
+        check(KnobInt::typeNameStatic());
+    }
+    undoAll();
+    {
+        SCOPED_TRACE("undone");
+        check(KnobDouble::typeNameStatic());
+    }
+    redoAll();
+    {
+        SCOPED_TRACE("redone");
+        check(KnobInt::typeNameStatic());
+    }
+}
+
+TEST_F(UserKnobEdit, AnUnlinkedGroupMemberSurvivesATypeChange)
+{
+    NodePtr blur = createBlur();
+    NodePtr other = createBlur();
+    ASSERT_TRUE(bool(blur && other));
+    KnobDoublePtr amount = addTyped<KnobDouble>(blur, "amount");
+    KnobDoublePtr partner = addTyped<KnobDouble>(other, "partner");
+    ASSERT_TRUE(bool(amount && partner));
+    ASSERT_TRUE(amount->linkTo(0, partner, 0));
+    ASSERT_TRUE(amount->unlinkFromGroups());
+    amount->setValue(2., ViewSpec::all(), 0);
+    partner->setValue(7., ViewSpec::all(), 0);
+
+    KnobIPtr replacement;
+    std::string error;
+    ASSERT_EQ(eUserKnobTypeChangeConverted, changeUserKnobType(holderOf(blur), amount, KnobInt::typeNameStatic(), 1, false, &replacement, &error)) << error;
+    KnobIntPtr asInt = std::dynamic_pointer_cast<KnobInt>(replacement);
+    ASSERT_TRUE(asInt != nullptr);
+    KnobLinkGroupPtr group = replacement->getLinkGroup(0);
+    ASSERT_TRUE(group != nullptr);
+    EXPECT_EQ(group, partner->getLinkGroup(0));
+    EXPECT_FALSE(replacement->isLinked(0));
+    EXPECT_TRUE(partner->isLinked(0));
+    EXPECT_EQ(2, asInt->getValue(0));
+    EXPECT_DOUBLE_EQ(7., partner->getValue(0));
+
+    ASSERT_TRUE(replacement->relinkToGroups());
+    EXPECT_TRUE(replacement->isLinked(0));
+    EXPECT_EQ(7, asInt->getValue(0));
+    partner->setValue(9., ViewSpec::all(), 0);
+    EXPECT_EQ(9, asInt->getValue(0));
+}
+
+TEST_F(UserKnobEdit, AKnobNamedLikeAnInnerNodeCanStillBeEdited)
+{
+    CreateNodeArgs groupArgs(PLUGINID_NATRON_GROUP, getApp()->getProject());
+    groupArgs.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
+    groupArgs.setProperty<bool>(kCreateNodeArgsPropNodeGroupDisableCreateInitialNodes, true);
+    NodePtr group = getApp()->createNode(groupArgs);
+    ASSERT_TRUE(bool(group));
+    KnobIPtr box = add(group, makeSpec(KnobGroup::typeNameStatic(), "shared"));
+    ASSERT_TRUE(box != nullptr);
+    NodeGroupPtr collection = std::dynamic_pointer_cast<NodeGroup>(group->getEffectInstance());
+    ASSERT_TRUE(bool(collection));
+    CreateNodeArgs innerArgs(PLUGINID_NATRON_BLUR, collection);
+    innerArgs.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
+    NodePtr inner = getApp()->createNode(innerArgs);
+    ASSERT_TRUE(bool(inner));
+    // setScriptName() refuses a name a parameter of the group has.
+    inner->setScriptName_no_error_check("shared");
+    ASSERT_TRUE(bool(collection->getNodeByName("shared")));
+
+    UserKnobSpec spec = specFromKnob(box);
+    spec.label = "Shared Box";
+    EXPECT_TRUE(validateSpec(holderOf(group), box, spec).empty()) << validateSpec(holderOf(group), box, spec);
+    std::string error;
+    EXPECT_TRUE(applySpec(holderOf(group), box, spec, &error)) << error;
+    EXPECT_EQ("Shared Box", box->getLabel());
+    EXPECT_EQ(box, group->getKnobByName("shared"));
+}

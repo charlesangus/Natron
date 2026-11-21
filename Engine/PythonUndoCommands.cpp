@@ -28,13 +28,16 @@
 #include <algorithm>
 #include <list>
 #include <map>
+#include <string>
 #include <vector>
 
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/GraphEditRecorder.h"
 #include "Engine/IsolatedJob.h"
 #include "Engine/Knob.h"
+#include "Engine/KnobFactory.h"
 #include "Engine/KnobLinkGroup.h"
 #include "Engine/Node.h"
 #include "Engine/Project.h"
@@ -900,12 +903,32 @@ struct PythonUserKnobs {
  * leaves those knobs with expressions naming knobs that are gone and links that were dropped.
  */
 struct UserKnobDependentStates {
+    // The user knob dimension a dimension shares a link group with, and both members' flags in it.
+    struct Link {
+        std::string partner;
+        int partnerDimension = -1;
+        bool linked = false;
+        bool nodeLink = false;
+        bool partnerLinked = false;
+        bool partnerNodeLink = false;
+
+        bool operator==(const Link& other) const
+        {
+            return (partner == other.partner) && (partnerDimension == other.partnerDimension) && (linked == other.linked) && (nodeLink == other.nodeLink) && (partnerLinked == other.partnerLinked) && (partnerNodeLink == other.partnerNodeLink);
+        }
+
+        bool operator!=(const Link& other) const
+        {
+            return !(*this == other);
+        }
+    };
+
     struct Dependent {
         UndoKnobRef knob;
         std::vector<std::string> expressions;
         std::vector<bool> expressionsHaveRet;
-        // Per dimension, the user knob and dimension it is linked to, or an empty name.
-        std::vector<std::pair<std::string, int>> links;
+        // Per dimension; an empty partner name when the dimension shares no group with a user knob.
+        std::vector<Link> links;
     };
 
     std::vector<Dependent> dependents;
@@ -934,9 +957,16 @@ struct UserKnobDependentStates {
             for (KnobI::ListenerDimsMap::const_iterator l = listeners.begin(); l != listeners.end(); ++l) {
                 add(l->first.lock());
             }
-            const std::vector<KnobLinkedDimension> linked = (*it)->getLinkedKnobs();
-            for (std::size_t i = 0; i < linked.size(); ++i) {
-                add(linked[i].knob);
+            // Unlinked members too: they can rejoin the group.
+            for (int i = 0; i < (*it)->getDimension(); ++i) {
+                KnobLinkGroupPtr group = (*it)->getLinkGroup(i);
+                if (!group) {
+                    continue;
+                }
+                const std::vector<KnobLinkGroup::Member> members = group->getMembers();
+                for (std::size_t m = 0; m < members.size(); ++m) {
+                    add(members[m].knob.lock());
+                }
             }
         }
 
@@ -949,16 +979,35 @@ struct UserKnobDependentStates {
         Dependent dependent;
         dependent.knob = UndoKnobRef(knob);
         const int dimensionCount = knob->getDimension();
-        dependent.links.assign(dimensionCount, std::make_pair(std::string(), -1));
+        dependent.links.resize(dimensionCount);
         for (int i = 0; i < dimensionCount; ++i) {
             dependent.expressions.push_back(knob->getExpression(i));
             dependent.expressionsHaveRet.push_back(knob->isExpressionUsingRetVariable(i));
-        }
-        const std::vector<KnobLinkedDimension> linked = knob->getLinkedKnobs();
-        for (std::size_t i = 0; i < linked.size(); ++i) {
-            if (isOwnUserKnob(node, linked[i].knob) && (linked[i].dimension >= 0) && (linked[i].dimension < dimensionCount)) {
-                dependent.links[linked[i].dimension] = std::make_pair(linked[i].knob->getName(), linked[i].otherDimension);
+            KnobLinkGroupPtr group = knob->getLinkGroup(i);
+            if (!group) {
+                continue;
             }
+            const std::vector<KnobLinkGroup::Member> members = group->getMembers();
+            const KnobLinkGroup::Member* partner = 0;
+            KnobIPtr partnerKnob;
+            for (std::size_t m = 0; m < members.size(); ++m) {
+                KnobIPtr member = members[m].knob.lock();
+                if (!isOwnUserKnob(node, member) || (partner && partner->linked)) {
+                    continue;
+                }
+                partner = &members[m];
+                partnerKnob = member;
+            }
+            if (!partner) {
+                continue;
+            }
+            Link& link = dependent.links[i];
+            link.partner = partnerKnob->getName();
+            link.partnerDimension = partner->dimension;
+            link.linked = group->isMemberLinked(knob.get(), i);
+            link.nodeLink = group->isMemberNodeLink(knob.get(), i);
+            link.partnerLinked = partner->linked;
+            link.partnerNodeLink = partner->nodeLink;
         }
 
         return dependent;
@@ -1001,23 +1050,79 @@ struct UserKnobDependentStates {
         return ret;
     }
 
-    // Before the user knobs are rebuilt, while the ones these knobs read are still on the node.
+    /*
+     * Before the user knobs are rebuilt, while the ones these knobs read are still on the node. Linked
+     * dimensions too: their members are dependents as well, and apply() sets every expression again.
+     */
     void clearExpressions() const
     {
         for (std::size_t d = 0; d < dependents.size(); ++d) {
             KnobIPtr knob = dependents[d].knob.lock();
-            if (knob && (knob->getDimension() == (int)dependents[d].expressions.size())) {
-                clearUnlinkedExpressions(knob);
+            if (!knob || (knob->getDimension() != (int)dependents[d].expressions.size())) {
+                continue;
+            }
+            for (int i = 0; i < knob->getDimension(); ++i) {
+                if (!knob->getExpression(i).empty()) {
+                    knob->clearExpression(i, true);
+                }
             }
         }
     }
 
-    void apply(const Node& node) const
+    // Returns whether the dimension is in partner's group afterwards.
+    static bool relink(const KnobIPtr& knob,
+                       int dimension,
+                       const KnobIPtr& partner,
+                       const Link& link)
+    {
+        KnobLinkGroupPtr group = knob->getLinkGroup(dimension);
+        KnobLinkGroupPtr partnerGroup = partner->getLinkGroup(link.partnerDimension);
+        KnobHelperPtr ownState;
+        if (!group || (group != partnerGroup)) {
+            if (!link.linked) {
+                // Joining adopts the group's state, which an unlinked member does not share.
+                ownState = appPTR->getKnobFactory().createKnob(knob->typeName(), NULL, knob->getName(), knob->getDimension(), false);
+                if (ownState) {
+                    ownState->clone(knob.get(), dimension, dimension);
+                }
+            }
+            if (partnerGroup) {
+                // Linking to an unlinked member would move it out of its group.
+                partnerGroup->setMemberLinked(partner.get(), link.partnerDimension, true);
+            }
+            knob->linkTo(dimension, partner, link.partnerDimension);
+            group = knob->getLinkGroup(dimension);
+            if (partnerGroup && (group != partnerGroup)) {
+                partnerGroup->setMemberLinked(partner.get(), link.partnerDimension, link.partnerLinked);
+            }
+        }
+        if (!group || (group != partner->getLinkGroup(link.partnerDimension))) {
+            return false;
+        }
+        group->setMemberNodeLink(knob.get(), dimension, link.nodeLink);
+        group->setMemberNodeLink(partner.get(), link.partnerDimension, link.partnerNodeLink);
+        if (link.linked && !group->isMemberLinked(knob.get(), dimension)) {
+            group->setMemberLinked(partner.get(), link.partnerDimension, true);
+            knob->linkTo(dimension, partner, link.partnerDimension);
+        }
+        group->setMemberLinked(partner.get(), link.partnerDimension, link.partnerLinked);
+        if (!link.linked) {
+            group->setMemberLinked(knob.get(), dimension, false);
+            if (ownState) {
+                knob->clone(ownState.get(), dimension, dimension);
+            }
+        }
+
+        return true;
+    }
+
+    void apply(Node& node) const
     {
         EffectInstancePtr effect = node.getEffectInstance();
         if (!effect) {
             return;
         }
+        bool nodeLinks = false;
         for (std::size_t d = 0; d < dependents.size(); ++d) {
             const Dependent& dependent = dependents[d];
             KnobIPtr knob = dependent.knob.lock();
@@ -1025,28 +1130,30 @@ struct UserKnobDependentStates {
                 continue;
             }
             for (int i = 0; i < knob->getDimension(); ++i) {
-                const std::pair<std::string, int>& link = dependent.links[i];
-                KnobIPtr partner = link.first.empty() ? KnobIPtr() : effect->getKnobByName(link.first);
-                if (partner && (link.second >= 0) && (link.second < partner->getDimension())) {
-                    KnobLinkGroupPtr group = knob->getLinkGroup(i);
-                    if (!group || !knob->isLinked(i) || (group != partner->getLinkGroup(link.second))) {
-                        knob->linkTo(i, partner, link.second);
+                const Link& link = dependent.links[i];
+                KnobIPtr partner = link.partner.empty() ? KnobIPtr() : effect->getKnobByName(link.partner);
+                if (partner && (link.partnerDimension >= 0) && (link.partnerDimension < partner->getDimension()) && relink(knob, i, partner, link)) {
+                    nodeLinks |= link.nodeLink || link.partnerNodeLink;
+                    if (link.linked) {
+                        // A linked dimension shares the group's expression.
+                        continue;
                     }
-                    // A linked dimension shares the group's expression.
-                    continue;
                 }
-                if (knob->getExpression(i) == dependent.expressions[i]) {
-                    continue;
-                }
+                // Even when the text is unchanged: it was read from the knobs the rebuild replaced.
                 try {
                     if (dependent.expressions[i].empty()) {
-                        knob->clearExpression(i, true);
+                        if (!knob->getExpression(i).empty()) {
+                            knob->clearExpression(i, true);
+                        }
                     } else {
                         knob->setExpression(i, dependent.expressions[i], dependent.expressionsHaveRet[i], false);
                     }
                 } catch (...) {
                 }
             }
+        }
+        if (nodeLinks) {
+            node.emitLinksChanged(NodesList());
         }
     }
 };

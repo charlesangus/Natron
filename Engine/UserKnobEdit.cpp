@@ -39,6 +39,7 @@
 #include "Engine/Knob.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
+#include "Engine/KnobFactory.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobLinkGroup.h"
@@ -1142,7 +1143,7 @@ validateSpec(KnobHolder* holder,
         return "A parameter named " + spec.name + " already exists.";
     }
     NodeCollection* isCollection = dynamic_cast<NodeCollection*>(holder);
-    if (isCollection && isCollection->getNodeByName(spec.name)) {
+    if (isCollection && (!knob || (spec.name != knob->getName())) && isCollection->getNodeByName(spec.name)) {
         return "A node inside this group is named " + spec.name + ".";
     }
 
@@ -1434,11 +1435,17 @@ changeUserKnobType(KnobHolder* holder,
         DimensionExpression expression = { knob->getExpression(i), knob->isExpressionUsingRetVariable(i) };
         ownExpressions.push_back(expression);
     }
-    const std::vector<KnobLinkedDimension> links = knob->getLinkedKnobs();
-    std::vector<bool> nodeLinks(oldDimension, false);
+    struct GroupMembership {
+        KnobLinkGroupPtr group;
+        bool linked;
+        bool nodeLink;
+    };
+    std::vector<GroupMembership> memberships(oldDimension);
     for (int i = 0; i < oldDimension; ++i) {
-        KnobLinkGroupPtr group = knob->getLinkGroup(i);
-        nodeLinks[i] = group && group->isMemberNodeLink(knob.get(), i);
+        GroupMembership& membership = memberships[i];
+        membership.group = knob->getLinkGroup(i);
+        membership.linked = membership.group && membership.group->isMemberLinked(knob.get(), i);
+        membership.nodeLink = membership.group && membership.group->isMemberNodeLink(knob.get(), i);
     }
     const std::map<KnobIPtr, std::vector<DimensionExpression>> listeners = listenerExpressions(knob);
 
@@ -1452,6 +1459,41 @@ changeUserKnobType(KnobHolder* holder,
         holder->deleteKnob(replacement.get(), false);
 
         return fail("The parameter " + name + " could not be put back in " + parent->getName() + ".");
+    }
+
+    // Joined through the old knob while it is still a member: deleting it first would dissolve a group
+    // it shared with a single other knob, and linking to an unlinked member moves that member out.
+    bool restoredNodeLink = false;
+    if (convertible) {
+        KnobHelperPtr ownState;
+        for (int i = 0; i < dimension && i < oldDimension; ++i) {
+            const GroupMembership& membership = memberships[i];
+            if (!membership.group || (knob->getLinkGroup(i) != membership.group)) {
+                continue;
+            }
+            if (!membership.linked && !ownState) {
+                // Joining adopts the group's state, which an unlinked member does not share.
+                ownState = appPTR->getKnobFactory().createKnob(replacement->typeName(), NULL, name, dimension, false);
+                if (ownState) {
+                    ownState->clone(replacement.get());
+                }
+            }
+            membership.group->setMemberLinked(knob.get(), i, true);
+            if (!replacement->linkTo(i, knob, i) || (replacement->getLinkGroup(i) != membership.group)) {
+                continue;
+            }
+            membership.group->setMemberNodeLink(replacement.get(), i, membership.nodeLink);
+            restoredNodeLink |= membership.nodeLink;
+            if (!membership.linked) {
+                membership.group->setMemberLinked(replacement.get(), i, false);
+                if (ownState) {
+                    replacement->clone(ownState.get(), i, i);
+                }
+                if (ownExpressions[i].expression.empty() && !replacement->getExpression(i).empty()) {
+                    replacement->clearExpression(i, true);
+                }
+            }
+        }
     }
 
     // While the old knob is still on the holder: a listener still reading it once it is detached
@@ -1471,21 +1513,6 @@ changeUserKnobType(KnobHolder* holder,
         for (int i = 0; i < dimension && i < (int)ownExpressions.size(); ++i) {
             if (!ownExpressions[i].expression.empty()) {
                 setExpressionNoThrow(replacement, i, ownExpressions[i].expression, ownExpressions[i].hasRet);
-            }
-        }
-        bool restoredNodeLink = false;
-        for (std::size_t i = 0; i < links.size(); ++i) {
-            const KnobLinkedDimension& link = links[i];
-            if (!link.knob || (link.knob == knob) || (link.dimension >= dimension) || (link.otherDimension >= link.knob->getDimension())) {
-                continue;
-            }
-            if (!replacement->linkTo(link.dimension, link.knob, link.otherDimension) || !nodeLinks[link.dimension]) {
-                continue;
-            }
-            KnobLinkGroupPtr group = replacement->getLinkGroup(link.dimension);
-            if (group) {
-                group->setMemberNodeLink(replacement.get(), link.dimension, true);
-                restoredNodeLink = true;
             }
         }
         NodePtr node = nodeOfHolder(holder);

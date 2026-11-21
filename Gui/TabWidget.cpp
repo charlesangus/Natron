@@ -933,6 +933,13 @@ TabWidget::splitInternal(bool autoSave,
     newSplitter->setOrientation(orientation);
     _imp->gui->registerSplitter(newSplitter);
 
+    // The new splitter joins the parent splitter before this pane moves into it: through a
+    // parentless splitter the pane would leave the window, and each GL widget in it would lose
+    // its context.
+    if (parentIsSplitter) {
+        parentIsSplitter->insertChild_mt_safe(oldIndexInParentSplitter, newSplitter);
+    }
+
     /*Add this to the new splitter*/
     newSplitter->addWidget_mt_safe(this);
 
@@ -963,9 +970,6 @@ TabWidget::splitInternal(bool autoSave,
     newSplitter->setSizes_mt_safe(sizes);
 
     if (parentIsSplitter) {
-        /*Inserting back the new splitter at the original index*/
-        parentIsSplitter->insertChild_mt_safe(oldIndexInParentSplitter, newSplitter);
-
         /*restore the container original sizes*/
         parentIsSplitter->setSizes_mt_safe(oldSizeInParentSplitter);
     } else {
@@ -973,7 +977,6 @@ TabWidget::splitInternal(bool autoSave,
         parentIsFloating->setWidget(newSplitter);
         parentIsFloating->resize(splitterSize);
     }
-
 
     if (!_imp->gui->getApp()->getProject()->isLoadingProject() && autoSave) {
         _imp->gui->getApp()->triggerAutoSave();

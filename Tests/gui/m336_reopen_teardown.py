@@ -6,7 +6,8 @@ project, rebuild the graph. In the rounds listed in EARLY_CYCLES the reset comes
 is built, while the stage is still loading and drawing; in the others the first draw and the panel's
 rows are waited for first. After every reset it checks:
   - a timer fires on the main thread within RESPONSIVE_MS;
-  - the next graph's scene view draws and the Scene Graph panel lists /World.
+  - the next graph's scene view draws and the Scene Graph panel lists /World;
+  - splitting the viewer's pane for the panel leaves its GL widgets on the contexts they had.
 Two more rounds destroy the scene's viewer while it draws: one deletes the Viewer node, one closes the
 viewer's tab. Each is followed by a rebuilt graph that has to draw.
 
@@ -146,24 +147,60 @@ try:
         viewer.disconnectInput(0)
         require(viewer.connectInput(0, usd), "connect the Viewer to the USDRead")
 
-    def show_panel():
-        """Puts the Scene Graph panel beside the viewer, unless it already shows."""
+    def gl_widgets():
+        return widgets_of("SceneViewport") + widgets_of("ViewerGL")
+
+    def mark_contexts(pane):
+        """Tags the pane's GL widgets and their current contexts with a fresh token."""
+        _toggle[0] += 1
+        token = _toggle[0]
+        marked = 0
+        for w in gl_widgets():
+            ctx = w.context()
+            if ctx is not None and pane.isAncestorOf(w):
+                w.setProperty("natronSplitMark", token)
+                ctx.setProperty("natronSplitMark", token)
+                marked += 1
+        return token, marked
+
+    def kept_contexts(token):
+        """(widgets tagged with token, those whose context is still the tagged one)."""
+        tagged = kept = 0
+        for w in gl_widgets():
+            if w.property("natronSplitMark") != token:
+                continue
+            tagged += 1
+            ctx = w.context()
+            if ctx is not None and ctx.property("natronSplitMark") == token:
+                kept += 1
+        return tagged, kept
+
+    def show_panel(label):
+        """Puts the Scene Graph panel beside the viewer, unless it already shows.
+
+        The split must keep the viewer's GL widgets in the window: a context tagged before the split
+        is the one they hold after it, where a recreated context would carry no tag."""
         p = panel()
         if p is not None and p.isVisible():
             return
         home = ancestor_of_class(view(), "TabWidget")
         require(home is not None, "the scene view is in a pane")
+        token, marked = mark_contexts(home)
         split = app.getTabWidget(home.objectName()).splitHorizontally()
+        home = None
         require(split is not None, "split the viewer's pane")
         require(app.moveTab("sceneGraph", split), "move the Scene Graph panel beside the viewer")
         split = None
+        tagged, kept = kept_contexts(token)
+        check(marked >= 1 and tagged == marked and kept == marked,
+              "%s: splitting the viewer's pane keeps its GL contexts (%d of %d kept)" % (label, kept, marked))
 
     def wait_for_scene(label):
         ok = yield ("until", lambda: viewer_up() or view() is not None, STARTUP_TIMEOUT_S)
         require(ok, "%s: the viewer is up" % label)
         ok = yield ("until", scene_drawn, LOAD_TIMEOUT_S)
         require(ok, "%s: the scene view draws the city" % label)
-        show_panel()
+        show_panel(label)
         ok = yield ("until", lambda: panel() is not None and panel().isVisible() and row_count() >= 1, POLL_TIMEOUT_S)
         check(ok, "%s: the Scene Graph panel lists its rows (%d)" % (label, row_count()))
 

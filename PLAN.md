@@ -448,7 +448,7 @@ future core work has solid ground to build on.
 | M295 | Native DeepDefocus | todo | M294 |  | E8 | | | [M295-native-deepdefocus.md](PLAN/MILESTONES/M295-native-deepdefocus.md) |
 | M462 | Shared Optics Library | done | - | bosley-executor | E24 | F30 | | [M462-shared-optics-library.md](PLAN/MILESTONES/M462-shared-optics-library.md) |
 | M463 | Bundled Lens Database | todo | M462 |  | E24 | F30 | | [M463-bundled-lens-database.md](PLAN/MILESTONES/M463-bundled-lens-database.md) |
-| M465 | Aperture Model | doing | - | bosley-executor | E24 | F30 | | [M465-aperture-model.md](PLAN/MILESTONES/M465-aperture-model.md) |
+| M465 | Aperture Model | done | - | bosley-executor | E24 | F30 | | [M465-aperture-model.md](PLAN/MILESTONES/M465-aperture-model.md) |
 | M464 | FFT Library | done | - | bosley-executor | E24 | F31 | | [M464-fft-library.md](PLAN/MILESTONES/M464-fft-library.md) |
 | M472 | GPU Raster Pipelines | done | - | bosley-executor | E5 |  | | [M472-gpu-raster-pipelines.md](PLAN/MILESTONES/M472-gpu-raster-pipelines.md) |
 | M466 | LensFlare Ghost Tracing | todo | M462, M463, M464, M465 |  | E24 | F31 | | [M466-lensflare-ghost-tracing.md](PLAN/MILESTONES/M466-lensflare-ghost-tracing.md) |

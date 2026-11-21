@@ -56,3 +56,4 @@ Source: realflare (GPL-3.0-or-later) `flare/engine/tasks/shaders/aperture.frag`,
   - #1 can't be bit-exact: the gradient's division and Vulkan's sqrt aren't correctly rounded. The hard rounded case allows one sample per pixel on at most 16 of 7680 pixels; every other case keeps 1e-5.
 
   **Size and Image Size get no ratio lock (user):** the knob framework has none, and auto-fold is enough, so that part of the Scope is dropped. Gate re-running.
+- 2026-11-20 — Merged into feature/f30-lens-optics-base (bc99ce0af, #323) after review round 1, with PR CI green on fa5cd9f1a.

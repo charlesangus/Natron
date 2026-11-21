@@ -116,7 +116,7 @@ From the first valid baseline (VM, cloud-gpu-20261117T045608Z) and its sampled I
   - approach: round 9 killed Island-loaded load_all at ~89 GiB RSS (round 8: 20 GB); the render thread sat in `sendChanges` → `_SendPrimsAdded`. Find what each admit batch re-announces (prims already in Hydra, instancer masks over 30.9M instances); send dirties, not re-adds. Also the reveal_load_all stall (45 → 200 ms) now that loads join the fill queue.
   - verify: city-loaded and Island-loaded load_all RSS within ~10% of round 8; reveal_load_all stall ≤100.
   - size: L
-- [ ] M336.P3.T10 — Render context without the main thread waiting
+- [x] M336.P3.T10 — Render context without the main thread waiting
   - files: `Gui/SceneViewport.cpp` (`initializeGL`, `startRenderContext` ~7271, ~10269)
   - approach: connect's 100-145 ms is `initializeGL` waiting on `callOnRenderThread(makeRenderContext)`; post it and hold paints until ready. On reopen, `initializeGL` must not wait behind the old loop destroying its engine. Also orbit10k's cadence (city 18 fps, Lobby exactly 30 fps after P4.T3's frameSwapped-gated loop) and what Lobby's zero boxes mean.
   - verify: open_stall_ms and populate_full stall ≤100; orbit10k ≥30 fps on city and Lobby.
@@ -243,4 +243,4 @@ From the first valid baseline (VM, cloud-gpu-20261117T045608Z) and its sampled I
     - reopen is restoreDefaultLayout rebuilding the layout (wipeLayout/TabWidget::setParent → GL widget re-init) because the layout no longer matches the default, plus ~ViewerGL.
     - populate waits on the GIL.
   - Open/populate at 100–122 goes to the user. Fixes dispatched: no 2D flip on an empty input, a structural layout-kept test with deferred viewer deletion, and the bench's load-settle, poll timer and sampler.
-
+- 2026-11-20 — **Open and populate at 100–122 ms are within tolerance (user):** flat open 100.8, populate city-loaded 122.4 and Island-loaded 106.7 count as met. With orbit10k already met, P3.T10 is met. What remains: pattern_node (P3.T6), reopen (P3.T7) and the city load_all re-measure (P3.T9).

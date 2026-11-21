@@ -68,7 +68,7 @@ Scouted 2026-11-14 on `origin/main`:
     - Add a Tracker topology with 50 tracks, measured the same way.
     - Record median and p95.
     - Run it on unported main under `--xvfb` and commit the baseline.
-  - verify: `tools/bench/gui/run.sh --xvfb --driver roto` produces `overlay_draw` records for every shape count and the Tracker topology, and `compare.py` reads them.
+  - verify: `tools/bench/gui/run.sh --xvfb --preset overlay [--appimage PATH]` (roto driver, only `overlay_draw`, 3 reps, 30 minute cap) produces `overlay_draw` records for every shape count and the Tracker topology, and `compare.py` reads them.
   - size: M
 
 - [x] M434.P1.T4 — Draw-list cache and persistent GPU buffer

@@ -62,7 +62,9 @@
 #include "Engine/Interpolation.h"
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/MemoryInfo.h" // printAsRAM
+#include "Engine/Nodes/Image/StagePlan.h"
 #include "Engine/Nodes/Merge/Merge.h"
+#include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/RenderContext.h"
 #include "Engine/RenderStats.h"
 #include "Engine/RotoDrawableItem.h"
@@ -1485,34 +1487,25 @@ RotoDrawableItem::renderMaskInternal(const RectI& roi,
     if (cairo_surface_status(imgWrapper.cairoImg) != CAIRO_STATUS_SUCCESS) {
         return image;
     }
-    imgWrapper.ctx = cairo_create(imgWrapper.cairoImg);
-    //cairo_set_fill_rule(cr, CAIRO_FILL_RULE_EVEN_ODD); // creates holes on self-overlapping shapes
-    cairo_set_fill_rule(imgWrapper.ctx, CAIRO_FILL_RULE_WINDING);
-
-    // these Roto shapes must be rendered WITHOUT antialias, or the junction between the inner
-    // polygon and the feather zone will have artifacts. This is partly due to the fact that cairo
-    // meshes are not antialiased.
-    // Use a default feather distance of 1 pixel instead!
-    // UPDATE: unfortunately, this produces less artifacts, but there are still some remaining (use opacity=0.5 to test)
-    // maybe the inner polygon should be made of mesh patterns too?
-    cairo_set_antialias(imgWrapper.ctx, CAIRO_ANTIALIAS_NONE);
-
+    bool drawn = true;
     {
-        std::vector<cairo_pattern_t*> dotPatterns(ROTO_PRESSURE_LEVELS);
-        for (std::size_t i = 0; i < dotPatterns.size(); ++i) {
-            dotPatterns[i] = (cairo_pattern_t*)0;
-        }
-        {
-            RotoRenderProfile::StageTimer fill(RotoRenderProfile::eStageFill);
-            RotoContextPrivate::renderStroke(imgWrapper.ctx, dotPatterns, strokes, 0, this, doBuildUp, opacity, time, mipmapLevel);
-        }
+        RotoRenderProfile::StageTimer fill(RotoRenderProfile::eStageFill);
+        std::vector<RotoContextPrivate::StrokeDab> dabs;
+        RotoContextPrivate::collectStrokeDabs(strokes, 0, this, opacity, time, mipmapLevel, &dabs);
+        const int nThreads = appPTR->getNCPUsAvailableForEffect();
+        std::vector<RectI> bands;
+        makeStageRowBands(roi, nThreads, &bands);
+        RenderCancellation cancel(node->getEffectInstance().get());
+        drawn = RotoContextPrivate::renderStrokeDabBands(cairo_image_surface_get_data(imgWrapper.cairoImg),
+                                                         cairo_image_surface_get_stride(imgWrapper.cairoImg),
+                                                         cairoImgFormat, roi, bands, dabs, doBuildUp, opacity, nThreads, cancel);
+        cairo_surface_mark_dirty(imgWrapper.cairoImg);
+    }
+    if (!drawn) {
+        // The cache already holds the image, which is only partly drawn.
+        appPTR->removeFromNodeCache(image);
 
-        for (std::size_t i = 0; i < dotPatterns.size(); ++i) {
-            if (dotPatterns[i]) {
-                cairo_pattern_destroy(dotPatterns[i]);
-                dotPatterns[i] = 0;
-            }
-        }
+        return ImagePtr();
     }
 
     bool useOpacityToConvert = (isBezier != 0);
@@ -1601,16 +1594,18 @@ hardnessGaussLookup(double f)
 void
 RotoContextPrivate::renderDot(cairo_t* cr,
                               std::vector<cairo_pattern_t*>* dotPatterns,
-                              const Point &center,
+                              const Point& center,
                               double internalDotRadius,
                               double externalDotRadius,
                               double pressure,
                               bool doBuildUp,
-                              const std::vector<std::pair<double, double> >& opacityStops,
-                              double opacity)
+                              const std::vector<std::pair<double, double>>& opacityStops,
+                              double opacity,
+                              bool checkInsideTarget)
 {
     if ( !opacityStops.empty() ) {
         cairo_pattern_t* pattern;
+        bool ownsPattern = false;
         // sometimes, Qt gives a pressure level > 1... so we clamp it
         int pressureInt = int(std::max( 0., std::min(pressure, 1.) ) * (ROTO_PRESSURE_LEVELS - 1) + 0.5);
         assert(pressureInt >= 0 && pressureInt < ROTO_PRESSURE_LEVELS);
@@ -1625,11 +1620,15 @@ RotoContextPrivate::renderDot(cairo_t* cr,
                     cairo_pattern_add_color_stop_rgba(pattern, opacityStops[i].first, opacityStops[i].second, opacityStops[i].second, opacityStops[i].second, 1);
                 }
             }
-            //dotPatterns[pressureInt] = pattern;
+            ownsPattern = true;
         }
         cairo_translate(cr, center.x, center.y);
         cairo_set_source(cr, pattern);
         cairo_translate(cr, -center.x, -center.y);
+        if (ownsPattern) {
+            // The context holds its own reference to the source.
+            cairo_pattern_destroy(pattern);
+        }
     } else {
         if (doBuildUp) {
             cairo_set_source_rgba(cr, 1., 1., 1., opacity);
@@ -1639,13 +1638,16 @@ RotoContextPrivate::renderDot(cairo_t* cr,
     }
 #ifdef DEBUG
     //Make sure the dot we are about to render falls inside the clip region, otherwise the bounds of the image are mis-calculated.
-    cairo_surface_t* target = cairo_get_target(cr);
-    int w = cairo_image_surface_get_width(target);
-    int h = cairo_image_surface_get_height(target);
-    double x1, y1;
-    cairo_surface_get_device_offset(target, &x1, &y1);
-    assert(std::floor(center.x - externalDotRadius) >= -x1 && std::floor(center.x + externalDotRadius) < -x1 + w &&
-           std::floor(center.y - externalDotRadius) >= -y1 && std::floor(center.y + externalDotRadius) < -y1 + h);
+    if (checkInsideTarget) {
+        cairo_surface_t* target = cairo_get_target(cr);
+        int w = cairo_image_surface_get_width(target);
+        int h = cairo_image_surface_get_height(target);
+        double x1, y1;
+        cairo_surface_get_device_offset(target, &x1, &y1);
+        assert(std::floor(center.x - externalDotRadius) >= -x1 && std::floor(center.x + externalDotRadius) < -x1 + w && std::floor(center.y - externalDotRadius) >= -y1 && std::floor(center.y + externalDotRadius) < -y1 + h);
+    }
+#else
+    (void)checkInsideTarget;
 #endif
     cairo_arc(cr, center.x, center.y, externalDotRadius, 0, M_PI * 2);
     cairo_fill(cr);
@@ -1695,15 +1697,13 @@ getRenderDotParams(double alpha,
 }
 
 double
-RotoContextPrivate::renderStroke(cairo_t* cr,
-                                 std::vector<cairo_pattern_t*>& dotPatterns,
-                                 const std::list<std::list<std::pair<Point, double> > >& strokes,
-                                 double distToNext,
-                                 const RotoDrawableItem* stroke,
-                                 bool doBuildup,
-                                 double alpha,
-                                 double time,
-                                 unsigned int mipmapLevel)
+RotoContextPrivate::collectStrokeDabs(const std::list<std::list<std::pair<Point, double>>>& strokes,
+                                      double distToNext,
+                                      const RotoDrawableItem* stroke,
+                                      double alpha,
+                                      double time,
+                                      unsigned int mipmapLevel,
+                                      std::vector<StrokeDab>* dabs)
 {
     if ( strokes.empty() ) {
         return distToNext;
@@ -1712,8 +1712,6 @@ RotoContextPrivate::renderStroke(cairo_t* cr,
     if ( !stroke || !stroke->isActivated(time) ) {
         return distToNext;
     }
-
-    assert(dotPatterns.size() == ROTO_PRESSURE_LEVELS);
 
     KnobDoublePtr brushSizeKnob = stroke->getBrushSizeKnob();
     double brushSize = brushSizeKnob->getValueAtTime(time);
@@ -1745,8 +1743,6 @@ RotoContextPrivate::renderStroke(cairo_t* cr,
     if (mipmapLevel != 0) {
         brushSizePixel = std::max( 1., brushSizePixel / (1 << mipmapLevel) );
     }
-    cairo_set_operator(cr, doBuildup ? CAIRO_OPERATOR_OVER : CAIRO_OPERATOR_LIGHTEN);
-
 
     for (std::list<std::list<std::pair<Point, double> > >::const_iterator strokeIt = strokes.begin(); strokeIt != strokes.end(); ++strokeIt) {
         int firstPoint = (int)std::floor( (strokeIt->size() * writeOnStart) );
@@ -1773,7 +1769,13 @@ RotoContextPrivate::renderStroke(cairo_t* cr,
             double internalDotRadius, externalDotRadius, spacing;
             std::vector<std::pair<double, double> > opacityStops;
             getRenderDotParams(alpha, brushSizePixel, brushHardness, brushSpacing, it->second, pressureAffectsOpacity, pressureAffectsSize, pressureAffectsHardness, &internalDotRadius, &externalDotRadius, &spacing, &opacityStops);
-            renderDot(cr, &dotPatterns, it->first, internalDotRadius, externalDotRadius, it->second, doBuildup, opacityStops, alpha);
+            StrokeDab dab;
+            dab.center = it->first;
+            dab.internalRadius = internalDotRadius;
+            dab.externalRadius = externalDotRadius;
+            dab.pressure = it->second;
+            dab.opacityStops.swap(opacityStops);
+            dabs->push_back(std::move(dab));
             continue;
         }
 
@@ -1800,7 +1802,13 @@ RotoContextPrivate::renderStroke(cairo_t* cr,
                 double internalDotRadius, externalDotRadius, spacing;
                 std::vector<std::pair<double, double> > opacityStops;
                 getRenderDotParams(alpha, brushSizePixel, brushHardness, brushSpacing, pressure, pressureAffectsOpacity, pressureAffectsSize, pressureAffectsHardness, &internalDotRadius, &externalDotRadius, &spacing, &opacityStops);
-                renderDot(cr, &dotPatterns, center, internalDotRadius, externalDotRadius, pressure, doBuildup, opacityStops, alpha);
+                StrokeDab dab;
+                dab.center = center;
+                dab.internalRadius = internalDotRadius;
+                dab.externalRadius = externalDotRadius;
+                dab.pressure = pressure;
+                dab.opacityStops.swap(opacityStops);
+                dabs->push_back(std::move(dab));
 
                 distToNext += spacing;
             }
@@ -1814,7 +1822,92 @@ RotoContextPrivate::renderStroke(cairo_t* cr,
 
 
     return distToNext;
-} // RotoContextPrivate::renderStroke
+} // RotoContextPrivate::collectStrokeDabs
+
+void
+RotoContextPrivate::drawStrokeDabs(cairo_t* cr,
+                                   const std::vector<StrokeDab>& dabs,
+                                   bool doBuildup,
+                                   double alpha,
+                                   bool checkInsideTarget)
+{
+    cairo_set_operator(cr, doBuildup ? CAIRO_OPERATOR_OVER : CAIRO_OPERATOR_LIGHTEN);
+    for (std::size_t i = 0; i < dabs.size(); ++i) {
+        const StrokeDab& dab = dabs[i];
+        renderDot(cr, NULL, dab.center, dab.internalRadius, dab.externalRadius, dab.pressure, doBuildup, dab.opacityStops, alpha, checkInsideTarget);
+    }
+}
+
+double
+RotoContextPrivate::renderStroke(cairo_t* cr,
+                                 std::vector<cairo_pattern_t*>& dotPatterns,
+                                 const std::list<std::list<std::pair<Point, double>>>& strokes,
+                                 double distToNext,
+                                 const RotoDrawableItem* stroke,
+                                 bool doBuildup,
+                                 double alpha,
+                                 double time,
+                                 unsigned int mipmapLevel)
+{
+    assert(dotPatterns.size() == ROTO_PRESSURE_LEVELS);
+    (void)dotPatterns;
+    std::vector<StrokeDab> dabs;
+    distToNext = collectStrokeDabs(strokes, distToNext, stroke, alpha, time, mipmapLevel, &dabs);
+    drawStrokeDabs(cr, dabs, doBuildup, alpha, true);
+
+    return distToNext;
+}
+
+bool
+RotoContextPrivate::renderStrokeDabBands(unsigned char* data,
+                                         int stride,
+                                         cairo_format_t format,
+                                         const RectI& roi,
+                                         const std::vector<RectI>& bands,
+                                         const std::vector<StrokeDab>& dabs,
+                                         bool doBuildup,
+                                         double alpha,
+                                         int nThreads,
+                                         RenderCancellation& cancel)
+{
+    const int kDabsPerAbortCheck = 32;
+    std::atomic<bool> failed(false);
+    const std::function<void(int)> renderBand = [&](int bandIndex) {
+        const RectI& band = bands[bandIndex];
+        cairo_surface_t* surface = cairo_image_surface_create_for_data(data + (std::size_t)(band.y1 - roi.y1) * (std::size_t)stride,
+                                                                       format, roi.width(), band.height(), stride);
+        if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) {
+            failed.store(true);
+            cairo_surface_destroy(surface);
+
+            return;
+        }
+        cairo_surface_set_device_offset(surface, -roi.x1, -band.y1);
+        cairo_t* ctx = cairo_create(surface);
+        cairo_set_fill_rule(ctx, CAIRO_FILL_RULE_WINDING);
+        // Same as the whole-surface path: no antialiasing, or the inner polygon and the feather
+        // zone leave artifacts at their junction.
+        cairo_set_antialias(ctx, CAIRO_ANTIALIAS_NONE);
+        cairo_set_operator(ctx, doBuildup ? CAIRO_OPERATOR_OVER : CAIRO_OPERATOR_LIGHTEN);
+        for (std::size_t i = 0; i < dabs.size(); ++i) {
+            if ((i % kDabsPerAbortCheck == 0) && cancel.check()) {
+                break;
+            }
+            const StrokeDab& dab = dabs[i];
+            // A dab's pixels can reach one pixel past its circle's bounds.
+            if ((dab.center.y + dab.externalRadius + 1. < band.y1) || (dab.center.y - dab.externalRadius - 1. > band.y2)) {
+                continue;
+            }
+            renderDot(ctx, NULL, dab.center, dab.internalRadius, dab.externalRadius, dab.pressure, doBuildup, dab.opacityStops, alpha, false);
+        }
+        cairo_destroy(ctx);
+        cairo_surface_flush(surface);
+        cairo_surface_destroy(surface);
+    };
+    parallelForCancellable((int)bands.size(), nThreads, cancel, renderBand);
+
+    return !failed.load() && !cancel.check();
+}
 
 bool
 RotoContext::allocateAndRenderSingleDotStroke(int brushSizePixel,

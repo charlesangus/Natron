@@ -372,6 +372,8 @@ enum RotoPaintItemLifeTimeTypeEnum
 
 NATRON_NAMESPACE_ENTER
 
+class RenderCancellation;
+
 struct RotoFeatherVertex
 {
     double x,y;
@@ -2466,13 +2468,14 @@ public:
 
     static void renderDot(cairo_t* cr,
                           std::vector<cairo_pattern_t*>* dotPatterns,
-                          const Point &center,
+                          const Point& center,
                           double internalDotRadius,
                           double externalDotRadius,
                           double pressure,
                           bool doBuildUp,
-                          const std::vector<std::pair<double, double> >& opacityStops,
-                          double opacity);
+                          const std::vector<std::pair<double, double>>& opacityStops,
+                          double opacity,
+                          bool checkInsideTarget = true);
     static double renderStroke(cairo_t* cr,
                                std::vector<cairo_pattern_t*>& dotPatterns,
                                const std::list<std::list<std::pair<Point, double> > >& strokes,
@@ -2482,6 +2485,57 @@ public:
                                double opacity,
                                double time,
                                unsigned int mipmapLevel);
+
+    /**
+     * @brief One brush dab with everything renderDot() needs, evaluated up front so that bands
+     * can draw it without reading any knob.
+     **/
+    struct StrokeDab {
+        Point center;
+        double internalRadius;
+        double externalRadius;
+        double pressure;
+        std::vector<std::pair<double, double>> opacityStops;
+    };
+
+    /**
+     * @brief The dabs renderStroke() draws, in drawing order. Returns the distance to the next dab,
+     * as renderStroke() does. Reads the stroke's knobs, so it runs on the render thread.
+     **/
+    static double collectStrokeDabs(const std::list<std::list<std::pair<Point, double>>>& strokes,
+                                    double distToNext,
+                                    const RotoDrawableItem* stroke,
+                                    double alpha,
+                                    double time,
+                                    unsigned int mipmapLevel,
+                                    std::vector<StrokeDab>* dabs);
+
+    /**
+     * @brief Draws the dabs in order, with the operator renderStroke() picks for doBuildup.
+     **/
+    static void drawStrokeDabs(cairo_t* cr,
+                               const std::vector<StrokeDab>& dabs,
+                               bool doBuildup,
+                               double alpha,
+                               bool checkInsideTarget);
+
+    /**
+     * @brief Draws the dabs into the pixels of a cleared roi-sized cairo image surface (format,
+     * stride bytes per row), one cairo surface per row band over that band's rows, in parallel.
+     * A pixel only depends on the dabs that touch it, so the result does not depend on how roi
+     * is split. bands must tile roi's rows. Returns false when the render was aborted or a
+     * band's surface could not be created.
+     **/
+    static bool renderStrokeDabBands(unsigned char* data,
+                                     int stride,
+                                     cairo_format_t format,
+                                     const RectI& roi,
+                                     const std::vector<RectI>& bands,
+                                     const std::vector<StrokeDab>& dabs,
+                                     bool doBuildup,
+                                     double alpha,
+                                     int nThreads,
+                                     RenderCancellation& cancel);
     typedef std::function<void(const RectI& tile, const float* alpha)> AlphaTileSink;
 
     /**

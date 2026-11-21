@@ -272,6 +272,76 @@ public:
     }
 };
 
+static void
+fillStaleCueRect(double x0,
+                 double y0,
+                 double x1,
+                 double y1)
+{
+    glVertex2d(x0, y0);
+    glVertex2d(x1, y0);
+    glVertex2d(x1, y1);
+    glVertex2d(x0, y1);
+}
+
+static void
+fillStaleCueFrame(double left,
+                  double right,
+                  double bottom,
+                  double top,
+                  double bx,
+                  double by)
+{
+    glBegin(GL_QUADS);
+    fillStaleCueRect(left, bottom, right, bottom + by);
+    fillStaleCueRect(left, top - by, right, top);
+    fillStaleCueRect(left, bottom + by, left + bx, top - by);
+    fillStaleCueRect(right - bx, bottom + by, right, top - by);
+    glEnd();
+}
+
+// Sizes are in screen pixels: pixel is one widget pixel in zoom coordinates, per axis, so the
+// dot stays round whatever the pixel aspect ratio.
+static void
+drawStaleCue(StaleCueStyleEnum style,
+             const QPointF& pixel,
+             double left,
+             double right,
+             double bottom,
+             double top)
+{
+    GLProtectAttrib a(GL_ENABLE_BIT | GL_CURRENT_BIT | GL_COLOR_BUFFER_BIT);
+    glDisable(GL_TEXTURE_2D);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    const double px = pixel.x();
+    const double py = pixel.y();
+    switch (style) {
+    case eStaleCueStyleSubtleOutline:
+        glColor4d(1., 0.7, 0., 0.4);
+        fillStaleCueFrame(left, right, bottom, top, px, py);
+        break;
+    case eStaleCueStyleCornerDot: {
+        const double radius = 4.;
+        const double inset = 10.;
+        const double cx = right - (inset + radius) * px;
+        const double cy = top - (inset + radius) * py;
+        const int segments = 32;
+        glColor4d(1., 0.7, 0., 1.);
+        glBegin(GL_TRIANGLE_FAN);
+        glVertex2d(cx, cy);
+        for (int i = 0; i <= segments; ++i) {
+            const double t = 2. * M_PI * i / segments;
+            glVertex2d(cx + radius * px * std::cos(t), cy + radius * py * std::sin(t));
+        }
+        glEnd();
+        break;
+    }
+    case eStaleCueStyleOff:
+        break;
+    }
+}
+
 void
 ViewerGL::paintGL()
 {
@@ -530,6 +600,9 @@ ViewerGL::paintGL()
         if (_imp->ms == eMouseStateSelecting) {
             _imp->drawSelectionRectangle();
         }
+        if (_imp->staleCueVisible) {
+            drawStaleCue(_imp->staleCueStyle, _imp->glShadow, zoomLeft, zoomRight, zoomBottom, zoomTop);
+        }
         glCheckErrorAssert();
     } // GLProtectAttrib a(GL_TRANSFORM_BIT);
 
@@ -564,6 +637,44 @@ ViewerGL::clearColorBuffer(double r,
         glClear(GL_COLOR_BUFFER_BIT);
     } // GLProtectAttrib a(GL_CURRENT_BIT | GL_COLOR_BUFFER_BIT);
     glCheckErrorIgnoreOSXBug();
+}
+
+void
+ViewerGL::setStaleCue(StaleCueStyleEnum style,
+                      bool visible)
+{
+    if ((_imp->staleCueStyle == style) && (_imp->staleCueVisible == visible)) {
+        return;
+    }
+    _imp->staleCueStyle = style;
+    _imp->staleCueVisible = visible;
+    update();
+}
+
+bool
+ViewerGL::isStaleCueVisible() const
+{
+    return _imp->staleCueVisible;
+}
+
+void
+ViewerGL::noteStaleTransition()
+{
+    ++_imp->staleTransitions;
+}
+
+int
+ViewerGL::staleTransitionCount() const
+{
+    return _imp->staleTransitions;
+}
+
+bool
+ViewerGL::isViewerImageStale() const
+{
+    ViewerInstance* viewer = getInternalNode();
+
+    return viewer && viewer->isStale();
 }
 
 void

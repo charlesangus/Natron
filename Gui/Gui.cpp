@@ -233,7 +233,9 @@ Gui::abortProject(bool quitApp,
         (*it)->abortRendering();
     }
 
-    if (app && app->getProject()->hasNodes() && warnUserIfSaveNeeded) {
+    // A joined client's work is in the host's project, so there is nothing of its own to save.
+    const bool joined = app && (app->getLiveSessionState() == AppInstance::LiveSessionState::eJoined);
+    if (app && app->getProject()->hasNodes() && warnUserIfSaveNeeded && !joined) {
         int ret = saveWarning();
         if (ret == 0) {
             if ( !saveProject() ) {
@@ -262,6 +264,10 @@ Gui::abortProject(bool quitApp,
 
         setGuiAboutToClose(true);
         if (app) {
+            if (app->getLiveSessionState() != AppInstance::LiveSessionState::eNone) {
+                FlagSetter leaving(true, &_imp->leavingLiveSession);
+                app->leaveLiveSession(tr("The project was closed, which ended your part in the live session."));
+            }
             app->resetPreviewProvider();
             if (!blocking) {
                 app->getProject()->reset(false /*aboutToQuit*/, false /*blocking*/);
@@ -505,6 +511,17 @@ Gui::createMenuActions()
     _imp->actionSaveAndIncrementVersion = new ActionWithShortcut(kShortcutGroupGlobal, kShortcutIDActionSaveAndIncrVersion, kShortcutDescActionSaveAndIncrVersion, this);
     QObject::connect( _imp->actionSaveAndIncrementVersion, SIGNAL(triggered()), this, SLOT(saveAndIncrVersion()) );
 
+    _imp->actionHostLiveSession = new QAction(tr("Host Live Session..."), this);
+    _imp->actionHostLiveSession->setObjectName(QString::fromUtf8("actionHostLiveSession"));
+    QObject::connect(_imp->actionHostLiveSession, SIGNAL(triggered()), this, SLOT(hostLiveSession()));
+    _imp->actionJoinLiveSession = new QAction(tr("Join Live Session..."), this);
+    _imp->actionJoinLiveSession->setObjectName(QString::fromUtf8("actionJoinLiveSession"));
+    QObject::connect(_imp->actionJoinLiveSession, SIGNAL(triggered()), this, SLOT(joinLiveSession()));
+    _imp->actionLeaveLiveSession = new QAction(tr("Leave Session"), this);
+    _imp->actionLeaveLiveSession->setObjectName(QString::fromUtf8("actionLeaveLiveSession"));
+    _imp->actionLeaveLiveSession->setEnabled(false);
+    QObject::connect(_imp->actionLeaveLiveSession, SIGNAL(triggered()), this, SLOT(leaveLiveSession()));
+
     // Window shortcuts on this Gui's own windows, like the color trackball action below: with two
     // projects open, two application shortcuts on Ctrl+Z would be ambiguous and neither would
     // fire. registerFloatingWindow() adds them to each floating pane so it undoes its own project.
@@ -739,6 +756,10 @@ Gui::createMenuActions()
     _imp->menuFile->addAction(_imp->actionSaveAs_project);
     _imp->menuFile->addAction(_imp->actionSaveAndIncrementVersion);
     _imp->menuFile->addAction(_imp->actionExportAsGroup);
+    _imp->menuFile->addSeparator();
+    _imp->menuFile->addAction(_imp->actionHostLiveSession);
+    _imp->menuFile->addAction(_imp->actionJoinLiveSession);
+    _imp->menuFile->addAction(_imp->actionLeaveLiveSession);
     _imp->menuFile->addSeparator();
     _imp->menuFile->addAction(_imp->actionExit);
 

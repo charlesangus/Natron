@@ -73,9 +73,10 @@ public:
     void connectToHost(const QString& host, quint16 port, const QString& displayName);
 
     /**
-     * @brief Tells the host and disconnects.
+     * @brief Tells the host and disconnects; left() gives reason, or a default one when it is
+     * empty.
      **/
-    void leave();
+    void leave(const QString& reason = QString());
 
     /**
      * @brief Asks the host to save the shared project.

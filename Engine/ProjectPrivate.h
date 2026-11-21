@@ -74,6 +74,8 @@ public:
     QString lastAutoSaveFilePath; //< absolute file path of the last auto-save file
     bool hasProjectBeenSavedByUser; //< has this project ever been saved by the user?
     bool loadedFromFolder; //< opened from an unzipped bundle folder and not saved since
+    Project::LiveSessionRole liveSessionRole = Project::LiveSessionRole::eNone;
+    QString liveSessionTitle;
     QDateTime ageSinceLastSave; //< the last time the user saved
     QDateTime lastAutoSave; //< the last time since autosave
     // Milliseconds since the epoch. Kept as a number because converting a local QDateTime reads

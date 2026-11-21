@@ -78,6 +78,8 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/GraphEditRecorder.h"
 #include "Engine/GroupOutput.h"
 #include "Engine/KnobFile.h"
+#include "Engine/LiveSession/SessionClient.h"
+#include "Engine/LiveSession/SessionHost.h"
 #include "Engine/Node.h"
 #include "Engine/NodeCreationStageLog.h"
 #include "Engine/Nodes/IO/NativeRead.h"
@@ -325,7 +327,54 @@ public:
     void makeRenderProcess(RenderQueueItem* item);
 
     void startOrQueueRenders(bool blocking, std::list<RenderQueueItem> items);
+
+    // Owned. A session that ends from one of its own signals is deleted later, once that
+    // signal returns.
+    SessionHost* sessionHost = nullptr;
+    SessionClient* sessionClient = nullptr;
+    QString sessionAddress;
+
+    void onClientLeft(SessionClient* client, const QString& reason);
+
+    // Ends the session without telling the app's listeners, which are going away.
+    void endLiveSessionQuietly();
 };
+
+void
+AppInstancePrivate::onClientLeft(SessionClient* client,
+                                 const QString& reason)
+{
+    if (client != sessionClient) {
+        return;
+    }
+    sessionClient = nullptr;
+    sessionAddress.clear();
+    client->disconnect(_publicInterface);
+    client->deleteLater();
+    if (_currentProject->getLiveSessionRole() == Project::LiveSessionRole::eClient) {
+        _currentProject->detachFromLiveSession();
+    }
+    Q_EMIT _publicInterface->liveSessionEnded(reason);
+    Q_EMIT _publicInterface->liveSessionChanged();
+}
+
+void
+AppInstancePrivate::endLiveSessionQuietly()
+{
+    if (sessionClient) {
+        SessionClient* client = sessionClient;
+        sessionClient = nullptr;
+        client->disconnect(_publicInterface);
+        delete client;
+    }
+    if (sessionHost) {
+        SessionHost* host = sessionHost;
+        sessionHost = nullptr;
+        host->disconnect(_publicInterface);
+        delete host;
+    }
+    sessionAddress.clear();
+}
 
 AppInstance::AppInstance(int appID)
     : QObject()
@@ -335,6 +384,7 @@ AppInstance::AppInstance(int appID)
 
 AppInstance::~AppInstance()
 {
+    _imp->endLiveSessionQuietly();
     _imp->_currentProject->clearNodesBlocking();
 }
 
@@ -2585,6 +2635,9 @@ AppInstance::clearAllLastRenderedImages()
 void
 AppInstance::aboutToQuit()
 {
+    // The other peers are told before the project goes.
+    _imp->endLiveSessionQuietly();
+
     ///Clear nodes now, not in the destructor of the project as
     ///deleting nodes might reference the project.
     _imp->_currentProject->reset(true /*aboutToQuit*/, /*blocking*/true);
@@ -2849,6 +2902,9 @@ AppInstance::saveTemp(const std::string& filename)
 bool
 AppInstance::save(const std::string& filename)
 {
+    if (getLiveSessionState() == LiveSessionState::eJoined) {
+        return requestLiveSessionSave();
+    }
     ProjectPtr project = getProject();
 
     if ( project->hasProjectBeenSavedByUser() ) {
@@ -2864,10 +2920,136 @@ AppInstance::save(const std::string& filename)
 bool
 AppInstance::saveAs(const std::string& filename)
 {
+    if (_imp->sessionClient) {
+        leaveLiveSession(tr("You left the live session to save your own copy of the project."));
+    }
     std::string outFile = filename;
     std::string path = SequenceParsing::removePath(outFile);
 
     return getProject()->saveProject(QString::fromUtf8( path.c_str() ), QString::fromUtf8( outFile.c_str() ), 0);
+}
+
+bool
+AppInstance::hostLiveSession(const QString& bindAddress,
+                             quint16 port,
+                             const QString& displayName,
+                             QString* error)
+{
+    if (getLiveSessionState() != LiveSessionState::eNone) {
+        if (error) {
+            *error = tr("This project is already in a live session: leave it first.");
+        }
+
+        return false;
+    }
+    SessionHost* host = new SessionHost(shared_from_this());
+    if (!host->start(bindAddress, port, displayName, error)) {
+        delete host;
+
+        return false;
+    }
+    _imp->sessionHost = host;
+    _imp->sessionAddress = QString::fromUtf8("%1:%2").arg(bindAddress.isEmpty() ? QString::fromUtf8("0.0.0.0") : bindAddress).arg(host->serverPort());
+    QObject::connect(host, &SessionHost::peerCountChanged, this, [this](int) { Q_EMIT liveSessionChanged(); });
+    QObject::connect(host, &SessionHost::sessionMessage, this, &AppInstance::liveSessionMessage);
+    _imp->_currentProject->setLiveSessionRole(Project::LiveSessionRole::eHost, QString());
+    Q_EMIT liveSessionChanged();
+
+    return true;
+}
+
+void
+AppInstance::joinLiveSession(const QString& host,
+                             quint16 port,
+                             const QString& displayName)
+{
+    if (getLiveSessionState() != LiveSessionState::eNone) {
+        leaveLiveSession(QString());
+    }
+    SessionClient* client = new SessionClient(shared_from_this());
+    _imp->sessionClient = client;
+    _imp->sessionAddress = QString::fromUtf8("%1:%2").arg(host).arg(port);
+    QObject::connect(client, &SessionClient::joined, this, [this, host]() {
+        ProjectPtr project = _imp->_currentProject;
+        project->setLiveSessionRole(Project::LiveSessionRole::eClient, tr("Live: %1 @ %2").arg(project->getProjectFilename(), host));
+        Q_EMIT liveSessionChanged();
+    });
+    QObject::connect(client, &SessionClient::sessionMessage, this, &AppInstance::liveSessionMessage);
+    QObject::connect(client, &SessionClient::left, this, [this, client](const QString& reason) { _imp->onClientLeft(client, reason); });
+    client->connectToHost(host, port, displayName);
+    Q_EMIT liveSessionChanged();
+}
+
+void
+AppInstance::leaveLiveSession(const QString& reason)
+{
+    if (SessionClient* client = _imp->sessionClient) {
+        // left() ends it through onClientLeft().
+        client->leave(reason);
+        if (_imp->sessionClient == client) {
+            _imp->onClientLeft(client, reason);
+        }
+
+        return;
+    }
+    if (SessionHost* host = _imp->sessionHost) {
+        _imp->sessionHost = nullptr;
+        _imp->sessionAddress.clear();
+        host->disconnect(this);
+        host->stop();
+        host->deleteLater();
+        _imp->_currentProject->setLiveSessionRole(Project::LiveSessionRole::eNone, QString());
+        Q_EMIT liveSessionEnded(reason.isEmpty() ? tr("You stopped hosting the live session.") : reason);
+        Q_EMIT liveSessionChanged();
+    }
+}
+
+bool
+AppInstance::requestLiveSessionSave()
+{
+    if (getLiveSessionState() != LiveSessionState::eJoined) {
+        return false;
+    }
+    _imp->sessionClient->requestSave();
+
+    return true;
+}
+
+AppInstance::LiveSessionState
+AppInstance::getLiveSessionState() const
+{
+    if (_imp->sessionHost) {
+        return LiveSessionState::eHosting;
+    }
+    if (_imp->sessionClient) {
+        return (_imp->sessionClient->state() == SessionClient::State::eJoined) ? LiveSessionState::eJoined : LiveSessionState::eConnecting;
+    }
+
+    return LiveSessionState::eNone;
+}
+
+int
+AppInstance::getLiveSessionPeerCount() const
+{
+    return _imp->sessionHost ? _imp->sessionHost->peerCount() : 0;
+}
+
+QString
+AppInstance::getLiveSessionAddress() const
+{
+    return _imp->sessionAddress;
+}
+
+SessionHost*
+AppInstance::getLiveSessionHost() const
+{
+    return _imp->sessionHost;
+}
+
+SessionClient*
+AppInstance::getLiveSessionClient() const
+{
+    return _imp->sessionClient;
 }
 
 AppInstancePtr
@@ -2880,6 +3062,8 @@ AppInstance::loadProject(const std::string& filename)
 
         return AppInstancePtr();
     }
+
+    leaveLiveSession(tr("Opening another project ended your part in the live session."));
 
     //We are in background mode, there can only be 1 instance active, wipe the current project
     ProjectPtr project = getProject();
@@ -2903,6 +3087,7 @@ AppInstance::resetProject()
     if (getProject()->isSavingOnMainThread()) {
         return false;
     }
+    leaveLiveSession(tr("The project was closed, which ended your part in the live session."));
     getProject()->reset(false /*aboutToQuit*/, true /*blocking*/);
 
     return true;
@@ -2916,6 +3101,7 @@ AppInstance::closeProject()
     if (getProject()->isSavingOnMainThread()) {
         return false;
     }
+    _imp->endLiveSessionQuietly();
     getProject()->reset(true/*aboutToQuit*/, true /*blocking*/);
     quit();
 

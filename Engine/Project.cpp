@@ -727,9 +727,9 @@ Project::restoreFromBundle(const Serialization::ProjectBundleReader& bundle,
 
         QString projectPath = QString::fromUtf8( _imp->getProjectPath().c_str() );
         QString projectFilename = QString::fromUtf8( _imp->getProjectFilename().c_str() );
-        Q_EMIT projectNameChanged(projectPath + projectFilename, true);
+        emitProjectNameChanged(projectPath + projectFilename, true);
     } else {
-        Q_EMIT projectNameChanged(path + name, false);
+        emitProjectNameChanged(path + name, false);
     }
 
     /// Try to take the project lock by creating a lock file
@@ -783,6 +783,11 @@ Project::loadProjectFromBundleBytes(std::span<const std::byte> bytes,
             loadedOk = restoreFromBundle(*bundle, path, name, QString(), false, false, false, &mustSave);
             QMutexLocker k(&_imp->projectLock);
             _imp->loadedFromFolder = false;
+            // Without a path, saving the copy under name alone would write into the working
+            // directory: it must be given a file first.
+            if (path.isEmpty()) {
+                _imp->hasProjectBeenSavedByUser = false;
+            }
         }
         reportLoadWarnings();
         if (!loadedOk) {
@@ -805,6 +810,63 @@ Project::loadProjectFromBundleBytes(std::span<const std::byte> bytes,
 
     return true;
 } // Project::loadProjectFromBundleBytes
+
+void
+Project::emitProjectNameChanged(const QString& filePath,
+                                bool modified)
+{
+    QString title;
+    {
+        QMutexLocker k(&_imp->projectLock);
+        if (_imp->liveSessionRole == LiveSessionRole::eClient) {
+            title = _imp->liveSessionTitle;
+        }
+    }
+    Q_EMIT projectNameChanged(title.isEmpty() ? filePath : title, modified);
+}
+
+void
+Project::setLiveSessionRole(LiveSessionRole role,
+                            const QString& title)
+{
+    assert(QThread::currentThread() == qApp->thread());
+    {
+        QMutexLocker k(&_imp->projectLock);
+        _imp->liveSessionRole = role;
+        _imp->liveSessionTitle = (role == LiveSessionRole::eClient) ? title : QString();
+    }
+    if (role == LiveSessionRole::eClient) {
+        _imp->autoSaveTimer->stop();
+    }
+    emitProjectNameChanged(QString::fromUtf8(_imp->getProjectPath().c_str()) + QString::fromUtf8(_imp->getProjectFilename().c_str()), !isSaveUpToDate());
+}
+
+Project::LiveSessionRole
+Project::getLiveSessionRole() const
+{
+    QMutexLocker k(&_imp->projectLock);
+
+    return _imp->liveSessionRole;
+}
+
+void
+Project::detachFromLiveSession()
+{
+    assert(QThread::currentThread() == qApp->thread());
+    {
+        QMutexLocker k(&_imp->projectLock);
+        _imp->liveSessionRole = LiveSessionRole::eNone;
+        _imp->liveSessionTitle.clear();
+        _imp->hasProjectBeenSavedByUser = false;
+        _imp->loadedFromFolder = false;
+        _imp->ageSinceLastSave = QDateTime();
+    }
+    {
+        GraphEditRecorder::Suppress suppress;
+        _imp->setProjectPath(std::string());
+    }
+    emitProjectNameChanged(QString::fromUtf8(_imp->getProjectFilename().c_str()), true);
+}
 
 bool
 Project::saveProject(const QString & path,
@@ -1170,7 +1232,7 @@ Project::saveProjectInternal(const QString & path,
             _imp->loadedFromFolder = false;
             _imp->ageSinceLastSave = time;
         }
-        Q_EMIT projectNameChanged(path + name, false); //< notify the gui so it can update the title
+        emitProjectNameChanged(path + name, false); //< notify the gui so it can update the title
 
         //Create the lock file corresponding to the project
         createLockFile();
@@ -1178,7 +1240,7 @@ Project::saveProjectInternal(const QString & path,
         if (!isRenderSave) {
             QString projectPath = QString::fromUtf8( _imp->getProjectPath().c_str() );
             QString projectFilename = QString::fromUtf8( _imp->getProjectFilename().c_str() );
-            Q_EMIT projectNameChanged(projectPath + projectFilename, true);
+            emitProjectNameChanged(projectPath + projectFilename, true);
         }
     }
     if (updateProjectProperties) {
@@ -1397,7 +1459,7 @@ void
 Project::autoSave()
 {
     ///don't autosave in background mode...
-    if ( getApp()->isBackground() ) {
+    if (getApp()->isBackground() || (getLiveSessionRole() == LiveSessionRole::eClient)) {
         return;
     }
 
@@ -1417,6 +1479,10 @@ Project::triggerAutoSave()
     }
 
     if ( !hasProjectBeenSavedByUser() && !appPTR->getCurrentSettings()->isAutoSaveEnabledForUnsavedProjects() ) {
+        return;
+    }
+
+    if (getLiveSessionRole() == LiveSessionRole::eClient) {
         return;
     }
 
@@ -3729,7 +3795,7 @@ Project::doResetEnd(bool aboutToQuit)
         }
         getApp()->removeAllKeyframesIndicators();
 
-        Q_EMIT projectNameChanged(QString::fromUtf8(NATRON_PROJECT_UNTITLED), false);
+        emitProjectNameChanged(QString::fromUtf8(NATRON_PROJECT_UNTITLED), false);
         _imp->clearRFVVariables();
         const KnobsVec & knobs = getKnobs();
 

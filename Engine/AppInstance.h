@@ -50,6 +50,8 @@
 NATRON_NAMESPACE_ENTER
 
 struct AppInstancePrivate;
+class SessionClient;
+class SessionHost;
 
 /**
  * @brief The Natron build that saved the project being loaded, -1 and empty strings for what
@@ -585,8 +587,64 @@ public:
     virtual bool isRenderStatsActionChecked() const { return false; }
 
     bool saveTemp(const std::string& filename);
+
+    /**
+     * @brief Saves the project, or asks the host to when this app is a live session client.
+     **/
     virtual bool save(const std::string& filename);
+
+    /**
+     * @brief Saves the project to filename. A live session client leaves the session first: the
+     * file is its own copy.
+     **/
     virtual bool saveAs(const std::string& filename);
+
+    enum class LiveSessionState {
+        eNone,
+        eHosting,
+        eConnecting,
+        eJoined,
+    };
+
+    /**
+     * @brief Shares this app's project in a live session on bindAddress (every interface when
+     * empty) and port (0 picks a free one). Returns false with a message for the user in error
+     * when it cannot, or when this app is already in a session.
+     **/
+    bool hostLiveSession(const QString& bindAddress, quint16 port, const QString& displayName, QString* error);
+
+    /**
+     * @brief Leaves any session, then joins the one at host and port: once joined, the project is
+     * the host's, titled "Live: <host project> @ <host>". liveSessionEnded() follows when the
+     * join fails.
+     **/
+    void joinLiveSession(const QString& host, quint16 port, const QString& displayName);
+
+    /**
+     * @brief Stops hosting, or leaves the session joined, telling the other peers. liveSessionEnded()
+     * gives reason, or a default one when it is empty.
+     **/
+    void leaveLiveSession(const QString& reason = QString());
+
+    /**
+     * @brief Asks the host to save the shared project. False when this app has not joined a session.
+     **/
+    bool requestLiveSessionSave();
+
+    LiveSessionState getLiveSessionState() const;
+
+    /**
+     * @brief The clients connected when hosting, else 0.
+     **/
+    int getLiveSessionPeerCount() const;
+
+    /**
+     * @brief host:port of the session hosted or joined, empty without one.
+     **/
+    QString getLiveSessionAddress() const;
+
+    SessionHost* getLiveSessionHost() const;
+    SessionClient* getLiveSessionClient() const;
     virtual AppInstancePtr loadProject(const std::string& filename);
 
     ///Close the current project but keep the window
@@ -666,6 +724,22 @@ public Q_SLOTS:
 Q_SIGNALS:
 
     void pluginsPopulated();
+
+    /**
+     * @brief The live session state, its address or its peer count changed.
+     **/
+    void liveSessionChanged();
+
+    /**
+     * @brief A line for the user about the live session.
+     **/
+    void liveSessionMessage(const QString& message);
+
+    /**
+     * @brief The live session ended for this app; reason is for the user. A client's project is
+     * then an unsaved copy.
+     **/
+    void liveSessionEnded(const QString& reason);
 
 protected:
     virtual void onGroupCreationFinished(const NodePtr& node, const Serialization::NodeSerializationPtr& serialization, bool autoConnect);

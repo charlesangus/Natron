@@ -40,6 +40,8 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QMessageBox>
+#include <QStatusBar>
 
 #include "Engine/CLArgs.h"
 #include "Engine/CreateNodeArgs.h"
@@ -57,6 +59,7 @@
 #include "Gui/GuiApplicationManager.h" // appPTR
 #include "Gui/GuiPrivate.h"
 #include "Gui/Histogram.h"
+#include "Gui/LiveSessionDialogs.h"
 #include "Gui/Menu.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGui.h"
@@ -891,6 +894,12 @@ Gui::openProjectInternal(const std::string & absoluteFileName,
 bool
 Gui::saveProject()
 {
+    if (getApp()->getLiveSessionState() == AppInstance::LiveSessionState::eJoined) {
+        getApp()->requestLiveSessionSave();
+        statusBar()->showMessage(tr("Asked the host to save the project."), 5000);
+
+        return true;
+    }
     ProjectPtr project = getApp()->getProject();
 
     if ( project->hasProjectBeenSavedByUser() ) {
@@ -941,6 +950,10 @@ Gui::saveProject()
 bool
 Gui::saveProjectAs(const std::string& filename)
 {
+    if (getApp()->getLiveSessionClient()) {
+        FlagSetter leaving(true, &_imp->leavingLiveSession);
+        getApp()->leaveLiveSession(tr("You left the live session to save your own copy of the project."));
+    }
     std::string fileCopy = filename;
 
     if (fileCopy.find("." NATRON_PROJECT_FILE_EXT) == std::string::npos) {
@@ -987,6 +1000,12 @@ Gui::saveProjectAs()
 void
 Gui::saveAndIncrVersion()
 {
+    // A client's copy has no file of its own to take a version number from.
+    if (getApp()->getLiveSessionClient()) {
+        saveProjectAs();
+
+        return;
+    }
     ProjectPtr project = getApp()->getProject();
     QString path = project->getProjectPath();
     QString name = project->getProjectFilename();
@@ -1052,6 +1071,98 @@ Gui::saveAndIncrVersion()
     QString filename = path + QLatin1Char('/') + name;
     updateRecentFiles(filename);
 } // Gui::saveAndIncrVersion
+
+void
+Gui::hostLiveSession()
+{
+    GuiAppInstancePtr app = getApp();
+    if (app->getLiveSessionState() != AppInstance::LiveSessionState::eNone) {
+        return;
+    }
+    HostLiveSessionDialog dialog(this);
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+    dialog.rememberChoices();
+    QString error;
+    if (!app->hostLiveSession(dialog.getBindAddress(), dialog.getPort(), dialog.getDisplayName(), &error)) {
+        Dialogs::errorDialog(tr("Host Live Session").toStdString(), error.toStdString());
+    }
+}
+
+void
+Gui::joinLiveSession()
+{
+    GuiAppInstancePtr app = getApp();
+    if (app->getLiveSessionState() != AppInstance::LiveSessionState::eNone) {
+        return;
+    }
+    JoinLiveSessionDialog dialog(this);
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+    dialog.rememberChoices();
+    // The host's project replaces the one joining, so a project with work in it stays in this
+    // window and the session gets a new one, as opening a file does.
+    AppInstancePtr target = app;
+    if (!app->getProject()->isGraphWorthLess()) {
+        target = createNewProject();
+        if (!target) {
+            return;
+        }
+    }
+    target->joinLiveSession(dialog.getHost(), dialog.getPort(), dialog.getDisplayName());
+}
+
+void
+Gui::leaveLiveSession()
+{
+    FlagSetter leaving(true, &_imp->leavingLiveSession);
+    getApp()->leaveLiveSession();
+}
+
+void
+Gui::onLiveSessionChanged()
+{
+    GuiAppInstancePtr app = getApp();
+    if (!app) {
+        return;
+    }
+    const bool inSession = (app->getLiveSessionState() != AppInstance::LiveSessionState::eNone);
+    _imp->actionHostLiveSession->setEnabled(!inSession);
+    _imp->actionJoinLiveSession->setEnabled(!inSession);
+    _imp->actionLeaveLiveSession->setEnabled(inSession);
+    _imp->actionLeaveLiveSession->setText((app->getLiveSessionState() == AppInstance::LiveSessionState::eHosting) ? tr("Stop Hosting Session") : tr("Leave Session"));
+    if (inSession && !_imp->liveSessionStatus) {
+        _imp->liveSessionStatus = new LiveSessionStatus(app, statusBar());
+        statusBar()->addPermanentWidget(_imp->liveSessionStatus);
+    }
+}
+
+void
+Gui::onLiveSessionMessage(const QString& message)
+{
+    statusBar()->showMessage(message, 8000);
+}
+
+void
+Gui::onLiveSessionEnded(const QString& reason)
+{
+    if (reason.isEmpty()) {
+        return;
+    }
+    if (_imp->leavingLiveSession) {
+        statusBar()->showMessage(reason, 8000);
+
+        return;
+    }
+    // Not modal: the session can end at any moment, in the middle of whatever the user is doing.
+    QMessageBox* box = new QMessageBox(QMessageBox::Information, tr("Live Session"), reason, QMessageBox::Ok, this);
+    box->setObjectName(QString::fromUtf8("liveSessionEndedMessage"));
+    box->setAttribute(Qt::WA_DeleteOnClose);
+    box->setModal(false);
+    box->show();
+}
 
 void
 Gui::createNewViewer()

@@ -100,6 +100,9 @@ struct SessionClient::Implementation {
     std::map<std::string, int> pendingKeys;
     std::vector<Serialization::GraphOp> deferred;
     int subscription = -1;
+    // The project subscribed to, which can outlive the app's last reference while the app is
+    // destroyed, and must lose the subscription then.
+    ProjectWPtr subscribedProject;
     bool handling = false;
     bool readAgain = false;
     bool awaitingProject = false;
@@ -550,6 +553,7 @@ struct SessionClient::Implementation {
         if (GraphEditRecorder* r = recorder()) {
             r->flush();
             subscription = r->subscribe([this](const std::vector<Serialization::GraphOp>& ops) { onLocalOps(ops); });
+            subscribedProject = project();
         }
         state = State::eJoined;
         Q_EMIT publicInterface->joined();
@@ -649,8 +653,10 @@ struct SessionClient::Implementation {
         }
         ended = true;
         if (subscription >= 0) {
-            if (GraphEditRecorder* r = recorder()) {
-                r->unsubscribe(subscription);
+            if (ProjectPtr subscribed = subscribedProject.lock()) {
+                if (GraphEditRecorder* r = subscribed->getGraphEditRecorder()) {
+                    r->unsubscribe(subscription);
+                }
             }
             subscription = -1;
         }
@@ -739,7 +745,7 @@ SessionClient::connectToHost(const QString& host,
 }
 
 void
-SessionClient::leave()
+SessionClient::leave(const QString& reason)
 {
     if (_imp->state == State::eDisconnected) {
         return;
@@ -749,7 +755,7 @@ SessionClient::leave()
     if (_imp->socket) {
         _imp->socket->flush();
     }
-    _imp->end(tr("You left the session. The project is kept here, unsaved."));
+    _imp->end(reason.isEmpty() ? tr("You left the session. The project is kept here, unsaved.") : reason);
 }
 
 void

@@ -149,6 +149,28 @@ public:
      **/
     bool loadProjectFromBundleBytes(std::span<const std::byte> bytes, const QString& path, const QString& name, QString* error);
 
+    enum class LiveSessionRole {
+        eNone,
+        eHost,
+        eClient,
+    };
+
+    /**
+     * @brief Binds the project to a live session, or unbinds it with eNone. A client's copy is
+     * titled title (projectNameChanged() gives it instead of the file name) and is never
+     * autosaved: its file is the host's, which AppInstance asks the host to save. Main thread only.
+     **/
+    void setLiveSessionRole(LiveSessionRole role, const QString& title);
+
+    LiveSessionRole getLiveSessionRole() const;
+
+    /**
+     * @brief Ends the binding of a client's copy that lost or left its session: the project is
+     * then an unsaved project with no file, still named after the host's file, as editable as any
+     * other. Main thread only.
+     **/
+    void detachFromLiveSession();
+
     bool hasMissingPluginNode() const;
 
     /**
@@ -891,6 +913,8 @@ private:
                            const QString& filePath, bool isAutoSave, bool isUntitledAutosave, bool takeLock, bool* mustSave);
 
     QString saveProjectInternal(const QString & path, const QString & name, bool autosave, bool updateProjectProperties);
+
+    void emitProjectNameChanged(const QString& filePath, bool modified);
 
     void reportLoadWarnings();
 

@@ -89,6 +89,9 @@ struct SessionHost::Implementation {
     quint32 nextUserId = 1;
     QString displayName;
     int subscription = -1;
+    // The project subscribed to, which can outlive the app's last reference while the app is
+    // destroyed, and must lose the subscription then.
+    ProjectWPtr subscribedProject;
     bool handling = false;
     bool readAgain = false;
     int rejects = 0;
@@ -544,6 +547,7 @@ SessionHost::start(const QString& bindAddress,
     _imp->subscription = project->getGraphEditRecorder()->subscribe([this](const std::vector<Serialization::GraphOp>& ops) {
         _imp->onLocalOps(ops);
     });
+    _imp->subscribedProject = project;
     if (_imp->checksumTimer.interval() > 0) {
         _imp->checksumTimer.start();
     }
@@ -558,7 +562,7 @@ SessionHost::stop()
         return;
     }
     _imp->checksumTimer.stop();
-    ProjectPtr project = _imp->project();
+    ProjectPtr project = _imp->subscribedProject.lock();
     if (_imp->subscription >= 0) {
         if (project && project->getGraphEditRecorder()) {
             _imp->flushLocalEdits();

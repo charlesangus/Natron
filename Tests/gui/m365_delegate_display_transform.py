@@ -432,7 +432,7 @@ try:
                 changed = index
                 break
         if changed is None:
-            report("SKIP no other view of this config changes the card (%d tried)" % len(options))
+            check(False, "some other view of this config changes the card (%d tried)" % len(options))
         else:
             shown = capture("m365-view", "Cycles in the %s view: the card's pixel changes" % view_knob.getOption(changed))
             check(differs(mean_around(shown, centre), once, COLOUR_SLACK * 2), "the %s view changes the card (%r -> %r)"

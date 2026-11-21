@@ -1611,13 +1611,12 @@ ViewerTab::refreshSceneDisplayTransform()
     ProjectPtr project = (getGui() && getGui()->getApp()) ? getGui()->getApp()->getProject() : ProjectPtr();
     ProjectColorManagementPtr colorManagement = project ? project->getColorManagement() : ProjectColorManagementPtr();
     if (colorManagement) {
-        getDisplayTransform(&transform.display, &transform.view, nullptr);
         transform.config = colorManagement->getConfig();
         transform.colorSpace = project->getWorkingColorSpace();
     }
     if (_imp->viewerNode) {
-        // As the 2D viewer takes it: a look the config does not list is none.
-        _imp->viewerNode->getResolvedDisplayTransform(nullptr, nullptr, &transform.look);
+        // Resolved as the 2D viewer does: a knob on the project default takes the project's display and view, and a look the config does not list is none.
+        _imp->viewerNode->getResolvedDisplayTransform(&transform.display, &transform.view, &transform.look);
         transform.gain = _imp->viewerNode->getGain();
         transform.gamma = _imp->viewerNode->getGamma();
     }

@@ -1,0 +1,24 @@
+# Hand-written: the correspondences and conflicts a correct merge of rename/ gives.
+description: >-
+  The artist renames Grade1 to KeyGrade and raises its multiply; the supervisor raises Blur1's size.
+  A rename keeps the node's identity, so both edits apply cleanly.
+merges:
+  - template: grade_tpl
+    base_mine:
+      TplIn: TplIn
+      Grade1: KeyGrade
+      Blur1: Blur1
+      Constant1: Constant1
+      Merge1: Merge1
+      ColorCorrect1: ColorCorrect1
+      TplOut: TplOut
+    base_theirs:
+      TplIn: TplIn
+      Grade1: Grade1
+      Blur1: Blur1
+      Constant1: Constant1
+      Merge1: Merge1
+      ColorCorrect1: ColorCorrect1
+      TplOut: TplOut
+    scope: [TplIn, KeyGrade, Blur1, Constant1, Merge1, ColorCorrect1, TplOut]
+    conflicts: []

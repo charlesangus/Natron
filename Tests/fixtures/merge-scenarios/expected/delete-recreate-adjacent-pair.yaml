@@ -1,0 +1,34 @@
+# Hand-written: the correspondences and conflicts a correct merge of delete-recreate-adjacent-pair/ gives.
+description: >-
+  The artist deletes Grade1 and Blur1 and makes Grade2 and Blur2 in their place, TplIn -> Grade2 ->
+  Blur2 -> Merge1.B; the supervisor sets Grade1's gamma and Blur1's size. Each new node is the only
+  one of its plugin wired as its template node is along that node's matched neighbour (TplIn for
+  Grade2, Merge1.B for Blur2), so both are adopted. The supervisor's gamma lands on Grade2; Blur2
+  leaves size at its default where both Blur1 and the supervisor set it, so size conflicts.
+merges:
+  - template: grade_tpl
+    base_mine:
+      TplIn: TplIn
+      Grade1: Grade2
+      Blur1: Blur2
+      Constant1: Constant1
+      Merge1: Merge1
+      ColorCorrect1: ColorCorrect1
+      TplOut: TplOut
+    base_theirs:
+      TplIn: TplIn
+      Grade1: Grade1
+      Blur1: Blur1
+      Constant1: Constant1
+      Merge1: Merge1
+      ColorCorrect1: ColorCorrect1
+      TplOut: TplOut
+    scope: [TplIn, Grade2, Blur2, Constant1, Merge1, ColorCorrect1, TplOut]
+    conflicts:
+      - {node: Grade1, kind: adopted, defaulted: white}
+      - {node: Blur1, kind: adopted, defaulted: size}
+      - {node: Blur1, knob: size, dim: 0, kind: value}
+      - {node: Blur1, knob: size, dim: 1, kind: value}
+notes: >-
+  Each adoption rests on a matched neighbour of its own; the unmatched node between them may stand
+  for the other side's template node, so it does not block either.

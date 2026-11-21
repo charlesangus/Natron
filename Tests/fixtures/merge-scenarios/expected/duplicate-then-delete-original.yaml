@@ -1,0 +1,28 @@
+# Hand-written: the correspondences and conflicts a correct merge of duplicate-then-delete-original/ gives.
+description: >-
+  The artist duplicates Blur1 as Blur1_copy, which drops the origin because Blur1 still has it, then
+  deletes Blur1 and wires the copy in its place; the supervisor changes Blur1's size. Blur1_copy
+  sits where Blur1 sat, so it is adopted, takes the size, and the adoption is listed.
+merges:
+  - template: grade_tpl
+    base_mine:
+      TplIn: TplIn
+      Grade1: Grade1
+      Blur1: Blur1_copy
+      Constant1: Constant1
+      Merge1: Merge1
+      ColorCorrect1: ColorCorrect1
+      TplOut: TplOut
+    base_theirs:
+      TplIn: TplIn
+      Grade1: Grade1
+      Blur1: Blur1
+      Constant1: Constant1
+      Merge1: Merge1
+      ColorCorrect1: ColorCorrect1
+      TplOut: TplOut
+    scope: [TplIn, Grade1, Blur1_copy, Constant1, Merge1, ColorCorrect1, TplOut]
+    conflicts:
+      - {node: Blur1, kind: adopted}
+notes: >-
+  The copy holds Blur1's values, so the adopted conflict lists no defaulted knobs.

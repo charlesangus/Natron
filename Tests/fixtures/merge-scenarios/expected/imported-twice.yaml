@@ -1,0 +1,44 @@
+# Hand-written: the correspondences and conflicts a correct merge of imported-twice/ gives.
+description: >-
+  The template is imported twice into one shot, as grade_tpl and grade_tpl_2; the second copy is
+  renamed on import (Grade2, Blur2, ...) and the artist changes Grade2's multiply. The supervisor sets
+  Grade1's gamma. Each import merges on its own: the gamma lands on Grade1 and on Grade2.
+merges:
+  - template: grade_tpl
+    base_mine:
+      TplIn: TplIn
+      Grade1: Grade1
+      Blur1: Blur1
+      Constant1: Constant1
+      Merge1: Merge1
+      ColorCorrect1: ColorCorrect1
+      TplOut: TplOut
+    base_theirs:
+      TplIn: TplIn
+      Grade1: Grade1
+      Blur1: Blur1
+      Constant1: Constant1
+      Merge1: Merge1
+      ColorCorrect1: ColorCorrect1
+      TplOut: TplOut
+    scope: [TplIn, Grade1, Blur1, Constant1, Merge1, ColorCorrect1, TplOut]
+    conflicts: []
+  - template: grade_tpl_2
+    base_mine:
+      TplIn: TplIn2
+      Grade1: Grade2
+      Blur1: Blur2
+      Constant1: Constant2
+      Merge1: Merge2
+      ColorCorrect1: ColorCorrect2
+      TplOut: TplOut2
+    base_theirs:
+      TplIn: TplIn
+      Grade1: Grade1
+      Blur1: Blur1
+      Constant1: Constant1
+      Merge1: Merge1
+      ColorCorrect1: ColorCorrect1
+      TplOut: TplOut
+    scope: [TplIn2, Grade2, Blur2, Constant2, Merge2, ColorCorrect2, TplOut2]
+    conflicts: []

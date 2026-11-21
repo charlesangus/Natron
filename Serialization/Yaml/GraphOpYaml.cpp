@@ -97,7 +97,7 @@ namespace {
                 }
                 emitKey(em, "node");
                 em << YAML::Value;
-                emitNodeMap(em, std::list<NodeSerializationPtr>(1, op.node), std::string(), sink, usedPaths, true);
+                emitNodeMap(em, std::list<NodeSerializationPtr>(1, op.node), std::string(), sink, usedPaths, true, true);
             } else if constexpr (std::is_same_v<T, DeleteNodeOp>) {
                 emitStringEntry(em, "node", op.nodeId);
             } else if constexpr (std::is_same_v<T, SetKnobOp>) {

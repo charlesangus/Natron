@@ -657,6 +657,12 @@ Project::loadProjectInternal(const QString& path,
     for (const std::string& warning : warnings) {
         addLoadWarning(QString::fromUtf8(warning.c_str()));
     }
+    const std::size_t conflictCount = projectSerialization.mergeConflicts.size();
+    if (conflictCount == 1) {
+        addLoadWarning(tr("1 unresolved merge conflict"));
+    } else if (conflictCount > 1) {
+        addLoadWarning(tr("%1 unresolved merge conflicts").arg(conflictCount));
+    }
 
     const Serialization::BundleManifest& manifest = bundle->manifest();
     projectSerialization.creationDate = manifest.creationDate;
@@ -1251,9 +1257,25 @@ Project::registerNodeId(const NodePtr& node)
         return;
     }
     const std::string id = node->getNodeId();
+    const std::string originTemplate = node->getOriginTemplate();
+    const std::string originNode = node->getOriginNode();
     {
         QMutexLocker k(&_imp->nodesByIdMutex);
         _imp->nodesById[id] = node;
+        if (!originTemplate.empty()) {
+            const std::string key = ProjectPrivate::originKey(originTemplate, originNode);
+            bool indexed = false;
+            auto range = _imp->nodesByOrigin.equal_range(key);
+            for (auto it = range.first; it != range.second; ++it) {
+                if (it->second.lock() == node) {
+                    indexed = true;
+                    break;
+                }
+            }
+            if (!indexed) {
+                _imp->nodesByOrigin.emplace(key, node);
+            }
+        }
     }
     // A node may have counted its layer selections before it joined the graph.
     const bool onMainThread = qApp && (QThread::currentThread() == qApp->thread());
@@ -1280,6 +1302,10 @@ Project::unregisterNodeId(const Node* node)
                 _imp->nodesById.erase(found);
             }
         }
+        const std::string originTemplate = node->getOriginTemplate();
+        if (!originTemplate.empty()) {
+            ProjectPrivate::eraseOrigin(&_imp->nodesByOrigin, ProjectPrivate::originKey(originTemplate, node->getOriginNode()), node);
+        }
     }
     forgetLayerUser(node);
 }
@@ -1299,6 +1325,145 @@ Project::onNodeIdChanged(const NodePtr& node,
     }
     _imp->nodesById.erase(found);
     _imp->nodesById[id] = node;
+}
+
+void
+Project::onNodeIdsSwapped(const NodePtr& a,
+                          const NodePtr& b)
+{
+    if (!a || !b) {
+        return;
+    }
+    const std::string aId = a->getNodeId();
+    const std::string bId = b->getNodeId();
+    QMutexLocker k(&_imp->nodesByIdMutex);
+    std::unordered_map<std::string, NodeWPtr>::iterator aFound = _imp->nodesById.find(aId);
+    std::unordered_map<std::string, NodeWPtr>::iterator bFound = _imp->nodesById.find(bId);
+    const bool aIndexed = (bFound != _imp->nodesById.end()) && (bFound->second.lock() == a);
+    const bool bIndexed = (aFound != _imp->nodesById.end()) && (aFound->second.lock() == b);
+    if (aIndexed) {
+        _imp->nodesById[aId] = a;
+    }
+    if (bIndexed) {
+        _imp->nodesById[bId] = b;
+    }
+    if (aIndexed && !bIndexed) {
+        _imp->nodesById.erase(bId);
+    } else if (bIndexed && !aIndexed) {
+        _imp->nodesById.erase(aId);
+    }
+}
+
+std::string
+ProjectPrivate::originKey(const std::string& templateKey,
+                          const std::string& templateNodeId)
+{
+    return templateKey + '/' + templateNodeId;
+}
+
+void
+ProjectPrivate::eraseOrigin(std::unordered_multimap<std::string, NodeWPtr>* index,
+                            const std::string& key,
+                            const Node* node)
+{
+    auto range = index->equal_range(key);
+    for (auto it = range.first; it != range.second;) {
+        NodePtr indexed = it->second.lock();
+        if (!indexed || (indexed.get() == node)) {
+            it = index->erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+NodePtr
+Project::findActiveNodeWithOrigin(const std::string& templateKey,
+                                  const std::string& templateNodeId) const
+{
+    if (templateKey.empty()) {
+        return NodePtr();
+    }
+    std::vector<NodePtr> candidates;
+    {
+        QMutexLocker k(&_imp->nodesByIdMutex);
+        auto range = _imp->nodesByOrigin.equal_range(ProjectPrivate::originKey(templateKey, templateNodeId));
+        for (auto it = range.first; it != range.second; ++it) {
+            if (NodePtr node = it->second.lock()) {
+                candidates.push_back(node);
+            }
+        }
+    }
+    // Checked outside the index lock: the origin getters take the node's name mutex.
+    for (const NodePtr& node : candidates) {
+        if (node->isActivated() && (node->getOriginTemplate() == templateKey) && (node->getOriginNode() == templateNodeId) && (findNodeHoldingId(node->getNodeId()) == node)) {
+            return node;
+        }
+    }
+
+    return NodePtr();
+}
+
+void
+Project::onNodeOriginChanged(const NodePtr& node,
+                             const std::string& previousTemplate,
+                             const std::string& previousNode)
+{
+    if (!node) {
+        return;
+    }
+    const std::string originTemplate = node->getOriginTemplate();
+    const std::string originNode = node->getOriginNode();
+    QMutexLocker k(&_imp->nodesByIdMutex);
+    if (!previousTemplate.empty()) {
+        ProjectPrivate::eraseOrigin(&_imp->nodesByOrigin, ProjectPrivate::originKey(previousTemplate, previousNode), node.get());
+    }
+    if (!originTemplate.empty()) {
+        _imp->nodesByOrigin.emplace(ProjectPrivate::originKey(originTemplate, originNode), node);
+    }
+}
+
+const std::list<Serialization::TemplateImportSerialization>&
+Project::getTemplateImports() const
+{
+    return _imp->templateImports;
+}
+
+bool
+Project::hasTemplateImport(const std::string& key) const
+{
+    for (const Serialization::TemplateImportSerialization& entry : _imp->templateImports) {
+        if (entry.key == key) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void
+Project::setTemplateImport(const Serialization::TemplateImportSerialization& entry)
+{
+    for (Serialization::TemplateImportSerialization& existing : _imp->templateImports) {
+        if (existing.key == entry.key) {
+            existing = entry;
+
+            return;
+        }
+    }
+    _imp->templateImports.push_back(entry);
+}
+
+const std::vector<Serialization::MergeConflict>&
+Project::getMergeConflicts() const
+{
+    return _imp->mergeConflicts;
+}
+
+void
+Project::setMergeConflicts(const std::vector<Serialization::MergeConflict>& conflicts)
+{
+    _imp->mergeConflicts = conflicts;
 }
 
 void
@@ -3603,6 +3768,8 @@ Project::doResetEnd(bool aboutToQuit)
 {
     _imp->runOnProjectCloseCallback();
     _imp->projectId = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
+    _imp->templateImports.clear();
+    _imp->mergeConflicts.clear();
 
     QString lockFilePath = getLockAbsoluteFilePath();
     QString projectPath = QString::fromUtf8( _imp->getProjectPath().c_str() );

@@ -508,6 +508,8 @@ private:
     };
     typedef std::multimap<NodeWPtr, OutputLink, std::owner_less<NodeWPtr>> OutputLinksMap;
     OutputLinksMap _outputLinks;
+    // (original, copy): the copies hold the originals' IDs and origins while the command is done.
+    std::list<std::pair<NodeWPtr, NodeWPtr>> _identityPairs;
     NodeGuiWPtr _group;
     bool _firstRedoCalled;
     bool _isRedone;
@@ -547,6 +549,8 @@ private:
 
     NodeGraph* _graph;
     std::list<InlinedGroup> _groupNodes;
+    // (original, copy): the copies hold the originals' IDs and origins while the command is done.
+    std::list<std::pair<NodeWPtr, NodeWPtr>> _identityPairs;
     bool _firstRedoCalled;
 };
 

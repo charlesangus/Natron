@@ -1,0 +1,29 @@
+# Hand-written: the correspondences and conflicts a correct merge of roto-both-sides/ gives.
+description: >-
+  The template has a Roto, Matte, with shapes Garbage and Core on Merge1's mask. The artist moves a
+  Garbage point and adds ArtistFix; the supervisor moves another Garbage point, lowers Core's opacity
+  and adds Edge. Both added shapes are kept, Core's opacity applies, and Garbage's points conflict as
+  one shape.
+merges:
+  - template: grade_tpl
+    base_mine:
+      TplIn: TplIn
+      Grade1: Grade1
+      Blur1: Blur1
+      Constant1: Constant1
+      Merge1: Merge1
+      ColorCorrect1: ColorCorrect1
+      TplOut: TplOut
+      Matte: Matte
+    base_theirs:
+      TplIn: TplIn
+      Grade1: Grade1
+      Blur1: Blur1
+      Constant1: Constant1
+      Merge1: Merge1
+      ColorCorrect1: ColorCorrect1
+      TplOut: TplOut
+      Matte: Matte
+    scope: [TplIn, Grade1, Blur1, Constant1, Merge1, ColorCorrect1, TplOut, Matte]
+    conflicts:
+      - {node: Matte, item: Garbage, kind: roto-shape}

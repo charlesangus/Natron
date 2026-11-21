@@ -265,7 +265,9 @@ try:
               "the third notch from 100%% stops between 150%% and 200%% (got %r)" % between)
 
         gt.section("sticky")
-        set_zoom(100)
+        # Through the menu: zoomSlot() alone leaves the menu on the previous level, and a step
+        # that stays on 100% does not refresh it.
+        pick_menu_item("100%")
         yield ("sleep", STEP_MS)
         wheel(NOTCH // 4)
         yield ("sleep", STEP_MS)

@@ -321,7 +321,7 @@ Matrix3x3::operator=(const Matrix3x3 & m)
 bool
 Matrix3x3::isIdentity() const
 {
-    return a == 1 && b == 0 && c == 0 && d == 0 && e == 1 && f && 0 && g == 0 && h == 0 && i == 1;
+    return a == 1 && b == 0 && c == 0 && d == 0 && e == 1 && f == 0 && g == 0 && h == 0 && i == 1;
 }
 
 void

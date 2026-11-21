@@ -628,6 +628,8 @@ private:
     int _currentHistoryLocation;
     QAction* _showHiddenAction;
     QAction* _newFolderAction;
+    // The folder New Folder made, selected again once the watcher's relisting of its parent lands.
+    QString _newFolderToSelect;
     FileDialogModeEnum _dialogMode;
     QWidget* _centerArea;
     QHBoxLayout* _centerAreaLayout;

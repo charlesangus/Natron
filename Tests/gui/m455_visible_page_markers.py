@@ -66,6 +66,23 @@ try:
         _held.append(obj)
         return obj
 
+    def display_channels(name):
+        """Picks name ("RGB", "Alpha"...) in the viewer's channels menu, as a user would:
+        PyViewer.setChannels() looks entries up as "A", "R"... while the menu labels them "Alpha"."""
+        for combo in gt.widgets_of("ComboBox") + gt.widgets_of("ChannelsComboBox"):
+            try:
+                if "Display Channels:" not in (combo.toolTip() or ""):
+                    continue
+                items = [str(i) for i in (combo.property("natronItems") or [])]
+            except RuntimeError:
+                continue
+            if name in items:
+                hold(combo)
+                QMetaObject.invokeMethod(combo, "setCurrentIndex", Q_ARG(int, items.index(name)))
+                QApplication.processEvents()
+                return True
+        return False
+
     def timeline():
         visible = [w for w in gt.widgets_of("TimeLineGui") if w.isVisible()]
         return visible[0] if visible else None
@@ -369,6 +386,8 @@ try:
 
         clear_selection(roto)
         rg.untone_view()
+        # A Roto writes only its alpha; the RGB view of it is black.
+        require(display_channels("Alpha"), "the viewer shows the alpha channel")
         gl = rg.viewer_gl()
         require(gl is not None, "the viewer is visible")
         hold(gl)
@@ -402,6 +421,7 @@ try:
         check(ok, "frame %d: the layer translate lifts the shape by %g (%r lit, %r dark)" %
               (LAYER_KEYS[1], LAYER_RISE, lit, unlit))
         gt.shot("m455-roto-layer-frame%d.png" % LAYER_KEYS[1])
+        display_channels("RGB")
         select_row(roto, bez)
         yield from expect("the Bezier selected after the layer", ROTO_ALL)
 

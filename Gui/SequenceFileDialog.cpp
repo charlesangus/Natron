@@ -265,6 +265,7 @@ SequenceFileDialog::SequenceFileDialog(QWidget* parent, // necessary to transmit
     , _currentHistoryLocation(-1)
     , _showHiddenAction(0)
     , _newFolderAction(0)
+    , _newFolderToSelect()
     , _dialogMode(mode)
     , _centerArea(0)
     , _centerAreaLayout(0)
@@ -1145,6 +1146,20 @@ SequenceFileDialog::updateView(const QString &directory)
 
     /*clearselection*/
     _view->selectionModel()->clear();
+
+    if (_newFolderToSelect.isEmpty()) {
+        return;
+    }
+    if (QDir::cleanPath(QFileInfo(_newFolderToSelect).absolutePath()) != QDir::cleanPath(directoryItem->absoluteFilePath())) {
+        _newFolderToSelect.clear();
+
+        return;
+    }
+    QModelIndex created = _model->index(_newFolderToSelect);
+    if (created.isValid()) {
+        _view->selectionModel()->setCurrentIndex(created, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+        _view->scrollTo(created);
+    }
 }
 
 bool
@@ -1503,6 +1518,7 @@ SequenceFileDialog::createDir()
 
         return;
     }
+    _newFolderToSelect = QDir::cleanPath(_model->getFileSystemItem(index)->absoluteFilePath());
     _view->selectionModel()->setCurrentIndex(index, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
     _view->scrollTo(index);
 }

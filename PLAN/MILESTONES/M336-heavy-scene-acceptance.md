@@ -257,4 +257,8 @@ From the first valid baseline (VM, cloud-gpu-20261117T045608Z) and its sampled I
     - The deferred ~ViewerTab destroys the SceneViewport's QOpenGLContext on the main thread, where the VAO teardown creates a pbuffer (glXCreatePbuffer, 3 of 4 Lobby samples).
     - The new viewer's ViewerHandoff interop probe also costs time.
   - **Next:** log the structure difference, release or reuse the viewer GL context off the reopen path, cache the handoff path, then round 15.
+- 2026-11-21 — Reopen fixes:
+  - **f7856e0d7:** a reset closes only the panes added since the default (the twirl's split made the old kept test always fail); closing a pane moves its neighbour straight into the parent splitter; a dying GL context is left current so Qt's VAO teardown makes no pbuffer; the handoff path is cached per device.
+  - **Latest commit:** a split inserts the new splitter in place first, so GL widgets never leave the window. Floating-pane splits still detach (FloatingWidget::takeWidget); that's a follow-up.
 
+  Gate running, then round 15.

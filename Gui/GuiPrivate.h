@@ -142,6 +142,10 @@ public:
     QString _lastLoadProjectOpenedDir;
     // The default layout as last made, written out; empty until it has settled once.
     std::string defaultLayoutText;
+    // Its panes, splits and tabs alone, which is what a reset that keeps the layout must find unchanged.
+    std::string defaultLayoutStructure;
+    // While set, adding or removing a tab leaves which tab a pane shows to the rebuild's end.
+    bool rebuildingLayout = false;
     // Bumped by every layout made, so a snapshot queued for an earlier one is dropped.
     unsigned int layoutGeneration = 0;
     QString _lastSaveSequenceOpenedDir;

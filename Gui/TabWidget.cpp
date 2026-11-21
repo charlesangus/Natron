@@ -1039,7 +1039,13 @@ TabWidget::appendTab(const QIcon & icon,
         _imp->floatButton->setEnabled(true);
     }
     _imp->declareTabToPython( widget, object->getScriptName() );
-    makeCurrentTab(_imp->tabs.size() - 1);
+    if (_imp->gui && _imp->gui->isRebuildingLayout()) {
+        // Parented here hidden, as a tab that is not current is: the rebuild shows the pane's current
+        // tab once at its end.
+        widget->getWidget()->setParent(this);
+    } else {
+        makeCurrentTab(_imp->tabs.size() - 1);
+    }
 
     return true;
 }
@@ -1143,7 +1149,12 @@ TabWidget::removeTab(int index,
         _imp->modifyingTabBar = true;
         _imp->tabBar->removeTab(index);
         _imp->modifyingTabBar = false;
-        if (_imp->tabs.size() > 0) {
+        if ((_imp->tabs.size() > 0) && _imp->gui && _imp->gui->isRebuildingLayout()) {
+            if (_imp->currentWidget == tab) {
+                QObject::disconnect(w, SIGNAL(destroyed()), this, SLOT(onCurrentTabDeleted()));
+                _imp->currentWidget = 0;
+            }
+        } else if (_imp->tabs.size() > 0) {
             l.unlock();
             int i;
             if (newIndex == -1) {

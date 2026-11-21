@@ -94,7 +94,9 @@
 #                      the interval to collect delays the next one; the period the samples actually kept
 #                      is the "sample period" line heavy_scene_stack_window.py prints. A whole-process
 #                      eu-stack takes 0.15-0.3 s on the heavy scene and up to 1.5 s on a slow VM, so
-#                      SAMPLE_INTERVAL_S below that does not raise the rate. To walk only the main and
+#                      SAMPLE_INTERVAL_S below that does not raise the rate. One thread is not much
+#                      cheaper: the main thread alone took a median 250-320 ms a sample (about 3-4 Hz),
+#                      and each further thread walked costs about as much again. To walk only the main and
 #                      render threads, which is what the stall analysis reads, set
 #                        SAMPLE_TID_COMM='^NatronSceneRndr$'
 #                      The render thread is named NatronSceneRndr; the main thread is always walked. A

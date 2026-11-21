@@ -705,21 +705,23 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
                     const bool outOfMemory = outcome.status == Tracer::Status::OutOfMemory;
                     const bool overRange = outcome.status == Tracer::Status::OverStorageRange;
                     const bool lost = outcome.status == Tracer::Status::DeviceLost;
+                    const bool unsupported = outcome.status == Tracer::Status::Unsupported;
 
                     const bool failed = outcome.status != Tracer::Status::Ok && outcome.status != Tracer::Status::Stopped;
-                    const std::string fallback = std::string(outOfMemory     ? "The GPU ran out of memory"
-                                                                 : overRange ? "A table is larger than the GPU's storage buffer range"
-                                                                             : "The GPU was lost")
+                    const std::string fallback = std::string(outOfMemory       ? "The GPU ran out of memory"
+                                                                 : overRange   ? "A table is larger than the GPU's storage buffer range"
+                                                                 : unsupported ? "The scene is past what the GPU supports"
+                                                                               : "The GPU was lost")
                         + ", so the frame was rendered on the CPU: " + outcome.message;
 
-                    if ((outOfMemory || overRange) && device == Device::Auto) {
+                    if ((outOfMemory || overRange || unsupported) && device == Device::Auto) {
                         // The scene is not tried on the GPU again until it or the budget changes, so nothing of it stays there.
                         _renderParam->rememberGpuFallback(snapshot->version, budget, generation, fallback);
                         _renderParam->dropGpuExecutor();
                     } else if (lost || (outOfMemory && gpu->sceneFailed())) {
                         _renderParam->dropGpuExecutor();
                     }
-                    if (failed && device == Device::Auto && (outOfMemory || overRange || lost)) {
+                    if (failed && device == Device::Auto && (outOfMemory || overRange || unsupported || lost)) {
                         warning = fallback;
                         renderedOn = "CPU";
                         onCpu = true;

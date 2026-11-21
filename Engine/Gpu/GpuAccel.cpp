@@ -3,6 +3,7 @@
 #include "GpuRecord.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -12,6 +13,8 @@
 namespace gpu {
 
 namespace {
+
+    std::atomic<uint32_t> gMaxPrimitiveCountForTests { 0 };
 
     struct AccelFns {
         PFN_vkCreateAccelerationStructureKHR create = nullptr;
@@ -74,7 +77,26 @@ namespace {
         VkPhysicalDeviceProperties2 props { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2 };
         props.pNext = &accel;
         vkGetPhysicalDeviceProperties2(dev.physicalDevice(), &props);
+        const uint32_t cap = gMaxPrimitiveCountForTests.load(std::memory_order_relaxed);
+        if (cap != 0) {
+            accel.maxPrimitiveCount = std::min<uint64_t>(accel.maxPrimitiveCount, cap);
+        }
         return accel;
+    }
+
+    // Vulkan does not promise that an allocation past maxMemoryAllocationSize fails cleanly, so such a structure
+    // or scratch is refused before anything is allocated.
+    GpuStatus
+    checkAllocationLimit(GpuDevice& dev, const char* where, VkDeviceSize structureBytes, VkDeviceSize scratchBytes)
+    {
+        const uint64_t allocation = dev.info().maxMemoryAllocationSize;
+        if (allocation != 0 && (structureBytes > allocation || scratchBytes > allocation)) {
+            return { VK_ERROR_OUT_OF_DEVICE_MEMORY,
+                     std::string(where) + ": the " + std::to_string(structureBytes) + "-byte structure or its "
+                         + std::to_string(scratchBytes) + "-byte scratch exceeds the device's "
+                         + std::to_string(allocation) + "-byte allocation limit" };
+        }
+        return {};
     }
 
     VkDeviceAddress
@@ -442,6 +464,12 @@ namespace detail {
 
 } // namespace detail
 
+void
+GpuBlas::setMaxPrimitiveCountForTests(uint32_t count)
+{
+    gMaxPrimitiveCountForTests.store(count, std::memory_order_relaxed);
+}
+
 GpuStatus
 GpuBlas::querySizes(GpuDevice& dev, const GpuTriangles& triangles, const GpuBlasOptions& options, GpuAccelSizes& out)
 {
@@ -477,6 +505,9 @@ GpuBlas::buildWith(GpuRecordContext& ctx, GpuBufferPool& pool, const char* where
         return s;
     }
     const GpuAccelSizes sizes = buildSizes(dev, fns, desc);
+    if (GpuStatus s = checkAllocationLimit(dev, where, sizes.structureBytes, sizes.buildScratchBytes); !s) {
+        return GpuAccelRecorder::fail(ctx, std::move(s));
+    }
 
     GpuBlas blas;
     blas.options_ = options;
@@ -549,6 +580,9 @@ GpuBlas::refit(GpuRecordContext& ctx, const GpuTriangles& triangles)
     BuildDesc desc;
     if (GpuStatus s = describeTriangles(ctx.device(), where, triangles, options_, desc); !s) {
         return s;
+    }
+    if (GpuStatus s = checkAllocationLimit(ctx.device(), where, structure_.size(), updateScratchBytes_); !s) {
+        return GpuAccelRecorder::fail(ctx, std::move(s));
     }
     desc.info.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR;
     desc.info.srcAccelerationStructure = structure_.handle();

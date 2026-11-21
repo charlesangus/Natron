@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <string>
 
 #include "GpuAccel.h"
 #include "GpuBuffer.h"
@@ -358,6 +359,43 @@ GPU_TEST_F(GpuAccelTest, SizesOverTheBudgetReturnOutOfMemory)
     EXPECT_FALSE(static_cast<bool>(tlas));
     EXPECT_TRUE(ctx->ranOutOfMemory());
     EXPECT_TRUE(ctx->submitAndWait().ok());
+}
+
+// The cap derives from the quad's own structure size, which is the driver's choice.
+GPU_TEST_F(GpuAccelTest, ABlasOverTheAllocationLimitRunsOutOfMemoryBeforeAllocating)
+{
+    GpuAccelSizes sizes;
+    GpuStatus s = GpuBlas::querySizes(*dev, quad.triangles(), {}, sizes);
+    ASSERT_TRUE(s.ok()) << s.message;
+    ASSERT_GT(sizes.structureBytes, 1u);
+
+    GpuDeviceOptions options = gputest::deviceOptions();
+    options.maxMemoryAllocationSize = sizes.structureBytes - 1;
+    std::unique_ptr<GpuDevice> capped;
+    s = gputest::createDevice(capped, options);
+    ASSERT_TRUE(s.ok()) << s.message;
+    EXPECT_EQ(sizes.structureBytes - 1, capped->info().maxMemoryAllocationSize);
+    {
+        GpuKernelRegistry cappedRegistry(*capped);
+        GpuBufferPool cappedPool(*capped);
+        Quad cappedQuad;
+        s = cappedQuad.create(*capped, kGpuAccelInputUsage);
+        ASSERT_TRUE(s.ok()) << s.message;
+
+        std::unique_ptr<GpuRecordContext> ctx;
+        s = GpuRecordContext::create(cappedRegistry, ctx, &cappedPool);
+        ASSERT_TRUE(s.ok()) << s.message;
+        GpuBlas cappedBlas;
+        s = GpuBlas::build(*ctx, cappedPool, cappedQuad.triangles(), {}, cappedBlas);
+        EXPECT_EQ(s.result, VK_ERROR_OUT_OF_DEVICE_MEMORY) << s.message;
+        EXPECT_NE(std::string::npos, s.message.find("allocation limit")) << s.message;
+        EXPECT_FALSE(static_cast<bool>(cappedBlas));
+        EXPECT_TRUE(ctx->ranOutOfMemory());
+        EXPECT_EQ(0u, cappedPool.stats().liveBytes);
+        s = ctx->submitAndWait();
+        EXPECT_TRUE(s.ok()) << s.message;
+    }
+    capped->waitIdle();
 }
 
 namespace {

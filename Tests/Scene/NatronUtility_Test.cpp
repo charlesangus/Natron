@@ -83,6 +83,7 @@
 
 #ifdef NATRON_HAVE_GPU
 #include "Engine/AppManager.h"
+#include "Engine/Gpu/GpuAccel.h"
 #include "Engine/Gpu/GpuBufferPool.h"
 #include "Engine/Gpu/GpuRecord.h"
 #include "Engine/Gpu/GpuRuntime.h"
@@ -1515,6 +1516,67 @@ TEST(NatronUtilityRender, ForcedGpuOutOfMemoryFails)
 
     EXPECT_NE(std::string::npos, error.find(std::to_string(kStarvedPoolBytes))) << error;
 }
+namespace {
+// Holds every device's maxPrimitiveCount at one triangle while it lives, which no cube fits.
+class CappedPrimitiveCount {
+public:
+    CappedPrimitiveCount() { gpu::GpuBlas::setMaxPrimitiveCountForTests(1); }
+    ~CappedPrimitiveCount() { gpu::GpuBlas::setMaxPrimitiveCountForTests(0); }
+
+    CappedPrimitiveCount(const CappedPrimitiveCount&) = delete;
+    CappedPrimitiveCount& operator=(const CappedPrimitiveCount&) = delete;
+};
+} // anon namespace
+
+TEST(NatronUtilityRender, AutoRendersOnTheCpuWhenTheSceneIsPastWhatTheGpuSupports)
+{
+    UtilityGpuRuntime runtime;
+
+    GPUTEST_DEVICE_OR_SKIP(runtime.unavailable.empty(), runtime.unavailable);
+
+    const std::string missing = runtime.missingSupport();
+
+    if (!missing.empty()) {
+        GPUTEST_SKIP() << missing;
+    }
+
+    const CappedPrimitiveCount cap;
+    UtilityRender render(std::string("#usda 1.0\n") + cubeAt("Cube", kRedColor));
+
+    render.setDevice(kUtilityDeviceAuto);
+    render.render();
+    EXPECT_FLOAT_EQ(1.f, render.colorAt(8, 8)[0]);
+    EXPECT_EQ("CPU", render.textStat(kUtilityStatDevice));
+
+    const std::string warning = render.textStat(kUtilityStatWarning);
+
+    EXPECT_NE(std::string::npos, warning.find("past what the GPU supports")) << warning;
+    EXPECT_NE(std::string::npos, warning.find("triangles exceed the device's 1")) << warning;
+}
+
+TEST(NatronUtilityRender, ForcedGpuFailsWhenTheSceneIsPastWhatTheGpuSupports)
+{
+    UtilityGpuRuntime runtime;
+
+    GPUTEST_DEVICE_OR_SKIP(runtime.unavailable.empty(), runtime.unavailable);
+
+    const std::string missing = runtime.missingSupport();
+
+    if (!missing.empty()) {
+        GPUTEST_SKIP() << missing;
+    }
+
+    const CappedPrimitiveCount cap;
+    UtilityRender render(std::string("#usda 1.0\n") + cubeAt("Cube", kRedColor));
+
+    render.setDevice(kUtilityDeviceGpu);
+
+    const std::string error = render.renderError();
+
+    EXPECT_NE(std::string::npos, error.find("failed on the GPU")) << error;
+    EXPECT_NE(std::string::npos, error.find("triangles exceed the device's 1")) << error;
+}
+
 namespace {
 const std::uint64_t kCappedStorageRange = 64 * 1024;
 

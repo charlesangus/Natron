@@ -29,6 +29,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <chrono>
 #include <condition_variable>
@@ -107,6 +108,10 @@ const std::uint64_t kMaxDispatchRays = kUtilityMaxDispatchRays;
 
 // Bounds the host-visible memory one trace call stages.
 const std::size_t kMaxRaysPerSubmit = std::size_t(1) << 20;
+// A trace submission slower than this halves the rays of those after it, down to kMinRaysPerSubmit, so that an
+// expensive scene stays well inside the time a driver gives one job before it resets the device.
+const std::chrono::milliseconds kSlowSubmission(1000);
+const std::size_t kMinRaysPerSubmit = std::size_t(1) << 12;
 
 // Instance custom indices have 24 bits, so past this many a scene's slots are listed in an order table.
 const std::size_t kMaxInstances = std::size_t(1) << 24;
@@ -574,13 +579,14 @@ struct GpuTracer::Implementation {
         return false;
     }
 
-    // A failed submission leaves unknown which builds and refits ran, so nothing built is trusted.
+    // A failed submission leaves unknown which builds and refits ran, so nothing built is trusted. What ran out
+    // of memory or past a device limit keeps saying so, since the scene would do the same on another try.
     bool abandonSubmission(const std::string& what,
                            const gpu::GpuStatus& status)
     {
         Failure failed = failure(what, status);
 
-        if (failed.status != Status::DeviceLost) {
+        if (failed.status != Status::DeviceLost && failed.status != Status::OutOfMemory && failed.status != Status::Unsupported) {
             failed.status = Status::Failed;
         }
         geometries.clear();
@@ -609,6 +615,40 @@ struct GpuTracer::Implementation {
                      const std::atomic<bool>* stop,
                      const Failure& stopped);
 
+    // Halves the rays of the submissions after one of `submitted` rays that ran slow.
+    void shrinkSubmissions(std::size_t submitted) const
+    {
+        const std::size_t halved = std::max(kMinRaysPerSubmit, submitted / 2);
+        std::size_t current = raysPerSubmit.load(std::memory_order_relaxed);
+
+        while (halved < current && !raysPerSubmit.compare_exchange_weak(current, halved, std::memory_order_relaxed)) {
+        }
+    }
+
+    // The device-local heap budget VK_EXT_memory_budget reports, lowered by memoryBudgetLimit; 0 when neither
+    // gives one.
+    std::uint64_t memoryBudget() const
+    {
+        std::uint64_t budget = 0;
+        std::vector<VmaBudget> budgets;
+
+        if (device.info().memoryBudget && device.queryBudget(budgets)) {
+            const VkPhysicalDeviceMemoryProperties* props = nullptr;
+
+            vmaGetMemoryProperties(device.allocator(), &props);
+            for (std::uint32_t i = 0; props && i < props->memoryHeapCount && i < budgets.size(); ++i) {
+                if (props->memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) {
+                    budget = std::max<std::uint64_t>(budget, budgets[i].budget);
+                }
+            }
+        }
+        if (memoryBudgetLimit != 0) {
+            budget = budget ? std::min(budget, memoryBudgetLimit) : memoryBudgetLimit;
+        }
+
+        return budget;
+    }
+
     void trace(Entry entry,
                const RayBatch& rays,
                const HitBatch* hits,
@@ -622,6 +662,10 @@ struct GpuTracer::Implementation {
     std::shared_ptr<gpu::GpuKernel> occludedKernel;
     bool usable = false;
     std::size_t maxInstancesPerStructure = 0;
+    mutable std::atomic<std::size_t> raysPerSubmit { kMaxRaysPerSubmit };
+    std::function<std::chrono::steady_clock::time_point()> now = &std::chrono::steady_clock::now;
+    // Lowers the device's memory budget, for tests; 0 leaves it.
+    std::uint64_t memoryBudgetLimit = 0;
     // The structure table of a trace without structures: only the zero entry the kernel reads past the last.
     gpu::GpuBuffer noStructures;
 
@@ -1102,7 +1146,7 @@ GpuTracer::Implementation::trace(Entry entry,
     }
 
     const std::size_t bindable = static_cast<std::size_t>(ctx->maxStorageBufferBytes() / (kRayArrays * sizeof(float)));
-    const std::size_t chunk = std::min({ rays.count, kMaxRaysPerSubmit, bindable });
+    const std::size_t chunk = std::min({ rays.count, raysPerSubmit.load(std::memory_order_relaxed), bindable });
 
     if (chunk == 0) {
         record(Failure { Status::Failed, "GpuTracer: the device binds no storage buffer large enough for one ray" });
@@ -1159,8 +1203,12 @@ GpuTracer::Implementation::trace(Entry entry,
         deviceFilter = DeviceFilter { &lightBuffer, &maskBuffer, filter->stride, 0u };
     }
 
-    for (std::size_t start = 0; start < rays.count; start += chunk) {
-        const std::size_t n = std::min(chunk, rays.count - start);
+    std::size_t step = chunk;
+
+    for (std::size_t start = 0; start < rays.count; start += step) {
+        step = std::min(step, raysPerSubmit.load(std::memory_order_relaxed));
+
+        const std::size_t n = std::min(step, rays.count - start);
         float* staged = static_cast<float*>(rayBuffer.mapped());
 
         for (std::size_t array = 0; array < kRayArrays; ++array) {
@@ -1183,7 +1231,12 @@ GpuTracer::Implementation::trace(Entry entry,
         gpu::GpuStatus s = recordTrace(*ctx, entry, state, rayBuffer, static_cast<std::uint32_t>(n), valueBuffer, idBuffer, deviceFilter);
 
         if (s) {
+            const std::chrono::steady_clock::time_point began = now();
+
             s = ctx->submitAndWait();
+            if (s && now() - began > kSlowSubmission) {
+                shrinkSubmissions(n);
+            }
         }
         ctx.reset();
         if (!s) {
@@ -1267,6 +1320,30 @@ void
 GpuTracer::limitInstancesPerStructure(std::size_t count)
 {
     _imp->maxInstancesPerStructure = std::max<std::size_t>(1, std::min(_imp->maxInstancesPerStructure, count));
+}
+
+std::size_t
+GpuTracer::raysPerSubmission() const
+{
+    return _imp->raysPerSubmit.load(std::memory_order_relaxed);
+}
+
+void
+GpuTracer::limitRaysPerSubmission(std::size_t count)
+{
+    _imp->raysPerSubmit.store(std::max<std::size_t>(1, std::min(_imp->raysPerSubmit.load(std::memory_order_relaxed), count)), std::memory_order_relaxed);
+}
+
+void
+GpuTracer::useClock(std::function<std::chrono::steady_clock::time_point()> now)
+{
+    _imp->now = std::move(now);
+}
+
+void
+GpuTracer::limitMemoryBudget(std::uint64_t bytes)
+{
+    _imp->memoryBudgetLimit = bytes;
 }
 
 std::size_t
@@ -1430,6 +1507,55 @@ GpuTracer::update(const UtilityScene::Snapshot& snapshot,
     std::stable_sort(builds.begin(), builds.end(), [](const PendingBuild& a, const PendingBuild& b) {
         return a.entry->triangleCount > b.entry->triangleCount;
     });
+
+    // The structures are compared with the whole budget, not what is left of it, as the pool can evict what
+    // else it holds; a scene whose structures alone exceed it fails here rather than in the driver.
+    if (const std::uint64_t budget = imp.memoryBudget(); budget != 0) {
+        std::set<UtilityScene::GeometryId> rebuilt;
+        std::uint64_t structureBytes = 0;
+        std::uint64_t scratchBytes = 0;
+        gpu::GpuBlasOptions options;
+
+        options.allowUpdate = true;
+        options.allowCompaction = true;
+        for (const PendingBuild& build : builds) {
+            gpu::GpuAccelSizes sizes;
+
+            if (gpu::GpuStatus s = gpu::GpuBlas::querySizes(imp.device, build.entry->triangles(), options, sizes); !s) {
+                return imp.abandonUpdate(imp.failure("GpuTracer could not size the structure of " + snapshot.geometries.at(build.id).path.GetString(), s));
+            }
+            rebuilt.insert(build.id);
+            structureBytes += sizes.structureBytes;
+            scratchBytes = std::max<std::uint64_t>(scratchBytes, sizes.buildScratchBytes);
+        }
+        for (const auto& kept : imp.geometries) {
+            if (!rebuilt.count(kept.first) && snapshot.geometries.count(kept.first)) {
+                structureBytes += kept.second->blas.size();
+            }
+        }
+
+        const std::size_t instances = snapshot.instances.size();
+        const std::size_t perStructure = std::max<std::size_t>(1, imp.maxInstancesPerStructure);
+        // Full structures of perStructure instances, then one of the rest.
+        const std::pair<std::size_t, std::size_t> runs[] = { { perStructure, instances / perStructure },
+                                                             { instances % perStructure, std::size_t(instances % perStructure != 0) } };
+
+        for (const auto& [count, structures] : runs) {
+            gpu::GpuAccelSizes sizes;
+
+            if (structures == 0) {
+                continue;
+            }
+            if (gpu::GpuStatus s = gpu::GpuTlas::querySizes(imp.device, static_cast<std::uint32_t>(count), sizes); !s) {
+                return imp.abandonUpdate(imp.failure("GpuTracer could not size its instance structures", s));
+            }
+            structureBytes += structures * sizes.structureBytes;
+            scratchBytes = std::max<std::uint64_t>(scratchBytes, sizes.buildScratchBytes);
+        }
+        if (structureBytes + scratchBytes > budget) {
+            return imp.abandonUpdate(Failure { Status::OutOfMemory, "GpuTracer: the scene's acceleration structures need " + std::to_string(structureBytes + scratchBytes) + " bytes, more than the GPU's " + std::to_string(budget) + "-byte memory budget" });
+        }
+    }
 
     if (!builds.empty() || !refits.empty()) {
         GeometrySubmissionPtr job = std::make_shared<GeometrySubmission>();

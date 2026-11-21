@@ -637,6 +637,9 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
         dev->info_.maxDrawIndirectCount = std::max<uint32_t>(p2.properties.limits.maxDrawIndirectCount, 1);
         dev->info_.copyChunkSize = std::max<uint64_t>(options.copyChunkSize, 1);
         dev->info_.maxMemoryAllocationSize = p11.maxMemoryAllocationSize;
+        if (options.maxMemoryAllocationSize != 0) {
+            dev->info_.maxMemoryAllocationSize = std::min<uint64_t>(p11.maxMemoryAllocationSize, options.maxMemoryAllocationSize);
+        }
         dev->info_.minImportedHostPointerAlignment
             = dev->info_.externalMemoryHost ? hostProps.minImportedHostPointerAlignment : 0;
 

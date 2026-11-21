@@ -30,7 +30,9 @@
 
 #ifdef NATRON_HAVE_GPU
 
+#include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -125,6 +127,23 @@ public:
 
     // Lowers the instances one top-level structure takes, so that tests split small scenes. Never raises it.
     void limitInstancesPerStructure(std::size_t count);
+
+    // The rays intersect() and occluded() put in one submission at most. It starts at 2^20 and halves, down to
+    // 2^12, after each submission that takes longer than a second.
+    std::size_t raysPerSubmission() const;
+
+    // Lowers raysPerSubmission(), so that tests trace in several submissions. Never raises it.
+    void limitRaysPerSubmission(std::size_t count);
+
+    // Replaces the clock that times the trace submissions, so that tests can make them look slow.
+    void useClock(std::function<std::chrono::steady_clock::time_point()> now);
+
+    /**
+     * @brief Lowers the memory budget an update compares the scene's acceleration structures with, so that
+     * tests can exceed it. Without this the budget is the device-local heap's that VK_EXT_memory_budget
+     * reports, and nothing is compared without the extension. An update over it fails with OutOfMemory.
+     **/
+    void limitMemoryBudget(std::uint64_t bytes);
 
     // The top-level structures the last update split the scene's instances over.
     std::size_t instanceStructureCount() const;

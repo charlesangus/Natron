@@ -26,6 +26,7 @@
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -300,6 +301,16 @@ protected:
         _gpuTracers.push_back(tracer);
 
         return tracer;
+    }
+
+    // As makeGpuTracer(), for a test that makes the tracer fail: TearDown does not check its status.
+    std::shared_ptr<GpuTracer> makeUncheckedGpuTracer()
+    {
+        if (!_available || GetParam() != Backend::Gpu) {
+            return nullptr;
+        }
+
+        return std::make_shared<GpuTracer>(*_registry, *_pool);
     }
 
     std::shared_ptr<GpuTracer> makeSplitTracer(std::size_t instancesPerStructure)
@@ -1316,6 +1327,87 @@ TEST_P(NatronUtilityTracer, OnlyMotionBuildsMoverStructures)
     EXPECT_EQ(1u, tracer->moverStructureCount());
     ASSERT_TRUE(tracer->update(UtilityScene::atShutter(scene.snapshot(), 0.5, 0.5, 1), 2));
     EXPECT_EQ(0u, tracer->moverStructureCount()) << "a closed shutter";
+}
+
+// A clock that moves on two seconds whenever it is read makes every submission look slow.
+TEST_P(NatronUtilityTracer, SlowSubmissionsHalveTheRaysOfTheNextDownToAFloor)
+{
+    UtilityScene scene;
+    const UtilityScene::GeometryId id = addQuad(scene, "/quad");
+
+    scene.setInstances(id, { GfMatrix4d(1.) });
+
+    const std::shared_ptr<GpuTracer> tracer = makeGpuTracer();
+
+    if (!tracer) {
+        return;
+    }
+    ASSERT_TRUE(tracer->update(scene.snapshot(), 2));
+    EXPECT_EQ(std::size_t(1) << 20, tracer->raysPerSubmission());
+    tracer->limitRaysPerSubmission(std::size_t(1) << 14);
+
+    Rays one;
+
+    for (std::size_t i = 0; i < (std::size_t(1) << 14); ++i) {
+        one.add(0.75f, 0.25f);
+    }
+
+    std::vector<std::uint8_t> blocked(std::size_t(1) << 14, 7);
+
+    tracer->occluded(one.batch(), blocked.data());
+    EXPECT_EQ(std::size_t(1) << 14, tracer->raysPerSubmission()) << "a fast submission";
+
+    const std::shared_ptr<std::chrono::steady_clock::time_point> ticks = std::make_shared<std::chrono::steady_clock::time_point>();
+
+    tracer->useClock([ticks]() {
+        *ticks += std::chrono::seconds(2);
+
+        return *ticks;
+    });
+    tracer->occluded(one.batch(), blocked.data());
+    EXPECT_EQ(std::size_t(1) << 13, tracer->raysPerSubmission());
+
+    Rays several;
+
+    for (std::size_t i = 0; i < (std::size_t(1) << 15); ++i) {
+        several.add(0.75f, 0.25f);
+    }
+    several.add(2.f, 2.f);
+
+    std::vector<std::uint8_t> severalBlocked((std::size_t(1) << 15) + 1, 7);
+
+    // One submission of 2^13 rays, then those of 2^12 at the floor, the last ray in one of its own.
+    tracer->occluded(several.batch(), severalBlocked.data());
+    EXPECT_EQ(std::size_t(1) << 12, tracer->raysPerSubmission());
+    EXPECT_EQ(std::size_t(1) << 15, static_cast<std::size_t>(std::count(severalBlocked.begin(), severalBlocked.end(), std::uint8_t(1))));
+    EXPECT_EQ(0, severalBlocked.back());
+}
+
+TEST_P(NatronUtilityTracer, AScenePastTheMemoryBudgetRunsOutOfMemory)
+{
+    UtilityScene scene;
+    const UtilityScene::GeometryId id = addQuad(scene, "/quad");
+
+    scene.setInstances(id, { GfMatrix4d(1.) });
+
+    const std::shared_ptr<GpuTracer> tracer = makeUncheckedGpuTracer();
+
+    if (!tracer) {
+        return;
+    }
+    tracer->limitMemoryBudget(1);
+    EXPECT_FALSE(tracer->update(scene.snapshot(), 2));
+
+    const Tracer::Outcome outcome = tracer->status();
+
+    EXPECT_TRUE(outcome.status == Tracer::Status::OutOfMemory) << outcome.message;
+    EXPECT_NE(std::string::npos, outcome.message.find("1-byte memory budget")) << outcome.message;
+    EXPECT_EQ(Tracer::kNoHit, shootAt(*tracer, 0.75f, 0.25f).instance[0]);
+
+    tracer->limitMemoryBudget(std::uint64_t(1) << 40);
+    scene.setInstances(id, { GfMatrix4d(1.), translation(10., 0., 0.) });
+    EXPECT_TRUE(tracer->update(scene.snapshot(), 2)) << tracer->status().message;
+    EXPECT_EQ(0u, shootAt(*tracer, 0.75f, 0.25f).instance[0]);
 }
 #endif
 

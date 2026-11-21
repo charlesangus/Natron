@@ -133,8 +133,12 @@ public:
     static GpuStatus querySizes(GpuDevice& dev, const GpuTriangles& triangles, const GpuBlasOptions& options,
                                 GpuAccelSizes& out);
 
-    // Allocates the structure from `pool` and records its build. A structure `out` already held is handed to the
-    // context. `out` is left empty on failure.
+    // Test override: caps every device's maxPrimitiveCount while non-zero.
+    static void setMaxPrimitiveCountForTests(uint32_t count);
+
+    // Allocates the structure from `pool` and records its build. A structure or build scratch larger than the
+    // device's maxMemoryAllocationSize fails with VK_ERROR_OUT_OF_DEVICE_MEMORY before anything is allocated. A
+    // structure `out` already held is handed to the context. `out` is left empty on failure.
     static GpuStatus build(GpuRecordContext& ctx, GpuBufferPool& pool, const GpuTriangles& triangles,
                            const GpuBlasOptions& options, GpuBlas& out);
     // As above over boxes; such a structure cannot be refit.

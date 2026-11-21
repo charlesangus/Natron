@@ -91,6 +91,8 @@ struct GpuDeviceOptions {
     GpuDebugMessageFn debugMessage;
     // Test override: caps the reported maxStorageBufferRange when smaller than the device limit. 0 = none.
     uint64_t maxStorageBufferRange = 0;
+    // Test override: caps the reported maxMemoryAllocationSize when smaller than the device limit. 0 = none.
+    uint64_t maxMemoryAllocationSize = 0;
     // Size of one host<->device copy chunk.
     uint64_t copyChunkSize = 512ull << 20;
     GpuFaultPlan fault;

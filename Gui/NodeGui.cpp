@@ -757,8 +757,9 @@ NodeGui::startPanelBuild(bool incremental)
     NodeGuiPtr thisShared = shared_from_this();
     // The multi-instance panels are set up from the knob GUIs as soon as they exist.
     const bool buildIncrementally = incremental && shownNode && !shownNode->isMultiInstance() && shownNode->getParentMultiInstanceName().empty();
-    // Docking the panel costs about as much as creating it, so an incremental build does it in a pass of its own.
-    _settingsPanel = createPanel(propsLayout, thisShared, !buildIncrementally);
+    // Every row is built while the panel is still hidden and the panel is docked once it is complete:
+    // a row shown inside a visible panel pays for its own restyle and its ancestors' relayout.
+    _settingsPanel = createPanel(propsLayout, thisShared);
     if (_settingsPanel && shownNode && shownNode->hasOverlayColor()) {
         double r, g, b;
         shownNode->getStoredOverlayColor(&r, &g, &b);
@@ -766,12 +767,9 @@ NodeGui::startPanelBuild(bool incremental)
     }
     _panelTailPending = true;
     _panelTailStep = 0;
-    _panelDockPending = buildIncrementally && _settingsPanel;
+    _panelDockPending = (_settingsPanel != 0);
 
-    if (_panelDockPending && !_mainInstancePanel) {
-        QTimer::singleShot(0, this, [this]() {
-            dockPendingPanel();
-        });
+    if (buildIncrementally && _settingsPanel && !_mainInstancePanel) {
         NodeGuiWPtr weakThis = thisShared;
         _settingsPanel->initializeKnobsIncrementally([weakThis]() {
             NodeGuiPtr self = weakThis.lock();
@@ -799,6 +797,7 @@ NodeGui::dockPendingPanel()
     }
     _panelDockPending = false;
     if (_settingsPanel && !_settingsPanel->isClosed() && _graph) {
+        NodeCreationStageLog::Scope stage("panelDock");
         _graph->getGui()->addVisibleDockablePanel(_settingsPanel);
     }
 }
@@ -861,7 +860,6 @@ NodeGui::runPanelTail(bool all)
     if (!_panelTailPending || _panelTailRunning) {
         return;
     }
-    dockPendingPanel();
     if (_settingsPanel) {
         _settingsPanel->ensureKnobGuisCreated();
         // Asked for by a knob GUI of this panel while it is being built: the build's end runs the rest.
@@ -869,6 +867,7 @@ NodeGui::runPanelTail(bool all)
             return;
         }
     }
+    dockPendingPanel();
     NodePtr node = getNode();
     if (!_graph || (!all && (!node || !node->isActivated()))) {
         // A node deleted before its panel was done is not put back in the editors; opening its panel does that.
@@ -1014,8 +1013,7 @@ NodeGui::onSettingsPanelMaximized()
 
 NodeSettingsPanel*
 NodeGui::createPanel(QVBoxLayout* container,
-                     const NodeGuiPtr& thisAsShared,
-                     bool dock)
+                     const NodeGuiPtr& thisAsShared)
 {
     NodeSettingsPanel* panel = 0;
     NodePtr node = getNode();
@@ -1045,8 +1043,6 @@ NodeGui::createPanel(QVBoxLayout* container,
                  ( isCreatingPythonGroup && ( pluginID != PLUGINID_NATRON_GROUP) ) ||
                  !node->getParentMultiInstanceName().empty() ) {
                 panel->setClosed(true);
-            } else if (dock) {
-                _graph->getGui()->addVisibleDockablePanel(panel);
             }
         }
     }

@@ -269,6 +269,7 @@ private:
                               const std::vector<double>& maxs);
     void setDimensionLinesRightInset(QHBoxLayout* containerLayout);
     void seekDimensionSlidersToSpinBoxes();
+    void ensureDimensionSliders();
     void dimensionSliderEditingEnd(int dimension, double d);
     void onDimensionSliderValueChanged(int dimension, double d);
     void onDimensionSliderEditingFinished(int dimension, bool hasMovedOnce);

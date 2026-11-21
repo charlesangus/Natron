@@ -257,18 +257,27 @@ void
 ValueGlobalModeTargetBase::attach()
 {
     _attached = true;
-    refreshHighlight();
 
     KnobGui* knobGui = getKnobGui();
 
     if (!knobGui) {
+        refreshHighlight();
+
         return;
     }
+    revealKnobInPanel(getPanel(), knobGui->getKnob());
+    const std::vector<KnobGuiPtr> strokeKnobGuis = getStrokeKnobGuis();
+    for (std::size_t i = 0; i < strokeKnobGuis.size(); ++i) {
+        if (strokeKnobGuis[i]) {
+            strokeKnobGuis[i]->ensureRowBuilt();
+        }
+    }
+    refreshHighlight();
     touchGlobalModeKnob(knobGui);
 
     KnobGuiValue* value = dynamic_cast<KnobGuiValue*>(knobGui);
 
-    revealKnobInPanel(getPanel(), knobGui->getKnob(), value ? value->getGlobalModeRowWidget() : 0);
+    scrollWidgetIntoView(value ? value->getGlobalModeRowWidget() : 0);
 }
 
 void

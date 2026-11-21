@@ -476,7 +476,7 @@ KnobGuiChoice::_hide()
 void
 KnobGuiChoice::_show()
 {
-    _comboBox->show();
+    KnobGui::showWidget(_comboBox);
 }
 
 void

@@ -802,7 +802,7 @@ LayerChannelRow::rebuildChannelButtons()
         QColor color;
         if (getChannelColorFromName(channels[i], &color)) {
             b->setProperty(kChannelColorProperty, QVariant(color));
-            b->setStyleSheet(QString::fromUtf8("QPushButton:checked { background-color: %1; }").arg(getChannelButtonColor(color).name()));
+            b->setProperty(kChannelButtonProperty, getChannelButtonKey(channels[i]));
         }
         b->blockSignals(true);
         b->setChecked(isRegexRow ? !_regexExcludedChannels.count(channels[i]) : isChannelEnabled(channels[i]));

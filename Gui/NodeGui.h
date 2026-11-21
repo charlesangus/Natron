@@ -281,8 +281,8 @@ public:
     // Creates the panel if needed, or finishes a buildDeferredPanel() build, so might be expensive.
     void ensurePanelCreated(bool minimized = false, bool hideUnmodified = false);
 
-    // NodeGraph::schedulePanelBuild()'s build: skipped once the node is deleted or undone. The panel is
-    // filled over several passes of the event loop.
+    // NodeGraph::schedulePanelBuild()'s build: skipped once the node is deleted or undone. The hidden
+    // panel is filled over several passes of the event loop and docked once complete.
     void buildDeferredPanel();
 
     // Throws away a buildDeferredPanel() panel whose knob GUIs are still being built, leaving the node
@@ -788,8 +788,8 @@ Q_SIGNALS:
 protected:
 
     virtual void createGui();
-    // An open panel is added to the properties bin only if dock is set.
-    virtual NodeSettingsPanel* createPanel(QVBoxLayout* container, const NodeGuiPtr& thisAsShared, bool dock);
+    // The panel is created hidden and outside the properties bin; dockPendingPanel() adds an open one.
+    virtual NodeSettingsPanel* createPanel(QVBoxLayout* container, const NodeGuiPtr& thisAsShared);
 
 private:
     void startPanelBuild(bool incremental);

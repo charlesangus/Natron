@@ -42,8 +42,8 @@ ALL_SECTIONS = ("file-dialog", "placement", "picker-defaults", "deep-read")
 
 try:
     import NatronEngine
-    from PySide6.QtCore import QEvent, QItemSelectionModel, QMimeData, QMetaObject, QPoint, QPointF, Qt, QUrl
-    from PySide6.QtGui import QDragEnterEvent, QDropEvent, QEnterEvent, QGuiApplication, QKeyEvent, QMouseEvent
+    from PySide6.QtCore import QEvent, QItemSelectionModel, QMimeData, QMetaObject, QPoint, QPointF, Qt, QTimer, QUrl
+    from PySide6.QtGui import QCursor, QDragEnterEvent, QDropEvent, QEnterEvent, QGuiApplication, QKeyEvent, QMouseEvent
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QAbstractButton, QApplication, QLabel, QLineEdit, QListView, QMainWindow, QTreeView, QWidget
 
@@ -104,7 +104,19 @@ try:
         except Exception:
             return False
 
+    fixtures_written = []
+
     def make_fixtures():
+        # Written once per run: a reader pins a file to the identity it first saw, so a fixture
+        # rewritten after an earlier section read it fails as changed on disk and renders black.
+        if fixtures_written:
+            return True
+        ok = write_fixtures()
+        if ok:
+            fixtures_written.append(True)
+        return ok
+
+    def write_fixtures():
         ok = make_image(os.path.join(FILES_DIR, PNG_NAME), (0.9, 0.1, 0.1))
         ok = ok and make_image(os.path.join(FILES_DIR, "sub", "m138-inner.png"), (0.1, 0.1, 0.9))
         # Sizes that are not a multiple of the tile size, so edge tiles are partial.
@@ -175,12 +187,26 @@ try:
 
     def open_read_dialog():
         """Tab menu -> Read, which opens the create-time file dialog. Returns the dialog."""
+        # Cancelling the dialog leaves the Read it created, selected. With a node selected the Tab
+        # menu lists only nodes that take that node's output as an input, which leaves Read out, so
+        # the Reads of an earlier round go and the selection is cleared before the menu opens.
+        for n in app.getChildren():
+            if "Read" in n.getPluginID():
+                n.destroy()
+        app.clearSelection()
+        QApplication.processEvents()
+        require(len(app.getSelectedNodes()) == 0, "no node is selected before the Tab menu opens")
         view = node_graph_view()
         require(view is not None, "the node graph is on screen")
-        # The Tab shortcut only works while the pointer is over the graph, which the graph learns
-        # from its enter event; Xvfb has no pointer to move there.
+        # The Tab shortcut only works while the graph has the focus or the pointer is over it. A
+        # closed modal dialog leaves the focus elsewhere, so both are set here.
+        view.window().activateWindow()
+        view.setFocus(Qt.OtherFocusReason)
+        viewport = view.viewport()
+        QCursor.setPos(viewport.mapToGlobal(viewport.rect().center()))
         centre = QPointF(view.rect().center())
         QApplication.sendEvent(view, QEnterEvent(centre, centre, QPointF(view.mapToGlobal(view.rect().center()))))
+        QApplication.processEvents()
         QTest.keyClick(view, Qt.Key_Tab)
         ok = yield ("until", lambda: any(d.isVisible() for d in gt.widgets_of("TabTabTabWidget")), POLL_TIMEOUT_S)
         require(ok, "the Tab menu opens")
@@ -191,9 +217,12 @@ try:
         model = entries.model()
         row = next((r for r in range(model.rowCount())
                     if str(model.index(r, 0).data()).split("[")[0].strip() == "Read"), -1)
-        require(row >= 0, "the Tab menu offers Read")
+        require(row >= 0, "the Tab menu offers Read (rows: %s)" % [
+            str(model.index(r, 0).data()) for r in range(min(model.rowCount(), 8))])
         entries.setCurrentIndex(model.index(row, 0))
-        QTest.keyClick(line_edit, Qt.Key_Return)
+        # Choosing Read runs the file dialog's modal loop before the key press returns, so the press
+        # is sent from the event loop and this step waits for the dialog inside that modal loop.
+        QTimer.singleShot(0, lambda: QTest.keyClick(line_edit, Qt.Key_Return))
         ok = yield ("until", lambda: bool(visible_of("SequenceFileDialog")), POLL_TIMEOUT_S)
         require(ok, "the create-time file dialog opened")
         yield ("sleep", SETTLE_MS)
@@ -608,7 +637,9 @@ try:
         def shows(node, channel, label):
             view(viewer, node)
             yield ("sleep", RENDER_MS)
-            colour = gt.viewer_centre_colour()
+            # Off-centre: a leftover point-pick marker (an orange pixel) sits exactly at the centre.
+            # The 300x200 fixtures reach at least 150x100 px from the centre at any zoom >= 1.
+            colour = gt.viewer_centre_colour(offset=(24, 16))
             check(colour is not None and all(colour[channel] > colour[i] + 30 for i in range(3) if i != channel),
                   label + " (centre " + repr(colour) + ")")
 

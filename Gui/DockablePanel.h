@@ -159,9 +159,9 @@ public:
 
     virtual void refreshTabWidgetMaxHeight() OVERRIDE FINAL;
     virtual bool isPagingEnabled() const OVERRIDE FINAL;
+    virtual bool canDeferKnobRows() const OVERRIDE FINAL;
     virtual bool useScrollAreaForTabs() const OVERRIDE FINAL;
     virtual void onKnobsInitialized() OVERRIDE FINAL;
-    virtual void onKnobBuildStarted() OVERRIDE FINAL;
 
     virtual void setPyPlugUIEnabled(bool enabled);
 
@@ -292,9 +292,12 @@ private:
         QFrame::mousePressEvent(e);
     }
 
+    virtual bool event(QEvent* e) OVERRIDE FINAL;
+
     QString helpString() const;
 
     std::unique_ptr<DockablePanelPrivate> _imp;
+    bool _firstPaintLogged = false;
 };
 
 NATRON_NAMESPACE_EXIT

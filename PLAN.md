@@ -636,6 +636,7 @@ future core work has solid ground to build on.
 | F33 | Graph Diff And Merge | open | bosley-executor |  | feature/f33-graph-diff-and-merge | Diff and merge two versions of a graph, with a resolution UI, accepted in one UAT. |
 
 # Open questions
+- **Intermittent KeyMix GPU read of uninitialised memory, for /cat-plan as an E14 - Architecture stub (PM, 2026-11-21, from M336 - Heavy Scene Acceptance PR CI run 44940733888):** `Rows/EdgePolicyMatrixTest.ReadsPastTheBoxByItsMode/32` ("KeyMix A smaller than B, input over a black box", Tests/Native/EdgePolicy_Test.cpp:915) got 416 GPU-vs-CPU mismatches, worst 5.79e36, under parallel ctest on the task-graph leg, and passed on serial rerun. Same run: ProgressiveRenderTest stalled on MoonRay's headlight case (legacy) and segfaulted inside UsdImagingGLEngine construction (task-graph); both passed on rerun. None is M336 code.
 - **/cat-plan follow-up (from M434 - Interacts On The Overlay Draw List, 2026-11-21):** adding a Roto shape rebuilds the Dope Sheet's rows for every shape (DSNode::rebuildItemRows, Gui/DopeSheet.cpp:2309), so building 200 shapes takes minutes. Needs a milestone: incremental row insert, plus findShapeDSKnob's per-key full scan.
 
 - **F7 - Natron Utility Core UAT round 1 (user, 2026-11-21):**

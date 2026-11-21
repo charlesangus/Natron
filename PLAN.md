@@ -421,7 +421,7 @@ future core work has solid ground to build on.
 | M302 | Viewer Render State Cues | done | - | bosley-native-nodes | E6 | F6 | | [M302-viewer-render-state-cues.md](PLAN/MILESTONES/M302-viewer-render-state-cues.md) |
 | M303 | Interactive Edit Latency | done | M301 | bosley-native-nodes | E6 | F6 | | [M303-interactive-edit-latency.md](PLAN/MILESTONES/M303-interactive-edit-latency.md) |
 | M277 | Graph Creation And Insert | done | M192, M193 | bosley-native-nodes | E10 | | | [M277-graph-creation-and-insert.md](PLAN/MILESTONES/M277-graph-creation-and-insert.md) |
-| M278 | Translucent Selection Highlight | doing | M234 | bosley-executor | E9 | | | [M278-translucent-selection-highlight.md](PLAN/MILESTONES/M278-translucent-selection-highlight.md) |
+| M278 | Translucent Selection Highlight | doing | M234 | bosley-executor | E9 | | response | [M278-translucent-selection-highlight.md](PLAN/MILESTONES/M278-translucent-selection-highlight.md) |
 | M279 | Utility Renderer Foundation | done | M248 | bosley-native-nodes | E19 | F7 | | [M279-utility-renderer-foundation.md](PLAN/MILESTONES/M279-utility-renderer-foundation.md) |
 | M280 | Utility Renderer GPU Path | done | M279, M253 | bosley-native-nodes | E19 | F7 | | [M280-utility-renderer-gpu-path.md](PLAN/MILESTONES/M280-utility-renderer-gpu-path.md) |
 | M281 | Utility Materials And Lights | done | M280, M233, M234 | bosley-native-nodes | E19 | F7 | | [M281-utility-materials-and-lights.md](PLAN/MILESTONES/M281-utility-materials-and-lights.md) |
@@ -636,6 +636,7 @@ future core work has solid ground to build on.
 
 # Open questions
 
+- **M278 - Translucent Selection Highlight (PM, 2026-11-21):** five sign-off screenshots of selection highlighting sent (files in .worktrees/m278/build/remote/release/gui/m278_selection_highlight/). OK them, or say what to change, including whether the display-colour tint is right.
 - **Deleted-knob listener dependencies, for /cat-plan as an E14 - Architecture stub (PM, 2026-11-20, from M372 - User Knob Engine Edits):** `KnobHelper::deleteKnob` (Engine/Knob.cpp:907–961) marks listener expressions invalid but keeps their dependency on the deleted knob. Its recheck may re-bind them to it. Any later setExpression on such a listener, while the deleted knob is kept alive by Python or a test, asserts in `Node::onKnobSlaved` (`master->getHolder()`). M372 works around it on its own paths.
 - **M438 - Lens Distortion In The USD Scene follow-ups, for /cat-plan (PM, 2026-11-20):** the user chose both encodings in a lens prim. File the follow-up milestones A–G from PLAN/DESIGN/2026-11-14-usd-lens-distortion-design.md; M438 is done once they are filed.
 - **M447 - USDPreviewSurface Rename, for /cat-plan (PM, 2026-11-20):** sweep todo milestone briefs that still name `USDMaterial`; the node is now USDPreviewSurface.

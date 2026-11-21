@@ -134,12 +134,19 @@ within 1e-6 relative, from the device's division (mean) and rounding.
   are. Each level is one render of the body, so the iteration count trades smoothness between
   levels against time: a body that changes little across the range needs few, a large blur range
   more. With one iteration the Map has no effect.
+- Choosing the count: between two levels the driven knob steps by its range divided by
+  (iterations - 1), and a pixel between them blends the two renders rather than rendering its own
+  value, which shows as banding when the step is large. Start with a step of about one unit of the
+  knob: a Blur size driven 0 to 20 starts at 21 iterations, a `levelSpacing` of 0.05, each level
+  one pixel of blur apart. Then render and increase the count until the banding disappears; Cubic
+  hides it at fewer iterations than Linear, Nearest needs the most.
 - No Map connected: the Map reads 0, so the output is the first iteration, with a warning.
 - Culling: the output is cut into 64-pixel tiles, and each tile renders only the iterations its
   Map values read. A tile all black renders one iteration; a tile whose values span the range
   renders all of them. The result is the same as rendering every iteration everywhere. Each
-  iteration renders over the bounding box of the tiles that read it, so culling saves most where
-  large areas of the Map are flat.
+  iteration asks the body for only the tiles that read it, adjacent tiles joined into rectangles,
+  so culling saves most where large areas of the Map are flat. A renderer that renders each
+  iteration once over everything asked of it still covers the bounding box of those rectangles.
 - The node's own I-variants (IBlur, IDefocus, IErodeDilate) vary their size continuously per
   pixel and render once. They are exact and faster: use them when one exists, and Map Blend for
   any other body or several knobs at once.

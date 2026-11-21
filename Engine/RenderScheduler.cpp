@@ -2018,6 +2018,9 @@ RenderScheduler::probeRenderContinuation(const FramePtr& frame,
     std::vector<RequestPassRoot> passRoots;
     std::vector<FrameStore::TaskKey> rootKeys;
     std::vector<std::list<ImageLayerDesc>> rootComponents;
+    // Requests for different layers of one output share its root, which renders their union.
+    std::vector<std::list<ImageLayerDesc>> requestComponents;
+    requestComponents.reserve(probed.requests.size());
     for (const EffectInstance::RenderContinuationRequest& request : probed.requests) {
         if (!request.node || !request.node->getEffectInstance()) {
             failTaskWithReason(effect, "asked its render continuation for a node without an effect");
@@ -2054,6 +2057,7 @@ RenderScheduler::probeRenderContinuation(const FramePtr& frame,
                 rootComponents[index].push_back(comp);
             }
         }
+        requestComponents.push_back(comps);
     }
     std::vector<int> rootReads(rootKeys.size(), 0);
     std::vector<int> requestRoots;
@@ -2104,7 +2108,7 @@ RenderScheduler::probeRenderContinuation(const FramePtr& frame,
         input.request = probed.requests[r];
         input.key = root.key;
         input.renderedRoI = root.renderedRoI;
-        input.components = root.components;
+        input.components = requestComponents[r];
         made->inputs.push_back(std::move(input));
     }
 
@@ -2349,8 +2353,8 @@ RenderScheduler::executeRegion(const FramePtr& frame,
     }
     std::unique_ptr<Continuation> continuation;
     bool runsBody = (bool)body;
+    const int probed = (continuationMember >= 0) ? frame->graph.regions[region].members[continuationMember] : -1;
     if (continuationMember >= 0) {
-        const int probed = frame->graph.regions[region].members[continuationMember];
         {
             QMutexLocker k(&_mutex);
             std::map<int, std::unique_ptr<Continuation>>::iterator resumed = frame->continuations.find(taskIndex);
@@ -2389,8 +2393,16 @@ RenderScheduler::executeRegion(const FramePtr& frame,
     }
 
     if (runsBody) {
-        AppTLS::FrameContextScope scope(frame->context.get(), budget, runnablePriorityOf(frame->priority));
+        // As executeTask(): should the member fall back to the CPU, its renderRoI neither probes again nor misses
+        // the extension's outputs.
+        const FrameRenderContextPtr& renderContext = continuation ? continuation->context : frame->context;
+        AppTLS::FrameContextScope scope(renderContext.get(), budget, runnablePriorityOf(frame->priority));
         OpenMPThreadsScope openMPThreads(budget);
+        std::optional<EffectInstance::RenderContinuationHandledScope> handled;
+        if (continuation) {
+            const FrameGraph::Task& probedTask = frame->graph.tasks[probed];
+            handled.emplace(probedTask.key.node.get(), probedTask.key.time, probedTask.key.view, probedTask.key.contextKey, frame->depth);
+        }
         const int rendering = ++_tasksRendering;
         if (frame->context->getStats()) {
             frame->context->getStats()->noteConcurrentTasks(rendering);

@@ -1078,8 +1078,22 @@ private:
                 if (input.components.empty() || input.renderedRoI.isNull()) {
                     return fail(member->task, "an output its render continuation requested renders an empty window");
                 }
-                const ImageLayerDesc& layer = input.components.front();
-                member->inputSlots.push_back(externalSlot(graphTasks + (int)c, layer, input.renderedRoI));
+                ImageLayerDesc layer;
+                if (!effect->getGpuInputLayer(kGpuContinuationInputNb, member->plane, task.key.time, task.key.view, &layer)) {
+                    return fail(member->task, "the node cannot read an output its render continuation requested on the GPU");
+                }
+                const bool requested = std::any_of(input.components.begin(), input.components.end(), [&layer](const ImageLayerDesc& comp) {
+                    return sameLayer(comp, layer);
+                });
+                if (!requested) {
+                    return fail(member->task, "an output its render continuation requested is not in the layer the node reads");
+                }
+                // Requests for disjoint regions of one output share its root, so they read one upload of it.
+                std::size_t first = 0;
+                while (!(_continuationTasks[first].key == input.key)) {
+                    ++first;
+                }
+                member->inputSlots.push_back(externalSlot(graphTasks + (int)first, layer, input.renderedRoI));
                 member->inputSlotInput.push_back(kGpuContinuationInputNb);
                 member->inputSlotLayer.push_back(layer);
                 member->inputSlotTime.push_back(input.key.time);

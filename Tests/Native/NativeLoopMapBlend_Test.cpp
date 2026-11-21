@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <functional>
@@ -43,13 +44,16 @@
 #include "NativeShapeTestSupport.h"
 #include "RenderBothWays.h"
 
+#include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobDriver.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeGroup.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Filter/MapInput.h"
@@ -59,7 +63,9 @@
 #include "Engine/Nodes/Loop/LoopBegin.h"
 #include "Engine/Nodes/Loop/LoopEnd.h"
 #include "Engine/Nodes/Loop/LoopMapBlend.h"
+#include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/PoolParallelFor.h"
+#include "Engine/Project.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
 #include "Engine/TLSHolder.h"
@@ -160,6 +166,19 @@ protected:
         }
 
         return node;
+    }
+
+    NodePtr createInside(const NodePtr& group,
+                         const std::string& pluginID)
+    {
+        NodeCollectionPtr collection = std::dynamic_pointer_cast<NodeCollection>(group->getEffectInstance());
+        if (!collection) {
+            return NodePtr();
+        }
+        CreateNodeArgs args(pluginID, collection);
+        args.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
+
+        return getApp()->createNode(args);
     }
 
     // A Ramp from 0 at p0 to 1 at p1 over extent.
@@ -593,6 +612,140 @@ TEST_F(NativeLoopMapBlendTest, AMapReadFromAnotherBodyDoesNotPair)
     EXPECT_TRUE(message(outerEnd, &type).empty()) << message(outerEnd, &type);
 }
 
+// As above with the Map read through a group: past its GroupOutput the edge still enters the
+// LoopEnd's Map, not its Source.
+TEST_F(NativeLoopMapBlendTest, AMapReadThroughAGroupFromAnotherBodyDoesNotPair)
+{
+    NodePtr outerSource = createConstant(1.);
+    NodePtr outerBegin = createNode(QString::fromUtf8(PLUGINID_NATRON_LOOPBEGIN));
+    NodePtr outerGrade = createDrivenGrade(0., 1.);
+    NodePtr outerEnd = createNode(QString::fromUtf8(PLUGINID_NATRON_LOOPEND));
+    ASSERT_TRUE(outerEnd && setIterations(outerEnd, 3));
+    ASSERT_TRUE(wireLoop(outerSource, outerBegin, outerGrade, outerEnd, NodePtr()));
+
+    CreateNodeArgs groupArgs(PLUGINID_NATRON_GROUP, getApp()->getProject());
+    groupArgs.setProperty<bool>(kCreateNodeArgsPropNodeGroupDisableCreateInitialNodes, true);
+    groupArgs.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
+    NodePtr group = getApp()->createNode(groupArgs);
+    ASSERT_TRUE(group != nullptr);
+    NodePtr groupInput = createInside(group, PLUGINID_NATRON_INPUT);
+    NodePtr groupGrade = createInside(group, PLUGINID_NATRON_GRADE);
+    NodePtr groupOutput = createInside(group, PLUGINID_NATRON_OUTPUT);
+    ASSERT_TRUE(groupInput && groupGrade && groupOutput);
+    ASSERT_TRUE(groupGrade->connectInput(groupInput, 0));
+    ASSERT_TRUE(groupOutput->connectInput(groupGrade, 0));
+    ASSERT_TRUE(group->connectInput(outerGrade, 0));
+
+    NodePtr source = createConstant(1.);
+    NodePtr begin = createNode(QString::fromUtf8(PLUGINID_NATRON_LOOPBEGIN));
+    NodePtr grade = createDrivenGrade(0., 1.);
+    NodePtr end = createMapBlendEnd(5);
+    ASSERT_TRUE(wireLoop(source, begin, grade, end, group));
+    ASSERT_TRUE(groupGrade == end->getInput(kLoopEndInputMap));
+
+    EXPECT_EQ(outerEnd->getEffectInstance().get(), LoopEnd::pairedEndOf(outerBegin).get());
+    EXPECT_EQ(end->getEffectInstance().get(), LoopEnd::pairedEndOf(begin).get());
+    int type = -1;
+    EXPECT_TRUE(message(outerEnd, &type).empty()) << message(outerEnd, &type);
+    EXPECT_TRUE(message(end, &type).empty()) << message(end, &type);
+}
+
+// A Map checkered 0 and 1 over the two bottom tile rows and 1 over the two top ones: each
+// iteration's regions are the tiles reading it and no others, adjacent tiles of a row joining and
+// rows spanning the same columns joining down, so a body renders none of the tiles between them.
+TEST_F(NativeLoopMapBlendTest, RegionsKeepDisjointTilesApart)
+{
+    const int count = 5;
+    const int columns = 4;
+    const RectI window(0, 0, columns * kTileSize, 4 * kTileSize);
+    MapPlane map;
+    map.reset(window, 0.f);
+    for (int y = window.y1; y < window.y2; ++y) {
+        float* row = map.row(y);
+        for (int x = window.x1; x < window.x2; ++x) {
+            const int tx = x / kTileSize;
+            const int ty = y / kTileSize;
+            row[x - window.x1] = ((ty >= 2) || (((tx + ty) % 2) == 1)) ? 1.f : 0.f;
+        }
+    }
+
+    std::vector<std::vector<RectI>> regions;
+    ASSERT_TRUE(iterationRegions(map, window, count, eInterpolationLinear, &regions));
+    ASSERT_EQ((std::size_t)count, regions.size());
+    for (int k = 1; k < count - 1; ++k) {
+        EXPECT_TRUE(regions[k].empty()) << "iteration " << k;
+    }
+
+    // Every pixel lies in the regions of the one iteration its Map value reads, once.
+    for (int k = 0; k < count; k += count - 1) {
+        U64 area = 0;
+        for (std::size_t a = 0; a < regions[k].size(); ++a) {
+            const RectI& region = regions[k][a];
+            area += region.area();
+            for (std::size_t b = a + 1; b < regions[k].size(); ++b) {
+                EXPECT_FALSE(region.intersects(regions[k][b])) << "iteration " << k << " regions " << a << " and " << b;
+            }
+            for (int y = region.y1; y < region.y2; ++y) {
+                for (int x = region.x1; x < region.x2; ++x) {
+                    if (map.at(x, y) != ((k == 0) ? 0.f : 1.f)) {
+                        ADD_FAILURE() << "iteration " << k << " covers " << x << "," << y;
+
+                        return;
+                    }
+                }
+            }
+        }
+        const U64 tileArea = (U64)kTileSize * kTileSize;
+        EXPECT_EQ((k == 0) ? 4 * tileArea : 4 * tileArea + (U64)window.width() * 2 * kTileSize, area) << "iteration " << k;
+    }
+    EXPECT_EQ((std::size_t)4, regions[0].size());
+    ASSERT_EQ((std::size_t)5, regions[count - 1].size());
+    bool joined = false;
+    for (const RectI& region : regions[count - 1]) {
+        joined = joined || (region == RectI(0, 2 * kTileSize, window.x2, window.y2));
+    }
+    EXPECT_TRUE(joined);
+}
+
+// An aborted render stops computing regions and accumulating.
+TEST_F(NativeLoopMapBlendTest, RegionsAndAccumulateStopOnAbort)
+{
+    const int count = 3;
+    const int nComps = 4;
+    const RectI roi(0, 0, 4 * kTileSize, 4 * kTileSize);
+    MapPlane map;
+    map.reset(roi, 0.5f);
+    RenderCancellation cancel([]() {
+        return true;
+    });
+
+    std::vector<std::vector<RectI>> regions;
+    EXPECT_FALSE(iterationRegions(map, roi, count, eInterpolationLinear, &regions, &cancel));
+
+    ImagePtr src = std::make_shared<Image>(ImageLayerDesc::getRGBAComponents(),
+                                           RectD(roi.x1, roi.y1, roi.x2, roi.y2),
+                                           roi, 0, 1., eImageBitDepthFloat, eImageFieldingOrderNone, false);
+    src->fillZero(roi);
+    {
+        Image::WriteAccess w = src->getWriteRights();
+        for (int y = roi.y1; y < roi.y2; ++y) {
+            float* row = (float*)w.pixelAt(roi.x1, y);
+            std::fill(row, row + (std::size_t)roi.width() * nComps, 1.f);
+        }
+    }
+    std::vector<float> acc((std::size_t)roi.width() * roi.height() * nComps, 0.f);
+    {
+        // On one thread, so that no band starts before the abort is seen.
+        AppTLS::ThreadBudgetScope budget(1);
+        EXPECT_FALSE(accumulate(map, src.get(), roi, 1, count, eInterpolationLinear, roi, nComps, acc.data(), &cancel));
+    }
+    EXPECT_TRUE(std::all_of(acc.begin(), acc.end(), [](float v) {
+        return v == 0.f;
+    }));
+    EXPECT_TRUE(accumulate(map, src.get(), roi, 1, count, eInterpolationLinear, roi, nComps, acc.data()));
+    EXPECT_EQ(1.f, acc[0]);
+}
+
 // accumulate() splits a large window into row bands across the pool; the sum it leaves must be the
 // one a single thread leaves, bit for bit, with the window, the Map and every iteration image
 // offset from one another.
@@ -630,20 +783,25 @@ TEST_F(NativeLoopMapBlendTest, AccumulateIsTheSameOnOneThreadAndMany)
 
     const std::vector<InterpolationEnum> modes = { eInterpolationLinear, eInterpolationCubic, eInterpolationNearest };
     for (InterpolationEnum interpolation : modes) {
-        const std::vector<RectI> regions = iterationRegions(map, roi, count, interpolation);
+        std::vector<std::vector<RectI>> regions;
+        ASSERT_TRUE(iterationRegions(map, roi, count, interpolation, &regions));
         const std::size_t size = (std::size_t)roi.width() * roi.height() * nComps;
         std::vector<float> serial(size, 0.f), banded(size, 0.f);
         {
             AppTLS::ThreadBudgetScope budget(1);
             for (int k = 0; k < count; ++k) {
-                accumulate(map, images[k].get(), regions[k], k, count, interpolation, roi, nComps, serial.data());
+                for (const RectI& region : regions[k]) {
+                    ASSERT_TRUE(accumulate(map, images[k].get(), region, k, count, interpolation, roi, nComps, serial.data()));
+                }
             }
         }
         {
             AppTLS::ThreadBudgetScope budget(4);
             ASSERT_GT(appPTR->getNCPUsAvailableForEffect(), 1);
             for (int k = 0; k < count; ++k) {
-                accumulate(map, images[k].get(), regions[k], k, count, interpolation, roi, nComps, banded.data());
+                for (const RectI& region : regions[k]) {
+                    ASSERT_TRUE(accumulate(map, images[k].get(), region, k, count, interpolation, roi, nComps, banded.data()));
+                }
             }
         }
         EXPECT_EQ(0, std::memcmp(serial.data(), banded.data(), size * sizeof(float))) << "interpolation " << (int)interpolation;

@@ -17,7 +17,6 @@ struct LoopMapBlendParams
     uint dstOffset;
     uint dstStride;
     uint nComps;
-    // kBlend* flags.
     uint flags;
     uint srcOffset;
     uint srcStride;
@@ -42,7 +41,6 @@ struct LoopMapBlendParams
     float outside;
     int iteration;
     int count;
-    // LoopMapBlend::InterpolationEnum.
     uint interpolation;
 };
 
@@ -59,6 +57,7 @@ static const uint kBlendMapRead = 4;
 static const uint kBlendMapInvert = 8;
 static const uint kBlendMapSmooth = 16;
 
+// LoopMapBlend::InterpolationEnum's values.
 static const uint kInterpolationLinear = 0;
 static const uint kInterpolationCubic = 1;
 static const uint kInterpolationNearest = 2;

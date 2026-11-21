@@ -34,6 +34,7 @@
 #include "Engine/Image.h"
 #include "Engine/Nodes/Filter/MapInput.h"
 #include "Engine/Nodes/Image/GpuRender.h"
+#include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/PoolParallelFor.h"
 
 #ifdef NATRON_HAVE_GPU
@@ -89,6 +90,9 @@ namespace {
 
         return q * kTileSize;
     }
+
+    // Rows a band accumulates between two abort checks.
+    constexpr int kAbortCheckRows = 16;
 
     std::atomic<bool> tileStatsEnabled(false);
 
@@ -211,28 +215,63 @@ iterationsOf(const MapRange& range,
     return iterations;
 }
 
-std::vector<RectI>
+bool
 iterationRegions(const MapPlane& map,
                  const RectI& window,
                  int count,
-                 InterpolationEnum interpolation)
+                 InterpolationEnum interpolation,
+                 std::vector<std::vector<RectI>>* regions,
+                 RenderCancellation* cancel)
 {
-    std::vector<RectI> regions(std::max(count, 0));
-
+    regions->assign(std::max(count, 0), std::vector<RectI>());
     if (window.isNull() || (count <= 0)) {
-        return regions;
+        return true;
     }
     const bool recording = tileStatsEnabled.load(std::memory_order_relaxed);
     std::vector<TileStats::Entry> recorded;
+    // Per iteration: the run of adjacent tiles reading it in the tile row being walked, and the
+    // rectangles ending at the row below it and at this one, which runs spanning the same columns
+    // extend instead of starting another.
+    std::vector<RectI> runs(count);
+    std::vector<std::vector<std::size_t>> endingBelow(count);
+    std::vector<std::vector<std::size_t>> endingHere(count);
+    const auto closeRun = [&](int k) {
+        const RectI run = runs[k];
+        std::vector<RectI>& rects = (*regions)[k];
+        std::size_t index = rects.size();
+        for (std::size_t below : endingBelow[k]) {
+            if ((rects[below].x1 == run.x1) && (rects[below].x2 == run.x2)) {
+                index = below;
+                break;
+            }
+        }
+        if (index == rects.size()) {
+            rects.push_back(run);
+        } else {
+            rects[index].y2 = run.y2;
+        }
+        endingHere[k].push_back(index);
+        runs[k] = RectI();
+    };
     for (int ty = floorToTile(window.y1); ty < window.y2; ty += kTileSize) {
         for (int tx = floorToTile(window.x1); tx < window.x2; tx += kTileSize) {
+            if (cancel && cancel->check()) {
+                return false;
+            }
             const RectI tile = RectI(tx, ty, tx + kTileSize, ty + kTileSize).intersect(window);
             if (tile.isNull()) {
                 continue;
             }
             const IterationRange iterations = iterationsOf(map.tileRange(tile), count, interpolation);
             for (int k = iterations.first; k <= iterations.last; ++k) {
-                regions[k].merge(tile);
+                if (!runs[k].isNull() && (runs[k].x2 == tile.x1)) {
+                    runs[k].x2 = tile.x2;
+                } else {
+                    if (!runs[k].isNull()) {
+                        closeRun(k);
+                    }
+                    runs[k] = tile;
+                }
             }
             if (recording) {
                 TileStats::Entry entry;
@@ -241,6 +280,13 @@ iterationRegions(const MapPlane& map,
                 recorded.push_back(entry);
             }
         }
+        for (int k = 0; k < count; ++k) {
+            if (!runs[k].isNull()) {
+                closeRun(k);
+            }
+            endingBelow[k].swap(endingHere[k]);
+            endingHere[k].clear();
+        }
     }
     if (recording) {
         std::lock_guard<std::mutex> lock(tileStatsMutex());
@@ -248,10 +294,10 @@ iterationRegions(const MapPlane& map,
         entries.insert(entries.end(), recorded.begin(), recorded.end());
     }
 
-    return regions;
+    return true;
 }
 
-void
+bool
 accumulate(const MapPlane& map,
            const Image* src,
            const RectI& region,
@@ -260,14 +306,15 @@ accumulate(const MapPlane& map,
            InterpolationEnum interpolation,
            const RectI& roi,
            int nComps,
-           float* acc)
+           float* acc,
+           RenderCancellation* cancel)
 {
     if (!src) {
-        return;
+        return !(cancel && cancel->check());
     }
     const RectI covered = region.intersect(roi).intersect(src->getBounds());
     if (covered.isNull()) {
-        return;
+        return !(cancel && cancel->check());
     }
     const int srcComps = (int)src->getComponentsCount();
     const int comps = std::min(nComps, srcComps);
@@ -276,6 +323,9 @@ accumulate(const MapPlane& map,
     // A pixel is summed by one band only, so its taps still add in iteration order.
     forEachRowBand(covered, kMinParallelRowBandArea, [&](int bandY1, int bandY2) {
         for (int y = bandY1; y < bandY2; ++y) {
+            if (cancel && (((y - bandY1) % kAbortCheckRows) == 0) && cancel->check()) {
+                return;
+            }
             const float* srcRow = (const float*)access.pixelAt(covered.x1, y);
             if (!srcRow) {
                 continue;
@@ -292,6 +342,8 @@ accumulate(const MapPlane& map,
             }
         }
     });
+
+    return !(cancel && cancel->check());
 }
 
 #ifdef NATRON_HAVE_GPU

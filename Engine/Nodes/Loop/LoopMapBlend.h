@@ -36,6 +36,7 @@
 NATRON_NAMESPACE_ENTER
 
 class MapPlane;
+class RenderCancellation;
 struct MapRange;
 struct GpuImageView;
 struct GpuRenderArgs;
@@ -94,20 +95,25 @@ IterationRange iterationsOf(const MapRange& range,
                             InterpolationEnum interpolation) WARN_UNUSED_RETURN;
 
 /**
- * @brief For each of the count iterations, the bounding box of the tiles of window whose Map
- * values read it, null when none does.
+ * @brief For each of the count iterations, the tiles of window whose Map values read it, as
+ * disjoint rectangles: adjacent tiles of a tile row join into one, and a run spanning the same
+ * columns as one ending on the row below joins it. An iteration no tile reads has none. False once
+ * cancel, when given, reports an abort, which it is asked between tiles.
  **/
-std::vector<RectI> iterationRegions(const MapPlane& map,
-                                    const RectI& window,
-                                    int count,
-                                    InterpolationEnum interpolation) WARN_UNUSED_RETURN;
+bool iterationRegions(const MapPlane& map,
+                      const RectI& window,
+                      int count,
+                      InterpolationEnum interpolation,
+                      std::vector<std::vector<RectI>>* regions,
+                      RenderCancellation* cancel = nullptr) WARN_UNUSED_RETURN;
 
 /**
  * @brief Adds iteration's weighted values over region to acc, the nComps channels of roi's pixels
  * row after row. A null src, or a pixel outside its bounds, adds nothing. src must be float with
- * nComps channels.
+ * nComps channels. False once cancel, when given, reports an abort, which it is asked between
+ * rows; acc then holds part of the sum.
  **/
-void accumulate(const MapPlane& map,
+bool accumulate(const MapPlane& map,
                 const Image* src,
                 const RectI& region,
                 int iteration,
@@ -115,7 +121,8 @@ void accumulate(const MapPlane& map,
                 InterpolationEnum interpolation,
                 const RectI& roi,
                 int nComps,
-                float* acc);
+                float* acc,
+                RenderCancellation* cancel = nullptr) WARN_UNUSED_RETURN;
 
 /**
  * @brief The Map as recordGpu() reads it: channel of view, remapped by invert, smooth and

@@ -37,6 +37,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -54,6 +55,8 @@
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/ContentHasher.h"
+#include "Engine/GroupInput.h"
+#include "Engine/GroupOutput.h"
 #include "Engine/Image.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
@@ -177,8 +180,8 @@ collectPairedBegins(const NodePtr& from,
     }
 }
 
-// Whether from reaches end only through inputs other than its Source. A node met through a group
-// redirection matches none of end's inputs and counts as reaching the Source.
+// Whether from reaches end only through inputs other than its Source. from is the node getInput()
+// resolves the edge to, so the walk must carry it across group redirections.
 bool
 reachesOnlyAside(const NodePtr& end,
                  const NodePtr& from)
@@ -204,7 +207,8 @@ collectPairedEnds(const NodePtr& begin,
         int depth;
         NodePtr from;
     };
-    std::set<WalkStep> visited;
+    // A node passed through also keys on the node that entered it, which its outputs carry on.
+    std::set<std::tuple<Node*, int, Node*>> visited;
     std::vector<Pending> pending;
     // Through groups the way the hash walks go, so a node inside a group in the body, whose
     // GroupOutput has no outputs of its own, still finds the loop's end.
@@ -219,9 +223,16 @@ collectPairedEnds(const NodePtr& begin,
         int depth = pending.back().depth;
         const NodePtr from = pending.back().from;
         pending.pop_back();
+        if (!node) {
+            continue;
+        }
+        // getInput() resolves through groups, their GroupInputs and GroupOutputs to the node
+        // feeding them, so the edges leaving those nodes are named by the node that entered them.
+        const EffectInstance* effect = node->getEffectInstance().get();
+        const bool passedThrough = node->isEffectGroup() || dynamic_cast<const GroupOutput*>(effect) || dynamic_cast<const GroupInput*>(effect);
         // A LoopEnd reached through its Map reads it outside its own body, at this depth.
-        const bool aside = node && LoopEnd::isLoopEnd(node) && reachesOnlyAside(node, from);
-        if (!node || !visited.insert(WalkStep(node.get(), 2 * depth + (aside ? 1 : 0))).second) {
+        const bool aside = LoopEnd::isLoopEnd(node) && reachesOnlyAside(node, from);
+        if (!visited.insert(std::make_tuple(node.get(), 2 * depth + (aside ? 1 : 0), passedThrough ? from.get() : (Node*)0)).second) {
             continue;
         }
         if (LoopEnd::isLoopEnd(node) && !aside) {
@@ -235,8 +246,9 @@ collectPairedEnds(const NodePtr& begin,
         }
         outputs.clear();
         node->appendOutputsWithGroupRedirection(&outputs);
+        const NodePtr enteredFrom = passedThrough ? from : node;
         for (NodePtr& output : outputs) {
-            pending.push_back(Pending { std::move(output), depth, node });
+            pending.push_back(Pending { std::move(output), depth, enteredFrom });
         }
     }
 }
@@ -4104,6 +4116,13 @@ LoopEnd::renderMapBlendGpu(const GpuRenderArgs& args,
         if (k == count) {
             return eStatusFailed;
         }
+        // Each of an iteration's disjoint regions requested it again, and each request reads its whole output.
+        const bool tapped = std::any_of(taps.begin(), taps.end(), [k](const LoopMapBlend::GpuIteration& tap) {
+            return tap.iteration == k;
+        });
+        if (tapped) {
+            continue;
+        }
         LoopMapBlend::GpuIteration tap;
         tap.iteration = k;
         tap.view = &input.view;
@@ -4247,12 +4266,19 @@ LoopEnd::getRenderContinuation(const RenderContinuationArgs& args,
     if (!readMapPlane(args.time, args.view, args.mipmapLevel, args.roi, args.context, &map)) {
         return false;
     }
-    const std::vector<RectI> regions = LoopMapBlend::iterationRegions(map, args.roi, resolved.folded, mapBlendInterpolation());
+    RenderCancellation cancel([this]() {
+        return abortIfEditedSinceFrameStart() || aborted();
+    });
+    std::vector<std::vector<RectI>> regions;
+    if (!LoopMapBlend::iterationRegions(map, args.roi, resolved.folded, mapBlendInterpolation(), &regions, &cancel)) {
+        // The render, aborted, requests nothing more.
+        return true;
+    }
     const std::vector<Iteration> iterations = foldedIterations(resolved, args.context, args.time);
     const ImageLayerDesc layer = mapBlendLayer(args.time, args.view);
     for (int k = 0; k < resolved.folded; ++k) {
-        if (!regions[k].isNull()) {
-            continuation->requests.push_back(mapBlendRequest(iterations[k], args.view, args.mipmapLevel, regions[k], layer));
+        for (const RectI& region : regions[k]) {
+            continuation->requests.push_back(mapBlendRequest(iterations[k], args.view, args.mipmapLevel, region, layer));
         }
     }
 
@@ -4273,8 +4299,14 @@ LoopEnd::renderMapBlend(const RenderActionArgs& args,
     const int count = resolved.folded;
     const LoopMapBlend::InterpolationEnum interpolation = mapBlendInterpolation();
     const bool hasSource = (bool)getInput(kLoopEndInputSource);
-    // The same tiles as the probe's, so each region pulled lies within the one it requested.
-    const std::vector<RectI> regions = hasSource ? LoopMapBlend::iterationRegions(map, roi, count, interpolation) : std::vector<RectI>(count);
+    RenderCancellation cancel([this]() {
+        return abortIfEditedSinceFrameStart() || aborted();
+    });
+    // The same tiles as the probe's, so each region pulled is one it requested.
+    std::vector<std::vector<RectI>> regions(count);
+    if (hasSource && !LoopMapBlend::iterationRegions(map, roi, count, interpolation, &regions, &cancel)) {
+        return eStatusOK;
+    }
     const std::vector<Iteration> iterations = foldedIterations(resolved, context, args.time);
     const std::size_t width = (std::size_t)roi.width();
     const std::size_t height = (std::size_t)roi.height();
@@ -4288,31 +4320,32 @@ LoopEnd::renderMapBlend(const RenderActionArgs& args,
         const std::size_t rowSize = width * (std::size_t)nComps;
         std::vector<float> acc(rowSize * height, 0.f);
         // In iteration order, one image at a time: a pixel sums its taps in the same order
-        // whichever regions were culled.
+        // whichever regions were culled. An iteration's regions are disjoint, so a pixel takes it once.
         for (int k = 0; k < count; ++k) {
-            if (regions[k].isNull()) {
-                continue;
+            for (const RectI& region : regions[k]) {
+                if (cancel.check()) {
+                    return eStatusOK;
+                }
+                std::map<ImageLayerDesc, ImagePtr> planes;
+                const RenderRoIRetCode code = pullRenderContinuationRequest(mapBlendRequest(iterations[k], args.view, mipmapLevel, region, it->first), mipmapLevel, &planes);
+                if (code == eRenderRoIRetCodeAborted) {
+                    return eStatusOK;
+                }
+                if (code != eRenderRoIRetCodeOk) {
+                    return eStatusFailed;
+                }
+                std::map<ImageLayerDesc, ImagePtr>::const_iterator found = planes.find(it->first);
+                const ImagePtr pulled = (found != planes.end()) ? found->second : (planes.empty() ? ImagePtr() : planes.begin()->second);
+                const ImagePtr src = asFoldInput(pulled, region, it->first);
+                if (src && (src->getBitDepth() != eImageBitDepthFloat)) {
+                    return eStatusFailed;
+                }
+                if (!LoopMapBlend::accumulate(map, src.get(), region, k, count, interpolation, roi, nComps, acc.data(), &cancel)) {
+                    return eStatusOK;
+                }
             }
-            if (abortIfEditedSinceFrameStart() || aborted()) {
-                return eStatusOK;
-            }
-            std::map<ImageLayerDesc, ImagePtr> planes;
-            const RenderRoIRetCode code = pullRenderContinuationRequest(mapBlendRequest(iterations[k], args.view, mipmapLevel, regions[k], it->first), mipmapLevel, &planes);
-            if (code == eRenderRoIRetCodeAborted) {
-                return eStatusOK;
-            }
-            if (code != eRenderRoIRetCodeOk) {
-                return eStatusFailed;
-            }
-            std::map<ImageLayerDesc, ImagePtr>::const_iterator found = planes.find(it->first);
-            const ImagePtr pulled = (found != planes.end()) ? found->second : (planes.empty() ? ImagePtr() : planes.begin()->second);
-            const ImagePtr src = asFoldInput(pulled, regions[k], it->first);
-            if (src && (src->getBitDepth() != eImageBitDepthFloat)) {
-                return eStatusFailed;
-            }
-            LoopMapBlend::accumulate(map, src.get(), regions[k], k, count, interpolation, roi, nComps, acc.data());
         }
-        if (abortIfEditedSinceFrameStart() || aborted()) {
+        if (cancel.check()) {
             return eStatusOK;
         }
         Image::WriteAccess out(dst.get());

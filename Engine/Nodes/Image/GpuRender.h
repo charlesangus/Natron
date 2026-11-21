@@ -294,8 +294,9 @@ inline constexpr int kGpuContinuationInputNb = -4;
 
 /**
  * @brief An output the render continuation of a node supportsRenderContinuationOnGpu() requested:
- * the request's context and time, and its image in the request's first layer. The view's buffer
- * is null when the output renders nothing.
+ * the request's context and time, and its image in the layer getGpuInputLayer() names for
+ * kGpuContinuationInputNb, which must be one of the request's layers. The view's buffer is null
+ * when the output renders nothing.
  **/
 struct GpuContinuationInput {
     RenderContextPtr context;

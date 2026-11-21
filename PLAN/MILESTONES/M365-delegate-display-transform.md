@@ -30,19 +30,19 @@ Cycles, MoonRay and Natron Utility frames in the viewer get the viewer's display
 
 ## Phase 365.2: Graded delegate frames
 
-- [ ] M365.P2.T1 — Carry float frames from the worker
+- [x] M365.P2.T1 — Carry float frames from the worker
   - files: `Engine/Nodes/Scene/HydraRenderImpl.{h,cpp}` (`Frame`, `readFrame`, `srgbTable`), `Tests/Scene/ProgressiveRender_Test.cpp`
   - approach: `Frame` holds half-float RGBA in scene-linear from the colour AOV, with real alpha, no background and no clamp. Remove `srgbTable()` once nothing uses it.
   - verify: `ProgressiveRender_Test`: a Cycles frame of an emissive card at 4.0 reads back about 4.0 with alpha 1, and an empty pixel reads alpha 0.
   - size: M
 
-- [ ] M365.P2.T2 — Grade delegate frames with the viewer's transform
+- [x] M365.P2.T2 — Grade delegate frames with the viewer's transform
   - files: `Gui/SceneViewport.{h,cpp}`, `Tests/gui/` (a new `m365_delegate_display_transform.py`)
   - approach: upload the float frame as the P1.T1 design says and apply the `cachedViewportConfig` chain to it, then composite the background after, the same as Storm under M340 - Viewer Gain Gamma On Rendered Pixels. A gain, gamma or view change re-grades the last frame without touching the worker.
   - verify: GUI script with Cycles: gain 2 doubles a card pixel and leaves the background; a view change alters the pixel; neither restarts the render (worker generation unchanged).
   - size: M
 
-- [ ] M365.P2.T3 — Map the lighting mode onto delegates
+- [x] M365.P2.T3 — Map the lighting mode onto delegates
   - files: `Gui/SceneViewport.cpp` (lighting mode switch :977), `Engine/Nodes/Scene/HydraRenderImpl.cpp`, `Tests/gui/m365_delegate_display_transform.py`
   - approach: apply the lighting table from P1.T1 to Cycles and MoonRay sessions; a mode a delegate can't honour uses the closest one and logs once.
   - verify: GUI script: switching the lighting mode with Cycles changes a lit card's pixel and matches the table.
@@ -77,3 +77,4 @@ Cycles, MoonRay and Natron Utility frames in the viewer get the viewer's display
     The simple light's ambient and material terms have no meaning to a path tracer and are dropped. A mode change remakes the engine and restarts the render (a headlight cannot be removed from an engine, :1492). That is expected, unlike a gain change. The headlight's brightness is whatever the task controller gives the distant light, so it will not match Storm's look.
   - **Open for the user:** approve (a); approve half over float32 (float32 doubles the upload, 33 MB at HD and 133 MB at 4K); approve the lighting table, including leaving the headlight at the task controller's intensity rather than tuning it to look like Storm.
 - 2026-11-20 — **Option (a), half-float (user):** progressive Cycles and MoonRay frames arrive as half-float premultiplied RGBA and go through the viewer's GPU grade pass, with depth in R32F. **Lighting table as proposed (user):** Headlight switches the stage's lights off and adds a camera-following distant light at Hydra's default brightness. Auto follows Storm's rule. A mode change restarts the render. If MoonRay has no distant light, it falls back to Scene Lights with one warning.
+- 2026-11-21 — P2.T1–T3 landed together in 79abe8726; main merged in e994456e6 (one conflict in Gui/SceneViewport.cpp: drawStormGrade, then main's M278 selection pass). Remote gate run 44940439968 (fast, both ctest legs): ProgressiveRender_Test passes with Cycles loaded (FramesAreSceneLinearWithTheirAlpha ran, no skip), m254_progressive_viewer 39/39, m365_delegate_display_transform 49/49. Lobby screenshots for sign-off are next, locally under Xvfb.

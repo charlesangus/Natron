@@ -253,4 +253,4 @@ The git-driver test passes. Full ctest, smoke and CI are green.
     - 'The only candidate' means the only correctly wired candidate, not the only node of that type in the group.
   - both-sides-reparent gains one input conflict on Look.LookOut.
   - Gate running.
-
+- 2026-11-21 — Merged into feature/f33-graph-diff-and-merge as PR #329 (gate green and PR CI green on b102af6ed). M104 is next in F33, and the UAT comes with F33's.

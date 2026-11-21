@@ -859,6 +859,8 @@ public:
 
     int getInputNumberFromLabel(const std::string& inputLabel) const;
 
+    bool refreshMaskEnabledNess(int inputNb);
+
     bool isInputOnlyAlpha(int inputNb) const;
 
     bool isInputConnected(int inputNb) const;
@@ -2625,8 +2627,6 @@ private:
     void refreshInputRelatedDataRecursive();
 
     void refreshAllInputRelatedData(bool canChangeValues);
-
-    bool refreshMaskEnabledNess(int inpubNb);
 
     void markInputRelatedDataDirtyRecursive();
 

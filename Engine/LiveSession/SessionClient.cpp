@@ -98,6 +98,7 @@ struct SessionClient::Implementation {
     std::uint64_t nextClientSeq = 1;
     std::deque<PendingEdit> pending;
     std::map<std::string, int> pendingKeys;
+    std::vector<Serialization::GraphOp> deferred;
     int subscription = -1;
     bool handling = false;
     bool readAgain = false;
@@ -176,6 +177,7 @@ struct SessionClient::Implementation {
     {
         pending.clear();
         pendingKeys.clear();
+        deferred.clear();
     }
 
     void onLocalOps(const std::vector<Serialization::GraphOp>& ops)
@@ -208,6 +210,107 @@ struct SessionClient::Implementation {
         }
 
         return false;
+    }
+
+    // What a host edit does here, or nothing when an edit still pending here overrides it. A
+    // connection from a node a pending edit deletes is a disconnection: the host connects it and
+    // then deletes its source, which empties the input, while skipping it would leave this
+    // copy's old source in place.
+    std::optional<Serialization::GraphOp> asAppliedHere(const ProjectPtr& p,
+                                                        const Serialization::GraphOp& op) const
+    {
+        if (const Serialization::SetInputOp* input = std::get_if<Serialization::SetInputOp>(&op)) {
+            if (!input->sourceId.empty() && isPendingKey(LiveSession::nodeExistenceKey(input->sourceId)) && !p->findNodeById(input->sourceId)) {
+                Serialization::SetInputOp disconnect = *input;
+                disconnect.sourceId.clear();
+                if (mustSkip(Serialization::GraphOp(disconnect))) {
+                    return std::nullopt;
+                }
+
+                return Serialization::GraphOp(disconnect);
+            }
+        }
+        if (mustSkip(op)) {
+            return std::nullopt;
+        }
+
+        return op;
+    }
+
+    // A deferred host edit is out of date once a later host edit writes the same thing or deletes
+    // its node. When that later edit deletes its source, the host's input ends up empty.
+    void supersedeDeferred(const Serialization::GraphOp& op)
+    {
+        if (deferred.empty()) {
+            return;
+        }
+        const std::vector<std::string> keys = LiveSession::graphOpKeys(op);
+        const Serialization::DeleteNodeOp* deletion = std::get_if<Serialization::DeleteNodeOp>(&op);
+        for (std::vector<Serialization::GraphOp>::iterator it = deferred.begin(); it != deferred.end();) {
+            const std::vector<std::string> waiting = LiveSession::graphOpKeys(*it);
+            bool superseded = std::find_first_of(waiting.begin(), waiting.end(), keys.begin(), keys.end()) != waiting.end();
+            if (!superseded && deletion) {
+                superseded = (LiveSession::graphOpTargetNode(*it) == deletion->nodeId);
+                Serialization::SetInputOp* input = std::get_if<Serialization::SetInputOp>(&*it);
+                if (!superseded && input && (input->sourceId == deletion->nodeId)) {
+                    input->sourceId.clear();
+                }
+            }
+            if (superseded) {
+                it = deferred.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    void dropDeferredOf(const std::string& nodeId)
+    {
+        for (std::vector<Serialization::GraphOp>::iterator it = deferred.begin(); it != deferred.end();) {
+            const std::vector<std::string> ids = LiveSession::graphOpNodeIds(*it);
+            if (std::find(ids.begin(), ids.end(), nodeId) != ids.end()) {
+                it = deferred.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    // A host edit may fail here only because of this user's pending edits, a connection that
+    // closes a cycle with a pending one for instance. The host applies those after it and refuses
+    // or keeps them, so the edit waits until they are settled and is applied then. They are not
+    // settled at their acknowledgement: the host's refusal and its resync of what it refused
+    // follow it.
+    void applyOrDefer(const ProjectPtr& p,
+                      const Serialization::GraphOp& op,
+                      bool arriving)
+    {
+        const std::vector<Serialization::OpResult> results = applyGraphOps(p, { op });
+        if (results.empty() || results.front().applied()) {
+            return;
+        }
+        if (arriving && pending.empty()) {
+            Q_EMIT publicInterface->sessionMessage(QString::fromUtf8("A host edit (%1) could not be applied here: %2")
+                                                       .arg(QString::fromUtf8(std::string(Serialization::graphOpName(op)).c_str()),
+                                                            QString::fromUtf8(results.front().message.c_str())));
+        } else {
+            deferred.push_back(op);
+        }
+    }
+
+    void retryDeferred(const ProjectPtr& p)
+    {
+        if (deferred.empty()) {
+            return;
+        }
+        std::vector<Serialization::GraphOp> waiting;
+        waiting.swap(deferred);
+        GraphEditRecorder::Suppress suppress;
+        for (const Serialization::GraphOp& op : waiting) {
+            if (std::optional<Serialization::GraphOp> here = asAppliedHere(p, op)) {
+                applyOrDefer(p, *here, false);
+            }
+        }
     }
 
     // A pending creation or rename here may hold the name the host gave another node. That node
@@ -248,13 +351,13 @@ struct SessionClient::Implementation {
     {
         GraphEditRecorder::Suppress suppress;
         for (const Serialization::GraphOp& op : ops) {
-            freeNameFor(p, op);
-            const std::vector<Serialization::OpResult> results = applyGraphOps(p, { op });
-            if (!results.empty() && !results.front().applied()) {
-                Q_EMIT publicInterface->sessionMessage(QString::fromUtf8("A host edit (%1) could not be applied here: %2")
-                                                           .arg(QString::fromUtf8(std::string(Serialization::graphOpName(op)).c_str()),
-                                                                QString::fromUtf8(results.front().message.c_str())));
+            supersedeDeferred(op);
+            std::optional<Serialization::GraphOp> here = asAppliedHere(p, op);
+            if (!here) {
+                continue;
             }
+            freeNameFor(p, *here);
+            applyOrDefer(p, *here, true);
         }
     }
 
@@ -369,14 +472,9 @@ struct SessionClient::Implementation {
                 popPending();
             }
             adoptHostNames(p, broadcast.ops);
+            retryDeferred(p);
         } else if (broadcast.seq > seq) {
-            std::vector<Serialization::GraphOp> ops;
-            for (const Serialization::GraphOp& op : broadcast.ops) {
-                if (!mustSkip(op)) {
-                    ops.push_back(op);
-                }
-            }
-            applyHostOps(p, ops);
+            applyHostOps(p, broadcast.ops);
         }
         if (broadcast.seq > seq) {
             seq = broadcast.seq;
@@ -390,16 +488,21 @@ struct SessionClient::Implementation {
             return;
         }
         flushLocalEdits();
+        dropDeferredOf(message.nodeId);
         {
             GraphEditRecorder::Suppress suppress;
             if (p->findNodeById(message.nodeId)) {
                 applyGraphOps(p, { Serialization::GraphOp(Serialization::DeleteNodeOp { message.nodeId }) });
             }
         }
+        // The node's state is the host's before this user's pending edits, which win over it
+        // here as they will on the host: the ones of this node are applied again below, and the
+        // others are still in place.
         if (!message.deleted) {
             applyHostOps(p, message.ops);
         }
         reapplyPending(p, message.nodeId);
+        retryDeferred(p);
     }
 
     bool loadProject(const WelcomeMessage& welcome)
@@ -428,6 +531,7 @@ struct SessionClient::Implementation {
         ++loads;
         seq = welcome.seq;
         awaitingProject = false;
+        deferred.clear();
         reapplyPending(p, std::nullopt);
 
         return true;

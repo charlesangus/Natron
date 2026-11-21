@@ -45,8 +45,10 @@ NATRON_NAMESPACE_ENTER
  * The app's own edits are applied at once and sent to the host, which numbers them with
  * everyone's and broadcasts them back. Until that acknowledgement arrives an edit is pending,
  * and an edit of another user that writes the same thing is skipped: the host applies the
- * pending one after it, so it wins on every peer. The host's checksum is compared whenever
- * nothing is pending, and a mismatch reloads the whole project from the host.
+ * pending one after it, so it wins on every peer. An edit of another user that the pending ones
+ * keep from applying here, a connection closing a cycle with a pending one for instance, waits
+ * until they are acknowledged or refused. The host's checksum is compared whenever nothing is
+ * pending, and a mismatch reloads the whole project from the host.
  *
  * Main thread only. Leaving, or losing the host, keeps the project as it is.
  **/

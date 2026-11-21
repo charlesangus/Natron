@@ -207,6 +207,25 @@ defineQuad(const PXR_NS::UsdStageRefPtr& stage,
     return mesh;
 }
 
+// Binds prim to a UsdPreviewSurface at materialPath that emits colour and reflects nothing, so it
+// shows without lights.
+void
+bindEmissive(const PXR_NS::UsdStageRefPtr& stage,
+             const PXR_NS::UsdPrim& prim,
+             const char* materialPath,
+             const PXR_NS::GfVec3f& colour)
+{
+    const PXR_NS::SdfPath path(materialPath);
+    PXR_NS::UsdShadeMaterial material = PXR_NS::UsdShadeMaterial::Define(stage, path);
+    PXR_NS::UsdShadeShader surface = PXR_NS::UsdShadeShader::Define(stage, path.AppendChild(PXR_NS::TfToken("Surface")));
+
+    surface.CreateIdAttr(PXR_NS::VtValue(PXR_NS::TfToken("UsdPreviewSurface")));
+    surface.CreateInput(PXR_NS::TfToken("emissiveColor"), PXR_NS::SdfValueTypeNames->Color3f).Set(colour);
+    surface.CreateInput(PXR_NS::TfToken("diffuseColor"), PXR_NS::SdfValueTypeNames->Color3f).Set(PXR_NS::GfVec3f(0.f, 0.f, 0.f));
+    material.CreateSurfaceOutput().ConnectToSource(surface.CreateOutput(PXR_NS::TfToken("surface"), PXR_NS::SdfValueTypeNames->Token));
+    PXR_NS::UsdShadeMaterialBindingAPI::Apply(prim).Bind(material);
+}
+
 // /World/Card, a 4-unit square at z = 0, carries the projection material as USDProject3D authors
 // it: the plate is a UsdUVTexture without a file, so it shows its fallback, half-transparent red
 // in straight colour, as live textures hold it, which the shader premultiplies to (0.6, 0, 0, 0.5). The projector's frame covers the card's left half, x -2..0; Crop on and
@@ -214,9 +233,12 @@ defineQuad(const PXR_NS::UsdStageRefPtr& stage,
 // z = -1 with an emissive blue preview surface, so it shows without lights, lies behind the whole
 // card. From the fixture's free camera the card spans pixels 66..190 and the backdrop 44..212 on
 // both axes. Without the backdrop, the card's left half is all that is drawn, half-transparent.
+// With the occluder, an opaque emissive green rectangle at z = 0.5 spanning x -3..-1 and y -1..1
+// hides the card's left quarter, pixels 30..95 across and 95..161 down.
 ScenePayload
 projectedCardScene(std::string* error,
-                   bool withBackdrop = true)
+                   bool withBackdrop = true,
+                   bool withOccluder = false)
 {
     const std::string shaderPath = USDProject3D::getShaderPath();
 
@@ -235,14 +257,17 @@ projectedCardScene(std::string* error,
 
     if (withBackdrop) {
         PXR_NS::UsdGeomMesh backdrop = defineQuad(stage, "/World/Backdrop", 3.f, -1.f);
-        const PXR_NS::SdfPath backdropMaterialPath("/World/BackdropMaterial");
-        PXR_NS::UsdShadeMaterial backdropMaterial = PXR_NS::UsdShadeMaterial::Define(stage, backdropMaterialPath);
-        PXR_NS::UsdShadeShader surface = PXR_NS::UsdShadeShader::Define(stage, backdropMaterialPath.AppendChild(PXR_NS::TfToken("Surface")));
-        surface.CreateIdAttr(PXR_NS::VtValue(PXR_NS::TfToken("UsdPreviewSurface")));
-        surface.CreateInput(PXR_NS::TfToken("emissiveColor"), PXR_NS::SdfValueTypeNames->Color3f).Set(PXR_NS::GfVec3f(0.f, 0.f, 1.f));
-        surface.CreateInput(PXR_NS::TfToken("diffuseColor"), PXR_NS::SdfValueTypeNames->Color3f).Set(PXR_NS::GfVec3f(0.f, 0.f, 0.f));
-        backdropMaterial.CreateSurfaceOutput().ConnectToSource(surface.CreateOutput(PXR_NS::TfToken("surface"), PXR_NS::SdfValueTypeNames->Token));
-        PXR_NS::UsdShadeMaterialBindingAPI::Apply(backdrop.GetPrim()).Bind(backdropMaterial);
+        bindEmissive(stage, backdrop.GetPrim(), "/World/BackdropMaterial", PXR_NS::GfVec3f(0.f, 0.f, 1.f));
+    }
+    if (withOccluder) {
+        PXR_NS::UsdGeomMesh occluder = defineQuad(stage, "/World/Occluder", 1.f, 0.5f);
+        PXR_NS::VtVec3fArray points;
+        occluder.GetPointsAttr().Get(&points);
+        for (PXR_NS::GfVec3f& point : points) {
+            point[0] = (point[0] < 0.f) ? -3.f : -1.f;
+        }
+        occluder.GetPointsAttr().Set(points);
+        bindEmissive(stage, occluder.GetPrim(), "/World/OccluderMaterial", PXR_NS::GfVec3f(0.f, 1.f, 0.f));
     }
     PXR_NS::UsdGeomMesh card = defineQuad(stage, "/World/Card", 2.f, 0.f);
 
@@ -307,6 +332,12 @@ isReddish(const Rgb& c)
 }
 
 bool
+isGreenish(const Rgb& c)
+{
+    return (c.g > 90) && (c.g > c.r + 40) && (c.g > c.b + 40);
+}
+
+bool
 isBluish(const Rgb& c)
 {
     return (c.b > 90) && (c.b > c.r + 40) && (c.b > c.g + 20);
@@ -322,6 +353,33 @@ float
 srgbEncode(float linear)
 {
     return (linear <= 0.0031308f) ? 12.92f * linear : 1.055f * std::pow(linear, 1.f / 2.4f) - 0.055f;
+}
+
+// The selection's tint as displayed, and how far after has moved from before toward it, as a
+// fraction of the way: the tint is mixed in by the selection's coverage, so an opaque prim moves
+// all the way and a half-transparent one half of it.
+const Rgb kSelectionTint = { 255, 204, 26 };
+
+int
+distanceToTint(const Rgb& c)
+{
+    return std::abs(c.r - kSelectionTint.r) + std::abs(c.g - kSelectionTint.g) + std::abs(c.b - kSelectionTint.b);
+}
+
+double
+towardTint(const Rgb& before,
+           const Rgb& after)
+{
+    const int from = distanceToTint(before);
+
+    return (from > 0) ? double(from - distanceToTint(after)) / double(from) : 0.;
+}
+
+int
+difference(const Rgb& a,
+           const Rgb& b)
+{
+    return std::abs(a.r - b.r) + std::abs(a.g - b.g) + std::abs(a.b - b.b);
 }
 
 const char* const kStudioURI = "ocio://studio-config-v4.0.0_aces-v2.0_ocio-v2.5";
@@ -599,12 +657,135 @@ TEST_F(SceneViewportStorm, PicksAndHighlightsAProjectedCard)
     EXPECT_EQ(std::string("/World/Backdrop"), _renderer.pick(97, 200, kSize, kSize));
     EXPECT_EQ(std::string(), _renderer.pick(20, 128, kSize, kSize));
 
-    // Storm's translucent pass draws no selection highlight, so only the backdrop is checked.
+    // The opaque backdrop selected outside the card sets how far an opaque prim tints.
+    const Rgb backdrop = pixel(unselected, 97, 200);
+    _renderer.setSelectedPrims({ "/World/Backdrop" });
+    const double opaque = towardTint(backdrop, pixel(render(), 97, 200));
+    EXPECT_GT(opaque, 0.9) << "the selected opaque backdrop";
+
     _renderer.setSelectedPrims({ "/World/Card" });
     const QImage selected = render();
+    const Rgb projectedSelected = pixel(selected, 97, 128);
+    const double card = towardTint(projected, projectedSelected);
+    EXPECT_GE(card, 0.5 * opaque - 0.08) << "the half-transparent card tints by its alpha: " << projected << " -> " << projectedSelected;
+    EXPECT_LE(card, 0.5 * opaque + 0.08) << "the half-transparent card tints by its alpha: " << projected << " -> " << projectedSelected;
     const Rgb besideSelected = pixel(selected, 159, 128);
-    EXPECT_LE(std::abs(besideSelected.r - beside.r) + std::abs(besideSelected.g - beside.g) + std::abs(besideSelected.b - beside.b), 6)
+    EXPECT_LE(difference(besideSelected, beside), 6)
         << "the card's transparent half highlighted the backdrop: " << beside << " -> " << besideSelected;
+    EXPECT_LE(difference(pixel(selected, 97, 200), backdrop), 6) << "the backdrop is not selected";
+    EXPECT_LE(difference(pixel(selected, 20, 128), pixel(unselected, 20, 128)), 6) << "nothing is drawn there";
+}
+
+// The occluder, opaque, unselected and in front of the card, hides the selected card's tint where
+// it covers it, and the card's tint shows where it does not.
+TEST_F(SceneViewportStorm, AnUnselectedOpaquePrimInFrontHidesTheSelectionsTint)
+{
+    if (_skip) {
+        return;
+    }
+    std::string error;
+    const ScenePayload scene = projectedCardScene(&error, true, true);
+    ASSERT_TRUE(error.empty()) << error;
+    ASSERT_TRUE(_renderer.setScene(scene, 1., 24., &error)) << error;
+    _renderer.setDrawMode(SceneViewportRenderer::eDrawModeShaded);
+
+    const QImage unselected = render();
+    const Rgb covered = pixel(unselected, 80, 128);
+    const Rgb uncovered = pixel(unselected, 112, 128);
+    EXPECT_TRUE(isGreenish(covered)) << "the occluder over the card: " << covered;
+    EXPECT_FALSE(isGreenish(uncovered)) << "the card beside the occluder: " << uncovered;
+
+    _renderer.setSelectedPrims({ "/World/Card" });
+    const QImage selected = render();
+    EXPECT_LE(difference(pixel(selected, 80, 128), covered), 6) << "the occluder hid the card's tint: " << covered << " -> " << pixel(selected, 80, 128);
+    EXPECT_GT(towardTint(uncovered, pixel(selected, 112, 128)), 0.35) << "the card beside the occluder: " << uncovered << " -> " << pixel(selected, 112, 128);
+}
+
+// A translucent surface writes no depth, so the selected opaque backdrop tints through the card,
+// where the card shows and where it is transparent alike.
+TEST_F(SceneViewportStorm, ASelectedPrimTintsThroughATranslucentOne)
+{
+    if (_skip) {
+        return;
+    }
+    std::string error;
+    const ScenePayload scene = projectedCardScene(&error);
+    ASSERT_TRUE(error.empty()) << error;
+    ASSERT_TRUE(_renderer.setScene(scene, 1., 24., &error)) << error;
+    _renderer.setDrawMode(SceneViewportRenderer::eDrawModeShaded);
+
+    const QImage unselected = render();
+    _renderer.setSelectedPrims({ "/World/Backdrop" });
+    const QImage selected = render();
+    for (const QPoint& p : { QPoint(159, 128), QPoint(97, 128), QPoint(97, 200) }) {
+        const Rgb before = pixel(unselected, p.x(), p.y());
+        const Rgb after = pixel(selected, p.x(), p.y());
+        EXPECT_GT(towardTint(before, after), 0.35) << "the backdrop at (" << p.x() << ", " << p.y() << "): " << before << " -> " << after;
+    }
+    EXPECT_LE(difference(pixel(selected, 20, 128), pixel(unselected, 20, 128)), 6) << "nothing is drawn there";
+}
+
+TEST_F(SceneViewportStorm, ClearingTheSelectionRestoresTheColours)
+{
+    if (_skip) {
+        return;
+    }
+    std::string error;
+    const ScenePayload scene = projectedCardScene(&error);
+    ASSERT_TRUE(error.empty()) << error;
+    ASSERT_TRUE(_renderer.setScene(scene, 1., 24., &error)) << error;
+    _renderer.setDrawMode(SceneViewportRenderer::eDrawModeShaded);
+
+    const QImage unselected = render();
+    _renderer.setSelectedPrims({ "/World/Card", "/World/Backdrop" });
+    const QImage selected = render();
+    _renderer.setSelectedPrims({});
+    const QImage cleared = render();
+    for (const QPoint& p : { QPoint(97, 128), QPoint(159, 128), QPoint(97, 200), QPoint(20, 128) }) {
+        const Rgb before = pixel(unselected, p.x(), p.y());
+        if (p.x() != 20) {
+            EXPECT_GT(difference(pixel(selected, p.x(), p.y()), before), 30) << "(" << p.x() << ", " << p.y() << ") selected";
+        }
+        EXPECT_LE(difference(pixel(cleared, p.x(), p.y()), before), 6)
+            << "clearing the selection left (" << p.x() << ", " << p.y() << ") tinted: " << before << " -> " << pixel(cleared, p.x(), p.y());
+    }
+}
+
+// In wireframe the selection pass draws lines too: the selected box's edges tint, its faces and
+// the unselected ball stay as they were.
+TEST_F(SceneViewportStorm, WireframeTintsTheSelectedPrimsLines)
+{
+    if (_skip) {
+        return;
+    }
+    _renderer.setDrawMode(SceneViewportRenderer::eDrawModeWireframe);
+    const QImage unselected = render();
+    _renderer.setSelectedPrims({ "/World/Box" });
+    const QImage selected = render();
+
+    int tinted = 0;
+    int tintedBackground = 0;
+    int changedOutsideTheBox = 0;
+    for (int y = 0; y < kSize; ++y) {
+        for (int x = 0; x < kSize; ++x) {
+            const Rgb before = pixel(unselected, x, y);
+            const Rgb after = pixel(selected, x, y);
+            if (difference(before, after) <= 30) {
+                continue;
+            }
+            const bool inBox = (x >= 90) && (x <= 166) && (y >= 90) && (y <= 166);
+            if (!inBox) {
+                ++changedOutsideTheBox;
+            } else if (isBackground(before)) {
+                ++tintedBackground;
+            } else {
+                ++tinted;
+            }
+        }
+    }
+    EXPECT_GT(tinted, 50) << "the selected box's lines";
+    EXPECT_LE(tintedBackground, tinted / 4) << "the box's faces, which wireframe leaves undrawn";
+    EXPECT_EQ(0, changedOutsideTheBox) << "the ball, not selected";
 }
 
 // Through the studio config, the card and the background show as the 2D viewer shows images: from
@@ -1205,12 +1386,6 @@ TEST_F(SceneViewportStorm, RestoresTheGLStateItChanges)
 }
 
 namespace {
-bool
-isGreenish(const Rgb& c)
-{
-    return (c.g > 90) && (c.g > c.r + 40) && (c.g > c.b + 40);
-}
-
 bool
 isYellowish(const Rgb& c)
 {

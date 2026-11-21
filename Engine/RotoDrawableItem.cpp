@@ -1567,7 +1567,7 @@ RotoDrawableItem::resetTransformCenter()
     double time = context->getNode()->getApp()->getTimeLine()->currentFrame();
     double centerX, centerY;
     if (!context->getDefaultTransformCenter(time, &centerX, &centerY)) {
-        RectD bbox = getBoundingBox(time);
+        RectD bbox = getBoundingBox(time, true);
         centerX = (bbox.x1 + bbox.x2) / 2.;
         centerY = (bbox.y1 + bbox.y2) / 2.;
     }

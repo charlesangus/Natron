@@ -170,7 +170,11 @@ public:
      **/
     void addHostKnob(const KnobIPtr& knob);
 
-    virtual RectD getBoundingBox(double time) const = 0;
+    /**
+     * @brief The item's bounding box at time. Renders pass useGuiCurves false: a shape edited during
+     * a render has a GUI side the render must not see until it is written back.
+     **/
+    virtual RectD getBoundingBox(double time, bool useGuiCurves) const = 0;
 
     /**
      * @brief The item's transform as drawn and rendered: its own, through the context's

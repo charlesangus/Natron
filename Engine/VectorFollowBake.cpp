@@ -211,11 +211,9 @@ struct FollowShape {
     // Set instead of item and bezier for points that are not a curve's.
     VectorFollowPointsPtr points;
     VectorFollowShapeSetup setup;
-    // A fit whose item's own transform knobs do not drive it: the fit is applied to reference and
-    // keyed on the points instead.
+    // A fit whose item's own transform knobs do not drive it: the fit moves the anchors' points,
+    // which are keyed instead.
     bool bakesFit = false;
-    // The tracked points, as trackedPointsAt() gives them, at the first anchor.
-    std::vector<FollowPoint> reference;
     // Under eTranslate, the point in the item's coordinates whose shown position the fit drives.
     FollowPoint translatePivot;
     // The control points tracked one by one, when the model says so, or a baked fit moves.
@@ -579,14 +577,15 @@ VectorFollowRun::Imp::makeShape(const RotoDrawableItemPtr& item,
         /*
          * The fit's transform maps the first anchor's points to where they go, so each anchor's is
          * the fit of the first anchor's points to its own: the identity for the first, and for a
-         * key that changed the shape otherwise, the nearest the model gets to it.
+         * key that changed the shape otherwise, the nearest the model gets to it. The anchors keep
+         * their points, which the walk moves by the fit, so a key that changed the shape keeps
+         * that change instead of being replaced by the first anchor's shape.
          */
-        shape->reference = shape->setup.anchors.front().points;
-        const std::vector<double> weights(shape->reference.size(), 1.);
+        const std::vector<FollowPoint> reference = shape->setup.anchors.front().points;
+        const std::vector<double> weights(reference.size(), 1.);
         for (VectorFollowAnchor& anchor : shape->setup.anchors) {
-            const VectorFollowFit fit = fitFollowMotion(shape->setup.model, shape->reference, anchor.points, weights);
+            const VectorFollowFit fit = fitFollowMotion(shape->setup.model, reference, anchor.points, weights);
             anchor.transform = fit.valid ? fit.matrix : FollowMatrix();
-            anchor.points.clear();
         }
     }
     if (shape->setup.model != VectorFollowModel::ePerPoint) {
@@ -734,11 +733,7 @@ VectorFollowRun::Imp::writeFrame(FollowShape& shape,
         return;
     }
     if (shape.bakesFit) {
-        std::vector<FollowPoint> moved(shape.reference.size());
-        for (std::size_t i = 0; i < moved.size(); ++i) {
-            moved[i] = frame.transform.apply(shape.reference[i]);
-        }
-        if (writePoints(shape, time, moved)) {
+        if (writePoints(shape, time, frame.points)) {
             shape.written.insert(frame.frame);
         }
 

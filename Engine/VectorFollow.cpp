@@ -107,7 +107,7 @@ blendPoints(const std::vector<FollowPoint>& a,
             const std::vector<FollowPoint>& b,
             double weight)
 {
-    // A pass that ended holds no points, and the other one's must come through exactly.
+    // On an anchor the side weighted fully must come through exactly.
     if (weight <= 0.) {
         return a;
     }
@@ -311,6 +311,9 @@ public:
             for (FollowPoint& sample : _samples) {
                 sample = fit.matrix.apply(sample);
             }
+            for (FollowPoint& point : _points) {
+                point = fit.matrix.apply(point);
+            }
             _transform = fit.matrix * _transform;
             _inferred = confident < _samples.size();
         }
@@ -416,7 +419,6 @@ private:
         std::vector<FollowPoint> points;
         FollowMatrix transform;
         bool inferred = false;
-        bool ended = true;
     };
 
     VectorFollowShapeOutcome finish()
@@ -561,10 +563,63 @@ private:
         return true;
     }
 
+    static HeldState heldFrom(const ShapeWalker& walker)
+    {
+        HeldState state;
+        state.points = walker.points();
+        state.transform = walker.transform();
+        state.inferred = walker.inferred();
+
+        return state;
+    }
+
+    static HeldState heldAt(const VectorFollowAnchor& anchor)
+    {
+        HeldState state;
+        state.points = anchor.points;
+        state.transform = anchor.transform;
+
+        return state;
+    }
+
+    // Where a side would stand on a frame it never reached: the other side there, moved by how far
+    // apart the two stood on the frames each reached last.
+    HeldState carried(const HeldState& other,
+                      const HeldState& otherAtReach,
+                      const HeldState& ownAtReach) const
+    {
+        HeldState out = other;
+        if (_setup.model == VectorFollowModel::ePerPoint) {
+            if ((otherAtReach.points.size() == other.points.size()) && (ownAtReach.points.size() == other.points.size())) {
+                for (std::size_t i = 0; i < out.points.size(); ++i) {
+                    out.points[i].x += ownAtReach.points[i].x - otherAtReach.points[i].x;
+                    out.points[i].y += ownAtReach.points[i].y - otherAtReach.points[i].y;
+                }
+            }
+
+            return out;
+        }
+        FollowMatrix inverse;
+        if (!otherAtReach.transform.inverted(&inverse)) {
+            return out;
+        }
+        const FollowMatrix motion = other.transform * inverse;
+        out.transform = motion * ownAtReach.transform;
+        out.points.clear();
+        for (const FollowPoint& point : ownAtReach.points) {
+            out.points.push_back(motion.apply(point));
+        }
+
+        return out;
+    }
+
     /*
      * The side away from the follow's direction is worked out first and only held in memory, then
      * the other side bakes frame by frame: an abort leaves a run of finished frames next to the
-     * anchor the follow comes from, each already blended from both sides.
+     * anchor the follow comes from, each already blended from both sides. A side that stops short
+     * is carried on over the frames it missed by the other side's motion, so the blend still turns
+     * into each anchor's own shape. When the held side stopped short, that needs where the baking
+     * side stands on the frame the held one reached, so the baking side is held whole too.
      */
     bool bridge(const VectorFollowAnchor& a,
                 const VectorFollowAnchor& b,
@@ -575,27 +630,37 @@ private:
             return true;
         }
 
-        std::vector<HeldState> far(gapFrames);
+        // By frame - a.frame. Each side holds the frames from its own anchor to its reach, and gets
+        // to the other anchor only when a frame the other side missed needs it there.
+        std::vector<HeldState> fromA(gapFrames + 2);
+        std::vector<HeldState> fromB(gapFrames + 2);
+        fromA.front() = heldAt(a);
+        fromB.back() = heldAt(b);
+        int reachA = 0;
+        int reachB = gapFrames + 1;
+        const auto hold = [&](bool sideA, const ShapeWalker& walker) {
+            const int index = walker.frame() - a.frame;
+            (sideA ? fromA : fromB)[index] = heldFrom(walker);
+            (sideA ? reachA : reachB) = index;
+        };
+
         std::optional<VectorFollowPassStop> farStop;
+        std::optional<ShapeWalker> farWalker;
         if (!hasLayerFor(!forward)) {
             farStop = passStop(!forward, VectorFollowPassEnd::eNoLayer, (forward ? b : a).frame);
         } else {
-            ShapeWalker walker(_setup, forward ? b : a, !forward);
+            farWalker.emplace(_setup, forward ? b : a, !forward);
             for (int n = 0; n < gapFrames; ++n) {
                 VectorFollowPassEnd reason;
-                const PassStepResult result = stepPass(walker, &reason);
+                const PassStepResult result = stepPass(*farWalker, &reason);
                 if (result == ePassStepAborted) {
                     return false;
                 }
                 if (result == ePassStepEnded) {
-                    farStop = passStop(!forward, reason, walker.frame());
+                    farStop = passStop(!forward, reason, farWalker->frame());
                     break;
                 }
-                HeldState& state = far[walker.frame() - a.frame - 1];
-                state.points = walker.points();
-                state.transform = walker.transform();
-                state.inferred = walker.inferred();
-                state.ended = false;
+                hold(!forward, *farWalker);
             }
         }
 
@@ -618,57 +683,111 @@ private:
             nearStop = passStop(forward, VectorFollowPassEnd::eNoLayer, nearAnchor.frame);
         }
         ShapeWalker walker(_setup, nearAnchor, forward);
-        for (int n = 0; n < gapFrames; ++n) {
+        const auto stepNear = [&]() {
             if (nearStop) {
-                if (checkAborted()) {
-                    report();
-
-                    return false;
-                }
+                return !checkAborted();
+            }
+            VectorFollowPassEnd reason;
+            const PassStepResult result = stepPass(walker, &reason);
+            if (result == ePassStepAborted) {
+                return false;
+            }
+            if (result == ePassStepEnded) {
+                nearStop = passStop(forward, reason, walker.frame());
             } else {
-                VectorFollowPassEnd reason;
-                const PassStepResult result = stepPass(walker, &reason);
-                if (result == ePassStepAborted) {
-                    report();
-
-                    return false;
-                }
-                if (result == ePassStepEnded) {
-                    nearStop = passStop(forward, reason, walker.frame());
-                }
+                hold(forward, walker);
             }
 
-            const int frameNumber = forward ? (a.frame + 1 + n) : (b.frame - 1 - n);
-            const HeldState& other = far[frameNumber - a.frame - 1];
-            if (nearStop && other.ended) {
+            return true;
+        };
+        // One step past the gap, onto the other side's anchor; a stop there is no stop in the gap.
+        const auto stepOnto = [&](bool sideA, ShapeWalker& onto) {
+            VectorFollowPassEnd reason;
+            const PassStepResult result = stepPass(onto, &reason);
+            if (result == ePassStepAdvanced) {
+                hold(sideA, onto);
+            }
+
+            return result != ePassStepAborted;
+        };
+
+        const auto emitBridged = [&](int frameNumber) {
+            const int index = frameNumber - a.frame;
+            const bool reachedA = index <= reachA;
+            const bool reachedB = index >= reachB;
+            if (!reachedA && !reachedB) {
                 extendRange(&unfollowed, frameNumber);
-                continue;
+
+                return;
             }
-            if (nearStop) {
-                extendRange(&nearStop->otherOnly, frameNumber);
-            } else if (other.ended) {
-                extendRange(&farStop->otherOnly, frameNumber);
+            std::optional<VectorFollowPassStop>& stopA = forward ? nearStop : farStop;
+            std::optional<VectorFollowPassStop>& stopB = forward ? farStop : nearStop;
+            HeldState sideA, sideB;
+            if (reachedA) {
+                sideA = fromA[index];
+            } else {
+                extendRange(&stopA->otherOnly, frameNumber);
+                sideA = carried(fromB[index], fromB[std::max(reachA, reachB)], fromA[reachA]);
+            }
+            if (reachedB) {
+                sideB = fromB[index];
+            } else {
+                extendRange(&stopB->otherOnly, frameNumber);
+                sideB = carried(fromA[index], fromA[std::min(reachA, reachB)], fromB[reachB]);
             }
 
-            const bool aEnded = forward ? bool(nearStop) : other.ended;
-            const bool bEnded = forward ? other.ended : bool(nearStop);
-            double weight = followBridgeWeight(frameNumber, a.frame, b.frame);
-            if (aEnded) {
-                weight = 1.;
-            } else if (bEnded) {
-                weight = 0.;
-            }
-
+            const double weight = followBridgeWeight(frameNumber, a.frame, b.frame);
             VectorFollowFrame frame;
             frame.frame = frameNumber;
-            frame.points = forward ? blendPoints(walker.points(), other.points, weight)
-                                   : blendPoints(other.points, walker.points(), weight);
+            frame.points = blendPoints(sideA.points, sideB.points, weight);
             if (_setup.model != VectorFollowModel::ePerPoint) {
-                frame.transform = forward ? blendTransforms(_setup, walker.transform(), other.transform, weight)
-                                          : blendTransforms(_setup, other.transform, walker.transform(), weight);
+                frame.transform = blendTransforms(_setup, sideA.transform, sideB.transform, weight);
             }
-            frame.inferred = (!nearStop && walker.inferred()) || (!other.ended && other.inferred);
+            frame.inferred = sideA.inferred || sideB.inferred;
             emitFrame(frame);
+        };
+        const auto frameAt = [&](int n) {
+            return forward ? (a.frame + 1 + n) : (b.frame - 1 - n);
+        };
+
+        const int nearAnchorIndex = forward ? 0 : gapFrames + 1;
+        const int farAnchorIndex = gapFrames + 1 - nearAnchorIndex;
+        int& nearReach = forward ? reachA : reachB;
+        int& farReach = forward ? reachB : reachA;
+        if (farStop) {
+            for (int n = 0; n < gapFrames; ++n) {
+                if (!stepNear()) {
+                    report();
+
+                    return false;
+                }
+            }
+            if (!nearStop && (farReach == farAnchorIndex) && !stepOnto(forward, walker)) {
+                report();
+
+                return false;
+            }
+            for (int n = 0; n < gapFrames; ++n) {
+                emitBridged(frameAt(n));
+            }
+        } else {
+            bool farOnto = false;
+            for (int n = 0; n < gapFrames; ++n) {
+                if (!stepNear()) {
+                    report();
+
+                    return false;
+                }
+                if (nearStop && (nearReach == nearAnchorIndex) && farWalker && !farOnto) {
+                    farOnto = true;
+                    if (!stepOnto(!forward, *farWalker)) {
+                        report();
+
+                        return false;
+                    }
+                }
+                emitBridged(frameAt(n));
+            }
         }
         report();
 

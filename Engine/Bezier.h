@@ -132,7 +132,7 @@ public:
                                       const Point & p3,
                                       RectD *bbox);
 
-    bool isOpenBezier() const;
+    bool isOpenBezier(bool useGuiCurve = true) const;
 
     /**
      * @brief Rasterises the shape with its feather, as the Roto mask does but ignoring opacity, into
@@ -147,7 +147,10 @@ public:
      **/
     virtual bool useFeatherPoints() const { return true; }
 
-
+    /**
+     * @brief Copies other's GUI side, which is never behind its render side. Off the main thread
+     * the point lists are applied later, on the main thread.
+     **/
     virtual void clone(const RotoItem* other) OVERRIDE;
 
 
@@ -176,9 +179,10 @@ public:
     BezierCPPtr addControlPointAfterIndex(int index, double t);
 
     /**
-     * @brief Returns the number of control points of the bezier
+     * @brief Returns the number of control points of the bezier. Renders pass false: they read
+     * the list structural edits made during a render leave alone until it is written back.
      **/
-    int getControlPointsCount() const;
+    int getControlPointsCount(bool useGuiCurve = true) const;
 
     /**
      * @brief Given the (x,y) coordinates of a point, this function returns whether a point lies on
@@ -193,8 +197,7 @@ public:
      * and the last control point.
      **/
     void setCurveFinished(bool finished);
-    bool isCurveFinished() const;
-
+    bool isCurveFinished(bool useGuiCurve = true) const;
 
     /**
      * @brief Removes the control point at the given index if any. The feather point will also be removed , at the same position.
@@ -382,6 +385,7 @@ public:
     void setTangentsBroken(const BezierCPPtr& cp, const BezierCPPtr& fp, double time);
 
     void getMotionBlurSettings(const double time,
+                               bool useGuiCurves,
                                double* startTime,
                                double* endTime,
                                double* timeStep) const;
@@ -562,7 +566,7 @@ public:
      * @brief Returns the bounding box of the bezier. The last value computed by evaluateAtTime_DeCasteljau will be returned,
      * otherwise if it has never been called, evaluateAtTime_DeCasteljau will be called to compute the bounding box.
      **/
-    virtual RectD getBoundingBox(double time) const OVERRIDE;
+    virtual RectD getBoundingBox(double time, bool useGuiCurves) const OVERRIDE;
 
     /**
      * @brief The polygons the viewer overlay draws at time, evaluated from the GUI copy, with the
@@ -590,15 +594,13 @@ protected:
     std::list<BezierCPPtr> & getControlPoints_internal();
 
 public:
-
-
-    std::list<BezierCPPtr> getControlPoints_mt_safe() const;
+    std::list<BezierCPPtr> getControlPoints_mt_safe(bool useGuiCurve = true) const;
 
     /**
      * @brief Returns a const ref to the feather points of the bezier curve. This can only ever be called on the main thread.
      **/
     const std::list<BezierCPPtr> & getFeatherPoints() const;
-    std::list<BezierCPPtr> getFeatherPoints_mt_safe() const;
+    std::list<BezierCPPtr> getFeatherPoints_mt_safe(bool useGuiCurve = true) const;
     enum ControlPointSelectionPrefEnum
     {
         eControlPointSelectionPrefFeatherFirst = 0,
@@ -767,6 +769,19 @@ private:
      * @brief Erases every cached orientation of one side. itemMutex must be held.
      **/
     void eraseOrientation(bool useGuiCurve);
+
+    /**
+     * @brief Makes points, featherPoints (swapped out), isOpen and finished this shape's lists,
+     * on the side an edit would write now. Main thread only.
+     **/
+    void applyClonedLists(std::list<BezierCPPtr>* points, std::list<BezierCPPtr>* featherPoints, bool isOpen, bool finished);
+
+    /**
+     * @brief The control and feather points of both sides' lists, each once, the render lists'
+     * first in their order so that a structural edit of the GUI lists alone keeps the order of
+     * the points a render reads. itemMutex must be held.
+     **/
+    std::list<BezierCPPtr> allPointsLocked() const;
 
     /*
      * @brief If the node is currently involved in a render, returns false, otherwise returns true

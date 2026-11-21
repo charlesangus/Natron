@@ -24,6 +24,7 @@
 
 #include "Global/Macros.h"
 
+#include <cmath>
 #include <functional>
 #include <list>
 #include <map>
@@ -643,6 +644,78 @@ TEST_F(VectorFollowBlendTest, ABlendMeetsBothKeysAndBlendsBetween)
     }
 }
 
+// Keys of two different shapes: each frame between is the earlier key followed forward and the
+// later one followed back, blended per point, feathers too. A forward-only source carries the later
+// key back on the forward motion, which on this picture comes to the same.
+TEST_F(VectorFollowBlendTest, KeysOfDifferentShapesBlendSmoothlyFromOneToTheOther)
+{
+    const int later = kStart + 10;
+    for (bool backwardLayer : { true, false }) {
+        if (!backwardLayer) {
+            forwardOnly();
+        }
+        BezierPtr bezier = makeSquare(later);
+        bezier->setKeyframe(kStart);
+        ASSERT_TRUE(bezier->useFeatherPoints());
+        bezier->movePointByIndex(1, later, 12., 6.);
+        bezier->moveFeatherByIndex(2, later, -5., 8.);
+
+        const auto pointsAt = [&bezier](double time) {
+            std::vector<FollowPoint> out;
+            for (int index = 0; index < 4; ++index) {
+                out.push_back(positionAt(bezier, index, time));
+                FollowPoint feather;
+                bezier->getFeatherPointAtIndex(index)->getPositionAtTime(false, time, ViewIdx(0), &feather.x, &feather.y);
+                out.push_back(feather);
+            }
+
+            return out;
+        };
+        const std::vector<FollowPoint> first = pointsAt(kStart);
+        const std::vector<FollowPoint> last = pointsAt(later);
+        ASSERT_GT(std::abs(last[2].x - first[2].x), 10.);
+        ASSERT_GT(std::abs(last[5].y - first[5].y), 7.);
+
+        UndoCommandPtr undo;
+        const VectorFollowReport report = context()->followVectors(blendParamsFor(bezier, VectorFollowModel::ePerPoint), &undo);
+        ASSERT_TRUE(report.error.empty()) << report.error;
+        ASSERT_EQ(report.shapes.size(), 1u);
+        EXPECT_TRUE(report.shapes[0].unfollowed.empty());
+
+        std::set<double> keys;
+        bezier->getKeyframeTimes(&keys);
+        EXPECT_EQ(keys.size(), 11u) << backwardLayer;
+        std::vector<FollowPoint> previous = first;
+        for (int frame = kStart; frame <= later; ++frame) {
+            const std::vector<FollowPoint> shown = pointsAt(frame);
+            const double weight = followBridgeWeight(frame, kStart, later);
+            const double stepWeight = std::abs(weight - followBridgeWeight(frame - 1, kStart, later));
+            for (std::size_t i = 0; i < shown.size(); ++i) {
+                if ((frame == kStart) || (frame == later)) {
+                    const FollowPoint& key = (frame == kStart) ? first[i] : last[i];
+                    EXPECT_DOUBLE_EQ(shown[i].x, key.x) << backwardLayer << " " << frame << " " << i;
+                    EXPECT_DOUBLE_EQ(shown[i].y, key.y) << backwardLayer << " " << frame << " " << i;
+                } else {
+                    const double fromFirstX = first[i].x + kShiftX * (frame - kStart);
+                    const double fromFirstY = first[i].y + kShiftY * (frame - kStart);
+                    const double fromLastX = last[i].x - kShiftX * (later - frame);
+                    const double fromLastY = last[i].y - kShiftY * (later - frame);
+                    EXPECT_NEAR(shown[i].x, fromFirstX * (1. - weight) + fromLastX * weight, kFollowTolerance) << backwardLayer << " " << frame << " " << i;
+                    EXPECT_NEAR(shown[i].y, fromFirstY * (1. - weight) + fromLastY * weight, kFollowTolerance) << backwardLayer << " " << frame << " " << i;
+                }
+                // No frame jumps: each moves by the picture's motion plus its share of the change of shape.
+                if (frame > kStart) {
+                    const double changeX = (last[i].x - first[i].x) - kShiftX * (later - kStart);
+                    const double changeY = (last[i].y - first[i].y) - kShiftY * (later - kStart);
+                    EXPECT_LE(std::abs(shown[i].x - previous[i].x), std::abs(kShiftX) + stepWeight * std::abs(changeX) + 2. * kFollowTolerance) << backwardLayer << " " << frame << " " << i;
+                    EXPECT_LE(std::abs(shown[i].y - previous[i].y), std::abs(kShiftY) + stepWeight * std::abs(changeY) + 2. * kFollowTolerance) << backwardLayer << " " << frame << " " << i;
+                }
+            }
+            previous = shown;
+        }
+    }
+}
+
 TEST_F(VectorFollowBlendTest, ABlendUndoesAsOneStep)
 {
     const int later = kStart + 10;
@@ -749,7 +822,7 @@ TEST_F(VectorFollowBlendTest, AFitBlendLandsOnItsOwnKeys)
     }
 }
 
-TEST_F(VectorFollowBlendTest, ABlendOverAForwardOnlySourceFallsBackToForwardAndReportsIt)
+TEST_F(VectorFollowBlendTest, ABlendOverAForwardOnlySourceCarriesTheLaterKeyOnTheForwardPassAndReportsIt)
 {
     forwardOnly();
     const int later = kStart + 10;
@@ -768,8 +841,10 @@ TEST_F(VectorFollowBlendTest, ABlendOverAForwardOnlySourceFallsBackToForwardAndR
     EXPECT_EQ(report.shapes[0].passStops[0].otherOnly.first, kStart + 1);
     EXPECT_EQ(report.shapes[0].passStops[0].otherOnly.last, later - 1);
 
-    EXPECT_NEAR(positionAt(bezier, 0, later - 1).x, held.x + kShiftX * 9, kFollowTolerance);
-    EXPECT_NEAR(positionAt(bezier, 0, later - 1).y, held.y + kShiftY * 9, kFollowTolerance);
+    // Both keys hold the same pose, so the later one carried back trails the forward pass by 10 frames.
+    const double offset = 9. - 10. * followBridgeWeight(later - 1, kStart, later);
+    EXPECT_NEAR(positionAt(bezier, 0, later - 1).x, held.x + kShiftX * offset, kFollowTolerance);
+    EXPECT_NEAR(positionAt(bezier, 0, later - 1).y, held.y + kShiftY * offset, kFollowTolerance);
     EXPECT_DOUBLE_EQ(positionAt(bezier, 0, later).x, held.x);
     EXPECT_DOUBLE_EQ(positionAt(bezier, 0, later).y, held.y);
 }
@@ -878,10 +953,11 @@ TEST_F(VectorFollowBlendTest, AUserStopAfterAPassStopIsStillAUserStop)
     EXPECT_TRUE(isUserStopVectorFollowReport(report));
     EXPECT_FALSE(isCleanVectorFollowReport(report));
 
+    // With no backward pass the forward one must reach the later key before any frame is blended,
+    // so a stop part way leaves the second shape with only its keys.
     std::set<double> keys;
     second->getKeyframeTimes(&keys);
-    EXPECT_GT(keys.size(), 2u);
-    EXPECT_LT(keys.size(), 11u);
+    EXPECT_EQ(keys.size(), 2u);
 }
 
 TEST_F(VectorFollowBlendTest, ARefusedSourceWritesNothing)

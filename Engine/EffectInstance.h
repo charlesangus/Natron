@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <bitset>
+#include <functional>
 #include <list>
 #include <mutex>
 #include <optional>
@@ -1210,6 +1211,17 @@ public:
                                          FrameRequestMap & request);
 
     /**
+     * @brief Runs the request pass from each of roots in turn against request, which may already hold a pass's
+     * entries: an entry reached again has its final RoI grown to the union of the regions requested from it, as the
+     * planned pass does, and only what a root adds is walked upstream. When newWork is set, appends to it each region
+     * the pass added to an entry, in the order the pass added them. Not MT-safe on request: run it on a map no
+     * other thread reads. Implem is in ParallelRenderArgs.cpp
+     **/
+    static StatusEnum extendRequestPass(const std::vector<RequestPassRoot>& roots,
+                                        FrameRequestMap& request,
+                                        std::vector<RequestPassNewWork>* newWork);
+
+    /**
      * @brief Pre-renders the input frames node needs before rendering. Implem is in ParallelRenderArgs.cpp
      **/
     static EffectInstance::RenderRoIRetCode treeRecurseFunctor(const NodePtr& node,
@@ -2282,6 +2294,159 @@ public:
                                         std::vector<ContextNodeRequest>* /*requests*/) const
     {
     }
+
+    /**
+     * @brief Outputs a native effect asks for once part of its render is known, and what to run when they are
+     * rendered. See getRenderContinuation().
+     **/
+    struct RenderContinuationRequest {
+        NodePtr node;
+        // Restricted to what node's output reads before the request is planned; null for the empty context.
+        RenderContextPtr context;
+        double time = 0.;
+        ViewIdx view;
+        // In canonical coordinates.
+        RectD roi;
+        // Defaults to RGBA.
+        std::list<ImageLayerDesc> comps;
+    };
+
+    struct RenderContinuationArgs {
+        double time = 0.;
+        ViewIdx view;
+        unsigned int mipmapLevel = 0;
+        // The pixel region the effect is about to render.
+        RectI roi;
+        // The context the effect renders under, null for the empty one.
+        RenderContextPtr context;
+        // 0 for a render the frame planned; n for one an extension n levels deep asked for.
+        int depth = 0;
+    };
+
+    struct RenderContinuation {
+        std::vector<RenderContinuationRequest> requests;
+        // Run once, on the thread about to render the effect, after every request is rendered and before the render
+        // action; may be null. A status other than eStatusOK fails the render.
+        std::function<StatusEnum()> continuation;
+    };
+
+    /**
+     * @brief The deepest extension a probe may ask for: a probe at this depth that names requests fails its frame.
+     **/
+    static constexpr int kMaxRenderContinuationDepth = 8;
+
+    /**
+     * @brief The probe of a render continuation, called before the effect renders args.roi with its planned inputs
+     * rendered: returns true and fills continuation to have more outputs rendered first. Under the task-graph
+     * scheduler the requests are planned by an incremental request pass, rendered as tasks in parallel under the
+     * frame's budget, and continuation runs on the thread that then renders the effect, where it and the render
+     * read the requested outputs with pullRenderContinuationRequest() as store hits. A request for an output the
+     * frame already holds over the region is served from it without a task. Under the legacy scheduler, on a frame
+     * the task graph does not take, and for an effect pulled unplanned, the requests are rendered one after the
+     * other on the probing thread, then continuation runs inline.
+     *
+     * Called on a render thread with the effect's frame args installed, possibly on several threads at once for
+     * different regions, times or contexts. The probe must not keep the images it reads past its return; whatever
+     * continuation captures lives until it has run or the render is dropped. An aborted frame drops its extension
+     * and never runs continuation. A request naming an extension deeper than kMaxRenderContinuationDepth fails the
+     * frame with a message on the effect. Public to native effects only: neither OpenFX nor Python reach it.
+     **/
+    virtual bool getRenderContinuation(const RenderContinuationArgs& /*args*/,
+                                       RenderContinuation* /*continuation*/)
+    {
+        return false;
+    }
+
+    /**
+     * @brief Whether getRenderContinuation() may return true for some frame. GPU placement keeps such an effect on the
+     * CPU, since only CPU tasks are probed and the answer depends on pixels placement cannot read.
+     **/
+    virtual bool offersRenderContinuation() const WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
+    /**
+     * @brief Pulls the output request names from the render the calling thread runs for this effect: a store hit
+     * when the frame or an extension holds it, otherwise rendered on this thread. For the probe and continuation
+     * of getRenderContinuation(), and the render action after them.
+     **/
+    RenderRoIRetCode pullRenderContinuationRequest(const RenderContinuationRequest& request,
+                                                   unsigned int mipmapLevel,
+                                                   std::map<ImageLayerDesc, ImagePtr>* planes);
+
+    /**
+     * @brief Marks, for its lifetime, the render of node at time/view under contextKey the calling thread runs as one whose render
+     * continuation the scheduler already ran, so that renderRoI() does not probe it again, and the renders it pulls
+     * as belonging to an extension depth levels deep.
+     **/
+    class RenderContinuationHandledScope {
+    public:
+        RenderContinuationHandledScope(const Node* node,
+                                       double time,
+                                       ViewIdx view,
+                                       U64 contextKey,
+                                       int depth);
+        ~RenderContinuationHandledScope();
+
+        RenderContinuationHandledScope(const RenderContinuationHandledScope&) = delete;
+        RenderContinuationHandledScope& operator=(const RenderContinuationHandledScope&) = delete;
+
+        static bool isHandled(const Node* node,
+                              double time,
+                              ViewIdx view,
+                              U64 contextKey);
+
+    private:
+        const Node* _previousNode;
+        double _previousTime;
+        ViewIdx _previousView;
+        U64 _previousContextKey;
+        int _previousDepth;
+    };
+
+    /**
+     * @brief Whether renderRoI() runs the render continuation of this effect at time/view on the calling thread: the
+     * effect offers one and the scheduler did not already run it.
+     **/
+    bool probesRenderContinuationInline(double time,
+                                        ViewIdx view) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Holds, for its lifetime, every output consumer pulls on the calling thread through the frame store or a
+     * render, from the pre-render of its planned inputs through its probe, continuation and render, so that a later
+     * pullRenderContinuationRequest() of the same output reads the same image, as the task graph reads one stored
+     * image. A null consumer holds nothing, and keeps a consumer that an enclosing scope names from holding the pulls
+     * of the inputs it renders.
+     **/
+    class RenderContinuationHoldScope {
+    public:
+        explicit RenderContinuationHoldScope(const EffectInstance* consumer);
+        ~RenderContinuationHoldScope();
+
+        RenderContinuationHoldScope(const RenderContinuationHoldScope&) = delete;
+        RenderContinuationHoldScope& operator=(const RenderContinuationHoldScope&) = delete;
+
+    private:
+        std::size_t _heldBegin;
+        const Node* _previousConsumer;
+    };
+
+    /**
+     * @brief Runs the render continuation of this effect at time/view over roi on the calling thread: the probe, each
+     * request pulled in turn, then the continuation. For when probesRenderContinuationInline(), under a
+     * RenderContinuationHoldScope naming this effect.
+     **/
+    RenderRoIRetCode runRenderContinuationInline(double time,
+                                                 ViewIdx view,
+                                                 unsigned int mipmapLevel,
+                                                 const RectI& roi);
+
+    /**
+     * @brief Sets the error a probe asking for an extension deeper than kMaxRenderContinuationDepth leaves on this
+     * effect.
+     **/
+    void failRenderContinuationTooDeep();
 
     /**
      * @brief Override to initialize the overlay interact. It is called only on the

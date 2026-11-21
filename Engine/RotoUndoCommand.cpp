@@ -2579,11 +2579,8 @@ CommitObjectMaskUndoCommand::redo()
             shape->setKeyframe(_time);
             for (std::size_t i = 0; i < points.size(); ++i) {
                 // An unbroken point realigns its handles on every read, which rounds off corners.
-                if (BezierCPPtr cp = shape->getControlPointAtIndex((int)i)) {
-                    cp->setBroken(points[i].cusp);
-                }
-                if (BezierCPPtr fp = shape->getFeatherPointAtIndex((int)i)) {
-                    fp->setBroken(points[i].cusp);
+                if (points[i].cusp) {
+                    shape->setTangentsBroken(shape->getControlPointAtIndex((int)i), shape->getFeatherPointAtIndex((int)i), _time);
                 }
                 shape->setLeftBezierPoint((int)i, _time, points[i].left.x, points[i].left.y);
                 shape->setRightBezierPoint((int)i, _time, points[i].right.x, points[i].right.y);

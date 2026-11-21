@@ -87,7 +87,7 @@ public:
         .id = PLUGINID_NATRON_USDASSIGNMATERIAL,
         .label = "USDAssignMaterial",
         .description = "Bind a material to the prims a pattern names (paths, with * and ? wildcards). Connect a "
-                       "USDMaterial to the Material input to place it in the project's Materials Scope and bind it, "
+                       "USDPreviewSurface to the Material input to place it in the project's Materials Scope and bind it, "
                        "or name a material already in the scene with Material Path. Each matched root prim gets one "
                        "collection and one binding, which later nodes keep when they move the prims.",
         .grouping = PLUGIN_GROUP_3D_USD,

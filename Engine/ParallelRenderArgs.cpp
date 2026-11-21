@@ -889,6 +889,34 @@ planDeferredContextRequests(const DeferredContextRequest& request,
     return eStatusOK;
 }
 
+// Appends to pieces up to four disjoint rectangles covering a less b.
+void
+appendRectDifference(const RectD& a,
+                     const RectD& b,
+                     std::vector<RectD>* pieces)
+{
+    if (a.isNull()) {
+        return;
+    }
+    const RectD cut = a.intersect(b);
+    if (cut.isNull()) {
+        pieces->push_back(a);
+
+        return;
+    }
+    const RectD candidates[] = {
+        RectD(a.x1, a.y1, a.x2, cut.y1),
+        RectD(a.x1, cut.y2, a.x2, a.y2),
+        RectD(a.x1, cut.y1, cut.x1, cut.y2),
+        RectD(cut.x2, cut.y1, a.x2, cut.y2),
+    };
+    for (const RectD& piece : candidates) {
+        if (!piece.isNull()) {
+            pieces->push_back(piece);
+        }
+    }
+}
+
 StatusEnum
 visitRequestPassItem(bool useTransforms,
                      const RequestPassItem& item,
@@ -896,7 +924,8 @@ visitRequestPassItem(bool useTransforms,
                      WarmedRoDSet* warmed,
                      ContextFrameArgsMap* passArgs,
                      DeferredContextRequests* deferred,
-                     std::vector<RequestPassItem>* stack)
+                     std::vector<RequestPassItem>* stack,
+                     std::vector<RequestPassNewWork>* newWork)
 {
     const NodePtr& node = item.node;
     const double time = item.time;
@@ -1054,10 +1083,30 @@ visitRequestPassItem(bool useTransforms,
         // Do not recurse if the roi did not add anything new to render
         return eStatusOK;
     }
+    const RectD previousFinalRoI = fvRequest->finalData.finalRoi;
     if (finalRoIEmpty) {
         fvRequest->finalData.finalRoi = canonicalRenderWindow;
     } else {
         fvRequest->finalData.finalRoi.merge(canonicalRenderWindow);
+    }
+    if (newWork) {
+        RequestPassNewWork added;
+        added.key = nodeKey;
+        added.time = time;
+        added.view = view;
+        if (finalRoIEmpty) {
+            added.roi = canonicalRenderWindow;
+            newWork->push_back(added);
+        } else {
+            // The final RoI is one bounding rectangle, so what the entry renders anew is the merged rectangle less the
+            // previous one, the corner fill of a merge included.
+            std::vector<RectD> pieces;
+            appendRectDifference(fvRequest->finalData.finalRoi, previousFinalRoI, &pieces);
+            for (const RectD& piece : pieces) {
+                added.roi = piece;
+                newWork->push_back(added);
+            }
+        }
     }
 
     if (fvRequest->globalData.identityInputNb == -2) {
@@ -1226,16 +1275,13 @@ visitRequestPassItem(bool useTransforms,
 
 } // namespace
 
+namespace {
+
 StatusEnum
-EffectInstance::getInputsRoIsFunctor(bool useTransforms,
-                                     double time,
-                                     ViewIdx view,
-                                     unsigned originalMipmapLevel,
-                                     const NodePtr& node,
-                                     const NodePtr& /*callerNode*/,
-                                     const NodePtr& /*treeRoot*/,
-                                     const RectD& canonicalRenderWindow,
-                                     FrameRequestMap& requests)
+runRequestPass(bool useTransforms,
+               const std::vector<RequestPassItem>& roots,
+               FrameRequestMap& requests,
+               std::vector<RequestPassNewWork>* newWork)
 {
     // An explicit stack rather than recursion: the walk is as deep as the longest upstream chain, and request passes
     // run on pool threads with default-sized stacks.
@@ -1251,8 +1297,8 @@ EffectInstance::getInputsRoIsFunctor(bool useTransforms,
 
     DeferredContextRequests deferred;
 
-    // The root renders under the empty context.
-    stack.push_back(makeVisitItem(node, RenderContextPtr(), time, view, originalMipmapLevel, canonicalRenderWindow));
+    // Reversed, so that the roots are walked in their order.
+    stack.assign(roots.rbegin(), roots.rend());
 
     for (;;) {
         if (stack.empty()) {
@@ -1272,7 +1318,7 @@ EffectInstance::getInputsRoIsFunctor(bool useTransforms,
 
         switch (item.kind) {
         case RequestPassItem::eKindVisit:
-            if (visitRequestPassItem(useTransforms, item, requests, &warmed, &passArgs, &deferred, &stack) == eStatusFailed) {
+            if (visitRequestPassItem(useTransforms, item, requests, &warmed, &passArgs, &deferred, &stack, newWork) == eStatusFailed) {
                 return eStatusFailed;
             }
             break;
@@ -1301,6 +1347,25 @@ EffectInstance::getInputsRoIsFunctor(bool useTransforms,
     }
 
     return eStatusOK;
+} // runRequestPass
+
+} // namespace
+
+StatusEnum
+EffectInstance::getInputsRoIsFunctor(bool useTransforms,
+                                     double time,
+                                     ViewIdx view,
+                                     unsigned originalMipmapLevel,
+                                     const NodePtr& node,
+                                     const NodePtr& /*callerNode*/,
+                                     const NodePtr& /*treeRoot*/,
+                                     const RectD& canonicalRenderWindow,
+                                     FrameRequestMap& requests)
+{
+    // The root renders under the empty context.
+    const std::vector<RequestPassItem> roots(1, makeVisitItem(node, RenderContextPtr(), time, view, originalMipmapLevel, canonicalRenderWindow));
+
+    return runRequestPass(useTransforms, roots, requests, 0);
 } // EffectInstance::getInputsRoIsFunctor
 
 namespace {
@@ -1532,6 +1597,27 @@ EffectInstance::computeRequestPass(double time,
     }*/
 
     return eStatusOK;
+}
+
+StatusEnum
+EffectInstance::extendRequestPass(const std::vector<RequestPassRoot>& roots,
+                                  FrameRequestMap& request,
+                                  std::vector<RequestPassNewWork>* newWork)
+{
+    if (roots.empty()) {
+        return eStatusOK;
+    }
+    std::vector<RequestPassItem> items;
+    items.reserve(roots.size());
+    for (const RequestPassRoot& root : roots) {
+        if (!root.node || !root.node->getEffectInstance()) {
+            return eStatusFailed;
+        }
+        items.push_back(makeVisitItem(root.node, root.context, root.time, root.view, root.mipmapLevel, root.roi));
+    }
+    const bool doTransforms = appPTR->getCurrentSettings()->isTransformConcatenationEnabled();
+
+    return runRequestPass(doTransforms, items, request, newWork);
 }
 
 const FrameViewRequest*

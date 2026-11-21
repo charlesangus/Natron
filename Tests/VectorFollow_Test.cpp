@@ -494,7 +494,9 @@ TEST(VectorFollow, ABackwardBridgeBakesFromTheLaterAnchorAndAbortsToo)
     EXPECT_EQ(frames.back().frame, 7);
 }
 
-TEST(VectorFollow, ABackwardPassThatStopsLeavesTheForwardPassAlonePastThatPoint)
+// Past where it stopped, the backward pass is carried on by the forward one from frame 6, where it
+// stood 6 behind it.
+TEST(VectorFollow, ABackwardPassThatStopsIsCarriedOnByTheForwardPassPastThatPoint)
 {
     PassField field;
     field.backwardLowDownFrom = 6;
@@ -503,7 +505,7 @@ TEST(VectorFollow, ABackwardPassThatStopsLeavesTheForwardPassAlonePastThatPoint)
 
     ASSERT_EQ(frames.size(), 9u);
     for (int frame = 1; frame <= 5; ++frame) {
-        EXPECT_DOUBLE_EQ(offsetAt(frames, frame), (double)frame) << frame;
+        EXPECT_NEAR(offsetAt(frames, frame), frame - 6. * followBridgeWeight(frame, 0, 10), 1e-9) << frame;
     }
     for (int frame = 6; frame <= 9; ++frame) {
         EXPECT_NEAR(offsetAt(frames, frame), frame * (1. - followBridgeWeight(frame, 0, 10)), 1e-9) << frame;
@@ -519,7 +521,8 @@ TEST(VectorFollow, ABackwardPassThatStopsLeavesTheForwardPassAlonePastThatPoint)
     EXPECT_EQ(outcome.passStops[0].otherOnly.last, 5);
 }
 
-TEST(VectorFollow, AForwardPassThatStopsLeavesTheBackwardPassAlonePastThatPoint)
+// The forward pass stood 4 ahead of the backward one on frame 4, the last it reached.
+TEST(VectorFollow, AForwardPassThatStopsIsCarriedOnByTheBackwardPassPastThatPoint)
 {
     PassField field;
     field.forwardLowFrom = 4;
@@ -531,7 +534,7 @@ TEST(VectorFollow, AForwardPassThatStopsLeavesTheBackwardPassAlonePastThatPoint)
         EXPECT_NEAR(offsetAt(frames, frame), frame * (1. - followBridgeWeight(frame, 0, 10)), 1e-9) << frame;
     }
     for (int frame = 5; frame <= 9; ++frame) {
-        EXPECT_DOUBLE_EQ(offsetAt(frames, frame), 0.) << frame;
+        EXPECT_NEAR(offsetAt(frames, frame), 4. * (1. - followBridgeWeight(frame, 0, 10)), 1e-9) << frame;
     }
     EXPECT_FALSE(outcome.aborted);
     EXPECT_FALSE(outcome.stopped);
@@ -550,9 +553,9 @@ TEST(VectorFollow, AnUnreadableFrameInABridgeEndsBothPassesThereWithNoFailure)
     const std::vector<VectorFollowFrame> frames = runFollow(field, stillBridgeSetup(), &outcome);
 
     ASSERT_EQ(frames.size(), 9u);
-    EXPECT_DOUBLE_EQ(offsetAt(frames, 7), 7.);
+    EXPECT_NEAR(offsetAt(frames, 7), 7. - 8. * followBridgeWeight(7, 0, 10), 1e-9);
     EXPECT_NEAR(offsetAt(frames, 8), 8. * (1. - followBridgeWeight(8, 0, 10)), 1e-9);
-    EXPECT_DOUBLE_EQ(offsetAt(frames, 9), 0.);
+    EXPECT_NEAR(offsetAt(frames, 9), 8. * (1. - followBridgeWeight(9, 0, 10)), 1e-9);
     EXPECT_FALSE(outcome.aborted);
     EXPECT_FALSE(outcome.stopped);
     ASSERT_EQ(outcome.passStops.size(), 2u);
@@ -590,6 +593,13 @@ TEST(VectorFollow, FramesNeitherPassReachesAreLeftAloneAndReported)
     for (int frame = 4; frame <= 6; ++frame) {
         EXPECT_EQ(frameOf(frames, frame), nullptr) << frame;
     }
+    // With no frame both reached, each side is carried from where the other was last seen.
+    for (int frame = 1; frame <= 3; ++frame) {
+        EXPECT_NEAR(offsetAt(frames, frame), frame - 3. * followBridgeWeight(frame, 0, 10), 1e-9) << frame;
+    }
+    for (int frame = 7; frame <= 9; ++frame) {
+        EXPECT_NEAR(offsetAt(frames, frame), 3. * (1. - followBridgeWeight(frame, 0, 10)), 1e-9) << frame;
+    }
     EXPECT_FALSE(outcome.aborted);
     EXPECT_TRUE(outcome.stopped);
     EXPECT_EQ(outcome.stopFrame, 3);
@@ -599,7 +609,9 @@ TEST(VectorFollow, FramesNeitherPassReachesAreLeftAloneAndReported)
     EXPECT_EQ(outcome.passStops.size(), 2u);
 }
 
-TEST(VectorFollow, AForwardOnlySourceBridgesOnItsForwardPassAlone)
+// The forward pass goes on to the later anchor, which it misses by 10, and the backward pass is
+// that anchor carried back on the forward motion.
+TEST(VectorFollow, AForwardOnlySourceBridgesOnItsForwardPassAndStillMeetsTheLaterAnchor)
 {
     PassField field;
     field.backwardX = 100.;
@@ -610,7 +622,7 @@ TEST(VectorFollow, AForwardOnlySourceBridgesOnItsForwardPassAlone)
 
     ASSERT_EQ(frames.size(), 9u);
     for (int frame = 1; frame <= 9; ++frame) {
-        EXPECT_DOUBLE_EQ(offsetAt(frames, frame), (double)frame) << frame;
+        EXPECT_NEAR(offsetAt(frames, frame), frame - 10. * followBridgeWeight(frame, 0, 10), 1e-9) << frame;
     }
     EXPECT_FALSE(outcome.aborted);
     EXPECT_FALSE(outcome.stopped);
@@ -645,7 +657,7 @@ TEST(VectorFollow, ABackwardSeedIsTheLastAnchorAndBridgesDownToAnEarlierKey)
     EXPECT_FALSE(outcome.stopped);
 }
 
-TEST(VectorFollow, ABackwardBridgeOfAForwardOnlySourceRunsOnItsForwardPassAlone)
+TEST(VectorFollow, ABackwardBridgeOfAForwardOnlySourceRunsOnItsForwardPassAndMeetsBothAnchors)
 {
     PassField field;
     field.backwardX = 100.;
@@ -659,7 +671,7 @@ TEST(VectorFollow, ABackwardBridgeOfAForwardOnlySourceRunsOnItsForwardPassAlone)
     ASSERT_EQ(frames.size(), 10u);
     EXPECT_EQ(frames.front().frame, 10);
     for (int frame = 1; frame <= 9; ++frame) {
-        EXPECT_DOUBLE_EQ(offsetAt(frames, frame), (double)frame) << frame;
+        EXPECT_NEAR(offsetAt(frames, frame), frame - 10. * followBridgeWeight(frame, 0, 10), 1e-9) << frame;
     }
     EXPECT_FALSE(outcome.aborted);
     EXPECT_FALSE(outcome.stopped);

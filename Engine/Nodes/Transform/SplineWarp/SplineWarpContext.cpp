@@ -1956,7 +1956,7 @@ SplineWarpContext::onControlPointAboutToBeRemoved(const BezierPtr& curve,
     // as they are at the current time.
     double firstWeight = 0.5;
     if (pointCount > 2) {
-        const SplineWarpCurveShape shape = SplineWarpCurveShape::fromBezier(*curve, getTimelineCurrentTime());
+        const SplineWarpCurveShape shape = SplineWarpCurveShape::fromBezier(*curve, getTimelineCurrentTime(), false, true, true);
         const int segmentCount = shape.getSegmentCount();
         const int first = (closed && index == 0) ? segmentCount - 1 : index - 1;
         const int second = index;

@@ -675,7 +675,7 @@ Node::getPaintStrokeRoD(double time,
         if (!stroke) {
             throw std::logic_error("");
         }
-        *bbox = stroke->getBoundingBox(time);
+        *bbox = stroke->getBoundingBox(time, false);
     }
 }
 

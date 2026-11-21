@@ -1124,14 +1124,18 @@ TEST_P(NatronUtilityTracer, ASpinningInstanceKeepsItsSize)
         return;
     }
     ASSERT_TRUE(tracer->update(UtilityScene::atShutter(scene.snapshot(), 0., 1., 1), 2));
+    // The kernel slerps in float with the driver's acos, sin and cos, whose software implementations
+    // are good to about 1e-4 radians; that moves the hit by that much without changing the size.
+    const float tolerance = GetParam() == Backend::Gpu ? 3e-4f : 1e-4f;
+
     for (const double time : { 0.25, 0.5, 0.75 }) {
         const GfVec3d at = spin(90. * time).Transform(GfVec3d(0.8, 0.7, 0.));
         const Hits hits = shootAt(*tracer, (float)at[0], (float)at[1], (float)time);
 
         EXPECT_EQ(0u, hits.instance[0]) << time;
         EXPECT_EQ(0u, hits.primitive[0]) << time;
-        EXPECT_NEAR(0.1f, hits.u[0], 1e-4f) << time;
-        EXPECT_NEAR(0.7f, hits.v[0], 1e-4f) << time;
+        EXPECT_NEAR(0.1f, hits.u[0], tolerance) << time;
+        EXPECT_NEAR(0.7f, hits.v[0], tolerance) << time;
     }
 }
 

@@ -605,15 +605,15 @@ TabWidget::closeSplitterAndMoveOtherSplitToParent(Splitter* container)
     if (parentSplitter) {
         QList<int> mainContainerSizes = parentSplitter->sizes();
 
-        /*Removing the splitter container from its parent*/
         int containerIndexInParentSplitter = parentSplitter->indexOf(container);
-        parentSplitter->removeChild_mt_safe(container);
-
-        /*moving the other split to the mainContainer*/
+        // The other split moves straight across before the container goes: through a parentless
+        // container it would leave the window, and each GL widget in it would lose its context.
         if (otherSplit) {
             parentSplitter->insertChild_mt_safe(containerIndexInParentSplitter, otherSplit);
             otherSplit->setVisible(true);
         }
+        container->setVisible(false);
+        container->setParent(_imp->gui);
 
         /*restore the main container sizes*/
         parentSplitter->setSizes_mt_safe(mainContainerSizes);

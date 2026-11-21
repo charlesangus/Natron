@@ -10480,6 +10480,9 @@ SceneViewport::releaseEngine()
 void
 SceneViewport::initializeGL()
 {
+    GLContextLoss::watch(this, [this]() {
+        _imp->releaseGLResources();
+    });
     _imp->glInitialized = true;
     if (_imp->usesRenderThread && _imp->renderLoop) {
         // The pane was floated or docked. A widget context of the render context's share group
@@ -10493,9 +10496,6 @@ SceneViewport::initializeGL()
         // Until the render thread reports its context, frames wait and paints show the background.
         rebuildRenderContext();
     }
-    GLContextLoss::watch(this, [this]() {
-        _imp->releaseGLResources();
-    });
 }
 
 void

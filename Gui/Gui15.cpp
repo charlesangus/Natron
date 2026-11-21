@@ -32,7 +32,8 @@
 #include <exception>
 #include <istream>
 #include <iterator>
-#include <sstream>
+#include <list>
+#include <map>
 #include <string>
 
 #include <QAction>
@@ -50,11 +51,13 @@
 
 #include "Gui/DockablePanel.h"
 #include "Gui/GuiAppInstance.h"
+#include "Gui/Histogram.h"
 #include "Gui/Menu.h"
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
 #include "Gui/ProjectGui.h"
 #include "Gui/SequenceFileDialog.h"
+#include "Gui/Splitter.h"
 #include "Gui/TabWidget.h"
 #include "Gui/ViewerTab.h"
 
@@ -250,36 +253,99 @@ layoutDiagnosticsWanted()
     return qgetenv("NATRON_MAIN_HEARTBEAT") == "1";
 }
 
-// The first line of the layout files that differs, to tell what a session changed in the layout.
 void
-logFirstLayoutDifference(const std::string& defaultText,
-                         const std::string& currentText,
-                         bool structureKept)
+collectPaneTabs(const Serialization::SplitterSerialization& splitter,
+                std::map<std::string, std::list<std::string>>* out)
 {
-    std::istringstream defaultLines(defaultText);
-    std::istringstream currentLines(currentText);
-    std::string defaultLine, currentLine;
-    int lineNumber = 0;
-    for (;;) {
-        ++lineNumber;
-        const bool moreDefault = static_cast<bool>(std::getline(defaultLines, defaultLine));
-        const bool moreCurrent = static_cast<bool>(std::getline(currentLines, currentLine));
-        if (!moreDefault && !moreCurrent) {
-            return;
-        }
-        if (!moreDefault) {
-            defaultLine = "<end>";
-        }
-        if (!moreCurrent) {
-            currentLine = "<end>";
-        }
-        if (defaultLine != currentLine) {
-            break;
+    for (const Serialization::SplitterChildSerialization& child : splitter.children) {
+        if (child.splitter) {
+            collectPaneTabs(*child.splitter, out);
+        } else if (child.pane) {
+            (*out)[child.pane->name] = child.pane->tabs;
         }
     }
-    std::fprintf(stderr, "natron layout: reset %s the layout; line %d differs from the default: \"%s\" now \"%s\"\n",
-                 structureKept ? "keeps" : "rebuilds", lineNumber, defaultLine.c_str(), currentLine.c_str());
-    std::fflush(stderr);
+}
+
+std::map<std::string, std::list<std::string>>
+paneTabs(const Serialization::GuiLayoutSerialization& layout)
+{
+    std::map<std::string, std::list<std::string>> out;
+    for (const Serialization::ApplicationWindowSerialization& window : layout.windows) {
+        if (window.childSplitter) {
+            collectPaneTabs(*window.childSplitter, &out);
+        } else if (window.childPane) {
+            out[window.childPane->name] = window.childPane->tabs;
+        }
+    }
+
+    return out;
+}
+
+// Closes, in the main window, the panes the default layout has not got, each tab going back to the
+// pane the default gives it. Only the split a closed pane shared is rearranged: its neighbour moves
+// up into the parent split, and no other widget changes parent. Returns false, having changed
+// nothing, when the layout differs in a way this cannot undo.
+bool
+closePanesAddedToDefault(Gui* gui,
+                         const std::map<std::string, std::list<std::string>>& defaultPaneTabs)
+{
+    if (defaultPaneTabs.empty() || !gui->getFloatingWindows().empty()) {
+        return false;
+    }
+    const std::list<TabWidget*> panes = gui->getPanes();
+    std::map<std::string, TabWidget*> defaultPanes;
+    std::vector<TabWidget*> added;
+    TabWidget* anchor = 0;
+    for (TabWidget* pane : panes) {
+        const std::string name = pane->objectName_mt_safe().toStdString();
+        if (defaultPaneTabs.count(name)) {
+            defaultPanes[name] = pane;
+            if (pane->isAnchor()) {
+                anchor = pane;
+            }
+        } else if (pane->isAnchor() || !dynamic_cast<Splitter*>(pane->parentWidget())) {
+            return false;
+        } else {
+            added.push_back(pane);
+        }
+    }
+    if (!anchor || added.empty() || (defaultPanes.size() != defaultPaneTabs.size())) {
+        return false;
+    }
+    std::map<std::string, TabWidget*> defaultPaneOfTab;
+    for (const std::pair<const std::string, std::list<std::string>>& pane : defaultPaneTabs) {
+        for (const std::string& tab : pane.second) {
+            defaultPaneOfTab[tab] = defaultPanes[pane.first];
+        }
+    }
+    for (TabWidget* pane : added) {
+        while (pane->count() > 0) {
+            PanelWidget* widget = 0;
+            ScriptObject* object = 0;
+            pane->tabAt(0, &widget, &object);
+            if (!widget || !object) {
+                pane->removeTab(0, false);
+                continue;
+            }
+            TabWidget* target = 0;
+            if (dynamic_cast<ViewerTab*>(widget) || dynamic_cast<Histogram*>(widget)) {
+                target = anchor;
+            } else {
+                const std::map<std::string, TabWidget*>::const_iterator found = defaultPaneOfTab.find(object->getScriptName());
+                if (found != defaultPaneOfTab.end()) {
+                    target = found->second;
+                }
+            }
+            if (target) {
+                TabWidget::moveTab(widget, object, target);
+            } else {
+                pane->removeTab(0, false);
+            }
+        }
+        pane->closePane();
+    }
+
+    return true;
 }
 
 } // anonymous namespace
@@ -287,8 +353,8 @@ logFirstLayoutDifference(const std::string& defaultText,
 void
 Gui::noteDefaultLayout()
 {
-    _imp->defaultLayoutText.clear();
     _imp->defaultLayoutStructure.clear();
+    _imp->defaultPaneTabs.clear();
     const unsigned int generation = ++_imp->layoutGeneration;
     // Queued behind the layout requests the panes just posted, so the splitters have their sizes.
     QTimer::singleShot(0, this, [this, generation]() {
@@ -299,12 +365,10 @@ Gui::noteDefaultLayout()
             Serialization::GuiLayoutSerialization layoutSerialization;
             toSerialization(&layoutSerialization);
             _imp->defaultLayoutStructure = layoutStructure(getRegisteredTabs(), layoutSerialization);
-            if (layoutDiagnosticsWanted()) {
-                _imp->defaultLayoutText = Serialization::encodeGuiLayoutYaml(layoutSerialization);
-            }
+            _imp->defaultPaneTabs = paneTabs(layoutSerialization);
         } catch (const std::exception&) {
             _imp->defaultLayoutStructure.clear();
-            _imp->defaultLayoutText.clear();
+            _imp->defaultPaneTabs.clear();
         }
     });
 }
@@ -312,22 +376,43 @@ Gui::noteDefaultLayout()
 void
 Gui::restoreDefaultLayoutUnlessKept()
 {
-    // Rebuilding moves every pane's widgets to new parents, and each restyles on the move: a
-    // project reset that kept the default layout's panes and tabs keeps the layout as it is.
-    bool kept = false;
-    if (!_imp->defaultLayoutStructure.empty()) {
-        try {
-            Serialization::GuiLayoutSerialization layoutSerialization;
-            toSerialization(&layoutSerialization);
-            kept = (layoutStructure(getRegisteredTabs(), layoutSerialization) == _imp->defaultLayoutStructure);
-            if (layoutDiagnosticsWanted() && !_imp->defaultLayoutText.empty()) {
-                logFirstLayoutDifference(_imp->defaultLayoutText, Serialization::encodeGuiLayoutYaml(layoutSerialization), kept);
-            }
-        } catch (const std::exception&) {
-            kept = false;
-        }
+    // Rebuilding moves every pane's widgets to new parents, and each restyles on the move (and a GL
+    // widget taken out of the window loses its context): a project reset that kept the default
+    // layout's panes and tabs keeps the layout as it is, and one that only added panes closes them.
+    if (_imp->defaultLayoutStructure.empty()) {
+        restoreDefaultLayout();
+
+        return;
     }
-    if (kept) {
+    const std::string defaultStructure = _imp->defaultLayoutStructure;
+    std::string structure;
+    const char* outcome = "rebuilds";
+    bool rebuild = true;
+    try {
+        Serialization::GuiLayoutSerialization layoutSerialization;
+        toSerialization(&layoutSerialization);
+        structure = layoutStructure(getRegisteredTabs(), layoutSerialization);
+        if (structure == defaultStructure) {
+            outcome = "keeps";
+            rebuild = false;
+        } else if (closePanesAddedToDefault(this, _imp->defaultPaneTabs)) {
+            Serialization::GuiLayoutSerialization closedSerialization;
+            toSerialization(&closedSerialization);
+            if (layoutStructure(getRegisteredTabs(), closedSerialization) == defaultStructure) {
+                outcome = "closes the panes added to";
+                rebuild = false;
+            }
+        }
+    } catch (const std::exception&) {
+        outcome = "rebuilds";
+        rebuild = true;
+    }
+    if (layoutDiagnosticsWanted()) {
+        std::fprintf(stderr, "natron layout: reset %s the default layout\nnatron layout: default structure:\n%snatron layout: structure at reset:\n%s",
+                     outcome, defaultStructure.c_str(), structure.c_str());
+        std::fflush(stderr);
+    }
+    if (!rebuild) {
         removeSceneGraphPanelsOutsidePanes();
 
         return;

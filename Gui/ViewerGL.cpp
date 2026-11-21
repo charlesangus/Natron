@@ -1271,10 +1271,10 @@ ViewerGL::initializeGL()
         });
         QObject::disconnect(_imp->handoffContextConnection);
         _imp->handoffContextConnection = QObject::connect(glContext, &QOpenGLContext::aboutToBeDestroyed, this, [this]() {
+            // Left current: the slots after this one need the dying context current (see GLContextLoss).
             if (_imp->handoff) {
                 makeCurrent();
                 _imp->handoff->release();
-                doneCurrent();
             }
         });
         prepareHandoffAhead();

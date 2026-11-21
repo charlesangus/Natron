@@ -135,7 +135,7 @@ struct ShadeOne {
         frustum.SetPerspective(45., 1., 1., 100.);
         tables.update(snapshot);
 
-        const std::vector<float> rays = { 0.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 10.f };
+        const std::vector<float> rays = { 0.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 10.f, 0.5f };
         const std::vector<float> hitSurface = { t, u, v };
         const std::vector<std::uint32_t> hitIds = { 0u, 0u, primitive };
         KernelShadeBuffers buffers = tables.buffers();
@@ -189,7 +189,7 @@ TEST(NatronUtilityKernels, RayGenCornersFollowTheCameraFrustum)
     const std::size_t count = size * size;
     const GfFrustum frustum = offCentreCamera();
     const WavefrontFrame frame = frameOf(frustum, size, size);
-    std::vector<float> rays(count * 8, std::numeric_limits<float>::quiet_NaN());
+    std::vector<float> rays(count * kKernelRayArrays, std::numeric_limits<float>::quiet_NaN());
 
     runRayGenKernel(makeRayGenParams(frame, frame.window), rays.data());
 
@@ -207,7 +207,7 @@ TEST(NatronUtilityKernels, RayGenSpansTheCameraRange)
     const std::size_t count = size * size;
     const GfFrustum frustum = offCentreCamera();
     const WavefrontFrame frame = frameOf(frustum, size, size);
-    std::vector<float> rays(count * 8);
+    std::vector<float> rays(count * kKernelRayArrays);
 
     runRayGenKernel(makeRayGenParams(frame, frame.window), rays.data());
 
@@ -229,7 +229,7 @@ TEST(NatronUtilityKernels, RayGenTileMatchesTheWholeWindow)
     const int height = 5;
     const std::size_t count = static_cast<std::size_t>(width) * height;
     const WavefrontFrame frame = frameOf(offCentreCamera(), width, height);
-    std::vector<float> whole(count * 8);
+    std::vector<float> whole(count * kKernelRayArrays);
 
     runRayGenKernel(makeRayGenParams(frame, frame.window), whole.data());
 
@@ -241,7 +241,7 @@ TEST(NatronUtilityKernels, RayGenTileMatchesTheWholeWindow)
     tile.height = 2;
 
     const std::size_t tileCount = 8;
-    std::vector<float> part(tileCount * 8);
+    std::vector<float> part(tileCount * kKernelRayArrays);
 
     runRayGenKernel(makeRayGenParams(frame, tile), part.data());
     for (std::size_t i = 0; i < tileCount; ++i) {
@@ -265,7 +265,7 @@ TEST(NatronUtilityKernels, RayGenFollowsAnOrthographicCamera)
     const int size = 4;
     const std::size_t count = size * size;
     const WavefrontFrame frame = frameOf(frustum, size, size);
-    std::vector<float> rays(count * 8);
+    std::vector<float> rays(count * kKernelRayArrays);
 
     runRayGenKernel(makeRayGenParams(frame, frame.window), rays.data());
 
@@ -440,7 +440,7 @@ TEST(NatronUtilityKernels, ShadeSurfaceClearsMissesOnTheFirstLightPassOnly)
 
     tables.update(scene.snapshot());
 
-    const std::vector<float> rays = { 0.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 10.f };
+    const std::vector<float> rays = { 0.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 10.f, 0.5f };
     const std::vector<float> hitSurface = { 0.f, 0.f, 0.f };
     const std::vector<std::uint32_t> hitIds = { Tracer::kNoHit, Tracer::kNoHit, Tracer::kNoHit };
     float color[4] = { 9.f, 9.f, 9.f, 9.f };

@@ -64,9 +64,6 @@
 // The samples per pixel the running or last frame has drawn, and the number it draws in all.
 #define kUtilityStatSamples "utilitySamples"
 #define kUtilityStatSamplesWanted "utilitySamplesWanted"
-// The seconds each time bucket of the last frame took to trace, its scene's update included, summed
-// over its samples: a VtDoubleArray, one per bucket, the first opening the shutter.
-#define kUtilityStatBucketSeconds "utilityBucketSeconds"
 // Why some motion does not blur, naming the prims, as a std::string; empty when all of it does.
 #define kUtilityStatMotionWarning "utilityMotionWarning"
 
@@ -115,7 +112,7 @@
 #define kUtilityShutterEnd "end"
 #define kUtilityShutterCustom "custom"
 #define kUtilityDefaultShutter 0.5f
-#define kUtilityDefaultShutterSegments 8
+#define kUtilityDefaultShutterSegments 1
 
 // How pixels map to rays: Projection, a TfToken, one of the four values below. Overscan, an int, is how
 // many pixels the frame grows by on every side, for each projection but uvUnwrap. A uvUnwrap render
@@ -214,9 +211,6 @@ public:
                            std::size_t wanted);
     void sampleProgress(std::size_t* done,
                         std::size_t* wanted) const;
-    // What the stats report of the frame's time buckets. MT-safe.
-    void setBucketSeconds(const std::vector<double>& seconds);
-    std::vector<double> bucketSeconds() const;
 
     // What a running frame polls: set by stop() until restart(), and by cancelFrame() until the next
     // frame starts. MT-safe.
@@ -273,7 +267,6 @@ private:
     std::string _reportWarning;
     std::size_t _samplesDone = 0;
     std::size_t _samplesWanted = 0;
-    std::vector<double> _bucketSeconds;
     std::atomic<bool> _stop { false };
     std::atomic<bool> _cancel { false };
     std::atomic<bool> _frameRunning { false };

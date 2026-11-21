@@ -39,14 +39,14 @@ struct ShadeParams
 [[vk::binding(10, 0)]] StructuredBuffer<uint4> images;
 [[vk::binding(11, 0)]] StructuredBuffer<ProjectionRecord> projections;
 [[vk::binding(12, 0)]] StructuredBuffer<LightRecord> lights;
-// One shadow ray per hit per light of the pass, light-major: eight arrays of lightBatch * count values.
+// One shadow ray per hit per light of the pass, light-major: nine arrays of lightBatch * count values.
 [[vk::binding(13, 0)]] RWStructuredBuffer<float> shadowRays;
 // What each shadow ray's light adds to its pixel when the ray is not blocked, premultiplied.
 [[vk::binding(14, 0)]] RWStructuredBuffer<float4> shadowContributions;
 [[vk::binding(15, 0)]] RWStructuredBuffer<uint> shadowLights;
 // After the first bounce, what each ray's path carries.
 [[vk::binding(16, 0)]] StructuredBuffer<PathState> paths;
-// Each ray's continuation, count rays in eight arrays with a negative tMax where the path ends, and what
+// Each ray's continuation, count rays in nine arrays with a negative tMax where the path ends, and what
 // it carries; written only when a bounce follows this one.
 [[vk::binding(17, 0)]] RWStructuredBuffer<float> nextRays;
 [[vk::binding(18, 0)]] RWStructuredBuffer<PathState> nextPaths;
@@ -68,6 +68,8 @@ property FloatTable lightData { get { return FloatTable(tableAddresses[kTableLig
 // Per instance, the light-link mask then the shadow-link mask, lighting.z words each; bit l is light l.
 property UintTable linkMasks { get { return UintTable(tableAddresses[kTableLinkMasks]); } }
 property Float4Table texels { get { return Float4Table(tableAddresses[kTableTexels]); } }
+property UintTable instanceMotion { get { return UintTable(tableAddresses[kTableInstanceMotion]); } }
+property Float4Table motionRows { get { return Float4Table(tableAddresses[kTableMotionRows]); } }
 
 static const float4 kUnsupportedColor = float4(1.0, 0.0, 1.0, 1.0);
 // lightRandom()'s light numbers for what is not a light: choosing a hit's continuation and drawing its
@@ -146,6 +148,12 @@ bool mayReflect(PathState path)
     return path.counters.y < params.bounce.y && path.counters.z < params.bounce.z;
 }
 
+// A ray's bounces and shadow rays go on at its time.
+float rayTime(uint index)
+{
+    return rays[kRayTime * params.count + index];
+}
+
 void writeContinuation(uint index, float3 origin, float3 direction, float tMax, PathState path)
 {
     const uint n = params.count;
@@ -158,6 +166,7 @@ void writeContinuation(uint index, float3 origin, float3 direction, float tMax, 
     nextRays[kRayDirectionZ * n + index] = direction.z;
     nextRays[kRayTMin * n + index] = 0.0;
     nextRays[kRayTMax * n + index] = tMax;
+    nextRays[kRayTime * n + index] = rayTime(index);
     nextPaths[index] = path;
 }
 
@@ -188,6 +197,7 @@ void writeShadowRay(uint slot, uint light, float3 origin, float3 direction, floa
     shadowRays[kRayDirectionZ * n + slot] = direction.z;
     shadowRays[kRayTMin * n + slot] = 0.0;
     shadowRays[kRayTMax * n + slot] = tMax;
+    shadowRays[kRayTime * n + slot] = rayTime(slot % params.count);
     shadowContributions[slot] = float4(contribution, 0.0);
     shadowLights[slot] = light;
 }
@@ -458,16 +468,13 @@ void utilityShadeSurface(uint3 id : SV_DispatchThreadID)
     const float3 direction = float3(rays[kRayDirectionX * count + id.x], rays[kRayDirectionY * count + id.x], rays[kRayDirectionZ * count + id.x]);
     const float3 worldPosition = origin + t * direction;
 
-    const uint row = instance * kInstanceTransformRows;
-    const float4 o0 = instanceTransforms[row];
-    const float4 o1 = instanceTransforms[row + 1];
-    const float4 o2 = instanceTransforms[row + 2];
-    const float4 o3 = instanceTransforms[row + 3];
+    const float time = rayTime(id.x);
+    const InstanceFrame frame = instanceFrame(instanceTransforms, instanceMotion, motionRows, instance, time);
     float3 p0;
     float3 p1;
     float3 p2;
 
-    triangleCorners(points, triangles, geometry, primitive, o0, o1, o2, o3, p0, p1, p2);
+    triangleCorners(points, triangles, geometry, primitive, time, frame.o0, frame.o1, frame.o2, frame.o3, p0, p1, p2);
 
     const float3 outward = normalize(cross(p1 - p0, p2 - p0));
     const float alongRay = t / rays[kRayTMax * count + id.x];
@@ -478,14 +485,10 @@ void utilityShadeSurface(uint3 id : SV_DispatchThreadID)
     float4 shaded = kUnsupportedColor;
 
     if (material.kind.x == kMaterialProject3D) {
-        const float4 w0 = instanceTransforms[row + 4];
-        const float4 w1 = instanceTransforms[row + 5];
-        const float4 w2 = instanceTransforms[row + 6];
-        const float4 w3 = instanceTransforms[row + 7];
 
         writeNoShadows(id.x);
         endPath(id.x, path);
-        if (!evaluateProject3D(projections[material.kind.y], textureBindings, images, texels, worldPosition, outward, direction, width, o0, o1, o2, o3, w0, w1, w2, w3, shaded)) {
+        if (!evaluateProject3D(projections[material.kind.y], textureBindings, images, texels, worldPosition, outward, direction, width, frame.o0, frame.o1, frame.o2, frame.o3, frame.w0, frame.w1, frame.w2, frame.w3, shaded)) {
             if (writesAovs)
                 writeBackground(id.x, path);
             return;
@@ -524,8 +527,7 @@ void utilityShadeSurface(uint3 id : SV_DispatchThreadID)
         }
 
         const float3 geometric = dot(outward, direction) > 0.0 ? -outward : outward;
-        const float3 smooth = shadingNormal(surfaceNormal(normals, triangles, geometry, primitive, u, v),
-                                            instanceTransforms[row + 4], instanceTransforms[row + 5], instanceTransforms[row + 6], geometric);
+        const float3 smooth = shadingNormal(surfaceNormal(normals, triangles, geometry, primitive, u, v, time), frame.w0, frame.w1, frame.w2, geometric);
         const float3 normalConstant = float3(material.diffuseColor.w, material.emissiveColor.w, material.coverage.w);
         const float3 tangentNormal = colorInput(material, kSlotNormal, normalConstant, hasSt, st, footprint);
         const float3 normal = applyNormalMap(smooth, tangentNormal, p1 - p0, p2 - p0, st1 - st0, st2 - st0);

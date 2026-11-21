@@ -360,22 +360,6 @@ UtilityRenderParam::setSampleProgress(std::size_t done,
 }
 
 void
-UtilityRenderParam::setBucketSeconds(const std::vector<double>& seconds)
-{
-    const std::lock_guard<std::mutex> l(_reportMutex);
-
-    _bucketSeconds = seconds;
-}
-
-std::vector<double>
-UtilityRenderParam::bucketSeconds() const
-{
-    const std::lock_guard<std::mutex> l(_reportMutex);
-
-    return _bucketSeconds;
-}
-
-void
 UtilityRenderParam::sampleProgress(std::size_t* done,
                                    std::size_t* wanted) const
 {
@@ -824,10 +808,6 @@ UtilityRenderDelegate::GetRenderStats() const
     _renderParam->sampleProgress(&samples, &samplesWanted);
     dictionary[kUtilityStatSamples] = VtValue(samples);
     dictionary[kUtilityStatSamplesWanted] = VtValue(samplesWanted);
-
-    const std::vector<double> buckets = _renderParam->bucketSeconds();
-
-    dictionary[kUtilityStatBucketSeconds] = VtValue(VtDoubleArray(buckets.begin(), buckets.end()));
 
     std::string motionWarning;
 

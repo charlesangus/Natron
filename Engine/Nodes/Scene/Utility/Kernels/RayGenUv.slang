@@ -135,6 +135,7 @@ void utilityRayGenUv(uint3 id : SV_DispatchThreadID)
     rays[kRayDirectionZ * count + id.x] = direction.z;
     rays[kRayTMin * count + id.x] = covered ? 0.0 : 1.0;
     rays[kRayTMax * count + id.x] = covered ? reach : 0.0;
+    rays[kRayTime * count + id.x] = 0.5;
     hitValues[kHitT * count + id.x] = covered ? reach : 1.0 / 0.0;
     hitValues[kHitU * count + id.x] = barycentrics.x;
     hitValues[kHitV * count + id.x] = barycentrics.y;

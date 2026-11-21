@@ -57,6 +57,8 @@ property Float4Table instanceTransforms { get { return Float4Table(tableAddresse
 property Float2Table sts { get { return Float2Table(tableAddresses[kTableSts]); } }
 property UintTable linkMasks { get { return UintTable(tableAddresses[kTableLinkMasks]); } }
 property Float4Table texels { get { return Float4Table(tableAddresses[kTableTexels]); } }
+property UintTable instanceMotion { get { return UintTable(tableAddresses[kTableInstanceMotion]); } }
+property Float4Table motionRows { get { return Float4Table(tableAddresses[kTableMotionRows]); } }
 
 float rayValue(uint array, uint ray)
 {
@@ -71,6 +73,7 @@ void copyRay(uint ray, float tMin, float tMax)
         retrace[a * count + ray] = rays[a * count + ray];
     retrace[kRayTMin * count + ray] = tMin;
     retrace[kRayTMax * count + ray] = tMax;
+    retrace[kRayTime * count + ray] = rays[kRayTime * count + ray];
 }
 
 void writeMiss(uint ray)
@@ -116,9 +119,9 @@ bool passesThrough(uint ray, uint geometryIndex)
     if ((params.flags & kResolveShadow) == 0)
         width = lerp(params.pixelFootprint.x, params.pixelFootprint.y, t / rayValue(kRayTMax, ray));
 
-    return surfaceAbsent(colors, triangles, points, instanceTransforms, sts, textureBindings, images, texels, projections, geometry, material,
+    return surfaceAbsent(colors, triangles, points, instanceTransforms, instanceMotion, motionRows, sts, textureBindings, images, texels, projections, geometry, material,
                          instance, hitIds[kHitPrimitive * count + ray], hitSurface[kHitU * count + ray], hitSurface[kHitV * count + ray],
-                         origin + t * direction, direction, width);
+                         origin + t * direction, direction, width, rayValue(kRayTime, ray));
 }
 
 // For a shadow ray, whether its hit lets some of the light through, which then dims its contribution.

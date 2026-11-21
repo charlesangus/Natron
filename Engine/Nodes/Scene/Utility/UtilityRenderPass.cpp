@@ -664,15 +664,9 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
         try {
             AovFilm film(frameBindings);
             const auto drawSamples = [&](WavefrontExecutor& executor) {
-                std::vector<double> bucketSeconds;
-
                 _renderParam->setSampleProgress(0, samplesWanted);
 
-                const bool drawn = wavefrontDrawSamples(executor, *snapshot, frame, motion, film, cancel, threads, [this, samplesWanted](std::size_t done) { _renderParam->setSampleProgress(done, samplesWanted); }, &bucketSeconds);
-
-                _renderParam->setBucketSeconds(bucketSeconds);
-
-                return drawn;
+                return wavefrontDrawSamples(executor, *snapshot, frame, motion, film, cancel, threads, [this, samplesWanted](std::size_t done) { _renderParam->setSampleProgress(done, samplesWanted); });
             };
             std::string renderedOn = "CPU";
             std::string warning;

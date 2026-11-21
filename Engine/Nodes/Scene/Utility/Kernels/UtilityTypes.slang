@@ -1,7 +1,7 @@
 module UtilityTypes;
 
-// A batch of N rays is one float buffer holding eight arrays of N values, in this order. Tracer::RayBatch
-// addresses the same memory.
+// A batch of N rays is one float buffer holding nine arrays of N values, in this order. Tracer::RayBatch
+// addresses the same memory. A ray's time runs from 0 at the shutter's opening to 1 at its closing.
 public static const uint kRayOriginX = 0;
 public static const uint kRayOriginY = 1;
 public static const uint kRayOriginZ = 2;
@@ -10,7 +10,8 @@ public static const uint kRayDirectionY = 4;
 public static const uint kRayDirectionZ = 5;
 public static const uint kRayTMin = 6;
 public static const uint kRayTMax = 7;
-public static const uint kRayArrays = 8;
+public static const uint kRayTime = 8;
+public static const uint kRayArrays = 9;
 
 // Hits are two buffers of three arrays of N values each, as Tracer::HitBatch addresses them.
 public static const uint kHitT = 0;
@@ -78,7 +79,10 @@ public static const uint kTableNormals = 7;
 public static const uint kTableLightData = 8;
 public static const uint kTableLinkMasks = 9;
 public static const uint kTableTexels = 10;
-public static const uint kTableCount = 11;
+// Per instance, the first row of its steps in kTableMotionRows, or kNoMotion where it does not move.
+public static const uint kTableInstanceMotion = 11;
+public static const uint kTableMotionRows = 12;
+public static const uint kTableCount = 13;
 
 // UtilityScene::ColorBinding
 public static const uint kColorBindingConstant = 0;
@@ -109,6 +113,12 @@ public struct GeometryRecord
     public uint pointOffset;
     public uint normalOffset;
     public uint normalBinding;
+    // A deforming geometry holds its points, and its normals when they move with them, at each of
+    // pointSteps or normalSteps times, the stride apart; a still one has one step.
+    public uint pointSteps;
+    public uint pointStride;
+    public uint normalSteps;
+    public uint normalStride;
 };
 
 // UtilityMaterialDesc::Kind
@@ -230,6 +240,127 @@ public static const uint kInstanceTransformRows = 8;
 public float4 transformRow(float4 v, float4 r0, float4 r1, float4 r2, float4 r3)
 {
     return v.x * r0 + v.y * r1 + v.z * r2 + v.w * r3;
+}
+
+public static const uint kNoMotion = 0xffffffffu;
+
+// UtilityScene::Decomposition: column-vector M = T * R * U. A moving instance's steps lie in the motion rows
+// as kMotionRowsPerStep rows each: (U00, U01, U02, 0), (U11, U12, U22, 0), (T, 0), the quaternion (i, j, k, r).
+public static const uint kMotionRowsPerStep = 4;
+
+public struct MotionStep
+{
+    public float3 stretchTop;
+    public float3 stretchRest;
+    public float3 translation;
+    public float4 rotation;
+};
+
+// The span of steps time steps a time falls in and how far into it, as UtilityScene::stepAt() finds them.
+public void motionSpan(float time, uint steps, out uint span, out float fraction)
+{
+    const uint segments = max(steps, 2u) - 1u;
+    const float scaled = clamp(time, 0.0, 1.0) * float(segments);
+    span = min(uint(floor(scaled)), segments - 1u);
+    fraction = scaled - float(span);
+}
+
+public float4 slerpRotation(float4 a, float4 b, float u)
+{
+    float cosine = dot(a, b);
+    float4 to = b;
+    if (cosine < 0.0) {
+        to = -b;
+        cosine = -cosine;
+    }
+    if (cosine > 0.9995)
+        return normalize(lerp(a, to, u));
+    const float theta = acos(min(cosine, 1.0));
+    const float phi = u * theta;
+    return cos(phi) * a + sin(phi) * normalize(to - cosine * a);
+}
+
+public MotionStep blendSteps(MotionStep a, MotionStep b, float u)
+{
+    MotionStep out;
+    out.stretchTop = lerp(a.stretchTop, b.stretchTop, u);
+    out.stretchRest = lerp(a.stretchRest, b.stretchRest, u);
+    out.translation = lerp(a.translation, b.translation, u);
+    out.rotation = slerpRotation(a.rotation, b.rotation, u);
+    return out;
+}
+
+// The rotation's columns, in column vectors.
+public void rotationColumns(float4 q, out float3 c0, out float3 c1, out float3 c2)
+{
+    const float i = q.x;
+    const float j = q.y;
+    const float k = q.z;
+    const float r = q.w;
+    const float n = dot(q, q);
+    const float s = n > 0.0 ? 2.0 / n : 0.0;
+    c0 = float3(1.0 - s * (j * j + k * k), s * (i * j + k * r), s * (i * k - j * r));
+    c1 = float3(s * (i * j - k * r), 1.0 - s * (i * i + k * k), s * (j * k + i * r));
+    c2 = float3(s * (i * k + j * r), s * (j * k - i * r), 1.0 - s * (i * i + j * j));
+}
+
+/**
+ * The step's transform as the instance transform table holds one: o0 to o3 the rows of the row-vector
+ * object-to-world matrix, w0 to w3 those of its inverse. The column-vector linear part L = R * U has
+ * columns L_j = sum over x of U[x][j] * R_x, and row-vector rows that are those columns.
+ **/
+public void composeStep(MotionStep step, out float4 o0, out float4 o1, out float4 o2, out float4 o3,
+                        out float4 w0, out float4 w1, out float4 w2, out float4 w3)
+{
+    float3 r0;
+    float3 r1;
+    float3 r2;
+    rotationColumns(step.rotation, r0, r1, r2);
+    const float3 l0 = step.stretchTop.x * r0;
+    const float3 l1 = step.stretchTop.y * r0 + step.stretchRest.x * r1;
+    const float3 l2 = step.stretchTop.z * r0 + step.stretchRest.y * r1 + step.stretchRest.z * r2;
+    o0 = float4(l0, 0.0);
+    o1 = float4(l1, 0.0);
+    o2 = float4(l2, 0.0);
+    o3 = float4(step.translation, 1.0);
+    // The row-vector inverse's rows are the cofactor columns of the row-vector linear part over its
+    // determinant, whose rows are l0, l1 and l2.
+    const float3 c0 = cross(l1, l2);
+    const float3 c1 = cross(l2, l0);
+    const float3 c2 = cross(l0, l1);
+    const float determinant = dot(l0, c0);
+    const float scale = determinant != 0.0 ? 1.0 / determinant : 0.0;
+    const float3 i0 = float3(c0.x, c1.x, c2.x) * scale;
+    const float3 i1 = float3(c0.y, c1.y, c2.y) * scale;
+    const float3 i2 = float3(c0.z, c1.z, c2.z) * scale;
+    w0 = float4(i0, 0.0);
+    w1 = float4(i1, 0.0);
+    w2 = float4(i2, 0.0);
+    w3 = float4(-(step.translation.x * i0 + step.translation.y * i1 + step.translation.z * i2), 1.0);
+}
+
+public MotionStep readStep(Float4Table rows, uint first)
+{
+    MotionStep step;
+    const float4 a = rows[first];
+    const float4 b = rows[first + 1];
+    step.stretchTop = a.xyz;
+    step.stretchRest = b.xyz;
+    step.translation = rows[first + 2].xyz;
+    step.rotation = rows[first + 3];
+    return step;
+}
+
+// An instance's transform at a time, from the rows of its steps; the header row before them holds the
+// step count in x.
+public MotionStep stepAtTime(Float4Table rows, uint first, float time)
+{
+    const uint steps = asuint(rows[first].x);
+    uint span;
+    float fraction;
+    motionSpan(time, steps, span, fraction);
+    const uint at = first + 1 + span * kMotionRowsPerStep;
+    return blendSteps(readStep(rows, at), readStep(rows, at + kMotionRowsPerStep), fraction);
 }
 
 // UtilityLightDesc::Type

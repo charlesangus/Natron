@@ -27,11 +27,10 @@
 
 #include <algorithm>
 #include <atomic>
+#include <bit>
 #include <cmath>
 #include <set>
 
-#include <pxr/base/gf/matrix3d.h>
-#include <pxr/base/gf/quatd.h>
 #include <pxr/base/gf/vec3d.h>
 #include <pxr/base/tf/diagnostic.h>
 #include <pxr/base/tf/stringUtils.h>
@@ -46,15 +45,26 @@ NATRON_NAMESPACE_ENTER
 
 namespace {
 // Scene versions count up from 0, so these never meet one.
-const std::uint64_t kEvaluatedVersionBit = std::uint64_t(1) << 63;
-std::atomic<std::uint64_t> gEvaluatedVersions(0);
-// Points interpolated between looks at the stop flag.
+const std::uint64_t kShutterVersionBit = std::uint64_t(1) << 63;
+// Points sampled between looks at the stop flag.
 const std::size_t kEvaluateChunk = std::size_t(1) << 16;
 
-GfMatrix3d
-upperLeft(const GfMatrix4d& m)
+std::uint64_t
+mixVersion(std::uint64_t seed,
+           std::uint64_t value)
 {
-    return GfMatrix3d(m[0][0], m[0][1], m[0][2], m[1][0], m[1][1], m[1][2], m[2][0], m[2][1], m[2][2]);
+    std::uint64_t z = seed ^ (value + 0x9e3779b97f4a7c15ull + (seed << 6) + (seed >> 2));
+
+    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ull;
+    z = (z ^ (z >> 27)) * 0x94d049bb133111ebull;
+
+    return z ^ (z >> 31);
+}
+
+std::uint64_t
+bitsOf(double value)
+{
+    return std::bit_cast<std::uint64_t>(value);
 }
 
 // The sample before time and how far time is towards the next, clamped to the samples' span.
@@ -595,28 +605,47 @@ UtilityScene::moves(const Snapshot& snapshot)
 }
 
 UtilityScene::Snapshot
-UtilityScene::evaluateAt(const Snapshot& snapshot,
-                         double time)
+UtilityScene::atShutter(const Snapshot& snapshot,
+                        double open,
+                        double close,
+                        int segments)
 {
     const std::atomic<bool> never(false);
     Snapshot out;
 
-    (void)evaluateAt(snapshot, time, never, &out);
+    (void)atShutter(snapshot, open, close, segments, never, &out);
 
     return out;
 }
 
 bool
-UtilityScene::evaluateAt(const Snapshot& snapshot,
-                         double time,
-                         const std::atomic<bool>& stop,
-                         Snapshot* evaluated)
+UtilityScene::atShutter(const Snapshot& snapshot,
+                        double open,
+                        double close,
+                        int segments,
+                        const std::atomic<bool>& stop,
+                        Snapshot* atShutter)
 {
     const auto stopped = [&stop]() { return stop.load(std::memory_order_relaxed); };
-    Snapshot& out = *evaluated;
+    Snapshot& out = *atShutter;
 
     out = snapshot;
-    out.version = kEvaluatedVersionBit | ++gEvaluatedVersions;
+    out.timeSteps = 1;
+    out.shutterOpen = open;
+    out.shutterClose = close;
+    if (!(close > open) || segments < 1 || !moves(snapshot)) {
+        return true;
+    }
+
+    const int steps = segments + 1;
+    const std::uint64_t shutterKey = mixVersion(mixVersion(mixVersion(0, bitsOf(open)), bitsOf(close)), static_cast<std::uint64_t>(segments));
+    std::vector<double> times(static_cast<std::size_t>(steps));
+
+    for (int k = 0; k < steps; ++k) {
+        times[static_cast<std::size_t>(k)] = open + (close - open) * k / segments;
+    }
+    out.timeSteps = steps;
+    out.version = kShutterVersionBit | (mixVersion(snapshot.version, shutterKey) & ~kShutterVersionBit);
     for (auto& entry : out.geometries) {
         if (stopped()) {
             return false;
@@ -629,59 +658,72 @@ UtilityScene::evaluateAt(const Snapshot& snapshot,
         }
         const std::shared_ptr<const PointMotion> held = geometry.pointMotion;
         const PointMotion& motion = *held;
-        std::size_t index = 0;
 
         geometry.pointMotion.reset();
         if (motion.points.empty() || motion.points.size() != motion.times.size()) {
             continue;
         }
-        double u = 0.;
 
-        locate(motion.times, time, &index, &u);
+        bool sized = true;
 
-        const VtVec3fArray& a = motion.points[index];
-        const VtVec3fArray& b = motion.points[std::min(index + 1, motion.points.size() - 1)];
-
-        if (a.size() != geometry.points.size() || b.size() != geometry.points.size()) {
+        for (const VtVec3fArray& sample : motion.points) {
+            sized = sized && sample.size() == geometry.points.size();
+        }
+        if (!sized) {
             continue;
         }
-        VtVec3fArray points(a.size());
-        GfVec3f* written = points.data();
-        const float weight = static_cast<float>(u);
+        const bool withNormals = motion.normals.size() == motion.times.size() && geometry.normalBinding == eColorBindingVertex
+            && std::all_of(motion.normals.begin(), motion.normals.end(), [&](const VtVec3fArray& n) { return n.size() == geometry.normals.size(); });
 
-        for (std::size_t i = 0; i < a.size(); ++i) {
-            if (i % kEvaluateChunk == 0 && stopped()) {
-                return false;
+        geometry.pointSteps.resize(static_cast<std::size_t>(steps));
+        if (withNormals) {
+            geometry.normalSteps.resize(static_cast<std::size_t>(steps));
+        }
+        for (int k = 0; k < steps; ++k) {
+            std::size_t index = 0;
+            double u = 0.;
+
+            locate(motion.times, times[static_cast<std::size_t>(k)], &index, &u);
+
+            const std::size_t next = std::min(index + 1, motion.points.size() - 1);
+            const VtVec3fArray& a = motion.points[index];
+            const VtVec3fArray& b = motion.points[next];
+            VtVec3fArray points(a.size());
+            GfVec3f* written = points.data();
+            const float weight = static_cast<float>(u);
+
+            for (std::size_t i = 0; i < a.size(); ++i) {
+                if (i % kEvaluateChunk == 0 && stopped()) {
+                    return false;
+                }
+                written[i] = a.cdata()[i] + (b.cdata()[i] - a.cdata()[i]) * weight;
             }
-            written[i] = a.cdata()[i] + (b.cdata()[i] - a.cdata()[i]) * weight;
-        }
-        geometry.points = points;
-        geometry.pointsVersion = out.version;
-        if (motion.normals.size() != motion.times.size() || geometry.normalBinding != eColorBindingVertex) {
-            continue;
-        }
-
-        const VtVec3fArray& na = motion.normals[index];
-        const VtVec3fArray& nb = motion.normals[std::min(index + 1, motion.normals.size() - 1)];
-
-        if (na.size() != geometry.normals.size() || nb.size() != geometry.normals.size()) {
-            continue;
-        }
-        VtVec3fArray normals(na.size());
-        GfVec3f* blended = normals.data();
-
-        for (std::size_t i = 0; i < na.size(); ++i) {
-            if (i % kEvaluateChunk == 0 && stopped()) {
-                return false;
+            geometry.pointSteps[static_cast<std::size_t>(k)] = points;
+            if (!withNormals) {
+                continue;
             }
 
-            const GfVec3f n = na.cdata()[i] + (nb.cdata()[i] - na.cdata()[i]) * weight;
-            const float length = n.GetLength();
+            const VtVec3fArray& na = motion.normals[index];
+            const VtVec3fArray& nb = motion.normals[next];
+            VtVec3fArray normals(na.size());
+            GfVec3f* blended = normals.data();
 
-            blended[i] = length > 0.f && std::isfinite(length) ? n / length : GfVec3f(0.f);
+            for (std::size_t i = 0; i < na.size(); ++i) {
+                if (i % kEvaluateChunk == 0 && stopped()) {
+                    return false;
+                }
+
+                const GfVec3f n = na.cdata()[i] + (nb.cdata()[i] - na.cdata()[i]) * weight;
+                const float length = n.GetLength();
+
+                blended[i] = length > 0.f && std::isfinite(length) ? n / length : GfVec3f(0.f);
+            }
+            geometry.normalSteps[static_cast<std::size_t>(k)] = normals;
         }
-        geometry.normals = normals;
-        geometry.normalsVersion = out.version;
+        geometry.pointsVersion = kShutterVersionBit | (mixVersion(geometry.pointsVersion, shutterKey) & ~kShutterVersionBit);
+        if (withNormals) {
+            geometry.normalsVersion = kShutterVersionBit | (mixVersion(geometry.normalsVersion, shutterKey) & ~kShutterVersionBit);
+        }
     }
     for (std::size_t i = 0; i < out.instances.size(); ++i) {
         Instance& instance = out.instances[i];
@@ -694,25 +736,220 @@ UtilityScene::evaluateAt(const Snapshot& snapshot,
         }
         const std::shared_ptr<const TransformMotion> held = instance.motion;
         const TransformMotion& motion = *held;
+        const std::size_t which = static_cast<std::size_t>(instance.instanceIndex);
 
         instance.motion.reset();
-        if (motion.transforms.empty() || motion.transforms.size() != motion.times.size()) {
+        if (motion.transforms.empty() || motion.transforms.size() != motion.times.size()
+            || !std::all_of(motion.transforms.begin(), motion.transforms.end(), [which](const std::vector<GfMatrix4d>& t) { return which < t.size(); })) {
             continue;
         }
-        const std::size_t which = static_cast<std::size_t>(instance.instanceIndex);
-        std::size_t index = 0;
-        double u = 0.;
+        instance.transformSteps.resize(static_cast<std::size_t>(steps));
+        for (int k = 0; k < steps; ++k) {
+            std::size_t index = 0;
+            double u = 0.;
 
-        locate(motion.times, time, &index, &u);
+            locate(motion.times, times[static_cast<std::size_t>(k)], &index, &u);
 
-        const std::size_t next = std::min(index + 1, motion.transforms.size() - 1);
+            const std::size_t next = std::min(index + 1, motion.transforms.size() - 1);
+            const Decomposition a = decompose(motion.transforms[index][which]);
+            Decomposition step = u > 0. ? blend(a, decompose(motion.transforms[next][which]), u) : a;
 
-        if (which < motion.transforms[index].size() && which < motion.transforms[next].size()) {
-            instance.transform = interpolate(motion.transforms[index][which], motion.transforms[next][which], u);
+            if (k > 0 && GfDot(step.rotation, instance.transformSteps[static_cast<std::size_t>(k - 1)].rotation) < 0.) {
+                step.rotation = -step.rotation;
+            }
+            instance.transformSteps[static_cast<std::size_t>(k)] = step;
         }
     }
 
     return true;
+}
+
+void
+UtilityScene::stepAt(double time,
+                     int steps,
+                     int* span,
+                     double* fraction)
+{
+    const int segments = std::max(1, steps - 1);
+    const double scaled = std::min(std::max(time, 0.), 1.) * segments;
+    const int s = std::min(static_cast<int>(std::floor(scaled)), segments - 1);
+
+    *span = s;
+    *fraction = scaled - s;
+}
+
+UtilityScene::Decomposition
+UtilityScene::decompose(const GfMatrix4d& m)
+{
+    Decomposition d;
+
+    d.translation = GfVec3d(m[3][0], m[3][1], m[3][2]);
+
+    // Row vectors: m's row j is column j of the column-vector form, which Gram-Schmidt factors as R * U.
+    const GfVec3d columns[3] = { GfVec3d(m[0][0], m[0][1], m[0][2]), GfVec3d(m[1][0], m[1][1], m[1][2]), GfVec3d(m[2][0], m[2][1], m[2][2]) };
+    const double largest = std::max({ columns[0].GetLength(), columns[1].GetLength(), columns[2].GetLength() });
+    GfVec3d q[3];
+    double u[3][3] = { { 0., 0., 0. }, { 0., 0., 0. }, { 0., 0., 0. } };
+
+    for (int j = 0; j < 3; ++j) {
+        GfVec3d v = columns[j];
+
+        for (int k = 0; k < j; ++k) {
+            u[k][j] = GfDot(q[k], columns[j]);
+            v -= u[k][j] * q[k];
+        }
+
+        const double length = v.GetLength();
+
+        if (length > 1e-12 * largest && std::isfinite(length)) {
+            q[j] = v / length;
+            u[j][j] = length;
+            continue;
+        }
+        // A flattened axis keeps a rotation by completing the basis.
+        if (j == 2) {
+            q[2] = GfCross(q[0], q[1]);
+            continue;
+        }
+        GfVec3d axis(1., 0., 0.);
+
+        if (j == 1) {
+            const GfVec3d candidates[3] = { GfVec3d(1., 0., 0.), GfVec3d(0., 1., 0.), GfVec3d(0., 0., 1.) };
+
+            for (const GfVec3d& c : candidates) {
+                if (std::abs(GfDot(c, q[0])) < std::abs(GfDot(axis, q[0]))) {
+                    axis = c;
+                }
+            }
+            axis -= GfDot(axis, q[0]) * q[0];
+            axis.Normalize();
+        }
+        q[j] = axis;
+    }
+    if (GfDot(GfCross(q[0], q[1]), q[2]) < 0.) {
+        q[2] = -q[2];
+        u[2][2] = -u[2][2];
+    }
+
+    // R's column j is q[j], so R[i][j] = q[j][i].
+    const double r00 = q[0][0], r11 = q[1][1], r22 = q[2][2];
+    const double r21 = q[1][2], r12 = q[2][1], r02 = q[2][0], r20 = q[0][2], r10 = q[0][1], r01 = q[1][0];
+    const double trace = r00 + r11 + r22;
+    GfVec4d quat;
+
+    if (trace > 0.) {
+        const double s = std::sqrt(trace + 1.) * 2.;
+
+        quat = GfVec4d(0.25 * s, (r21 - r12) / s, (r02 - r20) / s, (r10 - r01) / s);
+    } else if (r00 > r11 && r00 > r22) {
+        const double s = std::sqrt(1. + r00 - r11 - r22) * 2.;
+
+        quat = GfVec4d((r21 - r12) / s, 0.25 * s, (r01 + r10) / s, (r02 + r20) / s);
+    } else if (r11 > r22) {
+        const double s = std::sqrt(1. + r11 - r00 - r22) * 2.;
+
+        quat = GfVec4d((r02 - r20) / s, (r01 + r10) / s, 0.25 * s, (r12 + r21) / s);
+    } else {
+        const double s = std::sqrt(1. + r22 - r00 - r11) * 2.;
+
+        quat = GfVec4d((r10 - r01) / s, (r02 + r20) / s, (r12 + r21) / s, 0.25 * s);
+    }
+    d.rotation = quat.GetNormalized();
+    d.stretch[0] = u[0][0];
+    d.stretch[1] = u[0][1];
+    d.stretch[2] = u[0][2];
+    d.stretch[3] = u[1][1];
+    d.stretch[4] = u[1][2];
+    d.stretch[5] = u[2][2];
+
+    return d;
+}
+
+GfMatrix4d
+UtilityScene::compose(const Decomposition& d)
+{
+    const double r = d.rotation[0], i = d.rotation[1], j = d.rotation[2], k = d.rotation[3];
+    const double n = r * r + i * i + j * j + k * k;
+    const double s = n > 0. ? 2. / n : 0.;
+    const double rotation[3][3] = {
+        { 1. - s * (j * j + k * k), s * (i * j - k * r), s * (i * k + j * r) },
+        { s * (i * j + k * r), 1. - s * (i * i + k * k), s * (j * k - i * r) },
+        { s * (i * k - j * r), s * (j * k + i * r), 1. - s * (i * i + j * j) },
+    };
+    const double stretch[3][3] = {
+        { d.stretch[0], d.stretch[1], d.stretch[2] },
+        { 0., d.stretch[3], d.stretch[4] },
+        { 0., 0., d.stretch[5] },
+    };
+    GfMatrix4d m(1.);
+
+    // The column-vector product's entry (row, column) is m[column][row] in row vectors.
+    for (int row = 0; row < 3; ++row) {
+        for (int column = 0; column < 3; ++column) {
+            double sum = 0.;
+
+            for (int x = 0; x < 3; ++x) {
+                sum += rotation[row][x] * stretch[x][column];
+            }
+            m[column][row] = sum;
+        }
+        m[row][3] = 0.;
+        m[3][row] = d.translation[row];
+    }
+
+    return m;
+}
+
+UtilityScene::Decomposition
+UtilityScene::blend(const Decomposition& a,
+                    const Decomposition& b,
+                    double u)
+{
+    Decomposition out;
+    GfVec4d to = b.rotation;
+    double cosine = GfDot(a.rotation, to);
+
+    if (cosine < 0.) {
+        to = -to;
+        cosine = -cosine;
+    }
+    out.translation = a.translation * (1. - u) + b.translation * u;
+    for (int i = 0; i < 6; ++i) {
+        out.stretch[i] = a.stretch[i] * (1. - u) + b.stretch[i] * u;
+    }
+    // Nearly parallel rotations lose slerp's precision in its sine, so they blend linearly as Embree's do.
+    if (cosine > 0.9995) {
+        out.rotation = (a.rotation * (1. - u) + to * u).GetNormalized();
+
+        return out;
+    }
+
+    const double theta = std::acos(std::min(cosine, 1.));
+    const double phi = u * theta;
+    const GfVec4d perpendicular = (to - cosine * a.rotation).GetNormalized();
+
+    out.rotation = std::cos(phi) * a.rotation + std::sin(phi) * perpendicular;
+
+    return out;
+}
+
+GfMatrix4d
+UtilityScene::transformAt(const Instance& instance,
+                          double time)
+{
+    if (instance.transformSteps.empty()) {
+        return instance.transform;
+    }
+    if (instance.transformSteps.size() == 1) {
+        return compose(instance.transformSteps.front());
+    }
+
+    int span = 0;
+    double fraction = 0.;
+
+    stepAt(time, static_cast<int>(instance.transformSteps.size()), &span, &fraction);
+
+    return compose(blend(instance.transformSteps[static_cast<std::size_t>(span)], instance.transformSteps[static_cast<std::size_t>(span) + 1], fraction));
 }
 
 GfMatrix4d
@@ -726,25 +963,8 @@ UtilityScene::interpolate(const GfMatrix4d& a,
     if (u >= 1.) {
         return b;
     }
-    const GfMatrix4d rotationA = a.RemoveScaleShear();
-    const GfMatrix4d rotationB = b.RemoveScaleShear();
-    // Row vectors: the upper left is the stretch then the rotation.
-    const GfMatrix3d stretchA = upperLeft(a) * upperLeft(rotationA).GetTranspose();
-    const GfMatrix3d stretchB = upperLeft(b) * upperLeft(rotationB).GetTranspose();
-    const GfQuatd from = rotationA.ExtractRotationQuat();
-    GfQuatd to = rotationB.ExtractRotationQuat();
 
-    if (GfDot(from, to) < 0.) {
-        to = to * -1.;
-    }
-    GfMatrix3d rotation(1.);
-
-    rotation.SetRotate(GfSlerp(u, from, to));
-
-    const GfMatrix3d stretch = stretchA * (1. - u) + stretchB * u;
-    const GfVec3d translation = a.ExtractTranslation() * (1. - u) + b.ExtractTranslation() * u;
-
-    return GfMatrix4d(stretch * rotation, translation);
+    return compose(blend(decompose(a), decompose(b), u));
 }
 
 NATRON_NAMESPACE_EXIT

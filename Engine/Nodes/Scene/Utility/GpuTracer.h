@@ -129,6 +129,10 @@ public:
     // The top-level structures the last update split the scene's instances over.
     std::size_t instanceStructureCount() const;
 
+    // The structures of boxes the last update swept the moving and deforming instances into, one per shutter
+    // segment: none when nothing moves.
+    std::size_t moverStructureCount() const;
+
     // The kernels the record functions dispatch; empty when the tracer cannot run.
     std::vector<std::shared_ptr<gpu::GpuKernel>> kernels() const;
 

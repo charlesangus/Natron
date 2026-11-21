@@ -240,7 +240,7 @@ struct ProjectedCard {
         const double t = -origin[2] / direction[2];
         const std::vector<float> rays = { (float)origin[0], (float)origin[1], (float)origin[2],
                                           (float)direction[0], (float)direction[1], (float)direction[2],
-                                          0.f, (float)(2. * t) };
+                                          0.f, (float)(2. * t), 0.5f };
         const std::vector<float> hitSurface = { (float)t, 0.25f, 0.25f };
         const std::vector<std::uint32_t> hitIds = { 0u, 0u, 0u };
         float color[4] = { -1.f, -1.f, -1.f, -1.f };

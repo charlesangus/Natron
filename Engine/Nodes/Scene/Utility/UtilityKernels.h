@@ -153,6 +153,10 @@ struct KernelGeometryRecord {
     std::uint32_t pointOffset;
     std::uint32_t normalOffset;
     std::uint32_t normalBinding;
+    std::uint32_t pointSteps;
+    std::uint32_t pointStride;
+    std::uint32_t normalSteps;
+    std::uint32_t normalStride;
 };
 
 const std::uint32_t kKernelStBindingNone = 0xffffffffu;
@@ -214,8 +218,19 @@ enum KernelTableSlot : std::uint32_t {
     eKernelTableLightData = 8,
     eKernelTableLinkMasks = 9,
     eKernelTableTexels = 10,
-    eKernelTableCount = 11,
+    eKernelTableInstanceMotion = 11,
+    eKernelTableMotionRows = 12,
+    eKernelTableCount = 13,
 };
+
+// kRayArrays in Kernels/UtilityTypes.slang: the float arrays of a ray batch.
+const std::size_t kKernelRayArrays = 9;
+// kNoMotion and kMotionRowsPerStep in Kernels/UtilityTypes.slang.
+const std::uint32_t kKernelNoMotion = 0xffffffffu;
+const std::uint32_t kKernelMotionRowsPerStep = 4;
+// kCameraRowsPerStep in Kernels/RayGen.slang: a moving camera's frustum in its view space, six rows, then
+// its view-to-world transform as kKernelMotionRowsPerStep motion rows.
+const std::uint32_t kKernelCameraRowsPerStep = 6 + kKernelMotionRowsPerStep;
 
 // Mirrors the address of DeviceTable in Kernels/UtilityTypes.slang: a device address on the GPU, a host
 // pointer in the C++ build.
@@ -269,7 +284,11 @@ struct KernelShadeBuffers {
     std::size_t lightDataCount = 0;
     const std::uint32_t* linkMasks = nullptr; // two masks of lighting[2] words per instance
     std::size_t linkMaskCount = 0;
-    // lighting[1] shadow rays per hit, light-major: rays in the eight-array layout, a contribution of
+    const std::uint32_t* instanceMotion = nullptr; // one per instance
+    std::size_t instanceMotionCount = 0;
+    const float* motionRows = nullptr; // four per row
+    std::size_t motionRowCount = 0;
+    // lighting[1] shadow rays per hit, light-major: rays in the nine-array layout, a contribution of
     // four floats and the light index of each.
     float* shadowRays = nullptr;
     float* shadowContributions = nullptr;
@@ -277,7 +296,7 @@ struct KernelShadeBuffers {
     const float* normals = nullptr; // four per value
     std::size_t normalCount = 0;
     // Past the first bounce, each ray's path; when a bounce follows, each ray's continuation in the
-    // eight-array layout and its path.
+    // nine-array layout and its path.
     const KernelPathState* paths = nullptr;
     float* nextRays = nullptr;
     KernelPathState* nextPaths = nullptr;
@@ -285,12 +304,12 @@ struct KernelShadeBuffers {
 
 // The per-batch buffers ResolveHits reads and writes besides the scene's tables, count rays each.
 struct KernelResolveBuffers {
-    const float* rays = nullptr; // eight arrays
+    const float* rays = nullptr; // nine arrays
     float* hitSurface = nullptr; // three arrays
     std::uint32_t* hitIds = nullptr; // three arrays
     const float* nextHitSurface = nullptr;
     const std::uint32_t* nextHitIds = nullptr;
-    float* retrace = nullptr; // eight arrays
+    float* retrace = nullptr; // nine arrays
     // Shadow rays only: the verdict, the light of each ray, and its contribution of four floats, which
     // transmissive surfaces dim.
     std::uint32_t* blocked = nullptr;
@@ -300,12 +319,15 @@ struct KernelResolveBuffers {
 
 /**
  * @brief Runs the C++ build of RayGen.slang for one tile, writing tileWidth * tileHeight rays in the
- * eight-array layout of Kernels/UtilityTypes.slang, and when weights is not null each ray's filter
- * weight. MT-safe.
+ * nine-array layout of Kernels/UtilityTypes.slang, and when weights is not null each ray's filter
+ * weight. cameraSteps holds a moving camera's steps as RayGen.slang's cameraSteps binding lays them
+ * out, cameraStepRows rows of four; without them the camera is params' frustum. MT-safe.
  **/
 void runRayGenKernel(const KernelRayGenParams& params,
                      float* rays,
-                     float* weights = nullptr);
+                     float* weights = nullptr,
+                     const float* cameraSteps = nullptr,
+                     std::size_t cameraStepRows = 0);
 
 /**
  * @brief Runs the C++ build of RayGenUv.slang for one tile, as runRayGenKernel() does, reading a

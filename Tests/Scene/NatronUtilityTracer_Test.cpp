@@ -92,7 +92,8 @@ public:
     void add(float x,
              float y,
              float tMin = 0.f,
-             float tMax = 100.f)
+             float tMax = 100.f,
+             float time = 0.5f)
     {
         _originX.push_back(x);
         _originY.push_back(y);
@@ -102,6 +103,7 @@ public:
         _directionZ.push_back(-1.f);
         _tMin.push_back(tMin);
         _tMax.push_back(tMax);
+        _time.push_back(time);
     }
 
     Tracer::RayBatch batch() const
@@ -116,6 +118,7 @@ public:
         rays.directionZ = _directionZ.data();
         rays.tMin = _tMin.data();
         rays.tMax = _tMax.data();
+        rays.time = _time.data();
         rays.count = _originX.size();
 
         return rays;
@@ -124,7 +127,7 @@ public:
 private:
     std::vector<float> _originX, _originY, _originZ;
     std::vector<float> _directionX, _directionY, _directionZ;
-    std::vector<float> _tMin, _tMax;
+    std::vector<float> _tMin, _tMax, _time;
 };
 
 struct Hits {
@@ -158,11 +161,12 @@ struct Hits {
 Hits
 shootAt(const Tracer& tracer,
         float x,
-        float y)
+        float y,
+        float time = 0.5f)
 {
     Rays rays;
 
-    rays.add(x, y);
+    rays.add(x, y, 0.f, 100.f, time);
 
     return Hits(rays, tracer);
 }
@@ -188,6 +192,31 @@ translation(double x,
     matrix.SetTranslate(GfVec3d(x, y, z));
 
     return matrix;
+}
+
+GfMatrix4d
+spin(double degrees)
+{
+    GfMatrix4d matrix(1.);
+
+    matrix.SetRotate(GfRotation(GfVec3d(0., 0., 1.), degrees));
+
+    return matrix;
+}
+
+// The instance's transforms at the shutter's open and close, over a shutter from 0 to 1.
+void
+moveInstance(UtilityScene& scene,
+             UtilityScene::GeometryId id,
+             const GfMatrix4d& open,
+             const GfMatrix4d& close)
+{
+    std::shared_ptr<UtilityScene::TransformMotion> motion = std::make_shared<UtilityScene::TransformMotion>();
+
+    motion->times = { 0., 1. };
+    motion->transforms = { { open }, { close } };
+    scene.setInstances(id, { open });
+    scene.setTransformMotion(id, motion);
 }
 
 // Each test runs against every backend; the GPU one skips, naming what is missing, on a device that
@@ -260,7 +289,7 @@ protected:
 
 #ifdef NATRON_HAVE_GPU
     // Null off the GPU backend or when it is unavailable.
-    std::shared_ptr<GpuTracer> makeSplitTracer(std::size_t instancesPerStructure)
+    std::shared_ptr<GpuTracer> makeGpuTracer()
     {
         if (!_available || GetParam() != Backend::Gpu) {
             return nullptr;
@@ -268,8 +297,18 @@ protected:
 
         const std::shared_ptr<GpuTracer> tracer = std::make_shared<GpuTracer>(*_registry, *_pool);
 
-        tracer->limitInstancesPerStructure(instancesPerStructure);
         _gpuTracers.push_back(tracer);
+
+        return tracer;
+    }
+
+    std::shared_ptr<GpuTracer> makeSplitTracer(std::size_t instancesPerStructure)
+    {
+        const std::shared_ptr<GpuTracer> tracer = makeGpuTracer();
+
+        if (tracer) {
+            tracer->limitInstancesPerStructure(instancesPerStructure);
+        }
 
         return tracer;
     }
@@ -893,6 +932,284 @@ TEST_P(NatronUtilityTracer, AgreesWithEmbree)
     }
 }
 
+// At one segment, rays at random times aim inside the triangles of a turning, stretching, sliding tent,
+// a still one and a deforming quad; both backends must report the same hits there.
+TEST_P(NatronUtilityTracer, AgreesWithEmbreeInMotion)
+{
+    const std::shared_ptr<Tracer> tracer = makeTracer();
+
+    if (!tracer || GetParam() == Backend::Embree) {
+        return;
+    }
+
+    UtilityScene scene;
+    const UtilityScene::GeometryId tent = scene.addGeometry(SdfPath("/tent"), 1);
+    const UtilityScene::GeometryId quad = addQuad(scene, "/quad");
+    const GfMatrix4d open = GfMatrix4d().SetScale(GfVec3d(1., 2., 1.)) * GfMatrix4d().SetRotate(GfRotation(GfVec3d(0.2, 0.3, 1.), -20.)) * translation(40., 5., -1.);
+    const GfMatrix4d close = GfMatrix4d().SetScale(GfVec3d(2., 1., 1.)) * GfMatrix4d().SetRotate(GfRotation(GfVec3d(0., 0.1, 1.), 150.)) * translation(46., 3., 0.);
+    std::shared_ptr<UtilityScene::TransformMotion> tentMotion = std::make_shared<UtilityScene::TransformMotion>();
+    std::shared_ptr<UtilityScene::PointMotion> quadMotion = std::make_shared<UtilityScene::PointMotion>();
+    VtVec3fArray bent = quadPoints();
+
+    scene.setTopology(tent, tentPoints(), tentTriangles());
+    scene.setInstances(tent, { open, translation(20., 0., 1.) });
+    tentMotion->times = { 0., 1. };
+    tentMotion->transforms = { { open, translation(20., 0., 1.) }, { close, translation(20., 0., 1.) } };
+    scene.setTransformMotion(tent, tentMotion);
+    bent[1] = GfVec3f(3.f, 0.5f, 1.f);
+    bent[2] = GfVec3f(2.f, 3.f, -1.f);
+    scene.setInstances(quad, { translation(60., 0., 0.) });
+    quadMotion->times = { 0., 1. };
+    quadMotion->points = { quadPoints(), bent };
+    scene.setPointMotion(quad, quadMotion);
+
+    const UtilityScene::Snapshot snapshot = UtilityScene::atShutter(scene.snapshot(), 0., 1., 1);
+
+    std::mt19937 random(283);
+    std::uniform_real_distribution<double> corner(0.1, 0.8);
+    std::uniform_real_distribution<double> sideways(-0.3, 0.3);
+    std::uniform_real_distribution<double> anytime(0., 1.);
+    std::vector<float> originX, originY, originZ, directionX, directionY, directionZ, tMin, tMax, times;
+    std::vector<std::uint32_t> aimedAt;
+
+    for (const UtilityScene::Instance& instance : snapshot.instances) {
+        const UtilityScene::Geometry& geometry = snapshot.geometries.at(instance.geometry);
+
+        for (std::size_t triangle = 0; triangle < geometry.triangles.size(); ++triangle) {
+            for (int sample = 0; sample < 6; ++sample) {
+                double u = corner(random);
+                double v = corner(random);
+
+                while (u + v > 0.9) {
+                    u = corner(random);
+                    v = corner(random);
+                }
+
+                const double time = anytime(random);
+                const GfVec3i& corners = geometry.triangles[triangle];
+                GfVec3d points[3];
+
+                for (int i = 0; i < 3; ++i) {
+                    points[i] = GfVec3d(geometry.points[corners[i]]);
+                    if (geometry.pointSteps.size() == 2) {
+                        points[i] = (1. - time) * GfVec3d(geometry.pointSteps[0][corners[i]]) + time * GfVec3d(geometry.pointSteps[1][corners[i]]);
+                    }
+                }
+
+                const GfVec3d hit = UtilityScene::transformAt(instance, time).Transform((1. - u - v) * points[0] + u * points[1] + v * points[2]);
+                const GfVec3d origin = hit + GfVec3d(sideways(random), sideways(random), 6.);
+                const GfVec3d direction = hit - origin;
+
+                originX.push_back(static_cast<float>(origin[0]));
+                originY.push_back(static_cast<float>(origin[1]));
+                originZ.push_back(static_cast<float>(origin[2]));
+                directionX.push_back(static_cast<float>(direction[0]));
+                directionY.push_back(static_cast<float>(direction[1]));
+                directionZ.push_back(static_cast<float>(direction[2]));
+                tMin.push_back(0.f);
+                tMax.push_back(10.f);
+                times.push_back(static_cast<float>(time));
+                aimedAt.push_back(static_cast<std::uint32_t>(triangle));
+            }
+        }
+    }
+
+    Tracer::RayBatch rays;
+
+    rays.originX = originX.data();
+    rays.originY = originY.data();
+    rays.originZ = originZ.data();
+    rays.directionX = directionX.data();
+    rays.directionY = directionY.data();
+    rays.directionZ = directionZ.data();
+    rays.tMin = tMin.data();
+    rays.tMax = tMax.data();
+    rays.time = times.data();
+    rays.count = originX.size();
+
+    EmbreeTracer reference;
+
+    ASSERT_TRUE(reference.update(snapshot, 2));
+    ASSERT_TRUE(tracer->update(snapshot, 2));
+
+    std::vector<float> expectedT(rays.count), expectedU(rays.count), expectedV(rays.count);
+    std::vector<float> actualT(rays.count), actualU(rays.count), actualV(rays.count);
+    std::vector<std::uint32_t> expectedIds(3 * rays.count), actualIds(3 * rays.count);
+    std::vector<std::uint8_t> expectedBlocked(rays.count, 7), actualBlocked(rays.count, 7);
+    Tracer::HitBatch expected, actual;
+
+    expected.t = expectedT.data();
+    expected.u = expectedU.data();
+    expected.v = expectedV.data();
+    expected.geometry = expectedIds.data();
+    expected.instance = expectedIds.data() + rays.count;
+    expected.primitive = expectedIds.data() + 2 * rays.count;
+    actual.t = actualT.data();
+    actual.u = actualU.data();
+    actual.v = actualV.data();
+    actual.geometry = actualIds.data();
+    actual.instance = actualIds.data() + rays.count;
+    actual.primitive = actualIds.data() + 2 * rays.count;
+    reference.intersect(rays, expected);
+    reference.occluded(rays, expectedBlocked.data());
+    tracer->intersect(rays, actual);
+    tracer->occluded(rays, actualBlocked.data());
+
+    for (std::size_t ray = 0; ray < rays.count; ++ray) {
+        ASSERT_EQ(aimedAt[ray], expected.primitive[ray]) << ray;
+        EXPECT_EQ(expected.geometry[ray], actual.geometry[ray]) << ray;
+        EXPECT_EQ(expected.instance[ray], actual.instance[ray]) << ray;
+        EXPECT_EQ(expected.primitive[ray], actual.primitive[ray]) << ray;
+        EXPECT_EQ(1, expectedBlocked[ray]) << ray;
+        EXPECT_EQ(1, actualBlocked[ray]) << ray;
+        EXPECT_NEAR(1.f, actual.t[ray], 1e-4f) << ray;
+        EXPECT_NEAR(expected.t[ray], actual.t[ray], 1e-4f) << ray;
+        EXPECT_NEAR(expected.u[ray], actual.u[ray], 1e-3f) << ray;
+        EXPECT_NEAR(expected.v[ray], actual.v[ray], 1e-3f) << ray;
+    }
+}
+
+// One segment is real blur: each ray meets the quad where its time puts it between the end-points.
+TEST_P(NatronUtilityTracer, ARaysTimePlacesATranslatingInstance)
+{
+    UtilityScene scene;
+    const UtilityScene::GeometryId id = addQuad(scene, "/quad");
+
+    moveInstance(scene, id, translation(0., 0., 0.), translation(4., 0., 0.));
+
+    const std::shared_ptr<Tracer> tracer = makeTracer();
+
+    if (!tracer) {
+        return;
+    }
+    ASSERT_TRUE(tracer->update(UtilityScene::atShutter(scene.snapshot(), 0., 1., 1), 2));
+    for (const float time : { 0.f, 0.25f, 0.6f, 1.f }) {
+        const Hits hits = shootAt(*tracer, 0.75f + 4.f * time, 0.25f, time);
+
+        EXPECT_EQ(0u, hits.instance[0]) << time;
+        EXPECT_EQ(0u, hits.primitive[0]) << time;
+        EXPECT_FLOAT_EQ(5.f, hits.t[0]) << time;
+        EXPECT_NEAR(0.5f, hits.u[0], kBarycentricTolerance) << time;
+        EXPECT_NEAR(0.25f, hits.v[0], kBarycentricTolerance) << time;
+    }
+    EXPECT_EQ(Tracer::kNoHit, shootAt(*tracer, 0.75f, 0.25f, 0.5f).instance[0]) << "the quad has left by mid-shutter";
+    EXPECT_EQ(Tracer::kNoHit, shootAt(*tracer, 4.75f, 0.25f, 0.1f).instance[0]) << "the quad is not there yet";
+
+    Rays rays;
+
+    rays.add(2.75f, 0.25f, 0.f, 100.f, 0.5f);
+    rays.add(2.75f, 0.25f, 0.f, 100.f, 0.f);
+    rays.add(0.75f, 0.25f, 0.f, 100.f, 0.f);
+
+    std::vector<std::uint8_t> blocked(3, 7);
+
+    tracer->occluded(rays.batch(), blocked.data());
+    EXPECT_EQ(1, blocked[0]);
+    EXPECT_EQ(0, blocked[1]);
+    EXPECT_EQ(1, blocked[2]);
+}
+
+// Half-way through a quarter turn the quad has turned 45 degrees and kept its size; blending the
+// matrices instead would shrink it by cos 45 and move the hit.
+TEST_P(NatronUtilityTracer, ASpinningInstanceKeepsItsSize)
+{
+    UtilityScene scene;
+    const UtilityScene::GeometryId id = addQuad(scene, "/quad");
+
+    moveInstance(scene, id, spin(0.), spin(90.));
+
+    const std::shared_ptr<Tracer> tracer = makeTracer();
+
+    if (!tracer) {
+        return;
+    }
+    ASSERT_TRUE(tracer->update(UtilityScene::atShutter(scene.snapshot(), 0., 1., 1), 2));
+    for (const double time : { 0.25, 0.5, 0.75 }) {
+        const GfVec3d at = spin(90. * time).Transform(GfVec3d(0.8, 0.7, 0.));
+        const Hits hits = shootAt(*tracer, (float)at[0], (float)at[1], (float)time);
+
+        EXPECT_EQ(0u, hits.instance[0]) << time;
+        EXPECT_EQ(0u, hits.primitive[0]) << time;
+        EXPECT_NEAR(0.1f, hits.u[0], 1e-4f) << time;
+        EXPECT_NEAR(0.7f, hits.v[0], 1e-4f) << time;
+    }
+}
+
+// Deforming points move linearly between the end-points, at the ray's time.
+TEST_P(NatronUtilityTracer, ARaysTimePlacesADeformingMesh)
+{
+    UtilityScene scene;
+    const UtilityScene::GeometryId id = addQuad(scene, "/quad");
+    std::shared_ptr<UtilityScene::PointMotion> motion = std::make_shared<UtilityScene::PointMotion>();
+    VtVec3fArray moved = quadPoints();
+
+    moved[2] = GfVec3f(5.f, 1.f, 0.f);
+    moved[3] = GfVec3f(4.f, 1.f, 0.f);
+    motion->times = { 0., 1. };
+    motion->points = { quadPoints(), moved };
+    scene.setInstances(id, { GfMatrix4d(1.) });
+    scene.setPointMotion(id, motion);
+
+    const std::shared_ptr<Tracer> tracer = makeTracer();
+
+    if (!tracer) {
+        return;
+    }
+    ASSERT_TRUE(tracer->update(UtilityScene::atShutter(scene.snapshot(), 0., 1., 1), 2));
+    // The top edge slides 4 units right while the bottom one stays, shearing the quad.
+    for (const float time : { 0.f, 0.25f, 0.5f, 1.f }) {
+        const float shear = 4.f * time;
+        const Hits hits = shootAt(*tracer, 0.25f + 0.75f * shear, 0.75f, time);
+
+        EXPECT_EQ(0u, hits.instance[0]) << time;
+        EXPECT_EQ(1u, hits.primitive[0]) << time;
+        EXPECT_FLOAT_EQ(5.f, hits.t[0]) << time;
+        EXPECT_NEAR(0.25f, hits.u[0], 1e-4f) << time;
+        EXPECT_NEAR(0.5f, hits.v[0], 1e-4f) << time;
+    }
+    EXPECT_EQ(Tracer::kNoHit, shootAt(*tracer, 0.25f, 0.75f, 1.f).instance[0]);
+
+    Rays rays;
+
+    rays.add(3.25f, 0.75f, 0.f, 100.f, 1.f);
+    rays.add(3.25f, 0.75f, 0.f, 100.f, 0.f);
+
+    std::vector<std::uint8_t> blocked(2, 7);
+
+    tracer->occluded(rays.batch(), blocked.data());
+    EXPECT_EQ(1, blocked[0]);
+    EXPECT_EQ(0, blocked[1]);
+}
+
+// Segments split a move that turns back: one segment spans only its ends, both at rest, while two
+// meet it where it turns.
+TEST_P(NatronUtilityTracer, SegmentsFollowAMoveThatTurnsBack)
+{
+    UtilityScene scene;
+    const UtilityScene::GeometryId id = addQuad(scene, "/quad");
+    std::shared_ptr<UtilityScene::TransformMotion> motion = std::make_shared<UtilityScene::TransformMotion>();
+
+    motion->times = { 0., 0.5, 1. };
+    motion->transforms = { { translation(0., 0., 0.) }, { translation(4., 0., 0.) }, { translation(0., 0., 0.) } };
+    scene.setInstances(id, { translation(0., 0., 0.) });
+    scene.setTransformMotion(id, motion);
+
+    const std::shared_ptr<Tracer> tracer = makeTracer();
+
+    if (!tracer) {
+        return;
+    }
+    ASSERT_TRUE(tracer->update(UtilityScene::atShutter(scene.snapshot(), 0., 1., 1), 2));
+    EXPECT_EQ(0u, shootAt(*tracer, 0.75f, 0.25f, 0.5f).instance[0]);
+    EXPECT_EQ(Tracer::kNoHit, shootAt(*tracer, 4.75f, 0.25f, 0.5f).instance[0]);
+
+    ASSERT_TRUE(tracer->update(UtilityScene::atShutter(scene.snapshot(), 0., 1., 2), 2));
+    EXPECT_EQ(Tracer::kNoHit, shootAt(*tracer, 0.75f, 0.25f, 0.5f).instance[0]);
+    EXPECT_EQ(0u, shootAt(*tracer, 4.75f, 0.25f, 0.5f).instance[0]);
+    EXPECT_EQ(0u, shootAt(*tracer, 2.75f, 0.25f, 0.25f).instance[0]);
+    EXPECT_EQ(0u, shootAt(*tracer, 2.75f, 0.25f, 0.75f).instance[0]);
+}
+
 #ifdef NATRON_HAVE_GPU
 // Split over one structure per instance, a scene still reports each hit's own instance, the nearest of those
 // stacked along a ray, and the casters a filter names.
@@ -965,6 +1282,36 @@ TEST_P(NatronUtilityTracer, InstancesSplitOverStructuresTraceAsOne)
     EXPECT_EQ(1, filteredBlocked[1]);
     EXPECT_EQ(0, filteredBlocked[2]);
     EXPECT_EQ(0, filteredBlocked[3]);
+}
+// A still scene builds no mover structures; a moving one builds one per shutter segment, beside a
+// still instance that stays in the hardware triangle structures.
+TEST_P(NatronUtilityTracer, OnlyMotionBuildsMoverStructures)
+{
+    UtilityScene scene;
+    const UtilityScene::GeometryId still = addQuad(scene, "/still");
+    const UtilityScene::GeometryId moving = addQuad(scene, "/moving");
+
+    scene.setInstances(still, { translation(10., 0., 0.) });
+    scene.setInstances(moving, { GfMatrix4d(1.) });
+
+    const std::shared_ptr<GpuTracer> tracer = makeGpuTracer();
+
+    if (!tracer) {
+        return;
+    }
+    ASSERT_TRUE(tracer->update(UtilityScene::atShutter(scene.snapshot(), 0., 1., 3), 2));
+    EXPECT_EQ(0u, tracer->moverStructureCount());
+
+    moveInstance(scene, moving, translation(0., 0., 0.), translation(4., 0., 0.));
+    ASSERT_TRUE(tracer->update(UtilityScene::atShutter(scene.snapshot(), 0., 1., 3), 2));
+    EXPECT_EQ(3u, tracer->moverStructureCount());
+    EXPECT_EQ(0u, shootAt(*tracer, 10.75f, 0.25f, 0.3f).geometry[0]);
+    EXPECT_EQ(1u, shootAt(*tracer, 2.75f, 0.25f, 0.5f).geometry[0]);
+
+    ASSERT_TRUE(tracer->update(UtilityScene::atShutter(scene.snapshot(), 0., 1., 1), 2));
+    EXPECT_EQ(1u, tracer->moverStructureCount());
+    ASSERT_TRUE(tracer->update(UtilityScene::atShutter(scene.snapshot(), 0.5, 0.5, 1), 2));
+    EXPECT_EQ(0u, tracer->moverStructureCount()) << "a closed shutter";
 }
 #endif
 

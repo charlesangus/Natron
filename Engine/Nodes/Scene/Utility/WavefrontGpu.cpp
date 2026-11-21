@@ -144,11 +144,11 @@ static_assert(utility_raygen_uv_storage_buffers == 5);
 static_assert(sizeof(KernelShadeParams) == utility_shade_surface_push_bytes);
 static_assert(sizeof(KernelShadeLightsParams) == utility_shade_lights_push_bytes);
 static_assert(sizeof(KernelResolveParams) == utility_resolve_hits_push_bytes);
-static_assert(utility_raygen_storage_buffers == 2 && utility_shade_surface_storage_buffers == 20 && utility_shade_lights_storage_buffers == 3);
+static_assert(utility_raygen_storage_buffers == 3 && utility_shade_surface_storage_buffers == 20 && utility_shade_lights_storage_buffers == 3);
 static_assert(utility_resolve_hits_storage_buffers == 15);
 static_assert(sizeof(KernelPathState) == 32);
 static_assert(sizeof(KernelLightRecord) == 144);
-static_assert(sizeof(KernelGeometryRecord) == 40);
+static_assert(sizeof(KernelGeometryRecord) == 56);
 static_assert(sizeof(KernelMaterialRecord) == 144 && sizeof(KernelTextureBinding) == 112 && sizeof(KernelProjectionRecord) == 256);
 
 const std::size_t kRayArrays = kUtilityRayArrays;
@@ -249,6 +249,8 @@ struct ShadeTableBuffers {
     gpu::GpuBufferHandle lights;
     gpu::GpuBufferHandle lightData;
     gpu::GpuBufferHandle linkMasks;
+    gpu::GpuBufferHandle instanceMotion;
+    gpu::GpuBufferHandle motionRows;
     // The device addresses of the tables at the KernelTableSlot slots, which ShadeSurface and ResolveHits
     // read through them rather than through bindings the storage buffer range would bound.
     gpu::GpuBufferHandle addresses;
@@ -535,6 +537,7 @@ struct WavefrontGpu::Implementation {
                        gpu::GpuBufferHandle& out,
                        const std::atomic<bool>& stop);
     bool uploadUnwrap(const WavefrontUnwrapConstPtr& unwrap);
+    bool uploadCameraSteps(const std::vector<float>& steps);
     bool reserveReadback(std::size_t rays,
                          const WavefrontAovs& aovs);
     struct ResolveScratch {
@@ -610,6 +613,9 @@ struct WavefrontGpu::Implementation {
     gpu::GpuBufferHandle unwrapTriangles;
     // The device addresses of the grid then the triangles, which RayGenUv reads through them.
     gpu::GpuBufferHandle unwrapAddresses;
+    // RayGen's cameraSteps, kept while the frames draw the same camera.
+    std::vector<float> cameraSteps;
+    gpu::GpuBufferHandle cameraStepsBuffer;
 };
 
 /**
@@ -800,7 +806,9 @@ WavefrontGpu::Implementation::uploadTables(std::uint64_t version,
         || !put(source.normals, source.normalCount * 4 * sizeof(float), "normals", next.normals)
         || !put(source.lights, source.lightCount * sizeof(KernelLightRecord), "light records", next.lights)
         || !put(source.lightData, source.lightDataCount * sizeof(float), "light tables", next.lightData)
-        || !put(source.linkMasks, source.linkMaskCount * sizeof(std::uint32_t), "light-link masks", next.linkMasks)) {
+        || !put(source.linkMasks, source.linkMaskCount * sizeof(std::uint32_t), "light-link masks", next.linkMasks)
+        || !put(source.instanceMotion, source.instanceMotionCount * sizeof(std::uint32_t), "instance motion", next.instanceMotion)
+        || !put(source.motionRows, source.motionRowCount * 4 * sizeof(float), "motion rows", next.motionRows)) {
         if (stoppedHere) {
             tables.texels = std::move(next.texels);
             tables.texelVersion = texelVersion;
@@ -824,6 +832,8 @@ WavefrontGpu::Implementation::uploadTables(std::uint64_t version,
     addresses[eKernelTableLightData] = tableAddress(next.lightData);
     addresses[eKernelTableLinkMasks] = tableAddress(next.linkMasks);
     addresses[eKernelTableTexels] = tableAddress(next.texels);
+    addresses[eKernelTableInstanceMotion] = tableAddress(next.instanceMotion);
+    addresses[eKernelTableMotionRows] = tableAddress(next.motionRows);
     if (!upload(*ctx, addresses.data(), sizeof(addresses), "table addresses", next.addresses)) {
         return false;
     }
@@ -882,6 +892,36 @@ WavefrontGpu::Implementation::uploadUnwrap(const WavefrontUnwrapConstPtr& next)
     unwrapGrid = std::move(grid);
     unwrapTriangles = std::move(triangles);
     unwrapAddresses = std::move(addresses);
+
+    return true;
+}
+
+bool
+WavefrontGpu::Implementation::uploadCameraSteps(const std::vector<float>& steps)
+{
+    if (cameraStepsBuffer && steps == cameraSteps) {
+        return true;
+    }
+    cameraStepsBuffer = gpu::GpuBufferHandle();
+
+    std::unique_ptr<gpu::GpuRecordContext> ctx;
+
+    if (gpu::GpuStatus s = gpu::GpuRecordContext::create(registry, ctx, &pool); !s) {
+        return fail("WavefrontGpu could not create a record context", s);
+    }
+    // A camera that does not move is one row whose step count is zero.
+    const std::array<float, 4> still = { 0.f, 0.f, 0.f, 0.f };
+    const bool moving = !steps.empty();
+    gpu::GpuBufferHandle buffer;
+
+    if (!upload(*ctx, moving ? steps.data() : still.data(), (moving ? steps.size() : still.size()) * sizeof(float), "camera steps", buffer)) {
+        return false;
+    }
+    if (gpu::GpuStatus s = ctx->submitAndWait(); !s) {
+        return fail("WavefrontGpu could not upload its camera steps", s);
+    }
+    cameraSteps = steps;
+    cameraStepsBuffer = std::move(buffer);
 
     return true;
 }
@@ -1197,7 +1237,7 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
             return fail("WavefrontGpu could not generate rays", s);
         }
     } else {
-        const std::array<gpu::GpuBinding, 2> bindings = { gpu::GpuBinding::storage(0, *rays), gpu::GpuBinding::storage(1, *weights) };
+        const std::array<gpu::GpuBinding, 3> bindings = { gpu::GpuBinding::storage(0, *rays), gpu::GpuBinding::storage(1, *weights), gpu::GpuBinding::storage(2, cameraStepsBuffer.buffer()) };
 
         if (gpu::GpuStatus s = rec.ctx().dispatchBindings(rayGenKernel, bindings, std::as_bytes(std::span(&rayGenParams, 1)), threads); !s) {
             return fail("WavefrontGpu could not generate rays", s);
@@ -1630,6 +1670,8 @@ WavefrontGpu::render(const UtilityScene::Snapshot& snapshot,
         if (!imp.uploadUnwrap(frame.unwrap)) {
             return false;
         }
+    } else if (!imp.uploadCameraSteps(frame.cameraSteps)) {
+        return false;
     }
 
     const WavefrontRect& window = frame.window;

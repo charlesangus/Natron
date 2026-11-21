@@ -75,6 +75,7 @@ rayBatchOf(const float* rays,
     batch.directionZ = rays + 5 * count;
     batch.tMin = rays + 6 * count;
     batch.tMax = rays + 7 * count;
+    batch.time = rays + 8 * count;
     batch.count = count;
 
     return batch;
@@ -111,7 +112,7 @@ resolveHits(const Tracer& tracer,
             std::uint32_t maxCutouts,
             const std::atomic<bool>& stop)
 {
-    std::vector<float> retrace(count * 8);
+    std::vector<float> retrace(count * kKernelRayArrays);
     std::vector<float> nextSurface(count * 3);
     std::vector<std::uint32_t> nextIds(count * 3);
     std::vector<std::size_t> pending;
@@ -148,10 +149,10 @@ resolveHits(const Tracer& tracer,
 
         const std::size_t n = pending.size();
 
-        gathered.resize(n * 8);
+        gathered.resize(n * kKernelRayArrays);
         gatheredSurface.resize(n * 3);
         gatheredIds.resize(n * 3);
-        for (std::size_t a = 0; a < 8; ++a) {
+        for (std::size_t a = 0; a < kKernelRayArrays; ++a) {
             for (std::size_t i = 0; i < n; ++i) {
                 gathered[a * n + i] = retrace[a * count + pending[i]];
             }
@@ -176,7 +177,7 @@ renderTile(const WavefrontFrame& frame,
            const std::atomic<bool>& stop)
 {
     const std::size_t count = static_cast<std::size_t>(rect.width) * rect.height;
-    std::vector<float> rays(count * 8);
+    std::vector<float> rays(count * kKernelRayArrays);
     std::vector<float> weights(count);
     std::vector<float> hitSurface(count * 3);
     std::vector<std::uint32_t> hitIds(count * 3);
@@ -192,7 +193,7 @@ renderTile(const WavefrontFrame& frame,
 
         runRayGenUvKernel(makeRayGenParams(frame, rect), unwrap.grid.data(), unwrap.triangles.data(), rays.data(), hitSurface.data(), hitIds.data(), weights.data());
     } else {
-        runRayGenKernel(makeRayGenParams(frame, rect), rays.data(), weights.data());
+        runRayGenKernel(makeRayGenParams(frame, rect), rays.data(), weights.data(), frame.cameraSteps.data(), frame.cameraSteps.size() / 4);
         tracer.intersect(rayBatchOf(rays.data(), count), hits);
     }
 
@@ -225,12 +226,12 @@ renderTile(const WavefrontFrame& frame,
     buffers.instanceIdOut = instanceId.data();
 
     // The rays the paths go on with, as many as the batch last shaded and in its layout.
-    std::vector<float> nextRays(limit > 0 ? count * 8 : 0);
+    std::vector<float> nextRays(limit > 0 ? count * kKernelRayArrays : 0);
     std::vector<KernelPathState> nextPaths(limit > 0 ? count : 0);
     const std::uint32_t lightCount = tables.lightCount();
     const std::uint32_t batch = std::min(lightCount, kLightBatch);
     const std::size_t shadowCapacity = count * batch;
-    std::vector<float> shadowRays(shadowCapacity * 8);
+    std::vector<float> shadowRays(shadowCapacity * kKernelRayArrays);
     std::vector<float> contributions(shadowCapacity * 4);
     std::vector<std::uint32_t> shadowLights(shadowCapacity);
     std::vector<std::uint8_t> blocked(resolveShadows ? 0 : shadowCapacity);
@@ -337,12 +338,12 @@ renderTile(const WavefrontFrame& frame,
 
         const std::size_t n = active.size();
 
-        bounceRays.resize(n * 8);
+        bounceRays.resize(n * kKernelRayArrays);
         bouncePaths.resize(n);
         bounceSurface.resize(n * 3);
         bounceIds.resize(n * 3);
         bounceColor.assign(n * 4, 0.f);
-        for (std::size_t a = 0; a < 8; ++a) {
+        for (std::size_t a = 0; a < kKernelRayArrays; ++a) {
             for (std::size_t i = 0; i < n; ++i) {
                 bounceRays[a * n + i] = nextRays[a * queued + active[i]];
             }

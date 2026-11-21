@@ -9,19 +9,40 @@ import UtilityTypes;
 // apart. Each entry of structures holds a structure's address as low and high words and the slot of its first
 // instance; a hit's slot is that plus its custom index. With an order table, slots are listed in it by
 // instance; without one, a slot is its instance.
+//
+// The instances that move or deform over the shutter are boxes instead, in one structure for each of the
+// shutter's segments, whose address movers holds in the first two words of its entry. Each box bounds a mover's
+// sweep over its segment, and its primitive index picks the mover's record in moverRecords from the row
+// moverFirst lists for it. A ray tests the boxes of the segment its time falls in, and each box it enters at
+// the mover's exact transform and points at that time.
 struct IntersectParams
 {
     uint2 structures;
     uint2 order;
     // The shadow-link masks of the casters, which grow with the instances and the lights.
     uint2 casterMasks;
+    uint2 movers;
+    uint2 moverRecords;
+    uint2 moverFirst;
     uint structureCount;
     uint stride;
     uint first;
     uint end;
     uint maskStride;
     uint maskOffset;
+    // Zero when nothing moves.
+    uint segments;
+    uint unused;
 };
+
+// A mover's record, in float4 rows bit-cast from words where they hold words: its slot, dense geometry index,
+// flags and the row of its motion header; then for a rigid geometry the address of a structure holding just
+// the geometry's triangles, or for a deforming one the addresses of its points, all its time steps' one after
+// another, and of its triangles; then its point count; then for a deforming geometry one row per segment with
+// the address of a structure of boxes, one per triangle, each bounding the triangle's sweep over the segment.
+// The motion header and steps are as stepAtTime() reads them, two steps or more.
+static const uint kMoverDeforms = 1;
+static const uint kMoverSweptRow = 3;
 
 // Both entry points share one layout, because the reflection the build reads describes every global of the
 // module: the occlusion entry leaves bindings 1 and 2 alone and writes 1 or 0 to the first array of binding 3,
@@ -75,8 +96,185 @@ bool readRay(uint ray, out RayDesc desc)
     desc.TMin = max(rayValue(kRayTMin, ray), 0.0);
     desc.TMax = rayValue(kRayTMax, ray);
 
-    return params.structureCount != 0 && allFinite(desc.Origin) && allFinite(desc.Direction)
+    return (params.structureCount != 0 || params.segments != 0) && allFinite(desc.Origin) && allFinite(desc.Direction)
         && any(desc.Direction != float3(0.0)) && !isnan(desc.TMax) && desc.TMin <= desc.TMax;
+}
+
+struct MoverHit
+{
+    float t;
+    float2 barycentrics;
+    uint primitive;
+};
+
+float3 pointAt(FloatTable points, uint index)
+{
+    return float3(points[3 * index], points[3 * index + 1], points[3 * index + 2]);
+}
+
+// Moeller-Trumbore, with barycentrics as a ray query reports them: the hit is p0 + u (p1 - p0) + v (p2 - p0).
+bool triangleHit(RayDesc ray, float3 p0, float3 p1, float3 p2, float tMax, out float t, out float2 barycentrics)
+{
+    t = 0.0;
+    barycentrics = float2(0.0);
+    const float3 e1 = p1 - p0;
+    const float3 e2 = p2 - p0;
+    const float3 pv = cross(ray.Direction, e2);
+    const float determinant = dot(e1, pv);
+    if (determinant == 0.0 || isnan(determinant))
+        return false;
+    const float inverse = 1.0 / determinant;
+    const float3 s = ray.Origin - p0;
+    const float u = dot(s, pv) * inverse;
+    if (!(u >= 0.0 && u <= 1.0))
+        return false;
+    const float3 q = cross(s, e1);
+    const float v = dot(ray.Direction, q) * inverse;
+    if (!(v >= 0.0 && u + v <= 1.0))
+        return false;
+    t = dot(e2, q) * inverse;
+    barycentrics = float2(u, v);
+    return t >= ray.TMin && t <= tMax;
+}
+
+uint segmentAt(float time)
+{
+    uint span;
+    float fraction;
+    motionSpan(time, params.segments + 1, span, fraction);
+    return span;
+}
+
+// The closest hit within world.TMax on a mover at the ray's time.
+bool hitMover(uint mover, RayDesc world, float time, out uint slot, out uint geometry, out MoverHit hit)
+{
+    const Float4Table rows = Float4Table(params.moverRecords);
+    const uint first = UintTable(params.moverFirst)[mover];
+    const uint4 head = asuint(rows[first]);
+    const uint4 where = asuint(rows[first + 1]);
+
+    slot = head.x;
+    geometry = head.y;
+    hit.t = world.TMax;
+    hit.barycentrics = float2(0.0);
+    hit.primitive = kNoHit;
+
+    float4 o0, o1, o2, o3, w0, w1, w2, w3;
+    composeStep(stepAtTime(rows, head.w, time), o0, o1, o2, o3, w0, w1, w2, w3);
+    // An affine map keeps the ray's parameter, so the object-space hit distances are the world's.
+    RayDesc local;
+    local.Origin = world.Origin.x * w0.xyz + world.Origin.y * w1.xyz + world.Origin.z * w2.xyz + w3.xyz;
+    local.Direction = world.Direction.x * w0.xyz + world.Direction.y * w1.xyz + world.Direction.z * w2.xyz;
+    local.TMin = world.TMin;
+    local.TMax = world.TMax;
+
+    if ((head.z & kMoverDeforms) == 0) {
+        RayQuery<RAY_FLAG_FORCE_OPAQUE> query;
+
+        query.TraceRayInline(sceneAt(where.xy), RAY_FLAG_NONE, 0xff, local);
+        while (query.Proceed()) {
+        }
+        if (query.CommittedStatus() != COMMITTED_TRIANGLE_HIT)
+            return false;
+        hit.t = query.CommittedRayT();
+        hit.barycentrics = query.CommittedTriangleBarycentrics();
+        hit.primitive = query.CommittedPrimitiveIndex();
+        return true;
+    }
+
+    uint span;
+    float fraction;
+    motionSpan(time, params.segments + 1, span, fraction);
+    const uint pointCount = asuint(rows[first + 2].x);
+    const FloatTable points = FloatTable(where.xy);
+    const UintTable triangles = UintTable(where.zw);
+    const uint4 swept = asuint(rows[first + kMoverSweptRow + span]);
+    const uint from = span * pointCount;
+    const uint to = from + pointCount;
+    bool found = false;
+    RayQuery<RAY_FLAG_FORCE_OPAQUE> query;
+
+    query.TraceRayInline(sceneAt(swept.xy), RAY_FLAG_NONE, 0xff, local);
+    while (query.Proceed()) {
+        if (query.CandidateType() != CANDIDATE_PROCEDURAL_PRIMITIVE)
+            continue;
+
+        const uint triangle = query.CandidatePrimitiveIndex();
+        float3 corners[3];
+        for (uint c = 0; c < 3; ++c) {
+            const uint index = triangles[3 * triangle + c];
+            corners[c] = lerp(pointAt(points, from + index), pointAt(points, to + index), fraction);
+        }
+
+        float t;
+        float2 barycentrics;
+        if (triangleHit(local, corners[0], corners[1], corners[2], hit.t, t, barycentrics)) {
+            query.CommitProceduralPrimitiveHit(t);
+            hit.t = t;
+            hit.barycentrics = barycentrics;
+            hit.primitive = triangle;
+            found = true;
+        }
+    }
+    return found;
+}
+
+// Leaves the closest mover hit within desc.TMax in the outputs.
+void intersectMovers(inout RayDesc desc, float time, inout float t, inout float2 barycentrics, inout uint geometry,
+                     inout uint instance, inout uint primitive)
+{
+    RayQuery<RAY_FLAG_FORCE_OPAQUE> query;
+
+    query.TraceRayInline(sceneAt(Uint4Table(params.movers)[segmentAt(time)].xy), RAY_FLAG_NONE, 0xff, desc);
+    while (query.Proceed()) {
+        if (query.CandidateType() != CANDIDATE_PROCEDURAL_PRIMITIVE)
+            continue;
+
+        uint slot;
+        uint moverGeometry;
+        MoverHit hit;
+        if (hitMover(query.CandidatePrimitiveIndex(), desc, time, slot, moverGeometry, hit)) {
+            query.CommitProceduralPrimitiveHit(hit.t);
+            desc.TMax = hit.t;
+            t = hit.t;
+            barycentrics = hit.barycentrics;
+            geometry = moverGeometry;
+            instance = slot;
+            primitive = hit.primitive;
+        }
+    }
+}
+
+bool casts(uint caster, uint light)
+{
+    const uint word = UintTable(params.casterMasks)[params.maskOffset + caster * params.maskStride + light / 32];
+    return ((word >> (light % 32)) & 1) != 0;
+}
+
+bool moversBlock(RayDesc desc, float time, uint light)
+{
+    bool blocked = false;
+    RayQuery<RAY_FLAG_FORCE_OPAQUE> query;
+
+    query.TraceRayInline(sceneAt(Uint4Table(params.movers)[segmentAt(time)].xy), RAY_FLAG_NONE, 0xff, desc);
+    while (query.Proceed()) {
+        if (query.CandidateType() != CANDIDATE_PROCEDURAL_PRIMITIVE)
+            continue;
+
+        const uint mover = query.CandidatePrimitiveIndex();
+        const uint first = UintTable(params.moverFirst)[mover];
+        if (params.maskStride != 0 && !casts(asuint(Float4Table(params.moverRecords)[first].x), light))
+            continue;
+
+        uint slot;
+        uint geometry;
+        MoverHit hit;
+        if (hitMover(mover, desc, time, slot, geometry, hit)) {
+            blocked = true;
+            query.Abort();
+        }
+    }
+    return blocked;
 }
 
 [shader("compute")]
@@ -113,6 +311,8 @@ void utilityIntersect(uint3 id : SV_DispatchThreadID)
                 primitive = query.CommittedPrimitiveIndex();
             }
         }
+        if (params.segments != 0)
+            intersectMovers(desc, rayValue(kRayTime, ray), t, barycentrics, geometry, instance, primitive);
     }
 
     hitValues[kHitT * params.stride + ray] = t;
@@ -151,14 +351,10 @@ void utilityOccluded(uint3 id : SV_DispatchThreadID)
             // Non-opaque, so each candidate comes back here to be kept or passed through.
             RayQuery<RAY_FLAG_FORCE_NON_OPAQUE> query;
             const uint light = rayLights[ray];
-            const UintTable casterMasks = UintTable(params.casterMasks);
 
             query.TraceRayInline(sceneAt(structure.xy), RAY_FLAG_NONE, 0xff, desc);
             while (query.Proceed()) {
-                const uint caster = instanceAt(structure.z + query.CandidateInstanceID());
-                const uint word = casterMasks[params.maskOffset + caster * params.maskStride + light / 32];
-
-                if (((word >> (light % 32)) & 1) != 0) {
+                if (casts(instanceAt(structure.z + query.CandidateInstanceID()), light)) {
                     query.CommitNonOpaqueTriangleHit();
                     query.Abort();
                 }
@@ -167,6 +363,10 @@ void utilityOccluded(uint3 id : SV_DispatchThreadID)
                 blocked = 1;
         }
     }
+
+    if (valid && blocked == 0 && params.segments != 0
+        && moversBlock(desc, rayValue(kRayTime, ray), params.maskStride != 0 ? rayLights[ray] : 0))
+        blocked = 1;
 
     hitIds[ray] = blocked;
 }

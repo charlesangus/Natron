@@ -74,24 +74,25 @@ movingStripe(double t0,
 }
 } // anon namespace
 
-TEST(NatronUtilityCancelStops, AStoppedEvaluationEndsEarly)
+TEST(NatronUtilityCancelStops, AStoppedShutterSamplingEndsEarly)
 {
     const UtilityScene::Snapshot snapshot = movingStripe(-0.25, -1., 0.25, 3.);
     const std::atomic<bool> stop(true);
-    UtilityScene::Snapshot evaluated;
+    UtilityScene::Snapshot sampled;
 
     ASSERT_TRUE(UtilityScene::moves(snapshot));
-    EXPECT_FALSE(UtilityScene::evaluateAt(snapshot, 0.125, stop, &evaluated));
+    EXPECT_FALSE(UtilityScene::atShutter(snapshot, 0., 0.25, 1, stop, &sampled));
 }
 
-TEST(NatronUtilityCancelStops, AnUnstoppedEvaluationMatchesThePlainOne)
+TEST(NatronUtilityCancelStops, AnUnstoppedShutterSamplingMatchesThePlainOne)
 {
     const UtilityScene::Snapshot snapshot = movingStripe(-0.25, -1., 0.25, 3.);
     const std::atomic<bool> stop(false);
-    UtilityScene::Snapshot evaluated;
+    UtilityScene::Snapshot sampled;
 
-    ASSERT_TRUE(UtilityScene::evaluateAt(snapshot, 0.125, stop, &evaluated));
-    ASSERT_EQ(1u, evaluated.instances.size());
-    EXPECT_NEAR(2., evaluated.instances[0].transform.ExtractTranslation()[0], 1e-9);
-    EXPECT_NEAR(2., UtilityScene::evaluateAt(snapshot, 0.125).instances[0].transform.ExtractTranslation()[0], 1e-9);
+    ASSERT_TRUE(UtilityScene::atShutter(snapshot, 0., 0.25, 1, stop, &sampled));
+    ASSERT_EQ(1u, sampled.instances.size());
+    ASSERT_EQ(2u, sampled.instances[0].transformSteps.size());
+    EXPECT_NEAR(2., UtilityScene::transformAt(sampled.instances[0], 0.5).ExtractTranslation()[0], 1e-9);
+    EXPECT_NEAR(2., UtilityScene::transformAt(UtilityScene::atShutter(snapshot, 0., 0.25, 1).instances[0], 0.5).ExtractTranslation()[0], 1e-9);
 }

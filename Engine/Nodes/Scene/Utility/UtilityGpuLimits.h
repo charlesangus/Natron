@@ -39,7 +39,7 @@
 NATRON_NAMESPACE_ENTER
 
 // The float arrays of a ray batch and the uint arrays of its hit ids, as Kernels/UtilityTypes.slang lays them out.
-inline constexpr std::size_t kUtilityRayArrays = 8;
+inline constexpr std::size_t kUtilityRayArrays = 9;
 inline constexpr std::size_t kUtilityHitArrays = 3;
 
 // Vulkan guarantees 65535 workgroups along x, and the kernels run 64 invocations to a group.

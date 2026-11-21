@@ -153,6 +153,9 @@ struct WavefrontFrame {
     std::uint32_t reflectionDepth = kWavefrontDefaultReflectionDepth;
     std::uint32_t refractionDepth = kWavefrontDefaultRefractionDepth;
     WavefrontSampling sampling;
+    // A camera that moves over the shutter, as RayGen.slang's cameraSteps binding takes it; empty for one
+    // that does not. wavefrontDrawSamples() fills it in from the motion it draws with.
+    std::vector<float> cameraSteps;
 };
 
 // The outputs a film takes in tiles. An executor may leave the arrays of the others null.
@@ -264,7 +267,8 @@ private:
 struct WavefrontMotion {
     double open = 0.;
     double close = 0.;
-    // How many times within the shutter the scene is traced at; at most the pixel's samples.
+    // How many spans the shutter is split into: the scene and the camera are taken at the ends of each
+    // and every ray interpolates between the ends of the span its time falls in.
     int segments = 1;
     // The camera at increasing times, the frame's among them; empty for a camera that does not move.
     std::vector<double> cameraTimes;
@@ -283,40 +287,25 @@ struct WavefrontMotion {
     }
 };
 
-/**
- * @brief How many time buckets a frame of samplesPerPixel samples is drawn in: one when the shutter
- * is closed or nothing within it moves, else the segments, at most one per sample.
- **/
-int wavefrontBucketCount(const WavefrontMotion& motion,
-                         const UtilityScene::Snapshot& snapshot,
-                         int samplesPerPixel);
-
-// The frame-relative time bucket of buckets traces at: the middle of its share of the shutter, or
-// the frame for a single bucket.
-double wavefrontBucketTime(const WavefrontMotion& motion,
-                           int bucket,
-                           int buckets);
-
-/**
- * @brief The sample indices of a pixel in the order they are drawn: buckets runs of consecutive
- * entries, the first sampling the first bucket. Over more than one bucket each run takes cells
- * spread across the pixel, so that where in the pixel a sample falls says nothing of its time.
- **/
-std::vector<int> wavefrontSampleOrder(int samplesPerPixel,
-                                      int buckets);
-
 // The frame's camera moved by how the motion's camera at time differs from its camera at the frame.
 WavefrontFrame wavefrontFrameAt(const WavefrontFrame& frame,
                                 const WavefrontMotion& motion,
                                 double time);
 
 /**
- * @brief Draws every sample of the frame, one per pixel per executor call, in time buckets: the
- * snapshot, evaluated at each bucket's time, and the camera at it trace that bucket's samples.
- * progress, when set, hears how many samples are done after each. bucketSeconds, when not null,
- * receives how long each bucket took, its scene's evaluation included. Returns false when stop ended it.
- * A UvUnwrap frame ignores the camera's motion, and buckets that trace the snapshot as it stands share
- * one unwrap. Throws std::runtime_error when a UvUnwrap frame's prim cannot be unwrapped.
+ * @brief The rows of RayGen.slang's cameraSteps binding for the frame's camera over the motion's
+ * shutter, at the ends of its segments; empty when the shutter is closed, the camera does not move or
+ * the frame is a UvUnwrap.
+ **/
+std::vector<float> wavefrontCameraSteps(const WavefrontFrame& frame,
+                                        const WavefrontMotion& motion);
+
+/**
+ * @brief Draws every sample of the frame, one per pixel per executor call, from one scene taken at the
+ * ends of the shutter's segments and the camera at the same ends; each ray has its own time over the
+ * shutter. progress, when set, hears how many samples are done after each. Returns false when stop
+ * ended it. A UvUnwrap frame traces the snapshot as it stands, without blur. Throws std::runtime_error
+ * when a UvUnwrap frame's prim cannot be unwrapped.
  **/
 bool wavefrontDrawSamples(WavefrontExecutor& executor,
                           const UtilityScene::Snapshot& snapshot,
@@ -325,8 +314,7 @@ bool wavefrontDrawSamples(WavefrontExecutor& executor,
                           WavefrontFilm& film,
                           const std::atomic<bool>& stop,
                           int threads,
-                          const std::function<void(std::size_t)>& progress,
-                          std::vector<double>* bucketSeconds);
+                          const std::function<void(std::size_t)>& progress);
 
 /**
  * @brief Lays the frame's window out over the UV tile of frame.unwrapPrim, as the scene places its first
@@ -438,6 +426,10 @@ private:
     bool _texelsComplete = false;
     std::vector<PXR_NS::GfVec4f> _points;
     std::vector<PXR_NS::GfVec4f> _instanceTransforms;
+    // Per instance, the first row of its steps in _motionRows, kKernelNoMotion for one that does not move.
+    std::vector<std::uint32_t> _instanceMotion;
+    // Four floats per row: a header row holding the step count, then kKernelMotionRowsPerStep rows per step.
+    std::vector<float> _motionRows;
     std::vector<PXR_NS::GfVec2f> _sts;
     std::vector<PXR_NS::GfVec4f> _normals;
     std::vector<SourceVersion> _sources;

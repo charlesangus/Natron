@@ -44,6 +44,16 @@ struct GpuTriangles {
     bool opaque = true;
 };
 
+// Axis-aligned boxes as VkAabbPositionsKHR: min x, y, z then max x, y, z, as floats. A ray query hands each box
+// a ray enters back to the shader as a procedural candidate. The buffer needs kGpuAccelInputUsage; the offset and
+// stride are multiples of 8.
+struct GpuAabbs {
+    const GpuBuffer* boxes = nullptr;
+    VkDeviceSize offset = 0;
+    VkDeviceSize stride = 6 * sizeof(float);
+    uint32_t count = 0;
+};
+
 struct GpuBlasOptions {
     // Lets refit() update the structure in place when only the points moved.
     bool allowUpdate = true;
@@ -127,6 +137,9 @@ public:
     // context. `out` is left empty on failure.
     static GpuStatus build(GpuRecordContext& ctx, GpuBufferPool& pool, const GpuTriangles& triangles,
                            const GpuBlasOptions& options, GpuBlas& out);
+    // As above over boxes; such a structure cannot be refit.
+    static GpuStatus build(GpuRecordContext& ctx, GpuBufferPool& pool, const GpuAabbs& boxes,
+                           const GpuBlasOptions& options, GpuBlas& out);
 
     // Records an in-place update from moved points: same buffers layout, vertex and triangle counts as the build.
     // Needs allowUpdate.
@@ -146,6 +159,11 @@ public:
     explicit operator bool() const { return static_cast<bool>(structure_); }
 
 private:
+    template <class Describe>
+    static GpuStatus buildWith(GpuRecordContext& ctx, GpuBufferPool& pool, const char* where,
+                               const GpuBlasOptions& options, uint32_t vertexCount, uint32_t triangleCount,
+                               Describe&& describe, GpuBlas& out);
+
     GpuAccelStructure structure_;
     detail::AccelQueryPool query_;
     GpuBlasOptions options_;

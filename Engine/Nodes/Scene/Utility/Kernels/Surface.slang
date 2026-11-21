@@ -62,8 +62,54 @@ public void cornerSts(Float2Table sts, IntTable triangles, GeometryRecord geomet
     st2 = sts[corners.z];
 }
 
+// An instance's object-to-world rows o and world-to-object rows w at a time, as the instance transform
+// table holds them.
+public struct InstanceFrame
+{
+    public float4 o0;
+    public float4 o1;
+    public float4 o2;
+    public float4 o3;
+    public float4 w0;
+    public float4 w1;
+    public float4 w2;
+    public float4 w3;
+};
+
+public InstanceFrame instanceFrame(Float4Table instanceTransforms, UintTable instanceMotion, Float4Table motionRows, uint instance, float time)
+{
+    InstanceFrame frame;
+    const uint first = instanceMotion[instance];
+    if (first != kNoMotion) {
+        composeStep(stepAtTime(motionRows, first, time), frame.o0, frame.o1, frame.o2, frame.o3, frame.w0, frame.w1, frame.w2, frame.w3);
+        return frame;
+    }
+    const uint row = instance * kInstanceTransformRows;
+    frame.o0 = instanceTransforms[row];
+    frame.o1 = instanceTransforms[row + 1];
+    frame.o2 = instanceTransforms[row + 2];
+    frame.o3 = instanceTransforms[row + 3];
+    frame.w0 = instanceTransforms[row + 4];
+    frame.w1 = instanceTransforms[row + 5];
+    frame.w2 = instanceTransforms[row + 6];
+    frame.w3 = instanceTransforms[row + 7];
+    return frame;
+}
+
+// A value of a geometry's steps at a time: index's entry of the step before it and of the one after, blended.
+public float3 stepValue(Float4Table values, uint offset, uint steps, uint stride, uint index, float time)
+{
+    if (steps <= 1)
+        return values[offset + index].xyz;
+    uint span;
+    float fraction;
+    motionSpan(time, steps, span, fraction);
+    const uint at = offset + span * stride + index;
+    return lerp(values[at].xyz, values[at + stride].xyz, fraction);
+}
+
 // The object-space shading normal at a hit, interpolated from the geometry's normals; zero without them.
-public float3 surfaceNormal(Float4Table normals, IntTable triangles, GeometryRecord geometry, uint primitive, float u, float v)
+public float3 surfaceNormal(Float4Table normals, IntTable triangles, GeometryRecord geometry, uint primitive, float u, float v, float time)
 {
     const uint offset = geometry.normalOffset;
     const uint binding = geometry.normalBinding;
@@ -75,6 +121,13 @@ public float3 surfaceNormal(Float4Table normals, IntTable triangles, GeometryRec
     if (binding == kColorBindingTriangle)
         return normals[offset + primitive].xyz;
 
+    if (geometry.normalSteps > 1) {
+        const uint3 local = cornerIndices(triangles, geometry, 0, binding, primitive);
+        const uint steps = geometry.normalSteps;
+        const uint stride = geometry.normalStride;
+        return (1.0 - u - v) * stepValue(normals, offset, steps, stride, local.x, time) + u * stepValue(normals, offset, steps, stride, local.y, time)
+            + v * stepValue(normals, offset, steps, stride, local.z, time);
+    }
     const uint3 corners = cornerIndices(triangles, geometry, offset, binding, primitive);
     return ((1.0 - u - v) * normals[corners.x] + u * normals[corners.y] + v * normals[corners.z]).xyz;
 }
@@ -93,14 +146,17 @@ public float3 shadingNormal(float3 objectNormal, float4 w0, float4 w1, float4 w2
     return dot(unit, geometric) < 0.0 ? -unit : unit;
 }
 
-// The world positions of a hit triangle's corners, through the instance's object-to-world rows.
-public void triangleCorners(Float4Table points, IntTable triangles, GeometryRecord geometry, uint primitive,
+// The world positions of a hit triangle's corners at a time, through the instance's object-to-world rows.
+public void triangleCorners(Float4Table points, IntTable triangles, GeometryRecord geometry, uint primitive, float time,
                             float4 o0, float4 o1, float4 o2, float4 o3, out float3 p0, out float3 p1, out float3 p2)
 {
     const uint triangle = geometry.triangleOffset + 3 * primitive;
-    p0 = transformRow(float4(points[geometry.pointOffset + uint(triangles[triangle])].xyz, 1.0), o0, o1, o2, o3).xyz;
-    p1 = transformRow(float4(points[geometry.pointOffset + uint(triangles[triangle + 1])].xyz, 1.0), o0, o1, o2, o3).xyz;
-    p2 = transformRow(float4(points[geometry.pointOffset + uint(triangles[triangle + 2])].xyz, 1.0), o0, o1, o2, o3).xyz;
+    const uint offset = geometry.pointOffset;
+    const uint steps = geometry.pointSteps;
+    const uint stride = geometry.pointStride;
+    p0 = transformRow(float4(stepValue(points, offset, steps, stride, uint(triangles[triangle]), time), 1.0), o0, o1, o2, o3).xyz;
+    p1 = transformRow(float4(stepValue(points, offset, steps, stride, uint(triangles[triangle + 1]), time), 1.0), o0, o1, o2, o3).xyz;
+    p2 = transformRow(float4(stepValue(points, offset, steps, stride, uint(triangles[triangle + 2]), time), 1.0), o0, o1, o2, o3).xyz;
 }
 
 public int textureOf(MaterialRecord material, uint slot)
@@ -161,6 +217,8 @@ public bool surfaceAbsent(Float4Table colors,
                           IntTable triangles,
                           Float4Table points,
                           Float4Table instanceTransforms,
+                          UintTable instanceMotion,
+                          Float4Table motionRows,
                           Float2Table sts,
                           StructuredBuffer<TextureBinding> bindings,
                           StructuredBuffer<uint4> images,
@@ -174,26 +232,23 @@ public bool surfaceAbsent(Float4Table colors,
                           float v,
                           float3 position,
                           float3 direction,
-                          float width)
+                          float width,
+                          float time)
 {
-    const uint row = instance * kInstanceTransformRows;
-    const float4 o0 = instanceTransforms[row];
-    const float4 o1 = instanceTransforms[row + 1];
-    const float4 o2 = instanceTransforms[row + 2];
-    const float4 o3 = instanceTransforms[row + 3];
+    const InstanceFrame frame = instanceFrame(instanceTransforms, instanceMotion, motionRows, instance, time);
     float3 p0;
     float3 p1;
     float3 p2;
 
-    triangleCorners(points, triangles, geometry, primitive, o0, o1, o2, o3, p0, p1, p2);
+    triangleCorners(points, triangles, geometry, primitive, time, frame.o0, frame.o1, frame.o2, frame.o3, p0, p1, p2);
 
     const float3 outward = normalize(cross(p1 - p0, p2 - p0));
 
     if (material.kind.x == kMaterialProject3D) {
         float4 color;
 
-        return !evaluateProject3D(projections[material.kind.y], bindings, images, texels, position, outward, direction, width, o0, o1, o2, o3,
-                                  instanceTransforms[row + 4], instanceTransforms[row + 5], instanceTransforms[row + 6], instanceTransforms[row + 7], color);
+        return !evaluateProject3D(projections[material.kind.y], bindings, images, texels, position, outward, direction, width, frame.o0, frame.o1, frame.o2, frame.o3,
+                                  frame.w0, frame.w1, frame.w2, frame.w3, color);
     }
 
     const bool hasSt = geometry.stBinding != kStBindingNone;

@@ -158,6 +158,44 @@ namespace {
         return {};
     }
 
+    GpuStatus
+    describeAabbs(GpuDevice& dev, const char* where, const GpuAabbs& b, const GpuBlasOptions& options, BuildDesc& out)
+    {
+        if (!b.boxes || !*b.boxes) {
+            return invalid(where, "a box buffer is required");
+        }
+        if (b.count == 0) {
+            return invalid(where, "there are no boxes");
+        }
+        if (b.offset % 8 != 0 || b.stride % 8 != 0 || b.stride < 6 * sizeof(float)) {
+            return invalid(where, "the box offset and stride must be multiples of 8, the stride at least 24 bytes");
+        }
+        if (b.offset + (b.count - 1) * b.stride + 6 * sizeof(float) > b.boxes->size()) {
+            return invalid(where, "the boxes run past the end of their buffer");
+        }
+        const VkPhysicalDeviceAccelerationStructurePropertiesKHR props = accelProperties(dev);
+        if (b.count > props.maxPrimitiveCount) {
+            return { VK_ERROR_FEATURE_NOT_PRESENT,
+                     std::string(where) + ": " + std::to_string(b.count) + " boxes exceed the device's "
+                         + std::to_string(props.maxPrimitiveCount) };
+        }
+
+        VkAccelerationStructureGeometryAabbsDataKHR& aabbs = out.geometry.geometry.aabbs;
+        aabbs.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_AABBS_DATA_KHR;
+        aabbs.data.deviceAddress = bufferAddress(dev, *b.boxes) + b.offset;
+        aabbs.stride = b.stride;
+        out.geometry.geometryType = VK_GEOMETRY_TYPE_AABBS_KHR;
+        out.geometry.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+
+        out.info.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+        out.info.flags = blasFlags(options);
+        out.info.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+        out.info.geometryCount = 1;
+        out.info.pGeometries = &out.geometry;
+        out.range.primitiveCount = b.count;
+        return {};
+    }
+
     void
     describeInstances(VkDeviceAddress instances, uint32_t count, BuildDesc& out)
     {
@@ -420,11 +458,11 @@ GpuBlas::querySizes(GpuDevice& dev, const GpuTriangles& triangles, const GpuBlas
     return {};
 }
 
+template <class Describe>
 GpuStatus
-GpuBlas::build(GpuRecordContext& ctx, GpuBufferPool& pool, const GpuTriangles& triangles,
-               const GpuBlasOptions& options, GpuBlas& out)
+GpuBlas::buildWith(GpuRecordContext& ctx, GpuBufferPool& pool, const char* where, const GpuBlasOptions& options,
+                   uint32_t vertexCount, uint32_t triangleCount, Describe&& describe, GpuBlas& out)
 {
-    const char* where = "GpuBlas::build";
     GpuAccelRecorder::retire(ctx, out.structure_);
     GpuAccelRecorder::retire(ctx, out.query_);
     out = GpuBlas();
@@ -435,15 +473,15 @@ GpuBlas::build(GpuRecordContext& ctx, GpuBufferPool& pool, const GpuTriangles& t
     }
     GpuDevice& dev = ctx.device();
     BuildDesc desc;
-    if (GpuStatus s = describeTriangles(dev, where, triangles, options, desc); !s) {
+    if (GpuStatus s = describe(dev, desc); !s) {
         return s;
     }
     const GpuAccelSizes sizes = buildSizes(dev, fns, desc);
 
     GpuBlas blas;
     blas.options_ = options;
-    blas.vertexCount_ = triangles.vertexCount;
-    blas.triangleCount_ = triangles.triangleCount;
+    blas.vertexCount_ = vertexCount;
+    blas.triangleCount_ = triangleCount;
     blas.updateScratchBytes_ = sizes.updateScratchBytes;
     if (GpuStatus s = GpuAccelRecorder::createStructure(dev, fns, pool, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
                                                         sizes.structureBytes, blas.structure_);
@@ -465,6 +503,29 @@ GpuBlas::build(GpuRecordContext& ctx, GpuBufferPool& pool, const GpuTriangles& t
     }
     out = std::move(blas);
     return {};
+}
+
+GpuStatus
+GpuBlas::build(GpuRecordContext& ctx, GpuBufferPool& pool, const GpuTriangles& triangles,
+               const GpuBlasOptions& options, GpuBlas& out)
+{
+    const char* where = "GpuBlas::build";
+    return buildWith(
+        ctx, pool, where, options, triangles.vertexCount, triangles.triangleCount,
+        [&](GpuDevice& dev, BuildDesc& desc) { return describeTriangles(dev, where, triangles, options, desc); }, out);
+}
+
+GpuStatus
+GpuBlas::build(GpuRecordContext& ctx, GpuBufferPool& pool, const GpuAabbs& boxes, const GpuBlasOptions& options,
+               GpuBlas& out)
+{
+    const char* where = "GpuBlas::build";
+    // No vertices, so refit() turns the structure down.
+    GpuBlasOptions fixed = options;
+    fixed.allowUpdate = false;
+    return buildWith(
+        ctx, pool, where, fixed, 0, boxes.count,
+        [&](GpuDevice& dev, BuildDesc& desc) { return describeAabbs(dev, where, boxes, fixed, desc); }, out);
 }
 
 GpuStatus

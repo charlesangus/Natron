@@ -164,12 +164,27 @@ commitCancellable(RTCScene scene,
 }
 
 // One geometry's structure. A geometry with nothing to trace has a null scene and no instances.
+// A deforming geometry's points at each of its snapshot's time steps; one step for a still one.
+std::size_t
+timeStepsOf(const UtilityScene::Geometry& source)
+{
+    return std::max<std::size_t>(1, source.pointSteps.size());
+}
+
+const GfVec3f*
+pointsAtStep(const UtilityScene::Geometry& source,
+             std::size_t step)
+{
+    return source.pointSteps.empty() ? source.points.cdata() : source.pointSteps[step].cdata();
+}
+
 class GeometryScene {
 public:
     GeometryScene(RTCDevice device,
                   const UtilityScene::Geometry& source)
         : _triangles(source.triangles)
         , _pointCount(source.points.size())
+        , _steps(timeStepsOf(source))
         , _topologyVersion(source.topologyVersion)
         , _pointsVersion(source.pointsVersion)
         , _committed(false)
@@ -183,13 +198,20 @@ public:
             return;
         }
         _geometry = rtcNewGeometry(device, RTC_GEOMETRY_TYPE_TRIANGLE);
-        // Embree reads vertices in 16-byte loads, so they need the padding it allocates; a VtArray has none.
-        _vertices = static_cast<GfVec3f*>(rtcSetNewGeometryBuffer(_geometry, RTC_BUFFER_TYPE_VERTEX, 0, RTC_FORMAT_FLOAT3,
-                                                                  sizeof(GfVec3f), _pointCount));
-        std::memcpy(_vertices, source.points.cdata(), _pointCount * sizeof(GfVec3f));
+        // Embree spreads the steps evenly over its time range of 0 to 1, as the snapshot's lie over the
+        // shutter, and interpolates the points linearly between them.
+        rtcSetGeometryTimeStepCount(_geometry, static_cast<unsigned int>(_steps));
+        _vertices.resize(_steps);
+        for (std::size_t step = 0; step < _steps; ++step) {
+            // Embree reads vertices in 16-byte loads, so they need the padding it allocates; a VtArray has none.
+            _vertices[step] = static_cast<GfVec3f*>(rtcSetNewGeometryBuffer(_geometry, RTC_BUFFER_TYPE_VERTEX, static_cast<unsigned int>(step), RTC_FORMAT_FLOAT3,
+                                                                            sizeof(GfVec3f), _pointCount));
+            std::memcpy(_vertices[step], pointsAtStep(source, step), _pointCount * sizeof(GfVec3f));
+        }
         rtcSetSharedGeometryBuffer(_geometry, RTC_BUFFER_TYPE_INDEX, 0, RTC_FORMAT_UINT3, _triangles.cdata(), 0,
                                    sizeof(GfVec3i), _triangles.size());
-        rtcSetGeometryBuildQuality(_geometry, RTC_BUILD_QUALITY_REFIT);
+        // A refit keeps a still mesh's tree; a deforming one's motion tree is built anew each time.
+        rtcSetGeometryBuildQuality(_geometry, _steps > 1 ? RTC_BUILD_QUALITY_MEDIUM : RTC_BUILD_QUALITY_REFIT);
         rtcCommitGeometry(_geometry);
         _scene = newRefittableScene(device);
         rtcAttachGeometry(_scene, _geometry);
@@ -215,7 +237,7 @@ public:
 
     bool needsRebuild(const UtilityScene::Geometry& source) const
     {
-        return source.topologyVersion != _topologyVersion || source.points.size() != _pointCount || (_scene && !_committed);
+        return source.topologyVersion != _topologyVersion || source.points.size() != _pointCount || timeStepsOf(source) != _steps || (_scene && !_committed);
     }
 
     void setCommitted()
@@ -236,8 +258,10 @@ public:
             return false;
         }
         _committed = false;
-        std::memcpy(_vertices, source.points.cdata(), _pointCount * sizeof(GfVec3f));
-        rtcUpdateGeometryBuffer(_geometry, RTC_BUFFER_TYPE_VERTEX, 0);
+        for (std::size_t step = 0; step < _steps; ++step) {
+            std::memcpy(_vertices[step], pointsAtStep(source, step), _pointCount * sizeof(GfVec3f));
+            rtcUpdateGeometryBuffer(_geometry, RTC_BUFFER_TYPE_VERTEX, static_cast<unsigned int>(step));
+        }
         rtcCommitGeometry(_geometry);
 
         return true;
@@ -246,10 +270,12 @@ public:
 private:
     RTCGeometry _geometry = nullptr;
     RTCScene _scene = nullptr;
-    GfVec3f* _vertices = nullptr;
+    // One buffer per time step.
+    std::vector<GfVec3f*> _vertices;
     // Embree reads the triangles from this array's storage, so it has to outlive the geometry.
     VtVec3iArray _triangles;
     std::size_t _pointCount;
+    std::size_t _steps;
     std::uint64_t _topologyVersion;
     std::uint64_t _pointsVersion;
     bool _committed;
@@ -258,22 +284,56 @@ private:
 struct Placement {
     UtilityScene::GeometryId geometry;
     GfMatrix4d transform;
+    // A moving instance's transform at each of the snapshot's time steps; empty for a still one.
+    std::vector<UtilityScene::Decomposition> steps;
 };
 
+bool
+sameDecomposition(const UtilityScene::Decomposition& a,
+                  const UtilityScene::Decomposition& b)
+{
+    return a.translation == b.translation && a.rotation == b.rotation && std::equal(a.stretch, a.stretch + 6, b.stretch);
+}
+
+bool
+samePlace(const Placement& a,
+          const Placement& b)
+{
+    return a.transform == b.transform && a.steps.size() == b.steps.size() && std::equal(a.steps.begin(), a.steps.end(), b.steps.begin(), sameDecomposition);
+}
+
+// The instances Embree has are kept only while each places the same geometry with as many time steps.
 bool
 sameGeometries(const std::vector<Placement>& a,
                const std::vector<Placement>& b)
 {
     return a.size() == b.size()
-        && std::equal(a.begin(), a.end(), b.begin(), [](const Placement& x, const Placement& y) { return x.geometry == y.geometry; });
+        && std::equal(a.begin(), a.end(), b.begin(), [](const Placement& x, const Placement& y) { return x.geometry == y.geometry && x.steps.size() == y.steps.size(); });
 }
 
 void
 setInstanceTransform(RTCGeometry instance,
-                     const GfMatrix4d& transform)
+                     const Placement& placement)
 {
+    if (placement.steps.size() > 1) {
+        // Embree slerps the rotation and lerps the rest between steps, as the shading kernels do, so
+        // that a hit lies on the surface they shade.
+        for (std::size_t step = 0; step < placement.steps.size(); ++step) {
+            const UtilityScene::Decomposition& d = placement.steps[step];
+            RTCQuaternionDecomposition q;
+
+            rtcInitQuaternionDecomposition(&q);
+            rtcQuaternionDecompositionSetScale(&q, static_cast<float>(d.stretch[0]), static_cast<float>(d.stretch[3]), static_cast<float>(d.stretch[5]));
+            rtcQuaternionDecompositionSetSkew(&q, static_cast<float>(d.stretch[1]), static_cast<float>(d.stretch[2]), static_cast<float>(d.stretch[4]));
+            rtcQuaternionDecompositionSetQuaternion(&q, static_cast<float>(d.rotation[0]), static_cast<float>(d.rotation[1]), static_cast<float>(d.rotation[2]), static_cast<float>(d.rotation[3]));
+            rtcQuaternionDecompositionSetTranslation(&q, static_cast<float>(d.translation[0]), static_cast<float>(d.translation[1]), static_cast<float>(d.translation[2]));
+            rtcSetGeometryTransformQuaternion(instance, static_cast<unsigned int>(step), &q);
+        }
+
+        return;
+    }
     float matrix[16];
-    const double* source = transform.data();
+    const double* source = placement.transform.data();
 
     // GfMatrix4d's row vectors lie in memory exactly as Embree's columns do.
     std::copy(source, source + 16, matrix);
@@ -302,7 +362,8 @@ fillRays(const Tracer::RayBatch& rays,
         packet.dir_z[i] = rays.directionZ[ray];
         packet.tnear[i] = rays.tMin[ray];
         packet.tfar[i] = rays.tMax[ray];
-        packet.time[i] = 0.f;
+        // Embree's time range is the snapshot's shutter, 0 to 1, the rays' own.
+        packet.time[i] = rays.time ? rays.time[ray] : 0.5f;
         packet.mask[i] = 0xffffffffu;
         packet.id[i] = static_cast<unsigned int>(i);
         packet.flags[i] = 0;
@@ -360,8 +421,11 @@ struct EmbreeTracer::Implementation {
             RTCGeometry instance = rtcNewGeometry(device, RTC_GEOMETRY_TYPE_INSTANCE);
 
             rtcSetGeometryInstancedScene(instance, found->second->scene());
-            setInstanceTransform(instance, newPlacements[i].transform);
-            rtcSetGeometryBuildQuality(instance, RTC_BUILD_QUALITY_REFIT);
+            if (newPlacements[i].steps.size() > 1) {
+                rtcSetGeometryTimeStepCount(instance, static_cast<unsigned int>(newPlacements[i].steps.size()));
+            }
+            setInstanceTransform(instance, newPlacements[i]);
+            rtcSetGeometryBuildQuality(instance, newPlacements[i].steps.size() > 1 ? RTC_BUILD_QUALITY_LOW : RTC_BUILD_QUALITY_REFIT);
             rtcCommitGeometry(instance);
             // The id Embree reports a hit under is the index into the snapshot's instances.
             rtcAttachGeometryByID(instanceScene, instance, static_cast<unsigned int>(i));
@@ -467,7 +531,7 @@ EmbreeTracer::update(const UtilityScene::Snapshot& snapshot,
         const UtilityScene::Instance& instance = snapshot.instances[i];
         const auto dense = denseIndices.find(instance.geometry);
 
-        placements.push_back(Placement { instance.geometry, instance.transform });
+        placements.push_back(Placement { instance.geometry, instance.transform, instance.transformSteps.size() > 1 ? instance.transformSteps : std::vector<UtilityScene::Decomposition>() });
         imp.instanceGeometry[i] = dense == denseIndices.end() ? kNoHit : dense->second;
     }
 
@@ -509,13 +573,13 @@ EmbreeTracer::update(const UtilityScene::Snapshot& snapshot,
             }
 
             RTCGeometry instance = imp.instances[i];
-            const bool moved = placements[i].transform != imp.placements[i].transform;
+            const bool moved = !samePlace(placements[i], imp.placements[i]);
 
             if (!instance || !(moved || geometryRefitted)) {
                 continue;
             }
             if (moved) {
-                setInstanceTransform(instance, placements[i].transform);
+                setInstanceTransform(instance, placements[i]);
             }
             // Without moving, an instance still caches the bounds of what it places, which a refit moved.
             rtcCommitGeometry(instance);

@@ -82,6 +82,8 @@ public:
         const float* directionZ = nullptr;
         const float* tMin = nullptr;
         const float* tMax = nullptr;
+        // Each ray's time over the shutter, from 0 at its open to 1 at its close; null is its centre.
+        const float* time = nullptr;
         std::size_t count = 0;
     };
 

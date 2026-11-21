@@ -26,6 +26,7 @@
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
 #include <pxr/base/gf/frustum.h>
+#include <pxr/base/gf/math.h>
 #include <pxr/base/gf/matrix4d.h>
 #include <pxr/base/gf/rect2i.h>
 #include <pxr/base/gf/rotation.h>
@@ -322,11 +323,10 @@ protected:
 #endif
     }
 
-    // Draws the whole frame as the render pass does, bucket by bucket.
+    // Draws the whole frame as the render pass does.
     std::vector<GfVec4f> draw(const UtilityScene& scene,
                               const WavefrontFrame& frame,
-                              const WavefrontMotion& motion,
-                              std::vector<double>* bucketSeconds = nullptr)
+                              const WavefrontMotion& motion)
     {
         ColorFilm film(GetParam() == Backend::GpuFilm);
         const std::atomic<bool> stop(false);
@@ -337,7 +337,7 @@ protected:
 
             return std::vector<GfVec4f>();
         }
-        EXPECT_TRUE(wavefrontDrawSamples(*executor, scene.snapshot(), frame, motion, film, stop, 2, std::function<void(std::size_t)>(), bucketSeconds));
+        EXPECT_TRUE(wavefrontDrawSamples(*executor, scene.snapshot(), frame, motion, film, stop, 2, std::function<void(std::size_t)>()));
 
         return film.colors();
     }
@@ -520,7 +520,7 @@ const int kMovedPixel = 10;
 
 } // anon namespace
 
-TEST(NatronUtilityMotionScene, ATranslationEvaluatesToItsInterpolatedPosition)
+TEST(NatronUtilityMotionScene, AShutterHoldsATranslationsEndPoints)
 {
     UtilityScene scene;
     const UtilityScene::GeometryId id = addStripe(scene, 0.);
@@ -532,16 +532,39 @@ TEST(NatronUtilityMotionScene, ATranslationEvaluatesToItsInterpolatedPosition)
     ASSERT_TRUE(UtilityScene::moves(snapshot));
     ASSERT_EQ(1u, snapshot.instances.size());
 
-    const UtilityScene::Snapshot middle = UtilityScene::evaluateAt(snapshot, 0.);
-    const UtilityScene::Snapshot quarter = UtilityScene::evaluateAt(snapshot, 0.125);
-    const UtilityScene::Snapshot past = UtilityScene::evaluateAt(snapshot, 1.);
+    const UtilityScene::Snapshot one = UtilityScene::atShutter(snapshot, 0., 0.25, 1);
+    const UtilityScene::Snapshot two = UtilityScene::atShutter(snapshot, -0.5, 1., 2);
 
-    EXPECT_NEAR(1., middle.instances[0].transform.ExtractTranslation()[0], 1e-9);
-    EXPECT_NEAR(2., quarter.instances[0].transform.ExtractTranslation()[0], 1e-9);
-    EXPECT_NEAR(3., past.instances[0].transform.ExtractTranslation()[0], 1e-9) << "beyond its samples a transform holds the last";
-    EXPECT_FALSE(UtilityScene::moves(middle)) << "an evaluated scene is still";
-    EXPECT_NE(0u, middle.version & kEvaluatedBit);
-    EXPECT_NE(middle.version, quarter.version) << "each evaluation is a scene of its own to the tracers";
+    EXPECT_EQ(2, one.timeSteps);
+    ASSERT_EQ(2u, one.instances[0].transformSteps.size());
+    EXPECT_NEAR(1., one.instances[0].transformSteps[0].translation[0], 1e-9);
+    EXPECT_NEAR(3., one.instances[0].transformSteps[1].translation[0], 1e-9);
+    EXPECT_NEAR(2., UtilityScene::transformAt(one.instances[0], 0.5).ExtractTranslation()[0], 1e-9);
+    EXPECT_EQ(3, two.timeSteps);
+    ASSERT_EQ(3u, two.instances[0].transformSteps.size());
+    EXPECT_NEAR(-1., two.instances[0].transformSteps[0].translation[0], 1e-9) << "before its samples a transform holds the first";
+    EXPECT_NEAR(1.5, two.instances[0].transformSteps[1].translation[0], 1e-9);
+    EXPECT_NEAR(3., two.instances[0].transformSteps[2].translation[0], 1e-9) << "beyond its samples a transform holds the last";
+    EXPECT_NE(0u, one.version & kEvaluatedBit);
+    EXPECT_EQ(one.version, UtilityScene::atShutter(snapshot, 0., 0.25, 1).version) << "the same shutter builds nothing again";
+    EXPECT_NE(one.version, two.version) << "each shutter is a scene of its own to the tracers";
+    EXPECT_EQ(1, UtilityScene::atShutter(snapshot, 0.1, 0.1, 4).timeSteps) << "a closed shutter";
+}
+
+// A spin's end-points blend along the shortest arc, so a quarter turn's middle keeps the object's size.
+TEST(NatronUtilityMotionScene, ASpinKeepsItsSize)
+{
+    UtilityScene::Instance instance;
+
+    instance.transformSteps = { UtilityScene::decompose(GfMatrix4d(1.)),
+                                UtilityScene::decompose(GfMatrix4d().SetRotate(GfRotation(GfVec3d(0., 0., 1.), 90.))) };
+
+    for (double time : { 0.25, 0.5, 0.75 }) {
+        const GfVec3d x = UtilityScene::transformAt(instance, time).TransformDir(GfVec3d(1., 0., 0.));
+
+        EXPECT_NEAR(1., x.GetLength(), 1e-9) << time;
+        EXPECT_NEAR(90. * time, GfRadiansToDegrees(std::atan2(x[1], x[0])), 1e-6) << time;
+    }
 }
 
 TEST(NatronUtilityMotionScene, TransformsInterpolateByDecomposition)
@@ -572,46 +595,38 @@ TEST(NatronUtilityMotionScene, PointsInterpolateLinearly)
     scene.setPointMotion(id, motion);
 
     const UtilityScene::Snapshot snapshot = scene.snapshot();
-    const UtilityScene::Snapshot quarter = UtilityScene::evaluateAt(snapshot, 0.25);
-    const UtilityScene::Geometry& geometry = quarter.geometries.at(id);
+    const UtilityScene::Snapshot sampled = UtilityScene::atShutter(snapshot, 0.25, 0.75, 1);
+    const UtilityScene::Geometry& geometry = sampled.geometries.at(id);
 
-    ASSERT_EQ(4u, geometry.points.size());
-    EXPECT_FLOAT_EQ(1.f, geometry.points[0][0]);
-    EXPECT_FLOAT_EQ(2.f, geometry.points[1][0]);
-    EXPECT_EQ(quarter.version, geometry.pointsVersion) << "moved points are a refit";
+    ASSERT_EQ(2u, geometry.pointSteps.size());
+    ASSERT_EQ(4u, geometry.pointSteps[0].size());
+    EXPECT_FLOAT_EQ(1.f, geometry.pointSteps[0][0][0]);
+    EXPECT_FLOAT_EQ(2.f, geometry.pointSteps[0][1][0]);
+    EXPECT_FLOAT_EQ(3.f, geometry.pointSteps[1][0][0]);
     EXPECT_EQ(snapshot.geometries.at(id).topologyVersion, geometry.topologyVersion) << "moved points keep their topology";
-    EXPECT_FALSE(UtilityScene::moves(quarter));
+    EXPECT_NE(snapshot.geometries.at(id).pointsVersion, geometry.pointsVersion);
 }
 
-TEST(NatronUtilityMotionScene, BucketsFollowTheShutterAndTheSamples)
+TEST(NatronUtilityMotionScene, TheCameraHasStepsOnlyWhenItMoves)
 {
-    UtilityScene still;
+    const WavefrontFrame frame = makeFrame(1);
+    WavefrontMotion motion = shutter(-0.5, 0.5, 2);
 
-    addStripe(still, 0.);
+    EXPECT_TRUE(wavefrontCameraSteps(frame, motion).empty()) << "a still camera";
+    for (double x : { -1., 0., 1. }) {
+        GfFrustum camera = orthographicCamera();
 
-    UtilityScene moving;
-
-    moveStripe(moving, addStripe(moving, 0.), -0.5, -0.5, 0.5, 0.5);
-    EXPECT_EQ(1, wavefrontBucketCount(shutter(0., 0., 8), moving.snapshot(), 64)) << "a closed shutter";
-    EXPECT_EQ(1, wavefrontBucketCount(shutter(-0.5, 0.5, 8), still.snapshot(), 64)) << "nothing moving";
-    EXPECT_EQ(8, wavefrontBucketCount(shutter(-0.5, 0.5, 8), moving.snapshot(), 64));
-    EXPECT_EQ(4, wavefrontBucketCount(shutter(-0.5, 0.5, 8), moving.snapshot(), 4)) << "no more buckets than samples";
-    EXPECT_DOUBLE_EQ(-0.375, wavefrontBucketTime(shutter(-0.5, 0.5, 4), 0, 4));
-    EXPECT_DOUBLE_EQ(0.375, wavefrontBucketTime(shutter(-0.5, 0.5, 4), 3, 4));
-    EXPECT_DOUBLE_EQ(0., wavefrontBucketTime(shutter(0., 1., 1), 0, 1)) << "one bucket of a shutter opening at the frame";
-    EXPECT_DOUBLE_EQ(0., wavefrontBucketTime(shutter(-1., 0., 1), 0, 1)) << "one bucket of a shutter closing at the frame";
-
-    for (int samples : { 1, 4, 9, 64, 256 }) {
-        for (int buckets : { 1, 3, 8 }) {
-            std::vector<int> order = wavefrontSampleOrder(samples, buckets);
-
-            std::sort(order.begin(), order.end());
-            ASSERT_EQ(static_cast<std::size_t>(samples), order.size());
-            for (int i = 0; i < samples; ++i) {
-                EXPECT_EQ(i, order[static_cast<std::size_t>(i)]) << samples << " samples in " << buckets << " buckets";
-            }
-        }
+        camera.SetPosition(GfVec3d(x, 0., kCameraZ));
+        motion.cameraTimes.push_back(x / 2.);
+        motion.cameraViews.push_back(camera.ComputeViewMatrix());
+        motion.cameraProjections.push_back(camera.ComputeProjectionMatrix());
     }
+    EXPECT_EQ(std::size_t(4 * (1 + 3 * kKernelCameraRowsPerStep)), wavefrontCameraSteps(frame, motion).size());
+
+    WavefrontMotion closed = motion;
+
+    closed.open = closed.close = 0.;
+    EXPECT_TRUE(wavefrontCameraSteps(frame, closed).empty()) << "a closed shutter";
 }
 
 TEST_P(NatronUtilityMotion, AStripeMovingAPixelAFrameSmearsAsTheBoxFilterSays)
@@ -623,11 +638,9 @@ TEST_P(NatronUtilityMotion, AStripeMovingAPixelAFrameSmearsAsTheBoxFilterSays)
 
     moveStripe(scene, addStripe(scene, 0.), -0.5, -0.5, 0.5, 0.5);
 
-    std::vector<double> bucketSeconds;
-    const std::vector<GfVec4f> colors = draw(scene, makeFrame(8), shutter(-0.5, 0.5, 16), &bucketSeconds);
+    const std::vector<GfVec4f> colors = draw(scene, makeFrame(8), shutter(-0.5, 0.5, 1));
 
     ASSERT_EQ(static_cast<std::size_t>(kSize * kSize), colors.size());
-    EXPECT_EQ(16u, bucketSeconds.size());
 
     double sum = 0.;
 
@@ -635,7 +648,7 @@ TEST_P(NatronUtilityMotion, AStripeMovingAPixelAFrameSmearsAsTheBoxFilterSays)
         const double alpha = colors[(kSize / 2) * kSize + x][3];
 
         sum += alpha;
-        // 64 samples in 16 buckets: within a sample's share in space, and a bucket's in time.
+        // 64 samples, each at a time of its own: within a sample's share in space and in time.
         EXPECT_NEAR(smearedCoverage(x, -0.5, 0.5), alpha, 0.1) << "pixel " << x;
     }
     EXPECT_NEAR(0.125, smearedCoverage(7, -0.5, 0.5), 1e-6);
@@ -645,7 +658,27 @@ TEST_P(NatronUtilityMotion, AStripeMovingAPixelAFrameSmearsAsTheBoxFilterSays)
     EXPECT_GT(colors[(kSize / 2) * kSize + 9][3], 0.f);
 }
 
-TEST_P(NatronUtilityMotion, OneSegmentDrawsTheUnblurredFrame)
+// One segment already interpolates, so more segments of a straight move only split it where it is straight.
+TEST_P(NatronUtilityMotion, MoreSegmentsOfAStraightMoveDrawTheSameSmear)
+{
+    if (!available()) {
+        return;
+    }
+    UtilityScene scene;
+
+    moveStripe(scene, addStripe(scene, 0.), -0.5, -0.5, 0.5, 0.5);
+
+    const std::vector<GfVec4f> one = draw(scene, makeFrame(8), shutter(-0.5, 0.5, 1));
+    const std::vector<GfVec4f> eight = draw(scene, makeFrame(8), shutter(-0.5, 0.5, 8));
+
+    ASSERT_EQ(one.size(), eight.size());
+    for (int x = 0; x < kSize; ++x) {
+        // A sample right on the stripe's edge may land either side of it.
+        EXPECT_NEAR(one[(kSize / 2) * kSize + x][3], eight[(kSize / 2) * kSize + x][3], 2.5 / 64.) << "pixel " << x;
+    }
+}
+
+TEST_P(NatronUtilityMotion, AClosedShutterOrAStillSceneDrawsTheUnblurredFrame)
 {
     if (!available()) {
         return;
@@ -661,18 +694,6 @@ TEST_P(NatronUtilityMotion, OneSegmentDrawsTheUnblurredFrame)
     const std::vector<GfVec4f> unblurred = draw(still, makeFrame(4), shutter(0., 0., 1));
 
     {
-        SCOPED_TRACE("one segment");
-        expectSameColors(unblurred, draw(scene, makeFrame(4), shutter(-0.5, 0.5, 1)));
-    }
-    {
-        SCOPED_TRACE("one segment of a shutter opening at the frame");
-        expectSameColors(unblurred, draw(scene, makeFrame(4), shutter(0., 0.5, 1)));
-    }
-    {
-        SCOPED_TRACE("one segment of a shutter closing at the frame");
-        expectSameColors(unblurred, draw(scene, makeFrame(4), shutter(-0.5, 0., 1)));
-    }
-    {
         SCOPED_TRACE("a closed shutter");
         expectSameColors(unblurred, draw(scene, makeFrame(4), shutter(0., 0., 8)));
     }
@@ -682,7 +703,30 @@ TEST_P(NatronUtilityMotion, OneSegmentDrawsTheUnblurredFrame)
     }
 }
 
-// Set NATRON_UTILITY_MOTION_BENCH to run: a deforming mesh of a million triangles, 8 buckets.
+// The stripe's points move rather than its transform: the same smear, through the deforming path.
+TEST_P(NatronUtilityMotion, ADeformingStripeSmearsAsTheBoxFilterSays)
+{
+    if (!available()) {
+        return;
+    }
+    UtilityScene scene;
+    const UtilityScene::GeometryId id = addStripe(scene, 0.);
+    std::shared_ptr<UtilityScene::PointMotion> motion = std::make_shared<UtilityScene::PointMotion>();
+
+    motion->times = { -0.5, 0.5 };
+    motion->points = { VtVec3fArray { GfVec3f(-0.5f, -50.f, 0.f), GfVec3f(0.5f, -50.f, 0.f), GfVec3f(0.5f, 50.f, 0.f), GfVec3f(-0.5f, 50.f, 0.f) },
+                       VtVec3fArray { GfVec3f(0.5f, -50.f, 0.f), GfVec3f(1.5f, -50.f, 0.f), GfVec3f(1.5f, 50.f, 0.f), GfVec3f(0.5f, 50.f, 0.f) } };
+    scene.setPointMotion(id, motion);
+
+    const std::vector<GfVec4f> colors = draw(scene, makeFrame(8), shutter(-0.5, 0.5, 1));
+
+    ASSERT_EQ(static_cast<std::size_t>(kSize * kSize), colors.size());
+    for (int x = 0; x < kSize; ++x) {
+        EXPECT_NEAR(smearedCoverage(x, -0.5, 0.5), colors[(kSize / 2) * kSize + x][3], 0.1) << "pixel " << x;
+    }
+}
+
+// Set NATRON_UTILITY_MOTION_BENCH to run: a deforming mesh of a million triangles over 8 segments.
 TEST_P(NatronUtilityMotion, BenchADeformingMillionTriangleMesh)
 {
     if (!available()) {
@@ -730,43 +774,42 @@ TEST_P(NatronUtilityMotion, BenchADeformingMillionTriangleMesh)
     motion->points = { from, to };
     scene.setPointMotion(id, motion);
 
-    std::vector<double> bucketSeconds;
     const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
 
-    draw(scene, makeFrame(4), shutter(-0.5, 0.5, 8), &bucketSeconds);
+    draw(scene, makeFrame(4), shutter(-0.5, 0.5, 8));
 
     const double total = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
 
-    ASSERT_EQ(8u, bucketSeconds.size());
-    for (std::size_t b = 0; b < bucketSeconds.size(); ++b) {
-        std::printf("[   BENCH  ] bucket %zu: %.3f s\n", b, bucketSeconds[b]);
-    }
-    std::printf("[   BENCH  ] %d triangles, 8 buckets, 16 samples a pixel: %.3f s\n", columns * rows * 2, total);
+    std::printf("[   BENCH  ] %d triangles, 8 segments, 16 samples a pixel: %.3f s\n", columns * rows * 2, total);
 }
 
 INSTANTIATE_TEST_CASE_P(Backends, NatronUtilityMotion, ::testing::Values(Backend::Cpu, Backend::GpuTiles, Backend::GpuFilm));
 
-// Two segments of a shutter from the frame to the next trace at a quarter and three quarters of a
-// frame, where a stripe moving 4 units a frame covers the pixels one and three units on; half of
-// each pixel's samples fall in each segment.
+// A shutter from the frame to the next over which the stripe moves 4 units smears it over the pixels from
+// its rest position on, each sample at a time of its own.
 void
-expectSegmentPositions(const MotionRender& render)
+expectSmear(const MotionRender& render)
 {
-    EXPECT_NEAR(0.f, render.alphaAt(kRestPixel), 1e-5f);
-    EXPECT_NEAR(0.5f, render.alphaAt(kRestPixel + 1), 1e-5f);
-    EXPECT_NEAR(0.f, render.alphaAt(kMovedPixel), 1e-5f);
-    EXPECT_NEAR(0.5f, render.alphaAt(kMovedPixel + 1), 1e-5f);
+    double sum = 0.;
+
+    for (int x = 0; x < kSize; ++x) {
+        const float alpha = render.alphaAt(x);
+
+        sum += alpha;
+        EXPECT_NEAR(smearedCoverage(x, 0., 4.), alpha, 0.1) << "pixel " << x;
+    }
+    EXPECT_NEAR(1., sum, 0.05) << "the smear spreads the stripe without adding to it";
 }
 
-TEST(NatronUtilityMotionDelegate, ATranslatingStripeIsWhereEachSegmentTraces)
+TEST(NatronUtilityMotionDelegate, ATranslatingStripeSmears)
 {
     MotionRender render(stage(std::string("    point3f[] points = ") + kStripePoints + "\n"
                                                                                        "    double3 xformOp:translate.timeSamples = { 1: (0, 0, 0), 2: (4, 0, 0) }\n"
                                                                                        "    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"),
-                        GfVec2d(0., 1.), 2, 2);
+                        GfVec2d(0., 1.), 8, 2);
 
     render.render(1.);
-    expectSegmentPositions(render);
+    expectSmear(render);
 }
 
 TEST(NatronUtilityMotionDelegate, AVelocitiesOnlyMeshMovesByItsVelocity)
@@ -774,23 +817,21 @@ TEST(NatronUtilityMotionDelegate, AVelocitiesOnlyMeshMovesByItsVelocity)
     // 96 units a second at 24 frames a second: 4 units a frame.
     MotionRender render(stage(std::string("    point3f[] points.timeSamples = { 1: ") + kStripePoints + " }\n"
                                                                                                         "    vector3f[] velocities.timeSamples = { 1: [(96, 0, 0), (96, 0, 0), (96, 0, 0), (96, 0, 0)] }\n"),
-                        GfVec2d(0., 1.), 2, 2);
+                        GfVec2d(0., 1.), 8, 2);
 
     render.render(1.);
-    expectSegmentPositions(render);
+    expectSmear(render);
 }
 
-TEST(NatronUtilityMotionDelegate, OneSegmentOfAShutterOpeningAtTheFrameRendersTheFrame)
+TEST(NatronUtilityMotionDelegate, OneSegmentBlurs)
 {
     MotionRender render(stage(std::string("    point3f[] points = ") + kStripePoints + "\n"
                                                                                        "    double3 xformOp:translate.timeSamples = { 1: (0, 0, 0), 2: (4, 0, 0) }\n"
                                                                                        "    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"),
-                        GfVec2d(0., 1.), 2, 1);
+                        GfVec2d(0., 1.), 8, 1);
 
     render.render(1.);
-    EXPECT_FLOAT_EQ(1.f, render.alphaAt(kRestPixel)) << "the stripe is not at the frame's position";
-    EXPECT_FLOAT_EQ(0.f, render.alphaAt(kMovedPixel));
-    EXPECT_EQ(1u, VtDictionaryGet<VtDoubleArray>(render.stats(), kUtilityStatBucketSeconds, VtDefault = VtDoubleArray()).size());
+    expectSmear(render);
 }
 
 // The stripe gains a point it does not use at mid-shutter, where it is 2 units on.
@@ -829,25 +870,33 @@ TEST(NatronUtilityMotionDelegate, AMeshWhoseIndicesChangeIsStillAtMidShutterAndN
     EXPECT_NE(std::string::npos, warning.find("/Stripe")) << warning;
 }
 
-TEST(NatronUtilityMotionDelegate, AMovingFrameTracesEachSegment)
+TEST(NatronUtilityMotionDelegate, TheSegmentsSettingSplitsAStraightMoveWithoutChangingIt)
 {
     MotionRender render(stage(std::string("    point3f[] points = ") + kStripePoints + "\n"
                                                                                        "    double3 xformOp:translate.timeSamples = { 1: (0, 0, 0), 2: (4, 0, 0) }\n"
                                                                                        "    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"),
-                        GfVec2d(0., 1.), 4, 4);
+                        GfVec2d(0., 1.), 8, 4);
 
     render.render(1.);
-
-    const VtDoubleArray buckets = VtDictionaryGet<VtDoubleArray>(render.stats(), kUtilityStatBucketSeconds, VtDefault = VtDoubleArray());
-
-    EXPECT_EQ(4u, buckets.size());
-
-    // Still at mid-shutter the stripe would cover only the moved pixel. Which neighbour a bucket's
-    // samples land in depends on where they fall in each pixel, so only their sum is certain.
-    const float swept = render.alphaAt(kRestPixel) + render.alphaAt(kRestPixel + 1) + render.alphaAt(kMovedPixel + 1) + render.alphaAt(kMovedPixel + 2);
-
-    EXPECT_GT(swept, 0.f) << "the stripe sweeps the pixels either side of its mid-shutter position";
+    expectSmear(render);
     EXPECT_TRUE(VtDictionaryGet<std::string>(render.stats(), kUtilityStatMotionWarning, VtDefault = std::string()).empty());
+}
+
+// The stripe goes out 4 units and back within the shutter. One segment spans only its ends, both at rest;
+// eight follow it out.
+TEST(NatronUtilityMotionDelegate, MoreSegmentsFollowAMoveThatTurnsBack)
+{
+    const std::string usda = stage(std::string("    point3f[] points = ") + kStripePoints + "\n"
+                                                                                            "    double3 xformOp:translate.timeSamples = { 1: (0, 0, 0), 1.25: (2, 0, 0), 1.5: (4, 0, 0), 1.75: (2, 0, 0), 2: (0, 0, 0) }\n"
+                                                                                            "    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n");
+    MotionRender one(usda, GfVec2d(0., 1.), 8, 1);
+    MotionRender eight(usda, GfVec2d(0., 1.), 8, 8);
+
+    one.render(1.);
+    eight.render(1.);
+    EXPECT_NEAR(1.f, one.alphaAt(kRestPixel), 1e-5f) << "one segment from the stripe at rest back to rest holds it there";
+    EXPECT_LT(eight.alphaAt(kRestPixel), 0.5f);
+    EXPECT_GT(eight.alphaAt(kRestPixel + 2) + eight.alphaAt(kRestPixel + 3), 0.2f) << "eight segments reach out along the move";
 }
 
 TEST(NatronUtilityMotionDelegate, AClosedShutterRendersTheFrame)
@@ -859,7 +908,6 @@ TEST(NatronUtilityMotionDelegate, AClosedShutterRendersTheFrame)
 
     render.render(1.);
     EXPECT_FLOAT_EQ(1.f, render.alphaAt(kRestPixel));
-    EXPECT_EQ(1u, VtDictionaryGet<VtDoubleArray>(render.stats(), kUtilityStatBucketSeconds, VtDefault = VtDoubleArray()).size());
 }
 
 namespace {

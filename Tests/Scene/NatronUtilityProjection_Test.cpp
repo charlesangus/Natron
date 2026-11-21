@@ -346,19 +346,18 @@ protected:
         return true;
     }
 
-    // Every sample of the frame, in the shutter's time buckets, as the render pass draws them.
+    // Every sample of the frame, as the render pass draws them.
     bool drawSamples(const UtilityScene& scene,
                      const WavefrontFrame& frame,
                      const WavefrontMotion& motion,
-                     ProjectionFilm& film,
-                     std::vector<double>* bucketSeconds = nullptr)
+                     ProjectionFilm& film)
     {
         const std::atomic<bool> stop(false);
 
         if (!_executor) {
             return false;
         }
-        if (!wavefrontDrawSamples(*_executor, scene.snapshot(), frame, motion, film, stop, 2, std::function<void(std::size_t)>(), bucketSeconds)) {
+        if (!wavefrontDrawSamples(*_executor, scene.snapshot(), frame, motion, film, stop, 2, std::function<void(std::size_t)>())) {
             ADD_FAILURE() << "the frame did not render";
 
             return false;
@@ -1202,7 +1201,7 @@ TEST_P(NatronUtilityProjection, ACameraTurningWithinTheShutterBlursTheSphericalF
     frame.sampling.samplesPerSide = side;
     turning.open = -0.5;
     turning.close = 0.5;
-    turning.segments = side * side;
+    turning.segments = 2;
     for (int i = -1; i <= 1; ++i) {
         GfFrustum at = camera;
 
@@ -1298,8 +1297,8 @@ TEST_P(NatronUtilityProjection, AUvUnwrapFrameWithoutItsUnwrapThrowsNamingThePri
     EXPECT_EQ(0, hitsIn(film));
 }
 
-// A bake ignores the camera, so a camera moving within the shutter draws it in one time bucket.
-TEST_P(NatronUtilityProjection, AUvUnwrapIgnoresTheCamerasMotionAndDrawsInOneBucket)
+// A bake ignores the camera and the shutter, so a camera moving within the shutter changes nothing.
+TEST_P(NatronUtilityProjection, AUvUnwrapIgnoresTheCamerasMotion)
 {
     UtilityScene scene;
 
@@ -1322,12 +1321,10 @@ TEST_P(NatronUtilityProjection, AUvUnwrapIgnoresTheCamerasMotionAndDrawsInOneBuc
     }
 
     ProjectionFilm baked(kBakeSize, kBakeSize);
-    std::vector<double> bucketSeconds;
 
-    if (!drawSamples(scene, frame, motion, baked, &bucketSeconds)) {
+    if (!drawSamples(scene, frame, motion, baked)) {
         return;
     }
-    EXPECT_EQ(1u, bucketSeconds.size());
     EXPECT_EQ(kBakeSize * kBakeSize, hitsIn(baked));
 }
 
@@ -1499,7 +1496,7 @@ TEST(NatronUtilityProjectionUnwrap, AMissingPrimvarIsAnErrorNamingPrimAndPrimvar
     ProjectionFilm film(kBakeSize, kBakeSize);
 
     try {
-        wavefrontDrawSamples(cpu, scene.snapshot(), bakeFrame(1001), WavefrontMotion(), film, stop, 2, std::function<void(std::size_t)>(), nullptr);
+        wavefrontDrawSamples(cpu, scene.snapshot(), bakeFrame(1001), WavefrontMotion(), film, stop, 2, std::function<void(std::size_t)>());
         ADD_FAILURE() << "the frame drew without the unwrap's primvar";
     } catch (const std::runtime_error& e) {
         EXPECT_NE(std::string::npos, std::string(e.what()).find("/quad")) << e.what();

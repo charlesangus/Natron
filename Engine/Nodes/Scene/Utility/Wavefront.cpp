@@ -26,11 +26,10 @@
 #include "Wavefront.h"
 
 #include <algorithm>
-#include <chrono>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <limits>
-#include <numeric>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -626,6 +625,45 @@ wavefrontBounceLimit(const WavefrontFrame& frame,
     return transmission ? frame.maxRayDepth : std::min(frame.maxRayDepth, frame.reflectionDepth);
 }
 
+namespace {
+void
+appendMotionStep(const UtilityScene::Decomposition& step,
+                 std::vector<float>* rows)
+{
+    const double* u = step.stretch;
+    const double values[16] = {
+        u[0],
+        u[1],
+        u[2],
+        0.,
+        u[3],
+        u[4],
+        u[5],
+        0.,
+        step.translation[0],
+        step.translation[1],
+        step.translation[2],
+        0.,
+        step.rotation[1],
+        step.rotation[2],
+        step.rotation[3],
+        step.rotation[0],
+    };
+
+    for (double value : values) {
+        rows->push_back(static_cast<float>(value));
+    }
+}
+
+void
+appendPosition(const float position[3],
+               std::vector<float>* rows)
+{
+    rows->insert(rows->end(), position, position + 3);
+    rows->push_back(0.f);
+}
+} // anon namespace
+
 bool
 WavefrontShadeTables::updateMaterials(const UtilityScene::Snapshot& snapshot,
                                       const std::atomic<bool>* stop)
@@ -811,9 +849,9 @@ WavefrontShadeTables::update(const UtilityScene::Snapshot& snapshot,
 
             colorTotal += std::max<std::size_t>(1, geometry.colors.size());
             triangleTotal += geometry.triangles.size() * 3;
-            pointTotal += geometry.points.size();
+            pointTotal += geometry.points.size() * std::max<std::size_t>(1, geometry.pointSteps.size());
             stTotal += geometry.st.size();
-            normalTotal += geometry.normals.size();
+            normalTotal += geometry.normals.size() * std::max<std::size_t>(1, geometry.normalSteps.size());
         }
         _colors.clear();
         _triangles.clear();
@@ -850,6 +888,8 @@ WavefrontShadeTables::update(const UtilityScene::Snapshot& snapshot,
         const std::uint32_t normalCount = normalsFit ? static_cast<std::uint32_t>(geometry.normals.size()) : 0;
         const std::uint32_t triangleCount = static_cast<std::uint32_t>(geometry.triangles.size());
         const std::uint32_t pointCount = static_cast<std::uint32_t>(geometry.points.size());
+        const std::uint32_t pointSteps = static_cast<std::uint32_t>(std::max<std::size_t>(1, geometry.pointSteps.size()));
+        const std::uint32_t normalSteps = normalsFit ? static_cast<std::uint32_t>(std::max<std::size_t>(1, geometry.normalSteps.size())) : 1u;
         const auto material = geometry.materialId.IsEmpty() ? _materialIndices.end() : _materialIndices.find(geometry.materialId);
         const KernelGeometryRecord record {
             colorOffset,
@@ -864,6 +904,10 @@ WavefrontShadeTables::update(const UtilityScene::Snapshot& snapshot,
             pointOffset,
             normalOffset,
             normalsFit ? static_cast<std::uint32_t>(geometry.normalBinding) : kKernelNormalBindingNone,
+            pointSteps,
+            pointCount,
+            normalSteps,
+            normalCount,
         };
 
         _geometries.push_back(record);
@@ -888,48 +932,54 @@ WavefrontShadeTables::update(const UtilityScene::Snapshot& snapshot,
                 }
             }
 
-            const GfVec3f* points = geometry.points.cdata();
+            for (std::uint32_t step = 0; step < pointSteps; ++step) {
+                const GfVec3f* points = geometry.pointSteps.empty() ? geometry.points.cdata() : geometry.pointSteps[step].cdata();
 
-            for (std::size_t first = 0; first < geometry.points.size(); first += kCopyChunk) {
-                if (stop && stop->load(std::memory_order_relaxed)) {
-                    return false;
-                }
+                for (std::size_t first = 0; first < pointCount; first += kCopyChunk) {
+                    if (stop && stop->load(std::memory_order_relaxed)) {
+                        return false;
+                    }
 
-                const std::size_t last = std::min(first + kCopyChunk, geometry.points.size());
+                    const std::size_t last = std::min<std::size_t>(first + kCopyChunk, pointCount);
 
-                for (std::size_t p = first; p < last; ++p) {
-                    _points.push_back(GfVec4f(points[p][0], points[p][1], points[p][2], 1.f));
+                    for (std::size_t p = first; p < last; ++p) {
+                        _points.push_back(GfVec4f(points[p][0], points[p][1], points[p][2], 1.f));
+                    }
                 }
             }
             if (stFits) {
                 _sts.insert(_sts.end(), geometry.st.cbegin(), geometry.st.cend());
             }
 
-            const GfVec3f* normals = normalsFit ? geometry.normals.cdata() : nullptr;
+            for (std::uint32_t step = 0; normalsFit && step < normalSteps; ++step) {
+                const GfVec3f* normals = geometry.normalSteps.empty() ? geometry.normals.cdata() : geometry.normalSteps[step].cdata();
 
-            for (std::size_t first = 0; first < normalCount; first += kCopyChunk) {
-                if (stop && stop->load(std::memory_order_relaxed)) {
-                    return false;
-                }
+                for (std::size_t first = 0; first < normalCount; first += kCopyChunk) {
+                    if (stop && stop->load(std::memory_order_relaxed)) {
+                        return false;
+                    }
 
-                const std::size_t last = std::min<std::size_t>(first + kCopyChunk, normalCount);
+                    const std::size_t last = std::min<std::size_t>(first + kCopyChunk, normalCount);
 
-                for (std::size_t n = first; n < last; ++n) {
-                    _normals.push_back(GfVec4f(normals[n][0], normals[n][1], normals[n][2], 0.f));
+                    for (std::size_t n = first; n < last; ++n) {
+                        _normals.push_back(GfVec4f(normals[n][0], normals[n][1], normals[n][2], 0.f));
+                    }
                 }
             }
         }
         colorOffset += colorCount;
         triangleOffset += triangleCount * 3;
-        pointOffset += pointCount;
+        pointOffset += pointCount * pointSteps;
         stOffset += stCount;
-        normalOffset += normalCount;
+        normalOffset += normalCount * normalSteps;
     }
 
     _instanceIds.clear();
     _instanceIds.reserve(snapshot.instances.size());
     _instanceTransforms.clear();
     _instanceTransforms.reserve(snapshot.instances.size() * 8);
+    _instanceMotion.assign(snapshot.instances.size(), kKernelNoMotion);
+    _motionRows.clear();
     _linkWords = static_cast<std::uint32_t>((_lights.size() + 31) / 32);
     _linkMasks.assign(snapshot.instances.size() * 2 * _linkWords, 0u);
     for (std::size_t i = 0; i < snapshot.instances.size(); ++i) {
@@ -947,6 +997,14 @@ WavefrontShadeTables::update(const UtilityScene::Snapshot& snapshot,
         _instanceIds.push_back(instance.instanceIndex);
         appendRows(instance.transform, &_instanceTransforms);
         appendRows(instance.transform.GetInverse(), &_instanceTransforms);
+        if (instance.transformSteps.size() > 1) {
+            _instanceMotion[i] = static_cast<std::uint32_t>(_motionRows.size() / 4);
+            _motionRows.push_back(std::bit_cast<float>(static_cast<std::uint32_t>(instance.transformSteps.size())));
+            _motionRows.insert(_motionRows.end(), 3, 0.f);
+            for (const UtilityScene::Decomposition& step : instance.transformSteps) {
+                appendMotionStep(step, &_motionRows);
+            }
+        }
         for (std::size_t l = 0; l < _lightLinks.size(); ++l) {
             const std::uint32_t bit = 1u << (l % 32);
 
@@ -1003,6 +1061,10 @@ WavefrontShadeTables::buffers() const
     buffers.lightDataCount = _lightData.size();
     buffers.linkMasks = _linkMasks.data();
     buffers.linkMaskCount = _linkMasks.size();
+    buffers.instanceMotion = _instanceMotion.data();
+    buffers.instanceMotionCount = _instanceMotion.size();
+    buffers.motionRows = _motionRows.data();
+    buffers.motionRowCount = _motionRows.size() / 4;
 
     return buffers;
 }
@@ -1105,69 +1167,6 @@ WavefrontShadeTables::occlusionFilter(const std::uint32_t* rayLights) const
     filter.casterCount = _instanceIds.size();
 
     return filter;
-}
-
-int
-wavefrontBucketCount(const WavefrontMotion& motion,
-                     const UtilityScene::Snapshot& snapshot,
-                     int samplesPerPixel)
-{
-    if (!motion.isOpen() || (motion.cameraTimes.empty() && !UtilityScene::moves(snapshot))) {
-        return 1;
-    }
-
-    return std::clamp(motion.segments, 1, std::max(1, samplesPerPixel));
-}
-
-double
-wavefrontBucketTime(const WavefrontMotion& motion,
-                    int bucket,
-                    int buckets)
-{
-    // One bucket draws the unblurred frame, which an offset shutter's middle would move.
-    if (!motion.isOpen() || buckets <= 1) {
-        return 0.;
-    }
-
-    return motion.open + (motion.close - motion.open) * (bucket + 0.5) / buckets;
-}
-
-std::vector<int>
-wavefrontSampleOrder(int samplesPerPixel,
-                     int buckets)
-{
-    const int count = std::max(1, samplesPerPixel);
-    std::vector<int> order(static_cast<std::size_t>(count));
-
-    if (buckets <= 1) {
-        std::iota(order.begin(), order.end(), 0);
-
-        return order;
-    }
-    // A stride coprime with the count visits every sample once. Index s is cell (s % side, s / side)
-    // of the pixel's grid, so a stride of rows * side + columns steps consecutive samples that many
-    // columns and rows on; golden fractions of the side for both spread a bucket over both axes.
-    const int side = static_cast<int>(std::lround(std::sqrt(static_cast<double>(count))));
-    int stride = 1;
-
-    if (side > 1 && side * side == count) {
-        int columns = std::max(1, static_cast<int>(std::lround(side * 0.6180339887)));
-
-        while (std::gcd(columns, side) != 1) {
-            ++columns;
-        }
-        stride = (static_cast<int>(std::lround(side * 0.3819660113)) * side + columns) % count;
-    } else {
-        stride = std::max(1, static_cast<int>(std::lround(count * 0.6180339887)));
-        while (std::gcd(stride, count) != 1) {
-            ++stride;
-        }
-    }
-    for (int i = 0; i < count; ++i) {
-        order[static_cast<std::size_t>(i)] = static_cast<int>((static_cast<long long>(i) * stride) % count);
-    }
-
-    return order;
 }
 
 namespace {
@@ -1467,6 +1466,62 @@ wavefrontRequireUnwrap(const WavefrontFrame& frame)
     }
 }
 
+std::vector<float>
+wavefrontCameraSteps(const WavefrontFrame& frame,
+                     const WavefrontMotion& motion)
+{
+    std::vector<float> rows;
+
+    if (!motion.isOpen() || motion.cameraTimes.empty() || frame.mapping == WavefrontMapping::UvUnwrap) {
+        return rows;
+    }
+    const int steps = std::max(1, motion.segments) + 1;
+    std::vector<WavefrontFrame> ends;
+
+    ends.reserve(static_cast<std::size_t>(steps));
+    for (int k = 0; k < steps; ++k) {
+        ends.push_back(wavefrontFrameAt(frame, motion, motion.open + (motion.close - motion.open) * k / (steps - 1)));
+    }
+    const bool still = std::all_of(ends.cbegin(), ends.cend(), [&](const WavefrontFrame& end) {
+        return end.worldToView == ends.front().worldToView && end.projection == ends.front().projection;
+    });
+
+    if (still) {
+        return rows;
+    }
+    const std::uint32_t count = static_cast<std::uint32_t>(steps);
+
+    rows.reserve(4 * (1 + static_cast<std::size_t>(steps) * kKernelCameraRowsPerStep));
+    rows.push_back(std::bit_cast<float>(count));
+    rows.insert(rows.end(), 3, 0.f);
+
+    GfVec4d previous(1., 0., 0., 0.);
+
+    for (WavefrontFrame& end : ends) {
+        const GfMatrix4d viewToWorld = end.worldToView.GetInverse();
+        // The frustum in the camera's own space, which its view-to-world transform then places.
+        end.worldToView = GfMatrix4d(1.);
+
+        const KernelRayGenParams local = makeRayGenParams(end, end.window);
+        UtilityScene::Decomposition place = UtilityScene::decompose(viewToWorld);
+
+        // Each end turns the short way from the one before it.
+        if (GfDot(place.rotation, previous) < 0.) {
+            place.rotation = -place.rotation;
+        }
+        previous = place.rotation;
+        appendPosition(local.nearAtCentre, &rows);
+        appendPosition(local.nearPerX, &rows);
+        appendPosition(local.nearPerY, &rows);
+        appendPosition(local.farAtCentre, &rows);
+        appendPosition(local.farPerX, &rows);
+        appendPosition(local.farPerY, &rows);
+        appendMotionStep(place, &rows);
+    }
+
+    return rows;
+}
+
 bool
 wavefrontDrawSamples(WavefrontExecutor& executor,
                      const UtilityScene::Snapshot& snapshot,
@@ -1475,80 +1530,43 @@ wavefrontDrawSamples(WavefrontExecutor& executor,
                      WavefrontFilm& film,
                      const std::atomic<bool>& stop,
                      int threads,
-                     const std::function<void(std::size_t)>& progress,
-                     std::vector<double>* bucketSeconds)
+                     const std::function<void(std::size_t)>& progress)
 {
     const bool unwrapping = frame.mapping == WavefrontMapping::UvUnwrap;
-    WavefrontMotion counted;
+    const bool blurred = !unwrapping && motion.isOpen() && UtilityScene::moves(snapshot);
+    UtilityScene::Snapshot shuttered;
 
-    // A bake's rays come from the unwrap, never the camera, so only the scene's motion splits it.
+    if (blurred && !UtilityScene::atShutter(snapshot, motion.open, motion.close, std::max(1, motion.segments), stop, &shuttered)) {
+        return false;
+    }
+    const UtilityScene::Snapshot& scene = blurred ? shuttered : snapshot;
+    WavefrontFrame drawn = frame;
+
     if (unwrapping) {
-        counted.open = motion.open;
-        counted.close = motion.close;
-        counted.segments = motion.segments;
-    }
+        std::string error;
+        WavefrontUnwrapConstPtr unwrap = wavefrontUnwrap(scene, drawn, stop, &error);
 
-    const WavefrontMotion& bucketed = unwrapping ? counted : motion;
-    const int samples = std::max(1, frame.sampling.samplesPerPixel());
-    const int buckets = wavefrontBucketCount(bucketed, snapshot, samples);
-    const std::vector<int> order = wavefrontSampleOrder(samples, buckets);
-    // The unwrap of the snapshot as it stands, kept for every bucket that does not evaluate it, so that
-    // the device copy of it is kept too.
-    WavefrontUnwrapConstPtr unevaluatedUnwrap;
-    std::size_t done = 0;
-
-    if (bucketSeconds) {
-        bucketSeconds->assign(static_cast<std::size_t>(buckets), 0.);
-    }
-    for (int bucket = 0; bucket < buckets; ++bucket) {
-        const auto start = std::chrono::steady_clock::now();
-        const int first = static_cast<int>(static_cast<long long>(bucket) * samples / buckets);
-        const int last = static_cast<int>(static_cast<long long>(bucket + 1) * samples / buckets);
-        const double time = wavefrontBucketTime(bucketed, bucket, buckets);
-        UtilityScene::Snapshot evaluated;
-        const bool evaluate = time != 0. && UtilityScene::moves(snapshot);
-
-        if (evaluate && !UtilityScene::evaluateAt(snapshot, time, stop, &evaluated)) {
+        if (!error.empty()) {
+            throw std::runtime_error(error);
+        }
+        if (!unwrap) {
             return false;
         }
-        const UtilityScene::Snapshot& scene = evaluate ? evaluated : snapshot;
-        WavefrontFrame atTime = (time != 0. && !unwrapping) ? wavefrontFrameAt(frame, motion, time) : frame;
+        drawn.unwrap = unwrap;
+    } else {
+        drawn.cameraSteps = wavefrontCameraSteps(frame, motion);
+    }
 
-        if (unwrapping) {
-            WavefrontUnwrapConstPtr unwrap = evaluate ? WavefrontUnwrapConstPtr() : unevaluatedUnwrap;
+    const int samples = std::max(1, frame.sampling.samplesPerPixel());
 
-            if (!unwrap) {
-                std::string error;
-
-                unwrap = wavefrontUnwrap(scene, atTime, stop, &error);
-                if (!error.empty()) {
-                    throw std::runtime_error(error);
-                }
-                if (!unwrap) {
-                    return false;
-                }
-                if (!evaluate) {
-                    unevaluatedUnwrap = unwrap;
-                }
-            }
-            atTime.unwrap = unwrap;
+    for (int i = 0; i < samples; ++i) {
+        drawn.sampling.sampleIndex = i;
+        if (!executor.render(scene, drawn, film, stop, threads)) {
+            return false;
         }
-
-        for (int i = first; i < last; ++i) {
-            WavefrontFrame pass = atTime;
-
-            pass.sampling.sampleIndex = order[static_cast<std::size_t>(i)];
-            if (!executor.render(scene, pass, film, stop, threads)) {
-                return false;
-            }
-            film.passDrawn();
-            ++done;
-            if (progress) {
-                progress(done);
-            }
-        }
-        if (bucketSeconds) {
-            (*bucketSeconds)[static_cast<std::size_t>(bucket)] = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        film.passDrawn();
+        if (progress) {
+            progress(static_cast<std::size_t>(i) + 1);
         }
     }
 

@@ -39,8 +39,10 @@
 
 #include <pxr/base/gf/matrix4d.h>
 #include <pxr/base/gf/vec2f.h>
+#include <pxr/base/gf/vec3d.h>
 #include <pxr/base/gf/vec3f.h>
 #include <pxr/base/gf/vec3i.h>
+#include <pxr/base/gf/vec4d.h>
 #include <pxr/base/gf/vec4f.h>
 #include <pxr/base/tf/token.h>
 #include <pxr/base/vt/array.h>
@@ -86,6 +88,18 @@ public:
         std::vector<std::vector<PXR_NS::GfMatrix4d>> transforms; // one per time, each one per instance
     };
 
+    /**
+     * @brief A transform as M = T * R * U on column vectors: an upper-triangular stretch U, then a rotation
+     * R, then a translation T. Blending two moves translation and stretch linearly and rotation along the
+     * shortest arc, which keeps a spinning object's size; Embree and the kernels blend the same parts.
+     **/
+    struct Decomposition {
+        PXR_NS::GfVec3d translation = PXR_NS::GfVec3d(0.);
+        // A unit quaternion as (r, i, j, k).
+        PXR_NS::GfVec4d rotation = PXR_NS::GfVec4d(1., 0., 0., 0.);
+        // U's upper triangle by rows: U00, U01, U02, U11, U12, U22.
+        double stretch[6] = { 1., 0., 0., 1., 0., 1. };
+    };
     struct Geometry {
         PXR_NS::SdfPath path;
         int primId = -1;
@@ -123,6 +137,10 @@ public:
         std::uint64_t normalsVersion = 0;
         // Null for a geometry that does not deform within the shutter; points are at the frame.
         std::shared_ptr<const PointMotion> pointMotion;
+        // In a snapshot at the shutter, for a deforming geometry, its points at each of the snapshot's
+        // timeSteps, and its vertex normals at each when it has them; empty otherwise.
+        std::vector<PXR_NS::VtVec3fArray> pointSteps;
+        std::vector<PXR_NS::VtVec3fArray> normalSteps;
     };
 
     struct Instance {
@@ -134,6 +152,9 @@ public:
         // Null for an instance that does not move within the shutter; instanceIndex indexes its
         // transforms, and transform is at the frame.
         std::shared_ptr<const TransformMotion> motion;
+        // In a snapshot at the shutter, for a moving instance, its transform at each of the snapshot's
+        // timeSteps, each rotation on the near side of the one before; empty otherwise.
+        std::vector<Decomposition> transformSteps;
     };
 
     struct Stats {
@@ -157,6 +178,11 @@ public:
         std::map<PXR_NS::SdfPath, std::shared_ptr<const UtilityMaterialDesc>> materials;
         std::map<PXR_NS::SdfPath, std::shared_ptr<const UtilityLightDesc>> lights;
         std::shared_ptr<UtilityTexturePool> textures;
+        // A snapshot at the shutter samples what moves at timeSteps times spread evenly from shutterOpen
+        // to shutterClose, relative to the frame; one where nothing moves.
+        int timeSteps = 1;
+        double shutterOpen = 0.;
+        double shutterClose = 0.;
     };
 
     UtilityScene();
@@ -240,23 +266,41 @@ public:
     static bool moves(const Snapshot& snapshot);
 
     /**
-     * @brief The snapshot as it stands at time, relative to the frame: each moving instance's
-     * transform and each deforming geometry's points and normals interpolated between their
-     * samples, held at the first or last outside them, and none of it moving. Its version, and each
-     * deforming geometry's pointsVersion and normalsVersion, differ from every scene snapshot's, so a
-     * tracer handed it refits what deforms and moves what moves.
+     * @brief The snapshot over the shutter from open to close, relative to the frame, in segments spans:
+     * each moving instance's transform and each deforming geometry's points and normals at the
+     * segments + 1 ends of the spans, sampled from their motion and held at the first or last sample
+     * outside it. The tracers and kernels interpolate between those ends at each ray's time. A closed
+     * shutter, or one over which nothing moves, gives the snapshot as it stands with one time step.
+     * The version, and each deforming geometry's pointsVersion and normalsVersion, follow from the
+     * scene's and the shutter's, so that the same shutter over the same scene builds nothing again.
      **/
-    static Snapshot evaluateAt(const Snapshot& snapshot,
-                               double time);
-
-    // As evaluateAt(), into out, polling stop for each geometry and instance and within large meshes.
-    // Returns false when stop ended it, out then partly evaluated.
-    static bool evaluateAt(const Snapshot& snapshot,
-                           double time,
-                           const std::atomic<bool>& stop,
-                           Snapshot* out);
-
-    // Between a and b by u in [0, 1]: translation and stretch linearly, rotation along the shortest arc.
+    static Snapshot atShutter(const Snapshot& snapshot,
+                              double open,
+                              double close,
+                              int segments);
+    // As atShutter(), into out, polling stop for each geometry and instance and within large meshes.
+    // Returns false when stop ended it, out then partly filled.
+    static bool atShutter(const Snapshot& snapshot,
+                          double open,
+                          double close,
+                          int segments,
+                          const std::atomic<bool>& stop,
+                          Snapshot* out);
+    // The span a shutter-relative time in [0, 1] falls in among steps time steps, and how far into it.
+    static void stepAt(double time,
+                       int steps,
+                       int* span,
+                       double* fraction);
+    static Decomposition decompose(const PXR_NS::GfMatrix4d& transform);
+    static PXR_NS::GfMatrix4d compose(const Decomposition& decomposition);
+    // Between a and b by u in [0, 1], with b's rotation taken on a's side.
+    static Decomposition blend(const Decomposition& a,
+                               const Decomposition& b,
+                               double u);
+    // An instance's transform at a shutter-relative time, from its steps, or its transform without any.
+    static PXR_NS::GfMatrix4d transformAt(const Instance& instance,
+                                          double time);
+    // Between a and b by u in [0, 1], as blend() blends their decompositions.
     static PXR_NS::GfMatrix4d interpolate(const PXR_NS::GfMatrix4d& a,
                                           const PXR_NS::GfMatrix4d& b,
                                           double u);

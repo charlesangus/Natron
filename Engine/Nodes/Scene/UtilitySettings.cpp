@@ -183,7 +183,7 @@ make()
 
     segments.key = kUtilitySettingShutterSegments;
     segments.name = "shutterSegments";
-    segments.tooltip = "How many times within the shutter the scene is traced at, each by its share of the pixel samples. More follow curved and fast motion more closely and take longer; there are never more than the pixel samples.";
+    segments.tooltip = "How many straight spans motion blur splits the shutter into. The scene and the camera are taken at the ends of each span and every sample blends them at its own time within the shutter, so one span already blurs smoothly; more follow curved motion, such as spinning or swinging, more closely, at the cost of memory and scene build time.";
     segments.defaultValue = VtValue(int(kUtilityDefaultShutterSegments));
     segments.hasRange = true;
     segments.minimum = 1;

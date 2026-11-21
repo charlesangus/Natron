@@ -44,6 +44,7 @@ struct KernelBuffer {
 struct RayGenGlobals {
     KernelBuffer rays;
     KernelBuffer weights;
+    KernelBuffer cameraSteps;
     const NATRON_NAMESPACE::KernelRayGenParams* params;
 };
 
@@ -147,6 +148,8 @@ tableAddresses(const KernelShadeBuffers& buffers)
     addresses[eKernelTableLightData] = hostAddress(buffers.lightData);
     addresses[eKernelTableLinkMasks] = hostAddress(buffers.linkMasks);
     addresses[eKernelTableTexels] = hostAddress(buffers.texels);
+    addresses[eKernelTableInstanceMotion] = hostAddress(buffers.instanceMotion);
+    addresses[eKernelTableMotionRows] = hostAddress(buffers.motionRows);
 
     return addresses;
 }
@@ -155,7 +158,9 @@ tableAddresses(const KernelShadeBuffers& buffers)
 void
 runRayGenKernel(const KernelRayGenParams& params,
                 float* rays,
-                float* weights)
+                float* weights,
+                const float* cameraSteps,
+                std::size_t cameraStepRows)
 {
     const std::size_t count = static_cast<std::size_t>(params.tileWidth) * params.tileHeight;
 
@@ -170,7 +175,14 @@ runRayGenKernel(const KernelRayGenParams& params,
         weights = unwanted.data();
     }
     KernelVarying varying = varyingFor(count);
-    RayGenGlobals globals { { rays, count * 8 }, { weights, count }, &params };
+    // The kernel reads the step count from the first row; zero is a camera that does not move.
+    static const float kStill[4] = { 0.f, 0.f, 0.f, 0.f };
+
+    if (!cameraSteps || cameraStepRows == 0) {
+        cameraSteps = kStill;
+        cameraStepRows = 1;
+    }
+    RayGenGlobals globals { { rays, count * kKernelRayArrays }, { weights, count }, { cameraSteps, cameraStepRows }, &params };
 
     utilityRayGen(&varying, nullptr, &globals);
 }
@@ -198,7 +210,7 @@ runRayGenUvKernel(const KernelRayGenParams& params,
     }
     KernelVarying varying = varyingFor(count);
     const KernelTableAddress unwrap[2] = { hostAddress(grid), hostAddress(triangles) };
-    RayGenUvGlobals globals { { rays, count * 8 }, { weights, count }, { hitSurface, count * 3 }, { hitIds, count * 3 }, { unwrap, 2 }, &params };
+    RayGenUvGlobals globals { { rays, count * kKernelRayArrays }, { weights, count }, { hitSurface, count * 3 }, { hitIds, count * 3 }, { unwrap, 2 }, &params };
 
     utilityRayGenUv(&varying, nullptr, &globals);
 }
@@ -220,7 +232,7 @@ runShadeSurfaceKernel(const KernelShadeParams& params,
     std::vector<std::uint32_t> liveBounces(continues ? params.bounce[1] : 0);
     const std::array<KernelTableAddress, eKernelTableCount> addresses = tableAddresses(buffers);
     ShadeSurfaceGlobals globals {
-        { buffers.rays, count * 8 },
+        { buffers.rays, count * kKernelRayArrays },
         { buffers.hitSurface, count * 3 },
         { buffers.hitIds, count * 3 },
         { addresses.data(), addresses.size() },
@@ -233,11 +245,11 @@ runShadeSurfaceKernel(const KernelShadeParams& params,
         { buffers.images, buffers.imageCount },
         { buffers.projections, buffers.projectionCount },
         { buffers.lights, buffers.lightCount },
-        { buffers.shadowRays, shadowCount * 8 },
+        { buffers.shadowRays, shadowCount * kKernelRayArrays },
         { buffers.shadowContributions, shadowCount },
         { buffers.shadowLights, shadowCount },
         { buffers.paths, pathCount },
-        { buffers.nextRays, continues ? count * 8 : 0 },
+        { buffers.nextRays, continues ? count * kKernelRayArrays : 0 },
         { buffers.nextPaths, continues ? count : 0 },
         { liveBounces.data(), liveBounces.size() },
         &params,
@@ -262,12 +274,12 @@ runResolveHitsKernel(const KernelResolveParams& params,
     std::vector<std::uint32_t> pending(params.passIndex + 1);
     const std::array<KernelTableAddress, eKernelTableCount> addresses = tableAddresses(tables);
     ResolveHitsGlobals globals {
-        { buffers.rays, count * 8 },
+        { buffers.rays, count * kKernelRayArrays },
         { buffers.hitSurface, count * 3 },
         { buffers.hitIds, count * 3 },
         { buffers.nextHitSurface, count * 3 },
         { buffers.nextHitIds, count * 3 },
-        { buffers.retrace, count * 8 },
+        { buffers.retrace, count * kKernelRayArrays },
         { buffers.blocked, shadow ? count : 0 },
         { buffers.rayLights, shadow ? count : 0 },
         { addresses.data(), addresses.size() },

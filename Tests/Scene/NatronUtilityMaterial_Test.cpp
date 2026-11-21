@@ -215,7 +215,7 @@ struct EmittedTexture {
 
         frustum.SetPerspective(45., 1., 1., 100.);
 
-        const std::vector<float> rays = { 0.f, 0.f, 1.f, 0.f, 0.f, -1.f, 0.f, 10.f };
+        const std::vector<float> rays = { 0.f, 0.f, 1.f, 0.f, 0.f, -1.f, 0.f, 10.f, 0.5f };
         const std::vector<float> hitSurface = { 1.f, s, t };
         const std::vector<std::uint32_t> hitIds = { 0u, 0u, 0u };
         float color[4] = { -1.f, -1.f, -1.f, -1.f };
@@ -496,7 +496,7 @@ shadeTriangle(const UtilityMaterialDesc& desc,
 
     frustum.SetPerspective(45., 1., 1., 100.);
 
-    const std::vector<float> rays = { 0.f, 0.f, 1.f, 0.f, 0.f, -1.f, 0.f, 10.f };
+    const std::vector<float> rays = { 0.f, 0.f, 1.f, 0.f, 0.f, -1.f, 0.f, 10.f, 0.5f };
     const std::vector<float> hitSurface = { 1.f, 0.25f, 0.25f };
     const std::vector<std::uint32_t> hitIds = { 0u, 0u, 0u };
     float color[4] = { -1.f, -1.f, -1.f, -1.f };

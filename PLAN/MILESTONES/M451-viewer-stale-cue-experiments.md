@@ -66,7 +66,7 @@ The milestone has three steps. First it separates **when** the cue shows (a debo
   - approach: Follow the harness pattern of `Tests/gui/m302_device_dots.py`, with the window at 1920x1080. Use M302's removed `Tests/gui/m302_stale_border.py` (in `65889b6cd`) for how it held a render long enough to see the viewer stale. For each of Outline, Subtle Outline, Corner Dot, Edge Line and Toolbar Spinner: set `staleCueStyle`, make the viewer stale past the delay, then save one screenshot per style under the script's output dir. Also check (a) that a render shorter than the delay never shows the cue and (b) that the cue clears within delay + hold + slack after the image becomes current. Read visibility through a test-only accessor on ViewerGL, or on the spinner widget's `isVisible()`, not from pixels.
   - verify: the script passes in the remote GUI gate (`build.sh --from-run <id> --gui`) and produces five screenshots.
   - size: M
-- [ ] M451.P3.T2 — UAT: user picks a style and timing
+- [x] M451.P3.T2 — UAT: user picks a style and timing
   - files: none (AppImage + steps .md, screenshots via SendUserFile)
   - approach: Send the five screenshots one file each. Package a release AppImage with a matching steps .md: try each style, try several delay and hold values on a slow graph and a fast one, and say which style and timings to keep. Set `Needs: uat`. Record the outcome in `## Decisions`: the chosen style, its default delay and hold, and whether `staleCueStyle` stays as a user preference (with Off) or is removed. If no style is acceptable, put the user's direction in `## Decisions` and add tasks for it before P4.
   - verify: the user's choice is recorded in `## Decisions`.
@@ -74,7 +74,7 @@ The milestone has three steps. First it separates **when** the cue shows (a debo
 
 ## Phase 451.4: Keep the chosen style
 
-- [ ] M451.P4.T1 — Remove the styles the user didn't pick
+- [x] M451.P4.T1 — Remove the styles the user didn't pick
   - files: Gui/ViewerGL.cpp, Gui/ViewerGL.h, Gui/ViewerTab.cpp, Gui/ViewerTab10.cpp, Gui/ViewerTabPrivate.h, Engine/Settings.cpp, Engine/Settings.h, Tests/gui/m451_stale_cue.py
   - approach: Per P3.T2's decision, delete the drawing code (or the toolbar spinner widget), choice entries and enum values of the styles that weren't picked. If the decision drops the style preference, remove `staleCueStyle` and its getter and draw the kept style unconditionally. Otherwise keep it with only Off plus the kept style. Set the delay and hold defaults to the chosen values. Trim the GUI script to the kept style and keep its timing checks.
   - verify: compiles; GuiTests pass; the trimmed GUI script passes remotely; a grep finds no removed enum value or knob name left behind.
@@ -91,3 +91,4 @@ The milestone has three steps. First it separates **when** the cue shows (a debo
 - 2026-11-17 — **Spinner placement OK for testing (user):** the second-row spot after the colour picker is fine to test against the other styles. If the Toolbar Spinner is the style kept, it gets a small margin, or a divider, between it and the eyedropper. Gate green (run 44180987607, f5dae26c7).
 - 2026-11-17 — Review fixes in 83ab2c2ce (gate 44213436867 green). PR #310 is a draft until the head-to-head pick (user: no PR before choosing). UAT AppImage build/appimages/Natron-m451-viewer-stale-cue-experiments.{AppImage,md}.
 - 2026-11-21 — **UAT pick (user):** ship the preference with Corner Dot (the default) and Subtle Outline; remove the other styles. Default timings stay as in the UAT AppImage (400 ms delay, 500 ms hold). P3.T2 is closed; P4.T1 removes the rest.
+- 2026-11-21 — P4.T1 done (rebased on main): Edge Line and Toolbar Spinner are removed with all their code. The preference is Off / Subtle Outline / Corner Dot, default Corner Dot, 400 ms delay and 500 ms hold. **PM call:** Off stays, so the cue can be disabled. PR #310 is marked ready, and the gate is running.

@@ -124,3 +124,13 @@ Known suspects, unmeasured as to their split (M399's samples are gone):
 - 2026-11-18 — Review round 1 on #315 fixed in 2643bdf8e (+ the hide-unmodified test fix), gate 44348488426 green with the panel script rerun 44368411415. UAT AppImage rebuilt from 2643bdf8e; P3.T1 waits for the real-display timings.
 - 2026-11-21 — **UAT round 1 (user):** "too slow and seems to be knob-number or node panel complexity-based time to open the panel; i don't really understand why drawing a node panel should take any appreciable amount of time? something is wrong if it's taking a noticeable amount of time, keep investigating." Investigation dispatched: per-step profiling of panel open on a real display.
 - 2026-11-21 — UAT investigation fixes in 9297013fb: rows built in their final parent (reparenting re-styled every widget), no redundant reparent on dock, a lazy warning icon and grid spacer, curve-editor visibility looking up one node. New dock, layout and first-paint stage timers. Measured before (N100, Xvfb, paint/build ms): Blur 114/59, Grade 297/187, Roto 445/261, USDRenderSettings 490/377. Gate running; then `open_panel --stages` on the same nodes.
+- 2026-11-21 — Bench after 9297013fb (N100, Xvfb, `open_panel --stages`, 10 opens; paint/build median ms, before → after):
+  - Blur 114/59 → 69/30
+  - Merge 164/73 → 113/43
+  - Grade 297/187 → 163/71
+  - Roto 445/261 → 174/83
+  - Transform 202/116 → 151/71
+  - USDRenderSettings 490/377 → 112/76
+
+  That's 1.5–4x faster but still far over the 16 ms budget. Top remaining stages: panelBuildKnobs 15–45, panelDock 13–32 (polish 4–23), panelFirstPaint 12–17, and Color rows (Grade) 24. Round 3 dispatched: build only the shown page's rows and the rest on first show, per-widget style-sheet cost, and the open-to-paint gap.
+

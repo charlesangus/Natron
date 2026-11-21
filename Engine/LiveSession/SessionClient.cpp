@@ -64,28 +64,6 @@ struct PendingEdit {
     std::vector<std::string> keys;
 };
 
-// The host's project paths knob, which loading rewrites with the path it is given.
-std::optional<Serialization::GraphOp>
-projectPathsOp(std::span<const std::byte> snapshot)
-{
-    Serialization::SetKnobOp op;
-    op.knobName = "projectPaths";
-    try {
-        const Serialization::ProjectBundleReader reader(snapshot);
-        const Serialization::ProjectSerialization project = reader.readProject();
-        for (const Serialization::KnobSerialization& knob : project.projectKnobs) {
-            if (knob.name == op.knobName) {
-                op.value = knob;
-                break;
-            }
-        }
-    } catch (const std::exception&) {
-        return std::nullopt;
-    }
-
-    return Serialization::GraphOp(op);
-}
-
 } // namespace
 
 struct SessionClient::Implementation {
@@ -571,11 +549,6 @@ struct SessionClient::Implementation {
         {
             GraphEditRecorder::Suppress suppress;
             ok = p->loadProjectFromBundleBytes(welcome.snapshot, QString(), QString::fromUtf8(welcome.projectName.c_str()), &error);
-            if (ok) {
-                if (std::optional<Serialization::GraphOp> paths = projectPathsOp(welcome.snapshot)) {
-                    applyGraphOps(p, { *paths });
-                }
-            }
         }
         if (!ok) {
             end(QString::fromUtf8("The host's project could not be loaded: %1").arg(error));

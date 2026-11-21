@@ -347,6 +347,12 @@ public:
 
     bool isSaveUpToDate() const WARN_UNUSED_RETURN;
 
+    /**
+     * @brief Flags the project as changed since its last save, for edits made without the undo
+     * stack, such as a live session client's. Main thread only.
+     **/
+    void markUnsavedChanges();
+
     //QDateTime getProjectAgeSinceLastSave() const WARN_UNUSED_RETURN ;
 
     //QDateTime getProjectAgeSinceLastAutosave() const WARN_UNUSED_RETURN;

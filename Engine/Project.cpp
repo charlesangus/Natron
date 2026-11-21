@@ -3300,6 +3300,25 @@ Project::isSaveUpToDate() const
 }
 
 void
+Project::markUnsavedChanges()
+{
+    assert(QThread::currentThread() == qApp->thread());
+    bool wasUpToDate = false;
+    {
+        QMutexLocker l(&_imp->projectLock);
+        wasUpToDate = (_imp->ageSinceLastSave == _imp->lastAutoSave);
+        if (wasUpToDate) {
+            // A null save time would equal a null auto-save time.
+            _imp->lastAutoSave = _imp->ageSinceLastSave.isValid() ? QDateTime() : QDateTime::currentDateTime();
+        }
+    }
+    if (wasUpToDate) {
+        emitProjectNameChanged(QString::fromUtf8(_imp->getProjectPath().c_str()) + QString::fromUtf8(_imp->getProjectFilename().c_str()), true);
+    }
+    triggerAutoSave();
+}
+
+void
 Project::beginKnobsValuesChanged(ValueChangedReasonEnum /*reason*/)
 {
 }

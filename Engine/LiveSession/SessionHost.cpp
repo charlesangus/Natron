@@ -328,6 +328,9 @@ struct SessionHost::Implementation {
                 fullResync = true;
             }
         }
+        if (!broadcast.ops.empty()) {
+            p->markUnsavedChanges();
+        }
         sendToJoined(broadcast);
         if (reasons.empty()) {
             return;

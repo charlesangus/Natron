@@ -312,6 +312,7 @@ Node::restoreUserKnobs(const Serialization::NodeSerialization& serialization)
             page = std::dynamic_pointer_cast<KnobPage>(found);
         }
         if (page) {
+            page->setHintToolTip(it->tooltip);
             _imp->restoreUserKnobsRecursive(it->children, KnobGroupPtr(), page);
         }
     }
@@ -535,6 +536,7 @@ Node::Implementation::restoreUserKnobsRecursive(const std::list<Serialization::G
             }
             grp->setAsUserKnob(true);
             grp->setName(groupSerialization.name);
+            grp->setHintToolTip(groupSerialization.tooltip);
             if (groupSerialization.isSetAsTab) {
                 grp->setAsTab();
             }

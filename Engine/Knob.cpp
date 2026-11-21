@@ -4266,6 +4266,62 @@ KnobHelper::replaceNodeNameInExpressionCode(int dimension,
     isEffect->endChanges(true);
 }
 
+std::string
+renameKnobInExpressionCode(const std::string& expression,
+                           const std::string& oldKnobName,
+                           const std::string& newKnobName,
+                           const std::set<std::string>& ownerNames)
+{
+    if (expression.empty() || oldKnobName.empty() || (oldKnobName == newKnobName) || ownerNames.empty()) {
+        return expression;
+    }
+    const std::vector<bool> code = pythonCodeMask(expression);
+    // The identifier ending just before position end, which must be code.
+    const auto identifierBefore = [&](std::size_t end) {
+        std::size_t begin = end;
+        while ((begin > 0) && code[begin - 1] && isIdentifierCharacter(expression[begin - 1])) {
+            --begin;
+        }
+
+        return expression.substr(begin, end - begin);
+    };
+    const auto isOwnerAttribute = [&](std::size_t dot) {
+        return (dot > 0) && code[dot] && (expression[dot] == '.') && (ownerNames.count(identifierBefore(dot)) > 0);
+    };
+    static const std::string kGetParam("getParam(");
+
+    std::string renamed;
+    std::size_t copiedUpTo = 0;
+    std::size_t pos = expression.find(oldKnobName);
+    while (pos != std::string::npos) {
+        const std::size_t after = pos + oldKnobName.size();
+        bool rename = false;
+        if (code[pos]) {
+            // owner.oldKnobName as an attribute.
+            rename = (pos > 0) && !((after < expression.size()) && isIdentifierCharacter(expression[after])) && isOwnerAttribute(pos - 1);
+        } else if ((pos > 0) && (after < expression.size())) {
+            // owner.getParam("oldKnobName"), the name being the whole literal.
+            const char quote = expression[pos - 1];
+            const std::size_t open = pos - 1;
+            rename = ((quote == '"') || (quote == '\'')) && (expression[after] == quote) && (open >= kGetParam.size() + 1) && code[open - 1] && (expression.compare(open - kGetParam.size(), kGetParam.size(), kGetParam) == 0) && isOwnerAttribute(open - kGetParam.size() - 1);
+        }
+        if (!rename) {
+            pos = expression.find(oldKnobName, pos + 1);
+            continue;
+        }
+        renamed.append(expression, copiedUpTo, pos - copiedUpTo);
+        renamed.append(newKnobName);
+        copiedUpTo = after;
+        pos = expression.find(oldKnobName, after);
+    }
+    if (copiedUpTo == 0) {
+        return expression;
+    }
+    renamed.append(expression, copiedUpTo, std::string::npos);
+
+    return renamed;
+}
+
 bool
 KnobHelper::isExpressionUsingRetVariable(int dimension) const
 {

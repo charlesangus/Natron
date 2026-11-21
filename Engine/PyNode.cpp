@@ -58,6 +58,7 @@
 #include "Engine/PythonUndoCommands.h"
 #include "Engine/RFV.h"
 #include "Engine/TimeLine.h"
+#include "Engine/UserKnobEdit.h"
 #include "Engine/ViewIdx.h"
 #include "Serialization/NodeSerialization.h"
 
@@ -1303,6 +1304,73 @@ UserParamHolder::removeParam(Param* param)
 
     return true;
 }
+
+Param*
+UserParamHolder::changeParamType(Param* param,
+                                 const QString& typeName,
+                                 bool allowReset)
+{
+    if (!checkHolderIsEditable(_holder)) {
+        return 0;
+    }
+    KnobIPtr knob = param ? param->getInternalKnob() : KnobIPtr();
+    if (!knob) {
+        PyErr_SetString(PyExc_ValueError, "The parameter no longer exists.");
+
+        return 0;
+    }
+    const std::string name = typeName.toStdString();
+    const int parametricCurves = dynamic_cast<KnobParametric*>(knob.get()) ? knob->getDimension() : 1;
+    const std::pair<const char*, std::pair<std::string, int>> types[] = {
+        { "Int", { KnobInt::typeNameStatic(), 1 } },
+        { "Int2D", { KnobInt::typeNameStatic(), 2 } },
+        { "Int3D", { KnobInt::typeNameStatic(), 3 } },
+        { "Double", { KnobDouble::typeNameStatic(), 1 } },
+        { "Double2D", { KnobDouble::typeNameStatic(), 2 } },
+        { "Double3D", { KnobDouble::typeNameStatic(), 3 } },
+        { "Color", { KnobColor::typeNameStatic(), 3 } },
+        { "ColorRGBA", { KnobColor::typeNameStatic(), 4 } },
+        { "Boolean", { KnobBool::typeNameStatic(), 1 } },
+        { "Choice", { KnobChoice::typeNameStatic(), 1 } },
+        { "String", { KnobString::typeNameStatic(), 1 } },
+        { "File", { KnobFile::typeNameStatic(), 1 } },
+        { "OutputFile", { KnobOutputFile::typeNameStatic(), 1 } },
+        { "Path", { KnobPath::typeNameStatic(), 1 } },
+        { "ChannelSet", { KnobChannelSet::typeNameStatic(), 1 } },
+        { "LayerSelect", { KnobLayerSelect::typeNameStatic(), 1 } },
+        { "ChannelSelect", { KnobChannelSelect::typeNameStatic(), 1 } },
+        { "Button", { KnobButton::typeNameStatic(), 1 } },
+        { "Separator", { KnobSeparator::typeNameStatic(), 1 } },
+        { "Parametric", { KnobParametric::typeNameStatic(), parametricCurves } },
+    };
+    const std::pair<std::string, int>* target = 0;
+    for (const std::pair<const char*, std::pair<std::string, int>>& type : types) {
+        if (name == type.first) {
+            target = &type.second;
+            break;
+        }
+    }
+    if (!target) {
+        const std::string message = "There is no parameter type named " + name + ".";
+        PyErr_SetString(PyExc_ValueError, message.c_str());
+
+        return 0;
+    }
+
+    KnobIPtr newKnob;
+    std::string error;
+    const UserKnobTypeChangeEnum result = changeUserKnobType(_holder, knob, target->first, target->second, allowReset, &newKnob, &error);
+    if (result == eUserKnobTypeChangeFailed) {
+        PyErr_SetString(PyExc_ValueError, error.c_str());
+
+        return 0;
+    }
+    if ((result == eUserKnobTypeChangeNeedsReset) || !newKnob) {
+        return 0;
+    }
+
+    return Effect::createParamWrapperForKnob(newKnob);
+} // UserParamHolder::changeParamType
 
 void
 UserParamHolder::addRFVKnob(Param* param)

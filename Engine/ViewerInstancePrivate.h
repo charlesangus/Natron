@@ -671,6 +671,8 @@ public:
     // What activeInputDataKindChanged() last announced. Only accessed from MT
     DataKindEnum notifiedInputDataKind = eDataKindImage;
     bool notifiedWipeDisabled = false;
+    // An empty input reads as an image, yet the viewer may keep showing a scene through it.
+    bool notifiedHasInputA = false;
 
     mutable std::mutex lastSceneMutex; // protects lastScene, lastSceneError, lastSceneOk, lastSceneLoadSet, lastSceneReach
     ScenePayload lastScene[2];

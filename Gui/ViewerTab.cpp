@@ -1509,6 +1509,8 @@ ViewerTab::onActiveInputDataKindChanged()
     if (!scene && isShowingScene() && !getSceneViewedNode()) {
         // An empty input keeps the scene view and its stage: showing the image viewer builds its GL
         // context on the main thread, and a reconnect would flip straight back and reload.
+        Q_EMIT sceneViewChanged();
+
         return;
     }
     if (scene && !_imp->sceneViewport) {

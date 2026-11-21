@@ -871,8 +871,8 @@ public Q_SLOTS:
     void executeDisconnectTextureRequestOnMainThread(int index, bool clearRoD);
 
     /**
-     * @brief Re-reads the active input's data kind and whether wipe is disabled, and emits
-     * activeInputDataKindChanged() when either changed. Callable from any thread; the work runs
+     * @brief Re-reads the active input's data kind, whether it is connected and whether wipe is
+     * disabled, and emits activeInputDataKindChanged() when any of them changed. Callable from any thread; the work runs
      * on the main thread.
      **/
     void refreshActiveInputDataKind();
@@ -907,7 +907,8 @@ Q_SIGNALS:
     void viewerRenderingStarted();
     void viewerRenderingEnded();
 
-    // getActiveInputDataKind() or isWipeDisabledByDataKind() changed. Emitted on the main thread.
+    // Emitted on the main thread when getActiveInputDataKind(), whether input A is connected,
+    // or isWipeDisabledByDataKind() now reads differently.
     void activeInputDataKindChanged();
 
     // A scene was evaluated for the input of textureIndex; getLastEvaluatedScene() has the

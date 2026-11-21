@@ -989,7 +989,9 @@ struct SceneGraphPanel::Implementation {
     void connectViewport(SceneViewport* newViewport)
     {
         if (viewport == newViewport) {
-            if (viewerSource && (model->getSource() == viewerSource)) {
+            // The viewport stays across a change of viewed node, which can move the wanted source
+            // between the viewer's stage and the shown node's own.
+            if (viewerSource && (model->getSource() == viewerSource) && (wantedSource() == viewerSource)) {
                 model->refresh();
             } else {
                 applySource();
@@ -1061,7 +1063,11 @@ struct SceneGraphPanel::Implementation {
             viewer = newViewer;
             if (viewer) {
                 QObject::connect(viewer, &ViewerTab::sceneViewChanged, panel, &SceneGraphPanel::onViewerSceneChanged);
-                QObject::connect(viewer, &ViewerTab::sceneViewedNodeChanged, panel, [this]() { updateBakeButton(); });
+                QObject::connect(viewer, &ViewerTab::sceneViewedNodeChanged, panel, [this]() {
+                    updateBakeButton();
+                    applySource();
+                    updateStatus();
+                });
             }
             if (viewerTimeLine) {
                 QObject::disconnect(viewerTimeLine, nullptr, panel, nullptr);

@@ -6649,6 +6649,10 @@ ViewerInstance::refreshActiveInputDataKind()
     }
 
     const DataKindEnum kinds[2] = { getInputDataKindForTexture(0), getInputDataKindForTexture(1) };
+    int a = -1, b = -1;
+    getActiveInputs(a, b);
+    const EffectInstancePtr inputA = (a >= 0) ? getInput(a) : EffectInstancePtr();
+    const bool hasInputA = inputA && inputA->getNode();
     const bool wipeDisabled = (kinds[0] == eDataKindScene) || (kinds[1] == eDataKindScene);
     {
         std::lock_guard<std::mutex> k(_imp->lastSceneMutex);
@@ -6663,11 +6667,12 @@ ViewerInstance::refreshActiveInputDataKind()
         }
     }
 
-    if ((kinds[0] == _imp->notifiedInputDataKind) && (wipeDisabled == _imp->notifiedWipeDisabled)) {
+    if ((kinds[0] == _imp->notifiedInputDataKind) && (wipeDisabled == _imp->notifiedWipeDisabled) && (hasInputA == _imp->notifiedHasInputA)) {
         return;
     }
     _imp->notifiedInputDataKind = kinds[0];
     _imp->notifiedWipeDisabled = wipeDisabled;
+    _imp->notifiedHasInputA = hasInputA;
     Q_EMIT activeInputDataKindChanged();
 }
 

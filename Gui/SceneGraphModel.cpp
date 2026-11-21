@@ -1597,6 +1597,17 @@ struct SceneGraphModel::Implementation {
     void resetTo(bool hasStage,
                  const PrimData& rootData)
     {
+        // The reset drops the fetches in flight, whose end is what a waiter on deferred reads awaits.
+        const bool readsOwed = (fetchesInFlight > 0) || !owedFetches.empty();
+        resetRows(hasStage, rootData);
+        if (readsOwed && (fetchesInFlight == 0) && owedFetches.empty()) {
+            Q_EMIT model->deferredReadsDone();
+        }
+    }
+
+    void resetRows(bool hasStage,
+                   const PrimData& rootData)
+    {
         ChangeScope scope(this);
         model->beginResetModel();
         // What the tree read from a heavy stage holds takes longer to destroy than a frame lasts.

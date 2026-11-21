@@ -6956,7 +6956,7 @@ struct SceneViewport::Implementation {
                 if (quit) {
                     return;
                 }
-                const auto woken = [this]() { return quit || !jobs.empty() || !doomedFences.empty(); };
+                const auto woken = [this]() { return quit || !jobs.empty() || (!doomedFences.empty() && QOpenGLContext::currentContext()); };
                 if (watched) {
                     changed.wait_for(lock, kFenceWatchInterval, woken);
                 } else {
@@ -6974,8 +6974,8 @@ struct SceneViewport::Implementation {
             }
             QOpenGLContext* current = QOpenGLContext::currentContext();
             if (!current) {
+                // Fences belong to the share group: they wait for a job to make a context current again.
                 watched = nullptr;
-                doomedFences.clear();
 
                 return;
             }

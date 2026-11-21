@@ -267,14 +267,27 @@ namespace {
                    const std::set<SdfPath>& materials) const
         {
             std::lock_guard<std::mutex> lock(_mutex);
-            std::set<SdfPath>& previous = _bindsTo[path];
-            for (const SdfPath& material : previous) {
-                forgetUser(material, path);
+            std::map<SdfPath, std::set<SdfPath>>::iterator previous = _bindsTo.find(path);
+            if (previous != _bindsTo.end()) {
+                // Forgetting a material that is still bound would drop the verdict just cached for it.
+                for (const SdfPath& material : previous->second) {
+                    if (materials.count(material) == 0) {
+                        forgetUser(material, path);
+                    }
+                }
             }
             for (const SdfPath& material : materials) {
                 _boundBy[material].insert(path);
             }
-            previous = materials;
+            if (materials.empty()) {
+                if (previous != _bindsTo.end()) {
+                    _bindsTo.erase(previous);
+                }
+            } else if (previous != _bindsTo.end()) {
+                previous->second = materials;
+            } else {
+                _bindsTo.emplace(path, materials);
+            }
         }
 
         // Geometry can be read before the material it binds to arrives, and is then left bound.
@@ -284,6 +297,8 @@ namespace {
             {
                 std::lock_guard<std::mutex> lock(_mutex);
                 if (_boundBy.find(materialPath) == _boundBy.end()) {
+                    _usesPtex.erase(materialPath);
+
                     return;
                 }
             }
@@ -307,6 +322,8 @@ namespace {
             users->second.erase(user);
             if (users->second.empty()) {
                 _boundBy.erase(users);
+                // Nothing would re-judge the material on an edit, so the next binder must judge it afresh.
+                _usesPtex.erase(materialPath);
             }
         }
 

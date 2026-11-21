@@ -286,6 +286,51 @@ TEST(NatronMerge, AWholeProjectMergeTakesBothSidesEdits)
     EXPECT_EQ(extra->inputs["Source"], "ColorCorrect1");
 }
 
+// A project whose Grade1 holds a multi-line string knob. The knob has no type name, as when read from a bundle.
+Serialization::ProjectSerialization
+projectWithScript(const std::string& text)
+{
+    Serialization::ProjectSerialization project = plainProject();
+    Serialization::NodeSerializationPtr grade = nodeAt(project, "Grade1");
+    Serialization::KnobSerialization knob;
+    knob.name = "script";
+    knob.dimension = 1;
+    knob.dimensions.resize(1);
+    knob.dimensions[0].defaultValue = Serialization::KnobValueSerialization(std::string());
+    knob.dimensions[0].value = Serialization::KnobValueSerialization(text);
+    grade->knobs.push_back(knob);
+
+    return project;
+}
+
+TEST(NatronMerge, AMultiLineStringKnobMergesByLinesThroughTheCli)
+{
+    ScratchDir dir;
+    writeBundle(projectWithScript("a\nb\nc\nd\n"), dir.file("base.ntpz"));
+    writeBundle(projectWithScript("A\nb\nc\nd\n"), dir.file("mine.ntpz"));
+    writeBundle(projectWithScript("a\nb\nc\nD\n"), dir.file("theirs.ntpz"));
+    const Serialization::ProjectSerialization baseRead = readBundle(dir.file("base.ntpz"));
+    const Serialization::ProjectSerialization mineRead = readBundle(dir.file("mine.ntpz"));
+    const Serialization::ProjectSerialization theirsRead = readBundle(dir.file("theirs.ntpz"));
+    ASSERT_TRUE(knobOf(*nodeAt(mineRead, "Grade1"), "script") != nullptr);
+    EXPECT_TRUE(knobOf(*nodeAt(mineRead, "Grade1"), "script")->typeName.empty());
+
+    const std::string out = dir.file("out.ntpz");
+    const RunResult run = runNatronMerge({ "merge", dir.file("base.ntpz"), dir.file("mine.ntpz"), dir.file("theirs.ntpz"), "-o", out });
+    EXPECT_EQ(run.status, 0);
+    const Serialization::ProjectSerialization merged = readBundle(out);
+    EXPECT_TRUE(merged.mergeConflicts.empty());
+    const Serialization::KnobSerialization* script = knobOf(*nodeAt(merged, "Grade1"), "script");
+    ASSERT_TRUE(script != nullptr);
+    ASSERT_TRUE(script->dimensions[0].value.has_value());
+    EXPECT_EQ(std::get<std::string>(*script->dimensions[0].value), "A\nb\nc\nD\n");
+
+    const Serialization::MergeResult api = Serialization::threeWayMerge(baseRead, mineRead, theirsRead, Serialization::planProjectMerge(baseRead, mineRead, theirsRead));
+    const std::string apiOut = dir.file("api.ntpz");
+    writeBundle(api.merged, apiOut);
+    EXPECT_EQ(graphText(merged), graphText(readBundle(apiOut)));
+}
+
 TEST(NatronMerge, AWholeProjectConflictKeepsMineAndExitsOne)
 {
     ScratchDir dir;

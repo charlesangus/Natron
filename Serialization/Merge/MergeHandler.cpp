@@ -411,9 +411,8 @@ mergeKnobLists(const MergeHandlerRegistry& handlers,
         const KnobSerialization* b = knobNamed(baseKnobs, name);
         const KnobSerialization* m = knobNamed(mineKnobs, name);
         const KnobSerialization* t = knobNamed(theirsKnobs, name);
-        const KnobSerialization* any = m ? m : (t ? t : b);
         std::optional<KnobSerialization> merged;
-        handlers.handlerFor(pluginID, any->typeName).merge(b, m, t, &merged, conflicts);
+        handlers.handlerFor(pluginID, b, m, t).merge(b, m, t, &merged, conflicts);
         if (merged) {
             result.push_back(std::move(*merged));
         }
@@ -490,6 +489,43 @@ MergeHandlerRegistry::handlerFor(const std::string& pluginID,
     }
 
     return *_scalar;
+}
+
+namespace {
+
+    bool
+    holdsMultiLineString(const KnobSerialization* knob)
+    {
+        if (!knob) {
+            return false;
+        }
+        for (const KnobDimensionSerialization& dimension : knob->dimensions) {
+            if (!dimension.value) {
+                continue;
+            }
+            const std::string* text = std::get_if<std::string>(&*dimension.value);
+            if (text && (text->find('\n') != std::string::npos)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+} // namespace
+
+const KnobMergeHandler&
+MergeHandlerRegistry::handlerFor(const std::string& pluginID,
+                                 const KnobSerialization* base,
+                                 const KnobSerialization* mine,
+                                 const KnobSerialization* theirs) const
+{
+    const KnobSerialization* any = mine ? mine : (theirs ? theirs : base);
+    if (any->typeName.empty() && (holdsMultiLineString(base) || holdsMultiLineString(mine) || holdsMultiLineString(theirs))) {
+        return handlerFor(pluginID, "String");
+    }
+
+    return handlerFor(pluginID, any->typeName);
 }
 
 const NodeMergeHandler&

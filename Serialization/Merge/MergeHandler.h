@@ -157,6 +157,13 @@ public:
 
     const KnobMergeHandler& handlerFor(const std::string& pluginID,
                                        const std::string& typeName) const;
+    // A bundle keeps no knob types, so a knob read from one has an empty typeName. Such a knob is
+    // taken for a String knob when any side holds a multi-line string: a choice knob also holds
+    // strings, but never ones with line breaks.
+    const KnobMergeHandler& handlerFor(const std::string& pluginID,
+                                       const KnobSerialization* base,
+                                       const KnobSerialization* mine,
+                                       const KnobSerialization* theirs) const;
     const NodeMergeHandler& nodeHandlerFor(const std::string& pluginID) const;
 
     static const MergeHandlerRegistry& defaults();

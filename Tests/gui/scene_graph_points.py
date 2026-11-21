@@ -88,7 +88,7 @@ try:
     from PySide6.QtWidgets import QAbstractItemView, QComboBox, QLabel, QTreeView
     from pxr import Sdf
 
-    from guitest import OUT, check, finish, plugin_problem, report, require, run, shot, viewer_up, widgets_of
+    from guitest import OUT, check, fetch_rows, finish, plugin_problem, report, require, run, shot, viewer_up, widgets_of
 
     PATH_ROLE = Qt.UserRole + 1
     STATE_ROLE = Qt.UserRole + 3
@@ -188,8 +188,7 @@ try:
         m = model()
         if m is None:
             return []
-        while m.canFetchMore(parent):
-            m.fetchMore(parent)
+        fetch_rows(m, parent)
         return [m.index(r, 0, parent) for r in range(m.rowCount(parent))]
 
     def path_of(index):
@@ -218,6 +217,23 @@ try:
     def expanded(path):
         index = find(path)
         return index.isValid() and tree().isExpanded(index)
+
+    def listed(*paths):
+        """Waits until the model, which reads rows on its worker, has read each of paths."""
+        ok = yield ("until", lambda: all(find(path).isValid() for path in paths), POLL_TIMEOUT_S)
+        check(ok, "the panel lists %r" % (paths,))
+        return ok
+
+    def opened(*paths):
+        """A poll that opens each of paths once the model has read its row, true when all are open."""
+        def step():
+            for path in paths:
+                index = find(path)
+                if not index.isValid():
+                    return False
+                tree().expand(index)
+            return True
+        return step
 
     def world_children():
         return [str(i.data()) for i in rows(find(WORLD))]
@@ -343,6 +359,7 @@ try:
         check(compose_count() > composed, "the pinned node is read into a stage of the panel's own (%d, then %d)"
               % (composed, compose_count()))
         check(opened_buildings() == [], "reading the pinned node opens no building's layer (got %r)" % (opened_buildings(),))
+        yield from listed(B0, BLOCK1 + "/B0")
         for path in (B0, BLOCK1 + "/B0"):
             check(state(path) == STATE_UNLOADED, "%s is unloaded on the panel's stage (got %r)" % (path, state(path)))
         shot("scene-graph-points-pinned-read.png")
@@ -357,17 +374,24 @@ try:
         yield ("sleep", SETTLE_MS)
 
         composed = compose_count()
+        del switch_watch.seen[:]
         yield from pin_to(usd)
-        check(shows(usd, all_blocks)(), "returning to a kept node shows its tree at once (got %r)" % (world_children(),))
+        # The rows come from the worker after the reset; "at once" is the kept stage's rows
+        # without the greyed wait for a first evaluation.
+        ok = yield ("until", shows(usd, all_blocks), POLL_TIMEOUT_S)
+        check(ok, "returning to a kept node shows its tree (got %r)" % (world_children(),))
+        check(not any(s[0] for s in switch_watch.seen),
+              "returning to a kept node shows its tree at once, never switching (got %r)" % (switch_watch.seen,))
         yield ("sleep", SETTLE_MS)
         check(compose_count() == composed, "returning to a kept node composes nothing (%d, then %d)" % (composed, compose_count()))
-        check(shows(usd, all_blocks)(), "the kept node's tree stays up (got %r)" % (world_children(),))
+        ok = yield ("until", shows(usd, all_blocks), POLL_TIMEOUT_S)
+        check(ok, "the kept node's tree stays up (got %r)" % (world_children(),))
 
         # Twirling on the panel's stage.
-        tree().expand(find(WORLD))
-        tree().expand(find(BLOCK0))
-        tree().expand(find(B0))
-        ok = yield ("until", lambda: state(B0) == STATE_LOADED, POLL_TIMEOUT_S)
+        ok = yield ("until", opened(WORLD, BLOCK0, B0), POLL_TIMEOUT_S)
+        check(ok, "the rows down to %s open" % (B0,))
+        ok = yield ("until", lambda: state(B0) == STATE_LOADED and [str(i.data()) for i in rows(find(B0))] == ["Floor"],
+                    POLL_TIMEOUT_S)
         check(ok, "twirling a payload row loads it on the panel's stage (state %r)" % (state(B0),))
         check(opened_buildings() == ["b0_0.usda"], "the twirl opens that building's layer alone (got %r)" % (opened_buildings(),))
         check(viewer_load_edits() == edits_before, "the twirl loads nothing on the viewer's stage (%d, then %d)"
@@ -383,6 +407,7 @@ try:
         check(ok, "the kept USDPrune's tree comes back (got %r)" % (world_children(),))
         yield ("sleep", SETTLE_MS)
         check(compose_count() == composed, "returning to the kept USDPrune composes nothing (%d, then %d)" % (composed, compose_count()))
+        yield from listed(B0)
         check(expanded(WORLD) and expanded(BLOCK0), "the open rows carry over to the USDPrune")
         check(state(B0) == STATE_UNLOADED and not expanded(B0),
               "the payload row unloaded here stays closed and unloaded (state %r, open %r)" % (state(B0), expanded(B0)))
@@ -443,11 +468,12 @@ try:
         ok = yield ("until", lambda: shows(usd, all_blocks)() and scene_drawn(), POLL_TIMEOUT_S)
         require(ok, "the panel shows the viewer's USDRead (got %r)" % (world_children(),))
         yield ("sleep", SETTLE_MS)
+        yield from listed(B0)
         check(state(B0) == STATE_UNLOADED and not expanded(B0),
               "on the viewer's stage, the remembered payload row stays closed and unloaded (state %r)" % (state(B0),))
-        for path in (BLOCK1, PROPS):
-            tree().expand(find(path))
         target = PROPS + "/P%03d" % (PROP_COUNT // 2,)
+        ok = yield ("until", lambda: opened(BLOCK1, PROPS)() and find(target).isValid(), POLL_TIMEOUT_S)
+        check(ok, "the Block1 and Props rows open and list %s" % (target,))
         tree().scrollTo(find(target), QAbstractItemView.PositionAtTop)
         ok = yield ("until", lambda: top_path().startswith(PROPS + "/") and str(prop("natronSceneGraphTopPath", "")) == top_path(),
                     POLL_TIMEOUT_S)
@@ -475,6 +501,7 @@ try:
         check(top_path() == top, "the top row survives the switch back (%r, then %r)" % (top, top_path()))
         check(viewer_load_edits() == edits, "restoring the rows loads nothing (%d, then %d)" % (edits, viewer_load_edits()))
         check(opened_buildings() == layers, "restoring the rows opens no building's layer (%r, then %r)" % (layers, opened_buildings()))
+        yield from listed(B0)
         check(state(B0) == STATE_UNLOADED and not expanded(B0), "the unloaded payload row stays closed (state %r)" % (state(B0),))
         shot("scene-graph-points-viewer-back.png")
 
@@ -533,14 +560,14 @@ try:
         use(FIRST)
         check(shows(prune, pruned)(), "pinning the second panel leaves the first on the USDPrune (got %r, %r)"
               % (shown_node(), world_children()))
+        yield from listed(BLOCK0 + "/B1")
         check(state(BLOCK0 + "/B1") == STATE_UNLOADED, "Block0/B1 is unloaded on the first panel's stage")
 
         edits = viewer_load_edits()
         composed_first = compose_count()
         use(SECOND)
-        tree().expand(find(WORLD))
-        tree().expand(find(BLOCK0))
-        tree().expand(find(BLOCK0 + "/B1"))
+        ok = yield ("until", opened(WORLD, BLOCK0, BLOCK0 + "/B1"), POLL_TIMEOUT_S)
+        check(ok, "the second panel opens the rows down to Block0/B1")
         ok = yield ("until", lambda: state(BLOCK0 + "/B1") == STATE_LOADED, POLL_TIMEOUT_S)
         check(ok, "twirling Block0/B1 loads it on the second panel's stage (state %r)" % (state(BLOCK0 + "/B1"),))
         yield ("sleep", SETTLE_MS)

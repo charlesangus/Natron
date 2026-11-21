@@ -53,6 +53,7 @@
 #include "Engine/Nodes/Filter/IErodeDilate.h"
 #include "Engine/Nodes/Filter/MapInput.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Project.h"
@@ -603,6 +604,7 @@ protected:
             if (!column) {
                 return NodePtr();
             }
+            setBlackOutside(column, true);
             if (!ramp) {
                 ramp = column;
                 continue;
@@ -760,6 +762,8 @@ TEST_F(NativeIErodeDilateTest, MapRampIsMonotonic)
         NodePtr over = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE), PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
         NodePtr map = makeStepRamp(7);
         ASSERT_TRUE(bool(background) && bool(band) && bool(over) && bool(map));
+        // Under Stretch the band, Merge's A, would repeat its rows over the whole background.
+        setBlackOutside(band, true);
         EXPECT_TRUE(setKnobValue(over, kNativeMergeParamOperation, std::string("over")));
         connectNodes(background, over, 0, true);
         connectNodes(band, over, 1, true);
@@ -804,6 +808,41 @@ TEST_F(NativeIErodeDilateTest, DisconnectedMapWarns)
     message.clear();
     node->getPersistentMessage(&message, &type, false);
     EXPECT_TRUE(message.isEmpty()) << message.toStdString();
+}
+
+// Stretch, which Input resolves to for a Constant, repeats the edge, so an eroded constant keeps
+// its value to the border, square or disc; Black erodes the border to black and leaves the middle.
+TEST_F(NativeIErodeDilateTest, EdgeModeDecidesTheBorderOfAConstant)
+{
+    const double v = 0.6;
+    NodePtr constant = makeConstant(kWindow, { v, v, v, v });
+    ASSERT_TRUE(bool(constant));
+    for (bool disc : { false, true }) {
+        for (const char* edgeMode : { "input", "stretch", "black" }) {
+            NodePtr node = makeNode(false, constant, NodePtr(), 3., 2.5);
+            ASSERT_TRUE(bool(node));
+            if (disc) {
+                ASSERT_TRUE(setKnobValue(node, kIErodeDilateParamShape, std::string(kIErodeDilateParamShapeDisc)));
+            }
+            ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string(edgeMode)));
+            RenderedPlane actual;
+            ASSERT_TRUE(renderRGBA(node, kWindow, &actual));
+            const int w = kWindow.width();
+            const auto at = [&](int x, int y) {
+                return actual.pixels[((std::size_t)y * w + x) * 4];
+            };
+            const std::string what = std::string(edgeMode) + (disc ? " disc" : " square");
+            if (std::string(edgeMode) == "black") {
+                EXPECT_EQ(0.f, at(0, 0)) << what << ": the corner";
+                EXPECT_EQ(0.f, at(w - 1, kWindow.height() / 2)) << what << ": the right edge";
+                EXPECT_EQ((float)v, at(w / 2, kWindow.height() / 2)) << what << ": the centre";
+                continue;
+            }
+            for (std::size_t i = 0; i < actual.pixels.size(); ++i) {
+                ASSERT_EQ((float)v, actual.pixels[i]) << what << " float " << i;
+            }
+        }
+    }
 }
 
 // A size of 0 on both axes is an identity, and the passes are empty, so the input passes through.
@@ -872,6 +911,8 @@ TEST_F(NativeIErodeDilateTest, MapRampCrossesZero)
     NodePtr over = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE), PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
     NodePtr map = makeStepRamp(8);
     ASSERT_TRUE(bool(background) && bool(band) && bool(over) && bool(map));
+    // Under Stretch the band, Merge's A, would repeat its rows over the whole background.
+    setBlackOutside(band, true);
     EXPECT_TRUE(setKnobValue(over, kNativeMergeParamOperation, std::string("over")));
     connectNodes(background, over, 0, true);
     connectNodes(band, over, 1, true);
@@ -944,4 +985,102 @@ TEST_F(NativeIErodeDilateTest, Golden)
         }));
     }
     runGoldenCases(getApp(), spec, v);
+}
+
+// Under Stretch a filter far wider than the image, its size varying with a Map smaller than the
+// image, reads only the source and the earlier stages' reach past it, and matches the same filter
+// under Black over a source and a Map whose edges are laid out explicitly past every pixel the
+// filter reaches.
+TEST_F(NativeIErodeDilateTest, StretchFarPastTheImageMatchesTheLaidOutEdge)
+{
+    const int pad = 300;
+    const RectI padded(kWindow.x1 - pad, kWindow.y1 - pad, kWindow.x2 + pad, kWindow.y2 + pad);
+    const RectI box(20, 14, 44, 34);
+    // `left` of base colour, the columns of `right` within it of a second colour, and box over both.
+    const auto makeTwoTone = [&](const RectI& left, const RectI& right, const std::vector<double>& a, const std::vector<double>& b, bool withBox) -> NodePtr {
+        NodePtr base = makeConstant(left, a);
+        NodePtr half = makeConstant(right, b);
+        NodePtr under = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE), PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
+        EXPECT_TRUE(bool(base) && bool(half) && bool(under));
+        if (!base || !half || !under) {
+            return NodePtr();
+        }
+        setBlackOutside(half, true);
+        EXPECT_TRUE(setKnobValue(under, kNativeMergeParamOperation, std::string("over")));
+        connectNodes(base, under, 0, true);
+        connectNodes(half, under, 1, true);
+        if (!withBox) {
+            return under;
+        }
+        NodePtr inside = makeConstant(box, { 4., 2., 1., 1. });
+        NodePtr over = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE), PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
+        EXPECT_TRUE(bool(inside) && bool(over));
+        if (!inside || !over) {
+            return NodePtr();
+        }
+        setBlackOutside(inside, true);
+        EXPECT_TRUE(setKnobValue(over, kNativeMergeParamOperation, std::string("over")));
+        connectNodes(under, over, 0, true);
+        connectNodes(inside, over, 1, true);
+
+        return over;
+    };
+    const std::vector<double> baseColor = { 0.2, 0.4, 0.6, 1. }, halfColor = { 0.9, 0.1, 0.3, 1. };
+    const std::vector<double> mapLow = { 0.3, 0.3, 0.3, 0.3 }, mapHigh = { 0.9, 0.9, 0.9, 0.9 };
+    const RectI mapRect(8, 6, 40, 36);
+    NodePtr source = makeTwoTone(kWindow, RectI(32, kWindow.y1, kWindow.x2, kWindow.y2), baseColor, halfColor, true);
+    NodePtr laidOut = makeTwoTone(padded, RectI(32, padded.y1, padded.x2, padded.y2), baseColor, halfColor, true);
+    NodePtr map = makeTwoTone(mapRect, RectI(24, mapRect.y1, mapRect.x2, mapRect.y2), mapLow, mapHigh, false);
+    NodePtr laidOutMap = makeTwoTone(padded, RectI(24, padded.y1, padded.x2, padded.y2), mapLow, mapHigh, false);
+    ASSERT_TRUE(bool(source) && bool(laidOut) && bool(map) && bool(laidOutMap));
+
+    struct Case {
+        bool dilate;
+        const char* shape;
+        bool withMap;
+    };
+    const Case cases[] = {
+        { true, kIErodeDilateParamShapeSquare, false },
+        { false, kIErodeDilateParamShapeSquare, true },
+        { true, kIErodeDilateParamShapeDisc, true },
+        { false, kIErodeDilateParamShapeDisc, false },
+    };
+    for (const Case& k : cases) {
+        const std::string label = std::string(k.dilate ? "dilate " : "erode ") + k.shape + (k.withMap ? " map" : "");
+        NodePtr stretched = makeNode(k.dilate, source, k.withMap ? map : NodePtr(), 90., 70.);
+        NodePtr reference = makeNode(k.dilate, laidOut, k.withMap ? laidOutMap : NodePtr(), 90., 70.);
+        ASSERT_TRUE(bool(stretched) && bool(reference)) << label;
+        for (const NodePtr& node : { stretched, reference }) {
+            ASSERT_TRUE(setKnobValue(node, kIErodeDilateParamShape, std::string(k.shape))) << label;
+            if (k.withMap) {
+                const double sign = k.dilate ? -1. : 1.;
+                ASSERT_TRUE(setKnobValues(node, kMapInputParamSizeAtBlack, { sign * 20., sign * 10. })) << label;
+            }
+        }
+        ASSERT_TRUE(setKnobValue(stretched, kEdgeModeParam, std::string("stretch"))) << label;
+        ASSERT_TRUE(setKnobValue(reference, kEdgeModeParam, std::string("black"))) << label;
+
+        RenderedPlane whole, part, expected;
+        const RectI tile(5, 30, 27, 48);
+        ASSERT_TRUE(renderRGBA(stretched, kWindow, &whole)) << label;
+        ASSERT_TRUE(renderRGBA(stretched, tile, &part)) << label;
+        ASSERT_TRUE(renderRGBA(reference, kWindow, &expected)) << label;
+        ASSERT_EQ((std::size_t)kWindow.width() * kWindow.height() * 4, whole.pixels.size()) << label;
+        ASSERT_EQ((std::size_t)kWindow.width() * kWindow.height() * 4, expected.pixels.size()) << label;
+        ASSERT_EQ((std::size_t)tile.width() * tile.height() * 4, part.pixels.size()) << label;
+        for (int y = kWindow.y1; y < kWindow.y2; ++y) {
+            for (int x = kWindow.x1; x < kWindow.x2; ++x) {
+                for (int c = 0; c < 4; ++c) {
+                    const std::size_t at = ((std::size_t)(y - kWindow.y1) * kWindow.width() + (x - kWindow.x1)) * 4 + c;
+                    const float v = whole.pixels[at];
+                    ASSERT_TRUE(std::isfinite(v)) << label;
+                    ASSERT_EQ(expected.pixels[at], v) << label << " at (" << x << "," << y << "," << c << ")";
+                    if (tile.contains(x, y)) {
+                        const std::size_t inTile = ((std::size_t)(y - tile.y1) * tile.width() + (x - tile.x1)) * 4 + c;
+                        ASSERT_EQ(v, part.pixels[inTile]) << label << " tile at (" << x << "," << y << "," << c << ")";
+                    }
+                }
+            }
+        }
+    }
 }

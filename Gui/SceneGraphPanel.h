@@ -101,6 +101,10 @@ public:
 
     NodePtr getPinnedNode() const;
 
+    // Lets go of the stages of nodes, pinned, followed or cached, asking their workers to quit,
+    // and goes back to following the active viewer. For a project about to destroy its nodes.
+    void releaseNodeStages();
+
     // What the panel shows when not pinned: the active viewer's scene, or the selected node's.
     void setFollow(FollowEnum follow);
 
@@ -161,6 +165,8 @@ protected:
     void keyPressEvent(QKeyEvent* e) override;
     void keyReleaseEvent(QKeyEvent* e) override;
     void mousePressEvent(QMouseEvent* e) override;
+    void showEvent(QShowEvent* e) override;
+    void hideEvent(QHideEvent* e) override;
 
 private:
     void copySelectedPaths();

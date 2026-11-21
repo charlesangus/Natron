@@ -39,6 +39,7 @@
 #include <vector>
 
 #include "Engine/Node.h"
+#include "Engine/Nodes/Scene/SceneLayerMemo.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/ParallelRenderArgs.h"
 
@@ -169,6 +170,8 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
         return _imp->mainInstance->evaluateScene(args, outputScene, errorMessage);
     }
 
+    PullFreshRecorder freshRecorder;
+
     // A scene worker's job outlives the destruction of the nodes it evaluates, which leaves their
     // effects without a node, or a node whose effect destroyNode() takes away; held, the node
     // stays valid until this evaluation ends.
@@ -242,7 +245,11 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
                     return eRenderRoIRetCodeFailed;
                 }
 
-                return evaluateScene(EvaluateSceneArgs(identityTime, identityView, args.context, args.abortInfo), outputScene, errorMessage);
+                takeLastPullFresh();
+                const RenderRoIRetCode selfCode = evaluateScene(EvaluateSceneArgs(identityTime, identityView, args.context, args.abortInfo), outputScene, errorMessage);
+                freshRecorder.setFresh(takeLastPullFresh());
+
+                return selfCode;
             }
 
             EffectInstancePtr identityInput = getIdentitySource(identityInputNb);
@@ -250,7 +257,14 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
                 return eRenderRoIRetCodeOk;
             }
 
-            return identityInput->evaluateScene(EvaluateSceneArgs(identityTime, identityView, args.context, args.abortInfo), outputScene, errorMessage);
+            takeLastPullFresh();
+            const RenderRoIRetCode identityCode = identityInput->evaluateScene(EvaluateSceneArgs(identityTime, identityView, args.context, args.abortInfo), outputScene, errorMessage);
+            if (takeLastPullFresh()) {
+                freshRecorder.setFresh(true);
+                node->noteInputExecution(identityInputNb);
+            }
+
+            return identityCode;
         }
     }
 
@@ -300,6 +314,8 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
     // are its own rules, and a payload it passes on from an input would otherwise bring that
     // input's rules twice.
     SceneDrawRules drawRules;
+    // The output stacks this node's layer on its inputs' layers, so it is fresh when one of them is.
+    bool anyInputFresh = false;
     const int nInputs = getNInputs();
     for (int i = 0; i < nInputs; ++i) {
         EffectInstancePtr input = getInput(i);
@@ -307,8 +323,6 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
         if (!input || !input->producesSceneData()) {
             continue;
         }
-
-        NotifyInputNRenderingStarted_RAII inputNIsRendering_RAII(node.get(), i);
 
         SceneEvaluationContext inputContext;
         try {
@@ -324,6 +338,7 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
         }
 
         ScenePayload inputScene;
+        takeLastPullFresh();
         RenderRoIRetCode inputCode;
         if (inputContext.hasSameLoadSet(args.context) && (inputContext.reach == args.context.reach)) {
             inputCode = input->evaluateScene(args, &inputScene, errorMessage);
@@ -337,8 +352,14 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
             actionArgs.inputContexts[i] = inputContext;
             inputCode = input->evaluateScene(EvaluateSceneArgs(args.time, args.view, inputContext, args.abortInfo), &inputScene, errorMessage);
         }
+        const bool inputFresh = takeLastPullFresh();
         if (inputCode != eRenderRoIRetCodeOk) {
             return inputCode;
+        }
+        // An input that re-emitted the layers it authored before lights no edge.
+        if (inputFresh) {
+            node->noteInputExecution(i);
+            anyInputFresh = true;
         }
         appendSceneDrawRules(inputScene.getDrawRules(), &drawRules);
         actionArgs.inputScenes[i] = inputScene.getDrawRules().empty() ? inputScene : inputScene.withDrawRules(SceneDrawRules());
@@ -354,6 +375,8 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
     ScenePayload renderedScene;
     std::string renderError;
     StatusEnum st;
+    // The inputs were evaluated above, so the layers authored from here on are this node's.
+    const U64 authoredBefore = SceneLayerMemo::getLayersAuthoredOnThread();
     try {
         // What the node's memoized layer is kept for, without every node passing it on.
         SceneEvaluationContext::Scope contextScope(args.context);
@@ -387,6 +410,11 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
         appendSceneDrawRules(renderedScene.getDrawRules(), &drawRules);
         *outputScene = renderedScene.withDrawRules(drawRules);
     }
+    const bool authored = SceneLayerMemo::getLayersAuthoredOnThread() != authoredBefore;
+    if (authored) {
+        node->noteExecution(Node::eExecutionDeviceCpu);
+    }
+    freshRecorder.setFresh(authored || anyInputFresh);
 
     return eRenderRoIRetCodeOk;
 } // EffectInstance::evaluateScene

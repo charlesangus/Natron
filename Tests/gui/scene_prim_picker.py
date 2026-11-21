@@ -186,6 +186,9 @@ try:
         return sorted(path_of(i) for i in rows(tree, world)) if world.isValid() else []
 
     def select(tree, paths):
+        """Selects paths' rows once the tree's model has them; the panel's reads them on its worker."""
+        ok = yield ("until", lambda: all(row_of(tree, path, row_of(tree, WORLD)).isValid() for path in paths), POLL_TIMEOUT_S)
+        require(ok, "the tree lists %r" % (paths,))
         world = row_of(tree, WORLD)
         tree.selectionModel().clearSelection()
         for path in paths:
@@ -354,7 +357,7 @@ try:
         # Pick two prims and confirm.
         check(popup_tree().selectionMode() == QAbstractItemView.ExtendedSelection,
               "a pattern knob's picker takes several prims")
-        select(popup_tree(), [BOX, BALL])
+        yield from select(popup_tree(), [BOX, BALL])
         check(popup_button(QDialogButtonBox.Ok).isEnabled(), "OK is enabled once prims are picked")
         yield ("sleep", SETTLE_MS)
         shot("scene-prim-picker-popup.png")
@@ -372,7 +375,7 @@ try:
 
         # Click order, not tree order; the checked missing path stays.
         yield from open_popup()
-        select(popup_tree(), [CAM, BOX, BALL])
+        yield from select(popup_tree(), [CAM, BOX, BALL])
         popup_button(QDialogButtonBox.Ok).click()
         ok = yield ("until", lambda: popup() is None, POLL_TIMEOUT_S)
         check(ok, "OK closes the picker")
@@ -386,7 +389,7 @@ try:
 
         # Cancel writes nothing.
         yield from open_popup()
-        select(popup_tree(), [CAM])
+        yield from select(popup_tree(), [CAM])
         popup_button(QDialogButtonBox.Cancel).click()
         ok = yield ("until", lambda: popup() is None, POLL_TIMEOUT_S)
         check(ok, "Cancel closes the picker")
@@ -397,7 +400,7 @@ try:
         require(tree is not None, "the Scene Graph panel's tree exists")
         ok = yield ("until", lambda: world_children(tree) == sorted([BOX, BALL, CAM]), POLL_TIMEOUT_S)
         require(ok, "the Scene Graph panel lists the scene")
-        select(tree, [CAM])
+        yield from select(tree, [CAM])
         ok = yield ("until", lambda: viewer_selection() == [CAM], POLL_TIMEOUT_S)
         require(ok, "Cam is selected in the 3D view (got %r)" % (viewer_selection(),))
         yield from open_popup()
@@ -423,7 +426,7 @@ try:
         require(prim_path is not None, "USDXformPrim has a primPath parameter")
         ok = yield ("until", lambda: picker_button() is not None, POLL_TIMEOUT_S)
         require(ok, "the USDXformPrim's panel shows a picker button")
-        select(panel_tree(), [BOX, BALL])
+        yield from select(panel_tree(), [BOX, BALL])
         ok = yield ("until", lambda: viewer_selection() == sorted([BOX, BALL]), POLL_TIMEOUT_S)
         require(ok, "Box and Ball are selected in the 3D view (got %r)" % (viewer_selection(),))
         yield from open_popup()

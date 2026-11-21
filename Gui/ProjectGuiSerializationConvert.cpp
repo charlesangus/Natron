@@ -266,6 +266,9 @@ void
 Gui::restoreLayout(bool wipePrevious,
                    const Serialization::GuiLayoutSerialization& layoutSerialization)
 {
+    _imp->defaultLayoutStructure.clear();
+    _imp->defaultPaneTabs.clear();
+    ++_imp->layoutGeneration;
     if (wipePrevious) {
         wipeLayout();
     }

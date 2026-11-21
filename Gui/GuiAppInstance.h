@@ -124,6 +124,7 @@ public:
                                               Natron::StandardButtonEnum defaultButton,
                                               bool* stopAsking) OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void onProjectNodesRestored() OVERRIDE FINAL;
+    virtual void aboutToDestroyProjectNodes() OVERRIDE FINAL;
     virtual void notifyRenderStarted(const QString & sequenceName,
                                      int firstFrame, int lastFrame,
                                      int frameStep, bool canPause,
@@ -252,6 +253,8 @@ public:
     virtual void removeNodeKeyframesFromTimeline(Node* node) OVERRIDE FINAL;
     virtual void setNodeShownOnTimeline(const NodePtr& node, bool shown) OVERRIDE FINAL;
     virtual void invalidateNodeKeyframeIndicators() OVERRIDE FINAL;
+    virtual void setPanelKeyframeIndicators(const void* owner, const std::vector<SequenceTime>& keys) OVERRIDE FINAL;
+    virtual void clearPanelKeyframeIndicators(const void* owner) OVERRIDE FINAL;
     virtual void getKeyframes(std::list<SequenceTime>* keys) const OVERRIDE FINAL;
     virtual void removeAllUserKeyframesIndicators() OVERRIDE FINAL;
     virtual void addUserKeyframeIndicator(SequenceTime time) OVERRIDE FINAL;

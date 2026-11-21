@@ -30,6 +30,8 @@
 
 #include <cstddef>
 
+#include "Global/EdgeMode.h"
+
 NATRON_NAMESPACE_ENTER
 
 /**
@@ -40,8 +42,10 @@ NATRON_NAMESPACE_ENTER
  * constant over each pixel, and the box is its mean over that interval, the end pixels weighed by
  * the part of them it covers. In two dimensions the box is the product of the two, which the
  * summed-area table gives in O(1) by bilinear lookups: the table of a piecewise-constant image is
- * its integral, bilinear between the pixel corners. Outside the table's image reads as zero, and
- * the box is always divided by its full area, so it darkens towards the edges as Blur does.
+ * its integral, bilinear between the pixel corners. Outside the table's image the box reads by the
+ * edge mode: under Black the image is zero there, and the box, always divided by its full area,
+ * darkens towards the edges as Blur does; under Stretch the edge pixels repeat, which extends the
+ * integral linearly past the table's last cell.
  *
  * A table holds (width + 1) x (height + 1) doubles, row 0 and column 0 zero, entry (i, j) the sum
  * of the pixels left of column i and below row j; double precision with a tile-local origin keeps
@@ -80,8 +84,8 @@ void accumulateColumn(double* sat,
 
 /**
  * @brief Row y of one box pass: dst[x] is the box of radius rx[x] horizontally and ry[x]
- * vertically around pixel (x, y) of the table's image, and src[x] exactly where both are 0.
- * rx, ry, src and dst point at row y.
+ * vertically around pixel (x, y) of the table's image, read outside it by edgeMode, and src[x]
+ * exactly where both are 0. rx, ry, src and dst point at row y.
  **/
 void boxRow(const double* sat,
             int width,
@@ -90,12 +94,14 @@ void boxRow(const double* sat,
             const float* rx,
             const float* ry,
             const float* src,
+            EdgeMode edgeMode,
             float* dst);
 
 /**
  * @brief The whole variable blur of one width x height plane, single-threaded: `iterations`
- * box passes with the per-pixel radii rx and ry (width x height each), from src into dst. The
- * reference the node's threaded passes and the GPU kernels are tested against.
+ * box passes with the per-pixel radii rx and ry (width x height each), from src into dst, each
+ * reading outside the plane by edgeMode. The reference the node's threaded passes and the GPU
+ * kernels are tested against.
  **/
 void iteratedBox(const float* src,
                  int width,
@@ -103,6 +109,7 @@ void iteratedBox(const float* src,
                  const float* rx,
                  const float* ry,
                  int iterations,
+                 EdgeMode edgeMode,
                  float* dst);
 } // namespace VariableBlurKernels
 

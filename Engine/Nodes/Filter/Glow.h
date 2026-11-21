@@ -115,7 +115,8 @@ inline constexpr InputSpec kGlowInputs[] = {
  * or the ungraded map as a preview. A processed alpha channel is glowed without saturation,
  * with its own gamma and tint, and clamped to [0, 1] outside the preview. Mix blends each processed
  * channel of the output, preview included, with the source's: source + mix * (output - source).
- * Black lies outside the image; expand RoD grows the region of definition by the bloom's reach.
+ * Outside the image the map and its bloom read by the Edge Mode; expand RoD grows the region of
+ * definition by the bloom's reach.
  * Scene-linear: nothing else is clamped. The source is glowed as it comes, with no unpremultiply:
  * light adds to a premultiplied image as it is.
  *
@@ -136,7 +137,9 @@ struct GlowOp {
                        "\n"
                        "Glow Only outputs the glow alone, to merge later; Preview shows the glow map, to adjust the threshold and the hue isolation.\n"
                        "\n"
-                       "Mix blends the output with the input: 0 leaves the input unchanged.",
+                       "Mix blends the output with the input: 0 leaves the input unchanged.\n"
+                       "\n"
+                       "Outside the image the bloom reads by the edge mode: Stretch repeats the edge pixels, so a bright border keeps glowing to the edge, while Black darkens the glow there.",
         .grouping = PLUGIN_GROUP_FILTER,
         .majorVersion = PLUGIN_MAJOR_NATRON_GLOW,
         .minorVersion = 0,
@@ -147,7 +150,7 @@ struct GlowOp {
     static constexpr ImagePipelineSpec kPipeline = {
         // The mask multiplies the glow map inside the op (PassList::opMask), so there is no MaskMix:
         // the op makes its own Mix knob and blends with the source itself.
-        .stages = { Stage::PassThroughUnprocessed },
+        .stages = { Stage::PassThroughUnprocessed, Stage::EdgeMode },
         .layers = LayerPolicy::color(true, true, true, false),
         .op = OpKind::Passes,
     };

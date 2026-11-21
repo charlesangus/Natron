@@ -1,3 +1,4 @@
+import edgesample;
 import mapremap;
 
 // IBlur's passes, after the workers of Engine/Nodes/Filter/IBlur.cpp and the box of
@@ -94,6 +95,9 @@ struct IBlurParams
     uint outHeight;
     uint dstOffset;
     uint dstStride;
+    // edgesample's kEdgeStretch or kEdgeBlack: how load reads past the source pixels and the box
+    // past the domain.
+    uint edgeMode;
 };
 [[vk::push_constant]] ConstantBuffer<IBlurParams> params;
 
@@ -103,6 +107,7 @@ static const uint kMapConnected = 1;
 static const uint kMapRead = 2;
 static const uint kMapInvert = 4;
 static const uint kMapSmooth = 8;
+static const uint kMapEdgeBlack = 16;
 
 ///////////////////////////////////////////////////////////////////////////////
 // Two-float arithmetic: a value is hi + lo with |lo| at most half an ulp of hi.
@@ -318,12 +323,13 @@ void iblur_load(uint3 tid : SV_DispatchThreadID)
     const uint dst = params.fromOffset + (tid.y * params.domWidth + tid.x) * n;
     const int x = params.domX1 + int(tid.x);
     const int y = params.domY1 + int(tid.y);
-    if (x < params.srcX1 || x >= params.srcX2 || y < params.srcY1 || y >= params.srcY2) {
+    int2 at;
+    if (!edgePixel(int2(x, y), int4(params.srcX1, params.srcY1, params.srcX2, params.srcY2), params.edgeMode, at)) {
         for (uint c = 0; c < n && c < 4; ++c)
             workBuf[dst + c] = 0.0;
         return;
     }
-    const uint src = params.srcOffset + uint(y - params.srcY1) * params.srcStride + uint(x - params.srcX1) * n;
+    const uint src = params.srcOffset + uint(at.y - params.srcY1) * params.srcStride + uint(at.x - params.srcX1) * n;
     for (uint c = 0; c < n && c < 4; ++c)
         workBuf[dst + c] = asfloat(srcBuf[src + c]);
 }
@@ -366,8 +372,9 @@ void iblur_radii(uint3 tid : SV_DispatchThreadID)
         ry = k.outsideRy;
         const int x = params.domX1 + int(tid.x);
         const int y = params.domY1 + int(tid.y);
-        if ((k.mapFlags & kMapRead) != 0u && x >= k.mapX1 && x < k.mapX2 && y >= k.mapY1 && y < k.mapY2) {
-            const float raw = asfloat(mapBuf[k.mapOffset + uint(y - k.mapY1) * k.mapStride + uint(x - k.mapX1) * k.mapChannels + k.mapChannel]);
+        int2 at;
+        if ((k.mapFlags & kMapRead) != 0u && edgePixel(int2(x, y), int4(k.mapX1, k.mapY1, k.mapX2, k.mapY2), edgeModeFromFlags(k.mapFlags, kMapEdgeBlack), at)) {
+            const float raw = asfloat(mapBuf[k.mapOffset + uint(at.y - k.mapY1) * k.mapStride + uint(at.x - k.mapX1) * k.mapChannels + k.mapChannel]);
             const float m = remapMap(k, raw);
             if (m == 0.0) {
                 rx = k.blackRx;
@@ -479,13 +486,22 @@ BoxEnd boxEnd(int x, float a, bool lower, int size)
         e.i = x + 1 + int(n);
         e.f = ff(f);
     }
-    // integral() clamps u to [0, size], and reads u = size as the last index with a weight of 1.
-    if (e.i < 0) {
+    // Under Black integral() clamps u to [0, size], and reads u = size as the last index with a
+    // weight of 1; under Stretch it extrapolates the edge cell, whose weight then leaves [0, 1].
+    if (params.edgeMode == kEdgeBlack) {
+        if (e.i < 0) {
+            e.i = 0;
+            e.f = ff(0.0);
+        } else if (e.i >= size) {
+            e.i = size - 1;
+            e.f = ff(1.0);
+        }
+    } else if (e.i < 0) {
+        e.f = ffAdd(ff(float(e.i)), e.f);
         e.i = 0;
-        e.f = ff(0.0);
     } else if (e.i >= size) {
+        e.f = ffAdd(ff(float(e.i - (size - 1))), e.f);
         e.i = size - 1;
-        e.f = ff(1.0);
     }
     return e;
 }

@@ -53,6 +53,7 @@
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Filter/BlurKernels.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Project.h"
@@ -165,8 +166,8 @@ TEST(BlurFIRGaussianKernel, RadiusRule)
     EXPECT_EQ(3, LineFilter::firGaussianRadius(1.));
     EXPECT_EQ(9, LineFilter::firGaussianRadius(3.));
     EXPECT_EQ(75, LineFilter::firGaussianRadius(25.));
-    EXPECT_TRUE(LineFilter::firGaussian(0.05, 0, true).isIdentity());
-    EXPECT_FALSE(LineFilter::firGaussian(0.5, 0, true).isIdentity());
+    EXPECT_TRUE(LineFilter::firGaussian(0.05, 0, EdgeMode::Stretch).isIdentity());
+    EXPECT_FALSE(LineFilter::firGaussian(0.5, 0, EdgeMode::Stretch).isIdentity());
 }
 
 TEST(BlurFIRGaussianKernel, ImpulseResponseMatchesTruncatedGaussian)
@@ -184,7 +185,7 @@ TEST(BlurFIRGaussianKernel, ImpulseResponseMatchesTruncatedGaussian)
             const bool neumann = (boundary == 1);
             std::vector<float> line(n, 0.f);
             line[center] = 1.f;
-            LineFilter::firGaussian(sigma, 0, neumann).apply(line.data(), n, 1);
+            LineFilter::firGaussian(sigma, 0, (neumann ? EdgeMode::Stretch : EdgeMode::Black)).apply(line.data(), n, 1);
 
             double sum = 0.;
             for (int i = 0; i < n; ++i) {
@@ -216,7 +217,7 @@ TEST(BlurFIRGaussianKernel, MatchesDoublePrecisionReferenceOnAnyLine)
             for (int boundary = 0; boundary < 2; ++boundary) {
                 const bool neumann = (boundary == 1);
                 std::vector<float> line = src;
-                LineFilter::firGaussian(sigmas[s], 0, neumann).apply(line.data(), n, 1);
+                LineFilter::firGaussian(sigmas[s], 0, (neumann ? EdgeMode::Stretch : EdgeMode::Black)).apply(line.data(), n, 1);
                 const std::vector<double> expected = referenceFilter(src, sigmas[s], neumann);
                 for (int i = 0; i < n; ++i) {
                     ASSERT_NEAR(expected[i], line[i], 1e-6) << "sigma " << sigmas[s] << ", n " << n << ", neumann " << neumann << ", i " << i;
@@ -241,7 +242,7 @@ TEST(BlurFIRGaussianKernel, LargeRadiusMatchesDoublePrecisionReference)
     for (int boundary = 0; boundary < 2; ++boundary) {
         const bool neumann = (boundary == 1);
         std::vector<float> line = src;
-        LineFilter::firGaussian(sigma, 0, neumann).apply(line.data(), n, 1);
+        LineFilter::firGaussian(sigma, 0, (neumann ? EdgeMode::Stretch : EdgeMode::Black)).apply(line.data(), n, 1);
         const std::vector<double> expected = referenceFilter(src, sigma, neumann);
         double worst = 0.;
         for (int i = 0; i < n; ++i) {
@@ -252,7 +253,7 @@ TEST(BlurFIRGaussianKernel, LargeRadiusMatchesDoublePrecisionReference)
     }
 
     std::vector<float> ones(n, 1.f);
-    LineFilter::firGaussian(sigma, 0, true).apply(ones.data(), n, 1);
+    LineFilter::firGaussian(sigma, 0, EdgeMode::Stretch).apply(ones.data(), n, 1);
     double worstOnes = 0.;
     for (int i = 0; i < n; ++i) {
         worstOnes = std::max(worstOnes, std::fabs(1. - ones[i]));
@@ -269,13 +270,13 @@ TEST(BlurFIRGaussianKernel, BoundaryModesOnAConstantLine)
     const std::vector<double> w = referenceWeights(sigma);
 
     std::vector<float> nearest(n, 1.f);
-    LineFilter::firGaussian(sigma, 0, true).apply(nearest.data(), n, 1);
+    LineFilter::firGaussian(sigma, 0, EdgeMode::Stretch).apply(nearest.data(), n, 1);
     for (int i = 0; i < n; ++i) {
         EXPECT_NEAR(1., nearest[i], 1e-6) << i;
     }
 
     std::vector<float> black(n, 1.f);
-    LineFilter::firGaussian(sigma, 0, false).apply(black.data(), n, 1);
+    LineFilter::firGaussian(sigma, 0, EdgeMode::Black).apply(black.data(), n, 1);
     double edge = 0.;
     for (int k = 0; k <= radius; ++k) {
         edge += w[radius + k];
@@ -296,7 +297,7 @@ TEST(BlurFIRGaussianKernel, StrideAndInterleavedLinesGiveTheSameResult)
         planar[i] = pseudoRandom(static_cast<unsigned>(i));
         interleaved[static_cast<std::size_t>(i) * comps + 2] = planar[i];
     }
-    const LineFilter f = LineFilter::firGaussian(2., 0, true);
+    const LineFilter f = LineFilter::firGaussian(2., 0, EdgeMode::Stretch);
     f.apply(planar.data(), n, 1);
     f.apply(interleaved.data() + 2, n, comps);
     for (int i = 0; i < n; ++i) {
@@ -325,7 +326,7 @@ TEST(BlurFIRGaussianKernel, ApplyColumnsEqualsColumnByColumn)
                         a[i] = pseudoRandom(static_cast<unsigned>(i));
                     }
                     std::vector<float> b = a;
-                    const LineFilter f = LineFilter::firGaussian(sigmas[si], 0, neumann);
+                    const LineFilter f = LineFilter::firGaussian(sigmas[si], 0, (neumann ? EdgeMode::Stretch : EdgeMode::Black));
 
                     LineScratch scratch;
                     f.applyColumns(a.data(), h, w, w, scratch);
@@ -346,8 +347,8 @@ TEST(BlurFIRGaussianKernel, ForFilterBuildsTheFIRGaussianFromSigma)
     std::vector<float> direct(n, 0.f);
 
     viaFilter[n / 2] = direct[n / 2] = 1.f;
-    LineFilter::forFilter(BlurKernels::eFilterFIRGaussian, 3.f, 0, true).apply(viaFilter.data(), n, 1);
-    LineFilter::firGaussian(3., 0, true).apply(direct.data(), n, 1);
+    LineFilter::forFilter(BlurKernels::eFilterFIRGaussian, 3.f, 0, EdgeMode::Stretch).apply(viaFilter.data(), n, 1);
+    LineFilter::firGaussian(3., 0, EdgeMode::Stretch).apply(direct.data(), n, 1);
     EXPECT_EQ(direct, viaFilter);
     EXPECT_EQ(5, static_cast<int>(BlurKernels::eFilterFIRGaussian));
 }
@@ -369,10 +370,10 @@ TEST(BlurFIRGaussianKernel, ReportDifferenceFromTheIIRGaussian)
         std::vector<float> impulseIIR = impulse;
         std::vector<float> stepIIR = step;
 
-        LineFilter::firGaussian(sigma, 0, true).apply(impulse.data(), n, 1);
-        LineFilter::firGaussian(sigma, 0, true).apply(step.data(), n, 1);
-        LineFilter::forFilter(BlurKernels::eFilterGaussian, sigma, 0, true).apply(impulseIIR.data(), n, 1);
-        LineFilter::forFilter(BlurKernels::eFilterGaussian, sigma, 0, true).apply(stepIIR.data(), n, 1);
+        LineFilter::firGaussian(sigma, 0, EdgeMode::Stretch).apply(impulse.data(), n, 1);
+        LineFilter::firGaussian(sigma, 0, EdgeMode::Stretch).apply(step.data(), n, 1);
+        LineFilter::forFilter(BlurKernels::eFilterGaussian, sigma, 0, EdgeMode::Stretch).apply(impulseIIR.data(), n, 1);
+        LineFilter::forFilter(BlurKernels::eFilterGaussian, sigma, 0, EdgeMode::Stretch).apply(stepIIR.data(), n, 1);
         const double impulseDiff = maxAbsDiff(impulse, impulseIIR);
         const double stepDiff = maxAbsDiff(step, stepIIR);
         std::cout << "[ report ] FIR - IIR, sigma " << sigma << ": impulse " << impulseDiff << ", step " << stepDiff << std::endl;
@@ -439,7 +440,8 @@ protected:
     // to equal the matching crop of the first.
     void expectSubRectEqualsCrop(const NodePtr& blur,
                                  const RectI& sub,
-                                 const std::string& caseName)
+                                 const std::string& caseName,
+                                 double tolerance = 1e-6)
     {
         const RectI full = renderWindow(blur);
         RenderedPlane whole, part;
@@ -464,7 +466,7 @@ protected:
                 }
             }
         }
-        EXPECT_LE(worst, 1e-6) << caseName;
+        EXPECT_LE(worst, tolerance) << caseName;
     }
 
     NodePtr makeBlurOnSource()
@@ -483,8 +485,8 @@ protected:
         return blur;
     }
 
-    // A Blur, uncropped, of a black image of the project format with a white, opaque rectangle
-    // `box` over it.
+    // A Blur, uncropped and reading black outside its source, of a black image of the project
+    // format with a white, opaque rectangle `box` over it.
     NodePtr makeBoxOverBlack(const RectI& box)
     {
         NodePtr black = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT), PLUGIN_MAJOR_NATRON_CONSTANT);
@@ -501,6 +503,7 @@ protected:
         EXPECT_TRUE(setKnobValues(white, kNativeGeneratorParamBottomLeft, { (double)box.x1, (double)box.y1 }));
         EXPECT_TRUE(setKnobValues(white, kNativeGeneratorParamSize, { (double)box.width(), (double)box.height() }));
         EXPECT_TRUE(setKnobValues(white, kConstantParamColor, { 1., 1., 1., 1. }));
+        setBlackOutside(white, true);
         EXPECT_TRUE(setKnobValue(merge, kNativeMergeParamOperation, std::string("over")));
         connectNodes(black, merge, 0, true);
         connectNodes(white, merge, 1, true);
@@ -510,6 +513,7 @@ protected:
         if (blur) {
             connectNodes(merge, blur, 0, true);
             EXPECT_TRUE(setKnobValues(blur, kBlurParamCropToFormat, { 0. }));
+            EXPECT_TRUE(setKnobValue(blur, kEdgeModeParam, std::string("black")));
         }
 
         return blur;
@@ -634,6 +638,55 @@ TEST_F(BlurFIRGaussianTest, ImpulseAndStepThroughTheNodeMatchTheReference)
     }
 }
 
+// A constant image keeps its value to the border where the blur repeats the edge (Stretch, and
+// Input over a generator, which reports Stretch) and darkens towards it where it reads black.
+TEST_F(BlurFIRGaussianTest, EdgeModeDecidesTheBorderOfAConstant)
+{
+    const float kValue = 0.5f;
+    const char* filters[] = { kBlurParamFilterFIRGaussian, kBlurParamFilterGaussian, kBlurParamFilterBox };
+    const char* modes[] = { "input", "stretch", "black" };
+
+    for (const char* filterId : filters) {
+        for (const char* mode : modes) {
+            resetProject();
+            NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT), PLUGIN_MAJOR_NATRON_CONSTANT);
+            NodePtr blur = createNode(QString::fromUtf8(PLUGINID_NATRON_BLUR), PLUGIN_MAJOR_NATRON_BLUR);
+            ASSERT_TRUE(bool(constant) && bool(blur));
+            ASSERT_TRUE(setKnobValue(constant, kNativeGeneratorParamExtent, std::string(kNativeGeneratorExtentProject)));
+            ASSERT_TRUE(setKnobValues(constant, kConstantParamColor, { kValue, kValue, kValue, kValue }));
+            connectNodes(constant, blur, 0, true);
+            ASSERT_TRUE(setKnobValue(blur, kBlurParamFilter, std::string(filterId)));
+            ASSERT_TRUE(setKnobValues(blur, kBlurParamSize, { 15., 15. }));
+            ASSERT_TRUE(setKnobValue(blur, kEdgeModeParam, std::string(mode)));
+
+            const std::string what = std::string(filterId) + ", edge mode " + mode;
+            const RectI format(0, 0, kParitySourceWidth, kParitySourceHeight);
+            RenderedPlane plane;
+            ASSERT_TRUE(renderRGBA(blur, format, &plane)) << what;
+            ASSERT_EQ(4u, plane.channels.size()) << what;
+            ASSERT_EQ(static_cast<std::size_t>(format.width()) * format.height() * 4, plane.pixels.size()) << what;
+            const auto at = [&](int x, int y, int c) {
+                return plane.pixels[(static_cast<std::size_t>(y - format.y1) * format.width() + (x - format.x1)) * 4 + c];
+            };
+
+            const bool black = std::string(mode) == "black";
+            if (black) {
+                EXPECT_LT(at(0, 0, 0), 0.4f * kValue) << what << ": the corner reads the black outside";
+                EXPECT_LT(at(format.x2 - 1, format.y2 / 2, 0), 0.75f * kValue) << what << ": an edge reads the black outside";
+                // The recursive Gaussian has no cut-off: its tail still reaches the centre, by a few parts in a thousand.
+                const float centreTolerance = (std::string(filterId) == kBlurParamFilterGaussian) ? 5e-3f : 1e-3f;
+                EXPECT_NEAR(kValue, at(format.x2 / 2, format.y2 / 2, 0), centreTolerance) << what << ": the centre is out of the blur's reach";
+            } else {
+                double worst = 0.;
+                for (std::size_t i = 0; i < plane.pixels.size(); ++i) {
+                    worst = std::max(worst, std::abs(static_cast<double>(plane.pixels[i]) - kValue));
+                }
+                EXPECT_LE(worst, 1e-4) << what << ": the value holds to the border";
+            }
+        }
+    }
+}
+
 TEST_F(BlurFIRGaussianTest, ReducedRenderScaleScalesSigma)
 {
     // At mipmap level 1, a size of 14.4 (sigma 6) is a sigma of 3 over a half-resolution image.
@@ -686,6 +739,28 @@ TEST_F(BlurFIRGaussianTest, SubRectRenderEqualsCropOfFullRender)
     expectSubRectEqualsCrop(blur, RectI(0, 0, 20, 17), "size 30, black, bottom-left corner");
     expectSubRectEqualsCrop(blur, RectI(40, 30, 64, 48), "size 30, black, top-right corner");
     expectSubRectEqualsCrop(blur, RectI(25, 20, 50, 40), "size 30, black");
+}
+
+// The recursive filters' halo is their reach, so a tile differs from the full frame only by the
+// recursion's rounding where its lines start at a different pixel.
+TEST_F(BlurFIRGaussianTest, RecursiveSubRectRenderEqualsCropOfFullRender)
+{
+    resetProject();
+    NodePtr blur = makeBlurOnSource();
+    ASSERT_TRUE(bool(blur));
+
+    for (const char* filter : { kBlurParamFilterQuasiGaussian, kBlurParamFilterGaussian }) {
+        for (const char* mode : { "black", "stretch" }) {
+            ASSERT_TRUE(setKnobValue(blur, kBlurParamFilter, std::string(filter)));
+            ASSERT_TRUE(setKnobValue(blur, kEdgeModeParam, std::string(mode)));
+            ASSERT_TRUE(setKnobValues(blur, kBlurParamSize, { 9., 4. }));
+            const std::string what = std::string(filter) + " " + mode;
+            expectSubRectEqualsCrop(blur, RectI(20, 10, 45, 30), what + ", size 9x4", 1e-5);
+            ASSERT_TRUE(setKnobValues(blur, kBlurParamSize, { 30., 30. }));
+            expectSubRectEqualsCrop(blur, RectI(0, 0, 20, 17), what + ", size 30, bottom-left corner", 1e-5);
+            expectSubRectEqualsCrop(blur, RectI(25, 20, 50, 40), what + ", size 30", 1e-5);
+        }
+    }
 }
 
 TEST_F(BlurFIRGaussianTest, RegionOfInterestPaddingIsTheRadius)

@@ -1555,7 +1555,8 @@ ColorEqualizer::opPasses(double time,
 
     carrier.growX = 0;
     carrier.growY = 0;
-    list.boundary = Boundary::Zero;
+    list.edgeMode = EdgeMode::Black;
+    list.clipToRegion = true;
     list.passes.push_back(carrier);
 
 #ifdef NATRON_HAVE_GPU
@@ -1675,6 +1676,7 @@ ColorEqualizer::renderOp(const RenderActionArgs& args,
     maskSource.invert = plan.maskInvert;
     maskSource.image = mask;
     maskSource.channel = plan.maskChannel;
+    maskSource.edgeMode = plan.maskEdgeMode;
     maskSource.lock();
     for (PlaneJob& job : jobs) {
         job.lock();
@@ -1726,7 +1728,7 @@ ColorEqualizer::renderOp(const RenderActionArgs& args,
             }
             const ProcessedPlanes fullPlanes(full);
             std::vector<float> source(planeSize * fullPlanes.count());
-            fillBuffer(full, fullPlanes, bufferRect, Boundary::Zero, nThreads, cancel, source.data());
+            fillBuffer(full, fullPlanes, bufferRect, EdgeMode::Black, nThreads, cancel, source.data());
             if (cancel.check()) {
                 return std::shared_ptr<const std::vector<float>>();
             }
@@ -2087,7 +2089,7 @@ ColorEqualizer::recordGpuFrame(const PassGpuIO& io,
     const PipelineMatrices& pm = pipelineMatrices();
 
     gpu::GpuBuffer* fill = nullptr;
-    if (BloomKernels::recordFill(io, false, &fill) != eStatusOK) {
+    if (BloomKernels::recordFill(io, EdgeMode::Black, &fill) != eStatusOK) {
         return eStatusFailed;
     }
     if (PassExec::isEmptyRect(output) || PassExec::isEmptyRect(domain)) {

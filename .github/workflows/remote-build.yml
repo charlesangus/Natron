@@ -82,6 +82,11 @@ on:
         required: false
         type: string
         default: ''
+      debug_symbols:
+        description: 'With appimage: also upload the symbol tables strip removes from the bundle (natron-symbols-<preset>-<sha>), for stack samples of that AppImage; the AppImage itself is unchanged'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -111,6 +116,8 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ${{ needs.dev-image.outputs.image }}
+      # The live texture tests export through /dev/shm, which Docker sizes at 64m.
+      options: --shm-size=2g
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -219,7 +226,9 @@ jobs:
           set -o pipefail
           mkdir -p "$NATRON_GOLDEN_RECORD_DIR"
           rc=0
-          xvfb-run --auto-servernum ctest -R '^(NativeGoldenTest|NativeIDistortAmountTest|NativeIWarpTest|USDRenderCyclesTest|BezierGuiCopyEquivalenceTest)$' --timeout 300 --output-on-failure || rc=$?
+          xvfb-run --auto-servernum ctest -R '^(NativeGoldenTest|NativeIDistortAmountTest|NativeIWarpTest|USDRenderCyclesTest|BezierGuiCopyEquivalenceTest|USDRenderCyclesLiveTextureTest|USDRenderMoonRayLiveTextureTest|USDRenderCyclesProjectionTest|USDRenderMoonRayProjectionTest)$' --timeout 300 --output-on-failure || rc=$?
+          # Storm skips and passes when no GL context can be made; REQUIRE_GL turns that into a failure.
+          NATRON_TEST_REQUIRE_GL=1 xvfb-run --auto-servernum ctest -R '^USDRenderStormTest$' --timeout 600 --output-on-failure || rc=$?
           # The node suites' own Golden cases go through the same recorder. ctest entries are whole
           # suites, so the cases are picked by filter, with a process per suite as under ctest.
           suites=$(cd Tests && ./Tests --gtest_list_tests --gtest_filter='*.Golden*' | sed -n 's/^\([A-Za-z0-9_]*\)\.\( .*\)\{0,1\}$/\1/p') || rc=1
@@ -309,6 +318,8 @@ jobs:
       # check-startup.sh runs inside make-appimage.sh.
       - name: Stage bundle
         if: inputs.appimage && inputs.preset != 'debug' && !cancelled() && steps.build.outcome == 'success'
+        env:
+          NATRON_STAGE_SYMBOLS_DIR: ${{ inputs.debug_symbols && '/tmp/natron-symbols' || '' }}
         run: tools/release/stage-bundle.sh "build/$PRESET" /tmp/natron-stage
 
       - name: Create AppImage
@@ -323,6 +334,21 @@ jobs:
           name: natron-${{ env.PRESET }}-${{ github.sha }}
           path: /tmp/artifacts/*.AppImage
           if-no-files-found: error
+          retention-days: 7
+
+      # One tarball, so the .build-id tree survives the artifact's handling of hidden files.
+      - name: Pack symbols
+        if: inputs.debug_symbols && steps.upload_appimage.outcome == 'success'
+        run: tar -C /tmp/natron-symbols -czf /tmp/natron-symbols.tar.gz .
+
+      - name: Upload symbols
+        if: inputs.debug_symbols && steps.upload_appimage.outcome == 'success'
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: natron-symbols-${{ env.PRESET }}-${{ github.sha }}
+          path: /tmp/natron-symbols.tar.gz
+          if-no-files-found: error
+          compression-level: 0
           retention-days: 7
 
       - name: Save ccache
@@ -391,6 +417,8 @@ jobs:
         scheduler: ${{ fromJSON(needs.ctest-legs.outputs.schedulers) }}
     container:
       image: ${{ needs.dev-image.outputs.image }}
+      # The live texture tests export through /dev/shm, which Docker sizes at 64m.
+      options: --shm-size=2g
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -735,6 +763,8 @@ jobs:
         include: ${{ fromJSON(needs.gui-matrix.outputs.matrix) }}
     container:
       image: ${{ needs.gui-matrix.outputs.image }}
+      # The live texture tests export through /dev/shm, which Docker sizes at 64m.
+      options: --shm-size=2g
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}

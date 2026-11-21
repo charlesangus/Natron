@@ -6,7 +6,7 @@
 #
 # Usage:
 #   tools/ci/remote/build.sh <fast|release|debug> [--tests] [--scheduler <legacy|taskgraph>] [--record-goldens]
-#                            [--shuffle-seeds <n,n,...>] [--repeat-test <name>:<N>] [--no-appimage] [--cmake-arg <arg>]... [--gui "<script> ..."]
+#                            [--shuffle-seeds <n,n,...>] [--repeat-test <name>:<N>] [--no-appimage] [--debug-symbols] [--cmake-arg <arg>]... [--gui "<script> ..."]
 #   tools/ci/remote/build.sh <fast|release> --from-run <run-id> --gui "<script> ..."
 #   tools/ci/remote/build.sh --mode
 #
@@ -22,9 +22,12 @@
 #                        run. A milestone's verification gate must run without it.
 #                        The smoke renders of the two schedulers are compared
 #                        only when both legs ran.
-#   --record-goldens  -> implies --tests; also records the native and Cycles golden
+#   --record-goldens  -> implies --tests; also records the native, Cycles and MoonRay golden
 #                        renders (NativeGoldenTest, NativeIDistortAmountTest,
-#                        NativeIWarpTest, USDRenderCyclesTest)
+#                        NativeIWarpTest, USDRenderCyclesTest,
+#                        USDRenderCyclesLiveTextureTest, USDRenderMoonRayLiveTextureTest,
+#                        USDRenderCyclesProjectionTest, USDRenderMoonRayProjectionTest,
+#                        USDRenderStormTest)
 #                        remotely and downloads them, STAMP included, into
 #                        Tests/fixtures/native-golden/ of this checkout. The
 #                        references bind bit for bit only under the preset that
@@ -49,6 +52,12 @@
 #                        ctest-<scheduler>-repeat.log next to the ctest log. <name>
 #                        must not contain a colon or whitespace.
 #   --no-appimage     -> skip packaging and downloading the AppImage.
+#   --debug-symbols   -> also download the symbol tables the bundle's strip removes,
+#                        as natron-symbols.tar.gz beside the AppImage and unpacked into
+#                        build/remote/<preset>/symbols/: a .build-id tree for eu-stack
+#                        --debuginfo-path and <exe>.bin.syms listings for
+#                        heavy_scene_stack_window.py --symbols. The AppImage is the
+#                        same one a run without it ships. Needs the AppImage.
 #   --cmake-arg <arg> -> pass <arg> to the remote cmake configure, e.g.
 #                        --cmake-arg -DNATRON_GPU=OFF. Repeatable. The args reach
 #                        the workflow as one space-separated input, so an arg
@@ -85,7 +94,7 @@ FIND_INTERVAL_SECS=5
 WATCH_INTERVAL_SECS=30
 
 usage() {
-    echo "usage: build.sh <fast|release|debug> [--tests] [--scheduler <legacy|taskgraph>] [--record-goldens] [--shuffle-seeds <n,n,...>] [--repeat-test <name>:<N>] [--no-appimage] [--cmake-arg <arg>]... [--gui \"<script> ...\"]" >&2
+    echo "usage: build.sh <fast|release|debug> [--tests] [--scheduler <legacy|taskgraph>] [--record-goldens] [--shuffle-seeds <n,n,...>] [--repeat-test <name>:<N>] [--no-appimage] [--debug-symbols] [--cmake-arg <arg>]... [--gui \"<script> ...\"]" >&2
     echo "       build.sh <fast|release> --from-run <run-id> [--gui-ref <ref>] --gui \"<script> ...\"" >&2
     echo "       build.sh --mode" >&2
 }
@@ -121,6 +130,7 @@ PRESET=""
 RUN_TESTS=false
 RECORD_GOLDENS=false
 WANT_APPIMAGE=true
+DEBUG_SYMBOLS=false
 SHUFFLE_SEEDS=""
 REPEAT_TEST=""
 SCHEDULERS="legacy,taskgraph"
@@ -196,6 +206,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --no-appimage)
             WANT_APPIMAGE=false
+            BUILD_OPTION=true
+            ;;
+        --debug-symbols)
+            DEBUG_SYMBOLS=true
             BUILD_OPTION=true
             ;;
         --cmake-arg)
@@ -313,6 +327,12 @@ if [[ "${PRESET}" == "debug" && "${WANT_APPIMAGE}" == "true" ]]; then
     WANT_APPIMAGE=false
 fi
 
+if [[ "${DEBUG_SYMBOLS}" == "true" && "${WANT_APPIMAGE}" == "false" ]]; then
+    echo "build.sh: --debug-symbols keeps the symbols of the AppImage's bundle, so it needs fast or release without --no-appimage" >&2
+    usage
+    exit 1
+fi
+
 cd "${REPO_ROOT}"
 
 BRANCH="$(git symbolic-ref --quiet --short HEAD || true)"
@@ -356,6 +376,9 @@ LABEL="${LABEL:-${BRANCH}}"
 REPEAT_ARGS=()
 if [[ -n "${REPEAT_TEST}" ]]; then
     REPEAT_ARGS=(-f "repeat_test=${REPEAT_TEST}")
+fi
+if [[ "${DEBUG_SYMBOLS}" == "true" ]]; then
+    REPEAT_ARGS+=(-f "debug_symbols=true")
 fi
 
 echo "== build.sh: dispatching ${WORKFLOW} on ${BRANCH} (${HEAD_SHA:0:10}) token=${TOKEN} =="
@@ -468,6 +491,15 @@ if [[ "${WANT_APPIMAGE}" == "true" ]]; then
     fi
 fi
 
+SYMBOLS_DIR=""
+if [[ "${DEBUG_SYMBOLS}" == "true" ]] && download_artifact "natron-symbols-${PRESET}-${HEAD_SHA}"; then
+    rm -rf "${OUT_DIR:?}/symbols"
+    mkdir -p "${OUT_DIR}/symbols"
+    if tar -C "${OUT_DIR}/symbols" -xzf "${OUT_DIR}/natron-symbols.tar.gz"; then
+        SYMBOLS_DIR="${OUT_DIR}/symbols"
+    fi
+fi
+
 if [[ "${RUN_TESTS}" == "true" ]]; then
     if download_artifact "ctest-logs-${PRESET}-${HEAD_SHA}"; then
         CTEST_LOG_DIR="${OUT_DIR}"
@@ -549,6 +581,11 @@ elif [[ "${RUN_STATUS}" -eq 0 ]]; then
     echo "== build.sh: remote build succeeded: ${RUN_URL} =="
     if [[ -n "${APPIMAGE}" ]]; then
         echo "AppImage: ${APPIMAGE}"
+        if [[ -n "${SYMBOLS_DIR}" ]]; then
+            echo "symbols: ${OUT_DIR}/natron-symbols.tar.gz (unpacked in ${SYMBOLS_DIR})"
+        elif [[ "${DEBUG_SYMBOLS}" == "true" ]]; then
+            echo "build.sh: --debug-symbols given but no symbols were downloaded" >&2
+        fi
     elif [[ "${WANT_APPIMAGE}" == "true" ]]; then
         echo "build.sh: run succeeded but no AppImage was downloaded" >&2
         RUN_STATUS=1

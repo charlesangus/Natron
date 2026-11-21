@@ -32,6 +32,7 @@
 #include <cstddef>
 #include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -43,6 +44,20 @@
 #include "Engine/ScenePayload.h"
 
 NATRON_NAMESPACE_ENTER
+
+/**
+ * @brief What a SceneStage composes, taken from one to make another compose the same: the payload
+ * last synced, the payloads it includes and the drag preview set over it. Copying it shares the
+ * payload's layers, it does not copy them.
+ **/
+struct SceneStageSnapshot {
+    ScenePayload payload;
+    // getLoadSet() of the stage; null for every payload.
+    SceneLoadSetPtr loadSet;
+    // The deltas and time code of the last setPreviewTransforms(), none while nothing is previewed.
+    std::vector<std::pair<std::string, PXR_NS::GfMatrix4d>> previewDeltas;
+    double previewTimeCode = 0.;
+};
 
 /**
  * @brief A long-lived stage that follows a changing layer stack. It owns a private anonymous root
@@ -144,7 +159,15 @@ public:
      **/
     void cancelPendingLoads(const PXR_NS::SdfPathVector& paths);
 
+    // Counts a load put off for a closed scene's stale layer only once SceneTeardown is idle.
     bool hasPendingLoads() const;
+
+    /**
+     * @brief Sets what is called, on the main thread, when loads put off for a closed scene's stale
+     * layer become pending again: SceneTeardown has gone idle. Whoever waits on hasPendingLoads()
+     * wakes on it. MT-safe.
+     **/
+    void setLoadsWake(const std::function<void()>& wake);
 
     // Whether a request is still waiting or in a serviceLoads() that has not returned.
     bool hasOutstandingLoads() const;
@@ -168,6 +191,10 @@ public:
      * one load policy per LoadAndUnload, so a batch mixing own and descendant loads commits in two
      * calls. A prim whose payload file does not open stays unloaded and is reported by
      * getLoadFailures().
+     *
+     * A payload whose file, or a file it needs, is still open in a closed scene's layer that
+     * SceneTeardown has yet to destroy, and has changed on disk since, stays unloaded and is asked
+     * for again once SceneTeardown is idle: composing it would reuse that layer.
      **/
     bool serviceLoads(const LockedSection& readLocked,
                       const LockedSection& writeLocked,
@@ -218,8 +245,22 @@ public:
     // How long the last serviced batch held writeLocked.
     double getLastLoadHoldMs() const;
 
+    SceneStageSnapshot getSnapshot() const;
+
+    /**
+     * @brief Makes the stage compose what snapshot holds: sync() of its payload, its load set
+     * applied, then its preview set or cleared. Returns true if anything was edited. A stage opened
+     * with LoadNone reads no payload file the snapshot's set leaves out. Another stage composing the same
+     * layers shares the write domain of the layers read from files (SceneWriteBarrier).
+     **/
+    bool syncTo(const SceneStageSnapshot& snapshot);
+
 private:
     void syncProjections();
+
+    // Under _loadMutex: moves the loads put off for a stale layer back to the pending ones once
+    // SceneTeardown has gone idle. A newer request for a path wins.
+    void takeReadyDeferredLoads();
 
     enum PendingLoadEnum {
         ePendingLoadOwn,
@@ -238,6 +279,8 @@ private:
     PXR_NS::SdfLayerRefPtr _root;
     // The strongest sublayer: the projection cameras the payload leaves for the stage to resolve.
     PXR_NS::SdfLayerRefPtr _projections;
+    // Of what resolve() last authored into _projections, 0 for nothing.
+    U64 _projectionsDigest = 0;
     std::vector<SceneProjectionCameras::Unresolved> _unresolvedProjections;
     PXR_NS::UsdStageRefPtr _stage;
     ScenePayload _payload;
@@ -259,9 +302,17 @@ private:
     bool _allCancelledWhileServicing = false;
     std::map<PXR_NS::SdfPath, std::string> _loadFailures;
     bool _servicingLoads = false;
+    // The loads put off for a stale layer, until SceneTeardown is idle.
+    std::map<PXR_NS::SdfPath, PendingLoadEnum> _deferredLoads;
+    std::map<PXR_NS::SdfPath, PXR_NS::SdfPathSet> _deferredExclusions;
+    struct DeferredLoadsWake;
+    // Shared with the callback SceneTeardown runs once idle, which may outlive the stage.
+    std::shared_ptr<DeferredLoadsWake> _deferredWake;
     std::atomic<U64> _loadEditCount { 0 };
     std::atomic<double> _lastLoadHoldMs { 0. };
     SceneLoadSetPtr _appliedLoadSet;
+    std::vector<std::pair<std::string, PXR_NS::GfMatrix4d>> _previewDeltas;
+    double _previewTimeCode = 0.;
 };
 
 NATRON_NAMESPACE_EXIT

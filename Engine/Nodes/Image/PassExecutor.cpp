@@ -28,7 +28,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
+#include <limits>
 #include <list>
 #include <memory>
 #include <utility>
@@ -195,6 +197,43 @@ readSourceRow(const Image* image,
 }
 
 void
+readSourceRow(const Image* image,
+              const Image::ReadAccess* access,
+              const RectI& bounds,
+              int srcNComps,
+              int x0,
+              int y,
+              int width,
+              int nComps,
+              EdgeMode mode,
+              float* row)
+{
+    int sy = y;
+    if (!image || (bounds.x1 >= bounds.x2) || !EdgeSample::coord(y, bounds.y1, bounds.y2, mode, &sy)) {
+        std::fill(row, row + (std::size_t)std::max(0, width) * nComps, 0.f);
+
+        return;
+    }
+    readSourceRow(image, access, bounds, srcNComps, x0, sy, width, nComps, row);
+    if (mode != EdgeMode::Stretch) {
+        return;
+    }
+    const std::size_t n = (std::size_t)nComps;
+    const auto repeat = [&](int edgeX, int from, int to) {
+        if (from >= to) {
+            return;
+        }
+        float* first = row + (std::size_t)(from - x0) * n;
+        readSourceRow(image, access, bounds, srcNComps, edgeX, sy, 1, nComps, first);
+        for (int x = from + 1; x < to; ++x) {
+            std::copy(first, first + n, row + (std::size_t)(x - x0) * n);
+        }
+    };
+    repeat(bounds.x1, x0, std::min(x0 + width, bounds.x1));
+    repeat(bounds.x2 - 1, std::max(x0, bounds.x2), x0 + width);
+}
+
+void
 readChannelRow(const Image* image,
                const Image::ReadAccess* access,
                const RectI& bounds,
@@ -225,6 +264,55 @@ readChannelRow(const Image* image,
     for (int x = xStart; x < xEnd; ++x, pix += imageNComps) {
         row[x - x0] = pix[channel];
     }
+}
+
+void
+readChannelRow(const Image* image,
+               const Image::ReadAccess* access,
+               const RectI& bounds,
+               int imageNComps,
+               int channel,
+               int x0,
+               int y,
+               int width,
+               EdgeMode mode,
+               float* row)
+{
+    std::fill(row, row + std::max(0, width), 0.f);
+    int sy = y;
+    if (!image || !EdgeSample::coord(y, bounds.y1, bounds.y2, mode, &sy)) {
+        return;
+    }
+    const float* line = (const float*)access->pixelAt(bounds.x1, sy);
+    if (!line) {
+        return;
+    }
+    for (int i = 0; i < width; ++i) {
+        int sx = x0 + i;
+        if (EdgeSample::coord(x0 + i, bounds.x1, bounds.x2, mode, &sx)) {
+            row[i] = line[(std::size_t)(sx - bounds.x1) * imageNComps + channel];
+        }
+    }
+}
+
+float
+readChannelAt(const Image* image,
+              const Image::ReadAccess* access,
+              const RectI& bounds,
+              int imageNComps,
+              int channel,
+              int x,
+              int y,
+              EdgeMode mode)
+{
+    int sx = x;
+    int sy = y;
+    if (!image || !EdgeSample::pixel(x, y, bounds, mode, &sx, &sy)) {
+        return 0.f;
+    }
+    const float* pix = (const float*)access->pixelAt(sx, sy);
+
+    return pix ? pix[channel] : 0.f;
 }
 
 PlaneJob::PlaneJob()
@@ -264,6 +352,7 @@ MaskInput::MaskInput()
     , image()
     , channel(-1)
     , nComps(0)
+    , edgeMode(EdgeMode::Black)
 {
 }
 
@@ -336,7 +425,7 @@ void
 fillBuffer(const PlaneJob& job,
            const ProcessedPlanes& planes,
            const RectI& bufferRect,
-           Boundary boundary,
+           EdgeMode edgeMode,
            int nThreads,
            RenderCancellation& cancel,
            float* buffer)
@@ -358,7 +447,6 @@ fillBuffer(const PlaneJob& job,
         srcIndex[p] = job.src ? channelIndexForBit(job.srcNComps, pixelKernelChannelBit(job.nComps, c)) : -1;
         divided[p] = (c != job.skipChannel);
     }
-    const bool nearest = (boundary == Boundary::Nearest);
     const RectI& b = job.srcBounds;
     const RectI& db = job.divisorBounds;
     const bool hasSource = job.src && !isEmptyRect(b);
@@ -371,14 +459,7 @@ fillBuffer(const PlaneJob& job,
             float* out = buffer + (std::size_t)row * bufferWidth;
             const int y = bufferRect.y1 + row;
             int cy = y;
-            bool rowInside = hasSource;
-            if (hasSource && ((y < b.y1) || (y >= b.y2))) {
-                if (nearest) {
-                    cy = (y < b.y1) ? b.y1 : (b.y2 - 1);
-                } else {
-                    rowInside = false;
-                }
-            }
+            const bool rowInside = hasSource && EdgeSample::coord(y, b.y1, b.y2, edgeMode, &cy);
             const float* srcRow = rowInside ? (const float*)job.srcAccess->pixelAt(b.x1, cy) : NULL;
             if (!srcRow) {
                 for (int p = 0; p < nPlanes; ++p) {
@@ -394,14 +475,11 @@ fillBuffer(const PlaneJob& job,
             for (int i = 0; i < bufferWidth; ++i) {
                 const int x = bufferRect.x1 + i;
                 int cx = x;
-                if ((x < b.x1) || (x >= b.x2)) {
-                    if (!nearest) {
-                        for (int p = 0; p < nPlanes; ++p) {
-                            out[(std::size_t)p * planeSize + i] = 0.f;
-                        }
-                        continue;
+                if (!EdgeSample::coord(x, b.x1, b.x2, edgeMode, &cx)) {
+                    for (int p = 0; p < nPlanes; ++p) {
+                        out[(std::size_t)p * planeSize + i] = 0.f;
                     }
-                    cx = (x < b.x1) ? b.x1 : (b.x2 - 1);
+                    continue;
                 }
                 const float* srcPix = srcRow + (std::size_t)(cx - b.x1) * job.srcNComps;
                 float d = 1.f;
@@ -480,7 +558,7 @@ writeWindow(const PlaneJob& job,
                 const int left = fastX1 - roi.x1;
                 const int right = roi.x2 - fastX2;
                 if ((left > 0) || (right > 0) || !allProcessed) {
-                    readSourceRow(job.src.get(), job.srcAccess.get(), job.srcBounds, job.srcNComps, roi.x1, y, width, nComps, &sourceRow[0]);
+                    readSourceRow(job.src.get(), job.srcAccess.get(), job.srcBounds, job.srcNComps, roi.x1, y, width, nComps, layout.sourceEdgeMode, &sourceRow[0]);
                 }
                 if (left > 0) {
                     std::copy(sourceRow.begin(), sourceRow.begin() + (std::size_t)left * nComps, dstPix);
@@ -508,7 +586,7 @@ writeWindow(const PlaneJob& job,
                 }
                 continue;
             }
-            readSourceRow(job.src.get(), job.srcAccess.get(), job.srcBounds, job.srcNComps, roi.x1, y, width, nComps, &sourceRow[0]);
+            readSourceRow(job.src.get(), job.srcAccess.get(), job.srcBounds, job.srcNComps, roi.x1, y, width, nComps, layout.sourceEdgeMode, &sourceRow[0]);
             if (!rowProcessed) {
                 std::copy(sourceRow.begin(), sourceRow.end(), dstPix);
                 continue;
@@ -517,7 +595,7 @@ writeWindow(const PlaneJob& job,
                 readChannelRow(job.divisor.get(), job.divisorAccess.get(), job.divisorBounds, job.divisorNComps, job.divisorChannel, roi.x1, y, width, 1.f, &divisorRow[0]);
             }
             if (doMask) {
-                readChannelRow(mask.image.get(), mask.access.get(), mask.bounds, mask.nComps, mask.channel, roi.x1, y, width, 0.f, &maskRow[0]);
+                readChannelRow(mask.image.get(), mask.access.get(), mask.bounds, mask.nComps, mask.channel, roi.x1, y, width, mask.edgeMode, &maskRow[0]);
             }
             const std::size_t bufferRow = rowInBuffer ? (std::size_t)(y - bufferRect.y1) * bufferWidth : 0;
             for (int i = 0; i < width; ++i, dstPix += nComps) {
@@ -626,6 +704,121 @@ effectRoDPixels(EffectInstance& effect,
     *out = toPixelEnclosing(rod, scale, effect.getRenderMetadata(time, view)->getPixelAspectRatio(-1));
 
     return true;
+}
+
+/**
+ * The rect a pass list's scratch covers for window: the window grown by the halo, then
+ *  - with clipToRegion, clipped to the effect's region of definition rod;
+ *  - under Black, clipped to rod and the source's region sourceRoD with a one-pixel border, and
+ *    the window: past that border every pass reads zero, which a window clamped to the border
+ *    reads too, while a halo far larger than the image would not fit in memory;
+ *  - under Stretch, for a list with a stretch reach, clipped to the source's region grown by that
+ *    reach, the op mask's region opMaskRoD with a one-pixel border, and the window: past them
+ *    every pass result repeats the scratch's edge, which is what a pass reading past the
+ *    scratch reads, so a halo of any size costs no more than the image;
+ *  - under Stretch otherwise, left whole, so that each pass reads what it would of the image
+ *    extended.
+ * runPassesCpu() and recordPassesGpu() share it so that both filter the same scratch.
+ **/
+RectI
+grownRect(const RectI& r,
+          int dx,
+          int dy)
+{
+    const auto clamp = [](int64_t v) {
+        return (int)std::max<int64_t>(std::numeric_limits<int>::min(), std::min<int64_t>(std::numeric_limits<int>::max(), v));
+    };
+
+    return RectI(clamp((int64_t)r.x1 - dx), clamp((int64_t)r.y1 - dy), clamp((int64_t)r.x2 + dx), clamp((int64_t)r.y2 + dy));
+}
+
+RectI
+passBufferRect(const RectI& window,
+               const PassList& list,
+               const RectI& rod,
+               const RectI& sourceRoD,
+               const RectI& opMaskRoD)
+{
+    const RectI full = passListSourceRoI(window, list);
+    RectI clip;
+    if (list.clipToRegion) {
+        clip = rod;
+    } else if (list.edgeMode == EdgeMode::Black) {
+        clip = rod;
+        if (!isEmptyRect(sourceRoD)) {
+            clip.merge(sourceRoD);
+        }
+        if (!isEmptyRect(clip)) {
+            clip = grownRect(clip, 1, 1);
+        }
+        clip.merge(window);
+    } else if ((list.stretchReachX >= 0) && (list.stretchReachY >= 0)) {
+        RectI varies(0, 0, 0, 0);
+        if (!isEmptyRect(sourceRoD)) {
+            varies = sourceRoD;
+        }
+        if (!isEmptyRect(list.stretchVaries)) {
+            varies.merge(grownRect(list.stretchVaries, 1, 1));
+        }
+        clip = RectI(0, 0, 0, 0);
+        if (!isEmptyRect(varies)) {
+            clip = grownRect(varies, list.stretchReachX, list.stretchReachY);
+        }
+        // The mask multiplies what the passes read, so they vary wherever it does, and under Black
+        // it reads zero only from a pixel past its region on.
+        if (!isEmptyRect(opMaskRoD)) {
+            clip.merge(grownRect(opMaskRoD, 1, 1));
+        }
+        if (list.stretchLinesEndAtRegion && !isEmptyRect(rod)) {
+            clip.merge(rod);
+        }
+        clip.merge(window);
+    } else {
+        return full;
+    }
+    RectI out(0, 0, 0, 0);
+    intersectRects(full, clip, &out);
+
+    return out;
+}
+
+// The source input's region of definition in pixels at scale, empty when it has none.
+RectI
+sourceRoDPixels(EffectInstance& effect,
+                int sourceInput,
+                double time,
+                const RenderScale& scale,
+                ViewIdx view)
+{
+    EffectInstancePtr input = effect.getInput(sourceInput);
+    if (!input) {
+        return RectI(0, 0, 0, 0);
+    }
+    const RenderScale inputScale = input->supportsRenderScale() ? scale : RenderScale::identity;
+    RectD rod;
+    bool isProjectFormat = false;
+    if (input->getRegionOfDefinition_public(input->getRenderHash(), time, inputScale, view, &rod, &isProjectFormat) == eStatusFailed) {
+        return RectI(0, 0, 0, 0);
+    }
+
+    return toPixelEnclosing(rod, scale, effect.getRenderMetadata(time, view)->getPixelAspectRatio(sourceInput));
+}
+
+// The region of definition in pixels of the op mask a list with opMask applies through
+// maskPlan, already resolved by resolveStageOpMask(); empty when none is applied.
+RectI
+opMaskRoDPixels(EffectInstance& effect,
+                const PassList& list,
+                const StagePlan& maskPlan,
+                double time,
+                const RenderScale& scale,
+                ViewIdx view)
+{
+    if (!list.opMask || !maskPlan.applyMask || (maskPlan.maskInput < 0)) {
+        return RectI(0, 0, 0, 0);
+    }
+
+    return sourceRoDPixels(effect, maskPlan.maskInput, time, scale, view);
 }
 
 void
@@ -942,6 +1135,43 @@ runPassListOnScratch(const PassList& list,
     }
 }
 
+bool
+passScratchRect(EffectInstance& effect,
+                const StagePlan& plan,
+                const PassList& list,
+                const RectI& window,
+                double time,
+                const RenderScale& scale,
+                ViewIdx view,
+                RectI* rect)
+{
+    RectI dstRoDPixel;
+    if (!effectRoDPixels(effect, time, scale, view, &dstRoDPixel)) {
+        return false;
+    }
+    StagePlan maskPlan = plan;
+    if (list.opMask) {
+        resolveStageOpMask(effect, &maskPlan);
+    } else {
+        maskPlan.applyMask = false;
+    }
+    const RectI srcRoDPixel = sourceRoDPixels(effect, plan.sourceInput, time, scale, view);
+    const RectI maskRoDPixel = opMaskRoDPixels(effect, list, maskPlan, time, scale, view);
+    *rect = passBufferRect(window, list, dstRoDPixel, srcRoDPixel, maskRoDPixel);
+
+    return true;
+}
+
+RectI
+passInputRoDPixels(EffectInstance& effect,
+                   int inputNb,
+                   double time,
+                   const RenderScale& scale,
+                   ViewIdx view)
+{
+    return sourceRoDPixels(effect, inputNb, time, scale, view);
+}
+
 StatusEnum
 runPassesCpu(EffectInstance& effect,
              const StagePlan& plan,
@@ -1024,23 +1254,18 @@ runPassesCpu(EffectInstance& effect,
         return eStatusOK;
     }
 
-    // The passes run over the window plus the halo, clipped to this effect's own region of
-    // definition, as CImgFilterPluginHelper::render() clips its source region of interest.
-    RectI dstRoDPixel;
-    if (!effectRoDPixels(effect, args.time, args.mappedScale, args.view, &dstRoDPixel)) {
-        return eStatusFailed;
-    }
-
     MaskInput maskSource;
     maskSource.applied = doMask;
     maskSource.invert = plan.maskInvert;
     maskSource.image = mask;
     maskSource.channel = plan.maskChannel;
+    maskSource.edgeMode = plan.maskEdgeMode;
     maskSource.lock();
     MaskInput opMaskSource;
     opMaskSource.applied = opMaskPlan.applyMask;
     opMaskSource.image = opMask;
     opMaskSource.channel = opMaskPlan.maskChannel;
+    opMaskSource.edgeMode = opMaskPlan.maskEdgeMode;
     opMaskSource.lock();
     for (std::size_t j = 0; j < jobs.size(); ++j) {
         jobs[j].lock();
@@ -1056,8 +1281,8 @@ runPassesCpu(EffectInstance& effect,
     const bool processing = !isEmptyRect(processWindow);
 
     RectI bufferRect(0, 0, 0, 0);
-    if (processing) {
-        intersectRects(passListSourceRoI(processWindow, list), dstRoDPixel, &bufferRect);
+    if (processing && !passScratchRect(effect, plan, list, processWindow, args.time, args.mappedScale, args.view, &bufferRect)) {
+        return eStatusFailed;
     }
     const int bufferWidth = std::max(0, bufferRect.width());
     const int bufferHeight = std::max(0, bufferRect.height());
@@ -1066,14 +1291,14 @@ runPassesCpu(EffectInstance& effect,
     const int nThreads = appPTR->getNCPUsAvailableForEffect();
     RenderCancellation cancel(&effect);
 
-    // The op's mask over the buffer, the same for every plane job: 0 outside the mask's image,
-    // everywhere when its channel resolves to none.
+    // The op's mask over the buffer, the same for every plane job, read past its image by its own
+    // edge mode; 0 everywhere when its channel resolves to none.
     std::vector<float> opMaskPlane;
     if (opMaskSource.applied && planeSize) {
         opMaskPlane.resize(planeSize);
         forEachLineChunk(bufferHeight, (std::size_t)bufferWidth, nThreads, cancel, [&](int first, int end) {
             for (int r = first; r < end; ++r) {
-                readChannelRow(opMaskSource.image.get(), opMaskSource.access.get(), opMaskSource.bounds, opMaskSource.nComps, opMaskSource.channel, bufferRect.x1, bufferRect.y1 + r, bufferWidth, 0.f, &opMaskPlane[(std::size_t)r * bufferWidth]);
+                readChannelRow(opMaskSource.image.get(), opMaskSource.access.get(), opMaskSource.bounds, opMaskSource.nComps, opMaskSource.channel, bufferRect.x1, bufferRect.y1 + r, bufferWidth, opMaskSource.edgeMode, &opMaskPlane[(std::size_t)r * bufferWidth]);
             }
         });
         if (cancel.check()) {
@@ -1130,7 +1355,7 @@ runPassesCpu(EffectInstance& effect,
                 scratch.buffers.push_back(slot.data());
             }
 
-            fillBuffer(job, planes, bufferRect, list.boundary, nThreads, cancel, buffer);
+            fillBuffer(job, planes, bufferRect, list.edgeMode, nThreads, cancel, buffer);
             if (cancel.check()) {
                 return eStatusOK;
             }
@@ -1152,6 +1377,8 @@ runPassesCpu(EffectInstance& effect,
         layout.bufferRect = bufferRect;
         layout.buffer = buffer ? scratch.buffers[list.resultSlot] : NULL;
         layout.mix = (float)plan.mix;
+        // At mix 0 the node is an identity, whose output is its input as rendered: zero past it.
+        layout.sourceEdgeMode = processing ? list.edgeMode : EdgeMode::Black;
         writeWindow(job, planes, maskSource, layout, nThreads, cancel);
         if (cancel.check()) {
             return eStatusOK;
@@ -1206,24 +1433,27 @@ recordPassesGpu(EffectInstance& effect,
     const ViewIdx view = query.view;
     const RenderScale& scale = query.mappedScale;
 
-    // runPassesCpu() runs the passes over the window plus its halo clipped to this effect's region
-    // of definition, and fillBuffer() resolves the source against the input image.
+    // runPassesCpu() runs the passes over passBufferRect(), and fillBuffer() resolves the source
+    // against the input image.
     RectI rodPixel;
     if (!effectRoDPixels(effect, time, scale, view, &rodPixel)) {
         return eStatusFailed;
     }
-    const RectI sourceRoI = passListSourceRoI(rect, list);
-    RectI domain;
-    intersectRects(sourceRoI, rodPixel, &domain);
-
     const RenderScale inputScale = input->supportsRenderScale() ? scale : RenderScale::identity;
     RectD srcRoD;
     bool isProjectFormat = false;
     if (input->getRegionOfDefinition_public(input->getRenderHash(), time, inputScale, view, &srcRoD, &isProjectFormat) == eStatusFailed) {
         return eStatusFailed;
     }
+    const RectI srcRoDPixel = toPixelEnclosing(srcRoD, scale, effect.getRenderMetadata(time, view)->getPixelAspectRatio(sourceInput));
+    const RectI sourceRoI = passListSourceRoI(rect, list);
+    StagePlan maskPlan = plan;
+    if (list.opMask) {
+        resolveStageOpMask(effect, &maskPlan);
+    }
+    const RectI domain = passBufferRect(rect, list, rodPixel, srcRoDPixel, opMaskRoDPixels(effect, list, maskPlan, time, scale, view));
     RectI valid;
-    intersectRects(src.bounds, toPixelEnclosing(srcRoD, scale, effect.getRenderMetadata(time, view)->getPixelAspectRatio(sourceInput)), &valid);
+    intersectRects(src.bounds, srcRoDPixel, &valid);
 
     int divisor = -1;
     if (!stageGpuDivisorComponent(plan, query, &divisor)) {
@@ -1255,11 +1485,19 @@ recordPassesGpu(EffectInstance& effect,
                 return eStatusFailed;
             }
             ctx.computeBarrier();
-            sourceValid = dividedRect;
+            // Outside the input the divided buffer holds zero, so a Stretch read must clamp into
+            // the input's pixels rather than the buffer's.
+            intersectRects(dividedRect, valid, &sourceValid);
         }
     }
+    // The finish passes the source through and blends with it past the image as runPassesCpu()
+    // writes its window: by the list's edge mode, or as zero at mix 0, where the node is an
+    // identity.
+    StagePlan finishPlan = plan;
+    finishPlan.edgeMode = list.edgeMode;
+    finishPlan.blendSourceFollowsEdgeMode = (plan.mix != 0.);
     if (!filtering) {
-        return recordStagesGpuFinish(plan, wrapArgs, source);
+        return recordStagesGpuFinish(finishPlan, wrapArgs, source);
     }
 
     GpuImageView filtered = dst;
@@ -1276,6 +1514,7 @@ recordPassesGpu(EffectInstance& effect,
     PassGpuIO io(ctx);
     io.source = source;
     io.sourceValid = sourceValid;
+    io.edgeMode = list.edgeMode;
     io.filtered = filtered;
     io.output = rect;
     io.domain = domain;
@@ -1322,9 +1561,8 @@ recordPassesGpu(EffectInstance& effect,
         io.layerInputs.push_back(cropped);
     }
     if (list.opMask) {
-        StagePlan maskPlan = plan;
-        resolveStageOpMask(effect, &maskPlan);
         io.maskApplied = maskPlan.applyMask;
+        io.maskEdgeMode = maskPlan.maskEdgeMode;
         const int maskInput = maskPlan.maskInput;
         // A mask that is not handed over reads zero everywhere.
         const bool hasMask = (maskInput >= 0) && (maskInput < (int)args.inputs.size()) && args.inputs[maskInput].buffer;
@@ -1344,7 +1582,7 @@ recordPassesGpu(EffectInstance& effect,
     }
     ctx.computeBarrier();
 
-    return recordStagesGpuFinish(plan, wrapArgs, filtered);
+    return recordStagesGpuFinish(finishPlan, wrapArgs, filtered);
 #else
     Q_UNUSED(effect);
     Q_UNUSED(plan);

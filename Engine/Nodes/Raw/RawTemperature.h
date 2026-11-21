@@ -187,6 +187,11 @@ public:
 
     virtual ~RawTemperature();
 
+    virtual bool pullsInputsAtScaleOne() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
 private:
     virtual void initializeKnobs() OVERRIDE FINAL;
 

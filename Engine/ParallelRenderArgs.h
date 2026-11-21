@@ -54,6 +54,24 @@
 NATRON_NAMESPACE_ENTER
 
 typedef std::map<EffectInstancePtr, RectD> RoIMap; // RoIs are in canonical coordinates
+
+/**
+ * @brief Whether rois names input and says none of inputRod is read. An input it doesn't name stays read, as does any
+ * input whose region of definition isn't known.
+ **/
+inline bool
+inputRoIMissesRoD(const RoIMap& rois,
+                  const EffectInstancePtr& input,
+                  const RectD& inputRod)
+{
+    const RoIMap::const_iterator found = rois.find(input);
+    if (found == rois.end()) {
+        return false;
+    }
+
+    return found->second.isNull() || (!inputRod.isNull() && !found->second.intersects(inputRod));
+}
+
 typedef std::map<ViewIdx, std::vector<RangeD> > FrameRangesMap;
 typedef std::map<int, FrameRangesMap> FramesNeededMap;
 typedef std::shared_ptr<FramesNeededMap> FramesNeededMapPtr;
@@ -595,6 +613,9 @@ public:
      * relying on other nodes that do not belong in the tree through expressions.
      * When setUpstreamArgs is false only treeRoot gets TLS: callers that do not render use this to avoid walking the
      * whole graph, and EffectInstance::getImage installs args on an input lazily if it ends up being pulled.
+     * Such a setter attaches no OpenGL context either, so its args carry none: those callers run on the main
+     * thread, where creating the first context of the pool stalls the UI for over 100 ms, and a render they pull
+     * through getImage gets its context from the setter getImage installs.
      **/
     ParallelRenderArgsSetter(double time,
                              ViewIdx view,

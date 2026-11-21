@@ -131,21 +131,21 @@ applyPlanar(const LineFilter& fx,
 TEST(BlurKernels, IdentityCases)
 {
     EXPECT_TRUE(LineFilter().isIdentity());
-    EXPECT_TRUE(LineFilter::deriche(0.05f, 0, true).isIdentity());
-    EXPECT_FALSE(LineFilter::deriche(0.05f, 1, true).isIdentity());
-    EXPECT_TRUE(LineFilter::vanVliet(0.05f, 0, false).isIdentity());
-    EXPECT_FALSE(LineFilter::vanVliet(0.5f, 0, false).isIdentity());
-    EXPECT_TRUE(LineFilter::box(0.f, 1, true, 1).isIdentity());
-    EXPECT_TRUE(LineFilter::box(1.f, 0, true, 3).isIdentity());
-    EXPECT_FALSE(LineFilter::box(1.f, 1, true, 3).isIdentity());
-    EXPECT_FALSE(LineFilter::box(1.5f, 0, true, 1).isIdentity());
-    EXPECT_TRUE(LineFilter::forFilter(eFilterGaussian, 0.f, 0, true).isIdentity());
+    EXPECT_TRUE(LineFilter::deriche(0.05f, 0, EdgeMode::Stretch).isIdentity());
+    EXPECT_FALSE(LineFilter::deriche(0.05f, 1, EdgeMode::Stretch).isIdentity());
+    EXPECT_TRUE(LineFilter::vanVliet(0.05f, 0, EdgeMode::Black).isIdentity());
+    EXPECT_FALSE(LineFilter::vanVliet(0.5f, 0, EdgeMode::Black).isIdentity());
+    EXPECT_TRUE(LineFilter::box(0.f, 1, EdgeMode::Stretch, 1).isIdentity());
+    EXPECT_TRUE(LineFilter::box(1.f, 0, EdgeMode::Stretch, 3).isIdentity());
+    EXPECT_FALSE(LineFilter::box(1.f, 1, EdgeMode::Stretch, 3).isIdentity());
+    EXPECT_FALSE(LineFilter::box(1.5f, 0, EdgeMode::Stretch, 1).isIdentity());
+    EXPECT_TRUE(LineFilter::forFilter(eFilterGaussian, 0.f, 0, EdgeMode::Stretch).isIdentity());
 
     std::vector<float> line = { 1.f, -2.f, 3.f };
     const std::vector<float> before = line;
-    LineFilter::box(1.f, 0, true, 3).apply(line.data(), static_cast<int>(line.size()), 1);
+    LineFilter::box(1.f, 0, EdgeMode::Stretch, 3).apply(line.data(), static_cast<int>(line.size()), 1);
     EXPECT_EQ(line, before);
-    LineFilter::vanVliet(3.f, 0, true).apply(line.data(), 0, 1);
+    LineFilter::vanVliet(3.f, 0, EdgeMode::Stretch).apply(line.data(), 0, 1);
     EXPECT_EQ(line, before);
 }
 
@@ -156,11 +156,11 @@ TEST(BlurKernels, InterleavedStrideMatchesPlanar)
     const int w = 33, h = 21, c = 4;
     const Planar src = makeSource(w, h, c);
     const LineFilter filters[] = {
-        LineFilter::vanVliet(3.f, 0, true),
-        LineFilter::vanVliet(2.f, 1, false),
-        LineFilter::deriche(4.f, 0, false),
-        LineFilter::box(5.5f, 0, true, 3),
-        LineFilter::box(3.f, 1, false, 1),
+        LineFilter::vanVliet(3.f, 0, EdgeMode::Stretch),
+        LineFilter::vanVliet(2.f, 1, EdgeMode::Black),
+        LineFilter::deriche(4.f, 0, EdgeMode::Black),
+        LineFilter::box(5.5f, 0, EdgeMode::Stretch, 3),
+        LineFilter::box(3.f, 1, EdgeMode::Black, 1),
     };
     LineScratch scratch;
     for (const LineFilter& f : filters) {
@@ -205,16 +205,16 @@ TEST(BlurKernels, ForFilterMapsCImgBlurChoices)
         LineFilter expected;
     };
     const Pair pairs[] = {
-        { eFilterQuasiGaussian, LineFilter::deriche(2.5f, 1, true) },
-        { eFilterGaussian, LineFilter::vanVliet(2.5f, 1, true) },
-        { eFilterBox, LineFilter::box(2.5f, 1, true, 1) },
-        { eFilterTriangle, LineFilter::box(2.5f, 1, true, 2) },
-        { eFilterQuadratic, LineFilter::box(2.5f, 1, true, 3) },
+        { eFilterQuasiGaussian, LineFilter::deriche(2.5f, 1, EdgeMode::Stretch) },
+        { eFilterGaussian, LineFilter::vanVliet(2.5f, 1, EdgeMode::Stretch) },
+        { eFilterBox, LineFilter::box(2.5f, 1, EdgeMode::Stretch, 1) },
+        { eFilterTriangle, LineFilter::box(2.5f, 1, EdgeMode::Stretch, 2) },
+        { eFilterQuadratic, LineFilter::box(2.5f, 1, EdgeMode::Stretch, 3) },
     };
     LineScratch scratch;
     for (const Pair& p : pairs) {
         Planar a = src, b = src;
-        const LineFilter f = LineFilter::forFilter(p.filter, 2.5f, 1, true);
+        const LineFilter f = LineFilter::forFilter(p.filter, 2.5f, 1, EdgeMode::Stretch);
         applyPlanar(f, f, a, scratch);
         applyPlanar(p.expected, p.expected, b, scratch);
         EXPECT_EQ(a.v, b.v) << "filter " << static_cast<int>(p.filter);
@@ -300,7 +300,7 @@ TEST(BlurKernels, DericheMatchesCImg)
                     ref.deriche(sigma, order, 'y', neumann);
 
                     Planar got = src;
-                    const LineFilter f = LineFilter::deriche(sigma, order, neumann);
+                    const LineFilter f = LineFilter::deriche(sigma, order, (neumann ? EdgeMode::Stretch : EdgeMode::Black));
                     applyPlanar(f, f, got, scratch);
 
                     EXPECT_LE(maxAbsDiff(got.v, fromCImg(ref)), kMaxAbsDiff)
@@ -328,7 +328,7 @@ TEST(BlurKernels, VanVlietMatchesCImg)
                     ref.vanvliet(sigma, order, 'y', neumann);
 
                     Planar got = src;
-                    const LineFilter f = LineFilter::vanVliet(sigma, order, neumann);
+                    const LineFilter f = LineFilter::vanVliet(sigma, order, (neumann ? EdgeMode::Stretch : EdgeMode::Black));
                     applyPlanar(f, f, got, scratch);
 
                     EXPECT_LE(maxAbsDiff(got.v, fromCImg(ref)), kMaxAbsDiff)
@@ -353,7 +353,7 @@ TEST(BlurKernels, BoxTriangleQuadraticMatchCImg)
                         ref.boxfilter(size, order, 'y', neumann, iterations);
 
                         Planar got = src;
-                        const LineFilter f = LineFilter::box(size, order, neumann, iterations);
+                        const LineFilter f = LineFilter::box(size, order, (neumann ? EdgeMode::Stretch : EdgeMode::Black), iterations);
                         applyPlanar(f, f, got, scratch);
 
                         EXPECT_LE(maxAbsDiff(got.v, fromCImg(ref)), kMaxAbsDiff)
@@ -375,7 +375,7 @@ TEST(BlurKernels, AnisotropicGaussianMatchesCImg)
 
     Planar got = src;
     LineScratch scratch;
-    applyPlanar(LineFilter::vanVliet(40.f / 2.4f, 1, true), LineFilter::vanVliet(5.f / 2.4f, 0, true), got, scratch);
+    applyPlanar(LineFilter::vanVliet(40.f / 2.4f, 1, EdgeMode::Stretch), LineFilter::vanVliet(5.f / 2.4f, 0, EdgeMode::Stretch), got, scratch);
     EXPECT_LE(maxAbsDiff(got.v, fromCImg(ref)), kMaxAbsDiff);
 }
 

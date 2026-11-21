@@ -72,6 +72,7 @@ struct TeardownState {
     };
     std::deque<Held> queue;
     std::vector<std::function<void()>> idleCallbacks;
+    std::vector<std::shared_ptr<void>> mainThreadHeld;
     bool busy = false;
     bool stopping = false;
     bool stopped = false;
@@ -169,6 +170,32 @@ releaseHeldUnscoped(std::shared_ptr<void> held)
     enqueue(std::move(held), false);
 }
 
+static void
+destroyMainThreadHeld()
+{
+    TeardownState& s = state();
+    std::vector<std::shared_ptr<void>> held;
+    {
+        std::lock_guard<std::mutex> lock(s.mutex);
+        held.swap(s.mainThreadHeld);
+    }
+    held.clear();
+}
+
+void
+releaseOnMainThread(std::shared_ptr<void> held)
+{
+    if (!held) {
+        return;
+    }
+    TeardownState& s = state();
+    {
+        std::lock_guard<std::mutex> lock(s.mutex);
+        s.mainThreadHeld.push_back(std::move(held));
+    }
+    postToMainThread(&destroyMainThreadHeld);
+}
+
 std::size_t
 getPendingCount()
 {
@@ -236,6 +263,8 @@ shutdown()
         idle.swap(s.idleCallbacks);
     }
     s.changed.notify_all();
+    // The event loop that would have destroyed them may not run again.
+    destroyMainThreadHeld();
     postAll(&idle);
 }
 } // namespace SceneTeardown

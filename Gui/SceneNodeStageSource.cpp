@@ -44,6 +44,32 @@
 NATRON_NAMESPACE_ENTER
 
 namespace {
+// Releases the Python GIL while the calling thread waits for a worker, if it holds it: the worker
+// may be evaluating a Python expression.
+class PythonUnlockedWhileWaiting {
+public:
+    PythonUnlockedWhileWaiting()
+        : _state(nullptr)
+    {
+        if (Py_IsInitialized() && PyGILState_Check()) {
+            _state = PyEval_SaveThread();
+        }
+    }
+
+    ~PythonUnlockedWhileWaiting()
+    {
+        if (_state) {
+            PyEval_RestoreThread(_state);
+        }
+    }
+
+    PythonUnlockedWhileWaiting(const PythonUnlockedWhileWaiting&) = delete;
+    PythonUnlockedWhileWaiting& operator=(const PythonUnlockedWhileWaiting&) = delete;
+
+private:
+    PyThreadState* _state;
+};
+
 bool
 evaluateNode(const NodeWPtr& weakNode,
              const SceneEvaluationContext& context,
@@ -190,6 +216,7 @@ SceneNodeStageSource::stop()
 {
     requestStop();
     if (_worker.joinable()) {
+        PythonUnlockedWhileWaiting unlocked;
         _worker.join();
     }
 }
@@ -216,6 +243,7 @@ SceneNodeStageSource::reap(const std::vector<std::shared_ptr<SceneNodeStageSourc
 void
 SceneNodeStageSource::joinReaped()
 {
+    PythonUnlockedWhileWaiting unlocked;
     Reaper& r = reaper();
     std::unique_lock<std::mutex> lock(r.mutex);
 
@@ -225,6 +253,7 @@ SceneNodeStageSource::joinReaped()
 void
 SceneNodeStageSource::stopAll()
 {
+    PythonUnlockedWhileWaiting unlocked;
     LiveSources& live = liveSources();
     std::unique_lock<std::mutex> lock(live.mutex);
 

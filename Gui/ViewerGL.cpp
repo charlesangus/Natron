@@ -1254,7 +1254,7 @@ ViewerGL::drawPersistentMessage()
 void
 ViewerGL::initializeGL()
 {
-    // Counted so a test can tell whether a dock or split recreated the widget's context.
+    // How many contexts the widget was initialised in: a dock or split that recreates it adds one.
     setProperty("natronGlInitCount", property("natronGlInitCount").toInt() + 1);
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );

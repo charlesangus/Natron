@@ -7076,7 +7076,7 @@ struct SceneViewport::Implementation {
             }
             if (surface && (QThread::currentThread() != surface->thread())) {
                 // A platform surface is only destroyed on the thread that made it.
-                surface.release()->deleteLater();
+                SceneTeardown::releaseOnMainThread(std::shared_ptr<QOffscreenSurface>(surface.release()));
             }
         }
     };
@@ -7638,8 +7638,8 @@ SceneViewport::Implementation::ClosedView::~ClosedView()
     if (imp) {
         imp->renderer.setLoadsWakeCallback(std::function<void()>());
     }
-    // See detachRenderLoop().
-    // Inline, the main thread holds no scope, as before the teardown deferred anything.
+    // Deferred, the loop is joined in a read scope, so no layer reload edits the stage its engine
+    // listens to until the engine is gone.
     if (SceneTeardown::isDeferred()) {
         SceneWriteBarrier::ReadScope read;
         renderLoop.reset();
@@ -10480,7 +10480,7 @@ SceneViewport::releaseEngine()
 void
 SceneViewport::initializeGL()
 {
-    // Counted so a test can tell whether a dock or split recreated the widget's context.
+    // How many contexts the widget was initialised in: a dock or split that recreates it adds one.
     setProperty("natronGlInitCount", property("natronGlInitCount").toInt() + 1);
     GLContextLoss::watch(this, [this]() {
         _imp->releaseGLResources();

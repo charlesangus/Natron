@@ -44,9 +44,7 @@ CITY_PRIMS = BLOCKS * BUILDINGS_PER_BLOCK * 40 + BLOCKS + 1
 INITIAL_DRAW_FULL_LOAD = 4
 
 try:
-    import shiboken6
     from PySide6.QtCore import QModelIndex, QObject, Qt, QTimer
-    from PySide6.QtOpenGLWidgets import QOpenGLWidget
     from PySide6.QtWidgets import QApplication, QMessageBox, QTreeView
 
     from guitest import OUT, check, finish, plugin_problem, report, require, run, section, shot, viewer_up, widgets_of
@@ -150,58 +148,48 @@ try:
         require(viewer.connectInput(0, usd), "connect the Viewer to the USDRead")
 
     def gl_widgets():
-        # PySide has no binding for these classes and may hand them out typed as plain QWidget.
-        found = []
-        for w in widgets_of("SceneViewport") + widgets_of("ViewerGL"):
-            if not isinstance(w, QOpenGLWidget):
-                w = shiboken6.wrapInstance(shiboken6.getCppPointer(w)[0], QOpenGLWidget)
-            found.append(w)
-        return found
+        return widgets_of("SceneViewport") + widgets_of("ViewerGL")
 
-    def mark_contexts(pane):
-        """Tags the pane's GL widgets and their current contexts with a fresh token."""
-        _toggle[0] += 1
-        token = _toggle[0]
-        marked = 0
+    def mark_gl_widgets(pane):
+        """Tags the pane's GL widgets with a fresh id; returns {id: GL init count at tagging}."""
+        counts = {}
         for w in gl_widgets():
-            ctx = w.context()
-            if ctx is not None and pane.isAncestorOf(w):
-                w.setProperty("natronSplitMark", token)
-                ctx.setProperty("natronSplitMark", token)
-                marked += 1
-        return token, marked
+            if pane.isAncestorOf(w):
+                _toggle[0] += 1
+                w.setProperty("natronSplitMark", _toggle[0])
+                counts[_toggle[0]] = w.property("natronGlInitCount") or 0
+        return counts
 
-    def kept_contexts(token):
-        """(widgets tagged with token, those whose context is still the tagged one)."""
-        tagged = kept = 0
+    def unchanged_gl_widgets(marked):
+        """Of the widgets tagged in marked, how many are found again and still have the init count they had."""
+        found = kept = 0
         for w in gl_widgets():
-            if w.property("natronSplitMark") != token:
-                continue
-            tagged += 1
-            ctx = w.context()
-            if ctx is not None and ctx.property("natronSplitMark") == token:
-                kept += 1
-        return tagged, kept
+            mark = w.property("natronSplitMark")
+            if mark in marked:
+                found += 1
+                if (w.property("natronGlInitCount") or 0) == marked[mark]:
+                    kept += 1
+        return found, kept
 
     def show_panel(label):
         """Puts the Scene Graph panel beside the viewer, unless it already shows.
 
-        The split must keep the viewer's GL widgets in the window: a context tagged before the split
-        is the one they hold after it, where a recreated context would carry no tag."""
+        The split must keep the viewer's GL widgets in the window: initializeGL runs once per GL
+        context a widget gets, so an unchanged count means the context was not recreated."""
         p = panel()
         if p is not None and p.isVisible():
             return
         home = ancestor_of_class(view(), "TabWidget")
         require(home is not None, "the scene view is in a pane")
-        token, marked = mark_contexts(home)
+        marked = mark_gl_widgets(home)
         split = app.getTabWidget(home.objectName()).splitHorizontally()
         home = None
         require(split is not None, "split the viewer's pane")
         require(app.moveTab("sceneGraph", split), "move the Scene Graph panel beside the viewer")
         split = None
-        tagged, kept = kept_contexts(token)
-        check(marked >= 1 and tagged == marked and kept == marked,
-              "%s: splitting the viewer's pane keeps its GL contexts (%d of %d kept)" % (label, kept, marked))
+        found, kept = unchanged_gl_widgets(marked)
+        check(len(marked) >= 1 and found == len(marked) and kept == len(marked),
+              "%s: splitting the viewer's pane keeps its GL contexts (%d of %d kept)" % (label, kept, len(marked)))
 
     def wait_for_scene(label):
         ok = yield ("until", lambda: viewer_up() or view() is not None, STARTUP_TIMEOUT_S)

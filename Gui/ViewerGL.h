@@ -317,6 +317,11 @@ public:
                                     double b,
                                     int flags = 0) OVERRIDE FINAL;
 
+    virtual void drawInViewportSpace(const std::function<void()>& draw) OVERRIDE FINAL;
+
+    virtual void getCursorPositionInOverlay(double& x,
+                                            double& y) const OVERRIDE FINAL;
+
     void renderText(double x,
                     double y,
                     const QString &string,

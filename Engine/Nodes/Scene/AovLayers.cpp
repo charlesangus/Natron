@@ -32,6 +32,7 @@
 #include <mutex>
 #include <utility>
 
+#include "Engine/Nodes/Scene/CyclesAovs.h"
 #include "Engine/Nodes/Scene/MoonRayAovs.h"
 
 NATRON_NAMESPACE_ENTER
@@ -86,7 +87,14 @@ std::string
 layerName(const std::string& aovName,
           const std::string& authoredLayer)
 {
-    return authoredLayer.empty() ? withoutNamespace(aovName) : authoredLayer;
+    if (!authoredLayer.empty()) {
+        return authoredLayer;
+    }
+    // A colon cannot appear in a layer name, and "cycles:lightgroup:key" keeps one after the namespace.
+    std::string name = withoutNamespace(aovName);
+    std::replace(name.begin(), name.end(), ':', '_');
+
+    return name;
 }
 
 bool
@@ -147,6 +155,9 @@ layoutFromName(const std::string& rendererId,
     if (MoonRayAovs::isMoonRay(rendererId) && (aovName == MoonRayAovs::depthAov().GetString())) {
         *layout = Layout { eKindScalar, 1 };
 
+        return true;
+    }
+    if (CyclesAovs::isCycles(rendererId) && CyclesAovs::passLayout(aovName, layout)) {
         return true;
     }
     if (aovName.compare(0, 4, "lpe:") == 0) {
@@ -231,6 +242,9 @@ layout(const std::string& rendererId,
     }
     if (!known) {
         out.kind = (formatChannels == 1) ? eKindScalar : eKindColor;
+    } else if ((out.kind == eKindUv) && (out.channels == 2) && (formatChannels == 3)) {
+        // Cycles hands texCoord2f back as three channels; the layer keeps U and V.
+        return out;
     } else if ((formatChannels != out.channels) && warning) {
         *warning = "The AOV " + aovName + (dataType.empty() ? std::string() : " of dataType " + dataType) + " has " + std::to_string(out.channels) + " channels, but the renderer gives it " + std::to_string(formatChannels) + ": its layer has the renderer's " + std::to_string(formatChannels) + ".";
     }

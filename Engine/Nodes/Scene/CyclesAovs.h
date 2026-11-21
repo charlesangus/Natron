@@ -33,6 +33,7 @@
 #include <string>
 #include <vector>
 
+#include "Engine/Nodes/Scene/AovLayers.h"
 #include "Engine/Nodes/Scene/DelegateSupport.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
@@ -92,6 +93,13 @@ const std::vector<std::string>& catalogue();
  * the geometry by its stageMetersPerUnit setting (0.01 unless set), which would put depth in
  * metres; it is set to 1 so that depth is in scene units, as Storm's.
  **/
+/**
+ * @brief The layout of a Cycles pass, "cycles:<pass>", or of a light group, "cycles:lightgroup:<group>",
+ * which is the group's lighting in RGB. False for any other name.
+ **/
+bool passLayout(const std::string& aovName,
+                AovLayers::Layout* layout) WARN_UNUSED_RETURN;
+
 void configureEngine(PXR_NS::UsdImagingGLEngine* engine);
 
 /**

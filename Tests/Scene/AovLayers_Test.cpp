@@ -108,9 +108,9 @@ TEST(AovLayersTest, DataTypeGivesTheChannels)
 TEST(AovLayersTest, FormatWinsOverDataTypeWithAWarning)
 {
     std::string warning;
-    const ImageLayerDesc st = layerOf("primvars:st", "texCoord2f", "", 3, &warning);
-    EXPECT_EQ(channels("U", "V", "W"), st.getChannels());
-    EXPECT_NE(std::string::npos, warning.find("primvars:st")) << warning;
+    const ImageLayerDesc rest = layerOf("primvars:rest", "point3f", "", 4, &warning);
+    EXPECT_EQ(channels("X", "Y", "Z", "W"), rest.getChannels());
+    EXPECT_NE(std::string::npos, warning.find("primvars:rest")) << warning;
 
     warning.clear();
     EXPECT_EQ(channels("R", "G", "B"), layerOf("cycles:diffuse_direct", "color3f", "", 3, &warning).getChannels());
@@ -119,6 +119,21 @@ TEST(AovLayersTest, FormatWinsOverDataTypeWithAWarning)
     warning.clear();
     EXPECT_EQ(channels("R", "G", "B", "A"), layerOf("cycles:unknown", "", "", 4, &warning).getChannels());
     EXPECT_TRUE(warning.empty()) << warning;
+}
+
+TEST(AovLayersTest, ThreeChannelFormatKeepsTwoChannelUv)
+{
+    std::string warning;
+    const ImageLayerDesc st = layerOf("primvars:st", "texCoord2f", "", 3, &warning);
+    EXPECT_EQ(channels("U", "V"), st.getChannels());
+    EXPECT_TRUE(warning.empty()) << warning;
+}
+
+TEST(AovLayersTest, ColonsInDerivedNamesBecomeUnderscores)
+{
+    EXPECT_EQ("lightgroup_key", layerOf("cycles:lightgroup:key").getLayerID());
+    EXPECT_EQ("a_b_c", AovLayers::layerName("ns:a:b:c", ""));
+    EXPECT_EQ("my:layer", AovLayers::layerName("cycles:lightgroup:key", "my:layer"));
 }
 
 TEST(AovLayersTest, ExistingLayerNamesAreUnchanged)

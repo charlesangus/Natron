@@ -25,7 +25,7 @@ USD_NODES = [
     "USDXformPrim",
     "USDScopePrim",
     "USDEditTransform",
-    "USDMaterial",
+    "USDPreviewSurface",
     "USDMerge",
     "USDPrune",
     "USDRead",

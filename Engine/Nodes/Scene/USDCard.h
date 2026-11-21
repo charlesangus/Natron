@@ -56,7 +56,7 @@ public:
         .label = "USDCard",
         .description = "Create a scene holding a card: a unit mesh facing the forward axis "
                        "(+Z when Y is up, -Y when Z is up), with texture coordinates spanning it. Scale X of a new "
-                       "card is the project format's aspect. Texture it through a USDMaterial on its Material input. Animated knobs "
+                       "card is the project format's aspect. Texture it through a USDPreviewSurface on its Material input. Animated knobs "
                        "are written as time samples.",
         .grouping = PLUGIN_GROUP_3D_USD,
         .majorVersion = 1,

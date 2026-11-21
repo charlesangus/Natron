@@ -758,7 +758,8 @@ RotoStrokeItem::computeBoundingBox(double time) const
 }
 
 RectD
-RotoStrokeItem::getBoundingBox(double time) const
+RotoStrokeItem::getBoundingBox(double time,
+                               bool /*useGuiCurves*/) const
 {
     bool isActivated = getActivatedKnob()->getValueAtTime(time);
 

@@ -117,7 +117,7 @@ are from `milestone/m336-heavy-scene-acceptance` as of 2026-11-17. Re-check them
     - a delegate-engine filter is unaffected.
   - size: L
 
-- [ ] M481.P3.T2 — Viewer node knobs and Preferences defaults
+- [x] M481.P3.T2 — Viewer node knobs and Preferences defaults
   - files: `Engine/ViewerInstance.cpp`, `Engine/ViewerInstance.h`, `Engine/Settings.cpp`, `Engine/Settings.h`, `Gui/SceneViewport.cpp` (right-click viewer menu, ~9818-9949), `Gui/SceneViewport.h`, `Tests/ViewerInstance_Test.cpp` (or the existing Viewer knob test)
   - approach: add the knobs to the Viewer node in `ViewerInstance::initializeKnobs` (beside the M164 - Viewer Node Knobs knobs), on a "Polygon Budget" group, so they save in `project.yaml`, script, link and undo like other Viewer knobs. Matching Preferences > Viewers knobs next to `viewer3DGuideSize` give a newly created Viewer node its initial values; loading a project uses the saved values. Knobs:
     - `viewer3DPolygonBudget` (bool, on)
@@ -132,7 +132,7 @@ are from `milestone/m336-heavy-scene-acceptance` as of 2026-11-17. Re-check them
   - verify: a test creates a Viewer node and reads the Preferences values; sets a knob, saves, reloads and reads it back; and checks that a second Viewer is unaffected. A menu edit changes the knob and undoes.
   - size: M
 
-- [ ] M481.P3.T3 — Camera-idle evaluation, stand-ins and HUD
+- [x] M481.P3.T3 — Camera-idle evaluation, stand-ins and HUD
   - files: `Gui/SceneViewport.cpp`, `Gui/SceneViewport.h`, `Gui/SceneDrawBoxes.cpp`
   - approach:
     - On camera change, cancel any evaluation in flight. After 250 ms idle, hand the camera to the box thread, run `SceneViewBudget` there against the published boxes and counts, and post the result to the filter through the existing draw-delta queue (`postDrawDelta`, ~3169). The main thread does no counting or solving.
@@ -142,7 +142,7 @@ are from `milestone/m336-heavy-scene-acceptance` as of 2026-11-17. Re-check them
   - verify: covered by P3.T4's GUI script; `SceneViewport_Test` builds.
   - size: L
 
-- [ ] M481.P3.T4 — GUI test for every control
+- [x] M481.P3.T4 — GUI test for every control
   - files: `Tests/gui/scene_viewer_budget.py`
   - approach: on a generated scene (a grid of meshes and one instancer, built in the script), check each of these:
     - the limit demotes the farthest first;
@@ -205,3 +205,10 @@ are from `milestone/m336-heavy-scene-acceptance` as of 2026-11-17. Re-check them
   - A demoted prim under a native instance masks the whole instance, because the prototype is shared. Those instances must still get stand-in boxes.
 
   The rest of P3.T3, plus P3.T2 and P3.T4, are being implemented. The P1.T1 GPU-host probe run is still owed; it runs on a VM after M336's round 14.
+- 2026-11-21 — Phase 481.3 complete in f40990dfd:
+  - **Viewport:** Storm-only budget; the solve runs on a 250 ms camera-idle timer and is cancelled on camera moves; stand-ins in the budget tint (Box Wire, Box Shaded, Marker or Off); per-prototype instanced stand-ins; native-instance gprims get stand-in boxes; picking hits stand-ins.
+  - **HUD:** a "Budget:" line.
+  - **Knobs:** Viewer Polygon Budget knobs with Preferences defaults applied to new Viewers, and a right-click submenu with undo.
+  - **GUI script:** scene_viewer_budget.py.
+
+  main's #297 (196d571e3) is cherry-picked as 512b25890, so the F4-based branch packages an AppImage. It drops out when M481 rebases onto F4 after F4 merges main. **PM calls:** picking an instance stand-in selects the prototype path, as Storm's pick does; the HUD shows faces drawn after demotion against the limit (the solver publishes both). Gate running with the GUI script.

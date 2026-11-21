@@ -127,3 +127,10 @@ Scouted 2026-11-14 on `origin/main`:
 - 2026-11-20 — P1.T1, T2, T4 and P2.T1 code (c01d83499) is built and green (run 44767988264). The only failure was the known USDRenderMoonRayLiveTextureTest exit timeout. Next: the P1.T3 baseline on main, the P2.T1 before-images, and P2.T2–T5.
 - 2026-11-20 — P2.T2–T5 in 64146bdc5, with a shared OverlayDrawListPen and lists that rebuild only when their content hash changes. Roto and SplineWarp interacts own their lists, so the GL stroke preview sits between them. Viewport culling of off-screen curves is gone, because a cached list can't depend on the pan; the bench shows whether that matters. Transform pieces are emitted as shapes anchored at the centre. **PM call:** accept the parity risks (viewer font = app font, text after geometry, all shadows under all colours) if `m434_interact_parity.py` passes within tolerance. Gate running with 16 GUI scripts. Still to do: the P1.T3 baseline on main and the P2.T1 before-images.
 - 2026-11-21 — **Bench runtime (user):** the overlay_draw before/after bench took about 6 h per run on the N100 and was stopped. Target: about 30 min on the N100 and less on the GPU host. A dedicated overlay preset is being written; the pre-port baseline (c01d83499) reruns with it.
+- 2026-11-21 — Bench harness fixes in 5e26af42c:
+  - The viewer wait now comes after the Viewer node is created; that wait was why every run failed at start.
+  - The n=100 undo failure was a 120 s op timeout cutting a drag before its release. The op limit is now 300 s and drags always release.
+  - **PM call:** the overlay preset caps at 1, 30 and 100 shapes (expected 10–15 min on the N100); larger counts are opt-in via `--overlay-shapes`.
+
+  **Found:** adding Roto shapes is worse than O(N²) (about 4 s per add at 100 shapes, 20 s at 200), likely in DSNode::rebuildItemRows (Gui/DopeSheet.cpp:2309), which rebuilds every item's rows per insert. Logged as a /cat-plan follow-up. Before/after bench queued for when the container is free.
+

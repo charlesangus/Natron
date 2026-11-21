@@ -636,6 +636,7 @@ future core work has solid ground to build on.
 | F33 | Graph Diff And Merge | open | bosley-executor |  | feature/f33-graph-diff-and-merge | Diff and merge two versions of a graph, with a resolution UI, accepted in one UAT. |
 
 # Open questions
+- **/cat-plan follow-up (from M434 - Interacts On The Overlay Draw List, 2026-11-21):** adding a Roto shape rebuilds the Dope Sheet's rows for every shape (DSNode::rebuildItemRows, Gui/DopeSheet.cpp:2309), so building 200 shapes takes minutes. Needs a milestone: incremental row insert, plus findShapeDSKnob's per-key full scan.
 
 - **M493 - Shared Ccache Remote Storage (PM, 2026-11-21):** create `/home/bosley/git/Natron/.local/ccache-remote` containing `url=<plain-HTTP docker-network URL>|layout=bazel` and `network=<the cache server's docker network>`. Add the repo secret `CCACHE_REMOTE_STORAGE` holding the public HTTPS URL `https://USER:PASS@host|layout=bazel`. Keep both out of chat; just say when they're done.
 - **F7 - Natron Utility Core UAT round 1 (user, 2026-11-21):**

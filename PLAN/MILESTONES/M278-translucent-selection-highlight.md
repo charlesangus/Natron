@@ -126,3 +126,4 @@ This milestone turns Storm's in-pass highlight off and replaces it with a Natron
     - In P3.T1, `ensureEngine` builds the SelectionEngine in place of the plain engine, and there is no separate pass to destroy.
   - **Wireframe draws lines (user):** the pass follows the draw mode.
 - 2026-11-20 — Phase 278.2 in 54fb9680b: Gui/SceneSelectionTasks.{h,cpp} and Gui/SelectionEngine.{h,cpp}. The camera and framing travel in `setRenderParams`; `setSize` takes the formats. The verify filter is `SceneSelectionTasks*`. Phase 3 must hold the engine as `std::unique_ptr<SelectionEngine>`, because the base destructor isn't virtual. Build running.
+- 2026-11-20 — Phase 278.2 gate green on dd52cfdaf, after the glad/Qt GL include fix. Phase 278.3 dispatched.

@@ -230,3 +230,4 @@ The git-driver test passes. Full ctest, smoke and CI are green.
   - Curve-key and roto-shape conflicts come in phase 3.
 
   **PM calls:** merged names are unique per group, matching Natron's group-scoped script names. An input conflict on a node that already has a reparent conflict folds into it, one entry per node. Both are being implemented, and the gate is running.
+- 2026-11-20 — Phase 103.2 gate green on eaebaa089. Phase 103.3 dispatched.

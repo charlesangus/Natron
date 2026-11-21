@@ -1036,7 +1036,8 @@ def Xform "World"
 }
 )";
 
-// The vars of the prim the USDRenderSettings node authors: depth, normal and a primvar no prim has.
+// The vars of the prim the USDRenderSettings node authors: depth, normal and a raw AOV no delegate
+// has. A primvar no prim has would not do: Cycles and Storm render any primvar AOV, as zeros.
 const char* const kDepthNormalNopeVars = R"(
 def Scope "Render"
 {
@@ -1062,7 +1063,6 @@ def Scope "Render"
         def RenderVar "nope"
         {
             uniform string sourceName = "nope"
-            uniform token sourceType = "primvar"
         }
     }
 }

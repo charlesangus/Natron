@@ -25,8 +25,10 @@
 
 #include "Gui/SceneDrawBoxes.h"
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
+#include <unordered_set>
 #include <utility>
 
 #ifdef emit
@@ -34,6 +36,7 @@
 #undef emit
 #endif
 #include <pxr/base/gf/bbox3d.h>
+#include <pxr/base/gf/matrix3d.h>
 #include <pxr/base/gf/range3d.h>
 #include <pxr/base/gf/vec4d.h>
 #include <pxr/usd/usd/primRange.h>
@@ -531,6 +534,15 @@ SceneDrawBoxes::solveBudget()
     budget->result = SceneViewBudget::solve(budget->units->units, budget->camera, budget->settings,
                                             comparable ? previous->result : SceneViewBudget::Result());
     budget->filter = SceneDrawFilter::budgetFrom(budget->result, budget->units->units);
+    const U64 serial = budget->serial;
+    const auto stale = [this, serial]() {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        return (serial != _budgetSerial) || _quit;
+    };
+    if (!buildStandIns(budget->result, budget->units->units, stale, &budget->standIns)) {
+        return;
+    }
     {
         std::lock_guard<std::mutex> lock(_mutex);
         if ((budget->serial != _budgetSerial) || _quit) {
@@ -730,6 +742,266 @@ SceneDrawBoxes::pick(const List& list,
 
     return best;
 } // SceneDrawBoxes::pick
+
+namespace {
+bool
+bitOr(const std::vector<bool>& bits,
+      std::size_t index,
+      bool fallback)
+{
+    return (index < bits.size()) ? bits[index] : fallback;
+}
+
+// Where along the ray from origin, at t = 0, to origin + direction, at t = 1, it enters the box;
+// false if it misses it or enters outside [0, 1].
+bool
+enterBox(const GfVec3d& origin,
+         const GfVec3d& direction,
+         const GfVec3f& min,
+         const GfVec3f& max,
+         double* t)
+{
+    double enter = -std::numeric_limits<double>::infinity();
+    double leave = std::numeric_limits<double>::infinity();
+    for (int axis = 0; axis < 3; ++axis) {
+        if (direction[axis] == 0.) {
+            if ((origin[axis] < min[axis]) || (origin[axis] > max[axis])) {
+                return false;
+            }
+            continue;
+        }
+        double t0 = (min[axis] - origin[axis]) / direction[axis];
+        double t1 = (max[axis] - origin[axis]) / direction[axis];
+        if (t0 > t1) {
+            std::swap(t0, t1);
+        }
+        enter = std::max(enter, t0);
+        leave = std::min(leave, t1);
+        if (enter > leave) {
+            return false;
+        }
+    }
+    if ((enter < 0.) || (enter > 1.)) {
+        return false;
+    }
+    *t = enter;
+
+    return true;
+}
+
+// The marker at centre's normalized device depth if it is within markerPixels of pixel on screen.
+bool
+hitMarker(const GfVec3d& centre,
+          const GfMatrix4d& viewProjection,
+          int width,
+          int height,
+          const GfVec2d& pixel,
+          double markerPixels,
+          double* depth)
+{
+    const GfVec4d clip = GfVec4d(centre[0], centre[1], centre[2], 1.) * viewProjection;
+    if (clip[3] <= 0.) {
+        return false;
+    }
+    const GfVec3d ndc(clip[0] / clip[3], clip[1] / clip[3], clip[2] / clip[3]);
+    if ((ndc[2] < -1.) || (ndc[2] > 1.)) {
+        return false;
+    }
+    const double sx = (ndc[0] + 1.) * 0.5 * width;
+    const double sy = (1. - ndc[1]) * 0.5 * height;
+    if ((std::abs(sx - pixel[0]) > markerPixels) || (std::abs(sy - pixel[1]) > markerPixels)) {
+        return false;
+    }
+    *depth = ndc[2];
+
+    return true;
+}
+} // anon namespace
+
+bool
+SceneDrawBoxes::buildStandIns(const SceneViewBudget::Result& result,
+                              const std::vector<Unit>& units,
+                              const std::function<bool()>& stale,
+                              StandIns* standIns)
+{
+    *standIns = StandIns();
+    if (!result.valid) {
+        return true;
+    }
+    std::unordered_set<SdfPath, SdfPath::Hash> hiddenInstances;
+    for (const Unit& unit : units) {
+        if (!unit.nativeInstance.IsEmpty() && (result.isDemoted(unit.path) || result.isCulled(unit.path))) {
+            hiddenInstances.insert(unit.nativeInstance);
+        }
+    }
+    std::size_t sinceCheck = 0;
+    for (const Unit& unit : units) {
+        if (++sinceCheck >= kInstanceChunk) {
+            sinceCheck = 0;
+            if (stale()) {
+                return false;
+            }
+        }
+        if (unit.state != SceneViewBudget::eStateDrawn) {
+            continue;
+        }
+        if (!unit.instances) {
+            if (result.isCulled(unit.path)) {
+                continue;
+            }
+            if (result.isDemoted(unit.path) || (!unit.nativeInstance.IsEmpty() && hiddenInstances.count(unit.nativeInstance))) {
+                Box box;
+                box.path = unit.path;
+                box.min = unit.min;
+                box.max = unit.bounded ? unit.max : unit.min;
+                box.kind = unit.bounded ? eKindBox : eKindMarker;
+                standIns->boxes.push_back(box);
+            }
+            continue;
+        }
+        const auto found = result.instancers.find(unit.path);
+        if (found == result.instancers.end()) {
+            continue;
+        }
+        const SceneViewBudget::InstancerResult& record = found->second;
+        const Instances& instances = *unit.instances;
+        // Per prototype, its group's index in standIns->groups.
+        std::vector<std::size_t> groupOf(instances.prototypes.size(), std::size_t(-1));
+        for (std::size_t index = 0; index < instances.size(); ++index) {
+            if (++sinceCheck >= kInstanceChunk) {
+                sinceCheck = 0;
+                if (stale()) {
+                    return false;
+                }
+            }
+            if (!instances.draws(index) || bitOr(record.culled, index, false)) {
+                continue;
+            }
+            if (!bitOr(record.demoted, index, false) && bitOr(record.kept, index, true)) {
+                continue;
+            }
+            const std::size_t prototype = std::size_t(instances.protoIndices[index]);
+            if (groupOf[prototype] == std::size_t(-1)) {
+                groupOf[prototype] = standIns->groups.size();
+                StandInGroup group;
+                group.instancer = unit.path;
+                group.prototype = instances.prototypes[prototype].path;
+                group.min = instances.prototypes[prototype].min;
+                group.max = instances.prototypes[prototype].bounded ? instances.prototypes[prototype].max : group.min;
+                group.bounded = instances.prototypes[prototype].bounded;
+                standIns->groups.push_back(std::move(group));
+            }
+            StandInGroup& group = standIns->groups[groupOf[prototype]];
+            const GfMatrix4d transform = instances.instanceTransform(index);
+            for (int row = 0; row < 4; ++row) {
+                for (int column = 0; column < 3; ++column) {
+                    group.rows.push_back(float(transform[row][column]));
+                }
+            }
+            group.indices.push_back(index);
+            ++standIns->instanceCount;
+        }
+    }
+
+    return true;
+} // SceneDrawBoxes::buildStandIns
+
+bool
+SceneDrawBoxes::pickStandIn(const StandIns& standIns,
+                            const GfMatrix4d& viewProjection,
+                            int width,
+                            int height,
+                            const GfVec2d& pixel,
+                            double markerPixels,
+                            bool markers,
+                            StandInHit* hit)
+{
+    if ((width <= 0) || (height <= 0) || (standIns.boxes.empty() && standIns.groups.empty())) {
+        return false;
+    }
+    const GfMatrix4d inverse = viewProjection.GetInverse();
+    const double nx = 2. * pixel[0] / width - 1.;
+    const double ny = 1. - 2. * pixel[1] / height;
+    const GfVec3d origin = inverse.Transform(GfVec3d(nx, ny, -1.));
+    const GfVec3d direction = inverse.Transform(GfVec3d(nx, ny, 1.)) - origin;
+    const double length = direction.GetLength();
+    if (length <= 0.) {
+        return false;
+    }
+    const GfVec3d unit = direction / length;
+    double bestDepth = std::numeric_limits<double>::infinity();
+    bool found = false;
+    const auto offer = [&](double depth, const GfVec3d& point, const SdfPath& path, const SdfPath& instancer, bool isInstance, std::size_t instance) {
+        if (depth >= bestDepth) {
+            return;
+        }
+        bestDepth = depth;
+        found = true;
+        hit->path = path;
+        hit->instancer = instancer;
+        hit->isInstance = isInstance;
+        hit->instance = instance;
+        hit->point = point;
+    };
+
+    for (const Box& box : standIns.boxes) {
+        double depth = 0.;
+        if (markers || (box.kind == eKindMarker)) {
+            const GfVec3d centre = (GfVec3d(box.min) + GfVec3d(box.max)) * 0.5;
+            if (hitMarker(centre, viewProjection, width, height, pixel, markerPixels, &depth)) {
+                offer(depth, centre, box.path, SdfPath(), false, 0);
+            }
+            continue;
+        }
+        double t = 0.;
+        if (enterBox(origin, direction, box.min, box.max, &t)) {
+            const GfVec3d point = origin + direction * t;
+            offer(viewProjection.Transform(point)[2], point, box.path, SdfPath(), false, 0);
+        }
+    }
+    for (const StandInGroup& group : standIns.groups) {
+        const GfVec3d localCentre = (GfVec3d(group.min) + GfVec3d(group.max)) * 0.5;
+        const double localRadius = (GfVec3d(group.max) - GfVec3d(group.min)).GetLength() * 0.5;
+        const bool asMarker = markers || !group.bounded;
+        for (std::size_t at = 0; at < group.indices.size(); ++at) {
+            const float* r = &group.rows[at * 12];
+            const GfVec3d r0(r[0], r[1], r[2]);
+            const GfVec3d r1(r[3], r[4], r[5]);
+            const GfVec3d r2(r[6], r[7], r[8]);
+            const GfVec3d r3(r[9], r[10], r[11]);
+            const GfVec3d centre = r0 * localCentre[0] + r1 * localCentre[1] + r2 * localCentre[2] + r3;
+            double depth = 0.;
+            if (asMarker) {
+                if (hitMarker(centre, viewProjection, width, height, pixel, markerPixels, &depth)) {
+                    offer(depth, centre, group.prototype, group.instancer, true, group.indices[at]);
+                }
+                continue;
+            }
+            // A bounding sphere first: most instances are far from the ray.
+            const double scale = std::max({ r0.GetLength(), r1.GetLength(), r2.GetLength() });
+            const GfVec3d toCentre = centre - origin;
+            const GfVec3d across = toCentre - unit * GfDot(toCentre, unit);
+            if (across.GetLength() > localRadius * scale) {
+                continue;
+            }
+            const GfMatrix3d linear(r0[0], r0[1], r0[2], r1[0], r1[1], r1[2], r2[0], r2[1], r2[2]);
+            double determinant = 0.;
+            const GfMatrix3d toLocal = linear.GetInverse(&determinant);
+            if (determinant == 0.) {
+                continue;
+            }
+            const GfVec3d localOrigin = (origin - r3) * toLocal;
+            const GfVec3d localDirection = direction * toLocal;
+            double t = 0.;
+            if (enterBox(localOrigin, localDirection, group.min, group.max, &t)) {
+                const GfVec3d point = origin + direction * t;
+                offer(viewProjection.Transform(point)[2], point, group.prototype, group.instancer, true, group.indices[at]);
+            }
+        }
+    }
+
+    return found;
+} // SceneDrawBoxes::pickStandIn
 
 std::vector<SdfPath>
 SceneDrawBoxes::boxedRows(const UsdStageRefPtr& stage,
@@ -1093,6 +1365,14 @@ SceneDrawBoxes::computeUnit(const UsdPrim& prim,
     entry.varying = bound.varying || countsMightVary(prim);
     entry.unit.faces = gprimFaces(prim, time);
     entry.unit.mesh = prim.IsA<UsdGeomMesh>();
+    if (prim.IsInstanceProxy()) {
+        for (UsdPrim at = prim.GetParent(); at; at = at.GetParent()) {
+            if (at.IsInstance()) {
+                entry.unit.nativeInstance = at.GetPath();
+                break;
+            }
+        }
+    }
 
     return entry;
 } // SceneDrawBoxes::computeUnit

@@ -62,6 +62,7 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/Cache.h"
+#include "Engine/CreateNodeArgs.h"
 #include "Engine/FrameRenderContext.h"
 #include "Engine/GenericSchedulerThread.h"
 #include "Engine/GpuContext.h"
@@ -463,6 +464,84 @@ ViewerInstance::getRawDisplayLabel(int textureIndex) const
     return ((textureIndex == 0) || (textureIndex == 1)) ? _rawDisplayLabel[textureIndex] : std::string();
 }
 
+std::vector<ChoiceOption>
+ViewerInstance::getStandInChoices()
+{
+    std::vector<ChoiceOption> entries;
+
+    entries.push_back(ChoiceOption("boxWire", tr("Box Wire").toStdString(), tr("The outline of its bounding box.").toStdString()));
+    entries.push_back(ChoiceOption("boxShaded", tr("Box Shaded").toStdString(), tr("Its bounding box, shaded.").toStdString()));
+    entries.push_back(ChoiceOption("marker", tr("Marker").toStdString(), tr("A cross at the centre of its bounding box.").toStdString()));
+    entries.push_back(ChoiceOption("off", tr("Off").toStdString(), tr("Nothing.").toStdString()));
+
+    return entries;
+}
+
+std::string
+ViewerInstance::getPolygonBudgetHint(const std::string& name)
+{
+    QString hint;
+
+    if (name == kViewerParamPolygonBudget) {
+        hint = tr("Keeps what the 3D view draws with Storm under Polygon Limit: once the camera rests, the farthest "
+                  "prims and instances draw as stand-ins until the rest fits. Off draws everything.");
+    } else if (name == kViewerParamPolygonLimit) {
+        hint = tr("The faces the 3D view draws at most: mesh faces, curve segments and points, counted after "
+                  "Cull Distance and Fraction Distance.");
+    } else if (name == kViewerParamCountWholeScene) {
+        hint = tr("Counts every prim against Polygon Limit; off counts only those in the camera's view, so turning "
+                  "the camera brings in what was out of view.");
+    } else if (name == kViewerParamCullDistance) {
+        hint = tr("Prims and instances farther from the camera than this, in scene units, draw nothing, not even a "
+                  "stand-in. 0 culls nothing.");
+    } else if (name == kViewerParamFractionDistance) {
+        hint = tr("Beyond this distance from the camera, in scene units, only Fraction Percent of each instancer's "
+                  "instances and of each mesh's faces draws; the same ones from any camera. 0 turns it off.");
+    } else if (name == kViewerParamFractionPercent) {
+        hint = tr("The share of instances and mesh faces kept beyond Fraction Distance.");
+    } else if (name == kViewerParamStandIn) {
+        hint = tr("What a prim or instance the budget demotes draws as, in the budget's tint: its bounding box as "
+                  "lines or shaded, a marker at its centre, or nothing. A prim with no bounds draws as a marker.");
+    }
+
+    return hint.toStdString();
+}
+
+void
+ViewerInstance::onEffectCreated(bool /*mayCreateFileDialog*/,
+                                const CreateNodeArgs& args)
+{
+    if (args.getProperty<Serialization::NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization)) {
+        return;
+    }
+    const SettingsPtr settings = appPTR->getCurrentSettings();
+    if (!settings) {
+        return;
+    }
+    const ViewerInstancePrivate::Knobs& k = _imp->knobs;
+    if (KnobBoolPtr knob = k.polygonBudget.lock()) {
+        knob->setValue(settings->getViewer3DPolygonBudget());
+    }
+    if (KnobIntPtr knob = k.polygonLimit.lock()) {
+        knob->setValue(settings->getViewer3DPolygonLimit());
+    }
+    if (KnobBoolPtr knob = k.countWholeScene.lock()) {
+        knob->setValue(settings->getViewer3DCountWholeScene());
+    }
+    if (KnobDoublePtr knob = k.cullDistance.lock()) {
+        knob->setValue(settings->getViewer3DCullDistance());
+    }
+    if (KnobDoublePtr knob = k.fractionDistance.lock()) {
+        knob->setValue(settings->getViewer3DFractionDistance());
+    }
+    if (KnobDoublePtr knob = k.fractionPercent.lock()) {
+        knob->setValue(settings->getViewer3DFractionPercent());
+    }
+    if (KnobChoicePtr knob = k.standIn.lock()) {
+        knob->setValue(settings->getViewer3DStandIn());
+    }
+}
+
 void
 ViewerInstance::onKnobsAboutToBeLoaded(const Serialization::NodeSerializationPtr& serialization)
 {
@@ -580,7 +659,8 @@ createViewerKnob(KnobHolder* holder,
                  const QString& label,
                  const char* name,
                  const QString& hint,
-                 int dimension = 1)
+                 int dimension = 1,
+                 const KnobGroupPtr& group = KnobGroupPtr())
 {
     std::shared_ptr<K> knob = AppManager::createKnob<K>(holder, label, dimension);
 
@@ -591,7 +671,11 @@ createViewerKnob(KnobHolder* holder,
     // The viewer's own hash is the tree version of every FrameKey it caches, so a hashed viewer
     // knob would drop the cached viewer textures on each edit. Upstream hashes never include it.
     knob->setHashExempt(true);
-    page->addKnob(knob);
+    if (group) {
+        group->addKnob(knob);
+    } else {
+        page->addKnob(knob);
+    }
 
     return knob;
 }
@@ -1014,6 +1098,57 @@ ViewerInstance::initializeKnobs()
                                                               tr("Holds a progressive renderer's refinement of the 3D view at its "
                                                                  "current samples; off continues from them. Edits wait until it is off."));
     k.refinementPaused = refinementPaused;
+
+    KnobGroupPtr budgetGroup = AppManager::createKnob<KnobGroup>(this, tr("Polygon Budget"));
+    budgetGroup->setName(kViewerParamPolygonBudgetGroup);
+    page->addKnob(budgetGroup);
+
+    const auto hint = [](const char* name) { return QString::fromStdString(getPolygonBudgetHint(name)); };
+    KnobBoolPtr polygonBudget = createViewerKnob<KnobBool>(this, page, tr("Polygon Budget"), kViewerParamPolygonBudget,
+                                                           hint(kViewerParamPolygonBudget), 1, budgetGroup);
+    polygonBudget->setDefaultValue(true);
+    k.polygonBudget = polygonBudget;
+
+    KnobIntPtr polygonLimit = createViewerKnob<KnobInt>(this, page, tr("Polygon Limit"), kViewerParamPolygonLimit,
+                                                        hint(kViewerParamPolygonLimit), 1, budgetGroup);
+    polygonLimit->setMinimum(0);
+    polygonLimit->setDisplayMinimum(0);
+    polygonLimit->setDisplayMaximum(100000000);
+    polygonLimit->setDefaultValue(20000000);
+    k.polygonLimit = polygonLimit;
+
+    KnobBoolPtr countWholeScene = createViewerKnob<KnobBool>(this, page, tr("Count Whole Scene"), kViewerParamCountWholeScene,
+                                                             hint(kViewerParamCountWholeScene), 1, budgetGroup);
+    k.countWholeScene = countWholeScene;
+
+    KnobDoublePtr cullDistance = createViewerKnob<KnobDouble>(this, page, tr("Cull Distance"), kViewerParamCullDistance,
+                                                              hint(kViewerParamCullDistance), 1, budgetGroup);
+    cullDistance->setMinimum(0.);
+    cullDistance->setDisplayMinimum(0.);
+    cullDistance->setDisplayMaximum(10000.);
+    k.cullDistance = cullDistance;
+
+    KnobDoublePtr fractionDistance = createViewerKnob<KnobDouble>(this, page, tr("Fraction Distance"), kViewerParamFractionDistance,
+                                                                  hint(kViewerParamFractionDistance), 1, budgetGroup);
+    fractionDistance->setMinimum(0.);
+    fractionDistance->setDisplayMinimum(0.);
+    fractionDistance->setDisplayMaximum(10000.);
+    k.fractionDistance = fractionDistance;
+
+    KnobDoublePtr fractionPercent = createViewerKnob<KnobDouble>(this, page, tr("Fraction Percent"), kViewerParamFractionPercent,
+                                                                 hint(kViewerParamFractionPercent), 1, budgetGroup);
+    fractionPercent->setMinimum(0.);
+    fractionPercent->setMaximum(100.);
+    fractionPercent->setDisplayMinimum(0.);
+    fractionPercent->setDisplayMaximum(100.);
+    fractionPercent->setDefaultValue(25.);
+    k.fractionPercent = fractionPercent;
+
+    KnobChoicePtr standIn = createViewerKnob<KnobChoice>(this, page, tr("Stand In"), kViewerParamStandIn,
+                                                         hint(kViewerParamStandIn), 1, budgetGroup);
+    standIn->populateChoices(getStandInChoices());
+    standIn->setDefaultValue((int)eStandInBoxWire);
+    k.standIn = standIn;
 
     if (NodePtr node = getNode()) {
         node->declareLayerKnob(layer, 0, LayerKnobSpec::eRoleInputBound);

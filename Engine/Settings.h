@@ -379,6 +379,16 @@ public:
     // scene units.
     double getViewer3DGuideSize() const;
 
+    // A new Viewer node's polygon budget knobs start from these.
+    bool getViewer3DPolygonBudget() const;
+    int getViewer3DPolygonLimit() const;
+    bool getViewer3DCountWholeScene() const;
+    double getViewer3DCullDistance() const;
+    double getViewer3DFractionDistance() const;
+    double getViewer3DFractionPercent() const;
+    // A ViewerInstance::StandInEnum.
+    int getViewer3DStandIn() const;
+
     // Sets the preference, which applies a preset's bindings to the 3D viewer's shortcuts.
     void setViewer3DNavigation(Viewer3DNavigationEnum navigation);
 
@@ -698,6 +708,13 @@ private:
     KnobChoicePtr _rotoShapeDragRender;
     KnobChoicePtr _viewer3DNavigation;
     KnobDoublePtr _viewer3DGuideSize;
+    KnobBoolPtr _viewer3DPolygonBudget;
+    KnobIntPtr _viewer3DPolygonLimit;
+    KnobBoolPtr _viewer3DCountWholeScene;
+    KnobDoublePtr _viewer3DCullDistance;
+    KnobDoublePtr _viewer3DFractionDistance;
+    KnobDoublePtr _viewer3DFractionPercent;
+    KnobChoicePtr _viewer3DStandIn;
     KnobChoicePtr _viewer3DTransformTarget;
     KnobChoicePtr _viewer3DLighting;
 

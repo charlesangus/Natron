@@ -137,6 +137,9 @@ public:
         bool mesh = false;
         // Set on a PointInstancer, whose instances are the units.
         InstancesPtr instances;
+        // The nearest native instance above a gprim inside one, which the gprim's demotion hides
+        // whole.
+        PXR_NS::SdfPath nativeInstance;
     };
 
     struct Camera {

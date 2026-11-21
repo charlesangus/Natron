@@ -1380,6 +1380,49 @@ Settings::initializeKnobsViewers()
     _viewer3DGuideSize->setDisplayMinimum(0.1);
     _viewer3DGuideSize->setDisplayMaximum(100.);
     _viewersTab->addKnob(_viewer3DGuideSize);
+
+    _viewer3DPolygonBudget = AppManager::createKnob<KnobBool>(this, tr("Viewer 3D Polygon Budget"));
+    _viewer3DPolygonBudget->setName("viewer3DPolygonBudget");
+    _viewer3DPolygonBudget->setHintToolTip(ViewerInstance::getPolygonBudgetHint(kViewerParamPolygonBudget) + tr(" A new Viewer starts from this.").toStdString());
+    _viewersTab->addKnob(_viewer3DPolygonBudget);
+    _viewer3DPolygonLimit = AppManager::createKnob<KnobInt>(this, tr("Viewer 3D Polygon Limit"));
+    _viewer3DPolygonLimit->setName("viewer3DPolygonLimit");
+    _viewer3DPolygonLimit->setHintToolTip(ViewerInstance::getPolygonBudgetHint(kViewerParamPolygonLimit) + tr(" A new Viewer starts from this.").toStdString());
+    _viewer3DPolygonLimit->setMinimum(0);
+    _viewer3DPolygonLimit->setDisplayMinimum(0);
+    _viewer3DPolygonLimit->setDisplayMaximum(100000000);
+    _viewersTab->addKnob(_viewer3DPolygonLimit);
+    _viewer3DCountWholeScene = AppManager::createKnob<KnobBool>(this, tr("Viewer 3D Count Whole Scene"));
+    _viewer3DCountWholeScene->setName("viewer3DCountWholeScene");
+    _viewer3DCountWholeScene->setHintToolTip(ViewerInstance::getPolygonBudgetHint(kViewerParamCountWholeScene) + tr(" A new Viewer starts from this.").toStdString());
+    _viewersTab->addKnob(_viewer3DCountWholeScene);
+    _viewer3DCullDistance = AppManager::createKnob<KnobDouble>(this, tr("Viewer 3D Cull Distance"));
+    _viewer3DCullDistance->setName("viewer3DCullDistance");
+    _viewer3DCullDistance->setHintToolTip(ViewerInstance::getPolygonBudgetHint(kViewerParamCullDistance) + tr(" A new Viewer starts from this.").toStdString());
+    _viewer3DCullDistance->setMinimum(0.);
+    _viewer3DCullDistance->setDisplayMinimum(0.);
+    _viewer3DCullDistance->setDisplayMaximum(10000.);
+    _viewersTab->addKnob(_viewer3DCullDistance);
+    _viewer3DFractionDistance = AppManager::createKnob<KnobDouble>(this, tr("Viewer 3D Fraction Distance"));
+    _viewer3DFractionDistance->setName("viewer3DFractionDistance");
+    _viewer3DFractionDistance->setHintToolTip(ViewerInstance::getPolygonBudgetHint(kViewerParamFractionDistance) + tr(" A new Viewer starts from this.").toStdString());
+    _viewer3DFractionDistance->setMinimum(0.);
+    _viewer3DFractionDistance->setDisplayMinimum(0.);
+    _viewer3DFractionDistance->setDisplayMaximum(10000.);
+    _viewersTab->addKnob(_viewer3DFractionDistance);
+    _viewer3DFractionPercent = AppManager::createKnob<KnobDouble>(this, tr("Viewer 3D Fraction Percent"));
+    _viewer3DFractionPercent->setName("viewer3DFractionPercent");
+    _viewer3DFractionPercent->setHintToolTip(ViewerInstance::getPolygonBudgetHint(kViewerParamFractionPercent) + tr(" A new Viewer starts from this.").toStdString());
+    _viewer3DFractionPercent->setMinimum(0.);
+    _viewer3DFractionPercent->setMaximum(100.);
+    _viewer3DFractionPercent->setDisplayMinimum(0.);
+    _viewer3DFractionPercent->setDisplayMaximum(100.);
+    _viewersTab->addKnob(_viewer3DFractionPercent);
+    _viewer3DStandIn = AppManager::createKnob<KnobChoice>(this, tr("Viewer 3D Stand In"));
+    _viewer3DStandIn->setName("viewer3DStandIn");
+    _viewer3DStandIn->setHintToolTip(ViewerInstance::getPolygonBudgetHint(kViewerParamStandIn) + tr(" A new Viewer starts from this.").toStdString());
+    _viewer3DStandIn->populateChoices(ViewerInstance::getStandInChoices());
+    _viewersTab->addKnob(_viewer3DStandIn);
     _viewer3DTransformTarget = AppManager::createKnob<KnobChoice>(this, tr("Viewer 3D Transform Target"));
     _viewer3DTransformTarget->setName("viewer3DTransformTarget");
     {
@@ -1864,6 +1907,13 @@ Settings::setDefaultValues()
     _rotoShapeDragRender->setDefaultValue((int)eRotoShapeDragRenderAdaptive);
     _viewer3DNavigation->setDefaultValue((int)eViewer3DNavigationNuke);
     _viewer3DGuideSize->setDefaultValue(3.);
+    _viewer3DPolygonBudget->setDefaultValue(true);
+    _viewer3DPolygonLimit->setDefaultValue(20000000);
+    _viewer3DCountWholeScene->setDefaultValue(false);
+    _viewer3DCullDistance->setDefaultValue(0.);
+    _viewer3DFractionDistance->setDefaultValue(0.);
+    _viewer3DFractionPercent->setDefaultValue(25.);
+    _viewer3DStandIn->setDefaultValue((int)ViewerInstance::eStandInBoxWire);
     _viewer3DTransformTarget->setDefaultValue((int)eViewer3DTransformTargetOwner);
     _viewer3DLighting->setDefaultValue((int)eViewer3DLightingScene);
 
@@ -2717,6 +2767,48 @@ double
 Settings::getViewer3DGuideSize() const
 {
     return _viewer3DGuideSize->getValue();
+}
+
+bool
+Settings::getViewer3DPolygonBudget() const
+{
+    return _viewer3DPolygonBudget->getValue();
+}
+
+int
+Settings::getViewer3DPolygonLimit() const
+{
+    return _viewer3DPolygonLimit->getValue();
+}
+
+bool
+Settings::getViewer3DCountWholeScene() const
+{
+    return _viewer3DCountWholeScene->getValue();
+}
+
+double
+Settings::getViewer3DCullDistance() const
+{
+    return _viewer3DCullDistance->getValue();
+}
+
+double
+Settings::getViewer3DFractionDistance() const
+{
+    return _viewer3DFractionDistance->getValue();
+}
+
+double
+Settings::getViewer3DFractionPercent() const
+{
+    return _viewer3DFractionPercent->getValue();
+}
+
+int
+Settings::getViewer3DStandIn() const
+{
+    return _viewer3DStandIn->getValue();
 }
 
 void

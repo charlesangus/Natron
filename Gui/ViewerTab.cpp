@@ -120,6 +120,13 @@ const char* const kViewerKnobNames[] = {
     kViewerParamMaxSamples,
     kViewerParamRenderEverything,
     kViewerParamRefinementPaused,
+    kViewerParamPolygonBudget,
+    kViewerParamPolygonLimit,
+    kViewerParamCountWholeScene,
+    kViewerParamCullDistance,
+    kViewerParamFractionDistance,
+    kViewerParamFractionPercent,
+    kViewerParamStandIn,
 };
 
 // One value per dimension: numbers for bool/int/double knobs, strings for string knobs.
@@ -1510,6 +1517,13 @@ ViewerTab::onActiveInputDataKindChanged()
         _imp->sceneViewport->setViewedNodeProvider([this]() -> NodePtr {
             return getSceneViewedNode();
         });
+        const auto budgetNode = [this]() -> NodePtr {
+            return _imp->viewerNode ? _imp->viewerNode->getNode() : NodePtr();
+        };
+        const auto budgetEdit = [this](const QString& text, const std::function<void()>& apply) {
+            editViewerKnobs(text, apply);
+        };
+        _imp->sceneViewport->setPolygonBudgetKnobs(budgetNode, budgetEdit);
         refreshSceneDisplayTransform();
         {
             SceneViewport::SelectionActions actions;
@@ -1768,6 +1782,10 @@ ViewerTab::refreshFromViewerKnob(const std::string& name)
         abortViewersAndRefresh();
     } else if ((name == kViewerParamMaxSamples) || (name == kViewerParamRefinementPaused) || (name == kViewerParamRenderEverything)) {
         refreshSceneRenderFromKnobs();
+    } else if ((name == kViewerParamPolygonBudget) || (name == kViewerParamPolygonLimit) || (name == kViewerParamCountWholeScene) || (name == kViewerParamCullDistance) || (name == kViewerParamFractionDistance) || (name == kViewerParamFractionPercent) || (name == kViewerParamStandIn)) {
+        if (_imp->sceneViewport) {
+            _imp->sceneViewport->refreshPolygonBudget();
+        }
     }
 }
 
@@ -1785,6 +1803,9 @@ ViewerTab::refreshAllFromViewerKnobs()
     refreshFpsFromKnobs();
     refreshFrameRangeFromKnobs();
     refreshSceneRenderFromKnobs();
+    if (_imp->sceneViewport) {
+        _imp->sceneViewport->refreshPolygonBudget();
+    }
 }
 
 void

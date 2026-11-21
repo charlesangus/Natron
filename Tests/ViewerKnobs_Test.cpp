@@ -29,6 +29,7 @@
 #include <cctype>
 #include <cmath>
 #include <exception>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -52,6 +53,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/IO/OcioSpaceKnobs.h"
 #include "Engine/Project.h"
+#include "Engine/Settings.h"
 #include "Engine/ViewerInstance.h"
 
 NATRON_NAMESPACE_USING
@@ -940,4 +942,116 @@ TEST_F(ViewerKnobsTest, OneNodeCanFeedSeveralInputs)
     loadedDot->activate();
     EXPECT_EQ(loadedDot, loaded->getInput(0));
     EXPECT_EQ(loadedDot, loaded->getInput(2));
+}
+
+namespace {
+
+// Sets Preferences knobs for one test and puts their values back after it.
+class PreferencesOverride {
+public:
+    ~PreferencesOverride()
+    {
+        for (auto it = _restores.rbegin(); it != _restores.rend(); ++it) {
+            (*it)();
+        }
+    }
+
+    template <class K, typename T>
+    void set(const char* name,
+             const T& value)
+    {
+        std::shared_ptr<K> knob = appPTR->getCurrentSettings()->getKnobByNameAndType<K>(name);
+        ASSERT_TRUE(knob != nullptr) << name;
+        const auto saved = knob->getValue();
+        _restores.push_back([knob, saved]() { knob->setValue(saved); });
+        knob->setValue(value);
+    }
+
+private:
+    std::vector<std::function<void()>> _restores;
+};
+
+} // namespace
+
+TEST_F(ViewerKnobsTest, PolygonBudgetKnobsStartFromThePreferences)
+{
+    PreferencesOverride preferences;
+    preferences.set<KnobBool>("viewer3DPolygonBudget", false);
+    preferences.set<KnobInt>("viewer3DPolygonLimit", 1234567);
+    preferences.set<KnobBool>("viewer3DCountWholeScene", true);
+    preferences.set<KnobDouble>("viewer3DCullDistance", 500.);
+    preferences.set<KnobDouble>("viewer3DFractionDistance", 80.);
+    preferences.set<KnobDouble>("viewer3DFractionPercent", 40.);
+    preferences.set<KnobChoice>("viewer3DStandIn", int(ViewerInstance::eStandInMarker));
+
+    NodePtr node = createViewer();
+    ASSERT_TRUE(bool(node));
+    EXPECT_FALSE(knobOf<KnobBool>(node, kViewerParamPolygonBudget)->getValue());
+    EXPECT_EQ(1234567, knobOf<KnobInt>(node, kViewerParamPolygonLimit)->getValue());
+    EXPECT_TRUE(knobOf<KnobBool>(node, kViewerParamCountWholeScene)->getValue());
+    EXPECT_DOUBLE_EQ(500., knobOf<KnobDouble>(node, kViewerParamCullDistance)->getValue());
+    EXPECT_DOUBLE_EQ(80., knobOf<KnobDouble>(node, kViewerParamFractionDistance)->getValue());
+    EXPECT_DOUBLE_EQ(40., knobOf<KnobDouble>(node, kViewerParamFractionPercent)->getValue());
+    EXPECT_EQ(int(ViewerInstance::eStandInMarker), knobOf<KnobChoice>(node, kViewerParamStandIn)->getValue());
+}
+
+TEST_F(ViewerKnobsTest, PolygonBudgetKnobsDefault)
+{
+    NodePtr node = createViewer();
+    ASSERT_TRUE(bool(node));
+    KnobBoolPtr budget = knobOf<KnobBool>(node, kViewerParamPolygonBudget);
+    KnobIntPtr limit = knobOf<KnobInt>(node, kViewerParamPolygonLimit);
+    KnobChoicePtr standIn = knobOf<KnobChoice>(node, kViewerParamStandIn);
+    ASSERT_TRUE(budget != nullptr && limit != nullptr && standIn != nullptr);
+    EXPECT_TRUE(budget->getDefaultValue(0));
+    EXPECT_EQ(20000000, limit->getDefaultValue(0));
+    EXPECT_FALSE(knobOf<KnobBool>(node, kViewerParamCountWholeScene)->getDefaultValue(0));
+    EXPECT_DOUBLE_EQ(0., knobOf<KnobDouble>(node, kViewerParamCullDistance)->getDefaultValue(0));
+    EXPECT_DOUBLE_EQ(0., knobOf<KnobDouble>(node, kViewerParamFractionDistance)->getDefaultValue(0));
+    EXPECT_DOUBLE_EQ(25., knobOf<KnobDouble>(node, kViewerParamFractionPercent)->getDefaultValue(0));
+    EXPECT_EQ(int(ViewerInstance::eStandInBoxWire), standIn->getDefaultValue(0));
+    EXPECT_EQ(std::string("Polygon Limit"), limit->getLabel());
+    EXPECT_EQ(std::string("Stand In"), standIn->getLabel());
+}
+
+// A loaded Viewer keeps its saved values whatever the Preferences say, and a second Viewer
+// keeps its own.
+TEST_F(ViewerKnobsTest, PolygonBudgetKnobsSurviveSaveAndLoad)
+{
+    ProjectPtr project = getApp()->getProject();
+    NodePtr node = createViewer();
+    NodePtr other = createViewer();
+    ASSERT_TRUE(bool(node) && bool(other));
+    const std::string name = node->getScriptName();
+    const std::string otherName = other->getScriptName();
+
+    knobOf<KnobInt>(node, kViewerParamPolygonLimit)->setValue(4321);
+    knobOf<KnobDouble>(node, kViewerParamCullDistance)->setValue(75.);
+    knobOf<KnobChoice>(node, kViewerParamStandIn)->setValue(int(ViewerInstance::eStandInBoxShaded));
+    EXPECT_EQ(20000000, knobOf<KnobInt>(other, kViewerParamPolygonLimit)->getValue());
+    EXPECT_DOUBLE_EQ(0., knobOf<KnobDouble>(other, kViewerParamCullDistance)->getValue());
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("viewer-budget.ntp");
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, 0));
+
+    project->reset(false, true);
+    node.reset();
+    other.reset();
+
+    PreferencesOverride preferences;
+    preferences.set<KnobInt>("viewer3DPolygonLimit", 99);
+    preferences.set<KnobDouble>("viewer3DCullDistance", 3.);
+
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+    NodePtr loaded = project->getNodeByName(name);
+    NodePtr loadedOther = project->getNodeByName(otherName);
+    ASSERT_TRUE(bool(loaded) && bool(loadedOther));
+    EXPECT_EQ(4321, knobOf<KnobInt>(loaded, kViewerParamPolygonLimit)->getValue());
+    EXPECT_DOUBLE_EQ(75., knobOf<KnobDouble>(loaded, kViewerParamCullDistance)->getValue());
+    EXPECT_EQ(int(ViewerInstance::eStandInBoxShaded), knobOf<KnobChoice>(loaded, kViewerParamStandIn)->getValue());
+    EXPECT_EQ(20000000, knobOf<KnobInt>(loadedOther, kViewerParamPolygonLimit)->getValue());
+    EXPECT_DOUBLE_EQ(0., knobOf<KnobDouble>(loadedOther, kViewerParamCullDistance)->getValue());
 }

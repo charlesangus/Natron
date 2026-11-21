@@ -63,6 +63,7 @@
 #include <QPointer>
 #include <QSet>
 #include <QSignalBlocker>
+#include <QSpinBox>
 #include <QTimer>
 #include <QUndoCommand>
 #include <QWheelEvent>
@@ -96,6 +97,7 @@
 #include "Engine/Project.h"
 #include "Engine/Settings.h"
 #include "Engine/UndoGesture.h"
+#include "Engine/ViewerInstance.h"
 #include "Serialization/NodeSerialization.h"
 
 // See UsdIncludes.h: oneTBB, which these include too, declares members named emit().
@@ -626,6 +628,50 @@ const int kBoxFloats = 9;
 const float kMarkerPixels = 6.f;
 // Beyond a marker's arms, so a click need not land on its one-pixel lines.
 const float kMarkerPickSlack = 2.f;
+
+// A stand-in is boxMin..boxMax mapped by its instance's rows, row vectors on the left as
+// SceneViewBudget::Instances::instanceTransform() has them; a marker sits at the box's centre.
+const char* const kStandInVertexShader = "#version 330 core\n"
+                                         "uniform mat4 viewProjection;\n"
+                                         "uniform vec3 boxMin;\n"
+                                         "uniform vec3 boxMax;\n"
+                                         "uniform int markers;\n"
+                                         "uniform int shaded;\n"
+                                         "uniform vec2 markerScale;\n"
+                                         "layout(location = 0) in vec3 corner;\n"
+                                         "layout(location = 1) in vec3 row0;\n"
+                                         "layout(location = 2) in vec3 row1;\n"
+                                         "layout(location = 3) in vec3 row2;\n"
+                                         "layout(location = 4) in vec3 row3;\n"
+                                         "out float shade;\n"
+                                         "const float kFaceShades[6] = float[6](0.55, 0.85, 0.65, 1.0, 0.7, 0.9);\n"
+                                         "void main() {\n"
+                                         "    vec3 local = (markers != 0) ? mix(boxMin, boxMax, vec3(0.5)) : mix(boxMin, boxMax, corner);\n"
+                                         "    vec3 world = local.x * row0 + local.y * row1 + local.z * row2 + row3;\n"
+                                         "    vec4 clip = viewProjection * vec4(world, 1.0);\n"
+                                         "    if (markers != 0) {\n"
+                                         "        clip += vec4(corner.xy * markerScale * clip.w, 0.0, 0.0);\n"
+                                         "    }\n"
+                                         "    shade = (shaded != 0) ? kFaceShades[min(gl_VertexID / 6, 5)] : 1.0;\n"
+                                         "    gl_Position = clip;\n"
+                                         "}\n";
+const char* const kStandInFragmentShader = "#version 330 core\n"
+                                           "uniform vec3 tint;\n"
+                                           "in float shade;\n"
+                                           "out vec4 colour;\n"
+                                           "void main() { colour = vec4(tint * shade, 1.0); }\n";
+// Two triangles per face, six vertices each, faces in the order of kFaceShades.
+const GLfloat kBoxFaces[] = {
+    0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 1, 0,
+    0, 0, 1, 1, 1, 1, 1, 0, 1, 0, 0, 1, 0, 1, 1, 1, 1, 1,
+    0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1,
+    0, 1, 0, 1, 1, 0, 1, 1, 1, 0, 1, 0, 1, 1, 1, 0, 1, 1,
+    0, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 1,
+    1, 0, 0, 1, 0, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0
+};
+// Unlike the boxes of boxed rows, the selection and unloaded payloads.
+const GLfloat kStandInTint[] = { 0.85f, 0.45f, 0.95f };
+const int kStandInRowFloats = 12;
 } // anon namespace
 
 std::atomic<U64> engineConstructionCount(0);
@@ -838,6 +884,35 @@ struct SceneViewportRenderer::Implementation {
     GLsizei markerInstances = 0;
     std::atomic<int> boxesDrawn { 0 };
     std::atomic<int> markersDrawn { 0 };
+    // The budget Storm's filter applies, whose stand-ins the frames draw.
+    SceneDrawBoxes::BudgetPtr appliedBudget;
+    // What the last frame drew stand-ins of, which is what a click picks from.
+    SceneDrawBoxes::BudgetPtr drawnStandIns;
+    std::atomic<int> standIn { SceneViewportRenderer::eStandInBoxWire };
+    std::atomic<bool> recordBudget { false };
+    // What the stats last recorded, on the render thread.
+    bool recordedBudget = false;
+    mutable std::mutex budgetMutex;
+    // Under budgetMutex.
+    SceneViewBudget::Camera frameCamera;
+    SceneViewportRenderer::BudgetStats budgetStats;
+    std::atomic<unsigned long long> frameCameraSerial { 0 };
+    GLuint standInProgram = 0;
+    // Edges, faces and marker arms.
+    GLuint standInVaos[3] = { 0, 0, 0 };
+    GLuint standInShapes[3] = { 0, 0, 0 };
+    GLuint standInRows = 0;
+    SceneDrawBoxes::BudgetPtr uploadedStandIns;
+    struct StandInRange {
+        GLint first = 0;
+        GLsizei count = 0;
+        GfVec3f min;
+        GfVec3f max;
+        bool bounded = true;
+        // Of a gprim, not an instance.
+        bool gprim = false;
+    };
+    std::vector<StandInRange> standInRanges;
     std::atomic<bool> everyLightHidden { false };
     StageNoticeCounter stageNotices;
     bool stageNoticesRegistered = false;
@@ -1886,6 +1961,7 @@ struct SceneViewportRenderer::Implementation {
                             filter ? (filter->getHiddenSentCount() - hiddenBefore) : 0,
                             filter ? (filter->getShownSentCount() - shownBefore) : 0, stepped != 0);
         }
+        serviceBudget(filter);
         refreshLightsHidden();
         refreshDrawStats();
     }
@@ -2603,7 +2679,111 @@ struct SceneViewportRenderer::Implementation {
     {
         const SceneDrawBoxes::ListPtr list = boxes ? boxes->getList() : SceneDrawBoxes::ListPtr();
 
-        return list && !list->boxes.empty();
+        return (list && !list->boxes.empty()) || hasStandIns();
+    }
+
+    bool hasStandIns() const
+    {
+        return appliedBudget && (standIn != SceneViewportRenderer::eStandInOff)
+            && (!appliedBudget->standIns.boxes.empty() || !appliedBudget->standIns.groups.empty());
+    }
+
+    // Needs stageMutex. A frame from another camera holds the budget as it is until the next
+    // request, which the main thread makes once the camera rests.
+    void noteFrameCamera(const GfFrustum& frustum)
+    {
+        SceneViewBudget::Camera camera;
+        camera.eye = frustum.GetPosition();
+        camera.viewProjection = frustum.ComputeViewMatrix() * frustum.ComputeProjectionMatrix();
+        camera.valid = true;
+        {
+            std::lock_guard<std::mutex> lock(budgetMutex);
+            if (camera == frameCamera) {
+                return;
+            }
+            frameCamera = camera;
+        }
+        ++frameCameraSerial;
+        if (boxes) {
+            boxes->cancelBudget();
+        }
+    }
+
+    // Needs stageMutex, on the thread holding the engine. Storm's filter alone takes the budget.
+    void serviceBudget(SceneDrawFilter* filter)
+    {
+        const bool storm = (rendererId == kRenderDelegateStormId);
+        bool changed = false;
+        if (!filter) {
+            changed = (appliedBudget != nullptr);
+            appliedBudget.reset();
+        } else {
+            if (filter->isBudgetBound() != storm) {
+                // Binding starts from no budget, and unbinding clears it.
+                filter->setBudgetBound(storm);
+                appliedBudget.reset();
+                changed = true;
+            }
+            const SceneDrawBoxes::BudgetPtr budget = (storm && boxes) ? boxes->getBudget() : SceneDrawBoxes::BudgetPtr();
+            if (budget != appliedBudget) {
+                filter->applyBudget(budget ? budget->filter : SceneDrawFilter::Budget());
+                appliedBudget = budget;
+                changed = true;
+            }
+        }
+        const bool record = recordBudget;
+        if (!changed && (record == recordedBudget)) {
+            return;
+        }
+        recordedBudget = record;
+        std::lock_guard<std::mutex> lock(budgetMutex);
+        SceneViewportRenderer::BudgetStats& stats = budgetStats;
+        stats.bound = filter && filter->isBudgetBound();
+        stats.serial = appliedBudget ? appliedBudget->serial : 0;
+        const SceneViewBudget::Result none;
+        const SceneViewBudget::Result& result = appliedBudget ? appliedBudget->result : none;
+        stats.counted = result.counted;
+        stats.drawn = result.drawn;
+        stats.limit = result.limit;
+        stats.demoted = result.demotedCount;
+        stats.culled = result.culledCount;
+        stats.aloneOverLimit = result.aloneOverLimit.IsEmpty() ? std::string() : result.aloneOverLimit.GetString();
+        stats.aloneOverLimitInstance = result.aloneOverLimitIsInstance ? (long long)result.aloneOverLimitInstance : -1;
+        stats.hidden = filter ? filter->getBudgetHiddenCount() : 0;
+        stats.masked = filter ? filter->getBudgetMaskedInstanceCount() : 0;
+        stats.facedMeshes = filter ? filter->getBudgetFacedMeshCount() : 0;
+        for (int axis = 0; axis < 3; ++axis) {
+            stats.eye[axis] = appliedBudget ? appliedBudget->camera.eye[axis] : 0.;
+        }
+        stats.demoteDistance = result.demoteDistance;
+        stats.demotedPaths.clear();
+        stats.culledPaths.clear();
+        stats.fractionedPaths.clear();
+        if (record) {
+            for (const SdfPath& path : result.demoted) {
+                stats.demotedPaths.push_back(path.GetString());
+            }
+            for (const SdfPath& path : result.culled) {
+                stats.culledPaths.push_back(path.GetString());
+            }
+            for (const auto& instancer : result.instancers) {
+                const SceneViewBudget::InstancerResult& instances = instancer.second;
+                const std::size_t count = std::max({ instances.demoted.size(), instances.culled.size(), instances.kept.size() });
+                for (std::size_t i = 0; i < count; ++i) {
+                    const std::string path = instancer.first.GetString() + "[" + std::to_string(i) + "]";
+                    if ((i < instances.culled.size()) && instances.culled[i]) {
+                        stats.culledPaths.push_back(path);
+                    } else if ((i < instances.demoted.size()) && instances.demoted[i]) {
+                        stats.demotedPaths.push_back(path);
+                    } else if ((i < instances.kept.size()) && !instances.kept[i]) {
+                        stats.fractionedPaths.push_back(path);
+                    }
+                }
+            }
+            std::sort(stats.demotedPaths.begin(), stats.demotedPaths.end());
+            std::sort(stats.culledPaths.begin(), stats.culledPaths.end());
+            std::sort(stats.fractionedPaths.begin(), stats.fractionedPaths.end());
+        }
     }
 
     bool ensureBoxProgram()
@@ -2790,8 +2970,271 @@ struct SceneViewportRenderer::Implementation {
         markersDrawn = int(markerInstances);
     } // drawBoxes
 
+    bool ensureStandInProgram()
+    {
+        if (standInProgram) {
+            return true;
+        }
+        const GLuint vertex = glCreateShader(GL_VERTEX_SHADER);
+        const GLuint fragment = glCreateShader(GL_FRAGMENT_SHADER);
+        glShaderSource(vertex, 1, &kStandInVertexShader, nullptr);
+        glShaderSource(fragment, 1, &kStandInFragmentShader, nullptr);
+        glCompileShader(vertex);
+        glCompileShader(fragment);
+        const GLuint program = glCreateProgram();
+        glAttachShader(program, vertex);
+        glAttachShader(program, fragment);
+        glLinkProgram(program);
+        glDeleteShader(vertex);
+        glDeleteShader(fragment);
+        GLint linked = GL_FALSE;
+        glGetProgramiv(program, GL_LINK_STATUS, &linked);
+        if (!linked) {
+            glDeleteProgram(program);
+
+            return false;
+        }
+        standInProgram = program;
+        const GLfloat* shapes[3] = { kBoxEdges, kBoxFaces, kMarkerArms };
+        const GLsizeiptr sizes[3] = { sizeof(kBoxEdges), sizeof(kBoxFaces), sizeof(kMarkerArms) };
+        glGenVertexArrays(3, standInVaos);
+        glGenBuffers(3, standInShapes);
+        glGenBuffers(1, &standInRows);
+        for (int shape = 0; shape < 3; ++shape) {
+            glBindVertexArray(standInVaos[shape]);
+            glBindBuffer(GL_ARRAY_BUFFER, standInShapes[shape]);
+            glBufferData(GL_ARRAY_BUFFER, sizes[shape], shapes[shape], GL_STATIC_DRAW);
+            glEnableVertexAttribArray(0);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
+            glBindBuffer(GL_ARRAY_BUFFER, standInRows);
+            for (GLuint attribute = 1; attribute <= 4; ++attribute) {
+                glEnableVertexAttribArray(attribute);
+                glVertexAttribDivisor(attribute, 1);
+            }
+        }
+        glBindVertexArray(0);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        uploadedStandIns.reset();
+
+        return true;
+    } // ensureStandInProgram
+
+    // The gprims' boxes become rows mapping the unit cube onto them, so that every stand-in draws
+    // through the one program.
+    void uploadStandIns(const SceneDrawBoxes::Budget& budget)
+    {
+        const SceneDrawBoxes::StandIns& standIns = budget.standIns;
+        std::vector<GLfloat> rows;
+        rows.reserve((standIns.boxes.size() + standIns.instanceCount) * kStandInRowFloats);
+        standInRanges.clear();
+        for (int pass = 0; pass < 2; ++pass) {
+            StandInRange range;
+            range.first = GLint(rows.size() / kStandInRowFloats);
+            range.bounded = (pass == 0);
+            range.gprim = true;
+            range.min = GfVec3f(0.f);
+            range.max = range.bounded ? GfVec3f(1.f) : GfVec3f(0.f);
+            for (const SceneDrawBoxes::Box& box : standIns.boxes) {
+                if ((box.kind != SceneDrawBoxes::eKindMarker) != range.bounded) {
+                    continue;
+                }
+                const GfVec3f size = range.bounded ? GfVec3f(box.max - box.min) : GfVec3f(0.f);
+                rows.insert(rows.end(), { size[0], 0.f, 0.f, 0.f, size[1], 0.f, 0.f, 0.f, size[2], box.min[0], box.min[1], box.min[2] });
+            }
+            range.count = GLsizei(rows.size() / kStandInRowFloats) - range.first;
+            if (range.count > 0) {
+                standInRanges.push_back(range);
+            }
+        }
+        for (const SceneDrawBoxes::StandInGroup& group : standIns.groups) {
+            StandInRange range;
+            range.first = GLint(rows.size() / kStandInRowFloats);
+            range.count = GLsizei(group.indices.size());
+            range.min = group.min;
+            range.max = group.max;
+            range.bounded = group.bounded;
+            rows.insert(rows.end(), group.rows.begin(), group.rows.end());
+            if (range.count > 0) {
+                standInRanges.push_back(range);
+            }
+        }
+        glBindBuffer(GL_ARRAY_BUFFER, standInRows);
+        glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(rows.size() * sizeof(GLfloat)), rows.data(), GL_STATIC_DRAW);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+    }
+
+    // The corners of a stand-in's box in world space, mapped by its rows.
+    static void standInCorners(const StandInRange& range,
+                               const GLfloat* row,
+                               GfVec3d corners[8])
+    {
+        for (int corner = 0; corner < 8; ++corner) {
+            const GfVec3d local((corner & 1) ? range.max[0] : range.min[0], (corner & 2) ? range.max[1] : range.min[1], (corner & 4) ? range.max[2] : range.min[2]);
+            for (int axis = 0; axis < 3; ++axis) {
+                corners[corner][axis] = local[0] * row[axis] + local[1] * row[3 + axis] + local[2] * row[6 + axis] + row[9 + axis];
+            }
+        }
+    }
+
+    void recordDrawnStandIns(const GfFrustum& frustum,
+                             int width,
+                             int height,
+                             bool markers)
+    {
+        const SceneDrawBoxes::StandIns& standIns = appliedBudget->standIns;
+        const SceneGizmo::View view(frustum.ComputeViewMatrix(), frustum.ComputeProjectionMatrix(), width, height);
+        std::vector<GLfloat> row(kStandInRowFloats);
+        const auto record = [&](const StandInRange& range, const std::string& path, const char* kind) {
+            GfVec3d corners[8];
+            standInCorners(range, row.data(), corners);
+            GfVec2d centre;
+            if (!SceneGizmo::project(view, (corners[0] + corners[7]) * 0.5, &centre)) {
+                return;
+            }
+            DrawnBox drawn;
+            drawn.path = path;
+            drawn.kind = kind;
+            drawn.x = drawn.left = drawn.right = centre[0];
+            drawn.y = drawn.top = drawn.bottom = centre[1];
+            for (int corner = 0; (corner < 8) && !markers && range.bounded; ++corner) {
+                GfVec2d p;
+                if (SceneGizmo::project(view, corners[corner], &p)) {
+                    drawn.left = std::min(drawn.left, p[0]);
+                    drawn.right = std::max(drawn.right, p[0]);
+                    drawn.top = std::min(drawn.top, p[1]);
+                    drawn.bottom = std::max(drawn.bottom, p[1]);
+                }
+            }
+            drawnBoxes.push_back(drawn);
+        };
+        for (const SceneDrawBoxes::Box& box : standIns.boxes) {
+            StandInRange range;
+            range.min = box.min;
+            range.max = (box.kind == SceneDrawBoxes::eKindMarker) ? box.min : box.max;
+            range.bounded = (box.kind != SceneDrawBoxes::eKindMarker);
+            row = { 1.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f };
+            record(range, box.path.GetString(), "standIn");
+        }
+        for (const SceneDrawBoxes::StandInGroup& group : standIns.groups) {
+            StandInRange range;
+            range.min = group.min;
+            range.max = group.max;
+            range.bounded = group.bounded;
+            for (std::size_t at = 0; at < group.indices.size(); ++at) {
+                std::copy(group.rows.begin() + at * kStandInRowFloats, group.rows.begin() + (at + 1) * kStandInRowFloats, row.begin());
+                record(range, group.instancer.GetString() + "[" + std::to_string(group.indices[at]) + "]", "standInInstance");
+            }
+        }
+    } // recordDrawnStandIns
+
+    // In the budget's tint, depth-tested against the frame's depth like the boxes: one instanced
+    // draw for the gprims' boxes, one for their markers, and one per prototype of each instancer.
+    // Shaded boxes write depth, so they hide one another.
+    void drawStandIns(const GfFrustum& frustum,
+                      int width,
+                      int height)
+    {
+        drawnStandIns.reset();
+        unsigned long long boxesShown = 0, instancesShown = 0, markersShown = 0;
+        const int mode = standIn;
+        if (hasStandIns() && ensureStandInProgram()) {
+            if (uploadedStandIns != appliedBudget) {
+                uploadStandIns(*appliedBudget);
+                uploadedStandIns = appliedBudget;
+            }
+            drawnStandIns = appliedBudget;
+            if (recordDrawnBoxes) {
+                recordDrawnStandIns(frustum, width, height, mode == SceneViewportRenderer::eStandInMarker);
+            }
+            const GfMatrix4f viewProjection(frustum.ComputeViewMatrix() * frustum.ComputeProjectionMatrix());
+            glUseProgram(standInProgram);
+            glUniformMatrix4fv(glGetUniformLocation(standInProgram, "viewProjection"), 1, GL_FALSE, viewProjection.GetArray());
+            glUniform3fv(glGetUniformLocation(standInProgram, "tint"), 1, kStandInTint);
+            glUniform2f(glGetUniformLocation(standInProgram, "markerScale"), 2.f * kMarkerPixels / float(width), 2.f * kMarkerPixels / float(height));
+            const GLint boxMinAt = glGetUniformLocation(standInProgram, "boxMin");
+            const GLint boxMaxAt = glGetUniformLocation(standInProgram, "boxMax");
+            const GLint markersAt = glGetUniformLocation(standInProgram, "markers");
+            const GLint shadedAt = glGetUniformLocation(standInProgram, "shaded");
+            glEnable(GL_DEPTH_TEST);
+            glDepthFunc(GL_LEQUAL);
+            glDisable(GL_BLEND);
+            glDisable(GL_CULL_FACE);
+            glLineWidth(1.f);
+            for (const StandInRange& range : standInRanges) {
+                const bool marker = (mode == SceneViewportRenderer::eStandInMarker) || !range.bounded;
+                const bool shaded = !marker && (mode == SceneViewportRenderer::eStandInBoxShaded);
+                const int shape = marker ? 2 : (shaded ? 1 : 0);
+                glDepthMask(shaded ? GL_TRUE : GL_FALSE);
+                glUniform3f(boxMinAt, range.min[0], range.min[1], range.min[2]);
+                glUniform3f(boxMaxAt, range.max[0], range.max[1], range.max[2]);
+                glUniform1i(markersAt, marker ? 1 : 0);
+                glUniform1i(shadedAt, shaded ? 1 : 0);
+                glBindVertexArray(standInVaos[shape]);
+                glBindBuffer(GL_ARRAY_BUFFER, standInRows);
+                for (GLuint attribute = 1; attribute <= 4; ++attribute) {
+                    const std::size_t offset = (std::size_t(range.first) * kStandInRowFloats + (attribute - 1) * 3) * sizeof(GLfloat);
+                    glVertexAttribPointer(attribute, 3, GL_FLOAT, GL_FALSE, kStandInRowFloats * sizeof(GLfloat), reinterpret_cast<const void*>(offset));
+                }
+                glDrawArraysInstanced(shaded ? GL_TRIANGLES : GL_LINES, 0, marker ? 4 : (shaded ? 36 : 24), range.count);
+                (range.gprim ? boxesShown : instancesShown) += range.count;
+                if (marker) {
+                    markersShown += range.count;
+                }
+            }
+            glBindVertexArray(0);
+            glBindBuffer(GL_ARRAY_BUFFER, 0);
+            glUseProgram(0);
+            glDepthMask(GL_TRUE);
+            glDepthFunc(GL_LESS);
+            glDisable(GL_DEPTH_TEST);
+        }
+        std::lock_guard<std::mutex> lock(budgetMutex);
+        budgetStats.standInBoxes = boxesShown;
+        budgetStats.standInInstances = instancesShown;
+        budgetStats.standInMarkers = markersShown;
+    } // drawStandIns
+
+    // The stand-in the last frame drew under the pixel (x, y), as pickBox() finds a box.
+    bool pickStandIn(const GfFrustum& frustum,
+                     int width,
+                     int height,
+                     int x,
+                     int y,
+                     std::string* path,
+                     GfVec3d* point) const
+    {
+        if (!drawnStandIns) {
+            return false;
+        }
+        SceneDrawBoxes::StandInHit hit;
+        if (!SceneDrawBoxes::pickStandIn(drawnStandIns->standIns, frustum.ComputeViewMatrix() * frustum.ComputeProjectionMatrix(), width, height,
+                                         GfVec2d(x + 0.5, y + 0.5), kMarkerPixels + kMarkerPickSlack,
+                                         standIn == SceneViewportRenderer::eStandInMarker, &hit)) {
+            return false;
+        }
+        *path = hit.path.GetString();
+        *point = hit.point;
+
+        return true;
+    }
+
     void releaseBoxesGL()
     {
+        if (standInProgram) {
+            glDeleteProgram(standInProgram);
+            glDeleteVertexArrays(3, standInVaos);
+            glDeleteBuffers(3, standInShapes);
+            glDeleteBuffers(1, &standInRows);
+            standInProgram = 0;
+            standInRows = 0;
+            for (int shape = 0; shape < 3; ++shape) {
+                standInVaos[shape] = 0;
+                standInShapes[shape] = 0;
+            }
+        }
+        uploadedStandIns.reset();
+        drawnStandIns.reset();
+        standInRanges.clear();
         if (boxProgram) {
             glDeleteProgram(boxProgram);
             glDeleteVertexArrays(1, &boxVao);
@@ -3234,6 +3677,66 @@ SceneViewportRenderer::getRevealYieldMs() const
     const long long left = kRevealCameraYieldMs - std::chrono::duration_cast<std::chrono::milliseconds>(since).count();
 
     return (left > 0) ? int(left) : 0;
+}
+
+bool
+SceneViewportRenderer::requestBudget(const BudgetSettings& settings)
+{
+    SceneViewBudget::Camera camera;
+    {
+        std::lock_guard<std::mutex> lock(_imp->budgetMutex);
+        camera = _imp->frameCamera;
+    }
+    if (!camera.valid || !_imp->boxes) {
+        return false;
+    }
+    SceneViewBudget::Settings solved;
+    solved.limit = settings.limit;
+    solved.countWholeScene = settings.countWholeScene;
+    solved.cullDistance = settings.cullDistance;
+    solved.fractionDistance = settings.fractionDistance;
+    solved.fractionPercent = settings.fractionPercent;
+    const U64 serial = _imp->boxes->requestBudget(camera, solved);
+    std::lock_guard<std::mutex> lock(_imp->budgetMutex);
+    _imp->budgetStats.requested = serial;
+
+    return true;
+}
+
+void
+SceneViewportRenderer::stopBudget()
+{
+    if (_imp->boxes) {
+        _imp->boxes->stopBudget();
+        // Counting walks the stage, which nothing needs without a budget.
+        _imp->boxes->setCounting(false);
+    }
+}
+
+unsigned long long
+SceneViewportRenderer::getFrameCameraSerial() const
+{
+    return _imp->frameCameraSerial;
+}
+
+void
+SceneViewportRenderer::setStandIn(StandInEnum standIn)
+{
+    _imp->standIn = int(standIn);
+}
+
+void
+SceneViewportRenderer::setRecordBudget(bool record)
+{
+    _imp->recordBudget = record;
+}
+
+SceneViewportRenderer::BudgetStats
+SceneViewportRenderer::getBudgetStats() const
+{
+    std::lock_guard<std::mutex> lock(_imp->budgetMutex);
+
+    return _imp->budgetStats;
 }
 
 int
@@ -4657,6 +5160,7 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
 
     const UsdStageRefPtr stage = _imp->currentStage();
     const GfFrustum frustum = _imp->computeFrustum(width, height);
+    _imp->noteFrameCamera(frustum);
     _imp->sceneLit = _imp->usesSceneLights();
     UsdImagingGLRenderParams params = _imp->renderParams();
     const bool held = _imp->stageHeld;
@@ -4719,6 +5223,7 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
     _imp->boxesDrawn = 0;
     _imp->markersDrawn = 0;
     _imp->drawnBoxList.reset();
+    _imp->drawnStandIns.reset();
     _imp->drawnBoxes.clear();
     if (_imp->showGrid || _imp->showGuides || _imp->hasHandles || _imp->hasBoxes()) {
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
@@ -4732,6 +5237,7 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
         }
         if (!held) {
             _imp->drawBoxes(frustum, width, height);
+            _imp->drawStandIns(frustum, width, height);
         }
         if (_imp->showGuides) {
             _imp->drawGuides(frustum, width, height);
@@ -5006,6 +5512,16 @@ SceneViewportRenderer::pick(int x,
             path = _imp->drawnBoxList->boxes[box].path.GetString();
             nearest = z;
             nearestPoint = boxPoint;
+        }
+    }
+    std::string standInPath;
+    GfVec3d standInPoint;
+    if (_imp->pickStandIn(frustum, width, height, x, y, &standInPath, &standInPoint)) {
+        const double z = viewMatrix.Transform(standInPoint)[2];
+        if (path.empty() || (z >= nearest)) {
+            path = standInPath;
+            nearest = z;
+            nearestPoint = standInPoint;
         }
     }
     if (_imp->showGuides) {
@@ -5815,6 +6331,12 @@ struct SceneViewport::Implementation {
     U64 previewSerial = 0;
 
     std::function<NodePtr()> viewedNodeProvider;
+    // The Viewer node holding the polygon budget knobs, and what runs an edit of them.
+    std::function<NodePtr()> budgetNodeProvider;
+    std::function<void(const QString&, const std::function<void()>&)> budgetEdit;
+    // Restarted by each frame from a new camera; the budget is solved when it runs out.
+    QTimer* cameraIdleTimer = nullptr;
+    unsigned long long seenFrameCamera = 0;
     SceneViewport::SelectionActions selectionActions;
     std::function<NodePtr(const std::string&)> cameraNodeProvider;
     QPointer<UndoHistory> undoHistory;
@@ -6326,6 +6848,10 @@ SceneViewport::SceneViewport(QWidget* parent)
     _imp->drawStates.reset(new SceneDrawStateQueue([this](const std::function<void()>& run) { QMetaObject::invokeMethod(this, run, Qt::QueuedConnection); },
                                                    [this](const SceneDrawChange& change) { deliverDrawChange(change); }));
 
+    _imp->cameraIdleTimer = new QTimer(this);
+    _imp->cameraIdleTimer->setSingleShot(true);
+    _imp->cameraIdleTimer->setInterval(250);
+    QObject::connect(_imp->cameraIdleTimer, &QTimer::timeout, this, [this]() { onCameraIdle(); });
     _imp->wheelMoveTimer = new QTimer(this);
     _imp->wheelMoveTimer->setSingleShot(true);
     _imp->wheelMoveTimer->setInterval(300);
@@ -8229,6 +8755,190 @@ SceneViewport::setViewedNodeProvider(const std::function<NodePtr()>& provider)
     _imp->viewedNodeProvider = provider;
 }
 
+namespace {
+struct PolygonBudgetKnobs {
+    bool on = false;
+    SceneViewportRenderer::BudgetSettings settings;
+    SceneViewportRenderer::StandInEnum standIn = SceneViewportRenderer::eStandInBoxWire;
+};
+
+double
+viewerKnobNumber(const NodePtr& node,
+                 const char* name,
+                 double fallback)
+{
+    const KnobIPtr knob = node ? node->getKnobByName(name) : KnobIPtr();
+
+    if (KnobBoolBase* isBool = dynamic_cast<KnobBoolBase*>(knob.get())) {
+        return isBool->getValue() ? 1. : 0.;
+    }
+    if (KnobIntBase* isInt = dynamic_cast<KnobIntBase*>(knob.get())) {
+        return isInt->getValue();
+    }
+    if (KnobDoubleBase* isDouble = dynamic_cast<KnobDoubleBase*>(knob.get())) {
+        return isDouble->getValue();
+    }
+
+    return fallback;
+}
+
+void
+setViewerKnobNumber(const NodePtr& node,
+                    const char* name,
+                    double value)
+{
+    const KnobIPtr knob = node ? node->getKnobByName(name) : KnobIPtr();
+
+    if (KnobBoolBase* isBool = dynamic_cast<KnobBoolBase*>(knob.get())) {
+        isBool->setValue(value != 0.);
+    } else if (KnobIntBase* isInt = dynamic_cast<KnobIntBase*>(knob.get())) {
+        isInt->setValue(int(value));
+    } else if (KnobDoubleBase* isDouble = dynamic_cast<KnobDoubleBase*>(knob.get())) {
+        isDouble->setValue(value);
+    }
+}
+
+// Without a Viewer node, the budget is off.
+PolygonBudgetKnobs
+readPolygonBudgetKnobs(const NodePtr& node)
+{
+    PolygonBudgetKnobs knobs;
+
+    if (!node) {
+        return knobs;
+    }
+    knobs.on = viewerKnobNumber(node, kViewerParamPolygonBudget, 0.) != 0.;
+    knobs.settings.limit = (unsigned long long)std::max(0., viewerKnobNumber(node, kViewerParamPolygonLimit, double(knobs.settings.limit)));
+    knobs.settings.countWholeScene = viewerKnobNumber(node, kViewerParamCountWholeScene, 0.) != 0.;
+    knobs.settings.cullDistance = viewerKnobNumber(node, kViewerParamCullDistance, 0.);
+    knobs.settings.fractionDistance = viewerKnobNumber(node, kViewerParamFractionDistance, 0.);
+    knobs.settings.fractionPercent = viewerKnobNumber(node, kViewerParamFractionPercent, knobs.settings.fractionPercent);
+    const int standIn = int(viewerKnobNumber(node, kViewerParamStandIn, 0.));
+    if ((standIn >= SceneViewportRenderer::eStandInBoxWire) && (standIn <= SceneViewportRenderer::eStandInOff)) {
+        knobs.standIn = SceneViewportRenderer::StandInEnum(standIn);
+    }
+
+    return knobs;
+}
+} // anon namespace
+
+void
+SceneViewport::setPolygonBudgetKnobs(const std::function<NodePtr()>& viewerNode,
+                                     const std::function<void(const QString& text, const std::function<void()>& apply)>& edit)
+{
+    _imp->budgetNodeProvider = viewerNode;
+    _imp->budgetEdit = edit;
+    refreshPolygonBudget();
+}
+
+void
+SceneViewport::refreshPolygonBudget()
+{
+    const PolygonBudgetKnobs knobs = readPolygonBudgetKnobs(_imp->budgetNodeProvider ? _imp->budgetNodeProvider() : NodePtr());
+
+    _imp->renderer.setStandIn(knobs.standIn);
+    if (knobs.on) {
+        _imp->cameraIdleTimer->start();
+    } else {
+        _imp->cameraIdleTimer->stop();
+        _imp->renderer.stopBudget();
+    }
+    update();
+}
+
+void
+SceneViewport::onCameraIdle()
+{
+    const PolygonBudgetKnobs knobs = readPolygonBudgetKnobs(_imp->budgetNodeProvider ? _imp->budgetNodeProvider() : NodePtr());
+
+    // Before the first frame there is no camera to solve for; that frame starts the timer again.
+    if (knobs.on) {
+        _imp->renderer.requestBudget(knobs.settings);
+    }
+}
+
+void
+SceneViewport::editPolygonBudgetKnob(const char* name,
+                                     const QString& text,
+                                     double value)
+{
+    const NodePtr node = _imp->budgetNodeProvider ? _imp->budgetNodeProvider() : NodePtr();
+
+    if (!node) {
+        return;
+    }
+    const std::string knobName(name);
+    const std::function<void()> apply = [node, knobName, value]() { setViewerKnobNumber(node, knobName.c_str(), value); };
+    if (_imp->budgetEdit) {
+        _imp->budgetEdit(text, apply);
+    } else {
+        apply();
+    }
+    refreshPolygonBudget();
+}
+
+void
+SceneViewport::publishBudget()
+{
+    const NodePtr node = _imp->budgetNodeProvider ? _imp->budgetNodeProvider() : NodePtr();
+    const bool on = node && (viewerKnobNumber(node, kViewerParamPolygonBudget, 0.) != 0.);
+    const unsigned long long cameraSerial = _imp->renderer.getFrameCameraSerial();
+
+    if (cameraSerial != _imp->seenFrameCamera) {
+        _imp->seenFrameCamera = cameraSerial;
+        if (on) {
+            _imp->cameraIdleTimer->start();
+        }
+    }
+    const SceneViewportRenderer::BudgetStats stats = _imp->renderer.getBudgetStats();
+    QString hud;
+    if (on && (stats.serial != 0)) {
+        hud = tr("Budget: %1 / %2 polys, %3 demoted, %4 culled").arg(stats.counted).arg(stats.limit).arg(stats.demoted).arg(stats.culled);
+        if (!stats.aloneOverLimit.empty()) {
+            QString alone = QString::fromStdString(stats.aloneOverLimit);
+            if (stats.aloneOverLimitInstance >= 0) {
+                alone += QString::fromUtf8("[%1]").arg(stats.aloneOverLimitInstance);
+            }
+            hud += tr(" (%1 alone exceeds the limit)").arg(alone);
+        }
+    }
+    QVariantMap published;
+    published[QString::fromUtf8("on")] = on;
+    published[QString::fromUtf8("bound")] = stats.bound;
+    published[QString::fromUtf8("serial")] = QVariant::fromValue<qulonglong>(stats.serial);
+    published[QString::fromUtf8("requested")] = QVariant::fromValue<qulonglong>(stats.requested);
+    published[QString::fromUtf8("counted")] = QVariant::fromValue<qulonglong>(stats.counted);
+    published[QString::fromUtf8("drawn")] = QVariant::fromValue<qulonglong>(stats.drawn);
+    published[QString::fromUtf8("limit")] = QVariant::fromValue<qulonglong>(stats.limit);
+    published[QString::fromUtf8("demoted")] = QVariant::fromValue<qulonglong>(stats.demoted);
+    published[QString::fromUtf8("culled")] = QVariant::fromValue<qulonglong>(stats.culled);
+    published[QString::fromUtf8("aloneOverLimit")] = QString::fromStdString(stats.aloneOverLimit);
+    published[QString::fromUtf8("aloneOverLimitInstance")] = QVariant::fromValue<qlonglong>(stats.aloneOverLimitInstance);
+    published[QString::fromUtf8("hidden")] = QVariant::fromValue<qulonglong>(stats.hidden);
+    published[QString::fromUtf8("masked")] = QVariant::fromValue<qulonglong>(stats.masked);
+    published[QString::fromUtf8("facedMeshes")] = QVariant::fromValue<qulonglong>(stats.facedMeshes);
+    published[QString::fromUtf8("standInBoxes")] = QVariant::fromValue<qulonglong>(stats.standInBoxes);
+    published[QString::fromUtf8("standInInstances")] = QVariant::fromValue<qulonglong>(stats.standInInstances);
+    published[QString::fromUtf8("standInMarkers")] = QVariant::fromValue<qulonglong>(stats.standInMarkers);
+    published[QString::fromUtf8("cameraSerial")] = QVariant::fromValue<qulonglong>(cameraSerial);
+    published[QString::fromUtf8("idlePending")] = _imp->cameraIdleTimer->isActive();
+    published[QString::fromUtf8("hud")] = hud;
+    published[QString::fromUtf8("eye")] = QVariantList { stats.eye[0], stats.eye[1], stats.eye[2] };
+    published[QString::fromUtf8("demoteDistance")] = stats.demoteDistance;
+    const auto pathList = [](const std::vector<std::string>& paths) {
+        QStringList list;
+        for (const std::string& path : paths) {
+            list.push_back(QString::fromStdString(path));
+        }
+
+        return list;
+    };
+    published[QString::fromUtf8("demotedPaths")] = pathList(stats.demotedPaths);
+    published[QString::fromUtf8("culledPaths")] = pathList(stats.culledPaths);
+    published[QString::fromUtf8("fractionedPaths")] = pathList(stats.fractionedPaths);
+    setProperty("natronSceneBudget", published);
+} // publishBudget
+
 void
 SceneViewport::setSelectionActions(const SelectionActions& actions)
 {
@@ -8763,6 +9473,7 @@ SceneViewport::paintGL()
     }
     _imp->renderer.setRecordDrawnGuides(property("natronSceneRecordGuides").toBool());
     _imp->renderer.setRecordDrawnBoxes(property("natronSceneRecordBoxes").toBool());
+    _imp->renderer.setRecordBudget(property("natronSceneRecordBudget").toBool());
     SceneViewportRenderer::RenderStatusEnum status = SceneViewportRenderer::eRenderStatusBusy;
     if (_imp->usesRenderThread && (_imp->renderer.getActiveRendererId() != kRenderDelegateStormId)) {
         // The delegate's frames are made on the refinement's thread, and drawing one needs no
@@ -8821,6 +9532,7 @@ SceneViewport::paintGL()
     publishRefineState();
     publishTransformState();
     publishDrawStats();
+    publishBudget();
     if (SceneDrawTiming* timing = _imp->renderer.drawTiming()) {
         if (timing->presented(_imp->renderer.getDrawFilterStats().absorbed, std::chrono::steady_clock::now())) {
             setProperty("natronSceneDrawTimings", timing->records());
@@ -8912,6 +9624,14 @@ SceneViewport::paintGL()
         }
         painter.setPen(QColor(200, 200, 200));
         painter.drawText(rect().adjusted(8, 6, -8, -6), Qt::AlignLeft | Qt::AlignTop, hud);
+        const QString budgetHud = property("natronSceneBudget").toMap().value(QString::fromUtf8("hud")).toString();
+        if (property("natronSceneBudgetHud").toString() != budgetHud) {
+            setProperty("natronSceneBudgetHud", budgetHud);
+        }
+        if (!budgetHud.isEmpty()) {
+            painter.setPen(QColor(217, 115, 242));
+            painter.drawText(rect().adjusted(8, 6 + painter.fontMetrics().height(), -8, -6), Qt::AlignLeft | Qt::AlignTop, budgetHud);
+        }
         if (!_imp->lockMessage.isEmpty()) {
             painter.setPen(QColor(230, 160, 80));
             painter.drawText(rect().adjusted(8, 6, -8, -6), Qt::AlignLeft | Qt::AlignBottom, _imp->lockMessage);
@@ -9924,10 +10644,119 @@ SceneViewport::showContextMenu(const QPoint& globalPos)
     QObject::connect(guides, &QAction::toggled, this, [this](bool show) {
         setShowGuides(show);
     });
+    if (_imp->budgetNodeProvider) {
+        addPolygonBudgetMenu(&menu);
+    }
 
     menu.exec(globalPos);
     clearGesture();
 } // showContextMenu
+
+// A view of the Viewer's knobs: each edit sets a knob, so it undoes like one.
+void
+SceneViewport::addPolygonBudgetMenu(QMenu* menu)
+{
+    const NodePtr node = _imp->budgetNodeProvider();
+
+    if (!node) {
+        return;
+    }
+    QMenu* budget = menu->addMenu(tr("Polygon Budget"));
+    budget->setObjectName(QString::fromUtf8("polygonBudgetMenu"));
+    const struct
+    {
+        const char* name;
+        QString label;
+    } toggles[] = {
+        { kViewerParamPolygonBudget, tr("Polygon Budget") },
+        { kViewerParamCountWholeScene, tr("Count Whole Scene") },
+    };
+    for (const auto& toggle : toggles) {
+        QAction* action = budget->addAction(toggle.label);
+        action->setObjectName(QString::fromUtf8(toggle.name));
+        action->setCheckable(true);
+        action->setChecked(viewerKnobNumber(node, toggle.name, 0.) != 0.);
+        const char* name = toggle.name;
+        const QString label = toggle.label;
+        QObject::connect(action, &QAction::toggled, this, [this, name, label](bool on) {
+            editPolygonBudgetKnob(name, label, on ? 1. : 0.);
+        });
+    }
+    const auto addRow = [this, budget](const QString& label, QWidget* box) {
+        QWidget* row = new QWidget(budget);
+        QHBoxLayout* layout = new QHBoxLayout(row);
+        layout->setContentsMargins(8, 2, 8, 2);
+        layout->addWidget(new QLabel(label, row));
+        box->setParent(row);
+        layout->addWidget(box);
+        QWidgetAction* action = new QWidgetAction(budget);
+        action->setDefaultWidget(row);
+        budget->addAction(action);
+    };
+    {
+        const QString label = tr("Polygon Limit");
+        QSpinBox* box = new QSpinBox;
+        box->setObjectName(QString::fromUtf8(kViewerParamPolygonLimit));
+        box->setRange(0, std::numeric_limits<int>::max());
+        box->setGroupSeparatorShown(true);
+        box->setValue(int(viewerKnobNumber(node, kViewerParamPolygonLimit, 0.)));
+        box->setKeyboardTracking(false);
+        addRow(label, box);
+        QObject::connect(box, qOverload<int>(&QSpinBox::valueChanged), this, [this, label](int value) {
+            editPolygonBudgetKnob(kViewerParamPolygonLimit, label, value);
+        });
+    }
+    const struct
+    {
+        const char* name;
+        QString label;
+        double maximum;
+    } numbers[] = {
+        { kViewerParamCullDistance, tr("Cull Distance"), 1e12 },
+        { kViewerParamFractionDistance, tr("Fraction Distance"), 1e12 },
+        { kViewerParamFractionPercent, tr("Fraction Percent"), 100. },
+    };
+    for (const auto& number : numbers) {
+        QDoubleSpinBox* box = new QDoubleSpinBox;
+        box->setObjectName(QString::fromUtf8(number.name));
+        box->setDecimals(3);
+        box->setRange(0., number.maximum);
+        box->setValue(viewerKnobNumber(node, number.name, 0.));
+        box->setKeyboardTracking(false);
+        addRow(number.label, box);
+        const char* name = number.name;
+        const QString label = number.label;
+        QObject::connect(box, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this, name, label](double value) {
+            editPolygonBudgetKnob(name, label, value);
+        });
+    }
+    QMenu* standIns = budget->addMenu(tr("Stand In"));
+    standIns->setObjectName(QString::fromUtf8(kViewerParamStandIn));
+    QActionGroup* standInGroup = new QActionGroup(standIns);
+    const struct
+    {
+        const char* name;
+        QString label;
+        SceneViewportRenderer::StandInEnum value;
+    } standInItems[] = {
+        { "standInBoxWire", tr("Box Wire"), SceneViewportRenderer::eStandInBoxWire },
+        { "standInBoxShaded", tr("Box Shaded"), SceneViewportRenderer::eStandInBoxShaded },
+        { "standInMarker", tr("Marker"), SceneViewportRenderer::eStandInMarker },
+        { "standInOff", tr("Off"), SceneViewportRenderer::eStandInOff },
+    };
+    const int current = int(viewerKnobNumber(node, kViewerParamStandIn, 0.));
+    for (const auto& item : standInItems) {
+        QAction* action = standIns->addAction(item.label);
+        action->setObjectName(QString::fromUtf8(item.name));
+        action->setCheckable(true);
+        action->setChecked(current == int(item.value));
+        action->setActionGroup(standInGroup);
+        const int value = int(item.value);
+        QObject::connect(action, &QAction::triggered, this, [this, value]() {
+            editPolygonBudgetKnob(kViewerParamStandIn, tr("Stand In"), value);
+        });
+    }
+} // addPolygonBudgetMenu
 
 NATRON_NAMESPACE_EXIT
 

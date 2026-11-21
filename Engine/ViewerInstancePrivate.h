@@ -560,6 +560,13 @@ public:
         KnobBoolWPtr renderEverything;
         KnobIntWPtr maxSamples; // 0: the render delegate's own count
         KnobBoolWPtr refinementPaused;
+        KnobBoolWPtr polygonBudget;
+        KnobIntWPtr polygonLimit;
+        KnobBoolWPtr countWholeScene;
+        KnobDoubleWPtr cullDistance; // 0: off
+        KnobDoubleWPtr fractionDistance; // 0: off
+        KnobDoubleWPtr fractionPercent;
+        KnobChoiceWPtr standIn;
     };
     Knobs knobs;
 

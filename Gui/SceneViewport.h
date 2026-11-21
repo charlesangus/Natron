@@ -54,6 +54,7 @@
 
 class QContextMenuEvent;
 class QKeyEvent;
+class QMenu;
 class QMouseEvent;
 class QWheelEvent;
 
@@ -838,6 +839,70 @@ public:
      **/
     void setRenderEverything(bool on);
 
+    // As SceneViewBudget::Settings has them.
+    struct BudgetSettings {
+        unsigned long long limit = 20000000;
+        bool countWholeScene = false;
+        double cullDistance = 0.;
+        double fractionDistance = 0.;
+        double fractionPercent = 25.;
+    };
+
+    // Of ViewerInstance::StandInEnum.
+    enum StandInEnum {
+        eStandInBoxWire,
+        eStandInBoxShaded,
+        eStandInMarker,
+        eStandInOff
+    };
+
+    /**
+     * @brief Asks the box worker for a polygon budget against the camera of the last frame rendered,
+     * which Storm's filter then applies. False when no frame has rendered yet. The budget holds
+     * while a frame's camera differs from the last one, until the next request.
+     **/
+    bool requestBudget(const BudgetSettings& settings);
+    // Everything the budget took out draws again.
+    void stopBudget();
+    // Changes whenever a frame renders from another camera than the frame before it.
+    unsigned long long getFrameCameraSerial() const;
+    void setStandIn(StandInEnum standIn);
+
+    struct BudgetStats {
+        // Whether the engine's filter applies a budget: Storm's alone does.
+        bool bound = false;
+        // Of the request the applied budget answers, 0 for none.
+        unsigned long long serial = 0;
+        unsigned long long requested = 0;
+        unsigned long long counted = 0;
+        unsigned long long drawn = 0;
+        unsigned long long limit = 0;
+        unsigned long long demoted = 0;
+        unsigned long long culled = 0;
+        // The unit too heavy to draw within the limit on its own, empty for none.
+        std::string aloneOverLimit;
+        long long aloneOverLimitInstance = -1;
+        // Of the filter.
+        unsigned long long hidden = 0;
+        unsigned long long masked = 0;
+        unsigned long long facedMeshes = 0;
+        // What the last frame drew in place of what the budget took out.
+        unsigned long long standInBoxes = 0;
+        unsigned long long standInInstances = 0;
+        unsigned long long standInMarkers = 0;
+        // The camera the budget was solved for, and the distance demotion starts from (infinite
+        // for none).
+        double eye[3] = { 0., 0., 0. };
+        double demoteDistance = 0.;
+        // Only while setRecordBudget() is on: the demoted, culled and fractioned units, an
+        // instance as "instancer[index]".
+        std::vector<std::string> demotedPaths;
+        std::vector<std::string> culledPaths;
+        std::vector<std::string> fractionedPaths;
+    };
+    BudgetStats getBudgetStats() const;
+    void setRecordBudget(bool record);
+
     // Pausing keeps a progressive render's samples; unpausing continues from them.
     void setRefinementPaused(bool paused);
 
@@ -1029,6 +1094,16 @@ public:
 
     // The node whose scene is shown: new cameras are placed near it, in its group.
     void setViewedNodeProvider(const std::function<NodePtr()>& provider);
+
+    /**
+     * @brief The Viewer node whose polygon budget knobs the view reads, and what runs an edit of
+     * them from the view's menu as one undoable entry. Without a node there is no budget.
+     **/
+    void setPolygonBudgetKnobs(const std::function<NodePtr()>& viewerNode,
+                               const std::function<void(const QString& text, const std::function<void()>& apply)>& edit);
+
+    // Reads the polygon budget knobs again after one changed.
+    void refreshPolygonBudget();
 
     /**
      * @brief What the selection is used for. setOnNodeBlocker says why setOnNode can't take the
@@ -1335,6 +1410,10 @@ private:
     // A restore's load set stops standing in for loads the stage has yet to take.
     void forgetRestoredLoads();
     void publishDrawStats();
+    void publishBudget();
+    void onCameraIdle();
+    void editPolygonBudgetKnob(const char* name, const QString& text, double value);
+    void addPolygonBudgetMenu(QMenu* menu);
 
     void onBackgroundFrameDone();
 

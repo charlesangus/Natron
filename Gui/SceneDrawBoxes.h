@@ -140,6 +140,26 @@ public:
 
     using UnitsPtr = std::shared_ptr<const Units>;
 
+    // The stand-ins of one prototype of one instancer, drawn as one instanced box.
+    struct StandInGroup {
+        PXR_NS::SdfPath instancer;
+        PXR_NS::SdfPath prototype;
+        // In the instancer's space, as Prototype has it.
+        PXR_NS::GfVec3f min;
+        PXR_NS::GfVec3f max;
+        bool bounded = false;
+        // Twelve per instance: the rows of instanceTransform()'s linear part, then its translation.
+        std::vector<float> rows;
+        std::vector<std::size_t> indices;
+    };
+
+    struct StandIns {
+        // The gprims', world space; a marker for one without bounds.
+        std::vector<Box> boxes;
+        std::vector<StandInGroup> groups;
+        std::size_t instanceCount = 0;
+    };
+
     struct Budget {
         // Of the requestBudget() it answers.
         U64 serial = 0;
@@ -147,8 +167,18 @@ public:
         SceneViewBudget::Settings settings;
         SceneViewBudget::Result result;
         SceneDrawFilter::Budget filter;
-        // What it was solved against, which the stand-ins draw from.
+        // What it was solved against.
         UnitsPtr units;
+        StandIns standIns;
+    };
+
+    struct StandInHit {
+        // The gprim's, or the prototype's for an instance.
+        PXR_NS::SdfPath path;
+        bool isInstance = false;
+        PXR_NS::SdfPath instancer;
+        std::size_t instance = 0;
+        PXR_NS::GfVec3d point;
     };
 
     using BudgetPtr = std::shared_ptr<const Budget>;
@@ -218,6 +248,29 @@ public:
                     const PXR_NS::GfVec2d& pixel,
                     double markerPixels,
                     PXR_NS::GfVec3d* point);
+
+    /**
+     * @brief What draws in place of what result takes out of units: a demoted gprim, every drawn
+     * gprim of a native instance the budget hides some of, and each demoted or fractioned-out
+     * instance. Culled ones get none. False, with standIns partial, as soon as stale() is true.
+     */
+    static bool buildStandIns(const SceneViewBudget::Result& result,
+                              const std::vector<Unit>& units,
+                              const std::function<bool()>& stale,
+                              StandIns* standIns);
+
+    /**
+     * @brief The stand-in nearest the eye under pixel, as pick() finds a box or marker; with markers,
+     * each is hit as a marker at its box's centre.
+     */
+    static bool pickStandIn(const StandIns& standIns,
+                            const PXR_NS::GfMatrix4d& viewProjection,
+                            int width,
+                            int height,
+                            const PXR_NS::GfVec2d& pixel,
+                            double markerPixels,
+                            bool markers,
+                            StandInHit* hit);
 
     // By path. A row the stage lacks, or one under a row that hides it, is left out.
     static std::vector<PXR_NS::SdfPath> boxedRows(const PXR_NS::UsdStageRefPtr& stage,

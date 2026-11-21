@@ -37,6 +37,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "Engine/ChoiceOption.h"
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Raw/RawDisplay.h"
 #include "Engine/OutputEffectInstance.h"
@@ -86,6 +87,14 @@
 #define kViewerParamMaxSamples "maxSamples"
 #define kViewerParamRenderEverything "renderEverything"
 #define kViewerParamRefinementPaused "refinementPaused"
+#define kViewerParamPolygonBudgetGroup "polygonBudgetGroup"
+#define kViewerParamPolygonBudget "polygonBudget"
+#define kViewerParamPolygonLimit "polygonLimit"
+#define kViewerParamCountWholeScene "countWholeScene"
+#define kViewerParamCullDistance "cullDistance"
+#define kViewerParamFractionDistance "fractionDistance"
+#define kViewerParamFractionPercent "fractionPercent"
+#define kViewerParamStandIn "standIn"
 
 NATRON_NAMESPACE_ENTER
 
@@ -263,6 +272,22 @@ GCC_DIAG_SUGGEST_OVERRIDE_ON
 
 public:
     static EffectInstance* BuildEffect(NodePtr n) WARN_UNUSED_RETURN;
+
+    // The order of the standIn knob's entries.
+    enum StandInEnum {
+        eStandInBoxWire,
+        eStandInBoxShaded,
+        eStandInMarker,
+        eStandInOff
+    };
+
+    static std::vector<ChoiceOption> getStandInChoices();
+
+    /**
+     * @brief The tooltip of a polygon budget knob, by its script name here; the Preferences knob of
+     * the same setting shares it.
+     **/
+    static std::string getPolygonBudgetHint(const std::string& name);
 
     ViewerInstance(NodePtr node);
 
@@ -944,6 +969,8 @@ private:
                              bool originatedFromMainThread) OVERRIDE FINAL;
     virtual void onKnobsLoaded() OVERRIDE FINAL;
     virtual void onKnobsAboutToBeLoaded(const Serialization::NodeSerializationPtr& serialization) OVERRIDE FINAL;
+    // A new Viewer, not one loaded or pasted, starts from the Preferences' polygon budget.
+    virtual void onEffectCreated(bool mayCreateFileDialog, const CreateNodeArgs& args) OVERRIDE FINAL;
 
     // Re-resolves the layer and alpha knobs against what the A input carries; a value that
     // resolves to nothing keeps the previous description. Returns whether a description changed.

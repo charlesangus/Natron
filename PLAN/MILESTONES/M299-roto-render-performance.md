@@ -196,4 +196,12 @@ Coordination with M370 - Roto Point List Render Isolation, which runs in paralle
     - 5 reps on edit cases;
     - the stroke fixture fails the run instead of being skipped silently.
   - P4.T2 dispatched.
+- 2026-11-21 — **P4.T2 design notes** (agent paused for a container restart; nothing written yet):
+  - **PM calls:** the direct path fetches the same RGBA float masks the node path uses, and shares its cache entries. A single-channel mask stores coverage×opacity, so it can't be bit-identical. Non-RGBA trees and any A edge mode other than Black fall back to the node path, as do mix ≠ 1, a connected mask, partial channels and a stroke in progress.
+  - **Reference points:**
+    - Roto output = overFunc in OFX Roto.cpp ~245-290; keep -0/NaN with `float(double(m)+0.0*(1-double(a)))`.
+    - The fold copies NativeMergeOp::step (Merge.cpp 550-593) and the runStagesCpu band loop (StagePlan.cpp 1410-1560): B alpha broadcast, dstAlpha carry, the isIdentityForTransparentA memcpy shortcut, and a re-read after every 64 A inputs.
+    - Output covers roi ∩ the bottom Merge's RoD, and the existing tail (RotoPaint.cpp 909-994) fills the rest.
+    - Band-parallel via makeStageRowBands and parallelForCancellable.
+    - NATRON_ROTO_INVERTIBLE and the motion-blur defines are compiled out.
 

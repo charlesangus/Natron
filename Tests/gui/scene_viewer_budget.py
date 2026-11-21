@@ -222,12 +222,22 @@ try:
         QTest.keyClick(v, Qt.Key_A)
         QApplication.processEvents()
 
-    def open_menu():
+    def open_menu(on_menu):
+        """menu.exec() runs a nested event loop, so on_menu is scheduled before it and runs inside it,
+        fetching the menu fresh; it must close the menu itself."""
         state = {}
+
+        def fire():
+            try:
+                on_menu()
+            except Exception:
+                check(False, "menu handler error: " + traceback.format_exc())
+                close_menus()
 
         def go():
             v = view()
             centre = v.rect().center()
+            QTimer.singleShot(500, fire)
             QApplication.sendEvent(v, QContextMenuEvent(QContextMenuEvent.Keyboard, centre, v.mapToGlobal(centre),
                                                         Qt.NoModifier))
             state["closed"] = True
@@ -371,7 +381,9 @@ try:
         viewer.getParam("standIn").setValue(0)
 
         section("count whole scene")
-        for _ in range(6):
+        # Each notch closes 15% of the distance; the framed scene sits well inside the view until the
+        # camera is near its middle, so dolly in far enough that part of it leaves the frustum.
+        for _ in range(20):
             wheel(view())
         yield from resolve("Count Whole Scene off", set_knob("polygonLimit", DEFAULT_LIMIT))
         in_view = int(budget().get("counted", 0))
@@ -436,10 +448,12 @@ try:
         check(ok, "a new budget is applied once the camera rests (%r -> %r)" % (held, budget().get("serial")))
 
         section("menu")
-        state = open_menu()
-        ok = yield ("until", lambda: budget_menu() is not None, POLL_TIMEOUT_S)
-        if check(ok, "the context menu has a Polygon Budget submenu"):
+
+        def edit_in_menu():
             menu = budget_menu()
+            if not check(menu is not None, "the context menu has a Polygon Budget submenu"):
+                close_menus()
+                return
             box = menu.findChild(QSpinBox, "polygonLimit")
             names = set(a.objectName() for a in menu.actions())
             check({"polygonBudget", "countWholeScene"} <= names, "the submenu has the toggles (%r)" % sorted(names))
@@ -451,6 +465,8 @@ try:
                 box.setValue(1234)
                 QApplication.processEvents()
             close_menus()
+
+        state = open_menu(edit_in_menu)
         yield ("until", lambda: state.get("closed", False), POLL_TIMEOUT_S)
         yield settle()
         check(viewer.getParam("polygonLimit").getValue() == 1234, "the menu edit sets the knob (%r)" %

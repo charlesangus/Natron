@@ -37,7 +37,7 @@ What has been checked on the server: a compile in `natron-dev` (ccache 4.13.6) w
 
 ## Phase 493.1: Local remote cache
 
-- [ ] M493.P1.T1 — Install ccache's HTTPS storage helper in the dev image
+- [x] M493.P1.T1 — Install ccache's HTTPS storage helper in the dev image
   - files: `tools/ci/local/Dockerfile`
   - approach:
     - In the "Additions on top of the base image" block, download `ccache-storage-http-go` v0.10.1 (`https://github.com/ccache/ccache-storage-http-go/releases/download/v0.10.1/ccache-storage-http-go-0.10.1-linux-amd64.tar.gz`).
@@ -139,3 +139,4 @@ Precondition: the user has set the repo secret `CCACHE_REMOTE_STORAGE` to the pu
 
   Unverified: the end-to-end HTTPS hit, and whether the layout option is written `layout=bazel` or `@layout=bazel`. **Needs the user:** create `.local/ccache-remote`, then a devshell `--recreate` to test. Phase 493.2 needs the repo secret `CCACHE_REMOTE_STORAGE`.
 - 2026-11-21 — M493.P1.T3 code in 85476bc56 (milestone/m493-shared-ccache-remote-storage): BuildKit inline cache plus `--cache-from :latest` in dev-image.yml and the devshell.sh fallback. bash -n, shellcheck and actionlint clean. Layer reuse takes effect only after main publishes an image with inline cache, so it is a post-merge check.
+- 2026-11-21 — **M493.P1.T1 verified:** in the recreated natron-dev (image ada6a1188a9c9f28), two compiles of a fresh file, each with its own empty CCACHE_DIR, over the public HTTPS URL: the first wrote 2 objects remotely, the second got `remote_storage_hit 1`, with no errors or timeouts. check-image-pins.sh passes. **The HTTPS helper needs `@layout=bazel`** (a helper custom attribute); `layout=bazel` is for the built-in http:// client. README fixed in d84d936ea. The user has added the repo secret `CCACHE_REMOTE_STORAGE`, and `.local/ccache-remote` now holds an HTTPS `url=`.

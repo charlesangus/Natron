@@ -1462,6 +1462,10 @@ Bezier::addControlPointAfterIndex(int index,
     if ( useFeatherPoints() ) {
         fp = std::make_shared<FeatherPoint>(this_shared);
     }
+    // Read before itemMutex: the context's lock is taken around item locks by region-of-definition
+    // readers on render threads, so taking it under this item's lock can deadlock with them.
+    const int currentTime = getContext()->getTimelineCurrentTime();
+    const bool autoKeying = getContext()->isAutoKeyingEnabled();
     {
         QMutexLocker l(&itemMutex);
 
@@ -1643,10 +1647,9 @@ Bezier::addControlPointAfterIndex(int index,
             }
         }
 
-        ///If auto-keying is enabled, set a new keyframe
-        int currentTime = getContext()->getTimelineCurrentTime();
+        /// If auto-keying is enabled, set a new keyframe
         bool keyedAllPoints = false;
-        if ( !_imp->hasKeyframeAtTime(useGuiCurve, currentTime) && getContext()->isAutoKeyingEnabled() ) {
+        if (autoKeying && !_imp->hasKeyframeAtTime(useGuiCurve, currentTime)) {
             keyedAllPoints = !_imp->hasKeyframeAtTime(true, currentTime);
             l.unlock();
             setKeyframeInternal(currentTime, useGuiCurve);

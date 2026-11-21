@@ -941,31 +941,15 @@ IWarp::renderOp(const RenderActionArgs& args,
         std::vector<float> jacobian(impulse ? 0 : (std::size_t)width * 4);
         const bool chained = chain && hasSource;
         const std::size_t chainSize = chained ? (std::size_t)width : 0;
-        std::vector<double> chainX(chainSize), chainY(chainSize), chainJ(impulse ? 0 : chainSize * 4);
-        std::vector<float> chainSx(chainSize), chainSy(chainSize), chainJacobian(impulse ? 0 : chainSize * 4);
+        Resampler::ChainRowScratch chainRow;
+        chainRow.resize(chainSize, !impulse);
         // The immediate Source at the pixel centres, which a held or unmixed pixel shows.
         std::vector<float> heldRow((chained && (mapped || !direct)) ? rowSize : 0);
-        // chainX, chainY, with J their Jacobians (null for the identity), through the chain and
+        // chainRow's points, with J their Jacobians (null for the identity), through the chain and
         // sampled into row.
         const auto sampleChainRow = [&](const float* J, float* row) {
-            double* const cj = chainJ.empty() ? NULL : chainJ.data();
-            if (cj) {
-                for (std::size_t k = 0; k < chainSize; ++k) {
-                    for (int e = 0; e < 4; ++e) {
-                        cj[k * 4 + e] = J ? (double)J[k * 4 + e] : ((e == 0) || (e == 3) ? 1. : 0.);
-                    }
-                }
-            }
-            chain->mapRow(chainSize, chainX.data(), chainY.data(), cj);
-            for (std::size_t k = 0; k < chainSize; ++k) {
-                chainSx[k] = (float)chainX[k];
-                chainSy[k] = (float)chainY[k];
-            }
-            for (std::size_t k = 0; k < chainJ.size(); ++k) {
-                chainJacobian[k] = (float)chainJ[k];
-            }
-            Resampler::resampleRowFromCoords(plane.source, chainSx.data(), chainSy.data(), chainJacobian.empty() ? NULL : chainJacobian.data(), width, settings.filter,
-                                             settings.clamp, settings.edgeMode, Resampler::eWrapNone, Resampler::eWrapNone, row, nComps);
+            chainRow.loadJacobians(chainSize, J);
+            Resampler::sampleRowThroughChain(*chain, chainSize, &chainRow, plane.source, settings.filter, settings.clamp, settings.edgeMode, row, nComps);
         };
         std::vector<float> one(nComps);
         std::vector<double> accPix(nComps);
@@ -1101,8 +1085,8 @@ IWarp::renderOp(const RenderActionArgs& args,
                 }
                 if (chained) {
                     for (int i = 0; i < width; ++i) {
-                        chainX[i] = sx[i];
-                        chainY[i] = sy[i];
+                        chainRow.x[i] = sx[i];
+                        chainRow.y[i] = sy[i];
                     }
                     sampleChainRow(impulse ? NULL : jacobian.data(), outRow);
                 } else {
@@ -1112,8 +1096,8 @@ IWarp::renderOp(const RenderActionArgs& args,
             }
             if (!heldRow.empty()) {
                 for (int i = 0; i < width; ++i) {
-                    chainX[i] = roi.x1 + i + 0.5;
-                    chainY[i] = y + 0.5;
+                    chainRow.x[i] = roi.x1 + i + 0.5;
+                    chainRow.y[i] = y + 0.5;
                 }
                 sampleChainRow(NULL, heldRow.data());
             }

@@ -2257,7 +2257,8 @@ public:
      * for renderWindow, a canonical region of its output, as transformInputRois() prepares it.
      * Null when the input concatenated no map. With no such region, every map gives no source.
      * Every call of one render whose region of interest is the same, and the request pass's
-     * transformInputRois() over it, share one prepared chain, whatever thread they are on. A chain with an error (InverseWarpChain::hasError()) is posted as the node's
+     * transformInputRois() over it, share one prepared chain, whatever thread they are on.
+     * A chain with an error (InverseWarpChain::hasError()) is posted as the node's
      * persistent error, which the consumer's render then fails with; a later call without one
      * withdraws it.
      **/
@@ -2280,16 +2281,10 @@ public:
 
 private:
     /**
-     * @brief chain prepared over window, shared by every caller with the same chain, input, time,
-     * view, scale, window and support while the chain lives, whatever thread it is on.
+     * @brief Posts chain's error as the node's persistent error, or, with none, withdraws the one
+     * an earlier call posted.
      **/
-    InverseWarpChainConstPtr prepareWarpChainShared(const InverseWarpChainConstPtr& chain,
-                                                    int inputNb,
-                                                    double time,
-                                                    ViewIdx view,
-                                                    const RenderScale& scale,
-                                                    const RectD& window,
-                                                    double filterSupport) const WARN_UNUSED_RETURN;
+    void postWarpChainError(const InverseWarpChainConstPtr& chain);
 
 protected:
     /**

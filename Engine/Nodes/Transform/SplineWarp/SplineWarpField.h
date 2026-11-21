@@ -117,7 +117,8 @@ public:
     /**
      * @brief What the field built over window gives, taken from from without solving again; from's
      * window must hold window. Grid points sit on the same lattice whatever the window, so their
-     * sources are copied; the Jacobians are worked out again, being one-sided at the grid's edge.
+     * sources are copied and the Jacobians worked out from them as a solve over window works them
+     * out, one-sided at the same grid edge, so the field is the one that solve gives, bit for bit.
      **/
     SplineWarpField(const SplineWarpField& from,
                     const RectI& window);
@@ -209,11 +210,11 @@ private:
     // cell (ix, iy)-(ix + 1, iy + 1) is in the grid.
     void cellOf(double x, double y, int* ix, int* iy, double* fx, double* fy) const;
     bool insideAnyFeather(double x, double y) const;
-    // Whether each pixel x1 to x2 - 1 of row y lies inside a boundary's feather, by the even-odd
-    // crossings of the row with each feather, as splineWarpPointInPolygon() decides.
     // Whether the window pixel containing the render-scale point (x, y) has its centre inside a
     // boundary's feather; false outside the window.
     bool containingPixelInsideFeathers(double x, double y) const;
+    // Whether each pixel x1 to x2 - 1 of row y lies inside a boundary's feather, by the even-odd
+    // crossings of the row with each feather, as splineWarpPointInPolygon() decides.
     void rowInsideFeathers(int y, int x1, int x2, std::vector<unsigned char>* inside) const;
     double nodeWeight(double x, double y) const;
 

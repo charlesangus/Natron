@@ -28,7 +28,10 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <future>
 #include <limits>
+#include <list>
+#include <mutex>
 
 #include "Engine/OverlayPointMap.h"
 
@@ -277,6 +280,39 @@ MatrixInverseWarpMap::pullBack(const RectD& canonical,
     return region;
 }
 
+struct InverseWarpChain::PreparedCache {
+    struct Entry {
+        RectD window;
+        double filterSupport = 0.;
+        std::shared_future<InverseWarpChainConstPtr> prepared;
+    };
+
+    std::mutex mutex;
+    std::list<Entry> entries;
+};
+
+InverseWarpChain::PreparedCacheSlot::PreparedCacheSlot()
+    : cache(new PreparedCache)
+{
+}
+
+InverseWarpChain::PreparedCacheSlot::PreparedCacheSlot(const PreparedCacheSlot&)
+    : cache(new PreparedCache)
+{
+}
+
+InverseWarpChain::PreparedCacheSlot&
+InverseWarpChain::PreparedCacheSlot::operator=(const PreparedCacheSlot&)
+{
+    cache.reset(new PreparedCache);
+
+    return *this;
+}
+
+InverseWarpChain::PreparedCacheSlot::~PreparedCacheSlot()
+{
+}
+
 InverseWarpChain::InverseWarpChain(const RenderScale& scale,
                                    double par)
     : _scale(scale)
@@ -427,6 +463,49 @@ InverseWarpChain::prepare(const RectD& window,
     prepared._prepared = true;
 
     return prepared;
+}
+
+InverseWarpChainConstPtr
+InverseWarpChain::prepareShared(const RectD& window,
+                                double filterSupport) const
+{
+    PreparedCache& cache = *_preparedCache.cache;
+    std::shared_future<InverseWarpChainConstPtr> prepared;
+    std::promise<InverseWarpChainConstPtr> promise;
+    bool preparesHere = false;
+    {
+        std::lock_guard<std::mutex> lock(cache.mutex);
+        for (const PreparedCache::Entry& entry : cache.entries) {
+            if ((entry.window == window) && (entry.filterSupport == filterSupport)) {
+                prepared = entry.prepared;
+                break;
+            }
+        }
+        if (!prepared.valid()) {
+            // Bounded, since a consumer that prepares per tile adds an entry per tile.
+            const std::size_t kMaxEntries = 64;
+            while (cache.entries.size() >= kMaxEntries) {
+                cache.entries.pop_front();
+            }
+            PreparedCache::Entry entry;
+            entry.window = window;
+            entry.filterSupport = filterSupport;
+            entry.prepared = promise.get_future().share();
+            prepared = entry.prepared;
+            cache.entries.push_back(entry);
+            preparesHere = true;
+        }
+    }
+    // Prepared outside the lock: a provider building its map must not hold up other windows.
+    if (preparesHere) {
+        try {
+            promise.set_value(std::make_shared<const InverseWarpChain>(prepare(window, filterSupport)));
+        } catch (...) {
+            promise.set_exception(std::current_exception());
+        }
+    }
+
+    return prepared.get();
 }
 
 void

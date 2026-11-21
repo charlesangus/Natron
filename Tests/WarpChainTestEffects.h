@@ -113,10 +113,13 @@ public:
     explicit WarpChainTestProvider(NodePtr n)
         : NativeEffectBase(n)
         , offersWarp(true)
+        , identity(false)
     {
     }
 
     std::atomic<bool> offersWarp;
+    // Read once per render hash: the identity cache keeps the first answer.
+    std::atomic<bool> identity;
 
     std::vector<RectD> getMapWindows() const
     {
@@ -155,6 +158,24 @@ public:
         *inputNb = 0;
 
         return offersWarp;
+    }
+
+    virtual bool isIdentity(double time,
+                            const RenderScale& /*scale*/,
+                            const RectI& /*roi*/,
+                            ViewIdx view,
+                            double* inputTime,
+                            ViewIdx* inputView,
+                            int* inputNb) OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        if (!identity) {
+            return false;
+        }
+        *inputTime = time;
+        *inputView = view;
+        *inputNb = 0;
+
+        return true;
     }
 
     virtual InverseWarpMapConstPtr getInverseWarpMap(double /*time*/,

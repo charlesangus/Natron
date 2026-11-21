@@ -299,6 +299,54 @@ TEST_F(WarpChainConcat, DisabledNodeInBetweenIsSkipped)
     EXPECT_EQ(window, providerOf(provider)->getMapWindows()[0]);
 }
 
+// An identity provider is stepped over as a disabled one is, so the matrices on either side of
+// it still multiply into one matrix and the provider builds no map.
+TEST_F(WarpChainConcat, IdentityNodeInsideAChainIsSkipped)
+{
+    NodePtr source = createSource();
+    NodePtr first = createTransform(5.5, 3., 15.);
+    NodePtr identity = createProvider();
+    NodePtr second = createTransform(-2., 1.5, -7.);
+    NodePtr consumer = createConsumer();
+    ASSERT_TRUE(source && first && identity && second && consumer);
+    providerOf(identity)->identity = true;
+    connectNodes(source, first, 0, true);
+    connectNodes(first, identity, 0, true);
+    connectNodes(identity, second, 0, true);
+    connectNodes(second, consumer, 0, true);
+
+    Transform::Matrix3x3 m1, m2;
+    ASSERT_TRUE(transformOf(first, &m1));
+    ASSERT_TRUE(transformOf(second, &m2));
+    const Transform::Matrix3x3 expected = Transform::matMul(m2, m1);
+
+    InputMatrixMap transforms = concatenate(consumer);
+    ASSERT_EQ(1u, transforms.count(0));
+    const InputMatrix& im = transforms[0];
+    EXPECT_FALSE(bool(im.warpChain));
+    ASSERT_TRUE(bool(im.cat));
+    expectBitIdentical(expected, *im.cat);
+    EXPECT_EQ(first->getEffectInstance(), im.newInputEffect);
+    EXPECT_EQ(source->getEffectInstance(), im.newInputEffect->getInput(im.newInputNbToFetchFrom));
+    EXPECT_TRUE(providerOf(identity)->getMapWindows().empty());
+
+    // Nearest the source, it leaves the provider above it the only map.
+    NodePtr provider = createProvider();
+    ASSERT_TRUE(bool(provider));
+    disconnectNodes(second, consumer, true);
+    disconnectNodes(first, identity, true);
+    connectNodes(source, identity, 0, true);
+    connectNodes(identity, provider, 0, true);
+    connectNodes(provider, consumer, 0, true);
+    transforms = concatenate(consumer);
+    ASSERT_EQ(1u, transforms.count(0));
+    const InputMatrix& chained = transforms[0];
+    ASSERT_TRUE(bool(chained.warpChain));
+    EXPECT_EQ(1u, chained.warpChain->getStepCount());
+    EXPECT_EQ(identity->getEffectInstance(), chained.newInputEffect);
+    EXPECT_EQ(source->getEffectInstance(), chained.newInputEffect->getInput(chained.newInputNbToFetchFrom));
+}
+
 // A chain of matrices only multiplies them in the order it always has, whether or not the
 // consumer accepts maps, and carries no warp chain.
 TEST_F(WarpChainConcat, TransformChainCatIsBitIdentical)

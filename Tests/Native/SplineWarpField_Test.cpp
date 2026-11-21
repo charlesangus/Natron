@@ -32,8 +32,10 @@
 #include <gtest/gtest.h>
 
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpField.h"
+#include "Engine/Nodes/Transform/SplineWarp/SplineWarpMesh.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpSampling.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpTps.h"
+#include "Engine/RectD.h"
 #include "Engine/RectI.h"
 
 NATRON_NAMESPACE_USING
@@ -472,5 +474,54 @@ TEST(SplineWarpField, TheCacheCutsAWindowFromALargerField)
         EXPECT_EQ(std::size_t(3), cache.getSolveCount());
         cache.get(3, map, boundaries, tiles[0], 0.75, 1., 8.);
         EXPECT_EQ(std::size_t(4), cache.getSolveCount());
+    }
+}
+
+// Both lay the grid out from the window and difference the same copied sources, one-sided at the
+// same edge, so a cut window's Jacobians are those a solve over it gives, at its edge too.
+TEST(SplineWarpField, ACutWindowHasTheJacobiansOfADirectSolve)
+{
+    std::vector<SplineWarpSamplePair> pairs;
+    pairs.push_back(makePair(40., 40., 43., 38.));
+    pairs.push_back(makePair(120., 40., 116., 45.));
+    pairs.push_back(makePair(120., 120., 126., 114.));
+    pairs.push_back(makePair(40., 120., 37., 124.));
+    SplineWarpSamplePolyline outline;
+    outline.pairs = { 0, 1, 2, 3 };
+    outline.closed = true;
+    const SplineWarpMesh mesh = SplineWarpMesh::build(pairs, std::vector<SplineWarpSamplePolyline>(1, outline), RectD(-60., -60., 300., 300.));
+    ASSERT_FALSE(mesh.usesFallback());
+    ASSERT_FALSE(mesh.isIdentity());
+    const SplineWarpTps map = bentMap();
+    const std::vector<SplineWarpBoundaryShape> none;
+    const std::vector<SplineWarpBoundaryShape> square = squareBoundary(1.5);
+    const RectI whole(-20, -30, 200, 190);
+    const RectI tiles[] = { RectI(37, 51, 101, 99), RectI(-20, -30, 13, 7), RectI(150, 140, 200, 190), RectI(-17, -21, 197, 183), RectI(64, 64, 65, 66) };
+
+    for (int m = 0; m < 2; ++m) {
+        for (int b = 0; b < 2; ++b) {
+            const std::vector<SplineWarpBoundaryShape>& boundaries = b ? square : none;
+            const SplineWarpField large = m ? SplineWarpField(mesh, boundaries, whole, 0.75, 1., 4.) : SplineWarpField(map, boundaries, whole, 0.75, 1., 4.);
+            ASSERT_FALSE(large.isIdentity());
+            for (const RectI& tile : tiles) {
+                const SplineWarpField cut(large, tile);
+                const SplineWarpField fresh = m ? SplineWarpField(mesh, boundaries, tile, 0.75, 1., 4.) : SplineWarpField(map, boundaries, tile, 0.75, 1., 4.);
+                expectSameField(fresh, cut);
+                // On the window's edges and corners and just inside them; getJacobian() takes
+                // canonical points, the window is in pixels at the 0.75 by 1 scale.
+                const double xs[] = { tile.x1 + 0., tile.x1 + 0.5, tile.x1 + 1.25, 0.5 * (tile.x1 + tile.x2), tile.x2 - 1.25, tile.x2 - 0.5, tile.x2 + 0. };
+                const double ys[] = { tile.y1 + 0., tile.y1 + 0.5, tile.y1 + 1.25, 0.5 * (tile.y1 + tile.y2), tile.y2 - 1.25, tile.y2 - 0.5, tile.y2 + 0. };
+                for (double y : ys) {
+                    for (double x : xs) {
+                        double jf[4], jc[4];
+                        fresh.getJacobian(x / 0.75, y, jf);
+                        cut.getJacobian(x / 0.75, y, jc);
+                        for (int k = 0; k < 4; ++k) {
+                            EXPECT_EQ(jf[k], jc[k]) << (m ? "mesh " : "tps ") << x << " " << y << " " << k;
+                        }
+                    }
+                }
+            }
+        }
     }
 }

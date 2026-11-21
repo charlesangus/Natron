@@ -73,6 +73,7 @@
 #include "Engine/RenderScale.h"
 #include "Engine/RotoItem.h"
 #include "Engine/Settings.h"
+#include "Engine/Transform.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -95,13 +96,14 @@ isNative(const NodePtr& node)
 bool
 renderRGBA(const NodePtr& node,
            const RectI& window,
-           RenderedPlane* plane)
+           RenderedPlane* plane,
+           double time = kTime)
 {
     std::list<ImageLayerDesc> layers;
     layers.push_back(ImageLayerDesc::getRGBAComponents());
     std::vector<RenderedPlane> planes;
     std::string error;
-    const bool ok = renderNodePlanesDirect(node, kTime, ViewIdx(0), 0, window, layers, &planes, &error);
+    const bool ok = renderNodePlanesDirect(node, time, ViewIdx(0), 0, window, layers, &planes, &error);
     EXPECT_TRUE(ok) << node->getScriptName() << ": " << error;
     if (!ok || (planes.size() != 1) || (planes[0].channels.size() != 4)) {
         return false;
@@ -790,6 +792,56 @@ TEST_F(NativeSplineWarpTest, OffersItsFieldToAChainConsumer)
     EXPECT_GT(maxDiff(image, chained, inside), 1e-3) << "the field should move the Source";
 }
 
+// A warp that leaves the Source unchanged is stepped over, so the Transform below it still reaches
+// the consumer as a matrix rather than as a chain.
+TEST_F(NativeSplineWarpTest, IdentityWarpKeepsAMatrixChainAMatrix)
+{
+    resetProject();
+    NodePtr source = makeSource();
+    NodePtr transform = makeNode(PLUGINID_NATRON_TRANSFORM, PLUGIN_MAJOR_NATRON_TRANSFORM, source);
+    ASSERT_TRUE(source && transform);
+    ASSERT_TRUE(setKnobValues(transform, kTransformNodeParamTranslate, { 3., -2. }));
+    ASSERT_TRUE(setKnobValues(transform, kTransformNodeParamRotate, { 12. }));
+    NodePtr warp = makeSplineWarp(transform);
+    NodePtr consumer = makeNode(kTestPluginIDWarpChainConsumer, -1, warp);
+    ASSERT_TRUE(warp && consumer);
+
+    Transform::Matrix3x3 m;
+    EffectInstancePtr inputToTransform;
+    ASSERT_EQ(eStatusOK, transform->getEffectInstance()->getTransform_public(kTime, RenderScale::identity, false, ViewIdx(0), &inputToTransform, &m));
+
+    const auto expectMatrix = [&](const char* what) {
+        InputMatrixMap transforms;
+        consumer->getEffectInstance()->tryConcatenateTransforms(kTime, false, ViewIdx(0), RenderScale::identity, &transforms);
+        ASSERT_EQ(1u, transforms.count(0)) << what;
+        const InputMatrix& im = transforms[0];
+        EXPECT_FALSE(bool(im.warpChain)) << what;
+        ASSERT_TRUE(bool(im.cat)) << what;
+        EXPECT_EQ(m.a, im.cat->a) << what;
+        EXPECT_EQ(m.b, im.cat->b) << what;
+        EXPECT_EQ(m.c, im.cat->c) << what;
+        EXPECT_EQ(m.d, im.cat->d) << what;
+        EXPECT_EQ(m.e, im.cat->e) << what;
+        EXPECT_EQ(m.f, im.cat->f) << what;
+        EXPECT_EQ(transform->getEffectInstance(), im.newInputEffect) << what;
+        EXPECT_EQ(source->getEffectInstance(), im.newInputEffect->getInput(im.newInputNbToFetchFrom)) << what;
+    };
+
+    ASSERT_TRUE(isIdentityOnSource(warp));
+    expectMatrix("no link");
+
+    ASSERT_TRUE(bool(linkQuad(contextOf(warp), 22., 16., 16., 2.5, -1.5)));
+    ASSERT_TRUE(setKnobValues(warp, kOfxMixParamName, { 0. }));
+    ASSERT_TRUE(isIdentityOnSource(warp));
+    expectMatrix("mix 0");
+
+    ASSERT_TRUE(setKnobValues(warp, kOfxMixParamName, { 1. }));
+    InputMatrixMap transforms;
+    consumer->getEffectInstance()->tryConcatenateTransforms(kTime, false, ViewIdx(0), RenderScale::identity, &transforms);
+    ASSERT_EQ(1u, transforms.count(0));
+    EXPECT_TRUE(bool(transforms[0].warpChain)) << "a warp that moves the Source is a map";
+}
+
 // A consumer sampling through the field alone would drop the mask, the mix and the sub-frames.
 TEST_F(NativeSplineWarpTest, MaskMixOrMotionBlurStopsItOfferingItsField)
 {
@@ -928,6 +980,55 @@ TEST_F(NativeSplineWarpTest, TransformAfterTheWarpResamplesTheSourceOnce)
     const RectI inside(10, 10, 54, 38);
     EXPECT_LE(maxDiff(concatenated, reference, inside), kWarpTolerance);
     EXPECT_GT(maxDiff(doubled, reference, inside), 1e-3) << "a double resample should soften the image";
+}
+
+// Each frame's render maps through the field of that frame, never through one prepared for another.
+TEST_F(NativeSplineWarpTest, AnimatedWarpUpstreamOfATransformFollowsTheFrame)
+{
+    resetProject();
+    NodePtr source = makeSource();
+    NodePtr warp = makeSplineWarp(source);
+    ASSERT_TRUE(source && warp);
+    SplineWarpContextPtr ctx = contextOf(warp);
+    ASSERT_TRUE(bool(ctx));
+    SplineWarpLinkPtr link = linkQuad(ctx, 22., 16., 16., 2.5, -1.5, 1.1);
+    ASSERT_TRUE(bool(link));
+    const double frames[2] = { kTime, kTime + 1. };
+    ctx->setLinkAmountAtTime(link, frames[0], 1.);
+    ctx->setLinkAmountAtTime(link, frames[1], 0.3);
+    NodePtr transform = makeNode(PLUGINID_NATRON_TRANSFORM, PLUGIN_MAJOR_NATRON_TRANSFORM, warp);
+    ASSERT_TRUE(bool(transform));
+    ASSERT_TRUE(setKnobValues(transform, kTransformNodeParamCenter, { 32., 24. }));
+    ASSERT_TRUE(setKnobValues(transform, kTransformNodeParamScale, { 0.9, 0.95 }));
+    ASSERT_TRUE(setKnobValues(transform, kTransformNodeParamTranslate, { -1., 0.5 }));
+    ASSERT_TRUE(setKnobValue(transform, kResamplerParamFilterType, std::string("bilinear")));
+    ASSERT_TRUE(setKnobValues(transform, kResamplerParamFilterClamp, { 0. }));
+    const std::optional<EdgeMode> edgeMode = transform->getEffectInstance()->getConcatenationEdgeMode(kTime, ViewIdx(0));
+    ASSERT_TRUE(edgeMode.has_value());
+    const Mat3 transformInverse = inverseOfTransform(transform);
+
+    const RectI window(0, 0, kParitySourceWidth, kParitySourceHeight);
+    const RectI inside(10, 10, 54, 38);
+    RenderedPlane rendered[2];
+    for (int f = 0; f < 2; ++f) {
+        InputMatrixMap transforms;
+        transform->getEffectInstance()->tryConcatenateTransforms(frames[f], false, ViewIdx(0), RenderScale::identity, &transforms);
+        ASSERT_EQ(1u, transforms.count(0));
+        ASSERT_TRUE(bool(transforms[0].warpChain)) << "frame " << frames[f];
+
+        RenderedPlane image;
+        ASSERT_TRUE(renderRGBA(source, window, &image, frames[f]));
+        ASSERT_TRUE(renderRGBA(transform, window, &rendered[f], frames[f]));
+        const InverseWarpMapConstPtr field = warp->getEffectInstance()->getInverseWarpMap(frames[f], ViewIdx(0), RenderScale::identity, false, RectD(-16., -16., 80., 64.));
+        ASSERT_TRUE(bool(field));
+        const RenderedPlane reference = sampleThrough([&](std::size_t n, double* sx, double* sy, double* J) {
+            InverseWarp::mapRowThroughMatrix(transformInverse.m, n, sx, sy, J);
+            field->mapRow(n, sx, sy, J);
+        },
+                                                      image, window, Resampler::eFilterBilinear, *edgeMode);
+        EXPECT_LE(maxDiff(rendered[f], reference, inside), kWarpTolerance) << "frame " << frames[f];
+    }
+    EXPECT_GT(maxDiff(rendered[0], rendered[1], inside), 1e-3) << "the warp should move between the frames";
 }
 
 // The field moves the whole Source left, so it has values beyond the warp's region of definition,

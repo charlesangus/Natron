@@ -243,8 +243,8 @@ private:
 
     /**
      * @brief Accepts what the stages accept in float without motion blur, when the Map's channel
-     * resolves in a layer of 1 to 4 channels or the Map is not read, and the Source concatenated
-     * nothing.
+     * resolves in a layer of 1 to 4 channels or the Map is not read, and the GPU takes what the
+     * Source concatenated, as warpGpuTakesChain() decides.
      **/
     virtual bool canRenderOpOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 

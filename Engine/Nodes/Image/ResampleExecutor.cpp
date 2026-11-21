@@ -633,34 +633,15 @@ runResampleCpu(EffectInstance& effect,
         std::vector<float> maskRow(doMask ? width : 0);
         const bool impulse = filter.filter == Resampler::eFilterImpulse;
         const std::size_t chainSize = plane.chained ? (std::size_t)width : 0;
-        std::vector<double> chainX(chainSize), chainY(chainSize), chainJ(impulse ? 0 : chainSize * 4);
-        std::vector<float> sx(chainSize), sy(chainSize), jacobian(impulse ? 0 : chainSize * 4);
+        Resampler::ChainRowScratch chainRow;
+        chainRow.resize(chainSize, !impulse);
         // Row y through the chain into row, after this node's own inverse matrix when throughOp.
         const auto resampleRowThroughChain = [&](int y, bool throughOp, float* row) {
-            double* const J = chainJ.empty() ? NULL : chainJ.data();
-            for (int i = 0; i < width; ++i) {
-                chainX[i] = roi.x1 + i + 0.5;
-                chainY[i] = y + 0.5;
-                if (J) {
-                    J[i * 4] = 1.;
-                    J[i * 4 + 1] = 0.;
-                    J[i * 4 + 2] = 0.;
-                    J[i * 4 + 3] = 1.;
-                }
-            }
+            chainRow.loadPixelCentres(chainSize, roi.x1, y);
             if (throughOp) {
-                InverseWarp::mapRowThroughMatrix(plane.inverse.m, chainSize, chainX.data(), chainY.data(), J);
+                InverseWarp::mapRowThroughMatrix(plane.inverse.m, chainSize, chainRow.x.data(), chainRow.y.data(), chainRow.jacobianData());
             }
-            chain->mapRow(chainSize, chainX.data(), chainY.data(), J);
-            for (std::size_t i = 0; i < chainSize; ++i) {
-                sx[i] = (float)chainX[i];
-                sy[i] = (float)chainY[i];
-            }
-            for (std::size_t k = 0; k < chainJ.size(); ++k) {
-                jacobian[k] = (float)chainJ[k];
-            }
-            Resampler::resampleRowFromCoords(plane.source, sx.data(), sy.data(), jacobian.empty() ? NULL : jacobian.data(), width, filter, request.settings.clamp,
-                                             request.settings.edgeMode, Resampler::eWrapNone, Resampler::eWrapNone, row, nComps);
+            Resampler::sampleRowThroughChain(*chain, chainSize, &chainRow, plane.source, filter, request.settings.clamp, request.settings.edgeMode, row, nComps);
         };
 
         for (int y = band.y1; y < band.y2; ++y) {

@@ -3108,6 +3108,10 @@ namespace {
 struct ConcatenatedStep {
     Transform::Matrix3x3 matrix;
     EffectInstancePtr provider;
+    // The node the step goes through, and the redirection before it.
+    EffectInstancePtr node;
+    EffectInstancePtr previousEffect;
+    int previousInputNb = -1;
 };
 } // namespace
 
@@ -3163,6 +3167,33 @@ EffectInstance::tryConcatenateTransforms(double time,
         }
     }
 
+    const auto outputPar = [time, view](const EffectInstancePtr& effect) {
+        const NodeMetadataConstPtr metadata = effect ? effect->getRenderMetadata(time, view) : NodeMetadataConstPtr();
+
+        return metadata ? metadata->getPixelAspectRatio(-1) : 1.;
+    };
+    // The input effect shows unchanged over its whole output, -1 when there is none at this time
+    // and view; stepped over as a disabled node is, so that it leaves a chain of matrices one.
+    const auto identityInputOf = [&](const EffectInstancePtr& effect) {
+        const U64 hash = effect->getRenderHash();
+        RectD rod;
+        bool isProjectFormat = false;
+        if ((effect->getRegionOfDefinition_public(hash, time, scale, view, &rod, &isProjectFormat) != eStatusOK) || rod.isInfinite()) {
+            return -1;
+        }
+        double identityTime = time;
+        ViewIdx identityView = view;
+        int identityNb = -1;
+        const RectI pixelRod = rod.toPixelEnclosing(scale, outputPar(effect));
+        if (!effect->isIdentity_public(true, hash, time, scale, pixelRod, view, &identityTime, &identityView, &identityNb)) {
+            return -1;
+        }
+        if ((identityNb < 0) || (identityTime != time) || (identityView != view) || !effect->getInput(identityNb)) {
+            return -1;
+        }
+
+        return identityNb;
+    };
 
     if ( (canTransform && getTransformSucceeded) || ( !canTransform && canApplyTransform && !inputHoldingTransforms.empty() ) ) {
         for (std::list<int>::iterator it = inputHoldingTransforms.begin(); it != inputHoldingTransforms.end(); ++it) {
@@ -3180,15 +3211,17 @@ EffectInstance::tryConcatenateTransforms(double time,
 
             // recursion upstream
             bool inputCanTransform = false;
+            bool inputOffersWarp = false;
             bool inputCanWarp = false;
             bool inputIsDisabled = input->getNode()->isNodeDisabled(time);
 
             if (!inputIsDisabled) {
                 inputCanTransform = input->getNode()->getCurrentCanTransform();
-                inputCanWarp = consumerAcceptsWarps && input->getNode()->getCurrentCanInverseWarp();
+                inputOffersWarp = input->getNode()->getCurrentCanInverseWarp();
+                inputCanWarp = consumerAcceptsWarps && inputOffersWarp;
             }
 
-            while (input && (inputCanTransform || inputCanWarp || inputIsDisabled)) {
+            while (input && (inputCanTransform || inputOffersWarp || inputIsDisabled)) {
                 // input is either disabled, or identity or can concatenate a transform or a warp too
                 if (inputIsDisabled) {
                     int prefInput;
@@ -3202,6 +3235,10 @@ EffectInstance::tryConcatenateTransforms(double time,
                         im.newInputNbToFetchFrom = prefInput;
                         im.newInputEffect = input;
                     }
+                } else if (const int identityNb = inputOffersWarp ? identityInputOf(input) : -1; identityNb >= 0) {
+                    im.newInputNbToFetchFrom = identityNb;
+                    im.newInputEffect = input;
+                    input = input->getInput(identityNb);
                 } else {
                     const std::optional<EdgeMode> inputEdgeMode = input->getConcatenationEdgeMode(time, view);
                     if (edgeMode && inputEdgeMode && (*edgeMode != *inputEdgeMode)) {
@@ -3215,6 +3252,9 @@ EffectInstance::tryConcatenateTransforms(double time,
                         if (stat == eStatusOK) {
                             ConcatenatedStep step;
                             step.matrix = m;
+                            step.node = input;
+                            step.previousEffect = im.newInputEffect;
+                            step.previousInputNb = im.newInputNbToFetchFrom;
                             steps.push_back(step);
                             if (inputToTransform) {
                                 im.newInputNbToFetchFrom = input->getInputNumber(inputToTransform.get());
@@ -3233,6 +3273,9 @@ EffectInstance::tryConcatenateTransforms(double time,
                         if (source) {
                             ConcatenatedStep step;
                             step.provider = input;
+                            step.node = input;
+                            step.previousEffect = im.newInputEffect;
+                            step.previousInputNb = im.newInputNbToFetchFrom;
                             steps.push_back(step);
                             im.newInputNbToFetchFrom = sourceNb;
                             im.newInputEffect = input;
@@ -3249,7 +3292,8 @@ EffectInstance::tryConcatenateTransforms(double time,
                     inputIsDisabled = input->getNode()->isNodeDisabled(time);
                     if (!inputIsDisabled) {
                         inputCanTransform = input->getNode()->getCurrentCanTransform();
-                        inputCanWarp = consumerAcceptsWarps && input->getNode()->getCurrentCanInverseWarp();
+                        inputOffersWarp = input->getNode()->getCurrentCanInverseWarp();
+                        inputCanWarp = consumerAcceptsWarps && inputOffersWarp;
                     }
                 }
             }
@@ -3260,6 +3304,28 @@ EffectInstance::tryConcatenateTransforms(double time,
                 bool hasProvider = false;
                 for (const ConcatenatedStep& step : steps) {
                     hasProvider = hasProvider || bool(step.provider);
+                }
+                // A chain converts every entry with the consumer's pixel aspect ratio, so one
+                // through a node with another ends before its first map, as matrices alone.
+                if (hasProvider) {
+                    const double par = outputPar(shared_from_this());
+                    bool samePar = (outputPar(input) == par);
+                    for (const ConcatenatedStep& step : steps) {
+                        samePar = samePar && (outputPar(step.node) == par);
+                    }
+                    if (!samePar) {
+                        std::size_t firstMap = 0;
+                        while (!steps[firstMap].provider) {
+                            ++firstMap;
+                        }
+                        im.newInputEffect = steps[firstMap].previousEffect;
+                        im.newInputNbToFetchFrom = steps[firstMap].previousInputNb;
+                        steps.resize(firstMap);
+                        hasProvider = false;
+                        if (steps.empty()) {
+                            continue;
+                        }
+                    }
                 }
                 if (!hasProvider && (std::find(chainOnlyInputs.begin(), chainOnlyInputs.end(), *it) != chainOnlyInputs.end())) {
                     continue;
@@ -3323,18 +3389,19 @@ EffectInstance::getConcatenatedWarpChain(int inputNb) const
     return found->second.warpChain;
 }
 
-namespace {
-// A chain's error is the node's to show until a render prepares its chain without one.
 void
-postWarpChainError(EffectInstance* effect,
-                   const InverseWarpChainConstPtr& chain)
+EffectInstance::postWarpChainError(const InverseWarpChainConstPtr& chain)
 {
     if (chain && chain->hasError()) {
-        effect->setPersistentMessage(eMessageTypeError, chain->getError());
+        _imp->warpChainErrorPosted = true;
+        setPersistentMessage(eMessageTypeError, chain->getError());
 
         return;
     }
-    NodePtr node = effect->getNode();
+    if (!_imp->warpChainErrorPosted.exchange(false)) {
+        return;
+    }
+    NodePtr node = getNode();
     if (!node) {
         return;
     }
@@ -3345,7 +3412,6 @@ postWarpChainError(EffectInstance* effect,
         node->clearPersistentMessage(false);
     }
 }
-} // namespace
 
 InverseWarpChainConstPtr
 EffectInstance::getPreparedWarpChain(int inputNb,
@@ -3368,7 +3434,7 @@ EffectInstance::getPreparedWarpChain(const InverseWarpChainConstPtr& chain,
     const EffectInstancePtr input = getInput(inputNb);
 
     if (!chain || !chain->hasMapStep() || !input) {
-        postWarpChainError(this, InverseWarpChainConstPtr());
+        postWarpChainError(InverseWarpChainConstPtr());
 
         return InverseWarpChainConstPtr();
     }
@@ -3378,69 +3444,10 @@ EffectInstance::getPreparedWarpChain(const InverseWarpChainConstPtr& chain,
     RoIMap::const_iterator found = rois.find(input);
     const RectD window = (found != rois.end()) ? found->second : RectD();
     const double filterSupport = getInverseWarpChainFilterSupport(inputNb, time, view);
-    const InverseWarpChainConstPtr result = prepareWarpChainShared(chain, inputNb, time, view, scale, window, filterSupport);
-    postWarpChainError(this, result);
+    const InverseWarpChainConstPtr result = chain->prepareShared(window, filterSupport);
+    postWarpChainError(result);
 
     return result;
-}
-
-InverseWarpChainConstPtr
-EffectInstance::prepareWarpChainShared(const InverseWarpChainConstPtr& chain,
-                                       int inputNb,
-                                       double time,
-                                       ViewIdx view,
-                                       const RenderScale& scale,
-                                       const RectD& window,
-                                       double filterSupport) const
-{
-    std::shared_future<InverseWarpChainConstPtr> prepared;
-    std::promise<InverseWarpChainConstPtr> promise;
-    bool preparesHere = false;
-    {
-        std::lock_guard<std::mutex> lock(_imp->preparedWarpChainsMutex);
-        std::list<Implementation::PreparedWarpChainEntry>& entries = _imp->preparedWarpChains;
-        for (std::list<Implementation::PreparedWarpChainEntry>::iterator it = entries.begin(); it != entries.end();) {
-            const InverseWarpChainConstPtr entryChain = it->chain.lock();
-            if (!entryChain) {
-                it = entries.erase(it);
-                continue;
-            }
-            if ((entryChain == chain) && (it->inputNb == inputNb) && (it->time == time) && (it->view == view) && (it->scale == scale) && (it->window == window) && (it->filterSupport == filterSupport)) {
-                prepared = it->prepared;
-                break;
-            }
-            ++it;
-        }
-        if (!prepared.valid()) {
-            // Bounded, since a render whose consumer prepares per tile adds an entry per tile.
-            const std::size_t kMaxEntries = 64;
-            while (entries.size() >= kMaxEntries) {
-                entries.pop_front();
-            }
-            Implementation::PreparedWarpChainEntry entry;
-            entry.chain = chain;
-            entry.inputNb = inputNb;
-            entry.time = time;
-            entry.view = view;
-            entry.scale = scale;
-            entry.window = window;
-            entry.filterSupport = filterSupport;
-            entry.prepared = promise.get_future().share();
-            prepared = entry.prepared;
-            entries.push_back(entry);
-            preparesHere = true;
-        }
-    }
-    // Prepared outside the lock: a provider building its map must not hold up other windows.
-    if (preparesHere) {
-        try {
-            promise.set_value(std::make_shared<const InverseWarpChain>(chain->prepare(window, filterSupport)));
-        } catch (...) {
-            promise.set_exception(std::current_exception());
-        }
-    }
-
-    return prepared.get();
 }
 
 bool
@@ -3542,7 +3549,7 @@ EffectInstance::transformInputRois(const EffectInstance* self,
             const double support = self->getInverseWarpChainFilterSupport(it->first, time, view);
             // Shared with the render's own preparation over the same region, so the request pass
             // and every tile build a provider's map once.
-            transformedRenderWindow = self->prepareWarpChainShared(it->second.warpChain, it->first, time, view, scale, foundRoI->second, support)->getSourceRegion();
+            transformedRenderWindow = it->second.warpChain->prepareShared(foundRoI->second, support)->getSourceRegion();
         } else {
             // invert it
             Transform::Matrix3x3 invertTransform;

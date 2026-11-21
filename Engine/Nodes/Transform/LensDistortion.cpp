@@ -1186,7 +1186,8 @@ LensDistortion::getInverseWarpMap(double time,
     const NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
     const double par = metadata ? metadata->getPixelAspectRatio(-1) : geometry.par;
     RectD rod;
-    if (getRegionOfDefinition(0, time, scale, view, &rod) != eStatusOK) {
+    bool isProjectFormat = false;
+    if (getRegionOfDefinition_public(getRenderHash(), time, scale, view, &rod, &isProjectFormat) != eStatusOK) {
         rod.clear();
     }
     const RectI crop = rod.isNull() ? RectI() : rod.toPixelEnclosing(scale, par);

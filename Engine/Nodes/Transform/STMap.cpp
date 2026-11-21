@@ -962,29 +962,18 @@ STMap::renderOp(const RenderActionArgs& args,
         // n coordinates (sx, sy) of this node's Source, with Jacobians J (null for the identity),
         // wrapped unless wrap is false, through the chain and sampled into out.
         const auto sampleThroughChain = [&](const float* sx, const float* sy, const float* J, int n, bool wrap, float* out) {
-            std::vector<double> chainX(n), chainY(n), chainJ(jacobians ? (std::size_t)n * 4 : 0);
+            // runStagesCpu() hands rows to any of its threads, so the scratch is per thread.
+            thread_local Resampler::ChainRowScratch chainRow;
+            chainRow.resize((std::size_t)n, jacobians);
             for (int i = 0; i < n; ++i) {
-                chainX[i] = sx[i];
-                chainY[i] = sy[i];
+                chainRow.x[i] = sx[i];
+                chainRow.y[i] = sy[i];
             }
-            for (std::size_t k = 0; k < chainJ.size(); ++k) {
-                chainJ[k] = J ? (double)J[k] : (((k % 4) == 0) || ((k % 4) == 3) ? 1. : 0.);
-            }
-            double* const cj = chainJ.empty() ? NULL : chainJ.data();
+            chainRow.loadJacobians((std::size_t)n, J);
             if (wrap) {
-                Resampler::wrapRow(chainX.data(), chainY.data(), cj, n, settings.wrapU, settings.wrapV, domain);
+                Resampler::wrapRow(chainRow.x.data(), chainRow.y.data(), chainRow.jacobianData(), n, settings.wrapU, settings.wrapV, domain);
             }
-            chain->mapRow(n, chainX.data(), chainY.data(), cj);
-            std::vector<float> fx(n), fy(n), fj(chainJ.size());
-            for (int i = 0; i < n; ++i) {
-                fx[i] = (float)chainX[i];
-                fy[i] = (float)chainY[i];
-            }
-            for (std::size_t k = 0; k < chainJ.size(); ++k) {
-                fj[k] = (float)chainJ[k];
-            }
-            Resampler::resampleRowFromCoords(source, fx.data(), fy.data(), fj.empty() ? NULL : fj.data(), n, settings.filter, settings.clamp, settings.edgeMode,
-                                             Resampler::eWrapNone, Resampler::eWrapNone, out, nComps);
+            Resampler::sampleRowThroughChain(*chain, (std::size_t)n, &chainRow, source, settings.filter, settings.clamp, settings.edgeMode, out, nComps);
         };
 
         const auto row = [&](const RowIO& io) {

@@ -210,7 +210,8 @@ private:
 
     /**
      * @brief Accepts what the stages accept in float, when U and V resolve to one layer of 1 to 4
-     * channels or to none, and so does the Map's channel, and the Source concatenated nothing.
+     * channels or to none, and so does the Map's channel, and the GPU takes what the Source
+     * concatenated, as warpGpuTakesChain() decides.
      **/
     virtual bool canRenderOpOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 

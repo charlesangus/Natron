@@ -384,7 +384,8 @@ private:
     virtual StatusEnum renderOp(const RenderActionArgs& args,
                                 const StagePlan& plan) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    // Accepts what the stages accept in float when the Source concatenated nothing.
+    // Accepts what the stages accept in float; with a concatenated Source, only without a mask, a
+    // mix or an unprocessed channel, outside STMap output, and when every step has a GPU form.
     virtual bool canRenderOpOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual StatusEnum renderOpGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;

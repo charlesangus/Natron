@@ -305,6 +305,14 @@ public:
     InverseWarpChain prepare(const RectD& window,
                              double filterSupport) const;
 
+    /**
+     * @brief prepare() shared by every caller with the same window and filterSupport, whatever
+     * thread it is on: the first one prepares while the others wait for it. The chain holds what
+     * it prepared, so the prepared copies go with it.
+     **/
+    InverseWarpChainConstPtr prepareShared(const RectD& window,
+                                           double filterSupport) const WARN_UNUSED_RETURN;
+
     bool isPrepared() const
     {
         return _prepared;
@@ -381,6 +389,19 @@ private:
         MapFactory factory;
     };
 
+    struct PreparedCache;
+
+    // A copy starts with an empty cache: one sharing its source's would make the copies
+    // prepareShared() stores hold the cache that holds them.
+    struct PreparedCacheSlot {
+        PreparedCacheSlot();
+        PreparedCacheSlot(const PreparedCacheSlot&);
+        PreparedCacheSlot& operator=(const PreparedCacheSlot&);
+        ~PreparedCacheSlot();
+
+        std::unique_ptr<PreparedCache> cache;
+    };
+
     RenderScale _scale;
     double _par;
     std::vector<Step> _steps;
@@ -389,6 +410,7 @@ private:
     std::string _error;
     bool _sourceInfinite = false;
     bool _prepared = false;
+    PreparedCacheSlot _preparedCache;
 };
 
 NATRON_NAMESPACE_EXIT

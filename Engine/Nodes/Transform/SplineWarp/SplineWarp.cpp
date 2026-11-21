@@ -2258,46 +2258,23 @@ SplineWarp::renderOp(const RenderActionArgs& args,
         std::vector<float> sy(width);
         std::vector<float> jacobian(impulse ? 0 : (std::size_t)width * 4);
         float* const jac = impulse ? NULL : jacobian.data();
-        std::vector<double> chainX(plane.chained ? width : 0);
-        std::vector<double> chainY(plane.chained ? width : 0);
-        std::vector<double> chainJ((plane.chained && !impulse) ? (std::size_t)width * 4 : 0);
-        double* const chainJac = chainJ.empty() ? NULL : chainJ.data();
-        // Row y's pixel centres through the field when given, the crop, then the chain, into sx, sy
-        // and jac.
-        const auto mapRowThroughChain = [&](const SplineWarpField* field, int y) {
-            for (int i = 0; i < width; ++i) {
-                chainX[i] = roi.x1 + i + 0.5;
-                chainY[i] = y + 0.5;
-                if (chainJac) {
-                    double* J = &chainJac[(std::size_t)i * 4];
-                    J[0] = 1.;
-                    J[1] = 0.;
-                    J[2] = 0.;
-                    J[3] = 1.;
-                }
-            }
+        Resampler::ChainRowScratch chainRow;
+        chainRow.resize(plane.chained ? (std::size_t)width : 0, !impulse);
+        // Row y's pixel centres through the field when given, the crop, then the chain, sampled
+        // into row.
+        const auto sampleRowThroughChain = [&](const SplineWarpField* field, int y, float* row) {
+            chainRow.loadPixelCentres((std::size_t)width, roi.x1, y);
             if (field) {
-                field->mapPoints((std::size_t)width, chainX.data(), chainY.data(), chainJac);
+                field->mapPoints((std::size_t)width, chainRow.x.data(), chainRow.y.data(), chainRow.jacobianData());
                 if (crop) {
-                    cropPointsToFormat(formatPixels, settings.edgeMode, (std::size_t)width, chainX.data(), chainY.data());
+                    cropPointsToFormat(formatPixels, settings.edgeMode, (std::size_t)width, chainRow.x.data(), chainRow.y.data());
                 }
             }
-            chain->mapRow((std::size_t)width, chainX.data(), chainY.data(), chainJac);
-            for (int i = 0; i < width; ++i) {
-                sx[i] = (float)chainX[i];
-                sy[i] = (float)chainY[i];
-            }
-            if (chainJac) {
-                for (std::size_t k = 0; k < (std::size_t)width * 4; ++k) {
-                    jac[k] = (float)chainJac[k];
-                }
-            }
+            Resampler::sampleRowThroughChain(*chain, (std::size_t)width, &chainRow, plane.source, settings.filter, settings.clamp, settings.edgeMode, row, nComps);
         };
         const auto sampleField = [&](const SplineWarpField& field, int y, float* row) {
             if (plane.chained) {
-                mapRowThroughChain(&field, y);
-                Resampler::resampleRowFromCoords(plane.source, sx.data(), sy.data(), jac, width, settings.filter, settings.clamp, settings.edgeMode,
-                                                 Resampler::eWrapNone, Resampler::eWrapNone, row, nComps);
+                sampleRowThroughChain(&field, y, row);
 
                 return;
             }
@@ -2362,9 +2339,7 @@ SplineWarp::renderOp(const RenderActionArgs& args,
             if (plane.chained) {
                 // The reference is this node's immediate input: the chain's source through the
                 // chain alone.
-                mapRowThroughChain(NULL, y);
-                Resampler::resampleRowFromCoords(plane.source, sx.data(), sy.data(), jac, width, settings.filter, settings.clamp, settings.edgeMode,
-                                                 Resampler::eWrapNone, Resampler::eWrapNone, &referenceRow[0], nComps);
+                sampleRowThroughChain(NULL, y, &referenceRow[0]);
             } else if (plane.concatenated) {
                 // The reference is this node's immediate input: the fetched image through the
                 // concatenated transform alone, read past its region under this node's edge mode,
@@ -2466,12 +2441,7 @@ SplineWarp::canRenderOpOnGpu(const GpuQuery& query) const
         return true;
     }
     // Motion blur's fields each map through the chain; only a matrix chain is taken with them.
-    Settings settings;
-    readSettings(query.time, query.view, &settings, query.draftMode);
-    std::vector<TimedWarp> warps;
-    const_cast<SplineWarp*>(this)->computeShutterWarps(query.time, query.view, settings, &warps);
-
-    return warps.size() <= 1;
+    return !hasMotionBlur(query.time, query.view);
 #else
     Q_UNUSED(query);
 
@@ -2599,9 +2569,6 @@ SplineWarp::renderOpGpu(const GpuRenderArgs& args)
         computeShutterWarps(query.time, query.view, settings, &warps);
         const bool subFrames = warps.size() > 1;
         if (chain) {
-            if (subFrames && chain->warpChain) {
-                return eStatusFailed;
-            }
             std::vector<uint32_t> chainWords(kSplineWarpGpuChainCropWords, 0u);
             if (crop) {
                 chainWords[0] = InverseWarpChain::kGpuCropFlag | ((settings.edgeMode == EdgeMode::Black) ? InverseWarpChain::kGpuEdgeBlackFlag : 0u);

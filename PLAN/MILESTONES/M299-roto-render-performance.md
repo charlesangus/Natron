@@ -72,7 +72,7 @@ Coordination with M370 - Roto Point List Render Isolation, which runs in paralle
   - verify: A gtest renders a 2-shape Roto with the variable set and checks that every stage appears once per mask. RotoContentHash_Test and RotoKeyDuringRender_Test still pass.
   - size: M
 
-- [ ] M299.P1.T3 — Record the baseline and profile, then pick the later tasks
+- [x] M299.P1.T3 — Record the baseline and profile, then pick the later tasks
   - files: tools/bench/baselines/roto-render.jsonl (new), tools/bench/BASELINE.md, this file's `## Decisions`
   - approach: On the GPU host or a cloud VM (not GitHub runners), run the P1.T1 bench on the merged P1 build with P1.T2's timers on. Then sample stacks (`tools/bench/sample_stacks_gdb.sh` + `analyze_stacks.py`) on the 100-shape UHD still and keyed cases and on the 300-stroke case. Confirm or refute the Assumptions. Rank rasterisation, feather, merge tree and per-render setup by share of frame time. Record in `## Decisions`:
     - which Phase 299.3/299.4 tasks run, and which are struck and why;
@@ -122,7 +122,7 @@ Coordination with M370 - Roto Point List Render Isolation, which runs in paralle
 
 ## Phase 299.3: Raster speed (run the tasks P1.T3 keeps)
 
-- [ ] M299.P3.T1 — Rasterise Bezier fill and feather in parallel row bands
+- [x] M299.P3.T1 — ~~Rasterise Bezier fill and feather in parallel row bands~~ (struck by P1.T3's profile; see Decisions)
   - files: Engine/RotoContext.cpp (renderBezier ~1832, renderInternalShape ~2727, kBezierTileArea ~1821), Engine/RotoFeatherRaster.cpp
   - approach:
     1. On the render thread, evaluate each sample's fill path into plain points (no `BezierCP` reads off-thread) and build the `RotoFeatherRasterizer`.
@@ -132,7 +132,7 @@ Coordination with M370 - Roto Point List Render Isolation, which runs in paralle
   - verify: BezierEdit goldens (Tests/fixtures/native-golden/BezierEdit), RotoFeatherBanding_Test and BezierGuiCopyEquivalence_Test stay bit-identical. A gtest renders the same shape with 1 and 16 bands and compares them bit for bit.
   - size: L
 
-- [ ] M299.P3.T2 — Rasterise only the requested window of large masks
+- [x] M299.P3.T2 — ~~Rasterise only the requested window of large masks~~ (struck by P1.T3's profile; see Decisions)
   - files: Engine/RotoContext.cpp (renderMaskFromStroke ~1323), Engine/EffectInstance.cpp (~2236, pass the RoI)
   - approach: Run this only if P1 shows that whole-bbox masks far larger than the RoI cost real time (zoomed viewer, tiles). Pass the pixel RoI into the mask render and rasterise RoI ∩ bbox. Record the rendered rows or tiles in M300's rendered-pixel bitmap, so later requests fill only what's missing.
   - verify: A gtest renders two disjoint RoIs, then the full bbox, and matches a one-shot render bit for bit, rasterising each pixel once. The M300 partial-entry tests still pass.
@@ -146,7 +146,7 @@ Coordination with M370 - Roto Point List Render Isolation, which runs in paralle
 
 ## Phase 299.4: Merge tree and per-render setup (run the tasks P1.T3 keeps)
 
-- [ ] M299.P4.T1 — Cache the render-order item list and tree node list per context age
+- [x] M299.P4.T1 — ~~Cache the render-order item list and tree node list per context age~~ (struck by P1.T3's profile; see Decisions)
   - files: Engine/RotoContext.cpp (getCurvesByRenderOrder, getRotoPaintTreeNodes, getRotoPaintBottomMergeNode ~158), Engine/RotoContextPrivate.h
   - approach: Keep the lists, keyed on the context age that `makeStroke`, insert, remove and reorder already bump, so each render stops walking layers and doing dynamic casts per item.
   - verify: A gtest checks that inserting, removing, reordering and changing an operator each refresh the list. RotoLayer_Test and RotoSelectionProxy_Test pass.
@@ -170,3 +170,20 @@ Coordination with M370 - Roto Point List Render Isolation, which runs in paralle
 
 - 2026-11-20 — Elaborated from the stub by a consultant after the claim; its deps (M224, M276, M300) are done. GPU rasterisation is Out; a separate milestone can be filed if the Phase 299.1 profile calls for it.
 - 2026-11-20 — P1.T1 and P1.T2 in 48f1f34a7. AppManager starts the profile from the environment, and there is an extra `allocate` stage. **PM calls:** the bench uses its own 8-frame checkerboard plate, so decode cost doesn't swamp Roto; compare.py gains the cold, p95 and edit columns, printed only when both files have them. Build running; P1.T3 (VM baseline and profile) follows.
+- 2026-11-21 — P1.T3 ran on a Vast RTX 4090 VM (EPYC 7C13 ×30, 49 GB), with the 48f1f34a7 AppImage. The baseline is `tools/bench/baselines/roto-render.jsonl` and the profile is BASELINE.md "Roto render" (committed on the lane). Six RotoPaint 300-shape records are excluded: the persistent disk tier served the identical Roto scene's Merge outputs. The stroke fixtures failed to paint, so there is no stroke data.
+- 2026-11-21 — **Profile** (100 shapes UHD, share of frame): Merge compositing 30%, outside RotoPaint 22%, per-item effect nodes 19%, RGBA conversion 14%, feather 4%, fill 2%, setup <0.1%, cache lookup 0.1%. The render runs on about 1.6 of 30 threads.
+- 2026-11-21 — **Assumptions:**
+  - Assumption 1 holds in the code but the bench hides it. The effect-node cache serves Grade edits with zero mask requests, and there were 0 mask cache hits overall (still shapes rasterise every frame). P2.T1 stays, because P4.T2 bypasses those nodes.
+  - Assumption 2 is untested, and nothing kept relies on it.
+- 2026-11-21 — **Keep and strike (PM, from the profile):**
+  - Kept: P2.T1–P2.T3, and P4.T2, which composites single-channel masks with colour applied in the composite.
+  - Struck: P3.T1 (raster is about 8.5%; parallelism across items is the fallback if the targets miss), P3.T2 (no case where the RoI is smaller than the mask) and P4.T1 (setup 0.33 ms).
+  - Deferred: P3.T3, until strokes are re-run.
+- 2026-11-21 — **Gate targets (PM, replacing the proposal):**
+  - 100-shape still UHD: later frames ≥3x, cold ≥1.75x.
+  - 100-shape keyed UHD: later frames ≥1.5x.
+  - Edit-Grade and edit-colour: ≥1.5x each.
+  - No median slower than 1.10x (run-to-run noise is ±7%).
+
+  Before the gate, the bench gets a fresh `NATRON_DISK_CACHE_PATH` per scenario, and make_roto_strokes.py is fixed for the stroke re-run.
+

@@ -46,6 +46,21 @@ isFiniteRegion(const RectD& r)
 {
     return std::isfinite(r.x1) && std::isfinite(r.y1) && std::isfinite(r.x2) && std::isfinite(r.y2) && !r.isInfinite();
 }
+
+// RectD's copy constructor asserts ordered corners, which a NaN corner or an inverted window lacks;
+// a NaN corner bounds nothing, so it reads as infinite.
+RectD
+copyableRegion(const RectD& r)
+{
+    if (std::isnan(r.x1) || std::isnan(r.y1) || std::isnan(r.x2) || std::isnan(r.y2)) {
+        return RectD(kOfxFlagInfiniteMin, kOfxFlagInfiniteMin, kOfxFlagInfiniteMax, kOfxFlagInfiniteMax);
+    }
+    if ((r.x2 < r.x1) || (r.y2 < r.y1)) {
+        return RectD();
+    }
+
+    return r;
+}
 } // namespace
 
 namespace InverseWarp {
@@ -436,7 +451,7 @@ InverseWarpChain::prepare(const RectD& window,
     prepared._windows.clear();
     prepared._windows.reserve(prepared._steps.size());
     prepared._error.clear();
-    RectD region = window;
+    RectD region = copyableRegion(window);
     if (_sourceInfinite && hasMapStep()) {
         prepared._error = getInfiniteWindowError();
     }
@@ -469,6 +484,7 @@ InverseWarpChainConstPtr
 InverseWarpChain::prepareShared(const RectD& window,
                                 double filterSupport) const
 {
+    const RectD key = copyableRegion(window);
     PreparedCache& cache = *_preparedCache.cache;
     std::shared_future<InverseWarpChainConstPtr> prepared;
     std::promise<InverseWarpChainConstPtr> promise;
@@ -476,7 +492,7 @@ InverseWarpChain::prepareShared(const RectD& window,
     {
         std::lock_guard<std::mutex> lock(cache.mutex);
         for (const PreparedCache::Entry& entry : cache.entries) {
-            if ((entry.window == window) && (entry.filterSupport == filterSupport)) {
+            if ((entry.window == key) && (entry.filterSupport == filterSupport)) {
                 prepared = entry.prepared;
                 break;
             }
@@ -488,7 +504,7 @@ InverseWarpChain::prepareShared(const RectD& window,
                 cache.entries.pop_front();
             }
             PreparedCache::Entry entry;
-            entry.window = window;
+            entry.window = key;
             entry.filterSupport = filterSupport;
             entry.prepared = promise.get_future().share();
             prepared = entry.prepared;
@@ -499,7 +515,7 @@ InverseWarpChain::prepareShared(const RectD& window,
     // Prepared outside the lock: a provider building its map must not hold up other windows.
     if (preparesHere) {
         try {
-            promise.set_value(std::make_shared<const InverseWarpChain>(prepare(window, filterSupport)));
+            promise.set_value(std::make_shared<const InverseWarpChain>(prepare(key, filterSupport)));
         } catch (...) {
             promise.set_exception(std::current_exception());
         }

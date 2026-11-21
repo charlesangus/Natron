@@ -805,6 +805,8 @@ TEST_F(NativeSplineWarpTest, IdentityWarpKeepsAMatrixChainAMatrix)
     NodePtr warp = makeSplineWarp(transform);
     NodePtr consumer = makeNode(kTestPluginIDWarpChainConsumer, -1, warp);
     ASSERT_TRUE(warp && consumer);
+    // The moved Source crosses the format's edge, so cropping to it would change the image.
+    ASSERT_TRUE(setKnobValues(warp, kSplineWarpParamCropToFormat, { 0. }));
 
     Transform::Matrix3x3 m;
     EffectInstancePtr inputToTransform;

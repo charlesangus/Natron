@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <map>
+#include <vector>
 
 #include "Global/GlobalDefines.h"
 
@@ -69,9 +70,12 @@ struct OverlayPathResult {
 /**
  * @brief Places overlayNode's overlay in a viewer showing viewed at time and view.
  *
- * viewed may be a viewer node, whose inputs are then the nodes it shows. Every walk tries inputs
- * non-optional before optional, last to first, depth first, and takes the first route that order
- * reaches, however long:
+ * viewed may be a viewer node. It then shows its active A input, and its B input too while it
+ * wipes or compares; the overlay is placed through whichever of the two it is closer to
+ * (downstream, then upstream, then sibling), A on a tie, and its other inputs play no part.
+ * Every walk tries a node's main input (Node::getPreferredInput, a Merge's B) first, then the
+ * others non-optional before optional, last to first, depth first, and takes the first route that
+ * order reaches, however long:
  * - downstream when the walk from the viewed node reaches the overlay node;
  * - otherwise upstream when the walk from the overlay node reaches the viewed node;
  * - otherwise sibling, through the first node the walk from the overlay node reaches that the
@@ -95,8 +99,8 @@ OverlayPathResult resolveOverlayPath(EffectInstance* viewed,
 
 /**
  * @brief Remembers the last resolveOverlayPath result per overlay node, so a paint or an event
- * resolves each overlay once. An entry is reused only for the same viewed node, time, view and
- * mapSiblings, and while neither the viewed node's nor the overlay's resolved node's hash mark
+ * resolves each overlay once. An entry is reused only for the same viewed node, the same nodes it
+ * displays, time, view and mapSiblings, and while neither the viewed node's nor the overlay's resolved node's hash mark
  * count has moved: every node a path can cross is upstream of one of the two, and a connection,
  * a node removal or a render knob edit there moves that count. Not thread-safe.
  **/
@@ -115,6 +119,7 @@ private:
         NodeWPtr overlayNode;
         NodeWPtr resolvedNode;
         EffectInstance* viewed = nullptr;
+        std::vector<EffectInstance*> displayed;
         U64 viewedMarks = 0;
         U64 resolvedMarks = 0;
         double time = 0.;

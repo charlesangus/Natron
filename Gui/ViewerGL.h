@@ -309,6 +309,13 @@ public:
                             double b,
                             int flags = 0) OVERRIDE FINAL; //!< see http://doc.qt.io/qt-4.8/qpainter.html#drawText-10
 
+    virtual bool renderViewportText(double x,
+                                    double y,
+                                    const std::string& string,
+                                    double r,
+                                    double g,
+                                    double b,
+                                    int flags = 0) OVERRIDE FINAL;
 
     void renderText(double x,
                     double y,

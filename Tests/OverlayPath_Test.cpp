@@ -47,6 +47,7 @@
 #include "Engine/RenderScale.h"
 #include "Engine/Transform.h"
 #include "Engine/ViewIdx.h"
+#include "Engine/ViewerInstance.h"
 
 NATRON_NAMESPACE_USING
 
@@ -379,20 +380,114 @@ TEST_F(OverlayPathTest, TransformOverlayOnASiblingMapsBySiblingLegsOnly)
     expectTranslation(result, 30., 0.);
 }
 
-TEST_F(OverlayPathTest, UpstreamRouteFollowsInputPreferenceOrder)
+TEST_F(OverlayPathTest, UpstreamRouteFollowsTheMergeMainInput)
 {
     NodePtr read = constant();
     NodePtr transform = translate(read, 10.);
-    NodePtr mergeNode = merge(transform, read);
-    NodePtr rotoNode = roto(mergeNode);
+    NodePtr onB = merge(read, transform);
+    NodePtr rotoOnB = roto(onB);
+    NodePtr onA = merge(transform, read);
+    NodePtr rotoOnA = roto(onA);
     NodePtr viewer = viewerOf(read);
-    ASSERT_TRUE(read && transform && mergeNode && rotoNode && viewer);
+    ASSERT_TRUE(read && transform && onB && rotoOnB && onA && rotoOnA && viewer);
+    ASSERT_EQ(kNativeMergeInputB, onB->getPreferredInput());
 
-    // A comes before B, so the route through the Transform wins over the shorter one.
+    const OverlayPathResult throughB = resolve(viewer, rotoOnB);
+    EXPECT_EQ(OverlayPathRelation::eUpstream, throughB.relation);
+    EXPECT_TRUE(throughB.visible);
+    expectTranslation(throughB, -10., 0.);
+
+    const OverlayPathResult directB = resolve(viewer, rotoOnA);
+    EXPECT_EQ(OverlayPathRelation::eUpstream, directB.relation);
+    EXPECT_TRUE(directB.visible);
+    expectTranslation(directB, 0., 0.);
+}
+
+TEST_F(OverlayPathTest, DownstreamRouteFollowsTheMergeMainInput)
+{
+    NodePtr read = constant();
+    NodePtr rotoNode = roto(read);
+    NodePtr transform = translate(rotoNode, 10.);
+    NodePtr onB = merge(rotoNode, transform);
+    NodePtr onA = merge(transform, rotoNode);
+    ASSERT_TRUE(read && rotoNode && transform && onB && onA);
+
+    NodePtr viewerB = viewerOf(onB);
+    ASSERT_TRUE(bool(viewerB));
+    const OverlayPathResult throughB = resolve(viewerB, rotoNode);
+    EXPECT_EQ(OverlayPathRelation::eDownstream, throughB.relation);
+    EXPECT_TRUE(throughB.visible);
+    expectTranslation(throughB, 10., 0.);
+
+    NodePtr viewerA = viewerOf(onA);
+    ASSERT_TRUE(bool(viewerA));
+    const OverlayPathResult directB = resolve(viewerA, rotoNode);
+    EXPECT_EQ(OverlayPathRelation::eDownstream, directB.relation);
+    EXPECT_TRUE(directB.visible);
+    expectTranslation(directB, 0., 0.);
+}
+
+TEST_F(OverlayPathTest, DownstreamRouteTakesTheOnlyInputThatReachesTheOverlay)
+{
+    NodePtr rotoNode = roto(constant());
+    NodePtr transform = translate(rotoNode, 10.);
+    NodePtr mergeNode = merge(transform, constant());
+    NodePtr viewer = viewerOf(mergeNode);
+    ASSERT_TRUE(rotoNode && transform && mergeNode && viewer);
+
+    const OverlayPathResult result = resolve(viewer, rotoNode);
+    EXPECT_EQ(OverlayPathRelation::eDownstream, result.relation);
+    EXPECT_TRUE(result.visible);
+    expectTranslation(result, 10., 0.);
+}
+
+TEST_F(OverlayPathTest, SiblingRouteFollowsTheMergeMainInput)
+{
+    NodePtr read = constant();
+    NodePtr left = translate(read, 10.);
+    NodePtr mergeNode = merge(read, left);
+    NodePtr rotoNode = roto(mergeNode);
+    NodePtr right = translate(read, 30.);
+    NodePtr viewer = viewerOf(right);
+    ASSERT_TRUE(read && left && mergeNode && rotoNode && right && viewer);
+
+    const OverlayPathResult result = resolve(viewer, rotoNode);
+    EXPECT_EQ(OverlayPathRelation::eSibling, result.relation);
+    EXPECT_TRUE(result.visible);
+    expectTranslation(result, 20., 0.);
+}
+
+TEST_F(OverlayPathTest, OnlyTheActiveViewerInputPlacesTheOverlay)
+{
+    NodePtr read = constant();
+    NodePtr transform = translate(read, 10.);
+    NodePtr rotoNode = roto(transform);
+    NodePtr downstream = translate(rotoNode, 30.);
+    NodePtr viewer = create(PLUGINID_NATRON_VIEWER);
+    ASSERT_TRUE(read && transform && rotoNode && downstream && viewer);
+    // Each connection makes its input the active A one, so the last one connected is shown.
+    connectNodes(downstream, viewer, 1, true);
+    connectNodes(read, viewer, 0, true);
+    ViewerInstance* viewerEffect = dynamic_cast<ViewerInstance*>(viewer->getEffectInstance().get());
+    ASSERT_TRUE(viewerEffect != nullptr);
+    int a = -1;
+    int b = -1;
+    viewerEffect->getActiveInputs(a, b);
+    ASSERT_EQ(0, a);
+
     const OverlayPathResult result = resolve(viewer, rotoNode);
     EXPECT_EQ(OverlayPathRelation::eUpstream, result.relation);
     EXPECT_TRUE(result.visible);
     expectTranslation(result, -10., 0.);
+
+    NodePtr unrelated = constant();
+    NodePtr other = create(PLUGINID_NATRON_VIEWER);
+    ASSERT_TRUE(unrelated && other);
+    connectNodes(downstream, other, 1, true);
+    connectNodes(unrelated, other, 0, true);
+    const OverlayPathResult hidden = resolve(other, rotoNode);
+    EXPECT_EQ(OverlayPathRelation::eUnrelated, hidden.relation);
+    expectTranslation(hidden, 0., 0.);
 }
 
 TEST_F(OverlayPathTest, ViewedNodeUpstreamWinsOverANearerSharedAncestor)

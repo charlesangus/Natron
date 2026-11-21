@@ -36,6 +36,7 @@
 #include "Engine/NodeGroup.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Image/TransformMath.h"
+#include "Engine/OpenGLViewerI.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/RenderScale.h"
 #include "Engine/ViewerInstance.h"
@@ -67,13 +68,19 @@ public:
     {
     }
 
-    // The connected inputs of node, non-optional before optional, each from last to first.
+    // The connected inputs of node: its main input first, then non-optional before optional,
+    // each from last to first.
     static std::vector<int> orderedInputs(EffectInstance* node)
     {
         std::vector<int> nonOptional;
         std::vector<int> optional;
+        const NodePtr owner = node->getNode();
+        const int mainInput = owner ? owner->getPreferredInput() : -1;
+        if ((mainInput >= 0) && node->getInput(mainInput)) {
+            nonOptional.push_back(mainInput);
+        }
         for (int i = node->getNInputs() - 1; i >= 0; --i) {
-            if (!node->getInput(i)) {
+            if ((i == mainInput) || !node->getInput(i)) {
                 continue;
             }
             if (node->isInputOptional(i)) {
@@ -406,24 +413,36 @@ private:
     ViewIdx _view;
 };
 
-// A viewer only displays its inputs, so a node it reads directly counts as the viewed node.
-bool
-isViewedNode(EffectInstance* viewed,
-             EffectInstance* node)
+// The nodes a viewer displays: its active A input, then its B input while it wipes or compares.
+// Any other node displays itself.
+std::vector<EffectInstance*>
+displayedNodes(EffectInstance* viewed)
 {
-    if (node == viewed) {
-        return true;
+    std::vector<EffectInstance*> nodes;
+    ViewerInstance* viewer = dynamic_cast<ViewerInstance*>(viewed);
+    if (!viewer) {
+        if (viewed) {
+            nodes.push_back(viewed);
+        }
+
+        return nodes;
     }
-    if (!dynamic_cast<ViewerInstance*>(viewed)) {
-        return false;
-    }
-    for (int i = 0; i < viewed->getNInputs(); ++i) {
-        if (viewed->getInput(i).get() == node) {
-            return true;
+    int a = -1;
+    int b = -1;
+    viewer->getActiveInputs(a, b);
+    const OpenGLViewerI* ui = viewer->getUiContext();
+    const bool compare = ui && (ui->getCompositingOperator() != eViewerCompositingOperatorNone);
+    for (int inputNb : { a, compare ? b : -1 }) {
+        if ((inputNb < 0) || (inputNb >= viewed->getNInputs())) {
+            continue;
+        }
+        EffectInstance* input = viewed->getInput(inputNb).get();
+        if (input && (std::find(nodes.begin(), nodes.end(), input) == nodes.end())) {
+            nodes.push_back(input);
         }
     }
 
-    return false;
+    return nodes;
 }
 
 // Whether m collapses the plane onto a line or a point: singular, or its derivative at the
@@ -522,7 +541,7 @@ resolveResolvedOverlayPath(EffectInstance* viewed,
     {
         std::set<EffectInstance*> explored;
         const auto isViewed = [viewed, targetEffect, &ancestor](EffectInstance* node) {
-            if ((node == targetEffect) || !isViewedNode(viewed, node)) {
+            if ((node == targetEffect) || (node != viewed)) {
                 return false;
             }
             ancestor = node;
@@ -574,6 +593,28 @@ resolveResolvedOverlayPath(EffectInstance* viewed,
     return result;
 } // resolveResolvedOverlayPath
 
+// The closest relation over the displayed nodes, the earlier node on a tie.
+OverlayPathResult
+resolveDisplayedOverlayPath(const std::vector<EffectInstance*>& displayed,
+                            EffectInstance* targetEffect,
+                            double time,
+                            ViewIdx view,
+                            bool mapSiblings)
+{
+    OverlayPathResult best;
+    best.time = time;
+    bool found = false;
+    for (EffectInstance* node : displayed) {
+        const OverlayPathResult result = resolveResolvedOverlayPath(node, targetEffect, time, view, mapSiblings);
+        if (!found || (result.relation < best.relation)) {
+            best = result;
+            found = true;
+        }
+    }
+
+    return best;
+}
+
 } // anonymous namespace
 
 OverlayPathResult
@@ -585,7 +626,7 @@ resolveOverlayPath(EffectInstance* viewed,
 {
     const NodePtr target = resolvedOverlayNode(overlayNode);
 
-    return resolveResolvedOverlayPath(viewed, target ? target->getEffectInstance().get() : NULL, time, view, mapSiblings);
+    return resolveDisplayedOverlayPath(displayedNodes(viewed), target ? target->getEffectInstance().get() : NULL, time, view, mapSiblings);
 }
 
 OverlayPathResult
@@ -597,19 +638,20 @@ OverlayPathCache::resolve(EffectInstance* viewed,
 {
     const NodePtr target = resolvedOverlayNode(overlayNode);
     const NodePtr viewedNode = viewed ? viewed->getNode() : NodePtr();
+    const std::vector<EffectInstance*> displayed = displayedNodes(viewed);
     if (!overlayNode || !target || !viewedNode) {
-        return resolveResolvedOverlayPath(viewed, target ? target->getEffectInstance().get() : NULL, time, view, mapSiblings);
+        return resolveDisplayedOverlayPath(displayed, target ? target->getEffectInstance().get() : NULL, time, view, mapSiblings);
     }
     // Read before resolving, so an edit made while resolving leaves the entry stale.
     const U64 viewedMarks = viewedNode->getHashMarkCount();
     const U64 resolvedMarks = target->getHashMarkCount();
 
     std::map<const Node*, Entry>::iterator it = _entries.find(overlayNode.get());
-    if ((it != _entries.end()) && (it->second.overlayNode.lock() == overlayNode) && (it->second.resolvedNode.lock() == target) && (it->second.viewed == viewed) && (it->second.viewedMarks == viewedMarks) && (it->second.resolvedMarks == resolvedMarks) && (it->second.time == time) && (it->second.view == view) && (it->second.mapSiblings == mapSiblings)) {
+    if ((it != _entries.end()) && (it->second.overlayNode.lock() == overlayNode) && (it->second.resolvedNode.lock() == target) && (it->second.viewed == viewed) && (it->second.displayed == displayed) && (it->second.viewedMarks == viewedMarks) && (it->second.resolvedMarks == resolvedMarks) && (it->second.time == time) && (it->second.view == view) && (it->second.mapSiblings == mapSiblings)) {
         return it->second.result;
     }
 
-    const OverlayPathResult result = resolveResolvedOverlayPath(viewed, target->getEffectInstance().get(), time, view, mapSiblings);
+    const OverlayPathResult result = resolveDisplayedOverlayPath(displayed, target->getEffectInstance().get(), time, view, mapSiblings);
     if (it == _entries.end()) {
         for (std::map<const Node*, Entry>::iterator entry = _entries.begin(); entry != _entries.end();) {
             if (entry->second.overlayNode.expired()) {
@@ -624,6 +666,7 @@ OverlayPathCache::resolve(EffectInstance* viewed,
     entry.overlayNode = overlayNode;
     entry.resolvedNode = target;
     entry.viewed = viewed;
+    entry.displayed = displayed;
     entry.viewedMarks = viewedMarks;
     entry.resolvedMarks = resolvedMarks;
     entry.time = time;

@@ -9,7 +9,11 @@ inverse of the Transform: 50 units left of where the Roto holds it. The test:
     drawn through the shared Constant, 20 units left, and a drag there moves the point;
   - clicks the toolbar's "mapSiblingOverlays" button: the knob turns off and the square is drawn
     in its own space, where a drag moves the point again;
-  - presses Shift+O in the viewer: the knob turns back on.
+  - presses Shift+O in the viewer: the knob turns back on;
+  - connects the Roto to the viewer's second pipe and shows the second Transform on A again: only
+    the active pipe places the overlay, so the square is still drawn 20 units left;
+  - wipes the Roto on B against A: the square is on the B side's render path, so it is drawn in
+    its own space.
 Saves a screenshot of each placement.
 
 Run in the natron-dev container:
@@ -204,6 +208,26 @@ try:
         yield ("sleep", SETTLE_MS)
         check(map_siblings_knob().get(), "Shift+O in the viewer turns Map Sibling Overlays back on")
         check(button.isChecked(), "the button follows the shortcut")
+
+        gt.section("inactive pipe")
+        py_viewer = app.getViewer(viewer.getScriptName())
+        gt.require(py_viewer is not None, "the viewer has a Python viewer")
+        gt.require(viewer.connectInput(1, roto), "the viewer's second pipe reads the Roto")
+        py_viewer.setAInput(0)
+        yield ("sleep", RENDER_MS)
+        check(py_viewer.getAInput() == 0, "A shows the second Transform again")
+        gt.shot("m432_inactive_pipe.png")
+        for cmd in drag_corner("inactive pipe", UPSTREAM_SHIFT - SIBLING_SHIFT):
+            yield cmd
+
+        gt.section("wipe")
+        py_viewer.setBInput(1)
+        py_viewer.setCompositingOperator(NatronEngine.Natron.ViewerCompositingOperatorEnum.eViewerCompositingOperatorWipeUnder)
+        yield ("sleep", RENDER_MS)
+        check(py_viewer.getBInput() == 1, "B shows the Roto")
+        gt.shot("m432_wipe_b.png")
+        for cmd in drag_corner("wipe B", 0.):
+            yield cmd
         faulthandler.cancel_dump_traceback_later()
 
     gt.run(steps())

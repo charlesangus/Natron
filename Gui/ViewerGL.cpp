@@ -3760,6 +3760,23 @@ ViewerGL::renderText(double x,
     return true;
 }
 
+bool
+ViewerGL::renderViewportText(double x,
+                             double y,
+                             const std::string& string,
+                             double r,
+                             double g,
+                             double b,
+                             int flags)
+{
+    // An off-path overlay is drawn through its path's matrix on the modelview; the viewport's
+    // own coordinates are the identity modelview paintGL sets up.
+    GLProtectMatrix p(GL_MODELVIEW);
+    glLoadIdentity();
+
+    return renderText(x, y, string, r, g, b, flags);
+}
+
 void
 ViewerGL::renderText(double x,
                      double y,

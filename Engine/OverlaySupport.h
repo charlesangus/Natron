@@ -177,6 +177,21 @@ public:
     }
 
     /**
+     * @brief Draws text at (x, y) in the coordinates of getViewportRect(), whatever transform the
+     * overlay is being drawn through, for text pinned to the viewport rather than to the image.
+     **/
+    virtual bool renderViewportText(double x,
+                                    double y,
+                                    const std::string& string,
+                                    double r,
+                                    double g,
+                                    double b,
+                                    int flags = 0)
+    {
+        return renderText(x, y, string, r, g, b, flags);
+    }
+
+    /**
      * @brief Draws a node's overlay draw list in the current OpenGL context, in the coordinates
      * the node's overlay is being drawn in.
      **/

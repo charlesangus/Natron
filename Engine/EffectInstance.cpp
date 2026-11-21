@@ -57,6 +57,7 @@
 #include "Engine/GPUContextPool.h"
 #include "Engine/Image.h"
 #include "Engine/ImageParams.h"
+#include "Engine/InverseWarpChain.h"
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobLayerSelect.h"
@@ -64,6 +65,7 @@
 #include "Engine/Log.h"
 #include "Engine/MemoryInfo.h" // printAsRAM
 #include "Engine/Node.h"
+#include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/OSGLContext.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/OfxImageEffectInstance.h"
@@ -3102,6 +3104,17 @@ EffectInstance::getImageFromCacheAndConvertIfNeeded(bool /*useCache*/,
     }
 } // EffectInstance::getImageFromCacheAndConvertIfNeeded
 
+namespace {
+struct ConcatenatedStep {
+    Transform::Matrix3x3 matrix;
+    EffectInstancePtr provider;
+    // The node the step goes through, and the redirection before it.
+    EffectInstancePtr node;
+    EffectInstancePtr previousEffect;
+    int previousInputNb = -1;
+};
+} // namespace
+
 void
 EffectInstance::tryConcatenateTransforms(double time,
                                          bool draftRender,
@@ -3118,6 +3131,28 @@ EffectInstance::tryConcatenateTransforms(double time,
 
     assert(inputHoldingTransforms.empty() || canApplyTransform);
 
+    // An input that takes a warp chain without holding a transform is only redirected through a
+    // chain with a map step: such a consumer has no use for a concatenated matrix alone. Nor is
+    // one whose effect is connected to another input too, which reads that effect's own output
+    // over a region of interest the redirection would move upstream.
+    std::vector<int> chainOnlyInputs;
+    const int nInputs = getNInputs();
+    for (int i = 0; i < nInputs; ++i) {
+        if ((std::find(inputHoldingTransforms.begin(), inputHoldingTransforms.end(), i) != inputHoldingTransforms.end()) || !acceptsInverseWarpChain(i, time, view)) {
+            continue;
+        }
+        const EffectInstancePtr input = getInput(i);
+        bool shared = false;
+        for (int j = 0; input && (j < nInputs) && !shared; ++j) {
+            shared = (j != i) && (getInput(j) == input);
+        }
+        if (input && !shared) {
+            inputHoldingTransforms.push_back(i);
+            chainOnlyInputs.push_back(i);
+        }
+    }
+    canApplyTransform = canApplyTransform || !chainOnlyInputs.empty();
+
     Transform::Matrix3x3 thisNodeTransform;
     EffectInstancePtr inputToTransform;
     bool getTransformSucceeded = false;
@@ -3132,6 +3167,33 @@ EffectInstance::tryConcatenateTransforms(double time,
         }
     }
 
+    const auto outputPar = [time, view](const EffectInstancePtr& effect) {
+        const NodeMetadataConstPtr metadata = effect ? effect->getRenderMetadata(time, view) : NodeMetadataConstPtr();
+
+        return metadata ? metadata->getPixelAspectRatio(-1) : 1.;
+    };
+    // The input effect shows unchanged over its whole output, -1 when there is none at this time
+    // and view; stepped over as a disabled node is, so that it leaves a chain of matrices one.
+    const auto identityInputOf = [&](const EffectInstancePtr& effect) {
+        const U64 hash = effect->getRenderHash();
+        RectD rod;
+        bool isProjectFormat = false;
+        if ((effect->getRegionOfDefinition_public(hash, time, scale, view, &rod, &isProjectFormat) != eStatusOK) || rod.isInfinite()) {
+            return -1;
+        }
+        double identityTime = time;
+        ViewIdx identityView = view;
+        int identityNb = -1;
+        const RectI pixelRod = rod.toPixelEnclosing(scale, outputPar(effect));
+        if (!effect->isIdentity_public(true, hash, time, scale, pixelRod, view, &identityTime, &identityView, &identityNb)) {
+            return -1;
+        }
+        if ((identityNb < 0) || (identityTime != time) || (identityView != view) || !effect->getInput(identityNb)) {
+            return -1;
+        }
+
+        return identityNb;
+    };
 
     if ( (canTransform && getTransformSucceeded) || ( !canTransform && canApplyTransform && !inputHoldingTransforms.empty() ) ) {
         for (std::list<int>::iterator it = inputHoldingTransforms.begin(); it != inputHoldingTransforms.end(); ++it) {
@@ -3139,23 +3201,28 @@ EffectInstance::tryConcatenateTransforms(double time,
             if (!input) {
                 continue;
             }
-            std::list<Transform::Matrix3x3> matricesByOrder; // from downstream to upstream
+            // From downstream to upstream; an entry without a provider is a matrix.
+            std::vector<ConcatenatedStep> steps;
             InputMatrix im;
             im.newInputEffect = input;
             im.newInputNbToFetchFrom = *it;
 
+            const bool consumerAcceptsWarps = acceptsInverseWarpChain(*it, time, view);
 
             // recursion upstream
             bool inputCanTransform = false;
+            bool inputOffersWarp = false;
+            bool inputCanWarp = false;
             bool inputIsDisabled = input->getNode()->isNodeDisabled(time);
 
             if (!inputIsDisabled) {
                 inputCanTransform = input->getNode()->getCurrentCanTransform();
+                inputOffersWarp = input->getNode()->getCurrentCanInverseWarp();
+                inputCanWarp = consumerAcceptsWarps && inputOffersWarp;
             }
 
-
-            while ( input && (inputCanTransform || inputIsDisabled) ) {
-                //input is either disabled, or identity or can concatenate a transform too
+            while (input && (inputCanTransform || inputOffersWarp || inputIsDisabled)) {
+                // input is either disabled, or identity or can concatenate a transform or a warp too
                 if (inputIsDisabled) {
                     int prefInput;
                     input = input->getNearestNonDisabled(time);
@@ -3168,47 +3235,136 @@ EffectInstance::tryConcatenateTransforms(double time,
                         im.newInputNbToFetchFrom = prefInput;
                         im.newInputEffect = input;
                     }
-                } else if (inputCanTransform) {
+                } else if (const int identityNb = inputOffersWarp ? identityInputOf(input) : -1; identityNb >= 0) {
+                    im.newInputNbToFetchFrom = identityNb;
+                    im.newInputEffect = input;
+                    input = input->getInput(identityNb);
+                } else {
                     const std::optional<EdgeMode> inputEdgeMode = input->getConcatenationEdgeMode(time, view);
                     if (edgeMode && inputEdgeMode && (*edgeMode != *inputEdgeMode)) {
                         break;
                     }
-                    Transform::Matrix3x3 m;
-                    inputToTransform.reset();
-                    StatusEnum stat = input->getTransform_public(time, scale, draftRender, view, &inputToTransform, &m);
-                    if (stat == eStatusOK) {
-                        matricesByOrder.push_back(m);
-                        if (inputToTransform) {
-                            im.newInputNbToFetchFrom = input->getInputNumber( inputToTransform.get() );
-                            im.newInputEffect = input;
-                            input = inputToTransform;
+                    bool concatenated = false;
+                    if (inputCanTransform) {
+                        Transform::Matrix3x3 m;
+                        inputToTransform.reset();
+                        StatusEnum stat = input->getTransform_public(time, scale, draftRender, view, &inputToTransform, &m);
+                        if (stat == eStatusOK) {
+                            ConcatenatedStep step;
+                            step.matrix = m;
+                            step.node = input;
+                            step.previousEffect = im.newInputEffect;
+                            step.previousInputNb = im.newInputNbToFetchFrom;
+                            steps.push_back(step);
+                            if (inputToTransform) {
+                                im.newInputNbToFetchFrom = input->getInputNumber(inputToTransform.get());
+                                im.newInputEffect = input;
+                                input = inputToTransform;
+                            }
+                            concatenated = true;
                         }
-                    } else {
+                    }
+                    if (!concatenated && inputCanWarp) {
+                        int sourceNb = -1;
+                        EffectInstancePtr source;
+                        if (input->canOfferInverseWarp(time, view, draftRender, &sourceNb) && (sourceNb >= 0)) {
+                            source = input->getInput(sourceNb);
+                        }
+                        if (source) {
+                            ConcatenatedStep step;
+                            step.provider = input;
+                            step.node = input;
+                            step.previousEffect = im.newInputEffect;
+                            step.previousInputNb = im.newInputNbToFetchFrom;
+                            steps.push_back(step);
+                            im.newInputNbToFetchFrom = sourceNb;
+                            im.newInputEffect = input;
+                            input = source;
+                            concatenated = true;
+                        }
+                    }
+                    if (!concatenated) {
                         break;
                     }
-                } else {
-                    assert(false);
                 }
 
                 if (input) {
                     inputIsDisabled = input->getNode()->isNodeDisabled(time);
                     if (!inputIsDisabled) {
                         inputCanTransform = input->getNode()->getCurrentCanTransform();
+                        inputOffersWarp = input->getNode()->getCurrentCanInverseWarp();
+                        inputCanWarp = consumerAcceptsWarps && inputOffersWarp;
                     }
                 }
             }
 
-            if ( input && !matricesByOrder.empty() ) {
+            if (input && !steps.empty()) {
                 assert(im.newInputEffect);
 
-                ///Now actually concatenate matrices together
-                im.cat= std::make_shared<Transform::Matrix3x3>();
-                std::list<Transform::Matrix3x3>::iterator it2 = matricesByOrder.begin();
-                *im.cat = *it2;
-                ++it2;
-                while ( it2 != matricesByOrder.end() ) {
-                    *im.cat = Transform::matMul(*im.cat, *it2);
+                bool hasProvider = false;
+                for (const ConcatenatedStep& step : steps) {
+                    hasProvider = hasProvider || bool(step.provider);
+                }
+                // A chain converts every entry with the consumer's pixel aspect ratio, so one
+                // through a node with another ends before its first map, as matrices alone.
+                if (hasProvider) {
+                    const double par = outputPar(shared_from_this());
+                    bool samePar = (outputPar(input) == par);
+                    for (const ConcatenatedStep& step : steps) {
+                        samePar = samePar && (outputPar(step.node) == par);
+                    }
+                    if (!samePar) {
+                        std::size_t firstMap = 0;
+                        while (!steps[firstMap].provider) {
+                            ++firstMap;
+                        }
+                        im.newInputEffect = steps[firstMap].previousEffect;
+                        im.newInputNbToFetchFrom = steps[firstMap].previousInputNb;
+                        steps.resize(firstMap);
+                        hasProvider = false;
+                        if (steps.empty()) {
+                            continue;
+                        }
+                    }
+                }
+                if (!hasProvider && (std::find(chainOnlyInputs.begin(), chainOnlyInputs.end(), *it) != chainOnlyInputs.end())) {
+                    continue;
+                }
+                if (!hasProvider) {
+                    /// Now actually concatenate matrices together
+                    im.cat = std::make_shared<Transform::Matrix3x3>();
+                    std::vector<ConcatenatedStep>::iterator it2 = steps.begin();
+                    *im.cat = it2->matrix;
                     ++it2;
+                    while (it2 != steps.end()) {
+                        *im.cat = Transform::matMul(*im.cat, it2->matrix);
+                        ++it2;
+                    }
+                } else {
+                    // Matrix entries convert regions with the consumer's aspect ratio, as transformInputRois() does.
+                    const NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
+                    const double par = metadata ? metadata->getPixelAspectRatio(-1) : 1.;
+                    std::shared_ptr<InverseWarpChain> chain = std::make_shared<InverseWarpChain>(scale, par);
+                    for (const ConcatenatedStep& step : steps) {
+                        if (!step.provider) {
+                            chain->appendMatrix(step.matrix);
+                            continue;
+                        }
+                        // Weak, so a chain held by a render does not keep a deleted provider alive.
+                        const EffectInstanceWPtr provider = step.provider;
+                        const unsigned gpuStep = step.provider->getInverseWarpGpuStep();
+                        const NativeEffectBase* native = dynamic_cast<const NativeEffectBase*>(step.provider.get());
+                        const std::optional<GpuWeight> gpuWeight = native ? std::optional<GpuWeight>(native->gpuWeight(time, view, scale.toMipmapLevel())) : std::nullopt;
+                        chain->appendMap(InverseWarpChain::MapFactory([provider, time, view, scale, draftRender](const RectD& window) {
+                                             const EffectInstancePtr effect = provider.lock();
+
+                                             return effect ? effect->getInverseWarpMap(time, view, scale, draftRender, window) : InverseWarpMapConstPtr();
+                                         }),
+                                         gpuStep, gpuWeight);
+                    }
+                    const EffectInstancePtr chainSource = im.newInputEffect->getInput(im.newInputNbToFetchFrom);
+                    chain->setSourceInfinite(chainSource && chainSource->isRegionOfDefinitionInfinite(time, view));
+                    im.warpChain = chain;
                 }
 
                 inputTransforms->insert( std::make_pair(*it, im) );
@@ -3216,6 +3372,83 @@ EffectInstance::tryConcatenateTransforms(double time,
         } //  for (std::list<int>::iterator it = inputHoldingTransforms.begin(); it != inputHoldingTransforms.end(); ++it)
     } // if ((canTransform && getTransformSucceeded) || (canApplyTransform && !inputHoldingTransforms.empty()))
 } // EffectInstance::tryConcatenateTransforms
+
+InverseWarpChainConstPtr
+EffectInstance::getConcatenatedWarpChain(int inputNb) const
+{
+    EffectTLSDataPtr tls = _imp->tlsData->getTLSData();
+
+    if (!tls || !tls->currentRenderArgs.validArgs || !tls->currentRenderArgs.transformRedirections) {
+        return InverseWarpChainConstPtr();
+    }
+    InputMatrixMap::const_iterator found = tls->currentRenderArgs.transformRedirections->find(inputNb);
+    if (found == tls->currentRenderArgs.transformRedirections->end()) {
+        return InverseWarpChainConstPtr();
+    }
+
+    return found->second.warpChain;
+}
+
+void
+EffectInstance::postWarpChainError(const InverseWarpChainConstPtr& chain)
+{
+    if (chain && chain->hasError()) {
+        _imp->warpChainErrorPosted = true;
+        setPersistentMessage(eMessageTypeError, chain->getError());
+
+        return;
+    }
+    if (!_imp->warpChainErrorPosted.exchange(false)) {
+        return;
+    }
+    NodePtr node = getNode();
+    if (!node) {
+        return;
+    }
+    QString current;
+    int type = 0;
+    node->getPersistentMessage(&current, &type, false);
+    if (current == QString::fromUtf8(InverseWarpChain::getInfiniteWindowError().c_str())) {
+        node->clearPersistentMessage(false);
+    }
+}
+
+InverseWarpChainConstPtr
+EffectInstance::getPreparedWarpChain(int inputNb,
+                                     double time,
+                                     ViewIdx view,
+                                     const RenderScale& scale,
+                                     const RectD& renderWindow)
+{
+    return getPreparedWarpChain(getConcatenatedWarpChain(inputNb), inputNb, time, view, scale, renderWindow);
+}
+
+InverseWarpChainConstPtr
+EffectInstance::getPreparedWarpChain(const InverseWarpChainConstPtr& chain,
+                                     int inputNb,
+                                     double time,
+                                     ViewIdx view,
+                                     const RenderScale& scale,
+                                     const RectD& renderWindow)
+{
+    const EffectInstancePtr input = getInput(inputNb);
+
+    if (!chain || !chain->hasMapStep() || !input) {
+        postWarpChainError(InverseWarpChainConstPtr());
+
+        return InverseWarpChainConstPtr();
+    }
+    // The output region of definition is unused by the regions of interest a chain consumer gives.
+    RoIMap rois;
+    getRegionsOfInterest(time, scale, renderWindow, renderWindow, view, &rois);
+    RoIMap::const_iterator found = rois.find(input);
+    const RectD window = (found != rois.end()) ? found->second : RectD();
+    const double filterSupport = getInverseWarpChainFilterSupport(inputNb, time, view);
+    const InverseWarpChainConstPtr result = chain->prepareShared(window, filterSupport);
+    postWarpChainError(result);
+
+    return result;
+}
 
 bool
 EffectInstance::allocateImageLayer(const ImageKey& key,
@@ -3288,9 +3521,11 @@ EffectInstance::allocateImageLayer(const ImageKey& key,
 
 void
 EffectInstance::transformInputRois(const EffectInstance* self,
-                                   const InputMatrixMapPtr & inputTransforms,
+                                   const InputMatrixMapPtr& inputTransforms,
+                                   double time,
+                                   ViewIdx view,
                                    double par,
-                                   const RenderScale & scale,
+                                   const RenderScale& scale,
                                    RoIMap* inputsRoi,
                                    std::map<int, EffectInstancePtr>* reroutesMap)
 {
@@ -3310,21 +3545,28 @@ EffectInstance::transformInputRois(const EffectInstance* self,
             continue;
         }
 
-        // invert it
-        Transform::Matrix3x3 invertTransform;
-        double det = Transform::matDeterminant(*it->second.cat);
-        if (det != 0.) {
-            invertTransform = Transform::matInverse(*it->second.cat, det);
+        if (it->second.warpChain) {
+            const double support = self->getInverseWarpChainFilterSupport(it->first, time, view);
+            // Shared with the render's own preparation over the same region, so the request pass
+            // and every tile build a provider's map once.
+            transformedRenderWindow = it->second.warpChain->prepareShared(foundRoI->second, support)->getSourceRegion();
+        } else {
+            // invert it
+            Transform::Matrix3x3 invertTransform;
+            double det = Transform::matDeterminant(*it->second.cat);
+            if (det != 0.) {
+                invertTransform = Transform::matInverse(*it->second.cat, det);
+            }
+
+            const auto scalePt = scale.toOfxPointD();
+            Transform::Matrix3x3 canonicalToPixel = Transform::matCanonicalToPixel(par, scalePt.x,
+                                                                                   scalePt.y, false);
+            Transform::Matrix3x3 pixelToCanonical = Transform::matPixelToCanonical(par, scalePt.x,
+                                                                                   scalePt.y, false);
+
+            invertTransform = Transform::matMul(Transform::matMul(pixelToCanonical, invertTransform), canonicalToPixel);
+            Transform::transformRegionFromRoD(foundRoI->second, invertTransform, transformedRenderWindow);
         }
-
-        const auto scalePt = scale.toOfxPointD();
-        Transform::Matrix3x3 canonicalToPixel = Transform::matCanonicalToPixel(par, scalePt.x,
-                                                                               scalePt.y, false);
-        Transform::Matrix3x3 pixelToCanonical = Transform::matPixelToCanonical(par,  scalePt.x,
-                                                                               scalePt.y, false);
-
-        invertTransform = Transform::matMul(Transform::matMul(pixelToCanonical, invertTransform), canonicalToPixel);
-        Transform::transformRegionFromRoD(foundRoI->second, invertTransform, transformedRenderWindow);
 
         //Replace the original RoI by the transformed RoI
         inputsRoi->erase(foundRoI);
@@ -5929,7 +6171,7 @@ EffectInstance::getRegionsOfInterest_public(double time,
     getRegionsOfInterest(time, scale, outputRoD, renderWindow, view, ret);
     const bool transformed = transforms && reroutesMap;
     if (transformed) {
-        transformInputRois(this, transforms, par, scale, ret, reroutesMap);
+        transformInputRois(this, transforms, time, view, par, scale, ret, reroutesMap);
     }
     adjustInputRegionsOfInterest(time, scale, view, transformed ? transforms.get() : nullptr, ret);
 }

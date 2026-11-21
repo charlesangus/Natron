@@ -289,6 +289,7 @@ public:
         , currentSupportOpenGLRender(ePluginOpenGLRenderSupportNone)
         , currentSupportSequentialRender(eSequentialPreferenceNotSequential)
         , currentCanTransform(false)
+        , currentCanInverseWarp(false)
         , draftModeUsed(false)
         , mustComputeInputRelatedData(true)
         , inputEditStamp(0)
@@ -629,6 +630,7 @@ public:
     PluginOpenGLRenderSupport currentSupportOpenGLRender;
     SequentialPreferenceEnum currentSupportSequentialRender;
     bool currentCanTransform;
+    bool currentCanInverseWarp;
     bool draftModeUsed, mustComputeInputRelatedData;
     // Main thread only. An edit of this node (its inputs, or the metadata it derives from them)
     // leaves every node below it dirty: a node is dirty while an edit stamp upstream of it is

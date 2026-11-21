@@ -30,8 +30,10 @@ amount the Map input gives. Transform (`Transform`) is its base node in the I-va
   the Map's gradient, so a steep Map does not alias. The Map is read one pixel past the render window for it.
 - **No Map.** With the Map disconnected it reads 1: the whole transform applies everywhere, as in Transform, and the
   node shows a warning badge.
-- **Concatenation.** ITransform is a per-pixel warp and never offers a matrix to concatenate: it ends a chain of
-  transforms, so a Transform above it and one below it each resample the image.
+- **Concatenation.** ITransform is a per-pixel warp and never offers a matrix to concatenate, so a transform
+  below it resamples the image again. Transforms and warps above it (Transform, CornerPin, SplineWarp,
+  LensDistortion) fold into its resample, except under motion blur or directional blur, which sample it at more
+  than one matrix per pixel: the image above them is sampled once.
 - **Region.** The region of definition is the source's pushed forward through the transforms at every Map value the
   render may see (only the full transform with the Map disconnected), grown by a pixel with Black Outside, and
   unioned with the source's under a mask or a mix. Over the Map values each corner's path is bounded per segment of
@@ -50,6 +52,7 @@ Smooth response inverted, motion blur, and mask and mix) are compared bit for bi
 
 GPU: `iwarp.slang` evaluates the same matrix curve from the same knots and reads the Map as an extra input, remapping
 it with `mapremap.slang` as the CPU does. Float images only, with or without a mask, never with motion or
-directional blur (`Tests/Native/NativeIWarpGpu_Test.cpp`).
+directional blur. Concatenated transforms and warps above it are sampled through by `warpchain.slang`; with a
+mask or a mix below 1 they render on the CPU (`Tests/Native/NativeIWarpGpu_Test.cpp`).
 
 It weighs as Heavy, the default for its op kind, so a region holding it always goes to the GPU.

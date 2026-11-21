@@ -89,7 +89,9 @@ isPlannedRange(const RangeD& range)
 struct InputMatrix
 {
     EffectInstancePtr newInputEffect;
+    // Set only when every node of the chain offered a matrix; warpChain holds any other chain.
     Transform::Matrix3x3Ptr cat;
+    InverseWarpChainConstPtr warpChain;
     int newInputNbToFetchFrom;
 };
 

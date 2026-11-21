@@ -40,6 +40,7 @@
 
 #include "BaseTest.h"
 #include "Native/NativeGpuParity.h"
+#include "Native/SplineWarpTestCurves.h"
 #include "NativeParity.h"
 
 #include "Engine/AppInstance.h"
@@ -62,6 +63,8 @@
 #include "Engine/Nodes/NodeSpec.h"
 #include "Engine/Nodes/Transform/IDistort.h"
 #include "Engine/Nodes/Transform/STMap.h"
+#include "Engine/Nodes/Transform/SplineWarp/SplineWarp.h"
+#include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/Plugin.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
@@ -338,6 +341,29 @@ expectFramesMatch(const EndToEndResult& result,
     EXPECT_EQ(0u, diff.mismatches) << what << ": worst " << diff.worstAbsolute << ", first at float " << diff.firstMismatchIndex;
 }
 
+// The pixels of a packed image of window more than margin pixels inside its edges.
+std::vector<float>
+interiorOf(const std::vector<float>& pixels,
+           const RectI& window,
+           int margin)
+{
+    const std::size_t area = (std::size_t)window.width() * window.height();
+    const std::size_t nComps = area ? pixels.size() / area : 0;
+    std::vector<float> interior;
+    for (int y = margin; y < window.height() - margin; ++y) {
+        for (int x = margin; x < window.width() - margin; ++x) {
+            const std::size_t at = ((std::size_t)y * window.width() + x) * nComps;
+            interior.insert(interior.end(), pixels.begin() + at, pixels.begin() + at + nComps);
+        }
+    }
+
+    return interior;
+}
+
+// A chain of map steps samples past the edges of the image upstream, where a frame rendered
+// through it may differ, so a concatenated frame is held to the CPU one in its interior.
+const int kChainInteriorMargin = 4;
+
 } // namespace
 
 class NativeWarpGpuTest
@@ -439,6 +465,56 @@ protected:
             EXPECT_TRUE(result.ranInRegion(node)) << what;
         }
         expectFramesMatch(result, tolerance, what);
+    }
+
+    // A Transform or, when `spline`, a SplineWarp moving a square on source: a warp that
+    // concatenates into the node after it.
+    NodePtr makeUpstreamWarp(const NodePtr& source,
+                             bool spline)
+    {
+        NodePtr node = createNode(QString::fromUtf8(spline ? PLUGINID_NATRON_SPLINEWARP : PLUGINID_NATRON_TRANSFORM),
+                                  spline ? PLUGIN_MAJOR_NATRON_SPLINEWARP : PLUGIN_MAJOR_NATRON_TRANSFORM);
+        EXPECT_TRUE(bool(node));
+        if (!node) {
+            return node;
+        }
+        connectNodes(source, node, 0, true);
+        if (spline) {
+            EXPECT_TRUE(setKnobValues(node, kSplineWarpParamBoundaryBBox, { 0. }));
+            EXPECT_TRUE(bool(SplineWarpTestCurves::linkQuad(SplineWarpTestCurves::contextOf(node), 32., 24., 12., 2., -1.5, 1.05)));
+        } else {
+            EXPECT_TRUE(setKnobValues(node, kTransformNodeParamCenter, { 32., 24. }));
+            EXPECT_TRUE(setKnobValues(node, kTransformNodeParamRotate, { 6. }));
+            EXPECT_TRUE(setKnobValues(node, kTransformNodeParamTranslate, { 2.5, -1.75 }));
+        }
+
+        return node;
+    }
+
+    // As expectParity(), with node run on the GPU and upstream concatenated into it rather than
+    // rendered when it is a map provider. Matrix-only chains are never concatenated into STMap or
+    // IDistort, so a Transform upstream renders on its own.
+    void expectChainParity(const NodePtr& source,
+                           const NodePtr& upstream,
+                           const NodePtr& node,
+                           bool concatenated,
+                           const ParityTolerance& tolerance,
+                           const std::string& what)
+    {
+        const RectI window = paritySourceWindow(source, kTime, 0);
+        const EndToEndResult result = renderEndToEnd(std::vector<NodePtr>({ upstream, node }), node, window, kTime);
+        if (result.skipped) {
+            return;
+        }
+        ASSERT_TRUE(result.ok) << what << ": " << result.error;
+        EXPECT_TRUE(result.ranInRegion(node)) << what;
+        EXPECT_EQ(1u, result.gpuTasksPerNode.count(node->getScriptName_mt_safe())) << what << ": the region fell back to the CPU";
+        EXPECT_EQ(concatenated ? 0u : 1u, result.gpuTasksPerNode.count(upstream->getScriptName_mt_safe())) << what << (concatenated ? ": the concatenated warp rendered" : ": the upstream Transform did not render");
+        EXPECT_TRUE(result.cpuFallbackReasons.empty()) << what;
+        ASSERT_EQ(result.cpu.size(), result.gpu.size()) << what;
+        const ImageDiff diff = compareImages(interiorOf(result.cpu, result.window, kChainInteriorMargin), interiorOf(result.gpu, result.window, kChainInteriorMargin), tolerance);
+        EXPECT_GT(diff.compared, 0u) << what;
+        EXPECT_EQ(0u, diff.mismatches) << what << ": worst " << diff.worstAbsolute << ", at interior float " << diff.worstIndex << ", first at interior float " << diff.firstMismatchIndex;
     }
 };
 
@@ -792,5 +868,43 @@ TEST_F(NativeWarpGpuTest, MapWithUVAlphaMatchesTheCpuFrame)
         ASSERT_TRUE(setKnobValues(stmap, kSTMapParamUVAlpha, { 1. }));
         connectNodes(makeSource(), stmap, kSTMapInputMap, true);
         expectParity(source, stmap, toleranceFor(filter), std::string("STMap Map and UV Alpha ") + filter);
+    }
+}
+
+// Its own suite, so that its renders do not push NativeWarpGpuTest past the per-suite timeout.
+class NativeWarpGpuChainTest
+    : public NativeWarpGpuTest {
+};
+
+// A SplineWarp concatenated into the Source is sampled through on the GPU: STMap wraps in its own
+// Source before the chain, and pixels a Map of 0 holds read the Source upstream where the chain
+// takes their centres. A Transform upstream renders on its own and the frames still match.
+TEST_F(NativeWarpGpuChainTest, ConcatenatedWarpsMatchTheCpuFrame)
+{
+    for (bool spline : { false, true }) {
+        for (const char* filter : { "impulse", "cubic" }) {
+            resetProject();
+            NodePtr source = makeSource();
+            NodePtr uv = makeUV();
+            ASSERT_TRUE(source && uv);
+            NodePtr upstream = makeUpstreamWarp(source, spline);
+            ASSERT_TRUE(bool(upstream));
+            NodePtr stmap = makeSTMap(upstream, uv, filter);
+            NodePtr idistort = makeIDistort(upstream, uv, filter);
+            ASSERT_TRUE(stmap && idistort);
+            ASSERT_TRUE(setKnobValues(stmap, kSTMapParamUVScale, { 2.3, 1.7 }));
+            ASSERT_TRUE(setKnobValue(stmap, kSTMapParamWrapU, std::string(kSTMapWrapRepeat)));
+            ASSERT_TRUE(setKnobValue(stmap, kSTMapParamWrapV, std::string(kSTMapWrapMirror)));
+
+            for (const NodePtr& node : { stmap, idistort }) {
+                const std::string what = node->getPluginID() + (spline ? " after a SplineWarp, " : " after a Transform, ") + filter;
+                // A Transform rendered on its own differs from the CPU one by rounding, which the
+                // impulse filter's exact tolerance would catch.
+                const ParityTolerance tolerance = spline ? toleranceFor(filter) : ParityTolerance::resampling();
+                expectChainParity(source, upstream, node, spline, tolerance, what);
+                connectNodes(makeSource(), node, (node == stmap) ? kSTMapInputMap : kIDistortInputMap, true);
+                expectChainParity(source, upstream, node, spline, tolerance, what + ", under a Map");
+            }
+        }
     }
 }

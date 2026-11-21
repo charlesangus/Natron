@@ -373,6 +373,11 @@ struct Member {
     // For a task gpuRendersFullScale(): the level-0 slot the effect renders fullRect of, which is then box-downscaled
     // into outSlot at the task's level. Only that downscale reads it.
     int fullSlot = -1;
+
+    // The transforms the frame's request concatenated into the member's inputs, and, by input number, what
+    // renderGpu() is handed of them.
+    InputMatrixMapPtr transforms;
+    std::vector<GpuInputChain> inputChains;
     RectI fullRect;
 };
 
@@ -912,6 +917,142 @@ private:
         return copies;
     }
 
+    // inputNb's entry of transforms, null when the input is fetched directly.
+    static const InputMatrix* concatenationOf(const InputMatrixMapPtr& transforms,
+                                              int inputNb)
+    {
+        if (!transforms) {
+            return nullptr;
+        }
+        const InputMatrixMap::const_iterator found = transforms->find(inputNb);
+
+        return ((found != transforms->end()) && found->second.newInputEffect) ? &found->second : nullptr;
+    }
+
+    // What effect reads of input inputNb over rect, in the pixels of the image its edge holds: for an input fetched
+    // through concatenated nodes, the effect's region pulled back through them as transformInputRois() pulls it
+    // back for the CPU, since the edge holds the image upstream of them.
+    static RectI inputRoIOf(NativeEffectBase* effect,
+                            const GpuQuery& q,
+                            const InputMatrixMapPtr& transforms,
+                            int inputNb,
+                            const RectI& rect)
+    {
+        const RectI direct = effect->getGpuInputRoI(inputNb, q.time, q.view, rect, q.mappedScale);
+        const InputMatrix* concatenation = concatenationOf(transforms, inputNb);
+        const EffectInstancePtr input = effect->getInput(inputNb);
+        if (!concatenation || direct.isNull() || !input) {
+            return direct;
+        }
+        const EffectInstancePtr source = concatenation->newInputEffect->getInput(concatenation->newInputNbToFetchFrom);
+        if (!source) {
+            return RectI();
+        }
+        const NodeMetadataConstPtr metadata = effect->getRenderMetadata(q.time, q.view);
+        const double inputPar = metadata ? metadata->getPixelAspectRatio(inputNb) : 1.;
+        const double par = metadata ? metadata->getPixelAspectRatio(-1) : 1.;
+        const InputMatrixMapPtr single = std::make_shared<InputMatrixMap>();
+        single->insert(std::make_pair(inputNb, *concatenation));
+        RoIMap rois;
+        rois[input] = direct.toCanonical_noClipping(q.mappedScale.toMipmapLevel(), inputPar);
+        std::map<int, EffectInstancePtr> reroutes;
+        EffectInstance::transformInputRois(effect, single, q.time, q.view, par, q.mappedScale, &rois, &reroutes);
+        const RoIMap::const_iterator found = rois.find(source);
+        if ((found == rois.end()) || found->second.isNull()) {
+            return RectI();
+        }
+        const NodeMetadataConstPtr sourceMetadata = source->getRenderMetadata(q.time, q.view);
+
+        return found->second.toPixelEnclosing(q.mappedScale, sourceMetadata ? sourceMetadata->getPixelAspectRatio(-1) : 1.);
+    }
+
+    // Fills member's inputChains from its transforms: a map chain prepared over renderRect and packed for
+    // warpchain.slang. False, failing the region so that the CPU renders and reports it, for a chain that cannot
+    // be prepared, has a node with no GPU form or does not fit a scratch buffer.
+    bool planInputChains(Member* member)
+    {
+        member->inputChains.clear();
+        if (!member->transforms) {
+            return true;
+        }
+        NativeEffectBase* effect = member->effect;
+        const GpuQuery& q = member->query;
+        const NodeMetadataConstPtr metadata = effect->getRenderMetadata(q.time, q.view);
+        const double par = metadata ? metadata->getPixelAspectRatio(-1) : 1.;
+        const RectD window = renderRectOf(*member).toCanonical_noClipping(q.mappedScale.toMipmapLevel(), par);
+        for (InputMatrixMap::const_iterator it = member->transforms->begin(); it != member->transforms->end(); ++it) {
+            const InputMatrix* concatenation = concatenationOf(member->transforms, it->first);
+            if (!concatenation || (it->first < 0)) {
+                continue;
+            }
+            if ((int)member->inputChains.size() <= it->first) {
+                member->inputChains.resize(it->first + 1);
+            }
+            GpuInputChain& chain = member->inputChains[it->first];
+            chain.source = concatenation->newInputEffect->getInput(concatenation->newInputNbToFetchFrom);
+            const InputMatrixMapPtr transforms = member->transforms;
+            const int inputNb = it->first;
+            chain.sourceRoI = [effect, q, transforms, inputNb](const RectI& rect) {
+                return inputRoIOf(effect, q, transforms, inputNb, rect);
+            };
+            if (!concatenation->warpChain) {
+                chain.cat = concatenation->cat;
+                if (!chain.cat) {
+                    return fail(member->task, "an input concatenates transforms the GPU path does not have");
+                }
+                continue;
+            }
+            if (!(concatenation->warpChain->getScale() == q.mappedScale)) {
+                return fail(member->task, "a warp concatenated into the node is at another scale than the GPU renders");
+            }
+            const InverseWarpChainConstPtr prepared = effect->getPreparedWarpChain(concatenation->warpChain, it->first, q.time, q.view, q.mappedScale, window);
+            if (!prepared || prepared->hasError()) {
+                return fail(member->task, prepared ? prepared->getError() : std::string("a warp concatenated into the node could not be prepared"));
+            }
+            std::shared_ptr<std::vector<uint32_t>> words = std::make_shared<std::vector<uint32_t>>();
+            if (!prepared->packGpu(words.get())) {
+                return fail(member->task, "a warp concatenated into the node has no GPU form");
+            }
+            if ((uint64_t)words->size() * sizeof(uint32_t) > q.maxScratchBytes) {
+                return fail(member->task, "a warp concatenated into the node does not fit a GPU scratch buffer");
+            }
+            chain.warpChain = prepared;
+            chain.gpuWords = words;
+            if (chain.source) {
+                // Pulling the node's region back again would prepare the chain over a window rounded
+                // otherwise, building its maps a second time, and read another region than the
+                // chain the GPU samples through.
+                const RectI preparedRect = renderRectOf(*member);
+                const NodeMetadataConstPtr sourceMetadata = chain.source->getRenderMetadata(q.time, q.view);
+                const double sourcePar = sourceMetadata ? sourceMetadata->getPixelAspectRatio(-1) : 1.;
+                chain.sourceRoI = [effect, q, transforms, inputNb, prepared, preparedRect, sourcePar](const RectI& rect) {
+                    if (rect == preparedRect) {
+                        return prepared->getSourcePixels(sourcePar);
+                    }
+
+                    return inputRoIOf(effect, q, transforms, inputNb, rect);
+                };
+            }
+        }
+
+        return true;
+    }
+
+    // inputRoIOf() through the chain planInputChains() prepared for inputNb, when it did.
+    static RectI chainInputRoIOf(const std::vector<GpuInputChain>& chains,
+                                 NativeEffectBase* effect,
+                                 const GpuQuery& q,
+                                 const InputMatrixMapPtr& transforms,
+                                 int inputNb,
+                                 const RectI& rect)
+    {
+        if ((inputNb >= 0) && (inputNb < (int)chains.size()) && chains[inputNb].sourceRoI) {
+            return chains[inputNb].sourceRoI(rect);
+        }
+
+        return inputRoIOf(effect, q, transforms, inputNb, rect);
+    }
+
     bool planInputs(const std::vector<std::pair<int, int>>& edges,
                     Member* member)
     {
@@ -982,7 +1123,7 @@ private:
             if (_graph.tasks[edges[e].second].renderedRoI.isNull()) {
                 return fail(member->task, "an input renders an empty window");
             }
-            const RectI needed = effect->getGpuInputRoI(inputNb, member->query.time, member->query.view, renderRect, member->query.mappedScale);
+            const RectI needed = chainInputRoIOf(member->inputChains, effect, member->query, member->transforms, inputNb, renderRect);
             const int slot = readSlot(edges[e].second, layer, needed);
             if (slot < 0) {
                 return fail(member->task, "an input produced in the region is not in the layer the node reads");
@@ -1011,7 +1152,7 @@ private:
             if (!effect->getGpuExtraInputLayers(inputNb, member->plane, task.key.time, task.key.view, &layers)) {
                 return fail(member->task, "the node cannot read an input on the GPU");
             }
-            const RectI needed = effect->getGpuInputRoI(inputNb, member->query.time, member->query.view, renderRect, member->query.mappedScale);
+            const RectI needed = chainInputRoIOf(member->inputChains, effect, member->query, member->transforms, inputNb, renderRect);
             for (const ImageLayerDesc& layer : layers) {
                 const int slot = readSlot(inputTasks[inputNb], layer, needed);
                 if (slot < 0) {
@@ -1165,7 +1306,8 @@ private:
                 } else if (!growFromDeviceTier(&member, &out) && task.servedFromCache) {
                     return fail(taskIndex, (_deviceGrowth != DeviceGrowth::None) ? "the device tier no longer holds the part of the output whose inputs the plan let go" : "a strip records an output grown from the device tier whole only, and the plan let go of inputs the rest of it reads");
                 }
-                if (!planInputs(edges, &member)) {
+                member.transforms = fvRequest ? fvRequest->globalData.transforms : InputMatrixMapPtr();
+                if (!planInputChains(&member) || !planInputs(edges, &member)) {
                     if (out.cachedPart) {
                         out.cachedPart->unpin();
                     }
@@ -2052,6 +2194,7 @@ private:
                    GpuRenderArgs* args) const
     {
         args->inputs.assign(member.nInputs, GpuImageView());
+        args->inputChains = member.inputChains;
         args->layerInputs.clear();
         args->contextInputs.clear();
         args->timedInputs.clear();
@@ -2446,10 +2589,17 @@ private:
             const double time = member.query.time;
             const ViewIdx view = member.query.view;
             const std::vector<int> inputOfSlot = member.inputSlotInput;
+            const std::vector<double> timeOfSlot = member.inputSlotTime;
             const ParallelRenderArgsPtr contextArgs = member.contextArgs;
             const EffectInstancePtr owner = contextArgs ? effect->shared_from_this() : EffectInstancePtr();
-            stripMember.inputRoI = [effect, owner, contextArgs, time, view, scale, inputOfSlot](int k, const RectI& rect) {
+            const GpuQuery query = member.query;
+            const InputMatrixMapPtr transforms = member.transforms;
+            const std::vector<GpuInputChain> chains = member.inputChains;
+            stripMember.inputRoI = [effect, owner, contextArgs, time, view, scale, inputOfSlot, timeOfSlot, query, transforms, chains](int k, const RectI& rect) {
                 const ContextFrameArgsScope contextScope(owner, contextArgs);
+                if (transforms && (timeOfSlot[k] == time)) {
+                    return chainInputRoIOf(chains, effect, query, transforms, inputOfSlot[k], rect);
+                }
 
                 return effect->getGpuInputRoI(inputOfSlot[k], time, view, rect, scale);
             };

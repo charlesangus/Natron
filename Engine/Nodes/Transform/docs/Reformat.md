@@ -43,4 +43,4 @@ Tolerance:
 |---|---|---|---|
 | Reformat | resampling | `kReformatTolerance` | |
 
-GPU tolerance: `resampling()` (1e-5 absolute) for every resize type, centre, flip, flop and turn, every filter with clamp and black outside on and off, preserveBB on and off, at mipmap 0 and 1. The matrix is the CPU's, built on the host. A transform concatenated from upstream stays on the CPU (`Tests/Native/NativeReformatGpu_Test.cpp`).
+GPU tolerance: `resampling()` (1e-5 absolute) for every resize type, centre, flip, flop and turn, every filter with clamp and black outside on and off, preserveBB on and off, at mipmap 0 and 1. The matrix is the CPU's, built on the host. A transform or warp concatenated from upstream (Transform, CornerPin, SplineWarp, LensDistortion) is sampled through on the GPU too, its chain packed on the host and evaluated per pixel in two-float pairs by `warpchain.slang`; with a mask, a mix below 1 or a partial channel selection the node renders on the CPU (`Tests/Native/NativeReformatGpu_Test.cpp`).

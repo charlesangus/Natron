@@ -32,6 +32,19 @@ Filtering uses the model's analytic Jacobian, so strong distortion is filtered b
 scale. openfx-misc used an identity Jacobian. The impulse filter, and draft renders, skip it and
 take the nearest pixel.
 
+With Image output the node concatenates. Transforms and warps above the Source (Transform,
+CornerPin, SplineWarp, another LensDistortion) fold into its resample, and a consumer below it
+(Transform, CornerPin, SplineWarp, IDistort, STMap, ITransform, ICornerPin, another LensDistortion)
+samples through its model, so the image is resampled once with the filter of the node lowest in
+the chain. It does neither with STMap output, a mask, a mix below 1, a partial channel selection,
+or a pixel aspect ratio other than the Source's. Through a chain a point with no solution has no
+source and reads as outside the image; with `cropToFormat` points outside the node's region read
+black or stretch from its edge, as they do when it renders on its own. A warp above it over an
+infinite region of definition fails the render with an error; crop the image above the warp.
+The GPU does the same, in either role: `warpchain.slang` evaluates the chain per pixel in two-float
+pairs, and a node lower in the chain weighs what the folded nodes would have, so placement sees
+the work it does (`Tests/WarpChainGpuPlacement_Test.cpp`).
+
 Choosing a PFBarrel `.pfb` file sets C3, C5, Center and Squeeze from it. A file with several keys
 sets keyframes, each with its own values. openfx-misc gave every key the first key's values and
 left Squeeze alone. 3DE and PFBarrel honour a format whose origin is not (0,0).

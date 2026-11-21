@@ -61,6 +61,7 @@
 #include "Engine/GpuRegionStrips.h"
 #include "Engine/GpuWeight.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/InverseWarpChain.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/LibraryBinary.h"
@@ -241,7 +242,15 @@ TEST_F(NativeTransformGpuTest, EligibilityFollowsTheSupportedSettings)
             EXPECT_EQ(supported, effect->canRenderOnGpu(q)) << name << " draft";
             q.draftMode = false;
             q.hasConcatenatedInput = true;
-            EXPECT_FALSE(effect->canRenderOnGpu(q)) << name << " a transform concatenated from upstream";
+            q.concatenatedSteps = { InverseWarpChain::eGpuStepMatrix };
+            EXPECT_EQ(supported, effect->canRenderOnGpu(q)) << name << " a transform concatenated from upstream";
+            q.concatenatedSteps = { InverseWarpChain::eGpuStepMatrix | InverseWarpChain::eGpuStepSplineWarp | InverseWarpChain::eGpuStepLens };
+            EXPECT_EQ(supported, effect->canRenderOnGpu(q)) << name << " warps concatenated from upstream";
+            q.concatenatedSteps = { InverseWarpChain::eGpuStepMatrix | InverseWarpChain::eGpuStepUnsupported };
+            EXPECT_FALSE(effect->canRenderOnGpu(q)) << name << " a warp with no GPU form concatenated from upstream";
+            q.concatenatedSteps = { InverseWarpChain::eGpuStepMatrix };
+            q.mix = 0.5;
+            EXPECT_FALSE(effect->canRenderOnGpu(q)) << name << " a mix over a transform concatenated from upstream";
         }
         if (masked) {
             GpuQuery q = eligibleQuery();
@@ -264,7 +273,10 @@ TEST_F(NativeTransformGpuTest, EligibilityFollowsTheSupportedSettings)
         {
             GpuQuery q = eligibleQuery();
             q.hasConcatenatedInput = true;
-            EXPECT_FALSE(effect->canRenderOnGpu(q)) << name << " directional blur with a transform concatenated from upstream";
+            q.concatenatedSteps = { InverseWarpChain::eGpuStepMatrix };
+            EXPECT_EQ(supported, effect->canRenderOnGpu(q)) << name << " directional blur with a transform concatenated from upstream";
+            q.concatenatedSteps = { InverseWarpChain::eGpuStepSplineWarp };
+            EXPECT_FALSE(effect->canRenderOnGpu(q)) << name << " directional blur with a warp concatenated from upstream";
         }
     }
 }
@@ -1206,7 +1218,9 @@ TEST_F(NativeTransformGpuTest, FilterParameterKnobsReachTheCpuAndGpuRenders)
     EXPECT_GT(nCompared, 0);
 }
 
-TEST_F(NativeTransformGpuTest, ConcatenatedTransformStaysOnTheCpu)
+// The second Transform resamples the source once through the concatenated matrix on the GPU,
+// which never renders the first.
+TEST_F(NativeTransformGpuTest, ConcatenatedTransformRendersOnTheGpu)
 {
     NodePtr source = createNode(QString::fromUtf8(kTestPluginIDParitySource));
     NodePtr first = makeNode();
@@ -1228,11 +1242,13 @@ TEST_F(NativeTransformGpuTest, ConcatenatedTransformStaysOnTheCpu)
         return;
     }
     ASSERT_TRUE(result.ok) << result.error;
-    EXPECT_FALSE(result.ranInRegion(second));
+    EXPECT_TRUE(result.ranInRegion(second));
+    EXPECT_EQ(0u, result.gpuTasksPerNode.count(first->getScriptName_mt_safe())) << "the concatenated Transform rendered";
+    EXPECT_TRUE(result.cpuFallbackReasons.empty());
 
     ASSERT_EQ(result.cpu.size(), result.gpu.size());
-    const ImageDiff diff = compareImages(result.cpu, result.gpu, ParityTolerance::exact());
-    EXPECT_EQ(0u, diff.mismatches) << "first at float " << diff.firstMismatchIndex;
+    const ImageDiff diff = compareImages(result.cpu, result.gpu, ParityTolerance::resampling());
+    EXPECT_EQ(0u, diff.mismatches) << "first at float " << diff.firstMismatchIndex << ", worst " << diff.worstAbsolute;
 }
 
 #define kFilterSpecOpPluginID "test.natron.built-in.GpuFilterSpecResampleOp"

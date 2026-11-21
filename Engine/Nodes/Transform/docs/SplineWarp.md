@@ -128,6 +128,11 @@ handle where they overlap.
 
 ## Notes
 
+- SplineWarp concatenates: transforms and warps above the Source fold into its resample, and a
+  consumer below it samples through its field, so the image is resampled once. A mask, a mix below
+  1, a partial channel selection or motion blur over a non-matrix chain stops it. The GPU does the
+  same with `warpchain.slang`, and the consumer weighs what SplineWarp would have
+  (`Tests/Native/NativeSplineWarpGpu_Test.cpp`, `Tests/WarpChainGpuPlacement_Test.cpp`).
 - `curveResolution` and `boundaryCurveResolution` are distances in pixels between samples (default
   4).
 - `solver` defaults to Thin Plate Spline; Mesh is the triangle mesh solver.

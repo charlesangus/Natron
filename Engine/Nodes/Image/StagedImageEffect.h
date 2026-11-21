@@ -351,6 +351,21 @@ protected:
                                                              ViewIdx view) const OVERRIDE WARN_UNUSED_RETURN;
 
     /**
+     * @brief For an op with a matrix, its source unless the op blurs over several matrices: the
+     * CPU resample maps each pixel centre through one matrix and then the chain.
+     **/
+    virtual bool acceptsInverseWarpChain(int inputNb,
+                                         double time,
+                                         ViewIdx view) const OVERRIDE WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The radius of opResample()'s filter.
+     **/
+    virtual double getInverseWarpChainFilterSupport(int inputNb,
+                                                    double time,
+                                                    ViewIdx view) const OVERRIDE WARN_UNUSED_RETURN;
+
+    /**
      * @brief Where route() chooses an input, whatever the op kind, only that input at the time
      * it chooses, and no input where it answers Black; the default where it answers None.
      **/
@@ -587,6 +602,13 @@ protected:
         return false;
     }
 
+protected:
+    /**
+     * @brief The MaskMix and PassThroughUnprocessed stages as they stand at time and view.
+     **/
+    ResampleRegionStages getResampleRegionStages(double time,
+                                                 ViewIdx view) const WARN_UNUSED_RETURN;
+
 private:
     /**
      * @brief The persistent error for a source at the wrong raw stage at time and view, or
@@ -610,9 +632,6 @@ private:
      * them, in an otherwise empty plan.
      **/
     StagePlan resolveSourcesPlan(double time, ViewIdx view, const ImageLayerDesc& plane) const WARN_UNUSED_RETURN;
-
-    ResampleRegionStages getResampleRegionStages(double time,
-                                                 ViewIdx view) const WARN_UNUSED_RETURN;
 
     StageKnobs _stageKnobs;
     mutable StageGpuShaderGate _gpuShaderGate;

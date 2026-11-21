@@ -25,6 +25,7 @@
 
 #include "Resampler.h"
 
+#include "Engine/InverseWarpChain.h"
 #include "Engine/Nodes/Image/EdgeSample.h"
 
 #include <algorithm>
@@ -1588,6 +1589,109 @@ resampleRowFromCoords(const SourceImage& src,
     }
     const RectI& domain = (wrapDomain && (wrapDomain->x2 > wrapDomain->x1) && (wrapDomain->y2 > wrapDomain->y1)) ? *wrapDomain : src.bounds;
     selectKernels(src.nComps).coords(filter, clamp, src, sx, sy, jacobian, n, edgeMode, wrapU, wrapV, domain, out, nComps);
+}
+
+void
+wrapRow(double* sx,
+        double* sy,
+        double* jacobian,
+        int n,
+        WrapMode wrapU,
+        WrapMode wrapV,
+        const RectI& domain)
+{
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+
+    for (int i = 0; i < n; ++i) {
+        bool movedX = false;
+        bool movedY = false;
+        if (!wrapCoord(&sx[i], wrapU, domain.x1, domain.x2, &movedX) || !wrapCoord(&sy[i], wrapV, domain.y1, domain.y2, &movedY)) {
+            sx[i] = nan;
+            sy[i] = nan;
+            continue;
+        }
+        if (jacobian) {
+            double* J = jacobian + (std::size_t)i * 4;
+            if (movedX) {
+                J[0] = J[1] = 0.;
+            }
+            if (movedY) {
+                J[2] = J[3] = 0.;
+            }
+        }
+    }
+}
+
+void
+ChainRowScratch::resize(std::size_t n,
+                        bool jacobians)
+{
+    x.resize(n);
+    y.resize(n);
+    jacobian.resize(jacobians ? n * 4 : 0);
+    fx.resize(n);
+    fy.resize(n);
+    fjacobian.resize(jacobian.size());
+}
+
+void
+ChainRowScratch::loadPixelCentres(std::size_t n,
+                                  int x1,
+                                  int row)
+{
+    double* const J = jacobianData();
+
+    for (std::size_t i = 0; i < n; ++i) {
+        x[i] = x1 + (int)i + 0.5;
+        y[i] = row + 0.5;
+        if (J) {
+            J[i * 4] = 1.;
+            J[i * 4 + 1] = 0.;
+            J[i * 4 + 2] = 0.;
+            J[i * 4 + 3] = 1.;
+        }
+    }
+}
+
+void
+ChainRowScratch::loadJacobians(std::size_t n,
+                               const float* J)
+{
+    double* const out = jacobianData();
+
+    if (!out) {
+        return;
+    }
+    for (std::size_t k = 0; k < n * 4; ++k) {
+        out[k] = J ? (double)J[k] : ((((k % 4) == 0) || ((k % 4) == 3)) ? 1. : 0.);
+    }
+}
+
+void
+sampleRowThroughChain(const InverseWarpChain& chain,
+                      std::size_t n,
+                      ChainRowScratch* scratch,
+                      const SourceImage& src,
+                      const FilterSpec& filter,
+                      bool clamp,
+                      EdgeMode edgeMode,
+                      float* out,
+                      int nComps)
+{
+    double* const J = scratch->jacobianData();
+
+    chain.mapRow(n, scratch->x.data(), scratch->y.data(), J);
+    for (std::size_t i = 0; i < n; ++i) {
+        scratch->fx[i] = (float)scratch->x[i];
+        scratch->fy[i] = (float)scratch->y[i];
+    }
+    float* const fj = J ? scratch->fjacobian.data() : NULL;
+    if (fj) {
+        for (std::size_t k = 0; k < n * 4; ++k) {
+            fj[k] = (float)J[k];
+        }
+    }
+    resampleRowFromCoords(src, scratch->fx.data(), scratch->fy.data(), fj, (int)n, filter, clamp, edgeMode, eWrapNone, eWrapNone, out, nComps);
 }
 
 namespace {

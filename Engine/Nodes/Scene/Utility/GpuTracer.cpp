@@ -275,7 +275,9 @@ sameGeometries(const std::vector<Placement>& a,
 // What a trace reads. Contexts that record traces hold it, so an update can replace it under them.
 struct SceneState {
     std::vector<gpu::GpuTlas> structures;
-    // Four words per structure, as Kernels/Intersect.slang reads them.
+    // Four words per structure, as Kernels/Intersect.slang reads them, then four zero words. Llvmpipe runs a
+    // loop's body once more after its last lane breaks, and loads an address every lane shares even with no
+    // lane active, so the kernel reads the entry past the last structure; zero is a structure it never traces.
     gpu::GpuBuffer structureTable;
     // The placement in each slot; empty when each slot is its placement.
     gpu::GpuBuffer order;
@@ -620,6 +622,8 @@ struct GpuTracer::Implementation {
     std::shared_ptr<gpu::GpuKernel> occludedKernel;
     bool usable = false;
     std::size_t maxInstancesPerStructure = 0;
+    // The structure table of a trace without structures: only the zero entry the kernel reads past the last.
+    gpu::GpuBuffer noStructures;
 
     std::map<UtilityScene::GeometryId, GeometryEntryPtr> geometries;
     // Built but not yet compacted, because the update that built them was stopped first.
@@ -651,7 +655,7 @@ GpuTracer::Implementation::recordTrace(gpu::GpuRecordContext& ctx,
     }
 
     const bool traced = state && state->traces();
-    const VkDeviceAddress structures = traced && state->structureTable ? state->structureTable.deviceAddress(device) : 0;
+    const VkDeviceAddress structures = (traced && state->structureTable ? state->structureTable : noStructures).deviceAddress(device);
     const VkDeviceAddress order = traced && state->order ? state->order.deviceAddress(device) : 0;
     const bool moves = traced && state->segments != 0;
     const VkDeviceAddress movers = moves ? state->moverTable.deviceAddress(device) : 0;
@@ -1248,6 +1252,14 @@ GpuTracer::GpuTracer(gpu::GpuKernelRegistry& registry,
 
         return;
     }
+
+    const std::uint32_t noStructure[4] = {};
+
+    if (gpu::GpuStatus s = stageWith(imp.device, noStructure, sizeof(noStructure), kAddressedUsage, imp.noStructures); !s) {
+        imp.outcome = Outcome { Status::Unsupported, "GpuTracer could not hold its empty structure table: " + s.message };
+
+        return;
+    }
     imp.usable = true;
 }
 
@@ -1632,7 +1644,7 @@ GpuTracer::update(const UtilityScene::Snapshot& snapshot,
             firstSlots.push_back(split ? static_cast<std::uint32_t>(first) : 0u);
         }
         if (!state->structures.empty()) {
-            const VkDeviceSize structureBytes = state->structures.size() * 4 * sizeof(std::uint32_t);
+            const VkDeviceSize structureBytes = (state->structures.size() + 1) * 4 * sizeof(std::uint32_t);
 
             if (gpu::GpuStatus s = gpu::GpuBuffer::createStaging(imp.device, structureBytes, kAddressedUsage, state->structureTable); !s) {
                 return imp.abandonUpdate(imp.failure("GpuTracer could not hold its structure table", s));
@@ -1640,6 +1652,7 @@ GpuTracer::update(const UtilityScene::Snapshot& snapshot,
 
             std::uint32_t* words = static_cast<std::uint32_t*>(state->structureTable.mapped());
 
+            std::memset(words, 0, structureBytes);
             for (std::size_t i = 0; i < state->structures.size(); ++i) {
                 const VkDeviceAddress address = state->structures[i].deviceAddress();
 

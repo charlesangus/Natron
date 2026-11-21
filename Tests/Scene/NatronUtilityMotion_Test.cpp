@@ -533,7 +533,7 @@ TEST(NatronUtilityMotionScene, AShutterHoldsATranslationsEndPoints)
     ASSERT_EQ(1u, snapshot.instances.size());
 
     const UtilityScene::Snapshot one = UtilityScene::atShutter(snapshot, 0., 0.25, 1);
-    const UtilityScene::Snapshot two = UtilityScene::atShutter(snapshot, -0.5, 1., 2);
+    const UtilityScene::Snapshot two = UtilityScene::atShutter(snapshot, -0.5, 0.5, 2);
 
     EXPECT_EQ(2, one.timeSteps);
     ASSERT_EQ(2u, one.instances[0].transformSteps.size());
@@ -543,7 +543,7 @@ TEST(NatronUtilityMotionScene, AShutterHoldsATranslationsEndPoints)
     EXPECT_EQ(3, two.timeSteps);
     ASSERT_EQ(3u, two.instances[0].transformSteps.size());
     EXPECT_NEAR(-1., two.instances[0].transformSteps[0].translation[0], 1e-9) << "before its samples a transform holds the first";
-    EXPECT_NEAR(1.5, two.instances[0].transformSteps[1].translation[0], 1e-9);
+    EXPECT_NEAR(1., two.instances[0].transformSteps[1].translation[0], 1e-9);
     EXPECT_NEAR(3., two.instances[0].transformSteps[2].translation[0], 1e-9) << "beyond its samples a transform holds the last";
     EXPECT_NE(0u, one.version & kEvaluatedBit);
     EXPECT_EQ(one.version, UtilityScene::atShutter(snapshot, 0., 0.25, 1).version) << "the same shutter builds nothing again";

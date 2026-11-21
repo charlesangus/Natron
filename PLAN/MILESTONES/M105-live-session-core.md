@@ -68,7 +68,7 @@ Scouting facts (2026-10-11): `Qt::Network` is already linked into Engine, Gui an
   - verify: compiled at P1.T5, where it passes 20 seeds in a row.
   - size: L
 
-- [ ] M105.P1.T5 — Phase 105.1 build and test checkpoint
+- [x] M105.P1.T5 — Phase 105.1 build and test checkpoint
   - files: none
   - approach: `NATRON_BUILD_JOBS=4 tools/ci/local/build.sh debug`, then `tools/ci/local/test.sh ctest debug`.
   - verify: green. The build is required.
@@ -142,3 +142,5 @@ full ctest, smoke and CI are green; the user signs off the UAT.
   3. A host connection that failed (a cycle with the peer's own unconfirmed edges) was dropped instead of waiting.
 
   Fixes: disconnect-on-deleting-source; waiting failed host edits, retried after confirmations and resyncs; resyncs keep unconfirmed edits; GraphOpApply always refreshes the mask switch. Re-gating. Still open: a hand-set mask switch racing a remote input change, and a resync re-deriving the switch.
+- 2026-11-21 — Phase 105.1 checkpoint green on 8a61def28 (gate m105-p1e, both schedulers). Phase 105.2 dispatched as one unit.
+

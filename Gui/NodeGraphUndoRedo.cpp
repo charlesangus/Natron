@@ -27,6 +27,7 @@
 
 #include <algorithm> // min, max
 #include <limits>
+#include <list>
 #include <memory>
 #include <optional>
 #include <set>
@@ -44,6 +45,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/GroupOutput.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeGroup.h"
 #include "Engine/Project.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/TimeLine.h"
@@ -1875,6 +1877,53 @@ ExtractNodeUndoRedoCommand::redo()
     _graph->getGui()->getApp()->triggerAutoSave();
 } // ExtractNodeUndoRedoCommand::redo
 
+namespace {
+
+// A copy that group from selection or ungroup makes stands in for its original, so it takes
+// the original's identity, and the copies of a group's children take its children's.
+void
+pairIdentities(const NodePtr& original,
+               const NodePtr& copy,
+               std::list<std::pair<NodeWPtr, NodeWPtr>>* pairs)
+{
+    if (!original || !copy || (original->getPluginID() != copy->getPluginID())) {
+        return;
+    }
+    pairs->push_back(std::make_pair(NodeWPtr(original), NodeWPtr(copy)));
+    NodeGroupPtr originalGroup = std::dynamic_pointer_cast<NodeGroup>(original->getEffectInstance());
+    NodeGroupPtr copyGroup = std::dynamic_pointer_cast<NodeGroup>(copy->getEffectInstance());
+    if (!originalGroup || !copyGroup) {
+        return;
+    }
+    const NodesList children = originalGroup->getNodes();
+    for (const NodePtr& child : children) {
+        pairIdentities(child, copyGroup->getNodeByName(child->getScriptName()), pairs);
+    }
+}
+
+void
+swapIdentities(const std::list<std::pair<NodeWPtr, NodeWPtr>>& pairs)
+{
+    for (const std::pair<NodeWPtr, NodeWPtr>& pair : pairs) {
+        Node::swapIdentity(pair.first.lock(), pair.second.lock());
+    }
+}
+
+NodePtr
+nodeNamed(const NodesGuiList& nodes,
+          const std::string& scriptName)
+{
+    for (const NodeGuiPtr& node : nodes) {
+        if (node && node->getNode() && (node->getNode()->getScriptName() == scriptName)) {
+            return node->getNode();
+        }
+    }
+
+    return NodePtr();
+}
+
+} // namespace
+
 GroupFromSelectionCommand::GroupFromSelectionCommand(NodeGraph* graph,
                                                      const NodesGuiList & nodes)
     : QUndoCommand()
@@ -1913,6 +1962,7 @@ GroupFromSelectionCommand::undo()
         outputNode->replaceInput(input, it->second.inputIdx);
     }
 
+    swapIdentities(_identityPairs);
 
     for (std::list<NodeGuiWPtr>::iterator it = _originalNodes.begin(); it != _originalNodes.end(); ++it) {
         NodeGuiPtr node = it->lock();
@@ -2002,6 +2052,7 @@ GroupFromSelectionCommand::redo()
 
         for (std::list<std::pair<std::string, NodeGuiPtr> >::iterator it = newNodes.begin(); it != newNodes.end(); ++it) {
             internalNewNodes.push_back( it->second->getNode() );
+            pairIdentities(nodeNamed(originalNodes, it->first), it->second->getNode(), &_identityPairs);
         }
 
         // Extract all trees from these new nodes
@@ -2168,6 +2219,7 @@ GroupFromSelectionCommand::redo()
                                      false,
                                      false);
     }
+    swapIdentities(_identityPairs);
 
     std::list<NodeGuiPtr> nodesToSelect;
     NodeGuiPtr nodeGroup = _group.lock();
@@ -2248,6 +2300,9 @@ InlineGroupCommand::InlineGroupCommand(NodeGraph* graph,
         }
         std::list<std::pair<std::string, NodeGuiPtr> > newNodes;
         _graph->pasteCliboard(cb, &newNodes);
+        for (const std::pair<std::string, NodeGuiPtr>& pasted : newNodes) {
+            pairIdentities(nodeNamed(nodesToCopy, pasted.first), pasted.second ? pasted.second->getNode() : NodePtr(), &_identityPairs);
+        }
 
         NodeGuiIPtr groupGui_i = group->getNode()->getNodeGui();
         assert(groupGui_i);
@@ -2419,6 +2474,7 @@ InlineGroupCommand::undo()
             nodesToSelect.push_back(groupNode);
         }
     }
+    swapIdentities(_identityPairs);
     _graph->setSelection(nodesToSelect);
     for (std::set<ViewerInstance*>::iterator it = viewers.begin(); it != viewers.end(); ++it) {
         (*it)->renderCurrentFrame(true);
@@ -2469,6 +2525,7 @@ InlineGroupCommand::redo()
             }
         }
     }
+    swapIdentities(_identityPairs);
     _graph->setSelection(nodesToSelect);
 
     for (std::set<ViewerInstance*>::iterator it = viewers.begin(); it != viewers.end(); ++it) {

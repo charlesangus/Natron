@@ -57,13 +57,25 @@ namespace YamlDetail {
                  const std::string& fullName,
                  BlobSink& sink,
                  std::set<std::string>* usedPaths,
-                 bool withIdentity)
+                 bool withIdentity,
+                 bool withOrigin)
         {
             em << YAML::BeginMap;
             if (withIdentity && !node.id.empty()) {
                 emitKey(em, "id");
                 em << YAML::Value;
                 emitString(em, node.id);
+            }
+            if (withOrigin && node.origin.isSet()) {
+                emitKey(em, "origin");
+                em << YAML::Value << YAML::Flow << YAML::BeginMap;
+                emitKey(em, "template");
+                em << YAML::Value;
+                emitString(em, node.origin.templateKey);
+                emitKey(em, "node");
+                em << YAML::Value;
+                emitString(em, node.origin.nodeId);
+                em << YAML::EndMap;
             }
             emitKey(em, "plugin");
             em << YAML::Value;
@@ -145,7 +157,7 @@ namespace YamlDetail {
             if (!node.children.empty()) {
                 emitKey(em, "children");
                 em << YAML::Value;
-                emitNodeMap(em, node.children, fullName, sink, usedPaths, withIdentity);
+                emitNodeMap(em, node.children, fullName, sink, usedPaths, withIdentity, withOrigin);
             }
             em << YAML::EndMap;
         }
@@ -163,6 +175,15 @@ namespace YamlDetail {
             data.scriptName = scriptName;
             if (YAML::Node id = reader.get("id")) {
                 data.id = readString(id, context + ".id");
+            }
+            if (YAML::Node origin = reader.get("origin")) {
+                MapReader originReader(origin, context + ".origin", warnings);
+                data.origin.templateKey = readString(originReader.get("template"), context + ".origin.template");
+                data.origin.nodeId = readString(originReader.get("node"), context + ".origin.node");
+                originReader.finish();
+                if (data.origin.templateKey.empty()) {
+                    fail(origin, context + ".origin", "an origin needs a template key");
+                }
             }
             data.pluginID = readString(reader.get("plugin"), context + ".plugin");
             if (data.pluginID.empty()) {
@@ -253,7 +274,8 @@ namespace YamlDetail {
                 const std::string& parentFullName,
                 BlobSink& sink,
                 std::set<std::string>* usedPaths,
-                bool withIdentity)
+                bool withIdentity,
+                bool withOrigin)
     {
         const std::vector<NodeSerializationPtr> sorted = sortedByScriptName(nodes, parentFullName);
         if (sorted.empty()) {
@@ -266,7 +288,7 @@ namespace YamlDetail {
             emitKey(em, node->scriptName);
             em << YAML::Value;
             const std::string fullName = parentFullName.empty() ? node->scriptName : parentFullName + "." + node->scriptName;
-            emitNode(em, *node, fullName, sink, usedPaths, withIdentity);
+            emitNode(em, *node, fullName, sink, usedPaths, withIdentity, withOrigin);
         }
         em << YAML::EndMap;
     }

@@ -1,0 +1,26 @@
+# Hand-written: the correspondences and conflicts a correct merge of keyframes-both-sides/ gives.
+description: >-
+  Grade1's multiply is keyed at frames 1 and 10 in the template. The artist changes the key at 10
+  and adds one at 20; the supervisor changes the keys at 1 and 10 and adds one at 30. Only the key at
+  10, changed differently by both, conflicts.
+merges:
+  - template: grade_tpl
+    base_mine:
+      TplIn: TplIn
+      Grade1: Grade1
+      Blur1: Blur1
+      Constant1: Constant1
+      Merge1: Merge1
+      ColorCorrect1: ColorCorrect1
+      TplOut: TplOut
+    base_theirs:
+      TplIn: TplIn
+      Grade1: Grade1
+      Blur1: Blur1
+      Constant1: Constant1
+      Merge1: Merge1
+      ColorCorrect1: ColorCorrect1
+      TplOut: TplOut
+    scope: [TplIn, Grade1, Blur1, Constant1, Merge1, ColorCorrect1, TplOut]
+    conflicts:
+      - {node: Grade1, knob: multiply, dim: 0, time: 10, kind: curve-key}

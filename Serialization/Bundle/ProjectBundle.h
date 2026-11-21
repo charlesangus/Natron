@@ -101,7 +101,8 @@ public:
     ProjectBundleWriter();
 
     /**
-     * @brief Encodes project.yaml, keeping its heavy roto and tracker data as blob members.
+     * @brief Encodes project.yaml, keeping its heavy roto and tracker data as blob members, and
+     * the project's unresolved merge conflicts as merge/conflicts.yaml when it has any.
      * Throws YamlError when the project cannot be encoded.
      **/
     void setProject(const ProjectSerialization& project);
@@ -214,6 +215,7 @@ public:
      * manifest that does not match the members, then what decoding reports: a blob member
      * project.yaml names that the bundle lacks leaves that item's data empty. Such a member is
      * reported there only, even when the manifest lists it, so each problem is reported once.
+     * A merge/conflicts.yaml that does not decode is reported and leaves no conflicts.
      * A project.yaml from a newer Natron throws YamlNewerFormatError; anything else that does
      * not decode throws YamlError.
      **/

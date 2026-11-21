@@ -1,0 +1,27 @@
+# Hand-written: the correspondences and conflicts a correct merge of cut-paste-template-node/ gives.
+description: >-
+  The artist cuts Grade1 and pastes it back unconnected, wiring TplIn straight into Blur1; the
+  supervisor sets Grade1's gamma. The paste gets a new ID but keeps its origin, since no other node
+  in the shot has it, so it still is Grade1 and takes the gamma; the artist's rewiring stays.
+merges:
+  - template: grade_tpl
+    base_mine:
+      TplIn: TplIn
+      Grade1: Grade1
+      Blur1: Blur1
+      Constant1: Constant1
+      Merge1: Merge1
+      ColorCorrect1: ColorCorrect1
+      TplOut: TplOut
+    base_theirs:
+      TplIn: TplIn
+      Grade1: Grade1
+      Blur1: Blur1
+      Constant1: Constant1
+      Merge1: Merge1
+      ColorCorrect1: ColorCorrect1
+      TplOut: TplOut
+    scope: [TplIn, Grade1, Blur1, Constant1, Merge1, ColorCorrect1, TplOut]
+    conflicts: []
+notes: >-
+  A paste or duplicate drops its origin only when the shot already has a node with that origin.

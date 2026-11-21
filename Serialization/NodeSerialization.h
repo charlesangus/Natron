@@ -92,6 +92,31 @@ struct NodeLayoutSerialization {
 };
 
 /**
+ * @brief Where a node came from when it was brought in by a template import: the import's key
+ * in the project's template list and the ID of the node in that template. Both empty for a node
+ * the artist made.
+ **/
+struct NodeOriginSerialization {
+    std::string templateKey;
+    std::string nodeId;
+
+    bool isSet() const
+    {
+        return !templateKey.empty();
+    }
+
+    bool operator==(const NodeOriginSerialization& other) const
+    {
+        return templateKey == other.templateKey && nodeId == other.nodeId;
+    }
+
+    bool operator!=(const NodeOriginSerialization& other) const
+    {
+        return !(*this == other);
+    }
+};
+
+/**
  * @brief The saved state of one node: its plug-in, names and knobs, its input connections, its
  * roto and tracker data, its user knob layout and, for a group or a multi-instance node, the
  * nodes it holds. Node names are script names.
@@ -99,6 +124,7 @@ struct NodeLayoutSerialization {
 struct NodeSerialization {
     // The node's persistent ID, 32 lowercase hex characters, or empty when it is not known.
     std::string id;
+    NodeOriginSerialization origin;
     std::string label;
     std::string scriptName;
     std::string pluginID;
@@ -138,6 +164,7 @@ struct NodeSerialization {
 
     NodeSerialization()
         : id()
+        , origin()
         , label()
         , scriptName()
         , pluginID()

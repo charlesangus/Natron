@@ -754,6 +754,23 @@ RotoDrawableItem::isMaskFrameInvariant(U64 contentHash) const
     return invariant;
 }
 
+namespace {
+
+// A single keyframe holds its value at every frame, so only a second one makes a knob vary.
+bool
+knobVariesOverFrames(const KnobIPtr& knob)
+{
+    for (int i = 0; i < knob->getDimension(); ++i) {
+        if ((knob->getKeyFramesCount(ViewIdx(0), i) > 1) || !knob->getExpression(i).empty()) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+} // anon namespace
+
 bool
 RotoDrawableItem::computeMaskFrameInvariant() const
 {
@@ -766,7 +783,7 @@ RotoDrawableItem::computeMaskFrameInvariant() const
         bool hasExpression = false;
         bool readsOutsideKnob = false;
         knob->getContentHashDependencies(&hasExpression, &readsOutsideKnob);
-        if (hasExpression || readsOutsideKnob || knob->hasAnimation()) {
+        if (hasExpression || readsOutsideKnob || knobVariesOverFrames(knob)) {
             return false;
         }
     }

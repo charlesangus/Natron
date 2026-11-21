@@ -122,3 +122,9 @@ Precondition: the user has set the repo secret `CCACHE_REMOTE_STORAGE` to the pu
 - 2026-11-20 — **Server stood up outside the repo (user):** an HTTP cache server with an LRU size cap. It was chosen over Redis (memory-bound) and plain WebDAV (no eviction). Its endpoints and credentials stay out of the public plan and repo.
 - 2026-11-20 — **One read-write credential, no read-only one:** fork PRs never see secrets, so the only untrusted writer is already excluded.
 - 2026-11-20 — **ccache's built-in client is HTTP-only;** HTTPS goes through the `ccache-storage-https` helper, hence M493.P1.T1.
+- 2026-11-21 — Phase 493.1 code in d36f5d9c6:
+  - **Image:** the Dockerfile pins and checksum-verifies the 0.10.1 HTTPS storage helper.
+  - **Opt-in:** devshell.sh reads `url=` and `network=` from the main checkout's `.local/ccache-remote`, attaches the network live, and passes `CCACHE_REMOTE_STORAGE` by name only, so the password stays out of `ps`.
+  - **Docs:** a README section with placeholders only.
+
+  Unverified: the end-to-end HTTPS hit, and whether the layout option is written `layout=bazel` or `@layout=bazel`. **Needs the user:** create `.local/ccache-remote`, then a devshell `--recreate` to test. Phase 493.2 needs the repo secret `CCACHE_REMOTE_STORAGE`.

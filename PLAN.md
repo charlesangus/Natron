@@ -564,7 +564,7 @@ future core work has solid ground to build on.
 | M490 | Channel Sources From Images And Audio | todo | M486 |  | E26 | F32 | | [M490-channel-sources-images-and-audio.md](PLAN/MILESTONES/M490-channel-sources-images-and-audio.md) |
 | M491 | Extra Input Picker | todo | - |  | E10 | | | [M491-extra-input-picker.md](PLAN/MILESTONES/M491-extra-input-picker.md) |
 | M492 | Image-Driven Warp Providers | todo | M153, M179 |  | E14 | | | [M492-image-driven-warp-providers.md](PLAN/MILESTONES/M492-image-driven-warp-providers.md) |
-| M493 | Shared Ccache Remote Storage | doing | - | bosley-executor | E2 | | | [M493-shared-ccache-remote-storage.md](PLAN/MILESTONES/M493-shared-ccache-remote-storage.md) |
+| M493 | Shared Ccache Remote Storage | doing | - | bosley-executor | E2 | | response | [M493-shared-ccache-remote-storage.md](PLAN/MILESTONES/M493-shared-ccache-remote-storage.md) |
 
 # Epics
 
@@ -637,6 +637,7 @@ future core work has solid ground to build on.
 
 # Open questions
 
+- **M493 - Shared Ccache Remote Storage (PM, 2026-11-21):** create `/home/bosley/git/Natron/.local/ccache-remote` containing `url=<plain-HTTP docker-network URL>|layout=bazel` and `network=<the cache server's docker network>`. Add the repo secret `CCACHE_REMOTE_STORAGE` holding the public HTTPS URL `https://USER:PASS@host|layout=bazel`. Keep both out of chat; just say when they're done.
 - **F7 - Natron Utility Core UAT round 1 (user, 2026-11-21):**
   1. No reflective or refractive materials in this build.
   2. Performance is so-so: what can be done?

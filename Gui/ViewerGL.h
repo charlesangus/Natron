@@ -126,6 +126,8 @@ public:
      **/
     double getZoomFactor() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    void stepZoomPresets(int steps, const QPointF& pivot);
+
     /**
      * @brief Returns the rectangle of the image displayed by the viewer
      **/
@@ -748,6 +750,8 @@ private:
     static double currentTimeForEvent(QInputEvent* e);
 
 private:
+    void onZoomStepped(double oldZoomFactor, double zoomFactor);
+
     struct Implementation;
     std::unique_ptr<Implementation> _imp; // PIMPL: hide implementation details
 };

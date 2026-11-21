@@ -362,6 +362,28 @@ public:
      **/
     virtual void composeItemTransform(const RotoDrawableItem& item, double time, const Transform::Matrix3x3& local, Transform::Matrix3x3* matrix) const;
 
+    /**
+     * @brief Whether a layer's transform knobs move what is inside it, and the node's transform
+     * knobs edit a selected layer's. False for a host that keeps layer transforms of its own.
+     **/
+    virtual bool layersOwnTransforms() const
+    {
+        return true;
+    }
+
+    /**
+     * @brief The frame item's own transform applies in: the transforms of its ancestor layers,
+     * outermost first. The identity when there are none or layersOwnTransforms() is false.
+     **/
+    void getParentLayersTransformAtTime(const RotoItem& item, double time, Transform::Matrix3x3* matrix) const;
+
+    /**
+     * @brief The frame the node's transform knobs edit in: the ancestor layers' transform of the
+     * layer or item they show. Returns false, with the identity, when there is no such frame.
+     * Main thread.
+     **/
+    bool getTransformKnobsFrameAtTime(double time, Transform::Matrix3x3* matrix) const;
+
 protected:
     /**
      * @brief False when the Transform page must not edit item's own transform knobs: the node's
@@ -692,6 +714,12 @@ private:
      * item they show. A null item stops the following.
      **/
     void mirrorItem(const RotoDrawableItemPtr& item);
+
+    /**
+     * @brief Makes the node's transform knobs show layer's, and follow them, instead of the
+     * mirrored item's. A null layer gives them back to the mirrored item.
+     **/
+    void mirrorLayer(const RotoLayerPtr& layer);
     bool mirrorsKnob(const RotoDrawableItem& item, const KnobI* proxy) const;
     bool forwardsKnob(const RotoDrawableItem& item, const KnobI* proxy, const std::list<RotoItemPtr>& selected) const;
 

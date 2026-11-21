@@ -119,6 +119,7 @@ set(Tests_SOURCES
     RippleEditModes_Test.cpp
     RotoUndoGesture_Test.cpp
     RotoDragUndo_Test.cpp
+    RotoInsertPointDrag_Test.cpp
     RotoDragRenderThrottle_Test.cpp
     RotoKeyDuringRender_Test.cpp
     StrokeRenderCoalescer_Test.cpp
@@ -376,6 +377,7 @@ set(GuiTests_SOURCES
     UndoHistory_Test.cpp
     ValueKnobEditSession_Test.cpp
     ValueKnobGlobalModeTarget_Test.cpp
+    ViewerZoomLadder_Test.cpp
     WindowPlacement_Test.cpp
     guimain.cpp
 )

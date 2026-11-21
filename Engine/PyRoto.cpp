@@ -136,12 +136,7 @@ ItemBase::getParentLayer() const
 Param*
 ItemBase::getParam(const QString& name) const
 {
-    RotoDrawableItem* drawable = dynamic_cast<RotoDrawableItem*>( _item.get() );
-
-    if (!drawable) {
-        return 0;
-    }
-    KnobIPtr knob = drawable->getKnobByName( name.toStdString() );
+    KnobIPtr knob = _item->getKnobByName(name.toStdString());
     if (!knob) {
         return 0;
     }
@@ -152,8 +147,7 @@ Param*
 ItemBase::asItemParam(Param* param,
                       const RotoItemPtr& item)
 {
-    RotoDrawableItem* drawable = dynamic_cast<RotoDrawableItem*>(item.get());
-    RotoCurveContextPtr context = drawable ? drawable->getContext() : RotoCurveContextPtr();
+    RotoCurveContextPtr context = item ? item->getContext() : RotoCurveContextPtr();
 
     if (param && context) {
         param->_itemNode = context->getNode();

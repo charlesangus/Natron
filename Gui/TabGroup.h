@@ -65,9 +65,13 @@ public:
 
     void refreshTabSecretNess(KnobGroup* group, bool secret);
 
+    bool isTabCurrent(const KnobGroup* group) const;
+
 public Q_SLOTS:
 
     void onGroupKnobSecretChanged();
+
+    void onCurrentTabChanged();
 
 private:
 

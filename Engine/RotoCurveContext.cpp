@@ -878,6 +878,16 @@ RotoCurveContext::resetTransformCenter()
         getItemsRegionOfDefinition(getSelectedItems(), time, ViewIdx(0), true, &bbox);
         x = (bbox.x1 + bbox.x2) / 2.;
         y = (bbox.y1 + bbox.y2) / 2.;
+        // The bounding box is drawn through the layers; the centre is read in their frame.
+        Transform::Matrix3x3 frame;
+        if (getTransformKnobsFrameAtTime(time, &frame)) {
+            Transform::Point3D p(x, y, 1.);
+            p = Transform::matApply(Transform::matInverse(frame), p);
+            if (p.z != 0.) {
+                x = p.x / p.z;
+                y = p.y / p.z;
+            }
+        }
     }
     setCenterKnob(center, x, y);
 }
@@ -947,12 +957,44 @@ RotoCurveContext::onTransformButtonPressed(const KnobI* k)
 }
 
 void
-RotoCurveContext::composeItemTransform(const RotoDrawableItem& /*item*/,
-                                       double /*time*/,
+RotoCurveContext::composeItemTransform(const RotoDrawableItem& item,
+                                       double time,
                                        const Transform::Matrix3x3& local,
                                        Transform::Matrix3x3* matrix) const
 {
-    *matrix = local;
+    Transform::Matrix3x3 parents;
+    getParentLayersTransformAtTime(item, time, &parents);
+    *matrix = Transform::matMul(parents, local);
+}
+
+bool
+RotoCurveContext::getTransformKnobsFrameAtTime(double time,
+                                               Transform::Matrix3x3* matrix) const
+{
+    *matrix = Transform::Matrix3x3();
+    RotoItemPtr shown = _imp->mirroredLayer.lock();
+    if (!shown) {
+        shown = _imp->mirroredItem.lock();
+    }
+    if (!shown) {
+        return false;
+    }
+    getParentLayersTransformAtTime(*shown, time, matrix);
+
+    return !matrix->isIdentity();
+}
+
+void
+RotoCurveContext::getParentLayersTransformAtTime(const RotoItem& item,
+                                                 double time,
+                                                 Transform::Matrix3x3* matrix) const
+{
+    RotoLayerPtr parent = item.getParentLayer();
+    if (parent) {
+        parent->getTransformAtTime(time, matrix);
+    } else {
+        *matrix = Transform::Matrix3x3();
+    }
 }
 
 void
@@ -1227,6 +1269,9 @@ RotoCurveContext::selectInternal(const RotoItemPtr& item, bool forwardEdits)
     RotoLayerPtr isLayer = std::dynamic_pointer_cast<RotoLayer>(item);
 
     if (isDrawable) {
+        if (forwardEdits) {
+            mirrorLayer(RotoLayerPtr());
+        }
         mirrorItem(isDrawable);
     } else if (isLayer) {
         const RotoItems& children = isLayer->getItems();
@@ -1241,6 +1286,9 @@ RotoCurveContext::selectInternal(const RotoItemPtr& item, bool forwardEdits)
         if (!forwardEdits) {
             _imp->selectedThroughLayer.push_back(item);
         }
+    }
+    if (isLayer && forwardEdits && layersOwnTransforms()) {
+        mirrorLayer(isLayer);
     }
     refreshProxyKnobStates();
 } // selectInternal
@@ -1535,9 +1583,14 @@ RotoCurveContext::refreshProxyKnobStates()
     int nbUnlockedStrokes = 0;
     int nbWithoutStrength = 0;
     int nbWithoutCloneFunctions = 0;
+    int nbUnlockedLayers = 0;
+    const bool layerTransforms = layersOwnTransforms();
     {
         QMutexLocker l(&_imp->rotoContextMutex);
         for (std::list<RotoItemPtr>::const_iterator it = _imp->selectedItems.begin(); it != _imp->selectedItems.end(); ++it) {
+            if (layerTransforms && dynamic_cast<RotoLayer*>(it->get()) && !(*it)->isLockedRecursive() && (std::find(_imp->selectedThroughLayer.begin(), _imp->selectedThroughLayer.end(), *it) == _imp->selectedThroughLayer.end())) {
+                ++nbUnlockedLayers;
+            }
             Bezier* isBezier = dynamic_cast<Bezier*>(it->get());
             RotoStrokeItem* isStroke = dynamic_cast<RotoStrokeItem*>(it->get());
             if (isStroke) {
@@ -1569,7 +1622,7 @@ RotoCurveContext::refreshProxyKnobStates()
         if (!k) {
             continue;
         }
-        bool enabled = any;
+        bool enabled = any || ((nbUnlockedLayers > 0) && isTransformKnob(k.get()));
         if (enabled && (k == strengthKnob)) {
             enabled = nbWithoutStrength == 0;
         } else if (enabled) {
@@ -1610,7 +1663,11 @@ bool
 RotoCurveContext::mirrorsKnob(const RotoDrawableItem& item,
                               const KnobI* proxy) const
 {
-    return !isTransformKnob(proxy) || tiesTransformKnobs(item);
+    if (!isTransformKnob(proxy)) {
+        return true;
+    }
+
+    return tiesTransformKnobs(item) && _imp->mirroredLayer.expired();
 }
 
 bool
@@ -1665,6 +1722,26 @@ RotoCurveContext::forwardTargets(const KnobIPtr& proxy) const
         }
         KnobIPtr own = drawable->getKnobByName(proxy->getName());
         if (own && (own != proxy) && (own->getDimension() == proxy->getDimension())) {
+            targets.push_back(own);
+        }
+    }
+    if (!layersOwnTransforms() || !isTransformKnob(proxy.get())) {
+        return targets;
+    }
+    for (std::list<RotoItemPtr>::const_iterator it = selected.begin(); it != selected.end(); ++it) {
+        RotoLayerPtr layer = std::dynamic_pointer_cast<RotoLayer>(*it);
+        if (!layer || (std::find(throughLayer.begin(), throughLayer.end(), *it) != throughLayer.end())) {
+            continue;
+        }
+        bool insideSelectedLayer = false;
+        for (RotoLayerPtr parent = layer->getParentLayer(); parent && !insideSelectedLayer; parent = parent->getParentLayer()) {
+            insideSelectedLayer = std::find(selected.begin(), selected.end(), parent) != selected.end();
+        }
+        if (insideSelectedLayer) {
+            continue;
+        }
+        KnobIPtr own = layer->getKnobByName(proxy->getName());
+        if (own && (own->getDimension() == proxy->getDimension())) {
             targets.push_back(own);
         }
     }
@@ -1771,12 +1848,72 @@ RotoCurveContext::mirrorItem(const RotoDrawableItemPtr& item)
 }
 
 void
+RotoCurveContext::mirrorLayer(const RotoLayerPtr& layer)
+{
+    RotoLayerPtr previous = _imp->mirroredLayer.lock();
+
+    if (previous == layer) {
+        return;
+    }
+    if (previous) {
+        const std::list<KnobIPtr>& knobs = previous->getKnobs();
+        for (std::list<KnobIPtr>::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+            if (KnobSignalSlotHandler* handler = (*it)->getSignalSlotHandler().get()) {
+                QObject::disconnect(handler, 0, this, SLOT(onMirroredItemKnobChanged()));
+            }
+        }
+    }
+    _imp->mirroredLayer = layer;
+    if (!layer) {
+        // Gives the transform knobs back to the item.
+        mirrorItem(_imp->mirroredItem.lock());
+
+        return;
+    }
+    connectProxyKnobs();
+
+    ProxySyncScope sync(_imp->proxySyncDepth);
+    const std::list<KnobIPtr>& knobs = layer->getKnobs();
+    for (std::list<KnobIPtr>::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+        KnobIPtr proxy = proxyKnobNamed((*it)->getName());
+        if (!proxy || (proxy == *it) || (proxy->getDimension() != (*it)->getDimension()) || !isTransformKnob(proxy.get())) {
+            continue;
+        }
+        if (KnobSignalSlotHandler* handler = (*it)->getSignalSlotHandler().get()) {
+            QObject::connect(handler, SIGNAL(valueChanged(ViewSpec, int, int)),
+                             this, SLOT(onMirroredItemKnobChanged()), Qt::UniqueConnection);
+            QObject::connect(handler, SIGNAL(keyFrameMoved(ViewSpec, int, double, double)),
+                             this, SLOT(onMirroredItemKnobChanged()), Qt::UniqueConnection);
+            QObject::connect(handler, SIGNAL(keyFrameInterpolationChanged(double, ViewSpec, int)),
+                             this, SLOT(onMirroredItemKnobChanged()), Qt::UniqueConnection);
+            QObject::connect(handler, SIGNAL(derivativeMoved(double, ViewSpec, int)),
+                             this, SLOT(onMirroredItemKnobChanged()), Qt::UniqueConnection);
+            QObject::connect(handler, SIGNAL(expressionChanged(int)),
+                             this, SLOT(onMirroredItemKnobChanged()), Qt::UniqueConnection);
+        }
+        showOnProxy(proxy, it->get());
+        snapshotProxy(proxy);
+    }
+}
+
+void
 RotoCurveContext::onMirroredItemKnobChanged()
 {
     if (_imp->proxySyncDepth > 0) {
         return;
     }
     KnobIPtr itemKnob = senderKnob(sender());
+    RotoLayerPtr layer = _imp->mirroredLayer.lock();
+    if (itemKnob && layer && (layer->getKnobByName(itemKnob->getName()) == itemKnob)) {
+        KnobIPtr proxy = proxyKnobNamed(itemKnob->getName());
+        if (proxy && (proxy->getDimension() == itemKnob->getDimension())) {
+            ProxySyncScope sync(_imp->proxySyncDepth);
+            showOnProxy(proxy, itemKnob.get());
+            snapshotProxy(proxy);
+        }
+
+        return;
+    }
     RotoDrawableItemPtr item = _imp->mirroredItem.lock();
     if (!itemKnob || !item || (item->getKnobByName(itemKnob->getName()) != itemKnob)) {
         return;
@@ -1934,6 +2071,17 @@ RotoCurveContext::proxyDiffersFromBaseline(const KnobIPtr& proxy) const
 void
 RotoCurveContext::remirrorProxy(const KnobIPtr& proxy)
 {
+    RotoLayerPtr layer = _imp->mirroredLayer.lock();
+    if (layer && isTransformKnob(proxy.get())) {
+        KnobIPtr own = layer->getKnobByName(proxy->getName());
+        if (own && (own->getDimension() == proxy->getDimension())) {
+            ProxySyncScope sync(_imp->proxySyncDepth);
+            showOnProxy(proxy, own.get());
+        }
+        snapshotProxy(proxy);
+
+        return;
+    }
     RotoDrawableItemPtr item = _imp->mirroredItem.lock();
     KnobIPtr own = item ? item->getKnobByName(proxy->getName()) : KnobIPtr();
 
@@ -2166,15 +2314,27 @@ RotoCurveContext::deselectInternal(RotoItemPtr b)
     }
     if (std::dynamic_pointer_cast<RotoDrawableItem>(b) || isLayer) {
         RotoDrawableItemPtr last;
+        RotoLayerPtr lastLayer;
         {
             QMutexLocker l(&_imp->rotoContextMutex);
             for (std::list<RotoItemPtr>::reverse_iterator it = _imp->selectedItems.rbegin(); it != _imp->selectedItems.rend() && !last; ++it) {
                 last = std::dynamic_pointer_cast<RotoDrawableItem>(*it);
             }
+            // The transform knobs follow the last item selected directly, when it is a layer.
+            for (std::list<RotoItemPtr>::reverse_iterator it = _imp->selectedItems.rbegin(); it != _imp->selectedItems.rend(); ++it) {
+                if (std::find(_imp->selectedThroughLayer.begin(), _imp->selectedThroughLayer.end(), *it) == _imp->selectedThroughLayer.end()) {
+                    lastLayer = std::dynamic_pointer_cast<RotoLayer>(*it);
+                    break;
+                }
+            }
+        }
+        if (!layersOwnTransforms()) {
+            lastLayer.reset();
         }
         if (last != _imp->mirroredItem.lock()) {
             mirrorItem(last);
         }
+        mirrorLayer(lastLayer);
     }
     refreshProxyKnobStates();
 } // deselectInternal

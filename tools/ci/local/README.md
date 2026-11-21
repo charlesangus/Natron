@@ -715,6 +715,7 @@ Confirmed recipe: not yet recorded.
 | Packaged artifacts | `build/<type>/artifacts` (gitignored) | delete the directory |
 | Test assets | `build/assets` (gitignored) | delete, then re-run `fetch-assets.sh` |
 | ccache | `.ccache` (repo root, gitignored, host bind mount) | delete the directory |
+| Remote cache config | `.local/ccache-remote` (main checkout, gitignored) | delete the file to go local-only |
 | `HOME` | Docker named volume `natron-dev-home` | `docker volume rm` |
 | Container | `natron-dev` | `docker rm -f natron-dev`, or see below |
 | GPU container | `natron-dev-gpu`, home volume `natron-dev-gpu-home` | `docker rm -f natron-dev-gpu` |
@@ -735,6 +736,52 @@ and builds in the same `build/<type>` layout relative to its own root, as
 can name the other tree's source paths. Under `base_dir`, `__FILE__`
 expands to a path relative to the build dir, so code must not locate files
 from `__FILE__`.
+
+### Remote cache
+
+A shared ccache remote storage server lets the main tree, worktrees and other
+hosts reuse each other's objects. The local `.ccache` stays the first layer:
+ccache asks the remote only on a local miss, and writes new objects to both.
+The server is not part of this repo; it is an HTTP cache that speaks ccache's
+`layout=bazel` and requires basic auth.
+
+It is off unless the gitignored file `.local/ccache-remote` exists in the
+main checkout. Worktrees read the main checkout's copy, found through the git
+common dir. The file holds `KEY=value` lines; blank lines and lines starting
+with `#` are skipped:
+
+```
+# ccache remote_storage URL. It carries the password: keep this file private.
+url=http://USER:PASS@CACHE_SERVICE:PORT|layout=bazel
+# Optional: a docker network the dev container joins to reach the server.
+network=CACHE_NETWORK
+```
+
+The values above are placeholders. Two kinds of URL work:
+
+- **Plain HTTP by docker service name**, for a server running in a docker
+  network on the build host. Set `network=` to that network, and `url=` to
+  `http://USER:PASS@CACHE_SERVICE:PORT|layout=bazel`. The default `bridge`
+  network can't reach ports the server only publishes on the host's LAN, so
+  the container has to join the server's network. ccache's built-in client
+  serves `http://` URLs.
+- **Public HTTPS**, from anywhere else: `url=https://USER:PASS@cache.example.com|layout=bazel`
+  with no `network=`. `https://` URLs go through the `ccache-storage-https`
+  helper, which the image installs in `/usr/local/bin`.
+
+`devshell.sh` reads the file on every call and passes `CCACHE_REMOTE_STORAGE`
+on every `docker exec`, so a running container picks up a new or changed file
+without `--recreate`. When `network=` names a network the container hasn't
+joined, it runs `docker network connect` first; that is live too. The URL and
+the network name are never printed. `build.sh`'s banner says only
+`remote cache: yes` or `no`, and its closing `ccache -s` counts remote hits
+and misses under "Remote storage".
+
+If the server is down or slow, ccache marks it failed for that compile and
+carries on locally, so the cache can't fail a build. To turn the remote cache
+off, delete `.local/ccache-remote`; `ccache -p | grep remote_storage` inside
+the container then shows it empty. While the file is in place, `ccache -p`
+prints the URL with its password, so keep its output out of logs and issues.
 
 ## Running build.sh/test.sh/package.sh from inside a container already (e.g. CI)
 

@@ -44,7 +44,9 @@ CITY_PRIMS = BLOCKS * BUILDINGS_PER_BLOCK * 40 + BLOCKS + 1
 INITIAL_DRAW_FULL_LOAD = 4
 
 try:
+    import shiboken6
     from PySide6.QtCore import QModelIndex, QObject, Qt, QTimer
+    from PySide6.QtOpenGLWidgets import QOpenGLWidget
     from PySide6.QtWidgets import QApplication, QMessageBox, QTreeView
 
     from guitest import OUT, check, finish, plugin_problem, report, require, run, section, shot, viewer_up, widgets_of
@@ -148,7 +150,13 @@ try:
         require(viewer.connectInput(0, usd), "connect the Viewer to the USDRead")
 
     def gl_widgets():
-        return widgets_of("SceneViewport") + widgets_of("ViewerGL")
+        # PySide has no binding for these classes and may hand them out typed as plain QWidget.
+        found = []
+        for w in widgets_of("SceneViewport") + widgets_of("ViewerGL"):
+            if not isinstance(w, QOpenGLWidget):
+                w = shiboken6.wrapInstance(shiboken6.getCppPointer(w)[0], QOpenGLWidget)
+            found.append(w)
+        return found
 
     def mark_contexts(pane):
         """Tags the pane's GL widgets and their current contexts with a fresh token."""

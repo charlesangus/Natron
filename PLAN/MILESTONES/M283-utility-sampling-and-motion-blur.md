@@ -73,17 +73,17 @@ milestone provides the time sampling they are measured from.
 
 ## Phase 283.3: Continuous-time motion blur (UAT round 1)
 
-- [ ] M283.P3.T1 — End-points in the scene and a time per ray
+- [x] M283.P3.T1 — End-points in the scene and a time per ray
   - files: `Engine/Nodes/Scene/Utility/UtilityScene.{h,cpp}`, `Engine/Nodes/Scene/Utility/Wavefront.{h,cpp}`, `Engine/Nodes/Scene/Utility/Kernels/UtilityTypes.slang`, `Engine/Nodes/Scene/Utility/Kernels/RayGen.slang`, `Engine/Nodes/Scene/Utility/Kernels/ShadeSurface.slang`, `Engine/Nodes/Scene/Utility/Kernels/ShadeLights.slang`, `Engine/Nodes/Scene/Utility/UtilityRenderDelegate.{h,cpp}`, `Tests/Scene/NatronUtilityMotion_Test.cpp`
   - approach: `UtilityScene::Snapshot` carries `segments + 1` end-point transforms per instance and end-point point arrays per deforming geometry (static ones keep one), replacing `evaluateAt`'s per-bucket snapshots. The ray arrays gain a ninth, `time` (shutter-relative 0..1), stratified per pixel sample with the existing golden-fraction order; bounce, shadow and light rays inherit it. Camera rays interpolate the camera's end-points at their time. Shading interpolates the hit's points and normals at the ray's time. Shutter Segments defaults to 1 and is not clamped; wavefrontDrawSamples draws one pass per sample, not per bucket.
   - verify: gtest — a quad translating one pixel per frame yields the analytic box smear within 1/N² at segments 1 on both backends; a rotating quad at segments 1 vs 8 differs only in the curve's chord error; a closed shutter equals the unblurred render.
   - size: L
-- [ ] M283.P3.T2 — Embree motion
+- [x] M283.P3.T2 — Embree motion
   - files: `Engine/Nodes/Scene/Utility/EmbreeTracer.cpp`, `Tests/Scene/NatronUtilityTracer_Test.cpp`
   - approach: `rtcSetGeometryTimeStepCount(segments + 1)` with one vertex buffer per end-point for deforming meshes; instances with `rtcSetGeometryTimeStepCount` and `rtcSetGeometryTransformQuaternion` per end-point (linear translation and scale, slerped rotation, matching Phase 2's decomposition); `RTCRay::time` from the ray's time; scene flags keep `RTC_BUILD_QUALITY_MEDIUM` for motion BVHs.
   - verify: gtest — a ray at t = 0.25 hits a translating quad at the interpolated position; static geometry gives identical hits with and without motion on.
   - size: M
-- [ ] M283.P3.T3 — Vulkan motion through swept bounds
+- [x] M283.P3.T3 — Vulkan motion through swept bounds
   - files: `Engine/Nodes/Scene/Utility/GpuTracer.cpp`, `Engine/Nodes/Scene/Utility/Kernels/Intersect.slang`, `Engine/Gpu/GpuAccel.{h,cpp}`, `Tests/Scene/NatronUtilityTracer_Test.cpp`
   - approach: static instances and geometry stay hardware triangles. Per segment, a deforming mesh gets an AABB BLAS of each triangle's swept bounds over the segment, and the candidate shader intersects the triangle interpolated at the ray's time; a moving instance becomes an AABB instance of its swept world bounds over the segment, whose candidate transforms the ray by the instance's interpolated inverse at the ray's time and traces a one-instance top-level structure over the geometry's BLAS. A ray picks its segment's structures (one structure set per segment, each split into structures of at most 2^24 instances like the static scene).
   - verify: gtest — GPU hits match Embree's within float tolerance on the translating, rotating and deforming quads at random ray times; a static scene builds no AABB structures.
@@ -105,3 +105,13 @@ milestone provides the time sampling they are measured from.
 - 2026-11-14 — Main (with #284) merged into F7 (9daa71dca; HydraRenderImpl convergence loop keeps F7's cancel-aware loop with main's three-argument RestartWatch::after) and F7 into this branch (75811c8e8); PR CI rerunning.
 - 2026-11-21 — **UAT round 1 (user): continuous-time motion blur.** Interpolate between temporal samples by shutter segments; default 1 segment (previous frame to this one and this one to the next for a centred shutter); rays distributed continuously in time; transforms and deformation linear between segment end-points; a segments knob raises it; CPU and GPU. Supersedes the 2026-11-01 time-bucket decision and Shutter Segments' default of 8 and its clamp. Phase 3 added. Open for the user: (a) GPU route — swept-bounds AABB structures with in-shader interpolation (portable, exact, chosen) vs `VK_NV_ray_tracing_motion_blur` (native on NVIDIA only, AMD would still need the portable path) vs keeping time buckets on the GPU (cheap, but stepped and differs from the CPU); (b) "linear" transforms read as linear translation/scale with slerped rotation, since a linear matrix blend shrinks spinning objects; (c) lights stay at shutter centre.
 - 2026-11-21 — **Reopened by F7 - Natron Utility Core's UAT (user):** interpolated shutter segments, default 1. **GPU route: swept-bounds structures with interpolation in the shader (user)**, portable to AMD and NVIDIA and matching the CPU. **Rotation: decompose and slerp (user)**: linear translation and scale, slerped rotation; lights stay at the shutter centre. Phase 283.3 is implemented on feature/f7-natron-utility-core.
+- 2026-11-21 — Phase 283.3 in 6d081804a, gate pending. **PM calls:**
+  - Bakes (UV unwrap) trace at the shutter centre, with no blur.
+  - Segments are not capped by the sample count.
+  - A camera projection change within the shutter is a linear frustum blend.
+  - GPU motion structures rebuild on any instance change, with no refit.
+
+  **Follow-ups:**
+  - Deforming points read from host-visible memory: move them to device-local, with the F7 performance list's geometry-upload item.
+  - Nested ray queries are unrun on real AMD or NVIDIA drivers: GPU-host check at UAT.
+

@@ -40,6 +40,7 @@
 #include <vector>
 
 #include "Engine/Nodes/Scene/SceneDrawStates.h"
+#include "Engine/Nodes/Scene/SceneViewBudget.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
 #ifdef emit
@@ -85,6 +86,13 @@ NATRON_NAMESPACE_ENTER
  * (usdImaging/niPrototypePropagatingSceneIndex.h), which names the instance among its
  * instanceLocations. So a row over an instance turns that instance off in the instancer's mask
  * (hd/instancerTopologySchema.h), and the instancer and its prototypes stay in Hydra, Hidden or not.
+ *
+ * A polygon budget lies over the rules as a layer of its own, bound on Storm's filter alone: it holds
+ * the gprims it demotes or culls invisible, turns instances off in their instancer's mask, a
+ * PointInstancer's by index and a native one's when any gprim below it goes, and omits a fractioned
+ * mesh's faces through a geomSubset child whose visibility is false, which the scene index adapter
+ * turns into the topology's invisible faces (HdMeshTopologySchema has none of its own). It only
+ * takes away from what the rules draw, and clearing it leaves exactly what they draw.
  *
  * The notices of one call go out together, once per prim, and a prim that ends where it started
  * sends none. They reach the render index directly, so callers hold the viewer lock and the GL
@@ -133,6 +141,26 @@ public:
     };
 
     static WeakPtr find(const std::string& renderInstanceId);
+
+    // What a polygon budget takes from what the rules draw.
+    struct Budget {
+        // Gprims demoted or culled.
+        std::unordered_set<PXR_NS::SdfPath, PXR_NS::SdfPath::Hash> hidden;
+        // By PointInstancer, indexed as its instances: true turns the instance off.
+        std::unordered_map<PXR_NS::SdfPath, std::vector<bool>, PXR_NS::SdfPath::Hash> instances;
+        // By mesh, the faces it leaves out, ascending.
+        std::unordered_map<PXR_NS::SdfPath, PXR_NS::VtIntArray, PXR_NS::SdfPath::Hash> invisibleFaces;
+
+        bool empty() const { return hidden.empty() && instances.empty() && invisibleFaces.empty(); }
+    };
+
+    // The instances a result demotes, culls or fractions out all go from Storm, the demoted and
+    // fractioned ones to be drawn as stand-ins. A mesh's face count is its unit's.
+    static Budget budgetFrom(const SceneViewBudget::Result& result,
+                             const std::vector<SceneViewBudget::Unit>& units);
+
+    // The name of the geomSubset child that carries a fractioned mesh's omitted faces.
+    static const PXR_NS::TfToken& budgetFacesChildName();
 
     // The renderInstanceIds of every live filter.
     static std::vector<std::string> getInstanceIds();
@@ -214,6 +242,31 @@ public:
      */
     bool hidesEveryLight(const LightPredicate& counts = LightPredicate()) const;
 
+    /**
+     * @brief Lets applyBudget() act. Only the filter of a Storm engine is bound; a render delegate's
+     * follows the rules alone. Unbinding clears the budget.
+     */
+    void setBudgetBound(bool bound);
+    bool isBudgetBound() const { return _budgetBound; }
+
+    /**
+     * @brief Replaces the budget layer, sending only what the difference changes. Does nothing on a
+     * filter that is not bound. Holding invisible keeps Storm's draw batches, which adding and
+     * removing prims would gather again.
+     */
+    void applyBudget(const Budget& budget);
+    void clearBudget() { applyBudget(Budget()); }
+
+    // Gprims Hydra holds that the budget alone makes invisible.
+    std::size_t getBudgetHiddenCount() const;
+    // Instances the budget turns off, whether or not a rule does too.
+    std::size_t getBudgetMaskedInstanceCount() const { return _budgetMaskedCount; }
+    std::size_t getBudgetFacedMeshCount() const { return _budgetFaces.size(); }
+    // Empty for a mesh the budget leaves whole.
+    PXR_NS::VtIntArray getBudgetInvisibleFaces(const PXR_NS::SdfPath& mesh) const;
+    // Whether the instancer's mask as this filter serves it turns the instance off.
+    bool isInstanceMasked(const PXR_NS::SdfPath& instancer, std::size_t index) const;
+
     const Rules& getRules() const { return _rules; }
     unsigned long long getInputAddedCount() const { return _inputAdded; }
     unsigned long long getInputRemovedCount() const { return _inputRemoved; }
@@ -288,6 +341,10 @@ private:
     void readInstancer(const PXR_NS::SdfPath& path, const PXR_NS::HdSceneIndexPrim& prim);
     void forgetInstancer(const PXR_NS::SdfPath& path);
     PXR_NS::HdSceneIndexPrim withMask(const PXR_NS::SdfPath& primPath, PXR_NS::HdSceneIndexPrim prim) const;
+    PXR_NS::HdSceneIndexPrim withBudget(const PXR_NS::SdfPath& primPath, PXR_NS::HdSceneIndexPrim prim) const;
+    // The native instance a path lies under, as its instancer and index, or null.
+    const std::pair<PXR_NS::SdfPath, std::size_t>* nativeInstanceOf(const PXR_NS::SdfPath& path) const;
+    bool hasBudgetLayer() const { return !_budgetHidden.empty() || !_budgetMasks.empty() || !_budgetFaces.empty(); }
     bool setInstanceHidden(const PXR_NS::SdfPath& instancer, Instancer& record, std::size_t index, bool hidden);
     void updateInstances(const std::vector<PXR_NS::SdfPath>& roots);
 
@@ -340,6 +397,13 @@ private:
     // What a call has changed so far, sent by sendChanges().
     std::vector<Node*> _changes;
     std::vector<PXR_NS::SdfPath> _maskChanges;
+
+    bool _budgetBound = false;
+    std::unordered_set<PXR_NS::SdfPath, PXR_NS::SdfPath::Hash> _budgetHidden;
+    // By instancer, PointInstancer or native, indexed as its mask: true turns the instance off.
+    std::unordered_map<PXR_NS::SdfPath, std::vector<bool>, PXR_NS::SdfPath::Hash> _budgetMasks;
+    std::unordered_map<PXR_NS::SdfPath, PXR_NS::VtIntArray, PXR_NS::SdfPath::Hash> _budgetFaces;
+    std::size_t _budgetMaskedCount = 0;
 
     unsigned long long _inputAdded = 0;
     unsigned long long _inputRemoved = 0;

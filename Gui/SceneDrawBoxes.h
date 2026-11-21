@@ -53,6 +53,7 @@
 #include <pxr/usd/sdf/path.h>
 #include <pxr/usd/usd/stage.h>
 #include <pxr/usd/usdGeom/bboxCache.h>
+#include <pxr/usd/usdGeom/pointInstancer.h>
 #ifdef NATRON_SCENEDRAWBOXES_RESTORE_EMIT
 #undef NATRON_SCENEDRAWBOXES_RESTORE_EMIT
 #define emit
@@ -81,7 +82,13 @@ NATRON_NAMESPACE_ENTER
  * PointInstancer the rules draw, with its world box and the faces it draws, and every unloaded
  * payload among them, which draws nothing. A PointInstancer is one unit carrying its prototypes'
  * boxes and counts and its instances' authored arrays, never a box per instance. The units are
- * published whole and apart from the boxes, after them, so counting never delays a box.
+ * published whole and apart from the boxes, after them, so counting never delays a box. A
+ * PointInstancer's arrays are read under the lock and its world bound and face count are taken from
+ * them after the walk, off the lock, a chunk of instances at a time so a dropped pass stops soon.
+ *
+ * A budget, once asked for, is solved on the same thread against the units published for the
+ * current request, and solved again with each new list of units until it is cancelled. A request or
+ * a cancellation drops a solve still running: its result is never published.
  */
 class SceneDrawBoxes {
 public:
@@ -133,6 +140,19 @@ public:
 
     using UnitsPtr = std::shared_ptr<const Units>;
 
+    struct Budget {
+        // Of the requestBudget() it answers.
+        U64 serial = 0;
+        SceneViewBudget::Camera camera;
+        SceneViewBudget::Settings settings;
+        SceneViewBudget::Result result;
+        SceneDrawFilter::Budget filter;
+        // What it was solved against, which the stand-ins draw from.
+        UnitsPtr units;
+    };
+
+    using BudgetPtr = std::shared_ptr<const Budget>;
+
     SceneDrawBoxes(const StageReader& reader,
                    const std::function<bool()>& shouldYield,
                    const std::function<void()>& published);
@@ -148,6 +168,22 @@ public:
     // depend on it.
     void setCamera(const Camera& camera);
     Camera getCamera() const;
+
+    /**
+     * @brief Solves a budget for camera once the units are in, and again whenever they change, until
+     * cancelBudget() or stopBudget(). Turns counting on. Returns the serial the result will carry.
+     */
+    U64 requestBudget(const Camera& camera,
+                      const SceneViewBudget::Settings& settings);
+    // Drops a solve under way or to come and holds the published budget, as during a camera move.
+    void cancelBudget();
+    // As cancelBudget(), and the published budget goes too.
+    void stopBudget();
+    // Null with none.
+    BudgetPtr getBudget() const;
+    // Whether a budget answering serial or a later request was published within timeout.
+    bool waitForBudget(U64 serial,
+                       std::chrono::milliseconds timeout) const;
 
     ListPtr getList() const;
     // Null until counting has published.
@@ -206,6 +242,8 @@ private:
         Unit unit;
         bool varying = false;
         double time = 0.;
+        // A PointInstancer whose bound and faces settleInstances() has still to take.
+        bool settle = false;
     };
 
     void run();
@@ -226,6 +264,16 @@ private:
     bool countUnits(const Request& request);
     UnitEntry computeUnit(const PXR_NS::UsdPrim& prim,
                           double time);
+    // Needs the stage read lock.
+    void readInstances(const PXR_NS::UsdGeomPointInstancer& instancer,
+                       double time,
+                       UnitEntry* entry);
+    // Off the lock. False when the pass was dropped.
+    bool settleInstances(const Request& request,
+                         Unit* unit) const;
+    // Whether a budget is due, under _mutex.
+    bool budgetDue() const;
+    void solveBudget();
     void publishUnits(const Request& request,
                       std::vector<Unit>&& units);
 
@@ -249,6 +297,13 @@ private:
     std::atomic<bool> _quit { false };
     ListPtr _list;
     UnitsPtr _units;
+    U64 _budgetSerial = 0;
+    bool _budgetPending = false;
+    // Requested and neither cancelled nor stopped, so new units are solved again.
+    bool _budgetLive = false;
+    Camera _budgetCamera;
+    SceneViewBudget::Settings _budgetSettings;
+    BudgetPtr _budget;
 
     // The worker's own.
     std::unordered_map<PXR_NS::SdfPath, Entry, PXR_NS::SdfPath::Hash> _entries;

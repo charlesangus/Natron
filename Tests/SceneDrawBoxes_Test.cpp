@@ -719,3 +719,94 @@ TEST(SceneDrawBoxes, TheCameraIsKeptWithoutStartingAPass)
     EXPECT_TRUE(boxes->getCamera() == camera);
     EXPECT_EQ(boxes->getGeneration(), generation);
 }
+
+TEST(SceneDrawBoxes, AHugeInstancersBoundAndFacesComeFromEveryChunkOfItsInstances)
+{
+    const UsdStageRefPtr stage = openCountScene();
+    const UsdGeomPointInstancer instancer(stage->GetPrimAtPath(SdfPath("/World/Instancer")));
+    ASSERT_TRUE(bool(instancer));
+    const int count = 200000;
+    VtIntArray protoIndices(count, 0);
+    VtVec3fArray positions(count);
+    for (int index = 0; index < count; ++index) {
+        positions[index] = GfVec3f(float(index), 0.f, 0.f);
+    }
+    instancer.GetProtoIndicesAttr().Set(protoIndices);
+    instancer.GetPositionsAttr().Set(positions);
+    instancer.CreateInvisibleIdsAttr().Set(VtInt64Array { 7, count - 1 });
+    const std::unique_ptr<SceneDrawBoxes> boxes = boxesOver(stage);
+
+    boxes->setCounting(true);
+    const SceneDrawBoxes::UnitsPtr units = latestUnits(*boxes);
+    const SceneDrawBoxes::Unit* unit = unitOf(units, "/World/Instancer");
+    ASSERT_NE(unit, nullptr);
+    EXPECT_EQ(unit->faces, 6u * U64(count - 2));
+    EXPECT_TRUE(unit->bounded);
+    EXPECT_EQ(unit->min, GfVec3f(-1, -1, -1));
+    EXPECT_EQ(unit->max, GfVec3f(float(count - 2) + 1.f, 1, 1));
+}
+
+namespace {
+SceneDrawBoxes::Camera
+budgetCamera()
+{
+    SceneDrawBoxes::Camera camera;
+    camera.eye = GfVec3d(0, 0, 10);
+    camera.viewProjection = viewProjection();
+    camera.valid = true;
+
+    return camera;
+}
+} // anon namespace
+
+TEST(SceneDrawBoxes, ARequestedBudgetIsSolvedOnTheWorkerAgainstTheUnitsAndStoppingDropsIt)
+{
+    const UsdStageRefPtr stage = openCountScene();
+    const std::unique_ptr<SceneDrawBoxes> boxes = boxesOver(stage);
+    SceneViewBudget::Settings settings;
+    settings.limit = 10;
+    settings.countWholeScene = true;
+
+    const U64 serial = boxes->requestBudget(budgetCamera(), settings);
+
+    ASSERT_TRUE(boxes->waitForBudget(serial, kWait));
+    const SceneDrawBoxes::BudgetPtr budget = boxes->getBudget();
+    ASSERT_NE(budget, nullptr);
+    EXPECT_GE(budget->serial, serial);
+    EXPECT_TRUE(budget->result.valid);
+    EXPECT_EQ(budget->result.limit, 10u);
+    EXPECT_GT(budget->result.counted, 10u);
+    EXPECT_GT(budget->result.demotedCount, 0u);
+    EXPECT_FALSE(budget->filter.empty());
+    ASSERT_NE(budget->units, nullptr);
+    EXPECT_NE(unitOf(budget->units, "/World/Cube"), nullptr);
+
+    boxes->stopBudget();
+
+    EXPECT_EQ(boxes->getBudget(), nullptr);
+}
+
+TEST(SceneDrawBoxes, ALiveBudgetIsSolvedAgainWhenTheUnitsChangeAndACancelledOneIsNot)
+{
+    const UsdStageRefPtr stage = openCountScene();
+    const std::unique_ptr<SceneDrawBoxes> boxes = boxesOver(stage);
+    SceneViewBudget::Settings settings;
+    settings.countWholeScene = true;
+
+    const U64 serial = boxes->requestBudget(budgetCamera(), settings);
+    ASSERT_TRUE(boxes->waitForBudget(serial, kWait));
+    const SceneDrawBoxes::BudgetPtr first = boxes->getBudget();
+    EXPECT_EQ(first->result.demotedCount, 0u);
+
+    boxes->setRules(rules({ { "/World/Cube", SceneDrawFilter::eRuleHide } }));
+    ASSERT_TRUE(boxes->waitForBudget(first->serial + 1, kWait));
+    const SceneDrawBoxes::BudgetPtr again = boxes->getBudget();
+    EXPECT_EQ(unitOf(again->units, "/World/Cube"), nullptr);
+
+    boxes->cancelBudget();
+    boxes->setRules(SceneDrawFilter::Rules());
+    latestUnits(*boxes);
+
+    EXPECT_FALSE(boxes->waitForBudget(again->serial + 1, std::chrono::milliseconds(200)));
+    EXPECT_EQ(boxes->getBudget(), again);
+}

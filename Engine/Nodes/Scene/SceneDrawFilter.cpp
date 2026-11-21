@@ -36,7 +36,9 @@
 #define NATRON_SCENEDRAWFILTER_RESTORE_EMIT
 #undef emit
 #endif
+#include <pxr/imaging/hd/geomSubsetSchema.h>
 #include <pxr/imaging/hd/instancerTopologySchema.h>
+#include <pxr/imaging/hd/meshSchema.h>
 #include <pxr/imaging/hd/overlayContainerDataSource.h>
 #include <pxr/imaging/hd/retainedDataSource.h>
 #include <pxr/imaging/hd/sceneIndexPluginRegistry.h>
@@ -237,6 +239,47 @@ visibilityLocators()
     static const HdDataSourceLocatorSet locators { HdVisibilitySchema::GetDefaultLocator() };
 
     return locators;
+}
+
+const HdDataSourceLocatorSet&
+topologyLocators()
+{
+    static const HdDataSourceLocatorSet locators { HdMeshSchema::GetTopologyLocator() };
+
+    return locators;
+}
+
+const HdDataSourceLocatorSet&
+subsetLocators()
+{
+    static const HdDataSourceLocatorSet locators { HdGeomSubsetSchema::GetDefaultLocator() };
+
+    return locators;
+}
+
+// Invisible, so the scene index adapter lists its faces among the mesh topology's invisible ones,
+// as the legacy delegate does for its own such child.
+HdSceneIndexPrim
+facesSubset(const VtIntArray& faces)
+{
+    HdSceneIndexPrim prim;
+    prim.primType = HdPrimTypeTokens->geomSubset;
+    prim.dataSource = HdOverlayContainerDataSource::OverlayedContainerDataSources(
+        invisibleData(),
+        HdRetainedContainerDataSource::New(
+            HdGeomSubsetSchema::GetSchemaToken(),
+            HdGeomSubsetSchema::Builder()
+                .SetType(HdGeomSubsetSchema::BuildTypeDataSource(HdGeomSubsetSchemaTokens->typeFaceSet))
+                .SetIndices(HdRetainedTypedSampledDataSource<VtIntArray>::New(faces))
+                .Build()));
+
+    return prim;
+}
+
+std::size_t
+countSet(const std::vector<bool>& bits)
+{
+    return std::size_t(std::count(bits.begin(), bits.end(), true));
 }
 
 const HdDataSourceLocatorSet&
@@ -488,6 +531,16 @@ SceneDrawFilter::forget(Node* top)
         if (node->output == eOutputInvisible) {
             --_invisibleCount;
         }
+        // What comes back in its place waits for the next budget, which sees it as it then is.
+        if (hasBudgetLayer()) {
+            _budgetHidden.erase(*node->path);
+            _budgetFaces.erase(*node->path);
+            const auto mask = _budgetMasks.find(*node->path);
+            if (mask != _budgetMasks.end()) {
+                _budgetMaskedCount -= countSet(mask->second);
+                _budgetMasks.erase(mask);
+            }
+        }
         _nodes.erase(_nodes.find(*node->path));
     }
 }
@@ -644,9 +697,18 @@ SceneDrawFilter::hidesEveryLight(const LightPredicate& counts) const
 HdSceneIndexPrim
 SceneDrawFilter::GetPrim(const SdfPath& primPath) const
 {
+    if (!_budgetFaces.empty() && (primPath.GetNameToken() == budgetFacesChildName())) {
+        const auto found = _budgetFaces.find(primPath.GetParentPath());
+        if (found != _budgetFaces.end()) {
+            return facesSubset(found->second);
+        }
+    }
     HdSceneIndexPrim prim = _GetInputSceneIndex()->GetPrim(primPath);
-    if ((_rules.empty() && !_revealing) || !isHideable(prim.primType)) {
+    if (!isHideable(prim.primType)) {
         return prim;
+    }
+    if (_rules.empty() && !_revealing) {
+        return hasBudgetLayer() ? withBudget(primPath, withMask(primPath, prim)) : prim;
     }
     const auto node = _nodes.find(primPath);
     OutputEnum output = eOutputShown;
@@ -657,7 +719,7 @@ SceneDrawFilter::GetPrim(const SdfPath& primPath) const
     }
     switch (output) {
     case eOutputShown:
-        return withMask(primPath, prim);
+        return hasBudgetLayer() ? withBudget(primPath, withMask(primPath, prim)) : withMask(primPath, prim);
     case eOutputInvisible:
         prim.dataSource = HdOverlayContainerDataSource::OverlayedContainerDataSources(invisibleData(), prim.dataSource);
 
@@ -669,7 +731,8 @@ SceneDrawFilter::GetPrim(const SdfPath& primPath) const
     return HdSceneIndexPrim();
 }
 
-// Over the mask the input authors, such as a point instancer's invisibleIds.
+// Over the mask the input authors, such as a point instancer's invisibleIds: what the rules turn off
+// and what the budget does both go.
 HdSceneIndexPrim
 SceneDrawFilter::withMask(const SdfPath& primPath,
                           HdSceneIndexPrim prim) const
@@ -678,20 +741,33 @@ SceneDrawFilter::withMask(const SdfPath& primPath,
         return prim;
     }
     const auto found = _instancers.find(primPath);
-    if ((found == _instancers.end()) || (found->second.hiddenCount == 0)) {
+    const std::vector<bool>* hidden = ((found != _instancers.end()) && (found->second.hiddenCount != 0)) ? &found->second.hidden : nullptr;
+    const std::vector<bool>* budget = nullptr;
+    if (!_budgetMasks.empty()) {
+        const auto masked = _budgetMasks.find(primPath);
+        if (masked != _budgetMasks.end()) {
+            budget = &masked->second;
+        }
+    }
+    if (!hidden && !budget) {
         return prim;
     }
-    const std::vector<bool>& hidden = found->second.hidden;
     VtArray<bool> mask;
     if (const HdBoolArrayDataSourceHandle authored = HdInstancerTopologySchema::GetFromParent(prim.dataSource).GetMask()) {
         mask = authored->GetTypedValue(0.f);
     }
-    if (mask.size() < hidden.size()) {
-        mask.resize(hidden.size(), true);
+    const std::size_t size = (std::max)(hidden ? hidden->size() : 0, budget ? budget->size() : 0);
+    if (mask.size() < size) {
+        mask.resize(size, true);
     }
-    for (std::size_t i = 0; i < hidden.size(); ++i) {
-        if (hidden[i]) {
-            mask[i] = false;
+    for (const std::vector<bool>* off : { hidden, budget }) {
+        if (!off) {
+            continue;
+        }
+        for (std::size_t i = 0; i < off->size(); ++i) {
+            if ((*off)[i]) {
+                mask[i] = false;
+            }
         }
     }
     const HdContainerDataSourceHandle overlay = HdRetainedContainerDataSource::New(
@@ -702,10 +778,26 @@ SceneDrawFilter::withMask(const SdfPath& primPath,
     return prim;
 }
 
+HdSceneIndexPrim
+SceneDrawFilter::withBudget(const SdfPath& primPath,
+                            HdSceneIndexPrim prim) const
+{
+    if (!_budgetHidden.empty() && HdPrimTypeIsGprim(prim.primType) && (_budgetHidden.count(primPath) != 0)) {
+        prim.dataSource = HdOverlayContainerDataSource::OverlayedContainerDataSources(invisibleData(), prim.dataSource);
+    }
+
+    return prim;
+}
+
 SdfPathVector
 SceneDrawFilter::GetChildPrimPaths(const SdfPath& primPath) const
 {
-    return _GetInputSceneIndex()->GetChildPrimPaths(primPath);
+    SdfPathVector children = _GetInputSceneIndex()->GetChildPrimPaths(primPath);
+    if (!_budgetFaces.empty() && (_budgetFaces.count(primPath) != 0)) {
+        children.push_back(primPath.AppendChild(budgetFacesChildName()));
+    }
+
+    return children;
 }
 
 void
@@ -1268,6 +1360,258 @@ SceneDrawFilter::_PrimsDirtied(const HdSceneIndexBase& /*sender*/,
     if (!kept.empty()) {
         _SendPrimsDirtied(kept);
     }
+}
+
+const TfToken&
+SceneDrawFilter::budgetFacesChildName()
+{
+    static const TfToken token("__natronBudgetFaces");
+
+    return token;
+}
+
+SceneDrawFilter::Budget
+SceneDrawFilter::budgetFrom(const SceneViewBudget::Result& result,
+                            const std::vector<SceneViewBudget::Unit>& units)
+{
+    Budget budget;
+
+    if (!result.valid) {
+        return budget;
+    }
+    budget.hidden = result.demoted;
+    budget.hidden.insert(result.culled.begin(), result.culled.end());
+    const auto bitAt = [](const std::vector<bool>& bits, std::size_t index, bool fallback) {
+        return (index < bits.size()) ? bits[index] : fallback;
+    };
+    for (const auto& entry : result.instancers) {
+        const SceneViewBudget::InstancerResult& record = entry.second;
+        const std::size_t size = (std::max)({ record.demoted.size(), record.culled.size(), record.kept.size() });
+        std::vector<bool> off(size, false);
+        bool any = false;
+        for (std::size_t index = 0; index < size; ++index) {
+            off[index] = bitAt(record.demoted, index, false) || bitAt(record.culled, index, false) || !bitAt(record.kept, index, true);
+            any = any || off[index];
+        }
+        if (any) {
+            budget.instances.emplace(entry.first, std::move(off));
+        }
+    }
+    if (result.keptFaceFraction.empty()) {
+        return budget;
+    }
+    for (const SceneViewBudget::Unit& unit : units) {
+        if (!unit.mesh || unit.instances) {
+            continue;
+        }
+        const auto fraction = result.keptFaceFraction.find(unit.path);
+        if (fraction == result.keptFaceFraction.end()) {
+            continue;
+        }
+        const U64 seed = SceneViewBudget::pathSeed(unit.path);
+        VtIntArray omitted;
+        for (U64 face = 0; face < unit.faces; ++face) {
+            if (!SceneViewBudget::keeps(seed, std::size_t(face), fraction->second)) {
+                omitted.push_back(int(face));
+            }
+        }
+        if (!omitted.empty()) {
+            budget.invisibleFaces.emplace(unit.path, std::move(omitted));
+        }
+    }
+
+    return budget;
+} // SceneDrawFilter::budgetFrom
+
+void
+SceneDrawFilter::setBudgetBound(bool bound)
+{
+    if (!bound && _budgetBound) {
+        clearBudget();
+    }
+    _budgetBound = bound;
+}
+
+const std::pair<SdfPath, std::size_t>*
+SceneDrawFilter::nativeInstanceOf(const SdfPath& path) const
+{
+    if (_locations.empty()) {
+        return nullptr;
+    }
+    for (SdfPath at = path; !at.IsEmpty() && !at.IsAbsoluteRootPath(); at = at.GetParentPath()) {
+        const auto found = _locations.find(at);
+        if (found != _locations.end()) {
+            return &found->second;
+        }
+    }
+
+    return nullptr;
+}
+
+void
+SceneDrawFilter::applyBudget(const Budget& budget)
+{
+    if (!_budgetBound || (budget.empty() && !hasBudgetLayer())) {
+        return;
+    }
+    const auto drawn = [this](const SdfPath& path) {
+        const auto node = _nodes.find(path);
+
+        return (node != _nodes.end()) && (node->second.output == eOutputShown);
+    };
+
+    // A gprim under a native instance is not in Hydra: its prototype draws through the instancer,
+    // so the whole instance goes.
+    std::unordered_set<SdfPath, SdfPath::Hash> hidden;
+    std::unordered_map<SdfPath, std::vector<bool>, SdfPath::Hash> masks;
+    hidden.reserve(budget.hidden.size());
+    for (const SdfPath& path : budget.hidden) {
+        const auto node = _nodes.find(path);
+        if (node != _nodes.end()) {
+            if (HdPrimTypeIsGprim(node->second.type)) {
+                hidden.insert(path);
+            }
+            continue;
+        }
+        const std::pair<SdfPath, std::size_t>* instance = nativeInstanceOf(path);
+        if (!instance) {
+            continue;
+        }
+        const auto record = _instancers.find(instance->first);
+        if (record == _instancers.end()) {
+            continue;
+        }
+        std::vector<bool>& bits = masks[instance->first];
+        bits.resize(record->second.locations.size(), false);
+        bits[instance->second] = true;
+    }
+    for (const auto& entry : budget.instances) {
+        const auto node = _nodes.find(entry.first);
+        if ((node == _nodes.end()) || (node->second.type != HdPrimTypeTokens->instancer)) {
+            continue;
+        }
+        std::vector<bool>& bits = masks[entry.first];
+        if (bits.size() < entry.second.size()) {
+            bits.resize(entry.second.size(), false);
+        }
+        for (std::size_t index = 0; index < entry.second.size(); ++index) {
+            if (entry.second[index]) {
+                bits[index] = true;
+            }
+        }
+    }
+    std::unordered_map<SdfPath, VtIntArray, SdfPath::Hash> faces;
+    for (const auto& entry : budget.invisibleFaces) {
+        const auto node = _nodes.find(entry.first);
+        if (!entry.second.empty() && (node != _nodes.end()) && (node->second.type == HdPrimTypeTokens->mesh)) {
+            faces.emplace(entry.first, entry.second);
+        }
+    }
+
+    HdSceneIndexObserver::DirtiedPrimEntries dirtied;
+    HdSceneIndexObserver::AddedPrimEntries added;
+    HdSceneIndexObserver::RemovedPrimEntries removed;
+    for (const SdfPath& path : _budgetHidden) {
+        if ((hidden.count(path) == 0) && drawn(path)) {
+            dirtied.emplace_back(path, visibilityLocators());
+        }
+    }
+    for (const SdfPath& path : hidden) {
+        if ((_budgetHidden.count(path) == 0) && drawn(path)) {
+            dirtied.emplace_back(path, visibilityLocators());
+        }
+    }
+    std::vector<SdfPath> maskChanged;
+    for (const auto& entry : masks) {
+        const auto old = _budgetMasks.find(entry.first);
+        if ((old == _budgetMasks.end()) || (old->second != entry.second)) {
+            maskChanged.push_back(entry.first);
+        }
+    }
+    for (const auto& entry : _budgetMasks) {
+        if (masks.count(entry.first) == 0) {
+            maskChanged.push_back(entry.first);
+        }
+    }
+    for (const SdfPath& path : maskChanged) {
+        const auto node = _nodes.find(path);
+        if ((node != _nodes.end()) && (node->second.output != eOutputAbsent)) {
+            dirtied.emplace_back(path, maskLocators());
+        }
+    }
+    for (const auto& entry : _budgetFaces) {
+        if (faces.count(entry.first) == 0) {
+            removed.emplace_back(entry.first.AppendChild(budgetFacesChildName()));
+            dirtied.emplace_back(entry.first, topologyLocators());
+        }
+    }
+    for (const auto& entry : faces) {
+        const auto old = _budgetFaces.find(entry.first);
+        if (old == _budgetFaces.end()) {
+            added.emplace_back(entry.first.AppendChild(budgetFacesChildName()), HdPrimTypeTokens->geomSubset);
+            dirtied.emplace_back(entry.first, topologyLocators());
+        } else if (old->second != entry.second) {
+            dirtied.emplace_back(entry.first.AppendChild(budgetFacesChildName()), subsetLocators());
+            dirtied.emplace_back(entry.first, topologyLocators());
+        }
+    }
+
+    _budgetHidden.swap(hidden);
+    _budgetMasks.swap(masks);
+    _budgetFaces.swap(faces);
+    _budgetMaskedCount = 0;
+    for (const auto& entry : _budgetMasks) {
+        _budgetMaskedCount += countSet(entry.second);
+    }
+
+    if (!removed.empty()) {
+        _SendPrimsRemoved(removed);
+    }
+    if (!added.empty()) {
+        _SendPrimsAdded(added);
+    }
+    const std::size_t dirtiedBatch = 4096;
+    for (std::size_t begin = 0; begin < dirtied.size(); begin += dirtiedBatch) {
+        const std::size_t end = (std::min)(begin + dirtiedBatch, dirtied.size());
+        _SendPrimsDirtied(HdSceneIndexObserver::DirtiedPrimEntries(dirtied.begin() + begin, dirtied.begin() + end));
+    }
+} // SceneDrawFilter::applyBudget
+
+std::size_t
+SceneDrawFilter::getBudgetHiddenCount() const
+{
+    std::size_t count = 0;
+
+    for (const SdfPath& path : _budgetHidden) {
+        const auto node = _nodes.find(path);
+        if ((node != _nodes.end()) && (node->second.output == eOutputShown)) {
+            ++count;
+        }
+    }
+
+    return count;
+}
+
+VtIntArray
+SceneDrawFilter::getBudgetInvisibleFaces(const SdfPath& mesh) const
+{
+    const auto found = _budgetFaces.find(mesh);
+
+    return (found != _budgetFaces.end()) ? found->second : VtIntArray();
+}
+
+bool
+SceneDrawFilter::isInstanceMasked(const SdfPath& instancer,
+                                  std::size_t index) const
+{
+    const HdSceneIndexPrim prim = GetPrim(instancer);
+    const HdBoolArrayDataSourceHandle mask = HdInstancerTopologySchema::GetFromParent(prim.dataSource).GetMask();
+    if (!mask) {
+        return false;
+    }
+    const VtArray<bool> bits = mask->GetTypedValue(0.f);
+
+    return (index < bits.size()) && !bits[index];
 }
 
 SceneRevealPacer::SceneRevealPacer(double targetMs,

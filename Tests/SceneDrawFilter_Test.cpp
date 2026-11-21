@@ -46,6 +46,7 @@
 #endif
 #include <pxr/imaging/hd/changeTracker.h>
 #include <pxr/imaging/hd/filteringSceneIndex.h>
+#include <pxr/imaging/hd/geomSubsetSchema.h>
 #include <pxr/imaging/hd/instancerTopologySchema.h>
 #include <pxr/imaging/hd/renderDelegate.h>
 #include <pxr/imaging/hd/renderIndex.h>
@@ -1542,6 +1543,226 @@ TEST_F(SceneDrawFilterTest, ANewInstanceListIsReadWhenTheInputAddsItAgain)
     scene->RemovePrims({ SdfPath("/UsdNiPropagatedPrototypes") });
 
     EXPECT_EQ(0u, filter->getMaskedInstanceCount());
+}
+
+namespace {
+// A PointInstancer as usdImaging gives it: an instancer at its own path naming no instance location.
+void
+addPointInstancer(const HdRetainedSceneIndexRefPtr& scene,
+                  const std::vector<bool>& mask = std::vector<bool>())
+{
+    HdInstancerTopologySchema::Builder builder;
+    if (!mask.empty()) {
+        builder.SetMask(HdRetainedTypedSampledDataSource<VtArray<bool>>::New(VtArray<bool>(mask.begin(), mask.end())));
+    }
+    scene->AddPrims({ { SdfPath("/World/pi"), HdPrimTypeTokens->instancer, HdRetainedContainerDataSource::New(HdInstancerTopologySchema::GetSchemaToken(), builder.Build()) } });
+}
+
+SceneViewBudget::Unit
+meshUnit(const char* path,
+         U64 faces)
+{
+    SceneViewBudget::Unit unit;
+    unit.path = SdfPath(path);
+    unit.faces = faces;
+    unit.mesh = true;
+
+    return unit;
+}
+} // anon namespace
+
+TEST_F(SceneDrawFilterTest, TheBudgetHoldsADemotedFullPrimInvisibleAndClearingItRestoresTheRules)
+{
+    filter->applyDelta(states.setState("/World/c", eSceneDrawStateFull));
+    filter->setBudgetBound(true);
+    recorder.reset();
+    SceneDrawFilter::Budget budget;
+    budget.hidden.insert(SdfPath("/World/c"));
+
+    filter->applyBudget(budget);
+
+    EXPECT_FALSE(drawn("/World/c"));
+    EXPECT_EQ(HdPrimTypeTokens->mesh, filter->GetPrim(SdfPath("/World/c")).primType);
+    EXPECT_EQ(PathSet { "/World/c" }, recorder.invisible);
+    EXPECT_TRUE(recorder.leftHydra.empty());
+    EXPECT_EQ(1u, filter->getBudgetHiddenCount());
+    recorder.reset();
+
+    filter->clearBudget();
+
+    EXPECT_EQ(kAllGeometry, drawnGeometry());
+    EXPECT_EQ(PathSet { "/World/c" }, recorder.shows);
+    EXPECT_EQ(0u, filter->getBudgetHiddenCount());
+}
+
+TEST_F(SceneDrawFilterTest, TheBudgetOnlyTakesAwayAndOutlastsARuleChange)
+{
+    filter->setBudgetBound(true);
+    SceneDrawFilter::Budget budget;
+    budget.hidden.insert(SdfPath("/World/c"));
+    budget.hidden.insert(SdfPath("/World/a/m1"));
+    filter->applyDelta(states.setState("/World/a", eSceneDrawStateHidden));
+
+    filter->applyBudget(budget);
+
+    EXPECT_FALSE(drawn("/World/c"));
+    EXPECT_TRUE(filter->GetPrim(SdfPath("/World/a/m1")).primType.IsEmpty());
+    EXPECT_EQ(1u, filter->getBudgetHiddenCount());
+
+    filter->applyDelta(states.setState("/World", eSceneDrawStateBBox));
+    filter->applyDelta(states.clearAllStates());
+
+    EXPECT_FALSE(drawn("/World/c"));
+    EXPECT_FALSE(drawn("/World/a/m1"));
+
+    filter->clearBudget();
+
+    EXPECT_EQ(kAllGeometry, drawnGeometry());
+}
+
+TEST_F(SceneDrawFilterTest, AnInstanceTheBudgetAndARuleBothMaskReadsHiddenOnceAndClearingTheBudgetLeavesTheRule)
+{
+    addInstances(scene);
+    filter->setBudgetBound(true);
+    filter->applyDelta(states.setState("/World/b", eSceneDrawStateBBox));
+    recorder.reset();
+    SceneDrawFilter::Budget budget;
+    budget.hidden.insert(SdfPath("/World/b/i3/m"));
+    budget.hidden.insert(SdfPath("/World/a/i1/m"));
+
+    filter->applyBudget(budget);
+
+    EXPECT_EQ((std::vector<bool> { false, true, false }), maskOf(*filter, kNativeInstancer));
+    EXPECT_EQ(1u, filter->getMaskedInstanceCount());
+    EXPECT_EQ(2u, filter->getBudgetMaskedInstanceCount());
+    EXPECT_EQ(1u, recorder.dirtied.count(kNativeInstancer));
+    EXPECT_TRUE(filter->isInstanceMasked(SdfPath(kNativeInstancer), 2));
+    recorder.reset();
+
+    filter->clearBudget();
+
+    EXPECT_EQ((std::vector<bool> { true, true, false }), maskOf(*filter, kNativeInstancer));
+    EXPECT_EQ(1u, filter->getMaskedInstanceCount());
+    EXPECT_EQ(0u, filter->getBudgetMaskedInstanceCount());
+    EXPECT_EQ(1u, recorder.dirtied.count(kNativeInstancer));
+}
+
+TEST_F(SceneDrawFilterTest, TheBudgetMasksPointInstancerInstancesByIndexOverWhatTheInputMasks)
+{
+    addPointInstancer(scene, { true, true, false, true });
+    filter->setBudgetBound(true);
+    recorder.reset();
+    SceneDrawFilter::Budget budget;
+    budget.instances[SdfPath("/World/pi")] = { false, true, false, true };
+
+    filter->applyBudget(budget);
+
+    EXPECT_EQ((std::vector<bool> { true, false, false, false }), maskOf(*filter, "/World/pi"));
+    EXPECT_EQ(2u, filter->getBudgetMaskedInstanceCount());
+    EXPECT_EQ(1u, recorder.dirtied.count("/World/pi"));
+    recorder.reset();
+
+    filter->applyBudget(budget);
+
+    EXPECT_TRUE(recorder.empty());
+
+    filter->clearBudget();
+
+    EXPECT_EQ((std::vector<bool> { true, true, false, true }), maskOf(*filter, "/World/pi"));
+    EXPECT_EQ(1u, recorder.dirtied.count("/World/pi"));
+}
+
+TEST_F(SceneDrawFilterTest, AResultTurnsDemotedCulledAndFractionedOutInstancesOff)
+{
+    SceneViewBudget::Result result;
+    result.valid = true;
+    result.demoted.insert(SdfPath("/World/c"));
+    result.culled.insert(SdfPath("/World/b/m3"));
+    SceneViewBudget::InstancerResult& record = result.instancers[SdfPath("/World/pi")];
+    record.demoted = { false, true, false, false, false };
+    record.culled = { false, false, true, false, false };
+    record.kept = { true, true, true, false, true };
+
+    const SceneDrawFilter::Budget budget = SceneDrawFilter::budgetFrom(result, std::vector<SceneViewBudget::Unit>());
+
+    EXPECT_EQ(2u, budget.hidden.size());
+    EXPECT_EQ(1u, budget.hidden.count(SdfPath("/World/c")));
+    EXPECT_EQ(1u, budget.hidden.count(SdfPath("/World/b/m3")));
+    ASSERT_EQ(1u, budget.instances.count(SdfPath("/World/pi")));
+    EXPECT_EQ((std::vector<bool> { false, true, true, true, false }), budget.instances.at(SdfPath("/World/pi")));
+    EXPECT_TRUE(SceneDrawFilter::budgetFrom(SceneViewBudget::Result(), std::vector<SceneViewBudget::Unit>()).empty());
+}
+
+TEST_F(SceneDrawFilterTest, AFractionedMeshOmitsItsHashedFacesThroughAnInvisibleSubset)
+{
+    filter->setBudgetBound(true);
+    SceneViewBudget::Result result;
+    result.valid = true;
+    result.keptFaceFraction[SdfPath("/World/c")] = 0.25;
+    const SceneDrawFilter::Budget budget = SceneDrawFilter::budgetFrom(result, { meshUnit("/World/c", 200), meshUnit("/World/b/m3", 50) });
+    VtIntArray expected;
+    for (int face = 0; face < 200; ++face) {
+        if (!SceneViewBudget::keepsFace(SdfPath("/World/c"), std::size_t(face), 0.25)) {
+            expected.push_back(face);
+        }
+    }
+    ASSERT_FALSE(expected.empty());
+    ASSERT_LT(expected.size(), 200u);
+    ASSERT_EQ(1u, budget.invisibleFaces.count(SdfPath("/World/c")));
+    EXPECT_EQ(expected, budget.invisibleFaces.at(SdfPath("/World/c")));
+    recorder.reset();
+
+    filter->applyBudget(budget);
+
+    const SdfPath child = SdfPath("/World/c").AppendChild(SceneDrawFilter::budgetFacesChildName());
+    EXPECT_EQ(expected, filter->getBudgetInvisibleFaces(SdfPath("/World/c")));
+    EXPECT_EQ(1u, filter->getBudgetFacedMeshCount());
+    const SdfPathVector children = filter->GetChildPrimPaths(SdfPath("/World/c"));
+    EXPECT_NE(children.end(), std::find(children.begin(), children.end(), child));
+    const HdSceneIndexPrim subset = filter->GetPrim(child);
+    EXPECT_EQ(HdPrimTypeTokens->geomSubset, subset.primType);
+    EXPECT_FALSE(visible(subset));
+    const HdIntArrayDataSourceHandle indices = HdGeomSubsetSchema::GetFromParent(subset.dataSource).GetIndices();
+    ASSERT_TRUE(indices != nullptr);
+    EXPECT_EQ(expected, indices->GetTypedValue(0.f));
+    EXPECT_EQ(1u, recorder.shows.count(child.GetString()));
+    EXPECT_EQ(1u, recorder.dirtied.count("/World/c"));
+    EXPECT_TRUE(drawn("/World/c"));
+    recorder.reset();
+
+    filter->clearBudget();
+
+    EXPECT_EQ(1u, recorder.removed.count(child.GetString()));
+    EXPECT_EQ(1u, recorder.dirtied.count("/World/c"));
+    EXPECT_TRUE(filter->getBudgetInvisibleFaces(SdfPath("/World/c")).empty());
+    const SdfPathVector after = filter->GetChildPrimPaths(SdfPath("/World/c"));
+    EXPECT_EQ(after.end(), std::find(after.begin(), after.end(), child));
+}
+
+TEST_F(SceneDrawFilterTest, AFilterTheBudgetIsNotBoundToIgnoresIt)
+{
+    addPointInstancer(scene);
+    recorder.reset();
+    SceneDrawFilter::Budget budget;
+    budget.hidden.insert(SdfPath("/World/c"));
+    budget.instances[SdfPath("/World/pi")] = { true };
+    budget.invisibleFaces[SdfPath("/World/a/m1")] = VtIntArray { 0, 2 };
+
+    filter->applyBudget(budget);
+
+    EXPECT_FALSE(filter->isBudgetBound());
+    EXPECT_TRUE(recorder.empty());
+    EXPECT_EQ(kAllGeometry, drawnGeometry());
+    EXPECT_TRUE(maskOf(*filter, "/World/pi").empty());
+    EXPECT_EQ(0u, filter->getBudgetFacedMeshCount());
+
+    filter->setBudgetBound(true);
+    filter->applyBudget(budget);
+    filter->setBudgetBound(false);
+
+    EXPECT_EQ(kAllGeometry, drawnGeometry());
+    EXPECT_TRUE(maskOf(*filter, "/World/pi").empty());
+    EXPECT_EQ(0u, filter->getBudgetFacedMeshCount());
 }
 
 namespace {

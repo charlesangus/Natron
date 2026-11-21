@@ -69,6 +69,8 @@ namespace {
 // A write waits for every reader, so a pass under the lock stays short.
 const std::chrono::milliseconds kPassBudget(4);
 const std::chrono::milliseconds kPassGap(1);
+// Instances settled between checks for a dropped pass, off the lock.
+const std::size_t kInstanceChunk = 1 << 16;
 
 // The scene graph's rows, so every row it lists can be boxed.
 Usd_PrimFlagsPredicate
@@ -432,6 +434,116 @@ SceneDrawBoxes::getCamera() const
     return _camera;
 }
 
+U64
+SceneDrawBoxes::requestBudget(const Camera& camera,
+                              const SceneViewBudget::Settings& settings)
+{
+    U64 serial = 0;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        serial = ++_budgetSerial;
+        _budgetPending = true;
+        _budgetLive = true;
+        _budgetCamera = camera;
+        _budgetSettings = settings;
+        _camera = camera;
+        if (!_counting) {
+            _counting = true;
+            ++_generation;
+        }
+    }
+    _changed.notify_all();
+
+    return serial;
+}
+
+void
+SceneDrawBoxes::cancelBudget()
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+
+    ++_budgetSerial;
+    _budgetPending = false;
+    _budgetLive = false;
+}
+
+void
+SceneDrawBoxes::stopBudget()
+{
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        ++_budgetSerial;
+        _budgetPending = false;
+        _budgetLive = false;
+        _budget.reset();
+    }
+    if (_published) {
+        _published();
+    }
+}
+
+SceneDrawBoxes::BudgetPtr
+SceneDrawBoxes::getBudget() const
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+
+    return _budget;
+}
+
+bool
+SceneDrawBoxes::waitForBudget(U64 serial,
+                              std::chrono::milliseconds timeout) const
+{
+    std::unique_lock<std::mutex> lock(_mutex);
+
+    return _changed.wait_for(lock, timeout, [&]() { return _budget && (_budget->serial >= serial); });
+}
+
+bool
+SceneDrawBoxes::budgetDue() const
+{
+    return _budgetPending && _units && (_units->generation == _generation);
+}
+
+void
+SceneDrawBoxes::solveBudget()
+{
+    std::shared_ptr<Budget> budget = std::make_shared<Budget>();
+    BudgetPtr previous;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        if (!budgetDue()) {
+            return;
+        }
+        _budgetPending = false;
+        budget->serial = _budgetSerial;
+        budget->camera = _budgetCamera;
+        budget->settings = _budgetSettings;
+        budget->units = _units;
+        previous = _budget;
+    }
+    // Hysteresis holds only against a result for the same settings.
+    const bool comparable = previous && (previous->settings.limit == budget->settings.limit)
+        && (previous->settings.countWholeScene == budget->settings.countWholeScene)
+        && (previous->settings.cullDistance == budget->settings.cullDistance)
+        && (previous->settings.fractionDistance == budget->settings.fractionDistance)
+        && (previous->settings.fractionPercent == budget->settings.fractionPercent);
+    budget->result = SceneViewBudget::solve(budget->units->units, budget->camera, budget->settings,
+                                            comparable ? previous->result : SceneViewBudget::Result());
+    budget->filter = SceneDrawFilter::budgetFrom(budget->result, budget->units->units);
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        if ((budget->serial != _budgetSerial) || _quit) {
+            return;
+        }
+        _budget = budget;
+    }
+    _changed.notify_all();
+    if (_published) {
+        _published();
+    }
+} // SceneDrawBoxes::solveBudget
+
 SceneDrawBoxes::ListPtr
 SceneDrawBoxes::getList() const
 {
@@ -659,20 +771,27 @@ SceneDrawBoxes::run()
 {
     for (;;) {
         Request request;
+        bool due = false;
         {
             std::unique_lock<std::mutex> lock(_mutex);
-            _changed.wait(lock, [this]() { return _quit || (_taken != _generation); });
+            _changed.wait(lock, [this]() { return _quit || (_taken != _generation) || budgetDue(); });
             if (_quit) {
                 return;
             }
-            request.rules = _rules;
-            request.time = _time;
-            request.generation = _generation;
-            request.contentGeneration = _contentGeneration;
-            request.counting = _counting;
-            _taken = _generation;
+            if (_taken != _generation) {
+                request.rules = _rules;
+                request.time = _time;
+                request.generation = _generation;
+                request.contentGeneration = _contentGeneration;
+                request.counting = _counting;
+                _taken = _generation;
+                due = true;
+            }
         }
-        compute(request);
+        if (due) {
+            compute(request);
+        }
+        solveBudget();
     }
 }
 
@@ -911,6 +1030,20 @@ SceneDrawBoxes::countUnits(const Request& request)
     if (!done || dropped) {
         return false;
     }
+    for (Unit& unit : units) {
+        if (!unit.instances) {
+            continue;
+        }
+        const std::unordered_map<SdfPath, UnitEntry, SdfPath::Hash>::iterator found = _unitEntries.find(unit.path);
+        if ((found == _unitEntries.end()) || !found->second.settle) {
+            continue;
+        }
+        if (!settleInstances(request, &found->second.unit)) {
+            return false;
+        }
+        found->second.settle = false;
+        unit = found->second.unit;
+    }
     std::unordered_map<SdfPath, UnitEntry, SdfPath::Hash> kept;
     kept.reserve(units.size());
     for (const Unit& unit : units) {
@@ -929,8 +1062,21 @@ SceneDrawBoxes::UnitEntry
 SceneDrawBoxes::computeUnit(const UsdPrim& prim,
                             double time)
 {
-    const Entry bound = computeEntry(prim, time);
     UnitEntry entry;
+    const UsdGeomPointInstancer instancer(prim);
+
+    // A PointInstancer's world bound visits every instance, too long a read to hold the lock for
+    // with millions of them: settleInstances() takes it from the arrays read here, off the lock.
+    if (instancer && prim.IsLoaded()) {
+        entry.time = time;
+        entry.unit.path = prim.GetPath();
+        entry.varying = boundMightVary(prim) || countsMightVary(prim);
+        entry.settle = true;
+        readInstances(instancer, time, &entry);
+
+        return entry;
+    }
+    const Entry bound = computeEntry(prim, time);
 
     entry.time = time;
     entry.unit.path = bound.box.path;
@@ -945,13 +1091,18 @@ SceneDrawBoxes::computeUnit(const UsdPrim& prim,
         return entry;
     }
     entry.varying = bound.varying || countsMightVary(prim);
-    const UsdGeomPointInstancer instancer(prim);
-    if (!instancer) {
-        entry.unit.faces = gprimFaces(prim, time);
-        entry.unit.mesh = prim.IsA<UsdGeomMesh>();
+    entry.unit.faces = gprimFaces(prim, time);
+    entry.unit.mesh = prim.IsA<UsdGeomMesh>();
 
-        return entry;
-    }
+    return entry;
+} // SceneDrawBoxes::computeUnit
+
+void
+SceneDrawBoxes::readInstances(const UsdGeomPointInstancer& instancer,
+                              double time,
+                              UnitEntry* entry)
+{
+    const UsdPrim prim = instancer.GetPrim();
     const UsdTimeCode at(time);
     std::shared_ptr<Instances> instances = std::make_shared<Instances>();
     UsdGeomXformCache xforms(at);
@@ -972,7 +1123,7 @@ SceneDrawBoxes::computeUnit(const UsdPrim& prim,
         prototype.faces = faces[index];
         const UsdPrim prototypePrim = stage->GetPrimAtPath(paths[index]);
         if (prototypePrim) {
-            entry.varying = entry.varying || boundMightVary(prototypePrim) || countsMightVary(prototypePrim);
+            entry->varying = entry->varying || boundMightVary(prototypePrim) || countsMightVary(prototypePrim);
             GfBBox3d box = _bboxCache->ComputeUntransformedBound(prototypePrim);
             GfMatrix4d local(1.);
             bool resets = false;
@@ -989,11 +1140,51 @@ SceneDrawBoxes::computeUnit(const UsdPrim& prim,
         }
         instances->prototypes.push_back(prototype);
     }
-    entry.unit.faces = instancedFaces(instances->protoIndices, instances->mask, faces);
-    entry.unit.instances = instances;
+    entry->unit.instances = instances;
+} // SceneDrawBoxes::readInstances
 
-    return entry;
-} // SceneDrawBoxes::computeUnit
+bool
+SceneDrawBoxes::settleInstances(const Request& request,
+                                Unit* unit) const
+{
+    const Instances& instances = *unit->instances;
+    const std::size_t size = instances.size();
+    GfRange3d range;
+    U64 faces = 0;
+
+    for (std::size_t begin = 0; begin < size; begin += kInstanceChunk) {
+        if ((_contentGeneration != request.contentGeneration) || _quit) {
+            return false;
+        }
+        const std::size_t end = (std::min)(begin + kInstanceChunk, size);
+        for (std::size_t index = begin; index < end; ++index) {
+            if (!instances.draws(index)) {
+                continue;
+            }
+            const Prototype& prototype = instances.prototypes[std::size_t(instances.protoIndices[index])];
+            faces += prototype.faces;
+            const GfMatrix4d toWorld = instances.instanceTransform(index);
+            if (prototype.bounded) {
+                range.UnionWith(GfBBox3d(GfRange3d(GfVec3d(prototype.min), GfVec3d(prototype.max)), toWorld).ComputeAlignedRange());
+            } else {
+                range.UnionWith(toWorld.Transform(GfVec3d(0.)));
+            }
+        }
+    }
+    unit->faces = faces;
+    if (range.IsEmpty()) {
+        const GfVec3f origin(instances.toWorld.ExtractTranslation());
+        unit->min = origin;
+        unit->max = origin;
+        unit->bounded = false;
+    } else {
+        unit->min = GfVec3f(range.GetMin());
+        unit->max = GfVec3f(range.GetMax());
+        unit->bounded = true;
+    }
+
+    return true;
+} // SceneDrawBoxes::settleInstances
 
 SceneDrawBoxes::Entry
 SceneDrawBoxes::computeEntry(const UsdPrim& prim,
@@ -1057,6 +1248,10 @@ SceneDrawBoxes::publishUnits(const Request& request,
         published->time = request.time;
         published->units = std::move(units);
         _units = published;
+        if (_budgetLive) {
+            ++_budgetSerial;
+            _budgetPending = true;
+        }
     }
     _changed.notify_all();
     if (_published) {

@@ -750,6 +750,8 @@ private:
     static double currentTimeForEvent(QInputEvent* e);
 
 private:
+    void onZoomStepped(double oldZoomFactor, double zoomFactor);
+
     struct Implementation;
     std::unique_ptr<Implementation> _imp; // PIMPL: hide implementation details
 };

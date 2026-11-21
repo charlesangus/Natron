@@ -219,7 +219,6 @@ class SequenceDialogView
     : public QTreeView
 {
     SequenceFileDialog* _fd;
-    bool _listMode;
 
 public:
     explicit SequenceDialogView(SequenceFileDialog* fd);
@@ -227,9 +226,6 @@ public:
     void updateNameMapping(const std::vector<std::pair<QString, std::pair<qint64, QString> > > & nameMapping);
 
     void expandColumnsToFullWidth(int w);
-
-    void setListMode(bool listMode);
-    bool isListMode() const { return _listMode; }
 
     void dropEvent(QDropEvent* e) OVERRIDE FINAL;
 
@@ -412,8 +408,6 @@ public Q_SLOTS:
     void onSequencesToggled(bool checked);
     void onSplitOnGapsToggled(bool checked);
     void onShowHiddenToggled(bool checked);
-    void showListView();
-    void showDetailView();
 
     void onRelativeChoiceChanged(int index);
 
@@ -600,8 +594,6 @@ private:
     Button* _upButton;
     Button* _homeButton;
     Button* _createDirButton;
-    Button* _listViewButton;
-    Button* _detailViewButton;
     Button* _openButton;
     Button* _cancelButton;
     Button* _addFavoriteButton;

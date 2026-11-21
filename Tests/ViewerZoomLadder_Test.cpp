@@ -140,3 +140,77 @@ TEST(ViewerZoomLadder, ZeroStepsLeavesTheLevel)
 {
     EXPECT_DOUBLE_EQ(87., step(87., 0));
 }
+
+namespace {
+
+ViewerWheelZoom
+wheelSnap(double rawPercent,
+          double scale,
+          double minFactor = kMin,
+          double maxFactor = kMax)
+{
+    ViewerWheelZoom z = wheelZoomSnap(rawPercent / 100., scale, minFactor, maxFactor);
+    z.raw *= 100.;
+    z.factor *= 100.;
+
+    return z;
+}
+
+} // namespace
+
+TEST(ViewerZoomLadder, WheelLandsOnAPresetWithinItsBand)
+{
+    EXPECT_DOUBLE_EQ(100., wheelSnap(95., 1.02).factor);
+    EXPECT_NEAR(96.9, wheelSnap(95., 1.02).raw, 1e-9);
+    EXPECT_DOUBLE_EQ(75., wheelSnap(80., 0.95).factor);
+    EXPECT_DOUBLE_EQ(125., wheelSnap(110., 1.1).factor);
+}
+
+TEST(ViewerZoomLadder, WheelZoomsSmoothlyBetweenPresets)
+{
+    EXPECT_NEAR(168., wheelSnap(160., 1.05).factor, 1e-9);
+    EXPECT_NEAR(168., wheelSnap(160., 1.05).raw, 1e-9);
+    EXPECT_NEAR(300., wheelSnap(250., 1.2).factor, 1e-9);
+    EXPECT_NEAR(83.6, wheelSnap(88., 0.95).factor, 1e-9);
+}
+
+TEST(ViewerZoomLadder, LeavingAPresetTakesItsBand)
+{
+    ViewerWheelZoom z = wheelSnap(100., 1.05);
+    EXPECT_DOUBLE_EQ(100., z.factor);
+    z = wheelSnap(z.raw, 1.05);
+    EXPECT_NEAR(110.25, z.factor, 1e-9);
+    z = wheelSnap(100., 0.95);
+    EXPECT_DOUBLE_EQ(100., z.factor);
+    z = wheelSnap(z.raw, 0.95);
+    EXPECT_NEAR(90.25, z.factor, 1e-9);
+}
+
+TEST(ViewerZoomLadder, WheelNotchesFromAPreset)
+{
+    const double expected[] = { 125., 150., 172.8, 200. };
+    ViewerWheelZoom z { 1., 1. };
+
+    for (double e : expected) {
+        z = wheelZoomSnap(z.raw, 1.2, kMin, kMax);
+        EXPECT_NEAR(e, 100. * z.factor, 1e-9);
+    }
+}
+
+TEST(ViewerZoomLadder, AStepThatJumpsABandLandsOnItsPreset)
+{
+    ViewerWheelZoom z = wheelSnap(90., 1.25);
+    EXPECT_DOUBLE_EQ(100., z.factor);
+    EXPECT_DOUBLE_EQ(100., z.raw);
+    z = wheelSnap(110., 0.8);
+    EXPECT_DOUBLE_EQ(100., z.factor);
+    EXPECT_DOUBLE_EQ(75., wheelSnap(30., 3.).factor);
+    EXPECT_DOUBLE_EQ(100., wheelSnap(30., 3.5).factor);
+}
+
+TEST(ViewerZoomLadder, WheelClampsToTheZoomBounds)
+{
+    EXPECT_DOUBLE_EQ(100. * kMax, wheelSnap(100000., 2.).factor);
+    EXPECT_DOUBLE_EQ(100. * kMin, wheelSnap(1.5, 0.5).factor);
+    EXPECT_DOUBLE_EQ(100. * kMin, wheelSnap(1., 0.5).factor);
+}

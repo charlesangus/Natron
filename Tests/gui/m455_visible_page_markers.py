@@ -5,6 +5,8 @@ Transform node whose translate is keyed on its first page. The script reads the 
 TimeLineGui::keyframeMarkerTimes() and, after every step, compares them with the expected frames:
   - pages: switching the Roto between its General and Transform pages drops and brings back the
     translate keys while the shape keys stay; the Transform node's keys go on its Node page;
+  - roto-items: only the selected Bezier's keys show, none once nothing is selected; a key on the
+    node's translate reaches the selected Bezier's own translate and shows;
   - minimise: a minimised panel is skipped: alone it shows nothing, over another panel the next expanded
     one shows, and expanding it brings its keys back;
   - order: opening a second panel puts it on top and only its keys show; bringing the first one
@@ -34,6 +36,7 @@ SHAPE_KEYS = [1, 20]
 ITEM_TRANSLATE_KEYS = [9, 30]
 TRANSFORM_KEYS = [5, 15]
 ROTO_ALL = sorted(SHAPE_KEYS + ITEM_TRANSLATE_KEYS)
+OTHER_TRANSLATE_KEY = 40
 PIN_TO_KEYS = [3, 12]
 PIN_FROM_KEYS = [7, 18]
 
@@ -219,6 +222,12 @@ try:
         selection.select(index, QItemSelectionModel.Select | QItemSelectionModel.Rows)
         QApplication.processEvents()
 
+    def clear_selection(node):
+        tree = curve_tree(node)
+        require(tree is not None, "the RotoPanel of %s is open" % node.getLabel())
+        tree.selectionModel().clear()
+        QApplication.processEvents()
+
     def key_times(param):
         times = set()
         for d in range(param.getNumDimensions()):
@@ -293,6 +302,42 @@ try:
         yield from expect("Roto back on its General page", SHAPE_KEYS)
         show_page(roto, "Transform")
         yield from expect("Roto on its Transform page again", ROTO_ALL)
+
+        gt.section("roto-items")
+        clear_selection(roto)
+        yield from expect("no Roto item selected: the node's knobs keep no item's keys", [])
+        select_row(roto, bez)
+        yield from expect("the Bezier selected again", ROTO_ALL)
+        other = ctx.createBezier(400.0, 100.0, SHAPE_KEYS[0])
+        require(other is not None, "created a second Bezier")
+        for x, y in ((500.0, 100.0), (500.0, 300.0), (400.0, 300.0)):
+            other.addControlPoint(x, y)
+        other.setCurveFinished(True)
+        other_shape = sorted(int(k) for k in other.getKeyframes())
+        ok = yield ("until", lambda: curve_tree(roto) is not None, POLL_TIMEOUT_S)
+        require(ok, "the curve list is up after adding a Bezier")
+        select_row(roto, other)
+        yield from expect("the second Bezier selected: its own keys only", other_shape)
+        node_translate = roto.getParam("translate")
+        require(node_translate is not None, "the Roto has a translate knob")
+        node_translate.setValueAtTime(7.0, OTHER_TRANSLATE_KEY, 0)
+        other_translate = other.getParam("translate")
+        ok = yield ("until", lambda: OTHER_TRANSLATE_KEY in key_times(other_translate), POLL_TIMEOUT_S)
+        check(ok, "a key on the node's translate reaches the selected Bezier's own translate (%r)" %
+              (key_times(other_translate),))
+        check(abs(other_translate.getValueAtTime(OTHER_TRANSLATE_KEY, 0) - 7.0) < 1e-6,
+              "the second Bezier's translate is 7 at frame %d" % OTHER_TRANSLATE_KEY)
+        check(key_times(item_translate) == ITEM_TRANSLATE_KEYS,
+              "the first Bezier's translate keeps its keys %r (%r)" % (ITEM_TRANSLATE_KEYS, key_times(item_translate)))
+        yield from expect("the second Bezier's new translate key", sorted(set(other_shape + [OTHER_TRANSLATE_KEY])))
+        show_page(roto, "General")
+        yield from expect("the second Bezier on the General page", other_shape)
+        show_page(roto, "Transform")
+        select_row(roto, bez)
+        yield from expect("back to the first Bezier: the second one's key goes", ROTO_ALL)
+        clear_selection(roto)
+        yield from expect("nothing selected after showing two Beziers", [])
+        select_row(roto, bez)
 
         gt.section("minimise")
         set_minimized(roto, True)

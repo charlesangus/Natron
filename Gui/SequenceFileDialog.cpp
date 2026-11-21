@@ -41,23 +41,22 @@
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QCheckBox>
+#include <QDialog>
+#include <QFileDialog>
 #include <QFileIconProvider>
 #include <QFileSystemModel>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QIcon>
+#include <QInputDialog>
 #include <QListView>
 #include <QMessageBox>
 #include <QPainter>
-#include <QVBoxLayout>
-//#include <QInputDialog>
-#include <QSplitter>
-#include <QIcon>
-#include <QDialog>
 #include <QScrollBar>
-#include <QFileDialog>
+#include <QSplitter>
 #include <QStyleFactory>
-#include <QFileIconProvider>
+#include <QVBoxLayout>
 GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
 // /opt/local/include/QtGui/qmime.h:119:10: warning: private field 'type' is not used [-Wunused-private-field]
 #include <QKeyEvent>
@@ -232,8 +231,6 @@ SequenceFileDialog::SequenceFileDialog(QWidget* parent, // necessary to transmit
     , _upButton(0)
     , _homeButton(0)
     , _createDirButton(0)
-    , _listViewButton(0)
-    , _detailViewButton(0)
     , _openButton(0)
     , _cancelButton(0)
     , _addFavoriteButton(0)
@@ -343,34 +340,13 @@ SequenceFileDialog::SequenceFileDialog(QWidget* parent, // necessary to transmit
     _lookInCombobox->setInsertPolicy(QComboBox::NoInsert);
     _lookInCombobox->setDuplicatesEnabled(false);
 
-    _createDirButton = new Button(fileDialogGlyph("folder-plus"), tr("New Folder"), _buttonsWidget);
+    _createDirButton = new Button(fileDialogGlyph("folder-plus"), QString(), _buttonsWidget);
     _createDirButton->setObjectName(QString::fromUtf8("SequenceFileDialogNewFolderButton"));
     _createDirButton->setIconSize(buttonIconSize);
-    _createDirButton->setFixedHeight(buttonSize.height());
-    _createDirButton->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Create a new directory here."), NATRON_NAMESPACE::WhiteSpaceNormal) );
+    _createDirButton->setFixedSize(buttonSize);
+    _createDirButton->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tr("New Folder: create a folder in the current directory and go into it."), NATRON_NAMESPACE::WhiteSpaceNormal));
     _buttonsLayout->addWidget(_createDirButton);
     QObject::connect( _createDirButton, SIGNAL(clicked()), this, SLOT(createDir()) );
-
-    _buttonsLayout->addWidget(makeToolbarSeparator(_buttonsWidget));
-
-    _listViewButton = new Button(fileDialogGlyph("list"), QString(), _buttonsWidget);
-    _listViewButton->setObjectName(QString::fromUtf8("SequenceFileDialogListViewButton"));
-    _listViewButton->setIconSize(buttonIconSize);
-    _listViewButton->setFixedSize(buttonSize);
-    _listViewButton->setCheckable(true);
-    _listViewButton->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tr("List the names only."), NATRON_NAMESPACE::WhiteSpaceNormal));
-    _buttonsLayout->addWidget(_listViewButton);
-    QObject::connect(_listViewButton, SIGNAL(clicked()), this, SLOT(showListView()));
-
-    _detailViewButton = new Button(fileDialogGlyph("table"), QString(), _buttonsWidget);
-    _detailViewButton->setObjectName(QString::fromUtf8("SequenceFileDialogDetailViewButton"));
-    _detailViewButton->setIconSize(buttonIconSize);
-    _detailViewButton->setFixedSize(buttonSize);
-    _detailViewButton->setCheckable(true);
-    _detailViewButton->setChecked(true);
-    _detailViewButton->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tr("List the names with their size, type and date modified."), NATRON_NAMESPACE::WhiteSpaceNormal));
-    _buttonsLayout->addWidget(_detailViewButton);
-    QObject::connect(_detailViewButton, SIGNAL(clicked()), this, SLOT(showDetailView()));
 
     _mainLayout->addWidget(_buttonsWidget);
 
@@ -719,7 +695,6 @@ SequenceFileDialog::saveState() const
     stream << _sequencesCheckBox->isChecked();
     stream << _splitOnGapsCheckBox->isChecked();
     stream << _showHiddenCheckBox->isChecked();
-    stream << _view->isListMode();
 
     return data;
 }
@@ -745,7 +720,6 @@ SequenceFileDialog::restoreState(const QByteArray & state,
     bool sequences = true;
     bool splitOnGaps = false;
     bool showHiddenFiles = false;
-    bool listMode = false;
     stream >> splitterState
         >> bookmarks
         >> history
@@ -754,8 +728,7 @@ SequenceFileDialog::restoreState(const QByteArray & state,
         >> relativeChoice
         >> sequences
         >> splitOnGaps
-        >> showHiddenFiles
-        >> listMode;
+        >> showHiddenFiles;
     if (stream.status() != QDataStream::Ok) {
         return false;
     }
@@ -822,11 +795,6 @@ SequenceFileDialog::restoreState(const QByteArray & state,
     QHeaderView *headerView = _view->header();
     if ( !headerView->restoreState(headerData) ) {
         return false;
-    }
-    if (listMode) {
-        showListView();
-    } else {
-        showDetailView();
     }
     if (restoreDirectory) {
         *directoryRestored = setDirectory(currentDirectory);
@@ -920,22 +888,6 @@ SequenceFileDialog::onShowHiddenToggled(bool checked)
 }
 
 void
-SequenceFileDialog::showListView()
-{
-    _view->setListMode(true);
-    _listViewButton->setChecked(true);
-    _detailViewButton->setChecked(false);
-}
-
-void
-SequenceFileDialog::showDetailView()
-{
-    _view->setListMode(false);
-    _listViewButton->setChecked(false);
-    _detailViewButton->setChecked(true);
-}
-
-void
 SequenceFileDialog::showContextMenu(const QPoint & position)
 {
     Menu menu(_view);
@@ -962,8 +914,7 @@ SequenceFileDialog::showContextMenu(const QPoint & position)
         }
     }
     menu.addAction(_showHiddenAction);
-    if ( _createDirButton->isVisible() ) {
-        _newFolderAction->setEnabled( _createDirButton->isEnabled() );
+    if (_createDirButton->isVisible()) {
         menu.addAction(_newFolderAction);
     }
     menu.exec( _view->viewport()->mapToGlobal(position) );
@@ -990,7 +941,8 @@ SequenceFileDialog::createMenuActions()
     QObject::connect( _showHiddenAction, SIGNAL(triggered()), this, SLOT(showHidden()) );
 
     _newFolderAction = new QAction(this);
-    _newFolderAction->setText( tr("New folder") );
+    _newFolderAction->setText(tr("New Folder"));
+    _newFolderAction->setIcon(fileDialogGlyph("folder-plus"));
     QObject::connect( _newFolderAction, SIGNAL(triggered()), this, SLOT(createDir()) );
 }
 
@@ -1154,7 +1106,6 @@ SequenceFileDialog::setDirectory(const QString &directory)
     if ( !_model->setRootPath(newDirectory) ) {
         return false;
     }
-    _createDirButton->setEnabled(_dialogMode != eFileDialogModeOpen);
     if ( !newDirectory.isEmpty() ) {
         StrUtils::ensureLastPathSeparator(newDirectory);
     }
@@ -1226,7 +1177,6 @@ SequenceFileDialog::setRootIndex(const QModelIndex & index)
 SequenceDialogView::SequenceDialogView(SequenceFileDialog* fd)
     : QTreeView(fd)
     , _fd(fd)
-    , _listMode(false)
 {
     setSelectionBehavior(QAbstractItemView::SelectRows);
     setRootIsDecorated(false);
@@ -1307,23 +1257,8 @@ SequenceDialogView::resizeEvent(QResizeEvent* e)
 }
 
 void
-SequenceDialogView::setListMode(bool listMode)
-{
-    _listMode = listMode;
-    for (int i = 1; i < 4; ++i) {
-        setColumnHidden(i, listMode);
-    }
-    expandColumnsToFullWidth(viewport()->width());
-}
-
-void
 SequenceDialogView::expandColumnsToFullWidth(int w)
 {
-    if (_listMode) {
-        setColumnWidth(0, w);
-
-        return;
-    }
     setColumnWidth(0, w * 0.65);
     setColumnWidth(1, w * 0.1);
     setColumnWidth(2, w * 0.1);
@@ -1553,32 +1488,37 @@ SequenceFileDialog::createDir()
 {
     _favoriteView->clearSelection();
 
-    NATRON_PYTHON_NAMESPACE::PyModalDialog dialog(_gui);
-    dialog.setWindowTitle( tr("New Folder") );
-    NATRON_PYTHON_NAMESPACE::StringParamPtr folderName( dialog.createStringParam( QString::fromUtf8("folderName"), QString::fromUtf8("Folder Name") ) );
-    dialog.refreshUserParamsGUI();
-    if ( dialog.exec() ) {
-        QString newFolderString = folderName->getValue();
-        if ( !newFolderString.isEmpty() ) {
-            QString folderName = newFolderString;
-            QString prefix  = currentDirectory().absolutePath();
-            StrUtils::ensureLastPathSeparator(prefix);
-            if ( QFile::exists(prefix + folderName) ) {
-                qlonglong suffix = 2;
-                while ( QFile::exists(prefix + folderName) ) {
-                    folderName = newFolderString + QString::number(suffix);
-                    ++suffix;
-                }
-            }
-            QModelIndex index = _model->mkdir(_view->rootIndex(), folderName);
-            if ( !index.isValid() ) {
-                return;
-            }
-            enterDirectory(index);
-        }
+    QInputDialog prompt(this);
+    prompt.setObjectName(QString::fromUtf8("SequenceFileDialogNewFolderPrompt"));
+    prompt.setWindowTitle(tr("New Folder"));
+    prompt.setLabelText(tr("Folder Name"));
+    prompt.setTextValue(tr("New Folder"));
+    if (prompt.exec() != QDialog::Accepted) {
+        return;
     }
-}
+    const QString requested = prompt.textValue().trimmed();
+    if (requested.isEmpty()) {
+        return;
+    }
+    if (requested.contains(QLatin1Char('/')) || (requested == QString::fromUtf8(".")) || (requested == QString::fromUtf8(".."))) {
+        QMessageBox::warning(this, tr("New Folder"), tr("\"%1\" is not a folder name.").arg(requested));
 
+        return;
+    }
+    QString prefix = currentDirectory().absolutePath();
+    StrUtils::ensureLastPathSeparator(prefix);
+    QString folderName = requested;
+    for (qlonglong suffix = 2; QFileInfo::exists(prefix + folderName); ++suffix) {
+        folderName = requested + QString::number(suffix);
+    }
+    QModelIndex index = _model->mkdir(_view->rootIndex(), folderName);
+    if (!index.isValid()) {
+        QMessageBox::warning(this, tr("New Folder"), tr("Could not create the folder %1.").arg(prefix + folderName));
+
+        return;
+    }
+    enterDirectory(index);
+}
 
 void
 SequenceFileDialog::addFavorite()

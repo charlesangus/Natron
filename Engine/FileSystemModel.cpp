@@ -1378,12 +1378,15 @@ FileSystemModel::mkdir(const QModelIndex& parent,
 
     if (item) {
         QDir dir( item->absoluteFilePath() );
-        dir.mkpath(name);
+        if (!dir.mkpath(name)) {
+            return QModelIndex();
+        }
         FileSystemItemPtr newDir = mkPath( generateChildAbsoluteName(item, name) );
         if (!newDir) {
             return QModelIndex();
         }
-        return createIndex(newDir->indexInParent(), 0, item);
+
+        return index(newDir.get(), 0);
     }
 
     return QModelIndex();

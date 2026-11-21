@@ -53,6 +53,7 @@
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoPoint.h"
 #include "Engine/RotoStrokeItem.h"
+#include "Engine/Transform.h"
 #include "Engine/UndoCommand.h"
 #include "Engine/UndoRecorder.h"
 #include "Engine/ViewIdx.h"
@@ -1006,4 +1007,60 @@ TEST_F(RotoSelectionProxyTest, DeselectingOneOfThreeKeepsTheKnobsEnabledAndDirty
     context->deselect(b, RotoItem::eSelectionReasonOther);
     EXPECT_FALSE(shown->isEnabled(0));
     EXPECT_FALSE(dirty);
+}
+
+// A key set on the node's translate while a shape is selected keys the shape's own translate, which
+// moves the shape at each keyed frame.
+TEST_F(RotoSelectionProxyTest, ANodeTranslateKeyMovesTheSelectedShapeAtItsFrame)
+{
+    RotoContextPtr context = makeContext(PLUGINID_NATRON_ROTO);
+    ASSERT_TRUE(bool(context));
+    BezierPtr shape = makeSquare(context, 0.);
+    BezierPtr other = makeSquare(context, 30.);
+    ASSERT_TRUE(shape && other);
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+    context->select(shape, RotoItem::eSelectionReasonOther);
+    KnobDoublePtr shown = proxy<KnobDouble>("translate");
+    ASSERT_TRUE(bool(shown));
+
+    shown->setValueAtTime(10., 0., ViewSpec::all(), 0);
+    shown->setValueAtTime(20., 50., ViewSpec::all(), 0);
+    KnobIPtr own = shape->getKnobByName("translate");
+    ASSERT_TRUE(own != nullptr);
+    EXPECT_TRUE(hasKey(own, 10.));
+    EXPECT_TRUE(hasKey(own, 20.));
+    EXPECT_FALSE(hasKey(other->getKnobByName("translate"), 10.));
+
+    Transform::Matrix3x3 at10, at20, otherAt20;
+    shape->getTransformAtTime(10., &at10);
+    shape->getTransformAtTime(20., &at20);
+    other->getTransformAtTime(20., &otherAt20);
+    EXPECT_NEAR(0., at10.c, 1e-9);
+    EXPECT_NEAR(50., at20.c, 1e-9);
+    EXPECT_NEAR(0., otherAt20.c, 1e-9);
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+}
+
+// The node's item knobs are proxies, whose keys the timeline takes from the selected items instead:
+// once the selection is cleared, the proxy still holds the last item's keys.
+TEST_F(RotoSelectionProxyTest, TheItemKnobsAreProxiesThatKeepTheLastItemsKeys)
+{
+    RotoContextPtr context = makeContext(PLUGINID_NATRON_ROTO);
+    ASSERT_TRUE(bool(context));
+    BezierPtr shape = makeSquare(context, 0.);
+    ASSERT_TRUE(bool(shape));
+    shape->getOpacityKnob()->setValueAtTime(4., 0.3, ViewSpec::all(), 0);
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+    context->select(shape, RotoItem::eSelectionReasonOther);
+    KnobIPtr shown = _node->getKnobByName("opacity");
+    KnobIPtr translate = _node->getKnobByName("translate");
+    KnobIPtr disable = _node->getKnobByName(kDisableNodeKnobName);
+    ASSERT_TRUE(shown && translate && disable);
+    EXPECT_TRUE(context->isItemProxyKnob(shown));
+    EXPECT_TRUE(context->isItemProxyKnob(translate));
+    EXPECT_FALSE(context->isItemProxyKnob(disable));
+    EXPECT_TRUE(hasKey(shown, 4.));
+
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+    EXPECT_TRUE(hasKey(shown, 4.));
 }

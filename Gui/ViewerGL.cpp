@@ -3258,17 +3258,27 @@ ViewerGL::wheelEvent(QWheelEvent* e)
     NodeGuiPtr nodeGui = std::dynamic_pointer_cast<NodeGui>(nodeGui_i);
     gui->selectNode(nodeGui);
 
-    // High-resolution wheels and trackpads send small deltas; only each full notch of 120 steps a
-    // preset, and turning back discards what was gathered the other way.
-    const int delta = e->angleDelta().y();
-    if ((delta > 0 && _imp->wheelDeltaZoom < 0) || (delta < 0 && _imp->wheelDeltaZoom > 0)) {
-        _imp->wheelDeltaZoom = 0;
+    double oldZoomFactor, zoomFactor;
+    {
+        QMutexLocker l(&_imp->zoomCtxMutex);
+        oldZoomFactor = _imp->zoomCtx.factor();
+        // Fit, the menu or the +/- actions moved the zoom since the last wheel step.
+        if (std::fabs(oldZoomFactor - _imp->wheelZoomFactor) > 1e-9 * oldZoomFactor) {
+            _imp->wheelZoomRaw = oldZoomFactor;
+        }
+        const ViewerWheelZoom z = wheelZoomSnap(_imp->wheelZoomRaw, std::pow(NATRON_WHEEL_ZOOM_PER_DELTA, e->angleDelta().y()),
+                                                _imp->zoomCtx.minFactor(), _imp->zoomCtx.maxFactor());
+        _imp->wheelZoomRaw = z.raw;
+        if (z.factor != oldZoomFactor) {
+            const QPointF zoomCenter = _imp->zoomCtx.toZoomCoordinates(e->position().x(), e->position().y());
+            _imp->zoomCtx.zoom(zoomCenter.x(), zoomCenter.y(), z.factor / oldZoomFactor);
+            _imp->zoomOrPannedSinceLastFit = true;
+        }
+        zoomFactor = _imp->zoomCtx.factor();
+        _imp->wheelZoomFactor = zoomFactor;
     }
-    _imp->wheelDeltaZoom += delta;
-    const int steps = _imp->wheelDeltaZoom / 120;
-    _imp->wheelDeltaZoom -= steps * 120;
-    if (steps != 0) {
-        stepZoomPresets(steps, e->position());
+    if (zoomFactor != oldZoomFactor) {
+        onZoomStepped(oldZoomFactor, zoomFactor);
     }
 }
 
@@ -3291,6 +3301,13 @@ ViewerGL::stepZoomPresets(int steps,
         zoomFactor = _imp->zoomCtx.factor();
         _imp->zoomOrPannedSinceLastFit = true;
     }
+    onZoomStepped(oldZoomFactor, zoomFactor);
+}
+
+void
+ViewerGL::onZoomStepped(double oldZoomFactor,
+                        double zoomFactor)
+{
     const unsigned int oldMipmapLevel = oldZoomFactor >= 1 ? 0 : -std::ceil(std::log(oldZoomFactor) / M_LN2);
     const unsigned int newMipmapLevel = zoomFactor >= 1 ? 0 : -std::ceil(std::log(zoomFactor) / M_LN2);
     Q_EMIT zoomChanged(std::max(1, (int)std::lround(100 * zoomFactor)));

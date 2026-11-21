@@ -104,6 +104,54 @@ stepZoomPreset(double currentFactor,
     return std::min(maxFactor, std::max(minFactor, rung(target)));
 }
 
+// Half-width of a preset's magnetic band, as a ratio: |ln(factor / preset)| <= ln(1 + band).
+inline constexpr double kViewerWheelSnapBand = 0.08;
+
+struct ViewerWheelZoom {
+    double raw;
+    double factor;
+};
+
+// The wheel zooms continuously along `raw`; the shown factor sticks to a menu preset while `raw`
+// is within its band, so leaving a preset takes a band's worth of extra wheel. A step that jumps
+// a whole band lands on that preset instead of skipping it.
+inline ViewerWheelZoom
+wheelZoomSnap(double raw,
+              double scale,
+              double minFactor,
+              double maxFactor)
+{
+    const double next = std::min(maxFactor, std::max(minFactor, raw * scale));
+    if (!std::isfinite(raw) || (raw <= 0.) || !std::isfinite(next) || (next <= 0.)) {
+        return ViewerWheelZoom { raw, raw };
+    }
+    const double band = std::log1p(kViewerWheelSnapBand);
+    const double from = std::log(raw);
+    const double to = std::log(next);
+    double jumped = 0.;
+    double jumpedDistance = 0.;
+    for (int percent : kViewerZoomPresetsPercent) {
+        const double preset = percent / 100.;
+        if ((preset < minFactor) || (preset > maxFactor)) {
+            continue;
+        }
+        const double at = std::log(preset);
+        if (std::fabs(to - at) <= band) {
+            return ViewerWheelZoom { next, preset };
+        }
+        const bool over = ((from < at - band) && (to > at + band)) || ((from > at + band) && (to < at - band));
+        if (over && ((jumped == 0.) || (std::fabs(to - at) < jumpedDistance))) {
+            jumped = preset;
+            jumpedDistance = std::fabs(to - at);
+        }
+    }
+    if (jumped != 0.) {
+        return ViewerWheelZoom { jumped, jumped };
+    }
+
+    return ViewerWheelZoom { next, next };
+}
+
 NATRON_NAMESPACE_EXIT
 
 #endif // Gui_ViewerZoomLadder_h

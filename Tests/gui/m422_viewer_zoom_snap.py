@@ -1,3 +1,4 @@
+import math
 import os
 import sys
 import traceback
@@ -13,6 +14,8 @@ NOTCH = 120
 PRESETS = [10, 25, 50, 75, 100, 125, 150, 200, 400, 800, 1600, 2400, 3200, 6400]
 ZOOM_MIN_PERCENT = 1
 ZOOM_MAX_PERCENT = 102400
+WHEEL_PER_DELTA = 1.00152
+SNAP_BAND = 0.08
 FACTOR_TOLERANCE = 1e-6
 PIVOT_TOLERANCE = 1e-3
 
@@ -152,8 +155,25 @@ try:
             QMetaObject.invokeMethod(tab, "centerViewer")
             QApplication.processEvents()
 
-    def ladder_above(level):
-        return [p for p in PRESETS if p > level and abs(p - level) >= 0.005 * p]
+    def wheel_snap(raw, delta):
+        nxt = min(ZOOM_MAX_PERCENT, max(ZOOM_MIN_PERCENT, raw * WHEEL_PER_DELTA ** delta))
+        band = math.log1p(SNAP_BAND)
+        start, end = math.log(raw), math.log(nxt)
+        jumped = None
+        for p in PRESETS:
+            at = math.log(p)
+            if abs(end - at) <= band:
+                return nxt, float(p)
+            over = (start < at - band and end > at + band) or (start > at + band and end < at - band)
+            if over and (jumped is None or abs(end - at) < abs(end - math.log(jumped))):
+                jumped = float(p)
+        if jumped is not None:
+            return jumped, jumped
+        return nxt, nxt
+
+    def keeps_pivot(before, after):
+        return (before is not None and after is not None
+                and abs(before[0] - after[0]) < PIVOT_TOLERANCE and abs(before[1] - after[1]) < PIVOT_TOLERANCE)
 
     def expect_level(value, case, check_menu=True):
         got = percent()
@@ -199,52 +219,68 @@ try:
         gt.section("wheel")
         gl = viewer_gl()
         pivot = QPoint(int(gl.width() * 0.3), int(gl.height() * 0.6))
-        up = [p for p in ladder_above(fit_level) if p <= 400]
-        check(up[-5:] == [100, 125, 150, 200, 400], "the presets from Fit run up through 100%% to 400%% (got %r)" % up)
-        for value in up:
+        raw, level = fit_level, fit_level
+        visited = []
+        while level < 400. and len(visited) < 40:
+            raw, level = wheel_snap(raw, NOTCH)
             before = canonical_at(pivot)
             wheel(NOTCH, pivot)
             yield ("sleep", STEP_MS)
-            expect_level(value, "wheel in from %s" % label(fit_level))
-            after = canonical_at(pivot)
-            check(before is not None and after is not None
-                  and abs(before[0] - after[0]) < PIVOT_TOLERANCE and abs(before[1] - after[1]) < PIVOT_TOLERANCE,
-                  "wheel in to %s keeps the image point under the cursor (%r then %r)" % (label(value), before, after))
+            expect_level(level, "wheel in from %s" % label(fit_level))
+            check(keeps_pivot(before, canonical_at(pivot)),
+                  "wheel in to %s keeps the image point under the cursor" % label(level))
+            visited.append(level)
+        check(all(p in visited for p in (100., 125., 150., 200., 400.)),
+              "wheel in from Fit lands on 100, 125, 150, 200 and 400%% (got %r)" % visited)
+        check(any(all(not close(v, p) for p in PRESETS) for v in visited),
+              "wheel in from Fit also shows levels between the presets (got %r)" % visited)
         gt.shot("m422-wheel-400.png")
-        for value in reversed(up[:-1]):
+        for _ in range(len(visited)):
+            raw, level = wheel_snap(raw, -NOTCH)
             before = canonical_at(pivot)
             wheel(-NOTCH, pivot)
             yield ("sleep", STEP_MS)
-            expect_level(value, "wheel out")
-            after = canonical_at(pivot)
-            check(before is not None and after is not None
-                  and abs(before[0] - after[0]) < PIVOT_TOLERANCE and abs(before[1] - after[1]) < PIVOT_TOLERANCE,
-                  "wheel out to %s keeps the image point under the cursor (%r then %r)" % (label(value), before, after))
+            expect_level(level, "wheel out")
+            check(keeps_pivot(before, canonical_at(pivot)),
+                  "wheel out to %s keeps the image point under the cursor" % label(level))
 
-        gt.section("small-deltas")
+        gt.section("smooth")
         set_zoom(100)
         yield ("sleep", STEP_MS)
-        for i in range(3):
-            wheel(NOTCH // 4)
+        raw, level = 100., 100.
+        for i in range(4):
+            raw, level = wheel_snap(raw, NOTCH)
+            wheel(NOTCH)
             yield ("sleep", STEP_MS)
-            check(close(percent(), 100.), "30-delta event %d of 4 leaves the zoom at 100%% (got %r)" % (i + 1, percent()))
+            expect_level(level, "notch %d in from 100%%" % (i + 1))
+        check(close(percent(), 200.), "four notches in from 100%% end on 200%% (got %r)" % percent())
+        set_zoom(100)
+        yield ("sleep", STEP_MS)
+        wheel(NOTCH)
+        wheel(NOTCH)
+        wheel(NOTCH)
+        yield ("sleep", STEP_MS)
+        between = percent()
+        check(between is not None and 160. < between < 185. and all(not close(between, p) for p in PRESETS),
+              "the third notch from 100%% stops between 150%% and 200%% (got %r)" % between)
+
+        gt.section("sticky")
+        set_zoom(100)
+        yield ("sleep", STEP_MS)
         wheel(NOTCH // 4)
         yield ("sleep", STEP_MS)
-        expect_level(125., "the fourth 30-delta event")
-        wheel(NOTCH // 2)
+        expect_level(100., "a quarter notch in stays on the 100% preset")
+        wheel(NOTCH // 4)
         yield ("sleep", STEP_MS)
-        wheel(-NOTCH // 2)
+        expect_level(100. * WHEEL_PER_DELTA ** (NOTCH // 2), "a second quarter notch leaves 100% smoothly")
+        wheel(-NOTCH // 4)
         yield ("sleep", STEP_MS)
-        check(close(percent(), 125.), "half a notch in then half out leaves 125%% (got %r)" % percent())
-        wheel(-NOTCH // 2)
+        expect_level(100., "a quarter notch back snaps onto 100% again")
+        set_zoom(91)
         yield ("sleep", STEP_MS)
-        expect_level(100., "a second half notch out after turning back")
-        wheel(2 * NOTCH)
+        wheel(NOTCH)
         yield ("sleep", STEP_MS)
-        expect_level(150., "one event of two notches from 100%")
-        wheel(-3 * NOTCH)
-        yield ("sleep", STEP_MS)
-        expect_level(75., "one event of three notches out from 150%")
+        expect_level(100., "a notch from 91% that would jump past 100% lands on it")
 
         gt.section("off-ladder")
         set_zoom(87)
@@ -261,12 +297,12 @@ try:
         yield ("sleep", STEP_MS)
         wheel(-NOTCH)
         yield ("sleep", STEP_MS)
-        expect_level(5., "wheel out from 10%")
+        expect_level(10. / WHEEL_PER_DELTA ** NOTCH, "wheel out from 10%")
         set_zoom(6400)
         yield ("sleep", STEP_MS)
         wheel(NOTCH)
         yield ("sleep", STEP_MS)
-        expect_level(12800., "wheel in from 6400%")
+        expect_level(6400. * WHEEL_PER_DELTA ** NOTCH, "wheel in from 6400%")
 
         gt.section("bounds")
         for start, delta in ((ZOOM_MAX_PERCENT, NOTCH), (ZOOM_MIN_PERCENT, -NOTCH)):

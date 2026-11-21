@@ -8,12 +8,14 @@ POLL_TIMEOUT_S = 20.0
 SETTLE_MS = 500
 STARTUP_TIMEOUT_S = 60.0
 
+NEW_FOLDER = "m456 new folder"
 USER_FRIENDLY_NAME_ROLE = 0x0100 + 3
 CHUNK_RANGE_ROLE = 0x0100 + 4
 
 try:
     from PySide6.QtCore import QItemSelectionModel, QMetaObject, QPoint, Q_ARG, QTimer
-    from PySide6.QtWidgets import QApplication, QCheckBox, QFrame, QLabel, QLineEdit, QMenu, QTreeView, QWidget
+    from PySide6.QtWidgets import (QApplication, QCheckBox, QFrame, QInputDialog, QLabel, QLineEdit, QMenu,
+                                   QTreeView, QWidget)
 
     import guitest as gt
     from guitest import OUT, check, finish, plugin_problem, report, require, run
@@ -22,7 +24,11 @@ try:
     if not os.path.isdir(folder):
         os.makedirs(folder)
     for name in os.listdir(folder):
-        os.remove(os.path.join(folder, name))
+        path = os.path.join(folder, name)
+        if os.path.isdir(path):
+            os.rmdir(path)
+        else:
+            os.remove(path)
     for frame in list(range(10, 21)) + list(range(30, 41)):
         open(os.path.join(folder, "plate.%04d.exr" % frame), "w").close()
 
@@ -96,8 +102,7 @@ try:
     def check_rows(dialog):
         row1 = ["SequenceFileDialogPreviousButton", "SequenceFileDialogNextButton", "SequenceFileDialogUpButton",
                 "SequenceFileDialogHomeButton", "separator", "SequenceFileDialogLookInCombo",
-                "SequenceFileDialogNewFolderButton", "separator", "SequenceFileDialogListViewButton",
-                "SequenceFileDialogDetailViewButton"]
+                "SequenceFileDialogNewFolderButton"]
         back = child(dialog, QWidget, row1[0])
         require(back is not None, "the dialog has a back button")
         row = back.parentWidget()
@@ -112,11 +117,21 @@ try:
             else:
                 order.append(w.objectName())
         report("NOTE first row: %r" % (order,))
-        check(order == row1, "the first row runs back, forward, up, home, |, path, New Folder, |, list, detail")
+        check(order == row1, "the first row runs back, forward, up, home, |, path, New Folder")
+        check(child(dialog, QWidget, "SequenceFileDialogListViewButton") is None
+              and child(dialog, QWidget, "SequenceFileDialogDetailViewButton") is None,
+              "the dialog has no list and details toggles")
+        view = file_view(dialog)
+        require(view is not None, "the dialog shows its file view")
+        check(all(not view.isColumnHidden(c) for c in (1, 2, 3)),
+              "the file view shows the size, type and date columns")
         combo = child(dialog, QWidget, "SequenceFileDialogLookInCombo")
         new_folder = child(dialog, QWidget, "SequenceFileDialogNewFolderButton")
         check(combo is not None and combo.width() > 4 * back.width(), "the path stretches across the row")
-        check(new_folder is not None and new_folder.text() == "New Folder", "New Folder shows its text")
+        check(new_folder is not None and new_folder.text() == "" and not new_folder.icon().isNull(),
+              "New Folder is an icon button with no text")
+        check(new_folder is not None and new_folder.width() == back.width(), "New Folder is as wide as the back button")
+        check(new_folder is not None and new_folder.isEnabled(), "New Folder is enabled in an open dialog")
 
         sequences = child(dialog, QCheckBox, "SequenceFileDialogSequencesCheckBox")
         split = child(dialog, QCheckBox, "SequenceFileDialogSplitOnGapsCheckBox")
@@ -228,6 +243,45 @@ try:
         ok = yield ("until", lambda: len(items(dialog)) == 2, POLL_TIMEOUT_S)
         check(ok, "Split sequence lists the sequence's two runs")
         check(not split.isChecked(), "splitting one sequence leaves Split on gaps unchecked")
+
+        gt.section("new folder")
+        require(child(dialog, QWidget, "SequenceFileDialogNewFolderButton") is not None,
+                "the dialog has a New Folder button")
+
+        def click_new_folder():
+            # The prompt runs its own modal loop, so the button is clicked from a timer.
+            d = modal_dialog()
+            if d is not None:
+                d.findChild(QWidget, "SequenceFileDialogNewFolderButton").click()
+        QTimer.singleShot(0, click_new_folder)
+
+        def prompt():
+            w = QApplication.activeModalWidget()
+            return w if isinstance(w, QInputDialog) and w.objectName() == "SequenceFileDialogNewFolderPrompt" else None
+        ok = yield ("until", lambda: prompt() is not None, POLL_TIMEOUT_S)
+        require(ok, "New Folder asks for the folder's name")
+        prompt().setTextValue(NEW_FOLDER)
+        prompt().accept()
+        created = os.path.join(folder, NEW_FOLDER)
+        ok = yield ("until", lambda: os.path.isdir(created), POLL_TIMEOUT_S)
+        check(ok, "New Folder creates %s" % created)
+        ok = yield ("until", lambda: modal_dialog() is not None and file_view(modal_dialog()) is not None
+                    and str(file_view(modal_dialog()).rootIndex().data() or "") == NEW_FOLDER, POLL_TIMEOUT_S)
+        check(ok, "the dialog goes into the new folder")
+        gt.shot("m456-dialog-new-folder.png")
+        QMetaObject.invokeMethod(modal_dialog(), "parentFolder")
+
+        def listed_names():
+            dialog = modal_dialog()
+            view = file_view(dialog) if dialog is not None else None
+            if view is None:
+                return []
+            model, root = view.model(), view.rootIndex()
+            return [str(model.index(r, 0, root).data() or "") for r in range(model.rowCount(root))]
+        ok = yield ("until", lambda: NEW_FOLDER in listed_names(), POLL_TIMEOUT_S)
+        check(ok, "the parent directory lists the new folder (%r)" % (listed_names(),))
+        dialog = modal_dialog()
+        require(dialog is not None, "the dialog is still open")
         yield close(dialog)
         yield ("sleep", SETTLE_MS)
 

@@ -62,6 +62,7 @@
 #include "Engine/ProcessHandler.h"
 #include "Engine/Project.h"
 #include "Engine/RFV.h"
+#include "Engine/RotoCurveContext.h"
 #include "Engine/RotoStrokeItem.h"
 #include "Engine/Settings.h"
 #include "Engine/StartupGLDiag.h"
@@ -277,8 +278,11 @@ struct GuiAppInstancePrivate
 
             return;
         }
-        node->getAllKnobsKeyframes(keys, [panel](const KnobIPtr& knob) {
-            return panel->isKnobOnVisiblePage(knob);
+        // The RotoPanel publishes the selected items' own keys; a proxy keeps the last-shown item's
+        // curves after the selection changes, and holds keys that reach no item through a layer.
+        RotoCurveContextPtr curveContext = node->getCurveContext();
+        node->getAllKnobsKeyframes(keys, [panel, curveContext](const KnobIPtr& knob) {
+            return panel->isKnobOnVisiblePage(knob) && !(curveContext && curveContext->isItemProxyKnob(knob));
         });
     }
 

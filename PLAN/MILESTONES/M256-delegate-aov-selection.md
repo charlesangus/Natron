@@ -125,3 +125,10 @@ Sources: `spike/m255/REPORT-P1T1-aov-checklist.md`, `REPORT-P1T2-rendersettings-
   - **PM calls:** a 2-channel UV var takes Cycles' 3-channel buffer quietly; derived layer names map ':' to '_' (lightgroup_key); the light-group attribute names follow the reference tools' pattern.
   - **Noted:** Cycles light groups are direct plus indirect.
   - **Next:** the gate (with the new dev image), then the Xvfb four-layer check and screenshots.
+- 2026-11-21 — The Phase 256.3 gate (run 44864083630) failed 4 tests. Three are Cycles fork bugs; the tests are right:
+  1. Lights look up `cycles:lightgroup`, but USD 26.08's light data source needs `inputs:cycles:lightgroup`.
+  2. Primvar AOVs return a 4-channel buffer.
+  3. UpdateScene overwrites an explicit `cycles:background:lightgroup` with the dome's group.
+
+  Fork fixes are in progress, then a pin bump. The fourth was a test bug: Cycles and Storm render any `primvars:*` var (a missing primvar renders zeros), so the rejected-var fixture is now a raw var. **PM call (reference DCC behaviour):** a typo'd primvar var renders black with no warning; Natron doesn't traverse the stage to check primvars exist. The milestone's 'typo'd primvar' example now reads 'a var the renderer has no pass for'.
+

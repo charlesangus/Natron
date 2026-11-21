@@ -81,8 +81,16 @@ resolved when the container is created, and a running container is never
 touched. To force the fallback by hand:
 
 ```
-docker build -f tools/ci/local/Dockerfile -t "$(tools/ci/local/dev-image-tag.sh)" tools/ci/local/
+DOCKER_BUILDKIT=1 docker build --build-arg BUILDKIT_INLINE_CACHE=1 \
+  --cache-from ghcr.io/charlesangus/natron-dev:latest \
+  -f tools/ci/local/Dockerfile -t "$(tools/ci/local/dev-image-tag.sh)" tools/ci/local/
 ```
+
+Published images carry inline build cache and both builds pass `:latest` as
+`--cache-from`, so a Dockerfile change rebuilds only from the first changed
+layer on. Keep the slow layers (Cycles, MoonRay) early in the Dockerfile and
+put frequently edited steps after them. A missing or cache-less `:latest`
+only produces a warning and a full build.
 
 After a Dockerfile change (or a pull of a newer tag), run
 `tools/ci/local/devshell.sh --recreate` to pick the new image up, and only

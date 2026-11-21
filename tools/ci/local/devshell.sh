@@ -262,7 +262,10 @@ if [[ "${STATE}" == "missing" ]]; then
         echo "devshell.sh: pulling ${IMAGE}..." >&2
         if ! docker pull "${IMAGE}" >&2; then
             echo "devshell.sh: pull failed; building ${IMAGE} locally..." >&2
-            docker build -f "${SCRIPT_DIR}/Dockerfile" -t "${IMAGE}" "${SCRIPT_DIR}" >&2
+            DOCKER_BUILDKIT=1 docker build \
+                --build-arg BUILDKIT_INLINE_CACHE=1 \
+                --cache-from "${IMAGE%:*}:latest" \
+                -f "${SCRIPT_DIR}/Dockerfile" -t "${IMAGE}" "${SCRIPT_DIR}" >&2
         fi
     fi
     docker tag "${IMAGE}" "${LOCAL_IMAGE}"

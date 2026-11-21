@@ -33,6 +33,7 @@
 #include <QtCore/QString>
 
 #include "Engine/EffectInstance.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/Project.h"
@@ -82,9 +83,31 @@ namespace {
         writer->setProject(serialization);
     }
 
+    // Connecting an input on the peer turns its mask switch on there, as an edit would, while
+    // here it may have been turned off since: the switch is set to its state here afterwards.
+    void
+    appendMaskSwitch(const NodePtr& node,
+                     int inputNb,
+                     std::vector<Serialization::GraphOp>* switches)
+    {
+        KnobBoolPtr maskSwitch = node->getMaskEnabledKnob(inputNb);
+        if (!maskSwitch) {
+            return;
+        }
+        Serialization::SetKnobOp op;
+        op.nodeId = node->getNodeId();
+        op.knobName = maskSwitch->getName();
+        Serialization::KnobSerialization value;
+        if (maskSwitch->toSerialization(&value)) {
+            op.value = value;
+        }
+        switches->push_back(Serialization::GraphOp(op));
+    }
+
     void
     appendInputs(const NodePtr& node,
-                 std::vector<Serialization::GraphOp>* ops)
+                 std::vector<Serialization::GraphOp>* ops,
+                 std::vector<Serialization::GraphOp>* switches)
     {
         if (node->getParentMultiInstance()) {
             return;
@@ -94,6 +117,7 @@ namespace {
             NodePtr source = node->getRealGuiInput(i);
             if (source) {
                 ops->push_back(Serialization::GraphOp(Serialization::SetInputOp { node->getNodeId(), node->getInputLabel(i), source->getNodeId() }));
+                appendMaskSwitch(node, i, switches);
             }
         }
     }
@@ -313,13 +337,14 @@ nodeStateOps(const NodePtr& node)
     node->toSerialization(create.node.get());
     ops.push_back(Serialization::GraphOp(create));
 
-    appendInputs(node, &ops);
+    std::vector<Serialization::GraphOp> switches;
+    appendInputs(node, &ops, &switches);
     NodeGroupPtr group = std::dynamic_pointer_cast<NodeGroup>(node->getEffectInstance());
     if (group) {
         NodesList inside;
         group->getNodes_recursive(inside, true);
         for (const NodePtr& child : inside) {
-            appendInputs(child, &ops);
+            appendInputs(child, &ops, &switches);
         }
     }
 
@@ -334,9 +359,11 @@ nodeStateOps(const NodePtr& node)
         for (int i = 0; i < nInputs; ++i) {
             if (output->getRealGuiInput(i) == node) {
                 ops.push_back(Serialization::GraphOp(Serialization::SetInputOp { output->getNodeId(), output->getInputLabel(i), node->getNodeId() }));
+                appendMaskSwitch(output, i, &switches);
             }
         }
     }
+    ops.insert(ops.end(), switches.begin(), switches.end());
 
     return ops;
 }

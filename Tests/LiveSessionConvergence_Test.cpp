@@ -312,6 +312,27 @@ peerCommand(const AppInstancePtr& app,
             return "missing";
         }
         knob->setValue(value, ViewSpec::all(), 0);
+    } else if (verb == "mask") {
+        std::string inputLabel;
+        int on = 0;
+        in >> inputLabel >> on;
+        KnobBoolPtr maskSwitch = node->getMaskEnabledKnob(node->getInputNumberFromLabel(inputLabel));
+        if (!maskSwitch) {
+            return "missing";
+        }
+        maskSwitch->setValue(on != 0);
+    } else if (verb == "connect") {
+        std::string inputLabel;
+        std::string sourceName;
+        in >> inputLabel >> sourceName;
+        const int inputNb = node->getInputNumberFromLabel(inputLabel);
+        NodePtr source = app->getProject()->getNodeByName(sourceName);
+        if ((inputNb < 0) || !source) {
+            return "missing";
+        }
+        if (!node->replaceInput(source, inputNb)) {
+            return "failed";
+        }
     } else if (verb == "destroy") {
         node->destroyNode(true, false);
     } else if (verb == "rename") {
@@ -791,6 +812,102 @@ TEST_F(LiveSessionDeleteVersusEditTest, AnEditOfANodeAnotherClientDeletedConverg
     ASSERT_EQ(_peers[2]->command("rename Constant1 Renamed"), "ok");
 
     ASSERT_TRUE(quiesce());
+    expectConverged();
+    expectChecksumsMatch();
+}
+
+// A mask switch is set by hand and also follows its input. As in the cases above, each client
+// step reaches the host only after the host's own steps that follow it here.
+class LiveSessionMaskSwitchTest
+    : public LiveSessionConvergenceTest {
+protected:
+    // The hot node's mask is connected, and a spare node is there to connect it to instead.
+    void buildMaskedComp()
+    {
+        buildComp();
+        _spare = createIn(_hostApp, PLUGINID_NATRON_CONSTANT);
+        _hot = hostNode(kHotNodeName);
+        ASSERT_TRUE(_spare && _hot);
+        _spare->setScriptName("Spare");
+        _mask = _hot->getInputNumberFromLabel("Mask");
+        ASSERT_GE(_mask, 0);
+        ASSERT_NE(_hot->getMaskEnabledKnob(_mask), nullptr);
+        ASSERT_TRUE(NodeCollection::connectNodes(_mask, hostNode("Constant1"), _hot, false));
+        ASSERT_TRUE(_hot->isMaskEnabled(_mask));
+    }
+
+    void TearDown() override
+    {
+        _hot.reset();
+        _spare.reset();
+        LiveSessionConvergenceTest::TearDown();
+    }
+
+    NodePtr _hot;
+    NodePtr _spare;
+    int _mask = -1;
+};
+
+TEST_F(LiveSessionMaskSwitchTest, AClientSwitchWinsOverAnEarlierHostInputChange)
+{
+    buildMaskedComp();
+    startSession();
+    if (HasFatalFailure()) {
+        return;
+    }
+
+    ASSERT_EQ(_peers[0]->command(std::string("mask ") + kHotNodeName + " Mask 0"), "ok");
+    ASSERT_TRUE(_hot->replaceInput(_spare, _mask));
+    _host->flushLocalEdits();
+
+    ASSERT_TRUE(quiesce());
+    EXPECT_FALSE(_hot->isMaskEnabled(_mask));
+    expectConverged();
+    expectChecksumsMatch();
+}
+
+TEST_F(LiveSessionMaskSwitchTest, AClientInputChangeWinsOverAnEarlierHostSwitch)
+{
+    buildMaskedComp();
+    startSession();
+    if (HasFatalFailure()) {
+        return;
+    }
+
+    ASSERT_EQ(_peers[0]->command(std::string("connect ") + kHotNodeName + " Mask Spare"), "ok");
+    _hot->getMaskEnabledKnob(_mask)->setValue(false);
+    _host->flushLocalEdits();
+
+    ASSERT_TRUE(quiesce());
+    EXPECT_TRUE(_hot->isMaskEnabled(_mask));
+    expectConverged();
+    expectChecksumsMatch();
+}
+
+TEST_F(LiveSessionMaskSwitchTest, AJoinAndAResyncKeepASwitchTurnedOffOverAConnectedMask)
+{
+    buildMaskedComp();
+    if (HasFatalFailure()) {
+        return;
+    }
+    _hot->getMaskEnabledKnob(_mask)->setValue(false);
+    startSession();
+    if (HasFatalFailure()) {
+        return;
+    }
+    expectConverged();
+
+    // The host refuses the connection to the node it deleted and resyncs the hot node.
+    const int rejectsBefore = _peers[0]->state().rejects;
+    ASSERT_EQ(_peers[0]->command("hold"), "ok");
+    _spare->destroyNode(true, false);
+    _host->flushLocalEdits();
+    ASSERT_EQ(_peers[0]->command(std::string("connect ") + kHotNodeName + " Source Spare"), "ok");
+    ASSERT_EQ(_peers[0]->command("release"), "ok");
+
+    ASSERT_TRUE(quiesce());
+    EXPECT_GT(_peers[0]->state().rejects, rejectsBefore);
+    EXPECT_FALSE(_hot->isMaskEnabled(_mask));
     expectConverged();
     expectChecksumsMatch();
 }

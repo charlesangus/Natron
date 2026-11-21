@@ -96,7 +96,8 @@ std::string uniqueScriptName(const NodeCollectionPtr& collection,
 
 /**
  * @brief The operations that make node again on a peer that lacks it: its createNode, then
- * the connections of the node and of the nodes inside it, then those of the nodes it feeds.
+ * the connections of the node and of the nodes inside it, then those of the nodes it feeds, then
+ * the mask switches of those connections.
  **/
 std::vector<Serialization::GraphOp> nodeStateOps(const NodePtr& node);
 

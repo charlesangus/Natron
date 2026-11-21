@@ -774,6 +774,11 @@ public:
     bool isMaskEnabled(int inputNb) const;
 
     /**
+     * @brief The switch that turns input inputNb's mask on and off, or null when it has none.
+     **/
+    KnobBoolPtr getMaskEnabledKnob(int inputNb) const;
+
+    /**
      * @brief For every mask input that is connected, enabled and not set to None, and for the
      * "(Un)premult by" selector over a connected source, checks that the KnobChannelSelect value
      * resolves against that input's present layers, then defers to the effect's own

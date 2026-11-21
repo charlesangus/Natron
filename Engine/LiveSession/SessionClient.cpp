@@ -31,6 +31,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -40,6 +41,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/GraphEditRecorder.h"
 #include "Engine/GraphOpApply.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/LiveSession/SessionShared.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
@@ -308,10 +310,57 @@ struct SessionClient::Implementation {
         }
         std::vector<Serialization::GraphOp> waiting;
         waiting.swap(deferred);
+        {
+            GraphEditRecorder::Suppress suppress;
+            for (const Serialization::GraphOp& op : waiting) {
+                if (std::optional<Serialization::GraphOp> here = asAppliedHere(p, op)) {
+                    applyOrDefer(p, *here, false);
+                }
+            }
+        }
+        restorePendingMaskSwitches(p);
+    }
+
+    // A mask switch is set by hand, and also follows its input whenever the input changes. A host
+    // edit of an input, or a deletion that empties one, sets the switch here although a pending
+    // edit of the switch, or of the input under it, comes after it on the host and decides the
+    // switch there. The last such pending edit decides it here too.
+    void restorePendingMaskSwitches(const ProjectPtr& p)
+    {
+        if (pending.empty()) {
+            return;
+        }
+        std::map<std::pair<std::string, int>, const Serialization::GraphOp*> decisive;
+        for (const PendingEdit& edit : pending) {
+            for (const Serialization::GraphOp& op : edit.ops) {
+                if (const Serialization::SetKnobOp* set = std::get_if<Serialization::SetKnobOp>(&op)) {
+                    NodePtr node = set->nodeId ? p->findNodeById(*set->nodeId) : NodePtr();
+                    if (!node) {
+                        continue;
+                    }
+                    const int nInputs = node->getNInputs();
+                    for (int i = 0; i < nInputs; ++i) {
+                        KnobBoolPtr maskSwitch = node->getMaskEnabledKnob(i);
+                        if (maskSwitch && (maskSwitch->getName() == set->knobName)) {
+                            decisive[std::make_pair(*set->nodeId, i)] = &op;
+                            break;
+                        }
+                    }
+                } else if (const Serialization::SetInputOp* input = std::get_if<Serialization::SetInputOp>(&op)) {
+                    NodePtr node = p->findNodeById(input->nodeId);
+                    const int inputNb = node ? node->getInputNumberFromLabel(input->inputLabel) : -1;
+                    if ((inputNb >= 0) && node->getMaskEnabledKnob(inputNb)) {
+                        decisive[std::make_pair(input->nodeId, inputNb)] = &op;
+                    }
+                }
+            }
+        }
         GraphEditRecorder::Suppress suppress;
-        for (const Serialization::GraphOp& op : waiting) {
-            if (std::optional<Serialization::GraphOp> here = asAppliedHere(p, op)) {
-                applyOrDefer(p, *here, false);
+        for (const std::pair<const std::pair<std::string, int>, const Serialization::GraphOp*>& entry : decisive) {
+            if (std::holds_alternative<Serialization::SetKnobOp>(*entry.second)) {
+                applyGraphOps(p, { *entry.second });
+            } else if (NodePtr node = p->findNodeById(entry.first.first)) {
+                node->refreshMaskEnabledNess(entry.first.second);
             }
         }
     }
@@ -362,6 +411,7 @@ struct SessionClient::Implementation {
             freeNameFor(p, *here);
             applyOrDefer(p, *here, true);
         }
+        restorePendingMaskSwitches(p);
     }
 
     // The host may have given this user's creations and renames other names than asked for.
@@ -506,6 +556,7 @@ struct SessionClient::Implementation {
         }
         reapplyPending(p, message.nodeId);
         retryDeferred(p);
+        restorePendingMaskSwitches(p);
     }
 
     bool loadProject(const WelcomeMessage& welcome)

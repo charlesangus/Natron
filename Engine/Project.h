@@ -166,8 +166,7 @@ public:
 
     /**
      * @brief Ends the binding of a client's copy that lost or left its session: the project is
-     * then an unsaved project with no file, still named after the host's file, as editable as any
-     * other. Main thread only.
+     * then an untitled, unsaved project with no file, as editable as any other. Main thread only.
      **/
     void detachFromLiveSession();
 

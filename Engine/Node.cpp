@@ -8220,6 +8220,14 @@ Node::isMaskChannelKnob(const KnobI* knob) const
     return -1;
 }
 
+KnobBoolPtr
+Node::getMaskEnabledKnob(int inputNb) const
+{
+    std::map<int, MaskSelector>::const_iterator it = _imp->maskSelectors.find(inputNb);
+
+    return (it != _imp->maskSelectors.end()) ? it->second.enabled.lock() : KnobBoolPtr();
+}
+
 bool
 Node::isMaskEnabled(int inputNb) const
 {

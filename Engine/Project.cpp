@@ -864,8 +864,9 @@ Project::detachFromLiveSession()
     {
         GraphEditRecorder::Suppress suppress;
         _imp->setProjectPath(std::string());
+        _imp->setProjectFilename(NATRON_PROJECT_UNTITLED);
     }
-    emitProjectNameChanged(QString::fromUtf8(_imp->getProjectFilename().c_str()), true);
+    emitProjectNameChanged(QString::fromUtf8(NATRON_PROJECT_UNTITLED), true);
 }
 
 bool

@@ -105,6 +105,15 @@ runUntil(const std::function<bool()>& done,
     return true;
 }
 
+// The last name the peer's project gave its window.
+QString&
+peerWindowTitle()
+{
+    static QString title;
+
+    return title;
+}
+
 void
 replyToParent(const std::string& line)
 {
@@ -140,6 +149,9 @@ peerCommand(const AppInstancePtr& app,
     }
     if (verb == "save") {
         return app->save(std::string()) ? "saved" : "failed";
+    }
+    if (verb == "title") {
+        return "title " + peerWindowTitle().toStdString();
     }
     if (verb == "ended") {
         const bool ended = runUntil([&app]() { return app->getLiveSessionState() == AppInstance::LiveSessionState::eNone; });
@@ -323,6 +335,7 @@ TEST_F(LiveSessionProjectPeerProcess, ServesTheTestThatStartedIt)
 
     QString endReason;
     QObject::connect(app.get(), &AppInstance::liveSessionEnded, [&endReason](const QString& reason) { endReason = reason; });
+    QObject::connect(app->getProject().get(), &Project::projectNameChanged, [](const QString& filePath, bool) { peerWindowTitle() = filePath; });
     app->joinLiveSession(QString::fromUtf8("127.0.0.1"), static_cast<quint16>(std::atoi(port)), QString::fromUtf8("client"));
     const bool joined = runUntil([&app]() { return app->getLiveSessionState() != AppInstance::LiveSessionState::eConnecting; })
         && (app->getLiveSessionState() == AppInstance::LiveSessionState::eJoined);
@@ -491,6 +504,7 @@ TEST_F(LiveSessionProjectTest, AfterTheHostStopsTheClientKeepsAnUnsavedEditableC
     if (HasFatalFailure()) {
         return;
     }
+    EXPECT_EQ(_peer->command("title"), "title Live: live-session.ntpz @ 127.0.0.1");
 
     _app->leaveLiveSession();
     EXPECT_EQ(_app->getLiveSessionState(), AppInstance::LiveSessionState::eNone);
@@ -500,6 +514,8 @@ TEST_F(LiveSessionProjectTest, AfterTheHostStopsTheClientKeepsAnUnsavedEditableC
 
     EXPECT_EQ(_peer->command("ended"),
               expectedState(AppInstance::LiveSessionState::eNone, Project::LiveSessionRole::eNone, false, true));
+    // The copy is no longer the host's file, so the window does not show that file's name.
+    EXPECT_EQ(_peer->command("title"), std::string("title ") + NATRON_PROJECT_UNTITLED);
     EXPECT_EQ(_peer->command("create"), "ok");
     EXPECT_EQ(_peer->command("set SharedGrade " + std::string(kGradeParamMultiply) + " 3"), "ok");
     EXPECT_EQ(_peer->command("state"),

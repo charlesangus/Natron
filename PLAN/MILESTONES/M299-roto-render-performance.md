@@ -187,3 +187,13 @@ Coordination with M370 - Roto Point List Render Isolation, which runs in paralle
 
   Before the gate, the bench gets a fresh `NATRON_DISK_CACHE_PATH` per scenario, and make_roto_strokes.py is fixed for the stroke re-run.
 - 2026-11-21 — Phase 299.2 committed. The mask key is the item's content hash plus the Merge node's restricted render-context hash. `isMaskFrameInvariant()` is cached per content hash. The measured raster cost goes into recomputeCostNs. The bench turns the disk tier off (`NATRON_DISK_CACHE_PATH` doesn't move the tier). make_roto_strokes.py had never run, because guitest wasn't on sys.path; that's fixed. **PM call:** a point with exactly one keyframe counts as still. Gate running; then the stroke fixtures, then Phase 299.4's P4.T2.
+- 2026-11-21 — **Phase 2 VM bench** (RTX 4090 VM with 5 vCPUs, cloud-gpu-20261121T140413Z; before 48f1f34a7, after 13aa297b5): still later 1.32x, cold 0.99x, edits 1.00x, keyed later 1.01x; strokes skipped (make_roto_strokes found no ViewerGL). Consultant: the bench is valid and the cache hits (RSS 20.3 → 15.3 GB on still). 1.32x is about Phase 2's ceiling: masks were 27% of the frame.
+  - **Re-plan (PM):** the 3x / 1.75x / 1.5x targets are the end-of-milestone gate, applied after P4.T2. Phase 2 is accepted: still later ≥1.25x, nothing else slower beyond noise. P4.T2 composites in parallel. Across-item parallel raster (struck P3.T1's fallback) comes back only if cold misses after P4.T2.
+  - **Bench fixes before the next VM run:**
+    - a profiled pass for hit counters;
+    - the build hash in each log;
+    - a VM with ≥30 vCPUs like the baseline;
+    - 5 reps on edit cases;
+    - the stroke fixture fails the run instead of being skipped silently.
+  - P4.T2 dispatched.
+

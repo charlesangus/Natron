@@ -177,13 +177,13 @@ an add. Its lessons, which this design avoids:
 
 ## Phase 103.4: `natron-merge` CLI and git integration
 
-- [ ] M103.P4.T1 — `natron-merge diff` and `merge`
+- [x] M103.P4.T1 — `natron-merge diff` and `merge`
   - files: new `MergeTool/CMakeLists.txt`, new `MergeTool/main.cpp`, new `MergeTool/DiffPrinter.cpp`, `CMakeLists.txt` (`add_subdirectory(MergeTool)`), the install rules
   - approach: subcommands as in **Design**. The human-readable diff groups changes per node (`~ Grade1 (renamed from Grade3)`, `  white: 1 → 1.2`, `+ Blur2`, `- Crop1`, `  input Source: Read1 → Blur2`). `merge` takes `--scope template:<key>|all`. Exit codes: 0 clean, 1 conflicts, 2 error. Link only `NatronSerialization`.
   - verify: compiled at P4.T3. A ctest runs `natron-merge` on three corpus triples, checks the exit codes, and checks that its `diff` output contains the expected lines.
   - size: M
 
-- [ ] M103.P4.T2 — git merge driver and textconv
+- [x] M103.P4.T2 — git merge driver and textconv
   - files: `MergeTool/main.cpp`, new `docs/graph-merge.md`, new `Tests/merge/git_driver_test.sh`, `Tests/CMakeLists.txt`
   - approach: `git-driver %O %A %B` merges into `%A` with scope `all` and exits nonzero on conflict. `textconv` prints `project.yaml`, with node maps in sorted order. The doc gives the `.gitattributes` and `git config` setup and describes the template workflow.
   - verify: compiled at P4.T3. The shell test makes a temp git repo with the driver configured, commits a base, branches, edits both sides with corpus files, and runs `git merge`: a clean scenario merges automatically and a conflicted one exits nonzero with `merge/conflicts.yaml` present.
@@ -233,3 +233,11 @@ The git-driver test passes. Full ctest, smoke and CI are green.
 - 2026-11-20 — Phase 103.2 gate green on eaebaa089. Phase 103.3 dispatched.
 - 2026-11-20 — Phase 103.3 T1–T4 committed. New handlers: per-key curve merge (tangents count only for Free/Broken keys); line-based text merge for String knobs; Roto items matched by name per layer, with one roto-shape conflict per item; Tracker tracks matched by script name, user keys merged as sets. `merge/conflicts.yaml` is saved only when non-empty and gives one load warning. Merge tests 64/64 in a standalone build; NodeMatcher still 310/310. **PM calls:** a saved choice value keeps its option name and M104 maps it onto the live entries; a Roto item moved to another layer is a delete plus an add. Known gaps, left to M104 unless they block it: per-handler options, node renames inside roto and track knobs, side values on roto-shape and input conflicts. Gate running (T5).
 - 2026-11-21 — Phase 103.3 gate green on ac7187f27. Phase 103.4 dispatched.
+- 2026-11-21 — Phase 103.4 T1–T2 committed: the natron-merge CLI (MergeTool/, linking only NatronSerialization), whole-project scope (`planProjectMerge`) for the git merge driver, and docs/graph-merge.md. **PM calls:**
+  - `merge` with no `--scope` merges the whole project and warns when base and mine share no node IDs.
+  - `diff` exits 0 when identical and 1 when different.
+  - In a whole-project merge, formats and layers keep mine's; per-entry merging is a follow-up.
+  - Project-knob conflicts carry no node ID, and M104 handles them.
+  - natron-merge goes into the AppImage at F33's ship.
+
+  Gate running (P4.T3).

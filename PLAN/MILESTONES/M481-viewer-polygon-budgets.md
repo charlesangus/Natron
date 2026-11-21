@@ -66,7 +66,7 @@ are from `milestone/m336-heavy-scene-acceptance` as of 2026-11-17. Re-check them
 
 ## Phase 481.1: Apply-cost probe
 
-- [ ] M481.P1.T1 — Measure what a budget change costs Storm
+- [x] M481.P1.T1 — Measure what a budget change costs Storm
   - files: `tools/bench/heavy_scene_bench.py`, `tools/bench/README.md`
   - approach: add a `budget_apply_probe` scenario. On the 1M city (loaded), the 1M flat file and Island, time the next presented frame (main-thread stall and render-thread cost) after each of these changes:
     - hold invisible 1%, 10% and 50% of the drawn gprims through `SceneDrawFilter`'s visibility path;
@@ -78,7 +78,7 @@ are from `milestone/m336-heavy-scene-acceptance` as of 2026-11-17. Re-check them
 
 ## Phase 481.2: Counts and solver
 
-- [ ] M481.P2.T1 — Polygon counts on the box thread
+- [x] M481.P2.T1 — Polygon counts on the box thread
   - files: `Gui/SceneDrawBoxes.h`, `Gui/SceneDrawBoxes.cpp`, `Tests/SceneDrawBoxes_Test.cpp`
   - approach: alongside each `Box`, the box thread publishes a face count:
     - meshes: the length of `faceVertexCounts`;
@@ -88,7 +88,7 @@ are from `milestone/m336-heavy-scene-acceptance` as of 2026-11-17. Re-check them
   - verify: new `SceneDrawBoxes_Test` cases give the face counts of a cube mesh, a curves prim and an instancer with 3 instances of a 6-face prototype, and confirm an unloaded payload counts 0.
   - size: M
 
-- [ ] M481.P2.T2 — Budget solver
+- [x] M481.P2.T2 — Budget solver
   - files: `Engine/Nodes/Scene/SceneViewBudget.h`, `Engine/Nodes/Scene/SceneViewBudget.cpp`, `Tests/Scene/SceneViewBudget_Test.cpp`, the CMake source lists for Engine and Tests
   - approach: a pure function.
     - Inputs: units (a gprim path, or an instancer plus instance index), each with its box and face count; the camera (eye position and frustum); the settings (limit, count whole scene, cull distance, fraction distance, fraction percent); and the previous result, used for hysteresis.
@@ -192,3 +192,10 @@ are from `milestone/m336-heavy-scene-acceptance` as of 2026-11-17. Re-check them
 - 2026-11-18 — **Possible follow-up (user, from M336 - Heavy Scene Acceptance):** after a scene has fully filled, while the camera moves on a scene whose full draw is over budget, draw only the stand-in boxes (no Storm pass), then one full draw once idle — the During interaction stand-in rule applied to every move.
 - 2026-11-20 — P1.T1 in 598827bc9: the env-gated (`NATRON_BUDGET_PROBE=1`) SceneBudgetProbe scene index and the budget_apply_probe bench. Faces are hidden through a child geomSubset (visibility false) plus a topology dirty, because USD 0.26.8's HdMeshTopologySchema has no invisibleFaces; P3.T1's wording follows this. The probe sits just after SceneDrawFilter and sends the same Hydra changes, so the filter's own bookkeeping isn't measured. **PM call:** the probe stays on the milestone branch behind the env gate and is removed when P3 lands. Build running; the GPU-host or VM run follows.
 - 2026-11-20 — **Based on F4's current branch (user):** "Pick up m481 based on the current state of f4, accept some rebasing." The phase-1 commit is being rebased from M336's branch onto feature/f4-heavy-scene-viewer (bd9fae37b), and the remaining phases build on F4. M481 rebases again once M336 merges into F4. F4's branch lacks main's AppStream fix, so packaging may fail there until F4 ships; ctest still runs.
+- 2026-11-20 — Phase 481.1 rebased onto F4 (f6e7113f6). It adapts to F4's draw-change delivery and settled check, and records its own engine id.
+- 2026-11-20 — Phase 481.2 committed: unit counts on the box worker (off by default, `setCounting`; a PointInstancer is one unit; built-in shape face counts follow USD's tessellation) and SceneViewBudget (cull → fraction by hashed path and index → count → demote farthest first; >limit units always go and are named). Unit types live in Engine. **PM calls:**
+  - Keep the 5% hysteresis band. The drawn count may sit up to 5% over until a fresh solve, which avoids boundary flicker.
+  - Phase 3 must split a huge instancer's world-bound read into chunks so writers aren't stalled (UI responsiveness rule).
+  - Phase 3 must extend the draw filter's per-instance mask to PointInstancer instances; today it covers native instances only.
+
+  Noted: the solver keeps about 5 B per instance (about 155 MB at 31M), and the fraction hash uses the instance index, so reordering instances changes the subset. Gate running.

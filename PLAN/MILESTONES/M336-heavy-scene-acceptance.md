@@ -104,7 +104,7 @@ From the first valid baseline (VM, cloud-gpu-20261117T045608Z) and its sampled I
   - approach: sample the synchronous viewer reconnect (683-700 ms on Lobby and Island) and fix what it shows. Gather `readEdits` and `readPrimData` on a worker.
   - verify: `pattern_node_stall_ms` ≤100 everywhere (610-735); flat `inspect_stall_ms` ≤100 (121.5).
   - size: M
-- [ ] M336.P3.T7 — Reopen tears the old stage down off the main thread
+- [x] M336.P3.T7 — Reopen tears the old stage down off the main thread
   - files: the project reset path, SceneStage and viewer release
   - approach: release the old UsdStage and engine on a worker or the render thread, without the main thread waiting.
   - verify: `reopen_stall_ms` ≤100 (flat 21.3 s, city 395, Lobby 680, Island 997).
@@ -267,4 +267,4 @@ From the first valid baseline (VM, cloud-gpu-20261117T045608Z) and its sampled I
   - P3.T7 closes once its in-progress fixes (f7856e0d7, dd577db69, c46c7ed61) pass the gate, whatever the reopen budget.
   - No VM round 15 and no new performance work; only bugs get fixed.
   - Then: PR into F4, one review round (bugs only), merge. P2.T1's real-scene UAT happens at F4's UAT.
-
+- 2026-11-21 — P3.T7 closed per the "ship it" decision: PR #330 CI green on ab6c0039e with f7856e0d7, dd577db69 and c46c7ed61 (after format/shellcheck fixes in 6071c05d2 and ab6c0039e, and two re-runs of MoonRay/ProgressiveRender/KeyMix flakes that pass serially and are not M336 code; logged under # Open questions). The round-9 resetTo teardown was already moved off the main thread in d5f4f856d. P2.T1 (UAT AppImage on a real scene) goes to F4's Feature UAT. Next: the review round on #330, then merge into feature/f4-heavy-scene-viewer.

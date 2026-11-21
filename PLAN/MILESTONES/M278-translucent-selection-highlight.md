@@ -24,6 +24,7 @@ This milestone turns Storm's in-pass highlight off and replaces it with a Natron
 - Invisible prims and purposes the viewport hides: the pass uses the viewport's purposes, so they stay untinted.
 - Camera and light prims have no surface; their guides already show their selection.
 - An empty selection skips the pass at no cost.
+- A translucent selected surface in front of a selected opaque one: the pass keeps the nearest selected surface in each pixel, so the opaque surface behind tints only by the front surface's alpha. The two coverages are not added together (accepted, review round 1).
 - Engine failure or renderer switch: the pass is destroyed before the engine, because its delegate needs the engine's Hgi (Tests/SceneViewport_Test.cpp:1730-1735).
 
 **Assumptions:**
@@ -130,3 +131,4 @@ This milestone turns Storm's in-pass highlight off and replaces it with a Natron
 - 2026-11-20 — Phase 278.3 in 36ad8b2ab. `ensureEngine` builds the SelectionEngine; `highlight = false`; `drawSelection` composites after `drawGrade` (pass depth − 1e-5, LEQUAL, tint by alpha × pass alpha). New GL tests cover occlusion, tinting through translucent prims, clearing, and wireframe lines; PicksAndHighlightsAProjectedCard is rewritten. **PM call:** the tint is (1, 0.8, 0.1) in display colour, like the selected guides, rather than graded through the view, so it reads slightly more orange than Storm's old highlight. The user sees it in the sign-off screenshots. Gate running.
 - 2026-11-21 — Phase 278.3 gate green on 36ad8b2ab (ctest, m234_projection, scene_projection_delegates, scene_viewer_display). Next: the sign-off screenshot script, then the PR and review.
 - 2026-11-21 — Sign-off screenshots (m278_selection_highlight.py, c978a4373, 39 checks passed) sent to the user. PR opened, with review round 1 running.
+- 2026-11-21 — Review round 1 (#328) fixed. The beauty's colour and depth are 4x MSAA, resolved with GL_NEAREST (hdx renderSetupTask defaults; Storm's colorDepthMSAA), so the pass now matches that sampling and resolve exactly. New tests cover a 60°-tilted plane (≥95% tint coverage, pass and beauty depth within 1e-6). The pass skips itself when no task has draw items, a stale engine is detected after SetRendererPlugin, and per-frame copies are cut. Gate running, including the screenshot script.

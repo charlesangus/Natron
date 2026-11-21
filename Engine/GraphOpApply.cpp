@@ -282,6 +282,8 @@ private:
             }
         }
         if (!value) {
+            restoreDefaultDimensionsFoldState(knob.get());
+
             return OpResult();
         }
         if (!knob->fromSerialization(*value)) {

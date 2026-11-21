@@ -46,6 +46,7 @@
 #include "Engine/Project.h"
 
 #include "Serialization/Bundle/ProjectBundle.h"
+#include "Serialization/Ops/OpsPrivate.h"
 #include "Serialization/ProjectSerialization.h"
 #include "Serialization/Session/SessionProtocol.h"
 
@@ -294,6 +295,47 @@ struct SessionClient::Implementation {
         }
     }
 
+    // The project was just loaded from the host, so a node already holding the name a pending
+    // creation or rename asks for holds it on the host too: the pending node waits under a free
+    // name until the host's name for it arrives.
+    Serialization::GraphOp withUntakenName(const ProjectPtr& p,
+                                           const Serialization::GraphOp& op) const
+    {
+        if (const Serialization::CreateNodeOp* create = std::get_if<Serialization::CreateNodeOp>(&op)) {
+            if (!create->node) {
+                return op;
+            }
+            const NodeCollectionPtr collection = LiveSession::collectionForParent(p, create->parentId);
+            const std::string& name = create->node->scriptName;
+            NodePtr holder = collection ? collection->getNodeByName(name) : NodePtr();
+            if (!holder || (holder->getNodeId() == create->node->id)) {
+                return op;
+            }
+            Serialization::CreateNodeOp aside = *create;
+            aside.node = Serialization::OpsDetail::deepCopyNode(*create->node);
+            aside.node->scriptName = LiveSession::uniqueScriptName(collection, name + "_", nullptr, { name });
+
+            return Serialization::GraphOp(aside);
+        }
+        if (const Serialization::RenameOp* rename = std::get_if<Serialization::RenameOp>(&op)) {
+            NodePtr node = p->findNodeById(rename->nodeId);
+            const NodeCollectionPtr collection = node ? node->getGroup() : NodeCollectionPtr();
+            if (!collection || rename->scriptName.empty()) {
+                return op;
+            }
+            NodePtr holder = collection->getNodeByName(rename->scriptName);
+            if (!holder || (holder == node)) {
+                return op;
+            }
+            Serialization::RenameOp aside = *rename;
+            aside.scriptName = LiveSession::uniqueScriptName(collection, rename->scriptName + "_", node.get(), { rename->scriptName });
+
+            return Serialization::GraphOp(aside);
+        }
+
+        return op;
+    }
+
     void reapplyPending(const ProjectPtr& p,
                         const std::optional<std::string>& onlyNode)
     {
@@ -309,8 +351,9 @@ struct SessionClient::Implementation {
                 ops.push_back(op);
             }
         }
-        if (!ops.empty()) {
-            applyHostOps(p, ops);
+        GraphEditRecorder::Suppress suppress;
+        for (const Serialization::GraphOp& op : ops) {
+            applyGraphOps(p, { withUntakenName(p, op) });
         }
     }
 

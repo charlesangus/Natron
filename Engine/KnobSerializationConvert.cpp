@@ -852,6 +852,14 @@ completeKnobSerializationForKnob(const KnobI& liveKnob,
     return completed;
 }
 
+void
+restoreDefaultDimensionsFoldState(KnobI* knob)
+{
+    if (knob->hasDimensionsFoldState() && canFoldDimensions(knob)) {
+        knob->restoreDimensionsUnfoldedInGui(!areDimensionsFoldedByDefault(knob));
+    }
+}
+
 KnobIPtr
 createDetachedKnobFromSerialization(const Serialization::KnobSerialization& serialization)
 {

@@ -10186,6 +10186,9 @@ Node::refreshMaskEnabledNess(int inputNb)
         bool newValue = inp ? true : false;
         changed = curValue != newValue;
         if (changed) {
+            // Each copy of a shared project derives this from its own input change, which is
+            // shared already: shared too, it would land out of order with the inputs it follows.
+            GraphEditRecorder::Suppress derived;
             enabled->setValue(newValue);
         }
         enabled->unblockValueChanges();

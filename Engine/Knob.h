@@ -3918,6 +3918,12 @@ KnobIPtr createDetachedKnobFromSerialization(const Serialization::KnobSerializat
 Serialization::KnobSerialization completeKnobSerializationForKnob(const KnobI& liveKnob, const Serialization::KnobSerialization& serialization);
 
 /**
+ * @brief Puts knob's dimensions back in the fold state a knob nothing has folded or unfolded
+ * starts in, so that once its values are reset it saves as a fresh knob does.
+ **/
+void restoreDefaultDimensionsFoldState(KnobI* knob);
+
+/**
  * @brief Drops knob's alias master, its one-way links and the two-way links it can leave. The
  * knobs that are aliases of it stay so.
  **/

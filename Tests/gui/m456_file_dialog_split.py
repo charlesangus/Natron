@@ -190,6 +190,8 @@ try:
         check([(n, c) for n, c, _ in listed] == [("plate.####.exr 10-20", (10, 20)), ("plate.####.exr 30-40", (30, 40))],
               "the items are plate.####.exr 10-20 and 30-40")
         gt.shot("m456-dialog-split.png")
+        # A hidden column must not come back from the saved state on the next open.
+        file_view(dialog).setColumnHidden(2, True)
         yield close(dialog)
 
         gt.section("persistence")
@@ -199,6 +201,8 @@ try:
         dialog = modal_dialog()
         split = child(dialog, QCheckBox, "SequenceFileDialogSplitOnGapsCheckBox")
         check(split.isChecked(), "Split on gaps is still checked on reopen")
+        check(all(not file_view(dialog).isColumnHidden(c) for c in (1, 2, 3)),
+              "the reopened dialog shows every detail column though one was hidden when it closed")
 
         gt.section("open a run")
         ok = yield ("until", lambda: len(items(dialog)) == 2, POLL_TIMEOUT_S)
@@ -265,11 +269,6 @@ try:
         created = os.path.join(folder, NEW_FOLDER)
         ok = yield ("until", lambda: os.path.isdir(created), POLL_TIMEOUT_S)
         check(ok, "New Folder creates %s" % created)
-        ok = yield ("until", lambda: modal_dialog() is not None and file_view(modal_dialog()) is not None
-                    and str(file_view(modal_dialog()).rootIndex().data() or "") == NEW_FOLDER, POLL_TIMEOUT_S)
-        check(ok, "the dialog goes into the new folder")
-        gt.shot("m456-dialog-new-folder.png")
-        QMetaObject.invokeMethod(modal_dialog(), "parentFolder")
 
         def listed_names():
             dialog = modal_dialog()
@@ -278,8 +277,20 @@ try:
                 return []
             model, root = view.model(), view.rootIndex()
             return [str(model.index(r, 0, root).data() or "") for r in range(model.rowCount(root))]
+
+        def selected_names():
+            dialog = modal_dialog()
+            view = file_view(dialog) if dialog is not None else None
+            if view is None:
+                return []
+            return [str(i.data() or "") for i in view.selectionModel().selectedRows()]
         ok = yield ("until", lambda: NEW_FOLDER in listed_names(), POLL_TIMEOUT_S)
-        check(ok, "the parent directory lists the new folder (%r)" % (listed_names(),))
+        check(ok, "the current folder lists the new folder (%r)" % (listed_names(),))
+        root_name = str(file_view(modal_dialog()).rootIndex().data() or "") if modal_dialog() is not None else ""
+        check(root_name == os.path.basename(folder), "the dialog stays in the current folder (%r)" % (root_name,))
+        ok = yield ("until", lambda: selected_names() == [NEW_FOLDER], POLL_TIMEOUT_S)
+        check(ok, "the new folder is the selection (%r)" % (selected_names(),))
+        gt.shot("m456-dialog-new-folder.png")
         dialog = modal_dialog()
         require(dialog is not None, "the dialog is still open")
         yield close(dialog)

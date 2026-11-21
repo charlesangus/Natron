@@ -344,7 +344,7 @@ SequenceFileDialog::SequenceFileDialog(QWidget* parent, // necessary to transmit
     _createDirButton->setObjectName(QString::fromUtf8("SequenceFileDialogNewFolderButton"));
     _createDirButton->setIconSize(buttonIconSize);
     _createDirButton->setFixedSize(buttonSize);
-    _createDirButton->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tr("New Folder: create a folder in the current directory and go into it."), NATRON_NAMESPACE::WhiteSpaceNormal));
+    _createDirButton->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tr("New Folder: create a folder in the current directory and select it."), NATRON_NAMESPACE::WhiteSpaceNormal));
     _buttonsLayout->addWidget(_createDirButton);
     QObject::connect( _createDirButton, SIGNAL(clicked()), this, SLOT(createDir()) );
 
@@ -617,7 +617,7 @@ SequenceFileDialog::SequenceFileDialog(QWidget* parent, // necessary to transmit
     }
     QSettings settings( QString::fromUtf8(NATRON_ORGANIZATION_NAME), QString::fromUtf8(NATRON_APPLICATION_NAME) );
     bool hasRestoredDir;
-    restoreState( settings.value( QLatin1String("FileDialog") ).toByteArray(), directoryArgs.empty(), &hasRestoredDir );
+    restoreState(settings.value(QLatin1String("FileDialogState")).toByteArray(), directoryArgs.empty(), &hasRestoredDir);
 
     if (!hasRestoredDir) {
         hasRestoredDir = setDirectory( QString::fromUtf8( directoryArgs.c_str() ) );
@@ -655,7 +655,7 @@ SequenceFileDialog::~SequenceFileDialog()
 
     QSettings settings( QString::fromUtf8(NATRON_ORGANIZATION_NAME), QString::fromUtf8(NATRON_APPLICATION_NAME) );
 
-    settings.setValue( QLatin1String("FileDialog"), saveState() );
+    settings.setValue(QLatin1String("FileDialogState"), saveState());
 }
 
 void
@@ -690,7 +690,6 @@ SequenceFileDialog::saveState() const
     stream << urls;
     stream << history();
     stream << currentDirectory().path();
-    stream << _view->header()->saveState();
     stream << _relativeChoice->itemText( _relativeChoice->activeIndex() );
     stream << _sequencesCheckBox->isChecked();
     stream << _splitOnGapsCheckBox->isChecked();
@@ -712,7 +711,6 @@ SequenceFileDialog::restoreState(const QByteArray & state,
         return false;
     }
     QByteArray splitterState;
-    QByteArray headerData;
     QList<QUrl> bookmarks;
     QStringList history;
     QString currentDirectory;
@@ -724,7 +722,6 @@ SequenceFileDialog::restoreState(const QByteArray & state,
         >> bookmarks
         >> history
         >> currentDirectory
-        >> headerData
         >> relativeChoice
         >> sequences
         >> splitOnGaps
@@ -792,19 +789,8 @@ SequenceFileDialog::restoreState(const QByteArray & state,
         history.pop_front();
     }
     setHistory(history);
-    QHeaderView *headerView = _view->header();
-    if ( !headerView->restoreState(headerData) ) {
-        return false;
-    }
     if (restoreDirectory) {
         *directoryRestored = setDirectory(currentDirectory);
-    }
-
-    QList<QAction*> actions = headerView->actions();
-    QAbstractItemModel *abstractModel = _model.get();
-    int total = qMin(abstractModel->columnCount( QModelIndex() ), actions.count() + 1);
-    for (int i = 1; i < total; ++i) {
-        actions.at(i - 1)->setChecked( !headerView->isSectionHidden(i) );
     }
 
     return true;
@@ -1517,7 +1503,8 @@ SequenceFileDialog::createDir()
 
         return;
     }
-    enterDirectory(index);
+    _view->selectionModel()->setCurrentIndex(index, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+    _view->scrollTo(index);
 }
 
 void

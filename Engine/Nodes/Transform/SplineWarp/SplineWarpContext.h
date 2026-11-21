@@ -464,6 +464,12 @@ public:
      **/
     virtual void composeItemTransform(const RotoDrawableItem& item, double time, const Transform::Matrix3x3& local, Transform::Matrix3x3* matrix) const OVERRIDE;
 
+    // The warp keeps layer transforms in its own table: see getLayerTransform().
+    virtual bool layersOwnTransforms() const OVERRIDE FINAL
+    {
+        return false;
+    }
+
     /**
      * @brief Saves the links (the same objects, with their values), the boundaries and the layer
      * amounts.

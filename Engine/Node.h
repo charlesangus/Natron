@@ -2019,7 +2019,8 @@ public:
                               const KnobDoublePtr& skewY,
                               const KnobChoicePtr& skewOrder,
                               const KnobDoublePtr& center,
-                              const KnobBoolPtr& invert);
+                              const KnobBoolPtr& invert,
+                              const std::function<bool(double, Transform::Matrix3x3*)>& frame = std::function<bool(double, Transform::Matrix3x3*)>());
 
     /**
      * @brief The knobs of the transform interact that drives member, or of the first one the

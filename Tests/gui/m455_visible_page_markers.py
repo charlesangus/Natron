@@ -7,6 +7,10 @@ TimeLineGui::keyframeMarkerTimes() and, after every step, compares them with the
     translate keys while the shape keys stay; the Transform node's keys go on its Node page;
   - roto-items: only the selected Bezier's keys show, none once nothing is selected; a key on the
     node's translate reaches the selected Bezier's own translate and shows;
+  - layer-transform: with the base layer selected, a key on the node's translate keys the layer's
+    own translate (read back through the layer's Python param); the markers are the layer's keys
+    and its shapes' shape keys, not their item translate keys; in the viewer the keyed layer
+    translate lifts both shapes between its keys;
   - minimise: a minimised panel is skipped: alone it shows nothing, over another panel the next expanded
     one shows, and expanding it brings its keys back;
   - order: opening a second panel puts it on top and only its keys show; bringing the first one
@@ -37,6 +41,8 @@ ITEM_TRANSLATE_KEYS = [9, 30]
 TRANSFORM_KEYS = [5, 15]
 ROTO_ALL = sorted(SHAPE_KEYS + ITEM_TRANSLATE_KEYS)
 OTHER_TRANSLATE_KEY = 40
+LAYER_KEYS = [11, 25]
+LAYER_RISE = 300.0
 PIN_TO_KEYS = [3, 12]
 PIN_FROM_KEYS = [7, 18]
 
@@ -338,6 +344,66 @@ try:
         clear_selection(roto)
         yield from expect("nothing selected after showing two Beziers", [])
         select_row(roto, bez)
+
+        gt.section("layer-transform")
+        layer = ctx.getBaseLayer()
+        require(layer is not None, "the Roto has a base layer")
+        layer_translate = layer.getParam("translate")
+        require(layer_translate is not None, "the base layer has a translate param")
+        select_row(roto, layer)
+        node_translate.setValueAtTime(0.0, LAYER_KEYS[0], 1)
+        node_translate.setValueAtTime(LAYER_RISE, LAYER_KEYS[1], 1)
+        ok = yield ("until", lambda: key_times(layer_translate) == LAYER_KEYS, POLL_TIMEOUT_S)
+        check(ok, "the node's translate keys the selected layer's own translate %r (%r)" %
+              (LAYER_KEYS, key_times(layer_translate)))
+        check(key_times(item_translate) == ITEM_TRANSLATE_KEYS,
+              "the Bezier inside the layer keeps its translate keys %r (%r)" %
+              (ITEM_TRANSLATE_KEYS, key_times(item_translate)))
+        yield from expect("the base layer selected: its keys and its shapes' shape keys",
+                          sorted(set(SHAPE_KEYS + other_shape + LAYER_KEYS)))
+        timeline_shot("m455-roto-layer-markers.png")
+        show_page(roto, "General")
+        yield from expect("the base layer on the General page: its shapes' shape keys",
+                          sorted(set(SHAPE_KEYS + other_shape)))
+        show_page(roto, "Transform")
+
+        clear_selection(roto)
+        rg.untone_view()
+        gl = rg.viewer_gl()
+        require(gl is not None, "the viewer is visible")
+        hold(gl)
+        vmap = rg.ViewerMap(gl)
+        require(vmap.ok, "calibrated the viewer")
+        low = vmap.to_widget(240.0, 200.0)
+        high = vmap.to_widget(240.0, 200.0 + LAYER_RISE)
+        inside = all(0 <= p.x() < gl.width() and 0 <= p.y() < gl.height() for p in (low, high))
+        require(inside, "both sample points are in the viewer", "%r, %r" % (low, high))
+
+        def bright(c):
+            return c is not None and min(c) >= 200
+
+        def dark(c):
+            return c is not None and max(c) <= 60
+
+        def shows(frame, lit, unlit):
+            app.getViewer("Viewer1").seek(frame)
+
+            def ready():
+                grab = rg.Grab(gl)
+                return bright(grab.colour(lit.x(), lit.y())) and dark(grab.colour(unlit.x(), unlit.y()))
+            ok = yield ("until", ready, POLL_TIMEOUT_S)
+            grab = rg.Grab(gl)
+            return ok, grab.colour(lit.x(), lit.y()), grab.colour(unlit.x(), unlit.y())
+
+        ok, lit, unlit = yield from shows(LAYER_KEYS[0], low, high)
+        check(ok, "frame %d: the shape is at its own place (%r lit, %r dark)" % (LAYER_KEYS[0], lit, unlit))
+        gt.shot("m455-roto-layer-frame%d.png" % LAYER_KEYS[0])
+        ok, lit, unlit = yield from shows(LAYER_KEYS[1], high, low)
+        check(ok, "frame %d: the layer translate lifts the shape by %g (%r lit, %r dark)" %
+              (LAYER_KEYS[1], LAYER_RISE, lit, unlit))
+        gt.shot("m455-roto-layer-frame%d.png" % LAYER_KEYS[1])
+        select_row(roto, bez)
+        yield from expect("the Bezier selected after the layer", ROTO_ALL)
 
         gt.section("minimise")
         set_minimized(roto, True)

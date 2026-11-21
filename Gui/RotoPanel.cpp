@@ -407,7 +407,7 @@ public:
     AppInstanceWPtr app;
     std::set<BezierPtr> trackedBeziers;
     std::set<RotoStrokeItemPtr> trackedStrokes;
-    std::set<RotoDrawableItemPtr> wiredItems;
+    std::set<RotoItemPtr> wiredItems;
     std::weak_ptr<RotoStrokeItem> currentStroke;
     std::weak_ptr<RotoStrokeItem> lastSeenActiveStroke;
     bool markersEnabled;
@@ -529,9 +529,9 @@ public:
     // Keys on an item's own knobs (opacity, transform, ...) are timeline markers too, so edits
     // from Python, the GUI and undo are all followed through the knobs' signals. Only the items
     // that can show markers are wired, so a node with many strokes costs nothing extra.
-    void wireItem(const RotoDrawableItemPtr& item, bool connect);
-    void rewireMarkerSources(const std::set<RotoDrawableItemPtr>& wanted);
-    static void collectItemKnobKeyframes(const RotoDrawableItemPtr& item,
+    void wireItem(const RotoItemPtr& item, bool connect);
+    void rewireMarkerSources(const std::set<RotoItemPtr>& wanted);
+    static void collectItemKnobKeyframes(const RotoItemPtr& item,
                                          const std::function<bool(const KnobIPtr&)>& accept,
                                          std::set<double>* times);
 
@@ -2420,7 +2420,7 @@ RotoPanelPrivate::untrackStrokeLifeTime(const RotoStrokeItemPtr& stroke)
 }
 
 void
-RotoPanelPrivate::wireItem(const RotoDrawableItemPtr& item,
+RotoPanelPrivate::wireItem(const RotoItemPtr& item,
                            bool connect)
 {
     const std::list<KnobIPtr>& knobs = item->getKnobs();
@@ -2464,9 +2464,9 @@ RotoPanelPrivate::wireItem(const RotoDrawableItemPtr& item,
 }
 
 void
-RotoPanelPrivate::rewireMarkerSources(const std::set<RotoDrawableItemPtr>& wanted)
+RotoPanelPrivate::rewireMarkerSources(const std::set<RotoItemPtr>& wanted)
 {
-    for (std::set<RotoDrawableItemPtr>::iterator it = wiredItems.begin(); it != wiredItems.end();) {
+    for (std::set<RotoItemPtr>::iterator it = wiredItems.begin(); it != wiredItems.end();) {
         if (wanted.find(*it) == wanted.end()) {
             wireItem(*it, false);
             wiredItems.erase(it++);
@@ -2474,7 +2474,7 @@ RotoPanelPrivate::rewireMarkerSources(const std::set<RotoDrawableItemPtr>& wante
             ++it;
         }
     }
-    for (std::set<RotoDrawableItemPtr>::const_iterator it = wanted.begin(); it != wanted.end(); ++it) {
+    for (std::set<RotoItemPtr>::const_iterator it = wanted.begin(); it != wanted.end(); ++it) {
         if (wiredItems.insert(*it).second) {
             wireItem(*it, true);
         }
@@ -2492,12 +2492,13 @@ ownPaintedFrame(const RotoStrokeItemPtr& stroke)
 }
 
 void
-RotoPanelPrivate::collectItemKnobKeyframes(const RotoDrawableItemPtr& item,
+RotoPanelPrivate::collectItemKnobKeyframes(const RotoItemPtr& item,
                                            const std::function<bool(const KnobIPtr&)>& accept,
                                            std::set<double>* times)
 {
     // The lifetime frame of a stroke is its painted frame, already published on its own.
-    KnobIPtr lifeTimeFrame = item->getLifeTimeFrameKnob();
+    RotoDrawableItem* isDrawable = dynamic_cast<RotoDrawableItem*>(item.get());
+    KnobIPtr lifeTimeFrame = isDrawable ? isDrawable->getLifeTimeFrameKnob() : KnobIPtr();
     const std::list<KnobIPtr>& knobs = item->getKnobs();
     for (std::list<KnobIPtr>::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
         const KnobIPtr& knob = *it;
@@ -2601,7 +2602,7 @@ RotoPanelPrivate::publishMarkers()
 {
     AppInstancePtr app = this->app.lock();
     if (!markersEnabled || !markersInView()) {
-        rewireMarkerSources(std::set<RotoDrawableItemPtr>());
+        rewireMarkerSources(std::set<RotoItemPtr>());
         if (app) {
             app->clearPanelKeyframeIndicators(publicInterface);
         }
@@ -2613,8 +2614,41 @@ RotoPanelPrivate::publishMarkers()
     }
     syncActiveStroke(true);
     std::set<double> times;
-    std::set<RotoDrawableItemPtr> wanted;
+    std::set<RotoItemPtr> wanted;
+    const auto onVisiblePage = [this](const KnobIPtr& knob) { return isItemKnobOnVisiblePage(knob); };
+    const bool layersOwnTransforms = context && context->layersOwnTransforms();
+    std::set<RotoLayerPtr> selectedLayers;
+    if (layersOwnTransforms) {
+        for (SelectedItems::const_iterator it = selectedItems.begin(); it != selectedItems.end(); ++it) {
+            RotoLayerPtr isLayer = std::dynamic_pointer_cast<RotoLayer>(*it);
+            if (isLayer) {
+                selectedLayers.insert(isLayer);
+            }
+        }
+    }
+    const auto underSelectedLayer = [&selectedLayers](const RotoItemPtr& item) {
+        for (RotoLayerPtr layer = item->getParentLayer(); layer; layer = layer->getParentLayer()) {
+            if (selectedLayers.count(layer)) {
+                return true;
+            }
+        }
+
+        return false;
+    };
+    // The node's transform knobs drive a selected layer, not the items selected along with it.
+    const auto onVisiblePageNotTransform = [this, &onVisiblePage](const KnobIPtr& knob) {
+        NodeGuiPtr nodeGui = node.lock();
+        KnobIPtr proxy = nodeGui ? nodeGui->getNode()->getEffectInstance()->getKnobByName(knob->getName()) : KnobIPtr();
+
+        return onVisiblePage(knob) && !(proxy && context->isTransformKnob(proxy.get()));
+    };
     for (SelectedItems::const_iterator it = selectedItems.begin(); it != selectedItems.end(); ++it) {
+        RotoLayerPtr isLayer = std::dynamic_pointer_cast<RotoLayer>(*it);
+        if (isLayer && selectedLayers.count(isLayer)) {
+            collectItemKnobKeyframes(isLayer, onVisiblePage, &times);
+            wanted.insert(isLayer);
+            continue;
+        }
         BezierPtr isBezier = std::dynamic_pointer_cast<Bezier>(*it);
         RotoStrokeItemPtr isStroke = std::dynamic_pointer_cast<RotoStrokeItem>(*it);
         const bool liveBezier = isBezier && trackedBeziers.find(isBezier) != trackedBeziers.end();
@@ -2624,7 +2658,11 @@ RotoPanelPrivate::publishMarkers()
         }
         RotoDrawableItemPtr isDrawable = std::dynamic_pointer_cast<RotoDrawableItem>(*it);
         if (isDrawable && (liveBezier || liveStroke)) {
-            collectItemKnobKeyframes(isDrawable, [this](const KnobIPtr& knob) { return isItemKnobOnVisiblePage(knob); }, &times);
+            if (underSelectedLayer(isDrawable)) {
+                collectItemKnobKeyframes(isDrawable, onVisiblePageNotTransform, &times);
+            } else {
+                collectItemKnobKeyframes(isDrawable, onVisiblePage, &times);
+            }
             wanted.insert(isDrawable);
         }
         if (liveStroke) {

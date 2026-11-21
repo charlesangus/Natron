@@ -126,3 +126,9 @@ Scouted 2026-11-14 on `origin/main`:
   3. Handles don't follow the main/B input of, for example, a Merge.
 
   Fixes being implemented; the AppImage is rebuilt for round 2.
+- 2026-11-21 — UAT round 1 fixes in 0fe7f82dc (rebased on main):
+  1. The overlay path resolver considers only the viewer's active A input, plus B in wipe or compare. The closer relation wins, and A wins a tie (PM call).
+  2. Viewport-space overlay text is drawn untransformed (`OverlaySupport::renderViewportText`).
+  3. Every walk tries the node's main input first (`getPreferredInput`: Source, then B, then A).
+
+  This replaces the Scope edge case that put Merge's A ahead of B: the user's UAT asks for the main/B input. The ripple-edit border and brush cursor have the same viewport-space issue and are being fixed. Then: gate, round-2 AppImage.

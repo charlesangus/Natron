@@ -59,6 +59,7 @@
 #include "Serialization/Bundle/ProjectBundle.h"
 #include "Serialization/Merge/NodeMatcher.h"
 #include "Serialization/Merge/ThreeWayMerge.h"
+#include "Serialization/Sha256.h"
 #include "Serialization/Yaml/BlobSink.h"
 #include "Serialization/Yaml/ProjectYaml.h"
 
@@ -162,12 +163,18 @@ canonicalizeIds(std::list<Serialization::NodeSerializationPtr>* nodes,
 }
 
 // The merged graph as text, with the IDs a merge makes up replaced by ones named after each node's
-// path and the conflicts, compared on their own, left out.
+// path and the conflicts, compared on their own, left out, as are where and when each template
+// import was read, which only the CLI records.
 std::string
 graphText(Serialization::ProjectSerialization project)
 {
     canonicalizeIds(&project.nodes.nodes, std::string());
     project.mergeConflicts.clear();
+    for (Serialization::TemplateImportSerialization& entry : project.templates) {
+        entry.path.clear();
+        entry.contentHash.clear();
+        entry.importedAt.clear();
+    }
     Serialization::InlineBlobSink sink;
 
     return Serialization::encodeProjectYaml(project, sink);
@@ -225,8 +232,14 @@ TEST(NatronMerge, EveryScenarioMergesAsThroughTheApi)
     const std::string expectedDir = std::string(NATRON_TESTS_FIXTURES_DIR) + "/merge-scenarios/expected/";
     for (const std::pair<const std::string, Scenario>& scenario : scenarios()) {
         const Serialization::ProjectSerialization base = scenario.second.base.project();
-        const Serialization::ProjectSerialization mine = scenario.second.mine.project();
+        Serialization::ProjectSerialization mine = scenario.second.mine.project();
         const Serialization::ProjectSerialization theirs = scenario.second.theirs.project();
+        for (const ExpectedMerge& merge : readExpected(expectedDir + scenario.first + ".yaml")) {
+            Serialization::TemplateImportSerialization entry;
+            entry.key = merge.templateKey;
+            entry.base = std::make_shared<Serialization::ProjectSerialization>(base);
+            mine.templates.push_back(entry);
+        }
         ScratchDir dir;
         writeBundle(base, dir.file("base.ntpz"));
         writeBundle(mine, dir.file("mine.ntpz"));
@@ -350,6 +363,75 @@ TEST(NatronMerge, AWholeProjectConflictKeepsMineAndExitsOne)
     Serialization::NodeSerializationPtr blur = nodeAt(merged, "Blur1");
     ASSERT_TRUE(blur != nullptr);
     EXPECT_EQ(valuesOf(*blur, "size"), std::vector<double>({ 3., 3. }));
+}
+
+Serialization::MergeConflict
+savedConflict(const std::string& node,
+              const std::string& knob)
+{
+    Serialization::MergeConflict conflict;
+    conflict.kind = Serialization::MergeConflictKind::eValue;
+    conflict.baseNodeId = hexId(node);
+    conflict.nodeId = hexId(node);
+    conflict.knob = knob;
+
+    return conflict;
+}
+
+TEST(NatronMerge, AMergeKeepsTheOpenConflictsBothSidesSaved)
+{
+    ScratchDir dir;
+    writeBundle(plainProject(), dir.file("base.ntpz"));
+    Serialization::ProjectSerialization mine = plainProject();
+    mine.mergeConflicts.push_back(savedConflict("b:Grade1", "multiply"));
+    mine.mergeConflicts.push_back(savedConflict("b:Gone", "size"));
+    writeBundle(mine, dir.file("mine.ntpz"));
+    Serialization::ProjectSerialization theirs = plainProject([](SimGraph* g) { g->set("Grade1", "multiply", { 2. }); });
+    theirs.mergeConflicts.push_back(savedConflict("b:Grade1", "multiply"));
+    theirs.mergeConflicts.push_back(savedConflict("b:Blur1", "size"));
+    writeBundle(theirs, dir.file("theirs.ntpz"));
+    const std::string out = dir.file("out.ntpz");
+    const RunResult run = runNatronMerge({ "merge", dir.file("base.ntpz"), dir.file("mine.ntpz"), dir.file("theirs.ntpz"), "-o", out });
+    EXPECT_EQ(run.status, 0);
+    const Serialization::ProjectSerialization merged = readBundle(out);
+    std::set<std::pair<std::string, std::string>> got;
+    for (const Serialization::MergeConflict& conflict : merged.mergeConflicts) {
+        got.insert(std::make_pair(conflict.nodeId, conflict.knob));
+    }
+    EXPECT_EQ(merged.mergeConflicts.size(), 2u);
+    const std::set<std::pair<std::string, std::string>> expected = { { hexId("b:Grade1"), "multiply" }, { hexId("b:Blur1"), "size" } };
+    EXPECT_TRUE(got == expected);
+}
+
+TEST(NatronMerge, ATemplateMergeRecordsWhereTheTemplateCameFrom)
+{
+    ScratchDir dir;
+    const Serialization::ProjectSerialization base = plainProject();
+    writeBundle(base, dir.file("base.ntpz"));
+    Serialization::ProjectSerialization mine = plainProject();
+    Serialization::TemplateImportSerialization entry;
+    entry.key = "grade_tpl";
+    entry.path = "/elsewhere/grade.ntpz";
+    entry.base = std::make_shared<Serialization::ProjectSerialization>(base);
+    mine.templates.push_back(entry);
+    writeBundle(mine, dir.file("mine.ntpz"));
+    writeBundle(plainProject([](SimGraph* g) { g->set("Blur1", "size", { 4., 4. }); }), dir.file("theirs.ntpz"));
+    const std::string out = dir.file("out.ntpz");
+
+    EXPECT_EQ(runNatronMerge({ "merge", "--scope", "template:other_tpl", dir.file("base.ntpz"), dir.file("mine.ntpz"), dir.file("theirs.ntpz"), "-o", out }).status, 2);
+    EXPECT_FALSE(fs::exists(out));
+
+    const RunResult run = runNatronMerge({ "merge", "--scope", "template:grade_tpl", dir.file("base.ntpz"), dir.file("mine.ntpz"), dir.file("theirs.ntpz"), "-o", out });
+    EXPECT_NE(run.status, 2);
+    ASSERT_TRUE(fs::exists(out));
+    const Serialization::ProjectSerialization merged = readBundle(out);
+    ASSERT_EQ(merged.templates.size(), 1u);
+    const Serialization::TemplateImportSerialization& updated = merged.templates.front();
+    EXPECT_EQ(updated.key, "grade_tpl");
+    EXPECT_EQ(fs::path(updated.path), fs::absolute(dir.file("theirs.ntpz")).lexically_normal());
+    EXPECT_EQ(updated.contentHash, Serialization::sha256Hex(Serialization::ProjectBundleReader(dir.file("theirs.ntpz")).projectYaml()));
+    EXPECT_FALSE(updated.importedAt.empty());
+    ASSERT_TRUE(updated.base != nullptr);
 }
 
 TEST(NatronMerge, TheGitDriverMergesIntoTheCurrentFile)

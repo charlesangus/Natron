@@ -71,6 +71,12 @@ main(int argc,
         write(dir + "/conflict-base.ntpz", nullptr);
         write(dir + "/conflict-mine.ntpz", [](SimGraph* g) { g->set("Blur1", "size", { 3., 3. }); });
         write(dir + "/conflict-theirs.ntpz", [](SimGraph* g) { g->set("Blur1", "size", { 4., 4. }); });
+        write(dir + "/conflict-more.ntpz", [](SimGraph* g) {
+            g->set("Blur1", "size", { 4., 4. });
+            g->set("Grade1", "multiply", { 2. });
+        });
+        write(dir + "/addadd-mine.ntpz", [](SimGraph* g) { g->add("MineBlur", "Blur", "m:MineBlur", { { "Source", "ColorCorrect1" } }); });
+        write(dir + "/addadd-theirs.ntpz", [](SimGraph* g) { g->add("TheirBlur", "Blur", "t:TheirBlur", { { "Source", "ColorCorrect1" } }); });
     } catch (const std::exception& e) {
         std::cerr << "merge_scenario_writer: " << e.what() << "\n";
 

@@ -82,30 +82,26 @@ struct NodeCorrespondence {
 };
 
 /**
- * @brief Matches the nodes of a template base against another snapshot of it: the template as
- * the supervisor revised it, whose nodes keep their template IDs, or a shot the template was imported into as
- * templateKey, whose nodes have fresh IDs and carry an origin. Matching is deterministic, works
- * across the whole tree (a node moved into or out of a group is still the same node), and no
+ * @brief Matches the nodes of a base against another snapshot of it. With templateKey empty, other
+ * is a version of base itself, whose nodes keep base's IDs: the template as the supervisor revised
+ * it, or another version of the same project. Otherwise other is a shot the template was imported
+ * into as templateKey, whose nodes have fresh IDs and carry an origin. Matching is deterministic,
+ * works across the whole tree (a node moved into or out of a group is still the same node), and no
  * other-side node stands for two base nodes.
  *
- * A node whose origin names templateKey claims the base node the origin names; any other node
- * claims the base node with its own ID, which only the template's own versions share. A base node claimed by several nodes goes to
- * the one whose neighbours agree with it best, when one does. Then an unmatched base node adopts an
+ * In a shot, a node whose origin names templateKey claims the base node the origin names; any other
+ * node claims the base node with its own ID. A base node claimed by several nodes goes to the one
+ * whose neighbours agree with it best, when one does. Then an unmatched base node adopts an
  * unmatched node without an origin that has the same plug-in, the same parent, and the same matched
  * upstream and downstream neighbours on the same input labels, when each is the other's only
- * candidate. Adoption repeats until nothing more is adopted.
+ * candidate. In a shot the adopted node must also lie in the merge scope of the nodes matched so
+ * far, so a node of the artist's own branch next to the template is never adopted. Adoption repeats
+ * until nothing more is adopted. A merge writes an origin onto each adopted node it keeps, so the
+ * next match finds it by identity.
  **/
 NodeCorrespondence matchNodes(const MergeGraph& base,
                               const MergeGraph& other,
                               const std::string& templateKey);
-
-/**
- * @brief Writes the origin {templateKey, base ID} onto each node of mine that baseToMine adopted, so
- * the next match finds it by identity.
- **/
-void recordAdoptions(const NodeCorrespondence& baseToMine,
-                     const std::string& templateKey,
-                     ProjectSerialization* mine);
 
 /**
  * @brief The node with the given ID anywhere in the tree, or null.

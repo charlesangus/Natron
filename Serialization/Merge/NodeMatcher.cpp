@@ -21,6 +21,7 @@
 
 #include <vector>
 
+#include "Serialization/Merge/MergeScope.h"
 #include "Serialization/Ops/OpsPrivate.h"
 
 NATRON_NAMESPACE_ENTER
@@ -199,12 +200,14 @@ namespace {
     void
     adoptByStructure(const MergeGraph& base,
                      const MergeGraph& other,
+                     bool enclosedOnly,
                      NodeCorrespondence* correspondence)
     {
         bool progress = true;
         while (progress) {
             progress = false;
             const std::set<std::string> matchedOther = correspondence->matchedOther();
+            const std::set<std::string> enclosed = enclosedOnly ? mergeScope(other, *correspondence) : std::set<std::string>();
             // (plug-in, parent) to the unmatched nodes without an origin, in ID order.
             std::map<std::pair<std::string, std::string>, std::vector<std::string>> unmatched;
             for (const std::pair<const std::string, MergeGraph::Node>& otherEntry : other.nodes()) {
@@ -230,6 +233,9 @@ namespace {
                     continue;
                 }
                 for (const std::string& candidateId : bucket->second) {
+                    if (enclosedOnly && !enclosed.count(candidateId)) {
+                        continue;
+                    }
                     if (neighbourAgreement(baseEntry.second, *other.find(candidateId), *correspondence, matchedOther).exact) {
                         candidatesOfBase[baseEntry.first].push_back(candidateId);
                         ++claimsOnCandidate[candidateId];
@@ -318,7 +324,7 @@ matchNodes(const MergeGraph& base,
     const std::map<std::string, std::vector<std::string>> claims = collectClaims(base, other, templateKey);
     NodeCorrespondence result = matchUniqueClaims(claims);
     resolveAmbiguousClaims(base, other, claims, &result);
-    adoptByStructure(base, other, &result);
+    adoptByStructure(base, other, !templateKey.empty(), &result);
 
     return result;
 }
@@ -338,23 +344,6 @@ findNodeSerialization(const std::list<NodeSerializationPtr>& nodes,
     }
 
     return NodeSerializationPtr();
-}
-
-void
-recordAdoptions(const NodeCorrespondence& baseToMine,
-                const std::string& templateKey,
-                ProjectSerialization* mine)
-{
-    for (const std::pair<const std::string, std::string>& entry : baseToMine.baseToOther) {
-        if (!baseToMine.adopted.count(entry.second)) {
-            continue;
-        }
-        NodeSerializationPtr node = findNodeSerialization(mine->nodes.nodes, entry.second);
-        if (node) {
-            node->origin.templateKey = templateKey;
-            node->origin.nodeId = entry.first;
-        }
-    }
 }
 
 } // namespace Serialization

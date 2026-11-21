@@ -411,6 +411,26 @@ mergeKnobLists(const MergeHandlerRegistry& handlers,
         const KnobSerialization* b = knobNamed(baseKnobs, name);
         const KnobSerialization* m = knobNamed(mineKnobs, name);
         const KnobSerialization* t = knobNamed(theirsKnobs, name);
+        const bool user = (b && b->isUserKnob) || (m && m->isUserKnob) || (t && t->isUserKnob);
+        if (user && (!m || !t)) {
+            // A user knob exists only where a side made it, so its absence is a delete.
+            const KnobSerialization* kept = m ? m : t;
+            if (!kept || (b && sameKnobState(b, kept))) {
+                continue;
+            }
+            if (b) {
+                MergeConflict conflict;
+                conflict.kind = MergeConflictKind::eDeleteModify;
+                conflict.knob = name;
+                conflict.side = m ? MergeSide::eTheirs : MergeSide::eMine;
+                conflict.base = valueOf(b);
+                conflict.mine = valueOf(m);
+                conflict.theirs = valueOf(t);
+                conflicts->push_back(conflict);
+            }
+            result.push_back(*kept);
+            continue;
+        }
         std::optional<KnobSerialization> merged;
         handlers.handlerFor(pluginID, b, m, t).merge(b, m, t, &merged, conflicts);
         if (merged) {

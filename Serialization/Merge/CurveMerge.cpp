@@ -33,10 +33,10 @@ using MergeDetail::pick;
 
 namespace {
 
-    // The values of Engine's KeyframeTypeEnum whose tangents the user sets; every other
-    // interpolation recomputes its tangents from the neighbouring keys.
-    constexpr int kKeyframeTypeFree = 6;
-    constexpr int kKeyframeTypeBroken = 7;
+    // The interpolations whose tangents the user sets; every other one recomputes its tangents
+    // from the neighbouring keys.
+    constexpr int kKeyframeTypeFree = int(KeyFrameInterpolation::eFree);
+    constexpr int kKeyframeTypeBroken = int(KeyFrameInterpolation::eBroken);
 
     typedef std::tuple<double, int, double, double, double, double> KeyState;
 

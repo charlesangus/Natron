@@ -82,12 +82,58 @@ namespace MergeDetail {
             const MergeGraph& graph = theirs ? context.theirs : context.mine;
             const MergeGraph::Node& baseNode = *context.base.find(baseId);
             const MergeGraph::Node& sideNode = *graph.find(sideId);
-            const NodeRenames names = sideNames(context.base, graph, theirs ? context.plan.baseToTheirs.baseToOther : context.plan.baseToMine.baseToOther);
-            if (!sameKnobs(renamedKnobs(*baseNode.node, names), sideNode.node->knobs) || !sameNodeContent(*baseNode.node, *sideNode.node)) {
+            const ScopedNodeRenames names = sideNames(context.base, graph, theirs ? context.plan.baseToTheirs.baseToOther : context.plan.baseToMine.baseToOther);
+            if (!sameKnobLists(renamedKnobs(context.base, baseNode, names), sideNode.node->knobs) || !sameNodeContent(*baseNode.node, *sideNode.node)) {
                 return true;
             }
 
             return inputsInBaseTerms(context, baseNode, 0) != inputsInBaseTerms(context, sideNode, theirs ? 2 : 1);
+        }
+
+        typedef std::map<std::string, std::vector<std::string>> Children;
+
+        Children
+        childrenOf(const MergeGraph& graph)
+        {
+            Children children;
+            for (const std::pair<const std::string, MergeGraph::Node>& entry : graph.nodes()) {
+                if (!entry.second.parentId.empty()) {
+                    children[entry.second.parentId].push_back(entry.first);
+                }
+            }
+
+            return children;
+        }
+
+        // changedFromBase(), or a change inside the node that the other side's delete of it would
+        // drop: a node this side added inside it, or a change to a base node inside it that the
+        // other side deleted too.
+        bool
+        contentChanged(const MergeContext& context,
+                       const Children& children,
+                       const std::string& baseId,
+                       const std::string& sideId,
+                       bool theirs)
+        {
+            if (changedFromBase(context, baseId, sideId, theirs)) {
+                return true;
+            }
+            Children::const_iterator inside = children.find(sideId);
+            if (inside == children.end()) {
+                return false;
+            }
+            const NodeCorrespondence& other = theirs ? context.plan.baseToMine : context.plan.baseToTheirs;
+            for (const std::string& child : inside->second) {
+                const std::string childBase = theirs ? context.baseOfTheirs(child) : context.baseOfMine(child);
+                if (childBase.empty()) {
+                    return true;
+                }
+                if (other.otherFor(childBase).empty() && contentChanged(context, children, childBase, child, theirs)) {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         void
@@ -121,7 +167,7 @@ namespace MergeDetail {
                           const std::set<std::string>& paired)
         {
             const bool byName = addition.inputs.empty();
-            if (byName && parent.empty()) {
+            if (byName && (parent.empty() || !paired.count(parent))) {
                 return std::string();
             }
             std::map<std::string, std::string> sources;
@@ -220,6 +266,63 @@ namespace MergeDetail {
             return context.out.count(id) > 0;
         }
 
+        // The merged source that takes the place of baseId, a base node the merge left out: what
+        // theirs connected the node's consumers to in its place, else what fed it, passing through
+        // other nodes left out. Empty unless there is exactly one.
+        std::string
+        replacementFor(const MergeContext& context,
+                       const std::string& baseId)
+        {
+            std::set<std::string> rewired;
+            for (const std::pair<std::string, std::string>& output : context.base.find(baseId)->outputs) {
+                const MergeGraph::Node* consumer = context.theirs.find(context.plan.baseToTheirs.otherFor(output.first));
+                if (!consumer) {
+                    continue;
+                }
+                std::map<std::string, std::string>::const_iterator input = consumer->inputs.find(output.second);
+                if (input != consumer->inputs.end()) {
+                    const std::string source = outOfTheirs(context, input->second);
+                    if (isReal(context, source)) {
+                        rewired.insert(source);
+                    }
+                }
+            }
+            if (!rewired.empty()) {
+                return (rewired.size() == 1) ? *rewired.begin() : std::string();
+            }
+
+            std::set<std::string> upstream;
+            std::set<std::string> seen;
+            std::deque<std::string> queue(1, baseId);
+            while (!queue.empty()) {
+                const MergeGraph::Node* removed = context.base.find(queue.front());
+                queue.pop_front();
+                for (const std::pair<const std::string, std::string>& input : removed->inputs) {
+                    const std::string source = outOfBase(context, input.second);
+                    if (isReal(context, source)) {
+                        upstream.insert(source);
+                    } else if (seen.insert(input.second).second) {
+                        queue.push_back(input.second);
+                    }
+                }
+            }
+
+            return (upstream.size() == 1) ? *upstream.begin() : std::string();
+        }
+
+        // A source that is a base node the merge removed: its replacement, or empty.
+        std::string
+        replacedSource(const MergeContext& context,
+                       const std::string& source)
+        {
+            static const std::string gone("gone:");
+            if ((source.compare(0, gone.size(), gone) != 0) || (source.find(':', gone.size()) != std::string::npos)) {
+                return std::string();
+            }
+
+            return replacementFor(context, source.substr(gone.size()));
+        }
+
         void
         mergeInputs(MergeContext* context,
                     OutNode* node)
@@ -256,9 +359,16 @@ namespace MergeDetail {
                     result = t;
                 } else {
                     result = m;
-                    const std::pair<std::string, std::string> mineTail = chainTail(*context, m, b, [](const OutNode& candidate) {
-                        return candidate.fromMine && candidate.baseId.empty() && candidate.theirsId.empty();
-                    });
+                    const auto mineChain = [context](const OutNode& candidate) {
+                        return candidate.fromMine && candidate.baseId.empty() && candidate.theirsId.empty() && context->plan.scope.count(candidate.node->id);
+                    };
+                    // Mine's insert after a node theirs deleted was already reconnected to what
+                    // theirs put in its place.
+                    if (!b.empty() && !isReal(*context, b) && !chainTail(*context, m, t, mineChain).first.empty()) {
+                        merged[label] = m;
+                        continue;
+                    }
+                    const std::pair<std::string, std::string> mineTail = chainTail(*context, m, b, mineChain);
                     const std::pair<std::string, std::string> theirsTail = chainTail(*context, t, b, [](const OutNode& candidate) {
                         return !candidate.fromMine && candidate.baseId.empty();
                     });
@@ -276,6 +386,9 @@ namespace MergeDetail {
                     } else {
                         conflict.kind = MergeConflictKind::eInput;
                         context->conflicts.push_back(conflict);
+                    }
+                    if (!isReal(*context, result)) {
+                        result = replacedSource(*context, result);
                     }
                 }
                 if (isReal(*context, result)) {
@@ -336,6 +449,11 @@ namespace MergeDetail {
     void
     mergeExistence(MergeContext* context)
     {
+        const Children mineChildren = childrenOf(context->mine);
+        const Children theirsChildren = childrenOf(context->theirs);
+        // The groups one side deleted and the other kept for what it changed inside them, with the
+        // nodes inside them, which come back with the group and without conflicts of their own.
+        std::set<std::string> kept;
         std::set<std::string> restored;
         for (const std::string& baseId : byDepth(context->base)) {
             const std::string mineId = context->plan.baseToMine.otherFor(baseId);
@@ -347,21 +465,26 @@ namespace MergeDetail {
                 context->baseToOut[baseId] = mineId;
                 context->theirsToOut[theirsId] = mineId;
             } else if (!mineId.empty()) {
-                if (changedFromBase(*context, baseId, mineId, false)) {
+                const std::string parent = context->mine.find(mineId)->parentId;
+                const bool insideKept = !parent.empty() && kept.count(parent);
+                if (insideKept || contentChanged(*context, mineChildren, baseId, mineId, false)) {
                     OutNode& node = context->out[mineId];
                     node.baseId = baseId;
                     if (!context->plan.templateKey.empty()) {
                         node.node->origin = NodeOriginSerialization();
                     }
                     context->baseToOut[baseId] = mineId;
-                    context->addConflict(MergeConflictKind::eDeleteModify, baseId, MergeSide::eTheirs);
+                    kept.insert(mineId);
+                    if (!insideKept) {
+                        context->addConflict(MergeConflictKind::eDeleteModify, baseId, MergeSide::eTheirs);
+                    }
                 } else {
                     removeMineNode(context, mineId);
                 }
             } else if (!theirsId.empty()) {
                 const std::string parent = context->theirs.find(theirsId)->parentId;
                 const bool insideRestored = !parent.empty() && restored.count(parent);
-                if (insideRestored || changedFromBase(*context, baseId, theirsId, true)) {
+                if (insideRestored || contentChanged(*context, theirsChildren, baseId, theirsId, true)) {
                     const std::string id = context->addFromTheirs(theirsId);
                     context->out[id].baseId = baseId;
                     context->baseToOut[baseId] = id;
@@ -473,6 +596,18 @@ namespace MergeDetail {
                     const std::string source = outOfMine(*context, input.second);
                     if (isReal(*context, source)) {
                         inputs[input.first] = source;
+                        continue;
+                    }
+                    const std::string replacement = replacedSource(*context, source);
+                    if (!replacement.empty()) {
+                        inputs[input.first] = replacement;
+                    } else {
+                        MergeConflict conflict;
+                        conflict.kind = MergeConflictKind::eInput;
+                        conflict.baseNodeId = node.baseId;
+                        conflict.nodeId = entry.first;
+                        conflict.input = input.first;
+                        context->conflicts.push_back(conflict);
                     }
                 }
                 node.inputIds = std::move(inputs);

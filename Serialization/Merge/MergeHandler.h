@@ -178,7 +178,10 @@ private:
 
 /**
  * @brief Merges three knob lists by knob name through handlers, a knob absent from a list being at
- * its default. base is null when there is no base. Mine's knobs come first, in mine's order.
+ * its default. A user knob absent from a list was deleted there instead: a delete stands when the
+ * other side left the knob as base had it, and against a change it is a delete-modify conflict
+ * that keeps the changed knob. base is null when there is no base. Mine's knobs come first, in
+ * mine's order.
  **/
 std::list<KnobSerialization> mergeKnobLists(const MergeHandlerRegistry& handlers,
                                             const std::string& pluginID,

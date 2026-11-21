@@ -36,13 +36,17 @@ namespace Serialization {
 enum class MergeConflictKind {
     // Both sides changed one knob dimension differently; the merge kept mine.
     eValue,
-    // Both sides connected one input differently; the merge kept mine.
+    // Both sides connected one input differently; the merge kept mine. Also an input of a node
+    // only mine has whose source theirs deleted without one clear replacement; the merge left it
+    // unconnected.
     eInput,
     // Both sides inserted nodes on one base edge; the merge chained theirs, then mine.
     eStructuralInsert,
-    // One side deleted a node, or a roto item or track, the other changed. A node the artist
-    // deleted is restored from theirs; a node the supervisor deleted is kept from mine without its
-    // origin. An item or track is kept as the side that changed it has it.
+    // One side deleted a node, or a user knob, roto item or track, the other changed. A node the
+    // artist deleted is restored from theirs; a node the supervisor deleted is kept from mine
+    // without its origin. A group counts as changed when a node was added or changed inside it,
+    // and comes back with what is inside it. A knob, item or track is kept as the side that changed
+    // it has it.
     eDeleteModify,
     // Both sides moved one node into different groups; the merge kept mine. Inputs the two sides
     // also connected differently are listed on it, not raised apart, and keep mine too.
@@ -120,7 +124,7 @@ struct MergeConflict {
     MergeConflictKind kind = MergeConflictKind::eValue;
     // The template import the merge updated.
     std::string templateKey;
-    // The base node the conflict is about.
+    // The base node the conflict is about, or empty for a node only mine has.
     std::string baseNodeId;
     // That node in the merged snapshot, or empty when the merge left it out.
     std::string nodeId;
@@ -134,7 +138,7 @@ struct MergeConflict {
     std::string input;
     // eReparent: the node's inputs the two sides connected differently.
     std::vector<std::string> inputs;
-    // eDeleteModify: the side that deleted the node. eAdopted: the side whose node was adopted.
+    // eDeleteModify: the side that deleted the node or knob. eAdopted: the side whose node was adopted.
     MergeSide side = MergeSide::eMine;
     // eAdopted: the knobs the adopted node leaves at their default while the base node sets them.
     std::vector<std::string> defaultedKnobs;

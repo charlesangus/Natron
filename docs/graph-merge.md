@@ -45,12 +45,15 @@ Merges two edits of a common ancestor and writes the result to `out`:
 - `--scope template:<key>` updates a template imported into `mine` as `<key>`: `base` is the
   template as it was imported, `theirs` its new version, and only the nodes that came from the
   template, plus anything the artist put between them, are merged. Template nodes the artist
-  deleted and recreated are matched by their place in the graph.
+  deleted and recreated are matched by their place in the graph. `mine` must have an import
+  with that key, else the merge is an error. The import then records `theirs` as its base, with
+  its path, content hash and the time of the merge.
 
 Where both sides changed the same thing differently, the result keeps **mine** and records a
 conflict. The conflicts are saved in the bundle (`merge/conflicts.yaml`), so a conflicted
-project still opens normally, with the conflicts listed for resolving later. A summary is
-printed on stderr.
+project still opens normally, with the conflicts listed for resolving later. A later merge keeps
+the conflicts saved earlier, by `mine` and, with `--scope all`, by `theirs`, while the node each
+names is still in the result. A summary of the new conflicts is printed on stderr.
 
 ### git-driver and textconv
 
@@ -112,5 +115,4 @@ edits and the new version are merged:
    listed as conflicts.
 
 A shot can import several templates, or the same template twice under different keys; each
-key is updated on its own, and conflicts from updating one key are kept when another is
-updated.
+key is updated on its own, and the conflicts saved by earlier updates are kept.

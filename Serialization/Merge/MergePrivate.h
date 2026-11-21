@@ -80,8 +80,8 @@ namespace MergeDetail {
         // The script names in use in each group of the merged snapshot, by the group's merged ID,
         // empty for the top level. A name only has to be free among its siblings.
         std::map<std::string, std::set<std::string>> names;
-        // Mine's names the merge changed, old to new.
-        NodeRenames mineRenames;
+        // Mine's names the merge changed, old to new, by mine's group.
+        ScopedNodeRenames mineRenames;
         std::vector<MergeConflict> conflicts;
         // A merged node's reparent conflict, as an index into conflicts.
         std::map<std::string, std::size_t> reparentConflicts;
@@ -110,22 +110,23 @@ namespace MergeDetail {
                             const std::string& id,
                             bool fromTheirs);
 
+    // The fully qualified name of the group a node is in, empty at the top level.
+    std::string groupPath(const MergeGraph& graph,
+                          const MergeGraph::Node& node);
+
     // A side's script name to its name on another side, for the base nodes both have.
-    NodeRenames sideNames(const MergeGraph& from,
-                          const MergeGraph& to,
-                          const std::map<std::string, std::string>& fromToTo);
+    ScopedNodeRenames sideNames(const MergeGraph& from,
+                                const MergeGraph& to,
+                                const std::map<std::string, std::string>& fromToTo);
 
     // A node's knobs with references renamed.
-    std::list<KnobSerialization> renamedKnobs(const NodeSerialization& node,
-                                              const NodeRenames& renames);
-
-    // Whether two knob lists hold the same state, absent knobs being at their default.
-    bool sameKnobs(const std::list<KnobSerialization>& a,
-                   const std::list<KnobSerialization>& b);
+    std::list<KnobSerialization> renamedKnobs(const MergeGraph& graph,
+                                              const MergeGraph::Node& node,
+                                              const ScopedNodeRenames& renames);
 
     // The script-name renames that take one side's names to the merged names.
-    NodeRenames baseNamesToOut(const MergeContext& context);
-    NodeRenames theirsNamesToOut(const MergeContext& context);
+    ScopedNodeRenames baseNamesToOut(const MergeContext& context);
+    ScopedNodeRenames theirsNamesToOut(const MergeContext& context);
 
     // Node existence: deletes, restores, additions and identical additions.
     void mergeExistence(MergeContext* context);

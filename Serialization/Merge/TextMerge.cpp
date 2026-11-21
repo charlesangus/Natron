@@ -20,6 +20,7 @@
 #include "Serialization/Merge/MergeHandler.h"
 
 #include <algorithm>
+#include <utility>
 #include <variant>
 
 #include "Serialization/Merge/MergeRules.h"
@@ -51,8 +52,75 @@ namespace {
         return lines;
     }
 
+    // The lengths of the longest common subsequences of base[from, to) and each prefix of
+    // other[otherFrom, otherTo), or of each suffix when backward.
+    std::vector<int>
+    commonLengths(const Lines& base,
+                  std::size_t from,
+                  std::size_t to,
+                  const Lines& other,
+                  std::size_t otherFrom,
+                  std::size_t otherTo,
+                  bool backward)
+    {
+        const std::size_t columns = otherTo - otherFrom;
+        std::vector<int> previous(columns + 1, 0);
+        std::vector<int> current(columns + 1, 0);
+        for (std::size_t row = 0; row < to - from; ++row) {
+            const std::string& line = base[backward ? (to - 1 - row) : (from + row)];
+            for (std::size_t j = 1; j <= columns; ++j) {
+                const std::string& candidate = other[backward ? (otherTo - j) : (otherFrom + j - 1)];
+                current[j] = (line == candidate) ? (previous[j - 1] + 1) : std::max(previous[j], current[j - 1]);
+            }
+            std::swap(previous, current);
+        }
+
+        return previous;
+    }
+
+    // Hirschberg's split: matches base[from, to) against other[otherFrom, otherTo) in linear space.
+    void
+    matchRange(const Lines& base,
+               std::size_t from,
+               std::size_t to,
+               const Lines& other,
+               std::size_t otherFrom,
+               std::size_t otherTo,
+               std::vector<int>* result)
+    {
+        if ((from == to) || (otherFrom == otherTo)) {
+            return;
+        }
+        if (to - from == 1) {
+            for (std::size_t j = otherFrom; j < otherTo; ++j) {
+                if (base[from] == other[j]) {
+                    (*result)[from] = int(j);
+
+                    return;
+                }
+            }
+
+            return;
+        }
+        const std::size_t middle = from + (to - from) / 2;
+        const std::vector<int> upper = commonLengths(base, from, middle, other, otherFrom, otherTo, false);
+        const std::vector<int> lower = commonLengths(base, middle, to, other, otherFrom, otherTo, true);
+        const std::size_t columns = otherTo - otherFrom;
+        std::size_t split = 0;
+        int best = -1;
+        for (std::size_t k = 0; k <= columns; ++k) {
+            const int length = upper[k] + lower[columns - k];
+            if (length > best) {
+                best = length;
+                split = k;
+            }
+        }
+        matchRange(base, from, middle, other, otherFrom, otherFrom + split, result);
+        matchRange(base, middle, to, other, otherFrom + split, otherTo, result);
+    }
+
     // For each base line, the index of the other line it is kept as, or -1, from a longest common
-    // subsequence. The common head and tail are matched first so the table only spans the edits.
+    // subsequence. The common head and tail are matched first so the search only spans the edits.
     std::vector<int>
     matchLines(const Lines& base,
                const Lines& other)
@@ -68,31 +136,7 @@ namespace {
             result[base.size() - 1 - tail] = int(other.size() - 1 - tail);
             ++tail;
         }
-        const std::size_t rows = base.size() - head - tail;
-        const std::size_t columns = other.size() - head - tail;
-        std::vector<std::vector<int>> lengths(rows + 1, std::vector<int>(columns + 1, 0));
-        for (std::size_t i = rows; i-- > 0;) {
-            for (std::size_t j = columns; j-- > 0;) {
-                if (base[head + i] == other[head + j]) {
-                    lengths[i][j] = lengths[i + 1][j + 1] + 1;
-                } else {
-                    lengths[i][j] = std::max(lengths[i + 1][j], lengths[i][j + 1]);
-                }
-            }
-        }
-        std::size_t i = 0;
-        std::size_t j = 0;
-        while ((i < rows) && (j < columns)) {
-            if (base[head + i] == other[head + j]) {
-                result[head + i] = int(head + j);
-                ++i;
-                ++j;
-            } else if (lengths[i + 1][j] >= lengths[i][j + 1]) {
-                ++i;
-            } else {
-                ++j;
-            }
-        }
+        matchRange(base, head, base.size() - tail, other, head, other.size() - tail, &result);
 
         return result;
     }

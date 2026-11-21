@@ -67,6 +67,12 @@ struct MergeOptions {
     const MergeHandlerRegistry* handlers = nullptr;
     // Mints the ID of each node the merge adds; null for random IDs.
     std::function<std::string()> newNodeId;
+    // Where a template merge's theirs came from, recorded on the import with theirs as its new
+    // base: the template file, the SHA-256 of its project.yaml, and when it was read (ISO 8601,
+    // UTC).
+    std::string templatePath;
+    std::string templateContentHash;
+    std::string templateImportedAt;
 };
 
 struct MergeResult {
@@ -86,7 +92,8 @@ struct MergeResult {
  * Expressions and links that name nodes are compared and written in the merged snapshot's names,
  * so a node the artist renamed keeps the supervisor's new expressions that name it. The merged
  * nodes that stand for a template node carry an origin naming theirs, and the import's base
- * becomes theirs, so merging the same theirs again changes nothing.
+ * becomes theirs, with the options' template file, hash and time, so merging the same theirs again
+ * changes no node.
  *
  * A whole-project plan (planProjectMerge()) leaves origins as the sides have them, keeps the ID of
  * a node taken from theirs unless mine uses it, merges the project knobs per knob, with conflicts
@@ -98,6 +105,18 @@ MergeResult threeWayMerge(const ProjectSerialization& base,
                           const ProjectSerialization& theirs,
                           const MergePlan& plan,
                           const MergeOptions& options = MergeOptions());
+
+/**
+ * @brief The conflicts to save with result.merged: the conflicts mine saved from earlier merges
+ * that are still open, then, for a whole-project plan, those theirs saved, then result's own. An
+ * earlier conflict is open while the node it names is in the merged snapshot (or it names no
+ * node) and the merge raised no conflict of its kind at the same place; one both sides saved is
+ * kept once.
+ **/
+std::vector<MergeConflict> conflictsToSave(const ProjectSerialization& mine,
+                                           const ProjectSerialization& theirs,
+                                           const MergePlan& plan,
+                                           const MergeResult& result);
 
 } // namespace Serialization
 NATRON_NAMESPACE_EXIT

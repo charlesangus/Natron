@@ -25,14 +25,18 @@
 
 #include "Global/Macros.h"
 
+#include <list>
 #include <optional>
 #include <ostream>
+#include <variant>
+#include <vector>
 
 #include <gtest/gtest.h>
 
 #include "MergeScenarios.h"
 
 #include "Serialization/Merge/MergeHandler.h"
+#include "Serialization/Merge/NodeReferences.h"
 #include "Serialization/Merge/ThreeWayMerge.h"
 #include "Serialization/Yaml/BlobSink.h"
 #include "Serialization/Yaml/ProjectYaml.h"
@@ -183,6 +187,97 @@ TEST(MergeHandlerRegistry, DispatchesByPluginThenByKnobKind)
     EXPECT_EQ(&registry.handlerFor("Grade", "String"), byKind.get());
     EXPECT_TRUE(dynamic_cast<const Serialization::ScalarKnobMergeHandler*>(&registry.handlerFor("Grade", "Double")) != nullptr);
     EXPECT_TRUE(dynamic_cast<const Serialization::ScalarKnobMergeHandler*>(&Serialization::MergeHandlerRegistry::defaults().handlerFor("Blur", "String")) != nullptr);
+}
+
+// A list holding the user knob "size" at value, or no knob for nullopt.
+std::list<Serialization::KnobSerialization>
+userKnobs(std::optional<double> value)
+{
+    std::list<Serialization::KnobSerialization> knobs;
+    if (value) {
+        Serialization::KnobSerialization knob = *doubleKnob({ *value });
+        knob.isUserKnob = true;
+        knobs.push_back(knob);
+    }
+
+    return knobs;
+}
+
+TEST(MergeKnobLists, AUserKnobMissingFromASideWasDeletedThere)
+{
+    struct Case {
+        const char* name;
+        std::optional<double> base;
+        std::optional<double> mine;
+        std::optional<double> theirs;
+        // The merged value, or nullopt for no knob.
+        std::optional<double> merged;
+        // The side whose delete conflicts with the other's change, or nullopt for no conflict.
+        std::optional<Serialization::MergeSide> deleted;
+    };
+    const std::vector<Case> cases = {
+        { "mine adds", std::nullopt, 2., std::nullopt, 2., std::nullopt },
+        { "theirs adds", std::nullopt, std::nullopt, 3., 3., std::nullopt },
+        { "mine deletes an unchanged knob", 2., std::nullopt, 2., std::nullopt, std::nullopt },
+        { "theirs deletes an unchanged knob", 2., 2., std::nullopt, std::nullopt, std::nullopt },
+        { "both delete", 2., std::nullopt, std::nullopt, std::nullopt, std::nullopt },
+        { "mine deletes what theirs changed", 2., std::nullopt, 3., 3., Serialization::MergeSide::eMine },
+        { "theirs deletes what mine changed", 2., 4., std::nullopt, 4., Serialization::MergeSide::eTheirs },
+    };
+    for (const Case& c : cases) {
+        SCOPED_TRACE(c.name);
+        const std::list<Serialization::KnobSerialization> base = userKnobs(c.base);
+        std::vector<Serialization::MergeConflict> conflicts;
+        const std::list<Serialization::KnobSerialization> merged = Serialization::mergeKnobLists(Serialization::MergeHandlerRegistry::defaults(), "Blur", &base, userKnobs(c.mine), userKnobs(c.theirs), &conflicts);
+        if (c.merged) {
+            ASSERT_EQ(merged.size(), 1u);
+            ASSERT_TRUE(merged.front().dimensions[0].value.has_value());
+            EXPECT_EQ(std::get<double>(*merged.front().dimensions[0].value), *c.merged);
+        } else {
+            EXPECT_TRUE(merged.empty());
+        }
+        if (c.deleted) {
+            ASSERT_EQ(conflicts.size(), 1u);
+            EXPECT_EQ(conflicts.front().kind, Serialization::MergeConflictKind::eDeleteModify);
+            EXPECT_EQ(conflicts.front().knob, "size");
+            EXPECT_EQ(conflicts.front().side, *c.deleted);
+        } else {
+            EXPECT_TRUE(conflicts.empty());
+        }
+    }
+}
+
+TEST(NodeReferences, OnlyReferencesToTheRenamedNodeOfTheirGroupChange)
+{
+    Serialization::ScopedNodeRenames renames;
+    renames[std::string()]["Grade1"] = "KeyGrade";
+    renames["Look"]["Blur1"] = "Soft";
+    struct Case {
+        const char* group;
+        const char* before;
+        const char* after;
+    };
+    const std::vector<Case> cases = {
+        { "", "Grade1.multiply.getValue(0)", "KeyGrade.multiply.getValue(0)" },
+        { "", "Look.Blur1.size.get()", "Look.Soft.size.get()" },
+        { "", "app1.Look.Blur1.size.get()", "app1.Look.Soft.size.get()" },
+        { "", "Blur1.size.get()", "Blur1.size.get()" },
+        { "", "'Grade1.multiply'", "'Grade1.multiply'" },
+        { "", "\"Grade1.multiply\" + Grade1.multiply.get()", "\"Grade1.multiply\" + KeyGrade.multiply.get()" },
+        { "", "'it\\'s Grade1.multiply'", "'it\\'s Grade1.multiply'" },
+        { "", "f().Grade1.multiply", "f().Grade1.multiply" },
+        { "", "x.Grade1.multiply", "x.Grade1.multiply" },
+        { "", "myGrade1.multiply", "myGrade1.multiply" },
+        { "", "Grade1 + 1", "Grade1 + 1" },
+        { "Look", "Blur1.size.get()", "Soft.size.get()" },
+        { "Look", "thisGroup.Blur1.size.get()", "thisGroup.Soft.size.get()" },
+        { "Look", "Grade1.multiply.get()", "Grade1.multiply.get()" },
+        { "Look", "app.Grade1.multiply.get()", "app.KeyGrade.multiply.get()" },
+    };
+    for (const Case& c : cases) {
+        SCOPED_TRACE(std::string(c.group) + ": " + c.before);
+        EXPECT_EQ(Serialization::renameNodesInExpression(c.before, renames, c.group), c.after);
+    }
 }
 
 struct Projects {

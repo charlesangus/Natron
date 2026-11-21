@@ -28,6 +28,8 @@
 #include <QDebug>
 #include <QThread>
 
+#include <algorithm>
+#include <functional>
 #include <set>
 #include <sstream>
 #include <utility>
@@ -180,8 +182,11 @@ Node::swapIdentity(const NodePtr& a,
     const std::string bOriginTemplate = b->getOriginTemplate();
     const std::string bOriginNode = b->getOriginNode();
     {
-        QMutexLocker ka(&a->_imp->nameMutex);
-        QMutexLocker kb(&b->_imp->nameMutex);
+        // In address order, so two swaps of the same pair never wait on each other.
+        QMutex* first = std::min(&a->_imp->nameMutex, &b->_imp->nameMutex, std::less<QMutex*>());
+        QMutex* second = std::max(&a->_imp->nameMutex, &b->_imp->nameMutex, std::less<QMutex*>());
+        QMutexLocker k1(first);
+        QMutexLocker k2(second);
         std::swap(a->_imp->nodeId, b->_imp->nodeId);
     }
     AppInstancePtr app = a->getApp();

@@ -24,6 +24,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <list>
+#include <optional>
 #include <random>
 #include <tuple>
 
@@ -75,29 +76,39 @@ namespace {
         return result;
     }
 
-    // Name renames that drop any name two nodes would rename differently.
+    // Name renames, by group, that drop any name two nodes of a group would rename differently.
     class RenameBuilder {
     public:
-        void add(const std::string& from,
+        void add(const std::string& group,
+                 const std::string& from,
                  const std::string& to)
         {
-            if (_ambiguous.count(from)) {
+            std::set<std::string>& ambiguous = _ambiguous[group];
+            if (ambiguous.count(from)) {
                 return;
             }
-            std::pair<NodeRenames::iterator, bool> inserted = _renames.emplace(from, to);
+            NodeRenames& renames = _renames[group];
+            std::pair<NodeRenames::iterator, bool> inserted = renames.emplace(from, to);
             if (!inserted.second && (inserted.first->second != to)) {
-                _renames.erase(inserted.first);
-                _ambiguous.insert(from);
+                renames.erase(inserted.first);
+                ambiguous.insert(from);
             }
         }
 
-        NodeRenames take()
+        ScopedNodeRenames take()
         {
-            for (NodeRenames::iterator it = _renames.begin(); it != _renames.end();) {
-                if (it->first == it->second) {
-                    it = _renames.erase(it);
+            for (ScopedNodeRenames::iterator scope = _renames.begin(); scope != _renames.end();) {
+                for (NodeRenames::iterator it = scope->second.begin(); it != scope->second.end();) {
+                    if (it->first == it->second) {
+                        it = scope->second.erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
+                if (scope->second.empty()) {
+                    scope = _renames.erase(scope);
                 } else {
-                    ++it;
+                    ++scope;
                 }
             }
 
@@ -105,8 +116,8 @@ namespace {
         }
 
     private:
-        NodeRenames _renames;
-        std::set<std::string> _ambiguous;
+        ScopedNodeRenames _renames;
+        std::map<std::string, std::set<std::string>> _ambiguous;
     };
 
     std::vector<std::string>
@@ -335,7 +346,16 @@ namespace MergeDetail {
         return (fromTheirs ? "theirs:" : "mine:") + id;
     }
 
-    NodeRenames
+    std::string
+    groupPath(const MergeGraph& graph,
+              const MergeGraph::Node& node)
+    {
+        const MergeGraph::Node* parent = node.parentId.empty() ? nullptr : graph.find(node.parentId);
+
+        return parent ? parent->path : std::string();
+    }
+
+    ScopedNodeRenames
     sideNames(const MergeGraph& from,
               const MergeGraph& to,
               const std::map<std::string, std::string>& fromToTo)
@@ -345,7 +365,7 @@ namespace MergeDetail {
             const MergeGraph::Node* a = from.find(entry.first);
             const MergeGraph::Node* b = to.find(entry.second);
             if (a && b) {
-                builder.add(a->node->scriptName, b->node->scriptName);
+                builder.add(groupPath(from, *a), a->node->scriptName, b->node->scriptName);
             }
         }
 
@@ -353,52 +373,49 @@ namespace MergeDetail {
     }
 
     std::list<KnobSerialization>
-    renamedKnobs(const NodeSerialization& node,
-                 const NodeRenames& renames)
+    renamedKnobs(const MergeGraph& graph,
+                 const MergeGraph::Node& node,
+                 const ScopedNodeRenames& renames)
     {
-        std::list<KnobSerialization> knobs = node.knobs;
+        std::list<KnobSerialization> knobs = node.node->knobs;
         if (!renames.empty()) {
-            renameNodeReferences(&knobs, renames);
+            renameNodeReferences(&knobs, renames, groupPath(graph, node));
         }
 
         return knobs;
     }
 
-    bool
-    sameKnobs(const std::list<KnobSerialization>& a,
-              const std::list<KnobSerialization>& b)
-    {
-        return sameKnobLists(a, b);
-    }
+    namespace {
 
-    NodeRenames
+        ScopedNodeRenames
+        namesToOut(const MergeContext& context,
+                   const MergeGraph& graph,
+                   const std::map<std::string, std::string>& toOut)
+        {
+            RenameBuilder builder;
+            for (const std::pair<const std::string, std::string>& entry : toOut) {
+                const MergeGraph::Node* a = graph.find(entry.first);
+                std::map<std::string, OutNode>::const_iterator b = context.out.find(entry.second);
+                if (a && (b != context.out.end())) {
+                    builder.add(groupPath(graph, *a), a->node->scriptName, b->second.node->scriptName);
+                }
+            }
+
+            return builder.take();
+        }
+
+    } // namespace
+
+    ScopedNodeRenames
     baseNamesToOut(const MergeContext& context)
     {
-        RenameBuilder builder;
-        for (const std::pair<const std::string, std::string>& entry : context.baseToOut) {
-            const MergeGraph::Node* a = context.base.find(entry.first);
-            std::map<std::string, OutNode>::const_iterator b = context.out.find(entry.second);
-            if (a && (b != context.out.end())) {
-                builder.add(a->node->scriptName, b->second.node->scriptName);
-            }
-        }
-
-        return builder.take();
+        return namesToOut(context, context.base, context.baseToOut);
     }
 
-    NodeRenames
+    ScopedNodeRenames
     theirsNamesToOut(const MergeContext& context)
     {
-        RenameBuilder builder;
-        for (const std::pair<const std::string, std::string>& entry : context.theirsToOut) {
-            const MergeGraph::Node* a = context.theirs.find(entry.first);
-            std::map<std::string, OutNode>::const_iterator b = context.out.find(entry.second);
-            if (a && (b != context.out.end())) {
-                builder.add(a->node->scriptName, b->second.node->scriptName);
-            }
-        }
-
-        return builder.take();
+        return namesToOut(context, context.theirs, context.theirsToOut);
     }
 
     void
@@ -444,7 +461,7 @@ namespace MergeDetail {
             if ((mine.scriptName == base.scriptName) && (theirs.scriptName != base.scriptName) && !siblings.count(theirs.scriptName)) {
                 siblings.erase(mine.scriptName);
                 siblings.insert(theirs.scriptName);
-                context->mineRenames[mine.scriptName] = theirs.scriptName;
+                context->mineRenames[groupPath(context->mine, *context->mine.find(entry.first))][mine.scriptName] = theirs.scriptName;
                 mine.scriptName = theirs.scriptName;
             }
             takeChanged(base.label, &mine.label, theirs.label);
@@ -494,24 +511,24 @@ namespace MergeDetail {
             }
         }
 
-        const NodeRenames baseNames = baseNamesToOut(*context);
-        const NodeRenames theirsNames = theirsNamesToOut(*context);
+        const ScopedNodeRenames baseNames = baseNamesToOut(*context);
+        const ScopedNodeRenames theirsNames = theirsNamesToOut(*context);
         for (std::pair<const std::string, OutNode>& entry : context->out) {
             OutNode& node = entry.second;
             if (!node.fromMine) {
-                node.node->knobs = renamedKnobs(*context->theirs.find(node.theirsId)->node, theirsNames);
+                node.node->knobs = renamedKnobs(context->theirs, *context->theirs.find(node.theirsId), theirsNames);
                 continue;
             }
             if (!context->mineRenames.empty()) {
-                renameNodeReferences(&node.node->knobs, context->mineRenames);
+                renameNodeReferences(&node.node->knobs, context->mineRenames, groupPath(context->mine, *context->mine.find(entry.first)));
             }
             if (node.theirsId.empty()) {
                 continue;
             }
-            const std::list<KnobSerialization> theirs = renamedKnobs(*context->theirs.find(node.theirsId)->node, theirsNames);
+            const std::list<KnobSerialization> theirs = renamedKnobs(context->theirs, *context->theirs.find(node.theirsId), theirsNames);
             std::list<KnobSerialization> base;
             if (!node.baseId.empty()) {
-                base = renamedKnobs(*context->base.find(node.baseId)->node, baseNames);
+                base = renamedKnobs(context->base, *context->base.find(node.baseId), baseNames);
             }
             std::vector<MergeConflict> conflicts;
             node.node->knobs = mergeKnobLists(context->handlers, node.node->pluginID, node.baseId.empty() ? nullptr : &base, node.node->knobs, theirs, &conflicts);
@@ -539,7 +556,7 @@ planMerge(const ProjectSerialization& base,
     MergePlan plan;
     plan.templateKey = templateKey;
     plan.baseToMine = matchNodes(baseGraph, mineGraph, templateKey);
-    plan.baseToTheirs = matchNodes(baseGraph, theirsGraph, templateKey);
+    plan.baseToTheirs = matchNodes(baseGraph, theirsGraph, std::string());
     plan.scope = mergeScope(mineGraph, plan.baseToMine);
 
     return plan;
@@ -599,18 +616,63 @@ threeWayMerge(const ProjectSerialization& base,
     bool found = false;
     for (TemplateImportSerialization& entry : result.merged.templates) {
         if (entry.key == plan.templateKey) {
-            entry.base = newBase;
             found = true;
         }
     }
     if (!found) {
         TemplateImportSerialization entry;
         entry.key = plan.templateKey;
-        entry.base = newBase;
         result.merged.templates.push_back(entry);
+    }
+    for (TemplateImportSerialization& entry : result.merged.templates) {
+        if (entry.key == plan.templateKey) {
+            entry.path = options.templatePath;
+            entry.contentHash = options.templateContentHash;
+            entry.importedAt = options.templateImportedAt;
+            entry.base = newBase;
+        }
     }
 
     return result;
+}
+
+std::vector<MergeConflict>
+conflictsToSave(const ProjectSerialization& mine,
+                const ProjectSerialization& theirs,
+                const MergePlan& plan,
+                const MergeResult& result)
+{
+    typedef std::tuple<MergeConflictKind, std::string, std::string, std::string, int, std::string, std::string, std::optional<double>> Place;
+    const auto placeOf = [](const MergeConflict& conflict) {
+        return Place(conflict.kind, conflict.templateKey, conflict.nodeId, conflict.knob, conflict.dimension, conflict.item, conflict.input, conflict.time);
+    };
+    std::set<std::string> present;
+    std::map<std::string, int> order;
+    walkTree(result.merged.nodes.nodes, &order);
+    for (const std::pair<const std::string, int>& entry : order) {
+        present.insert(entry.first);
+    }
+
+    std::set<Place> taken;
+    for (const MergeConflict& conflict : result.conflicts) {
+        taken.insert(placeOf(conflict));
+    }
+    std::vector<MergeConflict> saved;
+    std::vector<const std::vector<MergeConflict>*> earlier(1, &mine.mergeConflicts);
+    if (plan.templateKey.empty()) {
+        earlier.push_back(&theirs.mergeConflicts);
+    }
+    for (const std::vector<MergeConflict>* side : earlier) {
+        for (const MergeConflict& conflict : *side) {
+            const bool open = conflict.nodeId.empty() ? conflict.baseNodeId.empty() : present.count(conflict.nodeId) > 0;
+            if (open && taken.insert(placeOf(conflict)).second) {
+                saved.push_back(conflict);
+            }
+        }
+    }
+    saved.insert(saved.end(), result.conflicts.begin(), result.conflicts.end());
+
+    return saved;
 }
 
 } // namespace Serialization

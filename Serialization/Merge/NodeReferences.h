@@ -33,27 +33,39 @@ NATRON_NAMESPACE_ENTER
 namespace Serialization {
 
 /**
- * @brief Old script name to new script name, for nodes that were renamed.
+ * @brief Old script name to new script name, for nodes of one group that were renamed.
  **/
 typedef std::map<std::string, std::string> NodeRenames;
 
 /**
- * @brief expression with each reference to a renamed node rewritten. A reference is an identifier
- * followed by '.', as in Grade1.multiply or thisGroup.Grade1.multiply, so a variable that happens to
- * share a node's name is left alone.
+ * @brief Renames by the group the renamed nodes are children of, keyed by that group's fully
+ * qualified name before the renames: script names from the top level down, joined by '.', empty
+ * for the top level. Siblings only clash within a group, so a rename never reaches a namesake in
+ * another group.
  **/
-std::string renameNodesInExpression(std::string_view expression, const NodeRenames& renames);
+typedef std::map<std::string, NodeRenames> ScopedNodeRenames;
 
 /**
- * @brief Rewrites the node references of knobs: expressions, and the masters of links, which name
- * the node by script name and by fully qualified name.
+ * @brief expression, written by a node inside group, with each reference to a renamed node
+ * rewritten. A reference is a dotted chain of names, each followed by '.': it starts at a name of
+ * group's children, at thisGroup (group itself) or at app or appN (the top level), and each next
+ * name is a child of the node before it, as in Grade1.multiply or thisGroup.Group2.Blur1.size. A
+ * variable that happens to share a node's name, an attribute after another '.' and text inside a
+ * string literal are left alone.
  **/
-void renameNodeReferences(std::list<KnobSerialization>* knobs, const NodeRenames& renames);
+std::string renameNodesInExpression(std::string_view expression, const ScopedNodeRenames& renames, const std::string& group);
 
 /**
- * @brief renameNodeReferences() on the knobs of node and of every node inside it.
+ * @brief Rewrites the node references of the knobs of a node inside group: expressions, and the
+ * masters of links, which name the node by script name and by fully qualified name.
  **/
-void renameNodeReferencesRecursive(NodeSerialization* node, const NodeRenames& renames);
+void renameNodeReferences(std::list<KnobSerialization>* knobs, const ScopedNodeRenames& renames, const std::string& group);
+
+/**
+ * @brief renameNodeReferences() on the knobs of node, a child of group, and of every node inside
+ * it. Group names are taken from the nodes as they are, so call it before renaming them.
+ **/
+void renameNodeReferencesRecursive(NodeSerialization* node, const ScopedNodeRenames& renames, const std::string& group);
 
 } // namespace Serialization
 NATRON_NAMESPACE_EXIT

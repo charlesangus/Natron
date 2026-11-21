@@ -36,7 +36,10 @@ but this shot has no entry for them.
   - Adoption: an unmatched base node adopts an unmatched node that has no origin, when that node
     has the same plug-in, the same parent, and the same matched neighbours on the same input labels,
     upstream and downstream. Each must be the other's only candidate. Adoption repeats until nothing
-    more is adopted.
+    more is adopted. In a shot, a candidate must also be in the merge scope of the matches so far
+    (MatchedEnclosed, below), so an artist's branch next to the template is never adopted. The
+    template side (theirs) is a version of the template itself: its nodes match by their own IDs,
+    and their origins are not followed.
 - **NameBased.** Matches nodes by path, ignoring IDs and origins.
 
 ## Scores
@@ -142,6 +145,8 @@ delete-modify conflicts, as the corpus expects.
 **Recommendation:** count the recreated node as the same node, and mark it. The merge records each
 adopted pair (`NodeCorrespondence::adopted`), and the resolution UI can show "matched by position"
 for it, so the artist can split it into a delete-modify conflict.
+The merged snapshot gives each adopted node an origin naming the template node, so the next update
+of the same import matches it by identity.
 
 ## Scope rules
 

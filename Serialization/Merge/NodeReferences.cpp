@@ -19,6 +19,7 @@
 
 #include "Serialization/Merge/NodeReferences.h"
 
+#include <algorithm>
 #include <list>
 
 #include "Serialization/KnobSerialization.h"
@@ -42,20 +43,53 @@ namespace {
     }
 
     std::string
+    childPath(const std::string& group,
+              const std::string& name)
+    {
+        return group.empty() ? name : group + "." + name;
+    }
+
+    const std::string*
+    renamed(const ScopedNodeRenames& renames,
+            const std::string& group,
+            const std::string& name)
+    {
+        ScopedNodeRenames::const_iterator scope = renames.find(group);
+        if (scope == renames.end()) {
+            return nullptr;
+        }
+        NodeRenames::const_iterator found = scope->second.find(name);
+
+        return (found == scope->second.end()) ? nullptr : &found->second;
+    }
+
+    bool
+    namesTopLevel(const std::string& token)
+    {
+        if (token.compare(0, 3, "app") != 0) {
+            return false;
+        }
+
+        return std::all_of(token.begin() + 3, token.end(), [](char c) { return (c >= '0') && (c <= '9'); });
+    }
+
+    std::string
     renameInQualifiedName(const std::string& name,
-                          const NodeRenames& renames)
+                          const ScopedNodeRenames& renames)
     {
         std::string result;
+        std::string group;
         std::size_t start = 0;
         for (;;) {
             const std::size_t dot = name.find('.', start);
             const std::string part = name.substr(start, (dot == std::string::npos) ? std::string::npos : dot - start);
-            NodeRenames::const_iterator found = renames.find(part);
-            result += (found == renames.end()) ? part : found->second;
+            const std::string* found = renamed(renames, group, part);
+            result += found ? *found : part;
             if (dot == std::string::npos) {
                 return result;
             }
             result += '.';
+            group = childPath(group, part);
             start = dot + 1;
         }
     }
@@ -64,30 +98,70 @@ namespace {
 
 std::string
 renameNodesInExpression(std::string_view expression,
-                        const NodeRenames& renames)
+                        const ScopedNodeRenames& renames,
+                        const std::string& group)
 {
     if (renames.empty()) {
         return std::string(expression);
     }
+    const std::size_t size = expression.size();
     std::string result;
-    result.reserve(expression.size());
+    result.reserve(size);
     std::size_t i = 0;
-    while (i < expression.size()) {
+    while (i < size) {
         const char c = expression[i];
-        if (!isIdentifierStart(c)) {
+        if ((c == '\'') || (c == '"')) {
+            std::size_t end = i + 1;
+            while ((end < size) && (expression[end] != c)) {
+                end += (expression[end] == '\\') ? 2 : 1;
+            }
+            end = std::min(end + 1, size);
+            result.append(expression.substr(i, end - i));
+            i = end;
+            continue;
+        }
+        if (!isIdentifierStart(c) || ((i > 0) && isIdentifierChar(expression[i - 1]))) {
             result += c;
             ++i;
             continue;
         }
-        std::size_t end = i + 1;
-        while ((end < expression.size()) && isIdentifierChar(expression[end])) {
-            ++end;
+        // After a '.' that ends no chain, as in f().Grade1, the name is an attribute of a value.
+        bool references = (i == 0) || (expression[i - 1] != '.');
+        std::string scope = group;
+        bool first = true;
+        for (;;) {
+            std::size_t end = i + 1;
+            while ((end < size) && isIdentifierChar(expression[end])) {
+                ++end;
+            }
+            const std::string token(expression.substr(i, end - i));
+            const bool followed = (end < size) && (expression[end] == '.');
+            if (!followed || !references) {
+                result += token;
+                i = end;
+                if (!followed) {
+                    break;
+                }
+            } else {
+                if (first && (token == "thisGroup")) {
+                    result += token;
+                } else if (first && namesTopLevel(token)) {
+                    result += token;
+                    scope.clear();
+                } else {
+                    const std::string* found = renamed(renames, scope, token);
+                    result += found ? *found : token;
+                    scope = childPath(scope, token);
+                }
+                i = end;
+            }
+            result += '.';
+            ++i;
+            first = false;
+            if ((i >= size) || !isIdentifierStart(expression[i])) {
+                break;
+            }
         }
-        const std::string token(expression.substr(i, end - i));
-        NodeRenames::const_iterator found = renames.find(token);
-        const bool isReference = (end < expression.size()) && (expression[end] == '.');
-        result += (found != renames.end() && isReference) ? found->second : token;
-        i = end;
     }
 
     return result;
@@ -95,7 +169,8 @@ renameNodesInExpression(std::string_view expression,
 
 void
 renameNodeReferences(std::list<KnobSerialization>* knobs,
-                     const NodeRenames& renames)
+                     const ScopedNodeRenames& renames,
+                     const std::string& group)
 {
     if (renames.empty()) {
         return;
@@ -103,14 +178,16 @@ renameNodeReferences(std::list<KnobSerialization>* knobs,
     for (KnobSerialization& knob : *knobs) {
         for (KnobDimensionSerialization& dim : knob.dimensions) {
             if (!dim.expression.empty()) {
-                dim.expression = renameNodesInExpression(dim.expression, renames);
+                dim.expression = renameNodesInExpression(dim.expression, renames, group);
             }
             if (dim.master) {
-                NodeRenames::const_iterator found = renames.find(dim.master->masterNodeName);
-                if (found != renames.end()) {
-                    dim.master->masterNodeName = found->second;
+                const std::string& full = dim.master->masterNodeNameFull;
+                const std::size_t dot = full.rfind('.');
+                const std::string masterGroup = full.empty() ? group : ((dot == std::string::npos) ? std::string() : full.substr(0, dot));
+                if (const std::string* found = renamed(renames, masterGroup, dim.master->masterNodeName)) {
+                    dim.master->masterNodeName = *found;
                 }
-                dim.master->masterNodeNameFull = renameInQualifiedName(dim.master->masterNodeNameFull, renames);
+                dim.master->masterNodeNameFull = renameInQualifiedName(full, renames);
             }
         }
     }
@@ -118,11 +195,13 @@ renameNodeReferences(std::list<KnobSerialization>* knobs,
 
 void
 renameNodeReferencesRecursive(NodeSerialization* node,
-                              const NodeRenames& renames)
+                              const ScopedNodeRenames& renames,
+                              const std::string& group)
 {
-    renameNodeReferences(&node->knobs, renames);
+    renameNodeReferences(&node->knobs, renames, group);
+    const std::string inside = childPath(group, node->scriptName);
     for (const NodeSerializationPtr& child : node->children) {
-        renameNodeReferencesRecursive(child.get(), renames);
+        renameNodeReferencesRecursive(child.get(), renames, inside);
     }
 }
 

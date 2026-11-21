@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <ctime>
 #include <exception>
 #include <filesystem>
 #include <iostream>
@@ -34,6 +35,7 @@
 #include "Serialization/Bundle/ProjectBundle.h"
 #include "Serialization/Merge/ThreeWayMerge.h"
 #include "Serialization/Ops/SnapshotDiff.h"
+#include "Serialization/Sha256.h"
 #include "Serialization/Yaml/BlobSink.h"
 #include "Serialization/Yaml/GraphOpYaml.h"
 #include "Serialization/Yaml/ManifestYaml.h"
@@ -47,6 +49,7 @@ namespace {
 
 constexpr int kExitClean = 0;
 constexpr int kExitConflicts = 1;
+constexpr int kExitDiffers = 1;
 constexpr int kExitError = 2;
 
 const char* const kUsage = "usage:\n"
@@ -67,6 +70,8 @@ public:
 
 struct LoadedProject {
     ProjectSerialization project;
+    // The SHA-256 of the bundle's project.yaml, or empty for an empty file.
+    std::string contentHash;
     // The folder the bundle's members sit under, without the trailing '/'.
     std::string root;
     BundleManifest manifest;
@@ -90,6 +95,7 @@ load(const std::string& path)
     const ProjectBundleReader reader(path);
     YamlWarnings warnings;
     loaded.project = reader.readProject(&warnings);
+    loaded.contentHash = sha256Hex(reader.projectYaml());
     for (const std::string& warning : warnings) {
         std::cerr << "natron-merge: " << path << ": " << warning << "\n";
     }
@@ -100,6 +106,19 @@ load(const std::string& path)
     loaded.manifest = reader.manifest();
 
     return loaded;
+}
+
+// The time now as ISO 8601 in UTC, as a template import records it.
+std::string
+utcNow()
+{
+    const std::time_t now = std::time(nullptr);
+    std::tm utc {};
+    gmtime_r(&now, &utc);
+    char text[32];
+    std::strftime(text, sizeof(text), "%Y-%m-%dT%H:%M:%SZ", &utc);
+
+    return std::string(text);
 }
 
 // Replaces path only once the whole bundle is written, so a failed merge leaves the old file.
@@ -215,24 +234,26 @@ runMerge(const std::string& basePath,
     const LoadedProject mine = load(minePath);
     const LoadedProject theirs = load(theirsPath);
     MergePlan plan;
+    MergeOptions options;
     if (templateKey) {
+        const bool imported = std::any_of(mine.project.templates.begin(), mine.project.templates.end(), [&](const TemplateImportSerialization& entry) { return entry.key == *templateKey; });
+        if (!imported) {
+            throw std::runtime_error(minePath + ": no template import has the key " + *templateKey);
+        }
         plan = planMerge(base.project, mine.project, theirs.project, *templateKey);
+        std::error_code error;
+        const std::filesystem::path absolute = std::filesystem::absolute(theirsPath, error);
+        options.templatePath = error ? theirsPath : absolute.lexically_normal().string();
+        options.templateContentHash = theirs.contentHash;
+        options.templateImportedAt = utcNow();
     } else {
         plan = planProjectMerge(base.project, mine.project, theirs.project);
         if (!base.project.nodes.nodes.empty() && plan.baseToMine.baseToOther.empty()) {
             std::cerr << "natron-merge: no node of " << basePath << " is in " << minePath << "; to update a template import, pass --scope template:<key>\n";
         }
     }
-    MergeResult result = threeWayMerge(base.project, mine.project, theirs.project, plan);
-    const std::string key = templateKey ? *templateKey : std::string();
-    std::vector<MergeConflict> kept;
-    for (const MergeConflict& conflict : result.merged.mergeConflicts) {
-        if (conflict.templateKey != key) {
-            kept.push_back(conflict);
-        }
-    }
-    kept.insert(kept.end(), result.conflicts.begin(), result.conflicts.end());
-    result.merged.mergeConflicts = kept;
+    MergeResult result = threeWayMerge(base.project, mine.project, theirs.project, plan, options);
+    result.merged.mergeConflicts = conflictsToSave(mine.project, theirs.project, plan, result);
     save(result.merged, root.empty() ? mine.root : root, mine.manifest, outPath);
     for (const MergeConflict& conflict : result.conflicts) {
         std::cerr << "natron-merge: conflict: " << describeConflict(conflict, base.project, result.merged) << "\n";
@@ -272,7 +293,7 @@ diffCommand(const std::vector<std::string>& args)
         std::cout << MergeTool::printDiff(before, after, ops);
     }
 
-    return ops.empty() ? kExitClean : 1;
+    return ops.empty() ? kExitClean : kExitDiffers;
 }
 
 int

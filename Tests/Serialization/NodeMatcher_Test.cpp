@@ -38,6 +38,7 @@
 
 #include "Serialization/Merge/MergeScope.h"
 #include "Serialization/Merge/NodeMatcher.h"
+#include "Serialization/Merge/ThreeWayMerge.h"
 
 NATRON_NAMESPACE_USING
 using namespace MergeScenarios;
@@ -185,7 +186,7 @@ TEST(NodeMatcher, MatchesAndScopesEveryScenarioAsExpected)
             table << std::setw(44) << (scenario.first + " [" + merge.templateKey + "]");
             for (std::size_t i = 0; i < strategies.size(); ++i) {
                 const Score mineScore = score(base, mine, strategies[i].second(base, mine, merge.templateKey), merge.baseMine);
-                const Score theirsScore = score(base, theirs, strategies[i].second(base, theirs, merge.templateKey), merge.baseTheirs);
+                const Score theirsScore = score(base, theirs, strategies[i].second(base, theirs, std::string()), merge.baseTheirs);
                 std::ostringstream cell;
                 cell << mineScore.correct << "/" << (mineScore.correct + mineScore.wrong + mineScore.missing) << "  " << theirsScore.correct << "/" << (theirsScore.correct + theirsScore.wrong + theirsScore.missing);
                 table << " | " << std::setw(22) << cell.str();
@@ -231,28 +232,56 @@ TEST(NodeMatcher, MatchingIgnoresTheOrderNodesAreListedIn)
     }
 }
 
-TEST(NodeMatcher, RecordedAdoptionsMatchByIdentityNextTime)
+TEST(NodeMatcher, MergedAdoptionsMatchByIdentityNextTime)
 {
     const Scenario scenario = scenarios().at("delete-recreate-grade");
     const Serialization::ProjectSerialization baseProject = scenario.base.project();
-    Serialization::ProjectSerialization mineProject = scenario.mine.project();
+    const Serialization::ProjectSerialization mineProject = scenario.mine.project();
+    const Serialization::ProjectSerialization theirsProject = scenario.theirs.project();
     const Serialization::MergeGraph base(baseProject);
     const Serialization::NodeCorrespondence first = Serialization::matchNodes(base, Serialization::MergeGraph(mineProject), "grade_tpl");
     const std::string grade = hexId("b:Grade1");
     ASSERT_EQ(first.otherFor(grade), hexId("m:new"));
     EXPECT_EQ(first.adopted.count(hexId("m:new")), 1u);
 
-    Serialization::recordAdoptions(first, "grade_tpl", &mineProject);
-    Serialization::NodeSerializationPtr adopted = Serialization::findNodeSerialization(mineProject.nodes.nodes, hexId("m:new"));
+    Serialization::MergeResult result = Serialization::threeWayMerge(baseProject, mineProject, theirsProject, Serialization::planMerge(baseProject, mineProject, theirsProject, "grade_tpl"));
+    Serialization::NodeSerializationPtr adopted = Serialization::findNodeSerialization(result.merged.nodes.nodes, hexId("m:new"));
     ASSERT_TRUE(adopted != nullptr);
     EXPECT_EQ(adopted->origin.templateKey, "grade_tpl");
     EXPECT_EQ(adopted->origin.nodeId, grade);
 
     // Rewired away from the template's chain, the node still matches: it now has an identity.
     adopted->inputs.clear();
-    const Serialization::NodeCorrespondence second = Serialization::matchNodes(base, Serialization::MergeGraph(mineProject), "grade_tpl");
+    const Serialization::NodeCorrespondence second = Serialization::matchNodes(Serialization::MergeGraph(theirsProject), Serialization::MergeGraph(result.merged), "grade_tpl");
     EXPECT_EQ(second.otherFor(grade), hexId("m:new"));
     EXPECT_TRUE(second.adopted.empty());
+}
+
+TEST(NodeMatcher, AnArtistBranchNextToTheTemplateIsNeverAdopted)
+{
+    // The template's Constant1 is gone from the shot, and the artist's own Constant feeds Merge1.A
+    // in its place: it has the right plug-in and neighbours, but nothing of the template feeds it.
+    Scenario scenario = scenarios().at("reconnect");
+    scenario.mine.remove("Constant1");
+    const Serialization::ProjectSerialization baseProject = scenario.base.project();
+    const Serialization::ProjectSerialization mineProject = scenario.mine.project();
+    const Serialization::NodeCorrespondence match = Serialization::matchNodes(Serialization::MergeGraph(baseProject), Serialization::MergeGraph(mineProject), "grade_tpl");
+    EXPECT_TRUE(match.otherFor(hexId("b:Constant1")).empty());
+    EXPECT_TRUE(match.adopted.empty());
+}
+
+TEST(NodeMatcher, TheTemplateSideNeverFollowsOrigins)
+{
+    // A revised template whose node carries an origin naming the key still matches by its own ID.
+    Scenario scenario = templateScenario();
+    scenario.theirs.get("Grade1").originKey = "grade_tpl";
+    scenario.theirs.get("Grade1").originNode = hexId("b:Blur1");
+    const Serialization::ProjectSerialization baseProject = scenario.base.project();
+    const Serialization::ProjectSerialization mineProject = scenario.mine.project();
+    const Serialization::ProjectSerialization theirsProject = scenario.theirs.project();
+    const Serialization::MergePlan plan = Serialization::planMerge(baseProject, mineProject, theirsProject, "grade_tpl");
+    EXPECT_EQ(plan.baseToTheirs.otherFor(hexId("b:Grade1")), hexId("b:Grade1"));
+    EXPECT_EQ(plan.baseToTheirs.otherFor(hexId("b:Blur1")), hexId("b:Blur1"));
 }
 
 TEST(NodeMatcher, AnOriginNamingAnotherImportIsNeverAdopted)

@@ -25,8 +25,10 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -139,6 +141,111 @@ TEST(StructuralMerge, NodeExistence)
             EXPECT_EQ(Serialization::mergeConflictKindName(result.conflicts.front().kind), c.conflict);
             EXPECT_EQ(result.conflicts.front().side, c.side);
         }
+    }
+}
+
+// The template with Blur1 in a group Look, imported, on every side.
+Scenario
+groupedScenario()
+{
+    Scenario scenario = templateScenario();
+    wrapIntoGroup(&scenario.base, "Look", "b:", false);
+    wrapIntoGroup(&scenario.theirs, "Look", "b:", false);
+    wrapIntoGroup(&scenario.mine, "Look", "m:", false);
+    for (const std::pair<std::string, std::string>& node : std::vector<std::pair<std::string, std::string>>({ { "Look", "" }, { "InB", "Look" }, { "LookOut", "Look" } })) {
+        SimNode& imported = scenario.mine.get(node.first, node.second);
+        imported.originKey = "grade_tpl";
+        imported.originNode = hexId("b:" + (node.second.empty() ? node.first : node.second + "." + node.first));
+    }
+
+    return scenario;
+}
+
+void
+removeGroup(SimGraph* graph,
+            const std::string& group)
+{
+    graph->remove(group);
+    graph->nodes.erase(std::remove_if(graph->nodes.begin(), graph->nodes.end(), [&](const SimNode& node) { return node.parent == group; }), graph->nodes.end());
+}
+
+const Serialization::MergeConflict*
+conflictOn(const Serialization::MergeResult& result,
+           Serialization::MergeConflictKind kind,
+           const std::string& baseNodeId)
+{
+    for (const Serialization::MergeConflict& conflict : result.conflicts) {
+        if ((conflict.kind == kind) && (conflict.baseNodeId == baseNodeId)) {
+            return &conflict;
+        }
+    }
+
+    return nullptr;
+}
+
+TEST(StructuralMerge, AGroupMineDeletedComesBackWithTheirsAdditionInside)
+{
+    Scenario scenario = groupedScenario();
+    removeGroup(&scenario.mine, "Look");
+    scenario.theirs.add("Sharpen", "Sharpen", "t:Sharpen", { { "Source", "Blur1" } }, "Look");
+    scenario.theirs.get("LookOut", "Look").inputs = { { "Source", "Sharpen" } };
+    const Serialization::MergeResult result = Projects(scenario).merge();
+    EXPECT_TRUE(nodeAt(result.merged, "Look") != nullptr);
+    EXPECT_TRUE(nodeAt(result.merged, "Look.Sharpen") != nullptr);
+    EXPECT_EQ(inputOf(result.merged, "Look.LookOut", "Source"), "Sharpen");
+    const Serialization::MergeConflict* conflict = conflictOn(result, Serialization::MergeConflictKind::eDeleteModify, hexId("b:Look"));
+    ASSERT_TRUE(conflict != nullptr);
+    EXPECT_EQ(conflict->side, Serialization::MergeSide::eMine);
+}
+
+TEST(StructuralMerge, AGroupTheirsDeletedStaysWithTheArtistsNodesInside)
+{
+    Scenario scenario = groupedScenario();
+    removeGroup(&scenario.theirs, "Look");
+    scenario.theirs.get("Merge1").inputs["B"] = "Grade1";
+    scenario.mine.add("ArtistSharpen", "Sharpen", "m:ArtistSharpen", { { "Source", "Blur1" } }, "Look");
+    scenario.mine.get("LookOut", "Look").inputs = { { "Source", "ArtistSharpen" } };
+    const Serialization::MergeResult result = Projects(scenario).merge();
+    EXPECT_TRUE(nodeAt(result.merged, "Look") != nullptr);
+    EXPECT_TRUE(nodeAt(result.merged, "Look.ArtistSharpen") != nullptr);
+    EXPECT_TRUE(nodeAt(result.merged, "Look.Blur1") != nullptr);
+    EXPECT_TRUE(nodeAt(result.merged, "ArtistSharpen") == nullptr);
+    EXPECT_EQ(inputOf(result.merged, "Look.ArtistSharpen", "Source"), "Blur1");
+    const Serialization::MergeConflict* conflict = conflictOn(result, Serialization::MergeConflictKind::eDeleteModify, hexId("b:Look"));
+    ASSERT_TRUE(conflict != nullptr);
+    EXPECT_EQ(conflict->side, Serialization::MergeSide::eTheirs);
+}
+
+TEST(StructuralMerge, AnInsertFedByANodeTheirsDeletedTakesItsReplacement)
+{
+    {
+        Scenario scenario = templateScenario();
+        insertBefore(&scenario.mine, "ArtistCC", "ColorCorrect", "m:ArtistCC", "Blur1", "Source");
+        scenario.theirs.remove("Grade1");
+        scenario.theirs.get("Blur1").inputs["Source"] = "TplIn";
+        const Serialization::MergeResult result = Projects(scenario).merge();
+        EXPECT_TRUE(nodeAt(result.merged, "Grade1") == nullptr);
+        EXPECT_EQ(inputOf(result.merged, "Blur1", "Source"), "ArtistCC");
+        EXPECT_EQ(inputOf(result.merged, "ArtistCC", "Source"), "TplIn");
+        for (const Serialization::MergeConflict& conflict : result.conflicts) {
+            EXPECT_NE(conflict.kind, Serialization::MergeConflictKind::eInput);
+        }
+    }
+    {
+        // Merge1 had two inputs, so nothing says which one the insert after it should take.
+        Scenario scenario = templateScenario();
+        insertBefore(&scenario.mine, "ArtistCC", "ColorCorrect", "m:ArtistCC", "ColorCorrect1", "Source");
+        scenario.theirs.remove("Merge1");
+        const Serialization::MergeResult result = Projects(scenario).merge();
+        EXPECT_TRUE(nodeAt(result.merged, "Merge1") == nullptr);
+        Serialization::NodeSerializationPtr inserted = nodeAt(result.merged, "ArtistCC");
+        ASSERT_TRUE(inserted != nullptr);
+        EXPECT_EQ(inputOf(result.merged, "ArtistCC", "Source"), "");
+        bool reported = false;
+        for (const Serialization::MergeConflict& conflict : result.conflicts) {
+            reported = reported || ((conflict.kind == Serialization::MergeConflictKind::eInput) && (conflict.nodeId == inserted->id) && (conflict.input == "Source"));
+        }
+        EXPECT_TRUE(reported);
     }
 }
 

@@ -90,7 +90,6 @@ uniqueTemplateKey(const std::string& stem,
     }
 }
 
-// Grade1 is taken, so Grade2, then Grade3; TplIn becomes TplIn2.
 std::string
 uniqueScriptName(const std::string& name,
                  const NodeCollectionPtr& group,
@@ -206,7 +205,8 @@ Project::importTemplate(const QString& filePath,
     for (const Serialization::NodeSerializationPtr& node : imported.nodes.nodes) {
         nodes.push_back(Serialization::OpsDetail::deepCopyNode(*node));
     }
-    Serialization::NodeRenames renames;
+    Serialization::ScopedNodeRenames scoped;
+    Serialization::NodeRenames& renames = scoped[std::string()];
     std::set<std::string> picked;
     for (const Serialization::NodeSerializationPtr& node : nodes) {
         const std::string name = uniqueScriptName(node->scriptName, target, picked);
@@ -216,7 +216,7 @@ Project::importTemplate(const QString& filePath,
         }
     }
     for (const Serialization::NodeSerializationPtr& node : nodes) {
-        Serialization::renameNodeReferencesRecursive(node.get(), renames);
+        Serialization::renameNodeReferencesRecursive(node.get(), scoped, std::string());
         for (std::pair<const std::string, std::string>& input : node->inputs) {
             Serialization::NodeRenames::const_iterator found = renames.find(input.second);
             if (found != renames.end()) {

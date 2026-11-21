@@ -99,7 +99,7 @@ From the first valid baseline (VM, cloud-gpu-20261117T045608Z) and its sampled I
   - approach: `viewer.connectInput` → `InspectorNode::refreshActiveInputs` → `onKnobValueChanged_public` → `ParallelRenderArgsSetter` → `GPUContextPool::attachGLContextToRender` creates a GLX context on the main thread. Time the connect substeps, then create the context ahead of time or skip it for setters triggered by a knob change.
   - verify: `open_stall_ms` and populate_full `stall_ms` ≤100 on all four scenes (now 200-260).
   - size: M
-- [ ] M336.P3.T6 — pattern_node and panel reads off the main thread
+- [x] M336.P3.T6 — pattern_node and panel reads off the main thread
   - files: `Gui/SceneGraphModel.cpp` (~1003-1106), the viewer input switch
   - approach: sample the synchronous viewer reconnect (683-700 ms on Lobby and Island) and fix what it shows. Gather `readEdits` and `readPrimData` on a worker.
   - verify: `pattern_node_stall_ms` ≤100 everywhere (610-735); flat `inspect_stall_ms` ≤100 (121.5).
@@ -111,7 +111,7 @@ From the first valid baseline (VM, cloud-gpu-20261117T045608Z) and its sampled I
   - round 9: the reset part (1.1 s flat, 0.94 s Lobby) is `SceneGraphModel::resetTo` destroying the item tree on the main thread (via `SceneGraphPanel::releaseNodeStages`); move it to the teardown worker.
   - size: M
 
-- [ ] M336.P3.T9 — Island load_all memory under admission
+- [x] M336.P3.T9 — Island load_all memory under admission
   - files: `Engine/Nodes/Scene/SceneDrawFilter.cpp` (~912-1015, 1259-1335, 1610-1640)
   - approach: round 9 killed Island-loaded load_all at ~89 GiB RSS (round 8: 20 GB); the render thread sat in `sendChanges` → `_SendPrimsAdded`. Find what each admit batch re-announces (prims already in Hydra, instancer masks over 30.9M instances); send dirties, not re-adds. Also the reveal_load_all stall (45 → 200 ms) now that loads join the fill queue.
   - verify: city-loaded and Island-loaded load_all RSS within ~10% of round 8; reveal_load_all stall ≤100.
@@ -245,3 +245,16 @@ From the first valid baseline (VM, cloud-gpu-20261117T045608Z) and its sampled I
   - Open/populate at 100–122 goes to the user. Fixes dispatched: no 2D flip on an empty input, a structural layout-kept test with deferred viewer deletion, and the bench's load-settle, poll timer and sampler.
 - 2026-11-20 — **Open and populate at 100–122 ms are within tolerance (user):** flat open 100.8, populate city-loaded 122.4 and Island-loaded 106.7 count as met. With orbit10k already met, P3.T10 is met. What remains: pattern_node (P3.T6), reopen (P3.T7) and the city load_all re-measure (P3.T9).
 - 2026-11-21 — The df10e4a65 no-flip change broke scene_viewer_flip and scene_graph_follow. An empty input reported Image, so a later 2D input sent no kind change, and the Scene Graph panel didn't re-pick its source. Fixed in e282175d4: the viewer also signals when input A connects or disconnects, and the panel re-applies its source on every viewed-node change. Gate green (release, ctest 916/916, all 24 scene GUI scripts, symbols). Round 14 launched on the same 3090 host class as round 13 (offer 47687661).
+- 2026-11-21 — **Round 14** (RTX 3090, e282175d4 with symbols, cloud-gpu-20261121T060139Z; driver consistent, no API mismatch): 18 pass / 6 fail.
+  - **Met:**
+    - pattern_node: flat 24.6, city 36.2, Lobby 30.1, Island 22.6 (P3.T6).
+    - city load_all 57.4 at 13.07 GB, measured validly (the load edit came 4.6 s in and settled after 89.7 s); reveal_load_all 53.8 (P3.T9).
+    - Island-loaded reveal_wide 39.4.
+  - **Tolerated:** populate city-loaded 115.7 and Island-loaded 116.4. **Waived:** Island-loaded draw_budget 148 (M481).
+  - **Fails:** reopen flat 395, city 217, Lobby 1264, Island 641 (P3.T7; Lobby and Island are worse than round 13). Flat open was 170.1 in one run (95.0 sampled, no stacks).
+  - **Samples:**
+    - Every reset still rebuilds the layout: the structural kept test never matches, so flat reopen runs wipeLayout.
+    - The deferred ~ViewerTab destroys the SceneViewport's QOpenGLContext on the main thread, where the VAO teardown creates a pbuffer (glXCreatePbuffer, 3 of 4 Lobby samples).
+    - The new viewer's ViewerHandoff interop probe also costs time.
+  - **Next:** log the structure difference, release or reuse the viewer GL context off the reopen path, cache the handoff path, then round 15.
+

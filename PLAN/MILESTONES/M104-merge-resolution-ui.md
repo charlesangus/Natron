@@ -39,7 +39,7 @@ M103's P1.T4 decision before starting.
   - verify: compiled at P1.T3. Exercised by the P4.T1 GUI test: undo after Update from Template restores the pre-merge graph exactly.
   - size: M
 
-- [ ] M104.P1.T3 — Phase 104.1 build and test checkpoint
+- [x] M104.P1.T3 — Phase 104.1 build and test checkpoint
   - files: none
   - approach: `NATRON_BUILD_JOBS=4 tools/ci/local/build.sh debug`, then `tools/ci/local/test.sh ctest debug`.
   - verify: green. The build is required.

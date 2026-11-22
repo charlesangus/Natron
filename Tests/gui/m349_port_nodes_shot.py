@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd
 
 try:
     import NatronEngine
+    import NatronGui
     import guitest as gt
     from PySide6.QtCore import QEvent, QMetaObject, Qt
     from PySide6.QtGui import QKeyEvent
@@ -76,7 +77,7 @@ try:
         after = pane.size()
         gt.report("NOTE node graph pane %dx%d -> %dx%d" % (before.width(), before.height(), after.width(), after.height()))
         gt.check(after.width() > before.width() and after.height() > before.height(), "the node graph pane is maximised")
-        app.clearSelection(app)
+        NatronGui.natron.getGuiInstance(app.getAppID()).clearSelection()
         QMetaObject.invokeMethod(g, "centerOnAllNodes")
         yield ("sleep", 600)
         # centerOnAllNodes stops at 1:1; zoom past it so the port names read at 1920x1080.

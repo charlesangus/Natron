@@ -30,6 +30,8 @@
 #include <string>
 #include <vector>
 
+#include <openvdb/Grid.h>
+
 #include <SequenceParsing.h>
 
 #include "Engine/AppInstance.h"

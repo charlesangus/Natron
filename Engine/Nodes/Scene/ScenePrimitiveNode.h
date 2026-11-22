@@ -126,6 +126,17 @@ private:
                                    ScenePayload* outputScene,
                                    std::string* errorMessage) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    virtual SceneEvaluationContext getSceneInputContext(int inputNb,
+                                                        const SceneEvaluationContext& ctx,
+                                                        double time,
+                                                        ViewIdx view) const OVERRIDE FINAL;
+
+    virtual void mapSceneInputReach(int inputNb,
+                                    double time,
+                                    ViewIdx view,
+                                    const std::vector<std::string>& in,
+                                    std::vector<std::string>* out) const OVERRIDE FINAL;
+
     bool authorLayer(const SceneLayerEdit& edit,
                      const SceneMaterialGraft& graft,
                      std::string* errorMessage) const;
@@ -134,7 +145,8 @@ private:
     KnobBoolWPtr _doubleSided;
     SceneTransformKnobs _transform;
     KnobDoubleWPtr _pivot;
-    SceneGraftMemo _graftMemo;
+    // Mutable for mapSceneInputReach(), which reads what the last graft of a context named.
+    mutable SceneGraftMemo _graftMemo;
 };
 
 NATRON_NAMESPACE_EXIT

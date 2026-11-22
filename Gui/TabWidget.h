@@ -312,6 +312,8 @@ public Q_SLOTS:
 
     void moveSceneGraphHere();
 
+    void newSceneGraphHere();
+
     void onSplitHorizontally()
     {
         splitHorizontally();

@@ -1906,7 +1906,7 @@ USDWrite::writeFrameRange(int firstFrame,
         std::vector<PXR_NS::SdfLayerRefPtr> open;
         for (const QString& path : paths) {
             const PXR_NS::SdfLayerHandle layer = PXR_NS::SdfLayer::Find(path.toStdString());
-            if (layer) {
+            if (layer && !SceneOps::isStalePendingLayer(PXR_NS::SdfLayerRefPtr(layer))) {
                 open.push_back(PXR_NS::SdfLayerRefPtr(layer));
             }
         }

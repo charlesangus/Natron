@@ -36,6 +36,8 @@ GpuKernelRegistry::GpuKernelRegistry(GpuDevice& device)
 
 GpuKernelRegistry::~GpuKernelRegistry()
 {
+    // Retiring work runs out of the command pools and ends its recording here once reaped.
+    device_.finishRetiring();
     std::lock_guard<std::mutex> lock(mutex_);
     slots_.clear();
     destroyPoolsLocked();
@@ -142,6 +144,7 @@ void
 GpuKernelRegistry::destroyPoolsLocked()
 {
     // A command buffer of work that never finished may still be executing out of one of these pools.
+    retiredCommandBuffers_.clear();
     if (device_.hasAbandonedWork()) {
         pools_.clear();
         return;
@@ -155,6 +158,7 @@ GpuKernelRegistry::destroyPoolsLocked()
 void
 GpuKernelRegistry::invalidate()
 {
+    device_.finishRetiring();
     std::lock_guard<std::mutex> lock(mutex_);
     for (Slot& slot : slots_) {
         slot.kernel.reset();
@@ -183,7 +187,26 @@ GpuKernelRegistry::commandPoolForThisThread(VkCommandPool& out, QueueKind queue)
         it = pools_.emplace(key, pool).first;
     }
     out = it->second;
+    for (auto r = retiredCommandBuffers_.begin(); r != retiredCommandBuffers_.end();) {
+        if ((r->pool != out) || !r->done->load(std::memory_order_acquire)) {
+            ++r;
+            continue;
+        }
+        vkFreeCommandBuffers(device_.device(), r->pool, static_cast<uint32_t>(r->buffers.size()), r->buffers.data());
+        r = retiredCommandBuffers_.erase(r);
+    }
     return {};
+}
+
+void
+GpuKernelRegistry::retireCommandBuffers(VkCommandPool pool, std::vector<VkCommandBuffer> buffers,
+                                        std::shared_ptr<std::atomic<bool>> done)
+{
+    if (buffers.empty()) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    retiredCommandBuffers_.push_back({ pool, std::move(buffers), std::move(done) });
 }
 
 void

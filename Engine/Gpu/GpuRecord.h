@@ -212,6 +212,11 @@ public:
     // destroyed.
     void waitExternalSemaphore(VkSemaphore semaphore);
 
+    // Makes submit() and submitAndWait() also wait for `value`, a timeline semaphore value that may be signalled
+    // later, before any command of the context runs. The caller keeps the semaphore alive, through hold(), until the
+    // context is destroyed.
+    void waitTimeline(TimelineValue value);
+
     // Keeps `object` alive until the context is destroyed, or for good when the device is lost with the
     // context's work in flight.
     void hold(std::shared_ptr<void> object);
@@ -264,16 +269,19 @@ public:
     // Work still running after timeoutNs fails at once with VK_ERROR_DEVICE_LOST, through
     // GpuDevice::abandonInFlightWork(): what the context holds is parked, and the buffers the caller bound are not
     // freed when it destroys them, so the work never writes released memory. A split context applies timeoutNs to
-    // each command buffer; when `stop` returns true between them, it fails with VK_INCOMPLETE and none of its work
-    // is left on the device.
+    // each command buffer. `stop` is asked between command buffers and every 20 ms of a wait; once it returns
+    // true the call fails with VK_INCOMPLETE. A command buffer already submitted is then left to finish: the device
+    // keeps it, its fence and everything the context holds until it does (GpuDevice::retireWhenSignalled()), and the
+    // pooled buffers, buffers and textures the caller releases meanwhile are neither reused nor freed before then.
+    // Later work on the queue runs after it, and the device is not treated as lost.
     GpuStatus submitAndWait(uint64_t timeoutNs = 30'000'000'000ull, const std::function<bool()>& stop = {});
 
     // Ends the buffer and submits it once every wait is reached, signalling `signal` when it is done. The context
     // holds the command buffer and its scratch buffers, so it must not be destroyed before `signal` is reached.
     // Only a split context blocks: until all its command buffers but the last have finished, one at a time. When
-    // `stop` returns true between them it fails with VK_INCOMPLETE, `signal` is never signalled, and none of its work
-    // is left on the device. An aborted context submits the waits and the signal alone, so `signal` is still
-    // reached, and returns GpuStatus::aborted.
+    // `stop` returns true meanwhile it fails with VK_INCOMPLETE and `signal` is never signalled; a command buffer
+    // already submitted is left to finish as submitAndWait() leaves one. An aborted context submits the waits and
+    // the signal alone, so `signal` is still reached, and returns GpuStatus::aborted.
     GpuStatus submit(std::span<const TimelineValue> waits, TimelineValue signal, const std::function<bool()>& stop = {});
 
 private:
@@ -286,7 +294,11 @@ private:
                               GpuBufferPool* pool, GpuPipelineCache* pipelines, GpuTextureCache* textures);
     GpuStatus beginCommandBuffer(VkCommandBuffer& out);
     // A null `cmd` submits the waits alone.
-    GpuStatus submitFenced(VkCommandBuffer cmd, std::span<const VkSemaphoreSubmitInfo> waits, uint64_t timeoutNs);
+    GpuStatus submitFenced(VkCommandBuffer cmd, std::span<const VkSemaphoreSubmitInfo> waits, uint64_t timeoutNs,
+                           const std::function<bool()>& stop);
+    // Hands the submitted work behind `fence`, and everything the context holds, to GpuDevice::retireWhenSignalled().
+    void retireWork(VkFence fence);
+    std::shared_ptr<void> takeHoldings(std::shared_ptr<void> finalizer);
     GpuStatus waitBeforeBatches(std::span<const TimelineValue> waits, uint64_t timeoutNs, const std::function<bool()>& stop);
     GpuStatus runBatchesBeforeLast(std::span<const VkSemaphoreSubmitInfo> waits, uint64_t timeoutNs, const std::function<bool()>& stop);
     void abandonWork(const char* what);
@@ -327,12 +339,15 @@ private:
     std::vector<std::shared_ptr<GpuKernel>> kernels_;
     std::vector<std::shared_ptr<void>> heldObjects_;
     std::vector<VkSemaphore> externalWaits_;
+    std::vector<TimelineValue> timelineWaits_;
     VkCommandPool pool_ = VK_NULL_HANDLE;
     VkCommandBuffer cmd_ = VK_NULL_HANDLE;
     std::vector<FinishedBatch> finished_;
     uint64_t work_ = 0;
     bool open_ = false;
     bool outOfMemory_ = false;
+    // The work was handed to the device to retire, which ends the registry's recording for it.
+    bool retired_ = false;
 
     const QueueKind queue_;
     std::function<bool()> abortCheck_;

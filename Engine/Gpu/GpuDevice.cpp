@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -751,6 +752,20 @@ GpuDevice::~GpuDevice()
     }
     if (device_ != VK_NULL_HANDLE) {
         vkDeviceWaitIdle(device_);
+        reap(true);
+        std::vector<std::shared_ptr<void>> released;
+        {
+            std::lock_guard<std::mutex> lock(retiringMutex_);
+            for (Retiring& r : retiring_) {
+                vkDestroyFence(device_, r.fence, nullptr);
+                released.push_back(std::move(r.holdings));
+                for (std::shared_ptr<void>& d : r.deferred) {
+                    released.push_back(std::move(d));
+                }
+            }
+            retiring_.clear();
+            retiringCount_.store(0, std::memory_order_release);
+        }
     }
     if (allocator_) {
         vmaDestroyAllocator(allocator_);
@@ -856,6 +871,7 @@ GpuDevice::drainQueues()
         return;
     }
     waitIdleLocked();
+    reap(true);
 }
 
 void
@@ -863,7 +879,173 @@ GpuDevice::abandonInFlightWork(const char* what)
 {
     // Set before the loss is latched, so that whoever sees the loss also sees there is nothing to drain.
     abandoned_.store(true, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(retiringMutex_);
+        parkRetiringLocked();
+    }
     check(VK_ERROR_DEVICE_LOST, what);
+}
+
+namespace {
+    // Set while a reap releases holdings: what they release is used by no retiring work, so it is not deferred.
+    thread_local bool tReaping = false;
+
+    constexpr uint64_t kRetiringTimeoutNs = 30'000'000'000ull;
+}
+
+void
+GpuDevice::parkRetiringLocked()
+{
+    for (Retiring& r : retiring_) {
+        parkForever(std::move(r.holdings));
+        for (std::shared_ptr<void>& d : r.deferred) {
+            parkForever(std::move(d));
+        }
+    }
+    retiring_.clear();
+    retiringCount_.store(0, std::memory_order_release);
+}
+
+void
+GpuDevice::retireWhenSignalled(VkFence fence, std::shared_ptr<void> holdings)
+{
+    std::lock_guard<std::mutex> lock(retiringMutex_);
+    if (hasAbandonedWork()) {
+        parkForever(std::move(holdings));
+        return;
+    }
+    Retiring r;
+    r.serial = ++nextRetiringSerial_;
+    r.fence = fence;
+    r.holdings = std::move(holdings);
+    retiring_.push_back(std::move(r));
+    retiringCount_.store(retiring_.size(), std::memory_order_release);
+}
+
+void
+GpuDevice::reapRetired()
+{
+    if (hasRetiringWork()) {
+        reap(false);
+    }
+}
+
+void
+GpuDevice::reap(bool block)
+{
+    if (tReaping) {
+        return;
+    }
+    std::vector<std::shared_ptr<void>> released;
+    VkResult lost = VK_SUCCESS;
+    {
+        std::unique_lock<std::mutex> lock(retiringMutex_, std::defer_lock);
+        if (block) {
+            lock.lock();
+        } else if (!lock.try_lock()) {
+            return;
+        }
+        for (auto it = retiring_.begin(); it != retiring_.end();) {
+            const VkResult status = vkGetFenceStatus(device_, it->fence);
+            if (status == VK_NOT_READY) {
+                ++it;
+                continue;
+            }
+            if (status == VK_SUCCESS) {
+                vkDestroyFence(device_, it->fence, nullptr);
+                released.push_back(std::move(it->holdings));
+                for (std::shared_ptr<void>& d : it->deferred) {
+                    released.push_back(std::move(d));
+                }
+            } else {
+                // The work may still be pending on a lost device, so its fence and holdings are leaked.
+                lost = status;
+                parkForever(std::move(it->holdings));
+                for (std::shared_ptr<void>& d : it->deferred) {
+                    parkForever(std::move(d));
+                }
+            }
+            it = retiring_.erase(it);
+        }
+        retiringCount_.store(retiring_.size(), std::memory_order_release);
+    }
+    if (lost != VK_SUCCESS) {
+        check(lost, "vkGetFenceStatus");
+    }
+    // Released with no lock held: the holdings return buffers to their pool and end their registry's recording.
+    tReaping = true;
+    released.clear();
+    tReaping = false;
+}
+
+void
+GpuDevice::finishRetiring()
+{
+    if ((device_ == VK_NULL_HANDLE) || hasAbandonedWork() || !hasRetiringWork()) {
+        return;
+    }
+    bool timedOut = false;
+    {
+        std::lock_guard<std::mutex> lock(retiringMutex_);
+        for (const Retiring& r : retiring_) {
+            if (vkWaitForFences(device_, 1, &r.fence, VK_TRUE, kRetiringTimeoutNs) == VK_TIMEOUT) {
+                timedOut = true;
+                break;
+            }
+        }
+    }
+    if (timedOut) {
+        std::fprintf(stderr, "GpuDevice: stopped device work did not finish within %llu ms; the GPU device is treated as lost\n",
+                     static_cast<unsigned long long>(kRetiringTimeoutNs / 1000000));
+        abandonInFlightWork("vkWaitForFences");
+        return;
+    }
+    reap(true);
+}
+
+void
+GpuDevice::destroyWhenRetired(std::function<void()> destroy)
+{
+    if (!destroy) {
+        return;
+    }
+    if (!tReaping && hasRetiringWork()) {
+        std::lock_guard<std::mutex> lock(retiringMutex_);
+        if (!retiring_.empty()) {
+            // Shared by every entry retiring now, so that it runs when the last of them is reaped.
+            std::shared_ptr<void> deferred(nullptr, [destroy = std::move(destroy)](void*) { destroy(); });
+            for (Retiring& r : retiring_) {
+                r.deferred.push_back(deferred);
+            }
+            return;
+        }
+    }
+    destroy();
+}
+
+uint64_t
+GpuDevice::retiringMark() const
+{
+    if (tReaping || !hasRetiringWork()) {
+        return 0;
+    }
+    std::lock_guard<std::mutex> lock(retiringMutex_);
+    return retiring_.empty() ? 0 : retiring_.back().serial;
+}
+
+bool
+GpuDevice::retiredThrough(uint64_t mark) const
+{
+    if ((mark == 0) || !hasRetiringWork()) {
+        return true;
+    }
+    std::lock_guard<std::mutex> lock(retiringMutex_);
+    for (const Retiring& r : retiring_) {
+        if (r.serial <= mark) {
+            return false;
+        }
+    }
+    return true;
 }
 
 void
@@ -957,6 +1139,7 @@ GpuDevice::submitUncounted(QueueKind kind, std::span<const VkSubmitInfo2> submit
     if (!route_[static_cast<size_t>(kind)]) {
         return fail(VK_ERROR_FEATURE_NOT_PRESENT, "the device has no queue of that kind");
     }
+    reapRetired();
     Queue& q = queueFor(kind);
     std::lock_guard<std::mutex> lock(q.mutex);
     return check(vkQueueSubmit2(q.handle, static_cast<uint32_t>(submits.size()), submits.data(), fence),

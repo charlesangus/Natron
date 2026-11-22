@@ -69,6 +69,9 @@ GpuBufferPool::GpuBufferPool(GpuDevice& dev, const GpuBufferPoolOptions& options
 
 GpuBufferPool::~GpuBufferPool()
 {
+    // Retiring work holds handles whose release comes back here.
+    dev_.finishRetiring();
+    returnQuarantined();
     trim();
 }
 
@@ -146,6 +149,36 @@ GpuBufferPool::reserveLocked(uint64_t bytes)
 }
 
 void
+GpuBufferPool::returnQuarantined()
+{
+    dev_.reapRetired();
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (quarantine_.empty()) {
+            return;
+        }
+    }
+    const uint64_t limit = computeBudget();
+    std::vector<GpuBuffer> doomed;
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto it = quarantine_.begin(); it != quarantine_.end();) {
+        if (!dev_.retiredThrough(it->mark)) {
+            ++it;
+            continue;
+        }
+        const VkDeviceSize size = it->buffer.size();
+        stats_.quarantinedBytes -= size;
+        if (usageLocked() + size <= limit) {
+            free_[size].push_back(std::move(it->buffer));
+            stats_.pooledBytes += size;
+        } else {
+            doomed.push_back(std::move(it->buffer));
+        }
+        it = quarantine_.erase(it);
+    }
+}
+
+void
 GpuBufferPool::trim()
 {
     std::map<VkDeviceSize, std::vector<GpuBuffer>> doomed;
@@ -193,6 +226,7 @@ GpuStatus
 GpuBufferPool::acquire(VkDeviceSize size, GpuBufferHandle& out)
 {
     out = GpuBufferHandle();
+    returnQuarantined();
     const uint64_t limit = computeBudget();
     if (size > limit) {
         return outOfMemory(size, limit);
@@ -331,13 +365,17 @@ GpuBufferPool::release(detail::BufferLease* lease)
     GpuBuffer buf = std::move(lease->buffer);
     const VkDeviceSize size = buf.size();
     const uint64_t limit = computeBudget();
+    const uint64_t mark = dev_.retiringMark();
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (lease->evictable) {
             unlinkLocked(lease);
         }
         stats_.liveBytes -= size;
-        if (usageLocked() + size <= limit) {
+        if (mark != 0) {
+            quarantine_.push_back({ std::move(buf), mark });
+            stats_.quarantinedBytes += size;
+        } else if (usageLocked() + size <= limit) {
             free_[size].push_back(std::move(buf));
             stats_.pooledBytes += size;
         }

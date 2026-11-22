@@ -1436,7 +1436,8 @@ consumerDevices(const FrameGraph& graph,
 /**
  * @brief For a task the device tier holds layer of only at a finer level: that entry box-downscaled on the device to
  * the task's level, over its renderedRoI, and cached in the tier under exact, the key the task's level is looked up by.
- * Null when no finer entry holds all of what the downscale reads, or the downscale cannot be made.
+ * Null when no finer entry holds all of what the downscale reads, the downscale cannot be made, or the render was
+ * aborted while the device ran it.
  **/
 CacheDeviceEntryPtr
 downscaleFinerDeviceEntry(CacheDeviceTier& tier,
@@ -1444,7 +1445,8 @@ downscaleFinerDeviceEntry(CacheDeviceTier& tier,
                           const ImageKey& exact,
                           const FrameGraph::Task& task,
                           const ImageLayerDesc& layer,
-                          const RenderStatsPtr& stats)
+                          const RenderStatsPtr& stats,
+                          const AbortableRenderInfoPtr& abortInfo)
 {
     gpu::GpuRuntime* runtime = tier.runtime();
     const unsigned int level = task.key.mipmapLevel;
@@ -1504,11 +1506,14 @@ downscaleFinerDeviceEntry(CacheDeviceTier& tier,
         dst.nComps = (std::uint32_t)layout.nComps();
         gpu::GpuStatus status = gpu::recordMipDownscale(*recorder, src, dst, dst.bounds, levels);
         if (status) {
-            status = recorder->submitAndWait();
+            const std::function<bool()> stop = [&abortInfo]() { return abortInfo && abortInfo->isAborted(); };
+            status = recorder->submitAndWait(30'000'000'000ull, stop);
         }
         image->unpin();
         if (!status) {
-            runtime->note(status);
+            if (status.result != VK_INCOMPLETE) {
+                runtime->note(status);
+            }
 
             return CacheDeviceEntryPtr();
         }
@@ -1562,7 +1567,7 @@ serveFromDeviceTier(const FrameRenderContext& context,
         const ImageKey exact = base.forEntry(task.key.mipmapLevel, layer, eImageBitDepthFloat);
         CacheDeviceEntryPtr entry = tier->findServing(exact);
         if (!entry) {
-            entry = downscaleFinerDeviceEntry(*tier, base, exact, task, layer, context.getStats());
+            entry = downscaleFinerDeviceEntry(*tier, base, exact, task, layer, context.getStats(), context.getAbortInfo());
         }
         if (!entry) {
             return false;

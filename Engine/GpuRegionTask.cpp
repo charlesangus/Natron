@@ -421,14 +421,17 @@ public:
     ~RegionRun()
     {
         drain();
+        // Work a stop left running on the device may still write the queries or wait on the timeline.
+        gpu::GpuDevice& device = _runtime.device();
+        const VkDevice vk = device.device();
         if (_queries) {
-            vkDestroyQueryPool(_runtime.device().device(), _queries, nullptr);
+            device.destroyWhenRetired([vk, pool = _queries]() { vkDestroyQueryPool(vk, pool, nullptr); });
         }
         if (_segmentQueries) {
-            vkDestroyQueryPool(_runtime.device().device(), _segmentQueries, nullptr);
+            device.destroyWhenRetired([vk, pool = _segmentQueries]() { vkDestroyQueryPool(vk, pool, nullptr); });
         }
         if (_computeTimeline) {
-            vkDestroySemaphore(_runtime.device().device(), _computeTimeline, nullptr);
+            device.destroyWhenRetired([vk, semaphore = _computeTimeline]() { vkDestroySemaphore(vk, semaphore, nullptr); });
         }
     }
 
@@ -637,8 +640,8 @@ private:
         return [this]() { return isAborted(); };
     }
 
-    // A record context's submit stopped by stopWhenAborted() left nothing on the device and signals nothing; it fails
-    // only so that the region unwinds.
+    // A record context's submit stopped by stopWhenAborted() signals nothing, and the device keeps what any work it
+    // left running uses; it fails only so that the region unwinds.
     bool noteStopped(const gpu::GpuStatus& status)
     {
         if (status.result != VK_INCOMPLETE) {
@@ -3356,13 +3359,14 @@ private:
         gpu::GpuStatus resetStatus = _runtime.newRecordContext(reset);
         if (resetStatus) {
             reset->resetQueries(_queries, 0, info.queryCount);
-            resetStatus = _runtime.note(reset->submitAndWait());
+            resetStatus = _runtime.note(reset->submitAndWait(30'000'000'000ull, stopWhenAborted()));
         }
         if (!resetStatus) {
             if (_runtime.isLost()) {
                 return failGpu(firstMemberTask(), "cannot reset the strips' timestamps", resetStatus);
             }
-            vkDestroyQueryPool(device.device(), _queries, nullptr);
+            const VkDevice vk = device.device();
+            device.destroyWhenRetired([vk, pool = _queries]() { vkDestroyQueryPool(vk, pool, nullptr); });
             _queries = VK_NULL_HANDLE;
 
             return true;

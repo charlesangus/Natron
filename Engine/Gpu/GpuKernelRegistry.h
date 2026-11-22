@@ -91,6 +91,9 @@ private:
     // thread, so it is only reset once no recording context is alive.
     void recordingBegan();
     void recordingEnded();
+    // Command buffers of `pool` whose work was left retiring on the device: freed by the thread that owns the pool,
+    // the next time it asks for it, once `done` is set.
+    void retireCommandBuffers(VkCommandPool pool, std::vector<VkCommandBuffer> buffers, std::shared_ptr<std::atomic<bool>> done);
     // A kernel the registry does not own, dispatched by a context; its descriptor-pool fallback is
     // recycled with the registry's own once no context is alive.
     void noteExternalKernel(const std::shared_ptr<GpuKernel>& kernel);
@@ -118,6 +121,12 @@ private:
     std::deque<RuntimeModule> runtimeModules_;
     std::vector<std::weak_ptr<GpuKernel>> external_;
     std::map<std::pair<std::thread::id, uint32_t>, VkCommandPool> pools_;
+    struct RetiredCommandBuffers {
+        VkCommandPool pool = VK_NULL_HANDLE;
+        std::vector<VkCommandBuffer> buffers;
+        std::shared_ptr<std::atomic<bool>> done;
+    };
+    std::vector<RetiredCommandBuffers> retiredCommandBuffers_;
     uint32_t activeContexts_ = 0;
     // What GpuRecordContext learned of this device's speed; 0 until it finished a split context's first batch.
     std::atomic<uint64_t> learnedBatchWork_ { 0 };

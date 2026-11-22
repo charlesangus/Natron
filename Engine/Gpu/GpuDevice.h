@@ -272,10 +272,42 @@ public:
     // Keeps `object` alive until the process exits, without ever destroying it.
     static void parkForever(std::shared_ptr<void> object);
 
+    // Takes over `fence`, of submitted work nobody waits for any more, and keeps `holdings` alive until it signals;
+    // a reap then destroys the fence and releases them. A fence that reports the device lost, and every fence once
+    // abandonInFlightWork() runs, has its holdings parked with parkForever() instead.
+    void retireWhenSignalled(VkFence fence, std::shared_ptr<void> holdings);
+
+    // Reaps every retiring fence that has signalled. Every submit and drainQueues() reap too. Returns at once when
+    // another thread is reaping.
+    void reapRetired();
+
+    // Waits for every retiring fence and reaps them all, for the owner of something the holdings refer to, before it
+    // goes away. A fence still pending after 30 s is handled as GpuRecordContext::submitAndWait handles one, through
+    // abandonInFlightWork().
+    void finishRetiring();
+
+    bool hasRetiringWork() const { return retiringCount_.load(std::memory_order_acquire) != 0; }
+
+    // Runs `destroy` once every fence retiring now has been reaped, as what it destroys may be used by their work: at
+    // once when none is retiring, or when called while a reap releases holdings.
+    void destroyWhenRetired(std::function<void()> destroy);
+
+    // For something released now that the retiring work may still use: 0 when nothing is retiring, else a mark that
+    // retiredThrough() accepts once every fence retiring now has been reaped.
+    uint64_t retiringMark() const;
+    bool retiredThrough(uint64_t mark) const;
+
 private:
     struct Queue {
         VkQueue handle = VK_NULL_HANDLE;
         std::mutex mutex;
+    };
+
+    struct Retiring {
+        uint64_t serial = 0;
+        VkFence fence = VK_NULL_HANDLE;
+        std::shared_ptr<void> holdings;
+        std::vector<std::shared_ptr<void>> deferred;
     };
 
     GpuDevice() = default;
@@ -283,6 +315,8 @@ private:
     Queue& queueFor(QueueKind kind);
     GpuStatus lostStatus() const;
     VkResult waitIdleLocked();
+    void reap(bool block);
+    void parkRetiringLocked();
 
     GpuDeviceInfo info_;
     GpuDebugMessageFn debugMessage_;
@@ -307,6 +341,11 @@ private:
     std::function<void()> onDeviceLost_;
     std::atomic<bool> lost_ { false };
     std::atomic<bool> abandoned_ { false };
+
+    mutable std::mutex retiringMutex_;
+    std::vector<Retiring> retiring_;
+    uint64_t nextRetiringSerial_ = 0;
+    std::atomic<size_t> retiringCount_ { 0 };
 };
 
 } // namespace gpu

@@ -3074,7 +3074,7 @@ struct ProgressiveRender::Implementation {
         EnginePtr made;
         {
             TfErrorMark mark;
-            made = newEngine(parameters, cycles, threads);
+            made = newEngine(parameters, cycles, threads, false);
             ++gEngineBuilds;
             if (made->GetCurrentRendererId() != TfToken(id)) {
                 std::string reasons;

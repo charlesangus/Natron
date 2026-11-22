@@ -177,11 +177,6 @@ struct SessionClient::Implementation {
             edit.keys.insert(edit.keys.end(), keys.begin(), keys.end());
         }
         send(OpsMessage { edit.clientSeq, ops });
-        // A deferred host edit came before this one on the host, which applies this one over it:
-        // applied here later, once this one is acknowledged, it would undo it.
-        for (const Serialization::GraphOp& op : ops) {
-            supersedeDeferred(op);
-        }
         addPending(std::move(edit));
     }
 
@@ -226,9 +221,8 @@ struct SessionClient::Implementation {
         return op;
     }
 
-    // A deferred host edit is out of date once a later edit, the host's or this user's, writes the
-    // same thing or deletes its node. When that later edit deletes its source, the host's input
-    // ends up empty.
+    // A deferred host edit is out of date once a later host edit writes the same thing or deletes
+    // its node. When that later edit deletes its source, the host's input ends up empty.
     void supersedeDeferred(const Serialization::GraphOp& op)
     {
         if (deferred.empty()) {
@@ -285,27 +279,6 @@ struct SessionClient::Implementation {
                                                             QString::fromUtf8(results.front().message.c_str())));
         } else {
             deferred.push_back(op);
-        }
-    }
-
-    // Once nothing is pending and the last acknowledgement's refusals and resyncs are in, a host
-    // edit still waiting has failed for good and is reported, never applied out of order. Unsent
-    // local edits reach the host after it, so they are flushed before anything is settled.
-    void settleDeferred()
-    {
-        if (deferred.empty()) {
-            return;
-        }
-        flushLocalEdits();
-        ProjectPtr p = project();
-        if (!p || !pending.empty() || deferred.empty()) {
-            return;
-        }
-        std::vector<Serialization::GraphOp> waiting;
-        waiting.swap(deferred);
-        GraphEditRecorder::Suppress suppress;
-        for (const Serialization::GraphOp& op : waiting) {
-            applyOrDefer(p, op, true);
         }
     }
 
@@ -655,9 +628,6 @@ struct SessionClient::Implementation {
             end(QString::fromUtf8("Protocol error: %1 before welcome.").arg(QString::fromUtf8(std::string(sessionMessageName(message)).c_str())));
 
             return;
-        }
-        if (std::holds_alternative<BroadcastMessage>(message) || std::holds_alternative<ChecksumMessage>(message)) {
-            settleDeferred();
         }
         if (const BroadcastMessage* broadcast = std::get_if<BroadcastMessage>(&message)) {
             handleBroadcast(*broadcast);

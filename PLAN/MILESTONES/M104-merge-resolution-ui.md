@@ -33,7 +33,7 @@ M103's P1.T4 decision before starting.
   - verify: compiled at P1.T3. Headless gtests on two corpus scenarios: a clean update changes only the template nodes and keeps the artist's overrides; a conflicted one returns its conflicts and leaves mine in the graph.
   - size: M
 
-- [ ] M104.P1.T2 — Undoable apply of an operation batch
+- [x] M104.P1.T2 — Undoable apply of an operation batch
   - files: `Gui/NodeGraphUndoRedo.h`, `Gui/NodeGraphUndoRedo.cpp`
   - approach: `ApplyGraphOpsCommand` holds forward operations and inverse operations (`diffSnapshots(after, before)` over the touched scope). redo and undo apply them through `GraphOpApply` and refresh the NodeGuis (create and remove).
   - verify: compiled at P1.T3. Exercised by the P4.T1 GUI test: undo after Update from Template restores the pre-merge graph exactly.

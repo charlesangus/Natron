@@ -18,7 +18,7 @@ Out of scope: caching staged libs per image (not needed once the walk is fixed);
 
 ## Phase 549.1: Measure
 
-- [ ] M549.P1.T1 — Section timings and a staged-file manifest
+- [x] M549.P1.T1 — Section timings and a staged-file manifest
   - files: `tools/release/stage-bundle.sh`, `tools/release/stage-manifest.sh` (new), `.github/workflows/remote-build.yml`
   - approach: log `$SECONDS` per `==>` section and for the walk; `stage-manifest.sh <dir>` writes path, mode, symlink target and sha256 per staged file, sorted. The remote build uploads the manifest with the AppImage.
   - verify: one remote release run with the current walk records the baseline manifest and section times.
@@ -60,3 +60,4 @@ Out of scope: caching staged libs per image (not needed once the walk is fixed);
 ## Decisions
 
 - 2026-11-22 — Profile done (consultant, log /tmp/m549log on the dev host): the cost is the walk and the doubled checker, not strip or copying; no per-image lib cache. The 0-hit remote-cache builds were lanes predating M493, not a config mismatch.
+- 2026-11-22 — T1 in 18b55e6c5 (artifact stage-manifest-<preset>-<sha>); baseline `fast` run queued; Phase 2 being implemented.

@@ -127,9 +127,11 @@ and no AppImage. It only keeps the ccache warm for branch runs.
 
 The build job layers a shared ccache remote storage server on top of the
 `actions/cache` ccache restore. The repo secret `CCACHE_REMOTE_STORAGE` holds
-its URL, in the form
-`https://USER:PASS@cache.example.com|@layout=bazel`. The dev image's
-`ccache-storage-https` helper handles the HTTPS. It is on for pushes and for
+its URL, in the form `https://USER:PASS@cache.example.com`. The workflow
+replaces any `layout=` attribute on it with the bazel layout the local builds
+use (`@layout=bazel` for the dev image's `ccache-storage-https` helper, which
+handles the HTTPS), so both spellings work and CI shares keys with local
+builds. It is on for pushes and for
 dispatches by default; ccache stats at the end of the build show a "Remote
 storage" block.
 

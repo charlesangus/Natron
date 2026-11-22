@@ -178,6 +178,31 @@ jobs:
             ccache-linux-${{ env.PRESET }}-main-
             ${{ env.PRESET == 'debug' && 'ccache-linux-main-' || '' }}
 
+      - name: Reset ccache statistics
+        run: ccache -z
+
+      - name: Normalise remote ccache layout
+        run: |
+          # shellcheck source=tools/ci/ccache-remote-layout.sh
+          source tools/ci/ccache-remote-layout.sh
+          if [[ -z "${CCACHE_REMOTE_STORAGE:-}" ]]; then
+            echo "remote ccache: off"
+            exit 0
+          fi
+          normalised="$(ccache_remote_with_bazel_layout "${CCACHE_REMOTE_STORAGE}")"
+          echo "::add-mask::${normalised}"
+          if [[ "${normalised}" == *$'\n'* ]]; then
+            echo "remote ccache: unsupported value, off"
+            echo "CCACHE_REMOTE_STORAGE=" >>"${GITHUB_ENV}"
+            exit 0
+          fi
+          echo "CCACHE_REMOTE_STORAGE=${normalised}" >>"${GITHUB_ENV}"
+          case "${normalised}" in
+            https://*) echo "remote ccache: https, layout set" ;;
+            http://*) echo "remote ccache: http, layout set" ;;
+            *) echo "remote ccache: on" ;;
+          esac
+
       - name: Cache test assets
         uses: actions/cache@v6.1.0
         with:

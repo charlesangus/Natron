@@ -153,7 +153,10 @@ if [[ -f "${CCACHE_REMOTE_FILE}" ]]; then
 fi
 EXEC_ENV_ARGS=(-e CCACHE_MAXSIZE="${CCACHE_MAXSIZE}")
 if [[ -n "${CCACHE_REMOTE_URL}" ]]; then
-    export CCACHE_REMOTE_STORAGE="${CCACHE_REMOTE_URL}"
+    # shellcheck source=tools/ci/ccache-remote-layout.sh
+    source "${REPO_ROOT}/tools/ci/ccache-remote-layout.sh"
+    CCACHE_REMOTE_STORAGE="$(ccache_remote_with_bazel_layout "${CCACHE_REMOTE_URL}")"
+    export CCACHE_REMOTE_STORAGE
     EXEC_ENV_ARGS+=(-e CCACHE_REMOTE_STORAGE)
 fi
 

@@ -1738,7 +1738,7 @@ TEST_F(SceneDrawFilterTest, AFractionedMeshOmitsItsHashedFacesThroughAnInvisible
     const HdIntArrayDataSourceHandle indices = HdGeomSubsetSchema::GetFromParent(subset.dataSource).GetIndices();
     ASSERT_TRUE(indices != nullptr);
     EXPECT_EQ(expected, indices->GetTypedValue(0.f));
-    EXPECT_EQ(1u, recorder.shows.count(child.GetString()));
+    EXPECT_EQ(1u, recorder.enteredInvisible.count(child.GetString()));
     EXPECT_EQ(1u, recorder.dirtied.count("/World/c"));
     EXPECT_TRUE(drawn("/World/c"));
     recorder.reset();

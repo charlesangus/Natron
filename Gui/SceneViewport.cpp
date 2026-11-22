@@ -4796,6 +4796,7 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo,
         return false;
     }
     section.collectWith(_imp->engine->GetHgi());
+    _imp->noteFrameCamera(frame.frustum);
     if (frame.tintOnly) {
         frame.params.enableSceneLights = _imp->usesSceneLights(frame.lightingMode);
         // Checked again, as the frame may have been prepared before a change the lock kept out. A

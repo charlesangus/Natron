@@ -22,7 +22,7 @@ Make builder networks render correctly in Cycles, in both `USDRender` and the pr
 **Edge cases:**
 - Delegate fix needed: goes to the charlesangus Cycles fork, as with earlier Cycles fixes.
 - Attribute Cycles reads only outside Hydra: recorded in the milestone report and in the attribute's tooltip.
-- No Cycles network on a material: hdCycles reads universal, so a preview or `USDMaterial` network still renders.
+- No Cycles network on a material: hdCycles reads universal, so a preview or `USDPreviewSurface` network still renders.
 - Viewer edit of a shader knob: restarts progressive refinement.
 
 **Assumptions:**

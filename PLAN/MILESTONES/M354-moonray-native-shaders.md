@@ -23,7 +23,7 @@ Make builder networks render correctly in MoonRay, in both `USDRender` and the p
 - Delegate fix needed: goes to the fork from M325 - MoonRay Fork.
 - `execComp` startup failure: reported as today by `MoonRayRuntime`, not as a shader error.
 - `SceneObject` attribute given a non-matching shader: refused by M351 - Shader Graph Presentation's type check, so it can't be authored.
-- No MoonRay network on a material: hdMoonray reads universal, so a preview or `USDMaterial` network still renders.
+- No MoonRay network on a material: hdMoonray reads universal, so a preview or `USDPreviewSurface` network still renders.
 
 **Assumptions:**
 - hdMoonray converts a USD connection on a `SceneObject` attribute to the right rdl2 binding. P1.T2 proves or fixes it.

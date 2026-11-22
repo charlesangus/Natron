@@ -1,13 +1,13 @@
 # M352 - USDMaterialBuilder Node
 
-Make `USDMaterialBuilder` author real materials. In the main graph it is one ordinary node with a Scene output, Image inputs and promoted controls, connecting into `USDAssignMaterial` like `USDMaterial`, which stays for simple cases. Inside, one Output node holds surface, displacement and volume terminals per renderer plus a preview. One builder holds networks for several renderers on one `UsdShadeMaterial` (`outputs:cycles:surface`, `outputs:moonray:surface`, universal `outputs:surface`), and scene emission goes through `emitSceneLayer` and `SceneNodeAuthoring::openLayerStage`. It derives from M351 - Shader Graph Presentation's generic `NetworkBuilder` with targets `cycles` and `moonray`; M446 - MaterialX Builder Nodes adds MaterialX's.
+Make `USDMaterialBuilder` author real materials. In the main graph it is one ordinary node with a Scene output, Image inputs and promoted controls, connecting into `USDAssignMaterial` like `USDPreviewSurface`, which stays for simple cases. Inside, one Output node holds surface, displacement and volume terminals per renderer plus a preview. One builder holds networks for several renderers on one `UsdShadeMaterial` (`outputs:cycles:surface`, `outputs:moonray:surface`, universal `outputs:surface`), and scene emission goes through `emitSceneLayer` and `SceneNodeAuthoring::openLayerStage`. It derives from M351 - Shader Graph Presentation's generic `NetworkBuilder` with targets `cycles` and `moonray`; M446 - MaterialX Builder Nodes adds MaterialX's.
 
 ## Scope
 
 **In:**
 - `ShaderOutput` node with terminals per renderer, a preview terminal, and knobs for per-material renderer settings. Only terminals with something wired are authored.
-- Authoring: shaders reachable from a terminal, under `<material>/<renderer>/<node>`, with `info:id`, non-default values, connections and named outputs. Animated knobs author the same way as `USDMaterial`.
-- `Material Path` behaves as on `USDMaterial`. One builder authors one material.
+- Authoring: shaders reachable from a terminal, under `<material>/<renderer>/<node>`, with `info:id`, non-default values, connections and named outputs. Animated knobs author the same way as `USDPreviewSurface`.
+- `Material Path` behaves as on `USDPreviewSurface`. One builder authors one material.
 - Inner Input nodes create the builder's Image arrows, as Group inputs do. An Input connects to an image shader's file input, which authors `natron://` with a linear colour space.
 - Promoting any inner knob to the builder's panel. One promoted knob can drive parameters in several renderers' networks through links added by hand.
 - New builder: the Output node only. Presets `USDCyclesPrincipledBSDFBuilder` (Principled BSDF on the Cycles surface terminal) and `USDMoonRayDwaBaseBuilder` (`DwaBaseMaterial` on the MoonRay surface terminal) create it with that starter network, as menu items like Merge's presets. MaterialX presets come with M446 - MaterialX Builder Nodes.
@@ -18,16 +18,16 @@ Make `USDMaterialBuilder` author real materials. In the main graph it is one ord
 - Automatic preview: M356 - Automatic Preview Shader.
 - Editing materials already on a stage: M355 - Shader Tweak Node.
 - Several materials per builder, and saving a builder as a library item: none yet.
-- A `USDMaterial` replacement: none, it stays.
+- A `USDPreviewSurface` replacement: none, it stays.
 
 **Edge cases:**
 - No terminal wired: authors the material with no outputs and warns on the node.
 - Shader not reachable from any terminal: not authored.
 - `MissingPluginNode` in a network: its branch isn't authored and the node warns, naming it. The rest authors.
-- Input with nothing connected: the image shader falls back as `USDMaterial` does and warns.
+- Input with nothing connected: the image shader falls back as `USDPreviewSurface` does and warns.
 - Image shader with a file knob and a connected Input: the connection wins.
 - Two builders on one `Material Path`: compose through `USDMerge`, the same as any two scene nodes. Different attributes merge, and the stronger input wins conflicts.
-- Builder copied and pasted, or nested in another Group: works as any Group. Its Material Path behaves as `USDMaterial`'s would.
+- Builder copied and pasted, or nested in another Group: works as any Group. Its Material Path behaves as `USDPreviewSurface`'s would.
 
 **Assumptions:**
 - M233 - Live Node Textures' pre-render finds image inputs through the builder Group's Input nodes. P2.T1 confirms or fixes it.
@@ -42,7 +42,7 @@ Make `USDMaterialBuilder` author real materials. In the main graph it is one ord
 
 - [ ] M352.P1.T2 — Author the network into USD
   - files: `Engine/Nodes/Scene/USDMaterialBuilder.{h,cpp}`, `Engine/Nodes/Scene/Shaders/ShaderAuthoring.{h,cpp}`, `Tests/Scene/USDMaterialBuilder_Test.cpp`
-  - approach: walk from each terminal, author as in Scope, and emit through `emitSceneLayer`. Types come from the manifest via `SdfValueTypeNames`. Output names on connections follow M349 - Shader Node Spike's mechanism. Follow `USDMaterial.cpp:255-293` for stage and output handling.
+  - approach: walk from each terminal, author as in Scope, and emit through `emitSceneLayer`. Types come from the manifest via `SdfValueTypeNames`. Output names on connections follow M349 - Shader Node Spike's mechanism. Follow `USDPreviewSurface.cpp:255-293` for stage and output handling.
   - verify: gtest — a builder with Cycles and MoonRay networks authors the expected prims, `info:id`s, values and both render-context outputs, read back through `UsdShadeMaterial`; an unreachable shader is absent; default values aren't authored.
   - size: L
 
@@ -56,7 +56,7 @@ Make `USDMaterialBuilder` author real materials. In the main graph it is one ord
 
 - [ ] M352.P2.T1 — Feed images in through Inputs
   - files: `Engine/Nodes/Scene/USDMaterialBuilder.cpp`, `Engine/Nodes/Scene/Shaders/ShaderAuthoring.cpp`, `Tests/Scene/USDMaterialBuilderTexture_Test.cpp`
-  - approach: an Image input on the builder, through an inner Input, connects to an image shader's file input. Author `natron://` as `USDMaterial`'s texture path does, with linear colour space. Make sure M233 - Live Node Textures' pre-render finds it.
+  - approach: an Image input on the builder, through an inner Input, connects to an image shader's file input. Author `natron://` as `USDPreviewSurface`'s texture path does, with linear colour space. Make sure M233 - Live Node Textures' pre-render finds it.
   - verify: gtest — the authored `file` is a `natron://` URI with the source's hash; changing the source changes it; a Storm render of a builder using a preview network with a Constant input shows that colour.
   - size: M
 

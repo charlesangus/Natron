@@ -12,7 +12,7 @@ A new `USDVolumeMaterial` node with one set of volume controls, translated into 
 - Node docs and icon, plus a table of how each control maps per renderer in the milestone report.
 
 **Out:**
-- Volume controls on `USDMaterial` — none (user chose a separate node, 2026-11-05).
+- Volume controls on `USDPreviewSurface` — none (user chose a separate node, 2026-11-05).
 - Surface shading on the same node — none.
 - Temperature and blackbody controls — none (a future named milestone: MoonRay's geometry has no temperature grid).
 - A node-graph shader editor or MaterialX volumes — none (OSL and MaterialX volume shading aren't in the bundled delegates).
@@ -40,7 +40,7 @@ A new `USDVolumeMaterial` node with one set of volume controls, translated into 
 
 - [ ] M347.P2.T1 — Add USDVolumeMaterial with Cycles output
   - files: `Engine/Nodes/Scene/USDVolumeMaterial.h`, `Engine/Nodes/Scene/USDVolumeMaterial.cpp`, `Engine/Nodes/Scene/USDVolumeMaterial.reg.inc`, `Engine/CMakeLists.txt`, `Tests/Scene/USDVolumeMaterial_Test.cpp`
-  - approach: Follow `USDMaterial` for structure and knob helpers. Author a `UsdShadeMaterial` with a `cycles_principled_volume` shader; the terminal output name must be `outputs:Volume` on the shader (`material.cpp` looks up the socket by that name, and `outputs:volume` fails with "Could not find terminal output"). Labels match script names. No (un)premult knob, since this isn't a colour node.
+  - approach: Follow `USDPreviewSurface` for structure and knob helpers. Author a `UsdShadeMaterial` with a `cycles_principled_volume` shader; the terminal output name must be `outputs:Volume` on the shader (`material.cpp` looks up the socket by that name, and `outputs:volume` fails with "Could not find terminal output"). Labels match script names. No (un)premult knob, since this isn't a colour node.
   - verify: The test asserts the authored network, and a Cycles render of the fixture changes as Density and Colour change.
   - size: L
 - [ ] M347.P2.T2 — Add the MoonRay output
@@ -71,7 +71,7 @@ A new `USDVolumeMaterial` node with one set of volume controls, translated into 
 
 ## Decisions
 
-- 2026-11-05 — Dedicated `USDVolumeMaterial` node, assigned through `USDAssignMaterial` (user): keeps `USDMaterial` simple, and shows only the controls that apply.
+- 2026-11-05 — Dedicated `USDVolumeMaterial` node, assigned through `USDAssignMaterial` (user): keeps `USDPreviewSurface` simple, and shows only the controls that apply.
 - 2026-11-05 — Storm approximates density, colour and emission (user): the viewer preview should resemble the final look; lighting won't match a path tracer.
 - 2026-11-05 — The 2026-11-05 audit's MoonRay test used `BaseVolume` under `outputs:moonray:volume`, and its Cycles test uses `cycles_principled_volume` under `outputs:cycles:volume`, with `MaterialBindingAPI` applied on the volume prim: without that schema USD warns about the binding and ignores it.
 - 2026-11-13 — MoonRay source changes go in the pinned fork (inbox, from M325 - MoonRay Fork): MoonRay builds from the charlesangus forks pinned by commit (`NATRON_MOONRAY_COMMIT` in `tools/ci/local/Dockerfile`) with no build-time patches. Any MoonRay change this milestone needs, the render-context override included, goes on fork branch `natron/v2026.29.1`: push the submodule fork, bump its gitlink in charlesangus/openmoonray, then bump the pin. Never add a `sed`/patch step to `build-moonray.sh`.

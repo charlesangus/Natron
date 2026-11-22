@@ -1,6 +1,6 @@
 # M445 - USDOpenPBR Node
 
-A new `USDOpenPBR` node for quick lookdev: one OpenPBR material per node, authored as MaterialX (`ND_open_pbr_surface_surfaceshader` on `outputs:mtlx:surface`), so it renders in Storm through hdSt's MaterialX support and in Cycles and MoonRay through F26 - MaterialX Rendering's translation. It is built the way `USDPreviewSurface` (today's `USDMaterial`, renamed by M447 - USDPreviewSurface Rename) is: a scene source with no scene input that connects to a geometry node's Material input. Comprehensive shading (procedurals, layering, per-input networks) is `USDMaterialBuilder`'s job, with MaterialX nodes from M446 - MaterialX Builder Nodes.
+A new `USDOpenPBR` node for quick lookdev: one OpenPBR material per node, authored as MaterialX (`ND_open_pbr_surface_surfaceshader` on `outputs:mtlx:surface`), so it renders in Storm through hdSt's MaterialX support and in Cycles and MoonRay through F26 - MaterialX Rendering's translation. It is built the way `USDPreviewSurface` (today's `USDPreviewSurface`, renamed by M447 - USDPreviewSurface Rename) is: a scene source with no scene input that connects to a geometry node's Material input. Comprehensive shading (procedurals, layering, per-input networks) is `USDMaterialBuilder`'s job, with MaterialX nodes from M446 - MaterialX Builder Nodes.
 
 ## Scope
 
@@ -31,7 +31,7 @@ A new `USDOpenPBR` node for quick lookdev: one OpenPBR material per node, author
 
 - [ ] M445.P1.T1 — Add USDOpenPBR with every input as a knob
   - files: `Engine/Nodes/Scene/USDOpenPBR.{h,cpp}`, `Engine/Nodes/Scene/USDOpenPBR.reg.inc`, `Engine/CMakeLists.txt`, `Tests/Scene/USDOpenPBR_Test.cpp`, `Tests/CMakeLists.txt`
-  - approach: mirror `USDMaterial`'s structure (`USDMaterial.h:41`, its `.reg.inc`, Prim Path behaviour and Material-input wiring). Generate the 41 knobs from a committed table of the nodedef's inputs (name, type, default, folder), with labels derived from script names. Author the material prim, an `OpenPBR` shader with `info:id` `ND_open_pbr_surface_surfaceshader`, non-default values only, and `outputs:mtlx:surface`. Animated knobs author time samples.
+  - approach: mirror `USDPreviewSurface`'s structure (`USDPreviewSurface.h`, its `.reg.inc`, Prim Path behaviour and Material-input wiring). Generate the 41 knobs from a committed table of the nodedef's inputs (name, type, default, folder), with labels derived from script names. Author the material prim, an `OpenPBR` shader with `info:id` `ND_open_pbr_surface_surfaceshader`, non-default values only, and `outputs:mtlx:surface`. Animated knobs author time samples.
   - verify: gtest — a default node authors the shader with no input values and the mtlx surface output; setting `coat_weight` authors that value; an animated `base_color` authors time samples; the knob table matches the nodedef in the image's MaterialX libraries input for input.
   - size: L
 
@@ -43,13 +43,13 @@ A new `USDOpenPBR` node for quick lookdev: one OpenPBR material per node, author
 
 - [ ] M445.P1.T3 — Live image inputs and Use Alpha
   - files: `Engine/Nodes/Scene/USDOpenPBR.cpp`, `Tests/Scene/USDOpenPBR_Test.cpp`
-  - approach: the eight image inputs in Scope **In**, served as `natron://` paths exactly as `USDMaterial`'s are (default path for a static image, per-frame time samples for an animated one), and winning over the file knob. Use Alpha drives `geometry_opacity` from the Base Color input's alpha, or Emission Color's, as `USDMaterial` does.
+  - approach: the eight image inputs in Scope **In**, served as `natron://` paths exactly as `USDPreviewSurface`'s are (default path for a static image, per-frame time samples for an animated one), and winning over the file knob. Use Alpha drives `geometry_opacity` from the Base Color input's alpha, or Emission Color's, as `USDPreviewSurface` does.
   - verify: gtest — a connected Base Color input authors a `natron://` image node; an animated source authors per-frame paths; with Use Alpha on, opacity is wired from the image's alpha; with it off, no opacity is authored.
   - size: M
 
 - [ ] M445.P1.T4 — Author the universal preview approximation
   - files: `Engine/Nodes/Scene/USDOpenPBR.cpp`, `Tests/Scene/USDOpenPBR_Test.cpp`
-  - approach: alongside the MaterialX network, author a `UsdPreviewSurface` on `outputs:surface` with the mappings in Scope **In**; textures and live inputs on mapped inputs become `UsdUVTexture`s, as on `USDMaterial`.
+  - approach: alongside the MaterialX network, author a `UsdPreviewSurface` on `outputs:surface` with the mappings in Scope **In**; textures and live inputs on mapped inputs become `UsdUVTexture`s, as on `USDPreviewSurface`.
   - verify: gtest — the preview's diffuseColor is base colour × weight; a base colour texture appears on both networks; `USDWrite` output holds both outputs.
   - size: M
 

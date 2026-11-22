@@ -2,7 +2,7 @@
 
 > Stub — elaborate into phases/tasks before starting (PLAN-FORMAT.md §5).
 
-Native geometry as a first-class texture-painting source, with no `GeoToUSD` hop (user, 2026-11-14: "native geometry support as a first class member, not via conversion"). Following the SOP/LOP split, texture painting becomes two nodes over one shared base: `USDTexturePaint` (M53 - Projected Texture Painting's `TexturePaint`, renamed during M53) and a new `GeoTexturePaint` with a Geometry input. Both output the same multi-layer UDIM texture image. M427 extracts the shared base (sessions, brushes, paint buffer, bake engine, cache, undo, Static/Animated mode, Bake Output) from `USDTexturePaint`, and puts a mesh-source interface under SceneRaster and TextureProjection with two adapters: `UsdGeomMesh` and `GeoDetail` (polygons and `uv` of any class, read directly). `GeoTexturePaint` selects primitives with a SOP-style group field. Its base under the paint is a connected Base image (UDIM), else `Cd`, else empty. While its panel is open, the Viewer previews the painted result on the matched geometry through the viewer-private session layer (M376 - Geometry Display). A final render still goes through `GeoToUSD` → `USDMaterial`. Design: `PLAN/DECISIONS/2026-11-14-native-geometry-texture-painting.md`.
+Native geometry as a first-class texture-painting source, with no `GeoToUSD` hop (user, 2026-11-14: "native geometry support as a first class member, not via conversion"). Following the SOP/LOP split, texture painting becomes two nodes over one shared base: `USDTexturePaint` (M53 - Projected Texture Painting's `TexturePaint`, renamed during M53) and a new `GeoTexturePaint` with a Geometry input. Both output the same multi-layer UDIM texture image. M427 extracts the shared base (sessions, brushes, paint buffer, bake engine, cache, undo, Static/Animated mode, Bake Output) from `USDTexturePaint`, and puts a mesh-source interface under SceneRaster and TextureProjection with two adapters: `UsdGeomMesh` and `GeoDetail` (polygons and `uv` of any class, read directly). `GeoTexturePaint` selects primitives with a SOP-style group field. Its base under the paint is a connected Base image (UDIM), else `Cd`, else empty. While its panel is open, the Viewer previews the painted result on the matched geometry through the viewer-private session layer (M376 - Geometry Display). A final render still goes through `GeoToUSD` → `USDPreviewSurface`. Design: `PLAN/DECISIONS/2026-11-14-native-geometry-texture-painting.md`.
 
 Blocked on: M53 - Projected Texture Painting merging into F11 - Texture Painting's branch (its TexturePaint core, which this splits; this milestone merges into that branch too), F15 - Native Geometry landing (M358 - Geometry Bridges And Display's attribute conventions, M376 - Geometry Display's geometry context and viewer-private session layer), and M428 - Native UV Operators for the UAT's flattened mesh.
 
@@ -29,7 +29,7 @@ Acceptance sketch:
 - Viewing an image node's 3D source in a 2D/3D-switchable Viewer (M430 - Viewer 2D/3D Switch); the paint nodes adopt it there.
 - Authoring UVs (M428 - Native UV Operators).
 - Deforming geometry: geometry is static, as in M53 - Projected Texture Painting.
-- Material binding on native geometry; rendering stays `GeoToUSD` → `USDMaterial`.
+- Material binding on native geometry; rendering stays `GeoToUSD` → `USDPreviewSurface`.
 
 **Edge cases:**
 - Any non-polygon primitive in the selection (packed Geometry, packed USD, polyline, point): node error, no painting.

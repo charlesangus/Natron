@@ -2651,7 +2651,7 @@ ApplyGraphOpsCommand::apply(const std::vector<Serialization::GraphOp>& ops)
     }
     applyGraphOps(project, ops);
     _graph->clearSelection();
-    GuiAppInstance* app = _graph->getGui()->getApp();
+    GuiAppInstancePtr app = _graph->getGui()->getApp();
     app->triggerAutoSave();
     app->renderAllViewers(true);
 }

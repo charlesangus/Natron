@@ -1,7 +1,7 @@
 """A geometry loop in the GUI: GeoPrimitive -> GeoForEachBegin -> GeoTransform -> GeoForEachEnd ->
 GeoToUSD -> Viewer1.
 
-Graph: a GeoPrimitive cube. The GeoForEachBegin extracts pieces. The GeoTransform's translate x is
+Graph: a GeoPrimitive cube with one face per side. The GeoForEachBegin extracts pieces. The GeoTransform's translate x is
 driven by loop.iteration, from 0 to PIECE_SPACING. The GeoForEachEnd iterates over pieces with Piece
 Method Each Element, so each of the cube's 6 faces is its own piece. The stage is read by flattening
 the GeoToUSD to a .usda through a probe USDWrite and opening it with pxr.
@@ -67,6 +67,7 @@ try:
 
     cube = make("GeoPrimitive", 0, 0)
     param(cube, "type").setValue(SHAPE_CUBE)
+    param(cube, "cubeSubdivisions").set(1, 1, 1)  # one face per side, as CUBE_FACES and CUBE_POINTS count
     begin = make("GeoForEachBegin", 0, 100)
     require(begin.connectInput(0, cube), "connect the GeoPrimitive into the GeoForEachBegin")
     param(begin, "method").setValue(METHOD_EXTRACT)

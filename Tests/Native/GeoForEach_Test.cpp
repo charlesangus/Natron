@@ -119,6 +119,10 @@ protected:
         KnobChoicePtr type = std::dynamic_pointer_cast<KnobChoice>(_cube->getKnobByName(kGeoPrimitiveParamType));
         ASSERT_TRUE(type != NULL);
         type->setValue((int)eGeoShapeCube);
+        // The default cube splits each side into 2x2 faces; the piece counts assume one face per side.
+        for (int d = 0; d < 3; ++d) {
+            setInt(_cube, kGeoPrimitiveParamCubeSubdivisions, 1, d);
+        }
     }
 
     virtual void TearDown() OVERRIDE
@@ -233,11 +237,12 @@ protected:
 
     static void setInt(const NodePtr& node,
                        const char* name,
-                       int value)
+                       int value,
+                       int dimension = 0)
     {
         KnobIntPtr knob = std::dynamic_pointer_cast<KnobInt>(node->getKnobByName(name));
         ASSERT_TRUE(knob != NULL) << name;
-        knob->setValue(value);
+        knob->setValue(value, ViewSpec::all(), dimension);
     }
 
     static void setBool(const NodePtr& node,

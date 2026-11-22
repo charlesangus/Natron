@@ -83,7 +83,7 @@ What has been checked on the server: a compile in `natron-dev` (ccache 4.13.6) w
 
 Precondition: the user has set the repo secret `CCACHE_REMOTE_STORAGE` to the public HTTPS URL.
 
-- [ ] M493.P2.T1 — Use the remote cache in `remote-build.yml`, with a switch
+- [x] M493.P2.T1 — Use the remote cache in `remote-build.yml`, with a switch
   - files: `.github/workflows/remote-build.yml`, `tools/ci/remote/build.sh`, `tools/ci/remote/README.md`
   - approach:
     - Add a `workflow_dispatch` boolean input `remote_ccache` (default `true`) and a matching `--no-remote-ccache` flag in `tools/ci/remote/build.sh`.
@@ -98,7 +98,7 @@ Precondition: the user has set the repo secret `CCACHE_REMOTE_STORAGE` to the pu
     - `lint-ci` green.
   - size: M
 
-- [ ] M493.P2.T2 — Measure CI wall time with and without the remote cache
+- [x] M493.P2.T2 — Measure CI wall time with and without the remote cache
   - files: none (a measurement; results go in this file's Decisions section)
   - approach:
     - On one commit, dispatch `remote-build.yml` `fast` and `debug` twice each: once with `remote_ccache=false` and once with it on.
@@ -144,3 +144,5 @@ Precondition: the user has set the repo secret `CCACHE_REMOTE_STORAGE` to the pu
 - 2026-11-21 — **M493.P1.T2 verified** on ab912a864's sources in .worktrees/m493 (natron-dev from image ada6a1188a9c9f28, HTTPS remote). Run A, debug, empty local cache: 1779 misses, 3549 remote writes, 0 errors/timeouts, 2 h 18 min at -j3. Run B, fresh build dir, its own empty local cache: **1777/1779 remote hits**, 0 errors, 9 min 27 s. With `.local/ccache-remote` moved away, devshell passes no `CCACHE_REMOTE_STORAGE` and `ccache -p` shows `remote_storage` empty. bash -n and shellcheck clean.
 - 2026-11-21 — **P2.T2 first pass:** fast off 1996 s / on 1669 s (server had no fast objects, 0/1028 hits: no overhead); debug off 5039 s / on 5317 s with **0/1784 remote hits** although the server held every debug object from P1.T2. The consultant ruled out paths (base_dir relativises worktree and CI builds identically), image, compiler and flags; the store differed. The secret had been an http URL with the helper's `@` attribute.
 - 2026-11-21 — **Fixes:** 2f1770c1a adds tools/ci/ccache-remote-layout.sh, used by CI and devshell, which sets `@layout=bazel` (https) or `layout=bazel` (http) whatever the stored spelling, and `ccache -z` after the CI restore. The user then re-entered the secret as the whole local line (`url=…`); ccache rejected it as an invalid scheme, **failed every compile**, and printed the URL with only the credentials masked. The logs of runs 44965552172 and 44965207715 were deleted; earlier M493 runs never mention the domain. 0d1709e24 accepts a copied `url=`/`docker_url=` key, turns the remote off with a fixed message for anything not http(s), masks the bare host, and checks `ccache --print-config` under the value. Verification debug run dispatched with the current secret.
+- 2026-11-22 — 820ebc4d8 replaces the `ccache --print-config` check (not a ccache option; it rejected every value) with a one-file probe compile, checked in the M493 image: a malformed value fails it, an unreachable server passes.
+- 2026-11-22 — **P2.T1 verified and P2.T2 verdict: win.** Remote-build debug, local layer cold (branch caches deleted): remote off 5039 s build step; **remote on 328 s, 1777/1784 remote hits** (run 44979152185, secret normalised to https, no domain in the log). Fast with a cold remote (0/1028 hits) 1669 s vs off 1996 s, so misses and uploads cost nothing measurable. No remote timeouts or errors. P2.T3 proceeds.

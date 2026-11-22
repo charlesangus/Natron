@@ -198,11 +198,18 @@ jobs:
           echo "::add-mask::${normalised}"
           host="$(ccache_remote_host "${normalised}")"
           [[ -z "${host}" ]] || echo "::add-mask::${host}"
-          if ! CCACHE_REMOTE_STORAGE="${normalised}" ccache --print-config >/dev/null 2>&1; then
+          # ccache parses the remote URL only when it stores or fetches, so probe with a compile.
+          probe_dir="$(mktemp -d)"
+          echo 'int natron_ccache_probe;' >"${probe_dir}/probe.c"
+          if ! (cd "${probe_dir}" && mkdir ccache-probe-dir \
+            && CCACHE_DIR="${probe_dir}/ccache-probe-dir" CCACHE_REMOTE_STORAGE="${normalised}" \
+              ccache cc -c probe.c -o probe.o) >/dev/null 2>&1; then
+            rm -rf -- "${probe_dir:?}"
             echo "remote ccache: config rejected, off"
             echo "CCACHE_REMOTE_STORAGE=" >>"${GITHUB_ENV}"
             exit 0
           fi
+          rm -rf -- "${probe_dir:?}"
           echo "CCACHE_REMOTE_STORAGE=${normalised}" >>"${GITHUB_ENV}"
           case "${normalised}" in
             https://*) echo "remote ccache: https, layout set" ;;

@@ -155,6 +155,28 @@ public:
     }
 
     /**
+     * @brief For a writer whose output kind is eDataKindGeometry: writes @p detail, the node's own
+     * output evaluated at @p time and @p view, for one frame of its render. Called from a render
+     * thread, frames possibly in parallel unless rendersFramesInOrder(). On failure, sets a
+     * persistent error naming the cause and returns eStatusFailed, which fails the render.
+     **/
+    virtual StatusEnum writeGeometryFrame(double /*time*/,
+                                          ViewIdx /*view*/,
+                                          const GeoDetailConstPtr& /*detail*/)
+    {
+        return eStatusOK;
+    }
+
+    /**
+     * @brief Whether a render of this node must run its frames one at a time and in order, as when
+     * each frame depends on the previous one's result. Read when the render opens a render thread.
+     **/
+    virtual bool rendersFramesInOrder() const
+    {
+        return false;
+    }
+
+    /**
      * @brief The frame range the running render of this node was asked for. Returns false when
      * no render of it is running.
      **/

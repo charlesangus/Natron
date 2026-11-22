@@ -73,6 +73,9 @@ set(Tests_SOURCES
     GeoDetailCache_Test.cpp
     GeoDelete_Test.cpp
     GeoDisplace_Test.cpp
+    GeoFileFormat_Test.cpp
+    GeoFileCache_Test.cpp
+    GeoFile_Test.cpp
     GeoGroup_Test.cpp
     GeoImportOBJ_Test.cpp
     GeoIndexMap_Test.cpp

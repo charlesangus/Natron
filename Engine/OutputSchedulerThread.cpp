@@ -139,6 +139,39 @@ unsupportedOutputKindMessage(const NodePtr& writer)
     return std::string("No scheduler support for the output data kind of ") + writer->getScriptName_mt_safe() + " yet";
 }
 
+// Evaluates a geometry writer's own output and hands it to its writeGeometryFrame(). False when the
+// render must stop with *error, which is then never empty; true otherwise, with *retCode the
+// evaluation's code.
+bool
+evaluateAndWriteGeometryFrame(const OutputEffectInstancePtr& writer,
+                              double time,
+                              ViewIdx view,
+                              EffectInstance::RenderRoIRetCode* retCode,
+                              std::string* error)
+{
+    GeoDetailConstPtr detail;
+    std::string evaluationError;
+    *retCode = writer->evaluateGeometry(EffectInstance::EvaluateGeometryArgs(time, view, false /*byPassCache*/), &detail, &evaluationError);
+    if (*retCode == EffectInstance::eRenderRoIRetCodeFailed) {
+        *error = evaluationError.empty() ? std::string("Error caught while rendering") : evaluationError;
+
+        return false;
+    }
+    if ((*retCode != EffectInstance::eRenderRoIRetCodeOk) || !detail) {
+        return true;
+    }
+    if (writer->writeGeometryFrame(time, view, detail) == eStatusFailed) {
+        QString message;
+        int type = 0;
+        writer->getNode()->getPersistentMessage(&message, &type, false);
+        *error = message.isEmpty() ? std::string("Error caught while writing") : message.toStdString();
+
+        return false;
+    }
+
+    return true;
+}
+
 NATRON_NAMESPACE_ANONYMOUS_EXIT
 
 
@@ -1646,6 +1679,12 @@ OutputSchedulerThread::adjustNumberOfThreads(int* newNThreads,
 {
     ///How many parallel renders the user wants
     int userSettingParallelThreads = appPTR->getCurrentSettings()->getNumberOfParallelRenders();
+    {
+        const OutputEffectInstancePtr output = _imp->outputEffect.lock();
+        if (output && output->rendersFramesInOrder()) {
+            userSettingParallelThreads = 1;
+        }
+    }
 
     // The load is read before renderThreadsMutex is taken so that this lock is never held while the
     // RenderScheduler's is. Counting and creating or flagging under one lock keeps two finishing frame
@@ -2542,6 +2581,25 @@ private:
                     _imp->scheduler->notifyFrameRendered(time, viewsToRender[view], viewsToRender, stats, eSchedulingPolicyFFA);
                     continue;
                 }
+                if (outputKind == eDataKindGeometry) {
+                    // Geometry has no region or planes to request: the frame is the writer's
+                    // whole output, which it then writes.
+                    EffectInstance::RenderRoIRetCode geometryRetCode = EffectInstance::eRenderRoIRetCodeOk;
+                    std::string error;
+                    if (!evaluateAndWriteGeometryFrame(output, time, viewsToRender[view], &geometryRetCode, &error)) {
+                        _imp->scheduler->notifyRenderFailure(error);
+
+                        return;
+                    }
+                    if (geometryRetCode != EffectInstance::eRenderRoIRetCodeOk) {
+                        _imp->scheduler->notifyRenderFailure(geometryRetCode == EffectInstance::eRenderRoIRetCodeAborted ? "Render aborted" : "Error caught while rendering");
+
+                        return;
+                    }
+                    notifyFrameStatsObserver(time, viewsToRender[view], stats);
+                    _imp->scheduler->notifyFrameRendered(time, viewsToRender[view], viewsToRender, stats, eSchedulingPolicyFFA);
+                    continue;
+                }
 
                 // The frame's region, layers and layout all come from the snapshot its args took,
                 // so an edit made while the sequence renders cannot pair one state's region with
@@ -2802,6 +2860,15 @@ DefaultScheduler::processFrame(const BufferedFrames& frames)
                                                              effect.get(),
                                                              frame.time);
                 retCode = effect->renderDeepRoI(renderArgs, &deepImage);
+                break;
+            }
+            case eDataKindGeometry: {
+                std::string error;
+                if (!evaluateAndWriteGeometryFrame(effect, frame.time, it->view, &retCode, &error)) {
+                    notifyRenderFailure(error);
+
+                    return;
+                }
                 break;
             }
             default:

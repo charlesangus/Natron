@@ -212,3 +212,4 @@ are from `milestone/m336-heavy-scene-acceptance` as of 2026-11-17. Re-check them
   - **GUI script:** scene_viewer_budget.py.
 
   main's #297 (196d571e3) is cherry-picked as 512b25890, so the F4-based branch packages an AppImage. It drops out when M481 rebases onto F4 after F4 merges main. **PM calls:** picking an instance stand-in selects the prototype path, as Storm's pick does; the HUD shows faces drawn after demotion against the limit (the solver publishes both). Gate running with the GUI script.
+- 2026-11-22 — Merged F4 (with M336 squashed in) as a36914884: 27 hunks in 7 files resolved keeping both sides (draw filter, SceneDrawBoxes worker, viewer overlay pass, bench, tests); appliedBudget now guarded by budgetMutex since F4 draws overlays on the main thread. **Naming (user):** M481's budget-demoted boxes are renamed from "stand-in" to "Budget Boxes" (`budgetBoxes`), since F4's Scene Stand-In already means the wireframe boxes drawn in place of the scene.

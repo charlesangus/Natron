@@ -94,7 +94,7 @@ Scouting facts (2026-10-11): `Qt::Network` is already linked into Engine, Gui an
   - verify: passes under the GUI harness. The build is required.
   - size: M
 
-- [ ] M105.P2.T4 — Phase 105.2 build, full ctest and smoke
+- [x] M105.P2.T4 — Phase 105.2 build, full ctest and smoke
   - files: none
   - approach: `NATRON_BUILD_JOBS=4 tools/ci/local/build.sh debug`, then `tools/ci/local/test.sh ctest debug` and `smoke debug`.
   - verify: everything green. The build is required.
@@ -147,3 +147,4 @@ full ctest, smoke and CI are green; the user signs off the UAT.
   - **PM calls:** a client's Save asks the host to save; Save As or Save and Increment Version leave the session; joining with work in the current graph opens a new window.
   - **Still open:** the two Phase-1 mask-switch races; the window title keeps the host's file name after a disconnect (fix before UAT); a client peer count is left to M106.
 - 2026-11-21 — Open defects fixed in 4ee9bdee8 (milestone/m105-live-session-core): after any host edit a client re-asserts mask switches from its own pending edits (both race directions), resyncs end with explicit switch values, and a detached copy is titled Untitled.ntpz; tests in LiveSessionConvergence_Test (LiveSessionMaskSwitchTest) and LiveSessionProject_Test. **Behaviour change beyond live sessions:** the project loader now keeps a saved mask switch turned off when it reconnects a mask input (it used to reopen switched on); PM accepted it as the correct save/load round trip, flagged to the user. P2.T4 runs remotely (`tools/ci/remote/build.sh debug --tests`) while the local container is busy.
+- 2026-11-21 — P2.T4 green remotely (run 44954667714, debug, 899/899 on both schedulers plus smoke) on 1b1d7cf90, which also fixes two LiveSessionProjectTest failures present since the tests were added: a project loaded from bytes kept an empty [Project] folder, and a host never marked client edits unsaved (now Project::markUnsavedChanges from SessionHost::applyClientOps). P3.T1 (two-machine AppImage UAT) goes to F5's Feature UAT. Next: PR into feature/f5-live-sessions-v1 and its review.

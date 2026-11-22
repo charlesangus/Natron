@@ -680,8 +680,6 @@ future core work has solid ground to build on.
 | F35 | Pyro | open |  |  | feature/f35-pyro | A sparse-tile smoke and fire solver on native VDB volumes, with sourcing, shaping, collisions, look baking and quick setups, on GPU and CPU. Waits for F18 - Geometry Loops And Solver and F22 - Native VDB to land. |
 
 # Open questions
-- **M104 - Merge Resolution UI (2026-11-22):** (1) conflicts carry no "handler options", so there's no "keep both keys" choice; (2) input, insert/delete, group, adoption and roto-shape conflicts don't store each side's state, so only value and curve-key conflicts can pick Mine/Theirs/Base — the rest can only be accepted. The plan asks for input and structure resolutions; both need M103's conflict model to record each side. Extend M103's model inside M104, or ship value/key resolutions now and file the rest as a follow-up?
-
 - **Main freeze until F4 - Heavy Scene Viewer lands (user, 2026-11-22):** land F4 first, as a priority; merge nothing else to `main` before it. Feature-branch merges (into F16, F27, F33, F36 …) may continue. Held for main: M509 - Cancel-Aware GPU Fence Wait (#335) and every other main-targeted PR.
 
 - **M105 - Live Session Core (2026-11-22):** a value change to a user knob is sent as a whole `SetUserKnobsOp` (`GraphEditRecorder.cpp:~385`), which on every peer deletes and rebuilds all user knobs and their panel page (`GraphOpApply.cpp:431-451`), so peers flicker on each user-knob edit. A per-value op would fix it: in M105's scope, or a follow-up?

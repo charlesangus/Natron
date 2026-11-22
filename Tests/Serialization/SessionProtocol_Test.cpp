@@ -99,7 +99,7 @@ everyMessage()
     std::vector<SessionMessage> messages;
     messages.push_back(HelloMessage { kProtocolVersion, "Ana \"the compositor\"", "2.6.0" });
     messages.push_back(WelcomeMessage { 3, NodeUiColor { 0.25f, 0.5f, 1.f }, 42, "comp.ntpz", sampleSnapshot() });
-    messages.push_back(WelcomeMessage { 1, NodeUiColor {}, 0, std::string(), std::string(), std::vector<std::byte>() });
+    messages.push_back(WelcomeMessage { 1, NodeUiColor {}, 0, std::string(), std::vector<std::byte>() });
     messages.push_back(OpsMessage { 9, sampleOps() });
     messages.push_back(OpsMessage { 10, std::vector<GraphOp>() });
     messages.push_back(BroadcastMessage { 43, 3, 9, sampleOps() });

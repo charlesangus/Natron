@@ -42,6 +42,21 @@
 
 NATRON_NAMESPACE_ENTER
 
+PythonUnlockedWhileWaiting::PythonUnlockedWhileWaiting()
+    : _state(nullptr)
+{
+    if (Py_IsInitialized() && PyGILState_Check()) {
+        _state = PyEval_SaveThread();
+    }
+}
+
+PythonUnlockedWhileWaiting::~PythonUnlockedWhileWaiting()
+{
+    if (_state) {
+        PyEval_RestoreThread(_state);
+    }
+}
+
 namespace {
 struct BarrierState {
     std::mutex mutex;
@@ -102,29 +117,6 @@ state()
 }
 
 thread_local int readDepth = 0;
-
-// Releases the Python GIL while the calling thread waits, if it holds it: a reader may need the
-// GIL (expressions) to finish the evaluation the writer is waiting for.
-class PythonUnlockedWhileWaiting {
-public:
-    PythonUnlockedWhileWaiting()
-        : _state(nullptr)
-    {
-        if (Py_IsInitialized() && PyGILState_Check()) {
-            _state = PyEval_SaveThread();
-        }
-    }
-
-    ~PythonUnlockedWhileWaiting()
-    {
-        if (_state) {
-            PyEval_RestoreThread(_state);
-        }
-    }
-
-private:
-    PyThreadState* _state;
-};
 
 bool
 onMainThread()

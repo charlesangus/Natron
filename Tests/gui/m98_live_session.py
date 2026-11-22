@@ -86,11 +86,27 @@ try:
         QApplication.sendEvent(widget, QKeyEvent(QEvent.KeyRelease, key, modifiers))
         QApplication.processEvents()
 
-    def action(object_name):
+    # An action is only used while its window's wrapper is held: PySide marks a child's wrapper
+    # deleted once its parent's is collected, so no action wrapper leaves these helpers.
+    def action_info(object_name):
+        """The File action's enabled state and text, or None when there is no such action."""
         win = main_gui()
-        if win is None:
+        a = win.findChild(QAction, object_name) if win is not None else None
+        if a is None:
             return None
-        return win.findChild(QAction, object_name)
+        return {"enabled": a.isEnabled(), "text": a.text()}
+
+    def action_enabled(object_name):
+        info = action_info(object_name)
+        return info is not None and info["enabled"]
+
+    def trigger_action(object_name):
+        win = main_gui()
+        a = win.findChild(QAction, object_name) if win is not None else None
+        if a is None:
+            return False
+        a.trigger()
+        return True
 
     def status_text():
         win = main_gui()
@@ -265,12 +281,11 @@ try:
     # ---- client ----------------------------------------------------------------------------
 
     def client_join(port):
-        a = action("actionJoinLiveSession")
-        if a is None or not a.isEnabled():
+        if not action_enabled("actionJoinLiveSession"):
             return "no enabled Join Live Session action"
         seen = {}
         fill_dialog("joinLiveSessionDialog", {"host": "127.0.0.1", "port": port, "displayName": "client"}, seen)
-        a.trigger()
+        trigger_action("actionJoinLiveSession")
         if not seen.get("dialog"):
             return "the join dialog did not show"
         if seen.get("missing"):
@@ -281,8 +296,7 @@ try:
         title = main_gui().windowFilePath()
         if not title.startswith("Live: "):
             return "the window title is %r, not the session's" % title
-        leave = action("actionLeaveLiveSession")
-        if leave is None or not leave.isEnabled() or action("actionHostLiveSession").isEnabled():
+        if not action_enabled("actionLeaveLiveSession") or action_enabled("actionHostLiveSession"):
             return "the session actions are not enabled for a joined session"
         return "ok"
 
@@ -399,7 +413,7 @@ try:
         return "ok"
 
     def client_ended():
-        ok = yield ("until", lambda: status_text() == "" and action("actionJoinLiveSession").isEnabled(), 30.0)
+        ok = yield ("until", lambda: status_text() == "" and action_enabled("actionJoinLiveSession"), 30.0)
         if not ok:
             return "the client still shows a session (%r)" % status_text()
         boxes = [w for w in QApplication.topLevelWidgets() if isinstance(w, QMessageBox)
@@ -581,13 +595,12 @@ try:
 
         # ---- host
         gt.section("host")
-        a = action("actionHostLiveSession")
-        require(a is not None and a.isEnabled(), "File has an enabled Host Live Session action")
+        require(action_enabled("actionHostLiveSession"), "File has an enabled Host Live Session action")
         seen = {}
         # Port 0 is Any Free Port: the host listens on one the system chooses, so no other process can
         # take it between choosing and listening.
         fill_dialog("hostLiveSessionDialog", {"bindAddress": "127.0.0.1", "port": "0", "displayName": "host"}, seen)
-        a.trigger()
+        trigger_action("actionHostLiveSession")
         require(seen.get("dialog"), "Host Live Session shows its dialog")
         check(not seen.get("missing"), "the host dialog has Bind Address, Port and Display Name (%s)" % seen.get("missing"))
         warning = seen.get("warning") or ""
@@ -597,7 +610,7 @@ try:
         require(ok, "the status bar says the project is hosted on a port", status_text())
         port = int(hosted.match(status_text()).group(1))
         check(port > 0, "the host listens on the port the system chose: %d" % port)
-        check(action("actionLeaveLiveSession").isEnabled() and not action("actionJoinLiveSession").isEnabled(),
+        check(action_enabled("actionLeaveLiveSession") and not action_enabled("actionJoinLiveSession"),
               "while hosting, only Leave is enabled")
 
         # ---- join
@@ -650,11 +663,11 @@ try:
 
         # ---- stop
         gt.section("stop")
-        leave = action("actionLeaveLiveSession")
-        require(leave is not None and leave.isEnabled(), "Stop Hosting Session is enabled")
-        check(leave.text() == "Stop Hosting Session", "the host's leave action reads Stop Hosting Session (%r)" % leave.text())
-        leave.trigger()
-        ok = yield ("until", lambda: status_text() == "" and action("actionHostLiveSession").isEnabled(), 10.0)
+        leave = action_info("actionLeaveLiveSession")
+        require(leave is not None and leave["enabled"], "Stop Hosting Session is enabled")
+        check(leave["text"] == "Stop Hosting Session", "the host's leave action reads Stop Hosting Session (%r)" % leave["text"])
+        trigger_action("actionLeaveLiveSession")
+        ok = yield ("until", lambda: status_text() == "" and action_enabled("actionHostLiveSession"), 10.0)
         check(ok, "the host's status bar clears and Host is enabled again")
         check(main_gui().windowFilePath().endswith("m98_host.ntpz"), "the host keeps its own file")
         answer = yield from client_do("ended")

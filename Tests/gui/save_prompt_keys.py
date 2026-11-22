@@ -31,7 +31,7 @@ DIALOG_TIMEOUT_S = 20.0
 SETTLE_MS = 700
 AUTOSAVE_DELAY_S = 1
 AUTOSAVE_WAIT_MS = 4000
-CONSTANT = "net.sf.openfx.ConstantPlugin"
+CONSTANT = "Constant"
 
 try:
     import NatronEngine

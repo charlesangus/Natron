@@ -2608,6 +2608,7 @@ private:
                             if (graph.tasks.empty()) {
                                 fallbackReason = "request does not reach the writer";
                             } else {
+                                RenderScheduler::pruneBehindCacheHits(graph, context);
                                 placeRenderGraph(graph, context);
                                 future = appPTR->getRenderScheduler()->submit(context, std::move(graph), RenderScheduler::Priority::Background);
                             }
@@ -3200,10 +3201,25 @@ private:
 
 
         if ( ( args[0] && (status[0] != ViewerInstance::eViewerRenderRetCodeFail) ) || ( args[1] && (status[1] != ViewerInstance::eViewerRenderRetCodeFail) ) ) {
+            U64 renderAges[2] = { 0, 0 };
+            bool hadRender[2] = { false, false };
+            for (int i = 0; i < 2; ++i) {
+                if (args[i] && args[i]->params && args[i]->params->abortInfo) {
+                    renderAges[i] = args[i]->params->abortInfo->getRenderAge();
+                    hadRender[i] = true;
+                }
+            }
             try {
                 stat = viewer->renderViewer(view, false, true, viewerHash, true, NodePtr(), true,  args, ViewerCurrentFrameRequestSchedulerStartArgsPtr(), stats);
             } catch (...) {
                 stat = ViewerInstance::eViewerRenderRetCodeFail;
+            }
+            if (stat == ViewerInstance::eViewerRenderRetCodeFail) {
+                for (int i = 0; i < 2; ++i) {
+                    if (hadRender[i]) {
+                        viewer->renderFailed(i, renderAges[i]);
+                    }
+                }
             }
         }
         if (stat == ViewerInstance::eViewerRenderRetCodeFail) {
@@ -3964,6 +3980,12 @@ public:
         }
 
         if (stat == ViewerInstance::eViewerRenderRetCodeFail) {
+            // An exception or a lost UI context leaves the requests unsettled; settling twice is a no-op.
+            for (int i = 0; i < 2; ++i) {
+                if (hadRender[i]) {
+                    _args->viewer->renderFailed(i, renderAges[i]);
+                }
+            }
             /// Don't report any error message otherwise we will flood the viewer with irrelevant messages such as
             ///"Render failed", instead we let the plug-in that failed post an error message which will be more helpful.
             // renderViewer() drops the arguments of each input that failed.

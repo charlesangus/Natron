@@ -53,7 +53,7 @@ inline constexpr InputSpec kIWarpInputs[] = {
 };
 
 inline constexpr ImagePipelineSpec kIWarpPipeline = {
-    .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed },
+    .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed, Stage::EdgeMode },
     .layers = LayerPolicy::all(),
     .op = OpKind::Custom,
 };
@@ -123,7 +123,8 @@ protected:
     struct WarpSettings {
         Resampler::FilterSpec filter;
         bool clamp = false;
-        bool blackOutside = true;
+        // The Source's resolved mode, which warpSettings() sets after readWarpSettings().
+        EdgeMode edgeMode = EdgeMode::Black;
         bool invert = false;
         Resampler::BlurSettings blur;
     };
@@ -176,6 +177,11 @@ protected:
                     const std::function<void(const TransformMath::Mat3&)>& visitMatrix = nullptr) const;
 
 private:
+    /**
+     * @brief readWarpSettings() with the edge mode the Source is read under.
+     **/
+    void warpSettings(double time, ViewIdx view, WarpSettings* settings) const;
+
     /**
      * @brief The Source over the output window pulled back through the transforms (see
      * getRegionOfDefinition()), grown for the filter at the transforms' scale, or the whole Source

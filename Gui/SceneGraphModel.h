@@ -261,12 +261,48 @@ public:
     void refresh();
 
     /**
+     * @brief Whether the stage is read on a thread of its own, what it reads applied from the event
+     * loop, rather than under the main thread's read: the edited subtrees' prims for refresh(), and
+     * the rows fetchMore() and indexOfPath() read. Edits read for rows the tree no longer has are
+     * dropped, and ones for rows changed meanwhile are read again; gathered edits are applied a
+     * slice at a time. A row whose children are being read shows the loading row if it has none
+     * yet, and cannot fetch more until they land. Off by default.
+     **/
+    void setReadsOnWorker(bool onWorker);
+
+    // How long one slice of gathered edits applies for at most, in milliseconds; at least one
+    // update is applied per slice, so 0 applies one at a time. 8 by default.
+    void setApplySliceMs(int ms);
+
+    // How many slices of gathered edits have been applied since the model was made.
+    int getApplySliceCount() const;
+
+    /**
+     * @brief While deferred, as while no view shows the rows, refresh(), settleLoads() and
+     * refreshDrawStates() only mark the model stale; undeferring a stale model refreshes it once,
+     * which reads every edit made meanwhile. Work already under way finishes. Off by default.
+     **/
+    void setDeferred(bool deferred);
+
+    bool isDeferred() const;
+
+    // Whether a deferred model has edits, loads or draw states it has yet to read.
+    bool isStale() const;
+
+    // Whether rows the loads that ended have yet to be redrawn for, a slice at a time, remain.
+    bool hasPendingSettle() const;
+
+    // How many slices of ended loads' rows have been redrawn since the model was made.
+    int getSettleSliceCount() const;
+
+    /**
      * @brief The index of the prim at path, column 0, reading the children on the way when populate.
-     * Invalid with *busy set when an edit held the stage; deferredReadsDone() says when to ask again.
+     * Invalid with *busy set when an edit held the stage, or, with reads on the worker, while the
+     * rows on the way are read there; deferredReadsDone() says when to ask again.
      **/
     QModelIndex indexOfPath(const QString& path, bool populate, bool* busy = nullptr);
 
-    // Whether a read that found the stage busy has yet to happen.
+    // Whether a read that found the stage busy, or one of rows on the worker, has yet to happen.
     bool hasOwedReads() const;
 
     // Whether the model is adding, removing or resetting rows, so that a view's selection is
@@ -344,7 +380,8 @@ public:
     Qt::DropActions supportedDragActions() const override;
 
 Q_SIGNALS:
-    // Every read owed for rows has now happened: what asked for rows and found the stage busy can ask again.
+    // Every read owed for rows has now happened, on the worker too: what asked for rows and was told
+    // to wait can ask again.
     void deferredReadsDone();
 
 private:

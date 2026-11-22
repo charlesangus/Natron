@@ -327,6 +327,17 @@ try:
         index = find(path)
         return index.data(STATE_ROLE) if index.isValid() else None
 
+    def opened(*paths):
+        """A poll that opens each of paths once the model has read its row, true when all are open."""
+        def step():
+            for path in paths:
+                index = find(path)
+                if not index.isValid():
+                    return False
+                tree().expand(index)
+            return True
+        return step
+
     def pivot():
         p = edit.getParam("pivot")
         return tuple(float(p.getValue(d)) for d in range(3))
@@ -419,9 +430,7 @@ try:
         split = None
         ok = yield ("until", lambda: panel() is not None and panel().isVisible() and find(WORLD).isValid(), POLL_TIMEOUT_S)
         require(ok, "the Scene Graph panel lists /World")
-        for path in (WORLD, BLOCK0):
-            tree().expand(find(path))
-        ok = yield ("until", lambda: state(TARGET) == STATE_UNLOADED, POLL_TIMEOUT_S)
+        ok = yield ("until", lambda: opened(WORLD, BLOCK0)() and state(TARGET) == STATE_UNLOADED, POLL_TIMEOUT_S)
         require(ok, "the target building's row is listed as unloaded (state %r)" % (state(TARGET),))
         target_row = find(TARGET)
         target_tree = tree()

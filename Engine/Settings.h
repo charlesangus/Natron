@@ -48,6 +48,13 @@ NATRON_NAMESPACE_ENTER
 struct GpuDeviceSummary;
 enum class AiModelTask;
 
+// How a viewer marks an image that is out of date, in the order of the staleCueStyle choices.
+enum StaleCueStyleEnum : int {
+    eStaleCueStyleOff = 0,
+    eStaleCueStyleSubtleOutline,
+    eStaleCueStyleCornerDot
+};
+
 /*The current settings in the preferences menu.*/
 class Settings
     : public KnobHolder
@@ -106,6 +113,22 @@ public:
         eViewer3DLightingHeadlight
     };
 
+    // When the 3D viewer draws boxes in place of the scene.
+    enum SceneStandInModeEnum {
+        eSceneStandInModeOff = 0,
+        // While the view moves, when the last full frame took longer than the budget.
+        eSceneStandInModeInteraction,
+        // In place of every full frame.
+        eSceneStandInModeAlways
+    };
+
+    // What the 3D viewer's stand-in draws a box for.
+    enum SceneStandInBoxesEnum {
+        // Each model prim, or each draw state row on a stage without models.
+        eSceneStandInBoxesModels = 0,
+        eSceneStandInBoxesRows
+    };
+
     enum KnownHostNameEnum
     {
         eKnownHostNameNatron = 0,
@@ -160,7 +183,11 @@ public:
 
     U64 getMaximumDiskCacheNodeSize() const;
 
-    U64 getMaximumDeepImageCacheSize() const;
+    U64 getDiskTierSizeBytes() const;
+
+    std::string getDiskTierLocation() const;
+
+    static std::string defaultDiskTierLocation();
 
     double getUnreachableRamPercent() const;
 
@@ -367,9 +394,18 @@ public:
     ImageBitDepthEnum getViewersBitDepth() const;
     int getViewerTilesPowerOf2() const;
     int getCheckerboardTileSize() const;
+    StaleCueStyleEnum getStaleCueStyle() const;
+    int getStaleCueDelayMs() const;
+    int getStaleCueHoldMs() const;
+
     void getCheckerboardColor1(double* r, double* g, double* b, double* a) const;
     void getCheckerboardColor2(double* r, double* g, double* b, double* a) const;
     bool isAutoProxyEnabled() const;
+    void setAutoProxyEnabled(bool enabled);
+    // Whether the viewer rounds its zoom to the nearest power of two rather than the nearest finer one.
+    bool isViewerMipRoundingNearest() const;
+    // Whether Raw Demosaic below 100% demosaics at full resolution and downscales, rather than averaging photosites.
+    bool isZoomedOutDemosaicFull() const;
     unsigned int getAutoProxyMipmapLevel() const;
     int getMaxOpenedNodesViewerContext() const;
 
@@ -405,6 +441,13 @@ public:
 
     // Sets the preference and saves it.
     void setViewer3DLighting(Viewer3DLightingEnum lighting);
+
+    SceneStandInModeEnum getSceneStandInMode() const;
+    // Milliseconds a full frame of the 3D viewer may take before its stand-in shows while the view moves.
+    int getSceneStandInBudgetMs() const;
+    SceneStandInBoxesEnum getSceneStandInBoxes() const;
+    // Milliseconds the view stays still before the full frame that replaces the stand-in starts.
+    int getSceneStandInRefillDelayMs() const;
     ///////////////////////////////////////////////////////
 
     bool areRGBPixelComponentsSupported() const;
@@ -437,14 +480,14 @@ public:
      **/
     std::string getDefaultOCIOConfigSourceForNewProjects() const;
 
-    bool isAggressiveCachingEnabled() const;
-
     RenderSchedulerModeEnum getRenderSchedulerMode() const;
 
     GpuComputeModeEnum getGpuComputeMode() const;
     // The UUID id of the chosen GPU device, or "" for automatic.
     std::string getGpuDevice() const;
     std::uint64_t getGpuMemoryBudgetMB() const;
+    // 0 for half the memory of the graphics card.
+    std::uint64_t getGpuTextureBudgetMB() const;
 
     bool isAutoTurboEnabled() const;
 
@@ -616,6 +659,7 @@ private:
     KnobChoicePtr _gpuComputeMode;
     KnobChoicePtr _gpuDevice;
     KnobIntPtr _gpuMemoryBudgetMB;
+    KnobIntPtr _gpuTextureBudget;
     KnobStringPtr _gpuStatus;
 
     // AI
@@ -665,7 +709,7 @@ private:
 
     // Caching
     KnobPagePtr _cachingTab;
-    KnobBoolPtr _aggressiveCaching;
+    KnobChoicePtr _cacheAdmissionPolicy;
     ///The percentage of the value held by _maxRAMPercent to dedicate to playback cache (viewer cache's in-RAM portion) only
     KnobStringPtr _maxPlaybackLabel;
 
@@ -689,8 +733,9 @@ private:
 
     /// Deep renders are large and must not be able to evict the entire 2D image cache above, so
     /// they get a separate budget entirely, RAM-only (deep has no on-disk cache in v1).
-    KnobIntPtr _maxDeepImageCacheGB;
     KnobPathPtr _diskCachePath;
+    KnobPathPtr _diskTierLocation;
+    KnobIntPtr _diskTierSize;
     KnobButtonPtr _wipeDiskCache;
 
     // Viewer
@@ -698,10 +743,15 @@ private:
     KnobChoicePtr _texturesMode;
     KnobIntPtr _powerOf2Tiling;
     KnobIntPtr _checkerboardTileSize;
+    KnobChoicePtr _staleCueStyle;
+    KnobIntPtr _staleCueDelay;
+    KnobIntPtr _staleCueHold;
     KnobColorPtr _checkerboardColor1;
     KnobColorPtr _checkerboardColor2;
     KnobBoolPtr _autoProxyWhenScrubbingTimeline;
     KnobChoicePtr _autoProxyLevel;
+    KnobChoicePtr _viewerMipRounding;
+    KnobChoicePtr _zoomedOutDemosaic;
     KnobIntPtr _maximumNodeViewerUIOpened;
     KnobBoolPtr _viewerNumberKeys;
     KnobBoolPtr _viewerOverlaysPath;
@@ -717,6 +767,10 @@ private:
     KnobChoicePtr _viewer3DStandIn;
     KnobChoicePtr _viewer3DTransformTarget;
     KnobChoicePtr _viewer3DLighting;
+    KnobChoicePtr _sceneStandInMode;
+    KnobIntPtr _sceneStandInBudget;
+    KnobChoicePtr _sceneStandInBoxes;
+    KnobIntPtr _sceneStandInRefillDelay;
 
     // Nodegraph
     KnobPagePtr _nodegraphTab;

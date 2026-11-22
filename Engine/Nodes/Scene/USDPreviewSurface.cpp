@@ -23,7 +23,7 @@
 #include <Python.h>
 // ***** END PYTHON BLOCK *****
 
-#include "USDMaterial.h"
+#include "USDPreviewSurface.h"
 
 #include <functional>
 #include <string>
@@ -51,7 +51,7 @@ const char* const kLiveTextureLayer = "rgba";
 typedef std::function<bool(const PXR_NS::UsdAttribute& file)> AuthorFileFunc;
 
 KnobFilePtr
-makeTextureKnob(USDMaterial* holder,
+makeTextureKnob(USDPreviewSurface* holder,
                 const KnobPagePtr& page,
                 const QString& label,
                 const char* name,
@@ -70,7 +70,7 @@ makeTextureKnob(USDMaterial* holder,
 }
 
 KnobDoublePtr
-makeUnitKnob(USDMaterial* holder,
+makeUnitKnob(USDPreviewSurface* holder,
              const KnobPagePtr& page,
              const QString& label,
              const char* name,
@@ -92,7 +92,7 @@ makeUnitKnob(USDMaterial* holder,
 }
 
 KnobColorPtr
-makeColorKnob(USDMaterial* holder,
+makeColorKnob(USDPreviewSurface* holder,
               const KnobPagePtr& page,
               const QString& label,
               const char* name,
@@ -157,12 +157,13 @@ connectTexture(const PXR_NS::UsdStageRefPtr& stage,
         && output && input.ConnectToSource(output);
 }
 
-// The live texture of image input inputNb, or null when nothing is connected to it.
+// The live texture of image input inputNb, or null when it has none. Its node is null too when the
+// source was deleted, which still authors the texture.
 const LiveTextureSource*
 getLiveTexture(const LiveTextureSourceList& liveTextures,
                int inputNb)
 {
-    if ((inputNb < 0) || (inputNb >= (int)liveTextures.size()) || !liveTextures[inputNb].node.lock()) {
+    if ((inputNb < 0) || (inputNb >= (int)liveTextures.size()) || liveTextures[inputNb].nodeName.empty()) {
         return nullptr;
     }
 
@@ -170,62 +171,62 @@ getLiveTexture(const LiveTextureSourceList& liveTextures,
 }
 } // anonymous namespace
 
-USDMaterial::USDMaterial(NodePtr node)
+USDPreviewSurface::USDPreviewSurface(NodePtr node)
     : NativeEffectBase(node)
 {
 }
 
-USDMaterial::~USDMaterial()
+USDPreviewSurface::~USDPreviewSurface()
 {
 }
 
 const NodeSpec*
-USDMaterial::nodeSpec() const
+USDPreviewSurface::nodeSpec() const
 {
     return staticNodeSpec<kNodeSpec>();
 }
 
 void
-USDMaterial::onScriptNameChanged(const std::string& /*fullyQualifiedName*/)
+USDPreviewSurface::onScriptNameChanged(const std::string& /*fullyQualifiedName*/)
 {
     followSceneNodeRename(_primPath.lock(), getSceneNodeDefaultPrimPath(this, "Material"));
 }
 
 void
-USDMaterial::initializeKnobs()
+USDPreviewSurface::initializeKnobs()
 {
     KnobPagePtr page = createKnob<KnobPage>(tr("Controls"));
 
     _primPath = createScenePrimPathKnob(this, page, getSceneNodeDefaultPrimPath(this, "Material"),
                                         tr("The path of the material prim the node authors. Its shaders are authored under it."));
 
-    _diffuseColor = makeColorKnob(this, page, tr("Diffuse Color"), kUSDMaterialParamDiffuseColor,
+    _diffuseColor = makeColorKnob(this, page, tr("Diffuse Color"), kUSDPreviewSurfaceParamDiffuseColor,
                                   tr("The surface's base colour (inputs:diffuseColor), in the project working space, written "
                                      "unchanged."),
                                   0.18);
-    _diffuseTexture = makeTextureKnob(this, page, tr("Diffuse Texture"), kUSDMaterialParamDiffuseTexture,
+    _diffuseTexture = makeTextureKnob(this, page, tr("Diffuse Texture"), kUSDPreviewSurfaceParamDiffuseTexture,
                                       tr("An image file whose colour replaces Diffuse Color, read at the prims' st texture "
                                          "coordinates. Authored even when it does not resolve."));
-    _metallic = makeUnitKnob(this, page, tr("Metallic"), kUSDMaterialParamMetallic,
+    _metallic = makeUnitKnob(this, page, tr("Metallic"), kUSDPreviewSurfaceParamMetallic,
                              tr("0 for a dielectric surface, 1 for a metal (inputs:metallic)."), 0.);
-    _metallicTexture = makeTextureKnob(this, page, tr("Metallic Texture"), kUSDMaterialParamMetallicTexture,
+    _metallicTexture = makeTextureKnob(this, page, tr("Metallic Texture"), kUSDPreviewSurfaceParamMetallicTexture,
                                        tr("An image file whose first channel replaces Metallic, read as raw values at the "
                                           "prims' st texture coordinates. Authored even when it does not resolve."));
-    _roughness = makeUnitKnob(this, page, tr("Roughness"), kUSDMaterialParamRoughness,
+    _roughness = makeUnitKnob(this, page, tr("Roughness"), kUSDPreviewSurfaceParamRoughness,
                               tr("0 for a mirror-like surface, 1 for a fully rough one (inputs:roughness)."), 0.5);
-    _roughnessTexture = makeTextureKnob(this, page, tr("Roughness Texture"), kUSDMaterialParamRoughnessTexture,
+    _roughnessTexture = makeTextureKnob(this, page, tr("Roughness Texture"), kUSDPreviewSurfaceParamRoughnessTexture,
                                         tr("An image file whose first channel replaces Roughness, read as raw values at the "
                                            "prims' st texture coordinates. Authored even when it does not resolve."));
-    _emissiveColor = makeColorKnob(this, page, tr("Emissive Color"), kUSDMaterialParamEmissiveColor,
+    _emissiveColor = makeColorKnob(this, page, tr("Emissive Color"), kUSDPreviewSurfaceParamEmissiveColor,
                                    tr("Light the surface gives off (inputs:emissiveColor), in the project working space, "
                                       "written unchanged."),
                                    0.);
-    _emissiveTexture = makeTextureKnob(this, page, tr("Emissive Texture"), kUSDMaterialParamEmissiveTexture,
+    _emissiveTexture = makeTextureKnob(this, page, tr("Emissive Texture"), kUSDPreviewSurfaceParamEmissiveTexture,
                                        tr("An image file whose colour replaces Emissive Color, read at the prims' st texture "
                                           "coordinates. Authored even when it does not resolve."));
 
     KnobBoolPtr useAlpha = createKnob<KnobBool>(tr("Use Alpha"));
-    useAlpha->setName(kUSDMaterialParamUseAlpha);
+    useAlpha->setName(kUSDPreviewSurfaceParamUseAlpha);
     useAlpha->setHintToolTip(tr("When on, the alpha of the image connected to the Diffuse Color input, or to the Emissive "
                                 "Color input when Diffuse Color has none, is the surface's opacity (inputs:opacity, in "
                                 "the presence mode): where it is transparent the surface shows what is behind it, as "
@@ -235,18 +236,34 @@ USDMaterial::initializeKnobs()
     useAlpha->setAnimationEnabled(false);
     page->addKnob(useAlpha);
     _useAlpha = useAlpha;
-} // USDMaterial::initializeKnobs
+
+    SceneNodeAuthoring::createDeletedTextureSourcesKnob(this, page);
+} // USDPreviewSurface::initializeKnobs
+
+void
+USDPreviewSurface::onInputChanged(int inputNo)
+{
+    NativeEffectBase::onInputChanged(inputNo);
+    SceneNodeAuthoring::forgetDeletedTextureSourceIfConnected(*this, inputNo);
+}
+
+void
+USDPreviewSurface::onInputSourceDeleted(int inputNo,
+                                        const std::string& sourceName)
+{
+    SceneNodeAuthoring::recordDeletedTextureSource(*this, inputNo, sourceName);
+}
 
 std::string
-USDMaterial::getTexturePath(const KnobFilePtr& knob)
+USDPreviewSurface::getTexturePath(const KnobFilePtr& knob)
 {
     return SceneNodeAuthoring::getAnchoredFilePath(knob);
 }
 
 bool
-USDMaterial::authorLayer(const SceneLayerEdit& edit,
-                         const LiveTextureSourceList& liveTextures,
-                         std::string* errorMessage) const
+USDPreviewSurface::authorLayer(const SceneLayerEdit& edit,
+                               const LiveTextureSourceList& liveTextures,
+                               std::string* errorMessage) const
 {
     PXR_NS::SdfPath path;
 
@@ -308,7 +325,7 @@ USDMaterial::authorLayer(const SceneLayerEdit& edit,
 
     // Authored only for a connected Normal input: the surface's own default is the geometry's.
     PXR_NS::UsdShadeInput normalInput;
-    const LiveTextureSource* normalSource = getLiveTexture(liveTextures, kUSDMaterialInputNormal);
+    const LiveTextureSource* normalSource = getLiveTexture(liveTextures, kUSDPreviewSurfaceInputNormal);
     if (normalSource) {
         normalInput = surface.CreateInput(PXR_NS::TfToken("normal"), PXR_NS::SdfValueTypeNames->Normal3f);
         if (!normalInput) {
@@ -329,19 +346,19 @@ USDMaterial::authorLayer(const SceneLayerEdit& edit,
         PXR_NS::UsdShadeInput* input;
     };
     const TexturedInput textured[] = {
-        { "diffuseColor", getTexturePath(_diffuseTexture.lock()), getLiveTexture(liveTextures, kUSDMaterialInputDiffuseColor), true, false, &diffuseInput },
-        { "metallic", getTexturePath(_metallicTexture.lock()), getLiveTexture(liveTextures, kUSDMaterialInputMetallic), false, false, &metallicInput },
-        { "roughness", getTexturePath(_roughnessTexture.lock()), getLiveTexture(liveTextures, kUSDMaterialInputRoughness), false, false, &roughnessInput },
-        { "emissiveColor", getTexturePath(_emissiveTexture.lock()), getLiveTexture(liveTextures, kUSDMaterialInputEmissiveColor), true, false, &emissiveInput },
+        { "diffuseColor", getTexturePath(_diffuseTexture.lock()), getLiveTexture(liveTextures, kUSDPreviewSurfaceInputDiffuseColor), true, false, &diffuseInput },
+        { "metallic", getTexturePath(_metallicTexture.lock()), getLiveTexture(liveTextures, kUSDPreviewSurfaceInputMetallic), false, false, &metallicInput },
+        { "roughness", getTexturePath(_roughnessTexture.lock()), getLiveTexture(liveTextures, kUSDPreviewSurfaceInputRoughness), false, false, &roughnessInput },
+        { "emissiveColor", getTexturePath(_emissiveTexture.lock()), getLiveTexture(liveTextures, kUSDPreviewSurfaceInputEmissiveColor), true, false, &emissiveInput },
         { "normal", std::string(), normalSource, false, true, &normalInput },
     };
     // The image whose alpha is the opacity: the diffuse one, the colour a lit surface shows, or
     // failing that the emissive one.
     std::string opacityFrom;
     if (useAlpha->getValue()) {
-        if (getLiveTexture(liveTextures, kUSDMaterialInputDiffuseColor)) {
+        if (getLiveTexture(liveTextures, kUSDPreviewSurfaceInputDiffuseColor)) {
             opacityFrom = "diffuseColor";
-        } else if (getLiveTexture(liveTextures, kUSDMaterialInputEmissiveColor)) {
+        } else if (getLiveTexture(liveTextures, kUSDPreviewSurfaceInputEmissiveColor)) {
             opacityFrom = "emissiveColor";
         }
     }
@@ -386,18 +403,18 @@ USDMaterial::authorLayer(const SceneLayerEdit& edit,
     }
 
     return true;
-} // USDMaterial::authorLayer
+} // USDPreviewSurface::authorLayer
 
 StatusEnum
-USDMaterial::renderScene(const SceneRenderActionArgs& args,
-                         ScenePayload* outputScene,
-                         std::string* errorMessage)
+USDPreviewSurface::renderScene(const SceneRenderActionArgs& args,
+                               ScenePayload* outputScene,
+                               std::string* errorMessage)
 {
     // The image inputs' identities and hashes, without rendering them: the layer reads nothing
     // else of them, so an upstream image edit re-authors this layer and no other.
-    LiveTextureSourceList liveTextures(kUSDMaterialInputCount);
+    LiveTextureSourceList liveTextures(kUSDPreviewSurfaceInputCount);
     ContentHasher facts;
-    for (int i = 0; i < kUSDMaterialInputCount; ++i) {
+    for (int i = 0; i < kUSDPreviewSurfaceInputCount; ++i) {
         const bool connected = SceneNodeAuthoring::getLiveTextureSource(*this, i, kLiveTextureLayer, &liveTextures[i]);
         facts.appendBool(connected);
         if (connected) {
@@ -417,10 +434,10 @@ USDMaterial::renderScene(const SceneRenderActionArgs& args,
     // vanish while the layer stays the same.
     QStringList warnings;
     const std::pair<KnobFilePtr, int> textureKnobs[] = {
-        { _diffuseTexture.lock(), kUSDMaterialInputDiffuseColor },
-        { _metallicTexture.lock(), kUSDMaterialInputMetallic },
-        { _roughnessTexture.lock(), kUSDMaterialInputRoughness },
-        { _emissiveTexture.lock(), kUSDMaterialInputEmissiveColor },
+        { _diffuseTexture.lock(), kUSDPreviewSurfaceInputDiffuseColor },
+        { _metallicTexture.lock(), kUSDPreviewSurfaceInputMetallic },
+        { _roughnessTexture.lock(), kUSDPreviewSurfaceInputRoughness },
+        { _emissiveTexture.lock(), kUSDPreviewSurfaceInputEmissiveColor },
     };
     for (const std::pair<KnobFilePtr, int>& knob : textureKnobs) {
         if (getLiveTexture(liveTextures, knob.second)) {
@@ -435,13 +452,13 @@ USDMaterial::renderScene(const SceneRenderActionArgs& args,
     }
     // Repeated here because a consumer's prepare() warns once, and this clears messages.
     for (const LiveTextureSource& source : liveTextures) {
-        if (!source.node.lock()) {
+        if (source.nodeName.empty()) {
             continue;
         }
         const std::string uri = source.getUri(args.time);
-        const std::string failure = LiveTextureStore::instance().getFailure(uri);
+        const std::string failure = SceneNodeAuthoring::getLiveTextureFailure(source, args.time);
         if (!failure.empty()) {
-            warnings.push_back(tr("The live texture %1 shows the renderer's fallback: %2.").arg(QString::fromStdString(uri)).arg(QString::fromStdString(failure)));
+            warnings.push_back(tr("The live texture %1 shows magenta, the missing-texture colour: %2.").arg(QString::fromStdString(uri)).arg(QString::fromStdString(failure)));
         }
     }
     if (warnings.isEmpty()) {
@@ -451,6 +468,6 @@ USDMaterial::renderScene(const SceneRenderActionArgs& args,
     }
 
     return eStatusOK;
-} // USDMaterial::renderScene
+} // USDPreviewSurface::renderScene
 
 NATRON_NAMESPACE_EXIT

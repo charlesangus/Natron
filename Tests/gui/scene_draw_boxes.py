@@ -257,6 +257,9 @@ try:
         check(restored == 0, "clearing every row gives back the first image (%r pixels differ)" % (restored,))
 
         section("unknown-bounds badge")
+        ok = yield ("until", lambda: all(find("%s/B%d" % (block, i)).isValid()
+                                         for block in BLOCKS for i in range(BUILDINGS_PER_BLOCK)), POLL_TIMEOUT_S)
+        check(ok, "the panel lists every building")
         flagged = []
         for b, block in enumerate(BLOCKS):
             for i in range(BUILDINGS_PER_BLOCK):

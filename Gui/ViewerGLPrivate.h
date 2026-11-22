@@ -26,6 +26,7 @@
 #include <Python.h>
 // ***** END PYTHON BLOCK *****
 
+#include "Global/EdgeMode.h"
 #include "Global/Macros.h"
 
 #include <atomic>
@@ -41,6 +42,7 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Engine/Image.h"
 #include "Engine/ProjectColorManagement.h"
+#include "Engine/Settings.h"
 
 #include "Gui/GuiFwd.h"
 #include "Gui/NodeOverlayRenderer.h"
@@ -119,6 +121,7 @@ struct TextureInfo
         , mipmapLevel(0)
         , time(0)
         , rod()
+        , edgeMode(EdgeMode::Black)
         , format()
         , pixelAspectRatio(1.)
         , lastRenderedTiles(MAX_MIP_MAP_LEVELS)
@@ -145,6 +148,8 @@ struct TextureInfo
     unsigned int mipmapLevel;
     SequenceTime time;
     RectD rod;
+    // Displayed past rod: the edge pixels repeated under Stretch, nothing under Black.
+    EdgeMode edgeMode;
 
     RectD format;
 
@@ -226,6 +231,9 @@ struct ViewerGL::Implementation
     double _screenPixelRatio;
     std::unique_ptr<QFont> _textFont;
     bool overlay; /*!< True if the user enabled overlay display*/
+    StaleCueStyleEnum staleCueStyle = eStaleCueStyleOff;
+    bool staleCueVisible = false;
+    int staleTransitions = 0;
     bool updatingTexture;
     QColor clearColor;
     QMenu* menu;
@@ -349,6 +357,18 @@ public:
     void initializeCheckerboardTexture(bool mustCreateTexture);
 
     void drawCheckerboardTexture(const RectD& rod);
+
+    /**
+     * @brief Whether the viewer displays a pixel of texture textureIndex at the canonical point (x, y): inside its RoD,
+     * or anywhere past it under Stretch.
+     **/
+    bool displaysImageAt(int textureIndex, double x, double y) const;
+
+    /**
+     * @brief Under Stretch, the pixels at mipmapLevel whose values the viewer repeats past the RoD of texture
+     * textureIndex: a pixel read outside them reads the nearest of them. False under Black.
+     **/
+    bool getStretchPixelBounds(int textureIndex, unsigned int mipmapLevel, double par, RectI* bounds) const;
 
     void drawCheckerboardTexture(const QPolygonF& polygon);
 

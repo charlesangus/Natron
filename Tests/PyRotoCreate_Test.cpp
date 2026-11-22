@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <cstdio>
 #include <memory>
 #include <string>
 
@@ -41,7 +42,12 @@
 #include "Engine/Node.h"
 #include "Engine/Project.h"
 #include "Engine/PyRoto.h"
+#include "Engine/RotoContext.h"
 #include "Engine/RotoCurveContext.h"
+#include "Engine/RotoLayer.h"
+#include "Engine/RotoPoint.h"
+#include "Engine/RotoStrokeItem.h"
+#include "Engine/TimeLine.h"
 #include "Engine/TrackMarker.h"
 #include "Engine/TrackerContext.h"
 #include "Engine/ViewIdx.h"
@@ -76,6 +82,7 @@ protected:
     virtual void TearDown() OVERRIDE
     {
         getApp()->getProject()->reset(false, true);
+        getApp()->getTimeLine()->seekFrame(1, false, NULL, eTimelineChangeReasonOtherSeek);
         BaseTest::TearDown();
     }
 
@@ -205,4 +212,138 @@ TEST_F(PyRotoCreateTest, UnlinkBakeDuringARenderKeepsAPointEdit)
         EXPECT_EQ(41., x) << "gui " << gui;
         EXPECT_EQ(63., y) << "gui " << gui;
     }
+}
+
+// A layer's children are wrapped as their own types, so a child layer, a Bezier and a stroke each
+// offer their type's methods to the script.
+TEST_F(PyRotoCreateTest, LayerChildrenHaveTheirOwnTypes)
+{
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTOPAINT));
+    ASSERT_TRUE(bool(node));
+    RotoContextPtr ctx = node->getRotoContext();
+    ASSERT_TRUE(bool(ctx));
+    ASSERT_FALSE(ctx->getLayers().empty());
+    RotoLayerPtr base = ctx->getLayers().front();
+
+    BezierPtr shape = ctx->makeSquare(0., 0., 10., ctx->getTimelineCurrentTime());
+    ASSERT_TRUE(bool(shape));
+    ASSERT_TRUE(shape->setScriptName("childShape"));
+    RotoStrokeItemPtr stroke(new RotoStrokeItem(eRotoStrokeTypeSolid, ctx, "childStroke", RotoLayerPtr()));
+    stroke->createNodes();
+    ctx->addItem(base, 0, stroke, RotoItem::eSelectionReasonOther);
+    for (int i = 0; i < 8; ++i) {
+        stroke->appendPoint(i == 0, RotoPoint(4. + 2. * i, 20., 0.5, 1.));
+    }
+    stroke->setStrokeFinished();
+    ctx->clearSelection(RotoItem::eSelectionReasonOther);
+    RotoLayerPtr layer = ctx->addLayer();
+    ASSERT_TRUE(bool(layer));
+    ASSERT_TRUE(layer->setScriptName("childLayer"));
+    ctx->clearSelection(RotoItem::eSelectionReasonOther);
+    ASSERT_EQ(base, shape->getParentLayer());
+    ASSERT_EQ(base, stroke->getParentLayer());
+    ASSERT_EQ(base, layer->getParentLayer());
+
+    const std::string script = "import NatronEngine\n"
+                               "r = "
+        + pythonName(node) + ".getRotoContext()\n"
+                             "children = dict((c.getScriptName(), c) for c in r.getBaseLayer().getChildren())\n"
+                             "assert sorted(children.keys()) == [\"childLayer\", \"childShape\", \"childStroke\"], children.keys()\n"
+                             "l = children[\"childLayer\"]\n"
+                             "assert isinstance(l, NatronEngine.Layer), type(l)\n"
+                             "assert l.getChildren() == [], l.getChildren()\n"
+                             "b = children[\"childShape\"]\n"
+                             "assert isinstance(b, NatronEngine.BezierCurve), type(b)\n"
+                             "assert b.isCurveFinished()\n"
+                             "assert b.getNumControlPoints() == 4, b.getNumControlPoints()\n"
+                             "s = children[\"childStroke\"]\n"
+                             "assert type(s) is NatronEngine.ItemBase, type(s)\n"
+                             "assert s.getParam(\"opacity\") is not None\n";
+    std::string error, output;
+    EXPECT_TRUE(NATRON_NAMESPACE::NATRON_PYTHON_NAMESPACE::interpretPythonScript(script, &error, &output)) << error << "\n"
+                                                                                                           << script;
+}
+
+// A shape's parameter read from Python without a frame answers at its node's current frame, as a
+// node's own parameter does, whether or not the shape is selected.
+TEST_F(PyRotoCreateTest, AShapeParameterReadsAtTheNodesCurrentFrame)
+{
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTO));
+    ASSERT_TRUE(bool(node));
+    RotoContextPtr ctx = node->getRotoContext();
+    ASSERT_TRUE(bool(ctx));
+    BezierPtr selected = ctx->makeSquare(0., 0., 10., ctx->getTimelineCurrentTime());
+    BezierPtr unselected = ctx->makeSquare(30., 0., 10., ctx->getTimelineCurrentTime());
+    ASSERT_TRUE(selected && unselected);
+    ASSERT_TRUE(selected->setScriptName("selectedShape"));
+    ASSERT_TRUE(unselected->setScriptName("unselectedShape"));
+    selected->getOpacityKnob()->setValueAtTime(1., 0.2, ViewSpec::all(), 0);
+    selected->getOpacityKnob()->setValueAtTime(20., 0.8, ViewSpec::all(), 0);
+    unselected->getOpacityKnob()->setValueAtTime(1., 0.6, ViewSpec::all(), 0);
+    unselected->getOpacityKnob()->setValueAtTime(20., 0.1, ViewSpec::all(), 0);
+    ctx->clearSelection(RotoItem::eSelectionReasonOther);
+    ctx->select(selected, RotoItem::eSelectionReasonOther);
+    const double frame = 12.;
+    getApp()->getTimeLine()->seekFrame((int)frame, false, NULL, eTimelineChangeReasonOtherSeek);
+    ASSERT_DOUBLE_EQ(frame, node->getEffectInstance()->getCurrentTime());
+
+    const double selectedAtFrame = selected->getOpacityKnob()->getValueAtTime(frame, 0);
+    const double unselectedAtFrame = unselected->getOpacityKnob()->getValueAtTime(frame, 0);
+    ASSERT_NE(selected->getOpacityKnob()->getValueAtTime(0., 0), selectedAtFrame);
+    ASSERT_NE(unselected->getOpacityKnob()->getValueAtTime(0., 0), unselectedAtFrame);
+    char expected[128];
+    std::snprintf(expected, sizeof(expected), "expected = {\"selectedShape\": %.17g, \"unselectedShape\": %.17g}\n",
+                  selectedAtFrame, unselectedAtFrame);
+
+    const std::string script = std::string("r = ") + pythonName(node) + ".getRotoContext()\n"
+        + expected
+        + "for name, want in expected.items():\n"
+          "    p = r.getItemByName(name).getParam(\"opacity\")\n"
+          "    assert p.getCurrentTime() == 12, (name, p.getCurrentTime())\n"
+          "    assert abs(p.get() - want) < 1e-9, (name, p.get(), want)\n"
+          "    assert abs(p.getValue() - want) < 1e-9, (name, p.getValue(), want)\n"
+          "    assert abs(p.getValue(0) - want) < 1e-9, (name, p.getValue(0), want)\n";
+    std::string error, output;
+    EXPECT_TRUE(NATRON_NAMESPACE::NATRON_PYTHON_NAMESPACE::interpretPythonScript(script, &error, &output)) << error << "\n"
+                                                                                                           << script;
+    ctx->clearSelection(RotoItem::eSelectionReasonOther);
+}
+
+// A shape's own accessors return parameters that read at the node's current frame, as getParam()
+// does.
+TEST_F(PyRotoCreateTest, AShapesParamAccessorsReadAtTheNodesCurrentFrame)
+{
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTO));
+    ASSERT_TRUE(bool(node));
+    RotoContextPtr ctx = node->getRotoContext();
+    ASSERT_TRUE(bool(ctx));
+    BezierPtr shape = ctx->makeSquare(0., 0., 10., ctx->getTimelineCurrentTime());
+    ASSERT_TRUE(bool(shape));
+    ASSERT_TRUE(shape->setScriptName("keyedShape"));
+    shape->getOpacityKnob()->setValueAtTime(1., 0.2, ViewSpec::all(), 0);
+    shape->getOpacityKnob()->setValueAtTime(20., 0.8, ViewSpec::all(), 0);
+    ctx->clearSelection(RotoItem::eSelectionReasonOther);
+    const double frame = 12.;
+    getApp()->getTimeLine()->seekFrame((int)frame, false, NULL, eTimelineChangeReasonOtherSeek);
+    ASSERT_DOUBLE_EQ(frame, node->getEffectInstance()->getCurrentTime());
+    const double atFrame = shape->getOpacityKnob()->getValueAtTime(frame, 0);
+    ASSERT_NE(shape->getOpacityKnob()->getValueAtTime(0., 0), atFrame);
+    char expected[64];
+    std::snprintf(expected, sizeof(expected), "want = %.17g\n", atFrame);
+
+    const std::string script = std::string("r = ") + pythonName(node) + ".getRotoContext()\n"
+        + expected
+        + "b = r.getItemByName(\"keyedShape\")\n"
+          "params = {\"opacity\": b.getOpacityParam(), \"activated\": b.getActivatedParam(),\n"
+          "          \"feather\": b.getFeatherDistanceParam(), \"featherFallOff\": b.getFeatherFallOffParam(),\n"
+          "          \"color\": b.getColorParam(), \"operator\": b.getCompositingOperatorParam()}\n"
+          "for name, p in params.items():\n"
+          "    assert p is not None, name\n"
+          "    assert p.getCurrentTime() == 12, (name, p.getCurrentTime())\n"
+          "p = b.getOpacityParam()\n"
+          "assert abs(p.get() - want) < 1e-9, (p.get(), want)\n"
+          "assert abs(p.getValue() - want) < 1e-9, (p.getValue(), want)\n";
+    std::string error, output;
+    EXPECT_TRUE(NATRON_NAMESPACE::NATRON_PYTHON_NAMESPACE::interpretPythonScript(script, &error, &output)) << error << "\n"
+                                                                                                           << script;
 }

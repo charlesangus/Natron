@@ -29,6 +29,7 @@
 
 #include <QCoreApplication>
 #include <QThread>
+#include <QTimer>
 
 #include <ofxImageEffect.h>
 #include <ofxNatron.h>
@@ -115,6 +116,7 @@ Node::load(const CreateNodeArgs& args)
          */
         _imp->effect.reset( func.second(thisShared) );
         assert(_imp->effect);
+        _imp->hostedEffect.store(_imp->effect.get(), std::memory_order_release);
 
         initNodeScriptName(serialization.get(), QString::fromUtf8(argFixedName.c_str()));
 
@@ -137,6 +139,7 @@ Node::load(const CreateNodeArgs& args)
         // ofx plugin
         _imp->effect = appPTR->createOFXEffect(thisShared, args);
         assert(_imp->effect);
+        _imp->hostedEffect.store(_imp->effect.get(), std::memory_order_release);
     }
 
     _imp->effect->initializeOverlayInteract();
@@ -684,17 +687,40 @@ Node::restoreKnobsLinks(const NodesList & allNodes,
     }
 }
 
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+// Hashing threads hold a copy of the effect for the length of a call. Whichever reference goes
+// last destroys the effect and its knobs, which must happen on the main thread, so the main thread
+// keeps its own until it is the only one. Without an event loop to come back on, it goes at once.
+void
+releaseEffectOnMainThread(EffectInstancePtr effect)
+{
+    if (!effect || (effect.use_count() == 1) || !qApp || (QThread::currentThread() != qApp->thread()) || (QThread::currentThread()->loopLevel() == 0)) {
+        return;
+    }
+    QTimer::singleShot(1, qApp, [effect = std::move(effect)]() mutable {
+        releaseEffectOnMainThread(std::move(effect));
+    });
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
 
 void
 Node::doDestroyNodeInternalEnd(bool autoReconnect)
 {
+    // An inactive node was deleted by a command already, or never was: an undo stack dropping its
+    // command, or a create undone, must not count as a second deletion.
+    const bool wasActive = isActivated();
+
     ///Remove the node from the project
     deactivate(NodesList(),
                true,
                autoReconnect,
                true,
                false);
-
+    if (wasActive) {
+        notifyOutputsOfDeletion();
+    }
 
     {
         NodeGuiIPtr guiPtr = _imp->guiPointer.lock();
@@ -746,9 +772,11 @@ Node::doDestroyNodeInternalEnd(bool autoReconnect)
     EffectInstancePtr effect;
     {
         QMutexLocker k(&_imp->effectTeardownMutex);
+        QMutexLocker pointerLocker(&_imp->effectPointerMutex);
+        _imp->hostedEffect.store(nullptr, std::memory_order_release);
         effect.swap(_imp->effect);
     }
-    effect.reset();
+    releaseEffectOnMainThread(std::move(effect));
     for (NodesList::const_iterator it = linkedNodes.begin(); it != linkedNodes.end(); ++it) {
         Q_EMIT(*it)->linksChanged();
     }

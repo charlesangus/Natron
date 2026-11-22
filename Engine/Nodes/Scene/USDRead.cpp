@@ -29,6 +29,7 @@
 #include <mutex>
 #include <set>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include <QString>
@@ -43,6 +44,7 @@
 #include "Engine/Nodes/Scene/SceneFileSource.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
+#include "Engine/Nodes/Scene/SceneTeardown.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/Project.h"
@@ -158,6 +160,11 @@ struct USDRead::Implementation {
     {
     }
 
+    ~Implementation()
+    {
+        SceneTeardown::release(std::make_tuple(std::move(sourceFileLayer), std::move(correctionSource)));
+    }
+
     RootPrims getRootPrims(const std::string& path)
     {
         const U64 digest = source.getDigest();
@@ -171,7 +178,14 @@ struct USDRead::Implementation {
         {
             SceneWriteBarrier::ReadScope readScope;
             std::string error;
-            read = definedRootPrims(SceneFileSource::openLayer(path, &error));
+            PXR_NS::SdfLayerRefPtr layer = SceneFileSource::openLayer(path, &error);
+            if (SceneOps::isStalePendingLayer(layer)) {
+                // Not kept: the next evaluation, once the walk has re-keyed the node, reads the file.
+                SceneTeardown::release(std::move(layer));
+
+                return read;
+            }
+            read = definedRootPrims(layer);
         }
         std::lock_guard<std::mutex> lock(rootPrimsMutex);
         rootPrimsRead = true;
@@ -520,21 +534,30 @@ USDRead::knobChanged(KnobI* k,
     if (!reload || (k != reload.get())) {
         return false;
     }
-    std::vector<std::string> reloaded;
-    std::string error;
-    if (!_imp->source.reload(filename ? filename->getSingleFilePath() : std::string(), &error, &reloaded)) {
-        setPersistentMessage(eMessageTypeError, tr("Reload failed: %1").arg(QString::fromStdString(error)).toStdString());
-    } else {
-        clearPersistentMessage(false);
-    }
-    purgeCaches();
-    // Same as NativeRead: the Reload bracket hashed this node before purgeCaches() moved its
-    // hash inputs.
-    NodePtr node = getNode();
-    if (node) {
-        node->markHashDirty();
-    }
-    SceneFileSource::reloadOtherReaders(reloaded, filename ? filename->getResolvedPath() : std::string(), this);
+    // The node's hash moves once the layers hold the new content, which may be after this
+    // returns: a render keyed by the new hash must not read the old layers. inCall is set while
+    // this call runs: a reload that ends inside it leaves the render to the Reload bracket.
+    const std::shared_ptr<bool> inCall = std::make_shared<bool>(true);
+    _imp->source.reload(filename ? filename->getSingleFilePath() : std::string(), weak_from_this(), [this, inCall](bool ok, const std::string& error, const std::vector<std::string>& reloaded) {
+        KnobFilePtr file = _filename.lock();
+        if (!ok) {
+            setPersistentMessage(eMessageTypeError, tr("Reload failed: %1").arg(QString::fromStdString(error)).toStdString());
+        } else {
+            clearPersistentMessage(false);
+        }
+        purgeCaches();
+        // Same as NativeRead: the Reload bracket hashed this node before purgeCaches() moved its
+        // hash inputs.
+        NodePtr node = getNode();
+        if (node) {
+            node->markHashDirty();
+        }
+        SceneFileSource::reloadOtherReaders(reloaded, file ? file->getResolvedPath() : std::string(), this);
+        if (!*inCall) {
+            evaluate(true, true);
+        }
+    });
+    *inCall = false;
 
     return true;
 }
@@ -572,6 +595,25 @@ USDRead::refreshFileDependencies(const std::vector<std::string>& paths)
     clearActionsCache();
 
     return true;
+}
+
+void
+USDRead::rekeyAfterTeardown()
+{
+    KnobFilePtr filename = _filename.lock();
+
+    // Its hash holds the stamp the file had when the closed scene read it.
+    if (filename) {
+        filename->invalidateContentHash();
+    }
+    invalidateSceneLayer();
+    clearActionsCache();
+    clearPersistentMessage(false);
+    NodePtr node = getNode();
+    if (node) {
+        node->markHashDirty();
+    }
+    evaluate(true, true);
 }
 
 void
@@ -700,7 +742,16 @@ USDRead::renderScene(const SceneRenderActionArgs& args,
         return eStatusFailed;
     }
 
-    if (_imp->source.walk(path)) {
+    const SceneFileSource::WalkResultEnum walked = _imp->source.walk(path);
+    if (walked == SceneFileSource::eWalkDeferred) {
+        // Nothing memoizes an empty scene under this hash: the layer memo is not reached, and
+        // the digest stays an unwalked one, which the re-key replaces.
+        setPersistentMessage(eMessageTypeWarning, tr("Waiting for the previous scene to close.").toStdString());
+        _imp->source.rekeyWhenTeardownIdle(weak_from_this(), [this]() { rekeyAfterTeardown(); });
+
+        return eStatusOK;
+    }
+    if (walked == SceneFileSource::eWalkDigestMoved) {
         NodePtr node = getNode();
         if (node) {
             node->markHashDirty();

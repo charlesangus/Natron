@@ -52,6 +52,7 @@
 #include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/OutputSchedulerThread.h" // RenderEngine
 #include "Engine/Project.h"
+#include "Engine/Settings.h"
 #include "Engine/UndoGesture.h"
 #include "Engine/Utils.h" // convertFromPlainText
 #include "Engine/ViewIdx.h"
@@ -645,6 +646,24 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     _imp->renderScaleCombo->addAction(proxy32);
     _imp->firstRowLayout->addWidget(_imp->renderScaleCombo);
 
+    _imp->autoProxyButton = new Button(tr("Auto Proxy"), _imp->firstSettingsRow);
+    _imp->autoProxyButton->setFocusPolicy(Qt::NoFocus);
+    _imp->autoProxyButton->setFixedHeight(buttonSize.height());
+    _imp->autoProxyButton->setCheckable(true);
+    {
+        const bool autoProxy = appPTR->getCurrentSettings()->isAutoProxyEnabled();
+        _imp->autoProxyButton->setChecked(autoProxy);
+        _imp->autoProxyButton->setDown(autoProxy);
+    }
+    setToolTipWithShortcut(kShortcutGroupViewer, kShortcutIDActionAutoProxyScrubbing,
+                           "<p><b>" + tr("Auto Proxy Scrubbing:").toStdString() + "</b></p><p>" + tr("When checked, the viewer drafts while the timeline is scrubbed or a control is dragged, "
+                                                                                                     "at the auto-proxy level of the preferences. Dragging a control of a colour node that works "
+                                                                                                     "pixel by pixel never drafts, and draft turns off on its own when the viewer's full "
+                                                                                                     "resolution keeps up.")
+                                                                                                      .toStdString()
+                               + "</p>" + "<p><b>" + tr("Keyboard shortcut: %1").toStdString() + "</b></p>",
+                           _imp->autoProxyButton);
+    _imp->firstRowLayout->addWidget(_imp->autoProxyButton);
 
     addSpacer(_imp->firstRowLayout);
 
@@ -911,6 +930,9 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     _imp->sceneRenderRowLayout->addWidget(_imp->refineSamplesLabel);
     _imp->sceneRenderRowLayout->addStretch();
     _imp->sceneRenderRow->hide();
+    // The first switch to a progressive renderer shows the row: its style sheet polish is done
+    // now rather than on that switch.
+    _imp->sceneRenderRow->ensurePolished();
     QObject::connect(_imp->maxSamplesBox, SIGNAL(valueChanged(double)), this, SLOT(onMaxSamplesBoxChanged(double)));
     QObject::connect(_imp->refinementPausedButton, SIGNAL(clicked(bool)), this, SLOT(onRefinementPausedButtonClicked(bool)));
     QObject::connect(_imp->renderEverythingButton, SIGNAL(clicked(bool)), this, SLOT(onRenderEverythingButtonClicked(bool)));
@@ -1375,12 +1397,34 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     QObject::connect( engine.get(), SIGNAL(renderFinished(int)), this, SLOT(onEngineStopped()) );
     QObject::connect( engine.get(), SIGNAL(renderStarted(bool)), this, SLOT(onEngineStarted(bool)) );
 
+    _imp->staleCueClock.start();
+    _imp->staleCueTimer.setSingleShot(true);
+    // A coarse timer may fire early, which would cost an extra wake-up before each deadline.
+    _imp->staleCueTimer.setTimerType(Qt::PreciseTimer);
+    QObject::connect(&_imp->staleCueTimer, &QTimer::timeout, this, &ViewerTab::onStaleCueTimeout);
+    QObject::connect(_imp->viewerNode, &ViewerInstance::staleChanged, this, &ViewerTab::onViewerStaleChanged);
+
     _imp->mustSetUpPlaybackButtonsTimer.setSingleShot(true);
     QObject::connect( &_imp->mustSetUpPlaybackButtonsTimer, SIGNAL(timeout()), this, SLOT(onSetDownPlaybackButtonsTimeout()) );
     manageSlotsForInfoWidget(0, true);
 
     QObject::connect( _imp->clipToProjectFormatButton, SIGNAL(clicked(bool)), this, SLOT(onClipToProjectButtonToggle(bool)) );
     QObject::connect( _imp->fullFrameProcessingButton, SIGNAL(clicked(bool)), this, SLOT(onFullFrameButtonToggle(bool)) );
+    QObject::connect(_imp->autoProxyButton, SIGNAL(clicked(bool)), this, SLOT(onAutoProxyButtonToggle(bool)));
+    QObject::connect(appPTR->getCurrentSettings().get(), &Settings::settingChanged, this, [this](KnobI* knob) {
+        if (knob && (knob->getName() == "staleCueStyle")) {
+            refreshStaleCue();
+
+            return;
+        }
+        if (!knob || (knob->getName() != "autoProxyScrubbing")) {
+            return;
+        }
+        const bool autoProxy = appPTR->getCurrentSettings()->isAutoProxyEnabled();
+        QSignalBlocker blocker(_imp->autoProxyButton);
+        _imp->autoProxyButton->setChecked(autoProxy);
+        _imp->autoProxyButton->setDown(autoProxy);
+    });
     QObject::connect( _imp->viewsComboBox, SIGNAL(currentIndexChanged(int)), this, SLOT(onViewsComboboxChanged(int)) );
     QObject::connect(_imp->enableViewerRoI, SIGNAL(clicked(bool)), this, SLOT(onEnableViewerRoIButtonToggle(bool)));
     QObject::connect( _imp->renderScaleCombo, SIGNAL(currentIndexChanged(int)), this, SLOT(onRenderScaleComboIndexChanged(int)) );
@@ -1481,6 +1525,13 @@ ViewerTab::onActiveInputDataKindChanged()
     refreshCompositingOperatorFromKnob();
 
     const bool scene = (node->getActiveInputDataKind() == eDataKindScene);
+    if (!scene && isShowingScene() && !getSceneViewedNode()) {
+        // An empty input keeps the scene view and its stage: showing the image viewer builds its GL
+        // context on the main thread, and a reconnect would flip straight back and reload.
+        Q_EMIT sceneViewChanged();
+
+        return;
+    }
     if (scene && !_imp->sceneViewport) {
         _imp->sceneViewport = new SceneViewport(_imp->viewerSubContainer);
         _imp->sceneViewport->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
@@ -1563,7 +1614,7 @@ ViewerTab::onActiveInputDataKindChanged()
             _imp->sceneViewport->setUndoHistory(gui->getUndoHistory());
         }
         {
-            // Called on the viewport's load thread, which outlives neither the viewport nor this tab.
+            // Called on the viewport's load thread, and not once the viewport is destroyed.
             const std::weak_ptr<EffectInstance> viewer = _imp->viewerNode->shared_from_this();
             const SceneViewportRenderer::LoadSetEvaluator evaluate = [viewer](const SceneLoadSetPtr& loadSet,
                                                                               ScenePayload* payload,
@@ -1948,8 +1999,15 @@ ViewerTab::refreshSceneRenderRow()
     }
     const bool progressive = isShowingScene() && (_imp->sceneViewport->getRenderer().getActiveRendererId() != kRenderDelegateStormId);
 
-    _imp->sceneRenderRow->setVisible(topVisible && progressive);
+    const bool show = topVisible && progressive;
+    const bool toggled = _imp->sceneRenderRow->isVisibleTo(this) != show;
+    _imp->sceneRenderRow->setVisible(show);
     refreshRefineSamplesLabel();
+    if (toggled) {
+        // Laid out now rather than at the posted layout request, so that the view's resize, which
+        // paints it, comes before any repaint asked for after this (SceneViewport::setRendererId()).
+        _imp->mainLayout->activate();
+    }
 }
 
 void

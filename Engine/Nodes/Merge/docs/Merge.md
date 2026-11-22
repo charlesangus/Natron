@@ -25,8 +25,8 @@ Tolerance:
   `MergeMultiply`): bit for bit on the recording configuration.
 
 `Merge` (`Merge.h`, class `NativeMerge` with op `NativeMergeOp`, version 1, grouping Merge) is a
-clean-sheet node: Nuke's Merge feature for feature, minus the pieces listed under "Dropped", plus
-the openfx-misc extra operators and merging several layers at once. It is an `OpKind::Composite`
+clean-sheet node: the full compositing operator set, minus the pieces listed under "Dropped", plus
+extra blend operators and merging several layers at once. It is an `OpKind::Composite`
 op with the `MaskMix` and `PassThroughUnprocessed` stages, so it runs on the CPU and on the GPU,
 and a GPU-resident region flows through it. It is in the inspector list and bound to the M
 shortcut.
@@ -47,15 +47,15 @@ GPU one dispatch, per connected A input. Mask and mix apply once, to the result.
   color-dodge, exclusion, from, matte, over, plus, screen, stencil, under, xor) the node is an
   identity of B, or black with no B either. Any other operator merges a transparent A (A = 0,
   a = 0) over B.
-- **No B connected.** B reads zero, as in Nuke.
+- **No B connected.** B reads zero.
 - **A stretch with nothing in A.** For the operators above, a chunk of row where every A value
   and alpha is zero, such as one outside every A's region of definition, copies B with no
   operator call.
 
 ## Operators
 
-A and B are the premultiplied channel values, a and b their alphas. The option names are Nuke's
-exactly; the openfx-misc extras keep their openfx-misc names. The default is `over`.
+A and B are the premultiplied channel values, a and b their alphas. The option names are the
+customary compositing names. The default is `over`.
 
 | Operator | Formula |
 |---|---|
@@ -114,12 +114,12 @@ hint in the Operation menu.
 
 ### HDR-safe deviations
 
-The formulas are Nuke's (and openfx-misc's for the extras), made HDR-safe: where a formula clamps,
+The formulas are the textbook compositing ones, made HDR-safe: where a formula clamps,
 flips sign, divides by zero or jumps for values above 1 or below 0, Merge uses a continuous,
 unbounded variant, so scene-linear values pass through. There is no legacy toggle. The same table
 heads `mergeops.slang`.
 
-| Operator | Nuke / openfx-misc | Merge |
+| Operator | Textbook form | Merge |
 |---|---|---|
 | color-burn | 1 - min(1, (1-B)/A), A if A <= 0 | 1 - (1-B)/A, A if A <= 0 (no clamp) |
 | color-dodge | min(1, B/(1-A)), A if A >= 1 | B/(1-A), A if A >= 1 (no clamp) |
@@ -129,7 +129,7 @@ heads `mergeops.slang`.
 | geometric | 2AB/(A+B) | 2AB/(A+B), 0 if A+B = 0 |
 | hard-light | multiply (negatives jump), screen | plain multiply, screen as above |
 | overlay | multiply (negatives jump), screen | plain multiply, screen as above |
-| soft-light | openfx-misc: SVG piecewise | Nuke's: B(2A+B(1-AB)) if AB < 1, else 2AB |
+| soft-light | SVG piecewise | B(2A+B(1-AB)) if AB < 1, else 2AB |
 | pinlight | max(B, 2A-1) if A >= 0.5, else min(B, 2A) | min(max(B, 2A-1), 2A) |
 | reflect | min(1, A²/(1-B)), 1 if B >= 1 | A²/(1-B), B if B >= 1 (no clamp) |
 | freeze | max(0, 1 - sqrt(max(0, 1-A))/B), 0 if B <= 0 | 1 - ssqrt(1-A)/B, 0 if B <= 0, ssqrt signed |
@@ -137,7 +137,7 @@ heads `mergeops.slang`.
 
 Every guard that remains sits on a pole of its formula, where no finite choice is continuous.
 In screen, both forms equal 1 on the edge of the unit square, so taking max(A, B) as soon as
-either side exceeds 1 joins them without the jump Nuke's "or" leaves where both cross 1.
+either side exceeds 1 joins them without the jump an "or" test leaves where both cross 1.
 
 ## Layers
 
@@ -149,8 +149,7 @@ Merge has no node Layer knob. Its layer knobs are:
   input. A listed layer that B lacks is not produced.
 - **Channel buttons**: each layer row carries one button per channel of its layer, by the
   layer's own channel names (R G B A on `rgba`, U V on `uv`), all on by default. Only the
-  channels on are merged; every other channel of that layer passes through from B bit-exact, as
-  Nuke's output channels do. A row with `A` alone merges rgba's alpha only, one with R, G and B
+  channels on are merged; every other channel of that layer passes through from B bit-exact. A row with `A` alone merges rgba's alpha only, one with R, G and B
   merges the colour and keeps B's alpha. A row with every channel on merges the whole layer. The
   All row has no buttons and merges every channel of every layer. The buttons feed the host's
   per-plane channel mask (`EffectInstance::addProducedPlanesChannels()`), the one a node Layer
@@ -225,7 +224,7 @@ Layers rows' channel buttons are the wrap's channel mask and leave the GPU path 
 
 - **Alpha masking** (`screenAlpha`, the old node's "Alpha masking"): blend operators process
   alpha like any other channel; mask or premultiply upstream instead.
-- **Mask fringe, inject and video colorspace** (Nuke): masking is the `MaskMix` stage's mask
+- **Mask fringe, inject and video colorspace**: masking is the `MaskMix` stage's mask
   channel, invert and mix only.
 - **The A/B channel checkboxes** (`AChannels`, `BChannels`): A and B are read in whole layers.
   The output channels are each Layers row's channel buttons.

@@ -523,15 +523,18 @@ public:
 
     /**
      * @brief The passes for params at scale over the render window roi, whose Map values lie in
-     * range, reading map; with no map, the passes have no work and only carry the halo and growth,
+     * range, reading map and the source outside its image by edgeMode; with no map, the passes have no work and only carry the halo and growth,
      * as the region actions need. No pass at all when the range gives a radius of 0 throughout.
-     * map must cover mapWindow(roi, ...) of the same range.
+     * map must cover mapWindow(roi, ...) of the same range. A stage computes no pixel outside a
+     * non-empty bound, which holds the scratch the passes run over.
      **/
     static PassList passes(const IErodeDilateParams& params,
                            const RenderScale& scale,
                            const MapRange& range,
                            const std::shared_ptr<const MapPlane>& map,
-                           const RectI& roi) WARN_UNUSED_RETURN;
+                           const RectI& roi,
+                           EdgeMode edgeMode,
+                           const RectI& bound = RectI(0, 0, 0, 0)) WARN_UNUSED_RETURN;
 
     /**
      * @brief The pixels whose Map values the passes over roi read: roi alone while one stage at

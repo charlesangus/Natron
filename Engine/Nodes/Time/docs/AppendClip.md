@@ -11,6 +11,8 @@ project's range. The output frame range is `[firstFrame, lastFrame]`.
 A frame showing one input at full weight is an identity of that input at its own time; a frame
 showing nothing is black. Otherwise the output is `alpha0 * A + alpha1 * B`, the remaining weight
 black, through the shared time blend: the `timeblend` kernel on the colour plane on the GPU.
+Past its own region each input reads as its edge mode says: zero under Black, its edge pixels
+under Stretch.
 
 | Parameter | Default | Meaning |
 |---|---|---|

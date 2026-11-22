@@ -17,8 +17,8 @@
  * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
  * ***** END LICENSE BLOCK ***** */
 
-#ifndef Engine_Nodes_Scene_USDMaterial_h
-#define Engine_Nodes_Scene_USDMaterial_h
+#ifndef Engine_Nodes_Scene_USDPreviewSurface_h
+#define Engine_Nodes_Scene_USDPreviewSurface_h
 
 // ***** BEGIN PYTHON BLOCK *****
 // from <https://docs.python.org/3/c-api/intro.html#include-files>:
@@ -38,25 +38,25 @@
 // Free of USD: NativeRegistryAll.inc includes every node header into translation units that keep
 // Py_LIMITED_API, which USD's headers cannot be compiled under.
 
-#define PLUGINID_NATRON_USDMATERIAL "USDMaterial"
+#define PLUGINID_NATRON_USDPREVIEWSURFACE "USDPreviewSurface"
 
-#define kUSDMaterialParamDiffuseColor "diffuseColor"
-#define kUSDMaterialParamDiffuseTexture "diffuseTexture"
-#define kUSDMaterialParamMetallic "metallic"
-#define kUSDMaterialParamMetallicTexture "metallicTexture"
-#define kUSDMaterialParamRoughness "roughness"
-#define kUSDMaterialParamRoughnessTexture "roughnessTexture"
-#define kUSDMaterialParamEmissiveColor "emissiveColor"
-#define kUSDMaterialParamEmissiveTexture "emissiveTexture"
-#define kUSDMaterialParamUseAlpha "useAlpha"
+#define kUSDPreviewSurfaceParamDiffuseColor "diffuseColor"
+#define kUSDPreviewSurfaceParamDiffuseTexture "diffuseTexture"
+#define kUSDPreviewSurfaceParamMetallic "metallic"
+#define kUSDPreviewSurfaceParamMetallicTexture "metallicTexture"
+#define kUSDPreviewSurfaceParamRoughness "roughness"
+#define kUSDPreviewSurfaceParamRoughnessTexture "roughnessTexture"
+#define kUSDPreviewSurfaceParamEmissiveColor "emissiveColor"
+#define kUSDPreviewSurfaceParamEmissiveTexture "emissiveTexture"
+#define kUSDPreviewSurfaceParamUseAlpha "useAlpha"
 
 // The optional image inputs, each driving the surface input of the same name through a live texture.
-#define kUSDMaterialInputDiffuseColor 0
-#define kUSDMaterialInputRoughness 1
-#define kUSDMaterialInputMetallic 2
-#define kUSDMaterialInputNormal 3
-#define kUSDMaterialInputEmissiveColor 4
-#define kUSDMaterialInputCount 5
+#define kUSDPreviewSurfaceInputDiffuseColor 0
+#define kUSDPreviewSurfaceInputRoughness 1
+#define kUSDPreviewSurfaceInputMetallic 2
+#define kUSDPreviewSurfaceInputNormal 3
+#define kUSDPreviewSurfaceInputEmissiveColor 4
+#define kUSDPreviewSurfaceInputCount 5
 
 NATRON_NAMESPACE_ENTER
 
@@ -82,10 +82,10 @@ typedef std::vector<LiveTextureSource> LiveTextureSourceList;
  * that does not change over time, which consumers render before Hydra reads it. A connected
  * input wins over the texture file.
  **/
-class USDMaterial
+class USDPreviewSurface
     : public NativeEffectBase {
 public:
-    static constexpr InputSpec kInputs[kUSDMaterialInputCount] = {
+    static constexpr InputSpec kInputs[kUSDPreviewSurfaceInputCount] = {
         InputSpec { .label = "Diffuse Color", .kind = eDataKindImage, .role = InputRole::Aux, .optional = true, .time = InputTime::Any },
         InputSpec { .label = "Roughness", .kind = eDataKindImage, .role = InputRole::Aux, .optional = true, .time = InputTime::Any },
         InputSpec { .label = "Metallic", .kind = eDataKindImage, .role = InputRole::Aux, .optional = true, .time = InputTime::Any },
@@ -94,8 +94,8 @@ public:
     };
 
     static constexpr NodeSpec kNodeSpec = {
-        .id = PLUGINID_NATRON_USDMATERIAL,
-        .label = "USDMaterial",
+        .id = PLUGINID_NATRON_USDPREVIEWSURFACE,
+        .label = "USDPreviewSurface",
         .description = "Author a UsdPreviewSurface material (diffuse colour, metallic, roughness and emissive colour, each "
                        "optionally from a texture file). Connect it to the Material input of a geometry node, which "
                        "places the material under its own prim and binds itself to it. Colours are in the project "
@@ -106,7 +106,7 @@ public:
         .grouping = PLUGIN_GROUP_3D_USD,
         .majorVersion = 1,
         .minorVersion = 0,
-        .icon = NATRON_IMAGES_PATH "NativeNodes/USDMaterial.png",
+        .icon = NATRON_IMAGES_PATH "NativeNodes/USDPreviewSurface.png",
         .isWriter = false,
         .outputKind = eDataKindScene,
         .inputs = kInputs,
@@ -115,16 +115,19 @@ public:
 
     static EffectInstance* BuildEffect(NodePtr node)
     {
-        return new USDMaterial(node);
+        return new USDPreviewSurface(node);
     }
 
-    explicit USDMaterial(NodePtr node);
+    explicit USDPreviewSurface(NodePtr node);
 
-    virtual ~USDMaterial();
+    virtual ~USDPreviewSurface();
 
 private:
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void initializeKnobs() OVERRIDE FINAL;
+    virtual void onInputChanged(int inputNo) OVERRIDE FINAL;
+    virtual void onInputSourceDeleted(int inputNo,
+                                      const std::string& sourceName) OVERRIDE FINAL;
     virtual void onScriptNameChanged(const std::string& fullyQualifiedName) OVERRIDE FINAL;
     virtual StatusEnum renderScene(const SceneRenderActionArgs& args,
                                    ScenePayload* outputScene,
@@ -153,4 +156,4 @@ private:
 
 NATRON_NAMESPACE_EXIT
 
-#endif // Engine_Nodes_Scene_USDMaterial_h
+#endif // Engine_Nodes_Scene_USDPreviewSurface_h

@@ -36,12 +36,16 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/Bezier.h"
+#include "Engine/Curve.h"
 #include "Engine/Knob.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/Project.h"
+#include "Engine/RotoContext.h"
 #include "Engine/ViewerInstance.h"
 
 NATRON_NAMESPACE_USING
@@ -297,4 +301,42 @@ TEST_F(PySetExpressionEvaluatesTest, InputOnlyKnobOnlyAndMixedBatchesEachRequest
     EXPECT_EQ(0, renderRequests);
     run("g.endChanges()\n");
     EXPECT_EQ(1, renderRequests);
+}
+
+TEST_F(PySetExpressionEvaluatesTest, AnExpressionOnTheRotoNodeReachesTheSelectedShapesAndKeepsTheirKeys)
+{
+    NodePtr roto = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTO));
+    ASSERT_TRUE(roto != nullptr);
+    RotoContextPtr context = roto->getRotoContext();
+    ASSERT_TRUE(bool(context));
+    BezierPtr a = context->makeSquare(0., 0., 10., context->getTimelineCurrentTime());
+    BezierPtr b = context->makeSquare(30., 0., 10., context->getTimelineCurrentTime());
+    BezierPtr outside = context->makeSquare(60., 0., 10., context->getTimelineCurrentTime());
+    ASSERT_TRUE(a && b && outside);
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+    a->getOpacityKnob()->setValueAtTime(1., 0.2, ViewSpec::all(), 0);
+    a->getOpacityKnob()->setValueAtTime(10., 0.8, ViewSpec::all(), 0);
+    b->getOpacityKnob()->setValueAtTime(5., 0.5, ViewSpec::all(), 0);
+    context->select(a, RotoItem::eSelectionReasonOther);
+    context->select(b, RotoItem::eSelectionReasonOther);
+
+    int renderRequests = 0;
+    QObject receiver;
+    RenderEnginePtr engine = countRenderRequests(roto, &receiver, &renderRequests);
+    ASSERT_TRUE(engine != nullptr);
+
+    renderRequests = 0;
+    run("assert " + py(roto) + ".getParam('opacity').setExpression('0.5', False, 0)\n");
+    EXPECT_EQ(std::string("0.5"), a->getOpacityKnob()->getExpression(0));
+    EXPECT_EQ(std::string("0.5"), b->getOpacityKnob()->getExpression(0));
+    EXPECT_TRUE(outside->getOpacityKnob()->getExpression(0).empty());
+    EXPECT_EQ(2, a->getOpacityKnob()->getKeyFramesCount(ViewSpec::current(), 0));
+    EXPECT_EQ(1, b->getOpacityKnob()->getKeyFramesCount(ViewSpec::current(), 0));
+    KeyFrame key;
+    EXPECT_TRUE(a->getOpacityKnob()->getCurve(ViewSpec(0), 0, true)->getKeyFrameWithTime(10., &key));
+    EXPECT_DOUBLE_EQ(0.8, key.getValue());
+    EXPECT_TRUE(b->getOpacityKnob()->getCurve(ViewSpec(0), 0, true)->getKeyFrameWithTime(5., &key));
+    EXPECT_DOUBLE_EQ(0.5, key.getValue());
+    EXPECT_GE(renderRequests, 1);
+    context->clearSelection(RotoItem::eSelectionReasonOther);
 }

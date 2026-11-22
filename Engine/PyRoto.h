@@ -70,6 +70,13 @@ public:
     Param* getParam(const QString& name) const;
 
 private:
+    friend class BezierCurve;
+
+    /**
+     * @brief Every wrapper of an item's own knob goes through here: the item's node gives the
+     * wrapper its current frame and the undo history it records in.
+     **/
+    static Param* asItemParam(Param* param, const RotoItemPtr& item);
 
     RotoItemPtr _item;
 };

@@ -409,6 +409,7 @@ public Q_SLOTS:
     void togglePlaybackMode();
     void onViewerChannelsChanged(int);
     void onFullFrameButtonToggle(bool);
+    void onAutoProxyButtonToggle(bool);
     void onClipToProjectButtonToggle(bool);
     void onTimeLineTimeChanged(SequenceTime time, int);
     void onCurrentTimeSpinBoxChanged(double);
@@ -486,6 +487,11 @@ public Q_SLOTS:
     void onEngineStarted(bool forward);
 
     void onSetDownPlaybackButtonsTimeout();
+
+    void onViewerStaleChanged(bool stale);
+    void onStaleCueTimeout();
+    // Pushes the timing's visibility to the selected style and re-arms the timer at its next deadline.
+    void refreshStaleCue();
 
     void refreshViewerRenderingState();
 

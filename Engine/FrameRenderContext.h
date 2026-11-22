@@ -30,6 +30,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <list>
 #include <map>
 #include <memory>
@@ -66,6 +67,10 @@ public:
         // The context key the node renders under (see NodeCtxKey).
         U64 contextKey = 0;
 
+        // Nonzero for the tasks of a render continuation's extension, which share the frame's store: an extension
+        // may render a frame/view the planned graph renders too, over another region, without replacing its entry.
+        int generation = 0;
+
         bool operator==(const TaskKey& other) const;
     };
 
@@ -80,6 +85,10 @@ public:
         // The images downloaded from deviceLayers join the ones stored in RAM.
         std::map<ImageLayerDesc, ImagePtr> layers;
         std::map<ImageLayerDesc, DeviceImagePtr> deviceLayers;
+
+        // What each device layer added to deviceBytes: once the device tier has moved a shared image's pixels to RAM, the
+        // image no longer reports the bytes it held.
+        std::map<ImageLayerDesc, std::size_t> deviceLayerBytes;
 
         // Intersection of the bounds of all layers.
         RectI bounds;
@@ -101,6 +110,7 @@ public:
             : lock()
             , layers()
             , deviceLayers()
+            , deviceLayerBytes()
             , bounds()
             , renderedRoI()
             , consumersLeft(0)
@@ -132,6 +142,12 @@ public:
     void putDevice(const TaskKey& key, std::map<ImageLayerDesc, DeviceImagePtr> deviceLayers, const RectI& renderedRoI, int consumers);
 
     /**
+     * @brief Like put(), with a device copy of some of the layers too, so that a device consumer reads those in place
+     * and a RAM one never waits on a download.
+     **/
+    void put(const TaskKey& key, std::map<ImageLayerDesc, ImagePtr> layers, std::map<ImageLayerDesc, DeviceImagePtr> deviceLayers, const RectI& renderedRoI, int consumers);
+
+    /**
      * @brief Appends to out the image of each needed layer, in order, if all of them are stored for key and both
      * their bounds and the RoI rendered for key contain pixelRoI. Returns false and leaves out untouched otherwise.
      * A layer stored only in device memory is downloaded once and kept in RAM for the later finds.
@@ -145,15 +161,24 @@ public:
 
     /**
      * @brief Moves the device layers of key to RAM and frees their device memory, leaving the consumer count alone.
-     * Returns the device bytes freed.
+     * With only set, just the layer holding that image. Returns the device bytes freed.
      **/
-    std::size_t evictToRam(const TaskKey& key);
+    std::size_t evictToRam(const TaskKey& key,
+                           const DeviceImage* only = nullptr);
 
     /**
      * @brief Called once by each consumer of key when done reading it; the entry is erased by the last one.
      * Images a consumer still holds stay alive.
      **/
     void release(const TaskKey& key);
+
+    /**
+     * @brief If an entry is stored for key whose layers include every needed one and whose bounds and rendered RoI
+     * contain pixelRoI, adds count consumers to it and returns true; returns false and changes nothing otherwise.
+     * Checked and counted under the store's lock, so an entry found is never erased before its new consumers
+     * released it.
+     **/
+    bool retain(const TaskKey& key, const std::list<ImageLayerDesc>& needed, const RectI& pixelRoI, int count);
 
     /**
      * @brief The bytes of the stored images the image cache does not already account for, each image counted once
@@ -218,6 +243,8 @@ private:
 class FrameRenderContext {
     FrameRenderContext();
 
+    explicit FrameRenderContext(const FrameRenderContextPtr& parent);
+
 public:
     /**
      * @brief Takes the same arguments as the ParallelRenderArgsSetter walking upstream of treeRoot, and builds the
@@ -245,6 +272,35 @@ public:
                                                   const RenderStatsPtr& stats,
                                                   double time,
                                                   ViewIdx view);
+
+    /**
+     * @brief The context the tasks of a render continuation's extension run under: a copy of parent's frame args
+     * pointed at request, the extension's own request pass, sharing parent's store, abort info, stats, isolated job
+     * and fresh-output marks. The frame args parent's request planned under nonzero context keys stay reachable
+     * from the copies for the keys request does not plan. generation is the one the extension's tasks store their
+     * outputs under, nonzero and unique among the extensions sharing the store. Built on the thread running the
+     * probe, before any task uses it; parent's own args and request are only read.
+     **/
+    static FrameRenderContextPtr createExtension(const FrameRenderContextPtr& parent,
+                                                 const std::shared_ptr<FrameRequestMap>& request,
+                                                 int generation);
+
+    /**
+     * @brief The context this one extends, or null for a frame's own.
+     **/
+    const FrameRenderContextPtr& getParent() const
+    {
+        return _parent;
+    }
+
+    /**
+     * @brief The store generations a task under this context reads from, its own first and then those of the
+     * contexts it extends, ending with 0, the planned graph's.
+     **/
+    const std::vector<int>& getStoreGenerations() const
+    {
+        return _storeGenerations;
+    }
 
     ~FrameRenderContext();
 
@@ -285,6 +341,20 @@ public:
      **/
     bool isRotoPaintTreeNode(const Node* node) const;
 
+    /**
+     * @brief Records that node's output at time and view in this frame holds pixels computed for it, by its own effect
+     * or by the nodes an identity one passes through, rather than taken from a cache. Lock free: the mark is kept on
+     * the node (see Node::stampFreshOutput()). It is per (node, time, view), not per consumer, so in a diamond the
+     * consumer that took the output from the cache after the other one's pull computed it sees it fresh too.
+     **/
+    void noteFreshOutput(const Node* node, double time, ViewIdx view) const;
+
+    /**
+     * @brief Whether noteFreshOutput() was called for node at time and view in this frame. Lock free; it can miss a
+     * fresh output when the node is rendered for many frames or times at once, never report a cached one.
+     **/
+    bool hasFreshOutput(const Node* node, double time, ViewIdx view) const;
+
     const AbortableRenderInfoPtr& getAbortInfo() const
     {
         return _abortInfo;
@@ -307,7 +377,7 @@ public:
 
     FrameStore& getStore() const
     {
-        return _store;
+        return *_store;
     }
 
     /**
@@ -354,6 +424,15 @@ public:
      * @brief Returns the planes setRootDevicePlanes() set and leaves none. Thread safe.
      **/
     std::map<ImageLayerDesc, GpuDeviceImagePtr> takeRootDevicePlanes();
+
+    /**
+     * @brief CacheDeviceTier::purgeGeneration() when the frame was made, before it read any of its sources, for the
+     * frame's inserts into a device tier.
+     **/
+    std::uint64_t deviceTierGeneration() const
+    {
+        return _deviceTierGeneration;
+    }
 #endif
 
 private:
@@ -364,12 +443,20 @@ private:
     // Effects share the holder of their render clones, so a clone finds the args of its node.
     std::unordered_map<const TLSHolderBase*, ParallelRenderArgsPtr> _argsByHolder;
     std::unordered_set<const Node*> _rotoPaintTreeNodes;
+    std::uint64_t freshOutputKey(double time, ViewIdx view) const;
+
+    // Unique among the frames of the session, so a node's fresh-output marks from an older frame never match.
+    const std::uint64_t _freshOutputFrameId;
     std::shared_ptr<FrameRequestMap> _request;
     AbortableRenderInfoPtr _abortInfo;
     RenderStatsPtr _stats;
     double _time;
     ViewIdx _view;
-    mutable FrameStore _store;
+
+    // Null for a frame's own context; an extension's keeps the one it extends, whose store it shares, alive.
+    FrameRenderContextPtr _parent;
+    std::vector<int> _storeGenerations;
+    std::shared_ptr<FrameStore> _store;
     const IsolatedJob* _isolatedJob;
     std::atomic<bool> _recordsRenderedNodes;
     mutable std::mutex _renderedMutex;
@@ -378,6 +465,7 @@ private:
     std::atomic<bool> _wantsRootOnDevice;
     std::mutex _rootDeviceMutex;
     std::map<ImageLayerDesc, GpuDeviceImagePtr> _rootDevicePlanes;
+    const std::uint64_t _deviceTierGeneration;
 #endif
 };
 

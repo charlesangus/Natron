@@ -34,13 +34,17 @@
 #include <limits>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <shared_mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
 #include <unordered_set>
+#include <utility>
 #include <vector>
+
+#include <pthread.h>
 
 #include <QActionGroup>
 #include <QCheckBox>
@@ -59,11 +63,13 @@
 #include <QMouseEvent>
 #include <QOffscreenSurface>
 #include <QOpenGLContext>
+#include <QPaintEvent>
 #include <QPainter>
 #include <QPointer>
 #include <QSet>
 #include <QSignalBlocker>
 #include <QSpinBox>
+#include <QThread>
 #include <QTimer>
 #include <QUndoCommand>
 #include <QWheelEvent>
@@ -79,6 +85,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/CyclesAovs.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
+#include "Engine/Nodes/Scene/LiveTextureSceneIndex.h"
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/RenderSettingsPrim.h"
@@ -88,9 +95,12 @@
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
+#include "Engine/Nodes/Scene/SceneTeardown.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Nodes/Scene/StormGLSection.h"
+#include "Engine/Nodes/Scene/StormPtexBindingFilter.h"
 #include "Engine/Nodes/Scene/StormPtexBudget.h"
+#include "Engine/Nodes/Scene/StormTextureBudget.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
 #include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
@@ -127,6 +137,7 @@
 #include <pxr/imaging/hdx/pickTask.h>
 #include <pxr/imaging/hdx/tokens.h>
 #include <pxr/imaging/hgi/texture.h>
+#include <pxr/usd/sdf/layer.h>
 #include <pxr/usd/usd/notice.h>
 #include <pxr/usd/usd/primRange.h>
 #include <pxr/usd/usd/stage.h>
@@ -154,8 +165,10 @@
 #include "Gui/SceneGizmo.h"
 #include "Gui/SceneGraphModel.h"
 #include "Gui/SceneGuides.h"
+#include "Gui/ScenePresentPacer.h"
 #include "Gui/SceneTransformTarget.h"
 #include "Gui/SceneTransformWidget.h"
+#include "Gui/SelectionEngine.h"
 #include "Gui/UndoHistory.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
@@ -175,6 +188,14 @@ const int kMaxRenderPasses = 8;
 // A stage change usually reaches the screen sooner than this, and a status flashing over the old
 // image on every edit would be worse than the short wait.
 const int kComposingStatusDelayMs = 250;
+// How often the render thread, idle, asks whether the frame it sent the GPU is done.
+const std::chrono::milliseconds kFenceWatchInterval(1);
+// The longest a frame waits after the paint that asked for it for the window's composition, which
+// a window not shown on screen never does.
+const int kFrameStartFallbackMs = 50;
+// The longest a finished render holds the paints while the GPU completes it. A paint before then
+// shows the frame before, and its composition takes the vertical blank the new frame needed.
+const std::chrono::milliseconds kPresentHoldLimit(50);
 // The longest a sync's first frame waits for the graph policy its prims take: past it, the view
 // draws them as they are rather than seem stuck.
 const int kPolicyHoldMs = 500;
@@ -186,6 +207,10 @@ const double kRevealTargetMs = 33.;
 const int kRevealStepDeadlineMs = 16;
 // Long enough to span the gaps between the moves of one drag.
 const int kRevealCameraYieldMs = 250;
+// What a frame of the fill streams in of textures, paced between these by what frames cost.
+const std::uint64_t kFillTextureBatchMinBytes = std::uint64_t(16) << 20;
+const std::uint64_t kFillTextureBatchStartBytes = std::uint64_t(64) << 20;
+const std::uint64_t kFillTextureBatchMaxBytes = std::uint64_t(512) << 20;
 
 SdfPathVector
 toSdfPaths(const std::vector<std::string>& paths)
@@ -391,6 +416,36 @@ setLutParameters(GLenum target,
 
 // The colour AOV and its depth take the first two texture units, the LUTs the ones after.
 const GLint kFirstLutUnit = 2;
+
+// The selected surfaces' tint, in display colour as the selected guides are drawn; its alpha is
+// how strongly a fully covered pixel takes it.
+const GLfloat kSelectionTint[4] = { 1.f, 0.8f, 0.1f, 1.f };
+// The selection pass draws the beauty's own rprims with the beauty's camera, multisampling and
+// resolve, so its depth is the beauty's but for the rounding of drawGrade()'s write into the
+// target's depth buffer.
+const GLfloat kSelectionDepthBias = 1e-5f;
+
+/**
+ * @brief The pass that tints the selected surfaces drawn by SelectionEngine::renderSelection():
+ * each pixel moves toward the tint by the tint's alpha times how much of it the selection covers,
+ * so a half-transparent card tints half as much as an opaque prim. Its depth is the selection's,
+ * tested against the beauty's, so a selected surface hidden behind an unselected opaque one is not
+ * tinted, while one behind a translucent surface, which writes no depth, is.
+ **/
+const char* const kSelectionFragmentShader = "#version 400 compatibility\n"
+                                             "uniform sampler2D selectionColor;\n"
+                                             "uniform sampler2D selectionDepth;\n"
+                                             "uniform vec4 tint;\n"
+                                             "uniform float depthBias;\n"
+                                             "void main() {\n"
+                                             "    ivec2 p = ivec2(gl_FragCoord.xy);\n"
+                                             "    float a = clamp(texelFetch(selectionColor, p, 0).a, 0.0, 1.0) * tint.a;\n"
+                                             "    if (a <= 0.0) {\n"
+                                             "        discard;\n"
+                                             "    }\n"
+                                             "    gl_FragColor = vec4(tint.rgb, a);\n"
+                                             "    gl_FragDepth = max(texelFetch(selectionDepth, p, 0).r - depthBias, 0.0);\n"
+                                             "}\n";
 
 struct GradeLut {
     GLuint id;
@@ -687,6 +742,15 @@ struct SceneViewportRenderer::Implementation {
     std::atomic<bool> exclusiveOwed { false };
     std::function<void()> readEnded;
 
+    // A deferred stage load can become ready on the teardown thread after the renderer is gone, so
+    // the stage's wake goes through this shared gate and clearing the callback waits out a call
+    // in flight.
+    struct LoadsWakeGate {
+        std::mutex mutex;
+        std::function<void()> wake;
+    };
+    std::shared_ptr<LoadsWakeGate> loadsWakeGate { std::make_shared<LoadsWakeGate>() };
+
     // For the main thread, and for work it waits on. Whoever made this fail lets the viewport know
     // when it lets go: edits and frames by their signals, other readers by readEnded.
     bool tryLockExclusive(std::unique_lock<std::shared_mutex>* lock)
@@ -766,7 +830,49 @@ struct SceneViewportRenderer::Implementation {
             ~Waiting() { --count; }
         } waiting(exclusiveWaiting);
 
-        return std::unique_lock<std::shared_mutex>(stageMutex);
+        if (!onMainThread()) {
+            return std::unique_lock<std::shared_mutex>(stageMutex);
+        }
+        std::unique_lock<std::shared_mutex> lock(stageMutex, std::try_to_lock);
+        if (!lock.owns_lock()) {
+            const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+            lock.lock();
+            noteMainThreadWait(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+        }
+
+        return lock;
+    }
+
+    std::shared_lock<std::shared_mutex> lockShared()
+    {
+        if (!onMainThread()) {
+            return std::shared_lock<std::shared_mutex>(stageMutex);
+        }
+        std::shared_lock<std::shared_mutex> lock(stageMutex, std::try_to_lock);
+        if (!lock.owns_lock()) {
+            const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+            lock.lock();
+            noteMainThreadWait(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+        }
+
+        return lock;
+    }
+
+    static bool onMainThread()
+    {
+        const QCoreApplication* app = QCoreApplication::instance();
+
+        return app && (QThread::currentThread() == app->thread());
+    }
+
+    // The main thread's blocking waits, for stageMutex and for the render thread. Main thread only.
+    double mainThreadWaitMs = 0.;
+    double mainThreadWaitMaxMs = 0.;
+
+    void noteMainThreadWait(double ms)
+    {
+        mainThreadWaitMs += ms;
+        mainThreadWaitMaxMs = std::max(mainThreadWaitMaxMs, ms);
     }
     // Created by the first sync and kept for the renderer's life: the engine binds the first
     // stage it renders for good (v26.08 usdImagingGL/engine.cpp, PrepareBatch populates once).
@@ -847,26 +953,68 @@ struct SceneViewportRenderer::Implementation {
     // A paced step is timed from its start to the end of the render that sent it to Hydra, which is
     // where its cost lands.
     SceneRevealPacer drawRevealPacer { kRevealTargetMs };
+    // A frame in which rprims entered Hydra also rebuilt every draw batch, which says nothing of what
+    // a step costs; these count such entries as of the last render's end and of the step's frame.
+    unsigned long long drawInsertsRendered = 0;
+    unsigned long long drawRevealStepInserts = 0;
     bool drawRevealStepTimed = false;
     std::size_t drawRevealStepPrims = 0;
     std::chrono::steady_clock::time_point drawRevealStepStart;
     unsigned long long drawRevealSteps = 0;
+    // A Storm filter admits its geometry a batch a presented image, timed and paced as reveal steps
+    // are, which it never takes meanwhile; the rows come nearest first, as the stand-in's worker
+    // orders them for the view the camera last rested at.
+    std::atomic<bool> drawFilling { false };
+    // Only frames shown one after another take the batches in, as each waits for the last to be
+    // presented: a render its caller waits out (render()) draws everything there is.
+    bool fillPaced = true;
+    std::atomic<std::size_t> fillAdmitted { 0 };
+    std::atomic<std::size_t> fillPending { 0 };
+    std::atomic<std::size_t> fillFixedBatch { 0 };
+    std::atomic<double> fillBudgetMs { kRevealTargetMs };
+    double fillPacerBudgetMs = kRevealTargetMs;
+    bool drawFillStep = false;
+    // A load landing in the step's frame adds prims of its own to what the frame cost.
+    unsigned long long drawFillStepLoads = 0;
+    SceneDrawFilter::Order fillOrder;
+    std::shared_ptr<const std::vector<std::string>> fillOrderRows;
+    bool fillOrderViewSet = false;
+    GfMatrix4d fillOrderView;
+    int fillOrderWidth = 0;
+    int fillOrderHeight = 0;
+    std::uint64_t textureBatchBytes = kFillTextureBatchStartBytes;
+    std::uint64_t texturesStreamedBytes = 0;
+    std::chrono::steady_clock::time_point texturesStreamedAt;
+    // The stand-in's boxes of the rows with prims still to come, made on the render thread from the
+    // list and the admissions they were made for.
+    mutable std::mutex fillBoxMutex;
+    SceneDrawBoxes::ListPtr fillBoxList;
+    SceneDrawBoxes::ListPtr fillBoxSource;
+    std::size_t fillBoxAdmitted = 0;
+    std::atomic<bool> fillBoxesShown { false };
     // When the user last moved the camera, as steady clock ticks.
     std::atomic<long long> cameraMovedAt { 0 };
     // Background frames take the reveal steps then, so a render the main thread waits for takes none.
     std::atomic<bool> backgroundFramesUsed { false };
     SceneDrawFilter::Rules drawRules;
+    // Held by the thread taking draw deltas in while it changes drawRules and drawRulesVersion, and
+    // by any other that reads them: the guides are built on the main thread while frames render.
+    mutable std::mutex rulesMutex;
     SceneDrawFilter::WeakPtr drawFilter;
-    // The renderInstanceId the engine's scene indices were built under, or empty.
+    // The engine's render index, which its texture budget filter is found by; empty without one.
     std::string engineInstanceId;
-    // The list the box buffer holds, and how many of its boxes the last frame drew.
-    SceneDrawBoxes::ListPtr uploadedBoxes;
+    // Set by the render thread after a render, read by the main thread to ask for the frames that
+    // bring the held textures in.
+    std::atomic<bool> texturesOwed { false };
+    // The passes the last Storm frame ran, and whether the fill was complete when it began.
+    std::atomic<int> lastFramePasses { 0 };
+    std::atomic<bool> lastFrameFillComplete { false };
     // What the last frame drew, which is what a click picks from.
     SceneDrawBoxes::ListPtr drawnBoxList;
-    // Cleared by the main thread when the selection changes, as the buffer colours the boxes
+    // Cleared by the main thread when the selection changes, as the buffers colour the boxes
     // holding a selected prim.
     std::atomic<bool> boxColoursValid { false };
-    std::vector<bool> boxHighlighted;
+    std::atomic<bool> standInColoursValid { false };
     bool recordDrawnBoxes = false;
     std::vector<DrawnBox> drawnBoxes;
     // Whether the box worker was last given no rules for Render Everything, not drawRules.
@@ -874,14 +1022,26 @@ struct SceneViewportRenderer::Implementation {
     // Bumped with each change of drawRules, so the guides follow them.
     U64 drawRulesVersion = 0;
     GLuint boxProgram = 0;
-    GLuint boxVao = 0;
-    GLuint boxEdgeBuffer = 0;
-    GLuint boxInstanceBuffer = 0;
-    GLsizei boxInstances = 0;
-    GLuint markerVao = 0;
-    GLuint markerArmBuffer = 0;
-    GLuint markerInstanceBuffer = 0;
-    GLsizei markerInstances = 0;
+    // The instanced boxes and markers of one box list, in the context that draws them.
+    struct BoxBuffers {
+        GLuint boxVao = 0;
+        GLuint boxEdgeBuffer = 0;
+        GLuint boxInstanceBuffer = 0;
+        GLsizei boxInstances = 0;
+        GLuint markerVao = 0;
+        GLuint markerArmBuffer = 0;
+        GLuint markerInstanceBuffer = 0;
+        GLsizei markerInstances = 0;
+        // The list the buffers hold, and which of its boxes hold a selected prim.
+        SceneDrawBoxes::ListPtr uploaded;
+        std::vector<bool> highlighted;
+    };
+    BoxBuffers boxBuffers;
+    BoxBuffers standInBuffers;
+    BoxBuffers fillBuffers;
+    // What the last overlay pass drew of fillBoxList. Main thread.
+    SceneDrawBoxes::ListPtr fillDrawnList;
+    std::atomic<bool> fillColoursValid { false };
     std::atomic<int> boxesDrawn { 0 };
     std::atomic<int> markersDrawn { 0 };
     // The budget Storm's filter applies, whose stand-ins the frames draw.
@@ -913,6 +1073,14 @@ struct SceneViewportRenderer::Implementation {
         bool gprim = false;
     };
     std::vector<StandInRange> standInRanges;
+    // Whether feedBoxes() feeds the stand-in's worker. Main thread.
+    bool standInEnabled = false;
+    // Which rows the stand-in's worker lists, read there.
+    std::atomic<bool> standInByModel { true };
+    // The drawRulesVersion the stand-in's worker was last given, if any.
+    U64 standInRulesVersion = 0;
+    bool standInRulesFed = false;
+    std::atomic<int> standInBoxesDrawn { 0 };
     std::atomic<bool> everyLightHidden { false };
     StageNoticeCounter stageNotices;
     bool stageNoticesRegistered = false;
@@ -933,7 +1101,8 @@ struct SceneViewportRenderer::Implementation {
     bool showRender = false;
     bool showGuidePurpose = false;
     LightingModeEnum lightingMode = eLightingModeScene;
-    bool sceneLit = false;
+    // Whether the stage's lights lit the last frame rendered; written by the render thread.
+    std::atomic<bool> sceneLit { false };
     FreeCamera freeCamera;
     ClipPlanes clipPlanes;
     // Read by the threads that work out the first framing.
@@ -944,7 +1113,12 @@ struct SceneViewportRenderer::Implementation {
     GfMatrix4d lookThroughOverride = GfMatrix4d(1.);
     // The selected prims, the current one last.
     std::vector<std::string> selected;
-    std::unique_ptr<UsdImagingGLEngine> engine;
+    // engineSelection's valid paths, which the selection pass draws, and whether the engine has yet
+    // to be given them. Touched only by whichever thread holds the engine.
+    SdfPathVector selectedPaths;
+    bool selectedPathsChanged = true;
+    // Held by its own type: UsdImagingGLEngine's destructor is not virtual.
+    std::unique_ptr<SelectionEngine> engine;
     std::atomic<bool> engineHeld { false };
     std::atomic<U64> engineCount { 0 };
     // What the engine has yet to be told is selected: the main thread sets it without waiting for
@@ -952,6 +1126,23 @@ struct SceneViewportRenderer::Implementation {
     std::mutex engineSelectionMutex;
     std::vector<std::string> engineSelection;
     std::atomic<bool> engineSelectionDirty { false };
+    // A selection change leaves the view and the stage as they were, so these counts are what
+    // asks for the frame that tints it: posted by the main thread, applied with engineSelection,
+    // absorbed by the render that drew the selection pass.
+    std::atomic<U64> selectionPosted { 0 };
+    std::atomic<U64> selectionApplied { 0 };
+    std::atomic<U64> selectionAbsorbed { 0 };
+
+    // Another delegate than Storm renders on the refinement's own thread.
+    bool takesBackgroundFrames() const
+    {
+        if (stageHeld || !shown || !loadStage.load() || !getRendererErrorCopy().empty()) {
+            return false;
+        }
+        std::lock_guard<std::mutex> lock(rendererIdMutex);
+
+        return rendererId == kRenderDelegateStormId;
+    }
     // The renderer chosen, a delegate's id or kRenderDelegateSceneDefaultId; the delegate the
     // next engine is made with, the chosen one or the one the stage's render settings prim names;
     // and why it could not be, if it could not.
@@ -999,7 +1190,12 @@ struct SceneViewportRenderer::Implementation {
 
         // True while the fbo holds this frame's image and nothing has drawn over it.
         bool imageKept = false;
+        // Prepared to grade the engine's last render again and tint it, rendering nothing.
+        bool tintOnly = false;
         unsigned int fbo = 0;
+        // selectionApplied when the frame drew its selection pass: a kept image tinted for another
+        // selection is not this one's.
+        U64 selection = 0;
         U64 editCount = 0;
         U64 loadEditCount = 0;
         U64 previewGeneration = 0;
@@ -1008,6 +1204,49 @@ struct SceneViewportRenderer::Implementation {
         U64 cancels = 0;
     };
     BackgroundFrame backgroundFrame;
+    // Main thread: the view of the last background frame prepared, which the render thread's copy
+    // in backgroundFrame is not, as it is read and changed while that frame runs.
+    struct BackgroundView {
+        bool valid = false;
+        int width = 0;
+        int height = 0;
+        GfMatrix4d viewMatrix;
+        GfMatrix4d projection;
+        UsdImagingGLRenderParams params;
+        LightingModeEnum lightingMode = eLightingModeScene;
+        OCIO_NAMESPACE::ConstProcessorRcPtr displayProcessor;
+        double gain = 1.;
+        double gamma = 1.;
+        float background[3] = { 0.f, 0.f, 0.f };
+
+        bool operator==(const BackgroundView& other) const
+        {
+            return valid && other.valid && (width == other.width) && (height == other.height) && (viewMatrix == other.viewMatrix)
+                && (projection == other.projection) && (params == other.params) && (lightingMode == other.lightingMode)
+                && (displayProcessor == other.displayProcessor) && (gain == other.gain) && (gamma == other.gamma)
+                && std::equal(background, background + 3, other.background);
+        }
+    };
+    BackgroundView backgroundView;
+
+    // What the engine's colour and depth AOVs hold: the converged render that left them. A pick
+    // renders into its own task's buffers and the selection pass into the selection's, so only a
+    // render, another engine or another buffer size changes them, and a frame owed only to a
+    // selection change can grade them again and draw the selection over them.
+    struct AovFrame {
+        bool valid = false;
+        U64 engine = 0;
+        int width = 0;
+        int height = 0;
+        GfMatrix4d viewMatrix;
+        GfMatrix4d projection;
+        UsdImagingGLRenderParams params;
+        U64 editCount = 0;
+        U64 loadEditCount = 0;
+        U64 previewGeneration = 0;
+        U64 drawApplied = 0;
+    };
+    AovFrame aovFrame;
 
     // What a traversal of the stage found, as of an edit count. The threads that change the stage
     // publish it before anyone is told of the change, and nothing else traverses, so no frame or
@@ -1034,6 +1273,12 @@ struct SceneViewportRenderer::Implementation {
     std::atomic<double> guideSize { 1. };
     std::vector<DrawnGuide> drawnGuides;
     bool recordDrawnGuides = false;
+    // Main thread: what drawOverlays() last read of the stage, drawn again when it cannot read it.
+    GfFrustum overlayFrustum;
+    bool overlayThroughCamera = false;
+    bool overlayHandlesShown = false;
+    SceneGizmo::Frame overlayHandleFrame;
+    bool overlayHandleSelection = false;
     // Indices into guides, unselected cameras, unselected lights and selected ones, without the
     // look-through camera's.
     std::vector<int> guideBatches[3];
@@ -1052,6 +1297,11 @@ struct SceneViewportRenderer::Implementation {
     // the main thread may have set since.
     GLuint gradeProgram = 0;
     std::vector<GradeLut> gradeLuts;
+    // The pass tinting the selection over what drawGrade() drew (kSelectionFragmentShader), a GL
+    // object of the context of render(), and whether linking it failed, so that it is not retried.
+    // Its uniforms are set once, when it is linked.
+    GLuint selectionProgram = 0;
+    bool selectionProgramFailed = false;
     OCIO_NAMESPACE::GpuShaderDescRcPtr gradeShader;
     bool gradeBuilt = false;
     OCIO_NAMESPACE::ConstProcessorRcPtr gradeProcessor;
@@ -1226,8 +1476,10 @@ struct SceneViewportRenderer::Implementation {
     }
 
     /**
-     * @brief Renders with renderer from the next render on: a change destroys the engine, so it
-     * needs the context of render() current. Needs stageMutex.
+     * @brief Renders with renderer from the next render on. The Storm engine stays while another
+     * delegate renders: it keeps queueing the stage's change notices, so going back to Storm
+     * applies only the edits made since, where a new engine would populate the whole stage on the
+     * main thread. Needs stageMutex.
      **/
     void switchRenderer(const std::string& renderer)
     {
@@ -1241,7 +1493,9 @@ struct SceneViewportRenderer::Implementation {
         setRendererErrorCopy(std::string());
         setRefineErrorCopy(std::string());
         uploadedFrame.reset();
-        dropEngine();
+        // A return to Storm renders afresh rather than showing the image from before the switch.
+        backgroundFrame.imageKept = false;
+        aovFrame.valid = false;
         // The last delegate's refinement engine goes; another has its own default cap, and starts
         // refining.
         progressive->setRenderer(std::string());
@@ -1251,6 +1505,19 @@ struct SceneViewportRenderer::Implementation {
         if (renderer != kRenderDelegateStormId) {
             progressive->setDrawRules(drawRules);
         }
+    }
+
+    // Needs stageMutex.
+    void chooseRenderer(const std::string& id)
+    {
+        {
+            std::lock_guard<std::mutex> idLock(rendererIdMutex);
+            rendererChoice = id.empty() ? std::string(kRenderDelegateStormId) : id;
+        }
+        // The error is cleared even for the same id, so that choosing it again retries it.
+        setRendererErrorCopy(std::string());
+        setRefineErrorCopy(std::string());
+        switchRenderer(effectiveRenderer());
     }
 
     std::shared_ptr<const StageSummary> getStageSummary() const
@@ -1304,7 +1571,9 @@ struct SceneViewportRenderer::Implementation {
         const std::shared_ptr<const StageSummary> summary = getStageSummary();
         const double time = timeCode();
         const double length = guideLength();
-        if (!guidesValid || (guidesSummary != summary) || (guidesTimeCode != time) || (guidesLength != length) || (guidesRulesVersion != drawRulesVersion)) {
+        std::unique_lock<std::mutex> rulesLock(rulesMutex);
+        const U64 rulesVersion = drawRulesVersion;
+        if (!guidesValid || (guidesSummary != summary) || (guidesTimeCode != time) || (guidesLength != length) || (guidesRulesVersion != rulesVersion)) {
             const UsdStageRefPtr stage = currentStage();
             guides.clear();
             if (stage && summary) {
@@ -1316,9 +1585,10 @@ struct SceneViewportRenderer::Implementation {
                         shown.push_back(prim);
                     }
                 }
+                rulesLock.unlock();
                 guides = SceneGuides::buildGuides(stage, shown, UsdTimeCode(time), length);
             }
-            guidesRulesVersion = drawRulesVersion;
+            guidesRulesVersion = rulesVersion;
             guidesSummary = summary;
             guidesTimeCode = time;
             guidesLength = length;
@@ -1331,7 +1601,12 @@ struct SceneViewportRenderer::Implementation {
 
     const std::vector<int>* currentGuideBatches()
     {
-        const std::vector<SceneGuides::Guide>& all = currentGuides();
+        return guideBatchesOf(currentGuides());
+    }
+
+    // The batches of guides as last built, without building them again.
+    const std::vector<int>* guideBatchesOf(const std::vector<SceneGuides::Guide>& all)
+    {
         if (!guideBatchesValid) {
             for (std::vector<int>& batch : guideBatches) {
                 batch.clear();
@@ -1595,7 +1870,9 @@ struct SceneViewportRenderer::Implementation {
         // transform that is not linear gets wrong wherever alpha is between 0 and 1.
         params.clearColor = GfVec4f(0.f, 0.f, 0.f, 0.f);
         params.colorCorrectionMode = HdxColorCorrectionTokens->disabled;
-        params.highlight = true;
+        // The selection is tinted after drawGrade(), from a pass of its own: Storm's highlight
+        // misses translucent surfaces.
+        params.highlight = false;
         params.showProxy = showProxy;
         params.showRender = showRender;
         params.showGuides = showGuidePurpose;
@@ -1618,26 +1895,21 @@ struct SceneViewportRenderer::Implementation {
         return params;
     }
 
-    // Needs an engine.
+    // Needs stageMutex.
     void applySelection()
     {
-        // The engine highlights differently from now on, so a kept image is out of date.
-        backgroundFrame.imageKept = false;
         engineSelectionDirty = false;
-        SdfPathVector paths;
+        selectedPaths.clear();
         {
             std::lock_guard<std::mutex> lock(engineSelectionMutex);
+            selectionApplied = selectionPosted.load();
             for (const std::string& path : engineSelection) {
                 if (SdfPath::IsValidPathString(path)) {
-                    paths.push_back(SdfPath(path));
+                    selectedPaths.push_back(SdfPath(path));
                 }
             }
         }
-        if (paths.empty()) {
-            engine->ClearSelected();
-        } else {
-            engine->SetSelected(paths);
-        }
+        selectedPathsChanged = true;
     }
 
     // Needs the GL context current, stageMutex and a StormGLSection, as the render that threw has
@@ -1646,15 +1918,57 @@ struct SceneViewportRenderer::Implementation {
     void discardFailedEngine(const std::string& what)
     {
         engine.reset();
+        forgetEngineInstance();
         engineHeld = false;
         backgroundFrame.imageKept = false;
+        aovFrame.valid = false;
         setRenderErrorCopy("The " + rendererId + " render failed: " + what);
+    }
+
+    void forgetEngineInstance()
+    {
+        engineInstanceId.clear();
+        texturesOwed = false;
+    }
+
+    // Needs stageMutex and a current GL context, before the frame's first render.
+    void streamTextures()
+    {
+        StormTextureBudget::sampleFreeVideoMemory();
+        StormTextureBudget::StreamPace pace;
+        pace.batchBytes = textureBatchBytes;
+        SceneDrawFilter* filter = get_pointer(drawFilter);
+        if (filter && filter->isFilling() && fillOrderRows) {
+            pace.rows = fillOrderRows;
+            pace.reached = filter->orderReached();
+        }
+        texturesStreamedAt = std::chrono::steady_clock::now();
+        texturesStreamedBytes = StormTextureBudget::streamTextures(engineInstanceId, pace).bytes;
+    }
+
+    // After the renders of a frame that streamed textures: what they and the frame cost sizes the
+    // next frame's batch.
+    void paceTextures()
+    {
+        if (texturesStreamedBytes == 0) {
+            return;
+        }
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - texturesStreamedAt).count();
+        const double budgetMs = fillBudgetMs;
+        if (ms > budgetMs) {
+            textureBatchBytes = (std::max)(kFillTextureBatchMinBytes, textureBatchBytes / 2);
+        } else if (ms < 0.8 * budgetMs) {
+            textureBatchBytes = (std::min)(kFillTextureBatchMaxBytes, textureBatchBytes + textureBatchBytes / 2);
+        }
+        texturesStreamedBytes = 0;
     }
 
     // Nothing above a paint catches what a delegate throws.
     void engineFailedToStart(const std::string& what)
     {
         engine.reset();
+        aovFrame.valid = false;
+        forgetEngineInstance();
         engineHeld = false;
         setRendererErrorCopy("The renderer " + rendererId + " could not be started: " + what + ".");
     }
@@ -1690,11 +2004,15 @@ struct SceneViewportRenderer::Implementation {
             SceneDrawFilter::registerForAllRenderers();
             CyclesAovs::registerSceneIndices();
             SceneBudgetProbe::registerForStorm();
+            StormPtexBindingFilter::registerForStorm();
+            StormTextureBudget::registerForStorm();
+            LiveTextureSceneIndex::registerSceneIndices();
             {
                 TfErrorMark mark;
                 const SceneDrawFilter::EngineScope scope;
-                engine.reset(new UsdImagingGLEngine(parameters));
+                engine.reset(new SelectionEngine(parameters));
                 filterInstanceId = scope.getInstanceId();
+                applySelection();
                 ++engineCount;
                 ++engineConstructionCount;
                 if (engine->GetCurrentRendererId() != parameters.rendererPluginId) {
@@ -1716,8 +2034,6 @@ struct SceneViewportRenderer::Implementation {
             // Hydra's presentation.
             engine->SetRendererAov(HdAovTokens->color);
             engine->SetEnablePresentation(false);
-            engine->SetSelectionColor(GfVec4f(1.f, 0.8f, 0.1f, 1.f));
-            applySelection();
         } catch (const std::exception& e) {
             engineFailedToStart(e.what());
 
@@ -1730,8 +2046,12 @@ struct SceneViewportRenderer::Implementation {
         drawFilter = SceneDrawFilter::find(filterInstanceId);
         engineInstanceId = filterInstanceId;
         if (SceneDrawFilter* filter = get_pointer(drawFilter)) {
+            filter->setAdmitting(fillPaced && RenderDelegates::isStorm(rendererId));
             filter->seedRules(drawRules);
         }
+        fillOrder.reset();
+        fillOrderRows.reset();
+        fillOrderViewSet = false;
         engineHeld = true;
 
         return true;
@@ -1773,11 +2093,36 @@ struct SceneViewportRenderer::Implementation {
 
         engine.reset();
         drawFilter = SceneDrawFilter::WeakPtr();
-        engineInstanceId.clear();
+        forgetEngineInstance();
         drawRevealing = false;
         everyLightHidden = false;
         engineHeld = false;
         backgroundFrame.imageKept = false;
+        aovFrame.valid = false;
+    }
+
+    // Needs stageMutex and a current GL context. Every GL object, the engine first.
+    void releaseHeldGL()
+    {
+        releaseBoxesGL();
+        releaseEngineHeldGL();
+    }
+
+    // Needs stageMutex and a current GL context. Every GL object but the overlays', the engine first.
+    void releaseEngineHeldGL()
+    {
+        dropEngine();
+        releaseGrade();
+        releaseSelectionTint();
+        if (refineTexture) {
+            glDeleteTextures(1, &refineTexture);
+            glDeleteBuffers(1, &refineDepthBuffer);
+            refineTexture = 0;
+            refineDepthBuffer = 0;
+        }
+        refineWidth = 0;
+        refineHeight = 0;
+        uploadedFrame.reset();
     }
 
     // Needs stageMutex.
@@ -1789,6 +2134,7 @@ struct SceneViewportRenderer::Implementation {
         }
         absorbedParamsKey = paramsKey(params);
         drawAbsorbed = drawApplied.load();
+        selectionAbsorbed = selectionApplied.load();
         if (!stageNoticesRegistered && sceneStage && sceneStage->getStage()) {
             stageNoticesRegistered = true;
             TfNotice::Register(TfCreateWeakPtr(&stageNotices), &StageNoticeCounter::onObjectsChanged, UsdStageWeakPtr(sceneStage->getStage()));
@@ -1902,13 +2248,16 @@ struct SceneViewportRenderer::Implementation {
         // at all if it ends where it started.
         std::vector<const SceneDrawDelta*> deltas;
         deltas.reserve(queued.size());
-        for (const QueuedDrawDelta& entry : queued) {
-            SceneDrawFilter::applyToRules(entry.delta, &drawRules);
-            drawRevealBatch = entry.revealBatch;
-            deltas.push_back(&entry.delta);
-        }
-        if (!queued.empty()) {
-            ++drawRulesVersion;
+        {
+            std::lock_guard<std::mutex> rulesLock(rulesMutex);
+            for (const QueuedDrawDelta& entry : queued) {
+                SceneDrawFilter::applyToRules(entry.delta, &drawRules);
+                drawRevealBatch = entry.revealBatch;
+                deltas.push_back(&entry.delta);
+            }
+            if (!queued.empty()) {
+                ++drawRulesVersion;
+            }
         }
         // A delegate rendering everything draws every row, so no box stands in for one.
         const bool boxesBlank = renderEverything && (rendererId != kRenderDelegateStormId);
@@ -1943,7 +2292,26 @@ struct SceneViewportRenderer::Implementation {
             drawRevealStepTimed = paced && (stepped != 0) && !filter->wasStepCut();
             drawRevealStepPrims = stepped;
             drawRevealStepStart = stepStart;
+            drawRevealStepInserts = drawInsertsRendered;
         }
+        drawFillStep = false;
+        if ((stepped == 0) && mayStep && filter && filter->isFilling() && !yieldsToCamera() && drawRevealStepDue.exchange(false)) {
+            refreshFillOrder();
+            const double budgetMs = fillBudgetMs;
+            if (budgetMs != fillPacerBudgetMs) {
+                drawRevealPacer = SceneRevealPacer(budgetMs);
+                fillPacerBudgetMs = budgetMs;
+            }
+            const std::chrono::steady_clock::time_point stepStart = std::chrono::steady_clock::now();
+            const std::size_t fixedBatch = fillFixedBatch;
+            stepped = filter->admit(fillOrder, (fixedBatch != 0) ? fixedBatch : drawRevealPacer.nextBatch(), stepStart + std::chrono::milliseconds(kRevealStepDeadlineMs));
+            ++drawRevealSteps;
+            drawFillStep = (stepped != 0);
+            drawFillStepLoads = filter->getInputAddedCount();
+            drawRevealStepPrims = stepped;
+            drawRevealStepStart = stepStart;
+        }
+        noteFillState(filter);
         const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
         const double ms = std::chrono::duration<double, std::milli>(end - start).count();
         drawRevealing = filter && filter->isRevealing();
@@ -1974,11 +2342,92 @@ struct SceneViewportRenderer::Implementation {
             return;
         }
         filter->endRender();
-        if (drawRevealStepTimed && rendered) {
+        const unsigned long long inserts = filter->getInputAddedCount() + filter->getInsertedSentCount();
+        drawInsertsRendered = inserts;
+        if (drawRevealStepTimed && rendered && (inserts == drawRevealStepInserts)) {
             drawRevealPacer.observe(drawRevealStepPrims, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - drawRevealStepStart).count());
         }
         drawRevealStepTimed = false;
+        if (drawFillStep && rendered && (filter->getInputAddedCount() == drawFillStepLoads)) {
+            drawRevealPacer.observe(drawRevealStepPrims, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - drawRevealStepStart).count());
+        }
+        drawFillStep = false;
         drawRevealing = filter->isRevealing();
+        noteFillState(filter);
+    }
+
+    // Turning the pacing off lets every waiting prim in. Another delegate than Storm never paces, as
+    // it would restart its render at every batch.
+    void setFillPaced(bool paced)
+    {
+        fillPaced = paced;
+        if (SceneDrawFilter* filter = get_pointer(drawFilter)) {
+            filter->setAdmitting(paced && RenderDelegates::isStorm(rendererId));
+        }
+    }
+
+    // Render thread. Takes the stand-in worker's latest order, and the rows of it the textures go by.
+    void refreshFillOrder()
+    {
+        const SceneDrawFilter::Order order = standInBoxes ? standInBoxes->getOrder() : SceneDrawFilter::Order();
+        if (order == fillOrder) {
+            return;
+        }
+        fillOrder = order;
+        if (!order) {
+            fillOrderRows.reset();
+
+            return;
+        }
+        std::shared_ptr<std::vector<std::string>> rows = std::make_shared<std::vector<std::string>>();
+        rows->reserve(order->size());
+        for (const SdfPath& row : *order) {
+            rows->push_back(row.GetString());
+        }
+        fillOrderRows = rows;
+    }
+
+    // Render thread, before a frame's draw deltas: a camera at rest has the rows ordered for its view.
+    void noteFillView(const GfFrustum& frustum,
+                      int width,
+                      int height)
+    {
+        if (!drawFilling || yieldsToCamera() || !standInBoxes) {
+            return;
+        }
+        const GfMatrix4d viewProjection = frustum.ComputeViewMatrix() * frustum.ComputeProjectionMatrix();
+        if (fillOrderViewSet && (viewProjection == fillOrderView) && (width == fillOrderWidth) && (height == fillOrderHeight)) {
+            return;
+        }
+        fillOrderViewSet = true;
+        fillOrderView = viewProjection;
+        fillOrderWidth = width;
+        fillOrderHeight = height;
+        standInBoxes->setOrderView(viewProjection, width, height);
+    }
+
+    // Render thread: what the fill has left, and the boxes standing in for it.
+    void noteFillState(SceneDrawFilter* filter)
+    {
+        const bool filling = filter && filter->isFilling();
+        drawFilling = filling;
+        fillAdmitted = filter ? filter->admittedCount() : 0;
+        fillPending = filter ? filter->pendingCount() : 0;
+        const SceneDrawBoxes::ListPtr source = (filling && fillBoxesShown && standInBoxes) ? standInBoxes->getList() : SceneDrawBoxes::ListPtr();
+        const std::size_t admitted = fillAdmitted;
+        if ((source == fillBoxSource) && (!source || (admitted == fillBoxAdmitted))) {
+            return;
+        }
+        SceneDrawBoxes::ListPtr list;
+        if (source) {
+            list = std::make_shared<const SceneDrawBoxes::List>(SceneDrawBoxes::unadmitted(*source, [filter](const SdfPath& row) {
+                return filter->hasPendingAt(row);
+            }));
+        }
+        std::lock_guard<std::mutex> lock(fillBoxMutex);
+        fillBoxList = list;
+        fillBoxSource = source;
+        fillBoxAdmitted = admitted;
     }
 
     // The GL state both kinds of frame start from.
@@ -2022,7 +2471,52 @@ struct SceneViewportRenderer::Implementation {
             && (frame.displayProcessor == displayProcessor) && (frame.gain == displayTransform.gain) && (frame.gamma == displayTransform.gamma)
             && (frame.editCount == sceneStage->getEditCount())
             && (frame.loadEditCount == sceneStage->getLoadEditCount())
-            && (frame.previewGeneration == sceneStage->getPreviewGeneration());
+            && (frame.previewGeneration == sceneStage->getPreviewGeneration())
+            && (frame.selection == selectionApplied);
+    }
+
+    // Needs stageMutex, after the renders of a frame of this view.
+    void noteAovs(bool converged,
+                  int width,
+                  int height,
+                  const GfFrustum& frustum,
+                  const UsdImagingGLRenderParams& params)
+    {
+        AovFrame& aovs = aovFrame;
+        aovs.valid = converged && engine && sceneStage && !texturesOwed && !drawFilling && !drawRevealing;
+        if (!aovs.valid) {
+            return;
+        }
+        aovs.engine = engineCount;
+        aovs.width = width;
+        aovs.height = height;
+        aovs.viewMatrix = frustum.ComputeViewMatrix();
+        aovs.projection = frustum.ComputeProjectionMatrix();
+        aovs.params = params;
+        aovs.editCount = sceneStage->getEditCount();
+        aovs.loadEditCount = sceneStage->getLoadEditCount();
+        aovs.previewGeneration = sceneStage->getPreviewGeneration();
+        aovs.drawApplied = drawApplied;
+    }
+
+    // Needs stageMutex. Whether a render of this view would leave the AOVs as they are, so that
+    // grading them again draws its frame. The renderer's settings are the stage's at the params'
+    // time, so the edit counts and the params cover them.
+    bool aovsHold(int width,
+                  int height,
+                  const GfFrustum& frustum,
+                  const UsdImagingGLRenderParams& params) const
+    {
+        const AovFrame& aovs = aovFrame;
+
+        return aovs.valid && engine && sceneStage && (rendererId == kRenderDelegateStormId) && (aovs.engine == engineCount)
+            && (aovs.width == width) && (aovs.height == height)
+            && (aovs.viewMatrix == frustum.ComputeViewMatrix()) && (aovs.projection == frustum.ComputeProjectionMatrix())
+            && (aovs.params == params)
+            && (aovs.editCount == sceneStage->getEditCount()) && (aovs.loadEditCount == sceneStage->getLoadEditCount())
+            && (aovs.previewGeneration == sceneStage->getPreviewGeneration())
+            && (aovs.drawApplied == drawApplied) && (drawApplied == drawPosted)
+            && !texturesOwed && !drawFilling && !drawRevealing;
     }
 
     // Needs the GL context current.
@@ -2244,6 +2738,125 @@ struct SceneViewportRenderer::Implementation {
         glDisable(GL_DEPTH_TEST);
     }
 
+    // Needs the GL context current.
+    void releaseSelectionTint()
+    {
+        if (selectionProgram) {
+            glDeleteProgram(selectionProgram);
+            selectionProgram = 0;
+        }
+        selectionProgramFailed = false;
+    }
+
+    // Needs what the engine's Render() needs, after a Render() with params and the drawGrade() of
+    // its image. False if the pass threw, the engine then discarded.
+    bool drawSelectionPass(StormGLSection& section,
+                           unsigned int fbo,
+                           int width,
+                           int height,
+                           const UsdImagingGLRenderParams& params)
+    {
+        if (selectedPathsChanged) {
+            engine->setSelection(selectedPaths);
+            selectedPathsChanged = false;
+        }
+        if (selectedPaths.empty()) {
+            return true;
+        }
+        std::string what;
+        bool failed = false;
+        bool drawn = false;
+        try {
+            drawn = engine->renderSelection(params);
+        } catch (const std::exception& e) {
+            failed = true;
+            what = e.what();
+        } catch (...) {
+            failed = true;
+        }
+        if (failed) {
+            // The engine's Hgi goes with it, collecting as it does.
+            section.collectWith(nullptr);
+            discardFailedEngine(what.empty() ? std::string("unknown exception") : what);
+
+            return false;
+        }
+        if (drawn) {
+            drawSelection(fbo, width, height);
+        }
+
+        return true;
+    }
+
+    // Needs the GL context current, and the engine's selection pass drawn after drawGrade() drew
+    // the frame it tints. Changes the bindings drawGrade() changes, and leaves the state it leaves.
+    void drawSelection(unsigned int fbo,
+                       int width,
+                       int height)
+    {
+        const HgiTextureHandle color = engine->colorTexture();
+        const HgiTextureHandle depth = engine->depthTexture();
+        if (!color || !depth) {
+            return;
+        }
+        if (!selectionProgram && !selectionProgramFailed) {
+            try {
+                selectionProgram = linkProgram(kGradeVertexShader, kSelectionFragmentShader);
+            } catch (const std::exception& e) {
+                qWarning() << "SceneViewport: the selection cannot be drawn:" << e.what();
+                selectionProgramFailed = true;
+            }
+            if (selectionProgram) {
+                glUseProgram(selectionProgram);
+                glUniform1i(glGetUniformLocation(selectionProgram, "selectionColor"), 0);
+                glUniform1i(glGetUniformLocation(selectionProgram, "selectionDepth"), 1);
+                glUniform4fv(glGetUniformLocation(selectionProgram, "tint"), 1, kSelectionTint);
+                glUniform1f(glGetUniformLocation(selectionProgram, "depthBias"), kSelectionDepthBias);
+            }
+        }
+        if (!selectionProgram) {
+            return;
+        }
+
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glViewport(0, 0, width, height);
+        glBindVertexArray(0);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_CULL_FACE);
+        glDisable(GL_STENCIL_TEST);
+        glDisable(GL_ALPHA_TEST);
+        glDisable(GL_FRAMEBUFFER_SRGB);
+        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        glDepthMask(GL_FALSE);
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LEQUAL);
+        glEnable(GL_BLEND);
+        glBlendEquation(GL_FUNC_ADD);
+        glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE);
+
+        glUseProgram(selectionProgram);
+        glActiveTexture(GL_TEXTURE0);
+        glBindSampler(0, 0);
+        glBindTexture(GL_TEXTURE_2D, (GLuint)color->GetRawResource());
+        glActiveTexture(GL_TEXTURE1);
+        glBindSampler(1, 0);
+        glBindTexture(GL_TEXTURE_2D, (GLuint)depth->GetRawResource());
+
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glUseProgram(0);
+        glDisable(GL_BLEND);
+        glDepthMask(GL_TRUE);
+        glDepthFunc(GL_LESS);
+        glDisable(GL_DEPTH_TEST);
+    }
+
     // A light at the camera, as usdview's default camera light, or none when the stage's own
     // lights light the scene (Storm adds those itself with enableSceneLights). No ambient then
     // either, so a scene without lights shows its lit surfaces black.
@@ -2269,6 +2882,10 @@ struct SceneViewportRenderer::Implementation {
                    int height,
                    bool lit)
     {
+        // Buffers of another size are new ones, whatever a render then draws into them.
+        if ((width != aovFrame.width) || (height != aovFrame.height)) {
+            aovFrame.valid = false;
+        }
         engine->SetRenderBufferSize(GfVec2i(width, height));
         engine->SetFraming(CameraUtilFraming(GfRect2i(GfVec2i(0, 0), width, height)));
         engine->SetCameraState(frustum.ComputeViewMatrix(), frustum.ComputeProjectionMatrix());
@@ -2425,18 +3042,14 @@ struct SceneViewportRenderer::Implementation {
         }
     }
 
-    // The handles in X red, Y green and Z blue, the highlighted or dragged one yellow, drawn over
-    // everything. Needs stageMutex.
-    void drawTransformHandles(const GfFrustum& frustum,
+    // The handles at frame, from computeHandleFrame(), in X red, Y green and Z blue, the
+    // highlighted or dragged one yellow, drawn over everything.
+    void drawTransformHandles(const SceneGizmo::Frame& frame,
+                              bool selection,
+                              const GfFrustum& frustum,
                               int width,
                               int height) const
     {
-        SceneGizmo::Frame frame;
-        bool selection = false;
-
-        if (!computeHandleFrame(&frame, &selection)) {
-            return;
-        }
         const SceneGizmo::View view(frustum.ComputeViewMatrix(), frustum.ComputeProjectionMatrix(), width, height);
         const double length = SceneGizmo::getHandleLength(view, frame);
         if (!(length > 0.) || !std::isfinite(length)) {
@@ -2510,12 +3123,13 @@ struct SceneViewportRenderer::Implementation {
 
     // A grid on the ground plane through the origin, with lines a power of ten metres apart, about
     // a tenth to half the camera's distance, and the two ground axes coloured. Depth-tested against
-    // Storm's presented depth.
-    void drawGrid(const GfFrustum& frustum) const
+    // Storm's presented depth. throughCamera: the frustum is a stage camera's.
+    void drawGrid(const GfFrustum& frustum,
+                  bool throughCamera) const
     {
         const double mpu = (metersPerUnit.load() > 0.) ? metersPerUnit.load() : 0.01;
         // An orthographic view's eye is backed far off: measure from where it would be.
-        const GfVec3d eye = lookThroughCamera() ? frustum.GetPosition() : freeEye();
+        const GfVec3d eye = throughCamera ? frustum.GetPosition() : freeEye();
         const double distance = std::max(eye.GetLength(), freeCamera.distance);
         const double distanceMeters = std::max(distance * mpu, 1e-6);
         const double spacing = std::pow(10., std::floor(std::log10(distanceMeters * 0.5))) / mpu;
@@ -2604,17 +3218,18 @@ struct SceneViewportRenderer::Implementation {
 
     // The camera and light guides, but the camera looked through's, as one batch of lines per
     // colour, depth-tested against Storm's presented depth; selected ones in the selection colour.
-    // Needs stageMutex.
+    // Builds them again for a changed stage only if stageReadable, which needs stageMutex.
     void drawGuides(const GfFrustum& frustum,
                     int width,
-                    int height)
+                    int height,
+                    bool stageReadable)
     {
         drawnGuides.clear();
-        const std::vector<SceneGuides::Guide>& all = currentGuides();
+        const std::vector<SceneGuides::Guide>& all = stageReadable ? currentGuides() : guides;
         if (all.empty()) {
             return;
         }
-        const std::vector<int>* batches = currentGuideBatches();
+        const std::vector<int>* batches = guideBatchesOf(all);
         if (recordDrawnGuides) {
             const SceneGizmo::View view(frustum.ComputeViewMatrix(), frustum.ComputeProjectionMatrix(), width, height);
             for (int pass = 0; pass < 3; ++pass) {
@@ -2675,6 +3290,28 @@ struct SceneViewportRenderer::Implementation {
         }
     }
 
+    // Tells the stand-in's worker the rules, the time and the stage's version. Main thread, with
+    // stageMutex.
+    void feedStandInBoxes()
+    {
+        if (standInBoxes && (standInEnabled || drawFilling)) {
+            {
+                std::lock_guard<std::mutex> rulesLock(rulesMutex);
+                if (!standInRulesFed || (standInRulesVersion != drawRulesVersion)) {
+                    if (!standInRulesFed) {
+                        // Rules, time and version may all be those it starts with, which ask for nothing.
+                        standInBoxes->relist();
+                    }
+                    standInBoxes->setRules(drawRules);
+                    standInRulesVersion = drawRulesVersion;
+                    standInRulesFed = true;
+                }
+            }
+            standInBoxes->setTime(timeCode());
+            standInBoxes->setStageVersion(stageEditCount + stageLoadEditCount);
+        }
+    }
+
     bool hasBoxes() const
     {
         const SceneDrawBoxes::ListPtr list = boxes ? boxes->getList() : SceneDrawBoxes::ListPtr();
@@ -2684,8 +3321,10 @@ struct SceneViewportRenderer::Implementation {
 
     bool hasStandIns() const
     {
-        return appliedBudget && (standIn != SceneViewportRenderer::eStandInOff)
-            && (!appliedBudget->standIns.boxes.empty() || !appliedBudget->standIns.groups.empty());
+        const SceneDrawBoxes::BudgetPtr budget = currentBudget();
+
+        return budget && (standIn != SceneViewportRenderer::eStandInOff)
+            && (!budget->standIns.boxes.empty() || !budget->standIns.groups.empty());
     }
 
     // Needs stageMutex. A frame from another camera holds the budget as it is until the next
@@ -2709,6 +3348,21 @@ struct SceneViewportRenderer::Implementation {
         }
     }
 
+    // Written on the thread holding the engine, read where the overlays are drawn, which with a
+    // render thread is the main thread.
+    void setAppliedBudget(const SceneDrawBoxes::BudgetPtr& budget)
+    {
+        std::lock_guard<std::mutex> lock(budgetMutex);
+        appliedBudget = budget;
+    }
+
+    SceneDrawBoxes::BudgetPtr currentBudget() const
+    {
+        std::lock_guard<std::mutex> lock(budgetMutex);
+
+        return appliedBudget;
+    }
+
     // Needs stageMutex, on the thread holding the engine. Storm's filter alone takes the budget.
     void serviceBudget(SceneDrawFilter* filter)
     {
@@ -2716,18 +3370,18 @@ struct SceneViewportRenderer::Implementation {
         bool changed = false;
         if (!filter) {
             changed = (appliedBudget != nullptr);
-            appliedBudget.reset();
+            setAppliedBudget(SceneDrawBoxes::BudgetPtr());
         } else {
             if (filter->isBudgetBound() != storm) {
                 // Binding starts from no budget, and unbinding clears it.
                 filter->setBudgetBound(storm);
-                appliedBudget.reset();
+                setAppliedBudget(SceneDrawBoxes::BudgetPtr());
                 changed = true;
             }
             const SceneDrawBoxes::BudgetPtr budget = (storm && boxes) ? boxes->getBudget() : SceneDrawBoxes::BudgetPtr();
             if (budget != appliedBudget) {
                 filter->applyBudget(budget ? budget->filter : SceneDrawFilter::Budget());
-                appliedBudget = budget;
+                setAppliedBudget(budget);
                 changed = true;
             }
         }
@@ -2811,6 +3465,14 @@ struct SceneViewportRenderer::Implementation {
             return false;
         }
         boxProgram = program;
+        makeBoxBuffers(&boxBuffers);
+        makeBoxBuffers(&standInBuffers);
+
+        return true;
+    } // ensureBoxProgram
+
+    static void makeBoxBuffers(BoxBuffers* buffers)
+    {
         const auto makeVao = [](GLuint* vao, GLuint* shape, GLuint* instances, const GLfloat* vertices, GLsizeiptr size) {
             glGenVertexArrays(1, vao);
             glGenBuffers(1, shape);
@@ -2827,20 +3489,31 @@ struct SceneViewportRenderer::Implementation {
                 glVertexAttribDivisor(attribute, 1);
             }
         };
-        makeVao(&boxVao, &boxEdgeBuffer, &boxInstanceBuffer, kBoxEdges, sizeof(kBoxEdges));
-        makeVao(&markerVao, &markerArmBuffer, &markerInstanceBuffer, kMarkerArms, sizeof(kMarkerArms));
+        makeVao(&buffers->boxVao, &buffers->boxEdgeBuffer, &buffers->boxInstanceBuffer, kBoxEdges, sizeof(kBoxEdges));
+        makeVao(&buffers->markerVao, &buffers->markerArmBuffer, &buffers->markerInstanceBuffer, kMarkerArms, sizeof(kMarkerArms));
         glBindVertexArray(0);
         glBindBuffer(GL_ARRAY_BUFFER, 0);
-        uploadedBoxes.reset();
+        buffers->uploaded.reset();
+    }
 
-        return true;
-    } // ensureBoxProgram
-
-    // Which boxes hold a selected prim. Boxed rows never nest, so a selected prim deep in a boxed
-    // branch lights the one box drawn for its nearest boxed ancestor.
-    void findHighlightedBoxes(const SceneDrawBoxes::List& list)
+    static void releaseBoxBuffers(BoxBuffers* buffers)
     {
-        boxHighlighted.assign(list.boxes.size(), false);
+        if (buffers->boxVao) {
+            glDeleteVertexArrays(1, &buffers->boxVao);
+            glDeleteBuffers(1, &buffers->boxEdgeBuffer);
+            glDeleteBuffers(1, &buffers->boxInstanceBuffer);
+            glDeleteVertexArrays(1, &buffers->markerVao);
+            glDeleteBuffers(1, &buffers->markerArmBuffer);
+            glDeleteBuffers(1, &buffers->markerInstanceBuffer);
+        }
+        *buffers = BoxBuffers();
+    }
+
+    // Which boxes hold a selected prim: every box drawn for the prim or one of its ancestors.
+    void findHighlightedBoxes(const SceneDrawBoxes::List& list,
+                              std::vector<bool>* highlighted) const
+    {
+        highlighted->assign(list.boxes.size(), false);
         if (selected.empty()) {
             return;
         }
@@ -2856,7 +3529,7 @@ struct SceneViewportRenderer::Implementation {
             }
         }
         for (std::size_t index = 0; index < list.boxes.size(); ++index) {
-            boxHighlighted[index] = (lit.count(list.boxes[index].path) != 0);
+            (*highlighted)[index] = (lit.count(list.boxes[index].path) != 0);
         }
     }
 
@@ -2891,9 +3564,76 @@ struct SceneViewportRenderer::Implementation {
         drawnBoxes.push_back(drawn);
     }
 
+    // Puts list in buffers unless they hold it already with valid colours. Unloaded rows and markers
+    // are tinted; a pending row's marker is grey; a box holding a selected prim takes the guides'
+    // selection colour; any other is boxColour.
+    void uploadBoxes(BoxBuffers* buffers,
+                     const SceneDrawBoxes::ListPtr& list,
+                     bool coloursValid,
+                     const GfVec3f& boxColour)
+    {
+        if ((list == buffers->uploaded) && coloursValid) {
+            return;
+        }
+        findHighlightedBoxes(*list, &buffers->highlighted);
+        std::vector<GLfloat> boxData;
+        std::vector<GLfloat> markerData;
+        for (std::size_t index = 0; index < list->boxes.size(); ++index) {
+            const SceneDrawBoxes::Box& box = list->boxes[index];
+            GfVec3f colour = boxColour;
+            if (buffers->highlighted[index]) {
+                colour = GfVec3f(1.f, 0.8f, 0.1f);
+            } else if ((box.kind == SceneDrawBoxes::eKindUnloaded) || (box.kind == SceneDrawBoxes::eKindMarker)) {
+                colour = GfVec3f(0.95f, 0.7f, 0.35f);
+            } else if (box.kind == SceneDrawBoxes::eKindPending) {
+                colour = GfVec3f(0.6f, 0.6f, 0.6f);
+            }
+            std::vector<GLfloat>& data = ((box.kind == SceneDrawBoxes::eKindMarker) || (box.kind == SceneDrawBoxes::eKindPending)) ? markerData : boxData;
+            data.insert(data.end(), { box.min[0], box.min[1], box.min[2], box.max[0], box.max[1], box.max[2], colour[0], colour[1], colour[2] });
+        }
+        glBindBuffer(GL_ARRAY_BUFFER, buffers->boxInstanceBuffer);
+        glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(boxData.size() * sizeof(GLfloat)), boxData.data(), GL_STATIC_DRAW);
+        glBindBuffer(GL_ARRAY_BUFFER, buffers->markerInstanceBuffer);
+        glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(markerData.size() * sizeof(GLfloat)), markerData.data(), GL_STATIC_DRAW);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        buffers->boxInstances = GLsizei(boxData.size() / kBoxFloats);
+        buffers->markerInstances = GLsizei(markerData.size() / kBoxFloats);
+        buffers->uploaded = list;
+    }
+
     // One draw call for the boxes and one for the markers, however many, depth-tested against the
-    // frame's depth like the guides. Unloaded rows are tinted; a pending row's marker is grey; a
-    // box holding a selected prim takes the guides' selection colour.
+    // depth buffer bound.
+    void drawBoxBuffers(const BoxBuffers& buffers,
+                        const GfFrustum& frustum,
+                        int width,
+                        int height) const
+    {
+        // GfMatrix4d is row-major with row vectors, so its memory is what GL reads as column-major
+        // with column vectors, and view * projection here is projection * view there.
+        const GfMatrix4f viewProjection(frustum.ComputeViewMatrix() * frustum.ComputeProjectionMatrix());
+        glUseProgram(boxProgram);
+        glUniformMatrix4fv(glGetUniformLocation(boxProgram, "viewProjection"), 1, GL_FALSE, viewProjection.GetArray());
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LEQUAL);
+        glDepthMask(GL_FALSE);
+        glDisable(GL_BLEND);
+        glLineWidth(1.f);
+        glUniform1i(glGetUniformLocation(boxProgram, "markers"), 0);
+        glBindVertexArray(buffers.boxVao);
+        glDrawArraysInstanced(GL_LINES, 0, 24, buffers.boxInstances);
+        glUniform1i(glGetUniformLocation(boxProgram, "markers"), 1);
+        glUniform2f(glGetUniformLocation(boxProgram, "markerScale"), 2.f * kMarkerPixels / float(width), 2.f * kMarkerPixels / float(height));
+        glBindVertexArray(buffers.markerVao);
+        glDrawArraysInstanced(GL_LINES, 0, 4, buffers.markerInstances);
+        glBindVertexArray(0);
+        glUseProgram(0);
+        glDepthMask(GL_TRUE);
+        glDepthFunc(GL_LESS);
+        glDisable(GL_DEPTH_TEST);
+    }
+
+    // The boxes of the rows the draw states box, depth-tested against the frame's depth like the
+    // guides.
     void drawBoxes(const GfFrustum& frustum,
                    int width,
                    int height)
@@ -2907,67 +3647,20 @@ struct SceneViewportRenderer::Implementation {
         if (!list || list->boxes.empty() || !ensureBoxProgram()) {
             return;
         }
-        const bool coloursValid = boxColoursValid.exchange(true);
-        if ((list != uploadedBoxes) || !coloursValid) {
-            findHighlightedBoxes(*list);
-            std::vector<GLfloat> boxData;
-            std::vector<GLfloat> markerData;
-            for (std::size_t index = 0; index < list->boxes.size(); ++index) {
-                const SceneDrawBoxes::Box& box = list->boxes[index];
-                GfVec3f colour(0.55f, 0.75f, 0.95f);
-                if (boxHighlighted[index]) {
-                    colour = GfVec3f(1.f, 0.8f, 0.1f);
-                } else if ((box.kind == SceneDrawBoxes::eKindUnloaded) || (box.kind == SceneDrawBoxes::eKindMarker)) {
-                    colour = GfVec3f(0.95f, 0.7f, 0.35f);
-                } else if (box.kind == SceneDrawBoxes::eKindPending) {
-                    colour = GfVec3f(0.6f, 0.6f, 0.6f);
-                }
-                std::vector<GLfloat>& data = ((box.kind == SceneDrawBoxes::eKindMarker) || (box.kind == SceneDrawBoxes::eKindPending)) ? markerData : boxData;
-                data.insert(data.end(), { box.min[0], box.min[1], box.min[2], box.max[0], box.max[1], box.max[2], colour[0], colour[1], colour[2] });
-            }
-            glBindBuffer(GL_ARRAY_BUFFER, boxInstanceBuffer);
-            glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(boxData.size() * sizeof(GLfloat)), boxData.data(), GL_STATIC_DRAW);
-            glBindBuffer(GL_ARRAY_BUFFER, markerInstanceBuffer);
-            glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(markerData.size() * sizeof(GLfloat)), markerData.data(), GL_STATIC_DRAW);
-            glBindBuffer(GL_ARRAY_BUFFER, 0);
-            boxInstances = GLsizei(boxData.size() / kBoxFloats);
-            markerInstances = GLsizei(markerData.size() / kBoxFloats);
-            uploadedBoxes = list;
-        }
-        if ((boxInstances == 0) && (markerInstances == 0)) {
+        uploadBoxes(&boxBuffers, list, boxColoursValid.exchange(true), GfVec3f(0.55f, 0.75f, 0.95f));
+        if ((boxBuffers.boxInstances == 0) && (boxBuffers.markerInstances == 0)) {
             return;
         }
         drawnBoxList = list;
         if (recordDrawnBoxes) {
             const SceneGizmo::View view(frustum.ComputeViewMatrix(), frustum.ComputeProjectionMatrix(), width, height);
             for (std::size_t index = 0; index < list->boxes.size(); ++index) {
-                recordDrawnBox(view, list->boxes[index], boxHighlighted[index]);
+                recordDrawnBox(view, list->boxes[index], boxBuffers.highlighted[index]);
             }
         }
-        // GfMatrix4d is row-major with row vectors, so its memory is what GL reads as column-major
-        // with column vectors, and view * projection here is projection * view there.
-        const GfMatrix4f viewProjection(frustum.ComputeViewMatrix() * frustum.ComputeProjectionMatrix());
-        glUseProgram(boxProgram);
-        glUniformMatrix4fv(glGetUniformLocation(boxProgram, "viewProjection"), 1, GL_FALSE, viewProjection.GetArray());
-        glEnable(GL_DEPTH_TEST);
-        glDepthFunc(GL_LEQUAL);
-        glDepthMask(GL_FALSE);
-        glDisable(GL_BLEND);
-        glLineWidth(1.f);
-        glUniform1i(glGetUniformLocation(boxProgram, "markers"), 0);
-        glBindVertexArray(boxVao);
-        glDrawArraysInstanced(GL_LINES, 0, 24, boxInstances);
-        glUniform1i(glGetUniformLocation(boxProgram, "markers"), 1);
-        glUniform2f(glGetUniformLocation(boxProgram, "markerScale"), 2.f * kMarkerPixels / float(width), 2.f * kMarkerPixels / float(height));
-        glBindVertexArray(markerVao);
-        glDrawArraysInstanced(GL_LINES, 0, 4, markerInstances);
-        glBindVertexArray(0);
-        glUseProgram(0);
-        glDepthMask(GL_TRUE);
-        glDepthFunc(GL_LESS);
-        glDisable(GL_DEPTH_TEST);
-        boxesDrawn = int(boxInstances);
-        markersDrawn = int(markerInstances);
+        drawBoxBuffers(boxBuffers, frustum, width, height);
+        boxesDrawn = int(boxBuffers.boxInstances);
+        markersDrawn = int(boxBuffers.markerInstances);
     } // drawBoxes
 
     bool ensureStandInProgram()
@@ -3081,7 +3774,7 @@ struct SceneViewportRenderer::Implementation {
                              int height,
                              bool markers)
     {
-        const SceneDrawBoxes::StandIns& standIns = appliedBudget->standIns;
+        const SceneDrawBoxes::StandIns& standIns = drawnStandIns->standIns;
         const SceneGizmo::View view(frustum.ComputeViewMatrix(), frustum.ComputeProjectionMatrix(), width, height);
         std::vector<GLfloat> row(kStandInRowFloats);
         const auto record = [&](const StandInRange& range, const std::string& path, const char* kind) {
@@ -3137,12 +3830,13 @@ struct SceneViewportRenderer::Implementation {
         drawnStandIns.reset();
         unsigned long long boxesShown = 0, instancesShown = 0, markersShown = 0;
         const int mode = standIn;
-        if (hasStandIns() && ensureStandInProgram()) {
-            if (uploadedStandIns != appliedBudget) {
-                uploadStandIns(*appliedBudget);
-                uploadedStandIns = appliedBudget;
+        const SceneDrawBoxes::BudgetPtr budget = hasStandIns() ? currentBudget() : SceneDrawBoxes::BudgetPtr();
+        if (budget && ensureStandInProgram()) {
+            if (uploadedStandIns != budget) {
+                uploadStandIns(*budget);
+                uploadedStandIns = budget;
             }
-            drawnStandIns = appliedBudget;
+            drawnStandIns = budget;
             if (recordDrawnBoxes) {
                 recordDrawnStandIns(frustum, width, height, mode == SceneViewportRenderer::eStandInMarker);
             }
@@ -3218,6 +3912,51 @@ struct SceneViewportRenderer::Implementation {
         return true;
     }
 
+    // The stand-in's wireframe boxes, in grey, over a view already cleared.
+    void drawStandInBoxes(const GfFrustum& frustum,
+                          int width,
+                          int height)
+    {
+        const SceneDrawBoxes::ListPtr list = standInBoxes ? standInBoxes->getList() : SceneDrawBoxes::ListPtr();
+
+        standInBoxesDrawn = 0;
+        if (!list || list->boxes.empty() || !ensureBoxProgram()) {
+            return;
+        }
+        uploadBoxes(&standInBuffers, list, standInColoursValid.exchange(true), GfVec3f(0.7f, 0.7f, 0.7f));
+        drawBoxBuffers(standInBuffers, frustum, width, height);
+        standInBoxesDrawn = int(standInBuffers.boxInstances + standInBuffers.markerInstances);
+    }
+
+    // Over a frame of the fill, the stand-in's boxes of the rows still to come in.
+    void drawFillBoxes(const GfFrustum& frustum,
+                       int width,
+                       int height)
+    {
+        SceneDrawBoxes::ListPtr list;
+        {
+            std::lock_guard<std::mutex> lock(fillBoxMutex);
+            list = fillBoxList;
+        }
+        if (!list || list->boxes.empty() || !ensureBoxProgram()) {
+            return;
+        }
+        uploadBoxes(&fillBuffers, list, fillColoursValid.exchange(true), GfVec3f(0.7f, 0.7f, 0.7f));
+        drawBoxBuffers(fillBuffers, frustum, width, height);
+        fillDrawnList = list;
+        standInBoxesDrawn = int(fillBuffers.boxInstances + fillBuffers.markerInstances);
+    }
+
+    bool hasFillBoxes() const
+    {
+        if (!fillBoxesShown || !drawFilling) {
+            return false;
+        }
+        std::lock_guard<std::mutex> lock(fillBoxMutex);
+
+        return fillBoxList && !fillBoxList->boxes.empty();
+    }
+
     void releaseBoxesGL()
     {
         if (standInProgram) {
@@ -3237,67 +3976,135 @@ struct SceneViewportRenderer::Implementation {
         standInRanges.clear();
         if (boxProgram) {
             glDeleteProgram(boxProgram);
-            glDeleteVertexArrays(1, &boxVao);
-            glDeleteBuffers(1, &boxEdgeBuffer);
-            glDeleteBuffers(1, &boxInstanceBuffer);
-            glDeleteVertexArrays(1, &markerVao);
-            glDeleteBuffers(1, &markerArmBuffer);
-            glDeleteBuffers(1, &markerInstanceBuffer);
             boxProgram = 0;
-            boxVao = 0;
-            boxEdgeBuffer = 0;
-            boxInstanceBuffer = 0;
-            markerVao = 0;
-            markerArmBuffer = 0;
-            markerInstanceBuffer = 0;
         }
-        uploadedBoxes.reset();
+        releaseBoxBuffers(&boxBuffers);
+        releaseBoxBuffers(&standInBuffers);
+        releaseBoxBuffers(&fillBuffers);
         drawnBoxList.reset();
-        boxInstances = 0;
-        markerInstances = 0;
+        fillDrawnList.reset();
     }
 
-    // The drawn box or marker under the pixel (x, y) of the frustum's width x height view, -1 for
-    // none. Needs stageMutex.
-    int pickBox(const GfFrustum& frustum,
-                int width,
-                int height,
-                int x,
-                int y,
-                GfVec3d* point) const
+    // The overlays over the image in fbo. handleFrame is null when no handles are drawn.
+    // stageReadable: stageMutex is held, and the guides may be built again. standIn: the stand-in's
+    // boxes go first.
+    void drawOverlayPass(unsigned int fbo,
+                         const GfFrustum& frustum,
+                         int width,
+                         int height,
+                         bool held,
+                         const SceneGizmo::Frame* handleFrame,
+                         bool handleSelection,
+                         bool throughCamera,
+                         bool stageReadable,
+                         bool standIn)
     {
-        if (!drawnBoxList) {
-            return -1;
+        drawnGuides.clear();
+        boxesDrawn = 0;
+        markersDrawn = 0;
+        standInBoxesDrawn = 0;
+        drawnBoxList.reset();
+        drawnStandIns.reset();
+        fillDrawnList.reset();
+        drawnBoxes.clear();
+        const bool fillBoxes = !standIn && !held && hasFillBoxes();
+        if (!standIn && !fillBoxes && !showGrid && !showGuides && !hasHandles && !hasBoxes()) {
+            return;
+        }
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glViewport(0, 0, width, height);
+        glUseProgram(0);
+        glBindVertexArray(0);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        glDisable(GL_FRAMEBUFFER_SRGB);
+        if (standIn && !held) {
+            drawStandInBoxes(frustum, width, height);
+        } else if (fillBoxes) {
+            drawFillBoxes(frustum, width, height);
+        }
+        if (showGrid) {
+            drawGrid(frustum, throughCamera);
+        }
+        if (!held) {
+            drawBoxes(frustum, width, height);
+            drawStandIns(frustum, width, height);
+        }
+        if (showGuides) {
+            drawGuides(frustum, width, height, stageReadable);
+        }
+        if (handleFrame) {
+            drawTransformHandles(*handleFrame, handleSelection, frustum, width, height);
+        }
+    }
+
+    // The row of the drawn box or marker under the pixel (x, y) of the frustum's width x height
+    // view, the nearest of the guide boxes and the fill's; empty for none. Needs stageMutex.
+    SdfPath pickBox(const GfFrustum& frustum,
+                    int width,
+                    int height,
+                    int x,
+                    int y,
+                    GfVec3d* point) const
+    {
+        const GfMatrix4d viewProjection = frustum.ComputeViewMatrix() * frustum.ComputeProjectionMatrix();
+        SdfPath path;
+        double nearest = 0.;
+        for (const SceneDrawBoxes::ListPtr& list : { drawnBoxList, fillDrawnList }) {
+            if (!list) {
+                continue;
+            }
+            GfVec3d hit;
+            const int box = SceneDrawBoxes::pick(*list, viewProjection, width, height, GfVec2d(x + 0.5, y + 0.5), kMarkerPixels + kMarkerPickSlack, &hit);
+            if (box < 0) {
+                continue;
+            }
+            const double depth = viewProjection.Transform(hit)[2];
+            if (path.IsEmpty() || (depth < nearest)) {
+                path = list->boxes[box].path;
+                nearest = depth;
+                *point = hit;
+            }
         }
 
-        return SceneDrawBoxes::pick(*drawnBoxList, frustum.ComputeViewMatrix() * frustum.ComputeProjectionMatrix(), width, height,
-                                    GfVec2d(x + 0.5, y + 0.5), kMarkerPixels + kMarkerPickSlack, point);
+        return path;
     }
 
-    // Last, so that it goes first: its worker reads the members above.
+    // Last, so that they go first: their workers read the members above.
     std::unique_ptr<SceneDrawBoxes> boxes;
+    std::unique_ptr<SceneDrawBoxes> standInBoxes;
 };
 
 SceneViewportRenderer::SceneViewportRenderer()
     : _imp(new Implementation)
 {
     // A layer reload edits layers the stage composes: it waits until no paint, pick or sync is
-    // reading the stage, and keeps them out until it is done.
+    // reading the stage, and keeps them out until it is done. Quiesced last: the progressive
+    // worker's quiesce waits out a delegate call that can take seconds, and holding stageMutex
+    // through that wait would stall every paint on the GUI thread.
     std::shared_mutex* stageMutex = &_imp->stageMutex;
     _imp->participant = SceneWriteBarrier::registerParticipant([stageMutex]() { stageMutex->lock(); },
-                                                               [stageMutex]() { stageMutex->unlock(); });
+                                                               [stageMutex]() { stageMutex->unlock(); },
+                                                               SceneWriteBarrier::eQuiesceOrderLast);
     Implementation* imp = _imp.get();
-    // The refinement reads the stage alongside paints, and like any other reader lets a failed
+    // The refinement snapshots the stage alongside paints, and like any other reader lets a failed
     // try to edit know when it lets go.
     HydraRender::ProgressiveRender::StageLock refineStageLock;
-    refineStageLock.acquire = [stageMutex]() { stageMutex->lock_shared(); };
+    refineStageLock.tryAcquire = [stageMutex]() { return stageMutex->try_lock_shared(); };
     refineStageLock.release = [imp, stageMutex]() {
         stageMutex->unlock_shared();
         if (imp->exclusiveOwed.exchange(false) && imp->readEnded) {
             imp->readEnded();
         }
     };
-    _imp->progressive.reset(new HydraRender::ProgressiveRender(refineStageLock, [imp]() { return imp->currentStage(); }, [imp]() {
+    const auto snapshot = [imp](SceneStageSnapshot* into) {
+        if (!imp->shown || !imp->sceneStage) {
+            return false;
+        }
+        *into = imp->sceneStage->getSnapshot();
+
+        return true;
+    };
+    _imp->progressive.reset(new HydraRender::ProgressiveRender(refineStageLock, snapshot, [imp]() {
         std::function<void()> listener;
         {
             std::lock_guard<std::mutex> lock(imp->refineListenerMutex);
@@ -3307,18 +4114,21 @@ SceneViewportRenderer::SceneViewportRenderer()
             listener();
         } }, kBackgroundLinear));
     _imp->progressive->setThreads(&refineThreads);
-    // Like any other reader, the box worker lets a failed try to edit know when it lets go, and
-    // ends its pass for a waiting edit.
-    _imp->boxes.reset(new SceneDrawBoxes([imp](const SceneDrawBoxes::StageRead& read) {
+    // Like any other reader, the box workers let a failed try to edit know when they let go, and
+    // end their pass for a waiting edit.
+    const SceneDrawBoxes::StageReader boxReader = [imp](const SceneDrawBoxes::StageRead& read) {
         SceneWriteBarrier::ReadScope readScope;
         {
-            std::shared_lock<std::shared_mutex> lock(imp->stageMutex);
+            std::shared_lock<std::shared_mutex> lock = imp->lockShared();
             const bool shown = imp->shown && imp->sceneStage && imp->sceneStage->isValid();
             read(shown ? imp->sceneStage->getStage() : UsdStageRefPtr(), imp->stageEditCount + imp->stageLoadEditCount);
         }
         if (imp->exclusiveOwed.exchange(false) && imp->readEnded) {
             imp->readEnded();
-        } }, [imp]() { return (imp->exclusiveWaiting > 0) || imp->exclusiveOwed; }, [imp]() {
+        }
+    };
+    const std::function<bool()> boxYield = [imp]() { return (imp->exclusiveWaiting > 0) || imp->exclusiveOwed; };
+    const std::function<void()> boxPublished = [imp]() {
         std::function<void()> listener;
         {
             std::lock_guard<std::mutex> lock(imp->refineListenerMutex);
@@ -3326,14 +4136,20 @@ SceneViewportRenderer::SceneViewportRenderer()
         }
         if (listener) {
             listener();
-        } }));
+        }
+    };
+    _imp->boxes.reset(new SceneDrawBoxes(boxReader, boxYield, boxPublished));
+    _imp->standInBoxes.reset(new SceneDrawBoxes(boxReader, boxYield, boxPublished, [imp](const UsdStageRefPtr& stage, const SceneDrawFilter::Rules& rules) {
+        return SceneDrawBoxes::standInRows(stage, rules, imp->standInByModel);
+    }));
 }
 
 SceneViewportRenderer::~SceneViewportRenderer()
 {
-    // Its worker reads the stage's layers under stageMutex: joined while the barrier still holds
-    // writes back for it.
+    // Ahead of the rest: until it returns its worker may call the snapshot, which reads
+    // stageMutex and the stage. It does not wait for the delegate to stop.
     _imp->progressive.reset();
+    _imp->standInBoxes.reset();
     _imp->boxes.reset();
     SceneWriteBarrier::unregisterParticipant(_imp->participant);
     // The engine owns GL objects: whoever owns this must have called releaseGL() in its context.
@@ -3343,9 +4159,16 @@ SceneViewportRenderer::~SceneViewportRenderer()
     if (_imp->gradeProgram || !_imp->gradeLuts.empty()) {
         qDebug() << "SceneViewportRenderer destroyed without releaseGL(); leaking its display transform pass";
     }
+    if (_imp->selectionProgram) {
+        qDebug() << "SceneViewportRenderer destroyed without releaseGL(); leaking its selection pass";
+    }
     if (_imp->engine) {
         qDebug() << "SceneViewportRenderer destroyed without releaseGL(); leaking its Storm engine";
         (void)_imp->engine.release();
+    }
+    setLoadsWakeCallback(std::function<void()>());
+    if (_imp->sceneStage) {
+        SceneTeardown::release(std::move(_imp->sceneStage));
     }
 }
 
@@ -3382,7 +4205,7 @@ SceneViewportRenderer::syncScene(const ScenePayload& payload,
     {
         // Playback and draw rule edits sync the stack the stage has: these leave the stage as it
         // is, so the paints that read it go on meanwhile.
-        std::shared_lock<std::shared_mutex> lock(_imp->stageMutex);
+        std::shared_lock<std::shared_mutex> lock = _imp->lockShared();
         unchanged = _imp->sceneStage && _imp->sceneStage->isValid() && _imp->loadRulesMade && (_imp->shown == !payload.isEmpty())
             && !((serial != 0) && (serial > _imp->previewClearAfter.load())) && _imp->sceneStage->isSyncedTo(payload);
     }
@@ -3399,6 +4222,13 @@ SceneViewportRenderer::syncScene(const ScenePayload& payload,
         if (!_imp->sceneStage) {
             // The viewer shows what was asked for: nothing loads until a load is requested.
             _imp->sceneStage.reset(new SceneStage(UsdStage::LoadNone));
+            const std::shared_ptr<Implementation::LoadsWakeGate> gate = _imp->loadsWakeGate;
+            _imp->sceneStage->setLoadsWake([gate]() {
+                std::lock_guard<std::mutex> lock(gate->mutex);
+                if (gate->wake) {
+                    gate->wake();
+                }
+            });
             std::lock_guard<std::mutex> earlyLock(_imp->earlyLoadsMutex);
             _imp->loadStage = _imp->sceneStage.get();
             for (const SceneDrawLoadRequest& load : _imp->earlyLoads) {
@@ -3451,7 +4281,7 @@ SceneViewportRenderer::syncScene(const ScenePayload& payload,
     if (restart) {
         _imp->progressive->invalidate();
     }
-    std::shared_lock<std::shared_mutex> lock(_imp->stageMutex);
+    std::shared_lock<std::shared_mutex> lock = _imp->lockShared();
     _imp->refreshStageSummary();
     if (serial > _imp->stageSyncSerial) {
         _imp->stageSyncSerial = serial;
@@ -3506,7 +4336,7 @@ SceneViewportRenderer::readStage(const std::function<void(const SceneStage* stag
 {
     SceneWriteBarrier::ReadScope readScope;
     {
-        std::shared_lock<std::shared_mutex> lock(_imp->stageMutex);
+        std::shared_lock<std::shared_mutex> lock = _imp->lockShared();
         const bool shown = _imp->shown && _imp->sceneStage && _imp->sceneStage->isValid();
         read(shown ? _imp->sceneStage.get() : nullptr);
     }
@@ -3534,6 +4364,14 @@ void
 SceneViewportRenderer::setReadEndedCallback(const std::function<void()>& callback)
 {
     _imp->readEnded = callback;
+}
+
+void
+SceneViewportRenderer::setLoadsWakeCallback(const std::function<void()>& callback)
+{
+    std::lock_guard<std::mutex> lock(_imp->loadsWakeGate->mutex);
+
+    _imp->loadsWakeGate->wake = callback;
 }
 
 U64
@@ -3575,14 +4413,23 @@ SceneViewportRenderer::hasEngine() const
 bool
 SceneViewportRenderer::needsBackgroundFrame() const
 {
-    // Another delegate than Storm renders on the refinement's own thread.
-    if (_imp->stageHeld || !_imp->shown || !_imp->loadStage.load() || !_imp->getRendererErrorCopy().empty() || (getActiveRendererId() != kRenderDelegateStormId)) {
+    if (needsStageFrame()) {
+        return true;
+    }
+
+    return _imp->takesBackgroundFrames() && (_imp->selectionAbsorbed != _imp->selectionPosted);
+}
+
+bool
+SceneViewportRenderer::needsStageFrame() const
+{
+    if (!_imp->takesBackgroundFrames()) {
         return false;
     }
 
     return !_imp->engineHeld || (_imp->absorbedEditCount != _imp->stageEditCount) || (_imp->absorbedLoadEditCount != _imp->stageLoadEditCount)
         || (_imp->absorbedParamsKey != Implementation::paramsKey(_imp->currentRenderParams()))
-        || (_imp->drawAbsorbed != _imp->drawPosted) || (_imp->drawRevealing && _imp->drawRevealStepDue && !_imp->yieldsToCamera());
+        || (_imp->drawAbsorbed != _imp->drawPosted) || ((_imp->drawRevealing || _imp->drawFilling) && _imp->drawRevealStepDue && !_imp->yieldsToCamera()) || _imp->texturesOwed;
 }
 
 void
@@ -3604,7 +4451,7 @@ SceneViewportRenderer::applyPendingDrawDeltas()
     // Before the viewer lock, the order every reader takes them in.
     SceneWriteBarrier::ReadScope read;
     {
-        std::shared_lock<std::shared_mutex> lock(_imp->stageMutex);
+        std::shared_lock<std::shared_mutex> lock = _imp->lockShared();
         if (_imp->engine) {
             StormGLStateGuard guard;
             StormGLSection section;
@@ -3646,6 +4493,45 @@ bool
 SceneViewportRenderer::isDrawRevealing() const
 {
     return _imp->drawRevealing;
+}
+
+bool
+SceneViewportRenderer::isDrawFilling() const
+{
+    return _imp->drawFilling;
+}
+
+void
+SceneViewportRenderer::setDrawFillBatch(std::size_t prims)
+{
+    _imp->fillFixedBatch = prims;
+}
+
+double
+SceneViewportRenderer::getFillProgress() const
+{
+    const double admitted = double(_imp->fillAdmitted.load());
+    const double total = admitted + double(_imp->fillPending.load());
+
+    return (total > 0.) ? (admitted / total) : 1.;
+}
+
+bool
+SceneViewportRenderer::isFillComplete() const
+{
+    return !_imp->drawFilling && (_imp->fillPending == 0) && !_imp->texturesOwed;
+}
+
+int
+SceneViewportRenderer::getLastFramePasses() const
+{
+    return _imp->lastFramePasses;
+}
+
+bool
+SceneViewportRenderer::wasFillCompleteAtLastFrameStart() const
+{
+    return _imp->lastFrameFillComplete;
 }
 
 void
@@ -3787,10 +4673,19 @@ SceneViewportRenderer::drawTiming() const
 
 bool
 SceneViewportRenderer::prepareBackgroundFrame(int width,
-                                              int height)
+                                              int height,
+                                              bool* viewOnly)
 {
     _imp->backgroundFramesUsed = true;
-    if ((width <= 0) || (height <= 0) || !AppManager::instance()->isOpenGLLoaded() || !needsBackgroundFrame()) {
+    if (viewOnly) {
+        *viewOnly = false;
+    }
+    if ((width <= 0) || (height <= 0) || !AppManager::instance()->isOpenGLLoaded()) {
+        return false;
+    }
+    const bool stageChanged = needsBackgroundFrame();
+    // needsBackgroundFrame()'s own reasons for no frame at all.
+    if (!stageChanged && (_imp->stageHeld || !_imp->shown || !_imp->loadStage.load() || !_imp->getRendererErrorCopy().empty() || (getActiveRendererId() != kRenderDelegateStormId))) {
         return false;
     }
     // A camera looked through is a prim of the stage.
@@ -3805,31 +4700,68 @@ SceneViewportRenderer::prepareBackgroundFrame(int width,
     if (_imp->currentStage() && (!summary || (summary->editCount != _imp->sceneStage->getEditCount() + _imp->sceneStage->getLoadEditCount()))) {
         return false;
     }
+    Implementation::BackgroundView view;
+    view.valid = true;
+    view.width = width;
+    view.height = height;
+    const GfFrustum frustum = _imp->computeFrustum(width, height);
+    view.viewMatrix = frustum.ComputeViewMatrix();
+    view.projection = frustum.ComputeProjectionMatrix();
+    view.params = _imp->currentRenderParams();
+    view.lightingMode = _imp->lightingMode;
+    view.displayProcessor = _imp->displayProcessor;
+    view.gain = _imp->displayTransform.gain;
+    view.gamma = _imp->displayTransform.gamma;
+    std::copy(_imp->backgroundShown, _imp->backgroundShown + 3, view.background);
+    if (!stageChanged && (view == _imp->backgroundView)) {
+        return false;
+    }
+    _imp->backgroundView = view;
+    if (viewOnly) {
+        *viewOnly = !stageChanged;
+    }
     Implementation::BackgroundFrame& frame = _imp->backgroundFrame;
     frame.width = width;
     frame.height = height;
-    frame.frustum = _imp->computeFrustum(width, height);
-    frame.params = _imp->currentRenderParams();
+    frame.frustum = frustum;
+    frame.params = view.params;
     frame.lightingMode = _imp->lightingMode;
     frame.displayProcessor = _imp->displayProcessor;
     frame.gain = _imp->displayTransform.gain;
     frame.gamma = _imp->displayTransform.gamma;
     std::copy(_imp->backgroundShown, _imp->backgroundShown + 3, frame.background);
     frame.imageKept = false;
+    frame.tintOnly = !needsStageFrame() && _imp->aovsHold(width, height, frustum, frame.params);
     frame.stops = _imp->backgroundStops;
     frame.cancels = _imp->backgroundCancels;
 
     return true;
 }
 
-void
-SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo)
+bool
+SceneViewportRenderer::isBackgroundFrameTintOnly() const
 {
+    return _imp->backgroundFrame.tintOnly;
+}
+
+void
+SceneViewportRenderer::forgetBackgroundView()
+{
+    _imp->backgroundView.valid = false;
+}
+
+bool
+SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo,
+                                             bool* finished)
+{
+    if (finished) {
+        *finished = false;
+    }
     Implementation::BackgroundFrame& frame = _imp->backgroundFrame;
     // Before the viewer lock, the order every reader takes them in.
     SceneWriteBarrier::ReadScope read;
 
-    std::shared_lock<std::shared_mutex> lock(_imp->stageMutex);
+    std::shared_lock<std::shared_mutex> lock = _imp->lockShared();
     StormGLStateGuard guard;
     StormGLSection section;
 
@@ -3838,12 +4770,12 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo)
     // Another delegate renders on the refinement's own thread, and one the stage's render
     // settings prim names instead is switched to on the main thread before Storm compiles for it.
     if (_imp->rendererId != kRenderDelegateStormId) {
-        return;
+        return false;
     }
     if (_imp->effectiveRenderer() != _imp->rendererId) {
         _imp->rendererSwitchPending = true;
 
-        return;
+        return false;
     }
     // Storm, the only delegate rendering here, cannot be stopped inside a pass
     // (HdStRenderDelegate leaves IsStopSupported at false), so the frame ends between passes.
@@ -3855,11 +4787,64 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo)
 
         return (pass > 0) && ((imp->backgroundStops != frame.stops) || (imp->exclusiveWaiting > 0));
     };
-    if (ended(0) || !_imp->ensureEngine()) {
-        return;
+    if (ended(0)) {
+        return false;
+    }
+    _imp->lastFrameFillComplete = isFillComplete();
+    _imp->setFillPaced(true);
+    if (!_imp->ensureEngine()) {
+        return false;
     }
     section.collectWith(_imp->engine->GetHgi());
+    if (frame.tintOnly) {
+        frame.params.enableSceneLights = _imp->usesSceneLights(frame.lightingMode);
+        // Checked again, as the frame may have been prepared before a change the lock kept out. A
+        // full frame then: one refused here would be prepared again for the same view.
+        frame.tintOnly = _imp->aovsHold(frame.width, frame.height, frame.frustum, frame.params);
+    }
+    if (frame.tintOnly) {
+        // The draw filter is not serviced: a change it took in now would need a render.
+        std::string what;
+        bool failed = false;
+        try {
+            _imp->setCamera(frame.frustum, frame.width, frame.height, frame.params.enableSceneLights);
+        } catch (const std::exception& e) {
+            failed = true;
+            what = e.what();
+        } catch (...) {
+            failed = true;
+        }
+        if (failed) {
+            // The engine's Hgi goes with it, collecting as it does.
+            section.collectWith(nullptr);
+            _imp->discardFailedEngine(what.empty() ? std::string("unknown exception") : what);
+
+            return false;
+        }
+        _imp->lastFramePasses = 0;
+        _imp->noteDrawFilterRendered(false);
+        Implementation::bindFrameTarget(fbo, frame.width, frame.height);
+        _imp->drawGrade(fbo, frame.width, frame.height, frame.displayProcessor, frame.gain, frame.gamma);
+        if (!_imp->drawSelectionPass(section, fbo, frame.width, frame.height, frame.params)) {
+            return false;
+        }
+        _imp->noteStageAbsorbed(frame.params);
+        frame.fbo = fbo;
+        frame.editCount = _imp->sceneStage->getEditCount();
+        frame.loadEditCount = _imp->sceneStage->getLoadEditCount();
+        frame.previewGeneration = _imp->sceneStage->getPreviewGeneration();
+        frame.selection = _imp->selectionApplied;
+        frame.imageKept = true;
+        if (finished) {
+            *finished = true;
+        }
+
+        return true;
+    }
+    _imp->noteFillView(frame.frustum, frame.width, frame.height);
     _imp->serviceDrawFilter(true);
+    // A batch of the fill is shown by its first pass, so the next batch follows that image.
+    const bool fillStep = _imp->drawFillStep;
     frame.params.enableSceneLights = _imp->usesSceneLights(frame.lightingMode);
     Implementation::bindFrameTarget(fbo, frame.width, frame.height);
 
@@ -3873,8 +4858,13 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo)
     try {
         _imp->applyStormSettings();
         _imp->setCamera(frame.frustum, frame.width, frame.height, frame.params.enableSceneLights);
-        for (; (passes < kMaxRenderPasses) && !converged && !ended(passes); ++passes) {
+        for (; (passes < (fillStep ? 1 : kMaxRenderPasses)) && !converged && !ended(passes); ++passes) {
             RenderDelegates::runRenderFaultHook();
+            if (passes == 0) {
+                _imp->streamTextures();
+            } else {
+                StormTextureBudget::sampleFreeVideoMemory();
+            }
             _imp->engine->Render(stage->GetPseudoRoot(), frame.params);
             converged = _imp->engine->IsConverged();
             // The first render is what puts the stage's lights into Hydra, and so into the filter.
@@ -3897,12 +4887,18 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo)
         section.collectWith(nullptr);
         _imp->discardFailedEngine(what.empty() ? std::string("unknown exception") : what);
 
-        return;
+        return false;
     }
+    _imp->lastFramePasses = passes;
     _imp->noteDrawFilterRendered(passes != 0);
+    _imp->paceTextures();
+    _imp->texturesOwed = StormTextureBudget::texturesPending(_imp->engineInstanceId);
     if (passes == 0) {
-        return;
+        return false;
     }
+    converged = converged && !_imp->drawFilling;
+    _imp->noteAovs(converged, frame.width, frame.height, frame.frustum, frame.params);
+    _imp->sceneLit = frame.params.enableSceneLights;
     if (timed) {
         // Only the render thread waits here, and the image could not be shown before the GPU is
         // done with it anyway; the wait separates GPU time left after submission from the CPU's.
@@ -3912,12 +4908,21 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo)
         timing->frameEnded(renderEnd, passes, gpuTailMs, false);
     }
     _imp->drawGrade(fbo, frame.width, frame.height, frame.displayProcessor, frame.gain, frame.gamma);
+    if (!_imp->drawSelectionPass(section, fbo, frame.width, frame.height, frame.params)) {
+        return false;
+    }
     _imp->noteStageAbsorbed(frame.params);
     frame.fbo = fbo;
     frame.editCount = _imp->sceneStage->getEditCount();
     frame.loadEditCount = _imp->sceneStage->getLoadEditCount();
     frame.previewGeneration = _imp->sceneStage->getPreviewGeneration();
+    frame.selection = _imp->selectionApplied;
     frame.imageKept = converged;
+    if (finished) {
+        *finished = converged;
+    }
+
+    return true;
 }
 
 void
@@ -4084,7 +5089,7 @@ SceneViewportRenderer::serviceStageLoads(const std::function<bool()>& cancelled)
     }
     const bool serviced = stage->serviceLoads([imp](const std::function<void()>& section) {
         SceneWriteBarrier::ReadScope read;
-        std::shared_lock<std::shared_mutex> lock(imp->stageMutex);
+        std::shared_lock<std::shared_mutex> lock = imp->lockShared();
         section(); }, [imp, stage, committed](const std::function<void()>& section) {
         SceneWriteBarrier::ReadScope read;
         const std::unique_lock<std::shared_mutex> lock = imp->lockExclusive();
@@ -4123,7 +5128,7 @@ SceneViewportRenderer::serviceStageLoads(const std::function<bool()>& cancelled)
         return serviced;
     }
     SceneWriteBarrier::ReadScope read;
-    std::shared_lock<std::shared_mutex> lock(imp->stageMutex);
+    std::shared_lock<std::shared_mutex> lock = imp->lockShared();
     imp->refreshStageSummary();
 
     return serviced;
@@ -4167,6 +5172,24 @@ SceneViewportRenderer::getLastStageLoadHoldMs() const
     const SceneStage* stage = _imp->loadStage;
 
     return stage ? stage->getLastLoadHoldMs() : 0.;
+}
+
+double
+SceneViewportRenderer::getMainThreadWaitMs() const
+{
+    return _imp->mainThreadWaitMs;
+}
+
+double
+SceneViewportRenderer::getMainThreadWaitMaxMs() const
+{
+    return _imp->mainThreadWaitMaxMs;
+}
+
+void
+SceneViewportRenderer::addMainThreadWait(double ms)
+{
+    _imp->noteMainThreadWait(ms);
 }
 
 std::vector<std::pair<std::string, std::string>>
@@ -4532,7 +5555,7 @@ SceneViewportRenderer::computeFrameBounds(const std::vector<std::string>& select
     bounds.selection = !selection.empty();
     // Before the viewer lock, the order every reader takes them in.
     SceneWriteBarrier::ReadScope read;
-    std::shared_lock<std::shared_mutex> lock(_imp->stageMutex);
+    std::shared_lock<std::shared_mutex> lock = _imp->lockShared();
     const UsdStageRefPtr stage = _imp->currentStage();
     if (!stage) {
         return bounds;
@@ -4624,6 +5647,27 @@ SceneViewportRenderer::tumble(double azimuthDegrees,
 }
 
 void
+SceneViewportRenderer::releaseStormEngine()
+{
+    const std::unique_lock<std::shared_mutex> lock = _imp->lockExclusive();
+
+    _imp->dropEngine();
+}
+
+bool
+SceneViewportRenderer::tryReleaseStormEngine()
+{
+    std::unique_lock<std::shared_mutex> lock;
+
+    if (!_imp->tryLockExclusive(&lock)) {
+        return false;
+    }
+    _imp->dropEngine();
+
+    return true;
+}
+
+void
 SceneViewportRenderer::pan(double dxPixels,
                            double dyPixels,
                            int viewHeight)
@@ -4700,8 +5744,11 @@ SceneViewportRenderer::setSelectedPrims(const std::vector<std::string>& paths)
     _imp->selected = paths;
     _imp->guideBatchesValid = false;
     _imp->boxColoursValid = false;
+    _imp->standInColoursValid = false;
+    _imp->fillColoursValid = false;
     std::lock_guard<std::mutex> lock(_imp->engineSelectionMutex);
     _imp->engineSelection = paths;
+    ++_imp->selectionPosted;
     _imp->engineSelectionDirty = true;
 }
 
@@ -4768,7 +5815,7 @@ bool
 SceneViewportRenderer::hasTransformHandles() const
 {
     SceneGizmo::Frame frame;
-    std::shared_lock<std::shared_mutex> lock(_imp->stageMutex);
+    std::shared_lock<std::shared_mutex> lock = _imp->lockShared();
 
     return _imp->computeHandleFrame(&frame);
 }
@@ -4875,7 +5922,7 @@ SceneViewportRenderer::getTransformHandlePixel(int handle,
 {
     SceneGizmo::Frame frame;
     bool selection = false;
-    std::shared_lock<std::shared_mutex> lock(_imp->stageMutex);
+    std::shared_lock<std::shared_mutex> lock = _imp->lockShared();
 
     if ((width <= 0) || (height <= 0) || !_imp->computeHandleFrame(&frame, &selection) || !_imp->isDrawnHandle(handle, selection)) {
         return false;
@@ -5075,8 +6122,11 @@ SceneViewportRenderer::render(unsigned int fbo,
                               int height)
 {
     const std::unique_lock<std::shared_mutex> lock = _imp->lockExclusive();
+    const bool done = renderLocked(fbo, width, height, true) == eRenderStatusDone;
+    // Only this caller waits for every prim: an engine a pick or a switch makes afterwards fills paced.
+    _imp->setFillPaced(true);
 
-    return renderLocked(fbo, width, height, true) == eRenderStatusDone;
+    return done;
 }
 
 SceneViewportRenderer::RenderStatusEnum
@@ -5120,7 +6170,6 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
     // the renderer it has and leaves the switch to followSceneRenderer(), outside Qt's paint.
     const std::string effective = _imp->effectiveRenderer();
     if (followScene) {
-        StormGLStateGuard guard;
         _imp->switchRenderer(effective);
     }
     _imp->rendererSwitchPending = (effective != _imp->rendererId);
@@ -5130,6 +6179,9 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
     StormGLStateGuard guard;
     StormGLSection section;
 
+    _imp->lastFrameFillComplete = isFillComplete();
+    // render() is waited out, and nothing presents its image to let a next batch go.
+    _imp->setFillPaced(!followScene);
     if (!_imp->ensureEngine()) {
         Implementation::bindFrameTarget(fbo, width, height);
         Implementation::clearFrameTarget(_imp->backgroundShown);
@@ -5165,11 +6217,37 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
     UsdImagingGLRenderParams params = _imp->renderParams();
     const bool held = _imp->stageHeld;
     const bool kept = !held && _imp->takeBackgroundImage(fbo, width, height, frustum, params);
+    const bool tintOnly = !held && !kept && _imp->aovsHold(width, height, frustum, params);
     Implementation::bindFrameTarget(fbo, width, height);
-    bool converged = kept || held;
+    bool converged = kept || held || tintOnly;
     if (held) {
         // The engine is not handed the stage either: it would take its prims in at full.
         Implementation::clearFrameTarget(_imp->backgroundShown);
+    } else if (tintOnly) {
+        Implementation::clearFrameTarget(_imp->backgroundShown);
+        std::string what;
+        bool failed = false;
+        try {
+            _imp->setCamera(frustum, width, height, _imp->sceneLit);
+        } catch (const std::exception& e) {
+            failed = true;
+            what = e.what();
+        } catch (...) {
+            failed = true;
+        }
+        if (failed) {
+            // The engine's Hgi goes with it, collecting as it does.
+            section.collectWith(nullptr);
+            _imp->discardFailedEngine(what.empty() ? std::string("unknown exception") : what);
+
+            return eRenderStatusDone;
+        }
+        _imp->lastFramePasses = 0;
+        Implementation::bindFrameTarget(fbo, width, height);
+        _imp->drawGrade(fbo, width, height, _imp->displayProcessor, _imp->displayTransform.gain, _imp->displayTransform.gamma);
+        if (!_imp->drawSelectionPass(section, fbo, width, height, params)) {
+            return eRenderStatusDone;
+        }
     } else if (!kept) {
         Implementation::clearFrameTarget(_imp->backgroundShown);
         _imp->setCamera(frustum, width, height, _imp->sceneLit);
@@ -5181,6 +6259,11 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
             bool failed = false;
             try {
                 RenderDelegates::runRenderFaultHook();
+                if (i == 0) {
+                    _imp->streamTextures();
+                } else {
+                    StormTextureBudget::sampleFreeVideoMemory();
+                }
                 _imp->engine->Render(stage->GetPseudoRoot(), params);
             } catch (const std::exception& e) {
                 failed = true;
@@ -5206,47 +6289,119 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
                 converged = false;
             }
         }
+        _imp->lastFramePasses = passes;
+        _imp->paceTextures();
+        _imp->texturesOwed = StormTextureBudget::texturesPending(_imp->engineInstanceId);
+        converged = converged && !_imp->texturesOwed && !_imp->drawFilling;
+        _imp->noteAovs(converged, width, height, frustum, params);
         if (timed) {
             // The main thread waits for this render, so the GPU is left to finish on its own.
             timing->frameEnded(std::chrono::steady_clock::now(), passes, -1., true);
         }
-        // A kept image was graded by the frame that left it.
+        // A kept image was graded and tinted by the frame that left it.
         _imp->drawGrade(fbo, width, height, _imp->displayProcessor, _imp->displayTransform.gain, _imp->displayTransform.gamma);
+        if (!_imp->drawSelectionPass(section, fbo, width, height, params)) {
+            return eRenderStatusDone;
+        }
     }
     if (!held) {
-        _imp->noteDrawFilterRendered(!kept);
+        _imp->noteDrawFilterRendered(!kept && !tintOnly);
         _imp->noteStageAbsorbed(params);
     }
 
-    _imp->drawnGuides.clear();
     _imp->feedBoxes();
-    _imp->boxesDrawn = 0;
-    _imp->markersDrawn = 0;
-    _imp->drawnBoxList.reset();
-    _imp->drawnStandIns.reset();
-    _imp->drawnBoxes.clear();
-    if (_imp->showGrid || _imp->showGuides || _imp->hasHandles || _imp->hasBoxes()) {
-        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-        glViewport(0, 0, width, height);
-        glUseProgram(0);
-        glBindVertexArray(0);
-        glBindBuffer(GL_ARRAY_BUFFER, 0);
-        glDisable(GL_FRAMEBUFFER_SRGB);
-        if (_imp->showGrid) {
-            _imp->drawGrid(frustum);
-        }
-        if (!held) {
-            _imp->drawBoxes(frustum, width, height);
-            _imp->drawStandIns(frustum, width, height);
-        }
-        if (_imp->showGuides) {
-            _imp->drawGuides(frustum, width, height);
-        }
-        _imp->drawTransformHandles(frustum, width, height);
-    }
+    SceneGizmo::Frame handleFrame;
+    bool handleSelection = false;
+    const bool handlesShown = (_imp->showGrid || _imp->showGuides || _imp->hasHandles || _imp->hasBoxes()) && _imp->computeHandleFrame(&handleFrame, &handleSelection);
+    _imp->drawOverlayPass(fbo, frustum, width, height, held, handlesShown ? &handleFrame : nullptr, handleSelection, bool(_imp->lookThroughCamera()), true, false);
 
     return converged ? eRenderStatusDone : eRenderStatusRefining;
 } // renderLocked
+
+void
+SceneViewportRenderer::drawOverlays(unsigned int fbo,
+                                    int width,
+                                    int height,
+                                    bool standIn)
+{
+    Implementation& imp = *_imp;
+
+    if ((width <= 0) || (height <= 0) || !appPTR->isOpenGLLoaded()) {
+        return;
+    }
+    bool readable = false;
+    {
+        // A sync or a load holding the lock edits the stage for as long as it takes; the overlays
+        // then show the stage as last read, at the current camera, rather than wait.
+        std::shared_lock<std::shared_mutex> lock(imp.stageMutex, std::try_to_lock);
+        if (lock.owns_lock()) {
+            readable = true;
+            imp.feedBoxes();
+            imp.feedStandInBoxes();
+            imp.overlayThroughCamera = bool(imp.lookThroughCamera());
+            imp.overlayFrustum = imp.computeFrustum(width, height);
+            imp.overlayHandlesShown = imp.computeHandleFrame(&imp.overlayHandleFrame, &imp.overlayHandleSelection);
+            if (imp.showGuides) {
+                imp.currentGuides();
+            }
+        }
+    }
+    if (readable && imp.exclusiveOwed.exchange(false) && imp.readEnded) {
+        imp.readEnded();
+    }
+    if (!readable) {
+        if (imp.lookThrough.empty()) {
+            // The free camera is the main thread's own, and needs no stage.
+            imp.overlayThroughCamera = false;
+            imp.overlayFrustum = imp.computeFrustum(width, height);
+        }
+        if (!imp.hasHandles) {
+            imp.overlayHandlesShown = false;
+        }
+    }
+    StormGLStateGuard guard;
+    imp.drawOverlayPass(fbo, imp.overlayFrustum, width, height, imp.stageHeld,
+                        imp.overlayHandlesShown ? &imp.overlayHandleFrame : nullptr, imp.overlayHandleSelection, imp.overlayThroughCamera, false, standIn);
+}
+
+void
+SceneViewportRenderer::setStandIn(bool enabled,
+                                  bool byModel)
+{
+    _imp->standInEnabled = enabled;
+    if (_imp->standInByModel.exchange(byModel) != byModel) {
+        // The next feed lists the rows again.
+        _imp->standInRulesFed = false;
+    }
+}
+
+void
+SceneViewportRenderer::setFill(bool boxesShown,
+                               double budgetMs)
+{
+    _imp->fillBoxesShown = boxesShown;
+    _imp->fillBudgetMs = (budgetMs > 0.) ? budgetMs : kRevealTargetMs;
+}
+
+int
+SceneViewportRenderer::getStandInBoxCount() const
+{
+    return _imp->standInBoxesDrawn;
+}
+
+bool
+SceneViewportRenderer::isStandInListComplete() const
+{
+    const SceneDrawBoxes::ListPtr list = _imp->standInBoxes->getList();
+
+    return list && list->complete && (list->generation >= _imp->standInBoxes->getGeneration());
+}
+
+void
+SceneViewportRenderer::releaseOverlayGL()
+{
+    _imp->releaseBoxesGL();
+}
 
 SceneViewportRenderer::RenderStatusEnum
 SceneViewportRenderer::renderProgressive(unsigned int fbo,
@@ -5377,29 +6532,11 @@ SceneViewportRenderer::renderProgressive(unsigned int fbo,
         _imp->drawnSamples = -1;
     }
 
-    _imp->drawnGuides.clear();
     _imp->feedBoxes();
-    _imp->boxesDrawn = 0;
-    _imp->markersDrawn = 0;
-    _imp->drawnBoxList.reset();
-    _imp->drawnBoxes.clear();
-    if (_imp->showGrid || _imp->showGuides || _imp->hasHandles || _imp->hasBoxes()) {
-        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-        glViewport(0, 0, width, height);
-        glUseProgram(0);
-        glBindVertexArray(0);
-        glBindBuffer(GL_ARRAY_BUFFER, 0);
-        if (_imp->showGrid) {
-            _imp->drawGrid(frustum);
-        }
-        if (!held) {
-            _imp->drawBoxes(frustum, width, height);
-        }
-        if (_imp->showGuides) {
-            _imp->drawGuides(frustum, width, height);
-        }
-        _imp->drawTransformHandles(frustum, width, height);
-    }
+    SceneGizmo::Frame handleFrame;
+    bool handleSelection = false;
+    const bool handlesShown = (_imp->showGrid || _imp->showGuides || _imp->hasHandles || _imp->hasBoxes()) && _imp->computeHandleFrame(&handleFrame, &handleSelection);
+    _imp->drawOverlayPass(fbo, frustum, width, height, held, handlesShown ? &handleFrame : nullptr, handleSelection, bool(_imp->lookThroughCamera()), true, false);
     if (held) {
         return eRenderStatusDone;
     }
@@ -5420,8 +6557,8 @@ SceneViewportRenderer::pick(int x,
         return std::string();
     }
     if (_imp->rendererId != kRenderDelegateStormId) {
-        // From the AOVs of the last pass, of the size of the view when it rendered; it takes the
-        // viewer lock itself, so it is read before ours is taken.
+        // From the AOVs of the last pass, of the size of the view when it rendered; empty while a
+        // pass holds them.
         const std::shared_ptr<const HydraRender::ProgressiveRender::Frame> frame = _imp->progressive->getFrame();
         // What is under the pixel and its window depth; a prim without one is behind everything.
         std::string path;
@@ -5446,11 +6583,11 @@ SceneViewportRenderer::pick(int x,
         const GfMatrix4d projection = frustum.ComputeProjectionMatrix();
         // A box wins a tie with a prim, and a guide a tie with either.
         GfVec3d boxPoint;
-        const int box = _imp->pickBox(frustum, width, height, x, y, &boxPoint);
-        if (box >= 0) {
+        const SdfPath boxPath = _imp->pickBox(frustum, width, height, x, y, &boxPoint);
+        if (!boxPath.IsEmpty()) {
             const double boxDepth = ((viewMatrix * projection).Transform(boxPoint)[2] + 1.) * 0.5;
             if (path.empty() || (boxDepth <= nearest)) {
-                path = _imp->drawnBoxList->boxes[box].path.GetString();
+                path = boxPath.GetString();
                 nearest = boxDepth;
             }
         }
@@ -5505,11 +6642,11 @@ SceneViewportRenderer::pick(int x,
         nearest = viewMatrix.Transform(nearestPoint)[2];
     }
     GfVec3d boxPoint;
-    const int box = _imp->pickBox(frustum, width, height, x, y, &boxPoint);
-    if (box >= 0) {
+    const SdfPath boxPath = _imp->pickBox(frustum, width, height, x, y, &boxPoint);
+    if (!boxPath.IsEmpty()) {
         const double z = viewMatrix.Transform(boxPoint)[2];
         if (path.empty() || (z >= nearest)) {
-            path = _imp->drawnBoxList->boxes[box].path.GetString();
+            path = boxPath.GetString();
             nearest = z;
             nearestPoint = boxPoint;
         }
@@ -5606,23 +6743,51 @@ SceneViewportRenderer::pickRect(int x0,
     return paths;
 }
 
+std::shared_ptr<void>
+SceneViewportRenderer::releaseGLKeepingEngine()
+{
+    const std::unique_lock<std::shared_mutex> lock = _imp->lockExclusive();
+    std::shared_ptr<void> kept;
+
+    if (SelectionEngine* engine = _imp->engine.release()) {
+        kept = std::shared_ptr<void>(engine, [](void* held) {
+            StormGLSection section;
+
+            delete static_cast<SelectionEngine*>(held);
+        });
+    }
+    _imp->releaseHeldGL();
+
+    return kept;
+}
+
 void
 SceneViewportRenderer::releaseGL()
 {
     const std::unique_lock<std::shared_mutex> lock = _imp->lockExclusive();
 
-    _imp->dropEngine();
-    _imp->releaseGrade();
-    _imp->releaseBoxesGL();
-    if (_imp->refineTexture) {
-        glDeleteTextures(1, &_imp->refineTexture);
-        glDeleteBuffers(1, &_imp->refineDepthBuffer);
-        _imp->refineTexture = 0;
-        _imp->refineDepthBuffer = 0;
+    _imp->releaseHeldGL();
+}
+
+void
+SceneViewportRenderer::releaseEngineGL()
+{
+    const std::unique_lock<std::shared_mutex> lock = _imp->lockExclusive();
+
+    _imp->releaseEngineHeldGL();
+}
+
+bool
+SceneViewportRenderer::tryReleaseGL()
+{
+    std::unique_lock<std::shared_mutex> lock;
+
+    if (!_imp->tryLockExclusive(&lock)) {
+        return false;
     }
-    _imp->refineWidth = 0;
-    _imp->refineHeight = 0;
-    _imp->uploadedFrame.reset();
+    _imp->releaseHeldGL();
+
+    return true;
 }
 
 void
@@ -5630,20 +6795,34 @@ SceneViewportRenderer::setRendererId(const std::string& id)
 {
     const std::unique_lock<std::shared_mutex> lock = _imp->lockExclusive();
 
-    {
-        std::lock_guard<std::mutex> idLock(_imp->rendererIdMutex);
-        _imp->rendererChoice = id.empty() ? std::string(kRenderDelegateStormId) : id;
-    }
-    // The error is cleared even for the same id, so that choosing it again retries it.
-    _imp->setRendererErrorCopy(std::string());
-    _imp->setRefineErrorCopy(std::string());
-    _imp->switchRenderer(_imp->effectiveRenderer());
+    _imp->chooseRenderer(id);
 }
 
 bool
-SceneViewportRenderer::followSceneRenderer()
+SceneViewportRenderer::trySetRendererId(const std::string& id)
 {
-    const std::unique_lock<std::shared_mutex> lock = _imp->lockExclusive();
+    std::unique_lock<std::shared_mutex> lock;
+
+    if (!_imp->tryLockExclusive(&lock)) {
+        return false;
+    }
+    _imp->chooseRenderer(id);
+
+    return true;
+}
+
+bool
+SceneViewportRenderer::followSceneRenderer(bool* busy)
+{
+    std::unique_lock<std::shared_mutex> lock;
+    const bool locked = _imp->tryLockExclusive(&lock);
+
+    if (busy) {
+        *busy = !locked;
+    }
+    if (!locked) {
+        return false;
+    }
     const std::string before = _imp->rendererId;
 
     _imp->switchRenderer(_imp->effectiveRenderer());
@@ -6407,6 +7586,43 @@ struct SceneViewport::Implementation {
         return GfVec2d((pos.x() + 0.5) * dpr, (pos.y() + 0.5) * dpr);
     }
 
+    // Every layer open in the process, counted where a sync or a load round ends so a reader on the
+    // main thread never walks the layer registry.
+    std::atomic<qulonglong> loadedLayerCount { 0 };
+
+    void countLoadedLayers()
+    {
+        loadedLayerCount = SdfLayer::GetLoadedLayers().size();
+    }
+
+    // The view the worker, the load thread, the render thread and the renderer's own threads post
+    // to. They outlive it, joined by the scene teardown, so a post checks it is still there under
+    // the mutex its destructor takes: a QPointer is no guard across threads.
+    std::mutex viewMutex;
+    SceneViewport* openView = nullptr;
+
+    template <typename Fn>
+    void postToView(Fn&& fn)
+    {
+        std::lock_guard<std::mutex> lock(viewMutex);
+        if (openView) {
+            QMetaObject::invokeMethod(openView, std::forward<Fn>(fn), Qt::QueuedConnection);
+        }
+    }
+
+    bool isViewOpen()
+    {
+        std::lock_guard<std::mutex> lock(viewMutex);
+
+        return openView != nullptr;
+    }
+
+    void closeView()
+    {
+        std::lock_guard<std::mutex> lock(viewMutex);
+        openView = nullptr;
+    }
+
     // The worker syncing the renderer's stage, and the latest payload waiting for it. A newer
     // request replaces one the worker has not taken yet.
     std::thread worker;
@@ -6520,7 +7736,7 @@ struct SceneViewport::Implementation {
         });
         if (!matched) {
             if (matchId != 0) {
-                QMetaObject::invokeMethod(view, [view, matchId]() { view->onDrawRulesMatchDropped(matchId); }, Qt::QueuedConnection);
+                postToView([view, matchId]() { view->onDrawRulesMatchDropped(matchId); });
             }
 
             return false;
@@ -6538,7 +7754,7 @@ struct SceneViewport::Implementation {
             }
         }
         // Dropped by Qt if the widget is gone by then.
-        QMetaObject::invokeMethod(view, [view, generation, matchId, serial, policy]() { view->onDrawRulesMatched(generation, matchId, serial, policy); }, Qt::QueuedConnection);
+        postToView([view, generation, matchId, serial, policy]() { view->onDrawRulesMatched(generation, matchId, serial, policy); });
 
         return true;
     }
@@ -6582,38 +7798,419 @@ struct SceneViewport::Implementation {
     // Also read by the load batch, which gives up on its files when it turns true.
     std::atomic<bool> loadQuit { false };
 
-    // The thread the engine lives on, running jobs in order.
-    std::thread renderThread;
-    std::mutex renderJobsMutex;
-    std::condition_variable renderJobsChanged;
-    std::deque<std::function<void()>> renderJobs;
-    bool renderQuit = false;
+    // The thread the engine lives on, running jobs in order. Owned apart from the view, as a
+    // closed view leaves it to finish destroying the engine on its own.
+    struct RenderLoop {
+        std::mutex mutex;
+        std::condition_variable changed;
+        std::deque<std::function<void()>> jobs;
+        bool quit = false;
+        // Jobs posted and not yet over, the one running included.
+        std::atomic<int> outstanding { 0 };
+        // Called with mutex held when the last job outstanding is over, so that clearing it under
+        // the mutex leaves no call in flight to a view that has gone.
+        std::function<void()> idle;
+        // Looked after between jobs, without counting as one, so that they hold no paint: a fence
+        // asked after without waiting, in the context it was made in, and fences to delete. The
+        // main thread would have to make its own context current for either, which waits on the
+        // driver for whatever this thread has in flight.
+        GLsync watched = nullptr;
+        QOpenGLContext* watchedContext = nullptr;
+        std::vector<GLsync> doomedFences;
+        // Called with mutex held once watched has signalled, as idle is.
+        std::function<void(GLsync)> signalled;
+        // Declared last: it starts in the constructor, on the members above.
+        std::thread thread;
+
+        RenderLoop()
+            : thread([this]() { run(); })
+        {
+        }
+
+        ~RenderLoop() { stop(); }
+
+        void run()
+        {
+            // Lets a stack sampler pick this thread out by its /proc comm (15 characters at most).
+            pthread_setname_np(pthread_self(), "NatronSceneRndr");
+            std::unique_lock<std::mutex> lock(mutex);
+            for (;;) {
+                tendFences();
+                if (!jobs.empty()) {
+                    std::function<void()> job = std::move(jobs.front());
+                    jobs.pop_front();
+                    lock.unlock();
+                    job();
+                    job = nullptr;
+                    lock.lock();
+                    if ((--outstanding == 0) && idle) {
+                        idle();
+                    }
+                    continue;
+                }
+                if (quit) {
+                    return;
+                }
+                const auto woken = [this]() { return quit || !jobs.empty() || (!doomedFences.empty() && QOpenGLContext::currentContext()); };
+                if (watched) {
+                    changed.wait_for(lock, kFenceWatchInterval, woken);
+                } else {
+                    changed.wait(lock, [this, &woken]() { return woken() || watched; });
+                }
+            }
+        }
+
+        // Under mutex, so that once unwatch() or dropFence() returns no test of that fence is
+        // running. Asking never waits.
+        void tendFences()
+        {
+            if (!watched && doomedFences.empty()) {
+                return;
+            }
+            QOpenGLContext* current = QOpenGLContext::currentContext();
+            if (!current) {
+                // Fences belong to the share group: they wait for a job to make a context current again.
+                watched = nullptr;
+
+                return;
+            }
+            for (GLsync fence : doomedFences) {
+                glDeleteSync(fence);
+            }
+            doomedFences.clear();
+            if (watched && (current != watchedContext)) {
+                watched = nullptr;
+            }
+            if (watched && (glClientWaitSync(watched, 0, 0) != GL_TIMEOUT_EXPIRED)) {
+                const GLsync done = watched;
+                watched = nullptr;
+                if (signalled) {
+                    signalled(done);
+                }
+            }
+        }
+
+        // From a job: fence, flushed in the context current, is told of through signalled.
+        void watch(GLsync fence)
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            watched = fence;
+            watchedContext = QOpenGLContext::currentContext();
+        }
+
+        void unwatch(GLsync fence)
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            if (watched == fence) {
+                watched = nullptr;
+            }
+        }
+
+        // Deleted between jobs.
+        void dropFence(GLsync fence)
+        {
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                if (watched == fence) {
+                    watched = nullptr;
+                }
+                doomedFences.push_back(fence);
+            }
+            changed.notify_one();
+        }
+
+        void setSignalled(std::function<void(GLsync)> callback)
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            signalled = std::move(callback);
+        }
+
+        void post(std::function<void()> job)
+        {
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                ++outstanding;
+                jobs.push_back(std::move(job));
+            }
+            changed.notify_one();
+        }
+
+        void setIdle(std::function<void()> callback)
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            idle = std::move(callback);
+        }
+
+        // Runs the jobs posted so far, then joins the thread.
+        void stop()
+        {
+            if (!thread.joinable()) {
+                return;
+            }
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                quit = true;
+            }
+            changed.notify_one();
+            thread.join();
+        }
+    };
+
+    // A closed view's render thread, destroying the engine in its own context. Destroying this
+    // waits for it.
+    struct RetiredRenderLoop {
+        std::unique_ptr<RenderLoop> loop;
+        // Kept until the context made current on it is gone.
+        std::unique_ptr<QOffscreenSurface> surface;
+
+        ~RetiredRenderLoop()
+        {
+            {
+                PythonUnlockedWhileWaiting unlocked;
+                loop.reset();
+            }
+            if (surface && (QThread::currentThread() != surface->thread())) {
+                // A platform surface is only destroyed on the thread that made it.
+                SceneTeardown::releaseOnMainThread(std::shared_ptr<QOffscreenSurface>(surface.release()));
+            }
+        }
+    };
+
+    std::unique_ptr<RenderLoop> renderLoop;
+    // Main thread: the view is going, so the engine may finish going after it.
+    bool closing = false;
     // Whether the engine's context is the render thread's right now. Main thread.
     bool usesRenderThread = false;
     std::unique_ptr<QOffscreenSurface> renderSurface;
-    // Render thread: its context, sharing the widget's, and the target it draws into.
+    // Render thread: its context, sharing the widget's.
     std::unique_ptr<QOpenGLContext> renderContext;
-    GLuint renderFbo = 0;
-    GLuint renderTexture = 0;
-    GLuint renderDepth = 0;
-    int renderWidth = 0;
-    int renderHeight = 0;
+    // Main thread: the share group of renderContext once made, null while it is being made.
+    // A widget context of this group, after a reparent, uses the render thread as it is.
+    QOpenGLContextGroup* renderShareGroup = nullptr;
+    // The widget's context is gone and no new one has come: no frame starts meanwhile.
+    bool widgetContextLost = false;
+    // Render contexts being made: the first, or again for a widget context of another share group.
+    int renderContextRebuilds = 0;
+    // The context a render context being made again shares with. The render thread makes it under
+    // the mutex, and the main thread, before that context dies, takes it away and bumps the
+    // generation under it, so the render thread never shares with a dead context.
+    std::mutex rebuildShareMutex;
+    QOpenGLContext* rebuildShare = nullptr;
+    U64 rebuildShareGeneration = 0;
+    // Main thread. The widget's updates are off while the render thread has work, so that neither
+    // a paint nor the window's composition it would bring waits on the driver for that work.
+    bool paintsHeld = false;
+    // A resize came while paints were held: QOpenGLWidget's own makes its context current.
+    bool resizeOwed = false;
+    QSize resizeOwedFrom;
+    // A paint asked for a frame, which starts once the window has composed that paint.
+    bool frameStartOwed = false;
+    QTimer* frameStartFallback = nullptr;
+    // The overlays' GL objects go at the next paint, in the widget's context.
+    bool overlayGLReleaseOwed = false;
+    // An engine release posted to the render thread has not come back.
+    bool engineReleaseRunning = false;
+    // Without a render thread, an engine release or a renderer switch that found the viewer lock
+    // held, carried out when it is let go.
+    bool engineReleaseOwed = false;
+    bool engineReleaseOwedStorm = false;
+    std::optional<std::string> rendererIdOwed;
+    QString rendererIdOwedName;
+    // Main thread: asks for the paint held back once the long render-thread job is over.
+    QTimer* holdPoll = nullptr;
+    // Render thread, but for readFence, which the main thread sets once it has copied the target
+    // to the screen; presentPacer says which target each thread may touch.
+    struct RenderTarget {
+        GLuint fbo = 0;
+        GLuint texture = 0;
+        GLuint depth = 0;
+        int width = 0;
+        int height = 0;
+        GLsync readFence = nullptr;
+    };
+    RenderTarget renderTargets[2];
     // The widget's context: framebuffer objects are not shared, so it has its own on the texture.
     GLuint presentFbo = 0;
 
+    // A render-thread frame, from its render to its presentation.
+    struct PresentFrame {
+        int width = 0;
+        int height = 0;
+        SceneViewportRenderer::RenderStatusEnum status = SceneViewportRenderer::eRenderStatusDone;
+        // The draw changes the frame took in.
+        unsigned long long absorbed = 0;
+        QVariantList view;
+        std::chrono::steady_clock::time_point startedAt;
+        // Prepared to render no pass, only to grade the last render again and tint it.
+        bool tintOnly = false;
+    };
+    // Main thread, and the render thread while the main thread waits for it. Only the render
+    // thread asks whether a fence has signalled.
+    ScenePresentPacer<PresentFrame> presentPacer {
+        [this](void* fence) { return static_cast<GLsync>(fence) == signalledFence; },
+        [this](void* fence) { releaseFence(static_cast<GLsync>(fence)); }
+    };
+    // Main thread: the fence the render thread last found signalled.
+    GLsync signalledFence = nullptr;
+    // Main thread: the frame last given to presentPacer was a tint-only one.
+    bool submittedTintOnly = false;
+    // Main thread: until when the frame on the GPU holds the paints.
+    std::chrono::steady_clock::time_point presentHoldEnd;
+
+    // Main thread. A sync object belongs to the share group, so the render thread can delete one
+    // when no context is current here, and making the widget's current could wait out a render.
+    void releaseFence(GLsync fence)
+    {
+        if (fence == signalledFence) {
+            signalledFence = nullptr;
+        }
+        if (renderLoop) {
+            renderLoop->unwatch(fence);
+        }
+        if (QOpenGLContext::currentContext()) {
+            glDeleteSync(fence);
+        } else if (renderLoop) {
+            renderLoop->dropFence(fence);
+        }
+    }
+    // Main thread: the frame in presentPacer's front target, which every paint shows until a newer
+    // one is finished, whatever the camera or size has become since.
+    std::optional<PresentFrame> frontFrame;
+    // Main thread: the view of the frame running on the render thread, and whether it was asked to
+    // end at its next pass for a view that has moved on.
+    QVariantList runningFrameView;
+    bool runningFrameStopped = false;
+
+    // Main thread. The stand-in preferences.
+    Settings::SceneStandInModeEnum standInMode = Settings::eSceneStandInModeInteraction;
+    double standInBudgetMs = 33.;
+    bool standInByModel = true;
+    int standInRefillDelayMs = 250;
+    // From its start to the GPU finishing it, the last full frame's cost, negative before any.
+    double lastFullFrameMs = -1.;
+    bool overBudget = false;
+    // The view the last paint or frame start saw, and since when.
+    QVariantList lastView;
+    QElapsedTimer viewStillClock;
+    // The stand-in is up until a full frame of the view now is shown.
+    bool standInLatched = false;
+    // Asks for the paint that starts the refill once the view has been still long enough.
+    QTimer* standInRefillTimer = nullptr;
+
+    void noteView(const QVariantList& view)
+    {
+        if (view != lastView) {
+            lastView = view;
+            viewStillClock.start();
+        }
+    }
+
+    bool viewMoving() const
+    {
+        return viewStillClock.isValid() && (viewStillClock.elapsed() < standInRefillDelayMs);
+    }
+
+    void noteFullFrame(double costMs)
+    {
+        lastFullFrameMs = costMs;
+        if (costMs > standInBudgetMs) {
+            overBudget = true;
+        } else if (costMs < 0.8 * standInBudgetMs) {
+            overBudget = false;
+        }
+    }
+
+    // Whether the stand-in's boxes are kept measured, ahead of the move that shows them.
+    bool standInWanted() const
+    {
+        return (standInMode == Settings::eSceneStandInModeAlways) || ((standInMode == Settings::eSceneStandInModeInteraction) && overBudget);
+    }
+
+    // Takes the stand-in up when the view starts moving over budget, and down once the full frame
+    // of the view now is shown.
+    void updateStandInLatch(const QVariantList& view)
+    {
+        if (standInMode != Settings::eSceneStandInModeInteraction) {
+            standInLatched = false;
+        } else if (overBudget && viewMoving()) {
+            standInLatched = true;
+        } else if (standInLatched && !viewMoving() && frontFrame && (frontFrame->view == view)) {
+            standInLatched = false;
+        }
+    }
+
+    // Whether no full frame may start: the stand-in stands for the scene.
+    bool standInHoldsFrames() const
+    {
+        return usesRenderThread && ((standInMode == Settings::eSceneStandInModeAlways) || (standInLatched && viewMoving()));
+    }
+
+    void readStandInSettings(const Settings& settings)
+    {
+        standInMode = settings.getSceneStandInMode();
+        standInBudgetMs = settings.getSceneStandInBudgetMs();
+        standInByModel = (settings.getSceneStandInBoxes() == Settings::eSceneStandInBoxesModels);
+        standInRefillDelayMs = settings.getSceneStandInRefillDelayMs();
+        if (standInMode != Settings::eSceneStandInModeInteraction) {
+            standInLatched = false;
+        }
+        if (overBudget && (lastFullFrameMs >= 0.) && (lastFullFrameMs < 0.8 * standInBudgetMs)) {
+            overBudget = false;
+        } else if (lastFullFrameMs > standInBudgetMs) {
+            overBudget = true;
+        }
+    }
+    // Bumped when the render context goes: a frame rendered in the old one is never shown.
+    U64 renderContextGeneration = 0;
+
     // Main thread.
     bool backgroundFrameRunning = false;
+    // The frame running is for a camera, size or display change alone, which shows no composing status.
+    bool backgroundFrameViewOnly = false;
+    // The frame running renders no pass, so work queued behind it waits no longer than a grade and
+    // the selection pass.
+    bool backgroundFrameTintOnly = false;
+    // Draw changes posted to the render thread and not yet taken in there.
+    int drawJobsQueued = 0;
     // A renderer switch posted to the render thread, whose engine it drops, has not come back. The
     // switch numbered rendererSwitchLatest is the one asked for last: the render thread skips the
     // others, and the main thread waits for that one.
     bool rendererSwitchRunning = false;
     std::atomic<U64> rendererSwitchLatest { 0 };
+    // A followSceneRenderer() posted to the render thread has not come back.
+    bool followSceneRunning = false;
 
     // Whether the render thread is on work the main thread does not wait for, and must not queue
     // behind.
     bool renderThreadBusy() const
     {
-        return backgroundFrameRunning || rendererSwitchRunning;
+        return backgroundFrameRunning || renderThreadBusyBesideFrames();
+    }
+
+    bool renderThreadBusyBesideFrames() const
+    {
+        return rendererSwitchRunning || followSceneRunning || (drawJobsQueued > 0) || (renderContextRebuilds > 0) || engineReleaseRunning;
+    }
+
+    bool engineReleasePending() const
+    {
+        return engineReleaseRunning || engineReleaseOwed;
+    }
+
+    // What a frame is drawn for, as scripts see it and as a paint tells a frame of an older view by.
+    QVariantList paintedView(int w,
+                             int h) const
+    {
+        const SceneViewportRenderer::FreeCamera& camera = renderer.getFreeCamera();
+
+        return QVariantList { camera.pivot[0], camera.pivot[1], camera.pivot[2], camera.distance, camera.azimuth, camera.elevation, camera.fovY,
+                              int(camera.viewMode), QString::fromStdString(renderer.getLookThroughCamera()), w, h };
+    }
+
+    // Whether the render thread is taking in a change of the stage or of the renderer.
+    bool composesScene() const
+    {
+        return (backgroundFrameRunning && !backgroundFrameViewOnly) || rendererSwitchRunning;
     }
     // The load edit count the main thread has had onStageLoadsServiced() for.
     U64 takenLoadEditCount = 0;
@@ -6631,13 +8228,15 @@ struct SceneViewport::Implementation {
     QElapsedTimer composingClock;
     QTimer* composingTimer = nullptr;
 
+    // Main thread: holds the paints from now, before any update() after the post can compose.
+    std::function<void()> renderJobPosted;
+
     void postToRenderThread(std::function<void()> job)
     {
-        {
-            std::lock_guard<std::mutex> lock(renderJobsMutex);
-            renderJobs.push_back(std::move(job));
+        renderLoop->post(std::move(job));
+        if (renderJobPosted) {
+            renderJobPosted();
         }
-        renderJobsChanged.notify_one();
     }
 
     // Waits for job, after any job before it. The caller's own state is safe for job to read, as
@@ -6648,42 +8247,39 @@ struct SceneViewport::Implementation {
         std::condition_variable doneChanged;
         bool done = false;
 
-        postToRenderThread([&]() {
+        // The main thread paints nothing while it waits, so the paints need no hold.
+        renderLoop->post([&]() {
             job();
             std::lock_guard<std::mutex> lock(doneMutex);
             done = true;
             doneChanged.notify_one();
         });
         PythonUnlockedWhileWaiting unlocked;
+        const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
         std::unique_lock<std::mutex> lock(doneMutex);
         doneChanged.wait(lock, [&done]() { return done; });
+        renderer.addMainThreadWait(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
     }
+
+    // Main thread: asked on the render thread once it has no job left.
+    std::function<void()> renderLoopIdle;
+    // Main thread: told on the render thread of a frame's fence once it has signalled.
+    std::function<void(GLsync)> renderLoopSignalled;
 
     void startRenderThread()
     {
-        if (renderThread.joinable()) {
-            return;
+        if (!renderLoop) {
+            renderLoop.reset(new RenderLoop());
+            renderLoop->setIdle(renderLoopIdle);
+            renderLoop->setSignalled(renderLoopSignalled);
         }
-        renderThread = std::thread([this]() {
-            for (;;) {
-                std::function<void()> job;
-                {
-                    std::unique_lock<std::mutex> lock(renderJobsMutex);
-                    renderJobsChanged.wait(lock, [this]() { return renderQuit || !renderJobs.empty(); });
-                    if (renderJobs.empty()) {
-                        return;
-                    }
-                    job = std::move(renderJobs.front());
-                    renderJobs.pop_front();
-                }
-                job();
-            }
-        });
     }
 
     // Main thread, the widget's context current. False if this platform cannot, and the engine
-    // then stays in the widget's context.
-    bool startRenderContext(QOpenGLContext* share)
+    // then stays in the widget's context. Otherwise the render thread is up without its context,
+    // which the caller has it make: the driver can take hundreds of milliseconds over that while
+    // another viewer's context of the same window is destroying its engine.
+    bool prepareRenderThread(const QOpenGLContext* share)
     {
         if (!QOpenGLContext::supportsThreadedOpenGL() || !AppManager::instance()->isOpenGLLoaded()) {
             return false;
@@ -6698,134 +8294,274 @@ struct SceneViewport::Implementation {
             return false;
         }
         startRenderThread();
-        bool started = false;
-        callOnRenderThread([&]() {
-            renderContext.reset(new QOpenGLContext());
-            renderContext->setFormat(share->format());
-            renderContext->setShareContext(share);
-            started = renderContext->create() && QOpenGLContext::areSharing(renderContext.get(), share) && renderContext->makeCurrent(renderSurface.get());
-            if (!started) {
-                renderContext.reset();
-            }
-        });
-        if (!started) {
-            renderSurface.reset();
-        }
-        usesRenderThread = started;
+        renderShareGroup = nullptr;
+        usesRenderThread = true;
+        widgetContextLost = false;
 
-        return started;
+        return true;
     }
 
-    // Render thread. The target of a width x height frame, reallocated when the size changes.
-    GLuint ensureRenderTarget(int width,
+    // Render thread, renderSurface made. The new context's share group, null if it could not be made.
+    QOpenGLContextGroup* makeRenderContext(QOpenGLContext* share)
+    {
+        renderContext.reset(new QOpenGLContext());
+        renderContext->setFormat(share->format());
+        renderContext->setShareContext(share);
+        if (!renderContext->create() || !QOpenGLContext::areSharing(renderContext.get(), share) || !renderContext->makeCurrent(renderSurface.get())) {
+            renderContext.reset();
+
+            return nullptr;
+        }
+
+        return renderContext->shareGroup();
+    }
+
+    /**
+     * Whether the widget's context is kept from being made current now: while the render thread
+     * has any job, from the moment it is posted. The driver serialises making a context current
+     * against the work of another context of the share group, so a paint inside a job, however
+     * short, would wait for it on the main thread; held, it waits on the event loop instead.
+     **/
+    bool holdsPaints() const
+    {
+        if (!usesRenderThread || !renderLoop) {
+            return false;
+        }
+
+        return (renderLoop->outstanding.load() > 0) || (presentPacer.inFlight() && (std::chrono::steady_clock::now() < presentHoldEnd));
+    }
+
+    // Render thread. Target index of a width x height frame, reallocated when the size changes.
+    GLuint ensureRenderTarget(int index,
+                              int width,
                               int height)
     {
-        if (renderFbo && (renderWidth == width) && (renderHeight == height)) {
-            return renderFbo;
+        RenderTarget& target = renderTargets[index];
+        if (target.readFence) {
+            // The GPU, not this thread, waits for the widget's copy of the last image to be done.
+            glWaitSync(target.readFence, 0, GL_TIMEOUT_IGNORED);
+            glDeleteSync(target.readFence);
+            target.readFence = nullptr;
         }
-        if (!renderFbo) {
-            glGenFramebuffers(1, &renderFbo);
-            glGenTextures(1, &renderTexture);
-            glGenRenderbuffers(1, &renderDepth);
+        if (target.fbo && (target.width == width) && (target.height == height)) {
+            return target.fbo;
         }
-        glBindTexture(GL_TEXTURE_2D, renderTexture);
+        if (!target.fbo) {
+            glGenFramebuffers(1, &target.fbo);
+            glGenTextures(1, &target.texture);
+            glGenRenderbuffers(1, &target.depth);
+        }
+        glBindTexture(GL_TEXTURE_2D, target.texture);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glBindTexture(GL_TEXTURE_2D, 0);
-        glBindRenderbuffer(GL_RENDERBUFFER, renderDepth);
+        glBindRenderbuffer(GL_RENDERBUFFER, target.depth);
         glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, width, height);
         glBindRenderbuffer(GL_RENDERBUFFER, 0);
-        glBindFramebuffer(GL_FRAMEBUFFER, renderFbo);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, renderTexture, 0);
-        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, renderDepth);
+        glBindFramebuffer(GL_FRAMEBUFFER, target.fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, target.texture, 0);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, target.depth);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        renderWidth = width;
-        renderHeight = height;
+        target.width = width;
+        target.height = height;
 
-        return renderFbo;
+        return target.fbo;
     }
 
-    // Render thread: everything of the render context, the engine first.
-    void releaseRenderContext()
+    // Render thread.
+    void releaseRenderTargets()
+    {
+        for (RenderTarget& target : renderTargets) {
+            glDeleteFramebuffers(1, &target.fbo);
+            glDeleteTextures(1, &target.texture);
+            glDeleteRenderbuffers(1, &target.depth);
+            if (target.readFence) {
+                glDeleteSync(target.readFence);
+            }
+            target = RenderTarget();
+        }
+    }
+
+    // Render thread: everything of the render context, the engine first. The overlays' GL objects
+    // too unless overlays is false, for when the widget's context may have made them anew.
+    void releaseRenderContext(bool overlays = true)
     {
         if (!renderContext) {
             return;
         }
-        renderer.releaseGL();
-        glDeleteFramebuffers(1, &renderFbo);
-        glDeleteTextures(1, &renderTexture);
-        glDeleteRenderbuffers(1, &renderDepth);
-        renderFbo = renderTexture = renderDepth = 0;
-        renderWidth = renderHeight = 0;
+        if (overlays) {
+            renderer.releaseGL();
+        } else {
+            renderer.releaseEngineGL();
+        }
+        releaseRenderTargets();
         renderContext->doneCurrent();
         renderContext.reset();
     }
 
-    // Main thread, the widget's context current, with the engine's context dying or the widget going.
+    /**
+     * Main thread, the view going. Lets the render thread go with job last, waiting for none of
+     * its jobs: the one running may wait on the stage for the worker, which the view no longer
+     * waits for either. They reach this and the renderer, so the loop returned is destroyed before
+     * this is. Destroying it joins the thread once the engine is gone, which keeps readers' scopes
+     * held meanwhile, so no layer reload edits the stage the engine listens to.
+     **/
+    std::shared_ptr<RetiredRenderLoop> detachRenderLoop(std::function<void()> job)
+    {
+        renderLoop->setIdle(std::function<void()>());
+        renderLoop->setSignalled(std::function<void(GLsync)>());
+        renderLoop->post(std::move(job));
+        std::shared_ptr<RetiredRenderLoop> retired = std::make_shared<RetiredRenderLoop>();
+        retired->loop = std::move(renderLoop);
+        retired->surface = std::move(renderSurface);
+
+        return retired;
+    }
+
+    // Set by the view's destructor, for the scene teardown to destroy after the worker and the
+    // load thread are joined and before this.
+    std::shared_ptr<RetiredRenderLoop> closedRenderLoop;
+
+    // A closed view's threads and what they use, which the scene teardown destroys in that order.
+    struct ClosedView {
+        std::thread worker;
+        std::thread loadThread;
+        std::shared_ptr<RetiredRenderLoop> renderLoop;
+        std::unique_ptr<Implementation> imp;
+
+        ~ClosedView();
+    };
+
+    /**
+     * Main thread, the widget's context current, with that context dying or the widget going.
+     * A view that stays keeps its render thread, context and engine: the next widget context
+     * usually shares with them, and otherwise the render thread makes its context again, the engine
+     * going first under the viewer lock, without the main thread waiting for either.
+     **/
     void releaseGLResources()
     {
+        {
+            std::lock_guard<std::mutex> lock(rebuildShareMutex);
+            rebuildShare = nullptr;
+            ++rebuildShareGeneration;
+        }
         if (!usesRenderThread) {
             renderer.releaseGL();
 
             return;
         }
-        callOnRenderThread([this]() { releaseRenderContext(); });
+        // The overlays are drawn in the widget's context, not the render thread's.
+        renderer.releaseOverlayGL();
+        overlayGLReleaseOwed = false;
+        // A frame of the old widget context's share group is never shown.
+        renderer.cancelBackgroundFrame();
+        presentPacer.clear();
+        ++renderContextGeneration;
+        frontFrame.reset();
+        renderer.forgetBackgroundView();
         if (presentFbo) {
             glDeleteFramebuffers(1, &presentFbo);
             presentFbo = 0;
         }
-        renderSurface.reset();
-        usesRenderThread = false;
-        backgroundFrameRunning = false;
         presentedScene = false;
-    }
+        if (!closing) {
+            widgetContextLost = true;
 
-    void stopRenderThread()
-    {
-        if (!renderThread.joinable()) {
             return;
         }
-        postToRenderThread([this]() { releaseRenderContext(); });
-        {
-            std::lock_guard<std::mutex> lock(renderJobsMutex);
-            renderQuit = true;
-        }
-        renderJobsChanged.notify_one();
-        renderThread.join();
+        closedRenderLoop = detachRenderLoop([this]() {
+            std::shared_ptr<void> engine = renderer.releaseGLKeepingEngine();
+            releaseRenderTargets();
+            engine.reset();
+            if (renderContext) {
+                renderContext->doneCurrent();
+                renderContext.reset();
+            }
+        });
+        usesRenderThread = false;
+        backgroundFrameRunning = false;
     }
 
-    // Main thread, the widget's context current. The render thread has finished its work on the
-    // texture when fence signals.
+    // Main thread, the widget's context current. The front target's frame, frontFrame, which the
+    // GPU has finished: the copy never waits for the render thread's work. A frame of another size
+    // is stretched over the view. Its depth, which would not line up with the overlays unless the
+    // frame was rendered for this camera and size, is then left out: the overlays go over it all.
     void presentRenderTarget(GLuint target,
                              int width,
-                             int height,
-                             GLsync fence)
+                             int height)
     {
-        if (fence) {
-            glWaitSync(fence, 0, GL_TIMEOUT_IGNORED);
-            glDeleteSync(fence);
+        const int front = presentPacer.frontTarget();
+        if ((front < 0) || !frontFrame) {
+            return;
         }
+        RenderTarget& source = renderTargets[front];
+        const int sourceWidth = frontFrame->width;
+        const int sourceHeight = frontFrame->height;
+        const bool sameSize = (sourceWidth == width) && (sourceHeight == height);
+        const bool sameView = sameSize && (frontFrame->view == paintedView(width, height));
         if (!presentFbo) {
             glGenFramebuffers(1, &presentFbo);
         }
         glBindFramebuffer(GL_READ_FRAMEBUFFER, presentFbo);
         // Attached anew each time: a change made in another context is only seen after a bind, and
         // a resize has given the texture a new image.
-        glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, renderTexture, 0);
+        glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, source.texture, 0);
+        glFramebufferRenderbuffer(GL_READ_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, sameView ? source.depth : 0);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, target);
         glDisable(GL_SCISSOR_TEST);
         glDisable(GL_FRAMEBUFFER_SRGB);
         glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-        glBlitFramebuffer(0, 0, width, height, 0, 0, width, height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        glDepthMask(GL_TRUE);
+        glClearDepth(1.);
+        glClear(GL_DEPTH_BUFFER_BIT);
+        glBlitFramebuffer(0, 0, sourceWidth, sourceHeight, 0, 0, width, height, GL_COLOR_BUFFER_BIT, sameSize ? GL_NEAREST : GL_LINEAR);
+        if (sameView) {
+            // The grid, guides and boxes hide behind what the frame shows, as when Storm drew them.
+            glBlitFramebuffer(0, 0, width, height, 0, 0, width, height, GL_DEPTH_BUFFER_BIT, GL_NEAREST);
+        }
         glBindFramebuffer(GL_FRAMEBUFFER, target);
+        // The render thread draws into this target again only after the copy, without waiting for it.
+        if (source.readFence) {
+            glDeleteSync(source.readFence);
+        }
+        source.readFence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        // A fence another context waits on has to reach the GPU first.
+        glFlush();
     }
 };
+
+SceneViewport::Implementation::ClosedView::~ClosedView()
+{
+    {
+        PythonUnlockedWhileWaiting unlocked;
+        if (worker.joinable()) {
+            worker.join();
+        }
+        if (loadThread.joinable()) {
+            loadThread.join();
+        }
+    }
+    if (imp) {
+        imp->renderer.setLoadsWakeCallback(std::function<void()>());
+    }
+    // Deferred, the loop is joined in a read scope, so no layer reload edits the stage its engine
+    // listens to until the engine is gone.
+    if (SceneTeardown::isDeferred()) {
+        SceneWriteBarrier::ReadScope read;
+        renderLoop.reset();
+    } else {
+        renderLoop.reset();
+    }
+    // Outside any scope: the renderer leaving the write barrier waits for a write in progress.
+    imp.reset();
+}
 
 SceneViewport::SceneViewport(QWidget* parent)
     : QOpenGLWidget(parent)
     , _imp(new Implementation)
 {
+    _imp->openView = this;
     setFocusPolicy(Qt::ClickFocus);
     // Hovering highlights the transform handle under the pointer.
     setMouseTracking(true);
@@ -6843,9 +8579,10 @@ SceneViewport::SceneViewport(QWidget* parent)
         const auto republish = [this]() {
             setProperty("natronSceneDrawTimings", _imp->renderer.drawTiming()->records());
         };
-        timing->setTraceReadCallback([this, republish]() { QMetaObject::invokeMethod(this, republish, Qt::QueuedConnection); });
+        Implementation* imp = _imp.get();
+        timing->setTraceReadCallback([imp, republish]() { imp->postToView(republish); });
     }
-    _imp->drawStates.reset(new SceneDrawStateQueue([this](const std::function<void()>& run) { QMetaObject::invokeMethod(this, run, Qt::QueuedConnection); },
+    _imp->drawStates.reset(new SceneDrawStateQueue([imp = _imp.get()](const std::function<void()>& run) { imp->postToView(run); },
                                                    [this](const SceneDrawChange& change) { deliverDrawChange(change); }));
 
     _imp->cameraIdleTimer = new QTimer(this);
@@ -6878,15 +8615,36 @@ SceneViewport::SceneViewport(QWidget* parent)
         update();
     });
     // Queued: it runs on the reader's thread, and readers end before the viewport goes.
-    _imp->renderer.setReadEndedCallback([this]() { QMetaObject::invokeMethod(this, [this]() { serviceDeferredInput(); }, Qt::QueuedConnection); });
+    {
+        Implementation* wakeImp = _imp.get();
+        _imp->renderer.setLoadsWakeCallback([wakeImp]() {
+            {
+                std::lock_guard<std::mutex> lock(wakeImp->loadWakeMutex);
+            }
+            wakeImp->loadWake.notify_one();
+        });
+    }
+    const auto onReadEnded = [this]() {
+        if (_imp->followSceneOwed) {
+            followSceneRenderer();
+        }
+        serviceDeferredInput();
+    };
+    _imp->renderer.setReadEndedCallback([imp = _imp.get(), onReadEnded]() { imp->postToView(onReadEnded); });
 
     SettingsPtr settings = appPTR ? appPTR->getCurrentSettings() : SettingsPtr();
     if (settings) {
         _imp->renderer.setGuideSize(settings->getViewer3DGuideSize());
         // The Viewer 3D Lighting preference is every 3D view's lighting mode.
         _imp->renderer.setLightingMode((SceneViewportRenderer::LightingModeEnum)settings->getViewer3DLighting());
+        _imp->readStandInSettings(*settings);
         QObject::connect(settings.get(), &Settings::settingChanged, this, [this]() {
             SettingsPtr current = appPTR->getCurrentSettings();
+            if (current) {
+                _imp->readStandInSettings(*current);
+                // Another mode may start a frame, and a frame held back is asked for by a paint.
+                update();
+            }
             const double size = current ? current->getViewer3DGuideSize() : _imp->renderer.getGuideSize();
             const SceneViewportRenderer::LightingModeEnum lighting = current ? (SceneViewportRenderer::LightingModeEnum)current->getViewer3DLighting() : _imp->renderer.getLightingMode();
             if ((size != _imp->renderer.getGuideSize()) || (lighting != _imp->renderer.getLightingMode())) {
@@ -6902,6 +8660,29 @@ SceneViewport::SceneViewport(QWidget* parent)
     _imp->composingTimer->setSingleShot(true);
     _imp->composingTimer->setInterval(kComposingStatusDelayMs);
     QObject::connect(_imp->composingTimer, &QTimer::timeout, this, [this]() { update(); });
+    _imp->holdPoll = new QTimer(this);
+    _imp->holdPoll->setSingleShot(true);
+    _imp->holdPoll->setInterval(10);
+    QObject::connect(_imp->holdPoll, &QTimer::timeout, this, [this]() { refreshPaintHold(); });
+    _imp->renderJobPosted = [this]() { refreshPaintHold(); };
+    // Queued: these run on the render thread, under the loop's mutex.
+    _imp->renderLoopIdle = [this, imp = _imp.get()]() { imp->postToView([this]() { refreshPaintHold(); }); };
+    _imp->renderLoopSignalled = [this, imp = _imp.get()](GLsync fence) {
+        imp->postToView([this, fence]() {
+            _imp->signalledFence = fence;
+            pollPresent(); });
+    };
+    _imp->frameStartFallback = new QTimer(this);
+    _imp->frameStartFallback->setSingleShot(true);
+    _imp->frameStartFallback->setInterval(kFrameStartFallbackMs);
+    QObject::connect(_imp->frameStartFallback, &QTimer::timeout, this, [this]() { startOwedFrame(); });
+    // Emitted once the window has composed: a frame started before would hold the driver while the
+    // composition makes the window's context current.
+    QObject::connect(this, &QOpenGLWidget::frameSwapped, this, [this]() { startOwedFrame(); });
+    _imp->standInRefillTimer = new QTimer(this);
+    _imp->standInRefillTimer->setSingleShot(true);
+    _imp->standInRefillTimer->setTimerType(Qt::PreciseTimer);
+    QObject::connect(_imp->standInRefillTimer, &QTimer::timeout, this, [this]() { update(); });
 
     _imp->policyHoldTimer = new QTimer(this);
     _imp->policyHoldTimer->setSingleShot(true);
@@ -6950,9 +8731,10 @@ SceneViewport::SceneViewport(QWidget* parent)
             }
             // Payloads without extent hints leave nothing to frame until one of them loads.
             const U64 loadEditCount = imp->renderer.getStageLoadEditCount();
+            imp->countLoadedLayers();
             const SceneViewportRenderer::FrameBounds bounds = imp->renderer.isFramed() ? SceneViewportRenderer::FrameBounds() : imp->renderer.computeFrameBounds(std::vector<std::string>(), imp->renderer.getTimeCode());
             // Dropped by Qt if the widget is gone by then.
-            QMetaObject::invokeMethod(this, [this, bounds, loadEditCount, loadRound]() { onStageLoadsServiced(bounds, loadEditCount, loadRound); }, Qt::QueuedConnection);
+            imp->postToView([this, bounds, loadEditCount, loadRound]() { onStageLoadsServiced(bounds, loadEditCount, loadRound); });
         }
     });
     _imp->worker = std::thread([this, imp]() {
@@ -7041,8 +8823,9 @@ SceneViewport::SceneViewport(QWidget* parent)
                     rulesMatched = imp->matchDrawRules(this, rules, generation, matchId, serial, newerRequest, false);
                     matchedRules = rules;
                 }
+                imp->countLoadedLayers();
                 // Dropped by Qt if the widget is gone by then.
-                QMetaObject::invokeMethod(this, [this, serial, ok, qerror, bounds, awaitedMatch]() { onSynced(serial, ok, qerror, bounds, awaitedMatch); }, Qt::QueuedConnection);
+                imp->postToView([this, serial, ok, qerror, bounds, awaitedMatch]() { onSynced(serial, ok, qerror, bounds, awaitedMatch); });
                 if (matches && needsStage) {
                     rulesMatched = imp->matchDrawRules(this, rules, generation, matchId, serial, newerRequest, false);
                     matchedRules = rules;
@@ -7050,7 +8833,7 @@ SceneViewport::SceneViewport(QWidget* parent)
             }
             if (framingId != 0) {
                 const SceneViewportRenderer::FrameBounds bounds = imp->renderer.computeFrameBounds(framingSelection, imp->renderer.getTimeCode());
-                QMetaObject::invokeMethod(this, [this, framingId, bounds]() { onFramingComputed(framingId, bounds); }, Qt::QueuedConnection);
+                imp->postToView([this, framingId, bounds]() { onFramingComputed(framingId, bounds); });
             }
             if (pivot) {
                 imp->renderer.computeFrameBounds(std::vector<std::string>(), imp->renderer.getTimeCode());
@@ -7058,8 +8841,8 @@ SceneViewport::SceneViewport(QWidget* parent)
         }
     });
     // A progressive render's new frame repaints.
-    _imp->renderer.setRefineListener([this]() {
-        QMetaObject::invokeMethod(this, [this]() { update(); }, Qt::QueuedConnection);
+    _imp->renderer.setRefineListener([this, imp = _imp.get()]() {
+        imp->postToView([this]() { update(); });
     });
     publishState();
 }
@@ -7067,6 +8850,7 @@ SceneViewport::SceneViewport(QWidget* parent)
 SceneViewport::~SceneViewport()
 {
     Q_EMIT closing();
+    _imp->closeView();
     _imp->drawStates.reset();
     _imp->renderer.setRefineListener(std::function<void()>());
     // Every thread is told before any is waited for: the worker's sync may wait for a frame, and
@@ -7083,14 +8867,21 @@ SceneViewport::~SceneViewport()
     _imp->renderer.cancelBackgroundFrame();
     _imp->queueChanged.notify_all();
     _imp->loadWake.notify_all();
-    if (_imp->worker.joinable()) {
-        _imp->worker.join();
-    }
-    if (_imp->loadThread.joinable()) {
-        _imp->loadThread.join();
-    }
+    _imp->closing = true;
     GLContextLoss::releaseNow(this);
-    _imp->stopRenderThread();
+    if (_imp->renderLoop) {
+        _imp->presentPacer.clear();
+        Implementation* imp = _imp.get();
+        _imp->closedRenderLoop = _imp->detachRenderLoop([imp]() { imp->releaseRenderContext(); });
+    }
+    // The worker may be closing the scene it last synced, and the load thread opening a file:
+    // the teardown joins them, then the render thread, then destroys the rest.
+    std::shared_ptr<Implementation::ClosedView> closed = std::make_shared<Implementation::ClosedView>();
+    closed->worker = std::move(_imp->worker);
+    closed->loadThread = std::move(_imp->loadThread);
+    closed->renderLoop = std::move(_imp->closedRenderLoop);
+    closed->imp = std::move(_imp);
+    SceneTeardown::releaseHeldUnscoped(std::move(closed));
 }
 
 void
@@ -7199,8 +8990,6 @@ SceneViewport::onSynced(U64 serial,
 void
 SceneViewport::followSceneRenderer()
 {
-    // Dropping the old engine needs its context, which a view not yet shown has not made: it has
-    // no engine then either.
     if (_imp->renderThreadBusy()) {
         _imp->followSceneOwed = true;
 
@@ -7208,16 +8997,65 @@ SceneViewport::followSceneRenderer()
     }
     _imp->followSceneOwed = false;
     bool changed = false;
+    bool busy = false;
+    if (_imp->usesRenderThread && _imp->glInitialized && context()) {
+        // Waiting here would wait out whatever the render thread runs before the job, a frame's
+        // pass included.
+        _imp->followSceneRunning = true;
+        Implementation* imp = _imp.get();
+        _imp->postToRenderThread([this, imp]() {
+            bool jobBusy = false;
+            const bool jobChanged = imp->renderer.followSceneRenderer(&jobBusy);
+            // Dropped by Qt if the widget is gone by then.
+            imp->postToView([this, jobChanged, jobBusy]() { onSceneRendererFollowed(jobChanged, jobBusy); });
+        });
+
+        return;
+    }
     if (_imp->glInitialized && context()) {
-        runWithEngineContext([this, &changed]() { changed = _imp->renderer.followSceneRenderer(); });
+        runWithEngineContext([this, &changed, &busy]() { changed = _imp->renderer.followSceneRenderer(&busy); });
     } else {
-        changed = _imp->renderer.followSceneRenderer();
+        changed = _imp->renderer.followSceneRenderer(&busy);
+    }
+    if (busy) {
+        // A sync or a load holds the viewer lock, for as long as tens of seconds on a large stage.
+        _imp->followSceneOwed = true;
+
+        return;
     }
     if (changed) {
         publishState();
         publishActiveRenderer();
         update();
     }
+}
+
+void
+SceneViewport::onSceneRendererFollowed(bool changed,
+                                       bool busy)
+{
+    // Set by a followSceneRenderer() that came while the job ran, which may have been the holder
+    // of the lock letting go after the job found it held.
+    const bool askedMeanwhile = _imp->followSceneOwed;
+
+    _imp->followSceneRunning = false;
+    _imp->followSceneOwed = busy || askedMeanwhile;
+    if (changed) {
+        publishActiveRenderer();
+    }
+    if (_imp->renderThreadBusy()) {
+        refreshPaintHold();
+
+        return;
+    }
+    if (askedMeanwhile) {
+        followSceneRenderer();
+    }
+    startBackgroundFrame();
+    serviceDeferredInput();
+    publishState();
+    refreshPaintHold();
+    update();
 }
 
 bool
@@ -7229,7 +9067,15 @@ SceneViewport::isSceneSynced() const
     // A view nobody sees takes nothing in until it is shown.
     const bool awaitsEngine = _imp->usesRenderThread && isVisible() && (width() > 0) && (height() > 0);
 
-    return !awaitsEngine || (!_imp->renderThreadBusy() && !_imp->renderer.needsBackgroundFrame());
+    if (awaitsEngine && (_imp->standInMode == Settings::eSceneStandInModeAlways)) {
+        // No frame ever comes: the boxes are what shows the stage.
+        return !_imp->renderThreadBusy() && _imp->renderer.isStandInListComplete();
+    }
+
+    // Between a fill's frame and the paint presenting it no frame is due, yet prims are still to come.
+    const bool filling = (_imp->renderer.getActiveRendererId() == kRenderDelegateStormId) && _imp->renderer.isDrawFilling();
+
+    return !awaitsEngine || (!_imp->renderThreadBusy() && !_imp->renderer.needsBackgroundFrame() && !_imp->presentPacer.pending() && !filling);
 }
 
 bool
@@ -7238,29 +9084,118 @@ SceneViewport::isStageSynced() const
     return _imp->syncedSerial == _imp->requestedSerial;
 }
 
+namespace {
+// Storm draws for most of a second a frame on software GL, and the GUI thread waits out such a
+// frame in a paint or, behind it on the GPU, when it next composes. Scripts need each frame's
+// start and cost to tell a stall around the frames from the frames themselves, and the passes it
+// ran and whether the fill was complete when it began to tell work from contention.
+void
+publishStormFrame(QObject* view,
+                  double startMs,
+                  double costMs,
+                  int passes,
+                  bool fillCompleteAtStart)
+{
+    // Several frames can begin between two polls; the list lets a poller find each of them.
+    QVariantList frames = view->property("natronSceneStormFrames").toList();
+    frames.append(QVariant(QVariantList { startMs, costMs, passes, fillCompleteAtStart }));
+    while (frames.size() > 16) {
+        frames.removeFirst();
+    }
+    view->setProperty("natronSceneStormFrames", frames);
+    view->setProperty("natronSceneStormPaints", QVariant::fromValue<qulonglong>(view->property("natronSceneStormPaints").toULongLong() + 1));
+}
+
+// The clock and precision a script's own wall time has, so a frame starting in the same
+// millisecond as a poll is still ordered against it.
+double
+epochMs()
+{
+    return std::chrono::duration<double, std::milli>(std::chrono::system_clock::now().time_since_epoch()).count();
+}
+} // anonymous namespace
+
 void
 SceneViewport::startBackgroundFrame()
 {
-    if (!_imp->usesRenderThread || _imp->renderThreadBusy() || !isVisible() || (_imp->syncedSerial < _imp->paintHeldUntilSerial) || _imp->stageAwaitsTakeIn() || _imp->policyHeld()) {
+    // One frame on the GPU at a time: its target is the one this frame would draw into. A finished
+    // frame is shown first, as the paint that shows it would be held behind the next.
+    if (!_imp->usesRenderThread || _imp->widgetContextLost || _imp->renderThreadBusy() || _imp->presentPacer.pending() || !isVisible() || (_imp->syncedSerial < _imp->paintHeldUntilSerial) || _imp->stageAwaitsTakeIn() || _imp->policyHeld()) {
         return;
     }
     const qreal dpr = devicePixelRatio();
     const int w = int(width() * dpr);
     const int h = int(height() * dpr);
-    if (!_imp->renderer.prepareBackgroundFrame(w, h)) {
+    const QVariantList view = _imp->paintedView(w, h);
+    _imp->noteView(view);
+    _imp->updateStandInLatch(view);
+    if (_imp->standInHoldsFrames()) {
+        return;
+    }
+    bool viewOnly = false;
+    if (!_imp->renderer.prepareBackgroundFrame(w, h, &viewOnly)) {
         return;
     }
     _imp->backgroundFrameRunning = true;
-    _imp->composingClock.start();
-    _imp->composingTimer->start();
+    _imp->backgroundFrameViewOnly = viewOnly;
+    _imp->backgroundFrameTintOnly = _imp->renderer.isBackgroundFrameTintOnly();
+    if (!viewOnly) {
+        _imp->composingClock.start();
+        _imp->composingTimer->start();
+    }
     Implementation* imp = _imp.get();
-    _imp->postToRenderThread([this, imp, w, h]() {
-        imp->renderer.renderBackgroundFrame(imp->ensureRenderTarget(w, h));
-        // The widget's context reads the image only after a later fence, but the commands must be
+    const int target = _imp->presentPacer.backTarget();
+    const U64 generation = _imp->renderContextGeneration;
+    Implementation::PresentFrame frame;
+    frame.width = w;
+    frame.height = h;
+    frame.view = _imp->paintedView(w, h);
+    frame.tintOnly = _imp->backgroundFrameTintOnly;
+    _imp->runningFrameView = frame.view;
+    _imp->runningFrameStopped = false;
+    Implementation::RenderLoop* loop = _imp->renderLoop.get();
+    _imp->postToRenderThread([this, imp, loop, target, w, h, generation, frame]() {
+        const double startMs = epochMs();
+        const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+        bool converged = false;
+        const bool rendered = imp->renderer.renderBackgroundFrame(imp->ensureRenderTarget(target, w, h), &converged);
+        const int passes = imp->renderer.getLastFramePasses();
+        const bool fillCompleteAtStart = imp->renderer.wasFillCompleteAtLastFrameStart();
+        GLsync fence = nullptr;
+        if (rendered) {
+            fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        }
+        // A fence asked after without a flush has to reach the GPU first, and the commands must be
         // on their way before this thread goes idle.
         glFlush();
+        const double costMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        Implementation::PresentFrame finished = frame;
+        finished.startedAt = start;
+        finished.status = converged ? SceneViewportRenderer::eRenderStatusDone : SceneViewportRenderer::eRenderStatusRefining;
+        // Read here: draw changes posted after the frame are taken in by the render thread before
+        // the main thread hears of the frame.
+        finished.absorbed = imp->renderer.getDrawFilterStats().absorbed;
+        const auto done = [this, rendered, converged, fence, generation, finished, startMs, costMs, passes, fillCompleteAtStart]() {
+            if (rendered) {
+                publishStormFrame(this, startMs, costMs, passes, fillCompleteAtStart);
+            }
+            if (fence && (generation == _imp->renderContextGeneration) && _imp->usesRenderThread) {
+                _imp->presentPacer.submitted(fence, finished);
+                _imp->submittedTintOnly = finished.tintOnly;
+                _imp->presentHoldEnd = std::chrono::steady_clock::now() + kPresentHoldLimit;
+            }
+            if (!rendered || !converged) {
+                _imp->renderer.forgetBackgroundView();
+            }
+            onBackgroundFrameDone();
+        };
+        if (fence) {
+            // Before the main thread has the fence to release, and asked after only once this job
+            // is over, so done reaches the main thread first.
+            loop->watch(fence);
+        }
         // Dropped by Qt if the widget is gone by then.
-        QMetaObject::invokeMethod(this, [this]() { onBackgroundFrameDone(); }, Qt::QueuedConnection);
+        imp->postToView(done);
     });
     publishState();
 }
@@ -7272,6 +9207,8 @@ SceneViewport::onBackgroundFrameDone()
         timing->frameDone(std::chrono::steady_clock::now());
     }
     _imp->backgroundFrameRunning = false;
+    _imp->backgroundFrameViewOnly = false;
+    _imp->backgroundFrameTintOnly = false;
     if (!_imp->rendererSwitchRunning) {
         _imp->composingTimer->stop();
     }
@@ -7282,6 +9219,203 @@ SceneViewport::onBackgroundFrameDone()
     startBackgroundFrame();
     serviceDeferredInput();
     publishState();
+    refreshPaintHold();
+    update();
+}
+
+void
+SceneViewport::refreshPaintHold()
+{
+    if (_imp->backgroundFrameRunning && !_imp->runningFrameStopped) {
+        const qreal dpr = devicePixelRatio();
+        if (_imp->paintedView(int(width() * dpr), int(height() * dpr)) != _imp->runningFrameView) {
+            // The paints stay held for the rest of its passes, a still view however the camera
+            // moves; ended at the next pass, what it has drawn is shown and a frame of the view
+            // now starts.
+            _imp->runningFrameStopped = true;
+            _imp->renderer.stopBackgroundFrame();
+        }
+    }
+    const bool hold = _imp->holdsPaints();
+
+    if (hold != _imp->paintsHeld) {
+        _imp->paintsHeld = hold;
+        // With its updates off, an update() asks the window for no composition either.
+        setUpdatesEnabled(!hold);
+        if (!hold) {
+            if (_imp->resizeOwed) {
+                _imp->resizeOwed = false;
+                QResizeEvent resize(size(), _imp->resizeOwedFrom);
+                QOpenGLWidget::resizeEvent(&resize);
+            }
+            update();
+        }
+    }
+    if (hold && !_imp->holdPoll->isActive()) {
+        _imp->holdPoll->start();
+    }
+}
+
+void
+SceneViewport::startOwedFrame()
+{
+    if (!_imp->frameStartOwed) {
+        return;
+    }
+    _imp->frameStartOwed = false;
+    _imp->frameStartFallback->stop();
+    Implementation* imp = _imp.get();
+    startBackgroundFrame();
+    if (!imp->renderThreadBusy() && !imp->presentPacer.inFlight() && !imp->stageAwaitsTakeIn() && imp->renderer.needsBackgroundFrame() && !imp->standInHoldsFrames()) {
+        // A sync or a load holds the viewer lock and asks for no paint if it edits nothing.
+        update();
+    }
+}
+
+void
+SceneViewport::rebuildRenderContext()
+{
+    Implementation* imp = _imp.get();
+    U64 shareGeneration = 0;
+
+    ++imp->renderContextGeneration;
+    imp->renderShareGroup = nullptr;
+    ++imp->renderContextRebuilds;
+    {
+        std::lock_guard<std::mutex> lock(imp->rebuildShareMutex);
+        imp->rebuildShare = context();
+        shareGeneration = ++imp->rebuildShareGeneration;
+    }
+    imp->postToRenderThread([this, imp, shareGeneration]() {
+        // The viewer lock is taken here, not on the main thread: a sync may hold it for seconds.
+        imp->releaseRenderContext(false);
+        QOpenGLContextGroup* group = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(imp->rebuildShareMutex);
+            if (imp->rebuildShare && (imp->rebuildShareGeneration == shareGeneration)) {
+                group = imp->makeRenderContext(imp->rebuildShare);
+            }
+        }
+        // Dropped by Qt if the widget is gone by then.
+        imp->postToView([this, shareGeneration, group]() { onRenderContextRebuilt(shareGeneration, group); });
+    });
+}
+
+void
+SceneViewport::onRenderContextRebuilt(U64 shareGeneration,
+                                      QOpenGLContextGroup* group)
+{
+    --_imp->renderContextRebuilds;
+    bool latest = false;
+    {
+        std::lock_guard<std::mutex> lock(_imp->rebuildShareMutex);
+        latest = (shareGeneration == _imp->rebuildShareGeneration);
+    }
+    // A later rebuild, or the next initializeGL(), answers for the newer widget context.
+    if (latest) {
+        if (group) {
+            _imp->renderShareGroup = group;
+        } else {
+            // The loop stays, idle, until the widget goes: joining it here could wait on the viewer
+            // lock for draw changes still queued. The engine is made again in the widget's context.
+            _imp->usesRenderThread = false;
+            _imp->backgroundFrameRunning = false;
+            _imp->renderSurface.reset();
+        }
+    }
+    if (_imp->followSceneOwed || _imp->renderer.hasPendingRendererSwitch()) {
+        followSceneRenderer();
+    }
+    startBackgroundFrame();
+    serviceDeferredInput();
+    publishState();
+    refreshPaintHold();
+    update();
+}
+
+void
+SceneViewport::onEngineReleased()
+{
+    _imp->engineReleaseRunning = false;
+    if (_imp->followSceneOwed || _imp->renderer.hasPendingRendererSwitch()) {
+        followSceneRenderer();
+    }
+    startBackgroundFrame();
+    serviceDeferredInput();
+    publishState();
+    refreshPaintHold();
+    update();
+}
+
+void
+SceneViewport::serviceOwedEngineWork()
+{
+    if (_imp->usesRenderThread) {
+        return;
+    }
+    if (_imp->engineReleaseOwed) {
+        const bool storm = _imp->engineReleaseOwedStorm;
+        bool released = true;
+        if (_imp->glInitialized && context()) {
+            runWithEngineContext([this, storm, &released]() { released = storm ? _imp->renderer.tryReleaseGL() : _imp->renderer.tryReleaseStormEngine(); });
+        }
+        if (released) {
+            _imp->engineReleaseOwed = false;
+            publishState();
+            update();
+        }
+    }
+    if (_imp->rendererIdOwed) {
+        bool switched = false;
+        const std::string renderer = *_imp->rendererIdOwed;
+        runWithEngineContext([this, &renderer, &switched]() { switched = _imp->renderer.trySetRendererId(renderer); });
+        if (!switched) {
+            return;
+        }
+        const QString id = _imp->rendererIdOwedName;
+        _imp->rendererIdOwed.reset();
+        publishState();
+        _imp->announcedRenderer = _imp->renderer.getActiveRendererId();
+        const QSize before = size();
+        Q_EMIT rendererChanged(id);
+        // The render row shown or hidden lays the view out at once, and QOpenGLWidget paints in its
+        // resize: a repaint asked for as well would draw the frame twice, a whole Storm frame on
+        // software GL.
+        if (!isVisible() || (size() == before)) {
+            update();
+        }
+    }
+}
+
+void
+SceneViewport::onDrawChangesTakenIn()
+{
+    if (_imp->drawJobsQueued > 0) {
+        --_imp->drawJobsQueued;
+    }
+    if (_imp->renderThreadBusy()) {
+        return;
+    }
+    if (_imp->followSceneOwed || _imp->renderer.hasPendingRendererSwitch()) {
+        followSceneRenderer();
+    }
+    startBackgroundFrame();
+    serviceDeferredInput();
+    publishState();
+    refreshPaintHold();
+    update();
+}
+
+void
+SceneViewport::pollPresent()
+{
+    // Until the render thread has found the fence signalled, no context is made current to ask:
+    // that would wait on the driver for the render thread's work.
+    if (!_imp->presentPacer.inFlight() || !_imp->presentPacer.poll()) {
+        return;
+    }
+    refreshPaintHold();
+    serviceDeferredInput();
     update();
 }
 
@@ -7299,6 +9433,9 @@ SceneViewport::onStageLoadsServiced(const SceneViewportRenderer::FrameBounds& bo
         _imp->renderer.applyFrameBounds(bounds);
         endLockOutsideLookThrough();
     }
+    if (_imp->followSceneOwed) {
+        followSceneRenderer();
+    }
     startBackgroundFrame();
     serviceDeferredInput();
     publishState();
@@ -7309,6 +9446,7 @@ SceneViewport::onStageLoadsServiced(const SceneViewportRenderer::FrameBounds& bo
 void
 SceneViewport::serviceDeferredInput()
 {
+    serviceOwedEngineWork();
     if (_imp->previewClearOwed) {
         _imp->clearPreview();
         if (!_imp->previewClearOwed) {
@@ -7413,7 +9551,7 @@ SceneViewport::runWithEngineContext(const std::function<void()>& fn)
 bool
 SceneViewport::isComposing() const
 {
-    return _imp->renderThreadBusy() || ((_imp->syncedSerial < _imp->requestedSerial) && !_imp->requestedPayload.isEmpty() && !_imp->renderer.hasScene());
+    return _imp->composesScene() || ((_imp->syncedSerial < _imp->requestedSerial) && !_imp->requestedPayload.isEmpty() && !_imp->renderer.hasScene());
 }
 
 void
@@ -7621,7 +9759,12 @@ SceneViewport::deliverDrawChange(const SceneDrawChange& change)
 {
     if (_imp->renderer.postDrawChange(change, _imp->drawRevealBatch) && _imp->usesRenderThread) {
         Implementation* imp = _imp.get();
-        _imp->postToRenderThread([imp]() { imp->renderer.applyPendingDrawDeltas(); });
+        ++_imp->drawJobsQueued;
+        _imp->postToRenderThread([this, imp]() {
+            imp->renderer.applyPendingDrawDeltas();
+            // Dropped by Qt if the widget is gone by then.
+            imp->postToView([this]() { onDrawChangesTakenIn(); });
+        });
     }
     if (!change.delta.loads.empty()) {
         // Taking the mutex keeps the wake-up from falling between the thread's check and its wait.
@@ -7873,6 +10016,12 @@ SceneViewport::setDrawRevealBatch(int prims)
 }
 
 void
+SceneViewport::setDrawFillBatch(int prims)
+{
+    _imp->renderer.setDrawFillBatch((prims > 0) ? std::size_t(prims) : 0);
+}
+
+void
 SceneViewport::setDrawTimingTrace(bool trace)
 {
     if (SceneDrawTiming* timing = _imp->renderer.drawTiming()) {
@@ -8109,7 +10258,25 @@ void
 SceneViewport::setLoadSetEvaluator(const SceneViewportRenderer::LoadSetEvaluator& evaluate,
                                    const SceneViewportRenderer::LoadSetCommitted& committed)
 {
-    _imp->renderer.setLoadSetEvaluator(evaluate, committed);
+    // The load thread outlives the view, and the owner that gave these may go with it: past the
+    // view's destructor they are not called. One under way finishes.
+    Implementation* imp = _imp.get();
+    SceneViewportRenderer::LoadSetEvaluator gatedEvaluate;
+    SceneViewportRenderer::LoadSetCommitted gatedCommitted;
+    if (evaluate) {
+        gatedEvaluate = [imp, evaluate](const SceneLoadSetPtr& loadSet, ScenePayload* payload, SceneLoadReachPtr* reach) {
+            return imp->isViewOpen() && evaluate(loadSet, payload, reach);
+        };
+    }
+    if (committed) {
+        gatedCommitted = [imp, committed](const SceneLoadSetPtr& loadSet, bool reevaluate) {
+            std::lock_guard<std::mutex> lock(imp->viewMutex);
+            if (imp->openView) {
+                committed(loadSet, reevaluate);
+            }
+        };
+    }
+    _imp->renderer.setLoadSetEvaluator(gatedEvaluate, gatedCommitted);
 }
 
 void
@@ -8129,6 +10296,10 @@ SceneViewport::clearScene()
     // A viewer showing images hides this, and a hidden view is not painted to let its refinement
     // engine go.
     _imp->renderer.releaseRefinement();
+    // The next scene's cost is its own.
+    _imp->lastFullFrameMs = -1.;
+    _imp->overBudget = false;
+    _imp->standInLatched = false;
     requestSync(ScenePayload(), QString());
     update();
 }
@@ -8145,7 +10316,10 @@ SceneViewport::publishState()
     // batch held the viewer lock, and each failed prim's path and error.
     setProperty("natronSceneLoadsPending", _imp->renderer.hasPendingStageLoads());
     setProperty("natronSceneLoadEdits", QVariant::fromValue<qulonglong>(_imp->renderer.getStageLoadEditCount()));
+    setProperty("natronSceneLoadedLayers", QVariant::fromValue<qulonglong>(_imp->loadedLayerCount));
     setProperty("natronSceneLoadHoldMs", _imp->renderer.getLastStageLoadHoldMs());
+    setProperty("natronSceneMainWaitMs", _imp->renderer.getMainThreadWaitMs());
+    setProperty("natronSceneMainWaitMaxMs", _imp->renderer.getMainThreadWaitMaxMs());
     publishDrawStats();
     {
         QVariantList failures;
@@ -8158,7 +10332,8 @@ SceneViewport::publishState()
     setProperty("natronSceneSyncRequests", QVariant::fromValue<qulonglong>(_imp->requestedSerial));
     setProperty("natronSceneLookThrough", QString::fromStdString(_imp->renderer.getLookThroughCamera()));
     setProperty("natronSceneEngineCount", QVariant::fromValue<qulonglong>(_imp->renderer.getEngineCount()));
-    setProperty("natronSceneEngineHeld", _imp->renderer.hasEngine());
+    // A release posted or owed has let go of the engine, as far as anyone may use it.
+    setProperty("natronSceneEngineHeld", _imp->renderer.hasEngine() && !_imp->engineReleasePending());
     // The free camera's view (perspective, front, back, right, left, top or bottom), its clip
     // planes (automatic, near, far), whether the view is locked to the camera looked through, and
     // why the last move of a locked camera could not be made.
@@ -8292,16 +10467,14 @@ SceneViewport::setLightingMode(SceneViewportRenderer::LightingModeEnum mode)
 void
 SceneViewport::setRendererId(const QString& id)
 {
-    // Dropping the old engine needs its context.
     const std::string renderer = id.toStdString();
     if (!_imp->usesRenderThread) {
         ++_imp->rendererSwitchLatest;
         _imp->rendererSwitchRunning = false;
-        runWithEngineContext([this, &renderer]() { _imp->renderer.setRendererId(renderer); });
-        publishState();
-        update();
-        _imp->announcedRenderer = _imp->renderer.getActiveRendererId();
-        Q_EMIT rendererChanged(id);
+        // A sync may hold the viewer lock for seconds: the switch waits for it to let go instead.
+        _imp->rendererIdOwed = renderer;
+        _imp->rendererIdOwedName = id;
+        serviceOwedEngineWork();
 
         return;
     }
@@ -8321,7 +10494,7 @@ SceneViewport::setRendererId(const QString& id)
         }
         imp->renderer.setRendererId(renderer);
         // Dropped by Qt if the widget is gone by then.
-        QMetaObject::invokeMethod(this, [this, id, serial]() { onRendererSwitched(id, serial); }, Qt::QueuedConnection);
+        imp->postToView([this, id, serial]() { onRendererSwitched(id, serial); });
     });
     publishState();
 }
@@ -8338,6 +10511,7 @@ SceneViewport::onRendererSwitched(const QString& id,
         _imp->composingTimer->stop();
     }
     _imp->announcedRenderer = _imp->renderer.getActiveRendererId();
+    const QSize before = size();
     Q_EMIT rendererChanged(id);
     if (_imp->followSceneOwed || _imp->renderer.hasPendingRendererSwitch()) {
         followSceneRenderer();
@@ -8345,7 +10519,12 @@ SceneViewport::onRendererSwitched(const QString& id,
     startBackgroundFrame();
     serviceDeferredInput();
     publishState();
-    update();
+    // The render row shown or hidden lays the view out at once, and QOpenGLWidget paints in its
+    // resize: a repaint asked for as well would draw the frame twice, a whole Storm frame on
+    // software GL.
+    if (!isVisible() || (size() == before)) {
+        update();
+    }
 }
 
 void
@@ -8571,10 +10750,22 @@ SceneViewport::pickMustWait()
 {
     // The engine is busy for as long as a background frame runs, and a stage change not yet taken
     // in would have the pick do that frame's work on the render thread, with the main thread
-    // waiting for it. Asking for the frame here brings the retry that follows it.
-    startBackgroundFrame();
+    // waiting for it. Asking for the frame here brings the retry that follows it. A pick behind a
+    // frame still on the GPU would have the main thread wait for the GPU; the poll that finds it
+    // done retries. Under the Always stand-in no frame comes, and the pick takes the change in.
+    // A frame owed only to draw a selection change goes after the pick, which would otherwise
+    // wait for it: the pick hits the same prims with or without the tint. A tint-only frame
+    // already running or on the GPU renders no pass, so the pick queues behind it and stays
+    // synchronous.
+    const bool stageFrame = _imp->renderer.needsStageFrame();
+    if (stageFrame || !_imp->renderer.needsBackgroundFrame()) {
+        startBackgroundFrame();
+    }
+    const bool tintRunning = _imp->backgroundFrameRunning && _imp->backgroundFrameTintOnly;
+    const bool busy = tintRunning ? _imp->renderThreadBusyBesideFrames() : _imp->renderThreadBusy();
+    const bool onGpu = _imp->presentPacer.inFlight() && !_imp->submittedTintOnly;
 
-    return _imp->renderThreadBusy() || (_imp->usesRenderThread && _imp->renderer.needsBackgroundFrame());
+    return busy || onGpu || (_imp->usesRenderThread && stageFrame && (_imp->standInMode != Settings::eSceneStandInModeAlways));
 }
 
 QString
@@ -9399,12 +11590,35 @@ SceneViewport::releaseEngine()
 {
     // The engine's GL objects belong to its context, and releaseGL() takes the viewer lock, so the
     // worker is not syncing into the stage the engine listens to while it goes.
-    if (_imp->glInitialized && context()) {
-        // A background frame would keep the main thread waiting for the rest of its passes.
+    // Another delegate's render holds host memory and keeps going; only the Storm engine kept
+    // behind it goes.
+    const bool storm = RenderDelegates::isStorm(_imp->renderer.getActiveRendererId());
+    if (_imp->glInitialized && context() && _imp->usesRenderThread) {
+        // A background frame would hold the render thread for the rest of its passes.
         _imp->renderer.cancelBackgroundFrame();
-        runWithEngineContext([this]() { _imp->renderer.releaseGL(); });
+        // The overlays' GL objects are the widget's context's, which the next paint has current:
+        // making it current here would wait out a render on the driver.
+        _imp->overlayGLReleaseOwed = _imp->overlayGLReleaseOwed || storm;
+        _imp->engineReleaseRunning = true;
+        Implementation* imp = _imp.get();
+        // The render thread waits for the viewer lock, which a sync may hold for seconds.
+        _imp->postToRenderThread([this, imp, storm]() {
+            if (storm) {
+                imp->renderer.releaseEngineGL();
+            } else {
+                imp->renderer.releaseStormEngine();
+            }
+            // Dropped by Qt if the widget is gone by then.
+            imp->postToView([this]() { onEngineReleased(); });
+        });
+    } else if (_imp->glInitialized && context()) {
+        _imp->engineReleaseOwed = true;
+        _imp->engineReleaseOwedStorm = storm;
+        serviceOwedEngineWork();
     }
-    _imp->renderer.releaseRefinement();
+    if (storm) {
+        _imp->renderer.releaseRefinement();
+    }
     if (_imp->requestedLiveTextures) {
         // Free GPU Memory emptied the store too, and only the worker's sync renders textures.
         requestSync(_imp->requestedPayload, _imp->requestedError);
@@ -9419,13 +11633,24 @@ SceneViewport::releaseEngine()
 void
 SceneViewport::initializeGL()
 {
-    _imp->glInitialized = true;
-    _imp->startRenderContext(context());
-    // A new context (the pane was floated or docked) cannot use the old one's engine, and the engine
-    // context shared with the old one has to go with it.
+    // How many contexts the widget was initialised in: a dock or split that recreates it adds one.
+    setProperty("natronGlInitCount", property("natronGlInitCount").toInt() + 1);
     GLContextLoss::watch(this, [this]() {
         _imp->releaseGLResources();
     });
+    _imp->glInitialized = true;
+    if (_imp->usesRenderThread && _imp->renderLoop) {
+        // The pane was floated or docked. A widget context of the render context's share group
+        // sees the engine's objects and the frames as they are; another needs both made again.
+        _imp->widgetContextLost = false;
+        if (context()->shareGroup() != _imp->renderShareGroup) {
+            rebuildRenderContext();
+        }
+        update();
+    } else if (_imp->prepareRenderThread(context())) {
+        // Until the render thread reports its context, frames wait and paints show the background.
+        rebuildRenderContext();
+    }
 }
 
 void
@@ -9437,8 +11662,61 @@ SceneViewport::resizeGL(int /*w*/,
 }
 
 void
+SceneViewport::paintEvent(QPaintEvent* e)
+{
+    if (_imp->holdsPaints()) {
+        // QOpenGLWidget's paint makes the widget's context current, which waits on the driver for
+        // as long as the render thread's context, of the same share group, is inside a render. The
+        // widget's framebuffer keeps the last image for the window to compose meanwhile.
+        refreshPaintHold();
+
+        return;
+    }
+    QOpenGLWidget::paintEvent(e);
+}
+
+void
+SceneViewport::resizeEvent(QResizeEvent* e)
+{
+    if (_imp->holdsPaints()) {
+        // QOpenGLWidget's resize makes the widget's context current to make its framebuffer anew,
+        // and paints. The window composes the old framebuffer stretched meanwhile.
+        if (!_imp->resizeOwed) {
+            _imp->resizeOwed = true;
+            _imp->resizeOwedFrom = e->oldSize();
+        }
+        refreshPaintHold();
+
+        return;
+    }
+    if (_imp->resizeOwed) {
+        _imp->resizeOwed = false;
+        QResizeEvent resize(e->size(), _imp->resizeOwedFrom);
+        QOpenGLWidget::resizeEvent(&resize);
+
+        return;
+    }
+    QOpenGLWidget::resizeEvent(e);
+}
+
+void
 SceneViewport::paintGL()
 {
+    if (_imp->overlayGLReleaseOwed) {
+        _imp->overlayGLReleaseOwed = false;
+        _imp->renderer.releaseOverlayGL();
+    }
+    if (_imp->usesRenderThread && ((_imp->renderContextRebuilds > 0) || _imp->engineReleaseRunning)) {
+        // A paint outside the hold, as a framebuffer grab: the render thread is making its context or
+        // releasing GL objects the overlays and the refinement share, and the next paint after it
+        // shows the scene.
+        float background[3];
+        _imp->renderer.getBackgroundColor(background);
+        glClearColor(background[0], background[1], background[2], 1.f);
+        glClear(GL_COLOR_BUFFER_BIT);
+
+        return;
+    }
     if (_imp->syncedSerial < _imp->paintHeldUntilSerial) {
         // onSynced asks for the repaint.
         return;
@@ -9446,20 +11724,63 @@ SceneViewport::paintGL()
     const qreal dpr = devicePixelRatio();
     const int w = int(width() * dpr);
     const int h = int(height() * dpr);
-    if (_imp->usesRenderThread && (w > 0) && (h > 0)) {
-        startBackgroundFrame();
-        if (_imp->renderThreadBusy() || _imp->renderer.needsBackgroundFrame()) {
-            if (!_imp->renderThreadBusy() && !_imp->stageAwaitsTakeIn()) {
-                // A sync or a load holds the viewer lock and asks for no paint if it edits nothing.
-                update();
-            }
-            if (!_imp->presentedScene || (_imp->composingClock.isValid() && (_imp->composingClock.elapsed() >= kComposingStatusDelayMs))) {
+    Implementation* imp = _imp.get();
+    const bool stormOnRenderThread = imp->usesRenderThread && (imp->renderer.getActiveRendererId() == kRenderDelegateStormId);
+    // A frame the render thread finished since the last paint, which this one is the first to show.
+    std::optional<Implementation::PresentFrame> fresh;
+    // Boxes over a cleared view stand for the scene, in place of any frame.
+    bool standInShown = false;
+    // Nothing of a frame to show: no scene, a renderer that failed, or a stage held out of frames.
+    const bool blank = (w <= 0) || (h <= 0) || !imp->renderer.hasScene() || imp->renderer.isStageHeld() || !imp->renderer.getRendererError().empty();
+    if (!stormOnRenderThread) {
+        imp->presentPacer.clear();
+        imp->frontFrame.reset();
+        imp->standInLatched = false;
+        imp->renderer.setStandIn(false, imp->standInByModel);
+    } else if ((w > 0) && (h > 0)) {
+        imp->presentPacer.poll();
+        fresh = imp->presentPacer.takeReady();
+        if (fresh) {
+            imp->frontFrame = fresh;
+            imp->noteFullFrame(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - fresh->startedAt).count());
+            setProperty("natronSceneLastFullFrameMs", imp->lastFullFrameMs);
+        }
+        const QVariantList view = imp->paintedView(w, h);
+        imp->noteView(view);
+        imp->updateStandInLatch(view);
+        imp->renderer.setStandIn(imp->standInWanted(), imp->standInByModel);
+        imp->renderer.setFill(imp->standInMode != Settings::eSceneStandInModeOff, imp->standInBudgetMs);
+        standInShown = !blank && ((imp->standInMode == Settings::eSceneStandInModeAlways) || imp->standInLatched);
+        // The paint never renders: a frame for this camera and size starts on the render thread
+        // once the window has composed this paint, and the poll that finds it finished asks for
+        // the paint that shows it. Until then the last frame stays up, whatever camera or size it
+        // was made for.
+        if (!imp->frameStartOwed) {
+            imp->frameStartOwed = true;
+            imp->frameStartFallback->start();
+        }
+        if (imp->standInLatched && imp->viewMoving()) {
+            // The camera's moves ask for paints until it stops; this one is for the refill after.
+            imp->standInRefillTimer->start(std::max<int>(0, int(imp->standInRefillDelayMs - imp->viewStillClock.elapsed())) + 1);
+        }
+        if (!imp->frontFrame && !blank && !standInShown) {
+            if (!imp->presentedScene || (imp->composingClock.isValid() && (imp->composingClock.elapsed() >= kComposingStatusDelayMs))) {
                 paintComposingStatus();
             }
 
             return;
         }
     }
+    const bool stormPaint = (_imp->renderer.getActiveRendererId() == kRenderDelegateStormId);
+    const double paintStartMs = epochMs();
+    const std::chrono::steady_clock::time_point paintStart = std::chrono::steady_clock::now();
+    // The cost is that of the paint that rendered the frame: a frame rendered ahead, in the
+    // background, is shown by a later paint, which costs next to nothing.
+    const auto publishPaintedStormFrame = [this, stormPaint, paintStartMs, paintStart]() {
+        if (stormPaint) {
+            publishStormFrame(this, paintStartMs, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - paintStart).count(), _imp->renderer.getLastFramePasses(), _imp->renderer.wasFillCompleteAtLastFrameStart());
+        }
+    };
     refreshTransformHandles();
     {
         // The free camera this paint draws with, for scripts: pivot x, y, z, distance, azimuth,
@@ -9475,29 +11796,43 @@ SceneViewport::paintGL()
     _imp->renderer.setRecordDrawnBoxes(property("natronSceneRecordBoxes").toBool());
     _imp->renderer.setRecordBudget(property("natronSceneRecordBudget").toBool());
     SceneViewportRenderer::RenderStatusEnum status = SceneViewportRenderer::eRenderStatusBusy;
+    // Whether this paint shows a Storm frame no paint showed before.
+    bool newStormFrame = false;
     if (_imp->usesRenderThread && (_imp->renderer.getActiveRendererId() != kRenderDelegateStormId)) {
         // The delegate's frames are made on the refinement's thread, and drawing one needs no
         // engine: waiting on the render thread for it would hold the event loop for two thread
         // wake-ups on processors the delegate keeps busy, at every frame it refines.
         status = _imp->renderer.renderRefinementIfIdle(defaultFramebufferObject(), w, h);
     } else if (_imp->usesRenderThread) {
-        GLuint target = 0;
-        GLsync fence = nullptr;
-        Implementation* imp = _imp.get();
-        imp->callOnRenderThread([imp, w, h, &status, &target, &fence]() {
-            target = imp->ensureRenderTarget(w, h);
-            status = imp->renderer.renderIfIdle(target, w, h);
-            if (status != SceneViewportRenderer::eRenderStatusBusy) {
-                fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-                // A fence another context waits on has to reach the GPU first.
-                glFlush();
-            }
-        });
-        if (status != SceneViewportRenderer::eRenderStatusBusy) {
-            imp->presentRenderTarget(defaultFramebufferObject(), w, h, fence);
+        const GLuint fbo = defaultFramebufferObject();
+        if (imp->frontFrame && !blank && !standInShown) {
+            imp->presentRenderTarget(fbo, w, h);
+            status = imp->frontFrame->status;
+            newStormFrame = bool(fresh);
+        } else {
+            float background[3];
+            imp->renderer.getBackgroundColor(background);
+            glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+            glDisable(GL_SCISSOR_TEST);
+            glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+            glDepthMask(GL_TRUE);
+            glClearColor(background[0], background[1], background[2], 1.f);
+            glClearDepth(1.);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            status = SceneViewportRenderer::eRenderStatusDone;
+        }
+        if (imp->renderer.hasScene() && imp->renderer.getRendererError().empty()) {
+            // Drawn here at the camera of this paint, not into the frame, so that they keep up with
+            // the pointer however long the frame takes.
+            imp->renderer.drawOverlays(fbo, w, h, standInShown);
         }
     } else {
         status = _imp->renderer.renderIfIdle(defaultFramebufferObject(), w, h);
+        // A busy paint drew nothing and is left out, or it would hide the cost of the next one.
+        if (status != SceneViewportRenderer::eRenderStatusBusy) {
+            publishPaintedStormFrame();
+            newStormFrame = stormPaint;
+        }
     }
     if (status == SceneViewportRenderer::eRenderStatusBusy) {
         // The worker is syncing; it asks for a repaint when it is done. The refinement passing
@@ -9513,7 +11848,8 @@ SceneViewport::paintGL()
         return;
     }
     _imp->presentedScene = _imp->renderer.hasScene() && !_imp->renderer.isStageHeld();
-    if (_imp->renderer.isDrawRevealing()) {
+    // Only a paint showing a frame newer than the last one shows more of a reveal.
+    if ((_imp->renderer.isDrawRevealing() || _imp->renderer.isDrawFilling()) && (!stormOnRenderThread || fresh)) {
         _imp->renderer.noteDrawRevealPresented();
         const int yieldMs = _imp->renderer.getRevealYieldMs();
         if (yieldMs > 0) {
@@ -9527,23 +11863,57 @@ SceneViewport::paintGL()
         // A sync landed between the last one followed and this paint.
         QTimer::singleShot(0, this, [this]() { followSceneRenderer(); });
     }
-    const bool converged = (status == SceneViewportRenderer::eRenderStatusDone);
+    bool converged = (status == SceneViewportRenderer::eRenderStatusDone);
+    if (standInShown) {
+        // Always shows the boxes for good once they answer the stage; During Interaction's stand
+        // in for a frame still to come.
+        converged = (imp->standInMode == Settings::eSceneStandInModeAlways) && imp->renderer.isStandInListComplete() && !imp->renderThreadBusy();
+    } else if (stormOnRenderThread && imp->frontFrame && !blank) {
+        // A frame for an older camera, size or stage is shown until the newer one lands, but is not
+        // the frame of the state now.
+        converged = converged && (imp->frontFrame->view == imp->paintedView(w, h)) && !imp->renderer.needsBackgroundFrame() && !imp->composesScene()
+            && (imp->drawJobsQueued == 0) && !imp->presentPacer.inFlight();
+    }
+    // A frame of a fill still coming in is not the frame of the scene.
+    // The fill is the Storm engine's, which another delegate leaves where it was.
+    const bool fillComplete = !stormPaint || _imp->renderer.isFillComplete();
+    converged = converged && fillComplete;
     const SceneViewportRenderer::RefineStatus refine = _imp->renderer.getRefineStatus();
     publishRefineState();
     publishTransformState();
     publishDrawStats();
     publishBudget();
+    // A render-thread frame is shown after its render, once the GPU has finished it, and shows
+    // the changes it took in then.
+    const unsigned long long absorbed = (stormOnRenderThread && imp->frontFrame) ? imp->frontFrame->absorbed : _imp->renderer.getDrawFilterStats().absorbed;
     if (SceneDrawTiming* timing = _imp->renderer.drawTiming()) {
-        if (timing->presented(_imp->renderer.getDrawFilterStats().absorbed, std::chrono::steady_clock::now())) {
+        if (timing->presented(absorbed, std::chrono::steady_clock::now())) {
             setProperty("natronSceneDrawTimings", timing->records());
         }
     }
-    // A paint gets here only once the frame has taken in every delta posted so far, unlike the stats,
-    // which also change on the way to the screen.
-    setProperty("natronSceneDrawPresented", QVariant::fromValue<qulonglong>(_imp->renderer.getDrawFilterStats().absorbed));
+    // The deltas the frame on screen took in, unlike the stats, which also change on the way to it.
+    setProperty("natronSceneDrawPresented", QVariant::fromValue<qulonglong>(absorbed));
+    // Whether this paint showed the stand-in, and how many boxes and markers it drew; and how many
+    // paints drew something, which a benchmark counts frames by while no full frame comes.
+    setProperty("natronSceneStandIn", standInShown);
+    setProperty("natronSceneStandInBoxes", standInShown ? _imp->renderer.getStandInBoxCount() : 0);
+    // How much of the geometry Hydra has been given has come in, and whether nothing, textures
+    // included, is still to come and this paint's frame is the finished one.
+    setProperty("natronSceneFillProgress", _imp->renderer.getFillProgress());
+    setProperty("natronSceneFillComplete", converged);
+    setProperty("natronScenePaintCount", QVariant::fromValue<qulonglong>(property("natronScenePaintCount").toULongLong() + 1));
+    // How many paints showed a Storm frame new to the screen, which a benchmark counts frames by
+    // while the camera moves and no frame is the finished one of the view.
+    if (newStormFrame) {
+        setProperty("natronScenePresentedFrames", QVariant::fromValue<qulonglong>(property("natronScenePresentedFrames").toULongLong() + 1));
+    }
+    // Whatever published the state last may have seen a frame still on its way to the screen,
+    // and the paint that shows it is the last thing to run.
+    setProperty("natronSceneSynced", isSceneSynced());
     // The engine is made at the first render in a context.
     setProperty("natronSceneEngineCount", QVariant::fromValue<qulonglong>(_imp->renderer.getEngineCount()));
-    setProperty("natronSceneEngineHeld", _imp->renderer.hasEngine());
+    // A release posted or owed has let go of the engine, as far as anyone may use it.
+    setProperty("natronSceneEngineHeld", _imp->renderer.hasEngine() && !_imp->engineReleasePending());
     const QString renderError = QString::fromStdString(_imp->renderer.takeRenderError());
     if (!renderError.isEmpty()) {
         _imp->error = renderError;
@@ -9650,7 +12020,7 @@ SceneViewport::paintGL()
     if (converged) {
         // When the last finished frame was drawn, for benchmarks and scripts.
         setProperty("natronSceneLastPaintMs", QVariant::fromValue<qlonglong>(QDateTime::currentMSecsSinceEpoch()));
-    } else if (status == SceneViewportRenderer::eRenderStatusRefining) {
+    } else if ((status == SceneViewportRenderer::eRenderStatusRefining) && !stormOnRenderThread) {
         update();
     }
     // eRenderStatusWaiting: the background render's listener asks for the next paint.

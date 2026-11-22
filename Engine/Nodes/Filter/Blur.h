@@ -86,7 +86,7 @@ inline constexpr InputSpec kBlurInputs[] = {
  * CImgFilterPluginHelper base included); it registers under that plug-in's ID one major above.
  *
  * Its passes are a horizontal then a vertical line filter over one buffer covering the render
- * window plus the filter's halo, clipped to the output's region of definition, whatever the mask.
+ * window plus the filter's halo, whatever the mask.
  * The IIR filters' result depends on the extent of the lines they run over, so the executor runs
  * each pass over whole lines, which gives the same pixels at any thread count.
  **/
@@ -122,7 +122,7 @@ struct BlurOp {
     };
 
     static constexpr ImagePipelineSpec kPipeline = {
-        .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed },
+        .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed, Stage::EdgeMode },
         .layers = LayerPolicy::all(),
         .op = OpKind::Passes,
     };

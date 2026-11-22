@@ -68,6 +68,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/Backdrop.h"
+#include "Engine/CacheRetention.h"
 #include "Engine/ContentHasher.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/Curve.h"
@@ -672,7 +673,7 @@ Node::getPaintStrokeRoD(double time,
         if (!stroke) {
             throw std::logic_error("");
         }
-        *bbox = stroke->getBoundingBox(time);
+        *bbox = stroke->getBoundingBox(time, false);
     }
 }
 
@@ -971,9 +972,16 @@ Node::getContentHash() const
 U64
 Node::getStoredContentHash() const
 {
-    QReadLocker l(&_imp->contentHashMutex);
+    U64 hash;
+    {
+        QReadLocker l(&_imp->contentHashMutex);
+        hash = _imp->contentHash;
+    }
+    if (ContentHasher::isSalted(hash)) {
+        ContentHasher::noteSalted();
+    }
 
-    return _imp->contentHash;
+    return hash;
 }
 
 U64
@@ -1060,7 +1068,7 @@ Node::computeHashInternal(U64 projectDigest,
                           U64* newContentHash)
 {
     *newContentHash = 0;
-    if (!_imp->effect) {
+    if (!_imp->effectForWorker()) {
         return false;
     }
     if (!_imp->inputsInitialized) {
@@ -1117,15 +1125,14 @@ Node::getKnobsContentDigest(bool* hasExpression) const
 {
     // Read before any knob: an edit made meanwhile invalidates after it lands, so it moves the
     // generation past the one stored here and the next call rebuilds.
-    // destroyNode() takes the effect away while a scene worker's job may still hash the node.
-    const EffectInstance* effect = _imp->effect.get();
+    const EffectInstancePtr effect = _imp->effectForWorker();
     if (!effect) {
         *hasExpression = false;
 
         return 0;
     }
     const U64 generation = effect->getKnobsContentGeneration();
-    const KnobHolder* holder = effect;
+    const KnobHolder* holder = effect.get();
 
     QMutexLocker l(&_imp->knobsDigestMutex);
     if (!_imp->knobsDigestValid || (_imp->knobsDigestGeneration != generation)) {
@@ -1184,7 +1191,7 @@ Node::getKnobsNamespaceDigests() const
 {
     std::map<std::string, U64> digests;
 
-    if (!_imp->effect) {
+    if (!_imp->effectForWorker()) {
         return digests;
     }
     // Brings the entries up to date.
@@ -1247,9 +1254,15 @@ Node::computeContentHash(U64 projectDigest,
                          HashNamespacesConstPtr* namespaces,
                          U64* baseHash) const
 {
+    ContentHasher::SaltScope salt;
     ContentHasher h;
     auto hashOf = [inputHash](const Node& input) -> U64 {
-        return inputHash ? (*inputHash)(input) : input.getStoredBaseContentHash();
+        const U64 hash = inputHash ? (*inputHash)(input) : input.getStoredBaseContentHash();
+        if (ContentHasher::isSalted(hash)) {
+            ContentHasher::noteSalted();
+        }
+
+        return hash;
     };
 
     h.appendString(getPluginID());
@@ -1263,7 +1276,8 @@ Node::computeContentHash(U64 projectDigest,
 
     bool hasExpression = false;
     h.appendU64(getKnobsContentDigest(&hasExpression));
-    if (const EffectInstance* effect = _imp->effect.get()) {
+    const EffectInstancePtr effect = _imp->effectForWorker();
+    if (effect) {
         effect->appendNodeContentHash(h);
     }
 
@@ -1334,7 +1348,7 @@ Node::computeContentHash(U64 projectDigest,
     ProjectPtr project = getApp()->getProject();
     // The project digest leaves the frame range out, so only the nodes that can read it re-key
     // when it changes. An expression may read it through the project's parameters.
-    const bool usesProjectFrameRange = hasExpression || _imp->effect->dependsOnProjectFrameRange();
+    const bool usesProjectFrameRange = hasExpression || (effect && effect->dependsOnProjectFrameRange());
     h.appendBool(usesProjectFrameRange);
     if (usesProjectFrameRange) {
         double first = 0., last = 0.;
@@ -1343,31 +1357,52 @@ Node::computeContentHash(U64 projectDigest,
         h.appendDouble(last);
     }
 
-    h.appendU64(projectDigest ? projectDigest : project->getContentDigest());
+    const U64 digest = projectDigest ? projectDigest : project->getContentDigest();
+    if (ContentHasher::isSalted(digest)) {
+        ContentHasher::noteSalted();
+    }
+    h.appendU64(digest);
+
+    // A table holds plain digests, so a salted namespace upstream shows only in the full hash of
+    // the input it came through, which getStoredContentHash() notes as salted.
+    const auto noteNamespaceSalt = [&inputs]() {
+        for (std::size_t i = 0; i < inputs.bySlot.size(); ++i) {
+            const NodePtr& input = inputs.bySlot[i].second;
+            if (input && input->getHashNamespaces()) {
+                (void)input->getStoredContentHash();
+            }
+        }
+    };
+    // An effect that folds what it reads of the namespaces itself has them in its base hash.
+    const bool consumesNamespaces = effect && effect->consumesHashNamespaces();
+    if (consumesNamespaces) {
+        noteNamespaceSalt();
+    }
+    const U64 base = ContentHasher::withSaltFlag(h.finalize(), salt.salted());
+    if (baseHash) {
+        *baseHash = base;
+    }
 
     // The namespaced knobs upstream are in the stage this node reads, so every node folds them
     // all, but an effect that folds what it reads of them itself and outputs no stage. They are
     // folded last and kept out of the base hash: the inputs' base hashes are what a node folds, so
     // a consumer is not moved by the namespaces it leaves out.
     HashNamespacesConstPtr table;
-    if (!_imp->effect->consumesHashNamespaces()) {
+    if (effect && !consumesNamespaces) {
         table = mergeHashNamespaces(inputs);
     }
     if (namespaces) {
         *namespaces = table;
     }
-    const U64 base = h.finalize();
-    if (baseHash) {
-        *baseHash = base;
-    }
     if (!table) {
         return base;
     }
+    noteNamespaceSalt();
     ContentHasher full;
     full.appendU64(base);
     table->appendAll(full);
 
-    return full.finalize();
+    return ContentHasher::withSaltFlag(full.finalize(), salt.salted());
 } // Node::computeContentHash
 
 HashNamespacesConstPtr
@@ -1421,13 +1456,14 @@ Node::mergeHashNamespaces(const HashInputs& inputs) const
     }
 
     // A file read may author render settings prims, naming another renderer or active prim.
-    if (_imp->effect && _imp->effect->mayAuthorUntrackedRenderSettings()) {
+    const EffectInstancePtr effect = _imp->effectForWorker();
+    if (effect && effect->mayAuthorUntrackedRenderSettings()) {
         unsettled = true;
     }
 
     std::string path, defaultRenderer;
     bool active = false;
-    const bool authors = _imp->effect && _imp->effect->getHashNamespaceScope(&path, &defaultRenderer, &active);
+    const bool authors = effect && effect->getHashNamespaceScope(&path, &defaultRenderer, &active);
     if (!authors && !unsettled) {
         return merged ? HashNamespacesConstPtr(merged) : only;
     }
@@ -1590,16 +1626,20 @@ Node::walkLoopBody(const std::vector<NodePtr>& begins,
     }
     if (digest && !tailIsBegin) {
         *digest = hashOf(*tail);
+        if (ContentHasher::isSalted(*digest)) {
+            ContentHasher::noteSalted();
+        }
     }
 } // Node::walkLoopBody
 
 bool
 Node::dependsOnProjectFrameRange() const
 {
-    if (!_imp->effect) {
+    const EffectInstancePtr effect = _imp->effectForWorker();
+    if (!effect) {
         return false;
     }
-    if (_imp->effect->dependsOnProjectFrameRange()) {
+    if (effect->dependsOnProjectFrameRange()) {
         return true;
     }
     // The predicate computeContentHash() folds the range under: an expression on a knob that
@@ -1614,10 +1654,11 @@ void
 Node::getHashDependents(std::vector<NodePtr>* dependents,
                         std::vector<NodePtr>* leaves) const
 {
-    if (!_imp->effect) {
+    const EffectInstancePtr effect = _imp->effectForWorker();
+    if (!effect) {
         return;
     }
-    const bool isRotoPaint = _imp->effect->isRotoPaintNode();
+    const bool isRotoPaint = effect->isRotoPaintNode();
     // The appended range doubles as the queue of outputs still to look at; entries it drops are
     // compacted away behind the read position.
     std::size_t write = dependents->size();
@@ -1643,8 +1684,8 @@ Node::getHashDependents(std::vector<NodePtr>* dependents,
         if (redirects && (std::find(passedThrough.begin(), passedThrough.end(), output.get()) == passedThrough.end())) {
             passedThrough.push_back(output.get());
             output->appendOutputsThroughOneRedirection(dependents);
-            if (output->_imp->effect) {
-                output->_imp->effect->appendHashLeafDependents(leaves);
+            if (const EffectInstancePtr outputEffect = output->_imp->effectForWorker()) {
+                outputEffect->appendHashLeafDependents(leaves);
             }
         }
         (*dependents)[write++] = std::move(output);
@@ -1656,7 +1697,7 @@ Node::getHashDependents(std::vector<NodePtr>* dependents,
         _imp->rotoContext->getRotoPaintTreeNodes(&paintTree);
         dependents->insert(dependents->end(), paintTree.begin(), paintTree.end());
     }
-    _imp->effect->appendExtraHashDependents(dependents);
+    effect->appendExtraHashDependents(dependents);
     getHashLeafDependents(dependents, leaves);
 }
 
@@ -1664,10 +1705,11 @@ void
 Node::getHashLeafDependents(std::vector<NodePtr>* dependents,
                             std::vector<NodePtr>* leaves) const
 {
-    if (!_imp->effect) {
+    const EffectInstancePtr effect = _imp->effectForWorker();
+    if (!effect) {
         return;
     }
-    _imp->effect->appendHashLeafDependents(leaves);
+    effect->appendHashLeafDependents(leaves);
 
     std::list<std::pair<KnobIPtr, int>> readers;
     getMetadataReaders(&readers);
@@ -1696,10 +1738,11 @@ Node::getHashInputs(HashInputs* inputs) const
     inputs->bySlot.clear();
     inputs->metadataSources.clear();
     inputs->extraSources.clear();
-    if (!_imp->effect) {
+    const EffectInstancePtr effect = _imp->effectForWorker();
+    if (!effect) {
         return;
     }
-    ViewerInstance* isViewer = dynamic_cast<ViewerInstance*>(_imp->effect.get());
+    ViewerInstance* isViewer = dynamic_cast<ViewerInstance*>(effect.get());
     if (isViewer) {
         inputs->isViewer = true;
         int activeInput[2];
@@ -1728,7 +1771,7 @@ Node::getHashInputs(HashInputs* inputs) const
         inputs->bySlot.push_back(std::make_pair((int)i, std::move(input)));
     }
     appendMetadataSources(&inputs->metadataSources, NULL);
-    _imp->effect->appendExtraHashSources(&inputs->extraSources);
+    effect->appendExtraHashSources(&inputs->extraSources);
 }
 
 bool
@@ -1736,7 +1779,7 @@ Node::knobMetadataReadsFoldIntoHash(const KnobI& knob) const
 {
     // A hash-exempt knob is refreshed through its metadata reader registration instead, and may
     // read a node downstream, which as a hash input would make the hash order cyclic.
-    return knob.isRenderHashed() || dynamic_cast<const ViewerInstance*>(_imp->effect.get());
+    return knob.isRenderHashed() || dynamic_cast<const ViewerInstance*>(_imp->effectForWorker().get());
 }
 
 void
@@ -1744,7 +1787,11 @@ Node::appendMetadataSources(std::vector<NodePtr>* sources,
                             std::set<std::pair<const KnobI*, int>>* reached) const
 {
     // A walk looking for a knob must pass through every expression, metadata reads or not.
-    if (!_imp->effect || (!reached && !KnobHelper::anyExpressionReadsMetadata())) {
+    if (!reached && !KnobHelper::anyExpressionReadsMetadata()) {
+        return;
+    }
+    const EffectInstancePtr effect = _imp->effectForWorker();
+    if (!effect) {
         return;
     }
     std::vector<NodePtr> read;
@@ -1766,7 +1813,7 @@ Node::appendMetadataSources(std::vector<NodePtr>* sources,
     if (!cached) {
         std::set<std::pair<const KnobI*, int>> visited;
         std::set<std::pair<const KnobI*, int>>* walked = reached ? reached : &visited;
-        const KnobsVec knobs = _imp->effect->getKnobs_mt_safe();
+        const KnobsVec knobs = effect->getKnobs_mt_safe();
         for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
             const KnobHelper* knob = dynamic_cast<const KnobHelper*>(it->get());
             if (!knob || !knobMetadataReadsFoldIntoHash(*knob)) {
@@ -2192,7 +2239,8 @@ Node::flushHashDirtyMarks()
                 toExpand.push_back(root);
             }
             if (batch[i].includeGroupContents) {
-                NodeGroup* isGroup = dynamic_cast<NodeGroup*>(root->_imp->effect.get());
+                const EffectInstancePtr rootEffect = root->_imp->effectForWorker();
+                NodeGroup* isGroup = dynamic_cast<NodeGroup*>(rootEffect.get());
                 if (isGroup) {
                     NodesList inner;
                     isGroup->getNodes_recursive(inner, false);
@@ -2220,8 +2268,8 @@ Node::flushHashDirtyMarks()
                     }
                     feedbackBegins->appendFeedbackBeginsOf(node, &dependents);
                     // A LoopEnd is not in its own body, but its LoopBegin folds its knobs in.
-                    if (node->_imp->effect) {
-                        node->_imp->effect->appendExtraHashDependents(&dependents);
+                    if (const EffectInstancePtr nodeEffect = node->_imp->effectForWorker()) {
+                        nodeEffect->appendExtraHashDependents(&dependents);
                     }
                 }
                 for (std::size_t d = 0; d < dependents.size(); ++d) {
@@ -2300,7 +2348,8 @@ bool
 Node::recomputeHashIfDirty(bool requireCleanInputs,
                            HashWalk* walk)
 {
-    if (!_imp->effect) {
+    const EffectInstancePtr effect = _imp->effectForWorker();
+    if (!effect) {
         return true;
     }
     bool changed = false;
@@ -2350,7 +2399,7 @@ Node::recomputeHashIfDirty(bool requireCleanInputs,
     // Run outside the recompute lock, since they take the effect's and knobs' locks. The cache entries
     // made under the node's other keys are left to the caches' LRU: a content key names one state only, so they stay valid for a return to it.
     if (changed) {
-        _imp->effect->onNodeHashChanged(contentHash);
+        effect->onNodeHashChanged(contentHash);
     }
 
     return true;
@@ -2453,6 +2502,20 @@ Node::onKnobContentChanged(const KnobI* knob)
         groupState = (knob == _imp->disableNodeKnob.lock().get()) || (knob == _imp->lifeTimeKnob.lock().get()) || (knob == _imp->enableLifeTimeKnob.lock().get());
     }
     markHashDirtyInternal(groupState, "knob content changed", knob);
+
+    // Building a node sets every knob, and a knob that does not evaluate changes no image, so neither is an edit.
+    if (knob && isNodeCreated() && knob->getEvaluateOnChange()) {
+        const std::uint64_t now = CacheRetention::nowNs();
+        if (_imp->retentionSignals->noteEdited(now)) {
+            const int inputCount = getInputSlotCount();
+            for (int i = 0; i < inputCount; ++i) {
+                const NodePtr input = getInput(i);
+                if (input) {
+                    input->getRetentionSignals()->noteInputOfEdited(now);
+                }
+            }
+        }
+    }
 }
 
 bool
@@ -3893,6 +3956,10 @@ Node::makeInfoForInput(int inputNumber) const
         double par = inputMetadata->getPixelAspectRatio(-1);
         ss << "<b>" << tr("Pixel aspect ratio:").toStdString() << "</b> <font color=#c8c8c8>" << par << "</font><br />";
     }
+    {
+        const QString edgeMode = (inputMetadata->getEdgeMode() == EdgeMode::Black) ? tr("Black") : tr("Stretch");
+        ss << "<b>" << tr("Edge Mode:").toStdString() << "</b> <font color=#c8c8c8>" << edgeMode.toStdString() << "</font><br />";
+    }
     { // fps
         double fps = inputMetadata->getOutputFrameRate();
         ss << "<b>" << tr("Frame rate:").toStdString() << "</b> <font color=#c8c8c8>" << tr("%1fps").arg(fps).toStdString() << "</font><br />";
@@ -5091,7 +5158,20 @@ Node::setEffect(const EffectInstancePtr& effect)
     ////Only called by the main-thread
     assert( QThread::currentThread() == qApp->thread() );
     _imp->effect = effect;
+    _imp->hostedEffect.store(effect.get(), std::memory_order_release);
     _imp->effect->initializeData();
+}
+
+bool
+Node::hostsEffect(const EffectInstance* effect) const
+{
+    return effect && (_imp->hostedEffect.load(std::memory_order_acquire) == effect);
+}
+
+bool
+Node::hasEffectAttached() const
+{
+    return _imp->hostedEffect.load(std::memory_order_acquire) != nullptr;
 }
 
 EffectInstancePtr
@@ -5535,6 +5615,25 @@ Node::clearLastRenderedImage()
 /*After this call this node still knows the link to the old inputs/outputs
    but no other node knows this node.*/
 void
+Node::notifyOutputsOfDeletion()
+{
+    const AppInstancePtr app = getApp();
+
+    // Closing a project deletes every node, and nothing will read what the outputs would record.
+    if (!app || !app->getProject() || app->getProject()->isProjectClosing()) {
+        return;
+    }
+    const std::string name = getFullyQualifiedName();
+    for (DeactivatedState::const_iterator it = _imp->deactivatedState.begin(); it != _imp->deactivatedState.end(); ++it) {
+        const NodePtr output = it->first.lock();
+        const EffectInstancePtr effect = output ? output->getEffectInstance() : EffectInstancePtr();
+        if (effect && !output->getRealInput(it->second)) {
+            effect->onInputSourceDeleted(it->second, name);
+        }
+    }
+}
+
+void
 Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
                  bool disconnectAll,
                  bool reconnect,
@@ -5577,27 +5676,40 @@ Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
     if (unslaveKnobs) {
         ///For all knobs that have listeners, invalidate expressions
         NodeGroup* isParentGroup = dynamic_cast<NodeGroup*>( parentCol.get() );
-        // The effect holding a knob that reads this node from outside it and its enclosing group,
-        // or null.
-        const auto outsideReader = [this, isParentGroup](const KnobIPtr& listener) -> EffectInstance* {
-            KnobHolder* holder = listener->getHolder();
-            if (!holder || (holder == _imp->effect.get()) || (holder == isParentGroup)) {
-                return 0;
+        // The effect holding a knob that reads this node from outside it and its enclosing group, and
+        // its node, or nulls. Both are held through the edit: the effect's last owner may be a render
+        // thread, and the effect only weakly references its node, which endChanges() reaches.
+        struct OutsideReader {
+            EffectInstancePtr effect;
+            NodePtr node;
+        };
+        const auto outsideReader = [this, isParentGroup](const KnobIPtr& listener) -> OutsideReader {
+            KnobHolder* holder = 0;
+            OutsideReader reader;
+            reader.effect = EffectInstance::lockHolder(*listener, &holder);
+            if (!reader.effect || (holder == _imp->effect.get()) || (holder == isParentGroup)) {
+                return OutsideReader();
             }
-            EffectInstance* isEffect = dynamic_cast<EffectInstance*>(holder);
-            if (!isEffect) {
-                return 0;
+            reader.node = reader.effect->getNode();
+            if (!reader.node || !reader.node->hostsEffect(reader.effect.get())) {
+                return OutsideReader();
             }
-            NodeCollectionPtr effectParent = isEffect->getNode()->getGroup();
+            {
+                QMutexLocker k(&reader.node->_imp->isBeingDestroyedMutex);
+                if (reader.node->_imp->isBeingDestroyed) {
+                    return OutsideReader();
+                }
+            }
+            NodeCollectionPtr effectParent = reader.node->getGroup();
             if (!effectParent) {
-                return 0;
+                return OutsideReader();
             }
             NodeGroup* isEffectParentGroup = dynamic_cast<NodeGroup*>(effectParent.get());
             if (isEffectParentGroup && (isEffectParentGroup == _imp->effect.get())) {
-                return 0;
+                return OutsideReader();
             }
 
-            return isEffect;
+            return reader;
         };
         std::stringstream missingNode;
         missingNode << tr("Missing node ").toStdString();
@@ -5623,7 +5735,8 @@ Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
                 if (!listener) {
                     continue;
                 }
-                EffectInstance* isEffect = outsideReader(listener);
+                const OutsideReader reader = outsideReader(listener);
+                EffectInstance* isEffect = reader.effect.get();
                 if (!isEffect) {
                     continue;
                 }
@@ -5648,7 +5761,8 @@ Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
         std::list<std::pair<KnobIPtr, int>> metadataReaders;
         getMetadataReaders(&metadataReaders);
         for (std::list<std::pair<KnobIPtr, int>>::const_iterator it = metadataReaders.begin(); it != metadataReaders.end(); ++it) {
-            EffectInstance* isEffect = outsideReader(it->first);
+            const OutsideReader reader = outsideReader(it->first);
+            EffectInstance* isEffect = reader.effect.get();
             if (!isEffect || it->first->getExpression(it->second).empty()) {
                 continue;
             }
@@ -7391,49 +7505,6 @@ Node::purgeAllInstancesCaches()
 }
 
 bool
-Node::notifyInputNIsRendering(int inputNb)
-{
-    if ( !getApp() || getApp()->isGuiFrozen() ) {
-        return false;
-    }
-
-    timeval now;
-
-
-    gettimeofday(&now, 0);
-
-    QMutexLocker l(&_imp->lastRenderStartedMutex);
-    double t =  now.tv_sec  - _imp->lastInputNRenderStartedSlotCallTime.tv_sec +
-               (now.tv_usec - _imp->lastInputNRenderStartedSlotCallTime.tv_usec) * 1e-6f;
-
-    assert( inputNb >= 0 && inputNb < (int)_imp->inputIsRenderingCounter.size() );
-
-    if ( (t > NATRON_RENDER_GRAPHS_HINTS_REFRESH_RATE_SECONDS) || (_imp->inputIsRenderingCounter[inputNb] == 0) ) {
-        _imp->lastInputNRenderStartedSlotCallTime = now;
-        ++_imp->inputIsRenderingCounter[inputNb];
-
-        l.unlock();
-
-        Q_EMIT inputNIsRendering(inputNb);
-
-        return true;
-    }
-
-    return false;
-}
-
-void
-Node::notifyInputNIsFinishedRendering(int inputNb)
-{
-    {
-        QMutexLocker l(&_imp->lastRenderStartedMutex);
-        assert( inputNb >= 0 && inputNb < (int)_imp->inputIsRenderingCounter.size() );
-        --_imp->inputIsRenderingCounter[inputNb];
-    }
-    Q_EMIT inputNIsFinishedRendering(inputNb);
-}
-
-bool
 Node::notifyRenderingStarted()
 {
     if ( !getApp() || getApp()->isGuiFrozen() ) {
@@ -7475,21 +7546,64 @@ Node::notifyRenderingEnded()
 }
 
 int
-Node::getIsInputNRenderingCounter(int inputNb) const
-{
-    QMutexLocker l(&_imp->lastRenderStartedMutex);
-
-    assert( inputNb >= 0 && inputNb < (int)_imp->inputIsRenderingCounter.size() );
-
-    return _imp->inputIsRenderingCounter[inputNb];
-}
-
-int
 Node::getIsNodeRenderingCounter() const
 {
     QMutexLocker l(&_imp->lastRenderStartedMutex);
 
     return _imp->renderStartedCounter;
+}
+
+void
+Node::noteExecution(ExecutionDeviceEnum device,
+                    int count)
+{
+    if (count <= 0) {
+        return;
+    }
+    if (_imp->executionCounts[device].fetch_add(count) == 0) {
+        Q_EMIT executionCountChanged();
+    }
+}
+
+int
+Node::takeExecutionCount(ExecutionDeviceEnum device)
+{
+    return _imp->executionCounts[device].exchange(0);
+}
+
+void
+Node::noteInputExecution(int inputNb)
+{
+    const Node::Implementation::InputExecutionCounts* counts = _imp->inputExecutionCounts.load(std::memory_order_acquire);
+    if (!counts || (inputNb < 0) || (inputNb >= counts->size)) {
+        return;
+    }
+    if (counts->counts[inputNb].fetch_add(1) == 0) {
+        Q_EMIT inputExecutionCountChanged();
+    }
+}
+
+int
+Node::takeInputExecutionCount(int inputNb)
+{
+    const Node::Implementation::InputExecutionCounts* counts = _imp->inputExecutionCounts.load(std::memory_order_acquire);
+    if (!counts || (inputNb < 0) || (inputNb >= counts->size)) {
+        return 0;
+    }
+
+    return counts->counts[inputNb].exchange(0);
+}
+
+void
+Node::stampFreshOutput(std::uint64_t key) const
+{
+    _imp->freshOutputStamps[key % Node::Implementation::kFreshOutputSlots].store(key, std::memory_order_release);
+}
+
+bool
+Node::hasFreshOutputStamp(std::uint64_t key) const
+{
+    return _imp->freshOutputStamps[key % Node::Implementation::kFreshOutputSlots].load(std::memory_order_acquire) == key;
 }
 
 void
@@ -9959,18 +10073,40 @@ addIdentityNodesRecursively(const Node* caller,
     }
 } // addIdentityNodesRecursively
 
+const CacheRetentionSignalsPtr&
+Node::getRetentionSignals() const
+{
+    return _imp->retentionSignals;
+}
+
 bool
 Node::shouldCacheOutput(bool isFrameVaryingOrAnimated,
                         double time,
                         ViewIdx view,
                         int /*visitsCount*/) const
 {
+    const unsigned reasons = computeRetentionReasons(isFrameVaryingOrAnimated, time, view);
+
+    // renderRoI notes the static output itself, for every node, including those whose reasons stop before testing it.
+    _imp->retentionSignals->noteReasons(reasons & ~CacheRetention::eReasonStaticOutput);
+
+    return CacheRetention::admit(reasons, *_imp->retentionSignals);
+}
+
+// Does not stop at the first reason, because each one also weighs in the priority. Every test is one a node with no
+// reason already paid for, so this costs at most what an uncached node always cost.
+unsigned
+Node::computeRetentionReasons(bool isFrameVaryingOrAnimated,
+                              double time,
+                              ViewIdx view) const
+{
+    using namespace CacheRetention;
+
     /*
      * Here is a list of reasons when caching is enabled for a node:
      * - It is references multiple times below in the graph
      * - Its single output has its settings panel opened,  meaning the user is actively editing the output
      * - The force caching parameter in the "Node" tab is checked
-     * - The aggressive caching preference of Natron is checked
      * - We are in a recursive action (such as an analysis)
      * - The plug-in does temporal clip access
      * - Preview image is enabled (and Natron is not running in background)
@@ -9989,100 +10125,84 @@ Node::shouldCacheOutput(bool isFrameVaryingOrAnimated,
     if (appPTR->isBackground()) {
         outputs.remove_if([](const Node* output) { return output->isEffectViewer() != 0; });
     }
-    std::size_t sz = outputs.size();
+    const std::size_t sz = outputs.size();
+    const RotoDrawableItemPtr attachedStroke = _imp->paintStroke.lock();
+    const bool strokeBeingEdited = attachedStroke && attachedStroke->getContext()->getNode()->isSettingsPanelVisible();
+    unsigned reasons = 0;
+
+    if (sz == 0) {
+        // Nothing reads this output, so only an explicit request or a rotopaint internal node is a reason to keep it.
+        if (isForceCachingEnabled()) {
+            reasons |= eReasonForced;
+        }
+        if (strokeBeingEdited) {
+            reasons |= eReasonRotoEditing;
+        }
+
+        return reasons;
+    }
 
     if (sz > 1) {
-        ///The node is referenced multiple times below, cache it
-        return true;
-    } else {
-        if (sz == 1) {
-            const Node* output = outputs.front();
-            ViewerInstance* isViewer = output->isEffectViewer();
-            if (isViewer) {
-                int activeInputs[2];
-                isViewer->getActiveInputs(activeInputs[0], activeInputs[1]);
-                if ( (output->getInput(activeInputs[0]).get() == this) ||
-                     ( output->getInput(activeInputs[1]).get() == this) ) {
-                    ///The node is a direct input of the viewer. Cache it because it is likely the user will make
+        reasons |= eReasonMultipleOutputs;
 
-                    ///changes to the viewer that will need this image.
-                    return true;
+        const std::uint64_t now = CacheRetention::nowNs();
+        if (_imp->retentionSignals->panelScanDue(now)) {
+            for (const Node* output : outputs) {
+                if (output->isSettingsPanelVisible()) {
+                    _imp->retentionSignals->notePanelOfOutput(now);
+                    break;
                 }
             }
-
-            RotoPaint* isRoto = dynamic_cast<RotoPaint*>(output->getEffectInstance().get());
-            if (isRoto) {
-                // THe roto internally makes multiple references to the input so cache it
-                return true;
+        }
+    } else {
+        const Node* output = outputs.front();
+        ViewerInstance* isViewer = output->isEffectViewer();
+        if (isViewer) {
+            int activeInputs[2];
+            isViewer->getActiveInputs(activeInputs[0], activeInputs[1]);
+            if ((output->getInput(activeInputs[0]).get() == this) || (output->getInput(activeInputs[1]).get() == this)) {
+                reasons |= eReasonViewerInput;
             }
-
-            if (!isFrameVaryingOrAnimated) {
-                //This image never changes, cache it once.
-                return true;
-            }
-            if ( output->isSettingsPanelVisible() ) {
-                //Output node has panel opened, meaning the user is likely to be heavily editing
-
-                //that output node, hence requesting this node a lot. Cache it.
-                return true;
-            }
-            if ( _imp->effect->doesTemporalClipAccess() ) {
-                //Very heavy to compute since many frames are fetched upstream. Cache it.
-                return true;
-            }
-            if ( !_imp->effect->supportsTiles() ) {
-                //No tiles, image is going to be produced fully, cache it to prevent multiple access
-
-                //with different RoIs
-                return true;
-            }
-            if (_imp->effect->getRecursionLevel() > 0) {
-                //We are in a call from getImage() and the image needs to be computed, so likely in an
-
-                //analysis pass. Cache it because the image is likely to get asked for severla times.
-                return true;
-            }
-            if ( isForceCachingEnabled() ) {
-                //Users wants it cached
-                return true;
-            }
-            NodeGroup* parentIsGroup = dynamic_cast<NodeGroup*>( getGroup().get() );
-            if ( parentIsGroup && parentIsGroup->getNode()->isForceCachingEnabled() && (parentIsGroup->getOutputNodeInput(false).get() == this) ) {
-                //if the parent node is a group and it has its force caching enabled, cache the output of the Group Output's node input.
-                return true;
-            }
-
-            if ( appPTR->isAggressiveCachingEnabled() ) {
-                ///Users wants all nodes cached
-                return true;
-            }
-
-            if ( isPreviewEnabled() && !appPTR->isBackground() ) {
-                ///The node has a preview, meaning the image will be computed several times between previews & actual renders. Cache it.
-                return true;
-            }
-
-            if ( isRotoPaintingNode() && isSettingsPanelVisible() ) {
-                ///The Roto node is being edited, cache its output (special case because Roto has an internal node tree)
-                return true;
-            }
-
-            RotoDrawableItemPtr attachedStroke = _imp->paintStroke.lock();
-            if ( attachedStroke && attachedStroke->getContext()->getNode()->isSettingsPanelVisible() ) {
-                ///Internal RotoPaint tree and the Roto node has its settings panel opened, cache it.
-                return true;
-            }
-        } else {
-            // outputs == 0, never cache, unless explicitly set or rotopaint internal node
-            RotoDrawableItemPtr attachedStroke = _imp->paintStroke.lock();
-
-            return isForceCachingEnabled() || appPTR->isAggressiveCachingEnabled() ||
-                   ( attachedStroke && attachedStroke->getContext()->getNode()->isSettingsPanelVisible() );
+        }
+        if (dynamic_cast<RotoPaint*>(output->getEffectInstance().get())) {
+            // The roto internally makes multiple references to its input.
+            reasons |= eReasonRotoInput;
+        }
+        if (!isFrameVaryingOrAnimated) {
+            reasons |= eReasonStaticOutput;
+        }
+        if (output->isSettingsPanelVisible()) {
+            reasons |= eReasonOutputPanel;
+            _imp->retentionSignals->notePanelOfOutput(CacheRetention::nowNs());
         }
     }
 
-    return false;
-} // Node::shouldCacheOutput
+    if (_imp->effect->doesTemporalClipAccess()) {
+        reasons |= eReasonTemporalAccess;
+    }
+    if (!_imp->effect->supportsTiles()) {
+        // The image is produced whole, and other RoIs will ask for it again.
+        reasons |= eReasonNoTiles;
+    }
+    if (_imp->effect->getRecursionLevel() > 0) {
+        // Inside getImage(), so likely an analysis pass that will ask again.
+        reasons |= eReasonNestedRender;
+    }
+    NodeGroup* parentIsGroup = dynamic_cast<NodeGroup*>(getGroup().get());
+    if (isForceCachingEnabled() || (parentIsGroup && parentIsGroup->getNode()->isForceCachingEnabled() && (parentIsGroup->getOutputNodeInput(false).get() == this))) {
+        reasons |= eReasonForced;
+    }
+    if (isPreviewEnabled() && !appPTR->isBackground()) {
+        // Computed again between previews and actual renders.
+        reasons |= eReasonPreview;
+    }
+    // A roto node has an internal node tree, whose outputs say nothing about its panel.
+    if ((isRotoPaintingNode() && isSettingsPanelVisible()) || strokeBeingEdited) {
+        reasons |= eReasonRotoEditing;
+    }
+
+    return reasons;
+} // Node::computeRetentionReasons
 
 bool
 Node::refreshMaskEnabledNess(int inputNb)

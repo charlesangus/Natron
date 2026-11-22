@@ -359,6 +359,9 @@ ViewerInstance::ViewerInstance(NodePtr node)
 
     setSupportsRenderScaleMaybe(EffectInstance::eSupportsYes);
 
+    _imp->staleNotifier = [this](bool stale) {
+        QMetaObject::invokeMethod(this, [this, stale]() { Q_EMIT staleChanged(stale); }, Qt::QueuedConnection);
+    };
     _imp->gpuPlacementPlanner = std::make_shared<GpuPlacementPlanner>(this);
 
     QObject::connect( this, SIGNAL(disconnectTextureRequest(int,bool)), this, SLOT(executeDisconnectTextureRequestOnMainThread(int,bool)) );
@@ -1875,6 +1878,22 @@ noteHandoffRefusal(const RenderStatsPtr& stats,
 }
 #endif
 
+// The setter has just walked the viewer's branch to install its args, so knowing the branch costs no walk of its own.
+// Runs before any node of the frame asks about admission, so the first render of a branch already counts as on it.
+void
+noteActiveViewerBranch(const ParallelRenderArgsSetter& setter,
+                       const NodePtr& viewer)
+{
+    if (!viewer->getApp()->isViewerActiveForRenders(viewer.get())) {
+        return;
+    }
+
+    const std::uint64_t now = CacheRetention::nowNs();
+    for (const std::pair<const NodePtr, ParallelRenderArgsPtr>& args : setter.getInstalledArgs()) {
+        args.first->getRetentionSignals()->noteViewerBranch(now);
+    }
+}
+
 // The graph of the viewer input for one frame, empty when the request pass does not reach the input. The root task
 // renders exactly what renderRoI would: the viewer's RoI and displayed layers.
 FrameGraph
@@ -1897,6 +1916,7 @@ buildViewerFrameGraph(const FrameRenderContextPtr& context,
         root.roi = roi;
         root.components = components;
         root.bitdepth = bitdepth;
+        RenderScheduler::pruneBehindCacheHits(graph, context);
     }
 
     return graph;
@@ -2902,6 +2922,7 @@ ViewerInstance::planGpuPlacementOfInput(int textureIndex,
 
     const NodeMetadataConstPtr metadata = args.activeInputToRender->getRenderMetadata(time, view);
     args.params->pixelAspectRatio = metadata->getPixelAspectRatio(-1);
+    args.params->edgeMode = metadata->getEdgeMode();
     RectI roi;
     const bool exact = args.userRoIEnabled || args.isDoingPartialUpdates;
     if (!getGpuPlacementRoI(textureIndex, rod, args.params->pixelAspectRatio, mipmapLevel, exact, &roi) || roi.isNull()) {
@@ -3045,6 +3066,7 @@ ViewerInstance::getViewerArgsAndRenderViewer(SequenceTime time,
                                            NodePtr(),
                                            false,
                                            stats);
+        noteActiveViewerBranch(tls, thisNode);
         NodesList rotoPaintNodes;
         if (rotoPaintNode) {
             if (activeStroke) {
@@ -3100,6 +3122,7 @@ ViewerInstance::getViewerArgsAndRenderViewer(SequenceTime time,
                 } else {
                     ///The drawing is already up to date: all changes have been taken into account for this event
                     args[i].reset();
+                    renderEndedWithoutImage(i, abortInfo->getRenderAge());
 
                     return eViewerRenderRetCodeRedraw;
                 }
@@ -3130,6 +3153,9 @@ ViewerInstance::getViewerArgsAndRenderViewer(SequenceTime time,
 
 
         if ( (status[i] == eViewerRenderRetCodeFail) || (status[i] == eViewerRenderRetCodeBlack) ) {
+            // The texture is cleared whatever renders are still running, so this counts as shown and an older
+            // running render must not draw over it; a newer request still has a higher age and stays stale.
+            _imp->checkAndUpdateDisplayAge(i, abortInfo->getRenderAge());
             disconnectTextureRequest(i, status[i] == eViewerRenderRetCodeFail);
         } else {
             assert(args[i] && args[i]->params);
@@ -3219,6 +3245,13 @@ ViewerInstance::renderViewer(ViewIdx view,
         placementBuilder.emplace();
         placementStamp = _imp->currentGpuPlacementStamp();
     }
+    // The A and B inputs of one update together make what it costs.
+    struct {
+        double ms = 0.;
+        bool timed = false;
+        unsigned int renderedLevel = 0;
+        unsigned int fullLevel = 0;
+    } interactive;
     for (int i = 0; i < 2; ++i) {
         if (args[i] && args[i]->params) {
             if ( (i == 1) && (_imp->uiContext->getCompositingOperator() == eViewerCompositingOperatorNone) ) {
@@ -3245,10 +3278,20 @@ ViewerInstance::renderViewer(ViewIdx view,
                         effect->renderOverlayImages(args[i]->overlayImageRequest, args[i]->params->abortInfo);
                     }
                 }
+                const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
                 ret[i] = renderViewer_internal(view, singleThreaded, isSequentialRender, viewerHash, canAbort, rotoPaintNode, useTLS, request,
                                                i == 0 ? stats : RenderStatsPtr(),
                                                placementBuilder ? &*placementBuilder : nullptr,
                                                *args[i]);
+                // An aborted update stopped early, so its time would understate the cost.
+                if (!isSequentialRender && (ret[i] == eViewerRenderRetCodeRender) && args[i]->params && !args[i]->params->abortInfo->isAborted()) {
+                    interactive.ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+                    if (!interactive.timed) {
+                        interactive.timed = true;
+                        interactive.renderedLevel = args[i]->draftModeEnabled ? args[i]->mipmapLevelWithDraft : args[i]->mipmapLevelWithoutDraft;
+                        interactive.fullLevel = args[i]->mipmapLevelWithoutDraft;
+                    }
+                }
 
                 // Reset the rednering flag
                 args[i]->isRenderingFlag.reset();
@@ -3289,6 +3332,10 @@ ViewerInstance::renderViewer(ViewIdx view,
                 args[i].reset();
             }
         }
+    }
+
+    if (interactive.timed) {
+        noteInteractiveRender(interactive.ms, interactive.renderedLevel, interactive.fullLevel);
     }
 
     if (placementBuilder && _imp->publishGpuPlacement(*placementBuilder, placementStamp, false)) {
@@ -3471,6 +3518,7 @@ ViewerInstance::setupMinimalUpdateViewerParams(const SequenceTime time,
 
     // The PAR of the input image
     outArgs->params->pixelAspectRatio = activeInputMetadata->getPixelAspectRatio(-1);
+    outArgs->params->edgeMode = activeInputMetadata->getEdgeMode();
 
     // Is it playback ?
     outArgs->params->isSequential = isSequential;
@@ -3512,28 +3560,120 @@ ViewerInstance::setupMinimalUpdateViewerParams(const SequenceTime time,
 } // ViewerInstance::setupMinimalUpdateViewerParams
 
 void
+AdaptiveDraft::noteRender(double ms,
+                          unsigned int renderedLevel,
+                          unsigned int fullLevel)
+{
+    if (!(ms >= 0.)) {
+        return;
+    }
+    // A fixed per-update overhead scales up with the pixels, which errs towards drafting.
+    const unsigned int levels = renderedLevel > fullLevel ? renderedLevel - fullLevel : 0;
+    const double predicted = ms * std::ldexp(1., 2 * (int)levels);
+    _predictedFullMs = (_predictedFullMs < 0.) ? predicted : (0.5 * _predictedFullMs + 0.5 * predicted);
+    if (!_full && (_predictedFullMs <= kBudgetMs * kEnterFullRatio)) {
+        _full = true;
+    } else if (_full && (_predictedFullMs > kBudgetMs * kLeaveFullRatio)) {
+        _full = false;
+    }
+}
+
+void
+AdaptiveDraft::reset()
+{
+    _predictedFullMs = -1.;
+    _full = false;
+}
+
+unsigned int
+ViewerInstance::mipmapLevelForZoom(double zoomFactor,
+                                   bool nearest)
+{
+    if (!(zoomFactor < 1.) || !(zoomFactor > 0.)) {
+        return 0;
+    }
+    const double levels = -std::log2(zoomFactor);
+
+    return (unsigned int)(nearest ? std::lround(levels) : std::floor(levels));
+}
+
+unsigned int
+ViewerInstance::autoProxyMipmapLevel(unsigned int withoutDraft,
+                                     double zoomFactor,
+                                     unsigned int autoProxyLevel)
+{
+    if (zoomFactor > 1) {
+        // Decrease draft mode at each inverse mipmaplevel level taken
+        const unsigned int invLevel = Image::getLevelFromScale(1. / zoomFactor);
+        autoProxyLevel = (invLevel < autoProxyLevel) ? autoProxyLevel - invLevel : 0;
+    }
+
+    return std::max(withoutDraft, autoProxyLevel);
+}
+
+void
+ViewerInstance::resolveDraft(bool draftOn,
+                             bool editsDraft,
+                             bool autoProxy,
+                             const AdaptiveDraft& adaptive,
+                             unsigned int withoutDraft,
+                             double zoomFactor,
+                             unsigned int autoProxyLevel,
+                             bool* draftModeEnabled,
+                             unsigned int* withDraft)
+{
+    // An update that does not draft renders as the release would, so the release finds it in the cache.
+    *draftModeEnabled = autoProxy && draftOn && editsDraft && adaptive.drafts();
+    *withDraft = *draftModeEnabled ? autoProxyMipmapLevel(withoutDraft, zoomFactor, autoProxyLevel) : withoutDraft;
+}
+
+void
+ViewerInstance::noteInteractiveRender(double ms,
+                                      unsigned int renderedLevel,
+                                      unsigned int fullLevel)
+{
+    if (!getApp()->isDraftRenderEnabled()) {
+        return;
+    }
+    QMutexLocker k(&_imp->adaptiveDraftMutex);
+    _imp->adaptiveDraft.noteRender(ms, renderedLevel, fullLevel);
+}
+
+AdaptiveDraft
+ViewerInstance::getAdaptiveDraft() const
+{
+    QMutexLocker k(&_imp->adaptiveDraftMutex);
+
+    return _imp->adaptiveDraft;
+}
+
+void
 ViewerInstance::computeMipmapLevels(double zoomFactor,
                                     ViewerArgs* outArgs) const
 {
+    computeMipmapLevels(zoomFactor, getApp()->isDraftRenderEnabled(), outArgs);
+}
+
+void
+ViewerInstance::computeMipmapLevels(double zoomFactor,
+                                    bool draftOn,
+                                    ViewerArgs* outArgs) const
+{
     outArgs->mipmapLevelWithoutDraft = getMipmapLevelWithoutDraft();
-    outArgs->mipmapLevelWithDraft = outArgs->mipmapLevelWithoutDraft;
 
-    outArgs->draftModeEnabled = getApp()->isDraftRenderEnabled();
-
-    // If draft mode is enabled, compute the mipmap level according to the auto-proxy setting in the preferences
-    if (outArgs->draftModeEnabled && appPTR->getCurrentSettings()->isAutoProxyEnabled()) {
-        unsigned int autoProxyLevel = appPTR->getCurrentSettings()->getAutoProxyMipmapLevel();
-        if (zoomFactor > 1) {
-            // Decrease draft mode at each inverse mipmaplevel level taken
-            unsigned int invLevel = Image::getLevelFromScale(1. / zoomFactor);
-            if (invLevel < autoProxyLevel) {
-                autoProxyLevel -= invLevel;
-            } else {
-                autoProxyLevel = 0;
-            }
+    AdaptiveDraft adaptive;
+    {
+        QMutexLocker k(&_imp->adaptiveDraftMutex);
+        // Each drag or scrub judges its own cost.
+        if (!draftOn) {
+            _imp->adaptiveDraft.reset();
         }
-        outArgs->mipmapLevelWithDraft = std::max(outArgs->mipmapLevelWithoutDraft, autoProxyLevel);
+        adaptive = _imp->adaptiveDraft;
     }
+    const SettingsPtr settings = appPTR->getCurrentSettings();
+    resolveDraft(draftOn, draftOn && getApp()->draftAppliesToEdits(), settings->isAutoProxyEnabled(), adaptive,
+                 outArgs->mipmapLevelWithoutDraft, zoomFactor, settings->getAutoProxyMipmapLevel(),
+                 &outArgs->draftModeEnabled, &outArgs->mipmapLevelWithDraft);
 }
 
 void
@@ -3952,6 +4092,7 @@ ViewerInstance::evaluateSceneInput(ViewerArgs& inArgs)
     ScenePayload scene;
     std::string error;
     EffectInstance::RenderRoIRetCode code;
+    EffectInstance::takeLastPullFresh();
     const SceneEvaluationContext context(_imp->sceneContextId, getSceneLoadSet(), std::make_shared<SceneLoadReach>());
     try {
         code = inArgs.activeInputToRender->evaluateScene(EffectInstance::EvaluateSceneArgs(inArgs.params->time, inArgs.params->view, context), &scene, &error);
@@ -3961,8 +4102,13 @@ ViewerInstance::evaluateSceneInput(ViewerArgs& inArgs)
     } catch (...) {
         code = EffectInstance::eRenderRoIRetCodeFailed;
     }
+    if (EffectInstance::takeLastPullFresh() && (code == EffectInstance::eRenderRoIRetCodeOk)) {
+        getNode()->noteInputExecution(inArgs.activeInputIndex);
+    }
 
     if (code == EffectInstance::eRenderRoIRetCodeAborted) {
+        renderEndedWithoutImage(textureIndex, inArgs.params->abortInfo->getRenderAge());
+
         return eViewerRenderRetCodeRedraw;
     }
 
@@ -4030,6 +4176,7 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                                                                      activeInputNode,
                                                                      inArgs.draftModeEnabled,
                                                                      stats);
+        noteActiveViewerBranch(*frameArgs, getNode());
     }
 
 
@@ -4098,6 +4245,8 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
 
     ///Check that we were not aborted already
     if (!isSequentialRender && ((activeInputNode->getHashValue() != inArgs.activeInputHash) || (inArgs.params->time != getTimeline()->currentFrame()))) {
+        renderEndedWithoutImage(inArgs.params->textureIndex, inArgs.params->abortInfo->getRenderAge());
+
         return eViewerRenderRetCodeRedraw;
     }
 
@@ -4142,7 +4291,6 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
         return eViewerRenderRetCodeBlack;
     }
 
-    EffectInstance::NotifyInputNRenderingStarted_RAII inputNIsRendering_RAII(getNode().get(), inArgs.activeInputIndex);
     std::vector<RectI> splitRoi;
     if (inArgs.isDoingPartialUpdates) {
         for (std::list<UpdateViewerParams::CachedTile>::iterator it = inArgs.params->tiles.begin(); it != inArgs.params->tiles.end(); ++it) {
@@ -4194,6 +4342,8 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
         GpuDeviceImagePtr deviceColor;
 #endif
         bool hasDeviceColor = false;
+        // Whether the input's pixels were computed for this render rather than taken from a cache.
+        bool inputFresh = false;
 
         // If an exception occurs here it is probably fatal, since
         // it comes from Natron itself. All exceptions from plugins are already caught
@@ -4220,7 +4370,9 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                                                            inArgs.params->time);
                 DeepImagePtr deepImage;
                 std::list<ImagePtr> flattened;
+                EffectInstance::takeLastPullFresh();
                 retCode = inArgs.activeInputToRender->renderDeepRoIFlattened(deepArgs, requestedComponents, &flattened, &deepImage);
+                inputFresh = EffectInstance::takeLastPullFresh();
                 if ((retCode == EffectInstance::eRenderRoIRetCodeOk) && !flattened.empty()) {
                     // Two layers only for the matte overlay, which requested the alpha layer first.
                     if (flattened.size() == 2) {
@@ -4252,6 +4404,7 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                         placementBuilder->finishGraph(retCode, future->getRegionFallbacks(), frameContext ? &renderedNodes : nullptr);
                     }
                     layers = future->getRootPlanes();
+                    inputFresh = frameContext && frameContext->hasFreshOutput(inArgs.activeInputToRender->getNode().get(), inArgs.params->time, view);
                     if (const SchedulerResultHook hook = schedulerResultHook()) {
                         hook(frameContext, &layers);
                     }
@@ -4299,7 +4452,13 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                                                                        this,
                                                                        eStorageModeRAM /*returnStorage*/,
                                                                        inArgs.params->time));
+                    EffectInstance::takeLastRenderExecuted();
+                    EffectInstance::takeLastPullFresh();
                     retCode = inArgs.activeInputToRender->renderRoI(*renderArgs, &layers);
+                    inputFresh = EffectInstance::takeLastPullFresh();
+                    if (EffectInstance::takeLastRenderExecuted()) {
+                        inArgs.activeInputToRender->getNode()->noteExecution(Node::eExecutionDeviceCpu);
+                    }
                 }
             }
             // Either rendering failed or we have 2 layers (alpha mask and color image) or we have a single layer (color image)
@@ -4340,13 +4499,21 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                        for example when an effect returns a NULL RoD at some point. Don't fail but
                        display a black image
                      */
+                    renderEndedWithoutImage(inArgs.params->textureIndex, inArgs.params->abortInfo->getRenderAge());
+
                     return eViewerRenderRetCodeRedraw;
                 }
+            }
+            getNode()->noteExecution(hasDeviceColor ? Node::eExecutionDeviceGpu : Node::eExecutionDeviceCpu);
+            if (inputFresh) {
+                getNode()->noteInputExecution(inArgs.activeInputIndex);
             }
         } catch (...) {
             ///If the plug-in was aborted, this is probably not a failure due to render but because of abortion.
             ///Don't forward the exception in that case.
             if ( inArgs.activeInputToRender->aborted() ) {
+                renderEndedWithoutImage(inArgs.params->textureIndex, inArgs.params->abortInfo->getRenderAge());
+
                 return eViewerRenderRetCodeRedraw;
             }
             throw;
@@ -4564,6 +4731,8 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
             const RectI tileBounds(0, 0, inArgs.params->tileSize, inArgs.params->tileSize);
             assert(!tileBounds.isNull());
             if (tileBounds.isNull()) {
+                renderEndedWithoutImage(inArgs.params->textureIndex, inArgs.params->abortInfo->getRenderAge());
+
                 return eViewerRenderRetCodeRedraw;
             }
             std::string inputToRenderName = inArgs.activeInputToRender->getNode()->getScriptName_mt_safe();
@@ -5867,6 +6036,9 @@ ViewerInstance::ViewerInstancePrivate::showFrame(const UpdateViewerParamsPtr& pa
         }
     }
 
+    if (!params->isPartialRect) {
+        uiContext->setDisplayedEdgeMode(params->textureIndex, params->edgeMode);
+    }
     uiContext->endTransferBufferFromRAMToGPU(params->textureIndex, texture, originalImage, params->time, params->rod, params->pixelAspectRatio, depth, params->mipmapLevel, params->gain, params->gamma, params->offset, params->recenterViewport, params->viewportCenter, params->isPartialRect);
     if (!params->isPartialRect && (originalImage || deviceFrame)) {
         uiContext->setLastRenderedDeepImage(params->textureIndex, params->mipmapLevel, deepImage);
@@ -6612,6 +6784,10 @@ ViewerInstance::refreshActiveInputDataKind()
     }
 
     const DataKindEnum kinds[2] = { getInputDataKindForTexture(0), getInputDataKindForTexture(1) };
+    int a = -1, b = -1;
+    getActiveInputs(a, b);
+    const EffectInstancePtr inputA = (a >= 0) ? getInput(a) : EffectInstancePtr();
+    const bool hasInputA = inputA && inputA->getNode();
     const bool wipeDisabled = (kinds[0] == eDataKindScene) || (kinds[1] == eDataKindScene);
     {
         std::lock_guard<std::mutex> k(_imp->lastSceneMutex);
@@ -6626,11 +6802,12 @@ ViewerInstance::refreshActiveInputDataKind()
         }
     }
 
-    if ((kinds[0] == _imp->notifiedInputDataKind) && (wipeDisabled == _imp->notifiedWipeDisabled)) {
+    if ((kinds[0] == _imp->notifiedInputDataKind) && (wipeDisabled == _imp->notifiedWipeDisabled) && (hasInputA == _imp->notifiedHasInputA)) {
         return;
     }
     _imp->notifiedInputDataKind = kinds[0];
     _imp->notifiedWipeDisabled = wipeDisabled;
+    _imp->notifiedHasInputA = hasInputA;
     Q_EMIT activeInputDataKindChanged();
 }
 
@@ -6732,24 +6909,14 @@ ViewerInstance::getMipmapLevelWithoutDraft() const
     if (isFullFrameProcessingEnabled()) {
         return 0;
     }
-    const unsigned int proxyLevel = getMipmapLevel();
 
-    // The nearest mipmap level higher in quality than the zoom factor: 48% renders at 50%
-    // (level 1), 51% at 100% (level 0).
-    double zoomFactor = _imp->uiContext->getZoomFactor();
-    double closestPowerOf2 = zoomFactor >= 1 ? 1 : ipow(2, (int)-std::ceil(std::log(zoomFactor) / M_LN2));
-    unsigned int zoomMipmapLevel = std::log(closestPowerOf2) / M_LN2;
-
-    return std::max(proxyLevel, zoomMipmapLevel);
+    return std::max(getMipmapLevel(), getMipmapLevelFromZoomFactor());
 }
 
 unsigned int
 ViewerInstance::getMipmapLevelFromZoomFactor() const
 {
-    double zoomFactor = _imp->uiContext->getZoomFactor();
-    double closestPowerOf2 = zoomFactor >= 1 ? 1 : std::pow( 2, -std::ceil(std::log(zoomFactor) / M_LN2) );
-
-    return std::log(closestPowerOf2) / M_LN2;
+    return mipmapLevelForZoom(_imp->uiContext->getZoomFactor(), appPTR->getCurrentSettings()->isViewerMipRoundingNearest());
 }
 
 double
@@ -6769,6 +6936,27 @@ ViewerInstance::isLatestRender(int textureIndex,
                                U64 renderAge) const
 {
     return _imp->isLatestRender(textureIndex, renderAge);
+}
+
+bool
+ViewerInstance::isStale() const
+{
+    return _imp->isStale();
+}
+
+void
+ViewerInstance::renderFailed(int textureIndex,
+                             U64 renderAge)
+{
+    _imp->checkAndUpdateDisplayAgeIfNewest(textureIndex, renderAge);
+    _imp->removeOngoingRender(textureIndex, renderAge);
+}
+
+void
+ViewerInstance::renderEndedWithoutImage(int textureIndex,
+                                        U64 renderAge)
+{
+    _imp->checkAndUpdateDisplayAgeIfNewest(textureIndex, renderAge);
 }
 
 void

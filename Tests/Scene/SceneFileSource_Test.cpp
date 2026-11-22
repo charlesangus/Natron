@@ -97,9 +97,9 @@ TEST(SceneFileSourceTest, AWalkOfAFileNoLongerNamedLeavesTheNewFilesDigest)
     source.load(a);
     source.load(b);
     const U64 unwalkedB = source.getDigest();
-    EXPECT_FALSE(source.walk(a));
+    EXPECT_EQ(source.walk(a), SceneFileSource::eWalkUnchanged);
     EXPECT_EQ(source.getDigest(), unwalkedB);
-    EXPECT_TRUE(source.walk(b));
+    EXPECT_EQ(source.walk(b), SceneFileSource::eWalkDigestMoved);
     EXPECT_EQ(source.getDigest(), walkedB);
 }
 
@@ -119,11 +119,11 @@ TEST(SceneFileSourceTest, AWalkOvertakenByALoadLeavesTheNewFilesDigest)
         source.load(b);
         overtaken = true;
     });
-    EXPECT_FALSE(source.walk(a));
+    EXPECT_EQ(source.walk(a), SceneFileSource::eWalkUnchanged);
     source.setWalkHookForTesting(std::function<void()>());
     ASSERT_TRUE(overtaken);
     EXPECT_NE(source.getDigest(), walkedA);
-    EXPECT_TRUE(source.walk(b));
+    EXPECT_EQ(source.walk(b), SceneFileSource::eWalkDigestMoved);
     EXPECT_EQ(source.getDigest(), walkedB);
 }
 
@@ -136,8 +136,8 @@ TEST(SceneFileSourceTest, AWalkTakesTheDigestOfItsClosure)
     source.load(a);
     const U64 unwalked = source.getDigest();
     EXPECT_NE(unwalked, U64(0));
-    EXPECT_TRUE(source.walk(a));
+    EXPECT_EQ(source.walk(a), SceneFileSource::eWalkDigestMoved);
     EXPECT_EQ(source.getDigest(), walkedDigest(a));
     // Nothing was reloaded: the second walk has nothing to do.
-    EXPECT_FALSE(source.walk(a));
+    EXPECT_EQ(source.walk(a), SceneFileSource::eWalkUnchanged);
 }

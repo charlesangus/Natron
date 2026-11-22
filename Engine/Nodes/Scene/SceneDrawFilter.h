@@ -28,10 +28,12 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <set>
 #include <string>
@@ -73,6 +75,12 @@ NATRON_NAMESPACE_ENTER
  * again, at a cost that grows with every draw item in the scene (hd/changeTracker.h
  * GetRprimIndexVersion); a visibility change reaches HdStCommandBuffer::SyncDrawItemVisibility
  * instead (hdSt/commandBuffer.h) and keeps the batches. A Hidden row then takes the prim out.
+ *
+ * So a reveal brings every prim it will show that Hydra lacks in at once, held invisible, and its
+ * steps only flip visibility: the batches are rebuilt once a reveal, not once a step. Storm still
+ * syncs an invisible prim in full the first time (HdRprim::CanSkipDirtyBitPropagationAndSync), so
+ * that first frame pays for the whole row. Lights are sprims, which no draw batch holds, and come
+ * with the steps as before.
  *
  * Every other prim passes through, because drawn geometry keeps needing a material or camera that
  * lives under a boxed row. That rules out a RemovedPrimEntry, which takes the whole subtree, and so a
@@ -191,7 +199,8 @@ public:
      * have not changed, so what is left there still comes, after what this delta shows.
      *
      * With a non-zero revealBatch, what the delta's loads bring in joins a reveal as it arrives
-     * instead of reaching Hydra all at once, until a delta with revealBatch 0 comes.
+     * instead of being drawn all at once, until a delta with revealBatch 0 comes. Either way, what a
+     * reveal is to show reaches Hydra invisible straight away.
      */
     void applyDelta(const SceneDrawDelta& delta, std::size_t revealBatch = 0);
 
@@ -217,9 +226,54 @@ public:
 
     /**
      * @brief Marks a render's end. A prim the input takes away and adds again within one render, as a
-     * resync does, is one Hydra held, and it comes back as it was rather than joining a reveal.
+     * resync does, comes back as it was: drawn if Hydra drew it, rather than joining a reveal.
      */
     void endRender();
+
+    /**
+     * @brief Has geometry reach Hydra only as admit() lets it in, so no render syncs more of it than
+     * a batch: Storm syncs an invisible prim in full the first time it holds it, so only a prim it
+     * does not hold yet costs a render nothing.
+     *
+     * While admitting, an rprim or instancer the rules show and Hydra does not hold yet stays out of
+     * Hydra, as a Hidden row keeps it, and waits its turn; so does a native instance the input names,
+     * masked in its instancer, and what a load brings in, which gives no reveal. Lights and every
+     * prim that is neither pass through. The input's changes to a waiting prim are dropped, as Hydra
+     * reads it whole when it comes in. What Hydra holds keeps following the rules at once.
+     *
+     * Turning it off lets everything waiting in at once.
+     */
+    void setAdmitting(bool admitting);
+    bool isAdmitting() const { return _admitting; }
+
+    // Rows, nearest the eye first.
+    using Order = std::shared_ptr<const std::vector<PXR_NS::SdfPath>>;
+
+    /**
+     * @brief Lets up to maxPrims waiting prims into Hydra, those at or below each row of order in
+     * turn and then the rest in the input's order, and returns how many came in. An instancer comes
+     * with every prototype it draws, as one unit, which may take it past maxPrims; at least one unit
+     * comes in each call. kInstancesPerPrim waiting instances count as one prim. It stops early at the
+     * deadline.
+     *
+     * A row is taken up again in later calls until nothing at or below it waits; another order, or a
+     * change of rules, starts again from its first row.
+     */
+    std::size_t admit(const Order& order,
+                      std::size_t maxPrims,
+                      Clock::time_point deadline = (Clock::time_point::max)());
+
+    static constexpr std::size_t kInstancesPerPrim = 64;
+
+    // Prims and native instances waiting to be admitted.
+    std::size_t pendingCount() const { return _root->queuedBelow + _waitingCount; }
+    // Admitted since nothing was last waiting.
+    std::size_t admittedCount() const { return _admitted; }
+    // How many rows of the last order admit() was given it has come to, the one it is in included.
+    std::size_t orderReached() const { return _order ? (std::min)(_orderNext + 1, _order->size()) : 0; }
+    bool isFilling() const { return pendingCount() != 0; }
+    // Whether anything at or below path waits to be admitted.
+    bool hasPendingAt(const PXR_NS::SdfPath& path) const;
 
     using LightPredicate = std::function<bool(const PXR_NS::SdfPath&)>;
 
@@ -275,6 +329,9 @@ public:
     unsigned long long getShownSentCount() const { return _shownSent; }
     // The hides and shows that went as a visibility change, with the prim kept in Hydra.
     unsigned long long getVisibilitySentCount() const { return _visibilitySent; }
+    // Prims this filter brought into Hydra, shown or held invisible for a reveal. With
+    // getInputAddedCount(), it tells a frame that rebuilt the draw batches from one that did not.
+    unsigned long long getInsertedSentCount() const { return _insertedSent; }
     std::size_t getHeldInvisibleCount() const { return _invisibleCount; }
     // Native instances the rules turn off in their instancer's mask.
     std::size_t getMaskedInstanceCount() const { return _maskedCount; }
@@ -311,6 +368,10 @@ private:
         bool light = false;
         bool pending = false;
         bool arriving = false;
+        // Waiting to be admitted.
+        bool queued = false;
+        // Queued nodes at or below this one.
+        std::size_t queuedBelow = 0;
     };
 
     // now and was are the rules governing node in _rules and _revealFrom; belowNow and belowWas say
@@ -333,6 +394,12 @@ private:
         std::vector<PXR_NS::SdfPath> locations;
         std::vector<bool> hidden;
         std::size_t hiddenCount = 0;
+        // Instances not admitted yet, masked as hidden ones are. None before waitingFrom.
+        std::vector<bool> waiting;
+        std::size_t waitingCount = 0;
+        std::size_t waitingFrom = 0;
+        // What the instancer draws, admitted with it.
+        std::vector<PXR_NS::SdfPath> prototypes;
         bool pending = false;
     };
 
@@ -346,7 +413,23 @@ private:
     const std::pair<PXR_NS::SdfPath, std::size_t>* nativeInstanceOf(const PXR_NS::SdfPath& path) const;
     bool hasBudgetLayer() const { return !_budgetHidden.empty() || !_budgetMasks.empty() || !_budgetFaces.empty(); }
     bool setInstanceHidden(const PXR_NS::SdfPath& instancer, Instancer& record, std::size_t index, bool hidden);
+    void setInstanceWaiting(const PXR_NS::SdfPath& instancer, Instancer& record, std::size_t index, bool waiting);
+    void queueMaskChange(const PXR_NS::SdfPath& instancer, Instancer& record);
     void updateInstances(const std::vector<PXR_NS::SdfPath>& roots);
+
+    bool isFiltering() const { return !_rules.empty() || _revealing || (_root->queuedBelow != 0) || (_waitingCount != 0); }
+    bool queues(const Node& node) const { return _admitting && node.hideable && !node.light; }
+    void enqueue(Node& node);
+    void dequeue(Node& node);
+    void admitNode(Node& node);
+    Node* unitOwner(Node& node);
+    std::size_t admitUnit(Node& node);
+    std::size_t admitBelow(Node& top, std::size_t budget, Clock::time_point deadline);
+    std::size_t admitAt(const PXR_NS::SdfPath& path, std::size_t budget, Clock::time_point deadline);
+    std::size_t admitInstance(const PXR_NS::SdfPath& instancer, Instancer& record, std::size_t index);
+    std::size_t admitAnyInstances(std::size_t budget, Clock::time_point deadline);
+    using Locations = std::multimap<PXR_NS::SdfPath, std::pair<PXR_NS::SdfPath, std::size_t>>;
+    Locations::const_iterator scanStart(const PXR_NS::SdfPath& path) const;
 
     Node& nodeAt(const PXR_NS::SdfPath& path);
     Node* indexPrim(const PXR_NS::SdfPath& path, const PXR_NS::TfToken& primType);
@@ -375,7 +458,7 @@ private:
 
     // Where what loads in is revealed rather than sent at once.
     std::set<PXR_NS::SdfPath> _arrivalRoots;
-    // Prims Hydra held when the input took them away during this render.
+    // Prims Hydra drew when the input took them away during this render.
     std::unordered_set<PXR_NS::SdfPath, PXR_NS::SdfPath::Hash> _removedHeld;
 
     std::unordered_map<PXR_NS::SdfPath, Node, PXR_NS::SdfPath::Hash> _nodes;
@@ -391,8 +474,23 @@ private:
     std::unordered_map<PXR_NS::SdfPath, Instancer, PXR_NS::SdfPath::Hash> _instancers;
     // Each instance location to its instancer and its index there, sorted so that a changed row finds
     // the instances below it without looking at the others.
-    std::multimap<PXR_NS::SdfPath, std::pair<PXR_NS::SdfPath, std::size_t>> _locations;
+    Locations _locations;
+    // Per row asked about, where its last scan of _locations stopped: no instance below the row
+    // and before that point waits. Without it, every batch of a fill would walk again past all
+    // the instances admitted so far. Cleared whenever _locations changes or an instance starts
+    // waiting.
+    mutable std::map<PXR_NS::SdfPath, Locations::const_iterator> _scannedTo;
     std::size_t _maskedCount = 0;
+    // Each prototype an instancer names to that instancer.
+    std::map<PXR_NS::SdfPath, PXR_NS::SdfPath> _prototypeOwners;
+
+    bool _admitting = false;
+    std::size_t _waitingCount = 0;
+    std::size_t _admitted = 0;
+    // Instances admitted toward the next prim they count as.
+    std::size_t _instanceCredit = 0;
+    Order _order;
+    std::size_t _orderNext = 0;
 
     // What a call has changed so far, sent by sendChanges().
     std::vector<Node*> _changes;
@@ -411,6 +509,7 @@ private:
     unsigned long long _hiddenSent = 0;
     unsigned long long _shownSent = 0;
     unsigned long long _visibilitySent = 0;
+    unsigned long long _insertedSent = 0;
     Clock::time_point _lastInputAdded;
 };
 
@@ -418,15 +517,26 @@ private:
  * @brief Sizes a reveal's batches from what the frames that showed them cost, so a modest machine and
  * a many-core one both keep near the frame time they aim for.
  *
- * A frame costs a fixed part and a part per prim shown. The fixed part is large in Storm, which
- * gathers every draw item again when an rprim comes or goes (hd/changeTracker.h
- * GetRprimIndexVersion), and it grows as the reveal does. The pacer fits both to its last few
- * frames. Where the fixed part alone nearly fills the target, no batch keeps the target, and a batch
- * costing about the fixed part again keeps half of each frame for progress.
+ * A frame costs a fixed part and a part per prim shown: the batch is what the target leaves after
+ * the fixed part, so a frame predicted as fixed + per prim x batch stays within the target. The
+ * per-prim slope is fitted to the last few frames once their sizes vary enough to tell the parts
+ * apart; the fixed part is what the latest frame cost beyond that slope, as it grows during a fill
+ * with the prims Hydra holds (Storm walks every rprim it holds when a prim first turns varying:
+ * HdDirtyList, HdChangeTracker::ResetVaryingState). A frame cannot be stopped midway. Where the
+ * fixed part alone is at or beyond the target, no batch fits it, and a minBatch-sized one would take
+ * far too many passes: the batch is then sized so its prim work is at most the fixed part, so a pass
+ * costs at most about twice the fixed part and the fill takes a number of passes that does not depend
+ * on the prim count. Where the fixed part is under the target but leaves less than minBatch prims'
+ * worth, the batch is minBatch and does not grow.
+ *
+ * Until the frames have varied enough in size to tell the parts apart, the batch doubles after a
+ * frame within the target and halves after one beyond it. It is never zero, so a fill always moves.
  */
 class SceneRevealPacer {
 public:
-    explicit SceneRevealPacer(double targetMs = 33., std::size_t firstBatch = 1024);
+    static constexpr std::size_t kMinBatch = 64;
+
+    explicit SceneRevealPacer(double targetMs = 33., std::size_t firstBatch = 1024, std::size_t minBatch = kMinBatch);
 
     std::size_t nextBatch() const { return _batch; }
     // How long a frame showing prims took, from the step to the end of its render.
@@ -444,11 +554,13 @@ private:
 
     double _targetMs;
     std::size_t _batch;
+    std::size_t _minBatch;
     Sample _samples[kSamples];
     std::size_t _sampleCount = 0;
     std::size_t _nextSample = 0;
     double _fixedMs = 0.;
     double _perPrimMs = 0.;
+    bool _fitted = false;
 };
 
 NATRON_NAMESPACE_EXIT

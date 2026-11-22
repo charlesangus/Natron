@@ -2848,9 +2848,9 @@ exportBezierPointAtTime(int indentLevel,
     QString token = isFeather ? QString::fromUtf8("bezier.setFeatherPointAtIndex(") : QString::fromUtf8("bezier.setPointAtIndex(");
     double x, y, lx, ly, rx, ry;
 
-    point->getPositionAtTime(false, time, ViewIdx(0), &x, &y);
-    point->getLeftBezierPointAtTime(false, time, ViewIdx(0), &lx, &ly);
-    point->getRightBezierPointAtTime(false, time, ViewIdx(0), &rx, &ry);
+    point->getPositionAtTime(true, time, ViewIdx(0), &x, &y);
+    point->getLeftBezierPointAtTime(true, time, ViewIdx(0), &lx, &ly);
+    point->getRightBezierPointAtTime(true, time, ViewIdx(0), &rx, &ry);
 
     WRITE_INDENT(indentLevel); WRITE_STRING( token + NUM_INT(idx) + QString::fromUtf8(", ") +
                                              NUM_TIME(time) + QString::fromUtf8(", ") + NUM_VALUE(x) + QString::fromUtf8(", ") +
@@ -2880,7 +2880,7 @@ exportRotoLayer(int indentLevel,
                 continue;
             }
 
-            time = cps.front()->getKeyframeTime(false, 0);
+            time = cps.front()->getKeyframeTime(true, 0);
 
             WRITE_INDENT(indentLevel); WRITE_STRING( QString::fromUtf8("bezier = roto.createBezier(0, 0, ") + NUM_TIME(time) + QString::fromUtf8(")") );
             WRITE_INDENT(indentLevel); WRITE_STRING( QString::fromUtf8("bezier.setScriptName(") + ESC( isBezier->getScriptName() ) + QString::fromUtf8(")") );

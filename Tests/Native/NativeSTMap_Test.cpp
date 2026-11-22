@@ -57,6 +57,7 @@
 #include "Engine/LibraryBinary.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/NodeSpec.h"
@@ -525,7 +526,7 @@ TEST_F(NativeSTMapTest, KnobsAndInputs)
         kResamplerParamBicubicB,
         kResamplerParamBicubicC,
         kResamplerParamFilterClamp,
-        kResamplerParamFilterBlackOutside,
+        kEdgeModeParam,
         kOfxMixParamName,
         kOfxMaskInvertParamName,
     };
@@ -801,6 +802,7 @@ TEST_F(NativeSTMapTest, MaskAndMixFromTheBase)
     NodePtr mask = makeSource();
     ASSERT_TRUE(source && uv && mask);
     setParitySourceOrigin(mask, 8, 4);
+    setBlackOutside(mask, true);
     NodePtr node = makeSTMap(source, uv, "impulse");
     ASSERT_TRUE(bool(node));
     // The flipped map, so that the warp differs from the Source almost everywhere.

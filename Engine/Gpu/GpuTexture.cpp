@@ -79,6 +79,80 @@ GpuTexture::viewType() const
                                  : VK_IMAGE_VIEW_TYPE_3D;
 }
 
+VkDeviceSize
+GpuTexture::packedBytes() const
+{
+    return VkDeviceSize(desc_.width) * desc_.height * desc_.depth * storedChannels(desc_.channels) * sizeof(float);
+}
+
+GpuStatus
+GpuTexture::createAttachment(GpuDevice& device, uint32_t width, uint32_t height, uint32_t channels,
+                             std::unique_ptr<GpuTexture>& out)
+{
+    if (device.isLost()) {
+        return fail(VK_ERROR_DEVICE_LOST, "GpuTexture::createAttachment: device lost");
+    }
+    if ((channels != 1 && channels != 4) || width == 0 || height == 0) {
+        return fail(VK_ERROR_INITIALIZATION_FAILED, "GpuTexture::createAttachment: invalid attachment description");
+    }
+    const VkFormat format = formatFor(channels);
+    VkFormatProperties fp;
+    vkGetPhysicalDeviceFormatProperties(device.physicalDevice(), format, &fp);
+    const VkFormatFeatureFlags need = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT
+        | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+    if ((fp.optimalTilingFeatures & need) != need) {
+        return fail(VK_ERROR_FORMAT_NOT_SUPPORTED, "GpuTexture::createAttachment: the device cannot render and blend " + std::to_string(channels) + "-channel float attachments");
+    }
+    const VkImageUsageFlags usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT
+        | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    VkImageFormatProperties ifp {};
+    const VkResult fr = vkGetPhysicalDeviceImageFormatProperties(device.physicalDevice(), format, VK_IMAGE_TYPE_2D,
+                                                                 VK_IMAGE_TILING_OPTIMAL, usage, 0, &ifp);
+    if (fr != VK_SUCCESS || width > ifp.maxExtent.width || height > ifp.maxExtent.height) {
+        return fail(VK_ERROR_FORMAT_NOT_SUPPORTED, "GpuTexture::createAttachment: the device does not support a " + std::to_string(width) + "x" + std::to_string(height) + " attachment");
+    }
+
+    GpuTextureDesc desc;
+    desc.dimensions = 2;
+    desc.width = width;
+    desc.height = height;
+    desc.channels = channels;
+    desc.filter = GpuTextureFilter::Nearest;
+    std::unique_ptr<GpuTexture> t(new GpuTexture(device, desc));
+    t->format_ = format;
+    t->attachment_ = true;
+
+    VkImageCreateInfo ici { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+    ici.imageType = VK_IMAGE_TYPE_2D;
+    ici.format = format;
+    ici.extent = { width, height, 1 };
+    ici.mipLevels = 1;
+    ici.arrayLayers = 1;
+    ici.samples = VK_SAMPLE_COUNT_1_BIT;
+    ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ici.usage = usage;
+    ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VmaAllocationCreateInfo aci {};
+    aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+    if (GpuStatus s = device.check(vmaCreateImage(device.allocator(), &ici, &aci, &t->image_, &t->allocation_, nullptr),
+                                   "vmaCreateImage");
+        !s) {
+        return s;
+    }
+
+    VkImageViewCreateInfo vci { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+    vci.image = t->image_;
+    vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vci.format = format;
+    vci.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    if (GpuStatus s = device.check(vkCreateImageView(device.device(), &vci, nullptr, &t->view_), "vkCreateImageView"); !s) {
+        return s;
+    }
+    out = std::move(t);
+    return {};
+}
+
 GpuStatus
 GpuTexture::create(GpuDevice& device, const GpuTextureDesc& desc, std::span<const float> texels,
                    std::unique_ptr<GpuTexture>& out)

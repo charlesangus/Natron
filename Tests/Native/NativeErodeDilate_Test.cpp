@@ -48,6 +48,9 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Filter/ErodeDilate.h"
+#include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
+#include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
@@ -166,6 +169,19 @@ protected:
         }
     }
 
+    // The references' windows stop at the region of definition, over a source read black past
+    // it: an erosion's region is the source's, where a shrinking window is the edge repeated, and
+    // a dilation's grown region holds that black, past which a shrinking window reads nothing the
+    // black does not already give.
+    bool setSize(const ParityPair& pair,
+                 double sizeX,
+                 double sizeY)
+    {
+        const bool erodes = (sizeX > 0.) || (sizeY > 0.);
+
+        return setKnobOnBoth(pair, kErodeDilateParamSize, { sizeX, sizeY }) && setKnobValue(pair.native, kEdgeModeParam, std::string(erodes ? "stretch" : "black"));
+    }
+
     // The recorded cases, eroding at the sizes named, or dilating at them when `dilate` negates
     // them.
     void runSizes(bool dilate)
@@ -176,13 +192,13 @@ protected:
         const double sign = dilate ? -1. : 1.;
         const std::string mode = dilate ? "dilate-" : "erode-";
 
-        ASSERT_TRUE(setKnobOnBoth(pair, kErodeDilateParamSize, { sign, sign }));
+        ASSERT_TRUE(setSize(pair, sign, sign));
         expectParity(pair, mode + "size-1x1", true);
 
-        ASSERT_TRUE(setKnobOnBoth(pair, kErodeDilateParamSize, { sign * 5., 0. }));
+        ASSERT_TRUE(setSize(pair, sign * 5., 0.));
         expectParity(pair, mode + "size-5x0", true);
 
-        ASSERT_TRUE(setKnobOnBoth(pair, kErodeDilateParamSize, { sign * -3., sign * -3. }));
+        ASSERT_TRUE(setSize(pair, sign * -3., sign * -3.));
         expectParity(pair, mode + "size-neg3x3", true);
     }
 
@@ -331,6 +347,43 @@ TEST_F(NativeErodeDilateTest, ErodeSizes)
 TEST_F(NativeErodeDilateTest, DilateSizes)
 {
     runSizes(true);
+}
+
+// Erosion reads the fill beyond the source: Stretch and the generator's own Stretch keep a
+// constant to the border, Black pulls the border pixels to zero.
+TEST_F(NativeErodeDilateTest, EdgeModeDecidesTheBorderOfAnErodedConstant)
+{
+    const float kValue = 0.5f;
+    const char* modes[] = { "input", "stretch", "black" };
+    const RectI format(0, 0, kParitySourceWidth, kParitySourceHeight);
+
+    for (const char* mode : modes) {
+        resetProject();
+        NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT), PLUGIN_MAJOR_NATRON_CONSTANT);
+        ASSERT_TRUE(bool(constant));
+        ASSERT_TRUE(setKnobValue(constant, kNativeGeneratorParamExtent, std::string(kNativeGeneratorExtentProject)));
+        ASSERT_TRUE(setKnobValues(constant, kConstantParamColor, { kValue, kValue, kValue, kValue }));
+        NodePtr node = makeNode(constant, 3., 3.);
+        ASSERT_TRUE(bool(node));
+        ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string(mode)));
+
+        std::vector<float> pixels;
+        ASSERT_TRUE(renderRGBA(node, format, &pixels)) << mode;
+        ASSERT_EQ(static_cast<std::size_t>(format.width()) * format.height() * 4, pixels.size()) << mode;
+        const auto at = [&](int x, int y) {
+            return pixels[(static_cast<std::size_t>(y - format.y1) * format.width() + (x - format.x1)) * 4];
+        };
+
+        if (std::string(mode) == "black") {
+            EXPECT_EQ(0.f, at(0, 0)) << mode << ": the corner reads the black outside";
+            EXPECT_EQ(0.f, at(format.x2 - 1, format.y2 / 2)) << mode << ": the right edge reads the black outside";
+            EXPECT_EQ(kValue, at(format.x2 / 2, format.y2 / 2)) << mode << ": the centre is out of the window's reach";
+        } else {
+            for (std::size_t i = 0; i < pixels.size(); ++i) {
+                ASSERT_EQ(kValue, pixels[i]) << mode << ": the value holds to the border, float " << i;
+            }
+        }
+    }
 }
 
 TEST_F(NativeErodeDilateTest, RendersTheSameInBothSchedulerModesAtAnyPoolSize)

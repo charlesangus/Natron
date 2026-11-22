@@ -314,6 +314,8 @@ try:
 
         ok = yield ("until", lambda: panel().isVisible() and ROOT in top_paths() and settled_on(edit, len(MARKED)), LOAD_TIMEOUT_S)
         require(ok, "the panel marks %d rows for the USDEditTransform (got %r, count %r)" % (len(MARKED), top_paths(), prop("ChangedHereCount")))
+        # The tree reads its rows on the model's worker, so the marked set fills in as they land.
+        yield ("until", lambda: tree_marked_paths() == MARKED - {DEEP}, POLL_TIMEOUT_S)
         marked = tree_marked_paths()
         check(marked == MARKED - {DEEP}, "the targets and their ancestors are marked, and no other row of the tree's small branches (got %r)" % (sorted(marked),))
         check(prop("ChangedHereRows") == 0, "the filter reads no row while the button has never been on (got %r)" % (prop("ChangedHereRows"),))
@@ -321,9 +323,16 @@ try:
         yield ("sleep", SETTLE_MS)
         shot("scene-changed-here-marked.png")
 
-        tree().expand(find_tree_row(ROOT))
-        tree().expand(find_tree_row(ROOT + "/A"))
-        tree().expand(find_tree_row(FLAT))
+        def open_rows():
+            for path in (ROOT, ROOT + "/A", FLAT):
+                index = find_tree_row(path)
+                if not index.isValid():
+                    return False
+                tree().expand(index)
+            return flat_rows_read() > 0
+
+        ok = yield ("until", open_rows, POLL_TIMEOUT_S)
+        check(ok, "the tree opens down to the flat Scope and reads its first rows")
         yield ("sleep", SETTLE_MS)
         flat_before = flat_rows_read()
         check(flat_before < FLAT_PRIMS, "the tree has read part of the flat Scope (%d rows)" % (flat_before,))
@@ -383,6 +392,7 @@ try:
         button.click()
         ok = yield ("until", lambda: filter_off() and ROOT in top_paths(), LOAD_TIMEOUT_S)
         check(ok, "switching the button off shows the USDRead's scene")
+        yield ("until", lambda: all(find_tree_row(path).isValid() for path in UNMARKED), POLL_TIMEOUT_S)
         check(not tree_marked_paths(), "a node that authors nothing marks no row (got %r)" % (sorted(tree_marked_paths()),))
         for path in UNMARKED:
             check(find_tree_row(path).isValid(), "the tree lists %s" % (path,))

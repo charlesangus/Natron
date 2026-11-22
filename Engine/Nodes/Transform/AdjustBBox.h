@@ -35,9 +35,6 @@
 #define PLUGIN_MAJOR_NATRON_ADJUSTBBOX 1
 
 #define kAdjustBBoxParamNumPixels "numpixels"
-#define kAdjustBBoxParamBoundary "boundary"
-#define kAdjustBBoxBoundaryBlack "black"
-#define kAdjustBBoxBoundaryNearest "nearest"
 
 NATRON_NAMESPACE_ENTER
 
@@ -47,25 +44,19 @@ inline constexpr InputSpec kAdjustBBoxInputs[] = {
 
 /**
  * @brief AdjustBBox: grows the source's region of definition by numpixels on each side, or
- * shrinks it for negative values. The added border is black or repeats the source's edge pixels.
+ * shrinks it for negative values. The added border is black or repeats the source's edge pixels, as the Edge Mode resolves.
  **/
 struct AdjustBBoxOp {
-    enum Boundary {
-        eBoundaryBlack = 0,
-        eBoundaryNearest
-    };
-
     struct Params {
         double padX = 0.;
         double padY = 0.;
-        bool nearest = false;
     };
 
     static constexpr NodeSpec kNodeSpec = {
         .id = PLUGINID_NATRON_ADJUSTBBOX,
         .label = "AdjustBBox",
         .description = "Enlarges the input's region of definition (bounding box) by Num Pixels on each side, "
-                       "or crops it when they are negative. Boundary sets what fills the added border: black, "
+                       "or crops it when they are negative. Edge Mode sets what fills the added border: black, "
                        "or the nearest pixel of the input's edge.",
         .grouping = PLUGIN_GROUP_TRANSFORM,
         .majorVersion = PLUGIN_MAJOR_NATRON_ADJUSTBBOX,
@@ -75,7 +66,7 @@ struct AdjustBBoxOp {
     };
 
     static constexpr ImagePipelineSpec kPipeline = {
-        .stages = {},
+        .stages = { Stage::EdgeMode },
         .layers = LayerPolicy::all(),
         .op = OpKind::Passes,
     };
@@ -92,15 +83,14 @@ struct AdjustBBoxOp {
                     const PassContext& context) const;
 
     /**
-     * @brief Nothing to compute with a black border: the executor reads zero outside the source.
-     * A nearest border reads the source clamped to its pixels, through a pass that only widens
+     * @brief Nothing to compute under EdgeMode::Black: the executor reads zero outside the source.
+     * Under Stretch the border reads the source clamped to its pixels, through a pass that only widens
      * the region read by the border's width, so that the edge pixels are always among them.
      **/
     PassList passes(const Params& params,
                     const PassContext& context) const;
 
     KnobDoubleWPtr numPixels;
-    KnobChoiceWPtr boundary;
 };
 
 static_assert(PassesOp<AdjustBBoxOp>);

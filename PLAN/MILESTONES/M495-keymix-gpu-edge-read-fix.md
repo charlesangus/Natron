@@ -46,3 +46,6 @@
   - size: S
 
 **Verification gate:** P3.T1 green on both schedulers; the P2.T2 regression test passes; full debug PR CI green.
+
+## Decisions
+- 2026-11-22 — Gate on 7ce580607 (diagnostics only): full debug ctest green on both schedulers (933/933); the EdgePolicyMatrix ×20 repeat timed out (exit 124) in iteration 2 on both schedulers, with no mismatch in the iterations that ran (19 and 36 rows OK). The hang's stacks (build/debug/Testing/repeat/Rows_EdgePolicyMatrixTest/iter-2.stacks) aren't uploaded as artifacts. Next: upload the repeat stacks/logs from remote-build.yml, rerun with fewer parallel copies or a longer per-iteration timeout to tell a hang from a slow debug run. Parked behind F4 (user priority, 2026-11-22).

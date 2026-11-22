@@ -346,7 +346,7 @@ USDReference::renderScene(const SceneRenderActionArgs& args,
                 return eStatusFailed;
             }
         }
-        facts.appendU64(source.getStackHash());
+        facts.appendU64(source.getContentHash());
     }
     if ((sourceKind == eSourceFile) ? assetPath.empty() : source.isEmpty()) {
         *outputScene = upstream;

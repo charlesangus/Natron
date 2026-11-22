@@ -68,6 +68,7 @@
 #include "Engine/Nodes/Scene/USDAssignMaterial.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
 #include "Engine/Nodes/Scene/USDCard.h"
+#include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/Nodes/Scene/USDLayerBreak.h"
 #include "Engine/Nodes/Scene/USDLight.h"
 #include "Engine/Nodes/Scene/USDMerge.h"
@@ -76,6 +77,8 @@
 #include "Engine/Nodes/Scene/USDPrune.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDReference.h"
+#include "Engine/Nodes/Scene/USDSetAttribute.h"
+#include "Engine/Nodes/Scene/USDVariant.h"
 #include "Engine/Nodes/Scene/USDWrite.h"
 #include "Engine/Nodes/Scene/USDXformPrim.h"
 #include "Engine/Project.h"
@@ -2142,7 +2145,7 @@ protected:
                     bool strip)
     {
         NodePtr writer = createWriter(input, path, mode, 1, 1);
-        KnobBool* stripKnob = writer ? getKnob<KnobBool>(writer, kUSDWriteParamStripLayerBreaks) : NULL;
+        KnobBool* stripKnob = writer ? getKnob<KnobBool>(writer, kUSDWriteParamStripLayersAboveBreaks) : NULL;
         EXPECT_TRUE(stripKnob != NULL);
         if (!stripKnob) {
             return NodePtr();
@@ -2393,4 +2396,292 @@ TEST_F(USDWriteLayerBreakTest, AReferenceAfterTheBreakIsWrittenAsASidecar)
     }
     EXPECT_EQ(1, markerSublayers);
     EXPECT_TRUE(QFile::exists(QString::fromUtf8(kLayerStackScene)));
+}
+
+namespace {
+// What the composed stage makes of the fixture's /World/Asset/Geo at frame 1: the look selected,
+// its colour, a custom attribute, where it sits and the targets of a relationship.
+std::string
+describeAsset(const PXR_NS::UsdStageRefPtr& stage)
+{
+    EXPECT_TRUE(static_cast<bool>(stage));
+    const PXR_NS::UsdPrim asset = stage ? stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Asset")) : PXR_NS::UsdPrim();
+    const PXR_NS::UsdPrim geo = stage ? stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Asset/Geo")) : PXR_NS::UsdPrim();
+    if (!asset || !geo) {
+        return std::string("missing");
+    }
+    const PXR_NS::UsdTimeCode time(1.);
+    std::string text = "look=" + asset.GetVariantSets().GetVariantSelection("look");
+    const PXR_NS::UsdGeomPrimvar color = PXR_NS::UsdGeomPrimvarsAPI(geo).GetPrimvar(PXR_NS::TfToken("displayColor"));
+    PXR_NS::VtValue value;
+    if (color && color.Get(&value, time)) {
+        text += " color=" + PXR_NS::TfStringify(value);
+    }
+    const PXR_NS::UsdAttribute weight = geo.GetAttribute(PXR_NS::TfToken("userProperties:weight"));
+    if (weight && weight.Get(&value, time)) {
+        text += " weight=" + PXR_NS::TfStringify(value);
+    }
+    text += " world=" + PXR_NS::TfStringify(PXR_NS::UsdGeomXformable(geo).ComputeLocalToWorldTransform(time));
+    const PXR_NS::UsdRelationship relationship = geo.GetRelationship(PXR_NS::TfToken("testTargets"));
+    PXR_NS::SdfPathVector targets;
+    if (relationship) {
+        relationship.GetTargets(&targets);
+    }
+    for (const PXR_NS::SdfPath& target : targets) {
+        text += " target=" + target.GetString();
+    }
+
+    return text;
+}
+} // anonymous namespace
+
+// Edits after the break to prims the context defines, written flattened: a variant selection, an
+// attribute, a transform and a relationship append keep their effect once the file is layered over
+// the context, as the composed scene shows them, rather than composing to nothing without it.
+TEST_F(USDWriteLayerBreakTest, FlattenedEditsOfContextPrimsComposeOverTheContext)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    // The fixture with a relationship of its own, which the edits append to.
+    const std::string basePath = (tmp.path() + QString::fromUtf8("/landscape.usda")).toStdString();
+    {
+        PXR_NS::SdfLayerRefPtr fixture = PXR_NS::SdfLayer::FindOrOpen(kLayerStackScene);
+        ASSERT_TRUE(static_cast<bool>(fixture));
+        PXR_NS::SdfLayerRefPtr base = PXR_NS::SdfLayer::CreateNew(basePath);
+        ASSERT_TRUE(static_cast<bool>(base));
+        base->TransferContent(fixture);
+        PXR_NS::SdfPrimSpecHandle geo = base->GetPrimAtPath(PXR_NS::SdfPath("/World/Asset/Geo"));
+        ASSERT_TRUE(static_cast<bool>(geo));
+        PXR_NS::SdfRelationshipSpecHandle targets = PXR_NS::SdfRelationshipSpec::New(geo, "testTargets");
+        ASSERT_TRUE(static_cast<bool>(targets));
+        base->SetField(targets->GetPath(), PXR_NS::SdfFieldKeys->TargetPaths, PXR_NS::SdfPathListOp::CreateExplicit({ PXR_NS::SdfPath("/World/Cam") }));
+        ASSERT_TRUE(base->Save());
+    }
+    const std::string editsPath = (tmp.path() + QString::fromUtf8("/appends.usda")).toStdString();
+    writeTextFile(QString::fromStdString(editsPath),
+                  "#usda 1.0\n"
+                  "over \"World\"\n"
+                  "{\n"
+                  "    over \"Asset\"\n"
+                  "    {\n"
+                  "        over \"Geo\"\n"
+                  "        {\n"
+                  "            append rel testTargets = </World/Asset>\n"
+                  "        }\n"
+                  "    }\n"
+                  "}\n");
+
+    NodePtr landscape = read(basePath.c_str());
+    ASSERT_TRUE(bool(landscape));
+    NodePtr brk = layerBreak(landscape);
+    NodePtr variant = createNode(QString::fromUtf8(PLUGINID_NATRON_USDVARIANT));
+    NodePtr setAttribute = createNode(QString::fromUtf8(PLUGINID_NATRON_USDSETATTRIBUTE));
+    NodePtr transform = createNode(QString::fromUtf8(PLUGINID_NATRON_USDEDITTRANSFORM));
+    NodePtr appends = read(editsPath.c_str());
+    ASSERT_TRUE(brk && variant && setAttribute && transform && appends);
+    setString(variant, kUSDVariantParamPrimPattern, "/World/Asset");
+    setString(variant, kUSDVariantParamVariantSet, "look");
+    setString(variant, kUSDVariantParamVariant, "right");
+    setString(setAttribute, kUSDSetAttributeParamPrimPattern, "/World/Asset/Geo");
+    setString(setAttribute, kUSDSetAttributeParamAttributeName, "userProperties:weight");
+    KnobChoice* valueType = getKnob<KnobChoice>(setAttribute, kUSDSetAttributeParamValueType);
+    ASSERT_TRUE(valueType != NULL);
+    valueType->setValueFromID("float", 0);
+    KnobDouble* weight = getKnob<KnobDouble>(setAttribute, kUSDSetAttributeParamValue);
+    ASSERT_TRUE(weight != NULL);
+    weight->setValue(2.5);
+    setString(transform, kUSDEditTransformParamPrimPattern, "/World/Asset/Geo");
+    KnobDouble* translate = getKnob<KnobDouble>(transform, kSceneParamTranslate);
+    ASSERT_TRUE(translate != NULL);
+    translate->setValue(5., ViewSpec::all(), 1);
+    ASSERT_TRUE(variant->connectInput(brk, 0));
+    ASSERT_TRUE(setAttribute->connectInput(variant, 0));
+    ASSERT_TRUE(transform->connectInput(setAttribute, 0));
+    NodePtr graph = merge({ transform, appends });
+    ASSERT_TRUE(bool(graph));
+
+    const std::string composed = describeAsset(composeOutput(graph));
+    EXPECT_NE(std::string::npos, composed.find("look=right")) << composed;
+    EXPECT_NE(std::string::npos, composed.find("weight=2.5")) << composed;
+    EXPECT_NE(std::string::npos, composed.find("target=/World/Cam target=/World/Asset")) << composed;
+
+    const QString path = tmp.path() + QString::fromUtf8("/out/lighting.usda");
+    ASSERT_TRUE(bool(writeTo(graph, path, USDWrite::eExportModeFlattened, true)));
+    PXR_NS::SdfLayerRefPtr layer = PXR_NS::SdfLayer::FindOrOpen(path.toStdString());
+    ASSERT_TRUE(static_cast<bool>(layer));
+    EXPECT_TRUE(layer->GetSubLayerPaths().empty());
+    PXR_NS::SdfPrimSpecHandle geo = layer->GetPrimAtPath(PXR_NS::SdfPath("/World/Asset/Geo"));
+    ASSERT_TRUE(static_cast<bool>(geo));
+    EXPECT_EQ(PXR_NS::SdfSpecifierOver, geo->GetSpecifier());
+    EXPECT_FALSE(static_cast<bool>(layer->GetAttributeAtPath(PXR_NS::SdfPath("/World/Asset/Geo.size")))) << "nothing the context authors";
+    PXR_NS::SdfPrimSpecHandle asset = layer->GetPrimAtPath(PXR_NS::SdfPath("/World/Asset"));
+    ASSERT_TRUE(static_cast<bool>(asset));
+    PXR_NS::SdfVariantSelectionMap selections;
+    ASSERT_TRUE(layer->HasField(asset->GetPath(), PXR_NS::SdfFieldKeys->VariantSelection, &selections));
+    EXPECT_EQ(std::string("right"), selections["look"]);
+    PXR_NS::SdfPathListOp targets;
+    ASSERT_TRUE(layer->HasField(PXR_NS::SdfPath("/World/Asset/Geo.testTargets"), PXR_NS::SdfFieldKeys->TargetPaths, &targets));
+    EXPECT_FALSE(targets.IsExplicit());
+    EXPECT_EQ(PXR_NS::SdfPathVector(1, PXR_NS::SdfPath("/World/Asset")), targets.GetAppendedItems());
+
+    PXR_NS::SdfLayerRefPtr root = PXR_NS::SdfLayer::CreateAnonymous("edits-over-landscape");
+    root->SetSubLayerPaths({ path.toStdString(), basePath });
+    EXPECT_EQ(composed, describeAsset(PXR_NS::UsdStage::Open(root)));
+}
+
+// A reference after the break whose source is all context: the referenced stack is still written,
+// as a sidecar with the read file sublayered in layered mode and baked in in flattened mode, and the
+// read above the break is not written over.
+TEST_F(USDWriteLayerBreakTest, AReferenceToTheContextIsStillWritten)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    NodePtr landscape = read(kLayerStackScene);
+    ASSERT_TRUE(bool(landscape));
+    NodePtr brk = layerBreak(landscape);
+    NodePtr reference = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREFERENCE));
+    ASSERT_TRUE(brk && reference);
+    setString(reference, kSceneParamPrimPath, "/World/Ext");
+    KnobChoice* sourceKnob = getKnob<KnobChoice>(reference, kUSDReferenceParamSource);
+    ASSERT_TRUE(sourceKnob != NULL);
+    sourceKnob->setValueFromID("input", 0);
+    ASSERT_TRUE(reference->connectInput(brk, 0));
+    ASSERT_TRUE(reference->connectInput(brk, 1));
+    const QString landscapeFile = cleanAbsolute(QString::fromUtf8(kLayerStackScene));
+
+    const QString outDir = tmp.path() + QString::fromUtf8("/layered");
+    const QString path = outDir + QString::fromUtf8("/ext.usda");
+    NodePtr writer = writeTo(reference, path, USDWrite::eExportModeLayered, true);
+    ASSERT_TRUE(bool(writer));
+    EXPECT_FALSE(writer->hasPersistentMessage());
+    EXPECT_EQ(QStringList() << QString::fromUtf8("ext.usda") << QString::fromUtf8("ext_layer1.usda"), fileNames(outDir));
+    PXR_NS::SdfLayerRefPtr layer = PXR_NS::SdfLayer::FindOrOpen(path.toStdString());
+    ASSERT_TRUE(static_cast<bool>(layer));
+    EXPECT_TRUE(layer->GetSubLayerPaths().empty());
+    EXPECT_FALSE(static_cast<bool>(layer->GetPrimAtPath(PXR_NS::SdfPath("/World/Asset"))));
+    PXR_NS::SdfReferenceListOp referenceList;
+    ASSERT_TRUE(layer->HasField(PXR_NS::SdfPath("/World/Ext"), PXR_NS::SdfFieldKeys->References, &referenceList));
+    const std::vector<PXR_NS::SdfReference> references = referenceList.GetAppliedItems();
+    ASSERT_EQ((std::size_t)1, references.size());
+    EXPECT_EQ(std::string("./ext_layer1.usda"), references[0].GetAssetPath());
+    PXR_NS::SdfLayerRefPtr sidecar = PXR_NS::SdfLayer::FindOrOpen((outDir + QString::fromUtf8("/ext_layer1.usda")).toStdString());
+    ASSERT_TRUE(static_cast<bool>(sidecar));
+    EXPECT_EQ(QStringList() << landscapeFile, absoluteSubLayers(sidecar));
+    EXPECT_TRUE(QFile::exists(landscapeFile));
+
+    const QString flatDir = tmp.path() + QString::fromUtf8("/flattened");
+    const QString flatPath = flatDir + QString::fromUtf8("/ext.usda");
+    writer = writeTo(reference, flatPath, USDWrite::eExportModeFlattened, true);
+    ASSERT_TRUE(bool(writer));
+    EXPECT_FALSE(writer->hasPersistentMessage());
+    EXPECT_EQ(QStringList() << QString::fromUtf8("ext.usda"), fileNames(flatDir));
+    PXR_NS::SdfLayerRefPtr flat = PXR_NS::SdfLayer::FindOrOpen(flatPath.toStdString());
+    ASSERT_TRUE(static_cast<bool>(flat));
+    EXPECT_TRUE(flat->GetSubLayerPaths().empty());
+    EXPECT_FALSE(static_cast<bool>(flat->GetPrimAtPath(PXR_NS::SdfPath("/World/Asset"))));
+    PXR_NS::SdfReferenceListOp flatReferences;
+    if (flat->HasField(PXR_NS::SdfPath("/World/Ext"), PXR_NS::SdfFieldKeys->References, &flatReferences)) {
+        EXPECT_TRUE(flatReferences.GetAppliedItems().empty()) << "baked in";
+    }
+    PXR_NS::SdfPrimSpecHandle ext = flat->GetPrimAtPath(PXR_NS::SdfPath("/World/Ext"));
+    ASSERT_TRUE(static_cast<bool>(ext));
+    EXPECT_EQ(PXR_NS::SdfSpecifierDef, ext->GetSpecifier());
+    PXR_NS::SdfPrimSpecHandle geo = flat->GetPrimAtPath(PXR_NS::SdfPath("/World/Ext/Asset/Geo"));
+    ASSERT_TRUE(static_cast<bool>(geo));
+    EXPECT_EQ(PXR_NS::SdfSpecifierDef, geo->GetSpecifier());
+    EXPECT_EQ(PXR_NS::TfToken("Cube"), geo->GetTypeName());
+
+    PXR_NS::SdfLayerRefPtr root = PXR_NS::SdfLayer::CreateAnonymous("ext-over-landscape");
+    root->SetSubLayerPaths({ flatPath.toStdString(), std::string(kLayerStackScene) });
+    EXPECT_EQ(describePrims(composeOutput(reference)), describePrims(PXR_NS::UsdStage::Open(root)));
+}
+
+// Written over a file read above the break, the file would keep only the edits after it: both
+// modes refuse, while with the toggle off a flattened write, which holds the whole scene, may.
+TEST_F(USDWriteLayerBreakTest, AFileReadAboveTheBreakIsNotWrittenOverWithEdits)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString landscapePath = tmp.path() + QString::fromUtf8("/landscape.usda");
+    ASSERT_TRUE(QFile::copy(QString::fromUtf8(kLayerStackScene), landscapePath));
+    ASSERT_TRUE(QFile::setPermissions(landscapePath, QFile::ReadOwner | QFile::WriteOwner));
+    const std::string landscapeFile = landscapePath.toStdString();
+    NodePtr landscape = read(landscapeFile.c_str());
+    ASSERT_TRUE(bool(landscape));
+    NodePtr brk = layerBreak(landscape);
+    ASSERT_TRUE(bool(brk));
+    NodePtr pruned = prune(brk, "/World/Cam");
+    ASSERT_TRUE(bool(pruned));
+    const QByteArray original = fileContents(tmp.path())[QString::fromUtf8("landscape.usda")];
+    ASSERT_FALSE(original.isEmpty());
+
+    for (const USDWrite::ExportModeEnum mode : { USDWrite::eExportModeLayered, USDWrite::eExportModeFlattened }) {
+        NodePtr writer = createWriter(pruned, landscapePath, mode, 1, 1);
+        ASSERT_TRUE(bool(writer));
+        KnobBool* strip = getKnob<KnobBool>(writer, kUSDWriteParamStripLayersAboveBreaks);
+        ASSERT_TRUE(strip != NULL);
+        EXPECT_TRUE(strip->getValue());
+        EXPECT_EQ(eStatusFailed, writeOffMainThread(writer, 1, 1)) << mode;
+        QString message;
+        int type = 0;
+        writer->getPersistentMessage(&message, &type, false);
+        EXPECT_EQ((int)eMessageTypeError, type) << mode;
+        EXPECT_TRUE(message.contains(QString::fromUtf8("read above a USDLayerBreak"))) << mode << ": " << message.toStdString();
+        EXPECT_EQ(QStringList() << QString::fromUtf8("landscape.usda"), fileNames(tmp.path())) << mode;
+        EXPECT_EQ(original, fileContents(tmp.path())[QString::fromUtf8("landscape.usda")]) << mode;
+    }
+
+    NodePtr writer = createWriter(pruned, landscapePath, USDWrite::eExportModeFlattened, 1, 1);
+    ASSERT_TRUE(bool(writer));
+    KnobBool* strip = getKnob<KnobBool>(writer, kUSDWriteParamStripLayersAboveBreaks);
+    ASSERT_TRUE(strip != NULL);
+    strip->setValue(false);
+    QString message;
+    int type = 0;
+    EXPECT_EQ(eStatusOK, writeOffMainThread(writer, 1, 1));
+    writer->getPersistentMessage(&message, &type, false);
+    EXPECT_NE((int)eMessageTypeError, type) << message.toStdString();
+    PXR_NS::SdfLayerRefPtr written = PXR_NS::SdfLayer::OpenAsAnonymous(landscapeFile);
+    ASSERT_TRUE(static_cast<bool>(written));
+    PXR_NS::SdfPrimSpecHandle geo = written->GetPrimAtPath(PXR_NS::SdfPath("/World/Asset/Geo"));
+    ASSERT_TRUE(static_cast<bool>(geo));
+    EXPECT_EQ(PXR_NS::SdfSpecifierDef, geo->GetSpecifier());
+}
+
+// A projection the context alone authors, material and card, is no edit: neither mode bakes it into
+// a file of edits, nor exports its plate.
+TEST_F(USDWriteProjectionTest, AProjectionAboveABreakIsNotBaked)
+{
+    createRig();
+    ASSERT_TRUE(bool(card));
+    NodePtr brk = createNode(QString::fromUtf8(PLUGINID_NATRON_USDLAYERBREAK));
+    NodePtr key = createNode(QString::fromUtf8(PLUGINID_NATRON_USDLIGHT));
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
+    ASSERT_TRUE(brk && key && merge);
+    setString(key, kSceneParamPrimPath, "/Key");
+    ASSERT_TRUE(brk->connectInput(card, 0));
+    ASSERT_TRUE(merge->connectInput(brk, 0));
+    ASSERT_TRUE(merge->connectInput(key, 1));
+
+    for (const USDWrite::ExportModeEnum mode : { USDWrite::eExportModeLayered, USDWrite::eExportModeFlattened }) {
+        QTemporaryDir tmp;
+        ASSERT_TRUE(tmp.isValid());
+        const QString path = tmp.path() + QString::fromUtf8("/scene.usda");
+        NodePtr writer = createWriter(merge, path, mode, 1, 3);
+        ASSERT_TRUE(writer && getWriter(writer));
+        ASSERT_EQ(eStatusOK, writeOffMainThread(writer, 1, 3)) << mode << ": " << messageOf(writer).toStdString();
+        EXPECT_EQ(QStringList() << QString::fromUtf8("scene.usda"), fileNames(tmp.path())) << mode;
+        EXPECT_FALSE(QDir(tmp.path() + QString::fromUtf8("/scene_textures")).exists()) << mode;
+
+        PXR_NS::SdfLayerRefPtr layer = PXR_NS::SdfLayer::FindOrOpen(path.toStdString());
+        ASSERT_TRUE(static_cast<bool>(layer));
+        EXPECT_TRUE(layer->GetSubLayerPaths().empty()) << mode;
+        EXPECT_TRUE(static_cast<bool>(layer->GetPrimAtPath(PXR_NS::SdfPath("/Key")))) << mode;
+        const PXR_NS::SdfPath keyPath("/Key");
+        layer->Traverse(PXR_NS::SdfPath::AbsoluteRootPath(), [&](const PXR_NS::SdfPath& specPath) {
+            if (specPath.IsPrimPath()) {
+                EXPECT_TRUE(specPath.HasPrefix(keyPath)) << mode << ": " << specPath.GetString();
+            }
+        });
+    }
 }

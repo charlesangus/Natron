@@ -83,6 +83,7 @@ struct ScenePayloadImpl {
     SceneLayerEntry top;
     std::size_t numLayers = 0;
     U64 stackHash = 0;
+    U64 contentHash = 0;
     SceneMetadata metadata;
 };
 

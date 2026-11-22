@@ -35,10 +35,10 @@ layers over the scene it was made against. The file is not sublayered by path:
 it does not open on its own as a complete scene. Prims only the context defines,
 edited after the break, are written as `over` specs. In Layered mode the scenes
 a USDReference after the break references are still written as files beside the
-written one. In Flattened mode the layers after the break are composed alone and
-flattened: references they author are baked in, and a prim they deactivate is
-written as an `over` with `active = false`. The stage metadata is the whole
-scene's either way. With no break upstream, or with the toggle off, the whole
+written one. In Flattened mode the layers after the break are merged into one
+layer, keeping list edits, variant selections, arcs and deactivations as they
+are authored; the scenes a USDReference after the break references are baked in.
+The stage metadata is the whole scene's either way. With no break upstream, or with the toggle off, the whole
 scene is written.
 
 Asset Paths sets how the file refers to other files (the sublayers of Layered

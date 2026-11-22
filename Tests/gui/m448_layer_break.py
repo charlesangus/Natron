@@ -79,7 +79,7 @@ try:
     require(writer.connectInput(0, prune), "connect the USDPrune to the USDWrite")
     param(prune, "primPattern").setValue("/World/Cam")
     require(set_choice(param(prune, "mode"), "deactivate"), "the USDPrune Mode menu offers deactivate")
-    strip = param(writer, "stripLayerBreaks")
+    strip = param(writer, "stripLayersAboveBreaks")
     counter = [0]
 
     def view():

@@ -46,7 +46,7 @@
 #define kUSDWriteParamFirstFrame "firstFrame"
 #define kUSDWriteParamLastFrame "lastFrame"
 #define kUSDWriteParamExportLiveTextures "exportLiveTextures"
-#define kUSDWriteParamStripLayerBreaks "stripLayerBreaks"
+#define kUSDWriteParamStripLayersAboveBreaks "stripLayersAboveBreaks"
 
 NATRON_NAMESPACE_ENTER
 
@@ -152,7 +152,7 @@ private:
     KnobChoiceWPtr _exportMode;
     KnobChoiceWPtr _pathMode;
     KnobBoolWPtr _exportLiveTextures;
-    KnobBoolWPtr _stripLayerBreaks;
+    KnobBoolWPtr _stripLayersAboveBreaks;
     KnobChoiceWPtr _frameRange;
     KnobIntWPtr _firstFrame;
     KnobIntWPtr _lastFrame;

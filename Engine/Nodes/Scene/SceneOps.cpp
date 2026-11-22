@@ -291,6 +291,15 @@ appendEntry(const ScenePayload& base,
     imp->top = entry;
     imp->numLayers = base.getNumLayers() + 1;
 
+    ContentHasher content;
+    content.appendU64(base.getContentHash());
+    content.appendU64(layerHash);
+    imp->contentHash = content.finalize();
+    // 0 stands for the empty stack.
+    if (imp->contentHash == 0) {
+        imp->contentHash = 1;
+    }
+
     ContentHasher h;
     h.appendU64(base.getStackHash());
     h.appendU64(layerHash);
@@ -1746,7 +1755,7 @@ SceneLayerMemo::produce(const Key& key,
     h.appendI64((std::int64_t)key.upstreamRead);
     switch (key.upstreamRead) {
     case Key::eUpstreamReadWholeStack:
-        h.appendU64(upstream.getStackHash());
+        h.appendU64(upstream.getContentHash());
         break;
     case Key::eUpstreamReadFacts:
         h.appendU64(key.factsDigest);

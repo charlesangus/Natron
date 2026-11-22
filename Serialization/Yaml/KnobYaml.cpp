@@ -518,6 +518,32 @@ namespace YamlDetail {
                 em << YAML::Value;
                 emitBool(em, text->usesRichText);
                 em << YAML::EndMap;
+            } else if (const KnobParametricExtraSerialization* parametric = std::get_if<KnobParametricExtraSerialization>(&knob.extraData)) {
+                emitKey(em, "parametric");
+                em << YAML::Value << YAML::BeginMap;
+                emitKey(em, "labels");
+                em << YAML::Value;
+                emitStringList(em, parametric->curveLabels);
+                emitKey(em, "colors");
+                em << YAML::Value << YAML::Flow << YAML::BeginSeq;
+                for (std::size_t i = 0; i < parametric->curveColors.size(); ++i) {
+                    em << YAML::Flow << YAML::BeginSeq;
+                    for (std::size_t c = 0; c < parametric->curveColors[i].size(); ++c) {
+                        emitDouble(em, parametric->curveColors[i][c]);
+                    }
+                    em << YAML::EndSeq;
+                }
+                em << YAML::EndSeq;
+                emitKey(em, "range");
+                em << YAML::Value << YAML::Flow << YAML::BeginSeq;
+                emitDouble(em, parametric->rangeMinimum);
+                emitDouble(em, parametric->rangeMaximum);
+                em << YAML::EndSeq;
+                em << YAML::EndMap;
+            } else if (const KnobButtonExtraSerialization* button = std::get_if<KnobButtonExtraSerialization>(&knob.extraData)) {
+                emitKey(em, "script");
+                em << YAML::Value;
+                emitString(em, button->script);
             }
             if (knob.useHostOverlayHandle) {
                 emitKey(em, "overlayHandle");
@@ -610,6 +636,33 @@ namespace YamlDetail {
                 text.usesRichText = readBool(textReader.get("richText"), context + ".text.richText");
                 textReader.finish();
                 knob->extraData = text;
+            }
+            if (YAML::Node parametricNode = reader.get("parametric")) {
+                MapReader parametricReader(parametricNode, context + ".parametric", warnings);
+                KnobParametricExtraSerialization parametric;
+                if (YAML::Node labels = parametricReader.get("labels")) {
+                    parametric.curveLabels = readStringVector(labels, context + ".parametric.labels");
+                }
+                if (YAML::Node colors = parametricReader.get("colors")) {
+                    if (!colors.IsSequence()) {
+                        fail(colors, context + ".parametric.colors", "expected a list of colours");
+                    }
+                    for (std::size_t i = 0; i < colors.size(); ++i) {
+                        parametric.curveColors.push_back(readDoubleVector(colors[i], context + ".parametric.colors", 3));
+                    }
+                }
+                if (YAML::Node range = parametricReader.get("range")) {
+                    std::vector<double> values = readDoubleVector(range, context + ".parametric.range", 2);
+                    parametric.rangeMinimum = values[0];
+                    parametric.rangeMaximum = values[1];
+                }
+                parametricReader.finish();
+                knob->extraData = parametric;
+            }
+            if (YAML::Node script = reader.get("script")) {
+                KnobButtonExtraSerialization button;
+                button.script = readString(script, context + ".script");
+                knob->extraData = button;
             }
             if (YAML::Node overlayHandle = reader.get("overlayHandle")) {
                 knob->useHostOverlayHandle = readBool(overlayHandle, context + ".overlayHandle");
@@ -950,6 +1003,11 @@ namespace YamlDetail {
             emitKey(em, "label");
             em << YAML::Value;
             emitString(em, group.label);
+            if (!group.tooltip.empty()) {
+                emitKey(em, "tooltip");
+                em << YAML::Value;
+                emitString(em, group.tooltip);
+            }
             if (group.secret) {
                 emitKey(em, "secret");
                 em << YAML::Value;
@@ -1018,6 +1076,9 @@ namespace YamlDetail {
             MapReader reader(node, context, warnings);
             MapReader definition(reader.get("group"), context + ".group", warnings);
             group.label = readString(definition.get("label"), context + ".group.label");
+            if (YAML::Node tooltip = definition.get("tooltip")) {
+                group.tooltip = readString(tooltip, context + ".group.tooltip");
+            }
             if (YAML::Node secret = definition.get("secret")) {
                 group.secret = readBool(secret, context + ".group.secret");
             }
@@ -1109,6 +1170,28 @@ decodeKnobsYaml(std::string_view text,
     YAML::Node node = YamlDetail::loadDocument(text, "the knobs");
 
     return YamlDetail::readKnobMap(node, "knobs", warnings);
+}
+
+std::string
+encodeUserPagesYaml(const std::list<GroupKnobSerialization>& pages)
+{
+    YAML::Emitter em;
+    if (pages.empty()) {
+        em << YAML::Flow << YAML::BeginMap << YAML::EndMap;
+    } else {
+        YamlDetail::emitUserPages(em, pages);
+    }
+
+    return YamlDetail::documentText(em);
+}
+
+std::list<GroupKnobSerialization>
+decodeUserPagesYaml(std::string_view text,
+                    YamlWarnings* warnings)
+{
+    YAML::Node node = YamlDetail::loadDocument(text, "the user pages");
+
+    return YamlDetail::readUserPages(node, "userPages", warnings);
 }
 
 void

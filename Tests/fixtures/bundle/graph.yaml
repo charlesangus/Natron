@@ -5,7 +5,7 @@ knobs:
 formats:
   - {name: "BundleSquare", rect: [0, 0, 64, 64], par: 1}
 layers:
-  zdepth: {label: "Depth", channelsLabel: "Z", channels: ["Z"], origin: 1}
+  zdepth: {channels: ["Z"], origin: 1}
 timeline: {current: 7}
 nodes:
   Blur1:

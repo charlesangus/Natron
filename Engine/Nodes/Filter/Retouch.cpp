@@ -1521,8 +1521,9 @@ Retouch::drawOverlay(double time,
         } else {
             double cx, cy;
             viewport->getCursorPosition(cx, cy);
-            centre = QPointF(cx, cy);
             hasCentre = viewport->getViewportRect().contains(cx, cy);
+            viewport->getCursorPositionInOverlay(cx, cy);
+            centre = QPointF(cx, cy);
         }
         const std::pair<double, double> offset = _ui->cloneOffset;
         if (hasCentre && ((offset.first != 0.) || (offset.second != 0.))) {

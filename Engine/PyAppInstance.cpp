@@ -624,7 +624,7 @@ App::addProjectLayer(const QString& id,
         chans.push_back(it->toStdString());
     }
 
-    ImageLayerDesc desc(idStr, idStr, "", chans);
+    ImageLayerDesc desc(idStr, chans);
     std::string error;
     LayerRegistry::AddResultEnum res = getInternalApp()->getProject()->addLayer(desc, LayerRegistryEntry::eOriginUser, &error);
 

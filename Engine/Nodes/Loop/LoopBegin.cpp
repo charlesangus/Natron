@@ -432,8 +432,8 @@ LoopBegin::render(const RenderActionArgs& args)
         }
         if (src->getComponents() != dst->getComponents()) {
             conformMessage = tr("The iteration or frame before outputs %1 where the loop's input has %2: it is converted.")
-                                 .arg(QString::fromUtf8(src->getComponents().getChannelsLabel().c_str()))
-                                 .arg(QString::fromUtf8(dst->getComponents().getChannelsLabel().c_str()))
+                                 .arg(QString::fromUtf8(src->getComponents().getUserFacingLabel().c_str()))
+                                 .arg(QString::fromUtf8(dst->getComponents().getUserFacingLabel().c_str()))
                                  .toStdString();
         }
         const int srcComps = (int)src->getComponentsCount();

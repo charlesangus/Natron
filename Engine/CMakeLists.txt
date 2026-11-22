@@ -49,10 +49,17 @@ file(GLOB NatronEngineAi_HEADERS Ai/*.h)
 file(GLOB NatronEngineAi_SOURCES Ai/*.cpp)
 list(APPEND NatronEngine_HEADERS ${NatronEngineAi_HEADERS})
 list(APPEND NatronEngine_SOURCES ${NatronEngineAi_SOURCES})
+# Engine/Flow/ is the optical-flow library. It knows nothing of nodes, images or Qt.
+file(GLOB NatronEngineFlow_HEADERS Flow/*.h)
+file(GLOB NatronEngineFlow_SOURCES Flow/*.cpp)
+list(APPEND NatronEngine_HEADERS ${NatronEngineFlow_HEADERS})
+list(APPEND NatronEngine_SOURCES ${NatronEngineFlow_SOURCES})
 # OpenUSD's headers (Nodes/Scene/UsdIncludes.h) include its Python bindings' headers, which need
 # the full Python API, and libshiboken puts Py_LIMITED_API on everything that links it.
 file(GLOB NatronEngineScene_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Scene/*.cpp)
 set_source_files_properties(${NatronEngineScene_SOURCES} PROPERTIES COMPILE_OPTIONS -UPy_LIMITED_API)
+# Releases the Python lock only if its caller holds it, which the limited API cannot ask.
+set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/VectorFollowTask.cpp PROPERTIES COMPILE_OPTIONS -UPy_LIMITED_API)
 
 # Native node registration fragments (see Engine/Nodes/NativeRegistry.h), aggregated into
 # NativeRegistryAll.inc. Sorted so the registration order does not depend on the filesystem.
@@ -305,6 +312,7 @@ target_include_directories(NatronEngine
         .
         ..
         ../Global
+        ../libs/Eigen3
         ../libs/SequenceParsing
         ../libs/xxhash
         ${X11_INCLUDE_DIR}

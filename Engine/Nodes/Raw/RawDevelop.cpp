@@ -35,6 +35,7 @@
 #include <QString>
 #include <QTimer>
 
+#include <ofxImageEffect.h>
 #include <ofxNatron.h>
 
 #include "Engine/Ai/ModelDownloader.h"

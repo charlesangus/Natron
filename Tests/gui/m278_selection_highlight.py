@@ -32,6 +32,7 @@ POLL_TIMEOUT_S = 20.0
 SETTLE_MS = 800
 STARTUP_TIMEOUT_S = 60.0
 CTRL_LEFT_TUMBLE_NAVIGATION = 0
+INITIAL_DRAW_FULL = 3
 GRID_COLUMNS = 40
 GRID_ROWS = 22
 CARD = "/World/Card"
@@ -150,6 +151,9 @@ try:
 
     param(stage_read, "filename").setValue(scene_path)
     param(slab_read, "filename").setValue(slab_path)
+    # Full: the prims draw and pick themselves, not one box per top-level prim.
+    param(stage_read, "initialDraw").setValue(INITIAL_DRAW_FULL)
+    param(slab_read, "initialDraw").setValue(INITIAL_DRAW_FULL)
     param(plate, "color").set(1.0, 0.0, 0.0, 0.5)
     param(camera, "translate").set(0.0, 0.0, 8.0)
     param(assign, "primPattern").set(CARD)

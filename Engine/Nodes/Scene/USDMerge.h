@@ -83,8 +83,9 @@ public:
     /**
      * @brief The union of inputs, given in order from weakest to strongest: each one's layers
      * stacked over the ones before, each layer kept only at its first, weakest, position. A
-     * payload that holds every layer of the first non-empty input in order is built on that
-     * input's stack, so a single input passes through as it is.
+     * kept layer is context (SceneLayerEntry::context) only if it is in every input holding it.
+     * A payload that holds every layer of the first non-empty input in order, flagged the same,
+     * is built on that input's stack, so a single input passes through as it is.
      **/
     static ScenePayload mergeStacks(const std::vector<ScenePayload>& inputs);
 

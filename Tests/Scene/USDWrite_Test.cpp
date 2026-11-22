@@ -68,10 +68,14 @@
 #include "Engine/Nodes/Scene/USDAssignMaterial.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
 #include "Engine/Nodes/Scene/USDCard.h"
+#include "Engine/Nodes/Scene/USDLayerBreak.h"
+#include "Engine/Nodes/Scene/USDLight.h"
 #include "Engine/Nodes/Scene/USDMerge.h"
 #include "Engine/Nodes/Scene/USDPreviewSurface.h"
 #include "Engine/Nodes/Scene/USDProject3D.h"
+#include "Engine/Nodes/Scene/USDPrune.h"
 #include "Engine/Nodes/Scene/USDRead.h"
+#include "Engine/Nodes/Scene/USDReference.h"
 #include "Engine/Nodes/Scene/USDWrite.h"
 #include "Engine/Nodes/Scene/USDXformPrim.h"
 #include "Engine/Project.h"
@@ -2048,4 +2052,345 @@ TEST_F(USDWriteTest, ExportsCarryNoNatronCustomData)
             EXPECT_FALSE(file.second.contains("natron:")) << file.first.toStdString();
         }
     }
+}
+
+// The lighting-over-landscape graphs: reads of the layer-stack fixture with a USDLayerBreak, edits
+// after it, and what USDWrite writes of them.
+class USDWriteLayerBreakTest
+    : public USDWriteTest {
+protected:
+    NodePtr read(const char* path)
+    {
+        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
+        KnobFile* file = node ? getKnob<KnobFile>(node, kUSDReadParamFile) : NULL;
+        EXPECT_TRUE(file != NULL);
+        if (!file) {
+            return NodePtr();
+        }
+        file->setValue(std::string(path));
+
+        return node;
+    }
+
+    NodePtr prune(const NodePtr& input,
+                  const char* pattern)
+    {
+        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPRUNE));
+        EXPECT_TRUE(bool(node));
+        if (!node) {
+            return node;
+        }
+        setString(node, kUSDPruneParamPrimPattern, pattern);
+        EXPECT_TRUE(node->connectInput(input, 0));
+
+        return node;
+    }
+
+    NodePtr layerBreak(const NodePtr& input)
+    {
+        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDLAYERBREAK));
+        EXPECT_TRUE(bool(node));
+        if (node) {
+            EXPECT_TRUE(node->connectInput(input, 0));
+        }
+
+        return node;
+    }
+
+    NodePtr light(const char* path)
+    {
+        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDLIGHT));
+        EXPECT_TRUE(bool(node));
+        if (node) {
+            setString(node, kSceneParamPrimPath, path);
+        }
+
+        return node;
+    }
+
+    NodePtr merge(const std::vector<NodePtr>& inputs)
+    {
+        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
+        EXPECT_TRUE(bool(node));
+        for (std::size_t i = 0; node && i < inputs.size(); ++i) {
+            EXPECT_TRUE(node->connectInput(inputs[i], (int)i)) << i;
+        }
+
+        return node;
+    }
+
+    // Read -> Break -> Prune /World/Cam, merged with a light at /Key.
+    NodePtr createLightingGraph(NodePtr* layerBreakNode = NULL)
+    {
+        NodePtr reader = read(kLayerStackScene);
+        NodePtr brk = reader ? layerBreak(reader) : NodePtr();
+        NodePtr pruned = brk ? prune(brk, "/World/Cam") : NodePtr();
+        NodePtr key = light("/Key");
+        if (!pruned || !key) {
+            return NodePtr();
+        }
+        if (layerBreakNode) {
+            *layerBreakNode = brk;
+        }
+
+        return merge({ pruned, key });
+    }
+
+    NodePtr writeTo(const NodePtr& input,
+                    const QString& path,
+                    USDWrite::ExportModeEnum mode,
+                    bool strip)
+    {
+        NodePtr writer = createWriter(input, path, mode, 1, 1);
+        KnobBool* stripKnob = writer ? getKnob<KnobBool>(writer, kUSDWriteParamStripLayerBreaks) : NULL;
+        EXPECT_TRUE(stripKnob != NULL);
+        if (!stripKnob) {
+            return NodePtr();
+        }
+        EXPECT_TRUE(stripKnob->getValue()) << "on by default";
+        stripKnob->setValue(strip);
+        EXPECT_EQ(eStatusOK, writeOffMainThread(writer, 1, 1));
+        EXPECT_TRUE(QFile::exists(path)) << path.toStdString();
+
+        return writer;
+    }
+
+    // The sublayers of layer, as absolute clean paths.
+    static QStringList absoluteSubLayers(const PXR_NS::SdfLayerRefPtr& layer)
+    {
+        QStringList paths;
+        const QString dir = QFileInfo(QString::fromStdString(layer->GetRealPath())).absolutePath();
+        for (const std::string& subLayer : layer->GetSubLayerPaths()) {
+            paths.push_back(QDir::cleanPath(QDir(dir).absoluteFilePath(QString::fromStdString(subLayer))));
+        }
+
+        return paths;
+    }
+
+    // Every prim stage composes, inactive ones included, with its type and whether it is active.
+    static std::vector<std::string> describePrims(const PXR_NS::UsdStageRefPtr& stage)
+    {
+        std::vector<std::string> prims;
+        EXPECT_TRUE(static_cast<bool>(stage));
+        if (!stage) {
+            return prims;
+        }
+        for (const PXR_NS::UsdPrim& prim : stage->Traverse(PXR_NS::UsdPrimAllPrimsPredicate)) {
+            prims.push_back(prim.GetPath().GetString() + " " + prim.GetTypeName().GetString() + (prim.IsActive() ? "" : " inactive"));
+        }
+
+        return prims;
+    }
+
+    static void expectOnlyLightingEdits(const PXR_NS::SdfLayerRefPtr& layer)
+    {
+        ASSERT_TRUE(static_cast<bool>(layer));
+        EXPECT_TRUE(layer->GetSubLayerPaths().empty());
+
+        PXR_NS::SdfPrimSpecHandle cam = layer->GetPrimAtPath(PXR_NS::SdfPath("/World/Cam"));
+        ASSERT_TRUE(static_cast<bool>(cam));
+        EXPECT_EQ(PXR_NS::SdfSpecifierOver, cam->GetSpecifier());
+        EXPECT_TRUE(cam->HasActive());
+        EXPECT_FALSE(cam->GetActive());
+        EXPECT_TRUE(cam->GetTypeName().IsEmpty());
+        PXR_NS::SdfPrimSpecHandle world = layer->GetPrimAtPath(PXR_NS::SdfPath("/World"));
+        ASSERT_TRUE(static_cast<bool>(world));
+        EXPECT_EQ(PXR_NS::SdfSpecifierOver, world->GetSpecifier());
+        EXPECT_TRUE(world->GetTypeName().IsEmpty());
+
+        PXR_NS::SdfPrimSpecHandle key = layer->GetPrimAtPath(PXR_NS::SdfPath("/Key"));
+        ASSERT_TRUE(static_cast<bool>(key));
+        EXPECT_EQ(PXR_NS::SdfSpecifierDef, key->GetSpecifier());
+        EXPECT_FALSE(key->GetTypeName().IsEmpty());
+
+        // Nothing the fixture defines.
+        EXPECT_FALSE(static_cast<bool>(layer->GetPrimAtPath(PXR_NS::SdfPath("/World/Asset"))));
+        EXPECT_FALSE(static_cast<bool>(layer->GetPrimAtPath(PXR_NS::SdfPath("/World/Asset/Geo"))));
+        EXPECT_EQ((std::size_t)1, world->GetNameChildren().size()) << "only Cam under World";
+
+        // The stage metadata is the scene's, though the context layer authored it.
+        EXPECT_EQ(PXR_NS::TfToken("World"), layer->GetDefaultPrim());
+    }
+
+    static const char* const kLayerStackScene;
+    static const char* const kReferencedScene;
+};
+
+const char* const USDWriteLayerBreakTest::kLayerStackScene = NATRON_TESTS_FIXTURES_DIR "/m52-layer-stack.usda";
+const char* const USDWriteLayerBreakTest::kReferencedScene = NATRON_TESTS_FIXTURES_DIR "/m52-referenced.usda";
+
+TEST_F(USDWriteLayerBreakTest, LayerBreakWritesOnlyEditsAfterTheBreak)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    NodePtr brk;
+    NodePtr graph = createLightingGraph(&brk);
+    ASSERT_TRUE(graph && brk);
+
+    const QString outDir = tmp.path() + QString::fromUtf8("/out");
+    const QString path = outDir + QString::fromUtf8("/lighting.usda");
+    ASSERT_TRUE(bool(writeTo(graph, path, USDWrite::eExportModeLayered, true)));
+    EXPECT_EQ(QStringList() << QString::fromUtf8("lighting.usda"), fileNames(outDir));
+    PXR_NS::SdfLayerRefPtr layer = PXR_NS::SdfLayer::FindOrOpen(path.toStdString());
+    expectOnlyLightingEdits(layer);
+
+    // Layered over the fixture, the delta composes the graph's scene.
+    PXR_NS::SdfLayerRefPtr root = PXR_NS::SdfLayer::CreateAnonymous("lighting-over-landscape");
+    root->SetSubLayerPaths({ path.toStdString(), std::string(kLayerStackScene) });
+    const std::vector<std::string> layeredPrims = describePrims(PXR_NS::UsdStage::Open(root));
+    EXPECT_EQ(describePrims(composeOutput(graph)), layeredPrims);
+    EXPECT_NE(layeredPrims.end(), std::find(layeredPrims.begin(), layeredPrims.end(), std::string("/World/Cam Camera inactive")));
+    EXPECT_NE(layeredPrims.end(), std::find(layeredPrims.begin(), layeredPrims.end(), std::string("/World/Asset/Geo Cube")));
+
+    // Off, the write is the one of the same graph without a break.
+    const QString offPath = outDir + QString::fromUtf8("/off.usda");
+    ASSERT_TRUE(bool(writeTo(graph, offPath, USDWrite::eExportModeLayered, false)));
+    brk->setNodeDisabled(true);
+    const QString unbrokenPath = outDir + QString::fromUtf8("/unbroken.usda");
+    ASSERT_TRUE(bool(writeTo(graph, unbrokenPath, USDWrite::eExportModeLayered, true)));
+    std::map<QString, QByteArray> contents = fileContents(outDir);
+    EXPECT_FALSE(contents[QString::fromUtf8("off.usda")].isEmpty());
+    EXPECT_EQ(contents[QString::fromUtf8("unbroken.usda")], contents[QString::fromUtf8("off.usda")]);
+    PXR_NS::SdfLayerRefPtr off = PXR_NS::SdfLayer::FindOrOpen(offPath.toStdString());
+    ASSERT_TRUE(static_cast<bool>(off));
+    EXPECT_EQ(QStringList() << cleanAbsolute(QString::fromUtf8(kLayerStackScene)), absoluteSubLayers(off));
+}
+
+TEST_F(USDWriteLayerBreakTest, LayerBreakFlattenedHoldsOnlyEdits)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    NodePtr graph = createLightingGraph();
+    ASSERT_TRUE(bool(graph));
+
+    const QString path = tmp.path() + QString::fromUtf8("/lighting.usda");
+    ASSERT_TRUE(bool(writeTo(graph, path, USDWrite::eExportModeFlattened, true)));
+    expectOnlyLightingEdits(PXR_NS::SdfLayer::FindOrOpen(path.toStdString()));
+
+    // Off, the fixture is baked in.
+    const QString offPath = tmp.path() + QString::fromUtf8("/off.usda");
+    ASSERT_TRUE(bool(writeTo(graph, offPath, USDWrite::eExportModeFlattened, false)));
+    PXR_NS::SdfLayerRefPtr off = PXR_NS::SdfLayer::FindOrOpen(offPath.toStdString());
+    ASSERT_TRUE(static_cast<bool>(off));
+    EXPECT_TRUE(static_cast<bool>(off->GetPrimAtPath(PXR_NS::SdfPath("/World/Asset/Geo"))));
+}
+
+// A merge of a branch through a break and a branch without one: only the broken branch's read is
+// left out, and both branches' edits are written.
+TEST_F(USDWriteLayerBreakTest, AnUnbrokenMergeBranchIsWrittenWhole)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    NodePtr landscape = read(kLayerStackScene);
+    ASSERT_TRUE(bool(landscape));
+    NodePtr brk = layerBreak(landscape);
+    ASSERT_TRUE(bool(brk));
+    NodePtr broken = prune(brk, "/World/Cam");
+    NodePtr marker = read(kReferencedScene);
+    ASSERT_TRUE(broken && marker);
+    NodePtr unbroken = prune(marker, "/Root/Marker");
+    ASSERT_TRUE(bool(unbroken));
+    NodePtr graph = merge({ broken, unbroken });
+    ASSERT_TRUE(bool(graph));
+
+    const QString outDir = tmp.path() + QString::fromUtf8("/out");
+    const QString path = outDir + QString::fromUtf8("/merged.usda");
+    ASSERT_TRUE(bool(writeTo(graph, path, USDWrite::eExportModeLayered, true)));
+
+    const QString landscapeFile = cleanAbsolute(QString::fromUtf8(kLayerStackScene));
+    const QString markerFile = cleanAbsolute(QString::fromUtf8(kReferencedScene));
+    int markerSublayers = 0;
+    for (const QString& name : fileNames(outDir)) {
+        PXR_NS::SdfLayerRefPtr layer = PXR_NS::SdfLayer::FindOrOpen(QDir(outDir).filePath(name).toStdString());
+        ASSERT_TRUE(static_cast<bool>(layer)) << name.toStdString();
+        const QStringList subLayers = absoluteSubLayers(layer);
+        EXPECT_FALSE(subLayers.contains(landscapeFile)) << name.toStdString();
+        markerSublayers += subLayers.count(markerFile);
+    }
+    EXPECT_EQ(1, markerSublayers);
+
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(path.toStdString());
+    const std::vector<std::string> prims = describePrims(stage);
+    EXPECT_NE(prims.end(), std::find(prims.begin(), prims.end(), std::string("/World/Cam  inactive")));
+    EXPECT_NE(prims.end(), std::find(prims.begin(), prims.end(), std::string("/Root/Marker Cube inactive")));
+    EXPECT_NE(prims.end(), std::find(prims.begin(), prims.end(), std::string("/Root Xform")));
+    for (const std::string& prim : prims) {
+        EXPECT_NE(0u, prim.rfind("/World/Asset", 0)) << prim;
+    }
+}
+
+// One read feeding both merge inputs, one through a break: the unbroken path relies on it, so it is
+// still sublayered.
+TEST_F(USDWriteLayerBreakTest, AReadAlsoReachedWithoutABreakIsWritten)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    NodePtr landscape = read(kLayerStackScene);
+    ASSERT_TRUE(bool(landscape));
+    NodePtr brk = layerBreak(landscape);
+    ASSERT_TRUE(bool(brk));
+    NodePtr broken = prune(brk, "/World/Cam");
+    NodePtr unbroken = prune(landscape, "/World/Asset");
+    ASSERT_TRUE(broken && unbroken);
+    NodePtr graph = merge({ broken, unbroken });
+    ASSERT_TRUE(bool(graph));
+
+    const QString path = tmp.path() + QString::fromUtf8("/merged.usda");
+    ASSERT_TRUE(bool(writeTo(graph, path, USDWrite::eExportModeLayered, true)));
+    PXR_NS::SdfLayerRefPtr layer = PXR_NS::SdfLayer::FindOrOpen(path.toStdString());
+    ASSERT_TRUE(static_cast<bool>(layer));
+    EXPECT_EQ(QStringList() << cleanAbsolute(QString::fromUtf8(kLayerStackScene)), absoluteSubLayers(layer));
+    EXPECT_EQ(describePrims(composeOutput(graph)), describePrims(PXR_NS::UsdStage::Open(layer)));
+}
+
+// A reference made after the break to a scene without one: the referenced stack is written beside
+// the file with its read file sublayered, and the written file holds the arc but not the read
+// above the break.
+TEST_F(USDWriteLayerBreakTest, AReferenceAfterTheBreakIsWrittenAsASidecar)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    NodePtr landscape = read(kLayerStackScene);
+    ASSERT_TRUE(bool(landscape));
+    NodePtr brk = layerBreak(landscape);
+    NodePtr marker = read(kReferencedScene);
+    ASSERT_TRUE(brk && marker);
+    NodePtr source = prune(marker, "/Root/Nothing");
+    NodePtr reference = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREFERENCE));
+    ASSERT_TRUE(source && reference);
+    setString(reference, kSceneParamPrimPath, "/World/Ext");
+    KnobChoice* sourceKnob = getKnob<KnobChoice>(reference, kUSDReferenceParamSource);
+    ASSERT_TRUE(sourceKnob != NULL);
+    sourceKnob->setValueFromID("input", 0);
+    ASSERT_TRUE(reference->connectInput(brk, 0));
+    ASSERT_TRUE(reference->connectInput(source, 1));
+
+    const QString outDir = tmp.path() + QString::fromUtf8("/out");
+    const QString path = outDir + QString::fromUtf8("/ext.usda");
+    ASSERT_TRUE(bool(writeTo(reference, path, USDWrite::eExportModeLayered, true)));
+
+    PXR_NS::SdfLayerRefPtr layer = PXR_NS::SdfLayer::FindOrOpen(path.toStdString());
+    ASSERT_TRUE(static_cast<bool>(layer));
+    EXPECT_TRUE(layer->GetSubLayerPaths().empty());
+    EXPECT_FALSE(static_cast<bool>(layer->GetPrimAtPath(PXR_NS::SdfPath("/World/Asset"))));
+    PXR_NS::SdfPrimSpecHandle ext = layer->GetPrimAtPath(PXR_NS::SdfPath("/World/Ext"));
+    ASSERT_TRUE(static_cast<bool>(ext));
+    PXR_NS::SdfReferenceListOp referenceList;
+    ASSERT_TRUE(layer->HasField(ext->GetPath(), PXR_NS::SdfFieldKeys->References, &referenceList));
+    const std::vector<PXR_NS::SdfReference> references = referenceList.GetAppliedItems();
+    ASSERT_EQ((std::size_t)1, references.size());
+    EXPECT_TRUE(QString::fromStdString(references[0].GetAssetPath()).startsWith(QString::fromUtf8("./ext_layer"))) << references[0].GetAssetPath();
+
+    const QString landscapeFile = cleanAbsolute(QString::fromUtf8(kLayerStackScene));
+    const QString markerFile = cleanAbsolute(QString::fromUtf8(kReferencedScene));
+    int markerSublayers = 0;
+    for (const QString& name : fileNames(outDir)) {
+        PXR_NS::SdfLayerRefPtr written = PXR_NS::SdfLayer::FindOrOpen(QDir(outDir).filePath(name).toStdString());
+        ASSERT_TRUE(static_cast<bool>(written)) << name.toStdString();
+        const QStringList subLayers = absoluteSubLayers(written);
+        EXPECT_FALSE(subLayers.contains(landscapeFile)) << name.toStdString();
+        markerSublayers += subLayers.count(markerFile);
+    }
+    EXPECT_EQ(1, markerSublayers);
+    EXPECT_TRUE(QFile::exists(QString::fromUtf8(kLayerStackScene)));
 }

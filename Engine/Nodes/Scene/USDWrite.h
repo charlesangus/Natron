@@ -46,6 +46,7 @@
 #define kUSDWriteParamFirstFrame "firstFrame"
 #define kUSDWriteParamLastFrame "lastFrame"
 #define kUSDWriteParamExportLiveTextures "exportLiveTextures"
+#define kUSDWriteParamStripLayerBreaks "stripLayerBreaks"
 
 NATRON_NAMESPACE_ENTER
 
@@ -58,6 +59,10 @@ NATRON_NAMESPACE_ENTER
  * layers bring in (USDRead's) as sublayers, as Solaris's USD ROP does with Flatten Implicit
  * Layers. Flattened mode bakes the whole composed stage, external files included, into the one
  * layer. Asset paths are written relative to the output file, or absolute.
+ *
+ * With Strip Layers Above Breaks, both modes leave out the scene's context layers, those above a
+ * USDLayerBreak (SceneLayerEntry::context), and the files they read: the file holds only the edits
+ * made after the break. The stage metadata still comes from the whole composed scene.
  *
  * Live textures (natron:// URIs a USDPreviewSurface's image inputs author) are rendered, with Export
  * Live Textures, to OpenEXR files in <file's base name>_textures beside it, one per frame for an
@@ -147,6 +152,7 @@ private:
     KnobChoiceWPtr _exportMode;
     KnobChoiceWPtr _pathMode;
     KnobBoolWPtr _exportLiveTextures;
+    KnobBoolWPtr _stripLayerBreaks;
     KnobChoiceWPtr _frameRange;
     KnobIntWPtr _firstFrame;
     KnobIntWPtr _lastFrame;

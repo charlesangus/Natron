@@ -294,6 +294,10 @@ appendEntry(const ScenePayload& base,
     ContentHasher h;
     h.appendU64(base.getStackHash());
     h.appendU64(layerHash);
+    // Only when set, so a stack without breaks hashes as it would without the flag.
+    if (entry.context) {
+        h.appendString("context");
+    }
     imp->stackHash = h.finalize();
     // 0 stands for the empty stack.
     if (imp->stackHash == 0) {
@@ -317,6 +321,50 @@ getLayers(const ScenePayload& payload)
     std::reverse(layers.begin(), layers.end());
 
     return layers;
+}
+
+ScenePayload
+markContext(const ScenePayload& payload)
+{
+    ScenePayload result;
+
+    for (SceneLayerEntry entry : getLayers(payload)) {
+        entry.context = true;
+        result = appendEntry(result, entry);
+    }
+
+    return result;
+}
+
+bool
+hasContext(const ScenePayload& payload)
+{
+    for (const ScenePayloadImpl* link = payload.getImpl().get(); link; link = link->base.get()) {
+        if (link->top.context) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+ScenePayload
+stripContext(const ScenePayload& payload)
+{
+    ScenePayload result;
+
+    for (const SceneLayerEntry& entry : getLayers(payload)) {
+        if (!entry.context) {
+            result = appendEntry(result, entry);
+        }
+    }
+    if (result.isEmpty()) {
+        return result;
+    }
+    std::shared_ptr<ScenePayloadImpl> imp = std::make_shared<ScenePayloadImpl>(*result.getImpl());
+    imp->metadata = payload.getMetadata();
+
+    return ScenePayload(imp);
 }
 
 namespace {
@@ -1729,9 +1777,10 @@ SceneLayerMemo::produce(const Key& key,
     std::lock_guard<std::mutex> lock(_imp->mutex);
     if (_imp->valid && (_imp->layerHash == layerHash)) {
         // An upstream re-authored to the same content hashes the same but holds other layers:
-        // the memoized layer goes on top of the stack actually handed in.
+        // the memoized layer goes on top of the stack actually handed in. The same layers can
+        // also come back with other context flags, which only the stack hash tells apart.
         const ScenePayload memoizedBase(_imp->output.getImpl()->base);
-        if (!memoizedBase.isSameStack(upstream)) {
+        if (!memoizedBase.isSameStack(upstream) || (memoizedBase.getStackHash() != upstream.getStackHash())) {
             _imp->output = SceneOps::appendEntry(upstream, _imp->output.getImpl()->top);
         }
         *output = _imp->output;

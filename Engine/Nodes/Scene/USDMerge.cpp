@@ -26,7 +26,8 @@
 #include "USDMerge.h"
 
 #include <cstddef>
-#include <unordered_set>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "Engine/Nodes/Scene/SceneOps.h"
@@ -55,8 +56,10 @@ USDMerge::mergeStacks(const std::vector<ScenePayload>& inputs)
     // A layer reached through several inputs is a common upstream of them: every layer stacked
     // over it in any input was authored downstream of it, over it. Keeping its weakest position
     // keeps it under all of those, so each input's own order survives the union.
+    // A layer is context only if every input reaching it does so through a break: a branch
+    // without one relies on it, so an export must write it.
     std::vector<SceneLayerEntry> merged;
-    std::unordered_set<const PXR_NS::SdfLayer*> seen;
+    std::unordered_map<const PXR_NS::SdfLayer*, std::size_t> seen;
     const ScenePayload* first = NULL;
     for (const ScenePayload& input : inputs) {
         if (input.isEmpty()) {
@@ -66,8 +69,14 @@ USDMerge::mergeStacks(const std::vector<ScenePayload>& inputs)
             first = &input;
         }
         for (const SceneLayerEntry& entry : SceneOps::getLayers(input)) {
-            if (entry.layer && seen.insert(entry.layer.operator->()).second) {
+            if (!entry.layer) {
+                continue;
+            }
+            const std::pair<std::unordered_map<const PXR_NS::SdfLayer*, std::size_t>::iterator, bool> inserted = seen.emplace(entry.layer.operator->(), merged.size());
+            if (inserted.second) {
                 merged.push_back(entry);
+            } else if (!entry.context) {
+                merged[inserted.first->second].context = false;
             }
         }
     }
@@ -81,7 +90,7 @@ USDMerge::mergeStacks(const std::vector<ScenePayload>& inputs)
     const std::vector<SceneLayerEntry> firstLayers = SceneOps::getLayers(*first);
     bool isPrefix = firstLayers.size() <= merged.size();
     for (std::size_t i = 0; isPrefix && i < firstLayers.size(); ++i) {
-        isPrefix = (firstLayers[i].layer == merged[i].layer);
+        isPrefix = (firstLayers[i].layer == merged[i].layer) && (firstLayers[i].context == merged[i].context);
     }
     if (isPrefix) {
         result = *first;

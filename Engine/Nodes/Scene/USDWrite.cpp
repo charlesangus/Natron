@@ -584,6 +584,23 @@ clipTimeSamples(const PXR_NS::SdfLayerRefPtr& layer,
     }
 } // clipTimeSamples
 
+// UsdStage::Flatten prunes deactivated prims. A stage composed without its context layers holds
+// deactivations of prims only the context defines, which are edits the flattened layer must keep.
+void
+authorDeactivations(const PXR_NS::UsdStageRefPtr& stage,
+                    const PXR_NS::SdfLayerRefPtr& layer)
+{
+    for (const PXR_NS::UsdPrim& prim : stage->Traverse(PXR_NS::UsdPrimAllPrimsPredicate)) {
+        if (prim.IsActive()) {
+            continue;
+        }
+        const PXR_NS::SdfPrimSpecHandle spec = PXR_NS::SdfCreatePrimInLayer(layer, prim.GetPath());
+        if (spec) {
+            spec->SetActive(false);
+        }
+    }
+}
+
 void
 authorStageMetadata(const PXR_NS::SdfLayerRefPtr& layer,
                     const SceneMetadata& metadata,
@@ -1402,6 +1419,17 @@ USDWrite::initializeKnobs()
     page->addKnob(exportMode);
     _exportMode = exportMode;
 
+    KnobBoolPtr stripLayerBreaks = createKnob<KnobBool>(tr("Strip Layers Above Breaks"));
+    stripLayerBreaks->setName(kUSDWriteParamStripLayerBreaks);
+    stripLayerBreaks->setHintToolTip(tr("Leaves out of the file the context layers above a USDLayerBreak, and the files they "
+                                        "read, in either export mode, so the file holds only the edits made after the break. "
+                                        "Prims those edits change but only the context defines are written as overs. Off, "
+                                        "the whole scene is written as if there were no break."));
+    stripLayerBreaks->setDefaultValue(true);
+    stripLayerBreaks->setAnimationEnabled(false);
+    page->addKnob(stripLayerBreaks);
+    _stripLayerBreaks = stripLayerBreaks;
+
     KnobChoicePtr pathMode = createKnob<KnobChoice>(tr("Asset Paths"));
     pathMode->setName(kUSDWriteParamPathMode);
     pathMode->setHintToolTip(tr("How the file refers to other files: the sublayers it reads in Layered mode, and the "
@@ -1595,6 +1623,8 @@ USDWrite::writeFrameRange(int firstFrame,
     KnobChoicePtr pathModeKnob = _pathMode.lock();
     const ExportModeEnum exportMode = (exportModeKnob && (exportModeKnob->getValue() == (int)eExportModeFlattened)) ? eExportModeFlattened : eExportModeLayered;
     const PathModeEnum pathMode = (pathModeKnob && (pathModeKnob->getValue() == (int)ePathModeAbsolute)) ? ePathModeAbsolute : ePathModeRelative;
+    KnobBoolPtr stripLayerBreaksKnob = _stripLayerBreaks.lock();
+    const bool stripContext = stripLayerBreaksKnob && stripLayerBreaksKnob->getValue() && SceneOps::hasContext(scene);
     AppInstancePtr app = getApp();
     const double fps = (app && app->getProject()) ? app->getProject()->getProjectFrameRate() : 24.;
     const SceneMetadata& metadata = scene.getMetadata();
@@ -1643,6 +1673,26 @@ USDWrite::writeFrameRange(int firstFrame,
         // is one stack, numbered among the sidecars in the order the written layers reference it,
         // so the same scene gets the same names.
         std::vector<WrittenStack> stacks(1);
+        // The context layers left out, strongest first, and the files they read, which the nodes
+        // reading them still need and which the write must not replace with the edits after them.
+        std::vector<PXR_NS::SdfLayerRefPtr> contextLayers;
+        std::set<QString> contextFiles;
+        if (stripContext) {
+            const std::vector<SceneLayerEntry> layers = SceneOps::getLayers(scene);
+            for (std::vector<SceneLayerEntry>::const_reverse_iterator it = layers.rbegin(); it != layers.rend(); ++it) {
+                if (!it->context) {
+                    continue;
+                }
+                contextLayers.push_back(it->layer);
+                for (const PXR_NS::SdfLayerRefPtr& file : SceneOps::getFileLayerClosure(it->layer)) {
+                    const std::string realPath = file->GetRealPath();
+                    if (!realPath.empty()) {
+                        contextFiles.insert(QDir::cleanPath(QString::fromStdString(realPath)));
+                    }
+                }
+            }
+            keep.insert(contextFiles.begin(), contextFiles.end());
+        }
         stacks[0].path = outputPath;
         stacks[0].tcps = metadata.timeCodesPerSecond;
         stacks[0].hasRange = true;
@@ -1662,10 +1712,13 @@ USDWrite::writeFrameRange(int firstFrame,
             return fail(tr("The scene could not be flattened%1").arg(errors.empty() ? QString::fromUtf8(".") : QString::fromUtf8(": ") + QString::fromStdString(errors)));
         };
         if (exportMode == eExportModeFlattened) {
-            PXR_NS::UsdStageRefPtr stage = SceneOps::compose(scene);
+            PXR_NS::UsdStageRefPtr stage = SceneOps::compose(stripContext ? SceneOps::stripContext(scene) : scene);
             stacks[0].layout.output = stage ? stage->Flatten(false) : PXR_NS::SdfLayerRefPtr();
             if (!stacks[0].layout.output) {
                 return flattenFailure();
+            }
+            if (stripContext) {
+                authorDeactivations(stage, stacks[0].layout.output);
             }
             // The flattened file holds what these files author, but the nodes reading them, a
             // USDRead of one, still need them.
@@ -1681,6 +1734,9 @@ USDWrite::writeFrameRange(int firstFrame,
                 if (i == 0) {
                     const std::vector<SceneLayerEntry> layers = SceneOps::getLayers(scene);
                     for (std::vector<SceneLayerEntry>::const_reverse_iterator it = layers.rbegin(); it != layers.rend(); ++it) {
+                        if (stripContext && it->context) {
+                            continue;
+                        }
                         // As composition maps a sublayer of the root: by the ratio of their time codes per second.
                         const PXR_NS::SdfLayerOffset toRoot(0., metadata.timeCodesPerSecond / it->layer->GetTimeCodesPerSecond());
                         appendLayerStack(it->layer, toRoot, &items);
@@ -1748,6 +1804,9 @@ USDWrite::writeFrameRange(int firstFrame,
             std::vector<std::string> definitions;
             for (const StackItem& item : stacks[0].layout.sublayers) {
                 definitions.push_back(item.layer->GetIdentifier());
+            }
+            for (const PXR_NS::SdfLayerRefPtr& layer : contextLayers) {
+                definitions.push_back(layer->GetIdentifier());
             }
             stacks[0].layout.output->SetSubLayerPaths(definitions);
             bakeProjections(SceneOps::compose(scene), stacks[0].layout.output, times, locator, &projectionBake);
@@ -1871,6 +1930,11 @@ USDWrite::writeFrameRange(int firstFrame,
                         return fail(tr("%1 is read by the scene it would be overwritten with: write to another file, or use Flattened mode.").arg(w.path));
                     }
                 }
+            }
+        }
+        for (const Written& w : written) {
+            if (contextFiles.count(w.path) != 0) {
+                return fail(tr("%1 is read above a USDLayerBreak, so it would be overwritten with only the edits after the break: write to another file.").arg(w.path));
             }
         }
     }

@@ -43,6 +43,7 @@
 #include "Engine/Project.h"
 
 #include "Serialization/Bundle/ProjectBundle.h"
+#include "Serialization/Merge/MergeHandler.h"
 #include "Serialization/Merge/ThreeWayMerge.h"
 #include "Serialization/NodeSerialization.h"
 #include "Serialization/Ops/SnapshotDiff.h"
@@ -98,6 +99,41 @@ namespace {
         change.y = flat.node->layout.y;
 
         return change;
+    }
+
+    // The merge leaves out a knob at its defaults, but some knobs are saved even then (a channel
+    // set always is). Without mine's copy back, the diff resets every such knob on every update.
+    void
+    keepMineDefaultKnobs(const std::list<Serialization::KnobSerialization>& mine,
+                         std::list<Serialization::KnobSerialization>* merged)
+    {
+        for (const Serialization::KnobSerialization& knob : mine) {
+            if (!Serialization::isDefaultKnob(knob)) {
+                continue;
+            }
+            const bool kept = std::any_of(merged->begin(), merged->end(), [&knob](const Serialization::KnobSerialization& other) {
+                return other.name == knob.name;
+            });
+            if (!kept) {
+                merged->push_back(knob);
+            }
+        }
+    }
+
+    void
+    keepMineDefaultKnobs(const FlatNodes& mine,
+                         const std::list<Serialization::NodeSerializationPtr>& merged)
+    {
+        for (const Serialization::NodeSerializationPtr& node : merged) {
+            if (!node) {
+                continue;
+            }
+            FlatNodes::const_iterator found = mine.find(node->id);
+            if (!node->id.empty() && (found != mine.end())) {
+                keepMineDefaultKnobs(found->second.node->knobs, &node->knobs);
+            }
+            keepMineDefaultKnobs(mine, node->children);
+        }
     }
 
     void
@@ -195,7 +231,14 @@ updateFromTemplate(const ProjectPtr& project,
         return result;
     }
 
-    result.ops = Serialization::diffSnapshots(Serialization::editableState(mine), Serialization::editableState(merged.merged));
+    const Serialization::ProjectSerialization before = Serialization::editableState(mine);
+    Serialization::ProjectSerialization after = Serialization::editableState(merged.merged);
+    FlatNodes mineNodes;
+    std::vector<std::string> mineOrder;
+    flatten(before.nodes.nodes, std::string(), &mineNodes, &mineOrder);
+    keepMineDefaultKnobs(mineNodes, after.nodes.nodes);
+    keepMineDefaultKnobs(before.projectKnobs, &after.projectKnobs);
+    result.ops = Serialization::diffSnapshots(before, after);
     if (!result.ops.empty()) {
         result.results = applier ? applier(result.ops) : applyGraphOps(project, result.ops);
     }

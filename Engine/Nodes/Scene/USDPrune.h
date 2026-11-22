@@ -28,6 +28,8 @@
 
 #include "Global/Macros.h"
 
+#include <memory>
+
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Scene/PrimSelector.h"
@@ -116,6 +118,9 @@ private:
 
     void refreshKeepKnobs();
 
+    // The prims isolating prunes, per evaluation context; defined in USDPrune.cpp.
+    struct IsolateCache;
+
     PrimSelector _primPattern;
     KnobChoiceWPtr _mode;
     KnobBoolWPtr _pruneUnselected;
@@ -124,6 +129,7 @@ private:
     KnobBoolWPtr _keepMaterials;
     KnobBoolWPtr _keepRenderSettings;
     PrimPatternCache _matches;
+    std::unique_ptr<IsolateCache> _isolateCache;
 };
 
 NATRON_NAMESPACE_EXIT

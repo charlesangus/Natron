@@ -574,6 +574,72 @@ TEST_F(USDMergePruneTest, PruneUnselectedKeepsTheInstanceHoldingAMatchWhole)
     EXPECT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Inst/other")).IsActive());
 }
 
+TEST_F(USDMergePruneTest, PruneUnselectedKeepsTheInstanceHoldingAMatchWholeInARender)
+{
+    NodePtr source = readUsda("class Xform \"Proto\"\n{\n    def Cube \"part\"\n    {\n    }\n    def Cube \"other\"\n    {\n    }\n}\n"
+                              "class Xform \"Rig\"\n{\n    def Camera \"cam\"\n    {\n    }\n}\n"
+                              "def Xform \"World\"\n{\n"
+                              "    def Xform \"Inst\" (\n        instanceable = true\n        prepend references = </Proto>\n    )\n    {\n    }\n"
+                              "    def Xform \"Other\" (\n        instanceable = true\n        prepend references = </Proto>\n    )\n    {\n    }\n"
+                              "    def Xform \"CamRig\" (\n        instanceable = true\n        prepend references = </Rig>\n    )\n    {\n    }\n"
+                              "    def Xform \"Plain\"\n    {\n    }\n}\n");
+    ASSERT_TRUE(bool(source));
+
+    // A render searches inside instances, by a plain path and by a wildcard alike, and keeps the
+    // instance holding a kept camera whole.
+    for (const char* pattern : { "/World/Inst/part", "/World/Inst/p*" }) {
+        NodePtr node = prune(source, pattern, "deactivate");
+        ASSERT_TRUE(bool(node)) << pattern;
+        setBool(node, kUSDPruneParamPruneUnselected, true);
+
+        PXR_NS::UsdStageRefPtr stage = SceneOps::compose(evaluate(node));
+        ASSERT_TRUE(bool(stage)) << pattern;
+        EXPECT_EQ(std::vector<std::string>({ "/World/Other", "/World/Plain" }), inactivePrims(stage)) << pattern;
+        const PXR_NS::UsdPrim instance = stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Inst"));
+        ASSERT_TRUE(bool(instance)) << pattern;
+        EXPECT_TRUE(instance.IsInstance()) << pattern;
+        EXPECT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Inst/other")).IsActive()) << pattern;
+        EXPECT_FALSE(node->hasPersistentMessage()) << pattern;
+
+        setBool(node, kUSDPruneParamKeepCameras, false);
+        stage = SceneOps::compose(evaluate(node));
+        ASSERT_TRUE(bool(stage)) << pattern;
+        EXPECT_EQ(std::vector<std::string>({ "/World/CamRig", "/World/Other", "/World/Plain" }), inactivePrims(stage)) << pattern;
+    }
+}
+
+TEST_F(USDMergePruneTest, PruneUnselectedInHideModeHidesAPruneRootThatCannotBeDrawnOrWhatItHolds)
+{
+    NodePtr source = readUsda("class Xform \"Proto\"\n{\n    def Cube \"part\"\n    {\n    }\n}\n"
+                              "def Xform \"World\"\n{\n"
+                              "    def Cube \"keep\"\n    {\n    }\n"
+                              "    def \"Typeless\" (\n        instanceable = true\n        prepend references = </Proto>\n    )\n    {\n    }\n"
+                              "    def \"Group\"\n    {\n        def Cube \"c\"\n        {\n        }\n    }\n"
+                              "    def \"Bare\"\n    {\n    }\n}\n");
+    ASSERT_TRUE(bool(source));
+    NodePtr node = prune(source, "/World/keep", "hide");
+    ASSERT_TRUE(bool(node));
+    setBool(node, kUSDPruneParamPruneUnselected, true);
+
+    const ScenePayload output = evaluate(node);
+    PXR_NS::UsdStageRefPtr stage = SceneOps::compose(output);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_TRUE(inactivePrims(stage).empty());
+    EXPECT_EQ(PXR_NS::UsdGeomTokens->invisible, visibilityOf(stage, "/World/Group/c"));
+    EXPECT_EQ(PXR_NS::UsdGeomTokens->inherited, visibilityOf(stage, "/World/keep"));
+    const std::vector<PXR_NS::SdfLayer*> layers = layersOf(output);
+    ASSERT_FALSE(layers.empty());
+    const auto authorsVisibility = [&layers](const char* path) {
+        return bool(layers.back()->GetAttributeAtPath(PXR_NS::SdfPath(path).AppendProperty(PXR_NS::UsdGeomTokens->visibility)));
+    };
+    // An instance cannot be authored inside, so the instance itself is hidden.
+    EXPECT_TRUE(authorsVisibility("/World/Typeless"));
+    EXPECT_TRUE(authorsVisibility("/World/Group/c"));
+    for (const char* path : { "/World", "/World/keep", "/World/Group", "/World/Bare" }) {
+        EXPECT_FALSE(authorsVisibility(path)) << path;
+    }
+}
+
 TEST_F(USDMergePruneTest, PruneUnselectedWithNoMatchPrunesEverythingQuietly)
 {
     NodePtr world = worldABC();

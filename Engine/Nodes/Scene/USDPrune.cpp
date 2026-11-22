@@ -25,6 +25,9 @@
 
 #include "USDPrune.h"
 
+#include <algorithm>
+#include <list>
+#include <mutex>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -36,6 +39,7 @@
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
+#include "Engine/SceneLoadSet.h"
 
 #include <pxr/usd/usdLux/boundableLightBase.h>
 #include <pxr/usd/usdLux/lightFilter.h>
@@ -126,11 +130,29 @@ private:
     U64 _count;
 };
 
+struct IsolateFrame {
+    PXR_NS::SdfPath path;
+    // In the kept set: left alone with everything below it.
+    bool kept = false;
+    // A prim below is kept.
+    bool holdsKept = false;
+    // Its children cannot be authored on: an instance, or an unloaded payload.
+    bool leaf = false;
+    // Hiding it hides something: it can be drawn, or it is a leaf, which can hold what can.
+    bool hideable = false;
+    // The prune roots found below it, when it holds a kept prim.
+    std::vector<PXR_NS::SdfPath> roots;
+    // What pruning each child holding no kept prim authors on.
+    std::vector<PXR_NS::SdfPath> candidates;
+};
+
 /**
  * The highest prims of stage off every path to matches and to the prims keeps names: what
- * isolating matches prunes. In a partial evaluation an unloaded payload stays when the pattern
- * can reach it (reach). Hide replaces a root that cannot be drawn by the highest prims below it
- * that can. False when aborted turned true.
+ * isolating matches prunes, sorted. In a partial evaluation an unloaded payload stays when the
+ * pattern can reach it (reach). An instance is kept whole when it holds a kept prim, since USD
+ * cannot author inside it. Hide replaces a root that cannot be drawn by the highest prims below
+ * it that can, or that hold what an instance or an unloaded payload draws. False when aborted
+ * turned true.
  **/
 bool
 findIsolateRoots(const PXR_NS::UsdStageRefPtr& stage,
@@ -143,80 +165,165 @@ findIsolateRoots(const PXR_NS::UsdStageRefPtr& stage,
                  std::vector<PXR_NS::SdfPath>* roots)
 {
     AbortPoll poll(aborted);
-    PathSet kept(matches.begin(), matches.end());
-
-    if (partial || keeps.any()) {
-        std::vector<PXR_NS::SdfPath> extra;
-        PXR_NS::UsdPrimRange range = stage->Traverse(isolatePredicate());
-        for (PXR_NS::UsdPrimRange::iterator it = range.begin(); it != range.end(); ++it) {
-            if (poll()) {
-                return false;
-            }
-            const PXR_NS::SdfPath path = it->GetPath();
-            if (kept.count(path)) {
-                it.PruneChildren();
-            } else if (partial && isUnloadedPayload(*it)) {
-                if (reachTouches(path, reach)) {
-                    extra.push_back(path);
-                }
-                it.PruneChildren();
-            } else if (isKeptType(*it, keeps)) {
-                extra.push_back(path);
-                it.PruneChildren();
-            }
-        }
-        kept.insert(extra.begin(), extra.end());
-    }
-
-    PathSet above;
-    for (const PXR_NS::SdfPath& path : kept) {
+    const PathSet matched(matches.begin(), matches.end());
+    PathSet aboveMatches;
+    for (const PXR_NS::SdfPath& path : matches) {
         for (PXR_NS::SdfPath parent = path.GetParentPath(); !parent.IsEmpty() && !parent.IsAbsoluteRootPath(); parent = parent.GetParentPath()) {
-            if (!above.insert(parent).second) {
+            if (!aboveMatches.insert(parent).second) {
                 break;
             }
         }
     }
+    // Only kept types and reachable unloaded payloads are found by looking below a prim.
+    const bool searchBelow = partial || keeps.any();
 
-    std::vector<PXR_NS::SdfPath> found;
-    PXR_NS::UsdPrimRange range = stage->Traverse(isolatePredicate());
-    // An instance's children are not traversed: USD cannot author inside it, so an instance
-    // holding a kept prim is kept whole.
+    std::vector<IsolateFrame> stack(1);
+    stack.front().holdsKept = true;
+    PXR_NS::UsdPrimRange range = PXR_NS::UsdPrimRange::PreAndPostVisit(stage->GetPseudoRoot(), PXR_NS::UsdTraverseInstanceProxies(isolatePredicate()));
     for (PXR_NS::UsdPrimRange::iterator it = range.begin(); it != range.end(); ++it) {
         if (poll()) {
             return false;
         }
-        const PXR_NS::SdfPath path = it->GetPath();
-        if (above.count(path)) {
+        const PXR_NS::UsdPrim& prim = *it;
+        if (prim.IsPseudoRoot()) {
             continue;
         }
-        it.PruneChildren();
-        if (kept.count(path)) {
-            continue;
-        }
-        if (!hide || it->IsA<PXR_NS::UsdGeomImageable>()) {
-            found.push_back(path);
-            continue;
-        }
-        // Hiding a prim that cannot be drawn hides nothing below it.
-        PXR_NS::UsdPrimRange below(*it, isolatePredicate());
-        for (PXR_NS::UsdPrimRange::iterator sub = below.begin(); sub != below.end(); ++sub) {
-            if (poll()) {
-                return false;
+        if (!it.IsPostVisit()) {
+            IsolateFrame frame;
+            frame.path = prim.GetPath();
+            const bool unloaded = partial && isUnloadedPayload(prim);
+            frame.leaf = prim.IsInstance() || unloaded;
+            frame.hideable = frame.leaf || prim.IsA<PXR_NS::UsdGeomImageable>();
+            if (matched.count(frame.path) || (frame.leaf && aboveMatches.count(frame.path))) {
+                frame.kept = true;
+            } else if (unloaded) {
+                frame.kept = reachTouches(frame.path, reach);
+            } else if (isKeptType(prim, keeps)) {
+                frame.kept = true;
             }
-            if (sub->IsA<PXR_NS::UsdGeomImageable>()) {
-                found.push_back(sub->GetPath());
-                sub.PruneChildren();
+            const bool descend = !frame.kept && (searchBelow || aboveMatches.count(frame.path) || (hide && !frame.hideable));
+            if (!descend) {
+                it.PruneChildren();
             }
+            stack.push_back(frame);
+            continue;
+        }
+
+        if (stack.size() < 2) {
+            continue;
+        }
+        IsolateFrame frame = std::move(stack.back());
+        stack.pop_back();
+        IsolateFrame& parent = stack.back();
+        if (frame.leaf && frame.holdsKept) {
+            frame.kept = true;
+        }
+        if (frame.kept) {
+            parent.holdsKept = true;
+        } else if (frame.holdsKept) {
+            parent.holdsKept = true;
+            parent.roots.insert(parent.roots.end(), frame.roots.begin(), frame.roots.end());
+            parent.roots.insert(parent.roots.end(), frame.candidates.begin(), frame.candidates.end());
+        } else if (!hide || frame.hideable) {
+            parent.candidates.push_back(frame.path);
+        } else {
+            // Hiding a prim that cannot be drawn hides nothing below it.
+            parent.candidates.insert(parent.candidates.end(), frame.candidates.begin(), frame.candidates.end());
         }
     }
-    *roots = found;
+    IsolateFrame& top = stack.front();
+    top.roots.insert(top.roots.end(), top.candidates.begin(), top.candidates.end());
+    std::sort(top.roots.begin(), top.roots.end());
+    *roots = std::move(top.roots);
 
     return true;
 } // findIsolateRoots
+// Evaluation contexts isolating's prune roots are kept for at once.
+const std::size_t kIsolateCacheEntries = 4;
 } // anonymous namespace
+
+struct USDPrune::IsolateCache {
+    struct Entry {
+        U64 context = 0;
+        ScenePayload upstream;
+        SceneLoadSetPtr loadSet;
+        std::string pattern;
+        // The Mode and the Keep checkboxes.
+        U64 settings = 0;
+        std::vector<PXR_NS::SdfPath> targets;
+    };
+
+    std::mutex mutex;
+    // Most recently used first.
+    std::list<Entry> entries;
+
+    // What isolating prunes for these, when an evaluation remembered it.
+    bool find(const ScenePayload& upstream,
+              const SceneEvaluationContext& context,
+              const std::string& pattern,
+              U64 settings,
+              std::vector<PXR_NS::SdfPath>* targets)
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+
+        for (std::list<Entry>::iterator it = entries.begin(); it != entries.end(); ++it) {
+            if ((it->pattern != pattern) || (it->settings != settings) || !it->upstream.isSameStack(upstream)
+                || (it->upstream.getStackHash() != upstream.getStackHash()) || !SceneEvaluationContext(0, it->loadSet).hasSameLoadSet(context)) {
+                continue;
+            }
+            *targets = it->targets;
+            Entry entry = *it;
+            entry.context = context.id;
+            entry.upstream = upstream;
+            entry.loadSet = context.loadSet;
+            entries.erase(it);
+            removeContext(context.id);
+            entries.push_front(entry);
+
+            return true;
+        }
+
+        return false;
+    }
+
+    void store(const ScenePayload& upstream,
+               const SceneEvaluationContext& context,
+               const std::string& pattern,
+               U64 settings,
+               const std::vector<PXR_NS::SdfPath>& targets)
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+
+        removeContext(context.id);
+        Entry entry;
+        entry.context = context.id;
+        entry.upstream = upstream;
+        entry.loadSet = context.loadSet;
+        entry.pattern = pattern;
+        entry.settings = settings;
+        entry.targets = targets;
+        entries.push_front(entry);
+        if (entries.size() > kIsolateCacheEntries) {
+            entries.pop_back();
+        }
+    }
+
+private:
+    void removeContext(U64 id)
+    {
+        for (std::list<Entry>::iterator it = entries.begin(); it != entries.end(); ++it) {
+            if (it->context == id) {
+                entries.erase(it);
+
+                return;
+            }
+        }
+    }
+};
 
 USDPrune::USDPrune(NodePtr node)
     : NativeEffectBase(node)
+    , _isolateCache(new IsolateCache)
 {
 }
 
@@ -357,78 +464,87 @@ USDPrune::renderScene(const SceneRenderActionArgs& args,
     keeps.materials = boolValue(_keepMaterials);
     keeps.renderSettings = boolValue(_keepRenderSettings);
 
-    // What isolating prunes depends on every loaded prim, not only on where the pattern reaches.
-    if (isolate && args.context.reach) {
-        args.context.reach->add({ std::string("/") });
-    }
-
-    SceneNodeAuthoring::PatternFilter filter;
-    if ((mode == eModeHide) && !isolate) {
-        filter = [](const PXR_NS::UsdPrim& prim) {
-            return prim.IsA<PXR_NS::UsdGeomImageable>();
-        };
-    }
-    const U64 filterKey = isolate ? (U64)eModeDeactivate : (U64)mode;
-    SceneQueryPool::Lease lease;
-    SceneNodeAuthoring::PatternMatches found;
-    if (!SceneNodeAuthoring::matchPattern(&_matches, upstream, pattern, args.context, filterKey, filter, &lease, &found, errorMessage)) {
-        setPersistentMessage(eMessageTypeError, *errorMessage);
-
-        return eStatusFailed;
-    }
     const bool blank = PrimSelector::isBlank(pattern);
-    if (found.paths.empty() && !isolate && !upstream.isEmpty() && !blank) {
-        *outputScene = upstream;
-        setPersistentMessage(eMessageTypeWarning,
-                             SceneNodeAuthoring::describeNoMatch(pattern, found, tr("the scene is passed through unchanged").toStdString()));
-
-        return eStatusOK;
-    }
-    if (found.paths.empty() && (!isolate || blank || upstream.isEmpty())) {
-        *outputScene = upstream;
-        clearPersistentMessage(false);
-
-        return eStatusOK;
-    }
-
+    const bool isolating = isolate && !blank && !upstream.isEmpty();
+    const U64 isolateSettings = (U64)mode | (keeps.lights ? 2 : 0) | (keeps.cameras ? 4 : 0) | (keeps.materials ? 8 : 0) | (keeps.renderSettings ? 16 : 0);
     std::vector<PXR_NS::SdfPath> targets;
-    if (isolate) {
-        // A viewer never looks into an unloaded payload for a match, so with no loaded match
-        // the pattern keeps nothing and every unloaded branch is pruned with the rest.
-        std::vector<PXR_NS::SdfPath> reachPaths;
-        if (!found.paths.empty()) {
-            PrimSelector::Reach reach;
-            if (!PrimSelector::getReach(pattern, &reach, errorMessage)) {
-                setPersistentMessage(eMessageTypeError, *errorMessage);
+    bool remembered = false;
+    if (isolating) {
+        // What isolating prunes depends on every loaded prim, not only on where the pattern reaches.
+        if (args.context.reach) {
+            args.context.reach->add({ std::string("/") });
+        }
+        remembered = _isolateCache->find(upstream, args.context, pattern, isolateSettings, &targets);
+    }
 
-                return eStatusFailed;
-            }
-            for (const std::string& prefix : reach.prefixes) {
-                reachPaths.push_back(PXR_NS::SdfPath(prefix));
-            }
+    if (!remembered) {
+        SceneNodeAuthoring::PatternFilter filter;
+        if ((mode == eModeHide) && !isolate) {
+            filter = [](const PXR_NS::UsdPrim& prim) {
+                return prim.IsA<PXR_NS::UsdGeomImageable>();
+            };
         }
-        if (!lease.isValid()) {
-            lease = SceneQueryPool::instance().borrow(upstream, args.context.loadSet, errorMessage);
-        }
-        const PXR_NS::UsdStageRefPtr stage = lease.getStage();
-        if (!stage) {
-            if (errorMessage->empty()) {
-                *errorMessage = tr("USD could not compose the input scene.").toStdString();
-            }
+        const U64 filterKey = isolate ? (U64)eModeDeactivate : (U64)mode;
+        SceneQueryPool::Lease lease;
+        SceneNodeAuthoring::PatternMatches found;
+        if (!SceneNodeAuthoring::matchPattern(&_matches, upstream, pattern, args.context, filterKey, filter, &lease, &found, errorMessage, isolate)) {
             setPersistentMessage(eMessageTypeError, *errorMessage);
 
             return eStatusFailed;
         }
-        const std::function<bool()> abortedFunc = [this]() {
-            return aborted();
-        };
-        if (!findIsolateRoots(stage, found.paths, reachPaths, !args.context.includesEverything(), keeps, mode == eModeHide, abortedFunc, &targets)) {
-            return eStatusFailed;
+        if (!isolating) {
+            if (found.paths.empty() && !isolate && !upstream.isEmpty() && !blank) {
+                *outputScene = upstream;
+                setPersistentMessage(eMessageTypeWarning,
+                                     SceneNodeAuthoring::describeNoMatch(pattern, found, tr("the scene is passed through unchanged").toStdString()));
+
+                return eStatusOK;
+            }
+            targets = found.paths;
+        } else {
+            if (!lease.isValid()) {
+                lease = SceneQueryPool::instance().borrow(upstream, args.context.loadSet, errorMessage);
+            }
+            const PXR_NS::UsdStageRefPtr stage = lease.getStage();
+            if (!stage) {
+                if (errorMessage->empty()) {
+                    *errorMessage = tr("USD could not compose the input scene.").toStdString();
+                }
+                setPersistentMessage(eMessageTypeError, *errorMessage);
+
+                return eStatusFailed;
+            }
+            // A plain path below an unloaded payload is found without its prim; the viewer never
+            // looks into the payload, so it is no loaded match.
+            std::vector<PXR_NS::SdfPath> matches;
+            for (const PXR_NS::SdfPath& path : found.paths) {
+                if (stage->GetPrimAtPath(path)) {
+                    matches.push_back(path);
+                }
+            }
+            // With no loaded match the pattern keeps nothing, and every unloaded branch is pruned
+            // with the rest.
+            std::vector<PXR_NS::SdfPath> reachPaths;
+            if (!matches.empty()) {
+                PrimSelector::Reach reach;
+                if (!PrimSelector::getReach(pattern, &reach, errorMessage)) {
+                    setPersistentMessage(eMessageTypeError, *errorMessage);
+
+                    return eStatusFailed;
+                }
+                for (const std::string& prefix : reach.prefixes) {
+                    reachPaths.push_back(PXR_NS::SdfPath(prefix));
+                }
+            }
+            const std::function<bool()> abortedFunc = [this]() {
+                return aborted();
+            };
+            if (!findIsolateRoots(stage, matches, reachPaths, !args.context.includesEverything(), keeps, mode == eModeHide, abortedFunc, &targets)) {
+                return eStatusFailed;
+            }
+            _isolateCache->store(upstream, args.context, pattern, isolateSettings, targets);
         }
-    } else {
-        targets = found.paths;
     }
-    lease.release();
     if (targets.empty()) {
         *outputScene = upstream;
         clearPersistentMessage(false);
@@ -471,8 +587,6 @@ USDPrune::renderScene(const SceneRenderActionArgs& args,
     // upstream that keeps them re-stacks the layer without authoring it again.
     ContentHasher facts;
     SceneNodeAuthoring::appendUpstreamMetadata(upstream, &facts);
-    facts.appendU64(isolate ? 1 : 0);
-    facts.appendU64(isolate ? ((keeps.lights ? 1 : 0) | (keeps.cameras ? 2 : 0) | (keeps.materials ? 4 : 0) | (keeps.renderSettings ? 8 : 0)) : 0);
     facts.appendU64(targets.size());
     for (const PXR_NS::SdfPath& path : targets) {
         facts.appendString(path.GetString());

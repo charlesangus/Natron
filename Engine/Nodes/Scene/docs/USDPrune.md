@@ -31,9 +31,11 @@ by Deactivate or Hide as Mode says.
   mode they stay visible, unless the input already made one invisible.
 - In Hide mode, a pruned prim that cannot be drawn, such as a material or a
   typeless prim, is not hidden itself; the highest prims below it that can be
-  drawn are hidden instead.
-- USD cannot author inside an instance, so an instance holding a match is kept
-  whole, and an instance off every kept path is pruned as one prim.
+  drawn are hidden instead. An instance or an unloaded payload is hidden itself
+  whatever its type, since its contents cannot be hidden one by one.
+- Matches and kept types are looked for inside instances too. USD cannot
+  author inside an instance, so an instance holding a match or a kept prim is
+  kept whole, and an instance off every kept path is pruned as one prim.
 
 With Prune Unselected on, a pattern that matches nothing prunes everything,
 without a warning: only what the Keep checkboxes keep survives.

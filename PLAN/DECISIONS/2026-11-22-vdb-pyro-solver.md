@@ -1,0 +1,9 @@
+# VDB pyro solver
+
+2026-11-22, /cat-plan with the user. A 3D smoke and fire solver on native geometry, shipped as F35 - Pyro under E22 - Simulation And Solvers, waiting for F18 - Geometry Loops And Solver and F22 - Native VDB to land.
+
+- **Sparse tiles, GPU and CPU (user).** The sim runs on its own sparse tile grid: dense 8³ tiles (one OpenVDB leaf each, so conversion is a leaf copy), with the active tile set regrown every step from reference fields, padding and velocity. Kernels are Slang, with a multithreaded CPU path of the same kernels, the pattern M410 - 2D Fluid Solver Core uses; placement is weight-based (M239). Rejected: OpenVDB trees as the live fields (CPU only; `VolumeAdvection` and PCG too slow at production sizes, and a GPU path would be a rewrite), and a single dense resizing box (memory follows the bounding box, not the smoke). Dense mode is still offered, as every tile inside the bounds active.
+- **VDB at the boundaries.** Sources, colliders and solver output are M417 - VDB Volume Primitive grids. The solver converts sources into tiles each substep and its fields back into named VDB primitives each frame, which M404 - Geometry Solver's sim cache stores and `GeoToUSD` hands to renderers as content-hashed `.vdb` files.
+- **One `PyroSolver` geometry node (user),** with the full SOP Pyro Solver control set, tab by tab; companions `PyroSource`, `VolumeRasterizeAttributes`, `PyroBakeVolume` and `PyroPostProcess`. No microsolver block. Frame-to-frame state and caching come from M404's solver core, so scrubbing, reset-on-edit and disk spill match the Solver SOP.
+- **Pressure:** multigrid-preconditioned CG over the sparse tile hierarchy; inactive space is vacuum (pressure 0), bounds walls and colliders are Neumann with the solid's velocity. The single-V-cycle option skips CG.
+- **One Feature (user):** F35 - Pyro collects every pyro milestone into one PR and one UAT.

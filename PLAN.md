@@ -587,6 +587,15 @@ future core work has solid ground to build on.
 | M515 | Storm Oversample And Motion Blur | todo | - |  | E9 |  | | [M515-storm-oversample-and-motion-blur.md](PLAN/MILESTONES/M515-storm-oversample-and-motion-blur.md) |
 | M516 | Port Groups And Folding | todo | M351 |  | E9 | F2 | | [M516-port-groups-and-folding.md](PLAN/MILESTONES/M516-port-groups-and-folding.md) |
 | M517 | Storm Translucent Prim Ids | todo | - |  | E9 |  | | [M517-storm-translucent-prim-ids.md](PLAN/MILESTONES/M517-storm-translucent-prim-ids.md) |
+| M540 | Sparse Tile Field Core | todo | M417 |  | E22 | F35 | | [M540-sparse-tile-field-core.md](PLAN/MILESTONES/M540-sparse-tile-field-core.md) |
+| M541 | Pyro Advection And Pressure | todo | M540 |  | E22 | F35 | | [M541-pyro-advection-and-pressure.md](PLAN/MILESTONES/M541-pyro-advection-and-pressure.md) |
+| M542 | PyroSolver Node And Sourcing | todo | M541, M404 |  | E22 | F35 | | [M542-pyrosolver-node-and-sourcing.md](PLAN/MILESTONES/M542-pyrosolver-node-and-sourcing.md) |
+| M543 | Pyro Fields And Combustion | todo | M542 |  | E22 | F35 | | [M543-pyro-fields-and-combustion.md](PLAN/MILESTONES/M543-pyro-fields-and-combustion.md) |
+| M544 | Pyro Shaping Forces | todo | M543 |  | E22 | F35 | | [M544-pyro-shaping-forces.md](PLAN/MILESTONES/M544-pyro-shaping-forces.md) |
+| M545 | Pyro Collisions | todo | M543, M418 |  | E22 | F35 | | [M545-pyro-collisions.md](PLAN/MILESTONES/M545-pyro-collisions.md) |
+| M546 | PyroSource And Rasterize | todo | M417, M359 |  | E22 | F35 | | [M546-pyrosource-and-rasterize.md](PLAN/MILESTONES/M546-pyrosource-and-rasterize.md) |
+| M547 | Pyro Look And Post-Process | todo | M543, M347 |  | E22 | F35 | | [M547-pyro-look-and-post-process.md](PLAN/MILESTONES/M547-pyro-look-and-post-process.md) |
+| M548 | Pyro Quick Setups And Checkpoints | todo | M544, M545, M546, M547 |  | E22 | F35 | | [M548-pyro-quick-setups-and-checkpoints.md](PLAN/MILESTONES/M548-pyro-quick-setups-and-checkpoints.md) |
 
 # Epics
 
@@ -657,6 +666,7 @@ future core work has solid ground to build on.
 | F32 | Channel Networks | open |  |  | feature/f32-channel-networks | CHOP-style channel networks that drive knobs and shapes, with operators, Channel VOP, every source and channel-based animation layers. |
 | F33 | Graph Diff And Merge | open | bosley-executor |  | feature/f33-graph-diff-and-merge | Diff and merge two versions of a graph, with a resolution UI, accepted in one UAT. |
 | F34 | Scene Lens Distortion | open |  |  | feature/f34-scene-lens-distortion | Camera lens distortion carried in the USD scene, authored on cameras and used by LensDistortion and the projection nodes. |
+| F35 | Pyro | open |  |  | feature/f35-pyro | A sparse-tile smoke and fire solver on native VDB volumes, with sourcing, shaping, collisions, look baking and quick setups, on GPU and CPU. Waits for F18 - Geometry Loops And Solver and F22 - Native VDB to land. |
 
 # Open questions
 - **M365 - Delegate Display Transform (user, 2026-11-22):** apply the camera's exposure in the viewer when looking through a camera; add a toggle button to the right of the viewer's exposure (gain) slider to turn it on/off, and a non-editable label next to it showing the camera's exposure value. Screenshots to re-send after.

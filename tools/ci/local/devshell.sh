@@ -35,6 +35,11 @@
 #   rm -rf .ccache
 #   docker volume rm "${NATRON_DEV_CONTAINER:-natron-dev}-home"
 #
+# An optional shared ccache remote storage is read from .local/ccache-remote in
+# the main checkout (see "Remote cache" in tools/ci/local/README.md): the URL is
+# url= or else docker_url=, the network is network= or else, for docker_url,
+# docker_default. Without that file every build stays local-only.
+#
 # The container this script creates always has NATRON_IN_CONTAINER=1 set (see
 # the `docker run -e NATRON_IN_CONTAINER=1 ...` below). build.sh/test.sh use
 # that as the explicit, unambiguous "we are already inside the dev container,
@@ -93,6 +98,72 @@ CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-80G}"
 # works the same from any worktree.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." >/dev/null 2>&1 && pwd)"
+
+# The remote cache config lives in the main checkout, found through the git
+# common dir, so every worktree shares one file. The URL carries the cache
+# password, so neither it nor the network name is ever printed, and the URL
+# reaches docker exec through the environment rather than its argv.
+CCACHE_REMOTE_FILE=""
+if COMMON_DIR="$(git -c safe.directory='*' -C "${REPO_ROOT}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" \
+        && [[ -n "${COMMON_DIR}" && -d "$(dirname "${COMMON_DIR}")" ]]; then
+    CCACHE_REMOTE_FILE="$(dirname "${COMMON_DIR}")/.local/ccache-remote"
+else
+    CCACHE_REMOTE_FILE="${REPO_ROOT}/.local/ccache-remote"
+fi
+CCACHE_REMOTE_URL=""
+CCACHE_REMOTE_NETWORK=""
+CCACHE_REMOTE_DOCKER_URL=""
+if [[ -f "${CCACHE_REMOTE_FILE}" ]]; then
+    if [[ -r "${CCACHE_REMOTE_FILE}" ]]; then
+        while IFS= read -r line || [[ -n "${line}" ]]; do
+            line="${line%$'\r'}"
+            [[ "${line}" =~ ^[[:space:]]*(#|$) ]] && continue
+            if [[ "${line}" != *=* ]]; then
+                echo "devshell.sh: ignoring a line without KEY=value in .local/ccache-remote" >&2
+                continue
+            fi
+            key="${line%%=*}"
+            key="${key//[[:space:]]/}"
+            value="${line#*=}"
+            value="${value#"${value%%[![:space:]]*}"}"
+            value="${value%"${value##*[![:space:]]}"}"
+            case "${key}" in
+                url) CCACHE_REMOTE_URL="${value}" ;;
+                network) CCACHE_REMOTE_NETWORK="${value}" ;;
+                docker_url) CCACHE_REMOTE_DOCKER_URL="${value}" ;;
+                # Other consumers of the same file read these.
+                user|password|host_url|wan_url) ;;
+                *) echo "devshell.sh: ignoring unknown key '${key}' in .local/ccache-remote" >&2 ;;
+            esac
+        done <"${CCACHE_REMOTE_FILE}"
+        # docker_url is only reachable from the server's docker network, so it
+        # brings that network's default compose name along unless network= says
+        # otherwise; an explicit url= is taken to need no network by default.
+        if [[ -z "${CCACHE_REMOTE_URL}" && -n "${CCACHE_REMOTE_DOCKER_URL}" ]]; then
+            CCACHE_REMOTE_URL="${CCACHE_REMOTE_DOCKER_URL}"
+            [[ -n "${CCACHE_REMOTE_NETWORK}" ]] || CCACHE_REMOTE_NETWORK="docker_default"
+        fi
+        if [[ -z "${CCACHE_REMOTE_URL}" ]]; then
+            echo "devshell.sh: .local/ccache-remote has neither url= nor docker_url=; the remote cache is off" >&2
+            CCACHE_REMOTE_NETWORK=""
+        fi
+    else
+        echo "devshell.sh: .local/ccache-remote is not readable; the remote cache is off" >&2
+    fi
+fi
+EXEC_ENV_ARGS=(-e CCACHE_MAXSIZE="${CCACHE_MAXSIZE}")
+if [[ -n "${CCACHE_REMOTE_URL}" ]]; then
+    # shellcheck source=tools/ci/ccache-remote-layout.sh disable=SC1091
+    source "${REPO_ROOT}/tools/ci/ccache-remote-layout.sh"
+    CCACHE_REMOTE_STORAGE="$(ccache_remote_with_bazel_layout "${CCACHE_REMOTE_URL}")"
+    if [[ -n "${CCACHE_REMOTE_STORAGE}" ]]; then
+        export CCACHE_REMOTE_STORAGE
+        EXEC_ENV_ARGS+=(-e CCACHE_REMOTE_STORAGE)
+    else
+        echo "devshell.sh: the .local/ccache-remote url is not an http:// or https:// URL; the remote cache is off" >&2
+        CCACHE_REMOTE_NETWORK=""
+    fi
+fi
 
 # Bind-mount ccache from a gitignored dir under the checked-out repo (same
 # ${CCACHE_DIR: deliberately under the workspace} rationale as
@@ -199,7 +270,10 @@ if [[ "${STATE}" == "missing" ]]; then
         echo "devshell.sh: pulling ${IMAGE}..." >&2
         if ! docker pull "${IMAGE}" >&2; then
             echo "devshell.sh: pull failed; building ${IMAGE} locally..." >&2
-            docker build -f "${SCRIPT_DIR}/Dockerfile" -t "${IMAGE}" "${SCRIPT_DIR}" >&2
+            DOCKER_BUILDKIT=1 docker build \
+                --build-arg BUILDKIT_INLINE_CACHE=1 \
+                --cache-from "${IMAGE%:*}:latest" \
+                -f "${SCRIPT_DIR}/Dockerfile" -t "${IMAGE}" "${SCRIPT_DIR}" >&2
         fi
     fi
     docker tag "${IMAGE}" "${LOCAL_IMAGE}"
@@ -293,15 +367,31 @@ else
     fi
 fi
 
+# The default bridge network cannot reach a cache server that is only
+# published on the host's LAN, so the container joins the server's own
+# network. Attaching is live, and a failure only costs the remote cache:
+# ccache falls back to local-only when the server is unreachable.
+if [[ -n "${CCACHE_REMOTE_NETWORK}" ]]; then
+    attached="$(docker container inspect -f '{{range $name, $net := .NetworkSettings.Networks}}{{$name}}{{"\n"}}{{end}}' "${CONTAINER_NAME}" 2>/dev/null || true)"
+    if ! grep -qxF -- "${CCACHE_REMOTE_NETWORK}" <<<"${attached}"; then
+        if docker network connect "${CCACHE_REMOTE_NETWORK}" "${CONTAINER_NAME}" >/dev/null 2>&1; then
+            echo "devshell.sh: attached '${CONTAINER_NAME}' to the remote cache network" >&2
+        else
+            echo "devshell.sh: could not attach '${CONTAINER_NAME}' to the remote cache network; ccache may run local-only" >&2
+        fi
+    fi
+fi
+
 # --- run the requested command ----------------------------------------------
 # Note: the base image's entrypoint prints a large NVIDIA/CUDA banner, but
 # that only runs once, at container creation/start above (it lands in
 # `docker logs <container>`, not here). `docker exec` never re-invokes the
 # entrypoint, so it never pollutes the output below -- this is also why we
 # don't need a TTY for the non-interactive path.
-# The container's env is fixed at creation, so pass the current size on every exec.
+# The container's env is fixed at creation, so the current cache size and
+# remote storage are passed on every exec.
 if [[ "$#" -eq 0 ]]; then
-    exec docker exec -it -e CCACHE_MAXSIZE="${CCACHE_MAXSIZE}" "${CONTAINER_NAME}" bash -l
+    exec docker exec -it "${EXEC_ENV_ARGS[@]}" "${CONTAINER_NAME}" bash -l
 else
-    exec docker exec -i -e CCACHE_MAXSIZE="${CCACHE_MAXSIZE}" "${CONTAINER_NAME}" "$@"
+    exec docker exec -i "${EXEC_ENV_ARGS[@]}" "${CONTAINER_NAME}" "$@"
 fi

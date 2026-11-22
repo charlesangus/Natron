@@ -12,7 +12,7 @@ Give port networks their presentation inside a builder's graph tab: left-to-righ
 - Read-only value summaries (a swatch or a number) beside unconnected promoted ports.
 - Bezier pipes with horizontal tangents, coloured by the source port's type, thicker for arrays, a two-colour gradient where a type conversion happens.
 - Default content: promoted ports (key ports, or every linkable attribute for shaders with 12 ports or fewer) plus port-only attributes.
-- Dragging: start a pipe from any port, input or output; drag a pipe's input end to rewire; outputs fan out. Incompatible ports dim to about 30%, compatible ones get a halo, and a refused drop shows its reason in the status bar ("no shared target", "closure cannot feed color3").
+- Connecting (user, 2026-11-22): clicking an output port picks up a new pipe (outputs fan out); clicking an input port picks up its pipe, or a new one when unconnected; clicking a pipe picks it up by the end nearer the click, as on today's graph. Dropping on a port connects; dropping on empty space disconnects; shift-dropping on empty space opens the target-filtered Tab menu, and the new node's compatible ports (inputs or outputs, by the end being placed) are highlighted, the first is picked, and scroll or up/down moves the pipe between them. Incompatible ports dim to about 30%, compatible ones get a halo, and a refused drop shows its reason in the status bar ("no shared target", "closure cannot feed color3").
 - Promote and demote control beside each promotable knob in the panel; a connected port's knob greys out.
 - Tab lists the nodes of one of the container's targets plus Backdrop; Shift+Tab switches target. A builder's targets are Cycles and MoonRay.
 - Gestures inside: selection, copy and paste, delete, undo, Backdrops. A `MissingPluginNode` draws with ports from its stored inputs.
@@ -81,8 +81,8 @@ Give port networks their presentation inside a builder's graph tab: left-to-righ
 
 - [ ] M351.P2.T1 — Typed connection dragging
   - files: `Engine/Nodes/Network/PortTypes.{h,cpp}`, `Gui/PortNodeGui.cpp`, `Gui/NodeGraph10.cpp`, `Tests/Network/PortTypes_Test.cpp`, `Tests/gui/shader_graph_drag.py`
-  - approach: `PortTypes` answers whether an output port can connect to an input port, with a reason when it can't. Each target registers its implicit conversions (Cycles' and MoonRay's here); ports of nodes sharing no target never connect. A drag can start from any port; dragging a pipe's input end rewires it; outputs fan out. During a drag incompatible ports dim to about 30% and compatible ones get a halo. A refused drop changes nothing and shows the reason in the status bar. Kiss, shake, splice and insert don't run inside port graphs.
-  - verify: gtest — float to color on Cycles allowed, closure to float refused with "closure cannot feed float", Cycles to MoonRay refused with "no shared target"; an Xvfb script drags onto a compatible and an incompatible port, rewires an input end, and asserts the status-bar text; a screenshot of the dimming goes to the user.
+  - approach: `PortTypes` answers whether an output port can connect to an input port, with a reason when it can't. Each target registers its implicit conversions (Cycles' and MoonRay's here); ports of nodes sharing no target never connect. Clicking an output port picks up a new pipe; clicking an input port picks up its pipe, or a new one when unconnected; clicking a pipe picks it up by the nearer end. Dropping on a port connects; dropping on empty space disconnects. During a drag incompatible ports dim to about 30% and compatible ones get a halo. A refused drop changes nothing and shows the reason in the status bar. Kiss, shake, splice and insert don't run inside port graphs.
+  - verify: gtest — float to color on Cycles allowed, closure to float refused with "closure cannot feed float", Cycles to MoonRay refused with "no shared target"; an Xvfb script drags onto a compatible and an incompatible port, picks a pipe up by each end, drops one on empty space (disconnected), and asserts the status-bar text; a screenshot of the dimming goes to the user.
   - size: M
 
 - [ ] M351.P2.T2 — Promote from the panel
@@ -111,6 +111,12 @@ Give port networks their presentation inside a builder's graph tab: left-to-righ
   - verify: an Xvfb script loads a project naming an unknown shader, asserts its connections are drawn and that saving keeps them; a screenshot goes to the user.
   - size: M
 
+- [ ] M351.P3.T3 — Shift-drop creates a wired node
+  - files: `Gui/NodeGraph10.cpp`, `Gui/TabMenuBridge.cpp`, `Gui/PortNodeGui.cpp`, `Tests/gui/shader_graph_shift_drop.py`
+  - approach: shift-dropping a picked-up pipe on empty space opens the Tab menu filtered to nodes with a shared target and a type-compatible port (via `PortTypes`). The created node appears at the drop point with its compatible ports highlighted — inputs when the pipe's output end is held, outputs when its input end is — the first one connected, and scroll or up/down move the connection to the next or previous compatible port until the user clicks or presses Enter/Escape. Escape cancels the creation and drops the pipe as a disconnect. One undo step covers the creation and the wiring. Written against `ConnectorLayout` so M550 - Classic Graph Shift-Drop Creation can reuse it on radial nodes.
+  - verify: an Xvfb script shift-drops a closure pipe, picks a BSDF, cycles with the down key, and asserts the final input; undo removes node and pipe; a screenshot of the highlight goes to the user.
+  - size: M
+
 **Verification gate:** release gate green per `.local/build-mode`; `PortTypes_Test` passes; `graph_connector_goldens.py` and every `Tests/gui/shader_graph_*.py` pass under Xvfb at 1920x1080; the user OKs each screenshot.
 
 ## Decisions
@@ -122,3 +128,4 @@ Give port networks their presentation inside a builder's graph tab: left-to-righ
 - 2026-11-17 — **Generic presentation (user):** port node, edge, type registry and builder base are context-neutral so VOP and channel containers reuse them; shader-specific code lives only in the shader target registrations.
 - 2026-11-22 — **Ports as the single connection model (user, via M349 - Shader Node Spike):** `ConnectorLayout` per `NodeGui`, classic nodes refactored first to a pixel-identical `RadialLayout`, port nodes on `PortListLayout`; replaces the sibling `PortEdge`. Phase 351.4 was added for the refactor and runs first; it is numbered 351.4 because phase and task IDs are never renumbered (cat-plan).
 - 2026-11-22 — **Look as proposed (user):** type colours, shapes, bezier pipes, compatible-port feedback with a status-bar reason, category header colours, read-only summaries, no inline widgets. Groups, folding and search-to-connect move to M516 - Port Groups And Folding, which stays in F2 - Native Shader Networks (user, 2026-11-22).
+- 2026-11-22 — **Connection gestures (user):** click-to-pick-up on ports and pipes, empty drop disconnects, shift-drop opens Tab and cycles the new node's compatible ports; replaces the earlier "drop on empty space opens the menu" and ctrl-drag fan-out. The same gesture comes to the classic graph and plain Tab creation in M550 - Classic Graph Shift-Drop Creation. Design note updated in d518cbe66.

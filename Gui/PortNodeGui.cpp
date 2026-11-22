@@ -4,6 +4,7 @@
 
 #include <QBrush>
 #include <QGraphicsEllipseItem>
+#include <QGraphicsLineItem>
 #include <QGraphicsSimpleTextItem>
 #include <QPainterPath>
 #include <QPen>
@@ -34,8 +35,9 @@ PortEdge::PortEdge(PortNodeGui* s, int o, PortNodeGui* d, int i, QGraphicsItem* 
     , dst(d)
     , inputIndex(i)
 {
-    setPen(QPen(QColor(200, 200, 200), 1.5));
+    setPen(QPen(QColor(230, 230, 230), 2.));
     setZValue(1);
+    setData(0, QStringLiteral("PortEdge"));
     src->attachedEdges.push_back(this);
     dst->attachedEdges.push_back(this);
     updatePath();
@@ -54,6 +56,10 @@ PortEdge::updatePath()
 
 PortNodeGui::PortNodeGui(QGraphicsItem* parent)
     : NodeGui(parent)
+    , _headerH(kHeaderH)
+    , _layingOut(false)
+    , _laidOutW(0)
+    , _laidOutH(0)
 {
 }
 
@@ -73,29 +79,21 @@ PortNodeGui::getInitialSize(int* w, int* h) const
     PortTestNode* fx = portEffect(getNode());
     int rows = fx ? (int)std::max(fx->getPorts().size(), fx->layout().outputs.size()) : 1;
     *w = (int)kWidth;
-    *h = (int)(kHeaderH + rows * kRowH + 6);
-}
-
-QRectF
-PortNodeGui::bodyRect() const
-{
-    double w, h;
-    getSize(&w, &h);
-    return QRectF(mapFromParent(pos()), QSizeF(w, h));
+    *h = (int)(_headerH + rows * kRowH + 6);
 }
 
 QPointF
 PortNodeGui::inputAnchor(int i) const
 {
     QRectF r = bodyRect();
-    return mapToScene(QPointF(r.left(), r.top() + kHeaderH + (i + 0.5) * kRowH));
+    return mapToScene(QPointF(r.left(), r.top() + _headerH + (i + 0.5) * kRowH));
 }
 
 QPointF
 PortNodeGui::outputAnchor(int o) const
 {
     QRectF r = bodyRect();
-    return mapToScene(QPointF(r.right(), r.top() + kHeaderH + (o + 0.5) * kRowH));
+    return mapToScene(QPointF(r.right(), r.top() + _headerH + (o + 0.5) * kRowH));
 }
 
 int
@@ -144,13 +142,26 @@ PortNodeGui::rebuildPorts()
         return;
     }
     int w, h;
+    _layingOut = true;
     getInitialSize(&w, &h);
     setSize(w, h);
+    // The framed name's height is only known once a resize has laid it out.
+    const double header = std::max(kHeaderH, (double)getFrameNameHeight() + 2.);
+    if (header != _headerH) {
+        _headerH = header;
+        getInitialSize(&w, &h);
+        setSize(w, h);
+    }
+    _layingOut = false;
     QRectF r = bodyRect();
+    QGraphicsLineItem* rule = new QGraphicsLineItem(r.left(), r.top() + _headerH - 1, r.right(), r.top() + _headerH - 1, this);
+    rule->setPen(QPen(QColor(40, 40, 40), 1.));
+    rule->setZValue(zValue() + 2);
+    _portItems.push_back(rule);
     std::vector<std::string> ports = fx->getPorts();
     for (std::size_t i = 0; i < ports.size(); ++i) {
         const PortTestAttribute* a = fx->findAttribute(ports[i]);
-        double y = r.top() + kHeaderH + i * kRowH;
+        double y = r.top() + _headerH + i * kRowH;
         QGraphicsEllipseItem* dot = new QGraphicsEllipseItem(r.left() - kDot / 2, y + (kRowH - kDot) / 2, kDot, kDot, this);
         dot->setBrush(a && a->type == "closure" ? QColor(90, 200, 120) : QColor(220, 200, 90));
         dot->setZValue(zValue() + 2);
@@ -164,7 +175,7 @@ PortNodeGui::rebuildPorts()
     const std::vector<PortTestOutput>& outs = fx->layout().outputs;
     for (std::size_t o = 0; o < outs.size(); ++o) {
         _outputNames.push_back(outs[o].name);
-        double y = r.top() + kHeaderH + o * kRowH;
+        double y = r.top() + _headerH + o * kRowH;
         QGraphicsEllipseItem* dot = new QGraphicsEllipseItem(r.right() - kDot / 2, y + (kRowH - kDot) / 2, kDot, kDot, this);
         dot->setBrush(QColor(120, 170, 230));
         dot->setZValue(zValue() + 2);
@@ -174,6 +185,28 @@ PortNodeGui::rebuildPorts()
         _portItems.push_back(dot);
         _portItems.push_back(t);
     }
+}
+
+void
+PortNodeGui::resizeExtraContent(int w,
+                                int h,
+                                bool /*forceResize*/)
+{
+    if (_layingOut) {
+        _laidOutW = w;
+        _laidOutH = h;
+        return;
+    }
+    if (_portItems.empty() || ((w == _laidOutW) && (h == _laidOutH))) {
+        return;
+    }
+    // NodeGui resizes on its own for label and name refreshes; the rows and pipes follow it.
+    QTimer::singleShot(0, this, [this]() {
+        rebuildPorts();
+        for (PortEdge* e : attachedEdges) {
+            e->updatePath();
+        }
+    });
 }
 
 void
@@ -191,11 +224,8 @@ PortNodeGui::rebuildEdges()
     if (!fx || !parentItem()) {
         return;
     }
+    hidePositionalArrows();
     for (int i = 0; i < node->getNInputs(); ++i) {
-        // The positional Edge still exists for selection and dragging; the prototype only draws over it.
-        if (Edge* arrow = getInputArrow(i)) {
-            arrow->setVisible(false);
-        }
         NodePtr up = node->getInput(i);
         if (!up) {
             continue;
@@ -206,6 +236,22 @@ PortNodeGui::rebuildEdges()
         }
         int o = upGui->outputIndexOf(fx->getOutputForInput(node->getInputLabel(i)));
         _inputEdges.push_back(new PortEdge(upGui, o, this, i, parentItem()));
+    }
+}
+
+void
+PortNodeGui::hidePositionalArrows()
+{
+    NodePtr node = getNode();
+    if (!node) {
+        return;
+    }
+    // NodeGui re-shows its positional input Edges on hover and selection, so they are made
+    // transparent rather than hidden; they still exist for selection and dragging.
+    for (int i = 0; i < node->getNInputs(); ++i) {
+        if (Edge* arrow = getInputArrow(i)) {
+            arrow->setOpacity(0.);
+        }
     }
 }
 

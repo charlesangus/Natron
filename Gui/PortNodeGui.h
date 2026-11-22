@@ -54,13 +54,19 @@ private:
     virtual bool canMakePreview() OVERRIDE FINAL WARN_UNUSED_RETURN { return false; }
     virtual void getInitialSize(int* w, int* h) const OVERRIDE FINAL;
     virtual QVariant itemChange(GraphicsItemChange change, const QVariant& value) OVERRIDE FINAL;
+    virtual bool mustFrameName() const OVERRIDE FINAL { return true; }
+    virtual void resizeExtraContent(int w, int h, bool forceResize) OVERRIDE FINAL;
 
-    QRectF bodyRect() const;
     void clearPortItems();
+    void hidePositionalArrows();
 
     std::vector<QGraphicsItem*> _portItems;
     std::vector<PortEdge*> _inputEdges;
     std::vector<std::string> _outputNames;
+    double _headerH;
+    bool _layingOut;
+    int _laidOutW;
+    int _laidOutH;
 };
 
 NATRON_NAMESPACE_EXIT

@@ -33,8 +33,7 @@
 #include <QString>
 #include <QTemporaryDir>
 
-#include <openvdb/openvdb.h>
-#include <openvdb/tools/LevelSetSphere.h>
+#include "Engine/Geo/GeoOpenVDB.h"
 
 #include "Engine/Geo/GeoVDB.h"
 #include "Engine/GeoDetail.h"

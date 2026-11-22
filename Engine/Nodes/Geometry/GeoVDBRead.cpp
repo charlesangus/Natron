@@ -30,7 +30,7 @@
 #include <string>
 #include <vector>
 
-#include <openvdb/Grid.h>
+#include "Engine/Geo/GeoOpenVDB.h"
 
 #include <SequenceParsing.h>
 

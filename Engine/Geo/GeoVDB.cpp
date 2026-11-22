@@ -39,8 +39,7 @@
 
 #include <unistd.h>
 
-#include <openvdb/io/io.h>
-#include <openvdb/openvdb.h>
+#include "Engine/Geo/GeoOpenVDB.h"
 
 #include "Engine/AppManager.h"
 #include "Engine/ContentHasher.h"

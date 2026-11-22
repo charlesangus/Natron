@@ -31,8 +31,7 @@
 
 #include <gtest/gtest.h>
 
-#include <openvdb/openvdb.h>
-#include <openvdb/tools/LevelSetSphere.h>
+#include "Engine/Geo/GeoOpenVDB.h"
 
 #include "Engine/Geo/GeoVDB.h"
 

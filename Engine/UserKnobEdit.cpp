@@ -653,23 +653,18 @@ countLinkGroupIds(const Serialization::GroupKnobSerialization& group,
     }
 }
 
-// A link group with one copied member becomes a link to a member outside the copy: its id has no
-// partner in the paste. One with several keeps its id, which links the pasted members together.
+// A link group with one copied member loses its id: it has no partner in the paste, and membership
+// of a group outside the copy is dropped. One with several keeps its id, which links the pasted
+// members together.
 void
-linkGroupsToMasters(KnobHolder* holder,
-                    const std::map<std::string, int>& counts,
+linkGroupsToMasters(const std::map<std::string, int>& counts,
                     Serialization::GroupKnobSerialization* group)
 {
     for (std::list<Serialization::GroupKnobChildSerialization>::iterator it = group->children.begin(); it != group->children.end(); ++it) {
         if (it->isGroup) {
-            linkGroupsToMasters(holder, counts, &it->group);
+            linkGroupsToMasters(counts, &it->group);
             continue;
         }
-        KnobIPtr knob = holder->getKnobByName(it->knob.name);
-        if (!knob) {
-            continue;
-        }
-        const std::vector<KnobLinkedDimension> linked = knob->getLinkedKnobs();
         for (std::size_t d = 0; d < it->knob.dimensions.size(); ++d) {
             Serialization::KnobDimensionSerialization& dimension = it->knob.dimensions[d];
             if (!dimension.linkGroup) {
@@ -680,23 +675,6 @@ linkGroupsToMasters(KnobHolder* holder,
                 continue;
             }
             dimension.linkGroup.reset();
-            for (std::size_t i = 0; i < linked.size(); ++i) {
-                if ((linked[i].dimension != (int)d) || !linked[i].knob) {
-                    continue;
-                }
-                EffectInstance* partnerEffect = dynamic_cast<EffectInstance*>(linked[i].knob->getHolder());
-                NodePtr partnerNode = partnerEffect ? partnerEffect->getNode() : NodePtr();
-                if (!partnerNode) {
-                    continue;
-                }
-                Serialization::KnobMasterSerialization master;
-                master.masterDimension = linked[i].otherDimension;
-                master.masterNodeName = partnerNode->getScriptName_mt_safe();
-                master.masterNodeNameFull = partnerNode->getFullyQualifiedName();
-                master.masterKnobName = linked[i].knob->getName();
-                dimension.master = master;
-                break;
-            }
         }
     }
 }
@@ -765,13 +743,43 @@ restorePastedExpressionsAndLinks(KnobHolder* holder,
 {
     // Through placeholders: with a renamed to a2 and a2 to a3, renaming in place would turn a
     // into a3.
+    // The prefix is lengthened until no knob name or expression text contains it, so a real knob can
+    // never be mistaken for a placeholder.
+    std::string placeholderPrefix = "natronPastedKnob";
+    {
+        std::vector<std::string> texts;
+        for (std::map<std::string, std::string>::const_iterator it = renamed.begin(); it != renamed.end(); ++it) {
+            texts.push_back(it->first);
+            texts.push_back(it->second);
+        }
+        for (std::list<PastedKnob>::const_iterator it = pasted.begin(); it != pasted.end(); ++it) {
+            texts.push_back(it->knob->getName());
+            for (std::size_t d = 0; d < it->serialization.dimensions.size(); ++d) {
+                texts.push_back(it->serialization.dimensions[d].expression);
+            }
+        }
+        std::vector<KnobIPtr> holderKnobs = holder->getKnobs_mt_safe();
+        for (std::size_t i = 0; i < holderKnobs.size(); ++i) {
+            texts.push_back(holderKnobs[i]->getName());
+        }
+        bool clash = true;
+        while (clash) {
+            clash = false;
+            for (std::size_t i = 0; i < texts.size() && !clash; ++i) {
+                clash = texts[i].find(placeholderPrefix) != std::string::npos;
+            }
+            if (clash) {
+                placeholderPrefix += "X";
+            }
+        }
+    }
     std::vector<std::pair<std::string, std::string>> toPlaceholder;
     std::vector<std::pair<std::string, std::string>> fromPlaceholder;
     for (std::map<std::string, std::string>::const_iterator it = renamed.begin(); it != renamed.end(); ++it) {
         if (it->first == it->second) {
             continue;
         }
-        const std::string placeholder = "natronPastedKnob" + std::to_string(toPlaceholder.size()) + "_";
+        const std::string placeholder = placeholderPrefix + std::to_string(toPlaceholder.size()) + "_";
         toPlaceholder.push_back(std::make_pair(it->first, placeholder));
         fromPlaceholder.push_back(std::make_pair(placeholder, it->second));
     }
@@ -1599,7 +1607,7 @@ copyUserKnobs(KnobHolder* holder,
         countLinkGroupIds(*it, &linkGroupCounts);
     }
     for (std::list<Serialization::GroupKnobSerialization>::iterator it = pages.begin(); it != pages.end(); ++it) {
-        linkGroupsToMasters(holder, linkGroupCounts, &*it);
+        linkGroupsToMasters(linkGroupCounts, &*it);
     }
 
     return Serialization::encodeUserPagesYaml(pages);

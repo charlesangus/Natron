@@ -1199,6 +1199,82 @@ TEST_F(UserKnobEdit, ContainerTooltipsRoundTrip)
     EXPECT_EQ(edited.tooltip, loaded->getKnobByName("box")->getHintToolTip());
 }
 
+TEST_F(UserKnobEdit, PastingOneMemberOfALinkGroupDropsTheLink)
+{
+    NodePtr source = createBlur();
+    NodePtr target = createBlur();
+    ASSERT_TRUE(bool(source && target));
+    KnobDoublePtr a = addTyped<KnobDouble>(source, "a");
+    KnobDoublePtr b = addTyped<KnobDouble>(source, "b");
+    ASSERT_TRUE(bool(a && b));
+    ASSERT_TRUE(b->linkTo(0, a, 0));
+    ASSERT_TRUE(isLinkedTo(a, b) || isLinkedTo(b, a));
+
+    const std::string text = copyUserKnobs(holderOf(source), { source->getKnobByName("a") });
+    std::string error;
+    ASSERT_FALSE(pasteUserKnobs(holderOf(target), text, KnobIPtr(), -1, &error).empty()) << error;
+    KnobIPtr pastedA = target->getKnobByName("a");
+    ASSERT_TRUE(bool(pastedA));
+    EXPECT_FALSE(isLinkedTo(pastedA, a));
+    EXPECT_FALSE(isLinkedTo(pastedA, b));
+    EXPECT_FALSE(isLinkedTo(a, pastedA));
+    EXPECT_FALSE(isLinkedTo(b, pastedA));
+    EXPECT_TRUE(isLinkedTo(b, a));
+}
+
+TEST_F(UserKnobEdit, PlaceholderLikeKnobNamesSurviveAPasteRename)
+{
+    NodePtr source = createBlur();
+    NodePtr target = createBlur();
+    ASSERT_TRUE(bool(source && target));
+    ASSERT_TRUE(bool(add(source, makeSpec(KnobPage::typeNameStatic(), "tools"))));
+    KnobDoublePtr x = addTyped<KnobDouble>(source, "x", 1, "tools");
+    KnobDoublePtr odd = addTyped<KnobDouble>(source, "natronPastedKnob0_", 1, "tools");
+    KnobDoublePtr sum = addTyped<KnobDouble>(source, "sum", 1, "tools");
+    ASSERT_TRUE(bool(x && odd && sum));
+    ASSERT_NO_THROW(sum->setExpression(0, "thisNode.x.get() + thisNode.natronPastedKnob0_.get()", false, true));
+    ASSERT_TRUE(bool(addTyped<KnobDouble>(target, "x")));
+
+    const std::string text = copyUserKnobs(holderOf(source), { source->getKnobByName("tools") });
+    std::string error;
+    ASSERT_FALSE(pasteUserKnobs(holderOf(target), text, KnobIPtr(), -1, &error).empty()) << error;
+    KnobIPtr pastedSum = target->getKnobByName("sum");
+    ASSERT_TRUE(bool(pastedSum && target->getKnobByName("x2") && target->getKnobByName("natronPastedKnob0_")));
+    EXPECT_EQ("thisNode.x2.get() + thisNode.natronPastedKnob0_.get()", pastedSum->getExpression(0));
+}
+
+TEST_F(UserKnobEdit, HiddenPagesAndGroupsStayHiddenAfterReload)
+{
+    NodePtr node = createBlur();
+    ASSERT_TRUE(bool(node));
+    UserKnobSpec pageSpec = makeSpec(KnobPage::typeNameStatic(), "tools");
+    pageSpec.secret = true;
+    UserKnobSpec groupSpec = makeSpec(KnobGroup::typeNameStatic(), "box", 1, "tools");
+    groupSpec.secret = true;
+    ASSERT_TRUE(bool(add(node, pageSpec)));
+    ASSERT_TRUE(bool(add(node, groupSpec)));
+    ASSERT_TRUE(bool(addTyped<KnobDouble>(node, "inside", 1, "box")));
+    ASSERT_TRUE(node->getKnobByName("tools")->getIsSecret());
+    ASSERT_TRUE(node->getKnobByName("box")->getIsSecret());
+
+    const std::string nodeName = node->getScriptName();
+    ProjectPtr project = getApp()->getProject();
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("hidden-containers.ntpz");
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
+    project->reset(false, true);
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+
+    NodePtr loaded = project->getNodeByName(nodeName);
+    ASSERT_TRUE(bool(loaded));
+    ASSERT_TRUE(bool(loaded->getKnobByName("tools") && loaded->getKnobByName("box")));
+    EXPECT_TRUE(loaded->getKnobByName("tools")->getIsSecret());
+    EXPECT_TRUE(loaded->getKnobByName("box")->getIsSecret());
+}
+
 TEST_F(UserKnobEdit, LinksSurviveATypeChange)
 {
     NodePtr blur = createBlur();

@@ -330,7 +330,11 @@ try:
         return "ok"
 
     def client_key(name, frame):
-        app.seek(frame)
+        # The timeline is only reachable from Python through a viewer; the shared project has one.
+        viewer = app.getViewer("Viewer1")
+        if viewer is None:
+            return "no Python handle on Viewer1 to move the timeline"
+        viewer.seek(frame)
         ok = yield from open_panel(name)
         if not ok:
             return "no panel for " + name

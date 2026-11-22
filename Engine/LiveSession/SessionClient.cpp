@@ -288,11 +288,15 @@ struct SessionClient::Implementation {
         }
     }
 
-    // Once nothing is pending, and the refusals and resyncs that follow the last acknowledgement
-    // are in, a host edit still waiting fails for good: it is reported rather than applied later,
-    // out of order.
+    // Once nothing is pending and the last acknowledgement's refusals and resyncs are in, a host
+    // edit still waiting has failed for good and is reported, never applied out of order. Unsent
+    // local edits reach the host after it, so they are flushed before anything is settled.
     void settleDeferred()
     {
+        if (deferred.empty()) {
+            return;
+        }
+        flushLocalEdits();
         ProjectPtr p = project();
         if (!p || !pending.empty() || deferred.empty()) {
             return;

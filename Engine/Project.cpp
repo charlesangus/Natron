@@ -1979,7 +1979,7 @@ Project::initializeKnobs()
                                      "absolute is relative to [%1].")
                                       .arg(QString::fromUtf8(NATRON_PROJECT_ENV_VAR_NAME))
                                       .arg(QString::fromUtf8(NATRON_OCIO_ENV_VAR_NAME)));
-    _imp->envVars->setSecret(true);
+    _imp->envVars->setSecretByDefault(true);
     _imp->envVars->setMultiPath(true);
 
     page->addKnob(_imp->envVars);

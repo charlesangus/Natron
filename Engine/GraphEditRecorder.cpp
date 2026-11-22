@@ -613,6 +613,22 @@ GraphEditRecorder::recorderFor(const AppInstance* app)
     return recorder;
 }
 
+// A node added or activated has left the deleted ones, even unrecorded, under Suppress or while
+// the project loads: a node replayed from another copy of the project may take the address of one
+// deleted here, and the edits made to it afterwards are its own.
+void
+GraphEditRecorder::forgetDeleted(const Node* node)
+{
+    AppInstancePtr app = node->getApp();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+    GraphEditRecorder* recorder = project ? project->getGraphEditRecorder() : nullptr;
+    if (!recorder) {
+        return;
+    }
+    std::lock_guard<std::mutex> l(recorder->_imp->lock);
+    recorder->_imp->deleted.erase(node);
+}
+
 GraphEditRecorder::CreationScope::CreationScope(const AppInstance* app)
 {
     if (!isActive()) {
@@ -626,13 +642,12 @@ GraphEditRecorder::CreationScope::CreationScope(Node* activatedNode)
     if (!isActive() || !activatedNode) {
         return;
     }
+    forgetDeleted(activatedNode);
     AppInstancePtr app = activatedNode->getApp();
     begin(app.get());
     if (creation.depth > 0) {
         NodePtr node = activatedNode->shared_from_this();
         creation.noted.push_back(node);
-        std::lock_guard<std::mutex> l(creation.recorder->_imp->lock);
-        creation.recorder->_imp->deleted.erase(activatedNode);
     }
 }
 
@@ -684,18 +699,10 @@ GraphEditRecorder::onNodeAdded(const NodePtr& node)
     if (!node) {
         return;
     }
-    GraphEditRecorder* recorder = creation.recorder;
     if (creation.depth > 0) {
         creation.noted.push_back(node);
-    } else {
-        recorder = recorderFor(node->getApp().get());
     }
-    if (!recorder) {
-        return;
-    }
-    // A new node may have the address of one deleted earlier.
-    std::lock_guard<std::mutex> l(recorder->_imp->lock);
-    recorder->_imp->deleted.erase(node.get());
+    forgetDeleted(node.get());
 }
 
 void

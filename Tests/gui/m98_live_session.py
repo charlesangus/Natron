@@ -45,6 +45,7 @@ try:
     from PySide6.QtWidgets import (QApplication, QComboBox, QDialogButtonBox, QLabel, QLineEdit, QMainWindow,
                                    QMessageBox, QSpinBox, QWidget)
 
+    from shiboken6 import isValid
     import guitest as gt
     from guitest import check, report, require
     import roto_gui as rg
@@ -201,6 +202,10 @@ try:
             report("NOTE the settings panel of %s did not open (attempt %d)" % (name, attempt + 1))
         return False
 
+    # The wrapper of the panel each field was found in, by node: a wrapper findChildren() gives
+    # dies with the wrapper of the widget it was asked of.
+    _field_panels = {}
+
     def field_of(name, tooltip_part):
         """The first field of the parameter whose tooltip has tooltip_part in the node's panel."""
         p = panel_of(name)
@@ -209,23 +214,48 @@ try:
         for w in p.findChildren(QWidget):
             try:
                 if w.objectName() == "dim-0" and w.isVisible() and tooltip_part in w.toolTip():
+                    _field_panels[name] = p
                     return w
             except RuntimeError:
                 continue
         return None
 
     def wait_field(name, tooltip_part):
-        """Waits for the field, which the panel builds over later event-loop passes than it shows in.
-        Returns the field, or None with what the panel holds reported."""
-        ok = yield ("until", lambda: field_of(name, tooltip_part) is not None, 10.0)
+        """Waits until the panel, which builds its fields over later event-loop passes than it
+        shows in, gives the same field on two passes in a row. Returns the field, or None with what
+        the panel holds reported."""
+        last = {"field": None}
+
+        def settled():
+            field = field_of(name, tooltip_part)
+            previous = last["field"]
+            last["field"] = field
+            return field is not None and previous is not None and isValid(previous) and previous is field
+
+        ok = yield ("until", settled, 10.0)
         if ok:
-            return field_of(name, tooltip_part)
+            return last["field"]
         p = panel_of(name)
         if p is not None:
             fields = [w for w in p.findChildren(QWidget) if w.objectName() == "dim-0"]
             matching = [w for w in fields if tooltip_part in w.toolTip()]
             report("NOTE the panel of %s has %d first fields, %d matching %r, %d of those visible"
                    % (name, len(fields), len(matching), tooltip_part, len([w for w in matching if w.isVisible()])))
+        return None
+
+    def use_field(name, tooltip_part, use):
+        """use(field) with the field found just now, then once more with the field found again if
+        the first goes away under it. None when the panel has no such field."""
+        for attempt in range(2):
+            field = field_of(name, tooltip_part)
+            if field is None:
+                return None
+            try:
+                return use(field)
+            except RuntimeError:
+                if attempt == 1:
+                    raise
+                report("NOTE the %r field of %s went away while in use: finding it again" % (tooltip_part, name))
         return None
 
     def knob_menu(field, entry):
@@ -321,22 +351,31 @@ try:
         field = yield from wait_field(name, "Mix factor")
         if field is None:
             return "no mix field in the panel of " + name
-        slider = None
-        a = field.parentWidget()
-        for _ in range(4):
-            if a is None:
-                break
-            sliders = [w for w in a.findChildren(QWidget) if gt.class_name(w) == "ScaleSliderQWidget" and w.isVisible()]
-            if sliders:
-                slider = sliders[0]
-                break
-            a = a.parentWidget()
-        if slider is None:
-            return "no slider beside the mix field"
-        _keep.append(slider)
+
+        def drag_slider(field):
+            slider = None
+            a = field.parentWidget()
+            for _ in range(4):
+                if a is None:
+                    break
+                sliders = [w for w in a.findChildren(QWidget) if gt.class_name(w) == "ScaleSliderQWidget" and w.isVisible()]
+                if sliders:
+                    slider = sliders[0]
+                    break
+                a = a.parentWidget()
+            if slider is None:
+                return "no slider beside the mix field"
+            _keep.append(slider)
+            y = slider.height() / 2.0
+            drag(slider, QPointF(slider.width() * 0.8, y), QPointF(slider.width() * 0.4, y))
+            return "ok"
+
         before = app.getNode(name).getParam("mix").get()
-        y = slider.height() / 2.0
-        drag(slider, QPointF(slider.width() * 0.8, y), QPointF(slider.width() * 0.4, y))
+        dragged = use_field(name, "Mix factor", drag_slider)
+        if dragged is None:
+            return "the mix field left the panel of " + name
+        if dragged != "ok":
+            return dragged
         yield ("sleep", SETTLE_MS)
         after = app.getNode(name).getParam("mix").get()
         if abs(after - before) < 1e-6:
@@ -355,7 +394,10 @@ try:
         field = yield from wait_field(name, "<b>size</b>")
         if field is None:
             return "no size field in the panel of " + name
-        if not knob_menu(field, "Set Key (all dimensions)"):
+        triggered = use_field(name, "<b>size</b>", lambda f: knob_menu(f, "Set Key (all dimensions)"))
+        if triggered is None:
+            return "the size field left the panel of " + name
+        if not triggered:
             return "the size menu offers no Set Key (all dimensions)"
         param = app.getNode(name).getParam("size")
         if param.getNumKeys(0) < 1:

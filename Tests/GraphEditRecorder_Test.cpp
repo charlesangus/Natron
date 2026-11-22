@@ -339,6 +339,61 @@ TEST_F(GraphEditRecorderTest, DeleteAndReactivateInOneTurnKeepOrder)
     EXPECT_EQ(std::get<CreateNodeOp>(ops[1]).node->id, id);
 }
 
+TEST_F(GraphEditRecorderTest, ANodeDeletedThenReactivatedUnrecordedRecordsItsLaterEdits)
+{
+    NodePtr blur = createIn(PLUGINID_NATRON_BLUR, project());
+    NodePtr dot = createIn(PLUGINID_NATRON_DOT, project());
+    ASSERT_NE(blur, nullptr);
+    ASSERT_NE(dot, nullptr);
+    startRecording();
+
+    blur->deactivate(NodesList(), true, false, true, false);
+    std::vector<GraphOp> ops = take();
+    ASSERT_EQ(ops.size(), 1u);
+    ASSERT_NE(std::get_if<DeleteNodeOp>(&ops.front()), nullptr);
+    {
+        GraphEditRecorder::Suppress suppress;
+        blur->activate(NodesList(), true, false);
+    }
+    EXPECT_TRUE(take().empty());
+
+    ASSERT_TRUE(NodeCollection::connectNodes(0, dot, blur, false));
+    ops = take();
+    ASSERT_EQ(ops.size(), 1u);
+    const SetInputOp* input = std::get_if<SetInputOp>(&ops.front());
+    ASSERT_NE(input, nullptr);
+    EXPECT_EQ(input->nodeId, blur->getNodeId());
+    EXPECT_EQ(input->sourceId, dot->getNodeId());
+
+    blurSize(blur)->setValue(3., ViewSpec::all(), 0);
+    expectOneKnobOp(take(), blur, kBlurParamSize);
+}
+
+// A node created unrecorded, as a live session replays another user's creation, often takes the
+// address of the node deleted just before it.
+TEST_F(GraphEditRecorderTest, ANodeCreatedUnrecordedAfterADeletionRecordsItsLaterEdits)
+{
+    startRecording();
+    for (int i = 0; i < 8; ++i) {
+        NodePtr deleted = createIn(PLUGINID_NATRON_BLUR, project());
+        ASSERT_NE(deleted, nullptr);
+        take();
+        deleted->destroyNode(true, false);
+        deleted.reset();
+        take();
+
+        NodePtr replayed;
+        {
+            GraphEditRecorder::Suppress suppress;
+            replayed = createIn(PLUGINID_NATRON_BLUR, project());
+        }
+        ASSERT_NE(replayed, nullptr);
+        EXPECT_TRUE(take().empty());
+        blurSize(replayed)->setValue(2. + i, ViewSpec::all(), 0);
+        expectOneKnobOp(take(), replayed, kBlurParamSize);
+    }
+}
+
 TEST_F(GraphEditRecorderTest, GroupFromSelectionGivesPrimitiveOps)
 {
     NodePtr dot = createIn(PLUGINID_NATRON_DOT, project());

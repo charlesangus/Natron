@@ -118,8 +118,12 @@ echo 'set(OpenColorIO_FOUND TRUE)' >"${helpers}/ocio/OpenColorIOConfig.cmake"
 #
 # WITH_CYCLES_NATIVE_ONLY stays off: the CPU kernels are built for every x86-64 level Cycles
 # supports and picked at run time, so the image's build host does not decide what users can run.
+#
+# The standalone build finds NanoVDB but never adds NANOVDB_INCLUDE_DIRS to any target, since
+# Blender's library bundle puts the headers on the OpenVDB include path, hence the -isystem.
 cmake -S "$src" -B "$build" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_CXX_FLAGS="-isystem ${helpers}/nanovdb/include" \
     -DCMAKE_SHARED_LINKER_FLAGS=-Wl,--as-needed \
     -DPXR_ROOT="$usd_prefix" \
     "${dep_dirs[@]}" \

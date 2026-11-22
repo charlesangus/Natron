@@ -32,7 +32,7 @@ Every wait in `Engine/Nodes/Scene/SceneWriteBarrier.cpp` (F4 branch) that has to
 
 ## Phase 504.2: One shared guard
 
-- [ ] M504.P2.T1 — Move `PythonUnlockedWhileWaiting` into `Engine/AppManager.h` beside `PythonGILLocker`
+- [x] M504.P2.T1 — Move `PythonUnlockedWhileWaiting` into `Engine/AppManager.h` beside `PythonGILLocker`
   - files: `Engine/AppManager.h`, `Engine/AppManager.cpp`, `Engine/Nodes/Scene/SceneWriteBarrier.cpp` (:107), `Gui/SceneViewport.cpp` (:228), `Gui/SceneNodeStageSource.cpp` (:49)
   - approach: one class that is non-copyable (copy deleted, as in the Gui copies), with its comment generalised; delete the three anonymous-namespace copies.
   - verify: `git grep -c "class PythonUnlockedWhileWaiting"` returns 1; the phase build compiles
@@ -42,3 +42,4 @@ Every wait in `Engine/Nodes/Scene/SceneWriteBarrier.cpp` (F4 branch) that has to
 
 ## Decisions
 - 2026-11-22 — Phase 504.1 green (6a31005b0): full fast ctest plus ProgressiveRenderTest ×10, both schedulers. registerParticipant/unregisterParticipant also release the GIL before writerMutex (PM default for the open question), so every writerMutex taker releases the GIL first. Phase 504.2 and the PR wait for F4 to land (main frozen until then, user 2026-11-22).
+- 2026-11-22 — P2.T1 in 280e119aa (definitions live in SceneWriteBarrier.cpp, which already builds without Py_LIMITED_API). PR #341 to main; gate with ProgressiveRenderTest ×20 queued.

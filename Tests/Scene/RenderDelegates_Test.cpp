@@ -47,6 +47,7 @@
 
 #include "CyclesTestUtils.h"
 #include "Engine/Nodes/Scene/CyclesAovs.h"
+#include "Engine/Nodes/Scene/DelegateSupport.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/MoonRayAovs.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
@@ -348,4 +349,213 @@ TEST(RenderDelegates, AbortingMoonRayRendersMidPassRepeatedlyTearsDownCleanly)
     HydraRender::release(&owner);
     EXPECT_EQ(0u, HydraRender::getCpuEngineCount());
     HydraRender::setRendererSettings(kMoonRayRendererId, std::map<std::string, PXR_NS::VtValue>());
+}
+
+namespace {
+PXR_NS::UsdStageRefPtr
+stageOf(const std::string& body)
+{
+    PXR_NS::SdfLayerRefPtr layer = PXR_NS::SdfLayer::CreateAnonymous(".usda");
+    if (!layer->ImportFromString("#usda 1.0\n" + body)) {
+        ADD_FAILURE() << "the layer does not parse:\n"
+                      << body;
+
+        return PXR_NS::UsdStageRefPtr();
+    }
+
+    return PXR_NS::UsdStage::Open(layer);
+}
+
+// A delegate that renders meshes, volumes and materials, reading the cycles render context.
+DelegateSupport::Support
+cyclesLikeSupport()
+{
+    DelegateSupport::Support support;
+    support.primTypes = { PXR_NS::TfToken("mesh"), PXR_NS::TfToken("volume"), PXR_NS::TfToken("material") };
+    support.materialRenderContexts = { PXR_NS::TfToken("cycles") };
+
+    return support;
+}
+
+// A card bound to /Looks/Mat, which has outputs.
+std::string
+boundCard(const std::string& outputs)
+{
+    return "def Mesh \"Card\" (\n"
+           "    prepend apiSchemas = [\"MaterialBindingAPI\"]\n"
+           ")\n"
+           "{\n"
+           "    int[] faceVertexCounts = [4]\n"
+           "    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+           "    point3f[] points = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)]\n"
+           "    rel material:binding = </Looks/Mat>\n"
+           "}\n"
+           "def Scope \"Looks\"\n"
+           "{\n"
+           "    def Material \"Mat\"\n"
+           "    {\n"
+        + outputs + "        def Shader \"Volume\"\n"
+                    "        {\n"
+                    "            uniform token info:id = \"principled_volume\"\n"
+                    "            token outputs:volume\n"
+                    "        }\n"
+                    "        def Shader \"Surface\"\n"
+                    "        {\n"
+                    "            uniform token info:id = \"PxrSurface\"\n"
+                    "            token outputs:out\n"
+                    "        }\n"
+                    "    }\n"
+                    "}\n";
+}
+
+const char* const kCyclesVolumeOutput = "        token outputs:cycles:volume.connect = </Looks/Mat/Volume.outputs:volume>\n";
+const char* const kRiSurfaceOutput = "        token outputs:ri:surface.connect = </Looks/Mat/Surface.outputs:out>\n";
+
+std::string
+supportWarning(const std::string& body)
+{
+    const PXR_NS::UsdStageRefPtr stage = stageOf(body);
+
+    return stage ? DelegateSupport::warningText(stage, cyclesLikeSupport(), "Test") : std::string("no stage");
+}
+
+struct Field {
+    std::string name;
+    std::string file;
+    std::string grid;
+    std::string type = "OpenVDBAsset";
+};
+
+std::string
+volumeScene(const std::vector<Field>& fields)
+{
+    std::string body = "def Volume \"Vol\"\n{\n";
+    for (const Field& field : fields) {
+        body += "    rel field:" + field.name + " = </Vol/" + field.name + ">\n";
+    }
+    for (const Field& field : fields) {
+        body += "    def " + field.type + " \"" + field.name + "\"\n    {\n";
+        body += "        asset filePath = @" + field.file + "@\n";
+        body += "        token fieldName = \"" + field.grid + "\"\n    }\n";
+    }
+
+    return body + "}\n";
+}
+
+std::string
+volumeWarning(const std::string& body,
+              const DelegateSupport::VolumeLimits& limits,
+              double time = 1.)
+{
+    const PXR_NS::UsdStageRefPtr stage = stageOf(body);
+    if (!stage) {
+        return "no stage";
+    }
+    const std::vector<PXR_NS::SdfPath> volumes = DelegateSupport::volumePrims(stage);
+    EXPECT_EQ(1u, volumes.size());
+
+    return DelegateSupport::volumeWarningText(stage, volumes, PXR_NS::UsdTimeCode(time), limits, "Test");
+}
+
+const std::string kFrame1Vdb = NATRON_TESTS_FIXTURES_DIR "/volume-sphere.0001.vdb";
+const std::string kFrame2Vdb = NATRON_TESTS_FIXTURES_DIR "/volume-sphere.0002.vdb";
+
+bool
+has(const std::string& text,
+    const std::string& part)
+{
+    return text.find(part) != std::string::npos;
+}
+} // anon namespace
+
+TEST(DelegateSupportWarnings, AVolumeOnlyMaterialHasNoSurfaceWarning)
+{
+    EXPECT_EQ(std::string(), supportWarning(boundCard(kCyclesVolumeOutput)));
+}
+
+// The surface is for another renderer, but the volume is for this one.
+TEST(DelegateSupportWarnings, AVolumeForTheRenderersContextsCountsAsItsShading)
+{
+    EXPECT_EQ(std::string(), supportWarning(boundCard(std::string(kRiSurfaceOutput) + kCyclesVolumeOutput)));
+}
+
+TEST(DelegateSupportWarnings, AMaterialWithNeitherForTheRenderersContextsStillWarns)
+{
+    const std::string warning = supportWarning(boundCard(kRiSurfaceOutput));
+    EXPECT_TRUE(has(warning, "finds no surface")) << warning;
+    EXPECT_TRUE(has(warning, "/Looks/Mat")) << warning;
+}
+
+TEST(DelegateSupportWarnings, AValidVolumeRaisesNoWarning)
+{
+    const std::string body = volumeScene({ { "density", kFrame1Vdb, "density" }, { "velocity", kFrame1Vdb, "velocity" } });
+    EXPECT_EQ(std::string(), volumeWarning(body, DelegateSupport::VolumeLimits()));
+    EXPECT_EQ(std::string(), volumeWarning(body, DelegateSupport::VolumeLimits::moonRay()));
+}
+
+TEST(DelegateSupportWarnings, AMissingFileIsNamedByVolumeAndField)
+{
+    const std::string warning = volumeWarning(volumeScene({ { "density", NATRON_TESTS_FIXTURES_DIR "/no-such-volume.vdb", "density" } }), DelegateSupport::VolumeLimits());
+    EXPECT_TRUE(has(warning, "Test finds no file for volume fields: /Vol (density)")) << warning;
+    EXPECT_TRUE(has(warning, "no-such-volume.vdb")) << warning;
+}
+
+TEST(DelegateSupportWarnings, AFileThatIsNotOpenVdbIsUnreadable)
+{
+    const std::string warning = volumeWarning(volumeScene({ { "density", NATRON_TESTS_FIXTURES_DIR "/scene-volume.usda", "density" } }), DelegateSupport::VolumeLimits());
+    EXPECT_TRUE(has(warning, "Test cannot read the OpenVDB files of volume fields: /Vol (density)")) << warning;
+}
+
+TEST(DelegateSupportWarnings, AGridNotInItsFileIsNamed)
+{
+    const std::string warning = volumeWarning(volumeScene({ { "density", kFrame1Vdb, "smoke" } }), DelegateSupport::VolumeLimits());
+    EXPECT_TRUE(has(warning, "Test finds no grid of the given name for volume fields: /Vol (density): smoke in ")) << warning;
+    EXPECT_TRUE(has(warning, "volume-sphere.0001.vdb")) << warning;
+}
+
+TEST(DelegateSupportWarnings, AFieldThatIsNotOpenVdbIsNamed)
+{
+    Field field = { "density", kFrame1Vdb, "density" };
+    field.type = "Field3DAsset";
+    const std::string warning = volumeWarning(volumeScene({ field }), DelegateSupport::VolumeLimits());
+    EXPECT_TRUE(has(warning, "Test reads only OpenVDB volume fields, not: /Vol (density)")) << warning;
+}
+
+// Any field name is fine without limits; MoonRay renders only three.
+TEST(DelegateSupportWarnings, FieldNamesOutsideTheLimitsAreNamed)
+{
+    const std::string body = volumeScene({ { "density", kFrame1Vdb, "density" }, { "temperature", kFrame1Vdb, "temperature" } });
+    EXPECT_EQ(std::string(), volumeWarning(body, DelegateSupport::VolumeLimits()));
+    const std::string warning = volumeWarning(body, DelegateSupport::VolumeLimits::moonRay());
+    EXPECT_TRUE(has(warning, "Test renders only density, emission and velocity volume fields and skips: /Vol (temperature)")) << warning;
+    EXPECT_FALSE(has(warning, "/Vol (density)")) << warning;
+}
+
+TEST(DelegateSupportWarnings, FieldsFromSeveralFilesWarnOnlyUnderASingleFileLimit)
+{
+    const std::string body = volumeScene({ { "density", kFrame1Vdb, "density" }, { "velocity", kFrame2Vdb, "velocity" } });
+    EXPECT_EQ(std::string(), volumeWarning(body, DelegateSupport::VolumeLimits()));
+    const std::string warning = volumeWarning(body, DelegateSupport::VolumeLimits::moonRay());
+    EXPECT_TRUE(has(warning, "Test reads each volume's fields from one file and cannot render volumes whose fields span several: /Vol")) << warning;
+}
+
+// A field's file can change in time: the check is of the file at the time asked for.
+TEST(DelegateSupportWarnings, ATimeSampledFileIsCheckedAtTheTimeAskedFor)
+{
+    const std::string body = "def Volume \"Vol\"\n"
+                             "{\n"
+                             "    rel field:density = </Vol/density>\n"
+                             "    def OpenVDBAsset \"density\"\n"
+                             "    {\n"
+                             "        asset filePath.timeSamples = {\n"
+                             "            1: @"
+        + kFrame1Vdb + "@,\n"
+                       "            2: @" NATRON_TESTS_FIXTURES_DIR "/no-such-volume.vdb@,\n"
+                       "        }\n"
+                       "        token fieldName = \"density\"\n"
+                       "    }\n"
+                       "}\n";
+    EXPECT_EQ(std::string(), volumeWarning(body, DelegateSupport::VolumeLimits(), 1.));
+    const std::string warning = volumeWarning(body, DelegateSupport::VolumeLimits(), 2.);
+    EXPECT_TRUE(has(warning, "finds no file for volume fields: /Vol (density)")) << warning;
 }

@@ -513,6 +513,12 @@ struct EngineEntry {
     // found since the stage or the delegate last changed.
     std::string supportWarning;
     bool supportChecked = false;
+    // The stage's volumes, found with the support check, and what their fields at volumeTime lack;
+    // a field's file can change in time, so that is checked again at each new time.
+    std::vector<SdfPath> volumes;
+    std::string volumeWarning;
+    UsdTimeCode volumeTime = UsdTimeCode::Default();
+    bool volumeChecked = false;
     // Whether the stage authors values that change in time, found at the stage edit and write
     // counts beside it; unknown until a render at another time asks.
     bool timeVarying = false;
@@ -1667,9 +1673,20 @@ RenderThread::renderEngine(const HydraRender::Request& request,
         // Only Cycles is probed: making a delegate to ask it its types may start a render.
         if (!entry.supportChecked) {
             entry.supportWarning = CyclesAovs::isCycles(renderer) ? DelegateSupport::warningText(stage, CyclesAovs::support(), entry.rendererName) : std::string();
+            entry.volumes = DelegateSupport::volumePrims(stage);
+            entry.volumeChecked = false;
             entry.supportChecked = true;
         }
+        if (!entry.volumeChecked || (entry.volumeTime != request.time)) {
+            const DelegateSupport::VolumeLimits limits = MoonRayAovs::isMoonRay(renderer) ? DelegateSupport::VolumeLimits::moonRay() : DelegateSupport::VolumeLimits();
+            entry.volumeWarning = DelegateSupport::volumeWarningText(stage, entry.volumes, request.time, limits, entry.rendererName);
+            entry.volumeTime = request.time;
+            entry.volumeChecked = true;
+        }
         entry.warning = entry.supportWarning;
+        if (!entry.volumeWarning.empty()) {
+            entry.warning += (entry.warning.empty() ? std::string() : std::string("\n")) + entry.volumeWarning;
+        }
         entry.errors.clear();
         if (log) {
             const std::vector<MoonRayAovs::Notice> notices = log->notices();

@@ -30,6 +30,7 @@
 
 #include <functional>
 #include <string>
+#include <vector>
 
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
@@ -67,6 +68,29 @@ Support probe(const std::string& rendererId) WARN_UNUSED_RETURN;
 std::string warningText(const PXR_NS::UsdStageRefPtr& stage,
                         const Support& support,
                         const std::string& rendererName) WARN_UNUSED_RETURN;
+
+// What a delegate takes of a volume's fields beyond OpenVDB files.
+struct VolumeLimits {
+    // All of a volume's fields must come from one file.
+    bool singleFile = false;
+    // The field names it renders; every name when empty.
+    PXR_NS::TfTokenVector fieldNames;
+
+    static VolumeLimits moonRay() WARN_UNUSED_RETURN;
+};
+
+// The stage's UsdVolVolume prims, found once per stage edit so a change of time alone does not
+// walk the stage again.
+std::vector<PXR_NS::SdfPath> volumePrims(const PXR_NS::UsdStageRefPtr& stage) WARN_UNUSED_RETURN;
+
+// What of volumes' fields at time a delegate with limits cannot render, a line per problem, naming
+// each volume and field: missing or unreadable files, grids not in their file and fields outside
+// limits. Each distinct file is read once, and only its grids' metadata.
+std::string volumeWarningText(const PXR_NS::UsdStageRefPtr& stage,
+                              const std::vector<PXR_NS::SdfPath>& volumes,
+                              PXR_NS::UsdTimeCode time,
+                              const VolumeLimits& limits,
+                              const std::string& rendererName) WARN_UNUSED_RETURN;
 } // namespace DelegateSupport
 
 NATRON_NAMESPACE_EXIT

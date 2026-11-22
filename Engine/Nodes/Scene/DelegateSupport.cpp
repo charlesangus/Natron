@@ -25,6 +25,8 @@
 
 #include "DelegateSupport.h"
 
+#include "Engine/Nodes/Scene/VolumeFields.h"
+
 #include <algorithm>
 #include <cctype>
 #include <map>
@@ -37,6 +39,8 @@
 #include <pxr/imaging/hd/tokens.h>
 #include <pxr/usd/usdShade/input.h>
 #include <pxr/usd/usdShade/tokens.h>
+#include <pxr/usd/usdVol/openVDBAsset.h>
+#include <pxr/usd/usdVol/volume.h>
 #include <pxr/usdImaging/usdImaging/adapterRegistry.h>
 #include <pxr/usdImaging/usdImaging/apiSchemaAdapter.h>
 #include <pxr/usdImaging/usdImaging/primAdapter.h>
@@ -227,7 +231,8 @@ warningText(const UsdStageRefPtr& stage,
     for (const SdfPath& path : materials) {
         const UsdShadeMaterial material(stage->GetPrimAtPath(path));
         const UsdShadeShader surface = material.ComputeSurfaceSource(contexts);
-        if (!surface) {
+        const UsdShadeShader volume = material.ComputeVolumeSource(contexts);
+        if (!surface && !volume) {
             // One with no surface at all is not authored for another renderer.
             if (!material.GetSurfaceOutputs().empty()) {
                 appendName(&noSurface, path.GetString());
@@ -240,6 +245,7 @@ warningText(const UsdStageRefPtr& stage,
         std::set<SdfPath> visited;
         std::vector<UsdShadeShader> shaders;
         collectShaders(surface, &visited, &shaders);
+        collectShaders(volume, &visited, &shaders);
         for (const UsdShadeShader& shader : shaders) {
             TfToken id;
             if (shader.GetShaderId(&id) && !id.IsEmpty() && !support.takesShader(id)) {
@@ -268,6 +274,144 @@ warningText(const UsdStageRefPtr& stage,
 
     return text;
 } // warningText
+
+VolumeLimits
+VolumeLimits::moonRay()
+{
+    VolumeLimits limits;
+    limits.singleFile = true;
+    limits.fieldNames = { TfToken("density"), TfToken("emission"), TfToken("velocity") };
+
+    return limits;
+}
+
+std::vector<SdfPath>
+volumePrims(const UsdStageRefPtr& stage)
+{
+    std::vector<SdfPath> paths;
+
+    if (!stage) {
+        return paths;
+    }
+    for (const UsdPrim& prim : stage->Traverse(UsdTraverseInstanceProxies())) {
+        if (prim.IsA<UsdVolVolume>()) {
+            paths.push_back(prim.GetPath());
+        }
+    }
+
+    return paths;
+}
+
+std::string
+volumeWarningText(const UsdStageRefPtr& stage,
+                  const std::vector<SdfPath>& volumes,
+                  UsdTimeCode time,
+                  const VolumeLimits& limits,
+                  const std::string& rendererName)
+{
+    if (!stage || volumes.empty()) {
+        return std::string();
+    }
+    struct FileGrids {
+        bool read = false;
+        std::string error;
+        std::set<std::string> names;
+    };
+    std::map<std::string, FileGrids> files;
+    std::vector<std::string> notOpenVdb;
+    std::vector<std::string> noFile;
+    std::vector<std::string> unreadable;
+    std::vector<std::string> noGrid;
+    std::vector<std::string> unnamed;
+    std::vector<std::string> severalFiles;
+
+    for (const SdfPath& path : volumes) {
+        const UsdVolVolume volume(stage->GetPrimAtPath(path));
+        if (!volume) {
+            continue;
+        }
+        std::set<std::string> volumeFiles;
+        for (const std::pair<const TfToken, SdfPath>& field : volume.GetFieldPaths()) {
+            const std::string label = path.GetString() + " (" + field.first.GetString() + ")";
+            if (!limits.fieldNames.empty() && !contains(limits.fieldNames, field.first)) {
+                appendName(&unnamed, label);
+            }
+            const UsdPrim fieldPrim = stage->GetPrimAtPath(field.second);
+            if (!fieldPrim) {
+                continue;
+            }
+            if (!fieldPrim.IsA<UsdVolOpenVDBAsset>()) {
+                appendName(&notOpenVdb, label);
+                continue;
+            }
+            const UsdVolOpenVDBAsset asset(fieldPrim);
+            SdfAssetPath filePath;
+            asset.GetFilePathAttr().Get(&filePath, time);
+            const std::string resolved = filePath.GetResolvedPath();
+            if (resolved.empty()) {
+                appendName(&noFile, label + (filePath.GetAssetPath().empty() ? std::string() : ": " + filePath.GetAssetPath()));
+                continue;
+            }
+            volumeFiles.insert(resolved);
+            FileGrids& grids = files[resolved];
+            if (!grids.read) {
+                grids.read = true;
+                std::vector<VolumeFields::Grid> read;
+                if (VolumeFields::readGrids(resolved, &read, &grids.error)) {
+                    for (const VolumeFields::Grid& grid : read) {
+                        grids.names.insert(grid.name);
+                    }
+                }
+            }
+            if (!grids.error.empty()) {
+                appendName(&unreadable, label + ": " + resolved);
+                continue;
+            }
+            TfToken gridName;
+            asset.GetFieldNameAttr().Get(&gridName, time);
+            // With no grid named, which grid is read is the renderer's choice.
+            if (!gridName.IsEmpty() && !grids.names.count(gridName.GetString())) {
+                appendName(&noGrid, label + ": " + gridName.GetString() + " in " + resolved);
+            }
+        }
+        if (limits.singleFile && (volumeFiles.size() > 1)) {
+            appendName(&severalFiles, path.GetString());
+        }
+    }
+
+    std::vector<std::string> lines;
+    if (!noFile.empty()) {
+        lines.push_back(rendererName + " finds no file for volume fields: " + joinNames(noFile));
+    }
+    if (!unreadable.empty()) {
+        lines.push_back(rendererName + " cannot read the OpenVDB files of volume fields: " + joinNames(unreadable));
+    }
+    if (!noGrid.empty()) {
+        lines.push_back(rendererName + " finds no grid of the given name for volume fields: " + joinNames(noGrid));
+    }
+    if (!notOpenVdb.empty()) {
+        lines.push_back(rendererName + " reads only OpenVDB volume fields, not: " + joinNames(notOpenVdb));
+    }
+    if (!unnamed.empty()) {
+        std::string names;
+        for (size_t i = 0; i < limits.fieldNames.size(); ++i) {
+            names += (i ? ((i + 1 == limits.fieldNames.size()) ? " and " : ", ") : "") + limits.fieldNames[i].GetString();
+        }
+        lines.push_back(rendererName + " renders only " + names + " volume fields and skips: " + joinNames(unnamed));
+    }
+    if (!severalFiles.empty()) {
+        lines.push_back(rendererName + " reads each volume's fields from one file and cannot render volumes whose fields span several: " + joinNames(severalFiles));
+    }
+    std::string text;
+    for (const std::string& line : lines) {
+        if (!text.empty()) {
+            text += '\n';
+        }
+        text += line;
+    }
+
+    return text;
+} // volumeWarningText
 } // namespace DelegateSupport
 
 NATRON_NAMESPACE_EXIT

@@ -649,6 +649,7 @@ future core work has solid ground to build on.
 | F33 | Graph Diff And Merge | open | bosley-executor |  | feature/f33-graph-diff-and-merge | Diff and merge two versions of a graph, with a resolution UI, accepted in one UAT. |
 
 # Open questions
+- **M350/M351 re-plan, for /cat-plan (PM, 2026-11-22, from M349 - Shader Node Spike):** the user chose ports as the single connection model (ConnectorLayout per NodeGui; RadialLayout for classic nodes refactored first with pixel-identical goldens; PortListLayout for port nodes) and a port-node look (type colours, shapes incl. diamonds for varying, groups, folding defaults, no inline widgets). M350 - Shader Manifest And Nodes must carry port type/page/promoted in the runtime spec; M351 - Shader Graph Presentation needs the two-step layout refactor; groups/folding/search-to-connect need a later milestone. Details in M349's Decisions.
 - **M365 - Delegate Display Transform (user, 2026-11-22):** apply the camera's exposure in the viewer when looking through a camera; add a toggle button to the right of the viewer's exposure (gain) slider to turn it on/off, and a non-editable label next to it showing the camera's exposure value. Screenshots to re-send after.
 
 - **F7 - Natron Utility Core UAT round 1 (user, 2026-11-21):**

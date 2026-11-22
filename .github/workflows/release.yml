@@ -47,6 +47,10 @@ jobs:
       CI: 'True'
       NATRON_IN_CONTAINER: 1
       CCACHE_DIR: ${{ github.workspace }}/.ccache
+      # An empty secret leaves ccache local-only.
+      CCACHE_REMOTE_STORAGE: ${{ secrets.CCACHE_REMOTE_STORAGE }}
+      # Compiler mtimes differ between hosts; hash content so keys match.
+      CCACHE_COMPILERCHECK: content
       CCACHE_MAXSIZE: 6G
       TAG: ${{ inputs.tag || github.ref_name }}
 
@@ -105,6 +109,12 @@ jobs:
           key: ccache-linux-release-tag-${{ env.TAG }}-${{ github.run_id }}
           restore-keys: |
             ccache-linux-release-tag-${{ env.TAG }}-
+
+      - name: Reset ccache statistics
+        run: ccache -z
+
+      - name: Normalise remote ccache layout
+        run: tools/ci/ccache-remote-setup.sh
 
       - name: Cache test assets
         uses: actions/cache@v6.1.0

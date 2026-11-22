@@ -273,10 +273,24 @@ TEST_F(PyTemplateImportTest, AnotherAppsGroupAndAnotherAppRaiseValueError)
     AppInstancePtr other = appPTR->newBackgroundInstance(args, true);
     appPTR->setAsTopLevelInstance(getApp()->getAppID());
     ASSERT_TRUE(other != nullptr);
-    ASSERT_TRUE(createIn(PLUGINID_NATRON_GROUP, "OtherGroup", other->getProject()) != nullptr);
-    const std::string otherName = other->getAppIDString();
+    // In background mode getAppIDString() is "app", which Python binds to the first instance, so
+    // the second app's nodes cannot declare their children under it: a group made with its
+    // initial Input and Output nodes fails to create them. The second app is reached through the
+    // appN variable its creation declares.
+    {
+        CreateNodeArgs groupArgs(PLUGINID_NATRON_GROUP, other->getProject());
+        groupArgs.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
+        groupArgs.setProperty<bool>(kCreateNodeArgsPropNodeGroupDisableCreateInitialNodes, true);
+        groupArgs.setProperty<std::string>(kCreateNodeArgsPropNodeInitialName, "OtherGroup");
+        NodePtr otherGroup = other->createNode(groupArgs);
+        ASSERT_TRUE(otherGroup != nullptr);
+        ASSERT_TRUE(otherGroup->isEffectGroup() != nullptr);
+    }
+    const std::string otherName = "app" + std::to_string(other->getAppID() + 1);
+    ASSERT_NE(otherName, std::string("app") + std::to_string(getApp()->getAppID() + 1));
 
     std::string script = fill(R"(
+assert @OTHER@.getNode('OtherGroup') is not None
 for target in (@OTHER@.getNode('OtherGroup'), @OTHER@):
     try:
         @APP@.importTemplate('@PATH@', target)

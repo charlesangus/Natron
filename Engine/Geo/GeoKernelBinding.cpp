@@ -26,8 +26,10 @@
 #include "GeoKernelBinding.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <deque>
 #include <map>
 #include <memory>
@@ -39,6 +41,7 @@
 #include "Engine/Geo/GeoKernelTopology.h"
 #include "Engine/Geo/GeoPointTree.h"
 #include "Engine/Kernel/KernelParser.h"
+#include "Engine/PoolParallelFor.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -1586,6 +1589,315 @@ geoKernelRun(const KernelProgram& program, GeoAttribClassEnum runOver, std::span
         result.status = KernelRunStatus::eFailed;
         result.error = e.what();
         result.detail = *inputs[0];
+    }
+    return result;
+}
+
+namespace {
+
+class GeoGpuTarget : public KernelGpuTarget {
+public:
+    KernelGpuForm bindingForm(const KernelProgramBinding& b, std::string* why) const override
+    {
+        if (b.input != 0) {
+            if (why) {
+                *why = "reads of another input run on the CPU";
+            }
+            return KernelGpuForm::eUnsupported;
+        }
+        if (b.type.array || b.type.base == B::eString) {
+            if (why) {
+                *why = kernelTypeName(b.type) + " values run on the CPU";
+            }
+            return KernelGpuForm::eUnsupported;
+        }
+        if (b.variable.kind == KernelVariableKind::eBuiltin) {
+            switch (Builtin(b.variable.id)) {
+            case Builtin::eNumpt:
+            case Builtin::eNumprim:
+            case Builtin::eNumvtx:
+            case Builtin::eNumelem:
+            case Builtin::eFrame:
+            case Builtin::eTime:
+                return KernelGpuForm::eUniform;
+            case Builtin::ePtnum:
+            case Builtin::ePrimnum:
+            case Builtin::eVtxnum:
+            case Builtin::eElemnum:
+                return KernelGpuForm::ePerElement;
+            }
+        }
+        return KernelGpuForm::ePerElement;
+    }
+
+    KernelGpuForm functionForm(const KernelProgramFunction& function) const override
+    {
+        const std::vector<FnEntry>& table = functionTable();
+        if (function.provider != KernelFunctionProvider::eBinding || function.signature.id < 0
+            || std::size_t(function.signature.id) >= table.size()) {
+            return KernelGpuForm::eUnsupported;
+        }
+        switch (table[std::size_t(function.signature.id)].fn) {
+        case Fn::eNPoints:
+        case Fn::eNPrimitives:
+        case Fn::eNVertices:
+        case Fn::eChFloat:
+        case Fn::eChInt:
+        case Fn::eChVector:
+            return KernelGpuForm::eUniform;
+        default:
+            return KernelGpuForm::eUnsupported;
+        }
+    }
+};
+
+int
+denseThreadCount(int requested, std::size_t items)
+{
+    int threads = requested > 0 ? requested : AppTLS::currentThreadBudget();
+    if (threads <= 0) {
+        threads = QThreadPool::globalInstance()->maxThreadCount();
+    }
+    return int(std::max<std::size_t>(1, std::min<std::size_t>(std::size_t(std::max(1, threads)), items)));
+}
+
+std::uint32_t
+registerWord(const KernelRegisters& regs, const KernelOperand& o, int lane)
+{
+    if (o.bank == KernelBank::eInt) {
+        return std::uint32_t(regs.i(o.reg)[lane]);
+    }
+    std::uint32_t w;
+    std::memcpy(&w, regs.f(o.reg) + lane, sizeof w);
+    return w;
+}
+
+void
+setRegisterWord(KernelRegisters& regs, const KernelOperand& o, int lane, std::uint32_t w)
+{
+    if (o.bank == KernelBank::eInt) {
+        regs.i(o.reg)[lane] = std::int32_t(w);
+    } else {
+        std::memcpy(regs.f(o.reg) + lane, &w, sizeof w);
+    }
+}
+
+// Runs fn(worker, registers, item) for every item on the pool, one worker per thread, until one
+// throws, which ends the run with its message, or aborted returns true.
+KernelRunStatus
+forEachItem(const KernelProgram& program, GeoKernelRun& run, const GeoKernelRunOptions& options, std::string& error,
+            const std::function<void(KernelRunWorker&, KernelRegisters&, std::size_t)>& fn)
+{
+    const std::size_t items = run.itemCount();
+    if (items == 0) {
+        return KernelRunStatus::eDone;
+    }
+    std::atomic<std::size_t> next { 0 };
+    std::atomic<bool> stop { false };
+    std::atomic<bool> aborted { false };
+    std::mutex errorMutex;
+    const std::function<void(int)> body = [&](int) {
+        try {
+            std::unique_ptr<KernelRunWorker> worker = run.createWorker();
+            KernelRegisters regs(program);
+            for (;;) {
+                const std::size_t item = next.fetch_add(1);
+                if (item >= items || stop.load()) {
+                    return;
+                }
+                if (options.aborted && options.aborted()) {
+                    aborted.store(true);
+                    stop.store(true);
+                    return;
+                }
+                fn(*worker, regs, item);
+            }
+        } catch (const std::exception& e) {
+            std::lock_guard<std::mutex> lock(errorMutex);
+            if (error.empty()) {
+                error = e.what();
+            }
+            stop.store(true);
+        }
+    };
+    const int threads = denseThreadCount(options.threads, items);
+    parallelForOnGlobalPool(threads, threads, body);
+    if (!error.empty()) {
+        return KernelRunStatus::eFailed;
+    }
+    return aborted.load() ? KernelRunStatus::eAborted : KernelRunStatus::eDone;
+}
+
+} // namespace
+
+const KernelGpuTarget&
+geoKernelGpuTarget()
+{
+    static const GeoGpuTarget target;
+    return target;
+}
+
+GeoKernelRunResult
+geoKernelRunDense(const KernelProgram& program, const KernelGpuPlan& plan, GeoAttribClassEnum runOver,
+                  std::span<const GeoDetail* const> inputs, const GeoKernelRunOptions& options,
+                  const GeoKernelDenseBody& body, std::string& declined)
+{
+    declined.clear();
+    GeoKernelRunResult result;
+    if (inputs.empty() || !inputs[0]) {
+        result.status = KernelRunStatus::eFailed;
+        result.error = "geometry kernel: input 0 is missing";
+        return result;
+    }
+    result.detail = *inputs[0];
+    if (!plan.runsOnGpu()) {
+        result.status = KernelRunStatus::eFailed;
+        result.error = plan.cpuOnlyReason;
+        declined = plan.cpuOnlyReason;
+        return result;
+    }
+    const auto failed = [&](KernelRunStatus status, const std::string& error) {
+        result.status = status;
+        result.error = error;
+        result.detail = *inputs[0];
+        return result;
+    };
+    try {
+        GeoKernelRun run(program, runOver, inputs, options);
+        const std::size_t items = run.itemCount();
+        const std::size_t columns = plan.columns.size();
+        const int lane0 = 0;
+
+        // Gathered per item, then laid out column by column for the whole run.
+        std::vector<std::vector<std::uint32_t>> itemWords(items);
+        std::vector<std::size_t> itemCounts(items, 0);
+        std::vector<std::vector<std::uint32_t>> itemUniforms(items);
+        std::string error;
+        KernelRunStatus status = forEachItem(program, run, options, error, [&](KernelRunWorker& worker, KernelRegisters& regs, std::size_t item) {
+            const std::size_t n = worker.beginItem(item);
+            itemCounts[item] = n;
+            std::vector<std::uint32_t>& words = itemWords[item];
+            words.assign(n * columns, 0u);
+            for (std::size_t first = 0; first < n; first += kKernelLaneCount) {
+                const int lanes = int(std::min<std::size_t>(kKernelLaneCount, n - first));
+                worker.gather(first, lanes, regs);
+                for (std::size_t c = 0; c < columns; ++c) {
+                    const KernelGpuColumn& col = plan.columns[c];
+                    if (!col.load) {
+                        continue;
+                    }
+                    const KernelOperand o { col.bank, col.reg };
+                    for (int l = 0; l < lanes; ++l) {
+                        words[c * n + first + std::size_t(l)] = registerWord(regs, o, l);
+                    }
+                }
+                if (first == 0) {
+                    std::vector<std::uint32_t>& uniforms = itemUniforms[item];
+                    uniforms.assign(plan.uniforms.size(), 0u);
+                    for (std::size_t u = 0; u < plan.uniforms.size(); ++u) {
+                        if (plan.uniforms[u].binding >= 0) {
+                            uniforms[u] = registerWord(regs, plan.uniforms[u].operand, lane0);
+                        }
+                    }
+                }
+            }
+        });
+        if (status != KernelRunStatus::eDone) {
+            return failed(status, error);
+        }
+
+        GeoKernelDenseValues values;
+        std::vector<std::size_t> itemBegin(items, 0);
+        for (std::size_t item = 0; item < items; ++item) {
+            itemBegin[item] = values.count;
+            values.count += itemCounts[item];
+        }
+        values.uniforms.assign(plan.uniforms.size(), 0u);
+        for (std::size_t item = 0; item < items; ++item) {
+            if (itemCounts[item] != 0) {
+                values.uniforms = itemUniforms[item];
+                break;
+            }
+        }
+        if (values.count == 0) {
+            result.status = KernelRunStatus::eDone;
+            result.detail = run.finish();
+            return result;
+        }
+        {
+            std::unique_ptr<KernelRunWorker> worker = run.createWorker();
+            KernelRegisters regs(program);
+            const std::int32_t mask = 1;
+            for (std::size_t u = 0; u < plan.uniforms.size(); ++u) {
+                const KernelGpuUniform& uniform = plan.uniforms[u];
+                if (uniform.instruction < 0) {
+                    continue;
+                }
+                const KernelInstruction& in = program.instructions[std::size_t(uniform.instruction)];
+                const std::span<const KernelOperand> operands(program.operands.data() + in.operandBegin, in.operandCount);
+                const std::size_t resultCount = std::size_t(std::max(in.b, 0));
+                const KernelCall call { program,
+                                        std::uint32_t(uniform.instruction),
+                                        program.functions[std::size_t(in.imm)],
+                                        regs,
+                                        &mask,
+                                        1,
+                                        operands.subspan(0, resultCount),
+                                        operands.subspan(resultCount) };
+                worker->call(call);
+                values.uniforms[u] = registerWord(regs, uniform.operand, lane0);
+            }
+        }
+        values.words.assign(values.count * columns, 0u);
+        for (std::size_t item = 0; item < items; ++item) {
+            const std::size_t n = itemCounts[item];
+            const std::vector<std::uint32_t>& words = itemWords[item];
+            for (std::size_t c = 0; c < columns && n != 0; ++c) {
+                std::copy(words.begin() + std::ptrdiff_t(c * n), words.begin() + std::ptrdiff_t((c + 1) * n),
+                          values.words.begin() + std::ptrdiff_t(c * values.count + itemBegin[item]));
+            }
+            std::vector<std::uint32_t>().swap(itemWords[item]);
+        }
+
+        const KernelRunResult ran = body(values);
+        if (ran.status == KernelRunStatus::eFailed) {
+            declined = ran.error.empty() ? std::string("the GPU run failed") : ran.error;
+            return failed(KernelRunStatus::eFailed, declined);
+        }
+        if (ran.status == KernelRunStatus::eAborted) {
+            return failed(KernelRunStatus::eAborted, ran.error);
+        }
+        result.batches = ran.batches;
+
+        status = forEachItem(program, run, options, error, [&](KernelRunWorker& worker, KernelRegisters& regs, std::size_t item) {
+            const std::size_t n = worker.beginItem(item);
+            if (n != itemCounts[item]) {
+                throw KernelRunError("geometry kernel: the element count changed during the run");
+            }
+            for (std::size_t first = 0; first < n; first += kKernelLaneCount) {
+                const int lanes = int(std::min<std::size_t>(kKernelLaneCount, n - first));
+                for (std::size_t c = 0; c < columns; ++c) {
+                    const KernelGpuColumn& col = plan.columns[c];
+                    if (!col.store) {
+                        continue;
+                    }
+                    const KernelOperand o { col.bank, col.reg };
+                    const std::uint32_t* words = values.words.data() + c * values.count + itemBegin[item] + first;
+                    for (int l = 0; l < lanes; ++l) {
+                        setRegisterWord(regs, o, l, words[l]);
+                    }
+                }
+                worker.scatter(first, lanes, regs);
+            }
+            worker.endItem(item);
+        });
+        if (status != KernelRunStatus::eDone) {
+            return failed(status, error);
+        }
+        result.status = KernelRunStatus::eDone;
+        result.detail = run.finish();
+    } catch (const std::exception& e) {
+        return failed(KernelRunStatus::eFailed, e.what());
     }
     return result;
 }

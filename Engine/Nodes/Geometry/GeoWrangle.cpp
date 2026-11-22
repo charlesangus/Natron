@@ -44,7 +44,11 @@
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
 #include "Engine/Curve.h"
+#include "Engine/Geo/GeoKernelGpuRunner.h"
 #include "Engine/GeoDetail.h"
+#ifdef NATRON_HAVE_GPU
+#include "Engine/GpuContext.h"
+#endif
 #include "Engine/Kernel/KernelParser.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -400,6 +404,7 @@ GeoWrangle::compile(const std::string& snippet,
         const GeoKernelBinding binding(runOver, &parameters);
         std::shared_ptr<KernelProgram> program = std::make_shared<KernelProgram>();
         if (kernelCompile(snippet, binding, *program, compiled->error)) {
+            compiled->gpuPlan = kernelGpuPlan(*program, geoKernelGpuTarget());
             compiled->program = std::move(program);
         }
     }
@@ -499,7 +504,18 @@ GeoWrangle::renderGeometry(const GeoRenderActionArgs& args,
         return stop;
     };
 
-    GeoKernelRunResult result = geoKernelRun(*compiled->program, cls, std::span<const GeoDetail* const>(inputs), options);
+    gpu::GpuRuntime* runtime = nullptr;
+    std::shared_ptr<void> runtimeHold;
+#ifdef NATRON_HAVE_GPU
+    GpuContext* const gpuContext = appPTR ? appPTR->getGpuContext() : nullptr;
+    if (gpuContext && gpuContext->isAvailable()) {
+        runtimeHold = gpuContext->holdRuntime();
+        runtime = runtimeHold ? gpuContext->runtime() : nullptr;
+    }
+#endif
+    GeoKernelGpuRunResult ran = geoKernelRunGpu(*compiled->program, compiled->gpuPlan, cls, std::span<const GeoDetail* const>(inputs), options, runtime);
+    runtimeHold.reset();
+    GeoKernelRunResult& result = ran.result;
     if (result.status == KernelRunStatus::eAborted) {
         return eStatusFailed;
     }
@@ -510,7 +526,11 @@ GeoWrangle::renderGeometry(const GeoRenderActionArgs& args,
         return eStatusFailed;
     }
 
-    clearPersistentMessage(false);
+    if (ran.fallback.empty()) {
+        clearPersistentMessage(false);
+    } else {
+        setPersistentMessage(eMessageTypeInfo, "Ran on the CPU: " + ran.fallback);
+    }
     *outputDetail = std::make_shared<const GeoDetail>(std::move(result.detail));
 
     return eStatusOK;

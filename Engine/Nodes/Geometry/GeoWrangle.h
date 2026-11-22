@@ -109,6 +109,7 @@ private:
     struct Compiled {
         std::shared_ptr<const KernelProgram> program;
         KernelCompileError error;
+        KernelGpuPlan gpuPlan;
     };
 
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;

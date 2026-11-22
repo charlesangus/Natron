@@ -43,6 +43,7 @@
 
 #include "Engine/GeoDetail.h"
 #include "Engine/Kernel/KernelBinding.h"
+#include "Engine/Kernel/KernelGpuCodegen.h"
 #include "Engine/Kernel/KernelRunner.h"
 
 NATRON_NAMESPACE_ENTER
@@ -141,6 +142,44 @@ GeoKernelRunResult geoKernelRun(const KernelProgram& program,
                                 GeoAttribClassEnum runOver,
                                 std::span<const GeoDetail* const> inputs,
                                 const GeoKernelRunOptions& options = GeoKernelRunOptions());
+
+/**
+ * @brief What geometry hands to a GPU run: attributes and element numbers of input 0 per element,
+ * the element counts, @Frame, @Time, npoints nprimitives nvertices and the numeric ch readers as
+ * uniforms. String and array values, other inputs' attributes and every other function stay on the
+ * CPU.
+ **/
+const KernelGpuTarget& geoKernelGpuTarget();
+
+/**
+ * @brief The values of a GPU plan's columns for every element a run covers, in run order: column c
+ * of element e is words[c * count + e]. Columns the plan does not load hold zero.
+ **/
+struct GeoKernelDenseValues {
+    std::size_t count = 0;
+    std::vector<std::uint32_t> words;
+    // One word per KernelGpuPlan::uniforms entry, floats as their bits.
+    std::vector<std::uint32_t> uniforms;
+};
+
+/**
+ * @brief Computes the plan's stored columns in place. eDone keeps them; eFailed gives the run up
+ * with error as the reason, and eAborted ends it.
+ **/
+typedef std::function<KernelRunResult(GeoKernelDenseValues& values)> GeoKernelDenseBody;
+
+/**
+ * @brief As geoKernelRun, with the program's body replaced by body, which works on values gathered
+ * for plan (a plan of program against geoKernelGpuTarget() that runs on the GPU). When body gives
+ * the run up, declined receives its reason and the result is a failure to discard.
+ **/
+GeoKernelRunResult geoKernelRunDense(const KernelProgram& program,
+                                     const KernelGpuPlan& plan,
+                                     GeoAttribClassEnum runOver,
+                                     std::span<const GeoDetail* const> inputs,
+                                     const GeoKernelRunOptions& options,
+                                     const GeoKernelDenseBody& body,
+                                     std::string& declined);
 
 /** @brief Whether a program compiled against GeoKernelBinding reads @Frame or @Time. */
 bool geoKernelReadsTime(const KernelProgram& program);

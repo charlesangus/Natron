@@ -355,7 +355,7 @@ future core work has solid ground to build on.
 | M180 | Loop Block Core | done | M178 | bosley-native-nodes | E15 | | | [M180-loop-block-core.md](PLAN/MILESTONES/M180-loop-block-core.md) |
 | M181 | Loop Drivers And UI | done | M180, M71 | bosley-native-nodes | E15 | | | [M181-loop-drivers-and-ui.md](PLAN/MILESTONES/M181-loop-drivers-and-ui.md) |
 | M182 | Loop Feedback | done | M180 | bosley-native-nodes | E15 | | | [M182-loop-feedback.md](PLAN/MILESTONES/M182-loop-feedback.md) |
-| M183 | Loop Map Blend | doing | M180, M179, M184 | bosley-executor | E15 | F14 | | [M183-loop-map-blend.md](PLAN/MILESTONES/M183-loop-map-blend.md) |
+| M183 | Loop Map Blend | done | M180, M179, M184 | bosley-executor | E15 | F14 | | [M183-loop-map-blend.md](PLAN/MILESTONES/M183-loop-map-blend.md) |
 | M184 | Variable-Size Filter Kit | done | M120, M137 | gpu | E15 | | | [M184-variable-size-filter-kit.md](PLAN/MILESTONES/M184-variable-size-filter-kit.md) |
 | M185 | Variable Warps | done | M113, M184 |  | E15 | | | [M185-variable-warps.md](PLAN/MILESTONES/M185-variable-warps.md) |
 | M186 | Exact IDefocus | done | M131, M184 | bosley-native-nodes | E15 | | | [M186-exact-idefocus.md](PLAN/MILESTONES/M186-exact-idefocus.md) |

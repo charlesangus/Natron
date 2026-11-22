@@ -1752,7 +1752,7 @@ iconForType(const QString& type)
 {
     static const QIcon camera(QString::fromUtf8(":/Resources/Images/NativeNodes/USDCamera.png"));
     static const QIcon light(QString::fromUtf8(":/Resources/Images/NativeNodes/USDLight.png"));
-    static const QIcon material(QString::fromUtf8(":/Resources/Images/NativeNodes/USDMaterial.png"));
+    static const QIcon material(QString::fromUtf8(":/Resources/Images/NativeNodes/USDPreviewSurface.png"));
     static const QIcon xform(QString::fromUtf8(":/Resources/Images/NativeNodes/USDXformPrim.png"));
     static const QIcon scope(QString::fromUtf8(":/Resources/Images/NativeNodes/USDScopePrim.png"));
 

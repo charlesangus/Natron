@@ -97,8 +97,8 @@
 #include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/Nodes/Scene/USDEmissiveMaterial.h"
 #include "Engine/Nodes/Scene/USDLight.h"
-#include "Engine/Nodes/Scene/USDMaterial.h"
 #include "Engine/Nodes/Scene/USDMerge.h"
+#include "Engine/Nodes/Scene/USDPreviewSurface.h"
 #include "Engine/Nodes/Scene/USDProject3D.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDRender.h"
@@ -1676,7 +1676,7 @@ protected:
                                  bool emissive)
     {
         Graph graph;
-        NodePtr material = createNode(QString::fromUtf8(emissive ? PLUGINID_NATRON_USDEMISSIVEMATERIAL : PLUGINID_NATRON_USDMATERIAL));
+        NodePtr material = createNode(QString::fromUtf8(emissive ? PLUGINID_NATRON_USDEMISSIVEMATERIAL : PLUGINID_NATRON_USDPREVIEWSURFACE));
         NodePtr card = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
         NodePtr camera = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCAMERA));
         NodePtr light = createNode(QString::fromUtf8(PLUGINID_NATRON_USDLIGHT));
@@ -1703,7 +1703,7 @@ protected:
 
             return graph;
         }
-        connectNodes(source, material, emissive ? kUSDEmissiveMaterialInputEmissive : kUSDMaterialInputDiffuseColor, true);
+        connectNodes(source, material, emissive ? kUSDEmissiveMaterialInputEmissive : kUSDPreviewSurfaceInputDiffuseColor, true);
         connectNodes(material, card, 0, true);
         connectNodes(card, merge, 0, true);
         connectNodes(camera, merge, 1, true);
@@ -2008,7 +2008,7 @@ TEST_F(USDRenderCyclesLiveTextureTest, ALiveNormalMapBendsTheLighting)
     const NodePtr normal = createConstant(0.5, 0.5, 1.);
     const Graph graph = createLiveTextureGraph(createConstant(1., 1., 1.), false);
     ASSERT_TRUE(bool(graph.render));
-    connectNodes(normal, graph.material, kUSDMaterialInputNormal, true);
+    connectNodes(normal, graph.material, kUSDPreviewSurfaceInputNormal, true);
 
     const std::array<double, 4> flat = centreAtFrame(graph.render, 1.);
     ASSERT_GT(flat[0], 0.05);

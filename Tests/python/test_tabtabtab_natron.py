@@ -873,7 +873,7 @@ class NatronAdapterTests(unittest.TestCase):
                     node("USDEditTransform", "scene", "primPattern"),
                     node("USDPrune", "scene", "primPattern"),
                     node("USDMerge", "scene"),
-                    node("USDMaterial", "", "primPath"),
+                    node("USDPreviewSurface", "", "primPath"),
                     node("USDXformPrim", "scene", "primPath"),
                 ]),
             ]),
@@ -897,7 +897,7 @@ class NatronAdapterTests(unittest.TestCase):
         h.module.launch(_FakeApp(), {"inputKind": "scene", "needsPrimPathKnob": True})
         items = h.module._plugin.get_items()
 
-        # USDMaterial is a source with no scene input, so nothing can be inserted
+        # USDPreviewSurface is a source with no scene input, so nothing can be inserted
         # after a scene node as one, prim path knob or not.
         self.assertEqual(self._labels(items), ["USDEditTransform", "USDPrune", "USDXformPrim"])
 
@@ -920,7 +920,7 @@ class NatronAdapterTests(unittest.TestCase):
 
         labels = self._labels(items)
         self.assertIn("Blur", labels)
-        self.assertIn("USDMaterial", labels)
+        self.assertIn("USDPreviewSurface", labels)
         self.assertIn("Preferences", labels)
 
     def test_filtered_choice_triggers_through_the_app(self):

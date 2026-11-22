@@ -1044,10 +1044,16 @@ makeRenderPlacementInputs(const FrameRenderContextPtr& context)
         if (!context) {
             return false;
         }
+        const EffectInstancePtr effect = task.key.node ? task.key.node->getEffectInstance() : EffectInstancePtr();
+        if (effect && effect->offersRenderContinuation()) {
+            refusal->reason = FrameGraph::PlacementReason::NoGpuPath;
+            refusal->detail = "the node offers a render continuation, which only CPU tasks are probed for";
+
+            return false;
+        }
         if (makeGpuTaskPlanes(task, *context, &planes, &refusal->detail)) {
             return true;
         }
-        const EffectInstancePtr effect = task.key.node ? task.key.node->getEffectInstance() : EffectInstancePtr();
         const NativeEffectBase* native = dynamic_cast<const NativeEffectBase*>(effect.get());
         if (refusal->detail.empty() && native && native->opKind() && isDownscaleUnsupported(task, *native)) {
             refusal->reason = FrameGraph::PlacementReason::DownscaleUnsupported;

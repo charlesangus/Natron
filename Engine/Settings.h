@@ -48,6 +48,13 @@ NATRON_NAMESPACE_ENTER
 struct GpuDeviceSummary;
 enum class AiModelTask;
 
+// How a viewer marks an image that is out of date, in the order of the staleCueStyle choices.
+enum StaleCueStyleEnum : int {
+    eStaleCueStyleOff = 0,
+    eStaleCueStyleSubtleOutline,
+    eStaleCueStyleCornerDot
+};
+
 /*The current settings in the preferences menu.*/
 class Settings
     : public KnobHolder
@@ -387,6 +394,9 @@ public:
     ImageBitDepthEnum getViewersBitDepth() const;
     int getViewerTilesPowerOf2() const;
     int getCheckerboardTileSize() const;
+    StaleCueStyleEnum getStaleCueStyle() const;
+    int getStaleCueDelayMs() const;
+    int getStaleCueHoldMs() const;
 
     void getCheckerboardColor1(double* r, double* g, double* b, double* a) const;
     void getCheckerboardColor2(double* r, double* g, double* b, double* a) const;
@@ -723,6 +733,9 @@ private:
     KnobChoicePtr _texturesMode;
     KnobIntPtr _powerOf2Tiling;
     KnobIntPtr _checkerboardTileSize;
+    KnobChoicePtr _staleCueStyle;
+    KnobIntPtr _staleCueDelay;
+    KnobIntPtr _staleCueHold;
     KnobColorPtr _checkerboardColor1;
     KnobColorPtr _checkerboardColor2;
     KnobBoolPtr _autoProxyWhenScrubbingTimeline;

@@ -44,3 +44,6 @@
   - size: M
 
 **Verification gate:** `ctest -R "MoonRayAovs|USDRenderMoonRay"` green; full debug PR CI green.
+
+## Decisions
+- 2026-11-22 — P1.T1 recorded (gate on cfde0f2ed): a frame-held projection on two cards makes hdMoonray emit, per card, level-2 notices `<prim>.primvars:natronProjectionFrameHold1: GfMatrix4d not translated` and `<prim>.primvars:natronProjectionFrameHold1Column{0,1,2}: VtArray<GfVec4f> not translated`; the render still projects correctly on both cards (EXPECT_PROJECTS passes). They are benign: Natron's own frame-hold primvars, which hdMoonray can't translate and doesn't need (the projection reads the column primvars through the shader). The filter drops exactly these — primvar name `natronProjectionFrameHold<N>` or `natronProjectionFrameHold<N>Column<0-2>` with "not translated" — matched in full, not by prefix.

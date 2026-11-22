@@ -37,3 +37,4 @@ Make MoonRay's deep output true deep in our MoonRay fork. Upstream MoonRay recor
 
 - 2026-11-16 — **Split from M258 - MoonRay Deep Output (user, inbox and grill):** fork-only work with no dependency on M286 - Utility Renderer Deep Output, so it can run now.
 - 2026-11-16 — **Volume deep segments carry colour and alpha (user, M255 P2.T3 decision 7).**
+- 2026-11-22 — T1 landed on the forks (moonray 799d47e4, openmoonray c4edab6) and pinned in a4bb52fe3; the remote fast gate with the rebuilt image is green (full ctest). Still to run: `variants.sh` in the image (presence flattened RMSE ≤ 1e-3; opaque and glass unchanged) before checking T1 off.

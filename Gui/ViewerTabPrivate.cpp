@@ -97,6 +97,8 @@ ViewerTabPrivate::ViewerTabPrivate(ViewerTab* publicInterface,
     , toggleGainButton(NULL)
     , gainBox(NULL)
     , gainSlider(NULL)
+    , applyCameraExposureButton(NULL)
+    , cameraExposureLabel(NULL)
     , gammaBox(NULL)
     , toggleGammaButton(NULL)
     , gammaSlider(NULL)

@@ -82,6 +82,7 @@
 #define kViewerParamDownscaleLevel "downscaleLevel"
 #define kViewerParamMaxSamples "maxSamples"
 #define kViewerParamRefinementPaused "refinementPaused"
+#define kViewerParamApplyCameraExposure "applyCameraExposure"
 
 NATRON_NAMESPACE_ENTER
 

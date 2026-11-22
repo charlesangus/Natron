@@ -13,10 +13,16 @@ Stages: an emissive card (no lights), read once at an emission of 0.3 for refere
   - neither the gain nor the view change restarts the render (natronSceneRestartCount);
   - on the lit card, the Headlight lighting mode restarts the render, changes the card's pixel and
     shows as natronSceneLighting "headlight"; Auto, the stage having a light, renders as Scene
-    Lights without a restart; Scene Lights again brings back the first pixel.
+    Lights without a restart; Scene Lights again brings back the first pixel;
+  - looking through a camera at exposure 1 (Look Through submenu) in front of the 0.15 card: the
+    toolbar's cameraExposure label reads "1.0", natronSceneCameraExposure is [True, 1, 2], and the
+    card shows as the 0.3 card did at gain 1. Clicking the toolbar's applyCameraExposure button
+    clears the knob and shows the card at 0.15, without restarting the render; clicking it again
+    brings exposure back. Back on the free camera the label is empty and disabled.
 
 Screenshots for sign-off, each with a CAPTION line in results.txt: m365-reference, m365-plain,
-m365-gain-2, m365-view, m365-scene-lights, m365-headlight, m365-auto.
+m365-gain-2, m365-view, m365-scene-lights, m365-headlight, m365-auto, m365-camera-exposure,
+m365-camera-exposure-off.
 
 Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go to $NATRON_GUI_TEST_OUT
 (default build/gui-test-out/). Exit status 0 only if every check passed.
@@ -126,11 +132,24 @@ def Xform "World"
 }
 """
 
+CAMERA_STAGE = EMISSIVE_STAGE.replace("""    def Scope "Looks"
+""", """    def Camera "Cam"
+    {
+        float exposure = 1
+        float2 clippingRange = (0.1, 100)
+        double3 xformOp:translate = (0, 0, 3)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def Scope "Looks"
+""", 1)
+CAMERA_PATH = "/World/Cam"
+
 try:
     from PySide6.QtCore import QEvent, QPointF, Qt, QTimer
     from PySide6.QtGui import QContextMenuEvent, QGuiApplication, QMouseEvent
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication, QLabel, QPushButton
 
     import NatronEngine
     from guitest import OUT, check, finish, plugin_problem, report, require, run, section, shot, viewer_up, widgets_of
@@ -147,6 +166,7 @@ try:
     reference_path = write_stage("m365-reference.usda", EMISSIVE_STAGE % {"grey": "0.3"})
     card_path = write_stage("m365-card.usda", EMISSIVE_STAGE % {"grey": "0.15"})
     lit_path = write_stage("m365-lit.usda", LIT_STAGE)
+    camera_path = write_stage("m365-camera.usda", CAMERA_STAGE % {"grey": "0.15"})
 
     lighting = NatronEngine.natron.getSettings().getParam("viewer3DLighting")
     require(lighting is not None, "Preferences have a viewer3DLighting parameter")
@@ -163,7 +183,7 @@ try:
     require(viewer is not None, "a Viewer exists")
     viewer.setPosition(0, 150)
     knobs = {}
-    for name in ("enableGain", "gain", "enableGamma", "gamma", "view", "maxSamples"):
+    for name in ("enableGain", "gain", "enableGamma", "gamma", "view", "maxSamples", "applyCameraExposure"):
         knobs[name] = viewer.getParam(name)
         require(knobs[name] is not None, "the Viewer has a %s parameter" % name)
 
@@ -283,6 +303,48 @@ try:
         close_menus()
         yield ("until", lambda: state.get("closed", False), POLL_TIMEOUT_S)
         return usable
+
+    def pick_look_through(text):
+        """Steps that pick the Look Through submenu's entry labelled text; return whether it was found."""
+        gui = main_gui()
+        if gui is not None:
+            gui.activateWindow()
+            gui.raise_()
+        QApplication.processEvents()
+        state = {}
+        post_context_menu(view(), state)
+        ok = yield ("until", lambda: popup() is not None, POLL_TIMEOUT_S)
+        require(ok, "the view's context menu opens")
+        menu = popup()
+        _held.append(menu)
+        found = [a for a in menu.actions() if a.text().replace("&", "") == "Look Through" and a.menu() is not None]
+        require(bool(found), "the context menu has a Look Through submenu")
+        action = found[0]
+        _held.append(action)
+        sub = action.menu()
+        _held.append(sub)
+        menu.setActiveAction(action)
+        QTest.keyClick(menu, Qt.Key_Right)
+        yield ("until", lambda: sub.isVisible(), 5.0)
+        entries = [a for a in sub.actions() if a.text().replace("&", "") == text]
+        if entries:
+            entries[0].trigger()
+        close_menus()
+        yield ("until", lambda: state.get("closed", False), POLL_TIMEOUT_S)
+        return bool(entries)
+
+    def toolbar(cls, name):
+        for tab in widgets_of("ViewerTab"):
+            w = tab.findChild(cls, name)
+            if w is not None:
+                # A child's wrapper lives only as long as its parent's.
+                _held.append(tab)
+                _held.append(w)
+                return w
+        return None
+
+    def view_centre(image):
+        return (image.width() // 2, image.height() // 2)
 
     def crop():
         v = view()
@@ -477,6 +539,58 @@ try:
         auto = mean_around(auto_image, centre)
         check(restarts() == before, "auto on a stage with a light restarts no render (%d -> %d)" % (before, restarts()))
         check(not differs(auto, scene_lit, COLOUR_SLACK), "auto renders as Scene Lights (%r vs %r)" % (auto, scene_lit))
+
+        section("camera exposure")
+        set_lighting(LIGHTING_SCENE)
+        yield from load(camera_path, "the 0.15 card with a camera at exposure 1")
+        check(bool(knobs["applyCameraExposure"].get()), "Apply Camera Exposure is on by default")
+        before = restarts()
+        found = yield from pick_look_through(CAMERA_PATH)
+        require(found, "the Look Through submenu lists %s" % CAMERA_PATH)
+        ok = yield ("until", lambda: prop("natronSceneLookThrough") == CAMERA_PATH, POLL_TIMEOUT_S)
+        require(ok, "the view looks through %s (%r)" % (CAMERA_PATH, prop("natronSceneLookThrough")))
+        ok = yield from converged_after(before)
+        require(ok, "Cycles converges through the camera (restarts %r)" % (restarts(),))
+        exposure = prop("natronSceneCameraExposure")
+        check(exposure is not None and bool(exposure[0]) and abs(float(exposure[1]) - 1.0) < 1e-4
+              and abs(float(exposure[2]) - 2.0) < 1e-4, "the view reads the camera's exposure as 1 stop, a scale of 2 (%r)" % (exposure,))
+        label = toolbar(QLabel, "cameraExposure")
+        button = toolbar(QPushButton, "applyCameraExposure")
+        require(label is not None and button is not None, "the toolbar has the camera exposure button and label")
+        ok = yield ("until", lambda: label.text() == "1.0", POLL_TIMEOUT_S)
+        check(ok and label.isEnabled(), "the camera exposure label reads 1.0 (%r, enabled %r)" % (label.text(), label.isEnabled()))
+        check(button.isEnabled() and button.isChecked(), "the Apply Camera Exposure button is enabled and on")
+        exposed_image = capture("m365-camera-exposure", "Cycles through a camera at exposure 1: the 0.15 card shows as the 0.3 card at gain 1")
+        exposed = mean_around(exposed_image, view_centre(exposed_image))
+        check(not differs(exposed, twice, COLOUR_SLACK), "camera exposure 1 shows the 0.15 card as the 0.3 one (%r vs %r)"
+              % (exposed, twice))
+
+        settled = restarts()
+        main_gui().activateWindow()
+        QTest.mouseClick(button, Qt.LeftButton)
+        ok = yield ("until", lambda: not knobs["applyCameraExposure"].get(), POLL_TIMEOUT_S)
+        check(ok and not button.isChecked(), "the button clears the applyCameraExposure knob")
+        yield from repaint()
+        off_image = capture("m365-camera-exposure-off", "Cycles through the same camera with Apply Camera Exposure off: the card at 0.15")
+        off = mean_around(off_image, view_centre(off_image))
+        check(not differs(off, once, COLOUR_SLACK), "with camera exposure off the card shows at 0.15 (%r vs %r)" % (off, once))
+        check(label.text() == "1.0", "the label still shows the camera's exposure (%r)" % (label.text(),))
+        QTest.mouseClick(button, Qt.LeftButton)
+        ok = yield ("until", lambda: bool(knobs["applyCameraExposure"].get()), POLL_TIMEOUT_S)
+        check(ok and button.isChecked(), "clicking again sets the knob")
+        yield from repaint()
+        again = mean_around(crop(), view_centre(exposed_image))
+        check(not differs(again, exposed, COLOUR_SLACK), "camera exposure applies again (%r vs %r)" % (again, exposed))
+        check(restarts() == settled, "toggling camera exposure restarts no render (%d -> %d)" % (settled, restarts()))
+
+        found = yield from pick_look_through("Free Camera")
+        check(found, "the Look Through submenu lists Free Camera")
+        ok = yield ("until", lambda: prop("natronSceneLookThrough") == "", POLL_TIMEOUT_S)
+        check(ok, "the view is back on the free camera (%r)" % (prop("natronSceneLookThrough"),))
+        yield from repaint()
+        ok = yield ("until", lambda: label.text() == "" and not label.isEnabled(), POLL_TIMEOUT_S)
+        check(ok, "on the free camera the label is empty and disabled (%r)" % (label.text(),))
+        check(not button.isEnabled(), "on the free camera the button is disabled")
 
     def all_steps():
         try:

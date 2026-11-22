@@ -631,6 +631,8 @@ struct SceneViewportRenderer::Implementation {
     bool guideBatchesValid = false;
 
     DisplayTransform displayTransform;
+    // What the last render read from the camera looked through.
+    CameraExposure cameraExposure;
     // displayTransform's display, view and look, null for the sRGB encoding.
     OCIO_NAMESPACE::ConstProcessorRcPtr displayProcessor;
     // The background as shown: the display transform of kBackgroundLinear, without the viewer's
@@ -1041,6 +1043,32 @@ struct SceneViewportRenderer::Implementation {
         return camera;
     }
 
+    // Needs stageMutex.
+    void readCameraExposure()
+    {
+        CameraExposure exposure;
+        if (const UsdGeomCamera camera = lookThroughCamera()) {
+            for (const UsdAttribute& attribute : { camera.GetExposureAttr(), camera.GetExposureTimeAttr(), camera.GetExposureIsoAttr(),
+                                                   camera.GetExposureFStopAttr(), camera.GetExposureResponsivityAttr() }) {
+                exposure.authored = exposure.authored || (attribute && attribute.HasAuthoredValue());
+            }
+            if (exposure.authored) {
+                const double scale = camera.ComputeLinearExposureScale(UsdTimeCode(timeCode()));
+                if (std::isfinite(scale) && (scale > 0.)) {
+                    exposure.scale = scale;
+                    exposure.stops = std::log2(scale);
+                }
+            }
+        }
+        cameraExposure = exposure;
+    }
+
+    // What the grade multiplies rendered pixels by before the display transform.
+    double gradeGain() const
+    {
+        return displayTransform.gain * (displayTransform.applyCameraExposure ? cameraExposure.scale : 1.);
+    }
+
     bool hasLookThroughOverride() const
     {
         return !lookThrough.empty() && (lookThroughOverridePath == lookThrough);
@@ -1411,7 +1439,7 @@ struct SceneViewportRenderer::Implementation {
         glUniform1i(glGetUniformLocation(gradeProgram, "hasDepth"), depth ? 1 : 0);
         glUniform1i(glGetUniformLocation(gradeProgram, "stretched"), stretched ? 1 : 0);
         glUniform2f(glGetUniformLocation(gradeProgram, "viewSize"), (GLfloat)width, (GLfloat)height);
-        glUniform1f(glGetUniformLocation(gradeProgram, "gain"), (GLfloat)displayTransform.gain);
+        glUniform1f(glGetUniformLocation(gradeProgram, "gain"), (GLfloat)gradeGain());
         glUniform1f(glGetUniformLocation(gradeProgram, "gamma"), (GLfloat)displayTransform.gamma);
         for (std::size_t i = 0; i < gradeLuts.size(); ++i) {
             const GLint unit = kFirstLutUnit + (GLint)i;
@@ -2657,6 +2685,12 @@ SceneViewportRenderer::hasLookThroughTransform() const
     return _imp->hasLookThroughOverride();
 }
 
+SceneViewportRenderer::CameraExposure
+SceneViewportRenderer::getCameraExposure() const
+{
+    return _imp->cameraExposure;
+}
+
 void
 SceneViewportRenderer::setSelectedPrims(const std::vector<std::string>& paths)
 {
@@ -3020,6 +3054,7 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
     if ((width <= 0) || (height <= 0) || !appPTR->isOpenGLLoaded()) {
         return eRenderStatusDone;
     }
+    _imp->readCameraExposure();
     // Scene Default follows the renderer the stage's render settings prim names. A paint keeps
     // the renderer it has and leaves the switch to followSceneRenderer(), outside Qt's paint.
     const std::string effective = _imp->effectiveRenderer();
@@ -3986,6 +4021,8 @@ struct SceneViewport::Implementation {
     bool glInitialized = false;
     // The delegate rendering as of the last rendererChanged().
     std::string announcedRenderer = kRenderDelegateStormId;
+    // The camera exposure as of the last cameraExposureChanged().
+    SceneViewportRenderer::CameraExposure announcedExposure;
 
     // What a drag of the pressed button does.
     enum DragRoleEnum {
@@ -4399,6 +4436,12 @@ SceneViewport::publishState()
     // How many scenes were handed to the worker: navigation alone must not add to it.
     setProperty("natronSceneSyncRequests", QVariant::fromValue<qulonglong>(_imp->requestedSerial));
     setProperty("natronSceneLookThrough", QString::fromStdString(_imp->renderer.getLookThroughCamera()));
+    // Whether the camera looked through authors an exposure, in stops and as a linear scale, as
+    // the last paint read it.
+    {
+        const SceneViewportRenderer::CameraExposure& exposure = _imp->announcedExposure;
+        setProperty("natronSceneCameraExposure", QVariantList { exposure.authored, exposure.stops, exposure.scale });
+    }
     setProperty("natronSceneEngineCount", QVariant::fromValue<qulonglong>(_imp->renderer.getEngineCount()));
     setProperty("natronSceneEngineHeld", _imp->renderer.hasEngine());
     // The free camera's view (perspective, front, back, right, left, top or bottom), its clip
@@ -5312,6 +5355,13 @@ SceneViewport::paintGL()
         QTimer::singleShot(0, this, [this]() { followSceneRenderer(); });
     }
     const bool converged = (status == SceneViewportRenderer::eRenderStatusDone);
+    const SceneViewportRenderer::CameraExposure exposure = _imp->renderer.getCameraExposure();
+    if (!(exposure == _imp->announcedExposure)) {
+        _imp->announcedExposure = exposure;
+        setProperty("natronSceneCameraExposure", QVariantList { exposure.authored, exposure.stops, exposure.scale });
+        // The toolbar label changing inside this paint could relayout the viewer around it.
+        QTimer::singleShot(0, this, [this]() { Q_EMIT cameraExposureChanged(); });
+    }
     const SceneViewportRenderer::RefineStatus refine = _imp->renderer.getRefineStatus();
     publishRefineState();
     publishTransformState();

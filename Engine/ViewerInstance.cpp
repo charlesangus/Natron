@@ -963,6 +963,14 @@ ViewerInstance::initializeKnobs()
                                                                  "current samples; off continues from them. Edits wait until it is off."));
     k.refinementPaused = refinementPaused;
 
+    KnobBoolPtr applyCameraExposure = createViewerKnob<KnobBool>(this, page, tr("Apply Camera Exposure"), kViewerParamApplyCameraExposure,
+                                                                 tr("While the 3D view looks through a scene camera, multiplies what is rendered by "
+                                                                    "the camera's exposure, pow(2, exposure) with its exposure time, ISO, f-stop "
+                                                                    "and responsivity terms, together with Gain. It changes only what the viewer "
+                                                                    "shows, not what is rendered or written."));
+    applyCameraExposure->setDefaultValue(true);
+    k.applyCameraExposure = applyCameraExposure;
+
     if (NodePtr node = getNode()) {
         node->declareLayerKnob(layer, 0, LayerKnobSpec::eRoleInputBound);
         node->declareLayerKnob(alphaChannel, 0, LayerKnobSpec::eRoleInputBound);

@@ -250,6 +250,8 @@ public:
         std::string look;
         double gain = 1.;
         double gamma = 1.;
+        // Multiplies the exposure of the camera looked through in with the gain.
+        bool applyCameraExposure = true;
     };
 
     /**
@@ -378,6 +380,24 @@ public:
 
     // Whether the camera looked through is drawn from setLookThroughTransform().
     bool hasLookThroughTransform() const;
+
+    // The exposure of the camera looked through at the shown time, as the last render read it.
+    struct CameraExposure {
+        // The camera authors an exposure attribute: exposure, or one of the exposure:* terms.
+        bool authored = false;
+        // log2 of scale.
+        double stops = 0.;
+        // The camera's linear exposure scale as USD computes it, 1 when nothing is authored.
+        double scale = 1.;
+
+        bool operator==(const CameraExposure& other) const
+        {
+            return (authored == other.authored) && (stops == other.stops) && (scale == other.scale);
+        }
+    };
+
+    // The free camera has none.
+    CameraExposure getCameraExposure() const;
 
     // The highlighted prims, in selection order: the last is the current one.
     void setSelectedPrims(const std::vector<std::string>& paths);
@@ -784,6 +804,10 @@ Q_SIGNALS:
 
     // Whenever the natronSceneSamples family of properties is published.
     void refineStateChanged();
+
+    // The exposure of the camera looked through changed (getRenderer().getCameraExposure()), or
+    // the camera did. Queued after the paint that read it.
+    void cameraExposureChanged();
 
     // The renderer's stage holds the latest requested scene, or none (main thread).
     void sceneSynced();

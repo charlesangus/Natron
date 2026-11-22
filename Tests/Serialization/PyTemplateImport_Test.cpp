@@ -36,6 +36,7 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/CLArgs.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Node.h"
@@ -268,7 +269,9 @@ TEST_F(PyTemplateImportTest, AnotherAppsGroupAndAnotherAppRaiseValueError)
     const QString path = saveTemplate(dir);
     ASSERT_FALSE(path.isEmpty());
 
-    AppInstancePtr other = getApp()->newProject();
+    CLArgs args;
+    AppInstancePtr other = appPTR->newBackgroundInstance(args, true);
+    appPTR->setAsTopLevelInstance(getApp()->getAppID());
     ASSERT_TRUE(other != nullptr);
     ASSERT_TRUE(createIn(PLUGINID_NATRON_GROUP, "OtherGroup", other->getProject()) != nullptr);
     const std::string otherName = other->getAppIDString();
@@ -290,4 +293,5 @@ for target in (@OTHER@.getNode('OtherGroup'), @OTHER@):
     EXPECT_TRUE(project()->getTemplateImports().empty());
     EXPECT_TRUE(other->getProject()->getTemplateImports().empty());
     appPTR->quitNow(other);
+    appPTR->setAsTopLevelInstance(getApp()->getAppID());
 }

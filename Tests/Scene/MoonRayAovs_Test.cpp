@@ -196,6 +196,18 @@ TEST(MoonRayAovs, WarnsOnePerKindAndKeepsOtherErrorsForTheNode)
     EXPECT_EQ(std::string("RenderPassState without camera is unsupported"), MoonRayAovs::errorText(stage, notices));
 }
 
+TEST(MoonRayAovs, KeepsMoonRaysTextForEachPrimOnce)
+{
+    const PXR_NS::UsdStageRefPtr stage = lightStage();
+    std::vector<MoonRayAovs::Notice> notices;
+    notices.push_back(notice(MoonRayAovs::Notice::eLevelWarning, "/World/Ground/proto_0: unknown Rprim type foo"));
+    notices.push_back(notice(MoonRayAovs::Notice::eLevelWarning, "/World/Ground/proto_0: unknown Rprim type foo"));
+    notices.push_back(notice(MoonRayAovs::Notice::eLevelWarning, "/World/Ground/proto_0: another problem"));
+
+    const std::string warning = MoonRayAovs::warningText(stage, std::vector<MoonRayAovs::Light>(), notices);
+    EXPECT_EQ(std::string("MoonRay could not render these prims as authored: /World/Ground (unknown Rprim type foo), /World/Ground (another problem)"), warning);
+}
+
 TEST(MoonRayAovs, NamesTheTextureFilesNotThePrimsTheyShade)
 {
     const PXR_NS::UsdStageRefPtr stage = lightStage();

@@ -380,6 +380,24 @@ namespace {
         return !path->IsEmpty();
     }
 
+    // MoonRay's own words from the rest of a notice: "/World/Cube.material: no shader" gives "no shader".
+    std::string
+    messageOf(const std::string& rest)
+    {
+        size_t start = 0;
+        if (!rest.empty() && ((rest[0] == '.') || (rest[0] == ':'))) {
+            const size_t colon = rest.find(':');
+            start = (colon == std::string::npos) ? rest.size() : colon + 1;
+        }
+        const size_t first = rest.find_first_not_of(" \t", start);
+        if (first == std::string::npos) {
+            return std::string();
+        }
+        const size_t last = rest.find_last_not_of(" \t\r\n");
+
+        return rest.substr(first, last - first + 1);
+    }
+
     // The nearest prim at or above path on stage.
     UsdPrim
     nearestPrim(const UsdStageRefPtr& stage,
@@ -647,7 +665,8 @@ warningText(const UsdStageRefPtr& stage,
                     continue;
                 }
             }
-            appendName(&names[kind], name);
+            const std::string message = messageOf(rest);
+            appendName(&names[kind], message.empty() ? name : name + " (" + message + ")");
         }
     }
     std::string text;

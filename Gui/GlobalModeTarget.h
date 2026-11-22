@@ -44,6 +44,7 @@ NATRON_NAMESPACE_ENTER
 
 class ColorTrackballReveal;
 struct ColorTrackballHudState;
+struct ColorTrackballRevealLabels;
 
 /**
  * @brief Undoes or redoes on panel's own undo stack, as every global-mode target does between
@@ -129,6 +130,13 @@ public:
      * placement and its hint block are the controller's.
      **/
     virtual void syncReveal(ColorTrackballReveal* reveal, bool strokeActive) = 0;
+
+    /**
+     * @brief What a drag toward each side does right now, for the pills on the reveal and
+     * round the pointer; all four empty when the target's graphic already labels every
+     * direction.
+     **/
+    virtual ColorTrackballRevealLabels directionLabels() const = 0;
 };
 
 NATRON_NAMESPACE_EXIT

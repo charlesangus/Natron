@@ -8,9 +8,9 @@ descendants take the material too. The node does not touch colour.
 
 The material comes from one of two places:
 
-- Material input: connect a USDMaterial (or any scene holding a material). Its
+- Material input: connect a USDPreviewSurface (or any scene holding a material). Its
   root prims are grafted under the project's Materials Scope (Project Settings,
-  default `/materials`), so a USDMaterial at `/Material1` lands at
+  default `/materials`), so a USDPreviewSurface at `/Material1` lands at
   `/materials/Material1`, and the first material in them, depth first, is bound.
   A root already named like the scope, such as a USDScopePrim at `/materials`,
   is passed through rather than nested. Several assigns sharing one material

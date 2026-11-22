@@ -392,7 +392,7 @@ protected:
     static void setCenterKnob(const KnobDoublePtr& center, double x, double y);
 
 protected:
-    void getItemsRegionOfDefinition(const std::list<RotoItemPtr>& items, double time, ViewIdx view, RectD* rod) const;
+    void getItemsRegionOfDefinition(const std::list<RotoItemPtr>& items, double time, ViewIdx view, bool useGuiCurves, RectD* rod) const;
 
 public:
     /**

@@ -417,20 +417,30 @@ public:
     /**
      * @brief Imports the nodes of the .ntpz project bundle (or unzipped bundle folder) at filename
      * into group, or into the project's root when group is None, and returns the created top-level
-     * nodes. They get new names and new persistent IDs, keep their connections among themselves,
-     * and remember the template they came from. Raises RuntimeError with the loader's message
-     * when the file is missing, unreadable or not a project, and then no node is created. Raises
-     * ValueError when group is not a group of this application. An import from a script is not an
-     * undo step.
+     * nodes. Unlike createNode(), a None group means the project root, never the node-creation
+     * context. They get new names and new persistent IDs, keep their connections among themselves,
+     * and remember the template they came from. Each created node is recorded in the script's
+     * undo step. Raises RuntimeError with the loader's message when the file is missing,
+     * unreadable or not a project (no node is created), when only part of the template could be
+     * imported (the nodes that were created stay in place, and the message lists the problems),
+     * and when called from a thread other than the main one. Raises ValueError when group is not
+     * a group of this application.
      **/
     std::list<Effect*> importTemplate(const QString& filename, Group* group = 0);
 
+    enum ImportTemplateError {
+        eImportTemplateErrorNone,
+        eImportTemplateErrorFailed,
+        eImportTemplateErrorBadGroup
+    };
+
     /**
      * @brief Internal variant of importTemplate() that reports a failure instead of raising it.
-     * errorKind is set to 0 on success, 1 when the import failed (error holds the message) and 2
-     * when group does not belong to this application.
+     * errorKind is set to eImportTemplateErrorNone on success, eImportTemplateErrorFailed when the
+     * import failed in whole or in part (error holds the message) and eImportTemplateErrorBadGroup
+     * when group does not belong to this application. The list is empty on any failure.
      **/
-    std::list<Effect*> importTemplateChecked(const QString& filename, Group* group, QString* error, int* errorKind);
+    std::list<Effect*> importTemplateChecked(const QString& filename, Group* group, QString* error, ImportTemplateError* errorKind);
 
     ///Close the current project but keep the window
     bool resetProject();

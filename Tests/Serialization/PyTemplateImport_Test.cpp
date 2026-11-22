@@ -84,13 +84,36 @@ protected:
                                                                     << error;
     }
 
+    // Replaces @APP@ with the app's Python variable and @PATH@ with the template path.
+    std::string fill(std::string script,
+                     const QString& path = QString()) const
+    {
+        const std::pair<std::string, std::string> subs[] = {
+            { "@APP@", appName() }, { "@PATH@", path.toStdString() }, { "@GROUP@", PLUGINID_NATRON_GROUP }
+        };
+        for (const auto& sub : subs) {
+            for (std::size_t pos = script.find(sub.first); pos != std::string::npos; pos = script.find(sub.first, pos + sub.second.size())) {
+                script.replace(pos, sub.first.size(), sub.second);
+            }
+        }
+
+        return script;
+    }
+
     NodePtr create(const char* pluginID,
                    const std::string& name)
     {
-        CreateNodeArgs args(pluginID, project());
+        return createIn(pluginID, name, project());
+    }
+
+    NodePtr createIn(const char* pluginID,
+                     const std::string& name,
+                     const NodeCollectionPtr& collection)
+    {
+        CreateNodeArgs args(pluginID, collection);
         args.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
         args.setProperty<std::string>(kCreateNodeArgsPropNodeInitialName, name);
-        NodePtr node = getApp()->createNode(args);
+        NodePtr node = collection->getApplication()->createNode(args);
         if (node && (node->getScriptName() != name)) {
             node->setScriptName(name);
         }
@@ -124,12 +147,14 @@ TEST_F(PyTemplateImportTest, ImportIntoTheRootReturnsTheCreatedEffects)
     const QString path = saveTemplate(dir);
     ASSERT_FALSE(path.isEmpty());
 
-    run("effects = " + appName() + ".importTemplate('" + path.toStdString() + "')\n"
-                                                                              "assert len(effects) == 2, len(effects)\n"
-                                                                              "names = sorted(e.getScriptName() for e in effects)\n"
-                                                                              "assert names == ['Blur1', 'Grade1'], names\n"
-                                                                              "assert sorted(e.getScriptName() for e in "
-        + appName() + ".getChildren()) == names\n");
+    run(fill(R"(
+effects = @APP@.importTemplate('@PATH@')
+assert len(effects) == 2, len(effects)
+names = sorted(e.getScriptName() for e in effects)
+assert names == ['Blur1', 'Grade1'], names
+assert sorted(e.getScriptName() for e in @APP@.getChildren()) == names
+)",
+             path));
     ASSERT_EQ(project()->getTemplateImports().size(), 1u);
     EXPECT_EQ(project()->getNodes().size(), 2u);
 }
@@ -141,16 +166,38 @@ TEST_F(PyTemplateImportTest, ImportIntoAGroupMakesThemItsChildren)
     const QString path = saveTemplate(dir);
     ASSERT_FALSE(path.isEmpty());
 
-    run("g = " + appName() + ".createNode('" + std::string(PLUGINID_NATRON_GROUP) + "')\n"
-                                                                                    "assert g is not None\n"
-                                                                                    "before = len(g.getChildren())\n"
-                                                                                    "effects = "
-        + appName() + ".importTemplate('" + path.toStdString() + "', g)\n"
-                                                                 "assert len(effects) == 2, len(effects)\n"
-                                                                 "children = sorted(e.getScriptName() for e in g.getChildren())\n"
-                                                                 "assert len(children) == before + 2, children\n"
-                                                                 "for e in effects:\n"
-                                                                 "    assert e.getScriptName() in children, e.getScriptName()\n");
+    run(fill(R"(
+g = @APP@.createNode('@GROUP@')
+assert g is not None
+before = len(g.getChildren())
+effects = @APP@.importTemplate('@PATH@', g)
+assert len(effects) == 2, len(effects)
+children = sorted(e.getScriptName() for e in g.getChildren())
+assert len(children) == before + 2, children
+for e in effects:
+    assert e.getScriptName() in children, e.getScriptName()
+)",
+             path));
+    // The imported nodes are the group's children, not the root's, and the import is recorded once.
+    EXPECT_EQ(project()->getNodes().size(), 1u);
+    EXPECT_EQ(project()->getTemplateImports().size(), 1u);
+}
+
+TEST_F(PyTemplateImportTest, TheAppAsGroupImportsIntoTheRoot)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const QString path = saveTemplate(dir);
+    ASSERT_FALSE(path.isEmpty());
+
+    run(fill(R"(
+effects = @APP@.importTemplate('@PATH@', @APP@)
+assert len(effects) == 2, len(effects)
+assert sorted(e.getScriptName() for e in @APP@.getChildren()) == ['Blur1', 'Grade1']
+)",
+             path));
+    EXPECT_EQ(project()->getNodes().size(), 2u);
+    EXPECT_EQ(project()->getTemplateImports().size(), 1u);
 }
 
 TEST_F(PyTemplateImportTest, ImportingTwiceGivesDistinctNamesAndTwoTemplateEntries)
@@ -160,31 +207,36 @@ TEST_F(PyTemplateImportTest, ImportingTwiceGivesDistinctNamesAndTwoTemplateEntri
     const QString path = saveTemplate(dir);
     ASSERT_FALSE(path.isEmpty());
 
-    run("p = '" + path.toStdString() + "'\n"
-                                       "a = "
-        + appName() + ".importTemplate(p)\n"
-                      "b = "
-        + appName() + ".importTemplate(p)\n"
-                      "an = set(e.getScriptName() for e in a)\n"
-                      "bn = set(e.getScriptName() for e in b)\n"
-                      "assert len(an) == 2 and len(bn) == 2\n"
-                      "assert not (an & bn), (an, bn)\n");
+    run(fill(R"(
+a = @APP@.importTemplate('@PATH@')
+b = @APP@.importTemplate('@PATH@')
+an = set(e.getScriptName() for e in a)
+bn = set(e.getScriptName() for e in b)
+assert an == set(['Blur1', 'Grade1']), an
+assert len(bn) == 2, bn
+assert not (an & bn), (an, bn)
+assert set(e.getScriptName() for e in @APP@.getChildren()) == (an | bn)
+)",
+             path));
     EXPECT_EQ(project()->getTemplateImports().size(), 2u);
     EXPECT_EQ(project()->getNodes().size(), 4u);
 }
 
-TEST_F(PyTemplateImportTest, AMissingFileRaisesRuntimeErrorNamingItAndCreatesNothing)
+TEST_F(PyTemplateImportTest, AMissingFileRaisesRuntimeErrorWithTheLoaderMessageAndCreatesNothing)
 {
-    const std::string missing = "/nonexistent/dir/missing_tpl.ntpz";
-    run("before = len(" + appName() + ".getChildren())\n"
-                                      "try:\n"
-                                      "    "
-        + appName() + ".importTemplate('" + missing + "')\n"
-                                                      "    raise AssertionError('no exception')\n"
-                                                      "except RuntimeError as e:\n"
-                                                      "    assert 'missing_tpl.ntpz' in str(e), str(e)\n"
-                                                      "assert len("
-        + appName() + ".getChildren()) == before\n");
+    run(fill(R"(
+before = len(@APP@.getChildren())
+try:
+    @APP@.importTemplate('/nonexistent/dir/missing_tpl.ntpz')
+    raise AssertionError('no exception')
+except RuntimeError as e:
+    text = str(e)
+    assert 'missing_tpl.ntpz' in text, text
+    marker = 'cannot be imported as a template: '
+    assert marker in text, text
+    assert len(text.split(marker, 1)[1]) > 0, text
+assert len(@APP@.getChildren()) == before
+)"));
     EXPECT_EQ(project()->getNodes().size(), 0u);
     EXPECT_TRUE(project()->getTemplateImports().empty());
 }
@@ -197,11 +249,45 @@ TEST_F(PyTemplateImportTest, ANonGroupEffectRaisesValueError)
     ASSERT_FALSE(path.isEmpty());
     ASSERT_TRUE(create(PLUGINID_NATRON_BLUR, "Blur9") != nullptr);
 
-    run("try:\n"
-        "    "
-        + appName() + ".importTemplate('" + path.toStdString() + "', " + appName() + ".getNode('Blur9'))\n"
-                                                                                     "    raise AssertionError('no exception')\n"
-                                                                                     "except ValueError:\n"
-                                                                                     "    pass\n");
+    run(fill(R"(
+try:
+    @APP@.importTemplate('@PATH@', @APP@.getNode('Blur9'))
+    raise AssertionError('no exception')
+except ValueError:
+    pass
+)",
+             path));
     EXPECT_EQ(project()->getNodes().size(), 1u);
+    EXPECT_TRUE(project()->getTemplateImports().empty());
+}
+
+TEST_F(PyTemplateImportTest, AnotherAppsGroupAndAnotherAppRaiseValueError)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const QString path = saveTemplate(dir);
+    ASSERT_FALSE(path.isEmpty());
+
+    AppInstancePtr other = getApp()->newProject();
+    ASSERT_TRUE(other != nullptr);
+    ASSERT_TRUE(createIn(PLUGINID_NATRON_GROUP, "OtherGroup", other->getProject()) != nullptr);
+    const std::string otherName = other->getAppIDString();
+
+    std::string script = fill(R"(
+for target in (@OTHER@.getNode('OtherGroup'), @OTHER@):
+    try:
+        @APP@.importTemplate('@PATH@', target)
+        raise AssertionError('no exception')
+    except ValueError:
+        pass
+)",
+                              path);
+    for (std::size_t pos = script.find("@OTHER@"); pos != std::string::npos; pos = script.find("@OTHER@", pos + otherName.size())) {
+        script.replace(pos, 7, otherName);
+    }
+    run(script);
+    EXPECT_EQ(project()->getNodes().size(), 0u);
+    EXPECT_TRUE(project()->getTemplateImports().empty());
+    EXPECT_TRUE(other->getProject()->getTemplateImports().empty());
+    appPTR->quitNow(other);
 }

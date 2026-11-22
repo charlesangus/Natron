@@ -36,6 +36,7 @@
 #include <iostream>
 #include <limits>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -146,6 +147,18 @@ FrameFuture::finish(EffectInstance::RenderRoIRetCode retCode,
     _finishedCond.wakeAll();
 }
 
+struct RenderScheduler::Continuation {
+    // Installed while the continuation and the task's render run, so that they read what the extension rendered.
+    FrameRenderContextPtr context;
+
+    // One per read of a requested output by the continuation, released once the task rendered.
+    std::vector<FrameStore::TaskKey> rootKeys;
+    std::function<StatusEnum()> callback;
+
+    // Guarded by the scheduler's mutex; null once the extension finished, or when nothing was left to render.
+    FramePtr extension;
+};
+
 struct RenderScheduler::Frame {
     FrameRenderContextPtr context;
     FrameGraph graph;
@@ -172,6 +185,19 @@ struct RenderScheduler::Frame {
 
     // Released only once the store holds no device image any more.
     std::shared_ptr<void> gpuLease;
+
+    // Set on an extension: the frame whose task parentTask waits for it. An extension shares that frame's store and
+    // abort info, and has no future: finishing resumes the task.
+    FramePtr parent;
+    int parentTask = -1;
+
+    // How many extensions the frames this one extends make, 0 for a submitted frame.
+    int depth = 0;
+
+    // Guarded by the scheduler's mutex: the extensions of this frame's tasks that did not finish, which still read
+    // and write its store, and per waiting or resumed task what its continuation runs.
+    int pendingExtensions = 0;
+    std::map<int, std::unique_ptr<Continuation>> continuations;
 };
 
 class RenderScheduler::NodeTask
@@ -408,7 +434,7 @@ formatTaskRecord(const FrameGraph::Task& task,
         if (it != task.components.begin()) {
             line.push_back(',');
         }
-        appendJSONString(it->getChannelsLabel(), &line);
+        appendJSONString(it->getUserFacingLabel(), &line);
     }
     std::snprintf(num, sizeof(num), "],\"bitDepth\":\"%s\",\"deps\":[", bitDepthName(task.bitdepth));
     line.append(num);
@@ -513,6 +539,7 @@ RenderScheduler::RenderScheduler()
     , _peakBytesInFlight(0)
     , _regionBody(&runGpuRegion)
     , _tasksRendering(0)
+    , _nextStoreGeneration(1)
 {
     SettingsPtr settings = appPTR ? appPTR->getCurrentSettings() : SettingsPtr();
 
@@ -568,14 +595,32 @@ RenderScheduler::buildGraph(const FrameRenderContextPtr& context,
                             ViewIdx view,
                             unsigned int mipmapLevel)
 {
+    if (!root) {
+        return FrameGraph();
+    }
+    FrameStore::TaskKey rootKey;
+    rootKey.node = root;
+    rootKey.time = time;
+    rootKey.view = view;
+    rootKey.mipmapLevel = mipmapLevel;
+
+    return buildGraph(context, std::vector<FrameStore::TaskKey>(1, rootKey));
+}
+
+FrameGraph
+RenderScheduler::buildGraph(const FrameRenderContextPtr& context,
+                            const std::vector<FrameStore::TaskKey>& roots)
+{
     FrameGraph graph;
 
-    if (!context || !root || !context->getRequest()) {
+    if (!context || roots.empty() || !context->getRequest()) {
         return graph;
     }
     const FrameRequestMap& request = *context->getRequest();
-    if (!request.findFrameViewRequest(root, time, view)) {
-        return graph;
+    for (const FrameStore::TaskKey& root : roots) {
+        if (!root.node || !request.findFrameViewRequest(NodeCtxKey(root.node, root.contextKey), root.time, root.view)) {
+            return graph;
+        }
     }
 
     std::unordered_map<FrameStore::TaskKey, int, FrameStore::TaskKeyHash> indices;
@@ -594,12 +639,11 @@ RenderScheduler::buildGraph(const FrameRenderContextPtr& context,
         return index;
     };
 
-    FrameStore::TaskKey rootKey;
-    rootKey.node = root;
-    rootKey.time = time;
-    rootKey.view = view;
-    rootKey.mipmapLevel = mipmapLevel;
-    taskFor(rootKey);
+    for (const FrameStore::TaskKey& root : roots) {
+        taskFor(root);
+    }
+    // Expanded from the first root, as a single root's graph is.
+    std::reverse(toExpand.begin(), toExpand.end());
 
     while (!toExpand.empty()) {
         const int index = toExpand.back();
@@ -737,7 +781,8 @@ missingPartReads(const FrameGraph::Task& dep,
 
 void
 RenderScheduler::pruneBehindCacheHits(FrameGraph& graph,
-                                      const FrameRenderContextPtr& context)
+                                      const FrameRenderContextPtr& context,
+                                      int rootCount)
 {
     if (graph.tasks.empty() || !context || !context->getRequest() || !appPTR) {
         return;
@@ -767,7 +812,9 @@ RenderScheduler::pruneBehindCacheHits(FrameGraph& graph,
     }
 
     std::vector<char> needed(count, 0);
-    needed[0] = 1;
+    for (int i = 0; (i < rootCount) && (i < count); ++i) {
+        needed[i] = 1;
+    }
     // Edge positions rather than task indices, so that dependencyInputNbs is filtered alongside dependencies.
     std::vector<std::vector<int>> keptEdges(count);
     bool droppedAny = false;
@@ -1271,6 +1318,7 @@ RenderScheduler::runOneTask()
     if (popped) {
         executeTask(frame, task, budget, &finished);
     }
+    destroyRetiredContinuations();
     if (!finished.empty()) {
         finalizeFrames(finished);
         reevaluate();
@@ -1743,9 +1791,71 @@ RenderScheduler::executeTask(const FramePtr& frame,
         }
     }
 
-    if (effect && !servedInPlace) {
-        AppTLS::FrameContextScope scope(frame->context.get(), budget, runnablePriorityOf(frame->priority));
+    std::unique_ptr<Continuation> continuation;
+    bool renders = effect && !servedInPlace;
+    if (renders && task.reusesStore) {
+        renders = false;
+        retCode = EffectInstance::eRenderRoIRetCodeOk;
+    } else if (renders && !task.servedFromCache) {
+        {
+            QMutexLocker k(&_mutex);
+            std::map<int, std::unique_ptr<Continuation>>::iterator resumed = frame->continuations.find(taskIndex);
+            if ((resumed != frame->continuations.end()) && !resumed->second->extension) {
+                continuation = std::move(resumed->second);
+                frame->continuations.erase(resumed);
+            }
+        }
+        if (!continuation) {
+            switch (probeRenderContinuation(frame, taskIndex, budget, &continuation)) {
+            case ProbeOutcome::Render:
+                break;
+            case ProbeOutcome::Parked:
+
+                return;
+            case ProbeOutcome::Failed:
+                renders = false;
+                retCode = EffectInstance::eRenderRoIRetCodeFailed;
+                break;
+            case ProbeOutcome::Aborted:
+                renders = false;
+                retCode = EffectInstance::eRenderRoIRetCodeAborted;
+                break;
+            }
+        }
+    }
+
+    if (renders && continuation) {
+        const AbortableRenderInfoPtr& abortInfo = frame->context->getAbortInfo();
+        if (abortInfo && abortInfo->isAborted()) {
+            renders = false;
+            retCode = EffectInstance::eRenderRoIRetCodeAborted;
+        } else if (continuation->callback) {
+            AppTLS::FrameContextScope scope(continuation->context.get(), budget, runnablePriorityOf(frame->priority));
+            OpenMPThreadsScope openMPThreads(budget);
+            ContextFrameArgsScope contextArgs(effect, task.key.contextKey ? continuation->context->getArgs(NodeCtxKey(task.key.node, task.key.contextKey)) : ParallelRenderArgsPtr());
+            EffectInstance::RenderContinuationHandledScope handled(task.key.node.get(), task.key.time, task.key.view, task.key.contextKey, frame->depth + 1);
+            StatusEnum status = eStatusFailed;
+            try {
+                status = continuation->callback();
+            } catch (...) {
+                status = eStatusFailed;
+            }
+            if (status != eStatusOK) {
+                renders = false;
+                retCode = EffectInstance::eRenderRoIRetCodeFailed;
+            }
+        }
+    }
+
+    if (renders) {
+        const FrameRenderContextPtr& renderContext = continuation ? continuation->context : frame->context;
+        AppTLS::FrameContextScope scope(renderContext.get(), budget, runnablePriorityOf(frame->priority));
         OpenMPThreadsScope openMPThreads(budget);
+        // A partial cache hit was not probed: renderRoI probes it inline if something is left to render.
+        std::optional<EffectInstance::RenderContinuationHandledScope> handled;
+        if (!task.servedFromCache) {
+            handled.emplace(task.key.node.get(), task.key.time, task.key.view, task.key.contextKey, frame->depth);
+        }
         ProfileSink& sink = profileSink();
         const bool profiling = sink.isEnabled();
         const std::chrono::steady_clock::time_point renderStart = profiling ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
@@ -1795,7 +1905,14 @@ RenderScheduler::executeTask(const FramePtr& frame,
         }
     }
 
-    if (retCode == EffectInstance::eRenderRoIRetCodeOk) {
+    if (continuation) {
+        FrameStore& store = frame->context->getStore();
+        for (const FrameStore::TaskKey& key : continuation->rootKeys) {
+            store.release(key);
+        }
+    }
+
+    if ((retCode == EffectInstance::eRenderRoIRetCodeOk) && !task.reusesStore) {
         FrameStore& store = frame->context->getStore();
         // Released before storing this task's planes, so that the inputs and the output of a chain are never both
         // counted in flight.
@@ -1828,6 +1945,315 @@ RenderScheduler::executeTask(const FramePtr& frame,
 
     completeTask(frame, taskIndex, retCode, std::move(planes), finished);
 } // RenderScheduler::executeTask
+
+RenderScheduler::ProbeOutcome
+RenderScheduler::probeRenderContinuation(const FramePtr& frame,
+                                         int taskIndex,
+                                         int budget,
+                                         std::unique_ptr<Continuation>* continuation)
+{
+    const FrameGraph::Task& task = frame->graph.tasks[taskIndex];
+    const EffectInstancePtr effect = task.key.node->getEffectInstance();
+    AppTLS::FrameContextScope scope(frame->context.get(), budget, runnablePriorityOf(frame->priority));
+    EffectInstance::RenderContinuation probed;
+    bool hasContinuation = false;
+    {
+        const ParallelRenderArgsPtr taskArgs = frame->context->getArgs(NodeCtxKey(task.key.node, task.key.contextKey));
+        ContextFrameArgsScope contextArgs(effect, task.key.contextKey ? taskArgs : ParallelRenderArgsPtr());
+        EffectInstance::RenderContinuationHandledScope handled(task.key.node.get(), task.key.time, task.key.view, task.key.contextKey, frame->depth);
+        EffectInstance::RenderContinuationArgs args;
+        args.time = task.key.time;
+        args.view = task.key.view;
+        args.mipmapLevel = task.key.mipmapLevel;
+        args.roi = task.roi;
+        args.context = taskArgs ? taskArgs->context : RenderContextPtr();
+        args.depth = frame->depth;
+        try {
+            hasContinuation = effect->getRenderContinuation(args, &probed);
+        } catch (...) {
+            failTaskWithReason(effect, "threw from its render continuation probe");
+
+            return ProbeOutcome::Failed;
+        }
+    }
+    if (!hasContinuation) {
+        return ProbeOutcome::Render;
+    }
+    std::unique_ptr<Continuation> made(new Continuation);
+    made->context = frame->context;
+    made->callback = std::move(probed.continuation);
+    if (probed.requests.empty()) {
+        *continuation = std::move(made);
+
+        return ProbeOutcome::Render;
+    }
+    if (frame->depth >= EffectInstance::kMaxRenderContinuationDepth) {
+        effect->failRenderContinuationTooDeep();
+        failTaskWithReason(effect, "asked for a render continuation deeper than the most allowed");
+
+        return ProbeOutcome::Failed;
+    }
+
+    std::vector<RequestPassRoot> passRoots;
+    std::vector<FrameStore::TaskKey> rootKeys;
+    std::vector<std::list<ImageLayerDesc>> rootComponents;
+    for (const EffectInstance::RenderContinuationRequest& request : probed.requests) {
+        if (!request.node || !request.node->getEffectInstance()) {
+            failTaskWithReason(effect, "asked its render continuation for a node without an effect");
+
+            return ProbeOutcome::Failed;
+        }
+        RenderContextPtr restricted;
+        FrameStore::TaskKey key;
+        key.node = request.node;
+        key.time = request.time;
+        key.view = request.view;
+        key.mipmapLevel = task.key.mipmapLevel;
+        key.contextKey = restrictContextToNode(request.context, request.node, &restricted);
+        RequestPassRoot root;
+        root.node = request.node;
+        root.context = restricted;
+        root.time = request.time;
+        root.view = request.view;
+        root.mipmapLevel = task.key.mipmapLevel;
+        root.roi = request.roi;
+        passRoots.push_back(root);
+        // Distinct keys in their first request's order, which is how buildGraph numbers its roots.
+        std::size_t index = 0;
+        while ((index < rootKeys.size()) && !(rootKeys[index] == key)) {
+            ++index;
+        }
+        if (index == rootKeys.size()) {
+            rootKeys.push_back(key);
+            rootComponents.emplace_back();
+        }
+        const std::list<ImageLayerDesc> comps = request.comps.empty() ? std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()) : request.comps;
+        for (const ImageLayerDesc& comp : comps) {
+            if (std::find(rootComponents[index].begin(), rootComponents[index].end(), comp) == rootComponents[index].end()) {
+                rootComponents[index].push_back(comp);
+            }
+        }
+    }
+    std::vector<int> rootReads(rootKeys.size(), 0);
+    for (const EffectInstance::RenderContinuationRequest& request : probed.requests) {
+        RenderContextPtr restricted;
+        FrameStore::TaskKey key;
+        key.node = request.node;
+        key.time = request.time;
+        key.view = request.view;
+        key.mipmapLevel = task.key.mipmapLevel;
+        key.contextKey = restrictContextToNode(request.context, request.node, &restricted);
+        ++rootReads[std::find(rootKeys.begin(), rootKeys.end(), key) - rootKeys.begin()];
+    }
+
+    // The extension's own map: the planned one is read without a lock by the tasks running.
+    const std::shared_ptr<FrameRequestMap> request = std::make_shared<FrameRequestMap>();
+    if (EffectInstance::extendRequestPass(passRoots, *request, 0) == eStatusFailed) {
+        failTaskWithReason(effect, "asked its render continuation for outputs the request pass could not plan");
+
+        return ProbeOutcome::Failed;
+    }
+    const FrameRenderContextPtr extensionContext = FrameRenderContext::createExtension(frame->context, request, _nextStoreGeneration++);
+    FrameGraph graph;
+    {
+        AppTLS::FrameContextScope extensionScope(extensionContext.get(), budget, runnablePriorityOf(frame->priority));
+        graph = buildGraph(extensionContext, rootKeys);
+        if (graph.tasks.size() < rootKeys.size()) {
+            failTaskWithReason(effect, "asked its render continuation for outputs the request pass did not reach");
+
+            return ProbeOutcome::Failed;
+        }
+        for (std::size_t i = 0; i < rootKeys.size(); ++i) {
+            FrameGraph::Task& root = graph.tasks[i];
+            root.components = rootComponents[i];
+            root.estimatedBytes = estimateBytes(root.renderedRoI, root.components, root.bitdepth);
+        }
+        // A task served from the cache is not probed, as renderRoI returns a full hit before its probe.
+        pruneBehindCacheHits(graph, extensionContext, (int)rootKeys.size());
+    }
+    made->context = extensionContext;
+    planExtensionReuse(graph, rootReads, *extensionContext, &made->rootKeys);
+
+    bool rendersAny = false;
+    for (const FrameGraph::Task& extensionTask : graph.tasks) {
+        rendersAny = rendersAny || !extensionTask.reusesStore;
+    }
+    if (!rendersAny) {
+        *continuation = std::move(made);
+
+        return ProbeOutcome::Render;
+    }
+
+    FramePtr extension = std::make_shared<Frame>();
+    extension->context = extensionContext;
+    extension->graph = std::move(graph);
+    extension->priority = frame->priority;
+    extension->regionTasksBegin = (int)extension->graph.tasks.size();
+    extension->remainingTasks = (int)extension->graph.tasks.size();
+    extension->parent = frame;
+    extension->parentTask = taskIndex;
+    extension->depth = frame->depth + 1;
+    made->extension = extension;
+
+    int toStart = 0;
+    int runnablePriority = 0;
+    {
+        QMutexLocker k(&_mutex);
+        const AbortableRenderInfoPtr& abortInfo = frame->context->getAbortInfo();
+        // The pins the reuse took go with the store, which the frame's end or restart clears.
+        if (frame->dead || frame->finished || frame->restartOnCpu || (abortInfo && abortInfo->isAborted())) {
+            extension->parent.reset();
+
+            return ProbeOutcome::Aborted;
+        }
+        extension->sequence = frame->sequence;
+        // The task waits on no thread: its runnable ends here and the task is pushed again once the extension
+        // finished.
+        --_outstandingRunnables;
+        --_runningTasks;
+        unreserveLocked(task);
+        --frame->runningTasks;
+        if (task.sharesCachedOutput) {
+            releaseSharedOutputLocked(task);
+        }
+        ++frame->pendingExtensions;
+        std::unique_ptr<Continuation>& slot = frame->continuations[taskIndex];
+        if (slot) {
+            retireContinuationLocked(std::move(slot));
+        }
+        slot = std::move(made);
+        _activeFrames.push_back(extension);
+        if (abortInfo) {
+            _framesByAbortInfo.emplace(abortInfo.get(), extension);
+        }
+        for (std::size_t i = 0; i < extension->graph.tasks.size(); ++i) {
+            FrameGraph::Task& extensionTask = extension->graph.tasks[i];
+            extensionTask.remainingDeps = (int)extensionTask.dependencies.size();
+            extensionTask.unstartedConsumers = (int)extensionTask.consumerTasks.size();
+            extensionTask.started = false;
+            if (extensionTask.remainingDeps == 0) {
+                pushReadyLocked(extension, (int)i);
+            }
+        }
+        toStart = reserveRunnablesLocked(&runnablePriority);
+    }
+    startRunnables(toStart, runnablePriority);
+
+    return ProbeOutcome::Parked;
+} // RenderScheduler::probeRenderContinuation
+
+void
+RenderScheduler::planExtensionReuse(FrameGraph& graph,
+                                    const std::vector<int>& rootReads,
+                                    const FrameRenderContext& extension,
+                                    std::vector<FrameStore::TaskKey>* rootKeys)
+{
+    FrameStore& store = extension.getStore();
+    const std::vector<int>& generations = extension.getStoreGenerations();
+    const int count = (int)graph.tasks.size();
+
+    // Consumers before their dependencies, so that a task is decided once every task that could read it has been.
+    std::vector<int> undecidedConsumers(count);
+    std::vector<int> order;
+    order.reserve(count);
+    for (int i = 0; i < count; ++i) {
+        undecidedConsumers[i] = (int)graph.tasks[i].consumerTasks.size();
+        if (undecidedConsumers[i] == 0) {
+            order.push_back(i);
+        }
+    }
+    for (std::size_t next = 0; next < order.size(); ++next) {
+        for (const int dep : graph.tasks[order[next]].dependencies) {
+            if (--undecidedConsumers[dep] == 0) {
+                order.push_back(dep);
+            }
+        }
+    }
+
+    std::vector<char> needed(count, 0);
+    for (std::size_t i = 0; (i < rootReads.size()) && ((int)i < count); ++i) {
+        needed[i] = rootReads[i] > 0;
+    }
+    if ((int)order.size() == count) {
+        for (const int index : order) {
+            if (!needed[index]) {
+                continue;
+            }
+            FrameGraph::Task& task = graph.tasks[index];
+            // Pinned once now, so that the entry outlives the release of its last planned consumer.
+            for (std::size_t g = 1; g < generations.size(); ++g) {
+                FrameStore::TaskKey key = task.key;
+                key.generation = generations[g];
+                if (store.retain(key, task.components, task.renderedRoI, 1)) {
+                    task.key.generation = key.generation;
+                    task.reusesStore = true;
+                    break;
+                }
+            }
+            if (!task.reusesStore) {
+                for (const int dep : task.dependencies) {
+                    needed[dep] = 1;
+                }
+            }
+        }
+    } else {
+        std::fill(needed.begin(), needed.end(), 1);
+    }
+
+    std::vector<int> newIndex(count, -1);
+    int keptCount = 0;
+    for (int i = 0; i < count; ++i) {
+        if (needed[i]) {
+            newIndex[i] = keptCount++;
+        }
+    }
+    std::vector<FrameGraph::Task> tasks;
+    tasks.reserve(keptCount);
+    for (int i = 0; i < count; ++i) {
+        if (!needed[i]) {
+            continue;
+        }
+        FrameGraph::Task task = std::move(graph.tasks[i]);
+        if (task.reusesStore) {
+            task.dependencies.clear();
+            task.dependencyInputNbs.clear();
+            task.estimatedBytes = 0;
+        } else {
+            for (int& dep : task.dependencies) {
+                dep = newIndex[dep];
+            }
+            task.key.generation = generations.front();
+        }
+        task.consumerTasks.clear();
+        tasks.push_back(std::move(task));
+    }
+    for (std::size_t i = 0; i < tasks.size(); ++i) {
+        for (const int dep : tasks[i].dependencies) {
+            tasks[dep].consumerTasks.push_back((int)i);
+        }
+    }
+    for (std::size_t i = 0; i < tasks.size(); ++i) {
+        tasks[i].consumers = (int)tasks[i].consumerTasks.size();
+    }
+    for (std::size_t i = 0; (i < rootReads.size()) && ((int)i < count); ++i) {
+        if (newIndex[i] < 0) {
+            continue;
+        }
+        FrameGraph::Task& root = tasks[newIndex[i]];
+        root.consumers += rootReads[i];
+        for (int r = 0; r < rootReads[i]; ++r) {
+            rootKeys->push_back(root.key);
+        }
+    }
+    for (FrameGraph::Task& task : tasks) {
+        // The pin already counts one of the reads.
+        if (task.reusesStore && (task.consumers > 1)) {
+            store.retain(task.key, task.components, task.renderedRoI, task.consumers - 1);
+        }
+    }
+    graph.tasks = std::move(tasks);
+    setBranchFlags(&graph);
+} // RenderScheduler::planExtensionReuse
 
 void
 RenderScheduler::executeRegion(const FramePtr& frame,
@@ -2026,7 +2452,18 @@ RenderScheduler::completeTask(const FramePtr& frame,
             // What a task returns while the frame waits for its restart is dropped with the store; a failure caused by
             // the loss would only recur, or not, on the CPU.
             failsFrame = false;
-            if (frame->runningTasks == 0) {
+            // An extension's tasks read and write the store the restart clears.
+            std::vector<FramePtr> extensions;
+            for (const std::pair<const int, std::unique_ptr<Continuation>>& waiting : frame->continuations) {
+                if (waiting.second->extension) {
+                    extensions.push_back(waiting.second->extension);
+                }
+            }
+            std::vector<ReadyRef> droppedExtensionTasks;
+            for (const FramePtr& extension : extensions) {
+                abortLocked(extension, &droppedExtensionTasks, finished);
+            }
+            if (frame->restartOnCpu && canFinishLocked(*frame)) {
                 restartOnCpuLocked(frame, finished);
             }
         } else if (retCode != EffectInstance::eRenderRoIRetCodeOk) {
@@ -2040,7 +2477,7 @@ RenderScheduler::completeTask(const FramePtr& frame,
 
         // A restart may have dropped the task standing for a region, which task refers to.
         if (!restarting && frame->dead) {
-            if (frame->runningTasks == 0) {
+            if (canFinishLocked(*frame)) {
                 finishLocked(frame, finished);
             }
         } else if (!restarting) {
@@ -2215,7 +2652,7 @@ RenderScheduler::discardStaleTopsLocked(ReadyHeap* heap,
             frame->context->getStats()->incTasksPurged();
         }
         markDeadLocked(frame, EffectInstance::eRenderRoIRetCodeAborted);
-        if (frame->runningTasks == 0) {
+        if (canFinishLocked(*frame)) {
             finishLocked(frame, finished);
         }
     }
@@ -2264,7 +2701,10 @@ RenderScheduler::bytesInFlightLocked() const
     std::size_t bytes = 0;
 
     for (std::list<FramePtr>::const_iterator it = _activeFrames.begin(); it != _activeFrames.end(); ++it) {
-        bytes += (*it)->context->getStore().hostBytesInFlight();
+        // An extension's outputs are in the store of the frame it extends.
+        if (!(*it)->parent) {
+            bytes += (*it)->context->getStore().hostBytesInFlight();
+        }
     }
 
     return bytes;
@@ -2306,8 +2746,98 @@ RenderScheduler::finishLocked(const FramePtr& frame,
     // The store is cleared by finalizeFrames(), so the inputs of the purged tasks need no release.
     std::vector<int> purged;
     purgeQueuedLocked(frame, &purged);
+    retireContinuationsLocked(frame.get());
 
+    if (frame->parent) {
+        finishExtensionLocked(frame, finished);
+
+        return;
+    }
     finished->push_back(frame);
+}
+
+bool
+RenderScheduler::canFinishLocked(const Frame& frame)
+{
+    return (frame.runningTasks == 0) && (frame.pendingExtensions == 0);
+}
+
+void
+RenderScheduler::retireContinuationLocked(std::unique_ptr<Continuation> continuation)
+{
+    if (continuation) {
+        _retiredContinuations.push_back(std::move(continuation));
+    }
+}
+
+void
+RenderScheduler::retireContinuationsLocked(Frame* frame)
+{
+    for (std::pair<const int, std::unique_ptr<Continuation>>& waiting : frame->continuations) {
+        retireContinuationLocked(std::move(waiting.second));
+    }
+    frame->continuations.clear();
+}
+
+void
+RenderScheduler::destroyRetiredContinuations()
+{
+    std::vector<std::unique_ptr<Continuation>> retired;
+    {
+        QMutexLocker k(&_mutex);
+        retired.swap(_retiredContinuations);
+    }
+}
+
+void
+RenderScheduler::finishExtensionLocked(const FramePtr& extension,
+                                       std::vector<FramePtr>* finished)
+{
+    const FramePtr parent = extension->parent;
+    // Breaks the cycle through the continuation that holds the extension.
+    extension->parent.reset();
+    --parent->pendingExtensions;
+    std::map<int, std::unique_ptr<Continuation>>::iterator waiting = parent->continuations.find(extension->parentTask);
+    const bool ours = (waiting != parent->continuations.end()) && (waiting->second->extension == extension);
+    const AbortableRenderInfoPtr& abortInfo = parent->context->getAbortInfo();
+    const bool parentAlive = !parent->dead && !parent->finished && !parent->restartOnCpu && !(abortInfo && abortInfo->isAborted());
+    if (ours && !extension->dead && parentAlive) {
+        waiting->second->extension.reset();
+        // Ahead of admission: what the task waits on is already held, and waiting for budget it holds itself could
+        // stall the frame.
+        ReadyRef ref;
+        ref.frame = parent;
+        ref.task = extension->parentTask;
+        _freeReady.push_back(std::move(ref));
+        std::push_heap(_freeReady.begin(), _freeReady.end(), ReadyRefWorse());
+
+        return;
+    }
+    if (ours) {
+        retireContinuationLocked(std::move(waiting->second));
+        parent->continuations.erase(waiting);
+    }
+    if (parent->finished) {
+        return;
+    }
+    if (parent->restartOnCpu && !parent->dead) {
+        if (canFinishLocked(*parent)) {
+            restartOnCpuLocked(parent, finished);
+        }
+
+        return;
+    }
+    const EffectInstance::RenderRoIRetCode retCode = extension->dead ? extension->retCode : EffectInstance::eRenderRoIRetCodeAborted;
+    markDeadLocked(parent, retCode);
+    if (retCode == EffectInstance::eRenderRoIRetCodeFailed) {
+        // The abort that a failed task of the extension raises may have reached the frame first.
+        parent->retCode = retCode;
+    }
+    std::vector<int> purged;
+    purgeQueuedLocked(parent, &purged);
+    if (canFinishLocked(*parent)) {
+        finishLocked(parent, finished);
+    }
 }
 
 void
@@ -2329,6 +2859,7 @@ RenderScheduler::restartOnCpuLocked(const FramePtr& frame,
     frame->context->getStore().clear();
     frame->gpuLease.reset();
     frame->rootPlanes.clear();
+    retireContinuationsLocked(frame.get());
 
     FrameGraph& graph = frame->graph;
     graph.tasks.resize(frame->regionTasksBegin);
@@ -2413,7 +2944,7 @@ RenderScheduler::abortLocked(const FramePtr& frame,
 
     std::vector<int> tasks;
     purgeQueuedLocked(frame, &tasks);
-    if (frame->runningTasks == 0) {
+    if (canFinishLocked(*frame)) {
         finishLocked(frame, finished);
 
         return;
@@ -2445,6 +2976,7 @@ RenderScheduler::finishAbort(const std::vector<ReadyRef>& purged,
                              const std::vector<FramePtr>& finished)
 {
     releasePurgedInputs(purged);
+    destroyRetiredContinuations();
     if (!finished.empty()) {
         finalizeFrames(finished);
     }

@@ -135,6 +135,22 @@ RotoStrokeItem::appendGeometryContentHash(ContentHasher& h) const
 }
 
 static void
+projectStrokePoint(const Transform::Matrix3x3& transform,
+                   double* x,
+                   double* y,
+                   double* z)
+{
+    Transform::Point3D p;
+    p.x = *x;
+    p.y = *y;
+    p.z = *z;
+    p = Transform::matApplyProjected(transform, p);
+    *x = p.x;
+    *y = p.y;
+    *z = p.z;
+}
+
+static void
 evaluateStrokeInternal(const KeyFrameSet& xCurve,
                        const KeyFrameSet& yCurve,
                        const KeyFrameSet& pCurve,
@@ -182,7 +198,7 @@ evaluateStrokeInternal(const KeyFrameSet& xCurve,
         p.y = yIt->getValue();
         p.z = 1.;
 
-        p = Transform::matApply(transform, p);
+        p = Transform::matApplyProjected(transform, p);
 
         Point pixelPoint;
         pixelPoint.x = p.x / pot;
@@ -227,10 +243,10 @@ evaluateStrokeInternal(const KeyFrameSet& xCurve,
         double y2pl = y2 - dt * yNext->getLeftDerivative() / 3.;
         double z2pl = 1;
         double press2pl = press2 - dt * pNext->getLeftDerivative() / 3.;
-        Transform::matApply(transform, &x1, &y1, &z1);
-        Transform::matApply(transform, &x1pr, &y1pr, &z1pr);
-        Transform::matApply(transform, &x2pl, &y2pl, &z2pl);
-        Transform::matApply(transform, &x2, &y2, &z2);
+        projectStrokePoint(transform, &x1, &y1, &z1);
+        projectStrokePoint(transform, &x1pr, &y1pr, &z1pr);
+        projectStrokePoint(transform, &x2pl, &y2pl, &z2pl);
+        projectStrokePoint(transform, &x2, &y2, &z2);
 
         /*
          * Approximate the necessary number of line segments, using http://antigrain.com/research/adaptive_bezier/
@@ -681,7 +697,7 @@ RotoStrokeItem::computeBoundingBoxInternal(double time,
             p.x = xIt->getValue();
             p.y = yIt->getValue();
             p.z = 1.;
-            p = Transform::matApply(transform, p);
+            p = Transform::matApplyProjected(transform, p);
             double pressure = pressureAffectsSize ? pIt->getValue() : 1.;
             RectD subBox;
             subBox.x1 = p.x;
@@ -717,11 +733,10 @@ RotoStrokeItem::computeBoundingBoxInternal(double time,
             p2.x = p3.x - dt * xNext->getLeftDerivative() / 3.;
             p2.y = p3.y - dt * yNext->getLeftDerivative() / 3.;
 
-
-            p0 = Transform::matApply(transform, p0);
-            p1 = Transform::matApply(transform, p1);
-            p2 = Transform::matApply(transform, p2);
-            p3 = Transform::matApply(transform, p3);
+            p0 = Transform::matApplyProjected(transform, p0);
+            p1 = Transform::matApplyProjected(transform, p1);
+            p2 = Transform::matApplyProjected(transform, p2);
+            p3 = Transform::matApplyProjected(transform, p3);
 
             Point p0_, p1_, p2_, p3_;
             p0_.x = p0.x; p0_.y = p0.y;
@@ -759,7 +774,8 @@ RotoStrokeItem::computeBoundingBox(double time) const
 }
 
 RectD
-RotoStrokeItem::getBoundingBox(double time) const
+RotoStrokeItem::getBoundingBox(double time,
+                               bool /*useGuiCurves*/) const
 {
     bool isActivated = getActivatedKnob()->getValueAtTime(time);
 

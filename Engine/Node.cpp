@@ -105,6 +105,7 @@
 #include "Engine/Project.h"
 #include "Engine/RenderContext.h"
 #include "Engine/RotoContext.h"
+#include "Engine/RotoCurvePanelHook.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoPaint.h"
 #include "Engine/RotoStrokeItem.h"
@@ -116,6 +117,7 @@
 #include "Engine/TrackerContext.h"
 #include "Engine/UndoCommand.h"
 #include "Engine/Utils.h" // convertFromPlainText
+#include "Engine/VectorFollowKnobs.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
 
@@ -673,7 +675,7 @@ Node::getPaintStrokeRoD(double time,
         if (!stroke) {
             throw std::logic_error("");
         }
-        *bbox = stroke->getBoundingBox(time);
+        *bbox = stroke->getBoundingBox(time, false);
     }
 }
 
@@ -3650,6 +3652,16 @@ Node::Implementation::checkForExitPreview()
     }
 }
 
+namespace {
+VectorFollowControls*
+vectorFollowOf(EffectInstance* effect)
+{
+    RotoCurvePanelHook* hook = effect ? effect->getCurvePanelHook() : nullptr;
+
+    return hook ? hook->getVectorFollowControls() : nullptr;
+}
+} // anonymous namespace
+
 bool
 Node::areAllProcessingThreadsQuit() const
 {
@@ -3682,6 +3694,10 @@ Node::areAllProcessingThreadsQuit() const
             return false;
         }
     }
+    const VectorFollowControls* follow = vectorFollowOf(_imp->effect.get());
+    if (follow && follow->isFollowing()) {
+        return false;
+    }
 
     return true;
 }
@@ -3706,6 +3722,10 @@ Node::quitAnyProcessing_non_blocking()
     TrackerContextPtr trackerContext = getTrackerContext();
     if (trackerContext) {
         trackerContext->quitTrackerThread_non_blocking();
+    }
+
+    if (VectorFollowControls* follow = vectorFollowOf(_imp->effect.get())) {
+        follow->abortFollow(false);
     }
 
     if ( isRotoPaintingNode() ) {
@@ -3758,6 +3778,10 @@ Node::quitAnyProcessing_blocking(bool allowThreadsToRestart)
         trackerContext->quitTrackerThread_blocking(allowThreadsToRestart);
     }
 
+    if (VectorFollowControls* follow = vectorFollowOf(_imp->effect.get())) {
+        follow->abortFollow(true);
+    }
+
     if ( isRotoPaintingNode() ) {
         if (RotoPaint* rotoPaint = dynamic_cast<RotoPaint*>(_imp->effect.get())) {
             rotoPaint->abortObjectSelectEncoding(true);
@@ -3782,6 +3806,10 @@ Node::abortAnyProcessing_non_blocking()
     TrackerContextPtr trackerContext = getTrackerContext();
     if (trackerContext) {
         trackerContext->abortTracking();
+    }
+
+    if (VectorFollowControls* follow = vectorFollowOf(_imp->effect.get())) {
+        follow->abortFollow(false);
     }
 
     _imp->abortPreview_non_blocking();
@@ -3888,7 +3916,7 @@ Node::makeInfoForInput(int inputNumber) const
         }
         for (std::list<ImageLayerDesc>::iterator it = availableLayers.begin(); it != availableLayers.end(); ++it) {
 
-            ss << " " << it->getUserFacingLabel() << '.' << it->getChannelsLabel();
+            ss << " " << it->getUserFacingLabel();
             if ( next != availableLayers.end() ) {
                 ss << ", ";
                 ++next;
@@ -7064,6 +7092,17 @@ Node::setPersistentMessage(MessageTypeEnum type,
                            const std::string & content)
 {
     postPersistentMessage(type, content, false, 0, NULL);
+}
+
+void
+Node::setQuietInfoMessage(const std::string& content)
+{
+    if (appPTR->isBackground()) {
+        std::cout << "Persistent message: " << content << std::endl;
+    }
+    if (storePersistentMessage(eMessageTypeInfo, content, false, 0, NULL) && !appPTR->isBackground()) {
+        Q_EMIT persistentMessageChanged();
+    }
 }
 
 void

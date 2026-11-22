@@ -37,7 +37,7 @@ file knobs name made absolute (a relative one against the project's directory,
 or the working directory for an unsaved project), so a relative path in the
 written file resolves from the file's own folder.
 
-Export Live Textures (on by default) writes the images USDMaterial's image
+Export Live Textures (on by default) writes the images USDPreviewSurface's image
 inputs feed the scene (its `natron://` live textures, which only the running
 Natron session can read) to OpenEXR files in a `name_textures` folder beside
 `name.usda`, and points the texture paths at them, following Asset Paths. Each

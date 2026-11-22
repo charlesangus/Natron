@@ -218,6 +218,8 @@ ViewerGL::resizeGL(int w,
         oldWidth = _imp->zoomCtx.screenWidth();
         oldHeight = _imp->zoomCtx.screenHeight();
         _imp->zoomCtx.setScreenSize(zoomWidth, zoomHeight, /*alignTop=*/ true, /*alignRight=*/ false);
+        // An estimate for events before the next paint; paintGL replaces it with the viewport Qt set.
+        _imp->zoomCtx.setDevicePixelGrid(static_cast<int>(w * devicePixelRatio()), static_cast<int>(h * devicePixelRatio()));
         zoomSinceLastFit = _imp->zoomOrPannedSinceLastFit;
     }
     glCheckError();
@@ -273,6 +275,76 @@ public:
     }
 };
 
+static void
+fillStaleCueRect(double x0,
+                 double y0,
+                 double x1,
+                 double y1)
+{
+    glVertex2d(x0, y0);
+    glVertex2d(x1, y0);
+    glVertex2d(x1, y1);
+    glVertex2d(x0, y1);
+}
+
+static void
+fillStaleCueFrame(double left,
+                  double right,
+                  double bottom,
+                  double top,
+                  double bx,
+                  double by)
+{
+    glBegin(GL_QUADS);
+    fillStaleCueRect(left, bottom, right, bottom + by);
+    fillStaleCueRect(left, top - by, right, top);
+    fillStaleCueRect(left, bottom + by, left + bx, top - by);
+    fillStaleCueRect(right - bx, bottom + by, right, top - by);
+    glEnd();
+}
+
+// Sizes are in screen pixels: pixel is one widget pixel in zoom coordinates, per axis, so the
+// dot stays round whatever the pixel aspect ratio.
+static void
+drawStaleCue(StaleCueStyleEnum style,
+             const QPointF& pixel,
+             double left,
+             double right,
+             double bottom,
+             double top)
+{
+    GLProtectAttrib a(GL_ENABLE_BIT | GL_CURRENT_BIT | GL_COLOR_BUFFER_BIT);
+    glDisable(GL_TEXTURE_2D);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    const double px = pixel.x();
+    const double py = pixel.y();
+    switch (style) {
+    case eStaleCueStyleSubtleOutline:
+        glColor4d(1., 0.7, 0., 0.4);
+        fillStaleCueFrame(left, right, bottom, top, px, py);
+        break;
+    case eStaleCueStyleCornerDot: {
+        const double radius = 4.;
+        const double inset = 10.;
+        const double cx = right - (inset + radius) * px;
+        const double cy = top - (inset + radius) * py;
+        const int segments = 32;
+        glColor4d(1., 0.7, 0., 1.);
+        glBegin(GL_TRIANGLE_FAN);
+        glVertex2d(cx, cy);
+        for (int i = 0; i <= segments; ++i) {
+            const double t = 2. * M_PI * i / segments;
+            glVertex2d(cx + radius * px * std::cos(t), cy + radius * py * std::sin(t));
+        }
+        glEnd();
+        break;
+    }
+    case eStaleCueStyleOff:
+        break;
+    }
+}
+
 void
 ViewerGL::paintGL()
 {
@@ -301,10 +373,13 @@ ViewerGL::paintGL()
     }
     assert(_imp->_textFont);
 
+    GLint viewport[4] = { 0, 0, 0, 0 };
+    glGetIntegerv(GL_VIEWPORT, viewport);
     double zoomLeft, zoomRight, zoomBottom, zoomTop;
     {
         QMutexLocker l(&_imp->zoomCtxMutex);
         assert(0 < _imp->zoomCtx.factor() && _imp->zoomCtx.factor() <= 1024);
+        _imp->zoomCtx.setDevicePixelGrid(viewport[2], viewport[3]);
         zoomLeft = _imp->zoomCtx.left();
         zoomRight = _imp->zoomCtx.right();
         zoomBottom = _imp->zoomCtx.bottom();
@@ -325,7 +400,6 @@ ViewerGL::paintGL()
         // However,
         // - Nuke uses a different matrix (RoD.width is the width of the RoD of the displayed image)
         // - Nuke transforms the interacts using the modelview if there are Transform nodes between the viewer and the interact.
-
 
         glMatrixMode(GL_PROJECTION);
         glLoadIdentity();
@@ -531,6 +605,9 @@ ViewerGL::paintGL()
         if (_imp->ms == eMouseStateSelecting) {
             _imp->drawSelectionRectangle();
         }
+        if (_imp->staleCueVisible) {
+            drawStaleCue(_imp->staleCueStyle, _imp->glShadow, zoomLeft, zoomRight, zoomBottom, zoomTop);
+        }
         glCheckErrorAssert();
     } // GLProtectAttrib a(GL_TRANSFORM_BIT);
 
@@ -565,6 +642,44 @@ ViewerGL::clearColorBuffer(double r,
         glClear(GL_COLOR_BUFFER_BIT);
     } // GLProtectAttrib a(GL_CURRENT_BIT | GL_COLOR_BUFFER_BIT);
     glCheckErrorIgnoreOSXBug();
+}
+
+void
+ViewerGL::setStaleCue(StaleCueStyleEnum style,
+                      bool visible)
+{
+    if ((_imp->staleCueStyle == style) && (_imp->staleCueVisible == visible)) {
+        return;
+    }
+    _imp->staleCueStyle = style;
+    _imp->staleCueVisible = visible;
+    update();
+}
+
+bool
+ViewerGL::isStaleCueVisible() const
+{
+    return _imp->staleCueVisible;
+}
+
+void
+ViewerGL::noteStaleTransition()
+{
+    ++_imp->staleTransitions;
+}
+
+int
+ViewerGL::staleTransitionCount() const
+{
+    return _imp->staleTransitions;
+}
+
+bool
+ViewerGL::isViewerImageStale() const
+{
+    ViewerInstance* viewer = getInternalNode();
+
+    return viewer && viewer->isStale();
 }
 
 void
@@ -1546,8 +1661,8 @@ ViewerGL::endTransferBufferFromRAMToGPU(int textureIndex,
 {
     if (recenterViewer) {
         QMutexLocker k(&_imp->zoomCtxMutex);
-        double curCenterX = ( _imp->zoomCtx.left() + _imp->zoomCtx.right() ) / 2.;
-        double curCenterY = ( _imp->zoomCtx.bottom() + _imp->zoomCtx.top() ) / 2.;
+        double curCenterX = _imp->zoomCtx.unsnappedLeft() + (_imp->zoomCtx.right() - _imp->zoomCtx.left()) / 2.;
+        double curCenterY = _imp->zoomCtx.unsnappedBottom() + (_imp->zoomCtx.top() - _imp->zoomCtx.bottom()) / 2.;
         _imp->zoomCtx.translate(viewportCenter.x - curCenterX, viewportCenter.y - curCenterY);
     }
 
@@ -2625,20 +2740,22 @@ ViewerGL::penMotionInternal(int x,
     //    _imp->pickerState = ePickerStateInactive;
     //}
 
+    QPointF texelPos;
     double zoomScreenPixelWidth, zoomScreenPixelHeight; // screen pixel size in zoom coordinates
     {
         QMutexLocker l(&_imp->zoomCtxMutex);
         zoomPos = _imp->zoomCtx.toZoomCoordinates(x, y);
+        texelPos = _imp->zoomCtx.toZoomCoordinatesAtPixelCentre(x, y);
         zoomScreenPixelWidth = _imp->zoomCtx.screenPixelWidth();
         zoomScreenPixelHeight = _imp->zoomCtx.screenPixelHeight();
     }
 
-    updateInfoWidgetColorPicker( zoomPos, QPoint(x, y) );
+    updateInfoWidgetColorPicker(texelPos, QPoint(x, y));
     if ( _imp->viewerTab->isViewersSynchroEnabled() ) {
         const std::list<ViewerTab*>& allViewers = gui->getViewersList();
         for (std::list<ViewerTab*>::const_iterator it = allViewers.begin(); it != allViewers.end(); ++it) {
             if ( (*it)->getViewer() != this ) {
-                (*it)->getViewer()->updateInfoWidgetColorPicker( zoomPos, QPoint(x, y) );
+                (*it)->getViewer()->updateInfoWidgetColorPicker(texelPos, QPoint(x, y));
             }
         }
     }
@@ -2998,6 +3115,14 @@ ViewerGL::toZoomCoordinates(const QPointF& position) const
 }
 
 QPointF
+ViewerGL::toZoomCoordinatesAtPixelCentre(const QPointF& position) const
+{
+    QMutexLocker l(&_imp->zoomCtxMutex);
+
+    return _imp->zoomCtx.toZoomCoordinatesAtPixelCentre(position.x(), position.y());
+}
+
+QPointF
 ViewerGL::toWidgetCoordinates(const QPointF& position) const
 {
     QMutexLocker l(&_imp->zoomCtxMutex);
@@ -3063,21 +3188,21 @@ ViewerGL::updateColorPicker(int textureIndex,
         if ( !_imp->viewerTab->isViewersSynchroEnabled() ) {
             pos = mapFromGlobal( QCursor::pos() );
             QMutexLocker l(&_imp->zoomCtxMutex);
-            imgPosCanonical = _imp->zoomCtx.toZoomCoordinates( pos.x(), pos.y() );
+            imgPosCanonical = _imp->zoomCtx.toZoomCoordinatesAtPixelCentre(pos.x(), pos.y());
         } else {
             ViewerTab* masterViewer = getViewerTab()->getGui()->getMasterSyncViewer();
             if (masterViewer) {
                 pos = masterViewer->getViewer()->mapFromGlobal( QCursor::pos() );
-                imgPosCanonical = masterViewer->getViewer()->toZoomCoordinates(pos);
+                imgPosCanonical = masterViewer->getViewer()->toZoomCoordinatesAtPixelCentre(pos);
             } else {
                 pos = mapFromGlobal( QCursor::pos() );
                 QMutexLocker l(&_imp->zoomCtxMutex);
-                imgPosCanonical = _imp->zoomCtx.toZoomCoordinates( pos.x(), pos.y() );
+                imgPosCanonical = _imp->zoomCtx.toZoomCoordinatesAtPixelCentre(pos.x(), pos.y());
             }
         }
     } else {
         QMutexLocker l(&_imp->zoomCtxMutex);
-        imgPosCanonical = _imp->zoomCtx.toZoomCoordinates( pos.x(), pos.y() );
+        imgPosCanonical = _imp->zoomCtx.toZoomCoordinatesAtPixelCentre(pos.x(), pos.y());
     }
 
     float r, g, b, a;
@@ -3852,7 +3977,7 @@ ViewerGL::updatePersistentMessageToWidth(int w)
         QString mess;
         int nType = 0;
         (*it)->getPersistentMessage(&mess, &nType);
-        if (mess.isEmpty() || allMessages.contains(mess)) {
+        if (mess.isEmpty() || (nType == 0) || allMessages.contains(mess)) {
             continue;
         }
         allMessages.append(mess);
@@ -3893,8 +4018,8 @@ ViewerGL::getProjection(double *zoomLeft,
     // MT-SAFE
     QMutexLocker l(&_imp->zoomCtxMutex);
 
-    *zoomLeft = _imp->zoomCtx.left();
-    *zoomBottom = _imp->zoomCtx.bottom();
+    *zoomLeft = _imp->zoomCtx.unsnappedLeft();
+    *zoomBottom = _imp->zoomCtx.unsnappedBottom();
     *zoomFactor = _imp->zoomCtx.factor();
     *zoomAspectRatio = _imp->zoomCtx.aspectRatio();
 }
@@ -4247,7 +4372,7 @@ ViewerGL::pickColorInternal(double x,
     QPointF imgPos;
     {
         QMutexLocker l(&_imp->zoomCtxMutex);
-        imgPos = _imp->zoomCtx.toZoomCoordinates(x, y);
+        imgPos = _imp->zoomCtx.toZoomCoordinatesAtPixelCentre(x, y);
     }
 
     _imp->lastPickerPos = imgPos;

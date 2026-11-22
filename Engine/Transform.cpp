@@ -377,6 +377,21 @@ matApply(const Matrix3x3 & m,
     *z = tmpZ;
 }
 
+Point3D
+matApplyProjected(const Matrix3x3& m,
+                  const Point3D& p)
+{
+    Point3D ret = matApply(m, p);
+
+    if ((ret.z != 0.) && (ret.z != 1.)) {
+        ret.x /= ret.z;
+        ret.y /= ret.z;
+        ret.z = 1.;
+    }
+
+    return ret;
+}
+
 Matrix4x4::Matrix4x4()
 {
     std::fill(data, data + 16, 0.);

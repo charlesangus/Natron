@@ -29,8 +29,10 @@
 #include "Global/Macros.h"
 
 #include <cstddef> // for NULL
+#include <functional>
 #include <limits>
 #include <list>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -357,6 +359,20 @@ public:
                                 double /*t*/)
     {
         return true;
+    }
+
+    /**
+     * @brief Shows an application-modal dialog over the interface that follows node's progress
+     * task, started by progressStart(), with Cancel as its only button, so that nothing can edit
+     * what the job reads. onCancel is called when the user cancels. The dialog stays open until the
+     * returned holder is dropped, for a job that outlives its progress task. Null without an
+     * interface.
+     **/
+    virtual std::shared_ptr<void> showProgressModal(const NodePtr& /*node*/,
+                                                    const std::string& /*title*/,
+                                                    const std::function<void()>& /*onCancel*/)
+    {
+        return std::shared_ptr<void>();
     }
 
     /**

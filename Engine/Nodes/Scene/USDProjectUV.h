@@ -105,7 +105,7 @@ public:
         .description = "Write texture coordinates on the meshes a pattern selects (a USD path expression: paths with * and ? "
                        "wildcards, // for any depth, set operators) in the input scene by projecting their points through a camera. The camera "
                        "comes from the Camera input, or from the scene when that input is not connected. The UVs are a "
-                       "faceVarying primvar (st by default) that any renderer reads; texture them with a USDMaterial. "
+                       "faceVarying primvar (st by default) that any renderer reads; texture them with a USDPreviewSurface. "
                        "They are per vertex, so a projection onto coarse geometry warps between vertices. A moving "
                        "mesh or camera writes time samples over the project range.",
         .grouping = PLUGIN_GROUP_3D_USD,

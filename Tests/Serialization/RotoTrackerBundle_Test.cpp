@@ -330,7 +330,7 @@ protected:
         if (controlPoints.empty()) {
             return NodePtr();
         }
-        controlPoints.front()->setBroken(true);
+        controlPoints.front()->setBroken(false, true);
         square->setLeftBezierPoint(0, 8., 0.5, 5.);
         KnobDoublePtr feather = square->getFeatherKnob();
         if (!feather) {

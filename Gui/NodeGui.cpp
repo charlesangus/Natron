@@ -2212,7 +2212,7 @@ NodeGui::initializeInputsForInspector()
             _inputEdges[i]->setAngle(maskAngle);
             maskAngle += angleBetweenMasks;
         } else {
-            if ( ( (int)i < maxInitiallyOnTopVisibleInputs ) ) {
+            if (((int)i < maxInitiallyOnTopVisibleInputs) && !node->getEffectInstance()->isInputFirstOnSide(i)) {
                 _inputEdges[i]->setAngle(angle);
                 angle += angleBetweenInputs;
             } else {
@@ -2273,9 +2273,7 @@ NodeGui::initializeInputs()
                 }
             }
         }
-        if ( node &&
-             !node->getEffectInstance()->isInputMask(i) &&
-             !node->getEffectInstance()->isInputRotoBrush(i) ) {
+        if (node && !node->getEffectInstance()->isInputMask(i) && !node->getEffectInstance()->isInputRotoBrush(i) && !node->getEffectInstance()->isInputFirstOnSide(i)) {
             if (!input) {
                 ++emptyInputsCount;
             }
@@ -2297,7 +2295,10 @@ NodeGui::initializeInputs()
             if ( node && !node->getEffectInstance()->isInputRotoBrush(i) ) {
                 double edgeAngle;
                 bool incrAngle = true;
-                if ( node->getEffectInstance()->isInputMask(i) ) {
+                if (node->getEffectInstance()->isInputFirstOnSide(i)) {
+                    edgeAngle = M_PI;
+                    incrAngle = false;
+                } else if (node->getEffectInstance()->isInputMask(i)) {
                     if (maskIndex == 0) {
                         edgeAngle = 0;
                         incrAngle = false;
@@ -2406,7 +2407,19 @@ NodeGui::refreshEdgesVisility()
         /*
          * If optional inputs are displayed, only show one input on th left side of the node
          */
+        const EffectInstancePtr effect = node->getEffectInstance();
+        std::vector<int> sideInputs;
+        for (int i = 0; i < (int)_inputEdges.size(); ++i) {
+            if (effect->isInputFirstOnSide(i)) {
+                sideInputs.push_back(i);
+            }
+        }
         for (int i = maxInitiallyOnTopVisibleInputs; i < (int)_inputEdges.size(); ++i) {
+            if (!effect->isInputFirstOnSide(i)) {
+                sideInputs.push_back(i);
+            }
+        }
+        for (int i : sideInputs) {
             if ( !edgesVisibility[i] || _inputEdges[i]->isMask() ) {
                 continue;
             }
@@ -3029,7 +3042,9 @@ NodeGui::onPersistentMessageChanged()
     const bool isPlaceholder = node && node->getPluginID() == PLUGINID_NATRON_MISSING_PLUGIN;
     const bool showMessage = !message.isEmpty() && (isError || isWarning) && !isPlaceholder;
 
-    setToolTip(node && !message.isEmpty() && (isError || isWarning) ? message : QString());
+    // An information message is only readable: no badge, border or caption, just the tooltip.
+    const bool isInfo = (type == eMessageTypeInfo);
+    setToolTip(node && !message.isEmpty() && (isError || isWarning || isInfo) ? message : QString());
 
     if (_messageBadge && _messageBorder && _messageCaption) {
         if (showMessage) {

@@ -304,7 +304,7 @@ TEST_F(RotoRoundTripTest, AnimatedFeatheredBezierWithBrokenTangent)
 
     const std::list<BezierCPPtr> controlPoints = square->getControlPoints_mt_safe();
     ASSERT_EQ(4u, controlPoints.size());
-    controlPoints.front()->setBroken(true);
+    controlPoints.front()->setBroken(false, true);
     square->setLeftBezierPoint(0, 10., 2., 52.);
 
     KnobDoublePtr featherKnob = square->getFeatherKnob();

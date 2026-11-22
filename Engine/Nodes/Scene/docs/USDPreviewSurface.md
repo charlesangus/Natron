@@ -1,4 +1,4 @@
-# USDMaterial
+# USDPreviewSurface
 
 Authors a UsdPreviewSurface material, as a scene source with no scene input. The
 material prim is at Prim Path, which follows the node's script name

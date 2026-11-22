@@ -42,7 +42,7 @@ ImageLayerDesc
 makeLayer(const std::string& name,
           const std::vector<std::string>& channels)
 {
-    return ImageLayerDesc(name, name, "", channels);
+    return ImageLayerDesc(name, channels);
 }
 
 std::vector<std::string>

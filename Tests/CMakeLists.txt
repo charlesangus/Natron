@@ -20,7 +20,7 @@
 # Where the test-only OFX bundles are built; the test mains append it to OFX_PLUGIN_PATH.
 set(NATRON_TEST_OFX_PLUGIN_DIR ${CMAKE_BINARY_DIR}/Tests/TestPlugins)
 
-set(Tests_HEADERS Ai/AiModelTestEffect.h BaseTest.h CacheMemoryPressureGuard.h CacheStress.h CacheStressTestEffect.h ContextTestEffects.h CountingTestEffect.h CurveHostTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h IdentityHopTestEffect.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h Native/KeyerMatteReference.h Native/NativeBlurRange.h Native/NativeGolden.h Native/NativeGpuParity.h Native/NativeTimeNodesTest.h NativeMetadataTestEffect.h NativeParity.h PerProcessUserDirs.h RenderBothWays.h SceneTestEffect.h TestWatchdog.h SplineWarpHostTestEffect.h Native/SplineWarpTestCurves.h TestOfxPluginPath.h TestRetiredOfxIds.h ViewerInstanceTestAccess.h)
+set(Tests_HEADERS Ai/AiModelTestEffect.h BaseTest.h CacheMemoryPressureGuard.h CacheStress.h CacheStressTestEffect.h ContextTestEffects.h ContinuationTestEffects.h CountingTestEffect.h CurveHostTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h Flow/FlowTestPlate.h IdentityHopTestEffect.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h Native/KeyerMatteReference.h Native/NativeBlurRange.h Native/NativeGolden.h Native/NativeGpuParity.h Native/NativeTimeNodesTest.h NativeMetadataTestEffect.h NativeParity.h PerProcessUserDirs.h RenderBothWays.h SceneTestEffect.h TestWatchdog.h SplineWarpHostTestEffect.h Native/SplineWarpTestCurves.h TestOfxPluginPath.h TestRetiredOfxIds.h TwoPlaneTestEffect.h ViewerInstanceTestAccess.h)
 set(Tests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
@@ -111,6 +111,12 @@ set(Tests_SOURCES
     RotoSelectionProxy_Test.cpp
     PyRotoCreate_Test.cpp
     CurveTrackLink_Test.cpp
+    VectorSampler_Test.cpp
+    VectorFollow_Test.cpp
+    VectorFollowModels_Test.cpp
+    VectorFollowBake_Test.cpp
+    VectorFollowReduce_Test.cpp
+    SplineWarpFollowVectors_Test.cpp
     CurveClipboard_Test.cpp
     BezierEditScaling_Test.cpp
     BezierGuiCopyEquivalence_Test.cpp
@@ -120,8 +126,10 @@ set(Tests_SOURCES
     RotoUndoGesture_Test.cpp
     RotoDragUndo_Test.cpp
     RotoInsertPointDrag_Test.cpp
+    RotoOverlayHomography_Test.cpp
     RotoDragRenderThrottle_Test.cpp
     RotoKeyDuringRender_Test.cpp
+    RotoPaintExtraBgRoD_Test.cpp
     StrokeRenderCoalescer_Test.cpp
     Knob_Test.cpp
     LayerKnobsRender_Test.cpp
@@ -137,6 +145,11 @@ set(Tests_SOURCES
     Gpu/CacheStressGpu_Test.cpp
     Gpu/CacheDeviceTier_Test.cpp
     Gpu/RawAmazeGpu_Test.cpp
+    Gpu/GpuFlowPyramid_Test.cpp
+    Gpu/GpuDisFlow_Test.cpp
+    Gpu/GpuTvL1Flow_Test.cpp
+    Gpu/GpuFlowConfidence_Test.cpp
+    Gpu/GpuSplitWork_Test.cpp
     Ai/AiSettings_Test.cpp
     Ai/OrtLoader_Test.cpp
     Ai/OrtTelemetry_Test.cpp
@@ -147,6 +160,7 @@ set(Tests_SOURCES
     Ai/ModelKnob_Test.cpp
     Ai/Segmentation_Test.cpp
     Ai/MaskTrace_Test.cpp
+    Ai/OpticalFlow_Test.cpp
     NodeCategory_Test.cpp
     NodePresetApply_Test.cpp
     TabMenuSettings_Test.cpp
@@ -173,6 +187,7 @@ set(Tests_SOURCES
     ProjectSerialization_Test.cpp
     Serialization/ProjectEquivalence.cpp
     PyKeyTangents_Test.cpp
+    PyVectorFollow_Test.cpp
     PyLinks_Test.cpp
     PyPlugExport_Test.cpp
     PyPlugInstantiate_Test.cpp
@@ -195,6 +210,7 @@ set(Tests_SOURCES
     RenderContext_Test.cpp
     RenderContextMetadata_Test.cpp
     RenderContextRequest_Test.cpp
+    RenderContinuation_Test.cpp
     RenderIsolation_Test.cpp
     RenderProfile_Test.cpp
     RenderRange_Test.cpp
@@ -213,6 +229,7 @@ set(Tests_SOURCES
     TimeVaryingLayers_Test.cpp
     TrackerLayer_Test.cpp
     Tracker_Test.cpp
+    TwoPlaneRender_Test.cpp
     TypedPassthrough_Test.cpp
     WeightedInterpolation_Test.cpp
     WriteAllLayers_Test.cpp
@@ -237,6 +254,9 @@ list(APPEND Tests_SOURCES ${Tests_NATIVE_SOURCES})
 # Same CONFIGURE_DEPENDS auto-pickup for the serialization-boundary tests.
 file(GLOB Tests_SERIALIZATION_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Serialization/*_Test.cpp)
 list(APPEND Tests_SOURCES ${Tests_SERIALIZATION_SOURCES})
+# Same CONFIGURE_DEPENDS auto-pickup for the optical-flow library tests.
+file(GLOB Tests_FLOW_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Flow/*_Test.cpp)
+list(APPEND Tests_SOURCES ${Tests_FLOW_SOURCES})
 # Same CONFIGURE_DEPENDS auto-pickup for the scene (USD) transport tests.
 file(GLOB Tests_SCENE_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Scene/*_Test.cpp)
 # Authors the layers of SceneTestEffect.h's stubs, which wmain.cpp registers.
@@ -365,6 +385,7 @@ set(GuiTests_SOURCES
     SceneGizmo_Test.cpp
     SceneGraphModel_Test.cpp
     SceneGuides_Test.cpp
+    SceneSelectionTasks_Test.cpp
     SceneViewport_Test.cpp
     ShuffleMatrix_Test.cpp
     SpinBox_Test.cpp
@@ -376,6 +397,8 @@ set(GuiTests_SOURCES
     UndoHistory_Test.cpp
     ValueKnobEditSession_Test.cpp
     ValueKnobGlobalModeTarget_Test.cpp
+    ViewerPixelGrid_Test.cpp
+    ViewerStaleCueTiming_Test.cpp
     ViewerZoomLadder_Test.cpp
     WindowPlacement_Test.cpp
     guimain.cpp
@@ -384,7 +407,7 @@ set(GuiTests_SOURCES
 find_package(Qt6 6.8 CONFIG REQUIRED COMPONENTS Test)
 add_executable(GuiTests ${GuiTests_SOURCES})
 # Build their scenes with OpenUSD, whose headers need the full Python API.
-set_source_files_properties(SceneGizmo_Test.cpp SceneGraphModel_Test.cpp SceneGuides_Test.cpp SceneViewport_Test.cpp PROPERTIES COMPILE_OPTIONS -UPy_LIMITED_API)
+set_source_files_properties(SceneGizmo_Test.cpp SceneGraphModel_Test.cpp SceneGuides_Test.cpp SceneSelectionTasks_Test.cpp SceneViewport_Test.cpp PROPERTIES COMPILE_OPTIONS -UPy_LIMITED_API)
 target_link_libraries(GuiTests
     PRIVATE
         NatronGui

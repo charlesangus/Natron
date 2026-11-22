@@ -77,6 +77,7 @@ CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
 #include <SequenceParsing.h>
+#include <ofxImageEffect.h>
 
 #include "Global/QtCompat.h"
 #include "Global/StrUtils.h"

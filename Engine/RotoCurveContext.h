@@ -59,6 +59,8 @@ CLANG_DIAG_ON(deprecated-declarations)
 NATRON_NAMESPACE_ENTER
 
 struct RotoContextPrivate;
+struct VectorFollowParams;
+struct VectorFollowReport;
 class ContentHasher;
 
 /**
@@ -174,6 +176,13 @@ public:
     BezierPtr makeEllipse(double x, double y, double diameter, bool fromCenter, double time);
     BezierPtr makeSquare(double x, double y, double initialSize, double time);
     std::string generateUniqueName(const std::string& baseName);
+
+    /**
+     * @brief Follows the given shapes along the vectors of a node, here and now: the keys are written
+     * on the main thread between reads of the source. The whole follow is one undo step, pushed on
+     * the node or handed over in undo when given. A refused source only sets the report's error.
+     **/
+    VectorFollowReport followVectors(const VectorFollowParams& params, UndoCommandPtr* undo = 0);
 
     /**
      * @brief Called on every drawable item made for this context, by creation, copy or load,
@@ -332,6 +341,27 @@ public:
     bool isTransformKnob(const KnobI* knob) const;
 
     /**
+     * @brief While one is alive no item's transform knobs are tied to the Transform page, so the
+     * page neither shows nor edits any item's transform. Main thread only.
+     **/
+    class TransformTieSuspension {
+    public:
+        explicit TransformTieSuspension(const RotoCurveContextPtr& context);
+        ~TransformTieSuspension();
+
+        TransformTieSuspension(const TransformTieSuspension&) = delete;
+        TransformTieSuspension& operator=(const TransformTieSuspension&) = delete;
+
+    private:
+        RotoCurveContextWPtr _context;
+    };
+
+    /**
+     * @brief The item whose transform knobs the Transform page shows and edits, or null.
+     **/
+    RotoDrawableItemPtr getTransformTiedItem() const;
+
+    /**
      * @brief Sets center to getDefaultTransformCenter(), or else to the centre of the selected
      * items' bounding box, at the current time.
      **/
@@ -384,22 +414,45 @@ public:
      **/
     bool getTransformKnobsFrameAtTime(double time, Transform::Matrix3x3* matrix) const;
 
-protected:
     /**
-     * @brief False when the Transform page must not edit item's own transform knobs: the node's
-     * transform knobs then neither show nor edit them. See refreshTransformKnobTies().
+     * @brief Whether a follow's fit may key item's own transform knobs. They only move item while no
+     * other item's transform takes their place; when one does, the fit is keyed on item's points.
      **/
-    virtual bool tiesTransformKnobs(const RotoDrawableItem& /*item*/) const
+    virtual bool fitKeysOwnTransform(const RotoDrawableItem& /*item*/) const
     {
         return true;
     }
 
     /**
-     * @brief Shows a selected item's transform in the node's knobs again once tiesTransformKnobs()
-     * returns a different answer for it. Edits on the node's transform knobs skip an untied item and an item inside a
-     * selected layer, so they reach only the layer.
+     * @brief The other items whose own transform knobs make up item's transform, such as a
+     * transform link target. A follow keys them before item, so item's keys are converted through
+     * the transform they end up with.
      **/
-    void refreshTransformKnobTies(const RotoDrawableItemPtr& item);
+    virtual std::list<RotoItemPtr> getTransformSources(const RotoDrawableItem& /*item*/) const
+    {
+        return std::list<RotoItemPtr>();
+    }
+
+protected:
+    /**
+     * @brief False when the Transform page must not edit owner's transform, so selecting owner
+     * leaves the page untied and disabled. See refreshTransformKnobTies().
+     **/
+    virtual bool pageEditsTransform(const RotoItem& /*owner*/) const
+    {
+        return true;
+    }
+
+    /**
+     * @brief Ties the Transform page to the selection's one transform: the node's transform knobs
+     * show the item's own knobs and edits on them reach those alone, when the selection holds
+     * exactly one transform and it is one that pageEditsTransform() allows. A selected layer is
+     * one transform, and an item inside it does not count. Where layersOwnTransforms(), a tied
+     * layer's own knobs are shown and edited; otherwise the host edits it through the page. With
+     * more than one transform selected, none, or one the page must not edit, nothing is tied and
+     * the page is disabled, which hides the transform handle too. Main thread only.
+     **/
+    void refreshTransformKnobTies();
 
     void resetTransformInternal(const KnobDoublePtr& translate,
                                 const KnobDoublePtr& scale,
@@ -414,7 +467,7 @@ protected:
     static void setCenterKnob(const KnobDoublePtr& center, double x, double y);
 
 protected:
-    void getItemsRegionOfDefinition(const std::list<RotoItemPtr>& items, double time, ViewIdx view, RectD* rod) const;
+    void getItemsRegionOfDefinition(const std::list<RotoItemPtr>& items, double time, ViewIdx view, bool useGuiCurves, RectD* rod) const;
 
 public:
     /**
@@ -721,7 +774,7 @@ private:
      **/
     void mirrorLayer(const RotoLayerPtr& layer);
     bool mirrorsKnob(const RotoDrawableItem& item, const KnobI* proxy) const;
-    bool forwardsKnob(const RotoDrawableItem& item, const KnobI* proxy, const std::list<RotoItemPtr>& selected) const;
+    bool forwardsKnob(const RotoDrawableItem& item, const KnobI* proxy) const;
 
     /**
      * @brief The own knobs, of the selected items, that an edit on the node's item knob proxy is

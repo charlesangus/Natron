@@ -68,8 +68,8 @@
 #include "Engine/Nodes/Scene/USDAssignMaterial.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
 #include "Engine/Nodes/Scene/USDCard.h"
-#include "Engine/Nodes/Scene/USDMaterial.h"
 #include "Engine/Nodes/Scene/USDMerge.h"
+#include "Engine/Nodes/Scene/USDPreviewSurface.h"
 #include "Engine/Nodes/Scene/USDProject3D.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDWrite.h"
@@ -178,7 +178,7 @@ writeTextFile(const QString& path,
 //
 //   USDRead ----------------> USDXformPrim /Transform1 --\
 //                                                      USDMerge -> USDWrite
-//   USDMaterial -> Card ----> USDXformPrim /Transform2 --/
+//   USDPreviewSurface -> Card ----> USDXformPrim /Transform2 --/
 //
 // Each USDXformPrim references the layer stack of its input from an anonymous layer, and the card
 // so references its material's.
@@ -214,7 +214,7 @@ protected:
     {
         NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
         NodePtr transform1 = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
-        NodePtr material = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMATERIAL));
+        NodePtr material = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPREVIEWSURFACE));
         NodePtr card = createNode(QString::fromUtf8(kTestPluginIDSceneGeometry));
         NodePtr transform2 = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
         NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
@@ -227,7 +227,7 @@ protected:
         KnobDouble* offset = getKnob<KnobDouble>(reader, kUSDReadParamFrameOffset);
         KnobDouble* translate1 = getKnob<KnobDouble>(transform1, kSceneParamTranslate);
         KnobDouble* translate2 = getKnob<KnobDouble>(transform2, kSceneParamTranslate);
-        KnobColor* diffuse = getKnob<KnobColor>(material, kUSDMaterialParamDiffuseColor);
+        KnobColor* diffuse = getKnob<KnobColor>(material, kUSDPreviewSurfaceParamDiffuseColor);
         EXPECT_TRUE(file && offset && translate1 && translate2 && diffuse);
         if (!(file && offset && translate1 && translate2 && diffuse)) {
             return NodePtr();
@@ -512,7 +512,7 @@ TEST_F(USDWriteTest, ASharedMaterialAssignmentRoundTripsInBothModes)
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
-    NodePtr material = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMATERIAL));
+    NodePtr material = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPREVIEWSURFACE));
     NodePtr assign = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
     NodePtr transform = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
     ASSERT_TRUE(reader && material && assign && transform);
@@ -752,7 +752,7 @@ sizeOf(const QString& path)
 }
 } // anonymous namespace
 
-// A USDMaterial whose Diffuse Color input is a Constant, its red 0.1, or keyed 0.1, 0.2 and 0.3 at
+// A USDPreviewSurface whose Diffuse Color input is a Constant, its red 0.1, or keyed 0.1, 0.2 and 0.3 at
 // frames 1 to 3 when animated.
 class USDWriteLiveTextureTest
     : public USDWriteTest {
@@ -760,9 +760,9 @@ protected:
     NodePtr createMaterial(bool animated)
     {
         NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
-        NodePtr material = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMATERIAL));
+        NodePtr material = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPREVIEWSURFACE));
         if (!constant || !material) {
-            ADD_FAILURE() << "Constant or USDMaterial is not registered";
+            ADD_FAILURE() << "Constant or USDPreviewSurface is not registered";
 
             return NodePtr();
         }
@@ -780,7 +780,7 @@ protected:
         } else {
             color->setValue(0.1, ViewSpec::all(), 0);
         }
-        EXPECT_TRUE(material->connectInput(constant, kUSDMaterialInputDiffuseColor));
+        EXPECT_TRUE(material->connectInput(constant, kUSDPreviewSurfaceInputDiffuseColor));
 
         return material;
     }
@@ -907,11 +907,11 @@ TEST_F(USDWriteLiveTextureTest, ADeletedSourceIsWrittenAsTheMaterialsOwnColourWi
     ASSERT_TRUE(tmp.isValid());
     NodePtr material = createMaterial(false);
     ASSERT_TRUE(bool(material));
-    NodePtr constant = material->getInput(kUSDMaterialInputDiffuseColor);
+    NodePtr constant = material->getInput(kUSDPreviewSurfaceInputDiffuseColor);
     ASSERT_TRUE(bool(constant));
     constant->destroyNode(true, false);
     constant.reset();
-    ASSERT_FALSE(material->getInput(kUSDMaterialInputDiffuseColor));
+    ASSERT_FALSE(material->getInput(kUSDPreviewSurfaceInputDiffuseColor));
 
     const USDWrite::ExportModeEnum modes[] = { USDWrite::eExportModeLayered, USDWrite::eExportModeFlattened };
     const bool exports[] = { true, false };

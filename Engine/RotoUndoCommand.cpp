@@ -40,12 +40,14 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Engine/Bezier.h"
 #include "Engine/BezierCP.h"
+#include "Engine/Curve.h"
 #include "Engine/FeatherPoint.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/MergingEnum.h"
 #include "Engine/Node.h"
 #include "Engine/Project.h"
 #include "Engine/RotoContext.h"
+#include "Engine/RotoContextPrivate.h"
 #include "Engine/RotoCurveContext.h"
 #include "Engine/RotoCurveInteract.h"
 #include "Engine/RotoFeatherDrag.h"
@@ -450,10 +452,21 @@ TransformUndoCommand::undo()
 void
 TransformUndoCommand::transformPoints(Transform::Matrix3x3 matrix)
 {
+    // matrix acts where the points are drawn, past their shape's own transform; the points are
+    // stored before that transform, so each shape gets matrix taken back through its own.
+    const Bezier* lastCurve = 0;
+    Transform::Matrix3x3 local;
     for (SelectedCpList::iterator it = _selectedPoints.begin(); it != _selectedPoints.end(); ++it) {
-        it->first->getBezier()->transformPoint(it->first, _time, &matrix);
+        const BezierPtr curve = it->first->getBezier();
+        if (curve.get() != lastCurve) {
+            Transform::Matrix3x3 shape;
+            curve->getTransformAtTime(_time, &shape);
+            local = Transform::matMul(Transform::matInverse(shape), Transform::matMul(matrix, shape));
+            lastCurve = curve.get();
+        }
+        curve->transformPoint(it->first, _time, &local);
         if (it->second) {
-            it->second->getBezier()->transformPoint(it->second, _time, &matrix);
+            curve->transformPoint(it->second, _time, &local);
         }
     }
 
@@ -990,9 +1003,9 @@ getDeltaForPoint(const BezierCP& p,
     p.getRightBezierPointAtTime(true, time, ViewIdx(0), &rtan.x, &rtan.y);
     p.getPositionAtTime(true, time, ViewIdx(0), &pos.x, &pos.y);
 
-    pos = Transform::matApply(transform, pos);
-    ltan = Transform::matApply(transform, ltan);
-    rtan = Transform::matApply(transform, rtan);
+    pos = Transform::matApplyProjected(transform, pos);
+    ltan = Transform::matApplyProjected(transform, ltan);
+    rtan = Transform::matApplyProjected(transform, rtan);
 
     double dist = isLeft ?  sqrt( (rtan.x - pos.x) * (rtan.x - pos.x) + (rtan.y - pos.y) * (rtan.y - pos.y) )
                   : sqrt( (ltan.x - pos.x) * (ltan.x - pos.x) + (ltan.y - pos.y) * (ltan.y - pos.y) );
@@ -1284,7 +1297,7 @@ transformedPoint(double x,
     p.x = x;
     p.y = y;
     p.z = 1.;
-    p = Transform::matApply(transform, p);
+    p = Transform::matApplyProjected(transform, p);
     Point r;
     r.x = p.x;
     r.y = p.y;
@@ -1357,8 +1370,8 @@ computeFeatherBarDrag(const BezierCPPtr& cp,
     cp->getPositionAtTime(true, time, ViewIdx(0), &controlPoint.x, &controlPoint.y);
     drag->isOnKeyframe = fp->getPositionAtTime(true, time, ViewIdx(0), &featherPoint.x, &featherPoint.y);
 
-    controlPoint = Transform::matApply(transform, controlPoint);
-    featherPoint = Transform::matApply(transform, featherPoint);
+    controlPoint = Transform::matApplyProjected(transform, controlPoint);
+    featherPoint = Transform::matApplyProjected(transform, featherPoint);
 
     Point c, f, left, right;
     c.x = controlPoint.x;
@@ -2692,11 +2705,8 @@ CommitObjectMaskUndoCommand::redo()
             shape->setKeyframe(_time);
             for (std::size_t i = 0; i < points.size(); ++i) {
                 // An unbroken point realigns its handles on every read, which rounds off corners.
-                if (BezierCPPtr cp = shape->getControlPointAtIndex((int)i)) {
-                    cp->setBroken(points[i].cusp);
-                }
-                if (BezierCPPtr fp = shape->getFeatherPointAtIndex((int)i)) {
-                    fp->setBroken(points[i].cusp);
+                if (points[i].cusp) {
+                    shape->setTangentsBroken(shape->getControlPointAtIndex((int)i), shape->getFeatherPointAtIndex((int)i), _time);
                 }
                 shape->setLeftBezierPoint((int)i, _time, points[i].left.x, points[i].left.y);
                 shape->setRightBezierPoint((int)i, _time, points[i].right.x, points[i].right.y);
@@ -2730,5 +2740,174 @@ CommitObjectMaskUndoCommand::redo()
     roto->setSelection(selection, std::list<std::pair<BezierCPPtr, BezierCPPtr>>());
     roto->evaluate(true);
 } // CommitObjectMaskUndoCommand::redo
+
+////////////////////////////
+
+namespace {
+
+KnobDoublePtr
+followedKnob(const RotoDrawableItem& item,
+             const char* name)
+{
+    return std::dynamic_pointer_cast<KnobDouble>(item.getKnobByName(name));
+}
+
+void
+saveKnobCurves(const KnobDoublePtr& knob,
+               std::vector<CurvePtr>* curves,
+               std::vector<double>* values)
+{
+    curves->clear();
+    values->clear();
+    for (int dim = 0; dim < knob->getDimension(); ++dim) {
+        CurvePtr copy = std::make_shared<Curve>();
+        copy->clone(*knob->getCurve(ViewIdx(0), dim));
+        curves->push_back(copy);
+        values->push_back(knob->getValue(dim));
+    }
+}
+
+// The GUI copy is never behind the internal one, so it is the state the user sees even while
+// a render holds the internal one.
+BezierCPPtr
+snapshotPoint(const BezierCPPtr& point)
+{
+    BezierCPPtr copy = std::make_shared<BezierCP>(point->getBezier());
+    copy->cloneGuiState(*point, true);
+
+    return copy;
+}
+
+} // anonymous namespace
+
+FollowVectorsUndoCommand::FollowVectorsUndoCommand(const RotoCurveContextPtr& context,
+                                                   const std::list<RotoDrawableItemPtr>& items,
+                                                   bool hostState)
+    : UndoCommand()
+    , _context(context)
+    , _items()
+    , _hostBefore()
+    , _hostAfter()
+    , _done(false)
+{
+    if (hostState) {
+        _hostBefore = context->saveHostState();
+    }
+    for (const RotoDrawableItemPtr& item : items) {
+        ItemState state;
+        state.item = item;
+        state.bezier = std::dynamic_pointer_cast<Bezier>(item);
+        if (state.bezier) {
+            state.points = state.bezier->getControlPoints_mt_safe();
+            const std::list<BezierCPPtr> feathers = state.bezier->getFeatherPoints_mt_safe();
+            state.points.insert(state.points.end(), feathers.begin(), feathers.end());
+            for (const BezierCPPtr& point : state.points) {
+                state.before.push_back(snapshotPoint(point));
+            }
+            state.bezier->getKeyframeTimes(&state.keysBefore);
+        }
+        for (const char* name : { kRotoDrawableItemTranslateParam, kRotoDrawableItemRotateParam, kRotoDrawableItemScaleParam,
+                                  kRotoDrawableItemSkewXParam, kRotoDrawableItemSkewYParam, kRotoDrawableItemCenterParam,
+                                  kRotoDrawableItemExtraMatrixParam }) {
+            KnobState knobState;
+            knobState.knob = followedKnob(*item, name);
+            if (knobState.knob) {
+                saveKnobCurves(knobState.knob, &knobState.before, &knobState.valuesBefore);
+                state.knobs.push_back(knobState);
+            }
+        }
+        _items.push_back(state);
+    }
+    setText(tr("Follow Vectors").toStdString());
+}
+
+FollowVectorsUndoCommand::~FollowVectorsUndoCommand()
+{
+}
+
+void
+FollowVectorsUndoCommand::captureResult()
+{
+    for (ItemState& state : _items) {
+        state.after.clear();
+        for (const BezierCPPtr& point : state.points) {
+            state.after.push_back(snapshotPoint(point));
+        }
+        if (state.bezier) {
+            state.keysAfter.clear();
+            state.bezier->getKeyframeTimes(&state.keysAfter);
+        }
+        for (KnobState& knobState : state.knobs) {
+            saveKnobCurves(knobState.knob, &knobState.after, &knobState.valuesAfter);
+        }
+    }
+    RotoCurveContextPtr context = _context.lock();
+    if (_hostBefore && context) {
+        _hostAfter = context->saveHostState();
+    }
+    _done = true;
+}
+
+void
+FollowVectorsUndoCommand::restore(bool after)
+{
+    RotoCurveContext::TransformTieSuspension untied(_context.lock());
+
+    for (ItemState& state : _items) {
+        const std::list<BezierCPPtr>& saved = after ? state.after : state.before;
+        std::list<BezierCPPtr>::const_iterator itSaved = saved.begin();
+        for (std::list<BezierCPPtr>::const_iterator it = state.points.begin(); it != state.points.end() && itSaved != saved.end(); ++it, ++itSaved) {
+            state.bezier->restorePointState(*it, **itSaved);
+        }
+
+        for (KnobState& knobState : state.knobs) {
+            const std::vector<CurvePtr>& curves = after ? knobState.after : knobState.before;
+            const std::vector<double>& values = after ? knobState.valuesAfter : knobState.valuesBefore;
+            knobState.knob->beginChanges();
+            for (std::size_t dim = 0; dim < curves.size(); ++dim) {
+                knobState.knob->cloneCurve(ViewIdx(0), (int)dim, *curves[dim]);
+                if (curves[dim]->getKeyFramesCount() == 0) {
+                    knobState.knob->setValue(values[dim], ViewSpec::all(), (int)dim);
+                }
+            }
+            knobState.knob->endChanges();
+        }
+
+        if (state.bezier) {
+            state.bezier->notifyKeyframesRestored(after ? state.keysBefore : state.keysAfter,
+                                                  after ? state.keysAfter : state.keysBefore);
+        }
+    }
+
+    RotoCurveContextPtr context = _context.lock();
+    const std::shared_ptr<RotoCurveContextHostState>& hostState = after ? _hostAfter : _hostBefore;
+    if (context && hostState) {
+        context->restoreHostState(hostState);
+    }
+    if (context) {
+        context->refreshTrackLinkListeners();
+        context->emitRefreshViewerOverlays();
+        context->evaluateChange();
+    }
+}
+
+void
+FollowVectorsUndoCommand::undo()
+{
+    _done = false;
+    restore(false);
+}
+
+void
+FollowVectorsUndoCommand::redo()
+{
+    // The follow already wrote all of this, frame by frame, before the command was pushed.
+    if (_done) {
+        _done = false;
+
+        return;
+    }
+    restore(true);
+}
 
 NATRON_NAMESPACE_EXIT

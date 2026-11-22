@@ -80,6 +80,9 @@ tools/ci/remote/build.sh <fast|release> --from-run <run-id> --gui "<script> ..."
   `ToFormatWithAPixelAspectRatio`, `ToProjectFormatFromTheSourceRoD`), record
   the same way into `Tests/fixtures/native-parity/`; the other parity
   references are left alone.
+  Every `Native*Test.Regression*` case also records its parity reference, which
+  comes down under `Tests/fixtures/native-golden/native-parity/`; copy a
+  node's directory to `Tests/fixtures/native-parity/` to commit it.
 - `--shuffle-seeds <n,n,...>` implies `--tests`, e.g. `--shuffle-seeds 1,2,3`
   (seeds 1 to 99999). Each ctest leg runs once unshuffled, as without the
   option, then once per seed with `GTEST_SHUFFLE=1 GTEST_RANDOM_SEED=<seed>`,

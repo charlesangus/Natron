@@ -8,7 +8,7 @@ script name (`/Plate` for a node named Plate) until it is set by hand. Under it 
 `surface` output is the material's surface.
 
 To use the material, connect the node to the Material input of a geometry node,
-as for a USDMaterial. The geometry node places the material under its own prim
+as for a USDPreviewSurface. The geometry node places the material under its own prim
 and binds itself to it with `material:binding`.
 
 The shader's `diffuseColor` is black, its `metallic` 0 and `roughness` 1, and it

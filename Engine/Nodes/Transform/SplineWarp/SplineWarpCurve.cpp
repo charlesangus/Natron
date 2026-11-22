@@ -92,7 +92,7 @@ SplineWarpCurveShape::fromBezier(const Bezier& curve,
                                  bool useGuiCurves)
 {
     SplineWarpCurveShape shape;
-    const std::list<BezierCPPtr> cps = feather ? curve.getFeatherPoints_mt_safe() : curve.getControlPoints_mt_safe();
+    const std::list<BezierCPPtr> cps = feather ? curve.getFeatherPoints_mt_safe(useGuiCurves) : curve.getControlPoints_mt_safe(useGuiCurves);
     const ViewIdx view(0);
 
     Transform::Matrix3x3 matrix;
@@ -121,7 +121,7 @@ SplineWarpCurveShape::fromBezier(const Bezier& curve,
 
     const int n = (int)pos.size();
     shape._pointCount = n;
-    shape._closed = isClosedCurve(curve);
+    shape._closed = !curve.isOpenBezier(useGuiCurves) && curve.isCurveFinished(useGuiCurves);
     if (n > 0) {
         shape._first = pos[0];
     }

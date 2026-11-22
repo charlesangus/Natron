@@ -47,6 +47,7 @@
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuRecord.h"
 #include "Engine/Gpu/GpuRuntime.h"
+#include "Engine/Gpu/GpuSizeClass.h"
 #endif
 
 NATRON_NAMESPACE_USING
@@ -115,7 +116,7 @@ snippets()
           { "P", "n", "t" } },
         { "int a = @ptnum - 500; i@q = a / 7; i@r = a % 7; i@s = a << 3; i@t = a >> 2; int z = @ptnum * 0; i@u = a / z; i@v = a % -3;",
           { "q", "r", "s", "t", "u", "v" } },
-        { "f@m = fmod(@P.y, 1.5); f@r = round(@P.y); f@a = atan2(@P.y, @P.x); f@p = pow(abs(@P.y), 1.5); f@l = log10(abs(@P.x) + 1);",
+        { "f@m = @P.y % 1.5; f@r = round(@P.y); f@a = atan2(@P.y, @P.x); f@p = pow(abs(@P.y), 1.5); f@l = log10(abs(@P.x) + 1);",
           { "m", "r", "a", "p", "l" } },
         { "int i = @ptnum; @Cd[i % 3] = 1; f@a = @P[i % 3] + getcomp(@P, 1);", { "Cd", "a" } },
         { "int count = 0; for (int i = 0; i < 10; ++i) { if (i % 2 == 0) continue; count += i; } i@odd = count + int(@P.y);",
@@ -275,7 +276,12 @@ TEST(GeoWrangleGpuTest, ASmallBufferLimitSplitsTheRunIntoPageChunks)
     const KernelGpuPlan plan = kernelGpuPlan(program, geoKernelGpuTarget());
     ASSERT_TRUE(plan.runsOnGpu()) << plan.cpuOnlyReason;
 
-    gpu::GpuRecordContext::setMaxStorageBufferBytesForTests(std::uint64_t(64) * 1024);
+    const std::uint64_t pageBytes = std::uint64_t(plan.columns.size()) * 4u * kGeoPageSize;
+    std::uint64_t limit = pageBytes;
+    while (gpu::largestSizeWithin(limit) < pageBytes) {
+        limit += pageBytes / 8 + 1;
+    }
+    gpu::GpuRecordContext::setMaxStorageBufferBytesForTests(limit);
     const GeoKernelGpuRunResult gpu = geoKernelRunGpu(program, plan, eGeoAttribClassPoint, std::span<const GeoDetail* const>(inputs),
                                                       options, &runtime->runtime());
     gpu::GpuRecordContext::setMaxStorageBufferBytesForTests(0);

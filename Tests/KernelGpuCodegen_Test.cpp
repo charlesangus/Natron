@@ -88,7 +88,7 @@ const char* const kGpuSnippets[] = {
     "matrix m = ident(); m = transpose(m) * invert(m); f@det = determinant(m);",
     "@P.x = ch(\"amp\") * @P.x + chi(\"count\"); @P += chv(\"offset\"); i@n = npoints(0); f@t = @Time + @Frame + @numpt;",
     "int a = @ptnum - 500; i@q = a / 7; i@r = a % 7; i@s = a << 3; i@t = a >> 2; int z = @ptnum * 0; i@u = a / z;",
-    "f@m = fmod(@P.x, 1.5); f@r = round(@P.y); f@a = atan2(@P.y, @P.x); f@p = pow(@P.x, 1.5); f@l = log10(abs(@P.x) + 1);",
+    "f@m = @P.x % 1.5; f@r = round(@P.y); f@a = atan2(@P.y, @P.x); f@p = pow(@P.x, 1.5); f@l = log10(abs(@P.x) + 1);",
     "int i = @ptnum; @Cd[i % 3] = 1; @a = @P[i % 3] + getcomp(@P, 1);",
 };
 

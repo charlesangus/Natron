@@ -518,7 +518,7 @@ future core work has solid ground to build on.
 | M369 | Curve Slopes Independent Of Edit Order | todo | M304 |  | E14 |  | | [M369-curve-slopes-independent-of-edit-order.md](PLAN/MILESTONES/M369-curve-slopes-independent-of-edit-order.md) |
 | M370 | Roto Point List Render Isolation | done | M304 | bosley-executor | E6 |  | | [M370-roto-point-list-render-isolation.md](PLAN/MILESTONES/M370-roto-point-list-render-isolation.md) |
 | M371 | Cycles Abort Test Thread Count | done | - | bosley-native-nodes | E9 |  | | [M371-cycles-abort-test-thread-count.md](PLAN/MILESTONES/M371-cycles-abort-test-thread-count.md) |
-| M372 | User Knob Engine Edits | doing | - | bosley-executor | E10 | F16 | | [M372-user-knob-engine-edits.md](PLAN/MILESTONES/M372-user-knob-engine-edits.md) |
+| M372 | User Knob Engine Edits | done | - | bosley-executor | E10 | F16 | | [M372-user-knob-engine-edits.md](PLAN/MILESTONES/M372-user-knob-engine-edits.md) |
 | M373 | In-Panel Knob Editor | todo | M372 |  | E10 | F16 | | [M373-in-panel-knob-editor.md](PLAN/MILESTONES/M373-in-panel-knob-editor.md) |
 | M374 | Remove Node Magnify On Ctrl-Scroll | done | - | | E10 |  | | [M374-remove-node-magnify-on-ctrl-scroll.md](PLAN/MILESTONES/M374-remove-node-magnify-on-ctrl-scroll.md) |
 | M375 | No CPU Vulkan Auto-Select | done | - | bosley-native-nodes | E5 |  | | [M375-no-cpu-vulkan-auto-select.md](PLAN/MILESTONES/M375-no-cpu-vulkan-auto-select.md) |

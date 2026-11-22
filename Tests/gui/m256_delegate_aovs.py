@@ -11,8 +11,13 @@ Renderer Cycles) into USDRender, which feeds Viewer1 and a Write. In a 1920x1080
     from Python, since it is a second st;
   - waits for the viewer's layer menu to list the four layers with no reconnection;
   - checks USDRender, USDRenderSettings and the viewer carry no warning that names MoonRay;
-  - shows each of the four layers in the viewer, one screenshot each (m256-<layer>.png, the viewer
-    only), and checks each differs from the others;
+  - picks each of the four layers, and the beauty, in the viewer's Layer menu (found by its tooltip),
+    waits until the viewer's layer knob names it and the image is current and steady, and saves one
+    screenshot each (m256-<layer>.png and m256-beauty.png, the viewer only);
+  - compares the format's area of those shots: each layer differs from the beauty and from every
+    other layer by a mean absolute difference over the lit pixels well above render noise, ao and
+    mist are grey, ao is mostly bright, mist is not flat, and st's red (U) rises from left to right
+    with no blue (W);
   - renders a Write to one EXR and lists its channels with oiiotool: each layer's channels are there.
 A build without Cycles, or without a MoonRay checklist, reports SKIP for what it lacks.
 
@@ -23,13 +28,22 @@ import os
 import re
 import subprocess
 import sys
+import time
 import traceback
 
 sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd()), "Tests", "gui"))
 
 POLL_TIMEOUT_S = 30.0
 RENDER_TIMEOUT_S = 60.0
-SETTLE_MS = 800
+FORMAT_W = 320
+FORMAT_H = 240
+STEADY_S = 0.75
+LAYER_MENU_TOOLTIP = "The layer that the Viewer node will fetch"
+# On-screen 8-bit display values: a pixel is lit when its channels sum above LIT_SUM, and two shots
+# differ when their mean absolute difference over pixels lit in either exceeds MIN_LAYER_DIFF.
+LIT_SUM = 12
+MIN_LAYER_DIFF = 0.03
+MAX_GREY_SPREAD = 0.02
 STARTUP_TIMEOUT_S = 60.0
 CYCLES_ID = "HdCyclesPlugin"
 CYCLES_PASSES = ("diffuse_direct", "ao", "mist")
@@ -81,7 +95,7 @@ try:
                 return True
         return False
 
-    app.addFormat("m256Aovs 320x240")
+    app.addFormat("m256Aovs %dx%d" % (FORMAT_W, FORMAT_H))
     project_format = app.getProjectParam("outputFormat")
     format_options = [str(o) for o in project_format.getOptions()]
     project_format.setValue(next((i for i, o in enumerate(format_options) if "m256Aovs" in o), len(format_options) - 1))
@@ -243,32 +257,113 @@ try:
         return None, None
 
     def layer_combo():
-        """The viewer's layer menu: the visible ComboBox that lists a colour layer."""
+        """The viewer's Layer menu, told from its Alpha Channel menu by its tooltip."""
         for c in widgets_of("ComboBox"):
             try:
-                items = [str(i) for i in (c.property("natronItems") or [])]
-                if c.isVisible() and any("depth" in i.lower() for i in items):
-                    return hold(c), items
+                if c.isVisible() and LAYER_MENU_TOOLTIP in (c.toolTip() or ""):
+                    return hold(c), [str(i) for i in (c.property("natronItems") or [])]
             except RuntimeError:
                 continue
         return None, []
 
+    def layer_index(items, name):
+        return next((i for i, t in enumerate(items) if t.lower() == name.lower()), None)
+
+    def beauty_index(items):
+        return next((i for i, t in enumerate(items) if t.lower() in ("rgba", "rgb", "color.rgba", "color.rgb")), None)
+
     def layer_listed(name):
         _, items = layer_combo()
-        return any(i.lower().startswith(name.lower()) for i in items)
+        return layer_index(items, name) is not None
+
+    def viewer_layer():
+        p = viewer.getParam("layer")
+        return str(p.getLayer()) if p is not None and hasattr(p, "getLayer") else None
+
+    def viewer_gl():
+        views = [w for w in widgets_of("ViewerGL") if w.isVisible()]
+        return hold(views[0]) if views else None
 
     def viewer_crop():
-        views = [w for w in widgets_of("ViewerGL") if w.isVisible()]
-        if not views:
+        v = viewer_gl()
+        if v is None:
             return None
-        v = hold(views[0])
         QApplication.processEvents()
         origin = v.mapToGlobal(v.rect().topLeft())
         return QGuiApplication.primaryScreen().grabWindow(0).toImage().copy(origin.x(), origin.y(), v.width(), v.height())
 
-    def image_signature(image):
-        step = 8
-        return tuple(image.pixel(x, y) for y in range(0, image.height(), step) for x in range(0, image.width(), step))
+    def format_crop():
+        """The project format's area of the viewer, from the screen, 3 px inside its frame."""
+        v = viewer_gl()
+        mapping = v.property("natronCanonicalToWidget") if v is not None else None
+        if not mapping or len(mapping) != 4:
+            return None
+        ox, oy, sx, sy = [float(m) for m in mapping]
+        xs = sorted((ox, ox + FORMAT_W * sx))
+        ys = sorted((oy, oy + FORMAT_H * sy))
+        x0, y0 = int(round(xs[0])) + 3, int(round(ys[0])) + 3
+        w, h = int(round(xs[1])) - 3 - x0, int(round(ys[1])) - 3 - y0
+        if w < 16 or h < 16:
+            return None
+        QApplication.processEvents()
+        origin = v.mapToGlobal(v.rect().topLeft())
+        return QGuiApplication.primaryScreen().grabWindow(0).toImage().copy(origin.x() + x0, origin.y() + y0, w, h)
+
+    def pixels(image, step=2):
+        """(x fraction, r, g, b) of every step-th pixel, rows top to bottom."""
+        out = []
+        width = max(1, image.width() - 1)
+        for y in range(0, image.height(), step):
+            for x in range(0, image.width(), step):
+                p = image.pixel(x, y)
+                out.append((x / float(width), (p >> 16) & 255, (p >> 8) & 255, p & 255))
+        return out
+
+    def lit(px):
+        return px[1] + px[2] + px[3] > LIT_SUM
+
+    def mean_difference(a, b):
+        """Mean absolute channel difference, 0..1, over the pixels lit in either; None if sizes differ."""
+        if len(a) != len(b):
+            return None
+        total, count = 0, 0
+        for pa, pb in zip(a, b):
+            if lit(pa) or lit(pb):
+                total += abs(pa[1] - pb[1]) + abs(pa[2] - pb[2]) + abs(pa[3] - pb[3])
+                count += 3
+        return total / (255.0 * count) if count else 0.0
+
+    def grey_spread(px):
+        """Mean of max - min channel over the lit pixels, 0..1."""
+        shown = [p for p in px if lit(p)]
+        if not shown:
+            return None
+        return sum(max(p[1:]) - min(p[1:]) for p in shown) / (255.0 * len(shown))
+
+    def steady_viewer(name):
+        """A predicate true once the viewer's layer knob is name, its image is current, and the
+        format's area has not changed for STEADY_S."""
+        seen = []
+        since = [0.0]
+
+        def settled():
+            if viewer_layer() != name:
+                return False
+            v = viewer_gl()
+            if v is None or bool(v.property("natronViewerStale")):
+                del seen[:]
+                return False
+            image = format_crop()
+            if image is None:
+                return False
+            signature = tuple(image.pixel(x, y) for y in range(0, image.height(), 4) for x in range(0, image.width(), 4))
+            if not seen or seen[-1] != signature:
+                del seen[:]
+                seen.append(signature)
+                since[0] = time.time()
+            return time.time() - since[0] >= STEADY_S
+
+        return settled
 
     def mentions_moonray(text):
         return "moonray" in (text or "").lower()
@@ -357,28 +452,58 @@ try:
         report("NOTE viewer messages: %r" % messages)
         check(not any(mentions_moonray(m) for m in messages), "the viewer shows no warning naming MoonRay")
 
-        signatures = {}
-        for n in wanted:
+        shown = {}
+        for n in ["beauty"] + wanted:
             combo, items = layer_combo()
-            index = next((i for i, t in enumerate(items) if t.lower().startswith(n.lower())), None)
+            index = beauty_index(items) if n == "beauty" else layer_index(items, n)
             if combo is None or index is None:
-                check(False, "the layer menu has %s to show" % n)
+                check(False, "the viewer's Layer menu has %s to show (%r)" % (n, items))
                 continue
+            target = items[index]
             QMetaObject.invokeMethod(combo, "setCurrentIndex", Q_ARG(int, index))
             QApplication.processEvents()
-            yield ("sleep", SETTLE_MS)
+            ok = yield ("until", steady_viewer(target), RENDER_TIMEOUT_S)
+            check(ok, "picking %s in the Layer menu sets the viewer's layer knob and the viewer settles on it "
+                      "(knob %r, stale %r)" % (target, viewer_layer(), viewer_gl() and viewer_gl().property("natronViewerStale")))
             image = viewer_crop()
-            if image is None:
-                check(False, "the viewer is on screen for %s" % n)
+            area = format_crop()
+            if image is None or area is None:
+                check(False, "the viewer and its format area are on screen for %s" % n)
                 continue
             path = os.path.join(OUT, "m256-%s.png" % n)
             image.save(path)
             report("SHOT " + path)
-            signatures[n] = image_signature(image)
-        names = list(signatures)
+            shown[n] = pixels(area)
+        names = list(shown)
         for i, a in enumerate(names):
             for b in names[i + 1:]:
-                check(signatures[a] != signatures[b], "the viewer shows %s and %s differently" % (a, b))
+                d = mean_difference(shown[a], shown[b])
+                check(d is not None and d > MIN_LAYER_DIFF,
+                      "the viewer shows %s and %s differently (mean difference %s over lit pixels, wanted > %.2f)"
+                      % (a, b, "n/a" if d is None else "%.3f" % d, MIN_LAYER_DIFF))
+        for n in ("ao", "mist"):
+            if n in shown:
+                spread = grey_spread(shown[n])
+                check(spread is not None and spread < MAX_GREY_SPREAD,
+                      "the viewer shows %s grey (mean channel spread %r, wanted < %.2f)" % (n, spread, MAX_GREY_SPREAD))
+        if "ao" in shown:
+            lit_px = [p for p in shown["ao"] if lit(p)]
+            bright = sum(1 for p in lit_px if min(p[1:]) > 0.7 * 255) / float(len(lit_px)) if lit_px else 0.0
+            check(bright > 0.5, "most of ao's lit pixels are bright, the sphere being unoccluded (%.2f of them)" % bright)
+        if "mist" in shown:
+            values = [p[1] for p in shown["mist"]]
+            span = (max(values) - min(values)) / 255.0 if values else 0.0
+            check(span > 0.2, "mist is not flat: its values span %.2f of the range" % span)
+        if PRIMVAR_LAYER in shown:
+            lit_px = [p for p in shown[PRIMVAR_LAYER] if lit(p)]
+            left = [p[1] for p in lit_px if p[0] < 1.0 / 3.0]
+            right = [p[1] for p in lit_px if p[0] > 2.0 / 3.0]
+            left_mean = sum(left) / (255.0 * len(left)) if left else None
+            right_mean = sum(right) / (255.0 * len(right)) if right else None
+            check(left_mean is not None and right_mean is not None and right_mean > left_mean + 0.08,
+                  "st's red (U) rises from left to right (left third %r, right third %r)" % (left_mean, right_mean))
+            blue = sum(p[3] for p in lit_px) / (255.0 * len(lit_px)) if lit_px else None
+            check(blue is not None and blue < 0.02, "st shows no blue, W being zero (mean %r)" % blue)
 
         report("NOTE Write params %s" % [str(p.getScriptName()) for p in write.getParams()])
         app.renderBlocking(write, 1, 1)

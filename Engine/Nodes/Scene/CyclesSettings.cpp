@@ -105,7 +105,7 @@ make()
 
     c.tooltip = "The settings Cycles declares.";
     c.groups.push_back(groupSpec("sampling", "", true, "How long the render runs and how clean it gets. More samples mean less noise and more time."));
-    c.groups.push_back(groupSpec("denoise", "", true, "Removes leftover noise after sampling, so fewer samples are needed, at some risk to fine detail."));
+    c.groups.push_back(groupSpec("denoise", "", false, "Removes leftover noise after sampling, so fewer samples are needed, at some risk to fine detail."));
     c.groups.push_back(groupSpec("lightPaths", "", true, "How far light travels through the scene, and shortcuts that trade accuracy for less noise or time."));
     c.groups.push_back(groupSpec("bounces", "lightPaths", false, "How many times light may bounce. More bounces give fuller, brighter light and take longer."));
     c.groups.push_back(groupSpec("clamping", "lightPaths", false, "Limits very bright samples to remove fireflies, at the cost of some light energy."));

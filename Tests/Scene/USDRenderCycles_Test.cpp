@@ -1284,6 +1284,10 @@ TEST_F(USDRenderCyclesTest, MenusStartOnTheDeclaredDefault)
         { "cycles:film:filter_type", { 0, 1, 2 } },
     };
 
+    const std::map<std::string, std::vector<std::string>> tokenMenus = {
+        { "natron:adaptiveSpace", { "pixel", "object" } },
+    };
+
     for (const RenderSettingsKnobs::CuratedSetting& c : CyclesSettings::curated().settings) {
         ASSERT_EQ(1u, declared.count(c.key)) << c.key;
         const PXR_NS::VtValue& declaredDefault = declared[c.key];
@@ -1305,6 +1309,16 @@ TEST_F(USDRenderCyclesTest, MenusStartOnTheDeclaredDefault)
         EXPECT_EQ(index, choice->getValue()) << c.key;
         const PXR_NS::VtValue& entry = c.choices[index].value;
         EXPECT_EQ(declaredDefault, entry.IsEmpty() ? declaredDefault : entry) << c.key;
+        const std::map<std::string, std::vector<std::string>>::const_iterator tokens = tokenMenus.find(c.key);
+        if (tokens != tokenMenus.end()) {
+            std::vector<std::string> sent;
+            for (const RenderSettingsKnobs::Choice& e : c.choices) {
+                EXPECT_FALSE(e.label.empty()) << c.key;
+                sent.push_back(e.value.Get<PXR_NS::TfToken>().GetString());
+            }
+            EXPECT_EQ(tokens->second, sent) << c.key;
+            continue;
+        }
         const std::map<std::string, std::vector<int>>::const_iterator values = menus.find(c.key);
         if (values == menus.end()) {
             EXPECT_FALSE(c.disabledReason.empty()) << c.key << " is a menu the test does not list";

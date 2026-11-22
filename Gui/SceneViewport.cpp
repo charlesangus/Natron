@@ -1050,6 +1050,12 @@ struct SceneViewportRenderer::Implementation {
     std::mutex engineSelectionMutex;
     std::vector<std::string> engineSelection;
     std::atomic<bool> engineSelectionDirty { false };
+    // A selection change leaves the view and the stage as they were, so these counts are what
+    // asks for the frame that tints it: posted by the main thread, applied with engineSelection,
+    // absorbed by the render that drew the selection pass.
+    std::atomic<U64> selectionPosted { 0 };
+    std::atomic<U64> selectionApplied { 0 };
+    std::atomic<U64> selectionAbsorbed { 0 };
     // The renderer chosen, a delegate's id or kRenderDelegateSceneDefaultId; the delegate the
     // next engine is made with, the chosen one or the one the stage's render settings prim names;
     // and why it could not be, if it could not.
@@ -1786,6 +1792,7 @@ struct SceneViewportRenderer::Implementation {
         selectedPaths.clear();
         {
             std::lock_guard<std::mutex> lock(engineSelectionMutex);
+            selectionApplied = selectionPosted.load();
             for (const std::string& path : engineSelection) {
                 if (SdfPath::IsValidPathString(path)) {
                     selectedPaths.push_back(SdfPath(path));
@@ -2013,6 +2020,7 @@ struct SceneViewportRenderer::Implementation {
         }
         absorbedParamsKey = paramsKey(params);
         drawAbsorbed = drawApplied.load();
+        selectionAbsorbed = selectionApplied.load();
         if (!stageNoticesRegistered && sceneStage && sceneStage->getStage()) {
             stageNoticesRegistered = true;
             TfNotice::Register(TfCreateWeakPtr(&stageNotices), &StageNoticeCounter::onObjectsChanged, UsdStageWeakPtr(sceneStage->getStage()));
@@ -3860,7 +3868,7 @@ SceneViewportRenderer::needsBackgroundFrame() const
 
     return !_imp->engineHeld || (_imp->absorbedEditCount != _imp->stageEditCount) || (_imp->absorbedLoadEditCount != _imp->stageLoadEditCount)
         || (_imp->absorbedParamsKey != Implementation::paramsKey(_imp->currentRenderParams()))
-        || (_imp->drawAbsorbed != _imp->drawPosted) || ((_imp->drawRevealing || _imp->drawFilling) && _imp->drawRevealStepDue && !_imp->yieldsToCamera()) || _imp->texturesOwed;
+        || (_imp->drawAbsorbed != _imp->drawPosted) || (_imp->selectionAbsorbed != _imp->selectionPosted) || ((_imp->drawRevealing || _imp->drawFilling) && _imp->drawRevealStepDue && !_imp->yieldsToCamera()) || _imp->texturesOwed;
 }
 
 void
@@ -5065,6 +5073,7 @@ SceneViewportRenderer::setSelectedPrims(const std::vector<std::string>& paths)
     _imp->fillColoursValid = false;
     std::lock_guard<std::mutex> lock(_imp->engineSelectionMutex);
     _imp->engineSelection = paths;
+    ++_imp->selectionPosted;
     _imp->engineSelectionDirty = true;
 }
 

@@ -578,6 +578,13 @@ future core work has solid ground to build on.
 | M511 | Viewer Toolbar Fits 1920x1080 | todo | - |  | E10 |  | | [M511-viewer-toolbar-fits-1920x1080.md](PLAN/MILESTONES/M511-viewer-toolbar-fits-1920x1080.md) |
 | M512 | Python importTemplate Binding | todo | M103 |  | E12 | F33 | | [M512-python-importtemplate-binding.md](PLAN/MILESTONES/M512-python-importtemplate-binding.md) |
 | M513 | MoonRay OIDN Denoiser | todo | - |  | E9 |  | | [M513-moonray-oidn-denoiser.md](PLAN/MILESTONES/M513-moonray-oidn-denoiser.md) |
+| M497 | Lens Schema And Camera Authoring | todo | M132 |  | E9 | F34 | | [M497-lens-schema-and-camera-authoring.md](PLAN/MILESTONES/M497-lens-schema-and-camera-authoring.md) |
+| M498 | LensDistortion From Scene | todo | M497 |  | E9 | F34 | | [M498-lensdistortion-from-scene.md](PLAN/MILESTONES/M498-lensdistortion-from-scene.md) |
+| M499 | Scene Lens In Projection Nodes | todo | M497, M437 |  | E9 | F34 | | [M499-scene-lens-in-projection-nodes.md](PLAN/MILESTONES/M499-scene-lens-in-projection-nodes.md) |
+| M500 | USDProject3D Lens Maps | todo | M497 |  | E9 | F34 | | [M500-usdproject3d-lens-maps.md](PLAN/MILESTONES/M500-usdproject3d-lens-maps.md) |
+| M501 | Lens Maps In The Scene | todo | M497, M499, M500, M433 |  | E9 | F34 | | [M501-lens-maps-in-the-scene.md](PLAN/MILESTONES/M501-lens-maps-in-the-scene.md) |
+| M514 | Utility Raster Mode | todo | M283, M472 |  | E19 |  | | [M514-utility-raster-mode.md](PLAN/MILESTONES/M514-utility-raster-mode.md) |
+| M515 | Storm Oversample And Motion Blur | todo | - |  | E9 |  | | [M515-storm-oversample-and-motion-blur.md](PLAN/MILESTONES/M515-storm-oversample-and-motion-blur.md) |
 
 # Epics
 
@@ -647,6 +654,7 @@ future core work has solid ground to build on.
 | F31 | Lens Flares | open | bosley-executor |  | feature/f31-lens-flares | A physically based, ray-traced LensFlare node with ghosts, starburst, layers and USD lights on CPU and GPU, with lens browser previews. Waits for F30 - Lens Optics Base to land. |
 | F32 | Channel Networks | open |  |  | feature/f32-channel-networks | CHOP-style channel networks that drive knobs and shapes, with operators, Channel VOP, every source and channel-based animation layers. |
 | F33 | Graph Diff And Merge | open | bosley-executor |  | feature/f33-graph-diff-and-merge | Diff and merge two versions of a graph, with a resolution UI, accepted in one UAT. |
+| F34 | Scene Lens Distortion | open |  |  | feature/f34-scene-lens-distortion | Camera lens distortion carried in the USD scene, authored on cameras and used by LensDistortion and the projection nodes. |
 
 # Open questions
 - **M350/M351 re-plan, for /cat-plan (PM, 2026-11-22, from M349 - Shader Node Spike):** the user chose ports as the single connection model (ConnectorLayout per NodeGui; RadialLayout for classic nodes refactored first with pixel-identical goldens; PortListLayout for port nodes) and a port-node look (type colours, shapes incl. diamonds for varying, groups, folding defaults, no inline widgets). M350 - Shader Manifest And Nodes must carry port type/page/promoted in the runtime spec; M351 - Shader Graph Presentation needs the two-step layout refactor; groups/folding/search-to-connect need a later milestone. Details in M349's Decisions.
@@ -658,10 +666,9 @@ future core work has solid ground to build on.
   3. Motion blur: shouldn't need many samples to avoid steppy blur. Any enabled motion blur interpolates between temporal samples by shutter segments; the default is 1 segment (previous frame → this one → next), with rays distributed in time.
   4. Crashed on an AMD card rendering Island.
   5. Island failed on the AMD GPU host: more instances than the 2^24 a ray query can tell apart.
-  6. Consider a GPU shader or rasteriser renderer for maximum speed in simple setups (mostly projections with motion blur); to discuss, probably a follow-up.
+  6. Consider a GPU shader or rasteriser renderer for maximum speed in simple setups (mostly projections with motion blur); to discuss, probably a follow-up. Filed as M514 - Utility Raster Mode and M515 - Storm Oversample And Motion Blur (cat-plan, 2026-11-22).
 
   Fixes for 1–5 are being investigated on the F7 branch. **PM, 2026-11-21:** PR #316 is green on 8bc8553a3 after fixing an llvmpipe one-past-the-end structure-table read in the GPU tracer (a zero sentinel entry), two wrong test expectations and a GPU tolerance; main merged in 8de8d85c7. On the branch since the round-1 AppImage: USDPreviewSurface specular/clearcoat/opacity/IOR inputs (1) and shutter-segment motion blur (3). Item 5 was the round-1 AppImage's own check; a53d277e6 already splits instances across top-level structures. f09a5d634 hardens the GPU path (allocation-limit and VRAM-budget checks, Unsupported falls back to CPU under Auto, slow tracer submissions shrink); the production WavefrontGpu batch sizes are still fixed, pending AMD logs. **Round-2 AppImage** `build/appimages/Natron-f7-natron-utility-core.AppImage` (release, f09a5d634, PR #316 green) with its .md "Round 2" section; Needs uat.
-- **M438 - Lens Distortion In The USD Scene follow-ups, for /cat-plan (PM, 2026-11-20):** the user chose both encodings in a lens prim. File the follow-up milestones A–G from PLAN/DESIGN/2026-11-14-usd-lens-distortion-design.md; M438 is done once they are filed.
 - **F29 - UI Polish Batch (PM, 2026-11-20):** Feature review round 1 is fixed (f75950a65), and the m421 script's graph lookup is made robust (1c60da022). The gate is green (release, ctest, 8 GUI scripts). The round-2 UAT AppImage is `build/appimages/Natron-f29-ui-polish-batch.AppImage`, with its .md (see "Round 2+").
 
 - **M472 - GPU Raster Pipelines post-merge check (PM, 2026-11-20, merged c97bbfcb6 / #318):** record the raster-capable record context's capability report on RADV and NVIDIA on the GPU host (only llvmpipe has run it).

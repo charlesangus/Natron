@@ -5567,6 +5567,19 @@ EffectInstance::getTransform_public(double time,
     return getTransform(time, renderScale, draftRender, view, inputToTransform, transform);
 }
 
+StatusEnum
+EffectInstance::getOverlayTransform_public(double time,
+                                           const RenderScale& renderScale,
+                                           bool draftRender,
+                                           ViewIdx view,
+                                           EffectInstancePtr* inputToTransform,
+                                           Transform::Matrix3x3* transform)
+{
+    RECURSIVE_ACTION();
+
+    return getOverlayTransform(time, renderScale, draftRender, view, inputToTransform, transform);
+}
+
 bool
 EffectInstance::isIdentity_public(bool useIdentityCache, // only set to true when calling for the whole image (not for a subrect)
                                   U64 hash,

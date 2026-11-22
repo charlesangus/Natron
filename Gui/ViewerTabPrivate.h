@@ -43,6 +43,7 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Knob.h"
+#include "Engine/OverlayPath.h"
 #include "Engine/UndoGesture.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
@@ -51,8 +52,6 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/GuiFwd.h"
 #include "Gui/NodeViewerContext.h"
 #include "Gui/ViewerStaleCueTiming.h"
-
-#define NATRON_TRANSFORM_AFFECTS_OVERLAYS
 
 NATRON_NAMESPACE_ENTER
 
@@ -133,6 +132,7 @@ struct ViewerTabPrivate
     ProjectColorManagementPtr colorManagement;
     int configChangedCallbackId;
     Button* checkerboardButton;
+    Button* mapSiblingOverlaysButton;
     Button* pickerButton;
     ComboBox* viewsComboBox;
     /*Info*/
@@ -217,6 +217,13 @@ struct ViewerTabPrivate
     bool hasPenDown;
     bool hasCaughtPenMotionWhileDragging;
 
+    // The overlay that took the last pen-down and where it was then: it gets the pen-up even if
+    // the drag hid it.
+    NodeWPtr penDownOverlay;
+    OverlayPathResult penDownPlacement;
+
+    mutable OverlayPathCache overlayPathCache;
+
     ViewerTabPrivate(ViewerTab* publicInterface,
                      ViewerInstance* node);
 
@@ -250,21 +257,10 @@ struct ViewerTabPrivate
         }
     }
 
-#ifdef NATRON_TRANSFORM_AFFECTS_OVERLAYS
-    // return the tronsform to apply to the overlay as a 3x3 homography in canonical coordinates
-    bool getOverlayTransform(double time,
-                             ViewIdx view,
-                             const NodePtr& target,
-                             EffectInstance* currentNode,
-                             Transform::Matrix3x3* transform) const;
-
-    bool getTimeTransform(double time,
-                          ViewIdx view,
-                          const NodePtr& target,
-                          EffectInstance* currentNode,
-                          double *newTime) const;
-
-#endif
+    // Where node's overlay goes in this viewer at the viewer's time.
+    OverlayPathResult resolveOverlay(double time,
+                                     ViewIdx view,
+                                     const NodePtr& node) const;
 
     void getComponentsAvailabel(double time, ViewIdx view, std::set<ImageLayerDesc>* comps) const;
 

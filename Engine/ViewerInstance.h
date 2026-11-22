@@ -82,6 +82,7 @@
 #define kViewerParamDownscaleLevel "downscaleLevel"
 #define kViewerParamMaxSamples "maxSamples"
 #define kViewerParamRefinementPaused "refinementPaused"
+#define kViewerParamMapSiblingOverlays "mapSiblingOverlays"
 
 NATRON_NAMESPACE_ENTER
 

@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <utility>
 #include <vector>
 
 CLANG_DIAG_OFF(deprecated)
@@ -59,6 +60,9 @@ public:
     static StandardButtonEnum fromQtStandardButton(QMessageBox::StandardButton b);
     static QMessageBox::StandardButton toQtStandardButton(StandardButtonEnum b);
     static QMessageBox::StandardButtons toQtStandarButtons(StandardButtons buttons);
+
+    // Labels each button with a one-letter mnemonic, no two buttons sharing a letter.
+    static void setStandardButtonMnemonics(const std::vector<std::pair<StandardButtonEnum, QAbstractButton*>>& buttons);
     static bool toQtCursor(CursorEnum c, Qt::CursorShape* ret);
 };
 

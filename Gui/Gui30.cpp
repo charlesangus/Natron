@@ -410,6 +410,12 @@ Gui::onDoDialog(int type,
         setQMessageBoxAppropriateFont(&ques);
         setQMessageBoxThemedIcon(&ques);
         ques.setDefaultButton(QtEnumConvert::toQtStandardButton((StandardButtonEnum)defaultB));
+        // QMessageBox::keyPressEvent clicks the button whose mnemonic matches a plain letter press.
+        std::vector<std::pair<StandardButtonEnum, QAbstractButton*>> quesButtons;
+        for (QAbstractButton* b : ques.buttons()) {
+            quesButtons.push_back(std::make_pair(QtEnumConvert::fromQtStandardButton(ques.standardButton(b)), b));
+        }
+        QtEnumConvert::setStandardButtonMnemonics(quesButtons);
         ques.setWindowFlags(ques.windowFlags() | Qt::WindowStaysOnTopHint);
         ignore_result(ques.exec());
         // A box closed without a click, such as one a termination signal dismissed, answers Escape rather than
@@ -526,10 +532,10 @@ Gui::onDoDialogWithStopAskingCheckbox(int type,
 
     dialog.setCheckBox(stopAskingCheckbox);
     dialog.setWindowFlags(dialog.windowFlags() | Qt::WindowStaysOnTopHint);
-    if ( dialog.exec() ) {
-        _imp->_lastQuestionDialogAnswer = dialog.getReply();
-        _imp->_lastStopAskingAnswer = stopAskingCheckbox->isChecked();
-    }
+    // Escape rejects the box, which then answers Escape rather than keeping the previous question's answer.
+    ignore_result(dialog.exec());
+    _imp->_lastQuestionDialogAnswer = dialog.getReply();
+    _imp->_lastStopAskingAnswer = stopAskingCheckbox->isChecked();
 
     {
         QMutexLocker locker(&_imp->_uiUsingMainThreadMutex);

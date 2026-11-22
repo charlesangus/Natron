@@ -25,7 +25,10 @@
 
 #include "QtEnumConvert.h"
 
+#include <QAbstractButton>
+#include <QCoreApplication>
 #include <QDebug>
+#include <algorithm>
 #include <stdexcept>
 
 NATRON_NAMESPACE_ENTER
@@ -1925,6 +1928,110 @@ QtEnumConvert::toQtCursor(CursorEnum c,
 
     return b;
 } // toQtCursor
+
+namespace {
+
+QString
+standardButtonLabel(StandardButtonEnum b)
+{
+    switch (b) {
+    case eStandardButtonOk:
+        return QCoreApplication::translate("StandardButton", "&OK");
+    case eStandardButtonSave:
+        return QCoreApplication::translate("StandardButton", "&Save");
+    case eStandardButtonSaveAll:
+        return QCoreApplication::translate("StandardButton", "Save &All");
+    case eStandardButtonOpen:
+        return QCoreApplication::translate("StandardButton", "&Open");
+    case eStandardButtonYes:
+        return QCoreApplication::translate("StandardButton", "&Yes");
+    case eStandardButtonYesToAll:
+        return QCoreApplication::translate("StandardButton", "Yes to &All");
+    case eStandardButtonNo:
+        return QCoreApplication::translate("StandardButton", "&No");
+    case eStandardButtonNoToAll:
+        return QCoreApplication::translate("StandardButton", "N&o to All");
+    case eStandardButtonAbort:
+        return QCoreApplication::translate("StandardButton", "&Abort");
+    case eStandardButtonRetry:
+        return QCoreApplication::translate("StandardButton", "&Retry");
+    case eStandardButtonIgnore:
+        return QCoreApplication::translate("StandardButton", "&Ignore");
+    case eStandardButtonClose:
+        return QCoreApplication::translate("StandardButton", "&Close");
+    case eStandardButtonCancel:
+        return QCoreApplication::translate("StandardButton", "&Cancel");
+    case eStandardButtonDiscard:
+        return QCoreApplication::translate("StandardButton", "&Discard");
+    case eStandardButtonHelp:
+        return QCoreApplication::translate("StandardButton", "&Help");
+    case eStandardButtonApply:
+        return QCoreApplication::translate("StandardButton", "&Apply");
+    case eStandardButtonReset:
+        return QCoreApplication::translate("StandardButton", "&Reset");
+    case eStandardButtonRestoreDefaults:
+        return QCoreApplication::translate("StandardButton", "Restore &Defaults");
+    case eStandardButtonNoButton:
+    case eStandardButtonEscape:
+        break;
+    }
+
+    return QString();
+}
+
+} // anon namespace
+
+void
+QtEnumConvert::setStandardButtonMnemonics(const std::vector<std::pair<StandardButtonEnum, QAbstractButton*>>& buttons)
+{
+    // The answers people reach for first claim their letters before any button that could clash with them.
+    static const StandardButtonEnum priority[] = {
+        eStandardButtonSave,
+        eStandardButtonDiscard,
+        eStandardButtonCancel,
+        eStandardButtonYes,
+        eStandardButtonNo,
+        eStandardButtonOk,
+        eStandardButtonYesToAll,
+        eStandardButtonNoToAll,
+        eStandardButtonSaveAll,
+        eStandardButtonOpen,
+        eStandardButtonAbort,
+        eStandardButtonRetry,
+        eStandardButtonIgnore,
+        eStandardButtonClose,
+        eStandardButtonHelp,
+        eStandardButtonApply,
+        eStandardButtonReset,
+        eStandardButtonRestoreDefaults,
+    };
+    QString used;
+
+    for (StandardButtonEnum which : priority) {
+        for (const std::pair<StandardButtonEnum, QAbstractButton*>& b : buttons) {
+            if ((b.first != which) || !b.second) {
+                continue;
+            }
+            QString label = standardButtonLabel(which);
+            const int amp = std::max(0, (int)label.indexOf(QLatin1Char('&')));
+            label.remove(QLatin1Char('&'));
+            int pick = -1;
+            for (int i = 0; i < label.size(); ++i) {
+                const int at = (amp + i) % label.size();
+                const QChar c = label[at].toLower();
+                if (c.isLetter() && !used.contains(c)) {
+                    pick = at;
+                    break;
+                }
+            }
+            if (pick >= 0) {
+                used.append(label[pick].toLower());
+                label.insert(pick, QLatin1Char('&'));
+            }
+            b.second->setText(label);
+        }
+    }
+}
 
 NATRON_NAMESPACE_EXIT
 

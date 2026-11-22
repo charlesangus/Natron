@@ -344,6 +344,20 @@ jobs:
           NATRON_STAGE_SYMBOLS_DIR: ${{ inputs.debug_symbols && '/tmp/natron-symbols' || '' }}
         run: tools/release/stage-bundle.sh "build/$PRESET" /tmp/natron-stage
 
+      - name: Stage manifest
+        id: stage_manifest
+        if: inputs.appimage && inputs.preset != 'debug' && !cancelled() && steps.build.outcome == 'success'
+        run: tools/release/stage-manifest.sh /tmp/natron-stage /tmp/stage-manifest.txt
+
+      - name: Upload stage manifest
+        if: steps.stage_manifest.outcome == 'success'
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: stage-manifest-${{ env.PRESET }}-${{ github.sha }}
+          path: /tmp/stage-manifest.txt
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Create AppImage
         if: inputs.appimage && inputs.preset != 'debug' && !cancelled() && steps.build.outcome == 'success'
         run: tools/release/make-appimage.sh /tmp/natron-stage /tmp/artifacts

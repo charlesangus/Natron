@@ -7,6 +7,21 @@ EXCLUDELIST="$SCRIPT_DIR/excludelist.txt"
 CHECK_RELOCATABLE="$SCRIPT_DIR/check-relocatable.sh"
 CHECK_STARTUP="$SCRIPT_DIR/check-startup.sh"
 
+SECTION_NAME=""
+SECTION_START=$SECONDS
+section_end() {
+    if [[ -n "$SECTION_NAME" ]]; then
+        echo "==> $SECTION_NAME done in $((SECONDS - SECTION_START))s"
+    fi
+    SECTION_NAME=""
+}
+section() {
+    section_end
+    SECTION_NAME="$1"
+    SECTION_START=$SECONDS
+    echo "==> $1"
+}
+
 if [[ $# -ne 2 ]]; then
     echo "Usage: stage-bundle.sh <build-dir> <staging-dir>" >&2
     exit 1
@@ -256,7 +271,7 @@ stage_library() {
     stage_elf "$STAGE_DIR/lib/$name"
 }
 
-echo "==> Installing from CMake build to $STAGE_DIR"
+section "Installing from CMake build to $STAGE_DIR"
 cmake --install "$BUILD_DIR" --prefix "$STAGE_DIR"
 
 mkdir -p "$STAGE_DIR/lib"
@@ -272,7 +287,7 @@ if [[ -z "$QT_PLUGIN_DIR" || ! -d "$QT_PLUGIN_DIR" ]]; then
     exit 1
 fi
 
-echo "==> Copying Qt6 plugins from $QT_PLUGIN_DIR"
+section "Copying Qt6 plugins from $QT_PLUGIN_DIR"
 
 # tls/ holds Qt's TLS backends. Without them every HTTPS request, model
 # downloads included, fails with "TLS initialization failed".
@@ -298,7 +313,7 @@ if [[ ! -f "$STAGE_DIR/plugins/tls/libqopensslbackend.so" ]]; then
     exit 1
 fi
 
-echo "==> Writing qt.conf"
+section "Writing qt.conf"
 cat > "$STAGE_DIR/bin/qt.conf" <<'QTCONF'
 [Paths]
 Prefix = ..
@@ -332,7 +347,7 @@ fi
 # bundle instead of dying on "No module named 'encodings'".
 PY_DEST="$STAGE_DIR/lib/python$PY_TAG"
 
-echo "==> Staging the Python $PY_TAG standard library from $PY_STDLIB"
+section "Staging the Python $PY_TAG standard library from $PY_STDLIB"
 
 # config-* is the static libpython and Makefile fragments used to *build*
 # extension modules, which a bundle never does and which alone outweighs
@@ -361,7 +376,7 @@ mkdir -p "$PY_DEST/site-packages"
 # ships neither Qt Quick nor Qt Multimedia nor Qt WebEngine.
 PYSIDE_SRC="$PY_SITELIB/PySide6"
 if [[ -d "$PYSIDE_SRC" ]]; then
-    echo "==> Staging PySide6 (QtCore, QtGui, QtWidgets) and shiboken6"
+    section "Staging PySide6 (QtCore, QtGui, QtWidgets) and shiboken6"
     mkdir -p "$PY_DEST/site-packages/PySide6"
     for pyside_item in __init__.py _config.py _git_pyside_version.py support \
                        QtCore.abi3.so QtGui.abi3.so QtWidgets.abi3.so; do
@@ -396,7 +411,7 @@ for usd_dir in "$USD_PREFIX/lib/usd" "$USD_PREFIX/plugin/usd" "$PY_SITELIB/pxr";
     fi
 done
 
-echo "==> Staging OpenUSD from $USD_PREFIX"
+section "Staging OpenUSD from $USD_PREFIX"
 for usd_lib in "$USD_PREFIX"/lib/libusd_*.so; do
     stage_library "$usd_lib" "$(basename "$usd_lib")"
 done
@@ -456,7 +471,7 @@ while IFS= read -r staged_py_binary; do
     fi
 done < <(find "$PY_DEST" -type f -name "*.so" 2>/dev/null)
 
-echo "==> Staging bundle-relative resources"
+section "Staging bundle-relative resources"
 
 # AppManager::loadInternal() points FONTCONFIG_PATH at <bin>/../Resources/etc/
 # fonts. The template is stored with its quotes backslash-escaped, which is not
@@ -498,7 +513,7 @@ OFX_ASSETS="$ASSETS_DIR/Plugins"
 mkdir -p "$STAGE_DIR/Plugins/OFX/Natron"
 
 if compgen -G "$OFX_ASSETS/*.ofx.bundle" > /dev/null; then
-    echo "==> Staging OFX plugins from $OFX_ASSETS"
+    section "Staging OFX plugins from $OFX_ASSETS"
     for ofx_bundle in "$OFX_ASSETS"/*.ofx.bundle; do
         echo "  $(basename "$ofx_bundle")"
         copy_tree "$ofx_bundle" "$STAGE_DIR/Plugins/OFX/Natron/$(basename "$ofx_bundle")"
@@ -521,7 +536,7 @@ if ! compgen -G "$ORT_ASSETS/lib/libonnxruntime.so.*.*" > /dev/null; then
     echo "error: Run tools/ci/local/fetch-assets.sh and stage again." >&2
     exit 1
 fi
-echo "==> Staging ONNX Runtime from $ORT_ASSETS"
+section "Staging ONNX Runtime from $ORT_ASSETS"
 mkdir -p "$STAGE_DIR/lib/onnxruntime"
 cp -a "$ORT_ASSETS"/lib/libonnxruntime.so* "$STAGE_DIR/lib/onnxruntime/"
 cp "$ORT_ASSETS/LICENSE" "$ORT_ASSETS/ThirdPartyNotices.txt" "$STAGE_DIR/lib/onnxruntime/"
@@ -532,7 +547,7 @@ cp "$ORT_ASSETS/LICENSE" "$ORT_ASSETS/ThirdPartyNotices.txt" "$STAGE_DIR/lib/onn
 # The debug delegate, headers, CMake files and the other command-line tools stay out.
 MOONRAY_PREFIX="$(cache_value 'NATRON_MOONRAY_PREFIX:PATH')"
 if [[ -n "$MOONRAY_PREFIX" && -f "$MOONRAY_PREFIX/plugin/pxr/plugInfo.json" ]]; then
-    echo "==> Staging MoonRay from $MOONRAY_PREFIX"
+    section "Staging MoonRay from $MOONRAY_PREFIX"
     MOONRAY_DEST="$STAGE_DIR/moonray"
     copy_tree "$MOONRAY_PREFIX" "$MOONRAY_DEST" \
         --exclude='./bin' --exclude='./include' --exclude='./lib64/cmake' --exclude='./lib64/pkgconfig' \
@@ -569,7 +584,7 @@ resolve_deps() {
     done
 }
 
-echo "==> Walking ldd closure"
+section "Walking ldd closure"
 
 declare -A SEEN
 
@@ -639,7 +654,9 @@ walk_closure() {
     done
 }
 
+closure_start=$SECONDS
 walk_closure
+echo "==> ldd closure walk took $((SECONDS - closure_start))s"
 
 # A plugin's private Libraries and the shared lib/ can offer the same soname:
 # the app and Arena's ImageMagick both link lcms2. Shipping both copies means
@@ -660,7 +677,7 @@ drop_shared_ofx_libraries() {
     find "$STAGE_DIR/Plugins" -path "*.ofx.bundle/Libraries/*" -xtype l -delete 2>/dev/null || true
 }
 
-echo "==> Resolving plugin libraries against the shared lib/"
+section "Resolving plugin libraries against the shared lib/"
 drop_shared_ofx_libraries
 
 # The GCC runtime is the one piece of the closure the bundle must not simply
@@ -802,13 +819,13 @@ LAUNCHER
     done
 }
 
-echo "==> Setting the GCC runtime aside for launch-time election"
+section "Setting the GCC runtime aside for launch-time election"
 split_optional_runtime_libs
 
-echo "==> Installing the launcher shims"
+section "Installing the launcher shims"
 install_launcher
 
-echo "==> Debug info stripped from staged ELF files"
+section "Debug info stripped from staged ELF files"
 if [[ -n "$STRIP" ]]; then
     echo "  stripped $STRIP_COUNT files ($STRIP_FAILED failed): $STRIP_BYTES_BEFORE -> $STRIP_BYTES_AFTER bytes"
     if [[ "$STRIP_FAILED" -gt 0 ]]; then
@@ -825,13 +842,15 @@ fi
 # ldd is the right tool above -- finding host libraries to bundle is exactly
 # its job -- and the wrong one here, because it would answer using this
 # machine's ld.so.cache. Hand the finished tree to the checker instead.
-echo "==> Verifying the staged tree resolves against itself"
+section "Verifying the staged tree resolves against itself"
 "$CHECK_RELOCATABLE" "$STAGE_DIR"
 
 # The check above reads ELF headers, so a bundle missing a data dependency --
 # the Python standard library, the fontconfig configuration -- passes it and
 # still cannot start. Actually start the binaries.
-echo "==> Verifying the staged binaries start"
+section "Verifying the staged binaries start"
 "$CHECK_STARTUP" "$STAGE_DIR"
 
-echo "==> Staging complete: $STAGE_DIR"
+section "Staging complete: $STAGE_DIR"
+section_end
+echo "==> Total staging time ${SECONDS}s"

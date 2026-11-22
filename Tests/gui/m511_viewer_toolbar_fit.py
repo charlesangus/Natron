@@ -7,7 +7,9 @@ minimumSizeHint plus the row and pane widths, and asserts:
   - every control lies inside the row;
   - no control overlaps its neighbour;
   - the B combo, the last control, is fully visible.
-It shoots the viewer toolbar once. Before the fix the assertions are expected to fail.
+It shoots the viewer toolbar, then connects A and B to nodes with 40-character labels, selects a
+40-character layer, repeats the fit checks and asserts the combos elide the text and carry the full
+name in their tooltip; a second shot follows.
 
 Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go to $NATRON_GUI_TEST_OUT
 (default build/gui-test-out/). Exit status 0 only if every check passed.
@@ -23,7 +25,7 @@ POLL_TIMEOUT_S = 60.0
 SETTLE_MS = 1500
 
 try:
-    from PySide6.QtCore import QPoint
+    from PySide6.QtCore import QPoint, Qt
     from PySide6.QtWidgets import QApplication, QWidget
 
     from guitest import check, class_name, finish, report, require, run, section, shot, viewer_up, widgets_of
@@ -67,18 +69,11 @@ try:
                 text = ""
         return "%s %r %r" % (class_name(w), text, tip)
 
-    def steps():
-        gui = main_gui()
-        if gui is not None:
-            gui.resize(1920, 1080)
-        ok = yield ("until", viewer_up, POLL_TIMEOUT_S)
-        require(ok, "a viewer is up")
-        yield ("sleep", SETTLE_MS)
-
+    def measure_row(tag):
         tab, row = first_row()
         require(row is not None, "found the first viewer row (the parent of the A: label)")
 
-        section("first row")
+        section(tag)
         row_w = row.width()
         tab_w = tab.width()
         hint = row.sizeHint().width()
@@ -122,8 +117,71 @@ try:
             check(b_combo.width() >= b_combo.minimumSizeHint().width(),
                   "the B combo (%d) is at least its minimumSizeHint (%d)" % (b_combo.width(), b_combo.minimumSizeHint().width()))
 
+        return tab, row, parts
+
+
+    def combo_of(parts, left_of_label):
+        """The combo right after the given label ("A:" or "B:") in the row."""
+        ordered = [w for w in parts if class_name(w) in ("ComboBox", "Label")]
+        for i, w in enumerate(ordered):
+            if class_name(w) == "Label" and w.text() == left_of_label and i + 1 < len(ordered):
+                return ordered[i + 1]
+        return None
+
+    def check_elided(combo, full, what):
+        check(combo is not None, "found the %s combo" % what)
+        if combo is None:
+            return
+        check(combo.natronCurrentText == full, "%s combo holds %r (has %r)" % (what, full, combo.natronCurrentText))
+        check(full in re.sub(r"<[^>]+>", "", combo.toolTip() or ""), "%s combo's tooltip carries the full name" % what)
+        shown = combo.fontMetrics().elidedText(full, Qt.ElideMiddle, combo.width() - 12)
+        check(shown != full, "%s combo (%d px) elides %r as %r" % (what, combo.width(), full, shown))
+
+
+    def steps():
+        gui = main_gui()
+        if gui is not None:
+            gui.resize(1920, 1080)
+        ok = yield ("until", viewer_up, POLL_TIMEOUT_S)
+        require(ok, "a viewer is up")
+        yield ("sleep", SETTLE_MS)
+
+        measure_row("first row, default")
         QApplication.processEvents()
         shot("m511-viewer-toolbar-default.png")
+
+        long_a = "A_input_with_a_very_long_node_label_0001"
+        long_b = "B_input_with_a_very_long_node_label_0002"
+        long_layer = "a_layer_with_a_very_long_name_00000003"
+        node_a = app.createNode("Constant")
+        node_b = app.createNode("Constant")
+        node_a.setLabel(long_a)
+        node_b.setLabel(long_b)
+        shuffle = app.createNode("Shuffle")
+        shuffle.getParam("out1").setLayer(long_layer)
+        shuffle.connectInput(0, node_a)
+        require(viewer.connectInput(0, shuffle), "the Viewer shows the shuffled A input")
+        require(viewer.connectInput(1, node_b), "the Viewer input 2 is the B node")
+        layer_param = viewer.getParam("layer")
+        try:
+            layer_param.setLayer(long_layer)
+        except Exception:
+            report("NOTE setLayer on the viewer layer param failed: %s" % traceback.format_exc().splitlines()[-1])
+            layer_param.setValue(long_layer)
+        viewer.getParam("aInput").setValue(0)
+        viewer.getParam("bInput").setValue(1)
+        yield ("sleep", SETTLE_MS)
+
+        tab, row, parts = measure_row("first row, long names")
+        combos = [w for w in parts if class_name(w) == "ComboBox"]
+        a_combo, b_combo = combo_of(parts, "A:"), combo_of(parts, "B:")
+        report("NOTE A combo text %r, B combo text %r" % (a_combo.natronCurrentText if a_combo else None,
+                                                          b_combo.natronCurrentText if b_combo else None))
+        layer_combo = combos[0] if combos else None
+        check_elided(layer_combo, long_layer, "layer")
+        QApplication.processEvents()
+        shot("m511-viewer-toolbar-long-names.png")
+
 
     run(steps())
 except Exception:

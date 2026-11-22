@@ -89,6 +89,8 @@ private:
     unsigned short _align;
     int _currentDelta; // accumulated wheel delta
     int _elidedWidth;
+    bool _textToolTip;
+    QString _baseToolTip;
 
 protected:
 
@@ -189,6 +191,10 @@ public:
     // Fixes the widget at w pixels and paints the current text middle-elided to fit; 0 restores
     // the default behaviour of sizing to the text.
     void setElidedWidth(int w);
+
+    // As setElidedWidth, and the tooltip becomes the tooltip set so far followed by the full
+    // current text, kept current as the text changes.
+    void setElidedWidthWithTextToolTip(int w);
 
     void setAltered(bool b);
     bool getAltered() const;

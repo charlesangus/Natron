@@ -106,6 +106,7 @@ ComboBox::ComboBox(QWidget* parent)
     , _align(Qt::AlignLeft | Qt::AlignVCenter | Qt::TextExpandTabs)
     , _currentDelta(0)
     , _elidedWidth(0)
+    , _textToolTip(false)
     , ignoreWheelEvent(false)
 {
     _rootNode = std::make_shared<ComboBoxMenuNode>();
@@ -214,6 +215,10 @@ void
 ComboBox::updateLabel()
 {
     _validHints = false;
+    if (_textToolTip) {
+        const QString current = _currentText.toHtmlEscaped();
+        setToolTip(current.isEmpty() ? _baseToolTip : _baseToolTip + QString::fromUtf8("<p>") + current + QString::fromUtf8("</p>"));
+    }
     updateGeometry(); //< force a call to minmumSizeHint
     update();
     Q_EMIT minimumSizeChanged(_msh);
@@ -792,6 +797,14 @@ ComboBox::setElidedWidth(int w)
         setMaximumWidth(QWIDGETSIZE_MAX);
     }
     updateLabel();
+}
+
+void
+ComboBox::setElidedWidthWithTextToolTip(int w)
+{
+    _baseToolTip = toolTip();
+    _textToolTip = true;
+    setElidedWidth(w);
 }
 
 int

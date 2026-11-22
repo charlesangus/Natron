@@ -477,7 +477,7 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
                                         "The channels of the layer will be mapped to the RGBA channels of the viewer according to "
                                         "its number of channels. (e.g: UV would be mapped to RG)") + QString::fromUtf8("</p>") );
     QObject::connect( _imp->layerChoice, SIGNAL(currentIndexChanged(int)), this, SLOT(onLayerComboChanged(int)) );
-    _imp->layerChoice->setFixedWidth(_imp->layerChoice->widthToFit(QStringList() << QString::fromUtf8("Color.Toto.RGBA")));
+    _imp->layerChoice->setElidedWidthWithTextToolTip(_imp->layerChoice->widthToFit(QStringList() << QString::fromUtf8("Color.Toto.RGBA")));
     _imp->layerChoice->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     _imp->firstRowLayout->addWidget(_imp->layerChoice);
 
@@ -485,7 +485,7 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     _imp->alphaChannelChoice->setToolTip( QString::fromUtf8("<p><b>") + tr("Alpha channel:") + QString::fromUtf8("</b></p><p>")
                                           + tr("Select here a channel of any layer that will be used when displaying the "
                                                "alpha channel with the <b>Channels</b> choice on the right.") + QString::fromUtf8("</p>") );
-    _imp->alphaChannelChoice->setFixedWidth(_imp->alphaChannelChoice->widthToFit(QStringList() << QString::fromUtf8("Color.alpha")));
+    _imp->alphaChannelChoice->setElidedWidthWithTextToolTip(_imp->alphaChannelChoice->widthToFit(QStringList() << QString::fromUtf8("Color.alpha")));
     _imp->alphaChannelChoice->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     QObject::connect( _imp->alphaChannelChoice, SIGNAL(currentIndexChanged(int)), this, SLOT(onAlphaChannelComboChanged(int)) );
     _imp->firstRowLayout->addWidget(_imp->alphaChannelChoice);
@@ -703,7 +703,7 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
 
     _imp->firstInputImage = new ComboBox(_imp->firstSettingsRow);
     _imp->firstInputImage->setToolTip( _imp->firstInputLabel->toolTip() );
-    _imp->firstInputImage->setFixedWidth(_imp->firstInputImage->widthToFit(QStringList() << QString::fromUtf8("ColorCorrect1")));
+    _imp->firstInputImage->setElidedWidthWithTextToolTip(_imp->firstInputImage->widthToFit(QStringList() << QString::fromUtf8("ColorCorrect1")));
     _imp->firstInputImage->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     _imp->firstInputImage->addItem( QString::fromUtf8(" - ") );
     QObject::connect(_imp->firstInputImage, SIGNAL(currentIndexChanged(int)), this, SLOT(onFirstInputMenuChanged(int)));
@@ -742,7 +742,7 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
 
     _imp->secondInputImage = new ComboBox(_imp->firstSettingsRow);
     _imp->secondInputImage->setToolTip( _imp->secondInputLabel->toolTip() );
-    _imp->secondInputImage->setFixedWidth(_imp->secondInputImage->widthToFit(QStringList() << QString::fromUtf8("ColorCorrect1")));
+    _imp->secondInputImage->setElidedWidthWithTextToolTip(_imp->secondInputImage->widthToFit(QStringList() << QString::fromUtf8("ColorCorrect1")));
     _imp->secondInputImage->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     _imp->secondInputImage->addItem( QString::fromUtf8(" - ") );
     QObject::connect(_imp->secondInputImage, SIGNAL(currentIndexChanged(int)), this, SLOT(onSecondInputMenuChanged(int)));

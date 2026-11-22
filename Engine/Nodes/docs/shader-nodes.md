@@ -163,7 +163,8 @@ Staging:
    visible change; classic graph goldens must stay pixel-identical.
 3. M351, step 2: add `PortListLayout`, bezier pipes and output names, and delete the prototype's
    arrow hiding.
-4. Later: port groups, folding and search-to-connect.
+4. Later: port groups, folding and shift-drop node creation. Shift-drop with port cycling then
+   comes to the classic graph and to plain Tab creation too.
 
 Not yet prototyped: splice, bend points and Dot insertion with bezier pipes.
 
@@ -185,11 +186,16 @@ Not yet prototyped: splice, bend points and Dot insertion with bezier pipes.
 - **Default fold:** connected ports only for a node with more than 20 ports, otherwise all
   promoted ports. Header-only is a manual state.
 - **Interaction:**
-  - drag from any port, input or output;
-  - dropping on empty space opens the node menu, filtered to nodes with a shared target and a
-    type-compatible port, and the new node is auto-wired;
-  - dragging a pipe's input end rewires it;
-  - ctrl-drag from an output adds another pipe, since outputs fan out freely;
+  - clicking an output port picks up a new pipe from it, so outputs fan out freely;
+  - clicking an input port picks up its pipe, or a new one when it is unconnected;
+  - clicking a pipe picks it up by the end nearer the click, input or output, as edges do on
+    today's graph;
+  - dropping a pipe on a port connects it;
+  - dropping a pipe on empty space disconnects it;
+  - shift-dropping a pipe on empty space opens the Tab node menu, filtered to nodes with a shared
+    target and a type-compatible port. The new node's compatible ports are highlighted, inputs or
+    outputs depending on which end of the pipe is being placed. The first one is picked, and the
+    scroll wheel or the up and down keys move the pipe to the next or previous compatible port;
   - Dot nodes serve as reroutes.
 
 ## Recommendation

@@ -78,3 +78,5 @@ Member of F18 - Geometry Loops And Solver: branches off and merges into `feature
 - 2026-11-12 — Code finding: loops are image-only today (`LoopBegin.h:48`, `LoopEnd.h:95`), and `evaluateScene`/`evaluateGeometry` don't carry the render-context key.
 
 Shared design: `PLAN/DECISIONS/2026-11-12-geometry-simulation-expansion.md`.
+- 2026-11-22 — GeoForEachBegin has a Method knob (Extract Piece or Point / Fetch Feedback / Fetch Metadata / Fetch Input) and several Begin nodes pair with one End, instead of three outputs (user, 2026-11-22): nodes have exactly one output.
+- 2026-11-22 — P1.T1: the context key reaches the geometry cache through the node hash, as for images; `GeoDetailKey` is unchanged. Scope-set contexts, direct evaluations and `EvaluateGeometryArgs::context` now carry it (f179a850c).

@@ -31,7 +31,7 @@ Make USDRender's primId plane, and the picking that reads it, see translucent pr
   - verify: gtest — a projected card in front of an opaque plane: primId at the card's pixels decodes to the card's path and elsewhere to the plane's; a pixel outside the projection's data window decodes to the plane; a scene with no translucent prims gives a primId plane byte-identical to the same render with the pass disabled.
   - size: L
 
-- [ ] M517.P1.T2 — Check picking on projected cards
+- [x] M517.P1.T2 (dropped, user 2026-11-22) — Check picking on projected cards
   - files: `Tests/gui/storm_translucent_pick.py`, `Tests/fixtures/storm_translucent_pick/`
   - approach: a GUI script under Xvfb loads a small scene with a USDProject3D card over a ground plane rendered by USDRender with Storm, and picks on USDRender's output and in the 3D viewer at a card pixel and a plane pixel.
   - verify: the script passes under Xvfb: the card pixel selects the card, the plane pixel the plane, in both places.
@@ -42,3 +42,5 @@ Make USDRender's primId plane, and the picking that reads it, see translucent pr
 ## Decisions
 
 - 2026-11-22 — **Ids for translucent prims, not an opaque projection material (user):** chosen over tagging the projection material opaque when its plate is opaque, so semi-transparent cards and every other translucent prim pick too. Written in our own pass because the base image's OpenUSD carries no patches (cat-plan); patching Storm needs the user's say.
+- 2026-11-22 — P1.T2 (GUI picking check) dropped (user, 2026-11-22): nothing picks from USDRender's 2D output, and the gtests prove the id planes.
+- 2026-11-22 — Translucent ids use a private depth buffer (implementer): opaque/masked prims redraw depth into it, then translucent prims draw ids with depth test and write on, so the nearest translucent id wins; Storm's own colour and depth are untouched. Pending the user's confirmation (asked whether draw order would do; it would not — see Open questions).

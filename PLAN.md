@@ -646,7 +646,7 @@ future core work has solid ground to build on.
 | F1 | VDB Volumes | open |  |  | feature/f1-vdb-volumes | Bring a VDB into the scene, shade it with one material across Storm, Cycles and MoonRay, and inspect it in the viewer. |
 | F2 | Native Shader Networks | open |  |  | feature/f2-native-shader-networks | Build, tweak and render each renderer's native shading networks from one builder node, with full or nearly full coverage of Cycles and MoonRay. |
 | F3 | Cycles And MoonRay Delegates | landed | misty-marten |  | feature/f3-cycles-and-moonray-delegates | Bundle Cycles and MoonRay and render through them in USDRender and the viewer, with full render settings, tested on one AppImage. |
-| F4 | Heavy Scene Viewer | shipping | bosley-executor |  | feature/f4-heavy-scene-viewer | Open and inspect production-sized USD scenes without blocking, with deferred loading, draw states and full prim inspection. |
+| F4 | Heavy Scene Viewer | done |  |  | feature/f4-heavy-scene-viewer | Open and inspect production-sized USD scenes without blocking, with deferred loading, draw states and full prim inspection. |
 | F5 | Live Sessions V1 | open |  |  | feature/f5-live-sessions-v1 | Let several artists edit one graph live, with presence, per-user undo and viewer following. |
 | F6 | Unified Tiered Cache | landed | bosley-executor | | feature/f6-unified-tiered-cache | Reuse unchanged upstream work across RAM, disk and VRAM so a downstream edit reaches the viewer within budget, and show truthfully what is rendering. |
 | F7 | Natron Utility Core | shipping | bosley-executor | uat | feature/f7-natron-utility-core | A usable Nucleon Utility renderer on CPU and GPU, with materials, lights, sampling, reflection, subdivision and projection modes. Ships only after F9 - Delegate Projection lands, for M364 - Delegate Cancel Responsiveness. |
@@ -685,7 +685,7 @@ future core work has solid ground to build on.
 
 - **Engine TLS race (found in M402, 2026-11-22):** `makeInheritedTLSData` (`Engine/TLSHolderImpl.h:70`, HostFrameThreading path via `inheritFromSpawner`/`getTLSData`) copies a live spawner thread's `frameArgs` list without a lock while the spawner may push/pop entries (`ContextFrameArgsScope::install`, `Engine/ParallelRenderArgs.cpp:1862`), a use-after-free that segfaulted M402's 100k-iteration loop. M402 fixed its own path (helpers no longer inherit); any other `SpawnedThreadScope` user whose spawner keeps cooking is exposed, and it may explain unexplained render-thread crashes/flakes. File an E14 milestone to make the inheritance safe (lock, or snapshot at spawn time)?
 
-- **Main freeze until F4 - Heavy Scene Viewer lands (user, 2026-11-22):** land F4 first, as a priority; merge nothing else to `main` before it. Feature-branch merges (into F16, F27, F33, F36 …) may continue. Held for main: M509 - Cancel-Aware GPU Fence Wait (#335) and every other main-targeted PR.
+- **F4 - Heavy Scene Viewer post-merge UAT (user, 2026-11-22):** merged as 77d7fb709 before the final UAT, at the user's request; the user runs `build/appimages/Natron-f4-heavy-scene-viewer.AppImage` with its steps `.md` later and files follow-ups for any issue.
 
 - **M105 - Live Session Core (2026-11-22):** a value change to a user knob is sent as a whole `SetUserKnobsOp` (`GraphEditRecorder.cpp:~385`), which on every peer deletes and rebuilds all user knobs and their panel page (`GraphOpApply.cpp:431-451`), so peers flicker on each user-knob edit. A per-value op would fix it: in M105's scope, or a follow-up?
 

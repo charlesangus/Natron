@@ -16,15 +16,27 @@ anonymous layer. Comp edits are a 20-Grade chain: a knob change plus a reconnect
 
 | Bar | Limit | Knob-first | Every attribute a port | Result |
 |---|---|---|---|---|
-| Open | < 2 s | _pending_ | _pending_ | _pending_ |
-| Save | < 2 s | _pending_ | _pending_ | _pending_ |
-| Knob edit re-authors | < 100 ms | _pending_ | _pending_ | _pending_ |
-| Comp edits (in process) | no slower | _pending_ | _pending_ | _pending_ |
-| Comp edits (graph_bench re-render) | no slower | _pending_ | _pending_ | _pending_ |
+| Open | < 2 s | 128.0 ms | 118.0 ms | pass |
+| Save | < 2 s | 14.9 ms | 17.0 ms | pass |
+| Knob edit re-authors | < 100 ms | 29.4 ms | 30.6 ms | pass |
+| Comp edits (in process) | no slower (limit 42.6 ms) | 13.9 ms | 14.9 ms | pass |
+| Comp edits (graph_bench re-render) | no slower (limit 4.8 ms) | 4.2 ms | 4.3 ms | pass |
 
 Only the knob-first network is held to the bar; the other column is the fallback design if live
-inputs had proved unsafe. Registration: _pending_ µs per plug-in entry, _pending_ µs per port edit
-on the 170-attribute node.
+inputs had proved unsafe, and it passes too. Registration: 1.6 µs per plug-in entry, 86.4 µs per
+port edit (10 kinds).
+
+Network sizes: knob-first has 245 inputs and 1865 knobs (create 76.3 ms); every-attribute-a-port
+has 1015 inputs and the same 1865 knobs (create 81.5 ms). Both have 50 nodes and 40 edges.
+
+Caveats:
+
+- The worst single knob edit on the knob-first network was 541.1 ms (every-attribute-a-port: 32.2
+  ms). The bar is on the typical edit, which passed at 29.4 ms, but the outlier is unexplained and
+  worth a follow-up investigation, for example a first-edit cache warm-up.
+- The bench ran in a release build in the natron-dev container on the dev box (an N100-class
+  machine), on 2026-11-22. A faster machine should do better, but the numbers are not a survey of
+  hardware.
 
 Reproduce, from the checkout root in natron-dev after a release build:
 
@@ -182,10 +194,20 @@ Not yet prototyped: splice, bend points and Dot insertion with bezier pipes.
 
 ## Recommendation
 
-_Pending the measurements._ If every bar passes, build the production nodes as real Natron nodes
-with these choices: one class with a runtime spec and an entry per kind, live ports with
-disconnect, rebuild and reconnect by label, named outputs on the downstream node, and the
-two-layer target-then-type check.
+**Verdict: PASS.** All ShaderNode gtests passed (15/15) and every bar is met by the knob-first
+network, with wide margin on open and save (about 15x and 130x under the limit) and about 3x
+under the knob-edit limit. Live input ports cost nothing measurable on comp edits. The lazy knob
+creation and data-model fallbacks above are not needed.
+
+Build the production nodes as real Natron nodes with these choices: one class with a runtime spec
+and an entry per kind, live ports with disconnect, rebuild and reconnect by label, named outputs
+on the downstream node, and the two-layer target-then-type check. For the graph, follow the
+decisions under Drawing: ports are the single connection model through a per-`NodeGui`
+`ConnectorLayout` (`RadialLayout` first, pixel-identical, then `PortListLayout`); unconnected
+promoted ports show read-only summaries, with no inline value widgets; a node with more than 20
+ports shows connected ports only by default; varying values use diamond ports.
+
+Before production, investigate the 541 ms worst knob edit.
 
 ## Open questions
 

@@ -680,6 +680,8 @@ future core work has solid ground to build on.
 | F35 | Pyro | open |  |  | feature/f35-pyro | A sparse-tile smoke and fire solver on native VDB volumes, with sourcing, shaping, collisions, look baking and quick setups, on GPU and CPU. Waits for F18 - Geometry Loops And Solver and F22 - Native VDB to land. |
 
 # Open questions
+- **Engine TLS race (found in M402, 2026-11-22):** `makeInheritedTLSData` (`Engine/TLSHolderImpl.h:70`, HostFrameThreading path via `inheritFromSpawner`/`getTLSData`) copies a live spawner thread's `frameArgs` list without a lock while the spawner may push/pop entries (`ContextFrameArgsScope::install`, `Engine/ParallelRenderArgs.cpp:1862`), a use-after-free that segfaulted M402's 100k-iteration loop. M402 fixed its own path (helpers no longer inherit); any other `SpawnedThreadScope` user whose spawner keeps cooking is exposed, and it may explain unexplained render-thread crashes/flakes. File an E14 milestone to make the inheritance safe (lock, or snapshot at spawn time)?
+
 - **Main freeze until F4 - Heavy Scene Viewer lands (user, 2026-11-22):** land F4 first, as a priority; merge nothing else to `main` before it. Feature-branch merges (into F16, F27, F33, F36 …) may continue. Held for main: M509 - Cancel-Aware GPU Fence Wait (#335) and every other main-targeted PR.
 
 - **M105 - Live Session Core (2026-11-22):** a value change to a user knob is sent as a whole `SetUserKnobsOp` (`GraphEditRecorder.cpp:~385`), which on every peer deletes and rebuilds all user knobs and their panel page (`GraphOpApply.cpp:431-451`), so peers flicker on each user-knob edit. A per-value op would fix it: in M105's scope, or a follow-up?

@@ -127,7 +127,7 @@ const char* const kViewerKnobNames[] = {
     kViewerParamCullDistance,
     kViewerParamFractionDistance,
     kViewerParamFractionPercent,
-    kViewerParamStandIn,
+    kViewerParamBudgetBoxes,
 };
 
 // One value per dimension: numbers for bool/int/double knobs, strings for string knobs.
@@ -1833,7 +1833,7 @@ ViewerTab::refreshFromViewerKnob(const std::string& name)
         abortViewersAndRefresh();
     } else if ((name == kViewerParamMaxSamples) || (name == kViewerParamRefinementPaused) || (name == kViewerParamRenderEverything)) {
         refreshSceneRenderFromKnobs();
-    } else if ((name == kViewerParamPolygonBudget) || (name == kViewerParamPolygonLimit) || (name == kViewerParamCountWholeScene) || (name == kViewerParamCullDistance) || (name == kViewerParamFractionDistance) || (name == kViewerParamFractionPercent) || (name == kViewerParamStandIn)) {
+    } else if ((name == kViewerParamPolygonBudget) || (name == kViewerParamPolygonLimit) || (name == kViewerParamCountWholeScene) || (name == kViewerParamCullDistance) || (name == kViewerParamFractionDistance) || (name == kViewerParamFractionPercent) || (name == kViewerParamBudgetBoxes)) {
         if (_imp->sceneViewport) {
             _imp->sceneViewport->refreshPolygonBudget();
         }

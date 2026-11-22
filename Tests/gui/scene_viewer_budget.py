@@ -1,25 +1,25 @@
-"""The 3D viewer's polygon budget demotes the farthest units to stand-ins once the camera rests.
+"""The 3D viewer's polygon budget demotes the farthest units to budget boxes once the camera rests.
 
 Graph: USDRead of a generated scene into Viewer1, drawn Full under Storm. The scene is a 5 x 5 grid of
 400-face meshes and one PointInstancer of 50 instances of a 100-face mesh, 15,000 faces in all. The
 view's natronSceneBudget property publishes what the applied budget did (counts, the camera it was
 solved for, the demoted, culled and fractioned units while natronSceneRecordBudget is set), and
-natronSceneBoxes lists the stand-ins drawn while natronSceneRecordBoxes is set. The script checks:
+natronSceneBoxes lists the budget boxes drawn while natronSceneRecordBoxes is set. The script checks:
   - with the default limit nothing is demoted, and the budget applies to Storm's filter;
   - a lower Polygon Limit demotes the farthest units first, and leaves at most the limit drawn;
   - Count Whole Scene counts the units outside the view too;
-  - Cull Distance culls the units beyond it, and draws no stand-in for them;
-  - the instances Fraction Distance turns into stand-ins are the same from two cameras;
-  - each Stand In value draws its kind of stand-in, or nothing for Off, with one screenshot each;
+  - Cull Distance culls the units beyond it, and draws no budget box for them;
+  - the instances Fraction Distance turns into budget boxes are the same from two cameras;
+  - each Budget Boxes value draws its kind of budget box, or nothing for Off, with one screenshot each;
   - the HUD line reads the budget's numbers, and names a unit that alone exceeds the limit;
-  - a click on a stand-in selects its prim;
+  - a click on a budget box selects its prim;
   - a row set to Full is demoted like any other;
   - moving the camera holds the applied budget, which changes once the camera rests;
   - the Polygon Budget submenu edits the Viewer's knobs, and Edit > Undo takes an edit back;
   - turning the budget off restores every unit and hides the HUD line.
 
-Screenshots for sign-off: scene-budget-none, scene-budget-standin-box-wire,
-scene-budget-standin-box-shaded, scene-budget-standin-marker, scene-budget-standin-off,
+Screenshots for sign-off: scene-budget-none, scene-budget-boxes-box-wire,
+scene-budget-boxes-box-shaded, scene-budget-boxes-marker, scene-budget-boxes-off,
 scene-budget-menu, scene-budget-off.
 
 Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go to $NATRON_GUI_TEST_OUT
@@ -51,7 +51,7 @@ DEFAULT_LIMIT = 20000000
 UNIT_RADIUS = math.sqrt(2.0)
 INSTANCER = "/World/Inst"
 PROTOTYPE = "/World/Inst/Protos/Tile"
-STAND_INS = [("box-wire", 0), ("box-shaded", 1), ("marker", 2), ("off", 3)]
+BUDGET_BOXES = [("box-wire", 0), ("box-shaded", 1), ("marker", 2), ("off", 3)]
 
 try:
     from PySide6.QtCore import Q_ARG, QEvent, QMetaObject, QPoint, QPointF, Qt, QTimer
@@ -123,7 +123,7 @@ try:
     require(viewer is not None, "a Viewer exists")
     viewer.setPosition(0, 200)
     for name in ("polygonBudget", "polygonLimit", "countWholeScene", "cullDistance", "fractionDistance",
-                 "fractionPercent", "standIn"):
+                 "fractionPercent", "budgetBoxes"):
         require(viewer.getParam(name) is not None, "the Viewer has a %s knob" % name)
 
     def view():
@@ -151,11 +151,11 @@ try:
         v = view()
         return str(v.property("natronSceneBudgetHud") or "") if v is not None else ""
 
-    def stand_in_boxes():
-        """The stand-ins the last frame drew: [path, kind, x, y] each."""
+    def budget_boxes():
+        """The budget boxes the last frame drew: [path, kind, x, y] each."""
         v = view()
         boxes = v.property("natronSceneBoxes") if v is not None else None
-        return [(str(b[0]), str(b[1]), float(b[3]), float(b[4])) for b in (boxes or []) if str(b[1]).startswith("standIn")]
+        return [(str(b[0]), str(b[1]), float(b[3]), float(b[4])) for b in (boxes or []) if str(b[1]).startswith("budgetBox")]
 
     def selection():
         v = view()
@@ -314,7 +314,7 @@ try:
         check(int(b.get("limit", 0)) == DEFAULT_LIMIT, "the limit is the default %d (%r)" % (DEFAULT_LIMIT, b.get("limit")))
         check(int(b.get("demoted", -1)) == 0 and int(b.get("culled", -1)) == 0,
               "nothing is demoted or culled under the default limit (%r, %r)" % (b.get("demoted"), b.get("culled")))
-        check(stand_in_boxes() == [], "no stand-in is drawn (%r)" % stand_in_boxes()[:3])
+        check(budget_boxes() == [], "no budget box is drawn (%r)" % budget_boxes()[:3])
         save("scene-budget-none")
 
         section("limit")
@@ -326,10 +326,10 @@ try:
         check(int(b.get("hidden", 0)) + int(b.get("masked", 0)) > 0, "the filter hides the demoted units (%r, %r)" %
               (b.get("hidden"), b.get("masked")))
         check_farthest_first("Polygon Limit %d" % limit)
-        drawn_paths = set(p for p, _, _, _ in stand_in_boxes())
+        drawn_paths = set(p for p, _, _, _ in budget_boxes())
         demoted = paths("demotedPaths")
         check(all((p in drawn_paths) or p.startswith(INSTANCER + "[") for p in demoted),
-              "every demoted mesh draws a stand-in (%r missing)" % [p for p in demoted if p not in drawn_paths][:3])
+              "every demoted mesh draws a budget box (%r missing)" % [p for p in demoted if p not in drawn_paths][:3])
 
         section("hud")
         b = budget()
@@ -342,26 +342,26 @@ try:
         check(alone != "" and alone in hud(), "the HUD names %r (%r)" % (alone, hud()))
 
         section("picking")
-        boxes = stand_in_boxes()
-        if check(len(boxes) > 0, "stand-ins are drawn with every unit over the limit"):
-            stand_in_paths = set(p for p, _, _, _ in boxes)
-            pickable = set(p for p in stand_in_paths if not p.startswith(INSTANCER + "["))
+        boxes = budget_boxes()
+        if check(len(boxes) > 0, "budget boxes are drawn with every unit over the limit"):
+            budget_box_paths = set(p for p, _, _, _ in boxes)
+            pickable = set(p for p in budget_box_paths if not p.startswith(INSTANCER + "["))
             pickable.add(PROTOTYPE)
-            target = next(((p, x, y) for p, kind, x, y in boxes if kind == "standIn"), None)
-            if check(target is not None, "a mesh stand-in is drawn"):
+            target = next(((p, x, y) for p, kind, x, y in boxes if kind == "budgetBox"), None)
+            if check(target is not None, "a mesh budget box is drawn"):
                 click(view(), QPoint(int(round(target[1])), int(round(target[2]))))
                 yield settle()
                 picked = selection()
                 check(len(picked) == 1 and picked[0] in pickable,
-                      "a click on %s's stand-in selects a stand-in's prim (%r)" % (target[0], picked))
-            target = next(((p, x, y) for p, kind, x, y in boxes if kind == "standInInstance"), None)
-            if check(target is not None, "an instance stand-in is drawn"):
+                      "a click on %s's budget box selects a budget box's prim (%r)" % (target[0], picked))
+            target = next(((p, x, y) for p, kind, x, y in boxes if kind == "budgetBoxInstance"), None)
+            if check(target is not None, "an instance budget box is drawn"):
                 QMetaObject.invokeMethod(view(), "selectPaths", Q_ARG("QStringList", []))
                 click(view(), QPoint(int(round(target[1])), int(round(target[2]))))
                 yield settle()
                 picked = selection()
                 check(len(picked) == 1 and picked[0] in pickable,
-                      "a click on %s's stand-in selects a stand-in's prim (%r)" % (target[0], picked))
+                      "a click on %s's budget box selects a budget box's prim (%r)" % (target[0], picked))
             QMetaObject.invokeMethod(view(), "selectPaths", Q_ARG("QStringList", []))
 
         section("explicit full row")
@@ -374,24 +374,24 @@ try:
         check(farthest in paths("demotedPaths"), "%s, set to Full, is still demoted (%r)" % (farthest, paths("demotedPaths")[:5]))
         QMetaObject.invokeMethod(view(), "clearDrawState", Q_ARG("QString", farthest))
 
-        section("stand in")
-        for label, value in STAND_INS:
-            yield from resolve("Stand In %s" % label, lambda value=value: (
-                viewer.getParam("standIn").setValue(value), viewer.getParam("polygonLimit").setValue(limit + value)))
+        section("budget boxes")
+        for label, value in BUDGET_BOXES:
+            yield from resolve("Budget Boxes %s" % label, lambda value=value: (
+                viewer.getParam("budgetBoxes").setValue(value), viewer.getParam("polygonLimit").setValue(limit + value)))
             b = budget()
-            boxes_drawn, instances, markers = (int(b.get("standInBoxes", 0)), int(b.get("standInInstances", 0)),
-                                               int(b.get("standInMarkers", 0)))
+            boxes_drawn, instances, markers = (int(b.get("budgetBoxCount", 0)), int(b.get("budgetBoxInstances", 0)),
+                                               int(b.get("budgetBoxMarkers", 0)))
             if label == "off":
-                check(boxes_drawn == 0 and instances == 0 and markers == 0, "Off draws no stand-in (%r, %r, %r)" %
+                check(boxes_drawn == 0 and instances == 0 and markers == 0, "Off draws no budget box (%r, %r, %r)" %
                       (boxes_drawn, instances, markers))
             elif label == "marker":
                 check(boxes_drawn + instances > 0 and markers == boxes_drawn + instances,
-                      "Marker draws every stand-in as a marker (%r, %r, %r)" % (boxes_drawn, instances, markers))
+                      "Marker draws every budget box as a marker (%r, %r, %r)" % (boxes_drawn, instances, markers))
             else:
                 check(boxes_drawn + instances > 0 and markers == 0, "%s draws boxes and no marker (%r, %r, %r)" %
                       (label, boxes_drawn, instances, markers))
-            save("scene-budget-standin-" + label)
-        viewer.getParam("standIn").setValue(0)
+            save("scene-budget-boxes-" + label)
+        viewer.getParam("budgetBoxes").setValue(0)
 
         section("count whole scene")
         # Each notch closes 15% of the distance; the framed scene sits well inside the view until the
@@ -421,8 +421,8 @@ try:
         check(all(distance(p, e) + UNIT_RADIUS >= cull for p in culled), "no culled unit is nearer than the distance")
         check(all(distance(p, e) - UNIT_RADIUS <= cull for p in CENTRES if p not in culled),
               "every unit well beyond the distance is culled")
-        drawn_paths = set(p for p, _, _, _ in stand_in_boxes())
-        check(not any(p in drawn_paths for p in culled), "no stand-in is drawn for a culled unit")
+        drawn_paths = set(p for p, _, _, _ in budget_boxes())
+        check(not any(p in drawn_paths for p in culled), "no budget box is drawn for a culled unit")
         yield from resolve("Cull Distance off", set_knob("cullDistance", 0.0))
 
         section("fraction")
@@ -508,7 +508,7 @@ try:
         b = budget()
         check(int(b.get("hidden", -1)) == 0 and int(b.get("masked", -1)) == 0 and int(b.get("facedMeshes", -1)) == 0,
               "the filter hides nothing (%r, %r, %r)" % (b.get("hidden"), b.get("masked"), b.get("facedMeshes")))
-        check(stand_in_boxes() == [], "no stand-in is drawn (%r)" % stand_in_boxes()[:3])
+        check(budget_boxes() == [], "no budget box is drawn (%r)" % budget_boxes()[:3])
         check(hud() == "", "the HUD line is hidden (%r)" % hud())
         save("scene-budget-off")
 

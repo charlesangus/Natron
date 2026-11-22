@@ -982,7 +982,7 @@ TEST_F(ViewerKnobsTest, PolygonBudgetKnobsStartFromThePreferences)
     preferences.set<KnobDouble>("viewer3DCullDistance", 500.);
     preferences.set<KnobDouble>("viewer3DFractionDistance", 80.);
     preferences.set<KnobDouble>("viewer3DFractionPercent", 40.);
-    preferences.set<KnobChoice>("viewer3DStandIn", int(ViewerInstance::eStandInMarker));
+    preferences.set<KnobChoice>("viewer3DBudgetBoxes", int(ViewerInstance::eBudgetBoxesMarker));
 
     NodePtr node = createViewer();
     ASSERT_TRUE(bool(node));
@@ -992,7 +992,7 @@ TEST_F(ViewerKnobsTest, PolygonBudgetKnobsStartFromThePreferences)
     EXPECT_DOUBLE_EQ(500., knobOf<KnobDouble>(node, kViewerParamCullDistance)->getValue());
     EXPECT_DOUBLE_EQ(80., knobOf<KnobDouble>(node, kViewerParamFractionDistance)->getValue());
     EXPECT_DOUBLE_EQ(40., knobOf<KnobDouble>(node, kViewerParamFractionPercent)->getValue());
-    EXPECT_EQ(int(ViewerInstance::eStandInMarker), knobOf<KnobChoice>(node, kViewerParamStandIn)->getValue());
+    EXPECT_EQ(int(ViewerInstance::eBudgetBoxesMarker), knobOf<KnobChoice>(node, kViewerParamBudgetBoxes)->getValue());
 }
 
 TEST_F(ViewerKnobsTest, PolygonBudgetKnobsDefault)
@@ -1001,17 +1001,17 @@ TEST_F(ViewerKnobsTest, PolygonBudgetKnobsDefault)
     ASSERT_TRUE(bool(node));
     KnobBoolPtr budget = knobOf<KnobBool>(node, kViewerParamPolygonBudget);
     KnobIntPtr limit = knobOf<KnobInt>(node, kViewerParamPolygonLimit);
-    KnobChoicePtr standIn = knobOf<KnobChoice>(node, kViewerParamStandIn);
-    ASSERT_TRUE(budget != nullptr && limit != nullptr && standIn != nullptr);
+    KnobChoicePtr budgetBoxes = knobOf<KnobChoice>(node, kViewerParamBudgetBoxes);
+    ASSERT_TRUE(budget != nullptr && limit != nullptr && budgetBoxes != nullptr);
     EXPECT_TRUE(budget->getDefaultValue(0));
     EXPECT_EQ(20000000, limit->getDefaultValue(0));
     EXPECT_FALSE(knobOf<KnobBool>(node, kViewerParamCountWholeScene)->getDefaultValue(0));
     EXPECT_DOUBLE_EQ(0., knobOf<KnobDouble>(node, kViewerParamCullDistance)->getDefaultValue(0));
     EXPECT_DOUBLE_EQ(0., knobOf<KnobDouble>(node, kViewerParamFractionDistance)->getDefaultValue(0));
     EXPECT_DOUBLE_EQ(25., knobOf<KnobDouble>(node, kViewerParamFractionPercent)->getDefaultValue(0));
-    EXPECT_EQ(int(ViewerInstance::eStandInBoxWire), standIn->getDefaultValue(0));
+    EXPECT_EQ(int(ViewerInstance::eBudgetBoxesBoxWire), budgetBoxes->getDefaultValue(0));
     EXPECT_EQ(std::string("Polygon Limit"), limit->getLabel());
-    EXPECT_EQ(std::string("Stand In"), standIn->getLabel());
+    EXPECT_EQ(std::string("Budget Boxes"), budgetBoxes->getLabel());
 }
 
 // A loaded Viewer keeps its saved values whatever the Preferences say, and a second Viewer
@@ -1027,7 +1027,7 @@ TEST_F(ViewerKnobsTest, PolygonBudgetKnobsSurviveSaveAndLoad)
 
     knobOf<KnobInt>(node, kViewerParamPolygonLimit)->setValue(4321);
     knobOf<KnobDouble>(node, kViewerParamCullDistance)->setValue(75.);
-    knobOf<KnobChoice>(node, kViewerParamStandIn)->setValue(int(ViewerInstance::eStandInBoxShaded));
+    knobOf<KnobChoice>(node, kViewerParamBudgetBoxes)->setValue(int(ViewerInstance::eBudgetBoxesBoxShaded));
     EXPECT_EQ(20000000, knobOf<KnobInt>(other, kViewerParamPolygonLimit)->getValue());
     EXPECT_DOUBLE_EQ(0., knobOf<KnobDouble>(other, kViewerParamCullDistance)->getValue());
 
@@ -1051,7 +1051,7 @@ TEST_F(ViewerKnobsTest, PolygonBudgetKnobsSurviveSaveAndLoad)
     ASSERT_TRUE(bool(loaded) && bool(loadedOther));
     EXPECT_EQ(4321, knobOf<KnobInt>(loaded, kViewerParamPolygonLimit)->getValue());
     EXPECT_DOUBLE_EQ(75., knobOf<KnobDouble>(loaded, kViewerParamCullDistance)->getValue());
-    EXPECT_EQ(int(ViewerInstance::eStandInBoxShaded), knobOf<KnobChoice>(loaded, kViewerParamStandIn)->getValue());
+    EXPECT_EQ(int(ViewerInstance::eBudgetBoxesBoxShaded), knobOf<KnobChoice>(loaded, kViewerParamBudgetBoxes)->getValue());
     EXPECT_EQ(20000000, knobOf<KnobInt>(loadedOther, kViewerParamPolygonLimit)->getValue());
     EXPECT_DOUBLE_EQ(0., knobOf<KnobDouble>(loadedOther, kViewerParamCullDistance)->getValue());
 }

@@ -422,8 +422,8 @@ public:
     double getViewer3DCullDistance() const;
     double getViewer3DFractionDistance() const;
     double getViewer3DFractionPercent() const;
-    // A ViewerInstance::StandInEnum.
-    int getViewer3DStandIn() const;
+    // A ViewerInstance::BudgetBoxesEnum.
+    int getViewer3DBudgetBoxes() const;
 
     // Sets the preference, which applies a preset's bindings to the 3D viewer's shortcuts.
     void setViewer3DNavigation(Viewer3DNavigationEnum navigation);
@@ -764,7 +764,7 @@ private:
     KnobDoublePtr _viewer3DCullDistance;
     KnobDoublePtr _viewer3DFractionDistance;
     KnobDoublePtr _viewer3DFractionPercent;
-    KnobChoicePtr _viewer3DStandIn;
+    KnobChoicePtr _viewer3DBudgetBoxes;
     KnobChoicePtr _viewer3DTransformTarget;
     KnobChoicePtr _viewer3DLighting;
     KnobChoicePtr _sceneStandInMode;

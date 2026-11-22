@@ -58,15 +58,15 @@ NATRON_NAMESPACE_ENTER
 
 /**
  * @brief The 3D viewer's polygon budget: which drawn gprims and PointInstancer instances to hide or
- * replace by stand-ins so that what Storm draws stays under a polygon limit.
+ * replace by budget boxes so that what Storm draws stays under a polygon limit.
  *
  * A unit is a gprim, or one instance of a PointInstancer. Its distance is from the eye to its
  * bounding sphere, zero inside. In order:
  * - beyond Cull Distance a unit is culled;
  * - beyond Fraction Distance an instancer keeps a hashed Fraction Percent of its instances, the
- *   rest being stand-ins, and a mesh keeps that fraction of its faces;
+ *   rest being budget boxes, and a mesh keeps that fraction of its faces;
  * - the faces of the units left whose sphere meets the frustum, or of all of them when Count Whole
- *   Scene is on, are counted, and the farthest are demoted to stand-ins until the count fits.
+ *   Scene is on, are counted, and the farthest are demoted to budget boxes until the count fits.
  * Only drawn, loaded units change; a boxed, hidden or unloaded one counts nothing and is never in a
  * result. The hashes depend on the path and the instance or face index alone, so the kept subset
  * never changes with the camera.
@@ -169,7 +169,7 @@ public:
         // Each empty when it holds no instance, otherwise one per instance.
         std::vector<bool> demoted;
         std::vector<bool> culled;
-        // False for the instances the fraction turns into stand-ins.
+        // False for the instances the fraction turns into budget boxes.
         std::vector<bool> kept;
         std::size_t demotedCount = 0;
         std::size_t culledCount = 0;
@@ -203,7 +203,7 @@ public:
         bool isCulled(const PXR_NS::SdfPath& path) const;
         bool isInstanceDemoted(const PXR_NS::SdfPath& instancer, std::size_t index) const;
         bool isInstanceCulled(const PXR_NS::SdfPath& instancer, std::size_t index) const;
-        // True when no fraction turned the instance into a stand-in.
+        // True when no fraction turned the instance into a budget box.
         bool isInstanceKept(const PXR_NS::SdfPath& instancer, std::size_t index) const;
     };
 

@@ -1492,11 +1492,11 @@ Settings::initializeKnobsViewers()
     _viewer3DFractionPercent->setDisplayMinimum(0.);
     _viewer3DFractionPercent->setDisplayMaximum(100.);
     _viewersTab->addKnob(_viewer3DFractionPercent);
-    _viewer3DStandIn = AppManager::createKnob<KnobChoice>(this, tr("Viewer 3D Stand In"));
-    _viewer3DStandIn->setName("viewer3DStandIn");
-    _viewer3DStandIn->setHintToolTip(ViewerInstance::getPolygonBudgetHint(kViewerParamStandIn) + tr(" A new Viewer starts from this.").toStdString());
-    _viewer3DStandIn->populateChoices(ViewerInstance::getStandInChoices());
-    _viewersTab->addKnob(_viewer3DStandIn);
+    _viewer3DBudgetBoxes = AppManager::createKnob<KnobChoice>(this, tr("Viewer 3D Budget Boxes"));
+    _viewer3DBudgetBoxes->setName("viewer3DBudgetBoxes");
+    _viewer3DBudgetBoxes->setHintToolTip(ViewerInstance::getPolygonBudgetHint(kViewerParamBudgetBoxes) + tr(" A new Viewer starts from this.").toStdString());
+    _viewer3DBudgetBoxes->populateChoices(ViewerInstance::getBudgetBoxesChoices());
+    _viewersTab->addKnob(_viewer3DBudgetBoxes);
     _viewer3DTransformTarget = AppManager::createKnob<KnobChoice>(this, tr("Viewer 3D Transform Target"));
     _viewer3DTransformTarget->setName("viewer3DTransformTarget");
     {
@@ -2075,7 +2075,7 @@ Settings::setDefaultValues()
     _viewer3DCullDistance->setDefaultValue(0.);
     _viewer3DFractionDistance->setDefaultValue(0.);
     _viewer3DFractionPercent->setDefaultValue(25.);
-    _viewer3DStandIn->setDefaultValue((int)ViewerInstance::eStandInBoxWire);
+    _viewer3DBudgetBoxes->setDefaultValue((int)ViewerInstance::eBudgetBoxesBoxWire);
     _viewer3DTransformTarget->setDefaultValue((int)eViewer3DTransformTargetOwner);
     _viewer3DLighting->setDefaultValue((int)eViewer3DLightingScene);
     _sceneStandInMode->setDefaultValue((int)eSceneStandInModeInteraction);
@@ -3027,9 +3027,9 @@ Settings::getViewer3DFractionPercent() const
 }
 
 int
-Settings::getViewer3DStandIn() const
+Settings::getViewer3DBudgetBoxes() const
 {
-    return _viewer3DStandIn->getValue();
+    return _viewer3DBudgetBoxes->getValue();
 }
 
 void

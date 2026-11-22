@@ -142,8 +142,8 @@ public:
 
     using UnitsPtr = std::shared_ptr<const Units>;
 
-    // The stand-ins of one prototype of one instancer, drawn as one instanced box.
-    struct StandInGroup {
+    // The budget boxes of one prototype of one instancer, drawn as one instanced box.
+    struct BudgetBoxGroup {
         PXR_NS::SdfPath instancer;
         PXR_NS::SdfPath prototype;
         // In the instancer's space, as Prototype has it.
@@ -155,10 +155,10 @@ public:
         std::vector<std::size_t> indices;
     };
 
-    struct StandIns {
+    struct BudgetBoxSet {
         // The gprims', world space; a marker for one without bounds.
         std::vector<Box> boxes;
-        std::vector<StandInGroup> groups;
+        std::vector<BudgetBoxGroup> groups;
         std::size_t instanceCount = 0;
     };
 
@@ -171,10 +171,10 @@ public:
         SceneDrawFilter::Budget filter;
         // What it was solved against.
         UnitsPtr units;
-        StandIns standIns;
+        BudgetBoxSet budgetBoxSet;
     };
 
-    struct StandInHit {
+    struct BudgetBoxHit {
         // The gprim's, or the prototype's for an instance.
         PXR_NS::SdfPath path;
         bool isInstance = false;
@@ -293,25 +293,25 @@ public:
     /**
      * @brief What draws in place of what result takes out of units: a demoted gprim, every drawn
      * gprim of a native instance the budget hides some of, and each demoted or fractioned-out
-     * instance. Culled ones get none. False, with standIns partial, as soon as stale() is true.
+     * instance. Culled ones get none. False, with budgetBoxSet partial, as soon as stale() is true.
      */
-    static bool buildStandIns(const SceneViewBudget::Result& result,
-                              const std::vector<Unit>& units,
-                              const std::function<bool()>& stale,
-                              StandIns* standIns);
+    static bool buildBudgetBoxes(const SceneViewBudget::Result& result,
+                                 const std::vector<Unit>& units,
+                                 const std::function<bool()>& stale,
+                                 BudgetBoxSet* budgetBoxSet);
 
     /**
-     * @brief The stand-in nearest the eye under pixel, as pick() finds a box or marker; with markers,
+     * @brief The budget box nearest the eye under pixel, as pick() finds a box or marker; with markers,
      * each is hit as a marker at its box's centre.
      */
-    static bool pickStandIn(const StandIns& standIns,
-                            const PXR_NS::GfMatrix4d& viewProjection,
-                            int width,
-                            int height,
-                            const PXR_NS::GfVec2d& pixel,
-                            double markerPixels,
-                            bool markers,
-                            StandInHit* hit);
+    static bool pickBudgetBox(const BudgetBoxSet& budgetBoxSet,
+                              const PXR_NS::GfMatrix4d& viewProjection,
+                              int width,
+                              int height,
+                              const PXR_NS::GfVec2d& pixel,
+                              double markerPixels,
+                              bool markers,
+                              BudgetBoxHit* hit);
 
     // By path. A row the stage lacks, or one under a row that hides it, is left out.
     static std::vector<PXR_NS::SdfPath> boxedRows(const PXR_NS::UsdStageRefPtr& stage,

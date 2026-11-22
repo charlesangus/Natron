@@ -546,7 +546,7 @@ SceneDrawBoxes::solveBudget()
 
         return (serial != _budgetSerial) || _quit;
     };
-    if (!buildStandIns(budget->result, budget->units->units, stale, &budget->standIns)) {
+    if (!buildBudgetBoxes(budget->result, budget->units->units, stale, &budget->budgetBoxSet)) {
         return;
     }
     {
@@ -969,12 +969,12 @@ hitMarker(const GfVec3d& centre,
 } // anon namespace
 
 bool
-SceneDrawBoxes::buildStandIns(const SceneViewBudget::Result& result,
-                              const std::vector<Unit>& units,
-                              const std::function<bool()>& stale,
-                              StandIns* standIns)
+SceneDrawBoxes::buildBudgetBoxes(const SceneViewBudget::Result& result,
+                                 const std::vector<Unit>& units,
+                                 const std::function<bool()>& stale,
+                                 BudgetBoxSet* budgetBoxSet)
 {
-    *standIns = StandIns();
+    *budgetBoxSet = BudgetBoxSet();
     if (!result.valid) {
         return true;
     }
@@ -1005,7 +1005,7 @@ SceneDrawBoxes::buildStandIns(const SceneViewBudget::Result& result,
                 box.min = unit.min;
                 box.max = unit.bounded ? unit.max : unit.min;
                 box.kind = unit.bounded ? eKindBox : eKindMarker;
-                standIns->boxes.push_back(box);
+                budgetBoxSet->boxes.push_back(box);
             }
             continue;
         }
@@ -1015,7 +1015,7 @@ SceneDrawBoxes::buildStandIns(const SceneViewBudget::Result& result,
         }
         const SceneViewBudget::InstancerResult& record = found->second;
         const Instances& instances = *unit.instances;
-        // Per prototype, its group's index in standIns->groups.
+        // Per prototype, its group's index in budgetBoxSet->groups.
         std::vector<std::size_t> groupOf(instances.prototypes.size(), std::size_t(-1));
         for (std::size_t index = 0; index < instances.size(); ++index) {
             if (++sinceCheck >= kInstanceChunk) {
@@ -1032,16 +1032,16 @@ SceneDrawBoxes::buildStandIns(const SceneViewBudget::Result& result,
             }
             const std::size_t prototype = std::size_t(instances.protoIndices[index]);
             if (groupOf[prototype] == std::size_t(-1)) {
-                groupOf[prototype] = standIns->groups.size();
-                StandInGroup group;
+                groupOf[prototype] = budgetBoxSet->groups.size();
+                BudgetBoxGroup group;
                 group.instancer = unit.path;
                 group.prototype = instances.prototypes[prototype].path;
                 group.min = instances.prototypes[prototype].min;
                 group.max = instances.prototypes[prototype].bounded ? instances.prototypes[prototype].max : group.min;
                 group.bounded = instances.prototypes[prototype].bounded;
-                standIns->groups.push_back(std::move(group));
+                budgetBoxSet->groups.push_back(std::move(group));
             }
-            StandInGroup& group = standIns->groups[groupOf[prototype]];
+            BudgetBoxGroup& group = budgetBoxSet->groups[groupOf[prototype]];
             const GfMatrix4d transform = instances.instanceTransform(index);
             for (int row = 0; row < 4; ++row) {
                 for (int column = 0; column < 3; ++column) {
@@ -1049,24 +1049,24 @@ SceneDrawBoxes::buildStandIns(const SceneViewBudget::Result& result,
                 }
             }
             group.indices.push_back(index);
-            ++standIns->instanceCount;
+            ++budgetBoxSet->instanceCount;
         }
     }
 
     return true;
-} // SceneDrawBoxes::buildStandIns
+} // SceneDrawBoxes::buildBudgetBoxes
 
 bool
-SceneDrawBoxes::pickStandIn(const StandIns& standIns,
-                            const GfMatrix4d& viewProjection,
-                            int width,
-                            int height,
-                            const GfVec2d& pixel,
-                            double markerPixels,
-                            bool markers,
-                            StandInHit* hit)
+SceneDrawBoxes::pickBudgetBox(const BudgetBoxSet& budgetBoxSet,
+                              const GfMatrix4d& viewProjection,
+                              int width,
+                              int height,
+                              const GfVec2d& pixel,
+                              double markerPixels,
+                              bool markers,
+                              BudgetBoxHit* hit)
 {
-    if ((width <= 0) || (height <= 0) || (standIns.boxes.empty() && standIns.groups.empty())) {
+    if ((width <= 0) || (height <= 0) || (budgetBoxSet.boxes.empty() && budgetBoxSet.groups.empty())) {
         return false;
     }
     const GfMatrix4d inverse = viewProjection.GetInverse();
@@ -1094,7 +1094,7 @@ SceneDrawBoxes::pickStandIn(const StandIns& standIns,
         hit->point = point;
     };
 
-    for (const Box& box : standIns.boxes) {
+    for (const Box& box : budgetBoxSet.boxes) {
         double depth = 0.;
         if (markers || (box.kind == eKindMarker)) {
             const GfVec3d centre = (GfVec3d(box.min) + GfVec3d(box.max)) * 0.5;
@@ -1109,7 +1109,7 @@ SceneDrawBoxes::pickStandIn(const StandIns& standIns,
             offer(viewProjection.Transform(point)[2], point, box.path, SdfPath(), false, 0);
         }
     }
-    for (const StandInGroup& group : standIns.groups) {
+    for (const BudgetBoxGroup& group : budgetBoxSet.groups) {
         const GfVec3d localCentre = (GfVec3d(group.min) + GfVec3d(group.max)) * 0.5;
         const double localRadius = (GfVec3d(group.max) - GfVec3d(group.min)).GetLength() * 0.5;
         const bool asMarker = markers || !group.bounded;
@@ -1151,7 +1151,7 @@ SceneDrawBoxes::pickStandIn(const StandIns& standIns,
     }
 
     return found;
-} // SceneDrawBoxes::pickStandIn
+} // SceneDrawBoxes::pickBudgetBox
 
 std::vector<SdfPath>
 SceneDrawBoxes::boxedRows(const UsdStageRefPtr& stage,

@@ -468,7 +468,7 @@ ViewerInstance::getRawDisplayLabel(int textureIndex) const
 }
 
 std::vector<ChoiceOption>
-ViewerInstance::getStandInChoices()
+ViewerInstance::getBudgetBoxesChoices()
 {
     std::vector<ChoiceOption> entries;
 
@@ -487,7 +487,7 @@ ViewerInstance::getPolygonBudgetHint(const std::string& name)
 
     if (name == kViewerParamPolygonBudget) {
         hint = tr("Keeps what the 3D view draws with Storm under Polygon Limit: once the camera rests, the farthest "
-                  "prims and instances draw as stand-ins until the rest fits. Off draws everything.");
+                  "prims and instances draw as budget boxes until the rest fits. Off draws everything.");
     } else if (name == kViewerParamPolygonLimit) {
         hint = tr("The faces the 3D view draws at most: mesh faces, curve segments and points, counted after "
                   "Cull Distance and Fraction Distance.");
@@ -496,13 +496,13 @@ ViewerInstance::getPolygonBudgetHint(const std::string& name)
                   "the camera brings in what was out of view.");
     } else if (name == kViewerParamCullDistance) {
         hint = tr("Prims and instances farther from the camera than this, in scene units, draw nothing, not even a "
-                  "stand-in. 0 culls nothing.");
+                  "budget box. 0 culls nothing.");
     } else if (name == kViewerParamFractionDistance) {
         hint = tr("Beyond this distance from the camera, in scene units, only Fraction Percent of each instancer's "
                   "instances and of each mesh's faces draws; the same ones from any camera. 0 turns it off.");
     } else if (name == kViewerParamFractionPercent) {
         hint = tr("The share of instances and mesh faces kept beyond Fraction Distance.");
-    } else if (name == kViewerParamStandIn) {
+    } else if (name == kViewerParamBudgetBoxes) {
         hint = tr("What a prim or instance the budget demotes draws as, in the budget's tint: its bounding box as "
                   "lines or shaded, a marker at its centre, or nothing. A prim with no bounds draws as a marker.");
     }
@@ -540,8 +540,8 @@ ViewerInstance::onEffectCreated(bool /*mayCreateFileDialog*/,
     if (KnobDoublePtr knob = k.fractionPercent.lock()) {
         knob->setValue(settings->getViewer3DFractionPercent());
     }
-    if (KnobChoicePtr knob = k.standIn.lock()) {
-        knob->setValue(settings->getViewer3DStandIn());
+    if (KnobChoicePtr knob = k.budgetBoxes.lock()) {
+        knob->setValue(settings->getViewer3DBudgetBoxes());
     }
 }
 
@@ -1147,11 +1147,11 @@ ViewerInstance::initializeKnobs()
     fractionPercent->setDefaultValue(25.);
     k.fractionPercent = fractionPercent;
 
-    KnobChoicePtr standIn = createViewerKnob<KnobChoice>(this, page, tr("Stand In"), kViewerParamStandIn,
-                                                         hint(kViewerParamStandIn), 1, budgetGroup);
-    standIn->populateChoices(getStandInChoices());
-    standIn->setDefaultValue((int)eStandInBoxWire);
-    k.standIn = standIn;
+    KnobChoicePtr budgetBoxes = createViewerKnob<KnobChoice>(this, page, tr("Budget Boxes"), kViewerParamBudgetBoxes,
+                                                             hint(kViewerParamBudgetBoxes), 1, budgetGroup);
+    budgetBoxes->populateChoices(getBudgetBoxesChoices());
+    budgetBoxes->setDefaultValue((int)eBudgetBoxesBoxWire);
+    k.budgetBoxes = budgetBoxes;
 
     if (NodePtr node = getNode()) {
         node->declareLayerKnob(layer, 0, LayerKnobSpec::eRoleInputBound);

@@ -684,37 +684,37 @@ const float kMarkerPixels = 6.f;
 // Beyond a marker's arms, so a click need not land on its one-pixel lines.
 const float kMarkerPickSlack = 2.f;
 
-// A stand-in is boxMin..boxMax mapped by its instance's rows, row vectors on the left as
+// A budget box is boxMin..boxMax mapped by its instance's rows, row vectors on the left as
 // SceneViewBudget::Instances::instanceTransform() has them; a marker sits at the box's centre.
-const char* const kStandInVertexShader = "#version 330 core\n"
-                                         "uniform mat4 viewProjection;\n"
-                                         "uniform vec3 boxMin;\n"
-                                         "uniform vec3 boxMax;\n"
-                                         "uniform int markers;\n"
-                                         "uniform int shaded;\n"
-                                         "uniform vec2 markerScale;\n"
-                                         "layout(location = 0) in vec3 corner;\n"
-                                         "layout(location = 1) in vec3 row0;\n"
-                                         "layout(location = 2) in vec3 row1;\n"
-                                         "layout(location = 3) in vec3 row2;\n"
-                                         "layout(location = 4) in vec3 row3;\n"
-                                         "out float shade;\n"
-                                         "const float kFaceShades[6] = float[6](0.55, 0.85, 0.65, 1.0, 0.7, 0.9);\n"
-                                         "void main() {\n"
-                                         "    vec3 local = (markers != 0) ? mix(boxMin, boxMax, vec3(0.5)) : mix(boxMin, boxMax, corner);\n"
-                                         "    vec3 world = local.x * row0 + local.y * row1 + local.z * row2 + row3;\n"
-                                         "    vec4 clip = viewProjection * vec4(world, 1.0);\n"
-                                         "    if (markers != 0) {\n"
-                                         "        clip += vec4(corner.xy * markerScale * clip.w, 0.0, 0.0);\n"
-                                         "    }\n"
-                                         "    shade = (shaded != 0) ? kFaceShades[min(gl_VertexID / 6, 5)] : 1.0;\n"
-                                         "    gl_Position = clip;\n"
-                                         "}\n";
-const char* const kStandInFragmentShader = "#version 330 core\n"
-                                           "uniform vec3 tint;\n"
-                                           "in float shade;\n"
-                                           "out vec4 colour;\n"
-                                           "void main() { colour = vec4(tint * shade, 1.0); }\n";
+const char* const kBudgetBoxVertexShader = "#version 330 core\n"
+                                           "uniform mat4 viewProjection;\n"
+                                           "uniform vec3 boxMin;\n"
+                                           "uniform vec3 boxMax;\n"
+                                           "uniform int markers;\n"
+                                           "uniform int shaded;\n"
+                                           "uniform vec2 markerScale;\n"
+                                           "layout(location = 0) in vec3 corner;\n"
+                                           "layout(location = 1) in vec3 row0;\n"
+                                           "layout(location = 2) in vec3 row1;\n"
+                                           "layout(location = 3) in vec3 row2;\n"
+                                           "layout(location = 4) in vec3 row3;\n"
+                                           "out float shade;\n"
+                                           "const float kFaceShades[6] = float[6](0.55, 0.85, 0.65, 1.0, 0.7, 0.9);\n"
+                                           "void main() {\n"
+                                           "    vec3 local = (markers != 0) ? mix(boxMin, boxMax, vec3(0.5)) : mix(boxMin, boxMax, corner);\n"
+                                           "    vec3 world = local.x * row0 + local.y * row1 + local.z * row2 + row3;\n"
+                                           "    vec4 clip = viewProjection * vec4(world, 1.0);\n"
+                                           "    if (markers != 0) {\n"
+                                           "        clip += vec4(corner.xy * markerScale * clip.w, 0.0, 0.0);\n"
+                                           "    }\n"
+                                           "    shade = (shaded != 0) ? kFaceShades[min(gl_VertexID / 6, 5)] : 1.0;\n"
+                                           "    gl_Position = clip;\n"
+                                           "}\n";
+const char* const kBudgetBoxFragmentShader = "#version 330 core\n"
+                                             "uniform vec3 tint;\n"
+                                             "in float shade;\n"
+                                             "out vec4 colour;\n"
+                                             "void main() { colour = vec4(tint * shade, 1.0); }\n";
 // Two triangles per face, six vertices each, faces in the order of kFaceShades.
 const GLfloat kBoxFaces[] = {
     0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 1, 0,
@@ -725,8 +725,8 @@ const GLfloat kBoxFaces[] = {
     1, 0, 0, 1, 0, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0
 };
 // Unlike the boxes of boxed rows, the selection and unloaded payloads.
-const GLfloat kStandInTint[] = { 0.85f, 0.45f, 0.95f };
-const int kStandInRowFloats = 12;
+const GLfloat kBudgetBoxTint[] = { 0.85f, 0.45f, 0.95f };
+const int kBudgetBoxRowFloats = 12;
 } // anon namespace
 
 std::atomic<U64> engineConstructionCount(0);
@@ -1044,11 +1044,11 @@ struct SceneViewportRenderer::Implementation {
     std::atomic<bool> fillColoursValid { false };
     std::atomic<int> boxesDrawn { 0 };
     std::atomic<int> markersDrawn { 0 };
-    // The budget Storm's filter applies, whose stand-ins the frames draw.
+    // The budget Storm's filter applies, whose budget boxes the frames draw.
     SceneDrawBoxes::BudgetPtr appliedBudget;
-    // What the last frame drew stand-ins of, which is what a click picks from.
-    SceneDrawBoxes::BudgetPtr drawnStandIns;
-    std::atomic<int> standIn { SceneViewportRenderer::eStandInBoxWire };
+    // What the last frame drew budget boxes of, which is what a click picks from.
+    SceneDrawBoxes::BudgetPtr drawnBudgetBoxes;
+    std::atomic<int> budgetBoxes { SceneViewportRenderer::eBudgetBoxesBoxWire };
     std::atomic<bool> recordBudget { false };
     // What the stats last recorded, on the render thread.
     bool recordedBudget = false;
@@ -1057,13 +1057,13 @@ struct SceneViewportRenderer::Implementation {
     SceneViewBudget::Camera frameCamera;
     SceneViewportRenderer::BudgetStats budgetStats;
     std::atomic<unsigned long long> frameCameraSerial { 0 };
-    GLuint standInProgram = 0;
+    GLuint budgetBoxProgram = 0;
     // Edges, faces and marker arms.
-    GLuint standInVaos[3] = { 0, 0, 0 };
-    GLuint standInShapes[3] = { 0, 0, 0 };
-    GLuint standInRows = 0;
-    SceneDrawBoxes::BudgetPtr uploadedStandIns;
-    struct StandInRange {
+    GLuint budgetBoxVaos[3] = { 0, 0, 0 };
+    GLuint budgetBoxShapes[3] = { 0, 0, 0 };
+    GLuint budgetBoxRows = 0;
+    SceneDrawBoxes::BudgetPtr uploadedBudgetBoxes;
+    struct BudgetBoxRange {
         GLint first = 0;
         GLsizei count = 0;
         GfVec3f min;
@@ -1072,7 +1072,7 @@ struct SceneViewportRenderer::Implementation {
         // Of a gprim, not an instance.
         bool gprim = false;
     };
-    std::vector<StandInRange> standInRanges;
+    std::vector<BudgetBoxRange> budgetBoxRanges;
     // Whether feedBoxes() feeds the stand-in's worker. Main thread.
     bool standInEnabled = false;
     // Which rows the stand-in's worker lists, read there.
@@ -3316,15 +3316,15 @@ struct SceneViewportRenderer::Implementation {
     {
         const SceneDrawBoxes::ListPtr list = boxes ? boxes->getList() : SceneDrawBoxes::ListPtr();
 
-        return (list && !list->boxes.empty()) || hasStandIns();
+        return (list && !list->boxes.empty()) || hasBudgetBoxes();
     }
 
-    bool hasStandIns() const
+    bool hasBudgetBoxes() const
     {
         const SceneDrawBoxes::BudgetPtr budget = currentBudget();
 
-        return budget && (standIn != SceneViewportRenderer::eStandInOff)
-            && (!budget->standIns.boxes.empty() || !budget->standIns.groups.empty());
+        return budget && (budgetBoxes != SceneViewportRenderer::eBudgetBoxesOff)
+            && (!budget->budgetBoxSet.boxes.empty() || !budget->budgetBoxSet.groups.empty());
     }
 
     // Needs stageMutex. A frame from another camera holds the budget as it is until the next
@@ -3663,15 +3663,15 @@ struct SceneViewportRenderer::Implementation {
         markersDrawn = int(boxBuffers.markerInstances);
     } // drawBoxes
 
-    bool ensureStandInProgram()
+    bool ensureBudgetBoxesProgram()
     {
-        if (standInProgram) {
+        if (budgetBoxProgram) {
             return true;
         }
         const GLuint vertex = glCreateShader(GL_VERTEX_SHADER);
         const GLuint fragment = glCreateShader(GL_FRAGMENT_SHADER);
-        glShaderSource(vertex, 1, &kStandInVertexShader, nullptr);
-        glShaderSource(fragment, 1, &kStandInFragmentShader, nullptr);
+        glShaderSource(vertex, 1, &kBudgetBoxVertexShader, nullptr);
+        glShaderSource(fragment, 1, &kBudgetBoxFragmentShader, nullptr);
         glCompileShader(vertex);
         glCompileShader(fragment);
         const GLuint program = glCreateProgram();
@@ -3687,19 +3687,19 @@ struct SceneViewportRenderer::Implementation {
 
             return false;
         }
-        standInProgram = program;
+        budgetBoxProgram = program;
         const GLfloat* shapes[3] = { kBoxEdges, kBoxFaces, kMarkerArms };
         const GLsizeiptr sizes[3] = { sizeof(kBoxEdges), sizeof(kBoxFaces), sizeof(kMarkerArms) };
-        glGenVertexArrays(3, standInVaos);
-        glGenBuffers(3, standInShapes);
-        glGenBuffers(1, &standInRows);
+        glGenVertexArrays(3, budgetBoxVaos);
+        glGenBuffers(3, budgetBoxShapes);
+        glGenBuffers(1, &budgetBoxRows);
         for (int shape = 0; shape < 3; ++shape) {
-            glBindVertexArray(standInVaos[shape]);
-            glBindBuffer(GL_ARRAY_BUFFER, standInShapes[shape]);
+            glBindVertexArray(budgetBoxVaos[shape]);
+            glBindBuffer(GL_ARRAY_BUFFER, budgetBoxShapes[shape]);
             glBufferData(GL_ARRAY_BUFFER, sizes[shape], shapes[shape], GL_STATIC_DRAW);
             glEnableVertexAttribArray(0);
             glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
-            glBindBuffer(GL_ARRAY_BUFFER, standInRows);
+            glBindBuffer(GL_ARRAY_BUFFER, budgetBoxRows);
             for (GLuint attribute = 1; attribute <= 4; ++attribute) {
                 glEnableVertexAttribArray(attribute);
                 glVertexAttribDivisor(attribute, 1);
@@ -3707,59 +3707,59 @@ struct SceneViewportRenderer::Implementation {
         }
         glBindVertexArray(0);
         glBindBuffer(GL_ARRAY_BUFFER, 0);
-        uploadedStandIns.reset();
+        uploadedBudgetBoxes.reset();
 
         return true;
-    } // ensureStandInProgram
+    } // ensureBudgetBoxesProgram
 
-    // The gprims' boxes become rows mapping the unit cube onto them, so that every stand-in draws
+    // The gprims' boxes become rows mapping the unit cube onto them, so that every budget box draws
     // through the one program.
-    void uploadStandIns(const SceneDrawBoxes::Budget& budget)
+    void uploadBudgetBoxes(const SceneDrawBoxes::Budget& budget)
     {
-        const SceneDrawBoxes::StandIns& standIns = budget.standIns;
+        const SceneDrawBoxes::BudgetBoxSet& budgetBoxSet = budget.budgetBoxSet;
         std::vector<GLfloat> rows;
-        rows.reserve((standIns.boxes.size() + standIns.instanceCount) * kStandInRowFloats);
-        standInRanges.clear();
+        rows.reserve((budgetBoxSet.boxes.size() + budgetBoxSet.instanceCount) * kBudgetBoxRowFloats);
+        budgetBoxRanges.clear();
         for (int pass = 0; pass < 2; ++pass) {
-            StandInRange range;
-            range.first = GLint(rows.size() / kStandInRowFloats);
+            BudgetBoxRange range;
+            range.first = GLint(rows.size() / kBudgetBoxRowFloats);
             range.bounded = (pass == 0);
             range.gprim = true;
             range.min = GfVec3f(0.f);
             range.max = range.bounded ? GfVec3f(1.f) : GfVec3f(0.f);
-            for (const SceneDrawBoxes::Box& box : standIns.boxes) {
+            for (const SceneDrawBoxes::Box& box : budgetBoxSet.boxes) {
                 if ((box.kind != SceneDrawBoxes::eKindMarker) != range.bounded) {
                     continue;
                 }
                 const GfVec3f size = range.bounded ? GfVec3f(box.max - box.min) : GfVec3f(0.f);
                 rows.insert(rows.end(), { size[0], 0.f, 0.f, 0.f, size[1], 0.f, 0.f, 0.f, size[2], box.min[0], box.min[1], box.min[2] });
             }
-            range.count = GLsizei(rows.size() / kStandInRowFloats) - range.first;
+            range.count = GLsizei(rows.size() / kBudgetBoxRowFloats) - range.first;
             if (range.count > 0) {
-                standInRanges.push_back(range);
+                budgetBoxRanges.push_back(range);
             }
         }
-        for (const SceneDrawBoxes::StandInGroup& group : standIns.groups) {
-            StandInRange range;
-            range.first = GLint(rows.size() / kStandInRowFloats);
+        for (const SceneDrawBoxes::BudgetBoxGroup& group : budgetBoxSet.groups) {
+            BudgetBoxRange range;
+            range.first = GLint(rows.size() / kBudgetBoxRowFloats);
             range.count = GLsizei(group.indices.size());
             range.min = group.min;
             range.max = group.max;
             range.bounded = group.bounded;
             rows.insert(rows.end(), group.rows.begin(), group.rows.end());
             if (range.count > 0) {
-                standInRanges.push_back(range);
+                budgetBoxRanges.push_back(range);
             }
         }
-        glBindBuffer(GL_ARRAY_BUFFER, standInRows);
+        glBindBuffer(GL_ARRAY_BUFFER, budgetBoxRows);
         glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(rows.size() * sizeof(GLfloat)), rows.data(), GL_STATIC_DRAW);
         glBindBuffer(GL_ARRAY_BUFFER, 0);
     }
 
-    // The corners of a stand-in's box in world space, mapped by its rows.
-    static void standInCorners(const StandInRange& range,
-                               const GLfloat* row,
-                               GfVec3d corners[8])
+    // The corners of a budget box's box in world space, mapped by its rows.
+    static void budgetBoxCorners(const BudgetBoxRange& range,
+                                 const GLfloat* row,
+                                 GfVec3d corners[8])
     {
         for (int corner = 0; corner < 8; ++corner) {
             const GfVec3d local((corner & 1) ? range.max[0] : range.min[0], (corner & 2) ? range.max[1] : range.min[1], (corner & 4) ? range.max[2] : range.min[2]);
@@ -3769,17 +3769,17 @@ struct SceneViewportRenderer::Implementation {
         }
     }
 
-    void recordDrawnStandIns(const GfFrustum& frustum,
-                             int width,
-                             int height,
-                             bool markers)
+    void recordDrawnBudgetBoxes(const GfFrustum& frustum,
+                                int width,
+                                int height,
+                                bool markers)
     {
-        const SceneDrawBoxes::StandIns& standIns = drawnStandIns->standIns;
+        const SceneDrawBoxes::BudgetBoxSet& budgetBoxSet = drawnBudgetBoxes->budgetBoxSet;
         const SceneGizmo::View view(frustum.ComputeViewMatrix(), frustum.ComputeProjectionMatrix(), width, height);
-        std::vector<GLfloat> row(kStandInRowFloats);
-        const auto record = [&](const StandInRange& range, const std::string& path, const char* kind) {
+        std::vector<GLfloat> row(kBudgetBoxRowFloats);
+        const auto record = [&](const BudgetBoxRange& range, const std::string& path, const char* kind) {
             GfVec3d corners[8];
-            standInCorners(range, row.data(), corners);
+            budgetBoxCorners(range, row.data(), corners);
             GfVec2d centre;
             if (!SceneGizmo::project(view, (corners[0] + corners[7]) * 0.5, &centre)) {
                 return;
@@ -3800,74 +3800,74 @@ struct SceneViewportRenderer::Implementation {
             }
             drawnBoxes.push_back(drawn);
         };
-        for (const SceneDrawBoxes::Box& box : standIns.boxes) {
-            StandInRange range;
+        for (const SceneDrawBoxes::Box& box : budgetBoxSet.boxes) {
+            BudgetBoxRange range;
             range.min = box.min;
             range.max = (box.kind == SceneDrawBoxes::eKindMarker) ? box.min : box.max;
             range.bounded = (box.kind != SceneDrawBoxes::eKindMarker);
             row = { 1.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f };
-            record(range, box.path.GetString(), "standIn");
+            record(range, box.path.GetString(), "budgetBox");
         }
-        for (const SceneDrawBoxes::StandInGroup& group : standIns.groups) {
-            StandInRange range;
+        for (const SceneDrawBoxes::BudgetBoxGroup& group : budgetBoxSet.groups) {
+            BudgetBoxRange range;
             range.min = group.min;
             range.max = group.max;
             range.bounded = group.bounded;
             for (std::size_t at = 0; at < group.indices.size(); ++at) {
-                std::copy(group.rows.begin() + at * kStandInRowFloats, group.rows.begin() + (at + 1) * kStandInRowFloats, row.begin());
-                record(range, group.instancer.GetString() + "[" + std::to_string(group.indices[at]) + "]", "standInInstance");
+                std::copy(group.rows.begin() + at * kBudgetBoxRowFloats, group.rows.begin() + (at + 1) * kBudgetBoxRowFloats, row.begin());
+                record(range, group.instancer.GetString() + "[" + std::to_string(group.indices[at]) + "]", "budgetBoxInstance");
             }
         }
-    } // recordDrawnStandIns
+    } // recordDrawnBudgetBoxes
 
     // In the budget's tint, depth-tested against the frame's depth like the boxes: one instanced
     // draw for the gprims' boxes, one for their markers, and one per prototype of each instancer.
     // Shaded boxes write depth, so they hide one another.
-    void drawStandIns(const GfFrustum& frustum,
-                      int width,
-                      int height)
+    void drawBudgetBoxes(const GfFrustum& frustum,
+                         int width,
+                         int height)
     {
-        drawnStandIns.reset();
+        drawnBudgetBoxes.reset();
         unsigned long long boxesShown = 0, instancesShown = 0, markersShown = 0;
-        const int mode = standIn;
-        const SceneDrawBoxes::BudgetPtr budget = hasStandIns() ? currentBudget() : SceneDrawBoxes::BudgetPtr();
-        if (budget && ensureStandInProgram()) {
-            if (uploadedStandIns != budget) {
-                uploadStandIns(*budget);
-                uploadedStandIns = budget;
+        const int mode = budgetBoxes;
+        const SceneDrawBoxes::BudgetPtr budget = hasBudgetBoxes() ? currentBudget() : SceneDrawBoxes::BudgetPtr();
+        if (budget && ensureBudgetBoxesProgram()) {
+            if (uploadedBudgetBoxes != budget) {
+                uploadBudgetBoxes(*budget);
+                uploadedBudgetBoxes = budget;
             }
-            drawnStandIns = budget;
+            drawnBudgetBoxes = budget;
             if (recordDrawnBoxes) {
-                recordDrawnStandIns(frustum, width, height, mode == SceneViewportRenderer::eStandInMarker);
+                recordDrawnBudgetBoxes(frustum, width, height, mode == SceneViewportRenderer::eBudgetBoxesMarker);
             }
             const GfMatrix4f viewProjection(frustum.ComputeViewMatrix() * frustum.ComputeProjectionMatrix());
-            glUseProgram(standInProgram);
-            glUniformMatrix4fv(glGetUniformLocation(standInProgram, "viewProjection"), 1, GL_FALSE, viewProjection.GetArray());
-            glUniform3fv(glGetUniformLocation(standInProgram, "tint"), 1, kStandInTint);
-            glUniform2f(glGetUniformLocation(standInProgram, "markerScale"), 2.f * kMarkerPixels / float(width), 2.f * kMarkerPixels / float(height));
-            const GLint boxMinAt = glGetUniformLocation(standInProgram, "boxMin");
-            const GLint boxMaxAt = glGetUniformLocation(standInProgram, "boxMax");
-            const GLint markersAt = glGetUniformLocation(standInProgram, "markers");
-            const GLint shadedAt = glGetUniformLocation(standInProgram, "shaded");
+            glUseProgram(budgetBoxProgram);
+            glUniformMatrix4fv(glGetUniformLocation(budgetBoxProgram, "viewProjection"), 1, GL_FALSE, viewProjection.GetArray());
+            glUniform3fv(glGetUniformLocation(budgetBoxProgram, "tint"), 1, kBudgetBoxTint);
+            glUniform2f(glGetUniformLocation(budgetBoxProgram, "markerScale"), 2.f * kMarkerPixels / float(width), 2.f * kMarkerPixels / float(height));
+            const GLint boxMinAt = glGetUniformLocation(budgetBoxProgram, "boxMin");
+            const GLint boxMaxAt = glGetUniformLocation(budgetBoxProgram, "boxMax");
+            const GLint markersAt = glGetUniformLocation(budgetBoxProgram, "markers");
+            const GLint shadedAt = glGetUniformLocation(budgetBoxProgram, "shaded");
             glEnable(GL_DEPTH_TEST);
             glDepthFunc(GL_LEQUAL);
             glDisable(GL_BLEND);
             glDisable(GL_CULL_FACE);
             glLineWidth(1.f);
-            for (const StandInRange& range : standInRanges) {
-                const bool marker = (mode == SceneViewportRenderer::eStandInMarker) || !range.bounded;
-                const bool shaded = !marker && (mode == SceneViewportRenderer::eStandInBoxShaded);
+            for (const BudgetBoxRange& range : budgetBoxRanges) {
+                const bool marker = (mode == SceneViewportRenderer::eBudgetBoxesMarker) || !range.bounded;
+                const bool shaded = !marker && (mode == SceneViewportRenderer::eBudgetBoxesBoxShaded);
                 const int shape = marker ? 2 : (shaded ? 1 : 0);
                 glDepthMask(shaded ? GL_TRUE : GL_FALSE);
                 glUniform3f(boxMinAt, range.min[0], range.min[1], range.min[2]);
                 glUniform3f(boxMaxAt, range.max[0], range.max[1], range.max[2]);
                 glUniform1i(markersAt, marker ? 1 : 0);
                 glUniform1i(shadedAt, shaded ? 1 : 0);
-                glBindVertexArray(standInVaos[shape]);
-                glBindBuffer(GL_ARRAY_BUFFER, standInRows);
+                glBindVertexArray(budgetBoxVaos[shape]);
+                glBindBuffer(GL_ARRAY_BUFFER, budgetBoxRows);
                 for (GLuint attribute = 1; attribute <= 4; ++attribute) {
-                    const std::size_t offset = (std::size_t(range.first) * kStandInRowFloats + (attribute - 1) * 3) * sizeof(GLfloat);
-                    glVertexAttribPointer(attribute, 3, GL_FLOAT, GL_FALSE, kStandInRowFloats * sizeof(GLfloat), reinterpret_cast<const void*>(offset));
+                    const std::size_t offset = (std::size_t(range.first) * kBudgetBoxRowFloats + (attribute - 1) * 3) * sizeof(GLfloat);
+                    glVertexAttribPointer(attribute, 3, GL_FLOAT, GL_FALSE, kBudgetBoxRowFloats * sizeof(GLfloat), reinterpret_cast<const void*>(offset));
                 }
                 glDrawArraysInstanced(shaded ? GL_TRIANGLES : GL_LINES, 0, marker ? 4 : (shaded ? 36 : 24), range.count);
                 (range.gprim ? boxesShown : instancesShown) += range.count;
@@ -3883,27 +3883,27 @@ struct SceneViewportRenderer::Implementation {
             glDisable(GL_DEPTH_TEST);
         }
         std::lock_guard<std::mutex> lock(budgetMutex);
-        budgetStats.standInBoxes = boxesShown;
-        budgetStats.standInInstances = instancesShown;
-        budgetStats.standInMarkers = markersShown;
-    } // drawStandIns
+        budgetStats.budgetBoxCount = boxesShown;
+        budgetStats.budgetBoxInstances = instancesShown;
+        budgetStats.budgetBoxMarkers = markersShown;
+    } // drawBudgetBoxes
 
-    // The stand-in the last frame drew under the pixel (x, y), as pickBox() finds a box.
-    bool pickStandIn(const GfFrustum& frustum,
-                     int width,
-                     int height,
-                     int x,
-                     int y,
-                     std::string* path,
-                     GfVec3d* point) const
+    // The budget box the last frame drew under the pixel (x, y), as pickBox() finds a box.
+    bool pickBudgetBox(const GfFrustum& frustum,
+                       int width,
+                       int height,
+                       int x,
+                       int y,
+                       std::string* path,
+                       GfVec3d* point) const
     {
-        if (!drawnStandIns) {
+        if (!drawnBudgetBoxes) {
             return false;
         }
-        SceneDrawBoxes::StandInHit hit;
-        if (!SceneDrawBoxes::pickStandIn(drawnStandIns->standIns, frustum.ComputeViewMatrix() * frustum.ComputeProjectionMatrix(), width, height,
-                                         GfVec2d(x + 0.5, y + 0.5), kMarkerPixels + kMarkerPickSlack,
-                                         standIn == SceneViewportRenderer::eStandInMarker, &hit)) {
+        SceneDrawBoxes::BudgetBoxHit hit;
+        if (!SceneDrawBoxes::pickBudgetBox(drawnBudgetBoxes->budgetBoxSet, frustum.ComputeViewMatrix() * frustum.ComputeProjectionMatrix(), width, height,
+                                           GfVec2d(x + 0.5, y + 0.5), kMarkerPixels + kMarkerPickSlack,
+                                           budgetBoxes == SceneViewportRenderer::eBudgetBoxesMarker, &hit)) {
             return false;
         }
         *path = hit.path.GetString();
@@ -3959,21 +3959,21 @@ struct SceneViewportRenderer::Implementation {
 
     void releaseBoxesGL()
     {
-        if (standInProgram) {
-            glDeleteProgram(standInProgram);
-            glDeleteVertexArrays(3, standInVaos);
-            glDeleteBuffers(3, standInShapes);
-            glDeleteBuffers(1, &standInRows);
-            standInProgram = 0;
-            standInRows = 0;
+        if (budgetBoxProgram) {
+            glDeleteProgram(budgetBoxProgram);
+            glDeleteVertexArrays(3, budgetBoxVaos);
+            glDeleteBuffers(3, budgetBoxShapes);
+            glDeleteBuffers(1, &budgetBoxRows);
+            budgetBoxProgram = 0;
+            budgetBoxRows = 0;
             for (int shape = 0; shape < 3; ++shape) {
-                standInVaos[shape] = 0;
-                standInShapes[shape] = 0;
+                budgetBoxVaos[shape] = 0;
+                budgetBoxShapes[shape] = 0;
             }
         }
-        uploadedStandIns.reset();
-        drawnStandIns.reset();
-        standInRanges.clear();
+        uploadedBudgetBoxes.reset();
+        drawnBudgetBoxes.reset();
+        budgetBoxRanges.clear();
         if (boxProgram) {
             glDeleteProgram(boxProgram);
             boxProgram = 0;
@@ -4004,7 +4004,7 @@ struct SceneViewportRenderer::Implementation {
         markersDrawn = 0;
         standInBoxesDrawn = 0;
         drawnBoxList.reset();
-        drawnStandIns.reset();
+        drawnBudgetBoxes.reset();
         fillDrawnList.reset();
         drawnBoxes.clear();
         const bool fillBoxes = !standIn && !held && hasFillBoxes();
@@ -4027,7 +4027,7 @@ struct SceneViewportRenderer::Implementation {
         }
         if (!held) {
             drawBoxes(frustum, width, height);
-            drawStandIns(frustum, width, height);
+            drawBudgetBoxes(frustum, width, height);
         }
         if (showGuides) {
             drawGuides(frustum, width, height, stageReadable);
@@ -4606,9 +4606,9 @@ SceneViewportRenderer::getFrameCameraSerial() const
 }
 
 void
-SceneViewportRenderer::setStandIn(StandInEnum standIn)
+SceneViewportRenderer::setBudgetBoxes(BudgetBoxesEnum budgetBoxes)
 {
-    _imp->standIn = int(standIn);
+    _imp->budgetBoxes = int(budgetBoxes);
 }
 
 void
@@ -6651,14 +6651,14 @@ SceneViewportRenderer::pick(int x,
             nearestPoint = boxPoint;
         }
     }
-    std::string standInPath;
-    GfVec3d standInPoint;
-    if (_imp->pickStandIn(frustum, width, height, x, y, &standInPath, &standInPoint)) {
-        const double z = viewMatrix.Transform(standInPoint)[2];
+    std::string budgetBoxPath;
+    GfVec3d budgetBoxPoint;
+    if (_imp->pickBudgetBox(frustum, width, height, x, y, &budgetBoxPath, &budgetBoxPoint)) {
+        const double z = viewMatrix.Transform(budgetBoxPoint)[2];
         if (path.empty() || (z >= nearest)) {
-            path = standInPath;
+            path = budgetBoxPath;
             nearest = z;
-            nearestPoint = standInPoint;
+            nearestPoint = budgetBoxPoint;
         }
     }
     if (_imp->showGuides) {
@@ -10950,7 +10950,7 @@ namespace {
 struct PolygonBudgetKnobs {
     bool on = false;
     SceneViewportRenderer::BudgetSettings settings;
-    SceneViewportRenderer::StandInEnum standIn = SceneViewportRenderer::eStandInBoxWire;
+    SceneViewportRenderer::BudgetBoxesEnum budgetBoxes = SceneViewportRenderer::eBudgetBoxesBoxWire;
 };
 
 double
@@ -11004,9 +11004,9 @@ readPolygonBudgetKnobs(const NodePtr& node)
     knobs.settings.cullDistance = viewerKnobNumber(node, kViewerParamCullDistance, 0.);
     knobs.settings.fractionDistance = viewerKnobNumber(node, kViewerParamFractionDistance, 0.);
     knobs.settings.fractionPercent = viewerKnobNumber(node, kViewerParamFractionPercent, knobs.settings.fractionPercent);
-    const int standIn = int(viewerKnobNumber(node, kViewerParamStandIn, 0.));
-    if ((standIn >= SceneViewportRenderer::eStandInBoxWire) && (standIn <= SceneViewportRenderer::eStandInOff)) {
-        knobs.standIn = SceneViewportRenderer::StandInEnum(standIn);
+    const int budgetBoxes = int(viewerKnobNumber(node, kViewerParamBudgetBoxes, 0.));
+    if ((budgetBoxes >= SceneViewportRenderer::eBudgetBoxesBoxWire) && (budgetBoxes <= SceneViewportRenderer::eBudgetBoxesOff)) {
+        knobs.budgetBoxes = SceneViewportRenderer::BudgetBoxesEnum(budgetBoxes);
     }
 
     return knobs;
@@ -11027,7 +11027,7 @@ SceneViewport::refreshPolygonBudget()
 {
     const PolygonBudgetKnobs knobs = readPolygonBudgetKnobs(_imp->budgetNodeProvider ? _imp->budgetNodeProvider() : NodePtr());
 
-    _imp->renderer.setStandIn(knobs.standIn);
+    _imp->renderer.setBudgetBoxes(knobs.budgetBoxes);
     if (knobs.on) {
         _imp->cameraIdleTimer->start();
     } else {
@@ -11108,9 +11108,9 @@ SceneViewport::publishBudget()
     published[QString::fromUtf8("hidden")] = QVariant::fromValue<qulonglong>(stats.hidden);
     published[QString::fromUtf8("masked")] = QVariant::fromValue<qulonglong>(stats.masked);
     published[QString::fromUtf8("facedMeshes")] = QVariant::fromValue<qulonglong>(stats.facedMeshes);
-    published[QString::fromUtf8("standInBoxes")] = QVariant::fromValue<qulonglong>(stats.standInBoxes);
-    published[QString::fromUtf8("standInInstances")] = QVariant::fromValue<qulonglong>(stats.standInInstances);
-    published[QString::fromUtf8("standInMarkers")] = QVariant::fromValue<qulonglong>(stats.standInMarkers);
+    published[QString::fromUtf8("budgetBoxCount")] = QVariant::fromValue<qulonglong>(stats.budgetBoxCount);
+    published[QString::fromUtf8("budgetBoxInstances")] = QVariant::fromValue<qulonglong>(stats.budgetBoxInstances);
+    published[QString::fromUtf8("budgetBoxMarkers")] = QVariant::fromValue<qulonglong>(stats.budgetBoxMarkers);
     published[QString::fromUtf8("cameraSerial")] = QVariant::fromValue<qulonglong>(cameraSerial);
     published[QString::fromUtf8("idlePending")] = _imp->cameraIdleTimer->isActive();
     published[QString::fromUtf8("hud")] = hud;
@@ -13100,30 +13100,30 @@ SceneViewport::addPolygonBudgetMenu(QMenu* menu)
             editPolygonBudgetKnob(name, label, value);
         });
     }
-    QMenu* standIns = budget->addMenu(tr("Stand In"));
-    standIns->setObjectName(QString::fromUtf8(kViewerParamStandIn));
-    QActionGroup* standInGroup = new QActionGroup(standIns);
+    QMenu* budgetBoxSet = budget->addMenu(tr("Budget Boxes"));
+    budgetBoxSet->setObjectName(QString::fromUtf8(kViewerParamBudgetBoxes));
+    QActionGroup* budgetBoxGroup = new QActionGroup(budgetBoxSet);
     const struct
     {
         const char* name;
         QString label;
-        SceneViewportRenderer::StandInEnum value;
-    } standInItems[] = {
-        { "standInBoxWire", tr("Box Wire"), SceneViewportRenderer::eStandInBoxWire },
-        { "standInBoxShaded", tr("Box Shaded"), SceneViewportRenderer::eStandInBoxShaded },
-        { "standInMarker", tr("Marker"), SceneViewportRenderer::eStandInMarker },
-        { "standInOff", tr("Off"), SceneViewportRenderer::eStandInOff },
+        SceneViewportRenderer::BudgetBoxesEnum value;
+    } budgetBoxItems[] = {
+        { "budgetBoxBoxWire", tr("Box Wire"), SceneViewportRenderer::eBudgetBoxesBoxWire },
+        { "budgetBoxBoxShaded", tr("Box Shaded"), SceneViewportRenderer::eBudgetBoxesBoxShaded },
+        { "budgetBoxMarker", tr("Marker"), SceneViewportRenderer::eBudgetBoxesMarker },
+        { "budgetBoxOff", tr("Off"), SceneViewportRenderer::eBudgetBoxesOff },
     };
-    const int current = int(viewerKnobNumber(node, kViewerParamStandIn, 0.));
-    for (const auto& item : standInItems) {
-        QAction* action = standIns->addAction(item.label);
+    const int current = int(viewerKnobNumber(node, kViewerParamBudgetBoxes, 0.));
+    for (const auto& item : budgetBoxItems) {
+        QAction* action = budgetBoxSet->addAction(item.label);
         action->setObjectName(QString::fromUtf8(item.name));
         action->setCheckable(true);
         action->setChecked(current == int(item.value));
-        action->setActionGroup(standInGroup);
+        action->setActionGroup(budgetBoxGroup);
         const int value = int(item.value);
         QObject::connect(action, &QAction::triggered, this, [this, value]() {
-            editPolygonBudgetKnob(kViewerParamStandIn, tr("Stand In"), value);
+            editPolygonBudgetKnob(kViewerParamBudgetBoxes, tr("Budget Boxes"), value);
         });
     }
 } // addPolygonBudgetMenu

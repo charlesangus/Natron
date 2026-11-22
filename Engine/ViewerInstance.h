@@ -94,7 +94,7 @@
 #define kViewerParamCullDistance "cullDistance"
 #define kViewerParamFractionDistance "fractionDistance"
 #define kViewerParamFractionPercent "fractionPercent"
-#define kViewerParamStandIn "standIn"
+#define kViewerParamBudgetBoxes "budgetBoxes"
 
 NATRON_NAMESPACE_ENTER
 
@@ -309,15 +309,15 @@ GCC_DIAG_SUGGEST_OVERRIDE_ON
 public:
     static EffectInstance* BuildEffect(NodePtr n) WARN_UNUSED_RETURN;
 
-    // The order of the standIn knob's entries.
-    enum StandInEnum {
-        eStandInBoxWire,
-        eStandInBoxShaded,
-        eStandInMarker,
-        eStandInOff
+    // The order of the budgetBoxes knob's entries.
+    enum BudgetBoxesEnum {
+        eBudgetBoxesBoxWire,
+        eBudgetBoxesBoxShaded,
+        eBudgetBoxesMarker,
+        eBudgetBoxesOff
     };
 
-    static std::vector<ChoiceOption> getStandInChoices();
+    static std::vector<ChoiceOption> getBudgetBoxesChoices();
 
     /**
      * @brief The tooltip of a polygon budget knob, by its script name here; the Preferences knob of

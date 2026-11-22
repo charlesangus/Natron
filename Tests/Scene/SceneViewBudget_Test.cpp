@@ -259,7 +259,7 @@ TEST(SceneViewBudget, AFractionKeepsTheSameHashedSubsetFromAnyCamera)
     EXPECT_LT(kept, 320u);
     ASSERT_EQ(first.keptFaceFraction.count(SdfPath("/Mesh")), 1u);
     EXPECT_DOUBLE_EQ(first.keptFaceFraction.at(SdfPath("/Mesh")), 0.25);
-    // Fractioned-out instances are stand-ins, which count nothing; the mesh counts its share.
+    // Fractioned-out instances are budget boxes, which count nothing; the mesh counts its share.
     EXPECT_EQ(first.counted, kept * 10 + 250u);
 
     // Nearer than the fraction distance everything draws.

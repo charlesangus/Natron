@@ -975,12 +975,12 @@ public:
         double fractionPercent = 25.;
     };
 
-    // Of ViewerInstance::StandInEnum.
-    enum StandInEnum {
-        eStandInBoxWire,
-        eStandInBoxShaded,
-        eStandInMarker,
-        eStandInOff
+    // Of ViewerInstance::BudgetBoxesEnum.
+    enum BudgetBoxesEnum {
+        eBudgetBoxesBoxWire,
+        eBudgetBoxesBoxShaded,
+        eBudgetBoxesMarker,
+        eBudgetBoxesOff
     };
 
     /**
@@ -993,7 +993,7 @@ public:
     void stopBudget();
     // Changes whenever a frame renders from another camera than the frame before it.
     unsigned long long getFrameCameraSerial() const;
-    void setStandIn(StandInEnum standIn);
+    void setBudgetBoxes(BudgetBoxesEnum budgetBoxes);
 
     struct BudgetStats {
         // Whether the engine's filter applies a budget: Storm's alone does.
@@ -1014,9 +1014,9 @@ public:
         unsigned long long masked = 0;
         unsigned long long facedMeshes = 0;
         // What the last frame drew in place of what the budget took out.
-        unsigned long long standInBoxes = 0;
-        unsigned long long standInInstances = 0;
-        unsigned long long standInMarkers = 0;
+        unsigned long long budgetBoxCount = 0;
+        unsigned long long budgetBoxInstances = 0;
+        unsigned long long budgetBoxMarkers = 0;
         // The camera the budget was solved for, and the distance demotion starts from (infinite
         // for none).
         double eye[3] = { 0., 0., 0. };

@@ -163,7 +163,7 @@ public:
     };
 
     // The instances a result demotes, culls or fractions out all go from Storm, the demoted and
-    // fractioned ones to be drawn as stand-ins. A mesh's face count is its unit's.
+    // fractioned ones to be drawn as budget boxes. A mesh's face count is its unit's.
     static Budget budgetFrom(const SceneViewBudget::Result& result,
                              const std::vector<SceneViewBudget::Unit>& units);
 

@@ -628,7 +628,7 @@ public:
         KnobDoubleWPtr cullDistance; // 0: off
         KnobDoubleWPtr fractionDistance; // 0: off
         KnobDoubleWPtr fractionPercent;
-        KnobChoiceWPtr standIn;
+        KnobChoiceWPtr budgetBoxes;
     };
     Knobs knobs;
 

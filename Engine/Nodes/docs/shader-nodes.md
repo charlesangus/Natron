@@ -126,13 +126,59 @@ A scratch `PortNodeGui` (not landed) draws named ports in rows: inputs on the le
 right, with pipes curving from an output dot to an input dot. `NodeGraph::createNodeGUI` dispatches
 it beside `DotGui` and `BackdropGui`.
 
-**Decision: a sibling port-edge class, not an extended `Edge`.** `Edge` is built around an input
-number and an angle around the node; `initLine` draws centre to centre and clips to the node
-outline; and 13 other GUI files use it for selection, dragging, splice hints, bend points and Dot
-insertion. A port pipe instead joins two anchors, needs the output's name, and redraws when either
-node moves. Adding that to `Edge` would put two geometry models behind one class that every node
-uses. A sibling path item anchored to ports keeps `Edge` unchanged. The production work then gives
-the sibling the interactions `Edge` has: drag from a port, splice, select and delete.
+**Decision: ports are the single connection model.** Each `NodeGui` owns a `ConnectorLayout`
+(`inputAnchor(i)`, `outputAnchor(name)`, approach direction, hit test), and the one `Edge` class
+takes its endpoints and tangents from it. Classic nodes get a `RadialLayout` that reproduces
+today's angles, including the mask, side-input and inspector rules; port nodes get a
+`PortListLayout` that lists ports down the sides. The graph items sit on Node inputs plus a port
+descriptor (type, page, output name, promoted), with no new engine connection store.
+
+Why: there is one connection class to keep correct, not two that must stay in step, and later work
+(port groups, folding, channel networks) builds on the layout instead of on special cases. The
+rejected alternatives were a sibling port-edge class, which would duplicate selection, dragging,
+splice hints, bend points and Dot insertion that 13 other GUI files already get from `Edge`, and a
+sibling item hierarchy beside `NodeGui`, which fails because `NodeGraph` assumes `NodeGuiPtr` for
+selection, undo, backdrops, copy and viewer inputs.
+
+What the prototype showed: with the scratch `PortNodeGui`, `NodeGui`'s positional input arrows
+reappear on port nodes. Hiding them (making them transparent) is a hack, and it is the reason the
+fix has to sit at the layout level.
+
+Staging:
+
+1. M350: the runtime spec carries port type, page and a `promoted` flag.
+2. M351, step 1: add `ConnectorLayout` and move today's angle logic into `RadialLayout` with no
+   visible change; classic graph goldens must stay pixel-identical.
+3. M351, step 2: add `PortListLayout`, bezier pipes and output names, and delete the prototype's
+   arrow hiding.
+4. Later: port groups, folding and search-to-connect.
+
+Not yet prototyped: splice, bend points and Dot insertion with bezier pipes.
+
+## Look and interaction
+
+- **Type colours** come from a type table in the core: float light grey, int lime, vector3 dark
+  blue, normal/point blue-violet, color yellow, string light blue, closure green, displacement
+  teal, texture apricot, channel magenta, custom white with a coloured ring.
+- **Port shapes:** a circle for a single value, a pill for an array, a diamond for a varying value
+  in kernel and channel networks.
+- **Pipes:** bezier curves with horizontal tangents, coloured by the source port's type.
+- **Dragging a pipe:** compatible ports are highlighted and incompatible ones dim. A refused drop
+  says why in the status bar.
+- **Groups:** collapsible port groups that mirror the knob pages.
+- **Header colour:** by node category.
+- **No inline value widgets.** An unconnected promoted port shows at most a read-only summary (a
+  swatch or a number); editing stays in the properties panel. Inline widgets suit 5-10 ports, not
+  100+, and the real `DwaBaseMaterial` has 101.
+- **Default fold:** connected ports only for a node with more than 20 ports, otherwise all
+  promoted ports. Header-only is a manual state.
+- **Interaction:**
+  - drag from any port, input or output;
+  - dropping on empty space opens the node menu, filtered to nodes with a shared target and a
+    type-compatible port, and the new node is auto-wired;
+  - dragging a pipe's input end rewires it;
+  - ctrl-drag from an output adds another pipe, since outputs fan out freely;
+  - Dot nodes serve as reroutes.
 
 ## Recommendation
 

@@ -30,6 +30,7 @@
 
 #include <cstddef>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include <QWidget>
@@ -44,7 +45,8 @@ NATRON_NAMESPACE_ENTER
 /**
  * @brief Lists the project's unresolved merge conflicts, grouped by node, and resolves them:
  * selecting a row frames its node and opens its settings panel; Mine, Theirs and Base put that
- * side's state back, Accept keeps what the merge chose. Selecting a node's row acts on all of its
+ * side's state back, a button per handler option of the one selected conflict applies that
+ * option, Accept keeps what the merge chose. Selecting a node's row acts on all of its
  * conflicts. It also keeps the conflict badges of the node graph up to date.
  **/
 class MergeConflictPanel
@@ -67,6 +69,8 @@ public:
     // Resolves those of the conflicts at indices that can take a side, reporting a failure in a
     // dialog; acceptConflicts() keeps what the merge chose for all of them.
     void resolveConflicts(const std::vector<std::size_t>& indices, ProjectMerge::ConflictSide side);
+    // Applies the handler option named option of the conflict at index, reporting a failure in a dialog.
+    void resolveOption(std::size_t index, const std::string& option);
     void acceptConflicts(const std::vector<std::size_t>& indices);
 
 public Q_SLOTS:

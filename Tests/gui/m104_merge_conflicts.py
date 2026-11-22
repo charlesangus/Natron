@@ -7,6 +7,10 @@ One conflict is resolved with Theirs, Base, Mine and Accept in turn, each undone
 which brings the conflict back. Resolve All Theirs clears the list and the badge; undoing it brings
 them back, and the project saved like that and reopened shows the panel with the same count.
 
+Then an input conflict: version 2 of a second template feeds Blur2 from a new Blur3, the artist
+feeds it from Artist, and the update keeps Artist with a conflict listed under Blur2. Theirs
+reconnects Blur2 to Blur3, and Edit > Undo puts Artist back and the conflict with it.
+
 Usage: Tests/gui/run-gui-test.sh Tests/gui/m104_merge_conflicts.py
 """
 import os
@@ -127,6 +131,22 @@ try:
         QApplication.processEvents()
         return item.text(0)
 
+    def select_under(node_name):
+        """Selects the first conflict listed under node_name and returns its text, or None."""
+        t = tree()
+        found = [item for group, item in rows() if node_name in group]
+        if not check(t is not None and len(found) > 0, "the panel lists a conflict under " + node_name):
+            return None
+        t.clearSelection()
+        t.setCurrentItem(found[0])
+        found[0].setSelected(True)
+        QApplication.processEvents()
+        return found[0].text(0)
+
+    def source_of(node):
+        source = node.getInput(0)
+        return source.getScriptName() if source is not None else None
+
     def dimension_of(text):
         """The dimension a value conflict's row names, or None."""
         marker = "dimension "
@@ -238,6 +258,66 @@ try:
         yield ("sleep", SETTLE_MS)
         check_panel(count, "after reopening")
         check(app.isMergeConflictBadgeShown(app.getNode("Blur1")), "the reopened Blur1 carries the badge")
+
+        gt.section("input templates")
+        require(app.resetProject(), "reset the project for the input conflict")
+        yield ("sleep", SETTLE_MS)
+        in_v1 = os.path.join(gt.OUT, "m104_input_template_v1.ntpz")
+        in_v2 = os.path.join(gt.OUT, "m104_input_template_v2.ntpz")
+        first = app.createNode(BLUR)
+        require(first is not None, "create Blur1", gt.plugin_problem(BLUR))
+        first.setScriptName("Blur1")
+        second = app.createNode(BLUR)
+        require(second is not None, "create Blur2", gt.plugin_problem(BLUR))
+        second.setScriptName("Blur2")
+        second.setPosition(0, 200)
+        require(second.connectInput(0, first), "connect Blur1 to Blur2")
+        require(app.saveProjectAs(in_v1), "save the input template version 1")
+        feed = app.createNode(BLUR)
+        require(feed is not None, "create Blur3", gt.plugin_problem(BLUR))
+        feed.setScriptName("Blur3")
+        feed.setPosition(200, 100)
+        second.disconnectInput(0)
+        require(second.connectInput(0, feed), "connect Blur3 to Blur2")
+        require(app.saveProjectAs(in_v2), "save the input template version 2")
+        require(app.resetProject(), "reset the project")
+        yield ("sleep", SETTLE_MS)
+
+        gt.section("input update")
+        artist = app.createNode(BLUR)
+        require(artist is not None, "create Artist", gt.plugin_problem(BLUR))
+        artist.setScriptName("Artist")
+        artist.setPosition(-200, 100)
+        in_key = app.importTemplate(in_v1)
+        require(bool(in_key), "import the input template version 1")
+        yield ("sleep", SETTLE_MS)
+        blur2 = app.getNode("Blur2")
+        require(blur2 is not None, "the import created Blur2")
+        blur2.disconnectInput(0)
+        require(blur2.connectInput(0, artist), "connect Artist to Blur2")
+        in_count = app.updateFromTemplate(in_key, in_v2)
+        require(in_count > 0, "the update raises the input conflict (got %d)" % in_count)
+        ok = yield ("until", lambda: panel_shown() and len(rows()) == in_count, POLL_TIMEOUT_S)
+        require(ok, "the panel lists the input conflict")
+        yield ("sleep", SETTLE_MS)
+        require(app.getNode("Blur3") is not None, "the update added Blur3")
+        check(source_of(blur2) == "Artist", "the update kept the artist's input (%r)" % source_of(blur2))
+        check(app.isMergeConflictBadgeShown(blur2), "Blur2 carries the conflict badge")
+
+        gt.section("resolve input Theirs")
+        text = select_under("Blur2")
+        require(text is not None, "select the input conflict")
+        report("NOTE input: resolving %r" % text)
+        require(click("mergeConflictTheirs"), "resolve the input conflict with Theirs")
+        yield ("sleep", SETTLE_MS)
+        check_panel(in_count - 1, "after the input Theirs")
+        check(source_of(blur2) == "Blur3", "Theirs feeds Blur2 from Blur3 (%r)" % source_of(blur2))
+        gt.shot("m104_merge_conflicts_input.png")
+        if undo("the input Theirs resolution"):
+            yield ("sleep", SETTLE_MS)
+            check_panel(in_count, "after undoing the input Theirs")
+            check(source_of(blur2) == "Artist", "undoing Theirs feeds Blur2 from Artist again (%r)" % source_of(blur2))
+            check(app.isMergeConflictBadgeShown(blur2), "undoing the input Theirs keeps the badge")
 
     gt.run(steps())
 except Exception:

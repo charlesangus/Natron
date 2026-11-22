@@ -26,6 +26,7 @@
 #include "MergeConflictResolve.h"
 
 #include <algorithm>
+#include <functional>
 #include <set>
 
 #include <QCoreApplication>
@@ -203,6 +204,72 @@ updateFromTemplate(Gui* gui,
     return result;
 }
 
+namespace {
+    // Each conflict's operations are built from the graph as the ones before it left it, so that
+    // conflicts on the same node compose.
+    bool
+    resolveWith(Gui* gui,
+                const std::vector<std::size_t>& indices,
+                const std::function<bool(const Serialization::MergeConflict&, std::vector<Serialization::GraphOp>*, QString*)>& operations,
+                QString* error)
+    {
+        const ProjectPtr project = gui->getApp()->getProject();
+        const std::vector<Serialization::MergeConflict> conflicts = project->getMergeConflicts();
+        NodeGraph* graph = graphOf(gui);
+        MergeStateCommand* command = new MergeStateCommand(project, QCoreApplication::translate("MergeConflictResolve", "Resolve Merge Conflict"));
+        std::set<std::size_t> seen;
+        std::set<std::size_t> applied;
+        bool ok = true;
+        const auto failed = [&ok, error](const QString& message) {
+            if (ok && error) {
+                *error = message;
+            }
+            ok = false;
+        };
+        std::set<std::string> present;
+        for (std::size_t index : indices) {
+            if ((index < conflicts.size()) && !conflicts[index].nodeId.empty() && project->findNodeById(conflicts[index].nodeId)) {
+                present.insert(conflicts[index].nodeId);
+            }
+        }
+        for (std::size_t index : indices) {
+            if ((index >= conflicts.size()) || !seen.insert(index).second) {
+                continue;
+            }
+            // A conflict about a node an earlier resolution of the batch deleted has nothing left to resolve.
+            if (present.count(conflicts[index].nodeId) && !project->findNodeById(conflicts[index].nodeId)) {
+                applied.insert(index);
+                continue;
+            }
+            std::vector<Serialization::GraphOp> ops;
+            QString opError;
+            if (!operations(conflicts[index], &ops, &opError)) {
+                failed(opError);
+                continue;
+            }
+            if (!ops.empty()) {
+                const std::vector<Serialization::OpResult> results = ApplyGraphOpsCommand::applyAndRecord(graph, project, ops, command->text(), command);
+                const std::vector<Serialization::OpResult>::const_iterator bad = std::find_if(results.begin(), results.end(), [](const Serialization::OpResult& result) {
+                    return !result.applied();
+                });
+                if (bad != results.end()) {
+                    failed(QString::fromStdString(bad->message));
+                    continue;
+                }
+                if (results.size() != ops.size()) {
+                    failed(QCoreApplication::translate("MergeConflictResolve", "The resolution was not applied."));
+                    continue;
+                }
+            }
+            applied.insert(index);
+        }
+        removeConflicts(project, applied);
+        push(gui, command);
+
+        return ok;
+    }
+} // anon namespace
+
 bool
 resolve(Gui* gui,
         const std::vector<std::size_t>& indices,
@@ -210,51 +277,19 @@ resolve(Gui* gui,
         QString* error)
 {
     const ProjectPtr project = gui->getApp()->getProject();
-    const std::vector<Serialization::MergeConflict> conflicts = project->getMergeConflicts();
-    std::vector<Serialization::GraphOp> ops;
-    std::set<std::size_t> resolved;
-    bool ok = true;
-    for (std::size_t index : indices) {
-        if ((index >= conflicts.size()) || (resolved.find(index) != resolved.end())) {
-            continue;
-        }
-        Serialization::GraphOp op;
-        QString opError;
-        if (!ProjectMerge::sideOperation(project, conflicts[index], side, &op, &opError)) {
-            if (ok && error) {
-                *error = opError;
-            }
-            ok = false;
-            continue;
-        }
-        ops.push_back(op);
-        resolved.insert(index);
-    }
-    if (resolved.empty()) {
-        return ok;
-    }
 
-    NodeGraph* graph = graphOf(gui);
-    MergeStateCommand* command = new MergeStateCommand(project, QCoreApplication::translate("MergeConflictResolve", "Resolve Merge Conflict"));
-    const std::vector<Serialization::OpResult> results = ApplyGraphOpsCommand::applyAndRecord(graph, project, ops, command->text(), command);
-    std::set<std::size_t> applied;
-    std::size_t opIndex = 0;
-    for (std::size_t index : resolved) {
-        if ((opIndex < results.size()) && results[opIndex].applied()) {
-            applied.insert(index);
-        } else {
-            if (ok && error) {
-                *error = (opIndex < results.size()) ? QString::fromStdString(results[opIndex].message)
-                                                    : QCoreApplication::translate("MergeConflictResolve", "The resolution was not applied.");
-            }
-            ok = false;
-        }
-        ++opIndex;
-    }
-    removeConflicts(project, applied);
-    push(gui, command);
+    return resolveWith(gui, indices, [&project, side](const Serialization::MergeConflict& conflict, std::vector<Serialization::GraphOp>* ops, QString* opError) { return ProjectMerge::sideOperations(project, conflict, side, ops, opError); }, error);
+}
 
-    return ok;
+bool
+resolveOption(Gui* gui,
+              std::size_t index,
+              const std::string& option,
+              QString* error)
+{
+    const ProjectPtr project = gui->getApp()->getProject();
+
+    return resolveWith(gui, std::vector<std::size_t>(1, index), [&project, &option](const Serialization::MergeConflict& conflict, std::vector<Serialization::GraphOp>* ops, QString* opError) { return ProjectMerge::optionOperations(project, conflict, option, ops, opError); }, error);
 }
 
 void

@@ -106,6 +106,16 @@ bool resolve(Gui* gui,
              QString* error);
 
 /**
+ * @brief Applies the handler option named option of the conflict at index and removes the
+ * conflict from the list, as one undo step. Returns false with error set, leaving the conflict,
+ * when the option cannot be applied.
+ **/
+bool resolveOption(Gui* gui,
+                   std::size_t index,
+                   const std::string& option,
+                   QString* error);
+
+/**
  * @brief Keeps what the merge chose for the conflicts at indices and removes them from the list,
  * as one undo step.
  **/

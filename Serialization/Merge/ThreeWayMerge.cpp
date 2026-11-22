@@ -136,6 +136,20 @@ namespace {
         return result;
     }
 
+    std::list<KnobSerialization>
+    knobsNamed(const std::list<KnobSerialization>& knobs,
+               const std::vector<std::string>& names)
+    {
+        std::list<KnobSerialization> result;
+        for (const KnobSerialization& knob : knobs) {
+            if (std::find(names.begin(), names.end(), knob.name) != names.end()) {
+                result.push_back(knob);
+            }
+        }
+
+        return result;
+    }
+
     const TemplateImportSerialization*
     templateImportNamed(const std::list<TemplateImportSerialization>& imports,
                         const std::string& key)
@@ -487,6 +501,25 @@ namespace MergeDetail {
     void
     mergeKnobs(MergeContext* context)
     {
+        const ScopedNodeRenames baseNames = baseNamesToOut(*context);
+        const ScopedNodeRenames theirsNames = theirsNamesToOut(*context);
+        // Each side's state of the knobs the adopted node left at their default, in merged names.
+        const auto recordSides = [&](MergeConflict* conflict) {
+            const MergeGraph::Node& baseNode = *context->base.find(conflict->baseNodeId);
+            conflict->base.knobs = knobsNamed(renamedKnobs(context->base, baseNode, baseNames), conflict->defaultedKnobs);
+            const std::string mineId = context->plan.baseToMine.otherFor(conflict->baseNodeId);
+            if (const MergeGraph::Node* mineNode = mineId.empty() ? nullptr : context->mine.find(mineId)) {
+                std::list<KnobSerialization> knobs = mineNode->node->knobs;
+                if (!context->mineRenames.empty()) {
+                    renameNodeReferences(&knobs, context->mineRenames, groupPath(context->mine, *mineNode), mineNode->node->scriptName);
+                }
+                conflict->mine.knobs = knobsNamed(knobs, conflict->defaultedKnobs);
+            }
+            const std::string theirsId = context->plan.baseToTheirs.otherFor(conflict->baseNodeId);
+            if (const MergeGraph::Node* theirsNode = theirsId.empty() ? nullptr : context->theirs.find(theirsId)) {
+                conflict->theirs.knobs = knobsNamed(renamedKnobs(context->theirs, *theirsNode, theirsNames), conflict->defaultedKnobs);
+            }
+        };
         for (const std::pair<const std::string, std::string>& entry : context->plan.baseToMine.baseToOther) {
             if (context->plan.baseToMine.adopted.count(entry.second)) {
                 MergeConflict conflict;
@@ -495,6 +528,7 @@ namespace MergeDetail {
                 conflict.nodeId = context->out.count(entry.second) ? entry.second : std::string();
                 conflict.side = MergeSide::eMine;
                 conflict.defaultedKnobs = defaultedKnobs(context->base.find(entry.first)->node->knobs, context->mine.find(entry.second)->node->knobs);
+                recordSides(&conflict);
                 context->conflicts.push_back(conflict);
             }
         }
@@ -507,12 +541,11 @@ namespace MergeDetail {
                 conflict.nodeId = (found == context->baseToOut.end()) ? std::string() : found->second;
                 conflict.side = MergeSide::eTheirs;
                 conflict.defaultedKnobs = defaultedKnobs(context->base.find(entry.first)->node->knobs, context->theirs.find(entry.second)->node->knobs);
+                recordSides(&conflict);
                 context->conflicts.push_back(conflict);
             }
         }
 
-        const ScopedNodeRenames baseNames = baseNamesToOut(*context);
-        const ScopedNodeRenames theirsNames = theirsNamesToOut(*context);
         for (std::pair<const std::string, OutNode>& entry : context->out) {
             OutNode& node = entry.second;
             if (!node.fromMine) {
@@ -598,6 +631,7 @@ threeWayMerge(const ProjectSerialization& base,
 
     MergeResult result;
     result.merged = MergeDetail::assemble(&context);
+    MergeDetail::recordConflictSides(&context);
     if (plan.templateKey.empty()) {
         std::vector<MergeConflict> projectConflicts;
         result.merged.projectKnobs = mergeKnobLists(context.handlers, std::string(), &base.projectKnobs, mine.projectKnobs, theirs.projectKnobs, &projectConflicts);

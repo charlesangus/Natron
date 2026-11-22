@@ -142,6 +142,8 @@ namespace MergeDetail {
     void mergeConnections(MergeContext* context);
     // The merged snapshot.
     ProjectSerialization assemble(MergeContext* context);
+    // The side states of the node, input and group conflicts, once the merged snapshot is assembled.
+    void recordConflictSides(MergeContext* context);
 
 } // namespace MergeDetail
 } // namespace Serialization

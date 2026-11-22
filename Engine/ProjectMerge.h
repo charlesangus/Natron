@@ -146,23 +146,49 @@ enum class ConflictSide {
 };
 
 /**
- * @brief Whether a side can be put back where conflict is: value and curve-key conflicts on a knob
- * of a node the project still has, or of the project itself. The other kinds only record what the
- * merge chose and are resolved by accepting it.
+ * @brief Whether the state side recorded for conflict can be put back in the project: the knob,
+ * node, roto item or track it names is still there, and the side has a state of its own (a side
+ * whose input source or group the merge did not keep has none).
+ *
+ * The state is, by kind: a value or curve key on a knob of a node, of a roto item or track, or of
+ * the project; an input's source; an inserted chain's connections; a node's group and inputs
+ * there; the knobs an adopted node left at their default; a roto item, track or spline warp. For
+ * a delete-modify conflict the side that deleted deletes, the side that kept keeps the graph as
+ * it is, and the base gives a node the knobs it had in the base.
  **/
 bool canChooseSide(const ProjectPtr& project,
-                   const Serialization::MergeConflict& conflict);
+                   const Serialization::MergeConflict& conflict,
+                   ConflictSide side);
 
 /**
- * @brief The operation that gives the conflicted knob dimension, extra state or curve key the
- * state side had, leaving the rest of the knob as it is now. Returns false with error set when
- * canChooseSide() is false.
+ * @brief The operations that give the project side's state for conflict, leaving the rest of the
+ * graph as it is now, possibly none when it already has it. A node moved back into a group keeps
+ * its ID; the nodes that read from it in the group it left are disconnected. A roto item or
+ * track the node lost goes back at the end of its list. Returns false with error set when
+ * canChooseSide() is false or the state no longer fits the graph.
  **/
-bool sideOperation(const ProjectPtr& project,
-                   const Serialization::MergeConflict& conflict,
-                   ConflictSide side,
-                   Serialization::GraphOp* op,
-                   QString* error);
+bool sideOperations(const ProjectPtr& project,
+                    const Serialization::MergeConflict& conflict,
+                    ConflictSide side,
+                    std::vector<Serialization::GraphOp>* ops,
+                    QString* error);
+
+/**
+ * @brief Whether conflict offers the handler option named option and its state can be applied.
+ **/
+bool canChooseOption(const ProjectPtr& project,
+                     const Serialization::MergeConflict& conflict,
+                     const std::string& option);
+
+/**
+ * @brief sideOperations() for the state of conflict's handler option named option.
+ **/
+bool optionOperations(const ProjectPtr& project,
+                      const Serialization::MergeConflict& conflict,
+                      const std::string& option,
+                      std::vector<Serialization::GraphOp>* ops,
+                      QString* error);
+
 } // namespace ProjectMerge
 
 NATRON_NAMESPACE_EXIT

@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <set>
 #include <string>
 #include <variant>
@@ -50,6 +51,7 @@
 
 #include "Serialization/Merge/MergeConflict.h"
 #include "Serialization/Ops/GraphOp.h"
+#include "Serialization/Ops/SnapshotDiff.h"
 #include "Serialization/ProjectSerialization.h"
 
 NATRON_NAMESPACE_USING
@@ -121,6 +123,72 @@ protected:
         setSize(first, 4.);
         ASSERT_TRUE(project()->saveProject(dir.path() + QLatin1Char('/'), QString::fromUtf8("tpl_v2.ntpz"), v2));
         project()->reset(false, true);
+    }
+
+    // Writes template version 1 (Blur1 -> Blur2) as tpl.ntpz, then edit's result as tpl_v2.ntpz.
+    void saveTemplateVersions(const QTemporaryDir& dir,
+                              const std::function<void()>& edit,
+                              QString* v1,
+                              QString* v2)
+    {
+        NodePtr first = createBlur("Blur1");
+        NodePtr second = createBlur("Blur2");
+        ASSERT_NE(first, nullptr);
+        ASSERT_NE(second, nullptr);
+        ASSERT_TRUE(NodeCollection::connectNodes(0, first, second, false));
+        ASSERT_TRUE(project()->saveProject(dir.path() + QLatin1Char('/'), QString::fromUtf8("tpl.ntpz"), v1));
+        edit();
+        ASSERT_TRUE(project()->saveProject(dir.path() + QLatin1Char('/'), QString::fromUtf8("tpl_v2.ntpz"), v2));
+        project()->reset(false, true);
+    }
+
+    Serialization::ProjectSerialization state() const
+    {
+        Serialization::ProjectSerialization live;
+        project()->toSerialization(&live);
+
+        return Serialization::editableState(live);
+    }
+
+    // Applies the side's (or, with option set, the option's) operations, runs check, then applies
+    // the reverse diff, as undo does, and expects the project as it was.
+    void choose(const Serialization::MergeConflict& conflict,
+                ProjectMerge::ConflictSide side,
+                const std::function<void()>& check,
+                const std::string& option = std::string())
+    {
+        const Serialization::ProjectSerialization before = state();
+        std::vector<Serialization::GraphOp> ops;
+        QString error;
+        if (option.empty()) {
+            ASSERT_TRUE(ProjectMerge::canChooseSide(project(), conflict, side));
+            ASSERT_TRUE(ProjectMerge::sideOperations(project(), conflict, side, &ops, &error)) << error.toStdString();
+        } else {
+            ASSERT_TRUE(ProjectMerge::canChooseOption(project(), conflict, option));
+            ASSERT_TRUE(ProjectMerge::optionOperations(project(), conflict, option, &ops, &error)) << error.toStdString();
+        }
+        for (const Serialization::OpResult& result : applyGraphOps(project(), ops)) {
+            EXPECT_TRUE(result.applied()) << result.message;
+        }
+        check();
+        const Serialization::ProjectSerialization after = state();
+        for (const Serialization::OpResult& result : applyGraphOps(project(), Serialization::diffSnapshots(after, before))) {
+            EXPECT_TRUE(result.applied()) << result.message;
+        }
+        EXPECT_TRUE(Serialization::diffSnapshots(state(), before).empty());
+    }
+
+    const Serialization::MergeConflict* conflictOf(const ProjectMerge::UpdateResult& result,
+                                                   Serialization::MergeConflictKind kind,
+                                                   int dimension = -1) const
+    {
+        for (const Serialization::MergeConflict& conflict : result.conflicts) {
+            if ((conflict.kind == kind) && ((dimension < 0) || (conflict.dimension == dimension))) {
+                return &conflict;
+            }
+        }
+
+        return nullptr;
     }
 
     // The shot: the artist's own Artist node and the imported template.
@@ -273,4 +341,141 @@ TEST_F(ProjectMergeTest, CompareSummarisesAddedChangedAndRemovedNodes)
     ASSERT_NE(added, nullptr);
     EXPECT_EQ(added->kind, ProjectMerge::NodeChange::eAdded);
     EXPECT_EQ(added->scriptName, "Extra");
+}
+
+TEST_F(ProjectMergeTest, AValueConflictResolvesToEachSideAndUndoes)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    QString v1;
+    QString v2;
+    saveTemplateVersions(dir, &v1, &v2);
+    importShot(v1);
+    const std::string key = project()->getTemplateImports().front().key;
+    NodePtr blur1 = nodeNamed("Blur1");
+    const double base = blurSize(blur1)->getValue(0);
+    setSize(blur1, 7.);
+    const ProjectMerge::UpdateResult result = ProjectMerge::updateFromTemplate(project(), key, v2);
+    ASSERT_TRUE(result.ok) << result.error.toStdString();
+    const Serialization::MergeConflict* conflict = conflictOf(result, Serialization::MergeConflictKind::eValue, 0);
+    ASSERT_NE(conflict, nullptr);
+
+    choose(*conflict, ProjectMerge::ConflictSide::eMine, [&] { EXPECT_DOUBLE_EQ(blurSize(blur1)->getValue(0), 7.); });
+    choose(*conflict, ProjectMerge::ConflictSide::eTheirs, [&] {
+        EXPECT_DOUBLE_EQ(blurSize(blur1)->getValue(0), 4.);
+        EXPECT_DOUBLE_EQ(blurSize(blur1)->getValue(1), 7.);
+    });
+    choose(*conflict, ProjectMerge::ConflictSide::eBase, [&] { EXPECT_DOUBLE_EQ(blurSize(blur1)->getValue(0), base); });
+    EXPECT_DOUBLE_EQ(blurSize(blur1)->getValue(0), 7.);
+}
+
+TEST_F(ProjectMergeTest, AnInputConflictResolvesToEachSidesSourceAndUndoes)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    QString v1;
+    QString v2;
+    saveTemplateVersions(dir, [this] {
+        NodePtr feed = createBlur("Blur3");
+        NodePtr second = nodeNamed("Blur2");
+        ASSERT_NE(feed, nullptr);
+        ASSERT_NE(second, nullptr);
+        second->disconnectInput(0);
+        ASSERT_TRUE(NodeCollection::connectNodes(0, feed, second, false)); }, &v1, &v2);
+    importShot(v1);
+    const std::string key = project()->getTemplateImports().front().key;
+    NodePtr blur2 = nodeNamed("Blur2");
+    blur2->disconnectInput(0);
+    ASSERT_TRUE(NodeCollection::connectNodes(0, nodeNamed("Artist"), blur2, false));
+    const ProjectMerge::UpdateResult result = ProjectMerge::updateFromTemplate(project(), key, v2, [this](const std::vector<Serialization::GraphOp>& ops) {
+        return applyGraphOps(project(), ops);
+    });
+    ASSERT_TRUE(result.ok) << result.error.toStdString();
+    const Serialization::MergeConflict* conflict = conflictOf(result, Serialization::MergeConflictKind::eInput);
+    ASSERT_NE(conflict, nullptr);
+    EXPECT_EQ(conflict->nodeId, blur2->getNodeId());
+    ASSERT_NE(nodeNamed("Blur3"), nullptr);
+
+    const auto sourceIs = [&](const std::string& name) {
+        NodePtr source = blur2->getInput(0);
+        ASSERT_NE(source, nullptr);
+        EXPECT_EQ(source->getScriptName(), name);
+    };
+    choose(*conflict, ProjectMerge::ConflictSide::eMine, [&] { sourceIs("Artist"); });
+    choose(*conflict, ProjectMerge::ConflictSide::eTheirs, [&] { sourceIs("Blur3"); });
+    choose(*conflict, ProjectMerge::ConflictSide::eBase, [&] { sourceIs("Blur1"); });
+    sourceIs("Artist");
+}
+
+TEST_F(ProjectMergeTest, ADeleteModifyConflictDeletesOnlyForTheDeletingSideAndUndoes)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    QString v1;
+    QString v2;
+    saveTemplateVersions(dir, [this] {
+        NodePtr second = nodeNamed("Blur2");
+        ASSERT_NE(second, nullptr);
+        second->destroyNode(true, false); }, &v1, &v2);
+    importShot(v1);
+    const std::string key = project()->getTemplateImports().front().key;
+    const double base = blurSize(nodeNamed("Blur2"))->getValue(0);
+    setSize(nodeNamed("Blur2"), 7.);
+    const ProjectMerge::UpdateResult result = ProjectMerge::updateFromTemplate(project(), key, v2, [this](const std::vector<Serialization::GraphOp>& ops) {
+        return applyGraphOps(project(), ops);
+    });
+    ASSERT_TRUE(result.ok) << result.error.toStdString();
+    const Serialization::MergeConflict* conflict = conflictOf(result, Serialization::MergeConflictKind::eDeleteModify);
+    ASSERT_NE(conflict, nullptr);
+    EXPECT_EQ(conflict->side, Serialization::MergeSide::eTheirs);
+    ASSERT_NE(nodeNamed("Blur2"), nullptr);
+
+    choose(*conflict, ProjectMerge::ConflictSide::eMine, [&] { EXPECT_DOUBLE_EQ(blurSize(nodeNamed("Blur2"))->getValue(0), 7.); });
+    choose(*conflict, ProjectMerge::ConflictSide::eTheirs, [&] { EXPECT_EQ(nodeNamed("Blur2"), nullptr); });
+    choose(*conflict, ProjectMerge::ConflictSide::eBase, [&] {
+        NodePtr blur2 = nodeNamed("Blur2");
+        ASSERT_NE(blur2, nullptr);
+        EXPECT_DOUBLE_EQ(blurSize(blur2)->getValue(0), base);
+    });
+    ASSERT_NE(nodeNamed("Blur2"), nullptr);
+    EXPECT_DOUBLE_EQ(blurSize(nodeNamed("Blur2"))->getValue(0), 7.);
+}
+
+TEST_F(ProjectMergeTest, ACurveKeyConflictResolvesToEachSideOrKeepsBothKeysAndUndoes)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    QString v1;
+    QString v2;
+    saveTemplateVersions(dir, [this] {
+        NodePtr first = nodeNamed("Blur1");
+        ASSERT_NE(first, nullptr);
+        blurSize(first)->setValueAtTime(10, 4., ViewSpec::all(), 0); }, &v1, &v2);
+    importShot(v1);
+    const std::string key = project()->getTemplateImports().front().key;
+    NodePtr blur1 = nodeNamed("Blur1");
+    blurSize(blur1)->setValueAtTime(10, 7., ViewSpec::all(), 0);
+    const ProjectMerge::UpdateResult result = ProjectMerge::updateFromTemplate(project(), key, v2);
+    ASSERT_TRUE(result.ok) << result.error.toStdString();
+    const Serialization::MergeConflict* conflict = conflictOf(result, Serialization::MergeConflictKind::eCurveKey, 0);
+    ASSERT_NE(conflict, nullptr);
+    ASSERT_EQ(conflict->options.size(), 1u);
+    const std::string keepBoth(Serialization::kMergeOptionKeepBothKeys);
+    EXPECT_EQ(conflict->options.front().name, keepBoth);
+
+    const auto keys = [&] {
+        return blurSize(blur1)->getKeyFramesCount(ViewSpec::all(), 0);
+    };
+    choose(*conflict, ProjectMerge::ConflictSide::eMine, [&] { EXPECT_DOUBLE_EQ(blurSize(blur1)->getValueAtTime(10, 0), 7.); });
+    choose(*conflict, ProjectMerge::ConflictSide::eTheirs, [&] {
+        EXPECT_EQ(keys(), 1);
+        EXPECT_DOUBLE_EQ(blurSize(blur1)->getValueAtTime(10, 0), 4.);
+    });
+    choose(*conflict, ProjectMerge::ConflictSide::eBase, [&] { EXPECT_EQ(keys(), 0); });
+    choose(*conflict, ProjectMerge::ConflictSide::eMine, [&] {
+        EXPECT_EQ(keys(), 2);
+        EXPECT_DOUBLE_EQ(blurSize(blur1)->getValueAtTime(10, 0), 7.);
+        EXPECT_DOUBLE_EQ(blurSize(blur1)->getValueAtTime(11, 0), 4.); }, keepBoth);
+    EXPECT_EQ(keys(), 1);
+    EXPECT_FALSE(ProjectMerge::canChooseOption(project(), *conflict, "no-such-choice"));
 }

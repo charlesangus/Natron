@@ -81,6 +81,18 @@ namespace {
         return (a.scriptName == b.scriptName) && (a.label == b.label) && (a.enabled == b.enabled) && (a.isPatternMatching == b.isPatternMatching) && (userKeysOf(&a) == userKeysOf(&b)) && sameKnobLists(a.knobs, b.knobs);
     }
 
+    std::optional<TrackerContextSerialization>
+    trackAlone(const TrackSerialization* track)
+    {
+        if (!track) {
+            return std::nullopt;
+        }
+        TrackerContextSerialization context;
+        context.tracks.push_back(*track);
+
+        return context;
+    }
+
     TrackSerialization
     mergeTrack(const TrackSerialization* base,
                const TrackSerialization& mine,
@@ -176,6 +188,9 @@ mergeTrackerContexts(const TrackerContextSerialization* base,
                 conflict.kind = MergeConflictKind::eDeleteModify;
                 conflict.item = name;
                 conflict.side = m ? MergeSide::eTheirs : MergeSide::eMine;
+                conflict.base.tracker = trackAlone(b);
+                conflict.mine.tracker = trackAlone(m);
+                conflict.theirs.tracker = trackAlone(t);
                 conflicts->push_back(conflict);
                 kept.emplace(name, *present);
             }

@@ -18,6 +18,7 @@
  * ***** END LICENSE BLOCK ***** */
 
 #include <algorithm>
+#include <array>
 #include <deque>
 
 #include "Serialization/Merge/MergePrivate.h"
@@ -323,6 +324,71 @@ namespace MergeDetail {
             return replacementFor(context, source.substr(gone.size()));
         }
 
+        // The connection that gives a node's input the source a side has there, by merged IDs, when
+        // that source is in the merged snapshot beside the node in group.
+        std::vector<MergeConflictConnection>
+        sideConnection(const MergeContext& context,
+                       const std::string& nodeId,
+                       const std::string& label,
+                       const std::string& source,
+                       const std::string& group)
+        {
+            if (!source.empty() && (!isReal(context, source) || (context.out.at(source).parent != group))) {
+                return std::vector<MergeConflictConnection>();
+            }
+
+            return std::vector<MergeConflictConnection>(1, MergeConflictConnection { nodeId, label, source });
+        }
+
+        // A side's source of a node's input, by merged ID, or empty when the side leaves it unconnected.
+        std::string
+        sideSource(const MergeContext& context,
+                   const MergeGraph::Node& sideNode,
+                   const std::string& label,
+                   int side)
+        {
+            std::map<std::string, std::string>::const_iterator input = sideNode.inputs.find(label);
+            if (input == sideNode.inputs.end()) {
+                return std::string();
+            }
+            switch (side) {
+            case 0:
+                return outOfBase(context, input->second);
+            case 1:
+                return outOfMine(context, input->second);
+            default:
+                break;
+            }
+
+            return outOfTheirs(context, input->second);
+        }
+
+        // The base, mine and theirs nodes a merged node stands for, null where the side has none.
+        std::array<const MergeGraph::Node*, 3>
+        sideNodes(const MergeContext& context,
+                  const std::string& nodeId)
+        {
+            const OutNode& node = context.out.at(nodeId);
+
+            return { node.baseId.empty() ? nullptr : context.base.find(node.baseId),
+                     node.fromMine ? context.mine.find(nodeId) : nullptr,
+                     node.theirsId.empty() ? nullptr : context.theirs.find(node.theirsId) };
+        }
+
+        void
+        recordInputSides(const MergeContext& context,
+                         MergeConflict* conflict)
+        {
+            const std::string& group = context.out.at(conflict->nodeId).parent;
+            const std::array<const MergeGraph::Node*, 3> nodes = sideNodes(context, conflict->nodeId);
+            MergeConflictValue* values[3] = { &conflict->base, &conflict->mine, &conflict->theirs };
+            for (int side = 0; side < 3; ++side) {
+                if (nodes[side]) {
+                    values[side]->connections = sideConnection(context, conflict->nodeId, conflict->input, sideSource(context, *nodes[side], conflict->input, side), group);
+                }
+            }
+        }
+
         void
         mergeInputs(MergeContext* context,
                     OutNode* node)
@@ -380,11 +446,17 @@ namespace MergeDetail {
                     if (isReal(*context, b) && !mineTail.first.empty() && !theirsTail.first.empty()) {
                         context->out[mineTail.first].inputIds[mineTail.second] = t;
                         conflict.kind = MergeConflictKind::eStructuralInsert;
+                        // Each side's chain alone; the other's inserted nodes stay, unconnected.
+                        const std::string& id = node->node->id;
+                        conflict.base.connections = { MergeConflictConnection { id, label, b } };
+                        conflict.mine.connections = { MergeConflictConnection { id, label, m }, MergeConflictConnection { mineTail.first, mineTail.second, b } };
+                        conflict.theirs.connections = { MergeConflictConnection { id, label, t } };
                         context->conflicts.push_back(conflict);
                     } else if (reparent != context->reparentConflicts.end()) {
                         context->conflicts[reparent->second].inputs.push_back(label);
                     } else {
                         conflict.kind = MergeConflictKind::eInput;
+                        recordInputSides(*context, &conflict);
                         context->conflicts.push_back(conflict);
                     }
                     if (!isReal(*context, result)) {
@@ -451,6 +523,7 @@ namespace MergeDetail {
             conflict.baseNodeId = context->out[nodeId].baseId;
             conflict.nodeId = nodeId;
             conflict.input = label;
+            recordInputSides(*context, &conflict);
             context->conflicts.push_back(conflict);
         }
 
@@ -635,6 +708,7 @@ namespace MergeDetail {
                         conflict.baseNodeId = node.baseId;
                         conflict.nodeId = entry.first;
                         conflict.input = input.first;
+                        recordInputSides(*context, &conflict);
                         context->conflicts.push_back(conflict);
                     }
                 }
@@ -696,6 +770,50 @@ namespace MergeDetail {
         attach(children, context->out, std::string(), &merged.nodes.nodes);
 
         return merged;
+    }
+
+    void
+    recordConflictSides(MergeContext* context)
+    {
+        const ScopedNodeRenames baseNames = baseNamesToOut(*context);
+        for (MergeConflict& conflict : context->conflicts) {
+            const bool nodeLevel = conflict.item.empty() && conflict.knob.empty() && context->out.count(conflict.nodeId);
+            if (!nodeLevel) {
+                continue;
+            }
+            if ((conflict.kind == MergeConflictKind::eDeleteModify) && !conflict.baseNodeId.empty()) {
+                const MergeGraph::Node* baseNode = context->base.find(conflict.baseNodeId);
+                if (baseNode) {
+                    conflict.base.knobs = renamedKnobs(context->base, *baseNode, baseNames);
+                }
+                continue;
+            }
+            if (conflict.kind != MergeConflictKind::eReparent) {
+                continue;
+            }
+            const std::array<const MergeGraph::Node*, 3> nodes = sideNodes(*context, conflict.nodeId);
+            MergeConflictValue* values[3] = { &conflict.base, &conflict.mine, &conflict.theirs };
+            for (int side = 0; side < 3; ++side) {
+                const MergeGraph::Node* sideNode = nodes[side];
+                if (!sideNode) {
+                    continue;
+                }
+                std::string group;
+                if (!sideNode->parentId.empty()) {
+                    group = (side == 0) ? outOfBase(*context, sideNode->parentId) : (side == 1) ? outOfMine(*context, sideNode->parentId)
+                                                                                                : outOfTheirs(*context, sideNode->parentId);
+                    if (!isReal(*context, group)) {
+                        continue;
+                    }
+                }
+                values[side]->parent = group;
+                for (const std::pair<const std::string, std::string>& input : sideNode->inputs) {
+                    for (MergeConflictConnection& connection : sideConnection(*context, conflict.nodeId, input.first, sideSource(*context, *sideNode, input.first, side), group)) {
+                        values[side]->connections.push_back(std::move(connection));
+                    }
+                }
+            }
+        }
     }
 
 } // namespace MergeDetail

@@ -413,7 +413,7 @@ bool
 isColourPartName(const std::string& part)
 {
     static const char* const names[] = {
-        kNatronColorStorageLabel, kNatronColorLayerID, kNatronColorViewRGBA, kNatronColorViewRGB, kNatronColorViewAlpha, kNatronColorViewXY
+        kNatronColorLayerID, kNatronColorViewRGB, kNatronColorViewAlpha, kNatronColorViewXY
     };
 
     return std::any_of(std::begin(names), std::end(names), [&part](const char* name) { return sameName(part, name); });

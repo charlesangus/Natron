@@ -23,7 +23,7 @@ The transform is translate, rotate in the chosen order (degrees) and scale (scal
 x Uniform Scale) about Pivot, authored as one `xformOp:transform` matrix op on the
 mesh, as in USDXformPrim.
 
-The optional Material input takes a scene holding a material, such as USDMaterial's.
+The optional Material input takes a scene holding a material, such as USDPreviewSurface's.
 Its root prims are grafted under the mesh and the first material among them is
 bound to it; links leaving the grafted roots are dropped and named in a node
 warning. Unplugged, the mesh is unbound.

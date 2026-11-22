@@ -39,6 +39,8 @@
 
 #include <QString>
 
+#include <ofxImageEffect.h>
+
 #include "BaseTest.h"
 #include "NativePluginIdentity.h"
 #include "RawFixtures.h"

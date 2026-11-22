@@ -4083,7 +4083,6 @@ Project::computeContentDigestWithoutFileStamps(const std::shared_ptr<const std::
     if (layers) {
         for (std::vector<LayerRegistryEntry>::const_iterator it = layers->begin(); it != layers->end(); ++it) {
             h.appendString(it->desc.getLayerID());
-            h.appendString(it->desc.getLayerLabel());
             const std::vector<std::string>& channels = it->desc.getChannels();
             h.appendU64(channels.size());
             for (std::size_t c = 0; c < channels.size(); ++c) {

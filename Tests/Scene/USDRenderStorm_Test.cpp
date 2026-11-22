@@ -89,8 +89,8 @@
 #include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/Nodes/Scene/USDEmissiveMaterial.h"
 #include "Engine/Nodes/Scene/USDLight.h"
-#include "Engine/Nodes/Scene/USDMaterial.h"
 #include "Engine/Nodes/Scene/USDMerge.h"
+#include "Engine/Nodes/Scene/USDPreviewSurface.h"
 #include "Engine/Nodes/Scene/USDProject3D.h"
 #include "Engine/Nodes/Scene/USDPrune.h"
 #include "Engine/Nodes/Scene/USDRead.h"
@@ -817,7 +817,7 @@ protected:
     {
         NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
         NodePtr transform = createNode(QString::fromUtf8(PLUGINID_NATRON_USDEDITTRANSFORM));
-        NodePtr material = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMATERIAL));
+        NodePtr material = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPREVIEWSURFACE));
         NodePtr box = createNode(QString::fromUtf8(kTestPluginIDSceneGeometry));
         NodePtr rig = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
         NodePtr camera = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCAMERA));
@@ -832,7 +832,7 @@ protected:
         }
 
         KnobFile* file = knob<KnobFile>(reader, kUSDReadParamFile);
-        KnobColor* diffuse = knob<KnobColor>(material, kUSDMaterialParamDiffuseColor);
+        KnobColor* diffuse = knob<KnobColor>(material, kUSDPreviewSurfaceParamDiffuseColor);
         if (!file || !diffuse) {
             return NodePtr();
         }
@@ -894,7 +894,7 @@ protected:
     {
         NodePtr card = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
         NodePtr left = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
-        NodePtr material = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMATERIAL));
+        NodePtr material = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPREVIEWSURFACE));
         NodePtr sphere = createNode(QString::fromUtf8(PLUGINID_NATRON_USDSPHERE));
         NodePtr right = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
         NodePtr camera = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCAMERA));
@@ -907,7 +907,7 @@ protected:
             return NodePtr();
         }
 
-        KnobColor* diffuse = knob<KnobColor>(material, kUSDMaterialParamDiffuseColor);
+        KnobColor* diffuse = knob<KnobColor>(material, kUSDPreviewSurfaceParamDiffuseColor);
         if (!diffuse) {
             return NodePtr();
         }
@@ -960,14 +960,14 @@ protected:
      * no light. Sets *constant to the Constant and returns the USDRender, kWidth x kHeight, null
      * after a gtest failure.
      **/
-    // The constant feeds the diffuse input of a USDMaterial, or with emissive the one input of a
+    // The constant feeds the diffuse input of a USDPreviewSurface, or with emissive the one input of a
     // USDEmissiveMaterial.
     NodePtr createLiveTextureGraph(NodePtr* constant,
                                    bool withLight = true,
                                    bool emissive = false)
     {
         NodePtr source = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
-        NodePtr material = createNode(QString::fromUtf8(emissive ? PLUGINID_NATRON_USDEMISSIVEMATERIAL : PLUGINID_NATRON_USDMATERIAL));
+        NodePtr material = createNode(QString::fromUtf8(emissive ? PLUGINID_NATRON_USDEMISSIVEMATERIAL : PLUGINID_NATRON_USDPREVIEWSURFACE));
         NodePtr card = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
         NodePtr camera = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCAMERA));
         NodePtr light = withLight ? createNode(QString::fromUtf8(PLUGINID_NATRON_USDLIGHT)) : NodePtr();
@@ -987,7 +987,7 @@ protected:
         if (!ok) {
             return NodePtr();
         }
-        connectNodes(source, material, emissive ? kUSDEmissiveMaterialInputEmissive : kUSDMaterialInputDiffuseColor, true);
+        connectNodes(source, material, emissive ? kUSDEmissiveMaterialInputEmissive : kUSDPreviewSurfaceInputDiffuseColor, true);
         connectNodes(material, card, 0, true);
         connectNodes(card, merge, 0, true);
         connectNodes(camera, merge, 1, true);
@@ -1513,7 +1513,7 @@ protected:
 
     /**
      * The shared-material graph of USDWrite's round trip, rendered: an asset whose box is bound
-     * directly to a grey material, a USDAssignMaterial binding a red USDMaterial to /Asset with
+     * directly to a grey material, a USDAssignMaterial binding a red USDPreviewSurface to /Asset with
      * strength, optionally a second binding a blue one to /Asset/Box, the result moved under a
      * USDXformPrim /T1, and a camera at (0, 0, 10) looking down -Z with a key light. Returns the
      * USDRender, kWidth x kHeight, null after a gtest failure.
@@ -1523,9 +1523,9 @@ protected:
                                       bool secondAssign)
     {
         NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
-        NodePtr red = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMATERIAL));
+        NodePtr red = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPREVIEWSURFACE));
         NodePtr assign = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
-        NodePtr blue = secondAssign ? createNode(QString::fromUtf8(PLUGINID_NATRON_USDMATERIAL)) : NodePtr();
+        NodePtr blue = secondAssign ? createNode(QString::fromUtf8(PLUGINID_NATRON_USDPREVIEWSURFACE)) : NodePtr();
         NodePtr assignOver = secondAssign ? createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL)) : NodePtr();
         NodePtr moved = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
         NodePtr camera = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCAMERA));
@@ -1539,7 +1539,7 @@ protected:
         }
 
         KnobFile* file = knob<KnobFile>(reader, kUSDReadParamFile);
-        KnobColor* redDiffuse = knob<KnobColor>(red, kUSDMaterialParamDiffuseColor);
+        KnobColor* redDiffuse = knob<KnobColor>(red, kUSDPreviewSurfaceParamDiffuseColor);
         KnobChoice* strengthKnob = knob<KnobChoice>(assign, kUSDAssignMaterialParamStrength);
         if (!file || !redDiffuse || !strengthKnob) {
             return NodePtr();
@@ -1565,7 +1565,7 @@ protected:
         connectNodes(red, assign, kUSDAssignMaterialInputMaterial, true);
         NodePtr last = assign;
         if (secondAssign) {
-            KnobColor* blueDiffuse = knob<KnobColor>(blue, kUSDMaterialParamDiffuseColor);
+            KnobColor* blueDiffuse = knob<KnobColor>(blue, kUSDPreviewSurfaceParamDiffuseColor);
             if (!blueDiffuse || !setString(blue, kSceneParamPrimPath, "/Blue") || !setString(assignOver, kUSDAssignMaterialParamPrimPattern, "/Asset/Box")) {
                 return NodePtr();
             }
@@ -1600,8 +1600,8 @@ protected:
     {
         std::list<ImageLayerDesc> layers;
         layers.push_back(ImageLayerDesc::getRGBAComponents());
-        layers.push_back(ImageLayerDesc("depth", "depth", "", std::vector<std::string>(1, "Z")));
-        layers.push_back(ImageLayerDesc("primId", "primId", "", std::vector<std::string>(1, "id")));
+        layers.push_back(ImageLayerDesc("depth", std::vector<std::string>(1, "Z")));
+        layers.push_back(ImageLayerDesc("primId", std::vector<std::string>(1, "id")));
 
         return layers;
     }

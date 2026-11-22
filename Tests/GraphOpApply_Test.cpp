@@ -396,7 +396,6 @@ TEST_F(GraphOpApplyTest, RefusedProjectDataChangesNothing)
     op.formats->push_back(added);
     LayerRegistryEntrySerialization tooWide;
     tooWide.layer.layerID = "wide";
-    tooWide.layer.layerLabel = "wide";
     tooWide.layer.channels = { "A", "B", "C", "D", "E" };
     tooWide.origin = LayerRegistryEntry::eOriginUser;
     op.layers.emplace(1, tooWide);

@@ -95,8 +95,8 @@
 #include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/Nodes/Scene/USDEmissiveMaterial.h"
 #include "Engine/Nodes/Scene/USDLight.h"
-#include "Engine/Nodes/Scene/USDMaterial.h"
 #include "Engine/Nodes/Scene/USDMerge.h"
+#include "Engine/Nodes/Scene/USDPreviewSurface.h"
 #include "Engine/Nodes/Scene/USDProject3D.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDRender.h"
@@ -229,12 +229,12 @@ pixel(int row,
 std::list<ImageLayerDesc>
 allPlanes()
 {
-    static const char* const normalChannels[] = { "X", "Y", "Z" };
+    static const char* const normalChannels[] = { "x", "y", "z" };
     std::list<ImageLayerDesc> layers;
     layers.push_back(ImageLayerDesc::getRGBAComponents());
-    layers.push_back(ImageLayerDesc("depth", "depth", "", std::vector<std::string>(1, "Z")));
-    layers.push_back(ImageLayerDesc("primId", "primId", "", std::vector<std::string>(1, "id")));
-    layers.push_back(ImageLayerDesc("normal", "normal", "", std::vector<std::string>(normalChannels, normalChannels + 3)));
+    layers.push_back(ImageLayerDesc("depth", std::vector<std::string>(1, "Z")));
+    layers.push_back(ImageLayerDesc("primId", std::vector<std::string>(1, "id")));
+    layers.push_back(ImageLayerDesc("normal", std::vector<std::string>(normalChannels, normalChannels + 3)));
 
     return layers;
 }
@@ -1326,7 +1326,7 @@ protected:
                                  bool emissive)
     {
         Graph graph;
-        NodePtr material = createNode(QString::fromUtf8(emissive ? PLUGINID_NATRON_USDEMISSIVEMATERIAL : PLUGINID_NATRON_USDMATERIAL));
+        NodePtr material = createNode(QString::fromUtf8(emissive ? PLUGINID_NATRON_USDEMISSIVEMATERIAL : PLUGINID_NATRON_USDPREVIEWSURFACE));
         NodePtr card = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
         NodePtr camera = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCAMERA));
         NodePtr light = createNode(QString::fromUtf8(PLUGINID_NATRON_USDLIGHT));
@@ -1353,7 +1353,7 @@ protected:
 
             return graph;
         }
-        connectNodes(source, material, emissive ? kUSDEmissiveMaterialInputEmissive : kUSDMaterialInputDiffuseColor, true);
+        connectNodes(source, material, emissive ? kUSDEmissiveMaterialInputEmissive : kUSDPreviewSurfaceInputDiffuseColor, true);
         connectNodes(material, card, 0, true);
         connectNodes(card, merge, 0, true);
         connectNodes(camera, merge, 1, true);

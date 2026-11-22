@@ -162,6 +162,15 @@ hudState(ColorGlobalModeEnum mode)
 const ColorTrackballReveal::PillSideEnum kSides[4] = {
     ColorTrackballReveal::ePillRight, ColorTrackballReveal::ePillLeft, ColorTrackballReveal::ePillTop, ColorTrackballReveal::ePillBottom
 };
+
+// As the colour target shows a mode: the disc and that mode's pills.
+void
+showMode(ColorTrackballReveal& reveal,
+         ColorGlobalModeEnum mode)
+{
+    reveal.setMode(mode);
+    reveal.setPillTexts(colorTrackballRevealDirectionLabels(mode));
+}
 } // namespace
 
 TEST(ColorTrackballReveal, WindowIsAClickThroughToolWindowHoldingTheDiscAndTheBlock)
@@ -180,7 +189,7 @@ TEST(ColorTrackballReveal, WindowIsAClickThroughToolWindowHoldingTheDiscAndTheBl
     EXPECT_TRUE(reveal.testAttribute(Qt::WA_TranslucentBackground));
 
     for (ColorGlobalModeEnum mode : { eColorGlobalModeC, eColorGlobalModeS, eColorGlobalModeT, eColorGlobalModeV }) {
-        reveal.setMode(mode);
+        showMode(reveal, mode);
         reveal.setHudState(hudState(mode));
 
         const QRect all(QPoint(0, 0), reveal.size());
@@ -201,7 +210,7 @@ TEST(ColorTrackballReveal, IsMaskedToItsDiscPillsAndBlock)
 {
     ColorTrackballReveal reveal;
 
-    reveal.setMode(eColorGlobalModeS);
+    showMode(reveal, eColorGlobalModeS);
     reveal.setHudState(hudState(eColorGlobalModeS));
 
     const QRegion mask = reveal.mask();
@@ -219,7 +228,7 @@ TEST(ColorTrackballReveal, IsMaskedToItsDiscPillsAndBlock)
     }
 
     // In C the pills are gone, and so is their part of the mask.
-    reveal.setMode(eColorGlobalModeC);
+    showMode(reveal, eColorGlobalModeC);
     EXPECT_FALSE(reveal.mask().contains(reveal.getPill(ColorTrackballReveal::ePillRight)->geometry().center()));
     EXPECT_TRUE(reveal.mask().contains(reveal.getHudBlock()->geometry().center()));
 }
@@ -252,7 +261,7 @@ TEST(ColorTrackballReveal, PillsSitOnTheirSideOutsideTheRingAndTheBlockUnderneat
     ColorTrackballReveal reveal;
 
     for (ColorGlobalModeEnum mode : { eColorGlobalModeS, eColorGlobalModeT, eColorGlobalModeV }) {
-        reveal.setMode(mode);
+        showMode(reveal, mode);
         reveal.setHudState(hudState(mode));
 
         const ColorTrackballRevealLabels labels = colorTrackballRevealDirectionLabels(mode);
@@ -294,7 +303,7 @@ TEST(ColorTrackballReveal, PillsSitOnTheirSideOutsideTheRingAndTheBlockUnderneat
     }
 
     // C has no pills; the block sits right under the ring.
-    reveal.setMode(eColorGlobalModeC);
+    showMode(reveal, eColorGlobalModeC);
     for (ColorTrackballReveal::PillSideEnum side : kSides) {
         EXPECT_TRUE(reveal.getPill(side)->isHidden()) << (int)side;
     }
@@ -307,7 +316,7 @@ TEST(ColorTrackballReveal, TheBlockShowsTheKnobNameAndTheActiveMode)
     ColorTrackballHudState state = hudState(eColorGlobalModeT);
 
     state.knobLabel = QString::fromUtf8("Lift");
-    reveal.setMode(eColorGlobalModeT);
+    showMode(reveal, eColorGlobalModeT);
     reveal.setHudState(state);
 
     const QStringList lines = reveal.getHudBlock()->lines();
@@ -350,7 +359,7 @@ TEST(ColorTrackballReveal, APressCentresTheDiscAndACornerKeepsTheWindowInside)
     const QRect g = screen->geometry();
     ColorTrackballReveal reveal;
 
-    reveal.setMode(eColorGlobalModeS);
+    showMode(reveal, eColorGlobalModeS);
     reveal.setHudState(hudState(eColorGlobalModeS));
     ASSERT_GE(g.width(), reveal.width() + 80);
     ASSERT_GE(g.height(), reveal.height() + 80);
@@ -380,7 +389,7 @@ TEST(ColorTrackballReveal, SetModeSwapsTheWidgetInPlace)
 
     reveal.setHudState(hudState(eColorGlobalModeC));
     reveal.centreOn(press);
-    reveal.setMode(eColorGlobalModeC);
+    showMode(reveal, eColorGlobalModeC);
     EXPECT_TRUE(reveal.getModeWidget() == reveal.getWheel());
     EXPECT_FALSE(reveal.getWheel()->isHidden());
     EXPECT_TRUE(reveal.getDisc()->isHidden());
@@ -388,7 +397,7 @@ TEST(ColorTrackballReveal, SetModeSwapsTheWidgetInPlace)
     const QPoint placed = discCentre(reveal);
 
     for (ColorGlobalModeEnum mode : { eColorGlobalModeS, eColorGlobalModeT, eColorGlobalModeV }) {
-        reveal.setMode(mode);
+        showMode(reveal, mode);
         reveal.setHudState(hudState(mode));
         EXPECT_TRUE(reveal.getModeWidget() == reveal.getDisc());
         EXPECT_EQ(mode, reveal.getDisc()->getMode());
@@ -399,7 +408,7 @@ TEST(ColorTrackballReveal, SetModeSwapsTheWidgetInPlace)
         EXPECT_EQ(placed, discCentre(reveal)) << (int)mode;
     }
 
-    reveal.setMode(eColorGlobalModeC);
+    showMode(reveal, eColorGlobalModeC);
     EXPECT_TRUE(reveal.getModeWidget() == reveal.getWheel());
     EXPECT_EQ(reveal.getDiscRect(), reveal.getWheel()->geometry());
     EXPECT_EQ(placed, discCentre(reveal));
@@ -416,7 +425,7 @@ TEST(ColorTrackballReveal, ReleaseReturnsThePointerToThePressAndTheRevealStaysPu
     const QPoint dragEnd = press + QPoint(150, -90);
     ColorTrackballReveal reveal;
 
-    reveal.setMode(eColorGlobalModeS);
+    showMode(reveal, eColorGlobalModeS);
     reveal.setHudState(hudState(eColorGlobalModeS));
     reveal.centreOn(press);
 
@@ -470,7 +479,7 @@ TEST(ColorTrackballReveal, PuckStartsInTheCentreAndMovesWithTheStroke)
     ColorGlobalModeStroke stroke;
 
     reveal.setKnob(eColorKnobRoleGain, basis, &identity, rates.wheelRim);
-    reveal.setMode(eColorGlobalModeV);
+    showMode(reveal, eColorGlobalModeV);
     stroke.begin(start, 0.0);
     reveal.setStroke(start, start, stroke.getTotalDx(), stroke.getTotalDy(), rates);
     EXPECT_DOUBLE_EQ(0.0, reveal.getDisc()->getPuck().x());
@@ -499,7 +508,7 @@ TEST(ColorTrackballReveal, CWheelPuckIsTheStrokesTranslate)
     ColorTrackballReveal reveal;
 
     reveal.setKnob(eColorKnobRoleGain, basis, &identity, rates.wheelRim);
-    reveal.setMode(eColorGlobalModeC);
+    showMode(reveal, eColorGlobalModeC);
 
     // Anchored on the start, the puck in the centre until the stroke moves.
     reveal.setStroke(start, start, 0.0, 0.0, rates);
@@ -536,7 +545,7 @@ TEST(ColorTrackballReveal, TheStrokesValueDoesNotDependOnTheReveal)
 
         plain.begin(start, 0.0);
         shown.begin(start, 0.0);
-        reveal.setMode(mode);
+        showMode(reveal, mode);
         for (int step = 0; step < 5; ++step) {
             plain.addMove(7.0, -3.0, 1.0);
             shown.addMove(7.0, -3.0, 1.0);

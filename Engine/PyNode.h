@@ -47,14 +47,14 @@ NATRON_PYTHON_NAMESPACE_ENTER;
 class ImageLayer
 {
     QString _layerName;
-    QString _componentsPrettyName;
     QStringList _componentsName;
     ImageLayerDescPtr _comps;
 
 public:
-
+    /**
+     * @brief A colour view name (rgba, rgb, alpha, xy) with that view's channels names the view.
+     **/
     ImageLayer(const QString& layerName,
-               const QString& componentsPrettyName,
                const QStringList& componentsName);
 
     ImageLayer(const ImageLayerDesc& comps);
@@ -74,7 +74,6 @@ public:
 
     const QString& getLayerName() const;
     const QStringList& getComponentsNames() const;
-    const QString& getComponentsPrettyName() const;
 
     bool operator==(const ImageLayer& other) const;
 

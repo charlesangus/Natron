@@ -67,21 +67,21 @@ namespace {
 ImageLayerDesc
 depthLayer()
 {
-    return ImageLayerDesc("depth", "depth", "", std::vector<std::string>(1, "Z"));
+    return ImageLayerDesc("depth", std::vector<std::string>(1, "Z"));
 }
 
 ImageLayerDesc
 primIdLayer()
 {
-    return ImageLayerDesc("primId", "primId", "", std::vector<std::string>(1, "id"));
+    return ImageLayerDesc("primId", std::vector<std::string>(1, "id"));
 }
 
 ImageLayerDesc
 normalLayer()
 {
-    static const char* const channels[] = { "X", "Y", "Z" };
+    static const char* const channels[] = { "x", "y", "z" };
 
-    return ImageLayerDesc("normal", "normal", "", std::vector<std::string>(channels, channels + 3));
+    return ImageLayerDesc("normal", std::vector<std::string>(channels, channels + 3));
 }
 
 std::string
@@ -464,7 +464,7 @@ USDRender::getPreferredMetadataAt(double time,
                                   NodeMetadata& metadata)
 {
     metadata.setBitDepth(-1, eImageBitDepthFloat);
-    metadata.setComponentsType(-1, kNatronColorLayerID);
+    metadata.setComponentsType(-1, eImageComponentsTypeColor);
     metadata.setNComps(-1, 4);
     metadata.setIsFrameVarying(true);
     RectI format;

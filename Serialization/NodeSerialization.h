@@ -38,13 +38,10 @@ NATRON_NAMESPACE_ENTER
 namespace Serialization {
 
 /**
- * @brief Plain-data equivalent of an image layer description: its ID, its label, the label of
- * its channel set and its channel names.
+ * @brief Plain-data equivalent of an image layer description: its ID and its channel names.
  **/
 struct LayerSerialization {
     std::string layerID;
-    std::string layerLabel;
-    std::string channelsLabel;
     std::vector<std::string> channels;
 };
 

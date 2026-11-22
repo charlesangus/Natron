@@ -124,8 +124,7 @@ public:
      **/
     void fromSerialization(const Serialization::RotoStrokeItemSerialization& serialization);
 
-    virtual RectD getBoundingBox(double time) const OVERRIDE FINAL;
-
+    virtual RectD getBoundingBox(double time, bool useGuiCurves) const OVERRIDE FINAL;
 
     ///bbox is in canonical coords
     void evaluateStroke(unsigned int mipmapLevel, double time,

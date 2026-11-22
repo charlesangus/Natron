@@ -1549,13 +1549,25 @@ RotoDrawableItem::setExtraMatrix(bool setKeyframe,
 }
 
 void
+RotoDrawableItem::setTranslateKeyframe(double time,
+                                       double tx,
+                                       double ty)
+{
+    _imp->translate->beginChanges();
+    _imp->translate->setValueAtTime(time, tx, ViewSpec::all(), 0);
+    _imp->translate->setValueAtTime(time, ty, ViewSpec::all(), 1);
+    _imp->translate->endChanges();
+    onTransformSet(time);
+}
+
+void
 RotoDrawableItem::resetTransformCenter()
 {
     RotoCurveContextPtr context = getContext();
     double time = context->getNode()->getApp()->getTimeLine()->currentFrame();
     double centerX, centerY;
     if (!context->getDefaultTransformCenter(time, &centerX, &centerY)) {
-        RectD bbox = getBoundingBox(time);
+        RectD bbox = getBoundingBox(time, true);
         centerX = (bbox.x1 + bbox.x2) / 2.;
         centerY = (bbox.y1 + bbox.y2) / 2.;
     }

@@ -33,8 +33,10 @@
 #include "Engine/Nodes/Transform/Transform.h"
 
 #include "Gui/ColorTrackballHud.h"
+#include "Gui/ColorTrackballReveal.h"
 #include "Gui/ColorTrackballTarget.h"
 #include "Gui/TransformGroupGlobalModeTarget.h"
+#include "Gui/ValueModeDiscWidget.h"
 
 #include "GlobalModeTestSupport.h"
 
@@ -245,6 +247,28 @@ TEST_F(TransformGroupGlobalModeTargetTest, HudLightsTheActiveMember)
     EXPECT_TRUE(state.chipRows[0][1].lit);
     EXPECT_TRUE(state.chipRows[1][0].dimmed);
     EXPECT_FALSE(state.rateLine.isEmpty());
+}
+
+TEST_F(TransformGroupGlobalModeTargetTest, DirectionLabelsFollowTheActiveMember)
+{
+    const ColorTrackballRevealLabels rotate = valueModeRevealDirectionLabels(eGlobalModeKindRotate);
+    ColorTrackballRevealLabels labels = _target->directionLabels();
+
+    EXPECT_FALSE(labels.right.isEmpty());
+    EXPECT_EQ(rotate.right, labels.right);
+    EXPECT_EQ(rotate.left, labels.left);
+    EXPECT_EQ(rotate.top, labels.top);
+    EXPECT_EQ(rotate.bottom, labels.bottom);
+
+    ASSERT_TRUE(_target->handleKey(Qt::Key_Q, Qt::NoModifier, false));
+
+    const ColorTrackballRevealLabels translate = valueModeRevealDirectionLabels(eGlobalModeKindTranslate);
+
+    labels = _target->directionLabels();
+    EXPECT_EQ(translate.right, labels.right);
+    EXPECT_EQ(translate.left, labels.left);
+    EXPECT_EQ(translate.top, labels.top);
+    EXPECT_EQ(translate.bottom, labels.bottom);
 }
 
 } // namespace

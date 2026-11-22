@@ -25,18 +25,15 @@
 
 #include "Global/Macros.h"
 
+#include <cstdlib>
 #include <memory>
 
 #include <QApplication>
 #include <QCoreApplication>
 #include <QElapsedTimer>
-#include <QEvent>
 #include <QEventLoop>
-#include <QGuiApplication>
-#include <QObject>
 #include <QPoint>
 #include <QRect>
-#include <QScreen>
 #include <QSize>
 #include <QString>
 #include <QStringList>
@@ -145,26 +142,6 @@ TEST(ColorTrackballHud, PillIsSizedToItsText)
     EXPECT_TRUE(shortPill.testAttribute(Qt::WA_TransparentForMouseEvents));
 }
 
-TEST(ColorTrackballHud, BlockWindowIsAClickThroughToolWindow)
-{
-    ColorTrackballHudBlock block(nullptr, colorTrackballFollowCursorWindowFlags());
-    const Qt::WindowFlags flags = block.windowFlags();
-
-    EXPECT_TRUE(block.isWindow());
-    EXPECT_TRUE(block.isHidden());
-    EXPECT_EQ((int)Qt::Tool, (int)(flags & Qt::WindowType_Mask));
-    EXPECT_TRUE(flags.testFlag(Qt::FramelessWindowHint));
-    EXPECT_TRUE(flags.testFlag(Qt::WindowStaysOnTopHint));
-    EXPECT_TRUE(flags.testFlag(Qt::WindowTransparentForInput));
-    EXPECT_TRUE(flags.testFlag(Qt::WindowDoesNotAcceptFocus));
-    EXPECT_TRUE(block.testAttribute(Qt::WA_ShowWithoutActivating));
-    EXPECT_TRUE(block.testAttribute(Qt::WA_TransparentForMouseEvents));
-    // Masked to its rounded panel, so its corners never paint black without a compositor.
-    EXPECT_FALSE(block.mask().isEmpty());
-    EXPECT_FALSE(block.mask().contains(QPoint(0, 0)));
-    EXPECT_TRUE(block.mask().contains(QPoint(block.width() / 2, block.height() / 2)));
-}
-
 TEST(ColorTrackballHud, FrameOverADummyWidgetTracksAResize)
 {
     QWidget window;
@@ -213,80 +190,63 @@ TEST(ColorTrackballHud, FollowPositionIsBelowRightAndFlipsAtTheScreenEdges)
     EXPECT_EQ(QPoint(116, 116), colorTrackballHudFollowPosition(QPoint(100, 100), size, QRect(), offset));
 }
 
-namespace {
-class PaintCounter
-    : public QObject {
-public:
-    int count = 0;
+TEST(ColorTrackballHud, PointerBadgesClearTheCursorAndEachOther)
+{
+    const int reach = 20;
+    const QSize pills[4] = { QSize(48, 22), QSize(52, 22), QSize(60, 22), QSize(44, 22) };
+    const ColorTrackballPointerBadgeRects r = colorTrackballPointerBadgeLayout(reach, pills, QSize(220, 90), 8, QPoint(16, 16));
+    const QRect cursor(-reach, -reach, 2 * reach, 2 * reach);
 
-protected:
-    bool eventFilter(QObject*, QEvent* e) override
-    {
-        if (e->type() == QEvent::Paint) {
-            ++count;
+    for (int i = 0; i < 4; ++i) {
+        EXPECT_EQ(pills[i], r.pills[i].size());
+        EXPECT_FALSE(r.pills[i].intersects(cursor)) << i;
+        for (int j = i + 1; j < 4; ++j) {
+            EXPECT_FALSE(r.pills[i].intersects(r.pills[j])) << i << " " << j;
         }
-
-        return false;
+        EXPECT_FALSE(r.pills[i].intersects(r.block)) << i;
+        EXPECT_TRUE(r.bounds.contains(r.pills[i])) << i;
     }
-};
+    EXPECT_GT(r.pills[0].left(), 0);
+    EXPECT_LT(r.pills[1].right(), 0);
+    EXPECT_LT(r.pills[2].bottom(), 0);
+    EXPECT_GT(r.pills[3].top(), 0);
+    EXPECT_TRUE(r.bounds.contains(r.block));
 }
 
-TEST(ColorTrackballHud, ANewStateAndAMoveLeaveTheBlockWindowRepainted)
+TEST(ColorTrackballHud, PointerBadgesKeepClearOfTallSidePills)
 {
-    ColorTrackballHudBlock block(nullptr, colorTrackballFollowCursorWindowFlags());
-    PaintCounter counter;
+    const QSize pills[4] = { QSize(80, 50), QSize(80, 50), QSize(120, 22), QSize(120, 22) };
+    const ColorTrackballPointerBadgeRects r = colorTrackballPointerBadgeLayout(10, pills, QSize(100, 40), 8, QPoint(16, 16));
 
-    block.setState(stateFor(eColorGlobalModeS));
-    block.show();
-    QElapsedTimer timer;
-    timer.start();
-    while (!block.isVisible() && timer.elapsed() < 2000) {
-        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    for (int i = 0; i < 4; ++i) {
+        for (int j = i + 1; j < 4; ++j) {
+            EXPECT_FALSE(r.pills[i].intersects(r.pills[j])) << i << " " << j;
+        }
     }
-    QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
-    block.installEventFilter(&counter);
-
-    ColorTrackballHudState longer = stateFor(eColorGlobalModeS);
-
-    longer.endOfListMessage = QString::fromUtf8("Last colour knob.");
-    block.setState(longer);
-    block.followCursorTo(QPoint(120, 130));
-    QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
-    EXPECT_GE(counter.count, 1);
-    block.hide();
 }
 
-TEST(ColorTrackballHud, FollowingBlockSitsAtTheOffsetAndFlipsNearTheEdges)
+TEST(ColorTrackballHud, PointerBadgeBlockSitsCentredUnderTheBottomPill)
 {
-    QScreen* screen = QGuiApplication::primaryScreen();
+    const QSize pills[4] = { QSize(48, 22), QSize(52, 22), QSize(60, 22), QSize(44, 22) };
+    const QSize blockSize(220, 90);
+    const ColorTrackballPointerBadgeRects r = colorTrackballPointerBadgeLayout(20, pills, blockSize, 8, QPoint(16, 16));
 
-    ASSERT_TRUE(screen != 0);
+    EXPECT_EQ(blockSize, r.block.size());
+    EXPECT_EQ(r.pills[3].bottom() + 1 + 8, r.block.top());
+    EXPECT_LE(std::abs(r.block.center().x() - r.pills[3].center().x()), 1);
+    EXPECT_LE(std::abs(r.block.center().x()), 1);
+}
 
-    const QRect g = screen->geometry();
-    ColorTrackballHudBlock block(nullptr, colorTrackballFollowCursorWindowFlags());
+TEST(ColorTrackballHud, PointerBadgeBlockAloneSitsWhereTheFollowingBlockDoes)
+{
+    const QSize pills[4];
+    const QSize blockSize(220, 90);
+    const QPoint offset(16, 16);
+    const ColorTrackballPointerBadgeRects r = colorTrackballPointerBadgeLayout(20, pills, blockSize, 8, offset);
 
-    block.setState(stateFor(eColorGlobalModeS));
-    ASSERT_LE(g.left() + 116 + block.width(), g.left() + g.width());
-    ASSERT_LE(g.top() + 116 + block.height(), g.top() + g.height());
-
-    const QPoint near = g.topLeft() + QPoint(100, 100);
-
-    block.followCursorTo(near);
-    EXPECT_EQ(near + QPoint(16, 16), block.pos());
-
-    const QPoint corner(g.left() + g.width() - 10, g.top() + g.height() - 10);
-
-    block.followCursorTo(corner);
-    EXPECT_LT(block.geometry().right(), corner.x());
-    EXPECT_LT(block.geometry().bottom(), corner.y());
-    EXPECT_GE(block.geometry().left(), g.left());
-    EXPECT_GE(block.geometry().top(), g.top());
-
-    // A new state that resizes it is placed by the same cursor again.
-    ColorTrackballHudState longer = stateFor(eColorGlobalModeC);
-
-    longer.endOfListMessage = QString::fromUtf8("Last colour knob.");
-    block.setState(longer);
-    EXPECT_LT(block.geometry().right(), corner.x());
-    EXPECT_LT(block.geometry().bottom(), corner.y());
+    for (int i = 0; i < 4; ++i) {
+        EXPECT_TRUE(r.pills[i].isNull()) << i;
+    }
+    EXPECT_EQ(QRect(colorTrackballHudFollowPosition(QPoint(0, 0), blockSize, QRect(), offset), blockSize), r.block);
+    EXPECT_EQ(r.block, r.bounds);
 }

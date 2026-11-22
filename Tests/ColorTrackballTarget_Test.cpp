@@ -25,15 +25,23 @@
 
 #include "Global/Macros.h"
 
+#include <memory>
 #include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
 
+#include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
 #include "Engine/Nodes/Color/ColorCorrect.h"
 #include "Engine/Nodes/Color/Grade.h"
 
+#include "Gui/ColorTrackballGlobalMode.h"
+#include "Gui/ColorTrackballReveal.h"
 #include "Gui/ColorTrackballTarget.h"
+#include "Gui/KnobGuiColor.h"
+
+#include "GlobalModeTestSupport.h"
 
 NATRON_NAMESPACE_USING
 
@@ -231,4 +239,79 @@ TEST(ColorTrackballTarget, AllDisabledKnobsPickNone)
     }
 
     EXPECT_EQ(-1, pickTargetIndex(PLUGINID_NATRON_GRADE, knobs, -1));
+}
+
+namespace {
+
+class ColorTrackballTargetLabelsTest
+    : public GlobalModeNodeTest {
+protected:
+    virtual void SetUp() OVERRIDE
+    {
+        GlobalModeNodeTest::SetUp();
+        _grade = create(PLUGINID_NATRON_GRADE, PLUGIN_MAJOR_NATRON_GRADE);
+        ASSERT_TRUE(bool(_grade));
+
+        KnobIPtr multiply = _grade->getKnobByName(kGradeParamMultiply);
+
+        ASSERT_TRUE(bool(std::dynamic_pointer_cast<KnobColor>(multiply)));
+        _knobGui = std::make_shared<KnobGuiColor>(multiply, &container());
+        _target.reset(new ColorGlobalModeTarget(_knobGui));
+    }
+
+    virtual void TearDown() OVERRIDE
+    {
+        _target.reset();
+        _knobGui.reset();
+        _grade.reset();
+        GlobalModeNodeTest::TearDown();
+    }
+
+    NodePtr _grade;
+    KnobGuiColorPtr _knobGui;
+    std::unique_ptr<ColorGlobalModeTarget> _target;
+};
+
+} // namespace
+
+TEST_F(ColorTrackballTargetLabelsTest, SGivesHueAndSatLabels)
+{
+    const QString minus(QChar(0x2212));
+
+    _target->setMode(eColorGlobalModeS);
+
+    const ColorTrackballRevealLabels labels = _target->directionLabels();
+
+    EXPECT_EQ(QString::fromUtf8("+Hue"), labels.right);
+    EXPECT_EQ(minus + QString::fromUtf8("Hue"), labels.left);
+    EXPECT_EQ(QString::fromUtf8("+Sat"), labels.top);
+    EXPECT_EQ(minus + QString::fromUtf8("Sat"), labels.bottom);
+}
+
+TEST_F(ColorTrackballTargetLabelsTest, CGivesNoLabels)
+{
+    _target->setMode(eColorGlobalModeS);
+    _target->setMode(eColorGlobalModeC);
+
+    const ColorTrackballRevealLabels labels = _target->directionLabels();
+
+    EXPECT_TRUE(labels.right.isEmpty());
+    EXPECT_TRUE(labels.left.isEmpty());
+    EXPECT_TRUE(labels.top.isEmpty());
+    EXPECT_TRUE(labels.bottom.isEmpty());
+}
+
+TEST_F(ColorTrackballTargetLabelsTest, TAndVMatchTheRevealLabels)
+{
+    for (ColorGlobalModeEnum mode : { eColorGlobalModeT, eColorGlobalModeV }) {
+        _target->setMode(mode);
+
+        const ColorTrackballRevealLabels expected = colorTrackballRevealDirectionLabels(mode);
+        const ColorTrackballRevealLabels labels = _target->directionLabels();
+
+        EXPECT_EQ(expected.right, labels.right);
+        EXPECT_EQ(expected.left, labels.left);
+        EXPECT_EQ(expected.top, labels.top);
+        EXPECT_EQ(expected.bottom, labels.bottom);
+    }
 }

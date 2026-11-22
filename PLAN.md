@@ -181,7 +181,7 @@ future core work has solid ground to build on.
 | M333 | Prim Inspector | done | M232 | misty-marten | E9 | F4 | | [M333-prim-inspector.md](PLAN/MILESTONES/M333-prim-inspector.md) |
 | M334 | Knob Prim Tools | done | M52, M232, M331 | bosley-native-nodes | E9 | F4 | | [M334-knob-prim-tools.md](PLAN/MILESTONES/M334-knob-prim-tools.md) |
 | M335 | Viewer Render Draw States | done | M254, M329 | bosley-native-nodes | E9 | F4 | | [M335-viewer-render-draw-states.md](PLAN/MILESTONES/M335-viewer-render-draw-states.md) |
-| M336 | Heavy Scene Acceptance | doing | M329, M330, M331, M332 | bosley-executor | E9 | F4 | | [M336-heavy-scene-acceptance.md](PLAN/MILESTONES/M336-heavy-scene-acceptance.md) |
+| M336 | Heavy Scene Acceptance | done | M329, M330, M331, M332 | bosley-executor | E9 | F4 | | [M336-heavy-scene-acceptance.md](PLAN/MILESTONES/M336-heavy-scene-acceptance.md) |
 | M401 | 3D Viewer Breadcrumbs | done | M231, M232, M328, M332 | bosley-native-nodes | E9 | F4 | | [M401-3d-viewer-breadcrumbs.md](PLAN/MILESTONES/M401-3d-viewer-breadcrumbs.md) |
 | M481 | Viewer Polygon Budgets | doing | M336 | bosley-executor | E9 | | | [M481-viewer-polygon-budgets.md](PLAN/MILESTONES/M481-viewer-polygon-budgets.md) |
 | M423 | USDPrune Isolate Mode | doing | M381 | bosley-executor | E9 | | | [M423-usdprune-isolate-mode.md](PLAN/MILESTONES/M423-usdprune-isolate-mode.md) |

@@ -18,7 +18,7 @@ USDPrune gains a Prune Unselected checkbox. With it on, the node keeps what Prim
 - A match inside an instance proxy: its instance prim is kept whole, since USD can't author inside an instance proxy. Off-path instance prims are pruned as one prim.
 - Hide mode and a non-imageable prune root (a Material or a typeless prim): the node descends into it and hides the highest imageable prims below it, since hiding a non-imageable prim has no effect.
 - Hide mode keeps every ancestor of a kept prim visible by authoring nothing on it. An ancestor the input already made invisible stays invisible, as in today's Hide mode.
-- A pattern that matches nothing with Prune Unselected on: the scene passes through unchanged with the existing no-match warning, rather than pruning everything.
+- A pattern that matches nothing in the loaded scene with Prune Unselected on: everything but the kept types is pruned (user, 2026-11-20), in the viewer and in renders.
 - An empty pattern with Prune Unselected on: passes through without a warning, as today.
 - Keep Lights means any `UsdLuxBoundableLightBase` or `UsdLuxNonboundableLightBase` prim, and light filters. Keep Cameras means `UsdGeomCamera`. Keep Materials means `UsdShadeMaterial` and anything below one (shaders, node graphs). Keep Render Settings means `UsdRenderSettings`, `UsdRenderProduct`, `UsdRenderVar` and `UsdRenderPass`. Each kept prim keeps its ancestors.
 - Unloaded branches in a viewer evaluation: the Keep types are checked only on loaded prims. An unloaded payload is kept when any prefix of the pattern's reach lies on or below it, or above it, and pruned otherwise. A light or camera inside an unloaded payload the pattern can't reach is pruned in the viewer and kept in a render.

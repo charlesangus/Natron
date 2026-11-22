@@ -1097,7 +1097,14 @@ struct UserKnobDependentStates {
                 if (partner && (link.partnerDimension >= 0) && (link.partnerDimension < partner->getDimension()) && relink(knob, i, partner, link)) {
                     nodeLinks |= link.nodeLink || link.partnerNodeLink;
                     if (link.linked) {
-                        // A linked dimension shares the group's expression.
+                        // A linked dimension shares the group's expression. Members adopt it only when its text
+                        // changes, so one left invalid by a deleted knob is re-set, and the set reaches the group.
+                        if (!dependent.expressions[i].empty() && !knob->isExpressionValid(i, 0)) {
+                            try {
+                                knob->setExpression(i, dependent.expressions[i], dependent.expressionsHaveRet[i], false);
+                            } catch (...) {
+                            }
+                        }
                         continue;
                     }
                 }

@@ -214,6 +214,49 @@ TEST_F(ProjectResetListenersTest, ListenerOfADeletedKnobTakesANewExpression)
     EXPECT_DOUBLE_EQ(0.75, readerWhite->getValue(0));
 }
 
+// Deleting a group deletes its children through the holder, each with its own recheck.
+TEST_F(ProjectResetListenersTest, ListenerOfADeletedGroupsChildTakesANewExpression)
+{
+    ReaderOverDriver g;
+    ASSERT_TRUE(build(getApp(), &g));
+    const EffectInstancePtr driverEffect = g.driver->getEffectInstance();
+    KnobGroupPtr group = driverEffect->createGroupKnob("grp", "Grp");
+    KnobDoublePtr k = driverEffect->createDoubleKnob("k", "K", 1);
+    ASSERT_TRUE(group != nullptr);
+    ASSERT_TRUE(k != nullptr);
+    ASSERT_TRUE(group->addKnob(k));
+    ASSERT_NO_THROW(g.readerWhite->setExpression(0, readExpression(g.driver, "k"), false, true));
+    ASSERT_TRUE(listens(k, g.readerWhite, 0));
+
+    const KnobIPtr held = k;
+    driverEffect->deleteKnob(group.get(), false);
+    group.reset();
+    k.reset();
+
+    EXPECT_TRUE(driverEffect->getKnobByName("k") == nullptr);
+    EXPECT_TRUE(driverEffect->getKnobByName("grp") == nullptr);
+    std::string error;
+    EXPECT_FALSE(g.readerWhite->isExpressionValid(0, &error));
+    KnobI::ListenerDimsMap listeners;
+    held->getListeners(listeners);
+    EXPECT_TRUE(listeners.empty());
+    std::list<Node::KnobLink> links;
+    g.reader->getKnobsLinks(links);
+    for (std::list<Node::KnobLink>::const_iterator it = links.begin(); it != links.end(); ++it) {
+        EXPECT_TRUE(it->master.lock() != held);
+    }
+
+    const KnobColorPtr driverWhite = std::dynamic_pointer_cast<KnobColor>(g.driverWhite);
+    const KnobColorPtr readerWhite = std::dynamic_pointer_cast<KnobColor>(g.readerWhite);
+    ASSERT_TRUE(driverWhite != nullptr);
+    ASSERT_TRUE(readerWhite != nullptr);
+    driverWhite->setValue(0.75, ViewSpec::all(), 0);
+    ASSERT_NO_THROW(g.readerWhite->setExpression(0, readExpression(g.driver, kGradeParamWhite), false, true));
+    EXPECT_TRUE(g.readerWhite->isExpressionValid(0, &error)) << error;
+    EXPECT_TRUE(listens(g.driverWhite, g.readerWhite, 0));
+    EXPECT_DOUBLE_EQ(0.75, readerWhite->getValue(0));
+}
+
 TEST_F(ProjectResetListenersTest, UnslavingOneDimensionKeepsTheOthersListening)
 {
     ReaderOverDriver g;

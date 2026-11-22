@@ -2029,6 +2029,10 @@ TEST_F(SceneViewportStorm, AnExceptionFromHydraDiscardsTheEngineAndTheNextRender
     ASSERT_TRUE(_renderer.hasEngine());
     const U64 engines = _renderer.getEngineCount();
 
+    // An unchanged view is a tint-only frame, which never calls into the engine's Render.
+    SceneViewportRenderer::FreeCamera camera = _renderer.getFreeCamera();
+    camera.azimuth += 30.;
+    _renderer.setFreeCamera(camera);
     RenderDelegates::setRenderFaultHook([]() { throw std::runtime_error("texture commit failed"); });
     EXPECT_TRUE(renderFrame());
     RenderDelegates::setRenderFaultHook(nullptr);

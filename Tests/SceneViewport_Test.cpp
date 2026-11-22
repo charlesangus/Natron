@@ -2120,6 +2120,51 @@ TEST_F(SceneViewportStorm, AStoppedBackgroundFrameRendersOnePassAndTakesItIn)
     EXPECT_GT(countNonBackground(render()), 0);
 }
 
+// A selection change alone grades the AOVs the last render left and tints them, rendering no
+// pass, on the render thread's frame and on the main thread's alike, a pick in between included.
+// A camera move still renders.
+TEST_F(SceneViewportStorm, ASelectionChangeAloneTintsWithoutARenderPass)
+{
+    if (_skip) {
+        return;
+    }
+    const QImage unselected = render();
+    const Rgb box = pixel(unselected, 128, 128);
+    const Rgb ball = pixel(unselected, 221, 128);
+
+    int passes = 0;
+    RenderDelegates::setRenderFaultHook([&passes]() { ++passes; });
+    _renderer.setSelectedPrims({ "/World/Box" });
+    ASSERT_TRUE(_renderer.prepareBackgroundFrame(kSize, kSize));
+    EXPECT_FALSE(_renderer.needsStageFrame());
+    EXPECT_TRUE(_renderer.isBackgroundFrameTintOnly());
+    bool finished = false;
+    EXPECT_TRUE(_renderer.renderBackgroundFrame(_fbo->handle(), &finished));
+    const QImage framed = _fbo->toImage();
+    EXPECT_EQ(0, passes);
+    EXPECT_EQ(0, _renderer.getLastFramePasses());
+    EXPECT_TRUE(finished);
+    EXPECT_FALSE(_renderer.needsBackgroundFrame()) << "the tint-only frame took the selection in";
+    EXPECT_GT(difference(pixel(framed, 128, 128), box), 30) << "the box is tinted: " << box << " -> " << pixel(framed, 128, 128);
+    EXPECT_LE(difference(pixel(framed, 221, 128), ball), 6) << "the ball is not selected";
+
+    EXPECT_EQ(std::string("/World/Ball"), _renderer.pick(221, 128, kSize, kSize));
+    _renderer.setSelectedPrims({});
+    const QImage cleared = render();
+    EXPECT_EQ(0, passes);
+    EXPECT_LE(difference(pixel(cleared, 128, 128), box), 6) << "clearing the selection left the box tinted: " << box << " -> " << pixel(cleared, 128, 128);
+
+    SceneViewportRenderer::FreeCamera camera = _renderer.getFreeCamera();
+    camera.azimuth += 30.;
+    _renderer.setFreeCamera(camera);
+    _renderer.setSelectedPrims({ "/World/Box" });
+    ASSERT_TRUE(_renderer.prepareBackgroundFrame(kSize, kSize));
+    EXPECT_FALSE(_renderer.isBackgroundFrameTintOnly()) << "the AOVs are of another view";
+    _renderer.renderBackgroundFrame(_fbo->handle());
+    RenderDelegates::setRenderFaultHook(nullptr);
+    EXPECT_GT(passes, 0);
+}
+
 // A sync blocked on the viewer lock ends the background frame holding it at its next pass, rather
 // than waiting out every pass of it.
 TEST_F(SceneViewportStorm, ASyncDuringABackgroundFrameEndsTheFrameAtItsNextPass)

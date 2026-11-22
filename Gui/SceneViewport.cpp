@@ -1114,7 +1114,12 @@ struct SceneViewportRenderer::Implementation {
 
         // True while the fbo holds this frame's image and nothing has drawn over it.
         bool imageKept = false;
+        // Prepared to grade the engine's last render again and tint it, rendering nothing.
+        bool tintOnly = false;
         unsigned int fbo = 0;
+        // selectionApplied when the frame drew its selection pass: a kept image tinted for another
+        // selection is not this one's.
+        U64 selection = 0;
         U64 editCount = 0;
         U64 loadEditCount = 0;
         U64 previewGeneration = 0;
@@ -1147,6 +1152,25 @@ struct SceneViewportRenderer::Implementation {
         }
     };
     BackgroundView backgroundView;
+
+    // What the engine's colour and depth AOVs hold: the converged render that left them. A pick
+    // renders into its own task's buffers and the selection pass into the selection's, so only a
+    // render, another engine or another buffer size changes them, and a frame owed only to a
+    // selection change can grade them again and draw the selection over them.
+    struct AovFrame {
+        bool valid = false;
+        U64 engine = 0;
+        int width = 0;
+        int height = 0;
+        GfMatrix4d viewMatrix;
+        GfMatrix4d projection;
+        UsdImagingGLRenderParams params;
+        U64 editCount = 0;
+        U64 loadEditCount = 0;
+        U64 previewGeneration = 0;
+        U64 drawApplied = 0;
+    };
+    AovFrame aovFrame;
 
     // What a traversal of the stage found, as of an edit count. The threads that change the stage
     // publish it before anyone is told of the change, and nothing else traverses, so no frame or
@@ -1395,6 +1419,7 @@ struct SceneViewportRenderer::Implementation {
         uploadedFrame.reset();
         // A return to Storm renders afresh rather than showing the image from before the switch.
         backgroundFrame.imageKept = false;
+        aovFrame.valid = false;
         // The last delegate's refinement engine goes; another has its own default cap, and starts
         // refining.
         progressive->setRenderer(std::string());
@@ -1797,8 +1822,6 @@ struct SceneViewportRenderer::Implementation {
     // Needs stageMutex.
     void applySelection()
     {
-        // The selection pass draws differently from now on, so a kept image is out of date.
-        backgroundFrame.imageKept = false;
         engineSelectionDirty = false;
         selectedPaths.clear();
         {
@@ -1822,6 +1845,7 @@ struct SceneViewportRenderer::Implementation {
         forgetEngineInstance();
         engineHeld = false;
         backgroundFrame.imageKept = false;
+        aovFrame.valid = false;
         setRenderErrorCopy("The " + rendererId + " render failed: " + what);
     }
 
@@ -1867,6 +1891,7 @@ struct SceneViewportRenderer::Implementation {
     void engineFailedToStart(const std::string& what)
     {
         engine.reset();
+        aovFrame.valid = false;
         forgetEngineInstance();
         engineHeld = false;
         setRendererErrorCopy("The renderer " + rendererId + " could not be started: " + what + ".");
@@ -1996,6 +2021,7 @@ struct SceneViewportRenderer::Implementation {
         everyLightHidden = false;
         engineHeld = false;
         backgroundFrame.imageKept = false;
+        aovFrame.valid = false;
     }
 
     // Needs stageMutex and a current GL context. Every GL object, the engine first.
@@ -2366,7 +2392,52 @@ struct SceneViewportRenderer::Implementation {
             && (frame.displayProcessor == displayProcessor) && (frame.gain == displayTransform.gain) && (frame.gamma == displayTransform.gamma)
             && (frame.editCount == sceneStage->getEditCount())
             && (frame.loadEditCount == sceneStage->getLoadEditCount())
-            && (frame.previewGeneration == sceneStage->getPreviewGeneration());
+            && (frame.previewGeneration == sceneStage->getPreviewGeneration())
+            && (frame.selection == selectionApplied);
+    }
+
+    // Needs stageMutex, after the renders of a frame of this view.
+    void noteAovs(bool converged,
+                  int width,
+                  int height,
+                  const GfFrustum& frustum,
+                  const UsdImagingGLRenderParams& params)
+    {
+        AovFrame& aovs = aovFrame;
+        aovs.valid = converged && engine && sceneStage && !texturesOwed && !drawFilling && !drawRevealing;
+        if (!aovs.valid) {
+            return;
+        }
+        aovs.engine = engineCount;
+        aovs.width = width;
+        aovs.height = height;
+        aovs.viewMatrix = frustum.ComputeViewMatrix();
+        aovs.projection = frustum.ComputeProjectionMatrix();
+        aovs.params = params;
+        aovs.editCount = sceneStage->getEditCount();
+        aovs.loadEditCount = sceneStage->getLoadEditCount();
+        aovs.previewGeneration = sceneStage->getPreviewGeneration();
+        aovs.drawApplied = drawApplied;
+    }
+
+    // Needs stageMutex. Whether a render of this view would leave the AOVs as they are, so that
+    // grading them again draws its frame. The renderer's settings are the stage's at the params'
+    // time, so the edit counts and the params cover them.
+    bool aovsHold(int width,
+                  int height,
+                  const GfFrustum& frustum,
+                  const UsdImagingGLRenderParams& params) const
+    {
+        const AovFrame& aovs = aovFrame;
+
+        return aovs.valid && engine && sceneStage && (rendererId == kRenderDelegateStormId) && (aovs.engine == engineCount)
+            && (aovs.width == width) && (aovs.height == height)
+            && (aovs.viewMatrix == frustum.ComputeViewMatrix()) && (aovs.projection == frustum.ComputeProjectionMatrix())
+            && (aovs.params == params)
+            && (aovs.editCount == sceneStage->getEditCount()) && (aovs.loadEditCount == sceneStage->getLoadEditCount())
+            && (aovs.previewGeneration == sceneStage->getPreviewGeneration())
+            && (aovs.drawApplied == drawApplied) && (drawApplied == drawPosted)
+            && !texturesOwed && !drawFilling && !drawRevealing;
     }
 
     // Needs the GL context current.
@@ -2732,6 +2803,10 @@ struct SceneViewportRenderer::Implementation {
                    int height,
                    bool lit)
     {
+        // Buffers of another size are new ones, whatever a render then draws into them.
+        if ((width != aovFrame.width) || (height != aovFrame.height)) {
+            aovFrame.valid = false;
+        }
         engine->SetRenderBufferSize(GfVec2i(width, height));
         engine->SetFraming(CameraUtilFraming(GfRect2i(GfVec2i(0, 0), width, height)));
         engine->SetCameraState(frustum.ComputeViewMatrix(), frustum.ComputeProjectionMatrix());
@@ -4130,10 +4205,17 @@ SceneViewportRenderer::prepareBackgroundFrame(int width,
     frame.gamma = _imp->displayTransform.gamma;
     std::copy(_imp->backgroundShown, _imp->backgroundShown + 3, frame.background);
     frame.imageKept = false;
+    frame.tintOnly = !needsStageFrame() && _imp->aovsHold(width, height, frustum, frame.params);
     frame.stops = _imp->backgroundStops;
     frame.cancels = _imp->backgroundCancels;
 
     return true;
+}
+
+bool
+SceneViewportRenderer::isBackgroundFrameTintOnly() const
+{
+    return _imp->backgroundFrame.tintOnly;
 }
 
 void
@@ -4188,6 +4270,51 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo,
         return false;
     }
     section.collectWith(_imp->engine->GetHgi());
+    if (frame.tintOnly) {
+        frame.params.enableSceneLights = _imp->usesSceneLights(frame.lightingMode);
+        // Checked again, as the frame may have been prepared before a change the lock kept out. A
+        // full frame then: one refused here would be prepared again for the same view.
+        frame.tintOnly = _imp->aovsHold(frame.width, frame.height, frame.frustum, frame.params);
+    }
+    if (frame.tintOnly) {
+        // The draw filter is not serviced: a change it took in now would need a render.
+        std::string what;
+        bool failed = false;
+        try {
+            _imp->setCamera(frame.frustum, frame.width, frame.height, frame.params.enableSceneLights);
+        } catch (const std::exception& e) {
+            failed = true;
+            what = e.what();
+        } catch (...) {
+            failed = true;
+        }
+        if (failed) {
+            // The engine's Hgi goes with it, collecting as it does.
+            section.collectWith(nullptr);
+            _imp->discardFailedEngine(what.empty() ? std::string("unknown exception") : what);
+
+            return false;
+        }
+        _imp->lastFramePasses = 0;
+        _imp->noteDrawFilterRendered(false);
+        Implementation::bindFrameTarget(fbo, frame.width, frame.height);
+        _imp->drawGrade(fbo, frame.width, frame.height, frame.displayProcessor, frame.gain, frame.gamma);
+        if (!_imp->drawSelectionPass(section, fbo, frame.width, frame.height, frame.params)) {
+            return false;
+        }
+        _imp->noteStageAbsorbed(frame.params);
+        frame.fbo = fbo;
+        frame.editCount = _imp->sceneStage->getEditCount();
+        frame.loadEditCount = _imp->sceneStage->getLoadEditCount();
+        frame.previewGeneration = _imp->sceneStage->getPreviewGeneration();
+        frame.selection = _imp->selectionApplied;
+        frame.imageKept = true;
+        if (finished) {
+            *finished = true;
+        }
+
+        return true;
+    }
     _imp->noteFillView(frame.frustum, frame.width, frame.height);
     _imp->serviceDrawFilter(true);
     // A batch of the fill is shown by its first pass, so the next batch follows that image.
@@ -4244,6 +4371,7 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo,
         return false;
     }
     converged = converged && !_imp->drawFilling;
+    _imp->noteAovs(converged, frame.width, frame.height, frame.frustum, frame.params);
     _imp->sceneLit = frame.params.enableSceneLights;
     if (timed) {
         // Only the render thread waits here, and the image could not be shown before the GPU is
@@ -4262,6 +4390,7 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo,
     frame.editCount = _imp->sceneStage->getEditCount();
     frame.loadEditCount = _imp->sceneStage->getLoadEditCount();
     frame.previewGeneration = _imp->sceneStage->getPreviewGeneration();
+    frame.selection = _imp->selectionApplied;
     frame.imageKept = converged;
     if (finished) {
         *finished = converged;
@@ -5561,11 +5690,37 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
     UsdImagingGLRenderParams params = _imp->renderParams();
     const bool held = _imp->stageHeld;
     const bool kept = !held && _imp->takeBackgroundImage(fbo, width, height, frustum, params);
+    const bool tintOnly = !held && !kept && _imp->aovsHold(width, height, frustum, params);
     Implementation::bindFrameTarget(fbo, width, height);
-    bool converged = kept || held;
+    bool converged = kept || held || tintOnly;
     if (held) {
         // The engine is not handed the stage either: it would take its prims in at full.
         Implementation::clearFrameTarget(_imp->backgroundShown);
+    } else if (tintOnly) {
+        Implementation::clearFrameTarget(_imp->backgroundShown);
+        std::string what;
+        bool failed = false;
+        try {
+            _imp->setCamera(frustum, width, height, _imp->sceneLit);
+        } catch (const std::exception& e) {
+            failed = true;
+            what = e.what();
+        } catch (...) {
+            failed = true;
+        }
+        if (failed) {
+            // The engine's Hgi goes with it, collecting as it does.
+            section.collectWith(nullptr);
+            _imp->discardFailedEngine(what.empty() ? std::string("unknown exception") : what);
+
+            return eRenderStatusDone;
+        }
+        _imp->lastFramePasses = 0;
+        Implementation::bindFrameTarget(fbo, width, height);
+        _imp->drawGrade(fbo, width, height, _imp->displayProcessor, _imp->displayTransform.gain, _imp->displayTransform.gamma);
+        if (!_imp->drawSelectionPass(section, fbo, width, height, params)) {
+            return eRenderStatusDone;
+        }
     } else if (!kept) {
         Implementation::clearFrameTarget(_imp->backgroundShown);
         _imp->setCamera(frustum, width, height, _imp->sceneLit);
@@ -5611,6 +5766,7 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
         _imp->paceTextures();
         _imp->texturesOwed = StormTextureBudget::texturesPending(_imp->engineInstanceId);
         converged = converged && !_imp->texturesOwed && !_imp->drawFilling;
+        _imp->noteAovs(converged, width, height, frustum, params);
         if (timed) {
             // The main thread waits for this render, so the GPU is left to finish on its own.
             timing->frameEnded(std::chrono::steady_clock::now(), passes, -1., true);
@@ -5622,7 +5778,7 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
         }
     }
     if (!held) {
-        _imp->noteDrawFilterRendered(!kept);
+        _imp->noteDrawFilterRendered(!kept && !tintOnly);
         _imp->noteStageAbsorbed(params);
     }
 
@@ -7342,6 +7498,8 @@ struct SceneViewport::Implementation {
         unsigned long long absorbed = 0;
         QVariantList view;
         std::chrono::steady_clock::time_point startedAt;
+        // Prepared to render no pass, only to grade the last render again and tint it.
+        bool tintOnly = false;
     };
     // Main thread, and the render thread while the main thread waits for it. Only the render
     // thread asks whether a fence has signalled.
@@ -7351,6 +7509,8 @@ struct SceneViewport::Implementation {
     };
     // Main thread: the fence the render thread last found signalled.
     GLsync signalledFence = nullptr;
+    // Main thread: the frame last given to presentPacer was a tint-only one.
+    bool submittedTintOnly = false;
     // Main thread: until when the frame on the GPU holds the paints.
     std::chrono::steady_clock::time_point presentHoldEnd;
 
@@ -7464,6 +7624,9 @@ struct SceneViewport::Implementation {
     bool backgroundFrameRunning = false;
     // The frame running is for a camera, size or display change alone, which shows no composing status.
     bool backgroundFrameViewOnly = false;
+    // The frame running renders no pass, so work queued behind it waits no longer than a grade and
+    // the selection pass.
+    bool backgroundFrameTintOnly = false;
     // Draw changes posted to the render thread and not yet taken in there.
     int drawJobsQueued = 0;
     // A renderer switch posted to the render thread, whose engine it drops, has not come back. The
@@ -7478,7 +7641,12 @@ struct SceneViewport::Implementation {
     // behind.
     bool renderThreadBusy() const
     {
-        return backgroundFrameRunning || rendererSwitchRunning || followSceneRunning || (drawJobsQueued > 0) || (renderContextRebuilds > 0) || engineReleaseRunning;
+        return backgroundFrameRunning || renderThreadBusyBesideFrames();
+    }
+
+    bool renderThreadBusyBesideFrames() const
+    {
+        return rendererSwitchRunning || followSceneRunning || (drawJobsQueued > 0) || (renderContextRebuilds > 0) || engineReleaseRunning;
     }
 
     bool engineReleasePending() const
@@ -8423,6 +8591,7 @@ SceneViewport::startBackgroundFrame()
     }
     _imp->backgroundFrameRunning = true;
     _imp->backgroundFrameViewOnly = viewOnly;
+    _imp->backgroundFrameTintOnly = _imp->renderer.isBackgroundFrameTintOnly();
     if (!viewOnly) {
         _imp->composingClock.start();
         _imp->composingTimer->start();
@@ -8434,6 +8603,7 @@ SceneViewport::startBackgroundFrame()
     frame.width = w;
     frame.height = h;
     frame.view = _imp->paintedView(w, h);
+    frame.tintOnly = _imp->backgroundFrameTintOnly;
     _imp->runningFrameView = frame.view;
     _imp->runningFrameStopped = false;
     Implementation::RenderLoop* loop = _imp->renderLoop.get();
@@ -8464,6 +8634,7 @@ SceneViewport::startBackgroundFrame()
             }
             if (fence && (generation == _imp->renderContextGeneration) && _imp->usesRenderThread) {
                 _imp->presentPacer.submitted(fence, finished);
+                _imp->submittedTintOnly = finished.tintOnly;
                 _imp->presentHoldEnd = std::chrono::steady_clock::now() + kPresentHoldLimit;
             }
             if (!rendered || !converged) {
@@ -8490,6 +8661,7 @@ SceneViewport::onBackgroundFrameDone()
     }
     _imp->backgroundFrameRunning = false;
     _imp->backgroundFrameViewOnly = false;
+    _imp->backgroundFrameTintOnly = false;
     if (!_imp->rendererSwitchRunning) {
         _imp->composingTimer->stop();
     }
@@ -9991,13 +10163,18 @@ SceneViewport::pickMustWait()
     // frame still on the GPU would have the main thread wait for the GPU; the poll that finds it
     // done retries. Under the Always stand-in no frame comes, and the pick takes the change in.
     // A frame owed only to draw a selection change goes after the pick, which would otherwise
-    // wait for it: the pick hits the same prims with or without the tint.
+    // wait for it: the pick hits the same prims with or without the tint. A tint-only frame
+    // already running or on the GPU renders no pass, so the pick queues behind it and stays
+    // synchronous.
     const bool stageFrame = _imp->renderer.needsStageFrame();
     if (stageFrame || !_imp->renderer.needsBackgroundFrame()) {
         startBackgroundFrame();
     }
+    const bool tintRunning = _imp->backgroundFrameRunning && _imp->backgroundFrameTintOnly;
+    const bool busy = tintRunning ? _imp->renderThreadBusyBesideFrames() : _imp->renderThreadBusy();
+    const bool onGpu = _imp->presentPacer.inFlight() && !_imp->submittedTintOnly;
 
-    return _imp->renderThreadBusy() || _imp->presentPacer.inFlight() || (_imp->usesRenderThread && stageFrame && (_imp->standInMode != Settings::eSceneStandInModeAlways));
+    return busy || onGpu || (_imp->usesRenderThread && stageFrame && (_imp->standInMode != Settings::eSceneStandInModeAlways));
 }
 
 QString

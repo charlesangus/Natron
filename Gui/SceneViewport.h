@@ -406,6 +406,13 @@ public:
     void forgetBackgroundView();
 
     /**
+     * @brief Whether the frame prepared last only grades the engine's last render again and draws
+     * the selection over it, rendering no pass, as when only the selection changed since that
+     * render. Main thread.
+     **/
+    bool isBackgroundFrameTintOnly() const;
+
+    /**
      * @brief Makes the engine if needed and renders the prepared frame into fbo, without overlays.
      * If the next render() is of the same view into the same fbo with nothing changed, it keeps this
      * image and only draws the overlays. Needs the context of render() current. Renders up to a

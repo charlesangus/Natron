@@ -27,7 +27,7 @@ M103's P1.T4 decision before starting.
 
 ## Phase 104.1: Engine and undo glue
 
-- [ ] M104.P1.T1 — Project-level update-from-template and compare
+- [x] M104.P1.T1 — Project-level update-from-template and compare
   - files: new `Engine/ProjectMerge.h`, new `Engine/ProjectMerge.cpp`, `Engine/Project.h`, `Engine/CMakeLists.txt`, new `Tests/ProjectMerge_Test.cpp`
   - approach: `ProjectMerge::updateFromTemplate(project, templateKey, newPath)` snapshots the live scope, runs M103's merge, computes operations against the live state, applies them through a caller-supplied applier (so Gui can wrap it in undo), updates the stored base, and returns the conflicts. `ProjectMerge::compare(project, otherSnapshot)` returns a per-node change summary for the overlay.
   - verify: compiled at P1.T3. Headless gtests on two corpus scenarios: a clean update changes only the template nodes and keeps the artist's overrides; a conflicted one returns its conflicts and leaves mine in the graph.
@@ -120,3 +120,6 @@ M103's P1.T4 decision before starting.
 
 **Verification gate:** full ctest, smoke, `m97_template_merge.py` and CI green. Update from
 Template is a single undo step. Conflicts survive save and reopen. The user signs off the UAT.
+
+## Decisions
+- 2026-11-22 — Lane opened on milestone/m104-merge-resolution-ui off F33 (main merged into F33 as 40d854f5d). P1.T1 in cc8ae8967: ProjectMerge::updateFromTemplate (applier callback, stores the new base and the merge conflicts only when every op applied) and ProjectMerge::compare (per-node ChangeSummary, removed nodes described from the other snapshot). Tests build live scenarios; M103's MergeScenarios corpus is SimGraph-only, so it isn't used. Syntax-checked; first compile at P1.T3. Comment-policy check downgraded to warn for one misfire ("Added and changed nodes…" documents result ordering).

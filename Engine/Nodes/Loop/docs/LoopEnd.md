@@ -110,6 +110,47 @@ within 1e-6 relative, from the device's division (mean) and rounding.
   `singlePassIteration / (n - 1)`. Under Feedback it is that iteration's output, after the
   iterations before it. Past the last iteration is an error. `operation`, `reverseOrder` and
   `stopCondition` do not apply.
+- `mode` Map Blend: see [Map Blend](#map-blend).
+
+## Map Blend
+
+- `mode` Map Blend blends the iterations per pixel by the LoopEnd's Map input instead of folding
+  them. Iteration k sits at Map value `k / (n - 1)`, the same as its `loop.t`: a pixel whose Map
+  value m, clamped to [0,1], lands on an iteration reads that iteration alone, and one between two
+  reads both by `interpolation`:
+  - Linear: the two iterations around m, weighted by where m lies between them.
+  - Cubic: Catmull-Rom over the four around m, the first and last iterations held at the ends.
+    Smoother across levels; it can overshoot between them.
+  - Nearest: the iteration closest to m, unblended.
+- The recipe: drive any knob of the body from `loop.t` (see [Drivers](#drivers)); Map black then
+  gives the knob's start value and white its end value, so any body, a Blur, a Grade or a plug-in,
+  varies per pixel with the Map. A driver's easing shapes how its values are spread across the
+  iterations, which are always evenly spaced in `loop.t`.
+- The Map knobs: `mapChannel` picks the channel, of any of the Map's layers (default the alpha);
+  `mapInvert` swaps black and white; `mapResponse` and `mapGamma` reshape the values between them.
+  Past the Map's region of definition the Map reads black (white with `mapInvert`). A NaN reads as
+  black.
+- `levelSpacing` shows how far apart in Map value the iterations are, and how many levels there
+  are. Each level is one render of the body, so the iteration count trades smoothness between
+  levels against time: a body that changes little across the range needs few, a large blur range
+  more. With one iteration the Map has no effect.
+- Choosing the count: between two levels the driven knob steps by its range divided by
+  (iterations - 1), and a pixel between them blends the two renders rather than rendering its own
+  value, which shows as banding when the step is large. Start with a step of about one unit of the
+  knob: a Blur size driven 0 to 20 starts at 21 iterations, a `levelSpacing` of 0.05, each level
+  one pixel of blur apart. Then render and increase the count until the banding disappears; Cubic
+  hides it at fewer iterations than Linear, Nearest needs the most.
+- No Map connected: the Map reads 0, so the output is the first iteration, with a warning.
+- Culling: the output is cut into 64-pixel tiles, and each tile renders only the iterations its
+  Map values read. A tile all black renders one iteration; a tile whose values span the range
+  renders all of them. The result is the same as rendering every iteration everywhere. Each
+  iteration asks the body for only the tiles that read it, adjacent tiles joined into rectangles,
+  so culling saves most where large areas of the Map are flat. A renderer that renders each
+  iteration once over everything asked of it still covers the bounding box of those rectangles.
+- The node's own I-variants (IBlur, IDefocus, IErodeDilate) vary their size continuously per
+  pixel and render once. They are exact and faster: use them when one exists, and Map Blend for
+  any other body or several knobs at once.
+- `singlePass`, `operation`, `reverseOrder`, `stopCondition` and `crossFrame` do not apply.
 
 ## Feedback
 
@@ -278,3 +319,10 @@ within 1e-6 relative, from the device's division (mean) and rounding.
   when a feedback tail's layer differs from the LoopBegin's (the CPU conforms it), and under the
   legacy scheduler, where one render folds every iteration. A depth other than float also keeps
   it on the CPU.
+- Map Blend, under the task-graph scheduler, blends on the GPU in a region of its own: the
+  culling probe reads the Map on the host first, then the blend reads the Map and each iteration
+  the probe requested on the device, in iteration order, within 1e-6 relative of the CPU. The
+  iterations are placed as any graph is: a body that the weight rule sends to the GPU renders
+  there and stays on the device for the blend; one left on the host is uploaded. A
+  layer other than the one the node outputs, a depth other than float, and the legacy scheduler
+  keep the blend on the CPU.

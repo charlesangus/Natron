@@ -37,6 +37,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -54,6 +55,8 @@
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/ContentHasher.h"
+#include "Engine/GroupInput.h"
+#include "Engine/GroupOutput.h"
 #include "Engine/Image.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
@@ -61,6 +64,7 @@
 #include "Engine/NodeGroup.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Image/GpuRender.h"
+#include "Engine/Nodes/KnobReader.h"
 #include "Engine/Nodes/Loop/LoopBegin.h"
 #include "Engine/Nodes/Loop/LoopFrameBake.h"
 #include "Engine/ParallelRenderArgs.h"
@@ -74,6 +78,26 @@ NATRON_NAMESPACE_ENTER
 namespace {
 
 const char* const kLoopVariables[] = { "iteration", "count", "t", "frame" };
+
+constexpr MapKnobHints kMapLevelKnobHints = {
+    .response = QT_TRANSLATE_NOOP("Natron::EffectInstance", "How Map values between 0 and 1, after Map Gamma, pick the iterations Map Blend "
+                                                            "blends, from the first at 0 to the last at 1."),
+    .responseLinear = QT_TRANSLATE_NOOP("Natron::EffectInstance", "The level follows the Map value in proportion."),
+    .responseSmooth = QT_TRANSLATE_NOOP("Natron::EffectInstance", "Smoothstep, 3m^2 - 2m^3: the levels crowd towards the first and last iterations."),
+    .gamma = QT_TRANSLATE_NOOP("Natron::EffectInstance", "Raises the Map, clamped to [0,1], to the power 1/gamma, as the Gamma node does: "
+                                                         "above 1 the levels lean towards the last iteration, below 1 towards the first. "
+                                                         "0 and 1 stay put."),
+};
+
+// Within kLoopEndFrameSnap of a step, the range ends on a sample, which division rounding would
+// otherwise drop.
+double
+frameSamples(double before,
+             double after,
+             double frameStep)
+{
+    return std::floor((before + after) / frameStep + kLoopEndFrameSnap) + 1.;
+}
 
 std::atomic<int> liveLoopEnds(0);
 
@@ -136,6 +160,7 @@ collectPairedBegins(const NodePtr& from,
         if (!node || !visited.insert(WalkStep(node.get(), depth)).second) {
             continue;
         }
+        bool nestedEnd = false;
         if (LoopBegin::isLoopBegin(node)) {
             if (depth == 0) {
                 found->insert(node.get());
@@ -143,39 +168,74 @@ collectPairedBegins(const NodePtr& from,
             }
             --depth;
         } else if (LoopEnd::isLoopEnd(node)) {
-            ++depth;
+            nestedEnd = true;
         }
+        // Only a nested LoopEnd's Source is its body: its Map is read where the LoopEnd is.
         for (int i = 0, n = node->getNInputs(); i < n; ++i) {
             NodePtr input = node->getInput(i);
             if (input) {
-                pending.push_back(std::make_pair(input, depth));
+                pending.push_back(std::make_pair(input, (nestedEnd && (i == kLoopEndInputSource)) ? depth + 1 : depth));
             }
         }
     }
+}
+
+// Whether from reaches end only through inputs other than its Source. from is the node getInput()
+// resolves the edge to, so the walk must carry it across group redirections.
+bool
+reachesOnlyAside(const NodePtr& end,
+                 const NodePtr& from)
+{
+    if (!from || (end->getInput(kLoopEndInputSource) == from)) {
+        return false;
+    }
+    for (int i = 0, n = end->getNInputs(); i < n; ++i) {
+        if ((i != kLoopEndInputSource) && (end->getInput(i) == from)) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 void
 collectPairedEnds(const NodePtr& begin,
                   std::set<Node*>* found)
 {
-    std::set<WalkStep> visited;
-    std::vector<std::pair<NodePtr, int>> pending;
+    struct Pending {
+        NodePtr node;
+        int depth;
+        NodePtr from;
+    };
+    // A node passed through also keys on the node that entered it, which its outputs carry on.
+    std::set<std::tuple<Node*, int, Node*>> visited;
+    std::vector<Pending> pending;
     // Through groups the way the hash walks go, so a node inside a group in the body, whose
     // GroupOutput has no outputs of its own, still finds the loop's end.
     std::vector<NodePtr> outputs;
 
     begin->appendOutputsWithGroupRedirection(&outputs);
     for (NodePtr& output : outputs) {
-        pending.push_back(std::make_pair(std::move(output), 0));
+        pending.push_back(Pending { std::move(output), 0, begin });
     }
     while (!pending.empty()) {
-        const NodePtr node = pending.back().first;
-        int depth = pending.back().second;
+        const NodePtr node = pending.back().node;
+        int depth = pending.back().depth;
+        const NodePtr from = pending.back().from;
         pending.pop_back();
-        if (!node || !visited.insert(WalkStep(node.get(), depth)).second) {
+        if (!node) {
             continue;
         }
-        if (LoopEnd::isLoopEnd(node)) {
+        // getInput() resolves through groups, their GroupInputs and GroupOutputs to the node
+        // feeding them, so the edges leaving those nodes are named by the node that entered them.
+        const EffectInstance* effect = node->getEffectInstance().get();
+        const bool passedThrough = node->isEffectGroup() || dynamic_cast<const GroupOutput*>(effect) || dynamic_cast<const GroupInput*>(effect);
+        // A LoopEnd reached through its Map reads it outside its own body, at this depth.
+        const bool aside = LoopEnd::isLoopEnd(node) && reachesOnlyAside(node, from);
+        if (!visited.insert(std::make_tuple(node.get(), 2 * depth + (aside ? 1 : 0), passedThrough ? from.get() : (Node*)0)).second) {
+            continue;
+        }
+        if (LoopEnd::isLoopEnd(node) && !aside) {
             if (depth == 0) {
                 found->insert(node.get());
                 continue;
@@ -186,8 +246,9 @@ collectPairedEnds(const NodePtr& begin,
         }
         outputs.clear();
         node->appendOutputsWithGroupRedirection(&outputs);
+        const NodePtr enteredFrom = passedThrough ? from : node;
         for (NodePtr& output : outputs) {
-            pending.push_back(std::make_pair(std::move(output), depth));
+            pending.push_back(Pending { std::move(output), depth, enteredFrom });
         }
     }
 }
@@ -279,6 +340,17 @@ foldStepOf(const RenderContextPtr& context,
     }
 
     return (int)*step;
+}
+
+bool
+sameRenderContext(const RenderContextPtr& a,
+                  const RenderContextPtr& b)
+{
+    if (a == b) {
+        return true;
+    }
+
+    return a && b && (*a == *b);
 }
 
 RenderContextPtr
@@ -625,7 +697,31 @@ LoopEnd::isCrossFrame() const
 {
     KnobBoolPtr crossFrame = _crossFrame.lock();
 
-    return crossFrame && crossFrame->getValue();
+    return crossFrame && crossFrame->getValue() && !isMapBlend();
+}
+
+bool
+LoopEnd::isMapBlend() const
+{
+    KnobChoicePtr mode = _mode.lock();
+
+    return mode && (mode->getActiveEntry().id == kLoopEndParamModeMapBlend);
+}
+
+LoopMapBlend::InterpolationEnum
+LoopEnd::mapBlendInterpolation() const
+{
+    KnobChoicePtr interpolation = _interpolation.lock();
+    const std::string id = interpolation ? interpolation->getActiveEntry().id : std::string();
+
+    if (id == kLoopEndParamInterpolationCubic) {
+        return LoopMapBlend::eInterpolationCubic;
+    }
+    if (id == kLoopEndParamInterpolationNearest) {
+        return LoopMapBlend::eInterpolationNearest;
+    }
+
+    return LoopMapBlend::eInterpolationLinear;
 }
 
 int
@@ -2389,11 +2485,50 @@ LoopEnd::initializeKnobs()
                                        tr("Each iteration's LoopBegins with Feedback on output the iteration before it, the first "
                                           "one their input; the output is the last iteration.")
                                            .toStdString()));
+        options.push_back(ChoiceOption(kLoopEndParamModeMapBlend, tr("Map Blend").toStdString(),
+                                       tr("Each pixel blends the iterations its Map value falls between, the first at "
+                                          "Map 0 and the last at Map 1; an iteration no pixel of a region reads is not "
+                                          "rendered there.")
+                                           .toStdString()));
         mode->populateChoices(options);
     }
     mode->setDefaultValue(0);
     page->addKnob(mode);
     _mode = mode;
+
+    KnobChoicePtr interpolation = createKnob<KnobChoice>(tr("Interpolation"));
+    interpolation->setName(kLoopEndParamInterpolation);
+    interpolation->setAnimationEnabled(false);
+    interpolation->setHintToolTip(tr("How Map Blend blends the iterations around a pixel's Map value."));
+    {
+        std::vector<ChoiceOption> options;
+        options.push_back(ChoiceOption(kLoopEndParamInterpolationLinear, tr("Linear").toStdString(),
+                                       tr("The two iterations either side, in proportion to how close the Map value is to each.").toStdString()));
+        options.push_back(ChoiceOption(kLoopEndParamInterpolationCubic, tr("Cubic").toStdString(),
+                                       tr("A Catmull-Rom curve through the four nearest iterations, held on the first and "
+                                          "last at the ends: smoother across levels, and it may overshoot them.")
+                                           .toStdString()));
+        options.push_back(ChoiceOption(kLoopEndParamInterpolationNearest, tr("Nearest").toStdString(),
+                                       tr("The iteration nearest the Map value, unblended.").toStdString()));
+        interpolation->populateChoices(options);
+    }
+    interpolation->setDefaultValue(0);
+    page->addKnob(interpolation);
+    _interpolation = interpolation;
+
+    KnobStringPtr levelSpacing = createKnob<KnobString>(tr("Level Spacing"));
+    levelSpacing->setName(kLoopEndParamLevelSpacing);
+    levelSpacing->setHintToolTip(tr("How far apart in Map value the iterations sit under Map Blend: 1 / (Iterations - 1)."));
+    levelSpacing->setAsLabel();
+    levelSpacing->setAnimationEnabled(false);
+    levelSpacing->setEvaluateOnChange(false);
+    levelSpacing->setIsPersistent(false);
+    levelSpacing->setHashExempt(true);
+    page->addKnob(levelSpacing);
+    _levelSpacing = levelSpacing;
+
+    _map.createKnobs(this, page, kMapLevelKnobHints);
+    _map.declareLayerKnob(getNode(), kLoopEndInputMap);
 
     // Shown as a list of the loop's LoopBegins to tick; it holds the ones left unticked, so a
     // LoopBegin newly wired in feeds back.
@@ -2676,6 +2811,7 @@ LoopEnd::initializeKnobs()
     page->addKnob(drivenKnobs);
 
     refreshKnobVisibility();
+    refreshLevelSpacing();
 }
 
 std::vector<NodePtr>
@@ -2843,6 +2979,7 @@ LoopEnd::resolve() const
     }
     resolved.loopName = loopNameOf(getNode());
     resolved.feedback = (mode->getActiveEntry().id == kLoopEndParamModeFeedback);
+    resolved.mapBlend = (mode->getActiveEntry().id == kLoopEndParamModeMapBlend);
     resolved.frames = (iterateOver->getActiveEntry().id == kLoopEndParamIterateOverFrames);
     const int cap = maxIterations->getValue();
     if (resolved.frames) {
@@ -2852,9 +2989,7 @@ LoopEnd::resolve() const
         resolved.frameLast = after;
         resolved.frameStep = std::max(kLoopEndMinFrameStep, frameStep->getValue());
         resolved.fractionalFrames = (before != std::round(before)) || (after != std::round(after)) || (resolved.frameStep != std::round(resolved.frameStep));
-        // Within kLoopEndFrameSnap of a step, the range ends on a sample, which division rounding
-        // would otherwise drop.
-        const double samples = std::floor((before + after) / resolved.frameStep + kLoopEndFrameSnap) + 1.;
+        const double samples = frameSamples(before, after, resolved.frameStep);
         if (samples > (double)cap) {
             resolved.message = tr("%1 iterations is more than Max Iterations (%2).").arg(std::min(samples, 1e15), 0, 'f', 0).arg(cap).toStdString();
 
@@ -2883,6 +3018,13 @@ LoopEnd::resolve() const
         return resolved;
     }
     resolved.folded = resolved.count;
+    if (resolved.mapBlend) {
+        if (!getInput(kLoopEndInputMap)) {
+            resolved.warning = tr("No Map is connected: Map Blend outputs the first iteration.").toStdString();
+        }
+
+        return resolved;
+    }
     if (singlePass->getValue()) {
         const int k = singlePassIteration->getValue();
         if ((k < 0) || (k >= resolved.count)) {
@@ -2903,7 +3045,7 @@ LoopEnd::resolveAt(double time) const
     Resolved resolved = resolve();
 
     // Single Pass shows any iteration, whether or not the loop would have reached it.
-    if (!resolved.message.empty() || (resolved.singlePass >= 0)) {
+    if (!resolved.message.empty() || (resolved.singlePass >= 0) || resolved.mapBlend) {
         return resolved;
     }
     const std::string expression = activeStopCondition();
@@ -3088,8 +3230,40 @@ LoopEnd::refreshMessage(const Resolved& resolved)
 
     if (resolved.message.empty() && !resolved.stopError.empty()) {
         refreshLoopMessage(getNode(), eMessageTypeError, resolved.stopError, &_postedMessage);
+    } else if (resolved.message.empty() && !resolved.warning.empty()) {
+        refreshLoopMessage(getNode(), eMessageTypeWarning, resolved.warning, &_postedMessage);
     } else {
         refreshLoopMessage(getNode(), resolved.messageType, resolved.message, &_postedMessage);
+    }
+}
+
+void
+LoopEnd::refreshLevelSpacing()
+{
+    KnobStringPtr levelSpacing = _levelSpacing.lock();
+    KnobChoicePtr iterateOver = _iterateOver.lock();
+    KnobIntPtr iterations = _iterations.lock();
+    KnobDoublePtr framesBefore = _framesBefore.lock();
+    KnobDoublePtr framesAfter = _framesAfter.lock();
+    KnobDoublePtr frameStep = _frameStep.lock();
+
+    if (!levelSpacing || !iterateOver || !iterations || !framesBefore || !framesAfter || !frameStep) {
+        return;
+    }
+    double count = iterations->getValue();
+    if (iterateOver->getActiveEntry().id == kLoopEndParamIterateOverFrames) {
+        count = frameSamples(std::max(0., framesBefore->getValue()), std::max(0., framesAfter->getValue()),
+                             std::max(kLoopEndMinFrameStep, frameStep->getValue()));
+    }
+    QString text;
+    if (count == 1.) {
+        text = tr("One iteration: the Map has no effect.");
+    } else if (count > 1.) {
+        text = tr("%1 apart, %2 levels").arg(1. / (count - 1.), 0, 'g', 4).arg(count, 0, 'f', 0);
+    }
+    const std::string value = text.toStdString();
+    if (levelSpacing->getValue() != value) {
+        levelSpacing->setValue(value);
     }
 }
 
@@ -3104,16 +3278,25 @@ LoopEnd::refreshKnobVisibility()
         return;
     }
     const bool feedback = (mode->getActiveEntry().id == kLoopEndParamModeFeedback);
-    const bool singlePass = singlePassKnob->getValue();
+    const bool mapBlend = (mode->getActiveEntry().id == kLoopEndParamModeMapBlend);
+    const bool singlePass = singlePassKnob->getValue() && !mapBlend;
     const bool frames = (iterateOver->getActiveEntry().id == kLoopEndParamIterateOverFrames);
     const bool crossFrame = isCrossFrame();
     // With one LoopBegin, Mode and Cross Frame alone say whether it feeds back.
     const bool severalBegins = (feedback || crossFrame) && getNode() && (getLoopBegins().size() > 1);
     const std::pair<KnobIPtr, bool> visibility[] = {
         std::make_pair(KnobIPtr(_passThroughBegins.lock()), severalBegins),
-        std::make_pair(KnobIPtr(_operation.lock()), !singlePass && !feedback),
-        std::make_pair(KnobIPtr(_reverseOrder.lock()), !singlePass && !feedback),
-        std::make_pair(KnobIPtr(_stopCondition.lock()), !singlePass),
+        std::make_pair(KnobIPtr(_singlePass.lock()), !mapBlend),
+        std::make_pair(KnobIPtr(_operation.lock()), !singlePass && !feedback && !mapBlend),
+        std::make_pair(KnobIPtr(_reverseOrder.lock()), !singlePass && !feedback && !mapBlend),
+        std::make_pair(KnobIPtr(_stopCondition.lock()), !singlePass && !mapBlend),
+        std::make_pair(KnobIPtr(_crossFrame.lock()), !mapBlend),
+        std::make_pair(KnobIPtr(_interpolation.lock()), mapBlend),
+        std::make_pair(KnobIPtr(_levelSpacing.lock()), mapBlend),
+        std::make_pair(getKnobByName(kMapInputParamChannel), mapBlend),
+        std::make_pair(getKnobByName(kMapInputParamInvert), mapBlend),
+        std::make_pair(getKnobByName(kMapInputParamResponse), mapBlend),
+        std::make_pair(getKnobByName(kMapInputParamGamma), mapBlend),
         std::make_pair(KnobIPtr(_iterations.lock()), !frames),
         std::make_pair(KnobIPtr(_start.lock()), !frames),
         std::make_pair(KnobIPtr(_step.lock()), !frames),
@@ -3141,7 +3324,7 @@ LoopEnd::activeStopCondition() const
     KnobStringPtr stopCondition = _stopCondition.lock();
     KnobBoolPtr singlePass = _singlePass.lock();
 
-    if (!stopCondition || (singlePass && singlePass->getValue())) {
+    if (!stopCondition || (singlePass && singlePass->getValue()) || isMapBlend()) {
         return std::string();
     }
     const std::string expression = stopCondition->getValue();
@@ -3266,6 +3449,7 @@ LoopEnd::knobChanged(KnobI* k,
             if (modeChanged || singlePassChanged || (iterateOver && (k == iterateOver.get()))) {
                 refreshKnobVisibility();
             }
+            refreshLevelSpacing();
             if ((k == _stopCondition.lock().get()) || singlePassChanged) {
                 refreshStopDependencies();
             } else if (modeChanged) {
@@ -3326,6 +3510,7 @@ void
 LoopEnd::onKnobsLoaded()
 {
     refreshKnobVisibility();
+    refreshLevelSpacing();
     refreshStopDependencies();
     refreshMessage(resolve());
 }
@@ -3426,8 +3611,22 @@ LoopEnd::getFramesNeeded(double time,
     }
     const Resolved resolved = resolveAt(time);
 
+    if (resolved.message.empty() && resolved.mapBlend) {
+        // The Source is requested by getRenderContinuation(), where the Map reads it.
+        FramesNeededMap frames;
+        if (getInput(kLoopEndInputMap)) {
+            FrameRangesMap views;
+            views.insert(std::make_pair(view, std::vector<RangeD>(1, RangeD { time, time })));
+            frames.insert(std::make_pair(kLoopEndInputMap, views));
+        }
+
+        return frames;
+    }
     if (!resolved.message.empty() || (!resolved.frames && !resolved.subframes) || !getInput(0)) {
-        return EffectInstance::getFramesNeeded(time, view);
+        FramesNeededMap frames = EffectInstance::getFramesNeeded(time, view);
+        frames.erase(kLoopEndInputMap);
+
+        return frames;
     }
     const RenderContextPtr context = getCurrentRenderContext();
     const std::vector<Iteration> iterations = foldedIterations(resolved, context, time);
@@ -3464,7 +3663,7 @@ LoopEnd::getInputContexts(int inputNb,
     }
     const std::vector<Iteration> iterations = foldedIterations(resolved, context, time);
     contexts->clear();
-    if (foldsAsTasks()) {
+    if (foldsAsTasks() && !resolved.mapBlend) {
         // A fold step needs only the iteration it folds in.
         contexts->push_back(iterations[iterationOfStep(foldStepOf(context, resolved.folded), resolved)].context);
     } else {
@@ -3488,7 +3687,7 @@ LoopEnd::getContextNodeRequests(double time,
         return;
     }
     const Resolved resolved = resolveAt(time);
-    if (!resolved.message.empty()) {
+    if (!resolved.message.empty() || resolved.mapBlend) {
         return;
     }
     const int step = foldStepOf(context, resolved.folded);
@@ -3677,21 +3876,55 @@ LoopEnd::canRenderOnGpu(const GpuQuery& query) const
         return false;
     }
     const Resolved resolved = resolveAt(query.time);
+    if (!resolved.message.empty() || (resolved.folded <= 0)) {
+        return false;
+    }
+    if (resolved.mapBlend) {
+        // The only layer the render continuation requests of the iterations.
+        return LoopMapBlend::hasGpuKernel() && (query.plane == mapBlendLayer(query.time, query.view));
+    }
 
-    return resolved.message.empty() && (resolved.folded > 0);
+    return true;
 }
 
 bool
 LoopEnd::getGpuInputLayer(int inputNb,
                           const ImageLayerDesc& plane,
-                          double /*time*/,
-                          ViewIdx /*view*/,
+                          double time,
+                          ViewIdx view,
                           ImageLayerDesc* layer) const
 {
-    if ((inputNb != 0) && (inputNb != FrameViewRequest::TaskEdge::kContextRequestInputNb)) {
+    if (inputNb == kLoopEndInputMap) {
+        int channel = -1;
+
+        return _map.resolveChannel(const_cast<LoopEnd*>(this), kLoopEndInputMap, time, view, layer, &channel);
+    }
+    if ((inputNb != 0) && (inputNb != FrameViewRequest::TaskEdge::kContextRequestInputNb) && (inputNb != kGpuContinuationInputNb)) {
         return false;
     }
     *layer = plane;
+
+    return true;
+}
+
+bool
+LoopEnd::readsGpuInput(int inputNb,
+                       const ImageLayerDesc& /*plane*/,
+                       double time,
+                       ViewIdx view) const
+{
+    if (!isMapBlend()) {
+        return inputNb != kLoopEndInputMap;
+    }
+    if (inputNb == kLoopEndInputSource) {
+        return false;
+    }
+    if (inputNb == kLoopEndInputMap) {
+        ImageLayerDesc layer;
+        int channel = -1;
+
+        return _map.resolveChannel(const_cast<LoopEnd*>(this), kLoopEndInputMap, time, view, &layer, &channel);
+    }
 
     return true;
 }
@@ -3705,6 +3938,9 @@ LoopEnd::renderGpu(const GpuRenderArgs& args)
         return eStatusFailed;
     }
     const Resolved resolved = resolveAt(query.time);
+    if (resolved.mapBlend) {
+        return renderMapBlendGpu(args, resolved);
+    }
     if (drivesFeedbackChain(resolved)) {
         return eStatusFailed;
     }
@@ -3750,6 +3986,9 @@ LoopEnd::render(const RenderActionArgs& args)
     const RenderContextPtr context = getCurrentRenderContext();
     if (crossFrameDriven(args.time)) {
         return renderCrossFrameOutput(args, context, resolved.loopName);
+    }
+    if (resolved.mapBlend) {
+        return renderMapBlend(args, resolved, context);
     }
     const std::vector<Iteration> iterations = foldedIterations(resolved, context, args.time);
     const int count = resolved.folded;
@@ -3833,6 +4072,282 @@ LoopEnd::render(const RenderActionArgs& args)
             LoopFold::finishRow(operation, count, acc.data(), acc.size());
         }
 
+        Image::WriteAccess out(dst.get());
+        for (int y = roi.y1; y < roi.y2; ++y) {
+            float* dstPix = (float*)out.pixelAt(roi.x1, y);
+            if (!dstPix) {
+                return eStatusFailed;
+            }
+            const float* accRow = &acc[(std::size_t)(y - roi.y1) * rowSize];
+            std::copy(accRow, accRow + rowSize, dstPix);
+        }
+    }
+
+    return eStatusOK;
+}
+
+bool
+LoopEnd::offersRenderContinuation() const
+{
+    return isMapBlend();
+}
+
+bool
+LoopEnd::supportsRenderContinuationOnGpu() const
+{
+    return isMapBlend() && LoopMapBlend::hasGpuKernel();
+}
+
+StatusEnum
+LoopEnd::renderMapBlendGpu(const GpuRenderArgs& args,
+                           const Resolved& resolved)
+{
+    const GpuQuery& query = args.query;
+    const int count = resolved.folded;
+    const std::vector<Iteration> iterations = foldedIterations(resolved, getCurrentRenderContext(), query.time);
+    std::vector<LoopMapBlend::GpuIteration> taps;
+
+    taps.reserve(args.continuationInputs.size());
+    for (const GpuContinuationInput& input : args.continuationInputs) {
+        int k = 0;
+        while ((k < count) && !((iterations[k].time == input.time) && sameRenderContext(iterations[k].context, input.context))) {
+            ++k;
+        }
+        if (k == count) {
+            return eStatusFailed;
+        }
+        // Each of an iteration's disjoint regions requested it again, and each request reads its whole output.
+        const bool tapped = std::any_of(taps.begin(), taps.end(), [k](const LoopMapBlend::GpuIteration& tap) {
+            return tap.iteration == k;
+        });
+        if (tapped) {
+            continue;
+        }
+        LoopMapBlend::GpuIteration tap;
+        tap.iteration = k;
+        tap.view = &input.view;
+        taps.push_back(tap);
+    }
+    // A pixel sums its taps in iteration order, as the CPU does.
+    std::stable_sort(taps.begin(), taps.end(), [](const LoopMapBlend::GpuIteration& a, const LoopMapBlend::GpuIteration& b) {
+        return a.iteration < b.iteration;
+    });
+
+    LoopMapBlend::GpuMap map;
+    // As readMapPlane(): no Map reads 0, a Map reads its remapped black beyond its image or
+    // everywhere when its channel does not resolve.
+    if (getInput(kLoopEndInputMap)) {
+        const MapInputParams params = _map.bake(KnobReader(query.time, query.view));
+        map.invert = params.invert;
+        map.smooth = params.smooth;
+        map.exponent = params.exponent;
+        map.outside = params.remap(0.f);
+        ImageLayerDesc layer;
+        int channel = -1;
+        const bool resolves = _map.resolveChannel(this, kLoopEndInputMap, query.time, query.view, &layer, &channel);
+        if (resolves && ((int)args.inputs.size() > kLoopEndInputMap) && args.inputs[kLoopEndInputMap].buffer) {
+            map.view = &args.inputs[kLoopEndInputMap];
+            map.channel = channel;
+        }
+    }
+
+    return LoopMapBlend::recordGpu(args, map, taps, count, mapBlendInterpolation()) ? eStatusOK : eStatusFailed;
+}
+
+bool
+LoopEnd::getInputLayersRead(int inputNb,
+                            double time,
+                            ViewIdx view,
+                            std::list<ImageLayerDesc>* layers)
+{
+    if (inputNb == kLoopEndInputMap) {
+        return _map.getInputLayersRead(this, kLoopEndInputMap, time, view, layers);
+    }
+
+    return NativeEffectBase::getInputLayersRead(inputNb, time, view, layers);
+}
+
+ImageLayerDesc
+LoopEnd::mapBlendLayer(double time,
+                       ViewIdx view) const
+{
+    NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
+    if (metadata) {
+        ImageLayerDesc layer, pairedLayer;
+        getLayersFromMetadata(*metadata, -1, &layer, &pairedLayer);
+        if (layer.getNumComponents() > 0) {
+            return layer;
+        }
+    }
+
+    return ImageLayerDesc::getRGBAComponents();
+}
+
+LoopEnd::RenderContinuationRequest
+LoopEnd::mapBlendRequest(const Iteration& iteration,
+                         ViewIdx view,
+                         unsigned int mipmapLevel,
+                         const RectI& region,
+                         const ImageLayerDesc& layer) const
+{
+    const EffectInstancePtr source = getInput(kLoopEndInputSource);
+    NodeMetadataConstPtr metadata = getRenderMetadata(iteration.time, view);
+    const double par = metadata ? metadata->getPixelAspectRatio(-1) : 1.;
+    RenderContinuationRequest request;
+
+    request.node = source ? source->getNode() : NodePtr();
+    request.context = iteration.context;
+    request.time = iteration.time;
+    request.view = view;
+    request.roi = region.toCanonical_noClipping(mipmapLevel, par);
+    request.comps.push_back(layer);
+
+    return request;
+}
+
+bool
+LoopEnd::readMapPlane(double time,
+                      ViewIdx view,
+                      unsigned int mipmapLevel,
+                      const RectI& window,
+                      const RenderContextPtr& context,
+                      MapPlane* plane)
+{
+    const EffectInstancePtr map = getInput(kLoopEndInputMap);
+    if (!map) {
+        plane->reset(window, 0.f);
+
+        return true;
+    }
+    const MapInputParams params = _map.bake(KnobReader(time, view));
+    ImageLayerDesc layer;
+    int channel = -1;
+    if (!_map.resolveChannel(this, kLoopEndInputMap, time, view, &layer, &channel)) {
+        MapInput::fill(NULL, -1, params, window, plane);
+
+        return true;
+    }
+    NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
+    const double par = metadata ? metadata->getPixelAspectRatio(-1) : 1.;
+    RenderContinuationRequest request;
+    request.node = map->getNode();
+    request.context = context;
+    request.time = time;
+    request.view = view;
+    request.roi = window.toCanonical_noClipping(mipmapLevel, par);
+    request.comps.push_back(layer);
+    std::map<ImageLayerDesc, ImagePtr> planes;
+    if (pullRenderContinuationRequest(request, mipmapLevel, &planes) != eRenderRoIRetCodeOk) {
+        return false;
+    }
+    std::map<ImageLayerDesc, ImagePtr>::const_iterator found = planes.find(layer);
+    const ImagePtr image = (found != planes.end()) ? found->second : (planes.empty() ? ImagePtr() : planes.begin()->second);
+    if (image && (image->getBitDepth() != eImageBitDepthFloat)) {
+        return false;
+    }
+    // Black beyond the Map's image whatever its edge mode: past its region the Map reads 0.
+    MapInput::fill(image.get(), channel, params, window, plane, EdgeMode::Black);
+
+    return true;
+}
+
+bool
+LoopEnd::getRenderContinuation(const RenderContinuationArgs& args,
+                               RenderContinuation* continuation)
+{
+    if (!isMapBlend() || !getInput(kLoopEndInputSource)) {
+        return false;
+    }
+    const Resolved resolved = resolveAt(args.time);
+    if (!resolved.message.empty() || !resolved.mapBlend || (resolved.folded <= 0)) {
+        return false;
+    }
+    MapPlane map;
+    if (!readMapPlane(args.time, args.view, args.mipmapLevel, args.roi, args.context, &map)) {
+        return false;
+    }
+    RenderCancellation cancel([this]() {
+        return abortIfEditedSinceFrameStart() || aborted();
+    });
+    std::vector<std::vector<RectI>> regions;
+    if (!LoopMapBlend::iterationRegions(map, args.roi, resolved.folded, mapBlendInterpolation(), &regions, &cancel)) {
+        // The render, aborted, requests nothing more.
+        return true;
+    }
+    const std::vector<Iteration> iterations = foldedIterations(resolved, args.context, args.time);
+    const ImageLayerDesc layer = mapBlendLayer(args.time, args.view);
+    for (int k = 0; k < resolved.folded; ++k) {
+        for (const RectI& region : regions[k]) {
+            continuation->requests.push_back(mapBlendRequest(iterations[k], args.view, args.mipmapLevel, region, layer));
+        }
+    }
+
+    return true;
+}
+
+StatusEnum
+LoopEnd::renderMapBlend(const RenderActionArgs& args,
+                        const Resolved& resolved,
+                        const RenderContextPtr& context)
+{
+    const unsigned int mipmapLevel = args.mappedScale.toMipmapLevel();
+    const RectI& roi = args.roi;
+    MapPlane map;
+    if (!readMapPlane(args.time, args.view, mipmapLevel, roi, context, &map)) {
+        return aborted() ? eStatusOK : eStatusFailed;
+    }
+    const int count = resolved.folded;
+    const LoopMapBlend::InterpolationEnum interpolation = mapBlendInterpolation();
+    const bool hasSource = (bool)getInput(kLoopEndInputSource);
+    RenderCancellation cancel([this]() {
+        return abortIfEditedSinceFrameStart() || aborted();
+    });
+    // The same tiles as the probe's, so each region pulled is one it requested.
+    std::vector<std::vector<RectI>> regions(count);
+    if (hasSource && !LoopMapBlend::iterationRegions(map, roi, count, interpolation, &regions, &cancel)) {
+        return eStatusOK;
+    }
+    const std::vector<Iteration> iterations = foldedIterations(resolved, context, args.time);
+    const std::size_t width = (std::size_t)roi.width();
+    const std::size_t height = (std::size_t)roi.height();
+
+    for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
+        const ImagePtr& dst = it->second;
+        if (!dst || (dst->getBitDepth() != eImageBitDepthFloat)) {
+            return eStatusFailed;
+        }
+        const int nComps = (int)dst->getComponentsCount();
+        const std::size_t rowSize = width * (std::size_t)nComps;
+        std::vector<float> acc(rowSize * height, 0.f);
+        // In iteration order, one image at a time: a pixel sums its taps in the same order
+        // whichever regions were culled. An iteration's regions are disjoint, so a pixel takes it once.
+        for (int k = 0; k < count; ++k) {
+            for (const RectI& region : regions[k]) {
+                if (cancel.check()) {
+                    return eStatusOK;
+                }
+                std::map<ImageLayerDesc, ImagePtr> planes;
+                const RenderRoIRetCode code = pullRenderContinuationRequest(mapBlendRequest(iterations[k], args.view, mipmapLevel, region, it->first), mipmapLevel, &planes);
+                if (code == eRenderRoIRetCodeAborted) {
+                    return eStatusOK;
+                }
+                if (code != eRenderRoIRetCodeOk) {
+                    return eStatusFailed;
+                }
+                std::map<ImageLayerDesc, ImagePtr>::const_iterator found = planes.find(it->first);
+                const ImagePtr pulled = (found != planes.end()) ? found->second : (planes.empty() ? ImagePtr() : planes.begin()->second);
+                const ImagePtr src = asFoldInput(pulled, region, it->first);
+                if (src && (src->getBitDepth() != eImageBitDepthFloat)) {
+                    return eStatusFailed;
+                }
+                if (!LoopMapBlend::accumulate(map, src.get(), region, k, count, interpolation, roi, nComps, acc.data(), &cancel)) {
+                    return eStatusOK;
+                }
+            }
+        }
+        if (cancel.check()) {
+            return eStatusOK;
+        }
         Image::WriteAccess out(dst.get());
         for (int y = roi.y1; y < roi.y2; ++y) {
             float* dstPix = (float*)out.pixelAt(roi.x1, y);

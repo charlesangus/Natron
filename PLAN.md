@@ -680,6 +680,8 @@ future core work has solid ground to build on.
 | F35 | Pyro | open |  |  | feature/f35-pyro | A sparse-tile smoke and fire solver on native VDB volumes, with sourcing, shaping, collisions, look baking and quick setups, on GPU and CPU. Waits for F18 - Geometry Loops And Solver and F22 - Native VDB to land. |
 
 # Open questions
+- **M349 - Shader Node Spike (2026-11-22):** gate green; every bar passes with the knob-first design (typical knob edit 29.4 ms, one unexplained 541 ms worst edit to investigate before production). Read the design note `Engine/Nodes/docs/shader-nodes.md` on `milestone/m349-shader-node-spike` and confirm the design so M350 - Shader Manifest And Nodes can start.
+
 - **M104 - Merge Resolution UI (2026-11-22):** Keep Both Keys puts theirs' key one frame after mine, or halfway to the next key when that's closer. Confirm, or give the rule you want.
 
 - **Engine TLS race (found in M402, 2026-11-22):** `makeInheritedTLSData` (`Engine/TLSHolderImpl.h:70`, HostFrameThreading path via `inheritFromSpawner`/`getTLSData`) copies a live spawner thread's `frameArgs` list without a lock while the spawner may push/pop entries (`ContextFrameArgsScope::install`, `Engine/ParallelRenderArgs.cpp:1862`), a use-after-free that segfaulted M402's 100k-iteration loop. M402 fixed its own path (helpers no longer inherit); any other `SpawnedThreadScope` user whose spawner keeps cooking is exposed, and it may explain unexplained render-thread crashes/flakes. File an E14 milestone to make the inheritance safe (lock, or snapshot at spawn time)?

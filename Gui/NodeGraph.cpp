@@ -49,6 +49,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/Dot.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Test/PortTestNode.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/Project.h"
 #include "Engine/Settings.h"
@@ -57,6 +58,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/BackdropGui.h"
 #include "Gui/DotGui.h"
 #include "Gui/Edge.h"
+#include "Gui/PortNodeGui.h"
 #include "Gui/GpuOverlay.h"
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
@@ -669,6 +671,8 @@ NodeGraph::createNodeGUI(const NodePtr & node,
         node_ui.reset( new DotGui(_imp->_nodeRoot) );
     } else if (isBd) {
         node_ui.reset( new BackdropGui(_imp->_nodeRoot) );
+    } else if ( dynamic_cast<PortTestNode*>( node->getEffectInstance().get() ) ) {
+        node_ui.reset( new PortNodeGui(_imp->_nodeRoot) );
     } else {
         node_ui.reset( new NodeGui(_imp->_nodeRoot) );
     }

@@ -104,6 +104,9 @@ public:
         std::string group;
         // The next setting's knob shares this one's row.
         bool sameRowAsNext = false;
+        // For a bool setting: the knob is on while the value sent is false. defaultValue and
+        // EnabledBy conditions on it are in the delegate's terms.
+        bool inverted = false;
     };
 
     // A named section of the renderer's page. Its script name is the renderer's prefix followed by name.

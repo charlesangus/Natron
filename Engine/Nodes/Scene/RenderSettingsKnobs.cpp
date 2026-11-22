@@ -886,6 +886,7 @@ struct RenderSettingsKnobs::Impl {
         std::vector<Choice> choices;
         std::string follows;
         std::vector<EnabledBy> enabledBy;
+        bool inverted = false;
         KnobIWPtr knob;
     };
 
@@ -942,7 +943,7 @@ struct RenderSettingsKnobs::Impl {
         case eKindBool: {
             KnobBool* b = dynamic_cast<KnobBool*>(k.get());
 
-            return b ? VtValue(b->getValue()) : VtValue();
+            return b ? VtValue(b->getValue() != s.inverted) : VtValue();
         }
         case eKindInt:
         case eKindUInt: {
@@ -1029,7 +1030,7 @@ struct RenderSettingsKnobs::Impl {
         case eKindBool: {
             KnobBool* b = dynamic_cast<KnobBool*>(k.get());
             if (b) {
-                (void)b->setValue(value.UncheckedGet<bool>());
+                (void)b->setValue(value.UncheckedGet<bool>() != s.inverted);
             }
 
             return b != nullptr;
@@ -1288,7 +1289,9 @@ RenderSettingsKnobs::addRenderer(const std::string& rendererId,
             scriptName = prefix + capitalized(camelCaseFromKey(key, true)) + std::to_string(n);
         }
         names.insert(scriptName);
-        KnobIPtr k = _imp->makeKnob(labelFromScriptName(scriptName, prefix), knobDefault, choices);
+        const bool inverted = range && range->inverted && knobDefault.IsHolding<bool>();
+        KnobIPtr k = _imp->makeKnob(labelFromScriptName(scriptName, prefix),
+                                    inverted ? VtValue(!knobDefault.UncheckedGet<bool>()) : knobDefault, choices);
         if (!k) {
             return;
         }
@@ -1340,6 +1343,7 @@ RenderSettingsKnobs::addRenderer(const std::string& rendererId,
         setting.delegateDefault = delegateDefault;
         setting.choices = choices;
         setting.follows = follows;
+        setting.inverted = inverted;
         if (range && disabledReason.empty()) {
             setting.enabledBy = range->enabledBy;
         }

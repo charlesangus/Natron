@@ -201,13 +201,9 @@ namespace {
         if (interpolation != HdPrimvarSchemaTokens->faceVarying) {
             return eShadingAsAuthored;
         }
-        // The delegate reads no normals of a mesh it subdivides.
-        if (scheme == UsdGeomTokens->bilinear) {
-            const HdIntDataSourceHandle refine = HdLegacyDisplayStyleSchema::GetFromParent(prim).GetRefineLevel();
-            if (refine && (refine->GetTypedValue(0.f) > 0)) {
-                return eShadingAsAuthored;
-            }
-        }
+        // A bilinear mesh the delegate subdivides ignores its normals, and linear subdivision of
+        // the mesh this makes has the same shape, so the delegate's subdivision setting, which
+        // no scene index sees, need not decide this.
         const HdMeshTopologySchema topology = mesh.GetTopology();
         const HdIntArrayDataSourceHandle countsDs = topology.GetFaceVertexCounts();
         const HdIntArrayDataSourceHandle indicesDs = topology.GetFaceVertexIndices();
@@ -541,7 +537,7 @@ namespace {
         void _PrimsDirtied(const HdSceneIndexBase& /*sender*/,
                            const HdSceneIndexObserver::DirtiedPrimEntries& entries) override
         {
-            static const HdDataSourceLocatorSet decides = { HdMeshSchema::GetDefaultLocator(), HdPrimvarsSchema::GetNormalsLocator(), HdPrimvarsSchema::GetPointsLocator(), HdLegacyDisplayStyleSchema::GetRefineLevelLocator() };
+            static const HdDataSourceLocatorSet decides = { HdMeshSchema::GetDefaultLocator(), HdPrimvarsSchema::GetNormalsLocator(), HdPrimvarsSchema::GetPointsLocator() };
             static const HdDataSourceLocatorSet reshaped = { HdMeshSchema::GetTopologyLocator(), HdPrimvarsSchema::GetDefaultLocator(), HdLegacyDisplayStyleSchema::GetFlatShadingEnabledLocator() };
             HdSceneIndexObserver::DirtiedPrimEntries forwarded = entries;
             for (HdSceneIndexObserver::DirtiedPrimEntry& entry : forwarded) {

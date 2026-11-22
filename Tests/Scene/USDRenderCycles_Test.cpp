@@ -41,6 +41,7 @@
 #include <list>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <string>
@@ -59,6 +60,7 @@
 #include <QString>
 
 #include <pxr/base/plug/registry.h>
+#include <pxr/base/tf/diagnosticMgr.h>
 #include <pxr/usd/usdGeom/points.h>
 
 #include "BaseTest.h"
@@ -1117,6 +1119,11 @@ cyclesScriptNames()
         { "cycles:integrator:volume_ray_marching", "cyclesVolumeRayMarching" },
         { "cycles:integrator:volume_step_rate", "cyclesVolumeStepRate" },
         { "cycles:background:lightgroup", "cyclesLightgroup" },
+        { "natron:subdivisionSurfaces", "cyclesSubdivisionSurfaces" },
+        { "natron:dicingRate", "cyclesDicingRate" },
+        { "natron:maxSubdivisionLevel", "cyclesMaxSubdivisionLevel" },
+        { "natron:adaptiveSpace", "cyclesAdaptiveSpace" },
+        { "natron:dicingCamera", "cyclesDicingCamera" },
         { "cycles:background:transparent", "cyclesTransparent" },
         { "cycles:background:transparent_glass", "cyclesTransparentGlass" },
         { "cycles:background:transparent_roughness_threshold", "cyclesTransparentRoughnessThreshold" },
@@ -1162,6 +1169,7 @@ cyclesLayout()
         { "cyclesFastGi", "cyclesLightPaths", false, { "cyclesAoBounces", "cyclesAoFactor", "cyclesAoDistance", "cyclesAoAdditiveFactor" } },
         { "cyclesLights", "cycles", false, { "cyclesUseLightTree", "cyclesLightSamplingThreshold" } },
         { "cyclesVolumes", "cycles", false, { "cyclesVolumeRayMarching", "cyclesVolumeMaxSteps", "cyclesVolumeStepRate" } },
+        { "cyclesSubdivision", "cycles", false, { "cyclesSubdivisionSurfaces", "cyclesDicingRate", "cyclesMaxSubdivisionLevel", "cyclesAdaptiveSpace", "cyclesDicingCamera" } },
         { "cyclesPathGuiding", "cycles", false, { "cyclesUseGuiding", "cyclesDeterministicGuiding", "cyclesUseSurfaceGuiding", "cyclesSurfaceGuidingProbability", "cyclesUseVolumeGuiding", "cyclesVolumeGuidingProbability", "cyclesGuidingTrainingSamples", "cyclesUseGuidingDirectLight", "cyclesUseGuidingMisWeights", "cyclesGuidingDistributionType", "cyclesGuidingDirectionalSamplingType", "cyclesGuidingRoughnessThreshold" } },
         { "cyclesLightContributions", "cycles", false, { "cyclesUseDirectLight", "cyclesUseIndirectLight", "cyclesUseDiffuse", "cyclesUseGlossy", "cyclesUseTransmission", "cyclesUseEmission" } },
         { "cyclesFilm", "cycles", false, { "cyclesExposure", "cyclesFilterType", "cyclesFilterWidth", "cyclesTransparent", "cyclesTransparentGlass", "cyclesTransparentRoughnessThreshold", "cyclesUseApproximateShadowCatcher" } },
@@ -1370,6 +1378,8 @@ TEST_F(USDRenderCyclesTest, CuratedKnobsReachTheDelegate)
         // The denoising render below needs passes and a resolution it can run with.
         "cycles:integrator:denoiser_passes",
         "cycles:integrator:denoiser_upscale_factor",
+        // A camera path, which the nudge would make into one that names no camera.
+        "natron:dicingCamera",
     };
     std::vector<std::string> nudged;
     for (const RenderSettingsKnobs::CuratedSetting& c : CyclesSettings::curated().settings) {
@@ -1435,6 +1445,300 @@ TEST_F(USDRenderCyclesTest, EveryDeclaredSettingHasAKnob)
     }
     EXPECT_EQ(std::set<std::string>({ "cycles:film:display_pass", "cycles:film:show_active_pixels", "cycles:film:use_sample_count" }), setByNatron);
     EXPECT_EQ(cyclesScriptNames(), reached);
+}
+
+namespace {
+// Pixels of the cage of kSubdivisionCube's front face, a quad two units wide nine units from the
+// camera: (21, 21) is just inside its corner, which a Catmull-Clark limit surface pulls far inward.
+const int kCageCornerX = 21;
+const int kCageCornerY = 21;
+
+// Usda text for a mesh cube named name, two units wide times scale, at x on the x axis, of scheme,
+// with extra text in its body.
+std::string
+subdivisionCube(const char* name,
+                const char* scheme,
+                double scale = 1.,
+                double x = 0.,
+                const std::string& extra = std::string())
+{
+    const std::string s = std::to_string(scale);
+
+    return std::string("    def Mesh \"") + name + "\"\n    {\n"
+                                                   "        uniform token subdivisionScheme = \""
+        + scheme + "\"\n"
+                   "        int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]\n"
+                   "        int[] faceVertexIndices = [0, 1, 3, 2, 2, 3, 5, 4, 4, 5, 7, 6, 6, 7, 1, 0, 1, 7, 5, 3, 6, 0, 2, 4]\n"
+                   "        point3f[] points = [(-"
+        + s + ", -" + s + ", " + s + "), (" + s + ", -" + s + ", " + s + "), (-" + s + ", " + s + ", " + s + "), (" + s + ", " + s + ", " + s + "), (-" + s + ", " + s + ", -" + s + "), (" + s + ", " + s + ", -" + s + "), (-" + s + ", -" + s + ", -" + s + "), (" + s + ", -" + s + ", -" + s + ")]\n"
+                                                                                                                                                                                                                                                                                                    "        color3f[] primvars:displayColor = [(0.8, 0.2, 0.1)]\n"
+                                                                                                                                                                                                                                                                                                    "        double3 xformOp:translate = ("
+        + std::to_string(x) + ", 0, 0)\n"
+                              "        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"
+        + extra + "    }\n";
+}
+
+// Writes a stage of meshes, usda text, with kFixture's camera and a second one far behind it.
+bool
+writeSubdivisionStage(const QString& file,
+                      const std::string& meshes)
+{
+    const std::string text = std::string("#usda 1.0\n(\n    defaultPrim = \"World\"\n    upAxis = \"Y\"\n)\n\n"
+                                         "def Xform \"World\"\n{\n")
+        + meshes + "    def Camera \"Cam\"\n    {\n        float focalLength = 35\n"
+                   "        float horizontalAperture = 20.955\n        float verticalAperture = 20.955\n"
+                   "        double3 xformOp:translate = (0, 0, 10)\n        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n    }\n"
+                   "    def Camera \"FarCam\"\n    {\n        float focalLength = 35\n"
+                   "        float horizontalAperture = 20.955\n        float verticalAperture = 20.955\n"
+                   "        double3 xformOp:translate = (0, 0, 400)\n        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n    }\n"
+                   "}\n";
+    std::FILE* f = std::fopen(file.toStdString().c_str(), "w");
+    if (!f) {
+        return false;
+    }
+    const bool written = std::fwrite(text.data(), 1, text.size(), f) == text.size();
+
+    return (std::fclose(f) == 0) && written;
+}
+
+// The sum of the alpha of the pixels of rgba, kSize x kSize, in columns [x0, x1).
+double
+coverage(const std::vector<float>& rgba,
+         int x0 = 0,
+         int x1 = kSize)
+{
+    double sum = 0.;
+    for (int y = 0; y < kSize; ++y) {
+        for (int x = x0; x < x1; ++x) {
+            sum += rgba[pixelIndex(x, y) * 4 + 3];
+        }
+    }
+
+    return sum;
+}
+
+// Keeps the text of every warning posted while it is attached.
+class WarningCollector
+    : public PXR_NS::TfDiagnosticMgr::Delegate {
+public:
+    WarningCollector() { PXR_NS::TfDiagnosticMgr::GetInstance().AddDelegate(this); }
+    ~WarningCollector() override { PXR_NS::TfDiagnosticMgr::GetInstance().RemoveDelegate(this); }
+
+    void IssueError(const PXR_NS::TfError&) override { }
+    void IssueFatalError(const PXR_NS::TfCallContext&, const std::string&) override { }
+    void IssueStatus(const PXR_NS::TfStatus&) override { }
+    void IssueWarning(const PXR_NS::TfWarning& warning) override
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        messages.push_back(warning.GetCommentary());
+    }
+
+    bool any(const std::string& a,
+             const std::string& b)
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        for (const std::string& m : messages) {
+            if ((m.find(a) != std::string::npos) && (m.find(b) != std::string::npos)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    std::mutex mutex;
+    std::vector<std::string> messages;
+};
+} // anon namespace
+
+class USDRenderCyclesSubdivisionTest
+    : public USDRenderCyclesTest {
+protected:
+    // Renders the stage of meshes with fixedSampling() and settings on Cycles' engine; false after
+    // a gtest failure.
+    bool renderStage(const std::string& meshes,
+                     const std::map<std::string, PXR_NS::VtValue>& settings,
+                     std::vector<float>* rgba)
+    {
+        std::map<std::string, PXR_NS::VtValue> all = fixedSampling(16);
+        all.insert(settings.begin(), settings.end());
+        HydraRender::setRendererSettings(kRenderDelegateCyclesId, all);
+        HydraRender::releaseAllCpuEngines();
+        const QString file = _dir.path() + QString::fromUtf8("/subdivision") + QString::number(_files++) + QString::fromUtf8(".usda");
+        if (!_dir.isValid() || !writeSubdivisionStage(file, meshes)) {
+            ADD_FAILURE() << "cannot write " << file.toStdString();
+
+            return false;
+        }
+        NodePtr node = createGraph(nullptr, file.toStdString().c_str());
+        if (!node) {
+            return false;
+        }
+        std::vector<RenderedPlane> planes;
+        if (!renderAll(node, &planes)) {
+            return false;
+        }
+        *rgba = planes[0].pixels;
+
+        return true;
+    }
+
+    static std::map<std::string, PXR_NS::VtValue> on(std::map<std::string, PXR_NS::VtValue> settings = std::map<std::string, PXR_NS::VtValue>())
+    {
+        settings["natron:subdivisionSurfaces"] = PXR_NS::VtValue(true);
+
+        return settings;
+    }
+
+    QTemporaryDir _dir;
+    int _files = 0;
+};
+
+// With Subdivision Surfaces on, a Catmull-Clark cube renders as its rounded limit surface; off, it
+// covers what its cage, a cube of scheme none, does, which renders the same either way. The cube of
+// scheme none is shaded flat and the other smooth, so only their alpha matches.
+TEST_F(USDRenderCyclesSubdivisionTest, SubdivisionSurfacesFollowTheScheme)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const std::string smooth = subdivisionCube("Cube", "catmullClark");
+    const std::string none = subdivisionCube("Cube", "none");
+    std::vector<float> smoothOff, smoothOn, noneOff, noneOn;
+    ASSERT_TRUE(renderStage(smooth, std::map<std::string, PXR_NS::VtValue>(), &smoothOff));
+    ASSERT_TRUE(renderStage(smooth, on(), &smoothOn));
+    ASSERT_TRUE(renderStage(none, std::map<std::string, PXR_NS::VtValue>(), &noneOff));
+    ASSERT_TRUE(renderStage(none, on(), &noneOn));
+
+    const std::size_t corner = pixelIndex(kCageCornerX, kCageCornerY);
+    const std::size_t centre = pixelIndex(kNearX, kNearY);
+    EXPECT_NEAR(1.f, smoothOff[corner * 4 + 3], 1e-3f);
+    EXPECT_LT(smoothOn[corner * 4 + 3], 0.5f);
+    EXPECT_NEAR(1.f, smoothOn[centre * 4 + 3], 1e-3f);
+    EXPECT_LT(coverage(smoothOn), 0.95 * coverage(smoothOff));
+
+    const std::size_t pixels = (std::size_t)kSize * (std::size_t)kSize;
+    std::size_t alphaDiffers = 0;
+    for (std::size_t p = 0; p < pixels; ++p) {
+        alphaDiffers += (std::fabs(smoothOff[p * 4 + 3] - noneOff[p * 4 + 3]) > kChannelTolerance) ? 1 : 0;
+    }
+    EXPECT_EQ(0u, alphaDiffers);
+    EXPECT_EQ(0u, differingPixels(noneOff, noneOn));
+    EXPECT_GT(differingPixels(smoothOff, smoothOn), (std::size_t)(kDifferingFraction * (double)pixels));
+}
+
+// A Loop mesh renders as Catmull-Clark, with a warning that names it. Cycles' warnings go to the
+// console only.
+TEST_F(USDRenderCyclesSubdivisionTest, LoopRendersAsCatmullClarkWithAWarning)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    std::vector<float> smooth, loop;
+    ASSERT_TRUE(renderStage(subdivisionCube("Cube", "catmullClark"), on(), &smooth));
+    WarningCollector warnings;
+    ASSERT_TRUE(renderStage(subdivisionCube("Cube", "loop"), on(), &loop));
+
+    EXPECT_TRUE(warnings.any("/World/Cube", "Loop"));
+    const std::size_t corner = pixelIndex(kCageCornerX, kCageCornerY);
+    EXPECT_LT(loop[corner * 4 + 3], 0.5f);
+    EXPECT_EQ(0u, differingPixels(smooth, loop));
+}
+
+// A coarse dicing rate renders the limit surface in fewer, larger facets than a fine one.
+TEST_F(USDRenderCyclesSubdivisionTest, DicingRateSetsTheFacetSize)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const std::string cube = subdivisionCube("Cube", "catmullClark");
+    std::map<std::string, PXR_NS::VtValue> fine, coarse;
+    fine["natron:dicingRate"] = PXR_NS::VtValue(0.5f);
+    coarse["natron:dicingRate"] = PXR_NS::VtValue(8.f);
+    std::vector<float> fineRgba, coarseRgba, defaultRgba;
+    ASSERT_TRUE(renderStage(cube, on(fine), &fineRgba));
+    ASSERT_TRUE(renderStage(cube, on(coarse), &coarseRgba));
+    ASSERT_TRUE(renderStage(cube, on(), &defaultRgba));
+
+    EXPECT_GT(differingPixels(fineRgba, coarseRgba), 0u);
+    // The coarse surface is a polygon inside the smooth one, so it covers less.
+    EXPECT_LT(coverage(coarseRgba), coverage(fineRgba));
+    EXPECT_LE(differingPixels(fineRgba, defaultRgba), differingPixels(coarseRgba, defaultRgba));
+}
+
+// A cycles:max_level primvar of 1 coarsens its own mesh only, and cycles:dicing_rate scales the
+// rate of its own mesh only.
+TEST_F(USDRenderCyclesSubdivisionTest, PrimvarsOverrideOneMesh)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const std::string left = subdivisionCube("Left", "catmullClark", 0.5, -1.2);
+    const std::string right = subdivisionCube("Right", "catmullClark", 0.5, 1.2);
+    const std::string capped = subdivisionCube("Right", "catmullClark", 0.5, 1.2, "        int primvars:cycles:max_level = 1 (\n            interpolation = \"constant\"\n        )\n");
+    const std::string scaled = subdivisionCube("Right", "catmullClark", 0.5, 1.2, "        float primvars:cycles:dicing_rate = 16 (\n            interpolation = \"constant\"\n        )\n");
+    std::vector<float> both, cappedRgba, scaledRgba;
+    ASSERT_TRUE(renderStage(left + right, on(), &both));
+    ASSERT_TRUE(renderStage(left + capped, on(), &cappedRgba));
+    ASSERT_TRUE(renderStage(left + scaled, on(), &scaledRgba));
+
+    const int half = kSize / 2;
+    for (const std::vector<float>* overridden : { &cappedRgba, &scaledRgba }) {
+        EXPECT_NEAR(coverage(both, 0, half), coverage(*overridden, 0, half), 0.5);
+        EXPECT_LT(coverage(*overridden, half, kSize), coverage(both, half, kSize) - 1.);
+    }
+}
+
+// Dicing as seen from a camera far behind the render camera coarsens what the render camera sees.
+TEST_F(USDRenderCyclesSubdivisionTest, AFarDicingCameraCoarsensTheMesh)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const std::string cube = subdivisionCube("Cube", "catmullClark");
+    std::map<std::string, PXR_NS::VtValue> far;
+    far["natron:dicingCamera"] = PXR_NS::VtValue(std::string("/World/FarCam"));
+    std::vector<float> nearRgba, farRgba;
+    ASSERT_TRUE(renderStage(cube, on(), &nearRgba));
+    ASSERT_TRUE(renderStage(cube, on(far), &farRgba));
+
+    EXPECT_GT(differingPixels(nearRgba, farRgba), 0u);
+    EXPECT_LT(coverage(farRgba), coverage(nearRgba));
+}
+
+// USDRender's Subdivision Surfaces knob subdivides a Catmull-Clark cube, and its Dicing Rate knob
+// changes the result.
+TEST_F(USDRenderCyclesSubdivisionTest, KnobsSubdivideAndDice)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const QString file = _dir.path() + QString::fromUtf8("/knobs.usda");
+    ASSERT_TRUE(_dir.isValid());
+    ASSERT_TRUE(writeSubdivisionStage(file, subdivisionCube("Cube", "catmullClark")));
+    NodePtr node = createGraph(nullptr, file.toStdString().c_str());
+    ASSERT_TRUE(bool(node));
+    const RenderSettingsKnobs* settings = cyclesSettingsOf(node);
+    ASSERT_TRUE(settings != nullptr);
+    KnobBool* subdivide = dynamic_cast<KnobBool*>(settings->knob(kRenderDelegateCyclesId, "natron:subdivisionSurfaces").get());
+    KnobDouble* rate = dynamic_cast<KnobDouble*>(settings->knob(kRenderDelegateCyclesId, "natron:dicingRate").get());
+    ASSERT_TRUE(subdivide != nullptr);
+    ASSERT_TRUE(rate != nullptr);
+    EXPECT_FALSE(subdivide->getValue());
+    EXPECT_FALSE(rate->isEnabled(0));
+
+    std::vector<RenderedPlane> cage, smooth, coarse;
+    ASSERT_TRUE(renderAll(node, &cage));
+    subdivide->setValue(true);
+    EXPECT_TRUE(rate->isEnabled(0));
+    ASSERT_TRUE(renderAll(node, &smooth));
+    rate->setValue(8.);
+    ASSERT_TRUE(renderAll(node, &coarse));
+
+    const std::size_t corner = pixelIndex(kCageCornerX, kCageCornerY);
+    EXPECT_NEAR(1.f, cage[0].pixels[corner * 4 + 3], 1e-3f);
+    EXPECT_LT(smooth[0].pixels[corner * 4 + 3], 0.5f);
+    EXPECT_GT(differingPixels(smooth[0].pixels, coarse[0].pixels), 0u);
 }
 
 /*

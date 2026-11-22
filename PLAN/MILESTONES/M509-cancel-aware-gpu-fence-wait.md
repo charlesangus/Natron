@@ -62,3 +62,7 @@
   - size: S
 
 **Verification gate:** P3.T1 green; `ctest -R Gpu` passes; full debug PR CI green.
+
+## Decisions
+- 2026-11-22 — Retire list (P1.T1, implementer): a stopped batch's fence and its finalizer (holding the context's objects) go on a GpuDevice retire list; while anything retires, standalone buffers/textures, query pools and timelines are freed through `destroyWhenRetired`, pooled buffers are quarantined by `retiringMark()` and count against the pool budget. Reaped on submit, pool acquire, `drainQueues` and `finishRetiring()` (30 s, then parked as lost; device loss parks everything). Host memory behind host-imported buffers belongs to its caller and is not held.
+- 2026-11-22 — The cancel test signals a host timeline semaphore (`GpuRecordContext::waitTimeline`) instead of the planned binary semaphore: waiting on an unsignalled binary semaphore breaks the Vulkan spec and same-queue signalling deadlocks.

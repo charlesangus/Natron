@@ -679,6 +679,8 @@ future core work has solid ground to build on.
 | F35 | Pyro | open |  |  | feature/f35-pyro | A sparse-tile smoke and fire solver on native VDB volumes, with sourcing, shaping, collisions, look baking and quick setups, on GPU and CPU. Waits for F18 - Geometry Loops And Solver and F22 - Native VDB to land. |
 
 # Open questions
+- **M408 - Kernel Language GPU Backend (2026-11-22):** wrangles go to the GPU whenever one is available; the weight-based placement (M239) has no hook for geometry work. Add one, or a minimum element count below which details stay on the CPU? Also: noise/matrix/quaternion run single-precision on the GPU (expected ~1e-7 vs the CPU's double, test tolerance 1e-5); the CPU-fallback info message shows only when a GPU is present.
+
 - **M403 - Geometry File Cache (2026-11-22, 3540fd5d5):** (1) the Version knob is substituted into the path as `$VER` / `$VER3` (3-padded); confirm or pick another syntax; (2) rendering in Load From Disk or Pass Through mode fails with a message so a render can't overwrite a cache being loaded, rather than always writing the input; (3) files are memory-mapped but each frame is decoded whole on read (no lazy pages).
 
 - **M417 - VDB Volume Primitive (2026-11-22, 65f09ce71):** written `<disk cache>/vdb/<hash>.vdb` field files aren't tied into session-cache eviction (no hook found); the GUI check needs a `Tests/fixtures/m417-fog-sphere.vdb` generated after the build; GeoFileFormat embedding of VDB waits for M403.

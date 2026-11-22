@@ -32,7 +32,7 @@ struct GpuBufferPoolStats {
     uint64_t peakBytes = 0;
     uint64_t evictions = 0;
     uint64_t budgetBytes = 0;
-    // Released while device work that may still use them was retiring, and kept out of reuse until it is reaped.
+    // Released while retiring device work that uses them was pending, and kept out of reuse until it is reaped.
     // They count against the budget like pooled bytes.
     uint64_t quarantinedBytes = 0;
 };
@@ -151,7 +151,7 @@ private:
     std::map<VkDeviceSize, std::vector<GpuBuffer>> free_;
     struct Quarantined {
         GpuBuffer buffer;
-        // GpuDevice::retiringMark() when it was released.
+        // GpuDevice::retiringMark() of the buffer when it was released.
         uint64_t mark = 0;
     };
     std::vector<Quarantined> quarantine_;

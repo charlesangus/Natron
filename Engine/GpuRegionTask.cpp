@@ -3361,6 +3361,9 @@ private:
             reset->resetQueries(_queries, 0, info.queryCount);
             resetStatus = _runtime.note(reset->submitAndWait(30'000'000'000ull, stopWhenAborted()));
         }
+        if (noteStopped(resetStatus)) {
+            return false;
+        }
         if (!resetStatus) {
             if (_runtime.isLost()) {
                 return failGpu(firstMemberTask(), "cannot reset the strips' timestamps", resetStatus);

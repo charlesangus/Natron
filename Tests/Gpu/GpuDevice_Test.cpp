@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "GpuBuffer.h"
 #include "GpuDevice.h"
 #include "GpuTestDevice.h"
 
@@ -124,10 +125,15 @@ GPU_TEST_F(GpuDeviceTest, DestroyWhenRetiredWaitsForEveryPendingFence)
     const VkFence second = createFence(*dev, 0);
     ASSERT_NE(first, VK_NULL_HANDLE);
     ASSERT_NE(second, VK_NULL_HANDLE);
-    dev->retireWhenSignalled(first, nullptr);
-    dev->retireWhenSignalled(second, nullptr);
-    const uint64_t mark = dev->retiringMark();
+    GpuBuffer used;
+    GpuBuffer unused;
+    ASSERT_TRUE(GpuBuffer::createDeviceLocal(*dev, 4096, kGpuBufferDefaultUsage, used).ok());
+    ASSERT_TRUE(GpuBuffer::createDeviceLocal(*dev, 4096, kGpuBufferDefaultUsage, unused).ok());
+    dev->retireWhenSignalled(first, nullptr, { used.buffer() });
+    dev->retireWhenSignalled(second, nullptr, { used.buffer() });
+    const uint64_t mark = dev->retiringMark(used.buffer());
     EXPECT_NE(mark, 0u);
+    EXPECT_EQ(dev->retiringMark(unused.buffer()), 0u);
 
     bool destroyed = false;
     dev->destroyWhenRetired([&destroyed]() { destroyed = true; });
@@ -143,7 +149,7 @@ GPU_TEST_F(GpuDeviceTest, DestroyWhenRetiredWaitsForEveryPendingFence)
     dev->finishRetiring();
     EXPECT_TRUE(destroyed);
     EXPECT_TRUE(dev->retiredThrough(mark));
-    EXPECT_EQ(dev->retiringMark(), 0u);
+    EXPECT_EQ(dev->retiringMark(used.buffer()), 0u);
 
     bool immediate = false;
     dev->destroyWhenRetired([&immediate]() { immediate = true; });

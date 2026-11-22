@@ -115,6 +115,7 @@ GpuRecordContext::createOn(QueueKind queue, GpuKernelRegistry& registry, std::un
     if (device.isLost()) {
         return { VK_ERROR_DEVICE_LOST, "GpuRecordContext::create: device lost" };
     }
+    device.reapRetired();
     std::unique_ptr<GpuRecordContext> ctx(new GpuRecordContext(queue, registry, pool, pipelines, textures));
     registry.recordingBegan();
     // From here the destructor balances recordingBegan(), including on the error paths.
@@ -293,6 +294,7 @@ GpuRecordContext::dispatch(GpuKernelId kernel, std::span<const GpuBuffer* const>
         }
         handles[i] = buffers[i]->buffer();
     }
+    touched_.insert(touched_.end(), handles.begin(), handles.end());
     return k->record(cmd_, handles, push, threads);
 }
 
@@ -317,6 +319,16 @@ GpuRecordContext::checkTextureBindings(const char* where, std::span<const GpuBin
     return {};
 }
 
+void
+GpuRecordContext::touchBindings(std::span<const GpuBinding> bindings)
+{
+    for (const GpuBinding& b : bindings) {
+        if (b.buffer != VK_NULL_HANDLE) {
+            touched_.push_back(b.buffer);
+        }
+    }
+}
+
 GpuStatus
 GpuRecordContext::dispatchBindings(GpuKernelId kernel, std::span<const GpuBinding> bindings,
                                    std::span<const std::byte> push, std::array<uint32_t, 3> threads)
@@ -339,6 +351,7 @@ GpuRecordContext::dispatchBindings(GpuKernelId kernel, std::span<const GpuBindin
     if (GpuStatus s = registry_.get(kernel, k); !s) {
         return s;
     }
+    touchBindings(bindings);
     return k->recordBindings(cmd_, bindings, push, k->groupCount(threads));
 }
 
@@ -378,6 +391,7 @@ GpuRecordContext::dispatchBindings(const std::shared_ptr<GpuKernel>& kernel, std
         kernels_.push_back(kernel);
         registry_.noteExternalKernel(kernel);
     }
+    touchBindings(bindings);
     return kernel->recordBindings(cmd_, bindings, push, kernel->groupCount(threads));
 }
 
@@ -549,6 +563,7 @@ GpuRecordContext::updateBuffer(const GpuBuffer& dst, VkDeviceSize offset, std::s
         || offset + data.size() > dst.size()) {
         return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::updateBuffer: invalid range" };
     }
+    touched_.push_back(dst.buffer());
     vkCmdUpdateBuffer(cmd_, dst.buffer(), offset, data.size(), data.data());
     VkMemoryBarrier2 mb { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
     mb.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
@@ -572,6 +587,7 @@ GpuRecordContext::acquireFromTransfer(const GpuTransfer& transfer, const GpuBuff
     if (outsideComputeFamily()) {
         return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::acquireFromTransfer: a raster context outside the compute family takes uploads through a compute context" };
     }
+    touched_.push_back(buffer.buffer());
     transfer.recordComputeAcquire(cmd_, buffer, offset, bytes);
     return {};
 }
@@ -586,6 +602,7 @@ GpuRecordContext::releaseToTransfer(const GpuTransfer& transfer, const GpuBuffer
     if (outsideComputeFamily()) {
         return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::releaseToTransfer: a raster context outside the compute family hands downloads to a compute context" };
     }
+    touched_.push_back(buffer.buffer());
     transfer.recordComputeRelease(cmd_, buffer, offset, bytes);
     return {};
 }
@@ -748,6 +765,7 @@ GpuRecordContext::bindRaster(const char* where, GpuRasterId raster, GpuRasterBle
             return s;
         }
         infos[i] = { buffers[i]->buffer(), 0, VK_WHOLE_SIZE };
+        touched_.push_back(buffers[i]->buffer());
         VkWriteDescriptorSet& w = writes[i];
         w = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
         w.dstBinding = static_cast<uint32_t>(i);
@@ -827,6 +845,8 @@ GpuRecordContext::drawIndexedIndirect(GpuRasterId raster, GpuRasterBlend blend,
     if (GpuStatus s = bindRaster(where, raster, blend, buffers, push); !s) {
         return s;
     }
+    touched_.push_back(indexBuffer.buffer());
+    touched_.push_back(indirectBuffer.buffer());
     vkCmdBindIndexBuffer(cmd_, indexBuffer.buffer(), 0, VK_INDEX_TYPE_UINT32);
     const uint32_t perDraw = maxDrawIndirectCount();
     for (uint32_t first = 0; first < drawCount; first += perDraw) {
@@ -886,6 +906,7 @@ GpuRecordContext::copyToImage(const GpuBuffer& dst)
     VkBufferImageCopy region {};
     region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
     region.imageExtent = { rendered_->desc().width, rendered_->desc().height, 1 };
+    touched_.push_back(dst.buffer());
     vkCmdCopyImageToBuffer(cmd_, rendered_->image(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst.buffer(), 1, &region);
     memoryBarrier(cmd_, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT | kDrawStages
@@ -918,6 +939,7 @@ GpuRecordContext::ownershipBarrier(const GpuBuffer& buffer, VkDeviceSize offset,
         b.srcQueueFamilyIndex = other;
         b.dstQueueFamilyIndex = mine;
     }
+    touched_.push_back(buffer.buffer());
     b.buffer = buffer.buffer();
     b.offset = offset;
     b.size = bytes;
@@ -1017,6 +1039,8 @@ GpuRecordContext::copyBuffer(const GpuBuffer& src, const GpuBuffer& dst, std::sp
     dep.pMemoryBarriers = &before;
     vkCmdPipelineBarrier2(cmd_, &dep);
 
+    touched_.push_back(src.buffer());
+    touched_.push_back(dst.buffer());
     vkCmdCopyBuffer(cmd_, src.buffer(), dst.buffer(), static_cast<uint32_t>(regions.size()), regions.data());
 
     VkMemoryBarrier2 after { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
@@ -1056,6 +1080,7 @@ GpuRecordContext::fillBuffer(const GpuBuffer& dst, VkDeviceSize size, uint32_t v
     dep.pMemoryBarriers = &before;
     vkCmdPipelineBarrier2(cmd_, &dep);
 
+    touched_.push_back(dst.buffer());
     vkCmdFillBuffer(cmd_, dst.buffer(), 0, size, value);
 
     VkMemoryBarrier2 after { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
@@ -1088,6 +1113,8 @@ GpuRecordContext::copyFromExternal(const GpuBuffer& src, VkDeviceSize srcBytes, 
     }
     const uint32_t family = registry_.device().queueFamily(queue_);
 
+    touched_.push_back(src.buffer());
+    touched_.push_back(dst.buffer());
     VkBufferMemoryBarrier2 acquire { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2 };
     acquire.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
     acquire.srcAccessMask = VK_ACCESS_2_NONE;
@@ -1160,6 +1187,7 @@ GpuStatus
 GpuRecordContext::submit(std::span<const TimelineValue> waits, TimelineValue signal, const std::function<bool()>& stop)
 {
     const char* where = "GpuRecordContext::submit";
+    registry_.device().reapRetired();
     if (!open_ || !aborted_) {
         if (GpuStatus s = recordable(where); !s) {
             return s;
@@ -1225,6 +1253,7 @@ GpuStatus
 GpuRecordContext::submitAndWait(uint64_t timeoutNs, const std::function<bool()>& stop)
 {
     const char* where = "GpuRecordContext::submitAndWait";
+    registry_.device().reapRetired();
     if (!open_ || !aborted_) {
         if (GpuStatus s = recordable(where); !s) {
             return s;
@@ -1482,7 +1511,8 @@ GpuRecordContext::retireWork(VkFence fence)
     });
     descriptorPools_.clear();
     retired_ = true;
-    device.retireWhenSignalled(fence, takeHoldings(std::move(finalizer)));
+    device.retireWhenSignalled(fence, takeHoldings(std::move(finalizer)), std::move(touched_));
+    touched_.clear();
 }
 
 } // namespace gpu

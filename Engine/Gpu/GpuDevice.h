@@ -273,28 +273,31 @@ public:
     static void parkForever(std::shared_ptr<void> object);
 
     // Takes over `fence`, of submitted work nobody waits for any more, and keeps `holdings` alive until it signals;
-    // a reap then destroys the fence and releases them. A fence that reports the device lost, and every fence once
+    // a reap then destroys the fence and releases them. `buffers` are what the work reads or writes, whose pooled
+    // releases retiringMark() holds back. A fence that reports the device lost, and every fence once
     // abandonInFlightWork() runs, has its holdings parked with parkForever() instead.
-    void retireWhenSignalled(VkFence fence, std::shared_ptr<void> holdings);
+    void retireWhenSignalled(VkFence fence, std::shared_ptr<void> holdings, std::vector<VkBuffer> buffers = {});
 
-    // Reaps every retiring fence that has signalled. Every submit and drainQueues() reap too. Returns at once when
-    // another thread is reaping.
+    // Reaps every retiring fence that has signalled and releases what they held. Every submit and drainQueues() reap
+    // too, but leave the release to the next call of this, of finishRetiring() or of a buffer pool's acquire(), as
+    // their callers may hold locks that the holdings' destructors take. Returns at once when another thread is
+    // reaping.
     void reapRetired();
 
-    // Waits for every retiring fence and reaps them all, for the owner of something the holdings refer to, before it
-    // goes away. A fence still pending after 30 s is handled as GpuRecordContext::submitAndWait handles one, through
-    // abandonInFlightWork().
+    // Waits, 30 s at most in all, for every fence retiring now, then reaps and releases them, for the owner of
+    // something the holdings refer to, before it goes away. A fence still pending then is handled as
+    // GpuRecordContext::submitAndWait handles one, through abandonInFlightWork().
     void finishRetiring();
 
     bool hasRetiringWork() const { return retiringCount_.load(std::memory_order_acquire) != 0; }
 
-    // Runs `destroy` once every fence retiring now has been reaped, as what it destroys may be used by their work: at
-    // once when none is retiring, or when called while a reap releases holdings.
+    // Runs `destroy` once every fence retiring now has been reaped, as what it destroys may be used by their work, or
+    // at once when none is retiring.
     void destroyWhenRetired(std::function<void()> destroy);
 
-    // For something released now that the retiring work may still use: 0 when nothing is retiring, else a mark that
-    // retiredThrough() accepts once every fence retiring now has been reaped.
-    uint64_t retiringMark() const;
+    // For `buffer` released now: 0 when no retiring work uses it, else a mark that retiredThrough() accepts once
+    // every fence retiring now that uses it has been reaped.
+    uint64_t retiringMark(VkBuffer buffer) const;
     bool retiredThrough(uint64_t mark) const;
 
 private:
@@ -303,11 +306,20 @@ private:
         std::mutex mutex;
     };
 
+    // Shared with finishRetiring() while it waits unlocked, so that a reap meanwhile does not destroy it.
+    struct RetiringFence {
+        VkDevice device = VK_NULL_HANDLE;
+        VkFence fence = VK_NULL_HANDLE;
+        ~RetiringFence();
+    };
+
     struct Retiring {
         uint64_t serial = 0;
-        VkFence fence = VK_NULL_HANDLE;
+        std::shared_ptr<RetiringFence> fence;
         std::shared_ptr<void> holdings;
         std::vector<std::shared_ptr<void>> deferred;
+        // Sorted.
+        std::vector<VkBuffer> buffers;
     };
 
     GpuDevice() = default;
@@ -315,7 +327,8 @@ private:
     Queue& queueFor(QueueKind kind);
     GpuStatus lostStatus() const;
     VkResult waitIdleLocked();
-    void reap(bool block);
+    void collectSignalled(bool block);
+    void releaseReaped();
     void parkRetiringLocked();
 
     GpuDeviceInfo info_;
@@ -346,6 +359,9 @@ private:
     std::vector<Retiring> retiring_;
     uint64_t nextRetiringSerial_ = 0;
     std::atomic<size_t> retiringCount_ { 0 };
+    // What reaped entries held, released by the next releaseReaped().
+    std::vector<std::shared_ptr<void>> reaped_;
+    std::atomic<size_t> reapedCount_ { 0 };
 };
 
 } // namespace gpu

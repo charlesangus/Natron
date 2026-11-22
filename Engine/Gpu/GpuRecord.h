@@ -212,9 +212,10 @@ public:
     // destroyed.
     void waitExternalSemaphore(VkSemaphore semaphore);
 
-    // Makes submit() and submitAndWait() also wait for `value`, a timeline semaphore value that may be signalled
-    // later, before any command of the context runs. The caller keeps the semaphore alive, through hold(), until the
-    // context is destroyed.
+    // For tests that need work left pending on the device: makes submit() and submitAndWait() also wait for
+    // `value`, a timeline semaphore value that may be signalled later, before any command of the context runs. The
+    // caller keeps the semaphore alive until the work is done. An aborted context drops the wait unless it also has
+    // an external semaphore to consume, as it then submits the waits alone.
     void waitTimeline(TimelineValue value);
 
     // Keeps `object` alive until the context is destroyed, or for good when the device is lost with the
@@ -273,7 +274,9 @@ public:
     // true the call fails with VK_INCOMPLETE. A command buffer already submitted is then left to finish: the device
     // keeps it, its fence and everything the context holds until it does (GpuDevice::retireWhenSignalled()), and the
     // pooled buffers, buffers and textures the caller releases meanwhile are neither reused nor freed before then.
-    // Later work on the queue runs after it, and the device is not treated as lost.
+    // Later work on the same queue is ordered after it by its own barriers, as submission order counts toward them;
+    // work on another queue is not ordered after it at all, so must not touch what it writes. The device is not
+    // treated as lost.
     GpuStatus submitAndWait(uint64_t timeoutNs = 30'000'000'000ull, const std::function<bool()>& stop = {});
 
     // Ends the buffer and submits it once every wait is reached, signalling `signal` when it is done. The context
@@ -302,6 +305,7 @@ private:
     GpuStatus waitBeforeBatches(std::span<const TimelineValue> waits, uint64_t timeoutNs, const std::function<bool()>& stop);
     GpuStatus runBatchesBeforeLast(std::span<const VkSemaphoreSubmitInfo> waits, uint64_t timeoutNs, const std::function<bool()>& stop);
     void abandonWork(const char* what);
+    void touchBindings(std::span<const GpuBinding> bindings);
     void parkInFlightWork();
     std::vector<VkSemaphoreSubmitInfo> externalWaitInfos() const;
     GpuStatus checkBindable(const char* where, uint32_t binding, VkDeviceSize bytes) const;
@@ -340,6 +344,8 @@ private:
     std::vector<std::shared_ptr<void>> heldObjects_;
     std::vector<VkSemaphore> externalWaits_;
     std::vector<TimelineValue> timelineWaits_;
+    // Every buffer the commands read or write, for GpuDevice::retireWhenSignalled().
+    std::vector<VkBuffer> touched_;
     VkCommandPool pool_ = VK_NULL_HANDLE;
     VkCommandBuffer cmd_ = VK_NULL_HANDLE;
     std::vector<FinishedBatch> finished_;

@@ -309,7 +309,8 @@ GpuBufferPool::acquire(VkDeviceSize size, GpuBufferHandle& out)
         std::function<void()> cb;
         if (!takeVictimLocked(cb)) {
             GpuStatus s = outOfMemory(size, limit);
-            s.budgetContention = !vmaRefused;
+            // Quarantined buffers come back once the retiring work that uses them is reaped.
+            s.budgetContention = !vmaRefused || (stats_.quarantinedBytes > 0);
             return s;
         }
         vmaRefused = false;
@@ -365,7 +366,7 @@ GpuBufferPool::release(detail::BufferLease* lease)
     GpuBuffer buf = std::move(lease->buffer);
     const VkDeviceSize size = buf.size();
     const uint64_t limit = computeBudget();
-    const uint64_t mark = dev_.retiringMark();
+    const uint64_t mark = dev_.retiringMark(buf.buffer());
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (lease->evictable) {

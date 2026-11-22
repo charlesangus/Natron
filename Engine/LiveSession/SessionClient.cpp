@@ -177,6 +177,11 @@ struct SessionClient::Implementation {
             edit.keys.insert(edit.keys.end(), keys.begin(), keys.end());
         }
         send(OpsMessage { edit.clientSeq, ops });
+        // A deferred host edit came before this one on the host, which applies this one over it.
+        // Retried here once this one is acknowledged, and so no longer pending, it would undo it.
+        for (const Serialization::GraphOp& op : ops) {
+            supersedeDeferred(op);
+        }
         addPending(std::move(edit));
     }
 
@@ -221,8 +226,9 @@ struct SessionClient::Implementation {
         return op;
     }
 
-    // A deferred host edit is out of date once a later host edit writes the same thing or deletes
-    // its node. When that later edit deletes its source, the host's input ends up empty.
+    // A deferred host edit is out of date once a later edit, the host's or this user's, writes the
+    // same thing or deletes its node. When that later edit deletes its source, the host's input
+    // ends up empty.
     void supersedeDeferred(const Serialization::GraphOp& op)
     {
         if (deferred.empty()) {

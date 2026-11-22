@@ -214,6 +214,20 @@ try:
                 continue
         return None
 
+    def wait_field(name, tooltip_part):
+        """Waits for the field, which the panel builds over later event-loop passes than it shows in.
+        Returns the field, or None with what the panel holds reported."""
+        ok = yield ("until", lambda: field_of(name, tooltip_part) is not None, 10.0)
+        if ok:
+            return field_of(name, tooltip_part)
+        p = panel_of(name)
+        if p is not None:
+            fields = [w for w in p.findChildren(QWidget) if w.objectName() == "dim-0"]
+            matching = [w for w in fields if tooltip_part in w.toolTip()]
+            report("NOTE the panel of %s has %d first fields, %d matching %r, %d of those visible"
+                   % (name, len(fields), len(matching), tooltip_part, len([w for w in matching if w.isVisible()])))
+        return None
+
     def knob_menu(field, entry):
         """Triggers the entry with that exact text in the field's right-click menu."""
         _keep.append(field)
@@ -304,7 +318,7 @@ try:
         ok = yield from open_panel(name)
         if not ok:
             return "no panel for " + name
-        field = field_of(name, "Mix factor")
+        field = yield from wait_field(name, "Mix factor")
         if field is None:
             return "no mix field in the panel of " + name
         slider = None
@@ -338,7 +352,7 @@ try:
         ok = yield from open_panel(name)
         if not ok:
             return "no panel for " + name
-        field = field_of(name, "<b>size</b>")
+        field = yield from wait_field(name, "<b>size</b>")
         if field is None:
             return "no size field in the panel of " + name
         if not knob_menu(field, "Set Key (all dimensions)"):

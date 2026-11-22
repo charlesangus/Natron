@@ -1056,6 +1056,17 @@ struct SceneViewportRenderer::Implementation {
     std::atomic<U64> selectionPosted { 0 };
     std::atomic<U64> selectionApplied { 0 };
     std::atomic<U64> selectionAbsorbed { 0 };
+
+    // Another delegate than Storm renders on the refinement's own thread.
+    bool takesBackgroundFrames() const
+    {
+        if (stageHeld || !shown || !loadStage.load() || !getRendererErrorCopy().empty()) {
+            return false;
+        }
+        std::lock_guard<std::mutex> lock(rendererIdMutex);
+
+        return rendererId == kRenderDelegateStormId;
+    }
     // The renderer chosen, a delegate's id or kRenderDelegateSceneDefaultId; the delegate the
     // next engine is made with, the chosen one or the one the stage's render settings prim names;
     // and why it could not be, if it could not.
@@ -3861,14 +3872,23 @@ SceneViewportRenderer::hasEngine() const
 bool
 SceneViewportRenderer::needsBackgroundFrame() const
 {
-    // Another delegate than Storm renders on the refinement's own thread.
-    if (_imp->stageHeld || !_imp->shown || !_imp->loadStage.load() || !_imp->getRendererErrorCopy().empty() || (getActiveRendererId() != kRenderDelegateStormId)) {
+    if (needsStageFrame()) {
+        return true;
+    }
+
+    return _imp->takesBackgroundFrames() && (_imp->selectionAbsorbed != _imp->selectionPosted);
+}
+
+bool
+SceneViewportRenderer::needsStageFrame() const
+{
+    if (!_imp->takesBackgroundFrames()) {
         return false;
     }
 
     return !_imp->engineHeld || (_imp->absorbedEditCount != _imp->stageEditCount) || (_imp->absorbedLoadEditCount != _imp->stageLoadEditCount)
         || (_imp->absorbedParamsKey != Implementation::paramsKey(_imp->currentRenderParams()))
-        || (_imp->drawAbsorbed != _imp->drawPosted) || (_imp->selectionAbsorbed != _imp->selectionPosted) || ((_imp->drawRevealing || _imp->drawFilling) && _imp->drawRevealStepDue && !_imp->yieldsToCamera()) || _imp->texturesOwed;
+        || (_imp->drawAbsorbed != _imp->drawPosted) || ((_imp->drawRevealing || _imp->drawFilling) && _imp->drawRevealStepDue && !_imp->yieldsToCamera()) || _imp->texturesOwed;
 }
 
 void
@@ -9970,9 +9990,14 @@ SceneViewport::pickMustWait()
     // waiting for it. Asking for the frame here brings the retry that follows it. A pick behind a
     // frame still on the GPU would have the main thread wait for the GPU; the poll that finds it
     // done retries. Under the Always stand-in no frame comes, and the pick takes the change in.
-    startBackgroundFrame();
+    // A frame owed only to draw a selection change goes after the pick, which would otherwise
+    // wait for it: the pick hits the same prims with or without the tint.
+    const bool stageFrame = _imp->renderer.needsStageFrame();
+    if (stageFrame || !_imp->renderer.needsBackgroundFrame()) {
+        startBackgroundFrame();
+    }
 
-    return _imp->renderThreadBusy() || _imp->presentPacer.inFlight() || (_imp->usesRenderThread && _imp->renderer.needsBackgroundFrame() && (_imp->standInMode != Settings::eSceneStandInModeAlways));
+    return _imp->renderThreadBusy() || _imp->presentPacer.inFlight() || (_imp->usesRenderThread && stageFrame && (_imp->standInMode != Settings::eSceneStandInModeAlways));
 }
 
 QString

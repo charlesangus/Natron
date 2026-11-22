@@ -36,6 +36,8 @@ CTRL_LEFT_TUMBLE_NAVIGATION = 0
 INITIAL_DRAW_FULL = 3
 GRID_COLUMNS = 40
 GRID_ROWS = 22
+# Pixels between the clicks that look again around a prim, for a part of another drawn narrower than a grid step.
+DENSE_STEP = 4
 CARD = "/World/Card"
 BOX = "/World/Box"
 BACKDROP = "/World/Backdrop"
@@ -268,18 +270,31 @@ try:
         y = sum(p.y() for p in points) / float(len(points))
         return nearest(points, QPoint(int(x), int(y)))
 
-    def probe():
-        """Where each prim is drawn, by clicking a grid of points; leaves the selection empty."""
+    def probe_rows(rows, hits):
+        """Clicks each row of points, recording what each one picks in hits."""
+        for points in rows:
+            for p in points:
+                picked = yield from click(p)
+                hits.setdefault(picked[0] if len(picked) == 1 else "", []).append(p)
+            yield ("sleep", 0)
+
+    def probe(dense_around=None):
+        """Where each prim is drawn, by clicking a grid of points; leaves the selection empty.
+        Around the prim dense_around, rows the grid found it on are clicked again every
+        DENSE_STEP pixels, a grid step to either side of it, for a sliver narrower than a step."""
         v = view()
         sx = max(1, v.width() // GRID_COLUMNS)
         sy = max(1, v.height() // GRID_ROWS)
         hits = {}
-        for row in range(GRID_ROWS):
-            for column in range(GRID_COLUMNS):
-                p = QPoint(sx // 2 + column * sx, sy // 2 + row * sy)
-                picked = yield from click(p)
-                hits.setdefault(picked[0] if len(picked) == 1 else "", []).append(p)
-            yield ("sleep", 0)
+        rows = [[QPoint(sx // 2 + column * sx, sy // 2 + row * sy) for column in range(GRID_COLUMNS)] for row in range(GRID_ROWS)]
+        yield from probe_rows(rows, hits)
+        if dense_around in hits:
+            xs = [p.x() for p in hits[dense_around]]
+            ys = sorted(set(p.y() for p in hits[dense_around]))
+            left = max(0, min(xs) - sx)
+            right = min(v.width() - 1, max(xs) + sx)
+            dense = [[QPoint(x, y) for x in range(left, right + 1, DENSE_STEP)] for y in ys]
+            yield from probe_rows(dense, hits)
         if "" in hits:
             yield from click(nearest(hits[""], QPoint(0, 0)))
         return hits
@@ -356,7 +371,7 @@ try:
         require(ok, "the scene view shows the slab")
         key(Qt.Key_A)
         yield from settle()
-        hits = yield from probe()
+        hits = yield from probe(dense_around=SLAB)
         report("NOTE grid hits: %r" % dict((k, len(p)) for k, p in hits.items()))
         require(SLAB in hits and BOX in hits and "" in hits, "the grid finds the slab and the part of the box in the open")
         slab = centre_of(hits[SLAB])

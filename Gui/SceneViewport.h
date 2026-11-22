@@ -261,9 +261,15 @@ public:
      * @brief Whether the shown stage, or a setting that decides Storm's shaders (draw mode, lighting,
      * purposes, display transform), changed since the engine last rendered, or there is no engine:
      * the render that follows does the Hydra work, however long that takes, rather than only
-     * drawing. Main thread.
+     * drawing, or a selection change has yet to be drawn. Main thread.
      **/
     bool needsBackgroundFrame() const;
+
+    /**
+     * @brief needsBackgroundFrame() less a selection change yet to be drawn: what a pick resolves
+     * against is the same either way. Main thread.
+     **/
+    bool needsStageFrame() const;
 
     /**
      * @brief Queues a draw state change for this renderer's engine; needsBackgroundFrame() holds

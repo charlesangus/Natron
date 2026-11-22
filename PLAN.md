@@ -564,7 +564,7 @@ future core work has solid ground to build on.
 | M490 | Channel Sources From Images And Audio | todo | M486 |  | E26 | F32 | | [M490-channel-sources-images-and-audio.md](PLAN/MILESTONES/M490-channel-sources-images-and-audio.md) |
 | M491 | Extra Input Picker | todo | - |  | E10 | | | [M491-extra-input-picker.md](PLAN/MILESTONES/M491-extra-input-picker.md) |
 | M492 | Image-Driven Warp Providers | todo | M153, M179 |  | E14 | | | [M492-image-driven-warp-providers.md](PLAN/MILESTONES/M492-image-driven-warp-providers.md) |
-| M493 | Shared Ccache Remote Storage | doing | - | bosley-executor | E2 | | | [M493-shared-ccache-remote-storage.md](PLAN/MILESTONES/M493-shared-ccache-remote-storage.md) |
+| M493 | Shared Ccache Remote Storage | done | - | bosley-executor | E2 | | | [M493-shared-ccache-remote-storage.md](PLAN/MILESTONES/M493-shared-ccache-remote-storage.md) |
 | M494 | Delegate Subdivision | todo | - |  | E9 | | | [M494-delegate-subdivision.md](PLAN/MILESTONES/M494-delegate-subdivision.md) |
 | M495 | KeyMix GPU Edge Read Fix | todo | - |  | E14 | | | [M495-keymix-gpu-edge-read-fix.md](PLAN/MILESTONES/M495-keymix-gpu-edge-read-fix.md) |
 | M496 | MoonRay Test Stability | todo | - |  | E9 | | | [M496-moonray-test-stability.md](PLAN/MILESTONES/M496-moonray-test-stability.md) |

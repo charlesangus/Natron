@@ -108,7 +108,7 @@ Precondition: the user has set the repo secret `CCACHE_REMOTE_STORAGE` to the pu
   - verify: the four runs' numbers and the verdict are recorded in this file's Decisions section.
   - size: M
 
-- [ ] M493.P2.T3 — Enable the remote cache in `ci.yml` and `release.yml`
+- [x] M493.P2.T3 — Enable the remote cache in `ci.yml` and `release.yml`
   - files: `.github/workflows/ci.yml`, `.github/workflows/release.yml`
   - approach:
     - Do this only if M493.P2.T2's recorded verdict is a win. Otherwise strike this task through and record why.
@@ -146,3 +146,5 @@ Precondition: the user has set the repo secret `CCACHE_REMOTE_STORAGE` to the pu
 - 2026-11-21 — **Fixes:** 2f1770c1a adds tools/ci/ccache-remote-layout.sh, used by CI and devshell, which sets `@layout=bazel` (https) or `layout=bazel` (http) whatever the stored spelling, and `ccache -z` after the CI restore. The user then re-entered the secret as the whole local line (`url=…`); ccache rejected it as an invalid scheme, **failed every compile**, and printed the URL with only the credentials masked. The logs of runs 44965552172 and 44965207715 were deleted; earlier M493 runs never mention the domain. 0d1709e24 accepts a copied `url=`/`docker_url=` key, turns the remote off with a fixed message for anything not http(s), masks the bare host, and checks `ccache --print-config` under the value. Verification debug run dispatched with the current secret.
 - 2026-11-22 — 820ebc4d8 replaces the `ccache --print-config` check (not a ccache option; it rejected every value) with a one-file probe compile, checked in the M493 image: a malformed value fails it, an unreachable server passes.
 - 2026-11-22 — **P2.T1 verified and P2.T2 verdict: win.** Remote-build debug, local layer cold (branch caches deleted): remote off 5039 s build step; **remote on 328 s, 1777/1784 remote hits** (run 44979152185, secret normalised to https, no domain in the log). Fast with a cold remote (0/1028 hits) 1669 s vs off 1996 s, so misses and uploads cost nothing measurable. No remote timeouts or errors. P2.T3 proceeds.
+- 2026-11-22 — **P2.T3:** ci.yml (debug and release build jobs) and release.yml use the remote through tools/ci/ccache-remote-setup.sh, shared with remote-build.yml (9aef12ab0). PR CI on PR #331: debug 1779/1784 remote hits, release 154 (its first fill); no log mentions the domain. Review round 2 (Codex): raw-secret masking with tracing off, release setup before an older-tag checkout, IPv6/query host masking, comment trim — fixed in 9e7ce943f. Lint fix c94f1e83d (SC1091). The only red leg was the known MoonRay segfault flake, green on re-run.
+- 2026-11-22 — **Merged** into main as 0261ec931 (#331). Post-merge: dev-image.yml publishes the image with the HTTPS helper and inline cache; the local natron-dev container is recreated from it so local builds use the remote.

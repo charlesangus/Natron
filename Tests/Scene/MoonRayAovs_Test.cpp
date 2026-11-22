@@ -224,7 +224,7 @@ TEST(MoonRayAovs, DropsOnlyTheFrameHoldPrimvarNoticesThatAreNotTranslated)
     const std::string warning = MoonRayAovs::warningText(stage, std::vector<MoonRayAovs::Light>(), kept);
     EXPECT_NE(std::string::npos, warning.find("natronProjectionFrameHoldX")) << warning;
     EXPECT_NE(std::string::npos, warning.find("natronProjectionFrameHold1Column3")) << warning;
-    EXPECT_NE(std::string::npos, warning.find("primvars:foo")) << warning;
+    EXPECT_NE(std::string::npos, warning.find("(foo: ")) << warning;
 }
 
 TEST(MoonRayAovs, NamesTheTextureFilesNotThePrimsTheyShade)

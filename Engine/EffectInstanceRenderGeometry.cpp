@@ -436,7 +436,7 @@ EffectInstance::evaluateGeometry(const EvaluateGeometryArgs& args,
         for (int i = 0; i < nInputs; ++i) {
             EffectInstancePtr input = getInput(i);
 
-            if (!input || !input->producesGeometryData()) {
+            if (!input || !input->producesGeometryData() || pullsInputInRender(i, args.time, args.view, frameArgs->context)) {
                 continue;
             }
 

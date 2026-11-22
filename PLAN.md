@@ -585,6 +585,8 @@ future core work has solid ground to build on.
 | M501 | Lens Maps In The Scene | todo | M497, M499, M500, M433 |  | E9 | F34 | | [M501-lens-maps-in-the-scene.md](PLAN/MILESTONES/M501-lens-maps-in-the-scene.md) |
 | M514 | Utility Raster Mode | todo | M283, M472 |  | E19 |  | | [M514-utility-raster-mode.md](PLAN/MILESTONES/M514-utility-raster-mode.md) |
 | M515 | Storm Oversample And Motion Blur | todo | - |  | E9 |  | | [M515-storm-oversample-and-motion-blur.md](PLAN/MILESTONES/M515-storm-oversample-and-motion-blur.md) |
+| M516 | Port Groups And Folding | todo | M351 |  | E9 | F2 | | [M516-port-groups-and-folding.md](PLAN/MILESTONES/M516-port-groups-and-folding.md) |
+| M517 | Storm Translucent Prim Ids | todo | - |  | E9 |  | | [M517-storm-translucent-prim-ids.md](PLAN/MILESTONES/M517-storm-translucent-prim-ids.md) |
 
 # Epics
 
@@ -657,7 +659,6 @@ future core work has solid ground to build on.
 | F34 | Scene Lens Distortion | open |  |  | feature/f34-scene-lens-distortion | Camera lens distortion carried in the USD scene, authored on cameras and used by LensDistortion and the projection nodes. |
 
 # Open questions
-- **M350/M351 re-plan, for /cat-plan (PM, 2026-11-22, from M349 - Shader Node Spike):** the user chose ports as the single connection model (ConnectorLayout per NodeGui; RadialLayout for classic nodes refactored first with pixel-identical goldens; PortListLayout for port nodes) and a port-node look (type colours, shapes incl. diamonds for varying, groups, folding defaults, no inline widgets). M350 - Shader Manifest And Nodes must carry port type/page/promoted in the runtime spec; M351 - Shader Graph Presentation needs the two-step layout refactor; groups/folding/search-to-connect need a later milestone. Details in M349's Decisions.
 - **M365 - Delegate Display Transform (user, 2026-11-22):** apply the camera's exposure in the viewer when looking through a camera; add a toggle button to the right of the viewer's exposure (gain) slider to turn it on/off, and a non-editable label next to it showing the camera's exposure value. Screenshots to re-send after.
 
 - **F7 - Natron Utility Core UAT round 1 (user, 2026-11-21):**
@@ -674,7 +675,6 @@ future core work has solid ground to build on.
 - **M472 - GPU Raster Pipelines post-merge check (PM, 2026-11-20, merged c97bbfcb6 / #318):** record the raster-capable record context's capability report on RADV and NVIDIA on the GPU host (only llvmpipe has run it).
 
 
-- **Storm primId on projected cards (2026-11-14, found in M281 - Utility Materials And Lights):** `natronProject3D.glslfx` is tagged translucent, and Storm's transparency passes write colour only, so USDRender's primId (and picking) misses every card carrying a projection under Storm. Fix options: make the projection material opaque when its plate and outside mode are opaque, or write ids in Storm's OIT passes. Add a follow-up milestone?
 
 
 

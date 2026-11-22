@@ -61,3 +61,4 @@ Apply USD camera exposure — `exposure`, and the fStop, shutter and ISO terms a
 ## Decisions
 
 - 2026-11-07 — USDRender, the viewer and every delegate apply camera exposure, which answers the M251 - Cycles Rendering camera exposure question (user).
+- 2026-11-22 — The viewer part of P2.T3 (apply the look-through camera's exposure in the 3D viewer, toggle and label) moved into M365 - Delegate Display Transform at the user's request (4783c0d14 on milestone/m365-delegate-display-transform). Re-scope P2.T3 to what remains when this milestone starts.

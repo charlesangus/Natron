@@ -704,8 +704,6 @@ future core work has solid ground to build on.
 
 - **M460 - MoonRay True Deep Patch (2026-11-22):** P2.T1 (deep AOVs and volumes behind presence) needs decisions: how min/max/closest-filtered AOVs split per presence layer; whether a 50% presence card clips the fog behind it; how volume deep segments accumulate across progressive passes. It also needs a MoonRay compile-and-render loop a no-build lane can't run. Separately, the intro's "lowers the deep Z tolerance default" has no task: MoonRay's scene-variable default, or Natron sending a smaller value?
 
-- **M504 - GIL Lock Order Fix (2026-11-22):** `SceneWriteBarrier::registerParticipant`/`unregisterParticipant` take `writerMutex` without releasing the GIL (callers `HydraRenderImpl.cpp`, `Gui/SceneViewport.cpp`), so `runExclusive` re-taking the GIL under `writerMutex` can still deadlock if they run with the GIL held. Release the GIL there too (PM default), unless they provably never hold it. Phase 504.2 waits on F4.
-
 - **M518 - Save Prompt Key Shortcuts (2026-11-22):** T2's verify can't run as written: no caller raises a Yes/No question through Natron's own MessageBox (the auto-save prompt uses the stock dialog). The GUI check covers `&OK` on MessageBox and y/n on the stock question dialog instead.
 
 - **M523 - USDSetAttribute Type From Stage (2026-11-22):** the type-mismatch warning covers authored non-schema attributes only; schema attributes (e.g. `radius`) keep the existing schema-mismatch render error, as the Edge cases say. The type lookup runs `evaluateScene` on a worker thread, with no off-thread precedent; the review checks that.

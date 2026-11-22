@@ -19,12 +19,12 @@ Every wait in `Engine/Nodes/Scene/SceneWriteBarrier.cpp` (F4 branch) that has to
 
 ## Phase 504.1: Fix
 
-- [ ] M504.P1.T1 — Re-take the GIL only after the barrier mutex is released
+- [x] M504.P1.T1 — Re-take the GIL only after the barrier mutex is released
   - files: `Engine/Nodes/Scene/SceneWriteBarrier.cpp`
   - approach: in `waitAllParked` and `ReadScope::ReadScope`, declare `std::optional<PythonUnlockedWhileWaiting> unlocked;` before the `unique_lock`. On the wait path, `lock.unlock(); unlocked.emplace(); lock.lock();` then `wait`, so the lock is destroyed before the guard. The no-wait path still never touches the GIL. Comment the `runExclusive` invariant.
   - verify: by reading, no guard outlives a held `s.mutex`; `ctest -R "ProgressiveRender|SceneLayerMemo"` passes at the phase build
   - size: M
-- [ ] M504.P1.T2 — A deadlock regression test for the reader wait
+- [x] M504.P1.T2 — A deadlock regression test for the reader wait
   - files: `Tests/Scene/ProgressiveRender_Test.cpp` (next to the ReadScope test at :1670)
   - approach: writer W sits inside `runExclusive`. Reader R, holding the GIL (`PyGILState_Ensure`), opens a `ReadScope` and waits. Thread G takes the GIL. W returns, and ~100 ms later G opens a `ReadScope`. The main thread waits up to 10 s for all three to finish; on timeout it calls `ADD_FAILURE` then `std::_Exit(1)` (threads in a deadlock cannot be joined). Bundled gtest is old: no `GTEST_SKIP`, no `ASSERT_TRUE(ptr)`.
   - verify: hangs or fails with P1.T1 reverted in a scratch build; passes with it
@@ -39,3 +39,6 @@ Every wait in `Engine/Nodes/Scene/SceneWriteBarrier.cpp` (F4 branch) that has to
   - size: M
 
 **Verification gate:** P1.T2 passes 20/20 (`--repeat-test ProgressiveRender:20`); full debug PR CI green.
+
+## Decisions
+- 2026-11-22 — Phase 504.1 green (6a31005b0): full fast ctest plus ProgressiveRenderTest ×10, both schedulers. registerParticipant/unregisterParticipant also release the GIL before writerMutex (PM default for the open question), so every writerMutex taker releases the GIL first. Phase 504.2 and the PR wait for F4 to land (main frozen until then, user 2026-11-22).

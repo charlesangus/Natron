@@ -705,7 +705,7 @@ future core work has solid ground to build on.
 
 - **M523 - USDSetAttribute Type From Stage (2026-11-22):** the type-mismatch warning covers authored non-schema attributes only; schema attributes (e.g. `radius`) keep the existing schema-mismatch render error, as the Edge cases say. The type lookup runs `evaluateScene` on a worker thread, with no off-thread precedent; the review checks that.
 
-- **F15 - Native Geometry (PM, 2026-11-22):** main merged into F15 (8bd000af4); geometry keeps its own RAM cache beside F6's unified tiered cache. Folding it into the node cache (as deep was) is the alternative. F18, F19, F21 and F22 now stack on F15 and can't ship before it.
+- **F15 - Native Geometry (PM, 2026-11-22):** main merged into F15 (8bd000af4, gate green); geometry keeps its own RAM cache beside F6's unified tiered cache. Folding it into the node cache (as deep was) is the alternative. F18, F19, F21 and F22 now stack on F15 and can't ship before it.
 - **M365 - Delegate Display Transform (user, 2026-11-22):** apply the camera's exposure in the viewer when looking through a camera; add a toggle button to the right of the viewer's exposure (gain) slider to turn it on/off, and a non-editable label next to it showing the camera's exposure value. Screenshots to re-send after.
 
 - **F7 - Natron Utility Core UAT round 1 (user, 2026-11-21):**

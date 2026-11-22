@@ -132,7 +132,9 @@ the URL only, in the form `https://USER:PASS@cache.example.com`, without a
 surrounding whitespace, but a value that is not an `http://` or `https://`
 URL turns the remote cache off for that run (the log says only
 `remote ccache: unsupported value, off`), as does a value ccache rejects. The
-whole value and its host are masked in the log. The workflow
+whole value and its host are masked in the log. The secret may also be the
+whole local `.local/ccache-remote` file (blank and `#` lines are skipped, only
+`url=` is used, and `network=`, `docker_url=` and other keys are ignored). The workflow
 replaces any `layout=` attribute on it with the bazel layout the local builds
 use (`@layout=bazel` for the dev image's `ccache-storage-https` helper, which
 handles the HTTPS), so both spellings work and CI shares keys with local

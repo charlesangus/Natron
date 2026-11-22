@@ -135,3 +135,5 @@ Scouted 2026-11-14 on `origin/main`:
 - 2026-11-21 — Follow-up: an `OverlaySupport::drawInViewportSpace` helper now draws the ripple-edit border and the Tracker magnifier and keyframe strip; Retouch's brush and clone circles use `getCursorPositionInOverlay`. The paint brush cursor was already correct. Left over: Tracker magnifier hit-testing under a mapped overlay.
 - 2026-11-21 — Gate green on 2d5a0472b (run 44875913812). The round-3 UAT AppImage is at build/appimages/Natron-m432-overlays-off-the-render-path.{AppImage,md}.
 - 2026-11-22 — **UAT round 3 approved (user).** One AI-segmentation crash the user saw did not recur; the user will file a follow-up if it does. Scripted checks found no crash on the round-3 AppImage (m205_object_select 97/97; an off-path Object Select run also ran without a crash). Main merged in for the final CI before merging #312.
+
+**Merged** 2026-11-22 as c916d571d (#312). User approved UAT; the AI segmentation crash did not reproduce, follow-up to be filed if it recurs.

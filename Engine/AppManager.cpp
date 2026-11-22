@@ -111,6 +111,7 @@
 
 #include "Global/FloatingPointExceptions.h"
 #include "Global/GLIncludes.h"
+#include "Global/GitVersion.h"
 #include "Global/ProcInfo.h"
 #include "Global/PythonUtils.h"
 #include "Global/StrUtils.h"
@@ -121,6 +122,9 @@
 #include "Engine/AppInstance.h"
 #include "Engine/Backdrop.h"
 #include "Engine/CLArgs.h"
+#include "Engine/CacheDeviceTier.h"
+#include "Engine/CacheDiskTier.h"
+#include "Engine/CacheRetention.h"
 #include "Engine/DiskCacheNode.h"
 #include "Engine/Dot.h"
 #include "Engine/FileSystemModel.h"
@@ -141,6 +145,7 @@
 #include "Engine/OfxHost.h"
 #include "Engine/OfxImageEffectInstance.h"
 #include "Engine/OneViewNode.h"
+#include "Engine/Plugin.h"
 #include "Engine/PrecompNode.h"
 #include "Engine/ProcessHandler.h" // ProcessInputChannel
 #include "Engine/Project.h"
@@ -163,6 +168,7 @@
 #include "Engine/Nodes/Scene/MoonRayRuntime.h"
 #include "Engine/Nodes/Scene/SceneCaches.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
+#include "Engine/Nodes/Scene/SceneTeardown.h"
 #include "Engine/Nodes/Test/OverlayImageGuiTestNode.h"
 #include "Engine/Nodes/Test/OverlayTestNode.h"
 
@@ -604,6 +610,8 @@ AppManager::AppManager()
         }
     }
 
+    CacheRetention::readAdmissionPolicyOverrideFromEnvironment();
+
     QObject::connect( this, SIGNAL(s_requestOFXDialogOnMainThread(OfxImageEffectInstance*,void*)), this, SLOT(onOFXDialogOnMainThreadReceived(OfxImageEffectInstance*,void*)) );
 
 #ifdef __NATRON_WIN32__
@@ -809,6 +817,10 @@ AppManager::~AppManager()
     setTeardownStage("waiting for the scene workers");
     SceneWorker::joinAll(5000);
 
+    // What the closed projects let go of still uses OpenUSD, the caches and the plug-ins' libraries.
+    setTeardownStage("closing the released scenes");
+    SceneTeardown::shutdown();
+
     for (PluginsMap::iterator it = _imp->_plugins.begin(); it != _imp->_plugins.end(); ++it) {
         for (PluginVersionsOrdered::reverse_iterator itver = it->second.rbegin(); itver != it->second.rend(); ++itver) {
             delete *itver;
@@ -828,6 +840,18 @@ AppManager::~AppManager()
     ///Caches may have launched some threads to delete images, wait for them to be done
     QThreadPool::globalInstance()->waitForDone();
 
+    // The viewers closed above left their delegates to stop on their own threads, which still use
+    // OpenUSD and the delegates' libraries. Bounded, so a stuck delegate cannot hang
+    // the exit.
+    if (!SceneCaches::waitForViewerRenderWorkers(30000)) {
+        // The rest of the teardown frees what a live worker still uses (the caches, Python, GL),
+        // and the delegates' libraries unload at exit: the process ends here instead, the
+        // caches already saved, without running static destructors or atexit handlers.
+        qWarning("A viewer's render delegate did not stop; exiting without the rest of the teardown.");
+        std::fflush(nullptr);
+        std::_Exit(EXIT_FAILURE);
+    }
+
     // No render is left to abort, and the watchdog thread reads this manager.
     AbortWatchdog::shutdown();
 
@@ -837,23 +861,16 @@ AppManager::~AppManager()
     }
 
     setTeardownStage("stopping the caches");
+    _imp->dropDeviceTier();
     ///Kill caches now because decreaseNCacheFilesOpened can be called
     if (_imp->_nodeCache) {
         _imp->_nodeCache->waitForDeleterThread();
     }
-    if (_imp->_diskCache) {
-        _imp->_diskCache->waitForDeleterThread();
-    }
     if (_imp->_viewerCache) {
         _imp->_viewerCache->waitForDeleterThread();
     }
-    if (_imp->_deepImageCache) {
-        _imp->_deepImageCache->waitForDeleterThread();
-    }
     _imp->_nodeCache.reset();
     _imp->_viewerCache.reset();
-    _imp->_diskCache.reset();
-    _imp->_deepImageCache.reset();
 
     setTeardownStage("finalizing Python");
     tearDownPython();
@@ -1412,6 +1429,41 @@ AppManager::initGui(const CLArgs& cl)
     return loadInternalAfterInitGui(cl);
 }
 
+static CacheDiskTierPtr
+openNodeCacheDiskTier(const Settings& settings)
+{
+    const U64 sizeBytes = settings.getDiskTierSizeBytes();
+    const char* const envSwitch = std::getenv("NATRON_CACHE_DISK_TIER");
+
+    if ((sizeBytes == 0) || (envSwitch && (std::strcmp(envSwitch, "off") == 0))) {
+        return CacheDiskTierPtr();
+    }
+
+    // Files of another build are not read, so every build needs only tell itself apart. Executables
+    // that cannot be stamped share a directory rather than leave a new one behind every launch, and
+    // since nothing then proves what wrote its files, such a session adds none.
+    bool stamped = false;
+    const U64 stamp = Plugin::runningExecutablesStamp(&stamped);
+    const std::string build = std::string(NATRON_VERSION_STRING) + GIT_COMMIT + (stamped ? std::to_string(stamp) : std::string("unstamped"));
+    char buildId[17];
+    std::snprintf(buildId, sizeof(buildId), "%016llx",
+                  (unsigned long long)CacheDiskTier::hashBytes(build.data(), build.size()));
+
+    CacheDiskTier::Config config;
+    config.root = settings.getDiskTierLocation();
+    config.buildId = buildId;
+    config.sizeBytes = sizeBytes;
+    config.publish = stamped;
+
+    std::string warning;
+    CacheDiskTierPtr tier = CacheDiskTier::openWithFallback(config, Settings::defaultDiskTierLocation(), &warning);
+    if (!warning.empty()) {
+        qWarning("%s", warning.c_str());
+    }
+
+    return tier;
+}
+
 bool
 AppManager::loadInternalAfterInitGui(const CLArgs& cl)
 {
@@ -1419,14 +1471,12 @@ AppManager::loadInternalAfterInitGui(const CLArgs& cl)
         size_t maxCacheRAM = _imp->_settings->getRamMaximumPercent() * getSystemTotalRAM();
         U64 viewerCacheSize = _imp->_settings->getMaximumViewerDiskCacheSize();
         U64 maxDiskCacheNode = _imp->_settings->getMaximumDiskCacheNodeSize();
-        U64 maxDeepImageCache = _imp->_settings->getMaximumDeepImageCacheSize();
 
         _imp->_nodeCache = std::make_shared<Cache<Image> >("NodeCache", NATRON_CACHE_VERSION, maxCacheRAM, 1.);
-        _imp->_diskCache = std::make_shared<Cache<Image> >("DiskCache", NATRON_CACHE_VERSION, maxDiskCacheNode, 0.);
-        _imp->_viewerCache = std::make_shared<Cache<FrameEntry> >("ViewerCache", NATRON_CACHE_VERSION, viewerCacheSize, 0.);
-        // RAM-only, like _nodeCache: deep has no on-disk cache in v1, and must not share
-        // _nodeCache's budget or a large deep render would evict the entire 2D image cache.
-        _imp->_deepImageCache = std::make_shared<Cache<DeepImageCacheEntry>>("DeepImageCache", NATRON_CACHE_VERSION, maxDeepImageCache, 1.);
+        _imp->_nodeCache->useEvictionScore();
+        _imp->_nodeCache->setDiskTier(openNodeCacheDiskTier(*_imp->_settings));
+        setNodeCachePinBudget(maxDiskCacheNode);
+        _imp->_viewerCache = std::make_shared<Cache<FrameEntry>>("ViewerCache", NATRON_CACHE_VERSION, viewerCacheSize, 0.);
         _imp->setViewerCacheTileSize();
     } catch (std::logic_error&) {
         // ignore
@@ -1442,9 +1492,16 @@ AppManager::loadInternalAfterInitGui(const CLArgs& cl)
         settings.setValue(QString::fromUtf8(kNatronCacheVersionSettingsKey), NATRON_CACHE_VERSION);
     }
 
-    if (oldCacheVersion != NATRON_CACHE_VERSION || cl.isCacheClearRequestedOnLaunch()) {
+    if (cl.isCacheClearRequestedOnLaunch()) {
         setLoadingStatus( tr("Clearing the image cache...") );
         wipeAndCreateDiskCacheStructure();
+    } else if (oldCacheVersion != NATRON_CACHE_VERSION) {
+        // Not the node cache's disk tier: peers may be using its files right now, and every build
+        // already keeps to its own.
+        setLoadingStatus(tr("Clearing the image cache..."));
+        abortAnyProcessing();
+        clearDiskCache();
+        rebuildDiskCacheStructure();
     } else {
         setLoadingStatus( tr("Restoring the image cache...") );
         _imp->restoreCaches();
@@ -1728,7 +1785,9 @@ AppManager::clearDiskCache()
 
     clearLastRenderedTextures();
     _imp->_viewerCache->clear();
-    _imp->_diskCache->clear();
+    if (_imp->_nodeCache) {
+        _imp->_nodeCache->clearPins();
+    }
 }
 
 void
@@ -1757,7 +1816,7 @@ AppManager::freeGpuMemory()
 {
     SceneCaches::releaseRenderEngines();
     SceneCaches::releaseLiveTextures();
-    releaseSceneViewEngines();
+    releaseSceneViewEngines(false);
     if (_imp->gpuContext) {
         _imp->gpuContext->releaseIdleMemory();
     }
@@ -1765,6 +1824,18 @@ AppManager::freeGpuMemory()
 
 void
 AppManager::clearAllCaches()
+{
+    clearCaches(false);
+}
+
+void
+AppManager::clearAllCachesInRam()
+{
+    clearCaches(true);
+}
+
+void
+AppManager::clearCaches(bool inRamOnly)
 {
     AppInstanceVec copy;
     {
@@ -1781,24 +1852,33 @@ AppManager::clearAllCaches()
     if (_imp->_nodeCache) {
         _imp->_nodeCache->waitForDeleterThread();
     }
-    if (_imp->_diskCache) {
-        _imp->_diskCache->waitForDeleterThread();
-    }
     if (_imp->_viewerCache) {
         _imp->_viewerCache->waitForDeleterThread();
     }
-    if (_imp->_deepImageCache) {
-        _imp->_deepImageCache->waitForDeleterThread();
-    }
 
-    clearDiskCache();
-    clearNodeCache();
-    _imp->_deepImageCache->clear();
+    if (inRamOnly) {
+        clearLastRenderedTextures();
+        if (_imp->_viewerCache) {
+            _imp->_viewerCache->clearInMemoryPortion();
+        }
+        for (AppInstanceVec::iterator it = copy.begin(); it != copy.end(); ++it) {
+            (*it)->clearAllLastRenderedImages();
+        }
+        if (_imp->_nodeCache) {
+            _imp->_nodeCache->clearInRam();
+        }
+    } else {
+        clearDiskCache();
+        clearNodeCache();
+    }
     SceneCaches::releaseIdleQueryStages();
     // Not freeGpuMemory(): the GPU pool's free buffers are what the next renders reuse.
     SceneCaches::releaseRenderEngines();
     SceneCaches::releaseLiveTextures();
     SceneCaches::releaseCpuRenderEngines();
+    // A Storm view's engine is drawing and would only be made again by a full sync on the GUI
+    // thread, but one kept behind another delegate holds the scene's GPU memory unused.
+    releaseSceneViewEngines(true);
 
     ///for each app instance clear all its nodes cache
     for (AppInstanceVec::iterator it = copy.begin(); it != copy.end(); ++it) {
@@ -1809,7 +1889,9 @@ AppManager::clearAllCaches()
         (*it)->renderAllViewers(true);
     }
 
-    Project::clearAutoSavesDir();
+    if (!inRamOnly) {
+        Project::clearAutoSavesDir();
+    }
 }
 
 void
@@ -1821,9 +1903,12 @@ AppManager::wipeAndCreateDiskCacheStructure()
     abortAnyProcessing();
 
     clearAllCaches();
+    rebuildDiskCacheStructure();
+}
 
-    assert(_imp->_diskCache);
-    _imp->cleanUpCacheDiskStructure( _imp->_diskCache->getCachePath(), false );
+void
+AppManager::rebuildDiskCacheStructure()
+{
     assert(_imp->_viewerCache);
     _imp->cleanUpCacheDiskStructure( _imp->_viewerCache->getCachePath() , true);
 }
@@ -1913,16 +1998,11 @@ AppManager::setApplicationsCachesMaximumViewerDiskSpace(unsigned long long size)
 }
 
 void
-AppManager::setApplicationsCachesMaximumDiskSpace(unsigned long long size)
+AppManager::setNodeCachePinBudget(U64 bytes)
 {
-    _imp->_diskCache->setMaximumCacheSize(size);
-}
-
-void
-AppManager::setApplicationsCachesMaximumDeepImageCacheSize(unsigned long long size)
-{
-    _imp->_deepImageCache->setMaximumCacheSize(size);
-    _imp->_deepImageCache->setMaximumInMemorySize(1);
+    if (_imp->_nodeCache && _imp->_nodeCache->diskTier()) {
+        _imp->_nodeCache->diskTier()->setPinBudget(bytes);
+    }
 }
 
 void
@@ -2688,7 +2768,6 @@ void
 AppManager::clearExceedingEntriesFromNodeCache()
 {
     _imp->_nodeCache->clearExceedingEntries();
-    _imp->_deepImageCache->clearExceedingEntries();
 }
 
 const PluginsMap&
@@ -2804,15 +2883,29 @@ AppManager::removeFromViewerCache(const FrameEntryPtr & texture)
 }
 
 void
-AppManager::removeFromDeepImageCache(const DeepImageCacheEntryPtr& entry)
+AppManager::removeFromNodeCache(const DeepImageCacheEntryPtr& entry)
 {
-    _imp->_deepImageCache->removeEntry(entry);
+    _imp->_nodeCache->removeEntry(entry);
 }
 
 void
 AppManager::removeFromNodeCache(U64 hash)
 {
     _imp->_nodeCache->removeEntry(hash);
+}
+
+void
+AppManager::removeFromNodeCache(const ImageKey& key)
+{
+    _imp->_nodeCache->removeEntryAndFiles<Image>(key);
+}
+
+void
+AppManager::setNodeCacheDiskTierSize(U64 bytes)
+{
+    if (_imp->_nodeCache && _imp->_nodeCache->diskTier()) {
+        _imp->_nodeCache->diskTier()->setSizeBytes(bytes);
+    }
 }
 
 void
@@ -2833,12 +2926,8 @@ AppManager::getMemoryStatsForCacheEntryHolder(const CacheEntryHolder* holder,
 
     std::size_t viewerCacheMem = 0;
     std::size_t viewerCacheDisk = 0;
-    std::size_t diskCacheMem = 0;
-    std::size_t diskCacheDisk = 0;
     std::size_t nodeCacheMem = 0;
     std::size_t nodeCacheDisk = 0;
-    std::size_t deepCacheMem = 0;
-    std::size_t deepCacheDisk = 0; // the deep cache is RAM-only, so this is always 0
     const Node* isNode = dynamic_cast<const Node*>(holder);
     if (isNode) {
         ViewerInstance* isViewer = isNode->isEffectViewer();
@@ -2846,12 +2935,13 @@ AppManager::getMemoryStatsForCacheEntryHolder(const CacheEntryHolder* holder,
             _imp->_viewerCache->getMemoryStatsForCacheEntryHolder(holder, &viewerCacheMem, &viewerCacheDisk);
         }
     }
-    _imp->_diskCache->getMemoryStatsForCacheEntryHolder(holder, &diskCacheMem, &diskCacheDisk);
     _imp->_nodeCache->getMemoryStatsForCacheEntryHolder(holder, &nodeCacheMem, &nodeCacheDisk);
-    _imp->_deepImageCache->getMemoryStatsForCacheEntryHolder(holder, &deepCacheMem, &deepCacheDisk);
 
-    *ramOccupied = diskCacheMem + viewerCacheMem + nodeCacheMem + deepCacheMem;
-    *diskOccupied = diskCacheDisk + viewerCacheDisk + nodeCacheDisk;
+    const CacheDiskTierPtr tier = _imp->_nodeCache->diskTier();
+    const std::size_t pinnedDisk = tier ? (std::size_t)tier->pinnedBytesOf(holder->getCacheID()) : 0;
+
+    *ramOccupied = viewerCacheMem + nodeCacheMem;
+    *diskOccupied = viewerCacheDisk + nodeCacheDisk + pinnedDisk;
 }
 
 void
@@ -2859,9 +2949,10 @@ AppManager::removeAllCacheEntriesForHolder(const CacheEntryHolder* holder,
                                            bool blocking)
 {
     _imp->_nodeCache->removeAllEntriesForHolderPublic(holder, blocking);
-    _imp->_diskCache->removeAllEntriesForHolderPublic(holder, blocking);
+    if (_imp->_nodeCache->diskTier()) {
+        _imp->_nodeCache->diskTier()->releaseHolder(holder->getCacheID());
+    }
     _imp->_viewerCache->removeAllEntriesForHolderPublic(holder, blocking);
-    _imp->_deepImageCache->removeAllEntriesForHolderPublic(holder, blocking);
 }
 
 const QString &
@@ -2886,33 +2977,56 @@ AppManager::getImage(const ImageKey & key,
 }
 
 bool
+AppManager::peekImage(const ImageKey& key,
+                      std::list<ImagePtr>* returnValue) const
+{
+    return _imp->_nodeCache->peek(key, returnValue);
+}
+
+bool
 AppManager::getImageOrCreate(const ImageKey & key,
                              const ImageParamsPtr& params,
                              ImagePtr* returnValue) const
 {
-    return _imp->_nodeCache->getOrCreate(key, params, 0, returnValue);
+    return _imp->_nodeCache->getOrCreate(key.forEntry(params->getMipmapLevel(), params->getComponents(), params->getBitDepth()), params, 0, returnValue);
 }
 
 bool
-AppManager::getImage_diskCache(const ImageKey & key,
-                               std::list<ImagePtr>* returnValue) const
+AppManager::getPinnedImage(const ImageKey& key,
+                           std::list<ImagePtr>* returnValue) const
 {
-    return _imp->_diskCache->get(key, returnValue);
+    return _imp->_nodeCache->getPinned(key, returnValue);
 }
 
 bool
-AppManager::getImageOrCreate_diskCache(const ImageKey & key,
-                                       const ImageParamsPtr& params,
-                                       ImagePtr* returnValue) const
+AppManager::peekPinnedImage(const ImageKey& key,
+                            std::list<ImagePtr>* returnValue) const
 {
-    return _imp->_diskCache->getOrCreate(key, params, 0, returnValue);
+    return _imp->_nodeCache->peekPinned(key, returnValue);
+}
+
+bool
+AppManager::getPinnedImageOrCreate(const ImageKey& key,
+                                   const ImageParamsPtr& params,
+                                   ImagePtr* returnValue) const
+{
+    return _imp->_nodeCache->getOrCreatePinned(key.forEntry(params->getMipmapLevel(), params->getComponents(), params->getBitDepth()), params, returnValue);
+}
+
+void
+AppManager::pinRenderedImage(const std::string& holderID,
+                             const ImagePtr& image)
+{
+    if (_imp->_nodeCache->diskTier()) {
+        (void)_imp->_nodeCache->diskTier()->publishPin(holderID, image);
+    }
 }
 
 bool
 AppManager::getDeepImage(const DeepImageKey& key,
                          std::list<DeepImageCacheEntryPtr>* returnValue) const
 {
-    return _imp->_deepImageCache->get(key, returnValue);
+    return _imp->_nodeCache->get(key, returnValue);
 }
 
 bool
@@ -2920,7 +3034,7 @@ AppManager::getDeepImageOrCreate(const DeepImageKey& key,
                                  const DeepImageParamsPtr& params,
                                  DeepImageCacheEntryPtr* returnValue) const
 {
-    return _imp->_deepImageCache->getOrCreate(key, params, 0, returnValue);
+    return _imp->_nodeCache->getOrCreate(key, params, 0, returnValue);
 }
 
 bool
@@ -2944,12 +3058,6 @@ AppManager::getTextureOrCreate(const FrameKey & key,
     return _imp->_viewerCache->getOrCreate(key, params, locker, returnValue);
 }
 
-bool
-AppManager::isAggressiveCachingEnabled() const
-{
-    return _imp->_settings->isAggressiveCachingEnabled();
-}
-
 U64
 AppManager::getCachesTotalMemorySize() const
 {
@@ -2959,7 +3067,9 @@ AppManager::getCachesTotalMemorySize() const
 U64
 AppManager::getCachesTotalDiskSize() const
 {
-    return  _imp->_diskCache->getDiskCacheSize() + _imp->_viewerCache->getDiskCacheSize();
+    const CacheDiskTierPtr tier = _imp->_nodeCache->diskTier();
+
+    return (tier ? (U64)tier->used() + tier->pinnedBytes() : 0) + _imp->_viewerCache->getDiskCacheSize();
 }
 
 CacheSignalEmitterPtr
@@ -3313,10 +3423,7 @@ AppManager::isNodeCacheAlmostFull() const
 bool
 AppManager::evictLRUFromMemoryCaches()
 {
-    bool evictedFromNodeCache = _imp->_nodeCache->evictLRUInMemoryEntry();
-    bool evictedFromDeepImageCache = _imp->_deepImageCache->evictLRUInMemoryEntry();
-
-    return evictedFromNodeCache || evictedFromDeepImageCache;
+    return _imp->_nodeCache->evictLRUInMemoryEntry();
 }
 
 void
@@ -3336,7 +3443,7 @@ evictMemoryCachesUntilShortfallCovered(std::size_t totalAvailableRAM,
     while (freedSoFar < shortfall) {
 #ifdef NATRON_DEBUG_CACHE
         qDebug() << "Total system available RAM is below the threshold:" << printAsRAM(totalAvailableRAM)
-                 << ", clearing least recently used NodeCache/DeepImageCache image...";
+                 << ", clearing least recently used NodeCache entry...";
 #endif
         if (!evictOnce()) {
             break;
@@ -3347,13 +3454,32 @@ evictMemoryCachesUntilShortfallCovered(std::size_t totalAvailableRAM,
     }
 }
 
+CacheHostTier&
+AppManager::getNodeCacheHostTier() const
+{
+    return _imp->_nodeCache->hostTier();
+}
+
+const CacheDeviceHost*
+AppManager::getNodeCacheHost() const
+{
+    return _imp->_nodeCache.get();
+}
+
+std::shared_ptr<CacheDiskTier>
+AppManager::getNodeCacheDiskTier() const
+{
+    return _imp->_nodeCache->diskTier();
+}
+
 void
 AppManager::checkCacheFreeMemoryIsGoodEnough()
 {
     size_t systemRAMToKeepFree = getSystemTotalRAM() * appPTR->getCurrentSettings()->getUnreachableRamPercent();
     size_t totalAvailableRAM = getAmountAvailablePhysicalRAM();
 
-    evictMemoryCachesUntilShortfallCovered(totalAvailableRAM, systemRAMToKeepFree, [this]() { return _imp->_nodeCache->getMemoryCacheSize() + _imp->_deepImageCache->getMemoryCacheSize(); }, [this]() { return evictLRUFromMemoryCaches(); });
+    _imp->_nodeCache->hostTier().setSystemMemory(totalAvailableRAM, systemRAMToKeepFree);
+    evictMemoryCachesUntilShortfallCovered(totalAvailableRAM, systemRAMToKeepFree, [this]() { return _imp->_nodeCache->getMemoryCacheSize(); }, [this]() { return evictLRUFromMemoryCaches(); });
 }
 
 void
@@ -3417,9 +3543,55 @@ AppManager::getGpuContext() const
     return _imp->gpuContext.get();
 }
 
+CacheDeviceTierPtr
+AppManager::getDeviceCacheTier() const
+{
+    GpuContext* gpu = _imp->gpuContext.get();
+    gpu::GpuRuntime* runtime = (gpu && gpu->isAvailable()) ? gpu->runtime() : nullptr;
+    std::lock_guard<std::mutex> k(_imp->deviceTierMutex);
+    if (!runtime || !_imp->_nodeCache) {
+        return CacheDeviceTierPtr();
+    }
+    if (!_imp->deviceTier) {
+        _imp->deviceTier = std::make_shared<CacheDeviceTier>(runtime);
+        // Looks the context up on each call: the tier can outlive a context swapped out for tests, so it must not keep
+        // a pointer to it, and only the context still running the tier's runtime protects it.
+        _imp->deviceTier->setRuntimeHold([runtime]() -> std::shared_ptr<void> {
+            GpuContext* current = appPTR ? appPTR->getGpuContext() : nullptr;
+            if (!current || (current->runtime() != runtime)) {
+                return std::shared_ptr<void>();
+            }
+
+            return current->holdRuntime();
+        });
+        _imp->_nodeCache->addDeviceTier(_imp->deviceTier);
+    }
+
+    return (_imp->deviceTier->runtime() == runtime) ? _imp->deviceTier : CacheDeviceTierPtr();
+}
+
+void
+AppManagerPrivate::dropDeviceTier()
+{
+    CacheDeviceTierPtr tier;
+    {
+        std::lock_guard<std::mutex> k(deviceTierMutex);
+        tier.swap(deviceTier);
+    }
+    if (!tier) {
+        return;
+    }
+    if (_nodeCache) {
+        _nodeCache->removeDeviceTier(tier);
+    } else {
+        tier->clear();
+    }
+}
+
 std::unique_ptr<GpuContext>
 AppManager::swapGpuContextForTests(std::unique_ptr<GpuContext> context)
 {
+    _imp->dropDeviceTier();
     _imp->gpuContext.swap(context);
 
     return context;

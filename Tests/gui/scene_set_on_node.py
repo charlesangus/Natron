@@ -136,6 +136,9 @@ try:
         return sorted(path_of(i) for i in rows(world)) if world.isValid() else []
 
     def select(paths):
+        """Selects paths' rows once the model, which reads them on its worker, has them."""
+        ok = yield ("until", lambda: all(row_of(path, row_of(WORLD)).isValid() for path in paths), POLL_TIMEOUT_S)
+        require(ok, "the tree lists %r" % (paths,))
         world = row_of(WORLD)
         selection = tree().selectionModel()
         selection.clearSelection()
@@ -233,7 +236,7 @@ try:
         require(ok, "the tree lists Box, Ball and Cam under /World (got %r)" % (world_children(),))
 
         # From the 3D view.
-        select([BOX, BALL])
+        yield from select([BOX, BALL])
         ok = yield ("until", lambda: viewer_selection() == sorted([BOX, BALL]), POLL_TIMEOUT_S)
         require(ok, "Box and Ball are selected in the 3D view (got %r)" % (viewer_selection(),))
         press_set_key(view())
@@ -251,7 +254,7 @@ try:
         check(ok, "after Undo the prims come back (got %r)" % (world_children(),))
 
         # From the Scene Graph panel.
-        select([BALL])
+        yield from select([BALL])
         ok = yield ("until", lambda: viewer_selection() == [BALL], POLL_TIMEOUT_S)
         require(ok, "Ball is selected (got %r)" % (viewer_selection(),))
         press_set_key(tree())
@@ -271,7 +274,7 @@ try:
         require(scope_path is not None, "USDScopePrim has a primPath parameter")
         before = str(scope_path.getValue())
         QApplication.processEvents()
-        select([BOX, BALL])
+        yield from select([BOX, BALL])
         ok = yield ("until", lambda: viewer_selection() == sorted([BOX, BALL]), POLL_TIMEOUT_S)
         require(ok, "Box and Ball are selected (got %r)" % (viewer_selection(),))
         press_set_key(view())
@@ -302,7 +305,7 @@ try:
         require(blur is not None, "create Blur", plugin_problem(BLUR_ID))
         blur.setPosition(200, 0)
         QApplication.processEvents()
-        select([BOX])
+        yield from select([BOX])
         ok = yield ("until", lambda: viewer_selection() == [BOX], POLL_TIMEOUT_S)
         require(ok, "Box is selected (got %r)" % (viewer_selection(),))
         press_set_key(view())

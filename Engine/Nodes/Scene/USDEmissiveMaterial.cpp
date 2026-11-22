@@ -109,7 +109,23 @@ USDEmissiveMaterial::initializeKnobs()
     useAlpha->setAnimationEnabled(false);
     page->addKnob(useAlpha);
     _useAlpha = useAlpha;
+
+    SceneNodeAuthoring::createDeletedTextureSourcesKnob(this, page);
 } // USDEmissiveMaterial::initializeKnobs
+
+void
+USDEmissiveMaterial::onInputChanged(int inputNo)
+{
+    NativeEffectBase::onInputChanged(inputNo);
+    SceneNodeAuthoring::forgetDeletedTextureSourceIfConnected(*this, inputNo);
+}
+
+void
+USDEmissiveMaterial::onInputSourceDeleted(int inputNo,
+                                          const std::string& sourceName)
+{
+    SceneNodeAuthoring::recordDeletedTextureSource(*this, inputNo, sourceName);
+}
 
 bool
 USDEmissiveMaterial::authorLayer(const SceneLayerEdit& edit,
@@ -159,7 +175,7 @@ USDEmissiveMaterial::authorLayer(const SceneLayerEdit& edit,
         return false;
     }
 
-    const bool hasLive = bool(live.node.lock());
+    const bool hasLive = !live.nodeName.empty();
     const std::string file = hasLive ? std::string() : SceneNodeAuthoring::getAnchoredFilePath(textureKnob);
     if (!hasLive && file.empty()) {
         if (!authorValue(emissiveInput.GetAttr(), edit, colorAnimated, colorAt)) {
@@ -244,9 +260,9 @@ USDEmissiveMaterial::renderScene(const SceneRenderActionArgs& args,
     QString warning;
     if (connected) {
         const std::string uri = live.getUri(args.time);
-        const std::string failure = LiveTextureStore::instance().getFailure(uri);
+        const std::string failure = SceneNodeAuthoring::getLiveTextureFailure(live, args.time);
         if (!failure.empty()) {
-            warning = tr("The live texture %1 shows the renderer's fallback: %2.").arg(QString::fromStdString(uri)).arg(QString::fromStdString(failure));
+            warning = tr("The live texture %1 shows magenta, the missing-texture colour: %2.").arg(QString::fromStdString(uri)).arg(QString::fromStdString(failure));
         }
     } else {
         const std::string texturePath = SceneNodeAuthoring::getAnchoredFilePath(_emissiveTexture.lock());

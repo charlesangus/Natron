@@ -36,8 +36,8 @@ NATRON_NAMESPACE_ENTER
 
 // AppManager::checkCacheFreeMemoryIsGoodEnough() runs on every app-wide cache allocation and,
 // whenever the host's free RAM is below Settings::getUnreachableRamPercent() of total RAM, evicts
-// LRU entries from both the node cache and the deep image cache until it isn't -- regardless of
-// which test triggered the allocation. On a host that is already below that bar (common: it reads
+// LRU entries from the node cache until it isn't -- regardless of which test triggered the
+// allocation. On a host that is already below that bar (common: it reads
 // MemFree, which page cache keeps low), a test asserting that an entry it just created is still
 // resident would fail for a reason that has nothing to do with the code under test. Pin the knob
 // to 0 for the guard's lifetime to make that eviction unreachable, and restore whatever it was

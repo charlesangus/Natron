@@ -1,6 +1,7 @@
 import pixelwrap;
 import coordmap;
 import resamplecore;
+import edgesample;
 
 // LensCorrect::renderOp per pixel, with LensCorrectProfile's map() and vignettingGain() in float. The
 // wrap's push block carries the Source, which is both sampled and blended under the mask and mix,
@@ -8,7 +9,7 @@ import resamplecore;
 // LensCorrectGpuParams in Engine/Nodes/Transform/LensCorrect.cpp mirrors the block's words.
 
 static const uint kLensCorrectClamp = 1;
-static const uint kLensCorrectBlackOutside = 2;
+static const uint kLensCorrectEdgeBlack = 2;
 static const uint kLensCorrectJacobian = 4;
 static const uint kLensCorrectSample = 8;
 static const uint kLensCorrectReverse = 16;
@@ -65,6 +66,8 @@ static const float kEpsilon = 1.0e-10;
 static const float kThobyK1 = 1.47;
 static const float kThobyK2 = 0.713;
 static const float kHuge = 1.6e16;
+// kHuge and what normUnScale makes of it; LensCorrectProfile.cpp holds the same value.
+static const float kNoAnswer = 1e9;
 
 struct LensCorrect
 {
@@ -418,6 +421,15 @@ struct Mapped
     float2 b;
 }
 
+// NaN where the model has no solution, so that the pixel is black whatever the edge mode, as
+// LensCorrectProfile::answered() makes it on the CPU.
+float2 answeredOrNaN(float2 lf)
+{
+    if (isFiniteF(lf.x) && isFiniteF(lf.y) && abs(lf.x) < kNoAnswer && abs(lf.y) < kNoAnswer)
+        return lf;
+    return float2(nanValue(), nanValue());
+}
+
 Mapped lensCorrectMap(LensCorrect d, float2 u)
 {
     Mapped m;
@@ -460,9 +472,9 @@ Mapped lensCorrectMap(LensCorrect d, float2 u)
         m.b = tcaAcmChannel(t + 1, p);
     }
     const float2 c = float2(d.centerX, d.centerY);
-    m.r = (m.r + c) * d.normUnScale;
-    m.g = (m.g + c) * d.normUnScale;
-    m.b = (m.b + c) * d.normUnScale;
+    m.r = answeredOrNaN((m.r + c) * d.normUnScale);
+    m.g = answeredOrNaN((m.g + c) * d.normUnScale);
+    m.b = answeredOrNaN((m.b + c) * d.normUnScale);
     return m;
 }
 
@@ -475,7 +487,7 @@ float vignettingGain(LensCorrect d, float2 p)
     const float r4 = r2 * r2;
     const float c = 1.0 + term(kVignettingTermsBase) * r2 + term(kVignettingTermsBase + 1) * r4 +
                     term(kVignettingTermsBase + 2) * r4 * r2;
-    if (isnan(c) || isinf(c))
+    if (!isFiniteF(c))
         return 1.0;
     if (d.vignetting == kDevignette)
         return c >= kDevignetteFloor ? 1.0 / c : 1.0;
@@ -518,19 +530,19 @@ ResampleSource lensCorrectSource(LensCorrect d)
     src.y2 = wrap.srcY2;
     src.nComps = wrap.nComps;
     src.valid = wrap.srcX2 > wrap.srcX1 && wrap.srcY2 > wrap.srcY1;
-    src.blackOutside = (d.flags & kLensCorrectBlackOutside) != 0;
+    src.edgeMode = edgeModeFromFlags(d.flags, kLensCorrectEdgeBlack);
     return src;
 }
 
 bool finite2(float2 p)
 {
-    return !isnan(p.x) && !isinf(p.x) && !isnan(p.y) && !isinf(p.y);
+    return isFiniteF(p.x) && isFiniteF(p.y);
 }
 
 // A difference that is not finite contributes nothing, as coordJacobians() on the CPU.
 float finiteOr0(float v)
 {
-    return (isnan(v) || isinf(v)) ? 0.0 : v;
+    return isFiniteF(v) ? v : 0.0;
 }
 
 float4 lensCorrectPixel(LensCorrect d, int2 p)

@@ -458,3 +458,76 @@ def Xform "Asset"
     expectBox(list, "/City/Plain", GfVec3f(5, 0, 0), GfVec3f(5, 0, 0), SceneDrawBoxes::eKindMarker);
     EXPECT_FALSE(stage->GetPrimAtPath(SdfPath("/City/Hinted")).IsLoaded());
 }
+
+TEST(SceneDrawBoxes, TheOrderPutsWhatCoversMoreOfTheViewFirstAndTheNearerOfTwoThatCoverNothing)
+{
+    SceneDrawBoxes::List list;
+    list.boxes.push_back(makeBox("/Small", GfVec3f(-0.5f, -0.5f, -10), GfVec3f(0.5f, 0.5f, -9)));
+    list.boxes.push_back(makeBox("/Behind", GfVec3f(-1, -1, 20), GfVec3f(1, 1, 22)));
+    list.boxes.push_back(makeBox("/Big", GfVec3f(-3, -3, -2), GfVec3f(3, 3, 0)));
+    list.boxes.push_back(makeBox("/FarAside", GfVec3f(200, 0, -60), GfVec3f(201, 1, -59)));
+    list.boxes.push_back(makeBox("/NearAside", GfVec3f(50, 0, 0), GfVec3f(51, 1, 1)));
+    list.boxes.push_back(makeBox("/Around", GfVec3f(-50, -50, -50), GfVec3f(50, 50, 50)));
+    list.boxes.push_back(makeBox("/Marker", GfVec3f(0, 0, 5), GfVec3f(0, 0, 5), SceneDrawBoxes::eKindMarker));
+
+    EXPECT_DOUBLE_EQ(SceneDrawBoxes::screenArea(list.boxes[5], viewProjection(), 100, 100), 10000.);
+    EXPECT_GT(SceneDrawBoxes::screenArea(list.boxes[2], viewProjection(), 100, 100), SceneDrawBoxes::screenArea(list.boxes[0], viewProjection(), 100, 100));
+    EXPECT_EQ(SceneDrawBoxes::screenArea(list.boxes[1], viewProjection(), 100, 100), 0.);
+    EXPECT_EQ(SceneDrawBoxes::screenArea(list.boxes[4], viewProjection(), 100, 100), 0.);
+
+    const std::vector<SdfPath> order = SceneDrawBoxes::nearFirst(list, viewProjection(), 100, 100);
+    const std::vector<SdfPath> expected = { SdfPath("/Around"), SdfPath("/Big"), SdfPath("/Small"), SdfPath("/Marker"), SdfPath("/NearAside"), SdfPath("/FarAside"), SdfPath("/Behind") };
+    EXPECT_EQ(order, expected);
+}
+
+TEST(SceneDrawBoxes, TheBoxesOfAFillLeaveOutWhatIsAdmitted)
+{
+    SceneDrawBoxes::List list;
+    list.generation = 3;
+    list.boxes.push_back(makeBox("/A", GfVec3f(-1, -1, -1), GfVec3f(1, 1, 1)));
+    list.boxes.push_back(makeBox("/B", GfVec3f(2, 2, 2), GfVec3f(3, 3, 3)));
+    list.boxes.push_back(makeBox("/C", GfVec3f(-3, -1, -1), GfVec3f(-2, 1, 1)));
+
+    const SceneDrawBoxes::List left = SceneDrawBoxes::unadmitted(list, [](const SdfPath& path) { return path != SdfPath("/A"); });
+
+    EXPECT_EQ(left.generation, 3u);
+    ASSERT_EQ(left.boxes.size(), 2u);
+    EXPECT_EQ(left.boxes[0].path, SdfPath("/B"));
+    EXPECT_EQ(left.boxes[1].path, SdfPath("/C"));
+    // A prim not yet admitted is picked through its box.
+    EXPECT_EQ(pickAt(list, 50, 50), 0);
+    EXPECT_EQ(pickAt(left, 50, 50), -1);
+}
+
+TEST(SceneDrawBoxes, TheWorkerOrdersItsListForTheViewItIsGivenAndAgainForANewList)
+{
+    const UsdStageRefPtr stage = openScene();
+    const std::unique_ptr<SceneDrawBoxes> boxes = boxesOver(stage);
+
+    boxes->setRules(rules({ { "/World/A", SceneDrawFilter::eRuleHide }, { "/World/B", SceneDrawFilter::eRuleHide } }));
+    ASSERT_NE(latest(*boxes), nullptr);
+    EXPECT_EQ(boxes->getOrder(), nullptr);
+
+    // From x = 10 looking down -Z, /World/A is right ahead and /World/B is off to the left.
+    GfFrustum frustum;
+    frustum.SetPosition(GfVec3d(10, 0, 10));
+    frustum.SetPerspective(60., 1., 1., 100.);
+    boxes->setOrderView(frustum.ComputeViewMatrix() * frustum.ComputeProjectionMatrix(), 100, 100);
+    ASSERT_TRUE(boxes->waitForOrder(kWait));
+    SceneDrawFilter::Order order = boxes->getOrder();
+    ASSERT_NE(order, nullptr);
+    EXPECT_EQ(*order, (std::vector<SdfPath> { SdfPath("/World/A"), SdfPath("/World/B") }));
+
+    boxes->setOrderView(viewProjection(), 100, 100);
+    ASSERT_TRUE(boxes->waitForOrder(kWait));
+    order = boxes->getOrder();
+    ASSERT_NE(order, nullptr);
+    EXPECT_EQ(*order, (std::vector<SdfPath> { SdfPath("/World/B"), SdfPath("/World/A") }));
+
+    boxes->setRules(rules({ { "/World/A", SceneDrawFilter::eRuleHide } }));
+    ASSERT_NE(latest(*boxes), nullptr);
+    ASSERT_TRUE(boxes->waitForOrder(kWait));
+    order = boxes->getOrder();
+    ASSERT_NE(order, nullptr);
+    EXPECT_EQ(*order, (std::vector<SdfPath> { SdfPath("/World/A") }));
+}

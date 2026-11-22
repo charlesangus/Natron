@@ -25,9 +25,13 @@
 
 #include "Gui/SceneDrawBoxes.h"
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
+#include <tuple>
 #include <utility>
+
+#include "Engine/Nodes/Scene/SceneTeardown.h"
 
 #ifdef emit
 #define NATRON_SCENEDRAWBOXES_RESTORE_EMIT
@@ -163,10 +167,12 @@ boundMightVary(const UsdPrim& prim)
 
 SceneDrawBoxes::SceneDrawBoxes(const StageReader& reader,
                                const std::function<bool()>& shouldYield,
-                               const std::function<void()>& published)
+                               const std::function<void()>& published,
+                               const RowLister& lister)
     : _reader(reader)
     , _shouldYield(shouldYield)
     , _published(published)
+    , _lister(lister)
 {
     _thread = std::thread([this]() { run(); });
 }
@@ -179,6 +185,7 @@ SceneDrawBoxes::~SceneDrawBoxes()
     }
     _changed.notify_all();
     _thread.join();
+    SceneTeardown::release(std::move(_list));
 }
 
 void
@@ -225,6 +232,17 @@ SceneDrawBoxes::setStageVersion(U64 version)
     _changed.notify_all();
 }
 
+void
+SceneDrawBoxes::relist()
+{
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        ++_generation;
+        ++_contentGeneration;
+    }
+    _changed.notify_all();
+}
+
 SceneDrawBoxes::ListPtr
 SceneDrawBoxes::getList() const
 {
@@ -248,6 +266,139 @@ SceneDrawBoxes::waitForList(U64 generation,
     std::unique_lock<std::mutex> lock(_mutex);
 
     return _changed.wait_for(lock, timeout, [&]() { return _list && _list->complete && (_list->generation >= generation); });
+}
+
+void
+SceneDrawBoxes::setOrderView(const GfMatrix4d& viewProjection,
+                             int width,
+                             int height)
+{
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        if (_hasOrderView && (viewProjection == _orderViewProjection) && (width == _orderWidth) && (height == _orderHeight)) {
+            return;
+        }
+        _hasOrderView = true;
+        _orderViewProjection = viewProjection;
+        _orderWidth = width;
+        _orderHeight = height;
+        ++_orderWanted;
+    }
+    _changed.notify_all();
+}
+
+SceneDrawFilter::Order
+SceneDrawBoxes::getOrder() const
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+
+    return _order;
+}
+
+bool
+SceneDrawBoxes::waitForOrder(std::chrono::milliseconds timeout) const
+{
+    std::unique_lock<std::mutex> lock(_mutex);
+
+    return _changed.wait_for(lock, timeout, [&]() { return _order && (_orderMade == _orderWanted); });
+}
+
+double
+SceneDrawBoxes::screenArea(const Box& box,
+                           const GfMatrix4d& viewProjection,
+                           int width,
+                           int height)
+{
+    if ((width <= 0) || (height <= 0) || (box.kind == eKindMarker) || (box.kind == eKindPending)) {
+        return 0.;
+    }
+    double left = std::numeric_limits<double>::infinity();
+    double right = -left;
+    double bottom = left;
+    double top = -left;
+    int behind = 0;
+    for (int corner = 0; corner < 8; ++corner) {
+        const GfVec4d clip = GfVec4d((corner & 1) ? box.max[0] : box.min[0],
+                                     (corner & 2) ? box.max[1] : box.min[1],
+                                     (corner & 4) ? box.max[2] : box.min[2],
+                                     1.)
+            * viewProjection;
+        if (clip[3] <= 0.) {
+            ++behind;
+            continue;
+        }
+        left = (std::min)(left, clip[0] / clip[3]);
+        right = (std::max)(right, clip[0] / clip[3]);
+        bottom = (std::min)(bottom, clip[1] / clip[3]);
+        top = (std::max)(top, clip[1] / clip[3]);
+    }
+    if (behind == 8) {
+        return 0.;
+    }
+    if (behind != 0) {
+        return double(width) * double(height);
+    }
+    const double x = (std::min)(right, 1.) - (std::max)(left, -1.);
+    const double y = (std::min)(top, 1.) - (std::max)(bottom, -1.);
+    if ((x <= 0.) || (y <= 0.)) {
+        return 0.;
+    }
+
+    return x * y * 0.25 * double(width) * double(height);
+}
+
+std::vector<SdfPath>
+SceneDrawBoxes::nearFirst(const List& list,
+                          const GfMatrix4d& viewProjection,
+                          int width,
+                          int height)
+{
+    struct Ranked {
+        double area;
+        double depth;
+        std::size_t index;
+    };
+    std::vector<Ranked> ranked;
+    ranked.reserve(list.boxes.size());
+    for (std::size_t index = 0; index < list.boxes.size(); ++index) {
+        const Box& box = list.boxes[index];
+        const GfVec3d centre = (GfVec3d(box.min) + GfVec3d(box.max)) * 0.5;
+        const GfVec4d clip = GfVec4d(centre[0], centre[1], centre[2], 1.) * viewProjection;
+        // Clip w is the distance in front of the eye.
+        const double depth = (clip[3] > 0.) ? clip[3] : std::numeric_limits<double>::infinity();
+        ranked.push_back(Ranked { screenArea(box, viewProjection, width, height), depth, index });
+    }
+    std::stable_sort(ranked.begin(), ranked.end(), [](const Ranked& a, const Ranked& b) {
+        if (a.area != b.area) {
+            return a.area > b.area;
+        }
+
+        return a.depth < b.depth;
+    });
+    std::vector<SdfPath> paths;
+    paths.reserve(ranked.size());
+    for (const Ranked& entry : ranked) {
+        paths.push_back(list.boxes[entry.index].path);
+    }
+
+    return paths;
+}
+
+SceneDrawBoxes::List
+SceneDrawBoxes::unadmitted(const List& list,
+                           const std::function<bool(const SdfPath&)>& waits)
+{
+    List kept;
+    kept.generation = list.generation;
+    kept.time = list.time;
+    kept.complete = list.complete;
+    for (const Box& box : list.boxes) {
+        if (waits(box.path)) {
+            kept.boxes.push_back(box);
+        }
+    }
+
+    return kept;
 }
 
 int
@@ -368,6 +519,66 @@ SceneDrawBoxes::boxedRows(const UsdStageRefPtr& stage,
     return rows;
 }
 
+std::vector<SdfPath>
+SceneDrawBoxes::standInRows(const UsdStageRefPtr& stage,
+                            const SceneDrawFilter::Rules& rules,
+                            bool byModel)
+{
+    std::vector<SdfPath> rows;
+
+    if (!stage) {
+        return rows;
+    }
+    if (byModel) {
+        // A prim is a model only below a chain of models, so the range never leaves the model
+        // hierarchy, which stays small however many prims lie below it.
+        UsdPrimRange range = stage->Traverse(UsdPrimIsActive && UsdPrimIsDefined && !UsdPrimIsAbstract && UsdPrimIsModel);
+        for (UsdPrimRange::iterator it = range.begin(); it != range.end(); ++it) {
+            const SdfPath& path = it->GetPath();
+            const SceneDrawFilter::Rules::const_iterator rule = rules.find(path);
+            if (rule != rules.end()) {
+                if (rule->second == SceneDrawFilter::eRuleHidden) {
+                    it.PruneChildren();
+                    continue;
+                }
+                if (rule->second == SceneDrawFilter::eRuleHide) {
+                    it.PruneChildren();
+                }
+            }
+            rows.push_back(path);
+        }
+        if (!rows.empty()) {
+            return rows;
+        }
+    }
+    const Usd_PrimFlagsPredicate predicate = rowPredicate();
+    for (const SceneDrawFilter::Rules::value_type& rule : rules) {
+        if ((rule.second != SceneDrawFilter::eRuleShow) && (rule.second != SceneDrawFilter::eRuleExpand)) {
+            continue;
+        }
+        if (!rule.first.IsPrimPath() || !parentShown(rules, rule.first)) {
+            continue;
+        }
+        const UsdPrim prim = stage->GetPrimAtPath(rule.first);
+        if (prim && predicate(prim)) {
+            rows.push_back(rule.first);
+        }
+    }
+    const std::vector<SdfPath> boxed = boxedRows(stage, rules);
+    rows.insert(rows.end(), boxed.begin(), boxed.end());
+    if (!rows.empty()) {
+        return rows;
+    }
+    for (const UsdPrim& child : stage->GetPseudoRoot().GetFilteredChildren(predicate)) {
+        const SceneDrawFilter::Rules::const_iterator rule = rules.find(child.GetPath());
+        if ((rule == rules.end()) || (rule->second != SceneDrawFilter::eRuleHidden)) {
+            rows.push_back(child.GetPath());
+        }
+    }
+
+    return rows;
+} // SceneDrawBoxes::standInRows
+
 void
 SceneDrawBoxes::run()
 {
@@ -375,9 +586,34 @@ SceneDrawBoxes::run()
         Request request;
         {
             std::unique_lock<std::mutex> lock(_mutex);
-            _changed.wait(lock, [this]() { return _quit || (_taken != _generation); });
+            _changed.wait(lock, [this]() { return _quit || (_taken != _generation) || (_orderMade != _orderWanted); });
             if (_quit) {
+                lock.unlock();
+                // The destructor joins this thread on the main thread, and freeing what a large
+                // stage filled these with takes seconds.
+                SceneTeardown::release(std::make_tuple(std::move(_entries), std::move(_bboxCache)));
+                _entries.clear();
+                _bboxCache.reset();
+
                 return;
+            }
+            if (_taken == _generation) {
+                const ListPtr list = _list;
+                const GfMatrix4d viewProjection = _orderViewProjection;
+                const int width = _orderWidth;
+                const int height = _orderHeight;
+                const U64 wanted = _orderWanted;
+                lock.unlock();
+                SceneDrawFilter::Order order;
+                if (list) {
+                    order = std::make_shared<const std::vector<SdfPath>>(nearFirst(*list, viewProjection, width, height));
+                }
+                lock.lock();
+                _order = std::move(order);
+                _orderMade = wanted;
+                lock.unlock();
+                _changed.notify_all();
+                continue;
             }
             request.rules = _rules;
             request.time = _time;
@@ -394,7 +630,7 @@ SceneDrawBoxes::compute(const Request& request)
 {
     std::vector<Box> boxes;
 
-    if (!boxesAnything(request.rules)) {
+    if (!_lister && !boxesAnything(request.rules)) {
         publish(request, std::move(boxes), true);
 
         return;
@@ -436,7 +672,7 @@ SceneDrawBoxes::compute(const Request& request)
                 _bboxCache->SetTime(time);
             }
             if (!listed) {
-                rows = boxedRows(stage, request.rules);
+                rows = _lister ? _lister(stage, request.rules) : boxedRows(stage, request.rules);
                 boxes.clear();
                 boxes.reserve(rows.size());
                 next = 0;
@@ -521,6 +757,10 @@ SceneDrawBoxes::compute(const Request& request)
         }
     }
     if (!done || dropped) {
+        if (_quit) {
+            SceneTeardown::release(std::make_tuple(std::move(rows), std::move(boxes), std::move(origins), std::move(unseen), std::move(xforms)));
+        }
+
         return;
     }
     std::unordered_map<SdfPath, Entry, SdfPath::Hash> kept;
@@ -576,6 +816,9 @@ SceneDrawBoxes::publish(const Request& request,
         list->complete = complete;
         list->boxes = std::move(boxes);
         _list = list;
+        if (_hasOrderView) {
+            ++_orderWanted;
+        }
     }
     _changed.notify_all();
     if (_published) {

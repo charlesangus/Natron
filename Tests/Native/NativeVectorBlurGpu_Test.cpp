@@ -45,6 +45,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Filter/VectorBlur.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/Project.h"
@@ -270,4 +271,17 @@ TEST_F(NativeVectorBlurGpuTest, MaskAndMixMatchTheCpuFrame)
     ASSERT_TRUE(source && node);
     ASSERT_TRUE(setKnobValues(node, kOfxMixParamName, { 0.5 }));
     expectParity(source, node, "mix");
+}
+
+// The window is the Source's image, so streaks at its border tap past the image under each mode.
+TEST_F(NativeVectorBlurGpuTest, EdgeModesMatchTheCpuFrame)
+{
+    for (const char* mode : { "black", "stretch" }) {
+        resetProject();
+        NodePtr source = makeSource();
+        NodePtr node = makeVectorBlur(source);
+        ASSERT_TRUE(source && node);
+        ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string(mode)));
+        expectParity(source, node, std::string("edge mode ") + mode);
+    }
 }

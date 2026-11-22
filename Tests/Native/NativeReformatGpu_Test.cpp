@@ -49,9 +49,12 @@
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
+#include "Engine/Nodes/Transform/Crop.h"
 #include "Engine/Nodes/Transform/Reformat.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
@@ -410,6 +413,64 @@ TEST_F(NativeReformatGpuTest, EveryCaseMatchesTheCpuRender)
     EXPECT_GT(nCompared, 0);
 }
 
+// Reformatted to a larger box, shifted or scaled up by a fraction so the filter reads past the
+// source, over a source carrying each mode and under each choice: the device reads past the source
+// what the CPU does, and the output carries the resolved mode.
+TEST_F(NativeReformatGpuTest, ToALargerFormatEdgeModesMatchTheCpuRender)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    const struct {
+        const char* name;
+        const char* resize;
+        double boxWidth;
+        double boxHeight;
+    } larger[] = { { "none-center", kReformatParamResizeOptionNone, 97., 81. }, { "fit", kReformatParamResizeOptionFit, 100., 70. } };
+
+    int nCompared = 0;
+    for (bool blackSource : { false, true }) {
+        for (const char* choice : { "input", "black", "stretch" }) {
+            for (const auto& l : larger) {
+                resetProject();
+                NodePtr parity = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
+                ASSERT_TRUE(bool(parity));
+                setParitySourceOrigin(parity, 0, 0);
+                NodePtr source = parity;
+                if (blackSource) {
+                    // The parity source carries Stretch; a Crop to its own window under Black gives
+                    // the same pixels carrying Black.
+                    source = createNodeAtMajor(getApp(), PLUGINID_NATRON_CROP, PLUGIN_MAJOR_NATRON_CROP);
+                    ASSERT_TRUE(bool(source));
+                    connectNodes(parity, source, 0, true);
+                    ASSERT_TRUE(setKnobValues(source, kNativeGeneratorParamBottomLeft, { 0., 0. }));
+                    ASSERT_TRUE(setKnobValues(source, kNativeGeneratorParamSize, { (double)kParitySourceWidth, (double)kParitySourceHeight }));
+                    ASSERT_TRUE(setKnobValue(source, kEdgeModeParam, std::string("black")));
+                }
+                NodePtr node = makeNode();
+                ASSERT_TRUE(bool(node));
+                connectNodes(source, node, 0, true);
+                ASSERT_TRUE(setKnobValue(node, kReformatParamType, std::string(kReformatParamTypeOptionToBox)));
+                ASSERT_TRUE(setKnobValues(node, kReformatParamBoxSize, { l.boxWidth, l.boxHeight }));
+                ASSERT_TRUE(setKnobValues(node, kReformatParamBoxFixed, { 1. }));
+                ASSERT_TRUE(setKnobValue(node, kReformatParamResize, std::string(l.resize)));
+                ASSERT_TRUE(setKnobValues(node, kReformatParamCenter, { 1. }));
+                ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string(choice)));
+
+                const std::string base = std::string(l.name) + " " + choice + (blackSource ? " over a Black source" : " over a Stretch source");
+                const bool stretch = (std::string(choice) == "stretch") || ((std::string(choice) == "input") && !blackSource);
+                EXPECT_TRUE(node->getEffectInstance()->getTimeInvariantMetadata()->getEdgeMode() == (stretch ? EdgeMode::Stretch : EdgeMode::Black)) << base;
+                expectGpuMatchesCpu(*runtime, source, node, base, &nCompared);
+                if (HasFatalFailure()) {
+                    return;
+                }
+            }
+        }
+    }
+    EXPECT_GT(nCompared, 0);
+}
+
 TEST_F(NativeReformatGpuTest, FilterParameterKnobsReachTheCpuAndGpuRenders)
 {
     std::unique_ptr<GpuParityRuntime> runtime;
@@ -493,7 +554,7 @@ TEST_P(NativeReformatGpuFilterTest, ResamplingMatchesTheCpuRender)
                 ASSERT_TRUE(setCase(node, *c));
                 ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string(filters[f].id)));
                 ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterClamp, { clamp ? 1. : 0. }));
-                ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { blackOutside ? 1. : 0. }));
+                ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string(blackOutside ? "black" : "stretch")));
                 std::ostringstream base;
                 base << filters[f].id << " " << c->name << (clamp ? " clamp" : "") << (blackOutside ? " black-outside" : "");
                 expectGpuMatchesCpu(*runtime, source, node, base.str(), &nCompared);

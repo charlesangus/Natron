@@ -1002,7 +1002,7 @@ DenoiseProfiled::renderOp(const RenderActionArgs& args,
             const int bh = rodPixel.height();
             const std::size_t planeSize = (std::size_t)bw * bh;
             std::vector<float> filled(planeSize * measurePlanes.count());
-            fillBuffer(measureJob, measurePlanes, rodPixel, Boundary::Zero, nThreads, cancel, filled.data());
+            fillBuffer(measureJob, measurePlanes, rodPixel, EdgeMode::Black, nThreads, cancel, filled.data());
             if (cancel.check()) {
                 return WholeFrameCache::Job();
             }
@@ -1039,6 +1039,7 @@ DenoiseProfiled::renderOp(const RenderActionArgs& args,
     maskSource.invert = plan.maskInvert;
     maskSource.image = mask;
     maskSource.channel = plan.maskChannel;
+    maskSource.edgeMode = plan.maskEdgeMode;
     maskSource.lock();
     for (PlaneJob& job : jobs) {
         job.lock();
@@ -1075,7 +1076,7 @@ DenoiseProfiled::renderOp(const RenderActionArgs& args,
             const int bh = bufferRect.height();
             const std::size_t planeSize = (std::size_t)bw * bh;
             std::vector<float> filled(planeSize * fillPlanes.count());
-            fillBuffer(fillJob, fillPlanes, bufferRect, Boundary::Zero, nThreads, cancel, filled.data());
+            fillBuffer(fillJob, fillPlanes, bufferRect, EdgeMode::Black, nThreads, cancel, filled.data());
             if (cancel.check()) {
                 return eStatusOK;
             }

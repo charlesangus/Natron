@@ -465,6 +465,7 @@ Gui::removeViewerTab(ViewerTab* tab,
 
     if (tab == _imp->_activeViewer) {
         _imp->_activeViewer = 0;
+        getApp()->setViewerActiveForRenders(NULL);
     }
     tab->abortRendering();
     NodeGraph* graph = 0;

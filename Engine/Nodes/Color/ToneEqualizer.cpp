@@ -843,7 +843,7 @@ ToneEqualizer::colourMask(double time,
         const ProcessedPlanes planes(job);
         auto filled = std::make_shared<std::vector<float>>((std::size_t)w * h * planes.count());
         RenderCancellation cancel(cancelled);
-        fillBuffer(job, planes, rodPixel, Boundary::Zero, nThreads, cancel, filled->data());
+        fillBuffer(job, planes, rodPixel, EdgeMode::Black, nThreads, cancel, filled->data());
         if (cancel.check()) {
             return WholeFrameCache::Job();
         }
@@ -1179,6 +1179,7 @@ ToneEqualizer::renderOp(const RenderActionArgs& args,
     maskSource.invert = plan.maskInvert;
     maskSource.image = mask;
     maskSource.channel = plan.maskChannel;
+    maskSource.edgeMode = plan.maskEdgeMode;
     maskSource.lock();
     for (PlaneJob& job : jobs) {
         job.lock();
@@ -1237,7 +1238,7 @@ ToneEqualizer::renderOp(const RenderActionArgs& args,
                     const int fw = rodPixel.width();
                     const int fh = rodPixel.height();
                     auto filled = std::make_shared<std::vector<float>>((std::size_t)fw * fh * framePlanes.count());
-                    fillBuffer(frameJob, framePlanes, rodPixel, Boundary::Zero, nThreads, cancel, filled->data());
+                    fillBuffer(frameJob, framePlanes, rodPixel, EdgeMode::Black, nThreads, cancel, filled->data());
                     if (cancel.check()) {
                         return WholeFrameCache::Job();
                     }
@@ -1284,7 +1285,7 @@ ToneEqualizer::renderOp(const RenderActionArgs& args,
             const int bh = bufferRect.height();
             const std::size_t planeSize = (std::size_t)bw * bh;
             std::vector<float> filled(planeSize * fillPlanes.count());
-            fillBuffer(fillJob, fillPlanes, bufferRect, Boundary::Zero, nThreads, cancel, filled.data());
+            fillBuffer(fillJob, fillPlanes, bufferRect, EdgeMode::Black, nThreads, cancel, filled.data());
             if (cancel.check()) {
                 return eStatusOK;
             }

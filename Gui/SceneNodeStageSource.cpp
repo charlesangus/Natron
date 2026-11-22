@@ -36,6 +36,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
+#include "Engine/Nodes/Scene/SceneTeardown.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/TLSHolder.h"
 #include "Engine/ViewIdx.h"
@@ -43,6 +44,32 @@
 NATRON_NAMESPACE_ENTER
 
 namespace {
+// Releases the Python GIL while the calling thread waits for a worker, if it holds it: the worker
+// may be evaluating a Python expression.
+class PythonUnlockedWhileWaiting {
+public:
+    PythonUnlockedWhileWaiting()
+        : _state(nullptr)
+    {
+        if (Py_IsInitialized() && PyGILState_Check()) {
+            _state = PyEval_SaveThread();
+        }
+    }
+
+    ~PythonUnlockedWhileWaiting()
+    {
+        if (_state) {
+            PyEval_RestoreThread(_state);
+        }
+    }
+
+    PythonUnlockedWhileWaiting(const PythonUnlockedWhileWaiting&) = delete;
+    PythonUnlockedWhileWaiting& operator=(const PythonUnlockedWhileWaiting&) = delete;
+
+private:
+    PyThreadState* _state;
+};
+
 bool
 evaluateNode(const NodeWPtr& weakNode,
              const SceneEvaluationContext& context,
@@ -84,9 +111,9 @@ struct Reaper {
             busy = true;
             lock.unlock();
             source->stop();
-            // Dropped here, unless another owner still holds it, so that destroying the stage
-            // happens off the thread that let it go too.
-            source.reset();
+            // Not destroyed here: joinReaped() waits for this loop, and the main thread for
+            // joinReaped(), but only for the worker to stop, not for its stage to close.
+            SceneTeardown::release(std::move(source));
             lock.lock();
             busy = false;
             changed.notify_all();
@@ -99,6 +126,21 @@ Reaper&
 reaper()
 {
     static Reaper* instance = new Reaper;
+
+    return *instance;
+}
+
+struct LiveSources {
+    std::mutex mutex;
+    std::condition_variable changed;
+    std::set<SceneNodeStageSource*> sources;
+};
+
+// Never destroyed, as reaper().
+LiveSources&
+liveSources()
+{
+    static LiveSources* instance = new LiveSources;
 
     return *instance;
 }
@@ -116,16 +158,34 @@ SceneNodeStageSource::SceneNodeStageSource(const NodePtr& node,
     , _contextId(SceneEvaluationContext::makeId())
     , _loadSet(loadPayloads ? SceneLoadSetPtr() : std::make_shared<const SceneLoadSet>(SceneLoadSet::none()))
 {
+    {
+        LiveSources& live = liveSources();
+        std::lock_guard<std::mutex> lock(live.mutex);
+        live.sources.insert(this);
+    }
     _worker = std::thread([this]() { run(); });
 }
 
 SceneNodeStageSource::~SceneNodeStageSource()
 {
     stop();
+    {
+        LiveSources& live = liveSources();
+        std::lock_guard<std::mutex> lock(live.mutex);
+        live.sources.erase(this);
+    }
+    liveSources().changed.notify_all();
     EffectInstance::retireSceneContextId(_contextId);
-    SceneWriteBarrier::ReadScope readScope;
-    std::lock_guard<std::mutex> lock(_stageMutex);
-    _stage.reset();
+    std::unique_ptr<SceneStage> stage;
+    {
+        SceneWriteBarrier::ReadScope readScope;
+        std::lock_guard<std::mutex> lock(_stageMutex);
+        stage = std::move(_stage);
+    }
+    // Whoever holds the source last may be the main thread, from a timer or a model swap.
+    if (stage) {
+        SceneTeardown::release(std::move(stage));
+    }
 }
 
 void
@@ -156,6 +216,7 @@ SceneNodeStageSource::stop()
 {
     requestStop();
     if (_worker.joinable()) {
+        PythonUnlockedWhileWaiting unlocked;
         _worker.join();
     }
 }
@@ -182,10 +243,32 @@ SceneNodeStageSource::reap(const std::vector<std::shared_ptr<SceneNodeStageSourc
 void
 SceneNodeStageSource::joinReaped()
 {
+    PythonUnlockedWhileWaiting unlocked;
     Reaper& r = reaper();
     std::unique_lock<std::mutex> lock(r.mutex);
 
     r.changed.wait(lock, [&r]() { return r.queue.empty() && !r.busy; });
+}
+
+void
+SceneNodeStageSource::stopAll()
+{
+    PythonUnlockedWhileWaiting unlocked;
+    LiveSources& live = liveSources();
+    std::unique_lock<std::mutex> lock(live.mutex);
+
+    for (SceneNodeStageSource* source : live.sources) {
+        source->requestStop();
+    }
+    live.changed.wait(lock, [&live]() {
+        for (SceneNodeStageSource* source : live.sources) {
+            if (!source->isFinished()) {
+                return false;
+            }
+        }
+
+        return true;
+    });
 }
 
 void
@@ -424,14 +507,21 @@ SceneNodeStageSource::run()
         std::vector<LoadRequest> loads;
         {
             std::unique_lock<std::mutex> lock(_queueMutex);
-            _queueChanged.wait(lock, [this]() { return _quit || _pending || !_loadRequests.empty(); });
+            _queueChanged.wait(lock, [this]() { return _quit || _pending || _loadsReady || !_loadRequests.empty(); });
             if (_quit) {
                 _finished = true;
+                lock.unlock();
+                // Taken so that stopAll(), which reads _finished under it, cannot miss the wake.
+                {
+                    std::lock_guard<std::mutex> liveLock(liveSources().mutex);
+                }
+                liveSources().changed.notify_all();
 
                 return;
             }
             evaluate = _pending;
             _pending = false;
+            _loadsReady = false;
             time = _pendingTime;
             loads.swap(_loadRequests);
         }
@@ -451,6 +541,18 @@ SceneNodeStageSource::run()
             std::lock_guard<std::mutex> lock(_stageMutex);
             if (!_stage) {
                 _stage.reset(new SceneStage(_loadPayloads ? PXR_NS::UsdStage::LoadAll : PXR_NS::UsdStage::LoadNone));
+                const std::weak_ptr<SceneNodeStageSource> self = weak_from_this();
+                _stage->setLoadsWake([self]() {
+                    const std::shared_ptr<SceneNodeStageSource> source = self.lock();
+                    if (!source) {
+                        return;
+                    }
+                    {
+                        std::lock_guard<std::mutex> lock(source->_queueMutex);
+                        source->_loadsReady = true;
+                    }
+                    source->_queueChanged.notify_one();
+                });
             }
             _stage->sync(ok ? payload : ScenePayload());
             _shown = ok && !payload.isEmpty();

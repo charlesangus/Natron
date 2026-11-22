@@ -156,7 +156,6 @@ ReformatOp::bake(const KnobReader& reader) const
     p.identity = !moved && ((Reformat::ResizeEnum)reader.value(resize) == Reformat::eResizeNone);
     p.filter = filterKnobs.read(reader);
     p.clamp = reader.value(clamp);
-    p.blackOutside = reader.value(blackOutside);
 
     return p;
 }
@@ -176,7 +175,6 @@ ReformatOp::settings(const Params& params,
 
     s.filter = params.filter;
     s.clamp = params.clamp;
-    s.blackOutside = params.blackOutside;
     s.invert = false;
     s.transformIsIdentity = params.identity;
 
@@ -453,13 +451,6 @@ Reformat::initializeKnobs()
     clamp->setSpacingBetweenItems(1);
     page->addKnob(clamp);
     op().clamp = clamp;
-
-    KnobBoolPtr blackOutside = createKnob<KnobBool>(tr(kResamplerParamFilterBlackOutsideLabel));
-    blackOutside->setName(kResamplerParamFilterBlackOutside);
-    blackOutside->setHintToolTip(tr(kResamplerParamFilterBlackOutsideHint));
-    blackOutside->setDefaultValue(false);
-    page->addKnob(blackOutside);
-    op().blackOutside = blackOutside;
 
     op().filterKnobs.create(this, page, filter, clamp);
 
@@ -945,6 +936,9 @@ Reformat::getPreferredMetadataAt(double time,
                                  ViewIdx view,
                                  NodeMetadata& metadata)
 {
+    if (const StatusEnum status = ImageNode<ReformatOp>::getPreferredMetadataAt(time, view, metadata); status != eStatusOK) {
+        return status;
+    }
     // The source's pixel aspect ratio is read from the metadata being computed, which hold the
     // source clip's at time.
     const double srcPar = metadata.getPixelAspectRatio(0);

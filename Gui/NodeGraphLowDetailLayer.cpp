@@ -171,7 +171,7 @@ struct Bucket {
 // Keyed by the z value and the index of the node's child the shapes come from.
 typedef std::map<std::pair<qreal, int>, Bucket> BucketMap;
 
-// A node scaled up, by magnification for instance, strokes its children with scaled pens.
+// A node scaled up strokes its children with scaled pens.
 QPen
 penInRoot(const QPen& pen,
           const QTransform& toRoot)

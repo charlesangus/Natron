@@ -109,16 +109,22 @@ public:
     using StageRead = std::function<void(const PXR_NS::UsdStageRefPtr& stage, U64 version)>;
     // Calls read once, under the lock that keeps the stage from changing.
     using StageReader = std::function<void(const StageRead& read)>;
+    // The rows to box on a stage under rules, called under the reader's lock.
+    using RowLister = std::function<std::vector<PXR_NS::SdfPath>(const PXR_NS::UsdStageRefPtr& stage, const SceneDrawFilter::Rules& rules)>;
 
+    // Without a lister the rows are boxedRows().
     SceneDrawBoxes(const StageReader& reader,
                    const std::function<bool()>& shouldYield,
-                   const std::function<void()>& published);
+                   const std::function<void()>& published,
+                   const RowLister& lister = RowLister());
 
     ~SceneDrawBoxes();
 
     void setRules(const SceneDrawFilter::Rules& rules);
     void setTime(double time);
     void setStageVersion(U64 version);
+    // The lister now gives other rows for the same stage and rules.
+    void relist();
 
     ListPtr getList() const;
 
@@ -128,6 +134,41 @@ public:
     // Whether a complete list answering generation or a later request was published within timeout.
     bool waitForList(U64 generation,
                      std::chrono::milliseconds timeout) const;
+
+    /**
+     * @brief Has the worker put the rows of its latest list in nearFirst() order for this view, and
+     * again for each list it publishes after; the order is published as getOrder(). Callers hand it
+     * a view the camera has rested at, so a moving camera costs no sorting.
+     */
+    void setOrderView(const PXR_NS::GfMatrix4d& viewProjection,
+                      int width,
+                      int height);
+
+    // Empty until setOrderView() has been called and a list published.
+    SceneDrawFilter::Order getOrder() const;
+
+    // Whether an order of the latest list for the latest view was published within timeout.
+    bool waitForOrder(std::chrono::milliseconds timeout) const;
+
+    /**
+     * @brief The pixels of a width x height view a box covers, by the screen rectangle of its corners.
+     * One reaching behind the eye covers the whole view, as it is around the eye or next to it; a
+     * marker, a pending box and one wholly behind the eye or off the view cover nothing.
+     */
+    static double screenArea(const Box& box,
+                             const PXR_NS::GfMatrix4d& viewProjection,
+                             int width,
+                             int height);
+
+    // The paths of list's boxes, the one covering most of the view first, then the nearer.
+    static std::vector<PXR_NS::SdfPath> nearFirst(const List& list,
+                                                  const PXR_NS::GfMatrix4d& viewProjection,
+                                                  int width,
+                                                  int height);
+
+    // The boxes of list whose row waits says has prims yet to come, in list's order.
+    static List unadmitted(const List& list,
+                           const std::function<bool(const PXR_NS::SdfPath&)>& waits);
 
     /**
      * @brief The index in list of the box or marker nearest the eye under pixel, -1 for none, and
@@ -147,6 +188,17 @@ public:
     // By path. A row the stage lacks, or one under a row that hides it, is left out.
     static std::vector<PXR_NS::SdfPath> boxedRows(const PXR_NS::UsdStageRefPtr& stage,
                                                   const SceneDrawFilter::Rules& rules);
+
+    /**
+     * @brief The rows a stand-in for the whole drawn scene boxes. With byModel, every model prim
+     * (kind component, assembly or group, as UsdModelAPI has it) the rules leave drawn, a BBox or
+     * Hidden row ending its branch; models nest, and so do their boxes. Without byModel, or on a
+     * stage with no model, every drawn row with a rule, and the rows boxedRows() gives; with no rule
+     * either, the top-level prims but Hidden ones. Instance proxies are not looked into.
+     */
+    static std::vector<PXR_NS::SdfPath> standInRows(const PXR_NS::UsdStageRefPtr& stage,
+                                                    const SceneDrawFilter::Rules& rules,
+                                                    bool byModel);
 
 private:
     struct Request {
@@ -176,6 +228,7 @@ private:
     const StageReader _reader;
     const std::function<bool()> _shouldYield;
     const std::function<void()> _published;
+    const RowLister _lister;
 
     mutable std::mutex _mutex;
     mutable std::condition_variable _changed;
@@ -184,6 +237,14 @@ private:
     U64 _stageVersion = 0;
     U64 _generation = 0;
     U64 _taken = 0;
+    bool _hasOrderView = false;
+    PXR_NS::GfMatrix4d _orderViewProjection;
+    int _orderWidth = 0;
+    int _orderHeight = 0;
+    // Counts changes of the list or the view; the order answers _orderMade of them.
+    U64 _orderWanted = 0;
+    U64 _orderMade = 0;
+    SceneDrawFilter::Order _order;
     std::atomic<U64> _contentGeneration { 0 };
     std::atomic<bool> _quit { false };
     ListPtr _list;

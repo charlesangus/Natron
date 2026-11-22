@@ -38,6 +38,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Project.h"
 #include "Engine/PyParameter.h"
 #include "Engine/PythonUndoCommands.h"
@@ -256,6 +257,12 @@ App::createWriter(const QString& filename,
     } else {
         return NULL;
     }
+}
+
+bool
+App::waitForReloads(int timeoutMs)
+{
+    return SceneWriteBarrier::waitForAsyncWrites(timeoutMs);
 }
 
 int

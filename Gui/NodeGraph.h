@@ -583,7 +583,7 @@ private:
     bool isDrawingLockedVeil() const;
 
     // A null viewPivot zooms about the view centre.
-    void wheelEventInternal(bool ctrlDown, double delta, const QPointF* viewPivot);
+    void wheelEventInternal(double delta, const QPointF* viewPivot);
 
     std::unique_ptr<NodeGraphPrivate> _imp;
 };

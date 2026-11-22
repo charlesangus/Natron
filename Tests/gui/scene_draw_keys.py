@@ -238,10 +238,12 @@ try:
         return ok
 
     def select_in_tree(path):
-        index = find(path)
-        check(index.isValid(), "the panel lists %s" % path)
-        if not index.isValid():
+        """Selects path's row once the model has read the rows down to it."""
+        ok = yield ("until", lambda: find(path).isValid(), POLL_TIMEOUT_S)
+        check(ok, "the panel lists %s" % path)
+        if not ok:
             return
+        index = find(path)
         t = tree()
         parent = index.parent()
         while parent.isValid():
@@ -360,7 +362,7 @@ try:
         shot("scene-keys-children.png")
 
         section("down on the box drawn for the selection")
-        select_in_tree(LEAF)
+        yield from select_in_tree(LEAF)
         ok = yield ("until", lambda: selection() == [LEAF], POLL_TIMEOUT_S)
         check(ok, "selecting the leaf in the tree selects it in the viewer (%r)" % selection())
         yield from key(Qt.Key_Down)

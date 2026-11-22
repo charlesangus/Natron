@@ -302,6 +302,9 @@ public:
 
     bool isDraggingPanel() const;
 
+    // Whether the layout is being torn down and made again, when panes defer showing their tabs.
+    bool isRebuildingLayout() const;
+
     void updateRecentFileActions();
 
     static QPixmap screenShot(QWidget* w);
@@ -749,6 +752,11 @@ private:
     void wipeLayout();
 
     void createDefaultLayoutInternal(bool wipePrevious);
+
+    // Records the layout once it has settled as the default, for a reset to know it was kept.
+    void noteDefaultLayout();
+
+    void restoreDefaultLayoutUnlessKept();
 
     void createMenuActions();
 

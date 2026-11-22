@@ -507,7 +507,7 @@ TEST_F(NativeIDistortAmountTest, IDistortMapScalesEachPixel)
         const double cy = (double)y + 0.5;
         const float sx = (m == 0.f) ? (float)cx : (float)(cx + (double)d[0] * 6. * (double)m);
         const float sy = (m == 0.f) ? (float)cy : (float)(cy + (double)d[1] * 4. * (double)m);
-        (void)Resampler::interpolate(Resampler::eFilterImpulse, false, sx, sy, image, false, want);
+        (void)Resampler::interpolate(Resampler::eFilterImpulse, false, sx, sy, image, EdgeMode::Stretch, want);
 
         return true; }, ParityTolerance::exact(), "Map from the alpha bands");
     EXPECT_EQ(0u, wrong);
@@ -618,7 +618,7 @@ TEST_F(NativeIDistortAmountTest, STMapMapMovesPartOfTheWay)
             sx = (float)(cx + (px - cx) * (double)m);
             sy = (float)(cy + (py - cy) * (double)m);
         }
-        (void)Resampler::interpolate(Resampler::eFilterImpulse, false, sx, sy, image, false, want);
+        (void)Resampler::interpolate(Resampler::eFilterImpulse, false, sx, sy, image, EdgeMode::Stretch, want);
     };
 
     NodePtr halfway = makeSTMap(source, uv, half, "impulse");

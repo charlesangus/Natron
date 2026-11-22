@@ -162,6 +162,9 @@ private:
      **/
     void stampClosure();
 
+    // Once a closed scene's stale layers are gone: keys the node on the files as they are now.
+    void rekeyAfterTeardown();
+
     virtual StatusEnum renderScene(const SceneRenderActionArgs& args,
                                    ScenePayload* outputScene,
                                    std::string* errorMessage) OVERRIDE FINAL WARN_UNUSED_RETURN;

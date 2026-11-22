@@ -193,13 +193,6 @@ IDistort::initializeKnobs()
     page->addKnob(clamp);
     _clamp = clamp;
 
-    KnobBoolPtr blackOutside = createKnob<KnobBool>(tr(kResamplerParamFilterBlackOutsideLabel));
-    blackOutside->setName(kResamplerParamFilterBlackOutside);
-    blackOutside->setHintToolTip(tr(kResamplerParamFilterBlackOutsideHint));
-    blackOutside->setDefaultValue(false);
-    page->addKnob(blackOutside);
-    _blackOutside = blackOutside;
-
     _filterKnobs.create(this, page, filter, clamp);
 
     _map.createKnobs(this, page, kMapWarpKnobHints);
@@ -256,10 +249,7 @@ IDistort::readSettings(double time,
     if (clamp) {
         settings->clamp = clamp->getValueAtTime(time, 0, view);
     }
-    KnobBoolPtr blackOutside = _blackOutside.lock();
-    if (blackOutside) {
-        settings->blackOutside = blackOutside->getValueAtTime(time, 0, view);
-    }
+    settings->edgeMode = resolvedEdgeMode(time, view);
     KnobDoublePtr uvOffset = _uvOffset.lock();
     if (uvOffset) {
         settings->uOffset = uvOffset->getValueAtTime(time, 0, view);
@@ -526,6 +516,7 @@ IDistort::renderOp(const RenderActionArgs& args,
     // read through these.
     PassExec::MaskInput maskSource;
     maskSource.image = mask;
+    maskSource.edgeMode = plan.maskEdgeMode;
     maskSource.lock();
     std::shared_ptr<Image::ReadAccess> uvAccess[2];
     RectI uvBounds[2];
@@ -590,11 +581,14 @@ IDistort::renderOp(const RenderActionArgs& args,
     const int gridX0 = roi.x1 - 1;
     const int gridWidth = width + 2;
     const UVChannel* const uvChannel = uvChannels;
+    const EdgeMode uvEdgeMode = stageInputEdgeMode(*this, kIDistortInputUV, args.time, args.view);
+    // A Black UV input's 0 past its bounds is a value the Jacobians difference across like any other.
+    const RectI jacobianBounds[2] = { (uvEdgeMode == EdgeMode::Stretch) ? uvBounds[0] : RectI(), (uvEdgeMode == EdgeMode::Stretch) ? uvBounds[1] : RectI() };
     const auto coordRow = [&](int y, float* uRow, float* vRow, float* sx, float* sy) {
         float* const values[2] = { uRow, vRow };
         for (int i = 0; i < 2; ++i) {
             if (uvChannel[i].valid && uvImages[i]) {
-                PassExec::readChannelRow(uvImages[i].get(), uvAccess[i].get(), uvBounds[i], uvNComps[i], uvChannel[i].channel, gridX0, y, gridWidth, 0.f, values[i]);
+                PassExec::readChannelRow(uvImages[i].get(), uvAccess[i].get(), uvBounds[i], uvNComps[i], uvChannel[i].channel, gridX0, y, gridWidth, uvEdgeMode, values[i]);
             } else {
                 std::fill(values[i], values[i] + gridWidth, 0.f);
             }
@@ -660,7 +654,7 @@ IDistort::renderOp(const RenderActionArgs& args,
                 std::fill(outRow, outRow + rowSize, 0.f);
             } else if (impulse) {
                 coordRow(y, uRow.data(), vRow.data(), rows.sx[1].data(), rows.sy[1].data());
-                Resampler::resampleRowFromCoords(plane.source, rows.sx[1].data() + 1, rows.sy[1].data() + 1, NULL, width, settings.filter, settings.clamp, settings.blackOutside,
+                Resampler::resampleRowFromCoords(plane.source, rows.sx[1].data() + 1, rows.sy[1].data() + 1, NULL, width, settings.filter, settings.clamp, settings.edgeMode,
                                                  Resampler::eWrapNone, Resampler::eWrapNone, outRow, nComps);
             } else {
                 if (!primed) {
@@ -675,8 +669,8 @@ IDistort::renderOp(const RenderActionArgs& args,
                 }
                 coordRow(y + 1, uRow.data(), vRow.data(), rows.sx[2].data(), rows.sy[2].data());
                 Resampler::coordJacobiansWithinBounds(rows.sx[0].data(), rows.sx[1].data(), rows.sx[2].data(), rows.sy[0].data(), rows.sy[1].data(), rows.sy[2].data(),
-                                                      gridX0, y, gridWidth, uvBounds[0], uvBounds[1], 1., 1., jacobian.data());
-                Resampler::resampleRowFromCoords(plane.source, rows.sx[1].data() + 1, rows.sy[1].data() + 1, jacobian.data() + 4, width, settings.filter, settings.clamp, settings.blackOutside,
+                                                      gridX0, y, gridWidth, jacobianBounds[0], jacobianBounds[1], 1., 1., jacobian.data());
+                Resampler::resampleRowFromCoords(plane.source, rows.sx[1].data() + 1, rows.sy[1].data() + 1, jacobian.data() + 4, width, settings.filter, settings.clamp, settings.edgeMode,
                                                  Resampler::eWrapNone, Resampler::eWrapNone, outRow, nComps);
             }
             if (mapped && hasSource) {
@@ -700,7 +694,7 @@ IDistort::renderOp(const RenderActionArgs& args,
             }
             PassExec::readSourceRow(plane.src.get(), plane.srcAccess.get(), plane.srcBounds, plane.src ? plane.srcNComps : nComps, roi.x1, y, width, nComps, &referenceRow[0]);
             if (doMask) {
-                PassExec::readChannelRow(mask.get(), maskSource.access.get(), maskSource.bounds, maskSource.nComps, maskChannel, roi.x1, y, width, 0.f, &maskRow[0]);
+                PassExec::readChannelRow(mask.get(), maskSource.access.get(), maskSource.bounds, maskSource.nComps, maskChannel, roi.x1, y, width, maskSource.edgeMode, &maskRow[0]);
             }
 
             for (int i = 0; i < width; ++i, dstPix += nComps) {
@@ -866,7 +860,7 @@ IDistort::renderOpGpu(const GpuRenderArgs& args)
     params.lobes = spec.lobes;
     params.bicubicB = (float)spec.B;
     params.bicubicC = (float)spec.C;
-    params.flags = ((settings.clamp && Resampler::filterHonoursClamp(settings.filter.filter)) ? kWarpGpuClamp : 0u) | (settings.blackOutside ? kWarpGpuBlackOutside : 0u) | ((settings.filter.filter != Resampler::eFilterImpulse) ? kWarpGpuJacobian : 0u) | kWarpGpuSample;
+    params.flags = ((settings.clamp && Resampler::filterHonoursClamp(settings.filter.filter)) ? kWarpGpuClamp : 0u) | (settings.edgeMode == EdgeMode::Black ? kWarpGpuEdgeBlack : 0u) | ((settings.filter.filter != Resampler::eFilterImpulse) ? kWarpGpuJacobian : 0u) | kWarpGpuSample;
     setWarpGpuDouble(settings.uOffset, params.uOffset);
     setWarpGpuDouble(settings.vOffset, params.vOffset);
     setWarpGpuDouble(productOrInfinity(settings.uScale, s.x), params.uScale);

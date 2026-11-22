@@ -7,12 +7,13 @@ import exactdivide;
 // and Tests/Gpu/MergeOpsOracle_Test.cpp holds the two together. Operator indices follow the
 // alphabetical list in MergeOps.h.
 //
-// The formulas are Nuke's, with the openfx-misc extras (hue, saturation, color, luminosity, freeze,
-// grain-extract, grain-merge, pinlight, reflect). Where a formula clamps, flips sign, divides by
-// zero or jumps for values above 1 or below 0, this module uses a continuous unbounded variant, so
-// scene-linear values pass through. The deviations:
+// The operators are the usual compositing set (over, under, the separable blend modes, the PDF
+// non-separable ones), plus hue, saturation, color, luminosity, freeze, grain-extract, grain-merge,
+// pinlight and reflect. Where the textbook formula clamps, flips sign, divides by zero or jumps for
+// values above 1 or below 0, this module uses a continuous unbounded variant, so scene-linear
+// values pass through. The variants:
 //
-// | Operator       | Nuke / openfx-misc                         | Here                                         |
+// | Operator       | Textbook form                              | Here                                         |
 // |----------------|--------------------------------------------|----------------------------------------------|
 // | color-burn     | 1 - min(1, (1-B)/A), A if A <= 0           | 1 - (1-B)/A, A if A <= 0 (no clamp)          |
 // | color-dodge    | min(1, B/(1-A)), A if A >= 1               | B/(1-A), A if A >= 1 (no clamp)              |
@@ -22,7 +23,7 @@ import exactdivide;
 // | geometric      | 2AB/(A+B)                                  | 2AB/(A+B), 0 if A+B == 0                     |
 // | hard-light     | multiply (negatives jump), screen          | plain multiply, screen as above              |
 // | overlay        | multiply (negatives jump), screen          | plain multiply, screen as above              |
-// | soft-light     | openfx-misc: SVG piecewise                 | Nuke: B(2A+B(1-AB)) if AB < 1, else 2AB      |
+// | soft-light     | SVG piecewise                              | B(2A+B(1-AB)) if AB < 1, else 2AB            |
 // | pinlight       | max(B, 2A-1) if A >= 0.5, else min(B, 2A)  | min(max(B, 2A-1), 2A)                        |
 // | reflect        | min(1, A²/(1-B)), 1 if B >= 1              | A²/(1-B), B if B >= 1 (no clamp)             |
 // | freeze         | max(0, 1 - sqrt(max(0, 1-A))/B), 0 if B<=0 | 1 - ssqrt(1-A)/B, 0 if B <= 0, ssqrt signed  |
@@ -32,7 +33,7 @@ import exactdivide;
 // The conjoint-over and disjoint-over factors B(1 - a/b) and B(1-a)/b are Porter-Duff's, continuous
 // where their branches meet; disjoint-over keeps A alone once a >= 1, where (1-a)/b would turn
 // negative. In screen, both forms equal 1 on the edge of the unit square, so taking max(A, B) as
-// soon as either side exceeds 1 joins them without the jump Nuke's "or" leaves where both cross 1.
+// soon as either side exceeds 1 joins them without the jump an "or" test leaves where both cross 1.
 //
 // The four non-separable operators are the PDF blend modes, written on premultiplied values. The
 // PDF form (1-a)B + (1-b)A + ab·Blend(A/a, B/b) is rewritten through SetLum's and SetSat's scaling,

@@ -2602,6 +2602,8 @@
     <rejection class="Effect" field-name="_node"/>
     <rejection class="*" field-name="_imp"/>
     <rejection class="Param" function-name="checkIsEditable"/>
+    <rejection class="Param" function-name="recordEdit"/>
+    <rejection class="Param" field-name="_itemNode"/>
     <rejection class="UserParamHolder" function-name="checkIsEditable"/>
     
     <object-type name="PyCoreApplication">

@@ -1241,7 +1241,11 @@ TrackerNode::drawOverlay(double time,
         } // for (std::vector<TrackMarkerPtr>::iterator it = allMarkers.begin(); it!=allMarkers.end(); ++it) {
 
         if (_imp->ui->showMarkerTexture && selectedFound) {
-            _imp->ui->drawSelectedMarkerTexture(std::make_pair(pixelScaleX, pixelScaleY), _imp->ui->selectedMarkerTextureTime, selectedCenter, selectedOffset, selectedPtnTopLeft, selectedPtnTopRight, selectedPtnBtmRight, selectedPtnBtmLeft, selectedSearchBtmLeft, selectedSearchTopRight);
+            // The magnification window and keyframe strip are laid out in viewer pixels, so they are
+            // drawn in the viewport's space rather than the overlay's.
+            overlay->drawInViewportSpace([&]() {
+                _imp->ui->drawSelectedMarkerTexture(std::make_pair(pixelScaleX, pixelScaleY), _imp->ui->selectedMarkerTextureTime, selectedCenter, selectedOffset, selectedPtnTopLeft, selectedPtnTopRight, selectedPtnBtmRight, selectedPtnBtmLeft, selectedSearchBtmLeft, selectedSearchTopRight);
+            });
         }
         // context->drawInternalNodesOverlay( time, renderScale, view, overlay);
 

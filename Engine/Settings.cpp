@@ -1379,14 +1379,6 @@ Settings::initializeKnobsViewers()
                                     "to Linux from a different OS.") );
     _viewersTab->addKnob(_viewerNumberKeys);
 
-    _viewerOverlaysPath = AppManager::createKnob<KnobBool>( this, tr("Only display overlays for the viewer render path") );
-    _viewerOverlaysPath->setName("viewerOverlaysPath");
-    _viewerOverlaysPath->setHintToolTip( tr("When disabled, overlays for all the non-minimized open "
-                                            "properties panels are displayed. When enabled, overlays are "
-                                            "displayed only for the render path for the current viewer "
-                                            "inputs.") );
-    _viewersTab->addKnob(_viewerOverlaysPath);
-
     _rotoShapeDragRender = AppManager::createKnob<KnobChoice>(this, tr("Roto Shape Drag Render"));
     _rotoShapeDragRender->setName("rotoShapeDragRender");
     {
@@ -1948,7 +1940,6 @@ Settings::setDefaultValues()
     _zoomedOutDemosaic->setDefaultValue(0);
     _maximumNodeViewerUIOpened->setDefaultValue(2);
     _viewerNumberKeys->setDefaultValue(true);
-    _viewerOverlaysPath->setDefaultValue(true);
     _rotoShapeDragRender->setDefaultValue((int)eRotoShapeDragRenderAdaptive);
     _viewer3DNavigation->setDefaultValue((int)eViewer3DNavigationNuke);
     _viewer3DGuideSize->setDefaultValue(3.);
@@ -2882,12 +2873,6 @@ bool
 Settings::viewerNumberKeys() const
 {
     return _viewerNumberKeys->getValue();
-}
-
-bool
-Settings::viewerOverlaysPath() const
-{
-    return _viewerOverlaysPath->getValue();
 }
 
 Settings::RotoShapeDragRenderEnum

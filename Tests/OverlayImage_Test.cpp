@@ -557,3 +557,96 @@ TEST_F(OverlayImageTest, ClosedPanelHidesTheFrame)
     node->getEffectInstance()->refreshOverlayImages();
     EXPECT_EQ(OverlayImageFrameConstPtr(), node->getOverlayImageFrame());
 }
+
+TEST_F(OverlayImageTest, PlanePassOverCachedRenderDoesNotRender)
+{
+    NodePtr node = createOverlayNode();
+    ASSERT_TRUE(node.get() != 0);
+    setBoolKnob(node, "showMask", true);
+    setBoolKnob(node, "readPlane", true);
+
+    ASSERT_FALSE(mainRender(node).empty());
+    ASSERT_EQ(1, CountingTestRegistry::renders(node));
+
+    switchMaskValue(node, 2.);
+    ASSERT_TRUE(runPass(node, fullRequest()));
+    EXPECT_EQ(1, CountingTestRegistry::renders(node));
+
+    const OverlayImageFrameConstPtr frame = node->getOverlayImageFrame();
+    ASSERT_TRUE(frame.get() != 0);
+    ASSERT_EQ(1u, frame->planes.size());
+    EXPECT_EQ(std::string("planeMask"), frame->planes.front().name);
+    ASSERT_EQ(1u, frame->planes.front().tiles.size());
+    EXPECT_EQ((size_t)kCountingTestSize * (size_t)kCountingTestSize, frame->planes.front().tiles.front()->coveredPixels);
+}
+
+TEST_F(OverlayImageTest, PlanePassFollowsTheViewWithoutRendering)
+{
+    NodePtr node = createOverlayNode();
+    ASSERT_TRUE(node.get() != 0);
+    setBoolKnob(node, "showMask", true);
+    setBoolKnob(node, "readPlane", true);
+    const U64 hashBefore = node->getHashValue();
+
+    switchMaskValue(node, 2.);
+    ASSERT_TRUE(runPass(node, fullRequest()));
+    ASSERT_EQ(1, CountingTestRegistry::renders(node));
+    EXPECT_EQ((size_t)kCountingTestSize * (size_t)kCountingTestSize, node->getOverlayImageFrame()->planes.front().tiles.front()->coveredPixels);
+
+    switchMaskValue(node, 0.5);
+    EXPECT_TRUE(node->getEffectInstance()->overlayImagesStale(fullRequest()));
+    ASSERT_TRUE(runPass(node, fullRequest()));
+    EXPECT_EQ(1, CountingTestRegistry::renders(node));
+    EXPECT_EQ(hashBefore, node->getHashValue());
+    EXPECT_EQ(0u, node->getOverlayImageFrame()->planes.front().tiles.front()->coveredPixels);
+}
+
+TEST_F(OverlayImageTest, PlanePassOnColdCacheSparesTheMainRender)
+{
+    NodePtr node = createOverlayNode();
+    ASSERT_TRUE(node.get() != 0);
+    setBoolKnob(node, "showMask", true);
+    setBoolKnob(node, "readPlane", true);
+
+    ASSERT_TRUE(runPass(node, fullRequest()));
+    ASSERT_EQ(1, CountingTestRegistry::renders(node));
+    EXPECT_FALSE(node->getEffectInstance()->isOverlayImageRender());
+
+    ASSERT_FALSE(mainRender(node).empty());
+    EXPECT_EQ(1, CountingTestRegistry::renders(node));
+}
+
+TEST_F(OverlayImageTest, PlanePassCoversOnlyTheVisibleWindowAtTheRenderScale)
+{
+    NodePtr node = createOverlayNode();
+    ASSERT_TRUE(node.get() != 0);
+    setBoolKnob(node, "showMask", true);
+    setBoolKnob(node, "readPlane", true);
+
+    OverlayImageRequest request = fullRequest();
+    request.mipmapLevel = 1;
+    request.visibleCanonical = RectI(0, 0, kCountingTestSize / 2, kCountingTestSize / 2);
+    ASSERT_TRUE(runPass(node, request));
+
+    const OverlayImageFrameConstPtr frame = node->getOverlayImageFrame();
+    ASSERT_TRUE(frame.get() != 0);
+    ASSERT_EQ(1u, frame->planes.size());
+    ASSERT_EQ(1u, frame->planes.front().tiles.size());
+    const std::shared_ptr<const OverlayImageTile>& tile = frame->planes.front().tiles.front();
+    EXPECT_EQ(1u, tile->mipmapLevel);
+    EXPECT_EQ(RectI(0, 0, kCountingTestSize / 4, kCountingTestSize / 4), tile->bounds);
+}
+
+TEST_F(OverlayImageTest, FailedPlanePassPublishesAnEmptyFrame)
+{
+    NodePtr node = createOverlayNode();
+    ASSERT_TRUE(node.get() != 0);
+    setBoolKnob(node, "showMask", true);
+    setBoolKnob(node, "readPlane", true);
+    setBoolKnob(node, "fail", true);
+
+    EXPECT_FALSE(runPass(node, fullRequest()));
+    const OverlayImageFrameConstPtr frame = node->getOverlayImageFrame();
+    ASSERT_TRUE(frame.get() != 0);
+    EXPECT_TRUE(frame->planes.empty());
+}

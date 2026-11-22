@@ -499,7 +499,7 @@ private:
     {
         const ImageLayerDesc& desc = entry.desc;
 
-        return ((int)entry.origin == saved.origin) && (desc.getLayerID() == saved.layer.layerID) && (desc.getLayerLabel() == saved.layer.layerLabel) && (desc.getChannelsLabel() == saved.layer.channelsLabel) && (desc.getChannels() == saved.layer.channels);
+        return ((int)entry.origin == saved.origin) && (desc.getLayerID() == saved.layer.layerID) && (desc.getChannels() == saved.layer.channels);
     }
 
     OpResult applyOne(const Serialization::SetProjectDataOp& op)
@@ -595,7 +595,7 @@ private:
 
     static ImageLayerDesc layerDesc(const Serialization::LayerRegistryEntrySerialization& layer)
     {
-        return ImageLayerDesc(layer.layer.layerID, layer.layer.layerLabel, layer.layer.channelsLabel, layer.layer.channels);
+        return ImageLayerDesc(layer.layer.layerID, layer.layer.channels);
     }
 
     // What restoreRFVVariables() would refuse, checked before anything changes.

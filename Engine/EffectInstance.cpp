@@ -362,7 +362,7 @@ containsIdenticalLayer(const std::list<ImageLayerDesc>& list,
 }
 
 const std::vector<std::string>&
-EffectInstance::getUserLayers() const
+EffectInstance::getUserLayers(std::string (*encode)(const ImageLayerDesc&)) const
 {
     EffectTLSDataPtr tls = _imp->tlsData->getOrCreateTLSData();
     assert(tls);
@@ -371,7 +371,7 @@ EffectInstance::getUserLayers() const
     std::list<ImageLayerDesc> projectLayers = getRegisteredProjectLayersList(getApp()->getProject());
 
     for (std::list<ImageLayerDesc>::iterator it = projectLayers.begin(); it != projectLayers.end(); ++it) {
-        tls->userLayerStrings.push_back(ImageLayerDesc::mapLayerToOFXPlaneString(*it));
+        tls->userLayerStrings.push_back(encode(*it));
     }
     return tls->userLayerStrings;
 }
@@ -2467,8 +2467,8 @@ EffectInstance::getImage(int inputNb,
         } else {
             cc = components;
         }
-        qDebug() << "WARNING:" << node->getScriptName_mt_safe().c_str() << "requested" << cc.getChannelsLabel().c_str() << "but" << inputEffect->getScriptName_mt_safe().c_str() << "returned an image with"
-                 << inputImg->getComponents().getChannelsLabel().c_str();
+        qDebug() << "WARNING:" << node->getScriptName_mt_safe().c_str() << "requested" << cc.getUserFacingLabel().c_str() << "but" << inputEffect->getScriptName_mt_safe().c_str() << "returned an image with"
+                 << inputImg->getComponents().getUserFacingLabel().c_str();
     }
 
 #endif
@@ -3505,7 +3505,7 @@ EffectInstance::Implementation::tiledRenderingFunctor(const RectToRender& rectTo
     EffectInstance::InputImagesMap::const_iterator foundMaskInput = rectToRender.imgs.end();
 
     if ( _publicInterface->isHostMaskingEnabled() ) {
-        foundMaskInput = rectToRender.imgs.find(_publicInterface->getNInputs() - 1);
+        foundMaskInput = rectToRender.imgs.find(_publicInterface->getHostMaskInputNb());
     }
 
     if ( ( foundMaskInput != rectToRender.imgs.end() ) && !foundMaskInput->second.empty() ) {
@@ -3805,7 +3805,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                 it->second.renderMappedImage->fillZero(renderMappedRectToRender);
 
                 if ( frameArgs->stats && frameArgs->stats->isInDepthProfilingEnabled() ) {
-                    frameArgs->stats->addRenderInfosForNode( _publicInterface->getNode(),  NodePtr(), it->first.getChannelsLabel(), renderMappedRectToRender, timeRecorder->getTimeSinceCreation() );
+                    frameArgs->stats->addRenderInfosForNode(_publicInterface->getNode(), NodePtr(), it->first.getUserFacingLabel(), renderMappedRectToRender, timeRecorder->getTimeSinceCreation());
                 }
             }
 
@@ -3831,7 +3831,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                     it->second.renderMappedImage->fillZero(renderMappedRectToRender);
 
                     if ( frameArgs->stats && frameArgs->stats->isInDepthProfilingEnabled() ) {
-                        frameArgs->stats->addRenderInfosForNode( _publicInterface->getNode(),  tls->currentRenderArgs.identityInput->getNode(), it->first.getChannelsLabel(), renderMappedRectToRender, timeRecorder->getTimeSinceCreation() );
+                        frameArgs->stats->addRenderInfosForNode(_publicInterface->getNode(), tls->currentRenderArgs.identityInput->getNode(), it->first.getUserFacingLabel(), renderMappedRectToRender, timeRecorder->getTimeSinceCreation());
                     }
                 }
 
@@ -3896,7 +3896,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                     }
 
                     if ( frameArgs->stats && frameArgs->stats->isInDepthProfilingEnabled() ) {
-                        frameArgs->stats->addRenderInfosForNode( _publicInterface->getNode(),  tls->currentRenderArgs.identityInput->getNode(), it->first.getChannelsLabel(), renderMappedRectToRender, timeRecorder->getTimeSinceCreation() );
+                        frameArgs->stats->addRenderInfosForNode(_publicInterface->getNode(), tls->currentRenderArgs.identityInput->getNode(), it->first.getUserFacingLabel(), renderMappedRectToRender, timeRecorder->getTimeSinceCreation());
                     }
                 }
 
@@ -4103,7 +4103,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
 
     bool useMaskMix = _publicInterface->isHostMaskingEnabled() || _publicInterface->isHostMixingEnabled();
     double mix = useMaskMix ? _publicInterface->getNode()->getHostMixingValue(time, view) : 1.;
-    bool doMask = useMaskMix ? _publicInterface->getNode()->isMaskEnabled(_publicInterface->getNInputs() - 1) : false;
+    bool doMask = useMaskMix ? _publicInterface->getNode()->isMaskEnabled(_publicInterface->getHostMaskInputNb()) : false;
     const bool rendersUnprocessed = _publicInterface->rendersUnprocessedChannels();
 
     for (std::map<ImageLayerDesc, EffectInstance::LayerToRender>::const_iterator it = outputLayers.begin(); it != outputLayers.end(); ++it) {
@@ -4263,7 +4263,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
         } // if (it->second.isAllocatedOnTheFly) {
 
         if ( frameArgs->stats && frameArgs->stats->isInDepthProfilingEnabled() ) {
-            frameArgs->stats->addRenderInfosForNode( _publicInterface->getNode(),  NodePtr(), it->first.getChannelsLabel(), renderMappedRectToRender, timeRecorder->getTimeSinceCreation() );
+            frameArgs->stats->addRenderInfosForNode(_publicInterface->getNode(), NodePtr(), it->first.getUserFacingLabel(), renderMappedRectToRender, timeRecorder->getTimeSinceCreation());
         }
     } // for (std::map<ImageLayerDesc,LayerToRender>::const_iterator it = outputLayers.begin(); it != outputLayers.end(); ++it) {
 
@@ -4853,8 +4853,6 @@ EffectInstance::renderOverlayImages(const OverlayImageRequest& request,
     const std::uint64_t generation = node->getOverlayImageGeneration();
     const OverlayImagePassPtr pass = std::make_shared<OverlayImagePass>(request.mipmapLevel, generation);
 
-    getParallelRenderArgsTLS()->overlayImagePass = pass;
-
     U64 hash = 0;
     double par = 1.;
     const auto publish = [&](std::vector<OverlayImagePlane>&& planes) {
@@ -4869,6 +4867,15 @@ EffectInstance::renderOverlayImages(const OverlayImageRequest& request,
 
     // A failed pass must not stop the viewer's own render, which reports the error if it has it too.
     try {
+        // A render under a pass runs its action beside any cached image, which a pass that only reads
+        // planes must not do: it would cost a render for what the cache already holds.
+        std::list<ImageLayerDesc> components = overlayImageSourcePlanes(request.time, request.view);
+        const bool readsPlanes = !components.empty();
+        if (!readsPlanes) {
+            getParallelRenderArgsTLS()->overlayImagePass = pass;
+            components.push_back(ImageLayerDesc::getRGBAComponents());
+        }
+
         hash = getRenderHash();
         const RenderScale scale = RenderScale::fromMipmapLevel(request.mipmapLevel);
         RectD rod;
@@ -4892,8 +4899,6 @@ EffectInstance::renderOverlayImages(const OverlayImageRequest& request,
             }
             frameArgs.updateNodesRequest(*requestPass);
 
-            std::list<ImageLayerDesc> components;
-            components.push_back(ImageLayerDesc::getRGBAComponents());
             RenderRoIArgs args(request.time,
                                scale,
                                request.mipmapLevel,
@@ -4919,6 +4924,10 @@ EffectInstance::renderOverlayImages(const OverlayImageRequest& request,
                 publish({});
 
                 return false;
+            }
+            if (readsPlanes) {
+                getParallelRenderArgsTLS()->overlayImagePass = pass;
+                addOverlayImagesFromPlanes(planes, request.time, request.view, canonicalRoI);
             }
         }
 
@@ -7840,20 +7849,25 @@ EffectInstance::getInputMetadataAt(int inputNb,
 
 static void
 metadataComponentsToLayers(int nComps,
-                           const std::string& componentsType,
+                           ImageComponentsTypeEnum componentsType,
                            ImageLayerDesc* layer,
                            ImageLayerDesc* pairedLayer)
 {
-    if (componentsType == kNatronColorLayerID) {
+    switch (componentsType) {
+    case eImageComponentsTypeColor:
         *layer = ImageLayerDesc::mapNCompsToColorLayer(nComps);
-    } else if (componentsType == kNatronDisparityComponentsLabel) {
+        break;
+    case eImageComponentsTypeDisparity:
         *layer = ImageLayerDesc::getDisparityLeftComponents();
         *pairedLayer = ImageLayerDesc::getDisparityRightComponents();
-    } else if (componentsType == kNatronMotionComponentsLabel) {
+        break;
+    case eImageComponentsTypeMotion:
         *layer = ImageLayerDesc::getBackwardMotionComponents();
         *pairedLayer = ImageLayerDesc::getForwardMotionComponents();
-    } else {
+        break;
+    case eImageComponentsTypeNone:
         *layer = ImageLayerDesc::getNoneComponents();
+        break;
     }
 }
 
@@ -7861,7 +7875,7 @@ static int
 metadataNComps(const NodeMetadata& metadata,
                int inputNb)
 {
-    if ((inputNb == -1) && (metadata.getOutputStorageNComps() > 0) && (metadata.getComponentsType(-1) == kNatronColorLayerID)) {
+    if ((inputNb == -1) && (metadata.getOutputStorageNComps() > 0) && (metadata.getComponentsType(-1) == eImageComponentsTypeColor)) {
         return metadata.getOutputStorageNComps();
     }
 
@@ -8108,7 +8122,7 @@ EffectInstance::getDefaultMetadataFromInputs(const std::vector<EffectInstancePtr
                 metadata.setOutputStorageNComps(remappedComps);
             }
             metadata.setNComps(i, remappedComps);
-            metadata.setComponentsType(i, kNatronColorLayerID);
+            metadata.setComponentsType(i, eImageComponentsTypeColor);
             metadata.setBitDepth(i, depth);
         } else {
 
@@ -8119,7 +8133,7 @@ EffectInstance::getDefaultMetadataFromInputs(const std::vector<EffectInstancePtr
             metadata.setBitDepth(i, depth);
 
             metadata.setNComps(i, rawComps);
-            metadata.setComponentsType(i, kNatronColorLayerID);
+            metadata.setComponentsType(i, eImageComponentsTypeColor);
         }
     }
 
@@ -8445,7 +8459,7 @@ void
 widenOutputMetadata(const NodeMetadata& metadata,
                     NodeMetadata* widened)
 {
-    if ((metadata.getComponentsType(-1) == kNatronColorLayerID) && (widened->getComponentsType(-1) == kNatronColorLayerID)) {
+    if ((metadata.getComponentsType(-1) == eImageComponentsTypeColor) && (widened->getComponentsType(-1) == eImageComponentsTypeColor)) {
         const int nComps = metadataNComps(metadata, -1);
         if (nComps > metadataNComps(*widened, -1)) {
             widened->setNComps(-1, std::max(widened->getNComps(-1), metadata.getNComps(-1)));
@@ -8948,13 +8962,13 @@ EffectInstance::Implementation::clampMetadata(const std::vector<EffectInstancePt
     }
     int nInputs = (int)inputs.size();
 
-    const bool outputKeptInputsStorage = (md.getComponentsType(-1) == kNatronColorLayerID) && (md.getOutputStorageNComps() > 0) && (md.getNComps(-1) == md.getOutputStorageNComps());
+    const bool outputKeptInputsStorage = (md.getComponentsType(-1) == eImageComponentsTypeColor) && (md.getOutputStorageNComps() > 0) && (md.getNComps(-1) == md.getOutputStorageNComps());
     md.setOutputStorageNComps(0);
 
     for (int i = -1; i < nInputs; ++i) {
         md.setBitDepth( i, node->getClosestSupportedBitDepth( md.getBitDepth(i) ) );
         int nComps = md.getNComps(i);
-        if (md.getComponentsType(i) == kNatronColorLayerID) {
+        if (md.getComponentsType(i) == eImageComponentsTypeColor) {
             md.setNComps(i, node->findClosestSupportedComponents(i, ImageLayerDesc::mapNCompsToColorLayer(nComps)).getNumComponents());
         }
     }
@@ -8978,7 +8992,7 @@ EffectInstance::Implementation::clampMetadata(const std::vector<EffectInstancePt
     // channel, and plug-ins such as Grade reject a source layout that differs from the output's.
     // The widened inputs read the missing channels as zero. A writer's channel set only picks what
     // goes to the file, so it never widens: an RGB image would otherwise gain a zero alpha there.
-    if (!_publicInterface->isWriter() && (md.getComponentsType(-1) == kNatronColorLayerID)) {
+    if (!_publicInterface->isWriter() && (md.getComponentsType(-1) == eImageComponentsTypeColor)) {
         // md.getNComps(-1) may already have been clamped, above and in getDefaultMetadata, to the
         // nearest layout this node's clip preferences support (e.g. Alpha clamped to RGBA, because
         // Grade declares no Alpha clip). That clamp can coincidentally already satisfy the write
@@ -8998,7 +9012,7 @@ EffectInstance::Implementation::clampMetadata(const std::vector<EffectInstancePt
                 bool rgbaSupported = node->findClosestSupportedComponents(-1, rgba) == rgba;
                 std::vector<int> widenedInputs;
                 for (int i = 0; rgbaSupported && i < nInputs; ++i) {
-                    if (!inputs[i] || _publicInterface->isInputMask(i) || node->isInputOnlyAlpha(i) || (md.getComponentsType(i) != kNatronColorLayerID)) {
+                    if (!inputs[i] || _publicInterface->isInputMask(i) || node->isInputOnlyAlpha(i) || (md.getComponentsType(i) != eImageComponentsTypeColor)) {
                         continue;
                     }
                     if (node->findClosestSupportedComponents(i, rgba) == rgba) {

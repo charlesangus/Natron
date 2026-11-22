@@ -125,10 +125,37 @@ try:
                         ys.append(y)
             if not xs:
                 return None
-            return (min(xs), min(ys), max(xs), max(ys))
+            x0, y0, x1, y1 = min(xs), min(ys), max(xs), max(ys)
+
+            def half(x, y):
+                return is_half_white(self.colour(QPointF(x, y)))
+
+            # The coarse grid and its near-white threshold under-measure an anti-aliased square;
+            # step each edge out to the last 1-px column and row that is at least half white.
+            ym, xm = (y0 + y1) // 2, (x0 + x1) // 2
+            while x0 > 0 and half(x0 - 1, ym):
+                x0 -= 1
+            while x1 < self.w - 1 and half(x1 + 1, ym):
+                x1 += 1
+            while y0 > 0 and half(xm, y0 - 1):
+                y0 -= 1
+            while y1 < self.h - 1 and half(xm, y1 + 1):
+                y1 += 1
+            while x0 < x1 and not half(x0, ym):
+                x0 += 1
+            while x1 > x0 and not half(x1, ym):
+                x1 -= 1
+            while y0 < y1 and not half(xm, y0):
+                y0 += 1
+            while y1 > y0 and not half(xm, y1):
+                y1 -= 1
+            return (x0, y0, x1, y1)
 
     def is_white(c):
         return c is not None and min(c) >= 200
+
+    def is_half_white(c):
+        return c is not None and min(c) >= 128
 
     def is_dark(c):
         return c is not None and max(c) <= 60
@@ -193,7 +220,7 @@ try:
         check(moved > 0, "%s: the drag moved the square's top-right corner (by %.1f)" % (mode, moved))
         # Edits made while a live render runs live in the overlay's copy until written back; one
         # lost to the next edit leaves the corner short of the cursor, the stutter seen while dragging.
-        expected = d * SQUARE_SIZE / float(max(1, x1 - x0))
+        expected = d * SQUARE_SIZE / float(max(1, x1 - x0 + 1))
         check(abs(moved - expected) <= 0.05 * expected,
               "%s: the corner follows the cursor through the whole drag (moved %.1f, cursor %.1f)" % (mode, moved, expected))
 

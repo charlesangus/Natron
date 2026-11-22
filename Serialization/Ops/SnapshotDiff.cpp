@@ -360,7 +360,7 @@ namespace {
                                const std::list<LayerRegistryEntrySerialization>& b)
         {
             return std::equal(a.begin(), a.end(), b.begin(), b.end(), [](const LayerRegistryEntrySerialization& x, const LayerRegistryEntrySerialization& y) {
-                return (x.origin == y.origin) && (x.layer.layerID == y.layer.layerID) && (x.layer.layerLabel == y.layer.layerLabel) && (x.layer.channelsLabel == y.layer.channelsLabel) && (x.layer.channels == y.layer.channels);
+                return (x.origin == y.origin) && (x.layer.layerID == y.layer.layerID) && (x.layer.channels == y.layer.channels);
             });
         }
 

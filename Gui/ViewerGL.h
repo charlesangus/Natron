@@ -518,6 +518,8 @@ public:
 
     QPointF toZoomCoordinates(const QPointF& position) const;
 
+    QPointF toZoomCoordinatesAtPixelCentre(const QPointF& position) const;
+
     QPointF toWidgetCoordinates(const QPointF& position) const;
 
     void getTopLeftAndBottomRightInZoomCoords(QPointF* topLeft, QPointF* bottomRight) const;

@@ -6,6 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXCLUDELIST="$SCRIPT_DIR/excludelist.txt"
 CHECK_RELOCATABLE="$SCRIPT_DIR/check-relocatable.sh"
 CHECK_STARTUP="$SCRIPT_DIR/check-startup.sh"
+RELOCATABLE_STAMP="$SCRIPT_DIR/relocatable-stamp.sh"
 
 SECTION_NAME=""
 SECTION_START=$SECONDS
@@ -120,6 +121,7 @@ is_excluded() {
 # the bundle?" is answerable by prefix match no matter what the caller passed.
 mkdir -p "$STAGE_DIR"
 STAGE_DIR="$(cd "$STAGE_DIR" && pwd)"
+"$RELOCATABLE_STAMP" clear "$STAGE_DIR"
 
 is_elf() {
     file -b "$1" 2>/dev/null | grep -q "^ELF"
@@ -571,22 +573,48 @@ else
     exit 1
 fi
 
-resolve_deps() {
-    local binary="$1"
-    ldd "$binary" 2>/dev/null | while read -r line; do
-        if [[ "$line" == *"=>"* ]]; then
-            local path
-            path="$(echo "$line" | sed -n 's/.* => \(\/[^ ]*\) .*/\1/p')"
-            if [[ -n "$path" ]]; then
-                echo "$path"
-            fi
+# ldd's verdict on a file depends on what lib/ already holds, so a parallel ldd
+# taken before a chunk's copies is only trusted for an item if none of the
+# names it reports were copied into lib/ since: a new lib/<name> can change the
+# lookup of <name> and nothing else. Otherwise the item is run again serially,
+# which leaves every copy decision, and so which source wins a basename, as a
+# one-at-a-time FIFO walk would make it.
+LDD_JOBS="${NATRON_STAGE_JOBS:-$(nproc)}"
+LDD_CHUNK=$((LDD_JOBS * 8))
+LDD_DIR="$(mktemp -d)"
+trap 'rm -rf "$LDD_DIR"' EXIT
+
+LDD_RESOLVED_RE='^.* => (/[^ ]*) .*$'
+LDD_DEPS=()
+LDD_NAMES=()
+parse_ldd() {
+    local line first
+    LDD_DEPS=()
+    LDD_NAMES=()
+    while read -r line; do
+        if [[ "$line" == *"=>"* && "$line" =~ $LDD_RESOLVED_RE ]]; then
+            LDD_DEPS+=("${BASH_REMATCH[1]}")
+            LDD_NAMES+=("${BASH_REMATCH[1]##*/}")
         fi
-    done
+        first="${line%%[[:space:]]*}"
+        if [[ -n "$first" ]]; then
+            LDD_NAMES+=("${first##*/}")
+        fi
+    done < "$1"
+}
+
+declare -A EXCLUDED_VERDICT
+is_excluded_cached() {
+    local verdict
+    if [[ ! -v EXCLUDED_VERDICT["$1"] ]]; then
+        verdict=1
+        is_excluded "$1" && verdict=0
+        EXCLUDED_VERDICT["$1"]=$verdict
+    fi
+    return "${EXCLUDED_VERDICT[$1]}"
 }
 
 section "Walking ldd closure"
-
-declare -A SEEN
 
 # Seed from everything the bundle ships that the loader can be asked for:
 # the executables, the libraries CMake installed, and the whole Qt, OpenUSD and
@@ -607,50 +635,78 @@ is_inside_ofx_libraries() {
     return 1
 }
 
+# Everything staged goes back on the queue and gets walked in turn, so a
+# library pulled in by a plugin contributes its own dependencies too. Each
+# path string is queued once, which is what brings the walk to a fixed point.
 walk_closure() {
-    local queue=()
-    local current dep dep_basename staged
+    local -a queue=()
+    local -A queued=()
+    local -A copied_in_chunk=()
+    local head=0 end i name stale bin dep dep_basename staged
 
     while IFS= read -r bin; do
+        [[ -v queued["$bin"] ]] && continue
+        queued["$bin"]=1
         queue+=("$bin")
     done < <(collect_binaries)
 
-    while [[ ${#queue[@]} -gt 0 ]]; do
-        current="${queue[0]}"
-        queue=("${queue[@]:1}")
+    while (( head < ${#queue[@]} )); do
+        end=$((head + LDD_CHUNK))
+        if (( end > ${#queue[@]} )); then
+            end=${#queue[@]}
+        fi
 
-        [[ -v SEEN["$current"] ]] && continue
-        SEEN["$current"]=1
+        for (( i = head; i < end; i++ )); do
+            printf '%s\0%s\0' "$LDD_DIR/$i" "${queue[i]}"
+        done | xargs -0 -n 2 -P "$LDD_JOBS" sh -c 'ldd "$2" > "$1" 2>/dev/null; exit 0' sh
 
-        while IFS= read -r dep; do
-            [[ -z "$dep" ]] && continue
-
-            dep_basename="$(basename "$dep")"
-
-            if is_excluded "$dep_basename"; then
-                continue
+        copied_in_chunk=()
+        for (( i = head; i < end; i++ )); do
+            parse_ldd "$LDD_DIR/$i"
+            stale=0
+            if [[ ${#copied_in_chunk[@]} -gt 0 ]]; then
+                for name in "${LDD_NAMES[@]}"; do
+                    if [[ -v copied_in_chunk["$name"] ]]; then
+                        stale=1
+                        break
+                    fi
+                done
             fi
-
-            if is_inside_ofx_libraries "$dep"; then
-                continue
+            if [[ "$stale" == 1 ]]; then
+                ldd "${queue[i]}" > "$LDD_DIR/$i" 2>/dev/null || true
+                parse_ldd "$LDD_DIR/$i"
             fi
+            rm -f "$LDD_DIR/$i"
 
-            if [[ "$dep" == "$STAGE_DIR"/* ]]; then
-                staged="$dep"
-            else
-                staged="$STAGE_DIR/lib/$dep_basename"
-                if [[ ! -f "$staged" ]]; then
-                    stage_library "$dep" "$dep_basename"
-                    echo "  copied: $dep_basename"
+            for dep in "${LDD_DEPS[@]}"; do
+                dep_basename="${dep##*/}"
+
+                if is_excluded_cached "$dep_basename"; then
+                    continue
                 fi
-            fi
 
-            # Everything staged goes back on the queue and gets walked in
-            # turn, so a library pulled in by a plugin contributes its own
-            # dependencies too. SEEN makes each file resolve once, which is
-            # what brings the walk to a fixed point.
-            queue+=("$staged")
-        done < <(resolve_deps "$current")
+                if is_inside_ofx_libraries "$dep"; then
+                    continue
+                fi
+
+                if [[ "$dep" == "$STAGE_DIR"/* ]]; then
+                    staged="$dep"
+                else
+                    staged="$STAGE_DIR/lib/$dep_basename"
+                    if [[ ! -f "$staged" ]]; then
+                        stage_library "$dep" "$dep_basename"
+                        copied_in_chunk["$dep_basename"]=1
+                        echo "  copied: $dep_basename"
+                    fi
+                fi
+
+                if [[ ! -v queued["$staged"] ]]; then
+                    queued["$staged"]=1
+                    queue+=("$staged")
+                fi
+            done
+        done
+        head=$end
     done
 }
 
@@ -844,6 +900,7 @@ fi
 # machine's ld.so.cache. Hand the finished tree to the checker instead.
 section "Verifying the staged tree resolves against itself"
 "$CHECK_RELOCATABLE" "$STAGE_DIR"
+"$RELOCATABLE_STAMP" write "$STAGE_DIR"
 
 # The check above reads ELF headers, so a bundle missing a data dependency --
 # the Python standard library, the fontconfig configuration -- passes it and

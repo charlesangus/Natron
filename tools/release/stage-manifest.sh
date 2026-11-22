@@ -14,20 +14,45 @@ OUT="${2:-/dev/stdout}"
 cd "$STAGE_DIR"
 export LC_ALL=C
 
-find . -mindepth 1 -printf '%P\0' | sort -z | while IFS= read -r -d '' path; do
-    mode="$(stat -c '%a' -- "$path")"
-    target=""
-    hash=""
-    if [[ -L "$path" ]]; then
-        type=symlink
-        target="$(readlink -- "$path")"
-    elif [[ -d "$path" ]]; then
-        type=dir
-    elif [[ -f "$path" ]]; then
-        type=file
-        hash="$(sha256sum -- "$path" | cut -d' ' -f1)"
+WORK_DIR="$(mktemp -d)"
+trap 'rm -rf "$WORK_DIR"' EXIT
+
+find . -mindepth 1 -printf '%P\0%m\0%y\0%l\0' > "$WORK_DIR/meta"
+
+# sha256sum -z neither escapes the name nor appends a newline, so the name is
+# everything after the hash and its two separator characters. One sha256sum at
+# a time: parallel ones would interleave their buffered output.
+if ! find . -mindepth 1 -type f -printf '%P\0' |
+    xargs -0 -r sha256sum -z -- > "$WORK_DIR/hashes"; then
+    echo "error: could not hash every file under $STAGE_DIR" >&2
+    exit 1
+fi
+
+declare -A MODE TYPE TARGET HASH
+while IFS= read -r -d '' path && IFS= read -r -d '' mode &&
+      IFS= read -r -d '' kind && IFS= read -r -d '' target; do
+    MODE["$path"]="$mode"
+    case "$kind" in
+        l) TYPE["$path"]=symlink ;;
+        d) TYPE["$path"]=dir ;;
+        f) TYPE["$path"]="file" ;;
+        *) TYPE["$path"]=other ;;
+    esac
+    TARGET["$path"]="$target"
+done < "$WORK_DIR/meta"
+
+# Plain sha256sum output, which this manifest has always been cut from, marks a
+# name holding a backslash or a newline by prefixing a backslash to the hash.
+while IFS= read -r -d '' line; do
+    path="${line:66}"
+    if [[ "$path" == *$'\\'* || "$path" == *$'\n'* ]]; then
+        HASH["$path"]="\\${line:0:64}"
     else
-        type=other
+        HASH["$path"]="${line:0:64}"
     fi
-    printf '%s\t%s\t%s\t%s\t%s\n' "$path" "$mode" "$type" "$target" "$hash"
+done < "$WORK_DIR/hashes"
+
+find . -mindepth 1 -printf '%P\0' | sort -z | while IFS= read -r -d '' path; do
+    printf '%s\t%s\t%s\t%s\t%s\n' "$path" "${MODE[$path]}" "${TYPE[$path]}" \
+        "${TARGET[$path]}" "${HASH[$path]:-}"
 done > "$OUT"

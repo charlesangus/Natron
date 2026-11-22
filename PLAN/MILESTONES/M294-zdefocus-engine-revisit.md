@@ -14,7 +14,7 @@ Edge Split, Surface Edges and the `defocusError` plane join ZDefocus's `output` 
 
 Deps: M291 - Defocus Reference Harness (results), M292 - Traced Lens Bokeh, M293 - ZDefocus Debug Outputs, M473 - Lens Camera And Focus Controls, M474 - Traced Lens Creative Aberrations, M475 - Aperture Maps And Front Filter and M476 - Traced Anamorphic Bokeh (the revisited engine must keep every traced-lens feature, image stage and debug mode working).
 
-Blocked on: M291 - Defocus Reference Harness's results and the user's choice of direction from its report.
+Blocked on: nothing; M291 - Defocus Reference Harness settled the direction on 2026-11-22 (user): keep layers, port fill + edge split, prototype on the CPU and re-run the harness first; reframed eclipsedBokeh; acceptance better in four scenes, no worse on grazingFloor and sharpFgBlurBg.
 
 Acceptance sketch:
 - The harness's edge-band RMSE and halo/hole energy improve on today's ZDefocus for every fixture scene, at the chosen quality settings.

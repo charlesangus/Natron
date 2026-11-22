@@ -81,6 +81,7 @@ public:
     virtual void endStroke() OVERRIDE;
     virtual void abandonStroke() OVERRIDE;
     virtual void syncReveal(ColorTrackballReveal* reveal, bool strokeActive) OVERRIDE;
+    virtual ColorTrackballRevealLabels directionLabels() const OVERRIDE;
 
     bool isStroking() const
     {

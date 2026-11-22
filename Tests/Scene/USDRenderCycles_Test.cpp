@@ -95,8 +95,8 @@
 #include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/Nodes/Scene/USDEmissiveMaterial.h"
 #include "Engine/Nodes/Scene/USDLight.h"
-#include "Engine/Nodes/Scene/USDMaterial.h"
 #include "Engine/Nodes/Scene/USDMerge.h"
+#include "Engine/Nodes/Scene/USDPreviewSurface.h"
 #include "Engine/Nodes/Scene/USDProject3D.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDRender.h"
@@ -242,9 +242,9 @@ processCpuSeconds()
 ImageLayerDesc
 normalLayer()
 {
-    static const char* const channels[] = { "X", "Y", "Z" };
+    static const char* const channels[] = { "x", "y", "z" };
 
-    return ImageLayerDesc("normal", "normal", "", std::vector<std::string>(channels, channels + 3));
+    return ImageLayerDesc("normal", std::vector<std::string>(channels, channels + 3));
 }
 
 std::list<ImageLayerDesc>
@@ -252,8 +252,8 @@ allPlanes()
 {
     std::list<ImageLayerDesc> layers;
     layers.push_back(ImageLayerDesc::getRGBAComponents());
-    layers.push_back(ImageLayerDesc("depth", "depth", "", std::vector<std::string>(1, "Z")));
-    layers.push_back(ImageLayerDesc("primId", "primId", "", std::vector<std::string>(1, "id")));
+    layers.push_back(ImageLayerDesc("depth", std::vector<std::string>(1, "Z")));
+    layers.push_back(ImageLayerDesc("primId", std::vector<std::string>(1, "id")));
     layers.push_back(normalLayer());
 
     return layers;
@@ -1846,7 +1846,7 @@ protected:
                                  bool emissive)
     {
         Graph graph;
-        NodePtr material = createNode(QString::fromUtf8(emissive ? PLUGINID_NATRON_USDEMISSIVEMATERIAL : PLUGINID_NATRON_USDMATERIAL));
+        NodePtr material = createNode(QString::fromUtf8(emissive ? PLUGINID_NATRON_USDEMISSIVEMATERIAL : PLUGINID_NATRON_USDPREVIEWSURFACE));
         NodePtr card = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
         NodePtr camera = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCAMERA));
         NodePtr light = createNode(QString::fromUtf8(PLUGINID_NATRON_USDLIGHT));
@@ -1873,7 +1873,7 @@ protected:
 
             return graph;
         }
-        connectNodes(source, material, emissive ? kUSDEmissiveMaterialInputEmissive : kUSDMaterialInputDiffuseColor, true);
+        connectNodes(source, material, emissive ? kUSDEmissiveMaterialInputEmissive : kUSDPreviewSurfaceInputDiffuseColor, true);
         connectNodes(material, card, 0, true);
         connectNodes(card, merge, 0, true);
         connectNodes(camera, merge, 1, true);
@@ -2178,7 +2178,7 @@ TEST_F(USDRenderCyclesLiveTextureTest, ALiveNormalMapBendsTheLighting)
     const NodePtr normal = createConstant(0.5, 0.5, 1.);
     const Graph graph = createLiveTextureGraph(createConstant(1., 1., 1.), false);
     ASSERT_TRUE(bool(graph.render));
-    connectNodes(normal, graph.material, kUSDMaterialInputNormal, true);
+    connectNodes(normal, graph.material, kUSDPreviewSurfaceInputNormal, true);
 
     const std::array<double, 4> flat = centreAtFrame(graph.render, 1.);
     ASSERT_GT(flat[0], 0.05);

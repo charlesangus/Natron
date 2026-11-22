@@ -66,21 +66,21 @@ namespace AovLayers {
 ImageLayerDesc
 depthLayer()
 {
-    return ImageLayerDesc("depth", "depth", "", std::vector<std::string>(1, "Z"));
+    return ImageLayerDesc("depth", std::vector<std::string>(1, "Z"));
 }
 
 ImageLayerDesc
 primIdLayer()
 {
-    return ImageLayerDesc("primId", "primId", "", std::vector<std::string>(1, "id"));
+    return ImageLayerDesc("primId", std::vector<std::string>(1, "id"));
 }
 
 ImageLayerDesc
 normalLayer()
 {
-    static const char* const channels[] = { "X", "Y", "Z" };
+    static const char* const channels[] = { "x", "y", "z" };
 
-    return ImageLayerDesc("normal", "normal", "", std::vector<std::string>(channels, channels + 3));
+    return ImageLayerDesc("normal", std::vector<std::string>(channels, channels + 3));
 }
 
 std::string
@@ -270,7 +270,7 @@ layer(const std::string& rendererId,
 {
     const std::string name = layerName(aovName, authoredLayer);
 
-    return ImageLayerDesc(name, name, "", channelNames(aovName, layout(rendererId, aovName, dataType, formatChannels, warning)));
+    return ImageLayerDesc(name, channelNames(aovName, layout(rendererId, aovName, dataType, formatChannels, warning)));
 }
 
 int

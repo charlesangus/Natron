@@ -747,7 +747,7 @@ KnobGuiLayers::onRemoveButtonClicked()
         }
         const std::string label = values[0].toStdString();
         for (std::size_t e = 0; e < snapshot->size(); ++e) {
-            if ((*snapshot)[e].desc.getLayerLabel() == label) {
+            if ((*snapshot)[e].desc.getLayerID() == label) {
                 ids.push_back((*snapshot)[e].desc.getLayerID());
                 break;
             }

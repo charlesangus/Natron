@@ -143,7 +143,7 @@ TEST(AovLayersTest, ExistingLayerNamesAreUnchanged)
     EXPECT_EQ("primId", AovLayers::primIdLayer().getLayerID());
     EXPECT_EQ(channels("id"), AovLayers::primIdLayer().getChannels());
     EXPECT_EQ("normal", AovLayers::normalLayer().getLayerID());
-    EXPECT_EQ(channels("X", "Y", "Z"), AovLayers::normalLayer().getChannels());
+    EXPECT_EQ(channels("x", "y", "z"), AovLayers::normalLayer().getChannels());
     EXPECT_EQ(channels("Z"), AovLayers::layer(kMoonRayRendererId, MoonRayAovs::depthAov().GetString(), "", "", 0, nullptr).getChannels());
 }
 

@@ -33,6 +33,7 @@
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
+#include <QElapsedTimer>
 #include <QMutex>
 #include <QTimer>
 CLANG_DIAG_ON(deprecated)
@@ -49,7 +50,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/ComboBox.h"
 #include "Gui/GuiFwd.h"
 #include "Gui/NodeViewerContext.h"
-
+#include "Gui/ViewerStaleCueTiming.h"
 
 #define NATRON_TRANSFORM_AFFECTS_OVERLAYS
 
@@ -167,6 +168,11 @@ struct ViewerTabPrivate
     ComboBox* timeFormat;
     Button* turboButton;
     QTimer mustSetUpPlaybackButtonsTimer;
+
+    ViewerStaleCueTiming staleCueTiming;
+    // Fires at the timing's next deadline; never runs while the stale cue style is Off.
+    QTimer staleCueTimer;
+    QElapsedTimer staleCueClock;
 
     /*frame seeker*/
     TimeLineGui* timeLineGui;

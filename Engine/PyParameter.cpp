@@ -3387,19 +3387,6 @@ channelsFromStringList(const QStringList& channels)
     return ret;
 }
 
-// Project load bypasses this check and resets the retired storage ID instead of throwing; an
-// explicit Python call naming it must fail.
-static bool
-rejectRetiredColorLayerID(const std::string& layerID)
-{
-    if (layerID != kNatronColorLayerID) {
-        return false;
-    }
-    PyErr_SetString(PyExc_ValueError, "The \"" kNatronColorLayerID "\" layer is retired: use \"" kNatronColorViewRGBA "\", \"" kNatronColorViewRGB "\", \"" kNatronColorViewAlpha "\" or \"" kNatronColorViewXY "\" instead");
-
-    return true;
-}
-
 ChannelSetParam::ChannelSetParam(const KnobChannelSetPtr& knob)
     : StringParamBase(std::dynamic_pointer_cast<KnobStringBase>(knob))
     , _tKnob(knob)
@@ -3484,9 +3471,6 @@ ChannelSetParam::setLayer(const QString& layerID,
     KnobChannelSetPtr knob = _tKnob.lock();
 
     if (!knob) {
-        return;
-    }
-    if (rejectRetiredColorLayerID(layerID.toStdString())) {
         return;
     }
     std::vector<std::string> chans = channelsFromStringList(channels);
@@ -3695,9 +3679,6 @@ LayerSelectParam::setLayer(const QString& layerID)
     if (!knob) {
         return;
     }
-    if (rejectRetiredColorLayerID(layerID.toStdString())) {
-        return;
-    }
     knob->setLayer(layerID.toStdString());
 }
 
@@ -3790,12 +3771,7 @@ ChannelSelectParam::set(const QString& value)
     if (!knob) {
         return;
     }
-    const std::string channel = value.toStdString();
-    const std::string::size_type dot = channel.rfind('.');
-    if ((dot != std::string::npos) && rejectRetiredColorLayerID(channel.substr(0, dot))) {
-        return;
-    }
-    knob->set(channel);
+    knob->set(value.toStdString());
 }
 
 void
@@ -3859,7 +3835,7 @@ shuffleMapGetSlotKnob(const KnobShuffleMapPtr& knob,
 /**
  * @brief The channel names of the layer currently selected on "slot" (one of in1/in2/out1/out2),
  * resolved the same way Shuffle itself resolves an output layer ID: a colour view's own
- * channels (e.g. just "A" for alpha), the retired storage ID's full RGBA, then the project's
+ * channels (e.g. just "A" for alpha), then the project's
  * layer registry. This is a pure function of the knob's stored selection, independent of
  * whether the corresponding input is actually connected.
  **/
@@ -3884,11 +3860,6 @@ shuffleMapResolveLayerChannels(const KnobShuffleMapPtr& knob,
         *channels = ImageLayerDesc::getColorView(layerID).getChannels();
         return true;
     }
-    if (layerID == kNatronColorLayerID) {
-        *channels = ImageLayerDesc::getRGBAComponents().getChannels();
-        return true;
-    }
-
     KnobHolder* holder = knob->getHolder();
     AppInstancePtr app = holder ? holder->getApp() : AppInstancePtr();
     ProjectPtr project = app ? app->getProject() : ProjectPtr();

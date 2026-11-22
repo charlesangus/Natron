@@ -748,7 +748,7 @@ VectorBlur::resolveLayers(double time,
             const ImageLayerDesc& forward = ImageLayerDesc::getForwardMotionComponents();
             for (int pass = 0; (pass < 2) && !found; ++pass) {
                 for (std::list<ImageLayerDesc>::const_iterator it = present.begin(); it != present.end(); ++it) {
-                    const bool match = (pass == 0) ? ((it->getLayerID() == kVectorBlurAutoLayerID) || (it->getLayerLabel() == kVectorBlurAutoLayerID))
+                    const bool match = (pass == 0) ? (it->getLayerID() == kVectorBlurAutoLayerID)
                                                    : (it->getLayerID() == forward.getLayerID());
                     if (match && !it->isColorLayer()) {
                         resolved.desc = *it;

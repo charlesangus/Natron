@@ -591,7 +591,7 @@ TEST_F(NativeWriteViewsTest, SplitViewsAndLayersHoldsOnePartPerLayerPerView)
         const std::string& view = _views[(std::size_t)v];
         SCOPED_TRACE(view);
         EXPECT_EQ(std::vector<std::string>(1, view), stringsOf(parts[index].spec, "view"));
-        EXPECT_EQ(std::string("Color.") + view, parts[index].spec.get_string_attribute("oiio:subimagename"));
+        EXPECT_EQ(std::string("rgba.") + view, parts[index].spec.get_string_attribute("oiio:subimagename"));
         expectPart(parts[index], channelsOf(v, view, true, false, false));
         ++index;
         EXPECT_EQ(std::vector<std::string>(1, view), stringsOf(parts[index].spec, "view"));

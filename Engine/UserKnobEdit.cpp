@@ -1504,15 +1504,6 @@ changeUserKnobType(KnobHolder* holder,
         }
     }
 
-    // While the old knob is still on the holder: a listener still reading it once it is detached
-    // unregisters from a knob without a holder when its expression is set again.
-    for (std::map<KnobIPtr, std::vector<DimensionExpression>>::const_iterator it = listeners.begin(); it != listeners.end(); ++it) {
-        for (int i = 0; i < (int)it->second.size() && i < it->first->getDimension(); ++i) {
-            if (!it->second[i].expression.empty()) {
-                it->first->clearExpression(i, true);
-            }
-        }
-    }
     holder->deleteKnob(knob.get(), true);
     replacement->setName(name);
     declareToPython(holder);

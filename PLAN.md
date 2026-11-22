@@ -682,8 +682,6 @@ future core work has solid ground to build on.
 | F35 | Pyro | open |  |  | feature/f35-pyro | A sparse-tile smoke and fire solver on native VDB volumes, with sourcing, shaping, collisions, look baking and quick setups, on GPU and CPU. Waits for F18 - Geometry Loops And Solver and F22 - Native VDB to land. |
 
 # Open questions
-- **M549 - Faster Gate Packaging (2026-11-22):** should remote gates stop building an AppImage by default? Proposed: package only with `--gui`, a new `--appimage` flag (UAT builds), or when the run is meant as a `--from-run` source. A plain `--tests` gate would then start ctest about an hour sooner. PR CI and releases are unchanged. Phases 1–2 (script fixes, ~55 min saved per packaged gate) go ahead regardless.
-
 - **M104 - Merge Resolution UI (2026-11-22):** Keep Both Keys puts theirs' key one frame after mine, or halfway to the next key when that's closer. Confirm, or give the rule you want.
 
 - **Engine TLS race (found in M402, 2026-11-22):** `makeInheritedTLSData` (`Engine/TLSHolderImpl.h:70`, HostFrameThreading path via `inheritFromSpawner`/`getTLSData`) copies a live spawner thread's `frameArgs` list without a lock while the spawner may push/pop entries (`ContextFrameArgsScope::install`, `Engine/ParallelRenderArgs.cpp:1862`), a use-after-free that segfaulted M402's 100k-iteration loop. M402 fixed its own path (helpers no longer inherit); any other `SpawnedThreadScope` user whose spawner keeps cooking is exposed, and it may explain unexplained render-thread crashes/flakes. File an E14 milestone to make the inheritance safe (lock, or snapshot at spawn time)?

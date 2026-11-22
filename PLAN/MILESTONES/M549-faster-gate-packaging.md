@@ -39,9 +39,9 @@ Out of scope: caching staged libs per image (not needed once the walk is fixed);
 
 ## Phase 549.3: Package only when needed
 
-- [ ] M549.P3.T4 — Gates package on demand (needs the user's decision, see Open questions)
+- [ ] M549.P3.T4 — Gates package on demand 
   - files: `tools/ci/remote/build.sh`, `.github/workflows/remote-build.yml`, `tools/ci/local/README.md`
-  - approach: as decided by the user. Proposed: gates default to no AppImage; `--gui`, a new `--appimage` flag (UAT) or `--package` for a run meant as a `--from-run` source turn it on; `--from-run` errors clearly when its source has no AppImage.
+  - approach: gates default to no AppImage; `--gui`, a new `--appimage` flag (UAT) or `--package` for a run meant as a `--from-run` source turn it on; `--from-run` errors clearly when its source has no AppImage.
   - verify: dispatches with and without `--gui` show the expected job lists.
   - size: M
 - [ ] M549.P3.T5 — Package in parallel with ctest
@@ -61,3 +61,4 @@ Out of scope: caching staged libs per image (not needed once the walk is fixed);
 
 - 2026-11-22 — Profile done (consultant, log /tmp/m549log on the dev host): the cost is the walk and the doubled checker, not strip or copying; no per-image lib cache. The 0-hit remote-cache builds were lanes predating M493, not a config mismatch.
 - 2026-11-22 — T1 in 18b55e6c5 (artifact stage-manifest-<preset>-<sha>); baseline `fast` run queued; Phase 2 being implemented.
+- 2026-11-22 — **Gates package on demand (user):** jobs that don't need an AppImage stop building one; `--gui`, UAT builds and `--from-run` sources still package. PR CI and release.yml unchanged.

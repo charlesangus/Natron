@@ -1,3 +1,4 @@
+import edgesample;
 import mapremap;
 
 // IErodeDilate's filter, one stage at a time, the definition of IErodeDilateKernels::filterPlane() in
@@ -76,6 +77,8 @@ struct MorphParams
     uint outHeight;
     uint dstOffset;
     uint dstStride;
+    // load: how reads past the source pixels go, edgesample's kEdgeStretch or kEdgeBlack.
+    uint edgeMode;
 };
 [[vk::push_constant]] ConstantBuffer<MorphParams> params;
 
@@ -87,6 +90,7 @@ static const uint kMapConnected = 1;
 static const uint kMapRead = 2;
 static const uint kMapInvert = 4;
 static const uint kMapSmooth = 8;
+static const uint kMapEdgeBlack = 16;
 
 // IErodeDilateKernels' reduce(), in the same argument order.
 float reduce(float a, float b, bool takeMax)
@@ -205,8 +209,9 @@ void ierodedilate_load(uint3 tid : SV_DispatchThreadID)
     const int x = params.domX1 + int(tid.x);
     const int y = params.domY1 + int(tid.y);
     float v = 0.0;
-    if (x >= params.srcX1 && x < params.srcX2 && y >= params.srcY1 && y < params.srcY2)
-        v = asfloat(srcBuf[params.srcOffset + uint(y - params.srcY1) * params.srcStride + uint(x - params.srcX1) * params.channels + params.comp]);
+    int2 at;
+    if (edgePixel(int2(x, y), int4(params.srcX1, params.srcY1, params.srcX2, params.srcY2), params.edgeMode, at))
+        v = asfloat(srcBuf[params.srcOffset + uint(at.y - params.srcY1) * params.srcStride + uint(at.x - params.srcX1) * params.channels + params.comp]);
     workBuf[levelIndex(0u, tid.x, tid.y)] = v;
 }
 
@@ -241,8 +246,9 @@ void ierodedilate_filter(uint3 tid : SV_DispatchThreadID)
     }
     const MorphConstants k = constBuf[0];
     float m = k.outside;
-    if ((k.mapFlags & kMapRead) != 0u && ax >= k.mapX1 && ax < k.mapX2 && ay >= k.mapY1 && ay < k.mapY2)
-        m = remapMap(k, asfloat(mapBuf[k.mapOffset + uint(ay - k.mapY1) * k.mapStride + uint(ax - k.mapX1) * k.mapChannels + k.mapChannel]));
+    int2 at;
+    if ((k.mapFlags & kMapRead) != 0u && edgePixel(int2(ax, ay), int4(k.mapX1, k.mapY1, k.mapX2, k.mapY2), edgeModeFromFlags(k.mapFlags, kMapEdgeBlack), at))
+        m = remapMap(k, asfloat(mapBuf[k.mapOffset + uint(at.y - k.mapY1) * k.mapStride + uint(at.x - k.mapX1) * k.mapChannels + k.mapChannel]));
     float rxf;
     float ryf;
     stageRadii(params.flags >> kStageShift, axisAt(k.blackRx, k.whiteRx, m), axisAt(k.blackRy, k.whiteRy, m), rxf, ryf);

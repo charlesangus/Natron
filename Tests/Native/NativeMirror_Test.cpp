@@ -45,6 +45,8 @@
 #include "Engine/Format.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/NativeEffectBase.h"
@@ -445,6 +447,22 @@ TEST_F(NativeMirrorTest, GpuMatchesCpuExactly)
         ASSERT_EQ(result.cpu.size(), result.gpu.size()) << what;
         const ImageDiff diff = compareImages(result.cpu, result.gpu, ParityTolerance::exact());
         EXPECT_EQ(0u, diff.mismatches) << what << ": first at float " << diff.firstMismatchIndex << ", worst " << diff.worstAbsolute;
+    }
+}
+
+// Mirror has no Edge Mode of its own: it carries its input's, which a Transform upstream forces.
+TEST_F(NativeMirrorTest, CarriesTheInputEdgeMode)
+{
+    for (const char* edgeMode : { "black", "stretch" }) {
+        resetProject();
+        NodePtr source = makeSource();
+        NodePtr transform = makeTransform(source, 3., 2., 10., 0.9, 1.1);
+        ASSERT_TRUE(bool(transform));
+        ASSERT_TRUE(setKnobValue(transform, kEdgeModeParam, std::string(edgeMode)));
+        NodePtr mirror = makeMirror(transform, true, true);
+        ASSERT_TRUE(bool(mirror));
+        EXPECT_TRUE(mirror->getEffectInstance()->getTimeInvariantMetadata()->getEdgeMode() == transform->getEffectInstance()->getTimeInvariantMetadata()->getEdgeMode()) << edgeMode;
+        EXPECT_TRUE(mirror->getEffectInstance()->getTimeInvariantMetadata()->getEdgeMode() == (std::string(edgeMode) == "black" ? EdgeMode::Black : EdgeMode::Stretch)) << edgeMode;
     }
 }
 

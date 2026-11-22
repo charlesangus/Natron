@@ -116,6 +116,16 @@ namespace {
         Features& operator=(const Features&) = delete;
     };
 
+    bool formatBlendsAsAttachment(VkPhysicalDevice pd, VkFormat format)
+    {
+        VkFormatProperties fp;
+        vkGetPhysicalDeviceFormatProperties(pd, format, &fp);
+        const VkFormatFeatureFlags need = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT
+            | VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT
+            | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+        return (fp.optimalTilingFeatures & need) == need;
+    }
+
     bool meetsRequirements(VkPhysicalDevice pd, const VkPhysicalDeviceProperties& props)
     {
         if (props.apiVersion < VK_API_VERSION_1_3) {
@@ -375,7 +385,53 @@ planQueues(std::span<const VkQueueFamilyProperties> families)
         plan.downloadQueueIndex = plan.computeQueues - 1;
     }
     plan.transferSharesComputeQueue = transfer < 0 && plan.computeQueues == 1;
+
+    constexpr VkQueueFlags graphicsAndCompute = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT;
+    if ((families[compute].queueFlags & graphicsAndCompute) == graphicsAndCompute) {
+        plan.graphics = true;
+        plan.graphicsFamily = plan.computeFamily;
+        plan.graphicsQueueIndex = plan.computeQueueIndex;
+        plan.graphicsSharesComputeQueue = true;
+    } else {
+        for (size_t i = 0; i < families.size(); ++i) {
+            if ((families[i].queueFlags & graphicsAndCompute) == graphicsAndCompute && families[i].queueCount > 0) {
+                plan.graphics = true;
+                plan.graphicsFamily = static_cast<uint32_t>(i);
+                plan.graphicsQueueIndex = 0;
+                plan.graphicsQueues = 1;
+                break;
+            }
+        }
+    }
     return plan;
+}
+
+std::vector<VkPhysicalDeviceType>
+enumeratePhysicalDeviceTypes()
+{
+    std::vector<VkPhysicalDeviceType> types;
+    VkApplicationInfo app {};
+    app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+    app.apiVersion = VK_API_VERSION_1_3;
+    VkInstanceCreateInfo ici {};
+    ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    ici.pApplicationInfo = &app;
+    VkInstance instance = VK_NULL_HANDLE;
+    // The loader and Mesa's drivers do float work of their own here, which debug builds trap.
+    const boost_adaptbx::floating_point::FpTrapGuard noTraps;
+    if (vkCreateInstance(&ici, nullptr, &instance) != VK_SUCCESS) {
+        return types;
+    }
+    std::vector<VkPhysicalDevice> pds;
+    if (enumeratePhysical(instance, pds)) {
+        for (VkPhysicalDevice pd : pds) {
+            VkPhysicalDeviceProperties props {};
+            vkGetPhysicalDeviceProperties(pd, &props);
+            types.push_back(props.deviceType);
+        }
+    }
+    vkDestroyInstance(instance, nullptr);
+    return types;
 }
 
 GpuStatus
@@ -387,6 +443,7 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
     if (options.fault.kind != GpuFaultPlan::Kind::Off) {
         dev->faultKind_.store(options.fault.kind);
         dev->faultAt_.store(options.fault.atOperation);
+        dev->faultRegionOnly_.store(options.fault.regionOnly);
     }
     dev->onDeviceLost_ = options.onDeviceLost;
 
@@ -459,18 +516,42 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
         }
     } else {
         std::vector<GpuDeviceCandidate> candidates(pds.size());
+        std::string skippedCpu;
+        std::string skippedFeatures;
         for (size_t i = 0; i < pds.size(); ++i) {
             candidates[i].index = static_cast<uint32_t>(i);
             candidates[i].type = props[i].deviceType;
             candidates[i].deviceLocalHeapSize = largestDeviceLocalHeap(pds[i]);
             candidates[i].name = props[i].deviceName;
             candidates[i].meetsRequirements = meetsRequirements(pds[i], props[i]);
+            if (!candidates[i].meetsRequirements && props[i].deviceType != VK_PHYSICAL_DEVICE_TYPE_CPU) {
+                skippedFeatures += (skippedFeatures.empty() ? "" : ", ") + candidates[i].name;
+            }
+            if (props[i].deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU) {
+                // A software rasteriser is only ever used when the user names it.
+                if (candidates[i].meetsRequirements) {
+                    skippedCpu += (skippedCpu.empty() ? "" : ", ") + candidates[i].name;
+                }
+                candidates[i].meetsRequirements = false;
+            }
         }
         if (const std::optional<GpuAutoPick> best = pickAutoDevice(candidates)) {
             pick = static_cast<int>(candidates[best->candidate].index);
             selectionReason = best->reason;
         }
         if (pick < 0) {
+            if (!skippedFeatures.empty()) {
+                std::string message = "no GPU meets the required features (" + skippedFeatures + ")";
+                if (!skippedCpu.empty()) {
+                    message += "; CPU devices (" + skippedCpu + ") need NATRON_GPU_DEVICE";
+                }
+                return fail(VK_ERROR_FEATURE_NOT_PRESENT, message);
+            }
+            if (!skippedCpu.empty()) {
+                return fail(VK_ERROR_FEATURE_NOT_PRESENT,
+                            "only CPU Vulkan devices (" + skippedCpu
+                                + ") are present; set NATRON_GPU_DEVICE to use one");
+            }
             return fail(VK_ERROR_FEATURE_NOT_PRESENT, "no device meets the required features");
         }
     }
@@ -499,6 +580,10 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
     dev->info_.uploadQueueIndex = queues->uploadQueueIndex;
     dev->info_.downloadQueueIndex = queues->downloadQueueIndex;
     dev->info_.transferSharesComputeQueue = queues->transferSharesComputeQueue;
+    dev->info_.graphicsQueue = queues->graphics;
+    dev->info_.graphicsFamily = queues->graphicsFamily;
+    dev->info_.graphicsQueueIndex = queues->graphicsQueueIndex;
+    dev->info_.graphicsSharesComputeQueue = queues->graphicsSharesComputeQueue;
 
     uint32_t ne = 0;
     vkEnumerateDeviceExtensionProperties(dev->physical_, nullptr, &ne, nullptr);
@@ -537,6 +622,7 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
             range = std::min<uint64_t>(range, options.maxStorageBufferRange);
         }
         dev->info_.maxStorageBufferRange = range;
+        dev->info_.maxDrawIndirectCount = std::max<uint32_t>(p2.properties.limits.maxDrawIndirectCount, 1);
         dev->info_.copyChunkSize = std::max<uint64_t>(options.copyChunkSize, 1);
         dev->info_.maxMemoryAllocationSize = p11.maxMemoryAllocationSize;
         dev->info_.minImportedHostPointerAlignment
@@ -549,12 +635,27 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
     Features avail;
     vkGetPhysicalDeviceFeatures2(dev->physical_, &avail.f2);
     dev->info_.shaderFloat16 = avail.f12.shaderFloat16 == VK_TRUE;
+    dev->info_.dynamicRendering = avail.f13.dynamicRendering == VK_TRUE;
+    dev->info_.multiDrawIndirect = avail.f2.features.multiDrawIndirect == VK_TRUE;
+    if (!dev->info_.multiDrawIndirect) {
+        dev->info_.maxDrawIndirectCount = 1;
+    }
+    dev->info_.vertexPipelineStores = avail.f2.features.vertexPipelineStoresAndAtomics == VK_TRUE;
+    dev->info_.fragmentStores = avail.f2.features.fragmentStoresAndAtomics == VK_TRUE;
+    dev->info_.rasterFloatBlend = dev->info_.graphicsQueue && dev->info_.dynamicRendering
+        && dev->info_.vertexPipelineStores && dev->info_.fragmentStores
+        && formatBlendsAsAttachment(dev->physical_, VK_FORMAT_R32G32B32A32_SFLOAT)
+        && formatBlendsAsAttachment(dev->physical_, VK_FORMAT_R32_SFLOAT);
 
     Features want;
     want.f11.storageBuffer16BitAccess = VK_TRUE;
     want.f12.timelineSemaphore = VK_TRUE;
     want.f12.shaderFloat16 = avail.f12.shaderFloat16;
     want.f13.synchronization2 = VK_TRUE;
+    want.f13.dynamicRendering = avail.f13.dynamicRendering;
+    want.f2.features.multiDrawIndirect = avail.f2.features.multiDrawIndirect;
+    want.f2.features.vertexPipelineStoresAndAtomics = avail.f2.features.vertexPipelineStoresAndAtomics;
+    want.f2.features.fragmentStoresAndAtomics = avail.f2.features.fragmentStoresAndAtomics;
 
     const float prios[3] = { 1.0f, 1.0f, 1.0f };
     std::vector<VkDeviceQueueCreateInfo> qcis;
@@ -568,6 +669,9 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
     addQueues(queues->computeFamily, queues->computeQueues);
     if (queues->transferQueues > 0) {
         addQueues(queues->transferFamily, queues->transferQueues);
+    }
+    if (queues->graphicsQueues > 0) {
+        addQueues(queues->graphicsFamily, queues->graphicsQueues);
     }
 
     VkDeviceCreateInfo dci { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
@@ -596,9 +700,13 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
             { QueueKind::Compute, dev->info_.computeFamily, dev->info_.computeQueueIndex },
             { QueueKind::Upload, dev->info_.transferFamily, dev->info_.uploadQueueIndex },
             { QueueKind::Download, dev->info_.transferFamily, dev->info_.downloadQueueIndex },
+            { QueueKind::Graphics, dev->info_.graphicsFamily, dev->info_.graphicsQueueIndex },
         };
         size_t used = 0;
         for (const auto& r : routes) {
+            if (r.kind == QueueKind::Graphics && !dev->info_.graphicsQueue) {
+                continue;
+            }
             VkQueue handle = VK_NULL_HANDLE;
             vkGetDeviceQueue(dev->device_, r.family, r.index, &handle);
             Queue* q = nullptr;
@@ -665,7 +773,16 @@ GpuDevice::~GpuDevice()
 uint32_t
 GpuDevice::queueFamily(QueueKind kind) const
 {
-    return kind == QueueKind::Compute ? info_.computeFamily : info_.transferFamily;
+    switch (kind) {
+    case QueueKind::Compute:
+        return info_.computeFamily;
+    case QueueKind::Graphics:
+        return info_.graphicsFamily;
+    case QueueKind::Upload:
+    case QueueKind::Download:
+        break;
+    }
+    return info_.transferFamily;
 }
 
 GpuDevice::Queue&
@@ -695,9 +812,18 @@ GpuDevice::check(VkResult result, const char* what)
 GpuStatus
 GpuDevice::countOperation()
 {
-    const uint64_t n = operations_.fetch_add(1, std::memory_order_relaxed) + 1;
+    uint64_t n = operations_.fetch_add(1, std::memory_order_relaxed) + 1;
     const uint64_t at = faultAt_.load(std::memory_order_acquire);
-    if (at == 0 || n != at) {
+    if (at == 0) {
+        return {};
+    }
+    if (faultRegionOnly_.load(std::memory_order_acquire)) {
+        if (!GpuRegionFaultScope::active()) {
+            return {};
+        }
+        n = regionOperations_.fetch_add(1, std::memory_order_relaxed) + 1;
+    }
+    if (n != at) {
         return {};
     }
     const GpuFaultPlan::Kind kind = faultKind_.load(std::memory_order_acquire);
@@ -718,6 +844,7 @@ GpuDevice::injectFault(GpuFaultPlan::Kind kind, uint64_t inOperations)
         faultKind_.store(GpuFaultPlan::Kind::Off, std::memory_order_release);
         return;
     }
+    faultRegionOnly_.store(false, std::memory_order_release);
     faultKind_.store(kind, std::memory_order_release);
     faultAt_.store(operations_.load(std::memory_order_relaxed) + inOperations, std::memory_order_release);
 }
@@ -753,7 +880,7 @@ VkResult
 GpuDevice::waitIdleLocked()
 {
     // Vulkan requires every queue of the device to be externally synchronized across vkDeviceWaitIdle.
-    std::scoped_lock lock(queues_[0].mutex, queues_[1].mutex, queues_[2].mutex);
+    std::scoped_lock lock(queues_[0].mutex, queues_[1].mutex, queues_[2].mutex, queues_[3].mutex);
     return vkDeviceWaitIdle(device_);
 }
 
@@ -765,7 +892,12 @@ GpuFaultPlan::parse(const std::string& text, GpuFaultPlan& out)
         return false;
     }
     const std::string kind = text.substr(0, at);
-    const std::string num = text.substr(at + 1);
+    std::string num = text.substr(at + 1);
+    const std::string regionPrefix = "region:";
+    const bool regionOnly = num.compare(0, regionPrefix.size(), regionPrefix) == 0;
+    if (regionOnly) {
+        num = num.substr(regionPrefix.size());
+    }
     if (num.empty() || num.find_first_not_of("0123456789") != std::string::npos || num.size() > 18) {
         return false;
     }
@@ -774,13 +906,34 @@ GpuFaultPlan::parse(const std::string& text, GpuFaultPlan& out)
         return false;
     }
     if (kind == "lost") {
-        out = { Kind::DeviceLost, n };
+        out = { Kind::DeviceLost, n, regionOnly };
     } else if (kind == "oom") {
-        out = { Kind::OutOfMemory, n };
+        out = { Kind::OutOfMemory, n, regionOnly };
     } else {
         return false;
     }
     return true;
+}
+
+namespace {
+    thread_local bool tInGpuRegion = false;
+}
+
+GpuRegionFaultScope::GpuRegionFaultScope()
+    : previous_(tInGpuRegion)
+{
+    tInGpuRegion = true;
+}
+
+GpuRegionFaultScope::~GpuRegionFaultScope()
+{
+    tInGpuRegion = previous_;
+}
+
+bool
+GpuRegionFaultScope::active()
+{
+    return tInGpuRegion;
 }
 
 GpuStatus
@@ -800,6 +953,9 @@ GpuDevice::submitUncounted(QueueKind kind, std::span<const VkSubmitInfo2> submit
 {
     if (isLost()) {
         return lostStatus();
+    }
+    if (!route_[static_cast<size_t>(kind)]) {
+        return fail(VK_ERROR_FEATURE_NOT_PRESENT, "the device has no queue of that kind");
     }
     Queue& q = queueFor(kind);
     std::lock_guard<std::mutex> lock(q.mutex);

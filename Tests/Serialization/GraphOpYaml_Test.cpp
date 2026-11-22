@@ -251,8 +251,6 @@ TEST(GraphOpYaml, SetProjectData)
     SetProjectDataOp layers;
     LayerRegistryEntrySerialization entry;
     entry.layer.layerID = "zdepth";
-    entry.layer.layerLabel = "Depth";
-    entry.layer.channelsLabel = "Z";
     entry.layer.channels = { "Z" };
     entry.origin = 1;
     layers.layers = std::list<LayerRegistryEntrySerialization> { entry };

@@ -393,8 +393,6 @@ EffectInstance::evaluateGeometry(const EvaluateGeometryArgs& args,
             std::set<double> inputTimes;
             collectGeometryFramesForInput(framesNeeded, i, args.view, args.time, &inputTimes);
 
-            NotifyInputNRenderingStarted_RAII inputNIsRendering_RAII(getNode().get(), i);
-
             for (std::set<double>::const_iterator it = inputTimes.begin(); it != inputTimes.end(); ++it) {
                 GeoDetailConstPtr inputDetail;
                 RenderRoIRetCode inputCode = input->evaluateGeometry(EvaluateGeometryArgs(*it, args.view, args.byPassCache), &inputDetail, errorMessage);

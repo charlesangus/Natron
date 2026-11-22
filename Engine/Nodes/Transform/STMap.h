@@ -99,7 +99,7 @@ inline constexpr NodeSpec kSTMapNodeSpec = {
 };
 
 inline constexpr ImagePipelineSpec kSTMapPipeline = {
-    .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed },
+    .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed, Stage::EdgeMode },
     .layers = LayerPolicy::all(),
     .op = OpKind::Custom,
 };
@@ -141,7 +141,7 @@ private:
     struct Settings {
         Resampler::FilterSpec filter;
         bool clamp = false;
-        bool blackOutside = true;
+        EdgeMode edgeMode = EdgeMode::Black;
         double uOffset = 0.;
         double vOffset = 0.;
         double uScale = 1.;
@@ -239,7 +239,6 @@ private:
     KnobChoiceWPtr _wrapV;
     KnobChoiceWPtr _filter;
     KnobBoolWPtr _clamp;
-    KnobBoolWPtr _blackOutside;
     Resampler::FilterKnobs _filterKnobs;
     KnobChoiceWPtr _formatFrom;
     KnobBoolWPtr _uvAlpha;

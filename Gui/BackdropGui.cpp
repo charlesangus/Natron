@@ -64,6 +64,13 @@ struct BackdropGuiPrivate
 
     void refreshLabelText(int nameHeight, const QString & text);
 
+    // The label wraps at the backdrop's edge, never earlier, and never sizes the backdrop.
+    void wrapLabelTo(int backdropWidth)
+    {
+        const qreal padding = 2. * label->document()->documentMargin();
+        label->setTextWidth(std::max(1., backdropWidth - padding));
+    }
+
     std::string getLabelValue() const;
 };
 
@@ -130,25 +137,19 @@ BackdropGui::adjustSizeToContent(int *w,
                                  bool /*adjustToTextSize*/)
 {
     NodeGui::adjustSizeToContent(w, h, false);
-    QRectF labelBbox = _imp->label->boundingRect();
-
-    *h = std::max( (double)*h, labelBbox.height() * 1.5 );
-    *w = std::max( (double)*w, _imp->label->textWidth() );
+    _imp->wrapLabelTo(*w);
 }
 
 void
 BackdropGui::resizeExtraContent(int /*w*/,
                                 int /*h*/,
-                                bool forceResize)
+                                bool /*forceResize*/)
 {
     QPointF p = pos();
     QPointF thisItemPos = mapFromParent(p);
     int nameHeight = getFrameNameHeight();
 
-    _imp->label->setPos( thisItemPos.x(), thisItemPos.y() + nameHeight + TO_DPIY(10) );
-    if (!forceResize) {
-        _imp->label->adjustSize();
-    }
+    _imp->label->setPos(thisItemPos.x(), thisItemPos.y() + nameHeight + TO_DPIY(10));
 }
 
 void
@@ -160,8 +161,8 @@ BackdropGui::refreshTextLabelFromKnob()
 }
 
 void
-BackdropGuiPrivate::refreshLabelText(int nameHeight,
-                                     const QString &text)
+BackdropGuiPrivate::refreshLabelText(int /*nameHeight*/,
+                                     const QString& text)
 {
     QString textLabel = text;
 
@@ -180,15 +181,7 @@ BackdropGuiPrivate::refreshLabelText(int nameHeight,
     }
 
     label->setHtml(textLabel);
-
-
-    QRectF bbox = _publicInterface->boundingRect();
-
-    //label->adjustSize();
-    int w = std::max( bbox.width(), label->textWidth() * 1.2 );
-    QRectF labelBbox = label->boundingRect();
-    int h = std::max( labelBbox.height() + nameHeight + TO_DPIX(10), bbox.height() );
-    _publicInterface->resize(w, h);
+    wrapLabelTo(_publicInterface->bodyRect().width());
     _publicInterface->update();
 }
 

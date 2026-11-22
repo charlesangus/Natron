@@ -28,12 +28,15 @@
 
 #include "Global/Macros.h"
 
-#include <vector>
+#include <cstddef> // for NULL
+#include <functional>
+#include <limits>
 #include <list>
+#include <memory>
+#include <set>
 #include <string>
 #include <utility>
-#include <limits>
-#include <cstddef>              // for NULL
+#include <vector>
 
 #include <QtGlobal>      // for Q_UNUSED
 #include <QObject>  // for Q_OBJECT, Q_SIGNALS, Q_SLOTS
@@ -358,6 +361,20 @@ public:
     }
 
     /**
+     * @brief Shows an application-modal dialog over the interface that follows node's progress
+     * task, started by progressStart(), with Cancel as its only button, so that nothing can edit
+     * what the job reads. onCancel is called when the user cancels. The dialog stays open until the
+     * returned holder is dropped, for a job that outlives its progress task. Null without an
+     * interface.
+     **/
+    virtual std::shared_ptr<void> showProgressModal(const NodePtr& /*node*/,
+                                                    const std::string& /*title*/,
+                                                    const std::function<void()>& /*onCancel*/)
+    {
+        return std::shared_ptr<void>();
+    }
+
+    /**
      * @brief Checks for a new version of Natron
      **/
     void checkForNewVersion() const;
@@ -438,6 +455,28 @@ public:
     void removeInvalidExpressionKnob(const KnobI* knob);
     void recheckInvalidExpressions();
 
+    /**
+     * @brief Rechecks only the invalid expressions that mention one of the given node or
+     * parameter script names, and those whose names cannot be read from their text.
+     **/
+    void recheckInvalidExpressionsReferencing(const std::set<std::string>& names);
+
+    /**
+     * @brief Between these, recheckInvalidExpressionsReferencing() on the main thread only collects
+     * the names, and the last end rechecks once for all of them.
+     **/
+    void beginInvalidExpressionRecheckBatch();
+    void endInvalidExpressionRecheckBatch();
+
+    /**
+     * @brief For tests: how many knobs the rechecks above have rechecked.
+     **/
+    U64 getInvalidExpressionRechecksCount() const;
+
+private:
+    void recheckInvalidExpressionsInternal(const std::set<std::string>* names);
+
+public:
     virtual void clearViewersLastRenderedTexture() {}
 
     virtual void toggleAutoHideGraphInputs() {}
@@ -487,6 +526,13 @@ public:
      **/
     virtual NodePtr getActiveViewerNode() const;
 
+    /**
+     * @brief For a render thread, which cannot ask the GUI which viewer is active. With no active viewer recorded, as
+     * in background mode, every viewer counts. The node is only compared, never dereferenced, so it may be stale.
+     **/
+    void setViewerActiveForRenders(const Node* viewer);
+    bool isViewerActiveForRenders(const Node* viewer) const;
+
     bool loadPythonScript(const QFileInfo& file);
     virtual void queueRedrawForAllViewers() {}
 
@@ -527,6 +573,22 @@ public:
     virtual bool isDraftRenderEnabled() const { return false; }
 
     virtual void setDraftRenderEnabled(bool /*b*/) {}
+
+    /**
+     * @brief Notes node as edited while draft is on. The draft session's edits decide whether the viewer drafts:
+     * draftAppliesToEdits(). clearDraftEdits() starts a new session.
+     **/
+    void noteDraftEdit(const NodePtr& node);
+    void clearDraftEdits();
+
+    /**
+     * @brief Whether a draft render should raise the viewer's mipmap level: true with no edit noted, as when
+     * scrubbing the timeline, or when any node edited is not a point op.
+     **/
+    bool draftAppliesToEdits() const WARN_UNUSED_RETURN;
+
+    // The nodes edited this draft session that still exist.
+    std::list<NodePtr> getDraftEdits() const WARN_UNUSED_RETURN;
 
     virtual void setUserIsPainting(const NodePtr& /*rotopaintNode*/,
                                    const RotoStrokeItemPtr& /*stroke*/,
@@ -585,8 +647,16 @@ public:
     const ProjectBeingLoadedInfo& getProjectBeingLoadedInfo() const;
     void setProjectBeingLoadedInfo(const ProjectBeingLoadedInfo& info);
 
+    /**
+     * @brief True once quit() or quitNow() has been called on this instance. Main thread only.
+     **/
+    bool isQuitRequested() const;
+
 public Q_SLOTS:
 
+    /**
+     * @brief Stops the renders and closes this instance once they end. Ignored after the first call.
+     **/
     void quit();
 
     void quitNow();

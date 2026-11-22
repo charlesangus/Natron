@@ -92,7 +92,7 @@ rawInputs(const FrameGraph& graph,
     PlacementInputs inputs;
     const FrameGraph* g = &graph;
 
-    inputs.canRenderOnGpu = [g, gpu](const FrameGraph::Task& task) {
+    inputs.canRenderOnGpu = [g, gpu](const FrameGraph::Task& task, GpuRefusal*) {
         return gpu.count(indexOf(*g, task)) != 0;
     };
     inputs.readsRaw = [g, raw](const FrameGraph::Task& task) {

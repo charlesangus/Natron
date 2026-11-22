@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <bitset>
+#include <functional>
 #include <list>
 #include <mutex>
 #include <optional>
@@ -53,12 +54,13 @@
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief The knobs the stages read: mix and maskInvert. A knob the node does not have reads as
- * its default, mix 1 and no inversion.
+ * @brief The knobs the stages read: mix, maskInvert and edgeMode. A knob the node does not have
+ * reads as its default, mix 1, no inversion and Input.
  **/
 struct StageKnobs {
     KnobDoubleWPtr mix;
     KnobBoolWPtr maskInvert;
+    KnobChoiceWPtr edgeMode;
 };
 
 /**
@@ -66,13 +68,15 @@ struct StageKnobs {
  * layer of layerInput, which is inputNb itself unless its InputLayer pairs it with another input: the plane
  * being rendered as that input resolves it when layerKnob is empty, else the layer the
  * KnobLayerSelect named layerKnob selects among the layers layerInput carries. alpha is its alpha
- * source, read from inputNb.
+ * source, read from inputNb. edgeMode is how inputNb, its pixels and its alpha, reads past its
+ * image: the input's own edge mode.
  **/
 struct StageSource {
     int inputNb = -1;
     int layerInput = -1;
     std::string_view layerKnob = {};
     CompositeAlpha alpha = {};
+    EdgeMode edgeMode = EdgeMode::Stretch;
 };
 
 /**
@@ -117,7 +121,9 @@ struct StageSourceLayers {
  * resolveStageSourcesLayers() has filled it, for inputs that read a selected layer or have an alpha
  * source; it is empty otherwise. compositeResultIsAlpha is CompositeInputs::resultIsAlpha. plane
  * is the plane a Composite op's plan renders, which every input without a selected layer is read
- * in; empty when the plan serves no one plane.
+ * in; empty when the plan serves no one plane. edgeMode is how the op reads its source outside
+ * the source's region: the Edge Mode knob resolved against the source's edge mode
+ * (resolveStageEdgeMode()) with the EdgeMode stage, and the source's own edge mode without it.
  **/
 struct StagePlan {
     double time = 0.;
@@ -131,12 +137,18 @@ struct StagePlan {
     int maskInput = -1;
     ImageLayerDesc maskLayer;
     int maskChannel = -1;
+    // The mask input's own edge mode: what the mask reads past its image.
+    EdgeMode maskEdgeMode = EdgeMode::Stretch;
     ImageLayerDesc divisorLayer;
     int divisorChannel = -1;
     std::vector<StageSource> composite;
     std::vector<StageSourceLayers> compositeLayers;
     bool compositeResultIsAlpha = false;
     ImageLayerDesc plane;
+    EdgeMode edgeMode = EdgeMode::Stretch;
+    // Whether an op that is not a Composite reads the source it blends under the mask and mix
+    // past the image by edgeMode, for an op whose output reaches past its source; zero otherwise.
+    bool blendSourceFollowsEdgeMode = false;
 };
 
 /**
@@ -175,7 +187,13 @@ int stageMaskInput(const EffectInstance& effect) WARN_UNUSED_RETURN;
 bool isStageMaskApplied(const EffectInstance& effect) WARN_UNUSED_RETURN;
 
 /**
- * @brief plan's mask fields (applyMask, maskInput, maskLayer, maskChannel) at plan's time and view
+ * @brief The edge mode input inputNb of effect carries at time and view, Stretch when it is not
+ * connected: how a read of that input past its image samples it.
+ **/
+EdgeMode stageInputEdgeMode(const EffectInstance& effect, int inputNb, double time, ViewIdx view) WARN_UNUSED_RETURN;
+
+/**
+ * @brief plan's mask fields (applyMask, maskInput, maskLayer, maskChannel, maskEdgeMode) at plan's time and view
  * for an op that applies its mask itself (PassList::opMask), as the MaskMix stage resolves them,
  * whether or not the pipeline has that stage.
  **/
@@ -183,8 +201,9 @@ void resolveStageOpMask(EffectInstance& effect, StagePlan* plan);
 
 /**
  * @brief Whether the region of definition of the effect connected to maskInput misses roi at
- * time, scale and view, so that a non-inverted mask leaves the source unchanged over roi.
- * False when the region cannot be computed.
+ * time, scale and view and that effect reads Black past it, so that a non-inverted mask leaves the
+ * source unchanged over roi. False when the region cannot be computed, and under Stretch, where
+ * the mask's nearest edge reaches roi.
  **/
 bool stageMaskMissesWindow(const EffectInstance& effect,
                            int maskInput,
@@ -192,6 +211,89 @@ bool stageMaskMissesWindow(const EffectInstance& effect,
                            const RenderScale& scale,
                            const RectI& roi,
                            ViewIdx view) WARN_UNUSED_RETURN;
+
+/**
+ * @brief roi, or when it misses rod, the band of rod nearest to it: on each axis where roi
+ * overlaps rod their overlap, elsewhere the pixelWidth-wide column or pixelHeight-high row at the
+ * nearest edge of rod. That band holds the nearest pixel of rod to every point of roi. roi itself
+ * when either rectangle is empty.
+ **/
+RectD stretchRegionOfInterest(const RectD& roi,
+                              const RectD& rod,
+                              double pixelWidth,
+                              double pixelHeight) WARN_UNUSED_RETURN;
+
+/**
+ * @brief The edge mode inputNb of effect is read by at time and view: the Edge Mode knob resolved
+ * against the input's edge mode for the source input of a node with the EdgeMode stage, the
+ * input's own edge mode otherwise, Stretch for an unconnected input.
+ **/
+EdgeMode resolveInputEdgeMode(const EffectInstance& effect,
+                              const StageSet& stages,
+                              const StageKnobs& knobs,
+                              int sourceInput,
+                              int inputNb,
+                              double time,
+                              ViewIdx view) WARN_UNUSED_RETURN;
+
+/**
+ * @brief Replaces, in rois, the region read from each input of effect that inputEdgeMode() says
+ * is read under Stretch at time and view by stretchRegionOfInterest() of it against the region
+ * of definition of the effect actually fetched at scale, with one full-scale pixel of that effect
+ * for the band. Where transforms concatenates an input, the effect fetched is the one upstream of
+ * the concatenated transforms and rois holds the region already mapped into its space, as
+ * EffectInstance::transformInputRois() leaves it. Black inputs, and regions of effects that are
+ * not fetched from an input, are left alone, so a Black input missed by the window is not fetched.
+ **/
+void clampStretchRegionsOfInterest(const EffectInstance& effect,
+                                   double time,
+                                   const RenderScale& scale,
+                                   ViewIdx view,
+                                   const InputMatrixMap* transforms,
+                                   const std::function<EdgeMode(int inputNb)>& inputEdgeMode,
+                                   RoIMap* rois);
+
+/**
+ * @brief clampStretchRegionsOfInterest() for inputs read at several times: input inputNb is read
+ * at every time inputTimes(inputNb) lists, under inputEdgeMode(inputNb, time). Where any read of
+ * a fetched effect is Stretch, its region becomes the bounding box of what each read needs: the
+ * band of stretchRegionOfInterest() against the region of definition at that time for a Stretch
+ * read, the region clipped to it for a Black one. Effects read only under Black are left alone.
+ **/
+void clampStretchRegionsOfInterest(const EffectInstance& effect,
+                                   const RenderScale& scale,
+                                   ViewIdx view,
+                                   const InputMatrixMap* transforms,
+                                   const std::function<std::vector<double>(int inputNb)>& inputTimes,
+                                   const std::function<EdgeMode(int inputNb, double time)>& inputEdgeMode,
+                                   RoIMap* rois);
+
+/**
+ * @brief rect, in pixels at scale, when mode is Stretch and rect misses the region of definition
+ * of input inputNb of effect, replaced by the one-pixel band of that region nearest to it
+ * (stretchRegionOfInterest() in pixels), so a GPU read past the edge has the edge to repeat.
+ * rect itself otherwise.
+ **/
+RectI stretchGpuInputRoI(const EffectInstance& effect,
+                         EdgeMode mode,
+                         int inputNb,
+                         double time,
+                         ViewIdx view,
+                         const RectI& rect,
+                         const RenderScale& scale) WARN_UNUSED_RETURN;
+
+/**
+ * @brief stretchGpuInputRoI() for an input read at every time of times, under modeAt(time): rect
+ * when no read is Stretch, else the bounding box of the band each Stretch read needs and of rect
+ * clipped to the input's region at the time of each Black read.
+ **/
+RectI stretchGpuInputRoI(const EffectInstance& effect,
+                         int inputNb,
+                         const std::vector<double>& times,
+                         const std::function<EdgeMode(double time)>& modeAt,
+                         ViewIdx view,
+                         const RectI& rect,
+                         const RenderScale& scale) WARN_UNUSED_RETURN;
 
 /**
  * @brief Resolves the stages of effect for a render at time and view: mix and mask inversion
@@ -208,10 +310,12 @@ StagePlan resolveStagePlan(EffectInstance& effect,
 
 /**
  * @brief Fills plan's composite list from a Composite op's inputs, base first: the input and knob
- * each one's InputLayer resolves to. A pairing that never ends in a plane or a selection reads the
- * input's own plane. With a null spec, every input reads its own plane.
+ * each one's InputLayer resolves to, and its edge mode in effect at plan's time and view. A pairing
+ * that never ends in a plane or a selection reads the input's own plane. With a null spec, every
+ * input reads its own plane.
  **/
-void resolveStageSources(const NodeSpec* spec,
+void resolveStageSources(const EffectInstance& effect,
+                         const NodeSpec* spec,
                          const CompositeInputs& inputs,
                          StagePlan* plan);
 

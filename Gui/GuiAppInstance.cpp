@@ -25,8 +25,12 @@
 
 #include "GuiAppInstance.h"
 
+#include <algorithm>
+#include <atomic>
 #include <exception>
+#include <map>
 #include <memory>
+#include <optional>
 #include <sstream> // stringstream
 #include <stdexcept>
 #include <string>
@@ -51,6 +55,7 @@
 #include "Engine/Image.h"
 #include "Engine/KnobFile.h"
 #include "Engine/Node.h"
+#include "Engine/NodeCreationStageLog.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/Plugin.h"
@@ -209,7 +214,16 @@ struct GuiAppInstancePrivate
     int overlayRedrawRequests;
     mutable QMutex rotoDataMutex;
     RotoPaintData rotoData;
+    // Roto shape and tracker marks, which their panels add and remove themselves.
     std::list<SequenceTime> timelineKeyframes, timelineUserKeys;
+    // One sorted, duplicate-free set per owning panel.
+    std::map<const void*, std::vector<SequenceTime>> panelKeys;
+    std::map<Node*, NodeWPtr> nodesShownOnTimeline;
+    // Sorted, without duplicates, derived from nodesShownOnTimeline.
+    std::vector<SequenceTime> nodeKeys;
+    std::atomic<bool> nodeKeysDirty;
+    std::atomic<bool> nodeKeysRefreshQueued;
+    bool nodeKeysChangedSinceSignal;
     KnobDnDData knobDnd;
 
     GuiAppInstancePrivate()
@@ -227,10 +241,56 @@ struct GuiAppInstancePrivate
         , rotoData()
         , timelineKeyframes()
         , timelineUserKeys()
+        , panelKeys()
+        , nodesShownOnTimeline()
+        , nodeKeys()
+        , nodeKeysDirty(false)
+        , nodeKeysRefreshQueued(false)
+        , nodeKeysChangedSinceSignal(false)
         , knobDnd()
     {
         _previewProvider = std::make_shared<FileDialogPreviewProvider>();
         rotoData.turboAlreadyActiveBeforePainting = false;
+    }
+
+    void refreshNodeKeysIfDirty()
+    {
+        if (!nodeKeysDirty.exchange(false)) {
+            return;
+        }
+        std::list<SequenceTime> keys;
+        for (std::map<Node*, NodeWPtr>::iterator it = nodesShownOnTimeline.begin(); it != nodesShownOnTimeline.end();) {
+            NodePtr node = it->second.lock();
+            if (!node) {
+                it = nodesShownOnTimeline.erase(it);
+                continue;
+            }
+            if (node->isActivated()) {
+                node->getAllKnobsKeyframes(&keys);
+            }
+            ++it;
+        }
+        std::vector<SequenceTime> sorted(keys.begin(), keys.end());
+        std::sort(sorted.begin(), sorted.end());
+        sorted.erase(std::unique(sorted.begin(), sorted.end()), sorted.end());
+        if (sorted != nodeKeys) {
+            nodeKeys.swap(sorted);
+            nodeKeysChangedSinceSignal = true;
+        }
+    }
+
+    std::vector<SequenceTime> sortedKeysWithExtras()
+    {
+        refreshNodeKeysIfDirty();
+        std::vector<SequenceTime> keys = nodeKeys;
+        keys.insert(keys.end(), timelineKeyframes.begin(), timelineKeyframes.end());
+        for (std::map<const void*, std::vector<SequenceTime>>::const_iterator it = panelKeys.begin(); it != panelKeys.end(); ++it) {
+            keys.insert(keys.end(), it->second.begin(), it->second.end());
+        }
+        std::sort(keys.begin(), keys.end());
+        keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+
+        return keys;
     }
 };
 
@@ -398,15 +458,6 @@ GuiAppInstance::loadInternal(const CLArgs& cl,
         }
     }
 
-    if ( nSettings->isDefaultAppearanceOutdated() ) {
-        StandardButtonEnum reply = Dialogs::questionDialog(tr("Appearance").toStdString(),
-                                                           tr("The default appearance of %1 changed since last version.\n"
-                                                              "Would you like to use the new default appearance?").arg( QString::fromUtf8(NATRON_APPLICATION_NAME) ).toStdString(), false);
-        if (reply == eStandardButtonYes) {
-            nSettings->restoreDefaultAppearance();
-        }
-    }
-
     /// Create auto-save dir if it does not exists
     QDir dir = Project::autoSavesDir();
     dir.mkpath( QString::fromUtf8(".") );
@@ -420,20 +471,6 @@ GuiAppInstance::loadInternal(const CLArgs& cl,
         QString missingOpenGLError;
         if ( !appPTR->hasOpenGLForRequirements(eOpenGLRequirementsTypeViewer, &missingOpenGLError) ) {
             throw std::runtime_error( missingOpenGLError.toStdString() );
-        }
-
-        if ( !appPTR->isShorcutVersionUpToDate() ) {
-            StandardButtonEnum reply = questionDialog(tr("Shortcuts").toStdString(),
-                                                      tr("Default shortcuts for %1 have changed, "
-                                                         "would you like to set them to their defaults?\n"
-                                                         "Clicking no will keep the old shortcuts hence if a new shortcut has been "
-                                                         "set to something else than an empty shortcut you will not benefit of it.").arg( QString::fromUtf8(NATRON_APPLICATION_NAME) ).toStdString(),
-                                                      false,
-                                                      StandardButtons(eStandardButtonYes | eStandardButtonNo),
-                                                      eStandardButtonNo);
-            if (reply == eStandardButtonYes) {
-                appPTR->restoreDefaultShortcuts();
-            }
         }
     }
 
@@ -555,6 +592,7 @@ GuiAppInstance::createNodeGui(const NodePtr &node,
                               const NodePtr& parentMultiInstance,
                               const CreateNodeArgs& args)
 {
+    NodeCreationStageLog::Scope createStage("createNodeGui");
     NodeCollectionPtr group = node->getGroup();
     NodeGraph* graph;
 
@@ -570,8 +608,25 @@ GuiAppInstance::createNodeGui(const NodePtr &node,
         throw std::logic_error("");
     }
 
-    NodesGuiList selectedNodes = graph->getSelectedNodes();
-    NodeGuiPtr nodegui = _imp->_gui->createNodeGUI(node, args);
+    Serialization::NodeSerializationPtr serialization = args.getProperty<Serialization::NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization);
+    // Only a node placed next to the selection reads it; copying it for each node of a paste
+    // costs the selection's size per pasted node.
+    NodesGuiList selectedNodes;
+    if (!serialization) {
+        selectedNodes = graph->getSelectedNodes();
+    }
+    // Lays out the name and edges once, after every input, label and selection change below has
+    // arrived, and before positioning, which reads the laid-out size. A backdrop's own creation
+    // reads its name's height.
+    std::optional<NodeRefreshBatch> refreshBatch;
+    if (!serialization && !node->isBackdropNode()) {
+        refreshBatch.emplace(graph);
+    }
+    NodeGuiPtr nodegui;
+    {
+        NodeCreationStageLog::Scope stage("nodeGraphItem");
+        nodegui = _imp->_gui->createNodeGUI(node, args);
+    }
     assert(nodegui);
 
     followTrackingInModal(node);
@@ -615,16 +670,27 @@ GuiAppInstance::createNodeGui(const NodePtr &node,
         }
     }
 
-    Serialization::NodeSerializationPtr serialization = args.getProperty<Serialization::NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization);
     if ( !serialization && !isViewer ) {
         ///we make sure we can have a clean preview.
-        node->computePreviewImage( getTimeLine()->currentFrame() );
-        triggerAutoSave();
+        {
+            NodeCreationStageLog::Scope stage("preview");
+            node->computePreviewImage(getTimeLine()->currentFrame());
+        }
+        {
+            NodeCreationStageLog::Scope stage("autosave");
+            triggerAutoSave();
+        }
+    }
+
+    if (refreshBatch) {
+        NodeCreationStageLog::Scope stage("nameAndEdges");
+        refreshBatch.reset();
     }
 
     // NodeGui::initialize already placed a node whose serialization holds a position.
     const bool hasStoredPosition = serialization && serialization->layout.hasPosition;
     if (node->getParentMultiInstanceName().empty() && !hasStoredPosition) {
+        NodeCreationStageLog::Scope stage("positioning");
         bool autoConnect = args.getProperty<bool>(kCreateNodeArgsPropAutoConnect);
 
         if ( selectedNodes.empty() || serialization) {
@@ -908,6 +974,7 @@ GuiAppInstance::onProjectNodesRestored()
     if (!_imp->_gui) {
         return;
     }
+    _imp->_gui->onProjectNodesRestoredInNodeGraphs();
     // Every node of every sub-graph, so a Group's own pipes are repainted right after load too.
     NodesList allNodes;
     getProject()->getNodes_recursive(allNodes, true);
@@ -953,9 +1020,9 @@ GuiAppInstance::notifyRenderRestarted( OutputEffectInstance* writer,
 }
 
 namespace {
-// The modal shown while one tracker node tracks. Releasing it on destruction lets the dialog
-// close should the tracker go away mid-run.
-struct TrackingModal {
+// The modal shown while one node's job runs. Releasing it on destruction lets the dialog close
+// should the job go away mid-run.
+struct HeldModal {
     ForegroundTaskDialogPtr dialog;
 
     void release()
@@ -967,7 +1034,7 @@ struct TrackingModal {
         }
     }
 
-    ~TrackingModal()
+    ~HeldModal()
     {
         release();
     }
@@ -983,7 +1050,7 @@ GuiAppInstance::followTrackingInModal(const NodePtr& node)
     }
     // Hooked here rather than in the tracker's settings panel so that tracking started from
     // Python, with no panel ever opened, is blocked the same way.
-    std::shared_ptr<TrackingModal> modal = std::make_shared<TrackingModal>();
+    std::shared_ptr<HeldModal> modal = std::make_shared<HeldModal>();
     NodeWPtr weakNode = node;
     TrackerContextWPtr weakContext = context;
     QObject::connect(context.get(), &TrackerContext::trackingStarted, this, [this, modal, weakNode, weakContext](int /*step*/) {
@@ -1027,6 +1094,38 @@ GuiAppInstance::followTrackingInModal(const NodePtr& node)
         modal->release();
     });
 } // GuiAppInstance::followTrackingInModal
+
+std::shared_ptr<void>
+GuiAppInstance::showProgressModal(const NodePtr& node,
+                                  const std::string& title,
+                                  const std::function<void()>& onCancel)
+{
+    Gui* gui = getGui();
+    ProgressPanel* panel = gui ? gui->getProgressPanel() : 0;
+    ProgressTaskInfoPtr task = (node && panel) ? panel->getTaskForNode(node) : ProgressTaskInfoPtr();
+    if (!task) {
+        return std::shared_ptr<void>();
+    }
+    const QString qtitle = QString::fromUtf8(title.c_str());
+    ForegroundTaskDialog::Texts texts;
+    texts.title = qtitle;
+    texts.taskFormat = qtitle + QString::fromUtf8(": %1");
+    texts.failureFormat = tr("%1 failed.");
+    texts.failureTitle = qtitle;
+    std::vector<ForegroundTaskDialog::TaskDesc> tasks(1);
+    tasks[0].label = QString::fromUtf8(node->getLabel().c_str());
+    tasks[0].task = task;
+    std::shared_ptr<HeldModal> modal = std::make_shared<HeldModal>();
+    modal->dialog = ForegroundTaskDialog::show(gui, texts, tasks, true);
+    if (!modal->dialog) {
+        return std::shared_ptr<void>();
+    }
+    if (onCancel) {
+        modal->dialog->setOnCancel(onCancel);
+    }
+
+    return modal;
+}
 
 void
 GuiAppInstance::renderForeground(const std::list<RenderWork>& writers)
@@ -1635,9 +1734,85 @@ GuiAppInstance::removeAllKeyframesIndicators()
     ///runs only in the main thread
     assert( QThread::currentThread() == qApp->thread() );
 
-    bool wasEmpty = _imp->timelineKeyframes.empty();
+    bool wasEmpty = _imp->timelineKeyframes.empty() && _imp->nodeKeys.empty() && _imp->panelKeys.empty();
     _imp->timelineKeyframes.clear();
+    _imp->panelKeys.clear();
+    _imp->nodesShownOnTimeline.clear();
+    _imp->nodeKeys.clear();
     if (!wasEmpty) {
+        Q_EMIT keyframeIndicatorsChanged();
+    }
+}
+
+void
+GuiAppInstance::setNodeShownOnTimeline(const NodePtr& node,
+                                       bool shown)
+{
+    /// runs only in the main thread
+    assert(QThread::currentThread() == qApp->thread());
+
+    if (shown) {
+        _imp->nodesShownOnTimeline[node.get()] = node;
+    } else {
+        _imp->nodesShownOnTimeline.erase(node.get());
+    }
+    invalidateNodeKeyframeIndicators();
+}
+
+void
+GuiAppInstance::invalidateNodeKeyframeIndicators()
+{
+    _imp->nodeKeysDirty.store(true);
+    if (_imp->nodeKeysRefreshQueued.exchange(true)) {
+        return;
+    }
+    // Not a timer: this can run on a render thread, where a timer of this object cannot be started.
+    QMetaObject::invokeMethod(this, [this]() {
+        // Cleared before the dirty flag is read, so an invalidation arriving during the rebuild
+        // queues another pass rather than being lost.
+        _imp->nodeKeysRefreshQueued.store(false);
+        _imp->refreshNodeKeysIfDirty();
+        if (_imp->nodeKeysChangedSinceSignal) {
+            _imp->nodeKeysChangedSinceSignal = false;
+            Q_EMIT keyframeIndicatorsChanged();
+        } }, Qt::QueuedConnection);
+}
+
+void
+GuiAppInstance::setPanelKeyframeIndicators(const void* owner,
+                                           const std::vector<SequenceTime>& keys)
+{
+    assert(QThread::currentThread() == qApp->thread());
+
+    std::vector<SequenceTime> sorted(keys);
+    std::sort(sorted.begin(), sorted.end());
+    sorted.erase(std::unique(sorted.begin(), sorted.end()), sorted.end());
+
+    std::map<const void*, std::vector<SequenceTime>>::iterator it = _imp->panelKeys.find(owner);
+    if (it != _imp->panelKeys.end()) {
+        if (it->second == sorted) {
+            return;
+        }
+        if (sorted.empty()) {
+            _imp->panelKeys.erase(it);
+        } else {
+            it->second.swap(sorted);
+        }
+    } else {
+        if (sorted.empty()) {
+            return;
+        }
+        _imp->panelKeys.insert(std::make_pair(owner, sorted));
+    }
+    Q_EMIT keyframeIndicatorsChanged();
+}
+
+void
+GuiAppInstance::clearPanelKeyframeIndicators(const void* owner)
+{
+    assert(QThread::currentThread() == qApp->thread());
+
+    if (_imp->panelKeys.erase(owner) > 0) {
         Q_EMIT keyframeIndicatorsChanged();
     }
 }
@@ -1836,7 +2011,12 @@ GuiAppInstance::getKeyframes(std::list<SequenceTime>* keys) const
     ///runs only in the main thread
     assert( QThread::currentThread() == qApp->thread() );
 
+    _imp->refreshNodeKeysIfDirty();
     *keys = _imp->timelineKeyframes;
+    keys->insert(keys->end(), _imp->nodeKeys.begin(), _imp->nodeKeys.end());
+    for (std::map<const void*, std::vector<SequenceTime>>::const_iterator it = _imp->panelKeys.begin(); it != _imp->panelKeys.end(); ++it) {
+        keys->insert(keys->end(), it->second.begin(), it->second.end());
+    }
 }
 
 void
@@ -1845,11 +2025,11 @@ GuiAppInstance::goToPreviousKeyframe()
     ///runs only in the main thread
     assert( QThread::currentThread() == qApp->thread() );
 
-    _imp->timelineKeyframes.sort();
+    const std::vector<SequenceTime> keys = _imp->sortedKeysWithExtras();
     TimeLinePtr timeline = getProject()->getTimeLine();
     SequenceTime currentFrame = timeline->currentFrame();
-    std::list<SequenceTime>::iterator lowerBound = std::lower_bound(_imp->timelineKeyframes.begin(), _imp->timelineKeyframes.end(), currentFrame);
-    if ( lowerBound != _imp->timelineKeyframes.begin() ) {
+    std::vector<SequenceTime>::const_iterator lowerBound = std::lower_bound(keys.begin(), keys.end(), currentFrame);
+    if (lowerBound != keys.begin()) {
         --lowerBound;
         timeline->seekFrame(*lowerBound, true, NULL, eTimelineChangeReasonPlaybackSeek);
     }
@@ -1861,11 +2041,11 @@ GuiAppInstance::goToNextKeyframe()
     ///runs only in the main thread
     assert( QThread::currentThread() == qApp->thread() );
 
-    _imp->timelineKeyframes.sort();
+    const std::vector<SequenceTime> keys = _imp->sortedKeysWithExtras();
     TimeLinePtr timeline = getProject()->getTimeLine();
     SequenceTime currentFrame = timeline->currentFrame();
-    std::list<SequenceTime>::iterator upperBound = std::upper_bound(_imp->timelineKeyframes.begin(), _imp->timelineKeyframes.end(), currentFrame);
-    if ( upperBound != _imp->timelineKeyframes.end() ) {
+    std::vector<SequenceTime>::const_iterator upperBound = std::upper_bound(keys.begin(), keys.end(), currentFrame);
+    if (upperBound != keys.end()) {
         timeline->seekFrame(*upperBound, true, NULL, eTimelineChangeReasonPlaybackSeek);
     }
 }

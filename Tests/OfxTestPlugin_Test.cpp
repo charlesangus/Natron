@@ -73,6 +73,7 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/OfxClipInstance.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/OfxImageEffectInstance.h"
+#include "Engine/OfxLayerMapping.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Plugin.h"
 #include "Engine/Project.h"
@@ -444,11 +445,11 @@ TEST_F(OfxTestPluginTest, MultiPlaneChoicesListTheInputsLayers)
     connectNodes(reader, multiPlane, 0, true);
 
     const std::vector<std::string> planes = optionIDs(multiPlane, kNatronTestMultiPlaneParamInputPlane);
-    EXPECT_TRUE(contains(planes, kNatronColorLayerID));
+    EXPECT_TRUE(contains(planes, OfxLayerMapping::colourPlane()));
     EXPECT_TRUE(contains(planes, "diffuse"));
     EXPECT_TRUE(contains(planes, "specular"));
     const std::vector<std::string> channels = optionIDs(multiPlane, kNatronTestMultiPlaneParamByChannel);
-    EXPECT_TRUE(contains(channels, std::string(kNatronColorLayerID) + ".A"));
+    EXPECT_TRUE(contains(channels, OfxLayerMapping::colourPlane() + ".A"));
     EXPECT_TRUE(contains(channels, "diffuse.G"));
     EXPECT_TRUE(contains(channels, "specular.B"));
     EXPECT_TRUE(contains(channels, "1"));

@@ -60,6 +60,7 @@
 #include "Engine/RotoLayer.h"
 #include "Engine/TimeLine.h"
 #include "Engine/Transform.h"
+#include "Engine/VectorFollowBake.h"
 
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuRecord.h"
@@ -137,11 +138,11 @@ mergePoint(RectD* r,
     }
 }
 
-// Sends Source positions outside the format outside every image, or onto the format's edge pixels
-// when the Source is not black outside, as the cropped Source a resample reads would.
+// Sends Source positions outside the format outside every image under EdgeMode::Black, or onto the
+// format's edge pixels under Stretch, as the cropped Source a resample reads would.
 void
 cropRowToFormat(const RectI& format,
-                bool blackOutside,
+                EdgeMode edgeMode,
                 int n,
                 float* sx,
                 float* sy)
@@ -150,7 +151,7 @@ cropRowToFormat(const RectI& format,
         if ((sx[i] >= format.x1) && (sx[i] <= format.x2) && (sy[i] >= format.y1) && (sy[i] <= format.y2)) {
             continue;
         }
-        if (blackOutside || format.isNull()) {
+        if ((edgeMode == EdgeMode::Black) || format.isNull()) {
             sx[i] = kOutsideCoord;
             sy[i] = kOutsideCoord;
         } else {
@@ -243,8 +244,17 @@ SplineWarp::getInputHint(int inputNb) const
     if (inputNb == kSplineWarpInputSource) {
         return tr("The image to warp.").toStdString();
     }
+    if (inputNb == kSplineWarpInputVectors) {
+        return tr(kVectorFollowInputHint).toStdString();
+    }
 
     return EffectInstance::getInputHint(inputNb);
+}
+
+bool
+SplineWarp::isInputFirstOnSide(int inputNb) const
+{
+    return inputNb == kSplineWarpInputVectors;
 }
 
 EffectInstance::CurveContextKindEnum
@@ -282,7 +292,7 @@ outputMaskLayerOf(const std::string& value,
     if (ImageLayerDesc::isColorLayer(layerID)) {
         return false;
     }
-    *layer = ImageLayerDesc(layerID, layerID, "", std::vector<std::string>(1, value.substr(dot + 1)));
+    *layer = ImageLayerDesc(layerID, std::vector<std::string>(1, value.substr(dot + 1)));
 
     return true;
 }
@@ -504,13 +514,6 @@ SplineWarp::initializeKnobs()
     renderPage->addKnob(clamp);
     _clamp = clamp;
 
-    KnobBoolPtr blackOutside = createKnob<KnobBool>(tr(kResamplerParamFilterBlackOutsideLabel));
-    blackOutside->setName(kResamplerParamFilterBlackOutside);
-    blackOutside->setHintToolTip(tr(kResamplerParamFilterBlackOutsideHint));
-    blackOutside->setDefaultValue(true);
-    renderPage->addKnob(blackOutside);
-    _blackOutside = blackOutside;
-
     _filterKnobs.create(this, renderPage, filter, clamp);
 
     KnobChoicePtr bbox = createKnob<KnobChoice>(tr("BBox"));
@@ -591,6 +594,22 @@ SplineWarp::initializeKnobs()
     _ui->connectToCurveContext();
     _ui->createViewerButtonKnobs(page);
     _ui->createDisplayKnobs(page);
+    _vectorFollow.reset(new VectorFollowControls(this, _ui.get(), kSplineWarpInputVectors));
+    _vectorFollow->createKnobs(page, page);
+    _vectorFollow->setSelectedPointsProvider([this]() {
+        std::list<VectorFollowPointsPtr> points;
+        SplineWarpLinkPtr link;
+        int index = -1;
+        SplineWarpContextPtr context = splineWarpContext(*this);
+        if (context && _ui->getSelectedCorrespondence(&link, &index)) {
+            if (VectorFollowPointsPtr correspondence = context->makeCorrespondenceFollowPoints(link, index)) {
+                points.push_back(correspondence);
+            }
+        }
+
+        return points;
+    });
+    _panelHook->setVectorFollowControls(_vectorFollow.get());
     _ui->createToolbar();
     _ui->createRightClickMenuKnobs(page);
     selectDefaultTool();
@@ -810,11 +829,13 @@ transformValueKnobs(const RotoCurveContext::TransformKnobs& knobs)
 }
 
 struct TransformTargets {
-    // The items whose own transform the Transform page edits besides the tied curves: each
-    // selected layer, and each linked curve, resolved through its links.
-    std::list<RotoItemPtr> sources;
+    // The selected layers, whose own transforms the Transform page edits besides the tied curves.
+    std::list<RotoItemPtr> layers;
     // The selected curves whose knobs are tied to the page.
     std::list<RotoItemPtr> tied;
+    // A selected item takes its transform through a link. The page then edits nothing: that
+    // transform is the link target's, and a write would move every item linked to it.
+    bool linked = false;
 };
 
 TransformTargets
@@ -837,18 +858,27 @@ transformTargets(const SplineWarpContext& context)
         if (insideLayer) {
             continue;
         }
-        const bool isLayer = bool(std::dynamic_pointer_cast<RotoLayer>(*it));
-        if (!isLayer && !context.getTransformLink(*it)) {
+        if (context.getTransformLink(*it)) {
+            targets.linked = true;
+        } else if (std::dynamic_pointer_cast<RotoLayer>(*it)) {
+            targets.layers.push_back(*it);
+        } else {
             targets.tied.push_back(*it);
-            continue;
-        }
-        RotoItemPtr source = context.getTransformSource(*it);
-        if (std::find(targets.sources.begin(), targets.sources.end(), source) == targets.sources.end()) {
-            targets.sources.push_back(source);
         }
     }
 
     return targets;
+}
+
+// The one selected layer the Transform page edits, null when the page edits a tied curve or nothing.
+RotoItemPtr
+editedLayer(const TransformTargets& targets)
+{
+    if (targets.linked || !targets.tied.empty() || (targets.layers.size() != 1)) {
+        return RotoItemPtr();
+    }
+
+    return targets.layers.front();
 }
 } // anonymous namespace
 
@@ -861,13 +891,13 @@ SplineWarp::syncTransformKnobs()
         return;
     }
     const std::list<KnobIPtr> knobs = transformValueKnobs(context->getTransformKnobs());
-    const TransformTargets targets = transformTargets(*context);
     // With a tied curve the page already shows it, and a write would reach it.
-    if (knobs.empty() || targets.sources.empty() || !targets.tied.empty()) {
+    const RotoItemPtr layer = editedLayer(transformTargets(*context));
+    if (knobs.empty() || !layer) {
         return;
     }
     _syncingTransform = true;
-    context->getOwnTransform(targets.sources.front()).writeKnobs(knobs);
+    context->getOwnTransform(layer).writeKnobs(knobs);
     for (std::list<KnobIPtr>::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
         (*it)->setAllDimensionsEnabled(true);
     }
@@ -882,18 +912,15 @@ SplineWarp::writeTransformKnobs()
     if (!context) {
         return;
     }
-    const TransformTargets targets = transformTargets(*context);
-    if (targets.sources.empty()) {
+    // The page edits one transform only; the curve context forwards the edit to a tied curve's own knobs.
+    const RotoItemPtr layer = editedLayer(transformTargets(*context));
+    if (!layer) {
         return;
     }
+    const std::list<KnobIPtr> pageKnobs = transformValueKnobs(context->getTransformKnobs());
     SplineWarpTransform transform;
-    transform.readKnobs(transformValueKnobs(context->getTransformKnobs()));
-    for (std::list<RotoItemPtr>::const_iterator it = targets.sources.begin(); it != targets.sources.end(); ++it) {
-        // A tied source curve already took the edit through its slaved knobs.
-        if (std::find(targets.tied.begin(), targets.tied.end(), *it) == targets.tied.end()) {
-            context->setOwnTransform(*it, transform);
-        }
-    }
+    transform.readKnobs(pageKnobs);
+    context->setOwnTransform(layer, transform);
 }
 
 void
@@ -934,6 +961,14 @@ SplineWarp::shouldDrawHostOverlay() const
             ++curves;
         }
     }
+    // The handle of a linked item would edit its link target's transform, shared with every item
+    // linked to it.
+    if ((layers == 0) && (curves == 1) && context->getTransformLink(selected.front())) {
+        return false;
+    }
+    if ((layers == 1) && context->getTransformLink(layer)) {
+        return false;
+    }
     if (layers == 0) {
         return curves == 1;
     }
@@ -966,6 +1001,9 @@ SplineWarp::onKnobsLoaded()
     updateCookieKnobsEnabled();
     registerOutputMaskLayer();
     selectDefaultTool();
+    if (_vectorFollow) {
+        _vectorFollow->onKnobsLoaded();
+    }
 }
 
 bool
@@ -1015,6 +1053,10 @@ SplineWarp::knobChanged(KnobI* k,
         return true;
     }
 
+    if (_vectorFollow && k && _vectorFollow->onKnobChanged(k)) {
+        return true;
+    }
+
     bool ret = false;
     if (k && _ui->onKnobChanged(k, time, &ret)) {
         return ret;
@@ -1029,6 +1071,7 @@ SplineWarp::getPluginShortcuts(std::list<PluginActionShortcut>* shortcuts)
     RotoCurveInteract::getViewerButtonShortcuts(shortcuts);
     SplineWarpInteract::getToolbarShortcuts(shortcuts);
     RotoCurveInteract::getRightClickMenuShortcuts(shortcuts);
+    VectorFollowControls::getShortcuts(shortcuts);
 }
 
 void
@@ -1207,10 +1250,7 @@ SplineWarp::readSettings(double time,
     if (clamp) {
         settings->clamp = clamp->getValueAtTime(time, 0, view);
     }
-    KnobBoolPtr blackOutside = _blackOutside.lock();
-    if (blackOutside) {
-        settings->blackOutside = blackOutside->getValueAtTime(time, 0, view);
-    }
+    settings->edgeMode = resolvedEdgeMode(time, view);
     KnobChoicePtr bbox = _bbox.lock();
     if (bbox) {
         settings->bboxUnion = bbox->getValueAtTime(time, 0, view) == 1;
@@ -1712,6 +1752,10 @@ SplineWarp::getRegionsOfInterest(double time,
     StagedImageEffect::getRegionsOfInterest(time, scale, outputRoD, renderWindow, view, ret);
 
     EffectInstancePtr source = getInput(kSplineWarpInputSource);
+    const EffectInstancePtr vectors = getInput(kSplineWarpInputVectors);
+    if (vectors && (vectors != source) && (vectors != getInput(kSplineWarpInputMask))) {
+        ret->erase(vectors);
+    }
     if (!source) {
         return;
     }
@@ -1753,6 +1797,16 @@ SplineWarp::getRegionsOfInterest(double time,
     }
     (*ret)[source] = region;
 } // SplineWarp::getRegionsOfInterest
+
+FramesNeededMap
+SplineWarp::getFramesNeeded(double time,
+                            ViewIdx view)
+{
+    FramesNeededMap ret = StagedImageEffect::getFramesNeeded(time, view);
+    ret.erase(kSplineWarpInputVectors);
+
+    return ret;
+}
 
 bool
 SplineWarp::isOpIdentity(double time,
@@ -1901,6 +1955,7 @@ SplineWarp::renderOp(const RenderActionArgs& args,
     // read through these.
     PassExec::MaskInput maskSource;
     maskSource.image = mask;
+    maskSource.edgeMode = plan.maskEdgeMode;
     maskSource.lock();
     for (std::size_t p = 0; p < planes.size(); ++p) {
         Plane& plane = *planes[p];
@@ -1981,11 +2036,11 @@ SplineWarp::renderOp(const RenderActionArgs& args,
             field.getRow(y, roi.x1, roi.x2, sx.data(), sy.data(), jac);
             if (plane.concatenated) {
                 if (crop) {
-                    cropRowToFormat(formatPixels, settings.blackOutside, width, sx.data(), sy.data());
+                    cropRowToFormat(formatPixels, settings.edgeMode, width, sx.data(), sy.data());
                 }
                 mapRowThrough(plane.inverse, width, sx.data(), sy.data(), jac);
             }
-            Resampler::resampleRowFromCoords(plane.source, sx.data(), sy.data(), jac, width, settings.filter, settings.clamp, settings.blackOutside,
+            Resampler::resampleRowFromCoords(plane.source, sx.data(), sy.data(), jac, width, settings.filter, settings.clamp, settings.edgeMode,
                                              Resampler::eWrapNone, Resampler::eWrapNone, row, nComps);
             if (plane.concatenated) {
                 return;
@@ -2038,7 +2093,8 @@ SplineWarp::renderOp(const RenderActionArgs& args,
             }
             if (plane.concatenated) {
                 // The reference is this node's immediate input: the fetched image through the
-                // concatenated transform alone, black outside its own region.
+                // concatenated transform alone, read past its region under this node's edge mode,
+                // which concatenation guarantees the transform resolves to as well.
                 for (int i = 0; i < width; ++i) {
                     sx[i] = (float)(roi.x1 + i + 0.5);
                     sy[i] = (float)(y + 0.5);
@@ -2051,13 +2107,14 @@ SplineWarp::renderOp(const RenderActionArgs& args,
                     }
                 }
                 mapRowThrough(plane.inverse, width, sx.data(), sy.data(), jac);
-                Resampler::resampleRowFromCoords(plane.source, sx.data(), sy.data(), jac, width, settings.filter, settings.clamp, true,
+                Resampler::resampleRowFromCoords(plane.source, sx.data(), sy.data(), jac, width, settings.filter, settings.clamp, settings.edgeMode,
                                                  Resampler::eWrapNone, Resampler::eWrapNone, &referenceRow[0], nComps);
             } else {
-                PassExec::readSourceRow(plane.src.get(), plane.srcAccess.get(), plane.srcBounds, plane.src ? plane.srcNComps : nComps, roi.x1, y, width, nComps, &referenceRow[0]);
+                PassExec::readSourceRow(plane.src.get(), plane.srcAccess.get(), plane.srcBounds, plane.src ? plane.srcNComps : nComps, roi.x1, y, width, nComps,
+                                        settings.edgeMode, &referenceRow[0]);
             }
             if (doMask) {
-                PassExec::readChannelRow(mask.get(), maskSource.access.get(), maskSource.bounds, maskSource.nComps, maskChannel, roi.x1, y, width, 0.f, &maskRow[0]);
+                PassExec::readChannelRow(mask.get(), maskSource.access.get(), maskSource.bounds, maskSource.nComps, maskChannel, roi.x1, y, width, maskSource.edgeMode, &maskRow[0]);
             }
             for (int i = 0; i < width; ++i, dstPix += nComps) {
                 const float* srcPix = &referenceRow[(std::size_t)i * nComps];
@@ -2142,6 +2199,10 @@ SplineWarp::readsGpuInput(int inputNb,
                           double time,
                           ViewIdx view) const
 {
+    if (inputNb == kSplineWarpInputVectors) {
+        return false;
+    }
+
     return (inputNb != kSplineWarpInputSource) || !isOutputMaskPlane(plane, time, view);
 }
 
@@ -2179,7 +2240,7 @@ SplineWarp::renderOpGpu(const GpuRenderArgs& args)
     params.lobes = spec.lobes;
     params.bicubicB = (float)spec.B;
     params.bicubicC = (float)spec.C;
-    params.flags = ((settings.clamp && Resampler::filterHonoursClamp(settings.filter.filter)) ? kSplineWarpGpuClamp : 0u) | (settings.blackOutside ? kSplineWarpGpuBlackOutside : 0u)
+    params.flags = ((settings.clamp && Resampler::filterHonoursClamp(settings.filter.filter)) ? kSplineWarpGpuClamp : 0u) | ((settings.edgeMode == EdgeMode::Black) ? kSplineWarpGpuEdgeBlack : 0u)
         | ((settings.filter.filter != Resampler::eFilterImpulse) ? kSplineWarpGpuJacobian : 0u);
 
     gpu::GpuRecordContext& ctx = args.context;
@@ -2204,7 +2265,9 @@ SplineWarp::renderOpGpu(const GpuRenderArgs& args)
     // The Source cropped to its region of definition, as the CPU fetches it, is blended under the
     // mask and mix; the image sampled is that Source inside the format when cropping, or, for the
     // outputMask plane, the cookie mask.
-    const StagePlan plan = resolveGpuPlan(query);
+    StagePlan plan = resolveGpuPlan(query);
+    // The output reaches past the Source, where the blend reads it as the CPU does.
+    plan.blendSourceFollowsEdgeMode = true;
     GpuRenderArgs cropped = args;
     const int sourceInput = plan.sourceInput;
     GpuImageView sampleView;

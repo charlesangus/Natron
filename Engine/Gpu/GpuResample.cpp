@@ -15,7 +15,8 @@ namespace gpu {
 namespace {
 
     constexpr uint32_t kFlagClamp = 1;
-    constexpr uint32_t kFlagBlackOutside = 2;
+    // kFlagEdgeBlack in Kernels/edgesample.slang.
+    constexpr uint32_t kFlagEdgeBlack = 2;
     constexpr uint32_t kFlagSrcValid = 4;
     constexpr uint32_t kFlagExactRowX = 8;
     constexpr uint32_t kFlagExactRowY = 16;
@@ -150,20 +151,8 @@ namespace {
             | (rowExactInFloats(m[3], m[4], m[5], output) ? kFlagExactRowY : 0u);
     }
 
-    uint32_t packStates(const std::array<GpuResampleJacobian, 4>& jacobians)
-    {
-        uint32_t states = 0;
-        for (uint32_t s = 0; s < 4; ++s) {
-            states |= (jacobians[s].zero ? 1u : 0u) << s;
-        }
-        return states;
-    }
-
     GpuStatus validateMatrix(const GpuResampleMatrix& m, bool weighted)
     {
-        if (!m.jacobians[0].zero) {
-            return invalid("the Jacobian with both axes outside must be zero");
-        }
         for (double v : m.matrix) {
             if (!std::isfinite(v)) {
                 return invalid("the matrix is not finite");
@@ -183,8 +172,46 @@ namespace {
         return {};
     }
 
-    // Mirrors kOffsetFlagMatte in Kernels/offset.slang.
+    // Mirrors kOffsetFlagMatte in Kernels/offset.slang and kFlagEdgeBlack in
+    // Kernels/edgesample.slang.
     constexpr uint32_t kOffsetFlagMatte = 1;
+    constexpr uint32_t kOffsetFlagEdgeBlack = 2;
+
+    // One axis of the source an offset dispatch of `size` threads reads: source pixels
+    // [first, last), at threads [first - shift, last - shift). Fills the threads the source covers
+    // and the first source pixel they read; false when nothing is read. Black reads only what lies
+    // over the dispatch. Stretch also clamps threads past the source onto its edge pixel, so a
+    // source beside the dispatch is cut to that pixel, placed on the thread just outside it.
+    bool offsetAxis(int64_t first, int64_t last, int64_t shift, uint32_t size, bool stretch, int32_t& valid1, int32_t& valid2, int64_t& start)
+    {
+        const int64_t n = int64_t(size);
+        if (last <= first) {
+            return false;
+        }
+        const int64_t lo = first - shift;
+        const int64_t hi = last - shift;
+        if (stretch && hi <= 0) {
+            valid1 = -1;
+            valid2 = 0;
+            start = last - 1;
+            return true;
+        }
+        if (stretch && lo >= n) {
+            valid1 = int32_t(n);
+            valid2 = int32_t(n + 1);
+            start = first;
+            return true;
+        }
+        const int64_t v1 = std::clamp<int64_t>(lo, 0, n);
+        const int64_t v2 = std::clamp<int64_t>(hi, 0, n);
+        if (v1 >= v2) {
+            return false;
+        }
+        valid1 = int32_t(v1);
+        valid2 = int32_t(v2);
+        start = v1 + shift;
+        return true;
+    }
 
     GpuStatus uploadWords(GpuRecordContext& ctx, std::span<const std::byte> bytes, GpuBuffer*& out)
     {
@@ -217,7 +244,7 @@ namespace {
             const GpuResampleMatrix& m = r.matrices[i];
             uint32_t* w = &words[kBlurHeaderWords + i * kBlurMatrixWords];
             packMatrix(m.matrix, exact, w);
-            w[12] = packStates(m.jacobians);
+            w[12] = m.jacobianZero ? 1u : 0u;
             splitDouble(m.weight, hi, lo);
             w[13] = floatBits(hi);
             w[14] = floatBits(lo);
@@ -278,7 +305,7 @@ recordResample(GpuRecordContext& ctx, const GpuResample& r)
     p.lobes = r.lobes;
     p.B = static_cast<float>(r.B);
     p.C = static_cast<float>(r.C);
-    p.flags = (r.clamp ? kFlagClamp : 0u) | (r.blackOutside ? kFlagBlackOutside : 0u);
+    p.flags = (r.clamp ? kFlagClamp : 0u) | (r.edgeMode == EdgeMode::Black ? kFlagEdgeBlack : 0u);
 
     const bool srcValid = r.src.buffer && !r.src.bounds.empty();
     if (srcValid) {
@@ -303,7 +330,7 @@ recordResample(GpuRecordContext& ctx, const GpuResample& r)
     if (!blurred && !projective && !(exact && exactReadsScales(r.filter))) {
         const GpuResampleMatrix& m = r.matrices[0];
         packMatrix(m.matrix, exact, p.matrix);
-        p.states = packStates(m.jacobians);
+        p.states = m.jacobianZero ? 1u : 0u;
         if (exact) {
             p.flags |= exactRowFlags(m.matrix, r.output);
         }
@@ -345,19 +372,21 @@ recordOffset(GpuRecordContext& ctx, const GpuOffset& o)
         return { VK_ERROR_INITIALIZATION_FAILED, "recordOffset: destination exceeds 32-bit indexing" };
     }
 
+    const bool stretch = o.edgeMode == EdgeMode::Stretch;
+    if (!stretch) {
+        p.flags |= kOffsetFlagEdgeBlack;
+    }
     bool srcValid = o.src.buffer && !o.src.bounds.empty();
     if (srcValid) {
         const int64_t sx0 = int64_t(o.output.x1) - o.dx;
         const int64_t sy0 = int64_t(o.output.y1) - o.dy;
-        const auto threads = [](int64_t v, uint32_t n) { return uint32_t(std::clamp<int64_t>(v, 0, int64_t(n))); };
-        p.validX1 = threads(int64_t(o.src.bounds.x1) - sx0, p.width);
-        p.validX2 = threads(int64_t(o.src.bounds.x2) - sx0, p.width);
-        p.validY1 = threads(int64_t(o.src.bounds.y1) - sy0, p.height);
-        p.validY2 = threads(int64_t(o.src.bounds.y2) - sy0, p.height);
-        srcValid = p.validX1 < p.validX2 && p.validY1 < p.validY2;
+        int64_t startX = 0;
+        int64_t startY = 0;
+        srcValid = offsetAxis(o.src.bounds.x1, o.src.bounds.x2, sx0, p.width, stretch, p.validX1, p.validX2, startX)
+            && offsetAxis(o.src.bounds.y1, o.src.bounds.y2, sy0, p.height, stretch, p.validY1, p.validY2, startY);
         if (srcValid) {
             p.srcStride = o.src.strideFloats;
-            if (!floatIndex(o.src, int32_t(sx0 + p.validX1), int32_t(sy0 + p.validY1), o.channels, p.srcOffset)) {
+            if (!floatIndex(o.src, int32_t(startX), int32_t(startY), o.channels, p.srcOffset)) {
                 return { VK_ERROR_INITIALIZATION_FAILED, "recordOffset: source exceeds 32-bit indexing" };
             }
         } else {
@@ -394,7 +423,7 @@ recordOffset(GpuRecordContext& ctx, const GpuOffset& o)
             return s;
         }
         weights = table;
-        p.flags = kOffsetFlagMatte;
+        p.flags |= kOffsetFlagMatte;
         p.rowWeights = 3 * p.width;
     }
     return ctx.dispatch(GpuKernelId::offset, { src, o.dst.buffer, weights }, p, { p.width, p.height, 1 });

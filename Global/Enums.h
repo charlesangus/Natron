@@ -169,8 +169,6 @@ enum PixmapEnum {
     NATRON_PIXMAP_VIEWER_ROI_DISABLED,
     NATRON_PIXMAP_VIEWER_RENDER_SCALE,
     NATRON_PIXMAP_VIEWER_RENDER_SCALE_CHECKED,
-    NATRON_PIXMAP_VIEWER_AUTOCONTRAST_ENABLED,
-    NATRON_PIXMAP_VIEWER_AUTOCONTRAST_DISABLED,
 
     NATRON_PIXMAP_OPEN_FILE,
     NATRON_PIXMAP_COLORWHEEL,
@@ -613,9 +611,10 @@ enum DopeSheetItemType {
     eDopeSheetItemTypeKnobRoot,
     eDopeSheetItemTypeKnobDim,
 
-    // A curve host's item (Bezier or stroke), and a Bezier's shape keys under it
+    // A curve host's item (Bezier or stroke), a Bezier's shape keys under it and a stroke's painted frame
     eDopeSheetItemTypeRotoItem,
-    eDopeSheetItemTypeShape
+    eDopeSheetItemTypeShape,
+    eDopeSheetItemTypePaintedFrame
 };
 
 enum CreateNodeReason

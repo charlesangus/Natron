@@ -44,6 +44,7 @@
 #include "Engine/Nodes/Filter/IErodeDilate.h"
 #include "Engine/Nodes/Filter/MapInput.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Project.h"
 #include "Engine/RectI.h"
@@ -292,6 +293,21 @@ TEST_F(NativeIErodeDilateGpuTest, DisconnectedMapMatchesTheCpu)
         ASSERT_TRUE(bool(source) && bool(node));
 
         expectParity(std::vector<NodePtr>({ node }), node, dilate ? "dilate, no Map" : "erode, no Map");
+    }
+}
+
+// The element reaches past the source on every side, which each edge mode reads its own way.
+TEST_F(NativeIErodeDilateGpuTest, EdgeModesMatchTheCpu)
+{
+    for (const char* edgeMode : { "stretch", "black" }) {
+        for (bool dilate : { false, true }) {
+            NodePtr source = makeParitySource();
+            NodePtr node = makeNode(dilate, source, NodePtr(), 4.5, 3.);
+            ASSERT_TRUE(bool(source) && bool(node));
+            ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string(edgeMode)));
+
+            expectParity(std::vector<NodePtr>({ node }), node, std::string(edgeMode) + (dilate ? ", dilate" : ", erode"));
+        }
     }
 }
 

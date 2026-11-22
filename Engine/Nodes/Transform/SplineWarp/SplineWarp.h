@@ -45,6 +45,7 @@
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpPanelHook.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpSampling.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpTps.h"
+#include "Engine/VectorFollowKnobs.h"
 
 #define PLUGINID_NATRON_SPLINEWARP "SplineWarp"
 #define PLUGIN_MAJOR_NATRON_SPLINEWARP 1
@@ -80,12 +81,14 @@
 
 #define kSplineWarpInputSource 0
 #define kSplineWarpInputMask 1
+#define kSplineWarpInputVectors 2
 
 NATRON_NAMESPACE_ENTER
 
 inline constexpr InputSpec kSplineWarpInputs[] = {
     InputSpec { .label = "Source" },
     InputSpec { .label = "Mask", .role = InputRole::Mask, .optional = true },
+    InputSpec { .label = kVectorFollowInputLabel, .role = InputRole::Aux, .optional = true },
 };
 
 inline constexpr NodeSpec kSplineWarpNodeSpec = {
@@ -107,7 +110,7 @@ inline constexpr NodeSpec kSplineWarpNodeSpec = {
 };
 
 inline constexpr ImagePipelineSpec kSplineWarpPipeline = {
-    .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed },
+    .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed, Stage::EdgeMode },
     .layers = LayerPolicy::all(),
     .op = OpKind::Custom,
 };
@@ -132,6 +135,7 @@ public:
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual const ImagePipelineSpec& imagePipelineSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual std::string getInputHint(int inputNb) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual bool isInputFirstOnSide(int inputNb) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual CurveContextKindEnum getCurveContextKind() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual RotoCurveContextPtr createGeometryCurveContext(const NodePtr& node) const OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -224,7 +228,7 @@ private:
         double fieldResolution = 8.;
         Resampler::FilterSpec filter;
         bool clamp = false;
-        bool blackOutside = true;
+        EdgeMode edgeMode = EdgeMode::Stretch;
         bool bboxUnion = false;
         double motionBlur = 0.;
         double shutter = 0.5;
@@ -303,6 +307,13 @@ private:
                                       ViewIdx view,
                                       RoIMap* ret) OVERRIDE FINAL;
 
+    /**
+     * @brief The frames StagedImageEffect::getFramesNeeded() lists, without the Vectors input,
+     * which only the follow tools read.
+     **/
+    virtual FramesNeededMap getFramesNeeded(double time,
+                                            ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     virtual bool isOpIdentity(double time,
                               const RenderScale& scale,
                               const RectI& roi,
@@ -332,7 +343,8 @@ private:
      **/
     virtual StatusEnum renderOpGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    // The outputMask plane is made from the cookie cutters alone.
+    // The outputMask plane is made from the cookie cutters alone, and only the follow tools read
+    // the Vectors input.
     virtual bool readsGpuInput(int inputNb,
                                const ImageLayerDesc& plane,
                                double time,
@@ -434,7 +446,6 @@ private:
     KnobIntWPtr _previewResolution;
     KnobChoiceWPtr _filter;
     KnobBoolWPtr _clamp;
-    KnobBoolWPtr _blackOutside;
     Resampler::FilterKnobs _filterKnobs;
     KnobChoiceWPtr _bbox;
     KnobDoubleWPtr _motionBlur;
@@ -456,6 +467,7 @@ private:
 
     SplineWarpInteractPtr _ui;
     std::unique_ptr<SplineWarpPanelHook> _panelHook;
+    std::unique_ptr<VectorFollowControls> _vectorFollow;
     // Whether a drag of the interact turned the viewer's draft render on.
     bool _draftDrag;
 

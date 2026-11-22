@@ -64,6 +64,10 @@ jobs:
       # -DCMAKE_*_COMPILER_LAUNCHER=ccache), so this value flows straight
       # through to the compiler-launcher ccache invocations.
       CCACHE_DIR: ${{ github.workspace }}/.ccache
+      # An empty secret (fork PRs) leaves ccache local-only.
+      CCACHE_REMOTE_STORAGE: ${{ secrets.CCACHE_REMOTE_STORAGE }}
+      # Compiler mtimes differ between hosts; hash content so keys match.
+      CCACHE_COMPILERCHECK: content
       # CCACHE_MAXSIZE: ccache's built-in 5 GiB default thrashed on a
       # cold debug build (193 cleanup cycles, 0.18% hit rate). Saved
       # debug entries are ~1.7-2.1 GB, and actions/cache has a 10 GB
@@ -125,6 +129,12 @@ jobs:
             ccache-linux-debug-${{ github.head_ref || github.ref_name }}-
             ccache-linux-debug-main-
             ccache-linux-main-
+
+      - name: Reset ccache statistics
+        run: ccache -z
+
+      - name: Normalise remote ccache layout
+        run: tools/ci/ccache-remote-setup.sh
 
       # build/assets is not just downloads: fetch-assets.sh compiles the
       # openfx-io plugin bundle from pinned source (see that script's
@@ -250,6 +260,10 @@ jobs:
       NATRON_IN_CONTAINER: 1
       # Under the workspace for the same reason as in the debug job.
       CCACHE_DIR: ${{ github.workspace }}/.ccache
+      # An empty secret (fork PRs) leaves ccache local-only.
+      CCACHE_REMOTE_STORAGE: ${{ secrets.CCACHE_REMOTE_STORAGE }}
+      # Compiler mtimes differ between hosts; hash content so keys match.
+      CCACHE_COMPILERCHECK: content
       # Saved release entries are ~2.0 GB (nightly.yml uses the same cap and
       # the same key family), so 3G matches the debug job. Only main pushes
       # save one (see Save ccache), so this family holds one entry beside
@@ -277,6 +291,12 @@ jobs:
           restore-keys: |
             ccache-linux-release-${{ github.head_ref || github.ref_name }}-
             ccache-linux-release-main-
+
+      - name: Reset ccache statistics
+        run: ccache -z
+
+      - name: Normalise remote ccache layout
+        run: tools/ci/ccache-remote-setup.sh
 
       # Same assets and key as the debug job; see the comments there.
       - name: Cache test assets
@@ -330,6 +350,8 @@ jobs:
             label: task-graph
     container:
       image: ${{ needs.dev-image.outputs.image }}
+      # The live texture tests export through /dev/shm, which Docker sizes at 64m.
+      options: --shm-size=2g
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}

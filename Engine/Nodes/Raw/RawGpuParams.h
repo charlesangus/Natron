@@ -226,6 +226,38 @@ struct RawDemosaicGpuPush {
 static_assert(sizeof(RawDemosaicGpuPush) == 96);
 
 /**
+ * @brief Mirrors SuperpixelParams in demosaic_superpixel.slang: the layout's period, origin and
+ * cells as RawLayoutGpu packs them, the mipmap level, RawSuperpixel's mode, the source view, the
+ * output window and the source's region of definition.
+ **/
+struct RawSuperpixelGpuPush {
+    std::int32_t period;
+    std::int32_t originX;
+    std::int32_t originY;
+    std::uint32_t mip;
+    std::uint32_t cells[9];
+    std::uint32_t mode;
+    std::uint32_t srcOffset;
+    std::uint32_t srcStride;
+    std::uint32_t srcComps;
+    std::int32_t srcX1;
+    std::int32_t srcY1;
+    std::int32_t srcX2;
+    std::int32_t srcY2;
+    std::uint32_t dstOffset;
+    std::uint32_t dstStride;
+    std::int32_t outX;
+    std::int32_t outY;
+    std::uint32_t outWidth;
+    std::uint32_t outHeight;
+    std::int32_t rodX1;
+    std::int32_t rodY1;
+    std::int32_t rodX2;
+    std::int32_t rodY2;
+};
+static_assert(sizeof(RawSuperpixelGpuPush) == 124);
+
+/**
  * @brief The push constants of every kernel of demosaic_vng.slang, which mirrors it as VngParams.
  * The kernels work over a top-down buffer of width x height photosites whose pattern, as the
  * buffer sees it from its top-left photosite, is layout, VNG4's second green being colour 3.

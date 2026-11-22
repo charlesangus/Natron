@@ -35,13 +35,13 @@ struct PerInputData
     //Either 1 or 2 components in the case of MotionVectors/Disparity
     double pixelAspectRatio;
     int nComps;
-    std::string componentsType;
+    ImageComponentsTypeEnum componentsType;
     ImageBitDepthEnum bitdepth;
 
     PerInputData()
         : pixelAspectRatio(1.)
         , nComps(0)
-        , componentsType()
+        , componentsType(eImageComponentsTypeNone)
         , bitdepth(eImageBitDepthFloat)
     {
     }
@@ -70,6 +70,8 @@ struct NodeMetadataPrivate {
 
     int outputStorageNComps;
 
+    EdgeMode edgeMode;
+
     NodeMetadataPrivate()
         : outputFielding(eImageFieldingOrderNone)
         , frameRate(24.)
@@ -79,6 +81,7 @@ struct NodeMetadataPrivate {
         , isFrameVarying(false)
         , outputFormat()
         , outputStorageNComps(0)
+        , edgeMode(EdgeMode::Stretch)
     {
     }
 
@@ -97,6 +100,7 @@ struct NodeMetadataPrivate {
         isFrameVarying = other.isFrameVarying;
         outputFormat = other.outputFormat;
         outputStorageNComps = other.outputStorageNComps;
+        edgeMode = other.edgeMode;
     }
 };
 
@@ -159,6 +163,9 @@ NodeMetadata::operator==(const NodeMetadata& other) const
     if (_imp->outputFormat != other._imp->outputFormat) {
         return false;
     }
+    if (_imp->edgeMode != other._imp->edgeMode) {
+        return false;
+    }
     if (_imp->outputStorageNComps != other._imp->outputStorageNComps) {
         return false;
     }
@@ -178,6 +185,18 @@ NodeMetadata::operator==(const NodeMetadata& other) const
     }
 
     return true;
+}
+
+void
+NodeMetadata::setEdgeMode(EdgeMode mode)
+{
+    _imp->edgeMode = mode;
+}
+
+EdgeMode
+NodeMetadata::getEdgeMode() const
+{
+    return _imp->edgeMode;
 }
 
 void
@@ -324,7 +343,7 @@ NodeMetadata::getNComps(int inputNb) const
 }
 
 void
-NodeMetadata::setComponentsType(int inputNb,const std::string& componentsType)
+NodeMetadata::setComponentsType(int inputNb, ImageComponentsTypeEnum componentsType)
 {
     if (inputNb == -1) {
         _imp->outputData.componentsType = componentsType;
@@ -335,7 +354,7 @@ NodeMetadata::setComponentsType(int inputNb,const std::string& componentsType)
     }
 }
 
-std::string
+ImageComponentsTypeEnum
 NodeMetadata::getComponentsType(int inputNb) const
 {
     if (inputNb == -1) {
@@ -345,7 +364,7 @@ NodeMetadata::getComponentsType(int inputNb) const
 
             return _imp->inputsData[inputNb].componentsType;
         } else {
-            return kNatronColorLayerID;
+            return eImageComponentsTypeColor;
         }
     }
 }

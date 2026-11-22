@@ -1,3 +1,5 @@
+import edgesample;
+
 // Separable erosion and dilation matching ErodeDilateKernels::filterLine bit for bit. Values travel
 // as raw bits and are ordered as integers, since devices may flush denormals in a float compare
 // while the CPU orders them exactly. GpuMorphParams in Engine/Gpu/GpuMorphology.h mirrors
@@ -8,8 +10,9 @@ RWStructuredBuffer<uint> dstBuf;
 // The rect (x1, y1, x2, y2) the CPU's filter buffer covers, which bounds every filtered line.
 RWStructuredBuffer<int> windowBuf;
 
-// A pass writes the rect of width x height pixels at (outX, outY) of the destination. The source
-// rect [srcX1, srcX2) x [srcY1, srcY2) reads zero outside.
+// A pass writes the rect of width x height pixels at (outX, outY) of the destination. Outside the
+// source rect [srcX1, srcX2) x [srcY1, srcY2) a read follows edgeMode, as fillBuffer() fills the
+// CPU's buffer.
 struct MorphParams
 {
     uint width;
@@ -28,6 +31,7 @@ struct MorphParams
     int srcY2;
     uint srcOffset;
     uint srcStride;
+    uint edgeMode;
 };
 [[vk::push_constant]] ConstantBuffer<MorphParams> params;
 
@@ -101,13 +105,21 @@ int lineOrigin()
     return params.vertical != 0 ? params.outX : params.outY;
 }
 
+bool sourceIndex(int a, int line, out uint idx)
+{
+    idx = 0;
+    const int2 p = params.vertical != 0 ? int2(line, a) : int2(a, line);
+    int2 s;
+    if (!edgePixel(p, int4(params.srcX1, params.srcY1, params.srcX2, params.srcY2), params.edgeMode, s))
+        return false;
+    idx = params.srcOffset + uint(s.y - params.srcY1) * params.srcStride + uint(s.x - params.srcX1) * params.channels;
+    return true;
+}
+
 uint sampleAt(int a, int line, uint c)
 {
-    const int x = params.vertical != 0 ? line : a;
-    const int y = params.vertical != 0 ? a : line;
-    if (x < params.srcX1 || x >= params.srcX2 || y < params.srcY1 || y >= params.srcY2)
-        return 0u;
-    return srcBuf[params.srcOffset + uint(y - params.srcY1) * params.srcStride + uint(x - params.srcX1) * params.channels + c];
+    uint idx;
+    return sourceIndex(a, line, idx) ? srcBuf[idx + c] : 0u;
 }
 
 // Index j of the CPU's padded line: halfWidth neutral values, the line, halfWidth neutral values.
@@ -244,12 +256,10 @@ uint4 paddedPixel(int j, Extent ax, int line)
     const int a = ax.lo + j - int(params.half);
     if (a < ax.lo || a >= ax.hi)
         return uint4(neutral());
-    const int x = params.vertical != 0 ? line : a;
-    const int y = params.vertical != 0 ? a : line;
     uint4 v = uint4(0u);
-    if (x < params.srcX1 || x >= params.srcX2 || y < params.srcY1 || y >= params.srcY2)
+    uint idx;
+    if (!sourceIndex(a, line, idx))
         return v;
-    const uint idx = params.srcOffset + uint(y - params.srcY1) * params.srcStride + uint(x - params.srcX1) * params.channels;
     const uint nc = params.channels;
     v.x = srcBuf[idx];
     if (nc > 1)

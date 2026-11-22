@@ -6,7 +6,7 @@
 #
 # Usage:
 #   tools/ci/remote/build.sh <fast|release|debug> [--tests] [--scheduler <legacy|taskgraph>] [--record-goldens]
-#                            [--shuffle-seeds <n,n,...>] [--repeat-test <name>:<N>] [--no-appimage] [--cmake-arg <arg>]... [--gui "<script> ..."]
+#                            [--shuffle-seeds <n,n,...>] [--repeat-test <name>:<N>] [--no-appimage] [--no-remote-ccache] [--cmake-arg <arg>]... [--gui "<script> ..."]
 #   tools/ci/remote/build.sh <fast|release> --from-run <run-id> --gui "<script> ..."
 #   tools/ci/remote/build.sh --mode
 #
@@ -22,9 +22,12 @@
 #                        run. A milestone's verification gate must run without it.
 #                        The smoke renders of the two schedulers are compared
 #                        only when both legs ran.
-#   --record-goldens  -> implies --tests; also records the native and Cycles golden
+#   --record-goldens  -> implies --tests; also records the native, Cycles and MoonRay golden
 #                        renders (NativeGoldenTest, NativeIDistortAmountTest,
-#                        NativeIWarpTest, USDRenderCyclesTest)
+#                        NativeIWarpTest, USDRenderCyclesTest,
+#                        USDRenderCyclesLiveTextureTest, USDRenderMoonRayLiveTextureTest,
+#                        USDRenderCyclesProjectionTest, USDRenderMoonRayProjectionTest,
+#                        USDRenderStormTest)
 #                        remotely and downloads them, STAMP included, into
 #                        Tests/fixtures/native-golden/ of this checkout. The
 #                        references bind bit for bit only under the preset that
@@ -49,6 +52,9 @@
 #                        ctest-<scheduler>-repeat.log next to the ctest log. <name>
 #                        must not contain a colon or whitespace.
 #   --no-appimage     -> skip packaging and downloading the AppImage.
+#   --no-remote-ccache -> build with the local and actions/cache ccache only,
+#                        without the shared remote ccache storage (the
+#                        CCACHE_REMOTE_STORAGE repo secret).
 #   --cmake-arg <arg> -> pass <arg> to the remote cmake configure, e.g.
 #                        --cmake-arg -DNATRON_GPU=OFF. Repeatable. The args reach
 #                        the workflow as one space-separated input, so an arg
@@ -85,7 +91,7 @@ FIND_INTERVAL_SECS=5
 WATCH_INTERVAL_SECS=30
 
 usage() {
-    echo "usage: build.sh <fast|release|debug> [--tests] [--scheduler <legacy|taskgraph>] [--record-goldens] [--shuffle-seeds <n,n,...>] [--repeat-test <name>:<N>] [--no-appimage] [--cmake-arg <arg>]... [--gui \"<script> ...\"]" >&2
+    echo "usage: build.sh <fast|release|debug> [--tests] [--scheduler <legacy|taskgraph>] [--record-goldens] [--shuffle-seeds <n,n,...>] [--repeat-test <name>:<N>] [--no-appimage] [--no-remote-ccache] [--cmake-arg <arg>]... [--gui \"<script> ...\"]" >&2
     echo "       build.sh <fast|release> --from-run <run-id> [--gui-ref <ref>] --gui \"<script> ...\"" >&2
     echo "       build.sh --mode" >&2
 }
@@ -121,6 +127,7 @@ PRESET=""
 RUN_TESTS=false
 RECORD_GOLDENS=false
 WANT_APPIMAGE=true
+REMOTE_CCACHE=true
 SHUFFLE_SEEDS=""
 REPEAT_TEST=""
 SCHEDULERS="legacy,taskgraph"
@@ -196,6 +203,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --no-appimage)
             WANT_APPIMAGE=false
+            BUILD_OPTION=true
+            ;;
+        --no-remote-ccache)
+            REMOTE_CCACHE=false
             BUILD_OPTION=true
             ;;
         --cmake-arg)
@@ -358,6 +369,12 @@ if [[ -n "${REPEAT_TEST}" ]]; then
     REPEAT_ARGS=(-f "repeat_test=${REPEAT_TEST}")
 fi
 
+# Sent only when switched off, so a ref whose workflow predates the input still dispatches.
+REMOTE_CCACHE_ARGS=()
+if [[ "${REMOTE_CCACHE}" == false ]]; then
+    REMOTE_CCACHE_ARGS=(-f "remote_ccache=false")
+fi
+
 echo "== build.sh: dispatching ${WORKFLOW} on ${BRANCH} (${HEAD_SHA:0:10}) token=${TOKEN} =="
 gh workflow run "${WORKFLOW}" --ref "${BRANCH}" \
     -f "preset=${PRESET}" \
@@ -366,6 +383,7 @@ gh workflow run "${WORKFLOW}" --ref "${BRANCH}" \
     -f "appimage=${WANT_APPIMAGE}" \
     -f "shuffle_seeds=${SHUFFLE_SEEDS}" \
     ${REPEAT_ARGS[@]+"${REPEAT_ARGS[@]}"} \
+    ${REMOTE_CCACHE_ARGS[@]+"${REMOTE_CCACHE_ARGS[@]}"} \
     -f "schedulers=${SCHEDULERS}" \
     -f "cmake_args=${CMAKE_ARGS}" \
     -f "label=${LABEL}" \

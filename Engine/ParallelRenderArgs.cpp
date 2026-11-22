@@ -448,10 +448,7 @@ EffectInstance::treeRecurseFunctor(const NodePtr& node,
         inputContext.install();
 
         {
-            ///Notify the node that we're going to render something with the input
-            EffectInstance::NotifyInputNRenderingStarted_RAIIPtr inputNIsRendering_RAII;
             assert(inputNb != -1); //< see getInputNumber
-            inputNIsRendering_RAII.reset(new EffectInstance::NotifyInputNRenderingStarted_RAII(node.get(), inputNb));
 
             ///For all views requested in input
             for (FrameRangesMap::const_iterator viewIt = it->second.begin(); viewIt != it->second.end(); ++viewIt) {
@@ -482,6 +479,15 @@ EffectInstance::treeRecurseFunctor(const NodePtr& node,
                                 roi = (ownRoI != inputRois.end()) ? ownRoI->second : RectD();
                             }
 
+                            // The planned RoI is what every rect of the frame reads together, so the rect being rendered
+                            // has to be asked: its own RoI may not reach an input a plan left out for it.
+                            if (roiIsInRequestPass && !inputRois.empty()) {
+                                const FrameViewRequest* inputRequest = frameArgs->request->getFrameViewRequest(f, viewIt->first);
+                                if (inputRequest && inputRoIMissesRoD(inputRois, inputEffect, inputRequest->globalData.rod)) {
+                                    continue;
+                                }
+                            }
+
                             const unsigned int upstreamMipmapLevel = useScaleOneInputs ? 0 : originalMipmapLevel;
                             const RenderScale upstreamScale = useScaleOneInputs ? RenderScale::identity : RenderScale::fromMipmapLevel(originalMipmapLevel);
                             const RectI inputRoIPixelCoords = roi.toPixelEnclosing(upstreamMipmapLevel, inputPar);
@@ -504,9 +510,14 @@ EffectInstance::treeRecurseFunctor(const NodePtr& node,
                                                                                    time /*callerRenderTime*/));
 
                                 EffectInstance::RenderRoIRetCode ret;
-                                ret = EffectInstance::renderInputOrTakeFromStore(inputEffect, inputNb, renderArgs.get(), &inputImgs, effect.get(), &inputContext); //< requested bitdepth
+                                bool freshInput = false;
+                                ret = EffectInstance::renderInputOrTakeFromStore(inputEffect, inputNb, renderArgs.get(), &inputImgs, effect.get(), &inputContext, &freshInput); //< requested bitdepth
                                 if (ret != EffectInstance::eRenderRoIRetCodeOk) {
                                     return ret;
+                                }
+                                // An input the cache served lights no edge: nothing ran upstream for this render.
+                                if (freshInput) {
+                                    node->noteInputExecution(inputNb);
                                 }
                             }
                             for (std::map<ImageLayerDesc, ImagePtr>::iterator it3 = inputImgs.begin(); it3 != inputImgs.end(); ++it3) {
@@ -526,7 +537,7 @@ EffectInstance::treeRecurseFunctor(const NodePtr& node,
                     }
                 } // for all ranges
             } // for all views
-        } // EffectInstance::NotifyInputNRenderingStarted_RAII
+        }
     } // for all inputs
     return EffectInstance::eRenderRoIRetCodeOk;
 } // EffectInstance::treeRecurseFunctor
@@ -878,6 +889,34 @@ planDeferredContextRequests(const DeferredContextRequest& request,
     return eStatusOK;
 }
 
+// Appends to pieces up to four disjoint rectangles covering a less b.
+void
+appendRectDifference(const RectD& a,
+                     const RectD& b,
+                     std::vector<RectD>* pieces)
+{
+    if (a.isNull()) {
+        return;
+    }
+    const RectD cut = a.intersect(b);
+    if (cut.isNull()) {
+        pieces->push_back(a);
+
+        return;
+    }
+    const RectD candidates[] = {
+        RectD(a.x1, a.y1, a.x2, cut.y1),
+        RectD(a.x1, cut.y2, a.x2, a.y2),
+        RectD(a.x1, cut.y1, cut.x1, cut.y2),
+        RectD(cut.x2, cut.y1, a.x2, cut.y2),
+    };
+    for (const RectD& piece : candidates) {
+        if (!piece.isNull()) {
+            pieces->push_back(piece);
+        }
+    }
+}
+
 StatusEnum
 visitRequestPassItem(bool useTransforms,
                      const RequestPassItem& item,
@@ -885,7 +924,8 @@ visitRequestPassItem(bool useTransforms,
                      WarmedRoDSet* warmed,
                      ContextFrameArgsMap* passArgs,
                      DeferredContextRequests* deferred,
-                     std::vector<RequestPassItem>* stack)
+                     std::vector<RequestPassItem>* stack,
+                     std::vector<RequestPassNewWork>* newWork)
 {
     const NodePtr& node = item.node;
     const double time = item.time;
@@ -1043,10 +1083,30 @@ visitRequestPassItem(bool useTransforms,
         // Do not recurse if the roi did not add anything new to render
         return eStatusOK;
     }
+    const RectD previousFinalRoI = fvRequest->finalData.finalRoi;
     if (finalRoIEmpty) {
         fvRequest->finalData.finalRoi = canonicalRenderWindow;
     } else {
         fvRequest->finalData.finalRoi.merge(canonicalRenderWindow);
+    }
+    if (newWork) {
+        RequestPassNewWork added;
+        added.key = nodeKey;
+        added.time = time;
+        added.view = view;
+        if (finalRoIEmpty) {
+            added.roi = canonicalRenderWindow;
+            newWork->push_back(added);
+        } else {
+            // The final RoI is one bounding rectangle, so what the entry renders anew is the merged rectangle less the
+            // previous one, the corner fill of a merge included.
+            std::vector<RectD> pieces;
+            appendRectDifference(fvRequest->finalData.finalRoi, previousFinalRoI, &pieces);
+            for (const RectD& piece : pieces) {
+                added.roi = piece;
+                newWork->push_back(added);
+            }
+        }
     }
 
     if (fvRequest->globalData.identityInputNb == -2) {
@@ -1065,7 +1125,7 @@ visitRequestPassItem(bool useTransforms,
         //Should fail on the assert above
         return eStatusFailed;
     } else if (fvRequest->globalData.identityInputNb != -1) {
-        EffectInstancePtr inputEffectIdentity = effect->getInput(fvRequest->globalData.identityInputNb);
+        EffectInstancePtr inputEffectIdentity = effect->getIdentitySource(fvRequest->globalData.identityInputNb);
         if (inputEffectIdentity) {
             NodePtr inputIdentityNode = inputEffectIdentity->getNode();
             // A node setting context variables may pass its input through: the input is visited
@@ -1092,16 +1152,14 @@ visitRequestPassItem(bool useTransforms,
 
     ///Compute the regions of interest in input for this RoI
     FrameViewPerRequestData fvPerRequestData;
-    effect->getRegionsOfInterest_public(time, nodeRequest->mappedScale, fvRequest->globalData.rod, canonicalRenderWindow, view, &fvPerRequestData.inputsRoi);
-
-
     ///Transform Rois and get the reroutes map
-    if (useTransforms) {
-        if (fvRequest->globalData.transforms) {
-            fvRequest->globalData.reroutesMap.reset( new std::map<int, EffectInstancePtr>() );
-            EffectInstance::transformInputRois(effect.get(), fvRequest->globalData.transforms, par, nodeRequest->mappedScale, &fvPerRequestData.inputsRoi, fvRequest->globalData.reroutesMap.get());
-        }
+    InputMatrixMapPtr roiTransforms;
+    if (useTransforms && fvRequest->globalData.transforms) {
+        roiTransforms = fvRequest->globalData.transforms;
+        fvRequest->globalData.reroutesMap.reset(new std::map<int, EffectInstancePtr>());
     }
+    effect->getRegionsOfInterest_public(time, nodeRequest->mappedScale, fvRequest->globalData.rod, canonicalRenderWindow, view, &fvPerRequestData.inputsRoi,
+                                        roiTransforms, par, roiTransforms ? fvRequest->globalData.reroutesMap.get() : nullptr);
 
     EffectInstance::ComponentsNeededMap neededComps;
     {
@@ -1115,10 +1173,7 @@ visitRequestPassItem(bool useTransforms,
     }
 
     // Mirrors the choice renderRoI makes before renderInputImagesForRoI.
-    bool useScaleOneInputs = node->useScaleOneImagesWhenRenderScaleSupportIsDisabled();
-    if (!useScaleOneInputs && !effect->supportsMultiResolution()) {
-        useScaleOneInputs = true;
-    }
+    const bool useScaleOneInputs = effect->pullsInputsAtScaleOne();
     // Same level as treeRecurseFunctor picks for this input when rendering.
     const unsigned int upstreamMipmapLevel = useScaleOneInputs ? 0 : originalMipmapLevel;
 
@@ -1220,16 +1275,13 @@ visitRequestPassItem(bool useTransforms,
 
 } // namespace
 
+namespace {
+
 StatusEnum
-EffectInstance::getInputsRoIsFunctor(bool useTransforms,
-                                     double time,
-                                     ViewIdx view,
-                                     unsigned originalMipmapLevel,
-                                     const NodePtr& node,
-                                     const NodePtr& /*callerNode*/,
-                                     const NodePtr& /*treeRoot*/,
-                                     const RectD& canonicalRenderWindow,
-                                     FrameRequestMap& requests)
+runRequestPass(bool useTransforms,
+               const std::vector<RequestPassItem>& roots,
+               FrameRequestMap& requests,
+               std::vector<RequestPassNewWork>* newWork)
 {
     // An explicit stack rather than recursion: the walk is as deep as the longest upstream chain, and request passes
     // run on pool threads with default-sized stacks.
@@ -1245,8 +1297,8 @@ EffectInstance::getInputsRoIsFunctor(bool useTransforms,
 
     DeferredContextRequests deferred;
 
-    // The root renders under the empty context.
-    stack.push_back(makeVisitItem(node, RenderContextPtr(), time, view, originalMipmapLevel, canonicalRenderWindow));
+    // Reversed, so that the roots are walked in their order.
+    stack.assign(roots.rbegin(), roots.rend());
 
     for (;;) {
         if (stack.empty()) {
@@ -1266,7 +1318,7 @@ EffectInstance::getInputsRoIsFunctor(bool useTransforms,
 
         switch (item.kind) {
         case RequestPassItem::eKindVisit:
-            if (visitRequestPassItem(useTransforms, item, requests, &warmed, &passArgs, &deferred, &stack) == eStatusFailed) {
+            if (visitRequestPassItem(useTransforms, item, requests, &warmed, &passArgs, &deferred, &stack, newWork) == eStatusFailed) {
                 return eStatusFailed;
             }
             break;
@@ -1295,6 +1347,25 @@ EffectInstance::getInputsRoIsFunctor(bool useTransforms,
     }
 
     return eStatusOK;
+} // runRequestPass
+
+} // namespace
+
+StatusEnum
+EffectInstance::getInputsRoIsFunctor(bool useTransforms,
+                                     double time,
+                                     ViewIdx view,
+                                     unsigned originalMipmapLevel,
+                                     const NodePtr& node,
+                                     const NodePtr& /*callerNode*/,
+                                     const NodePtr& /*treeRoot*/,
+                                     const RectD& canonicalRenderWindow,
+                                     FrameRequestMap& requests)
+{
+    // The root renders under the empty context.
+    const std::vector<RequestPassItem> roots(1, makeVisitItem(node, RenderContextPtr(), time, view, originalMipmapLevel, canonicalRenderWindow));
+
+    return runRequestPass(useTransforms, roots, requests, 0);
 } // EffectInstance::getInputsRoIsFunctor
 
 namespace {
@@ -1526,6 +1597,27 @@ EffectInstance::computeRequestPass(double time,
     }*/
 
     return eStatusOK;
+}
+
+StatusEnum
+EffectInstance::extendRequestPass(const std::vector<RequestPassRoot>& roots,
+                                  FrameRequestMap& request,
+                                  std::vector<RequestPassNewWork>* newWork)
+{
+    if (roots.empty()) {
+        return eStatusOK;
+    }
+    std::vector<RequestPassItem> items;
+    items.reserve(roots.size());
+    for (const RequestPassRoot& root : roots) {
+        if (!root.node || !root.node->getEffectInstance()) {
+            return eStatusFailed;
+        }
+        items.push_back(makeVisitItem(root.node, root.context, root.time, root.view, root.mipmapLevel, root.roi));
+    }
+    const bool doTransforms = appPTR->getCurrentSettings()->isTransformConcatenationEnabled();
+
+    return runRequestPass(doTransforms, items, request, newWork);
 }
 
 const FrameViewRequest*
@@ -2029,6 +2121,13 @@ getAllUpstreamNodesRecursiveWithDependencies_internal(const NodePtr& node,
         if (inputNode) {
             getAllUpstreamNodesRecursiveWithDependencies_internal(inputNode, finalNodes);
         }
+    }
+
+    // An identity of an internal source renders it in place of any input, so the source needs
+    // the frame args its inputs get.
+    const EffectInstancePtr internalSource = node->getEffectInstance()->getInternalIdentitySource();
+    if (internalSource) {
+        getAllUpstreamNodesRecursiveWithDependencies_internal(internalSource->getNode(), finalNodes);
     }
 } // getAllUpstreamNodesRecursiveWithDependencies_internal
 

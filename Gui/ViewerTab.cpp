@@ -52,6 +52,7 @@
 #include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/OutputSchedulerThread.h" // RenderEngine
 #include "Engine/Project.h"
+#include "Engine/Settings.h"
 #include "Engine/UndoGesture.h"
 #include "Engine/Utils.h" // convertFromPlainText
 #include "Engine/ViewIdx.h"
@@ -89,7 +90,6 @@ const char* const kViewerKnobNames[] = {
     kViewerParamGain,
     kViewerParamEnableGamma,
     kViewerParamGamma,
-    kViewerParamAutoContrast,
     kViewerParamCheckerboard,
     kViewerParamDisplay,
     kViewerParamView,
@@ -636,6 +636,24 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     _imp->renderScaleCombo->addAction(proxy32);
     _imp->firstRowLayout->addWidget(_imp->renderScaleCombo);
 
+    _imp->autoProxyButton = new Button(tr("Auto Proxy"), _imp->firstSettingsRow);
+    _imp->autoProxyButton->setFocusPolicy(Qt::NoFocus);
+    _imp->autoProxyButton->setFixedHeight(buttonSize.height());
+    _imp->autoProxyButton->setCheckable(true);
+    {
+        const bool autoProxy = appPTR->getCurrentSettings()->isAutoProxyEnabled();
+        _imp->autoProxyButton->setChecked(autoProxy);
+        _imp->autoProxyButton->setDown(autoProxy);
+    }
+    setToolTipWithShortcut(kShortcutGroupViewer, kShortcutIDActionAutoProxyScrubbing,
+                           "<p><b>" + tr("Auto Proxy Scrubbing:").toStdString() + "</b></p><p>" + tr("When checked, the viewer drafts while the timeline is scrubbed or a control is dragged, "
+                                                                                                     "at the auto-proxy level of the preferences. Dragging a control of a colour node that works "
+                                                                                                     "pixel by pixel never drafts, and draft turns off on its own when the viewer's full "
+                                                                                                     "resolution keeps up.")
+                                                                                                      .toStdString()
+                               + "</p>" + "<p><b>" + tr("Keyboard shortcut: %1").toStdString() + "</b></p>",
+                           _imp->autoProxyButton);
+    _imp->firstRowLayout->addWidget(_imp->autoProxyButton);
 
     addSpacer(_imp->firstRowLayout);
 
@@ -688,7 +706,7 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     _imp->firstInputImage->setFixedWidth(_imp->firstInputImage->widthToFit(QStringList() << QString::fromUtf8("ColorCorrect1")));
     _imp->firstInputImage->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     _imp->firstInputImage->addItem( QString::fromUtf8(" - ") );
-    QObject::connect( _imp->firstInputImage, SIGNAL(currentIndexChanged(QString)), this, SLOT(onFirstInputNameChanged(QString)) );
+    QObject::connect(_imp->firstInputImage, SIGNAL(currentIndexChanged(int)), this, SLOT(onFirstInputMenuChanged(int)));
     _imp->firstRowLayout->addWidget(_imp->firstInputImage);
 
     QIcon mergeIcon;
@@ -727,7 +745,7 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     _imp->secondInputImage->setFixedWidth(_imp->secondInputImage->widthToFit(QStringList() << QString::fromUtf8("ColorCorrect1")));
     _imp->secondInputImage->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     _imp->secondInputImage->addItem( QString::fromUtf8(" - ") );
-    QObject::connect( _imp->secondInputImage, SIGNAL(currentIndexChanged(QString)), this, SLOT(onSecondInputNameChanged(QString)) );
+    QObject::connect(_imp->secondInputImage, SIGNAL(currentIndexChanged(int)), this, SLOT(onSecondInputMenuChanged(int)));
     _imp->firstRowLayout->addWidget(_imp->secondInputImage);
 
     _imp->firstRowLayout->addStretch();
@@ -766,20 +784,6 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     QObject::connect( _imp->gainSlider, SIGNAL(editingFinished(bool)), this, SLOT(onGainSliderEditingFinished(bool)) );
     _imp->gainSlider->setToolTip(gainTt);
     _imp->secondRowLayout->addWidget(_imp->gainSlider);
-
-    QString autoContrastToolTip(QString::fromUtf8("<p><b>") + tr("Auto-contrast:") + QString::fromUtf8("</b></p><p>") + tr("Automatically adjusts the gain and the offset applied "
-                                                                                                                           "to the colors of the visible image portion on the viewer.")
-                                + QString::fromUtf8("</p>"));
-    QIcon acIc;
-    appPTR->getIcon(NATRON_PIXMAP_VIEWER_AUTOCONTRAST_ENABLED, pixmapIconSize, &acIc);
-    _imp->autoContrast = new Button(acIc, QString(), _imp->secondSettingsRow);
-    _imp->autoContrast->setCheckable(true);
-    _imp->autoContrast->setChecked(false);
-    _imp->autoContrast->setDown(false);
-    _imp->autoContrast->setIconSize(buttonIconSize);
-    _imp->autoContrast->setFixedSize(buttonSize);
-    _imp->autoContrast->setToolTip(autoContrastToolTip);
-    _imp->secondRowLayout->addWidget(_imp->autoContrast);
 
     QIcon gammaIc;
     appPTR->getIcon(NATRON_PIXMAP_VIEWER_GAMMA_ENABLED, pixmapIconSize, &gammaIc);
@@ -905,6 +909,9 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     _imp->sceneRenderRowLayout->addWidget(_imp->refineSamplesLabel);
     _imp->sceneRenderRowLayout->addStretch();
     _imp->sceneRenderRow->hide();
+    // The first switch to a progressive renderer shows the row: its style sheet polish is done
+    // now rather than on that switch.
+    _imp->sceneRenderRow->ensurePolished();
     QObject::connect(_imp->maxSamplesBox, SIGNAL(valueChanged(double)), this, SLOT(onMaxSamplesBoxChanged(double)));
     QObject::connect(_imp->refinementPausedButton, SIGNAL(clicked(bool)), this, SLOT(onRefinementPausedButtonClicked(bool)));
     /*=============================================*/
@@ -1368,15 +1375,36 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     QObject::connect( engine.get(), SIGNAL(renderFinished(int)), this, SLOT(onEngineStopped()) );
     QObject::connect( engine.get(), SIGNAL(renderStarted(bool)), this, SLOT(onEngineStarted(bool)) );
 
+    _imp->staleCueClock.start();
+    _imp->staleCueTimer.setSingleShot(true);
+    // A coarse timer may fire early, which would cost an extra wake-up before each deadline.
+    _imp->staleCueTimer.setTimerType(Qt::PreciseTimer);
+    QObject::connect(&_imp->staleCueTimer, &QTimer::timeout, this, &ViewerTab::onStaleCueTimeout);
+    QObject::connect(_imp->viewerNode, &ViewerInstance::staleChanged, this, &ViewerTab::onViewerStaleChanged);
+
     _imp->mustSetUpPlaybackButtonsTimer.setSingleShot(true);
     QObject::connect( &_imp->mustSetUpPlaybackButtonsTimer, SIGNAL(timeout()), this, SLOT(onSetDownPlaybackButtonsTimeout()) );
     manageSlotsForInfoWidget(0, true);
 
     QObject::connect( _imp->clipToProjectFormatButton, SIGNAL(clicked(bool)), this, SLOT(onClipToProjectButtonToggle(bool)) );
     QObject::connect( _imp->fullFrameProcessingButton, SIGNAL(clicked(bool)), this, SLOT(onFullFrameButtonToggle(bool)) );
+    QObject::connect(_imp->autoProxyButton, SIGNAL(clicked(bool)), this, SLOT(onAutoProxyButtonToggle(bool)));
+    QObject::connect(appPTR->getCurrentSettings().get(), &Settings::settingChanged, this, [this](KnobI* knob) {
+        if (knob && (knob->getName() == "staleCueStyle")) {
+            refreshStaleCue();
+
+            return;
+        }
+        if (!knob || (knob->getName() != "autoProxyScrubbing")) {
+            return;
+        }
+        const bool autoProxy = appPTR->getCurrentSettings()->isAutoProxyEnabled();
+        QSignalBlocker blocker(_imp->autoProxyButton);
+        _imp->autoProxyButton->setChecked(autoProxy);
+        _imp->autoProxyButton->setDown(autoProxy);
+    });
     QObject::connect( _imp->viewsComboBox, SIGNAL(currentIndexChanged(int)), this, SLOT(onViewsComboboxChanged(int)) );
-    QObject::connect( _imp->enableViewerRoI, SIGNAL(clicked(bool)), this, SLOT(onEnableViewerRoIButtonToggle(bool)) );
-    QObject::connect( _imp->autoContrast, SIGNAL(clicked(bool)), this, SLOT(onAutoContrastChanged(bool)) );
+    QObject::connect(_imp->enableViewerRoI, SIGNAL(clicked(bool)), this, SLOT(onEnableViewerRoIButtonToggle(bool)));
     QObject::connect( _imp->renderScaleCombo, SIGNAL(currentIndexChanged(int)), this, SLOT(onRenderScaleComboIndexChanged(int)) );
     QObject::connect( _imp->activateRenderScale, SIGNAL(toggled(bool)), this, SLOT(onRenderScaleButtonClicked(bool)) );
 
@@ -1677,7 +1705,7 @@ ViewerTab::onViewerKnobValueChanged(ViewSpec /*view*/,
 void
 ViewerTab::refreshFromViewerKnob(const std::string& name)
 {
-    if ((name == kViewerParamEnableGain) || (name == kViewerParamGain) || (name == kViewerParamEnableGamma) || (name == kViewerParamGamma) || (name == kViewerParamAutoContrast) || (name == kViewerParamCheckerboard)) {
+    if ((name == kViewerParamEnableGain) || (name == kViewerParamGain) || (name == kViewerParamEnableGamma) || (name == kViewerParamGamma) || (name == kViewerParamCheckerboard)) {
         refreshColorControlsFromKnobs();
     } else if ((name == kViewerParamDisplay) || (name == kViewerParamView) || (name == kViewerParamLook)) {
         refreshDisplayTransformMenus();
@@ -1732,13 +1760,12 @@ ViewerTab::refreshColorControlsFromKnobs()
     const double fstop = gainEnabled ? _imp->viewerValue<double>(kViewerParamGain, 0.) : 0.;
     const bool gammaEnabled = _imp->viewerValue<bool>(kViewerParamEnableGamma, false);
     const double gamma = gammaEnabled ? _imp->viewerValue<double>(kViewerParamGamma, 1.) : 1.;
-    const bool autoContrast = _imp->viewerValue<bool>(kViewerParamAutoContrast, false);
     const bool checkerboard = _imp->viewerValue<bool>(kViewerParamCheckerboard, false);
 
     {
         QSignalBlocker b0(_imp->toggleGainButton), b1(_imp->gainBox), b2(_imp->gainSlider);
         QSignalBlocker b3(_imp->toggleGammaButton), b4(_imp->gammaBox), b5(_imp->gammaSlider);
-        QSignalBlocker b6(_imp->autoContrast), b7(_imp->checkerboardButton);
+        QSignalBlocker b6(_imp->checkerboardButton);
 
         _imp->toggleGainButton->setChecked(gainEnabled);
         _imp->toggleGainButton->setDown(gainEnabled);
@@ -1753,15 +1780,6 @@ ViewerTab::refreshColorControlsFromKnobs()
             _imp->gammaBox->setValue(gamma);
         }
         _imp->gammaSlider->seekScalePosition(gamma);
-
-        _imp->autoContrast->setChecked(autoContrast);
-        _imp->autoContrast->setDown(autoContrast);
-        _imp->gainSlider->setEnabled(!autoContrast);
-        _imp->gainBox->setEnabled(!autoContrast);
-        _imp->toggleGainButton->setEnabled(!autoContrast);
-        _imp->gammaSlider->setEnabled(!autoContrast);
-        _imp->gammaBox->setEnabled(!autoContrast);
-        _imp->toggleGammaButton->setEnabled(!autoContrast);
 
         _imp->checkerboardButton->setChecked(checkerboard);
         _imp->checkerboardButton->setDown(checkerboard);
@@ -1862,8 +1880,15 @@ ViewerTab::refreshSceneRenderRow()
     }
     const bool progressive = isShowingScene() && (_imp->sceneViewport->getRenderer().getActiveRendererId() != kRenderDelegateStormId);
 
-    _imp->sceneRenderRow->setVisible(topVisible && progressive);
+    const bool show = topVisible && progressive;
+    const bool toggled = _imp->sceneRenderRow->isVisibleTo(this) != show;
+    _imp->sceneRenderRow->setVisible(show);
     refreshRefineSamplesLabel();
+    if (toggled) {
+        // Laid out now rather than at the posted layout request, so that the view's resize, which
+        // paints it, comes before any repaint asked for after this (SceneViewport::setRendererId()).
+        _imp->mainLayout->activate();
+    }
 }
 
 void

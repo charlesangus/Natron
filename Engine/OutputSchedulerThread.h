@@ -581,6 +581,8 @@ public:
 
     void notifyFrameProduced(const BufferableObjectPtrList& frames, const RenderStatsPtr& stats, const ViewerCurrentFrameRequestSchedulerStartArgsPtr& request);
 
+    bool isBackupThreadRunning() const;
+
 private:
 
     virtual void onWaitForAbortCompleted() OVERRIDE FINAL;
@@ -746,17 +748,6 @@ public:
     void waitForAbortToComplete_not_main_thread();
 
     /**
-     * @brief Same as waitForAbortToComplete_not_main_thread except that this function is not blocking and should be only called
-     * from the main-thread. You will get notified with the signal engineAborted when the engine really quits.
-     **/
-    void waitForAbortToComplete_main_thread();
-
-    /**
-     * @brief Use this as last resort, this will block the caller thread until abort is completed
-     **/
-    void waitForAbortToComplete_enforce_blocking();
-
-    /**
      * @brief Returns true if threads owned by the engine are still alive
      **/
     bool hasThreadsAlive() const;
@@ -808,8 +799,6 @@ public Q_SLOTS:
 
     void onCurrentFrameRenderRequestPosted();
 
-    void onWatcherEngineAbortedEmitted();
-
     void onWatcherEngineQuitEmitted();
 
 Q_SIGNALS:
@@ -836,9 +825,6 @@ Q_SIGNALS:
 
 
     void renderStarted(bool forward);
-
-    // Emitted after calling waitForAbortToComplete_main_thread
-    void engineAborted();
 
     // Emitted after calling waitForEngineToQuit_main_thread
     void engineQuit();

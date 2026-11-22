@@ -463,13 +463,14 @@ Gui::removeViewerTab(ViewerTab* tab,
 
     if (tab == _imp->_activeViewer) {
         _imp->_activeViewer = 0;
+        getApp()->setViewerActiveForRenders(NULL);
     }
     tab->abortRendering();
     NodeGraph* graph = 0;
     NodeGroup* isGrp = 0;
     NodeCollectionPtr collection;
     if ( tab->getInternalNode() && tab->getInternalNode()->getNode() ) {
-        NodeCollectionPtr collection = tab->getInternalNode()->getNode()->getGroup();
+        collection = tab->getInternalNode()->getNode()->getGroup();
         isGrp = dynamic_cast<NodeGroup*>( collection.get() );
     }
 
@@ -488,7 +489,10 @@ Gui::removeViewerTab(ViewerTab* tab,
 
     ViewerTab* lastSelectedViewer = graph->getLastSelectedViewer();
 
-    if (lastSelectedViewer == tab) {
+    ViewerTab* recentViewer = (lastSelectedViewer == tab) ? graph->mostRecentlyFocusedViewer(tab) : 0;
+    if (recentViewer) {
+        graph->setLastSelectedViewer(recentViewer);
+    } else if (lastSelectedViewer == tab) {
         bool foundOne = false;
         NodesList nodes;
         if (collection) {

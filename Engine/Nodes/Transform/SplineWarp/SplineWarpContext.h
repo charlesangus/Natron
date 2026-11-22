@@ -43,6 +43,8 @@
 
 NATRON_NAMESPACE_ENTER
 
+class VectorFollowPoints;
+
 namespace Serialization {
 struct SplineWarpAnimatedValueSerialization;
 struct SplineWarpLinkSerialization;
@@ -367,8 +369,8 @@ public:
     void setOwnTransform(const RotoItemPtr& item, const SplineWarpTransform& transform);
 
     /**
-     * @brief Ties the transform knobs of each selected curve that is neither transform-linked nor
-     * inside a selected layer, and unties the others. Main thread only.
+     * @brief Ties the Transform page to the selected curve when the selection holds one transform
+     * and it is an unlinked curve's, and unties every other curve. Does nothing off the main thread.
      **/
     void refreshSelectedTransformTies();
 
@@ -431,7 +433,23 @@ public:
      * parameter is out of range.
      **/
     void setCorrespondence(const SplineWarpLinkPtr& link, int index, double sourceParam, double destinationParam, double time);
-    void setCorrespondenceAtTime(const SplineWarpLinkPtr& link, int index, double time, double sourceParam, double destinationParam);
+
+    /**
+     * @brief Without evaluate, the node only learns that its output changed, and renders when the
+     * caller evaluates it, so keying many frames at once does not render once per key. Without markDirty the hash stays
+     * as it was too, and the caller owes correspondenceKeysWritten.
+     **/
+    void setCorrespondenceAtTime(const SplineWarpLinkPtr& link, int index, double time, double sourceParam, double destinationParam, bool evaluate = true, bool markDirty = true);
+
+    // Invalidates the node's hash once for correspondence keys written with markDirty false.
+    void correspondenceKeysWritten();
+
+    /**
+     * @brief The two ends of correspondence index of link, as points a vector follow moves, one
+     * on each curve. Each moved end is keyed at the parameter of its curve nearest to where it
+     * went, kept between the correspondences next to it. Null when index is out of range.
+     **/
+    std::shared_ptr<VectorFollowPoints> makeCorrespondenceFollowPoints(const SplineWarpLinkPtr& link, int index);
 
     void removeCorrespondence(const SplineWarpLinkPtr& link, int index);
 
@@ -465,6 +483,17 @@ public:
     virtual void composeItemTransform(const RotoDrawableItem& item, double time, const Transform::Matrix3x3& local, Transform::Matrix3x3* matrix) const OVERRIDE;
 
     /**
+     * @brief False for a transform-linked item: its own transform is unused, and its link target's
+     * belongs to that target and every other item linked to it.
+     **/
+    virtual bool fitKeysOwnTransform(const RotoDrawableItem& item) const OVERRIDE;
+
+    /**
+     * @brief What item and each of its parent layers are transform linked to.
+     **/
+    virtual std::list<RotoItemPtr> getTransformSources(const RotoDrawableItem& item) const OVERRIDE;
+
+    /**
      * @brief Saves the links (the same objects, with their values), the boundaries and the layer
      * amounts.
      **/
@@ -490,9 +519,15 @@ protected:
     virtual void appendHostContentHash(ContentHasher& h) const OVERRIDE;
 
     /**
-     * @brief False for a transform-linked item, whose own transform knobs are not used.
+     * @brief False for a transform-linked curve or layer: its own transform is unused, and its link
+     * target's is shared with every item linked to it.
      **/
-    virtual bool tiesTransformKnobs(const RotoDrawableItem& item) const OVERRIDE;
+    virtual bool pageEditsTransform(const RotoItem& owner) const OVERRIDE;
+
+    virtual bool layersOwnTransforms() const OVERRIDE
+    {
+        return true;
+    }
 
 private:
     bool ownsCurve(const BezierPtr& curve) const;

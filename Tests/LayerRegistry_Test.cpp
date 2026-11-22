@@ -49,6 +49,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/LayerRegistry.h"
 #include "Engine/Node.h"
+#include "Engine/NodeGroup.h"
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
 
@@ -99,32 +100,70 @@ TEST(LayerRegistry, ReservedNamesRefused)
     std::string error;
     std::vector<std::string> ch(1, "A");
 
-    ImageLayerDesc none("none", "none", "", ch);
+    ImageLayerDesc none("none", ch);
     EXPECT_EQ(LayerRegistry::eAddResultRefused, registry.add(none, LayerRegistryEntry::eOriginUser, &error));
 
-    ImageLayerDesc all("all", "all", "", ch);
+    ImageLayerDesc all("all", ch);
     EXPECT_EQ(LayerRegistry::eAddResultRefused, registry.add(all, LayerRegistryEntry::eOriginUser, &error));
 
-    ImageLayerDesc backward("Backward", "Backward", "", ch);
+    ImageLayerDesc alphaChannelName("a", ch);
+    EXPECT_EQ(LayerRegistry::eAddResultRefused, registry.add(alphaChannelName, LayerRegistryEntry::eOriginUser, &error));
+
+    ImageLayerDesc backward("Backward", ch);
     EXPECT_EQ(LayerRegistry::eAddResultRefused, registry.add(backward, LayerRegistryEntry::eOriginUser, &error));
 
-    ImageLayerDesc color("Color", "Color", "", ch);
-    EXPECT_EQ(LayerRegistry::eAddResultRefused, registry.add(color, LayerRegistryEntry::eOriginUser, &error));
+    ImageLayerDesc forwardUpper("FORWARD", ch);
+    EXPECT_EQ(LayerRegistry::eAddResultRefused, registry.add(forwardUpper, LayerRegistryEntry::eOriginUser, &error));
 
-    ImageLayerDesc storageId(kNatronColorLayerID, kNatronColorLayerID, "", ch);
+    ImageLayerDesc disparityLower("disparityl", ch);
+    EXPECT_EQ(LayerRegistry::eAddResultRefused, registry.add(disparityLower, LayerRegistryEntry::eOriginUser, &error));
+
+    // The colour storage ID is the rgba view's name, so a one-channel "rgba" conflicts with the built-in.
+    ImageLayerDesc storageId(kNatronColorLayerID, ch);
     EXPECT_EQ(LayerRegistry::eAddResultRefused, registry.add(storageId, LayerRegistryEntry::eOriginUser, &error));
 
-    ImageLayerDesc rgbaUpper("RGBA", "RGBA", "", ch);
+    ImageLayerDesc rgbaUpper("RGBA", ch);
     EXPECT_EQ(LayerRegistry::eAddResultRefused, registry.add(rgbaUpper, LayerRegistryEntry::eOriginUser, &error));
 
-    ImageLayerDesc xyUpper("XY", "XY", "", ch);
+    ImageLayerDesc xyUpper("XY", ch);
     EXPECT_EQ(LayerRegistry::eAddResultRefused, registry.add(xyUpper, LayerRegistryEntry::eOriginUser, &error));
 
     // "rgba" is a built-in with channels {R,G,B,A}: re-adding it with different channels hits
     // the built-in-conflict path in add(), not isRefusedReservedName, but is refused all the same.
     std::vector<std::string> xOnly(1, "X");
-    ImageLayerDesc rgbaWithX(kNatronColorViewRGBA, kNatronColorViewRGBA, "", xOnly);
+    ImageLayerDesc rgbaWithX(kNatronColorViewRGBA, xOnly);
     EXPECT_EQ(LayerRegistry::eAddResultRefused, registry.add(rgbaWithX, LayerRegistryEntry::eOriginUser, &error));
+}
+
+TEST(LayerRegistry, FormerLabelsAreOrdinaryNames)
+{
+    LayerRegistry registry;
+    std::string error;
+    std::vector<std::string> ch(1, "R");
+
+    EXPECT_EQ(LayerRegistry::eAddResultAdded, registry.add(ImageLayerDesc("Color", ch), LayerRegistryEntry::eOriginUser, &error)) << error;
+    EXPECT_EQ(LayerRegistry::eAddResultAdded, registry.add(ImageLayerDesc("Motion", ch), LayerRegistryEntry::eOriginUser, &error)) << error;
+    EXPECT_TRUE(registry.contains("Color"));
+    EXPECT_TRUE(registry.contains("Motion"));
+}
+
+TEST(LayerRegistry, BuiltinChannelNames)
+{
+    LayerRegistry registry;
+    ImageLayerDesc found;
+
+    ASSERT_TRUE(registry.find(kNatronForwardMotionVectorsLayerID, &found));
+    EXPECT_EQ(std::vector<std::string>({ "u", "v" }), found.getChannels());
+    ASSERT_TRUE(registry.find(kNatronBackwardMotionVectorsLayerID, &found));
+    EXPECT_EQ(std::vector<std::string>({ "u", "v" }), found.getChannels());
+    ASSERT_TRUE(registry.find(kNatronDisparityLeftLayerID, &found));
+    EXPECT_EQ(std::vector<std::string>({ "x", "y" }), found.getChannels());
+    ASSERT_TRUE(registry.find(kNatronDisparityRightLayerID, &found));
+    EXPECT_EQ(std::vector<std::string>({ "x", "y" }), found.getChannels());
+    ASSERT_TRUE(registry.find("normal", &found));
+    EXPECT_EQ(std::vector<std::string>({ "x", "y", "z" }), found.getChannels());
+    ASSERT_TRUE(registry.find("depth", &found));
+    EXPECT_EQ(std::vector<std::string>({ "Z" }), found.getChannels());
 }
 
 TEST(LayerRegistry, DottedIdRefusedUnlessFromFile)
@@ -132,7 +171,7 @@ TEST(LayerRegistry, DottedIdRefusedUnlessFromFile)
     LayerRegistry registry;
     std::string error;
     std::vector<std::string> ch(1, "R");
-    ImageLayerDesc dotted("light1.diffuse", "light1.diffuse", "", ch);
+    ImageLayerDesc dotted("light1.diffuse", ch);
 
     EXPECT_EQ(LayerRegistry::eAddResultRefused, registry.add(dotted, LayerRegistryEntry::eOriginUser, &error));
     EXPECT_EQ(LayerRegistry::eAddResultAdded, registry.add(dotted, LayerRegistryEntry::eOriginFile, &error));
@@ -149,7 +188,7 @@ TEST(LayerRegistry, FiveChannelsRefused)
     ch.push_back("B");
     ch.push_back("A");
     ch.push_back("Z");
-    ImageLayerDesc five("five", "five", "", ch);
+    ImageLayerDesc five("five", ch);
 
     EXPECT_EQ(LayerRegistry::eAddResultRefused, registry.add(five, LayerRegistryEntry::eOriginUser, &error));
     EXPECT_FALSE(error.empty());
@@ -163,7 +202,7 @@ TEST(LayerRegistry, DuplicateIdenticalIsUnchanged)
     ch.push_back("R");
     ch.push_back("G");
     ch.push_back("B");
-    ImageLayerDesc diffuse("diffuse", "diffuse", "", ch);
+    ImageLayerDesc diffuse("diffuse", ch);
 
     ASSERT_EQ(LayerRegistry::eAddResultAdded, registry.add(diffuse, LayerRegistryEntry::eOriginFile, &error));
     EXPECT_EQ(LayerRegistry::eAddResultUnchanged, registry.add(diffuse, LayerRegistryEntry::eOriginFile, &error));
@@ -177,7 +216,7 @@ TEST(LayerRegistry, FileUnionGrowsChannels)
     rgb.push_back("R");
     rgb.push_back("G");
     rgb.push_back("B");
-    ImageLayerDesc diffuseRgb("diffuse", "diffuse", "", rgb);
+    ImageLayerDesc diffuseRgb("diffuse", rgb);
     ASSERT_EQ(LayerRegistry::eAddResultAdded, registry.add(diffuseRgb, LayerRegistryEntry::eOriginFile, &error));
 
     std::vector<std::string> rgba;
@@ -185,7 +224,7 @@ TEST(LayerRegistry, FileUnionGrowsChannels)
     rgba.push_back("G");
     rgba.push_back("B");
     rgba.push_back("A");
-    ImageLayerDesc diffuseRgba("diffuse", "diffuse", "", rgba);
+    ImageLayerDesc diffuseRgba("diffuse", rgba);
     EXPECT_EQ(LayerRegistry::eAddResultGrown, registry.add(diffuseRgba, LayerRegistryEntry::eOriginFile, &error));
 
     ImageLayerDesc found;
@@ -205,20 +244,20 @@ TEST(LayerRegistry, FileReorderedIdenticalSetIsUnchanged)
     rgb.push_back("R");
     rgb.push_back("G");
     rgb.push_back("B");
-    ImageLayerDesc diffuseRgb("diffuse", "diffuse", "", rgb);
+    ImageLayerDesc diffuseRgb("diffuse", rgb);
     ASSERT_EQ(LayerRegistry::eAddResultAdded, registry.add(diffuseRgb, LayerRegistryEntry::eOriginFile, &error));
 
     std::vector<std::string> bgr;
     bgr.push_back("B");
     bgr.push_back("G");
     bgr.push_back("R");
-    ImageLayerDesc diffuseBgr("diffuse", "diffuse", "", bgr);
+    ImageLayerDesc diffuseBgr("diffuse", bgr);
     EXPECT_EQ(LayerRegistry::eAddResultUnchanged, registry.add(diffuseBgr, LayerRegistryEntry::eOriginFile, &error));
 
     std::vector<std::string> gr;
     gr.push_back("G");
     gr.push_back("R");
-    ImageLayerDesc diffuseGr("diffuse", "diffuse", "", gr);
+    ImageLayerDesc diffuseGr("diffuse", gr);
     EXPECT_EQ(LayerRegistry::eAddResultUnchanged, registry.add(diffuseGr, LayerRegistryEntry::eOriginFile, &error));
 
     ImageLayerDesc found;
@@ -237,7 +276,7 @@ TEST(LayerRegistry, UserConflictRefused)
     rgb.push_back("R");
     rgb.push_back("G");
     rgb.push_back("B");
-    ImageLayerDesc diffuseRgb("diffuse", "diffuse", "", rgb);
+    ImageLayerDesc diffuseRgb("diffuse", rgb);
     ASSERT_EQ(LayerRegistry::eAddResultAdded, registry.add(diffuseRgb, LayerRegistryEntry::eOriginUser, &error));
 
     std::vector<std::string> rgba;
@@ -245,7 +284,7 @@ TEST(LayerRegistry, UserConflictRefused)
     rgba.push_back("G");
     rgba.push_back("B");
     rgba.push_back("A");
-    ImageLayerDesc diffuseRgba("diffuse", "diffuse", "", rgba);
+    ImageLayerDesc diffuseRgba("diffuse", rgba);
     EXPECT_EQ(LayerRegistry::eAddResultRefused, registry.add(diffuseRgba, LayerRegistryEntry::eOriginUser, &error));
     EXPECT_FALSE(error.empty());
 }
@@ -278,7 +317,7 @@ TEST(LayerRegistry, ToStoragePlanesFoldsColorViewsToOneRGBAEntry)
     EXPECT_EQ(1, colorCount);
     EXPECT_TRUE(colorIsRgba);
 
-    // Non-colour entries survive untouched: DisparityLeft, DisparityRight, Backward, Forward, depth, primId, normal.
+    // Non-colour entries survive untouched: disparityL, disparityR, backward, forward, depth, primId, normal.
     EXPECT_EQ(std::size_t(11 - 4 + 1), storagePlanes.size());
 }
 
@@ -332,7 +371,7 @@ TEST(LayerRegistry, SnapshotIsStableAcrossAdd)
 
     std::string error;
     std::vector<std::string> ch(1, "R");
-    ImageLayerDesc newLayer("extra", "extra", "", ch);
+    ImageLayerDesc newLayer("extra", ch);
     registry.add(newLayer, LayerRegistryEntry::eOriginUser, &error);
 
     EXPECT_EQ(sizeBefore, before->size());
@@ -698,3 +737,92 @@ TEST_F(BaseTest, ReadPresentLayersNoColorFileStillReportsColor)
     EXPECT_TRUE(foundColor);
     EXPECT_EQ(expected, ids);
 } // TEST_F(BaseTest, ReadPresentLayersNoColorFileStillReportsColor)
+
+static int
+layerUsersInTable(const KnobTablePtr& knob, const std::string& label)
+{
+    std::vector<std::string> row;
+
+    if (!findLayersKnobRow(knob, label, &row) || (row.size() < 3)) {
+        return -1;
+    }
+
+    return std::stoi(row[2]);
+}
+
+static void
+expectTableMatchesAFullRecount(const ProjectPtr& project, const KnobTablePtr& knob)
+{
+    std::list<std::vector<std::string>> counted;
+
+    knob->getTable(&counted);
+    project->emitProjectLayersChangedSignal();
+    std::list<std::vector<std::string>> recounted;
+    knob->getTable(&recounted);
+    EXPECT_EQ(recounted, counted);
+}
+
+// "Used by" is kept by counting each node's change rather than by walking every node, so after
+// each kind of change it must equal what a walk of the whole project counts.
+TEST_F(BaseTest, LayerUsersFollowEachNodeChange)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    KnobTablePtr layersKnob = std::dynamic_pointer_cast<KnobTable>(project->getKnobByName("defaultLayers"));
+    ASSERT_TRUE(bool(layersKnob));
+    const int initial = layerUsersInTable(layersKnob, "xy");
+    ASSERT_GE(initial, 0);
+
+    NodePtr blur = createNode(QString::fromUtf8("Blur"));
+    ASSERT_TRUE(bool(blur));
+    KnobChannelSetPtr channels = std::dynamic_pointer_cast<KnobChannelSet>(blur->getKnobByName(kNodeParamChannelSet));
+    ASSERT_TRUE(bool(channels));
+    channels->addLayer("xy", 0);
+    EXPECT_EQ(initial + 1, layerUsersInTable(layersKnob, "xy"));
+    expectTableMatchesAFullRecount(project, layersKnob);
+
+    blur->deactivate();
+    EXPECT_EQ(initial, layerUsersInTable(layersKnob, "xy"));
+    expectTableMatchesAFullRecount(project, layersKnob);
+    blur->activate();
+    EXPECT_EQ(initial + 1, layerUsersInTable(layersKnob, "xy"));
+    expectTableMatchesAFullRecount(project, layersKnob);
+
+    CreateNodeArgs groupArgs(PLUGINID_NATRON_GROUP, project);
+    groupArgs.setProperty<bool>(kCreateNodeArgsPropNodeGroupDisableCreateInitialNodes, true);
+    groupArgs.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
+    NodePtr group = getApp()->createNode(groupArgs);
+    ASSERT_TRUE(bool(group));
+    NodeCollectionPtr inside = std::dynamic_pointer_cast<NodeCollection>(group->getEffectInstance());
+    ASSERT_TRUE(bool(inside));
+    CreateNodeArgs innerArgs("Blur", inside);
+    innerArgs.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
+    NodePtr innerBlur = getApp()->createNode(innerArgs);
+    ASSERT_TRUE(bool(innerBlur));
+    KnobChannelSetPtr innerChannels = std::dynamic_pointer_cast<KnobChannelSet>(innerBlur->getKnobByName(kNodeParamChannelSet));
+    ASSERT_TRUE(bool(innerChannels));
+    innerChannels->addLayer("xy", 0);
+    EXPECT_EQ(initial + 2, layerUsersInTable(layersKnob, "xy"));
+    expectTableMatchesAFullRecount(project, layersKnob);
+
+    group->deactivate();
+    EXPECT_EQ(initial + 1, layerUsersInTable(layersKnob, "xy"));
+    expectTableMatchesAFullRecount(project, layersKnob);
+    group->activate();
+    EXPECT_EQ(initial + 2, layerUsersInTable(layersKnob, "xy"));
+    expectTableMatchesAFullRecount(project, layersKnob);
+
+    innerBlur->destroyNode(true, false);
+    innerBlur.reset();
+    EXPECT_EQ(initial + 1, layerUsersInTable(layersKnob, "xy"));
+    expectTableMatchesAFullRecount(project, layersKnob);
+
+    blur->destroyNode(true, false);
+    blur.reset();
+    EXPECT_EQ(initial, layerUsersInTable(layersKnob, "xy"));
+    expectTableMatchesAFullRecount(project, layersKnob);
+
+    project->reset(false, true);
+} // TEST_F(BaseTest, LayerUsersFollowEachNodeChange)

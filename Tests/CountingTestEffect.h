@@ -55,7 +55,9 @@
 
 #define kTestPluginIDCounting "test.natron.built-in.Counting"
 #define kTestPluginIDCountingMerge "test.natron.built-in.CountingMerge"
+#define kTestPluginIDDraftCounting "test.natron.built-in.DraftCounting"
 #define kTestPluginIDTiledIdentity "test.natron.built-in.TiledIdentity"
+#define kTestPluginIDSplitInputs "test.natron.built-in.SplitInputs"
 
 NATRON_NAMESPACE_ENTER
 
@@ -290,7 +292,9 @@ private:
  * corner of the render window. Caches its output only when its "cacheOutput" knob is set, so that by default every
  * renderRoI on it reaches render(). Fails when its "fail" knob is set, throws when its "throwInRender" knob is set,
  * and sleeps for its "delayMs" knob first, so that the renders of concurrent tasks overlap. Its images are keyed by
- * frame only when its "frameVarying" knob is set.
+ * frame only when its "frameVarying" knob is set. Its edge mode is Black when its "blackEdge" knob is set, else Stretch.
+ * Its "identity" knob makes it an identity of its first input, as a disabled node is: it has no settings panel, so
+ * no Disable knob.
  **/
 class CountingTestEffectBase
     : public NativeEffectBase {
@@ -303,6 +307,8 @@ public:
         , _cacheOutput()
         , _throwInRender()
         , _frameVarying()
+        , _identity()
+        , _blackEdge()
     {
     }
 
@@ -330,6 +336,26 @@ public:
         KnobBoolPtr cacheKnob = _cacheOutput.lock();
 
         return cacheKnob && cacheKnob->getValue();
+    }
+
+    virtual bool isIdentity(double time,
+                            const RenderScale& /*scale*/,
+                            const RectI& /*roi*/,
+                            ViewIdx view,
+                            double* inputTime,
+                            ViewIdx* inputView,
+                            int* inputNb) OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        KnobBoolPtr identityKnob = _identity.lock();
+
+        if (!identityKnob || !identityKnob->getValue() || !getInput(0)) {
+            return false;
+        }
+        *inputNb = 0;
+        *inputTime = time;
+        *inputView = view;
+
+        return true;
     }
 
     virtual StatusEnum getRegionOfDefinition(U64 /*hash*/,
@@ -404,6 +430,20 @@ private:
         frameVarying->setDefaultValue(false);
         page->addKnob(frameVarying);
         _frameVarying = frameVarying;
+
+        KnobBoolPtr identity = createKnob<KnobBool>(std::string("Identity"));
+        identity->setName("identity");
+        identity->setAnimationEnabled(false);
+        identity->setDefaultValue(false);
+        page->addKnob(identity);
+        _identity = identity;
+        KnobBoolPtr blackEdge = createKnob<KnobBool>(std::string("Black Edge"));
+        blackEdge->setName("blackEdge");
+        blackEdge->setAnimationEnabled(false);
+        blackEdge->setDefaultValue(false);
+        blackEdge->setIsMetadataSlave(true);
+        page->addKnob(blackEdge);
+        _blackEdge = blackEdge;
     }
 
     virtual StatusEnum getPreferredMetadataAt(double /*time*/,
@@ -414,6 +454,10 @@ private:
 
         if (frameVaryingKnob && frameVaryingKnob->getValue()) {
             metadata.setIsFrameVarying(true);
+        }
+        KnobBoolPtr blackEdgeKnob = _blackEdge.lock();
+        if (blackEdgeKnob && blackEdgeKnob->getValue()) {
+            metadata.setEdgeMode(EdgeMode::Black);
         }
 
         return eStatusOK;
@@ -500,6 +544,8 @@ private:
     KnobBoolWPtr _cacheOutput;
     KnobBoolWPtr _throwInRender;
     KnobBoolWPtr _frameVarying;
+    KnobBoolWPtr _identity;
+    KnobBoolWPtr _blackEdge;
 };
 
 class CountingTestEffect
@@ -523,6 +569,46 @@ private:
     static constexpr NodeSpec kNodeSpec = {
         .id = kTestPluginIDCounting,
         .label = "Test Counting",
+        .outputKind = eDataKindImage,
+        .inputs = kInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return staticNodeSpec<kNodeSpec>();
+    }
+};
+
+/**
+ * @brief A CountingTestEffect that renders differently in draft, so that its output and everything downstream of it
+ * is cached under draft keys while drafting.
+ **/
+class DraftCountingTestEffect
+    : public CountingTestEffectBase {
+public:
+    static EffectInstance* BuildEffect(NodePtr n)
+    {
+        return new DraftCountingTestEffect(n);
+    }
+
+    explicit DraftCountingTestEffect(NodePtr n)
+        : CountingTestEffectBase(n)
+    {
+    }
+
+    virtual bool supportsRenderQuality() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
+private:
+    static constexpr InputSpec kInputs[] = {
+        InputSpec { .label = "Source", .kind = eDataKindImage, .optional = true },
+    };
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kTestPluginIDDraftCounting,
+        .label = "Test Draft Counting",
         .outputKind = eDataKindImage,
         .inputs = kInputs,
     };
@@ -670,6 +756,162 @@ private:
     static constexpr NodeSpec kNodeSpec = {
         .id = kTestPluginIDTiledIdentity,
         .label = "Test Tiled Identity",
+        .outputKind = eDataKindImage,
+        .inputs = kInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return staticNodeSpec<kNodeSpec>();
+    }
+};
+
+/**
+ * @brief Over the kCountingTestSize square, each pixel takes the value of input A left of the middle and of input B
+ * right of it, and the region of interest of each input says so. Always caches its output, and always asks for both
+ * inputs, so a render of one side alone also shows what it gets for the input it has no use for.
+ **/
+class SplitInputsTestEffect
+    : public NativeEffectBase {
+public:
+    static EffectInstance* BuildEffect(NodePtr n)
+    {
+        return new SplitInputsTestEffect(n);
+    }
+
+    explicit SplitInputsTestEffect(NodePtr n)
+        : NativeEffectBase(n)
+    {
+    }
+
+    virtual bool getMakeSettingsPanel() const OVERRIDE FINAL
+    {
+        return false;
+    }
+
+    virtual bool supportsTiles() const OVERRIDE FINAL
+    {
+        return true;
+    }
+
+    virtual RenderSafetyEnum renderThreadSafety() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return eRenderSafetyFullySafe;
+    }
+
+    virtual bool shouldCacheOutput(bool /*isFrameVaryingOrAnimated*/,
+                                   double /*time*/,
+                                   ViewIdx /*view*/,
+                                   int /*visitsCount*/) const OVERRIDE FINAL
+    {
+        return true;
+    }
+
+    virtual StatusEnum getRegionOfDefinition(U64 /*hash*/,
+                                             double /*time*/,
+                                             const RenderScale& /*scale*/,
+                                             ViewIdx /*view*/,
+                                             RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        rod->x1 = 0.;
+        rod->y1 = 0.;
+        rod->x2 = kCountingTestSize;
+        rod->y2 = kCountingTestSize;
+
+        return eStatusOK;
+    }
+
+    virtual void getRegionsOfInterest(double /*time*/,
+                                      const RenderScale& /*scale*/,
+                                      const RectD& /*outputRoD*/,
+                                      const RectD& renderWindow,
+                                      ViewIdx /*view*/,
+                                      RoIMap* ret) OVERRIDE FINAL
+    {
+        const double middle = kCountingTestSize / 2;
+        const auto side = [&](int inputNb, double x1, double x2) {
+            const EffectInstancePtr input = getInput(inputNb);
+            if (!input) {
+                return;
+            }
+            (*ret)[input] = renderWindow.intersect(RectD(x1, 0., x2, kCountingTestSize));
+        };
+        side(0, 0., middle);
+        side(1, middle, kCountingTestSize);
+    }
+
+    virtual void addAcceptedComponents(int /*inputNb*/,
+                                       std::list<ImageLayerDesc>* comps) OVERRIDE FINAL
+    {
+        comps->push_back(ImageLayerDesc::getRGBAComponents());
+    }
+
+    virtual void addSupportedBitDepth(std::list<ImageBitDepthEnum>* depths) const OVERRIDE FINAL
+    {
+        depths->push_back(eImageBitDepthFloat);
+    }
+
+private:
+    virtual void initializeKnobs() OVERRIDE FINAL
+    {
+    }
+
+    virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        CountingTestRegistry::noteRender(getNode().get());
+
+        const int middle = kCountingTestSize / 2;
+        float values[2] = { 0.f, 0.f };
+        for (int i = 0; i < 2; ++i) {
+            RectI inputRoI;
+            const ImagePtr input = getImage(i, args.time, args.mappedScale, args.view, NULL, &ImageLayerDesc::getRGBAComponents(),
+                                            false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &inputRoI);
+            const bool needed = (i == 0) ? (args.roi.x1 < middle) : (args.roi.x2 > middle);
+            if (!needed) {
+                continue;
+            }
+            if (!input) {
+                return eStatusFailed;
+            }
+            Image::ReadAccess access = input->getReadRights();
+            const float* pixel = (const float*)access.pixelAt((i == 0) ? 0 : middle, 0);
+            if (!pixel) {
+                return eStatusFailed;
+            }
+            values[i] = pixel[0];
+        }
+
+        for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
+            const ImagePtr& image = it->second;
+            if (!image || (image->getBitDepth() != eImageBitDepthFloat)) {
+                return eStatusFailed;
+            }
+            const int numChannels = (int)image->getComponentsCount();
+            Image::WriteAccess access(image.get());
+            for (int y = args.roi.y1; y < args.roi.y2; ++y) {
+                for (int x = args.roi.x1; x < args.roi.x2; ++x) {
+                    float* pixel = (float*)access.pixelAt(x, y);
+                    if (!pixel) {
+                        return eStatusFailed;
+                    }
+                    for (int c = 0; c < numChannels; ++c) {
+                        pixel[c] = values[(x < middle) ? 0 : 1];
+                    }
+                }
+            }
+        }
+
+        return eStatusOK;
+    }
+
+    static constexpr InputSpec kInputs[] = {
+        InputSpec { .label = "A", .kind = eDataKindImage, .optional = true },
+        InputSpec { .label = "B", .kind = eDataKindImage, .optional = true },
+    };
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kTestPluginIDSplitInputs,
+        .label = "Test Split Inputs",
         .outputKind = eDataKindImage,
         .inputs = kInputs,
     };

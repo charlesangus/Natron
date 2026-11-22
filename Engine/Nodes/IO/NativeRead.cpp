@@ -67,6 +67,7 @@
 #include "Engine/Nodes/IO/OiioReadSupport.h"
 #include "Engine/Nodes/IO/RawDecodeSupport.h"
 #include "Engine/Nodes/IO/RawExtensions.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/Raw/RawDevelop.h"
 #include "Engine/PoolParallelFor.h"
@@ -164,18 +165,14 @@ NativeRead::initializeKnobs()
     // NativeEffectBase has no counterpart of an OpenFX clip-preferences slave param, so without
     // this the preferred metadata is only consulted once, at creation, before a file is chosen.
     filename->setIsMetadataSlave(true);
-    // The Reload button reloads Filename and Proxy together.
-    filename->setShowsReloadButton(false);
-    filename->setAddNewLine(false);
     page->addKnob(filename);
     _filename = filename;
 
     // Left to trigger a render: the evaluation retires the images and action results cached under
     // the old node hash, and the metadata is derived again from the file now on disk.
-    KnobButtonPtr reload = createKnob<KnobButton>(tr("Reload"));
-    reload->setName(kNatronReadParamReload);
-    reload->setHintToolTip(tr("Reads the file again: forgets the frames, headers, layers and metadata read before and the "
-                              "images decoded from them, so a file changed on disk is what the node outputs."));
+    KnobButtonPtr reload = filename->createReloadButton(kNatronReadParamReload,
+                                                        tr("Reads the file again: forgets the frames, headers, layers and metadata read before and the "
+                                                           "images decoded from them, so a file changed on disk is what the node outputs."));
     reload->setIsMetadataSlave(true);
     page->addKnob(reload);
     _reload = reload;
@@ -183,7 +180,7 @@ NativeRead::initializeKnobs()
     KnobFilePtr proxy = createKnob<KnobFile>(tr("Proxy"));
     proxy->setName(kOfxImageEffectProxyParamName);
     proxy->setAsInputImage();
-    proxy->setShowsReloadButton(false);
+    proxy->setReloadButton(reload);
     proxy->setHintToolTip(tr("Filename of the proxy images. They are used instead of the images read from Filename "
                              "when the render scale is at or below the proxy threshold.\n"
                              "Not available for a camera raw file, which is always read at full size: downscaling the "
@@ -358,6 +355,8 @@ NativeRead::initializeKnobs()
     availableViews->setSecret(true);
     page->addKnob(availableViews);
     _availableViews = availableViews;
+
+    _blackOutside = createBlackOutsideKnob(this, page);
 
     OcioSpaceKnobs::Description inputSpace;
     inputSpace.name = kNatronReadParamColorspace;
@@ -1117,10 +1116,11 @@ NativeRead::getPreferredMetadataAt(double time,
                                    NodeMetadata& metadata)
 {
     metadata.setBitDepth(-1, eImageBitDepthFloat);
-    metadata.setComponentsType(-1, kNatronColorLayerID);
+    metadata.setComponentsType(-1, eImageComponentsTypeColor);
     metadata.setNComps(-1, 4);
 
     metadata.setIsFrameVarying(true);
+    metadata.setEdgeMode(readBlackOutside(_blackOutside, time, view));
 
     // The frame's own file, or the held one when the missing-frame mode holds. A frame that renders
     // black or an error has no file, so it reports the sequence's representative frame.

@@ -27,7 +27,9 @@
 
 #include <algorithm> // min, max
 #include <cassert>
+#include <cmath>
 #include <limits>
+#include <map>
 #include <set>
 #include <sstream> // stringstream
 #include <stdexcept>
@@ -45,6 +47,8 @@
 #include "Engine/GraphEditRecorder.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/PythonUndoCommands.h"
+#include "Engine/RotoContext.h"
 #include "Engine/RotoDrawableItem.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoStrokeItem.h"
@@ -53,6 +57,9 @@
 #include "Engine/TrackMarker.h"
 #include "Engine/TrackerContext.h"
 #include "Engine/Transform.h"
+#include "Engine/UndoRecorder.h"
+#include "Engine/VectorFollowBake.h"
+#include "Engine/VectorSampler.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
 
@@ -870,7 +877,7 @@ RotoCurveContext::resetTransformCenter()
     double x, y;
     if (!getDefaultTransformCenter(time, &x, &y)) {
         RectD bbox;
-        getItemsRegionOfDefinition(getSelectedItems(), time, ViewIdx(0), &bbox);
+        getItemsRegionOfDefinition(getSelectedItems(), time, ViewIdx(0), true, &bbox);
         x = (bbox.x1 + bbox.x2) / 2.;
         y = (bbox.y1 + bbox.y2) / 2.;
     }
@@ -950,43 +957,36 @@ RotoCurveContext::composeItemTransform(const RotoDrawableItem& /*item*/,
     *matrix = local;
 }
 
-void
-RotoCurveContext::refreshTransformKnobTies(const RotoDrawableItemPtr& item)
+RotoCurveContext::TransformTieSuspension::TransformTieSuspension(const RotoCurveContextPtr& context)
+    : _context(context)
 {
-    assert(QThread::currentThread() == qApp->thread());
-    bool viaLayer = false;
-    {
-        QMutexLocker l(&_imp->rotoContextMutex);
-        if (std::find(_imp->selectedItems.begin(), _imp->selectedItems.end(), item) == _imp->selectedItems.end()) {
-            return;
-        }
-        for (RotoLayerPtr layer = item->getParentLayer(); layer && !viaLayer; layer = layer->getParentLayer()) {
-            viaLayer = std::find(_imp->selectedItems.begin(), _imp->selectedItems.end(), layer) != _imp->selectedItems.end();
-        }
+    if (context) {
+        ++context->_imp->transformTiesSuspended;
+        context->refreshTransformKnobTies();
     }
-    const bool tie = tiesTransformKnobs(*item) && !viaLayer;
-    const std::list<KnobIPtr>& itemKnobs = item->getKnobs();
-    for (std::list<KnobIPtr>::const_iterator it = itemKnobs.begin(); it != itemKnobs.end(); ++it) {
-        for (std::list<KnobIWPtr>::const_iterator it2 = _imp->transformKnobs.begin(); it2 != _imp->transformKnobs.end(); ++it2) {
-            KnobIPtr contextKnob = it2->lock();
-            if (!contextKnob || (contextKnob->getName() != (*it)->getName())) {
-                continue;
-            }
-            const bool tied = (*it)->getMaster(0).second == contextKnob;
-            if (tie && !tied) {
-                tieItemKnob(*it, contextKnob, true);
-            } else if (!tie && tied) {
-                untieItemKnob(*it, true);
-            }
-            break;
-        }
+}
+
+RotoCurveContext::TransformTieSuspension::~TransformTieSuspension()
+{
+    RotoCurveContextPtr context = _context.lock();
+
+    if (context) {
+        --context->_imp->transformTiesSuspended;
+        context->refreshTransformKnobTies();
     }
+}
+
+RotoDrawableItemPtr
+RotoCurveContext::getTransformTiedItem() const
+{
+    return _imp->transformTiedItem.lock();
 }
 
 void
 RotoCurveContext::getItemsRegionOfDefinition(const std::list<RotoItemPtr>& items,
                                              double time,
                                              ViewIdx /*view*/,
+                                             bool useGuiCurves,
                                              RectD* rod) const
 {
     double startTime = time, mbFrameStep = 1., endTime = time;
@@ -1016,8 +1016,8 @@ RotoCurveContext::getItemsRegionOfDefinition(const std::list<RotoItemPtr>& items
             Bezier* isBezier = dynamic_cast<Bezier*>(it2->get());
             RotoStrokeItem* isStroke = dynamic_cast<RotoStrokeItem*>(it2->get());
             if (isBezier && !isStroke) {
-                if (isBezier->isActivated(time) && (isBezier->getControlPointsCount() > 1)) {
-                    RectD splineRoD = isBezier->getBoundingBox(t);
+                if (isBezier->isActivated(time) && (isBezier->getControlPointsCount(useGuiCurves) > 1)) {
+                    RectD splineRoD = isBezier->getBoundingBox(t, useGuiCurves);
                     if (splineRoD.isNull()) {
                         continue;
                     }
@@ -1035,7 +1035,7 @@ RotoCurveContext::getItemsRegionOfDefinition(const std::list<RotoItemPtr>& items
                     if (isStroke == activeStroke.get()) {
                         strokeRod = isStroke->getMergeNode()->getPaintStrokeRoD_duringPainting();
                     } else {
-                        strokeRod = isStroke->getBoundingBox(t);
+                        strokeRod = isStroke->getBoundingBox(t, useGuiCurves);
                     }
                     if (first) {
                         first = false;
@@ -1073,7 +1073,7 @@ RotoCurveContext::getMaskRegionOfDefinition(double time,
         }
     }
 
-    getItemsRegionOfDefinition(allItems, time, view, rod);
+    getItemsRegionOfDefinition(allItems, time, view, false, rod);
 }
 
 bool
@@ -1222,78 +1222,24 @@ RotoCurveContext::clearSelection(RotoItem::SelectionReasonEnum reason)
 }
 
 void
-RotoCurveContext::selectInternal(const RotoItemPtr& item, bool slaveKnobs)
+RotoCurveContext::selectInternal(const RotoItemPtr& item, bool forwardEdits)
 {
     /// only called on the main-thread
     assert(QThread::currentThread() == qApp->thread());
 
-    int nbUnlockedBeziers = 0;
-    int nbUnlockedStrokes = 0;
-    int nbStrokeWithoutStrength = 0;
-    int nbStrokeWithoutCloneFunctions = 0;
-    bool foundItem = false;
-
     {
         QMutexLocker l(&_imp->rotoContextMutex);
-        for (std::list<RotoItemPtr>::iterator it = _imp->selectedItems.begin(); it != _imp->selectedItems.end(); ++it) {
-            Bezier* isBezier = dynamic_cast<Bezier*>(it->get());
-            RotoStrokeItem* isStroke = dynamic_cast<RotoStrokeItem*>(it->get());
-            if (!isStroke && isBezier && !isBezier->isLockedRecursive()) {
-                if (isBezier->isOpenBezier()) {
-                    ++nbUnlockedStrokes;
-                } else {
-                    ++nbUnlockedBeziers;
-                }
-            } else if (isStroke) {
-                ++nbUnlockedStrokes;
-            }
-            if (it->get() == item.get()) {
-                foundItem = true;
-            }
+        /// the item is already selected, exit
+        if (std::find(_imp->selectedItems.begin(), _imp->selectedItems.end(), item) != _imp->selectedItems.end()) {
+            return;
         }
     }
-    /// the item is already selected, exit
-    if (foundItem) {
-        return;
-    }
 
-    BezierPtr isBezier = std::dynamic_pointer_cast<Bezier>(item);
-    RotoStrokeItemPtr isStroke = std::dynamic_pointer_cast<RotoStrokeItem>(item);
-    RotoDrawableItem* isDrawable = dynamic_cast<RotoDrawableItem*>(item.get());
+    RotoDrawableItemPtr isDrawable = std::dynamic_pointer_cast<RotoDrawableItem>(item);
     RotoLayerPtr isLayer = std::dynamic_pointer_cast<RotoLayer>(item);
 
     if (isDrawable) {
-        if (!isStroke && isBezier && !isBezier->isLockedRecursive()) {
-            if (isBezier->isOpenBezier()) {
-                ++nbUnlockedStrokes;
-            } else {
-                ++nbUnlockedBeziers;
-            }
-            ++nbStrokeWithoutCloneFunctions;
-            ++nbStrokeWithoutStrength;
-        } else if (isStroke) {
-            ++nbUnlockedStrokes;
-            if ((isStroke->getBrushType() != eRotoStrokeTypeBlur) && (isStroke->getBrushType() != eRotoStrokeTypeSharpen)) {
-                ++nbStrokeWithoutStrength;
-            }
-            if ((isStroke->getBrushType() != eRotoStrokeTypeClone) && (isStroke->getBrushType() != eRotoStrokeTypeReveal)) {
-                ++nbStrokeWithoutCloneFunctions;
-            }
-        }
-
-        const bool tieTransform = tiesTransformKnobs(*isDrawable);
-        const std::list<KnobIPtr>& drawableKnobs = isDrawable->getKnobs();
-        for (std::list<KnobIPtr>::const_iterator it = drawableKnobs.begin(); it != drawableKnobs.end(); ++it) {
-            for (std::list<KnobIWPtr>::iterator it2 = _imp->knobs.begin(); it2 != _imp->knobs.end(); ++it2) {
-                KnobIPtr thisKnob = it2->lock();
-                if (thisKnob->getName() == (*it)->getName()) {
-                    if (tieTransform || !isTransformKnob(thisKnob.get())) {
-                        tieItemKnob(*it, thisKnob, slaveKnobs);
-                    }
-                    break;
-                }
-            }
-        }
+        mirrorItem(isDrawable);
     } else if (isLayer) {
         const RotoItems& children = isLayer->getItems();
         for (RotoItems::const_iterator it = children.begin(); it != children.end(); ++it) {
@@ -1301,163 +1247,973 @@ RotoCurveContext::selectInternal(const RotoItemPtr& item, bool slaveKnobs)
         }
     }
 
-    /// enable the knobs
-    if ((nbUnlockedBeziers > 0) || (nbUnlockedStrokes > 0)) {
-        KnobIPtr strengthKnob = _imp->brushEffectKnob.lock();
-        KnobIPtr sourceTypeKnob = _imp->sourceTypeKnob.lock();
-        KnobIPtr timeOffsetKnob = _imp->timeOffsetKnob.lock();
-        KnobIPtr timeOffsetModeKnob = _imp->timeOffsetModeKnob.lock();
-        for (std::list<KnobIWPtr>::iterator it = _imp->knobs.begin(); it != _imp->knobs.end(); ++it) {
-            KnobIPtr k = it->lock();
-            if (!k) {
-                continue;
-            }
+    {
+        QMutexLocker l(&_imp->rotoContextMutex);
+        _imp->selectedItems.push_back(item);
+        if (!forwardEdits) {
+            _imp->selectedThroughLayer.push_back(item);
+        }
+    }
+    refreshProxyKnobStates();
+    refreshTransformKnobTies();
+} // selectInternal
 
-            if (k == strengthKnob) {
-                if (nbStrokeWithoutStrength) {
-                    k->setAllDimensionsEnabled(false);
-                } else {
-                    k->setAllDimensionsEnabled(true);
-                }
-            } else {
-                bool mustDisable = false;
-                if (nbStrokeWithoutCloneFunctions) {
-                    bool isCloneKnob = false;
-                    for (std::list<KnobIWPtr>::iterator it2 = _imp->cloneKnobs.begin(); it2 != _imp->cloneKnobs.end(); ++it2) {
-                        if (it2->lock() == k) {
-                            isCloneKnob = true;
-                        }
-                    }
-                    mustDisable |= isCloneKnob;
-                }
-                if (nbUnlockedBeziers && !mustDisable) {
-                    bool isStrokeKnob = false;
-                    for (std::list<KnobIWPtr>::iterator it2 = _imp->strokeKnobs.begin(); it2 != _imp->strokeKnobs.end(); ++it2) {
-                        if (it2->lock() == k) {
-                            isStrokeKnob = true;
-                        }
-                    }
-                    mustDisable |= isStrokeKnob;
-                }
-                if (nbUnlockedStrokes && !mustDisable) {
-                    bool isBezierKnob = false;
-                    for (std::list<KnobIWPtr>::iterator it2 = _imp->shapeKnobs.begin(); it2 != _imp->shapeKnobs.end(); ++it2) {
-                        if (it2->lock() == k) {
-                            isBezierKnob = true;
-                        }
-                    }
-                    mustDisable |= isBezierKnob;
-                }
-                k->setAllDimensionsEnabled(!mustDisable);
-            }
-            if ((nbUnlockedBeziers >= 2) || (nbUnlockedStrokes >= 2)) {
-                k->setDirty(true);
+namespace {
+class ProxySyncScope {
+public:
+    explicit ProxySyncScope(int& depth)
+        : _depth(depth)
+    {
+        ++_depth;
+    }
+
+    ~ProxySyncScope()
+    {
+        --_depth;
+    }
+
+private:
+    int& _depth;
+};
+
+bool
+knobListHas(const std::list<KnobIWPtr>& knobs,
+            const KnobI* knob)
+{
+    for (std::list<KnobIWPtr>::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+        if (it->lock().get() == knob) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+template <typename T>
+T
+fromKeyValue(double v)
+{
+    return (T)v;
+}
+
+template <>
+int
+fromKeyValue<int>(double v)
+{
+    return (int)std::floor(v + 0.5);
+}
+
+template <>
+bool
+fromKeyValue<bool>(double v)
+{
+    return v != 0.;
+}
+
+double
+rawNumber(const KnobI* knob,
+          int dimension)
+{
+    if (const Knob<double>* k = dynamic_cast<const Knob<double>*>(knob)) {
+        return k->getRawValue(dimension);
+    }
+    if (const Knob<int>* k = dynamic_cast<const Knob<int>*>(knob)) {
+        return k->getRawValue(dimension);
+    }
+    if (const Knob<bool>* k = dynamic_cast<const Knob<bool>*>(knob)) {
+        return k->getRawValue(dimension) ? 1. : 0.;
+    }
+
+    return 0.;
+}
+
+template <typename T>
+bool
+shownNumberAs(KnobI* knob,
+              int dimension,
+              double* value)
+{
+    Knob<T>* k = dynamic_cast<Knob<T>*>(knob);
+
+    if (!k) {
+        return false;
+    }
+    if (!k->getExpression(dimension).empty() || k->hasDrivers()) {
+        *value = rawNumber(knob, dimension);
+    } else {
+        *value = (double)k->getValue(dimension, ViewSpec::current(), false);
+    }
+
+    return true;
+}
+
+/*
+ * The static value the main thread sees. While its node renders, a write to the proxy is queued:
+ * the main thread reads the new value at once, but the raw value only changes once the render ends.
+ * Comparing raw values would then forward nothing until the render is over.
+ */
+double
+shownNumber(KnobI* knob,
+            int dimension)
+{
+    double value = 0.;
+
+    if (!shownNumberAs<double>(knob, dimension, &value) && !shownNumberAs<int>(knob, dimension, &value)) {
+        ignore_result(shownNumberAs<bool>(knob, dimension, &value));
+    }
+
+    return value;
+}
+
+template <typename T>
+bool
+addQueuedKeysAs(KnobI* knob,
+                int dimension,
+                Curve* curve)
+{
+    Knob<T>* k = dynamic_cast<Knob<T>*>(knob);
+
+    if (!k) {
+        return false;
+    }
+    const std::list<KeyFrame> keys = k->getQueuedKeyFrames(dimension);
+    for (std::list<KeyFrame>::const_iterator it = keys.begin(); it != keys.end(); ++it) {
+        ignore_result(curve->addKeyFrame(*it));
+    }
+
+    return true;
+}
+
+/*
+ * A copy of the curve the main thread sees. While its node renders, an edit of the proxy's curve
+ * goes to its GUI curve and a key it sets waits in its set-value queue: the curve the render reads
+ * only gets either once the render ends, after the edit's undo step and maybe a selection change.
+ */
+CurvePtr
+shownCurve(const KnobIPtr& knob,
+           int dimension)
+{
+    // Owned by no knob, so that writing it notifies nothing.
+    CurvePtr shown = std::make_shared<Curve>();
+
+    if (!knob->canAnimate()) {
+        return shown;
+    }
+    CurvePtr internal = knob->getCurve(ViewSpec(0), dimension, true);
+    CurvePtr gui = knob->getGuiCurve(ViewSpec(0), dimension, true);
+    KnobHolder* holder = knob->getHolder();
+    KnobHelper* helper = dynamic_cast<KnobHelper*>(knob.get());
+    const bool guiIsAhead = gui && ((holder && !holder->isSetValueCurrentlyPossible()) || (helper && helper->hasGuiCurveChanged(ViewSpec(0), dimension)));
+    CurvePtr source = guiIsAhead ? gui : internal;
+    if (source) {
+        shown->clone(*source);
+    }
+    if (!addQueuedKeysAs<double>(knob.get(), dimension, shown.get()) && !addQueuedKeysAs<int>(knob.get(), dimension, shown.get())) {
+        ignore_result(addQueuedKeysAs<bool>(knob.get(), dimension, shown.get()));
+    }
+
+    return shown;
+}
+
+/*
+ * Shows own on proxy. Every edit of the proxy has already reached the items it was made on, so
+ * what its node's render still holds of those edits must not apply to the item shown from now on.
+ */
+void
+showOnProxy(const KnobIPtr& proxy,
+            KnobI* own)
+{
+    proxy->discardQueuedValues();
+    proxy->discardGuiCurveChanges();
+    proxy->cloneAndUpdateGui(own);
+}
+
+bool
+sameKeyValues(const Curve& a,
+              const Curve& b)
+{
+    const KeyFrameSet aKeys = a.getKeyFrames_mt_safe();
+    const KeyFrameSet bKeys = b.getKeyFrames_mt_safe();
+
+    if (aKeys.size() != bKeys.size()) {
+        return false;
+    }
+    for (KeyFrameSet::const_iterator i = aKeys.begin(), j = bKeys.begin(); i != aKeys.end(); ++i, ++j) {
+        if ((i->getTime() != j->getTime()) || (i->getValue() != j->getValue())) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+std::string
+rawString(const KnobI* knob,
+          int dimension)
+{
+    if (const Knob<std::string>* k = dynamic_cast<const Knob<std::string>*>(knob)) {
+        return k->getRawValue(dimension);
+    }
+
+    return std::string();
+}
+
+template <typename T>
+bool
+writeNumberAs(KnobI* target,
+              double value,
+              bool atTime,
+              double time,
+              int dimension,
+              ValueChangedReasonEnum reason)
+{
+    Knob<T>* k = dynamic_cast<Knob<T>*>(target);
+
+    if (!k) {
+        return false;
+    }
+    // An item knob has no holder to auto-key it, and keying a knob that cannot animate trips
+    // over its missing curve.
+    if (atTime && target->canAnimate() && target->isAnimationEnabled()) {
+        // setValueAtTime writes the new key through this pointer unchecked.
+        KeyFrame newKey;
+        ignore_result(k->setValueAtTime(time, fromKeyValue<T>(value), ViewSpec::all(), dimension, reason, &newKey));
+    } else {
+        ignore_result(k->setValue(fromKeyValue<T>(value), ViewSpec::all(), dimension, reason, NULL));
+    }
+
+    return true;
+}
+
+void
+writeNumber(KnobI* target,
+            double value,
+            bool atTime,
+            double time,
+            int dimension,
+            ValueChangedReasonEnum reason)
+{
+    if (!writeNumberAs<double>(target, value, atTime, time, dimension, reason) && !writeNumberAs<int>(target, value, atTime, time, dimension, reason)) {
+        ignore_result(writeNumberAs<bool>(target, value, atTime, time, dimension, reason));
+    }
+}
+
+bool
+hasKeyAt(const KnobI* knob,
+         int dimension,
+         double time,
+         KeyFrame* key = NULL)
+{
+    CurvePtr curve = knob->getCurve(ViewSpec(0), dimension, true);
+    KeyFrame k;
+
+    return curve && curve->getKeyFrameWithTime(time, key ? key : &k);
+}
+
+bool
+isOwnAnimated(const KnobI* knob,
+              int dimension)
+{
+    CurvePtr curve = knob->canAnimate() ? knob->getCurve(ViewSpec(0), dimension, true) : CurvePtr();
+
+    return curve && curve->isAnimated();
+}
+
+ValueChangedReasonEnum
+forwardedReason(int reason)
+{
+    switch ((ValueChangedReasonEnum)reason) {
+    case eValueChangedReasonUserEdited:
+    case eValueChangedReasonPluginEdited:
+    case eValueChangedReasonNatronGuiEdited:
+        return (ValueChangedReasonEnum)reason;
+    default:
+        return eValueChangedReasonNatronInternalEdited;
+    }
+}
+
+KnobIPtr
+senderKnob(QObject* sender)
+{
+    KnobSignalSlotHandler* handler = qobject_cast<KnobSignalSlotHandler*>(sender);
+
+    return handler ? handler->getKnob() : KnobIPtr();
+}
+} // anonymous namespace
+
+void
+RotoCurveContext::refreshTransformKnobTies()
+{
+    assert(QThread::currentThread() == qApp->thread());
+    if (_imp->transformKnobs.empty()) {
+        return;
+    }
+
+    const bool ownedByLayers = layersOwnTransforms();
+    RotoItemPtr owner;
+    int owners = 0;
+    {
+        QMutexLocker l(&_imp->rotoContextMutex);
+        std::set<const RotoItem*> selectedLayers;
+        for (std::list<RotoItemPtr>::const_iterator it = _imp->selectedItems.begin(); it != _imp->selectedItems.end(); ++it) {
+            if (dynamic_cast<const RotoLayer*>(it->get())) {
+                selectedLayers.insert(it->get());
             }
         }
+        for (std::list<RotoItemPtr>::const_iterator it = _imp->selectedItems.begin(); it != _imp->selectedItems.end() && owners < 2; ++it) {
+            if (!ownedByLayers && selectedLayers.count(it->get())) {
+                continue;
+            }
+            bool viaLayer = false;
+            for (RotoLayerPtr layer = ownedByLayers ? (*it)->getParentLayer() : RotoLayerPtr(); layer && !viaLayer; layer = layer->getParentLayer()) {
+                viaLayer = selectedLayers.count(layer.get()) != 0;
+            }
+            if (!viaLayer) {
+                owner = *it;
+                ++owners;
+            }
+        }
+    }
 
+    const bool single = (owners == 1) && (_imp->transformTiesSuspended == 0) && pageEditsTransform(*owner);
+    RotoDrawableItemPtr target;
+    if (single) {
+        target = std::dynamic_pointer_cast<RotoDrawableItem>(owner);
+    }
+
+    if (target != _imp->transformTiedItem.lock()) {
+        _imp->transformTiedItem = target;
+        if (target) {
+            ProxySyncScope sync(_imp->proxySyncDepth);
+            for (std::list<KnobIWPtr>::const_iterator it = _imp->transformKnobs.begin(); it != _imp->transformKnobs.end(); ++it) {
+                KnobIPtr proxy = it->lock();
+                KnobIPtr own = proxy ? target->getKnobByName(proxy->getName()) : KnobIPtr();
+                if (own && (own != proxy) && (own->getDimension() == proxy->getDimension())) {
+                    showOnProxy(proxy, own.get());
+                    snapshotProxy(proxy);
+                }
+            }
+        }
+    }
+
+    // An owner that is not tied, a layer, is edited through the page by the host.
+    const bool editable = single && !(std::dynamic_pointer_cast<Bezier>(owner) && owner->isLockedRecursive());
+    for (std::list<KnobIWPtr>::const_iterator it = _imp->transformKnobs.begin(); it != _imp->transformKnobs.end(); ++it) {
+        if (KnobIPtr knob = it->lock()) {
+            knob->setAllDimensionsEnabled(editable);
+        }
+    }
+} // refreshTransformKnobTies
+
+void
+RotoCurveContext::refreshProxyKnobStates()
+{
+    int nbUnlockedBeziers = 0;
+    int nbUnlockedStrokes = 0;
+    int nbWithoutStrength = 0;
+    int nbWithoutCloneFunctions = 0;
+    {
+        QMutexLocker l(&_imp->rotoContextMutex);
+        for (std::list<RotoItemPtr>::const_iterator it = _imp->selectedItems.begin(); it != _imp->selectedItems.end(); ++it) {
+            Bezier* isBezier = dynamic_cast<Bezier*>(it->get());
+            RotoStrokeItem* isStroke = dynamic_cast<RotoStrokeItem*>(it->get());
+            if (isStroke) {
+                ++nbUnlockedStrokes;
+                if ((isStroke->getBrushType() != eRotoStrokeTypeBlur) && (isStroke->getBrushType() != eRotoStrokeTypeSharpen)) {
+                    ++nbWithoutStrength;
+                }
+                if ((isStroke->getBrushType() != eRotoStrokeTypeClone) && (isStroke->getBrushType() != eRotoStrokeTypeReveal)) {
+                    ++nbWithoutCloneFunctions;
+                }
+            } else if (isBezier && !isBezier->isLockedRecursive()) {
+                if (isBezier->isOpenBezier()) {
+                    ++nbUnlockedStrokes;
+                } else {
+                    ++nbUnlockedBeziers;
+                }
+                ++nbWithoutStrength;
+                ++nbWithoutCloneFunctions;
+            }
+        }
+    }
+
+    const bool any = (nbUnlockedBeziers > 0) || (nbUnlockedStrokes > 0);
+    // Two or more items show only the last-selected one's values.
+    const bool dirty = (nbUnlockedBeziers + nbUnlockedStrokes) >= 2;
+    KnobIPtr strengthKnob = _imp->brushEffectKnob.lock();
+    for (std::list<KnobIWPtr>::iterator it = _imp->knobs.begin(); it != _imp->knobs.end(); ++it) {
+        KnobIPtr k = it->lock();
+        if (!k) {
+            continue;
+        }
+        bool enabled = any;
+        if (enabled && (k == strengthKnob)) {
+            enabled = nbWithoutStrength == 0;
+        } else if (enabled) {
+            if (nbWithoutCloneFunctions && knobListHas(_imp->cloneKnobs, k.get())) {
+                enabled = false;
+            } else if (nbUnlockedBeziers && knobListHas(_imp->strokeKnobs, k.get())) {
+                enabled = false;
+            } else if (nbUnlockedStrokes && knobListHas(_imp->shapeKnobs, k.get())) {
+                enabled = false;
+            }
+        }
+        k->setAllDimensionsEnabled(enabled);
+        k->setDirty(dirty);
+    }
+
+    if (any) {
         // show activated/frame knob according to lifetime
         int lifetime_i = _imp->lifeTime.lock()->getValue();
         _imp->activated.lock()->setSecret(lifetime_i != 4);
         _imp->lifeTimeFrame.lock()->setSecret(lifetime_i == 4 || lifetime_i == 0);
     }
+} // refreshProxyKnobStates
 
-    QMutexLocker l(&_imp->rotoContextMutex);
-    _imp->selectedItems.push_back(item);
-} // selectInternal
+KnobIPtr
+RotoCurveContext::proxyKnobNamed(const std::string& name) const
+{
+    for (std::list<KnobIWPtr>::const_iterator it = _imp->knobs.begin(); it != _imp->knobs.end(); ++it) {
+        KnobIPtr k = it->lock();
+        if (k && (k->getName() == name)) {
+            return k;
+        }
+    }
+
+    return KnobIPtr();
+}
+
+bool
+RotoCurveContext::mirrorsKnob(const RotoDrawableItem& item,
+                              const KnobI* proxy) const
+{
+    return !isTransformKnob(proxy) || (&item == _imp->transformTiedItem.lock().get());
+}
+
+bool
+RotoCurveContext::forwardsKnob(const RotoDrawableItem& item,
+                               const KnobI* proxy) const
+{
+    const RotoStrokeItem* stroke = dynamic_cast<const RotoStrokeItem*>(&item);
+    const Bezier* bezier = dynamic_cast<const Bezier*>(&item);
+    const bool openBezier = bezier && bezier->isOpenBezier();
+    const RotoStrokeType brush = stroke ? stroke->getBrushType() : eRotoStrokeTypeSolid;
+    if (knobListHas(_imp->strokeKnobs, proxy) && !stroke && !openBezier) {
+        return false;
+    }
+    if (knobListHas(_imp->shapeKnobs, proxy) && (stroke || !bezier || openBezier)) {
+        return false;
+    }
+    if (knobListHas(_imp->cloneKnobs, proxy) && (!stroke || ((brush != eRotoStrokeTypeClone) && (brush != eRotoStrokeTypeReveal)))) {
+        return false;
+    }
+    if ((_imp->brushEffectKnob.lock().get() == proxy) && (!stroke || ((brush != eRotoStrokeTypeBlur) && (brush != eRotoStrokeTypeSharpen)))) {
+        return false;
+    }
+
+    return true;
+}
+
+std::list<KnobIPtr>
+RotoCurveContext::forwardTargets(const KnobIPtr& proxy) const
+{
+    std::list<RotoItemPtr> selected, throughLayer;
+    {
+        QMutexLocker l(&_imp->rotoContextMutex);
+        selected = _imp->selectedItems;
+        throughLayer = _imp->selectedThroughLayer;
+    }
+    std::list<KnobIPtr> targets;
+    if (isTransformKnob(proxy.get())) {
+        if (RotoDrawableItemPtr tied = _imp->transformTiedItem.lock()) {
+            KnobIPtr own = tied->getKnobByName(proxy->getName());
+            if (own && (own != proxy) && (own->getDimension() == proxy->getDimension())) {
+                targets.push_back(own);
+            }
+        }
+
+        return targets;
+    }
+    for (std::list<RotoItemPtr>::const_iterator it = selected.begin(); it != selected.end(); ++it) {
+        RotoDrawableItemPtr drawable = std::dynamic_pointer_cast<RotoDrawableItem>(*it);
+        if (!drawable || (std::find(throughLayer.begin(), throughLayer.end(), *it) != throughLayer.end()) || !forwardsKnob(*drawable, proxy.get())) {
+            continue;
+        }
+        KnobIPtr own = drawable->getKnobByName(proxy->getName());
+        if (own && (own != proxy) && (own->getDimension() == proxy->getDimension())) {
+            targets.push_back(own);
+        }
+    }
+
+    return targets;
+}
 
 void
-RotoCurveContext::onSelectedKnobCurveChanged()
+RotoCurveContext::snapshotProxy(const KnobIPtr& proxy)
 {
-    KnobSignalSlotHandler* handler = qobject_cast<KnobSignalSlotHandler*>(sender());
+    RotoProxyKnobBaseline& baseline = _imp->proxyBaselines[proxy.get()];
+    const int dims = proxy->getDimension();
 
-    if (handler) {
-        KnobIPtr knob = handler->getKnob();
-        for (std::list<KnobIWPtr>::const_iterator it = _imp->knobs.begin(); it != _imp->knobs.end(); ++it) {
-            KnobIPtr k = it->lock();
-            if (k->getName() == knob->getName()) {
-                k->clone(knob.get());
-                break;
+    baseline.curves.resize(dims);
+    baseline.numbers.resize(dims);
+    baseline.strings.resize(dims);
+    for (int d = 0; d < dims; ++d) {
+        baseline.curves[d] = shownCurve(proxy, d);
+        baseline.numbers[d] = shownNumber(proxy.get(), d);
+        baseline.strings[d] = rawString(proxy.get(), d);
+    }
+}
+
+void
+RotoCurveContext::connectProxyKnobs()
+{
+    for (std::list<KnobIWPtr>::const_iterator it = _imp->knobs.begin(); it != _imp->knobs.end(); ++it) {
+        KnobIPtr proxy = it->lock();
+        KnobSignalSlotHandler* handler = proxy ? proxy->getSignalSlotHandler().get() : NULL;
+        if (!handler) {
+            continue;
+        }
+        QObject::connect(handler, SIGNAL(valueChanged(ViewSpec, int, int)),
+                         this, SLOT(onProxyKnobValueChanged(ViewSpec, int, int)), Qt::UniqueConnection);
+        QObject::connect(handler, SIGNAL(keyFrameMoved(ViewSpec, int, double, double)),
+                         this, SLOT(onProxyKeyFrameMoved(ViewSpec, int, double, double)), Qt::UniqueConnection);
+        QObject::connect(handler, SIGNAL(keyFrameInterpolationChanged(double, ViewSpec, int)),
+                         this, SLOT(onProxyKeyFrameInterpolationChanged(double, ViewSpec, int)), Qt::UniqueConnection);
+        QObject::connect(handler, SIGNAL(derivativeMoved(double, ViewSpec, int)),
+                         this, SLOT(onProxyDerivativeMoved(double, ViewSpec, int)), Qt::UniqueConnection);
+        QObject::connect(handler, SIGNAL(expressionChanged(int)),
+                         this, SLOT(onProxyExpressionChanged(int)), Qt::UniqueConnection);
+        // What reports a curve edit made while the node renders; animationRemoved is not among
+        // them, as cloneCurve() emits it before the curve gets its new keys.
+        QObject::connect(handler, SIGNAL(keyFrameRemoved(double, ViewSpec, int, int)),
+                         this, SLOT(onProxyCurveChanged()), Qt::UniqueConnection);
+        QObject::connect(handler, SIGNAL(multipleKeyFramesRemoved(std::list<double>, ViewSpec, int, int)),
+                         this, SLOT(onProxyCurveChanged()), Qt::UniqueConnection);
+        QObject::connect(handler, SIGNAL(multipleKeyFramesSet(std::list<double>, ViewSpec, int, int)),
+                         this, SLOT(onProxyCurveChanged()), Qt::UniqueConnection);
+        QObject::connect(handler, SIGNAL(redrawGuiCurve(int, ViewSpec, int)),
+                         this, SLOT(onProxyCurveChanged()), Qt::UniqueConnection);
+        QObject::connect(handler, SIGNAL(curveEditHeldForRender(ViewSpec, int)),
+                         this, SLOT(onProxyCurveChanged()), Qt::UniqueConnection);
+        if (_imp->proxyBaselines.find(proxy.get()) == _imp->proxyBaselines.end()) {
+            snapshotProxy(proxy);
+        }
+    }
+}
+
+void
+RotoCurveContext::mirrorItem(const RotoDrawableItemPtr& item)
+{
+    RotoDrawableItemPtr previous = _imp->mirroredItem.lock();
+
+    if (previous && (previous != item)) {
+        const std::list<KnobIPtr>& knobs = previous->getKnobs();
+        for (std::list<KnobIPtr>::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+            if (KnobSignalSlotHandler* handler = (*it)->getSignalSlotHandler().get()) {
+                QObject::disconnect(handler, 0, this, SLOT(onMirroredItemKnobChanged()));
             }
         }
     }
-}
-
-void
-RotoCurveContext::onSelectedKnobValueChanged()
-{
-    KnobSignalSlotHandler* handler = qobject_cast<KnobSignalSlotHandler*>(sender());
-
-    if (!handler) {
+    _imp->mirroredItem = item;
+    if (!item) {
         return;
     }
-    KnobIPtr knob = handler->getKnob();
-    for (std::list<KnobIWPtr>::const_iterator it = _imp->knobs.begin(); it != _imp->knobs.end(); ++it) {
-        KnobIPtr k = it->lock();
-        if (k && (k->getName() == knob->getName())) {
-            // The context knob pushes itself back into its slaved items, which emit this again;
-            // by then they match and the check stops the echo.
-            ignore_result(k->cloneAndCheckIfChanged(knob.get()));
-            break;
+    connectProxyKnobs();
+
+    ProxySyncScope sync(_imp->proxySyncDepth);
+    const std::list<KnobIPtr>& knobs = item->getKnobs();
+    for (std::list<KnobIPtr>::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+        KnobIPtr proxy = proxyKnobNamed((*it)->getName());
+        if (!proxy || (proxy == *it) || (proxy->getDimension() != (*it)->getDimension())) {
+            continue;
         }
+        if (KnobSignalSlotHandler* handler = (*it)->getSignalSlotHandler().get()) {
+            QObject::connect(handler, SIGNAL(valueChanged(ViewSpec, int, int)),
+                             this, SLOT(onMirroredItemKnobChanged()), Qt::UniqueConnection);
+            QObject::connect(handler, SIGNAL(keyFrameMoved(ViewSpec, int, double, double)),
+                             this, SLOT(onMirroredItemKnobChanged()), Qt::UniqueConnection);
+            QObject::connect(handler, SIGNAL(keyFrameInterpolationChanged(double, ViewSpec, int)),
+                             this, SLOT(onMirroredItemKnobChanged()), Qt::UniqueConnection);
+            QObject::connect(handler, SIGNAL(derivativeMoved(double, ViewSpec, int)),
+                             this, SLOT(onMirroredItemKnobChanged()), Qt::UniqueConnection);
+            QObject::connect(handler, SIGNAL(expressionChanged(int)),
+                             this, SLOT(onMirroredItemKnobChanged()), Qt::UniqueConnection);
+        }
+        if (mirrorsKnob(*item, proxy.get())) {
+            showOnProxy(proxy, it->get());
+        }
+        snapshotProxy(proxy);
     }
 }
 
 void
-RotoCurveContext::tieItemKnob(const KnobIPtr& itemKnob,
-                              const KnobIPtr& contextKnob,
-                              bool slave)
+RotoCurveContext::onMirroredItemKnobChanged()
 {
-    // Clone current state
-    contextKnob->cloneAndUpdateGui(itemKnob.get());
-
-    // Slave internal knobs of the bezier
-    if (slave) {
-        assert(itemKnob->getDimension() == contextKnob->getDimension());
-        for (int i = 0; i < itemKnob->getDimension(); ++i) {
-            itemKnob->slaveTo(i, contextKnob, i);
-        }
+    if (_imp->proxySyncDepth > 0) {
+        return;
     }
-    KnobSignalSlotHandler* handler = itemKnob->getSignalSlotHandler().get();
-    QObject::connect(handler, SIGNAL(keyFrameSet(double, ViewSpec, int, int, bool)),
-                     this, SLOT(onSelectedKnobCurveChanged()));
-    QObject::connect(handler, SIGNAL(keyFrameRemoved(double, ViewSpec, int, int)),
-                     this, SLOT(onSelectedKnobCurveChanged()));
-    QObject::connect(handler, SIGNAL(keyFrameMoved(ViewSpec, int, double, double)),
-                     this, SLOT(onSelectedKnobCurveChanged()));
-    QObject::connect(handler, SIGNAL(animationRemoved(ViewSpec, int)),
-                     this, SLOT(onSelectedKnobCurveChanged()));
-    QObject::connect(handler, SIGNAL(derivativeMoved(double, ViewSpec, int)),
-                     this, SLOT(onSelectedKnobCurveChanged()));
-    QObject::connect(handler, SIGNAL(keyFrameInterpolationChanged(double, ViewSpec, int)),
-                     this, SLOT(onSelectedKnobCurveChanged()));
-    // A value written to the item at a time it already has a key emits no keyFrameSet, and
-    // the slaved item reads the context knob, so the write would be lost without this.
-    QObject::connect(handler, SIGNAL(valueChanged(ViewSpec, int, int)),
-                     this, SLOT(onSelectedKnobValueChanged()));
+    KnobIPtr itemKnob = senderKnob(sender());
+    RotoDrawableItemPtr item = _imp->mirroredItem.lock();
+    if (!itemKnob || !item || (item->getKnobByName(itemKnob->getName()) != itemKnob)) {
+        return;
+    }
+    KnobIPtr proxy = proxyKnobNamed(itemKnob->getName());
+    if (!proxy || (proxy->getDimension() != itemKnob->getDimension()) || !mirrorsKnob(*item, proxy.get())) {
+        return;
+    }
+    ProxySyncScope sync(_imp->proxySyncDepth);
+    showOnProxy(proxy, itemKnob.get());
+    snapshotProxy(proxy);
+}
+
+bool
+RotoCurveContext::isReplayingUndo() const
+{
+    NodePtr node = getNode();
+    AppInstancePtr app = node ? node->getApp() : AppInstancePtr();
+    if (!app) {
+        return false;
+    }
+    UndoRecorderPtr recorder = app->getUndoRecorder();
+
+    return app->isReplayingUndo() || (recorder && recorder->isReplaying());
 }
 
 void
-RotoCurveContext::untieItemKnob(const KnobIPtr& itemKnob,
-                                bool copyState)
+RotoCurveContext::recordForwardedEdit(const std::list<KnobIPtr>& targets) const
 {
-    for (int i = 0; i < itemKnob->getDimension(); ++i) {
-        itemKnob->unSlave(i, copyState);
+    NodePtr node = getNode();
+    for (std::list<KnobIPtr>::const_iterator it = targets.begin(); it != targets.end(); ++it) {
+        recordRotoItemKnobEdit(node, *it);
     }
-    KnobSignalSlotHandler* handler = itemKnob->getSignalSlotHandler().get();
-    QObject::disconnect(handler, SIGNAL(keyFrameSet(double, ViewSpec, int, int, bool)),
-                        this, SLOT(onSelectedKnobCurveChanged()));
-    QObject::disconnect(handler, SIGNAL(keyFrameRemoved(double, ViewSpec, int, int)),
-                        this, SLOT(onSelectedKnobCurveChanged()));
-    QObject::disconnect(handler, SIGNAL(keyFrameMoved(ViewSpec, int, double, double)),
-                        this, SLOT(onSelectedKnobCurveChanged()));
-    QObject::disconnect(handler, SIGNAL(animationRemoved(ViewSpec, int)),
-                        this, SLOT(onSelectedKnobCurveChanged()));
-    QObject::disconnect(handler, SIGNAL(derivativeMoved(double, ViewSpec, int)),
-                        this, SLOT(onSelectedKnobCurveChanged()));
-    QObject::disconnect(handler, SIGNAL(keyFrameInterpolationChanged(double, ViewSpec, int)),
-                        this, SLOT(onSelectedKnobCurveChanged()));
-    QObject::disconnect(handler, SIGNAL(valueChanged(ViewSpec, int, int)),
-                        this, SLOT(onSelectedKnobValueChanged()));
+}
+
+void
+RotoCurveContext::forwardDimensionEdit(const KnobIPtr& proxy,
+                                       int dimension,
+                                       ValueChangedReasonEnum reason,
+                                       const std::list<KnobIPtr>& targets)
+{
+    const RotoProxyKnobBaseline& baseline = _imp->proxyBaselines[proxy.get()];
+
+    if ((dimension >= (int)baseline.curves.size()) || !baseline.curves[dimension]) {
+        return;
+    }
+    const Curve& before = *baseline.curves[dimension];
+    CurvePtr now = shownCurve(proxy, dimension);
+    const bool wasAnimated = before.isAnimated();
+    const bool isAnimated = now && now->isAnimated();
+    const double time = proxy->getCurrentTime();
+
+    if (dynamic_cast<Knob<std::string>*>(proxy.get())) {
+        const std::string value = rawString(proxy.get(), dimension);
+        if (value == baseline.strings[dimension]) {
+            return;
+        }
+        for (std::list<KnobIPtr>::const_iterator it = targets.begin(); it != targets.end(); ++it) {
+            Knob<std::string>* target = dynamic_cast<Knob<std::string>*>(it->get());
+            if (target && !isOwnAnimated(target, dimension)) {
+                ignore_result(target->setValue(value, ViewSpec::all(), dimension, reason, NULL));
+            }
+        }
+
+        return;
+    }
+
+    const double value = shownNumber(proxy.get(), dimension);
+    if (!wasAnimated && !isAnimated) {
+        if (value == baseline.numbers[dimension]) {
+            return;
+        }
+        for (std::list<KnobIPtr>::const_iterator it = targets.begin(); it != targets.end(); ++it) {
+            writeNumber(it->get(), value, isOwnAnimated(it->get(), dimension), time, dimension, reason);
+        }
+    } else if (wasAnimated && !isAnimated) {
+        const bool valueDiffers = value != before.getValueAt(time);
+        for (std::list<KnobIPtr>::const_iterator it = targets.begin(); it != targets.end(); ++it) {
+            if (isOwnAnimated(it->get(), dimension)) {
+                (*it)->removeAnimation(ViewSpec::all(), dimension);
+            }
+            if (valueDiffers) {
+                writeNumber(it->get(), value, false, time, dimension, reason);
+            }
+        }
+    } else if (!wasAnimated && isAnimated) {
+        // The proxy was keyed from scratch: every item takes the same keys.
+        const KeyFrameSet keys = now->getKeyFrames_mt_safe();
+        for (std::list<KnobIPtr>::const_iterator it = targets.begin(); it != targets.end(); ++it) {
+            for (KeyFrameSet::const_iterator k = keys.begin(); k != keys.end(); ++k) {
+                writeNumber(it->get(), k->getValue(), true, k->getTime(), dimension, reason);
+            }
+        }
+    } else {
+        const KeyFrameSet beforeKeys = before.getKeyFrames_mt_safe();
+        const KeyFrameSet nowKeys = now->getKeyFrames_mt_safe();
+        for (KeyFrameSet::const_iterator k = beforeKeys.begin(); k != beforeKeys.end(); ++k) {
+            KeyFrame still;
+            if (now->getKeyFrameWithTime(k->getTime(), &still)) {
+                continue;
+            }
+            for (std::list<KnobIPtr>::const_iterator it = targets.begin(); it != targets.end(); ++it) {
+                if (hasKeyAt(it->get(), dimension, k->getTime())) {
+                    (*it)->deleteValueAtTime(eCurveChangeReasonInternal, k->getTime(), ViewSpec::all(), dimension, true);
+                }
+            }
+        }
+        for (KeyFrameSet::const_iterator k = nowKeys.begin(); k != nowKeys.end(); ++k) {
+            KeyFrame old;
+            if (before.getKeyFrameWithTime(k->getTime(), &old) && (old.getValue() == k->getValue())) {
+                continue;
+            }
+            for (std::list<KnobIPtr>::const_iterator it = targets.begin(); it != targets.end(); ++it) {
+                if (isOwnAnimated(it->get(), dimension)) {
+                    writeNumber(it->get(), k->getValue(), true, k->getTime(), dimension, reason);
+                } else if (k->getTime() == time) {
+                    // A key set away from the current frame leaves a static item as it is.
+                    writeNumber(it->get(), k->getValue(), false, time, dimension, reason);
+                }
+            }
+        }
+    }
+} // RotoCurveContext::forwardDimensionEdit
+
+bool
+RotoCurveContext::proxyDiffersFromBaseline(const KnobIPtr& proxy) const
+{
+    std::map<const KnobI*, RotoProxyKnobBaseline>::const_iterator found = _imp->proxyBaselines.find(proxy.get());
+
+    if (found == _imp->proxyBaselines.end()) {
+        return false;
+    }
+    const RotoProxyKnobBaseline& baseline = found->second;
+    const bool isString = dynamic_cast<Knob<std::string>*>(proxy.get()) != NULL;
+    for (int d = 0; d < proxy->getDimension() && d < (int)baseline.curves.size(); ++d) {
+        if (isString) {
+            if (rawString(proxy.get(), d) != baseline.strings[d]) {
+                return true;
+            }
+            continue;
+        }
+        CurvePtr now = shownCurve(proxy, d);
+        if (!sameKeyValues(*baseline.curves[d], *now)) {
+            return true;
+        }
+        // An animated value also changes with the frame, which is no edit.
+        if (!now->isAnimated() && !baseline.curves[d]->isAnimated() && (shownNumber(proxy.get(), d) != baseline.numbers[d])) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void
+RotoCurveContext::remirrorProxy(const KnobIPtr& proxy)
+{
+    RotoDrawableItemPtr item = _imp->mirroredItem.lock();
+    KnobIPtr own = item ? item->getKnobByName(proxy->getName()) : KnobIPtr();
+
+    if (own && (own != proxy) && (own->getDimension() == proxy->getDimension()) && mirrorsKnob(*item, proxy.get())) {
+        ProxySyncScope sync(_imp->proxySyncDepth);
+        showOnProxy(proxy, own.get());
+    }
+    snapshotProxy(proxy);
+}
+
+void
+RotoCurveContext::onProxyKnobValueChanged(ViewSpec /*view*/,
+                                          int /*dimension*/,
+                                          int reason)
+{
+    if (reason == (int)eValueChangedReasonTimeChanged) {
+        return;
+    }
+    forwardProxyChange(senderKnob(sender()), reason);
+}
+
+void
+RotoCurveContext::onProxyCurveChanged()
+{
+    forwardProxyChange(senderKnob(sender()), eValueChangedReasonNatronInternalEdited);
+}
+
+void
+RotoCurveContext::forwardProxyChange(const KnobIPtr& proxy,
+                                     int reason)
+{
+    if ((_imp->proxySyncDepth > 0) || !proxy || !knobListHas(_imp->knobs, proxy.get())) {
+        return;
+    }
+    if (_imp->proxyBaselines.find(proxy.get()) == _imp->proxyBaselines.end()) {
+        snapshotProxy(proxy);
+
+        return;
+    }
+    if (isReplayingUndo()) {
+        // The entry restores the selected items itself, and the node's knob must keep showing the
+        // item it mirrors now, which need not be one the entry recorded.
+        remirrorProxy(proxy);
+
+        return;
+    }
+    if (proxyDiffersFromBaseline(proxy)) {
+        const std::list<KnobIPtr> targets = forwardTargets(proxy);
+        recordForwardedEdit(targets);
+        {
+            ProxySyncScope sync(_imp->proxySyncDepth);
+            // Every dimension: a multi-dimension write may report only one of those it changed.
+            for (int d = 0; !targets.empty() && d < proxy->getDimension(); ++d) {
+                forwardDimensionEdit(proxy, d, forwardedReason(reason), targets);
+            }
+        }
+        // A setting edited on painted strokes starts the next stroke as a new item; moving the
+        // centres does not.
+        RotoContext* paint = dynamic_cast<RotoContext*>(this);
+        if (paint && !targets.empty() && (proxy->getName() != kRotoDrawableItemCenterParam) && (proxy->getName() != kRotoBrushCenterParam)) {
+            paint->s_breakMultiStroke();
+        }
+    }
+    snapshotProxy(proxy);
+}
+
+void
+RotoCurveContext::onProxyKeyFrameMoved(ViewSpec /*view*/,
+                                       int dimension,
+                                       double oldTime,
+                                       double newTime)
+{
+    if (_imp->proxySyncDepth > 0) {
+        return;
+    }
+    KnobIPtr proxy = senderKnob(sender());
+    std::map<const KnobI*, RotoProxyKnobBaseline>::const_iterator baseline = proxy ? _imp->proxyBaselines.find(proxy.get()) : _imp->proxyBaselines.end();
+    if (baseline == _imp->proxyBaselines.end()) {
+        return;
+    }
+    if (isReplayingUndo()) {
+        remirrorProxy(proxy);
+
+        return;
+    }
+    double dv = 0.;
+    KeyFrame moved, old;
+    if ((dimension < (int)baseline->second.curves.size()) && shownCurve(proxy, dimension)->getKeyFrameWithTime(newTime, &moved) && baseline->second.curves[dimension]->getKeyFrameWithTime(oldTime, &old)) {
+        dv = moved.getValue() - old.getValue();
+    }
+    {
+        const std::list<KnobIPtr> targets = forwardTargets(proxy);
+        recordForwardedEdit(targets);
+        ProxySyncScope sync(_imp->proxySyncDepth);
+        for (std::list<KnobIPtr>::const_iterator it = targets.begin(); it != targets.end(); ++it) {
+            KeyFrame targetMoved;
+            if (hasKeyAt(it->get(), dimension, oldTime)) {
+                ignore_result((*it)->moveValueAtTime(eCurveChangeReasonInternal, oldTime, ViewSpec::all(), dimension, newTime - oldTime, dv, &targetMoved));
+            }
+        }
+    }
+    snapshotProxy(proxy);
+}
+
+void
+RotoCurveContext::onProxyKeyFrameInterpolationChanged(double time,
+                                                      ViewSpec /*view*/,
+                                                      int dimension)
+{
+    if (_imp->proxySyncDepth > 0) {
+        return;
+    }
+    KnobIPtr proxy = senderKnob(sender());
+    KeyFrame key;
+    if (!proxy || !knobListHas(_imp->knobs, proxy.get())) {
+        return;
+    }
+    if (isReplayingUndo()) {
+        remirrorProxy(proxy);
+
+        return;
+    }
+    if (shownCurve(proxy, dimension)->getKeyFrameWithTime(time, &key)) {
+        const std::list<KnobIPtr> targets = forwardTargets(proxy);
+        recordForwardedEdit(targets);
+        ProxySyncScope sync(_imp->proxySyncDepth);
+        for (std::list<KnobIPtr>::const_iterator it = targets.begin(); it != targets.end(); ++it) {
+            KeyFrame changed;
+            if (hasKeyAt(it->get(), dimension, time)) {
+                ignore_result((*it)->setInterpolationAtTime(eCurveChangeReasonInternal, ViewSpec::all(), dimension, time, key.getInterpolation(), &changed));
+            }
+        }
+    }
+    snapshotProxy(proxy);
+}
+
+void
+RotoCurveContext::onProxyDerivativeMoved(double time,
+                                         ViewSpec /*view*/,
+                                         int dimension)
+{
+    if (_imp->proxySyncDepth > 0) {
+        return;
+    }
+    KnobIPtr proxy = senderKnob(sender());
+    KeyFrame key;
+    if (!proxy || !knobListHas(_imp->knobs, proxy.get())) {
+        return;
+    }
+    if (isReplayingUndo()) {
+        remirrorProxy(proxy);
+
+        return;
+    }
+    if (shownCurve(proxy, dimension)->getKeyFrameWithTime(time, &key)) {
+        KeyTangents tangents;
+        tangents.left = key.getLeftDerivative();
+        tangents.right = key.getRightDerivative();
+        tangents.leftWeight = key.getLeftWeight();
+        tangents.rightWeight = key.getRightWeight();
+        const std::list<KnobIPtr> targets = forwardTargets(proxy);
+        recordForwardedEdit(targets);
+        ProxySyncScope sync(_imp->proxySyncDepth);
+        for (std::list<KnobIPtr>::const_iterator it = targets.begin(); it != targets.end(); ++it) {
+            KeyFrame changed;
+            if (hasKeyAt(it->get(), dimension, time)) {
+                ignore_result((*it)->setTangentsAtTime(eCurveChangeReasonInternal, ViewSpec::all(), dimension, time, tangents, &changed));
+            }
+        }
+    }
+    snapshotProxy(proxy);
+}
+
+void
+RotoCurveContext::onProxyExpressionChanged(int dimension)
+{
+    if (_imp->proxySyncDepth > 0) {
+        return;
+    }
+    KnobIPtr proxy = senderKnob(sender());
+    if (!proxy || !knobListHas(_imp->knobs, proxy.get()) || (dimension < 0) || (dimension >= proxy->getDimension())) {
+        return;
+    }
+    if (isReplayingUndo()) {
+        remirrorProxy(proxy);
+
+        return;
+    }
+    const std::string expression = proxy->getExpression(dimension);
+    const bool hasRetVariable = proxy->isExpressionUsingRetVariable(dimension);
+    const std::list<KnobIPtr> targets = forwardTargets(proxy);
+    recordForwardedEdit(targets);
+    ProxySyncScope sync(_imp->proxySyncDepth);
+    for (std::list<KnobIPtr>::const_iterator it = targets.begin(); it != targets.end(); ++it) {
+        try {
+            if (expression.empty()) {
+                (*it)->clearExpression(dimension, true);
+            } else {
+                (*it)->setExpression(dimension, expression, hasRetVariable, false);
+            }
+        } catch (const std::exception&) {
+            // An expression the item cannot evaluate stays on the node's knob only.
+        }
+    }
 }
 
 void
@@ -1465,8 +2221,6 @@ RotoCurveContext::deselectInternal(RotoItemPtr b)
 {
     /// only called on the main-thread
     assert(QThread::currentThread() == qApp->thread());
-    int nbBeziersUnLockedBezier = 0;
-    int nbStrokesUnlocked = 0;
     {
         QMutexLocker l(&_imp->rotoContextMutex);
         std::list<RotoItemPtr>::iterator foundSelected = std::find(_imp->selectedItems.begin(), _imp->selectedItems.end(), b);
@@ -1477,63 +2231,29 @@ RotoCurveContext::deselectInternal(RotoItemPtr b)
         }
 
         _imp->selectedItems.erase(foundSelected);
-
-        for (std::list<RotoItemPtr>::iterator it = _imp->selectedItems.begin(); it != _imp->selectedItems.end(); ++it) {
-            Bezier* isBezier = dynamic_cast<Bezier*>(it->get());
-            RotoStrokeItem* isStroke = dynamic_cast<RotoStrokeItem*>(it->get());
-            if (!isStroke && isBezier && !isBezier->isLockedRecursive()) {
-                ++nbBeziersUnLockedBezier;
-            } else if (isStroke) {
-                ++nbStrokesUnlocked;
-            }
-        }
+        _imp->selectedThroughLayer.remove(b);
     }
-    bool bezierDirty = nbBeziersUnLockedBezier > 1;
-    bool strokeDirty = nbStrokesUnlocked > 1;
-    BezierPtr isBezier = std::dynamic_pointer_cast<Bezier>(b);
-    RotoDrawableItem* isDrawable = dynamic_cast<RotoDrawableItem*>(b.get());
-    RotoStrokeItemPtr isStroke = std::dynamic_pointer_cast<RotoStrokeItem>(b);
     RotoLayerPtr isLayer = std::dynamic_pointer_cast<RotoLayer>(b);
-    if (isDrawable) {
-        /// first-off set the context knobs to the value of this bezier
-
-        const bool tieTransform = tiesTransformKnobs(*isDrawable);
-        const std::list<KnobIPtr>& drawableKnobs = isDrawable->getKnobs();
-        for (std::list<KnobIPtr>::const_iterator it = drawableKnobs.begin(); it != drawableKnobs.end(); ++it) {
-            for (std::list<KnobIWPtr>::iterator it2 = _imp->knobs.begin(); it2 != _imp->knobs.end(); ++it2) {
-                KnobIPtr knob = it2->lock();
-                if (knob->getName() == (*it)->getName()) {
-                    if (tieTransform || !isTransformKnob(knob.get())) {
-                        // Clone current state
-                        knob->cloneAndUpdateGui(it->get());
-                    }
-                    assert((*it)->getDimension() == knob->getDimension());
-                    untieItemKnob(*it, isBezier ? !bezierDirty : !strokeDirty);
-                    break;
-                }
-            }
-        }
-    } else if (isLayer) {
+    if (isLayer) {
         const RotoItems& children = isLayer->getItems();
         for (RotoItems::const_iterator it = children.begin(); it != children.end(); ++it) {
             deselectInternal(*it);
         }
     }
-
-    /// if the selected beziers count reaches 0 notify the gui knobs so they appear not enabled
-
-    if ((nbBeziersUnLockedBezier == 0) || (nbStrokesUnlocked == 0)) {
-        for (std::list<KnobIWPtr>::iterator it = _imp->knobs.begin(); it != _imp->knobs.end(); ++it) {
-            KnobIPtr k = it->lock();
-            if (!k) {
-                continue;
-            }
-            k->setAllDimensionsEnabled(false);
-            if (!bezierDirty || !strokeDirty) {
-                k->setDirty(false);
+    if (std::dynamic_pointer_cast<RotoDrawableItem>(b) || isLayer) {
+        RotoDrawableItemPtr last;
+        {
+            QMutexLocker l(&_imp->rotoContextMutex);
+            for (std::list<RotoItemPtr>::reverse_iterator it = _imp->selectedItems.rbegin(); it != _imp->selectedItems.rend() && !last; ++it) {
+                last = std::dynamic_pointer_cast<RotoDrawableItem>(*it);
             }
         }
+        if (last != _imp->mirroredItem.lock()) {
+            mirrorItem(last);
+        }
     }
+    refreshProxyKnobStates();
+    refreshTransformKnobTies();
 } // deselectInternal
 
 RotoItemPtr
@@ -1789,6 +2509,29 @@ RotoCurveContext::getSelectedCurves() const
     }
 
     return drawables;
+}
+
+VectorFollowReport
+RotoCurveContext::followVectors(const VectorFollowParams& params,
+                                UndoCommandPtr* undo)
+{
+    VectorFollowRun run(shared_from_this(), params);
+    std::string error;
+    if (!run.prepare(&error)) {
+        VectorFollowReport report;
+        report.action = (params.mode == VectorFollowMode::eBlendBetweenKeys) ? kVectorFollowBlendActionName : kVectorFollowActionName;
+        report.error = error;
+
+        return report;
+    }
+
+    VectorSampler sampler(params.source, params.layers);
+    const std::function<bool()> aborted = [&params]() {
+        return params.shouldAbort && params.shouldAbort();
+    };
+    run.compute(sampler, [&run](int shape, const VectorFollowFrame& frame) { run.applyFrame(shape, frame); }, aborted);
+
+    return run.finish(false, run.wasAborted() ? sampler.lastError() : std::string(), undo);
 }
 
 std::list<RotoDrawableItemPtr>

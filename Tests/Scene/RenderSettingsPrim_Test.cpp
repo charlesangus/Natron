@@ -212,6 +212,37 @@ TEST_F(RenderSettingsPrimTest, SettingsLeaveOutReservedAndDisabledKeys)
     EXPECT_EQ(1u, cycles.size());
 }
 
+// Every cycles: attribute is sent under its own name, whatever node of Cycles' scene it names and
+// whether or not the delegate declares it. Storm's skydome reads domeLightCameraVisibility though
+// Storm declares no such setting, so the attribute is sent under the bare Hydra key.
+TEST_F(RenderSettingsPrimTest, CyclesAttributesAndDomeVisibilityAreSent)
+{
+    UsdStageRefPtr stage = stageFrom("#usda 1.0\n"
+                                     "def RenderSettings \"Prim\"\n"
+                                     "{\n"
+                                     "    bool cycles:background:transparent = 1\n"
+                                     "    float cycles:film:filter_width = 2\n"
+                                     "    int cycles:foo:bar = 3\n"
+                                     "    bool storm:domeLightCameraVisibility = 0\n"
+                                     "}\n");
+    ASSERT_TRUE(bool(stage));
+    const UsdPrim prim = stage->GetPrimAtPath(SdfPath("/Prim"));
+    ASSERT_TRUE(bool(prim));
+
+    RenderSettingsPrim::Values cycles = RenderSettingsPrim::settings(prim, "HdCyclesPlugin", UsdTimeCode::Default());
+    EXPECT_EQ(3u, cycles.size());
+    EXPECT_EQ(VtValue(true), cycles["cycles:background:transparent"]);
+    EXPECT_EQ(VtValue(2.f), cycles["cycles:film:filter_width"]);
+    EXPECT_EQ(VtValue(3), cycles["cycles:foo:bar"]);
+
+    RenderSettingsPrim::Values storm = RenderSettingsPrim::settings(prim, kRenderDelegateStormId, UsdTimeCode::Default());
+    EXPECT_EQ(1u, storm.size());
+    EXPECT_EQ(VtValue(false), storm["domeLightCameraVisibility"]);
+    EXPECT_EQ(std::string("storm:domeLightCameraVisibility"), RenderSettingsPrim::attributeName(kRenderDelegateStormId, "domeLightCameraVisibility"));
+    // Only Storm reads the bare key: another delegate's attribute of that name keeps its namespace.
+    EXPECT_EQ(std::string("cycles:domeLightCameraVisibility"), RenderSettingsPrim::keyFromAttribute("HdCyclesPlugin", "cycles:domeLightCameraVisibility"));
+}
+
 // An override path beats the stage's renderSettingsPrimPath; with neither there is no prim, and a
 // path naming no settings prim is an error.
 TEST_F(RenderSettingsPrimTest, ActivePrimPrecedence)

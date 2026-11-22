@@ -42,6 +42,7 @@
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/IO/RawMetadata.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
 
@@ -159,7 +160,7 @@ StagedImageEffect::resolveGpuPlan(const GpuQuery& query) const
     }
     const CompositeInputs inputs = opInputsForPlane(query.time, query.view, query.plane);
     StagePlan plan = resolveGpuStagePlan(*self, imagePipelineSpec().stages, _stageKnobs, inputs.blend(), query);
-    resolveStageSources(nodeSpec(), inputs, &plan);
+    resolveStageSources(*this, nodeSpec(), inputs, &plan);
     plan.plane = query.plane;
     resolveStageSourcesLayers(*self, &plan);
 
@@ -221,22 +222,26 @@ StagedImageEffect::getGpuInputRoI(int inputNb,
         return passListSourceRoI(outputRect, opPasses(time, view, scale));
     }
     if ((inputNb != source) && (kind == OpKind::Passes) && isAuxInput(*nodeSpec(), inputNb)) {
-        return opPassesInputRoI(inputNb, time, view, outputRect, scale);
+        return stretchGpuInputRoI(*this, inputNb, getInputReadTimes(inputNb, time, view), [&](double t) { return inputEdgeMode(inputNb, t, view); }, view, opPassesInputRoI(inputNb, time, view, outputRect, scale), scale);
     }
     if ((inputNb == getMaskInput()) && (kind == OpKind::Passes)) {
         const PassList list = opPasses(time, view, scale);
         if (list.opMask) {
-            return passListSourceRoI(outputRect, list);
+            return stretchGpuInputRoI(*this, inputNb, getInputReadTimes(inputNb, time, view), [&](double t) { return inputEdgeMode(inputNb, t, view); }, view, passListSourceRoI(outputRect, list), scale);
         }
     }
+    RectI roi;
+    RenderScale roiScale = scale;
     if ((inputNb == source) && (kind == OpKind::Resample) && opResamplesOnGpu()) {
-        return resampleGpuSourceRoI(*this, source, time, view, outputRect, scale);
-    }
-    if (kind == OpKind::Custom) {
-        return getOpGpuInputRoI(inputNb, time, view, outputRect, scale);
+        roi = resampleGpuSourceRoI(*this, source, time, view, outputRect, scale);
+    } else if (kind == OpKind::Custom) {
+        roi = getOpGpuInputRoI(inputNb, time, view, outputRect, scale);
+        roiScale = getOpGpuInputScale(inputNb, time, view, scale);
+    } else {
+        roi = NativeEffectBase::getGpuInputRoI(inputNb, time, view, outputRect, scale);
     }
 
-    return NativeEffectBase::getGpuInputRoI(inputNb, time, view, outputRect, scale);
+    return stretchGpuInputRoI(*this, inputNb, getInputReadTimes(inputNb, time, view), [&](double t) { return inputEdgeMode(inputNb, t, view); }, view, roi, roiScale);
 }
 
 bool
@@ -293,7 +298,8 @@ StagedImageEffect::resolveSourcesPlan(double time,
     plan.view = view;
     plan.sourceInput = inputs.blend();
     plan.plane = plane;
-    resolveStageSources(nodeSpec(), inputs, &plan);
+    plan.edgeMode = resolveInputEdgeMode(*this, imagePipelineSpec().stages, _stageKnobs, plan.sourceInput, plan.sourceInput, time, view);
+    resolveStageSources(*this, nodeSpec(), inputs, &plan);
 
     return plan;
 }
@@ -453,6 +459,9 @@ StagedImageEffect::createControlsPage()
 void
 StagedImageEffect::addStageKnobs(const KnobPagePtr& page)
 {
+    if (imagePipelineSpec().stages.has(Stage::EdgeMode)) {
+        _stageKnobs.edgeMode = createEdgeModeKnob(this, page, imagePipelineSpec().edgeModeDefaultsToBlack);
+    }
     if (imagePipelineSpec().stages.has(Stage::MaskMix)) {
         addMaskMixKnobs(page);
     }
@@ -519,6 +528,7 @@ StagedImageEffect::getPassContext(double time,
     if (par != 0.) {
         context.pixelAspectRatio = par;
     }
+    context.edgeMode = resolvedEdgeMode(time, view);
 
     return context;
 }
@@ -647,6 +657,50 @@ StagedImageEffect::getRegionsOfInterest(double time,
     }
 } // StagedImageEffect::getRegionsOfInterest
 
+void
+StagedImageEffect::adjustInputRegionsOfInterest(double time,
+                                                const RenderScale& scale,
+                                                ViewIdx view,
+                                                const InputMatrixMap* transforms,
+                                                RoIMap* ret)
+{
+    clampStretchRegionsOfInterest(*this, scale, view, transforms, [&](int inputNb) { return getInputReadTimes(inputNb, time, view); }, [&](int inputNb, double t) { return inputEdgeMode(inputNb, t, view); }, ret);
+}
+
+std::vector<double>
+StagedImageEffect::getInputReadTimes(int /*inputNb*/,
+                                     double time,
+                                     ViewIdx /*view*/) const
+{
+    return std::vector<double>(1, time);
+}
+
+EdgeMode
+StagedImageEffect::inputEdgeMode(int inputNb,
+                                 double time,
+                                 ViewIdx view) const
+{
+    return resolveInputEdgeMode(*this, imagePipelineSpec().stages, _stageKnobs, getSourceInput(), inputNb, time, view);
+}
+
+EdgeMode
+StagedImageEffect::resolvedEdgeMode(double time,
+                                    ViewIdx view) const
+{
+    return inputEdgeMode(getSourceInput(), time, view);
+}
+
+std::optional<EdgeMode>
+StagedImageEffect::getConcatenationEdgeMode(double time,
+                                            ViewIdx view) const
+{
+    if (!opHasMatrix()) {
+        return std::nullopt;
+    }
+
+    return opResample(time, view, RenderScale::identity).settings.edgeMode;
+}
+
 ResampleRegionStages
 StagedImageEffect::getResampleRegionStages(double time,
                                            ViewIdx view) const
@@ -761,17 +815,25 @@ StagedImageEffect::getPreferredMetadataAt(double time,
                                           ViewIdx view,
                                           NodeMetadata& metadata)
 {
+    const EdgeModeChoice choice = imagePipelineSpec().stages.has(Stage::EdgeMode) ? readEdgeModeChoice(_stageKnobs.edgeMode, time, view) : EdgeModeChoice::Input;
     if (route(time, view).kind != Route::Kind::Black) {
+        // Under Input the default derivation already carries the source's mode.
+        if (choice != EdgeModeChoice::Input) {
+            metadata.setEdgeMode(resolveEdgeMode(choice, EdgeMode::Stretch));
+        }
+
         return eStatusOK;
     }
     // The defaults come from whichever inputs are connected, which a Black answer reads none of.
     Format projectFormat;
     getApp()->getProject()->getProjectDefaultFormat(&projectFormat);
     metadata.setNComps(-1, 4);
-    metadata.setComponentsType(-1, kNatronColorLayerID);
+    metadata.setComponentsType(-1, eImageComponentsTypeColor);
     metadata.setBitDepth(-1, eImageBitDepthFloat);
     metadata.setPixelAspectRatio(-1, projectFormat.getPixelAspectRatio());
     metadata.setOutputFormat(projectFormat);
+    // A constant black image reads no input, so like any source it carries no edge of an input's.
+    metadata.setEdgeMode(resolveEdgeMode(choice, EdgeMode::Stretch));
 
     return eStatusOK;
 }
@@ -876,7 +938,7 @@ StagedImageEffect::render(const RenderActionArgs& args)
     const ImageLayerDesc plane = args.outputLayers.empty() ? ImageLayerDesc() : args.outputLayers.front().first;
     const CompositeInputs inputs = opInputsForPlane(args.time, args.view, plane);
     StagePlan plan = resolveStagePlan(*this, imagePipelineSpec().stages, _stageKnobs, inputs.blend(), args.time, args.view, args.processChannels);
-    resolveStageSources(nodeSpec(), inputs, &plan);
+    resolveStageSources(*this, nodeSpec(), inputs, &plan);
     plan.plane = plane;
     std::optional<std::string> error = checksRawStage ? rawStageError(args.time, args.view) : std::nullopt;
     if (!error) {

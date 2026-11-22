@@ -38,6 +38,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Project.h"
 #include "Engine/PyParameter.h"
 #include "Engine/PythonUndoCommands.h"
@@ -256,6 +257,12 @@ App::createWriter(const QString& filename,
     } else {
         return NULL;
     }
+}
+
+bool
+App::waitForReloads(int timeoutMs)
+{
+    return SceneWriteBarrier::waitForAsyncWrites(timeoutMs);
 }
 
 int
@@ -617,7 +624,7 @@ App::addProjectLayer(const QString& id,
         chans.push_back(it->toStdString());
     }
 
-    ImageLayerDesc desc(idStr, idStr, "", chans);
+    ImageLayerDesc desc(idStr, chans);
     std::string error;
     LayerRegistry::AddResultEnum res = getInternalApp()->getProject()->addLayer(desc, LayerRegistryEntry::eOriginUser, &error);
 

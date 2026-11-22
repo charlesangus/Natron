@@ -145,6 +145,7 @@ public:
     virtual void progressStart(const NodePtr& node, const std::string &message, const std::string &messageid, bool canCancel = true) OVERRIDE FINAL;
     virtual void progressEnd(const NodePtr& node) OVERRIDE FINAL;
     virtual bool progressUpdate(const NodePtr& node, double t) OVERRIDE FINAL;
+    virtual std::shared_ptr<void> showProgressModal(const NodePtr& node, const std::string& title, const std::function<void()>& onCancel) OVERRIDE FINAL;
     virtual void onMaxPanelsOpenedChanged(int maxPanels) OVERRIDE FINAL;
     virtual void onRenderQueuingChanged(bool queueingEnabled) OVERRIDE FINAL;
     virtual void connectViewersToViewerCache() OVERRIDE FINAL;
@@ -249,6 +250,10 @@ public:
     virtual void addNodeKeyframesToTimeline(Node* node) OVERRIDE FINAL;
     virtual void removeNodesKeyframesFromTimeline(const std::list<Node*> & nodes) OVERRIDE FINAL;
     virtual void removeNodeKeyframesFromTimeline(Node* node) OVERRIDE FINAL;
+    virtual void setNodeShownOnTimeline(const NodePtr& node, bool shown) OVERRIDE FINAL;
+    virtual void invalidateNodeKeyframeIndicators() OVERRIDE FINAL;
+    virtual void setPanelKeyframeIndicators(const void* owner, const std::vector<SequenceTime>& keys) OVERRIDE FINAL;
+    virtual void clearPanelKeyframeIndicators(const void* owner) OVERRIDE FINAL;
     virtual void getKeyframes(std::list<SequenceTime>* keys) const OVERRIDE FINAL;
     virtual void removeAllUserKeyframesIndicators() OVERRIDE FINAL;
     virtual void addUserKeyframeIndicator(SequenceTime time) OVERRIDE FINAL;

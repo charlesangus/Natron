@@ -39,6 +39,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -46,6 +47,8 @@
 // Before Qt's OpenGL headers.
 #include "Gui/SceneGizmo.h"
 #include "Gui/SceneViewport.h"
+#include "Gui/SelectionEngine.h"
+#include "Tests/TestWatchdog.h"
 
 #include <QColor>
 #include <QImage>
@@ -61,7 +64,9 @@
 #include "Engine/Nodes/Scene/CyclesAovs.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
+#include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
+#include "Engine/Nodes/Scene/StormGLSection.h"
 #include "Engine/Nodes/Scene/USDProject3D.h"
 #include "Engine/ProjectColorManagement.h"
 #include "Engine/Settings.h"
@@ -69,13 +74,18 @@
 #include "Gui/GuiGLRequirements.h"
 #include "Tests/Scene/CyclesTestUtils.h"
 
+#include <pxr/base/gf/frustum.h>
+#include <pxr/base/gf/rect2i.h>
 #include <pxr/base/gf/vec4f.h>
 #include <pxr/base/tf/token.h>
 #include <pxr/base/vt/value.h>
+#include <pxr/imaging/cameraUtil/framing.h>
+#include <pxr/imaging/hd/aov.h>
 #include <pxr/imaging/hd/driver.h>
 #include <pxr/imaging/hdSt/renderDelegate.h>
 #include <pxr/imaging/hgi/tokens.h>
 #include <pxr/usdImaging/usdImagingGL/engine.h>
+#include <pxr/usdImaging/usdImagingGL/renderParams.h>
 
 NATRON_NAMESPACE_USING
 
@@ -197,6 +207,25 @@ defineQuad(const PXR_NS::UsdStageRefPtr& stage,
     return mesh;
 }
 
+// Binds prim to a UsdPreviewSurface at materialPath that emits colour and reflects nothing, so it
+// shows without lights.
+void
+bindEmissive(const PXR_NS::UsdStageRefPtr& stage,
+             const PXR_NS::UsdPrim& prim,
+             const char* materialPath,
+             const PXR_NS::GfVec3f& colour)
+{
+    const PXR_NS::SdfPath path(materialPath);
+    PXR_NS::UsdShadeMaterial material = PXR_NS::UsdShadeMaterial::Define(stage, path);
+    PXR_NS::UsdShadeShader surface = PXR_NS::UsdShadeShader::Define(stage, path.AppendChild(PXR_NS::TfToken("Surface")));
+
+    surface.CreateIdAttr(PXR_NS::VtValue(PXR_NS::TfToken("UsdPreviewSurface")));
+    surface.CreateInput(PXR_NS::TfToken("emissiveColor"), PXR_NS::SdfValueTypeNames->Color3f).Set(colour);
+    surface.CreateInput(PXR_NS::TfToken("diffuseColor"), PXR_NS::SdfValueTypeNames->Color3f).Set(PXR_NS::GfVec3f(0.f, 0.f, 0.f));
+    material.CreateSurfaceOutput().ConnectToSource(surface.CreateOutput(PXR_NS::TfToken("surface"), PXR_NS::SdfValueTypeNames->Token));
+    PXR_NS::UsdShadeMaterialBindingAPI::Apply(prim).Bind(material);
+}
+
 // /World/Card, a 4-unit square at z = 0, carries the projection material as USDProject3D authors
 // it: the plate is a UsdUVTexture without a file, so it shows its fallback, half-transparent red
 // in straight colour, as live textures hold it, which the shader premultiplies to (0.6, 0, 0, 0.5). The projector's frame covers the card's left half, x -2..0; Crop on and
@@ -204,9 +233,12 @@ defineQuad(const PXR_NS::UsdStageRefPtr& stage,
 // z = -1 with an emissive blue preview surface, so it shows without lights, lies behind the whole
 // card. From the fixture's free camera the card spans pixels 66..190 and the backdrop 44..212 on
 // both axes. Without the backdrop, the card's left half is all that is drawn, half-transparent.
+// With the occluder, an opaque emissive green rectangle at z = 0.5 spanning x -3..-1 and y -1..1
+// hides the card's left quarter, pixels 30..95 across and 95..161 down.
 ScenePayload
 projectedCardScene(std::string* error,
-                   bool withBackdrop = true)
+                   bool withBackdrop = true,
+                   bool withOccluder = false)
 {
     const std::string shaderPath = USDProject3D::getShaderPath();
 
@@ -225,14 +257,17 @@ projectedCardScene(std::string* error,
 
     if (withBackdrop) {
         PXR_NS::UsdGeomMesh backdrop = defineQuad(stage, "/World/Backdrop", 3.f, -1.f);
-        const PXR_NS::SdfPath backdropMaterialPath("/World/BackdropMaterial");
-        PXR_NS::UsdShadeMaterial backdropMaterial = PXR_NS::UsdShadeMaterial::Define(stage, backdropMaterialPath);
-        PXR_NS::UsdShadeShader surface = PXR_NS::UsdShadeShader::Define(stage, backdropMaterialPath.AppendChild(PXR_NS::TfToken("Surface")));
-        surface.CreateIdAttr(PXR_NS::VtValue(PXR_NS::TfToken("UsdPreviewSurface")));
-        surface.CreateInput(PXR_NS::TfToken("emissiveColor"), PXR_NS::SdfValueTypeNames->Color3f).Set(PXR_NS::GfVec3f(0.f, 0.f, 1.f));
-        surface.CreateInput(PXR_NS::TfToken("diffuseColor"), PXR_NS::SdfValueTypeNames->Color3f).Set(PXR_NS::GfVec3f(0.f, 0.f, 0.f));
-        backdropMaterial.CreateSurfaceOutput().ConnectToSource(surface.CreateOutput(PXR_NS::TfToken("surface"), PXR_NS::SdfValueTypeNames->Token));
-        PXR_NS::UsdShadeMaterialBindingAPI::Apply(backdrop.GetPrim()).Bind(backdropMaterial);
+        bindEmissive(stage, backdrop.GetPrim(), "/World/BackdropMaterial", PXR_NS::GfVec3f(0.f, 0.f, 1.f));
+    }
+    if (withOccluder) {
+        PXR_NS::UsdGeomMesh occluder = defineQuad(stage, "/World/Occluder", 1.f, 0.5f);
+        PXR_NS::VtVec3fArray points;
+        occluder.GetPointsAttr().Get(&points);
+        for (PXR_NS::GfVec3f& point : points) {
+            point[0] = (point[0] < 0.f) ? -3.f : -1.f;
+        }
+        occluder.GetPointsAttr().Set(points);
+        bindEmissive(stage, occluder.GetPrim(), "/World/OccluderMaterial", PXR_NS::GfVec3f(0.f, 1.f, 0.f));
     }
     PXR_NS::UsdGeomMesh card = defineQuad(stage, "/World/Card", 2.f, 0.f);
 
@@ -279,6 +314,31 @@ projectedCardScene(std::string* error,
     return SceneOps::appendLayer(ScenePayload(), layer, 0x9c0ec7ULL);
 }
 
+/**
+ * @brief /World/Plane, a 4-unit square through the origin turned 60 degrees about Y, its left edge
+ * toward the camera, so its depth changes steeply across the frame. Opaque blue, without a
+ * material. From the fixture's free camera it spans pixels 91..154 across, 53..203 down at its near
+ * edge and 75..181 at its far one.
+ **/
+ScenePayload
+tiltedPlaneScene()
+{
+    PXR_NS::SdfLayerRefPtr layer = SceneOps::createNodeLayer("SceneViewportTiltedPlane");
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(layer);
+    PXR_NS::UsdGeomMesh plane = defineQuad(stage, "/World/Plane", 2.f, 0.f);
+    PXR_NS::VtVec3fArray points;
+
+    plane.GetPointsAttr().Get(&points);
+    for (PXR_NS::GfVec3f& point : points) {
+        const float x = point[0];
+        point[0] = x * 0.5f;
+        point[2] = -x * std::sqrt(3.f) * 0.5f;
+    }
+    plane.GetPointsAttr().Set(points);
+    plane.CreateDisplayColorAttr(PXR_NS::VtValue(PXR_NS::VtVec3fArray(1, PXR_NS::GfVec3f(0.f, 0.f, 1.f))));
+
+    return SceneOps::appendLayer(ScenePayload(), layer, 0x7117edULL);
+}
 struct Rgb {
     int r, g, b;
 };
@@ -294,6 +354,12 @@ bool
 isReddish(const Rgb& c)
 {
     return (c.r > 90) && (c.r > c.g + 40) && (c.r > c.b + 40);
+}
+
+bool
+isGreenish(const Rgb& c)
+{
+    return (c.g > 90) && (c.g > c.r + 40) && (c.g > c.b + 40);
 }
 
 bool
@@ -314,6 +380,33 @@ srgbEncode(float linear)
     return (linear <= 0.0031308f) ? 12.92f * linear : 1.055f * std::pow(linear, 1.f / 2.4f) - 0.055f;
 }
 
+// The selection's tint as displayed, and how far after has moved from before toward it, as a
+// fraction of the way: the tint is mixed in by the selection's coverage, so an opaque prim moves
+// all the way and a half-transparent one half of it.
+const Rgb kSelectionTint = { 255, 204, 26 };
+
+int
+distanceToTint(const Rgb& c)
+{
+    return std::abs(c.r - kSelectionTint.r) + std::abs(c.g - kSelectionTint.g) + std::abs(c.b - kSelectionTint.b);
+}
+
+double
+towardTint(const Rgb& before,
+           const Rgb& after)
+{
+    const int from = distanceToTint(before);
+
+    return (from > 0) ? double(from - distanceToTint(after)) / double(from) : 0.;
+}
+
+int
+difference(const Rgb& a,
+           const Rgb& b)
+{
+    return std::abs(a.r - b.r) + std::abs(a.g - b.g) + std::abs(a.b - b.b);
+}
+
 const char* const kStudioURI = "ocio://studio-config-v4.0.0_aces-v2.0_ocio-v2.5";
 const char* const kWorkingSpace = "ACEScg";
 const char* const kDisplay = "sRGB - Display";
@@ -324,6 +417,7 @@ class SceneViewportStorm
 protected:
     void SetUp() override
     {
+        _watchdog.start();
         if (!appPTR->isOpenGLLoaded()) {
             _skip = skipWithoutGL("Natron did not load OpenGL");
 
@@ -377,6 +471,7 @@ protected:
 
     void TearDown() override
     {
+        _watchdog.setPhase("teardown");
         if (_context && _surface && _context->makeCurrent(_surface.get())) {
             _renderer.releaseGL();
             _fbo.reset();
@@ -385,6 +480,29 @@ protected:
         _fbo.reset();
         _surface.reset();
         _context.reset();
+        _watchdog.stop();
+    }
+
+    template <typename Id>
+    void setRenderer(const Id& id)
+    {
+        _watchdog.setPhase("setRenderer");
+        _renderer.setRendererId(id);
+    }
+
+    bool renderFrame()
+    {
+        _watchdog.setPhase("render");
+
+        return _renderer.render(_fbo->handle(), kSize, kSize);
+    }
+
+    template <typename... Args>
+    bool syncScene(Args&&... args)
+    {
+        _watchdog.setPhase("syncScene");
+
+        return _renderer.syncScene(std::forward<Args>(args)...);
     }
 
     QImage render()
@@ -392,7 +510,7 @@ protected:
         bool converged = false;
 
         for (int i = 0; i < 4 && !converged; ++i) {
-            converged = _renderer.render(_fbo->handle(), kSize, kSize);
+            converged = renderFrame();
         }
         EXPECT_TRUE(converged) << "Storm did not converge";
 
@@ -437,10 +555,11 @@ protected:
     // converged frame, the delegate fails, or the time is up. True if both held.
     bool refineUntil(const std::function<bool(const SceneViewportRenderer::RefineStatus&)>& done)
     {
+        _watchdog.setPhase("refineTo");
         const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + std::chrono::seconds(120);
 
         while (std::chrono::steady_clock::now() < end) {
-            const bool drawn = _renderer.render(_fbo->handle(), kSize, kSize);
+            const bool drawn = renderFrame();
             if (!_renderer.getRendererError().empty()) {
                 ADD_FAILURE() << _renderer.getRendererError();
 
@@ -464,6 +583,7 @@ protected:
         });
     }
 
+    TestWatchdog _watchdog;
     bool _skip = false;
     std::unique_ptr<QOpenGLContext> _context;
     std::unique_ptr<QOffscreenSurface> _surface;
@@ -562,12 +682,173 @@ TEST_F(SceneViewportStorm, PicksAndHighlightsAProjectedCard)
     EXPECT_EQ(std::string("/World/Backdrop"), _renderer.pick(97, 200, kSize, kSize));
     EXPECT_EQ(std::string(), _renderer.pick(20, 128, kSize, kSize));
 
-    // Storm's translucent pass draws no selection highlight, so only the backdrop is checked.
+    // The opaque backdrop selected outside the card sets how far an opaque prim tints.
+    const Rgb backdrop = pixel(unselected, 97, 200);
+    _renderer.setSelectedPrims({ "/World/Backdrop" });
+    const double opaque = towardTint(backdrop, pixel(render(), 97, 200));
+    EXPECT_GT(opaque, 0.9) << "the selected opaque backdrop";
+
     _renderer.setSelectedPrims({ "/World/Card" });
     const QImage selected = render();
+    const Rgb projectedSelected = pixel(selected, 97, 128);
+    const double card = towardTint(projected, projectedSelected);
+    EXPECT_GE(card, 0.5 * opaque - 0.08) << "the half-transparent card tints by its alpha: " << projected << " -> " << projectedSelected;
+    EXPECT_LE(card, 0.5 * opaque + 0.08) << "the half-transparent card tints by its alpha: " << projected << " -> " << projectedSelected;
     const Rgb besideSelected = pixel(selected, 159, 128);
-    EXPECT_LE(std::abs(besideSelected.r - beside.r) + std::abs(besideSelected.g - beside.g) + std::abs(besideSelected.b - beside.b), 6)
+    EXPECT_LE(difference(besideSelected, beside), 6)
         << "the card's transparent half highlighted the backdrop: " << beside << " -> " << besideSelected;
+    EXPECT_LE(difference(pixel(selected, 97, 200), backdrop), 6) << "the backdrop is not selected";
+    EXPECT_LE(difference(pixel(selected, 20, 128), pixel(unselected, 20, 128)), 6) << "nothing is drawn there";
+}
+
+// The occluder, opaque, unselected and in front of the card, hides the selected card's tint where
+// it covers it, and the card's tint shows where it does not.
+TEST_F(SceneViewportStorm, AnUnselectedOpaquePrimInFrontHidesTheSelectionsTint)
+{
+    if (_skip) {
+        return;
+    }
+    std::string error;
+    const ScenePayload scene = projectedCardScene(&error, true, true);
+    ASSERT_TRUE(error.empty()) << error;
+    ASSERT_TRUE(_renderer.setScene(scene, 1., 24., &error)) << error;
+    _renderer.setDrawMode(SceneViewportRenderer::eDrawModeShaded);
+
+    const QImage unselected = render();
+    const Rgb covered = pixel(unselected, 80, 128);
+    const Rgb uncovered = pixel(unselected, 112, 128);
+    EXPECT_TRUE(isGreenish(covered)) << "the occluder over the card: " << covered;
+    EXPECT_FALSE(isGreenish(uncovered)) << "the card beside the occluder: " << uncovered;
+
+    _renderer.setSelectedPrims({ "/World/Card" });
+    const QImage selected = render();
+    EXPECT_LE(difference(pixel(selected, 80, 128), covered), 6) << "the occluder hid the card's tint: " << covered << " -> " << pixel(selected, 80, 128);
+    EXPECT_GT(towardTint(uncovered, pixel(selected, 112, 128)), 0.35) << "the card beside the occluder: " << uncovered << " -> " << pixel(selected, 112, 128);
+}
+
+// A translucent surface writes no depth, so the selected opaque backdrop tints through the card,
+// where the card shows and where it is transparent alike.
+TEST_F(SceneViewportStorm, ASelectedPrimTintsThroughATranslucentOne)
+{
+    if (_skip) {
+        return;
+    }
+    std::string error;
+    const ScenePayload scene = projectedCardScene(&error);
+    ASSERT_TRUE(error.empty()) << error;
+    ASSERT_TRUE(_renderer.setScene(scene, 1., 24., &error)) << error;
+    _renderer.setDrawMode(SceneViewportRenderer::eDrawModeShaded);
+
+    const QImage unselected = render();
+    _renderer.setSelectedPrims({ "/World/Backdrop" });
+    const QImage selected = render();
+    for (const QPoint& p : { QPoint(159, 128), QPoint(97, 128), QPoint(97, 200) }) {
+        const Rgb before = pixel(unselected, p.x(), p.y());
+        const Rgb after = pixel(selected, p.x(), p.y());
+        EXPECT_GT(towardTint(before, after), 0.35) << "the backdrop at (" << p.x() << ", " << p.y() << "): " << before << " -> " << after;
+    }
+    EXPECT_LE(difference(pixel(selected, 20, 128), pixel(unselected, 20, 128)), 6) << "nothing is drawn there";
+}
+
+// The tint covers a plane at 60 degrees as it covers one facing the camera: the selection's depth
+// passes the test against the beauty's across the whole surface, not only where it slopes gently.
+TEST_F(SceneViewportStorm, TheTintCoversASteeplyTiltedSelectedPrim)
+{
+    if (_skip) {
+        return;
+    }
+    std::string error;
+    ASSERT_TRUE(_renderer.setScene(tiltedPlaneScene(), 1., 24., &error)) << error;
+
+    const QImage unselected = render();
+    _renderer.setSelectedPrims({ "/World/Plane" });
+    const QImage selected = render();
+
+    // Pixels two or more away from the plane's edges, where only the plane is drawn.
+    int interior = 0;
+    int tinted = 0;
+    for (int y = 2; y < kSize - 2; ++y) {
+        for (int x = 2; x < kSize - 2; ++x) {
+            bool inside = true;
+            for (int dy = -2; (dy <= 2) && inside; ++dy) {
+                for (int dx = -2; (dx <= 2) && inside; ++dx) {
+                    inside = !isBackground(pixel(unselected, x + dx, y + dy));
+                }
+            }
+            if (!inside) {
+                continue;
+            }
+            ++interior;
+            if (towardTint(pixel(unselected, x, y), pixel(selected, x, y)) > 0.8) {
+                ++tinted;
+            }
+        }
+    }
+    ASSERT_GT(interior, 4000) << "the plane covers about 8000 pixels";
+    EXPECT_GE(tinted, interior * 95 / 100) << tinted << " of " << interior << " interior pixels tinted";
+}
+
+TEST_F(SceneViewportStorm, ClearingTheSelectionRestoresTheColours)
+{
+    if (_skip) {
+        return;
+    }
+    std::string error;
+    const ScenePayload scene = projectedCardScene(&error);
+    ASSERT_TRUE(error.empty()) << error;
+    ASSERT_TRUE(_renderer.setScene(scene, 1., 24., &error)) << error;
+    _renderer.setDrawMode(SceneViewportRenderer::eDrawModeShaded);
+
+    const QImage unselected = render();
+    _renderer.setSelectedPrims({ "/World/Card", "/World/Backdrop" });
+    const QImage selected = render();
+    _renderer.setSelectedPrims({});
+    const QImage cleared = render();
+    for (const QPoint& p : { QPoint(97, 128), QPoint(159, 128), QPoint(97, 200), QPoint(20, 128) }) {
+        const Rgb before = pixel(unselected, p.x(), p.y());
+        if (p.x() != 20) {
+            EXPECT_GT(difference(pixel(selected, p.x(), p.y()), before), 30) << "(" << p.x() << ", " << p.y() << ") selected";
+        }
+        EXPECT_LE(difference(pixel(cleared, p.x(), p.y()), before), 6)
+            << "clearing the selection left (" << p.x() << ", " << p.y() << ") tinted: " << before << " -> " << pixel(cleared, p.x(), p.y());
+    }
+}
+
+// In wireframe the selection pass draws lines too: the selected box's edges tint, its faces and
+// the unselected ball stay as they were.
+TEST_F(SceneViewportStorm, WireframeTintsTheSelectedPrimsLines)
+{
+    if (_skip) {
+        return;
+    }
+    _renderer.setDrawMode(SceneViewportRenderer::eDrawModeWireframe);
+    const QImage unselected = render();
+    _renderer.setSelectedPrims({ "/World/Box" });
+    const QImage selected = render();
+
+    int tinted = 0;
+    int tintedBackground = 0;
+    int changedOutsideTheBox = 0;
+    for (int y = 0; y < kSize; ++y) {
+        for (int x = 0; x < kSize; ++x) {
+            const Rgb before = pixel(unselected, x, y);
+            const Rgb after = pixel(selected, x, y);
+            if (difference(before, after) <= 30) {
+                continue;
+            }
+            const bool inBox = (x >= 90) && (x <= 166) && (y >= 90) && (y <= 166);
+            if (!inBox) {
+                ++changedOutsideTheBox;
+            } else if (isBackground(before)) {
+                ++tintedBackground;
+            } else {
+                ++tinted;
+            }
+        }
+    }
+    EXPECT_GT(tinted, 50) << "the selected box's lines";
+    EXPECT_LE(tintedBackground, tinted / 4) << "the box's faces, which wireframe leaves undrawn";
+    EXPECT_EQ(0, changedOutsideTheBox) << "the ball, not selected";
 }
 
 // Through the studio config, the card and the background show as the 2D viewer shows images: from
@@ -1101,12 +1382,15 @@ TEST(SceneViewportLighting, ThePreferenceIsSceneLightsByDefaultAndSavesAndLoads)
     settings->setSaveSettings(wasSaving);
 }
 
-// The viewer's own drawing relies on the GL state it set before the scene view drew.
+// The viewer's own drawing relies on the GL state it set before the scene view drew, the selection's
+// tint included.
 TEST_F(SceneViewportStorm, RestoresTheGLStateItChanges)
 {
     if (_skip) {
         return;
     }
+    const QImage unselected = render();
+    _renderer.setSelectedPrims({ "/World/Box" });
     GLuint texture = 0;
     glGenTextures(1, &texture);
     glActiveTexture(GL_TEXTURE0);
@@ -1115,8 +1399,10 @@ TEST_F(SceneViewportStorm, RestoresTheGLStateItChanges)
     glUseProgram(0);
     glViewport(3, 5, 70, 90);
     glEnable(GL_BLEND);
-    glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+    glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_DST_ALPHA, GL_ZERO);
     glDisable(GL_DEPTH_TEST);
+    glDepthMask(GL_FALSE);
+    glDepthFunc(GL_GREATER);
     glEnable(GL_SCISSOR_TEST);
     glScissor(1, 2, 30, 40);
     glMatrixMode(GL_PROJECTION);
@@ -1125,9 +1411,9 @@ TEST_F(SceneViewportStorm, RestoresTheGLStateItChanges)
 
     while (glGetError() != GL_NO_ERROR) {
     }
-    (void)_renderer.render(_fbo->handle(), kSize, kSize);
+    (void)renderFrame();
     _renderer.setShowGrid(true);
-    (void)_renderer.render(_fbo->handle(), kSize, kSize);
+    (void)renderFrame();
     (void)_renderer.pick(128, 128, kSize, kSize);
 
     GLint value = -1;
@@ -1151,6 +1437,17 @@ TEST_F(SceneViewportStorm, RestoresTheGLStateItChanges)
     EXPECT_FALSE(glIsEnabled(GL_FRAMEBUFFER_SRGB));
     glGetIntegerv(GL_BLEND_SRC_RGB, &value);
     EXPECT_EQ(GL_ONE, value);
+    glGetIntegerv(GL_BLEND_DST_RGB, &value);
+    EXPECT_EQ(GL_ONE_MINUS_SRC_ALPHA, value);
+    glGetIntegerv(GL_BLEND_SRC_ALPHA, &value);
+    EXPECT_EQ(GL_DST_ALPHA, value);
+    glGetIntegerv(GL_BLEND_DST_ALPHA, &value);
+    EXPECT_EQ(GL_ZERO, value);
+    GLboolean depthMask = GL_TRUE;
+    glGetBooleanv(GL_DEPTH_WRITEMASK, &depthMask);
+    EXPECT_EQ(GLboolean(GL_FALSE), depthMask);
+    glGetIntegerv(GL_DEPTH_FUNC, &value);
+    EXPECT_EQ(GL_GREATER, value);
     GLint scissor[4] = { 0, 0, 0, 0 };
     glGetIntegerv(GL_SCISSOR_BOX, scissor);
     EXPECT_EQ(30, scissor[2]);
@@ -1164,16 +1461,14 @@ TEST_F(SceneViewportStorm, RestoresTheGLStateItChanges)
 
     glDisable(GL_SCISSOR_TEST);
     glDisable(GL_BLEND);
+    glDepthMask(GL_TRUE);
+    glDepthFunc(GL_LESS);
     glDeleteTextures(1, &texture);
+    const QImage selected = _fbo->toImage();
+    EXPECT_GT(towardTint(pixel(unselected, 110, 110), pixel(selected, 110, 110)), 0.8) << "the selected box was tinted, away from the grid's line along row 128";
 }
 
 namespace {
-bool
-isGreenish(const Rgb& c)
-{
-    return (c.g > 90) && (c.g > c.r + 40) && (c.g > c.b + 40);
-}
-
 bool
 isYellowish(const Rgb& c)
 {
@@ -1414,8 +1709,8 @@ TEST_F(SceneViewportStorm, PaintSkipsWhileTheViewerLockIsHeld)
     EXPECT_NE(SceneViewportRenderer::eRenderStatusBusy, _renderer.renderIfIdle(_fbo->handle(), kSize, kSize));
 }
 
-// Switching the viewer to a delegate that cannot load drops the Storm engine and shows the
-// loader's error instead of a frame; switching back makes one Storm engine again.
+// Switching the viewer to a delegate that cannot load shows the loader's error instead of a
+// frame and keeps the Storm engine; switching back draws with that engine.
 TEST_F(SceneViewportStorm, SwitchesToAnUnavailableRendererAndBackToStorm)
 {
     if (_skip) {
@@ -1427,19 +1722,72 @@ TEST_F(SceneViewportStorm, SwitchesToAnUnavailableRendererAndBackToStorm)
     EXPECT_EQ(std::string(kRenderDelegateStormId), _renderer.getEngineRendererId());
     const U64 engines = _renderer.getEngineCount();
 
-    _renderer.setRendererId(stub);
-    EXPECT_FALSE(_renderer.hasEngine());
-    EXPECT_TRUE(_renderer.render(_fbo->handle(), kSize, kSize));
-    EXPECT_FALSE(_renderer.hasEngine());
+    setRenderer(stub);
+    EXPECT_TRUE(_renderer.hasEngine());
+    EXPECT_TRUE(renderFrame());
+    EXPECT_EQ(std::string(kRenderDelegateStormId), _renderer.getEngineRendererId());
     EXPECT_EQ(engines, _renderer.getEngineCount());
     EXPECT_NE(std::string::npos, _renderer.getRendererError().find(stub)) << _renderer.getRendererError();
     EXPECT_EQ(0, countNonBackground(_fbo->toImage()));
 
-    _renderer.setRendererId(kRenderDelegateStormId);
+    setRenderer(kRenderDelegateStormId);
     EXPECT_TRUE(_renderer.getRendererError().empty());
     EXPECT_GT(countNonBackground(render()), 0);
     ASSERT_TRUE(_renderer.hasEngine());
     EXPECT_EQ(std::string(kRenderDelegateStormId), _renderer.getEngineRendererId());
+    EXPECT_EQ(engines, _renderer.getEngineCount());
+}
+
+// The Storm engine kept while another delegate renders still hears the stage: edits made away
+// from Storm show on the first frame back, drawn by the same engine, as a renderer seeing the
+// edited scene for the first time draws it. Releasing the Storm engine alone leaves the other
+// delegate chosen, and the next Storm frame makes a new engine.
+TEST_F(SceneViewportStorm, TheStormEngineKeptBehindAnotherRendererFollowsItsEdits)
+{
+    if (_skip) {
+        return;
+    }
+    const std::string stub = "NatronTestStubRendererPlugin";
+    const ScenePayload reference = referenceScene();
+    (void)render();
+    ASSERT_TRUE(_renderer.hasEngine());
+    const U64 engines = _renderer.getEngineCount();
+
+    setRenderer(stub);
+    (void)renderFrame();
+    const ScenePayload scene = editedScene(reference, 1., 0);
+    std::string error;
+    ASSERT_TRUE(_renderer.setScene(scene, 1., 24., &error)) << error;
+    (void)renderFrame();
+
+    setRenderer(kRenderDelegateStormId);
+    const QImage back = render();
+    EXPECT_EQ(engines, _renderer.getEngineCount());
+
+    SceneViewportRenderer fresh;
+    ASSERT_TRUE(fresh.setScene(scene, 1., 24., &error)) << error;
+    fresh.setFreeCamera(_renderer.getFreeCamera());
+    fresh.setDrawMode(SceneViewportRenderer::eDrawModeUnshaded);
+    fresh.setShowGrid(false);
+    fresh.setShowGuides(false);
+    bool converged = false;
+    for (int i = 0; i < 4 && !converged; ++i) {
+        converged = fresh.render(_fbo->handle(), kSize, kSize);
+    }
+    const QImage expected = _fbo->toImage();
+    fresh.releaseGL();
+    // A few edge pixels may round differently; a stale prim covers hundreds.
+    EXPECT_LE(countDifferentPixels(back, expected), 40);
+    // The edit cube's centre: x = 128 + 128 / (10 tan 22.5), y = 128 + 128 * 3 / (10 tan 22.5).
+    const int px = int(std::lround(128. + 128. / (10. * 0.41421356237)));
+    EXPECT_GT(pixel(back, px, 221).g, pixel(back, px, 221).r + 40) << pixel(back, px, 221);
+
+    setRenderer(stub);
+    _renderer.releaseStormEngine();
+    EXPECT_FALSE(_renderer.hasEngine());
+    EXPECT_EQ(stub, _renderer.getActiveRendererId());
+    setRenderer(kRenderDelegateStormId);
+    EXPECT_GT(countNonBackground(render()), 0);
     EXPECT_EQ(engines + 1, _renderer.getEngineCount());
 }
 
@@ -1453,35 +1801,35 @@ TEST_F(SceneViewportStorm, SceneDefaultFollowsThePrimsRenderer)
     const std::string stub = "NatronTestStubRendererPlugin";
     const ScenePayload base = referenceScene();
     std::string error;
-    ASSERT_TRUE(_renderer.syncScene(base, &error)) << error;
+    ASSERT_TRUE(syncScene(base, &error)) << error;
 
-    _renderer.setRendererId(kRenderDelegateSceneDefaultId);
+    setRenderer(kRenderDelegateSceneDefaultId);
     EXPECT_EQ(std::string(kRenderDelegateSceneDefaultId), _renderer.getRendererId());
     EXPECT_GT(countNonBackground(render()), 0);
     EXPECT_EQ(std::string(kRenderDelegateStormId), _renderer.getActiveRendererId());
 
     // A prim without natron:renderer: still Storm.
-    ASSERT_TRUE(_renderer.syncScene(withSettingsPrim(base, std::string(), 4, 4, 0x5e771ULL), &error)) << error;
+    ASSERT_TRUE(syncScene(withSettingsPrim(base, std::string(), 4, 4, 0x5e771ULL), &error)) << error;
     EXPECT_GT(countNonBackground(render()), 0);
     EXPECT_EQ(std::string(kRenderDelegateStormId), _renderer.getActiveRendererId());
 
     // A prim naming a renderer that is not installed: the view says so instead of drawing.
-    ASSERT_TRUE(_renderer.syncScene(withSettingsPrim(base, stub, 4, 4, 0x5e772ULL), &error)) << error;
-    EXPECT_TRUE(_renderer.render(_fbo->handle(), kSize, kSize));
+    ASSERT_TRUE(syncScene(withSettingsPrim(base, stub, 4, 4, 0x5e772ULL), &error)) << error;
+    EXPECT_TRUE(renderFrame());
     EXPECT_EQ(stub, _renderer.getActiveRendererId());
     EXPECT_EQ(std::string(kRenderDelegateSceneDefaultId), _renderer.getRendererId());
-    EXPECT_FALSE(_renderer.hasEngine());
+    EXPECT_EQ(std::string(kRenderDelegateStormId), _renderer.getEngineRendererId());
     EXPECT_NE(std::string::npos, _renderer.getRendererError().find(stub)) << _renderer.getRendererError();
 
     // The prim gone, Storm again.
-    ASSERT_TRUE(_renderer.syncScene(base, &error)) << error;
+    ASSERT_TRUE(syncScene(base, &error)) << error;
     EXPECT_GT(countNonBackground(render()), 0);
     EXPECT_EQ(std::string(kRenderDelegateStormId), _renderer.getActiveRendererId());
     EXPECT_TRUE(_renderer.getRendererError().empty()) << _renderer.getRendererError();
 
     // A renderer chosen beats the prim's.
-    ASSERT_TRUE(_renderer.syncScene(withSettingsPrim(base, stub, 4, 4, 0x5e773ULL), &error)) << error;
-    _renderer.setRendererId(kRenderDelegateStormId);
+    ASSERT_TRUE(syncScene(withSettingsPrim(base, stub, 4, 4, 0x5e773ULL), &error)) << error;
+    setRenderer(kRenderDelegateStormId);
     EXPECT_GT(countNonBackground(render()), 0);
     EXPECT_EQ(std::string(kRenderDelegateStormId), _renderer.getActiveRendererId());
 }
@@ -1496,8 +1844,8 @@ TEST_F(SceneViewportStorm, ThePrimsSettingsReachTheRefinement)
     }
     const ScenePayload base = referenceScene();
     std::string error;
-    ASSERT_TRUE(_renderer.syncScene(withSettingsPrim(base, std::string(), 6, 64, 0x5e781ULL), &error)) << error;
-    _renderer.setRendererId(kRenderDelegateCyclesId);
+    ASSERT_TRUE(syncScene(withSettingsPrim(base, std::string(), 6, 64, 0x5e781ULL), &error)) << error;
+    setRenderer(kRenderDelegateCyclesId);
     ASSERT_TRUE(refineTo(6));
 
     _renderer.setMaxSamples(3);
@@ -1506,10 +1854,10 @@ TEST_F(SceneViewportStorm, ThePrimsSettingsReachTheRefinement)
     const U64 frames = _renderer.getRefineStatus().frames;
 
     // The MoonRay tab's edit: only /Render changes, in a namespace Cycles does not read.
-    ASSERT_TRUE(_renderer.syncScene(withSettingsPrim(base, std::string(), 6, 128, 0x5e782ULL), &error)) << error;
+    ASSERT_TRUE(syncScene(withSettingsPrim(base, std::string(), 6, 128, 0x5e782ULL), &error)) << error;
     const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
     while (std::chrono::steady_clock::now() < end) {
-        (void)_renderer.render(_fbo->handle(), kSize, kSize);
+        (void)renderFrame();
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     EXPECT_EQ(restarts, _renderer.getRefineStatus().restarts);
@@ -1518,7 +1866,7 @@ TEST_F(SceneViewportStorm, ThePrimsSettingsReachTheRefinement)
 
     // The Cycles tab's edit, without the cap: the prim's new samples.
     _renderer.setMaxSamples(0);
-    ASSERT_TRUE(_renderer.syncScene(withSettingsPrim(base, std::string(), 9, 128, 0x5e783ULL), &error)) << error;
+    ASSERT_TRUE(syncScene(withSettingsPrim(base, std::string(), 9, 128, 0x5e783ULL), &error)) << error;
     ASSERT_TRUE(refineTo(9));
     EXPECT_GT(_renderer.getRefineStatus().restarts, restarts);
 }
@@ -1531,16 +1879,16 @@ TEST_F(SceneViewportStorm, TheRefinementDrawsItsNewFrameAfterASwitchOfRenderer)
         return;
     }
     _renderer.setMaxSamples(1);
-    _renderer.setRendererId(kRenderDelegateCyclesId);
+    setRenderer(kRenderDelegateCyclesId);
     ASSERT_TRUE(refineTo(1));
     const QImage first = _fbo->toImage();
 
-    _renderer.setRendererId(kRenderDelegateStormId);
+    setRenderer(kRenderDelegateStormId);
     (void)render();
     SceneViewportRenderer::FreeCamera camera = _renderer.getFreeCamera();
     camera.azimuth = 60.;
     _renderer.setFreeCamera(camera);
-    _renderer.setRendererId(kRenderDelegateCyclesId);
+    setRenderer(kRenderDelegateCyclesId);
     ASSERT_TRUE(refineTo(1));
     EXPECT_NE(first, _fbo->toImage());
 }
@@ -1553,25 +1901,25 @@ TEST_F(SceneViewportStorm, ARefinementFailureClearsAtTheNextSceneEdit)
     }
     const ScenePayload base = referenceScene();
     std::string error;
-    ASSERT_TRUE(_renderer.syncScene(withSettingsPrim(base, std::string(), 6, 64, 0x5e791ULL), &error)) << error;
+    ASSERT_TRUE(syncScene(withSettingsPrim(base, std::string(), 6, 64, 0x5e791ULL), &error)) << error;
     std::atomic<bool> armed(true);
     RenderDelegates::setRenderFaultHook([&armed]() {
         if (armed.exchange(false)) {
             throw std::runtime_error("texture commit failed");
         }
     });
-    _renderer.setRendererId(kRenderDelegateCyclesId);
+    setRenderer(kRenderDelegateCyclesId);
     const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + std::chrono::seconds(120);
     while (_renderer.getRendererError().empty() && (std::chrono::steady_clock::now() < end)) {
-        (void)_renderer.render(_fbo->handle(), kSize, kSize);
+        (void)renderFrame();
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
     RenderDelegates::setRenderFaultHook(nullptr);
     EXPECT_NE(std::string::npos, _renderer.getRendererError().find("texture commit failed")) << _renderer.getRendererError();
 
-    ASSERT_TRUE(_renderer.syncScene(withSettingsPrim(base, std::string(), 9, 64, 0x5e792ULL), &error)) << error;
+    ASSERT_TRUE(syncScene(withSettingsPrim(base, std::string(), 9, 64, 0x5e792ULL), &error)) << error;
     while (!_renderer.getRendererError().empty() && (std::chrono::steady_clock::now() < end)) {
-        (void)_renderer.render(_fbo->handle(), kSize, kSize);
+        (void)renderFrame();
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
     EXPECT_TRUE(refineTo(9));
@@ -1602,7 +1950,7 @@ TEST_F(SceneViewportStorm, ARefinementPicksAGuide)
     ASSERT_FALSE(aimed.path.empty()) << "no guide Storm can pick";
 
     _renderer.setMaxSamples(1);
-    _renderer.setRendererId(kRenderDelegateCyclesId);
+    setRenderer(kRenderDelegateCyclesId);
     ASSERT_TRUE(refineTo(1));
     EXPECT_EQ(aimed.path, _renderer.pick((int)aimed.x, (int)aimed.y, kSize, kSize));
 }
@@ -1617,7 +1965,7 @@ TEST_F(SceneViewportStorm, AnExceptionFromHydraDiscardsTheEngineAndTheNextRender
     const U64 engines = _renderer.getEngineCount();
 
     RenderDelegates::setRenderFaultHook([]() { throw std::runtime_error("texture commit failed"); });
-    EXPECT_TRUE(_renderer.render(_fbo->handle(), kSize, kSize));
+    EXPECT_TRUE(renderFrame());
     RenderDelegates::setRenderFaultHook(nullptr);
 
     EXPECT_FALSE(_renderer.hasEngine());
@@ -1659,4 +2007,186 @@ TEST_F(SceneViewportStorm, DelegatesOnOneHgiShareAResourceRegistry)
     }
 
     engine.reset();
+}
+
+namespace {
+// Texels of a kSize square texture, row 0 at the bottom, read through a framebuffer of its own.
+std::vector<float>
+readTexture(const PXR_NS::HgiTextureHandle& texture,
+            bool isDepth)
+{
+    const int channels = isDepth ? 1 : 4;
+    std::vector<float> texels((std::size_t)(kSize * kSize * channels), -1.f);
+    GLint previous = 0;
+    GLuint framebuffer = 0;
+
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &previous);
+    glGenFramebuffers(1, &framebuffer);
+    glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, isDepth ? GL_DEPTH_ATTACHMENT : GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, (GLuint)texture->GetRawResource(), 0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE) {
+        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        glReadPixels(0, 0, kSize, kSize, isDepth ? GL_DEPTH_COMPONENT : GL_RGBA, GL_FLOAT, texels.data());
+    } else {
+        ADD_FAILURE() << "the " << (isDepth ? "depth" : "colour") << " texture cannot be read through a framebuffer";
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)previous);
+    glDeleteFramebuffers(1, &framebuffer);
+
+    return texels;
+}
+
+// At pixel (x, y) from the top left, as the fixture's renders and picks count them.
+float
+texelAt(const std::vector<float>& texels,
+        int channels,
+        int channel,
+        int x,
+        int y)
+{
+    return texels[(std::size_t)((((kSize - 1 - y) * kSize) + x) * channels + channel)];
+}
+
+using EngineCheck = std::function<void(SelectionEngine& engine, const PXR_NS::UsdImagingGLRenderParams& params)>;
+
+// Renders scene through a Storm SelectionEngine from the fixture's free camera, shaded and lit,
+// then hands the engine to check while its GL work can still run.
+void
+withRenderedEngine(TestWatchdog& watchdog,
+                   const ScenePayload& scene,
+                   const EngineCheck& check)
+{
+    SceneStage stage;
+    ASSERT_TRUE(stage.isValid());
+    ASSERT_TRUE(stage.sync(scene));
+
+    PXR_NS::UsdImagingGLEngine::Parameters parameters;
+    parameters.rendererPluginId = PXR_NS::TfToken(kRenderDelegateStormId);
+    std::unique_ptr<SelectionEngine> engine(new SelectionEngine(parameters));
+    ASSERT_TRUE(engine->GetHgi() != nullptr);
+    ASSERT_TRUE(engine->hasSelectionPass());
+    {
+        StormGLSection section;
+        section.collectWith(engine->GetHgi());
+        engine->SetRendererAov(PXR_NS::HdAovTokens->color);
+        engine->SetEnablePresentation(false);
+        engine->SetRenderBufferSize(PXR_NS::GfVec2i(kSize, kSize));
+        engine->SetFraming(PXR_NS::CameraUtilFraming(PXR_NS::GfRect2i(PXR_NS::GfVec2i(0, 0), kSize, kSize)));
+        PXR_NS::GfFrustum frustum;
+        frustum.SetPosition(PXR_NS::GfVec3d(0., 0., 10.));
+        frustum.SetPerspective(45., 1., 0.1, 100.);
+        engine->SetCameraState(frustum.ComputeViewMatrix(), frustum.ComputeProjectionMatrix());
+
+        PXR_NS::UsdImagingGLRenderParams params;
+        params.clearColor = PXR_NS::GfVec4f(0.f, 0.f, 0.f, 0.f);
+        params.drawMode = PXR_NS::UsdImagingGLDrawMode::DRAW_SHADED_SMOOTH;
+        params.enableLighting = true;
+        watchdog.setPhase("render");
+        engine->Render(stage.getStage()->GetPseudoRoot(), params);
+        check(*engine, params);
+
+        section.collectWith(nullptr);
+        engine.reset();
+    }
+}
+
+// The largest difference between the pass's depth and the beauty's where the pass covers a pixel
+// whole, and how many such pixels there are.
+float
+largestDepthDifference(SelectionEngine& engine,
+                       int* covered)
+{
+    const std::vector<float> color = readTexture(engine.colorTexture(), false);
+    const std::vector<float> pass = readTexture(engine.depthTexture(), true);
+    const std::vector<float> beauty = readTexture(engine.GetAovTexture(PXR_NS::HdAovTokens->depth), true);
+    float largest = 0.f;
+
+    *covered = 0;
+    for (int y = 0; y < kSize; ++y) {
+        for (int x = 0; x < kSize; ++x) {
+            if (texelAt(color, 4, 3, x, y) < 1.f) {
+                continue;
+            }
+            ++*covered;
+            largest = std::max(largest, std::abs(texelAt(pass, 1, 0, x, y) - texelAt(beauty, 1, 0, x, y)));
+        }
+    }
+
+    return largest;
+}
+
+// Well under the viewport's depth bias: the pass rasterises and resolves as the beauty does.
+const float kDepthParity = 1e-6f;
+
+} // namespace
+
+// The selection pass draws the card alone, with its own material: the projected half covers its
+// pixels by the plate's alpha, and neither the card's transparent half nor the backdrop behind it
+// is drawn. A selection with nothing to draw runs no pass.
+TEST_F(SceneViewportStorm, TheSelectionPassDrawsATranslucentCardByItsOwnAlpha)
+{
+    if (_skip) {
+        return;
+    }
+    std::string error;
+    const ScenePayload scene = projectedCardScene(&error);
+    ASSERT_TRUE(error.empty()) << error;
+
+    withRenderedEngine(_watchdog, scene, [](SelectionEngine& engine, const PXR_NS::UsdImagingGLRenderParams& params) {
+        EXPECT_FALSE(engine.renderSelection(params)) << "nothing selected";
+        engine.setSelection({ PXR_NS::SdfPath("/World/Projection") });
+        EXPECT_FALSE(engine.renderSelection(params)) << "a material, which draws nothing";
+        engine.setSelection({ PXR_NS::SdfPath("/World/Card") });
+        ASSERT_TRUE(engine.renderSelection(params));
+        const PXR_NS::HgiTextureHandle colorTexture = engine.colorTexture();
+        const PXR_NS::HgiTextureHandle depthTexture = engine.depthTexture();
+        ASSERT_TRUE(colorTexture && depthTexture);
+        EXPECT_NE(colorTexture.Get(), engine.GetAovTexture(PXR_NS::HdAovTokens->color).Get());
+
+        const std::vector<float> color = readTexture(colorTexture, false);
+        const std::vector<float> depth = readTexture(depthTexture, true);
+        EXPECT_NEAR(0.5f, texelAt(color, 4, 3, 97, 128), 0.02f) << "the projected half covers by the plate's alpha";
+        EXPECT_LT(texelAt(depth, 1, 0, 97, 128), 1.f) << "the projected half writes its depth";
+        EXPECT_EQ(0.f, texelAt(color, 4, 3, 159, 128)) << "the card's transparent half";
+        EXPECT_EQ(0.f, texelAt(color, 4, 3, 97, 200)) << "the backdrop, not selected";
+        EXPECT_EQ(1.f, texelAt(depth, 1, 0, 97, 200)) << "the backdrop, not selected";
+        EXPECT_EQ(0.f, texelAt(color, 4, 3, 20, 128)) << "nothing drawn";
+        EXPECT_EQ(1.f, texelAt(depth, 1, 0, 20, 128)) << "nothing drawn";
+    });
+}
+
+// For an opaque prim facing the camera, the pass's depth is the beauty's. The translucent card in
+// front of it writes no depth in the beauty, so the backdrop's shows through it there too.
+TEST_F(SceneViewportStorm, TheSelectionPassDepthIsTheBeautysForAnOpaquePrim)
+{
+    if (_skip) {
+        return;
+    }
+    std::string error;
+    const ScenePayload scene = projectedCardScene(&error);
+    ASSERT_TRUE(error.empty()) << error;
+
+    withRenderedEngine(_watchdog, scene, [](SelectionEngine& engine, const PXR_NS::UsdImagingGLRenderParams& params) {
+        engine.setSelection({ PXR_NS::SdfPath("/World/Backdrop") });
+        ASSERT_TRUE(engine.renderSelection(params));
+        int covered = 0;
+        EXPECT_LE(largestDepthDifference(engine, &covered), kDepthParity);
+        EXPECT_GT(covered, 20000) << "the backdrop covers pixels 44..212 on both axes";
+    });
+}
+
+// Across a plane at 60 degrees, where a surface's depth differs between a pixel's centre and its
+// samples by far more than the viewport's depth bias, the pass's depth is still the beauty's.
+TEST_F(SceneViewportStorm, TheSelectionPassDepthIsTheBeautysForATiltedPrim)
+{
+    if (_skip) {
+        return;
+    }
+    withRenderedEngine(_watchdog, tiltedPlaneScene(), [](SelectionEngine& engine, const PXR_NS::UsdImagingGLRenderParams& params) {
+        engine.setSelection({ PXR_NS::SdfPath("/World/Plane") });
+        ASSERT_TRUE(engine.renderSelection(params));
+        int covered = 0;
+        EXPECT_LE(largestDepthDifference(engine, &covered), kDepthParity);
+        EXPECT_GT(covered, 5000) << "the plane covers about 8000 pixels";
+    });
 }

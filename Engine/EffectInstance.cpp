@@ -27,6 +27,7 @@
 #include "EffectInstancePrivate.h"
 
 #include <algorithm> // min, max
+#include <atomic>
 #include <bitset>
 #include <cassert>
 #include <cmath>
@@ -36,10 +37,12 @@
 #include <optional>
 #include <sstream> // stringstream
 #include <stdexcept>
+#include <unordered_map>
 #include <unordered_set>
 
-#include <QReadWriteLock>
 #include <QCoreApplication>
+#include <QMutex>
+#include <QReadWriteLock>
 #include <QtConcurrentMap> // QtCore on Qt4, QtConcurrent on Qt5
 #include <QtConcurrentRun> // QtCore on Qt4, QtConcurrent on Qt5
 
@@ -102,11 +105,41 @@ EffectInstance::addThreadLocalInputImageTempPointer(int inputNb,
     _imp->addInputImageTempPointer(inputNb, img);
 }
 
+namespace {
+
+QMutex&
+liveEffectsMutex()
+{
+    // Leaked: effects may outlive static destruction.
+    static QMutex* mutex = new QMutex();
+
+    return *mutex;
+}
+
+std::unordered_map<const KnobHolder*, EffectInstance*>&
+liveEffects()
+{
+    static std::unordered_map<const KnobHolder*, EffectInstance*>* effects = new std::unordered_map<const KnobHolder*, EffectInstance*>();
+
+    return *effects;
+}
+
+void
+registerLiveEffect(EffectInstance* effect)
+{
+    QMutexLocker k(&liveEffectsMutex());
+
+    liveEffects()[effect] = effect;
+}
+
+} // anon namespace
+
 EffectInstance::EffectInstance(NodePtr node)
     : NamedKnobHolder( node ? node->getApp() : AppInstancePtr() )
     , _node(node)
     , _imp( new Implementation(this) )
 {
+    registerLiveEffect(this);
     if (node) {
         if ( !node->isRenderScaleSupportEnabledForPlugin() ) {
             setSupportsRenderScaleMaybe(eSupportsNo);
@@ -122,6 +155,7 @@ EffectInstance::EffectInstance(const EffectInstance& other)
     , _imp( new Implementation(*other._imp) )
 {
     _imp->_publicInterface = this;
+    registerLiveEffect(this);
 }
 
 namespace {
@@ -205,9 +239,37 @@ EffectInstance::closeOverlayEditStepIfOwner() const
 
 EffectInstance::~EffectInstance()
 {
+    {
+        // Together, so that under the mutex a knob's holder is either a registered effect or no
+        // effect at all: lockHolder() can then tell a dying effect from another kind of holder.
+        QMutexLocker k(&liveEffectsMutex());
+        liveEffects().erase(this);
+        detachKnobs();
+    }
     if (qApp && (QThread::currentThread() == qApp->thread())) {
         closeOverlayEditStepOf(this);
     }
+}
+
+EffectInstancePtr
+EffectInstance::lockHolder(const KnobI& knob,
+                           KnobHolder** holder)
+{
+    QMutexLocker k(&liveEffectsMutex());
+    KnobHolder* loaded = knob.getHolder();
+    std::unordered_map<const KnobHolder*, EffectInstance*>::const_iterator found = liveEffects().find(loaded);
+
+    if (found == liveEffects().end()) {
+        *holder = loaded;
+
+        return EffectInstancePtr();
+    }
+    // Unregistering waits on the mutex, so a registered effect is not freed yet. One whose last owner is
+    // gone already fails to lock.
+    EffectInstancePtr effect = found->second->weak_from_this().lock();
+    *holder = effect ? loaded : 0;
+
+    return effect;
 }
 
 void
@@ -300,7 +362,7 @@ containsIdenticalLayer(const std::list<ImageLayerDesc>& list,
 }
 
 const std::vector<std::string>&
-EffectInstance::getUserLayers() const
+EffectInstance::getUserLayers(std::string (*encode)(const ImageLayerDesc&)) const
 {
     EffectTLSDataPtr tls = _imp->tlsData->getOrCreateTLSData();
     assert(tls);
@@ -309,7 +371,7 @@ EffectInstance::getUserLayers() const
     std::list<ImageLayerDesc> projectLayers = getRegisteredProjectLayersList(getApp()->getProject());
 
     for (std::list<ImageLayerDesc>::iterator it = projectLayers.begin(); it != projectLayers.end(); ++it) {
-        tls->userLayerStrings.push_back(ImageLayerDesc::mapLayerToOFXPlaneString(*it));
+        tls->userLayerStrings.push_back(encode(*it));
     }
     return tls->userLayerStrings;
 }
@@ -808,6 +870,29 @@ EffectInstance::aborted() const
 } // EffectInstance::aborted
 
 bool
+EffectInstance::abortIfSuperseded() const
+{
+    AbortableThread* isAbortableThread = dynamic_cast<AbortableThread*>(QThread::currentThread());
+    bool isRenderUserInteraction = false;
+    AbortableRenderInfoPtr abortInfo;
+    EffectInstancePtr treeRoot;
+
+    if (!isAbortableThread || !isAbortableThread->getAbortInfo(&isRenderUserInteraction, &abortInfo, &treeRoot)) {
+        EffectTLSDataPtr tls = _imp->tlsData->getTLSData();
+        if (!tls || tls->frameArgs.empty()) {
+            return false;
+        }
+        abortInfo = tls->frameArgs.back()->abortInfo.lock();
+    }
+    if (!abortInfo || !abortInfo->canAbort() || !abortInfo->isSuperseded()) {
+        return false;
+    }
+    abortInfo->setAborted();
+
+    return true;
+}
+
+bool
 EffectInstance::shouldCacheOutput(bool isFrameVaryingOrAnimated,
                                   double time,
                                   ViewIdx view,
@@ -817,6 +902,259 @@ EffectInstance::shouldCacheOutput(bool isFrameVaryingOrAnimated,
 
     return n->shouldCacheOutput(isFrameVaryingOrAnimated, time, view, visitsCount);
 }
+
+bool
+EffectInstance::admitsOutputToCache(const RenderContextPtr& context,
+                                    const ParallelRenderArgs& frameArgs,
+                                    bool isFrameVaryingOrAnimated,
+                                    double time,
+                                    ViewIdx view,
+                                    const EffectInstance* caller) const
+{
+    if (renderContextHasLoopVariables(context)) {
+        return false;
+    }
+    // Whatever the policy: an analysis is likely to ask its input for the same image again.
+    if (frameArgs.isAnalysis && (frameArgs.treeRoot->getEffectInstance().get() == caller)) {
+        return true;
+    }
+
+    return shouldCacheOutput(isFrameVaryingOrAnimated, time, view, frameArgs.visitsCount);
+}
+
+bool
+EffectInstance::pullsInputsAtScaleOne() const
+{
+    // For multi-resolution we want input images with exactly the same size as the output image
+    return getNode()->useScaleOneImagesWhenRenderScaleSupportIsDisabled() || !supportsMultiResolution();
+}
+
+ImageKey
+EffectInstance::outputCacheKey(U64 nodeHash,
+                               bool isFrameVaryingOrAnimated,
+                               double time,
+                               ViewIdx view,
+                               bool draft,
+                               unsigned int renderMappedMipmapLevel) const
+{
+    return ImageKey(getNode().get(), nodeHash, isFrameVaryingOrAnimated, time, view, 1., draft, renderMappedMipmapLevel == 0 && !pullsInputsAtScaleOne());
+}
+
+namespace {
+
+// False while another render is working on any of atLevel, in pixels at level: renderRoI would wait for that render's
+// marker, and renders the region itself if that render aborts, so the task's inputs are still needed.
+bool
+settledRestAt(const ImagePtr& entry,
+              unsigned int level,
+              const RectI& atLevel,
+              const RectD& rod,
+              double par,
+              std::list<RectI>* rest)
+{
+    RectI at = atLevel;
+    if (entry->getMipmapLevel() < level) {
+        at = at.upscalePowerOfTwo(level - entry->getMipmapLevel()).intersect(rod.toPixelEnclosing(entry->getMipmapLevel(), par));
+    }
+#if NATRON_ENABLE_TRIMAP
+    bool beingRendered = false;
+    entry->getRestToRender_trimap(at, *rest, &beingRendered);
+
+    return !beingRendered;
+#else
+    entry->getRestToRender(at, *rest);
+
+    return true;
+#endif
+}
+
+} // anonymous namespace
+
+ImagePtr
+EffectInstance::mostCompleteCacheEntry(const std::list<ImagePtr>& entries,
+                                       unsigned int level,
+                                       const RectI& atLevel,
+                                       const RectD& rod,
+                                       double par)
+{
+    ImagePtr best;
+    double bestMissing = 0.;
+    int bestRank = 0;
+    for (const ImagePtr& entry : entries) {
+        std::list<RectI> rest;
+        double missingPixels = std::numeric_limits<double>::infinity();
+        if (settledRestAt(entry, level, atLevel, rod, par, &rest)) {
+            missingPixels = 0.;
+            for (const RectI& rect : rest) {
+                missingPixels += (double)rect.area();
+            }
+        }
+        const int rank = (entry->getStorageMode() == eStorageModeGLTex) ? 0 : (entry->isAllocated() ? 1 : 2);
+        if (!best || (missingPixels < bestMissing) || ((missingPixels == bestMissing) && (rank < bestRank))) {
+            best = entry;
+            bestMissing = missingPixels;
+            bestRank = rank;
+        }
+    }
+
+    return best;
+}
+
+EffectInstance::OutputCacheCoverage
+EffectInstance::probeOutputInCache(U64 nodeHash,
+                                   bool isFrameVaryingOrAnimated,
+                                   double time,
+                                   ViewIdx view,
+                                   unsigned int mipmapLevel,
+                                   bool rendersFullScale,
+                                   bool probesDraft,
+                                   bool acceptsPartial,
+                                   const RectI& region,
+                                   const RectD& rod,
+                                   double par,
+                                   const std::list<ImageLayerDesc>& layers,
+                                   ImageBitDepthEnum bitdepth,
+                                   RectD* missing,
+                                   OutputCacheTier* servedBy)
+{
+    if (layers.empty() || region.isNull()) {
+        return OutputCacheCoverage::None;
+    }
+    bool everyLayerOnDevice = true;
+    bool anyLayerOnDisk = false;
+    const auto noteTier = [&](const ImagePtr& entry) {
+        if (entry->getStorageMode() == eStorageModeGLTex) {
+            return;
+        }
+        everyLayerOnDevice = false;
+        anyLayerOnDisk = anyLayerOnDisk || !entry->isAllocated();
+    };
+    const auto reportTier = [&]() {
+        if (servedBy) {
+            *servedBy = everyLayerOnDevice ? OutputCacheTier::Device : (anyLayerOnDisk ? OutputCacheTier::Disk : OutputCacheTier::Memory);
+        }
+    };
+
+    ComponentsNeededMap neededComps;
+    std::list<ImageLayerDesc> passThroughLayers;
+    double passThroughTime;
+    int passThroughView;
+    std::bitset<4> processChannels;
+    ProcessChannelsPerPlaneMap processChannelsPerPlane;
+    int passThroughInput;
+    getComponentsNeededAndProduced_public(nodeHash, time, view, &neededComps, &passThroughLayers, &passThroughTime,
+                                          &passThroughView, &processChannels, &processChannelsPerPlane, &passThroughInput);
+    const ComponentsNeededMap::const_iterator foundOutput = neededComps.find(-1);
+    const std::list<ImageLayerDesc> outputComponents = foundOutput != neededComps.end() ? foundOutput->second : std::list<ImageLayerDesc>();
+
+    const unsigned int renderLevel = rendersFullScale ? 0 : mipmapLevel;
+    const ImageKey nonDraftKey = outputCacheKey(nodeHash, isFrameVaryingOrAnimated, time, view, false, renderLevel);
+    const ImageKey draftKey = outputCacheKey(nodeHash, isFrameVaryingOrAnimated, time, view, true, renderLevel);
+    const bool pinsOutput = dynamic_cast<DiskCacheNode*>(this) != nullptr;
+
+    const auto coversInFull = [&](const ImagePtr& entry, unsigned int level, const RectI& atLevel) -> bool {
+        std::list<RectI> rest;
+
+        return settledRestAt(entry, level, atLevel, rod, par, &rest) && rest.empty();
+    };
+
+    const auto peekEntry = [&](const ImageKey& key, unsigned int level, const ImageLayerDesc& layer, const RectI& atLevel) -> ImagePtr {
+        ImagePtr entry;
+        key.forEachServingKey(level, 0, layer, bitdepth, [&](const ImageKey& candidate) {
+            std::list<ImagePtr> images;
+            if (pinsOutput) {
+                appPTR->peekPinnedImage(candidate, &images);
+            } else {
+                appPTR->peekImage(candidate, &images);
+            }
+            std::list<ImagePtr> usable;
+            for (const ImagePtr& image : images) {
+                if (image->getParams()->isRodProjectFormat()) {
+                    Format projectFormat;
+                    getApp()->getProject()->getProjectDefaultFormat(&projectFormat);
+                    const RectD canonicalProject = projectFormat.toCanonicalFormat();
+                    if (canonicalProject != image->getRoD()) {
+                        continue;
+                    }
+                }
+                if (image->getBounds().isNull()) {
+                    continue;
+                }
+                // A device holder's entry has no pin to find it by, so renderRoI would not see it.
+                if (pinsOutput && (image->getStorageMode() == eStorageModeGLTex)) {
+                    continue;
+                }
+                // A finer device entry serves too: the scheduler downscales it on the device.
+                usable.push_back(image);
+            }
+            entry = mostCompleteCacheEntry(usable, level, atLevel, rod, par);
+
+            return (bool)entry;
+        });
+
+        return entry;
+    };
+    const auto findEntry = [&](unsigned int level, const ImageLayerDesc& layer, const RectI& atLevel) -> ImagePtr {
+        ImagePtr entry = peekEntry(nonDraftKey, level, layer, atLevel);
+        if (!entry && probesDraft) {
+            entry = peekEntry(draftKey, level, layer, atLevel);
+        }
+
+        return entry;
+    };
+
+    const RectI renderRegion = rendersFullScale ? region.toCanonical(mipmapLevel, par, rod).toPixelEnclosing(0, par).intersect(rod.toPixelEnclosing(0, par)) : region;
+    RectD missingCanonical;
+    for (const ImageLayerDesc& layer : layers) {
+        const ImageLayerDesc* cachedLayer = ImageKey::cachedLayerForRequest(layer, outputComponents);
+        if (!cachedLayer) {
+            return OutputCacheCoverage::None;
+        }
+        if (rendersFullScale) {
+            const ImagePtr atRequestedLevel = findEntry(mipmapLevel, *cachedLayer, region);
+            if (atRequestedLevel && coversInFull(atRequestedLevel, mipmapLevel, region)) {
+                noteTier(atRequestedLevel);
+                continue;
+            }
+        }
+        const ImagePtr entry = findEntry(renderLevel, *cachedLayer, renderRegion);
+        if (!entry) {
+            return OutputCacheCoverage::None;
+        }
+        // A finer entry's bitmap is carried over by a downscale, whose edges can't be predicted well enough to trust a part.
+        if (entry->getMipmapLevel() != renderLevel) {
+            if (!coversInFull(entry, renderLevel, renderRegion)) {
+                return OutputCacheCoverage::None;
+            }
+            noteTier(entry);
+            continue;
+        }
+        noteTier(entry);
+        std::list<RectI> rest;
+        if (!settledRestAt(entry, renderLevel, renderRegion, rod, par, &rest)) {
+            return OutputCacheCoverage::None;
+        }
+        if (!rest.empty() && !acceptsPartial) {
+            return OutputCacheCoverage::None;
+        }
+        for (const RectI& rect : rest) {
+            const RectD canonicalRect = rect.toCanonical_noClipping(renderLevel, par);
+            if (missingCanonical.isNull()) {
+                missingCanonical = canonicalRect;
+            } else {
+                missingCanonical.merge(canonicalRect);
+            }
+        }
+    }
+
+    reportTier();
+    if (missingCanonical.isNull()) {
+        return OutputCacheCoverage::Full;
+    }
+    *missing = missingCanonical;
+
+    return OutputCacheCoverage::Partial;
+} // EffectInstance::probeOutputInCache
 
 const std::string &
 EffectInstance::getScriptName() const
@@ -855,6 +1193,19 @@ EffectInstance::getInput(int n) const
 
     if (inputNode) {
         return inputNode->getEffectInstance();
+    }
+
+    return EffectInstancePtr();
+}
+
+EffectInstancePtr
+EffectInstance::getIdentitySource(int identityInputNb) const
+{
+    if (identityInputNb >= 0) {
+        return getInput(identityInputNb);
+    }
+    if (identityInputNb == kIdentityInternalSource) {
+        return getInternalIdentitySource();
     }
 
     return EffectInstancePtr();
@@ -946,9 +1297,9 @@ EffectInstance::retrieveGetImageDataUponFailure(const double time,
         ViewIdx identityView;
         *isIdentity_p = isIdentity_public(true, nodeHash, time, scale, pixelRod, view, &identityTime, &identityView, &identityInputNb);
         if (*isIdentity_p) {
-            if (identityInputNb >= 0) {
-                *identityInput_p = getInput(identityInputNb);
-            } else if (identityInputNb == -2) {
+            if (identityInputNb != -2) {
+                *identityInput_p = getIdentitySource(identityInputNb);
+            } else {
                 *identityInput_p = shared_from_this();
             }
         }
@@ -1121,7 +1472,16 @@ EffectInstance::lookupFrameStore(const EffectInstancePtr& input,
         }
     }
 
-    return context->getStore().find(key, comps, neededRoI, out);
+    // An extension's tasks read its own outputs first, then those of the graphs it extends.
+    const std::vector<int>& generations = context->getStoreGenerations();
+    for (std::vector<int>::const_iterator it = generations.begin(); it != generations.end(); ++it) {
+        key.generation = *it;
+        if (context->getStore().find(key, comps, neededRoI, out)) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 bool
@@ -1138,14 +1498,28 @@ EffectInstance::frameStoreImagesMatch(const std::list<ImagePtr>& images,
     return true;
 }
 
+namespace {
+
+void holdPulledOutput(const EffectInstance* consumer,
+                      const NodePtr& node,
+                      U64 contextKey,
+                      const EffectInstance::RenderRoIArgs& args,
+                      const std::map<ImageLayerDesc, ImagePtr>& layers);
+
+} // namespace
+
 EffectInstance::RenderRoIRetCode
 EffectInstance::renderInputOrTakeFromStore(const EffectInstancePtr& input,
                                            int inputNb,
                                            RenderRoIArgs* args,
                                            std::map<ImageLayerDesc, ImagePtr>* layers,
                                            const EffectInstance* consumer,
-                                           InputContextArgs* inputContext)
+                                           InputContextArgs* inputContext,
+                                           bool* freshInput)
 {
+    if (freshInput) {
+        *freshInput = false;
+    }
     std::unique_ptr<InputContextArgs> ownInputContext;
     if (!inputContext) {
         ownInputContext.reset(new InputContextArgs(consumer, input));
@@ -1158,11 +1532,17 @@ EffectInstance::renderInputOrTakeFromStore(const EffectInstancePtr& input,
     } else if (!args->roi.isNull() && !isRotoPaintTreePull(input)) {
         noteUnplannedPull();
     }
+    const FrameRenderContext* frameContext = AppTLS::currentFrameContext();
+    const NodePtr inputNode = input ? input->getNode() : NodePtr();
     if (fromStore && frameStoreImagesMatch(stored, args->bitdepth, args->returnStorage)) {
         std::list<ImagePtr>::const_iterator image = stored.begin();
         for (std::list<ImageLayerDesc>::const_iterator comp = args->components.begin(); comp != args->components.end(); ++comp, ++image) {
             layers->insert(std::make_pair(*comp, *image));
         }
+        if (freshInput) {
+            *freshInput = frameContext && frameContext->hasFreshOutput(inputNode.get(), args->time, args->view);
+        }
+        holdPulledOutput(consumer, inputNode, inputContext->contextKey(), *args, *layers);
 
         return eRenderRoIRetCodeOk;
     }
@@ -1172,7 +1552,311 @@ EffectInstance::renderInputOrTakeFromStore(const EffectInstancePtr& input,
     }
     inputContext->install();
 
-    return input->renderRoI(*args, layers);
+    // A renderRoI returning before it records anything leaves what an earlier one published.
+    takeLastRenderExecuted();
+    takeLastPullFresh();
+    const std::size_t layersBefore = layers->size();
+    const RenderRoIRetCode code = input->renderRoI(*args, layers);
+    const bool executed = takeLastRenderExecuted();
+    const bool passedFresh = takeLastPullFresh();
+    if (code != eRenderRoIRetCodeOk) {
+        return code;
+    }
+    bool fresh = (frameContext && frameContext->hasFreshOutput(inputNode.get(), args->time, args->view)) || (!fromStore && passedFresh);
+    if (!fromStore && executed && (layers->size() > layersBefore)) {
+        fresh = true;
+        if (inputNode) {
+            inputNode->noteExecution(Node::eExecutionDeviceCpu);
+        }
+        if (frameContext) {
+            frameContext->noteFreshOutput(inputNode.get(), args->time, args->view);
+        }
+    }
+    if (freshInput) {
+        *freshInput = fresh;
+    }
+    holdPulledOutput(consumer, inputNode, inputContext->contextKey(), *args, *layers);
+
+    return code;
+}
+
+namespace {
+
+struct HeldContinuationResult {
+    const Node* consumer = 0;
+    NodePtr node;
+    U64 contextKey = 0;
+    double time = 0.;
+    ViewIdx view;
+    unsigned int mipmapLevel = 0;
+    std::map<ImageLayerDesc, ImagePtr> planes;
+};
+
+// With the cache bypassed, an output pulled again would render again, and an uncached or varying one could then differ
+// between the probe and the render, which the task graph serves from one stored image.
+thread_local std::vector<HeldContinuationResult> tHeldContinuationResults;
+
+thread_local const Node* tHoldingConsumer = 0;
+
+// Depth of the extension the render running on this thread belongs to.
+thread_local int tRenderContinuationDepth = 0;
+
+thread_local const Node* tHandledContinuationNode = 0;
+thread_local double tHandledContinuationTime = 0.;
+thread_local ViewIdx tHandledContinuationView;
+thread_local U64 tHandledContinuationContextKey = 0;
+
+class RenderContinuationDepthScope {
+public:
+    explicit RenderContinuationDepthScope(int depth)
+        : _previous(tRenderContinuationDepth)
+    {
+        tRenderContinuationDepth = depth;
+    }
+
+    ~RenderContinuationDepthScope()
+    {
+        tRenderContinuationDepth = _previous;
+    }
+
+    RenderContinuationDepthScope(const RenderContinuationDepthScope&) = delete;
+    RenderContinuationDepthScope& operator=(const RenderContinuationDepthScope&) = delete;
+
+private:
+    int _previous;
+};
+
+std::list<ImageLayerDesc>
+continuationRequestComponents(const EffectInstance::RenderContinuationRequest& request)
+{
+    return request.comps.empty() ? std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()) : request.comps;
+}
+
+void
+holdPulledOutput(const EffectInstance* consumer,
+                 const NodePtr& node,
+                 U64 contextKey,
+                 const EffectInstance::RenderRoIArgs& args,
+                 const std::map<ImageLayerDesc, ImagePtr>& layers)
+{
+    if (!tHoldingConsumer || !consumer || !node || (consumer->getNode().get() != tHoldingConsumer)) {
+        return;
+    }
+    HeldContinuationResult held;
+    for (const ImageLayerDesc& comp : args.components) {
+        std::map<ImageLayerDesc, ImagePtr>::const_iterator plane = layers.find(comp);
+        if ((plane == layers.end()) || !plane->second) {
+            return;
+        }
+        held.planes.insert(*plane);
+    }
+    if (held.planes.empty()) {
+        return;
+    }
+    held.consumer = tHoldingConsumer;
+    held.node = node;
+    held.contextKey = contextKey;
+    held.time = args.time;
+    held.view = args.view;
+    held.mipmapLevel = args.mipmapLevel;
+    tHeldContinuationResults.push_back(std::move(held));
+}
+
+bool
+takeHeldContinuationResult(const Node* consumer,
+                           const NodePtr& node,
+                           U64 contextKey,
+                           double time,
+                           ViewIdx view,
+                           unsigned int mipmapLevel,
+                           const std::list<ImageLayerDesc>& comps,
+                           const RectI& pixelRoI,
+                           std::map<ImageLayerDesc, ImagePtr>* planes)
+{
+    for (std::vector<HeldContinuationResult>::const_reverse_iterator it = tHeldContinuationResults.rbegin(); it != tHeldContinuationResults.rend(); ++it) {
+        if ((it->consumer != consumer) || (it->node != node) || (it->contextKey != contextKey) || (it->time != time) || (it->view != view) || (it->mipmapLevel != mipmapLevel)) {
+            continue;
+        }
+        std::map<ImageLayerDesc, ImagePtr> found;
+        for (const ImageLayerDesc& comp : comps) {
+            std::map<ImageLayerDesc, ImagePtr>::const_iterator plane = it->planes.find(comp);
+            if ((plane == it->planes.end()) || !plane->second || !plane->second->getBounds().contains(pixelRoI)) {
+                found.clear();
+                break;
+            }
+            found.insert(*plane);
+        }
+        if (!found.empty()) {
+            planes->insert(found.begin(), found.end());
+
+            return true;
+        }
+    }
+
+    return false;
+}
+
+} // namespace
+
+EffectInstance::RenderContinuationHandledScope::RenderContinuationHandledScope(const Node* node,
+                                                                               double time,
+                                                                               ViewIdx view,
+                                                                               U64 contextKey,
+                                                                               int depth)
+    : _previousNode(tHandledContinuationNode)
+    , _previousTime(tHandledContinuationTime)
+    , _previousView(tHandledContinuationView)
+    , _previousContextKey(tHandledContinuationContextKey)
+    , _previousDepth(tRenderContinuationDepth)
+{
+    tHandledContinuationNode = node;
+    tHandledContinuationTime = time;
+    tHandledContinuationView = view;
+    tHandledContinuationContextKey = contextKey;
+    tRenderContinuationDepth = depth;
+}
+
+EffectInstance::RenderContinuationHandledScope::~RenderContinuationHandledScope()
+{
+    tHandledContinuationNode = _previousNode;
+    tHandledContinuationTime = _previousTime;
+    tHandledContinuationView = _previousView;
+    tHandledContinuationContextKey = _previousContextKey;
+    tRenderContinuationDepth = _previousDepth;
+}
+
+EffectInstance::RenderContinuationHoldScope::RenderContinuationHoldScope(const EffectInstance* consumer)
+    : _heldBegin(tHeldContinuationResults.size())
+    , _previousConsumer(tHoldingConsumer)
+{
+    tHoldingConsumer = consumer ? consumer->getNode().get() : 0;
+}
+
+EffectInstance::RenderContinuationHoldScope::~RenderContinuationHoldScope()
+{
+    tHoldingConsumer = _previousConsumer;
+    if (_heldBegin < tHeldContinuationResults.size()) {
+        tHeldContinuationResults.resize(_heldBegin);
+    }
+}
+
+bool
+EffectInstance::RenderContinuationHandledScope::isHandled(const Node* node,
+                                                          double time,
+                                                          ViewIdx view,
+                                                          U64 contextKey)
+{
+    return node && (tHandledContinuationNode == node) && (tHandledContinuationTime == time) && (tHandledContinuationView == view)
+        && (tHandledContinuationContextKey == contextKey);
+}
+
+EffectInstance::RenderRoIRetCode
+EffectInstance::pullRenderContinuationRequest(const RenderContinuationRequest& request,
+                                              unsigned int mipmapLevel,
+                                              std::map<ImageLayerDesc, ImagePtr>* planes)
+{
+    const EffectInstancePtr input = request.node ? request.node->getEffectInstance() : EffectInstancePtr();
+    if (!input || !planes) {
+        return eRenderRoIRetCodeFailed;
+    }
+    const std::list<ImageLayerDesc> comps = continuationRequestComponents(request);
+    InputContextScope scope(this, request.context);
+    InputContextArgs inputContext(this, input, -1, request.time, request.view);
+    double par = 1.;
+    ImageBitDepthEnum depth = eImageBitDepthFloat;
+    {
+        ActionContextScope actions(true, request.context);
+        const NodeMetadataConstPtr metadata = input->getRenderMetadata(request.time, request.view);
+        if (metadata) {
+            par = metadata->getPixelAspectRatio(-1);
+            depth = metadata->getBitDepth(-1);
+        }
+    }
+    const RectI pixelRoI = request.roi.toPixelEnclosing(mipmapLevel, par);
+    if (takeHeldContinuationResult(getNode().get(), request.node, inputContext.contextKey(), request.time, request.view, mipmapLevel, comps, pixelRoI, planes)) {
+        return eRenderRoIRetCodeOk;
+    }
+    RenderRoIArgs args(request.time,
+                       RenderScale::fromMipmapLevel(mipmapLevel),
+                       mipmapLevel,
+                       request.view,
+                       false /*byPassCache*/,
+                       pixelRoI,
+                       RectD(),
+                       comps,
+                       depth,
+                       false /*calledFromGetImage*/,
+                       this,
+                       eStorageModeRAM,
+                       request.time);
+
+    return renderInputOrTakeFromStore(input, -1, &args, planes, this, &inputContext);
+}
+
+bool
+EffectInstance::probesRenderContinuationInline(double time,
+                                               ViewIdx view) const
+{
+    if (!offersRenderContinuation()) {
+        return false;
+    }
+    const NodePtr node = getNode();
+    const ParallelRenderArgsPtr frameArgs = getParallelRenderArgsTLS();
+
+    return node && !RenderContinuationHandledScope::isHandled(node.get(), time, view, frameArgs ? frameArgs->contextKey : 0);
+}
+
+EffectInstance::RenderRoIRetCode
+EffectInstance::runRenderContinuationInline(double time,
+                                            ViewIdx view,
+                                            unsigned int mipmapLevel,
+                                            const RectI& roi)
+{
+    const ParallelRenderArgsPtr frameArgs = getParallelRenderArgsTLS();
+    RenderContinuationArgs probeArgs;
+    probeArgs.time = time;
+    probeArgs.view = view;
+    probeArgs.mipmapLevel = mipmapLevel;
+    probeArgs.roi = roi;
+    probeArgs.context = frameArgs ? frameArgs->context : RenderContextPtr();
+    probeArgs.depth = tRenderContinuationDepth;
+    RenderContinuation continuation;
+    if (!getRenderContinuation(probeArgs, &continuation)) {
+        return eRenderRoIRetCodeOk;
+    }
+    if (!continuation.requests.empty()) {
+        if (probeArgs.depth >= kMaxRenderContinuationDepth) {
+            failRenderContinuationTooDeep();
+
+            return eRenderRoIRetCodeFailed;
+        }
+        RenderContinuationDepthScope deeper(probeArgs.depth + 1);
+        for (const RenderContinuationRequest& request : continuation.requests) {
+            if (aborted()) {
+                return eRenderRoIRetCodeAborted;
+            }
+            std::map<ImageLayerDesc, ImagePtr> planes;
+            const RenderRoIRetCode code = pullRenderContinuationRequest(request, mipmapLevel, &planes);
+            if (code != eRenderRoIRetCodeOk) {
+                return code;
+            }
+        }
+    }
+    if (aborted()) {
+        return eRenderRoIRetCodeAborted;
+    }
+    if (continuation.continuation && (continuation.continuation() != eStatusOK)) {
+        return eRenderRoIRetCodeFailed;
+    }
+
+    return eRenderRoIRetCodeOk;
+}
+
+void
+EffectInstance::failRenderContinuationTooDeep()
+{
+    const std::string message = tr("%1 asks for a render continuation deeper than %2 levels.").arg(QString::fromUtf8(getScriptName_mt_safe().c_str())).arg(kMaxRenderContinuationDepth).toStdString();
+    setPersistentMessage(eMessageTypeError, message);
 }
 
 bool
@@ -1327,6 +2011,7 @@ EffectInstance::getImage(int inputNb,
     //    in the kOfxActionInstanceChanged and kOfxActionEndInstanceChanged actions with a kOfxPropChangeReason of kOfxChangeUserEdited
     RectD roi;
     bool roiWasInRequestPass = false;
+    RectD inputRoDInRequestPass;
     bool isAnalysisPass = false;
     RectD thisRod;
     double thisEffectRenderTime = time;
@@ -1357,6 +2042,7 @@ EffectInstance::getImage(int inputNb,
             if (request) {
                 roiWasInRequestPass = true;
                 roi = request->finalData.finalRoi;
+                inputRoDInRequestPass = request->globalData.rod;
             }
         }
 
@@ -1426,7 +2112,13 @@ EffectInstance::getImage(int inputNb,
     if (optionalBoundsParam) {
         //Set the RoI from the parameters given to clipGetImage
         roi = optionalBounds;
-    } else if (!roiWasInRequestPass) {
+    } else if (roiWasInRequestPass) {
+        // Partial cache hits leave out inputs that only the cached part of the output read. The rect being rendered
+        // reads nothing of such an input, and the render gets what it gets from an empty RoI without a request pass.
+        if (tls->currentRenderArgs.validArgs && inputRoIMissesRoD(tls->currentRenderArgs.regionOfInterestResults, inputEffect, inputRoDInRequestPass)) {
+            return ImagePtr();
+        }
+    } else {
         //We did not have a request pass, use if possible the result of getRegionsOfInterest found in the TLS
         //If not, fallback on input RoD
         EffectInstancePtr inputToFind;
@@ -1488,11 +2180,10 @@ EffectInstance::getImage(int inputNb,
     ///Does this node supports images at a scale different than 1
     bool renderFullScaleThenDownscale = (!supportsRenderScale() && mipmapLevel != 0 && returnStorage == eStorageModeRAM);
 
-    ///Do we want to render the graph upstream at scale 1 or at the requested render scale ? (user setting)
     bool renderScaleOneUpstreamIfRenderScaleSupportDisabled = false;
     unsigned int renderMappedMipmapLevel = mipmapLevel;
     if (renderFullScaleThenDownscale) {
-        renderScaleOneUpstreamIfRenderScaleSupportDisabled = node->useScaleOneImagesWhenRenderScaleSupportIsDisabled();
+        renderScaleOneUpstreamIfRenderScaleSupportDisabled = pullsInputsAtScaleOne();
         if (renderScaleOneUpstreamIfRenderScaleSupportDisabled) {
             renderMappedMipmapLevel = 0;
         }
@@ -1622,7 +2313,12 @@ EffectInstance::getImage(int inputNb,
     requestedComps.push_back(renderedComps);
     std::map<ImageLayerDesc, ImagePtr> inputImages;
     std::list<ImagePtr> storedImages;
-    const bool fromStore = lookupFrameStore(inputEffect, time, view, renderMappedMipmapLevel, requestedComps, pixelRoI, &storedImages, &inputContext);
+    // The request pass asked the input for this region in the input's own pixels. At this clip's ratio
+    // instead, an admitted input would grow its cached entry past that, so what this node reads
+    // would depend on whether the input's output is cached.
+    const RectI inputPixelRoI = roi.toPixelEnclosing(renderScaleOneUpstreamIfRenderScaleSupportDisabled ? 0 : mipmapLevel,
+                                                     inputEffect->getRenderMetadata(time, view)->getPixelAspectRatio(-1));
+    const bool fromStore = lookupFrameStore(inputEffect, time, view, renderMappedMipmapLevel, requestedComps, inputPixelRoI, &storedImages, &inputContext);
     if (fromStore) {
         // The pre-render of this render already counted the store images it handed over.
         bool handedOverByPreRender = false;
@@ -1657,7 +2353,7 @@ EffectInstance::getImage(int inputNb,
                                                                         renderMappedMipmapLevel,
                                                                         view,
                                                                         byPassCache,
-                                                                        pixelRoI,
+                                                                        inputPixelRoI,
                                                                         RectD(),
                                                                         requestedComps,
                                                                         depth,
@@ -1771,8 +2467,8 @@ EffectInstance::getImage(int inputNb,
         } else {
             cc = components;
         }
-        qDebug() << "WARNING:" << node->getScriptName_mt_safe().c_str() << "requested" << cc.getChannelsLabel().c_str() << "but" << inputEffect->getScriptName_mt_safe().c_str() << "returned an image with"
-                 << inputImg->getComponents().getChannelsLabel().c_str();
+        qDebug() << "WARNING:" << node->getScriptName_mt_safe().c_str() << "requested" << cc.getUserFacingLabel().c_str() << "but" << inputEffect->getScriptName_mt_safe().c_str() << "returned an image with"
+                 << inputImg->getComponents().getUserFacingLabel().c_str();
     }
 
 #endif
@@ -2084,25 +2780,11 @@ EffectInstance::NotifyRenderingStarted_RAII::~NotifyRenderingStarted_RAII()
     }
 }
 
-EffectInstance::NotifyInputNRenderingStarted_RAII::NotifyInputNRenderingStarted_RAII(Node* node,
-                                                                                     int inputNumber)
-    : _node(node)
-    , _inputNumber(inputNumber)
-{
-    _didEmit = node->notifyInputNIsRendering(inputNumber);
-}
-
-EffectInstance::NotifyInputNRenderingStarted_RAII::~NotifyInputNRenderingStarted_RAII()
-{
-    if (_didEmit) {
-        _node->notifyInputNIsFinishedRendering(_inputNumber);
-    }
-}
-
 static void
-getOrCreateFromCacheInternal(const ImageKey & key,
-                             const ImageParamsPtr & params,
+getOrCreateFromCacheInternal(const ImageKey& key,
+                             const ImageParamsPtr& params,
                              bool useCache,
+                             bool pinned,
                              ImagePtr* image)
 {
     if (!useCache) {
@@ -2111,9 +2793,11 @@ getOrCreateFromCacheInternal(const ImageKey & key,
         assert(params->getStorageInfo().mode != eStorageModeGLTex);
 
         if (params->getStorageInfo().mode == eStorageModeRAM) {
-            appPTR->getImageOrCreate(key, params, image);
-        } else if (params->getStorageInfo().mode == eStorageModeDisk) {
-            appPTR->getImageOrCreate_diskCache(key, params, image);
+            if (pinned) {
+                appPTR->getPinnedImageOrCreate(key, params, image);
+            } else {
+                appPTR->getImageOrCreate(key, params, image);
+            }
         }
 
         if (!*image) {
@@ -2210,7 +2894,7 @@ EffectInstance::convertRAMImageToOpenGLTexture(const ImagePtr& image)
 
     // The creation of the image will use glTexImage2D and will get filled with the PBO
     ImagePtr gpuImage;
-    getOrCreateFromCacheInternal(image->getKey(), params, false /*useCache*/, &gpuImage);
+    getOrCreateFromCacheInternal(image->getKey(), params, false /*useCache*/, false /*pinned*/, &gpuImage);
 
     // it is good idea to release PBOs with ID 0 after use.
     // Once bound with 0, all pixel operations are back to normal ways.
@@ -2238,47 +2922,33 @@ EffectInstance::getImageFromCacheAndConvertIfNeeded(bool /*useCache*/,
                                                     const OSGLContextAttacherPtr& glContextAttacher,
                                                     ImagePtr* image)
 {
-    ImageList cachedImages;
-    bool isCached = false;
+    /// A ptr to a finer level of the image, to downscale
+    ImagePtr imageToConvert;
 
-    ///Find first something in the input images list
-    if ( !inputImages.empty() ) {
+    key.forEachServingKey(mipmapLevel, 0, components, bitdepth, [&](const ImageKey& candidate) {
+        ImageList cachedImages;
+
+        /// Find first something in the input images list
         for (InputImagesMap::const_iterator it = inputImages.begin(); it != inputImages.end(); ++it) {
             for (ImageList::const_iterator it2 = it->second.begin(); it2 != it->second.end(); ++it2) {
-                if ( !it2->get() ) {
-                    continue;
-                }
-                const ImageKey & imgKey = (*it2)->getKey();
-                if (imgKey == key) {
+                if (it2->get() && ((*it2)->getKey() == candidate)) {
                     cachedImages.push_back(*it2);
-                    isCached = true;
                 }
             }
         }
-    }
 
-    if (!isCached) {
-        // For textures, we lookup for a RAM image, if found we convert it to a texture
-        if ( (storage == eStorageModeRAM) || (storage == eStorageModeGLTex) ) {
-            isCached = appPTR->getImage(key, &cachedImages);
-        } else if (storage == eStorageModeDisk) {
-            isCached = appPTR->getImage_diskCache(key, &cachedImages);
+        if (cachedImages.empty()) {
+            // For textures, we lookup for a RAM image, if found we convert it to a texture
+            if ((storage == eStorageModeRAM) || (storage == eStorageModeGLTex)) {
+                if (dynamic_cast<DiskCacheNode*>(this)) {
+                    appPTR->getPinnedImage(candidate, &cachedImages);
+                } else {
+                    appPTR->getImage(candidate, &cachedImages);
+                }
+            }
         }
-    }
-
-    if (stats && stats->isInDepthProfilingEnabled() && !isCached) {
-        stats->addCacheInfosForNode(getNode(), true, false);
-    }
-
-    if (isCached) {
-        ///A ptr to a higher resolution of the image or an image with different comps/bitdepth
-        ImagePtr imageToConvert;
 
         for (ImageList::iterator it = cachedImages.begin(); it != cachedImages.end(); ++it) {
-            unsigned int imgMMlevel = (*it)->getMipmapLevel();
-            const ImageLayerDesc& imgComps = (*it)->getComponents();
-            ImageBitDepthEnum imgDepth = (*it)->getBitDepth();
-
             if ( (*it)->getParams()->isRodProjectFormat() ) {
                 ////If the image was cached with a RoD dependent on the project format, but the project format changed,
                 ////just discard this entry
@@ -2295,102 +2965,111 @@ EffectInstance::getImageFromCacheAndConvertIfNeeded(bool /*useCache*/,
                 continue;
             }
 
-            ///Throw away images that are not even what the node want to render
-            /*if ( ( imgComps.isColorLayer() && nodePrefComps.isColorLayer() && (imgComps != nodePrefComps) ) || (imgDepth != nodePrefDepth) ) {
-                appPTR->removeFromNodeCache(*it);
-                continue;
-            }*/
-
-            bool convertible = (imgComps.isColorLayer() && components.isColorLayer()) || (imgComps == components);
-            if ( (imgMMlevel == mipmapLevel) && convertible &&
-                 ( getSizeOfForBitDepth(imgDepth) >= getSizeOfForBitDepth(bitdepth) ) /* && imgComps == components && imgDepth == bitdepth*/ ) {
-                ///We found  a matching image
-
+            if (candidate._mipmapLevel == mipmapLevel) {
                 *image = *it;
-                break;
+
+                return true;
+            }
+            if ((*it)->getStorageMode() == eStorageModeRAM) {
+                imageToConvert = *it;
+
+                return true;
+            }
+        }
+
+        return false;
+    });
+
+    if (imageToConvert && !*image) {
+        /// Ensure the image is allocated
+        (imageToConvert)->allocateMemory();
+
+        if (imageToConvert->getMipmapLevel() != mipmapLevel) {
+            ImageParamsPtr oldParams = imageToConvert->getParams();
+
+            assert(imageToConvert->getMipmapLevel() < mipmapLevel);
+
+            // This is the bounds of the upscaled image
+            RectI imgToConvertBounds = imageToConvert->getBounds();
+
+            // The rodParam might be different of oldParams->getRoD() simply because the RoD is dependent on the mipmap level
+            const RectD& rod = rodParam ? *rodParam : oldParams->getRoD();
+
+            RectI downscaledBounds = rod.toPixelEnclosing(mipmapLevel, imageToConvert->getPixelAspectRatio());
+
+            if (boundsParam) {
+                downscaledBounds.merge(*boundsParam);
+            }
+
+            ImageParamsPtr imageParams = Image::makeParams(rod,
+                                                           downscaledBounds,
+                                                           oldParams->getPixelAspectRatio(),
+                                                           mipmapLevel,
+                                                           oldParams->isRodProjectFormat(),
+                                                           oldParams->getComponents(),
+                                                           oldParams->getBitDepth(),
+                                                           oldParams->getFieldingOrder(),
+                                                           eStorageModeRAM);
+
+            ImagePtr img;
+            getOrCreateFromCacheInternal(key, imageParams, imageToConvert->usesBitMap(), dynamic_cast<DiskCacheNode*>(this) != nullptr, &img);
+            if (!img) {
+                return;
+            }
+
+            /*
+               Since the RoDs of the 2 mipmaplevels are different, their bounds do not match exactly as po2
+               To determine which portion we downscale, we downscale the initial image bounds to the mipmap level
+               of the downscale image, clip it against the bounds of the downscale image, re-upscale it to the
+               original mipmap level and ensure that it lies into the original image bounds
+             */
+            int downscaleLevels = img->getMipmapLevel() - imageToConvert->getMipmapLevel();
+            RectI dstRoi = imgToConvertBounds.downscalePowerOfTwoSmallestEnclosing(downscaleLevels);
+            dstRoi.clipIfOverlaps(downscaledBounds);
+            dstRoi = dstRoi.upscalePowerOfTwo(downscaleLevels);
+            dstRoi.clipIfOverlaps(imgToConvertBounds);
+
+            if (imgToConvertBounds.area() > 1) {
+                imageToConvert->downscaleMipmap(rod,
+                                                dstRoi,
+                                                imageToConvert->getMipmapLevel(), img->getMipmapLevel(),
+                                                imageToConvert->usesBitMap(),
+                                                img.get());
             } else {
-                if ( (*it)->getStorageMode() != eStorageModeRAM || (imgMMlevel >= mipmapLevel) || !convertible ||
-                     ( getSizeOfForBitDepth(imgDepth) < getSizeOfForBitDepth(bitdepth) ) ) {
-                    ///Either smaller resolution or not enough components or bit-depth is not as deep, don't use the image
-                    continue;
-                }
+                img->pasteFrom(*imageToConvert, imgToConvertBounds);
+            }
 
-                assert(imgMMlevel < mipmapLevel);
+            imageToConvert = img;
+        }
 
-                if (!imageToConvert) {
-                    imageToConvert = *it;
+        if (storage == eStorageModeGLTex) {
+
+            // When using the GPU, we don't want to retrieve partially rendered image because rendering the portion
+            // needed then reading it back to put it in the CPU image would take much more effort than just computing
+            // the GPU image.
+            std::list<RectI> restToRender;
+            imageToConvert->getRestToRender(roi, restToRender);
+            if (restToRender.empty()) {
+                if (returnStorage == eStorageModeGLTex) {
+                    assert(glContextAttacher);
+                    glContextAttacher->attach();
+                    *image = convertRAMImageToOpenGLTexture(imageToConvert);
                 } else {
-                    ///We found an image which scale is closer to the requested mipmap level we want, use it instead
-                    if ( imgMMlevel > imageToConvert->getMipmapLevel() ) {
-                        imageToConvert = *it;
-                    }
+                    assert(returnStorage == eStorageModeRAM && imageToConvert->getStorageMode() == eStorageModeRAM);
+                    // If renderRoI must return a RAM image, don't convert it back again!
+                    *image = imageToConvert;
                 }
             }
-        } //end for
-
-        if (imageToConvert && !*image) {
-            ///Ensure the image is allocated
-            (imageToConvert)->allocateMemory();
-
-
-            if (imageToConvert->getMipmapLevel() != mipmapLevel) {
-                ImageParamsPtr oldParams = imageToConvert->getParams();
-
-                assert(imageToConvert->getMipmapLevel() < mipmapLevel);
-
-                //This is the bounds of the upscaled image
-                RectI imgToConvertBounds = imageToConvert->getBounds();
-
-                //The rodParam might be different of oldParams->getRoD() simply because the RoD is dependent on the mipmap level
-                const RectD & rod = rodParam ? *rodParam : oldParams->getRoD();
-
-                RectI downscaledBounds = rod.toPixelEnclosing(mipmapLevel, imageToConvert->getPixelAspectRatio());
-
-                if (boundsParam) {
-                    downscaledBounds.merge(*boundsParam);
-                }
-
-                ImageParamsPtr imageParams = Image::makeParams(rod,
-                                                               downscaledBounds,
-                                                               oldParams->getPixelAspectRatio(),
-                                                               mipmapLevel,
-                                                               oldParams->isRodProjectFormat(),
-                                                               oldParams->getComponents(),
-                                                               oldParams->getBitDepth(),
-                                                               oldParams->getFieldingOrder(),
-                                                               eStorageModeRAM);
-
-                ImagePtr img;
-                getOrCreateFromCacheInternal(key, imageParams, imageToConvert->usesBitMap(), &img);
-                if (!img) {
-                    return;
-                }
-
-
-                /*
-                   Since the RoDs of the 2 mipmaplevels are different, their bounds do not match exactly as po2
-                   To determine which portion we downscale, we downscale the initial image bounds to the mipmap level
-                   of the downscale image, clip it against the bounds of the downscale image, re-upscale it to the
-                   original mipmap level and ensure that it lies into the original image bounds
-                 */
-                int downscaleLevels = img->getMipmapLevel() - imageToConvert->getMipmapLevel();
-                RectI dstRoi = imgToConvertBounds.downscalePowerOfTwoSmallestEnclosing(downscaleLevels);
-                dstRoi.clipIfOverlaps(downscaledBounds);
-                dstRoi = dstRoi.upscalePowerOfTwo(downscaleLevels);
-                dstRoi.clipIfOverlaps(imgToConvertBounds);
-
-                if (imgToConvertBounds.area() > 1) {
-                    imageToConvert->downscaleMipmap( rod,
-                                                     dstRoi,
-                                                     imageToConvert->getMipmapLevel(), img->getMipmapLevel(),
-                                                     imageToConvert->usesBitMap(),
-                                                     img.get() );
-                } else {
-                    img->pasteFrom(*imageToConvert, imgToConvertBounds);
-                }
-
-                imageToConvert = img;
-            }
+        } else {
+            *image = imageToConvert;
+        }
+        if (stats && stats->isInDepthProfilingEnabled()) {
+            stats->addCacheInfosForNode(getNode(), false, true);
+        }
+    } else if (*image) {
+        /// Ensure the image is allocated
+        if ((*image)->getStorageMode() != eStorageModeGLTex) {
+            (*image)->allocateMemory();
 
             if (storage == eStorageModeGLTex) {
 
@@ -2398,60 +3077,29 @@ EffectInstance::getImageFromCacheAndConvertIfNeeded(bool /*useCache*/,
                 // needed then reading it back to put it in the CPU image would take much more effort than just computing
                 // the GPU image.
                 std::list<RectI> restToRender;
-                imageToConvert->getRestToRender(roi, restToRender);
+                (*image)->getRestToRender(roi, restToRender);
                 if ( restToRender.empty() ) {
+                    // If renderRoI must return a RAM image, don't convert it back again!
                     if (returnStorage == eStorageModeGLTex) {
                         assert(glContextAttacher);
                         glContextAttacher->attach();
-                        *image = convertRAMImageToOpenGLTexture(imageToConvert);
-                    } else {
-                        assert(returnStorage == eStorageModeRAM && (imageToConvert->getStorageMode() == eStorageModeRAM || imageToConvert->getStorageMode() == eStorageModeDisk));
-                        // If renderRoI must return a RAM image, don't convert it back again!
-                        *image = imageToConvert;
+                        *image = convertRAMImageToOpenGLTexture(*image);
                     }
+                } else {
+                    image->reset();
+                    return;
                 }
-            } else {
-                *image = imageToConvert;
-            }
-            //assert(imageToConvert->getBounds().contains(bounds));
-            if ( stats && stats->isInDepthProfilingEnabled() ) {
-                stats->addCacheInfosForNode(getNode(), false, true);
-            }
-        } else if (*image) { //  else if (imageToConvert && !*image)
-            ///Ensure the image is allocated
-            if ( (*image)->getStorageMode() != eStorageModeGLTex ) {
-                (*image)->allocateMemory();
-
-                if (storage == eStorageModeGLTex) {
-
-                    // When using the GPU, we don't want to retrieve partially rendered image because rendering the portion
-                    // needed then reading it back to put it in the CPU image would take much more effort than just computing
-                    // the GPU image.
-                    std::list<RectI> restToRender;
-                    (*image)->getRestToRender(roi, restToRender);
-                    if ( restToRender.empty() ) {
-                        // If renderRoI must return a RAM image, don't convert it back again!
-                        if (returnStorage == eStorageModeGLTex) {
-                            assert(glContextAttacher);
-                            glContextAttacher->attach();
-                            *image = convertRAMImageToOpenGLTexture(*image);
-                        }
-                    } else {
-                        image->reset();
-                        return;
-                    }
-                }
-            }
-
-            if ( stats && stats->isInDepthProfilingEnabled() ) {
-                stats->addCacheInfosForNode(getNode(), false, false);
-            }
-        } else {
-            if ( stats && stats->isInDepthProfilingEnabled() ) {
-                stats->addCacheInfosForNode(getNode(), true, false);
             }
         }
-    } // isCached
+
+        if (stats && stats->isInDepthProfilingEnabled()) {
+            stats->addCacheInfosForNode(getNode(), false, false);
+        }
+    } else {
+        if (stats && stats->isInDepthProfilingEnabled()) {
+            stats->addCacheInfosForNode(getNode(), true, false);
+        }
+    }
 } // EffectInstance::getImageFromCacheAndConvertIfNeeded
 
 void
@@ -2462,6 +3110,7 @@ EffectInstance::tryConcatenateTransforms(double time,
                                          InputMatrixMap* inputTransforms)
 {
     bool canTransform = getNode()->getCurrentCanTransform();
+    const std::optional<EdgeMode> edgeMode = getConcatenationEdgeMode(time, view);
 
     //An effect might not be able to concatenate transforms but can still apply a transform (e.g CornerPinMasked)
     std::list<int> inputHoldingTransforms;
@@ -2520,6 +3169,10 @@ EffectInstance::tryConcatenateTransforms(double time,
                         im.newInputEffect = input;
                     }
                 } else if (inputCanTransform) {
+                    const std::optional<EdgeMode> inputEdgeMode = input->getConcatenationEdgeMode(time, view);
+                    if (edgeMode && inputEdgeMode && (*edgeMode != *inputEdgeMode)) {
+                        break;
+                    }
                     Transform::Matrix3x3 m;
                     inputToTransform.reset();
                     StatusEnum stat = input->getTransform_public(time, scale, draftRender, view, &inputToTransform, &m);
@@ -2581,6 +3234,8 @@ EffectInstance::allocateImageLayer(const ImageKey& key,
                                    ImagePtr* fullScaleImage,
                                    ImagePtr* downscaleImage)
 {
+    const bool pinned = dynamic_cast<DiskCacheNode*>(this) != nullptr;
+
     //If we're rendering full scale and with input images at full scale, don't cache the downscale image since it is cheap to
     //recreate, instead cache the full-scale image
     if (renderFullScaleThenDownscale) {
@@ -2598,7 +3253,7 @@ EffectInstance::allocateImageLayer(const ImageKey& key,
         //The upscaled image will be rendered with input images at full def, it is then the best possibly rendered image so cache it!
 
         fullScaleImage->reset();
-        getOrCreateFromCacheInternal(key, upscaledImageParams, createInCache, fullScaleImage);
+        getOrCreateFromCacheInternal(key, upscaledImageParams, createInCache, pinned, fullScaleImage);
 
         if (!*fullScaleImage) {
             return false;
@@ -2621,7 +3276,7 @@ EffectInstance::allocateImageLayer(const ImageKey& key,
         ///When calling allocateMemory() on the image, the cache already has the lock since it added it
         ///so taking this lock now ensures the image will be allocated completely
 
-        getOrCreateFromCacheInternal(key, cachedImgParams, createInCache, downscaleImage);
+        getOrCreateFromCacheInternal(key, cachedImgParams, createInCache, pinned, downscaleImage);
         if (!*downscaleImage) {
             return false;
         }
@@ -2691,12 +3346,16 @@ EffectInstance::renderInputImagesForRoI(const FrameViewRequest* request,
                                         const RenderScale& renderMappedScale,
                                         bool useScaleOneInputImages,
                                         bool byPassCache,
+                                        bool renderWindowIsPartOfRoI,
                                         const FramesNeededMap& framesNeeded,
                                         const EffectInstance::ComponentsNeededMap& neededComps,
                                         EffectInstance::InputImagesMap* inputImages,
                                         RoIMap* inputsRoi)
 {
-    if (!request) {
+    // With transforms the map would name the effects the transforms redirect to rather than the inputs. Without a frame
+    // context there is no plan that can have left an input out, and the planned RoI is read as before.
+    const bool asksRenderWindow = renderWindowIsPartOfRoI && AppTLS::currentFrameContext() && (!inputTransforms || inputTransforms->empty());
+    if (!request || asksRenderWindow) {
         getRegionsOfInterest_public(time, renderMappedScale, rod, canonicalRenderWindow, view, inputsRoi);
     }
 #ifdef DEBUG
@@ -2846,7 +3505,7 @@ EffectInstance::Implementation::tiledRenderingFunctor(const RectToRender& rectTo
     EffectInstance::InputImagesMap::const_iterator foundMaskInput = rectToRender.imgs.end();
 
     if ( _publicInterface->isHostMaskingEnabled() ) {
-        foundMaskInput = rectToRender.imgs.find(_publicInterface->getNInputs() - 1);
+        foundMaskInput = rectToRender.imgs.find(_publicInterface->getHostMaskInputNb());
     }
 
     if ( ( foundMaskInput != rectToRender.imgs.end() ) && !foundMaskInput->second.empty() ) {
@@ -3146,7 +3805,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                 it->second.renderMappedImage->fillZero(renderMappedRectToRender);
 
                 if ( frameArgs->stats && frameArgs->stats->isInDepthProfilingEnabled() ) {
-                    frameArgs->stats->addRenderInfosForNode( _publicInterface->getNode(),  NodePtr(), it->first.getChannelsLabel(), renderMappedRectToRender, timeRecorder->getTimeSinceCreation() );
+                    frameArgs->stats->addRenderInfosForNode(_publicInterface->getNode(), NodePtr(), it->first.getUserFacingLabel(), renderMappedRectToRender, timeRecorder->getTimeSinceCreation());
                 }
             }
 
@@ -3172,7 +3831,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                     it->second.renderMappedImage->fillZero(renderMappedRectToRender);
 
                     if ( frameArgs->stats && frameArgs->stats->isInDepthProfilingEnabled() ) {
-                        frameArgs->stats->addRenderInfosForNode( _publicInterface->getNode(),  tls->currentRenderArgs.identityInput->getNode(), it->first.getChannelsLabel(), renderMappedRectToRender, timeRecorder->getTimeSinceCreation() );
+                        frameArgs->stats->addRenderInfosForNode(_publicInterface->getNode(), tls->currentRenderArgs.identityInput->getNode(), it->first.getUserFacingLabel(), renderMappedRectToRender, timeRecorder->getTimeSinceCreation());
                     }
                 }
 
@@ -3237,7 +3896,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                     }
 
                     if ( frameArgs->stats && frameArgs->stats->isInDepthProfilingEnabled() ) {
-                        frameArgs->stats->addRenderInfosForNode( _publicInterface->getNode(),  tls->currentRenderArgs.identityInput->getNode(), it->first.getChannelsLabel(), renderMappedRectToRender, timeRecorder->getTimeSinceCreation() );
+                        frameArgs->stats->addRenderInfosForNode(_publicInterface->getNode(), tls->currentRenderArgs.identityInput->getNode(), it->first.getUserFacingLabel(), renderMappedRectToRender, timeRecorder->getTimeSinceCreation());
                     }
                 }
 
@@ -3444,7 +4103,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
 
     bool useMaskMix = _publicInterface->isHostMaskingEnabled() || _publicInterface->isHostMixingEnabled();
     double mix = useMaskMix ? _publicInterface->getNode()->getHostMixingValue(time, view) : 1.;
-    bool doMask = useMaskMix ? _publicInterface->getNode()->isMaskEnabled(_publicInterface->getNInputs() - 1) : false;
+    bool doMask = useMaskMix ? _publicInterface->getNode()->isMaskEnabled(_publicInterface->getHostMaskInputNb()) : false;
     const bool rendersUnprocessed = _publicInterface->rendersUnprocessedChannels();
 
     for (std::map<ImageLayerDesc, EffectInstance::LayerToRender>::const_iterator it = outputLayers.begin(); it != outputLayers.end(); ++it) {
@@ -3604,7 +4263,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
         } // if (it->second.isAllocatedOnTheFly) {
 
         if ( frameArgs->stats && frameArgs->stats->isInDepthProfilingEnabled() ) {
-            frameArgs->stats->addRenderInfosForNode( _publicInterface->getNode(),  NodePtr(), it->first.getChannelsLabel(), renderMappedRectToRender, timeRecorder->getTimeSinceCreation() );
+            frameArgs->stats->addRenderInfosForNode(_publicInterface->getNode(), NodePtr(), it->first.getUserFacingLabel(), renderMappedRectToRender, timeRecorder->getTimeSinceCreation());
         }
     } // for (std::map<ImageLayerDesc,LayerToRender>::const_iterator it = outputLayers.begin(); it != outputLayers.end(); ++it) {
 
@@ -3792,6 +4451,9 @@ EffectInstance::evaluate(bool isSignificant,
 
 
     double time = getCurrentTime();
+    if (Node::deferEvaluationToCascade(node, isSignificant, time)) {
+        return;
+    }
     std::list<ViewerInstance* > viewers;
     node->hasViewersConnected(&viewers);
     for (std::list<ViewerInstance* >::iterator it = viewers.begin();
@@ -3995,7 +4657,11 @@ EffectInstance::onKnobSlaved(const KnobIPtr& slave,
                              bool isSlave,
                              bool isExpression)
 {
-    getNode()->onKnobSlaved(slave, master, dimension, isSlave, isExpression);
+    // Null once a destroyed node's effect outlives it: its links died with the node.
+    NodePtr node = getNode();
+    if (node) {
+        node->onKnobSlaved(slave, master, dimension, isSlave, isExpression);
+    }
 }
 
 void
@@ -4187,8 +4853,6 @@ EffectInstance::renderOverlayImages(const OverlayImageRequest& request,
     const std::uint64_t generation = node->getOverlayImageGeneration();
     const OverlayImagePassPtr pass = std::make_shared<OverlayImagePass>(request.mipmapLevel, generation);
 
-    getParallelRenderArgsTLS()->overlayImagePass = pass;
-
     U64 hash = 0;
     double par = 1.;
     const auto publish = [&](std::vector<OverlayImagePlane>&& planes) {
@@ -4203,6 +4867,15 @@ EffectInstance::renderOverlayImages(const OverlayImageRequest& request,
 
     // A failed pass must not stop the viewer's own render, which reports the error if it has it too.
     try {
+        // A render under a pass runs its action beside any cached image, which a pass that only reads
+        // planes must not do: it would cost a render for what the cache already holds.
+        std::list<ImageLayerDesc> components = overlayImageSourcePlanes(request.time, request.view);
+        const bool readsPlanes = !components.empty();
+        if (!readsPlanes) {
+            getParallelRenderArgsTLS()->overlayImagePass = pass;
+            components.push_back(ImageLayerDesc::getRGBAComponents());
+        }
+
         hash = getRenderHash();
         const RenderScale scale = RenderScale::fromMipmapLevel(request.mipmapLevel);
         RectD rod;
@@ -4226,8 +4899,6 @@ EffectInstance::renderOverlayImages(const OverlayImageRequest& request,
             }
             frameArgs.updateNodesRequest(*requestPass);
 
-            std::list<ImageLayerDesc> components;
-            components.push_back(ImageLayerDesc::getRGBAComponents());
             RenderRoIArgs args(request.time,
                                scale,
                                request.mipmapLevel,
@@ -4253,6 +4924,10 @@ EffectInstance::renderOverlayImages(const OverlayImageRequest& request,
                 publish({});
 
                 return false;
+            }
+            if (readsPlanes) {
+                getParallelRenderArgsTLS()->overlayImagePass = pass;
+                addOverlayImagesFromPlanes(planes, request.time, request.view, canonicalRoI);
             }
         }
 
@@ -5008,6 +5683,26 @@ EffectInstance::hasComponentsNeededInCache(U64 hash,
     return (bool)_imp->actionsCache->getComponentsNeededResults(hash, time, view);
 }
 
+bool
+EffectInstance::isRegionOfDefinitionInfinite(double time,
+                                             ViewIdx view)
+{
+    if (!isEffectCreated()) {
+        return false;
+    }
+    if (getNode()->isNodeDisabled(time)) {
+        NodePtr preferredInput = getNode()->getPreferredInputNode();
+
+        return preferredInput && preferredInput->getEffectInstance()->isRegionOfDefinitionInfinite(time, view);
+    }
+
+    RECURSIVE_ACTION();
+    RectD rod;
+    const StatusEnum stat = getRegionOfDefinition(getRenderHash(), time, RenderScale::identity, view, &rod);
+
+    return ((stat == eStatusOK) || (stat == eStatusReplyDefault)) && rod.isInfinite();
+}
+
 StatusEnum
 EffectInstance::getRegionOfDefinition_public(U64 hash,
                                              double time,
@@ -5105,17 +5800,25 @@ EffectInstance::getRegionOfDefinition_public(U64 hash,
 
 void
 EffectInstance::getRegionsOfInterest_public(double time,
-                                            const RenderScale & scale,
-                                            const RectD & outputRoD, //!< effect RoD in canonical coordinates
-                                            const RectD & renderWindow, //!< the region to be rendered in the output image, in Canonical Coordinates
+                                            const RenderScale& scale,
+                                            const RectD& outputRoD, //!< effect RoD in canonical coordinates
+                                            const RectD& renderWindow, //!< the region to be rendered in the output image, in Canonical Coordinates
                                             ViewIdx view,
-                                            RoIMap* ret)
+                                            RoIMap* ret,
+                                            const InputMatrixMapPtr& transforms,
+                                            double par,
+                                            std::map<int, EffectInstancePtr>* reroutesMap)
 {
     NON_RECURSIVE_ACTION();
     assert(outputRoD.x2 >= outputRoD.x1 && outputRoD.y2 >= outputRoD.y1);
     assert(renderWindow.x2 >= renderWindow.x1 && renderWindow.y2 >= renderWindow.y1);
 
     getRegionsOfInterest(time, scale, outputRoD, renderWindow, view, ret);
+    const bool transformed = transforms && reroutesMap;
+    if (transformed) {
+        transformInputRois(this, transforms, par, scale, ret, reroutesMap);
+    }
+    adjustInputRegionsOfInterest(time, scale, view, transformed ? transforms.get() : nullptr, ret);
 }
 
 FramesNeededMap
@@ -5565,6 +6268,10 @@ EffectInstance::getLayersPassThroughInput(double time,
         if (isIdentity) {
             *isIdentity = true;
         }
+    } else if (identity && (identityInputNb == kIdentityInternalSource)) {
+        // The output is none of the inputs' layers, so none of them passes through; the effect
+        // presents its internal source's layers itself.
+        *inputNb = -1;
     }
 }
 
@@ -6438,6 +7145,9 @@ EffectInstance::onKnobValueChanged_public(KnobI* k,
         mustCallOnFileNameParameterChanged = true;
     }
 
+    if ((reason != eValueChangedReasonTimeChanged) && getApp()->isDraftRenderEnabled()) {
+        getApp()->noteDraftEdit(node);
+    }
 
     bool ret = false;
 
@@ -6573,16 +7283,6 @@ EffectInstance::onKnobValueChanged_public(KnobI* k,
 void
 EffectInstance::clearLastRenderedImage()
 {
-}
-
-void
-EffectInstance::aboutToRestoreDefaultValues()
-{
-    NodePtr node = getNode();
-
-    if ( node->areKeyframesVisibleOnTimeline() ) {
-        node->hideKeyframesFromTimeline(true);
-    }
 }
 
 /**
@@ -6795,10 +7495,7 @@ EffectInstance::getNearestNonIdentity(double time)
     if (!isIdentity_public(false, hash, time, RenderScale::identity, frmt, ViewIdx(0), &inputTimeIdentity, &inputView, &inputNbIdentity)) {
         return shared_from_this();
     } else {
-        if (inputNbIdentity < 0) {
-            return shared_from_this();
-        }
-        EffectInstancePtr effect = getInput(inputNbIdentity);
+        EffectInstancePtr effect = getIdentitySource(inputNbIdentity);
 
         return effect ? effect->getNearestNonIdentity(time) : shared_from_this();
     }
@@ -6832,13 +7529,23 @@ EffectInstance::onNodeHashChanged(U64 hash)
     }
 }
 
+namespace {
+std::atomic<bool> s_queuesWritesDuringBackgroundRenders(false);
+}
+
+void
+EffectInstance::setQueuesWritesDuringBackgroundRendersForTesting(bool queues)
+{
+    s_queuesWritesDuringBackgroundRenders = queues;
+}
+
 bool
 EffectInstance::canSetValue() const
 {
     // A render can keep the effect alive after its node is destroyed; nothing renders the node then.
     NodePtr node = getNode();
 
-    return !node || !node->isNodeRendering() || appPTR->isBackground();
+    return !node || !node->isNodeRendering() || (appPTR->isBackground() && !s_queuesWritesDuringBackgroundRenders);
 }
 
 void
@@ -6875,6 +7582,9 @@ EffectInstance::getDownstreamOutputs(std::list<OutputEffectInstance*>* outputNod
 void
 EffectInstance::abortViewerRendersForEdit()
 {
+    if (Node::deferViewerAbortToCascade(getNode())) {
+        return;
+    }
     std::list<OutputEffectInstance*> outputNodes;
     getDownstreamOutputs(&outputNodes);
     for (std::list<OutputEffectInstance*>::const_iterator it = outputNodes.begin(); it != outputNodes.end(); ++it) {
@@ -7139,20 +7849,25 @@ EffectInstance::getInputMetadataAt(int inputNb,
 
 static void
 metadataComponentsToLayers(int nComps,
-                           const std::string& componentsType,
+                           ImageComponentsTypeEnum componentsType,
                            ImageLayerDesc* layer,
                            ImageLayerDesc* pairedLayer)
 {
-    if (componentsType == kNatronColorLayerID) {
+    switch (componentsType) {
+    case eImageComponentsTypeColor:
         *layer = ImageLayerDesc::mapNCompsToColorLayer(nComps);
-    } else if (componentsType == kNatronDisparityComponentsLabel) {
+        break;
+    case eImageComponentsTypeDisparity:
         *layer = ImageLayerDesc::getDisparityLeftComponents();
         *pairedLayer = ImageLayerDesc::getDisparityRightComponents();
-    } else if (componentsType == kNatronMotionComponentsLabel) {
+        break;
+    case eImageComponentsTypeMotion:
         *layer = ImageLayerDesc::getBackwardMotionComponents();
         *pairedLayer = ImageLayerDesc::getForwardMotionComponents();
-    } else {
+        break;
+    case eImageComponentsTypeNone:
         *layer = ImageLayerDesc::getNoneComponents();
+        break;
     }
 }
 
@@ -7160,7 +7875,7 @@ static int
 metadataNComps(const NodeMetadata& metadata,
                int inputNb)
 {
-    if ((inputNb == -1) && (metadata.getOutputStorageNComps() > 0) && (metadata.getComponentsType(-1) == kNatronColorLayerID)) {
+    if ((inputNb == -1) && (metadata.getOutputStorageNComps() > 0) && (metadata.getComponentsType(-1) == eImageComponentsTypeColor)) {
         return metadata.getOutputStorageNComps();
     }
 
@@ -7351,6 +8066,7 @@ EffectInstance::getDefaultMetadataFromInputs(const std::vector<EffectInstancePtr
     double projectPAR = projectFormat.getPixelAspectRatio();
 
     RectI firstOptionalInputFormat, firstNonOptionalInputFormat;
+    EdgeMode firstOptionalInputEdgeMode = EdgeMode::Stretch, firstNonOptionalInputEdgeMode = EdgeMode::Stretch;
 
     // Format: Take format from the first non optional input if any. Otherwise from the first optional input.
     // Otherwise fallback on project format
@@ -7380,11 +8096,13 @@ EffectInstance::getDefaultMetadataFromInputs(const std::vector<EffectInstancePtr
             if (isOptional) {
                 if (!firstOptionalInputFormatSet && inputMetadata) {
                     firstOptionalInputFormat = inputMetadata->getOutputFormat();
+                    firstOptionalInputEdgeMode = inputMetadata->getEdgeMode();
                     firstOptionalInputFormatSet = true;
                 }
             } else {
                 if (!firstNonOptionalInputFormatSet && inputMetadata) {
                     firstNonOptionalInputFormat = inputMetadata->getOutputFormat();
+                    firstNonOptionalInputEdgeMode = inputMetadata->getEdgeMode();
                     firstNonOptionalInputFormatSet = true;
                 }
             }
@@ -7404,7 +8122,7 @@ EffectInstance::getDefaultMetadataFromInputs(const std::vector<EffectInstancePtr
                 metadata.setOutputStorageNComps(remappedComps);
             }
             metadata.setNComps(i, remappedComps);
-            metadata.setComponentsType(i, kNatronColorLayerID);
+            metadata.setComponentsType(i, eImageComponentsTypeColor);
             metadata.setBitDepth(i, depth);
         } else {
 
@@ -7415,7 +8133,7 @@ EffectInstance::getDefaultMetadataFromInputs(const std::vector<EffectInstancePtr
             metadata.setBitDepth(i, depth);
 
             metadata.setNComps(i, rawComps);
-            metadata.setComponentsType(i, kNatronColorLayerID);
+            metadata.setComponentsType(i, eImageComponentsTypeColor);
         }
     }
 
@@ -7431,6 +8149,18 @@ EffectInstance::getDefaultMetadataFromInputs(const std::vector<EffectInstancePtr
 
 
     metadata.setOutputFormat(outputFormat);
+
+    // The same input gives the format and the edge mode. A plug-in's clip preferences cannot
+    // express an edge mode, so an OpenFX effect starts from Stretch whatever its inputs say.
+    EdgeMode edgeMode = EdgeMode::Stretch;
+    if (!isOpenFX()) {
+        if (firstNonOptionalInputFormatSet) {
+            edgeMode = firstNonOptionalInputEdgeMode;
+        } else if (firstOptionalInputFormatSet) {
+            edgeMode = firstOptionalInputEdgeMode;
+        }
+    }
+    metadata.setEdgeMode(edgeMode);
 
     return eStatusOK;
 } // EffectInstance::getDefaultMetadataFromInputs
@@ -7466,6 +8196,9 @@ copyOutputMetadata(const NodeMetadata& from,
     }
     if (!defaults || (to->getIsContinuous() == defaults->getIsContinuous())) {
         to->setIsContinuous(from.getIsContinuous());
+    }
+    if (!defaults || (to->getEdgeMode() == defaults->getEdgeMode())) {
+        to->setEdgeMode(from.getEdgeMode());
     }
     to->setIsFrameVarying(to->getIsFrameVarying() || from.getIsFrameVarying());
 }
@@ -7541,12 +8274,17 @@ EffectInstance::applyIdentityRule(U64 hash,
     } catch (...) {
         identity = false;
     }
-    if (!identity || (inputNb < 0)) {
+    if (!identity) {
         return own;
     }
-    EffectInstancePtr input = getInput(inputNb);
+    EffectInstancePtr input = getIdentitySource(inputNb);
     if (!input) {
         return own;
+    }
+    // The defaults are what the inputs give, and an internal source is none of them, so every
+    // output field is taken from the source.
+    if (inputNb == kIdentityInternalSource) {
+        defaults = NULL;
     }
     NodeMetadataConstPtr inputMetadata;
     {
@@ -7562,6 +8300,16 @@ EffectInstance::applyIdentityRule(U64 hash,
     }
     std::shared_ptr<NodeMetadata> metadata = std::make_shared<NodeMetadata>(*own);
     copyOutputMetadata(*inputMetadata, defaults, metadata.get());
+    // An OpenFX effect resets the edge mode (getDefaultMetadataFromInputs()) even where the
+    // plug-in passes its input through; only the host's bypass of an inactive node forwards it.
+    if (isOpenFX()) {
+        const NodePtr node = getNode();
+        const RotoDrawableItemPtr rotoItem = node ? node->getAttachedRotoItem() : RotoDrawableItemPtr();
+        const bool bypassed = node && (node->isNodeDisabled(time) || (rotoItem && !rotoItem->isActivated(time)));
+        if (!bypassed) {
+            metadata->setEdgeMode(own->getEdgeMode());
+        }
+    }
 
     return metadata;
 }
@@ -7711,7 +8459,7 @@ void
 widenOutputMetadata(const NodeMetadata& metadata,
                     NodeMetadata* widened)
 {
-    if ((metadata.getComponentsType(-1) == kNatronColorLayerID) && (widened->getComponentsType(-1) == kNatronColorLayerID)) {
+    if ((metadata.getComponentsType(-1) == eImageComponentsTypeColor) && (widened->getComponentsType(-1) == eImageComponentsTypeColor)) {
         const int nComps = metadataNComps(metadata, -1);
         if (nComps > metadataNComps(*widened, -1)) {
             widened->setNComps(-1, std::max(widened->getNComps(-1), metadata.getNComps(-1)));
@@ -8214,13 +8962,13 @@ EffectInstance::Implementation::clampMetadata(const std::vector<EffectInstancePt
     }
     int nInputs = (int)inputs.size();
 
-    const bool outputKeptInputsStorage = (md.getComponentsType(-1) == kNatronColorLayerID) && (md.getOutputStorageNComps() > 0) && (md.getNComps(-1) == md.getOutputStorageNComps());
+    const bool outputKeptInputsStorage = (md.getComponentsType(-1) == eImageComponentsTypeColor) && (md.getOutputStorageNComps() > 0) && (md.getNComps(-1) == md.getOutputStorageNComps());
     md.setOutputStorageNComps(0);
 
     for (int i = -1; i < nInputs; ++i) {
         md.setBitDepth( i, node->getClosestSupportedBitDepth( md.getBitDepth(i) ) );
         int nComps = md.getNComps(i);
-        if (md.getComponentsType(i) == kNatronColorLayerID) {
+        if (md.getComponentsType(i) == eImageComponentsTypeColor) {
             md.setNComps(i, node->findClosestSupportedComponents(i, ImageLayerDesc::mapNCompsToColorLayer(nComps)).getNumComponents());
         }
     }
@@ -8244,7 +8992,7 @@ EffectInstance::Implementation::clampMetadata(const std::vector<EffectInstancePt
     // channel, and plug-ins such as Grade reject a source layout that differs from the output's.
     // The widened inputs read the missing channels as zero. A writer's channel set only picks what
     // goes to the file, so it never widens: an RGB image would otherwise gain a zero alpha there.
-    if (!_publicInterface->isWriter() && (md.getComponentsType(-1) == kNatronColorLayerID)) {
+    if (!_publicInterface->isWriter() && (md.getComponentsType(-1) == eImageComponentsTypeColor)) {
         // md.getNComps(-1) may already have been clamped, above and in getDefaultMetadata, to the
         // nearest layout this node's clip preferences support (e.g. Alpha clamped to RGBA, because
         // Grade declares no Alpha clip). That clamp can coincidentally already satisfy the write
@@ -8264,7 +9012,7 @@ EffectInstance::Implementation::clampMetadata(const std::vector<EffectInstancePt
                 bool rgbaSupported = node->findClosestSupportedComponents(-1, rgba) == rgba;
                 std::vector<int> widenedInputs;
                 for (int i = 0; rgbaSupported && i < nInputs; ++i) {
-                    if (!inputs[i] || _publicInterface->isInputMask(i) || node->isInputOnlyAlpha(i) || (md.getComponentsType(i) != kNatronColorLayerID)) {
+                    if (!inputs[i] || _publicInterface->isInputMask(i) || node->isInputOnlyAlpha(i) || (md.getComponentsType(i) != eImageComponentsTypeColor)) {
                         continue;
                     }
                     if (node->findClosestSupportedComponents(i, rgba) == rgba) {

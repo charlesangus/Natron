@@ -49,7 +49,7 @@
 #include "Engine/Nodes/Scene/USDCard.h"
 #include "Engine/Nodes/Scene/USDCube.h"
 #include "Engine/Nodes/Scene/USDCylinder.h"
-#include "Engine/Nodes/Scene/USDMaterial.h"
+#include "Engine/Nodes/Scene/USDPreviewSurface.h"
 #include "Engine/Nodes/Scene/USDSphere.h"
 #include "Engine/Project.h"
 #include "Engine/ScenePayload.h"
@@ -402,7 +402,7 @@ TEST_F(USDPrimitivesTest, TheTransformAndPivotPlaceThePrim)
 
 TEST_F(USDPrimitivesTest, TheMaterialInputIsGraftedAndBound)
 {
-    NodePtr material = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMATERIAL));
+    NodePtr material = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPREVIEWSURFACE));
     NodePtr sphere = primitive(PLUGINID_NATRON_USDSPHERE);
     ASSERT_TRUE(material && sphere);
     material->setScriptName("Material1");

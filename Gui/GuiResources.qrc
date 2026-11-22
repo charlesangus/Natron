@@ -72,11 +72,14 @@
         <file>Resources/Fonts/DroidSans-Bold.ttf</file>
         <file>Resources/Fonts/DroidSans.ttf</file>
         <file>Resources/Icons/lucide/aperture.svg</file>
+        <file>Resources/Icons/lucide/arrow-left-from-line.svg</file>
         <file>Resources/Icons/lucide/arrow-left-right.svg</file>
         <file>Resources/Icons/lucide/arrow-left.svg</file>
+        <file>Resources/Icons/lucide/arrow-right-from-line.svg</file>
         <file>Resources/Icons/lucide/arrow-right-to-line.svg</file>
         <file>Resources/Icons/lucide/arrow-right.svg</file>
         <file>Resources/Icons/lucide/arrow-up.svg</file>
+        <file>Resources/Icons/lucide/blend.svg</file>
         <file>Resources/Icons/lucide/bold.svg</file>
         <file>Resources/Icons/lucide/box.svg</file>
         <file>Resources/Icons/lucide/brush-cleaning.svg</file>
@@ -91,7 +94,6 @@
         <file>Resources/Icons/lucide/circle-x.svg</file>
         <file>Resources/Icons/lucide/clock.svg</file>
         <file>Resources/Icons/lucide/columns-2.svg</file>
-        <file>Resources/Icons/lucide/contrast.svg</file>
         <file>Resources/Icons/lucide/crosshair.svg</file>
         <file>Resources/Icons/lucide/diamond-minus.svg</file>
         <file>Resources/Icons/lucide/diamond-plus.svg</file>

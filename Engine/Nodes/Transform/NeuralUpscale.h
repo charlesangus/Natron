@@ -92,7 +92,7 @@ inline constexpr NodeSpec kNeuralUpscaleNodeSpec = {
 // PassThroughUnprocessed only tells the host the node writes every channel itself: renderOp()
 // never runs the stages, as the output does not share the Source's pixel grid.
 inline constexpr ImagePipelineSpec kNeuralUpscalePipeline = {
-    .stages = { Stage::PassThroughUnprocessed },
+    .stages = { Stage::PassThroughUnprocessed, Stage::EdgeMode },
     .layers = LayerPolicy::color(true, true, true, false),
     .op = OpKind::Custom,
 };

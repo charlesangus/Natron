@@ -27,7 +27,11 @@
 
 #include <QDebug>
 #include <QThread>
+
 #include <algorithm>
+#include <atomic>
+#include <list>
+#include <ofxImageEffect.h>
 #include <set>
 #include <unordered_map>
 #include <unordered_set>
@@ -55,6 +59,86 @@
 #include "Engine/ViewerInstance.h"
 
 NATRON_NAMESPACE_ENTER
+
+namespace {
+std::atomic<U64> cycleCheckVisits { 0 };
+
+// The viewers downstream of a node whose input is being edited, found by the walk aborting their
+// renders before the edit, for endInputEdition() to render after it. Changing a node's input
+// leaves what is downstream of it as it was (the new input is not downstream of it, or the
+// connection would be a cycle), so the list holds while nothing else changes the graph.
+struct DownstreamViewersOfEdit {
+    const Node* node = nullptr;
+    U64 graphGeneration = 0; //< 0 until the edit itself has been made
+    bool ownGraphChangeSeen = false;
+    std::list<ViewerInstance*> viewers;
+};
+
+thread_local DownstreamViewersOfEdit* downstreamViewersOfEdit = nullptr;
+
+class DownstreamViewersOfEditScope {
+public:
+    explicit DownstreamViewersOfEditScope(DownstreamViewersOfEdit* edit)
+        : _previous(downstreamViewersOfEdit)
+    {
+        downstreamViewersOfEdit = edit;
+    }
+
+    ~DownstreamViewersOfEditScope()
+    {
+        downstreamViewersOfEdit = _previous;
+    }
+
+private:
+    DownstreamViewersOfEdit* _previous;
+};
+
+// Stamped once, by the outermost edit of the node: an edit of it nested in a callback must not
+// hide a graph change made before it.
+void
+stampDownstreamViewersOfEdit(const Node* node)
+{
+    if (downstreamViewersOfEdit && (downstreamViewersOfEdit->node == node) && (downstreamViewersOfEdit->graphGeneration == 0)) {
+        downstreamViewersOfEdit->graphGeneration = LoopEnd::getGraphGeneration();
+    }
+}
+
+// The node's onInputChanged() for the edit counts as a graph change of its own; only it may follow
+// the stamp for the list to hold.
+void
+acceptOwnGraphChangeOfEdit(const Node* node)
+{
+    if (!downstreamViewersOfEdit || (downstreamViewersOfEdit->node != node) || (downstreamViewersOfEdit->graphGeneration == 0) || downstreamViewersOfEdit->ownGraphChangeSeen) {
+        return;
+    }
+    downstreamViewersOfEdit->ownGraphChangeSeen = true;
+    const U64 current = LoopEnd::getGraphGeneration();
+    if (current == downstreamViewersOfEdit->graphGeneration + 1) {
+        downstreamViewersOfEdit->graphGeneration = current;
+    }
+}
+
+void
+dropDownstreamViewersOfEdit(const Node* node)
+{
+    if (downstreamViewersOfEdit && (downstreamViewersOfEdit->node == node)) {
+        downstreamViewersOfEdit->node = nullptr;
+    }
+}
+
+bool
+feedsAnyInput(const std::vector<NodeWPtr>& inputs,
+              const Node* node)
+{
+    for (std::size_t i = 0; i < inputs.size(); ++i) {
+        if (inputs[i].lock().get() == node) {
+            return true;
+        }
+    }
+
+    return false;
+}
+} // anonymous namespace
 
 // onInputChanged() invalidates from the consumer, but the removed edge may have been the only path
 // between it and the detached input, so a kind the input derived through that edge (a requirement
@@ -233,6 +317,82 @@ Node::appendOutputsWithGroupRedirection(std::vector<NodePtr>* outputs) const
     NodesList redirected;
     getOutputsWithGroupRedirection(redirected);
     outputs->insert(outputs->end(), redirected.begin(), redirected.end());
+}
+
+void
+Node::appendDraftFlagDependents(std::vector<NodePtr>* dependents) const
+{
+    appendOutputsWithGroupRedirection(dependents);
+    // The flag is read through raw inputs, so a container's own outputs read it even where the
+    // redirection skips them for the nodes inside.
+    const bool redirected = isEffectGroup() || dynamic_cast<const GroupOutput*>(_imp->effect.get()) || _imp->precomp.lock();
+    if (redirected) {
+        QMutexLocker l(&_imp->outputsMutex);
+        for (NodesWList::const_iterator it = _imp->outputs.begin(); it != _imp->outputs.end(); ++it) {
+            NodePtr output = it->lock();
+            if (output) {
+                dependents->push_back(std::move(output));
+            }
+        }
+    }
+}
+
+bool
+Node::getDownstreamViewersOfOwnEdit(std::list<ViewerInstance*>* viewers) const
+{
+    if (!downstreamViewersOfEdit || (downstreamViewersOfEdit->node != this) || (downstreamViewersOfEdit->graphGeneration != LoopEnd::getGraphGeneration())) {
+        return false;
+    }
+    *viewers = downstreamViewersOfEdit->viewers;
+
+    return true;
+}
+
+void
+Node::appendOutputsThroughOneRedirection(std::vector<NodePtr>* outputs) const
+{
+    auto appendOutputsOf = [outputs](const Node& node) {
+        NodesWList list;
+        node.getOutputs_mt_safe(list);
+        for (NodesWList::const_iterator it = list.begin(); it != list.end(); ++it) {
+            NodePtr output = it->lock();
+            if (output) {
+                outputs->push_back(std::move(output));
+            }
+        }
+    };
+    const std::size_t start = outputs->size();
+
+    if (NodeGroup* isGrp = isEffectGroup()) {
+        NodesList inputsOutputs;
+        isGrp->getInputsOutputs(&inputsOutputs, false);
+        outputs->insert(outputs->end(), inputsOutputs.begin(), inputsOutputs.end());
+    } else if (dynamic_cast<const GroupOutput*>(_imp->effect.get())) {
+        NodeGroup* group = dynamic_cast<NodeGroup*>(getGroup().get());
+        NodePtr groupNode = group ? group->getNode() : NodePtr();
+        if (groupNode) {
+            appendOutputsOf(*groupNode);
+        }
+    } else if (isPrecompOutputNode()) {
+        PrecompNodePtr precomp = _imp->precomp.lock();
+        NodePtr precompNode = precomp ? precomp->getNode() : NodePtr();
+        if (precompNode) {
+            appendOutputsOf(*precompNode);
+        }
+    }
+    // As getOutputsWithGroupRedirection(): a redirection leading nowhere falls back to the node's
+    // own outputs.
+    if (outputs->size() == start) {
+        appendOutputsOf(*this);
+    }
+}
+
+bool
+Node::isPrecompOutputNode() const
+{
+    PrecompNodePtr precomp = _imp->precomp.lock();
+
+    return precomp && (precomp->getOutputNode().get() == this);
 }
 
 NodePtr
@@ -476,15 +636,17 @@ Node::initializeInputs()
         }
     }
     {
-        QMutexLocker l(&_imp->lastRenderStartedMutex);
-        _imp->inputIsRenderingCounter.resize(inputCount);
+        const Implementation::InputExecutionCounts* counts = _imp->inputExecutionCounts.load(std::memory_order_acquire);
+        if ((inputCount > 0) && (!counts || (counts->size < inputCount))) {
+            _imp->inputExecutionCountBlocks.push_back(std::make_unique<Implementation::InputExecutionCounts>(inputCount));
+            _imp->inputExecutionCounts.store(_imp->inputExecutionCountBlocks.back().get(), std::memory_order_release);
+        }
     }
     {
         QMutexLocker l(&_imp->inputsMutex);
         oldInputs = _imp->inputs;
 
         std::vector<bool> oldInputsVisibility = _imp->inputsVisibility;
-        _imp->inputIsRenderingCounter.resize(inputCount);
         _imp->inputs.resize(inputCount);
         _imp->guiInputs.resize(inputCount);
         _imp->inputsVisibility.resize(inputCount);
@@ -520,7 +682,9 @@ Node::initializeInputs()
         _imp->effect->addAcceptedComponents(-1, &_imp->outputComponents);
     }
     _imp->inputsInitialized = true;
+    const U64 upstreamStampGeneration = getUpstreamInputEditStampGraphGeneration();
     LoopEnd::onGraphChanged();
+    absorbGraphChangeOfOwnSources(upstreamStampGeneration, true);
 
     Q_EMIT inputsInitialized();
 } // Node::initializeInputs
@@ -554,6 +718,23 @@ Node::hasInputConnected() const
     return false;
 }
 
+bool
+Node::hasInputOrQueuedInputConnected() const
+{
+    QMutexLocker l(&_imp->inputsMutex);
+    for (const NodeWPtr& input : _imp->inputs) {
+        if (input.lock()) {
+            return true;
+        }
+    }
+    for (const NodeWPtr& input : _imp->guiInputs) {
+        if (input.lock()) {
+            return true;
+        }
+    }
+
+    return false;
+}
 
 bool
 Node::hasMandatoryInputDisconnected() const
@@ -638,15 +819,88 @@ Node::isNodeUpstream(const Node* input,
     ////Only called by the main-thread
     assert( QThread::currentThread() == qApp->thread() );
 
+    *ok = false;
     if (!input) {
-        *ok = false;
+        return;
+    }
 
+    // Every node listing input as one of its inputs went through input->connectOutput(), so with
+    // no metadata read to depend on it through, a node never connected depends on nothing.
+    if (!KnobHelper::anyExpressionReadsMetadata()) {
+        QMutexLocker l(&input->_imp->outputsMutex);
+        if (!input->_imp->everConnectedAsInput) {
+            return;
+        }
+    }
+
+    // The graph is acyclic, so nothing at or above one of input's own inputs depends on input: a
+    // node inserted between an input and its output is checked without walking what feeds it.
+    std::vector<const Node*> inputsOfInput;
+    {
+        QMutexLocker l(&input->_imp->inputsMutex);
+        for (std::size_t i = 0; i < input->_imp->inputs.size(); ++i) {
+            NodePtr in = input->_imp->inputs[i].lock();
+            if (in) {
+                inputsOfInput.push_back(in.get());
+            }
+        }
+    }
+    auto feedsInput = [&inputsOfInput](const Node* node) {
+        return std::find(inputsOfInput.begin(), inputsOfInput.end(), node) != inputsOfInput.end();
+    };
+    if (feedsInput(this)) {
         return;
     }
 
     // A node's hash folds those of the nodes whose metadata its hashed knobs read, as it does its
-    // inputs', so a cycle through them would never let the hashes settle.
-    *ok = hashDependsOn(input, NULL, -1);
+    // inputs', so a cycle through them would never let the hashes settle. These are the edges
+    // hashDependsOn() follows.
+    std::unordered_set<const Node*> visited;
+    std::vector<const Node*> stack;
+    visited.insert(this);
+    stack.push_back(this);
+    // Published once per check: a shared counter written per node would bounce its cache line
+    // between the threads checking at once.
+    struct VisitCount {
+        U64 visits = 0;
+        ~VisitCount()
+        {
+            cycleCheckVisits.fetch_add(visits, std::memory_order_relaxed);
+        }
+    } visitCount;
+    while (!stack.empty()) {
+        const Node* current = stack.back();
+        stack.pop_back();
+        ++visitCount.visits;
+        std::vector<NodePtr> dependencies;
+        {
+            QMutexLocker l(&current->_imp->inputsMutex);
+            for (std::size_t i = 0; i < current->_imp->inputs.size(); ++i) {
+                NodePtr in = current->_imp->inputs[i].lock();
+                if (in) {
+                    dependencies.push_back(in);
+                }
+            }
+        }
+        current->appendMetadataSources(&dependencies, NULL);
+        for (std::size_t i = 0; i < dependencies.size(); ++i) {
+            const Node* dependency = dependencies[i].get();
+            if (dependency == input) {
+                *ok = true;
+
+                return;
+            }
+            if (!feedsInput(dependency) && visited.insert(dependency).second) {
+                stack.push_back(dependency);
+            }
+        }
+    }
+}
+
+U64
+Node::getCycleCheckVisitCount()
+{
+    return cycleCheckVisits.load();
 }
 
 static Node::CanConnectInputReturnValue
@@ -830,7 +1084,11 @@ Node::connectInput(const NodePtr & input,
     if (IsolatedJob::refusesEdit(_imp->effect.get(), "the inputs")) {
         return false;
     }
-    _imp->effect->abortViewerRendersForEdit();
+    DownstreamViewersOfEdit downstreamViewers;
+    if (abortViewerRendersForInputEdit(&downstreamViewers.viewers)) {
+        downstreamViewers.node = this;
+    }
+    DownstreamViewersOfEditScope downstreamViewersScope(&downstreamViewers);
 
     bool useGuiInputs;
     {
@@ -857,11 +1115,17 @@ Node::connectInput(const NodePtr & input,
         markHashDirty();
     }
     input->connectOutput(useGuiInputs, shared_from_this());
+    stampDownstreamViewersOfEdit(this);
 
-    getApp()->recheckInvalidExpressions();
+    {
+        std::set<std::string> names;
+        names.insert(getScriptName_mt_safe());
+        names.insert(input->getScriptName_mt_safe());
+        getApp()->recheckInvalidExpressionsReferencing(names);
+    }
 
     ///Get notified when the input name has changed
-    QObject::connect( input.get(), SIGNAL(labelChanged(QString)), this, SLOT(onInputLabelChanged(QString)) );
+    QObject::connect(input.get(), SIGNAL(labelChanged(QString)), this, SLOT(onInputLabelChanged(QString)), Qt::UniqueConnection);
 
     ///Notify the GUI
     if (GraphEditRecorder::isActive()) {
@@ -879,6 +1143,7 @@ Node::connectInput(const NodePtr & input,
 
     std::string inputChangedCB = getInputChangedCallback();
     if ( !inputChangedCB.empty() ) {
+        dropDownstreamViewersOfEdit(this);
         _imp->runInputChangedCallback(inputNumber, inputChangedCB);
     }
 
@@ -950,13 +1215,16 @@ Node::replaceInputInternal(const NodePtr& input, int inputNumber, bool queueWhil
         markHashDirty();
     }
     if (curIn) {
-        QObject::connect(curIn.get(), SIGNAL(labelChanged(QString)), this, SLOT(onInputLabelChanged(QString)));
+        if (!feedsAnyInput(_imp->guiInputs, curIn.get())) {
+            QObject::disconnect(curIn.get(), SIGNAL(labelChanged(QString)), this, SLOT(onInputLabelChanged(QString)));
+        }
         curIn->disconnectOutput(useGuiInputs, this);
     }
     input->connectOutput(useGuiInputs, shared_from_this());
+    stampDownstreamViewersOfEdit(this);
 
     ///Get notified when the input name has changed
-    QObject::connect( input.get(), SIGNAL(labelChanged(QString)), this, SLOT(onInputLabelChanged(QString)) );
+    QObject::connect(input.get(), SIGNAL(labelChanged(QString)), this, SLOT(onInputLabelChanged(QString)), Qt::UniqueConnection);
 
     ///Notify the GUI
     if (GraphEditRecorder::isActive()) {
@@ -974,6 +1242,7 @@ Node::replaceInputInternal(const NodePtr& input, int inputNumber, bool queueWhil
 
     std::string inputChangedCB = getInputChangedCallback();
     if ( !inputChangedCB.empty() ) {
+        dropDownstreamViewersOfEdit(this);
         _imp->runInputChangedCallback(inputNumber, inputChangedCB);
     }
 
@@ -992,7 +1261,12 @@ Node::replaceInput(const NodePtr& input,
     if (IsolatedJob::refusesEdit(_imp->effect.get(), "the inputs")) {
         return false;
     }
-    _imp->effect->abortViewerRendersForEdit();
+    DownstreamViewersOfEdit downstreamViewers;
+    if (abortViewerRendersForInputEdit(&downstreamViewers.viewers)) {
+        downstreamViewers.node = this;
+    }
+    DownstreamViewersOfEditScope downstreamViewersScope(&downstreamViewers);
+
     return replaceInputInternal(input, inputNumber, true);
 } // Node::replaceInput
 
@@ -1106,18 +1380,11 @@ Node::onInputLabelChanged(const QString & name)
         // coverity[dead_error_line]
         return;
     }
-    int inputNb = -1;
-    ///No need to lock, inputs is only written to by the mainthread
-
+    /// No need to lock, inputs is only written to by the mainthread
     for (U32 i = 0; i < _imp->guiInputs.size(); ++i) {
         if (_imp->guiInputs[i].lock().get() == inp) {
-            inputNb = i;
-            break;
+            Q_EMIT inputLabelChanged(i, name);
         }
-    }
-
-    if (inputNb != -1) {
-        Q_EMIT inputLabelChanged(inputNb, name);
     }
 }
 
@@ -1129,6 +1396,7 @@ Node::connectOutput(bool useGuiValues,
 
     {
         QMutexLocker l(&_imp->outputsMutex);
+        _imp->everConnectedAsInput = true;
         if (!useGuiValues) {
             _imp->outputs.push_back(output);
             _imp->guiOutputs.push_back(output);
@@ -1136,7 +1404,10 @@ Node::connectOutput(bool useGuiValues,
             _imp->guiOutputs.push_back(output);
         }
     }
+    // The output's inputs have been set to this node already; only their sources have changed.
+    const U64 upstreamStampGeneration = getUpstreamInputEditStampGraphGeneration();
     LoopEnd::onGraphChanged();
+    output->absorbGraphChangeOfOwnSources(upstreamStampGeneration, true);
     Q_EMIT outputsChanged();
 }
 
@@ -1177,7 +1448,9 @@ Node::disconnectInput(int inputNumber)
         markHashDirty();
     }
 
-    QObject::disconnect(inputShared.get(), SIGNAL(labelChanged(QString)), this, SLOT(onInputLabelChanged(QString)));
+    if (!feedsAnyInput(_imp->guiInputs, inputShared.get())) {
+        QObject::disconnect(inputShared.get(), SIGNAL(labelChanged(QString)), this, SLOT(onInputLabelChanged(QString)));
+    }
     inputShared->disconnectOutput(useGuiValues, this);
 
     {
@@ -1201,6 +1474,7 @@ Node::disconnectInput(int inputNumber)
 
     std::string inputChangedCB = getInputChangedCallback();
     if ( !inputChangedCB.empty() ) {
+        dropDownstreamViewersOfEdit(this);
         _imp->runInputChangedCallback(inputNumber, inputChangedCB);
     }
     if (mustCallEnd) {
@@ -1296,6 +1570,49 @@ Node::disconnectInput(Node* input)
     return disconnectInputInternal(input, true);
 } // Node::disconnectInput
 
+bool
+Node::dropInputsFromDeactivated(const Node* input)
+{
+    assert(input);
+    std::vector<int> realChanged;
+    std::vector<int> guiChanged;
+    {
+        bool rendering;
+        std::unique_lock<QMutex> renderStarts = _imp->lockRenderStarts(&rendering);
+        QMutexLocker l(&_imp->inputsMutex);
+        for (std::size_t i = 0; i < _imp->inputs.size(); ++i) {
+            if (_imp->inputs[i].lock().get() == input) {
+                _imp->inputs[i].reset();
+                realChanged.push_back((int)i);
+            }
+            if (_imp->guiInputs[i].lock().get() == input) {
+                _imp->guiInputs[i].reset();
+                guiChanged.push_back((int)i);
+            }
+        }
+        if (realChanged.empty() && guiChanged.empty()) {
+            return false;
+        }
+        // Under the render-start lock, as in connectInput().
+        markHashDirty();
+    }
+    for (std::size_t i = 0; i < guiChanged.size(); ++i) {
+        Q_EMIT inputChanged(guiChanged[i]);
+    }
+    if (!realChanged.empty()) {
+        beginInputEdition();
+        for (std::size_t i = 0; i < realChanged.size(); ++i) {
+            if (std::find(guiChanged.begin(), guiChanged.end(), realChanged[i]) == guiChanged.end()) {
+                Q_EMIT inputChanged(realChanged[i]);
+            }
+            onInputChanged(realChanged[i]);
+        }
+        endInputEdition(true);
+    }
+
+    return true;
+} // Node::dropInputsFromDeactivated
+
 int
 Node::disconnectOutput(bool useGuiValues,
                        const Node* output)
@@ -1322,7 +1639,9 @@ Node::disconnectOutput(bool useGuiValues,
         }
     }
 
+    const U64 upstreamStampGeneration = getUpstreamInputEditStampGraphGeneration();
     LoopEnd::onGraphChanged();
+    output->absorbGraphChangeOfOwnSources(upstreamStampGeneration, true);
     //Will just refresh the gui
     Q_EMIT outputsChanged();
 
@@ -1613,9 +1932,10 @@ Node::beginInputEdition()
     ++_imp->inputModifiedRecursion;
 }
 
-void
+bool
 Node::endInputEdition(bool triggerRender)
 {
+    bool inputsChanged = false;
     assert( QThread::currentThread() == qApp->thread() );
     if (_imp->inputModifiedRecursion > 0) {
         --_imp->inputModifiedRecursion;
@@ -1623,6 +1943,7 @@ Node::endInputEdition(bool triggerRender)
 
     if (!_imp->inputModifiedRecursion) {
         bool hasChanged = !_imp->inputsModified.empty();
+        inputsChanged = hasChanged;
         _imp->inputsModified.clear();
 
         if (hasChanged) {
@@ -1636,19 +1957,26 @@ Node::endInputEdition(bool triggerRender)
 
         if (triggerRender) {
             std::list<ViewerInstance* > viewers;
-            hasViewersConnected(&viewers);
+            if (!getDownstreamViewersOfOwnEdit(&viewers)) {
+                hasViewersConnected(&viewers);
+            }
             for (std::list<ViewerInstance* >::iterator it2 = viewers.begin(); it2 != viewers.end(); ++it2) {
                 (*it2)->renderCurrentFrame(true);
             }
         }
     }
+
+    return inputsChanged;
 }
 
 void
 Node::onInputChanged(int inputNb,
                      bool isInputA)
 {
+    const U64 upstreamStampGeneration = getUpstreamInputEditStampGraphGeneration();
     LoopEnd::onGraphChanged();
+    absorbGraphChangeOfOwnSources(upstreamStampGeneration, true);
+    acceptOwnGraphChangeOfEdit(this);
     // A destroy deferred until the node's renders quit can finish after its app is gone.
     AppInstancePtr app = getApp();
     if (!app || app->getProject()->isProjectClosing()) {
@@ -1853,16 +2181,9 @@ InspectorNode::connectInput(const NodePtr& input,
         }
     }
 
-    ///If the node 'input' is already to an input of the inspector, find it.
-    ///If it has the same input number as what we want just return, otherwise
-    ///disconnect it and continue as usual.
-    int inputAlreadyConnected = inputIndex(input);
-    if (inputAlreadyConnected != -1) {
-        if (inputAlreadyConnected == inputNumber) {
-            return false;
-        } else {
-            disconnectInput(inputAlreadyConnected);
-        }
+    const std::vector<NodeWPtr>& currentInputs = getInputs();
+    if ((inputNumber < (int)currentInputs.size()) && (currentInputs[inputNumber].lock() == input)) {
+        return false;
     }
 
     if ( !Node::connectInput(input, inputNumber) ) {

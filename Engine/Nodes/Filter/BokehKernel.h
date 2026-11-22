@@ -32,6 +32,8 @@
 #include <limits>
 #include <vector>
 
+#include "Global/EdgeMode.h"
+
 NATRON_NAMESPACE_ENTER
 
 /**
@@ -243,8 +245,9 @@ private:
  * @brief The defocus gather over a plane of width x height floats, row by row. bokehPrefixRow()
  * fills a row's table, width + 1 sums from 0, a NaN or an infinity counting as 0; bokehGatherRow()
  * then writes dst[0 .. x2 - x1) for columns x1 .. x2 - 1 of row y from tables, the planes' row
- * tables one after another, and runs, a pixel outside the plane reading 0. acc holds x2 - x1
- * doubles of scratch.
+ * tables one after another, and runs. A pixel outside the plane reads 0 under EdgeMode::Black
+ * and the plane's nearest pixel under EdgeMode::Stretch, a run's part past either end of a row
+ * adding that end's pixel once per column. acc holds x2 - x1 doubles of scratch.
  **/
 void bokehPrefixRow(const float* src,
                     int width,
@@ -257,6 +260,7 @@ void bokehGatherRow(const double* tables,
                     int y,
                     int x1,
                     int x2,
+                    EdgeMode edgeMode,
                     double* acc,
                     float* dst);
 

@@ -30,7 +30,8 @@ struct GpuTextureDesc {
 };
 
 // An immutable, sampled float texture with its sampler (clamp to edge, no mipmaps, normalized
-// coordinates), in SHADER_READ_ONLY_OPTIMAL on the compute queue family. It must outlive the
+// coordinates), in SHADER_READ_ONLY_OPTIMAL on the compute queue family, or a colour attachment from
+// createAttachment(). It must outlive the
 // recorded work that samples it and be destroyed before its GpuDevice.
 class GpuTexture {
 public:
@@ -48,6 +49,13 @@ public:
     static GpuStatus create(GpuDevice& device, const GpuTextureDesc& desc, std::span<const float> texels,
                             std::unique_ptr<GpuTexture>& out);
 
+    // A 2D colour attachment of `channels` 1 (R32_SFLOAT) or 4 (R32G32B32A32_SFLOAT) that can also be
+    // cleared and copied from, with no sampler and in VK_IMAGE_LAYOUT_UNDEFINED, its texels undefined. Fails
+    // with VK_ERROR_FORMAT_NOT_SUPPORTED when the device cannot render to or blend the format at that extent;
+    // GpuDeviceInfo::rasterFloatBlend tells beforehand whether both formats are supported.
+    static GpuStatus createAttachment(GpuDevice& device, uint32_t width, uint32_t height, uint32_t channels,
+                                      std::unique_ptr<GpuTexture>& out);
+
     ~GpuTexture();
     GpuTexture(const GpuTexture&) = delete;
     GpuTexture& operator=(const GpuTexture&) = delete;
@@ -58,6 +66,9 @@ public:
     VkImageView view() const { return view_; }
     VkSampler sampler() const { return sampler_; }
     VkImageViewType viewType() const;
+    bool isAttachment() const { return attachment_; }
+    // Bytes of the tightly packed texels, as a copy into a buffer writes them.
+    VkDeviceSize packedBytes() const;
 
 private:
     GpuTexture(GpuDevice& device, const GpuTextureDesc& desc)
@@ -75,6 +86,7 @@ private:
     VmaAllocation allocation_ = nullptr;
     VkImageView view_ = VK_NULL_HANDLE;
     VkSampler sampler_ = VK_NULL_HANDLE;
+    bool attachment_ = false;
 };
 
 // Device textures kept under a caller's key, so that texels many dispatches sample unchanged, such

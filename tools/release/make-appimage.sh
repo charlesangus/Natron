@@ -103,8 +103,15 @@ BUNDLE_NAME="Natron-${VERSION}-x86_64"
 APPIMAGE="$OUTPUT_DIR/${BUNDLE_NAME}.AppImage"
 CHECKSUM="$APPIMAGE.sha256"
 
+# appimagetool's own AppStream check runs a strict appstream-util validate,
+# which demands a screenshot and fetches its URL; validate offline instead.
+if command -v appstream-util &>/dev/null; then
+    echo "==> Validating AppStream metadata"
+    appstream-util validate-relax --nonet "$APPDATA_FILE"
+fi
+
 echo "==> Running appimagetool"
-ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$APPIMAGETOOL" "$APPDIR" "$APPIMAGE"
+ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$APPIMAGETOOL" --no-appstream "$APPDIR" "$APPIMAGE"
 
 echo "==> Writing checksum $CHECKSUM"
 ( cd "$OUTPUT_DIR" && sha256sum "$(basename "$APPIMAGE")" > "$(basename "$CHECKSUM")" )

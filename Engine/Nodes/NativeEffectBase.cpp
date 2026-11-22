@@ -65,6 +65,15 @@ const unsigned long kCancelPollMilliseconds = 10;
 
 RenderCancellation::RenderCancellation(const EffectInstance* effect)
     : _effect(effect)
+    , _asked()
+    , _owner(std::this_thread::get_id())
+    , _cancelled(false)
+{
+}
+
+RenderCancellation::RenderCancellation(std::function<bool()> cancelled)
+    : _effect(nullptr)
+    , _asked(std::move(cancelled))
     , _owner(std::this_thread::get_id())
     , _cancelled(false)
 {
@@ -76,7 +85,7 @@ RenderCancellation::check()
     if (_cancelled.load(std::memory_order_relaxed)) {
         return true;
     }
-    if ((std::this_thread::get_id() == _owner) && _effect && _effect->aborted()) {
+    if ((std::this_thread::get_id() == _owner) && ((_effect && _effect->aborted()) || (_asked && _asked()))) {
         _cancelled.store(true, std::memory_order_relaxed);
 
         return true;

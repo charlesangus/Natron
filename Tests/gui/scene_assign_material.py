@@ -1,6 +1,6 @@
 """A shared material assigned by pattern stays bound when the asset is moved under a USDXformPrim.
 
-Graph: USDRead(asset.usda, a box bound to a grey material of its own) and a red USDMaterial into a
+Graph: USDRead(asset.usda, a box bound to a grey material of its own) and a red USDPreviewSurface into a
 USDAssignMaterial (Prim Pattern /Asset, the material on its Material input, Stronger Than
 Descendants) into Viewer1. A probe USDWrite flattens the scene for pxr to check: the material
 lands at /materials/Red and the box is bound to it. Then a USDXformPrim /T1 is inserted between
@@ -74,7 +74,7 @@ try:
 
     read = make("USDRead", 0, 0)
     read.getParam("filename").setValue(asset_path)
-    red = make("USDMaterial", 250, 0)
+    red = make("USDPreviewSurface", 250, 0)
     red.getParam("primPath").setValue("/Red")
     red.getParam("diffuseColor").set(0.8, 0.1, 0.1, 1.0)
     assign = make("USDAssignMaterial", 0, 120)
@@ -85,7 +85,7 @@ try:
         check(assign.getParam(name) is not None, "USDAssignMaterial has a %s knob" % name)
     check(material_path.getIsEnabled(), "Material Path is enabled with no Material input")
     require(assign.connectInput(0, read), "connect the USDRead to the assign's Scene input")
-    require(assign.connectInput(1, red), "connect the USDMaterial to the assign's Material input")
+    require(assign.connectInput(1, red), "connect the USDPreviewSurface to the assign's Material input")
     check(not material_path.getIsEnabled(), "Material Path is greyed while the Material input is connected")
     moved = make("USDXformPrim", 0, 240)
     moved.getParam("primPath").setValue("/T1")

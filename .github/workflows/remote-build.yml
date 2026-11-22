@@ -67,6 +67,11 @@ on:
         required: false
         type: string
         default: ''
+      remote_ccache:
+        description: 'Use the shared remote ccache storage (the CCACHE_REMOTE_STORAGE secret) beside the actions/cache ccache'
+        required: false
+        type: boolean
+        default: true
       gui_scripts:
         description: 'Space-separated Tests/gui/*.py scripts to run under Xvfb against the AppImage, one job each'
         required: false
@@ -111,6 +116,8 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ${{ needs.dev-image.outputs.image }}
+      # The live texture tests export through /dev/shm, which Docker sizes at 64m.
+      options: --shm-size=2g
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -120,6 +127,10 @@ jobs:
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: ${{ (inputs.preset || 'fast') == 'fast' && '2G' || '3G' }}
+      # An empty secret (fork PRs) or an empty value here leaves ccache local-only; push runs have no inputs.
+      CCACHE_REMOTE_STORAGE: ${{ (inputs.remote_ccache || github.event_name == 'push') && secrets.CCACHE_REMOTE_STORAGE || '' }}
+      # Compiler mtimes differ between hosts; hash content so keys match.
+      CCACHE_COMPILERCHECK: content
       # One compile per vCPU of the hosted runner; build.sh's default of 3 suits the dev machine.
       NATRON_BUILD_JOBS: 4
       # Debug links are large enough that several at once, beside the compiles, exhaust the runner's memory.
@@ -166,6 +177,12 @@ jobs:
             ccache-linux-${{ env.PRESET }}-${{ github.head_ref || github.ref_name }}-
             ccache-linux-${{ env.PRESET }}-main-
             ${{ env.PRESET == 'debug' && 'ccache-linux-main-' || '' }}
+
+      - name: Reset ccache statistics
+        run: ccache -z
+
+      - name: Normalise remote ccache layout
+        run: tools/ci/ccache-remote-setup.sh
 
       - name: Cache test assets
         uses: actions/cache@v6.1.0
@@ -219,7 +236,9 @@ jobs:
           set -o pipefail
           mkdir -p "$NATRON_GOLDEN_RECORD_DIR"
           rc=0
-          xvfb-run --auto-servernum ctest -R '^(NativeGoldenTest|NativeIDistortAmountTest|NativeIWarpTest|USDRenderCyclesTest|BezierGuiCopyEquivalenceTest)$' --timeout 300 --output-on-failure || rc=$?
+          xvfb-run --auto-servernum ctest -R '^(NativeGoldenTest|NativeIDistortAmountTest|NativeIWarpTest|USDRenderCyclesTest|BezierGuiCopyEquivalenceTest|USDRenderCyclesLiveTextureTest|USDRenderMoonRayLiveTextureTest|USDRenderCyclesProjectionTest|USDRenderMoonRayProjectionTest)$' --timeout 300 --output-on-failure || rc=$?
+          # Storm skips and passes when no GL context can be made; REQUIRE_GL turns that into a failure.
+          NATRON_TEST_REQUIRE_GL=1 xvfb-run --auto-servernum ctest -R '^USDRenderStormTest$' --timeout 600 --output-on-failure || rc=$?
           # The node suites' own Golden cases go through the same recorder. ctest entries are whole
           # suites, so the cases are picked by filter, with a process per suite as under ctest.
           suites=$(cd Tests && ./Tests --gtest_list_tests --gtest_filter='*.Golden*' | sed -n 's/^\([A-Za-z0-9_]*\)\.\( .*\)\{0,1\}$/\1/p') || rc=1
@@ -228,6 +247,13 @@ jobs:
             (cd Tests && xvfb-run --auto-servernum timeout 300 ./Tests --gtest_filter="$suite.Golden*") || rc=$?
           done
           test -f "$NATRON_GOLDEN_RECORD_DIR/STAMP" || rc=1
+          # Parity references ride in the golden artifact, where they cannot overwrite the committed ones.
+          # The binary directly, as a suite's ctest entry passes its own --gtest_filter, which outranks
+          # GTEST_FILTER. A node takes part by naming its cases Regression*.
+          export NATRON_PARITY_RECORD_DIR="$NATRON_GOLDEN_RECORD_DIR/native-parity"
+          (cd Tests && xvfb-run --auto-servernum timeout 300 ./Tests --gtest_filter='Native*Test.Regression*') || rc=$?
+          # A filter that selects nothing exits 0.
+          test -n "$(find "$NATRON_PARITY_RECORD_DIR" -name '*.f32' -print -quit)" || rc=1
           exit "$rc"
 
       # Straight after recording, so that a later leg that fails, times out or is cancelled cannot
@@ -391,6 +417,8 @@ jobs:
         scheduler: ${{ fromJSON(needs.ctest-legs.outputs.schedulers) }}
     container:
       image: ${{ needs.dev-image.outputs.image }}
+      # The live texture tests export through /dev/shm, which Docker sizes at 64m.
+      options: --shm-size=2g
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -735,6 +763,8 @@ jobs:
         include: ${{ fromJSON(needs.gui-matrix.outputs.matrix) }}
     container:
       image: ${{ needs.gui-matrix.outputs.image }}
+      # The live texture tests export through /dev/shm, which Docker sizes at 64m.
+      options: --shm-size=2g
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}

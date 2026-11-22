@@ -479,7 +479,7 @@ BezierCP::getLeftBezierPointAtTime(bool useGuiCurves,
 
     // If the CP does not have broken tangents, realign the Bezier points.
     // Fixes https://github.com/NatronGitHub/Natron/issues/202
-    if (reAlign && !_imp->broken) {
+    if (reAlign && !getBroken(useGuiCurves)) {
         double px, py, qx, qy;
         getPositionAtTime(useGuiCurves, time, view, &px, &py);
         getRightBezierPointAtTime(useGuiCurves, time, view, &qx, &qy, false);
@@ -531,7 +531,7 @@ BezierCP::getRightBezierPointAtTime(bool useGuiCurves,
 
     // If the CP does not have broken tangents, realign the Bezier points.
     // Fixes https://github.com/NatronGitHub/Natron/issues/202
-    if (reAlign && !_imp->broken) {
+    if (reAlign && !getBroken(useGuiCurves)) {
         double px, py, qx, qy;
         getPositionAtTime(useGuiCurves, time, view, &px, &py);
         getLeftBezierPointAtTime(useGuiCurves, time, view, &qx, &qy, false);
@@ -586,15 +586,19 @@ BezierCP::setRightBezierPointAtTime(bool useGuiCurves,
 }
 
 void
-BezierCP::setBroken(bool broken)
+BezierCP::setBroken(bool useGuiCurves,
+                    bool broken)
 {
-    _imp->broken = broken;
+    _imp->guiBroken = broken;
+    if (!useGuiCurves) {
+        _imp->broken = broken;
+    }
 }
 
 bool
-BezierCP::getBroken() const
+BezierCP::getBroken(bool useGuiCurves) const
 {
-    return _imp->broken;
+    return useGuiCurves ? _imp->guiBroken.load() : _imp->broken.load();
 }
 
 void
@@ -845,9 +849,9 @@ BezierCP::isNearbyTangent(bool useGuiCurves,
     getLeftBezierPointAtTime(useGuiCurves, time, view, &left.x, &left.y);
     getRightBezierPointAtTime(useGuiCurves, time, view, &right.x, &right.y);
 
-    p = Transform::matApply(transform, p);
-    left = Transform::matApply(transform, left);
-    right = Transform::matApply(transform, right);
+    p = Transform::matApplyProjected(transform, p);
+    left = Transform::matApplyProjected(transform, left);
+    right = Transform::matApplyProjected(transform, right);
 
     if ( (p.x != left.x) || (p.y != left.y) ) {
         if ( ( left.x >= (x - acceptance) ) && ( left.x <= (x + acceptance) ) && ( left.y >= (y - acceptance) ) && ( left.y <= (y + acceptance) ) ) {
@@ -928,7 +932,7 @@ smoothTangents(bool useGuiCurves,
         Transform::Point3D q;
         q.z = 1.;
         (*n)->getPositionAtTime(useGuiCurves, time, view, &q.x, &q.y);
-        q = Transform::matApply(transform, q);
+        q = Transform::matApplyProjected(transform, q);
         *nx = q.x;
         *ny = q.y;
     };
@@ -1012,7 +1016,7 @@ BezierCP::cuspPoint(bool useGuiCurves,
 
     bool keyframeSet = false;
 
-    setBroken(true);
+    setBroken(useGuiCurves, true);
     if (autoKeying || isOnKeyframe) {
         setLeftBezierPointAtTime(useGuiCurves, time, newLeftX, newLeftY);
         setRightBezierPointAtTime(useGuiCurves, time, newRightX, newRightY);
@@ -1057,9 +1061,9 @@ BezierCP::smoothPoint(bool useGuiCurves,
     getLeftBezierPointAtTime(useGuiCurves, time, view, &left.x, &left.y);
     bool isOnKeyframe = getRightBezierPointAtTime(useGuiCurves, time, view, &right.x, &right.y);
 
-    pos = Transform::matApply(transform, pos);
-    left = Transform::matApply(transform, left);
-    right = Transform::matApply(transform, right);
+    pos = Transform::matApplyProjected(transform, pos);
+    left = Transform::matApplyProjected(transform, left);
+    right = Transform::matApplyProjected(transform, right);
 
     smoothTangents(useGuiCurves, time, view, this, transform, pos.x, pos.y, &left.x, &left.y, &right.x, &right.y, pixelScale);
 
@@ -1067,10 +1071,10 @@ BezierCP::smoothPoint(bool useGuiCurves,
 
     // The handles were placed in the transformed space the user sees; the curves store them untransformed.
     const Transform::Matrix3x3 inverse = Transform::matInverse(transform);
-    left = Transform::matApply(inverse, left);
-    right = Transform::matApply(inverse, right);
+    left = Transform::matApplyProjected(inverse, left);
+    right = Transform::matApplyProjected(inverse, right);
 
-    setBroken(false);
+    setBroken(useGuiCurves, false);
     if (autoKeying || isOnKeyframe) {
         setLeftBezierPointAtTime(useGuiCurves, time, left.x, left.y);
         setRightBezierPointAtTime(useGuiCurves, time, right.x, right.y);
@@ -1164,6 +1168,7 @@ BezierCP::clone(const BezierCP & other)
         _imp->guiRightX = other._imp->rightX;
         _imp->guiRightY = other._imp->rightY;
         _imp->broken = other._imp->broken.load();
+        _imp->guiBroken = other._imp->broken.load();
 
         _imp->trackLink = other._imp->trackLink;
         _imp->guiTrackLink = other._imp->trackLink;
@@ -1450,6 +1455,7 @@ BezierCP::cloneInternalCurvesToGuiCurves()
     _imp->guiLeftY = _imp->leftY;
     _imp->guiRightX = _imp->rightX;
     _imp->guiRightY = _imp->rightY;
+    _imp->guiBroken = _imp->broken.load();
     _imp->guiTrackLink = _imp->trackLink;
     _imp->guiTrackOffsets = _imp->trackOffsets;
 }
@@ -1473,6 +1479,7 @@ BezierCP::cloneGuiCurvesToInternalCurves()
     _imp->leftY = _imp->guiLeftY;
     _imp->rightX = _imp->guiRightX;
     _imp->rightY = _imp->guiRightY;
+    _imp->broken = _imp->guiBroken.load();
     _imp->trackLink = _imp->guiTrackLink;
     _imp->trackOffsets = _imp->guiTrackOffsets;
 }
@@ -1510,7 +1517,7 @@ BezierCP::cloneGuiState(const BezierCP& other,
         guiLeftY = other._imp->guiLeftY;
         guiRightX = other._imp->guiRightX;
         guiRightY = other._imp->guiRightY;
-        broken = other._imp->broken;
+        broken = other._imp->guiBroken;
     }
 
     QMutexLocker k(&_imp->staticPositionMutex);
@@ -1523,6 +1530,7 @@ BezierCP::cloneGuiState(const BezierCP& other,
         _imp->rightY = guiRightY;
         _imp->trackLink = trackLink;
         _imp->trackOffsets = guiTrackOffsets;
+        _imp->broken = broken;
     }
     _imp->guiX = guiX;
     _imp->guiY = guiY;
@@ -1530,7 +1538,7 @@ BezierCP::cloneGuiState(const BezierCP& other,
     _imp->guiLeftY = guiLeftY;
     _imp->guiRightX = guiRightX;
     _imp->guiRightY = guiRightY;
-    _imp->broken = broken;
+    _imp->guiBroken = broken;
     _imp->guiTrackLink = trackLink;
     _imp->guiTrackOffsets = guiTrackOffsets;
 }
@@ -1552,6 +1560,7 @@ BezierCP::cloneInternalCurvesToGuiCurvesAtTime(double time)
     _imp->guiLeftY = _imp->leftY;
     _imp->guiRightX = _imp->rightX;
     _imp->guiRightY = _imp->rightY;
+    _imp->guiBroken = _imp->broken.load();
     _imp->guiTrackLink = _imp->trackLink;
     _imp->guiTrackOffsets = _imp->trackOffsets;
 }
@@ -1573,6 +1582,7 @@ BezierCP::cloneGuiCurvesToInternalCurvesAtTime(double time)
     _imp->leftY = _imp->guiLeftY;
     _imp->rightX = _imp->guiRightX;
     _imp->rightY = _imp->guiRightY;
+    _imp->broken = _imp->guiBroken.load();
     _imp->trackLink = _imp->guiTrackLink;
     _imp->trackOffsets = _imp->guiTrackOffsets;
 }

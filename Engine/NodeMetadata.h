@@ -31,9 +31,21 @@
 #include <memory>
 
 #include "Engine/ImageLayerDesc.h"
+#include "Global/EdgeMode.h"
 #include "Global/GlobalDefines.h"
 
 NATRON_NAMESPACE_ENTER
+
+/**
+ * @brief The kind of components a clip carries: the colour plane at its channel count, or the
+ * paired motion vector or disparity layers.
+ **/
+enum ImageComponentsTypeEnum {
+    eImageComponentsTypeNone = 0,
+    eImageComponentsTypeColor,
+    eImageComponentsTypeMotion,
+    eImageComponentsTypeDisparity
+};
 
 /**
  * @brief These meta-data are represents what's flowing through a node. They change
@@ -76,6 +88,10 @@ public:
 
     bool getIsFrameVarying() const;
 
+    void setEdgeMode(EdgeMode mode);
+
+    EdgeMode getEdgeMode() const;
+
     void setPixelAspectRatio(int inputNb, double par);
 
     double getPixelAspectRatio(int inputNb) const;
@@ -97,9 +113,9 @@ public:
 
     int getOutputStorageNComps() const;
 
-    void setComponentsType(int inputNb,const std::string& componentsType);
+    void setComponentsType(int inputNb, ImageComponentsTypeEnum componentsType);
 
-    std::string getComponentsType(int inputNb) const;
+    ImageComponentsTypeEnum getComponentsType(int inputNb) const;
 
     void setOutputFormat(const RectI& format);
 

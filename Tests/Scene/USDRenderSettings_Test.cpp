@@ -90,6 +90,7 @@
 PXR_NAMESPACE_USING_DIRECTIVE
 
 NATRON_NAMESPACE_USING
+NATRON_PYTHON_NAMESPACE_USING
 
 namespace {
 template <typename KNOB>
@@ -1091,7 +1092,7 @@ TEST_F(USDRenderSettingsTest, PythonAuthorsCustomAovs)
                                                                  "param.appendRow(['C<RD>L', 'lpe', '', 'diffuseLpe'])\n"
                                                                  "assert param.getTable() == [['st', 'primvar', 'texCoord2f', ''], ['C<RD>L', 'lpe', '', 'diffuseLpe']], param.getTable()\n";
     std::string error, output;
-    ASSERT_TRUE(NATRON_PYTHON_NAMESPACE::interpretPythonScript(script, &error, &output)) << error;
+    ASSERT_TRUE(interpretPythonScript(script, &error, &output)) << error;
 
     std::list<std::vector<std::string>> rows;
     custom->getTable(&rows);
@@ -1110,7 +1111,7 @@ TEST_F(USDRenderSettingsTest, PythonAuthorsCustomAovs)
     EXPECT_EQ(std::string("lpe"), lpe->sourceType);
 
     const std::string shortRow = "import NatronEngine\n" + param + "param.appendRow(['st', 'primvar'])\n";
-    EXPECT_FALSE(NATRON_PYTHON_NAMESPACE::interpretPythonScript(shortRow, &error, &output));
+    EXPECT_FALSE(interpretPythonScript(shortRow, &error, &output));
     EXPECT_NE(std::string::npos, error.find("ValueError")) << error;
     rows.clear();
     custom->getTable(&rows);

@@ -301,6 +301,13 @@ std::size_t getCpuEngineCount();
 std::uint64_t getEngineBuildCount();
 
 /**
+ * @brief Whether Storm renders write the ids of translucent prims into their primId plane, as
+ * they do unless turned off; for tests, to compare against Storm's own ids. Read when a render's
+ * ids are first decoded.
+ **/
+void setStormTranslucentIds(bool enabled);
+
+/**
  * @brief The thread count every Cycles session is made under, 0 for any: Cycles' task scheduler is
  * process-wide, and the first live session fixes it for all. It is the count asked for last, by a
  * USDRender render whose Request::threads changed or by a ProgressiveRender whose setThreads()

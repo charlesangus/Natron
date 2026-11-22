@@ -1398,6 +1398,93 @@ TEST_F(ProgressiveRenderTest, AReaderWaitingForAWriterTakesTheGilBackOutsideTheB
     EXPECT_TRUE(wrote) << writeError;
 }
 
+// A thread that holds the GIL and registers or unregisters a participant while a writer is inside
+// runExclusive releases the GIL while it waits for the writer lock, because the writer takes the
+// GIL back while it holds that lock. A hang ends the process.
+TEST_F(ProgressiveRenderTest, RegisteringAParticipantDuringAWriteReleasesTheGilWhileWaiting)
+{
+    ASSERT_TRUE(Py_IsInitialized() != 0);
+    _watchdog.setPhase("gil writer lock order");
+
+    std::mutex m;
+    std::condition_variable changed;
+    bool readerIn = false;
+    bool releaseReader = false;
+    bool writerHasGil = false;
+    bool writerDone = false;
+    bool registrantHasGil = false;
+    int finished = 0;
+    bool wrote = false;
+    std::string writeError;
+
+    auto setFlag = [&](bool& flag) {
+        {
+            std::lock_guard<std::mutex> l(m);
+            flag = true;
+        }
+        changed.notify_all();
+    };
+    auto finish = [&]() {
+        {
+            std::lock_guard<std::mutex> l(m);
+            ++finished;
+        }
+        changed.notify_all();
+    };
+    const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    auto waitFor = [&](const char* what, const std::function<bool()>& done) {
+        std::unique_lock<std::mutex> l(m);
+        if (!changed.wait_until(l, deadline, done)) {
+            ADD_FAILURE() << "the threads deadlocked waiting for " << what;
+            std::fprintf(stderr, "[  FAILED  ] the GIL and the writer lock deadlocked waiting for %s\n", what);
+            std::fflush(stdout);
+            std::fflush(stderr);
+            std::_Exit(1);
+        }
+    };
+
+    // Keeps the writer waiting for readers, with the writer lock held and the GIL released.
+    std::thread reader([&]() {
+        {
+            SceneWriteBarrier::ReadScope read;
+            setFlag(readerIn);
+            std::unique_lock<std::mutex> l(m);
+            changed.wait(l, [&]() { return releaseReader; });
+        }
+        finish();
+    });
+    waitFor("the reader to enter", [&]() { return readerIn; });
+
+    std::thread writer([&]() {
+        const PyGILState_STATE gil = PyGILState_Ensure();
+        setFlag(writerHasGil);
+        wrote = SceneWriteBarrier::runExclusive([]() { }, &writeError);
+        PyGILState_Release(gil);
+        setFlag(writerDone);
+        finish();
+    });
+    waitFor("the writer to take the GIL", [&]() { return writerHasGil; });
+
+    std::thread registrant([&]() {
+        const PyGILState_STATE gil = PyGILState_Ensure();
+        setFlag(registrantHasGil);
+        const SceneWriteBarrier::ParticipantId id = SceneWriteBarrier::registerParticipant([]() { }, []() { });
+        SceneWriteBarrier::unregisterParticipant(id);
+        PyGILState_Release(gil);
+        finish();
+    });
+    waitFor("the registrant to take the GIL", [&]() { return registrantHasGil; });
+
+    // Lets the writer reach its wait for the reader and the registrant reach the writer lock.
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    setFlag(releaseReader);
+    waitFor("the reader, writer and registrant to end", [&]() { return finished == 3; });
+    reader.join();
+    writer.join();
+    registrant.join();
+    EXPECT_TRUE(wrote) << writeError;
+}
+
 // A drag preview set on the caller's stage reaches the worker's stage with the snapshot, and
 // clearing it brings the prim back.
 TEST_F(ProgressiveRenderTest, ThePreviewTransformsReachTheRender)

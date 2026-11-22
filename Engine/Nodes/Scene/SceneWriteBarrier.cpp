@@ -404,6 +404,9 @@ SceneWriteBarrier::registerParticipant(const std::function<void()>& quiesce,
             park(parked);
         }
     }
+    // Declared before the lock so the GIL is re-taken only after writerMutex is released:
+    // runExclusive() takes the GIL back while it holds writerMutex.
+    PythonUnlockedWhileWaiting unlocked;
     std::lock_guard<std::mutex> lock(s.writerMutex);
     s.participants[id] = BarrierState::Participant { quiesce, resume, order };
 
@@ -415,6 +418,8 @@ SceneWriteBarrier::unregisterParticipant(ParticipantId id)
 {
     BarrierState& s = state();
     {
+        // Declared before the lock so the GIL is re-taken only after writerMutex is released.
+        PythonUnlockedWhileWaiting unlocked;
         std::lock_guard<std::mutex> lock(s.writerMutex);
         s.participants.erase(id);
     }
@@ -452,6 +457,9 @@ SceneWriteBarrier::runExclusive(const std::function<void()>& write,
     } parkHold;
     waitAllParked();
 
+    // The GIL is taken back below while writerLock is held. That is safe because every other taker
+    // of writerMutex (registerParticipant, unregisterParticipant) releases the GIL before locking
+    // it, so none waits for writerMutex while holding the GIL this thread needs.
     std::unique_lock<std::mutex> writerLock(s.writerMutex, std::defer_lock);
     {
         PythonUnlockedWhileWaiting unlocked;

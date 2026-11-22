@@ -1,0 +1,3 @@
+# USD nodes get a top-level toolbar category with functional submenus
+
+USD nodes move from the 3D/USD submenu to a top-level USD toolbar category, split into submenus by function: Prims, Lights, Cameras, Materials, Composition, Edit, Render and I/O (user request, 2026-11-22; landed by M520 - USD Toolbar Category And Submenus). `PLUGIN_GROUP_3D_USD` is removed rather than aliased so that a USD node written on another branch fails to compile until it picks a `PLUGIN_GROUP_USD_*` submenu, instead of silently landing at the top level. Native geometry nodes get their own top-level Geometry category the same way (M522 - Geometry Toolbar Category, in F15 - Native Geometry).

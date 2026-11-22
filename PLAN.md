@@ -74,6 +74,8 @@ future core work has solid ground to build on.
 
 - **GUI bench rule.** Every milestone whose diff touches `Gui/NodeGraph*`, `Gui/NodeGui*`, `Gui/Edge*`, knob expressions (`Engine/Knob*`) or node naming (`Engine/NodeGroup*`) runs the GUI bench at its gate: `tools/bench/gui/run.sh --xvfb`, then `compare.py` against `tools/bench/gui/baselines/xvfb.jsonl`. It records the result in its `## Decisions`. A regression blocks the gate unless the user accepts it. Xvfb numbers only catch regressions. Budgets are judged on the user's real host. The bench lands with M117 - GUI Perf Harness And Baseline, and the rule applies from then on. See `DECISIONS/2026-10-13-gui-bench-gate-rule.md`.
 
+- **USD nodes pick a toolbar submenu (2026-11-22):** from M520 - USD Toolbar Category And Submenus on, `PLUGIN_GROUP_3D_USD` is gone; a new USD node registers one of the `PLUGIN_GROUP_USD_*` submenus (Prims, Lights, Cameras, Materials, Composition, Edit, Render, I/O), adding a submenu only when none fits. See `DECISIONS/2026-11-22-usd-toolbar-submenus.md`.
+
 - **History:** the sequencing notes, shipped-milestone summaries and backlog-reordering log that used to sit here moved verbatim to `PLAN/ARCHIVE/board-context-history.md` (off the startup path).
 
 # Board
@@ -587,6 +589,13 @@ future core work has solid ground to build on.
 | M515 | Storm Oversample And Motion Blur | todo | - |  | E9 |  | | [M515-storm-oversample-and-motion-blur.md](PLAN/MILESTONES/M515-storm-oversample-and-motion-blur.md) |
 | M516 | Port Groups And Folding | todo | M351 |  | E9 | F2 | | [M516-port-groups-and-folding.md](PLAN/MILESTONES/M516-port-groups-and-folding.md) |
 | M517 | Storm Translucent Prim Ids | todo | - |  | E9 |  | | [M517-storm-translucent-prim-ids.md](PLAN/MILESTONES/M517-storm-translucent-prim-ids.md) |
+| M518 | Save Prompt Key Shortcuts | todo | - |  | E10 | F36 | | [M518-save-prompt-key-shortcuts.md](PLAN/MILESTONES/M518-save-prompt-key-shortcuts.md) |
+| M519 | Raw And Loop Toolbar Icons | todo | - |  | E10 | F36 | | [M519-raw-and-loop-toolbar-icons.md](PLAN/MILESTONES/M519-raw-and-loop-toolbar-icons.md) |
+| M520 | USD Toolbar Category And Submenus | todo | - |  | E10 | F36 | | [M520-usd-toolbar-category-and-submenus.md](PLAN/MILESTONES/M520-usd-toolbar-category-and-submenus.md) |
+| M521 | Easier Pipe Grabbing | todo | - |  | E10 | F36 | | [M521-easier-pipe-grabbing.md](PLAN/MILESTONES/M521-easier-pipe-grabbing.md) |
+| M522 | Geometry Toolbar Category | todo | - |  | E10 | F15 | | [M522-geometry-toolbar-category.md](PLAN/MILESTONES/M522-geometry-toolbar-category.md) |
+| M523 | USDSetAttribute Type From Stage | todo | - |  | E9 |  | | [M523-usdsetattribute-type-from-stage.md](PLAN/MILESTONES/M523-usdsetattribute-type-from-stage.md) |
+| M524 | Vertical Node Style | todo | M351, M522 |  | E10 |  | | [M524-vertical-node-style.md](PLAN/MILESTONES/M524-vertical-node-style.md) |
 | M540 | Sparse Tile Field Core | todo | M417 |  | E22 | F35 | | [M540-sparse-tile-field-core.md](PLAN/MILESTONES/M540-sparse-tile-field-core.md) |
 | M541 | Pyro Advection And Pressure | todo | M540 |  | E22 | F35 | | [M541-pyro-advection-and-pressure.md](PLAN/MILESTONES/M541-pyro-advection-and-pressure.md) |
 | M542 | PyroSolver Node And Sourcing | todo | M541, M404 |  | E22 | F35 | | [M542-pyrosolver-node-and-sourcing.md](PLAN/MILESTONES/M542-pyrosolver-node-and-sourcing.md) |
@@ -666,6 +675,7 @@ future core work has solid ground to build on.
 | F32 | Channel Networks | open |  |  | feature/f32-channel-networks | CHOP-style channel networks that drive knobs and shapes, with operators, Channel VOP, every source and channel-based animation layers. |
 | F33 | Graph Diff And Merge | open | bosley-executor |  | feature/f33-graph-diff-and-merge | Diff and merge two versions of a graph, with a resolution UI, accepted in one UAT. |
 | F34 | Scene Lens Distortion | open |  |  | feature/f34-scene-lens-distortion | Camera lens distortion carried in the USD scene, authored on cameras and used by LensDistortion and the projection nodes. |
+| F36 | UI Polish Batch II | open |  |  | feature/f36-ui-polish-batch-ii | Ship four small UI fixes — one-key answers in the save prompt, Raw and Loop toolbar icons, a USD toolbar category with functional submenus and easier-to-grab pipes — on one build and one merge. |
 | F35 | Pyro | open |  |  | feature/f35-pyro | A sparse-tile smoke and fire solver on native VDB volumes, with sourcing, shaping, collisions, look baking and quick setups, on GPU and CPU. Waits for F18 - Geometry Loops And Solver and F22 - Native VDB to land. |
 
 # Open questions

@@ -149,3 +149,4 @@
 - 2026-11-22 — delegate-subdivision-model: Cycles/MoonRay subdivide by scheme + dicing (Karma/Gaffer model) behind a default-off Subdivision Surfaces toggle; refineLevel ignored; Utility follows in M289 (user) → DECISIONS/2026-11-22-delegate-subdivision-model.md
 - 2026-11-22 — flaky-tests-filed: KeyMix GPU read → M495, MoonRay flakes → M496, SplineWarp GPU timeout closed (900 s on main) → DECISIONS/2026-11-22-flaky-tests-filed.md
 - 2026-11-22 — vdb-pyro-solver: sparse 8³-tile pyro solver (GPU+CPU), VDB at the boundaries, one PyroSolver node with full control set, shipped as F35 - Pyro (user) → DECISIONS/2026-11-22-vdb-pyro-solver.md
+- 2026-11-22 — usd-toolbar-submenus: USD nodes get a top-level USD category with functional submenus; PLUGIN_GROUP_3D_USD removed → DECISIONS/2026-11-22-usd-toolbar-submenus.md

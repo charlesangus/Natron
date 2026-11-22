@@ -33,6 +33,7 @@
 #include <cstring>
 #include <limits>
 #include <mutex>
+#include <regex>
 #include <set>
 #include <thread>
 
@@ -381,6 +382,15 @@ namespace {
     }
 
     // MoonRay's own words from the rest of a notice: "/World/Cube.material: no shader" gives "no shader".
+    // hdMoonray cannot translate Natron's own frame-hold primvars and does not need them, so its notice about them is noise.
+    bool
+    isBenignNotice(const std::string& rest)
+    {
+        static const std::regex benign("\\.primvars:natronProjectionFrameHold[0-9]+(Column[0-2])?:[ \t]*[^ \t]+ not translated[ \t\r\n]*");
+
+        return std::regex_match(rest, benign);
+    }
+
     std::string
     messageOf(const std::string& rest)
     {
@@ -647,6 +657,9 @@ warningText(const UsdStageRefPtr& stage,
             SdfPath path;
             std::string rest;
             if (!leadingPath(notice.text, &path, &rest)) {
+                continue;
+            }
+            if (isBenignNotice(rest)) {
                 continue;
             }
             const UsdPrim prim = nearestPrim(stage, path);

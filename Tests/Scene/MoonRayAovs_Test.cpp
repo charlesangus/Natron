@@ -208,6 +208,25 @@ TEST(MoonRayAovs, KeepsMoonRaysTextForEachPrimOnce)
     EXPECT_EQ(std::string("MoonRay could not render these prims as authored: /World/Ground (unknown Rprim type foo), /World/Ground (another problem)"), warning);
 }
 
+TEST(MoonRayAovs, DropsOnlyTheFrameHoldPrimvarNoticesThatAreNotTranslated)
+{
+    const PXR_NS::UsdStageRefPtr stage = lightStage();
+    std::vector<MoonRayAovs::Notice> benign;
+    benign.push_back(notice(MoonRayAovs::Notice::eLevelWarning, "/World/Ground.primvars:natronProjectionFrameHold1: GfMatrix4d not translated"));
+    benign.push_back(notice(MoonRayAovs::Notice::eLevelWarning, "/World/Ground.primvars:natronProjectionFrameHold12Column0: VtArray<GfVec4f> not translated"));
+    benign.push_back(notice(MoonRayAovs::Notice::eLevelWarning, "/World/Ground.primvars:natronProjectionFrameHold1Column2: VtArray<GfVec4f> not translated"));
+    EXPECT_TRUE(MoonRayAovs::warningText(stage, std::vector<MoonRayAovs::Light>(), benign).empty());
+
+    std::vector<MoonRayAovs::Notice> kept;
+    kept.push_back(notice(MoonRayAovs::Notice::eLevelWarning, "/World/Ground.primvars:natronProjectionFrameHoldX: GfMatrix4d not translated"));
+    kept.push_back(notice(MoonRayAovs::Notice::eLevelWarning, "/World/Ground.primvars:natronProjectionFrameHold1Column3: VtArray<GfVec4f> not translated"));
+    kept.push_back(notice(MoonRayAovs::Notice::eLevelWarning, "/World/Ground.primvars:foo: GfMatrix4d not translated"));
+    const std::string warning = MoonRayAovs::warningText(stage, std::vector<MoonRayAovs::Light>(), kept);
+    EXPECT_NE(std::string::npos, warning.find("natronProjectionFrameHoldX")) << warning;
+    EXPECT_NE(std::string::npos, warning.find("natronProjectionFrameHold1Column3")) << warning;
+    EXPECT_NE(std::string::npos, warning.find("primvars:foo")) << warning;
+}
+
 TEST(MoonRayAovs, NamesTheTextureFilesNotThePrimsTheyShade)
 {
     const PXR_NS::UsdStageRefPtr stage = lightStage();

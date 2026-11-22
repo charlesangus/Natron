@@ -1950,16 +1950,8 @@ TEST_F(USDRenderMoonRayProjectionTest, AHeldProjectionOnTwoCardsRendersThePlateO
     connectNodes(graph.projector, assign, kUSDAssignMaterialInputMaterial, true);
     connectNodes(assign, graph.merge, 0, true);
 
-    std::vector<MoonRayAovs::Notice> notices;
     RenderedPlane rgba;
-    {
-        MoonRayAovs::LogCapture log;
-        ASSERT_TRUE(renderProjection(graph.render, 1., &rgba));
-        notices = log.notices();
-    }
-    for (const MoonRayAovs::Notice& notice : notices) {
-        std::fprintf(stderr, "M510 notice level %d: %s\n", (int)notice.level, notice.text.c_str());
-    }
-    std::fprintf(stderr, "M510 render warning: %s\n", messageOf(graph.render).c_str());
+    ASSERT_TRUE(renderProjection(graph.render, 1., &rgba));
+    EXPECT_FALSE(graph.render->hasPersistentMessage()) << messageOf(graph.render);
     EXPECT_PROJECTS(checkProjection(rgba, kProjectionPlaneWidth, 0.));
 }

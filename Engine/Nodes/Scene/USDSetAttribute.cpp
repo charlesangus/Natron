@@ -33,6 +33,7 @@
 #include <QStringList>
 #include <QtConcurrentRun> // QtCore on Qt4, QtConcurrent on Qt5
 
+#include "Engine/AppInstance.h"
 #include "Engine/ChoiceOption.h"
 #include "Engine/ContentHasher.h"
 #include "Engine/KnobTypes.h"

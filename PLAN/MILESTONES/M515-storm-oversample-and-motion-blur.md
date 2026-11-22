@@ -8,7 +8,7 @@ USDRender's Storm path renders each frame once, through `HydraRender::render`/`w
 - `HydraRender::Request` gains a sub-sample list, and `renderEngine` renders and accumulates it on both the pack (GPU) and CPU readback paths.
 - USDRender gets the Samples (`samples`) and Motion Blur (`motionBlur`) knobs. It builds the schedule from the camera shutter and computes one frustum per sub-frame time. Docs go in `Engine/Nodes/Scene/docs/USDRender.md`.
 - Unit, Storm and node tests, plus an Xvfb GUI script with screenshots.
-- USDCamera Shutter Open (`shutterOpen`) and Shutter Close (`shutterClose`) knobs that author `shutter:open`/`shutter:close`, defaults -0.25 and 0.25, with an Edit Shutter (`editShutter`) override when the camera is read from a file.
+- USDCamera shutter controls: Shutter (open time) and Shutter Position (Centred / Start / End / Custom), defaults 0.5 frames Centred, authoring the standard `shutter:open`/`shutter:close`, which are also shown as Shutter Open/Close knobs and edited directly under Custom; an Edit Shutter (`editShutter`) override when the camera is read from a file.
 
 **Out:**
 - The Utility raster renderer's sub-frame accumulation: M514 - Utility Raster Mode.
@@ -37,7 +37,7 @@ USDRender's Storm path renders each frame once, through `HydraRender::render`/`w
 
 - 2026-11-22 — Storm through USDRender gains a sample count, each sample a sub-pixel jittered render, averaged (user, grilling): anti-aliasing for Storm frames.
 - 2026-11-22 — Motion blur accumulates sub-frames over the scene's shutter, the camera prim's `shutter:open`/`shutter:close`, gated by the settings prim's `disableMotionBlur` (user, grilling; planner chose the attributes, as Natron reads no shutter today).
-- 2026-11-22 — USDCamera gets Shutter Open and Shutter Close knobs, defaulting to -0.25 and 0.25 frames (user asked for the knobs; the defaults match common DCC camera defaults): the shutter needs a place to be set without a file or USDSetAttribute.
+- 2026-11-22 — USDCamera's shutter is set as an open time (Shutter, default 0.5 frames) and a Shutter Position (Centred / Start / End / Custom, default Centred); the standard `shutter:open`/`shutter:close` are authored behind it and shown as Shutter Open/Close knobs, editable under Custom (user): easier to set than raw open/close, while the standard attributes stay visible. Default −0.25 … 0.25 matches common DCC camera defaults. "Centred" follows the codebase's spelling.
 - 2026-11-22 — Both default off, at Samples 1 and Motion Blur off (user, grilling): interactive Storm speed is unchanged.
 - 2026-11-22 — With both on, time and AA share one count, and each sub-frame is jittered (user, grilling): N passes, not N×M.
 - 2026-11-22 — id and depth AOVs take one sample's value and are never averaged (planner): averaged ids name no prim.
@@ -83,12 +83,12 @@ USDRender's Storm path renders each frame once, through `HydraRender::render`/`w
   - size: M
 - [ ] M515.P3.T4 — USDCamera shutter knobs
   - files: `Engine/Nodes/Scene/USDCamera.h` (`kUSDCameraParam*`, :44), `Engine/Nodes/Scene/USDCamera.cpp`, `Engine/Nodes/Scene/docs/USDCamera.md`, `Tests/Scene/USDCamera_Test.cpp`
-  - approach: add "Shutter Open" (`shutterOpen`, double, default -0.25) and "Shutter Close" (`shutterClose`, double, default 0.25), animatable, in frames relative to the current frame, beside the lens knobs. Author them on the camera prim as `shutter:open`/`shutter:close` (animated knobs as time samples), the way the lens knobs author `focalLength`. With Read From File on, they author only when a new "Edit Shutter" (`editShutter`) toggle is on, mirroring `editLens`/`editClipping`; otherwise the file's shutter passes through. Tooltips say Storm motion blur (USDRender's Motion Blur) and the other delegates read this shutter. No other product names.
-  - verify: gtest: a USDCamera authors -0.25/0.25 by default; an animated Shutter Close authors time samples; with Read From File and Edit Shutter off the file's shutter passes through, and with it on the knobs win. `ctest -R USDCamera` passes at the phase build.
+  - approach: a Shutter group beside the lens knobs. "Shutter" (`shutter`, double, default 0.5, min 0) is how long the shutter is open, in frames. "Shutter Position" (`shutterPosition`, choice: Centred / Start / End / Custom, default Centred) places that interval against the frame: Centred is −shutter/2 … +shutter/2, Start is 0 … shutter, End is −shutter … 0. "Shutter Open" (`shutterOpen`) and "Shutter Close" (`shutterClose`), in frames relative to the current frame, are the values actually authored as `shutter:open`/`shutter:close`. Under Centred/Start/End they are disabled and show the computed values (set with no undo and no render trigger, refreshed when Shutter, Shutter Position or the time changes). Under Custom they are enabled and edited directly, and Shutter is disabled and shows close − open. Switching to Custom keeps the last computed values. All four can be animated; animated knobs author time samples, the way the lens knobs author `focalLength`. With Read From File on, the group authors only when a new "Edit Shutter" (`editShutter`) toggle is on, mirroring `editLens`/`editClipping`; otherwise the file's shutter passes through. Tooltips say USDRender's Motion Blur for Storm and the other delegates read this shutter. No other product names.
+  - verify: gtest: the defaults author −0.25/0.25; Start with Shutter 1 authors 0/1, End authors −1/0; Custom authors the Shutter Open/Close values as typed; an animated Shutter authors time samples; with Read From File and Edit Shutter off the file's shutter passes through, and with it on the knobs win. `ctest -R USDCamera` passes at the phase build.
   - size: M
 - [ ] M515.P3.T2 — Node docs
   - files: `Engine/Nodes/Scene/docs/USDRender.md` (Controls)
-  - approach: document Samples and Motion Blur: Storm only, off by default, one shared count, where the shutter comes from (the camera prim, set on USDCamera's Shutter Open/Close), the `disableMotionBlur` override, and that depth and primId come from one sample.
+  - approach: document Samples and Motion Blur: Storm only, off by default, one shared count, where the shutter comes from (the camera prim, set on USDCamera's Shutter and Shutter Position), the `disableMotionBlur` override, and that depth and primId come from one sample.
   - verify: the doc names both knobs with their script names, matching the P3.T1 tooltips
   - size: S
 - [ ] M515.P3.T3 — Node-level tests
@@ -101,7 +101,7 @@ USDRender's Storm path renders each frame once, through `HydraRender::render`/`w
 
 - [ ] M515.P4.T1 — Xvfb GUI script and screenshots
   - files: `Tests/gui/m515_storm_oversample.py` (new; neutral names)
-  - approach: at 1920x1080 under the Xvfb recipe, set up the P3.T3 scene in a viewer. Set the shutter through USDCamera's Shutter Open/Close knobs. Take screenshots of the USDRender panel, the USDCamera shutter knobs, of Samples 1 vs 16 (edge crop), and of Motion Blur on. While a Samples 64 render runs, change a knob and confirm the viewer repaints and the render restarts with the new value. Check behaviour only, with no timing lines.
+  - approach: at 1920x1080 under the Xvfb recipe, set up the P3.T3 scene in a viewer. Set the shutter through USDCamera's Shutter and Shutter Position knobs. Take screenshots of the USDRender panel, the USDCamera shutter knobs, of Samples 1 vs 16 (edge crop), and of Motion Blur on. While a Samples 64 render runs, change a knob and confirm the viewer repaints and the render restarts with the new value. Check behaviour only, with no timing lines.
   - verify: the script exits 0 under the Xvfb recipe; screenshots are shared with the user one file each and approved
   - size: M
 

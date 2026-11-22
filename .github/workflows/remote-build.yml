@@ -190,17 +190,23 @@ jobs:
             exit 0
           fi
           normalised="$(ccache_remote_with_bazel_layout "${CCACHE_REMOTE_STORAGE}")"
-          echo "::add-mask::${normalised}"
-          if [[ "${normalised}" == *$'\n'* ]]; then
+          if [[ -z "${normalised}" ]]; then
             echo "remote ccache: unsupported value, off"
+            echo "CCACHE_REMOTE_STORAGE=" >>"${GITHUB_ENV}"
+            exit 0
+          fi
+          echo "::add-mask::${normalised}"
+          host="$(ccache_remote_host "${normalised}")"
+          [[ -z "${host}" ]] || echo "::add-mask::${host}"
+          if ! CCACHE_REMOTE_STORAGE="${normalised}" ccache --print-config >/dev/null 2>&1; then
+            echo "remote ccache: config rejected, off"
             echo "CCACHE_REMOTE_STORAGE=" >>"${GITHUB_ENV}"
             exit 0
           fi
           echo "CCACHE_REMOTE_STORAGE=${normalised}" >>"${GITHUB_ENV}"
           case "${normalised}" in
             https://*) echo "remote ccache: https, layout set" ;;
-            http://*) echo "remote ccache: http, layout set" ;;
-            *) echo "remote ccache: on" ;;
+            *) echo "remote ccache: http, layout set" ;;
           esac
 
       - name: Cache test assets

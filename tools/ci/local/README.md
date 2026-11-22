@@ -788,7 +788,7 @@ ignored, as other tools read them; any other key draws a warning naming it.
 To use the public HTTPS address from the container, set `url=` to the
 `wan_url` value (and no `network=`). `https://` URLs go through the
 `ccache-storage-https` helper, which the image installs in `/usr/local/bin`;
-ccache's built-in client serves `http://` URLs. The helper takes its layout as a custom attribute (`@layout=bazel`, where an `http://` URL has `layout=bazel`) and defaults to a different key layout without it. `devshell.sh` therefore replaces any layout attribute on an `http://` or `https://` URL with the right bazel spelling, so a plain URL works and local builds share keys with the remote CI workflow, which applies the same rule.
+ccache's built-in client serves `http://` URLs. The helper takes its layout as a custom attribute (`@layout=bazel`, where an `http://` URL has `layout=bazel`) and defaults to a different key layout without it. `devshell.sh` therefore replaces any layout attribute on an `http://` or `https://` URL with the right bazel spelling, so a plain URL works (a value that is not an `http://` or `https://` URL turns the remote cache off, with a warning that never prints it) and local builds share keys with the remote CI workflow, which applies the same rule.
 
 `devshell.sh` reads the file on every call and passes `CCACHE_REMOTE_STORAGE`
 on every `docker exec`, so a running container picks up a new or changed file

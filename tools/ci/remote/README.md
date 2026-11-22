@@ -127,7 +127,12 @@ and no AppImage. It only keeps the ccache warm for branch runs.
 
 The build job layers a shared ccache remote storage server on top of the
 `actions/cache` ccache restore. The repo secret `CCACHE_REMOTE_STORAGE` holds
-its URL, in the form `https://USER:PASS@cache.example.com`. The workflow
+the URL only, in the form `https://USER:PASS@cache.example.com`, without a
+`url=` key or quotes. The workflow tolerates a leading `url=`, quotes and
+surrounding whitespace, but a value that is not an `http://` or `https://`
+URL turns the remote cache off for that run (the log says only
+`remote ccache: unsupported value, off`), as does a value ccache rejects. The
+whole value and its host are masked in the log. The workflow
 replaces any `layout=` attribute on it with the bazel layout the local builds
 use (`@layout=bazel` for the dev image's `ccache-storage-https` helper, which
 handles the HTTPS), so both spellings work and CI shares keys with local

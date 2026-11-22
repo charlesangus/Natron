@@ -156,8 +156,13 @@ if [[ -n "${CCACHE_REMOTE_URL}" ]]; then
     # shellcheck source=tools/ci/ccache-remote-layout.sh
     source "${REPO_ROOT}/tools/ci/ccache-remote-layout.sh"
     CCACHE_REMOTE_STORAGE="$(ccache_remote_with_bazel_layout "${CCACHE_REMOTE_URL}")"
-    export CCACHE_REMOTE_STORAGE
-    EXEC_ENV_ARGS+=(-e CCACHE_REMOTE_STORAGE)
+    if [[ -n "${CCACHE_REMOTE_STORAGE}" ]]; then
+        export CCACHE_REMOTE_STORAGE
+        EXEC_ENV_ARGS+=(-e CCACHE_REMOTE_STORAGE)
+    else
+        echo "devshell.sh: the .local/ccache-remote url is not an http:// or https:// URL; the remote cache is off" >&2
+        CCACHE_REMOTE_NETWORK=""
+    fi
 fi
 
 # Bind-mount ccache from a gitignored dir under the checked-out repo (same

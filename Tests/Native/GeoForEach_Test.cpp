@@ -279,10 +279,13 @@ protected:
     EffectInstance::RenderRoIRetCode pull(const NodePtr& node,
                                           GeoDetailConstPtr* detail,
                                           std::string* error,
-                                          bool byPassCache = false)
+                                          bool byPassCache = false,
+                                          AbortableRenderInfoPtr abortInfo = AbortableRenderInfoPtr())
     {
         const double time = 1.;
-        AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
+        if (!abortInfo) {
+            abortInfo = AbortableRenderInfo::create(true, 0);
+        }
         ParallelRenderArgsSetter frameRenderArgs(time,
                                                  ViewIdx(0),
                                                  true /*isRenderUserInteraction*/,
@@ -468,6 +471,88 @@ TEST_F(GeoForEachTest, OneAndEightThreadsGiveTheSameResult)
     EXPECT_GT(one->primitiveCount(), 3);
     EXPECT_EQ(positions(*one), positions(*eight));
     EXPECT_EQ(one->contentHash(), eight->contentHash());
+}
+
+// The merge's helper threads used to copy the calling thread's frame args of the body effects
+// while the calling thread, cooking iterations of its own, pushed and popped them: thousands of
+// iterations over several threads read a freed list node sooner or later.
+TEST_F(GeoForEachTest, ManyIterationsMergeOverSeveralThreads)
+{
+    const int iterations = 20000;
+    NodePtr input = begin(_cube, eGeoForEachBeginFetchInput);
+    NodePtr move = transform(input);
+    drive(move, kGeoTransformParamTranslate, 0, "loop.iteration", 0., 1.);
+    NodePtr loop = end(move, eGeoForEachIterateCount, eGeoForEachGatherMerge);
+    setInt(loop, kGeoForEachEndParamIterations, iterations);
+
+    AppTLS::ThreadBudgetScope budget(8);
+    GeoDetailConstPtr result;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, pull(loop, &result, &error, true)) << error;
+    ASSERT_TRUE(result != NULL);
+    const std::vector<float> cube = cubePositions();
+    ASSERT_FALSE(cube.empty());
+    EXPECT_EQ((GeoIndex)iterations * 6, result->primitiveCount());
+    EXPECT_EQ(cube.size() / 3 * (std::size_t)iterations, (std::size_t)result->pointCount());
+}
+
+TEST_F(GeoForEachTest, ManyFeedbackIterationsApplyTheBodyEachTime)
+{
+    const int iterations = 10000;
+    NodePtr previous = begin(_cube, eGeoForEachBeginFetchFeedback);
+    NodePtr move = transform(previous);
+    setDouble(move, kGeoTransformParamTranslate, 1., 0);
+    NodePtr loop = end(move, eGeoForEachIterateCount, eGeoForEachGatherFeedback);
+    setInt(loop, kGeoForEachEndParamIterations, iterations);
+
+    GeoDetailConstPtr result;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, pull(loop, &result, &error, true)) << error;
+    ASSERT_TRUE(result != NULL);
+    std::vector<float> expected = cubePositions();
+    for (std::size_t i = 0; i < expected.size(); i += 3) {
+        expected[i] += (float)iterations;
+    }
+    const std::vector<float> after = positions(*result);
+    ASSERT_EQ(expected.size(), after.size());
+    for (std::size_t i = 0; i < expected.size(); ++i) {
+        EXPECT_NEAR(expected[i], after[i], 1e-2) << "coordinate " << i;
+    }
+}
+
+TEST_F(GeoForEachTest, AbortingTheMaximumIterationCountReturnsPromptly)
+{
+    for (int gather = 0; gather < 2; ++gather) {
+        SCOPED_TRACE(gather ? "feedback" : "merge");
+        NodePtr input = begin(_cube, gather ? eGeoForEachBeginFetchFeedback : eGeoForEachBeginFetchInput);
+        NodePtr move = transform(input);
+        drive(move, kGeoTransformParamTranslate, 0, "loop.iteration", 0., 1.);
+        NodePtr loop = end(move, eGeoForEachIterateCount, gather ? eGeoForEachGatherFeedback : eGeoForEachGatherMerge);
+        setInt(loop, kGeoForEachEndParamIterations, kGeoForEachEndDefaultMaxIterations);
+
+        AppTLS::ThreadBudgetScope budget(8);
+        AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
+        std::chrono::steady_clock::time_point abortedAt;
+        std::thread aborter([&abortInfo, &abortedAt]() {
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            abortedAt = std::chrono::steady_clock::now();
+            abortInfo->setAborted();
+        });
+        GeoDetailConstPtr result;
+        std::string error;
+        const EffectInstance::RenderRoIRetCode code = pull(loop, &result, &error, true, abortInfo);
+        const std::chrono::steady_clock::time_point returnedAt = std::chrono::steady_clock::now();
+        aborter.join();
+        if (code == EffectInstance::eRenderRoIRetCodeOk) {
+            // A machine fast enough to finish before the abort still has to get every iteration.
+            ASSERT_TRUE(result != NULL);
+            EXPECT_EQ((GeoIndex)(gather ? 1 : kGeoForEachEndDefaultMaxIterations) * 6, result->primitiveCount());
+        } else {
+            EXPECT_EQ(EffectInstance::eRenderRoIRetCodeAborted, code) << error;
+            const double ms = std::chrono::duration<double, std::milli>(returnedAt - abortedAt).count();
+            EXPECT_LT(ms, 2000.) << "the loop went on for " << ms << " ms after the abort";
+        }
+    }
 }
 
 TEST_F(GeoForEachTest, PiecesByNameAreScaledAboutTheirOwnCentroids)

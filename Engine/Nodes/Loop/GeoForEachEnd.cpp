@@ -31,6 +31,7 @@
 #include <iterator>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <unordered_map>
 #include <utility>
@@ -143,6 +144,7 @@ collectPairedEnds(const NodePtr& begin,
 struct FeedbackRegistry {
     std::mutex mutex;
     std::unordered_map<U64, std::weak_ptr<const GeoDetail>> details;
+    std::size_t sweepSize = 1024;
 };
 
 FeedbackRegistry&
@@ -153,7 +155,31 @@ feedbackRegistry()
     return registry;
 }
 
-const std::size_t kFeedbackSweepSize = 1024;
+// A helper of the merge's parallel cooks sets up its own frame instead of inheriting the calling
+// thread's TLS: the calling thread cooks iterations too, pushing and popping each body effect's
+// frame args while a helper's inherited copy would be reading them.
+class HelperIterationScope {
+public:
+    HelperIterationScope(const FrameRenderContext* frameContext,
+                         const IsolatedJob* job,
+                         int runnablePriority)
+        : _frame(frameContext, 1, runnablePriority)
+        , _previousJob(IsolatedJob::exchangeCurrent(job))
+    {
+    }
+
+    ~HelperIterationScope()
+    {
+        IsolatedJob::exchangeCurrent(_previousJob);
+    }
+
+    HelperIterationScope(const HelperIterationScope&) = delete;
+    HelperIterationScope& operator=(const HelperIterationScope&) = delete;
+
+private:
+    AppTLS::FrameContextScope _frame;
+    const IsolatedJob* _previousJob;
+};
 
 } // anonymous namespace
 
@@ -353,10 +379,13 @@ GeoForEachEnd::publishFeedback(const GeoDetailConstPtr& detail)
     FeedbackRegistry& registry = feedbackRegistry();
     std::lock_guard<std::mutex> lock(registry.mutex);
 
-    if (registry.details.size() >= kFeedbackSweepSize) {
+    // Details the geometry cache still holds survive a sweep, so sweeping at a fixed size would scan
+    // every live entry on each publish of a long Feedback loop.
+    if (registry.details.size() >= registry.sweepSize) {
         for (auto it = registry.details.begin(); it != registry.details.end();) {
             it = it->second.expired() ? registry.details.erase(it) : std::next(it);
         }
+        registry.sweepSize = std::max<std::size_t>(1024, registry.details.size() * 2);
     }
     registry.details[hash] = detail;
 
@@ -962,9 +991,8 @@ GeoForEachEnd::renderGeometry(const GeoRenderActionArgs& args,
     }
 
     if ((s.gather == eGeoForEachGatherFeedback) && !s.singlePass) {
+        // Holding previous keeps it findable by the next iteration's Fetch Feedback.
         GeoDetailConstPtr previous;
-        // Each result stays findable while the next iteration cooks from it.
-        std::vector<GeoDetailConstPtr> held;
         for (std::size_t k : run) {
             if (previous && !s.stopAttribute.empty()) {
                 const GeoAttribute* stop = previous->findAttribute(eGeoAttribClassDetail, s.stopAttribute);
@@ -986,7 +1014,6 @@ GeoForEachEnd::renderGeometry(const GeoRenderActionArgs& args,
             if ((code != eRenderRoIRetCodeOk) || !result) {
                 return fail(tr("iteration %1 failed: %2").arg(k).arg(QString::fromUtf8(iterationError.c_str())).toStdString(), errorMessage);
             }
-            held.push_back(result);
             previous = result;
             if (aborted()) {
                 return eStatusFailed;
@@ -1016,9 +1043,13 @@ GeoForEachEnd::renderGeometry(const GeoRenderActionArgs& args,
         QThread* const callingThread = QThread::currentThread();
         const FrameRenderContext* const frameContext = AppTLS::currentFrameContext();
         const IsolatedJob* const job = IsolatedJob::current();
+        const int runnablePriority = AppTLS::currentRunnablePriority();
         RenderCancellation cancel(this);
         parallelForCancellable((int)run.size() - 1, appPTR->getNCPUsAvailableForEffect(), cancel, [&](int i) {
-            AppTLS::SpawnedThreadScope spawnedThreadTLS(callingThread, frameContext, job, AppTLS::eSpawnKindHostFrameThreading);
+            std::optional<HelperIterationScope> helperScope;
+            if (QThread::currentThread() != callingThread) {
+                helperScope.emplace(frameContext, job, runnablePriority);
+            }
             const std::size_t j = (std::size_t)i + 1;
             if (cancel.check()) {
                 codes[j] = eRenderRoIRetCodeAborted;

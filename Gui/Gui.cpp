@@ -740,6 +740,24 @@ Gui::createMenuActions()
     _imp->menuFile->addAction(_imp->actionSaveAndIncrementVersion);
     _imp->menuFile->addAction(_imp->actionExportAsGroup);
     _imp->menuFile->addSeparator();
+    {
+        QAction* importTemplateAction = new QAction(tr("Import Template..."), this);
+        importTemplateAction->setObjectName(QString::fromUtf8("actionImportTemplate"));
+        QObject::connect(importTemplateAction, SIGNAL(triggered()), this, SLOT(importTemplate()));
+        _imp->menuFile->addAction(importTemplateAction);
+
+        _imp->menuUpdateFromTemplate = new Menu(tr("Update from Template"), _imp->menuFile);
+        _imp->menuUpdateFromTemplate->setObjectName(QString::fromUtf8("menuUpdateFromTemplate"));
+        QObject::connect(_imp->menuUpdateFromTemplate, SIGNAL(aboutToShow()), this, SLOT(onUpdateFromTemplateMenuAboutToShow()));
+        _imp->menuFile->addAction(_imp->menuUpdateFromTemplate->menuAction());
+        onUpdateFromTemplateMenuAboutToShow();
+
+        QAction* compareAction = new QAction(tr("Compare with File..."), this);
+        compareAction->setObjectName(QString::fromUtf8("actionCompareWithFile"));
+        QObject::connect(compareAction, SIGNAL(triggered()), this, SLOT(compareWithFile()));
+        _imp->menuFile->addAction(compareAction);
+    }
+    _imp->menuFile->addSeparator();
     _imp->menuFile->addAction(_imp->actionExit);
 
     _imp->menuEdit->addAction(_imp->actionUndo);

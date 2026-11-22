@@ -2625,8 +2625,9 @@ ApplyGraphOpsCommand::ApplyGraphOpsCommand(NodeGraph* graph,
                                            const ProjectPtr& project,
                                            const std::vector<Serialization::GraphOp>& forward,
                                            const std::vector<Serialization::GraphOp>& inverse,
-                                           const QString& text)
-    : QUndoCommand()
+                                           const QString& text,
+                                           QUndoCommand* parent)
+    : QUndoCommand(parent)
     , _graph(graph)
     , _project(project)
     , _forward(forward)
@@ -2683,16 +2684,59 @@ ApplyGraphOpsCommand::applyAndPush(NodeGraph* graph,
 
     Serialization::ProjectSerialization after;
     project->toSerialization(&after);
+    if (ApplyGraphOpsCommand* command = makeCommand(graph, project, before, after, text, 0)) {
+        graph->pushUndoCommand(command, UndoScope());
+    }
+
+    return results;
+}
+
+ApplyGraphOpsCommand*
+ApplyGraphOpsCommand::makeCommand(NodeGraph* graph,
+                                  const ProjectPtr& project,
+                                  const Serialization::ProjectSerialization& before,
+                                  const Serialization::ProjectSerialization& after,
+                                  const QString& text,
+                                  QUndoCommand* parent)
+{
     const Serialization::ProjectSerialization beforeState = Serialization::editableState(before);
     const Serialization::ProjectSerialization afterState = Serialization::editableState(after);
     const std::vector<Serialization::GraphOp> forward = Serialization::diffSnapshots(beforeState, afterState);
     if (forward.empty()) {
-        return results;
+        return 0;
     }
     const std::vector<Serialization::GraphOp> inverse = Serialization::diffSnapshots(afterState, beforeState);
-    graph->pushUndoCommand(new ApplyGraphOpsCommand(graph, project, forward, inverse, text), UndoScope());
+
+    return new ApplyGraphOpsCommand(graph, project, forward, inverse, text, parent);
+}
+
+std::vector<Serialization::OpResult>
+ApplyGraphOpsCommand::applyAndRecord(NodeGraph* graph,
+                                     const ProjectPtr& project,
+                                     const std::vector<Serialization::GraphOp>& ops,
+                                     const QString& text,
+                                     QUndoCommand* parent)
+{
+    Serialization::ProjectSerialization before;
+    project->toSerialization(&before);
+    const std::vector<Serialization::OpResult> results = applyGraphOps(project, ops);
+
+    Serialization::ProjectSerialization after;
+    project->toSerialization(&after);
+    recordChange(graph, project, before, after, text, parent);
 
     return results;
+}
+
+bool
+ApplyGraphOpsCommand::recordChange(NodeGraph* graph,
+                                   const ProjectPtr& project,
+                                   const Serialization::ProjectSerialization& before,
+                                   const Serialization::ProjectSerialization& after,
+                                   const QString& text,
+                                   QUndoCommand* parent)
+{
+    return makeCommand(graph, project, before, after, text, parent) != 0;
 }
 
 ProjectMerge::OpApplier

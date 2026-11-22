@@ -1447,11 +1447,20 @@ Project::setTemplateImport(const Serialization::TemplateImportSerialization& ent
     for (Serialization::TemplateImportSerialization& existing : _imp->templateImports) {
         if (existing.key == entry.key) {
             existing = entry;
+            Q_EMIT templateImportsChanged();
 
             return;
         }
     }
     _imp->templateImports.push_back(entry);
+    Q_EMIT templateImportsChanged();
+}
+
+void
+Project::setTemplateImports(const std::list<Serialization::TemplateImportSerialization>& imports)
+{
+    _imp->templateImports = imports;
+    Q_EMIT templateImportsChanged();
 }
 
 const std::vector<Serialization::MergeConflict>&
@@ -1464,6 +1473,7 @@ void
 Project::setMergeConflicts(const std::vector<Serialization::MergeConflict>& conflicts)
 {
     _imp->mergeConflicts = conflicts;
+    Q_EMIT mergeConflictsChanged();
 }
 
 void
@@ -3770,6 +3780,8 @@ Project::doResetEnd(bool aboutToQuit)
     _imp->projectId = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
     _imp->templateImports.clear();
     _imp->mergeConflicts.clear();
+    Q_EMIT templateImportsChanged();
+    Q_EMIT mergeConflictsChanged();
 
     QString lockFilePath = getLockAbsoluteFilePath();
     QString projectPath = QString::fromUtf8( _imp->getProjectPath().c_str() );

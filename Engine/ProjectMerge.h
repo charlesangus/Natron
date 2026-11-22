@@ -118,6 +118,51 @@ struct ChangeSummary {
  **/
 ChangeSummary compare(const ProjectPtr& project,
                       const Serialization::ProjectSerialization& other);
+
+/**
+ * @brief compare() against the project file at path. Returns false with error set when it cannot
+ * be read.
+ **/
+bool compareWithFile(const ProjectPtr& project,
+                     const QString& path,
+                     ChangeSummary* summary,
+                     QString* error);
+
+/**
+ * @brief How the nodes of a template import differ from the import's stored base: the base's
+ * nodes stand for the live nodes the merge would match them with, and only those nodes and the
+ * nodes added inside the import's groups are listed. Returns false with error set when the project
+ * has no such import or it has no base.
+ **/
+bool compareWithTemplateBase(const ProjectPtr& project,
+                             const std::string& templateKey,
+                             ChangeSummary* summary,
+                             QString* error);
+
+enum class ConflictSide {
+    eMine,
+    eTheirs,
+    eBase,
+};
+
+/**
+ * @brief Whether a side can be put back where conflict is: value and curve-key conflicts on a knob
+ * of a node the project still has, or of the project itself. The other kinds only record what the
+ * merge chose and are resolved by accepting it.
+ **/
+bool canChooseSide(const ProjectPtr& project,
+                   const Serialization::MergeConflict& conflict);
+
+/**
+ * @brief The operation that gives the conflicted knob dimension, extra state or curve key the
+ * state side had, leaving the rest of the knob as it is now. Returns false with error set when
+ * canChooseSide() is false.
+ **/
+bool sideOperation(const ProjectPtr& project,
+                   const Serialization::MergeConflict& conflict,
+                   ConflictSide side,
+                   Serialization::GraphOp* op,
+                   QString* error);
 } // namespace ProjectMerge
 
 NATRON_NAMESPACE_EXIT

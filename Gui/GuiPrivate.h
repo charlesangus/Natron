@@ -30,6 +30,7 @@
 
 #include <list>
 #include <map>
+#include <memory>
 #include <vector>
 
 CLANG_DIAG_OFF(deprecated)
@@ -51,6 +52,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/GuiFwd.h"
 #include "Gui/LogWindow.h"
 
+#include "Engine/ProjectMerge.h"
 
 #define kPropertiesBinName "properties"
 
@@ -176,6 +178,9 @@ public:
     CurveEditor *_curveEditor;
     ProgressPanel* _progressPanel;
     SceneGraphPanel* _sceneGraphPanel;
+    MergeConflictPanel* _mergeConflictPanel;
+    Menu* menuUpdateFromTemplate;
+    std::shared_ptr<ProjectMerge::ChangeSummary> graphComparison;
 
     // The dope sheet
     DopeSheetEditor *_dopeSheetEditor;
@@ -291,6 +296,8 @@ public:
     void createProgressPanelGui();
 
     void createSceneGraphPanelGui();
+
+    void createMergeConflictPanelGui();
 
     ///If there's only 1 non-floating pane in the main window, return it, otherwise returns NULL
     TabWidget* getOnly1NonFloatingPane(int & count) const;

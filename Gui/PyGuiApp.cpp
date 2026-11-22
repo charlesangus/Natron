@@ -46,6 +46,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/ViewerInstance.h"
 
 #include "Gui/Gui.h"
+#include "Gui/MergeConflictResolve.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGui.h"
 #include "Gui/PythonPanels.h"
@@ -943,6 +944,43 @@ PyViewer::getCurrentView() const
     }
 
     return _viewer->getCurrentView().value();
+}
+
+QString
+GuiApp::importTemplate(const QString& filePath)
+{
+    QString error;
+    const std::string key = MergeConflictResolve::importTemplate(getInternalGuiApp()->getGui(), filePath, &error);
+    if (key.empty()) {
+        getInternalGuiApp()->appendToScriptEditor(error.toStdString());
+    }
+
+    return QString::fromStdString(key);
+}
+
+int
+GuiApp::updateFromTemplate(const QString& templateKey,
+                           const QString& filePath)
+{
+    const ProjectMerge::UpdateResult result = MergeConflictResolve::updateFromTemplate(getInternalGuiApp()->getGui(), templateKey.toStdString(), filePath);
+    if (!result.ok) {
+        getInternalGuiApp()->appendToScriptEditor(result.error.toStdString());
+
+        return -1;
+    }
+
+    return (int)result.conflicts.size();
+}
+
+bool
+GuiApp::isMergeConflictBadgeShown(Effect* effect) const
+{
+    if (!effect) {
+        return false;
+    }
+    NodeGuiPtr nodeUi = std::dynamic_pointer_cast<NodeGui>(effect->getInternalNode()->getNodeGui());
+
+    return nodeUi && nodeUi->isMergeConflictBadgeShown();
 }
 
 NATRON_PYTHON_NAMESPACE_EXIT

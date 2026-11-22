@@ -1,0 +1,610 @@
+/* ***** BEGIN LICENSE BLOCK *****
+ * This file is part of Natron <https://natrongithub.github.io/>,
+ * (C) 2018-2023 The Natron developers
+ * (C) 2013-2018 INRIA and Alexandre Gauthier-Foichat
+ *
+ * Natron is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * Natron is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
+ * ***** END LICENSE BLOCK ***** */
+
+// ***** BEGIN PYTHON BLOCK *****
+// from <https://docs.python.org/3/c-api/intro.html#include-files>:
+// "Since Python may define some pre-processor definitions which affect the standard headers on some systems, you must include Python.h before any standard headers are included."
+#include <Python.h>
+// ***** END PYTHON BLOCK *****
+
+#include "MergeConflictPanel.h"
+
+#include <map>
+#include <set>
+#include <string>
+#include <variant>
+
+#include <QHBoxLayout>
+#include <QHeaderView>
+#include <QKeyEvent>
+#include <QLabel>
+#include <QPushButton>
+#include <QTreeWidget>
+#include <QVBoxLayout>
+
+#include "Engine/Node.h"
+#include "Engine/Project.h"
+
+#include "Gui/Gui.h"
+#include "Gui/GuiAppInstance.h"
+#include "Gui/MergeConflictResolve.h"
+#include "Gui/NodeGraph.h"
+#include "Gui/NodeGui.h"
+#include "Gui/NodeSettingsPanel.h"
+#include "Gui/TabWidget.h"
+
+#include "Serialization/Merge/MergeConflict.h"
+
+NATRON_NAMESPACE_ENTER
+
+namespace {
+enum ColumnEnum {
+    eColumnConflict = 0,
+    eColumnMine,
+    eColumnTheirs,
+    eColumnBase,
+    eColumnCount
+};
+
+// On conflict rows: the conflict's index in the project's list. On node rows: the node ID.
+const int kConflictIndexRole = Qt::UserRole;
+const int kNodeIdRole = Qt::UserRole + 1;
+
+QString
+valueText(const Serialization::KnobValueSerialization& value)
+{
+    return std::visit([](const auto& v) -> QString {
+        using T = std::decay_t<decltype(v)>;
+        if constexpr (std::is_same_v<T, bool>) {
+            return v ? QString::fromUtf8("on") : QString::fromUtf8("off");
+        } else if constexpr (std::is_same_v<T, std::string>) {
+            return QString::fromStdString(v);
+        } else {
+            return QString::number(v);
+        }
+    },
+                      value);
+}
+
+QString
+sideText(const Serialization::MergeConflict& conflict,
+         const Serialization::MergeConflictValue& side)
+{
+    switch (conflict.kind) {
+    case Serialization::MergeConflictKind::eCurveKey:
+        if (!side.key) {
+            return MergeConflictPanel::tr("No key");
+        }
+
+        return QString::number(side.key->value);
+    case Serialization::MergeConflictKind::eValue: {
+        if (!side.knob) {
+            return MergeConflictPanel::tr("Default");
+        }
+        if (conflict.dimension < 0) {
+            return MergeConflictPanel::tr("Changed");
+        }
+        if (conflict.dimension >= (int)side.knob->dimensions.size()) {
+            return MergeConflictPanel::tr("Default");
+        }
+        const Serialization::KnobDimensionSerialization& dim = side.knob->dimensions[conflict.dimension];
+        if (!dim.expression.empty()) {
+            return QString::fromUtf8("= ") + QString::fromStdString(dim.expression);
+        }
+        if (dim.curve) {
+            return MergeConflictPanel::tr("Animated, %1 keys").arg(dim.curve->keyframes.size());
+        }
+        if (dim.value) {
+            return valueText(*dim.value);
+        }
+
+        return MergeConflictPanel::tr("Default");
+    }
+    default:
+        return QString();
+    }
+}
+
+QString
+conflictText(const Serialization::MergeConflict& conflict)
+{
+    const QString knob = QString::fromStdString(conflict.knob);
+    const QString item = QString::fromStdString(conflict.item);
+    switch (conflict.kind) {
+    case Serialization::MergeConflictKind::eValue:
+        if (conflict.dimension < 0) {
+            return MergeConflictPanel::tr("%1 (animation, options)").arg(knob);
+        }
+
+        return MergeConflictPanel::tr("%1, dimension %2").arg(knob).arg(conflict.dimension);
+    case Serialization::MergeConflictKind::eCurveKey:
+        return MergeConflictPanel::tr("%1, key at %2").arg(knob).arg(conflict.time ? *conflict.time : 0.);
+    case Serialization::MergeConflictKind::eInput:
+        return MergeConflictPanel::tr("Input %1 connected differently").arg(QString::fromStdString(conflict.input));
+    case Serialization::MergeConflictKind::eStructuralInsert:
+        return MergeConflictPanel::tr("Nodes inserted on the same link on both sides");
+    case Serialization::MergeConflictKind::eDeleteModify: {
+        const QString who = (conflict.side == Serialization::MergeSide::eMine) ? MergeConflictPanel::tr("this project") : MergeConflictPanel::tr("the template");
+        if (!knob.isEmpty()) {
+            return MergeConflictPanel::tr("%1 deleted in %2 and changed in the other").arg(knob, who);
+        }
+        if (!item.isEmpty()) {
+            return MergeConflictPanel::tr("%1 deleted in %2 and changed in the other").arg(item, who);
+        }
+
+        return MergeConflictPanel::tr("Node deleted in %1 and changed in the other").arg(who);
+    }
+    case Serialization::MergeConflictKind::eReparent:
+        return MergeConflictPanel::tr("Moved into different groups on both sides");
+    case Serialization::MergeConflictKind::eAdopted:
+        return MergeConflictPanel::tr("Matched to the template node by structure");
+    case Serialization::MergeConflictKind::eRotoShape:
+        return item.isEmpty() ? MergeConflictPanel::tr("Spline warp changed on both sides")
+                              : MergeConflictPanel::tr("Shape %1 changed on both sides").arg(item);
+    }
+
+    return QString();
+}
+
+// Conflicts about one node are grouped under its ID in the merged graph, or its base ID when the
+// merge left it out; the rest are the project's own.
+std::string
+groupKeyOf(const Serialization::MergeConflict& conflict)
+{
+    return conflict.nodeId.empty() ? conflict.baseNodeId : conflict.nodeId;
+}
+
+NodeGuiPtr
+nodeGuiOf(const NodePtr& node)
+{
+    return node ? std::dynamic_pointer_cast<NodeGui>(node->getNodeGui()) : NodeGuiPtr();
+}
+} // anon namespace
+
+struct MergeConflictPanel::Implementation {
+    Gui* gui;
+    ProjectWPtr project;
+    QLabel* summary;
+    QTreeWidget* tree;
+    QPushButton* mine;
+    QPushButton* theirs;
+    QPushButton* base;
+    QPushButton* accept;
+    QPushButton* allMine;
+    QPushButton* allTheirs;
+    // The nodes showing a conflict badge, by ID.
+    std::set<std::string> badged;
+    bool refreshing;
+
+    Implementation(Gui* gui)
+        : gui(gui)
+        , project()
+        , summary(0)
+        , tree(0)
+        , mine(0)
+        , theirs(0)
+        , base(0)
+        , accept(0)
+        , allMine(0)
+        , allTheirs(0)
+        , badged()
+        , refreshing(false)
+    {
+    }
+
+    QPushButton* makeButton(QWidget* parent,
+                            QLayout* layout,
+                            const char* name,
+                            const QString& text,
+                            const QString& tooltip)
+    {
+        QPushButton* b = new QPushButton(text, parent);
+        b->setObjectName(QString::fromUtf8(name));
+        b->setToolTip(tooltip);
+        layout->addWidget(b);
+
+        return b;
+    }
+
+    void refreshBadges(const ProjectPtr& p)
+    {
+        std::map<std::string, std::size_t> counts;
+        for (const Serialization::MergeConflict& conflict : p->getMergeConflicts()) {
+            if (!conflict.nodeId.empty()) {
+                ++counts[conflict.nodeId];
+            }
+        }
+        for (const std::string& id : badged) {
+            if (counts.find(id) == counts.end()) {
+                if (NodeGuiPtr nodeGui = nodeGuiOf(p->findNodeById(id))) {
+                    nodeGui->setMergeConflictCount(0);
+                }
+            }
+        }
+        badged.clear();
+        for (const auto& entry : counts) {
+            if (NodeGuiPtr nodeGui = nodeGuiOf(p->findNodeById(entry.first))) {
+                nodeGui->setMergeConflictCount(entry.second);
+                badged.insert(entry.first);
+            }
+        }
+    }
+};
+
+MergeConflictPanel::MergeConflictPanel(Gui* gui)
+    : QWidget(gui)
+    , PanelWidget(this, gui)
+    , _imp(new Implementation(gui))
+{
+    setObjectName(QString::fromUtf8("mergeConflicts"));
+    setLabel(tr("Merge Conflicts").toStdString());
+
+    QVBoxLayout* layout = new QVBoxLayout(this);
+    layout->setContentsMargins(2, 2, 2, 2);
+    layout->setSpacing(4);
+
+    _imp->summary = new QLabel(this);
+    _imp->summary->setObjectName(QString::fromUtf8("mergeConflictSummary"));
+    layout->addWidget(_imp->summary);
+
+    _imp->tree = new QTreeWidget(this);
+    _imp->tree->setObjectName(QString::fromUtf8("mergeConflictTree"));
+    _imp->tree->setColumnCount(eColumnCount);
+    _imp->tree->setHeaderLabels(QStringList() << tr("Conflict") << tr("Mine") << tr("Theirs") << tr("Base"));
+    _imp->tree->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    _imp->tree->setUniformRowHeights(true);
+    _imp->tree->header()->setStretchLastSection(false);
+    _imp->tree->header()->setSectionResizeMode(eColumnConflict, QHeaderView::Stretch);
+    for (int c = eColumnMine; c < eColumnCount; ++c) {
+        _imp->tree->header()->setSectionResizeMode(c, QHeaderView::ResizeToContents);
+    }
+    layout->addWidget(_imp->tree, 1);
+
+    QWidget* sideRow = new QWidget(this);
+    QHBoxLayout* sideLayout = new QHBoxLayout(sideRow);
+    sideLayout->setContentsMargins(0, 0, 0, 0);
+    sideLayout->setSpacing(4);
+    _imp->mine = _imp->makeButton(sideRow, sideLayout, "mergeConflictMine", tr("Mine"),
+                                  tr("Gives the selected conflicts the value this project had before the update."));
+    _imp->theirs = _imp->makeButton(sideRow, sideLayout, "mergeConflictTheirs", tr("Theirs"),
+                                    tr("Gives the selected conflicts the value of the new template version."));
+    _imp->base = _imp->makeButton(sideRow, sideLayout, "mergeConflictBase", tr("Base"),
+                                  tr("Gives the selected conflicts the value of the template version imported before."));
+    _imp->accept = _imp->makeButton(sideRow, sideLayout, "mergeConflictAccept", tr("Accept"),
+                                    tr("Keeps what the update chose for the selected conflicts. Conflicts about inputs, groups and inserted or deleted nodes can only be accepted."));
+    sideLayout->addStretch(1);
+    layout->addWidget(sideRow);
+
+    QWidget* allRow = new QWidget(this);
+    QHBoxLayout* allLayout = new QHBoxLayout(allRow);
+    allLayout->setContentsMargins(0, 0, 0, 0);
+    allLayout->setSpacing(4);
+    _imp->allMine = _imp->makeButton(allRow, allLayout, "mergeConflictAllMine", tr("Resolve All Mine"),
+                                     tr("Gives every value and key conflict in the list the value this project had before the update. To resolve one node, select its row and use Mine."));
+    _imp->allTheirs = _imp->makeButton(allRow, allLayout, "mergeConflictAllTheirs", tr("Resolve All Theirs"),
+                                       tr("Gives every value and key conflict in the list the value of the new template version. To resolve one node, select its row and use Theirs."));
+    allLayout->addStretch(1);
+    layout->addWidget(allRow);
+
+    QObject::connect(_imp->tree, SIGNAL(itemSelectionChanged()), this, SLOT(onSelectionChanged()));
+    QObject::connect(_imp->tree, SIGNAL(currentItemChanged(QTreeWidgetItem*, QTreeWidgetItem*)), this, SLOT(onCurrentItemChanged()));
+    QObject::connect(_imp->mine, SIGNAL(clicked()), this, SLOT(onMineClicked()));
+    QObject::connect(_imp->theirs, SIGNAL(clicked()), this, SLOT(onTheirsClicked()));
+    QObject::connect(_imp->base, SIGNAL(clicked()), this, SLOT(onBaseClicked()));
+    QObject::connect(_imp->accept, SIGNAL(clicked()), this, SLOT(onAcceptClicked()));
+    QObject::connect(_imp->allMine, SIGNAL(clicked()), this, SLOT(onAllMineClicked()));
+    QObject::connect(_imp->allTheirs, SIGNAL(clicked()), this, SLOT(onAllTheirsClicked()));
+
+    if (gui->getApp()) {
+        if (ProjectPtr project = gui->getApp()->getProject()) {
+            _imp->project = project;
+            QObject::connect(project.get(), SIGNAL(mergeConflictsChanged()), this, SLOT(refresh()));
+            QObject::connect(project.get(), SIGNAL(loaded()), this, SLOT(onProjectLoaded()));
+        }
+    }
+    refresh();
+}
+
+MergeConflictPanel::~MergeConflictPanel()
+{
+}
+
+void
+MergeConflictPanel::refresh()
+{
+    ProjectPtr project = _imp->project.lock();
+    _imp->refreshing = true;
+    _imp->tree->clear();
+    const std::vector<Serialization::MergeConflict> conflicts = project ? project->getMergeConflicts() : std::vector<Serialization::MergeConflict>();
+
+    std::map<std::string, QTreeWidgetItem*> groups;
+    std::vector<std::string> order;
+    for (std::size_t i = 0; i < conflicts.size(); ++i) {
+        const Serialization::MergeConflict& conflict = conflicts[i];
+        const std::string key = groupKeyOf(conflict);
+        QTreeWidgetItem*& group = groups[key];
+        if (!group) {
+            group = new QTreeWidgetItem();
+            group->setData(eColumnConflict, kNodeIdRole, QString::fromStdString(key));
+            order.push_back(key);
+        }
+        QTreeWidgetItem* row = new QTreeWidgetItem(group);
+        row->setData(eColumnConflict, kConflictIndexRole, (qulonglong)i);
+        row->setText(eColumnConflict, conflictText(conflict));
+        const bool choosable = project && ProjectMerge::canChooseSide(project, conflict);
+        if (choosable) {
+            row->setText(eColumnMine, sideText(conflict, conflict.mine));
+            row->setText(eColumnTheirs, sideText(conflict, conflict.theirs));
+            row->setText(eColumnBase, sideText(conflict, conflict.base));
+        }
+        row->setToolTip(eColumnConflict, choosable ? tr("The update kept Mine. Choose a side, or accept it.") : tr("The update chose for you. Review it in the node graph and accept it."));
+    }
+    for (const std::string& key : order) {
+        QTreeWidgetItem* group = groups[key];
+        QString name;
+        if (key.empty()) {
+            name = tr("Project");
+        } else if (NodePtr node = project ? project->findNodeById(key) : NodePtr()) {
+            const QString label = QString::fromStdString(node->getLabel());
+            const QString path = QString::fromStdString(node->getFullyQualifiedName());
+            name = (label == path) ? path : tr("%1 (%2)").arg(label, path);
+        } else {
+            name = tr("Node not in the project (%1)").arg(QString::fromStdString(key));
+        }
+        group->setText(eColumnConflict, tr("%1: %2").arg(name).arg(group->childCount()));
+        _imp->tree->addTopLevelItem(group);
+        group->setExpanded(true);
+    }
+    _imp->refreshing = false;
+
+    const int count = (int)conflicts.size();
+    const QString title = (count == 0) ? tr("Merge Conflicts") : tr("Merge Conflicts (%1)").arg(count);
+    setLabel(title.toStdString());
+    if (TabWidget* pane = getParentPane()) {
+        pane->setTabLabel(this, title);
+    }
+    _imp->summary->setText((count == 0) ? tr("No unresolved merge conflicts.")
+                                        : tr("%1 unresolved merge conflicts. The update kept this project's values where both sides changed.").arg(count));
+    _imp->allMine->setEnabled(count > 0);
+    _imp->allTheirs->setEnabled(count > 0);
+    onSelectionChanged();
+    if (project) {
+        _imp->refreshBadges(project);
+    }
+}
+
+void
+MergeConflictPanel::onProjectLoaded()
+{
+    ProjectPtr project = _imp->project.lock();
+    if (project && !project->getMergeConflicts().empty()) {
+        _imp->gui->ensureMergeConflictPanelVisible();
+    }
+}
+
+std::vector<std::size_t>
+MergeConflictPanel::getSelectedConflicts() const
+{
+    std::set<std::size_t> indices;
+    for (QTreeWidgetItem* item : _imp->tree->selectedItems()) {
+        if (item->parent()) {
+            indices.insert((std::size_t)item->data(eColumnConflict, kConflictIndexRole).toULongLong());
+        } else {
+            for (int i = 0; i < item->childCount(); ++i) {
+                indices.insert((std::size_t)item->child(i)->data(eColumnConflict, kConflictIndexRole).toULongLong());
+            }
+        }
+    }
+
+    return std::vector<std::size_t>(indices.begin(), indices.end());
+}
+
+void
+MergeConflictPanel::selectConflicts(const std::vector<std::size_t>& indices)
+{
+    const std::set<std::size_t> wanted(indices.begin(), indices.end());
+    _imp->tree->clearSelection();
+    for (int g = 0; g < _imp->tree->topLevelItemCount(); ++g) {
+        QTreeWidgetItem* group = _imp->tree->topLevelItem(g);
+        for (int i = 0; i < group->childCount(); ++i) {
+            QTreeWidgetItem* row = group->child(i);
+            if (wanted.count((std::size_t)row->data(eColumnConflict, kConflictIndexRole).toULongLong())) {
+                row->setSelected(true);
+            }
+        }
+    }
+}
+
+void
+MergeConflictPanel::onSelectionChanged()
+{
+    if (_imp->refreshing) {
+        return;
+    }
+    ProjectPtr project = _imp->project.lock();
+    const std::vector<std::size_t> selected = getSelectedConflicts();
+    bool choosable = false;
+    if (project) {
+        const std::vector<Serialization::MergeConflict>& conflicts = project->getMergeConflicts();
+        for (std::size_t index : selected) {
+            if ((index < conflicts.size()) && ProjectMerge::canChooseSide(project, conflicts[index])) {
+                choosable = true;
+                break;
+            }
+        }
+    }
+    _imp->mine->setEnabled(choosable);
+    _imp->theirs->setEnabled(choosable);
+    _imp->base->setEnabled(choosable);
+    _imp->accept->setEnabled(!selected.empty());
+}
+
+void
+MergeConflictPanel::onCurrentItemChanged()
+{
+    if (_imp->refreshing) {
+        return;
+    }
+    QTreeWidgetItem* item = _imp->tree->currentItem();
+    ProjectPtr project = _imp->project.lock();
+    if (!item || !project) {
+        return;
+    }
+    QTreeWidgetItem* group = item->parent() ? item->parent() : item;
+    const std::string nodeId = group->data(eColumnConflict, kNodeIdRole).toString().toStdString();
+    if (nodeId.empty()) {
+        return;
+    }
+    NodeGuiPtr nodeGui = nodeGuiOf(project->findNodeById(nodeId));
+    if (!nodeGui) {
+        return;
+    }
+    if (NodeGraph* graph = nodeGui->getDagGui()) {
+        graph->selectNode(nodeGui, false);
+        graph->centerOnItem(nodeGui.get());
+    }
+    nodeGui->setVisibleSettingsPanel(true);
+    if (nodeGui->getSettingPanel()) {
+        _imp->gui->putSettingsPanelFirst(nodeGui->getSettingPanel());
+    }
+}
+
+void
+MergeConflictPanel::resolveConflicts(const std::vector<std::size_t>& indices,
+                                     ProjectMerge::ConflictSide side)
+{
+    ProjectPtr project = _imp->project.lock();
+    if (!project) {
+        return;
+    }
+    // Conflicts that cannot take a side stay for the user to accept, so a mixed selection resolves
+    // what it can without failing.
+    const std::vector<Serialization::MergeConflict>& conflicts = project->getMergeConflicts();
+    std::vector<std::size_t> choosable;
+    for (std::size_t index : indices) {
+        if ((index < conflicts.size()) && ProjectMerge::canChooseSide(project, conflicts[index])) {
+            choosable.push_back(index);
+        }
+    }
+    if (choosable.empty()) {
+        return;
+    }
+    QString error;
+    if (!MergeConflictResolve::resolve(_imp->gui, choosable, side, &error)) {
+        _imp->gui->errorDialog(tr("Merge Conflicts").toStdString(), error.toStdString(), false);
+    }
+}
+
+void
+MergeConflictPanel::acceptConflicts(const std::vector<std::size_t>& indices)
+{
+    if (!indices.empty()) {
+        MergeConflictResolve::accept(_imp->gui, indices);
+    }
+}
+
+void
+MergeConflictPanel::resolveAll(ProjectMerge::ConflictSide side)
+{
+    ProjectPtr project = _imp->project.lock();
+    if (!project) {
+        return;
+    }
+    std::vector<std::size_t> all(project->getMergeConflicts().size());
+    for (std::size_t i = 0; i < all.size(); ++i) {
+        all[i] = i;
+    }
+    resolveConflicts(all, side);
+}
+
+void
+MergeConflictPanel::onMineClicked()
+{
+    resolveConflicts(getSelectedConflicts(), ProjectMerge::ConflictSide::eMine);
+}
+
+void
+MergeConflictPanel::onTheirsClicked()
+{
+    resolveConflicts(getSelectedConflicts(), ProjectMerge::ConflictSide::eTheirs);
+}
+
+void
+MergeConflictPanel::onBaseClicked()
+{
+    resolveConflicts(getSelectedConflicts(), ProjectMerge::ConflictSide::eBase);
+}
+
+void
+MergeConflictPanel::onAcceptClicked()
+{
+    acceptConflicts(getSelectedConflicts());
+}
+
+void
+MergeConflictPanel::onAllMineClicked()
+{
+    resolveAll(ProjectMerge::ConflictSide::eMine);
+}
+
+void
+MergeConflictPanel::onAllTheirsClicked()
+{
+    resolveAll(ProjectMerge::ConflictSide::eTheirs);
+}
+
+void
+MergeConflictPanel::enterEvent(QEnterEvent* e)
+{
+    enterEventBase();
+    QWidget::enterEvent(e);
+}
+
+void
+MergeConflictPanel::leaveEvent(QEvent* e)
+{
+    leaveEventBase();
+    QWidget::leaveEvent(e);
+}
+
+void
+MergeConflictPanel::keyPressEvent(QKeyEvent* e)
+{
+    handleUnCaughtKeyPressEvent(e);
+    QWidget::keyPressEvent(e);
+}
+
+void
+MergeConflictPanel::keyReleaseEvent(QKeyEvent* e)
+{
+    handleUnCaughtKeyUpEvent(e);
+    QWidget::keyReleaseEvent(e);
+}
+
+void
+MergeConflictPanel::mousePressEvent(QMouseEvent* e)
+{
+    takeClickFocus();
+    QWidget::mousePressEvent(e);
+}
+
+NATRON_NAMESPACE_EXIT
+
+NATRON_NAMESPACE_USING
+#include "moc_MergeConflictPanel.cpp"

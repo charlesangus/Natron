@@ -70,6 +70,7 @@ CLANG_DIAG_ON(deprecated)
 #include "Gui/GuiMacros.h"
 #include "Gui/Histogram.h"
 #include "Gui/Menu.h"
+#include "Gui/MergeConflictPanel.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/ProgressPanel.h"
 #include "Gui/PropertiesBinWrapper.h"
@@ -447,6 +448,7 @@ TabWidget::createMenu(const QPoint& globalPos)
     menu.addAction( tr("Script editor here"), this, SLOT(moveScriptEditorHere()) );
     menu.addAction( tr("Progress Panel here"), this, SLOT(moveProgressPanelHere()) );
     menu.addAction(tr("Scene Graph here"), this, SLOT(moveSceneGraphHere()));
+    menu.addAction(tr("Merge Conflicts here"), this, SLOT(moveMergeConflictsHere()));
 
     std::map<NATRON_PYTHON_NAMESPACE::PyPanel*, std::string> userPanels = _imp->gui->getPythonPanels();
     if ( !userPanels.empty() ) {
@@ -885,6 +887,12 @@ void
 TabWidget::moveSceneGraphHere()
 {
     moveTab(_imp->gui->getSceneGraphPanel(), _imp->gui->getSceneGraphPanel(), this);
+}
+
+void
+TabWidget::moveMergeConflictsHere()
+{
+    moveTab(_imp->gui->getMergeConflictPanel(), _imp->gui->getMergeConflictPanel(), this);
 }
 
 TabWidget*

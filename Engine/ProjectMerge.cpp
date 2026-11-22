@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <cassert>
 #include <exception>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <set>
@@ -40,6 +41,8 @@
 #include <QtCore/QThread>
 
 #include "Engine/GraphOpApply.h"
+#include "Engine/Knob.h"
+#include "Engine/Node.h"
 #include "Engine/Project.h"
 
 #include "Serialization/Bundle/ProjectBundle.h"
@@ -142,6 +145,108 @@ namespace {
     {
         if (std::find(list->begin(), list->end(), name) == list->end()) {
             list->push_back(name);
+        }
+    }
+
+    bool
+    readSnapshot(const QString& path,
+                 Serialization::ProjectSerialization* snapshot,
+                 QString* error)
+    {
+        try {
+            Serialization::ProjectBundleReader bundle(path.toStdString());
+            Serialization::YamlWarnings warnings;
+            *snapshot = bundle.readProject(&warnings);
+        } catch (const std::exception& e) {
+            if (error) {
+                *error = QCoreApplication::translate("ProjectMerge", "%1 cannot be read: %2").arg(path).arg(QString::fromUtf8(e.what()));
+            }
+
+            return false;
+        }
+
+        return true;
+    }
+
+    void
+    remapNodeIds(const std::list<Serialization::NodeSerializationPtr>& nodes,
+                 const Serialization::NodeCorrespondence& correspondence)
+    {
+        for (const Serialization::NodeSerializationPtr& node : nodes) {
+            if (!node) {
+                continue;
+            }
+            const std::string mapped = correspondence.otherFor(node->id);
+            if (!mapped.empty()) {
+                node->id = mapped;
+            }
+            remapNodeIds(node->children, correspondence);
+        }
+    }
+
+    const Serialization::MergeConflictValue&
+    valueOf(const Serialization::MergeConflict& conflict,
+            ConflictSide side)
+    {
+        switch (side) {
+        case ConflictSide::eMine:
+            return conflict.mine;
+        case ConflictSide::eTheirs:
+            return conflict.theirs;
+        case ConflictSide::eBase:
+            break;
+        }
+
+        return conflict.base;
+    }
+
+    KnobIPtr
+    conflictKnob(const ProjectPtr& project,
+                 const Serialization::MergeConflict& conflict)
+    {
+        if (conflict.knob.empty()) {
+            return KnobIPtr();
+        }
+        if (!conflict.nodeId.empty()) {
+            NodePtr node = project->findNodeById(conflict.nodeId);
+
+            return node ? node->getKnobByName(conflict.knob) : KnobIPtr();
+        }
+        if (!conflict.baseNodeId.empty()) {
+            return KnobIPtr();
+        }
+
+        return project->getKnobByName(conflict.knob);
+    }
+
+    Serialization::KnobDimensionSerialization
+    defaultDimensionLike(const Serialization::KnobDimensionSerialization& live)
+    {
+        Serialization::KnobDimensionSerialization dimension;
+        dimension.defaultValue = live.defaultValue;
+        dimension.value = live.defaultValue;
+
+        return dimension;
+    }
+
+    // Times are compared as the curve merge stores them: copied, never computed.
+    void
+    setKeyAt(Serialization::CurveSerialization* curve,
+             double time,
+             const std::optional<Serialization::KeyFrameSerialization>& key)
+    {
+        std::vector<Serialization::KeyFrameSerialization>& keys = curve->keyframes;
+        keys.erase(std::remove_if(keys.begin(), keys.end(), [time](const Serialization::KeyFrameSerialization& k) {
+                       return k.time == time;
+                   }),
+                   keys.end());
+        if (key) {
+            Serialization::KeyFrameSerialization placed = *key;
+            placed.time = time;
+            keys.insert(std::upper_bound(keys.begin(), keys.end(), placed, [](const Serialization::KeyFrameSerialization& a, const Serialization::KeyFrameSerialization& b) {
+                            return a.time < b.time;
+                        }),
+                        placed);
         }
     }
 
@@ -365,6 +470,153 @@ compare(const ProjectPtr& project,
     }
 
     return summary;
+}
+
+bool
+compareWithFile(const ProjectPtr& project,
+                const QString& path,
+                ChangeSummary* summary,
+                QString* error)
+{
+    Serialization::ProjectSerialization other;
+    if (!readSnapshot(path, &other, error)) {
+        return false;
+    }
+    *summary = compare(project, other);
+
+    return true;
+}
+
+bool
+compareWithTemplateBase(const ProjectPtr& project,
+                        const std::string& templateKey,
+                        ChangeSummary* summary,
+                        QString* error)
+{
+    assert(QThread::currentThread() == qApp->thread());
+    const Serialization::TemplateImportSerialization* found = nullptr;
+    for (const Serialization::TemplateImportSerialization& entry : project->getTemplateImports()) {
+        if (entry.key == templateKey) {
+            found = &entry;
+            break;
+        }
+    }
+    if (!found || !found->base) {
+        if (error) {
+            *error = QCoreApplication::translate("ProjectMerge", "The project has no stored base for the template import %1").arg(QString::fromStdString(templateKey));
+        }
+
+        return false;
+    }
+
+    Serialization::ProjectSerialization mine;
+    project->toSerialization(&mine);
+    const Serialization::ProjectSerialization& base = *found->base;
+    const Serialization::MergePlan plan = Serialization::planMerge(base, mine, base, templateKey);
+    Serialization::ProjectSerialization other = Serialization::editableState(base);
+    remapNodeIds(other.nodes.nodes, plan.baseToMine);
+
+    ChangeSummary all = compare(project, other);
+    summary->nodes.clear();
+    summary->projectKnobs.clear();
+    summary->projectData = false;
+    for (NodeChange& change : all.nodes) {
+        if ((change.kind == NodeChange::eRemoved) || (plan.scope.find(change.nodeId) != plan.scope.end())) {
+            summary->nodes.push_back(std::move(change));
+        }
+    }
+
+    return true;
+}
+
+bool
+canChooseSide(const ProjectPtr& project,
+              const Serialization::MergeConflict& conflict)
+{
+    if ((conflict.kind != Serialization::MergeConflictKind::eValue) && (conflict.kind != Serialization::MergeConflictKind::eCurveKey)) {
+        return false;
+    }
+    if ((conflict.kind == Serialization::MergeConflictKind::eCurveKey) && !conflict.time) {
+        return false;
+    }
+
+    return bool(conflictKnob(project, conflict));
+}
+
+bool
+sideOperation(const ProjectPtr& project,
+              const Serialization::MergeConflict& conflict,
+              ConflictSide side,
+              Serialization::GraphOp* op,
+              QString* error)
+{
+    assert(QThread::currentThread() == qApp->thread());
+    auto fail = [error](const QString& message) {
+        if (error) {
+            *error = message;
+        }
+
+        return false;
+    };
+    if (!canChooseSide(project, conflict)) {
+        return fail(QCoreApplication::translate("ProjectMerge", "This conflict has no side to choose: the merge's choice can only be accepted"));
+    }
+    KnobIPtr knob = conflictKnob(project, conflict);
+    Serialization::KnobSerialization state;
+    knob->toSerialization(&state);
+    const Serialization::MergeConflictValue& value = valueOf(conflict, side);
+    const int dimension = conflict.dimension;
+
+    if (conflict.kind == Serialization::MergeConflictKind::eValue) {
+        if (dimension < 0) {
+            state.parametricCurves = value.knob ? value.knob->parametricCurves : std::nullopt;
+            state.stringAnimation = value.knob ? value.knob->stringAnimation : std::nullopt;
+            state.choiceOptionID = value.knob ? value.knob->choiceOptionID : std::nullopt;
+        } else {
+            if (dimension >= int(state.dimensions.size())) {
+                return fail(QCoreApplication::translate("ProjectMerge", "%1 has no dimension %2").arg(QString::fromStdString(conflict.knob)).arg(dimension));
+            }
+            if (value.knob && (dimension < int(value.knob->dimensions.size()))) {
+                state.dimensions[dimension] = value.knob->dimensions[dimension];
+            } else {
+                state.dimensions[dimension] = defaultDimensionLike(state.dimensions[dimension]);
+            }
+        }
+    } else {
+        const double time = *conflict.time;
+        if (state.parametricCurves) {
+            if ((dimension < 0) || (dimension >= int(state.parametricCurves->size()))) {
+                return fail(QCoreApplication::translate("ProjectMerge", "%1 has no curve %2").arg(QString::fromStdString(conflict.knob)).arg(dimension));
+            }
+            std::list<Serialization::CurveSerialization>::iterator curve = state.parametricCurves->begin();
+            std::advance(curve, dimension);
+            setKeyAt(&*curve, time, value.key);
+        } else {
+            if ((dimension < 0) || (dimension >= int(state.dimensions.size()))) {
+                return fail(QCoreApplication::translate("ProjectMerge", "%1 has no dimension %2").arg(QString::fromStdString(conflict.knob)).arg(dimension));
+            }
+            Serialization::KnobDimensionSerialization& target = state.dimensions[dimension];
+            if (!target.curve) {
+                target.curve = Serialization::CurveSerialization();
+            }
+            setKeyAt(&*target.curve, time, value.key);
+            if (target.curve->keyframes.empty()) {
+                target.curve.reset();
+            }
+        }
+    }
+
+    Serialization::SetKnobOp set;
+    if (!conflict.nodeId.empty()) {
+        set.nodeId = conflict.nodeId;
+    }
+    set.knobName = conflict.knob;
+    if (!Serialization::isDefaultKnob(state)) {
+        set.value = std::move(state);
+    }
+    *op = std::move(set);
+
+    return true;
 }
 
 } // namespace ProjectMerge

@@ -131,6 +131,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/ViewerGL.h"
 #include "Gui/ViewerTab.h"
 
+#include "Serialization/Merge/MergeConflict.h"
 #include "Serialization/NodeSerialization.h"
 
 #define NATRON_STATE_INDICATOR_OFFSET 5
@@ -185,6 +186,33 @@ makeChainLinkIcon(double diameter)
     rotation.rotate(-45.);
 
     return rotation.map(icon);
+}
+
+/**
+ * @brief An exclamation mark centred on (0,0), sized for a badge of the given diameter and meant to
+ * be stroked with round caps, which turn its zero-length lower stroke into the dot.
+ **/
+static QPainterPath
+makeWarningIcon(double diameter)
+{
+    const double rad = diameter / 2.;
+    QPainterPath icon;
+    icon.moveTo(0., -0.5 * rad);
+    icon.lineTo(0., 0.1 * rad);
+    icon.moveTo(0., 0.45 * rad);
+    icon.lineTo(0., 0.45 * rad);
+
+    return icon;
+}
+
+// Where the merge conflict badge sits: on the top edge, left of the expression badge at the
+// top-right corner.
+static QPointF
+mergeConflictBadgeCenter(const QPointF& topRight)
+{
+    const double offset = TO_DPIX(NATRON_ELLIPSE_WARN_DIAMETER) / 2. + TO_DPIX(NATRON_LINK_BADGE_DIAMETER) / 2. + TO_DPIX(2);
+
+    return QPointF(topRight.x() - offset, topRight.y());
 }
 
 static QColor
@@ -429,6 +457,7 @@ NodeGui::NodeGui(QGraphicsItem* parent)
     , _overlayLocked(false)
     , _availableViewsIndicator()
     , _passThroughIndicator()
+    , _mergeConflictIndicator()
     , identityStateSet(false)
 {
 }
@@ -1229,6 +1258,22 @@ NodeGui::createGui()
                                                                             NATRON_NAMESPACE::WhiteSpaceNormal));
     _linkedNodeIndicator->setActive(false);
 
+    _mergeConflictIndicator.reset(new NodeGuiIndicator(_indicatorLayer, makeWarningIcon(linkDiam), mergeConflictBadgeCenter(bbox.topRight()), linkDiam,
+                                                       QColor(232, 160, 20), QColor(30, 30, 30)));
+    _mergeConflictIndicator->setActive(false);
+    {
+        const std::string nodeId = node->getNodeId();
+        std::size_t conflicts = 0;
+        if (!nodeId.empty()) {
+            for (const Serialization::MergeConflict& conflict : node->getApp()->getProject()->getMergeConflicts()) {
+                if (conflict.nodeId == nodeId) {
+                    ++conflicts;
+                }
+            }
+        }
+        setMergeConflictCount(conflicts);
+    }
+
     onAvailableViewsChanged();
 
     GroupInput* isGroupInput = dynamic_cast<GroupInput*>( node->getEffectInstance().get() );
@@ -1633,6 +1678,9 @@ NodeGui::resize(int width,
     }
     if (_passThroughIndicator) {
         _passThroughIndicator->refreshPosition(bottomRight);
+    }
+    if (_mergeConflictIndicator) {
+        _mergeConflictIndicator->refreshPosition(mergeConflictBadgeCenter(topRight));
     }
 
     _persistentMessage->setPos(midNodeX - (pMWidth / 2), topLeft.y() + height / 2 - metrics.height() / 2);
@@ -5414,6 +5462,33 @@ NodeGui::setOverlayLocked(bool locked)
 {
     assert( QThread::currentThread() == qApp->thread() );
     _overlayLocked = locked;
+}
+
+bool
+NodeGui::isMergeConflictBadgeShown() const
+{
+    return _mergeConflictIndicator && _mergeConflictIndicator->isActive();
+}
+
+void
+NodeGui::setMergeConflictCount(std::size_t count)
+{
+    if (!_mergeConflictIndicator) {
+        return;
+    }
+    if (count == 0) {
+        if (_mergeConflictIndicator->isActive()) {
+            _mergeConflictIndicator->setActive(false);
+        }
+
+        return;
+    }
+    const QString tooltip = (count == 1) ? tr("This node has an unresolved merge conflict. Review it in the Merge Conflicts panel.")
+                                         : tr("This node has %1 unresolved merge conflicts. Review them in the Merge Conflicts panel.").arg(count);
+    _mergeConflictIndicator->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tooltip, NATRON_NAMESPACE::WhiteSpaceNormal));
+    if (!_mergeConflictIndicator->isActive()) {
+        _mergeConflictIndicator->setActive(true);
+    }
 }
 
 void

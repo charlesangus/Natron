@@ -184,6 +184,22 @@ public:
      * when the menu closes with no choice, ends a filtered launch without creating anything.
      **/
     void triggerTabMenuAction(QAction* action);
+
+    /**
+     * @brief Imports the template file at filePath into the graph last worked in, as one undo step.
+     * Returns the new import's key, or an empty string when it failed.
+     **/
+    QString importTemplate(const QString& filePath);
+
+    /**
+     * @brief Merges the current version of the template import templateKey into the project as one
+     * undo step: the file at filePath, or the one the import recorded when filePath is empty.
+     * Returns the number of conflicts the update raised, or -1 when it failed.
+     **/
+    int updateFromTemplate(const QString& templateKey, const QString& filePath = QString());
+
+    // Whether effect's node shows the badge of a node with unresolved merge conflicts.
+    bool isMergeConflictBadgeShown(Effect* effect) const;
 };
 
 NATRON_PYTHON_NAMESPACE_EXIT;

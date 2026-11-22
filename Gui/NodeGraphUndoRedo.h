@@ -602,7 +602,8 @@ public:
                          const ProjectPtr& project,
                          const std::vector<Serialization::GraphOp>& forward,
                          const std::vector<Serialization::GraphOp>& inverse,
-                         const QString& text);
+                         const QString& text,
+                         QUndoCommand* parent = 0);
 
     virtual ~ApplyGraphOpsCommand();
 
@@ -626,7 +627,34 @@ public:
                                                const ProjectPtr& project,
                                                const QString& text);
 
+    /**
+     * @brief applyAndPush(), recording the change as a child of parent instead of pushing it.
+     **/
+    static std::vector<Serialization::OpResult> applyAndRecord(NodeGraph* graph,
+                                                               const ProjectPtr& project,
+                                                               const std::vector<Serialization::GraphOp>& ops,
+                                                               const QString& text,
+                                                               QUndoCommand* parent);
+
+    /**
+     * @brief Records the change from before to after, project snapshots taken around an edit already
+     * made, as a child of parent. Returns false, recording nothing, when they do not differ.
+     **/
+    static bool recordChange(NodeGraph* graph,
+                             const ProjectPtr& project,
+                             const Serialization::ProjectSerialization& before,
+                             const Serialization::ProjectSerialization& after,
+                             const QString& text,
+                             QUndoCommand* parent);
+
 private:
+    static ApplyGraphOpsCommand* makeCommand(NodeGraph* graph,
+                                             const ProjectPtr& project,
+                                             const Serialization::ProjectSerialization& before,
+                                             const Serialization::ProjectSerialization& after,
+                                             const QString& text,
+                                             QUndoCommand* parent);
+
     void apply(const std::vector<Serialization::GraphOp>& ops);
 
     NodeGraph* _graph;

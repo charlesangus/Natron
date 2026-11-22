@@ -508,6 +508,13 @@ public:
 
     void setOverlayLocked(bool locked);
 
+    /**
+     * @brief Shows the merge conflict badge while count, the project's unresolved merge conflicts
+     * about this node, is not zero.
+     **/
+    void setMergeConflictCount(std::size_t count);
+    bool isMergeConflictBadgeShown() const;
+
     virtual void refreshStateIndicator();
     virtual void exportGroupAsPythonScript() OVERRIDE FINAL;
 
@@ -1054,6 +1061,7 @@ private:
     bool _overlayLocked;
     NodeGuiIndicatorPtr _availableViewsIndicator;
     NodeGuiIndicatorPtr _passThroughIndicator;
+    NodeGuiIndicatorPtr _mergeConflictIndicator;
     NodeWPtr _identityInput;
     bool identityStateSet;
     NATRON_PYTHON_NAMESPACE::PyModalDialog* _activeNodeCustomModalDialog;

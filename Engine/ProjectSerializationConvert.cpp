@@ -455,6 +455,8 @@ ProjectPrivate::restoreFromSerialization(const Serialization::ProjectSerializati
     }
     templateImports = serialization.templates;
     mergeConflicts = serialization.mergeConflicts;
+    Q_EMIT _publicInterface->templateImportsChanged();
+    Q_EMIT _publicInterface->mergeConflictsChanged();
 
     std::list<Format> serializedAdditionalFormats;
     for (std::list<Serialization::FormatSerialization>::const_iterator it = serialization.additionalFormats.begin(); it != serialization.additionalFormats.end(); ++it) {

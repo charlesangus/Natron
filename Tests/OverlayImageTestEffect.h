@@ -32,6 +32,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <list>
+#include <map>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -56,6 +57,8 @@ constexpr float kOverlayImageTestMaskValue = 0.25f;
 /**
  * @brief Fills its output with its "value" knob and caches it, and on an overlay image pass adds a
  * "mask" tile over the render window. Its "showMask" knob is its view knob, "fail" fails the render.
+ * With "readPlane" on, the pass reads the output plane instead and adds a "planeMask" tile, full
+ * where the plane's first channel is below "maskValue".
  * Counts renders in CountingTestRegistry.
  **/
 class OverlayImageTestEffect
@@ -129,6 +132,44 @@ public:
     virtual void releaseOverlayImageResources() OVERRIDE FINAL
     {
         ++_resourceReleases;
+    }
+
+    virtual std::list<ImageLayerDesc> overlayImageSourcePlanes(double /*time*/,
+                                                               ViewIdx /*view*/) OVERRIDE FINAL
+    {
+        KnobBoolPtr knob = _readPlane.lock();
+        std::list<ImageLayerDesc> layers;
+
+        if (knob && knob->getValue()) {
+            layers.push_back(ImageLayerDesc::getRGBAComponents());
+        }
+
+        return layers;
+    }
+
+    virtual void addOverlayImagesFromPlanes(const std::map<ImageLayerDesc, ImagePtr>& planes,
+                                            double /*time*/,
+                                            ViewIdx /*view*/,
+                                            const RectD& canonicalWindow) OVERRIDE FINAL
+    {
+        KnobDoublePtr maskValueKnob = _maskValue.lock();
+        const float maskValue = maskValueKnob ? (float)maskValueKnob->getValue() : kOverlayImageTestMaskValue;
+
+        for (const std::pair<const ImageLayerDesc, ImagePtr>& plane : planes) {
+            const unsigned int level = plane.second->getMipmapLevel();
+            const RectI window = canonicalWindow.toPixelEnclosing(level, plane.second->getPixelAspectRatio());
+            Image::ReadAccess access(plane.second.get());
+            std::vector<unsigned char> values((size_t)window.width() * (size_t)window.height(), 0);
+            size_t i = 0;
+            for (int y = window.y1; y < window.y2; ++y) {
+                for (int x = window.x1; x < window.x2; ++x, ++i) {
+                    if (reinterpret_cast<const float*>(access.pixelAt(x, y))[0] < maskValue) {
+                        values[i] = 255;
+                    }
+                }
+            }
+            addOverlayImageTile("planeMask", OverlayColor::fromRGBA(0.f, 1.f, 0.f, 0.5f), window, level, std::move(values));
+        }
     }
 
     int overlayImageResourceReleases() const
@@ -210,6 +251,15 @@ private:
         page->addKnob(maskValue);
         _maskValue = maskValue;
 
+        KnobBoolPtr readPlane = createKnob<KnobBool>(std::string("Read Plane"));
+        readPlane->setName("readPlane");
+        readPlane->setAnimationEnabled(false);
+        readPlane->setDefaultValue(false);
+        readPlane->setEvaluateOnChange(false);
+        readPlane->setHashExempt(true);
+        page->addKnob(readPlane);
+        _readPlane = readPlane;
+
         KnobBoolPtr fail = createKnob<KnobBool>(std::string("Fail"));
         fail->setName("fail");
         fail->setAnimationEnabled(false);
@@ -266,6 +316,7 @@ private:
     KnobDoubleWPtr _value;
     KnobBoolWPtr _showMask;
     KnobDoubleWPtr _maskValue;
+    KnobBoolWPtr _readPlane;
     KnobBoolWPtr _fail;
     std::atomic<int> _resourceReleases { 0 };
     std::mutex _holdMutex;

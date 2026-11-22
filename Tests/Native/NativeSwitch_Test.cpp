@@ -439,7 +439,7 @@ expectBlackAnswer(const NodeMetadataConstPtr& metadata,
 {
     ASSERT_TRUE(bool(metadata)) << what;
     EXPECT_EQ(4, metadata->getNComps(-1)) << what;
-    EXPECT_EQ(std::string(kNatronColorLayerID), metadata->getComponentsType(-1)) << what;
+    EXPECT_EQ(eImageComponentsTypeColor, metadata->getComponentsType(-1)) << what;
     EXPECT_EQ(eImageBitDepthFloat, metadata->getBitDepth(-1)) << what;
     EXPECT_EQ(kSwitchProjectFormat, metadata->getOutputFormat()) << what;
     EXPECT_DOUBLE_EQ(kSwitchProjectPar, metadata->getPixelAspectRatio(-1)) << what;

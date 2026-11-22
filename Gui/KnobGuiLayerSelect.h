@@ -43,12 +43,12 @@ struct KnobGuiLayerSelectPrivate;
 
 /**
  * @brief Runs NewLayerDialog for knob's node and, unless the user cancels or the
- * registry refuses the layer, calls push with the new layer's id and label. Usable for
+ * registry refuses the layer, calls push with the new layer's id. Usable for
  * any knob on the node, not just a KnobLayerSelect.
  **/
 void runNewLayerDialog(const KnobIPtr& knob,
                        QWidget* parent,
-                       const std::function<void(const std::string& layerID, const std::string& layerLabel)>& push);
+                       const std::function<void(const std::string& layerID)>& push);
 
 /**
  * @brief The GUI of a KnobLayerSelect: one LayerChannelRow in layer-select mode, with

@@ -4699,7 +4699,7 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
         }
 
         if ( colorImage && stats && stats->isInDepthProfilingEnabled() ) {
-            stats->addRenderInfosForNode( getNode(), NodePtr(), colorImage->getComponents().getChannelsLabel(), viewerRenderRoI, viewerRenderTimeRecorder->getTimeSinceCreation() );
+            stats->addRenderInfosForNode(getNode(), NodePtr(), colorImage->getComponents().getUserFacingLabel(), viewerRenderRoI, viewerRenderTimeRecorder->getTimeSinceCreation());
         }
     } // for (std::vector<RectI>::iterator rect = splitRoi.begin(); rect != splitRoi.end(), ++rect) {
 

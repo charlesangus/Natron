@@ -106,7 +106,7 @@ private:
         rgb.push_back("R");
         rgb.push_back("G");
         rgb.push_back("B");
-        (*comps)[-1].push_back(ImageLayerDesc("diffuse", "diffuse", "RGB", rgb));
+        (*comps)[-1].push_back(ImageLayerDesc("diffuse", rgb));
 
         *passThroughTime = time;
         *passThroughView = view;

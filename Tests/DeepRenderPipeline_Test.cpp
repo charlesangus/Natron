@@ -1033,7 +1033,7 @@ diffuseLayer()
     channels.push_back("G");
     channels.push_back("B");
 
-    return ImageLayerDesc("diffuse", "diffuse", "", channels);
+    return ImageLayerDesc("diffuse", channels);
 }
 
 // The same layer ID and width as diffuseLayer(), over other channels.
@@ -1046,7 +1046,7 @@ diffuseXyzLayer()
     channels.push_back("Y");
     channels.push_back("Z");
 
-    return ImageLayerDesc("diffuse", "diffuse", "", channels);
+    return ImageLayerDesc("diffuse", channels);
 }
 
 // Every pixel of image holds the front-to-back flatten of the named deep channels, in order.

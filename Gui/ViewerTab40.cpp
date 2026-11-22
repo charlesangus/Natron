@@ -809,18 +809,6 @@ ViewerTab::onInternalNodeScriptNameChanged(const QString& /*name*/)
     }
 }
 
-static ChoiceOption
-viewerLayerChoiceOption(const ImageLayerDesc& layer)
-{
-    // A colour view's label is its own ID ("rgba", not "rgba." + a channels label): getLayerOption()
-    // appends getChannelsLabel(), which views leave empty.
-    if (ImageLayerDesc::isColorViewID(layer.getLayerID())) {
-        return ChoiceOption(layer.getLayerID(), layer.getLayerLabel(), "");
-    }
-
-    return layer.getLayerOption();
-}
-
 // The alpha menu entry, counting the leading "-", of layer's last channel. A colour view's channel
 // is listed under the one view the alpha menu keeps for the stream's layout, and is absent when
 // that layout lacks it.
@@ -959,7 +947,7 @@ ViewerTab::refreshLayerAndAlphaChannelComboBoxAtTime(double time)
     int firstColorIndex = -1;
     int index = 1;
     for (std::list<ImageLayerDesc>::iterator it = components.begin(); it != components.end(); ++it, ++index) {
-        _imp->layerChoice->addItem(QString::fromUtf8(viewerLayerChoiceOption(*it).label.c_str()));
+        _imp->layerChoice->addItem(QString::fromUtf8(it->getLayerID().c_str()));
         if ((layerIndex == -1) && (it->getLayerID() == layerID)) {
             layerIndex = index;
         }

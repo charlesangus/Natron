@@ -540,8 +540,8 @@ protected:
     {
         std::list<ImageLayerDesc> layers;
         layers.push_back(ImageLayerDesc::getRGBAComponents());
-        layers.push_back(ImageLayerDesc("depth", "depth", "", std::vector<std::string>(1, "Z")));
-        layers.push_back(ImageLayerDesc("primId", "primId", "", std::vector<std::string>(1, "id")));
+        layers.push_back(ImageLayerDesc("depth", std::vector<std::string>(1, "Z")));
+        layers.push_back(ImageLayerDesc("primId", std::vector<std::string>(1, "id")));
 
         return layers;
     }

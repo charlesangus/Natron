@@ -52,6 +52,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QTimer>
 #include <QWidget>
 #include <QtGlobal> // for Q_OS_*
+#include <ofxImageEffect.h>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 

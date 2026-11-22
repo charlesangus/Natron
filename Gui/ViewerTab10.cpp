@@ -29,6 +29,9 @@
 #include <QDebug>
 #include <algorithm>
 #include <cassert>
+#include <cstdint>
+#include <limits>
+#include <optional>
 #include <stdexcept>
 
 #include <QApplication>
@@ -335,8 +338,53 @@ ViewerTab::abortRendering()
 }
 
 void
+ViewerTab::onViewerStaleChanged(bool stale)
+{
+    const qint64 now = _imp->staleCueClock.elapsed();
+    if (stale && !_imp->staleCueTiming.stale()) {
+        if (_imp->viewer) {
+            _imp->viewer->noteStaleTransition();
+        }
+        const SettingsPtr settings = appPTR->getCurrentSettings();
+        _imp->staleCueTiming.setDelayMs(settings->getStaleCueDelayMs());
+        _imp->staleCueTiming.setHoldMs(settings->getStaleCueHoldMs());
+    }
+    _imp->staleCueTiming.setStale(stale, now);
+    refreshStaleCue();
+}
+
+void
+ViewerTab::onStaleCueTimeout()
+{
+    _imp->staleCueTiming.advance(_imp->staleCueClock.elapsed());
+    refreshStaleCue();
+}
+
+void
+ViewerTab::refreshStaleCue()
+{
+    const StaleCueStyleEnum style = appPTR->getCurrentSettings()->getStaleCueStyle();
+    const bool visible = (style != eStaleCueStyleOff) && _imp->staleCueTiming.visible();
+    if (_imp->viewer) {
+        _imp->viewer->setStaleCue(style, visible);
+    }
+
+    const std::optional<std::int64_t> deadline = _imp->staleCueTiming.nextDeadlineMs();
+    if ((style == eStaleCueStyleOff) || !deadline) {
+        _imp->staleCueTimer.stop();
+
+        return;
+    }
+    const std::int64_t wait = std::max<std::int64_t>(0, *deadline - _imp->staleCueClock.elapsed());
+    _imp->staleCueTimer.start((int)std::min<std::int64_t>(wait, std::numeric_limits<int>::max()));
+}
+
+void
 ViewerTab::onEngineStarted(bool forward)
 {
+    _imp->staleCueTiming.setPlayback(true, _imp->staleCueClock.elapsed());
+    refreshStaleCue();
+
     Gui* gui = getGui();
     if (!gui) {
         return;
@@ -397,6 +445,9 @@ ViewerTab::onSetDownPlaybackButtonsTimeout()
 void
 ViewerTab::onEngineStopped()
 {
+    _imp->staleCueTiming.setPlayback(false, _imp->staleCueClock.elapsed());
+    refreshStaleCue();
+
     if ( !getGui() ) {
         return;
     }

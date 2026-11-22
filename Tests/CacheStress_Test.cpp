@@ -407,7 +407,7 @@ buildAddLayers(const AppInstancePtr& app,
     setFormat(app);
     const NodeCollectionPtr root = app->getProject();
     std::string why;
-    if (app->getProject()->addLayer(ImageLayerDesc("mask", "mask", "", std::vector<std::string>(1, "A")), LayerRegistryEntry::eOriginUser, &why) == LayerRegistry::eAddResultRefused) {
+    if (app->getProject()->addLayer(ImageLayerDesc("mask", std::vector<std::string>(1, "A")), LayerRegistryEntry::eOriginUser, &why) == LayerRegistry::eAddResultRefused) {
         return fail(error, "could not register the mask layer: " + why);
     }
     const int source = paritySource(app, root, g, 0, 0);

@@ -846,7 +846,7 @@ StagedImageEffect::getPreferredMetadataAt(double time,
     Format projectFormat;
     getApp()->getProject()->getProjectDefaultFormat(&projectFormat);
     metadata.setNComps(-1, 4);
-    metadata.setComponentsType(-1, kNatronColorLayerID);
+    metadata.setComponentsType(-1, eImageComponentsTypeColor);
     metadata.setBitDepth(-1, eImageBitDepthFloat);
     metadata.setPixelAspectRatio(-1, projectFormat.getPixelAspectRatio());
     metadata.setOutputFormat(projectFormat);

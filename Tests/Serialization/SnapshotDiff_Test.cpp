@@ -372,7 +372,7 @@ TEST(SnapshotDiff, UserKnobsRotoTrackerAndProjectData)
 )yaml";
     ProjectSerialization after = projectFromYaml(edited({
         { "    inputs: {Input1: \"Merge1\"}\n", "    inputs: {Input1: \"Merge1\"}\n" + userPage },
-        { "  frameRate: 25\n", "  frameRate: 25\nformats:\n  - {name: \"Square\", rect: [0, 0, 512, 512], par: 1}\nlayers:\n  zdepth: {label: \"Depth\", channelsLabel: \"Z\", channels: [\"Z\"], origin: 1}\n" },
+        { "  frameRate: 25\n", "  frameRate: 25\nformats:\n  - {name: \"Square\", rect: [0, 0, 512, 512], par: 1}\nlayers:\n  zdepth: {channels: [\"Z\"], origin: 1}\n" },
     }));
     NodeSerializationPtr blur = findNode(after.nodes.nodes, "Blur1");
     blur->hasRotoContext = true;

@@ -733,7 +733,7 @@ namespace {
             }
             const std::vector<std::string> channels(kChannels, kChannels + p.first);
             std::string why;
-            if (rt.app->getProject()->addLayer(ImageLayerDesc(p.text, p.text, "", channels), LayerRegistryEntry::eOriginUser, &why) == LayerRegistry::eAddResultRefused) {
+            if (rt.app->getProject()->addLayer(ImageLayerDesc(p.text, channels), LayerRegistryEntry::eOriginUser, &why) == LayerRegistry::eAddResultRefused) {
                 *error = "the registry refused the layer: " + why;
 
                 return false;

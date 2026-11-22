@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Validates CCACHE_REMOTE_STORAGE for a CI job and exports the normalised value
 # through $GITHUB_ENV, or clears it when the value is unusable.
+{ set +x; } 2>/dev/null
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -11,6 +12,7 @@ if [[ -z "${CCACHE_REMOTE_STORAGE:-}" ]]; then
   echo "remote ccache: off"
   exit 0
 fi
+echo "::add-mask::${CCACHE_REMOTE_STORAGE}"
 normalised="$(ccache_remote_with_bazel_layout "${CCACHE_REMOTE_STORAGE}")"
 if [[ -z "${normalised}" ]]; then
   echo "remote ccache: unsupported value, off"

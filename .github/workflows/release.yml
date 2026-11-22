@@ -61,6 +61,11 @@ jobs:
           submodules: recursive
           lfs: false
 
+      # Runs before the dispatch tag is checked out: an older tag may predate
+      # the script.
+      - name: Normalise remote ccache layout
+        run: tools/ci/ccache-remote-setup.sh
+
       - name: Resolve dispatch tag
         if: github.event_name == 'workflow_dispatch'
         # A dispatch always checks out main, but beta-release.yml tags the
@@ -112,9 +117,6 @@ jobs:
 
       - name: Reset ccache statistics
         run: ccache -z
-
-      - name: Normalise remote ccache layout
-        run: tools/ci/ccache-remote-setup.sh
 
       - name: Cache test assets
         uses: actions/cache@v6.1.0

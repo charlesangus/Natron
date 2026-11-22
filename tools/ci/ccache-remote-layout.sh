@@ -3,18 +3,10 @@
 # address the same ccache remote key namespace whatever spelling the stored
 # URL uses.
 
-# Prints the storage value with any layout attribute replaced by bazel: the
-# built-in http client takes `layout=bazel`, the https helper takes the custom
-# attribute `@layout=bazel` and otherwise defaults to a different layout.
-# CRs are removed and surrounding whitespace is trimmed first. A single line
-# may carry a leading `url=` or `docker_url=` key and quotes, since the value
-# is often copied from the local config line. Several lines are read as the
-# local config file: blank and `#` lines are skipped, `url=` wins, otherwise
-# the one keyless http:// or https:// line is used, and every other key
-# (`network=`, `docker_url=`, ...) is ignored because it names an address CI
-# runners cannot reach. Prints nothing for anything that is not an http:// or
-# https:// URL, so a bad value turns the remote cache off instead of failing
-# every compile.
+# Prints the storage value with its layout attribute forced to bazel, or
+# nothing when it is not an http(s) URL. The http client spells the attribute
+# `layout=bazel` and the https helper `@layout=bazel`. Only url= is used from a
+# pasted config: CI ignores docker_url because runners cannot reach it.
 ccache_remote_with_bazel_layout() {
     local value="${1//$'\r'/}" stripped line key picked="" keyless="" keyless_count=0
     value="${value#"${value%%[![:space:]]*}"}"
@@ -77,13 +69,17 @@ ccache_remote_with_bazel_layout() {
     esac
 }
 
-# Prints the bare host of a normalised storage value (no credentials, port,
-# path or attributes), for masking it separately from the whole value.
+# Prints the bare host (an IPv6 literal keeps its brackets) of a normalised
+# storage value, for masking it separately from the whole value.
 ccache_remote_host() {
     local rest="${1#*://}"
     rest="${rest%%|*}"
-    rest="${rest%%/*}"
+    rest="${rest%%[/?#]*}"
     rest="${rest##*@}"
-    rest="${rest%%:*}"
+    if [[ "${rest}" == \[* ]]; then
+        rest="${rest%%]*}]"
+    else
+        rest="${rest%%:*}"
+    fi
     printf '%s' "${rest}"
 }

@@ -1370,6 +1370,8 @@ ViewerGL::drawPersistentMessage()
 void
 ViewerGL::initializeGL()
 {
+    // How many contexts the widget was initialised in: a dock or split that recreates it adds one.
+    setProperty("natronGlInitCount", property("natronGlInitCount").toInt() + 1);
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
     appPTR->initializeOpenGLFunctionsOnce();
@@ -1387,10 +1389,10 @@ ViewerGL::initializeGL()
         });
         QObject::disconnect(_imp->handoffContextConnection);
         _imp->handoffContextConnection = QObject::connect(glContext, &QOpenGLContext::aboutToBeDestroyed, this, [this]() {
+            // Left current: the slots after this one need the dying context current (see GLContextLoss).
             if (_imp->handoff) {
                 makeCurrent();
                 _imp->handoff->release();
-                doneCurrent();
             }
         });
         prepareHandoffAhead();

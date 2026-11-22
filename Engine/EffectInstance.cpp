@@ -249,6 +249,7 @@ EffectInstance::~EffectInstance()
     if (qApp && (QThread::currentThread() == qApp->thread())) {
         closeOverlayEditStepOf(this);
     }
+    retireSceneInputContextIds();
 }
 
 EffectInstancePtr
@@ -624,7 +625,7 @@ EffectInstance::getHash() const
 {
     NodePtr n = _node.lock();
 
-    return n->getHashValue();
+    return n ? n->getHashValue() : 0;
 }
 
 namespace {
@@ -1189,7 +1190,9 @@ EffectInstance::hasOutputConnected() const
 EffectInstancePtr
 EffectInstance::getInput(int n) const
 {
-    NodePtr inputNode = getNode()->getInput(n);
+    // No node once it is destroyed while a scene worker's job still holds this effect.
+    const NodePtr node = getNode();
+    NodePtr inputNode = node ? node->getInput(n) : NodePtr();
 
     if (inputNode) {
         return inputNode->getEffectInstance();
@@ -4467,6 +4470,9 @@ EffectInstance::evaluate(bool isSignificant,
     }
     if (isSignificant) {
         node->refreshPreviewsRecursivelyDownstream(time);
+        if (AppInstancePtr app = getApp()) {
+            Q_EMIT app->nodeEvaluated();
+        }
     }
 } // evaluate
 
@@ -4493,8 +4499,8 @@ EffectInstance::setPersistentMessage(MessageTypeEnum type,
     if (isCheckingIdentityForMetadata(this)) {
         return;
     }
+    // No node once it is destroyed while a scene worker's job still evaluates this effect.
     NodePtr node = getNode();
-    assert(node);
     if (node) {
         node->setPersistentMessage(type, content);
     }
@@ -4504,7 +4510,6 @@ bool
 EffectInstance::hasPersistentMessage()
 {
     NodePtr node = getNode();
-    assert(node);
     return node ? node->hasPersistentMessage() : false;
 }
 
@@ -4512,11 +4517,10 @@ void
 EffectInstance::clearPersistentMessage(bool recurse)
 {
     NodePtr node = getNode();
-    assert(node);
     if (node) {
         node->clearPersistentMessage(recurse);
+        assert(!node->hasPersistentMessage());
     }
-    assert( !hasPersistentMessage() );
 }
 
 int

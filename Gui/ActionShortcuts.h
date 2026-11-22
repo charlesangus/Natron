@@ -455,6 +455,30 @@ CLANG_DIAG_ON(uninitialized)
 #define kShortcutIDActionViewer3DCreateFromSelection "createNodeFromSelection"
 #define kShortcutDescActionViewer3DCreateFromSelection "Create Node from Selection"
 
+#define kShortcutIDActionViewer3DDrawChildren "drawStateChildren"
+#define kShortcutDescActionViewer3DDrawChildren "Draw Children"
+
+#define kShortcutIDActionViewer3DDrawFull "drawStateFull"
+#define kShortcutDescActionViewer3DDrawFull "Draw Full"
+
+#define kShortcutIDActionViewer3DDrawLoadAll "drawStateLoadAll"
+#define kShortcutDescActionViewer3DDrawLoadAll "Load All"
+
+#define kShortcutIDActionViewer3DDrawParentBBox "drawStateParentBBox"
+#define kShortcutDescActionViewer3DDrawParentBBox "Box Parent"
+
+#define kShortcutIDActionViewer3DPickwalkParent "pickwalkParent"
+#define kShortcutDescActionViewer3DPickwalkParent "Pickwalk Parent"
+
+#define kShortcutIDActionViewer3DPickwalkChild "pickwalkChild"
+#define kShortcutDescActionViewer3DPickwalkChild "Pickwalk Child"
+
+#define kShortcutIDActionViewer3DPickwalkPrevSibling "pickwalkPrevSibling"
+#define kShortcutDescActionViewer3DPickwalkPrevSibling "Pickwalk Previous Sibling"
+
+#define kShortcutIDActionViewer3DPickwalkNextSibling "pickwalkNextSibling"
+#define kShortcutDescActionViewer3DPickwalkNextSibling "Pickwalk Next Sibling"
+
 #define kShortcutIDToggleWipe "toggleWipe"
 #define kShortcutDescToggleWipe "Toggle Wipe"
 

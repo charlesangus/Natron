@@ -31,6 +31,22 @@ if [[ "${NATRON_STAGE_NO_STRIP:-0}" != "1" ]]; then
     fi
 fi
 
+# NATRON_STAGE_SYMBOLS_DIR: where the symbol tables strip removes are kept, for
+# stack samples of the shipped bundle. Nothing in the bundle changes.
+SYMBOLS_DIR=""
+if [[ -n "${NATRON_STAGE_SYMBOLS_DIR:-}" && -z "$STRIP" ]]; then
+    echo "  NATRON_STAGE_SYMBOLS_DIR ignored: NATRON_STAGE_NO_STRIP=1 keeps the symbols in the bundle"
+elif [[ -n "${NATRON_STAGE_SYMBOLS_DIR:-}" ]]; then
+    for tool in objcopy nm readelf; do
+        if ! command -v "$tool" &>/dev/null; then
+            echo "error: $tool not found in PATH (needed by NATRON_STAGE_SYMBOLS_DIR)" >&2
+            exit 1
+        fi
+    done
+    mkdir -p "$NATRON_STAGE_SYMBOLS_DIR"
+    SYMBOLS_DIR="$(cd "$NATRON_STAGE_SYMBOLS_DIR" && pwd)"
+fi
+
 if [[ ! -f "$BUILD_DIR/CMakeCache.txt" ]]; then
     echo "error: $BUILD_DIR does not look like a CMake build directory (no CMakeCache.txt)" >&2
     exit 1
@@ -156,6 +172,7 @@ set_bundle_runpath() {
 
 STRIP_COUNT=0
 STRIP_FAILED=0
+SYMBOLS_COUNT=0
 STRIP_BYTES_BEFORE=0
 STRIP_BYTES_AFTER=0
 
@@ -174,10 +191,40 @@ STRIP_BYTES_AFTER=0
 # segment: it moves .dynsym to a file offset nothing maps while DT_SYMTAB keeps
 # the old address, and the executable segfaults in the loader. A stripped file
 # fed to patchelf is just a smaller ELF, which every patchelf handles.
+# A symtab-only file under SYMBOLS_DIR/.build-id, where eu-stack --debuginfo-path
+# finds it. That lookup fails for a non-PIE executable once patchelf has mapped
+# the page below its base (see strip_elf), so a top-level executable in bin/
+# also gets SYMBOLS_DIR/<name>.bin.syms, nm's address-sorted listing, which
+# heavy_scene_stack_window.py --symbols applies to frames by absolute address.
+keep_symbols() {
+    local target="$1" build_id name notes header
+
+    # Each reader gets the whole output before it looks at it: an awk that
+    # exits, or a grep -q that stops, on the first match closes the pipe while
+    # readelf is still writing, and pipefail turns that SIGPIPE (141) into a
+    # fatal error under set -e.
+    notes="$(LC_ALL=C readelf -n "$target" 2>/dev/null || true)"
+    build_id="$(awk '/Build ID:/ { print $3; exit }' <<< "$notes")"
+    if [[ ${#build_id} -gt 2 ]]; then
+        mkdir -p "$SYMBOLS_DIR/.build-id/${build_id:0:2}"
+        objcopy --only-keep-debug --strip-debug "$target" "$SYMBOLS_DIR/.build-id/${build_id:0:2}/${build_id:2}.debug" \
+            || echo "  warning: no symbol file for ${target#"$STAGE_DIR"/}" >&2
+    fi
+    if [[ "$(dirname "$target")" == "$STAGE_DIR/bin" && "$target" != *.bin ]] \
+        && header="$(LC_ALL=C readelf -h "$target" 2>/dev/null || true)" \
+        && grep -q 'Type: *EXEC' <<< "$header"; then
+        name="$(basename "$target").bin"
+        nm -n -S -C --defined-only "$target" > "$SYMBOLS_DIR/$name.syms" \
+            || echo "  warning: no symbol listing for ${target#"$STAGE_DIR"/}" >&2
+    fi
+    SYMBOLS_COUNT=$((SYMBOLS_COUNT + 1))
+}
+
 strip_elf() {
     local target="$1" size_before size_after
 
     [[ -n "$STRIP" ]] || return 0
+    [[ -z "$SYMBOLS_DIR" ]] || keep_symbols "$target"
 
     size_before="$(stat -c %s "$target")"
     chmod u+w "$target"
@@ -770,6 +817,9 @@ if [[ -n "$STRIP" ]]; then
     fi
 else
     echo "  skipped: NATRON_STAGE_NO_STRIP=1"
+fi
+if [[ -n "$SYMBOLS_DIR" ]]; then
+    echo "  symbols of $SYMBOLS_COUNT files kept in $SYMBOLS_DIR ($(du -sh "$SYMBOLS_DIR" | cut -f1))"
 fi
 
 # ldd is the right tool above -- finding host libraries to bundle is exactly

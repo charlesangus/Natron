@@ -113,6 +113,22 @@ public:
         eViewer3DLightingHeadlight
     };
 
+    // When the 3D viewer draws boxes in place of the scene.
+    enum SceneStandInModeEnum {
+        eSceneStandInModeOff = 0,
+        // While the view moves, when the last full frame took longer than the budget.
+        eSceneStandInModeInteraction,
+        // In place of every full frame.
+        eSceneStandInModeAlways
+    };
+
+    // What the 3D viewer's stand-in draws a box for.
+    enum SceneStandInBoxesEnum {
+        // Each model prim, or each draw state row on a stage without models.
+        eSceneStandInBoxesModels = 0,
+        eSceneStandInBoxesRows
+    };
+
     enum KnownHostNameEnum
     {
         eKnownHostNameNatron = 0,
@@ -414,6 +430,13 @@ public:
 
     // Sets the preference and saves it.
     void setViewer3DLighting(Viewer3DLightingEnum lighting);
+
+    SceneStandInModeEnum getSceneStandInMode() const;
+    // Milliseconds a full frame of the 3D viewer may take before its stand-in shows while the view moves.
+    int getSceneStandInBudgetMs() const;
+    SceneStandInBoxesEnum getSceneStandInBoxes() const;
+    // Milliseconds the view stays still before the full frame that replaces the stand-in starts.
+    int getSceneStandInRefillDelayMs() const;
     ///////////////////////////////////////////////////////
 
     bool areRGBPixelComponentsSupported() const;
@@ -452,6 +475,8 @@ public:
     // The UUID id of the chosen GPU device, or "" for automatic.
     std::string getGpuDevice() const;
     std::uint64_t getGpuMemoryBudgetMB() const;
+    // 0 for half the memory of the graphics card.
+    std::uint64_t getGpuTextureBudgetMB() const;
 
     bool isAutoTurboEnabled() const;
 
@@ -623,6 +648,7 @@ private:
     KnobChoicePtr _gpuComputeMode;
     KnobChoicePtr _gpuDevice;
     KnobIntPtr _gpuMemoryBudgetMB;
+    KnobIntPtr _gpuTextureBudget;
     KnobStringPtr _gpuStatus;
 
     // AI
@@ -722,6 +748,10 @@ private:
     KnobDoublePtr _viewer3DGuideSize;
     KnobChoicePtr _viewer3DTransformTarget;
     KnobChoicePtr _viewer3DLighting;
+    KnobChoicePtr _sceneStandInMode;
+    KnobIntPtr _sceneStandInBudget;
+    KnobChoicePtr _sceneStandInBoxes;
+    KnobIntPtr _sceneStandInRefillDelay;
 
     // Nodegraph
     KnobPagePtr _nodegraphTab;

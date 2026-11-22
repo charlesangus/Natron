@@ -36,6 +36,11 @@ endif()
 # USD's garch links OpenGL::GL without finding OpenGL itself.
 find_package(OpenGL REQUIRED)
 find_package(pxr CONFIG REQUIRED PATHS "${NATRON_USD_PREFIX}" NO_DEFAULT_PATH)
+# Engine's VDB primitives (Engine/Geo/GeoVDB) link the same OpenVDB as USD's hioOpenVDB. Found
+# here, at the top level, so the target is visible to every directory that links NatronEngine.
+if(NOT TARGET OpenVDB::openvdb)
+    find_package(OpenVDB CONFIG REQUIRED)
+endif()
 
 # The same Conan build names MaterialX's targets materialx::<Lib>; MaterialX's own config, found
 # above, names them <Lib>.
@@ -72,8 +77,8 @@ endif()
 # lights it hands the engine; hio's image reader interface for the natron:// live textures; hdSt's
 # resource registry for the Ptex memory limit; and hdsi's implicit-surface scene index, which
 # tessellates UsdGeom's Cube, Sphere and the like for a delegate such as Cycles that takes only
-# meshes.
-set(NATRON_USD_ENGINE_LIBRARIES usdImagingGL usdImaging hdx hdSt hdsi hd hgi hgiGL glf garch hio cameraUtil usdUtils usd sdf usdGeom usdLux usdShade usdSkel usdRender sdr pcp ar kind plug vt gf tf work trace arch)
+# meshes; usdVol for the volumes GeoToUSD and USDToGeo write and read.
+set(NATRON_USD_ENGINE_LIBRARIES usdImagingGL usdImaging hdx hdSt hdsi hd hgi hgiGL glf garch hio cameraUtil usdUtils usd sdf usdGeom usdLux usdShade usdSkel usdRender usdVol sdr pcp ar kind plug vt gf tf work trace arch)
 
 # What the viewer's scene view (Gui/SceneViewport) links: the same Storm render as USDRender.
 set(NATRON_USD_GUI_LIBRARIES ${NATRON_USD_ENGINE_LIBRARIES})

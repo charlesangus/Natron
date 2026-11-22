@@ -714,10 +714,22 @@ GeoToUSD::renderScene(const SceneRenderActionArgs& args,
 
     std::vector<std::unique_ptr<const GeoUsdConvert>> converts;
     std::vector<std::string> sheared;
+    std::vector<std::string> volumeNotes;
+    std::vector<std::string> volumeFailures;
     const auto noteSheared = [&](const GeoUsdConvert& convert) {
         for (const PXR_NS::SdfPath& path : convert.shearedInstances()) {
             if (std::find(sheared.begin(), sheared.end(), path.GetString()) == sheared.end()) {
                 sheared.push_back(path.GetString());
+            }
+        }
+        for (const std::string& note : convert.volumeNotes()) {
+            if (std::find(volumeNotes.begin(), volumeNotes.end(), note) == volumeNotes.end()) {
+                volumeNotes.push_back(note);
+            }
+        }
+        for (const std::string& failure : convert.volumeWriteFailures()) {
+            if (std::find(volumeFailures.begin(), volumeFailures.end(), failure) == volumeFailures.end()) {
+                volumeFailures.push_back(failure);
             }
         }
     };
@@ -783,7 +795,7 @@ GeoToUSD::renderScene(const SceneRenderActionArgs& args,
         return eStatusFailed;
     }
 
-    if (missing.empty() && collisions.empty() && sheared.empty()) {
+    if (missing.empty() && collisions.empty() && sheared.empty() && volumeNotes.empty() && volumeFailures.empty()) {
         clearPersistentMessage(false);
 
         return eStatusOK;
@@ -816,7 +828,16 @@ GeoToUSD::renderScene(const SceneRenderActionArgs& args,
             message += QString::fromUtf8("\n  ") + QString::fromStdString(path);
         }
     }
-    setPersistentMessage(eMessageTypeWarning, message.toStdString());
+    for (const std::vector<std::string>* notes : { &volumeFailures, &volumeNotes }) {
+        for (const std::string& note : *notes) {
+            if (!message.isEmpty()) {
+                message += QString::fromUtf8("\n");
+            }
+            message += QString::fromStdString(note);
+        }
+    }
+    const bool onlyVolumeNotes = missing.empty() && collisions.empty() && sheared.empty() && volumeFailures.empty();
+    setPersistentMessage(onlyVolumeNotes ? eMessageTypeInfo : eMessageTypeWarning, message.toStdString());
 
     return eStatusOK;
 } // GeoToUSD::renderScene

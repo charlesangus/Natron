@@ -130,6 +130,7 @@
 #include "Engine/Dot.h"
 #include "Engine/FileSystemModel.h"
 #include "Engine/GPUContextPool.h"
+#include "Engine/Geo/GeoVDB.h"
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuDevice.h"
 #endif
@@ -1132,6 +1133,7 @@ AppManager::loadInternal(const CLArgs& cl)
 
     registerEngineMetaTypes();
     registerGuiMetaTypes();
+    geoInitializeOpenVDB();
 
     qApp->setOrganizationName( QString::fromUtf8(NATRON_ORGANIZATION_NAME) );
     qApp->setOrganizationDomain( QString::fromUtf8(NATRON_ORGANIZATION_DOMAIN) );

@@ -67,8 +67,10 @@ enum GeoPointDeleteModeEnum {
 
 class GeoDetail;
 class GeoPointTree;
+class GeoVDBGrid;
 typedef std::shared_ptr<GeoDetail> GeoDetailPtr;
 typedef std::shared_ptr<const GeoDetail> GeoDetailConstPtr;
+typedef std::shared_ptr<const GeoVDBGrid> GeoVDBGridConstPtr;
 
 /**
  * @brief A geometry detail in Houdini's model: one pool of points, vertices that each reference
@@ -195,6 +197,16 @@ public:
         return _sharedDetails;
     }
 
+    /**
+     * @brief The immutable grids that VDB primitives hold, one entry per distinct pointer.
+     * Primitives refer to an entry by index (see GeoVDB.h); contentHash() and getSizeInBytes()
+     * cover each entry once.
+     **/
+    std::span<const GeoVDBGridConstPtr> sharedGrids() const
+    {
+        return _sharedGrids;
+    }
+
     /** @brief Built on first use; shared by copies until a builder changes the topology. */
     std::shared_ptr<const GeoReverseTopology> reverseTopology() const;
 
@@ -237,6 +249,7 @@ private:
     std::array<GroupMap, 3> _groups;
     EdgeGroupMap _edgeGroups;
     std::vector<GeoDetailConstPtr> _sharedDetails;
+    std::vector<GeoVDBGridConstPtr> _sharedGrids;
     bool _pointPrecision64 = false;
     // Set while a builder owns this detail: nothing it computes is cached, since attributes
     // handed out for writing may still change.
@@ -315,6 +328,13 @@ public:
      **/
     std::int32_t addSharedDetail(GeoDetailConstPtr shared);
 
+    /**
+     * @brief Index of @p grid in sharedGrids(), appended when its pointer is not there yet.
+     * finish() drops entries that no live VDB primitive refers to. Throws std::invalid_argument
+     * for a null pointer.
+     **/
+    std::int32_t addSharedGrid(GeoVDBGridConstPtr grid);
+
     /** @brief Converts P between float32 and float64 storage. */
     void setPointPrecision64(bool precision64);
 
@@ -354,6 +374,7 @@ private:
     void validate() const;
     void startBuilding();
     void pruneSharedDetails();
+    void pruneSharedGrids();
 
     GeoDetail _detail;
 };

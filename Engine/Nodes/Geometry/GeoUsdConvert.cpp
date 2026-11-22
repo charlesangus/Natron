@@ -48,6 +48,7 @@
 #include <pxr/base/gf/vec3i.h>
 #include <pxr/base/gf/vec4i.h>
 #include <pxr/base/tf/stringUtils.h>
+#include <pxr/usd/sdf/assetPath.h>
 #include <pxr/usd/sdf/listOp.h>
 #include <pxr/usd/usdGeom/basisCurves.h>
 #include <pxr/usd/usdGeom/curves.h>
@@ -55,11 +56,15 @@
 #include <pxr/usd/usdGeom/points.h>
 #include <pxr/usd/usdGeom/primvar.h>
 #include <pxr/usd/usdGeom/subset.h>
+#include <pxr/usd/usdVol/openVDBAsset.h>
+#include <pxr/usd/usdVol/tokens.h>
+#include <pxr/usd/usdVol/volume.h>
 #ifdef NATRON_GEOUSDCONVERT_RESTORE_EMIT
 #undef NATRON_GEOUSDCONVERT_RESTORE_EMIT
 #define emit
 #endif
 
+#include "Engine/Geo/GeoVDB.h"
 #include "Engine/Hash64.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
@@ -81,6 +86,8 @@ struct Tokens {
     const TfToken prototypes { "Prototypes" };
     const TfToken xformOpTransform { "xformOp:transform" };
     const TfToken pathAttr { "path" };
+    const TfToken volume { "Volume" };
+    const TfToken openVDBAsset { "OpenVDBAsset" };
 };
 
 const Tokens&
@@ -248,7 +255,7 @@ findReadType(const SdfValueTypeName& scalar)
 bool
 isPackedIntrinsic(const std::string& name)
 {
-    return name == kGeoPackedXformAttr || name == kGeoPackedBoundsAttr || name == kGeoPackedDetailAttr || name == kGeoPackedUSDPathAttr || name == kGeoPackedUSDParentXformAttr;
+    return name == kGeoPackedXformAttr || name == kGeoPackedBoundsAttr || name == kGeoPackedDetailAttr || name == kGeoPackedUSDPathAttr || name == kGeoPackedUSDParentXformAttr || name == kGeoVDBGridAttr || name == kGeoVDBBoundsAttr;
 }
 
 std::string
@@ -267,6 +274,8 @@ kindName(GeoUsdPrimKindEnum kind)
         return "instances";
     case eGeoUsdPrimOverride:
         return "override";
+    case eGeoUsdPrimVolume:
+        return "volume";
     }
 
     return "prim";
@@ -289,6 +298,8 @@ kindTypeName(GeoUsdPrimKindEnum kind)
         return tk.xform;
     case eGeoUsdPrimOverride:
         break;
+    case eGeoUsdPrimVolume:
+        return tk.volume;
     }
 
     return TfToken();
@@ -706,6 +717,9 @@ struct GeoUsdConvert::Partition {
     std::vector<std::int32_t> instancePrototype;
     std::vector<GeoDetailConstPtr> prototypeDetails;
     std::vector<std::shared_ptr<const GeoUsdConvert>> prototypes;
+    // Per primitive of a volume: its field's prim name and its grid's file, empty when unwritten.
+    std::vector<TfToken> fields;
+    std::vector<std::string> fieldFiles;
     // The input holds this prim, and with the type this partition authors.
     bool onInput = false;
     bool sameTypeOnInput = false;
@@ -837,9 +851,11 @@ GeoUsdConvert::build(bool nested)
             kind = eGeoUsdPrimCurves;
         } else if (type == eGeoPrimitivePackedGeometry) {
             kind = _options.packedMode == eGeoUsdPackedNativeInstances ? eGeoUsdPrimNativeInstances : eGeoUsdPrimInstancer;
+        } else if (type == eGeoPrimitiveVDB) {
+            kind = eGeoUsdPrimVolume;
         }
         SdfPath path;
-        if (pathAttr) {
+        if (pathAttr && (kind != eGeoUsdPrimVolume || pathAttr->name() != kGeoNameAttr)) {
             const std::int32_t s = pathAttr->get<std::int32_t>(std::size_t(off));
             if (s >= 0) {
                 if (std::size_t(s) >= resolvedByString.size()) {
@@ -1198,6 +1214,45 @@ GeoUsdConvert::planProperties(Partition& p)
 
         return;
     }
+    case eGeoUsdPrimVolume: {
+        builtin(UsdGeomTokens->extent, n->Float3Array);
+        builtin(tokens().xformOpTransform, n->Matrix4d);
+        PropertyPlan order;
+        order.name = UsdGeomTokens->xformOpOrder;
+        order.typeName = n->TokenArray;
+        order.variability = SdfVariabilityUniform;
+        order.source = eGeoUsdSourceStatic;
+        order.staticDefault = VtValue(VtTokenArray { tokens().xformOpTransform });
+        p.properties.push_back(std::move(order));
+        const std::string directory = _options.volumeDirectory.empty() ? geoVDBCacheDirectory() : _options.volumeDirectory;
+        std::set<TfToken> taken;
+        for (std::size_t off : p.primitives) {
+            const std::string grid(geoVDBName(d, GeoOffset(off)));
+            const std::string base = TfMakeValidIdentifier(grid.empty() ? std::string("field") : grid);
+            TfToken field(base);
+            for (int k = 1; !taken.insert(field).second; ++k) {
+                field = TfToken(base + "_" + std::to_string(k));
+            }
+            if (field.GetString() != base) {
+                _volumeNotes.push_back("Several grids at " + p.path.GetString() + " are named " + grid + "; one is the field " + field.GetString());
+            }
+            std::string file;
+            std::string error;
+            if (!geoEnsureVDBFile(*geoVDB(d, GeoOffset(off)), grid, directory, &file, &error)) {
+                _volumeWriteFailures.push_back("The grid " + grid + " at " + p.path.GetString() + " could not be written, so the field has no file: " + error);
+                file.clear();
+            }
+            p.fields.push_back(field);
+            p.fieldFiles.push_back(file);
+            PropertyPlan rel;
+            rel.name = TfToken("field:" + field.GetString());
+            rel.relationship = true;
+            rel.targets = { p.path.AppendChild(field) };
+            p.properties.push_back(std::move(rel));
+        }
+
+        return;
+    }
     }
 
     const bool widthsAllowed = p.kind == eGeoUsdPrimCurves || p.kind == eGeoUsdPrimPoints;
@@ -1431,6 +1486,9 @@ GeoUsdConvert::addPartitionSpecs(std::size_t index)
     case eGeoUsdPrimOverride:
         specifier = SdfSpecifierOver;
         break;
+    case eGeoUsdPrimVolume:
+        typeName = tk.volume;
+        break;
     }
     if (p.onInput) {
         specifier = SdfSpecifierOver;
@@ -1441,6 +1499,31 @@ GeoUsdConvert::addPartitionSpecs(std::size_t index)
     ensurePrim(p.path, specifier, typeName).partition = pi;
     for (const PropertyPlan& plan : p.properties) {
         addProperty(p.path, plan).partition = pi;
+    }
+
+    for (std::size_t i = 0; i < p.fields.size(); ++i) {
+        const GeoOffset off = GeoOffset(p.primitives[i]);
+        const SdfPath fieldPath = p.path.AppendChild(p.fields[i]);
+        ensurePrim(fieldPath, SdfSpecifierDef, tk.openVDBAsset).partition = pi;
+        PropertyPlan file;
+        file.name = UsdVolTokens->filePath;
+        file.typeName = SdfValueTypeNames->Asset;
+        addProperty(fieldPath, file).partition = pi;
+        const auto token = [&](const TfToken& name, const std::string& value) {
+            PropertyPlan plan;
+            plan.name = name;
+            plan.typeName = SdfValueTypeNames->Token;
+            plan.source = eGeoUsdSourceStatic;
+            plan.staticDefault = VtValue(TfToken(value));
+            addProperty(fieldPath, plan).partition = pi;
+        };
+        const GeoVDBFieldInfo info = geoVDBFieldInfo(*geoVDBGrid(*_detail, off));
+        token(UsdVolTokens->fieldName, std::string(geoVDBName(*_detail, off)));
+        if (!info.dataType.empty()) {
+            token(UsdVolTokens->fieldDataType, info.dataType);
+        }
+        token(UsdVolTokens->vectorDataRoleHint, info.roleHint);
+        token(UsdVolTokens->fieldClass, info.gridClass);
     }
 
     for (const auto& [name, group] : p.subsets) {
@@ -1651,6 +1734,15 @@ GeoUsdConvert::computeSignature(const Partition& p) const
     for (const GeoDetailConstPtr& proto : p.prototypeDetails) {
         h.append(proto ? proto->contentHash() : U64(0));
     }
+    if (p.kind == eGeoUsdPrimVolume) {
+        // The grid references are indices, unchanged when the grid behind one is replaced.
+        for (std::size_t off : p.primitives) {
+            h.append(geoVDB(d, GeoOffset(off))->contentHash());
+        }
+        for (const std::string& file : p.fieldFiles) {
+            h.append(U64(std::hash<std::string>()(file)));
+        }
+    }
     if (const GeoUsdInputPrim* input = inputPrim(p.path)) {
         h.append(input->hash);
     }
@@ -1719,6 +1811,32 @@ GeoUsdConvert::buildValues(const Partition& p,
 {
     const Tokens& tk = tokens();
     const GeoDetail& d = *_detail;
+
+    if (p.kind == eGeoUsdPrimVolume) {
+        const GeoUsdInputPrim* input = inputPrim(p.path);
+        const GfMatrix4d parent = input ? input->parentWorld : frameOf(p.path);
+        values[p.path.AppendProperty(tk.xformOpTransform)] = VtValue(relativeTo(GfMatrix4d(1.), parent));
+        GfRange3d range;
+        for (std::size_t off : p.primitives) {
+            const GeoBounds b = geoVDBBounds(d, GeoOffset(off));
+            if (!(b == GeoBounds())) {
+                range.UnionWith(GfRange3d(GfVec3d(b.min[0], b.min[1], b.min[2]), GfVec3d(b.max[0], b.max[1], b.max[2])));
+            }
+        }
+        VtVec3fArray extent(2, GfVec3f(0.f));
+        if (!range.IsEmpty()) {
+            extent[0] = GfVec3f(range.GetMin());
+            extent[1] = GfVec3f(range.GetMax());
+        }
+        values[p.path.AppendProperty(UsdGeomTokens->extent)] = VtValue(extent);
+        for (std::size_t i = 0; i < p.fields.size(); ++i) {
+            if (!p.fieldFiles[i].empty()) {
+                values[p.path.AppendChild(p.fields[i]).AppendProperty(UsdVolTokens->filePath)] = VtValue(SdfAssetPath(p.fieldFiles[i]));
+            }
+        }
+
+        return;
+    }
 
     if (p.kind == eGeoUsdPrimOverride || p.kind == eGeoUsdPrimNativeInstances || p.kind == eGeoUsdPrimInstancer) {
         if (p.kind == eGeoUsdPrimOverride) {
@@ -2533,6 +2651,86 @@ readValue(ReadTarget& t,
     scatterComponents(*a, offsets, flat);
 }
 
+// The volume's file-backed OpenVDB fields as VDB primitives; every grid is read before the first is appended.
+void
+readVolume(const UsdPrim& prim,
+           UsdTimeCode time,
+           const GfMatrix4d* worldTransform,
+           GeoDetailBuilder& builder,
+           std::vector<std::string>* warnings)
+{
+    ReadTarget target { builder, warnings, prim.GetPath().GetString() };
+    std::vector<std::pair<GeoVDBGridBaseConstPtr, std::string>> grids;
+    for (const auto& [name, fieldPath] : UsdVolVolume(prim).GetFieldPaths()) {
+        const UsdPrim fieldPrim = prim.GetStage()->GetPrimAtPath(fieldPath);
+        if (!fieldPrim || !fieldPrim.IsA<UsdVolOpenVDBAsset>()) {
+            target.warn("the field " + name.GetString() + " is not an OpenVDB asset and is skipped");
+            continue;
+        }
+        const UsdVolOpenVDBAsset asset(fieldPrim);
+        SdfAssetPath file;
+        asset.GetFilePathAttr().Get(&file, time);
+        const std::string resolved = file.GetResolvedPath().empty() ? file.GetAssetPath() : file.GetResolvedPath();
+        if (resolved.empty()) {
+            target.warn("the field " + name.GetString() + " has no file and is skipped");
+            continue;
+        }
+        TfToken gridName;
+        asset.GetFieldNameAttr().Get(&gridName, time);
+        std::string error;
+        GeoVDBGridBaseConstPtr grid;
+        bool read = false;
+        if (gridName.IsEmpty()) {
+            std::vector<GeoVDBGridBaseConstPtr> all;
+            read = geoReadVDBFile(resolved, "*", &all, &error) && !all.empty();
+            if (read) {
+                grid = all.front();
+            } else if (error.empty()) {
+                error = resolved + " holds no grid";
+            }
+        } else {
+            read = geoReadVDBGrid(resolved, gridName.GetString(), &grid, &error);
+        }
+        if (!read) {
+            target.warn("the field " + name.GetString() + " is skipped: " + error);
+            continue;
+        }
+        grids.emplace_back(grid, gridName.GetString());
+    }
+    if (grids.empty()) {
+        return;
+    }
+
+    std::vector<std::size_t> primOffsets;
+    for (const auto& [grid, name] : grids) {
+        const GeoOffset off = geoAppendVDB(builder, grid, name);
+        if (worldTransform) {
+            const GeoMatrix4 world = geoMatrixFromUsd(*worldTransform);
+            geoTransformVDB(builder, off, world);
+            const GeoOffset point = builder.detail().vertexPoint(builder.detail().primitiveVertices(off).start);
+            const std::array<double, 3> origin = geoTransformPoint(world, builder.detail().pointPosition(point));
+            builder.setPointPosition(point, origin[0], origin[1], origin[2]);
+        }
+        primOffsets.push_back(std::size_t(off));
+    }
+    GeoAttributeDesc pathDesc;
+    pathDesc.name = "path";
+    pathDesc.storage = eGeoStorageString;
+    if (GeoAttribute* path = writableAttribute(target, eGeoAttribClassPrimitive, pathDesc)) {
+        for (std::size_t off : primOffsets) {
+            path->setString(off, target.primPath);
+        }
+    }
+    GeoAttributeDesc sourceDesc;
+    sourceDesc.name = kGeoUsdSourceAttr;
+    sourceDesc.storage = eGeoStorageInt32;
+    if (GeoAttribute* source = writableAttribute(target, eGeoAttribClassPrimitive, sourceDesc)) {
+        for (std::size_t off : primOffsets) {
+            source->set<std::int32_t>(off, 1);
+        }
+    }
+}
+
 } // namespace
 
 bool
@@ -2550,11 +2748,16 @@ geoUsdReadPrim(const UsdPrim& prim,
 
         return false;
     };
+    if (prim.IsA<UsdVolVolume>()) {
+        readVolume(prim, time, worldTransform, builder, warnings);
+
+        return true;
+    }
     const bool isMesh = prim.IsA<UsdGeomMesh>();
     const bool isCurves = prim.IsA<UsdGeomBasisCurves>();
     const bool isPoints = prim.IsA<UsdGeomPoints>();
     if (!isMesh && !isCurves && !isPoints) {
-        return fail("only meshes, basis curves and points can be unpacked, not " + prim.GetTypeName().GetString());
+        return fail("only meshes, basis curves, points and volumes can be unpacked, not " + prim.GetTypeName().GetString());
     }
     const UsdGeomPointBased pointBased(prim);
     VtVec3fArray points;
@@ -2879,7 +3082,7 @@ geoUsdDetailPaths(const GeoDetail& d,
 
                 return;
             }
-            if (pathAttr) {
+            if (pathAttr && (d.primitiveType(off) != eGeoPrimitiveVDB || pathAttr->name() != kGeoNameAttr)) {
                 add(primitivePath(off), false, readFromUsd(primitiveSource, off));
             }
         });

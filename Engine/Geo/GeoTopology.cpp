@@ -85,13 +85,19 @@ remapReferences(GeoAttribute& column,
 bool
 geoPrimitiveTypeIsValid(std::int32_t type)
 {
-    return type >= eGeoPrimitivePolygon && type <= eGeoPrimitivePackedUSD;
+    return type >= eGeoPrimitivePolygon && type <= eGeoPrimitiveVDB;
 }
 
 bool
 geoPrimitiveIsPacked(GeoPrimitiveTypeEnum type)
 {
     return type == eGeoPrimitivePackedGeometry || type == eGeoPrimitivePackedUSD;
+}
+
+bool
+geoPrimitiveIsSingleVertex(GeoPrimitiveTypeEnum type)
+{
+    return geoPrimitiveIsPacked(type) || type == eGeoPrimitiveVDB;
 }
 
 GeoOffset
@@ -104,6 +110,7 @@ geoPrimitiveMinVertexCount(GeoPrimitiveTypeEnum type)
         return 2;
     case eGeoPrimitivePackedGeometry:
     case eGeoPrimitivePackedUSD:
+    case eGeoPrimitiveVDB:
         return 1;
     }
 

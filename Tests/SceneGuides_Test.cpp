@@ -38,6 +38,7 @@
 #include <pxr/usd/usdGeom/xform.h>
 #include <pxr/usd/usdLux/cylinderLight.h>
 #include <pxr/usd/usdLux/diskLight.h>
+#include <pxr/usd/usdVol/volume.h>
 
 NATRON_NAMESPACE_USING
 
@@ -302,4 +303,25 @@ TEST(SceneGuides, HitTestAndRect)
     ASSERT_EQ(inRect.size(), 1u);
     EXPECT_EQ(inRect[0], 0);
     EXPECT_TRUE(SceneGuides::guidesInRect(view, guides, GfVec2d(0., 150.), GfVec2d(50., 199.), "").empty());
+}
+
+TEST(SceneGuides, VolumeGetsItsExtentBox)
+{
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::CreateInMemory();
+    PXR_NS::UsdVolVolume volume = PXR_NS::UsdVolVolume::Define(stage, PXR_NS::SdfPath("/Vol"));
+    volume.AddTranslateOp().Set(GfVec3d(10., 0., 0.));
+    volume.CreateExtentAttr().Set(PXR_NS::VtVec3fArray { PXR_NS::GfVec3f(-1.f, -2.f, -3.f), PXR_NS::GfVec3f(1.f, 2.f, 3.f) });
+    const std::vector<SceneGuides::Guide> guides = guidesOf(stage);
+
+    ASSERT_EQ(guides.size(), 1u);
+    EXPECT_EQ(guides[0].path, "/Vol");
+    EXPECT_EQ(guides[0].kind, SceneGuides::eGuideKindVolume);
+    EXPECT_EQ(std::string(SceneGuides::getGuideKindName(guides[0].kind)), "volume");
+    const std::vector<GfVec3d>& segments = guides[0].segments;
+    EXPECT_EQ(segments.size(), 24u);
+    EXPECT_TRUE(hasPoint(segments, GfVec3d(9., -2., -3.)));
+    EXPECT_TRUE(hasPoint(segments, GfVec3d(11., 2., 3.)));
+
+    PXR_NS::UsdVolVolume::Define(stage, PXR_NS::SdfPath("/NoExtent"));
+    EXPECT_EQ(guidesOf(stage).size(), 1u);
 }

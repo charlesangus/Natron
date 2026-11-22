@@ -31,6 +31,8 @@
 #include <stdexcept>
 #include <string>
 
+#include "Engine/Geo/GeoVDB.h"
+
 NATRON_NAMESPACE_ENTER
 
 GeoMatrix4
@@ -294,8 +296,9 @@ geoDetailBounds(const GeoDetail& detail)
         any = true;
     });
     detail.primitiveMap().forEachLive([&](GeoIndex, GeoOffset prim) {
-        if (geoPrimitiveIsPacked(detail.primitiveType(prim))) {
-            const GeoBounds nested = geoPackedWorldBounds(detail, prim);
+        const GeoPrimitiveTypeEnum type = detail.primitiveType(prim);
+        if (geoPrimitiveIsPacked(type) || type == eGeoPrimitiveVDB) {
+            const GeoBounds nested = type == eGeoPrimitiveVDB ? geoVDBBounds(detail, prim) : geoPackedWorldBounds(detail, prim);
             out = any ? geoUnionBounds(out, nested) : nested;
             any = true;
         }

@@ -43,6 +43,7 @@
 
 #include "Engine/ChoiceOption.h"
 #include "Engine/Geo/GeoOpUtils.h"
+#include "Engine/Geo/GeoVDB.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/Geometry/GeoInterpolate.h"
 
@@ -379,7 +380,7 @@ patternTokens(const std::string& pattern)
 bool
 isPackedIntrinsic(const std::string& name)
 {
-    return (name == kGeoPackedXformAttr) || (name == kGeoPackedBoundsAttr) || (name == kGeoPackedDetailAttr) || (name == kGeoPackedUSDPathAttr) || (name == kGeoPackedUSDParentXformAttr);
+    return (name == kGeoPackedXformAttr) || (name == kGeoPackedBoundsAttr) || (name == kGeoPackedDetailAttr) || (name == kGeoPackedUSDPathAttr) || (name == kGeoPackedUSDParentXformAttr) || (name == kGeoVDBGridAttr) || (name == kGeoVDBBoundsAttr);
 }
 
 enum TransformKindEnum {
@@ -597,6 +598,15 @@ expandCopy(const GeoDetail& source,
                                             transform, geoPackedLocalBounds(source, primitive));
             }
             finishPrimitive(primitive, packed);
+
+            return;
+        }
+        if (type == eGeoPrimitiveVDB) {
+            flush();
+            const GeoOffset pivot = firstPoint + localPoint[(std::size_t)source.vertexPoint(range.start)];
+            const GeoOffset vdb = geoAppendVDB(output, pivot, geoVDBGrid(source, primitive), geoVDBName(source, primitive));
+            geoTransformVDB(output, vdb, xform.m);
+            finishPrimitive(primitive, vdb);
 
             return;
         }

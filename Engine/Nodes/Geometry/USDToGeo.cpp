@@ -38,6 +38,7 @@
 
 #include <pxr/usd/usdGeom/basisCurves.h>
 #include <pxr/usd/usdGeom/points.h>
+#include <pxr/usd/usdVol/volume.h>
 
 #include "Engine/AppInstance.h"
 #include "Engine/Geo/GeoPacked.h"
@@ -83,7 +84,7 @@ geoBoundsFromRange(const PXR_NS::GfRange3d& range)
 bool
 isReadableUnpacked(const PXR_NS::UsdPrim& prim)
 {
-    return prim.IsA<PXR_NS::UsdGeomMesh>() || prim.IsA<PXR_NS::UsdGeomPoints>() || prim.IsA<PXR_NS::UsdGeomBasisCurves>();
+    return prim.IsA<PXR_NS::UsdGeomMesh>() || prim.IsA<PXR_NS::UsdGeomPoints>() || prim.IsA<PXR_NS::UsdGeomBasisCurves>() || prim.IsA<PXR_NS::UsdVolVolume>();
 }
 
 bool
@@ -118,8 +119,8 @@ packedMightVary(const PXR_NS::UsdPrim& prim)
     return false;
 }
 
-// Whether what geoUsdReadPrim() reads from the prim may change over time: its attributes and its
-// GeomSubsets', and its world transform when that is baked in.
+// Whether what geoUsdReadPrim() reads from the prim may change over time: its attributes, its
+// GeomSubsets' or a volume's fields', and its world transform when that is baked in.
 bool
 unpackedMightVary(const PXR_NS::UsdPrim& prim,
                   bool flatten)
@@ -130,6 +131,14 @@ unpackedMightVary(const PXR_NS::UsdPrim& prim,
     for (const PXR_NS::UsdPrim& child : prim.GetChildren()) {
         if (child.IsA<PXR_NS::UsdGeomSubset>() && attributesMightVary(child, true)) {
             return true;
+        }
+    }
+    if (prim.IsA<PXR_NS::UsdVolVolume>()) {
+        for (const auto& field : PXR_NS::UsdVolVolume(prim).GetFieldPaths()) {
+            const PXR_NS::UsdPrim fieldPrim = prim.GetStage()->GetPrimAtPath(field.second);
+            if (fieldPrim && attributesMightVary(fieldPrim, true)) {
+                return true;
+            }
         }
     }
 
@@ -164,7 +173,8 @@ USDToGeo::initializeKnobs()
     unpack->setName(kUSDToGeoParamUnpack);
     unpack->setHintToolTip(tr("Off, each prim becomes one packed primitive holding its path, transforms and bounds, "
                               "and no point is read. On, meshes, points and curves are read as polygons, points and "
-                              "curves sharing one point pool; other prims are skipped.")
+                              "curves sharing one point pool, and volumes' OpenVDB fields with a file as VDB "
+                              "primitives; other prims are skipped.")
                                .toStdString());
     unpack->setDefaultValue(false);
     unpack->setAnimationEnabled(false);
@@ -381,7 +391,7 @@ USDToGeo::renderGeometry(const GeoRenderActionArgs& args,
     }
     QString message;
     if (!skipped.empty()) {
-        message = unpack ? tr("Skipped, not a mesh, points or curves prim (or an instance proxy):")
+        message = unpack ? tr("Skipped, not a mesh, points, curves or volume prim (or an instance proxy):")
                          : tr("Skipped, not an imageable prim (or an instance proxy):");
         for (const std::string& entry : skipped) {
             message += QString::fromUtf8("\n  ") + QString::fromStdString(entry);

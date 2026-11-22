@@ -28,7 +28,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <memory>
 #include <set>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -36,6 +38,7 @@
 #include "Engine/Geo/GeoOpUtils.h"
 #include "Engine/Geo/GeoPacked.h"
 #include "Engine/Geo/GeoTopology.h"
+#include "Engine/Geo/GeoVDB.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -163,31 +166,46 @@ appendTopology(GeoDetailBuilder& builder,
     return out;
 }
 
+template <typename T, typename AddFn>
 void
-remapPackedDetails(GeoDetailBuilder& builder,
-                   const GeoDetail& in,
-                   const AppendedInput& appended)
+remapSharedRefs(GeoDetailBuilder& builder,
+                const GeoDetail& in,
+                const AppendedInput& appended,
+                const char* refAttr,
+                std::span<const std::shared_ptr<const T>> table,
+                AddFn add)
 {
-    const GeoAttribute* source = in.findAttribute(eGeoAttribClassPrimitive, kGeoPackedDetailAttr);
+    const GeoAttribute* source = in.findAttribute(eGeoAttribClassPrimitive, refAttr);
     if (!source || source->storage() != eGeoStorageInt32 || source->isArray()) {
         return;
     }
     std::vector<std::pair<std::size_t, std::int32_t>> remapped;
     for (std::size_t prim : appended.srcOffsets[eGeoAttribClassPrimitive]) {
         const std::int32_t index = source->get<std::int32_t>(prim);
-        if (index <= 0 || std::size_t(index) > in.sharedDetails().size()) {
+        if (index <= 0 || std::size_t(index) > table.size()) {
             continue;
         }
-        const std::int32_t merged = builder.addSharedDetail(in.sharedDetails()[std::size_t(index - 1)]) + 1;
+        const std::int32_t merged = add(table[std::size_t(index - 1)]) + 1;
         remapped.emplace_back(std::size_t(appended.primitiveRemap[prim]), merged);
     }
-    GeoAttribute* target = builder.attributeForWriting(eGeoAttribClassPrimitive, kGeoPackedDetailAttr);
+    GeoAttribute* target = builder.attributeForWriting(eGeoAttribClassPrimitive, refAttr);
     if (!target || target->storage() != eGeoStorageInt32 || target->isArray()) {
         return;
     }
     for (const auto& [prim, index] : remapped) {
         target->set<std::int32_t>(prim, index);
     }
+}
+
+void
+remapSharedTables(GeoDetailBuilder& builder,
+                  const GeoDetail& in,
+                  const AppendedInput& appended)
+{
+    remapSharedRefs(builder, in, appended, kGeoPackedDetailAttr, in.sharedDetails(),
+                    [&](const GeoDetailConstPtr& shared) { return builder.addSharedDetail(shared); });
+    remapSharedRefs(builder, in, appended, kGeoVDBGridAttr, in.sharedGrids(),
+                    [&](const GeoVDBGridConstPtr& grid) { return builder.addSharedGrid(grid); });
 }
 
 void
@@ -324,7 +342,7 @@ GeoMerge::merge(std::span<const GeoDetailConstPtr> inputs,
                 }
             }
         }
-        remapPackedDetails(builder, in, appended);
+        remapSharedTables(builder, in, appended);
         mergeGroups(builder, in, appended);
     }
 

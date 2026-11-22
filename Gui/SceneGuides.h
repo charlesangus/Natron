@@ -49,7 +49,9 @@ enum GuideKindEnum {
     eGuideKindDiskLight,
     eGuideKindCylinderLight,
     eGuideKindDomeLight,
-    eGuideKindOtherLight
+    eGuideKindOtherLight,
+    // The bounding box of a volume's extent.
+    eGuideKindVolume
 };
 
 // How far from a guide's drawn line a pixel may be and still be on it.
@@ -70,8 +72,8 @@ struct Guide {
 // The kind's script name, as "camera" or "rectLight".
 const char* getGuideKindName(GuideKindEnum kind);
 
-// The kind of guide prim gets. False if it gets none: it is neither a camera nor a light, or it is
-// a gprim that carries the light API, which Storm draws itself.
+// The kind of guide prim gets. False if it gets none: it is neither a camera, a light nor a volume,
+// or it is a gprim that carries the light API, which Storm draws itself.
 bool getGuideKind(const PXR_NS::UsdPrim& prim, GuideKindEnum* kind);
 
 // The prims of stage that get a guide, in traversal order, and in *hasLights whether stage has

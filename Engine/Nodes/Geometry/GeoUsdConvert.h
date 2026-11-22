@@ -71,6 +71,8 @@ enum GeoUsdPrimKindEnum {
     eGeoUsdPrimNativeInstances,
     // An over on a packed USD primitive's source path, carrying its local transform.
     eGeoUsdPrimOverride,
+    // A UsdVolVolume of VDB primitives, one OpenVDBAsset field child per grid.
+    eGeoUsdPrimVolume,
 };
 
 /** @brief What the stage the converted layer will be composed over holds at one prim. */
@@ -108,6 +110,8 @@ struct GeoUsdConvertOptions {
     // When set, prims the input already holds are authored as overs and transforms are written
     // relative to the input's parents, so that the composed result lands where the detail puts it.
     GeoUsdInputSceneConstPtr inputScene;
+    // Where VDB primitives' grids are written; empty for geoVDBCacheDirectory().
+    std::string volumeDirectory;
 };
 
 /**
@@ -172,6 +176,13 @@ GeoUsdInputSceneConstPtr geoUsdCaptureInputScene(const PXR_NS::UsdStageRefPtr& s
  * the space of their prim, or in world space when the detail says so (kGeoUsdWorldSpaceAttr);
  * normal and vector attributes then follow the points back into prim space.
  *
+ * VDB primitives sharing a `path` (the `name` attribute names their grids, not their prim)
+ * become one UsdVolVolume, unpathed ones volume_0 under the root. Each grid is written once to a
+ * content-addressed file under the volume directory (geoEnsureVDBFile()) and becomes an
+ * OpenVDBAsset child prim named after the grid, bound by a field:<name> relationship. A second
+ * grid of the same name in one volume gets a suffixed field name, noted in volumeNotes(). Grid
+ * transforms are in the detail's space, so the volume prim's transform cancels its parents'.
+ *
  * With an input scene, a partition read from USD (kGeoUsdSourceAttr) whose prim the input holds
  * becomes an over of it. Meshes, curves and points of the input's type then carry points, plus
  * the values that differ from the input's; topology only when it differs, in full. A partition
@@ -220,6 +231,18 @@ public:
     const std::vector<PXR_NS::SdfPath>& shearedInstances() const
     {
         return _shearedInstances;
+    }
+
+    /** @brief The volume fields renamed because another grid of the volume has the same name. */
+    const std::vector<std::string>& volumeNotes() const
+    {
+        return _volumeNotes;
+    }
+
+    /** @brief The grids whose file could not be written, so their fields have none. */
+    const std::vector<std::string>& volumeWriteFailures() const
+    {
+        return _volumeWriteFailures;
     }
 
     std::size_t partitionCount() const;
@@ -314,6 +337,8 @@ private:
     GeoUsdConvertOptions _options;
     std::vector<std::string> _warnings;
     std::vector<PXR_NS::SdfPath> _shearedInstances;
+    std::vector<std::string> _volumeNotes;
+    std::vector<std::string> _volumeWriteFailures;
     std::vector<std::unique_ptr<Partition>> _partitions;
     std::unordered_map<PXR_NS::SdfPath, SpecEntry, PXR_NS::SdfPath::Hash> _specs;
     PXR_NS::SdfPath _topPath;
@@ -333,12 +358,14 @@ GeoDetail geoUnpackPackedGeometry(const GeoDetail& source,
                                   std::vector<std::string>* warnings);
 
 /**
- * @brief Appends a UsdGeomMesh, UsdGeomBasisCurves or UsdGeomPoints prim to @p builder at
+ * @brief Appends a UsdGeomMesh, UsdGeomBasisCurves, UsdGeomPoints or UsdVolVolume prim to @p builder at
  * @p time, the inverse of GeoUsdConvert's mapping, and sets each new primitive's `path` to the
  * prim path, or for a points prim, which has no primitives, each new point's `path`, and marks
  * them with kGeoUsdSourceAttr. With @p worldTransform, positions are baked into that space, and
  * normal and vector attributes too, normals by its inverse transpose and renormalised.
- * GeomSubsets of faces become primitive groups and bool primvars become groups. An attribute that exists in
+ * GeomSubsets of faces become primitive groups and bool primvars become groups. A volume's
+ * OpenVDBAsset fields with a file become VDB primitives named after the field's grid, their grids
+ * read from the files; other fields are skipped with a warning. An attribute that exists in
  * the builder with another description is skipped with a warning. Returns false with
  * *errorMessage set for another prim type or inconsistent topology, leaving the builder as it
  * was.

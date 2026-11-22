@@ -34,6 +34,7 @@
 #include "Engine/ContentHasher.h"
 #include "Engine/Geo/GeoPacked.h"
 #include "Engine/Geo/GeoPointTree.h"
+#include "Engine/Geo/GeoVDB.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -440,6 +441,10 @@ GeoDetail::contentHash() const
     for (const GeoDetailConstPtr& shared : _sharedDetails) {
         hasher.appendU64(shared->contentHash());
     }
+    hasher.appendU64(_sharedGrids.size());
+    for (const GeoVDBGridConstPtr& grid : _sharedGrids) {
+        hasher.appendU64(grid->contentHash());
+    }
 
     U64 h = hasher.finalize();
     if (h == 0) {
@@ -476,6 +481,9 @@ GeoDetail::getSizeInBytes() const
     for (const GeoDetailConstPtr& shared : _sharedDetails) {
         bytes += sizeof(GeoDetailConstPtr) + shared->getSizeInBytes();
     }
+    for (const GeoVDBGridConstPtr& grid : _sharedGrids) {
+        bytes += sizeof(GeoVDBGridConstPtr) + grid->getSizeInBytes();
+    }
 
     return bytes;
 }
@@ -511,31 +519,35 @@ GeoDetailBuilder::startBuilding()
     _detail._building = true;
 }
 
+namespace {
+
+template <typename T>
 std::int32_t
-GeoDetailBuilder::addSharedDetail(GeoDetailConstPtr shared)
+addSharedEntry(std::vector<std::shared_ptr<const T>>& table,
+               std::shared_ptr<const T> entry)
 {
-    if (!shared) {
-        throw std::invalid_argument("GeoDetailBuilder::addSharedDetail: null detail");
-    }
-    std::vector<GeoDetailConstPtr>& table = _detail._sharedDetails;
     for (std::size_t i = 0; i < table.size(); ++i) {
-        if (table[i] == shared) {
+        if (table[i] == entry) {
             return std::int32_t(i);
         }
     }
-    table.push_back(std::move(shared));
+    table.push_back(std::move(entry));
 
     return std::int32_t(table.size() - 1);
 }
 
+template <typename T>
 void
-GeoDetailBuilder::pruneSharedDetails()
+pruneSharedTable(GeoDetailBuilder& builder,
+                 std::vector<std::shared_ptr<const T>>& table,
+                 const char* refAttr,
+                 GeoPrimitiveTypeEnum type)
 {
-    std::vector<GeoDetailConstPtr>& table = _detail._sharedDetails;
     if (table.empty()) {
         return;
     }
-    const GeoAttribute* refs = _detail.findAttribute(eGeoAttribClassPrimitive, kGeoPackedDetailAttr);
+    const GeoDetail& detail = builder.detail();
+    const GeoAttribute* refs = detail.findAttribute(eGeoAttribClassPrimitive, refAttr);
     if (!refs) {
         table.clear();
         return;
@@ -543,8 +555,8 @@ GeoDetailBuilder::pruneSharedDetails()
 
     std::vector<std::int32_t> newIndex(table.size(), -1);
     std::vector<GeoOffset> live;
-    _detail.primitiveMap().forEachLive([&](GeoIndex, GeoOffset offset) {
-        if (_detail.primitiveType(offset) == eGeoPrimitivePackedGeometry) {
+    detail.primitiveMap().forEachLive([&](GeoIndex, GeoOffset offset) {
+        if (detail.primitiveType(offset) == type) {
             const std::int32_t ref = refs->get<std::int32_t>(std::size_t(offset)) - 1;
             if (ref >= 0 && std::size_t(ref) < table.size()) {
                 newIndex[std::size_t(ref)] = 0;
@@ -553,7 +565,7 @@ GeoDetailBuilder::pruneSharedDetails()
         }
     });
 
-    std::vector<GeoDetailConstPtr> kept;
+    std::vector<std::shared_ptr<const T>> kept;
     for (std::size_t i = 0; i < table.size(); ++i) {
         if (newIndex[i] == 0) {
             newIndex[i] = std::int32_t(kept.size());
@@ -564,7 +576,7 @@ GeoDetailBuilder::pruneSharedDetails()
         return;
     }
 
-    GeoAttribute* writable = attributeForWriting(eGeoAttribClassPrimitive, kGeoPackedDetailAttr);
+    GeoAttribute* writable = builder.attributeForWriting(eGeoAttribClassPrimitive, refAttr);
     for (const GeoOffset offset : live) {
         const std::int32_t ref = writable->get<std::int32_t>(std::size_t(offset)) - 1;
         writable->set<std::int32_t>(std::size_t(offset), newIndex[std::size_t(ref)] + 1);
@@ -572,11 +584,46 @@ GeoDetailBuilder::pruneSharedDetails()
     table = std::move(kept);
 }
 
+} // namespace
+
+std::int32_t
+GeoDetailBuilder::addSharedDetail(GeoDetailConstPtr shared)
+{
+    if (!shared) {
+        throw std::invalid_argument("GeoDetailBuilder::addSharedDetail: null detail");
+    }
+
+    return addSharedEntry(_detail._sharedDetails, std::move(shared));
+}
+
+std::int32_t
+GeoDetailBuilder::addSharedGrid(GeoVDBGridConstPtr grid)
+{
+    if (!grid) {
+        throw std::invalid_argument("GeoDetailBuilder::addSharedGrid: null grid");
+    }
+
+    return addSharedEntry(_detail._sharedGrids, std::move(grid));
+}
+
+void
+GeoDetailBuilder::pruneSharedDetails()
+{
+    pruneSharedTable(*this, _detail._sharedDetails, kGeoPackedDetailAttr, eGeoPrimitivePackedGeometry);
+}
+
+void
+GeoDetailBuilder::pruneSharedGrids()
+{
+    pruneSharedTable(*this, _detail._sharedGrids, kGeoVDBGridAttr, eGeoPrimitiveVDB);
+}
+
 GeoDetail
 GeoDetailBuilder::finish()
 {
     validate();
     pruneSharedDetails();
+    pruneSharedGrids();
     for (GeoDetail::AttributeList& list : _detail._attributes) {
         for (std::shared_ptr<GeoDetail::AttributeSlot>& slot : list) {
             if (!slot->frozen) {
@@ -699,7 +746,7 @@ GeoDetailBuilder::appendPrimitives(GeoPrimitiveTypeEnum type,
     }
     std::size_t total = 0;
     for (std::int32_t c : vertexCounts) {
-        if (c < 0 || (geoPrimitiveIsPacked(type) && c != 1)) {
+        if (c < 0 || (geoPrimitiveIsSingleVertex(type) && c != 1)) {
             throw std::invalid_argument("GeoDetailBuilder::appendPrimitives: invalid vertex count");
         }
         total += std::size_t(c);

@@ -231,6 +231,84 @@ extract(const std::vector<float>& frame,
     return out;
 }
 
+void
+appendPixel(std::string* out,
+            const char* label,
+            const std::vector<float>& frame,
+            std::size_t pixel)
+{
+    *out += std::string(" ") + label + "=(";
+    for (int c = 0; c < 4; ++c) {
+        const std::size_t i = pixel * 4 + (std::size_t)c;
+        *out += (c ? "," : "") + ((i < frame.size()) ? std::to_string(frame[i]) : std::string("?"));
+    }
+    *out += ")";
+}
+
+// An intermittent GPU-against-CPU mismatch cannot be rerun at will, so its report must say which
+// render holds the wrong values (each is compared with `reference`, an independent CPU render of the
+// same case), the shape of the mismatching pixels, and how the GPU frame was placed.
+std::string
+describeGpuMismatch(const EndToEndResult& gpu,
+                    const std::vector<float>& reference,
+                    const ParityTolerance& tolerance)
+{
+    const int width = gpu.window.width();
+    std::size_t pixels = 0;
+    RectI bbox;
+    std::map<int, int> perRow;
+    std::vector<std::size_t> firsts;
+    for (std::size_t p = 0; (p * 4 + 3) < gpu.cpu.size(); ++p) {
+        bool differs = false;
+        for (int c = 0; c < 4; ++c) {
+            differs = differs || !tolerance.accepts(gpu.cpu[p * 4 + c], gpu.gpu[p * 4 + c]);
+        }
+        if (!differs) {
+            continue;
+        }
+        const int x = gpu.window.x1 + (int)(p % (std::size_t)width);
+        const int y = gpu.window.y1 + (int)(p / (std::size_t)width);
+        bbox = pixels ? RectI(std::min(bbox.x1, x), std::min(bbox.y1, y), std::max(bbox.x2, x + 1), std::max(bbox.y2, y + 1)) : RectI(x, y, x + 1, y + 1);
+        ++pixels;
+        ++perRow[y];
+        if (firsts.size() < 4) {
+            firsts.push_back(p);
+        }
+    }
+
+    std::string out = "\n  " + std::to_string(pixels) + " pixels differ, within " + std::to_string(bbox.x1) + "," + std::to_string(bbox.y1) + "-" + std::to_string(bbox.x2) + "," + std::to_string(bbox.y2) + "; per row:";
+    for (const std::pair<const int, int>& row : perRow) {
+        out += " y" + std::to_string(row.first) + "=" + std::to_string(row.second);
+    }
+    if (reference.size() == gpu.cpu.size()) {
+        out += "\n  against the independent CPU render: the CPU reference differs at " + std::to_string(compareImages(reference, gpu.cpu, tolerance).mismatches) + " floats, the GPU frame at " + std::to_string(compareImages(reference, gpu.gpu, tolerance).mismatches);
+    }
+    for (std::size_t p : firsts) {
+        out += "\n  at " + std::to_string(gpu.window.x1 + (int)(p % (std::size_t)width)) + "," + std::to_string(gpu.window.y1 + (int)(p / (std::size_t)width)) + ":";
+        appendPixel(&out, "cpu", gpu.cpu, p);
+        appendPixel(&out, "gpu", gpu.gpu, p);
+        appendPixel(&out, "independent", reference, p);
+    }
+    out += "\n  regions:";
+    for (const std::vector<NodePtr>& nodes : gpu.regionNodes) {
+        out += " [";
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            out += (i ? " " : "") + (nodes[i] ? nodes[i]->getScriptName_mt_safe() : std::string("?"));
+        }
+        out += "]";
+    }
+    out += "; GPU tasks:";
+    for (const std::pair<const std::string, int>& t : gpu.gpuTasksPerNode) {
+        out += " " + t.first + "=" + std::to_string(t.second);
+    }
+    out += "; uploads " + std::to_string(gpu.uploads) + ", downloads " + std::to_string(gpu.downloads) + "; CPU fallbacks:";
+    for (const std::pair<const std::string, int>& r : gpu.cpuFallbackReasons) {
+        out += " '" + r.first + "'=" + std::to_string(r.second);
+    }
+
+    return out;
+}
+
 // Inside `grown` the frame holds the box read by mode, and zero past it.
 void
 expectRepeatedBox(const std::vector<float>& frame,
@@ -912,7 +990,7 @@ TEST_P(EdgePolicyMatrixTest, ReadsPastTheBoxByItsMode)
                 ASSERT_EQ(gpu.cpu.size(), gpu.gpu.size()) << what;
                 ASSERT_FALSE(gpu.cpu.empty()) << what;
                 const ImageDiff diff = compareImages(gpu.cpu, gpu.gpu, row.gpuTolerance);
-                EXPECT_EQ(0u, diff.mismatches) << what << ": GPU against CPU, first at float " << diff.firstMismatchIndex << ", worst " << diff.worstAbsolute;
+                EXPECT_EQ(0u, diff.mismatches) << what << ": GPU against CPU, first at float " << diff.firstMismatchIndex << ", worst " << diff.worstAbsolute << (diff.mismatches ? describeGpuMismatch(gpu, rendered.frame, row.gpuTolerance) : std::string());
             }
             cases.push_back(rendered);
         }

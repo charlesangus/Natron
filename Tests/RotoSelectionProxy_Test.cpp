@@ -1093,7 +1093,7 @@ TEST_F(RotoSelectionProxyTest, NestedLayerTransformsComposeOverTheirShapes)
     ASSERT_TRUE(shape != nullptr);
     ASSERT_EQ(inner, shape->getParentLayer());
     const double time = context->getTimelineCurrentTime();
-    const RectD before = shape->getBoundingBox(time);
+    const RectD before = shape->getBoundingBox(time, false);
 
     KnobDoublePtr outerTranslate = layerKnob(outer, "translate");
     KnobDoublePtr innerScale = layerKnob(inner, "scale");
@@ -1116,7 +1116,7 @@ TEST_F(RotoSelectionProxyTest, NestedLayerTransformsComposeOverTheirShapes)
     EXPECT_NEAR(2., m.e, 1e-9);
     EXPECT_NEAR(10., m.f, 1e-9);
 
-    const RectD after = shape->getBoundingBox(time);
+    const RectD after = shape->getBoundingBox(time, false);
     // The feather pads the box by a fixed distance on every side, so only its centre scales.
     EXPECT_NEAR(2. * (before.x1 + before.x2) / 2. + 10., (after.x1 + after.x2) / 2., 1e-6);
     EXPECT_NEAR(2. * (before.y1 + before.y2) / 2. + 10., (after.y1 + after.y2) / 2., 1e-6);

@@ -53,6 +53,7 @@
 #include <pxr/base/gf/vec3f.h>
 #include <pxr/base/gf/vec4f.h>
 #include <pxr/base/tf/token.h>
+#include <pxr/base/tf/weakPtr.h>
 #include <pxr/base/vt/value.h>
 #include <pxr/imaging/garch/glApi.h>
 #include <pxr/imaging/hd/instancerTopologySchema.h>
@@ -150,6 +151,10 @@ VideoMemory
 queryVideoMemory(bool withTotal)
 {
     VideoMemory memory;
+    // GL answers no string without a current context.
+    if (!glGetString(GL_VERSION)) {
+        return memory;
+    }
     // Mesa's radeonsi answers the NVIDIA query too.
     if (GARCH_GLAPI_HAS(NVX_gpu_memory_info)) {
         GLint kilobytes = 0;
@@ -178,7 +183,8 @@ queryVideoMemory(bool withTotal)
             memory.totalBytes = (std::uint64_t)megabytes << 20;
         }
     }
-    while (glGetError() != GL_NO_ERROR) {
+    // A lost context reports GL_CONTEXT_LOST on every call, so the error queue is only drained so far.
+    for (int i = 0; (i < 16) && (glGetError() != GL_NO_ERROR); ++i) {
     }
 
     return memory;
@@ -641,7 +647,7 @@ private:
 class TextureBudgetSceneIndex;
 typedef TfRefPtr<TextureBudgetSceneIndex> TextureBudgetSceneIndexRefPtr;
 
-// Held while a scene index is used through it, so it cannot be destroyed meanwhile.
+// Held while an index is looked up, so that its destructor cannot unlist it meanwhile.
 std::mutex g_indicesMutex;
 std::map<std::string, TextureBudgetSceneIndex*> g_indices;
 
@@ -856,13 +862,18 @@ streamTextures(const std::string& renderInstanceId,
     if (renderInstanceId.empty()) {
         return Streamed();
     }
-    std::lock_guard<std::mutex> lock(g_indicesMutex);
-    const std::map<std::string, TextureBudgetSceneIndex*>::const_iterator found = g_indices.find(renderInstanceId);
-    if (found != g_indices.end()) {
-        return found->second->stream(pace);
+    TextureBudgetSceneIndexRefPtr index;
+    {
+        std::lock_guard<std::mutex> lock(g_indicesMutex);
+        const std::map<std::string, TextureBudgetSceneIndex*>::const_iterator found = g_indices.find(renderInstanceId);
+        if (found == g_indices.end()) {
+            return Streamed();
+        }
+        // Null for an index already being destroyed, whose destructor waits on the mutex to unlist it.
+        index = TfCreateRefPtrFromProtectedWeakPtr(TfWeakPtr<TextureBudgetSceneIndex>(found->second));
     }
-
-    return Streamed();
+    // Sent unlocked: an observer that streams again, or another viewer, would wait on the mutex.
+    return index ? index->stream(pace) : Streamed();
 }
 
 bool

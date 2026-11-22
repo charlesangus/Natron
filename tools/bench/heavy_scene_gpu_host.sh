@@ -94,7 +94,9 @@
 #                      the interval to collect delays the next one; the period the samples actually kept
 #                      is the "sample period" line heavy_scene_stack_window.py prints. A whole-process
 #                      eu-stack takes 0.15-0.3 s on the heavy scene and up to 1.5 s on a slow VM, so
-#                      SAMPLE_INTERVAL_S below that does not raise the rate. To walk only the main and
+#                      SAMPLE_INTERVAL_S below that does not raise the rate. One thread is not much
+#                      cheaper: the main thread alone took a median 250-320 ms a sample (about 3-4 Hz),
+#                      and each further thread walked costs about as much again. To walk only the main and
 #                      render threads, which is what the stall analysis reads, set
 #                        SAMPLE_TID_COMM='^NatronSceneRndr$'
 #                      The render thread is named NatronSceneRndr; the main thread is always walked. A
@@ -550,6 +552,8 @@ probe_gpu_after() {
         fi
     } >> "$log" 2>&1
     command -v glxinfo > /dev/null 2>&1 || return 0
+    # Both redirections only append to the log; nothing in the pipeline reads it.
+    # shellcheck disable=SC2094
     if ! timeout 10 glxinfo -B 2>> "$log" | tee -a "$log" | grep -q 'OpenGL renderer string: *[^ ]'; then
         GPU_WEDGED_AFTER="$1"
     fi
@@ -636,7 +640,7 @@ launch() {
     return 0
 }
 
-WARMUP_LABEL=warmup-city
+WARMUP_LABEL="warmup-city"
 # The warm-up is the city's open, the scene the first-frame budget is set on.
 warm_shader_cache() {
     if [ -n "${ONLY_LABELS:-}" ] && [ "$SHADER_CACHE_STATE" = warm ] && ! wanted "$WARMUP_LABEL"; then

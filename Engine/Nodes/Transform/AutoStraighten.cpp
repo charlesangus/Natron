@@ -1193,7 +1193,7 @@ AutoStraighten::drawnLines(double time,
                 if (!cp) {
                     continue;
                 }
-                cp->getPositionAtTime(false /*useGuiCurves*/, time, view, &p.x, &p.y);
+                cp->getPositionAtTime(true /*useGuiCurves*/, time, view, &p.x, &p.y);
                 p = Transform::matApply(transform, p);
                 const double x = p.x / p.z - x0;
                 const double y = y0 - p.y / p.z;
@@ -1257,8 +1257,8 @@ AutoStraighten::setLineOrientationFromDirection(const BezierPtr& line,
     if (!first || !last) {
         return;
     }
-    first->getPositionAtTime(false /*useGuiCurves*/, time, ViewIdx(0), &x1, &y1);
-    last->getPositionAtTime(false /*useGuiCurves*/, time, ViewIdx(0), &x2, &y2);
+    first->getPositionAtTime(true /*useGuiCurves*/, time, ViewIdx(0), &x1, &y1);
+    last->getPositionAtTime(true /*useGuiCurves*/, time, ViewIdx(0), &x2, &y2);
     setLineOrientation(line, (std::fabs(x2 - x1) > std::fabs(y2 - y1)) ? eLineOrientationHorizontal : eLineOrientationVertical);
 }
 

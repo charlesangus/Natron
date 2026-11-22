@@ -1291,13 +1291,43 @@ Settings::initializeKnobsViewers()
 
     _checkerboardColor1 = AppManager::createKnob<KnobColor>(this, tr("Checkerboard color 1"), 4);
     _checkerboardColor1->setName("checkerboardColor1");
-    _checkerboardColor1->setHintToolTip( tr("The first color used by the checkerboard.") );
+    _checkerboardColor1->setHintToolTip(tr("The first color used by the checkerboard."));
     _viewersTab->addKnob(_checkerboardColor1);
 
     _checkerboardColor2 = AppManager::createKnob<KnobColor>(this, tr("Checkerboard color 2"), 4);
     _checkerboardColor2->setName("checkerboardColor2");
-    _checkerboardColor2->setHintToolTip( tr("The second color used by the checkerboard.") );
+    _checkerboardColor2->setHintToolTip(tr("The second color used by the checkerboard."));
     _viewersTab->addKnob(_checkerboardColor2);
+
+    _staleCueStyle = AppManager::createKnob<KnobChoice>(this, tr("Stale Cue Style"));
+    _staleCueStyle->setName("staleCueStyle");
+    {
+        std::vector<ChoiceOption> entries;
+        entries.push_back(ChoiceOption("off", "Off", tr("Nothing marks an out-of-date image.").toStdString()));
+        entries.push_back(ChoiceOption("subtleOutline", "Subtle Outline", tr("A 1 pixel faint amber outline around the whole viewer.").toStdString()));
+        entries.push_back(ChoiceOption("cornerDot", "Corner Dot", tr("A small amber dot in the viewer's top-right corner.").toStdString()));
+        _staleCueStyle->populateChoices(entries);
+    }
+    _staleCueStyle->setHintToolTip(tr("How a viewer marks an image that is out of date, while a newer one is rendering. "
+                                      "The cue shows once the image has been out of date for Stale Cue Delay, stays up for "
+                                      "at least Stale Cue Hold, and is never drawn during playback."));
+    _viewersTab->addKnob(_staleCueStyle);
+
+    _staleCueDelay = AppManager::createKnob<KnobInt>(this, tr("Stale Cue Delay"));
+    _staleCueDelay->setName("staleCueDelay");
+    _staleCueDelay->setMinimum(0);
+    _staleCueDelay->disableSlider();
+    _staleCueDelay->setHintToolTip(tr("How long, in milliseconds, the viewer image must be out of date before the stale cue shows. "
+                                      "Renders shorter than this show no cue. Nothing is drawn during playback."));
+    _viewersTab->addKnob(_staleCueDelay);
+
+    _staleCueHold = AppManager::createKnob<KnobInt>(this, tr("Stale Cue Hold"));
+    _staleCueHold->setName("staleCueHold");
+    _staleCueHold->setMinimum(0);
+    _staleCueHold->disableSlider();
+    _staleCueHold->setHintToolTip(tr("The shortest time, in milliseconds, the stale cue stays up once shown, so a render that "
+                                     "finishes just after the cue appears does not make it flicker. Nothing is drawn during playback."));
+    _viewersTab->addKnob(_staleCueHold);
 
     _autoProxyWhenScrubbingTimeline = AppManager::createKnob<KnobBool>(this, tr("Auto Proxy Scrubbing"));
     _autoProxyWhenScrubbingTimeline->setName("autoProxyScrubbing");
@@ -1983,6 +2013,9 @@ Settings::setDefaultValues()
     _checkerboardColor2->setDefaultValue(0., 1);
     _checkerboardColor2->setDefaultValue(0., 2);
     _checkerboardColor2->setDefaultValue(0., 3);
+    _staleCueStyle->setDefaultValue((int)eStaleCueStyleCornerDot);
+    _staleCueDelay->setDefaultValue(400);
+    _staleCueHold->setDefaultValue(500);
     _autoProxyWhenScrubbingTimeline->setDefaultValue(true);
     _autoProxyLevel->setDefaultValue(1);
     _viewerMipRounding->setDefaultValue(0);
@@ -2814,6 +2847,24 @@ int
 Settings::getCheckerboardTileSize() const
 {
     return _checkerboardTileSize->getValue();
+}
+
+StaleCueStyleEnum
+Settings::getStaleCueStyle() const
+{
+    return (StaleCueStyleEnum)_staleCueStyle->getValue();
+}
+
+int
+Settings::getStaleCueDelayMs() const
+{
+    return _staleCueDelay->getValue();
+}
+
+int
+Settings::getStaleCueHoldMs() const
+{
+    return _staleCueHold->getValue();
 }
 
 void

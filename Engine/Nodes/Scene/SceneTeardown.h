@@ -64,6 +64,12 @@ void releaseHeld(std::shared_ptr<void> held);
  **/
 void releaseHeldUnscoped(std::shared_ptr<void> held);
 
+/**
+ * @brief Destroys held on the main thread: from its event loop, or in shutdown() when the loop no
+ * longer runs. For what only the thread that made it may destroy. MT-safe.
+ **/
+void releaseOnMainThread(std::shared_ptr<void> held);
+
 template <typename T>
 void
 release(T value)
@@ -89,7 +95,7 @@ void notifyWhenIdle(const std::function<void()>& callback);
 
 /**
  * @brief Destroys everything released so far, then stops the teardown thread: later releases
- * destroy at once. Before OpenUSD's statics go, as what is pending still uses them.
+ * destroy at once. Main thread. Before OpenUSD's statics go, as what is pending still uses them.
  **/
 void shutdown();
 } // namespace SceneTeardown

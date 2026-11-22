@@ -6,7 +6,8 @@ project, rebuild the graph. In the rounds listed in EARLY_CYCLES the reset comes
 is built, while the stage is still loading and drawing; in the others the first draw and the panel's
 rows are waited for first. After every reset it checks:
   - a timer fires on the main thread within RESPONSIVE_MS;
-  - the next graph's scene view draws and the Scene Graph panel lists /World.
+  - the next graph's scene view draws and the Scene Graph panel lists /World;
+  - splitting the viewer's pane for the panel leaves its GL widgets on the contexts they had.
 Two more rounds destroy the scene's viewer while it draws: one deletes the Viewer node, one closes the
 viewer's tab. Each is followed by a rebuilt graph that has to draw.
 
@@ -146,24 +147,56 @@ try:
         viewer.disconnectInput(0)
         require(viewer.connectInput(0, usd), "connect the Viewer to the USDRead")
 
-    def show_panel():
-        """Puts the Scene Graph panel beside the viewer, unless it already shows."""
+    def gl_widgets():
+        return widgets_of("SceneViewport") + widgets_of("ViewerGL")
+
+    def mark_gl_widgets(pane):
+        """Tags the pane's GL widgets with a fresh id; returns {id: GL init count at tagging}."""
+        counts = {}
+        for w in gl_widgets():
+            if pane.isAncestorOf(w):
+                _toggle[0] += 1
+                w.setProperty("natronSplitMark", _toggle[0])
+                counts[_toggle[0]] = w.property("natronGlInitCount") or 0
+        return counts
+
+    def unchanged_gl_widgets(marked):
+        """Of the widgets tagged in marked, how many are found again and still have the init count they had."""
+        found = kept = 0
+        for w in gl_widgets():
+            mark = w.property("natronSplitMark")
+            if mark in marked:
+                found += 1
+                if (w.property("natronGlInitCount") or 0) == marked[mark]:
+                    kept += 1
+        return found, kept
+
+    def show_panel(label):
+        """Puts the Scene Graph panel beside the viewer, unless it already shows.
+
+        The split must keep the viewer's GL widgets in the window: initializeGL runs once per GL
+        context a widget gets, so an unchanged count means the context was not recreated."""
         p = panel()
         if p is not None and p.isVisible():
             return
         home = ancestor_of_class(view(), "TabWidget")
         require(home is not None, "the scene view is in a pane")
+        marked = mark_gl_widgets(home)
         split = app.getTabWidget(home.objectName()).splitHorizontally()
+        home = None
         require(split is not None, "split the viewer's pane")
         require(app.moveTab("sceneGraph", split), "move the Scene Graph panel beside the viewer")
         split = None
+        found, kept = unchanged_gl_widgets(marked)
+        check(len(marked) >= 1 and found == len(marked) and kept == len(marked),
+              "%s: splitting the viewer's pane keeps its GL contexts (%d of %d kept)" % (label, kept, len(marked)))
 
     def wait_for_scene(label):
         ok = yield ("until", lambda: viewer_up() or view() is not None, STARTUP_TIMEOUT_S)
         require(ok, "%s: the viewer is up" % label)
         ok = yield ("until", scene_drawn, LOAD_TIMEOUT_S)
         require(ok, "%s: the scene view draws the city" % label)
-        show_panel()
+        show_panel(label)
         ok = yield ("until", lambda: panel() is not None and panel().isVisible() and row_count() >= 1, POLL_TIMEOUT_S)
         check(ok, "%s: the Scene Graph panel lists its rows (%d)" % (label, row_count()))
 

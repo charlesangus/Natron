@@ -334,7 +334,7 @@ RotoContext::resetTransformsCenter(bool doClone,
         double time = getNode()->getApp()->getTimeLine()->currentFrame();
         RectD bbox;
 
-        getItemsRegionOfDefinition(getSelectedItems(), time, ViewIdx(0), &bbox);
+        getItemsRegionOfDefinition(getSelectedItems(), time, ViewIdx(0), true, &bbox);
         setCenterKnob(_imp->cloneCenterKnob.lock(), (bbox.x1 + bbox.x2) / 2., (bbox.y1 + bbox.y2) / 2.);
     }
 }
@@ -1271,7 +1271,7 @@ RotoDrawableItem::renderMaskFromStroke(const ImageLayerDesc& components,
         int mbType_i = getContext()->getMotionBlurTypeKnob()->getValue();
         bool applyPerShapeMotionBlur = mbType_i == 0;
         if (applyPerShapeMotionBlur) {
-            isBezier->getMotionBlurSettings(time, &startTime, &endTime, &mbFrameStep);
+            isBezier->getMotionBlurSettings(time, false, &startTime, &endTime, &mbFrameStep);
         }
     }
 #endif
@@ -1290,7 +1290,7 @@ RotoDrawableItem::renderMaskFromStroke(const ImageLayerDesc& components,
     } else if (isBezier) {
         bool bboxSet = false;
         for (double t = startTime; t <= endTime; t += mbFrameStep) {
-            RectD subBbox = isBezier->getBoundingBox(t);
+            RectD subBbox = isBezier->getBoundingBox(t, false);
             if (!bboxSet) {
                 rotoBbox = subBbox;
                 bboxSet = true;
@@ -1298,7 +1298,7 @@ RotoDrawableItem::renderMaskFromStroke(const ImageLayerDesc& components,
                 rotoBbox.merge(subBbox);
             }
         }
-        if ( isBezier->isOpenBezier() ) {
+        if (isBezier->isOpenBezier(false)) {
             std::list<std::list<ParametricPoint> > decastelJauPolygon;
             isBezier->evaluateAtTime_DeCasteljau_autoNbPoints(false, time, mipmapLevel, &decastelJauPolygon, 0);
             std::list<std::pair<Point, double> > points;
@@ -1379,7 +1379,7 @@ RotoDrawableItem::renderMaskInternal(const RectI& roi,
     Bezier* isBezier = dynamic_cast<Bezier*>(this);
 
     assert(isStroke || isBezier);
-    if (!isStroke && isBezier && !isBezier->isOpenBezier()) {
+    if (!isStroke && isBezier && !isBezier->isOpenBezier(false)) {
         double shapeColor[3];
         getColor(time, shapeColor);
         const double opacity = getOpacity(time);
@@ -1515,7 +1515,7 @@ Bezier::rasterizeCoverage(double time,
 
         return false;
     }
-    if (roi.isNull() || !isCurveFinished() || isOpenBezier() || !isActivated(time) || (getControlPointsCount() <= 1)) {
+    if (roi.isNull() || !isCurveFinished(false) || isOpenBezier(false) || !isActivated(time) || (getControlPointsCount(false) <= 1)) {
         return false;
     }
 
@@ -1844,8 +1844,8 @@ RotoContextPrivate::renderBezier(const Bezier* bezier,
     try {
         std::vector<BezierRenderSample> samples;
         BezierCPs cps;
-        if (bezier->isCurveFinished() && bezier->isActivated(time) && (bezier->getControlPointsCount() > 1)) {
-            cps = bezier->getControlPoints_mt_safe();
+        if (bezier->isCurveFinished(false) && bezier->isActivated(time) && (bezier->getControlPointsCount(false) > 1)) {
+            cps = bezier->getControlPoints_mt_safe(false);
             std::vector<RotoFeatherQuad> quads;
             for (double t = startTime; t <= endTime; t += mbFrameStep) {
                 const double fallOff = bezier->getFeatherFallOff(t);

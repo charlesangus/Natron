@@ -373,12 +373,21 @@ try:
             return int(count)
         return len(Sdf.Layer.GetLoadedLayers()) if Sdf is not None else None
 
+    native_heartbeat_found = []
+
     def native_heartbeat():
         """Natron's own main-thread heartbeat, there when NATRON_MAIN_HEARTBEAT=1."""
+        # Found once: the heartbeat lives as long as the application, and a findChild at each window's
+        # start and stop would wrap the object on the main thread at the edges of the judged window.
+        if native_heartbeat_found:
+            return native_heartbeat_found[0]
         app_object = QApplication.instance()
         if app_object is None:
             return None
-        return app_object.findChild(QObject, "natronMainHeartbeat", Qt.FindDirectChildrenOnly)
+        hb = app_object.findChild(QObject, "natronMainHeartbeat", Qt.FindDirectChildrenOnly)
+        if hb is not None:
+            native_heartbeat_found.append(hb)
+        return hb
 
     class Heartbeat(object):
         """How long the main thread went without servicing a 10 ms timer: Natron's own heartbeat when
@@ -425,7 +434,11 @@ try:
                         self.window_gaps.append([round(gap, 1), round(began, 3)])
                 self.last = now
             if self.load_edit_times is not None:
-                v = view()
+                # Only the view already found: while none is cached, as across a reopen, finding one
+                # scans every widget, and doing that each tick would be the main thread's biggest load.
+                v = widget_cache.get("view")
+                if v is not None and not widget_alive(v):
+                    v = None
                 edits = v.property("natronSceneLoadEdits") if v is not None else None
                 if edits is not None:
                     edits = int(edits)
@@ -551,8 +564,13 @@ try:
         return found if usable(found) else None
 
     def first_visible_view():
-        views = [w for w in widgets_of("SceneViewport") if w.isVisible()]
-        return views[0] if views else None
+        # Searched by object name from each window, which wraps only the matches: a scan of every widget
+        # would wrap them all, on each poll of a judged window that waits for a view, as a reopen does.
+        for window in QApplication.topLevelWidgets():
+            for w in window.findChildren(QWidget, "SceneViewport"):
+                if w.isVisible():
+                    return w
+        return None
 
     def view():
         return cached_widget("view", first_visible_view, lambda w: w.isVisible())
@@ -632,6 +650,7 @@ try:
         if load_state == "all":
             m.all_payloads_requested = True
             project_state["loaded_at_open"] = True
+            project_state["open_load_edits"] = int(prop("natronSceneLoadEdits", 0) or 0)
         marks.append(time.perf_counter())
         usd.getParam("filename").setValue(path)
         marks.append(time.perf_counter())
@@ -977,9 +996,10 @@ try:
                 and not stats.get("revealing") and int(v.property("natronSceneDrawPresented") or 0) >= posted)
         return counts, idle
 
-    def wait_loads_settled(label):
-        """Waits until no load is pending or composing, no draw change is unpresented, and the loaded
-        layers, load edits, prims added and posted changes have held still for SETTLE_S; returns
+    def wait_loads_settled(label, edits_landed=None):
+        """Waits until no load is pending or composing, no draw change is unpresented, edits_landed(load
+        edits) holds when given, and the loaded layers, load edits, prims added and posted changes have
+        held still for SETTLE_S; returns
         {"ms": time to the start of that window, "wait_ms": the whole wait, "stable_at": its
         perf_counter, the counts before and at the end, the polls}."""
         t0 = time.perf_counter()
@@ -991,7 +1011,7 @@ try:
             now = time.perf_counter()
             if first is None:
                 first = counts
-            if not idle or counts is None:
+            if not idle or counts is None or (edits_landed is not None and not edits_landed(counts["load_edits"])):
                 stable_since = None
             elif stable_since is None or counts != last:
                 stable_since = now
@@ -1002,7 +1022,7 @@ try:
             if time.time() >= deadline:
                 break
             yield ("sleep", SETTLE_POLL_MS)
-        check(ok, "%s: the scene's loads are over (pending %r, composing %r, counts %r)"
+        check(ok, "%s: the scene's loads landed and are over (pending %r, composing %r, counts %r)"
               % (label, prop("natronSceneLoadsPending"), prop("natronSceneComposing"), last))
         stable_at = stable_since if ok else time.perf_counter()
         return {"ms": round((stable_at - t0) * 1000.0, 1), "wait_ms": round((time.perf_counter() - t0) * 1000.0, 1),
@@ -1017,9 +1037,13 @@ try:
         if project_state["loaded_at_open"]:
             # Full + Load keeps loading payloads after the first frame; what is left is what this waits for.
             edits_before = int(v.property("natronSceneLoadEdits") or 0)
+            at_open = project_state["open_load_edits"]
             m.all_payloads_requested = True
             m.values["loaded_at_open"] = True
-            settle = yield from wait_loads_settled("load_all")
+            # The stage opened is new and counts its load edits from zero, so the open's own Full + Load
+            # has landed once the count is past zero and differs from the stage it replaced; before
+            # that the queues read idle only because the load has not been queued yet.
+            settle = yield from wait_loads_settled("load_all", lambda edits: edits > 0 and edits != at_open)
             m.values["load_ms"] = settle["ms"]
             m.values["load_settle"] = settle_fields(settle)
             m.values["prims_added_upstream"] = draw_stats().get("inputAdded")
@@ -1036,7 +1060,7 @@ try:
         ok = yield ("until", committed, TIMEOUT_S)
         check(ok, "load_all: the loaded prims reached the screen (failures %r)" % (v.property("natronSceneLoadFailures"),))
         m.values["load_first_commit_ms"] = round(time.time() * 1000.0 - t0, 1)
-        settle = yield from wait_loads_settled("load_all")
+        settle = yield from wait_loads_settled("load_all", lambda edits: edits > edits_before)
         m.values["load_ms"] = round((settle["stable_at"] - started) * 1000.0, 1)
         m.values["load_settle"] = settle_fields(settle)
         m.values["prims_added_upstream"] = draw_stats().get("inputAdded")
@@ -1947,7 +1971,7 @@ try:
         m.values["cached_switch_composes"] = composes[-1]
         follow.setCurrentIndex(0)
 
-    project_state = {"reopened": False, "loaded_at_open": False}
+    project_state = {"reopened": False, "loaded_at_open": False, "open_load_edits": 0}
 
     def scene_has_payloads():
         return fixture == "city" or bool(rows.get("payload_rows"))
@@ -2018,7 +2042,7 @@ try:
             add_request(m, [block], True)
             yield from paced_reveal(m, "workflow_block", block, "bbox", "loadAll", commit_watch(v), keep_states=True)
             # The block's later payloads land after its first commit; the next step must not measure them.
-            settle = yield from wait_loads_settled("workflow: full_load_block")
+            settle = yield from wait_loads_settled("workflow: full_load_block", lambda edits: edits > edits_before)
             load_results(m, v, "workflow_block", edits_before)
             finish_step("full_load_block", m.values["workflow_block_ms"], path=block, complete=m.values["workflow_block_complete"],
                         worst_frame_ms=m.values["workflow_block_worst_frame_ms"], frames=m.values["workflow_block_frames"],
@@ -2085,16 +2109,22 @@ try:
         finish_step("save", (time.perf_counter() - t0) * 1000.0, project=os.path.basename(project_path))
         require(saved, "workflow: save the project to " + project_path)
 
-        # The viewer and panel changes above are project edits, so the reset asks whether to save them;
-        # the saved file is the one under test.
+        # A project modified since its save makes the reset ask whether to save it, and polling for that
+        # question from Python wraps widgets on the main thread inside the judged window. Saving again
+        # with no event loop run before the reset leaves nothing to ask; the slow timer only unblocks a
+        # question that still comes, which fails the step.
+        require(app.saveProject(project_path), "workflow: save the project again before the reset")
+        asked = []
+
         def discard_save_question():
             box = QApplication.activeModalWidget()
             if isinstance(box, QMessageBox) and box.button(QMessageBox.StandardButton.Discard) is not None:
+                asked.append(True)
                 box.button(QMessageBox.StandardButton.Discard).click()
 
         answer = QTimer()
         answer.timeout.connect(discard_save_question)
-        answer.start(200)
+        answer.start(5000)
         # The reopen is judged from the reset on: closing the old project is part of what the user waits for.
         heartbeat.start()
         t0 = time.perf_counter()
@@ -2105,6 +2135,7 @@ try:
             answer = None
         reset_ms = (time.perf_counter() - t0) * 1000.0
         require(reset, "workflow: reset the project")
+        check(not asked, "workflow: the reset of a saved project asks nothing")
         # The nodes and widgets of the closed project are gone.
         project_state["reopened"] = True
         forget_widgets()

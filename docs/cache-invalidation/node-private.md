@@ -45,7 +45,7 @@ callers AppManager.cpp:1372, :1412, Project.cpp:3252). Their GPU budget is at Hy
 `SceneLayerMemo` `nodeDigest` (Nodes/NativeEffectBase.cpp:888-911) hashes the plug-in ID and
 version, `getKnobsContentDigest`, `appendNodeContentHash`, and the fully qualified name when an
 expression exists. It leaves out the input hashes on purpose (:886-887) and the project digest;
-the frame range and fps are added separately. Facts users: USDPrim.cpp:214, USDMaterial.cpp:365,
+the frame range and fps are added separately. Facts users: USDPrim.cpp:214, USDPreviewSurface.cpp:365,
 USDPrune.cpp:181, USDLight.cpp:314, USDCamera.cpp:216, USDTransform.cpp:452. USDRead.cpp:367
 reads nothing upstream.
 

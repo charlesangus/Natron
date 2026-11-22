@@ -459,6 +459,31 @@ public:
 };
 
 /**
+ * @brief Where an incremental request pass starts: node's output under context (restricted to what
+ * node's output reads by the pass) at time/view, over roi in canonical coordinates.
+ **/
+struct RequestPassRoot {
+    NodePtr node;
+    RenderContextPtr context;
+    double time = 0.;
+    ViewIdx view;
+    unsigned int mipmapLevel = 0;
+    RectD roi;
+};
+
+/**
+ * @brief A region an incremental request pass added to an entry's final RoI: the whole request when
+ * the entry is new, otherwise one of the disjoint rectangles the merged final RoI covers and the
+ * previous one did not. A region already inside it is not reported.
+ **/
+struct RequestPassNewWork {
+    NodeCtxKey key;
+    double time = 0.;
+    ViewIdx view;
+    RectD roi;
+};
+
+/**
  * @brief The count of contexts a node may render under in one frame before a warning names the
  * nodes fanning them out, and the most action-cache states a node keeps for them.
  **/

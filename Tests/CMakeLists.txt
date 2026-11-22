@@ -20,7 +20,7 @@
 # Where the test-only OFX bundles are built; the test mains append it to OFX_PLUGIN_PATH.
 set(NATRON_TEST_OFX_PLUGIN_DIR ${CMAKE_BINARY_DIR}/Tests/TestPlugins)
 
-set(Tests_HEADERS Ai/AiModelTestEffect.h BaseTest.h CacheMemoryPressureGuard.h CacheStress.h CacheStressTestEffect.h ContextTestEffects.h CountingTestEffect.h CurveHostTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h IdentityHopTestEffect.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h Native/KeyerMatteReference.h Native/NativeBlurRange.h Native/NativeGolden.h Native/NativeGpuParity.h Native/NativeTimeNodesTest.h NativeMetadataTestEffect.h NativeParity.h PerProcessUserDirs.h RenderBothWays.h SceneTestEffect.h TestWatchdog.h SplineWarpHostTestEffect.h Native/SplineWarpTestCurves.h TestOfxPluginPath.h TestRetiredOfxIds.h ViewerInstanceTestAccess.h)
+set(Tests_HEADERS Ai/AiModelTestEffect.h BaseTest.h CacheMemoryPressureGuard.h CacheStress.h CacheStressTestEffect.h ContextTestEffects.h ContinuationTestEffects.h CountingTestEffect.h CurveHostTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h IdentityHopTestEffect.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h Native/KeyerMatteReference.h Native/NativeBlurRange.h Native/NativeGolden.h Native/NativeGpuParity.h Native/NativeTimeNodesTest.h NativeMetadataTestEffect.h NativeParity.h PerProcessUserDirs.h RenderBothWays.h SceneTestEffect.h TestWatchdog.h SplineWarpHostTestEffect.h Native/SplineWarpTestCurves.h TestOfxPluginPath.h TestRetiredOfxIds.h ViewerInstanceTestAccess.h)
 set(Tests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
@@ -195,6 +195,7 @@ set(Tests_SOURCES
     RenderContext_Test.cpp
     RenderContextMetadata_Test.cpp
     RenderContextRequest_Test.cpp
+    RenderContinuation_Test.cpp
     RenderIsolation_Test.cpp
     RenderProfile_Test.cpp
     RenderRange_Test.cpp
@@ -370,6 +371,7 @@ set(GuiTests_SOURCES
     SceneGuides_Test.cpp
     ScenePresentPacer_Test.cpp
     SceneSelectionActions_Test.cpp
+    SceneSelectionTasks_Test.cpp
     SceneViewport_Test.cpp
     ShuffleMatrix_Test.cpp
     SpinBox_Test.cpp
@@ -381,6 +383,7 @@ set(GuiTests_SOURCES
     UndoHistory_Test.cpp
     ValueKnobEditSession_Test.cpp
     ValueKnobGlobalModeTarget_Test.cpp
+    ViewerStaleCueTiming_Test.cpp
     WindowPlacement_Test.cpp
     guimain.cpp
 )
@@ -388,7 +391,7 @@ set(GuiTests_SOURCES
 find_package(Qt6 6.8 CONFIG REQUIRED COMPONENTS Test)
 add_executable(GuiTests ${GuiTests_SOURCES})
 # Build their scenes with OpenUSD, whose headers need the full Python API.
-set_source_files_properties(SceneDrawBoxes_Test.cpp SceneDrawFilter_Test.cpp SceneGizmo_Test.cpp SceneGraphModel_Test.cpp SceneGuides_Test.cpp SceneViewport_Test.cpp PROPERTIES COMPILE_OPTIONS -UPy_LIMITED_API)
+set_source_files_properties(SceneDrawBoxes_Test.cpp SceneDrawFilter_Test.cpp SceneGizmo_Test.cpp SceneGraphModel_Test.cpp SceneGuides_Test.cpp SceneSelectionTasks_Test.cpp SceneViewport_Test.cpp PROPERTIES COMPILE_OPTIONS -UPy_LIMITED_API)
 target_link_libraries(GuiTests
     PRIVATE
         NatronGui

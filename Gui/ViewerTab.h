@@ -488,6 +488,11 @@ public Q_SLOTS:
 
     void onSetDownPlaybackButtonsTimeout();
 
+    void onViewerStaleChanged(bool stale);
+    void onStaleCueTimeout();
+    // Pushes the timing's visibility to the selected style and re-arms the timer at its next deadline.
+    void refreshStaleCue();
+
     void refreshViewerRenderingState();
 
     void setTurboButtonDown(bool down);

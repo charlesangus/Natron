@@ -9,7 +9,11 @@
 # /proc/PID/task/<tid>/comm matches it (re-read every sample, so threads started later are caught), each
 # walked with eu-stack -1 -p TID. A whole-process eu-stack stops and unwinds every thread, which took
 # 0.15-0.3 s a sample on the heavy scene and up to 1.5 s on a slower VM, whatever INTERVAL says (the "ms
-# eu-stack took" field); a couple of threads cost a fraction of that. The achieved period is the
+# eu-stack took" field). Most of an eu-stack run's cost does not depend on how many threads it
+# walks, so one thread is not much cheaper than all of them. The main thread alone of a heavy-scene
+# Natron.bin, with SAMPLE_DEBUGINFO_PATH set, took a median 250-320 ms a sample (p90 305-330 ms), about
+# 3-4 samples a second; every further thread walked adds about as much again. 20 Hz on the main thread
+# needs a tracer that stays attached; no INTERVAL gets eu-stack there. The achieved period is the
 # difference of consecutive start epochs, which heavy_scene_stack_window.py prints.
 # With neither SAMPLE_TID_COMM nor SAMPLE_TID_FRAME set, SAMPLE_TID_COMM defaults to '^NatronSceneRndr$':
 # a whole-process eu-stack takes 1.4-1.9 s on a 1M-prim process, which hides stalls of 100-200 ms.
@@ -84,10 +88,10 @@ while [ "$i" -lt "$count" ]; do
         eu-stack -p "$pid" -m -n 80 "${debuginfo[@]}" > "$sample_out" 2> "$sample_err"
         if [ "$discovery" = 1 ]; then
             next_discovery=$((start + discover_us))
-            for tid in $(awk -v re="$tid_frame" '/^TID /{ tid = $2; sub(":", "", tid) } /^#/ && tid != "" && $0 ~ re { print tid; tid = "" }' "$sample_out"); do
+            while read -r tid; do
                 [ "$tid" = "$pid" ] && continue
                 case " $found_tids " in *" $tid "*) ;; *) found_tids="$found_tids $tid" ;; esac
-            done
+            done < <(awk -v re="$tid_frame" '/^TID /{ tid = $2; sub(":", "", tid) } /^#/ && tid != "" && $0 ~ re { print tid; tid = "" }' "$sample_out")
         fi
     else
         : > "$sample_out"

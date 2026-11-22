@@ -46,7 +46,9 @@ pick_device() {
         return 1
     fi
     for dir in /sys/class/drm/card[0-9]*/device; do
-        [ -r "$dir/mem_info_vram_total" ] && [ -r "$dir/mem_info_vram_used" ] || continue
+        if [ ! -r "$dir/mem_info_vram_total" ] || [ ! -r "$dir/mem_info_vram_used" ]; then
+            continue
+        fi
         read -r total < "$dir/mem_info_vram_total" || continue
         if [ "$total" -gt "$best_total" ]; then
             best="$dir"

@@ -1906,7 +1906,7 @@ Retouch::collectShapes(double time,
         RC::Shape shape;
         BezierPtr bezier = std::dynamic_pointer_cast<Bezier>(*it);
         if (bezier) {
-            const RectD bbox = bezier->getBoundingBox(time);
+            const RectD bbox = bezier->getBoundingBox(time, false);
             if (bbox.isNull()) {
                 continue;
             }

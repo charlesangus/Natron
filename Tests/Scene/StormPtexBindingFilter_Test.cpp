@@ -212,3 +212,21 @@ TEST(StormPtexBindingFilter, RebindsWhenTheMaterialArrivesOrChanges)
     EXPECT_EQ(recorder.rebound.count(SdfPath("/curves")), 1u);
     EXPECT_EQ(boundMaterial(filter, SdfPath("/curves")), kPtexMaterial);
 }
+
+TEST(StormPtexBindingFilter, RejudgesAMaterialEditedWhileUnbound)
+{
+    ASSERT_TRUE(ptexKnownToSdr());
+    HdRetainedSceneIndexRefPtr scene = HdRetainedSceneIndex::New();
+    scene->AddPrims({ { kPtexMaterial, HdPrimTypeTokens->material, materialPrim(false, false) },
+                      { SdfPath("/curvesA"), HdPrimTypeTokens->basisCurves, boundTo(kPtexMaterial) } });
+    const HdSceneIndexBaseRefPtr filter = StormPtexBindingFilter::New(scene);
+
+    EXPECT_EQ(boundMaterial(filter, SdfPath("/curvesA")), kPtexMaterial);
+
+    scene->AddPrims({ { SdfPath("/curvesA"), HdPrimTypeTokens->basisCurves, HdRetainedContainerDataSource::New() } });
+    EXPECT_TRUE(boundMaterial(filter, SdfPath("/curvesA")).IsEmpty());
+
+    scene->AddPrims({ { kPtexMaterial, HdPrimTypeTokens->material, materialPrim(true, false) } });
+    scene->AddPrims({ { SdfPath("/curvesB"), HdPrimTypeTokens->basisCurves, boundTo(kPtexMaterial) } });
+    EXPECT_TRUE(boundMaterial(filter, SdfPath("/curvesB")).IsEmpty());
+}

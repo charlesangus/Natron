@@ -679,6 +679,17 @@ future core work has solid ground to build on.
 | F35 | Pyro | open |  |  | feature/f35-pyro | A sparse-tile smoke and fire solver on native VDB volumes, with sourcing, shaping, collisions, look baking and quick setups, on GPU and CPU. Waits for F18 - Geometry Loops And Solver and F22 - Native VDB to land. |
 
 # Open questions
+- **M362 - Geometry Operators II (planner, 2026-11-22):** five questions in the milestone file's `## Open questions`: Boolean core (in-house vs libigl+CGAL vs Manifold), the source of authoritative defaults, Attribute Create's local variables / info block, kernel `d@` dicts, and where repeated knob blocks live.
+
+- **M460 - MoonRay True Deep Patch (2026-11-22):** P2.T1 (deep AOVs and volumes behind presence) needs decisions: how min/max/closest-filtered AOVs split per presence layer; whether a 50% presence card clips the fog behind it; how volume deep segments accumulate across progressive passes. It also needs a MoonRay compile-and-render loop a no-build lane can't run. Separately, the intro's "lowers the deep Z tolerance default" has no task: MoonRay's scene-variable default, or Natron sending a smaller value?
+
+- **M504 - GIL Lock Order Fix (2026-11-22):** `SceneWriteBarrier::registerParticipant`/`unregisterParticipant` take `writerMutex` without releasing the GIL (callers `HydraRenderImpl.cpp`, `Gui/SceneViewport.cpp`), so `runExclusive` re-taking the GIL under `writerMutex` can still deadlock if they run with the GIL held. Release the GIL there too (PM default), unless they provably never hold it. Phase 504.2 waits on F4.
+
+- **M518 - Save Prompt Key Shortcuts (2026-11-22):** T2's verify can't run as written: no caller raises a Yes/No question through Natron's own MessageBox (the auto-save prompt uses the stock dialog). The GUI check covers `&OK` on MessageBox and y/n on the stock question dialog instead.
+
+- **M523 - USDSetAttribute Type From Stage (2026-11-22):** the type-mismatch warning covers authored non-schema attributes only; schema attributes (e.g. `radius`) keep the existing schema-mismatch render error, as the Edge cases say. The type lookup runs `evaluateScene` on a worker thread, with no off-thread precedent; the review checks that.
+
+- **F15 - Native Geometry (PM, 2026-11-22):** main merged into F15 (8bd000af4); geometry keeps its own RAM cache beside F6's unified tiered cache. Folding it into the node cache (as deep was) is the alternative. F18, F19, F21 and F22 now stack on F15 and can't ship before it.
 - **M365 - Delegate Display Transform (user, 2026-11-22):** apply the camera's exposure in the viewer when looking through a camera; add a toggle button to the right of the viewer's exposure (gain) slider to turn it on/off, and a non-editable label next to it showing the camera's exposure value. Screenshots to re-send after.
 
 - **F7 - Natron Utility Core UAT round 1 (user, 2026-11-21):**

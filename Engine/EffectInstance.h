@@ -1070,6 +1070,9 @@ public:
         double time;
         ViewIdx view;
         bool byPassCache;
+        // When set, the effect evaluates under this context instead of the one the actions on
+        // this thread answer for, its inputs under what it requests of them in turn.
+        RenderContextPtr context;
 
         EvaluateGeometryArgs()
             : time(0)
@@ -1080,10 +1083,12 @@ public:
 
         EvaluateGeometryArgs(double time_,
                              ViewIdx view_,
-                             bool byPassCache_ = false)
+                             bool byPassCache_ = false,
+                             const RenderContextPtr& context_ = RenderContextPtr())
             : time(time_)
             , view(view_)
             , byPassCache(byPassCache_)
+            , context(context_)
         {
         }
     };
@@ -1098,6 +1103,11 @@ public:
      * input whose effective data kind is eDataKindGeometry is evaluated at each time
      * getFramesNeeded() asks for, the render's abort flag is checked between steps, and only
      * then is this effect's renderGeometry() called.
+     *
+     * The effect evaluates under the render context its knobs read, getCurrentRenderContext(),
+     * restricted to what its output reads: its detail is cached under its hash with that
+     * context's key mixed in, so a node whose upstream reads no context variable keeps one entry
+     * for every context, and one that does renders and caches once per distinct value.
      *
      * On eRenderRoIRetCodeOk, *outputDetail is non-NULL, possibly an empty detail. On any other
      * return code it is NULL; on eRenderRoIRetCodeFailed, *errorMessage (if given) carries the

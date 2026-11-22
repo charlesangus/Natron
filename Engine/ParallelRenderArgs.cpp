@@ -1903,6 +1903,7 @@ InputContextArgs::InputContextArgs(const EffectInstance* consumer,
     if (_contextKey == 0) {
         return;
     }
+    _context = restricted;
     const std::shared_ptr<const ContextFrameArgsMap> planned = consumerArgs ? consumerArgs->contextArgs.lock() : std::shared_ptr<const ContextFrameArgsMap>();
     if (planned) {
         ContextFrameArgsMap::const_iterator found = planned->find(NodeCtxKey(inputNode, _contextKey));

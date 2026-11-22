@@ -28,6 +28,7 @@
 #include <condition_variable>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <vector>
 
 #include <QCoreApplication>
@@ -256,11 +257,16 @@ void
 waitAllParked()
 {
     BarrierState& s = state();
+    // Declared before the lock so the GIL is re-taken only after s.mutex is released: a thread
+    // holding the GIL may be waiting for s.mutex.
+    std::optional<PythonUnlockedWhileWaiting> unlocked;
     std::unique_lock<std::mutex> lock(s.mutex);
     if (allParked(s)) {
         return;
     }
-    PythonUnlockedWhileWaiting unlocked;
+    lock.unlock();
+    unlocked.emplace();
+    lock.lock();
     s.changed.wait(lock, [&s]() { return allParked(s); });
 }
 
@@ -338,9 +344,14 @@ SceneWriteBarrier::ReadScope::ReadScope()
     }
 
     BarrierState& s = state();
+    // Declared before the lock so the GIL is re-taken only after s.mutex is released: a thread
+    // holding the GIL may be waiting for s.mutex.
+    std::optional<PythonUnlockedWhileWaiting> unlocked;
     std::unique_lock<std::mutex> lock(s.mutex);
     if (s.writersPending > 0) {
-        PythonUnlockedWhileWaiting unlocked;
+        lock.unlock();
+        unlocked.emplace();
+        lock.lock();
         s.changed.wait(lock, [&s]() { return s.writersPending == 0; });
     }
     ++s.readers;

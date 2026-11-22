@@ -414,6 +414,24 @@ public:
      **/
     App* loadProject(const QString& filename);
 
+    /**
+     * @brief Imports the nodes of the .ntpz project bundle (or unzipped bundle folder) at filename
+     * into group, or into the project's root when group is None, and returns the created top-level
+     * nodes. They get new names and new persistent IDs, keep their connections among themselves,
+     * and remember the template they came from. Raises RuntimeError with the loader's message
+     * when the file is missing, unreadable or not a project, and then no node is created. Raises
+     * ValueError when group is not a group of this application. An import from a script is not an
+     * undo step.
+     **/
+    std::list<Effect*> importTemplate(const QString& filename, Group* group = 0);
+
+    /**
+     * @brief Internal variant of importTemplate() that reports a failure instead of raising it.
+     * errorKind is set to 0 on success, 1 when the import failed (error holds the message) and 2
+     * when group does not belong to this application.
+     **/
+    std::list<Effect*> importTemplateChecked(const QString& filename, Group* group, QString* error, int* errorKind);
+
     ///Close the current project but keep the window
     bool resetProject();
 

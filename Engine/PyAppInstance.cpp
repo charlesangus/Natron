@@ -531,6 +531,61 @@ App::loadProject(const QString& filename)
     return new App(app);
 }
 
+std::list<Effect*>
+App::importTemplateChecked(const QString& filename,
+                           Group* group,
+                           QString* error,
+                           int* errorKind)
+{
+    std::list<Effect*> ret;
+    *errorKind = 0;
+    AppInstancePtr app = getInternalApp();
+    NodeCollectionPtr collection;
+    if (group) {
+        App* isApp = dynamic_cast<App*>(group);
+        Effect* isEffect = dynamic_cast<Effect*>(group);
+        if (isApp) {
+            if (isApp->getInternalApp() == app) {
+                collection = std::dynamic_pointer_cast<NodeCollection>(app->getProject());
+            }
+        } else if (isEffect && isEffect->getInternalNode() && isEffect->getInternalNode()->getApp() == app) {
+            collection = std::dynamic_pointer_cast<NodeCollection>(isEffect->getInternalNode()->getEffectInstance());
+        }
+        if (!collection) {
+            *errorKind = 2;
+            *error = QString::fromUtf8("The group to import into is not a group of this application");
+
+            return ret;
+        }
+    }
+
+    NodesList nodes = app->getProject()->importTemplate(filename, collection, error);
+    if (nodes.empty() && !error->isEmpty()) {
+        *errorKind = 1;
+
+        return ret;
+    }
+    for (const NodePtr& node : nodes) {
+        ret.push_back(new Effect(node));
+    }
+
+    return ret;
+}
+
+std::list<Effect*>
+App::importTemplate(const QString& filename,
+                    Group* group)
+{
+    QString error;
+    int errorKind = 0;
+    std::list<Effect*> ret = importTemplateChecked(filename, group, &error, &errorKind);
+    if (errorKind != 0) {
+        throw std::runtime_error(error.toStdString());
+    }
+
+    return ret;
+}
+
 ///Close the current project but keep the window
 bool
 App::resetProject()

@@ -46,6 +46,8 @@
 
 #include <gtest/gtest.h>
 
+#include <pxr/imaging/hd/tokens.h>
+
 #include <QFile>
 #include <QString>
 #include <QTemporaryDir>
@@ -416,6 +418,27 @@ TEST(USDRenderStorm, OneEngineFollowsAnEditAndAReleaseFreesIt)
 
     HydraRender::releaseAll();
     EXPECT_EQ(0u, HydraRender::getEngineCount());
+}
+
+// Camera exposure is applied by Natron, so Storm must never apply it as well.
+TEST(USDRenderStorm, TheEngineLeavesCameraExposureToNatron)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(kFixture);
+    ASSERT_TRUE(stage);
+    const int owner = 0;
+    std::string error;
+    HydraRender::Result result;
+    ASSERT_TRUE(HydraRender::render(referenceRequest(stage, 1., &owner), &result, &error)) << error;
+
+    PXR_NS::VtValue value;
+    ASSERT_TRUE(HydraRender::engineSetting(&owner, PXR_NS::HdRenderSettingsTokens->enableExposureCompensation.GetString(), &value));
+    ASSERT_TRUE(value.IsHolding<bool>());
+    EXPECT_FALSE(value.UncheckedGet<bool>());
+
+    HydraRender::release(&owner);
 }
 
 // Past the memory budget, the least recently used owner's engine goes; the rendering one stays.

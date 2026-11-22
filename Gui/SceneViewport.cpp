@@ -809,6 +809,9 @@ struct SceneViewportRenderer::Implementation {
         for (const std::pair<const std::string, VtValue>& setting : wanted) {
             engine->SetRendererSetting(TfToken(setting.first), setting.second);
         }
+        // The display grade applies the look-through camera's exposure; Storm applying it too, as
+        // it does when it renders through a scene camera, would apply it twice.
+        engine->SetRendererSetting(HdRenderSettingsTokens->enableExposureCompensation, VtValue(false));
         stormSettings = wanted;
         stormSettingsEngine = engineCount;
     }

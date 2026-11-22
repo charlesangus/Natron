@@ -1386,7 +1386,9 @@ RenderThread::makeEngine(EngineEntry& entry,
     for (RendererSettings::const_iterator it = settings.begin(); it != settings.end(); ++it) {
         entry.engine->SetRendererSetting(TfToken(it->first), it->second);
     }
-    // Last: a prim's settings must not override these.
+    // Last: a prim's settings must not override these. Storm would apply a scene camera's
+    // exposure when rendering through it; Natron applies camera exposure itself, never the delegate.
+    entry.engine->SetRendererSetting(HdRenderSettingsTokens->enableExposureCompensation, VtValue(false));
     if (CyclesAovs::isCycles(renderer)) {
         CyclesAovs::configureEngine(entry.engine.get());
     } else if (MoonRayAovs::isMoonRay(renderer)) {
@@ -3040,7 +3042,9 @@ struct ProgressiveRender::Implementation {
         for (RendererSettings::const_iterator it = settings.begin(); it != settings.end(); ++it) {
             made->SetRendererSetting(TfToken(it->first), it->second);
         }
-        // Last: a prim's settings must not override these.
+        // Last: a prim's settings must not override these. These frames go through the viewer's
+        // display grade, which applies the camera's exposure.
+        made->SetRendererSetting(HdRenderSettingsTokens->enableExposureCompensation, VtValue(false));
         if (cycles) {
             CyclesAovs::configureEngine(made.get());
         } else if (moonRay) {

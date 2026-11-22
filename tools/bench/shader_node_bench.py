@@ -10,18 +10,22 @@ Runs from the checkout root, inside natron-dev, after a build. Two parts:
      (about 10 ports per node, every other attribute a knob) and with every attribute a port. They
      print SHADER_BENCH lines: create, save, open, a knob edit plus re-authoring the network's
      UsdShade layer through SceneNodeAuthoring::openLayerStage, and in-process comp edits (a Grade
-     knob change and a reconnection per round) before and after the network is added.
+     knob change and a reconnection per round) with and without the network, both warmed and
+     timed in alternating pairs, as medians.
   2. graph_bench.py's gxg session (BENCH_SESSION=bc) in NatronRenderer without a network and with
-     each variant (BENCH_SHADER_NETWORK), comparing the re-render after each knob change.
+     each variant (BENCH_SHADER_NETWORK), comparing the re-render after each knob change. The three
+     sessions run --graph-rounds times in rotating order, and the bar compares the medians.
 
 Bars: open < 2 s, save < 2 s, a knob edit re-authors in < 100 ms, comp edits
 no slower with the network loaded (within --tolerance, default 10 %, for timing noise). Only the
 knob-first network has to meet them; the every-attribute-a-port network is printed for
-comparison. Exits 1 if a bar fails.
+comparison. The worst knob edit is printed against the knob-edit bar but not gated. Exits 1 if a
+bar fails.
 
   --tests BIN       the Tests binary (default <build>/Tests/Tests)
   --renderer BIN    NatronRenderer (default <build>/Renderer/NatronRenderer)
   --render-dir DIR  where graph_bench writes its frames (default build/bench/shader-node-render)
+  --graph-rounds N  graph_bench sessions per network (default 3)
   --json FILE       appends every measured record to FILE as JSON lines
 """
 import argparse
@@ -85,6 +89,7 @@ def main():
     parser.add_argument("--render-dir", default=os.path.abspath(os.path.join("build", "bench", "shader-node-render")))
     parser.add_argument("--no-graph-bench", action="store_true")
     parser.add_argument("--tolerance", type=float, default=0.10)
+    parser.add_argument("--graph-rounds", type=int, default=3)
     parser.add_argument("--json")
     args = parser.parse_args()
     tests = args.tests or os.path.join(args.build, "Tests", "Tests")
@@ -99,9 +104,17 @@ def main():
     graph = []
     if not args.no_graph_bench:
         os.makedirs(args.render_dir, exist_ok=True)
-        for network in ("",) + VARIANTS:
-            graph.append(graph_bench_record(renderer, args.render_dir, network))
-        records.extend(graph)
+        networks_in_order = ("",) + VARIANTS
+        sessions = {network: [] for network in networks_in_order}
+        for round_index in range(max(args.graph_rounds, 1)):
+            shift = round_index % len(networks_in_order)
+            for network in networks_in_order[shift:] + networks_in_order[:shift]:
+                record = graph_bench_record(renderer, args.render_dir, network)
+                records.append(record)
+                sessions[network].append(record["rerender_median_s"])
+        for network in networks_in_order:
+            graph.append({"network": network or None, "rerender_median_s": statistics.median(sessions[network]),
+                          "sessions": sessions[network]})
 
     failed = False
     print()
@@ -113,6 +126,8 @@ def main():
             ok = r[key] < limit
             failed = failed or (gated and not ok)
             print("%-24s %-26s %10.1fms %10.0fms  %s%s" % (variant, BAR_LABELS[key], r[key], limit, verdict(ok), "" if gated else " (comparison)"))
+        ok = r["knob_edit_max_ms"] < BARS_MS["knob_edit_ms"]
+        print("%-24s %-26s %10.1fms %10.0fms  %s (not gated)" % (variant, "worst knob edit", r["knob_edit_max_ms"], BARS_MS["knob_edit_ms"], verdict(ok)))
         limit = r["comp_edit_without_ms"] * (1.0 + args.tolerance)
         ok = r["comp_edit_with_ms"] <= limit
         failed = failed or (gated and not ok)

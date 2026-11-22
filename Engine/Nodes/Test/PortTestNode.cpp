@@ -285,6 +285,8 @@ PortTestNode::PortTestNode(NodePtr node)
     , _specs()
     , _spec(nullptr)
     , _appliedPorts()
+    , _applyingPorts(false)
+    , _portUpstreams()
     , _portsKnob()
     , _inputOutputsKnob()
 {
@@ -451,6 +453,7 @@ PortTestNode::applyPorts(const std::vector<std::string>& requested)
     }
     // initializeInputs() keeps connections by input number, so every connection whose port moves
     // or goes away is undone first, which also clears it from the upstream node's outputs.
+    _applyingPorts = true;
     for (std::size_t i = 0; i < old.size(); ++i) {
         if (upstream.count(old[i]) && ((i >= ports.size()) || (ports[i] != old[i]))) {
             node->disconnectInput((int)i);
@@ -464,6 +467,8 @@ PortTestNode::applyPorts(const std::vector<std::string>& requested)
             node->connectInput(it->second, (int)i);
         }
     }
+    _applyingPorts = false;
+    pruneInputOutputs();
 }
 
 void
@@ -539,6 +544,21 @@ PortTestNode::getOutputForInput(const std::string& inputLabel) const
 }
 
 void
+PortTestNode::setInputOutputs(const std::map<std::string, std::string>& outputs)
+{
+    std::vector<std::string> entries;
+
+    for (const auto& entry : outputs) {
+        entries.push_back(entry.first + "=" + entry.second);
+    }
+    KnobStringPtr knob = _inputOutputsKnob.lock();
+    const std::string text = portTestJoinPorts(entries);
+    if (knob && (knob->getValue() != text)) {
+        knob->setValue(text);
+    }
+}
+
+void
 PortTestNode::setOutputForInput(const std::string& inputLabel,
                                 const std::string& outputName)
 {
@@ -549,13 +569,58 @@ PortTestNode::setOutputForInput(const std::string& inputLabel,
     } else {
         outputs[inputLabel] = outputName;
     }
-    std::vector<std::string> entries;
+    setInputOutputs(outputs);
+}
+
+void
+PortTestNode::pruneInputOutputs()
+{
+    const std::map<std::string, std::string> outputs = getInputOutputs();
+    std::map<std::string, std::string> kept;
+
     for (const auto& entry : outputs) {
-        entries.push_back(entry.first + "=" + entry.second);
+        if (std::find(_appliedPorts.begin(), _appliedPorts.end(), entry.first) != _appliedPorts.end()) {
+            kept.insert(entry);
+        }
     }
-    KnobStringPtr knob = _inputOutputsKnob.lock();
-    if (knob) {
-        knob->setValue(portTestJoinPorts(entries));
+    for (std::map<std::string, NodeWPtr>::iterator it = _portUpstreams.begin(); it != _portUpstreams.end();) {
+        if (std::find(_appliedPorts.begin(), _appliedPorts.end(), it->first) == _appliedPorts.end()) {
+            it = _portUpstreams.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    if (kept.size() != outputs.size()) {
+        setInputOutputs(kept);
+    }
+}
+
+void
+PortTestNode::onInputChanged(int inputNo)
+{
+    if (_applyingPorts || (inputNo < 0) || (inputNo >= (int)_appliedPorts.size())) {
+        return;
+    }
+    NodePtr node = getNode();
+    NodePtr input = node ? node->getInput(inputNo) : NodePtr();
+    // A disconnect keeps the name: deleting the upstream node disconnects the input, and undoing
+    // the delete reconnects the same node, which must read the same output again.
+    if (!input) {
+        return;
+    }
+    const std::string& label = _appliedPorts[inputNo];
+    const std::map<std::string, NodeWPtr>::const_iterator previous = _portUpstreams.find(label);
+    const bool otherUpstream = (previous != _portUpstreams.end()) && (previous->second.lock() != input);
+    _portUpstreams[label] = input;
+    const std::string output = getOutputForInput(label);
+    if (output.empty()) {
+        return;
+    }
+    PortTestNode* upstream = dynamic_cast<PortTestNode*>(input->getEffectInstance().get());
+    // A loader or a paste connects inputs one at a time after all their names are set, with no
+    // previous upstream, so only the changed input's entry is checked.
+    if (otherUpstream || !upstream || !upstream->findOutput(output)) {
+        setOutputForInput(label, std::string());
     }
 }
 
@@ -623,6 +688,7 @@ PortTestEditPortsCommand::PortTestEditPortsCommand(const NodePtr& node,
     , _before()
     , _after(ports)
     , _connections()
+    , _outputs()
 {
     PortTestNode* effect = node ? dynamic_cast<PortTestNode*>(node->getEffectInstance().get()) : nullptr;
 
@@ -634,6 +700,10 @@ PortTestEditPortsCommand::PortTestEditPortsCommand(const NodePtr& node,
         NodePtr input = node->getInput((int)i);
         if (input) {
             _connections[_before[i]] = input;
+        }
+        const std::string output = effect->getOutputForInput(_before[i]);
+        if (!output.empty()) {
+            _outputs[_before[i]] = output;
         }
     }
 }
@@ -665,6 +735,9 @@ PortTestEditPortsCommand::undo()
         if (input && !node->getInput((int)i)) {
             node->connectInput(input, (int)i);
         }
+    }
+    for (const auto& output : _outputs) {
+        effect->setOutputForInput(output.first, output.second);
     }
 }
 

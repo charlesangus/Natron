@@ -38,6 +38,7 @@
 
 #include "BaseTest.h"
 
+#include "Engine/AppManager.h"
 #include "Engine/KnobTypes.h"
 
 #include "Scene/ShaderNodeTestUtils.h"
@@ -45,6 +46,7 @@
 #include "Serialization/Yaml/ClipboardYaml.h"
 
 NATRON_NAMESPACE_USING
+NATRON_PYTHON_NAMESPACE_USING
 
 namespace {
 
@@ -213,8 +215,49 @@ TEST_F(ShaderNodeOutputsTest, TheOutputNameSurvivesCopyAndPaste)
     expectTextureIntoBsdf(texture, bsdf);
 }
 
+// A name lives with its port and its upstream node. A port removed and added back, or an input
+// given a different upstream, reads that node's first output; an input reconnected to the same
+// node, as an undone delete does, reads the same output again.
+TEST_F(ShaderNodeOutputsTest, ARemovedPortOrANewUpstreamForgetsTheOutputName)
+{
+    NodeCollectionPtr project = getApp()->getProject();
+    NodePtr texture;
+    NodePtr bsdf;
+    buildTextureIntoBsdf(project, &texture, &bsdf);
+    ASSERT_FALSE(HasFatalFailure());
+    NodePtr map = create("Map", project);
+    ASSERT_TRUE(bool(map));
+    PortTestNode* downstream = portTestEffect(bsdf);
+
+    downstream->setPorts({ "color0", "float1" });
+    EXPECT_EQ(std::string(), downstream->getOutputForInput("float0"));
+    EXPECT_EQ(std::string("Color"), downstream->getOutputForInput("color0"));
+    downstream->setPorts({ "float0", "color0", "float1" });
+    EXPECT_FALSE(bool(portInput(bsdf, "float0")));
+    EXPECT_EQ(std::string(), downstream->getOutputForInput("float0"));
+    ASSERT_TRUE(connectPort(map, bsdf, "float0"));
+    EXPECT_EQ(std::string(), downstream->getOutputForInput("float0"));
+    EXPECT_TRUE(portTestEffect(map)->findOutput(downstream->getOutputForInput("float0")) != nullptr);
+
+    const int color0 = bsdf->getInputNumberFromLabel("color0");
+    ASSERT_GE(color0, 0);
+    bsdf->disconnectInput(color0);
+    ASSERT_TRUE(connectPort(texture, bsdf, "color0"));
+    EXPECT_EQ(std::string("Color"), downstream->getOutputForInput("color0"));
+    bsdf->disconnectInput(color0);
+    ASSERT_TRUE(connectPort(map, bsdf, "color0"));
+    EXPECT_EQ(std::string(), downstream->getOutputForInput("color0"));
+
+    // Moving a port keeps its name.
+    downstream->setOutputForInput("color0", "out");
+    downstream->setPorts({ "float1", "color0", "float0" });
+    EXPECT_EQ(map, portInput(bsdf, "color0"));
+    EXPECT_EQ(std::string("out"), downstream->getOutputForInput("color0"));
+}
+
 // Python and a Group exported as a PyPlug see the output name as an ordinary string parameter,
-// set before the exported script connects the inputs.
+// set before the exported script connects the inputs, and an instance of the PyPlug reads the
+// same outputs. The script runs as a loaded PyPlug's does: createInstance() into an empty Group.
 TEST_F(ShaderNodeOutputsTest, AGroupExportCarriesPortsAndOutputNamesBeforeConnections)
 {
     NodePtr group = createEmptyGroup(getApp());
@@ -234,6 +277,30 @@ TEST_F(ShaderNodeOutputsTest, AGroupExportCarriesPortsAndOutputNamesBeforeConnec
     const int connect = output.indexOf(QString::fromUtf8(".connectInput("));
     EXPECT_GE(ports, 0) << output.toStdString();
     EXPECT_GE(outputs, 0) << output.toStdString();
+    // Setting the ports prunes the names of ports the node does not have yet.
+    EXPECT_LT(ports, outputs) << output.toStdString();
     EXPECT_GT(connect, ports) << output.toStdString();
     EXPECT_GT(connect, outputs) << output.toStdString();
+
+    const std::string textureName = texture->getScriptName();
+    const std::string bsdfName = bsdf->getScriptName();
+    texture.reset();
+    bsdf.reset();
+    nodeGroup.reset();
+    group.reset();
+    getApp()->getProject()->reset(false, true);
+
+    std::string error;
+    std::string printed;
+    ASSERT_TRUE(interpretPythonScript(output.toStdString(), &error, &printed)) << error;
+    CreateNodeArgs containerArgs(PLUGINID_NATRON_GROUP, getApp()->getProject());
+    containerArgs.setProperty<bool>(kCreateNodeArgsPropNodeGroupDisableCreateInitialNodes, true);
+    NodePtr container = getApp()->createNode(containerArgs);
+    ASSERT_TRUE(container != nullptr);
+    const std::string appVar = getApp()->getAppIDString();
+    ASSERT_TRUE(interpretPythonScript("createInstance(" + appVar + ", " + appVar + "." + container->getFullyQualifiedName() + ")\n", &error, &printed)) << error;
+
+    NodeGroupPtr instance = std::dynamic_pointer_cast<NodeGroup>(container->getEffectInstance());
+    ASSERT_TRUE(instance != nullptr);
+    expectTextureIntoBsdf(instance->getNodeByName(textureName), instance->getNodeByName(bsdfName));
 }

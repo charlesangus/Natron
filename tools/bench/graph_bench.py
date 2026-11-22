@@ -602,6 +602,13 @@ COMP_TWEAKS = {
 
 
 PORT_NODE_PREFIX = "test.natron.built-in.PortNode."
+# The targets each port-node kind declares in Engine/Nodes/Test/PortTestNode.cpp, which Python can't read.
+PORT_NODE_TARGETS = {
+    "DwaBaseMaterial": {"moonray"},
+    "Map": {"moonray"},
+    "PrincipledBsdf": {"cycles"},
+    "ImageTexture": {"cycles"},
+}
 # Port names whose attribute a texture or map output can feed; the rest are flags, menus and strings.
 VALUE_PORT_STEMS = ("float", "color", "vector", "pair")
 
@@ -612,7 +619,9 @@ def is_value_port(port):
 
 
 def build_shader_network():
-    """The network of ShaderNodeCost_Test: 5 materials, 10 BSDFs, 5 two-output textures and 30 maps, 40 edges."""
+    """The network of ShaderNodeCost_Test's Network::build: 5 materials, 10 BSDFs, 5 two-output textures and
+    30 maps, 40 edges. Maps feed the materials round-robin and each texture feeds two BSDFs, so no edge crosses
+    targets; one that did would be refused by the node's connection check."""
     if DRY_RUN:
         log("dry run: shader network %s, 50 port nodes in a Group" % SHADER_NETWORK)
         return None
@@ -621,12 +630,15 @@ def build_shader_network():
     if group is None:
         raise RuntimeError("could not create a Group")
 
+    targets = {}
+
     def kind(name, count):
         nodes = []
         for _ in range(count):
             node = app.createNode(PORT_NODE_PREFIX + name + suffix, -1, group)
             if node is None:
                 raise RuntimeError("could not create %s%s%s: run with NATRON_GUI_TEST_NODES=1" % (PORT_NODE_PREFIX, name, suffix))
+            targets[node.getScriptName()] = PORT_NODE_TARGETS[name]
             nodes.append(node)
         return nodes
 
@@ -637,19 +649,26 @@ def build_shader_network():
     next_slot = {}
     outputs = {}
 
+    edges = [0]
+
     def wire(upstream, output, downstream):
         name = downstream.getScriptName()
+        if not targets[upstream.getScriptName()] & targets[name]:
+            raise RuntimeError("shader network edge %s -> %s crosses targets (%s vs %s)" % (
+                upstream.getScriptName(), name, sorted(targets[upstream.getScriptName()]), sorted(targets[name])))
         ports = [p for p in (downstream.getParam("ports").get() or "").split() if is_value_port(p)]
         slot = next_slot.get(name, 0)
         next_slot[name] = slot + 1
         port = ports[slot]
         index = [downstream.getInputLabel(i) for i in range(downstream.getMaxInputCount())].index(port)
-        downstream.connectInput(index, upstream)
+        if not downstream.connectInput(index, upstream):
+            raise RuntimeError("could not connect %s to %s.%s" % (upstream.getScriptName(), name, port))
+        edges[0] += 1
         if output:
             outputs.setdefault(name, []).append("%s=%s" % (port, output))
 
     for i, node in enumerate(maps):
-        wire(node, "", materials[i // 3] if i < 15 else bsdfs[(i - 15) % len(bsdfs)])
+        wire(node, "", materials[i % len(materials)])
     for i, node in enumerate(textures):
         wire(node, "Alpha", bsdfs[i])
         wire(node, "Color", bsdfs[i + 5])
@@ -657,6 +676,8 @@ def build_shader_network():
         entries = outputs.get(node.getScriptName())
         if entries:
             node.getParam("inputOutputs").set(" ".join(sorted(entries)))
+    if edges[0] != 40:
+        raise RuntimeError("shader network has %d edges, expected 40" % edges[0])
     log("shader network %s: %d nodes" % (SHADER_NETWORK, len(materials) + len(bsdfs) + len(textures) + len(maps)))
     return group
 

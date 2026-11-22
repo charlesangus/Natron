@@ -124,7 +124,12 @@ public:
      **/
     void setPorts(const std::vector<std::string>& ports);
 
-    // The output of input's upstream node the input reads, empty for that node's first.
+    /**
+     * @brief The output of input's upstream node the input reads, empty for that node's first.
+     * Removing the port drops its entry, and so does connecting the input to a node other than
+     * the one it was last connected to, or to one without that output. A disconnected input keeps
+     * its entry until it is connected again.
+     **/
     std::string getOutputForInput(const std::string& inputLabel) const;
 
     void setOutputForInput(const std::string& inputLabel,
@@ -170,6 +175,8 @@ private:
 
     virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    virtual void onInputChanged(int inputNo) OVERRIDE FINAL;
+
     std::vector<std::string> sanitizePorts(const std::vector<std::string>& ports) const;
 
     void publishSpec(const std::vector<std::string>& ports);
@@ -178,12 +185,21 @@ private:
 
     std::map<std::string, std::string> getInputOutputs() const;
 
+    void setInputOutputs(const std::map<std::string, std::string>& outputs);
+
+    void pruneInputOutputs();
+
     const PortTestLayout* _layout;
     // Render threads read the spec while the main thread replaces it, so a replaced spec is
     // retired rather than freed and every pointer handed out stays valid for the node's life.
     std::vector<std::unique_ptr<SpecStorage>> _specs;
     std::atomic<const NodeSpec*> _spec;
     std::vector<std::string> _appliedPorts;
+    // applyPorts() disconnects ports that move and reconnects them at their new index; their
+    // output names must survive that.
+    bool _applyingPorts;
+    // The node each port was last connected to, not saved.
+    std::map<std::string, NodeWPtr> _portUpstreams;
     KnobStringWPtr _portsKnob;
     KnobStringWPtr _inputOutputsKnob;
 };
@@ -206,6 +222,7 @@ private:
     std::vector<std::string> _before;
     std::vector<std::string> _after;
     std::map<std::string, NodeWPtr> _connections;
+    std::map<std::string, std::string> _outputs;
 };
 
 std::string portTestJoinPorts(const std::vector<std::string>& ports);

@@ -69,8 +69,9 @@ median(std::vector<double> values)
         return 0.;
     }
     std::sort(values.begin(), values.end());
+    const std::size_t middle = values.size() / 2;
 
-    return values[values.size() / 2];
+    return (values.size() % 2) ? values[middle] : 0.5 * (values[middle - 1] + values[middle]);
 }
 
 // Ports, connections and output names of one network node, by script name.
@@ -153,25 +154,32 @@ public:
         make("PrincipledBsdf", 10, &bsdfs);
         make("ImageTexture", 5, &textures);
         make("Map", 30, &maps);
+        // An ASSERT in a lambda only leaves the lambda; the wiring below indexes these vectors.
+        if (::testing::Test::HasFatalFailure()) {
+            return;
+        }
 
         std::map<NodePtr, std::size_t> nextSlot;
         const auto wire = [&](const NodePtr& upstream, const std::string& output, const NodePtr& downstream) {
             PortTestNode* effect = portTestEffect(downstream);
+            PortTestNode* source = portTestEffect(upstream);
+            ASSERT_TRUE(effect != nullptr);
+            ASSERT_TRUE(source != nullptr);
             const std::vector<std::string> ports = valuePorts(*effect);
             std::size_t& slot = nextSlot[downstream];
             ASSERT_LT(slot, ports.size());
             const std::string port = ports[slot++];
-            ASSERT_EQ(PortTestNode::eConnectionOk, PortTestNode::checkConnection(*portTestEffect(upstream), output, *effect, port)) << port;
+            ASSERT_EQ(PortTestNode::eConnectionOk, PortTestNode::checkConnection(*source, output, *effect, port)) << port;
             ASSERT_TRUE(connectPort(upstream, downstream, port)) << port;
             if (!output.empty()) {
                 effect->setOutputForInput(port, output);
             }
             ++edges;
         };
-        for (std::size_t i = 0; i < maps.size(); ++i) {
+        for (std::size_t i = 0; (i < maps.size()) && !::testing::Test::HasFatalFailure(); ++i) {
             wire(maps[i], std::string(), materials[i % materials.size()]);
         }
-        for (std::size_t i = 0; i < textures.size(); ++i) {
+        for (std::size_t i = 0; (i < textures.size()) && !::testing::Test::HasFatalFailure(); ++i) {
             wire(textures[i], "Alpha", bsdfs[i]);
             wire(textures[i], "Color", bsdfs[i + 5]);
         }
@@ -372,21 +380,47 @@ protected:
         const std::vector<NodePtr> chain = createGradeChain(20);
         ASSERT_EQ(20u, chain.size());
         const int rounds = 200;
+        // Both states are warmed, then timed in pairs whose order alternates, so neither state
+        // always runs first; the bar compares the medians.
+        const int samples = 6;
+        std::vector<double> compWithoutMs;
+        std::vector<double> compWithMs;
+        Network network;
+        const auto addNetwork = [&]() {
+            network = Network();
+            network.build(getApp(), allPorts);
+            ASSERT_FALSE(::testing::Test::HasFatalFailure());
+            ASSERT_EQ(40, network.edges);
+        };
+        const auto removeNetwork = [&]() {
+            network.group->destroyNode(true, false);
+            network = Network();
+        };
         timeCompEdits(chain, rounds / 10);
-        const double compWithoutMs = timeCompEdits(chain, rounds);
+        addNetwork();
+        ASSERT_FALSE(HasFatalFailure());
+        timeCompEdits(chain, rounds / 10);
+        removeNetwork();
+        for (int i = 0; i < samples; ++i) {
+            if (i % 2 == 0) {
+                compWithoutMs.push_back(timeCompEdits(chain, rounds));
+                addNetwork();
+                ASSERT_FALSE(HasFatalFailure());
+                compWithMs.push_back(timeCompEdits(chain, rounds));
+            } else {
+                compWithMs.push_back(timeCompEdits(chain, rounds));
+                removeNetwork();
+                compWithoutMs.push_back(timeCompEdits(chain, rounds));
+            }
+        }
 
         const Clock::time_point createStart = Clock::now();
-        Network network;
-        network.build(getApp(), allPorts);
+        addNetwork();
         ASSERT_FALSE(HasFatalFailure());
         const double createMs = millisecondsSince(createStart);
-        ASSERT_EQ(40, network.edges);
         const std::string groupName = network.group->getScriptName();
         const std::map<std::string, NodeWiring> wiring = networkWiring(groupCollection(network.group));
         ASSERT_EQ(50u, wiring.size());
-
-        timeCompEdits(chain, rounds / 10);
-        const double compWithMs = timeCompEdits(chain, rounds);
 
         QTemporaryDir tmp;
         ASSERT_TRUE(tmp.isValid());
@@ -442,10 +476,10 @@ protected:
         }
         std::printf("SHADER_BENCH {\"test\":\"network\",\"variant\":\"%s\",\"nodes\":%d,\"edges\":%d,\"inputs\":%d,\"knobs\":%d,"
                     "\"create_ms\":%.3f,\"save_ms\":%.3f,\"open_ms\":%.3f,\"knob_edit_ms\":%.3f,\"knob_edit_max_ms\":%.3f,"
-                    "\"comp_edit_without_ms\":%.3f,\"comp_edit_with_ms\":%.3f,\"comp_rounds\":%d}\n",
+                    "\"comp_edit_without_ms\":%.3f,\"comp_edit_with_ms\":%.3f,\"comp_rounds\":%d,\"comp_samples\":%d}\n",
                     allPorts ? "every-attribute-a-port" : "knob-first", (int)wiring.size(), 40, inputs, knobs,
                     createMs, saveMs, openMs, median(knobEditMs), *std::max_element(knobEditMs.begin(), knobEditMs.end()),
-                    compWithoutMs, compWithMs, rounds);
+                    median(compWithoutMs), median(compWithMs), rounds, samples);
         std::fflush(stdout);
     }
 };

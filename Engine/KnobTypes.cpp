@@ -3120,7 +3120,7 @@ KnobLayers::makeRow(const ImageLayerDesc& layer, int usersCount)
 {
     std::vector<std::string> row(3);
 
-    row[0] = layer.getLayerLabel();
+    row[0] = layer.getLayerID();
     const std::vector<std::string>& channels = layer.getChannels();
     for (std::size_t c = 0; c < channels.size(); ++c) {
         if (c > 0) {

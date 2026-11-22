@@ -121,6 +121,7 @@ const char* const kViewerKnobNames[] = {
     kViewerParamMaxSamples,
     kViewerParamRenderEverything,
     kViewerParamRefinementPaused,
+    kViewerParamMapSiblingOverlays,
 };
 
 // One value per dimension: numbers for bool/int/double knobs, strings for string knobs.
@@ -846,6 +847,15 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     QObject::connect( _imp->checkerboardButton, SIGNAL(clicked(bool)), this, SLOT(onCheckerboardButtonClicked()) );
     _imp->secondRowLayout->addWidget(_imp->checkerboardButton);
 
+    _imp->mapSiblingOverlaysButton = new Button(tr("Siblings"), _imp->secondSettingsRow);
+    _imp->mapSiblingOverlaysButton->setObjectName(QString::fromUtf8(kViewerParamMapSiblingOverlays));
+    _imp->mapSiblingOverlaysButton->setFocusPolicy(Qt::NoFocus);
+    _imp->mapSiblingOverlaysButton->setCheckable(true);
+    _imp->mapSiblingOverlaysButton->setChecked(true);
+    _imp->mapSiblingOverlaysButton->setDown(true);
+    QObject::connect(_imp->mapSiblingOverlaysButton, SIGNAL(clicked(bool)), this, SLOT(onMapSiblingOverlaysButtonClicked(bool)));
+    _imp->secondRowLayout->addWidget(_imp->mapSiblingOverlaysButton);
+
     _imp->viewsComboBox = new ComboBox(_imp->secondSettingsRow);
     _imp->viewsComboBox->setToolTip( QString::fromUtf8("<p><b>") + tr("Active view:") + QString::fromUtf8("</b></p>") + tr(
                                          "Tells the viewer what view should be displayed.") );
@@ -1254,6 +1264,12 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
                            tr("When checked, the viewer will render the image in its entirety and not just the visible portion.").toStdString() + "</p>" +
                            "<p><b>" + tr("Keyboard shortcut: %1").toStdString() + "</b></p>", _imp->fullFrameProcessingButton);
 
+    setToolTipWithShortcut(kShortcutGroupViewer, kShortcutIDActionMapSiblingOverlays, "<p>" + tr("When checked, the overlay of a node on another branch of an input the viewed node shares "
+                                                                                                 "is drawn through that input, so it lines up with the viewed image. "
+                                                                                                 "Unchecked, it is drawn in its own space.")
+                                                                                                  .toStdString()
+                               + "</p>" + "<p><b>" + tr("Keyboard shortcut: %1").toStdString() + "</b></p>",
+                           _imp->mapSiblingOverlaysButton);
 
     std::list<std::string> roiActions;
     roiActions.push_back(kShortcutIDActionROIEnabled);
@@ -1819,6 +1835,8 @@ ViewerTab::refreshFromViewerKnob(const std::string& name)
         abortViewersAndRefresh();
     } else if ((name == kViewerParamMaxSamples) || (name == kViewerParamRefinementPaused) || (name == kViewerParamRenderEverything)) {
         refreshSceneRenderFromKnobs();
+    } else if (name == kViewerParamMapSiblingOverlays) {
+        refreshMapSiblingOverlaysFromKnob();
     }
 }
 
@@ -1836,6 +1854,19 @@ ViewerTab::refreshAllFromViewerKnobs()
     refreshFpsFromKnobs();
     refreshFrameRangeFromKnobs();
     refreshSceneRenderFromKnobs();
+    refreshMapSiblingOverlaysFromKnob();
+}
+
+void
+ViewerTab::refreshMapSiblingOverlaysFromKnob()
+{
+    const bool mapped = _imp->viewerValue<bool>(kViewerParamMapSiblingOverlays, true);
+    {
+        QSignalBlocker b(_imp->mapSiblingOverlaysButton);
+        _imp->mapSiblingOverlaysButton->setChecked(mapped);
+        _imp->mapSiblingOverlaysButton->setDown(mapped);
+    }
+    _imp->viewer->redraw();
 }
 
 void

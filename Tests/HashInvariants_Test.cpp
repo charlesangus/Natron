@@ -776,7 +776,7 @@ viewerTileKey(const NodePtr& holder,
     channels.push_back("G");
     channels.push_back("B");
     channels.push_back("A");
-    const ImageLayerDesc layer("Color", "Color", "RGBA", channels);
+    const ImageLayerDesc layer(kNatronColorLayerID, channels);
 
     return FrameKey(holder.get(),
                     time,
@@ -791,7 +791,7 @@ viewerTileKey(const NodePtr& holder,
                     mipmapLevel,
                     tile.inputName.empty() ? holder->getScriptName() : tile.inputName,
                     layer,
-                    "Color.A",
+                    "rgba.A",
                     bitDepth == (int)eImageBitDepthFloat,
                     tile.draft);
 }
@@ -830,7 +830,7 @@ TEST(FrameKeyDisplaySettings, MatchWhatALookupWouldServe)
     channels.push_back("G");
     channels.push_back("B");
     channels.push_back("A");
-    const ImageLayerDesc layer("Color", "Color", "RGBA", channels);
+    const ImageLayerDesc layer(kNatronColorLayerID, channels);
     const TextureRect tile(0, 0, 256, 256, 1, 1.);
     struct Display {
         double gain;
@@ -851,15 +851,15 @@ TEST(FrameKeyDisplaySettings, MatchWhatALookupWouldServe)
         for (std::size_t j = 0; j < n; ++j) {
             const Display& a = displays[i];
             const Display& b = displays[j];
-            const FrameKey cached(NULL, 3, 11, a.gain, a.gamma, a.displayTransform, 0, 4, ViewIdx(0), tile, 0, "Viewer1", layer, "Color.A", a.useShaders, false);
-            const FrameKey lookup(NULL, 3, 11, b.gain, b.gamma, b.displayTransform, 0, 4, ViewIdx(0), tile, 0, "Viewer1", layer, "Color.A", b.useShaders, false);
+            const FrameKey cached(NULL, 3, 11, a.gain, a.gamma, a.displayTransform, 0, 4, ViewIdx(0), tile, 0, "Viewer1", layer, "rgba.A", a.useShaders, false);
+            const FrameKey lookup(NULL, 3, 11, b.gain, b.gamma, b.displayTransform, 0, 4, ViewIdx(0), tile, 0, "Viewer1", layer, "rgba.A", b.useShaders, false);
             const bool served = (cached.getHash() == lookup.getHash()) && (cached == lookup);
-            const FrameKey otherFrame(NULL, 9, 12, a.gain, a.gamma, a.displayTransform, 0, 4, ViewIdx(0), TextureRect(256, 0, 512, 256, 2, 1.), 1, "Viewer1", layer, "Color.A", a.useShaders, false);
+            const FrameKey otherFrame(NULL, 9, 12, a.gain, a.gamma, a.displayTransform, 0, 4, ViewIdx(0), TextureRect(256, 0, 512, 256, 2, 1.), 1, "Viewer1", layer, "rgba.A", a.useShaders, false);
             EXPECT_EQ(served, otherFrame.hasTheDisplaySettingsOf(lookup)) << "cached display " << i << ", viewer display " << j;
         }
     }
-    const FrameKey shaded(NULL, 3, 11, 1., 1., 0, 0, 4, ViewIdx(0), tile, 0, "Viewer1", layer, "Color.A", true, false);
-    const FrameKey shadedGain(NULL, 3, 11, 2., 1., 0, 0, 4, ViewIdx(0), tile, 0, "Viewer1", layer, "Color.A", true, false);
+    const FrameKey shaded(NULL, 3, 11, 1., 1., 0, 0, 4, ViewIdx(0), tile, 0, "Viewer1", layer, "rgba.A", true, false);
+    const FrameKey shadedGain(NULL, 3, 11, 2., 1., 0, 0, 4, ViewIdx(0), tile, 0, "Viewer1", layer, "rgba.A", true, false);
     EXPECT_TRUE(shaded.hasTheDisplaySettingsOf(shadedGain));
 }
 

@@ -117,7 +117,7 @@ The graph. Top-level keys, in the order they are written:
 | `id` | The project's identity, a random UUID made with a new project (File > New or a reset makes a new one). Loading restores it and Save As keeps it, so every save of one project, under any name, carries the same id. A paste uses it to tell whether nodes come from the open project. Omitted when empty; a file without one gets a new id when loaded. |
 | `knobs` | Project knobs, sparse (see below), then the project's Reverse-Flow Variables in declaration order, each with its definition under `user:`. Omitted when empty. |
 | `formats` | The project's additional formats: a list of `{name, rect: [x1, y1, x2, y2], par}`. Omitted when empty. |
-| `layers` | The layer registry: a map from layer ID to `{label, channelsLabel, channels, origin}`, sorted by ID. Omitted when empty. |
+| `layers` | The layer registry: a map from layer ID to `{channels, origin}`, sorted by ID. Omitted when empty. |
 | `timeline` | `{current: <frame>}`. |
 | `nodes` | The nodes, a map keyed by script name and sorted by it. |
 
@@ -215,8 +215,8 @@ knobs:
 formats:
   - {name: "Anamorphic", rect: [0, 0, 2048, 858], par: 2}
 layers:
-  diffuse: {label: "diffuse", channelsLabel: "RGB", channels: ["R", "G", "B"], origin: 2}
-  zdepth: {label: "Depth", channelsLabel: "Z", channels: ["Z"], origin: 1}
+  diffuse: {channels: ["R", "G", "B"], origin: 2}
+  zdepth: {channels: ["Z"], origin: 1}
 timeline: {current: 12}
 nodes:
   Blur1:

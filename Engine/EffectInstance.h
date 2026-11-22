@@ -688,6 +688,15 @@ public:
         return false;
     }
 
+    /**
+     * @brief Whether the node graph draws inputNb on the node's left side, ahead of its other
+     * side inputs, so it can be reached without connecting the inputs that come before it.
+     **/
+    virtual bool isInputFirstOnSide(int /*inputNb*/) const WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
     virtual int getRotoBrushInputIndex() const WARN_UNUSED_RETURN
     {
         return -1;
@@ -1926,6 +1935,22 @@ protected:
         return eStatusReplyDefault;
     }
 
+    /**
+     * @brief The matrix an overlay drawn upstream follows through this node, in the form
+     * getTransform answers. getTransform refuses wherever the matrix alone would not reproduce the
+     * render, a partial mix for one, since concatenation would drop what it leaves out; an overlay
+     * follows the matrix whenever the node moves the image at all. The default is getTransform.
+     **/
+    virtual StatusEnum getOverlayTransform(double time,
+                                           const RenderScale& renderScale,
+                                           bool draftRender,
+                                           ViewIdx view,
+                                           EffectInstancePtr* inputToTransform,
+                                           Transform::Matrix3x3* transform) WARN_UNUSED_RETURN
+    {
+        return getTransform(time, renderScale, draftRender, view, inputToTransform, transform);
+    }
+
 public:
 
 
@@ -1936,6 +1961,12 @@ public:
                                    ViewIdx view,
                                    EffectInstancePtr* inputToTransform,
                                    Transform::Matrix3x3* transform) WARN_UNUSED_RETURN;
+    StatusEnum getOverlayTransform_public(double time,
+                                          const RenderScale& renderScale,
+                                          bool draftRender,
+                                          ViewIdx view,
+                                          EffectInstancePtr* inputToTransform,
+                                          Transform::Matrix3x3* transform) WARN_UNUSED_RETURN;
 
     // getSceneInputContext() for a caller that maps a context through this node outside evaluateScene().
     SceneEvaluationContext getSceneInputContext_public(int inputNb,
@@ -3161,8 +3192,9 @@ public:
 
     /**
      * @brief True while the render running on this thread is the node's overlay image pass, the
-     * only render in which addOverlayImageTile() does anything. Whatever the answer, the render
-     * must write the same pixels to its output: the pass can fill the cache.
+     * only render in which addOverlayImageTile() does anything; a pass that reads planes is no
+     * render, so this stays false during it until addOverlayImagesFromPlanes(). Whatever the answer,
+     * the render must write the same pixels to its output: the pass can fill the cache.
      **/
     bool isOverlayImageRender() const;
 
@@ -3191,8 +3223,9 @@ public:
 
     /**
      * @brief Runs the node's render action over the part of request.visibleCanonical in its region
-     * of definition and publishes the tiles it adds, all at once, on success. A failed pass publishes
-     * an empty frame, so that the node's last mask does not pass for this state and the failure is not
+     * of definition, or requests the planes overlayImageSourcePlanes() names over it and hands them
+     * to addOverlayImagesFromPlanes(), and publishes the tiles added, all at once, on success. A
+     * failed pass publishes an empty frame, so that the node's last mask does not pass for this state and the failure is not
      * retried until the state changes. An aborted pass publishes nothing, nor does one that
      * refreshOverlayImages() overtook while it ran: it may have rendered the view before. Returns
      * whether the pass published what it rendered. Must not be called under another render's frame
@@ -3267,6 +3300,32 @@ public:
     }
 
     /**
+     * @brief The planes of this node its overlay images are read from. Empty, the default, means
+     * that the render action adds the tiles itself and has to run on every pass, cached or not. For
+     * any other answer the pass requests these planes as any render does, so that the cache answers
+     * it when it can, then calls addOverlayImagesFromPlanes(). This suits an overlay that is a
+     * reading of the node's own output: a view knob that only changes the reading costs no render.
+     **/
+    virtual std::list<ImageLayerDesc> overlayImageSourcePlanes(double /*time*/,
+                                                               ViewIdx /*view*/)
+    {
+        return std::list<ImageLayerDesc>();
+    }
+
+    /**
+     * @brief Adds the pass's tiles with addOverlayImageTile(), from the planes overlayImageSourcePlanes()
+     * named. Runs on the pass's thread once the planes are rendered, outside the render action.
+     * canonicalWindow is the part of the node the pass covers; only that part of each image is
+     * sure to be rendered.
+     **/
+    virtual void addOverlayImagesFromPlanes(const std::map<ImageLayerDesc, ImagePtr>& /*planes*/,
+                                            double /*time*/,
+                                            ViewIdx /*view*/,
+                                            const RectD& /*canonicalWindow*/)
+    {
+    }
+
+    /**
      * @brief Return true to have the viewer draw the list buildOverlay() fills.
      **/
     virtual bool hasOverlayDrawList() const
@@ -3306,11 +3365,19 @@ public:
      * Note that in this case this is expected that getNInputs returns the number of inputs *with* the mask.
      * The function getInputLabel should also return the appropriate label for the mask.
      * The function isInputMask should also return true for this mask index.
-     * The mask will be the last input, i.e its index will be getNInputs() - 1.
+     * The mask is the input getHostMaskInputNb() returns.
      **/
     virtual bool isHostMaskingEnabled() const
     {
         return false;
+    }
+
+    /**
+     * @brief The input host masking reads: the last one unless reimplemented.
+     **/
+    virtual int getHostMaskInputNb() const
+    {
+        return getNInputs() - 1;
     }
 
     /**
@@ -3498,7 +3565,10 @@ public:
     // getPresentLayers() plus, for inputNb == -1 only, every layer registered at the project level.
     void getAvailableLayers(double time, ViewIdx view, int inputNb, std::list<ImageLayerDesc>* availableLayers);
 
-    const std::vector<std::string>& getUserLayers() const;
+    /**
+     * @brief The project's registered layers, each one through encode(), into a per-thread vector.
+     **/
+    const std::vector<std::string>& getUserLayers(std::string (*encode)(const ImageLayerDesc&)) const;
 
     /**
      * @brief The input whose layers pass through this effect at (time, view), and the time and

@@ -17,7 +17,7 @@ ZOOM_MAX_PERCENT = 102400
 WHEEL_PER_DELTA = 1.00152
 SNAP_BAND = 0.08
 FACTOR_TOLERANCE = 1e-6
-PIVOT_TOLERANCE = 1e-3
+PIVOT_SLACK_PX = 1e-6
 
 try:
     import NatronEngine
@@ -171,9 +171,19 @@ try:
             return jumped, jumped
         return nxt, nxt
 
-    def keeps_pivot(before, after):
-        return (before is not None and after is not None
-                and abs(before[0] - after[0]) < PIVOT_TOLERANCE and abs(before[1] - after[1]) < PIVOT_TOLERANCE)
+    def pivot_drift(before, pos):
+        m = mapping()
+        if before is None or m is None:
+            return None
+        return max(abs(m[0] + before[0] * m[2] - pos.x()), abs(m[1] + before[1] * m[3] - pos.y()))
+
+    # The drawn projection edges snap to the device pixel grid while zoom keeps the cursor point
+    # fixed in the unsnapped projection, so the drawn point may move by up to one device pixel.
+    def keeps_pivot(before, pos):
+        drift = pivot_drift(before, pos)
+        gl = viewer_gl()
+        ratio = gl.devicePixelRatioF() if gl is not None else 1.
+        return drift is not None and drift <= 1. / ratio + PIVOT_SLACK_PX, drift
 
     def expect_level(value, case, check_menu=True):
         got = percent()
@@ -227,8 +237,8 @@ try:
             wheel(NOTCH, pivot)
             yield ("sleep", STEP_MS)
             expect_level(level, "wheel in from %s" % label(fit_level))
-            check(keeps_pivot(before, canonical_at(pivot)),
-                  "wheel in to %s keeps the image point under the cursor" % label(level))
+            kept, drift = keeps_pivot(before, pivot)
+            check(kept, "wheel in to %s keeps the image point under the cursor (moved %r px)" % (label(level), drift))
             visited.append(level)
         check(all(p in visited for p in (100., 125., 150., 200., 400.)),
               "wheel in from Fit lands on 100, 125, 150, 200 and 400%% (got %r)" % visited)
@@ -241,8 +251,8 @@ try:
             wheel(-NOTCH, pivot)
             yield ("sleep", STEP_MS)
             expect_level(level, "wheel out")
-            check(keeps_pivot(before, canonical_at(pivot)),
-                  "wheel out to %s keeps the image point under the cursor" % label(level))
+            kept, drift = keeps_pivot(before, pivot)
+            check(kept, "wheel out to %s keeps the image point under the cursor (moved %r px)" % (label(level), drift))
 
         gt.section("smooth")
         set_zoom(100)

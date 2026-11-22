@@ -22,6 +22,7 @@
 #include "Global/Macros.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <functional>
 #include <iostream>
@@ -29,6 +30,8 @@
 #include <span>
 #include <sstream>
 #include <string>
+#include <variant>
+#include <vector>
 
 #include <poll.h>
 #include <unistd.h>
@@ -39,16 +42,20 @@
 #include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QHostAddress>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QString>
 #include <QStringList>
+#include <QTcpServer>
+#include <QTcpSocket>
 #include <QTemporaryDir>
 
 #include "BaseTest.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/CreateNodeArgs.h"
+#include "Engine/GraphEditRecorder.h"
 #include "Engine/Knob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/LiveSession/SessionClient.h"
@@ -60,6 +67,8 @@
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Project.h"
+
+#include "Serialization/Session/SessionProtocol.h"
 
 NATRON_NAMESPACE_USING
 
@@ -522,4 +531,219 @@ TEST_F(LiveSessionProjectTest, AfterTheHostStopsTheClientKeepsAnUnsavedEditableC
               expectedState(AppInstance::LiveSessionState::eNone, Project::LiveSessionRole::eNone, false, true));
     // The detached copy's edits stay in it.
     EXPECT_EQ(doubleKnob(_app->getProject()->getNodeByName("SharedGrade"), kGradeParamMultiply)->getValue(0), 1.25);
+}
+
+namespace {
+
+namespace Session = Serialization::Session;
+
+// One end of a live session connection speaking the protocol directly, as a peer that is not
+// Natron would.
+class RawConnection {
+public:
+    explicit RawConnection(QTcpSocket* socket)
+        : _socket(socket)
+    {
+        _readyRead = QObject::connect(_socket, &QTcpSocket::readyRead, [this]() { read(); });
+        _closed = QObject::connect(_socket, &QTcpSocket::disconnected, [this]() {
+            read();
+            _disconnected = true;
+        });
+    }
+
+    // The socket may outlive this and still signal, aborting as it is destroyed.
+    ~RawConnection()
+    {
+        QObject::disconnect(_readyRead);
+        QObject::disconnect(_closed);
+    }
+
+    RawConnection(const RawConnection&) = delete;
+    RawConnection& operator=(const RawConnection&) = delete;
+
+    void sendBytes(const QByteArray& bytes)
+    {
+        _socket->write(bytes);
+        _socket->flush();
+    }
+
+    void send(const Session::SessionMessage& message)
+    {
+        const std::vector<std::byte> frame = Session::frameSessionMessage(message);
+        sendBytes(QByteArray(reinterpret_cast<const char*>(frame.data()), static_cast<qsizetype>(frame.size())));
+    }
+
+    template <typename Message>
+    bool received() const
+    {
+        for (const Session::SessionMessage& message : _messages) {
+            if (std::holds_alternative<Message>(message)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    bool disconnected() const
+    {
+        return _disconnected;
+    }
+
+    bool unreadable() const
+    {
+        return _unreadable;
+    }
+
+private:
+    void read()
+    {
+        const QByteArray bytes = _socket->readAll();
+        _decoder.feed(bytes.constData(), static_cast<std::size_t>(bytes.size()));
+        Session::SessionMessage message;
+        for (;;) {
+            const Session::SessionFrameDecoder::Status status = _decoder.next(&message);
+            if (status == Session::SessionFrameDecoder::Status::eError) {
+                _unreadable = true;
+            }
+            if (status != Session::SessionFrameDecoder::Status::eMessage) {
+                break;
+            }
+            _messages.push_back(message);
+        }
+    }
+
+    QTcpSocket* _socket;
+    QMetaObject::Connection _readyRead;
+    QMetaObject::Connection _closed;
+    Session::SessionFrameDecoder _decoder;
+    std::vector<Session::SessionMessage> _messages;
+    bool _disconnected = false;
+    bool _unreadable = false;
+};
+
+Session::HelloMessage
+helloFrom(const char* name)
+{
+    Session::HelloMessage hello;
+    hello.name = name;
+    hello.natronVersion = NATRON_VERSION_STRING;
+
+    return hello;
+}
+
+} // namespace
+
+TEST_F(LiveSessionProjectTest, BeforeHelloTheHostRefusesALargeFrameButAcceptsAHello)
+{
+    buildComp();
+    QString error;
+    ASSERT_TRUE(_app->hostLiveSession(QString::fromUtf8("127.0.0.1"), 0, QString::fromUtf8("host"), &error)) << error.toStdString();
+    const quint16 port = _app->getLiveSessionHost()->serverPort();
+
+    QTcpSocket flooding;
+    RawConnection flood(&flooding);
+    flooding.connectToHost(QString::fromUtf8("127.0.0.1"), port);
+    ASSERT_TRUE(runUntil([&flooding]() { return flooding.state() == QAbstractSocket::ConnectedState; }));
+    const std::uint32_t size = static_cast<std::uint32_t>(Session::kMaxFrameBytesBeforeHello + 1);
+    QByteArray header;
+    header.append(char(size >> 24)).append(char((size >> 16) & 0xff)).append(char((size >> 8) & 0xff)).append(char(size & 0xff));
+    flood.sendBytes(header + QByteArray(1024, 'x'));
+    ASSERT_TRUE(runUntil([&flood]() { return flood.disconnected(); }, 30000)) << "the host kept a peer sending a large frame before hello";
+    EXPECT_TRUE(flood.received<Session::ByeMessage>());
+    EXPECT_FALSE(flood.received<Session::WelcomeMessage>());
+    EXPECT_EQ(_app->getLiveSessionPeerCount(), 0);
+
+    QTcpSocket joining;
+    RawConnection join(&joining);
+    joining.connectToHost(QString::fromUtf8("127.0.0.1"), port);
+    ASSERT_TRUE(runUntil([&joining]() { return joining.state() == QAbstractSocket::ConnectedState; }));
+    join.send(helloFrom("raw"));
+    ASSERT_TRUE(runUntil([&join]() { return join.received<Session::WelcomeMessage>() || join.disconnected(); }));
+    EXPECT_TRUE(join.received<Session::WelcomeMessage>());
+    EXPECT_FALSE(join.unreadable());
+    EXPECT_TRUE(runUntil([this]() { return _app->getLiveSessionPeerCount() == 1; }));
+    joining.abort();
+}
+
+TEST_F(LiveSessionProjectTest, StoppingTheHostFromItsJoinMessageEndsTheSessionCleanly)
+{
+    buildComp();
+    QString error;
+    ASSERT_TRUE(_app->hostLiveSession(QString::fromUtf8("127.0.0.1"), 0, QString::fromUtf8("host"), &error)) << error.toStdString();
+    const quint16 port = _app->getLiveSessionHost()->serverPort();
+    // The slot runs while the host is handling the hello of the peer it stops for.
+    QObject context;
+    const QMetaObject::Connection stopOnJoin = QObject::connect(_app.get(), &AppInstance::liveSessionMessage, &context, [this](const QString& message) {
+        if (message.contains(QString::fromUtf8("joined"))) {
+            _app->leaveLiveSession();
+        }
+    });
+
+    QTcpSocket joining;
+    RawConnection join(&joining);
+    joining.connectToHost(QString::fromUtf8("127.0.0.1"), port);
+    ASSERT_TRUE(runUntil([&joining]() { return joining.state() == QAbstractSocket::ConnectedState; }));
+    join.send(helloFrom("raw"));
+    ASSERT_TRUE(runUntil([&join]() { return join.disconnected(); }, 30000)) << "the stopped host kept the connection";
+    QObject::disconnect(stopOnJoin);
+    EXPECT_TRUE(join.received<Session::WelcomeMessage>());
+    EXPECT_TRUE(join.received<Session::ByeMessage>());
+    EXPECT_EQ(_app->getLiveSessionState(), AppInstance::LiveSessionState::eNone);
+
+    // The app can host again.
+    ASSERT_TRUE(_app->hostLiveSession(QString::fromUtf8("127.0.0.1"), 0, QString::fromUtf8("host"), &error)) << error.toStdString();
+}
+
+TEST_F(LiveSessionProjectTest, LeavingWhileTheHostProjectLoadsKeepsNoSubscription)
+{
+    buildComp();
+    const std::vector<std::byte> snapshot = LiveSession::projectBundleBytes(_app->getProject());
+    ASSERT_FALSE(snapshot.empty());
+    ASSERT_FALSE(GraphEditRecorder::isActive());
+
+    // A host that is not Natron: it answers any hello with the comp.
+    QTcpServer server;
+    ASSERT_TRUE(server.listen(QHostAddress::LocalHost, 0));
+    std::unique_ptr<RawConnection> host;
+    bool welcomed = false;
+    QObject::connect(&server, &QTcpServer::newConnection, [&server, &host, &snapshot, &welcomed]() {
+        QTcpSocket* socket = server.nextPendingConnection();
+        host = std::make_unique<RawConnection>(socket);
+        QObject::connect(socket, &QTcpSocket::readyRead, [&host, &snapshot, &welcomed]() {
+            if (!welcomed && host->received<Session::HelloMessage>()) {
+                welcomed = true;
+                Session::WelcomeMessage welcome;
+                welcome.userId = 1;
+                welcome.projectName = "live-session.ntpz";
+                welcome.snapshot = snapshot;
+                host->send(welcome);
+            }
+        });
+    });
+
+    // The project names itself while it loads, which is when this user leaves.
+    bool left = false;
+    QObject context;
+    const QMetaObject::Connection leaveWhileLoading = QObject::connect(_app->getProject().get(), &Project::projectNameChanged, &context, [this, &left](const QString&, bool) {
+        if (!left && (_app->getLiveSessionState() == AppInstance::LiveSessionState::eConnecting) && _app->getLiveSessionClient()
+            && (_app->getLiveSessionClient()->state() == SessionClient::State::eJoining)) {
+            left = true;
+            _app->leaveLiveSession();
+        }
+    });
+    _app->joinLiveSession(QString::fromUtf8("127.0.0.1"), server.serverPort(), QString::fromUtf8("client"));
+    ASSERT_TRUE(runUntil([&left]() { return left; })) << "the project never loaded";
+    QObject::disconnect(leaveWhileLoading);
+    EXPECT_EQ(_app->getLiveSessionState(), AppInstance::LiveSessionState::eNone);
+    // A subscription kept here would call the client back on every edit.
+    EXPECT_FALSE(GraphEditRecorder::isActive());
+
+    NodePtr blur = createIn(_app, PLUGINID_NATRON_BLUR);
+    ASSERT_NE(blur, nullptr);
+    doubleKnob(blur, kBlurParamSize)->setValue(2., ViewSpec::all(), 0);
+    _app->getProject()->getGraphEditRecorder()->flush();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    _app->getProject()->getGraphEditRecorder()->flush();
+    EXPECT_EQ(_app->getLiveSessionState(), AppInstance::LiveSessionState::eNone);
 }

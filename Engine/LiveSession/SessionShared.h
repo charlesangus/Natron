@@ -101,6 +101,12 @@ std::string uniqueScriptName(const NodeCollectionPtr& collection,
  **/
 std::vector<Serialization::GraphOp> nodeStateOps(const NodePtr& node);
 
+/**
+ * @brief True when a knob outside node and the nodes inside it is linked to, cloned from or
+ * reads by expression a knob of theirs: recreating node from nodeStateOps() would lose that.
+ **/
+bool hasDependents(const NodePtr& node);
+
 } // namespace LiveSession
 NATRON_NAMESPACE_EXIT
 

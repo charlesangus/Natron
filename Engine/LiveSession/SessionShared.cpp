@@ -26,6 +26,7 @@
 #include "SessionShared.h"
 
 #include <cctype>
+#include <set>
 #include <type_traits>
 #include <variant>
 
@@ -366,6 +367,35 @@ nodeStateOps(const NodePtr& node)
     ops.insert(ops.end(), switches.begin(), switches.end());
 
     return ops;
+}
+
+bool
+hasDependents(const NodePtr& node)
+{
+    NodesList nodes;
+    nodes.push_back(node);
+    NodeGroupPtr group = std::dynamic_pointer_cast<NodeGroup>(node->getEffectInstance());
+    if (group) {
+        group->getNodes_recursive(nodes, true);
+    }
+    std::set<const KnobHolder*> own;
+    for (const NodePtr& each : nodes) {
+        own.insert(each->getEffectInstance().get());
+    }
+    for (const NodePtr& each : nodes) {
+        for (const KnobIPtr& knob : each->getKnobs()) {
+            KnobI::ListenerDimsMap listeners;
+            knob->getListeners(listeners);
+            for (const KnobI::ListenerDimsMap::value_type& listener : listeners) {
+                KnobIPtr other = listener.first.lock();
+                if (other && !own.count(other->getHolder())) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    return false;
 }
 
 } // namespace LiveSession

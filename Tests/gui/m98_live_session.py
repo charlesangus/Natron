@@ -23,7 +23,6 @@ gesture-level helper exists for them.
 """
 import os
 import re
-import socket
 import subprocess
 import sys
 import time
@@ -472,13 +471,6 @@ try:
 
     _client = {"process": None, "n": 0}
 
-    def free_port():
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.bind(("127.0.0.1", 0))
-        port = s.getsockname()[1]
-        s.close()
-        return port
-
     def client_do(line, timeout=COMMAND_TIMEOUT_S):
         _client["n"] += 1
         n = _client["n"]
@@ -589,18 +581,22 @@ try:
 
         # ---- host
         gt.section("host")
-        port = free_port()
         a = action("actionHostLiveSession")
         require(a is not None and a.isEnabled(), "File has an enabled Host Live Session action")
         seen = {}
-        fill_dialog("hostLiveSessionDialog", {"bindAddress": "127.0.0.1", "port": str(port), "displayName": "host"}, seen)
+        # Port 0 is Any Free Port: the host listens on one the system chooses, so no other process can
+        # take it between choosing and listening.
+        fill_dialog("hostLiveSessionDialog", {"bindAddress": "127.0.0.1", "port": "0", "displayName": "host"}, seen)
         a.trigger()
         require(seen.get("dialog"), "Host Live Session shows its dialog")
         check(not seen.get("missing"), "the host dialog has Bind Address, Port and Display Name (%s)" % seen.get("missing"))
         warning = seen.get("warning") or ""
         check("no password" in warning and "trust" in warning, "the host dialog warns that anyone can join: %r" % warning)
-        ok = yield ("until", lambda: status_text().startswith("Live: hosting on 127.0.0.1:%d" % port), 10.0)
-        require(ok, "the status bar says the project is hosted on port %d" % port, status_text())
+        hosted = re.compile(r"Live: hosting on 127\.0\.0\.1:(\d+)")
+        ok = yield ("until", lambda: hosted.match(status_text()) is not None, 10.0)
+        require(ok, "the status bar says the project is hosted on a port", status_text())
+        port = int(hosted.match(status_text()).group(1))
+        check(port > 0, "the host listens on the port the system chose: %d" % port)
         check(action("actionLeaveLiveSession").isEnabled() and not action("actionJoinLiveSession").isEnabled(),
               "while hosting, only Leave is enabled")
 

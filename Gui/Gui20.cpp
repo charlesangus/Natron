@@ -870,6 +870,10 @@ Gui::openProjectInternal(const std::string & absoluteFileName,
     ProjectPtr project = getApp()->getProject();
     ///if the current graph has no value, just load the project in the same window
     if ( project->isGraphWorthLess() ) {
+        // The file replaces the shared project in this window, so it must not stay bound to the
+        // session: its saves would go to the host and a resync would wipe it.
+        FlagSetter leaving(true, &_imp->leavingLiveSession);
+        getApp()->leaveLiveSession(tr("Opening another project ended your part in the live session."));
         _imp->undoHistory->clear();
         bool ok = project->loadProject(QString(), target.source, false, attemptToLoadAutosave);
         if (ok) {

@@ -328,8 +328,8 @@ public:
 
     void startOrQueueRenders(bool blocking, std::list<RenderQueueItem> items);
 
-    // Owned. A session that ends from one of its own signals is deleted later, once that
-    // signal returns.
+    // Owned. A session's object is only deleted through scheduleDeletion(): the session may end
+    // from one of its signals, or while it runs the event loop.
     SessionHost* sessionHost = nullptr;
     SessionClient* sessionClient = nullptr;
     QString sessionAddress;
@@ -350,7 +350,7 @@ AppInstancePrivate::onClientLeft(SessionClient* client,
     sessionClient = nullptr;
     sessionAddress.clear();
     client->disconnect(_publicInterface);
-    client->deleteLater();
+    client->scheduleDeletion();
     if (_currentProject->getLiveSessionRole() == Project::LiveSessionRole::eClient) {
         _currentProject->detachFromLiveSession();
     }
@@ -365,13 +365,15 @@ AppInstancePrivate::endLiveSessionQuietly()
         SessionClient* client = sessionClient;
         sessionClient = nullptr;
         client->disconnect(_publicInterface);
-        delete client;
+        client->leave(QString());
+        client->scheduleDeletion();
     }
     if (sessionHost) {
         SessionHost* host = sessionHost;
         sessionHost = nullptr;
         host->disconnect(_publicInterface);
-        delete host;
+        host->stop();
+        host->scheduleDeletion();
     }
     sessionAddress.clear();
 }
@@ -2997,7 +2999,7 @@ AppInstance::leaveLiveSession(const QString& reason)
         _imp->sessionAddress.clear();
         host->disconnect(this);
         host->stop();
-        host->deleteLater();
+        host->scheduleDeletion();
         _imp->_currentProject->setLiveSessionRole(Project::LiveSessionRole::eNone, QString());
         Q_EMIT liveSessionEnded(reason.isEmpty() ? tr("You stopped hosting the live session.") : reason);
         Q_EMIT liveSessionChanged();

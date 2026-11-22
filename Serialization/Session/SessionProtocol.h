@@ -48,6 +48,11 @@ namespace Session {
     inline constexpr std::size_t kMaxFrameBytes = std::size_t(512) << 20;
 
     /**
+     * @brief The largest frame body a host accepts from a peer that has not said hello yet.
+     **/
+    inline constexpr std::size_t kMaxFrameBytesBeforeHello = std::size_t(8) << 10;
+
+    /**
      * @brief Thrown when a message cannot be encoded or decoded. The stream it came from cannot be
      * trusted any further.
      **/
@@ -66,13 +71,12 @@ namespace Session {
 
     /**
      * @brief Host to client: the answer to hello, and to resyncRequest. snapshot is the project bundle
-     * (.ntpz bytes) at seq; projectPath and projectName are the host's project file.
+     * (.ntpz bytes) at seq; projectName is the name of the host's project file.
      **/
     struct WelcomeMessage {
         std::uint32_t userId = 0;
         NodeUiColor colour;
         std::uint64_t seq = 0;
-        std::string projectPath;
         std::string projectName;
         std::vector<std::byte> snapshot;
     };
@@ -185,9 +189,17 @@ namespace Session {
 
         /**
          * @brief eMessage with the next complete message in message, eNeedMore when no complete frame
-         * is buffered, eError once a frame is empty, over kMaxFrameBytes or does not decode.
+         * is buffered, eError once a frame is empty, over the maximum frame size or does not decode.
          **/
         Status next(SessionMessage* message);
+
+        /**
+         * @brief The largest frame body accepted from now on, kMaxFrameBytes at most and by default.
+         **/
+        void setMaxFrameBytes(std::size_t maxFrameBytes)
+        {
+            _maxFrameBytes = (maxFrameBytes < kMaxFrameBytes) ? maxFrameBytes : kMaxFrameBytes;
+        }
 
         const std::string& error() const
         {
@@ -204,6 +216,7 @@ namespace Session {
 
         std::vector<std::byte> _buffer;
         std::size_t _offset = 0;
+        std::size_t _maxFrameBytes = kMaxFrameBytes;
         std::string _error;
     };
 

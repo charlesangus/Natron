@@ -79,6 +79,12 @@ public:
     void leave(const QString& reason = QString());
 
     /**
+     * @brief Deletes this client from the event loop once it is not handling a message: a slot of
+     * one of its signals may call it, unlike delete, while loading the host's project for instance.
+     **/
+    void scheduleDeletion();
+
+    /**
      * @brief Asks the host to save the shared project.
      **/
     void requestSave();

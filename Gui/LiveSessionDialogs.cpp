@@ -131,8 +131,8 @@ HostLiveSessionDialog::HostLiveSessionDialog(QWidget* parent)
     _bindAddress->setObjectName(QString::fromUtf8("bindAddress"));
     _bindAddress->setToolTip(tr("The network address users join on. This Computer Only (127.0.0.1) lets only "
                                 "other Natron windows on this computer join."));
-    _bindAddress->addItem(tr("All Network Interfaces"), QString());
     _bindAddress->addItem(tr("This Computer Only (127.0.0.1)"), QString::fromUtf8("127.0.0.1"));
+    _bindAddress->addItem(tr("All Network Interfaces"), QString());
     const QList<QHostAddress> addresses = QNetworkInterface::allAddresses();
     for (const QHostAddress& address : addresses) {
         if (address.isLoopback() || address.isLinkLocal() || (address.protocol() != QAbstractSocket::IPv4Protocol)) {
@@ -140,12 +140,15 @@ HostLiveSessionDialog::HostLiveSessionDialog(QWidget* parent)
         }
         _bindAddress->addItem(address.toString(), address.toString());
     }
-    const int remembered = _bindAddress->findData(settings.value(settingsKey("bindAddress"), QString()).toString());
+    const int remembered = _bindAddress->findData(settings.value(settingsKey("bindAddress"), QString::fromUtf8("127.0.0.1")).toString());
     _bindAddress->setCurrentIndex((remembered >= 0) ? remembered : 0);
     form->addRow(tr("Bind Address"), _bindAddress);
 
     _port = makePortBox(this, settings.value(settingsKey("hostPort"), kDefaultPort).toInt());
-    _port->setToolTip(tr("The TCP port users join on."));
+    _port->setMinimum(0);
+    _port->setSpecialValueText(tr("Any Free Port"));
+    _port->setToolTip(tr("The TCP port users join on. Any Free Port lets the system choose one, shown in the "
+                         "status bar once hosting."));
     form->addRow(tr("Port"), _port);
 
     _displayName = makeDisplayNameEdit(this);
@@ -156,8 +159,10 @@ HostLiveSessionDialog::HostLiveSessionDialog(QWidget* parent)
     warning->setWordWrap(true);
     warning->setTextFormat(Qt::RichText);
     warning->setText(tr("<b>Warning: a live session has no password.</b> Anyone who can reach this computer on this "
-                        "port can join, see the whole project, change it and save it over its file. Host only on a "
-                        "network you trust, or choose This Computer Only."));
+                        "port can join. Whoever joins can see and change the whole project and save it over its "
+                        "file, and through the project can run code and write files on this computer, as you. "
+                        "Host on another address only on a network where you trust everyone; This Computer Only "
+                        "lets only Natron windows on this computer join."));
     warning->setMinimumWidth(420);
     mainLayout->addWidget(warning);
 

@@ -912,10 +912,12 @@ private:
 
     /**
      * @brief The part of loading that follows opening the bundle. filePath is the file read, for
-     * the autosave bookkeeping and the lock file, which is taken only when takeLock is set.
+     * the autosave bookkeeping and the lock file, which is taken only when takeLock is set. The
+     * events processed at the end leave out the user's input unless acceptUserInput is set.
      **/
     bool restoreFromBundle(const Serialization::ProjectBundleReader& bundle, const QString& path, const QString& name,
-                           const QString& filePath, bool isAutoSave, bool isUntitledAutosave, bool takeLock, bool* mustSave);
+                           const QString& filePath, bool isAutoSave, bool isUntitledAutosave, bool takeLock,
+                           bool acceptUserInput, bool* mustSave);
 
     QString saveProjectInternal(const QString & path, const QString & name, bool autosave, bool updateProjectProperties);
 

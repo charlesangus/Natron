@@ -98,7 +98,7 @@ everyMessage()
 {
     std::vector<SessionMessage> messages;
     messages.push_back(HelloMessage { kProtocolVersion, "Ana \"the compositor\"", "2.6.0" });
-    messages.push_back(WelcomeMessage { 3, NodeUiColor { 0.25f, 0.5f, 1.f }, 42, "/shows/a/", "comp.ntpz", sampleSnapshot() });
+    messages.push_back(WelcomeMessage { 3, NodeUiColor { 0.25f, 0.5f, 1.f }, 42, "comp.ntpz", sampleSnapshot() });
     messages.push_back(WelcomeMessage { 1, NodeUiColor {}, 0, std::string(), std::string(), std::vector<std::byte>() });
     messages.push_back(OpsMessage { 9, sampleOps() });
     messages.push_back(OpsMessage { 10, std::vector<GraphOp>() });
@@ -170,7 +170,6 @@ TEST(SessionProtocol, FieldsSurviveTheRoundTrip)
     EXPECT_EQ(welcome.userId, 3u);
     EXPECT_EQ(welcome.colour, (NodeUiColor { 0.25f, 0.5f, 1.f }));
     EXPECT_EQ(welcome.seq, 42u);
-    EXPECT_EQ(welcome.projectPath, "/shows/a/");
     EXPECT_EQ(welcome.projectName, "comp.ntpz");
     EXPECT_EQ(welcome.snapshot, sampleSnapshot());
 
@@ -259,6 +258,24 @@ TEST(SessionProtocol, OversizeFrameIsAnErrorBeforeItsBodyArrives)
     EXPECT_EQ(decoder.next(&message), SessionFrameDecoder::Status::eError);
 }
 
+TEST(SessionProtocol, ALoweredLimitRefusesALargerFrameAndRaisingItAcceptsIt)
+{
+    const std::vector<std::byte> bye = frameSessionMessage(ByeMessage { std::string(64, 'x') });
+    SessionMessage message;
+
+    SessionFrameDecoder refusing;
+    refusing.setMaxFrameBytes(16);
+    refusing.feed(std::span<const std::byte>(bye.data(), 4));
+    EXPECT_EQ(refusing.next(&message), SessionFrameDecoder::Status::eError);
+
+    SessionFrameDecoder raised;
+    raised.setMaxFrameBytes(16);
+    raised.setMaxFrameBytes(kMaxFrameBytes);
+    raised.feed(bye);
+    ASSERT_EQ(raised.next(&message), SessionFrameDecoder::Status::eMessage);
+    EXPECT_EQ(std::get<ByeMessage>(message).reason, std::string(64, 'x'));
+}
+
 TEST(SessionProtocol, GarbageFramesAreErrors)
 {
     const std::vector<std::string> bodies = {
@@ -269,7 +286,7 @@ TEST(SessionProtocol, GarbageFramesAreErrors)
         "type: \"broadcast\"\nseq: 1\n",
         "type: \"broadcast\"\nseq: -4\noriginUser: 0\nclientSeq: 0\nops: []\n",
         "type: \"ops\"\nclientSeq: 1\nops:\n  - op: \"flyAway\"\n",
-        "type: \"welcome\"\nuserId: 1\ncolour: [0, 0, 0]\nseq: 0\nprojectPath: \"\"\nprojectName: \"\"\nsnapshot: {a: 1}\n",
+        "type: \"welcome\"\nuserId: 1\ncolour: [0, 0, 0]\nseq: 0\nprojectName: \"\"\nsnapshot: {a: 1}\n",
         std::string("\xff\xfe\x00\x01garbage", 11),
     };
     for (const std::string& body : bodies) {

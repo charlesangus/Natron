@@ -171,7 +171,6 @@ namespace Session {
             emitIntField(em, "userId", message.userId);
             emitFloatTriple(em, "colour", message.colour.r, message.colour.g, message.colour.b);
             emitIntField(em, "seq", static_cast<long long>(message.seq));
-            emitStringField(em, "projectPath", message.projectPath);
             emitStringField(em, "projectName", message.projectName);
             emitKey(em, "snapshot");
             em << YAML::Value << YAML::Binary(reinterpret_cast<const unsigned char*>(message.snapshot.data()), message.snapshot.size());
@@ -272,7 +271,6 @@ namespace Session {
             const std::vector<float> rgb = readFloatTriple(colour, colourContext);
             message->colour = NodeUiColor { rgb[0], rgb[1], rgb[2] };
             message->seq = readSeq(reader, "seq");
-            message->projectPath = readStringField(reader, "projectPath");
             message->projectName = readStringField(reader, "projectName");
             const std::string snapshotContext = reader.context() + ".snapshot";
             const YAML::Node snapshot = reader.get("snapshot");
@@ -506,8 +504,8 @@ namespace Session {
         if (size == 0) {
             return failWith("empty session frame");
         }
-        if (size > kMaxFrameBytes) {
-            return failWith("a session frame of " + std::to_string(size) + " bytes is over the limit of " + std::to_string(kMaxFrameBytes));
+        if (size > _maxFrameBytes) {
+            return failWith("a session frame of " + std::to_string(size) + " bytes is over the limit of " + std::to_string(_maxFrameBytes));
         }
         if (bufferedBytes() < 4 + std::size_t(size)) {
             return Status::eNeedMore;

@@ -49,7 +49,8 @@ NATRON_NAMESPACE_ENTER
  * of the node it named. A client joining, or asking for it, gets the whole project. Every
  * checksum interval the clients get the hash of the project, to find out whether they diverged.
  *
- * Main thread only. The host stops when destroyed.
+ * Main thread only. The host stops when destroyed. A client that has not said hello yet may send
+ * only a small frame, and one that stops reading is cut off.
  **/
 class SessionHost
     : public QObject {
@@ -69,6 +70,12 @@ public:
      * @brief Tells every client the session ends, then closes every connection.
      **/
     void stop();
+
+    /**
+     * @brief Deletes this host from the event loop once no call of it is running: a slot of one of
+     * its signals may call it, unlike delete. Call stop() first to tell the clients.
+     **/
+    void scheduleDeletion();
 
     bool isRunning() const;
     quint16 serverPort() const;
@@ -118,7 +125,8 @@ Q_SIGNALS:
     void sessionMessage(const QString& message);
 
     /**
-     * @brief A client asked for the project to be saved; it was if it has a file.
+     * @brief A client asked for the project to be saved, which is done by now if the project has a
+     * file and unsaved changes.
      **/
     void saveRequested(quint32 userId);
 

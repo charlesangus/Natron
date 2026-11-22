@@ -646,7 +646,7 @@ Project::loadProjectInternal(const QString& path,
         throw std::runtime_error(e.what());
     }
 
-    return restoreFromBundle(*bundle, path, name, filePath, isAutoSave, isUntitledAutosave, true, mustSave);
+    return restoreFromBundle(*bundle, path, name, filePath, isAutoSave, isUntitledAutosave, true, true, mustSave);
 } // Project::loadProjectInternal
 
 bool
@@ -657,6 +657,7 @@ Project::restoreFromBundle(const Serialization::ProjectBundleReader& bundle,
                            bool isAutoSave,
                            bool isUntitledAutosave,
                            bool takeLock,
+                           bool acceptUserInput,
                            bool* mustSave)
 {
     LoadProjectSplashScreen_RAII __raii_splashscreen__(getApp(), name);
@@ -751,7 +752,7 @@ Project::restoreFromBundle(const Serialization::ProjectBundleReader& bundle,
 #ifdef DEBUG
         boost_adaptbx::floating_point::exception_trapping trap(0);
 #endif
-        QCoreApplication::processEvents();
+        QCoreApplication::processEvents(acceptUserInput ? QEventLoop::AllEvents : QEventLoop::ExcludeUserInputEvents);
     }
 
     return ret;
@@ -780,7 +781,9 @@ Project::loadProjectFromBundleBytes(std::span<const std::byte> bytes,
                 throw std::runtime_error(e.what());
             }
             bool mustSave = false;
-            loadedOk = restoreFromBundle(*bundle, path, name, QString(), false, false, false, &mustSave);
+            // A live session's copy loads from bytes, and an edit made while loading is not
+            // recorded, so it would never reach the other peers.
+            loadedOk = restoreFromBundle(*bundle, path, name, QString(), false, false, false, false, &mustSave);
             QMutexLocker k(&_imp->projectLock);
             _imp->loadedFromFolder = false;
             // Without a path, saving the copy under name alone would write into the working

@@ -25,6 +25,7 @@
 
 #include "SessionHost.h"
 
+#include <limits>
 #include <map>
 #include <set>
 #include <string>
@@ -32,6 +33,7 @@
 #include <vector>
 
 #include <QtCore/QByteArray>
+#include <QtCore/QElapsedTimer>
 #include <QtCore/QPointer>
 #include <QtCore/QTimer>
 #include <QtNetwork/QHostAddress>
@@ -67,6 +69,12 @@ const NodeUiColor kPeerColours[] = {
     { 0.65f, 0.65f, 0.65f },
 };
 
+// A client that stops reading must not grow the host's memory without end; a welcome, the
+// largest frame, fits twice over.
+const qint64 kMaxUnsentBytes = qint64(2) * qint64(kMaxFrameBytes);
+const qint64 kClosingTimeoutMs = 10000;
+const int kHousekeepingIntervalMs = 1000;
+
 struct Peer {
     QPointer<QTcpSocket> socket;
     SessionFrameDecoder decoder;
@@ -75,6 +83,9 @@ struct Peer {
     NodeUiColor colour;
     bool joined = false;
     bool closing = false;
+    QElapsedTimer closingFor;
+    bool wantsResync = false;
+    bool wantsSave = false;
 };
 
 } // namespace
@@ -84,8 +95,12 @@ struct SessionHost::Implementation {
     AppInstanceWPtr app;
     QTcpServer server;
     QTimer checksumTimer;
+    QTimer housekeepingTimer;
     std::vector<std::unique_ptr<Peer>> peers;
+    // Peers of a stopped session, kept until no call that may hold one is running.
+    std::vector<std::unique_ptr<Peer>> retired;
     std::uint64_t seq = 0;
+    std::uint64_t lastChecksumSeq = std::numeric_limits<std::uint64_t>::max();
     quint32 nextUserId = 1;
     QString displayName;
     int subscription = -1;
@@ -94,7 +109,33 @@ struct SessionHost::Implementation {
     ProjectWPtr subscribedProject;
     bool handling = false;
     bool readAgain = false;
+    // Calls running that may hold a peer, or this host, across a signal whose slot can stop or
+    // delete it: peers are only destroyed, and the host only deleted, once none is.
+    int busy = 0;
+    bool deleteWhenIdle = false;
     int rejects = 0;
+
+    class BusyScope {
+    public:
+        explicit BusyScope(Implementation* imp)
+            : _imp(imp)
+        {
+            ++_imp->busy;
+        }
+
+        ~BusyScope()
+        {
+            if (--_imp->busy == 0) {
+                _imp->settle();
+            }
+        }
+
+        BusyScope(const BusyScope&) = delete;
+        BusyScope& operator=(const BusyScope&) = delete;
+
+    private:
+        Implementation* _imp;
+    };
 
     Implementation(SessionHost* publicInterface,
                    const AppInstancePtr& app)
@@ -122,18 +163,47 @@ struct SessionHost::Implementation {
         return count;
     }
 
-    void send(Peer* peer,
+    void settle()
+    {
+        releaseRetired();
+        removeClosedPeers();
+        if (deleteWhenIdle) {
+            deleteWhenIdle = false;
+            publicInterface->deleteLater();
+        }
+    }
+
+    // A peer whose bytes pile up unsent is not reading: it is cut off at once.
+    void write(Peer* peer,
+               const std::vector<std::byte>& frame)
+    {
+        peer->socket->write(reinterpret_cast<const char*>(frame.data()), static_cast<qint64>(frame.size()));
+        if (peer->socket && (peer->socket->bytesToWrite() > kMaxUnsentBytes)) {
+            const QPointer<QTcpSocket> socket = peer->socket;
+            drop(peer, QString());
+            if (socket) {
+                socket->abort();
+            }
+        }
+    }
+
+    bool send(Peer* peer,
               const SessionMessage& message)
     {
         if (!peer->socket || peer->closing) {
-            return;
+            return false;
         }
+        std::vector<std::byte> frame;
         try {
-            const std::vector<std::byte> frame = frameSessionMessage(message);
-            peer->socket->write(reinterpret_cast<const char*>(frame.data()), static_cast<qint64>(frame.size()));
+            frame = frameSessionMessage(message);
         } catch (const SessionProtocolError& e) {
             Q_EMIT publicInterface->sessionMessage(QString::fromUtf8(e.what()));
+
+            return false;
         }
+        write(peer, frame);
+
+        return true;
     }
 
     void sendToJoined(const SessionMessage& message)
@@ -146,9 +216,12 @@ struct SessionHost::Implementation {
 
             return;
         }
-        for (const std::unique_ptr<Peer>& peer : peers) {
+        // By index: dropping a peer that does not read emits signals, whose slots may stop the
+        // session and empty the list.
+        for (std::size_t i = 0; i < peers.size(); ++i) {
+            Peer* peer = peers[i].get();
             if (peer->joined && !peer->closing && peer->socket) {
-                peer->socket->write(reinterpret_cast<const char*>(frame.data()), static_cast<qint64>(frame.size()));
+                write(peer, frame);
             }
         }
     }
@@ -166,6 +239,7 @@ struct SessionHost::Implementation {
         if (ops.empty()) {
             return;
         }
+        BusyScope scope(this);
         BroadcastMessage broadcast;
         broadcast.seq = ++seq;
         broadcast.originUser = 0;
@@ -174,10 +248,14 @@ struct SessionHost::Implementation {
         sendToJoined(broadcast);
     }
 
+    // Drops the peer when it cannot have the project: a client that joined without it would wait
+    // for it forever.
     void sendWelcome(Peer* peer)
     {
         ProjectPtr p = project();
         if (!p) {
+            drop(peer, QString::fromUtf8("The host has no project to send."));
+
             return;
         }
         flushLocalEdits();
@@ -185,7 +263,6 @@ struct SessionHost::Implementation {
         welcome.userId = peer->userId;
         welcome.colour = peer->colour;
         welcome.seq = seq;
-        welcome.projectPath = p->getProjectPath().toStdString();
         welcome.projectName = p->getProjectFilename().toStdString();
         try {
             welcome.snapshot = LiveSession::projectBundleBytes(p);
@@ -194,7 +271,9 @@ struct SessionHost::Implementation {
 
             return;
         }
-        send(peer, welcome);
+        if (!send(peer, welcome) && !peer->closing) {
+            drop(peer, QString::fromUtf8("The project could not be sent."));
+        }
     }
 
     void drop(Peer* peer,
@@ -205,9 +284,13 @@ struct SessionHost::Implementation {
         }
         if (!reason.isEmpty()) {
             send(peer, ByeMessage { reason.toStdString() });
+            if (peer->closing) {
+                return;
+            }
         }
         const bool wasJoined = peer->joined;
         peer->closing = true;
+        peer->closingFor.start();
         peer->joined = false;
         if (peer->socket) {
             peer->socket->disconnectFromHost();
@@ -218,8 +301,26 @@ struct SessionHost::Implementation {
         }
     }
 
+    void releaseRetired()
+    {
+        std::vector<std::unique_ptr<Peer>> leaving;
+        leaving.swap(retired);
+        for (const std::unique_ptr<Peer>& peer : leaving) {
+            if (peer->socket) {
+                // flush() can finish the disconnect and emit disconnected() before it returns.
+                peer->socket->disconnect(publicInterface);
+                peer->socket->flush();
+                peer->socket->deleteLater();
+                peer->socket = nullptr;
+            }
+        }
+    }
+
     void removeClosedPeers()
     {
+        if (busy > 0) {
+            return;
+        }
         for (std::vector<std::unique_ptr<Peer>>::iterator it = peers.begin(); it != peers.end();) {
             Peer* peer = it->get();
             const bool gone = !peer->socket || (peer->socket->state() == QAbstractSocket::UnconnectedState);
@@ -235,12 +336,35 @@ struct SessionHost::Implementation {
         }
     }
 
+    // A closing peer that never acknowledges the end of the connection is cut off.
+    void housekeeping()
+    {
+        BusyScope scope(this);
+        std::vector<QPointer<QTcpSocket>> stuck;
+        for (const std::unique_ptr<Peer>& peer : peers) {
+            if (peer->closing && peer->socket && (peer->socket->state() != QAbstractSocket::UnconnectedState) && (peer->closingFor.elapsed() > kClosingTimeoutMs)) {
+                stuck.push_back(peer->socket);
+            }
+        }
+        for (const QPointer<QTcpSocket>& socket : stuck) {
+            if (socket) {
+                socket->abort();
+            }
+        }
+        if (!server.isListening() && peers.empty()) {
+            housekeepingTimer.stop();
+        }
+    }
+
     // Claims each created or renamed node's script name in its group, in order, replacing one
     // already taken by the next free one, so concurrent creations of the same name all succeed.
     std::vector<Serialization::GraphOp> resolveNames(const ProjectPtr& p,
                                                      std::vector<Serialization::GraphOp> ops)
     {
         std::map<std::string, std::set<std::string>> claimed;
+        // The group and claimed name of each node named so far in this batch, by node ID: a node
+        // created here is not in the project yet, and a node renamed again gives up its claim.
+        std::map<std::string, std::pair<std::string, std::string>> named;
         for (Serialization::GraphOp& op : ops) {
             if (Serialization::CreateNodeOp* create = std::get_if<Serialization::CreateNodeOp>(&op)) {
                 if (!create->node) {
@@ -258,13 +382,26 @@ struct SessionHost::Implementation {
                     create->node = copy;
                 }
                 taken.insert(name);
+                named[create->node->id] = std::make_pair(create->parentId, name);
             } else if (Serialization::RenameOp* rename = std::get_if<Serialization::RenameOp>(&op)) {
                 NodePtr node = p->findNodeById(rename->nodeId);
-                if (!node) {
+                std::map<std::string, std::pair<std::string, std::string>>::iterator earlier = named.find(rename->nodeId);
+                std::string parentId;
+                NodeCollectionPtr collection;
+                if (node) {
+                    parentId = LiveSession::parentIdOf(node);
+                    collection = node->getGroup();
+                } else if (earlier != named.end()) {
+                    parentId = earlier->second.first;
+                    collection = LiveSession::collectionForParent(p, parentId);
+                } else {
                     continue;
                 }
-                std::set<std::string>& taken = claimed[LiveSession::parentIdOf(node)];
-                const std::string name = LiveSession::uniqueScriptName(node->getGroup(), rename->scriptName, node.get(), taken);
+                std::set<std::string>& taken = claimed[parentId];
+                if (earlier != named.end()) {
+                    taken.erase(earlier->second.second);
+                }
+                const std::string name = LiveSession::uniqueScriptName(collection, rename->scriptName, node.get(), taken);
                 if (name != rename->scriptName) {
                     if (rename->label && (*rename->label == rename->scriptName)) {
                         rename->label = name;
@@ -272,6 +409,7 @@ struct SessionHost::Implementation {
                     rename->scriptName = name;
                 }
                 taken.insert(name);
+                named[rename->nodeId] = std::make_pair(parentId, name);
             }
         }
 
@@ -332,11 +470,19 @@ struct SessionHost::Implementation {
             p->markUnsavedChanges();
         }
         sendToJoined(broadcast);
-        if (reasons.empty()) {
+        if (reasons.empty() || peer->closing) {
             return;
         }
         ++rejects;
         send(peer, RejectMessage { message.clientSeq, reasons });
+        // Recreating a node others are linked to, or read by expression, would cut those ties.
+        for (const std::string& target : resyncTargets) {
+            NodePtr node = p->findNodeById(target);
+            if (node && node->isActivated() && LiveSession::hasDependents(node)) {
+                fullResync = true;
+                break;
+            }
+        }
         if (fullResync) {
             sendWelcome(peer);
 
@@ -349,21 +495,25 @@ struct SessionHost::Implementation {
 
     void handleSaveRequest(Peer* peer)
     {
+        AppInstancePtr instance = app.lock();
         ProjectPtr p = project();
-        Q_EMIT publicInterface->saveRequested(peer->userId);
-        if (!p) {
+        const QString name = peer->name;
+        const quint32 userId = peer->userId;
+        if (!instance || !p) {
             return;
         }
         if (!p->hasProjectBeenSavedByUser()) {
-            Q_EMIT publicInterface->sessionMessage(QString::fromUtf8("%1 asked to save, but the project has no file yet: save it on the host first.").arg(peer->name));
-
-            return;
+            Q_EMIT publicInterface->sessionMessage(QString::fromUtf8("%1 asked to save, but the project has no file yet: save it on the host first.").arg(name));
+        } else if (!p->isSaveUpToDate()) {
+            try {
+                if (!instance->save(std::string())) {
+                    Q_EMIT publicInterface->sessionMessage(QString::fromUtf8("Saving for %1 failed.").arg(name));
+                }
+            } catch (const std::exception& e) {
+                Q_EMIT publicInterface->sessionMessage(QString::fromUtf8("Saving for %1 failed: %2").arg(name, QString::fromUtf8(e.what())));
+            }
         }
-        try {
-            p->saveProject(p->getProjectPath(), p->getProjectFilename(), nullptr);
-        } catch (const std::exception& e) {
-            Q_EMIT publicInterface->sessionMessage(QString::fromUtf8("Saving for %1 failed: %2").arg(peer->name, QString::fromUtf8(e.what())));
-        }
+        Q_EMIT publicInterface->saveRequested(userId);
     }
 
     void handleHello(Peer* peer,
@@ -377,12 +527,16 @@ struct SessionHost::Implementation {
         peer->userId = nextUserId++;
         peer->name = QString::fromUtf8(hello.name.c_str());
         peer->colour = kPeerColours[(peer->userId - 1) % (sizeof(kPeerColours) / sizeof(kPeerColours[0]))];
+        peer->decoder.setMaxFrameBytes(kMaxFrameBytes);
         sendWelcome(peer);
         if (peer->closing) {
             return;
         }
         peer->joined = true;
         Q_EMIT publicInterface->sessionMessage(QString::fromUtf8("%1 joined the session.").arg(peer->name));
+        if (peer->closing) {
+            return;
+        }
         Q_EMIT publicInterface->peerCountChanged(joinedCount());
     }
 
@@ -411,12 +565,26 @@ struct SessionHost::Implementation {
         if (const OpsMessage* ops = std::get_if<OpsMessage>(&message)) {
             applyClientOps(peer, *ops);
         } else if (std::holds_alternative<ResyncRequestMessage>(message)) {
-            Q_EMIT publicInterface->sessionMessage(QString::fromUtf8("%1 diverged and is reloading the project.").arg(peer->name));
-            sendWelcome(peer);
+            peer->wantsResync = true;
         } else if (std::holds_alternative<SaveRequestMessage>(message)) {
-            handleSaveRequest(peer);
+            peer->wantsSave = true;
         } else {
             drop(peer, QString::fromUtf8("Protocol error: unexpected %1 message.").arg(QString::fromUtf8(std::string(sessionMessageName(message)).c_str())));
+        }
+    }
+
+    // Requests repeated while the host was busy are answered once, after the edits sent with
+    // them.
+    void serveRequests(Peer* peer)
+    {
+        if (peer->wantsResync && !peer->closing) {
+            peer->wantsResync = false;
+            Q_EMIT publicInterface->sessionMessage(QString::fromUtf8("%1 diverged and is reloading the project.").arg(peer->name));
+            sendWelcome(peer);
+        }
+        if (peer->wantsSave && !peer->closing) {
+            peer->wantsSave = false;
+            handleSaveRequest(peer);
         }
     }
 
@@ -429,9 +597,12 @@ struct SessionHost::Implementation {
 
             return;
         }
+        BusyScope scope(this);
         handling = true;
         do {
             readAgain = false;
+            // By index: a slot of a signal emitted below may stop the session, which empties the
+            // list but keeps its peers alive until this returns.
             for (std::size_t i = 0; i < peers.size(); ++i) {
                 Peer* peer = peers[i].get();
                 if (peer->closing || !peer->socket) {
@@ -456,26 +627,25 @@ struct SessionHost::Implementation {
                         break;
                     }
                 }
+                serveRequests(peer);
             }
         } while (readAgain);
         handling = false;
-        removeClosedPeers();
     }
 
     void onDisconnected(QTcpSocket* socket)
     {
-        for (const std::unique_ptr<Peer>& peer : peers) {
-            if (peer->socket == socket) {
-                drop(peer.get(), QString());
+        BusyScope scope(this);
+        for (std::size_t i = 0; i < peers.size(); ++i) {
+            if (peers[i]->socket == socket) {
+                drop(peers[i].get(), QString());
             }
-        }
-        if (!handling) {
-            removeClosedPeers();
         }
     }
 
     void onNewConnection()
     {
+        BusyScope scope(this);
         while (server.hasPendingConnections()) {
             QTcpSocket* socket = server.nextPendingConnection();
             if (!socket) {
@@ -484,9 +654,21 @@ struct SessionHost::Implementation {
             socket->setSocketOption(QAbstractSocket::LowDelayOption, 1);
             std::unique_ptr<Peer> peer = std::make_unique<Peer>();
             peer->socket = socket;
+            // Anyone can connect: until a peer has said hello it may send no more than one.
+            peer->decoder.setMaxFrameBytes(kMaxFrameBytesBeforeHello);
             peers.push_back(std::move(peer));
             QObject::connect(socket, &QTcpSocket::readyRead, publicInterface, [this]() { pump(); });
             QObject::connect(socket, &QTcpSocket::disconnected, publicInterface, [this, socket]() { onDisconnected(socket); });
+        }
+    }
+
+    // Nothing changed since the last checksum, so the clients still agree with it.
+    void onChecksumTimer()
+    {
+        BusyScope scope(this);
+        flushLocalEdits();
+        if (seq != lastChecksumSeq) {
+            publicInterface->broadcastChecksum();
         }
     }
 };
@@ -497,13 +679,17 @@ SessionHost::SessionHost(const AppInstancePtr& app,
     , _imp(new Implementation(this, app))
 {
     _imp->checksumTimer.setInterval(5000);
-    QObject::connect(&_imp->checksumTimer, &QTimer::timeout, this, [this]() { broadcastChecksum(); });
+    _imp->housekeepingTimer.setInterval(kHousekeepingIntervalMs);
+    QObject::connect(&_imp->checksumTimer, &QTimer::timeout, this, [this]() { _imp->onChecksumTimer(); });
+    QObject::connect(&_imp->housekeepingTimer, &QTimer::timeout, this, [this]() { _imp->housekeeping(); });
     QObject::connect(&_imp->server, &QTcpServer::newConnection, this, [this]() { _imp->onNewConnection(); });
 }
 
 SessionHost::~SessionHost()
 {
+    _imp->deleteWhenIdle = false;
     stop();
+    _imp->releaseRetired();
 }
 
 bool
@@ -544,6 +730,7 @@ SessionHost::start(const QString& bindAddress,
     }
     _imp->displayName = displayName;
     _imp->seq = 0;
+    _imp->lastChecksumSeq = std::numeric_limits<std::uint64_t>::max();
     _imp->rejects = 0;
     // Edits made before the session started are in the snapshot, not in the sequence.
     project->getGraphEditRecorder()->flush();
@@ -554,6 +741,7 @@ SessionHost::start(const QString& bindAddress,
     if (_imp->checksumTimer.interval() > 0) {
         _imp->checksumTimer.start();
     }
+    _imp->housekeepingTimer.start();
 
     return true;
 }
@@ -564,6 +752,7 @@ SessionHost::stop()
     if (!_imp->server.isListening() && _imp->peers.empty()) {
         return;
     }
+    Implementation::BusyScope scope(_imp.get());
     _imp->checksumTimer.stop();
     ProjectPtr project = _imp->subscribedProject.lock();
     if (_imp->subscription >= 0) {
@@ -574,22 +763,31 @@ SessionHost::stop()
         _imp->subscription = -1;
     }
     _imp->server.close();
-    // flush() finishes a closing socket's disconnect and emits disconnected() before it returns,
-    // so the peers leave the list, and lose their handlers, before any of them is flushed.
-    std::vector<std::unique_ptr<Peer>> leaving;
-    leaving.swap(_imp->peers);
-    for (const std::unique_ptr<Peer>& peer : leaving) {
+    // The peers leave the list at once, so that the calls running keep them but see none, and are
+    // released once those calls return.
+    const std::size_t first = _imp->retired.size();
+    for (std::unique_ptr<Peer>& peer : _imp->peers) {
+        _imp->retired.push_back(std::move(peer));
+    }
+    _imp->peers.clear();
+    for (std::size_t i = first; i < _imp->retired.size(); ++i) {
+        Peer* peer = _imp->retired[i].get();
         if (peer->socket) {
             peer->socket->disconnect(this);
         }
-        _imp->drop(peer.get(), tr("The host closed the session."));
-        if (peer->socket) {
-            peer->socket->flush();
-            peer->socket->deleteLater();
-            peer->socket = nullptr;
-        }
+        _imp->drop(peer, tr("The host closed the session."));
     }
     Q_EMIT peerCountChanged(0);
+}
+
+void
+SessionHost::scheduleDeletion()
+{
+    if (_imp->busy > 0) {
+        _imp->deleteWhenIdle = true;
+    } else {
+        deleteLater();
+    }
 }
 
 bool
@@ -633,6 +831,7 @@ SessionHost::broadcastChecksum()
     if (!project || (_imp->joinedCount() == 0)) {
         return;
     }
+    Implementation::BusyScope scope(_imp.get());
     _imp->flushLocalEdits();
     ChecksumMessage checksum;
     checksum.seq = _imp->seq;
@@ -643,12 +842,14 @@ SessionHost::broadcastChecksum()
 
         return;
     }
+    _imp->lastChecksumSeq = checksum.seq;
     _imp->sendToJoined(checksum);
 }
 
 void
 SessionHost::flushLocalEdits()
 {
+    Implementation::BusyScope scope(_imp.get());
     _imp->flushLocalEdits();
 }
 

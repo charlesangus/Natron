@@ -87,6 +87,7 @@ struct SessionClient::Implementation {
     bool readAgain = false;
     bool awaitingProject = false;
     bool ended = false;
+    bool deleteWhenIdle = false;
     int mismatches = 0;
     int rejects = 0;
     int loads = 0;
@@ -278,6 +279,23 @@ struct SessionClient::Implementation {
                                                             QString::fromUtf8(results.front().message.c_str())));
         } else {
             deferred.push_back(op);
+        }
+    }
+
+    // Once nothing is pending, and the refusals and resyncs that follow the last acknowledgement
+    // are in, a host edit still waiting fails for good: it is reported rather than applied later,
+    // out of order.
+    void settleDeferred()
+    {
+        ProjectPtr p = project();
+        if (!p || !pending.empty() || deferred.empty()) {
+            return;
+        }
+        std::vector<Serialization::GraphOp> waiting;
+        waiting.swap(deferred);
+        GraphEditRecorder::Suppress suppress;
+        for (const Serialization::GraphOp& op : waiting) {
+            applyOrDefer(p, op, true);
         }
     }
 
@@ -550,6 +568,10 @@ struct SessionClient::Implementation {
             GraphEditRecorder::Suppress suppress;
             ok = p->loadProjectFromBundleBytes(welcome.snapshot, QString(), QString::fromUtf8(welcome.projectName.c_str()), &error);
         }
+        // Loading runs the event loop, where the session may have ended.
+        if (ended) {
+            return false;
+        }
         if (!ok) {
             end(QString::fromUtf8("The host's project could not be loaded: %1").arg(error));
 
@@ -567,7 +589,7 @@ struct SessionClient::Implementation {
     void handleWelcome(const WelcomeMessage& welcome)
     {
         const bool joining = (state == State::eJoining);
-        if (!loadProject(welcome)) {
+        if (!loadProject(welcome) || ended) {
             return;
         }
         if (!joining) {
@@ -593,7 +615,10 @@ struct SessionClient::Implementation {
         std::string mine;
         try {
             mine = LiveSession::projectChecksum(p);
-        } catch (const std::exception&) {
+        } catch (const std::exception& e) {
+            Q_EMIT publicInterface->sessionMessage(QString::fromUtf8("The project checksum could not be computed: %1").arg(QString::fromUtf8(e.what())));
+
+            return;
         }
         if (mine == checksum.hash) {
             return;
@@ -620,6 +645,9 @@ struct SessionClient::Implementation {
             end(QString::fromUtf8("Protocol error: %1 before welcome.").arg(QString::fromUtf8(std::string(sessionMessageName(message)).c_str())));
 
             return;
+        }
+        if (std::holds_alternative<BroadcastMessage>(message) || std::holds_alternative<ChecksumMessage>(message)) {
+            settleDeferred();
         }
         if (const BroadcastMessage* broadcast = std::get_if<BroadcastMessage>(&message)) {
             handleBroadcast(*broadcast);
@@ -668,6 +696,10 @@ struct SessionClient::Implementation {
             }
         } while (readAgain);
         handling = false;
+        if (deleteWhenIdle) {
+            deleteWhenIdle = false;
+            publicInterface->deleteLater();
+        }
     }
 
     void end(const QString& reason)
@@ -748,6 +780,7 @@ SessionClient::SessionClient(const AppInstancePtr& app,
 
 SessionClient::~SessionClient()
 {
+    _imp->deleteWhenIdle = false;
     if (_imp->state != State::eDisconnected) {
         _imp->send(ByeMessage { std::string() });
         if (_imp->socket) {
@@ -780,6 +813,16 @@ SessionClient::leave(const QString& reason)
         _imp->socket->flush();
     }
     _imp->end(reason.isEmpty() ? tr("You left the session. The project is kept here, unsaved.") : reason);
+}
+
+void
+SessionClient::scheduleDeletion()
+{
+    if (_imp->handling) {
+        _imp->deleteWhenIdle = true;
+    } else {
+        deleteLater();
+    }
 }
 
 void

@@ -131,6 +131,37 @@ with the run's failure status (or 1).
 A push to `main` also triggers the workflow as a `fast` build with no tests
 and no AppImage. It only keeps the ccache warm for branch runs.
 
+## Polling and the shared run watcher
+
+The core API quota is 5,000 calls an hour, shared by every gate on the
+account, so the script polls sparingly:
+
+- `NATRON_REMOTE_WATCH_INTERVAL_SECS` (default 60): seconds between status
+  polls of the run, one API call each. A line is printed when the run's status
+  changes (`queued`, `in_progress`, `completed`).
+- `NATRON_REMOTE_FIND_INTERVAL_SECS` (default 10): seconds between looks for
+  the dispatched run, and between artifact download retries.
+
+With many gates in flight, set `NATRON_REMOTE_RUN_STATE_DIR` to a directory
+shared by all of them (an absolute path, for example `$HOME/git/Natron/build/remote/run-state`; `build.sh` resolves a relative one against the directory it was started from, so every worktree would otherwise get its own watcher). The first
+`build.sh` that finds no watcher starts `watch-runs.sh <dir>` detached. It
+polls every recent `remote-build.yml` run with one `gh run list` call per
+watch interval, whatever the number of gates, and writes `<dir>/<run-id>`
+(`<status> <conclusion>`), `<dir>/titles.tsv` (`<run-id>`, head sha, run name)
+and `<dir>/heartbeat`. Each `build.sh` finds its run in `titles.tsv`, waits on
+its state file and registers in `<dir>/clients/<pid>` while it runs. A flock
+on `<dir>/watcher.lock` keeps one watcher per directory; its log is
+`<dir>/watcher.log`. The watcher exits after 10 minutes with no unfinished run
+and no live client (`NATRON_REMOTE_WATCHER_IDLE_SECS` changes this). If the
+heartbeat is older than three intervals, or the run has left the watcher's
+list, `build.sh` polls the run itself and tries to restart the watcher.
+The heartbeat is written only after a successful poll (the `gh` call has a
+timeout of twice the interval) and removed when the watcher exits; state files
+of runs that left the list and stale temp files are pruned each poll. Clients
+and the watcher must share a host and PID namespace, and one state dir serves
+one repo. While waiting, `build.sh` prints "still <status>" every 10 minutes.
+Without the variable, each `build.sh` polls its own run.
+
 ## Shared remote ccache
 
 The build job layers a shared ccache remote storage server on top of the

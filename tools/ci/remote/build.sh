@@ -100,8 +100,14 @@ set -euo pipefail
 
 WORKFLOW="remote-build.yml"
 FIND_TIMEOUT_SECS=300
-FIND_INTERVAL_SECS=5
-WATCH_INTERVAL_SECS=30
+FIND_INTERVAL_SECS="${NATRON_REMOTE_FIND_INTERVAL_SECS:-10}"
+WATCH_INTERVAL_SECS="${NATRON_REMOTE_WATCH_INTERVAL_SECS:-60}"
+for interval_var in FIND_INTERVAL_SECS WATCH_INTERVAL_SECS; do
+    if [[ ! "${!interval_var}" =~ ^[1-9][0-9]*$ ]]; then
+        echo "build.sh: NATRON_REMOTE_${interval_var} must be a positive whole number of seconds, got '${!interval_var}'" >&2
+        exit 1
+    fi
+done
 
 usage() {
     echo "usage: build.sh <fast|release|debug> [--tests] [--scheduler <legacy|taskgraph>] [--record-goldens] [--shuffle-seeds <n,n,...>] [--repeat-test <name>:<N>] [--appimage] [--no-remote-ccache] [--debug-symbols] [--cmake-arg <arg>]... [--gui \"<script> ...\"]" >&2
@@ -352,6 +358,10 @@ if [[ -z "${FROM_RUN}" && "${PRESET}" == "debug" && "${WANT_APPIMAGE}" == "true"
     exit 1
 fi
 
+if [[ -n "${NATRON_REMOTE_RUN_STATE_DIR:-}" && "${NATRON_REMOTE_RUN_STATE_DIR}" != /* ]]; then
+    NATRON_REMOTE_RUN_STATE_DIR="${PWD}/${NATRON_REMOTE_RUN_STATE_DIR}"
+fi
+
 cd "${REPO_ROOT}"
 
 # The workflow would fail on the same check, but only after the dev image job; asking here
@@ -444,19 +454,60 @@ gh workflow run "${WORKFLOW}" --ref "${BRANCH}" \
     -f "from_run=${FROM_RUN}" \
     -f "gui_ref=${GUI_REF}"
 
+RUN_STATE_DIR="${NATRON_REMOTE_RUN_STATE_DIR:-}"
+if [[ -n "${RUN_STATE_DIR}" ]]; then
+    mkdir -p "${RUN_STATE_DIR}/clients"
+    CLIENT_FILE="${RUN_STATE_DIR}/clients/$$"
+    : >"${CLIENT_FILE}"
+    trap 'rm -f "${CLIENT_FILE:?}"' EXIT
+fi
+
+# Every watcher but the one holding the lock exits at once, so a race between
+# two build.sh instances starting one is harmless.
+ensure_watcher() {
+    if flock -n "${RUN_STATE_DIR}/watcher.lock" true 2>/dev/null; then
+        setsid nohup "${SCRIPT_DIR}/watch-runs.sh" "${RUN_STATE_DIR}" \
+            >>"${RUN_STATE_DIR}/watcher.log" 2>&1 </dev/null &
+    fi
+}
+
+# True when the watcher polled within its last three intervals.
+watcher_fresh() {
+    local beat="" interval=""
+    # The heartbeat has no trailing newline, so read fails even when it filled both fields.
+    read -r beat interval 2>/dev/null <"${RUN_STATE_DIR}/heartbeat" || true
+    [[ "${beat}" =~ ^[0-9]+$ && "${interval}" =~ ^[0-9]+$ ]] || return 1
+    (( $(date +%s) - beat <= 3 * interval ))
+}
+
+if [[ -n "${RUN_STATE_DIR}" ]]; then
+    ensure_watcher
+fi
+
 # gh 2.23 prints no run ID on dispatch, so the run is found by the token that
 # the workflow echoes into its run name.
 RUN_ID=""
 deadline=$((SECONDS + FIND_TIMEOUT_SECS))
 while [[ -z "${RUN_ID}" ]]; do
-    RUN_ID="$(gh run list --workflow "${WORKFLOW}" --branch "${BRANCH}" \
-        --json databaseId,displayTitle,headSha --limit 20 \
-        --jq ".[] | select(.displayTitle | contains(\"${TOKEN}\")) | [.databaseId, .headSha] | @tsv" \
-        | head -n1 || true)"
+    if [[ -n "${RUN_STATE_DIR}" ]] && watcher_fresh; then
+        RUN_ID="$(awk -F'\t' -v token="${TOKEN}" 'index($3, token) { print $1 "\t" $2; exit }' \
+            "${RUN_STATE_DIR}/titles.tsv" 2>/dev/null || true)"
+    else
+        if [[ -n "${RUN_STATE_DIR}" ]]; then
+            ensure_watcher
+        fi
+        RUN_ID="$(gh run list --workflow "${WORKFLOW}" --branch "${BRANCH}" \
+            --json databaseId,displayTitle,headSha --limit 20 \
+            --jq ".[] | select(.displayTitle | contains(\"${TOKEN}\")) | [.databaseId, .headSha] | @tsv" \
+            | head -n1 || true)"
+    fi
     if [[ -n "${RUN_ID}" ]]; then
         RUN_SHA="${RUN_ID#*$'\t'}"
         RUN_ID="${RUN_ID%%$'\t'*}"
         break
+    fi
+    if [[ -n "${RUN_STATE_DIR}" ]]; then
+        ensure_watcher
     fi
     if (( SECONDS >= deadline )); then
         echo "build.sh: ERROR: no run with token ${TOKEN} appeared within ${FIND_TIMEOUT_SECS}s" >&2
@@ -473,19 +524,43 @@ if [[ "${RUN_SHA}" != "${HEAD_SHA}" ]]; then
     exit 1
 fi
 
-# gh run watch also exits on a transient API error (GitHub answers 502 at times), which would
-# leave the run going while the artifacts below are fetched too early. So its exit status is
-# ignored: the run's own status is polled until it completes, and its conclusion decides.
-gh run watch "${RUN_ID}" --interval "${WATCH_INTERVAL_SECS}" || true
-
+# A transient API error (GitHub answers 502 at times) yields an empty state, which is retried
+# at the next interval rather than taken as an outcome. `gh api` on the run is one call, where
+# `gh run view` may also fetch the jobs.
 RUN_CONCLUSION=""
+LAST_RUN_STATUS=""
+LAST_PROGRESS_SECS="${SECONDS}"
 while true; do
-    RUN_STATE="$(gh run view "${RUN_ID}" --json status,conclusion --jq '.status + " " + .conclusion' 2>/dev/null || true)"
+    RUN_STATE=""
+    POLL_SECS="${WATCH_INTERVAL_SECS}"
+    # A run missing from titles.tsv has dropped out of the watcher's list, so its state file
+    # would never change again.
+    if [[ -n "${RUN_STATE_DIR}" ]] && watcher_fresh \
+        && awk -F'\t' -v id="${RUN_ID}" '$1 == id { found = 1; exit } END { exit !found }' \
+            "${RUN_STATE_DIR}/titles.tsv" 2>/dev/null; then
+        RUN_STATE="$(cat "${RUN_STATE_DIR}/${RUN_ID}" 2>/dev/null || true)"
+        POLL_SECS="${FIND_INTERVAL_SECS}"
+    fi
+    if [[ -z "${RUN_STATE}" ]]; then
+        if [[ -n "${RUN_STATE_DIR}" ]]; then
+            ensure_watcher
+        fi
+        RUN_STATE="$(gh api "repos/{owner}/{repo}/actions/runs/${RUN_ID}" \
+            --jq '.status + " " + (.conclusion // "")' 2>/dev/null || true)"
+    fi
+    if [[ -n "${RUN_STATE}" && "${RUN_STATE%% *}" != "${LAST_RUN_STATUS}" ]]; then
+        LAST_RUN_STATUS="${RUN_STATE%% *}"
+        echo "build.sh: run ${RUN_ID} is ${LAST_RUN_STATUS}"
+    fi
+    if (( SECONDS - LAST_PROGRESS_SECS >= 600 )); then
+        LAST_PROGRESS_SECS="${SECONDS}"
+        echo "build.sh: run ${RUN_ID} still ${LAST_RUN_STATUS:-unknown}"
+    fi
     if [[ "${RUN_STATE%% *}" == "completed" ]]; then
         RUN_CONCLUSION="${RUN_STATE#* }"
         break
     fi
-    sleep "${WATCH_INTERVAL_SECS}"
+    sleep "${POLL_SECS}"
 done
 
 RUN_STATUS=0

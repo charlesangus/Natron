@@ -2919,6 +2919,10 @@ TEST_F(USDWriteSaveRegionTest, SaveRegionMetadataIsAuthored)
     rows.push_back({ "department", "String", "lighting" });
     customData->setTable(rows);
     setString(region, kUSDConfigureLayerParamDefaultPrim, "World");
+    // Editing a value knob turns its toggle on; turn it back off to leave the value unauthored.
+    KnobBool* defaultPrimAuthored = getKnob<KnobBool>(region, (std::string(kUSDConfigureLayerParamDefaultPrim) + "Authored").c_str());
+    ASSERT_TRUE(defaultPrimAuthored != NULL);
+    defaultPrimAuthored->setValue(false);
     setString(notes, kUSDConfigureLayerParamComment, "shot notes");
     author(notes, kUSDConfigureLayerParamComment);
 
@@ -2935,7 +2939,6 @@ TEST_F(USDWriteSaveRegionTest, SaveRegionMetadataIsAuthored)
     const PXR_NS::VtDictionary::const_iterator department = custom.find("department");
     ASSERT_TRUE(department != custom.end());
     EXPECT_EQ(PXR_NS::VtValue(std::string("lighting")), department->second);
-    // Not toggled, though set.
     EXPECT_FALSE(layer->HasDefaultPrim());
     EXPECT_FALSE(layer->HasStartTimeCode());
 

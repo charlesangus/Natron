@@ -30,6 +30,7 @@
 #include <atomic>
 #include <chrono>
 #include <filesystem>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -218,7 +219,7 @@ protected:
     static SceneQueryPool::Lease borrow(const ScenePayload& payload)
     {
         std::string error;
-        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(payload, &error);
+        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(payload, SceneLoadSet::everything(), &error);
 
         EXPECT_TRUE(lease.isValid()) << error;
 
@@ -540,7 +541,7 @@ TEST_F(USDReadTest, RenderThreadsComposeThroughTwentyReloads)
             bool intact = true;
             {
                 std::string borrowError;
-                SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(before, &borrowError);
+                SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(before, SceneLoadSet::everything(), &borrowError);
                 intact = lease.isValid() && consistent(lease.getStage());
             }
             {
@@ -672,6 +673,11 @@ TEST_F(USDReadTest, AMissingSublayerIsStampedAsMissingUntilReload)
 
     NodePtr reader = createReader(top);
     ASSERT_TRUE(bool(reader));
+    {
+        ScenePayload whileAbsent;
+        std::string evaluateError;
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &whileAbsent, &evaluateError)) << evaluateError;
+    }
     const U64 whileMissing = reader->getHashValue();
 
     writeFile(leaf, leafWithRadius(1.));
@@ -687,6 +693,110 @@ TEST_F(USDReadTest, AMissingSublayerIsStampedAsMissingUntilReload)
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &after, &error)) << error;
     SceneQueryPool::Lease lease = borrow(after);
     EXPECT_DOUBLE_EQ(1., leafRadius(lease.getStage()));
+}
+
+namespace {
+// A file with one payload arc, named Building, on the file at buildingFile.
+std::string
+sceneWithPayload(const std::string& buildingFile)
+{
+    return "#usda 1.0\n\ndef Xform \"Building\" (\n    payload = @./" + buildingFile + "@</Leaf>\n)\n{\n}\n";
+}
+} // anonymous namespace
+
+// A reader on a heavy file costs the main thread nothing when the file knob is set.
+TEST_F(USDReadTest, SettingTheFileKnobOpensNothing)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = dir.filePath(QString::fromUtf8("named.usda")).toStdString();
+    writeFile(path, sceneDefining("Named"));
+
+    NodePtr reader = createReader(path);
+    ASSERT_TRUE(bool(reader));
+    EXPECT_FALSE(bool(PXR_NS::SdfLayer::Find(path)));
+    EXPECT_FALSE(reader->hasPersistentMessage());
+
+    ScenePayload payload;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &payload, &error)) << error;
+    EXPECT_TRUE(bool(PXR_NS::SdfLayer::Find(path)));
+}
+
+// Before the walk knows the closure, no hash may match a cache stored under one in an earlier
+// session; after it, the hash is settled and evaluating again keeps it.
+TEST_F(USDReadTest, TheFirstEvaluationSettlesTheHash)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = dir.filePath(QString::fromUtf8("settled.usda")).toStdString();
+    writeFile(path, sceneDefining("Settled"));
+
+    NodePtr reader = createReader(path);
+    ASSERT_TRUE(bool(reader));
+    const U64 unwalked = reader->getHashValue();
+
+    ScenePayload first;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &first, &error)) << error;
+    const U64 walked = reader->getHashValue();
+    EXPECT_NE(unwalked, walked);
+
+    ScenePayload second;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &second, &error)) << error;
+    EXPECT_EQ(walked, reader->getHashValue());
+    EXPECT_TRUE(first.isSameStack(second));
+}
+
+// The walk stamps a payload's file without opening it, and Reload re-keys the reader on it.
+TEST_F(USDReadTest, EvaluationLeavesPayloadsClosedAndKeysOnTheirFiles)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string root = dir.filePath(QString::fromUtf8("root.usda")).toStdString();
+    const std::string building = dir.filePath(QString::fromUtf8("building.usda")).toStdString();
+    writeFile(building, leafWithRadius(1.));
+    writeFile(root, sceneWithPayload("building.usda"));
+
+    NodePtr reader = createReader(root);
+    ASSERT_TRUE(bool(reader));
+    ScenePayload payload;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &payload, &error)) << error;
+    EXPECT_FALSE(bool(PXR_NS::SdfLayer::Find(building))) << "evaluating opened a payload layer";
+    const U64 before = reader->getHashValue();
+
+    writeFile(building, leafWithRadius(2.));
+    pressReload(reader);
+    EXPECT_FALSE(reader->hasPersistentMessage());
+    EXPECT_FALSE(bool(PXR_NS::SdfLayer::Find(building))) << "Reload opened a payload layer";
+    EXPECT_NE(before, reader->getHashValue());
+}
+
+// A payload some stage has loaded is read again by Reload, though the walk left it closed.
+TEST_F(USDReadTest, ReloadReadsAPayloadAStageHasLoaded)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string root = dir.filePath(QString::fromUtf8("root.usda")).toStdString();
+    const std::string building = dir.filePath(QString::fromUtf8("building.usda")).toStdString();
+    writeFile(building, leafWithRadius(1.));
+    writeFile(root, sceneWithPayload("building.usda"));
+
+    NodePtr reader = createReader(root);
+    ASSERT_TRUE(bool(reader));
+    ScenePayload payload;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &payload, &error)) << error;
+    const PXR_NS::SdfLayerRefPtr loaded = PXR_NS::SdfLayer::FindOrOpen(building);
+    ASSERT_TRUE(bool(loaded));
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(loaded);
+    ASSERT_DOUBLE_EQ(1., leafRadius(stage));
+
+    writeFile(building, leafWithRadius(2.));
+    pressReload(reader);
+    EXPECT_FALSE(reader->hasPersistentMessage());
+    EXPECT_DOUBLE_EQ(2., leafRadius(stage));
 }
 
 // USD reloads a layer in place for every consumer, so one reader's Reload re-keys every other
@@ -765,7 +875,14 @@ TEST_F(USDReadTest, ASublayerRewrittenWhileClosedKeysTheReaderAnew)
     NodePtr reader = createReader(top);
     ASSERT_TRUE(bool(reader));
     const std::string readerName = reader->getScriptName();
-    const U64 firstSession = reader->getHashValue();
+    const auto walkedHash = [](const NodePtr& node) {
+        ScenePayload walked;
+        std::string error;
+        EXPECT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(node, &walked, &error)) << error;
+
+        return node->getHashValue();
+    };
+    const U64 firstSession = walkedHash(reader);
 
     const QString dirPath = dir.path() + QLatin1Char('/');
     const QString fileName = QString::fromUtf8("sublayer-closed.ntp");
@@ -777,14 +894,14 @@ TEST_F(USDReadTest, ASublayerRewrittenWhileClosedKeysTheReaderAnew)
     closeSession(getApp(), { top, leaf });
     reader = openSession(getApp(), dirPath, fileName, readerName);
     ASSERT_TRUE(bool(reader));
-    EXPECT_EQ(firstSession, reader->getHashValue());
+    EXPECT_EQ(firstSession, walkedHash(reader));
     reader.reset();
 
     closeSession(getApp(), { top, leaf });
     writeFile(leaf, leafWithRadius(2.));
     reader = openSession(getApp(), dirPath, fileName, readerName);
     ASSERT_TRUE(bool(reader));
-    EXPECT_NE(firstSession, reader->getHashValue());
+    EXPECT_NE(firstSession, walkedHash(reader));
 }
 
 // The save, rewrite, fresh-load path: the reader loaded after a sublayer changed while the
@@ -838,4 +955,193 @@ TEST_F(USDReadTest, USDReadSublayerChangedWhileClosed)
     ScenePayload reference;
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(fresh, &reference, &error)) << error;
     EXPECT_DOUBLE_EQ(leafRadius(SceneOps::compose(reference)), leafRadius(SceneOps::compose(loaded)));
+}
+
+namespace {
+// /A and /B defined at the root, /Over only overed, /Base a class, and /Sub from a sublayer.
+std::string
+sceneWithTopLevelPrims(const std::string& subLayer)
+{
+    return "#usda 1.0\n(\n    subLayers = [@./" + subLayer + "@]\n)\n\n"
+                                                             "def Xform \"A\"\n{\n    def Xform \"Child\"\n    {\n    }\n}\n\n"
+                                                             "def Xform \"B\"\n{\n}\n\n"
+                                                             "over \"Over\"\n{\n}\n\n"
+                                                             "class \"Base\"\n{\n}\n";
+}
+
+// /World (group) holding /World/Block (group) holding /World/Block/Building (assembly), whose
+// payload is buildingFile.
+std::string
+cityWithPayload(const std::string& buildingFile)
+{
+    return "#usda 1.0\n\n"
+           "def Xform \"World\" (\n    kind = \"group\"\n)\n{\n"
+           "    def Xform \"Block\" (\n        kind = \"group\"\n    )\n    {\n"
+           "        def Xform \"Building\" (\n            kind = \"assembly\"\n"
+           "            payload = @./"
+        + buildingFile + "@</Leaf>\n        )\n        {\n        }\n"
+                         "    }\n}\n";
+}
+
+void
+setInitialDraw(const NodePtr& reader,
+               const std::string& id)
+{
+    KnobChoice* initialDraw = dynamic_cast<KnobChoice*>(reader->getKnobByName(kUSDReadParamInitialDraw).get());
+
+    ASSERT_TRUE(initialDraw != NULL);
+    const std::vector<ChoiceOption> entries = initialDraw->getEntries_mt_safe();
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        if (entries[i].id == id) {
+            initialDraw->setValue((int)i);
+
+            return;
+        }
+    }
+    FAIL() << "Initial Draw has no " << id;
+}
+} // anonymous namespace
+
+// The rules name the prims the file and its sublayers define at the root, not those it only
+// overs or holds as classes, and not the prims below them.
+TEST_F(USDReadTest, InitialDrawBoxesTheFilesTopLevelPrimsByDefault)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string root = dir.filePath(QString::fromUtf8("root.usda")).toStdString();
+    const std::string sub = dir.filePath(QString::fromUtf8("sub.usda")).toStdString();
+    writeFile(sub, sceneDefining("Sub"));
+    writeFile(root, sceneWithTopLevelPrims("sub.usda"));
+
+    NodePtr reader = createReader(root);
+    ASSERT_TRUE(bool(reader));
+    ScenePayload payload;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &payload, &error)) << error;
+
+    const SceneDrawRules& rules = payload.getDrawRules();
+    ASSERT_EQ((std::size_t)1, rules.size());
+    EXPECT_EQ(std::string("/A /B /Sub"), rules[0].pattern);
+    EXPECT_EQ(eSceneDrawStateBBox, rules[0].state);
+    EXPECT_EQ(0, rules[0].levels);
+    EXPECT_TRUE(rules[0].toKind.empty());
+    EXPECT_EQ(reader->getScriptName(), rules[0].origin);
+
+    SceneDrawStates::PolicyStates policy;
+    ASSERT_TRUE(SceneOps::matchDrawRules(PXR_NS::UsdStageRefPtr(), rules, &policy, std::function<bool()>()));
+    EXPECT_EQ((std::size_t)3, policy.size());
+    EXPECT_EQ(eSceneDrawStateBBox, policy["/A"].state);
+    EXPECT_EQ(0u, policy.count("/A/Child"));
+    EXPECT_EQ(0u, policy.count("/Over"));
+    EXPECT_EQ(0u, policy.count("/Base"));
+}
+
+// Each value sets its own rule, and none changes the node's hash or the stack.
+TEST_F(USDReadTest, EachInitialDrawSetsItsRuleOnTheSameStack)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string root = dir.filePath(QString::fromUtf8("root.usda")).toStdString();
+    writeFile(root, sceneDefining("Top"));
+
+    NodePtr reader = createReader(root);
+    ASSERT_TRUE(bool(reader));
+    KnobInt* levels = dynamic_cast<KnobInt*>(reader->getKnobByName(kUSDReadParamLevels).get());
+    KnobChoice* toKind = dynamic_cast<KnobChoice*>(reader->getKnobByName(kUSDReadParamToKind).get());
+    ASSERT_TRUE(levels != NULL);
+    ASSERT_TRUE(toKind != NULL);
+
+    ScenePayload reference;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &reference, &error)) << error;
+    const U64 nodeHash = reader->getHashValue();
+
+    struct Expected {
+        const char* id;
+        SceneDrawStateEnum state;
+        int levels;
+        const char* toKind;
+    };
+    const Expected values[] = {
+        { kUSDReadInitialDrawLevels, eSceneDrawStateBBox, 3, "" },
+        { kUSDReadInitialDrawToKind, eSceneDrawStateBBox, 0, "group" },
+        { kUSDReadInitialDrawFull, eSceneDrawStateFull, 0, "" },
+        { kUSDReadInitialDrawFullLoad, eSceneDrawStateLoadAll, 0, "" },
+        { kUSDReadInitialDrawBBox, eSceneDrawStateBBox, 0, "" },
+    };
+    levels->setValue(3);
+    const std::vector<ChoiceOption> kinds = toKind->getEntries_mt_safe();
+    for (std::size_t i = 0; i < kinds.size(); ++i) {
+        if (kinds[i].id == "group") {
+            toKind->setValue((int)i);
+        }
+    }
+    for (const Expected& value : values) {
+        SCOPED_TRACE(value.id);
+        setInitialDraw(reader, value.id);
+        ScenePayload payload;
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &payload, &error)) << error;
+        const SceneDrawRules& rules = payload.getDrawRules();
+        ASSERT_EQ((std::size_t)1, rules.size());
+        EXPECT_EQ(std::string("/Top"), rules[0].pattern);
+        EXPECT_EQ(value.state, rules[0].state);
+        EXPECT_EQ(value.levels, rules[0].levels);
+        EXPECT_EQ(std::string(value.toKind), rules[0].toKind);
+        EXPECT_EQ(reference.getStackHash(), payload.getStackHash());
+        EXPECT_TRUE(reference.isSameStack(payload));
+        EXPECT_EQ(nodeHash, reader->getHashValue());
+    }
+}
+
+TEST_F(USDReadTest, LevelsAndToKindShowOnlyForTheirInitialDraw)
+{
+    NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
+    ASSERT_TRUE(bool(reader));
+    KnobIPtr levels = reader->getKnobByName(kUSDReadParamLevels);
+    KnobIPtr toKind = reader->getKnobByName(kUSDReadParamToKind);
+    ASSERT_TRUE(levels && toKind);
+
+    EXPECT_TRUE(levels->getIsSecret());
+    EXPECT_TRUE(toKind->getIsSecret());
+    setInitialDraw(reader, kUSDReadInitialDrawLevels);
+    EXPECT_FALSE(levels->getIsSecret());
+    EXPECT_TRUE(toKind->getIsSecret());
+    setInitialDraw(reader, kUSDReadInitialDrawToKind);
+    EXPECT_TRUE(levels->getIsSecret());
+    EXPECT_FALSE(toKind->getIsSecret());
+    setInitialDraw(reader, kUSDReadInitialDrawFullLoad);
+    EXPECT_TRUE(levels->getIsSecret());
+    EXPECT_TRUE(toKind->getIsSecret());
+}
+
+// To Kind opens the hierarchy down to the first prim of the kind, and boxes an unloaded payload
+// on the way where it is; nothing opens a payload file.
+TEST_F(USDReadTest, ToKindStopsAtAnUnloadedPayload)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string root = dir.filePath(QString::fromUtf8("city.usda")).toStdString();
+    const std::string building = dir.filePath(QString::fromUtf8("building.usda")).toStdString();
+    writeFile(building, leafWithRadius(1.));
+    writeFile(root, cityWithPayload("building.usda"));
+
+    NodePtr reader = createReader(root);
+    ASSERT_TRUE(bool(reader));
+    setInitialDraw(reader, kUSDReadInitialDrawToKind);
+    ScenePayload payload;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(reader, &payload, &error)) << error;
+    const SceneDrawRules& rules = payload.getDrawRules();
+    ASSERT_EQ((std::size_t)1, rules.size());
+    EXPECT_EQ(std::string("component"), rules[0].toKind);
+
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(root, PXR_NS::UsdStage::LoadNone);
+    ASSERT_TRUE(bool(stage));
+    SceneDrawStates::PolicyStates policy;
+    ASSERT_TRUE(SceneOps::matchDrawRules(stage, rules, &policy, std::function<bool()>()));
+    EXPECT_EQ(eSceneDrawStateChildren, policy["/World"].state);
+    EXPECT_EQ(eSceneDrawStateChildren, policy["/World/Block"].state);
+    EXPECT_EQ(eSceneDrawStateBBox, policy["/World/Block/Building"].state);
+    EXPECT_EQ(reader->getScriptName(), policy["/World/Block/Building"].origin);
+    EXPECT_FALSE(bool(PXR_NS::SdfLayer::Find(building))) << "a payload layer was opened";
 }

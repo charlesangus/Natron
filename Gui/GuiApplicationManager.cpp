@@ -27,6 +27,7 @@
 #include "GuiApplicationManagerPrivate.h"
 
 #include <algorithm>
+#include <chrono>
 #include <limits>
 #include <stdexcept>
 
@@ -36,6 +37,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QApplication>
 #include <QColor>
 #include <QDebug>
+#include <QDynamicPropertyChangeEvent>
 #include <QFile>
 #include <QFontDatabase>
 #include <QIcon>
@@ -65,6 +67,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Merge/Merge.h" // PLUGINID_NATRON_NATIVE_MERGE
+#include "Engine/Nodes/Scene/SceneTeardown.h"
 #include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/Plugin.h"
 #include "Engine/PluginActionShortcut.h"
@@ -93,6 +96,99 @@ CLANG_DIAG_ON(uninitialized)
 NATRON_NAMESPACE_ENTER
 
 namespace {
+
+/**
+ * With NATRON_MAIN_HEARTBEAT=1, ticks every 10 ms on the main thread and publishes the gaps between
+ * ticks as properties of itself, a child of the application named natronMainHeartbeat. A script's
+ * timer needs the GIL, so a thread holding it would pass for the main thread stalling; this does not.
+ *
+ * natronMainGapMaxMs and natronMainGapMaxAt: the longest gap and when it began, in epoch seconds.
+ * natronMainGapsOver100: each gap over 100 ms as [ms, began at], oldest first.
+ * Setting natronMainGapReset clears them; setting natronMainGapSample counts the gap up to now, for
+ * a reader that has kept the main thread busy since the last tick. Both act before setProperty()
+ * returns, and only for a value other than the last: Qt sends no change for the same one.
+ **/
+class MainHeartbeat
+    : public QObject {
+public:
+    explicit MainHeartbeat(QObject* parent)
+        : QObject(parent)
+    {
+        setObjectName(QString::fromUtf8("natronMainHeartbeat"));
+        _timer.setTimerType(Qt::PreciseTimer);
+        _timer.setInterval(10);
+        QObject::connect(&_timer, &QTimer::timeout, this, [this]() { tick(); });
+        reset();
+        _timer.start();
+    }
+
+    static bool isWanted()
+    {
+        const QByteArray value = qgetenv("NATRON_MAIN_HEARTBEAT");
+
+        return value == "1";
+    }
+
+protected:
+    virtual bool event(QEvent* e) OVERRIDE FINAL
+    {
+        if (e->type() == QEvent::DynamicPropertyChange) {
+            const QByteArray name = static_cast<QDynamicPropertyChangeEvent*>(e)->propertyName();
+            if (name == "natronMainGapReset") {
+                reset();
+            } else if (name == "natronMainGapSample") {
+                tick();
+            }
+        }
+
+        return QObject::event(e);
+    }
+
+private:
+    void reset()
+    {
+        _last = std::chrono::steady_clock::now();
+        _maxMs = 0.;
+        _maxAt = 0.;
+        _over.clear();
+        publish();
+    }
+
+    void tick()
+    {
+        const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+        const double gapMs = std::chrono::duration<double, std::milli>(now - _last).count();
+        _last = now;
+        const bool longest = gapMs > _maxMs;
+        const bool over = gapMs > 100.;
+        if (!longest && !over) {
+            return;
+        }
+        const double epochNow = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+        const double began = epochNow - gapMs / 1000.;
+        if (longest) {
+            _maxMs = gapMs;
+            _maxAt = began;
+        }
+        if (over) {
+            _over.push_back(QVariant(QVariantList { gapMs, began }));
+        }
+        publish();
+    }
+
+    void publish()
+    {
+        setProperty("natronMainGapMaxMs", _maxMs);
+        setProperty("natronMainGapMaxAt", (_maxMs > 0.) ? QVariant(_maxAt) : QVariant());
+        setProperty("natronMainGapsOver100", _over);
+    }
+
+    QTimer _timer;
+    std::chrono::steady_clock::time_point _last;
+    double _maxMs = 0.;
+    double _maxAt = 0.;
+    QVariantList _over;
+};
 
 StartupGLDiag::QtGLState
 currentQtGLState()
@@ -994,6 +1090,12 @@ GuiApplicationManager::getLinkToMultCursor() const
 bool
 GuiApplicationManager::initGui(const CLArgs& args)
 {
+    // Closing a heavy scene must not freeze the window.
+    SceneTeardown::setDeferred(true);
+    if (MainHeartbeat::isWanted() && qApp && !qApp->findChild<QObject*>(QString::fromUtf8("natronMainHeartbeat"), Qt::FindDirectChildrenOnly)) {
+        new MainHeartbeat(qApp);
+    }
+
     QSettings settings( QString::fromUtf8(NATRON_ORGANIZATION_NAME), QString::fromUtf8(NATRON_APPLICATION_NAME) );
 
     //load custom fonts

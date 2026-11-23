@@ -611,6 +611,7 @@ future core work has solid ground to build on.
 | M547 | Pyro Look And Post-Process | todo | M543, M347 |  | E22 | F35 | | [M547-pyro-look-and-post-process.md](PLAN/MILESTONES/M547-pyro-look-and-post-process.md) |
 | M548 | Pyro Quick Setups And Checkpoints | todo | M544, M545, M546, M547 |  | E22 | F35 | | [M548-pyro-quick-setups-and-checkpoints.md](PLAN/MILESTONES/M548-pyro-quick-setups-and-checkpoints.md) |
 | M554 | Scene Camera For Delegate Renders | todo | M345 |  | E9 | F1 | | [M554-scene-camera-for-delegate-renders.md](PLAN/MILESTONES/M554-scene-camera-for-delegate-renders.md) |
+| M555 | Dissolve GPU Smaller-Input Mismatch | todo | M495 |  | E14 |  | | [M555-dissolve-gpu-smaller-input-mismatch.md](PLAN/MILESTONES/M555-dissolve-gpu-smaller-input-mismatch.md) |
 
 # Epics
 

@@ -45,8 +45,10 @@
 #include "Gui/GeoSpreadsheet.h"
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
+#include "Gui/NodeSourceBar.h"
 #include "Gui/SceneSelectionActions.h"
 #include "Gui/SceneViewport.h"
+#include "Gui/UndoHistory.h"
 #include "Gui/ViewerTab.h"
 
 NATRON_NAMESPACE_ENTER
@@ -76,7 +78,8 @@ struct GeoSpreadsheetPanel::Implementation {
 
     GeoSpreadsheetPanel* panel;
     Gui* gui;
-    QLabel* nodeLabel = nullptr;
+    NodeSourceBar* sourceBar = nullptr;
+    QLabel* status = nullptr;
     GeoSpreadsheetWidget* sheet = nullptr;
     QTimer refreshTimer;
     QTimer greyTimer;
@@ -115,6 +118,8 @@ struct GeoSpreadsheetPanel::Implementation {
         const NodePtr node = shown.valid ? shown.node.lock() : NodePtr();
 
         panel->setProperty("natronGeometrySpreadsheetNode", node ? QString::fromStdString(node->getScriptName_mt_safe()) : QString());
+        panel->setProperty("natronGeometrySpreadsheetPinned", sourceBar->isPinned());
+        panel->setProperty("natronGeometrySpreadsheetFollow", NodeSourceBar::followName(sourceBar->getFollow()));
         panel->setProperty("natronGeometrySpreadsheetBusy", busy);
         panel->setProperty("natronGeometrySpreadsheetStale", stale);
         panel->setProperty("natronGeometrySpreadsheetReadsFinished", readsFinished);
@@ -127,12 +132,36 @@ struct GeoSpreadsheetPanel::Implementation {
         publishState();
     }
 
-    void setNodeLabel(const NodePtr& node)
+    void setStatus(const QString& text)
     {
-        const QString text = node ? QString::fromStdString(node->getLabel_mt_safe()) : QString();
+        status->setText(text);
+        status->setToolTip(text);
+    }
 
-        nodeLabel->setText(text);
-        nodeLabel->setToolTip(text);
+    // What the rows of node are, by how the panel came to show it.
+    QString statusOf(const NodePtr& node) const
+    {
+        const QString name = QString::fromStdString(node->getFullyQualifiedName());
+
+        if (sourceBar->isPinned()) {
+            return GeoSpreadsheetPanel::tr("Pinned to %1").arg(name);
+        }
+        if (sourceBar->getFollow() == NodeSourceBar::eFollowSelection) {
+            return GeoSpreadsheetPanel::tr("Selected: %1").arg(name);
+        }
+        const std::string viewerName = (viewer && viewer->getInternalNode()) ? viewer->getInternalNode()->getScriptName_mt_safe() : std::string();
+
+        return GeoSpreadsheetPanel::tr("%1 shows %2").arg(QString::fromStdString(viewerName), name);
+    }
+
+    // The node the panel is to list: the bar's target, or when following the viewer the node it views.
+    NodePtr wantedNode() const
+    {
+        if (sourceBar->isPinned() || (sourceBar->getFollow() == NodeSourceBar::eFollowSelection)) {
+            return sourceBar->getTarget();
+        }
+
+        return viewer ? viewer->getSceneViewedNode() : NodePtr();
     }
 
     ViewerInstancePtr viewerInstance() const
@@ -223,7 +252,7 @@ struct GeoSpreadsheetPanel::Implementation {
         busy = false;
         greyTimer.stop();
         shown = Shown();
-        setNodeLabel(NodePtr());
+        setStatus(text);
         sheet->setHighlightTarget(ViewerInstanceWPtr(), QString(), NodeWPtr());
         sheet->setSelectionViewer(ViewerInstanceWPtr());
         sheet->showMessage(text);
@@ -238,9 +267,21 @@ struct GeoSpreadsheetPanel::Implementation {
             return;
         }
         readOwed = false;
-        const NodePtr node = viewer ? viewer->getSceneViewedNode() : NodePtr();
+        const NodePtr target = sourceBar->getTarget();
+        if ((target && !target->isActivated()) || (sourceBar->isPinned() && !target)) {
+            sourceBar->dropTarget();
+
+            return;
+        }
+        const NodePtr node = wantedNode();
         if (!geoSpreadsheetListsNode(node)) {
-            showNothing(viewer ? GeoSpreadsheetPanel::tr("The viewer shows no native geometry") : GeoSpreadsheetPanel::tr("No viewer"));
+            if (sourceBar->isPinned()) {
+                showNothing(GeoSpreadsheetPanel::tr("The pinned node %1 puts out no native geometry").arg(QString::fromStdString(node->getFullyQualifiedName())));
+            } else if (sourceBar->getFollow() == NodeSourceBar::eFollowSelection) {
+                showNothing(GeoSpreadsheetPanel::tr("Select a node that puts out native geometry"));
+            } else {
+                showNothing(viewer ? GeoSpreadsheetPanel::tr("The viewer shows no native geometry") : GeoSpreadsheetPanel::tr("No viewer"));
+            }
 
             return;
         }
@@ -302,7 +343,9 @@ struct GeoSpreadsheetPanel::Implementation {
         shown.hash = runningHash;
         shown.fromViewer = read.fromViewer;
         shown.valid = bool(node);
-        setNodeLabel(node);
+        if (node) {
+            setStatus(statusOf(node));
+        }
         setStale(false);
         if (rereadWhenDone) {
             rereadWhenDone = false;
@@ -360,12 +403,26 @@ GeoSpreadsheetPanel::GeoSpreadsheetPanel(Gui* gui)
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(2);
 
-    _imp->nodeLabel = new QLabel(this);
-    _imp->nodeLabel->setObjectName(QString::fromUtf8("geometrySpreadsheetNode"));
-    _imp->nodeLabel->setContentsMargins(4, 2, 4, 0);
-    // A long node label must not set the panel's minimum width.
-    _imp->nodeLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
-    layout->addWidget(_imp->nodeLabel);
+    NodeSourceBar::ToolTips toolTips;
+    toolTips.pin = tr("Keeps listing the geometry of the node listed now, whichever viewer is active, whatever it views and whatever is selected.");
+    toolTips.follow = tr("What the panel follows when not pinned. Viewer: the geometry the active viewer shows. "
+                         "Node Selection: the geometry of the node last selected in the node graph that puts out "
+                         "native geometry; selecting other nodes keeps it.");
+    toolTips.node = tr("The node whose geometry is listed: the one followed, or a node pinned by name.");
+    _imp->sourceBar = new NodeSourceBar(gui, QString::fromUtf8("geometrySpreadsheet"), geoSpreadsheetListsNode, toolTips, this);
+    _imp->sourceBar->setShownNode([this]() {
+        const NodePtr node = _imp->wantedNode();
+
+        return geoSpreadsheetListsNode(node) ? node : NodePtr();
+    });
+    layout->addWidget(_imp->sourceBar);
+
+    _imp->status = new QLabel(this);
+    _imp->status->setObjectName(QString::fromUtf8("geometrySpreadsheetStatus"));
+    _imp->status->setContentsMargins(4, 0, 4, 0);
+    // A long node name must not set the panel's minimum width.
+    _imp->status->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    layout->addWidget(_imp->status);
 
     _imp->sheet = new GeoSpreadsheetWidget(QString::fromUtf8("geometrySpreadsheet"), this);
     layout->addWidget(_imp->sheet, 1);
@@ -380,9 +437,24 @@ GeoSpreadsheetPanel::GeoSpreadsheetPanel(Gui* gui)
             _imp->setStale(true);
         }
     });
+    QObject::connect(_imp->sourceBar, &NodeSourceBar::targetChanged, this, [this]() { _imp->refreshTimer.start(); });
+    QObject::connect(_imp->sourceBar, &NodeSourceBar::settlingChanged, this, [this]() { _imp->publishState(); });
     if (gui) {
         QObject::connect(gui, &Gui::activeViewerChanged, this, &GeoSpreadsheetPanel::onActiveViewerChanged);
         QObject::connect(gui, &Gui::viewersChanged, this, &GeoSpreadsheetPanel::onActiveViewerChanged);
+        // Edits, deletions and frame changes of a pinned or selected node the viewer does not show,
+        // which no viewer evaluates; a refresh that finds the rows current reads nothing.
+        QObject::connect(gui, &Gui::nodeGraphTopologyChanged, &_imp->refreshTimer, qOverload<>(&QTimer::start));
+        if (UndoHistory* history = gui->getUndoHistory()) {
+            QObject::connect(history, &UndoHistory::changed, &_imp->refreshTimer, qOverload<>(&QTimer::start));
+        }
+        GuiAppInstancePtr app = gui->getApp();
+        if (app) {
+            QObject::connect(app.get(), &AppInstance::nodeEvaluated, &_imp->refreshTimer, qOverload<>(&QTimer::start));
+        }
+        if (app && app->getTimeLine()) {
+            QObject::connect(app->getTimeLine().get(), &TimeLine::frameChanged, &_imp->refreshTimer, qOverload<>(&QTimer::start));
+        }
     }
     _imp->publishState();
     _imp->worker = std::thread([this]() { _imp->run(); });
@@ -401,10 +473,35 @@ GeoSpreadsheetPanel::releaseNodes()
     _imp->busy = false;
     _imp->greyTimer.stop();
     _imp->shown = Implementation::Shown();
-    _imp->setNodeLabel(NodePtr());
+    _imp->sourceBar->release();
+    _imp->setStatus(QString());
     _imp->sheet->setSelectionViewer(ViewerInstanceWPtr());
     _imp->sheet->setSnapshot(GeoSpreadsheetModel::SourcePtr());
     _imp->setStale(false);
+}
+
+void
+GeoSpreadsheetPanel::pinNode(const NodePtr& node)
+{
+    _imp->sourceBar->pinNode(node);
+}
+
+NodePtr
+GeoSpreadsheetPanel::getPinnedNode() const
+{
+    return _imp->sourceBar->getPinnedNode();
+}
+
+void
+GeoSpreadsheetPanel::setFollow(NodeSourceBar::FollowEnum follow)
+{
+    _imp->sourceBar->setFollow(follow);
+}
+
+NodeSourceBar::FollowEnum
+GeoSpreadsheetPanel::getFollow() const
+{
+    return _imp->sourceBar->getFollow();
 }
 
 void

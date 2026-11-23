@@ -34,21 +34,26 @@
 
 #include "Engine/EngineFwd.h"
 #include "Gui/GuiFwd.h"
+#include "Gui/NodeSourceBar.h"
 #include "Gui/PanelWidget.h"
 
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief The native geometry the active viewer shows, as a spreadsheet of its points, vertices,
- * primitives and detail at the viewer's frame. It follows the viewer's input A: the copy the 3D
- * view serves when that is current, so rows and picks share element numbers, else the node
- * evaluated on the panel's worker. A read under way when the node changes is cancelled; one under
+ * @brief A node's native geometry as a spreadsheet of its points, vertices, primitives and detail
+ * at the viewer's frame. Its source bar (NodeSourceBar) picks the node: by default the one the
+ * active viewer's input A shows, or, following the node selection, the node putting out native
+ * geometry last selected in the node graph, or a pinned node. The rows are the copy the 3D view
+ * serves when it shows that node and the copy is current, so rows and picks share element
+ * numbers, else the node evaluated on the panel's worker. A read under way when the node changes is cancelled; one under
  * way when the frame changes or the node is edited finishes, and the panel then reads again. While
  * a read has not finished the last rows stay up, greyed. Nothing is read while the panel is hidden.
  *
- * Scripts find its widgets by object name: geometrySpreadsheetPanel, geometrySpreadsheetNode and
- * geometrySpreadsheet (see GeoSpreadsheetWidget). It mirrors its state into the
- * natronGeometrySpreadsheetNode (the script name of the node whose rows are shown),
+ * Scripts find its widgets by object name: geometrySpreadsheetPanel,
+ * geometrySpreadsheetPin, geometrySpreadsheetFollow and geometrySpreadsheetNode (the source bar),
+ * geometrySpreadsheetStatus and geometrySpreadsheet (see GeoSpreadsheetWidget). It mirrors its
+ * state into the natronGeometrySpreadsheetNode (the script name of the node whose rows are shown),
+ * natronGeometrySpreadsheetPinned, natronGeometrySpreadsheetFollow ("viewer" or "selection"),
  * natronGeometrySpreadsheetBusy, natronGeometrySpreadsheetStale and
  * natronGeometrySpreadsheetReadsFinished properties.
  **/
@@ -64,8 +69,18 @@ public:
 
     ~GeoSpreadsheetPanel() override;
 
-    // Cancels the read under way and forgets the viewer and node shown, until the next refresh.
+    // Cancels the read under way, unpins, and forgets the viewer and node shown, until the next refresh.
     void releaseNodes();
+
+    // Lists node's geometry whichever viewer is active; null follows again.
+    void pinNode(const NodePtr& node);
+
+    NodePtr getPinnedNode() const;
+
+    // What the panel lists when not pinned: the active viewer's geometry, or the selected node's.
+    void setFollow(NodeSourceBar::FollowEnum follow);
+
+    NodeSourceBar::FollowEnum getFollow() const;
 
 public Q_SLOTS:
 

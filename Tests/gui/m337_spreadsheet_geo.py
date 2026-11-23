@@ -13,7 +13,11 @@ Checks:
     them set by hand, stay put;
   - with the grid viewed and one of its prims selected in the Scene Graph panel, the Scene Graph's
     Spreadsheet tab lists none of the grid's attributes and points to the Geometry Spreadsheet
-    panel, which still lists them.
+    panel, which still lists them;
+  - following the node selection (geometrySpreadsheetFollow), with the viewer still on the grid,
+    the panel lists the selected GeoDelete; selecting the Viewer, which puts out no geometry, keeps
+    it; pinned (geometrySpreadsheetPin), selecting the GeoTransform keeps the GeoDelete; unpinned,
+    the panel moves to the selected GeoTransform; back to following the viewer it lists the grid.
 
 One screenshot per check goes to $NATRON_GUI_TEST_OUT (default build/gui-test-out/) for sign-off.
 Run through Tests/gui/run-gui-test.sh. Exit status 0 only if every check passed.
@@ -73,7 +77,7 @@ def write_scene(directory):
 
 try:
     from PySide6.QtCore import Qt
-    from PySide6.QtWidgets import QLabel, QTabWidget, QTableView, QToolButton, QTreeView, QWidget
+    from PySide6.QtWidgets import QComboBox, QLabel, QTabWidget, QTableView, QToolButton, QTreeView, QWidget
 
     from guitest import OUT, check, finish, plugin_problem, report, require, run, section, shot, viewer_up, widgets_of
 
@@ -370,6 +374,63 @@ try:
               "the Geometry Spreadsheet panel still lists the grid's points (got %r rows)" % (sheet_state("Rows"),))
         shot("m337-spreadsheet-geo-scene-graph.png")
 
+    def shown_node():
+        return str(panel_state("Node") or "")
+
+    def lists(node, counts):
+        return lambda: shown_node() == node.getScriptName() and shows_counts(counts)
+
+    def select(node):
+        app.clearSelection()
+        app.selectNode(node, True)
+
+    def follow_section():
+        section("follow")
+        view_node(grid)
+        ok = yield ("until", lists(grid, GRID_COUNTS), POLL_TIMEOUT_S)
+        require(ok, "the panel lists the viewed grid (got %r, %r)" % (shown_node(), class_counts()))
+        follow = child(QComboBox, SPREADSHEET + "Follow")
+        pin = child(QToolButton, SPREADSHEET + "Pin")
+        chooser = child(QComboBox, SPREADSHEET + "Node")
+        require(follow is not None and pin is not None and chooser is not None, "the panel has its Pin, Follow and node choosers")
+        check(panel_state("Follow") == "viewer" and follow.currentIndex() == 0 and not panel_state("Pinned"),
+              "the panel follows the viewer by default (got %r)" % (panel_state("Follow"),))
+
+        select(delete)
+        yield ("sleep", SETTLE_MS)
+        check(lists(grid, GRID_COUNTS)(), "following the viewer, selecting the GeoDelete keeps the grid (got %r)" % (shown_node(),))
+
+        follow.setCurrentIndex(1)
+        ok = yield ("until", lambda: panel_state("Follow") == "selection", POLL_TIMEOUT_S)
+        require(ok, "the chooser switches the panel to following the selection")
+        ok = yield ("until", lists(delete, DELETED_COUNTS), POLL_TIMEOUT_S)
+        check(ok, "following the selection, the panel lists the selected GeoDelete while the viewer shows the grid (got %r, %r)"
+              % (shown_node(), class_counts()))
+        shot("m337-spreadsheet-geo-follow-selection.png")
+
+        select(viewer)
+        yield ("sleep", SETTLE_MS)
+        check(lists(delete, DELETED_COUNTS)(), "selecting the Viewer, which puts out no geometry, keeps the GeoDelete (got %r)"
+              % (shown_node(),))
+
+        pin.click()
+        ok = yield ("until", lambda: bool(panel_state("Pinned")), POLL_TIMEOUT_S)
+        require(ok, "the pin button pins the panel")
+        select(moved)
+        yield ("sleep", SETTLE_MS)
+        check(lists(delete, DELETED_COUNTS)(), "pinned, selecting the GeoTransform keeps the GeoDelete (got %r)" % (shown_node(),))
+        check(chooser.currentText() == delete.getScriptName() or chooser.currentText().endswith("." + delete.getScriptName()),
+              "the node chooser names the pinned GeoDelete (got %r)" % (chooser.currentText(),))
+        shot("m337-spreadsheet-geo-pinned.png")
+
+        pin.click()
+        ok = yield ("until", lambda: not panel_state("Pinned") and lists(moved, GRID_COUNTS)(), POLL_TIMEOUT_S)
+        check(ok, "unpinned, the panel lists the selected GeoTransform (got %r, %r)" % (shown_node(), class_counts()))
+
+        follow.setCurrentIndex(0)
+        ok = yield ("until", lambda: panel_state("Follow") == "viewer" and lists(grid, GRID_COUNTS)(), POLL_TIMEOUT_S)
+        check(ok, "back to following the viewer, the panel lists the viewed grid (got %r, %r)" % (shown_node(), class_counts()))
+
     def steps():
         view_node(grid)
         ok = yield ("until", lambda: viewer_up() or view() is not None, STARTUP_TIMEOUT_S)
@@ -396,6 +457,7 @@ try:
         yield from packed_section()
         yield from scrub_section(py_viewer)
         yield from scene_graph_section()
+        yield from follow_section()
 
     run(steps())
 except Exception:

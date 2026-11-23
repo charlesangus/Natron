@@ -732,3 +732,30 @@ TEST_F(GeoPipelineTest, TheSpreadsheetListsTheUVsGeoUVProjectWrites)
     EXPECT_EQ(1u, names.count("uv[1]"));
     EXPECT_GT(source.rowCount(eGeoAttribClassVertex), 0);
 }
+
+// With Attribute Class on Point, the spreadsheet lists the uv on the points, and none on the vertices.
+TEST_F(GeoPipelineTest, TheSpreadsheetListsGeoUVProjectPointUVsOnThePoints)
+{
+    const NodePtr card = make(PLUGINID_NATRON_GEOPRIMITIVE);
+    const NodePtr project = card ? after(card, PLUGINID_NATRON_GEOUVPROJECT) : NodePtr();
+    ASSERT_TRUE(project != nullptr);
+    setChoice(project, kGeoUVProjectParamAttributeClass, "point");
+
+    const GeoDetailConstPtr detail = pull(project);
+    ASSERT_TRUE(detail != nullptr);
+    EXPECT_TRUE(detail->findAttribute(eGeoAttribClassVertex, "uv") == nullptr);
+    ASSERT_TRUE(detail->findAttribute(eGeoAttribClassPoint, "uv") != nullptr);
+    const GeoDetailSpreadsheetSource source(detail);
+    std::set<std::string> pointNames;
+    for (const GeoSpreadsheetColumn& column : source.columns(eGeoAttribClassPoint)) {
+        pointNames.insert(column.name);
+    }
+    std::set<std::string> vertexNames;
+    for (const GeoSpreadsheetColumn& column : source.columns(eGeoAttribClassVertex)) {
+        vertexNames.insert(column.name);
+    }
+    EXPECT_EQ(1u, pointNames.count("uv[0]"));
+    EXPECT_EQ(1u, pointNames.count("uv[1]"));
+    EXPECT_EQ(0u, vertexNames.count("uv[0]"));
+    EXPECT_EQ((std::int64_t)detail->pointCount(), source.rowCount(eGeoAttribClassPoint));
+}

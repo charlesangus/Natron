@@ -51,6 +51,7 @@
 #define kGeoUVProjectParamInvertU "invertU"
 #define kGeoUVProjectParamInvertV "invertV"
 #define kGeoUVProjectParamUVAttribute "uvAttribute"
+#define kGeoUVProjectParamAttributeClass "attributeClass"
 
 NATRON_NAMESPACE_ENTER
 
@@ -77,15 +78,26 @@ struct GeoUVProjectParams {
     bool invertU = false;
     bool invertV = false;
     std::string uvAttribute = "uv";
+    // eGeoAttribClassVertex or eGeoAttribClassPoint.
+    GeoAttribClassEnum attributeClass = eGeoAttribClassVertex;
     // For the camera projection: world points as row vectors [x y z 1] to the camera's frame,
     // 0 to 1 across it after dividing by w.
     std::array<double, 16> cameraWorldToFrame = { 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1. };
 };
 
 /**
- * @brief Writes the vertex attribute params.uvAttribute (float32 x3, w = 0, unless one with two
- * or more numeric components exists, whose first two are overwritten) on the vertices of the
- * primitives params.group selects (a group pattern, see geoSelectElements()).
+ * @brief Writes the attribute params.uvAttribute (float32 x3, w = 0, unless one with two or more
+ * numeric components exists, whose first two are overwritten) of class params.attributeClass on
+ * the vertices of the primitives params.group selects (a group pattern, see geoSelectElements()),
+ * or on the points those vertices use.
+ *
+ * Both projections map a position to one uv, so every vertex of a point gets the same uv and the
+ * point class loses nothing: a point shared by several selected vertices is written once, with the
+ * uv of its position, and a point shared with primitives outside the group is written too, which
+ * changes the uv those primitives see. Writing vertices, a point attribute of the name is removed,
+ * its values seeding the vertices not written; writing points, a vertex attribute of the name,
+ * which would shadow the point one, is removed, and when the point attribute is made, a point not
+ * written takes the value its lowest-numbered vertex had.
  *
  * Planar: the plane is the unit square centred on translate, rotated and scaled, seen down the
  * axis from its positive side, so a point at its centre gets (0.5, 0.5). Looking down Z, u runs
@@ -112,10 +124,12 @@ public:
     static constexpr NodeSpec kNodeSpec = {
         .id = PLUGINID_NATRON_GEOUVPROJECT,
         .label = "GeoUVProject",
-        .description = "Write texture coordinates (uv) on the vertices of the input geometry by projecting its "
-                       "points onto a plane, placed by an axis, translate, rotate and scale, or through a camera "
-                       "taken from the scene on the Camera input. The camera projection maps its frame to 0 to 1, "
-                       "so an image the camera sees lands where it saw it.",
+        .description = "Write texture coordinates (uv) on the vertices of the input geometry, or on its points, by "
+                       "projecting its points onto a plane, placed by an axis, translate, rotate and scale, or "
+                       "through a camera taken from the scene on the Camera input. The camera projection maps its "
+                       "frame to 0 to 1, so an image the camera sees lands where it saw it. The uv depends only on "
+                       "a point's position, so writing points gives the same texture coordinates as writing "
+                       "vertices; a point shared with primitives outside the group changes their uv too.",
         .grouping = PLUGIN_GROUP_GEOMETRY,
         .majorVersion = 1,
         .minorVersion = 0,
@@ -173,6 +187,7 @@ private:
     KnobBoolWPtr _invertU;
     KnobBoolWPtr _invertV;
     KnobStringWPtr _uvAttribute;
+    KnobChoiceWPtr _attributeClass;
 };
 
 NATRON_NAMESPACE_EXIT

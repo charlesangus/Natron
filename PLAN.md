@@ -593,7 +593,7 @@ future core work has solid ground to build on.
 | M514 | Utility Raster Mode | todo | M283, M472 |  | E19 |  | | [M514-utility-raster-mode.md](PLAN/MILESTONES/M514-utility-raster-mode.md) |
 | M515 | Storm Oversample And Motion Blur | todo | - |  | E9 |  | | [M515-storm-oversample-and-motion-blur.md](PLAN/MILESTONES/M515-storm-oversample-and-motion-blur.md) |
 | M516 | Port Groups And Folding | todo | M351 |  | E9 | F2 | | [M516-port-groups-and-folding.md](PLAN/MILESTONES/M516-port-groups-and-folding.md) |
-| M517 | Storm Translucent Prim Ids | doing | - | bosley-executor | E9 |  | response | [M517-storm-translucent-prim-ids.md](PLAN/MILESTONES/M517-storm-translucent-prim-ids.md) |
+| M517 | Storm Translucent Prim Ids | doing | - | bosley-executor | E9 |  |  | [M517-storm-translucent-prim-ids.md](PLAN/MILESTONES/M517-storm-translucent-prim-ids.md) |
 | M518 | Save Prompt Key Shortcuts | doing | - | bosley-executor | E10 | F36 | | [M518-save-prompt-key-shortcuts.md](PLAN/MILESTONES/M518-save-prompt-key-shortcuts.md) |
 | M519 | Raw And Loop Toolbar Icons | done | - | bosley-executor | E10 | F36 | | [M519-raw-and-loop-toolbar-icons.md](PLAN/MILESTONES/M519-raw-and-loop-toolbar-icons.md) |
 | M520 | USD Toolbar Category And Submenus | doing | - | bosley-executor | E10 | F36 | | [M520-usd-toolbar-category-and-submenus.md](PLAN/MILESTONES/M520-usd-toolbar-category-and-submenus.md) |
@@ -700,7 +700,6 @@ future core work has solid ground to build on.
 
 - **M417 - VDB Volume Primitive (2026-11-22, 65f09ce71):** written `<disk cache>/vdb/<hash>.vdb` field files aren't tied into session-cache eviction (no hook found); the GUI check needs a `Tests/fixtures/m417-fog-sphere.vdb` generated after the build; GeoFileFormat embedding of VDB waits for M403.
 
-- **M517 - Storm Translucent Prim Ids (user asked, 2026-11-22: "is draw order correct?"):** no — with depth writes off, the last-drawn translucent prim's id wins wherever translucent prims overlap, whatever their depth, and Storm doesn't sort translucent draws front to back, so a card behind can overwrite a nearer one. The private depth buffer (implemented, 0bb3f6fbd) gives nearest-wins. Awaiting the user's OK.
 
 - **M494 - Delegate Subdivision (2026-11-22):** (1) the CyclesAovs bilinear branch can't see the delegate toggle, so the `refineLevel` branch and its dirty locator were removed instead; (2) Cycles' Loop-scheme warning reaches only the console, not the node message, unless the static stage scan gains a Loop check; (3) MoonRay's dicing camera uses a dedicated `natron:dicingCamera` setting (the `dicing_camera` scene variable holds an object); moving the camera doesn't re-dice in Cycles; (4) Natron rebuilds the engine on any setting change, so the forks' live re-sync is never exercised. Fork pins: Cycles 18a83a2 (branch natron/m494-subdivision), openmoonray ee4955e (branch natron/m494-subdivision, off the old 9cc77b5 pin, independent of M460's c4edab6; whichever lands second combines both).
 

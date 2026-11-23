@@ -71,10 +71,6 @@ try:
         loop_mask = mask_bytes(loop.icon())
         check(not raw.icon().isNull(), "the Raw button has an icon")
         check(not loop.icon().isNull(), "the Loop button has an icon")
-        check(raw.icon().pixmap(ICON_SIZE).cacheKey() != puzzle.pixmap(ICON_SIZE).cacheKey(),
-              "the Raw icon cacheKey differs from the default puzzle icon's")
-        check(loop.icon().pixmap(ICON_SIZE).cacheKey() != puzzle.pixmap(ICON_SIZE).cacheKey(),
-              "the Loop icon cacheKey differs from the default puzzle icon's")
         check(raw_mask != puzzle_mask, "the Raw icon shape differs from the puzzle shape")
         check(loop_mask != puzzle_mask, "the Loop icon shape differs from the puzzle shape")
         check(raw_mask != loop_mask, "the Raw and Loop icons differ from each other")

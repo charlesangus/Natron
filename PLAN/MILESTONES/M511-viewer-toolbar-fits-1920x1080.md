@@ -44,3 +44,6 @@ At 1920x1080, scale 1, with the default layout full-screen, the viewer's first t
   - size: M
 
 **Verification gate:** `m511_viewer_toolbar_fit.py` green under Xvfb at 1920x1080; one screenshot each of the default layout and a long layer name is shared with the user and approved before sign-off; full debug PR CI green.
+
+## Decisions
+- 2026-11-23 — **Close on the green gate (user):** the overflow did not reproduce at 1920x1080 (row fits with ~44 px spare); the user suspects it was the A/B viewer controls. Mark done once m511-gate3 and PR CI are green; reopen if it shows up again.

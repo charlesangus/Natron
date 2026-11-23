@@ -30,6 +30,7 @@
 
 #include <array>
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -272,11 +273,32 @@ private:
     std::atomic<bool> _holdSorts { false };
 };
 
+// Whether node puts out native geometry, which the Geometry Spreadsheet panel lists.
+bool geoSpreadsheetListsNode(const NodePtr& node);
+
+struct GeoSpreadsheetNodeRead {
+    // Null when the read failed, or was cancelled.
+    GeoSpreadsheetModel::SourcePtr source;
+    // Set when the source is the viewer's copy, so rows and the 3D view's picks share element numbers.
+    ViewerInstanceWPtr selectionViewer;
+    bool fromViewer = false;
+    bool cancelled = false;
+    QString error;
+};
+
+/**
+ * @brief The whole detail node puts out at frame: the copy viewer's 3D view serves when it shows that
+ * node's current geometry at that frame, else the node evaluated on the calling thread, a worker.
+ **/
+GeoSpreadsheetNodeRead geoSpreadsheetReadNode(const NodePtr& node,
+                                              const ViewerInstancePtr& viewer,
+                                              double frame,
+                                              const std::function<bool()>& isCancelled);
+
 /**
  * @brief The inspector's Spreadsheet tab: the selected prim's points, vertices, primitives and detail as
- * USD holds them at the inspector's frame, read without loading a payload. For a node that puts out
- * geometry, its whole detail instead: the one the viewer shows when the viewer shows that node, else
- * the node evaluated on the inspector's worker at the inspector's frame.
+ * USD holds them at the inspector's frame, read without loading a payload. A node that puts out native
+ * geometry shows a note pointing to the Geometry Spreadsheet panel instead.
  **/
 std::unique_ptr<ScenePrimInspectorTab> createScenePrimSpreadsheetTab();
 

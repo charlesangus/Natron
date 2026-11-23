@@ -1,4 +1,4 @@
-"""The prim inspector's Spreadsheet tab on the geometry the viewer shows.
+"""The Geometry Spreadsheet panel on the geometry the viewer shows.
 
 Builds, with the Viewer on each in turn: a GeoPrimitive grid of 2 rows by 3 columns; a GeoDelete
 deleting points 0-3 of it; a USDRead of a scene written under $NATRON_GUI_TEST_OUT feeding a packed
@@ -10,7 +10,10 @@ Checks:
   - the packed USDToGeo output lists intrinsic:* columns on its primitives, and the tooltip of an
     intrinsic:transform cell holds all 16 values of the matrix;
   - scrubbing the frame on the animated GeoTransform updates P[y], and the column widths, one of
-    them set by hand, stay put.
+    them set by hand, stay put;
+  - with the grid viewed and one of its prims selected in the Scene Graph panel, the Scene Graph's
+    Spreadsheet tab lists none of the grid's attributes and points to the Geometry Spreadsheet
+    panel, which still lists them.
 
 One screenshot per check goes to $NATRON_GUI_TEST_OUT (default build/gui-test-out/) for sign-off.
 Run through Tests/gui/run-gui-test.sh. Exit status 0 only if every check passed.
@@ -24,8 +27,9 @@ sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd
 POLL_TIMEOUT_S = 30.0
 STARTUP_TIMEOUT_S = 60.0
 SETTLE_MS = 400
-SPREADSHEET = "sceneGraphSpreadsheet"
-SPREADSHEET_TITLE = "Spreadsheet"
+SPREADSHEET = "geometrySpreadsheet"
+SCENE_GRAPH_SPREADSHEET = "sceneGraphSpreadsheet"
+SCENE_GRAPH_SPREADSHEET_TITLE = "Spreadsheet"
 CLASSES = ("Points", "Vertices", "Primitives", "Detail")
 GRID_ROWS = 2
 GRID_COLUMNS = 3
@@ -69,7 +73,7 @@ def write_scene(directory):
 
 try:
     from PySide6.QtCore import Qt
-    from PySide6.QtWidgets import QLabel, QTabWidget, QTableView, QToolButton, QWidget
+    from PySide6.QtWidgets import QLabel, QTabWidget, QTableView, QToolButton, QTreeView, QWidget
 
     from guitest import OUT, check, finish, plugin_problem, report, require, run, section, shot, viewer_up, widgets_of
 
@@ -125,16 +129,21 @@ try:
 
     _found = {}
 
-    def panel():
-        if "panel" not in _found:
-            panels = widgets_of("SceneGraphPanel")
+    def found_panel(key, class_name):
+        if key not in _found:
+            panels = widgets_of(class_name)
             if panels:
-                _found["panel"] = hold(panels[0])
-        return _found.get("panel")
+                _found[key] = hold(panels[0])
+        return _found.get(key)
 
-    def child(cls, name):
+    def panel():
+        return found_panel("panel", "GeoSpreadsheetPanel")
+
+    def scene_graph():
+        return found_panel("sceneGraph", "SceneGraphPanel")
+
+    def child_of(p, cls, name):
         if name not in _found:
-            p = panel()
             try:
                 c = hold(p.findChild(cls, name)) if p is not None else None
             except RuntimeError:
@@ -144,11 +153,17 @@ try:
             _found[name] = c
         return _found[name]
 
-    def inspector():
-        return child(QWidget, "sceneGraphInspector")
+    def child(cls, name):
+        return child_of(panel(), cls, name)
 
-    def inspector_state(name):
-        return inspector().property("natronSceneGraphInspector" + name)
+    def panel_state(name):
+        return panel().property("natronGeometrySpreadsheet" + name)
+
+    def sg_child(cls, name):
+        return child_of(scene_graph(), cls, name)
+
+    def sg_inspector_state(name):
+        return sg_child(QWidget, "sceneGraphInspector").property("natronSceneGraphInspector" + name)
 
     def scene_drawn():
         v = view()
@@ -215,17 +230,17 @@ try:
         return counts
 
     def settled():
-        return not inspector_state("Busy") and table().isVisible()
+        return not panel_state("Busy") and table().isVisible()
 
     def shows_counts(counts):
         return settled() and class_counts() == counts
 
-    def show_spreadsheet_tab():
-        tabs = child(QTabWidget, "sceneGraphInspectorTabs")
+    def show_scene_graph_spreadsheet_tab():
+        tabs = sg_child(QTabWidget, "sceneGraphInspectorTabs")
         titles = [tabs.tabText(i) for i in range(tabs.count())]
-        if SPREADSHEET_TITLE not in titles:
+        if SCENE_GRAPH_SPREADSHEET_TITLE not in titles:
             return False
-        tabs.setCurrentIndex(titles.index(SPREADSHEET_TITLE))
+        tabs.setCurrentIndex(titles.index(SCENE_GRAPH_SPREADSHEET_TITLE))
         return True
 
     def view_node(node):
@@ -245,8 +260,8 @@ try:
         section("grid")
         view_node(grid)
         ok = yield ("until", lambda: shows_counts(GRID_COUNTS), POLL_TIMEOUT_S)
-        check(ok, "the grid's class buttons count its detail with no prim selected (got %r, path %r)"
-              % (class_counts(), inspector_state("Path")))
+        check(ok, "the grid's class buttons count its detail (got %r, node %r)"
+              % (class_counts(), panel_state("Node")))
         listed = class_rows()
         check(listed == GRID_COUNTS, "the table lists every element of each class (got %r)" % (listed,))
         check(show_class("Points"), "back to the Points class")
@@ -317,26 +332,62 @@ try:
         check(sheet_state("Class") == "Points", "scrubbing keeps the class shown (got %r)" % (sheet_state("Class"),))
         shot("m337-spreadsheet-geo-scrub.png")
 
+    def scene_graph_section():
+        section("scene graph")
+        view_node(grid)
+        ok = yield ("until", lambda: shows_counts(GRID_COUNTS), POLL_TIMEOUT_S)
+        check(ok, "the Geometry Spreadsheet lists the grid (got %r)" % (class_counts(),))
+        home = hold(ancestor_of_class(view(), "TabWidget"))
+        require(home is not None, "the scene view is still in a pane")
+        lower = app.getTabWidget(home.objectName()).splitVertically()
+        require(lower is not None, "split the viewer's pane again")
+        require(app.moveTab("sceneGraph", lower), "move the Scene Graph panel under the viewer")
+        lower = None
+        ok = yield ("until", lambda: scene_graph() is not None and scene_graph().isVisible(), POLL_TIMEOUT_S)
+        require(ok, "the Scene Graph panel shows")
+        require(show_scene_graph_spreadsheet_tab(), "the Scene Graph inspector has a Spreadsheet tab")
+        tree = sg_child(QTreeView, "sceneGraphTree")
+        require(tree is not None, "the Scene Graph panel has its tree")
+        ok = yield ("until", lambda: tree.model().rowCount() > 0, POLL_TIMEOUT_S)
+        require(ok, "the Scene Graph lists the grid's scene")
+        tree.setCurrentIndex(tree.model().index(0, 0))
+        path = str(tree.model().index(0, 0).data(Qt.ToolTipRole) or "")
+        sg_sheet = sg_child(QWidget, SCENE_GRAPH_SPREADSHEET)
+        sg_message = sg_child(QLabel, SCENE_GRAPH_SPREADSHEET + "Message")
+        require(sg_sheet is not None and sg_message is not None, "the Scene Graph Spreadsheet tab has its table")
+        ok = yield ("until", lambda: bool(sg_inspector_state("Path")) and not sg_inspector_state("Busy")
+                    and sg_message.isVisible(), POLL_TIMEOUT_S)
+        report("NOTE scene graph prim %r, inspector path %r, message %r" % (path, sg_inspector_state("Path"), sg_message.text()))
+        check(ok and "Geometry Spreadsheet" in sg_message.text(),
+              "the Scene Graph Spreadsheet tab points to the Geometry Spreadsheet panel (message %r)" % (sg_message.text(),))
+        sg_table = sg_child(QTableView, SCENE_GRAPH_SPREADSHEET + "Table")
+        sg_headers = [str(sg_table.model().headerData(c, Qt.Horizontal)) for c in range(sg_table.model().columnCount())]
+        check(int(sg_sheet.property("natronGeoSpreadsheetRows")) == 0 and "P[x]" not in sg_headers,
+              "the Scene Graph Spreadsheet tab lists none of the grid's attributes (rows %r, columns %r)"
+              % (sg_sheet.property("natronGeoSpreadsheetRows"), sg_headers))
+        check(show_class("Points") and settled() and int(sheet_state("Rows")) == GRID_COUNTS["Points"]
+              and "P[x]" in headers(),
+              "the Geometry Spreadsheet panel still lists the grid's points (got %r rows)" % (sheet_state("Rows"),))
+        shot("m337-spreadsheet-geo-scene-graph.png")
+
     def steps():
         view_node(grid)
         ok = yield ("until", lambda: viewer_up() or view() is not None, STARTUP_TIMEOUT_S)
         require(ok, "the viewer is up")
         ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)
         require(ok, "the scene view shows the grid")
-        require(panel() is not None, "the Scene Graph panel exists")
+        require(panel() is not None, "the Geometry Spreadsheet panel exists")
 
         home = ancestor_of_class(view(), "TabWidget")
         require(home is not None, "the scene view is in a pane")
         split = app.getTabWidget(home.objectName()).splitHorizontally()
         require(split is not None, "split the viewer's pane")
-        require(app.moveTab("sceneGraph", split), "move the Scene Graph panel beside the viewer")
+        require(app.moveTab("geometrySpreadsheet", split), "move the Geometry Spreadsheet panel beside the viewer")
         split = None
         ok = yield ("until", lambda: panel().isVisible(), POLL_TIMEOUT_S)
         require(ok, "the panel shows")
-        require(inspector() is not None, "the panel has its inspector")
-        require(show_spreadsheet_tab(), "the inspector has a Spreadsheet tab")
-        require(sheet() is not None and table() is not None and message() is not None, "the Spreadsheet tab has its table")
-        require(all(class_button(label) is not None for label in CLASSES), "the Spreadsheet tab has its class bar")
+        require(sheet() is not None and table() is not None and message() is not None, "the panel has its table")
+        require(all(class_button(label) is not None for label in CLASSES), "the panel has its class bar")
 
         py_viewer = hold(app.getViewer(viewer.getScriptName()))
         py_viewer.seek(1)
@@ -344,6 +395,7 @@ try:
         yield from delete_section()
         yield from packed_section()
         yield from scrub_section(py_viewer)
+        yield from scene_graph_section()
 
     run(steps())
 except Exception:

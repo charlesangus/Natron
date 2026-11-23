@@ -2,7 +2,7 @@
 while the chosen type differs from it.
 
 Graph: USDSphere1 -> USDSetAttribute1, and USDSphere1 -> an authoring USDSetAttribute -> a checking one.
- 1. Typing the schema attribute radius sets Value Type to double.
+ 1. Typing the Mesh schema attribute doubleSided sets Value Type to bool.
  2. Typing displayColor with Primvar on sets Value Type to color3f.
  3. Changing the type of an authored int attribute to float shows the "authoring float over it" warning;
     changing it back clears it.
@@ -22,7 +22,8 @@ POLL_TIMEOUT_S = 40.0
 SETTLE_MS = 800
 STARTUP_TIMEOUT_S = 60.0
 PROJECT_NAME = "usd-setattribute-type.ntpz"
-SPHERE_PATTERN = "//{isa:Sphere}"
+# USDSphere authors a Mesh prim.
+SPHERE_PATTERN = "//{isa:Mesh}"
 
 try:
     import guitest as gt
@@ -67,11 +68,11 @@ try:
         require(viewer.connectInput(0, set_attr), "view USDSetAttribute")
 
         gt.section("schema attribute")
-        require(set_choice(param(set_attr, "valueType"), "string"), "start from a type that is not radius's")
+        require(set_choice(param(set_attr, "valueType"), "string"), "start from a type that is not doubleSided's")
         param(set_attr, "primPattern").setValue(SPHERE_PATTERN)
-        param(set_attr, "attributeName").setValue("radius")
-        ok = yield ("until", lambda: selected_type(set_attr) == "double", POLL_TIMEOUT_S)
-        check(ok, "typing radius sets Value Type to double (got %r)" % (selected_type(set_attr),))
+        param(set_attr, "attributeName").setValue("doubleSided")
+        ok = yield ("until", lambda: selected_type(set_attr) == "bool", POLL_TIMEOUT_S)
+        check(ok, "typing doubleSided sets Value Type to bool (got %r)" % (selected_type(set_attr),))
         yield ("sleep", SETTLE_MS)
 
         gt.section("mismatch warning")
@@ -105,9 +106,9 @@ try:
 
         gt.section("saved type is kept")
         param(set_attr, "primvar").setValue(False)
-        param(set_attr, "attributeName").setValue("radius")
-        ok = yield ("until", lambda: selected_type(set_attr) == "double", POLL_TIMEOUT_S)
-        require(ok, "radius sets double again")
+        param(set_attr, "attributeName").setValue("doubleSided")
+        ok = yield ("until", lambda: selected_type(set_attr) == "bool", POLL_TIMEOUT_S)
+        require(ok, "doubleSided sets bool again")
         require(set_choice(param(set_attr, "valueType"), "half"), "hand-pick half")
         yield ("sleep", SETTLE_MS)
         set_attr_name = set_attr.getScriptName()

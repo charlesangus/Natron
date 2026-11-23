@@ -2098,36 +2098,9 @@
                 %PYARG_0 = %CONVERTTOPYTHON[%RETURN_TYPE](%0);
             </inject-code>
         </modify-function>
-        <modify-function signature="getPinSource(int)const">
-            <inject-code class="target" position="beginning">
-                %RETURN_TYPE %0 = %CPPSELF.%FUNCTION_NAME(%1);
-                if (PyErr_Occurred()) {
-                    return nullptr;
-                }
-                %PYARG_0 = %CONVERTTOPYTHON[%RETURN_TYPE](%0);
-            </inject-code>
-        </modify-function>
-        <modify-function signature="getPinPosition(int)const">
-            <inject-code class="target" position="beginning">
-                %RETURN_TYPE %0 = %CPPSELF.%FUNCTION_NAME(%1);
-                if (PyErr_Occurred()) {
-                    return nullptr;
-                }
-                %PYARG_0 = %CONVERTTOPYTHON[%RETURN_TYPE](%0);
-            </inject-code>
-        </modify-function>
         <modify-function signature="getPinFrame(int)const">
             <inject-code class="target" position="beginning">
                 %RETURN_TYPE %0 = %CPPSELF.%FUNCTION_NAME(%1);
-                if (PyErr_Occurred()) {
-                    return nullptr;
-                }
-                %PYARG_0 = %CONVERTTOPYTHON[%RETURN_TYPE](%0);
-            </inject-code>
-        </modify-function>
-        <modify-function signature="getPinTarget(int,double)const">
-            <inject-code class="target" position="beginning">
-                %RETURN_TYPE %0 = %CPPSELF.%FUNCTION_NAME(%1, %2);
                 if (PyErr_Occurred()) {
                     return nullptr;
                 }

@@ -558,6 +558,9 @@ struct EngineEntry {
     std::uint64_t lastUse = 0;
     // The GPU memory the engine held after its last render.
     std::size_t bytes = 0;
+    // The part of bytes that is the translucent id pass's own depth buffer, which is made after
+    // the render and which Storm's count may leave out.
+    std::size_t idPassBytes = 0;
 
     // What the engine last rendered, which its AOVs hold until it renders again.
     bool rendered = false;
@@ -969,6 +972,17 @@ public:
             }
             releaseEngine(oldest->first);
         }
+    }
+
+    const void* ownerOf(const EngineEntry& entry) const
+    {
+        for (std::map<const void*, EngineEntry>::const_iterator it = _engines.begin(); it != _engines.end(); ++it) {
+            if (&it->second == &entry) {
+                return it->first;
+            }
+        }
+
+        return nullptr;
     }
 
     std::size_t engineCount() const
@@ -1765,7 +1779,8 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     if ((used != stats.end()) && used->second.IsHolding<size_t>()) {
         bytes = std::max(bytes, used->second.UncheckedGet<size_t>());
     }
-    entry.bytes = bytes;
+    entry.idPassBytes = entry.engine.get_deleter().stormIds ? static_cast<StormIdEngine*>(engine)->getIdPassBytes() : 0;
+    entry.bytes = bytes + entry.idPassBytes;
     const void* owner = request.owner;
     enforceBudget(owner);
 
@@ -2014,6 +2029,16 @@ RenderThread::translucentIds(EngineEntry& entry,
     }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     if (failure.empty()) {
+        const std::size_t passBytes = engine->getIdPassBytes();
+        if (passBytes != entry.idPassBytes) {
+            const bool grew = (passBytes > entry.idPassBytes);
+            entry.bytes = entry.bytes - entry.idPassBytes + passBytes;
+            entry.idPassBytes = passBytes;
+            if (grew) {
+                enforceBudget(ownerOf(entry));
+            }
+        }
+
         return true;
     }
     *error = "The " + entry.rendererName + " translucent id pass failed: " + failure;

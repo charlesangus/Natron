@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 
@@ -59,8 +60,9 @@ NATRON_NAMESPACE_ENTER
  * opaque depth without the engine's depth AOV being touched, and then the translucent prims with
  * blending off, depth writes on and the engine's depth test, into that depth and the engine's
  * primId and instanceId AOVs: the nearest translucent fragment in front of the opaque surface
- * leaves its ids. None of the tasks runs, and the engine's AOVs keep Storm's ids, when no
- * translucent prim has anything to draw.
+ * leaves its ids. When no translucent prim has anything to draw, a probe task finds that before
+ * the depth buffer is made, the buffer is released, none of the drawing tasks runs, and the
+ * engine's AOVs keep Storm's ids.
  **/
 class StormIdTasks {
 public:
@@ -100,11 +102,12 @@ public:
 
     ~StormIdTasks();
 
-    // The retained scene index holding the prims, to merge into the engine's scene.
     PXR_NS::HdSceneIndexBaseRefPtr getSceneIndex() const;
 
-    // The tasks in the order they run: the depth tasks, then the id task.
     const PXR_NS::SdfPathVector& getTaskPaths() const;
+
+    // Executed alone, it only finds whether any translucent prim has draw items.
+    const PXR_NS::SdfPath& getProbeTaskPath() const;
 
     const PXR_NS::SdfPath& getDepthBufferPath() const;
 
@@ -123,17 +126,22 @@ public:
 
     /**
      * @brief The depth buffer's size, format and multisampling, those of the engine's AOVs, which
-     * the id task's attachments must all share. The first call adds the buffer.
+     * the id task's attachments must all share. A call while there is none adds the buffer.
      **/
     void setSize(const PXR_NS::GfVec3i& dimensions,
                  PXR_NS::HdFormat depthFormat,
                  bool multiSampled,
                  std::uint32_t sampleCount);
 
-    // Before each execution of the tasks.
+    void releaseDepthBuffer();
+
+    // An estimate, as Storm's own count may leave render buffers out.
+    std::size_t getDepthBufferBytes() const;
+
+    static std::uint64_t getDepthBufferAddCount();
+
     void beginPass();
 
-    // Whether the tasks drew since beginPass(): whether any translucent prim had anything to draw.
     bool hasDrawn() const;
 
 private:
@@ -172,12 +180,13 @@ public:
      **/
     bool renderTranslucentIds(const PXR_NS::UsdImagingGLRenderParams& params);
 
+    std::size_t getIdPassBytes() const;
+
 private:
     StormIdEngine(StormIdTasks::Arming&& arming,
                   const Parameters& parameters);
 
     std::shared_ptr<StormIdTasks> _tasks;
-    // The task controller the tasks were merged beside.
     PXR_NS::HdSceneIndexBasePtr _armedController;
 };
 

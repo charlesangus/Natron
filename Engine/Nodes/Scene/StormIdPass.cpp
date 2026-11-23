@@ -25,6 +25,7 @@
 
 #include "StormIdPass.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <mutex>
@@ -125,18 +126,18 @@ private:
 
 HD_DECLARE_DATASOURCE_HANDLES(TaskSource);
 
-// HdEngine prepares every task before it executes any, so by the depth tasks' Execute() the id
-// task has said whether any translucent prim has draw items.
+// The probe task is executed alone, before the private depth buffer exists, so that an opaque
+// scene never has that buffer made; it never draws, so its bindings are the engine's own.
 class IdPassRenderTask
     : public HdxRenderTask {
 public:
     IdPassRenderTask(HdSceneDelegate* delegate,
                      const SdfPath& id,
                      const std::shared_ptr<bool>& drawn,
-                     bool decides)
+                     bool probe)
         : HdxRenderTask(delegate, id)
         , _drawn(drawn)
-        , _decides(decides)
+        , _probe(probe)
     {
     }
 
@@ -146,14 +147,14 @@ public:
         HdxRenderTask::Prepare(ctx, renderIndex);
         // HdSt_RenderPass::HasDrawItems() only asks whether any rprim in the index has the
         // collection's material tag and the task's render tags, whatever the root paths.
-        if (_decides && !*_drawn && _HasDrawItems() && !renderIndex->GetDrawItems(_collection, GetRenderTags()).empty()) {
+        if (_probe && !*_drawn && _HasDrawItems() && !renderIndex->GetDrawItems(_collection, GetRenderTags()).empty()) {
             *_drawn = true;
         }
     }
 
     void Execute(HdTaskContext* ctx) override
     {
-        if (*_drawn) {
+        if (!_probe && *_drawn) {
             HdxRenderTask::Execute(ctx);
         }
     }
@@ -172,7 +173,7 @@ protected:
 
 private:
     std::shared_ptr<bool> _drawn;
-    const bool _decides;
+    const bool _probe;
     HdRprimCollection _collection;
 };
 
@@ -180,21 +181,21 @@ class IdPassRenderTaskFactory
     : public HdLegacyTaskFactory {
 public:
     IdPassRenderTaskFactory(const std::shared_ptr<bool>& drawn,
-                            bool decides)
+                            bool probe)
         : _drawn(drawn)
-        , _decides(decides)
+        , _probe(probe)
     {
     }
 
     HdTaskSharedPtr Create(HdSceneDelegate* delegate,
                            const SdfPath& id) override
     {
-        return std::make_shared<IdPassRenderTask>(delegate, id, _drawn, _decides);
+        return std::make_shared<IdPassRenderTask>(delegate, id, _drawn, _probe);
     }
 
 private:
     std::shared_ptr<bool> _drawn;
-    const bool _decides;
+    const bool _probe;
 };
 
 class BufferSource
@@ -263,6 +264,8 @@ depthMaterialTags()
 
     return tags;
 }
+
+std::atomic<std::uint64_t> gDepthBuffersAdded(0);
 
 SdfPath
 nextPrefix()
@@ -375,6 +378,8 @@ struct StormIdTasks::Implementation {
     // The depth tasks, then the id task, as taskPaths holds them.
     std::vector<TaskSourceHandle> tasks;
     std::vector<TfToken> materialTags;
+    SdfPath probePath;
+    TaskSourceHandle probe;
     SdfPath depthPath;
     BufferSourceHandle depth;
     std::shared_ptr<bool> drawn = std::make_shared<bool>(false);
@@ -383,6 +388,7 @@ struct StormIdTasks::Implementation {
     SdfPath givenInstanceId;
     bool hasGivenParams = false;
 
+    // The index tasks.size() stands for the probe.
     void dirtyTasks(const std::vector<std::size_t>& changed,
                     const HdDataSourceLocator& locator)
     {
@@ -392,7 +398,7 @@ struct StormIdTasks::Implementation {
         HdSceneIndexObserver::DirtiedPrimEntries entries;
         const HdDataSourceLocatorSet locators { locator };
         for (std::size_t i : changed) {
-            entries.push_back(HdSceneIndexObserver::DirtiedPrimEntry(taskPaths[i], locators));
+            entries.push_back(HdSceneIndexObserver::DirtiedPrimEntry((i < taskPaths.size()) ? taskPaths[i] : probePath, locators));
         }
         sceneIndex->DirtyPrims(entries);
     }
@@ -462,11 +468,11 @@ StormIdTasks::StormIdTasks(const SdfPath& prefix)
     _imp->depthPath = prefix.AppendChild(TfToken("AOVs")).AppendChild(HdAovTokens->depth);
 
     std::vector<std::pair<TfToken, HdLegacyTaskFactorySharedPtr>> passes;
-    const HdLegacyTaskFactorySharedPtr depthFactory = std::make_shared<IdPassRenderTaskFactory>(_imp->drawn, false);
+    const HdLegacyTaskFactorySharedPtr drawFactory = std::make_shared<IdPassRenderTaskFactory>(_imp->drawn, false);
     for (const TfToken& tag : depthMaterialTags()) {
-        passes.push_back(std::make_pair(tag, depthFactory));
+        passes.push_back(std::make_pair(tag, drawFactory));
     }
-    passes.push_back(std::make_pair(HdStMaterialTagTokens->translucent, std::make_shared<IdPassRenderTaskFactory>(_imp->drawn, true)));
+    passes.push_back(std::make_pair(HdStMaterialTagTokens->translucent, drawFactory));
 
     HdRetainedSceneIndex::AddedPrimEntries entries;
     for (const std::pair<TfToken, HdLegacyTaskFactorySharedPtr>& pass : passes) {
@@ -480,6 +486,11 @@ StormIdTasks::StormIdTasks(const SdfPath& prefix)
         _imp->tasks.push_back(task);
         _imp->materialTags.push_back(pass.first);
     }
+    _imp->probe = TaskSource::New();
+    _imp->probe->factory = std::make_shared<IdPassRenderTaskFactory>(_imp->drawn, true);
+    _imp->probe->collection.SetMaterialTag(HdStMaterialTagTokens->translucent);
+    _imp->probePath = prefix.AppendChild(TfToken("probeTask_" + HdStMaterialTagTokens->translucent.GetString()));
+    entries.push_back({ _imp->probePath, HdPrimTypeTokens->task, HdRetainedContainerDataSource::New(HdLegacyTaskSchema::GetSchemaToken(), _imp->probe) });
     _imp->sceneIndex->AddPrims(entries);
 }
 
@@ -497,6 +508,12 @@ const SdfPathVector&
 StormIdTasks::getTaskPaths() const
 {
     return _imp->taskPaths;
+}
+
+const SdfPath&
+StormIdTasks::getProbeTaskPath() const
+{
+    return _imp->probePath;
 }
 
 const SdfPath&
@@ -519,6 +536,12 @@ StormIdTasks::setCollection(const HdRprimCollection& collection)
         _imp->tasks[i]->collection = tagged;
         changed.push_back(i);
     }
+    HdRprimCollection probed = collection;
+    probed.SetMaterialTag(HdStMaterialTagTokens->translucent);
+    if (!(_imp->probe->collection == probed)) {
+        _imp->probe->collection = probed;
+        changed.push_back(_imp->tasks.size());
+    }
     _imp->dirtyTasks(changed, HdLegacyTaskSchema::GetCollectionLocator());
 }
 
@@ -533,6 +556,10 @@ StormIdTasks::setRenderTags(const TfTokenVector& renderTags)
         }
         _imp->tasks[i]->renderTags = renderTags;
         changed.push_back(i);
+    }
+    if (_imp->probe->renderTags != renderTags) {
+        _imp->probe->renderTags = renderTags;
+        changed.push_back(_imp->tasks.size());
     }
     _imp->dirtyTasks(changed, HdLegacyTaskSchema::GetRenderTagsLocator());
 }
@@ -572,6 +599,10 @@ StormIdTasks::setRenderParams(const HdxRenderTaskParams& params,
         _imp->tasks[i]->params = own;
         changed.push_back(i);
     }
+    if (!(_imp->probe->params == params)) {
+        _imp->probe->params = params;
+        changed.push_back(_imp->tasks.size());
+    }
     _imp->dirtyTasks(changed, HdLegacyTaskSchema::GetParametersLocator());
 }
 
@@ -586,6 +617,14 @@ StormIdTasks::setSize(const GfVec3i& dimensions,
         _imp->sceneIndex->AddPrims({
             { _imp->depthPath, HdPrimTypeTokens->renderBuffer, HdRetainedContainerDataSource::New(HdRenderBufferSchema::GetSchemaToken(), _imp->depth) },
         });
+        ++gDepthBuffersAdded;
+        // HdxRenderSetupTask keeps the buffer it resolved a binding to until its parameters are
+        // synced again, and a buffer added after a release is a new one.
+        std::vector<std::size_t> all;
+        for (std::size_t i = 0; i < _imp->tasks.size(); ++i) {
+            all.push_back(i);
+        }
+        _imp->dirtyTasks(all, HdLegacyTaskSchema::GetParametersLocator());
 
         return;
     }
@@ -610,6 +649,40 @@ StormIdTasks::setSize(const GfVec3i& dimensions,
     if (!locators.IsEmpty()) {
         _imp->sceneIndex->DirtyPrims({ HdSceneIndexObserver::DirtiedPrimEntry(_imp->depthPath, locators) });
     }
+}
+
+void
+StormIdTasks::releaseDepthBuffer()
+{
+    if (!_imp->depth) {
+        return;
+    }
+    _imp->sceneIndex->RemovePrims({ HdSceneIndexObserver::RemovedPrimEntry(_imp->depthPath) });
+    _imp->depth.reset();
+}
+
+std::size_t
+StormIdTasks::getDepthBufferBytes() const
+{
+    const BufferSourceHandle& source = _imp->depth;
+
+    if (!source) {
+        return 0;
+    }
+    std::size_t texels = 1;
+    for (int i = 0; i < 3; ++i) {
+        texels *= (std::size_t)std::max(1, source->dimensions[i]);
+    }
+    // HdStRenderBuffer keeps a single-sampled texture to resolve into beside the multisampled one.
+    const std::size_t copies = source->multiSampled ? ((std::size_t)source->sampleCount + 1) : 1;
+
+    return texels * HdDataSizeOfFormat(source->format) * copies;
+}
+
+std::uint64_t
+StormIdTasks::getDepthBufferAddCount()
+{
+    return gDepthBuffersAdded.load();
 }
 
 void
@@ -675,13 +748,25 @@ StormIdEngine::renderTranslucentIds(const UsdImagingGLRenderParams& params)
     _tasks->setCollection(_renderCollection);
     TfTokenVector renderTags;
     _ComputeRenderTags(params, &renderTags);
-    _tasks->setSize(depth.dimensions, depth.format, depth.multiSampled, depth.sampleCount);
     _tasks->setRenderTags(renderTags);
     _tasks->setRenderParams(base.UncheckedGet<HdxRenderTaskParams>(), primIdPath, instanceIdPath);
     _tasks->beginPass();
+    _Execute(params, SdfPathVector(1, _tasks->getProbeTaskPath()));
+    if (!_tasks->hasDrawn()) {
+        _tasks->releaseDepthBuffer();
+
+        return false;
+    }
+    _tasks->setSize(depth.dimensions, depth.format, depth.multiSampled, depth.sampleCount);
     _Execute(params, _tasks->getTaskPaths());
 
-    return _tasks->hasDrawn();
+    return true;
+}
+
+std::size_t
+StormIdEngine::getIdPassBytes() const
+{
+    return _tasks ? _tasks->getDepthBufferBytes() : 0;
 }
 
 NATRON_NAMESPACE_EXIT

@@ -53,6 +53,7 @@
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
+#include "Engine/Nodes/Scene/StormIdPass.h"
 #include "Engine/Nodes/Scene/USDCard.h"
 #include "Engine/Nodes/Scene/USDProject3D.h"
 #include "Engine/ViewIdx.h"
@@ -312,4 +313,28 @@ TEST_F(StormTranslucentIdsTest, AnOpaqueSceneIsUnchangedByThePass)
     EXPECT_TRUE(withPass.primId == without.primId);
     EXPECT_TRUE(withPass.rgba == without.rgba);
     EXPECT_TRUE(withPass.depth == without.depth);
+}
+
+// The opaque scene's render leaves the pass's private depth buffer unmade; the translucent one
+// makes it, so the count can see one.
+TEST_F(StormTranslucentIdsTest, AnOpaqueSceneMakesNoPrivateDepthBuffer)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    const Graph graph = createProjectionGraph(stormScene());
+    ASSERT_TRUE(bool(graph.render));
+    ASSERT_TRUE(addBackCard(graph) != nullptr);
+    graph.card->disconnectInput(0);
+
+    const std::uint64_t before = StormIdTasks::getDepthBufferAddCount();
+    Planes opaque;
+    ASSERT_TRUE(renderPlanes(graph.render, true, &opaque));
+    EXPECT_EQ(idOf("/Card"), opaque.idAt(100, 50));
+    EXPECT_EQ(before, StormIdTasks::getDepthBufferAddCount());
+
+    this->connectNodes(graph.projector, graph.card, 0, true);
+    Planes translucent;
+    ASSERT_TRUE(renderPlanes(graph.render, true, &translucent));
+    EXPECT_LT(before, StormIdTasks::getDepthBufferAddCount());
 }

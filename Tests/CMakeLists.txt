@@ -89,6 +89,9 @@ set(Tests_SOURCES
     GeoTransform_Test.cpp
     GeoUVProject_Test.cpp
     GeoVDB_Test.cpp
+    GeoVDBConvert_Test.cpp
+    VDBFrom_Test.cpp
+    ConvertVDB_Test.cpp
     GeoVDBRead_Test.cpp
     GeoWrangleParams_Test.cpp
     GeoWrangle_Test.cpp

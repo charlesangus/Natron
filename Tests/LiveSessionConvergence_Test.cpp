@@ -296,6 +296,20 @@ peerCommand(const AppInstancePtr& app,
 
     std::string name;
     in >> name;
+    if (verb == "named") {
+        NodePtr created = createIn(app, PLUGINID_NATRON_GRADE);
+        if (!created) {
+            return "failed";
+        }
+        try {
+            created->setScriptName(name);
+        } catch (const std::exception&) {
+            return "failed";
+        }
+        client.flushLocalEdits();
+
+        return "ok";
+    }
     NodePtr node = app->getProject()->getNodeByName(name);
     if (verb == "has") {
         return node ? "yes" : "no";
@@ -816,6 +830,24 @@ TEST_F(LiveSessionDeleteVersusEditTest, AnEditOfANodeAnotherClientDeletedConverg
     expectChecksumsMatch();
 }
 
+// The creation and the rename reach the host in one edit, which the host acknowledges with
+// both: the client keeps the name it gave last.
+TEST_F(LiveSessionDeleteVersusEditTest, ANodeCreatedAndRenamedInOneEditKeepsItsNewName)
+{
+    buildComp();
+    startSession();
+    if (HasFatalFailure()) {
+        return;
+    }
+
+    ASSERT_EQ(_peers[0]->command("named ClientGrade"), "ok");
+    ASSERT_TRUE(quiesce());
+    EXPECT_TRUE(hasNode(0, "ClientGrade"));
+    EXPECT_TRUE(hasNode(1, "ClientGrade"));
+    expectConverged();
+    expectChecksumsMatch();
+}
+
 // A mask switch is set by hand and also follows its input. As in the cases above, each client
 // step reaches the host only after the host's own steps that follow it here.
 class LiveSessionMaskSwitchTest
@@ -903,6 +935,32 @@ TEST_F(LiveSessionMaskSwitchTest, AJoinAndAResyncKeepASwitchTurnedOffOverAConnec
     _spare->destroyNode(true, false);
     _host->flushLocalEdits();
     ASSERT_EQ(_peers[0]->command(std::string("connect ") + kHotNodeName + " Source Spare"), "ok");
+    ASSERT_EQ(_peers[0]->command("release"), "ok");
+
+    ASSERT_TRUE(quiesce());
+    EXPECT_GT(_peers[0]->state().rejects, rejectsBefore);
+    EXPECT_FALSE(_hot->isMaskEnabled(_mask));
+    expectConverged();
+    expectChecksumsMatch();
+}
+
+// The resync of the hot node is built before the host reads the client's deletion of the mask
+// source, so it carries the mask connection and a switch turned on, which the deletion turns off.
+TEST_F(LiveSessionMaskSwitchTest, AResyncKeepsTheSwitchOffUnderAMaskSourceTheClientDeletes)
+{
+    buildMaskedComp();
+    startSession();
+    if (HasFatalFailure()) {
+        return;
+    }
+    expectConverged();
+
+    const int rejectsBefore = _peers[0]->state().rejects;
+    ASSERT_EQ(_peers[0]->command("hold"), "ok");
+    _spare->destroyNode(true, false);
+    _host->flushLocalEdits();
+    ASSERT_EQ(_peers[0]->command(std::string("connect ") + kHotNodeName + " Source Spare"), "ok");
+    ASSERT_EQ(_peers[0]->command("destroy Constant1"), "ok");
     ASSERT_EQ(_peers[0]->command("release"), "ok");
 
     ASSERT_TRUE(quiesce());

@@ -204,12 +204,26 @@ struct SessionClient::Implementation {
     // What a host edit does here, or nothing when an edit still pending here overrides it. A
     // connection from a node a pending edit deletes is a disconnection: the host connects it and
     // then deletes its source, which empties the input, while skipping it would leave this
-    // copy's old source in place.
+    // copy's old source in place. That deletion also turns the input's mask switch off on the
+    // host, so a later setting of the switch in the same batch, which a resync appends after the
+    // connections, is skipped here: it is recorded in emptiedSwitches.
     std::optional<Serialization::GraphOp> asAppliedHere(const ProjectPtr& p,
-                                                        const Serialization::GraphOp& op) const
+                                                        const Serialization::GraphOp& op,
+                                                        std::set<std::pair<std::string, std::string>>* emptiedSwitches) const
     {
+        if (const Serialization::SetKnobOp* set = std::get_if<Serialization::SetKnobOp>(&op)) {
+            if (set->nodeId && emptiedSwitches && emptiedSwitches->count(std::make_pair(*set->nodeId, set->knobName))) {
+                return std::nullopt;
+            }
+        }
         if (const Serialization::SetInputOp* input = std::get_if<Serialization::SetInputOp>(&op)) {
             if (!input->sourceId.empty() && isPendingKey(LiveSession::nodeExistenceKey(input->sourceId)) && !p->findNodeById(input->sourceId)) {
+                NodePtr node = p->findNodeById(input->nodeId);
+                const int inputNb = node ? node->getInputNumberFromLabel(input->inputLabel) : -1;
+                KnobBoolPtr maskSwitch = (inputNb >= 0) ? node->getMaskEnabledKnob(inputNb) : KnobBoolPtr();
+                if (maskSwitch && emptiedSwitches) {
+                    emptiedSwitches->insert(std::make_pair(input->nodeId, maskSwitch->getName()));
+                }
                 Serialization::SetInputOp disconnect = *input;
                 disconnect.sourceId.clear();
                 if (mustSkip(Serialization::GraphOp(disconnect))) {
@@ -297,8 +311,9 @@ struct SessionClient::Implementation {
         waiting.swap(deferred);
         {
             GraphEditRecorder::Suppress suppress;
+            std::set<std::pair<std::string, std::string>> emptiedSwitches;
             for (const Serialization::GraphOp& op : waiting) {
-                if (std::optional<Serialization::GraphOp> here = asAppliedHere(p, op)) {
+                if (std::optional<Serialization::GraphOp> here = asAppliedHere(p, op, &emptiedSwitches)) {
                     applyOrDefer(p, *here, false);
                 }
             }
@@ -387,9 +402,10 @@ struct SessionClient::Implementation {
                       const std::vector<Serialization::GraphOp>& ops)
     {
         GraphEditRecorder::Suppress suppress;
+        std::set<std::pair<std::string, std::string>> emptiedSwitches;
         for (const Serialization::GraphOp& op : ops) {
             supersedeDeferred(op);
-            std::optional<Serialization::GraphOp> here = asAppliedHere(p, op);
+            std::optional<Serialization::GraphOp> here = asAppliedHere(p, op, &emptiedSwitches);
             if (!here) {
                 continue;
             }
@@ -400,11 +416,15 @@ struct SessionClient::Implementation {
     }
 
     // The host may have given this user's creations and renames other names than asked for.
+    // Only the last naming of a node in the edits names it: a creation followed by a rename in
+    // one edit would otherwise rename the node back to its creation name here.
     void adoptHostNames(const ProjectPtr& p,
                         const std::vector<Serialization::GraphOp>& acknowledged)
     {
         std::vector<Serialization::GraphOp> renames;
-        for (const Serialization::GraphOp& op : acknowledged) {
+        std::set<std::string> named;
+        for (std::vector<Serialization::GraphOp>::const_reverse_iterator it = acknowledged.rbegin(); it != acknowledged.rend(); ++it) {
+            const Serialization::GraphOp& op = *it;
             std::string nodeId;
             std::string name;
             std::optional<std::string> label;
@@ -422,6 +442,9 @@ struct SessionClient::Implementation {
             } else {
                 continue;
             }
+            if (!named.insert(nodeId).second) {
+                continue;
+            }
             if (isPendingKey("name:" + nodeId) || isPendingKey(LiveSession::nodeExistenceKey(nodeId))) {
                 continue;
             }
@@ -432,6 +455,7 @@ struct SessionClient::Implementation {
             renames.push_back(Serialization::GraphOp(Serialization::RenameOp { nodeId, name, label }));
         }
         if (!renames.empty()) {
+            std::reverse(renames.begin(), renames.end());
             applyHostOps(p, renames);
         }
     }

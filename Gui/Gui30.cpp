@@ -535,7 +535,8 @@ Gui::onDoDialogWithStopAskingCheckbox(int type,
     // Escape rejects the box, which then answers Escape rather than keeping the previous question's answer.
     ignore_result(dialog.exec());
     _imp->_lastQuestionDialogAnswer = dialog.getReply();
-    _imp->_lastStopAskingAnswer = stopAskingCheckbox->isChecked();
+    // A dismissed box was not an answer, so a ticked checkbox must not silence the question for good.
+    _imp->_lastStopAskingAnswer = (_imp->_lastQuestionDialogAnswer != eStandardButtonEscape) && stopAskingCheckbox->isChecked();
 
     {
         QMutexLocker locker(&_imp->_uiUsingMainThreadMutex);

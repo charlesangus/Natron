@@ -846,6 +846,33 @@
                 <define-ownership class="target" owner="target"/>
             </modify-argument>
         </modify-function>
+        <modify-function signature="importTemplateChecked(QString,Group*,QString*,App::ImportTemplateError*)" remove="all"/>
+        <modify-function signature="importTemplate(QString,Group*)">
+            <inject-code class="target" position="beginning">
+                QString importError;
+                App::ImportTemplateError importErrorKind = App::eImportTemplateErrorNone;
+                std::list&lt;Effect*&gt; effects = %CPPSELF.importTemplateChecked(%1, %2, &amp;importError, &amp;importErrorKind);
+                if (importErrorKind != App::eImportTemplateErrorNone) {
+                    PyErr_SetString(importErrorKind == App::eImportTemplateErrorBadGroup ? PyExc_ValueError : PyExc_RuntimeError, importError.toUtf8().constData());
+                    return 0;
+                }
+                PyObject* ret = PyList_New((int) effects.size());
+                if (!ret) {
+                    for (std::list&lt;Effect*&gt;::iterator it = effects.begin(); it!=effects.end(); ++it) {
+                        delete *it;
+                    }
+                    return 0;
+                }
+                int idx = 0;
+                for (std::list&lt;Effect*&gt;::iterator it = effects.begin(); it!=effects.end(); ++it,++idx) {
+                PyObject* item = %CONVERTTOPYTHON[Effect*](*it);
+                // Ownership transferences.
+                Shiboken::Object::getOwnership(item);
+                PyList_SET_ITEM(ret, idx, item);
+                }
+                return ret;
+            </inject-code>
+        </modify-function>
         <modify-function signature="getProjectLayer(QString)const">
             <modify-argument index="return">
                 <define-ownership class="target" owner="target"/>
@@ -2635,6 +2662,7 @@
     </object-type>
     
     <rejection class="App" field-name="_instance"/>
+    <rejection class="App" enum-name="ImportTemplateError"/>
     <rejection class="Effect" field-name="_node"/>
     <rejection class="*" field-name="_imp"/>
     <rejection class="Param" function-name="checkIsEditable"/>

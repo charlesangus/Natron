@@ -29,7 +29,9 @@
 #include <stdexcept>
 #include <sstream> // stringstream
 
+#include <QCoreApplication>
 #include <QDebug>
+#include <QThread>
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
@@ -529,6 +531,72 @@ App::loadProject(const QString& filename)
     }
 
     return new App(app);
+}
+
+std::list<Effect*>
+App::importTemplateChecked(const QString& filename,
+                           Group* group,
+                           QString* error,
+                           ImportTemplateError* errorKind)
+{
+    std::list<Effect*> ret;
+    *errorKind = eImportTemplateErrorNone;
+    if (QThread::currentThread() != qApp->thread()) {
+        *errorKind = eImportTemplateErrorFailed;
+        *error = QString::fromUtf8("importTemplate() can only be called from the main thread");
+
+        return ret;
+    }
+
+    AppInstancePtr app = getInternalApp();
+    NodeCollectionPtr collection;
+    if (group) {
+        App* isApp = dynamic_cast<App*>(group);
+        Effect* isEffect = dynamic_cast<Effect*>(group);
+        if (isApp) {
+            if (isApp->getInternalApp() == app) {
+                collection = std::dynamic_pointer_cast<NodeCollection>(app->getProject());
+            }
+        } else if (isEffect) {
+            NodePtr node = isEffect->getInternalNode();
+            if (node && node->getApp() == app && node->getEffectInstance()) {
+                collection = std::dynamic_pointer_cast<NodeGroup>(node->getEffectInstance()->shared_from_this());
+            }
+        }
+        if (!collection) {
+            *errorKind = eImportTemplateErrorBadGroup;
+            *error = QString::fromUtf8("The group to import into is not a group of this application");
+
+            return ret;
+        }
+    } else {
+        collection = std::dynamic_pointer_cast<NodeCollection>(app->getProject());
+    }
+
+    QString importError;
+    NodesList nodes = app->getProject()->importTemplate(filename, collection, &importError);
+    for (const NodePtr& node : nodes) {
+        recordPythonNodeCreated(node);
+    }
+    if (!importError.isEmpty()) {
+        *errorKind = eImportTemplateErrorFailed;
+        *error = importError;
+
+        return ret;
+    }
+    for (const NodePtr& node : nodes) {
+        ret.push_back(new Effect(node));
+    }
+
+    return ret;
+}
+
+std::list<Effect*>
+App::importTemplate(const QString& /*filename*/,
+                    Group* /*group*/)
+{
+    // The binding's inject code calls importTemplateChecked() and never reaches this body.
+    return std::list<Effect*>();
 }
 
 ///Close the current project but keep the window

@@ -82,7 +82,7 @@ Regions live on the stack, like M448's context flag. `SceneLayerEntry` gains a p
 
 ## Phase 449.2: USDWrite writes the region tree
 
-- [ ] M449.P2.T1 — One file per region, nested by sublayers
+- [x] M449.P2.T1 — One file per region, nested by sublayers
   - files: `Engine/Nodes/Scene/USDWrite.cpp` (`StackItem`, `appendLayerStack`, `layOutStack`, `writeFrameRange`, `removeStaleSidecars`), `Engine/Nodes/Scene/docs/USDWrite.md`
   - approach: carry each entry's region on its `StackItem`. In layered mode, build the region tree from the root stack's items. Each named region becomes a written stack whose path is its save path, resolved against the output directory and expanded with the frame-1 path variables as USDWrite's own file is. Its contiguous items are replaced in the parent by one sublayer item pointing at it. Implicit regions (no save path) stay inline in their parent. Lay out and write each stack with the existing run/sidecar logic, recursively. Root stage metadata stays as today. Apply the overwrite guard ("is read by the scene") to every region file. The stale-sidecar sweep only touches `_layerN` names. Non-contiguous region items are a write error naming the region's node. Flattened mode ignores regions.
   - verify: `Tests/Scene/USDWrite_Test.cpp` gains `SaveRegionsWriteNestedLayerFiles`. Read → A → B → ConfigureLayer(Preceding, `lighting.usda`) → Begin → ConfigureLayer(Following, `key/lights_key.usda`) → C → End → D → USDWrite(`shot.usda`). Expected files:
@@ -92,19 +92,19 @@ Regions live on the stack, like M448's context flag. `SceneLayerEntry` gains a p
     - Recomposing `shot.usda` gives the graph's composed stage.
   - size: L
 
-- [ ] M449.P2.T2 — Region metadata on written files
+- [x] M449.P2.T2 — Region metadata on written files
   - files: `Engine/Nodes/Scene/USDWrite.cpp` (`authorStageMetadata` and the per-stack write in `writeFrameRange`), `Tests/Scene/USDWrite_Test.cpp`
   - approach: author each named region's recorded settings on its file's root layer. Default prim, comment, start/end time, tcps, fps, upAxis, metersPerUnit, colour configuration and system, and the render settings prim go to their `SdfLayer` / `UsdStage` metadata fields. Custom data goes to the layer's `customLayerData`. An implicit region's settings go to the file that receives it. A region landing in the root overrides the root fields that `authorStageMetadata` would set.
   - verify: test `SaveRegionMetadataIsAuthored`. A region with upAxis Z, a comment and one custom-data row writes those to its file's layer metadata. An untoggled field is absent. A blank-path region's comment lands on the root file.
   - size: M
 
-- [ ] M449.P2.T3 — `saveCollisions` knob
+- [x] M449.P2.T3 — `saveCollisions` knob
   - files: `Engine/Nodes/Scene/USDWrite.h`/`.cpp`, `Engine/Nodes/Scene/docs/USDWrite.md`, `Tests/Scene/USDWrite_Test.cpp`
   - approach: add `saveCollisions` (`KnobChoice`, label "Save Path Collisions", entries Error | Merge Into One File, default Error). Before writing anything, map resolved paths to regions. Under Error, fail if two regions share a path, naming both nodes. Under Merge Into One File, concatenate the regions' items in stack order into one written stack, and merge their settings with the stronger region winning per field. A region resolving to the output file is an error in both modes.
   - verify: tests. Two branches saving to `lights.usda` fail under Error with both node names in the message and no file written. Under Merge they produce one file holding both branches' edits. A region named like the output always fails.
   - size: M
 
-- [ ] M449.P2.T4 — Region interplay tests
+- [x] M449.P2.T4 — Region interplay tests
   - files: `Tests/Scene/USDWrite_Test.cpp`
   - approach: four tests.
     - A region above a USDLayerBreak writes no file.
@@ -114,19 +114,19 @@ Regions live on the stack, like M448's context flag. `SceneLayerEntry` gains a p
   - verify: the four tests pass, along with every existing `USDWrite_Test` and M448 test.
   - size: M
 
-- [ ] M449.P2.T5 — GUI script for layer regions
+- [x] M449.P2.T5 — GUI script for layer regions
   - files: `Tests/gui/m449_layer_save_paths.py`, GUI test registration
   - approach: under Xvfb, build P2.T1's graph from Python, set ConfigureLayer knobs through the Python API (including one custom-data row), render USDWrite, and check the written file set and the root file's sublayer list by reading them back.
   - verify: the script passes in the remote `--gui` gate.
   - size: M
 
-- [ ] M449.P2.T6 — `Flatten Layers` export mode
+- [x] M449.P2.T6 — `Flatten Layers` export mode
   - files: `Engine/Nodes/Scene/USDWrite.h`/`.cpp` (`initializeKnobs` exportMode entries, `writeFrameRange`, `appendLayerStack`), `Engine/Nodes/Scene/docs/USDWrite.md`, `Tests/Scene/USDWrite_Test.cpp`
   - approach: add `flattenLayers` ("Flatten Layers") as the middle `exportMode` entry, with a tooltip contrasting it with Layered (a thin file sublayering read files) and Flattened (composition baked in). For the root stack, collect items as Layered does, after context skipping, but treat external items (read files) like anonymous ones. Flatten the whole run with `flattenRun` / `UsdUtilsFlattenLayerStack` into the output layer, so no sublayers remain. Regions are ignored. Asset paths inside flattened read files resolve through the existing `UsdUtilsFlattenLayerStackResolveAssetPath` callback, then `pathMode` applies. Referenced anonymous stacks still go to side files until P2.T7. Stage metadata as Layered.
   - verify: test `FlattenLayersWritesOneFileKeepingArcs`. Read the M52 layer-stack fixture → USDVariant → edit → USDWrite in Flatten Layers mode. The output has no sublayers. It holds the fixture's prims and the edit, and the variant set with both variants and the authored selection. A USDReference to `m52-referenced.usda` on disk stays a reference to that file. Recomposing it gives the graph's stage.
   - size: M
 
-- [ ] M449.P2.T7 — Inline referenced stacks in `Flatten Layers`
+- [x] M449.P2.T7 — Inline referenced stacks in `Flatten Layers`
   - files: `Engine/Nodes/Scene/USDWrite.cpp` (`anonymousArcs`, the `stackOfLayer` and arc-rewrite step of `writeFrameRange`), `Tests/Scene/USDWrite_Test.cpp`
   - approach: in Flatten Layers mode, flatten each anonymous referenced stack (`stacks[i]`, i > 0) as P2.T6 does. Then copy its root prims under `/_references/stack<N>` in the output layer, where N follows today's side-file numbering, with that root prim specified as `class` (`SdfCopySpec`). Rewrite each arc to an internal reference (empty asset path) to the copied prim: the arc's prim path, or the stack's default prim, re-rooted under `stack<N>`, keeping the layer offset (`scaleArcOffsets` applies as today). Relationship and connection targets inside copied prims are re-rooted with the same path mapping. Nested referenced stacks go in recursively. A stack referenced twice is copied once.
   - verify: test `FlattenLayersInlinesReferencedStacks`. A USDReference whose source is a second Read → edit branch, plus a USDXformPrim graft, writes one file and no side files. Recomposing it gives the graph's composed stage, prim for prim and attribute for attribute at two frames. A material binding inside the referenced stack still resolves.
@@ -145,3 +145,4 @@ Regions live on the stack, like M448's context flag. `SceneLayerEntry` gains a p
 - 2026-11-15 — Save-path collisions are configurable on USDWrite: Error by default, Merge Into One File on request (user, grill).
 - 2026-11-15 — USDWrite gains a third Export Mode, Flatten Layers: one self-contained file with every layer (read files included) flattened in but composition arcs kept (user, after the grill: "choose whether to write everything into the output file or a thin file referencing external files"). Layered stays the thin option. Referenced graph stacks are inlined as internal references so no side files remain (planner); file references stay external.
 - 2026-11-23 — Phase 1 implemented (gate queued); Phase 2 (USDWrite) next. PM defaults: a Read file is a region boundary for Preceding; a ConfigureLayer inside a bare Begin region configures it; Float custom data is stored as double. Open for Phase 2: regions made non-contiguous by a Preceding claim after a merge need a USDWrite rule; nodes that build a fresh stack or return an empty scene close open regions.
+- 2026-11-23 — Phase 2 in a77adcde5 (gate queued). PM choices: a region made non-contiguous by a Preceding claim takes the layers between into its own file (two interleaved regions fail, naming both); regions above a break write no file when Strip Layers Above Breaks is on; regions inside referenced or grafted stacks are not written as files; a region without a Save Path puts its metadata on the file holding its layers; region time codes per second are metadata only; a gathering region takes the file entry just below it (so lighting.usda sublayers the read file, per the spec); knob label Save Collisions (matches its script name). Python can't read the customData knob table yet (no KnobTable wrapper), so the GUI script skips that check.

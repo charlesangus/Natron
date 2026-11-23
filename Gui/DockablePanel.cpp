@@ -1764,7 +1764,7 @@ DockablePanel::onRightClickMenuRequested(const QPoint & pos)
 void
 DockablePanel::onEditParametersActionTriggered()
 {
-    if (_imp->_editMode) {
+    if (_imp->_editMode && canEditUserKnobs()) {
         _imp->_editMode->setActive(!_imp->_editMode->isActive());
     }
     refreshEditButton();

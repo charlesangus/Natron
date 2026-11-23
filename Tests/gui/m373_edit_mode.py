@@ -12,11 +12,13 @@ Blur, renames the Blur's plug-in ID in the file and loads it back.
 """
 import os
 import sys
+import zipfile
 
 sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd()), "Tests", "gui"))
 
 import guitest as gt
 from guitest import check, report
+
 import knob_edit_common as cm
 
 from PySide6.QtWidgets import QWidget
@@ -85,13 +87,15 @@ def steps():
     gt.section("not editable")
     app = cm.natron_app()
     plugin_id = app.getNode(blur).getPluginID()
-    path = os.path.join(gt.OUT, "m373_missing_plugin.ntp")
+    path = os.path.join(gt.OUT, "m373_missing_plugin.ntpz")
     gt.require(app.saveProjectAs(path), "saved the project to " + path)
-    with open(path) as f:
-        text = f.read()
-    gt.require(plugin_id in text, "the saved project names the Blur's plug-in ID")
-    with open(path, "w") as f:
-        f.write(text.replace(plugin_id, "net.natron.test.MissingPlugin"))
+    with zipfile.ZipFile(path) as z:
+        entries = [(i.filename, z.read(i.filename)) for i in z.infolist()]
+    named = [n for n, data in entries if plugin_id.encode() in data]
+    gt.require(bool(named), "the saved project names the Blur's plug-in ID")
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as z:
+        for n, data in entries:
+            z.writestr(n, data.replace(plugin_id.encode(), b"net.natron.test.MissingPlugin") if n in named else data)
     loaded = app.loadProject(path)
     gt.require(loaded is not None, "loaded the project back")
     cm.use_app(loaded)

@@ -47,6 +47,10 @@ def wait_for_graph():
     ok = yield ("until", lambda: root_graph() is not None, 60.0)
     gt.require(ok, "node graph widget is up")
     gt.close_all_panels()
+    win = main_window()
+    if win is not None:
+        win.activateWindow()
+        win.raise_()
     yield ("sleep", 400)
 
 
@@ -105,6 +109,9 @@ def undo():
     return True
 
 
+_panel_wrappers = {}
+
+
 def panel_of(name):
     """The settings panel of the node with that script name, found by the label in its header."""
     node = natron_app().getNode(name)
@@ -112,8 +119,12 @@ def panel_of(name):
         return None
     label = node.getLabel()
     for p in gt.widgets_of("NodeSettingsPanel"):
+        if not shiboken6.isValid(p):
+            continue
         for le in p.findChildren(QLineEdit):
-            if gt.class_name(le) == "LineEdit" and le.text() == label:
+            if shiboken6.isValid(le) and gt.class_name(le) == "LineEdit" and le.text() == label:
+                # A child's wrapper dies with its parent's, so callers' child widgets need the panel's wrapper kept.
+                _panel_wrappers[name] = p
                 return p
     return None
 
@@ -135,7 +146,12 @@ def selected(name):
 
 def pencil(name):
     p = panel_of(name)
-    return p.findChild(QAbstractButton, "DockablePanelEditButton") if p is not None else None
+    if p is None:
+        return None
+    for b in p.findChildren(QAbstractButton, "DockablePanelEditButton"):
+        if shiboken6.isValid(b) and b.isVisible():
+            return b
+    return None
 
 
 def set_editing(name, on):

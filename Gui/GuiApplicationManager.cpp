@@ -1402,7 +1402,6 @@ getIconForGrouping(QIcon* icon,
     appPTR->getIcon(e, size, icon);
 }
 
-// The glyph of a built-in USD submenu, looked up by the submenu's label under the top-level USD group.
 QString
 usdSubmenuIconPath(const PluginGroupNode& node)
 {
@@ -1912,7 +1911,8 @@ GuiApplicationManagerPrivate::populateNodesMenuGroup(QMenu* parent,
         QIcon menuIcon, toolButtonIcon;
         makePluginGroupIcons(group, &menuIcon, &toolButtonIcon);
         menu = new Menu(parent);
-        menu->setTitle(escapedMenuText(group.getLabel()));
+        // "/" would nest a submenu in a grouping string, so the I/O segment is spelled IO and only its title shows the slash.
+        menu->setTitle(escapedMenuText(group.getLabel() == QString::fromUtf8("IO") ? QString::fromUtf8("I/O") : group.getLabel()));
         menu->setIcon(menuIcon);
         QAction* menuAction = menu->menuAction();
         menuAction->setProperty(kNodesMenuPropPluginOwned, true);

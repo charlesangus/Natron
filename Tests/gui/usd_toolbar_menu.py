@@ -1,5 +1,5 @@
 """The USD toolbar category: the nodes menu has a top-level USD entry right after 3D, with the
-submenus Prims, Lights, Cameras, Materials, Composition, Edit, Render and IO in that order, each
+submenus Prims, Lights, Cameras, Materials, Composition, Edit, Render and I/O in that order, each
 holding exactly its USD nodes. Every submenu has an icon that is not the default puzzle glyph, no
 USD node has a grouping under 3D, and every USD node action carries the same category colour (the
 one of the USD node category, which differs from a Filter node's). The USD toolbox button's popup
@@ -32,6 +32,12 @@ SUBMENUS = [
     ("Render", ["USDRender", "USDRenderSettings"]),
     ("IO", ["USDRead", "USDWrite"]),
 ]
+DISPLAY_TITLES = {"IO": "I/O"}
+GLYPHS = {
+    "Prims": "shapes", "Lights": "sun", "Cameras": "camera", "Materials": "palette",
+    "Composition": "layers", "Edit": "pencil", "Render": "circle-play", "IO": "hard-drive",
+}
+ICON_SIZE = 32
 BLUR_ID = "Blur"
 
 try:
@@ -111,19 +117,39 @@ try:
             check(sorted(got) == sorted(ids), "%s holds %r (got %r)" % (name, ids, got))
             check(not owned_submenus(sub), "%s has no nested submenus" % name)
             check(not action.icon().isNull(), "%s has an icon" % name)
+            title = action.text()
+            check(title == DISPLAY_TITLES.get(name, name), "%s is titled %r (got %r)" % (name, DISPLAY_TITLES.get(name, name), title))
 
         gt.section("icons")
-        default_key = None
+        from PySide6.QtCore import QFile
+        from PySide6.QtGui import QIcon
+
+        def pixels(icon):
+            return icon.pixmap(ICON_SIZE, ICON_SIZE).toImage()
+
+        icons_dir = ":/Resources/Icons/lucide"
+        puzzle = None
         for a, _ in owned_submenus(menu):
             if a.property(PROP_GROUPING) == "Misc":
-                default_key = a.icon().cacheKey()
-        keys = [by_name[n][0].icon().cacheKey() for n, _ in SUBMENUS if n in by_name]
-        check(len(set(keys)) == len(keys), "the eight USD submenus have eight different icons")
-        if default_key is not None:
-            check(default_key not in keys, "no USD submenu uses the default group icon")
+                puzzle = pixels(a.icon())
+        images = {}
+        for n, _ in SUBMENUS:
+            if n not in by_name:
+                continue
+            images[n] = pixels(by_name[n][0].icon())
+            glyph_path = "%s/%s.svg" % (icons_dir, GLYPHS[n])
+            if not QFile.exists(glyph_path):
+                check(False, "%s glyph resource %s exists" % (n, glyph_path))
+                continue
+            check(images[n] == pixels(QIcon(glyph_path)), "%s draws the %s glyph" % (n, GLYPHS[n]))
+            if puzzle is not None:
+                check(images[n] != puzzle, "%s does not draw the default puzzle icon" % n)
+        unique = set(img.constBits().tobytes() for img in images.values())
+        check(len(unique) == len(images), "the eight USD submenus have eight different icons")
         usd_icon = usd_action.icon()
         check(not usd_icon.isNull(), "the USD entry has an icon")
-        check(all(usd_icon.cacheKey() != k for k in keys), "the USD icon differs from its submenus' icons")
+        usd_pixels = pixels(usd_icon).constBits().tobytes()
+        check(usd_pixels not in unique, "the USD icon differs from its submenus' icons")
 
         gt.section("category colour")
         colours = {}

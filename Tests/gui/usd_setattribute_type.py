@@ -76,6 +76,7 @@ try:
         yield ("sleep", SETTLE_MS)
 
         gt.section("mismatch warning")
+        # The type lookup only runs for a node a viewer is showing, so the checker is viewed before its attribute is typed.
         # A schema attribute of another type fails at render instead, so the warning needs an authored one.
         author = make("USDSetAttribute", 300, 0)
         checker = make("USDSetAttribute", 300, 150)
@@ -83,13 +84,13 @@ try:
         param(author, "primPattern").setValue(SPHERE_PATTERN)
         require(set_choice(param(author, "valueType"), "int"), "author an int")
         param(author, "attributeName").setValue("m523:count")
+        viewer.disconnectInput(0)
+        require(viewer.connectInput(0, checker), "view the second USDSetAttribute")
         param(checker, "primPattern").setValue(SPHERE_PATTERN)
         param(checker, "attributeName").setValue("m523:count")
         ok = yield ("until", lambda: selected_type(checker) == "int", POLL_TIMEOUT_S)
         check(ok, "an authored int attribute sets Value Type to int (got %r)" % (selected_type(checker),))
         require(set_choice(param(checker, "valueType"), "float"), "change Value Type to float")
-        viewer.disconnectInput(0)
-        require(viewer.connectInput(0, checker), "view the second USDSetAttribute")
         ok = yield ("until", lambda: "is a int attribute; authoring float over it" in message(checker), POLL_TIMEOUT_S)
         check(ok, "the warning names the mismatch (%r)" % (message(checker),))
         gt.shot("usd-setattribute-type-warning.png")

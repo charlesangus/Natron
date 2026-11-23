@@ -290,7 +290,7 @@ judgeByWeight(const FrameGraph& graph,
     if (pixels < kGpuRegionMinPixels) {
         return -1.;
     }
-    const bool accepted = heavy || (weight >= kGpuRegionMinWeight) || regionTransfersAreFree(graph, region, rootOnDevice);
+    const bool accepted = gpuWeightAccepts(pixels, weight, heavy) || regionTransfersAreFree(graph, region, rootOnDevice);
 
     return accepted ? 1. : -1.;
 }

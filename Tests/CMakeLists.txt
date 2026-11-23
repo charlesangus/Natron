@@ -110,6 +110,7 @@ set(Tests_SOURCES
     HashPluginSweep_Test.cpp
     IdentityHop_Test.cpp
     Image_Test.cpp
+    KernelGpuCodegen_Test.cpp
     KernelParser_Test.cpp
     KnobChannelSet_Test.cpp
     KnobFile_Test.cpp
@@ -173,6 +174,7 @@ set(Tests_SOURCES
     Gpu/GpuTvL1Flow_Test.cpp
     Gpu/GpuFlowConfidence_Test.cpp
     Gpu/GpuSplitWork_Test.cpp
+    Gpu/GeoWrangleGpu_Test.cpp
     Ai/AiSettings_Test.cpp
     Ai/OrtLoader_Test.cpp
     Ai/OrtTelemetry_Test.cpp

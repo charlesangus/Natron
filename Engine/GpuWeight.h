@@ -71,6 +71,18 @@ constexpr double kGpuRegionMinWeight = 4.;
 constexpr double kGpuRegionMinPixels = 256. * 256.;
 
 /**
+ * @brief The weight rule on its own: whether work over pixels pixels (at the rendered scale) that
+ * weighs weight, or is Heavy, gains from the GPU, ignoring what moving its images costs.
+ **/
+inline bool
+gpuWeightAccepts(double pixels,
+                 double weight,
+                 bool heavy)
+{
+    return pixels >= kGpuRegionMinPixels && (heavy || weight >= kGpuRegionMinWeight);
+}
+
+/**
  * @brief How much a node weighs when GPU placement decides where a region of nodes renders. A
  * Point node is kGpuPointWeight. A Filter node carries a weight, kGpuFilterWeight unless its
  * cost follows a size. A Heavy node sends the region it belongs to to the GPU whatever the other

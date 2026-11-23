@@ -62,7 +62,7 @@ public:
         .description = "Unite the scenes of the inputs into one by stacking their layers. Later inputs are stronger: "
                        "where two inputs author the same attribute, the higher-numbered input wins. A layer that "
                        "reaches the node through more than one input is used once, under everything authored over it.",
-        .grouping = PLUGIN_GROUP_3D_USD,
+        .grouping = PLUGIN_GROUP_USD_COMPOSITION,
         .majorVersion = 1,
         .minorVersion = 0,
         .icon = NATRON_IMAGES_PATH "NativeNodes/USDMerge.png",

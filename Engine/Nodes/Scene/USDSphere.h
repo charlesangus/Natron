@@ -57,7 +57,7 @@ public:
         .description = "Create a scene holding a sphere: a UV-sphere mesh of Radius about the origin, its poles on the project's up "
                        "axis, with texture coordinates wrapping once around it and the seam at the back. Texture it through a "
                        "USDPreviewSurface on its Material input. Animated knobs are written as time samples.",
-        .grouping = PLUGIN_GROUP_3D_USD,
+        .grouping = PLUGIN_GROUP_USD_PRIMS,
         .majorVersion = 1,
         .minorVersion = 0,
         .icon = NATRON_IMAGES_PATH "NativeNodes/USDSphere.png",

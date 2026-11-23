@@ -365,6 +365,9 @@ pixmapEnumToPath(PixmapEnum e)
     case NATRON_PIXMAP_DEEP_GROUPING:
         path = NATRON_ICONS_PATH "natron/deep.svg";
         break;
+    case NATRON_PIXMAP_USD_GROUPING:
+        path = NATRON_ICONS_PATH "natron/usd.svg";
+        break;
     case NATRON_PIXMAP_METADATA_GROUPING:
         path = NATRON_ICONS_PATH "lucide/tags.svg";
         break;
@@ -1228,6 +1231,7 @@ const char* const namedGroupsOrdered[] = {
     PLUGIN_GROUP_MERGE,
     PLUGIN_GROUP_TRANSFORM,
     PLUGIN_GROUP_3D,
+    PLUGIN_GROUP_USD,
     PLUGIN_GROUP_DEEP,
     PLUGIN_GROUP_METADATA,
     PLUGIN_GROUP_LOOP,
@@ -1267,6 +1271,8 @@ getIconForGrouping(QIcon* icon,
         e = NATRON_PIXMAP_TRANSFORM_GROUPING;
     } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_3D)) {
         e = NATRON_PIXMAP_3D_GROUPING;
+    } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_USD)) {
+        e = NATRON_PIXMAP_USD_GROUPING;
     } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_DEEP)) {
         e = NATRON_PIXMAP_DEEP_GROUPING;
     } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_METADATA)) {
@@ -1283,12 +1289,48 @@ getIconForGrouping(QIcon* icon,
     appPTR->getIcon(e, size, icon);
 }
 
+// The glyph of a built-in USD submenu, looked up by the submenu's label under the top-level USD group.
+QString
+usdSubmenuIconPath(const PluginGroupNode& node)
+{
+    if (!node.hasParent() || node.getChildren().empty() || node.getParent()->hasParent() || node.getParent()->getLabel() != QString::fromUtf8(PLUGIN_GROUP_USD)) {
+        return QString();
+    }
+    const QString& label = node.getLabel();
+    if (label == QString::fromUtf8("Prims")) {
+        return QString::fromUtf8(NATRON_ICONS_PATH "lucide/shapes.svg");
+    }
+    if (label == QString::fromUtf8("Lights")) {
+        return QString::fromUtf8(NATRON_ICONS_PATH "lucide/sun.svg");
+    }
+    if (label == QString::fromUtf8("Cameras")) {
+        return QString::fromUtf8(NATRON_ICONS_PATH "lucide/camera.svg");
+    }
+    if (label == QString::fromUtf8("Materials")) {
+        return QString::fromUtf8(NATRON_ICONS_PATH "lucide/palette.svg");
+    }
+    if (label == QString::fromUtf8("Composition")) {
+        return QString::fromUtf8(NATRON_ICONS_PATH "lucide/layers.svg");
+    }
+    if (label == QString::fromUtf8("Edit")) {
+        return QString::fromUtf8(NATRON_ICONS_PATH "lucide/pencil.svg");
+    }
+    if (label == QString::fromUtf8("Render")) {
+        return QString::fromUtf8(NATRON_ICONS_PATH "lucide/circle-play.svg");
+    }
+    if (label == QString::fromUtf8("IO")) {
+        return QString::fromUtf8(NATRON_ICONS_PATH "lucide/hard-drive.svg");
+    }
+
+    return QString();
+}
+
 void
 makePluginGroupIcons(const PluginGroupNode& node,
                      QIcon* menuIcon,
                      QIcon* toolButtonIcon)
 {
-    const QString& iconPath = node.getIconPath();
+    const QString iconPath = node.getIconPath().isEmpty() ? usdSubmenuIconPath(node) : node.getIconPath();
 
     if (!iconPath.isEmpty() && QFile::exists(iconPath)) {
         int menuSize = TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE);

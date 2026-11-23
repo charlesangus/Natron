@@ -80,7 +80,7 @@ public:
                        "others are left as the input scene has them. "
                        "Edit overrides the prims a pattern selects in the input scene; Define defines a prim of the "
                        "schema's type at a path. An API schema is applied to each prim.",
-        .grouping = PLUGIN_GROUP_3D_USD,
+        .grouping = PLUGIN_GROUP_USD_EDIT,
         .majorVersion = 1,
         .minorVersion = 0,
         .icon = NATRON_IMAGES_PATH "NativeNodes/USDEditPrim.png",

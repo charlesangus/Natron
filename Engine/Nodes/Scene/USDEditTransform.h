@@ -80,7 +80,7 @@ public:
                        "Append adds the transform after each prim's existing ops, in its local space; Replace discards "
                        "the existing ops and the parent transform. The transform turns and scales about a pivot. "
                        "While its settings panel is open, the Viewer's 3D view shows move, rotate and scale handles.",
-        .grouping = PLUGIN_GROUP_3D_USD,
+        .grouping = PLUGIN_GROUP_USD_EDIT,
         .majorVersion = 1,
         .minorVersion = 0,
         .icon = NATRON_IMAGES_PATH "NativeNodes/USDEditTransform.png",

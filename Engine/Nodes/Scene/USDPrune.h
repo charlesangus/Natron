@@ -68,7 +68,7 @@ public:
                        "depth, set operators) from the input scene. "
                        "Deactivate drops them and their descendants from the stage; Hide keeps them but makes them "
                        "invisible.",
-        .grouping = PLUGIN_GROUP_3D_USD,
+        .grouping = PLUGIN_GROUP_USD_COMPOSITION,
         .majorVersion = 1,
         .minorVersion = 0,
         .icon = NATRON_IMAGES_PATH "NativeNodes/USDPrune.png",

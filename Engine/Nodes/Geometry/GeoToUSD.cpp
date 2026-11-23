@@ -582,7 +582,7 @@ GeoToUSD::Implementation::gather(GeoToUSD* node,
         inputScene = &evaluated;
     }
     if (!inputScene->isEmpty()) {
-        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(*inputScene, errorMessage);
+        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(*inputScene, SceneLoadSet::everything(), errorMessage);
         const PXR_NS::UsdStageRefPtr stage = lease.getStage();
         if (!stage) {
             if (errorMessage->empty()) {

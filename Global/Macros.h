@@ -261,6 +261,7 @@ NATRON_VERSION_STRINGIZE__(major, minor)
 
 // Group ordering is set at every place in the code where GROUP_ORDER appears in the comments
 #define PLUGIN_GROUP_IMAGE "Image"
+#define PLUGIN_GROUP_RAW "Raw"
 #define PLUGIN_GROUP_IMAGE_READERS "Readers"
 #define PLUGIN_GROUP_IMAGE_WRITERS "Writers"
 #define PLUGIN_GROUP_PAINT "Draw"

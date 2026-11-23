@@ -46,8 +46,6 @@
 #include "Engine/RectI.h"
 #include "Engine/ViewIdx.h"
 
-#define PLUGIN_GROUP_RAW "Raw"
-
 NATRON_NAMESPACE_ENTER
 
 /**

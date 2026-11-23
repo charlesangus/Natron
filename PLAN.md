@@ -363,7 +363,7 @@ future core work has solid ground to build on.
 | M186 | Exact IDefocus | done | M131, M184 | bosley-native-nodes | E15 | | | [M186-exact-idefocus.md](PLAN/MILESTONES/M186-exact-idefocus.md) |
 | M187 | Variable Sharpen And Glow | blocked | M123, M184 |  | E15 | | | [M187-variable-sharpen-and-glow.md](PLAN/MILESTONES/M187-variable-sharpen-and-glow.md) |
 | M188 | Variable Median And DirBlur | blocked | M130, M184 |  | E15 | | | [M188-variable-median-and-dirblur.md](PLAN/MILESTONES/M188-variable-median-and-dirblur.md) |
-| M189 | Make I-Node Action | todo | M183, M184, M181 |  | E15 | F14 | | [M189-make-i-node-action.md](PLAN/MILESTONES/M189-make-i-node-action.md) |
+| M189 | Make I-Node Action | doing | M183, M184, M181 | bosley-executor | E15 | F14 | | [M189-make-i-node-action.md](PLAN/MILESTONES/M189-make-i-node-action.md) |
 | M190 | Cross-Frame Feedback | done | M182 | bosley-native-nodes | E15 | | | [M190-cross-frame-feedback.md](PLAN/MILESTONES/M190-cross-frame-feedback.md) |
 | M191 | Native VectorBlur | done | M120, M137 | bosley-native-nodes | E3 | | | [M191-native-vectorblur.md](PLAN/MILESTONES/M191-native-vectorblur.md) |
 | M177 | Renders Isolated From Edits | done | M167 |  | E14 | | | [M177-renders-isolated-from-edits.md](PLAN/MILESTONES/M177-renders-isolated-from-edits.md) |
@@ -449,7 +449,7 @@ future core work has solid ground to build on.
 | M479 | Lens Bokeh Parity Audit | todo | M292, M294, M473, M474, M475, M476, M477, M478 |  | E24 | F13 | | [M479-lens-bokeh-parity-audit.md](PLAN/MILESTONES/M479-lens-bokeh-parity-audit.md) |
 | M295 | Native DeepDefocus | todo | M294 |  | E8 | | | [M295-native-deepdefocus.md](PLAN/MILESTONES/M295-native-deepdefocus.md) |
 | M462 | Shared Optics Library | done | - | bosley-executor | E24 | F30 | | [M462-shared-optics-library.md](PLAN/MILESTONES/M462-shared-optics-library.md) |
-| M463 | Bundled Lens Database | todo | M462 |  | E24 | F30 | | [M463-bundled-lens-database.md](PLAN/MILESTONES/M463-bundled-lens-database.md) |
+| M463 | Bundled Lens Database | doing | M462 | bosley-executor | E24 | F30 | | [M463-bundled-lens-database.md](PLAN/MILESTONES/M463-bundled-lens-database.md) |
 | M465 | Aperture Model | done | - | bosley-executor | E24 | F30 | | [M465-aperture-model.md](PLAN/MILESTONES/M465-aperture-model.md) |
 | M464 | FFT Library | done | - | bosley-executor | E24 | F31 | | [M464-fft-library.md](PLAN/MILESTONES/M464-fft-library.md) |
 | M472 | GPU Raster Pipelines | done | - | bosley-executor | E5 |  | | [M472-gpu-raster-pipelines.md](PLAN/MILESTONES/M472-gpu-raster-pipelines.md) |
@@ -521,7 +521,7 @@ future core work has solid ground to build on.
 | M370 | Roto Point List Render Isolation | done | M304 | bosley-executor | E6 |  | | [M370-roto-point-list-render-isolation.md](PLAN/MILESTONES/M370-roto-point-list-render-isolation.md) |
 | M371 | Cycles Abort Test Thread Count | done | - | bosley-native-nodes | E9 |  | | [M371-cycles-abort-test-thread-count.md](PLAN/MILESTONES/M371-cycles-abort-test-thread-count.md) |
 | M372 | User Knob Engine Edits | done | - | bosley-executor | E10 | F16 | | [M372-user-knob-engine-edits.md](PLAN/MILESTONES/M372-user-knob-engine-edits.md) |
-| M373 | In-Panel Knob Editor | todo | M372 |  | E10 | F16 | | [M373-in-panel-knob-editor.md](PLAN/MILESTONES/M373-in-panel-knob-editor.md) |
+| M373 | In-Panel Knob Editor | doing | M372 | bosley-executor | E10 | F16 | | [M373-in-panel-knob-editor.md](PLAN/MILESTONES/M373-in-panel-knob-editor.md) |
 | M374 | Remove Node Magnify On Ctrl-Scroll | done | - | | E10 |  | | [M374-remove-node-magnify-on-ctrl-scroll.md](PLAN/MILESTONES/M374-remove-node-magnify-on-ctrl-scroll.md) |
 | M375 | No CPU Vulkan Auto-Select | done | - | bosley-native-nodes | E5 |  | | [M375-no-cpu-vulkan-auto-select.md](PLAN/MILESTONES/M375-no-cpu-vulkan-auto-select.md) |
 | M400 | Pointer Direction Badges | done | - | bosley-executor | E10 |  | | [M400-pointer-direction-badges.md](PLAN/MILESTONES/M400-pointer-direction-badges.md) |

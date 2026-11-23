@@ -11,6 +11,17 @@ fi
 STAGE_DIR="$(cd "$1" && pwd)"
 OUT="${2:-/dev/stdout}"
 
+# Resolve the out file against the caller's cwd before changing directory, and
+# refuse one inside the stage dir: it would be listed in its own manifest.
+if [[ $# -eq 2 ]]; then
+    OUT="$(realpath -m -- "$OUT")"
+    STAGE_REAL="$(realpath -- "$STAGE_DIR")"
+    if [[ "$OUT" == "$STAGE_REAL"/* ]]; then
+        echo "error: out file $OUT lies inside the staged dir $STAGE_REAL" >&2
+        exit 1
+    fi
+fi
+
 cd "$STAGE_DIR"
 export LC_ALL=C
 

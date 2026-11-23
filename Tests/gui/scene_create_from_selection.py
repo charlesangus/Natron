@@ -5,7 +5,7 @@ panel's tree with QModelIndex, which selects them in the 3D view too.
 
 Checks:
   - Tab on the 3D view opens the tab menu, filtered to scene nodes with a prim path or pattern
-    knob: it offers USDPrune and USDEditTransform, and no Blur or Grade;
+    knob: it offers USDPrune, USDEditTransform and USDToGeo, and no Blur or Grade;
   - choosing USDPrune creates one, between the USDRead and the Viewer, with its pattern set to both
     prims, which are pruned (/World holds only Cam);
   - one Undo removes the USDPrune, reconnects the Viewer to the USDRead and brings the prims back;
@@ -19,8 +19,8 @@ Checks:
   - with the USDEditTransform as the USDRead's first output and the panel pinned to it, a USDXformPrim
     created from Box wraps it there; the real Undo and Redo each restore the hierarchy, the moved
     prim's path, the scene the USDEditTransform outputs, and the connections;
-  - Tab on the node graph with the USDRead selected leaves out Blur but still lists the
-    Preferences menu command, and choosing it opens the Preferences panel.
+  - Tab on the node graph with the USDRead selected lists USDToGeo, leaves out Blur but still lists
+    the Preferences menu command, and choosing it opens the Preferences panel.
 
 Shots: scene-create-from-selection-menu.png (the filtered menu),
 scene-create-from-selection-pruned.png (after creating the USDPrune) and
@@ -201,6 +201,7 @@ try:
         report("NOTE %s lists for 'USD': %r" % (where, scene))
         check("USDPrune" in scene and "USDEditTransform" in scene,
               where + ": the menu offers USDPrune and USDEditTransform (got %r)" % (scene,))
+        check("USDToGeo" in scene, where + ": the menu offers USDToGeo, which reads a scene (got %r)" % (scene,))
         check("USDRead" not in scene, where + ": the menu leaves out USDRead, which has no input")
         for text in ("Blur", "Grade"):
             got = [row_name(e) for e in listed(line_edit, list_view, text)]
@@ -493,6 +494,8 @@ try:
         require(popup is not None, "Tab on the node graph with the USDRead selected opens the tab menu")
         blur = [row_name(e) for e in listed(line_edit, list_view, "Blur")]
         check("Blur" not in blur, "the node graph menu for a scene selection leaves out Blur (got %r)" % (blur,))
+        to_geo = [row_name(e) for e in listed(line_edit, list_view, "USDToGeo")]
+        check("USDToGeo" in to_geo, "the node graph menu for a scene selection lists USDToGeo (got %r)" % (to_geo,))
         entries = listed(line_edit, list_view, "pref")
         row = next((r for r, e in enumerate(entries) if row_name(e) == "Preferences..."), -1)
         if not check(row >= 0, "the node graph menu for a scene selection lists Preferences (got %r)" % (entries,)):

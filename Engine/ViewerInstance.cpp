@@ -4044,6 +4044,9 @@ ViewerInstance::evaluateGeometryInput(ViewerArgs& inArgs,
                                       bool* aborted)
 {
     const int textureIndex = inArgs.params->textureIndex;
+    // Read before evaluating, so an edit made during the evaluation leaves the detail outdated.
+    const NodePtr sourceNode = inArgs.activeInputToRender->getNode();
+    const U64 sourceHash = sourceNode ? sourceNode->getHashValue() : 0;
     GeoDetailConstPtr detail;
     EffectInstance::RenderRoIRetCode code;
     try {
@@ -4068,7 +4071,7 @@ ViewerInstance::evaluateGeometryInput(ViewerArgs& inArgs,
         layer = _imp->geometryLayers[textureIndex];
     }
 
-    return layer->serveFrame(detail, inArgs.params->time, inArgs.params->isSequential, scene, error);
+    return layer->serveFrame(detail, inArgs.params->time, inArgs.params->isSequential, scene, error, sourceNode, sourceHash);
 } // ViewerInstance::evaluateGeometryInput
 
 ViewerInstance::ViewerRenderRetCode
@@ -6666,7 +6669,9 @@ ViewerInstance::showGeometryFrame(int textureIndex,
 bool
 ViewerInstance::getShownGeometry(int textureIndex,
                                  GeoDetailConstPtr* detail,
-                                 int* frame) const
+                                 int* frame,
+                                 NodePtr* sourceNode,
+                                 U64* sourceHash) const
 {
     if ((textureIndex != 0) && (textureIndex != 1)) {
         return false;
@@ -6677,8 +6682,13 @@ ViewerInstance::getShownGeometry(int textureIndex,
     if (!layer || !GeoViewerLayer::getServedFrame(layer->getIdentifier(), &served)) {
         return false;
     }
+    NodeWPtr source;
+    const GeoDetailConstPtr shown = layer->getDetail(&source, sourceHash);
     if (detail) {
-        *detail = layer->getDetail();
+        *detail = shown;
+    }
+    if (sourceNode) {
+        *sourceNode = source.lock();
     }
     if (frame) {
         *frame = served;

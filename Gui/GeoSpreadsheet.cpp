@@ -654,10 +654,15 @@ private:
         GeoDetailConstPtr detail;
         const ViewerInstancePtr& viewer = read.getViewer();
         int servedFrame = 0;
+        NodePtr servedNode;
+        U64 servedHash = 0;
         // Texture 0 is input A, the input the 3D view shows and the only one getViewer() is set for. During
-        // playback the 3D view can still be on an earlier frame than the one asked for.
-        const bool fromViewer = viewer && viewer->getShownGeometry(0, &detail, &servedFrame) && detail
-            && (double(servedFrame) == read.getFrame());
+        // playback the 3D view can still be on an earlier frame than the one asked for, and right after
+        // the viewer is switched to another node, or the node is edited, it can still hold the geometry
+        // it had before.
+        const bool fromViewer = viewer && viewer->getShownGeometry(0, &detail, &servedFrame, &servedNode, &servedHash) && detail
+            && (double(servedFrame) == read.getFrame()) && servedNode && (servedNode == read.getNode())
+            && (servedHash == servedNode->getHashValue());
 
         // The viewer's own copy, when it has one, numbers the elements as its 3D view picks them.
         if (!fromViewer) {

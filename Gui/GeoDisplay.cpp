@@ -770,7 +770,7 @@ GeoDisplay::editStage(SceneStage& stage,
         componentVersion = _imp->componentVersion;
     }
 
-    // Points are picked through their markers, so picking points shows them.
+    // Picking points shows every point as a marker, so that what can be picked is seen.
     const bool markers = options.pointMarkers || ((componentMode == eGeoComponentPoints) && (converts.size() == 1));
     // Each guide is rebuilt only for a change of what it is drawn from: a pick touches the
     // selection's guides alone, which on a dense mesh leaves every point's marker as it is.

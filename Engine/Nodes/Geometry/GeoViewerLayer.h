@@ -34,6 +34,7 @@
 #include <utility>
 #include <vector>
 
+#include "Engine/EngineFwd.h"
 #include "Engine/GeoDetail.h"
 #include "Engine/ScenePayload.h"
 
@@ -114,7 +115,9 @@ public:
                     int frame,
                     bool sequential,
                     ScenePayload* payload,
-                    std::string* errorMessage);
+                    std::string* errorMessage,
+                    const NodeWPtr& sourceNode = NodeWPtr(),
+                    U64 sourceHash = 0);
 
     /**
      * @brief Serves the detail held for @p frame from now on, letting go of it. True when that
@@ -123,8 +126,13 @@ public:
      **/
     bool showFrame(int frame);
 
-    // The detail the layer is served from.
-    GeoDetailConstPtr getDetail() const;
+    /**
+     * @brief The detail the layer is served from, and in *sourceNode and *sourceHash the node
+     * serveFrame() was told it was evaluated from and that node's hash then. Either pointer may be
+     * null.
+     **/
+    GeoDetailConstPtr getDetail(NodeWPtr* sourceNode = nullptr,
+                                U64* sourceHash = nullptr) const;
 
     /**
      * @brief The frame the detail last read from the viewer geometry layer @p identifier was

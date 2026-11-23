@@ -68,6 +68,8 @@ public:
         .isWriter = false,
         .outputKind = eDataKindGeometry,
         .inputs = kInputs,
+        .primPathKnob = kUSDToGeoParamPrimPattern,
+        .primPathKnobTakesPattern = true,
     };
 
     static EffectInstance* BuildEffect(NodePtr node)

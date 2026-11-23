@@ -658,7 +658,8 @@ plug-in. Neither checks the doc, icon or kernel fragments.
   node can declare an input or output as `eDataKindGeometry` and have that
   participate in connection typing, but there is no detail type, no geometry
   cache and no `renderGeometry()` path yet. Geometry edges have their own
-  Preferences colour (`edgeGeometryColor`).
+  Preferences colour (`edgeGeometryColor`), defaulting to the Native 3D node
+  colour (`native3DNodesColor`).
 
 A node declares kinds via `NodeSpec::inputs[i].kind` and
 `NodeSpec::outputKind` (or, off `NativeEffectBase`, by

@@ -812,11 +812,16 @@ public:
 
     /**
      * @brief The geometry the viewer's copy for the given texture's input is served from, so element
-     * numbers match what the 3D view picks, and in *frame the frame the 3D view last read it at.
-     * False when that input shows no geometry or the 3D view has not read any yet. Either pointer
-     * may be null. MT-safe.
+     * numbers match what the 3D view picks, in *frame the frame the 3D view last read it at, and in
+     * *sourceNode and *sourceHash the node it was evaluated from and that node's hash before the
+     * evaluation. False when that input shows no geometry or the 3D view has not read any yet. Any
+     * pointer may be null. MT-safe.
      **/
-    bool getShownGeometry(int textureIndex, GeoDetailConstPtr* detail, int* frame) const;
+    bool getShownGeometry(int textureIndex,
+                          GeoDetailConstPtr* detail,
+                          int* frame,
+                          NodePtr* sourceNode = nullptr,
+                          U64* sourceHash = nullptr) const;
 
     /**
      * @brief Every node upstream of the A and B inputs that has a persistent message, nearest

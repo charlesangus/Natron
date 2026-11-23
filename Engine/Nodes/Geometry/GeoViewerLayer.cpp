@@ -75,6 +75,8 @@ maxHeldBytes()
 struct GeoViewerLayer::Slot {
     struct Held {
         GeoDetailConstPtr detail;
+        NodeWPtr sourceNode;
+        U64 sourceHash = 0;
         U64 order = 0;
         std::size_t bytes = 0;
     };
@@ -82,6 +84,8 @@ struct GeoViewerLayer::Slot {
     std::mutex mutex;
     // Under mutex.
     GeoDetailConstPtr detail = std::make_shared<const GeoDetail>();
+    NodeWPtr sourceNode;
+    U64 sourceHash = 0;
     int frame = 0;
     bool hasFrame = false;
     std::map<int, Held> held;
@@ -143,6 +147,8 @@ GeoViewerLayer::serve(const GeoDetailConstPtr& detail,
     {
         std::lock_guard<std::mutex> lock(_slot->mutex);
         _slot->detail = detail ? detail : std::make_shared<const GeoDetail>();
+        _slot->sourceNode.reset();
+        _slot->sourceHash = 0;
         _slot->hasFrame = false;
         _slot->held.clear();
     }
@@ -155,7 +161,9 @@ GeoViewerLayer::serveFrame(const GeoDetailConstPtr& detail,
                            int frame,
                            bool sequential,
                            ScenePayload* payload,
-                           std::string* errorMessage)
+                           std::string* errorMessage,
+                           const NodeWPtr& sourceNode,
+                           U64 sourceHash)
 {
     bool opened;
     {
@@ -169,10 +177,14 @@ GeoViewerLayer::serveFrame(const GeoDetailConstPtr& detail,
         }
         Slot::Held& held = _slot->held[frame];
         held.detail = detail ? detail : std::make_shared<const GeoDetail>();
+        held.sourceNode = sourceNode;
+        held.sourceHash = sourceHash;
         if (!opened) {
             // The layer opens on the first detail, so showing it later edits nothing, and a stage
             // composing it sees its prims appear as it is synced rather than as a resync.
             _slot->detail = held.detail;
+            _slot->sourceNode = sourceNode;
+            _slot->sourceHash = sourceHash;
         }
         held.order = _slot->nextOrder++;
         held.bytes = held.detail->getSizeInBytes();
@@ -206,6 +218,8 @@ GeoViewerLayer::showFrame(int frame)
         return false;
     }
     const GeoDetailConstPtr detail = found->second.detail;
+    _slot->sourceNode = found->second.sourceNode;
+    _slot->sourceHash = found->second.sourceHash;
     _slot->held.erase(found);
     // Frames the timeline has passed are never shown by playback, so letting them sit would pin
     // them until the next non-sequential evaluation. The direction is read off the last frame shown.
@@ -257,9 +271,16 @@ GeoViewerLayer::openPayload(ScenePayload* payload,
 }
 
 GeoDetailConstPtr
-GeoViewerLayer::getDetail() const
+GeoViewerLayer::getDetail(NodeWPtr* sourceNode,
+                          U64* sourceHash) const
 {
     std::lock_guard<std::mutex> lock(_slot->mutex);
+    if (sourceNode) {
+        *sourceNode = _slot->sourceNode;
+    }
+    if (sourceHash) {
+        *sourceHash = _slot->sourceHash;
+    }
 
     return _slot->detail;
 }

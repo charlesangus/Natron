@@ -2255,9 +2255,10 @@ Settings::setDefaultValues()
     _edgeRawColor->setDefaultValue(204. / 255., 0); // Okabe-Ito reddish purple
     _edgeRawColor->setDefaultValue(121. / 255., 1);
     _edgeRawColor->setDefaultValue(167. / 255., 2);
-    _edgeGeometryColor->setDefaultValue(0. / 255., 0); // Okabe-Ito bluish green
-    _edgeGeometryColor->setDefaultValue(158. / 255., 1);
-    _edgeGeometryColor->setDefaultValue(115. / 255., 2);
+    // The Native 3D node colour, so a geometry pipe reads as part of the geometry nodes it joins.
+    _edgeGeometryColor->setDefaultValue(0.50, 0);
+    _edgeGeometryColor->setDefaultValue(0.20, 1);
+    _edgeGeometryColor->setDefaultValue(0.60, 2);
     _linkLineColor->setDefaultValue(70. / 255., 0); // also the colour of linked parameter names
     _linkLineColor->setDefaultValue(140. / 255., 1);
     _linkLineColor->setDefaultValue(255. / 255., 2);

@@ -694,7 +694,7 @@ GeoDisplace::fetchImage(double time,
                         std::string* errorMessage) const
 {
     const EffectInstancePtr input = getInput(1);
-    const NodePtr node = input ? input->getNode() : NodePtr();
+    const NodePtr node = resolveDisabledNode(input ? input->getNode() : NodePtr(), time);
     if (!node) {
         return false;
     }

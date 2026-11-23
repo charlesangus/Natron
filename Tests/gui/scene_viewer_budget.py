@@ -157,6 +157,15 @@ try:
         boxes = v.property("natronSceneBoxes") if v is not None else None
         return [(str(b[0]), str(b[1]), float(b[3]), float(b[4])) for b in (boxes or []) if str(b[1]).startswith("budgetBox")]
 
+    def tallest_budget_box(kind):
+        """The budget box of kind drawn tallest on screen, as (path, x, y, height), or None. Each unit is
+        a flat tile, and a far one seen at this camera's low angle is under a pixel tall: no pixel's ray
+        reliably meets it, so the clicks go to the nearest."""
+        v = view()
+        boxes = v.property("natronSceneBoxes") if v is not None else None
+        found = [(str(b[0]), float(b[3]), float(b[4]), float(b[8]) - float(b[6])) for b in (boxes or []) if str(b[1]) == kind]
+        return max(found, key=lambda b: b[3]) if found else None
+
     def selection():
         v = view()
         value = v.property("natronSceneSelection") if v is not None else None
@@ -352,21 +361,21 @@ try:
             budget_box_paths = set(p for p, _, _, _ in boxes)
             pickable = set(p for p in budget_box_paths if not p.startswith(INSTANCER + "["))
             pickable.add(PROTOTYPE)
-            target = next(((p, x, y) for p, kind, x, y in boxes if kind == "budgetBox"), None)
+            target = tallest_budget_box("budgetBox")
             if check(target is not None, "a mesh budget box is drawn"):
                 click(view(), QPoint(int(round(target[1])), int(round(target[2]))))
                 yield settle()
                 picked = selection()
                 check(len(picked) == 1 and picked[0] in pickable,
-                      "a click on %s's budget box selects a budget box's prim (%r)" % (target[0], picked))
-            target = next(((p, x, y) for p, kind, x, y in boxes if kind == "budgetBoxInstance"), None)
+                      "a click on %s's budget box, %.1f px tall, selects a budget box's prim (%r)" % (target[0], target[3], picked))
+            target = tallest_budget_box("budgetBoxInstance")
             if check(target is not None, "an instance budget box is drawn"):
                 QMetaObject.invokeMethod(view(), "selectPaths", Q_ARG("QStringList", []))
                 click(view(), QPoint(int(round(target[1])), int(round(target[2]))))
                 yield settle()
                 picked = selection()
                 check(len(picked) == 1 and picked[0] in pickable,
-                      "a click on %s's budget box selects a budget box's prim (%r)" % (target[0], picked))
+                      "a click on %s's budget box, %.1f px tall, selects a budget box's prim (%r)" % (target[0], target[3], picked))
             QMetaObject.invokeMethod(view(), "selectPaths", Q_ARG("QStringList", []))
 
         section("explicit full row")

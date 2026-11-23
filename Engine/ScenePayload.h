@@ -89,13 +89,21 @@ public:
 
     ~ScenePayload();
 
+    // True when the stack holds no layer, even with regions open on it.
     bool isEmpty() const;
 
     std::size_t getNumLayers() const;
 
     /**
+     * @brief How many layer regions (USDLayerBegin, USDConfigureLayer) are open on the stack: the
+     * layers appended next go into the innermost one.
+     **/
+    std::size_t getNumOpenRegions() const;
+
+    /**
      * @brief Combines the hashes of the layers in stack order, so equal stacks hash equal and
-     * appending a layer moves it. 0 only for the empty stack.
+     * appending a layer moves it, as do the layers' regions and the regions open on the stack. 0
+     * only for the empty stack with no region open.
      **/
     U64 getStackHash() const;
 
@@ -113,7 +121,7 @@ public:
      **/
     bool isSameStack(const ScenePayload& other) const;
 
-    // For Engine/Nodes/Scene/ only; null for the empty stack.
+    // For Engine/Nodes/Scene/ only; null for the empty stack with no region open.
     const std::shared_ptr<const ScenePayloadImpl>& getImpl() const
     {
         return _imp;

@@ -58,42 +58,76 @@ USDMerge::mergeStacks(const std::vector<ScenePayload>& inputs)
     // keeps it under all of those, so each input's own order survives the union.
     // A layer is context only if every input reaching it does so through a break: a branch
     // without one relies on it, so an export must write it.
+    // A region open on an input closes there, so another branch's layers never land in its file.
+    // Below the merge, a USDConfigureLayer gathering the preceding layers reaches into every
+    // input up to that input's own boundary: an entry is sealed unless an input reaching it could
+    // claim it.
+    std::size_t nonEmpty = 0;
+    const ScenePayload* only = NULL;
+    for (const ScenePayload& input : inputs) {
+        if (!input.isEmpty()) {
+            ++nonEmpty;
+            only = &input;
+        }
+    }
+    // Gathering below the merge then reaches what it would above it.
+    if (nonEmpty == 1) {
+        return SceneOps::closeAllRegions(*only);
+    }
+
     std::vector<SceneLayerEntry> merged;
     std::unordered_map<const PXR_NS::SdfLayer*, std::size_t> seen;
-    const ScenePayload* first = NULL;
-    for (const ScenePayload& input : inputs) {
-        if (input.isEmpty()) {
+    ScenePayload first;
+    for (const ScenePayload& rawInput : inputs) {
+        if (rawInput.isEmpty()) {
             continue;
         }
-        if (!first) {
-            first = &input;
+        const ScenePayload input = SceneOps::closeAllRegions(rawInput);
+        if (first.isEmpty()) {
+            first = input;
         }
-        for (const SceneLayerEntry& entry : SceneOps::getLayers(input)) {
+        const std::vector<SceneLayerEntry> layers = SceneOps::getLayers(input);
+        std::vector<bool> claimable(layers.size(), false);
+        for (std::size_t i : SceneOps::getPrecedingRun(input)) {
+            claimable[i] = true;
+        }
+        for (std::size_t i = 0; i < layers.size(); ++i) {
+            const SceneLayerEntry& entry = layers[i];
             if (!entry.layer) {
                 continue;
             }
             const std::pair<std::unordered_map<const PXR_NS::SdfLayer*, std::size_t>::iterator, bool> inserted = seen.emplace(entry.layer.operator->(), merged.size());
             if (inserted.second) {
                 merged.push_back(entry);
-            } else if (!entry.context) {
-                merged[inserted.first->second].context = false;
+                merged.back().sealed = !claimable[i];
+                merged.back().mergeTop = false;
+                continue;
+            }
+            SceneLayerEntry& kept = merged[inserted.first->second];
+            if (!entry.context) {
+                kept.context = false;
+            }
+            if (claimable[i]) {
+                kept.sealed = false;
             }
         }
     }
-    if (!first) {
+    if (first.isEmpty()) {
         return ScenePayload();
     }
+    merged.back().mergeTop = true;
 
     // Build on the first input's stack when the union starts with it, to share its entries.
     ScenePayload result;
     std::size_t next = 0;
-    const std::vector<SceneLayerEntry> firstLayers = SceneOps::getLayers(*first);
+    const std::vector<SceneLayerEntry> firstLayers = SceneOps::getLayers(first);
     bool isPrefix = firstLayers.size() <= merged.size();
     for (std::size_t i = 0; isPrefix && i < firstLayers.size(); ++i) {
-        isPrefix = (firstLayers[i].layer == merged[i].layer) && (firstLayers[i].context == merged[i].context);
+        isPrefix = (firstLayers[i].layer == merged[i].layer) && (firstLayers[i].context == merged[i].context)
+            && (firstLayers[i].sealed == merged[i].sealed) && (firstLayers[i].mergeTop == merged[i].mergeTop);
     }
     if (isPrefix) {
-        result = *first;
+        result = first;
         next = firstLayers.size();
     }
     for (; next < merged.size(); ++next) {

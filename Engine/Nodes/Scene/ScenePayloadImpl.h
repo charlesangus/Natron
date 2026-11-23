@@ -30,6 +30,8 @@
 
 #include <cstddef>
 #include <memory>
+#include <optional>
+#include <string>
 #include <vector>
 
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
@@ -57,6 +59,62 @@ struct SceneLayerDependencies {
  **/
 typedef std::vector<PXR_NS::SdfPath> SceneLinkIndex;
 
+/**
+ * @brief One custom-data entry of a layer region: what USDWrite authors in the customLayerData of
+ * the region's file. text is the value as the user typed it, type its type's name.
+ **/
+struct SceneLayerCustomDatum {
+    std::string name;
+    std::string type;
+    std::string text;
+    PXR_NS::VtValue value;
+};
+
+/**
+ * @brief What a USDConfigureLayer records for a region of the layer stack: the file it is saved
+ * to, empty for a region flattened into the file of its parent, and the layer metadata the user
+ * set. Unset fields are left to whatever else authors them.
+ **/
+struct SceneLayerRegionSettings {
+    std::string savePath;
+    // The USDConfigureLayer the settings come from; empty when none set them.
+    std::string node;
+    std::optional<std::string> defaultPrim;
+    std::optional<std::string> comment;
+    std::optional<double> startTime;
+    std::optional<double> endTime;
+    std::optional<double> timeCodesPerSecond;
+    std::optional<double> framesPerSecond;
+    std::optional<SceneMetadata::UpAxisEnum> upAxis;
+    std::optional<double> metersPerUnit;
+    std::optional<std::string> colorConfiguration;
+    std::optional<std::string> colorManagementSystem;
+    std::optional<std::string> renderSettingsPrimPath;
+    std::vector<SceneLayerCustomDatum> customData;
+
+    bool isEmpty() const;
+
+    // Takes every field stronger sets, custom data by name.
+    void mergeFrom(const SceneLayerRegionSettings& stronger);
+
+    U64 hash() const;
+};
+
+/**
+ * @brief A region of the layer stack, which USDWrite saves to a file of its own when its settings
+ * name one: the entries tagged with it (SceneLayerEntry::region) and those of the regions nested
+ * in it. Immutable; a change of settings makes another region, under another id.
+ **/
+struct SceneLayerRegion {
+    U64 id = 0;
+    // The node that opened or claimed the region.
+    std::string node;
+    std::shared_ptr<const SceneLayerRegion> parent;
+    SceneLayerRegionSettings settings;
+};
+
+typedef std::shared_ptr<const SceneLayerRegion> SceneLayerRegionPtr;
+
 struct SceneLayerEntry {
     PXR_NS::SdfLayerRefPtr layer;
     U64 hash = 0;
@@ -72,19 +130,33 @@ struct SceneLayerEntry {
     // The layer sits above a USDLayerBreak: it composes like any other, but an export that strips
     // breaks leaves it out of what it writes.
     bool context = false;
+    // The innermost region the layer belongs to; null outside every region.
+    SceneLayerRegionPtr region;
+    // A boundary of a layer region (a file read, a break, another region) lies above the layer on
+    // every path a merge reached it by: a USDConfigureLayer gathering the preceding layers stops
+    // short of it.
+    bool sealed = false;
+    // The strongest layer of a merge's result, below which the preceding layers are gathered from
+    // every input, up to each one's own boundary.
+    bool mergeTop = false;
 };
 
 /**
  * @brief The shared state behind a non-empty ScenePayload: its strongest layer and a link to the
- * payload it was appended to, which holds the weaker ones.
+ * payload it was appended to, which holds the weaker ones. A payload without layers whose regions
+ * are open has one too, with no layer and no base: it is never the base of another link.
  **/
 struct ScenePayloadImpl {
     std::shared_ptr<const ScenePayloadImpl> base;
     SceneLayerEntry top;
     std::size_t numLayers = 0;
+    // The stack hash before openRegions is folded in.
+    U64 closedStackHash = 0;
     U64 stackHash = 0;
     U64 contentHash = 0;
     SceneMetadata metadata;
+    // The regions entries appended to the payload go into, outermost first.
+    std::vector<SceneLayerRegionPtr> openRegions;
 };
 
 NATRON_NAMESPACE_EXIT

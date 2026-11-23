@@ -64,7 +64,7 @@ if [[ ! -f "${BUILD_DIR}/CMakeCache.txt" ]]; then
     exit 1
 fi
 
-STAGE_DIR="$(mktemp -d)"
+STAGE_DIR="$(cd "$(mktemp -d)" && pwd -P)"
 trap 'rm -rf "${STAGE_DIR}" "${STAGE_DIR}.relocatable"' EXIT
 
 ARTIFACTS_DIR="${BUILD_DIR}/artifacts"

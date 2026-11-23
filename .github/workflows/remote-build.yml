@@ -361,8 +361,8 @@ jobs:
           # shellcheck disable=SC2086
           tools/ci/summary.sh build "$PRESET" "$(IFS=,; echo "${artifacts[*]}")" $CMAKE_ARGS
 
-  # Runs beside the ctest legs instead of ahead of them. Gated on the build tree rather than on
-  # test success: a red test leg should not withhold the binary someone is trying to inspect.
+  # Gated on the build tree rather than on test success:
+  # a red test leg should not withhold the binary someone is trying to inspect.
   package:
     name: Package · ${{ inputs.preset || 'fast' }} AppImage
     needs: [dev-image, remote-build]

@@ -50,7 +50,7 @@ BUNDLE_NAME="Natron-${VERSION}-linux-x86_64"
 TARBALL="$OUTPUT_DIR/${BUNDLE_NAME}.tar.xz"
 CHECKSUM="$TARBALL.sha256"
 
-# stage-bundle.sh stamps the tree it verified; a tree changed since is checked again.
+# The stamp covers the stage's real path plus the checker and excludelist contents.
 if "$RELOCATABLE_STAMP" check "$STAGING_DIR"; then
     echo "==> Bundle relocatability already verified by stage-bundle.sh for this exact tree"
 else

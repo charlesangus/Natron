@@ -580,6 +580,9 @@ fi
 # which leaves every copy decision, and so which source wins a basename, as a
 # one-at-a-time FIFO walk would make it.
 LDD_JOBS="${NATRON_STAGE_JOBS:-$(nproc)}"
+case "$LDD_JOBS" in
+    ''|*[!0-9]*|0*) echo "error: NATRON_STAGE_JOBS must be a positive integer, got '$LDD_JOBS'" >&2; exit 1 ;;
+esac
 LDD_CHUNK=$((LDD_JOBS * 8))
 LDD_DIR="$(mktemp -d)"
 trap 'rm -rf "$LDD_DIR"' EXIT

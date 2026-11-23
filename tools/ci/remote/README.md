@@ -98,7 +98,7 @@ tools/ci/remote/build.sh <fast|release> --from-run <run-id> --gui "<script> ..."
   meant as a later `--from-run` source. `--no-appimage` names the default and
   is rejected beside any of the three. `debug` takes none of them.
   Packaging runs in its own `package` job off the uploaded build tree, beside
-  the ctest legs, so tests no longer wait for it.
+  the ctest legs, so ctest does not wait for it.
 - `--cmake-arg <arg>` (repeatable) adds an argument to the cmake configure,
   e.g. `--cmake-arg -DNATRON_GPU=OFF`. `tools/ci/local/build.sh` takes the same
   flag and then builds in its own `build/<preset>-<hash>` tree instead of the

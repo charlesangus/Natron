@@ -205,6 +205,9 @@ WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
 JOBS="${NATRON_CHECK_JOBS:-$(nproc)}"
+case "$JOBS" in
+    ''|*[!0-9]*|0*) echo "error: NATRON_CHECK_JOBS must be a positive integer, got '$JOBS'" >&2; exit 1 ;;
+esac
 mapfile -d '' -t ALL_FILES < <(find "$STAGE_DIR" -type f -print0 | LC_ALL=C sort -z)
 BATCH_SIZE=$(( (${#ALL_FILES[@]} + JOBS * 4 - 1) / (JOBS * 4) ))
 (( BATCH_SIZE > 0 )) || BATCH_SIZE=1

@@ -41,8 +41,8 @@ while IFS= read -r -d '' path && IFS= read -r -d '' mode &&
     TARGET["$path"]="$target"
 done < "$WORK_DIR/meta"
 
-# Plain sha256sum output, which this manifest has always been cut from, marks a
-# name holding a backslash or a newline by prefixing a backslash to the hash.
+# Matches plain sha256sum output, which marks a name holding a backslash or a
+# newline by prefixing a backslash to the hash.
 while IFS= read -r -d '' line; do
     path="${line:66}"
     if [[ "$path" == *$'\\'* || "$path" == *$'\n'* ]]; then

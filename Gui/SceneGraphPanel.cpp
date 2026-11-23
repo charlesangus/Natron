@@ -2722,7 +2722,12 @@ void
 SceneGraphPanel::refreshInspector()
 {
     _imp->updateChangedHere();
-    _imp->inspector->setNode(_imp->modelNode());
+    const NodePtr shown = _imp->modelNode();
+    ViewerInstancePtr shownBy;
+    if (shown && _imp->viewer && (shown == _imp->viewer->getSceneViewedNode()) && _imp->viewer->getInternalNode()) {
+        shownBy = std::dynamic_pointer_cast<ViewerInstance>(_imp->viewer->getInternalNode()->shared_from_this());
+    }
+    _imp->inspector->setNode(shown, shownBy);
     _imp->inspector->setPrim(_imp->model->getSource(), _imp->currentPath(), _imp->currentFrame(), _imp->framesPerSecond());
 }
 

@@ -119,7 +119,8 @@ selectAllLive(const GeoIndexMap& map,
 }
 
 bool
-selectNumbers(const GeoIndexMap& map,
+selectNumbers(GeoIndex count,
+              const GeoIndexMap* map,
               std::string_view token,
               GeoElementMask& out,
               std::string* error)
@@ -152,10 +153,10 @@ selectNumbers(const GeoIndexMap& map,
         return false;
     }
     const GeoIndex lo = std::min(first, last);
-    const GeoIndex hi = std::min(std::max(first, last), map.size() - 1);
+    const GeoIndex hi = std::min(std::max(first, last), count - 1);
     for (GeoIndex i = lo; i <= hi; ++i) {
         if ((i - lo) % every < take) {
-            out[std::size_t(map.offsetFromIndex(i))] = 1;
+            out[std::size_t(map ? map->offsetFromIndex(i) : GeoOffset(i))] = 1;
         }
     }
 
@@ -270,7 +271,7 @@ selectToken(const GeoDetail& detail,
         return selectByCompare(detail, cls, token, out, error);
     }
     if (std::isdigit((unsigned char)token.front())) {
-        return selectNumbers(map, token, out, error);
+        return selectNumbers(map.size(), &map, token, out, error);
     }
     for (const std::string& name : detail.groupNames(cls)) {
         if (!geoGlobMatch(token, name)) {
@@ -280,6 +281,50 @@ selectToken(const GeoDetail& detail,
             group->forEachLiveMember(map, [&](GeoIndex /*index*/, GeoOffset offset) {
                 out[std::size_t(offset)] = 1;
             });
+        }
+    }
+
+    return true;
+}
+
+// The shared pattern loop over an element domain: liveFill marks every element, tokenFn marks what one token selects.
+template <typename LiveFill, typename TokenFn>
+bool
+selectPattern(std::size_t size,
+              LiveFill&& liveFill,
+              TokenFn&& tokenFn,
+              std::string_view pattern,
+              GeoElementMask* mask,
+              std::string* error)
+{
+    mask->assign(size, 0);
+    const std::vector<std::string_view> tokens = geoSplitPattern(pattern);
+    if (tokens.empty()) {
+        liveFill(*mask);
+
+        return true;
+    }
+    GeoElementMask live(size, 0);
+    liveFill(live);
+    GeoElementMask tokenMask;
+    for (std::string_view token : tokens) {
+        const bool remove = token.front() == '^';
+        if (remove) {
+            token.remove_prefix(1);
+        }
+        const bool negate = !token.empty() && token.front() == '!';
+        if (negate) {
+            token.remove_prefix(1);
+        }
+        tokenMask.assign(size, 0);
+        if (!tokenFn(token, tokenMask, error)) {
+            return false;
+        }
+        for (std::size_t i = 0; i < size; ++i) {
+            const bool hit = negate ? (live[i] && !tokenMask[i]) : bool(tokenMask[i]);
+            if (hit) {
+                (*mask)[i] = remove ? 0 : 1;
+            }
         }
     }
 
@@ -618,39 +663,68 @@ geoSelectElements(const GeoDetail& detail,
                   std::string* error)
 {
     const GeoIndexMap& map = detail.indexMap(cls);
-    const std::size_t size = std::size_t(map.offsetSize());
-    mask->assign(size, 0);
-    const std::vector<std::string_view> tokens = geoSplitPattern(pattern);
-    if (tokens.empty()) {
-        selectAllLive(map, *mask);
 
-        return true;
-    }
-    GeoElementMask live(size, 0);
-    selectAllLive(map, live);
-    GeoElementMask tokenMask;
-    for (std::string_view token : tokens) {
-        const bool remove = token.front() == '^';
-        if (remove) {
-            token.remove_prefix(1);
-        }
-        const bool negate = !token.empty() && token.front() == '!';
-        if (negate) {
-            token.remove_prefix(1);
-        }
-        tokenMask.assign(size, 0);
-        if (!selectToken(detail, cls, token, tokenMask, error)) {
-            return false;
-        }
-        for (std::size_t i = 0; i < size; ++i) {
-            const bool hit = negate ? (live[i] && !tokenMask[i]) : bool(tokenMask[i]);
-            if (hit) {
-                (*mask)[i] = remove ? 0 : 1;
+    return selectPattern(
+        std::size_t(map.offsetSize()),
+        [&](GeoElementMask& out) { selectAllLive(map, out); },
+        [&](std::string_view token, GeoElementMask& out, std::string* err) {
+            return selectToken(detail, cls, token, out, err);
+        },
+        pattern,
+        mask,
+        error);
+}
+
+bool
+geoSelectElementsInDomain(std::size_t count,
+                          std::span<const GeoNamedElementGroup> namedGroups,
+                          std::string_view pattern,
+                          GeoElementMask* mask,
+                          std::string* error,
+                          bool allowAttributes)
+{
+    return selectPattern(
+        count,
+        [&](GeoElementMask& out) { std::fill(out.begin(), out.end(), char(1)); },
+        [&](std::string_view token, GeoElementMask& out, std::string* err) {
+            if (token.empty()) {
+                return true;
             }
-        }
-    }
+            if (token == "*") {
+                std::fill(out.begin(), out.end(), char(1));
 
-    return true;
+                return true;
+            }
+            if (token.front() == '@') {
+                if (!allowAttributes) {
+                    if (err) {
+                        *err = "Attribute tests are not supported on USD prims";
+                    }
+
+                    return false;
+                }
+
+                return true;
+            }
+            if (std::isdigit((unsigned char)token.front())) {
+                return selectNumbers(GeoIndex(count), nullptr, token, out, err);
+            }
+            for (const GeoNamedElementGroup& group : namedGroups) {
+                if (!geoGlobMatch(token, group.name)) {
+                    continue;
+                }
+                for (const std::int32_t element : group.elements) {
+                    if ((element >= 0) && (std::size_t(element) < count)) {
+                        out[std::size_t(element)] = 1;
+                    }
+                }
+            }
+
+            return true;
+        },
+        pattern,
+        mask,
+        error);
 }
 
 std::string

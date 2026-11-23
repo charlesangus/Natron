@@ -928,6 +928,13 @@ public:
                                std::vector<std::pair<std::string, std::vector<int>>> edges,
                                std::vector<std::pair<std::string, std::vector<int>>> faces);
 
+    /**
+     * @brief Highlights the points and faces given by prim path and index, besides whatever else is
+     * highlighted. Empty vectors clear it.
+     **/
+    void setDisplayHighlight(std::vector<std::pair<std::string, std::vector<int>>> points,
+                             std::vector<std::pair<std::string, std::vector<int>>> faces);
+
     // Destroys the engine. Needs the context of render() current.
     void releaseGL();
 
@@ -1205,6 +1212,21 @@ public:
 
     // Takes @p selection as it is; componentSelectionChanged() if that changes the selection.
     void setComponentSelection(const GeoComponentSelection& selection);
+
+    /**
+     * @brief Display only, and only in the scene context: highlights the points (class Points) or
+     * faces (class Primitives) of the prim at @p primPath, besides the selected prims, replacing
+     * any earlier highlight. Nothing for another class or an empty list, which clears it, as does
+     * entering the geometry context. natronSceneHighlightCount reads the number highlighted.
+     **/
+    void setSceneComponentHighlight(const std::string& primPath,
+                                    GeoAttribClassEnum cls,
+                                    std::vector<int> indices);
+
+    void clearSceneComponentHighlight();
+
+    // Picks the mode of @p selection and takes it as it is, without carrying the previous selection over to that mode.
+    void setPickedComponents(const GeoComponentSelection& selection);
 
     /**
      * @brief Grows the component selection by @p steps rings of neighbours, or shrinks it for a

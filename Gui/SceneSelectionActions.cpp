@@ -697,18 +697,18 @@ createExpandHierarchyAfter(const NodePtr& viewed,
     UndoScope scope;
     scope.touchNode(created);
     scope.touchNode(viewed);
-    NodePtr below;
+    std::vector<NodePtr> moved;
     for (const ReconnectInputsCommand::InputChange& change : outputs) {
         NodePtr output = change.node.lock();
         if (output && output->replaceInput(created, change.inputNb)) {
             changes.push_back(change);
             scope.touchNode(output);
-            if (!below) {
-                below = output;
+            if (std::find(moved.begin(), moved.end(), output) == moved.end()) {
+                moved.push_back(output);
             }
         }
     }
-    placeBelow(viewed, created, below);
+    placeBelow(viewed, created, moved);
     // The connections are made, so the command's first redo does nothing.
     graph->pushUndoCommand(new ReconnectInputsCommand(graph, changes), scope);
 

@@ -154,6 +154,9 @@
 #include <pxr/usd/usd/stageLoadRules.h>
 #include <pxr/usd/usdGeom/bboxCache.h>
 #include <pxr/usd/usdGeom/camera.h>
+#include <pxr/usd/usdGeom/mesh.h>
+#include <pxr/usd/usdGeom/pointBased.h>
+#include <pxr/usd/usdGeom/pointInstancer.h>
 #include <pxr/usd/usdGeom/xformCache.h>
 #include <pxr/usdImaging/usdImagingGL/engine.h>
 #include <pxr/usdImaging/usdImagingGL/renderParams.h>
@@ -1099,6 +1102,13 @@ struct SceneViewportRenderer::Implementation {
     bool componentHighlight = false;
     std::vector<std::pair<std::string, std::vector<int>>> highlightEdges;
     std::vector<std::pair<std::string, std::vector<int>>> highlightFaces;
+    // Highlighted whichever of the two applies, by prim path.
+    std::vector<std::pair<std::string, std::vector<int>>> displayPoints;
+    std::vector<std::pair<std::string, std::vector<int>>> displayFaces;
+    // Storm draws a mesh's selected points only in its points repr, so the shaded and wireframe
+    // modes would show none of displayPoints, and it lights its selection colour, so a face lit
+    // black shows none of displayFaces: both are drawn over the frame instead.
+    std::atomic<bool> hasDisplayHighlight { false };
     std::atomic<bool> engineSelectionDirty { false };
     // A selection change leaves the view and the stage as they were, so these counts are what
     // asks for the frame that tints it: posted by the main thread, applied with engineSelection,
@@ -1855,8 +1865,8 @@ struct SceneViewportRenderer::Implementation {
         params.clearColor = GfVec4f(0.f, 0.f, 0.f, 0.f);
         params.colorCorrectionMode = HdxColorCorrectionTokens->disabled;
         // The selection is tinted after drawGrade(), from a pass of its own: Storm's highlight
-        // misses translucent surfaces. Points, edges and faces picked in viewed geometry have no
-        // prim of their own to draw there, so they take Storm's.
+        // misses translucent surfaces. Picked or highlighted points, edges and faces have no prim
+        // of their own to draw there, so they take Storm's.
         params.highlight = componentHighlightApplied;
         params.showProxy = showProxy;
         params.showRender = showRender;
@@ -1917,6 +1927,20 @@ struct SceneViewportRenderer::Implementation {
             }
         }
         selectedPathsChanged = true;
+        {
+            std::lock_guard<std::mutex> lock(engineSelectionMutex);
+            componentHighlightApplied = componentHighlightApplied || !displayPoints.empty() || !displayFaces.empty();
+            for (const std::pair<std::string, std::vector<int>>& prim : displayPoints) {
+                if (SdfPath::IsValidPathString(prim.first)) {
+                    components->AddPoints(HdSelection::HighlightModeSelect, SdfPath(prim.first), VtIntArray(prim.second.begin(), prim.second.end()), GfVec4f(1.f, 0.6f, 0.f, 1.f));
+                }
+            }
+            for (const std::pair<std::string, std::vector<int>>& prim : displayFaces) {
+                if (SdfPath::IsValidPathString(prim.first)) {
+                    components->AddElements(HdSelection::HighlightModeSelect, SdfPath(prim.first), VtIntArray(prim.second.begin(), prim.second.end()));
+                }
+            }
+        }
         engine->setComponentSelection(components);
     }
 
@@ -3329,6 +3353,183 @@ struct SceneViewportRenderer::Implementation {
         glPopMatrix();
     } // drawGuides
 
+    bool drawsOverlays() const
+    {
+        return showGrid || showGuides || hasHandles || hasBoxes() || hasDisplayHighlight;
+    }
+
+    // The highlighted points of displayPoints at the shown time, over everything. Needs stageMutex.
+    void drawDisplayPoints(const GfFrustum& frustum)
+    {
+        std::vector<std::pair<std::string, std::vector<int>>> prims;
+        {
+            std::lock_guard<std::mutex> lock(engineSelectionMutex);
+            prims = displayPoints;
+        }
+        const UsdStageRefPtr stage = currentStage();
+        if (prims.empty() || !stage) {
+            return;
+        }
+        const UsdTimeCode time(timeCode());
+        UsdGeomXformCache xforms(time);
+        std::vector<GfVec3d> world;
+        for (const std::pair<std::string, std::vector<int>>& prim : prims) {
+            if (!SdfPath::IsValidPathString(prim.first)) {
+                continue;
+            }
+            const UsdPrim usdPrim = stage->GetPrimAtPath(SdfPath(prim.first));
+            VtVec3fArray points;
+            if (usdPrim && usdPrim.IsA<UsdGeomPointBased>()) {
+                UsdGeomPointBased(usdPrim).GetPointsAttr().Get(&points, time);
+            } else if (usdPrim && usdPrim.IsA<UsdGeomPointInstancer>()) {
+                UsdGeomPointInstancer(usdPrim).GetPositionsAttr().Get(&points, time);
+            } else {
+                continue;
+            }
+            const GfMatrix4d toWorld = xforms.GetLocalToWorldTransform(usdPrim);
+            for (const int index : prim.second) {
+                if ((index >= 0) && ((std::size_t)index < points.size())) {
+                    world.push_back(toWorld.Transform(GfVec3d(points[(std::size_t)index])));
+                }
+            }
+        }
+        if (world.empty()) {
+            return;
+        }
+
+        glMatrixMode(GL_PROJECTION);
+        glPushMatrix();
+        glLoadMatrixd(frustum.ComputeProjectionMatrix().GetArray());
+        glMatrixMode(GL_MODELVIEW);
+        glPushMatrix();
+        glLoadMatrixd(frustum.ComputeViewMatrix().GetArray());
+
+        glDisable(GL_LIGHTING);
+        glDisable(GL_TEXTURE_2D);
+        glDisable(GL_CULL_FACE);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_BLEND);
+        glPointSize(7.f);
+        glColor4f(1.f, 0.6f, 0.f, 1.f);
+        glBegin(GL_POINTS);
+        for (const GfVec3d& p : world) {
+            glVertex3d(p[0], p[1], p[2]);
+        }
+        glEnd();
+        glPointSize(1.f);
+
+        glMatrixMode(GL_MODELVIEW);
+        glPopMatrix();
+        glMatrixMode(GL_PROJECTION);
+        glPopMatrix();
+    } // drawDisplayPoints
+
+    // The highlighted faces of displayFaces at the shown time, over everything: Storm mixes its
+    // selection colour in before lighting, so a face lit black (a scene without lights, or a
+    // face turned from the light) would show none of it. Needs stageMutex.
+    void drawDisplayFaces(const GfFrustum& frustum)
+    {
+        std::vector<std::pair<std::string, std::vector<int>>> prims;
+        {
+            std::lock_guard<std::mutex> lock(engineSelectionMutex);
+            prims = displayFaces;
+        }
+        const UsdStageRefPtr stage = currentStage();
+        if (prims.empty() || !stage) {
+            return;
+        }
+        const UsdTimeCode time(timeCode());
+        UsdGeomXformCache xforms(time);
+        // Each face's corners in world space, one after the other; counts holds how many each has.
+        std::vector<GfVec3d> corners;
+        std::vector<int> counts;
+        for (const std::pair<std::string, std::vector<int>>& prim : prims) {
+            if (!SdfPath::IsValidPathString(prim.first)) {
+                continue;
+            }
+            const UsdPrim usdPrim = stage->GetPrimAtPath(SdfPath(prim.first));
+            if (!usdPrim || !usdPrim.IsA<UsdGeomMesh>()) {
+                continue;
+            }
+            const UsdGeomMesh mesh(usdPrim);
+            VtVec3fArray points;
+            VtIntArray faceCounts, faceIndices;
+            mesh.GetPointsAttr().Get(&points, time);
+            mesh.GetFaceVertexCountsAttr().Get(&faceCounts, time);
+            mesh.GetFaceVertexIndicesAttr().Get(&faceIndices, time);
+            std::vector<std::size_t> starts(faceCounts.size() + 1, 0);
+            for (std::size_t face = 0; face < faceCounts.size(); ++face) {
+                starts[face + 1] = starts[face] + (std::size_t)std::max(0, faceCounts[face]);
+            }
+            const GfMatrix4d toWorld = xforms.GetLocalToWorldTransform(usdPrim);
+            for (const int face : prim.second) {
+                if ((face < 0) || ((std::size_t)face >= faceCounts.size()) || (starts[(std::size_t)face + 1] > faceIndices.size())) {
+                    continue;
+                }
+                int count = 0;
+                for (std::size_t corner = starts[(std::size_t)face]; corner < starts[(std::size_t)face + 1]; ++corner) {
+                    const int point = faceIndices[corner];
+                    if ((point >= 0) && ((std::size_t)point < points.size())) {
+                        corners.push_back(toWorld.Transform(GfVec3d(points[(std::size_t)point])));
+                        ++count;
+                    }
+                }
+                counts.push_back(count);
+            }
+        }
+        if (corners.empty()) {
+            return;
+        }
+
+        glMatrixMode(GL_PROJECTION);
+        glPushMatrix();
+        glLoadMatrixd(frustum.ComputeProjectionMatrix().GetArray());
+        glMatrixMode(GL_MODELVIEW);
+        glPushMatrix();
+        glLoadMatrixd(frustum.ComputeViewMatrix().GetArray());
+
+        glDisable(GL_LIGHTING);
+        glDisable(GL_TEXTURE_2D);
+        glDisable(GL_CULL_FACE);
+        glDisable(GL_DEPTH_TEST);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glColor4f(1.f, 0.6f, 0.f, 0.4f);
+        glBegin(GL_TRIANGLES);
+        std::size_t first = 0;
+        for (const int count : counts) {
+            for (int corner = 1; corner + 1 < count; ++corner) {
+                const GfVec3d& a = corners[first];
+                const GfVec3d& b = corners[first + (std::size_t)corner];
+                const GfVec3d& c = corners[first + (std::size_t)corner + 1];
+                glVertex3d(a[0], a[1], a[2]);
+                glVertex3d(b[0], b[1], b[2]);
+                glVertex3d(c[0], c[1], c[2]);
+            }
+            first += (std::size_t)count;
+        }
+        glEnd();
+        glDisable(GL_BLEND);
+        glColor4f(1.f, 0.6f, 0.f, 1.f);
+        glBegin(GL_LINES);
+        first = 0;
+        for (const int count : counts) {
+            for (int corner = 0; corner < count; ++corner) {
+                const GfVec3d& a = corners[first + (std::size_t)corner];
+                const GfVec3d& b = corners[first + (std::size_t)((corner + 1) % count)];
+                glVertex3d(a[0], a[1], a[2]);
+                glVertex3d(b[0], b[1], b[2]);
+            }
+            first += (std::size_t)count;
+        }
+        glEnd();
+
+        glMatrixMode(GL_MODELVIEW);
+        glPopMatrix();
+        glMatrixMode(GL_PROJECTION);
+        glPopMatrix();
+    } // drawDisplayFaces
+
     // Tells the box worker the frame's time and the stage's version. Needs stageMutex.
     void feedBoxes()
     {
@@ -3670,7 +3871,8 @@ struct SceneViewportRenderer::Implementation {
         fillDrawnList.reset();
         drawnBoxes.clear();
         const bool fillBoxes = !standIn && !held && hasFillBoxes();
-        if (!standIn && !fillBoxes && !showGrid && !showGuides && !hasHandles && !hasBoxes()) {
+        const bool displayHighlight = stageReadable && hasDisplayHighlight;
+        if (!standIn && !fillBoxes && !showGrid && !showGuides && !hasHandles && !hasBoxes() && !displayHighlight) {
             return;
         }
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
@@ -3695,6 +3897,10 @@ struct SceneViewportRenderer::Implementation {
         }
         if (handleFrame) {
             drawTransformHandles(*handleFrame, handleSelection, frustum, width, height);
+        }
+        if (displayHighlight) {
+            drawDisplayFaces(frustum);
+            drawDisplayPoints(frustum);
         }
     }
 
@@ -5960,7 +6166,7 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
     _imp->feedBoxes();
     SceneGizmo::Frame handleFrame;
     bool handleSelection = false;
-    const bool handlesShown = (_imp->showGrid || _imp->showGuides || _imp->hasHandles || _imp->hasBoxes()) && _imp->computeHandleFrame(&handleFrame, &handleSelection);
+    const bool handlesShown = _imp->drawsOverlays() && _imp->computeHandleFrame(&handleFrame, &handleSelection);
     _imp->drawOverlayPass(fbo, frustum, width, height, held, handlesShown ? &handleFrame : nullptr, handleSelection, bool(_imp->lookThroughCamera()), true, false);
 
     return converged ? eRenderStatusDone : eRenderStatusRefining;
@@ -6160,7 +6366,7 @@ SceneViewportRenderer::renderProgressive(unsigned int fbo,
         glBlitFramebuffer(0, 0, frameWidth, frameHeight, 0, 0, width, height, GL_COLOR_BUFFER_BIT, ((frameWidth == width) && (frameHeight == height)) ? GL_NEAREST : GL_LINEAR);
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
         glDeleteFramebuffers(1, &readFramebuffer);
-        if ((_imp->showGrid || _imp->showGuides || _imp->hasHandles || _imp->hasBoxes()) && (frameWidth == width) && (frameHeight == height)) {
+        if (_imp->drawsOverlays() && (frameWidth == width) && (frameHeight == height)) {
             // The frame's depth, so that the grid and guides hide behind what it shows.
             glUseProgram(0);
             glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
@@ -6184,7 +6390,7 @@ SceneViewportRenderer::renderProgressive(unsigned int fbo,
     _imp->feedBoxes();
     SceneGizmo::Frame handleFrame;
     bool handleSelection = false;
-    const bool handlesShown = (_imp->showGrid || _imp->showGuides || _imp->hasHandles || _imp->hasBoxes()) && _imp->computeHandleFrame(&handleFrame, &handleSelection);
+    const bool handlesShown = _imp->drawsOverlays() && _imp->computeHandleFrame(&handleFrame, &handleSelection);
     _imp->drawOverlayPass(fbo, frustum, width, height, held, handlesShown ? &handleFrame : nullptr, handleSelection, bool(_imp->lookThroughCamera()), true, false);
     if (held) {
         return eRenderStatusDone;
@@ -6502,6 +6708,17 @@ SceneViewportRenderer::setComponentHighlight(bool active,
     _imp->highlightEdges = std::move(edges);
     _imp->highlightFaces = std::move(faces);
     ++_imp->selectionPosted;
+    _imp->engineSelectionDirty = true;
+}
+
+void
+SceneViewportRenderer::setDisplayHighlight(std::vector<std::pair<std::string, std::vector<int>>> points,
+                                           std::vector<std::pair<std::string, std::vector<int>>> faces)
+{
+    std::lock_guard<std::mutex> lock(_imp->engineSelectionMutex);
+    _imp->displayPoints = std::move(points);
+    _imp->displayFaces = std::move(faces);
+    _imp->hasDisplayHighlight = !_imp->displayPoints.empty() || !_imp->displayFaces.empty();
     _imp->engineSelectionDirty = true;
 }
 
@@ -8146,6 +8363,7 @@ struct SceneViewport::Implementation {
     const std::shared_ptr<GeoDisplay> geoDisplay = std::make_shared<GeoDisplay>();
     GeoComponentEnum geoPickMode = eGeoComponentObjects;
     bool geometryContext = false;
+    int displayHighlightCount = 0;
     GeoComponentSelection componentSelection;
     bool reselecting = false;
     GeoComponentEnum reselectPickMode = eGeoComponentObjects;
@@ -8938,6 +9156,7 @@ SceneViewport::SceneViewport(QWidget* parent)
     setProperty("natronGeoComponents", false);
     setProperty("natronGeoSelection", QString());
     setProperty("natronGeoSelectionCount", 0);
+    setProperty("natronSceneHighlightCount", 0);
     _imp->renderer.setStageEditor(_imp->geoDisplay);
     // A paint skipped while the worker syncs leaves the framebuffer as it was. Assumed from Qt's
     // documentation of QOpenGLWidget::UpdateBehavior, which says PartialUpdate keeps the
@@ -11304,6 +11523,7 @@ SceneViewport::setGeometryContext(bool geometry)
         return;
     }
     _imp->geometryContext = geometry;
+    clearSceneComponentHighlight();
     refreshComponentState();
 }
 
@@ -11328,6 +11548,56 @@ SceneViewport::setComponentSelection(const GeoComponentSelection& selection)
     _imp->componentSelection = selection;
     refreshComponentState();
     Q_EMIT componentSelectionChanged();
+}
+
+void
+SceneViewport::setSceneComponentHighlight(const std::string& primPath,
+                                          GeoAttribClassEnum cls,
+                                          std::vector<int> indices)
+{
+    if (_imp->geometryContext || indices.empty() || primPath.empty() || ((cls != eGeoAttribClassPoint) && (cls != eGeoAttribClassPrimitive))) {
+        clearSceneComponentHighlight();
+
+        return;
+    }
+    const int count = int(indices.size());
+    std::vector<std::pair<std::string, std::vector<int>>> points, faces;
+    ((cls == eGeoAttribClassPoint) ? points : faces).emplace_back(primPath, std::move(indices));
+    _imp->displayHighlightCount = count;
+    _imp->renderer.setDisplayHighlight(std::move(points), std::move(faces));
+    setProperty("natronSceneHighlightCount", count);
+    update();
+}
+
+void
+SceneViewport::clearSceneComponentHighlight()
+{
+    if (_imp->displayHighlightCount == 0) {
+        return;
+    }
+    _imp->displayHighlightCount = 0;
+    _imp->renderer.setDisplayHighlight({}, {});
+    setProperty("natronSceneHighlightCount", 0);
+    update();
+}
+
+void
+SceneViewport::setPickedComponents(const GeoComponentSelection& selection)
+{
+    const bool modeChanged = selection.type != _imp->geoPickMode;
+    if (!modeChanged && (selection == _imp->componentSelection)) {
+        return;
+    }
+    const bool changed = selection != _imp->componentSelection;
+    _imp->geoPickMode = selection.type;
+    _imp->componentSelection = selection;
+    refreshComponentState();
+    if (modeChanged) {
+        Q_EMIT geoPickModeChanged(int(selection.type));
+    }
+    if (changed) {
+        Q_EMIT componentSelectionChanged();
+    }
 }
 
 bool

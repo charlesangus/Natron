@@ -89,6 +89,7 @@ set(Tests_SOURCES
     GeoPython_Test.cpp
     GeoRender_Test.cpp
     GeoScatter_Test.cpp
+    GeoSpreadsheet_Test.cpp
     GeoSubdivide_Test.cpp
     GeoTransform_Test.cpp
     GeoUVProject_Test.cpp
@@ -388,6 +389,7 @@ set(GuiTests_SOURCES
     DisplayLegendColour_Test.cpp
     EdgeGeometry_Test.cpp
     EdgeNearbyGrab_Test.cpp
+    GeoSpreadsheetModel_Test.cpp
     GlobalModeTargeting_Test.cpp
     GpuOverlayMapping_Test.cpp
     GuiGLRequirements_Test.cpp

@@ -612,6 +612,9 @@ future core work has solid ground to build on.
 | M548 | Pyro Quick Setups And Checkpoints | todo | M544, M545, M546, M547 |  | E22 | F35 | | [M548-pyro-quick-setups-and-checkpoints.md](PLAN/MILESTONES/M548-pyro-quick-setups-and-checkpoints.md) |
 | M554 | Scene Camera For Delegate Renders | todo | M345 |  | E9 | F1 | | [M554-scene-camera-for-delegate-renders.md](PLAN/MILESTONES/M554-scene-camera-for-delegate-renders.md) |
 | M555 | Dissolve GPU Smaller-Input Mismatch | todo | M495 |  | E14 |  | | [M555-dissolve-gpu-smaller-input-mismatch.md](PLAN/MILESTONES/M555-dissolve-gpu-smaller-input-mismatch.md) |
+| M556 | Scene Graph Bulk Commands | todo | - |  | E9 | F37 | | [M556-scene-graph-bulk-commands.md](PLAN/MILESTONES/M556-scene-graph-bulk-commands.md) |
+| M557 | Scene Graph Purpose Column | todo | - |  | E9 | F37 | | [M557-scene-graph-purpose-column.md](PLAN/MILESTONES/M557-scene-graph-purpose-column.md) |
+| M558 | Scene Graph Expand Commands | todo | M556 |  | E9 | F37 | | [M558-scene-graph-expand-commands.md](PLAN/MILESTONES/M558-scene-graph-expand-commands.md) |
 
 # Epics
 
@@ -684,6 +687,7 @@ future core work has solid ground to build on.
 | F34 | Scene Lens Distortion | open |  |  | feature/f34-scene-lens-distortion | Camera lens distortion carried in the USD scene, authored on cameras and used by LensDistortion and the projection nodes. |
 | F36 | UI Polish Batch II | open |  |  | feature/f36-ui-polish-batch-ii | Ship four small UI fixes — one-key answers in the save prompt, Raw and Loop toolbar icons, a USD toolbar category with functional submenus and easier-to-grab pipes — on one build and one merge. |
 | F35 | Pyro | open |  |  | feature/f35-pyro | A sparse-tile smoke and fire solver on native VDB volumes, with sourcing, shaping, collisions, look baking and quick setups, on GPU and CPU. Waits for F18 - Geometry Loops And Solver and F22 - Native VDB to land. |
+| F37 | Scene Graph Bulk Ops | open |  |  | feature/f37-scene-graph-bulk-ops | Load, draw and expand whole Scene Graph branches in one action, by row or down to a kind, with a Purpose column. |
 
 # Open questions
 - **M104 - Merge Resolution UI (2026-11-22):** Keep Both Keys puts theirs' key one frame after mine, or halfway to the next key when that's closer. Confirm, or give the rule you want.

@@ -23,7 +23,13 @@ struct GpuBufferPoolOptions {
     uint64_t overrideBudgetBytes = 0;
     // Share of the device-local heap budget the pool may use; the rest is left to other allocations.
     double heapBudgetFraction = 0.8;
+    // Tests only: acquire() fills every buffer it hands out with kGpuPoolPoisonBits before returning it, so a
+    // read of memory nothing wrote shows as that NaN rather than as whatever an earlier user left there.
+    bool poisonOnAcquire = false;
 };
+
+// A quiet NaN with a payload no arithmetic produces, so it is told apart from a NaN a kernel computed.
+inline constexpr uint32_t kGpuPoolPoisonBits = 0x7FC00001u;
 
 struct GpuBufferPoolStats {
     uint64_t liveBytes = 0;
@@ -106,6 +112,8 @@ public:
     GpuStatus acquire(VkDeviceSize size, GpuBufferHandle& out);
 
     void setUserBudget(uint64_t bytes);
+    // Sets GpuBufferPoolOptions::poisonOnAcquire for the acquires that start from now on.
+    void setPoisonOnAcquire(bool poison) { poison_.store(poison, std::memory_order_relaxed); }
     uint64_t budget();
     GpuBufferPoolStats stats() const;
     // Device allocations the pool has made so far, each a request no pooled buffer could serve.
@@ -137,6 +145,7 @@ private:
     uint64_t computeBudget();
     uint64_t usageLocked() const { return stats_.liveBytes + stats_.pooledBytes; }
     void reserveLocked(uint64_t bytes);
+    GpuStatus fillWithPoison(const GpuBuffer& buffer);
 
     GpuDevice& dev_;
     GpuBufferPoolOptions options_;
@@ -144,6 +153,7 @@ private:
     GpuBufferPoolStats stats_;
     uint64_t clock_ = 0;
     std::atomic<uint64_t> allocations_ { 0 };
+    std::atomic<bool> poison_ { false };
     std::map<VkDeviceSize, std::vector<GpuBuffer>> free_;
     // Evictable live buffers that must be downloaded on eviction, ordered by last use, oldest first.
     std::map<uint64_t, detail::BufferLease*> lru_;

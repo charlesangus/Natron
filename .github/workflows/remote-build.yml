@@ -47,6 +47,16 @@ on:
         required: false
         type: string
         default: ''
+      repeat_parallel:
+        description: 'With repeat_test: copies of the case run at once (empty: test.sh default, 4)'
+        required: false
+        type: string
+        default: ''
+      repeat_timeout:
+        description: 'With repeat_test: seconds each copy may run before its stacks are dumped and it is killed (empty: test.sh default, 900)'
+        required: false
+        type: string
+        default: ''
       cmake_args:
         description: 'Extra CMake arguments, space-separated'
         required: false
@@ -547,10 +557,19 @@ jobs:
           GALLIUM_OVERRIDE_CPU_CAPS: avx
           NATRON_RENDER_SCHEDULER: ${{ matrix.scheduler }}
           REPEAT_TEST: ${{ inputs.repeat_test }}
+          REPEAT_PARALLEL: ${{ inputs.repeat_parallel }}
+          REPEAT_TIMEOUT: ${{ inputs.repeat_timeout }}
         run: |
           set -o pipefail
           mkdir -p ctest-logs
-          tools/ci/local/test.sh repeat "${REPEAT_TEST%:*}" "${REPEAT_TEST##*:}" "$PRESET" 2>&1 \
+          extra=()
+          if [[ -n "$REPEAT_PARALLEL" ]]; then
+            extra+=(--parallel "$REPEAT_PARALLEL")
+          fi
+          if [[ -n "$REPEAT_TIMEOUT" ]]; then
+            extra+=(--timeout "$REPEAT_TIMEOUT")
+          fi
+          tools/ci/local/test.sh repeat "${REPEAT_TEST%:*}" "${REPEAT_TEST##*:}" "${extra[@]}" "$PRESET" 2>&1 \
             | tee "ctest-logs/ctest-${{ matrix.scheduler }}-repeat.log"
 
       - name: Run Python bindings smoke test (${{ matrix.scheduler }} scheduler)
@@ -568,6 +587,17 @@ jobs:
           path: ctest-logs/*
           if-no-files-found: ignore
           retention-days: 1
+
+      # Every iteration's log and, for a hung one, its thread stacks: the repeat step's own log only holds the
+      # first failure's output.
+      - name: Upload repeat iteration logs
+        if: always() && inputs.repeat_test != ''
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: ctest-repeat-${{ matrix.scheduler }}-${{ env.PRESET }}-${{ github.sha }}
+          path: build/${{ env.PRESET }}/Testing/repeat/**
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Upload smoke renders
         if: success() || failure()

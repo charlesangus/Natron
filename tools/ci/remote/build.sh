@@ -6,7 +6,7 @@
 #
 # Usage:
 #   tools/ci/remote/build.sh <fast|release|debug> [--tests] [--scheduler <legacy|taskgraph>] [--record-goldens]
-#                            [--shuffle-seeds <n,n,...>] [--repeat-test <name>:<N>] [--no-appimage] [--no-remote-ccache] [--cmake-arg <arg>]... [--gui "<script> ..."]
+#                            [--shuffle-seeds <n,n,...>] [--repeat-test <name>:<N> [--repeat-parallel <P>] [--repeat-timeout <S>]] [--no-appimage] [--no-remote-ccache] [--cmake-arg <arg>]... [--gui "<script> ..."]
 #   tools/ci/remote/build.sh <fast|release> --from-run <run-id> --gui "<script> ..."
 #   tools/ci/remote/build.sh --mode
 #
@@ -51,6 +51,13 @@
 #                        <name> <N>`), stopping at the first failure. The log is
 #                        ctest-<scheduler>-repeat.log next to the ctest log. <name>
 #                        must not contain a colon or whitespace.
+#                        Every iteration's log and any hung one's thread stacks are
+#                        downloaded into repeat-<scheduler>/ next to it.
+#   --repeat-parallel <P> -> with --repeat-test: copies of the case run at once
+#                        (test.sh repeat --parallel; default 4).
+#   --repeat-timeout <S> -> with --repeat-test: seconds each copy may run before its
+#                        stacks are dumped and it is killed (test.sh repeat --timeout;
+#                        default 900). The repeat step itself stops after 90 minutes.
 #   --no-appimage     -> skip packaging and downloading the AppImage.
 #   --no-remote-ccache -> build with the local and actions/cache ccache only,
 #                        without the shared remote ccache storage (the
@@ -91,7 +98,7 @@ FIND_INTERVAL_SECS=5
 WATCH_INTERVAL_SECS=30
 
 usage() {
-    echo "usage: build.sh <fast|release|debug> [--tests] [--scheduler <legacy|taskgraph>] [--record-goldens] [--shuffle-seeds <n,n,...>] [--repeat-test <name>:<N>] [--no-appimage] [--no-remote-ccache] [--cmake-arg <arg>]... [--gui \"<script> ...\"]" >&2
+    echo "usage: build.sh <fast|release|debug> [--tests] [--scheduler <legacy|taskgraph>] [--record-goldens] [--shuffle-seeds <n,n,...>] [--repeat-test <name>:<N> [--repeat-parallel <P>] [--repeat-timeout <S>]] [--no-appimage] [--no-remote-ccache] [--cmake-arg <arg>]... [--gui \"<script> ...\"]" >&2
     echo "       build.sh <fast|release> --from-run <run-id> [--gui-ref <ref>] --gui \"<script> ...\"" >&2
     echo "       build.sh --mode" >&2
 }
@@ -130,6 +137,8 @@ WANT_APPIMAGE=true
 REMOTE_CCACHE=true
 SHUFFLE_SEEDS=""
 REPEAT_TEST=""
+REPEAT_PARALLEL=""
+REPEAT_TIMEOUT=""
 SCHEDULERS="legacy,taskgraph"
 CMAKE_ARGS=""
 GUI_SCRIPTS=""
@@ -199,6 +208,20 @@ while [[ $# -gt 0 ]]; do
             REPEAT_TEST="$1"
             shift
             RUN_TESTS=true
+            BUILD_OPTION=true
+            ;;
+        --repeat-parallel|--repeat-timeout)
+            if [[ $# -eq 0 || ! "$1" =~ ^[1-9][0-9]*$ ]]; then
+                echo "build.sh: ${arg} needs a positive integer, got '${1:-}'" >&2
+                usage
+                exit 1
+            fi
+            if [[ "${arg}" == --repeat-parallel ]]; then
+                REPEAT_PARALLEL="$1"
+            else
+                REPEAT_TIMEOUT="$1"
+            fi
+            shift
             BUILD_OPTION=true
             ;;
         --no-appimage)
@@ -272,6 +295,12 @@ done
 
 if [[ -z "${PRESET}" ]]; then
     echo "build.sh: a preset (fast|release|debug) is required" >&2
+    usage
+    exit 1
+fi
+
+if [[ ( -n "${REPEAT_PARALLEL}" || -n "${REPEAT_TIMEOUT}" ) && -z "${REPEAT_TEST}" ]]; then
+    echo "build.sh: --repeat-parallel and --repeat-timeout need --repeat-test" >&2
     usage
     exit 1
 fi
@@ -367,6 +396,12 @@ LABEL="${LABEL:-${BRANCH}}"
 REPEAT_ARGS=()
 if [[ -n "${REPEAT_TEST}" ]]; then
     REPEAT_ARGS=(-f "repeat_test=${REPEAT_TEST}")
+fi
+if [[ -n "${REPEAT_PARALLEL}" ]]; then
+    REPEAT_ARGS+=(-f "repeat_parallel=${REPEAT_PARALLEL}")
+fi
+if [[ -n "${REPEAT_TIMEOUT}" ]]; then
+    REPEAT_ARGS+=(-f "repeat_timeout=${REPEAT_TIMEOUT}")
 fi
 
 # Sent only when switched off, so a ref whose workflow predates the input still dispatches.
@@ -492,6 +527,15 @@ if [[ "${RUN_TESTS}" == "true" ]]; then
     fi
 fi
 
+REPEAT_DIRS=()
+if [[ -n "${REPEAT_TEST}" ]]; then
+    for scheduler in ${SCHEDULERS//,/ }; do
+        if download_artifact "ctest-repeat-${scheduler}-${PRESET}-${HEAD_SHA}" "${OUT_DIR}/repeat-${scheduler}"; then
+            REPEAT_DIRS+=("${OUT_DIR}/repeat-${scheduler}")
+        fi
+    done
+fi
+
 GOLDEN_DIR=""
 if [[ "${RECORD_GOLDENS}" == "true" ]]; then
     GOLDEN_DIR="${REPO_ROOT}/Tests/fixtures/native-golden"
@@ -590,6 +634,9 @@ if [[ -n "${CTEST_LOG_DIR}" ]]; then
         done
     fi
 fi
+for dir in ${REPEAT_DIRS[@]+"${REPEAT_DIRS[@]}"}; do
+    echo "repeat iteration logs: ${dir}"
+done
 for line in "${GUI_LINES[@]}"; do
     echo "gui: ${line}"
 done

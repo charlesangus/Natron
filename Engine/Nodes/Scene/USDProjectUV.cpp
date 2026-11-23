@@ -1197,7 +1197,7 @@ USDProjectUV::renderScene(const SceneRenderActionArgs& args,
 
         result = computed;
         SceneLayerMemo::Key keyNow;
-        if (getSceneLayerKey(SceneLayerReads(), &keyNow, 0) && (keyNow.nodeDigest == layerKey.nodeDigest)) {
+        if (getSceneLayerKey(SceneLayerReads(), &keyNow, 0) && (keyNow == layerKey)) {
             std::lock_guard<std::mutex> l(_imp->lock);
             _imp->resultValid = true;
             _imp->resultKey = resultKey;
@@ -1237,6 +1237,8 @@ USDProjectUV::renderScene(const SceneRenderActionArgs& args,
         reads.upstream = SceneLayerMemo::Key::eUpstreamReadFacts;
         reads.factsDigest = result->digest;
         reads.frameRange = result->animated;
+        reads.valuesRead = true;
+        reads.valuesReadUnder = layerKey;
         const std::string primvarName = settings.primvarName;
         SceneLayerMemo::AuthorFunc author = [result, primvarName](const SceneLayerEdit& edit,
                                                                   std::string* error) {

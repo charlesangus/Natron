@@ -1140,9 +1140,9 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
         }
 
         samples = computed;
-        // Samples of a camera or hold edited while they were read must not serve its new key.
+        // Samples read across a knob or project edit must not serve the new key.
         SceneLayerMemo::Key keyNow;
-        if (getSceneLayerKey(SceneLayerReads(), &keyNow, 0) && (keyNow.nodeDigest == layerKey.nodeDigest)) {
+        if (getSceneLayerKey(SceneLayerReads(), &keyNow, 0) && (keyNow == layerKey)) {
             std::lock_guard<std::mutex> l(_imp->lock);
             _imp->samplesValid = true;
             _imp->samplesKey = samplesKey;
@@ -1176,7 +1176,7 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
     reads.factsDigest = facts.finalize();
     reads.frameRange = !samples->frames.empty() || (hasPlate && plate.varying);
     reads.valuesRead = true;
-    reads.valuesReadUnder = layerKey.nodeDigest;
+    reads.valuesReadUnder = layerKey;
 
     PXR_NS::SdfPath path;
     if (!SceneNodeAuthoring::getPrimPath(primPathKnob, &path, errorMessage)) {

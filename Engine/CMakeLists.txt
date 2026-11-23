@@ -230,6 +230,7 @@ target_link_libraries(NatronEngine
         tess
         rawspeed::rawspeed
         lensfun::lensfun
+        ZLIB::ZLIB
         ${CMAKE_DL_LIBS}
         ${NATRON_USD_ENGINE_LIBRARIES}
 )

@@ -1303,6 +1303,36 @@ differ by design:
   cycle in one dispatch. It records at most `kPoissonHealGpuMaxCycles` cycles; those after
   convergence return at once. Its sums run in float, in another order.
 
+### Lens knobs
+
+Nodes that trace a real lens (lens flares, traced bokeh) take their lens from
+`Optics::LensKnobs` (`Engine/Optics/LensKnobs.h`), so every such node has the
+same controls with the same script names:
+
+| Script name | Knob | Notes |
+| --- | --- | --- |
+| `lensModel` | choice | The node's own entries first (`LensKnobOptions::leadingModels`, such as a procedural lens), then Database and From File. |
+| `lens` | string | A `LensDatabase` id, `<vendor>/<file stem>`; the default is the caller's. Shown for Database. |
+| `lensBrowse` | button, "Browse…" | Opens the lens browser. Shown for Database. |
+| `lensFile` | file | A `.zmx` or `.dat` prescription. Shown for From File. |
+| `glassVendor` | choice | Schott, Ohara, Hoya, CDGM, Hikari, Sumita: the `glass.json` catalogue to match glasses in. |
+| `abbeOffset` | double, ±20 | Added to each Abbe number before matching. |
+| `useAspheric` | bool, on | Off traces aspheres as spheres. |
+
+The node calls `LensKnobs::create()` in `initializeKnobs()`, forwards its
+`knobChanged()` to `LensKnobs::knobChanged()` (which keeps the visibility above
+and opens the browser), and calls `refreshVisibility()` once its knobs are
+loaded. `resolve(time)` gives the prescription, or an error string the node
+reports as its error: a lens file's parse error with its line, or a lens id the
+database lacks, named, with the knob keeping its value so the project still
+opens. The lens browser is a GUI dialog that the GUI installs through
+`LensKnobs::setBrowseHandler()`, so the engine and background renders never
+depend on it.
+
+The database itself is `Optics::LensDatabase::shared()`: the photographic
+lenses of OpticsDatabase, bundled as `Gui/Resources/Optics/lenses.zmx.gz`
+(see the README there), and the built-in prescriptions as "Classic Designs".
+
 ### AI nodes
 
 An AI node runs a neural network through `Engine/Ai` (see `Engine/Ai/README.md`),

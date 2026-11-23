@@ -1,0 +1,6 @@
+NAME Broken lens
+SURF 0
+  DISZ INFINITY
+SURF 1
+  CURV not-a-number
+  DISZ 1

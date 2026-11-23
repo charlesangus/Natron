@@ -590,6 +590,12 @@ SceneDrawBoxes::getUnits() const
 }
 
 U64
+SceneDrawBoxes::getCountsDiscarded() const
+{
+    return _countsDiscarded;
+}
+
+U64
 SceneDrawBoxes::getGeneration() const
 {
     std::lock_guard<std::mutex> lock(_mutex);
@@ -1539,6 +1545,10 @@ SceneDrawBoxes::countUnits(const Request& request)
         }
     }
     if (!done || dropped) {
+        if (!_quit) {
+            ++_countsDiscarded;
+        }
+
         return false;
     }
     for (Unit& unit : units) {
@@ -1550,6 +1560,10 @@ SceneDrawBoxes::countUnits(const Request& request)
             continue;
         }
         if (!settleInstances(request, &found->second.unit)) {
+            if (!_quit) {
+                ++_countsDiscarded;
+            }
+
             return false;
         }
         found->second.settle = false;
@@ -1763,6 +1777,8 @@ SceneDrawBoxes::publishUnits(const Request& request,
     {
         std::lock_guard<std::mutex> lock(_mutex);
         if ((request.contentGeneration != _contentGeneration) || !_counting) {
+            ++_countsDiscarded;
+
             return;
         }
         std::shared_ptr<Units> published = std::make_shared<Units>();

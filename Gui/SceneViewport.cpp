@@ -1050,6 +1050,8 @@ struct SceneViewportRenderer::Implementation {
     SceneDrawBoxes::BudgetPtr drawnBudgetBoxes;
     std::atomic<int> budgetBoxes { SceneViewportRenderer::eBudgetBoxesBoxWire };
     std::atomic<bool> recordBudget { false };
+    // Whether the last service had Storm's filter to take a budget, so one solved since owes a frame.
+    std::atomic<bool> budgetServiceable { false };
     // What the stats last recorded, on the render thread.
     bool recordedBudget = false;
     mutable std::mutex budgetMutex;
@@ -3356,6 +3358,13 @@ struct SceneViewportRenderer::Implementation {
         appliedBudget = budget;
     }
 
+    // A budget the worker solved, or dropped, after the last frame took one in. Nothing else asks
+    // for that frame once the camera rests.
+    bool budgetOwed() const
+    {
+        return budgetServiceable && boxes && (boxes->getBudget() != currentBudget());
+    }
+
     SceneDrawBoxes::BudgetPtr currentBudget() const
     {
         std::lock_guard<std::mutex> lock(budgetMutex);
@@ -3368,6 +3377,7 @@ struct SceneViewportRenderer::Implementation {
     {
         const bool storm = (rendererId == kRenderDelegateStormId);
         bool changed = false;
+        budgetServiceable = filter && storm;
         if (!filter) {
             changed = (appliedBudget != nullptr);
             setAppliedBudget(SceneDrawBoxes::BudgetPtr());
@@ -4429,7 +4439,8 @@ SceneViewportRenderer::needsStageFrame() const
 
     return !_imp->engineHeld || (_imp->absorbedEditCount != _imp->stageEditCount) || (_imp->absorbedLoadEditCount != _imp->stageLoadEditCount)
         || (_imp->absorbedParamsKey != Implementation::paramsKey(_imp->currentRenderParams()))
-        || (_imp->drawAbsorbed != _imp->drawPosted) || ((_imp->drawRevealing || _imp->drawFilling) && _imp->drawRevealStepDue && !_imp->yieldsToCamera()) || _imp->texturesOwed;
+        || (_imp->drawAbsorbed != _imp->drawPosted) || ((_imp->drawRevealing || _imp->drawFilling) && _imp->drawRevealStepDue && !_imp->yieldsToCamera()) || _imp->texturesOwed
+        || _imp->budgetOwed();
 }
 
 void
@@ -4620,9 +4631,14 @@ SceneViewportRenderer::setRecordBudget(bool record)
 SceneViewportRenderer::BudgetStats
 SceneViewportRenderer::getBudgetStats() const
 {
+    const SceneDrawBoxes::BudgetPtr solved = _imp->boxes ? _imp->boxes->getBudget() : SceneDrawBoxes::BudgetPtr();
+    const unsigned long long discarded = _imp->boxes ? _imp->boxes->getCountsDiscarded() : 0;
     std::lock_guard<std::mutex> lock(_imp->budgetMutex);
+    BudgetStats stats = _imp->budgetStats;
+    stats.solved = solved ? solved->serial : 0;
+    stats.countsDiscarded = discarded;
 
-    return _imp->budgetStats;
+    return stats;
 }
 
 int
@@ -11099,6 +11115,8 @@ SceneViewport::publishBudget()
     published[QString::fromUtf8("bound")] = stats.bound;
     published[QString::fromUtf8("serial")] = QVariant::fromValue<qulonglong>(stats.serial);
     published[QString::fromUtf8("requested")] = QVariant::fromValue<qulonglong>(stats.requested);
+    published[QString::fromUtf8("solved")] = QVariant::fromValue<qulonglong>(stats.solved);
+    published[QString::fromUtf8("countsDiscarded")] = QVariant::fromValue<qulonglong>(stats.countsDiscarded);
     published[QString::fromUtf8("counted")] = QVariant::fromValue<qulonglong>(stats.counted);
     published[QString::fromUtf8("drawn")] = QVariant::fromValue<qulonglong>(stats.drawn);
     published[QString::fromUtf8("limit")] = QVariant::fromValue<qulonglong>(stats.limit);

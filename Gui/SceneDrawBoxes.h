@@ -224,6 +224,8 @@ public:
     ListPtr getList() const;
     // Null until counting has published.
     UnitsPtr getUnits() const;
+    // The counts dropped before they published, as a change of the stage or rules made them stale.
+    U64 getCountsDiscarded() const;
 
     // The latest request.
     U64 getGeneration() const;
@@ -408,6 +410,7 @@ private:
     U64 _orderMade = 0;
     SceneDrawFilter::Order _order;
     std::atomic<U64> _contentGeneration { 0 };
+    std::atomic<U64> _countsDiscarded { 0 };
     std::atomic<bool> _quit { false };
     ListPtr _list;
     UnitsPtr _units;

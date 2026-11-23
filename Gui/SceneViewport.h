@@ -1001,6 +1001,10 @@ public:
         // Of the request the applied budget answers, 0 for none.
         unsigned long long serial = 0;
         unsigned long long requested = 0;
+        // Of the latest budget the worker solved, applied or not, 0 for none.
+        unsigned long long solved = 0;
+        // The unit counts the worker dropped as stale before they published.
+        unsigned long long countsDiscarded = 0;
         unsigned long long counted = 0;
         unsigned long long drawn = 0;
         unsigned long long limit = 0;

@@ -305,6 +305,11 @@ try:
         require(ok, "the scene view shows the scene")
         frame_all()
         ok = yield ("until", solved, POLL_TIMEOUT_S)
+        if not ok:
+            b = budget()
+            # solved: the worker's latest budget, applied or not; countsDiscarded: unit counts dropped as stale.
+            report("NOTE budget worker: requested %r, solved %r, applied %r, counts discarded %r, camera serial %r" %
+                   (b.get("requested"), b.get("solved"), b.get("serial"), b.get("countsDiscarded"), b.get("cameraSerial")))
         require(ok, "the default budget is solved once the camera rests (%r)" % (budget(),))
 
         section("default limit")

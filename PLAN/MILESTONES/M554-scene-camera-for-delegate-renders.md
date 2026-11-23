@@ -65,3 +65,4 @@ Natron never hands a Hydra delegate the scene camera. `HydraRender::Request` car
 ## Decisions
 - 2026-11-23 — Joins F1 - VDB Volumes (user): it re-enables tests that live on the F1 branch until F1 lands.
 - 2026-11-23 — Volume velocity motion blur is in scope alongside the camera shutter fix (user): velocity blur on volumes is a standard way to blur them and must be supported.
+- 2026-11-23 — Claimed ahead of its Deps at the user's request; works on top of the dependency's branch.

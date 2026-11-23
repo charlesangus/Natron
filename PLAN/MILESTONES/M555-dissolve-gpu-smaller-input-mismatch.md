@@ -48,3 +48,4 @@
 
 ## Decisions
 - 2026-11-23 — Standalone milestone after M495 - KeyMix GPU Edge Read Fix (user, via inbox drain): its fix may be the same class, so it goes first.
+- 2026-11-23 — Claimed ahead of its Deps at the user's request; works on top of the dependency's branch.

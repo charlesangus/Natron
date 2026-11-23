@@ -47,6 +47,12 @@ USDPrune::~USDPrune()
 {
 }
 
+U64
+USDPrune::getPatternQueryCount() const
+{
+    return _matches.getQueryCount();
+}
+
 const NodeSpec*
 USDPrune::nodeSpec() const
 {
@@ -91,43 +97,27 @@ USDPrune::renderScene(const SceneRenderActionArgs& args,
     const std::string pattern = _primPattern.getExpression();
     const ModeEnum mode = (modeKnob && (modeKnob->getValue() == (int)eModeHide)) ? eModeHide : eModeDeactivate;
 
-    if (!PrimSelector::validate(pattern, errorMessage)) {
+    SceneNodeAuthoring::PatternFilter filter;
+    if (mode == eModeHide) {
+        filter = [](const PXR_NS::UsdPrim& prim) {
+            return prim.IsA<PXR_NS::UsdGeomImageable>();
+        };
+    }
+    SceneQueryPool::Lease lease;
+    SceneNodeAuthoring::PatternMatches found;
+    if (!SceneNodeAuthoring::matchPattern(&_matches, upstream, pattern, args.context, (U64)mode, filter, &lease, &found, errorMessage)) {
         setPersistentMessage(eMessageTypeError, *errorMessage);
 
         return eStatusFailed;
     }
-    std::vector<PXR_NS::SdfPath> matches;
-    if (!upstream.isEmpty() && !PrimSelector::isBlank(pattern)) {
-        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(upstream, errorMessage);
-        PXR_NS::UsdStageRefPtr stage = lease.getStage();
-        if (!stage) {
-            if (errorMessage->empty()) {
-                *errorMessage = tr("USD could not compose the input scene.").toStdString();
-            }
-            setPersistentMessage(eMessageTypeError, *errorMessage);
+    lease.release();
+    const std::vector<PXR_NS::SdfPath>& matches = found.paths;
+    if (matches.empty() && !upstream.isEmpty() && !PrimSelector::isBlank(pattern)) {
+        *outputScene = upstream;
+        setPersistentMessage(eMessageTypeWarning,
+                             SceneNodeAuthoring::describeNoMatch(pattern, found, tr("the scene is passed through unchanged").toStdString()));
 
-            return eStatusFailed;
-        }
-        std::vector<PXR_NS::SdfPath> found;
-        if (!SceneOps::selectPrims(stage, pattern, &found, errorMessage)) {
-            setPersistentMessage(eMessageTypeError, *errorMessage);
-
-            return eStatusFailed;
-        }
-        for (const PXR_NS::SdfPath& path : found) {
-            if ((mode == eModeDeactivate) || stage->GetPrimAtPath(path).IsA<PXR_NS::UsdGeomImageable>()) {
-                matches.push_back(path);
-            }
-        }
-        if (matches.empty()) {
-            *outputScene = upstream;
-            setPersistentMessage(eMessageTypeWarning, tr("The prim pattern \"%1\" matches no prim to remove; the scene is "
-                                                         "passed through unchanged.")
-                                                          .arg(QString::fromStdString(pattern))
-                                                          .toStdString());
-
-            return eStatusOK;
-        }
+        return eStatusOK;
     }
     if (matches.empty()) {
         *outputScene = upstream;

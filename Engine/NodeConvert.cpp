@@ -47,9 +47,9 @@
 #include "Engine/Nodes/Loop/LoopBegin.h"
 #include "Engine/Nodes/Loop/LoopEnd.h"
 #include "Engine/Project.h"
+#include "Serialization/NodeSerialization.h"
 
-// How far above and below the nodes they wrap the loop nodes are placed.
-#define kNodeConvertLoopNodeSpacing 100.
+#define kNodeConvertLoopNodeOffsetFromWrappedNodes 100.
 
 NATRON_NAMESPACE_ENTER
 
@@ -189,6 +189,35 @@ destroyIfDeactivated(const NodeWPtr& weak)
     }
 }
 
+// One alias of the original node, as it is and as the replacement carries it: either an alias
+// of a knob of the original whose master becomes the replacement's knob, or a knob of the
+// original that is an alias, replaced by the replacement's knob.
+struct AliasBinding {
+    KnobIWPtr originalAlias;
+    KnobIWPtr originalMaster;
+    KnobIWPtr convertedAlias;
+    KnobIWPtr convertedMaster;
+
+    static void bind(const KnobIWPtr& alias,
+                     const KnobIWPtr& master,
+                     bool doAlias)
+    {
+        KnobIPtr a = alias.lock();
+        KnobIPtr m = master.lock();
+        if (a && m) {
+            ignore_result(a->setKnobAsAliasOfThis(m, doAlias));
+        }
+    }
+
+    void detachOriginal() const { bind(originalAlias, originalMaster, false); }
+
+    void attachOriginal() const { bind(originalAlias, originalMaster, true); }
+
+    void detachConverted() const { bind(convertedAlias, convertedMaster, false); }
+
+    void attachConverted() const { bind(convertedAlias, convertedMaster, true); }
+};
+
 } // anonymous namespace
 
 const IVariant*
@@ -238,10 +267,15 @@ struct NodeConvertCommand::Implementation {
     // that joined them.
     std::list<KnobIWPtr> originalLinked;
     std::list<KnobIWPtr> convertedLinked;
+    std::vector<AliasBinding> aliases;
 
-    std::string targetKnobName(const std::string& name) const
+    std::string targetKnobName(const KnobIPtr& knob) const
     {
-        return toIVariant ? variant.iKnobFor(name) : variant.baseKnobFor(name);
+        if (knob->isUserKnob()) {
+            return knob->getName();
+        }
+
+        return toIVariant ? variant.iKnobFor(knob->getName()) : variant.baseKnobFor(knob->getName());
     }
 
     void copyKnobs(const NodePtr& from,
@@ -252,15 +286,23 @@ struct NodeConvertCommand::Implementation {
         if (!fromEffect || !toEffect) {
             return;
         }
+        const bool hasUserKnobs = copyUserKnobDefinitions(from, to);
+        if (hasUserKnobs) {
+            // The expressions copied below are checked against the knobs Python knows of.
+            to->declarePythonFields();
+        }
         const KnobsVec knobs = fromEffect->getKnobs_mt_safe();
         toEffect->beginChanges();
         for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
             const KnobIPtr& src = *it;
-            if (!src || !src->getIsPersistent() || src->isUserKnob()) {
+            if (!src || !src->getIsPersistent()) {
                 continue;
             }
-            KnobIPtr dst = toEffect->getKnobByName(targetKnobName(src->getName()));
-            if (!dst || (dst->typeName() != src->typeName())) {
+            if (src->isUserKnob() && (dynamic_cast<KnobPage*>(src.get()) || dynamic_cast<KnobGroup*>(src.get()))) {
+                continue;
+            }
+            KnobIPtr dst = toEffect->getKnobByName(targetKnobName(src));
+            if (!dst || (dst->typeName() != src->typeName()) || (dst->isUserKnob() != src->isUserKnob())) {
                 continue;
             }
             const int dims = std::min(src->getDimension(), dst->getDimension());
@@ -283,6 +325,14 @@ struct NodeConvertCommand::Implementation {
                 }
             }
 
+            // An alias keeps its group permanent, which neither knob could leave: the aliases come
+            // off the original first and go onto the replacement once the other links have moved.
+            const std::size_t firstAlias = aliases.size();
+            collectAliases(fromEffect.get(), src, dst);
+            for (std::size_t i = firstAlias; i < aliases.size(); ++i) {
+                aliases[i].detachOriginal();
+            }
+
             // Links to knobs of other nodes move to the replacement. The replacement joins each
             // group before the original leaves it, so that no group drops to a single member.
             bool linked = false;
@@ -302,8 +352,102 @@ struct NodeConvertCommand::Implementation {
                     originalLinked.push_back(src);
                 }
             }
+
+            for (std::size_t i = firstAlias; i < aliases.size(); ++i) {
+                aliases[i].attachConverted();
+            }
         }
         toEffect->endChanges();
+        if (hasUserKnobs) {
+            toEffect->recreateUserKnobs(true);
+        }
+    }
+
+    // Creates the user pages, groups and knobs of from on to, without their links and
+    // expressions, which copyKnobs() moves with the other knobs. A user knob named like one of
+    // the knobs of to is left out rather than turn that knob into a user knob.
+    static bool copyUserKnobDefinitions(const NodePtr& from,
+                                        const NodePtr& to)
+    {
+        Serialization::NodeSerialization serialization;
+        from->toSerialization(&serialization, false);
+        if (serialization.userPages.empty()) {
+            return false;
+        }
+        Serialization::NodeSerialization userPart;
+        // The original's page order would also reorder the replacement's own pages, which differ.
+        userPart.userPages = serialization.userPages;
+        for (std::list<Serialization::GroupKnobSerialization>::iterator it = userPart.userPages.begin(); it != userPart.userPages.end(); ++it) {
+            removeTakenNames(*to, &it->children);
+        }
+        to->restoreUserKnobs(userPart);
+
+        return true;
+    }
+
+    static void removeTakenNames(const Node& node,
+                                 std::list<Serialization::GroupKnobChildSerialization>* children)
+    {
+        for (std::list<Serialization::GroupKnobChildSerialization>::iterator it = children->begin(); it != children->end();) {
+            const std::string name = it->isGroup ? it->group.name : NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->knob.name);
+            const KnobIPtr existing = node.getKnobByName(name);
+            if (existing && !existing->isUserKnob()) {
+                it = children->erase(it);
+                continue;
+            }
+            if (it->isGroup) {
+                removeTakenNames(node, &it->group.children);
+            }
+            ++it;
+        }
+    }
+
+    // The aliases between src and knobs of other nodes, each to be carried by dst instead.
+    void collectAliases(const KnobHolder* fromHolder,
+                        const KnobIPtr& src,
+                        const KnobIPtr& dst)
+    {
+        if (src->getDimension() != dst->getDimension()) {
+            return;
+        }
+        const KnobsVec aliasesOfSrc = src->getAliasesOfThis();
+        for (KnobsVec::const_iterator it = aliasesOfSrc.begin(); it != aliasesOfSrc.end(); ++it) {
+            if (*it && ((*it)->getHolder() != fromHolder)) {
+                aliases.push_back(AliasBinding { *it, src, *it, dst });
+            }
+        }
+        const KnobIPtr master = src->getAliasMaster();
+        if (master && (master->getHolder() != fromHolder)) {
+            aliases.push_back(AliasBinding { src, master, dst, master });
+        }
+    }
+
+    void detachOriginalAliases()
+    {
+        for (std::size_t i = 0; i < aliases.size(); ++i) {
+            aliases[i].detachOriginal();
+        }
+    }
+
+    void attachOriginalAliases()
+    {
+        for (std::size_t i = 0; i < aliases.size(); ++i) {
+            aliases[i].attachOriginal();
+        }
+    }
+
+    void detachConvertedAliases()
+    {
+        for (std::size_t i = 0; i < aliases.size(); ++i) {
+            aliases[i].detachConverted();
+        }
+    }
+
+    void attachConvertedAliases()
+    {
+        for (std::size_t i = 0; i < aliases.size(); ++i) {
+            aliases[i].attachConverted();
+        }
     }
 
     static void relink(const std::list<KnobIWPtr>& knobs)
@@ -448,8 +592,10 @@ NodeConvertCommand::redo()
     if (!converted) {
         return;
     }
+    _imp->detachOriginalAliases();
     Implementation::relink(_imp->convertedLinked);
     Implementation::unlink(_imp->originalLinked);
+    _imp->attachConvertedAliases();
     deactivateNode(original);
     activateNode(converted);
     _imp->done = true;
@@ -463,8 +609,10 @@ NodeConvertCommand::undo()
     if (!original || !converted || !_imp->done) {
         return;
     }
+    _imp->detachConvertedAliases();
     Implementation::relink(_imp->originalLinked);
     Implementation::unlink(_imp->convertedLinked);
+    _imp->attachOriginalAliases();
     deactivateNode(converted);
     activateNode(original);
     _imp->done = false;
@@ -503,6 +651,27 @@ isWrappable(const NodePtr& node)
     EffectInstancePtr effect = node->getEffectInstance();
 
     return effect && !node->isEffectViewer() && !node->isOutputNode() && !dynamic_cast<GroupOutput*>(effect.get()) && !dynamic_cast<GroupInput*>(effect.get());
+}
+
+// LoopBegin and LoopEnd read and produce images only. An unconstrained polymorphic output is
+// accepted: the loop node it is wired to then makes it an image.
+bool
+outputsImages(const NodePtr& node)
+{
+    bool ambiguous = false;
+    const DataKindEnum kind = node->getEffectiveOutputDataKind(&ambiguous);
+
+    return !ambiguous && ((kind == eDataKindImage) || (kind == eDataKindPolymorphic));
+}
+
+bool
+inputReadsImages(const NodePtr& node,
+                 int inputNb)
+{
+    EffectInstancePtr effect = node->getEffectInstance();
+    const DataKindEnum kind = effect ? effect->getInputDataKind(inputNb) : eDataKindImage;
+
+    return (kind == eDataKindImage) || (kind == eDataKindPolymorphic);
 }
 
 bool
@@ -559,6 +728,9 @@ planWrap(const NodesList& nodes,
     }
     plan->output = ends.front();
     plan->readers = readersOf(plan->output);
+    if (!outputsImages(plan->output)) {
+        return refuse("A loop carries images only, and " + plan->output->getLabel_mt_safe() + " does not output an image.");
+    }
 
     std::vector<NodePtr> sources;
     for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
@@ -567,6 +739,9 @@ planWrap(const NodesList& nodes,
             NodePtr input = (*it)->getGuiInput(i);
             if (!input || selected.count(input.get())) {
                 continue;
+            }
+            if (!outputsImages(input) || !inputReadsImages(*it, i)) {
+                return refuse("A loop carries images only, and " + (*it)->getLabel_mt_safe() + " reads " + input->getLabel_mt_safe() + ", which is not an image.");
             }
             std::vector<NodePtr>::const_iterator found = std::find(sources.begin(), sources.end(), input);
             const std::size_t index = found - sources.begin();
@@ -594,7 +769,7 @@ planWrap(const NodesList& nodes,
                 continue;
             }
             for (int i = 0; i < n; ++i) {
-                if (!(*it)->getGuiInput(i) && !effect->isInputOptional(i)) {
+                if (!(*it)->getGuiInput(i) && !effect->isInputOptional(i) && inputReadsImages(*it, i)) {
                     plan->openInput = Edge { *it, i, NodeWPtr() };
                     break;
                 }
@@ -685,7 +860,7 @@ struct LoopWrapCommand::Implementation {
     {
         double outX = 0., outY = 0.;
         plan.output->getPosition(&outX, &outY);
-        NodePtr loopEnd = createNodeIn(plan.group, PLUGINID_NATRON_LOOPEND, std::string(), outX, outY + kNodeConvertLoopNodeSpacing);
+        NodePtr loopEnd = createNodeIn(plan.group, PLUGINID_NATRON_LOOPEND, std::string(), outX, outY + kNodeConvertLoopNodeOffsetFromWrappedNodes);
         if (!loopEnd) {
             return;
         }
@@ -712,7 +887,7 @@ struct LoopWrapCommand::Implementation {
             if (consumers[i]) {
                 consumers[i]->getPosition(&x, &y);
             }
-            NodePtr begin = createNodeIn(plan.group, PLUGINID_NATRON_LOOPBEGIN, std::string(), x, y - kNodeConvertLoopNodeSpacing);
+            NodePtr begin = createNodeIn(plan.group, PLUGINID_NATRON_LOOPBEGIN, std::string(), x, y - kNodeConvertLoopNodeOffsetFromWrappedNodes);
             begins.push_back(begin);
         }
         connect();

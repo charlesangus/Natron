@@ -62,10 +62,11 @@ bool hasConnectedInput(const NodePtr& node, const std::string& label) WARN_UNUSE
 
 /**
  * @brief Replaces a node by the node of another plug-in, keeping its name, label, position,
- * connections, and the values, animation, expressions, drivers and links of its knobs, through
- * the registry's knob map and otherwise by name. Expressions and links that read the node read
- * its replacement. Inputs the replacement has no input of the same label for are dropped, as are
- * knobs it has no knob of the same type for.
+ * connections, its user pages and knobs, and the values, animation, expressions, drivers, links
+ * and aliases of its knobs, through the registry's knob map and otherwise by name. Expressions,
+ * links and aliases that read the node read its replacement. Inputs the replacement has no input
+ * of the same label for are dropped, as are knobs it has no knob of the same type for and user
+ * knobs named like one of its own knobs.
  *
  * Nothing changes until the first redo(), which creates the replacement; later redo() and undo()
  * swap the two nodes, the one out of the graph kept deactivated for the other direction. Main
@@ -110,6 +111,7 @@ private:
 /**
  * @brief Wraps nodes in a loop block: a LoopBegin on each node outside the selection that feeds
  * it, and a LoopEnd after the selection's single output, taking over that output's connections.
+ * Loop nodes carry images only, so every edge entering the selection and its output must be one.
  * The LoopEnd is in Map Blend mode with kNodeConvertLoopIterations iterations and drives nothing.
  * Nothing changes until the first redo(), which creates the loop nodes; undo() takes them out
  * and puts the connections back. Main thread only.

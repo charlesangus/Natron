@@ -40,11 +40,16 @@
 #include "Engine/Node.h"
 #include "Engine/NodeConvert.h"
 #include "Engine/Nodes/Color/Grade.h"
+#include "Engine/Nodes/Deep/DeepCrop.h"
+#include "Engine/Nodes/Deep/DeepFromImage.h"
+#include "Engine/Nodes/Deep/DeepToImage.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Filter/IBlur.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Loop/LoopBegin.h"
 #include "Engine/Nodes/Loop/LoopEnd.h"
+#include "Engine/Nodes/Scene/USDCube.h"
+#include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
 
@@ -76,6 +81,35 @@ protected:
     static KnobDoublePtr sizeOf(const NodePtr& node)
     {
         return std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(kBlurParamSize));
+    }
+
+    static KnobDoublePtr addUserDouble(const NodePtr& node,
+                                       const std::string& name,
+                                       const std::string& label)
+    {
+        EffectInstancePtr effect = node->getEffectInstance();
+        KnobDoublePtr added = effect->createDoubleKnob(name, label, 1);
+        if (added) {
+            effect->getOrCreateUserPageKnob()->addKnob(added);
+        }
+
+        return added;
+    }
+
+    static KnobDoublePtr userDouble(const NodePtr& node,
+                                    const std::string& name)
+    {
+        return std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(name));
+    }
+
+    static bool refusesWrap(const NodePtr& node)
+    {
+        NodesList selection;
+        selection.push_back(node);
+        std::string reason;
+        const bool refused = !LoopWrapCommand::canWrap(selection, &reason) && !reason.empty();
+
+        return refused && !LoopWrapCommand::create(selection, &reason);
     }
 };
 
@@ -288,4 +322,176 @@ TEST_F(NodeConvertTest, WrapRefusesSeveralOutputs)
     EXPECT_FALSE(LoopWrapCommand::canWrap(selection, &reason));
     EXPECT_NE(std::string(), reason);
     EXPECT_EQ(nullptr, LoopWrapCommand::create(selection, &reason));
+}
+
+TEST_F(NodeConvertTest, ConvertKeepsUserKnobsTheirAnimationAndExpressions)
+{
+    const NodePtr constant = make(PLUGINID_NATRON_CONSTANT);
+    const NodePtr blur = make(PLUGINID_NATRON_BLUR);
+    const NodePtr grade = make(PLUGINID_NATRON_GRADE);
+    ASSERT_TRUE(constant != nullptr);
+    ASSERT_TRUE(blur != nullptr);
+    ASSERT_TRUE(grade != nullptr);
+    connectNodes(constant, blur, 0, true);
+    connectNodes(blur, grade, 0, true);
+
+    KnobDoublePtr gain = addUserDouble(blur, "userGain", "User Gain");
+    KnobDoublePtr twice = addUserDouble(blur, "twiceGain", "Twice Gain");
+    ASSERT_TRUE(gain != nullptr);
+    ASSERT_TRUE(twice != nullptr);
+    blur->declarePythonFields();
+    gain->setValueAtTime(0, 2., ViewSpec::all(), 0);
+    gain->setValueAtTime(10, 4., ViewSpec::all(), 0);
+    ASSERT_NO_THROW(twice->setExpression(0, "thisNode.userGain.getValueAtTime(frame) * 2", false, true));
+
+    const KnobIPtr white = grade->getKnobByName(kGradeParamWhite);
+    ASSERT_TRUE(white != nullptr);
+    ASSERT_NO_THROW(white->setExpression(0, blur->getScriptName() + ".userGain.getValueAtTime(frame)", false, true));
+    std::shared_ptr<Knob<double>> whiteValue = std::dynamic_pointer_cast<Knob<double>>(white);
+    ASSERT_TRUE(whiteValue != nullptr);
+    EXPECT_DOUBLE_EQ(4., whiteValue->getValueAtTime(10, 0));
+
+    std::string error;
+    std::shared_ptr<NodeConvertCommand> toI = NodeConvertCommand::toIVariant(blur, &error);
+    ASSERT_TRUE(toI != nullptr) << error;
+    toI->redo();
+    const NodePtr iblur = toI->getConverted();
+    ASSERT_TRUE(iblur != nullptr);
+
+    KnobDoublePtr iGain = userDouble(iblur, "userGain");
+    KnobDoublePtr iTwice = userDouble(iblur, "twiceGain");
+    ASSERT_TRUE(iGain != nullptr);
+    ASSERT_TRUE(iTwice != nullptr);
+    EXPECT_TRUE(iGain->isUserKnob());
+    EXPECT_EQ(std::string("User Gain"), iGain->getLabel());
+    EXPECT_EQ(2, iGain->getKeyFramesCount(ViewIdx(0), 0));
+    EXPECT_DOUBLE_EQ(3., iGain->getValueAtTime(5, 0));
+    EXPECT_NE(std::string(), iTwice->getExpression(0));
+    EXPECT_TRUE(iTwice->isExpressionValid(0, nullptr));
+    EXPECT_DOUBLE_EQ(8., iTwice->getValueAtTime(10, 0));
+    EXPECT_TRUE(white->isExpressionValid(0, nullptr));
+    EXPECT_DOUBLE_EQ(4., whiteValue->getValueAtTime(10, 0));
+
+    iGain->setValueAtTime(10, 6., ViewSpec::all(), 0);
+    EXPECT_DOUBLE_EQ(6., whiteValue->getValueAtTime(10, 0));
+    EXPECT_DOUBLE_EQ(4., gain->getValueAtTime(10, 0));
+
+    toI->undo();
+    EXPECT_TRUE(blur->isActivated());
+    EXPECT_FALSE(iblur->isActivated());
+    EXPECT_EQ(gain, userDouble(blur, "userGain"));
+    EXPECT_EQ(2, gain->getKeyFramesCount(ViewIdx(0), 0));
+    EXPECT_TRUE(twice->isExpressionValid(0, nullptr));
+    EXPECT_DOUBLE_EQ(8., twice->getValueAtTime(10, 0));
+    EXPECT_TRUE(white->isExpressionValid(0, nullptr));
+    EXPECT_DOUBLE_EQ(4., whiteValue->getValueAtTime(10, 0));
+
+    toI->redo();
+    EXPECT_TRUE(iblur->isActivated());
+    EXPECT_DOUBLE_EQ(6., whiteValue->getValueAtTime(10, 0));
+}
+
+TEST_F(NodeConvertTest, ConvertMovesAliasesToTheReplacement)
+{
+    const NodePtr constant = make(PLUGINID_NATRON_CONSTANT);
+    const NodePtr blur = make(PLUGINID_NATRON_BLUR);
+    const NodePtr other = make(PLUGINID_NATRON_BLUR);
+    ASSERT_TRUE(constant != nullptr);
+    ASSERT_TRUE(blur != nullptr);
+    ASSERT_TRUE(other != nullptr);
+    connectNodes(constant, blur, 0, true);
+
+    KnobDoublePtr size = sizeOf(blur);
+    KnobDoublePtr otherSize = sizeOf(other);
+    ASSERT_TRUE(size != nullptr);
+    ASSERT_TRUE(otherSize != nullptr);
+    ASSERT_TRUE(otherSize->setKnobAsAliasOfThis(size, true));
+    size->setValue(7., ViewSpec::all(), 0);
+    ASSERT_DOUBLE_EQ(7., otherSize->getValue(0));
+
+    // An alias of a knob of the converted node follows the replacement's knob.
+    std::string error;
+    std::shared_ptr<NodeConvertCommand> toI = NodeConvertCommand::toIVariant(blur, &error);
+    ASSERT_TRUE(toI != nullptr) << error;
+    toI->redo();
+    const NodePtr iblur = toI->getConverted();
+    ASSERT_TRUE(iblur != nullptr);
+    KnobDoublePtr iSize = std::dynamic_pointer_cast<KnobDouble>(iblur->getKnobByName(kIBlurParamSize));
+    ASSERT_TRUE(iSize != nullptr);
+    EXPECT_EQ(KnobIPtr(iSize), otherSize->getAliasMaster());
+    EXPECT_TRUE(iSize->isLinkPermanent(0));
+    EXPECT_FALSE(size->isLinkPermanent(0));
+    iSize->setValue(9., ViewSpec::all(), 0);
+    EXPECT_DOUBLE_EQ(9., otherSize->getValue(0));
+    EXPECT_DOUBLE_EQ(7., size->getValue(0));
+
+    toI->undo();
+    EXPECT_EQ(KnobIPtr(size), otherSize->getAliasMaster());
+    EXPECT_FALSE(iSize->isLinkPermanent(0));
+    size->setValue(11., ViewSpec::all(), 0);
+    EXPECT_DOUBLE_EQ(11., otherSize->getValue(0));
+    EXPECT_DOUBLE_EQ(9., iSize->getValue(0));
+
+    toI->redo();
+    EXPECT_EQ(KnobIPtr(iSize), otherSize->getAliasMaster());
+    toI->undo();
+
+    // A converted node's knob that is an alias is replaced by the replacement's knob.
+    std::shared_ptr<NodeConvertCommand> otherToI = NodeConvertCommand::toIVariant(other, &error);
+    ASSERT_TRUE(otherToI != nullptr) << error;
+    otherToI->redo();
+    const NodePtr otherI = otherToI->getConverted();
+    ASSERT_TRUE(otherI != nullptr);
+    KnobDoublePtr otherISize = std::dynamic_pointer_cast<KnobDouble>(otherI->getKnobByName(kIBlurParamSize));
+    ASSERT_TRUE(otherISize != nullptr);
+    EXPECT_EQ(KnobIPtr(size), otherISize->getAliasMaster());
+    EXPECT_EQ(KnobIPtr(), otherSize->getAliasMaster());
+    size->setValue(13., ViewSpec::all(), 0);
+    EXPECT_DOUBLE_EQ(13., otherISize->getValue(0));
+    EXPECT_DOUBLE_EQ(11., otherSize->getValue(0));
+
+    otherToI->undo();
+    EXPECT_EQ(KnobIPtr(size), otherSize->getAliasMaster());
+    EXPECT_EQ(KnobIPtr(), otherISize->getAliasMaster());
+    size->setValue(15., ViewSpec::all(), 0);
+    EXPECT_DOUBLE_EQ(15., otherSize->getValue(0));
+}
+
+TEST_F(NodeConvertTest, WrapRefusesDeepSelections)
+{
+    const NodePtr constant = make(PLUGINID_NATRON_CONSTANT);
+    const NodePtr fromImage = make(PLUGINID_NATRON_DEEPFROMIMAGE);
+    const NodePtr crop = make(PLUGINID_NATRON_DEEPCROP);
+    const NodePtr toImage = make(PLUGINID_NATRON_DEEPTOIMAGE);
+    const NodePtr grade = make(PLUGINID_NATRON_GRADE);
+    ASSERT_TRUE(constant != nullptr);
+    ASSERT_TRUE(fromImage != nullptr);
+    ASSERT_TRUE(crop != nullptr);
+    ASSERT_TRUE(toImage != nullptr);
+    ASSERT_TRUE(grade != nullptr);
+    connectNodes(constant, fromImage, 0, true);
+    connectNodes(fromImage, crop, 0, true);
+    connectNodes(crop, toImage, 0, true);
+    connectNodes(toImage, grade, 0, true);
+
+    // Image in, deep out; deep in and out; deep in, image out.
+    EXPECT_TRUE(refusesWrap(fromImage));
+    EXPECT_TRUE(refusesWrap(crop));
+    EXPECT_TRUE(refusesWrap(toImage));
+
+    NodesList imageOnly;
+    imageOnly.push_back(grade);
+    std::string reason;
+    EXPECT_TRUE(LoopWrapCommand::canWrap(imageOnly, &reason)) << reason;
+}
+
+TEST_F(NodeConvertTest, WrapRefusesSceneSelections)
+{
+    const NodePtr cube = make(PLUGINID_NATRON_USDCUBE);
+    const NodePtr transform = make(PLUGINID_NATRON_USDEDITTRANSFORM);
+    ASSERT_TRUE(cube != nullptr);
+    ASSERT_TRUE(transform != nullptr);
+    connectNodes(cube, transform, 0, true);
+
+    EXPECT_TRUE(refusesWrap(transform));
 }

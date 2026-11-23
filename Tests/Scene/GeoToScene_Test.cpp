@@ -261,7 +261,7 @@ protected:
                                           SceneQueryPool::Lease* lease)
     {
         std::string error;
-        *lease = SceneQueryPool::instance().borrow(payload, &error);
+        *lease = SceneQueryPool::instance().borrow(payload, SceneLoadSet::everything(), &error);
         EXPECT_TRUE(lease->isValid()) << error;
 
         return lease->getStage();

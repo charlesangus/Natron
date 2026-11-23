@@ -17,10 +17,11 @@ Give the Raw and Loop node-toolbar categories icons that say what they are. Neit
 
 ## Phase 519.1: Icons
 
-- [ ] M519.P1.T1 — Add Raw and Loop group icons
+- [x] M519.P1.T1 — Add Raw and Loop group icons
   - files: `Global/Macros.h`, `Engine/Nodes/Raw/RawNodeSupport.h`, `Gui/GuiApplicationManager.cpp`, `Gui/GuiDefines.h` or wherever `PixmapEnum` lives, `Gui/GuiResources.qrc`, `Gui/Resources/Icons/SOURCES.txt`, `Tests/gui/toolbar_group_icons.py`
   - approach: move `#define PLUGIN_GROUP_RAW "Raw"` into `Global/Macros.h` (delete it from `RawNodeSupport.h`); add `NATRON_PIXMAP_RAW_GROUP` and `NATRON_PIXMAP_LOOP_GROUP` with switch cases at `GuiApplicationManager.cpp:347-398` pointing at `lucide/aperture.svg` and `lucide/repeat.svg`; add both branches to `getIconForGrouping`; list Raw in `namedGroupsOrdered[]` after Image; add qrc entries if missing and note the two icons in `SOURCES.txt`.
   - verify: an Xvfb script finds the Raw and Loop toolbar buttons and asserts neither icon's `cacheKey` equals the default puzzle icon's; a screenshot of the toolbar goes to the user.
   - size: M
 
 **Verification gate:** release gate green per `.local/build-mode`; `Tests/gui/toolbar_group_icons.py` passes under Xvfb at 1920x1080; the toolbar screenshot is OK'd at F36 - UI Polish Batch II's UAT.
+- 2026-11-23 — Merged into F36 as PR #349 (976394ef5); review round closed (fix b4e3c5218).

@@ -232,7 +232,7 @@ future core work has solid ground to build on.
 | M405 | Particle Solver Core | todo | M404, M359 |  | E22 | F19 | | [M405-particle-solver-core.md](PLAN/MILESTONES/M405-particle-solver-core.md) |
 | M406 | Particle Forces And Wrangle | todo | M405, M360 |  | E22 | F19 | | [M406-particle-forces-and-wrangle.md](PLAN/MILESTONES/M406-particle-forces-and-wrangle.md) |
 | M407 | Particle Collisions | todo | M405, M418 |  | E22 | F19 | | [M407-particle-collisions.md](PLAN/MILESTONES/M407-particle-collisions.md) |
-| M408 | Kernel Language GPU Backend | doing | M360 | bosley-executor | E22 | F19 | | [M408-kernel-language-gpu-backend.md](PLAN/MILESTONES/M408-kernel-language-gpu-backend.md) |
+| M408 | Kernel Language GPU Backend | done | M360 | bosley-executor | E22 | F19 | | [M408-kernel-language-gpu-backend.md](PLAN/MILESTONES/M408-kernel-language-gpu-backend.md) |
 | M409 | Particle GPU Path | todo | M406, M407, M408 |  | E22 | F19 | | [M409-particle-gpu-path.md](PLAN/MILESTONES/M409-particle-gpu-path.md) |
 | M412 | 2D Image Particles | todo | M405, M406 |  | E22 | F19 | | [M412-2d-image-particles.md](PLAN/MILESTONES/M412-2d-image-particles.md) |
 | M410 | 2D Fluid Solver Core | todo | M190 |  | E22 | F20 | | [M410-2d-fluid-solver-core.md](PLAN/MILESTONES/M410-2d-fluid-solver-core.md) |
@@ -282,7 +282,7 @@ future core work has solid ground to build on.
 | M102 | Graph Edit Operations | done | M16 | bosley-native-nodes | E7 | | | [M102-graph-edit-operations.md](PLAN/MILESTONES/M102-graph-edit-operations.md) |
 | M103 | Graph Diff And Merge | done | M102 |  | E12 | F33 | | [M103-graph-diff-and-merge.md](PLAN/MILESTONES/M103-graph-diff-and-merge.md) |
 | M104 | Merge Resolution UI | doing | M103 | bosley-executor | E12 | F33 | | [M104-merge-resolution-ui.md](PLAN/MILESTONES/M104-merge-resolution-ui.md) |
-| M105 | Live Session Core | doing | M102 | bosley-executor | E11 | F5 | | [M105-live-session-core.md](PLAN/MILESTONES/M105-live-session-core.md) |
+| M105 | Live Session Core | done | M102 | bosley-executor | E11 | F5 | | [M105-live-session-core.md](PLAN/MILESTONES/M105-live-session-core.md) |
 | M106 | Live Session Presence And Undo | doing | M105 | bosley-executor | E11 | F5 | | [M106-live-session-presence-and-undo.md](PLAN/MILESTONES/M106-live-session-presence-and-undo.md) |
 | M70 | RFV Declaration And Storage | done |  |  | E13 | | | [M70-rfv-declaration-and-storage.md](PLAN/MILESTONES/M70-rfv-declaration-and-storage.md) |
 | M71 | RFV Render Context | done | M70, M178 |  | E13 | | | [M71-rfv-render-context.md](PLAN/MILESTONES/M71-rfv-render-context.md) |
@@ -595,7 +595,7 @@ future core work has solid ground to build on.
 | M516 | Port Groups And Folding | todo | M351 |  | E9 | F2 | | [M516-port-groups-and-folding.md](PLAN/MILESTONES/M516-port-groups-and-folding.md) |
 | M517 | Storm Translucent Prim Ids | doing | - | bosley-executor | E9 |  | | [M517-storm-translucent-prim-ids.md](PLAN/MILESTONES/M517-storm-translucent-prim-ids.md) |
 | M518 | Save Prompt Key Shortcuts | doing | - | bosley-executor | E10 | F36 | | [M518-save-prompt-key-shortcuts.md](PLAN/MILESTONES/M518-save-prompt-key-shortcuts.md) |
-| M519 | Raw And Loop Toolbar Icons | doing | - | bosley-executor | E10 | F36 | | [M519-raw-and-loop-toolbar-icons.md](PLAN/MILESTONES/M519-raw-and-loop-toolbar-icons.md) |
+| M519 | Raw And Loop Toolbar Icons | done | - | bosley-executor | E10 | F36 | | [M519-raw-and-loop-toolbar-icons.md](PLAN/MILESTONES/M519-raw-and-loop-toolbar-icons.md) |
 | M520 | USD Toolbar Category And Submenus | doing | - | bosley-executor | E10 | F36 | | [M520-usd-toolbar-category-and-submenus.md](PLAN/MILESTONES/M520-usd-toolbar-category-and-submenus.md) |
 | M521 | Easier Pipe Grabbing | doing | - | bosley-executor | E10 | F36 | | [M521-easier-pipe-grabbing.md](PLAN/MILESTONES/M521-easier-pipe-grabbing.md) |
 | M522 | Geometry Toolbar Category | doing | - | bosley-executor | E10 | F15 | | [M522-geometry-toolbar-category.md](PLAN/MILESTONES/M522-geometry-toolbar-category.md) |

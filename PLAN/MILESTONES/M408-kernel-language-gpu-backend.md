@@ -29,7 +29,7 @@ Member of F19 - Particles: branches off and merges into `feature/f19-particles` 
 
 ## Phase 408.1: Codegen
 
-- [ ] M408.P1.T1 — Slang code generator for kernel programs
+- [x] M408.P1.T1 — Slang code generator for kernel programs
   - files: `Engine/Kernel/KernelSlangCodegen.{h,cpp}`, `Engine/Kernel/KernelTypes.h`, `Tests/KernelSlangCodegen_Test.cpp`
   - approach: Walk the compiled `KernelProgram` and emit a Slang compute entry point with one buffer per bound attribute and a uniform block for `ch()` values and time. Each builtin maps to a Slang function in a shared prelude, or marks the program CPU-only with the builtin's name. Keep the generator free of `GeoDetail` types, as the front end is.
   - verify: `KernelSlangCodegen_Test` generates Slang for a set of reference snippets, compiles each with slangc in-process, and checks that unsupported builtins report CPU-only with the right name.
@@ -37,7 +37,7 @@ Member of F19 - Particles: branches off and merges into `feature/f19-particles` 
 
 ## Phase 408.2: Runner and wrangle
 
-- [ ] M408.P2.T1 — GPU runner and `GeoWrangle` GPU placement
+- [x] M408.P2.T1 — GPU runner and `GeoWrangle` GPU placement
   - files: `Engine/Geo/GeoKernelGpuRunner.{h,cpp}`, `Engine/Nodes/Geometry/GeoWrangle.cpp`, `Tests/Gpu/GeoWrangleGpu_Test.cpp`
   - approach: Upload bound attributes densely, dispatch, read back only written attributes into new pages. Ask placement for the device like image kernels do; fall back to the CPU interpreter on CPU-only programs or GPU errors, with an info message. Tests run under lavapipe in CI as other GPU tests do.
   - verify: `GeoWrangleGpu_Test`: a dozen reference snippets give CPU and GPU results equal within 1e-5 relative; a snippet using `addpoint` runs on the CPU with the fallback message.
@@ -51,3 +51,4 @@ Member of F19 - Particles: branches off and merges into `feature/f19-particles` 
 
 Shared design: `PLAN/DECISIONS/2026-11-12-geometry-simulation-expansion.md`.
 - 2026-11-22 — GLSL, not runtime Slang (user, 2026-11-22, after a comparison): a language-neutral IR walk (`KernelGpuCodegen`) with a GLSL emitter and hand-written GLSL helpers, compiled at runtime by glslang (`compileGlsl`), replacing the 2026-11-12 "Slang codegen" wording; the 2026-10-10 and 2026-10-13 decisions stand. P1.T1's "slangc in-process" verify becomes `compileGlsl`, and the generator is not named `KernelSlangCodegen`. M484's GPU sampling gets build-time `slangc -target glsl` helpers. Runtime libslang is revisited only if later work needs many shipped modules and an in-process benchmark (≤ 20 ms per compile after the first) passes.
+- 2026-11-23 — Merged into F19 as PR #347 (5e9cbd8e7); review findings 1–9 fixed in edaa49eb0, 10 declined.

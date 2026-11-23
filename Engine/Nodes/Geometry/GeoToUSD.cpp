@@ -270,13 +270,15 @@ struct GeoToUSD::Implementation {
     /**
      * The part of the detail at frame the group selects and the Scene input captured where the detail names prims. inputScene,
      * when given, is the Scene input's payload, evaluated by a caller already reading scenes;
-     * otherwise the input is evaluated here, under a ReadScope released on return. Any thread
-     * of the render cancel was built for.
+     * otherwise the input is evaluated here on inputContext, under a ReadScope released on
+     * return. The capture loads inputContext's payloads and those on the way to the named
+     * prims. Any thread of the render cancel was built for.
      **/
     RenderRoIRetCode gather(GeoToUSD* node,
                             double frame,
                             ViewIdx view,
                             const ScenePayload* inputScene,
+                            const SceneEvaluationContext& inputContext,
                             const NodeSettings& settings,
                             RenderCancellation& cancel,
                             Gathered* out,
@@ -536,6 +538,7 @@ GeoToUSD::Implementation::gather(GeoToUSD* node,
                                  double frame,
                                  ViewIdx view,
                                  const ScenePayload* inputScene,
+                                 const SceneEvaluationContext& inputContext,
                                  const NodeSettings& settings,
                                  RenderCancellation& cancel,
                                  Gathered* out,
@@ -575,14 +578,22 @@ GeoToUSD::Implementation::gather(GeoToUSD* node,
     ScenePayload evaluated;
     if (!inputScene) {
         read.emplace();
-        const RenderRoIRetCode code = sceneInput->evaluateScene(EvaluateSceneArgs(frame, view), &evaluated, errorMessage);
+        const RenderRoIRetCode code = sceneInput->evaluateScene(EvaluateSceneArgs(frame, view, inputContext), &evaluated, errorMessage);
         if (code != eRenderRoIRetCodeOk) {
             return code;
         }
         inputScene = &evaluated;
     }
     if (!inputScene->isEmpty()) {
-        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(*inputScene, SceneLoadSet::everything(), errorMessage);
+        std::vector<std::string> named;
+        named.reserve(paths.paths.size() + paths.sourcePaths.size());
+        for (const PXR_NS::SdfPath& path : paths.paths) {
+            named.push_back(path.GetString());
+        }
+        for (const PXR_NS::SdfPath& path : paths.sourcePaths) {
+            named.push_back(path.GetString());
+        }
+        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(*inputScene, SceneLoadSet::withPaths(inputContext.loadSet, named), errorMessage);
         const PXR_NS::UsdStageRefPtr stage = lease.getStage();
         if (!stage) {
             if (errorMessage->empty()) {
@@ -737,7 +748,7 @@ GeoToUSD::prepareSceneSources(const EvaluateSceneArgs& args,
 
     Gathered gathered;
     RenderCancellation cancel(this);
-    const RenderRoIRetCode code = _imp->gather(this, args.time, args.view, nullptr, settings, cancel, &gathered, &error);
+    const RenderRoIRetCode code = _imp->gather(this, args.time, args.view, nullptr, getSceneInputContext_public(kGeoToUSDInputScene, args.context, args.time, args.view), settings, cancel, &gathered, &error);
     if (code == eRenderRoIRetCodeAborted) {
         return code;
     }
@@ -881,6 +892,7 @@ GeoToUSD::renderScene(const SceneRenderActionArgs& args,
     // This render's evaluation holds a ReadScope that the helpers read under.
     const bool reading = SceneWriteBarrier::isReadingOnThisThread();
     const std::function<void(double)> hook = frameGatheredHook();
+    const SceneEvaluationContext& inputContext = args.getInputContext(kGeoToUSDInputScene);
     const auto gatherFrame = [&](int i) {
         if (failed.load(std::memory_order_relaxed)) {
             return;
@@ -888,7 +900,7 @@ GeoToUSD::renderScene(const SceneRenderActionArgs& args,
         SceneWriteBarrier::SharedReadScope shared(reading);
         // The Scene input's payload is evaluated at args.time; other frames evaluate their own.
         const ScenePayload* given = (frames[i] == args.time) ? &upstream : nullptr;
-        codes[i] = _imp->gather(this, frames[i], args.view, given, settings, cancel, &gathered[i], &errors[i]);
+        codes[i] = _imp->gather(this, frames[i], args.view, given, inputContext, settings, cancel, &gathered[i], &errors[i]);
         if (codes[i] != eRenderRoIRetCodeOk) {
             failed = true;
         } else if (hook) {

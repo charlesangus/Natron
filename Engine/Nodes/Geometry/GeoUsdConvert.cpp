@@ -1239,7 +1239,7 @@ GeoUsdConvert::planProperties(Partition& p)
                 plan.typeName = n->Color3fArray;
                 plan.type = findExportType(eGeoStorageFloat32, 3, eGeoTypeInfoColour);
             } else if (name == "pscale" && (f32 || a.storage() == eGeoStorageFloat64) && a.tupleSize() == 1 && widthsAllowed) {
-                // The Solaris SOP Import docs convert width, widths and pscale straight into widths, so there is no factor of two.
+                // Widths equal pscale with no factor of two, as common USD importers convert pscale.
                 plan.name = UsdGeomTokens->widths;
                 plan.typeName = n->FloatArray;
                 plan.type = findExportType(eGeoStorageFloat32, 1, eGeoTypeInfoNone);

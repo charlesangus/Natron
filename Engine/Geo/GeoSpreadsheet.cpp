@@ -286,6 +286,9 @@ countPages(std::span<const GeoOffset> offsets)
     std::uint64_t pages = 0;
     GeoOffset last = -1;
     for (const GeoOffset o : offsets) {
+        if (o < 0) {
+            continue;
+        }
         const GeoOffset page = o >> kGeoPageBits;
         if (page != last) {
             ++pages;
@@ -293,6 +296,20 @@ countPages(std::span<const GeoOffset> offsets)
         }
     }
     s_pagesRead.fetch_add(pages, std::memory_order_relaxed);
+}
+
+// The attributes the intrinsic columns already show; a user attribute that merely starts with "packed" stays.
+bool
+isPackedInternalAttribute(const std::string& name)
+{
+    for (const char* internal : { kGeoPackedXformAttr, kGeoPackedBoundsAttr, kGeoPackedDetailAttr, kGeoPackedUSDPathAttr,
+                                  kGeoPackedUSDParentXformAttr }) {
+        if (name == internal) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 } // namespace
@@ -310,6 +327,36 @@ geoSpreadsheetResetPagesRead()
 }
 
 GeoSpreadsheetSource::~GeoSpreadsheetSource() = default;
+
+void
+GeoSpreadsheetSource::readRowCells(GeoAttribClassEnum cls,
+                                   std::span<const GeoIndex> rows,
+                                   std::span<const int> columnList,
+                                   std::vector<std::string>& out) const
+{
+    const std::size_t cols = columnList.size();
+    const std::int64_t total = rowCount(cls);
+    out.assign(rows.size() * cols, std::string());
+    std::vector<std::string> run;
+    std::size_t i = 0;
+    while (i < rows.size()) {
+        const GeoIndex start = rows[i];
+        if ((start < 0) || (start >= total)) {
+            ++i;
+            continue;
+        }
+        std::size_t length = 1;
+        while ((i + length < rows.size()) && (rows[i + length] == start + GeoIndex(length)) && (rows[i + length] < total)) {
+            ++length;
+        }
+        readCells(cls, start, std::int64_t(length), columnList, run);
+        const std::size_t got = std::min(run.size(), length * cols);
+        for (std::size_t k = 0; k < got; ++k) {
+            out[i * cols + k] = std::move(run[k]);
+        }
+        i += length;
+    }
+}
 
 GeoDetailSpreadsheetSource::GeoDetailSpreadsheetSource(GeoDetailConstPtr detail)
     : _detail(std::move(detail))
@@ -340,7 +387,7 @@ GeoDetailSpreadsheetSource::GeoDetailSpreadsheetSource(GeoDetailConstPtr detail)
         const std::size_t count = _detail->attributeCount(cls);
         for (std::size_t i = 0; i < count; ++i) {
             const GeoAttribute& a = _detail->attribute(cls, i);
-            if (packed && std::string_view(a.name()).starts_with("packed")) {
+            if (packed && isPackedInternalAttribute(a.name())) {
                 continue;
             }
             if (a.isArray()) {
@@ -400,12 +447,32 @@ rowOffsets(const GeoDetail& detail,
     const GeoOffset pages = map.pageCount();
     for (GeoOffset page = map.offsetFromIndex(first) >> GeoIndexMap::kPageShift; page < pages && std::int64_t(out.size()) < count; ++page) {
         map.forEachLiveRunInPage(page, [&](GeoIndex index, GeoOffset offset, GeoOffset runCount) {
+            if (std::int64_t(out.size()) >= count) {
+                return;
+            }
             const std::int64_t skip = std::max<std::int64_t>(first - index, 0);
             for (std::int64_t i = skip; i < runCount && std::int64_t(out.size()) < count; ++i) {
                 out.push_back(offset + i);
             }
         });
     }
+}
+
+// The storage offset of one dense row, or kInvalidOffset past the class's rows.
+GeoOffset
+rowOffset(const GeoDetail& detail,
+          GeoAttribClassEnum cls,
+          std::int64_t row)
+{
+    if (cls == eGeoAttribClassDetail) {
+        return row == 0 ? 0 : GeoIndexMap::kInvalidOffset;
+    }
+    const GeoIndexMap& map = detail.indexMap(cls);
+    if ((row < 0) || (row >= map.size())) {
+        return GeoIndexMap::kInvalidOffset;
+    }
+
+    return map.offsetFromIndex(row);
 }
 
 } // namespace
@@ -422,6 +489,29 @@ GeoDetailSpreadsheetSource::readCells(GeoAttribClassEnum cls,
     rowCountWanted = std::clamp<std::int64_t>(rowCountWanted, 0, total - firstRow);
     std::vector<GeoOffset> offsets;
     rowOffsets(*_detail, cls, firstRow, rowCountWanted, offsets);
+    offsetCells(cls, offsets, columnList, out);
+}
+
+void
+GeoDetailSpreadsheetSource::readRowCells(GeoAttribClassEnum cls,
+                                         std::span<const GeoIndex> rows,
+                                         std::span<const int> columnList,
+                                         std::vector<std::string>& out) const
+{
+    std::vector<GeoOffset> offsets;
+    offsets.reserve(rows.size());
+    for (const GeoIndex row : rows) {
+        offsets.push_back(rowOffset(*_detail, cls, row));
+    }
+    offsetCells(cls, offsets, columnList, out);
+}
+
+void
+GeoDetailSpreadsheetSource::offsetCells(GeoAttribClassEnum cls,
+                                        std::span<const GeoOffset> offsets,
+                                        std::span<const int> columnList,
+                                        std::vector<std::string>& out) const
+{
     const std::size_t rows = offsets.size();
     const std::size_t cols = columnList.size();
     out.assign(rows * cols, std::string());
@@ -432,6 +522,9 @@ GeoDetailSpreadsheetSource::readCells(GeoAttribClassEnum cls,
         for (std::size_t r = 0; r < rows; ++r) {
             std::string& cell = out[r * cols + c];
             const GeoOffset o = offsets[r];
+            if (o < 0) {
+                continue;
+            }
             switch (col.kind) {
             case Column::eAttribute:
                 if (a->isArray()) {
@@ -482,12 +575,10 @@ GeoDetailSpreadsheetSource::sortKey(GeoAttribClassEnum cls,
                                     int column,
                                     std::int64_t row) const
 {
-    std::vector<GeoOffset> offsets;
-    rowOffsets(*_detail, cls, row, 1, offsets);
-    if (offsets.empty()) {
+    const GeoOffset o = rowOffset(*_detail, cls, row);
+    if (o == GeoIndexMap::kInvalidOffset) {
         return 0.;
     }
-    const GeoOffset o = offsets[0];
     const Column& col = _bindings[cls][std::size_t(column)];
     switch (col.kind) {
     case Column::eAttribute: {
@@ -520,12 +611,10 @@ GeoDetailSpreadsheetSource::fullValue(GeoAttribClassEnum cls,
                                       int column,
                                       std::int64_t row) const
 {
-    std::vector<GeoOffset> offsets;
-    rowOffsets(*_detail, cls, row, 1, offsets);
-    if (offsets.empty()) {
+    const GeoOffset o = rowOffset(*_detail, cls, row);
+    if (o == GeoIndexMap::kInvalidOffset) {
         return std::string();
     }
-    const GeoOffset o = offsets[0];
     const Column& col = _bindings[cls][std::size_t(column)];
     if (col.kind == Column::eAttribute) {
         const GeoAttribute& a = _detail->attribute(cls, col.attribute);
@@ -548,40 +637,49 @@ namespace {
 
 constexpr std::size_t kOrderChunk = 65536;
 
-int
-compareKeys(const GeoSpreadsheetSortKey& a,
-            const GeoSpreadsheetSortKey& b);
-
+// Negative when a goes before b in view order. Descending reverses every comparison but NaN's, which stays after
+// every number either way so that missing values never crowd the top of a column.
 int
 compareDoubles(double a,
-               double b)
+               double b,
+               bool descending)
 {
     const bool an = std::isnan(a);
     const bool bn = std::isnan(b);
     if (an || bn) {
         return int(an) - int(bn);
     }
-    return a < b ? -1 : (a > b ? 1 : 0);
+    const int c = a < b ? -1 : (a > b ? 1 : 0);
+
+    return descending ? -c : c;
 }
 
 int
 compareKeys(const GeoSpreadsheetSortKey& a,
-            const GeoSpreadsheetSortKey& b)
+            const GeoSpreadsheetSortKey& b,
+            bool descending)
 {
+    int c = 0;
     if (a.index() != b.index()) {
-        return a.index() < b.index() ? -1 : 1;
+        c = a.index() < b.index() ? -1 : 1;
+    } else {
+        switch (a.index()) {
+        case 0:
+            return compareDoubles(std::get<0>(a), std::get<0>(b), descending);
+        case 1:
+            c = std::get<1>(a).compare(std::get<1>(b));
+            c = c < 0 ? -1 : (c > 0 ? 1 : 0);
+            break;
+        default: {
+            const std::int64_t x = std::get<2>(a).length;
+            const std::int64_t y = std::get<2>(b).length;
+            c = x < y ? -1 : (x > y ? 1 : 0);
+            break;
+        }
+        }
     }
-    switch (a.index()) {
-    case 0:
-        return compareDoubles(std::get<0>(a), std::get<0>(b));
-    case 1:
-        return std::get<1>(a).compare(std::get<1>(b)) < 0 ? -1 : (std::get<1>(a) == std::get<1>(b) ? 0 : 1);
-    default: {
-        const std::int64_t x = std::get<2>(a).length;
-        const std::int64_t y = std::get<2>(b).length;
-        return x < y ? -1 : (x > y ? 1 : 0);
-    }
-    }
+
+    return descending ? -c : c;
 }
 
 // Sorts and merges with a strict total order (key, then element number), so no stable sort is needed.
@@ -645,6 +743,31 @@ sortOrder(std::vector<GeoIndex> order,
 
 } // namespace
 
+GeoElementMask
+geoSpreadsheetRowMask(const GeoIndexMap& map,
+                      const GeoElementMask& offsets)
+{
+    if (map.isTrivial()) {
+        GeoElementMask rows(offsets);
+        rows.resize(std::size_t(map.size()), 0);
+
+        return rows;
+    }
+    GeoElementMask rows(std::size_t(map.size()), 0);
+    const GeoOffset known = GeoOffset(offsets.size());
+    const GeoOffset pages = map.pageCount();
+    for (GeoOffset page = 0; page < pages; ++page) {
+        map.forEachLiveRunInPage(page, [&](GeoIndex index, GeoOffset offset, GeoOffset runCount) {
+            const GeoOffset end = std::min(offset + runCount, known);
+            for (GeoOffset o = offset; o < end; ++o) {
+                rows[std::size_t(index + (o - offset))] = offsets[std::size_t(o)];
+            }
+        });
+    }
+
+    return rows;
+}
+
 std::shared_ptr<const std::vector<GeoIndex>>
 geoSpreadsheetBuildOrder(const GeoSpreadsheetSource& source,
                          GeoAttribClassEnum cls,
@@ -700,17 +823,10 @@ geoSpreadsheetBuildOrder(const GeoSpreadsheetSource& source,
 
     if (allNumbers.load()) {
         const double* k = numbers.data();
-        if (descending) {
-            return sortOrder(
-                std::move(order), [k](GeoIndex a, GeoIndex b) {
-                    const int c = compareDoubles(k[a], k[b]);
-                    return c != 0 ? c > 0 : a < b;
-                },
-                cancelled);
-        }
+
         return sortOrder(
-            std::move(order), [k](GeoIndex a, GeoIndex b) {
-                const int c = compareDoubles(k[a], k[b]);
+            std::move(order), [k, descending](GeoIndex a, GeoIndex b) {
+                const int c = compareDoubles(k[a], k[b], descending);
                 return c != 0 ? c < 0 : a < b;
             },
             cancelled);
@@ -735,17 +851,10 @@ geoSpreadsheetBuildOrder(const GeoSpreadsheetSource& source,
         return nullptr;
     }
     const GeoSpreadsheetSortKey* k = keys.data();
-    if (descending) {
-        return sortOrder(
-            std::move(order), [k](GeoIndex a, GeoIndex b) {
-                const int c = compareKeys(k[a], k[b]);
-                return c != 0 ? c > 0 : a < b;
-            },
-            cancelled);
-    }
+
     return sortOrder(
-        std::move(order), [k](GeoIndex a, GeoIndex b) {
-            const int c = compareKeys(k[a], k[b]);
+        std::move(order), [k, descending](GeoIndex a, GeoIndex b) {
+            const int c = compareKeys(k[a], k[b], descending);
             return c != 0 ? c < 0 : a < b;
         },
         cancelled);

@@ -765,19 +765,6 @@ refresh(const std::string& identifier,
     return true;
 }
 
-GeoDetailConstPtr
-servedDetail(const std::string& identifier)
-{
-    std::string layerPath;
-    SdfLayer::FileFormatArguments args;
-    std::string key;
-    if (!SdfLayer::SplitIdentifier(identifier, &layerPath, &args) || !keyFromPath(layerPath, &key)) {
-        return GeoDetailConstPtr();
-    }
-
-    return currentDetail(key, consumerOf(args));
-}
-
 bool
 isConsumerLayer(const std::string& identifier,
                 std::string* consumer)

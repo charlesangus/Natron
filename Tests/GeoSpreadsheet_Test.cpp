@@ -32,6 +32,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <string>
 #include <thread>
@@ -494,4 +495,55 @@ TEST(GeoSpreadsheetOrderTest, CancellingMidSortReturnsPromptly)
     canceller.join();
     EXPECT_FALSE(order);
     EXPECT_LT(doneAt - setAt.load(), 100000);
+}
+
+TEST(GeoSpreadsheetOrderTest, NaNSortsLastAscendingAndDescending)
+{
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const double values[] = { 2., nan, 1., 3., nan };
+    const FakeSource numbers(5, [&](std::int64_t r) { return GeoSpreadsheetSortKey(values[r]); });
+    EXPECT_EQ(buildOrder(numbers, nullptr, 0, false), (std::vector<GeoIndex> { 2, 0, 3, 1, 4 }));
+    EXPECT_EQ(buildOrder(numbers, nullptr, 0, true), (std::vector<GeoIndex> { 3, 0, 2, 1, 4 }));
+
+    // A string in the column takes the mixed-kind path, which keeps NaN last among the numbers too.
+    const FakeSource mixed(6, [&](std::int64_t r) { return r == 5 ? GeoSpreadsheetSortKey(std::string("a")) : GeoSpreadsheetSortKey(values[r]); });
+    EXPECT_EQ(buildOrder(mixed, nullptr, 0, false), (std::vector<GeoIndex> { 2, 0, 3, 1, 4, 5 }));
+    EXPECT_EQ(buildOrder(mixed, nullptr, 0, true), (std::vector<GeoIndex> { 5, 3, 0, 2, 1, 4 }));
+}
+
+TEST(GeoSpreadsheetTest, RowMaskAndRowCellsFollowTheLiveRows)
+{
+    GeoDetailBuilder b(makeGrid());
+    const GeoOffset dead[] = { 2, 3, 4 };
+    b.deletePoints(dead, eGeoPointDeleteDegenerate);
+    const GeoDetail d = b.finish();
+    ASSERT_EQ(3, d.pointMap().tombstoneCount());
+
+    const GeoElementMask offsets = { 0, 1, 1, 1, 1, 1 };
+    EXPECT_EQ(geoSpreadsheetRowMask(d.pointMap(), offsets), (GeoElementMask { 0, 1, 1 }));
+    EXPECT_EQ(geoSpreadsheetRowMask(d.pointMap(), GeoElementMask { 1 }), (GeoElementMask { 1, 0, 0 }));
+
+    const GeoDetailSpreadsheetSource src(std::make_shared<const GeoDetail>(d));
+    const int cols[] = { columnIndex(src, eGeoAttribClassPoint, "name") };
+    const GeoIndex rows[] = { 2, 0, 7, 1 };
+    std::vector<std::string> out;
+    src.readRowCells(eGeoAttribClassPoint, rows, cols, out);
+    EXPECT_EQ(out, (std::vector<std::string> { "pt5", "pt0", "", "pt1" }));
+}
+
+TEST(GeoSpreadsheetTest, PackedPrimitivesKeepUserAttributesNamedLikePacked)
+{
+    GeoDetailBuilder b;
+    const GeoOffset p = b.appendPoints(1);
+    geoAppendPackedUSD(b, p, "/World/Chair", translation(0., 0., 0.), translation(0., 0., 0.), GeoBounds { { 0., 0., 0. }, { 1., 1., 1. } });
+    GeoAttributeDesc desc;
+    desc.name = "packedness";
+    b.addAttribute(eGeoAttribClassPrimitive, desc);
+    const GeoDetailSpreadsheetSource src(std::make_shared<const GeoDetail>(b.finish()));
+
+    const std::vector<std::string> names = columnNames(src, eGeoAttribClassPrimitive);
+    EXPECT_NE(std::find(names.begin(), names.end(), "packedness"), names.end());
+    for (const char* internal : { kGeoPackedXformAttr, kGeoPackedBoundsAttr, kGeoPackedUSDPathAttr, kGeoPackedUSDParentXformAttr }) {
+        EXPECT_EQ(std::find(names.begin(), names.end(), internal), names.end()) << internal;
+    }
 }

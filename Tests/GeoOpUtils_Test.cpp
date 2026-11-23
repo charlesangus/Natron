@@ -49,6 +49,20 @@ detailWithPoints(GeoIndex count)
     return builder.finish();
 }
 
+GeoDetail
+detailWithEdges(GeoIndex count,
+                const std::vector<GeoEdge>& edges)
+{
+    GeoDetailBuilder builder;
+    builder.appendPoints(count);
+    for (const GeoEdge& e : edges) {
+        const GeoOffset pts[2] = { e.p0, e.p1 };
+        builder.appendPrimitive(eGeoPrimitivePolyline, pts);
+    }
+
+    return builder.finish();
+}
+
 GeoElementMask
 maskOfNumbers(const GeoDetail& d,
               GeoAttribClassEnum cls,
@@ -81,7 +95,7 @@ decodeEdges(const GeoDetail& d,
 {
     std::set<GeoEdge> edges;
     std::string error;
-    EXPECT_TRUE(GeoGroup::selectEdges(d, pattern, &edges, &error)) << error;
+    EXPECT_TRUE(geoSelectEdges(d, pattern, &edges, &error)) << error;
 
     return std::vector<GeoEdge>(edges.begin(), edges.end());
 }
@@ -204,8 +218,8 @@ TEST(GeoOpUtilsTest, RandomEdgeSetsRoundTripOverTombstones)
 
 TEST(GeoOpUtilsTest, ClosedEdgeLoopIsOnePath)
 {
-    const GeoDetail d = detailWithPoints(10);
     const std::vector<GeoEdge> loop = { GeoEdge(3, 4), GeoEdge(4, 5), GeoEdge(5, 6), GeoEdge(6, 3) };
+    const GeoDetail d = detailWithEdges(10, loop);
     const std::string pattern = geoEncodeEdgePattern(d, loop);
     EXPECT_EQ("p3-4-5-6-3", pattern);
     EXPECT_EQ(std::vector<GeoEdge>({ GeoEdge(3, 4), GeoEdge(3, 6), GeoEdge(4, 5), GeoEdge(5, 6) }), decodeEdges(d, pattern));
@@ -217,7 +231,17 @@ TEST(GeoOpUtilsTest, OpenChainsAndBranchesUseFewPaths)
     EXPECT_EQ("p0-1-2 p5-6", geoEncodeEdgePattern(d, std::vector<GeoEdge>({ GeoEdge(5, 6), GeoEdge(1, 2), GeoEdge(0, 1) })));
     const std::vector<GeoEdge> star = { GeoEdge(0, 1), GeoEdge(0, 2), GeoEdge(0, 3) };
     const std::string pattern = geoEncodeEdgePattern(d, star);
-    EXPECT_EQ(std::vector<GeoEdge>(star), decodeEdges(d, pattern));
+    EXPECT_EQ(std::vector<GeoEdge>(star), decodeEdges(detailWithEdges(10, star), pattern));
+}
+
+TEST(GeoOpUtilsTest, PointPathSelectsOnlyRealEdges)
+{
+    const GeoDetail d = detailWithEdges(10, { GeoEdge(0, 1), GeoEdge(1, 2) });
+    EXPECT_EQ(std::vector<GeoEdge>({ GeoEdge(0, 1), GeoEdge(1, 2) }), decodeEdges(d, "p0-1-2"));
+    EXPECT_EQ(std::vector<GeoEdge>({ GeoEdge(0, 1) }), decodeEdges(d, "p0-1-5"));
+    EXPECT_TRUE(decodeEdges(d, "p0-5").empty());
+    EXPECT_TRUE(decodeEdges(d, "p0-2 p7-99").empty());
+    EXPECT_EQ(std::vector<GeoEdge>({ GeoEdge(1, 2) }), decodeEdges(d, "* ^p0-1"));
 }
 
 TEST(GeoOpUtils, GuessGroupTypeReadsTheClassFromThePattern)

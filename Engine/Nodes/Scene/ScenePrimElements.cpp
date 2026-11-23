@@ -274,6 +274,9 @@ ScenePrimElementsSource::ScenePrimElementsSource(const std::int64_t (&rowCounts)
     _ops.reserve(_bindings.size());
     for (std::size_t i = 0; i < _bindings.size(); ++i) {
         const Binding& b = _bindings[i];
+        if (b.vertexPoints && b.values.IsHolding<PXR_NS::VtIntArray>()) {
+            _vertexPoints = b.values.UncheckedGet<PXR_NS::VtIntArray>();
+        }
         const ValueOps* ops = valueOps(b.values);
         _ops.push_back(ops);
         std::vector<GeoSpreadsheetColumn>& cols = _columns[b.cls];
@@ -324,15 +327,7 @@ ScenePrimElementsSource::~ScenePrimElementsSource() = default;
 std::int64_t
 ScenePrimElementsSource::pointOfVertex(std::int64_t row) const
 {
-    for (const Binding& binding : _bindings) {
-        if ((binding.cls == eGeoAttribClassVertex) && (binding.name == "Point") && binding.values.IsHolding<PXR_NS::VtIntArray>()) {
-            const PXR_NS::VtIntArray& indices = binding.values.UncheckedGet<PXR_NS::VtIntArray>();
-
-            return ((row >= 0) && (std::size_t(row) < indices.size())) ? std::int64_t(indices[std::size_t(row)]) : -1;
-        }
-    }
-
-    return -1;
+    return ((row >= 0) && (std::size_t(row) < _vertexPoints.size())) ? std::int64_t(_vertexPoints[std::size_t(row)]) : -1;
 }
 
 std::int64_t
@@ -450,19 +445,32 @@ ScenePrimElementsSource::sortKey(GeoAttribClassEnum cls,
     if (!col.valid) {
         return 0.;
     }
-    if (col.arrayCell) {
-        return GeoSpreadsheetArrayLength { col.arrayLength };
-    }
     const std::int64_t element = elementOf(col, row);
     if (element < 0) {
         return 0.;
     }
     const ValueOps& ops = *_ops[col.binding];
+    const PXR_NS::VtValue& values = _bindings[col.binding].values;
+    // Every row of an array cell holds the same number of values, so the first value orders them.
+    if (col.arrayCell) {
+        if (col.arrayLength <= 0) {
+            return GeoSpreadsheetArrayLength { 0 };
+        }
+        const std::size_t first = std::size_t(element) * std::size_t(col.arrayLength);
+        if (ops.isText) {
+            std::string text;
+            ops.append(text, values, first, 0);
+
+            return text;
+        }
+
+        return ops.number(values, first, 0);
+    }
     if (ops.isText) {
         return cellText(col, row, false);
     }
 
-    return ops.number(_bindings[col.binding].values, std::size_t(element), col.component);
+    return ops.number(values, std::size_t(element), col.component);
 }
 
 std::string
@@ -652,6 +660,9 @@ ScenePrimElementsRead::Implementation::list(const PXR_NS::UsdPrim& prim,
     }
     if (prim.IsA<UsdGeomMesh>()) {
         vertexCountBinding = addValues(prim.GetAttribute(UsdGeomTokens->faceVertexIndices), "Point", eGeoAttribClassVertex, 1, TfToken());
+        if (vertexCountBinding != kNone) {
+            bindings[vertexCountBinding].vertexPoints = true;
+        }
         steps.push_back(Step { Step::eCount, 0, UsdGeomTokens->faceVertexCounts });
     } else if (prim.IsA<UsdGeomCurves>()) {
         steps.push_back(Step { Step::eCount, 0, UsdGeomTokens->curveVertexCounts });

@@ -490,6 +490,7 @@ GeoEdit::renderGeometry(const GeoRenderActionArgs& args,
         if (errorMessage) {
             *errorMessage = decodeError;
         }
+        clearPersistentMessage(false);
 
         return eStatusFailed;
     }

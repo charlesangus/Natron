@@ -207,6 +207,13 @@ public:
     bool syncScene(const ScenePayload& payload, double frame, double framesPerSecond, std::string* error, U64 serial = 0);
 
     /**
+     * @brief Runs the stage editor's pending edits on the stage as last synced, without a payload:
+     * what a change of the editor's own state, as a component pick is, needs. False if nothing
+     * changed. MT-safe, as syncScene() is.
+     **/
+    bool refreshStageEdits();
+
+    /**
      * @brief Shows payload at the project frame (a project running at framesPerSecond). The free
      * camera is framed on the scene the first time a scene is shown, and kept for later scenes.
      * Returns false with *error set if USD is unusable, and then shows nothing. Syncs on the
@@ -932,8 +939,8 @@ public:
      * @brief Highlights the points and faces given by prim path and index, besides whatever else is
      * highlighted. Empty vectors clear it.
      **/
-    void setDisplayHighlight(std::vector<std::pair<std::string, std::vector<int>>> points,
-                             std::vector<std::pair<std::string, std::vector<int>>> faces);
+    void setDisplayHighlight(std::vector<std::pair<std::string, std::vector<GeoIndex>>> points,
+                             std::vector<std::pair<std::string, std::vector<GeoIndex>>> faces);
 
     // Destroys the engine. Needs the context of render() current.
     void releaseGL();
@@ -1221,7 +1228,7 @@ public:
      **/
     void setSceneComponentHighlight(const std::string& primPath,
                                     GeoAttribClassEnum cls,
-                                    std::vector<int> indices);
+                                    std::vector<GeoIndex> indices);
 
     void clearSceneComponentHighlight();
 

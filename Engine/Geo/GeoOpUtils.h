@@ -202,7 +202,7 @@ std::string geoEncodePattern(const GeoDetail& detail,
                              bool emptyMeansEverything = false);
 
 /**
- * @brief The pattern that GeoGroup::selectEdges() reads back as @p edges: point paths such as
+ * @brief The pattern that geoSelectEdges() reads back as @p edges: point paths such as
  * "p3-4-5" over point element numbers, edges that share endpoints chained into one path and a
  * closed loop written as one path that returns to its start. Edges with a dead endpoint are
  * dropped. The empty set follows the same "" / "^*" rule as geoEncodePattern().
@@ -211,28 +211,38 @@ std::string geoEncodeEdgePattern(const GeoDetail& detail,
                                  std::span<const GeoEdge> edges,
                                  bool emptyMeansEverything = false);
 
+/** @brief Calls f(edge) for each edge of @p prim when it is a polygon or polyline. */
+template <typename F>
+void
+geoForEachPrimitiveEdge(const GeoDetail& detail, GeoOffset prim, F&& f)
+{
+    const GeoPrimitiveTypeEnum type = detail.primitiveType(prim);
+    if (type != eGeoPrimitivePolygon && type != eGeoPrimitivePolyline) {
+        return;
+    }
+    const GeoVertexRange range = detail.primitiveVertices(prim);
+    if (range.count < 2) {
+        return;
+    }
+    const GeoOffset segments = (type == eGeoPrimitivePolygon && range.count > 2) ? range.count : range.count - 1;
+    for (GeoOffset i = 0; i < segments; ++i) {
+        const GeoOffset a = detail.vertexPoint(range.start + i);
+        const GeoOffset b = detail.vertexPoint(range.start + (i + 1) % range.count);
+        if (a != b) {
+            f(GeoEdge(a, b));
+        }
+    }
+}
+
 /** @brief Calls f(edge, primitive) for each edge of each live polygon and polyline, edges repeating where primitives share them. */
 template <typename F>
 void
 geoForEachEdge(const GeoDetail& detail, F&& f)
 {
     detail.primitiveMap().forEachLive([&](GeoIndex /*index*/, GeoOffset prim) {
-        const GeoPrimitiveTypeEnum type = detail.primitiveType(prim);
-        if (type != eGeoPrimitivePolygon && type != eGeoPrimitivePolyline) {
-            return;
-        }
-        const GeoVertexRange range = detail.primitiveVertices(prim);
-        if (range.count < 2) {
-            return;
-        }
-        const GeoOffset segments = (type == eGeoPrimitivePolygon && range.count > 2) ? range.count : range.count - 1;
-        for (GeoOffset i = 0; i < segments; ++i) {
-            const GeoOffset a = detail.vertexPoint(range.start + i);
-            const GeoOffset b = detail.vertexPoint(range.start + (i + 1) % range.count);
-            if (a != b) {
-                f(GeoEdge(a, b), prim);
-            }
-        }
+        geoForEachPrimitiveEdge(detail, prim, [&](const GeoEdge& edge) {
+            f(edge, prim);
+        });
     });
 }
 

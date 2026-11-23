@@ -200,15 +200,15 @@ primSelectedRowMask(const ScenePrimElementsSource& prim,
 // Returns false for a source that has no view selection to read; the highlighted points or faces of a prim
 // fill the mask for a prim.
 bool
-selectedRowMask(const GeoSpreadsheetModel::SourcePtr& source,
+selectedRowMask(const GeoSpreadsheetSource& source,
                 GeoAttribClassEnum cls,
                 const GeoComponentSelection& selection,
                 const std::atomic<bool>& cancelled,
                 GeoElementMask* mask)
 {
-    const GeoDetailSpreadsheetSource* geometry = dynamic_cast<const GeoDetailSpreadsheetSource*>(source.get());
+    const GeoDetailSpreadsheetSource* geometry = dynamic_cast<const GeoDetailSpreadsheetSource*>(&source);
 
-    if (const ScenePrimElementsSource* prim = dynamic_cast<const ScenePrimElementsSource*>(source.get())) {
+    if (const ScenePrimElementsSource* prim = dynamic_cast<const ScenePrimElementsSource*>(&source)) {
         return primSelectedRowMask(*prim, cls, selection, cancelled, mask);
     }
     if (!geometry) {
@@ -323,46 +323,14 @@ runBuild(const GeoSpreadsheetModel::SourcePtr& source,
     }
     GeoElementMask mask;
     bool filtered = false;
-    if ((cls != eGeoAttribClassDetail) && (pattern.find_first_not_of(" \t\r\n") != std::string::npos)) {
-        if (const GeoDetailSpreadsheetSource* geometry = dynamic_cast<const GeoDetailSpreadsheetSource*>(source.get())) {
-            std::string error;
-            if (!geoSelectElements(*geometry->detail(), cls, pattern, &mask, &error)) {
-                result.error = QString::fromStdString(error);
+    std::string error;
+    if (!geoSpreadsheetFilterMask(*source, cls, pattern, selectedOnly, cancelled, &mask, &filtered, &error)) {
+        result.error = QString::fromStdString(error);
 
-                return result;
-            }
-            filtered = true;
-        } else if (const ScenePrimElementsSource* prim = dynamic_cast<const ScenePrimElementsSource*>(source.get())) {
-            std::vector<GeoNamedElementGroup> groups;
-            for (const ScenePrimElementGroup& group : prim->groups()) {
-                if (group.cls == cls) {
-                    groups.push_back({ group.name, std::span<const std::int32_t>(group.indices.data(), group.indices.size()) });
-                }
-            }
-            std::string error;
-            if (!geoSelectElementsInDomain((std::size_t)std::max<std::int64_t>(0, source->rowCount(cls)), groups, pattern, &mask, &error, false)) {
-                result.error = QString::fromStdString(error);
-
-                return result;
-            }
-            filtered = true;
-        }
+        return result;
     }
-    if (selectedOnly && (cls != eGeoAttribClassDetail)) {
-        GeoElementMask selected;
-        if (selectedRowMask(source, cls, *selectedOnly, cancelled, &selected)) {
-            if (cancelled.load()) {
-                return result;
-            }
-            if (filtered) {
-                for (std::size_t i = 0; i < mask.size(); ++i) {
-                    mask[i] = (mask[i] && (i < selected.size()) && selected[i]) ? 1 : 0;
-                }
-            } else {
-                mask = std::move(selected);
-                filtered = true;
-            }
-        }
+    if (cancelled.load()) {
+        return result;
     }
     result.order = geoSpreadsheetBuildOrder(*source, cls, filtered ? &mask : nullptr, sortColumn, descending, cancelled);
     if (result.order) {
@@ -685,7 +653,11 @@ private:
     {
         GeoDetailConstPtr detail;
         const ViewerInstancePtr& viewer = read.getViewer();
-        const bool fromViewer = viewer && viewer->getShownGeometry(0, &detail, nullptr) && detail;
+        int servedFrame = 0;
+        // Texture 0 is input A, the input the 3D view shows and the only one getViewer() is set for. During
+        // playback the 3D view can still be on an earlier frame than the one asked for.
+        const bool fromViewer = viewer && viewer->getShownGeometry(0, &detail, &servedFrame) && detail
+            && (double(servedFrame) == read.getFrame());
 
         // The viewer's own copy, when it has one, numbers the elements as its 3D view picks them.
         if (!fromViewer) {
@@ -730,6 +702,64 @@ private:
 };
 
 } // anon namespace
+
+bool
+geoSpreadsheetFilterMask(const GeoSpreadsheetSource& source,
+                         GeoAttribClassEnum cls,
+                         const std::string& pattern,
+                         const GeoComponentSelection* selectedOnly,
+                         const std::atomic<bool>& cancelled,
+                         GeoElementMask* mask,
+                         bool* filtered,
+                         std::string* error)
+{
+    mask->clear();
+    *filtered = false;
+    if (cls == eGeoAttribClassDetail) {
+        return true;
+    }
+    const GeoDetailSpreadsheetSource* geometry = dynamic_cast<const GeoDetailSpreadsheetSource*>(&source);
+    if (pattern.find_first_not_of(" \t\r\n") != std::string::npos) {
+        if (geometry) {
+            if (!geoSelectElements(*geometry->detail(), cls, pattern, mask, error)) {
+                return false;
+            }
+            *filtered = true;
+        } else if (const ScenePrimElementsSource* prim = dynamic_cast<const ScenePrimElementsSource*>(&source)) {
+            std::vector<GeoNamedElementGroup> groups;
+            for (const ScenePrimElementGroup& group : prim->groups()) {
+                if (group.cls == cls) {
+                    groups.push_back({ group.name, std::span<const std::int32_t>(group.indices.data(), group.indices.size()) });
+                }
+            }
+            if (!geoSelectElementsInDomain((std::size_t)std::max<std::int64_t>(0, source.rowCount(cls)), groups, pattern, mask, error, false)) {
+                return false;
+            }
+            *filtered = true;
+        }
+    }
+    if (selectedOnly) {
+        GeoElementMask selected;
+        if (selectedRowMask(source, cls, *selectedOnly, cancelled, &selected)) {
+            if (cancelled.load()) {
+                return true;
+            }
+            if (*filtered) {
+                for (std::size_t i = 0; i < mask->size(); ++i) {
+                    (*mask)[i] = ((*mask)[i] && (i < selected.size()) && selected[i]) ? 1 : 0;
+                }
+            } else {
+                *mask = std::move(selected);
+                *filtered = true;
+            }
+        }
+    }
+    if (*filtered && geometry) {
+        *mask = geoSpreadsheetRowMask(geometry->detail()->indexMap(cls), *mask);
+    }
+
+    return true;
+}
 
 GeoSpreadsheetWidget::GeoSpreadsheetWidget(const QString& objectName,
                                            QWidget* parent)
@@ -1048,9 +1078,10 @@ GeoSpreadsheetWidget::applyHighlight(const GeoComponentSelection& selection)
 
         return;
     }
+    std::vector<GeoIndex> indices(selection.elements.begin(), selection.elements.end());
     viewport->setSceneComponentHighlight(_highlightPath,
                                          (selection.type == eGeoComponentPrimitives) ? eGeoAttribClassPrimitive : eGeoAttribClassPoint,
-                                         std::vector<int>(selection.elements.begin(), selection.elements.end()));
+                                         std::move(indices));
 }
 
 bool

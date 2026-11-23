@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <climits>
+#include <cstddef>
 
 #include <QtGui/QFontMetrics>
 #include <QtWidgets/QHeaderView>
@@ -150,30 +151,31 @@ GeoSpreadsheetModel::fillBlock(Block& block, std::int64_t first) const
         return;
     }
     const std::int64_t sourceRows = _source->rowCount(_cls);
-    std::vector<std::string> run;
-    std::int64_t i = 0;
-    while (i < rows) {
-        const GeoIndex start = elementAt(first + i);
-        if (start < 0 || start >= sourceRows) {
-            ++i;
-            continue;
+    if (!_order) {
+        const std::int64_t length = std::max<std::int64_t>(0, std::min(rows, sourceRows - first));
+        if (length <= 0) {
+            return;
         }
-        std::int64_t length = 1;
-        while (i + length < rows) {
-            const GeoIndex next = elementAt(first + i + length);
-            if (next != start + length || next >= sourceRows) {
-                break;
-            }
-            ++length;
-        }
-        _source->readCells(_cls, start, length, _allColumns, run);
+        _source->readCells(_cls, first, length, _allColumns, _scratch);
         _cellsRead += (std::uint64_t)length * cols;
-        const std::size_t got = std::min<std::size_t>(run.size(), (std::size_t)length * cols);
-        for (std::size_t k = 0; k < got; ++k) {
-            block.cells[(std::size_t)i * cols + k] = std::move(run[k]);
-        }
-        i += length;
+        const std::size_t got = std::min<std::size_t>(_scratch.size(), (std::size_t)length * cols);
+        std::move(_scratch.begin(), _scratch.begin() + (std::ptrdiff_t)got, block.cells.begin());
+
+        return;
     }
+    _scratchRows.clear();
+    std::uint64_t live = 0;
+    for (std::int64_t i = 0; i < rows; ++i) {
+        const GeoIndex element = elementAt(first + i);
+        _scratchRows.push_back(element);
+        if ((element >= 0) && (element < sourceRows)) {
+            ++live;
+        }
+    }
+    _source->readRowCells(_cls, _scratchRows, _allColumns, _scratch);
+    _cellsRead += live * cols;
+    const std::size_t got = std::min<std::size_t>(_scratch.size(), block.cells.size());
+    std::move(_scratch.begin(), _scratch.begin() + (std::ptrdiff_t)got, block.cells.begin());
 }
 
 const GeoSpreadsheetModel::Block&

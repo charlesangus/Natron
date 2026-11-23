@@ -212,12 +212,12 @@ TEST(GeoGroupTest, EdgePathPattern)
     const GeoDetail input = grid();
     std::set<GeoEdge> edges;
     std::string error;
-    ASSERT_TRUE(GeoGroup::selectEdges(input, "p0-1-2", &edges, &error)) << error;
+    ASSERT_TRUE(geoSelectEdges(input, "p0-1-2", &edges, &error)) << error;
     const GeoOffset p0 = input.pointMap().offsetFromIndex(0);
     const GeoOffset p1 = input.pointMap().offsetFromIndex(1);
     const GeoOffset p2 = input.pointMap().offsetFromIndex(2);
     EXPECT_EQ((std::set<GeoEdge> { GeoEdge(p0, p1), GeoEdge(p1, p2) }), edges);
-    EXPECT_FALSE(GeoGroup::selectEdges(input, "3", &edges, &error));
+    EXPECT_FALSE(geoSelectEdges(input, "3", &edges, &error));
 }
 
 TEST(GeoGroupTest, ComparisonsMayHaveSpacesAroundTheOperator)

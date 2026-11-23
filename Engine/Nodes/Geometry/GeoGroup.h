@@ -156,12 +156,6 @@ public:
                             const GeoGroupParams& params,
                             std::string* error);
 
-    /** @brief The edges of the live polygons and polylines that @p pattern selects. */
-    static bool selectEdges(const GeoDetail& detail,
-                            const std::string& pattern,
-                            std::set<GeoEdge>* edges,
-                            std::string* error);
-
 private:
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void initializeKnobs() OVERRIDE FINAL;

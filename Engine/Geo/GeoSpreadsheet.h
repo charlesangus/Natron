@@ -84,6 +84,16 @@ public:
                            std::vector<std::string>& out) const
         = 0;
 
+    /**
+     * @brief readCells() for the listed rows in their order, so that a sorted or filtered block costs one call
+     * rather than one per row. @p out is resized to rows.size() * columns.size(); a row out of range gives empty
+     * cells. The default reads each run of consecutive rows through readCells().
+     **/
+    virtual void readRowCells(GeoAttribClassEnum cls,
+                              std::span<const GeoIndex> rows,
+                              std::span<const int> columns,
+                              std::vector<std::string>& out) const;
+
     virtual GeoSpreadsheetSortKey sortKey(GeoAttribClassEnum cls,
                                           int column,
                                           std::int64_t row) const
@@ -113,6 +123,10 @@ public:
                    std::int64_t rowCount,
                    std::span<const int> columns,
                    std::vector<std::string>& out) const override;
+    void readRowCells(GeoAttribClassEnum cls,
+                      std::span<const GeoIndex> rows,
+                      std::span<const int> columns,
+                      std::vector<std::string>& out) const override;
     GeoSpreadsheetSortKey sortKey(GeoAttribClassEnum cls,
                                   int column,
                                   std::int64_t row) const override;
@@ -136,6 +150,12 @@ public:
     };
 
 private:
+    // Cells of the rows at offsets, kInvalidOffset giving empty ones.
+    void offsetCells(GeoAttribClassEnum cls,
+                     std::span<const GeoOffset> offsets,
+                     std::span<const int> columns,
+                     std::vector<std::string>& out) const;
+
     std::string intrinsicText(GeoOffset primitive,
                               Column::KindEnum kind,
                               bool full) const;
@@ -146,12 +166,21 @@ private:
 };
 
 /**
+ * @brief @p offsets, a GeoElementMask indexed by storage offset (as geoSelectElements() fills it), re-indexed by
+ * dense element number through @p map; tombstoned offsets drop out.
+ **/
+GeoElementMask geoSpreadsheetRowMask(const GeoIndexMap& map,
+                                     const GeoElementMask& offsets);
+
+/**
  * @brief The element numbers of one class in view order: the elements @p mask keeps (every element when null; an
- * element past the mask's size is dropped), sorted by column @p sortColumn (unsorted when negative).
+ * element past the mask's size is dropped), sorted by column @p sortColumn (unsorted when negative). @p mask is
+ * indexed by row, the source's dense element number, not by storage offset: a detail's offset mask goes through
+ * geoSpreadsheetRowMask() first.
  *
  * Equal keys stay in ascending element order, descending included. Keys of different kinds in one column order by
- * kind, then value; NaN sorts after every number. Returns null when @p cancelled became true before the order was
- * complete; it is polled at least every few tens of thousands of rows.
+ * kind, then value; NaN sorts after every number, descending included. Returns null when @p cancelled became true
+ * before the order was complete; it is polled at least every few tens of thousands of rows.
  **/
 std::shared_ptr<const std::vector<GeoIndex>> geoSpreadsheetBuildOrder(const GeoSpreadsheetSource& source,
                                                                       GeoAttribClassEnum cls,

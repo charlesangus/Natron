@@ -220,15 +220,6 @@ setKnobSecret(const std::weak_ptr<PtrType>& knob,
 }
 } // anonymous namespace
 
-bool
-GeoGroup::selectEdges(const GeoDetail& detail,
-                      const std::string& pattern,
-                      std::set<GeoEdge>* edges,
-                      std::string* error)
-{
-    return geoSelectEdges(detail, pattern, edges, error);
-}
-
 static bool
 buildSelection(GeoDetailBuilder& builder,
                const GeoGroupParams& params,

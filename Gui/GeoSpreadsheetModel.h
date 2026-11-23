@@ -139,6 +139,9 @@ private:
     mutable std::array<Block, 2> _blocks;
     mutable std::uint64_t _clock;
     mutable std::uint64_t _cellsRead;
+    // Kept across block fills so that scrolling does not regrow them per block.
+    mutable std::vector<std::string> _scratch;
+    mutable std::vector<GeoIndex> _scratchRows;
 };
 
 /**

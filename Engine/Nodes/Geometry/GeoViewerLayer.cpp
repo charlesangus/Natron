@@ -29,10 +29,13 @@
 #include <atomic>
 #include <charconv>
 #include <functional>
+#include <limits>
 #include <map>
 #include <utility>
 
+#include "Engine/AppManager.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
+#include "Engine/Settings.h"
 
 #include "Engine/Nodes/Geometry/GeoSdfData.h"
 #include "Engine/Nodes/Geometry/GeoSdfFileFormat.h"
@@ -48,8 +51,24 @@ namespace {
 
 std::atomic<U64> nextViewerLayerId(1);
 
-// Past this many, the frames held longest go first: playback evaluates no further ahead.
+// Past either bound, the frames held longest go first. Held frames sit outside the cache budget,
+// so the bytes bound is what keeps animated heavy geometry from pinning memory.
 const std::size_t kMaxHeldFrames = 64;
+
+// A quarter of the geometry cache budget, read per check so a preference change applies at once.
+// Without settings (no application) only the frame bound applies.
+std::size_t
+maxHeldBytes()
+{
+    if (!appPTR) {
+        return std::numeric_limits<std::size_t>::max();
+    }
+    const SettingsPtr settings = appPTR->getCurrentSettings();
+    if (!settings) {
+        return std::numeric_limits<std::size_t>::max();
+    }
+    return std::size_t(settings->getMaximumGeoDetailCacheSize() / 4);
+}
 
 } // namespace
 
@@ -57,6 +76,7 @@ struct GeoViewerLayer::Slot {
     struct Held {
         GeoDetailConstPtr detail;
         U64 order = 0;
+        std::size_t bytes = 0;
     };
 
     std::mutex mutex;
@@ -155,13 +175,21 @@ GeoViewerLayer::serveFrame(const GeoDetailConstPtr& detail,
             _slot->detail = held.detail;
         }
         held.order = _slot->nextOrder++;
-        while (_slot->held.size() > kMaxHeldFrames) {
-            auto oldest = _slot->held.begin();
+        held.bytes = held.detail->getSizeInBytes();
+        std::size_t total = 0;
+        for (const auto& entry : _slot->held) {
+            total += entry.second.bytes;
+        }
+        const std::size_t heldBytesCap = maxHeldBytes();
+        // The frame just evaluated always stays, however large.
+        while ((_slot->held.size() > 1) && ((_slot->held.size() > kMaxHeldFrames) || (total > heldBytesCap))) {
+            auto oldest = _slot->held.end();
             for (auto it = _slot->held.begin(); it != _slot->held.end(); ++it) {
-                if (it->second.order < oldest->second.order) {
+                if ((it->second.order != held.order) && ((oldest == _slot->held.end()) || (it->second.order < oldest->second.order))) {
                     oldest = it;
                 }
             }
+            total -= oldest->second.bytes;
             _slot->held.erase(oldest);
         }
     }
@@ -179,6 +207,16 @@ GeoViewerLayer::showFrame(int frame)
     }
     const GeoDetailConstPtr detail = found->second.detail;
     _slot->held.erase(found);
+    // Frames the timeline has passed are never shown by playback, so letting them sit would pin
+    // them until the next non-sequential evaluation. The direction is read off the last frame shown.
+    const bool backwards = _slot->hasFrame && (frame < _slot->frame);
+    for (auto it = _slot->held.begin(); it != _slot->held.end();) {
+        if (backwards ? (it->first > frame) : (it->first < frame)) {
+            it = _slot->held.erase(it);
+        } else {
+            ++it;
+        }
+    }
     const bool changed = (detail != _slot->detail) || !_slot->hasFrame || (_slot->frame != frame);
     _slot->detail = detail;
     _slot->frame = frame;

@@ -1,8 +1,6 @@
 """Checks that the native geometry nodes sit under their own Geometry toolbar category.
 
-Usage (natron-dev container; see Tests/gui/run-gui-test.sh for the GL/Xvfb setup):
-    docker exec -e NATRON_GUI_TEST_OUT=build/m522-shots/out -w /home/bosley/git/Natron natron-dev \\
-        Tests/gui/run-gui-test.sh Tests/gui/geometry_toolbar_menu.py build/release/App/Natron
+Usage, from the repository root: Tests/gui/run-gui-test.sh Tests/gui/geometry_toolbar_menu.py
 
 Asserts:
   - the main window's toolbox has a Geometry button, placed right after 3D;

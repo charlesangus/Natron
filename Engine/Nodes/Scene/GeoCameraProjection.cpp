@@ -43,14 +43,16 @@ worldToFrame(const ScenePayload& scene,
              int fitMode,
              std::array<double, 16>* matrix,
              std::string* usedPath,
-             std::string* errorMessage)
+             std::string* errorMessage,
+             const SceneLoadSetPtr& loadSet)
 {
     if (scene.isEmpty()) {
         *errorMessage = "The camera input holds no scene.";
 
         return false;
     }
-    SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(scene, SceneLoadSet::everything(), errorMessage);
+    const SceneLoadSetPtr cameraLoadSet = cameraPath.empty() ? loadSet : SceneLoadSet::withPaths(loadSet, std::vector<std::string>(1, cameraPath));
+    SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(scene, cameraLoadSet, errorMessage);
     const PXR_NS::UsdStageRefPtr stage = lease.getStage();
     if (!stage) {
         if (errorMessage->empty()) {
@@ -94,14 +96,15 @@ worldToFrame(const ScenePayload& scene,
 } // worldToFrame
 
 std::vector<std::string>
-cameraPaths(const ScenePayload& scene)
+cameraPaths(const ScenePayload& scene,
+            const SceneLoadSetPtr& loadSet)
 {
     std::vector<std::string> out;
     if (scene.isEmpty()) {
         return out;
     }
     std::string error;
-    SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(scene, SceneLoadSet::everything(), &error);
+    SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(scene, loadSet, &error);
     const PXR_NS::UsdStageRefPtr stage = lease.getStage();
     if (!stage) {
         return out;

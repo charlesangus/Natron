@@ -77,15 +77,19 @@ public:
 
     ScenePayload stagedPayload(const ScenePayload& payload) override;
 
-    bool editStage(SceneStage& stage) override;
+    bool editStage(SceneStage& stage,
+                   bool* renderChanged) override;
+
+    bool hasPendingEdits() const override;
 
     bool showsGuidePurpose() const override;
 
     /**
      * @brief Paints the point and primitive numbers turned on that land in view, over a widget of
      * @p width by @p height logical pixels drawn with @p viewProjection, a row-major matrix taking
-     * a world-space row vector to clip space. At most a fixed number of labels per paint; nothing
-     * hides a label behind geometry. Returns how many it painted.
+     * a world-space row vector to clip space. At most a fixed number of labels per paint, from
+     * the parts of the geometry in view, and a bounded number of anchors looked at to find them;
+     * nothing hides a label behind geometry. Returns how many it painted.
      **/
     int paintLabels(QPainter& painter,
                     const double viewProjection[16],

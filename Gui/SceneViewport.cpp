@@ -192,6 +192,21 @@ NATRON_NAMESPACE_ENTER
 
 namespace {
 
+// Hydra indexes components with 32 bits: an index past that range would select another element, so it is left out.
+VtIntArray
+hydraIndices(const std::vector<GeoIndex>& indices)
+{
+    VtIntArray out;
+    out.reserve(indices.size());
+    for (const GeoIndex index : indices) {
+        if ((index >= 0) && (index <= GeoIndex(std::numeric_limits<int>::max()))) {
+            out.push_back(int(index));
+        }
+    }
+
+    return out;
+}
+
 // The background grey, in scene-linear; it is shown through the display transform.
 const float kBackgroundLinear = 0.05f;
 // The same grey once encoded to sRGB, for the clears and checks done outside Storm.
@@ -754,6 +769,9 @@ struct SceneViewportRenderer::Implementation {
 
     mutable std::mutex stageEditorMutex;
     std::shared_ptr<SceneStageEditor> stageEditor;
+    // Held through each sync and stage edit: the editor's staging state is the syncing thread's,
+    // and stagedPayload() runs before the viewer lock.
+    std::mutex syncMutex;
 
     mutable std::mutex drawnViewMutex;
     GfMatrix4d drawnViewProjection;
@@ -1089,6 +1107,10 @@ struct SceneViewportRenderer::Implementation {
     // The componentHighlight applySelection() last gave the engine. Touched only by whichever
     // thread holds the engine.
     bool componentHighlightApplied = false;
+    // highlightPosted as of the last applySelection(). Storm draws a component or display
+    // highlight into its colour AOV, so unlike a prim selection a change of one leaves neither the
+    // AOVs to grade again nor a kept image. Touched only by whichever thread holds the engine.
+    U64 highlightApplied = 0;
     // Held by its own type: UsdImagingGLEngine's destructor is not virtual.
     std::unique_ptr<SelectionEngine> engine;
     std::atomic<bool> engineHeld { false };
@@ -1103,8 +1125,30 @@ struct SceneViewportRenderer::Implementation {
     std::vector<std::pair<std::string, std::vector<int>>> highlightEdges;
     std::vector<std::pair<std::string, std::vector<int>>> highlightFaces;
     // Highlighted whichever of the two applies, by prim path.
-    std::vector<std::pair<std::string, std::vector<int>>> displayPoints;
-    std::vector<std::pair<std::string, std::vector<int>>> displayFaces;
+    std::vector<std::pair<std::string, std::vector<GeoIndex>>> displayPoints;
+    std::vector<std::pair<std::string, std::vector<GeoIndex>>> displayFaces;
+    // Counts the changes of either highlight, under engineSelectionMutex.
+    U64 highlightPosted = 0;
+    // Counts the changes of displayPoints and displayFaces.
+    std::atomic<U64> displayPosted { 0 };
+    // displayPoints and displayFaces in world space, as of displayPosted, the stage's version and
+    // the time: resolved by whichever draw holds stageMutex, so that one without it, as a threaded
+    // frame's overlays are, still draws them. Under displayResolvedMutex.
+    struct DisplayResolved {
+        bool valid = false;
+        U64 posted = 0;
+        const void* stage = nullptr;
+        U64 editCount = 0;
+        U64 loadEditCount = 0;
+        U64 previewGeneration = 0;
+        double time = 0.;
+        std::vector<GfVec3d> points;
+        // Each face's corners, one face after the other; counts holds how many each has.
+        std::vector<GfVec3d> corners;
+        std::vector<int> counts;
+    };
+    std::mutex displayResolvedMutex;
+    DisplayResolved displayResolved;
     // Storm draws a mesh's selected points only in its points repr, so the shaded and wireframe
     // modes would show none of displayPoints, and it lights its selection colour, so a face lit
     // black shows none of displayFaces: both are drawn over the frame instead.
@@ -1260,6 +1304,7 @@ struct SceneViewportRenderer::Implementation {
     bool recordDrawnGuides = false;
     // Main thread: what drawOverlays() last read of the stage, drawn again when it cannot read it.
     GfFrustum overlayFrustum;
+    bool overlayFrustumSet = false;
     bool overlayThroughCamera = false;
     bool overlayHandlesShown = false;
     SceneGizmo::Frame overlayHandleFrame;
@@ -1313,7 +1358,9 @@ struct SceneViewportRenderer::Implementation {
     // Translate handles on picked geometry components, set by the main thread. Their drag keeps
     // its change in an atomic, as the drag edits a node rather than the stage and must not wait
     // for the stage lock that each sync of those edits takes.
-    bool hasComponentHandles = false;
+    // The render thread reads these for the overlays; the origin is under componentHandlesMutex.
+    std::atomic<bool> hasComponentHandles { false };
+    mutable std::mutex componentHandlesMutex;
     GfVec3d componentOrigin = GfVec3d(0.);
     bool dragComponents = false;
     std::atomic<double> componentDragChange { 0. };
@@ -1897,9 +1944,12 @@ struct SceneViewportRenderer::Implementation {
         engineSelectionDirty = false;
         selectedPaths.clear();
         HdSelectionSharedPtr components = std::make_shared<HdSelection>();
+        bool highlightChanged = false;
         {
             std::lock_guard<std::mutex> lock(engineSelectionMutex);
             selectionApplied = selectionPosted.load();
+            highlightChanged = (highlightApplied != highlightPosted);
+            highlightApplied = highlightPosted;
             componentHighlightApplied = componentHighlight;
             if (componentHighlight) {
                 const auto add = [&components](const std::vector<std::pair<std::string, std::vector<int>>>& indices,
@@ -1930,18 +1980,22 @@ struct SceneViewportRenderer::Implementation {
         {
             std::lock_guard<std::mutex> lock(engineSelectionMutex);
             componentHighlightApplied = componentHighlightApplied || !displayPoints.empty() || !displayFaces.empty();
-            for (const std::pair<std::string, std::vector<int>>& prim : displayPoints) {
+            for (const std::pair<std::string, std::vector<GeoIndex>>& prim : displayPoints) {
                 if (SdfPath::IsValidPathString(prim.first)) {
-                    components->AddPoints(HdSelection::HighlightModeSelect, SdfPath(prim.first), VtIntArray(prim.second.begin(), prim.second.end()), GfVec4f(1.f, 0.6f, 0.f, 1.f));
+                    components->AddPoints(HdSelection::HighlightModeSelect, SdfPath(prim.first), hydraIndices(prim.second), GfVec4f(1.f, 0.6f, 0.f, 1.f));
                 }
             }
-            for (const std::pair<std::string, std::vector<int>>& prim : displayFaces) {
+            for (const std::pair<std::string, std::vector<GeoIndex>>& prim : displayFaces) {
                 if (SdfPath::IsValidPathString(prim.first)) {
-                    components->AddElements(HdSelection::HighlightModeSelect, SdfPath(prim.first), VtIntArray(prim.second.begin(), prim.second.end()));
+                    components->AddElements(HdSelection::HighlightModeSelect, SdfPath(prim.first), hydraIndices(prim.second));
                 }
             }
         }
         engine->setComponentSelection(components);
+        if (highlightChanged) {
+            aovFrame.valid = false;
+            backgroundFrame.imageKept = false;
+        }
     }
 
     // Needs the GL context current, stageMutex and a StormGLSection, as the render that threw has
@@ -3022,13 +3076,9 @@ struct SceneViewportRenderer::Implementation {
         return true;
     }
 
-    /**
-     * @brief Where the handles drawn sit at the shown time: the selection's widget, else an op's.
-     * *selection tells which. False if none are drawn. Needs stageMutex.
-     **/
     bool componentHandlesShown() const
     {
-        return (dragHandle != SceneGizmo::kNoHandle) ? dragComponents : hasComponentHandles;
+        return (dragHandle != SceneGizmo::kNoHandle) ? dragComponents : hasComponentHandles.load();
     }
 
     // The component handles, carried along by a drag of them under way.
@@ -3037,7 +3087,11 @@ struct SceneViewportRenderer::Implementation {
         if (!componentHandlesShown()) {
             return false;
         }
-        GfVec3d origin = componentOrigin;
+        GfVec3d origin;
+        {
+            std::lock_guard<std::mutex> lock(componentHandlesMutex);
+            origin = componentOrigin;
+        }
         if (dragHandle != SceneGizmo::kNoHandle) {
             origin = dragFrame.origin;
             origin[SceneGizmo::getHandleAxis(dragHandle)] += componentDragChange.load();
@@ -3054,6 +3108,10 @@ struct SceneViewportRenderer::Implementation {
         return true;
     }
 
+    /**
+     * @brief Where the handles drawn sit at the shown time: the selection's widget, else an op's.
+     * *selection tells which. False if none are drawn. Needs stageMutex.
+     **/
     bool computeHandleFrame(SceneGizmo::Frame* frame,
                             bool* selection) const
     {
@@ -3358,92 +3416,64 @@ struct SceneViewportRenderer::Implementation {
         return showGrid || showGuides || hasHandles || hasBoxes() || hasDisplayHighlight;
     }
 
-    // The highlighted points of displayPoints at the shown time, over everything. Needs stageMutex.
-    void drawDisplayPoints(const GfFrustum& frustum)
+    // Resolves displayPoints and displayFaces to world space at the shown time, unless they, the
+    // stage and the time are as they were resolved. Needs stageMutex.
+    void resolveDisplayHighlight()
     {
-        std::vector<std::pair<std::string, std::vector<int>>> prims;
-        {
-            std::lock_guard<std::mutex> lock(engineSelectionMutex);
-            prims = displayPoints;
-        }
         const UsdStageRefPtr stage = currentStage();
-        if (prims.empty() || !stage) {
-            return;
+        const double time = timeCode();
+        const U64 posted = displayPosted.load();
+        const void* stageId = get_pointer(stage);
+        const U64 editCount = sceneStage ? sceneStage->getEditCount() : 0;
+        const U64 loadEditCount = sceneStage ? sceneStage->getLoadEditCount() : 0;
+        const U64 previewGeneration = sceneStage ? sceneStage->getPreviewGeneration() : 0;
+        {
+            std::lock_guard<std::mutex> lock(displayResolvedMutex);
+            const DisplayResolved& r = displayResolved;
+            if (r.valid && (r.posted == posted) && (r.stage == stageId) && (r.editCount == editCount) && (r.loadEditCount == loadEditCount)
+                && (r.previewGeneration == previewGeneration) && (r.time == time)) {
+                return;
+            }
         }
-        const UsdTimeCode time(timeCode());
-        UsdGeomXformCache xforms(time);
-        std::vector<GfVec3d> world;
-        for (const std::pair<std::string, std::vector<int>>& prim : prims) {
+        DisplayResolved resolved;
+        resolved.valid = true;
+        resolved.posted = posted;
+        resolved.stage = stageId;
+        resolved.editCount = editCount;
+        resolved.loadEditCount = loadEditCount;
+        resolved.previewGeneration = previewGeneration;
+        resolved.time = time;
+        std::vector<std::pair<std::string, std::vector<GeoIndex>>> points, faces;
+        if (stage && hasDisplayHighlight) {
+            std::lock_guard<std::mutex> lock(engineSelectionMutex);
+            // A newer highlight posted since is resolved by the next draw.
+            resolved.posted = displayPosted.load();
+            points = displayPoints;
+            faces = displayFaces;
+        }
+        const UsdTimeCode timeCode(time);
+        UsdGeomXformCache xforms(timeCode);
+        for (const std::pair<std::string, std::vector<GeoIndex>>& prim : points) {
             if (!SdfPath::IsValidPathString(prim.first)) {
                 continue;
             }
             const UsdPrim usdPrim = stage->GetPrimAtPath(SdfPath(prim.first));
-            VtVec3fArray points;
+            VtVec3fArray positions;
             if (usdPrim && usdPrim.IsA<UsdGeomPointBased>()) {
-                UsdGeomPointBased(usdPrim).GetPointsAttr().Get(&points, time);
+                UsdGeomPointBased(usdPrim).GetPointsAttr().Get(&positions, timeCode);
             } else if (usdPrim && usdPrim.IsA<UsdGeomPointInstancer>()) {
-                UsdGeomPointInstancer(usdPrim).GetPositionsAttr().Get(&points, time);
+                UsdGeomPointInstancer(usdPrim).GetPositionsAttr().Get(&positions, timeCode);
             } else {
                 continue;
             }
             const GfMatrix4d toWorld = xforms.GetLocalToWorldTransform(usdPrim);
-            for (const int index : prim.second) {
-                if ((index >= 0) && ((std::size_t)index < points.size())) {
-                    world.push_back(toWorld.Transform(GfVec3d(points[(std::size_t)index])));
+            for (const GeoIndex index : prim.second) {
+                if ((index >= 0) && ((std::size_t)index < positions.size())) {
+                    resolved.points.push_back(toWorld.Transform(GfVec3d(positions[(std::size_t)index])));
                 }
             }
         }
-        if (world.empty()) {
-            return;
-        }
-
-        glMatrixMode(GL_PROJECTION);
-        glPushMatrix();
-        glLoadMatrixd(frustum.ComputeProjectionMatrix().GetArray());
-        glMatrixMode(GL_MODELVIEW);
-        glPushMatrix();
-        glLoadMatrixd(frustum.ComputeViewMatrix().GetArray());
-
-        glDisable(GL_LIGHTING);
-        glDisable(GL_TEXTURE_2D);
-        glDisable(GL_CULL_FACE);
-        glDisable(GL_DEPTH_TEST);
-        glDisable(GL_BLEND);
-        glPointSize(7.f);
-        glColor4f(1.f, 0.6f, 0.f, 1.f);
-        glBegin(GL_POINTS);
-        for (const GfVec3d& p : world) {
-            glVertex3d(p[0], p[1], p[2]);
-        }
-        glEnd();
-        glPointSize(1.f);
-
-        glMatrixMode(GL_MODELVIEW);
-        glPopMatrix();
-        glMatrixMode(GL_PROJECTION);
-        glPopMatrix();
-    } // drawDisplayPoints
-
-    // The highlighted faces of displayFaces at the shown time, over everything: Storm mixes its
-    // selection colour in before lighting, so a face lit black (a scene without lights, or a
-    // face turned from the light) would show none of it. Needs stageMutex.
-    void drawDisplayFaces(const GfFrustum& frustum)
-    {
-        std::vector<std::pair<std::string, std::vector<int>>> prims;
-        {
-            std::lock_guard<std::mutex> lock(engineSelectionMutex);
-            prims = displayFaces;
-        }
-        const UsdStageRefPtr stage = currentStage();
-        if (prims.empty() || !stage) {
-            return;
-        }
-        const UsdTimeCode time(timeCode());
-        UsdGeomXformCache xforms(time);
-        // Each face's corners in world space, one after the other; counts holds how many each has.
-        std::vector<GfVec3d> corners;
-        std::vector<int> counts;
-        for (const std::pair<std::string, std::vector<int>>& prim : prims) {
+        for (const std::pair<std::string, std::vector<GeoIndex>>& prim : faces) {
             if (!SdfPath::IsValidPathString(prim.first)) {
                 continue;
             }
@@ -3452,32 +3482,46 @@ struct SceneViewportRenderer::Implementation {
                 continue;
             }
             const UsdGeomMesh mesh(usdPrim);
-            VtVec3fArray points;
+            VtVec3fArray positions;
             VtIntArray faceCounts, faceIndices;
-            mesh.GetPointsAttr().Get(&points, time);
-            mesh.GetFaceVertexCountsAttr().Get(&faceCounts, time);
-            mesh.GetFaceVertexIndicesAttr().Get(&faceIndices, time);
+            mesh.GetPointsAttr().Get(&positions, timeCode);
+            mesh.GetFaceVertexCountsAttr().Get(&faceCounts, timeCode);
+            mesh.GetFaceVertexIndicesAttr().Get(&faceIndices, timeCode);
             std::vector<std::size_t> starts(faceCounts.size() + 1, 0);
             for (std::size_t face = 0; face < faceCounts.size(); ++face) {
                 starts[face + 1] = starts[face] + (std::size_t)std::max(0, faceCounts[face]);
             }
             const GfMatrix4d toWorld = xforms.GetLocalToWorldTransform(usdPrim);
-            for (const int face : prim.second) {
+            for (const GeoIndex face : prim.second) {
                 if ((face < 0) || ((std::size_t)face >= faceCounts.size()) || (starts[(std::size_t)face + 1] > faceIndices.size())) {
                     continue;
                 }
                 int count = 0;
                 for (std::size_t corner = starts[(std::size_t)face]; corner < starts[(std::size_t)face + 1]; ++corner) {
                     const int point = faceIndices[corner];
-                    if ((point >= 0) && ((std::size_t)point < points.size())) {
-                        corners.push_back(toWorld.Transform(GfVec3d(points[(std::size_t)point])));
+                    if ((point >= 0) && ((std::size_t)point < positions.size())) {
+                        resolved.corners.push_back(toWorld.Transform(GfVec3d(positions[(std::size_t)point])));
                         ++count;
                     }
                 }
-                counts.push_back(count);
+                resolved.counts.push_back(count);
             }
         }
-        if (corners.empty()) {
+        std::lock_guard<std::mutex> lock(displayResolvedMutex);
+        displayResolved = std::move(resolved);
+    } // resolveDisplayHighlight
+
+    /**
+     * @brief The highlighted faces, then points, as last resolved, over everything. The faces are
+     * drawn here rather than by Storm, which mixes its selection colour in before lighting, so a
+     * face lit black (a scene without lights, or a face turned from the light) would show none of
+     * it. Needs no stage lock.
+     **/
+    void drawDisplayHighlight(const GfFrustum& frustum)
+    {
+        std::lock_guard<std::mutex> lock(displayResolvedMutex);
+        const DisplayResolved& r = displayResolved;
+        if (!r.valid || (r.points.empty() && r.corners.empty())) {
             return;
         }
 
@@ -3492,43 +3536,56 @@ struct SceneViewportRenderer::Implementation {
         glDisable(GL_TEXTURE_2D);
         glDisable(GL_CULL_FACE);
         glDisable(GL_DEPTH_TEST);
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        glColor4f(1.f, 0.6f, 0.f, 0.4f);
-        glBegin(GL_TRIANGLES);
-        std::size_t first = 0;
-        for (const int count : counts) {
-            for (int corner = 1; corner + 1 < count; ++corner) {
-                const GfVec3d& a = corners[first];
-                const GfVec3d& b = corners[first + (std::size_t)corner];
-                const GfVec3d& c = corners[first + (std::size_t)corner + 1];
-                glVertex3d(a[0], a[1], a[2]);
-                glVertex3d(b[0], b[1], b[2]);
-                glVertex3d(c[0], c[1], c[2]);
+        if (!r.corners.empty()) {
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            glColor4f(1.f, 0.6f, 0.f, 0.4f);
+            glBegin(GL_TRIANGLES);
+            std::size_t first = 0;
+            for (const int count : r.counts) {
+                for (int corner = 1; corner + 1 < count; ++corner) {
+                    const GfVec3d& a = r.corners[first];
+                    const GfVec3d& b = r.corners[first + (std::size_t)corner];
+                    const GfVec3d& c = r.corners[first + (std::size_t)corner + 1];
+                    glVertex3d(a[0], a[1], a[2]);
+                    glVertex3d(b[0], b[1], b[2]);
+                    glVertex3d(c[0], c[1], c[2]);
+                }
+                first += (std::size_t)count;
             }
-            first += (std::size_t)count;
-        }
-        glEnd();
-        glDisable(GL_BLEND);
-        glColor4f(1.f, 0.6f, 0.f, 1.f);
-        glBegin(GL_LINES);
-        first = 0;
-        for (const int count : counts) {
-            for (int corner = 0; corner < count; ++corner) {
-                const GfVec3d& a = corners[first + (std::size_t)corner];
-                const GfVec3d& b = corners[first + (std::size_t)((corner + 1) % count)];
-                glVertex3d(a[0], a[1], a[2]);
-                glVertex3d(b[0], b[1], b[2]);
+            glEnd();
+            glDisable(GL_BLEND);
+            glColor4f(1.f, 0.6f, 0.f, 1.f);
+            glBegin(GL_LINES);
+            first = 0;
+            for (const int count : r.counts) {
+                for (int corner = 0; corner < count; ++corner) {
+                    const GfVec3d& a = r.corners[first + (std::size_t)corner];
+                    const GfVec3d& b = r.corners[first + (std::size_t)((corner + 1) % count)];
+                    glVertex3d(a[0], a[1], a[2]);
+                    glVertex3d(b[0], b[1], b[2]);
+                }
+                first += (std::size_t)count;
             }
-            first += (std::size_t)count;
+            glEnd();
         }
-        glEnd();
+        if (!r.points.empty()) {
+            glDisable(GL_BLEND);
+            glPointSize(7.f);
+            glColor4f(1.f, 0.6f, 0.f, 1.f);
+            glBegin(GL_POINTS);
+            for (const GfVec3d& p : r.points) {
+                glVertex3d(p[0], p[1], p[2]);
+            }
+            glEnd();
+            glPointSize(1.f);
+        }
 
         glMatrixMode(GL_MODELVIEW);
         glPopMatrix();
         glMatrixMode(GL_PROJECTION);
         glPopMatrix();
-    } // drawDisplayFaces
+    } // drawDisplayHighlight
 
     // Tells the box worker the frame's time and the stage's version. Needs stageMutex.
     void feedBoxes()
@@ -3871,7 +3928,10 @@ struct SceneViewportRenderer::Implementation {
         fillDrawnList.reset();
         drawnBoxes.clear();
         const bool fillBoxes = !standIn && !held && hasFillBoxes();
-        const bool displayHighlight = stageReadable && hasDisplayHighlight;
+        const bool displayHighlight = hasDisplayHighlight;
+        if (stageReadable && displayHighlight) {
+            resolveDisplayHighlight();
+        }
         if (!standIn && !fillBoxes && !showGrid && !showGuides && !hasHandles && !hasBoxes() && !displayHighlight) {
             return;
         }
@@ -3899,8 +3959,7 @@ struct SceneViewportRenderer::Implementation {
             drawTransformHandles(*handleFrame, handleSelection, frustum, width, height);
         }
         if (displayHighlight) {
-            drawDisplayFaces(frustum);
-            drawDisplayPoints(frustum);
+            drawDisplayHighlight(frustum);
         }
     }
 
@@ -4065,6 +4124,10 @@ SceneViewportRenderer::syncScene(const ScenePayload& payload,
         return false;
     }
 
+    const std::lock_guard<std::mutex> syncLock(_imp->syncMutex);
+    // The stage composes what the editor stacks over the payload, so that is what it is synced to.
+    const std::shared_ptr<SceneStageEditor> editor = _imp->getStageEditor();
+    const ScenePayload staged = editor ? editor->stagedPayload(payload) : payload;
     // Before the viewer lock, the order every reader takes them in.
     SceneWriteBarrier::ReadScope read;
     bool restart = false;
@@ -4074,7 +4137,8 @@ SceneViewportRenderer::syncScene(const ScenePayload& payload,
         // is, so the paints that read it go on meanwhile.
         std::shared_lock<std::shared_mutex> lock = _imp->lockShared();
         unchanged = _imp->sceneStage && _imp->sceneStage->isValid() && _imp->loadRulesMade && (_imp->shown == !payload.isEmpty())
-            && !((serial != 0) && (serial > _imp->previewClearAfter.load())) && _imp->sceneStage->isSyncedTo(payload);
+            && !((serial != 0) && (serial > _imp->previewClearAfter.load())) && _imp->sceneStage->isSyncedTo(staged)
+            && !(editor && editor->hasPendingEdits());
     }
     if (unchanged) {
         if (!_imp->takeSyncLoadSet(payload)) {
@@ -4128,16 +4192,17 @@ SceneViewportRenderer::syncScene(const ScenePayload& payload,
         before.renderSettingsPrimPath.clear();
         after.renderSettingsPrimPath.clear();
         StageChangePaths changes(_imp->sceneStage->getStage());
-        const std::shared_ptr<SceneStageEditor> editor = _imp->getStageEditor();
-        if (_imp->sceneStage->sync(editor ? editor->stagedPayload(payload) : payload)) {
+        if (_imp->sceneStage->sync(staged)) {
             // An edit of the render settings prims alone restarts nothing here: what of it the
             // render takes, the active prim's settings for its renderer, reaches it through
             // ProgressiveRender::setSettings(), which makes the engine again when they differ.
             restart = changes.outsideRender || !changes.any || (before != after);
         }
-        if (editor && editor->editStage(*_imp->sceneStage)) {
+        bool renderChanged = false;
+        if (editor && editor->editStage(*_imp->sceneStage, &renderChanged)) {
             _imp->sceneStage->noteLayerEdit();
-            restart = true;
+            // Guide-purpose prims never reach the final render.
+            restart = restart || renderChanged;
         }
         if (framesPerSecond > 0.) {
             _imp->frame = frame;
@@ -4158,6 +4223,40 @@ SceneViewportRenderer::syncScene(const ScenePayload& payload,
     if (serial > _imp->stageSyncSerial) {
         _imp->stageSyncSerial = serial;
     }
+
+    return true;
+}
+
+bool
+SceneViewportRenderer::refreshStageEdits()
+{
+    const std::lock_guard<std::mutex> syncLock(_imp->syncMutex);
+    const std::shared_ptr<SceneStageEditor> editor = _imp->getStageEditor();
+    if (!editor) {
+        return false;
+    }
+    // Before the viewer lock, the order every reader takes them in.
+    SceneWriteBarrier::ReadScope read;
+    {
+        std::shared_lock<std::shared_mutex> lock = _imp->lockShared();
+        if (!_imp->sceneStage || !_imp->sceneStage->isValid() || !editor->hasPendingEdits()) {
+            return false;
+        }
+    }
+    bool renderChanged = false;
+    {
+        const std::unique_lock<std::shared_mutex> lock = _imp->lockExclusive();
+        if (!_imp->sceneStage || !_imp->sceneStage->isValid() || !editor->editStage(*_imp->sceneStage, &renderChanged)) {
+            return false;
+        }
+        _imp->sceneStage->noteLayerEdit();
+        _imp->stageEditCount = _imp->sceneStage->getEditCount();
+    }
+    if (renderChanged) {
+        _imp->progressive->invalidate();
+    }
+    std::shared_lock<std::shared_mutex> lock = _imp->lockShared();
+    _imp->refreshStageSummary();
 
     return true;
 }
@@ -4607,6 +4706,8 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo,
     if (!_imp->ensureEngine()) {
         return false;
     }
+    // The frame was prepared before ensureEngine() gave the engine the selection posted since.
+    frame.params.highlight = _imp->componentHighlightApplied;
     section.collectWith(_imp->engine->GetHgi());
     if (frame.tintOnly) {
         frame.params.enableSceneLights = _imp->usesSceneLights(frame.lightingMode);
@@ -5590,8 +5691,9 @@ SceneViewportRenderer::clearTransformHandles()
 void
 SceneViewportRenderer::setComponentHandles(const double origin[3])
 {
-    _imp->hasComponentHandles = true;
+    std::lock_guard<std::mutex> lock(_imp->componentHandlesMutex);
     _imp->componentOrigin = GfVec3d(origin[0], origin[1], origin[2]);
+    _imp->hasComponentHandles = true;
 }
 
 void
@@ -6194,9 +6296,13 @@ SceneViewportRenderer::drawOverlays(unsigned int fbo,
             imp.feedStandInBoxes();
             imp.overlayThroughCamera = bool(imp.lookThroughCamera());
             imp.overlayFrustum = imp.computeFrustum(width, height);
+            imp.overlayFrustumSet = true;
             imp.overlayHandlesShown = imp.computeHandleFrame(&imp.overlayHandleFrame, &imp.overlayHandleSelection);
             if (imp.showGuides) {
                 imp.currentGuides();
+            }
+            if (imp.hasDisplayHighlight) {
+                imp.resolveDisplayHighlight();
             }
         }
     }
@@ -6208,10 +6314,16 @@ SceneViewportRenderer::drawOverlays(unsigned int fbo,
             // The free camera is the main thread's own, and needs no stage.
             imp.overlayThroughCamera = false;
             imp.overlayFrustum = imp.computeFrustum(width, height);
+            imp.overlayFrustumSet = true;
         }
         if (!imp.hasHandles) {
             imp.overlayHandlesShown = false;
         }
+    }
+    // What labels and component picks project with: the view the overlays are drawn at, which on
+    // the threaded path is the only draw this thread makes.
+    if (imp.overlayFrustumSet) {
+        imp.noteDrawnView(imp.overlayFrustum, width, height);
     }
     StormGLStateGuard guard;
     imp.drawOverlayPass(fbo, imp.overlayFrustum, width, height, imp.stageHeld,
@@ -6704,6 +6816,9 @@ SceneViewportRenderer::setComponentHighlight(bool active,
                                              std::vector<std::pair<std::string, std::vector<int>>> faces)
 {
     std::lock_guard<std::mutex> lock(_imp->engineSelectionMutex);
+    if (active || _imp->componentHighlight) {
+        ++_imp->highlightPosted;
+    }
     _imp->componentHighlight = active;
     _imp->highlightEdges = std::move(edges);
     _imp->highlightFaces = std::move(faces);
@@ -6712,13 +6827,19 @@ SceneViewportRenderer::setComponentHighlight(bool active,
 }
 
 void
-SceneViewportRenderer::setDisplayHighlight(std::vector<std::pair<std::string, std::vector<int>>> points,
-                                           std::vector<std::pair<std::string, std::vector<int>>> faces)
+SceneViewportRenderer::setDisplayHighlight(std::vector<std::pair<std::string, std::vector<GeoIndex>>> points,
+                                           std::vector<std::pair<std::string, std::vector<GeoIndex>>> faces)
 {
     std::lock_guard<std::mutex> lock(_imp->engineSelectionMutex);
+    const bool shown = !points.empty() || !faces.empty();
+    if (shown || _imp->hasDisplayHighlight) {
+        ++_imp->highlightPosted;
+    }
     _imp->displayPoints = std::move(points);
     _imp->displayFaces = std::move(faces);
-    _imp->hasDisplayHighlight = !_imp->displayPoints.empty() || !_imp->displayFaces.empty();
+    _imp->hasDisplayHighlight = shown;
+    ++_imp->displayPosted;
+    ++_imp->selectionPosted;
     _imp->engineSelectionDirty = true;
 }
 
@@ -7736,6 +7857,9 @@ pickedPackedUsdPrimitives(const GeoDisplay& display,
 
 // How far from the pointer, in logical pixels, a click finds a point or an edge.
 const int kComponentPickRadius = 6;
+// A component drag writes its edits at most this often: each write encodes every edit of the
+// node and evaluates the graph again, which on heavy geometry is slower than the mouse moves.
+const int kComponentDragWriteMs = 16;
 
 const char*
 drawModeName(SceneViewportRenderer::DrawModeEnum mode)
@@ -8035,6 +8159,7 @@ struct SceneViewport::Implementation {
     GeoEditData componentBase;
     GeoDetailConstPtr componentDetail;
     GeoEditTargets componentTargets;
+    QTimer* componentWriteTimer = nullptr;
     // The last edits text read, decoded, as each paint looks at it.
     std::string componentCacheText;
     GeoEditData componentCache;
@@ -8202,6 +8327,8 @@ struct SceneViewport::Implementation {
     bool quit = false;
     bool hasPending = false;
     ScenePayload pending;
+    // The stage editor has edits of its own for the stage as it is; a pending sync makes them too.
+    bool pendingStageEdit = false;
     // The live textures the pending payload shows at pendingFrame, which the worker renders
     // before it syncs: Hydra only reads them.
     LiveTextureSourceList pendingLiveTextures;
@@ -9174,6 +9301,14 @@ SceneViewport::SceneViewport(QWidget* parent)
     _imp->drawStates.reset(new SceneDrawStateQueue([imp = _imp.get()](const std::function<void()>& run) { imp->postToView(run); },
                                                    [this](const SceneDrawChange& change) { deliverDrawChange(change); }));
 
+    _imp->componentWriteTimer = new QTimer(this);
+    _imp->componentWriteTimer->setSingleShot(true);
+    _imp->componentWriteTimer->setInterval(kComponentDragWriteMs);
+    QObject::connect(_imp->componentWriteTimer, &QTimer::timeout, this, [this]() {
+        if ((_imp->handle != SceneGizmo::kNoHandle) && _imp->handleChanged && _imp->renderer.isComponentTransformDrag()) {
+            writeComponentDrag(_imp->handleChange, false);
+        }
+    });
     _imp->wheelMoveTimer = new QTimer(this);
     _imp->wheelMoveTimer->setSingleShot(true);
     _imp->wheelMoveTimer->setInterval(300);
@@ -9342,15 +9477,18 @@ SceneViewport::SceneViewport(QWidget* parent)
             U64 framingId = 0;
             std::vector<std::string> framingSelection;
             bool pivot = false;
+            bool stageEdit = false;
             SceneLoadSetPtr loadSet;
             SceneLoadReachPtr reach;
             {
                 std::unique_lock<std::mutex> lock(imp->queueMutex);
-                imp->queueChanged.wait(lock, [imp]() { return imp->quit || imp->hasPending || (imp->pendingFramingId != 0) || imp->pendingPivot; });
+                imp->queueChanged.wait(lock, [imp]() { return imp->quit || imp->hasPending || imp->pendingStageEdit || (imp->pendingFramingId != 0) || imp->pendingPivot; });
                 if (imp->quit) {
                     return;
                 }
                 sync = imp->hasPending;
+                stageEdit = imp->pendingStageEdit;
+                imp->pendingStageEdit = false;
                 if (sync) {
                     payload = imp->pending;
                     imp->pending = ScenePayload();
@@ -9415,6 +9553,9 @@ SceneViewport::SceneViewport(QWidget* parent)
                     rulesMatched = imp->matchDrawRules(this, rules, generation, matchId, serial, newerRequest, false);
                     matchedRules = rules;
                 }
+            }
+            if (stageEdit && !sync && imp->renderer.refreshStageEdits()) {
+                imp->postToView([this]() { update(); });
             }
             if (framingId != 0) {
                 const SceneViewportRenderer::FrameBounds bounds = imp->renderer.computeFrameBounds(framingSelection, imp->renderer.getTimeCode());
@@ -11553,7 +11694,7 @@ SceneViewport::setComponentSelection(const GeoComponentSelection& selection)
 void
 SceneViewport::setSceneComponentHighlight(const std::string& primPath,
                                           GeoAttribClassEnum cls,
-                                          std::vector<int> indices)
+                                          std::vector<GeoIndex> indices)
 {
     if (_imp->geometryContext || indices.empty() || primPath.empty() || ((cls != eGeoAttribClassPoint) && (cls != eGeoAttribClassPrimitive))) {
         clearSceneComponentHighlight();
@@ -11561,7 +11702,7 @@ SceneViewport::setSceneComponentHighlight(const std::string& primPath,
         return;
     }
     const int count = int(indices.size());
-    std::vector<std::pair<std::string, std::vector<int>>> points, faces;
+    std::vector<std::pair<std::string, std::vector<GeoIndex>>> points, faces;
     ((cls == eGeoAttribClassPoint) ? points : faces).emplace_back(primPath, std::move(indices));
     _imp->displayHighlightCount = count;
     _imp->renderer.setDisplayHighlight(std::move(points), std::move(faces));
@@ -11858,7 +11999,12 @@ SceneViewport::refreshComponentState()
         shown = _imp->componentSelection;
     }
     if (_imp->geoDisplay->setComponentState(pickable ? _imp->geoPickMode : eGeoComponentObjects, shown) && !_imp->requestedPayload.isEmpty()) {
-        requestSync(_imp->requestedPayload, _imp->requestedError);
+        // Only the guides change: the stage keeps the payload it has.
+        {
+            std::lock_guard<std::mutex> lock(_imp->queueMutex);
+            _imp->pendingStageEdit = true;
+        }
+        _imp->queueChanged.notify_one();
     }
     refreshComponentHighlight();
 
@@ -13198,9 +13344,12 @@ SceneViewport::dragHandle(const QPoint& pos)
     _imp->handleChange = change;
     _imp->handleChanged = true;
     if (_imp->renderer.isComponentTransformDrag()) {
-        // Written as it goes: the geometry shown is the node's output, with no stage-side preview.
+        // Written as it goes, the latest move at each write: the geometry shown is the node's
+        // output, with no stage-side preview.
         _imp->renderer.previewTransformDrag(change, &busy);
-        writeComponentDrag(change, false);
+        if (!_imp->componentWriteTimer->isActive()) {
+            _imp->componentWriteTimer->start();
+        }
         update();
 
         return;
@@ -13238,6 +13387,7 @@ SceneViewport::endHandleDrag()
     const bool components = _imp->renderer.isComponentTransformDrag();
 
     if (components) {
+        _imp->componentWriteTimer->stop();
         // Also when nothing changed, as Escape does, to take back what the drag wrote.
         written = writeComponentDrag(changed ? change : 0., true);
     } else if (changed) {
@@ -13411,7 +13561,7 @@ SceneViewport::event(QEvent* e)
             || matchesKeyBinding(kShortcutIDActionViewer3DSetSelectionOnNode, k->modifiers(), k->key())
             || matchesKeyBinding(kShortcutIDActionViewer3DCreateFromSelection, k->modifiers(), k->key()) || drawKeyFor(k->modifiers(), k->key())
             || (pickwalkForKey(k->modifiers(), k->key()) >= 0)
-            || (geoPickModeForKey(k->modifiers(), k->key()) >= 0) || (geoSelectionActionForKey(k->modifiers(), k->key()) >= 0)
+            || (_imp->geometryContext && ((geoPickModeForKey(k->modifiers(), k->key()) >= 0) || (geoSelectionActionForKey(k->modifiers(), k->key()) >= 0)))
             || matchesKeyBinding(kShortcutIDActionViewer3DReselect, k->modifiers(), k->key())
             || (_imp->reselecting && isReselectKey(k->modifiers(), k->key()))
             || ((k->key() == Qt::Key_Escape) && (_imp->handle != SceneGizmo::kNoHandle)) || ((k->key() == Qt::Key_Space) && bindingsUseSpace())) {
@@ -13558,14 +13708,14 @@ SceneViewport::keyPressEvent(QKeyEvent* e)
 
         return;
     }
-    const int pickMode = geoPickModeForKey(e->modifiers(), e->key());
+    const int pickMode = _imp->geometryContext ? geoPickModeForKey(e->modifiers(), e->key()) : -1;
     if (pickMode >= 0) {
         setGeoPickMode((GeoComponentEnum)pickMode);
         e->accept();
 
         return;
     }
-    const int selectionAction = geoSelectionActionForKey(e->modifiers(), e->key());
+    const int selectionAction = _imp->geometryContext ? geoSelectionActionForKey(e->modifiers(), e->key()) : -1;
     if (selectionAction >= 0) {
         runGeoSelectionAction(this, selectionAction);
         e->accept();

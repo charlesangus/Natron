@@ -288,3 +288,41 @@ TEST(ScenePrimElements, MissingPrimAndRefusedLock)
     const std::atomic<bool> cancelled(true);
     EXPECT_EQ(eScenePrimElementsStatusCancelled, SceneOps::readPrimElements(readerOf(stage), "/Quad", 1., 24., &cancelled).status);
 }
+
+TEST(ScenePrimElements, ArrayCellsSortByTheirFirstValue)
+{
+    SceneStage stage;
+    stage.sync(payloadOf(kMesh));
+    const ScenePrimElements read = SceneOps::readPrimElements(readerOf(stage), "/Quad", 1., 24.);
+    ASSERT_TRUE(bool(read.source));
+    const ScenePrimElementsSource& s = *read.source;
+    const int pair = columnOf(s, eGeoAttribClassPoint, "pair");
+    ASSERT_GE(pair, 0);
+    for (std::int64_t row = 0; row < 4; ++row) {
+        EXPECT_EQ(double(2 * row + 1), std::get<double>(s.sortKey(eGeoAttribClassPoint, pair, row))) << row;
+    }
+    EXPECT_EQ(1., std::get<double>(s.sortKey(eGeoAttribClassDetail, columnOf(s, eGeoAttribClassDetail, "tags"), 0)));
+}
+
+TEST(ScenePrimElements, PointOfVertexReadsTheTopologyNotAPrimvarNamedPoint)
+{
+    SceneStage stage;
+    stage.sync(payloadOf(R"(
+def Mesh "Tri"
+{
+    int[] primvars:Point = [7, 7, 7] (
+        interpolation = "faceVarying"
+    )
+    int[] faceVertexCounts = [3]
+    int[] faceVertexIndices = [2, 0, 1]
+    point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+}
+)"));
+    const ScenePrimElements read = SceneOps::readPrimElements(readerOf(stage), "/Tri", 1., 24.);
+    ASSERT_TRUE(bool(read.source));
+    const ScenePrimElementsSource& s = *read.source;
+    EXPECT_EQ(2, s.pointOfVertex(0));
+    EXPECT_EQ(0, s.pointOfVertex(1));
+    EXPECT_EQ(1, s.pointOfVertex(2));
+    EXPECT_EQ(-1, s.pointOfVertex(3));
+}

@@ -36,8 +36,9 @@ class SceneStage;
 
 /**
  * @brief What a viewer adds to the stage it composes a payload on: layers of its own on top of the
- * payload, and in-place edits of layers no other stage composes. SceneViewportRenderer calls both
- * from its sync, with its stage lock held exclusively, on the thread syncing.
+ * payload, and in-place edits of layers no other stage composes. SceneViewportRenderer calls all
+ * three from its sync, on the thread syncing: stagedPayload() before it takes its stage lock,
+ * hasPendingEdits() with the lock held shared, and editStage() with it held exclusively.
  **/
 class SceneStageEditor {
 public:
@@ -48,8 +49,17 @@ public:
     // The stack the stage composes for @p payload: the payload itself when the editor adds nothing.
     virtual ScenePayload stagedPayload(const ScenePayload& payload) = 0;
 
-    // Edits the layers the editor owns in the stage synced to stagedPayload(). True if any changed.
-    virtual bool editStage(SceneStage& stage) = 0;
+    /**
+     * @brief Edits the layers the editor owns in the stage synced to stagedPayload(). True if any
+     * changed; *renderChanged tells whether any of that is what a final render shows, rather than
+     * guide-purpose prims alone.
+     **/
+    virtual bool editStage(SceneStage& stage,
+                           bool* renderChanged)
+        = 0;
+
+    // Whether editStage() would change anything now: the sync skips the exclusive lock otherwise.
+    virtual bool hasPendingEdits() const = 0;
 
     // Whether what the editor adds is guide-purpose geometry the view must draw. Any thread.
     virtual bool showsGuidePurpose() const = 0;

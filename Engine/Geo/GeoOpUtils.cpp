@@ -837,7 +837,7 @@ geoEncodeEdgePattern(const GeoDetail& detail,
         }
         out += path;
     };
-    // Starting at an odd-degree point first keeps the path count at its minimum: a walk from
+    // Starting at an odd-degree point first keeps the path count low: a walk from
     // one can only end at another, so loops are left for the pass that follows.
     for (int pass = 0; pass < 2; ++pass) {
         for (std::size_t v = 0; v < adjacency.size(); ++v) {
@@ -1136,11 +1136,27 @@ geoSelectEdges(const GeoDetail& detail,
                std::set<GeoEdge>* edges,
                std::string* error)
 {
-    const std::set<GeoEdge> all = geoAllEdges(detail);
     const std::vector<std::string_view> tokens = geoSplitPattern(pattern);
     edges->clear();
+    // Only "*", "!" and "@" terms need every edge, and a point path just a membership test, so
+    // the sorted list is built on first use rather than for each pattern.
+    std::vector<GeoEdge> all;
+    bool haveAll = false;
+    const auto allEdges = [&]() -> const std::vector<GeoEdge>& {
+        if (!haveAll) {
+            geoForEachEdge(detail, [&](const GeoEdge& e, GeoOffset /*prim*/) {
+                all.push_back(e);
+            });
+            std::sort(all.begin(), all.end());
+            all.erase(std::unique(all.begin(), all.end()), all.end());
+            haveAll = true;
+        }
+
+        return all;
+    };
     if (tokens.empty()) {
-        *edges = all;
+        const std::vector<GeoEdge>& every = allEdges();
+        edges->insert(every.begin(), every.end());
 
         return true;
     }
@@ -1157,26 +1173,44 @@ geoSelectEdges(const GeoDetail& detail,
         if (token.empty()) {
             continue;
         } else if (token == "*") {
-            hit = all;
+            const std::vector<GeoEdge>& every = allEdges();
+            hit.insert(every.begin(), every.end());
         } else if (token.front() == '@') {
             GeoAttribCompare compare;
             if (!geoParseAttribCompare(token, &compare, error)) {
                 return false;
             }
             if (const GeoAttribute* a = detail.findAttribute(eGeoAttribClassPoint, compare.attribute)) {
-                for (const GeoEdge& e : all) {
+                for (const GeoEdge& e : allEdges()) {
                     if (geoEvalAttribCompare(*a, std::size_t(e.p0), compare) && geoEvalAttribCompare(*a, std::size_t(e.p1), compare)) {
                         hit.insert(e);
                     }
                 }
             }
         } else if (token.size() > 1 && token.front() == 'p' && std::isdigit((unsigned char)token[1])) {
-            if (!parsePointPath(detail, token, &hit)) {
+            std::set<GeoEdge> candidates;
+            if (!parsePointPath(detail, token, &candidates)) {
                 if (error) {
                     *error = "malformed point path \"" + std::string(token) + "\"";
                 }
 
                 return false;
+            }
+            // A path names point pairs, and only those that are edges of the detail are selected.
+            if (!candidates.empty()) {
+                if (haveAll) {
+                    for (const GeoEdge& e : candidates) {
+                        if (std::binary_search(all.begin(), all.end(), e)) {
+                            hit.insert(e);
+                        }
+                    }
+                } else {
+                    geoForEachEdge(detail, [&](const GeoEdge& e, GeoOffset /*prim*/) {
+                        if (candidates.count(e)) {
+                            hit.insert(e);
+                        }
+                    });
+                }
             }
         } else if (std::isdigit((unsigned char)token.front())) {
             if (error) {
@@ -1200,7 +1234,7 @@ geoSelectEdges(const GeoDetail& detail,
         }
         if (negate) {
             std::set<GeoEdge> complement;
-            std::set_difference(all.begin(), all.end(), hit.begin(), hit.end(), std::inserter(complement, complement.end()));
+            std::set_difference(allEdges().begin(), allEdges().end(), hit.begin(), hit.end(), std::inserter(complement, complement.end()));
             hit.swap(complement);
         }
         for (const GeoEdge& e : hit) {

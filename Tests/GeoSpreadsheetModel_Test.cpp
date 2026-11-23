@@ -25,12 +25,15 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
 
+#include "Engine/GeoDetail.h"
+#include "Gui/GeoSpreadsheet.h"
 #include "Gui/GeoSpreadsheetModel.h"
 
 #include <QAbstractItemModelTester>
@@ -175,4 +178,46 @@ TEST(GeoSpreadsheetModelTest, ClassSwapIsOneReset)
     model.setClass(eGeoAttribClassDetail);
     EXPECT_EQ(resets, 1);
     EXPECT_EQ(model.rowCount(), 1);
+}
+
+TEST(GeoSpreadsheetFilterTest, GroupAndSelectedOnlyKeepTheRightRowsAfterDeletes)
+{
+    GeoDetailBuilder builder;
+    const GeoOffset first = builder.appendPoints(10);
+    for (int i = 0; i < 10; ++i) {
+        builder.setPointPosition(first + i, double(i), 0., 0.);
+    }
+    const GeoOffset far[] = { 6, 7, 8, 9 };
+    builder.addGroup(eGeoAttribClassPoint, "far").add(far);
+    const GeoOffset dead[] = { 1, 2, 3 };
+    builder.deletePoints(dead);
+    const GeoDetailConstPtr detail = std::make_shared<const GeoDetail>(builder.finish());
+    ASSERT_EQ(3, detail->pointMap().tombstoneCount());
+    // Live offsets 0 4 5 6 7 8 9 are rows 0 to 6, so "far" is rows 3 to 6.
+    const GeoDetailSpreadsheetSource source(detail);
+    const std::atomic<bool> cancelled(false);
+
+    GeoElementMask mask;
+    bool filtered = false;
+    std::string error;
+    ASSERT_TRUE(geoSpreadsheetFilterMask(source, eGeoAttribClassPoint, "far", nullptr, cancelled, &mask, &filtered, &error)) << error;
+    EXPECT_TRUE(filtered);
+    EXPECT_EQ(GeoElementMask({ 0, 0, 0, 1, 1, 1, 1 }), mask);
+    std::shared_ptr<const std::vector<GeoIndex>> order = geoSpreadsheetBuildOrder(source, eGeoAttribClassPoint, &mask, -1, false, cancelled);
+    ASSERT_TRUE(order != nullptr);
+    EXPECT_EQ(std::vector<GeoIndex>({ 3, 4, 5, 6 }), *order);
+
+    // Rows 1 and 4 are offsets 4 and 7; only offset 7 is also in "far".
+    GeoComponentSelection selection;
+    selection.type = eGeoComponentPoints;
+    selection.elements = { 1, 4 };
+    ASSERT_TRUE(geoSpreadsheetFilterMask(source, eGeoAttribClassPoint, "far", &selection, cancelled, &mask, &filtered, &error)) << error;
+    order = geoSpreadsheetBuildOrder(source, eGeoAttribClassPoint, &mask, -1, false, cancelled);
+    ASSERT_TRUE(order != nullptr);
+    EXPECT_EQ(std::vector<GeoIndex>({ 4 }), *order);
+
+    ASSERT_TRUE(geoSpreadsheetFilterMask(source, eGeoAttribClassPoint, "", &selection, cancelled, &mask, &filtered, &error)) << error;
+    order = geoSpreadsheetBuildOrder(source, eGeoAttribClassPoint, &mask, -1, false, cancelled);
+    ASSERT_TRUE(order != nullptr);
+    EXPECT_EQ(std::vector<GeoIndex>({ 1, 4 }), *order);
 }

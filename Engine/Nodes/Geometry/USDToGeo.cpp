@@ -293,6 +293,8 @@ USDToGeo::renderGeometry(const GeoRenderActionArgs& args,
         if (scene.isEmpty()) {
             return eStatusOK;
         }
+        // A geometry render has no viewer load set, and the detail it makes is cached and shared by
+        // every consumer, so the pattern is matched against the whole scene, payloads included.
         SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(scene, SceneLoadSet::everything(), error);
         const PXR_NS::UsdStageRefPtr stage = lease.getStage();
         if (!stage) {

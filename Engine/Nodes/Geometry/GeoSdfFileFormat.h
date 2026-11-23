@@ -92,9 +92,6 @@ bool hasProvider(const std::string& key,
 GeoDetailConstPtr currentDetail(const std::string& key,
                                 const std::string& consumer = std::string());
 
-/** @brief currentDetail() of the key and consumer the layer @p identifier is opened for. */
-GeoDetailConstPtr servedDetail(const std::string& identifier);
-
 /** @brief Whether @p identifier names a geometry layer opened for a consumer, and which. */
 bool isConsumerLayer(const std::string& identifier,
                      std::string* consumer = nullptr);

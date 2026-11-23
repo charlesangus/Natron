@@ -58,57 +58,38 @@ struct GeoSpreadsheetPickResult;
 struct GeoSpreadsheetShowResult;
 
 /**
- * @brief A class bar (Points, Vertices, Primitives, Detail, each with its row count) over a table of one
- * GeoSpreadsheetSource snapshot, or a message in place of the table. A new snapshot keeps the class shown
- * when it has rows in it, else shows the first class that has. Double-clicking a cell opens its whole value
- * in the inspector's full value window. Main thread only; nothing it does on its own scales with the rows.
+ * @brief The rows of @p cls a Group @p pattern and, when given, @p selectedOnly keep, as a mask indexed by dense
+ * row, ready for geoSpreadsheetBuildOrder(). A geometry source's selection is read in storage offsets and mapped
+ * to rows here, so tombstoned elements never shift the rows kept. *filtered is false, and @p mask empty, when
+ * nothing narrows the rows. Returns false with *error set for a malformed pattern. Any thread.
+ **/
+bool geoSpreadsheetFilterMask(const GeoSpreadsheetSource& source,
+                              GeoAttribClassEnum cls,
+                              const std::string& pattern,
+                              const GeoComponentSelection* selectedOnly,
+                              const std::atomic<bool>& cancelled,
+                              GeoElementMask* mask,
+                              bool* filtered,
+                              std::string* error);
+
+/**
+ * @brief A class bar (Points, Vertices, Primitives, Detail, with row counts) over a table of one
+ * GeoSpreadsheetSource snapshot, or a message in place of the table. Main thread only; nothing it does
+ * on the main thread scales with the rows.
  *
- * Scripts find its children by object name, the widget's own followed by Points, Vertices, Primitives,
- * Detail, Table and Message, and read natronGeoSpreadsheetRows (the rows of the class shown),
- * natronGeoSpreadsheetClass (its label) and natronGeoSpreadsheetCellReads (cells the table has read since the
- * snapshot or the class last changed) as properties.
+ * The Group filter, the Selected Only narrowing and the column sort are built together on the widget's
+ * own worker, one build at a time, a newer request cancelling the one under way; the table keeps its
+ * previous order until the new one arrives. A malformed pattern leaves the previous filter applied.
  *
- * A Group box filters the rows to a group of the class shown (for geometry, any group pattern; for a USD
- * prim, a subset name), and a click on a column header sorts by it, a second click reversing. The
- * filtered and sorted order is built on the widget's own worker thread, one build at a time: a newer
- * sort, filter, snapshot or class cancels the build under way. The table keeps its previous order, and
- * stays usable, until the new one arrives. A new snapshot keeps the sort column and the filter. A
- * malformed pattern shows its error under the Group box and leaves the previous filter applied.
- * natronGeoSpreadsheetSortBusy is true while a build runs; natronGeoSpreadsheetSortsStarted and
- * natronGeoSpreadsheetSortsCancelled count builds started and builds cancelled before they finished.
- * A script sets natronGeoSpreadsheetHoldSorts to true to keep every build from starting until it sets
- * it back or the build is cancelled, which holds one under way for as long as a test needs.
- * Children Group, Busy and Error carry the widget's object name as prefix like the others.
+ * With a viewer set through setSelectionViewer(), selected rows replace that view's component selection
+ * and the view's selection selects rows, through the inverse of the built order. Selected Only does not
+ * write the view's selection, since that would shrink the rows to the ones selected. For a prim, rows
+ * highlight in the scene view through setHighlightTarget() instead, and Selected Only narrows to the
+ * highlight.
  *
- * With a viewer set through setSelectionViewer(), whose view shows the geometry the table lists, selecting
- * rows of Points, Vertices or Primitives replaces that view's live component selection: the points,
- * the points of the vertices, or the primitives numbered by the rows. A selection of many rows is
- * gathered on the worker and handed to the view when done, a newer one cancelling it. Detail rows select
- * nothing.
- *
- * The other way round, a change of that view's selection that the table did not make selects the rows of
- * the elements picked, in the class they belong to: points and primitives as they are, edges as their
- * endpoints in Points. Objects mode or nothing picked clears the rows. The first selected row is scrolled
- * into view. Rows are selected as runs of contiguous view rows, through the inverse of the sort and filter
- * order built beside that order. Picked elements the group filter leaves out are counted in the
- * SelectionNote label, which natronGeoSpreadsheetSelectionNote reads, e.g. "12 selected, 3 hidden by filter".
- *
- * With a viewer set, a Selected Only button (natronGeoSpreadsheetSelectedOnly reads and sets it) narrows
- * the rows, on top of the group filter, to the elements of the class shown that the view's selection
- * names: points and primitives promoted to each other (a primitive needs all its points), edges as their
- * endpoints or their primitives, vertices by their point. Detail keeps its one row. The rows are built in
- * the same cancellable build as the filter and sort, from the selection as it was when the build began,
- * and a change of the view's selection rebuilds. The class shown does not follow the selection then. While
- * it is on, selecting rows does not write the view's selection, which would shrink the rows to the ones
- * selected. It is disabled without a viewer, or for a snapshot that is not geometry.
- *
- * A prim's rows highlight in the scene view instead, through setHighlightTarget() when the viewer shows
- * the inspected node: Points rows (and the points of Vertices rows) highlight those points, Primitives
- * rows those faces, Detail none. The highlight is display only, and clears on another prim or node and on
- * no rows selected. Selected Only then narrows the rows to the highlighted ones: points, and vertices
- * using them, for a point highlight; faces for a face highlight; the other classes show none.
- *
- * Child SelectedOnly carries the widget's object name as prefix like the others.
+ * Children are named by the widget's object name followed by Points, Vertices, Primitives, Detail,
+ * Table, Message, Group, Busy, Error, SelectionNote and SelectedOnly. natronGeoSpreadsheetHoldSorts
+ * keeps builds from starting until it is cleared or the build is cancelled, so tests can hold one.
  **/
 class GeoSpreadsheetWidget
     : public QWidget {

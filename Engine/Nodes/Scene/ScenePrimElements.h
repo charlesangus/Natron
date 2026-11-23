@@ -109,6 +109,8 @@ public:
         bool indexed = false;
         PXR_NS::VtValue values;
         PXR_NS::VtIntArray indices;
+        // The mesh's face-vertex indices, which pointOfVertex() reads; a primvar may carry the same name.
+        bool vertexPoints = false;
     };
 
     struct ValueOps;
@@ -132,6 +134,7 @@ private:
 
     std::int64_t _rowCounts[kGeoAttribClassCount] = {};
     std::vector<Binding> _bindings;
+    PXR_NS::VtIntArray _vertexPoints;
     std::vector<const ValueOps*> _ops;
     std::vector<ScenePrimElementGroup> _groups;
     std::vector<GeoSpreadsheetColumn> _columns[kGeoAttribClassCount];

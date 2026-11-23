@@ -1896,6 +1896,8 @@ struct ReselectSession::Implementation {
     QPointer<SceneViewport> view;
     // Evaluating the input's geometry, or showing it, is under way.
     bool pending = false;
+    // Changes whenever a session ends, so an evaluation that finishes later knows it was dropped.
+    U64 generation = 0;
     NodeWPtr node;
     GeoDetailConstPtr detail;
     // Puts back what the viewer showed; empty when it was not changed.
@@ -1951,6 +1953,7 @@ struct ReselectSession::Implementation {
     void finish()
     {
         pending = false;
+        ++generation;
         node.reset();
         detail.reset();
         if (view) {
@@ -2025,13 +2028,29 @@ ReselectSession::begin()
         }
     }
     _imp->pending = true;
+    // Entering the mode now routes Escape to cancel() while the input evaluates.
+    _imp->view->beginReselect(GeoComponentSelection());
+    const U64 generation = _imp->generation;
     const EffectInstancePtr effect = target.input->getEffectInstance();
     const double frame = _imp->tab->getTimeLine()->currentFrame();
     auto* watcher = new QFutureWatcher<ReselectEvaluation>(_imp->view);
-    QObject::connect(watcher, &QFutureWatcher<ReselectEvaluation>::finished, _imp->view, [this, watcher, target]() {
+    QObject::connect(watcher, &QFutureWatcher<ReselectEvaluation>::finished, _imp->view, [this, watcher, target, generation]() {
         const ReselectEvaluation result = watcher->result();
         watcher->deleteLater();
+        if (generation != _imp->generation) {
+            return;
+        }
+        ReselectTarget current;
+        QString ignored;
+        if (!findReselectTarget(_imp->viewerNode(), &current, &ignored) || (current.node != target.node)) {
+            _imp->finish();
+
+            return;
+        }
         if (!result.detail) {
+            if (_imp->view) {
+                _imp->view->endReselect();
+            }
             _imp->pending = false;
             showHint(_imp->gui, tr("Reselect: the geometry of the input can't be computed: %1").arg(QString::fromStdString(result.error)));
             if (_imp->restoreViewer) {
@@ -2056,6 +2075,11 @@ ReselectSession::begin()
 void
 ReselectSession::commit(const GeoComponentSelection& selection)
 {
+    if (_imp->pending) {
+        showHint(_imp->gui, tr("Reselect: the geometry is still being computed. Escape cancels."));
+
+        return;
+    }
     NodePtr node = _imp->node.lock();
     if (!node || !node->isActivated()) {
         showHint(_imp->gui, tr("Reselect: the node is gone."));

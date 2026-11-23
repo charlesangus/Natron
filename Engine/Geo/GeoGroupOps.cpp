@@ -27,12 +27,6 @@ NATRON_NAMESPACE_ENTER
 
 namespace {
 bool
-ownsEdges(GeoPrimitiveTypeEnum type)
-{
-    return type == eGeoPrimitivePolygon || type == eGeoPrimitivePolyline;
-}
-
-bool
 maskHas(const GeoElementMask& mask,
         GeoOffset offset)
 {
@@ -70,22 +64,9 @@ appendPrimitiveEdges(const GeoDetail& detail,
                      GeoOffset prim,
                      std::vector<GeoEdge>& out)
 {
-    const GeoPrimitiveTypeEnum type = detail.primitiveType(prim);
-    if (!ownsEdges(type)) {
-        return;
-    }
-    const GeoVertexRange range = detail.primitiveVertices(prim);
-    if (range.count < 2) {
-        return;
-    }
-    const GeoOffset segments = (type == eGeoPrimitivePolygon && range.count > 2) ? range.count : range.count - 1;
-    for (GeoOffset i = 0; i < segments; ++i) {
-        const GeoOffset a = detail.vertexPoint(range.start + i);
-        const GeoOffset b = detail.vertexPoint(range.start + (i + 1) % range.count);
-        if (a != b) {
-            out.emplace_back(a, b);
-        }
-    }
+    geoForEachPrimitiveEdge(detail, prim, [&](const GeoEdge& edge) {
+        out.push_back(edge);
+    });
 }
 
 std::vector<GeoEdge>

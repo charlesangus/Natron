@@ -81,6 +81,9 @@ key(double time,
     return result;
 }
 
+// A plugin knob as the YAML carries it: no default, which the live node supplies on load. Roto
+// items and tracks store knobs untyped, so their values here are not whole numbers, which would
+// read back as ints.
 Serialization::KnobSerialization
 doubleKnob(const std::string& name,
            double value)
@@ -90,7 +93,6 @@ doubleKnob(const std::string& name,
     knob.typeName = "Double";
     knob.dimension = 1;
     knob.dimensions.resize(1);
-    knob.dimensions[0].defaultValue = Serialization::KnobValueSerialization(1.);
     knob.dimensions[0].value = Serialization::KnobValueSerialization(value);
 
     return knob;
@@ -132,7 +134,7 @@ trackAlone(const std::string& name,
     track.label = name;
     track.userKeys = { 1, 5 };
     Serialization::KnobSerialization knob = doubleKnob("centerPoint", centre);
-    knob.dimensions[0].defaultValue = Serialization::KnobValueSerialization(0.);
+    knob.dimensions[0].value.reset();
     Serialization::CurveSerialization curve;
     curve.keyframes.push_back(key(1., centre, 1));
     knob.dimensions[0].curve = curve;
@@ -203,8 +205,8 @@ everyKind()
     shape.baseNodeId = "base-roto";
     shape.nodeId = "roto";
     shape.item = "Garbage";
-    shape.base.roto = shapeAlone("Garbage", 0., 1.);
-    shape.mine.roto = shapeAlone("Garbage", 5., 1.);
+    shape.base.roto = shapeAlone("Garbage", 0., 0.75);
+    shape.mine.roto = shapeAlone("Garbage", 5., 0.75);
     shape.theirs.roto = shapeAlone("Garbage", 0., 0.5);
     conflicts.push_back(shape);
 
@@ -215,7 +217,7 @@ everyKind()
     deletedShape.nodeId = "roto";
     deletedShape.item = "Core";
     deletedShape.side = MergeSide::eMine;
-    deletedShape.base.roto = shapeAlone("Core", 0., 1.);
+    deletedShape.base.roto = shapeAlone("Core", 0., 0.75);
     deletedShape.theirs.roto = shapeAlone("Core", 0., 0.5);
     conflicts.push_back(deletedShape);
 
@@ -239,6 +241,7 @@ everyKind()
     deletedKnob.side = MergeSide::eMine;
     Serialization::KnobSerialization boost = doubleKnob("boost", 2.);
     boost.isUserKnob = true;
+    boost.dimensions[0].defaultValue = Serialization::KnobValueSerialization(1.);
     deletedKnob.base.knob = boost;
     boost.dimensions[0].value = Serialization::KnobValueSerialization(3.);
     deletedKnob.theirs.knob = boost;

@@ -119,17 +119,28 @@ try:
         QApplication.processEvents()
         return True
 
+    def select_row(item, label):
+        """Selects item and returns its text, or None when the row is gone or no longer selected
+        once events have run. Item wrappers do not survive processEvents, so the row is found again
+        by its text."""
+        t = tree()
+        t.clearSelection()
+        t.setCurrentItem(item)
+        item.setSelected(True)
+        text = item.text(0)
+        item = None
+        QApplication.processEvents()
+        again = [row for _, row in rows() if row.text(0) == text]
+        if not check(any(row.isSelected() for row in again), "the %s row stays selected (%r)" % (label, text)):
+            return None
+        return text
+
     def select_first():
         t = tree()
         found = rows()
         if not check(t is not None and len(found) > 0, "the panel lists a conflict to select"):
             return None
-        t.clearSelection()
-        item = found[0][1]
-        t.setCurrentItem(item)
-        item.setSelected(True)
-        QApplication.processEvents()
-        return item.text(0)
+        return select_row(found[0][1], "first")
 
     def select_under(node_name):
         """Selects the first conflict listed under node_name and returns its text, or None."""
@@ -137,11 +148,7 @@ try:
         found = [item for group, item in rows() if node_name in group]
         if not check(t is not None and len(found) > 0, "the panel lists a conflict under " + node_name):
             return None
-        t.clearSelection()
-        t.setCurrentItem(found[0])
-        found[0].setSelected(True)
-        QApplication.processEvents()
-        return found[0].text(0)
+        return select_row(found[0], node_name)
 
     def source_of(node):
         source = node.getInput(0)

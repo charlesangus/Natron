@@ -581,7 +581,12 @@ applyConflictKnobValue(const MergeConflict& conflict,
                 return failWith(error, quoted(conflict.knob) + " has no dimension " + std::to_string(dimension));
             }
             if (value.knob && (dimension < int(value.knob->dimensions.size()))) {
-                state->dimensions[dimension] = value.knob->dimensions[dimension];
+                // A plug-in knob's default is not saved with the side it came from, so the live one stays.
+                KnobDimensionSerialization recorded = value.knob->dimensions[dimension];
+                if (!recorded.defaultValue) {
+                    recorded.defaultValue = state->dimensions[dimension].defaultValue;
+                }
+                state->dimensions[dimension] = std::move(recorded);
             } else {
                 state->dimensions[dimension] = defaultDimensionLike(state->dimensions[dimension]);
             }

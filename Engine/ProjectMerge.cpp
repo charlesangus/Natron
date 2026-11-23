@@ -275,8 +275,14 @@ namespace {
             }
             Serialization::KnobSerialization state;
             knob->toSerialization(&state);
+            // A side read from a project file holds values typed only by their YAML form (4 is an
+            // int), which the typed live state cannot take until the live knob types them.
+            Serialization::MergeConflictValue typed = value;
+            if (typed.knob) {
+                typed.knob = completeKnobSerializationForKnob(*knob, *typed.knob);
+            }
             std::string message;
-            if (!Serialization::applyConflictKnobValue(conflict, value, &state, &message)) {
+            if (!Serialization::applyConflictKnobValue(conflict, typed, &state, &message)) {
                 return failWith(error, message);
             }
             Serialization::SetKnobOp set;

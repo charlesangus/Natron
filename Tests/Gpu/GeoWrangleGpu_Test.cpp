@@ -267,8 +267,6 @@ TEST(GeoWrangleGpuTest, ASmallBufferLimitSplitsTheRunIntoPageChunks)
         return;
     }
     const GeoKernelParameters parameters = testParameters();
-    const GeoDetail input = makePoints(kPointCount);
-    const GeoDetail* inputs[] = { &input };
     const GeoKernelRunOptions options = runOptions(parameters);
     const Snippet s { "@P.y += @ptnum * 0.5;", { "P" } };
     KernelProgram program;
@@ -281,6 +279,16 @@ TEST(GeoWrangleGpuTest, ASmallBufferLimitSplitsTheRunIntoPageChunks)
     while (gpu::largestSizeWithin(limit) < pageBytes) {
         limit += pageBytes / 8 + 1;
     }
+
+    const std::uint64_t bytesPerElement = std::uint64_t(plan.columns.size()) * 4u;
+    std::uint64_t chunkCount = gpu::largestSizeWithin(limit) / bytesPerElement;
+    chunkCount -= chunkCount % kGeoPageSize;
+    ASSERT_GE(chunkCount, std::uint64_t(kGeoPageSize));
+    // Two whole chunks and a partial page-sized tail, so the last chunk is a remainder.
+    const GeoDetail input = makePoints(GeoIndex(2 * chunkCount + kGeoPageSize / 2 + 3));
+    ASSERT_GT(std::uint64_t(input.pointCount()), chunkCount);
+    const GeoDetail* inputs[] = { &input };
+
     gpu::GpuRecordContext::setMaxStorageBufferBytesForTests(limit);
     const GeoKernelGpuRunResult gpu = geoKernelRunGpu(program, plan, eGeoAttribClassPoint, std::span<const GeoDetail* const>(inputs),
                                                       options, &runtime->runtime());
@@ -288,7 +296,7 @@ TEST(GeoWrangleGpuTest, ASmallBufferLimitSplitsTheRunIntoPageChunks)
 
     ASSERT_EQ(KernelRunStatus::eDone, gpu.result.status) << gpu.result.error;
     EXPECT_TRUE(gpu.ranOnGpu) << gpu.fallback;
-    EXPECT_GT(gpu.result.batches, 1u);
+    EXPECT_GE(gpu.result.batches, 3u);
     const GeoKernelRunResult cpu = geoKernelRun(program, eGeoAttribClassPoint, std::span<const GeoDetail* const>(inputs), options);
     ASSERT_EQ(KernelRunStatus::eDone, cpu.status) << cpu.error;
     expectSame(cpu.detail, gpu.result.detail, s);

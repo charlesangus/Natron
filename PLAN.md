@@ -593,7 +593,7 @@ future core work has solid ground to build on.
 | M514 | Utility Raster Mode | todo | M283, M472 |  | E19 |  | | [M514-utility-raster-mode.md](PLAN/MILESTONES/M514-utility-raster-mode.md) |
 | M515 | Storm Oversample And Motion Blur | todo | - |  | E9 |  | | [M515-storm-oversample-and-motion-blur.md](PLAN/MILESTONES/M515-storm-oversample-and-motion-blur.md) |
 | M516 | Port Groups And Folding | todo | M351 |  | E9 | F2 | | [M516-port-groups-and-folding.md](PLAN/MILESTONES/M516-port-groups-and-folding.md) |
-| M517 | Storm Translucent Prim Ids | doing | - | bosley-executor | E9 |  | | [M517-storm-translucent-prim-ids.md](PLAN/MILESTONES/M517-storm-translucent-prim-ids.md) |
+| M517 | Storm Translucent Prim Ids | doing | - | bosley-executor | E9 |  | response | [M517-storm-translucent-prim-ids.md](PLAN/MILESTONES/M517-storm-translucent-prim-ids.md) |
 | M518 | Save Prompt Key Shortcuts | doing | - | bosley-executor | E10 | F36 | | [M518-save-prompt-key-shortcuts.md](PLAN/MILESTONES/M518-save-prompt-key-shortcuts.md) |
 | M519 | Raw And Loop Toolbar Icons | done | - | bosley-executor | E10 | F36 | | [M519-raw-and-loop-toolbar-icons.md](PLAN/MILESTONES/M519-raw-and-loop-toolbar-icons.md) |
 | M520 | USD Toolbar Category And Submenus | doing | - | bosley-executor | E10 | F36 | | [M520-usd-toolbar-category-and-submenus.md](PLAN/MILESTONES/M520-usd-toolbar-category-and-submenus.md) |

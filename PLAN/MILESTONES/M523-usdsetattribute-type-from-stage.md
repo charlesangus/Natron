@@ -49,3 +49,4 @@ When USDSetAttribute names an attribute that already exists on the matched prims
 ## Decisions
 
 - 2026-11-22 — **Type auto-set but editable (user):** an existing attribute's type is filled in, the user may override it, and a mismatch shows a warning; the value is not seeded.
+- 2026-11-23 — Main (F4) merged in: the off-thread type lookup now borrows with the showing viewer's context and load set, and skips the lookup when no viewer shows the node (PM; the viewer never loads payloads without user action).

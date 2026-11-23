@@ -60,3 +60,4 @@ Sources: OpticsDatabase (`https://github.com/amegahed/OpticsDatabase`, MIT; cred
 
 - 2026-11-16 — **The full OpticsDatabase ships, bundled (user):** converted once and committed in-repo, no runtime network.
 - 2026-11-16 — **A browser that organises the lenses, with live previews and pre-rendered thumbnails (user):** this milestone ships the browser and diagram; flare previews and thumbnails are M471 - Lens Browser Previews, the bokeh preview is M292 - Traced Lens Bokeh.
+- 2026-11-23 — Implemented in 60834a682: 986 of 1,041 OpticsDatabase lenses (48 without an aperture stop, 7 malformed, dropped), archive 505 KB; with the 9 Classic Designs lenses the browser lists 995, so the verify line is >= 995. **F30 ships with its first lens node (user):** no node uses the lens knobs yet, so the browser GUI test and UAT move to F31 - Lens Flares or F13 traced bokeh, whichever lands first; M463 is gated on ctest only.

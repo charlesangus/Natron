@@ -567,7 +567,7 @@ future core work has solid ground to build on.
 | M491 | Extra Input Picker | todo | - |  | E10 | | | [M491-extra-input-picker.md](PLAN/MILESTONES/M491-extra-input-picker.md) |
 | M492 | Image-Driven Warp Providers | todo | M153, M179 |  | E14 | | | [M492-image-driven-warp-providers.md](PLAN/MILESTONES/M492-image-driven-warp-providers.md) |
 | M493 | Shared Ccache Remote Storage | done | - | bosley-executor | E2 | | | [M493-shared-ccache-remote-storage.md](PLAN/MILESTONES/M493-shared-ccache-remote-storage.md) |
-| M549 | Faster Gate Packaging | doing | - | bosley-executor | E2 | | | [M549-faster-gate-packaging.md](PLAN/MILESTONES/M549-faster-gate-packaging.md) |
+| M549 | Faster Gate Packaging | done | - | | E2 | | | [M549-faster-gate-packaging.md](PLAN/MILESTONES/M549-faster-gate-packaging.md) |
 | M550 | Classic Graph Shift-Drop Creation | todo | M351 |  | E9 | | | [M550-classic-graph-shift-drop-creation.md](PLAN/MILESTONES/M550-classic-graph-shift-drop-creation.md) |
 | M551 | Second Background App Groups | todo | - |  | E2 | | | [M551-second-background-app-groups.md](PLAN/MILESTONES/M551-second-background-app-groups.md) |
 | M552 | Shared Remote Run Watcher | doing | - | bosley-executor | E2 | | | [M552-shared-remote-run-watcher.md](PLAN/MILESTONES/M552-shared-remote-run-watcher.md) |

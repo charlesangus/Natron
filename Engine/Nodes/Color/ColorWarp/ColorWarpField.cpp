@@ -49,6 +49,16 @@ dist2(const double* a, const double* b)
     return dx * dx + dy * dy + dz * dz;
 }
 
+// stretch >= -1, so the result is never negative short of rounding, which the clamp removes.
+double
+lightnessDist2(const double* a, const double* b, const double* axis, double stretch)
+{
+    const double dx = a[0] - b[0], dy = a[1] - b[1], dz = a[2] - b[2];
+    const double along = dx * axis[0] + dy * axis[1] + dz * axis[2];
+
+    return std::max(0., dx * dx + dy * dy + dz * dz + stretch * along * along);
+}
+
 bool
 isNonZero(const double* d)
 {
@@ -192,6 +202,8 @@ ColorWarpField::ColorWarpField()
     , _kernel(eColorWarpKernelGaussian)
     , _basis(kIdentityMatrix)
     , _pinCount(0)
+    , _lightnessAxis()
+    , _lightnessStretch(0.)
     , _affine()
     , _origin()
     , _invScale(1.)
@@ -203,7 +215,8 @@ ColorWarpField::prepare(const std::vector<ColorWarpPin>& pins,
                         ColorWarpSpaceEnum space,
                         const ColorWarpSpaceBasis& basis,
                         ColorWarpKernelEnum kernel,
-                        double regularisation)
+                        double regularisation,
+                        double lightnessFalloff)
 {
     _space = space;
     _kernel = kernel;
@@ -215,6 +228,9 @@ ColorWarpField::prepare(const std::vector<ColorWarpPin>& pins,
     std::fill(_affine, _affine + 12, 0.);
     std::fill(_origin, _origin + 3, 0.);
     _invScale = 1.;
+    colorWarpLightnessAxis(space, basis, _lightnessAxis);
+    const double k = (std::isfinite(lightnessFalloff) && (lightnessFalloff > 0.)) ? lightnessFalloff : 1.;
+    _lightnessStretch = (kernel == eColorWarpKernelGaussian) ? (1. / (k * k) - 1.) : 0.;
 
     std::vector<double> sources, displacements, falloffs;
     for (const ColorWarpPin& pin : pins) {
@@ -410,7 +426,7 @@ ColorWarpField::displacementAt(const double warp[3], double d[3]) const
         for (int i = 0; i < _pinCount; ++i) {
             const double* ci = &_centres[i * 3];
             const double* di = &_coefficients[i * 3];
-            const double r2 = dist2(warp, ci);
+            const double r2 = lightnessDist2(warp, ci, _lightnessAxis, _lightnessStretch);
             const double t = r2 * _invTwoSigma2[i];
             if ((r2 == 0.) || ((_invTwoSigma2[i] > 0.) && (t < kGaussianExactHit))) {
                 d[0] = di[0];

@@ -56,7 +56,8 @@ struct ColorWarpPin {
  * @brief How pin displacements spread through the colour volume.
  *
  * - Gaussian: D(x) = sum(w_i d_i) / (1 + sum(w_i)), w_i = exp(-r^2 / 2 s^2) * s^2 / r^2,
- *   s = falloff / 2, r the warp-space distance to pin i. The 1 is an identity weight, so colours
+ *   s = falloff / 2, r the warp-space distance to pin i, measured with the lightness component
+ *   divided by the field's lightness falloff (see ColorWarpField::prepare()). The 1 is an identity weight, so colours
  *   far from every pin are unchanged (exactly, past kColorWarpGaussianCutoff falloffs). The
  *   1 / r^2 factor makes the blend pass exactly through every pin, hold pins included; it also
  *   flattens the field's gradient to zero at each pin.
@@ -77,6 +78,7 @@ const char* colorWarpKernelName(ColorWarpKernelEnum kernel);
 
 inline constexpr double kColorWarpGaussianCutoff = 4.;
 inline constexpr double kColorWarpDefaultRegularisation = 1e-6;
+inline constexpr double kColorWarpDefaultLightnessFalloff = 1.;
 
 /**
  * @brief A prepared warp field. prepare() does all the per-change work; apply() evaluates one
@@ -92,6 +94,7 @@ inline constexpr double kColorWarpDefaultRegularisation = 1e-6;
  * - centres: 3 per pin, warp space (Gaussian) or normalised as (x - origin) * invScale (RBF);
  * - coefficients: 3 per pin, the displacement (Gaussian) or the per-axis spline weight (RBF);
  * - invTwoSigma2: per pin, 1 / (2 s^2) (Gaussian only);
+ * - lightnessAxis and lightnessStretch: the Gaussian's r^2 is |x - c|^2 + stretch * ((x - c) . axis)^2;
  * - affine: 12 values, the RBF's constant term per axis then its 3x3 slope matrix (row = axis)
  *   in normalised coordinates;
  * - the space conversion: basis()'s matrices, plus the OKLab matrices and log-toe constants
@@ -101,11 +104,18 @@ class ColorWarpField {
 public:
     ColorWarpField();
 
+    /**
+     * @brief lightnessFalloff scales the Gaussian's reach along the space's neutral axis
+     * (colorWarpLightnessAxis()) relative to its reach across it, so 2 lets a pin reach twice as
+     * far in lightness as in chroma. 1 is a round reach; one that is not positive and finite
+     * reads as 1. The RBF kernels ignore it, as they ignore falloff.
+     **/
     void prepare(const std::vector<ColorWarpPin>& pins,
                  ColorWarpSpaceEnum space,
                  const ColorWarpSpaceBasis& basis,
                  ColorWarpKernelEnum kernel,
-                 double regularisation = kColorWarpDefaultRegularisation);
+                 double regularisation = kColorWarpDefaultRegularisation,
+                 double lightnessFalloff = kColorWarpDefaultLightnessFalloff);
 
     /**
      * @brief Returns rgb itself, bit-exact, when the field is an identity, when rgb is not finite,
@@ -126,6 +136,8 @@ public:
     const std::vector<double>& centres() const { return _centres; }
     const std::vector<double>& coefficients() const { return _coefficients; }
     const std::vector<double>& invTwoSigma2() const { return _invTwoSigma2; }
+    const double* lightnessAxis() const { return _lightnessAxis; }
+    double lightnessStretch() const { return _lightnessStretch; }
     const double* affine() const { return _affine; }
     const double* origin() const { return _origin; }
     double invScale() const { return _invScale; }
@@ -141,6 +153,8 @@ private:
     std::vector<double> _centres;
     std::vector<double> _coefficients;
     std::vector<double> _invTwoSigma2;
+    double _lightnessAxis[3];
+    double _lightnessStretch;
     double _affine[12];
     double _origin[3];
     double _invScale;

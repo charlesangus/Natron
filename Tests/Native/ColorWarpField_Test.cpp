@@ -514,3 +514,102 @@ TEST(ColorWarpField, NonFiniteInputPassesThrough)
     EXPECT_EQ(out[1], 0.2);
     EXPECT_TRUE(std::isinf(out[2]));
 }
+
+TEST(ColorWarpField, LightnessFalloffStretchesReachAlongTheNeutralAxisOnly)
+{
+    const ColorWarpSpaceBasis basis(kRec709ToXYZ);
+    const double source[3] = { 0.4, 0.12, 0.06 };
+    const double target[3] = { 0.35, 0.3, 0.05 };
+
+    for (int s = 0; s < kColorWarpSpaceCount; ++s) {
+        const ColorWarpSpaceEnum space = static_cast<ColorWarpSpaceEnum>(s);
+        SCOPED_TRACE(colorWarpSpaceName(space));
+        const double reach = reachFor(space) * 0.25;
+        double axis[3];
+        colorWarpLightnessAxis(space, basis, axis);
+        EXPECT_NEAR(axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2], 1., 1e-12);
+
+        double across[3] = { 1., 0., 0. };
+        const double along0 = across[0] * axis[0];
+        for (int c = 0; c < 3; ++c) {
+            across[c] -= along0 * axis[c];
+        }
+        if ((across[0] * across[0] + across[1] * across[1] + across[2] * across[2]) < 1e-6) {
+            across[0] = 0.;
+            across[1] = 1.;
+            across[2] = 0.;
+            const double along1 = axis[1];
+            for (int c = 0; c < 3; ++c) {
+                across[c] -= along1 * axis[c];
+            }
+        }
+        const double acrossLen = std::sqrt(across[0] * across[0] + across[1] * across[1] + across[2] * across[2]);
+
+        double ws[3];
+        toWarpSpace(space, basis, source, ws);
+        const double far = reach * (kColorWarpGaussianCutoff + 1.);
+        double alongRgb[3], acrossRgb[3];
+        {
+            double w[3];
+            for (int c = 0; c < 3; ++c) {
+                w[c] = ws[c] + far * axis[c];
+            }
+            fromWarpSpace(space, basis, w, alongRgb);
+            for (int c = 0; c < 3; ++c) {
+                w[c] = ws[c] + far * across[c] / acrossLen;
+            }
+            fromWarpSpace(space, basis, w, acrossRgb);
+        }
+
+        ColorWarpField round, stretched;
+        round.prepare({ makePin(source, target, 1., reach) }, space, basis, eColorWarpKernelGaussian);
+        stretched.prepare({ makePin(source, target, 1., reach) }, space, basis, eColorWarpKernelGaussian, kColorWarpDefaultRegularisation, 4.);
+
+        double out[3];
+        round.apply(alongRgb, out);
+        expectBitExact(out, alongRgb);
+        stretched.apply(alongRgb, out);
+        EXPECT_GT(std::fabs(out[0] - alongRgb[0]) + std::fabs(out[1] - alongRgb[1]) + std::fabs(out[2] - alongRgb[2]), 1e-6);
+        stretched.apply(acrossRgb, out);
+        expectBitExact(out, acrossRgb);
+
+        stretched.apply(source, out);
+        expectNear3(out, target, 1e-7);
+    }
+}
+
+TEST(ColorWarpField, DefaultLightnessFalloffMatchesARoundReach)
+{
+    const ColorWarpSpaceBasis basis(kRec709ToXYZ);
+    const double source[3] = { 0.4, 0.12, 0.06 };
+    const double target[3] = { 0.35, 0.3, 0.05 };
+    const double probe[3] = { 0.5, 0.2, 0.1 };
+    const double badFalloffs[] = { 0., -2., NAN, INFINITY };
+
+    for (int s = 0; s < kColorWarpSpaceCount; ++s) {
+        const ColorWarpSpaceEnum space = static_cast<ColorWarpSpaceEnum>(s);
+        SCOPED_TRACE(colorWarpSpaceName(space));
+        ColorWarpField field;
+        field.prepare({ makePin(source, target, 1., reachFor(space)) }, space, basis, eColorWarpKernelGaussian);
+        EXPECT_EQ(field.lightnessStretch(), 0.);
+        double ref[3];
+        field.apply(probe, ref);
+        for (double bad : badFalloffs) {
+            ColorWarpField other;
+            other.prepare({ makePin(source, target, 1., reachFor(space)) }, space, basis, eColorWarpKernelGaussian, kColorWarpDefaultRegularisation, bad);
+            double out[3];
+            other.apply(probe, out);
+            expectBitExact(out, ref);
+        }
+    }
+}
+
+TEST(ColorWarpField, FalloffScaleIsPositivePerSpace)
+{
+    for (int s = 0; s < kColorWarpSpaceCount; ++s) {
+        const ColorWarpSpaceEnum space = static_cast<ColorWarpSpaceEnum>(s);
+        SCOPED_TRACE(colorWarpSpaceName(space));
+        EXPECT_GT(colorWarpFalloffScale(space), 0.);
+    }
+    EXPECT_NEAR(colorWarpFalloffScale(eColorWarpSpaceOklabLog), 1., 0.1);
+}

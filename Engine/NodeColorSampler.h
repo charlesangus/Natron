@@ -28,6 +28,9 @@
 
 #include "Global/Macros.h"
 
+#include <array>
+#include <optional>
+
 #include "Engine/EngineFwd.h"
 #include "Engine/RectI.h"
 #include "Engine/ViewIdx.h"
@@ -104,6 +107,24 @@ bool sampleNodeColor(const NodePtr& node,
                      const RectI& pixelRect,
                      const ImageLayerDesc& layer,
                      float rgba[4]);
+
+/**
+ * @brief The RGBA of the pixel of node's input inputNb that holds the canonical position (x, y) at
+ * time and view, rendered at full scale through sampleNodeColor(), so a frame the input already has
+ * in the cache costs a lookup. A disabled input is looked through to the node it passes on. The
+ * input's own pixel aspect ratio places (x, y) in its pixels. Channels read as sampleNodeColor()
+ * reads them.
+ *
+ * None when node has no such input connected, (x, y) is outside the input's region of definition,
+ * or in the other cases sampleNodeColor() returns false. Main thread or any thread not rendering
+ * node; an overlay pen event may call it.
+ **/
+std::optional<std::array<float, 4>> sampleNodeInputAt(const NodePtr& node,
+                                                      int inputNb,
+                                                      double time,
+                                                      ViewIdx view,
+                                                      double x,
+                                                      double y);
 
 NATRON_NAMESPACE_EXIT
 

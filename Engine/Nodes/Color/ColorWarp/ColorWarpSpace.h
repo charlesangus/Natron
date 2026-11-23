@@ -91,6 +91,21 @@ inline constexpr double kColorWarpLogToe = 0.0078125;
 inline constexpr double kColorWarpLogToeEncoded = -7.;
 inline constexpr double kColorWarpLogToeSlope = 1. / (kColorWarpLogToe * M_LN2);
 
+/**
+ * @brief The warp-space reach that a pin falloff of 1 stands for in space: the falloff at which a
+ * lone saturated-red pin under the Gaussian kernel changes the same share (15%) of a chart that
+ * spans HDR ramps, a colour checker and a neutral ramp. Multiplying a user falloff by it makes one
+ * falloff value reach about as far in every space; in OklabLog it is close to one stop along L.
+ **/
+double colorWarpFalloffScale(ColorWarpSpaceEnum space);
+
+/**
+ * @brief The unit vector along space's neutral axis at the working space's white, which a
+ * Lightness Falloff stretches a pin's reach along: L in Oklab and OklabLog, the white point's
+ * direction in Xyz and R = G = B in LogRgb and LinearRgb.
+ **/
+void colorWarpLightnessAxis(ColorWarpSpaceEnum space, const ColorWarpSpaceBasis& basis, double axis[3]);
+
 double colorWarpLogEncode(double x);
 double colorWarpLogDecode(double y);
 

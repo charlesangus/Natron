@@ -26,6 +26,8 @@
 #include "NodeColorSampler.h"
 
 #include <algorithm>
+#include <climits>
+#include <cmath>
 #include <list>
 #include <map>
 #include <string>
@@ -376,5 +378,43 @@ sampleNodeColor(const NodePtr& node,
 
     return true;
 } // sampleNodeColor
+
+std::optional<std::array<float, 4>>
+sampleNodeInputAt(const NodePtr& node,
+                  int inputNb,
+                  double time,
+                  ViewIdx view,
+                  double x,
+                  double y)
+{
+    if (!node || !std::isfinite(x) || !std::isfinite(y)) {
+        return std::nullopt;
+    }
+    const NodePtr input = node->getInput(inputNb);
+    if (!input || !input->getEffectInstance()) {
+        return std::nullopt;
+    }
+    const EffectInstancePtr effective = input->getEffectInstance()->getNearestNonDisabled(time);
+    if (!effective) {
+        return std::nullopt;
+    }
+    const NodeMetadataConstPtr metadata = effective->getRenderMetadata(time, view);
+    double par = metadata ? metadata->getPixelAspectRatio(-1) : 1.;
+    if (!(par > 0.)) {
+        par = 1.;
+    }
+    const double px = std::floor(x / par);
+    const double py = std::floor(y);
+    if ((px < INT_MIN + 1.) || (px > INT_MAX - 1.) || (py < INT_MIN + 1.) || (py > INT_MAX - 1.)) {
+        return std::nullopt;
+    }
+    const RectI pixel((int)px, (int)py, (int)px + 1, (int)py + 1);
+    std::array<float, 4> rgba;
+    if (!sampleNodeColor(effective->getNode(), time, view, 0, pixel, ImageLayerDesc::getRGBAComponents(), rgba.data())) {
+        return std::nullopt;
+    }
+
+    return rgba;
+}
 
 NATRON_NAMESPACE_EXIT

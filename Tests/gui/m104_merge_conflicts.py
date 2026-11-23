@@ -27,6 +27,7 @@ ARTIST_SIZE = 2.0
 SUPERVISOR_SIZE = 4.0
 
 try:
+    from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QPushButton, QTabBar, QTreeWidget
 
     import guitest as gt
@@ -274,7 +275,19 @@ try:
         require(app.resetProject(), "reset the project")
         yield ("sleep", SETTLE_MS)
         check(len(rows()) == 0, "the panel lists nothing after the reset")
-        require(app.loadProject(shot) is not None, "reopen the shot")
+        # Loading a project with conflicts reports them in a modal warning, whose event loop would
+        # hold this generator inside the call, so the load runs from a timer and the dialog is
+        # dismissed here.
+        loaded = {}
+        QTimer.singleShot(0, lambda: loaded.setdefault("project", app.loadProject(shot)))
+        ok = yield ("until", lambda: QApplication.activeModalWidget() is not None or "project" in loaded, POLL_TIMEOUT_S)
+        require(ok, "the load of the shot finished or raised its warning")
+        dialog = QApplication.activeModalWidget()
+        if dialog is not None:
+            report("NOTE load warning: %r" % " ".join(l.text() for l in dialog.findChildren(QLabel) if l.text()))
+            dialog.accept()
+        ok = yield ("until", lambda: "project" in loaded, POLL_TIMEOUT_S)
+        require(ok and loaded["project"] is not None, "reopen the shot")
         ok = yield ("until", lambda: app.getNode("Blur1") is not None and len(rows()) > 0, POLL_TIMEOUT_S)
         require(ok, "the reopened shot lists its conflicts")
         ok = yield ("until", panel_shown, POLL_TIMEOUT_S)

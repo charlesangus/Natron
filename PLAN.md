@@ -187,7 +187,7 @@ future core work has solid ground to build on.
 | M401 | 3D Viewer Breadcrumbs | done | M231, M232, M328, M332 | bosley-native-nodes | E9 | F4 | | [M401-3d-viewer-breadcrumbs.md](PLAN/MILESTONES/M401-3d-viewer-breadcrumbs.md) |
 | M481 | Viewer Polygon Budgets | doing | M336 | bosley-executor | E9 | | | [M481-viewer-polygon-budgets.md](PLAN/MILESTONES/M481-viewer-polygon-budgets.md) |
 | M423 | USDPrune Isolate Mode | doing | M381 | bosley-executor | E9 | | | [M423-usdprune-isolate-mode.md](PLAN/MILESTONES/M423-usdprune-isolate-mode.md) |
-| M337 | Geometry Spreadsheet | doing | M54, M358, M361, M333 | bosley-executor | E9 | F15 | | [M337-geometry-spreadsheet.md](PLAN/MILESTONES/M337-geometry-spreadsheet.md) |
+| M337 | Geometry Spreadsheet | done | M54, M358, M361, M333 | bosley-executor | E9 | F15 | | [M337-geometry-spreadsheet.md](PLAN/MILESTONES/M337-geometry-spreadsheet.md) |
 | M233 | Live Node Textures | done | M19, M20 | bosley-native-nodes | E9 | | | [M233-live-node-textures.md](PLAN/MILESTONES/M233-live-node-textures.md) |
 | M234 | Camera Projection Nodes | done | M227, M233 | bosley-native-nodes | E9 | | | [M234-camera-projection-nodes.md](PLAN/MILESTONES/M234-camera-projection-nodes.md) |
 | M235 | USDCamera From File | done | M226 | bosley-native-nodes | E9 | | | [M235-usdcamera-from-file.md](PLAN/MILESTONES/M235-usdcamera-from-file.md) |
@@ -223,7 +223,7 @@ future core work has solid ground to build on.
 | M358 | Geometry Bridges And Display | done | M54, M52 | | E9 | F15 | | [M358-geometry-bridges-and-display.md](PLAN/MILESTONES/M358-geometry-bridges-and-display.md) |
 | M359 | Geometry Operators | done | M54 | | E9 | F15 | | [M359-geometry-operators.md](PLAN/MILESTONES/M359-geometry-operators.md) |
 | M360 | Geometry Kernel Language | done | M54 | | E9 | F15 | | [M360-geometry-kernel-language.md](PLAN/MILESTONES/M360-geometry-kernel-language.md) |
-| M361 | Geometry Point Editing | doing | M358, M359, M360, M376 | bosley-executor | E9 | F15 | | [M361-geometry-point-editing.md](PLAN/MILESTONES/M361-geometry-point-editing.md) |
+| M361 | Geometry Point Editing | done | M358, M359, M360, M376 | bosley-executor | E9 | F15 | | [M361-geometry-point-editing.md](PLAN/MILESTONES/M361-geometry-point-editing.md) |
 | M362 | Geometry Operators II | todo | M359, M360 |  | E9 | F21 | | [M362-geometry-operators-ii.md](PLAN/MILESTONES/M362-geometry-operators-ii.md) |
 | M363 | Geometry Display Extras | todo | M358, M376 |  | E9 |  | | [M363-geometry-display-extras.md](PLAN/MILESTONES/M363-geometry-display-extras.md) |
 | M402 | Geometry Loops | doing | M180, M181, M190, M359, M360 | bosley-executor | E22 | F18 | | [M402-geometry-loops.md](PLAN/MILESTONES/M402-geometry-loops.md) |
@@ -248,7 +248,7 @@ future core work has solid ground to build on.
 | M417 | VDB Volume Primitive | doing | M358 | bosley-executor | E9 | F22 | | [M417-vdb-volume-primitive.md](PLAN/MILESTONES/M417-vdb-volume-primitive.md) |
 | M418 | VDB Conversion Ops | doing | M417 | bosley-executor | E9 | F22 | | [M418-vdb-conversion-ops.md](PLAN/MILESTONES/M418-vdb-conversion-ops.md) |
 | M419 | VDB SDF Ops And Wrangle | todo | M418, M360 |  | E9 | F22 | | [M419-vdb-sdf-ops-and-wrangle.md](PLAN/MILESTONES/M419-vdb-sdf-ops-and-wrangle.md) |
-| M376 | Geometry Display | doing | M328, M358 | bosley-executor | E9 | F15 | | [M376-geometry-display.md](PLAN/MILESTONES/M376-geometry-display.md) |
+| M376 | Geometry Display | done | M328, M358 | bosley-executor | E9 | F15 | | [M376-geometry-display.md](PLAN/MILESTONES/M376-geometry-display.md) |
 | M377 | Readable CI Names | done | - | bosley-native-nodes | E2 | | | [M377-readable-ci-names.md](PLAN/MILESTONES/M377-readable-ci-names.md) |
 | M378 | Scene Render Test Stability | done | - | bosley-native-nodes | E9 | | | [M378-scene-render-test-stability.md](PLAN/MILESTONES/M378-scene-render-test-stability.md) |
 | M379 | GpuContext Test Segfault | done | - | bosley-native-nodes | E5 | | | [M379-gpucontext-test-segfault.md](PLAN/MILESTONES/M379-gpucontext-test-segfault.md) |
@@ -598,7 +598,7 @@ future core work has solid ground to build on.
 | M519 | Raw And Loop Toolbar Icons | done | - | bosley-executor | E10 | F36 | | [M519-raw-and-loop-toolbar-icons.md](PLAN/MILESTONES/M519-raw-and-loop-toolbar-icons.md) |
 | M520 | USD Toolbar Category And Submenus | doing | - | bosley-executor | E10 | F36 | | [M520-usd-toolbar-category-and-submenus.md](PLAN/MILESTONES/M520-usd-toolbar-category-and-submenus.md) |
 | M521 | Easier Pipe Grabbing | doing | - | bosley-executor | E10 | F36 | | [M521-easier-pipe-grabbing.md](PLAN/MILESTONES/M521-easier-pipe-grabbing.md) |
-| M522 | Geometry Toolbar Category | doing | - | bosley-executor | E10 | F15 | | [M522-geometry-toolbar-category.md](PLAN/MILESTONES/M522-geometry-toolbar-category.md) |
+| M522 | Geometry Toolbar Category | done | - | bosley-executor | E10 | F15 | | [M522-geometry-toolbar-category.md](PLAN/MILESTONES/M522-geometry-toolbar-category.md) |
 | M523 | USDSetAttribute Type From Stage | doing | - | bosley-executor | E9 |  | | [M523-usdsetattribute-type-from-stage.md](PLAN/MILESTONES/M523-usdsetattribute-type-from-stage.md) |
 | M524 | Vertical Node Style | todo | M351, M522 |  | E10 |  | | [M524-vertical-node-style.md](PLAN/MILESTONES/M524-vertical-node-style.md) |
 | M540 | Sparse Tile Field Core | todo | M417 |  | E22 | F35 | | [M540-sparse-tile-field-core.md](PLAN/MILESTONES/M540-sparse-tile-field-core.md) |
@@ -660,7 +660,7 @@ future core work has solid ground to build on.
 | F12 | Expression Speed | open | bosley-executor |  | feature/f12-expression-speed | Benchmark Python knob expressions and make them cheap on large graphs, through a lighter interpreter path, a result cache and a native evaluator. |
 | F13 | ZDefocus Rework | open | bosley-executor |  | feature/f13-zdefocus-rework | Measure ZDefocus against ground truth, add traced lenses and debug outputs, match or exceed Higx Optics' traced bokeh, and revisit its engine from the results. |
 | F14 | Map Blend I-Nodes | open |  |  | feature/f14-map-blend-i-nodes | Turn any subgraph into a Map-driven I-node through LoopEnd's Map blend and one Make I-Node action. |
-| F15 | Native Geometry | open |  |  | feature/f15-native-geometry | A SOP-style native geometry context: a Houdini-like detail, bridges to USD, operators, Python and VEX-like wrangles, point editing and a geometry spreadsheet. |
+| F15 | Native Geometry | shipping | bosley-executor |  | feature/f15-native-geometry | A SOP-style native geometry context: a Houdini-like detail, bridges to USD, operators, Python and VEX-like wrangles, point editing and a geometry spreadsheet. |
 | F16 | User Knob Editor | open | bosley-executor |  | feature/f16-user-knob-editor | Create and manage user knobs in place on the properties panel, with type changes, undo, button scripts, drag-in links and copy/paste. |
 | F17 | OpenNucleon Flag Day | open |  |  | feature/f17-opennucleon-flag-day | Rename Natron to OpenNucleon/Nucleon throughout, code included, with new art and the GPLv3 relicence, landed in one switchover at a quiet time the user chooses. |
 | F18 | Geometry Loops And Solver | open |  |  | feature/f18-geometry-loops-and-solver | Loop and solve native geometry: For-Each blocks on render contexts, a native geometry file cache, and a Solver SOP with a sim cache. |

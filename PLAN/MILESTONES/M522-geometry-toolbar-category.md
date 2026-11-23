@@ -25,3 +25,4 @@ Give native geometry nodes their own top-level toolbar category, Geometry, inste
   - size: M
 
 **Verification gate:** release gate green per `.local/build-mode`; `Tests/gui/geometry_toolbar_menu.py` passes under Xvfb at 1920x1080; the screenshot is OK'd at F15 - Native Geometry's UAT.
+- 2026-11-23 — Merged straight into feature/f15-native-geometry (524d054ae) without a member PR, so it had no review round of its own; the F15 Feature PR review covers its diff in full, not only how the members fit.

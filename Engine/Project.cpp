@@ -658,10 +658,8 @@ Project::loadProjectInternal(const QString& path,
         addLoadWarning(QString::fromUtf8(warning.c_str()));
     }
     const std::size_t conflictCount = projectSerialization.mergeConflicts.size();
-    if (conflictCount == 1) {
-        addLoadWarning(tr("1 unresolved merge conflict"));
-    } else if (conflictCount > 1) {
-        addLoadWarning(tr("%1 unresolved merge conflicts").arg(conflictCount));
+    if (conflictCount > 0) {
+        addLoadWarning(mergeConflictWarning(conflictCount));
     }
 
     const Serialization::BundleManifest& manifest = bundle->manifest();
@@ -1476,10 +1474,23 @@ Project::setMergeConflicts(const std::vector<Serialization::MergeConflict>& conf
     Q_EMIT mergeConflictsChanged();
 }
 
+QString
+Project::mergeConflictWarning(std::size_t count)
+{
+    return (count == 1) ? tr("1 unresolved merge conflict") : tr("%1 unresolved merge conflicts").arg(count);
+}
+
 void
 Project::reportLoadWarnings()
 {
-    const QStringList warnings = getLoadWarnings();
+    QStringList warnings = getLoadWarnings();
+
+    // The Merge Conflicts panel lists the conflicts and opens by itself, so a dialog on top would
+    // only be one more thing to dismiss; the error log still holds the line.
+    const std::size_t conflictCount = getMergeConflicts().size();
+    if (conflictCount > 0) {
+        warnings.removeAll(mergeConflictWarning(conflictCount));
+    }
 
     if (warnings.isEmpty()) {
         return;

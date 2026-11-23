@@ -925,6 +925,8 @@ private:
 
     QString saveProjectInternal(const QString & path, const QString & name, bool autosave, bool updateProjectProperties);
 
+    static QString mergeConflictWarning(std::size_t count);
+
     void reportLoadWarnings();
 
     void doResetEnd(bool aboutToQuit);

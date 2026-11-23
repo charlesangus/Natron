@@ -26,13 +26,16 @@
 #include "Global/Macros.h"
 
 #include <climits>
+#include <filesystem>
 #include <list>
 #include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
 
+#include <QCoreApplication>
 #include <QFile>
+#include <QObject>
 #include <QString>
 #include <QTemporaryDir>
 
@@ -47,11 +50,14 @@
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Geometry/GeoFile.h"
 #include "Engine/Nodes/Geometry/GeoFileCache.h"
 #include "Engine/Nodes/Geometry/GeoPrimitive.h"
 #include "Engine/Nodes/Geometry/GeoTransform.h"
 #include "Engine/OutputEffectInstance.h"
+#include "Engine/OutputSchedulerThread.h"
 #include "Engine/ParallelRenderArgs.h"
+#include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
 
@@ -143,6 +149,17 @@ protected:
         ASSERT_TRUE(writer != NULL);
         works.push_back(AppInstance::RenderWork(writer, first, last, 1, false));
         getApp()->startWritersRendering(eRenderModeBlocking, works);
+        // The node re-stamps the files it wrote from a slot queued to the main thread.
+        QCoreApplication::processEvents();
+    }
+
+    std::string persistentMessage() const
+    {
+        QString message;
+        int type = 0;
+        _cache->getPersistentMessage(&message, &type, false);
+
+        return message.toStdString();
     }
 
     EffectInstance::RenderRoIRetCode pull(const NodePtr& node,
@@ -239,4 +256,99 @@ TEST_F(GeoFileCacheNodeTest, OnlySaveModeWrites)
 
     setMode(GeoFileCache::eModePassThrough);
     EXPECT_EQ(hashAt(_transform, 2.), hashAt(_cache, 2.));
+}
+
+// The abort lands between frames, so the render is pinned to one render thread; with more, later
+// frames could already be in flight when it arrives.
+TEST_F(GeoFileCacheNodeTest, CancellingMidRangeKeepsTheFramesWrittenWhole)
+{
+    struct ParallelRendersScope {
+        int saved;
+
+        ParallelRendersScope()
+            : saved(appPTR->getCurrentSettings()->getNumberOfParallelRenders())
+        {
+            appPTR->getCurrentSettings()->setNumberOfParallelRenders(1);
+        }
+
+        ~ParallelRendersScope()
+        {
+            appPTR->getCurrentSettings()->setNumberOfParallelRenders(saved);
+        }
+    } parallelRenders;
+
+    std::vector<U64> saved;
+    for (int frame = 1; frame <= 2; ++frame) {
+        GeoDetailConstPtr detail;
+        std::string error;
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, pull(_transform, frame, &detail, &error)) << error;
+        ASSERT_TRUE(detail != nullptr);
+        saved.push_back(geoFileNormalized(*detail).contentHash());
+    }
+
+    OutputEffectInstance* writer = dynamic_cast<OutputEffectInstance*>(_cache->getEffectInstance().get());
+    ASSERT_TRUE(writer != NULL);
+    RenderEnginePtr engine = writer->getRenderEngine();
+    ASSERT_TRUE(engine != nullptr);
+    int framesReported = 0;
+    QMetaObject::Connection abortOnSecondFrame = QObject::connect(engine.get(), &RenderEngine::frameRendered, engine.get(), [&framesReported, engine](int /*time*/, double /*progress*/) {
+        if (++framesReported == 2) {
+            engine->abortRenderingNoRestart();
+        } }, Qt::DirectConnection);
+    render(1, 5);
+    QObject::disconnect(abortOnSecondFrame);
+
+    EXPECT_EQ(2, framesReported);
+    EXPECT_EQ(saved[0], geoFileRead(path("v001/cache.0001.ngeo")).contentHash());
+    EXPECT_EQ(saved[1], geoFileRead(path("v001/cache.0002.ngeo")).contentHash());
+    EXPECT_FALSE(QFile::exists(QString::fromStdString(path("v001/cache.0004.ngeo"))));
+    EXPECT_FALSE(QFile::exists(QString::fromStdString(path("v001/cache.0005.ngeo"))));
+    for (const std::filesystem::directory_entry& e : std::filesystem::directory_iterator(path("v001"))) {
+        const std::string name = e.path().filename().string();
+        EXPECT_EQ(std::string::npos, name.find(".tmp")) << "temporary file left behind: " << name;
+    }
+}
+
+TEST_F(GeoFileCacheNodeTest, LoadingAfterSavingAgainReturnsTheNewGeometry)
+{
+    render(1, 1);
+    NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_GEOFILE));
+    ASSERT_TRUE(reader != NULL);
+    KnobFilePtr readerFile = std::dynamic_pointer_cast<KnobFile>(reader->getKnobByName(kGeoFileParamFile));
+    ASSERT_TRUE(readerFile != NULL);
+    readerFile->setValue(path("v001/cache.$F4.ngeo"));
+
+    setMode(GeoFileCache::eModeLoad);
+    const U64 before = hashAt(_cache, 1);
+    EXPECT_EQ(before, hashAt(reader, 1));
+
+    KnobDoublePtr translate = std::dynamic_pointer_cast<KnobDouble>(_transform->getKnobByName(kGeoTransformParamTranslate));
+    ASSERT_TRUE(translate != NULL);
+    translate->setValueAtTime(1, 50., ViewSpec::all(), 0);
+    setMode(GeoFileCache::eModeSave);
+    render(1, 1);
+    setMode(GeoFileCache::eModeLoad);
+
+    const U64 written = geoFileRead(path("v001/cache.0001.ngeo")).contentHash();
+    EXPECT_NE(before, written);
+    EXPECT_EQ(written, hashAt(_cache, 1));
+    EXPECT_EQ(written, hashAt(reader, 1));
+
+    appPTR->removeAllCacheEntriesForHolder(reader.get(), true);
+    reader->destroyNode(false, false);
+}
+
+TEST_F(GeoFileCacheNodeTest, AFramelessNameCannotHoldSeveralFrames)
+{
+    KnobOutputFilePtr file = std::dynamic_pointer_cast<KnobOutputFile>(_cache->getKnobByName(kGeoFileCacheParamFile));
+    ASSERT_TRUE(file != NULL);
+    file->setValue(path("single.ngeo"));
+
+    render(1, 3);
+    EXPECT_FALSE(QFile::exists(QString::fromStdString(path("single.ngeo"))));
+    EXPECT_NE(std::string::npos, persistentMessage().find("no frame number")) << persistentMessage();
+
+    render(2, 2);
+    EXPECT_TRUE(QFile::exists(QString::fromStdString(path("single.ngeo"))));
+    EXPECT_TRUE(persistentMessage().empty()) << persistentMessage();
 }

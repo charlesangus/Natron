@@ -157,14 +157,17 @@ evaluateAndWriteGeometryFrame(const OutputEffectInstancePtr& writer,
 
         return false;
     }
-    if ((*retCode != EffectInstance::eRenderRoIRetCodeOk) || !detail) {
+    if (*retCode != EffectInstance::eRenderRoIRetCodeOk) {
         return true;
     }
-    if (writer->writeGeometryFrame(time, view, detail) == eStatusFailed) {
-        QString message;
-        int type = 0;
-        writer->getNode()->getPersistentMessage(&message, &type, false);
-        *error = message.isEmpty() ? std::string("Error caught while writing") : message.toStdString();
+    if (!detail) {
+        *error = writer->getScriptName_mt_safe() + ": Nothing to write at frame " + QString::number(time).toStdString();
+
+        return false;
+    }
+    std::string writeError;
+    if (writer->writeGeometryFrame(time, view, detail, &writeError) == eStatusFailed) {
+        *error = writeError.empty() ? std::string("Error caught while writing") : writeError;
 
         return false;
     }
@@ -2860,15 +2863,6 @@ DefaultScheduler::processFrame(const BufferedFrames& frames)
                                                              effect.get(),
                                                              frame.time);
                 retCode = effect->renderDeepRoI(renderArgs, &deepImage);
-                break;
-            }
-            case eDataKindGeometry: {
-                std::string error;
-                if (!evaluateAndWriteGeometryFrame(effect, frame.time, it->view, &retCode, &error)) {
-                    notifyRenderFailure(error);
-
-                    return;
-                }
                 break;
             }
             default:

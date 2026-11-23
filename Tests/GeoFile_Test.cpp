@@ -218,3 +218,24 @@ TEST_F(GeoFileNodeTest, AnUnreadableFileIsAnErrorWhateverTheMissingFrameRule)
     EXPECT_EQ(-1, pointCountAt(1., &error));
     EXPECT_NE(std::string::npos, error.find("bad.0001.ngeo")) << error;
 }
+
+TEST_F(GeoFileNodeTest, AFramelessFileIsReadOnceAcrossFramesUntilReload)
+{
+    geoFileWrite(makePoints(5), path("mesh.ngeo"));
+    const KnobFilePtr file = fileKnob();
+    ASSERT_TRUE(file != NULL);
+    file->setValue(path("mesh.ngeo"));
+    EXPECT_EQ(5, pointCountAt(1.));
+
+    // Gone from disk, the file is still served from the geometry cache at every frame.
+    ASSERT_EQ(0, std::remove(path("mesh.ngeo").c_str()));
+    EXPECT_EQ(5, pointCountAt(2.));
+    EXPECT_EQ(5, pointCountAt(7.));
+
+    geoFileWrite(makePoints(8), path("mesh.ngeo"));
+    EXPECT_EQ(5, pointCountAt(3.));
+    KnobButton* reload = dynamic_cast<KnobButton*>(_reader->getKnobByName(kGeoFileParamReload).get());
+    ASSERT_TRUE(reload != NULL);
+    reload->trigger();
+    EXPECT_EQ(8, pointCountAt(3.));
+}

@@ -39,9 +39,12 @@
 #include <SequenceParsing.h>
 
 #include "Engine/AppInstance.h"
+#include "Engine/ContentHasher.h"
+#include "Engine/FileStampRegistry.h"
 #include "Engine/Geo/GeoFileFormat.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Project.h"
 
@@ -191,6 +194,35 @@ GeoFile::nearestExistingFrame(const std::string& pattern,
     return best;
 }
 
+U64
+GeoFile::patternStamp(const std::string& pattern)
+{
+    if (pattern.empty()) {
+        return 0;
+    }
+    FileStampRegistry& registry = FileStampRegistry::instance();
+
+    return isFrameSequencePattern(pattern) ? registry.sequenceStamp(pattern) : registry.stamp(pattern);
+}
+
+bool
+GeoFile::invalidatePatternIfCovered(const std::string& pattern,
+                                    const std::vector<std::string>& paths)
+{
+    if (pattern.empty()) {
+        return false;
+    }
+    for (const std::string& path : paths) {
+        if (FileStampRegistry::coversSameFiles(path, pattern)) {
+            FileStampRegistry::instance().invalidate(pattern);
+
+            return true;
+        }
+    }
+
+    return false;
+}
+
 bool
 GeoFile::readFrame(EffectInstance* effect,
                    const std::string& pattern,
@@ -278,6 +310,11 @@ GeoFile::initializeKnobs()
     page->addKnob(file);
     _file = file;
 
+    KnobButtonPtr reload = file->createReloadButton(kGeoFileParamReload,
+                                                    tr("Reads the files again, so geometry changed on disk is what the node outputs."));
+    page->addKnob(reload);
+    _reload = reload;
+
     KnobChoicePtr missingFrames = createKnob<KnobChoice>(tr("Missing Frames").toStdString());
     missingFrames->setName(kGeoFileParamMissingFrames);
     missingFrames->setHintToolTip(tr("What a frame whose file does not exist gives.").toStdString());
@@ -295,6 +332,65 @@ GeoFile::initializeKnobs()
     _missingFrames = missingFrames;
 }
 
+std::string
+GeoFile::currentPattern() const
+{
+    const KnobFilePtr file = _file.lock();
+
+    // getValue() is not const; it only reads the stored value.
+    return file ? expandPattern(const_cast<GeoFile*>(this), file->getValue()) : std::string();
+}
+
+bool
+GeoFile::knobChanged(KnobI* k,
+                     ValueChangedReasonEnum /*reason*/,
+                     ViewSpec /*view*/,
+                     double /*time*/,
+                     bool /*originatedFromMainThread*/)
+{
+    const KnobButtonPtr reload = _reload.lock();
+    if (!reload || (k != reload.get())) {
+        return false;
+    }
+    // The file knob stamps its value as written, which differs from the pattern for a $F name.
+    const std::string pattern = currentPattern();
+    if (!pattern.empty()) {
+        FileStampRegistry::instance().invalidate(pattern);
+    }
+    const KnobFilePtr file = _file.lock();
+    if (file) {
+        file->reloadFile();
+        if (!pattern.empty() && (pattern != file->getResolvedPath())) {
+            KnobFile::reloadNodesReadingFiles(std::vector<std::string>(1, pattern), this);
+        }
+    }
+    NodePtr node = getNode();
+    if (node) {
+        node->markHashDirty();
+    }
+
+    return true;
+}
+
+void
+GeoFile::appendNodeContentHash(ContentHasher& h) const
+{
+    h.appendU64(patternStamp(currentPattern()));
+}
+
+bool
+GeoFile::refreshFileDependencies(const std::vector<std::string>& paths)
+{
+    if (!invalidatePatternIfCovered(currentPattern(), paths)) {
+        return false;
+    }
+    purgeCaches();
+    clearActionsCache();
+    clearPersistentMessage(false);
+
+    return true;
+}
+
 StatusEnum
 GeoFile::getPreferredMetadataAt(double /*time*/,
                                 ViewIdx /*view*/,
@@ -302,8 +398,7 @@ GeoFile::getPreferredMetadataAt(double /*time*/,
 {
     // The geometry cache keys on time only for frame-varying nodes; without this every frame of a
     // sequence would be served the first frame's geometry.
-    const KnobFilePtr file = _file.lock();
-    metadata.setIsFrameVarying(file && isFrameSequencePattern(normalizeFrameTokens(file->getValue())));
+    metadata.setIsFrameVarying(isFrameSequencePattern(currentPattern()));
 
     return eStatusOK;
 }
@@ -317,9 +412,7 @@ GeoFile::renderGeometry(const GeoRenderActionArgs& args,
     const GeoFileMissingFrameEnum missing = missingKnob ? (GeoFileMissingFrameEnum)missingKnob->getValue() : eGeoFileMissingFrameError;
     const int frame = (int)std::floor(args.time + 0.5);
     std::string error;
-    const KnobFilePtr file = _file.lock();
-    const std::string pattern = file ? expandPattern(this, file->getValue()) : std::string();
-    if (!readFrame(this, pattern, missing, frame, args.view, outputDetail, &error)) {
+    if (!readFrame(this, currentPattern(), missing, frame, args.view, outputDetail, &error)) {
         if (errorMessage) {
             *errorMessage = error;
         }

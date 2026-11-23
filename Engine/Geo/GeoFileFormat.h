@@ -52,7 +52,8 @@ NATRON_NAMESPACE_ENTER
  *
  * Every column is stored per page of kGeoPageSize elements, each page on its own: a constant
  * or uniform page as one element, any other page zstd-compressed (or raw when that is not
- * smaller). Array attributes store per-element lengths and their tuple pool; string attributes
+ * smaller). Constant and raw pages carry an XXH64 of their bytes, zstd pages a frame checksum,
+ * so a damaged page fails to read naming its section. Array attributes store per-element lengths and their tuple pool; string attributes
  * store their string table and int32 indices.
  *
  * Writing first normalises the detail: tombstones are defragmented away, array pools are
@@ -64,10 +65,10 @@ NATRON_NAMESPACE_ENTER
  * Integers are little-endian; the format is only read on the platform family that wrote it.
  **/
 
-inline constexpr std::uint32_t kGeoFileFormatVersion = 1;
+inline constexpr std::uint32_t kGeoFileFormatVersion = 2;
 inline constexpr const char* kGeoFileExtension = "ngeo";
 
-/** @brief Raised for an unreadable, truncated, corrupt or too-new file and for failed writes. */
+/** @brief Raised for an unreadable, truncated or corrupt file, one of another format version, and failed writes. */
 class GeoFileError : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
@@ -117,7 +118,7 @@ void geoFileWrite(const GeoDetail& detail,
 GeoDetail geoFileRead(const std::string& path,
                       const GeoFileReadOptions& options = GeoFileReadOptions());
 
-/** @brief Reads only the header. Throws GeoFileError, including for a too-new version. */
+/** @brief Reads only the header. Throws GeoFileError, including for another format version. */
 GeoFileInfo geoFileReadInfo(const std::string& path);
 
 NATRON_NAMESPACE_EXIT

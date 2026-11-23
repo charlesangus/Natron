@@ -36,12 +36,16 @@
 #include <vector>
 
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
+#include "Engine/ContentHasher.h"
+#include "Engine/FileStampRegistry.h"
 #include "Engine/Geo/GeoFileFormat.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Geometry/GeoFile.h"
+#include "Engine/OutputSchedulerThread.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -67,6 +71,11 @@ upstreamNeedsOrderedFrames(const NodePtr& node,
     const NativeEffectBase* native = dynamic_cast<const NativeEffectBase*>(node->getEffectInstance().get());
     if (native && native->needsOrderedFrames()) {
         return true;
+    }
+    // A cache loading from disk does not evaluate what is above it.
+    const GeoFileCache* cache = dynamic_cast<const GeoFileCache*>(native);
+    if (cache && (cache->mode() == GeoFileCache::eModeLoad)) {
+        return false;
     }
     for (int i = 0; i < node->getNInputs(); ++i) {
         if (upstreamNeedsOrderedFrames(node->getInput(i), visited)) {
@@ -221,6 +230,22 @@ GeoFileCache::initializeKnobs()
     _lastFrame = lastFrame;
 
     refreshKnobVisibility();
+
+    // The node scopes the connection, so the slot runs on the main thread and never after the node
+    // is gone; a render may keep this effect alive past its node, hence the check that the node
+    // still holds it.
+    NodePtr node = getNode();
+    RenderEnginePtr engine = getRenderEngine();
+    if (engine && node) {
+        NodeWPtr weakNode = node;
+        QObject::connect(engine.get(), &RenderEngine::renderFinished, node.get(), [this, weakNode](int retCode) {
+            NodePtr aliveNode = weakNode.lock();
+            EffectInstancePtr alive = aliveNode ? aliveNode->getEffectInstance() : EffectInstancePtr();
+            if (alive.get() == this) {
+                onRenderFinished(retCode);
+            }
+        });
+    }
 } // GeoFileCache::initializeKnobs
 
 void
@@ -310,7 +335,7 @@ GeoFileCache::dependsOnProjectFrameRange() const
 }
 
 std::string
-GeoFileCache::currentPattern()
+GeoFileCache::currentPattern() const
 {
     const KnobOutputFilePtr file = _file.lock();
     const KnobIntPtr version = _version.lock();
@@ -318,7 +343,56 @@ GeoFileCache::currentPattern()
         return std::string();
     }
 
-    return GeoFile::expandPattern(this, substituteVersion(file->getValue(), version ? version->getValue() : 1));
+    // getValue() is not const; it only reads the stored value.
+    return GeoFile::expandPattern(const_cast<GeoFileCache*>(this), substituteVersion(file->getValue(), version ? version->getValue() : 1));
+}
+
+void
+GeoFileCache::appendNodeContentHash(ContentHasher& h) const
+{
+    // Only loading reads the files; saving outputs the input.
+    h.appendU64(mode() == eModeLoad ? GeoFile::patternStamp(currentPattern()) : 0);
+}
+
+bool
+GeoFileCache::refreshFileDependencies(const std::vector<std::string>& paths)
+{
+    if ((mode() != eModeLoad) || !GeoFile::invalidatePatternIfCovered(currentPattern(), paths)) {
+        return false;
+    }
+    purgeCaches();
+    clearActionsCache();
+    clearPersistentMessage(false);
+
+    return true;
+}
+
+void
+GeoFileCache::onRenderFinished(int retCode)
+{
+    std::vector<std::string> written;
+    {
+        std::lock_guard<std::mutex> lock(_writtenPathsMutex);
+        written.swap(_writtenPaths);
+    }
+    if (retCode == 0) {
+        clearPersistentMessage(false);
+    }
+    if (written.empty()) {
+        return;
+    }
+    FileStampRegistry& registry = FileStampRegistry::instance();
+    for (const std::string& path : written) {
+        registry.invalidate(path);
+    }
+    purgeCaches();
+    clearActionsCache();
+    NodePtr node = getNode();
+    if (node) {
+        appPTR->removeAllCacheEntriesForHolder(node.get(), false);
+        node->markHashDirty();
+    }
+    KnobFile::reloadNodesReadingFiles(written, this);
 }
 
 FramesNeededMap
@@ -376,9 +450,14 @@ GeoFileCache::renderGeometry(const GeoRenderActionArgs& args,
 StatusEnum
 GeoFileCache::writeGeometryFrame(double time,
                                  ViewIdx view,
-                                 const GeoDetailConstPtr& detail)
+                                 const GeoDetailConstPtr& detail,
+                                 std::string* error)
 {
-    const auto fail = [this](const std::string& message) {
+    // Also a persistent message, so the node shows why its render failed.
+    const auto fail = [this, error](const std::string& message) {
+        if (error) {
+            *error = message;
+        }
         setPersistentMessage(eMessageTypeError, message);
 
         return eStatusFailed;
@@ -390,6 +469,15 @@ GeoFileCache::writeGeometryFrame(double time,
     const std::string pattern = currentPattern();
     if (pattern.empty()) {
         return fail(tr("No file to write to.").toStdString());
+    }
+    int firstFrame = 0;
+    int lastFrame = 0;
+    if (getRunningRenderRequestedRange(&firstFrame, &lastFrame) && (lastFrame > firstFrame) && !GeoFile::isFrameSequencePattern(pattern)) {
+        return fail(tr("The Filename has no frame number, so every frame from %1 to %2 would overwrite the same file. "
+                       "Write the frame number in it as #### or $F4.")
+                        .arg(firstFrame)
+                        .arg(lastFrame)
+                        .toStdString());
     }
     const int frame = (int)std::floor(time + 0.5);
     const std::string path = GeoFile::resolvePath(this, pattern, frame, view);
@@ -412,6 +500,10 @@ GeoFileCache::writeGeometryFrame(double time,
         geoFileWrite(*detail, path);
     } catch (const std::exception& e) {
         return fail(e.what());
+    }
+    {
+        std::lock_guard<std::mutex> lock(_writtenPathsMutex);
+        _writtenPaths.push_back(path);
     }
 
     return eStatusOK;

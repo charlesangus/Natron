@@ -88,6 +88,9 @@ public:
 
     virtual ~USDPrune();
 
+    // How many times the prim pattern was evaluated on a stage, for tests.
+    U64 getPatternQueryCount() const;
+
 private:
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void initializeKnobs() OVERRIDE FINAL;
@@ -97,6 +100,7 @@ private:
 
     PrimSelector _primPattern;
     KnobChoiceWPtr _mode;
+    PrimPatternCache _matches;
 };
 
 NATRON_NAMESPACE_EXIT

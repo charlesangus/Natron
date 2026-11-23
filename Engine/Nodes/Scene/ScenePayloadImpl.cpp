@@ -25,15 +25,75 @@
 
 #include "ScenePayloadImpl.h"
 
+#include <functional>
+#include <unordered_set>
+
 NATRON_NAMESPACE_ENTER
+
+namespace {
+struct DrawRuleHash {
+    std::size_t operator()(const SceneDrawRule* rule) const
+    {
+        const std::hash<std::string> hashString;
+        std::size_t h = hashString(rule->pattern);
+        const auto mix = [&h](std::size_t value) { h ^= value + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2); };
+        mix((std::size_t)rule->state);
+        mix((std::size_t)rule->levels);
+        mix(hashString(rule->toKind));
+        mix(hashString(rule->origin));
+        for (const std::string& layer : rule->layers) {
+            mix(hashString(layer));
+        }
+
+        return h;
+    }
+};
+
+struct DrawRuleEqual {
+    bool operator()(const SceneDrawRule* a,
+                    const SceneDrawRule* b) const
+    {
+        return *a == *b;
+    }
+};
+} // anonymous namespace
+
+void
+appendSceneDrawRules(const SceneDrawRules& rules,
+                     SceneDrawRules* to)
+{
+    if (rules.empty()) {
+        return;
+    }
+    if (to->empty()) {
+        *to = rules;
+
+        return;
+    }
+    // Reserved first, so the set's pointers into *to stay valid as it grows. Only the rules *to
+    // held before are looked up: a repeat within rules stays, as of two rows the later one wins.
+    to->reserve(to->size() + rules.size());
+    std::unordered_set<const SceneDrawRule*, DrawRuleHash, DrawRuleEqual> held;
+    held.reserve(to->size());
+    for (const SceneDrawRule& rule : *to) {
+        held.insert(&rule);
+    }
+    for (const SceneDrawRule& rule : rules) {
+        if (held.find(&rule) == held.end()) {
+            to->push_back(rule);
+        }
+    }
+}
 
 ScenePayload::ScenePayload()
     : _imp()
+    , _drawRules()
 {
 }
 
 ScenePayload::ScenePayload(const std::shared_ptr<const ScenePayloadImpl>& imp)
     : _imp(imp)
+    , _drawRules()
 {
 }
 
@@ -84,6 +144,26 @@ ScenePayload::isSameStack(const ScenePayload& other) const
     }
 
     return true;
+}
+
+const SceneDrawRules&
+ScenePayload::getDrawRules() const
+{
+    static const SceneDrawRules none;
+
+    return _drawRules ? *_drawRules : none;
+}
+
+ScenePayload
+ScenePayload::withDrawRules(const SceneDrawRules& rules) const
+{
+    ScenePayload payload(_imp);
+
+    if (!rules.empty()) {
+        payload._drawRules = std::make_shared<const SceneDrawRules>(rules);
+    }
+
+    return payload;
 }
 
 NATRON_NAMESPACE_EXIT

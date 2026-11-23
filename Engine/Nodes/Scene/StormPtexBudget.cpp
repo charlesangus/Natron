@@ -25,6 +25,8 @@
 
 #include "StormPtexBudget.h"
 
+#include "Engine/Nodes/Scene/StormTextureBudget.h"
+
 #include <cstddef>
 #include <memory>
 
@@ -39,22 +41,13 @@ PXR_NAMESPACE_USING_DIRECTIVE
 
 NATRON_NAMESPACE_ENTER
 
-namespace {
-// HdStPtexMipmapTextureLoader::generateBuffers (v26.08 hdSt/ptexMipmapTextureLoader.cpp) computes
-// the size of its page buffer in an int, which overflows at 2 GiB. The limit counts the texels of
-// the blocks, not of the pages they land on, and the packing can put a single block on a page of
-// nearly four times its area: one face sets the page size and every other face is one level
-// smaller. 512 MiB is the largest power of two whose worst case stays under the overflow; 1 GiB
-// still overflows on a plain texture of 512 x 512 faces with one larger face.
-const std::size_t kPtexMemoryRequest = 512 * 1024 * 1024;
-} // anonymous namespace
-
 void
 applyStormPtexBudget(Hgi* hgi)
 {
     if (!hgi) {
         return;
     }
+    StormTextureBudget::noteCurrentGLContext();
 
     // The engine keeps its delegate private, but Storm holds one registry per Hgi (v26.08
     // hdSt/renderDelegate.cpp, _HgiToResourceRegistryMap), so a delegate given the engine's Hgi
@@ -65,7 +58,7 @@ applyStormPtexBudget(Hgi* hgi)
 
     const HdStResourceRegistrySharedPtr registry = std::dynamic_pointer_cast<HdStResourceRegistry>(delegate.GetResourceRegistry());
     if (registry) {
-        registry->SetMemoryRequestForTextureType(HdStTextureType::Ptex, kPtexMemoryRequest);
+        registry->SetMemoryRequestForTextureType(HdStTextureType::Ptex, kStormPtexMemoryRequest);
     }
 }
 

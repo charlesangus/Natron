@@ -41,10 +41,10 @@ tools/ci/remote/build.sh --mode    # prints the resolved mode
 
 ## Two build kinds
 
-- UAT: a `fast` AppImage (-O1) for GUI checks.
+- UAT: a `fast` AppImage (-O1) for GUI checks, built with `--appimage`.
 - Debug: the `debug` preset, the one PR CI runs, with live asserts. It never
   packages an AppImage: llvmpipe raises SIGFPE under the `-DDEBUG` traps in
-  the container, so `debug` behaves as `--no-appimage`. Use it with
+  the container, so `debug` takes neither `--appimage` nor `--gui`. Use it with
   `--tests` to reproduce a PR CI failure.
 - Performance: a `release` AppImage (-O2), measured on the target host. Never take performance numbers from a GitHub runner.
 
@@ -54,7 +54,7 @@ included, not only `release`. Set `NATRON_STAGE_NO_STRIP=1` to opt out.
 ## Usage
 
 ```
-tools/ci/remote/build.sh <fast|release|debug> [--tests] [--record-goldens] [--shuffle-seeds <n,n,...>] [--no-appimage] [--no-remote-ccache] [--cmake-arg <arg>]... [--gui "<script> ..."]
+tools/ci/remote/build.sh <fast|release|debug> [--tests] [--record-goldens] [--shuffle-seeds <n,n,...>] [--appimage] [--no-remote-ccache] [--debug-symbols] [--cmake-arg <arg>]... [--gui "<script> ..."]
 tools/ci/remote/build.sh <fast|release> --from-run <run-id> --gui "<script> ..."
 ```
 
@@ -92,8 +92,13 @@ tools/ci/remote/build.sh <fast|release> --from-run <run-id> --gui "<script> ..."
   The ctest step's timeout rises from 30 to a fixed 120 minutes, about five
   seeds on the debug preset, so at most 5 seeds are accepted; `build.sh` and
   the workflow both reject a longer list.
-- `--no-appimage` skips packaging and downloading the AppImage. `debug`
-  implies it.
+- `--appimage` packages an AppImage and downloads it. A run packages only
+  with `--appimage`, `--gui` or `--debug-symbols` (both imply it), so a gate
+  that only runs ctest skips packaging. Pass it for UAT builds and for a run
+  meant as a later `--from-run` source. `--no-appimage` names the default and
+  is rejected beside any of the three. `debug` takes none of them.
+  Packaging runs in its own `package` job off the uploaded build tree, beside
+  the ctest legs, so ctest does not wait for it.
 - `--cmake-arg <arg>` (repeatable) adds an argument to the cmake configure,
   e.g. `--cmake-arg -DNATRON_GPU=OFF`. `tools/ci/local/build.sh` takes the same
   flag and then builds in its own `build/<preset>-<hash>` tree instead of the
@@ -114,7 +119,7 @@ run name, watches it, then downloads the artifacts (kept 7 days on GitHub):
 
 | Artifact | Contents |
 | --- | --- |
-| `natron-<preset>-<sha>` | the `.AppImage`, made executable |
+| `natron-<preset>-<sha>` | the `.AppImage`, made executable (`--appimage`, `--gui` or `--debug-symbols` only) |
 | `ctest-logs-<preset>-<sha>` | the ctest logs, `ctest-legacy.log` and `ctest-taskgraph.log` (only the chosen leg's with `--scheduler`), plus `ctest-<scheduler>-seed<seed>.log` per shuffle seed (`--tests` only), uploaded even when the run fails |
 
 Both land in `build/remote/<preset>/`, which is wiped at the start of each
@@ -125,6 +130,37 @@ with the run's failure status (or 1).
 
 A push to `main` also triggers the workflow as a `fast` build with no tests
 and no AppImage. It only keeps the ccache warm for branch runs.
+
+## Polling and the shared run watcher
+
+The core API quota is 5,000 calls an hour, shared by every gate on the
+account, so the script polls sparingly:
+
+- `NATRON_REMOTE_WATCH_INTERVAL_SECS` (default 60): seconds between status
+  polls of the run, one API call each. A line is printed when the run's status
+  changes (`queued`, `in_progress`, `completed`).
+- `NATRON_REMOTE_FIND_INTERVAL_SECS` (default 10): seconds between looks for
+  the dispatched run, and between artifact download retries.
+
+With many gates in flight, set `NATRON_REMOTE_RUN_STATE_DIR` to a directory
+shared by all of them (an absolute path, for example `$HOME/git/Natron/build/remote/run-state`; `build.sh` resolves a relative one against the directory it was started from, so every worktree would otherwise get its own watcher). The first
+`build.sh` that finds no watcher starts `watch-runs.sh <dir>` detached. It
+polls every recent `remote-build.yml` run with one `gh run list` call per
+watch interval, whatever the number of gates, and writes `<dir>/<run-id>`
+(`<status> <conclusion>`), `<dir>/titles.tsv` (`<run-id>`, head sha, run name)
+and `<dir>/heartbeat`. Each `build.sh` finds its run in `titles.tsv`, waits on
+its state file and registers in `<dir>/clients/<pid>` while it runs. A flock
+on `<dir>/watcher.lock` keeps one watcher per directory; its log is
+`<dir>/watcher.log`. The watcher exits after 10 minutes with no unfinished run
+and no live client (`NATRON_REMOTE_WATCHER_IDLE_SECS` changes this). If the
+heartbeat is older than three intervals, or the run has left the watcher's
+list, `build.sh` polls the run itself and tries to restart the watcher.
+The heartbeat is written only after a successful poll (the `gh` call has a
+timeout of twice the interval) and removed when the watcher exits; state files
+of runs that left the list and stale temp files are pruned each poll. Clients
+and the watcher must share a host and PID namespace, and one state dir serves
+one repo. While waiting, `build.sh` prints "still <status>" every 10 minutes.
+Without the variable, each `build.sh` polls its own run.
 
 ## Shared remote ccache
 
@@ -157,11 +193,17 @@ Runs where the secret is empty, such as fork PRs, and runs where the server is
 down or slow, build with the local ccache only; the build never fails because
 of the cache.
 
+A branch whose history predates remote storage support never writes to it, so
+builds of objects only such branches have compiled find nothing remotely (0
+remote hits) until those changes reach a branch that has remote storage.
+Merging main into the branch fixes it. Presets differ too: most gates build
+`fast`, so a first `release` build of a change mostly misses.
+
 ## GUI checks in remote mode
 
 `--gui "<script> ..."` runs `Tests/gui/` scripts on GitHub Actions, one job
-per script in parallel, against the run's AppImage (so not with `debug` or
-`--no-appimage`):
+per script in parallel, against the run's AppImage. It implies `--appimage`,
+so not with `debug`:
 
 ```
 tools/ci/remote/build.sh fast --gui "Tests/gui/m55_node_graph.py Tests/gui/m45_tab_menu.py"
@@ -176,7 +218,9 @@ job. Git LFS fixtures are fetched only when the script names them (by file
 name), so most scripts download none.
 
 `--from-run <run-id>` skips the build and uses the `natron-<preset>-<sha>`
-AppImage of an earlier `remote-build` run (artifacts last 7 days). The GUI
+AppImage of an earlier `remote-build` run (artifacts last 7 days). Only a run
+dispatched with `--appimage` or `--gui` has one; `build.sh` checks before
+dispatching and fails with the AppImages the run does have. The GUI
 jobs check out that run's commit, so the scripts and fixtures, the
 `run-gui-test.sh` and the dev image are the ones of the branch under test,
 which need not carry this workflow itself: dispatch from a branch that does.

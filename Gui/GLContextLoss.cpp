@@ -43,6 +43,7 @@ NATRON_NAMESPACE_ANONYMOUS_ENTER
 
 struct Watch {
     std::function<void()> release;
+    QOpenGLContext* context = nullptr;
     QMetaObject::Connection contextConnection;
     QMetaObject::Connection destroyedConnection;
 };
@@ -103,10 +104,12 @@ forget(QOpenGLWidget* widget)
     map.erase(found);
 }
 
-// Takes the widget's release out of the map before running it, so a release that ends up in
-// watch() or releaseNow() again finds a consistent map.
+// Qt's own slots on aboutToBeDestroyed, a vertex array object's among them, run after this one
+// and make the dying context current on a new offscreen surface (a pbuffer under GLX, which costs the
+// main thread hundreds of milliseconds) unless it is current already. So the context is left current:
+// QOpenGLContext::destroy() ends with doneCurrent() for the context it destroys.
 void
-releaseWatched(QOpenGLWidget* widget)
+onContextDying(QOpenGLWidget* widget)
 {
     std::unordered_map<QOpenGLWidget*, Watch>& map = watches();
     std::unordered_map<QOpenGLWidget*, Watch>::iterator found = map.find(widget);
@@ -115,19 +118,20 @@ releaseWatched(QOpenGLWidget* widget)
         return;
     }
     std::function<void()> release = std::move(found->second.release);
+    QOpenGLContext* context = found->second.context;
     forget(widget);
 
-    QOpenGLContext* context = widget->context();
-    if (!context || !release) {
+    if (!context || (widget->context() != context)) {
         return;
     }
-    CurrentContextRestore restore;
     // QOpenGLWidget keeps the dying context usable by makeCurrent() while it emits aboutToBeDestroyed.
     widget->makeCurrent();
     if (QOpenGLContext::currentContext() != context) {
         return;
     }
-    release();
+    if (release) {
+        release();
+    }
 }
 
 NATRON_NAMESPACE_ANONYMOUS_EXIT
@@ -138,15 +142,26 @@ watch(QOpenGLWidget* widget,
       std::function<void()> release)
 {
     assert(qApp && qApp->thread() == QThread::currentThread());
-    forget(widget);
     QOpenGLContext* context = widget->context();
     if (!context) {
+        forget(widget);
+
         return;
     }
-    Watch& entry = watches()[widget];
+    std::unordered_map<QOpenGLWidget*, Watch>& map = watches();
+    std::unordered_map<QOpenGLWidget*, Watch>::iterator found = map.find(widget);
+    if ((found != map.end()) && (found->second.context == context)) {
+        // Connected again, the handler would run after slots connected since, Qt's among them.
+        found->second.release = std::move(release);
+
+        return;
+    }
+    forget(widget);
+    Watch& entry = map[widget];
     entry.release = std::move(release);
+    entry.context = context;
     // The handler has to run before the context goes, so the connection must be direct.
-    entry.contextConnection = QObject::connect(context, &QOpenGLContext::aboutToBeDestroyed, widget, [widget]() { releaseWatched(widget); }, Qt::DirectConnection);
+    entry.contextConnection = QObject::connect(context, &QOpenGLContext::aboutToBeDestroyed, widget, [widget]() { onContextDying(widget); }, Qt::DirectConnection);
     // A widget whose destructor forgot releaseNow() must not leave a dangling key behind for the
     // next widget allocated at the same address.
     entry.destroyedConnection = QObject::connect(widget, &QObject::destroyed, [widget]() {
@@ -158,7 +173,26 @@ void
 releaseNow(QOpenGLWidget* widget)
 {
     assert(qApp && qApp->thread() == QThread::currentThread());
-    releaseWatched(widget);
+    std::unordered_map<QOpenGLWidget*, Watch>& map = watches();
+    std::unordered_map<QOpenGLWidget*, Watch>::iterator found = map.find(widget);
+
+    if (found == map.end()) {
+        return;
+    }
+    // The watch stays, without a release, so that the context QOpenGLWidget's destructor deletes
+    // next is still made current while it dies.
+    std::function<void()> release = std::move(found->second.release);
+    found->second.release = nullptr;
+    QOpenGLContext* context = widget->context();
+    if (!context || !release) {
+        return;
+    }
+    CurrentContextRestore restore;
+    widget->makeCurrent();
+    if (QOpenGLContext::currentContext() != context) {
+        return;
+    }
+    release();
 }
 
 bool

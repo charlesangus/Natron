@@ -26,12 +26,12 @@ Out of scope: caching staged libs per image (not needed once the walk is fixed);
 
 ## Phase 549.2: Fix the scripts
 
-- [ ] M549.P2.T2 — Fork-free, linear closure walk
+- [x] M549.P2.T2 — Fork-free, linear closure walk
   - files: `tools/release/stage-bundle.sh`
   - approach: parse `ldd` output with `[[ =~ ]]`, `${dep##*/}`, one extglob for the excludelist; an index-based queue; check SEEN before pushing. `ldd` a breadth-first frontier in parallel (`xargs -P`) but apply copy decisions serially in the same order, so "first source for a basename wins" is unchanged.
   - verify: on the same build tree the manifest matches the T1 baseline byte for byte; the walk takes under 2 min.
   - size: M
-- [ ] M549.P2.T3 — One relocatability check, run in parallel
+- [x] M549.P2.T3 — One relocatability check, run in parallel
   - files: `tools/release/check-relocatable.sh`, `tools/release/make-appimage.sh`, `tools/release/stage-bundle.sh`
   - approach: one `objdump -p` per binary, binaries checked in parallel; stage-bundle leaves a stamp with the manifest hash and `make-appimage.sh` skips the re-check when the stamp matches the staged tree. The checker keeps its own resolution code (independent of the stager).
   - verify: a scratch stage with a broken RUNPATH still fails; the check takes under 1 min; Create AppImage under 1 min.
@@ -39,12 +39,12 @@ Out of scope: caching staged libs per image (not needed once the walk is fixed);
 
 ## Phase 549.3: Package only when needed
 
-- [ ] M549.P3.T4 — Gates package on demand 
+- [x] M549.P3.T4 — Gates package on demand 
   - files: `tools/ci/remote/build.sh`, `.github/workflows/remote-build.yml`, `tools/ci/local/README.md`
   - approach: gates default to no AppImage; `--gui`, a new `--appimage` flag (UAT) or `--package` for a run meant as a `--from-run` source turn it on; `--from-run` errors clearly when its source has no AppImage.
   - verify: dispatches with and without `--gui` show the expected job lists.
   - size: M
-- [ ] M549.P3.T5 — Package in parallel with ctest
+- [x] M549.P3.T5 — Package in parallel with ctest
   - files: `.github/workflows/remote-build.yml`
   - approach: move stage, AppImage and upload into a `package` job fed by the build-tree artifact; ctest no longer waits for packaging; the gui job needs `package`.
   - verify: ctest starts before packaging ends; the manifest is identical to T1's baseline.
@@ -63,3 +63,4 @@ Out of scope: caching staged libs per image (not needed once the walk is fixed);
 - 2026-11-22 — T1 in 18b55e6c5 (artifact stage-manifest-<preset>-<sha>); baseline `fast` run queued; Phase 2 being implemented.
 - 2026-11-22 — **Gates package on demand (user):** jobs that don't need an AppImage stop building one; `--gui`, UAT builds and `--from-run` sources still package. PR CI and release.yml unchanged.
 - 2026-11-22 — Phase 2 in 5c22435ae (local: seed walk 1011 s → 189–283 s with identical manifest and copy order; checker 7m27 → 10 s on the F4 bundle, self-test cases unchanged; stamp file `<stage>.relocatable` beside the stage). Phase 3 T4–T5 in 1b0d4a2d3 (`--appimage` flag; `--debug-symbols` implies it; `--from-run` checks the source has an AppImage; `package` job beside ctest). Baseline run 45083761231 on 18b55e6c5; verification gate `fast --tests --gui m254_progressive_viewer.py` queued. Tasks are checked off once the manifest matches.
+- 2026-11-23 — Gate 45084366274 green on 1b0d4a2d3: staging 3323 s → 82 s (walk 2907 s → 44 s, check 373 s → 10 s, make-appimage skips the re-check by stamp); the package job ran beside ctest. Manifest vs baseline 45083761231: identical except bin/Natron.bin and bin/NatronRenderer.bin, which embed the commit (the runs built 18b55e6c5 and 1b0d4a2d3).

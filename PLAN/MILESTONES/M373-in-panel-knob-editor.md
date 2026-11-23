@@ -63,7 +63,7 @@ Code facts, read at `origin/main` on 2026-11-08; re-check line numbers before st
 
 ## Phase 373.1: Mockups
 
-- [ ] M373.P1.T1 — Mockups of the edit mode for approval
+- [x] M373.P1.T1 — Mockups of the edit mode for approval
   - files: new build/m373-mockup/ (not committed), Gui/DockablePanel.cpp and Gui/KnobGuiContainerHelper.cpp (read)
   - approach: Produce PNG mockups at 1920x1080 scale 1 of a Blur panel: edit mode off; edit mode on with the pencil, palette strip, a selected user knob and the property section for a float, a choice and a button (script editor); a drag-in drop indicator; the copy/paste context menu. Send each PNG to the user separately and park the milestone as `response` until approved; record the answer and any changes in `## Decisions`.
   - verify: The user's approval is recorded in this file's `## Decisions`.
@@ -125,3 +125,4 @@ Code facts, read at `origin/main` on 2026-11-08; re-check line numbers before st
 - 2026-11-08 — Edit mode rearranges user pages only; built-in knobs stay read-only and in place (user, grill).
 - 2026-11-08 — Palette and property section live inside the panel, with a pencil toggle in the header (user, grill).
 - 2026-11-08 — Mockups are approved before the editor is built (user, grill).
+- 2026-11-23 — **Mockups approved (user):** the eight edit-mode mockups (pencil toggle, palette strip, property section for float/choice/button, inline duplicate-name error, drag-in drop line, knob context menu, "Edit parameters" entry) "look reasonable, proceed".

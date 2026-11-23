@@ -30,11 +30,11 @@ STARTUP_TIMEOUT_S = 60.0
 SETTLE_MS = 700
 CANCEL_TIMEOUT_S = float(os.environ.get("NATRON_TEST_CANCEL_TIMEOUT_S", "10"))
 MAX_GAP_MS = float(os.environ.get("NATRON_TEST_MAX_GAP_MS", "100"))
-LONG_COOK_MS = 1500
+LONG_COOK_MS = 3000
 PIECE_SPACING = 3.0
 CUBE_FACES = 6
 CUBE_POINTS = 8
-LONG_ITERATIONS = 100000
+LONG_ITERATIONS = 5000000
 SHORT_ITERATIONS = 3
 # GeoPrimitive's Type, GeoForEachBegin's Method, GeoForEachEnd's choices.
 SHAPE_CUBE = 2
@@ -101,6 +101,13 @@ try:
         return (v is not None and bool(v.property("natronSceneSynced")) and bool(v.property("natronSceneShown"))
                 and not v.property("natronSceneError"))
 
+    def synced_at_ms():
+        v = view()
+        return (v.property("natronSceneSyncedAtMs") or 0) if v is not None else 0
+
+    def now_ms():
+        return int(time.time() * 1000)
+
     def read_stage():
         """Flattens the GeoToUSD to a fresh .usda and opens it with pxr. Blocks the main thread."""
         counter[0] += 1
@@ -164,13 +171,17 @@ try:
 
         # cancel
         heartbeat.start()
+        long_edit_ms = now_ms()
         param(end, "iterations").setValue(LONG_ITERATIONS)
         param(end, "iterationMethod").setValue(ITERATE_COUNT)
         yield ("sleep", LONG_COOK_MS)
-        check(not scene_drawn(), "the long loop is still cooking after %d ms" % LONG_COOK_MS)
+        # scene_drawn() stays true on the previous scene while a new one cooks, so it cannot show a cook running.
+        check(synced_at_ms() < long_edit_ms,
+              "the long loop is still cooking after %d ms (no scene synced since the edit)" % LONG_COOK_MS)
         started = time.monotonic()
+        short_edit_ms = now_ms()
         param(end, "iterations").setValue(SHORT_ITERATIONS)
-        ok = yield ("until", scene_drawn, CANCEL_TIMEOUT_S)
+        ok = yield ("until", lambda: synced_at_ms() >= short_edit_ms and scene_drawn(), CANCEL_TIMEOUT_S)
         took = time.monotonic() - started
         heartbeat.stop()
         report("NOTE short loop shown %.2f s after the edit; longest heartbeat gap %.1f ms over %d ticks"
@@ -181,6 +192,7 @@ try:
         yield ("sleep", SETTLE_MS)
         shot("m402_geo_foreach_cancelled.png")
 
+        report("NOTE iterations reads %d before the probe" % param(end, "iterations").getValue())
         stage = read_stage()
         require(stage is not None, "the GeoToUSD flattens to a stage after the cancel")
         faces, points, _, _ = meshes(stage)

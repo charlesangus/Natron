@@ -36,12 +36,12 @@ Make a USD `Volume` with `OpenVDBAsset` fields render correctly in Storm, Cycles
   - approach: Set `-DWITH_CYCLES_NANOVDB=ON`. `src/scene/volume.cpp`'s `create_volume_mesh` only builds a volume mesh under `WITH_OPENVDB && WITH_NANOVDB`, so with it off a volume can never render. Find out why M249 - Bundle Cycles Delegate turned it off (commit 680e291ca) and resolve that reason. If the image lacks `nanovdb/NanoVDB.h`, add the headers from the OpenVDB tag matching `libopenvdb.so.13.0`.
   - verify: The script's configure output reports NanoVDB enabled, and `nm -C` on the built `hdCycles.so` shows `VolumeMeshBuilder` symbols or `openvdb_to_nanovdb`.
   - size: M
-- [ ] M345.P1.T2 — Initialise OpenVDB in the Cycles delegate
+- [x] M345.P1.T2 — Initialise OpenVDB in the Cycles delegate
   - files: charlesangus/cycles `natron/` branch: `src/hydra/field.cpp`
   - approach: Call `openvdb::initialize()` before the first file read in `HdCyclesVolumeLoader`. Nothing in Cycles calls it, because Blender does so itself; without it `readGrid` throws and the loader logs "Error loading OpenVDB file: Unknown error". A preload shim calling it cleared the error in the audit. Keep it a single commit with its reason.
   - verify: Cycles-side build of the fork succeeds and the commit is pushed to the fork with its reason in the message.
   - size: M
-- [ ] M345.P1.T3 — Default volume shader for unbound Cycles volumes
+- [x] M345.P1.T3 — Default volume shader for unbound Cycles volumes
   - files: charlesangus/cycles `natron/` branch: `src/hydra/geometry.inl`, `src/hydra/volume.cpp`, `src/hydra/volume.h`
   - approach: `HdCyclesGeometry::Sync` falls back to `scene->default_surface`, which has no volume, so `create_volume_mesh` finds no volume shader and returns. For `HdCyclesVolume`, use `scene->default_volume` when no material is bound or the material has no volume output (user, 2026-11-05). Don't change other geometry types' fallback.
   - verify: Fork builds; a usda with an unbound volume renders a non-empty silhouette through `hdCycles` when run against the fork's build.
@@ -56,17 +56,17 @@ Make a USD `Volume` with `OpenVDBAsset` fields render correctly in Storm, Cycles
 
 All patches go in the fork from M325 - MoonRay Fork, not as `sed` lines in `build-moonray.sh`.
 
-- [ ] M345.P2.T1 — Advance MoonRay volumes over time
+- [x] M345.P2.T1 — Advance MoonRay volumes over time
   - files: fork `moonray/hydra/hdMoonray/lib/hydramoonray/Volume.cc`, `Volume.h`
   - approach: In the audit, a `filePath` with time samples at frames 1 and 2 rendered identically in MoonRay and moved correctly in Storm. `OpenVdbAsset::Sync` reads the path only on `DirtyParams`, and `Volume::syncAttributes` runs only when the rprim is dirty. Find where the change is lost and make a field path change update the geometry's `model`.
   - verify: A two-frame usda renders different silhouettes on frames 1 and 2 through MoonRay.
   - size: M
-- [ ] M345.P2.T2 — Map the emission field in hdMoonray
+- [x] M345.P2.T2 — Map the emission field in hdMoonray
   - files: fork `moonray/hydra/hdMoonray/lib/hydramoonray/Volume.cc`
   - approach: `syncAttributes` maps only `density` and `velocity`, though `VdbGeometry` also has `emission_grid`. Add `emission`. Other field names stay unmapped because the geometry class has no attribute for them.
   - verify: A file with an emission grid bound as `field:emission` changes the MoonRay render compared with the same scene unbound.
   - size: M
-- [ ] M345.P2.T3 — Fix hdMoonray's volume coding errors
+- [x] M345.P2.T3 — Fix hdMoonray's volume coding errors
   - files: fork `moonray/hydra/hdMoonray/lib/hydramoonray/Volume.cc`
   - approach: A volume render logs twice "Attempted to get value of type 'TfToken' from empty VtValue". Grid names are honoured (a wrong name draws nothing), so trace which `Get` fails, likely under scene-index emulation, and guard or correct it. `MarkAllRprimsDirty` errors are separate and also appear without volumes; leave them unless the trace shows otherwise.
   - verify: A MoonRay volume render's log has no `_FailGet` line.
@@ -107,3 +107,4 @@ All patches go in the fork from M325 - MoonRay Fork, not as `sed` lines in `buil
 - 2026-11-13 — Deferred `build-moonray.sh` cleanups (inbox, from M325 - MoonRay Fork's review, PR #272): whichever of M345 - VDB Rendering Fixes or M354 - MoonRay Native Shaders next edits `tools/ci/local/build-moonray.sh` also drops the dead `-DBUILD_MATERIALX_SHADERS=OFF` (the fork removed the option), fixes the header's stale reason for not fetching materialx_shaders (~:12), rewords the SOURCE text so the six unpatched upstream submodules don't read as Natron forks (~:196), and deletes or justifies the `check_origin` comment (~:58). Any edit to that script forces a dev-image rebuild, which is why these wait.
 - 2026-11-15 — **Deferred `build-moonray.sh` cleanups revised (cat-plan, F26 - MaterialX Rendering):** the flag item is withdrawn. M441 - MoonRay MaterialX Shaders Build restores the `materialx_shaders` submodule and turns `-DBUILD_MATERIALX_SHADERS` on, so never drop the flag. The other three cleanups stay with whichever of M345 - VDB Rendering Fixes, M354 - MoonRay Native Shaders or M441 edits the script first.
 - 2026-11-23 — Gate 45082110286: VolumeRenderStorm failed because volume warnings were computed only on the path-tracer branch (fixed in c511386c5); Cycles draws no volume and MoonRay doesn't blur because the fork tasks (P1.T2–T4, P2) aren't done yet — the tests assert the milestone's spec and stay. Fork patches being written on branch natron/m345-volumes (Cycles, openmoonray/hdMoonray); the PM then builds, pins and rebuilds the image.
+- 2026-11-23 — Fork patches pushed on natron/m345-volumes: Cycles 08b41ec74 (openvdb::initialize in HdCyclesVolumeLoader), 2201f6afe (default_volume when unbound or no volume output; a material edit that adds a volume output takes effect when the binding is next dirtied); hdMoonray ffd0e3f (fields dirty the volumes that bind them — the time-sampled path reached the field but nothing dirtied the volume), c70a34e (field:emission → emission_grid), e082566 (typed reads instead of checked Get; fieldIndex read as a field attribute; the empty-VtValue cause is not proven); openmoonray ba42be5. Pinned in ae39d0ca3 (Cycles archive SHA-256 fb71dbc0…). P1.T4 and the render checks wait for the gate's image rebuild.

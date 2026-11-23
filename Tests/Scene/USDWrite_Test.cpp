@@ -25,6 +25,8 @@
 
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
+#include <pxr/usd/sdf/variantSetSpec.h>
+#include <pxr/usd/sdf/variantSpec.h>
 #include <pxr/usd/usd/primRange.h>
 #include <pxr/usd/usdGeom/basisCurves.h>
 #include <pxr/usd/usdSkel/animation.h>
@@ -33,6 +35,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <list>
 #include <map>
 #include <string>
 #include <thread>
@@ -55,6 +58,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
 #include "Engine/KnobFile.h"
+#include "Engine/KnobLayerCustomData.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Generator/Constant.h"
@@ -68,8 +72,11 @@
 #include "Engine/Nodes/Scene/USDAssignMaterial.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
 #include "Engine/Nodes/Scene/USDCard.h"
+#include "Engine/Nodes/Scene/USDConfigureLayer.h"
 #include "Engine/Nodes/Scene/USDEditTransform.h"
+#include "Engine/Nodes/Scene/USDLayerBegin.h"
 #include "Engine/Nodes/Scene/USDLayerBreak.h"
+#include "Engine/Nodes/Scene/USDLayerEnd.h"
 #include "Engine/Nodes/Scene/USDLight.h"
 #include "Engine/Nodes/Scene/USDMerge.h"
 #include "Engine/Nodes/Scene/USDPreviewSurface.h"
@@ -2684,4 +2691,532 @@ TEST_F(USDWriteProjectionTest, AProjectionAboveABreakIsNotBaked)
             }
         });
     }
+}
+
+namespace {
+// The prims stage composes, with their types, attribute values at times and relationship targets,
+// classes left out: what a written file must compose to for the graph's stage. Asset values are
+// left out too, as a written file names its assets relative to itself.
+std::vector<std::string>
+describeComposed(const PXR_NS::UsdStageRefPtr& stage,
+                 const std::vector<double>& times)
+{
+    std::vector<std::string> lines;
+    EXPECT_TRUE(static_cast<bool>(stage));
+    if (!stage) {
+        return lines;
+    }
+    for (const PXR_NS::UsdPrim& prim : stage->Traverse()) {
+        lines.push_back(prim.GetPath().GetString() + " " + prim.GetTypeName().GetString());
+        for (const PXR_NS::UsdAttribute& attribute : prim.GetAttributes()) {
+            const PXR_NS::SdfValueTypeName type = attribute.GetTypeName();
+            if ((type == PXR_NS::SdfValueTypeNames->Asset) || (type == PXR_NS::SdfValueTypeNames->AssetArray)) {
+                continue;
+            }
+            for (double time : times) {
+                PXR_NS::VtValue value;
+                if (attribute.Get(&value, PXR_NS::UsdTimeCode(time))) {
+                    lines.push_back(attribute.GetPath().GetString() + "@" + PXR_NS::TfStringify(time) + "=" + PXR_NS::TfStringify(value));
+                }
+            }
+        }
+        for (const PXR_NS::UsdRelationship& relationship : prim.GetRelationships()) {
+            PXR_NS::SdfPathVector targets;
+            relationship.GetTargets(&targets);
+            for (const PXR_NS::SdfPath& target : targets) {
+                lines.push_back(relationship.GetPath().GetString() + "->" + target.GetString());
+            }
+        }
+    }
+
+    return lines;
+}
+} // anonymous namespace
+
+class USDWriteSaveRegionTest
+    : public USDWriteLayerBreakTest {
+protected:
+    NodePtr after(const char* pluginID,
+                  const NodePtr& input)
+    {
+        NodePtr node = createNode(QString::fromUtf8(pluginID));
+        EXPECT_TRUE(bool(node));
+        if (node && input) {
+            EXPECT_TRUE(node->connectInput(input, 0));
+        }
+
+        return node;
+    }
+
+    // Sets the float userProperties:<name> of the fixture's /World/Asset/Geo to value.
+    NodePtr edit(const NodePtr& input,
+                 const char* name,
+                 double value)
+    {
+        NodePtr node = after(PLUGINID_NATRON_USDSETATTRIBUTE, input);
+        if (!node) {
+            return node;
+        }
+        setString(node, kUSDSetAttributeParamPrimPattern, "/World/Asset/Geo");
+        setString(node, kUSDSetAttributeParamAttributeName, (std::string("userProperties:") + name).c_str());
+        KnobChoice* valueType = getKnob<KnobChoice>(node, kUSDSetAttributeParamValueType);
+        KnobDouble* knob = getKnob<KnobDouble>(node, kUSDSetAttributeParamValue);
+        EXPECT_TRUE(valueType && knob);
+        if (valueType && knob) {
+            valueType->setValueFromID("float", 0);
+            knob->setValue(value);
+        }
+
+        return node;
+    }
+
+    NodePtr configure(const NodePtr& input,
+                      const char* appliesTo,
+                      const char* savePath)
+    {
+        NodePtr node = after(PLUGINID_NATRON_USDCONFIGURELAYER, input);
+        if (!node) {
+            return node;
+        }
+        KnobChoice* mode = getKnob<KnobChoice>(node, kUSDConfigureLayerParamAppliesTo);
+        EXPECT_TRUE(mode != NULL);
+        if (mode) {
+            mode->setValueFromID(appliesTo, 0);
+        }
+        setString(node, kUSDConfigureLayerParamSavePath, savePath);
+
+        return node;
+    }
+
+    // Turns on the Authored toggle of the ConfigureLayer field name.
+    static void author(const NodePtr& node,
+                       const char* name)
+    {
+        KnobBool* authored = getKnob<KnobBool>(node, (std::string(name) + "Authored").c_str());
+        EXPECT_TRUE(authored != NULL) << name;
+        if (authored) {
+            authored->setValue(true);
+        }
+    }
+
+    // Writes input to path over frames 1 and 2, expecting status.
+    NodePtr write(const NodePtr& input,
+                  const QString& path,
+                  USDWrite::ExportModeEnum mode,
+                  StatusEnum status = eStatusOK)
+    {
+        NodePtr writer = createWriter(input, path, mode, 1, 2);
+        EXPECT_TRUE(writer && getWriter(writer));
+        if (!writer || !getWriter(writer)) {
+            return NodePtr();
+        }
+        EXPECT_EQ(status, writeOffMainThread(writer, 1, 2)) << message(writer).toStdString();
+
+        return writer;
+    }
+
+    void setSaveCollisions(const NodePtr& writer,
+                           USDWrite::SaveCollisionsEnum collisions)
+    {
+        KnobChoice* knob = getKnob<KnobChoice>(writer, kUSDWriteParamSaveCollisions);
+        EXPECT_TRUE(knob != NULL);
+        if (knob) {
+            knob->setValue((int)collisions);
+        }
+    }
+
+    static QString message(const NodePtr& node)
+    {
+        QString text;
+        int type = 0;
+        if (node->hasPersistentMessage()) {
+            node->getPersistentMessage(&text, &type, false);
+        }
+
+        return text;
+    }
+
+    static bool hasEdit(const PXR_NS::SdfLayerRefPtr& layer,
+                        const char* name)
+    {
+        return layer && static_cast<bool>(layer->GetAttributeAtPath(PXR_NS::SdfPath(std::string("/World/Asset/Geo.userProperties:") + name)));
+    }
+
+    static std::vector<std::string> describeGraph(const NodePtr& node)
+    {
+        return describeComposed(composeOutput(node), { 1., 2. });
+    }
+
+    static std::vector<std::string> describeFile(const QString& path)
+    {
+        return describeComposed(PXR_NS::UsdStage::Open(path.toStdString()), { 1., 2. });
+    }
+};
+
+TEST_F(USDWriteSaveRegionTest, SaveRegionsWriteNestedLayerFiles)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    NodePtr reader = read(kLayerStackScene);
+    NodePtr a = edit(reader, "a", 1.);
+    NodePtr b = edit(a, "b", 2.);
+    NodePtr lighting = configure(b, "preceding", "lighting.usda");
+    NodePtr begin = after(PLUGINID_NATRON_USDLAYERBEGIN, lighting);
+    NodePtr key = configure(begin, "following", "key/lights_key.usda");
+    NodePtr c = edit(key, "c", 3.);
+    NodePtr end = after(PLUGINID_NATRON_USDLAYEREND, c);
+    NodePtr d = edit(end, "d", 4.);
+    ASSERT_TRUE(reader && a && b && lighting && begin && key && c && end && d);
+
+    const QString outDir = tmp.path() + QString::fromUtf8("/out");
+    const QString path = outDir + QString::fromUtf8("/shot.usda");
+    ASSERT_TRUE(bool(write(d, path, USDWrite::eExportModeLayered)));
+    EXPECT_EQ(QStringList() << QString::fromUtf8("lighting.usda") << QString::fromUtf8("shot.usda"), fileNames(outDir));
+    EXPECT_EQ(QStringList() << QString::fromUtf8("lights_key.usda"), fileNames(outDir + QString::fromUtf8("/key")));
+
+    const QString lightingPath = outDir + QString::fromUtf8("/lighting.usda");
+    const QString keyPath = outDir + QString::fromUtf8("/key/lights_key.usda");
+    PXR_NS::SdfLayerRefPtr shot = PXR_NS::SdfLayer::FindOrOpen(path.toStdString());
+    PXR_NS::SdfLayerRefPtr lightingLayer = PXR_NS::SdfLayer::FindOrOpen(lightingPath.toStdString());
+    PXR_NS::SdfLayerRefPtr keyLayer = PXR_NS::SdfLayer::FindOrOpen(keyPath.toStdString());
+    ASSERT_TRUE(shot && lightingLayer && keyLayer);
+
+    // Strongest first: the key region is stacked after the lighting one.
+    EXPECT_EQ(QStringList() << keyPath << lightingPath, absoluteSubLayers(shot));
+    EXPECT_TRUE(hasEdit(shot, "d"));
+    EXPECT_FALSE(hasEdit(shot, "a") || hasEdit(shot, "b") || hasEdit(shot, "c"));
+
+    EXPECT_EQ(QStringList() << cleanAbsolute(QString::fromUtf8(kLayerStackScene)), absoluteSubLayers(lightingLayer));
+    EXPECT_TRUE(hasEdit(lightingLayer, "a") && hasEdit(lightingLayer, "b"));
+    EXPECT_FALSE(hasEdit(lightingLayer, "c") || hasEdit(lightingLayer, "d"));
+
+    EXPECT_TRUE(keyLayer->GetSubLayerPaths().empty());
+    EXPECT_TRUE(hasEdit(keyLayer, "c"));
+    EXPECT_FALSE(hasEdit(keyLayer, "a") || hasEdit(keyLayer, "b") || hasEdit(keyLayer, "d"));
+
+    EXPECT_EQ(describeGraph(d), describeFile(path));
+}
+
+TEST_F(USDWriteSaveRegionTest, SaveRegionMetadataIsAuthored)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    NodePtr reader = read(kLayerStackScene);
+    NodePtr a = edit(reader, "a", 1.);
+    NodePtr region = configure(a, "preceding", "region.usda");
+    NodePtr b = edit(region, "b", 2.);
+    NodePtr notes = configure(b, "preceding", "");
+    ASSERT_TRUE(reader && a && region && b && notes);
+
+    KnobChoice* upAxis = getKnob<KnobChoice>(region, kUSDConfigureLayerParamUpAxis);
+    KnobLayerCustomData* customData = getKnob<KnobLayerCustomData>(region, kUSDConfigureLayerParamCustomData);
+    ASSERT_TRUE(upAxis && customData);
+    upAxis->setValueFromID("Z", 0);
+    author(region, kUSDConfigureLayerParamUpAxis);
+    setString(region, kUSDConfigureLayerParamComment, "lighting pass");
+    author(region, kUSDConfigureLayerParamComment);
+    std::list<std::vector<std::string>> rows;
+    rows.push_back({ "department", "String", "lighting" });
+    customData->setTable(rows);
+    setString(region, kUSDConfigureLayerParamDefaultPrim, "World");
+    setString(notes, kUSDConfigureLayerParamComment, "shot notes");
+    author(notes, kUSDConfigureLayerParamComment);
+
+    const QString path = tmp.path() + QString::fromUtf8("/shot.usda");
+    ASSERT_TRUE(bool(write(notes, path, USDWrite::eExportModeLayered)));
+
+    PXR_NS::SdfLayerRefPtr layer = PXR_NS::SdfLayer::FindOrOpen((tmp.path() + QString::fromUtf8("/region.usda")).toStdString());
+    ASSERT_TRUE(static_cast<bool>(layer));
+    PXR_NS::VtValue axis;
+    ASSERT_TRUE(layer->HasField(PXR_NS::SdfPath::AbsoluteRootPath(), PXR_NS::UsdGeomTokens->upAxis, &axis));
+    EXPECT_EQ(PXR_NS::VtValue(PXR_NS::UsdGeomTokens->z), axis);
+    EXPECT_EQ(std::string("lighting pass"), layer->GetComment());
+    const PXR_NS::VtDictionary custom = layer->GetCustomLayerData();
+    const PXR_NS::VtDictionary::const_iterator department = custom.find("department");
+    ASSERT_TRUE(department != custom.end());
+    EXPECT_EQ(PXR_NS::VtValue(std::string("lighting")), department->second);
+    // Not toggled, though set.
+    EXPECT_FALSE(layer->HasDefaultPrim());
+    EXPECT_FALSE(layer->HasStartTimeCode());
+
+    PXR_NS::SdfLayerRefPtr root = PXR_NS::SdfLayer::FindOrOpen(path.toStdString());
+    ASSERT_TRUE(static_cast<bool>(root));
+    EXPECT_EQ(std::string("shot notes"), root->GetComment());
+    EXPECT_TRUE(hasEdit(root, "b"));
+    EXPECT_FALSE(hasEdit(root, "a"));
+}
+
+// Two branches each saving their layers to lights.usda.
+class USDWriteSaveCollisionTest
+    : public USDWriteSaveRegionTest {
+protected:
+    NodePtr createCollidingGraph(NodePtr* first,
+                                 NodePtr* second)
+    {
+        NodePtr reader = read(kLayerStackScene);
+        NodePtr a = edit(reader, "a", 1.);
+        *first = configure(a, "preceding", "lights.usda");
+        NodePtr key = light("/Key");
+        *second = configure(key, "preceding", "lights.usda");
+        if (!*first || !*second) {
+            return NodePtr();
+        }
+
+        return merge({ *first, *second });
+    }
+};
+
+TEST_F(USDWriteSaveCollisionTest, SharedSavePathsFailUnderError)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    NodePtr first;
+    NodePtr second;
+    NodePtr graph = createCollidingGraph(&first, &second);
+    ASSERT_TRUE(bool(graph));
+
+    const QString outDir = tmp.path() + QString::fromUtf8("/out");
+    NodePtr writer = write(graph, outDir + QString::fromUtf8("/shot.usda"), USDWrite::eExportModeLayered, eStatusFailed);
+    ASSERT_TRUE(bool(writer));
+    const QString text = message(writer);
+    EXPECT_TRUE(text.contains(QString::fromStdString(first->getFullyQualifiedName()))) << text.toStdString();
+    EXPECT_TRUE(text.contains(QString::fromStdString(second->getFullyQualifiedName()))) << text.toStdString();
+    EXPECT_TRUE(fileNames(outDir).isEmpty());
+}
+
+TEST_F(USDWriteSaveCollisionTest, SharedSavePathsMergeIntoOneFile)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    NodePtr first;
+    NodePtr second;
+    NodePtr graph = createCollidingGraph(&first, &second);
+    ASSERT_TRUE(bool(graph));
+
+    const QString outDir = tmp.path() + QString::fromUtf8("/out");
+    const QString path = outDir + QString::fromUtf8("/shot.usda");
+    NodePtr writer = createWriter(graph, path, USDWrite::eExportModeLayered, 1, 2);
+    ASSERT_TRUE(writer && getWriter(writer));
+    setSaveCollisions(writer, USDWrite::eSaveCollisionsMerge);
+    ASSERT_EQ(eStatusOK, writeOffMainThread(writer, 1, 2)) << message(writer).toStdString();
+    EXPECT_EQ(QStringList() << QString::fromUtf8("lights.usda") << QString::fromUtf8("shot.usda"), fileNames(outDir));
+
+    const QString lightsPath = outDir + QString::fromUtf8("/lights.usda");
+    PXR_NS::SdfLayerRefPtr lights = PXR_NS::SdfLayer::FindOrOpen(lightsPath.toStdString());
+    PXR_NS::SdfLayerRefPtr shot = PXR_NS::SdfLayer::FindOrOpen(path.toStdString());
+    ASSERT_TRUE(lights && shot);
+    EXPECT_TRUE(hasEdit(lights, "a"));
+    EXPECT_TRUE(static_cast<bool>(lights->GetPrimAtPath(PXR_NS::SdfPath("/Key"))));
+    EXPECT_EQ(QStringList() << lightsPath, absoluteSubLayers(shot));
+    EXPECT_FALSE(static_cast<bool>(shot->GetPrimAtPath(PXR_NS::SdfPath("/Key"))));
+    EXPECT_EQ(describeGraph(graph), describeFile(path));
+}
+
+TEST_F(USDWriteSaveCollisionTest, ARegionSavedAsTheOutputAlwaysFails)
+{
+    NodePtr reader = read(kLayerStackScene);
+    NodePtr a = edit(reader, "a", 1.);
+    NodePtr region = configure(a, "preceding", "shot.usda");
+    ASSERT_TRUE(reader && a && region);
+    for (const USDWrite::SaveCollisionsEnum collisions : { USDWrite::eSaveCollisionsError, USDWrite::eSaveCollisionsMerge }) {
+        QTemporaryDir tmp;
+        ASSERT_TRUE(tmp.isValid());
+        NodePtr writer = createWriter(region, tmp.path() + QString::fromUtf8("/shot.usda"), USDWrite::eExportModeLayered, 1, 2);
+        ASSERT_TRUE(writer && getWriter(writer));
+        setSaveCollisions(writer, collisions);
+        EXPECT_EQ(eStatusFailed, writeOffMainThread(writer, 1, 2)) << collisions;
+        EXPECT_TRUE(message(writer).contains(QString::fromStdString(region->getFullyQualifiedName()))) << message(writer).toStdString();
+        EXPECT_TRUE(fileNames(tmp.path()).isEmpty()) << collisions;
+    }
+}
+
+TEST_F(USDWriteSaveRegionTest, ARegionAboveABreakWritesNoFile)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    NodePtr reader = read(kLayerStackScene);
+    NodePtr a = edit(reader, "a", 1.);
+    NodePtr region = configure(a, "preceding", "above.usda");
+    NodePtr brk = region ? layerBreak(region) : NodePtr();
+    NodePtr b = edit(brk, "b", 2.);
+    ASSERT_TRUE(reader && a && region && brk && b);
+
+    const QString path = tmp.path() + QString::fromUtf8("/shot.usda");
+    ASSERT_TRUE(bool(write(b, path, USDWrite::eExportModeLayered)));
+    EXPECT_EQ(QStringList() << QString::fromUtf8("shot.usda"), fileNames(tmp.path()));
+    PXR_NS::SdfLayerRefPtr shot = PXR_NS::SdfLayer::FindOrOpen(path.toStdString());
+    ASSERT_TRUE(static_cast<bool>(shot));
+    EXPECT_TRUE(shot->GetSubLayerPaths().empty());
+    EXPECT_TRUE(hasEdit(shot, "b"));
+    EXPECT_FALSE(hasEdit(shot, "a"));
+}
+
+TEST_F(USDWriteSaveRegionTest, AFollowingRegionClosesAtAMerge)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    NodePtr reader = read(kLayerStackScene);
+    NodePtr region = configure(reader, "following", "branch.usda");
+    NodePtr a = edit(region, "a", 1.);
+    NodePtr key = light("/Key");
+    ASSERT_TRUE(reader && region && a && key);
+    NodePtr merged = merge({ a, key });
+    NodePtr c = edit(merged, "c", 3.);
+    ASSERT_TRUE(merged && c);
+
+    const QString path = tmp.path() + QString::fromUtf8("/shot.usda");
+    ASSERT_TRUE(bool(write(c, path, USDWrite::eExportModeLayered)));
+    EXPECT_EQ(QStringList() << QString::fromUtf8("branch.usda") << QString::fromUtf8("shot.usda"), fileNames(tmp.path()));
+    PXR_NS::SdfLayerRefPtr branch = PXR_NS::SdfLayer::FindOrOpen((tmp.path() + QString::fromUtf8("/branch.usda")).toStdString());
+    PXR_NS::SdfLayerRefPtr shot = PXR_NS::SdfLayer::FindOrOpen(path.toStdString());
+    ASSERT_TRUE(branch && shot);
+    EXPECT_TRUE(hasEdit(branch, "a"));
+    EXPECT_FALSE(static_cast<bool>(branch->GetPrimAtPath(PXR_NS::SdfPath("/Key"))));
+    EXPECT_FALSE(hasEdit(branch, "c"));
+    EXPECT_TRUE(static_cast<bool>(shot->GetPrimAtPath(PXR_NS::SdfPath("/Key"))));
+    EXPECT_TRUE(hasEdit(shot, "c"));
+    EXPECT_EQ(describeGraph(c), describeFile(path));
+}
+
+TEST_F(USDWriteSaveRegionTest, PrecedingAfterAMergeGathersBothBranches)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    NodePtr reader = read(kLayerStackScene);
+    NodePtr a = edit(reader, "a", 1.);
+    NodePtr key = light("/Key");
+    ASSERT_TRUE(reader && a && key);
+    NodePtr merged = merge({ a, key });
+    NodePtr region = configure(merged, "preceding", "gathered.usda");
+    NodePtr d = edit(region, "d", 4.);
+    ASSERT_TRUE(merged && region && d);
+
+    const QString path = tmp.path() + QString::fromUtf8("/shot.usda");
+    ASSERT_TRUE(bool(write(d, path, USDWrite::eExportModeLayered)));
+    EXPECT_EQ(QStringList() << QString::fromUtf8("gathered.usda") << QString::fromUtf8("shot.usda"), fileNames(tmp.path()));
+    PXR_NS::SdfLayerRefPtr gathered = PXR_NS::SdfLayer::FindOrOpen((tmp.path() + QString::fromUtf8("/gathered.usda")).toStdString());
+    PXR_NS::SdfLayerRefPtr shot = PXR_NS::SdfLayer::FindOrOpen(path.toStdString());
+    ASSERT_TRUE(gathered && shot);
+    EXPECT_TRUE(hasEdit(gathered, "a"));
+    EXPECT_TRUE(static_cast<bool>(gathered->GetPrimAtPath(PXR_NS::SdfPath("/Key"))));
+    EXPECT_FALSE(hasEdit(gathered, "d"));
+    EXPECT_TRUE(hasEdit(shot, "d"));
+    EXPECT_FALSE(static_cast<bool>(shot->GetPrimAtPath(PXR_NS::SdfPath("/Key"))));
+    EXPECT_EQ(describeGraph(d), describeFile(path));
+}
+
+TEST_F(USDWriteSaveRegionTest, AnEndWithNoOpenRegionWritesAsIfAbsent)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    NodePtr reader = read(kLayerStackScene);
+    NodePtr a = edit(reader, "a", 1.);
+    NodePtr end = after(PLUGINID_NATRON_USDLAYEREND, a);
+    NodePtr b = edit(end, "b", 2.);
+    ASSERT_TRUE(reader && a && end && b);
+
+    ASSERT_TRUE(bool(write(b, tmp.path() + QString::fromUtf8("/ended.usda"), USDWrite::eExportModeLayered)));
+    end->setNodeDisabled(true);
+    ASSERT_TRUE(bool(write(b, tmp.path() + QString::fromUtf8("/plain.usda"), USDWrite::eExportModeLayered)));
+    std::map<QString, QByteArray> contents = fileContents(tmp.path());
+    EXPECT_EQ(QStringList() << QString::fromUtf8("ended.usda") << QString::fromUtf8("plain.usda"), fileNames(tmp.path()));
+    EXPECT_FALSE(contents[QString::fromUtf8("plain.usda")].isEmpty());
+    EXPECT_EQ(contents[QString::fromUtf8("plain.usda")], contents[QString::fromUtf8("ended.usda")]);
+}
+
+TEST_F(USDWriteSaveRegionTest, FlattenLayersWritesOneFileKeepingArcs)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    NodePtr reader = read(kLayerStackScene);
+    NodePtr variant = after(PLUGINID_NATRON_USDVARIANT, reader);
+    ASSERT_TRUE(reader && variant);
+    setString(variant, kUSDVariantParamPrimPattern, "/World/Asset");
+    setString(variant, kUSDVariantParamVariantSet, "look");
+    setString(variant, kUSDVariantParamVariant, "right");
+    NodePtr a = edit(variant, "a", 1.);
+    NodePtr reference = after(PLUGINID_NATRON_USDREFERENCE, a);
+    ASSERT_TRUE(a && reference);
+    setString(reference, kSceneParamPrimPath, "/World/Ext");
+    KnobChoice* sourceKnob = getKnob<KnobChoice>(reference, kUSDReferenceParamSource);
+    KnobFile* fileKnob = getKnob<KnobFile>(reference, kUSDReferenceParamFile);
+    ASSERT_TRUE(sourceKnob && fileKnob);
+    sourceKnob->setValueFromID("file", 0);
+    fileKnob->setValue(std::string(kReferencedScene));
+    // A region is not written in this mode.
+    NodePtr region = configure(reference, "preceding", "region.usda");
+    ASSERT_TRUE(bool(region));
+
+    const QString path = tmp.path() + QString::fromUtf8("/shot.usda");
+    ASSERT_TRUE(bool(write(region, path, USDWrite::eExportModeFlattenLayers)));
+    EXPECT_EQ(QStringList() << QString::fromUtf8("shot.usda"), fileNames(tmp.path()));
+
+    PXR_NS::SdfLayerRefPtr layer = PXR_NS::SdfLayer::FindOrOpen(path.toStdString());
+    ASSERT_TRUE(static_cast<bool>(layer));
+    EXPECT_TRUE(layer->GetSubLayerPaths().empty());
+    EXPECT_TRUE(static_cast<bool>(layer->GetPrimAtPath(PXR_NS::SdfPath("/World/Cam"))));
+    EXPECT_TRUE(hasEdit(layer, "a"));
+    PXR_NS::SdfPrimSpecHandle asset = layer->GetPrimAtPath(PXR_NS::SdfPath("/World/Asset"));
+    ASSERT_TRUE(static_cast<bool>(asset));
+    const PXR_NS::SdfVariantSetsProxy variantSets = asset->GetVariantSets();
+    ASSERT_TRUE(variantSets.count("look") != 0);
+    const PXR_NS::SdfVariantSetSpecHandle look = (*variantSets.find("look")).second;
+    ASSERT_TRUE(static_cast<bool>(look));
+    EXPECT_EQ((std::size_t)2, look->GetVariantList().size());
+    const PXR_NS::SdfVariantSelectionMap selections = asset->GetVariantSelections();
+    ASSERT_TRUE(selections.count("look") != 0);
+    EXPECT_EQ(std::string("right"), selections.find("look")->second);
+
+    PXR_NS::SdfReferenceListOp referenceList;
+    ASSERT_TRUE(layer->HasField(PXR_NS::SdfPath("/World/Ext"), PXR_NS::SdfFieldKeys->References, &referenceList));
+    const std::vector<PXR_NS::SdfReference> references = referenceList.GetAppliedItems();
+    ASSERT_EQ((std::size_t)1, references.size());
+    EXPECT_EQ(cleanAbsolute(QString::fromUtf8(kReferencedScene)),
+              cleanAbsolute(QDir(tmp.path()).absoluteFilePath(QString::fromStdString(references[0].GetAssetPath()))));
+
+    EXPECT_EQ(describeGraph(region), describeFile(path));
+}
+
+TEST_F(USDWriteSaveRegionTest, FlattenLayersInlinesReferencedStacks)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    NodePtr grafts = createGraph(kReferenceScene, 0.);
+    NodePtr marker = read(kReferencedScene);
+    NodePtr source = marker ? prune(marker, "/Root/Nothing") : NodePtr();
+    NodePtr reference = after(PLUGINID_NATRON_USDREFERENCE, grafts);
+    ASSERT_TRUE(grafts && source && reference);
+    setString(reference, kSceneParamPrimPath, "/Ext");
+    KnobChoice* sourceKnob = getKnob<KnobChoice>(reference, kUSDReferenceParamSource);
+    ASSERT_TRUE(sourceKnob != NULL);
+    sourceKnob->setValueFromID("input", 0);
+    ASSERT_TRUE(reference->connectInput(source, 1));
+
+    const QString path = tmp.path() + QString::fromUtf8("/shot.usda");
+    ASSERT_TRUE(bool(write(reference, path, USDWrite::eExportModeFlattenLayers)));
+    EXPECT_EQ(QStringList() << QString::fromUtf8("shot.usda"), fileNames(tmp.path()));
+
+    PXR_NS::SdfLayerRefPtr layer = PXR_NS::SdfLayer::FindOrOpen(path.toStdString());
+    ASSERT_TRUE(static_cast<bool>(layer));
+    EXPECT_TRUE(layer->GetSubLayerPaths().empty());
+    layer->Traverse(PXR_NS::SdfPath::AbsoluteRootPath(), [&](const PXR_NS::SdfPath& specPath) {
+        PXR_NS::SdfReferenceListOp referenceList;
+        if (specPath.IsPrimPath() && layer->HasField(specPath, PXR_NS::SdfFieldKeys->References, &referenceList)) {
+            for (const PXR_NS::SdfReference& arc : referenceList.GetAppliedItems()) {
+                EXPECT_FALSE(PXR_NS::SdfLayer::IsAnonymousLayerIdentifier(arc.GetAssetPath())) << specPath.GetString();
+                EXPECT_EQ(std::string::npos, arc.GetAssetPath().find("_layer")) << arc.GetAssetPath();
+            }
+        }
+    });
+    PXR_NS::SdfPrimSpecHandle references = layer->GetPrimAtPath(PXR_NS::SdfPath("/_references"));
+    ASSERT_TRUE(static_cast<bool>(references));
+    EXPECT_EQ(PXR_NS::SdfSpecifierClass, references->GetSpecifier());
+
+    EXPECT_EQ(describeGraph(reference), describeFile(path));
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(path.toStdString());
+    ASSERT_TRUE(static_cast<bool>(stage));
+    EXPECT_TRUE(static_cast<bool>(stage->GetPrimAtPath(PXR_NS::SdfPath("/Ext/Marker"))));
+    const PXR_NS::UsdShadeMaterial bound = PXR_NS::UsdShadeMaterialBindingAPI(stage->GetPrimAtPath(PXR_NS::SdfPath("/Transform2/Card"))).ComputeBoundMaterial();
+    ASSERT_TRUE(static_cast<bool>(bound));
+    EXPECT_EQ(PXR_NS::SdfPath("/Transform2/Card/Red"), bound.GetPath());
 }

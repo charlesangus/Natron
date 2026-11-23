@@ -47,6 +47,7 @@
 #define kUSDWriteParamLastFrame "lastFrame"
 #define kUSDWriteParamExportLiveTextures "exportLiveTextures"
 #define kUSDWriteParamStripLayersAboveBreaks "stripLayersAboveBreaks"
+#define kUSDWriteParamSaveCollisions "saveCollisions"
 
 NATRON_NAMESPACE_ENTER
 
@@ -56,11 +57,14 @@ NATRON_NAMESPACE_ENTER
  * the time samples of the whole range. Its output is its input, unchanged.
  *
  * Layered mode flattens every layer Natron authored into the file and keeps the files those
- * layers bring in (USDRead's) as sublayers, as Solaris's USD ROP does with Flatten Implicit
- * Layers. Flattened mode bakes the whole composed stage, external files included, into the one
- * layer. Asset paths are written relative to the output file, or absolute.
+ * layers bring in (USDRead's) as sublayers. The layer regions a USDConfigureLayer names a file for (SceneLayerEntry::region) are
+ * written to those files, which the file of the region around them sublayers in their place.
+ * Flatten Layers mode flattens the whole layer stack, read files included, into the one layer and
+ * keeps its composition arcs, the scenes the nodes reference inlined under /_references. Flattened
+ * mode bakes the whole composed stage, external files included, into the one layer. Asset paths
+ * are written relative to the written file, or absolute.
  *
- * With Strip Layers Above Breaks, both modes leave out the scene's context layers, those above a
+ * With Strip Layers Above Breaks, every mode leaves out the scene's context layers, those above a
  * USDLayerBreak (SceneLayerEntry::context), and the files they read: the file holds only the edits
  * made after the break. The stage metadata still comes from the whole composed scene.
  *
@@ -74,7 +78,13 @@ class USDWrite
 public:
     enum ExportModeEnum {
         eExportModeLayered = 0,
+        eExportModeFlattenLayers,
         eExportModeFlattened
+    };
+
+    enum SaveCollisionsEnum {
+        eSaveCollisionsError = 0,
+        eSaveCollisionsMerge
     };
 
     enum PathModeEnum {
@@ -95,8 +105,10 @@ public:
         .id = PLUGINID_NATRON_USDWRITE,
         .label = "USDWrite",
         .description = "Write the input scene to a USD file (.usd, .usda, .usdc), once per render, with the time "
-                       "samples of the frame range. Layered mode keeps the files the scene reads as sublayers and "
-                       "flattens what Natron authored; Flattened mode bakes everything into one layer.",
+                       "samples of the frame range. Layered mode keeps the files the scene reads as sublayers, "
+                       "flattens what Natron authored and writes the layer regions USDConfigureLayer names to "
+                       "their own files; Flatten Layers mode flattens every layer into one file, keeping "
+                       "references, payloads and variants; Flattened mode bakes everything into one layer.",
         .grouping = PLUGIN_GROUP_3D_USD,
         .majorVersion = 1,
         .minorVersion = 0,
@@ -153,6 +165,7 @@ private:
     KnobChoiceWPtr _pathMode;
     KnobBoolWPtr _exportLiveTextures;
     KnobBoolWPtr _stripLayersAboveBreaks;
+    KnobChoiceWPtr _saveCollisions;
     KnobChoiceWPtr _frameRange;
     KnobIntWPtr _firstFrame;
     KnobIntWPtr _lastFrame;

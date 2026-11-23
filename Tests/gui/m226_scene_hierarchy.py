@@ -82,7 +82,7 @@ try:
 
     # Probe writers kept for the whole run: the child wrappers die with their parent wrapper.
     probe = make("USDWrite", 450, 200)
-    probe.getParam("exportMode").setValue(1)  # flattened
+    probe.getParam("exportMode").setValue(2)  # flattened
     layered = make("USDWrite", 450, 300)
     layered.getParam("exportMode").setValue(0)  # layered
     project_up_axis = app.getProjectParam("upAxis")
@@ -129,7 +129,7 @@ try:
         """Flattens source to a fresh .usda and opens it with pxr."""
         counter[0] += 1
         path = os.path.join(work_dir, "probe%d.usda" % counter[0])
-        if not write_stage(source, probe, path, 1):
+        if not write_stage(source, probe, path, 2):
             return None
         return Usd.Stage.Open(path)
 

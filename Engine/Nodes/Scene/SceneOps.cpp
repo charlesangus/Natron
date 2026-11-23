@@ -465,7 +465,8 @@ namespace {
     makeRegion(U64 id,
                const std::string& node,
                const SceneLayerRegionPtr& parent,
-               const SceneLayerRegionSettings& settings)
+               const SceneLayerRegionSettings& settings,
+               bool gathers)
     {
         std::shared_ptr<SceneLayerRegion> region = std::make_shared<SceneLayerRegion>();
 
@@ -473,6 +474,7 @@ namespace {
         region->node = node;
         region->parent = parent;
         region->settings = settings;
+        region->gathers = gathers;
 
         return region;
     }
@@ -658,7 +660,7 @@ openRegion(const ScenePayload& payload,
     std::vector<SceneLayerRegionPtr> openRegions = openRegionsOf(payload);
     const SceneLayerRegionPtr parent = openRegions.empty() ? SceneLayerRegionPtr() : openRegions.back();
 
-    openRegions.push_back(makeRegion(regionId("open", node, payload.getStackHash(), parent, settings), node, parent, settings));
+    openRegions.push_back(makeRegion(regionId("open", node, payload.getStackHash(), parent, settings), node, parent, settings, false));
 
     return withOpenRegions(payload, openRegions);
 }
@@ -698,7 +700,7 @@ setOpenRegionSettings(const ScenePayload& payload,
     h.appendString("settings");
     h.appendU64(merged.hash());
     std::map<const SceneLayerRegion*, SceneLayerRegionPtr> replaced;
-    replaced[innermost.get()] = makeRegion(h.finalize(), innermost->node, innermost->parent, merged);
+    replaced[innermost.get()] = makeRegion(h.finalize(), innermost->node, innermost->parent, merged, innermost->gathers);
 
     // The regions nested in the one replaced move under its replacement.
     std::function<SceneLayerRegionPtr(const SceneLayerRegionPtr&)> retag = [&replaced, &retag](const SceneLayerRegionPtr& region) -> SceneLayerRegionPtr {
@@ -716,7 +718,7 @@ setOpenRegionSettings(const ScenePayload& payload,
             moved.appendU64(region->id);
             moved.appendString("parent");
             moved.appendU64(parent->id);
-            result = makeRegion(moved.finalize(), region->node, parent, region->settings);
+            result = makeRegion(moved.finalize(), region->node, parent, region->settings, region->gathers);
         }
         replaced[region.get()] = result;
 
@@ -765,7 +767,7 @@ claimPreceding(const ScenePayload& payload,
         return payload;
     }
     const SceneLayerRegionPtr parent = getInnermostOpenRegion(payload);
-    const SceneLayerRegionPtr region = makeRegion(regionId("claim", node, payload.getStackHash(), parent, settings), node, parent, settings);
+    const SceneLayerRegionPtr region = makeRegion(regionId("claim", node, payload.getStackHash(), parent, settings), node, parent, settings, true);
     const std::vector<const ScenePayloadImpl*> links = getStackLinks(payload);
     const std::set<std::size_t> claimed(run.begin(), run.end());
 

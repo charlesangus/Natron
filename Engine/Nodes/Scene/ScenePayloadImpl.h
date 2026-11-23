@@ -111,6 +111,9 @@ struct SceneLayerRegion {
     std::string node;
     std::shared_ptr<const SceneLayerRegion> parent;
     SceneLayerRegionSettings settings;
+    // Claimed by a USDConfigureLayer gathering the preceding layers, which stopped at the file
+    // read just below them: that file's sublayer goes into the region's file, beneath them.
+    bool gathers = false;
 };
 
 typedef std::shared_ptr<const SceneLayerRegion> SceneLayerRegionPtr;

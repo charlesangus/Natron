@@ -254,7 +254,7 @@ try:
         require(viewer.connectInput(0, node), "connect the Viewer to %s" % node.getLabel())
 
     def write(source, writer, mode):
-        """Writes source through writer (0 layered, 1 flattened) to a fresh .usda and returns its path."""
+        """Writes source through writer (0 layered, 2 flattened) to a fresh .usda and returns its path."""
         counter[0] += 1
         path = os.path.join(work_dir, "probe%d.usda" % counter[0])
         writer.disconnectInput(0)
@@ -265,7 +265,7 @@ try:
         return path if os.path.isfile(path) else None
 
     def flattened(source):
-        path = write(source, probe, 1)
+        path = write(source, probe, 2)
         return Usd.Stage.Open(path) if path else None
 
     def authored_properties(source):

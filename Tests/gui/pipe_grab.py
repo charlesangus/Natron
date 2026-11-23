@@ -155,6 +155,13 @@ try:
         v = to_view(mid)
         return (v[0] - offset, v[1])
 
+    def beside_free_end(stub_seg, offset=15, up=5):
+        """The viewport point offset pixels left of a stub's free end, up pixels back along the stub.
+        The midpoint of a stub lies against the node's bottom edge, where a press selects the node
+        instead of grabbing the pipe."""
+        v = to_view((stub_seg[0][0], stub_seg[0][1] - up))
+        return (v[0] - offset, v[1])
+
     def nearest_pipe_px(press_view):
         p = to_scene(press_view)
         ds = [dist_to_segment(p, a, b) for a, b, _ in pipes()]
@@ -255,7 +262,7 @@ try:
 
         stub = output_stub(lone)
         require(stub is not None, "the output stub is back after the input drag")
-        press = beside(stub, 15)
+        press = beside_free_end(stub)
         report("NOTE output stub press at %r, nearest pipe %.1f px" % (press, nearest_pipe_px(press)))
         followed = drag_from(press)
         check(any(near(b, centre(lone)) for _, b in followed),

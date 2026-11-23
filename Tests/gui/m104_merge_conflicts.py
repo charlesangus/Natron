@@ -97,6 +97,31 @@ try:
                 found.append((group.text(0), row.text(0), row.isSelected()))
         return found
 
+    def tab_label():
+        """The text of the tab the panel is docked in, or "" when it is in none."""
+        for bar in QApplication.allWidgets():
+            try:
+                if not isinstance(bar, QTabBar):
+                    continue
+                for i in range(bar.count()):
+                    if bar.tabText(i).startswith("Merge Conflicts"):
+                        return bar.tabText(i)
+            except RuntimeError:
+                continue
+        return ""
+
+    def size_of(node):
+        param = node.getParam(SIZE)
+        return (param.getValue(0), param.getValue(1))
+
+    def click(name):
+        b = button(name)
+        if not check(b is not None and b.isEnabled(), "the %s button is enabled" % name):
+            return False
+        b.click()
+        QApplication.processEvents()
+        return True
+
     def select_row(group_text, text, label):
         """Selects the conflict row named text under the node row group_text and returns text, or
         None when the row is gone or no longer selected once events have run."""

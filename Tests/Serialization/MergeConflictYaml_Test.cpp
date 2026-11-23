@@ -180,6 +180,8 @@ everyKind()
     MergeConflict folded = value;
     folded.knob = "black";
     folded.dimension = Serialization::kMergeConflictAllDimensions;
+    folded.base.knob = colorKnob("black: 0.1\n");
+    folded.mine.knob = colorKnob("black: 0.25\n");
     conflicts.push_back(folded);
 
     MergeConflict curveKey;

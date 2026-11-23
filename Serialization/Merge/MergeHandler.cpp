@@ -72,11 +72,13 @@ namespace {
         return count;
     }
 
-    // True when the knob saved one dimension standing for its several.
+    // True when the knob saved one dimension standing for its knobDimensions. The count comes from
+    // every side because a side read from a project file does not record a plug-in knob's dimension.
     bool
-    isFolded(const KnobSerialization* knob)
+    isFolded(const KnobSerialization* knob,
+             std::size_t knobDimensions)
     {
-        return knob && (knob->dimension > 1) && (knob->dimensions.size() == 1);
+        return knob && (knobDimensions > 1) && (knob->dimensions.size() == 1);
     }
 
     // One saved dimension stands for all of a knob's dimensions (the folded form saving and the
@@ -374,8 +376,9 @@ ScalarKnobMergeHandler::merge(const KnobSerialization* base,
     }
     // When every side saved the knob folded, its one dimension merges as the whole knob's and
     // stays folded; otherwise a folded side is compared dimension by dimension.
-    const bool allFolded = isFolded(mine) && isFolded(theirs) && (!base || isFolded(base));
-    const std::size_t count = allFolded ? 1 : dimensionCount(base, mine, theirs);
+    const std::size_t knobDimensions = dimensionCount(base, mine, theirs);
+    const bool allFolded = isFolded(mine, knobDimensions) && isFolded(theirs, knobDimensions) && (!base || isFolded(base, knobDimensions));
+    const std::size_t count = allFolded ? 1 : knobDimensions;
     std::optional<KnobSerialization> unfoldedBase;
     std::optional<KnobSerialization> unfoldedMine;
     std::optional<KnobSerialization> unfoldedTheirs;

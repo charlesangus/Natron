@@ -627,6 +627,7 @@ Gui::putSettingsPanelFirst(DockablePanel* panel)
 void
 Gui::addVisibleDockablePanel(DockablePanel* panel)
 {
+    notifyLocalPresenceChanged();
     DockablePanel* found = 0;
     int nbDockedPanels = 0;
     {
@@ -696,6 +697,7 @@ Gui::addVisibleDockablePanel(DockablePanel* panel)
 void
 Gui::removeVisibleDockablePanel(DockablePanel* panel)
 {
+    notifyLocalPresenceChanged();
     QMutexLocker k(&_imp->openedPanelsMutex);
     std::list<DockablePanel*>::iterator it = std::find(_imp->openedPanels.begin(), _imp->openedPanels.end(), panel);
 

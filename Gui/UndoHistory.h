@@ -34,6 +34,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <QtGlobal>
 
 #include "Engine/EngineFwd.h"
@@ -169,6 +170,18 @@ public:
     void clear();
 
     /**
+     * @brief Drops every entry touching one of the nodes, which another user deleted. The node
+     * may come back from their undo, but as another node to this history.
+     **/
+    void dropEntriesTouchingNodes(const QStringList& nodeIds);
+
+    /**
+     * @brief Notes that another user changed the nodes, for the entries touching them, until each
+     * is next undone or redone.
+     **/
+    void noteRemoteEditOfNodes(const QStringList& nodeIds);
+
+    /**
      * @brief Opens a step that gathers what is pushed and recorded until the matching closeStep()
      * into one entry, labelled text unless it ends up holding a single command, which keeps its
      * own text when keepsText is false. A step opened inside an open step or an executing pushed
@@ -214,6 +227,12 @@ public:
 Q_SIGNALS:
 
     void changed();
+
+    /**
+     * @brief An entry touching a node another user changed since was undone or redone, restoring
+     * this user's values over theirs.
+     **/
+    void replayedOverRemoteEdit(const QString& text, bool undone);
 
 private:
     std::unique_ptr<UndoHistoryPrivate> _imp;

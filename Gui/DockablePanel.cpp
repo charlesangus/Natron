@@ -35,12 +35,14 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
 // /opt/local/include/QtGui/qmime.h:119:10: warning: private field 'type' is not used [-Wunused-private-field]
 #include <QMouseEvent>
 GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
-#include <QHBoxLayout>
-#include <QVBoxLayout>
-#include <QFile>
-#include <QTextStream>
 #include <QDesktopServices>
+#include <QFile>
+#include <QHBoxLayout>
+#include <QLabel>
+#include <QStringList>
 #include <QTextDocument>
+#include <QTextStream>
+#include <QVBoxLayout>
 
 #include <ofxNatron.h>
 
@@ -1356,6 +1358,44 @@ QWidget*
 DockablePanel::getHeaderWidget() const
 {
     return _imp->_headerWidget;
+}
+
+void
+DockablePanel::setRemoteUsers(const LiveSessionUserMarks& users)
+{
+    if ((_imp->_mode == eHeaderModeNoHeader) || !_imp->_headerLayout) {
+        return;
+    }
+    if (!_imp->_remoteUsersDots) {
+        if (users.empty()) {
+            return;
+        }
+        _imp->_remoteUsersDots = new QWidget(_imp->_headerWidget);
+        _imp->_remoteUsersDots->setObjectName(QString::fromUtf8("liveSessionPresenceDots"));
+        QHBoxLayout* layout = new QHBoxLayout(_imp->_remoteUsersDots);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->setSpacing(TO_DPIX(2));
+        QWidget* name = _imp->_nameLineEdit ? static_cast<QWidget*>(_imp->_nameLineEdit) : static_cast<QWidget*>(_imp->_nameLabel);
+        const int nameIndex = name ? _imp->_headerLayout->indexOf(name) : -1;
+        _imp->_headerLayout->insertWidget((nameIndex >= 0) ? (nameIndex + 1) : _imp->_headerLayout->count(), _imp->_remoteUsersDots);
+    }
+    const QList<QLabel*> old = _imp->_remoteUsersDots->findChildren<QLabel*>(QString(), Qt::FindDirectChildrenOnly);
+    for (QLabel* dot : old) {
+        delete dot;
+    }
+    const int size = TO_DPIX(10);
+    QStringList names;
+    for (const LiveSessionUserMark& user : users) {
+        QLabel* dot = new QLabel(_imp->_remoteUsersDots);
+        dot->setObjectName(QString::fromUtf8("liveSessionPresenceDot"));
+        dot->setFixedSize(size, size);
+        dot->setStyleSheet(QString::fromUtf8("background-color: %1; border-radius: %2px;").arg(user.colour.name()).arg(size / 2));
+        dot->setToolTip(tr("%1 has this panel open").arg(user.name));
+        _imp->_remoteUsersDots->layout()->addWidget(dot);
+        names.push_back(user.name);
+    }
+    _imp->_remoteUsersDots->setToolTip(names.join(QString::fromUtf8(", ")));
+    _imp->_remoteUsersDots->setVisible(!users.empty());
 }
 
 bool

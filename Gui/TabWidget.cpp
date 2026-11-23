@@ -69,6 +69,7 @@ CLANG_DIAG_ON(deprecated)
 #include "Gui/GuiDensity.h"
 #include "Gui/GuiMacros.h"
 #include "Gui/Histogram.h"
+#include "Gui/LiveSessionUsersPanel.h"
 #include "Gui/Menu.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/ProgressPanel.h"
@@ -448,6 +449,7 @@ TabWidget::createMenu(const QPoint& globalPos)
     menu.addAction( tr("Progress Panel here"), this, SLOT(moveProgressPanelHere()) );
     menu.addAction(tr("Scene Graph here"), this, SLOT(moveSceneGraphHere()));
     menu.addAction(tr("New Scene Graph"), this, SLOT(newSceneGraphHere()));
+    menu.addAction(tr("Session Users here"), this, SLOT(moveLiveSessionUsersHere()));
 
     std::map<NATRON_PYTHON_NAMESPACE::PyPanel*, std::string> userPanels = _imp->gui->getPythonPanels();
     if ( !userPanels.empty() ) {
@@ -896,6 +898,12 @@ TabWidget::newSceneGraphHere()
     appendTab(panel, panel);
 
     _imp->gui->getApp()->triggerAutoSave();
+}
+
+void
+TabWidget::moveLiveSessionUsersHere()
+{
+    moveTab(_imp->gui->getLiveSessionUsersPanel(), _imp->gui->getLiveSessionUsersPanel(), this);
 }
 
 TabWidget*

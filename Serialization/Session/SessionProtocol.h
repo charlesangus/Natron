@@ -24,6 +24,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -40,7 +41,7 @@ namespace Session {
     /**
      * @brief The version a peer announces in hello. A host refuses a peer announcing another one.
      **/
-    inline constexpr int kProtocolVersion = 1;
+    inline constexpr int kProtocolVersion = 2;
 
     /**
      * @brief The largest frame body accepted. A frame announcing more ends the stream.
@@ -135,6 +136,46 @@ namespace Session {
         std::string reason;
     };
 
+    /**
+     * @brief What a user's viewer shows: the frame, the viewer node and its input A, the zoom
+     * factor and pixel aspect ratio, the point at the middle of the viewport in canonical
+     * coordinates, and the displayed channels as ViewerTab::getChannelsString() names them.
+     **/
+    struct PresenceViewerState {
+        int frame = 0;
+        std::string viewerNodeId;
+        int inputIndex = -1;
+        double zoomFactor = 1.;
+        double zoomAspectRatio = 1.;
+        double centerX = 0.;
+        double centerY = 0.;
+        std::string channels;
+
+        bool operator==(const PresenceViewerState&) const = default;
+    };
+
+    /**
+     * @brief Either way: what one user is doing, never recorded or saved. A client sends its own;
+     * the host fills in userId, name, colour and host from the connection before relaying it, so
+     * those fields are ignored when a client sends them. selection and openPanels are node IDs.
+     **/
+    struct PresenceMessage {
+        std::uint32_t userId = 0;
+        std::string name;
+        NodeUiColor colour;
+        bool host = false;
+        std::vector<std::string> selection;
+        std::vector<std::string> openPanels;
+        std::optional<PresenceViewerState> viewer;
+
+        bool operator==(const PresenceMessage&) const = default;
+    };
+
+    // Host to every client: userId left the session.
+    struct PresenceLeftMessage {
+        std::uint32_t userId = 0;
+    };
+
     typedef std::variant<HelloMessage,
                          WelcomeMessage,
                          OpsMessage,
@@ -144,7 +185,9 @@ namespace Session {
                          ChecksumMessage,
                          SaveRequestMessage,
                          ResyncRequestMessage,
-                         ByeMessage>
+                         ByeMessage,
+                         PresenceMessage,
+                         PresenceLeftMessage>
         SessionMessage;
 
     /**

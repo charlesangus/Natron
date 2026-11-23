@@ -35,6 +35,7 @@
 #include <QtCore/QByteArray>
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QPointer>
+#include <QtCore/QStringList>
 #include <QtCore/QTimer>
 #include <QtNetwork/QHostAddress>
 #include <QtNetwork/QTcpServer>
@@ -43,6 +44,8 @@
 #include "Engine/AppInstance.h"
 #include "Engine/GraphEditRecorder.h"
 #include "Engine/GraphOpApply.h"
+#include "Engine/LiveSession/SessionPresence.h"
+#include "Engine/LiveSession/SessionRemoteEdits.h"
 #include "Engine/LiveSession/SessionShared.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
@@ -68,6 +71,8 @@ const NodeUiColor kPeerColours[] = {
     { 0.95f, 0.55f, 0.75f },
     { 0.65f, 0.65f, 0.65f },
 };
+
+const NodeUiColor kHostColour = { 1.0f, 0.55f, 0.10f };
 
 // A client that stops reading must not grow the host's memory without end; a welcome, the
 // largest frame, fits twice over.
@@ -114,6 +119,7 @@ struct SessionHost::Implementation {
     int busy = 0;
     bool deleteWhenIdle = false;
     int rejects = 0;
+    SessionPresence presence;
 
     class BusyScope {
     public:
@@ -206,7 +212,8 @@ struct SessionHost::Implementation {
         return true;
     }
 
-    void sendToJoined(const SessionMessage& message)
+    void sendToJoined(const SessionMessage& message,
+                      const Peer* except = nullptr)
     {
         std::vector<std::byte> frame;
         try {
@@ -220,7 +227,7 @@ struct SessionHost::Implementation {
         // session and empty the list.
         for (std::size_t i = 0; i < peers.size(); ++i) {
             Peer* peer = peers[i].get();
-            if (peer->joined && !peer->closing && peer->socket) {
+            if ((peer != except) && peer->joined && !peer->closing && peer->socket) {
                 write(peer, frame);
             }
         }
@@ -296,6 +303,8 @@ struct SessionHost::Implementation {
             peer->socket->disconnectFromHost();
         }
         if (wasJoined) {
+            presence.removeUser(peer->userId);
+            sendToJoined(PresenceLeftMessage { peer->userId });
             Q_EMIT publicInterface->sessionMessage(QString::fromUtf8("%1 left the session.").arg(peer->name));
             Q_EMIT publicInterface->peerCountChanged(joinedCount());
         }
@@ -442,6 +451,7 @@ struct SessionHost::Implementation {
         const std::vector<Serialization::GraphOp> resolved = resolveNames(p, message.ops);
         std::vector<Serialization::OpResult> results;
         {
+            LiveSession::RemoteApply remote;
             GraphEditRecorder::Suppress suppress;
             results = applyGraphOps(p, resolved);
         }
@@ -470,6 +480,7 @@ struct SessionHost::Implementation {
             p->markUnsavedChanges();
         }
         sendToJoined(broadcast);
+        notifyRemoteEdits(broadcast.ops);
         if (reasons.empty() || peer->closing) {
             return;
         }
@@ -491,6 +502,50 @@ struct SessionHost::Implementation {
         for (const std::string& target : resyncTargets) {
             send(peer, resyncNode(p, target));
         }
+    }
+
+    void notifyRemoteEdits(const std::vector<Serialization::GraphOp>& ops)
+    {
+        QStringList deleted;
+        QStringList edited;
+        LiveSession::remoteEditedNodes(ops, &deleted, &edited);
+        if (!deleted.isEmpty() || !edited.isEmpty()) {
+            Q_EMIT publicInterface->remoteNodesEdited(deleted, edited);
+        }
+    }
+
+    PresenceMessage presenceOf(const Peer* peer,
+                               const PresenceMessage& sent) const
+    {
+        PresenceMessage entry = sent;
+        entry.userId = peer->userId;
+        entry.name = peer->name.toStdString();
+        entry.colour = peer->colour;
+        entry.host = false;
+
+        return entry;
+    }
+
+    void handlePresence(Peer* peer,
+                        const PresenceMessage& sent)
+    {
+        const PresenceMessage entry = presenceOf(peer, sent);
+        presence.updateUser(entry);
+        sendToJoined(entry, peer);
+    }
+
+    // The newcomer learns who is there, and the others learn about it, before any presence of it.
+    void introduce(Peer* peer)
+    {
+        const PresenceMessage entry = presenceOf(peer, PresenceMessage {});
+        for (const PresenceMessage& user : presence.users()) {
+            if (peer->closing) {
+                return;
+            }
+            send(peer, user);
+        }
+        presence.updateUser(entry);
+        sendToJoined(entry, peer);
     }
 
     void handleSaveRequest(Peer* peer)
@@ -533,6 +588,10 @@ struct SessionHost::Implementation {
             return;
         }
         peer->joined = true;
+        introduce(peer);
+        if (peer->closing) {
+            return;
+        }
         Q_EMIT publicInterface->sessionMessage(QString::fromUtf8("%1 joined the session.").arg(peer->name));
         if (peer->closing) {
             return;
@@ -568,6 +627,8 @@ struct SessionHost::Implementation {
             peer->wantsResync = true;
         } else if (std::holds_alternative<SaveRequestMessage>(message)) {
             peer->wantsSave = true;
+        } else if (const PresenceMessage* sent = std::get_if<PresenceMessage>(&message)) {
+            handlePresence(peer, *sent);
         } else {
             drop(peer, QString::fromUtf8("Protocol error: unexpected %1 message.").arg(QString::fromUtf8(std::string(sessionMessageName(message)).c_str())));
         }
@@ -738,6 +799,11 @@ SessionHost::start(const QString& bindAddress,
         _imp->onLocalOps(ops);
     });
     _imp->subscribedProject = project;
+    _imp->presence.setSender([this](const PresenceMessage& entry) {
+        Implementation::BusyScope scope(_imp.get());
+        _imp->sendToJoined(entry);
+    });
+    _imp->presence.setLocalUser(0, displayName.toStdString(), kHostColour, true);
     if (_imp->checksumTimer.interval() > 0) {
         _imp->checksumTimer.start();
     }
@@ -777,6 +843,7 @@ SessionHost::stop()
         }
         _imp->drop(peer, tr("The host closed the session."));
     }
+    _imp->presence.clear();
     Q_EMIT peerCountChanged(0);
 }
 
@@ -872,6 +939,12 @@ int
 SessionHost::rejectCount() const
 {
     return _imp->rejects;
+}
+
+SessionPresence*
+SessionHost::presence() const
+{
+    return &_imp->presence;
 }
 
 NATRON_NAMESPACE_EXIT

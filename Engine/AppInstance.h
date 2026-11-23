@@ -38,9 +38,10 @@
 #include <utility>
 #include <vector>
 
-#include <QtGlobal>      // for Q_UNUSED
-#include <QObject>  // for Q_OBJECT, Q_SIGNALS, Q_SLOTS
 #include <QMutex>
+#include <QObject> // for Q_OBJECT, Q_SIGNALS, Q_SLOTS
+#include <QtCore/QStringList>
+#include <QtGlobal> // for Q_UNUSED
 
 #include "Global/GlobalDefines.h"
 #include "Engine/RectD.h"
@@ -54,6 +55,7 @@ NATRON_NAMESPACE_ENTER
 struct AppInstancePrivate;
 class SessionClient;
 class SessionHost;
+class SessionPresence;
 
 /**
  * @brief The Natron build that saved the project being loaded, -1 and empty strings for what
@@ -675,6 +677,11 @@ public:
 
     SessionHost* getLiveSessionHost() const;
     SessionClient* getLiveSessionClient() const;
+
+    /**
+     * @brief Who is in the live session hosted or joined, or null without one.
+     **/
+    SessionPresence* getLiveSessionPresence() const;
     virtual AppInstancePtr loadProject(const std::string& filename);
 
     ///Close the current project but keep the window
@@ -778,6 +785,27 @@ Q_SIGNALS:
      **/
     void nodeEvaluated();
 
+    /**
+     * @brief Emitted when a user enters or leaves the live session, or takes another name.
+     **/
+    void liveSessionUsersChanged();
+
+    /**
+     * @brief Emitted when what userId selects, has open or views differs, or the user is gone.
+     **/
+    void liveSessionPresenceChanged(quint32 userId);
+
+    /**
+     * @brief Emitted when the viewer of userId differs, or the user is gone.
+     **/
+    void liveSessionViewerChanged(quint32 userId);
+
+    /**
+     * @brief Another user's edit, applied here, deleted the nodes with the IDs in deleted and
+     * changed those in edited.
+     **/
+    void liveSessionRemoteEdit(const QStringList& deleted, const QStringList& edited);
+
 protected:
     virtual void onGroupCreationFinished(const NodePtr& node, const Serialization::NodeSerializationPtr& serialization, bool autoConnect);
     virtual void createNodeGui(const NodePtr& /*node*/,
@@ -787,6 +815,8 @@ protected:
     }
 
 private:
+    void forwardPresence(SessionPresence* presence);
+
     void startNextQueuedRender(OutputEffectInstance* finishedWriter, const ProcessHandler* finishedProcess);
 
     NodePtr createNodeInternal(CreateNodeArgs& args, CreateNodeStatusEnum* status = nullptr);

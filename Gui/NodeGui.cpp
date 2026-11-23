@@ -137,6 +137,7 @@ CLANG_DIAG_ON(uninitialized)
 
 // Strictly thinner than the state indicator band around the node, so the two never look alike.
 #define NATRON_USER_COLOR_BORDER_WIDTH 5
+#define NATRON_REMOTE_USER_OUTLINE_WIDTH 3
 
 #define NATRON_EDGE_DROP_TOLERANCE 15
 
@@ -2575,6 +2576,63 @@ NodeGui::refreshUserColorBorderGeometry()
     const double indicatorOffset = (double)TO_DPIX(NATRON_STATE_INDICATOR_OFFSET) + borderWidth;
     _stateIndicator->setRect(bbox.x() - indicatorOffset, bbox.y() - indicatorOffset,
                              bbox.width() + indicatorOffset * 2, bbox.height() + indicatorOffset * 2);
+    refreshRemoteUsersGeometry();
+}
+
+void
+NodeGui::setRemoteUsers(const LiveSessionUserMarks& users)
+{
+    if (users == _remoteUsers) {
+        return;
+    }
+    _remoteUsers = users;
+    while (_remoteUserOutlines.size() > users.size()) {
+        delete _remoteUserOutlines.back();
+        _remoteUserOutlines.pop_back();
+        delete _remoteUserTags.back();
+        _remoteUserTags.pop_back();
+    }
+    const double depth = zValue();
+    while (_remoteUserOutlines.size() < users.size()) {
+        QGraphicsRectItem* outline = new QGraphicsRectItem(this);
+        outline->setBrush(Qt::NoBrush);
+        outline->setZValue(depth + 1.6);
+        outline->setAcceptedMouseButtons(Qt::NoButton);
+        _remoteUserOutlines.push_back(outline);
+        QGraphicsSimpleTextItem* tag = new QGraphicsSimpleTextItem(this);
+        tag->setZValue(depth + 1.6);
+        tag->setAcceptedMouseButtons(Qt::NoButton);
+        _remoteUserTags.push_back(tag);
+    }
+    for (std::size_t i = 0; i < users.size(); ++i) {
+        QPen pen(users[i].colour, TO_DPIX(NATRON_REMOTE_USER_OUTLINE_WIDTH));
+        pen.setJoinStyle(Qt::MiterJoin);
+        _remoteUserOutlines[i]->setPen(pen);
+        _remoteUserOutlines[i]->setToolTip(users[i].name);
+        _remoteUserTags[i]->setText(users[i].name);
+        _remoteUserTags[i]->setBrush(users[i].colour);
+        _remoteUserTags[i]->setToolTip(users[i].name);
+    }
+    refreshRemoteUsersGeometry();
+}
+
+void
+NodeGui::refreshRemoteUsersGeometry()
+{
+    if (_remoteUserOutlines.empty() || !_stateIndicator) {
+        return;
+    }
+    const QRectF halo = _stateIndicator->rect();
+    const double width = (double)TO_DPIX(NATRON_REMOTE_USER_OUTLINE_WIDTH);
+    const double outermost = width * double(_remoteUserOutlines.size());
+    double tagTop = halo.top() - outermost;
+    for (std::size_t i = 0; i < _remoteUserOutlines.size(); ++i) {
+        // Each ring sits just outside the previous one, so that every user stays visible.
+        const double grow = width * (0.5 + double(i));
+        _remoteUserOutlines[i]->setRect(halo.adjusted(-grow, -grow, grow, grow));
+        tagTop -= _remoteUserTags[i]->boundingRect().height();
+        _remoteUserTags[i]->setPos(halo.left(), tagTop);
+    }
 }
 
 bool
@@ -2623,6 +2681,9 @@ NodeGui::setUserSelected(bool b)
     if (changed) {
         refreshEdgesVisility();
         refreshStateIndicator();
+        if (_graph && _graph->getGui()) {
+            _graph->getGui()->notifyLocalPresenceChanged();
+        }
     }
 }
 

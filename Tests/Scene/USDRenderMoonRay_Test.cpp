@@ -1264,7 +1264,9 @@ moonRaySubdivisionCube(const char* name,
 }
 
 // Writes a stage of meshes, usda text, under a dome light, seen by kCamera from ten units up +Z,
-// with a second camera, FarCam, far behind it.
+// with a second camera, AsideCam, as far to the side, which sees none of the meshes. MoonRay
+// measures a face's size by its distance from the render camera whatever the dicing camera, so a
+// dicing camera only changes the tessellation through its view and field of view.
 bool
 writeMoonRaySubdivisionStage(const QString& file,
                              const std::string& meshes)
@@ -1275,9 +1277,9 @@ writeMoonRaySubdivisionStage(const QString& file,
                    "        float horizontalAperture = 20.955\n        float verticalAperture = 20.955\n"
                    "        float2 clippingRange = (0.1, 100)\n"
                    "        double3 xformOp:translate = (0, 0, 10)\n        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n    }\n"
-                   "    def Camera \"FarCam\"\n    {\n        float focalLength = 50\n"
+                   "    def Camera \"AsideCam\"\n    {\n        float focalLength = 50\n"
                    "        float horizontalAperture = 20.955\n        float verticalAperture = 20.955\n"
-                   "        double3 xformOp:translate = (0, 0, 400)\n        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n    }\n"
+                   "        double3 xformOp:translate = (400, 0, 10)\n        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n    }\n"
                    "    def DomeLight \"Fill\"\n    {\n        float inputs:intensity = 1\n    }\n"
                    "}\n";
     std::FILE* f = std::fopen(file.toStdString().c_str(), "w");
@@ -1430,11 +1432,12 @@ TEST_F(USDRenderMoonRaySubdivisionTest, WithoutRenderSettingsTheCageRenders)
     EXPECT_NEAR(1.f, result.rgba[pixel(kCageCorner, kCageCorner) * 4 + 3], 1e-2f);
 }
 
-// With Adaptive Error above 0, tessellating as seen from a camera far behind the render camera
-// changes what the render camera sees. Coverage is no measure: a coarse tessellation of the limit
-// surface covers about as much as a fine one, so the renders are compared pixel by pixel, with the
-// render camera named as the dicing camera as the control that matches the default.
-TEST_F(USDRenderMoonRaySubdivisionTest, AFarDicingCameraChangesTheTessellation)
+// With Adaptive Error above 0, a dicing camera that does not see the mesh leaves it at the
+// coarsest tessellation where the render camera dices it finely. Coverage is no measure: a coarse
+// tessellation of the limit surface covers about as much as a fine one, so the renders are compared
+// pixel by pixel, with the render camera named as the dicing camera as the control that matches
+// the default.
+TEST_F(USDRenderMoonRaySubdivisionTest, ADicingCameraThatMissesTheMeshCoarsensIt)
 {
     if (!moonRayOrSkip()) {
         return;
@@ -1445,15 +1448,15 @@ TEST_F(USDRenderMoonRaySubdivisionTest, AFarDicingCameraChangesTheTessellation)
     adaptive["natron:meshResolution"] = PXR_NS::VtValue(8.f);
     std::map<std::string, PXR_NS::VtValue> same = adaptive;
     same["natron:dicingCamera"] = PXR_NS::VtValue(std::string(kCamera));
-    std::map<std::string, PXR_NS::VtValue> far = adaptive;
-    far["natron:dicingCamera"] = PXR_NS::VtValue(std::string("/World/FarCam"));
-    std::vector<float> nearRgba, sameRgba, farRgba;
-    ASSERT_TRUE(renderStage(cube, subdivided(adaptive), &nearRgba));
+    std::map<std::string, PXR_NS::VtValue> aside = adaptive;
+    aside["natron:dicingCamera"] = PXR_NS::VtValue(std::string("/World/AsideCam"));
+    std::vector<float> renderRgba, sameRgba, asideRgba;
+    ASSERT_TRUE(renderStage(cube, subdivided(adaptive), &renderRgba));
     ASSERT_TRUE(renderStage(cube, subdivided(same), &sameRgba));
-    ASSERT_TRUE(renderStage(cube, subdivided(far), &farRgba));
+    ASSERT_TRUE(renderStage(cube, subdivided(aside), &asideRgba));
 
-    EXPECT_EQ(0u, moonRayDifferingPixels(nearRgba, sameRgba));
-    EXPECT_GT(moonRayDifferingPixels(nearRgba, farRgba), 0u);
+    EXPECT_EQ(0u, moonRayDifferingPixels(renderRgba, sameRgba));
+    EXPECT_GT(moonRayDifferingPixels(renderRgba, asideRgba), 0u);
 }
 
 // A moonray:mesh_resolution primvar replaces the global Mesh Resolution for its own mesh only.

@@ -127,7 +127,9 @@ How finely a surface is diced into micropolygons:
 - MoonRay: Mesh Resolution (`moonrayMeshResolution`, 2) and Adaptive Error
   (`moonrayAdaptiveError`, 0, which turns adaptive dicing off) set the dicing.
   Dicing Camera (`moonrayDicingCamera`) names the camera prim meshes are diced
-  as seen from; empty uses the render camera. A mesh's primvars
+  as seen from; empty uses the render camera. Faces outside its view get the
+  coarsest dicing and its field of view sets how large a face looks, while the
+  distance to a face is still measured from the render camera. A mesh's primvars
   `moonray:mesh_resolution` and `moonray:adaptive_error` override them for that
   mesh.
 

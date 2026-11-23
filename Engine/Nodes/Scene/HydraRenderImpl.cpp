@@ -97,11 +97,14 @@
 #include "Engine/Nodes/Scene/MoonRaySettings.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/SceneCaches.h"
+#include "Engine/Nodes/Scene/SceneDrawFilter.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Nodes/Scene/StormGLSection.h"
 #include "Engine/Nodes/Scene/StormIdPass.h"
+#include "Engine/Nodes/Scene/StormPtexBindingFilter.h"
 #include "Engine/Nodes/Scene/StormPtexBudget.h"
+#include "Engine/Nodes/Scene/StormTextureBudget.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
 
@@ -121,6 +124,9 @@ renderGuarded(UsdImagingGLEngine* engine,
 {
     try {
         RenderDelegates::runRenderFaultHook();
+        if (RenderDelegates::isStorm(engine->GetCurrentRendererId().GetString())) {
+            StormTextureBudget::sampleFreeVideoMemory();
+        }
         engine->Render(root, params);
     } catch (const std::exception& e) {
         *what = e.what();
@@ -473,20 +479,32 @@ typedef std::unique_ptr<UsdImagingGLEngine, EngineDeleter> EnginePtr;
 /**
  * A new engine of parameters. A Cycles one (cycles), whose session the caller has opened, is made
  * so that its CPU device renders on threads threads, and closes the session when it goes. A
- * StormIdEngine (stormIds) is made for Storm on the GPU.
+ * StormIdEngine (stormIds) is made for Storm on the GPU. Only an engine made with wantFilter gets
+ * a SceneDrawFilter, whose renderInstanceId goes to *filterId if given; the viewer's draw states
+ * mean nothing to the others.
  **/
 EnginePtr
 newEngine(const UsdImagingGLEngine::Parameters& parameters,
           bool cycles,
           int threads,
-          bool stormIds)
+          bool stormIds,
+          bool wantFilter,
+          std::string* filterId = nullptr)
 {
     EnginePtr engine(nullptr, EngineDeleter { cycles, stormIds });
+    std::unique_ptr<SceneDrawFilter::EngineScope> scope;
+    if (wantFilter) {
+        SceneDrawFilter::registerForAllRenderers();
+        scope.reset(new SceneDrawFilter::EngineScope);
+    }
     const std::function<void()> make = [&]() {
         if (stormIds) {
             engine.reset(new StormIdEngine(parameters));
         } else {
             engine.reset(new UsdImagingGLEngine(parameters));
+        }
+        if (scope && filterId) {
+            *filterId = scope->getInstanceId();
         }
     };
 
@@ -642,12 +660,19 @@ takeGlError()
     return first;
 }
 
-// The light at the camera usdview gives a stage, which the request may ask for.
+/**
+ * The light at the camera usdview gives a stage, which the request may ask for. Storm places a
+ * camera-space light from its position alone; the distant light HdxTaskController makes for any
+ * other delegate is placed by the light's transform, so a delegate's headlight follows the camera
+ * only when transform is the camera's to world.
+ **/
 void
-setHeadlight(UsdImagingGLEngine* engine)
+setHeadlight(UsdImagingGLEngine* engine,
+             const GfMatrix4d& transform = GfMatrix4d(1.))
 {
     GlfSimpleLight light;
 
+    light.SetTransform(transform);
     light.SetIsCameraSpaceLight(true);
     light.SetPosition(GfVec4f(0.f, 0.f, 0.f, 1.f));
     light.SetAmbient(GfVec4f(0.f, 0.f, 0.f, 1.f));
@@ -1377,6 +1402,8 @@ RenderThread::makeEngine(EngineEntry& entry,
     }
     CyclesAovs::registerSceneIndices();
     MoonRayAovs::registerSceneIndices();
+    StormPtexBindingFilter::registerForStorm();
+    StormTextureBudget::registerForStorm();
     LiveTextureSceneIndex::registerSceneIndices();
     int threads = 0;
     if (cycles && !openCyclesSession(cancel, &threads, error)) {
@@ -1385,7 +1412,7 @@ RenderThread::makeEngine(EngineEntry& entry,
     std::string startError;
     {
         TfErrorMark mark;
-        entry.engine = newEngine(parameters, cycles, threads, _gl && RenderDelegates::isStorm(renderer));
+        entry.engine = newEngine(parameters, cycles, threads, _gl && RenderDelegates::isStorm(renderer), false);
         ++gEngineBuilds;
         // The engine reports a delegate it could not start as coding errors and renders nothing.
         if (entry.engine->GetCurrentRendererId() != TfToken(renderer)) {
@@ -2880,7 +2907,7 @@ namespace {
 struct ProgressiveRender::Implementation {
     typedef std::chrono::steady_clock Clock;
 
-    std::mutex* const stageLock;
+    StageLock stageLock;
     const std::function<bool(SceneStageSnapshot*)> snapshotOf;
     const std::function<void()> listener;
     const float background;
@@ -2921,6 +2948,10 @@ struct ProgressiveRender::Implementation {
     Status status;
     std::shared_ptr<const Frame> frame;
     int defaultMaxSamples = 0;
+    SceneDrawFilter::Rules drawRules;
+    bool renderEverything = false;
+    // Bumped by each change of what the filter is to draw by.
+    std::uint64_t drawEdits = 0;
 
     // The worker's; engineMutex guards them against pick() and barrier writes. The stage is made
     // on the first pass and kept until the worker ends, as an engine binds the first stage it
@@ -2943,6 +2974,19 @@ struct ProgressiveRender::Implementation {
     std::uint64_t workingEdits = 0;
     TfToken samplesKey;
     int appliedCap = 0;
+    // The engine's filter, null if its delegate's render index has none, and the drawEdits its
+    // rules are of.
+    SceneDrawFilter::WeakPtr drawFilter;
+    std::uint64_t appliedDrawEdits = 0;
+    // Whether the engine has the headlight that stands in for the scene's lights while the rules
+    // hide every one, as Storm's viewer lights such a scene.
+    bool headlit = false;
+    // An engine made again because its delegate did not show a restart starts with the headlight
+    // its predecessor had. Its filter learns the stage's lights only in its first render, so finding
+    // the headlight missing after that pass would restart the render; that restart may come too
+    // soon after the delegate starts for its counts to show it, which makes the engine again, and
+    // so on without end on a loaded machine.
+    bool carriedHeadlight = false;
     bool paused = false;
     // StopRenderer() stopped the delegate's threads for an edit; the next pass restarts them.
     bool rendererStopped = false;
@@ -2956,7 +3000,7 @@ struct ProgressiveRender::Implementation {
 
     std::thread worker;
 
-    Implementation(std::mutex* stageLock_,
+    Implementation(const StageLock& stageLock_,
                    const std::function<bool(SceneStageSnapshot*)>& snapshot_,
                    const std::function<void()>& listener_,
                    float background_)
@@ -2965,6 +3009,47 @@ struct ProgressiveRender::Implementation {
         , listener(listener_)
         , background(background_)
     {
+    }
+
+    // Under mutex.
+    SceneDrawFilter::Rules drawTarget() const
+    {
+        return renderEverything ? SceneDrawFilter::Rules() : drawRules;
+    }
+
+    // Under mutex.
+    void drawEdited()
+    {
+        ++drawEdits;
+        ++sceneEdits;
+        edited();
+    }
+
+    /**
+     * Whether the engine needs the headlight: the stage has lights and the rules keep all of them
+     * from Hydra. The task controller's own lights reach the filter too, and only the stage's
+     * count, or adding the headlight would take it away again. stage is the worker's; under
+     * engineMutex. The filter knows the stage's lights once a render has synced them.
+     **/
+    bool wantsHeadlight(const UsdStageRefPtr& stage) const
+    {
+        const SceneDrawFilter* filter = get_pointer(drawFilter);
+
+        return filter && filter->hidesEveryLight([&stage](const SdfPath& light) {
+            return bool(stage->GetPrimAtPath(light));
+        });
+    }
+
+    // Under engineMutex.
+    void applyHeadlight(bool on,
+                        const View& v)
+    {
+        if (on) {
+            setHeadlight(engine.get(), v.frustum.ComputeViewInverse());
+        } else {
+            engine->SetLightingState(GlfSimpleLightVector(), GlfSimpleMaterial(), GfVec4f(0.f, 0.f, 0.f, 1.f));
+        }
+        headlit = on;
     }
 
     // Under mutex.
@@ -2995,6 +3080,8 @@ struct ProgressiveRender::Implementation {
                 qWarning("A render delegate threw while resuming to be released.");
             }
         }
+        drawFilter = SceneDrawFilter::WeakPtr();
+        headlit = false;
         engine.reset();
         engineRenderer.clear();
         samplesKey = TfToken();
@@ -3060,6 +3147,8 @@ struct ProgressiveRender::Implementation {
                     bool cycles,
                     int threads,
                     const RendererSettings& primSettings,
+                    const SceneDrawFilter::Rules& rules,
+                    std::uint64_t rulesEdits,
                     int* defaultCap,
                     std::string* error)
     {
@@ -3072,9 +3161,10 @@ struct ProgressiveRender::Implementation {
         MoonRayAovs::registerSceneIndices();
         LiveTextureSceneIndex::registerSceneIndices();
         EnginePtr made;
+        std::string filterId;
         {
             TfErrorMark mark;
-            made = newEngine(parameters, cycles, threads, false);
+            made = newEngine(parameters, cycles, threads, false, true, &filterId);
             ++gEngineBuilds;
             if (made->GetCurrentRendererId() != TfToken(id)) {
                 std::string reasons;
@@ -3130,8 +3220,16 @@ struct ProgressiveRender::Implementation {
                 }
             }
         }
+        // Before the first render, which populates the render index, so seeding sends nothing.
+        const SceneDrawFilter::WeakPtr filter = filterId.empty() ? SceneDrawFilter::WeakPtr() : SceneDrawFilter::find(filterId);
+        if (SceneDrawFilter* f = get_pointer(filter)) {
+            f->seedRules(rules);
+        }
         std::lock_guard<std::mutex> l(engineMutex);
         engine = std::move(made);
+        drawFilter = filter;
+        appliedDrawEdits = rulesEdits;
+        headlit = false;
         engineRenderer = id;
         engineSettings = primSettings;
         depthAov = moonRay ? MoonRayAovs::depthAov() : HdAovTokens->depth;
@@ -3265,14 +3363,16 @@ struct ProgressiveRender::Implementation {
                       View* v,
                       int* cap,
                       std::uint64_t* passGeneration,
-                      std::uint64_t* restartIndex)
+                      std::uint64_t* restartIndex,
+                      std::uint64_t* passDrawEdits,
+                      SceneDrawFilter::Rules* passRules)
     {
         std::unique_lock<std::mutex> caller(callerMutex);
         // The caller edits its stage and bumps the generation under stageLock, so the generation
         // read with the snapshot is the one it was taken under. The caller may hold stageLock
         // through a long sync of its own: blocking on it with callerMutex held would make the
         // destructor, which takes callerMutex, wait out that sync.
-        std::unique_lock<std::mutex> stageGuard(*stageLock, std::defer_lock);
+        std::unique_lock<StageLock> stageGuard(stageLock, std::defer_lock);
         for (;;) {
             if (detached) {
                 return false;
@@ -3290,6 +3390,10 @@ struct ProgressiveRender::Implementation {
         *cap = (maxSamples > 0) ? maxSamples : defaultMaxSamples;
         *passGeneration = generation;
         *restartIndex = status.restarts;
+        *passDrawEdits = drawEdits;
+        if (drawEdits != appliedDrawEdits) {
+            *passRules = drawTarget();
+        }
 
         return true;
     }
@@ -3385,6 +3489,8 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
     bool lastConverged = false;
     bool firstPass = false;
     bool engineFresh = false;
+    // Whether the engine has rendered a pass, so that its delegate may be sampling on its own threads.
+    bool engineRendered = false;
     Clock::time_point restartTime = Clock::now();
     Clock::time_point stallSince = restartTime;
     bool done = false;
@@ -3435,6 +3541,8 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             const std::string id = renderer;
             const std::function<int()> threadsFn = threadsOf;
             const RendererSettings primSettings = settings;
+            const SceneDrawFilter::Rules rules = drawTarget();
+            const std::uint64_t rulesEdits = drawEdits;
             lock.unlock();
             const bool cycles = CyclesAovs::isCycles(id);
             int threads = 0;
@@ -3452,7 +3560,7 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             }
             std::string error;
             int cap = 0;
-            const bool made = makeEngine(id, cycles, threads, primSettings, &cap, &error);
+            const bool made = makeEngine(id, cycles, threads, primSettings, rules, rulesEdits, &cap, &error);
             lock.lock();
             if (!made) {
                 fail(lock, id, error, workingEdits);
@@ -3471,6 +3579,7 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             keepFrame = false;
             lastSamples = -1;
             lastConverged = false;
+            engineRendered = false;
             engineFresh = true;
             ++status.engines;
             needRestart = true;
@@ -3574,14 +3683,32 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             continue;
         }
 
+        if (engine && engineRendered && CyclesAovs::isCycles(engineRenderer) && !samplesKey.IsEmpty() && (appliedCap > 0) && !lastConverged) {
+            const int capNow = (maxSamples > 0) ? maxSamples : defaultMaxSamples;
+            if ((capNow > 0) && (capNow < appliedCap)) {
+                // Cycles told mid-render to stop at or below the samples it already holds resets to no
+                // sample and renders none again, with its AOVs cleared: a new engine starts under the
+                // cap, and the frame shown stays until it draws. Any lowering of a render under way
+                // counts, not only one below the samples last read: Cycles samples on between passes.
+                const bool lit = headlit;
+                lock.unlock();
+                dropEngine();
+                lock.lock();
+                carriedHeadlight = lit;
+                keepFrame = true;
+                continue;
+            }
+        }
         lock.unlock();
         View v;
         int cap = 0;
         std::uint64_t passGeneration = 0;
         std::uint64_t restartIndex = 0;
+        std::uint64_t passDrawEdits = 0;
+        SceneDrawFilter::Rules passRules;
         SceneStageSnapshot snapshot;
         bool hasStage = false;
-        if (!takeSnapshot(&snapshot, &hasStage, &v, &cap, &passGeneration, &restartIndex)) {
+        if (!takeSnapshot(&snapshot, &hasStage, &v, &cap, &passGeneration, &restartIndex, &passDrawEdits, &passRules)) {
             lock.lock();
             break;
         }
@@ -3595,12 +3722,14 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
         std::string renderFailure;
         std::string sessionFailure;
         std::shared_ptr<Frame> read;
+        bool lightsChanged = false;
         const std::uint64_t passEngineChanges = engineChanges.load();
         std::atomic<bool> exportCut { false };
         if (hasStage) {
             std::lock_guard<std::mutex> l(engineMutex);
             if (!workerStage) {
-                workerStage.reset(new SceneStage);
+                // Composes no payload until syncTo() applies the snapshot's load set.
+                workerStage.reset(new SceneStage(UsdStage::LoadNone));
             }
             const LiveTextureStore::ExportAbortScope exportAbort([this, passEngineChanges, &exportCut]() {
                 if (engineChanges.load() != passEngineChanges) {
@@ -3631,7 +3760,8 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
                     engine->SetRendererSetting(samplesKey, VtValue(cap));
                     appliedCap = cap;
                 }
-                if (!engineHasView || (engineView != v)) {
+                const bool viewMoved = !engineHasView || (engineView != v);
+                if (viewMoved) {
                     engine->SetRenderBufferSize(GfVec2i(v.width, v.height));
                     engine->SetFraming(CameraUtilFraming(GfRect2i(GfVec2i(0, 0), v.width, v.height)));
                     engine->SetCameraState(v.frustum.ComputeViewMatrix(), v.frustum.ComputeProjectionMatrix());
@@ -3647,10 +3777,30 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
                 params.clearColor = GfVec4f(0.f, 0.f, 0.f, 0.f);
                 params.colorCorrectionMode = HdxColorCorrectionTokens->disabled;
                 params.highlight = false;
+                SceneDrawFilter* filter = get_pointer(drawFilter);
+                if (passDrawEdits != appliedDrawEdits) {
+                    // All at once: each step of a paced reveal would restart the delegate.
+                    if (filter) {
+                        filter->replaceRules(passRules);
+                    }
+                    appliedDrawEdits = passDrawEdits;
+                }
+                const bool headlight = carriedHeadlight || wantsHeadlight(stage);
+                carriedHeadlight = false;
+                if ((headlight != headlit) || (headlight && viewMoved)) {
+                    applyHeadlight(headlight, v);
+                }
                 if (readsRestart) {
                     before = engine->GetRenderStats();
                 }
-                if (renderGuarded(engine.get(), stage->GetPseudoRoot(), params, &renderFailure)) {
+                const bool renderedPass = renderGuarded(engine.get(), stage->GetPseudoRoot(), params, &renderFailure);
+                if (filter) {
+                    filter->endRender();
+                }
+                // The render's sync may have brought the stage's lights to the filter, as an
+                // engine's first does, or taken them away.
+                lightsChanged = renderedPass && (wantsHeadlight(stage) != headlit);
+                if (renderedPass) {
                     rendered = true;
                     converged = engine->IsConverged();
                     stats = engine->GetRenderStats();
@@ -3663,6 +3813,7 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
         }
         const int samples = samplesOf(stats, cap);
         lock.lock();
+        engineRendered = engineRendered || rendered;
         if (quit) {
             break;
         }
@@ -3697,6 +3848,11 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             // Edited during the pass: what it rendered is stale.
             continue;
         }
+        if (lightsChanged) {
+            // Lit otherwise than the scene now asks: the next pass sets the headlight and restarts.
+            edited();
+            continue;
+        }
         if (!rendered) {
             // No stage yet: the sync that brings one edits it, and restarts.
             wake.wait(lock);
@@ -3711,9 +3867,12 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
         if (!restartSeen) {
             if (!restartWatch.restarting() && (now - restartTime >= kRestartUnseen)) {
                 // A new engine has no pixels from before to mistake for the restart's.
+                const bool lit = headlit;
                 lock.unlock();
                 dropEngine();
                 lock.lock();
+                carriedHeadlight = lit;
+                ++status.unseenRemakes;
                 keepFrame = true;
                 continue;
             }
@@ -3779,6 +3938,14 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
 } // ProgressiveRender::Implementation::refine
 
 ProgressiveRender::ProgressiveRender(std::mutex* stageLock,
+                                     const std::function<bool(SceneStageSnapshot*)>& snapshot,
+                                     const std::function<void()>& listener,
+                                     float background)
+    : ProgressiveRender(StageLock { [stageLock]() { return stageLock->try_lock(); }, [stageLock]() { stageLock->unlock(); } }, snapshot, listener, background)
+{
+}
+
+ProgressiveRender::ProgressiveRender(const StageLock& stageLock,
                                      const std::function<bool(SceneStageSnapshot*)>& snapshot,
                                      const std::function<void()>& listener,
                                      float background)
@@ -3918,6 +4085,52 @@ ProgressiveRender::setMaxSamples(int samples)
     _imp->maxSamples = samples;
     ++_imp->sceneEdits;
     _imp->edited();
+}
+
+void
+ProgressiveRender::setDrawRules(const SceneDrawFilter::Rules& rules)
+{
+    std::lock_guard<std::mutex> l(_imp->mutex);
+
+    if (rules == _imp->drawRules) {
+        return;
+    }
+    _imp->drawRules = rules;
+    if (!_imp->renderEverything) {
+        _imp->drawEdited();
+    }
+}
+
+void
+ProgressiveRender::applyDrawDeltas(const std::vector<SceneDrawDelta>& deltas)
+{
+    std::lock_guard<std::mutex> l(_imp->mutex);
+    SceneDrawFilter::Rules rules = _imp->drawRules;
+
+    for (const SceneDrawDelta& delta : deltas) {
+        SceneDrawFilter::applyToRules(delta, &rules);
+    }
+    if (rules == _imp->drawRules) {
+        return;
+    }
+    _imp->drawRules = std::move(rules);
+    if (!_imp->renderEverything) {
+        _imp->drawEdited();
+    }
+}
+
+void
+ProgressiveRender::setRenderEverything(bool on)
+{
+    std::lock_guard<std::mutex> l(_imp->mutex);
+
+    if (on == _imp->renderEverything) {
+        return;
+    }
+    _imp->renderEverything = on;
+    if (!_imp->drawRules.empty()) {
+        _imp->drawEdited();
+    }
 }
 
 int

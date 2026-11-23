@@ -391,8 +391,13 @@ struct TransformParams {
 };
 
 /**
+ * @brief The smallest scale magnitude effectiveScale() applies, what a scale of 0 becomes.
+ **/
+inline constexpr double kScaleMin = 0.0001;
+
+/**
  * @brief The scale actually applied: scaleY replaced by scaleX when uniform, and each kept at
- * least 0.0001 in magnitude.
+ * least kScaleMin in magnitude.
  **/
 inline void
 effectiveScale(double scaleParamX,
@@ -401,8 +406,6 @@ effectiveScale(double scaleParamX,
                double* outX,
                double* outY)
 {
-    const double kScaleMin = 0.0001;
-
     *outX = scaleParamX;
     if (std::fabs(*outX) < kScaleMin) {
         *outX = (*outX >= 0) ? kScaleMin : -kScaleMin;

@@ -156,8 +156,8 @@ struct Result {
     // 3 per pixel: the shading normal in camera space, 0 where nothing was hit. Empty when the
     // delegate renders no normal AOV, as Storm.
     std::vector<float> normal;
-    // What the delegate cannot render of the scene, one line per kind of prim, material or light,
-    // for the node's warning; empty if it renders everything or is not checked, as Storm.
+    // What the delegate cannot render of the scene, one line per kind of prim, material, light or
+    // volume field, for the node's warning; empty if it renders everything it is checked for.
     std::string warning;
     // The errors the delegate logged that name no prim of the scene, one per line; empty if none.
     std::string errors;

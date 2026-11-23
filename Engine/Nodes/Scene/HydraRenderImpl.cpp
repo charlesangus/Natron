@@ -1983,6 +1983,8 @@ RenderThread::frame(EngineEntry& entry,
         return false;
     }
     result->primPaths = entry.primPaths;
+    result->warning = entry.warning;
+    result->errors = entry.errors;
 
     return true;
 }

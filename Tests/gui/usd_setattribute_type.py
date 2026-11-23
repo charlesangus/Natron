@@ -54,16 +54,17 @@ try:
         return node.getPersistentMessage() or ""
 
     def steps():
+        viewer = app.getNode("Viewer1")
+        if viewer is None:
+            viewer = app.createNode("Viewer")
+        require(viewer is not None, "create the Viewer")
         ok = yield ("until", gt.viewer_up, STARTUP_TIMEOUT_S)
         require(ok, "the viewer is up")
 
         sphere = make("USDSphere", 0, 0)
         set_attr = make("USDSetAttribute", 0, 150)
         require(set_attr.connectInput(0, sphere), "connect the sphere to USDSetAttribute")
-        viewer = app.getNode("Viewer1")
-        if viewer is None:
-            viewer = app.createNode("Viewer")
-        require(viewer is not None and viewer.connectInput(0, set_attr), "view USDSetAttribute")
+        require(viewer.connectInput(0, set_attr), "view USDSetAttribute")
 
         gt.section("schema attribute")
         require(set_choice(param(set_attr, "valueType"), "string"), "start from a type that is not radius's")
@@ -109,16 +110,17 @@ try:
         require(ok, "radius sets double again")
         require(set_choice(param(set_attr, "valueType"), "half"), "hand-pick half")
         yield ("sleep", SETTLE_MS)
+        set_attr_name = set_attr.getScriptName()
         path = os.path.join(gt.OUT, PROJECT_NAME)
         require(app.saveProjectAs(path), "save the project to " + path)
         require(app.resetProject(), "reset the project")
         yield ("sleep", SETTLE_MS)
         reloaded = app.loadProject(path)
         require(reloaded is not None, "reopen " + path)
-        ok = yield ("until", lambda: reloaded.getNode(set_attr.getScriptName()) is not None, POLL_TIMEOUT_S)
+        ok = yield ("until", lambda: reloaded.getNode(set_attr_name) is not None, POLL_TIMEOUT_S)
         require(ok, "the node is back after reopening")
         yield ("sleep", 2 * SETTLE_MS)
-        back = reloaded.getNode(set_attr.getScriptName())
+        back = reloaded.getNode(set_attr_name)
         check(selected_type(back) == "half", "the hand-picked type survives the load (got %r)" % (selected_type(back),))
         gt.finish()
 

@@ -62,7 +62,19 @@ Natron never hands a Hydra delegate the scene camera. `HydraRender::Request` car
 
 **Verification gate:** `tools/ci/remote/build.sh debug --tests` green, including the P1.T2 framing parity test, the P2.T2 shutter test and both `VelocityBlursTheVolume` tests on Cycles and MoonRay; PR CI into the F1 branch green or the PM's gate standing in for it (§9b).
 
+- [ ] M554.P2.T4 — hdMoonray fork: shutter-window sampling of transforms and primvars, fit override and pixel aspect, fps from time codes per second
+  - files: the hdMoonray fork (branch natron/v2026.29.1: GeometryMixin.cc:121, Primvars.cc:379, Camera.cc:236, RenderPass.cc:85), the image pin
+  - approach: per P2.T1 findings; bump the pin in the image
+  - verify: moving-cube shutter blur test and fill-fit framing test pass on MoonRay
+  - size: L
+- [ ] M554.P2.T5 — Cycles fork: shuttertime/motion_position, object and point motion sampling, velocity_scale = (close − open)/tcps, fit override and pixel aspect
+  - files: the Cycles fork (camera.cpp, render_pass.cpp, integrator.cpp, geometry.inl, volume.cpp), the image pin
+  - approach: per P2.T1 findings; re-enable the Cycles VelocityBlursTheVolume test
+  - verify: Cycles shutter and volume velocity blur tests pass
+  - size: L
+
 ## Decisions
 - 2026-11-23 — Joins F1 - VDB Volumes (user): it re-enables tests that live on the F1 branch until F1 lands.
 - 2026-11-23 — Volume velocity motion blur is in scope alongside the camera shutter fix (user): velocity blur on volumes is a standard way to blur them and must be supported.
 - 2026-11-23 — Claimed ahead of its Deps at the user's request; works on top of the dependency's branch.
+- 2026-11-23 — P2.T1: hdCycles and hdMoonray ignore the fit override and pixel aspect; MoonRay samples geometry with no time window; Cycles never enables integrator motion blur. Until fork patches (P2.T4/T5) land, Cycles/MoonRay use the camera path only for expand fit with square pixels, otherwise the frustum (PM default; reversible).

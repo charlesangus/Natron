@@ -101,7 +101,7 @@ public:
                        "Attributes tagged as points, vectors, normals, quaternions or matrices "
                        "follow the transform; packed primitives have their transform multiplied "
                        "by it.",
-        .grouping = PLUGIN_GROUP_3D,
+        .grouping = PLUGIN_GROUP_GEOMETRY,
         .majorVersion = 1,
         .minorVersion = 0,
         .isWriter = false,

@@ -68,7 +68,7 @@ public:
         .description = "Edit geometry with a Python script. The script reads and writes attributes through geo "
                        "(geo.points[\"P\"], geo.prims[...], geo.vertices[...], geo.detail[...]), adds and removes "
                        "points and primitives, and can read the current frame as frame.",
-        .grouping = PLUGIN_GROUP_3D,
+        .grouping = PLUGIN_GROUP_GEOMETRY,
         .majorVersion = 1,
         .minorVersion = 0,
         .isWriter = false,

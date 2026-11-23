@@ -71,7 +71,7 @@ public:
         .id = PLUGINID_NATRON_GEODELETE,
         .label = "GeoDelete",
         .description = "Delete the points or primitives a group pattern selects, or keep only them.",
-        .grouping = PLUGIN_GROUP_3D,
+        .grouping = PLUGIN_GROUP_GEOMETRY,
         .majorVersion = 1,
         .minorVersion = 0,
         .isWriter = false,

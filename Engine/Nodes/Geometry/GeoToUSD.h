@@ -83,7 +83,7 @@ public:
                        "Root Path. Other geometry only defines new prims: a path outside Root Path that the Scene "
                        "input already holds goes under Root Path, with a warning. The geometry is served to the scene as it is, "
                        "without a copy; Copy Into Layer copies it into the node's layer instead.",
-        .grouping = PLUGIN_GROUP_3D,
+        .grouping = PLUGIN_GROUP_GEOMETRY,
         .majorVersion = 1,
         .minorVersion = 0,
         .isWriter = false,

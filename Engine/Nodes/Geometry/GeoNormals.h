@@ -94,7 +94,7 @@ public:
                        "the primitives. Vertex normals keep edges sharper than the cusp angle "
                        "hard. Polygons face the side from which their vertices turn "
                        "counter-clockwise.",
-        .grouping = PLUGIN_GROUP_3D,
+        .grouping = PLUGIN_GROUP_GEOMETRY,
         .majorVersion = 1,
         .minorVersion = 0,
         .isWriter = false,

@@ -116,7 +116,7 @@ public:
                        "points onto a plane, placed by an axis, translate, rotate and scale, or through a camera "
                        "taken from the scene on the Camera input. The camera projection maps its frame to 0 to 1, "
                        "so an image the camera sees lands where it saw it.",
-        .grouping = PLUGIN_GROUP_3D,
+        .grouping = PLUGIN_GROUP_GEOMETRY,
         .majorVersion = 1,
         .minorVersion = 0,
         .isWriter = false,

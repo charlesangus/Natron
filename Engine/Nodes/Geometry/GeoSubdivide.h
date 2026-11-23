@@ -113,7 +113,7 @@ public:
                        "triangles, or Bilinear to split faces without smoothing. Point and vertex attributes, uv "
                        "included, are interpolated across the new faces, which keep their parent's primitive "
                        "attributes and groups.",
-        .grouping = PLUGIN_GROUP_3D,
+        .grouping = PLUGIN_GROUP_GEOMETRY,
         .majorVersion = 1,
         .minorVersion = 0,
         .isWriter = false,

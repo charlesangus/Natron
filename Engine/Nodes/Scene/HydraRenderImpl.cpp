@@ -500,6 +500,8 @@ struct EngineEntry {
     EnginePtr engine;
     // Whether the engine lights the stage with a light at the camera.
     bool headlight = false;
+    // Whether the engine renders through a scene camera rather than a free one.
+    bool throughCamera = false;
     // The render settings the engine was made with: the request's, setRendererSettings()'s on top.
     std::map<std::string, VtValue> settings;
     // The thread budget a MoonRay engine was made with: its Arras session takes its cores when it starts.
@@ -544,6 +546,9 @@ struct EngineEntry {
     GfMatrix4d projection;
     int width = 0;
     int height = 0;
+    SdfPath camera;
+    HydraRender::FitModeEnum fit = HydraRender::eFitModeExpand;
+    double pixelAspect = 1.;
 
     // That render's primId plane and the paths of its hashes, decoded on the CPU when first asked for.
     bool idsDecoded = false;
@@ -1346,6 +1351,7 @@ RenderThread::makeEngine(EngineEntry& entry,
     const bool cycles = CyclesAovs::isCycles(renderer);
     entry.engine.reset();
     entry.rendered = false;
+    entry.throughCamera = false;
     // Named even for Storm: with no id the engine takes USD's default delegate, the first by
     // plugInfo priority that loads, which need not be Storm.
     UsdImagingGLEngine::Parameters parameters;
@@ -1489,6 +1495,11 @@ RenderThread::renderEngine(const HydraRender::Request& request,
         entry.rendered = false;
     }
     const UsdStageRefPtr& stage = entry.stage->getStage();
+    if (!request.camera.IsEmpty() && !UsdGeomCamera(stage->GetPrimAtPath(request.camera))) {
+        *error = "No camera at " + request.camera.GetString() + " on the input scene.";
+
+        return nullptr;
+    }
     RendererSettings settings = request.settings;
     for (const std::pair<const std::string, VtValue>& setting : rendererSettings(renderer)) {
         settings[setting.first] = setting.second;
@@ -1512,16 +1523,27 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     UsdImagingGLEngine* engine = entry.engine.get();
     const GfMatrix4d view = request.frustum.ComputeViewMatrix();
     const GfMatrix4d projection = request.frustum.ComputeProjectionMatrix();
+    HydraRender::EngineCamera engineCamera;
+    engineCamera.renderer = renderer;
+    engineCamera.camera = request.camera;
+    engineCamera.fit = request.fit;
+    engineCamera.pixelAspect = request.pixelAspect;
+    engineCamera.frustum = request.frustum;
+    engineCamera.width = width;
+    engineCamera.height = height;
+    // Two cameras with one frustum can differ in what else the delegate reads of them, such as
+    // their shutter.
+    const bool cameraMoved = (entry.camera != request.camera) || (entry.fit != request.fit) || (entry.pixelAspect != request.pixelAspect);
     const U64 writeCount = SceneWriteBarrier::getWriteCount();
     entry.lastUse = ++_useSerial;
-    if (entry.rendered && !edited && (entry.writeCount == writeCount) && (entry.time == request.time) && (entry.view == view) && (entry.projection == projection) && (entry.width == width) && (entry.height == height)) {
+    if (entry.rendered && !edited && (entry.writeCount == writeCount) && (entry.time == request.time) && (entry.view == view) && (entry.projection == projection) && (entry.width == width) && (entry.height == height) && !cameraMoved) {
         return &entry;
     }
     // Cycles shows a restart in its progress only once a change reaches it: a request changing
     // nothing it sees would wait out kRestartUnseen for one, then make the engine again.
     bool watchRestart = false;
     if (!freshEngine && RestartWatch::watches(renderer)) {
-        watchRestart = !entry.rendered || edited || (entry.writeCount != writeCount) || (entry.view != view) || (entry.projection != projection) || (entry.width != width) || (entry.height != height);
+        watchRestart = !entry.rendered || edited || (entry.writeCount != writeCount) || (entry.view != view) || (entry.projection != projection) || (entry.width != width) || (entry.height != height) || cameraMoved;
         if (!watchRestart && (entry.time != request.time)) {
             const U64 edits = entry.stage->getEditCount();
             if (!entry.timeVaryingKnown || (entry.timeVaryingEdits != edits) || (entry.timeVaryingWrites != writeCount)) {
@@ -1541,9 +1563,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     if (_gl) {
         bindFramebuffer(width, height);
     }
-    engine->SetRenderBufferSize(GfVec2i(width, height));
-    engine->SetFraming(CameraUtilFraming(GfRect2i(GfVec2i(0, 0), width, height)));
-    engine->SetCameraState(view, projection);
+    HydraRender::setEngineCamera(engine, engineCamera, &entry.throughCamera);
 
     UsdImagingGLRenderParams params;
     params.frame = request.time;
@@ -1669,9 +1689,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
                     return nullptr;
                 }
                 engine = entry.engine.get();
-                engine->SetRenderBufferSize(GfVec2i(width, height));
-                engine->SetFraming(CameraUtilFraming(GfRect2i(GfVec2i(0, 0), width, height)));
-                engine->SetCameraState(view, projection);
+                HydraRender::setEngineCamera(engine, engineCamera, &entry.throughCamera);
                 if (log) {
                     // What it kept of the session dropped must not fail the new one.
                     log.reset();
@@ -1720,6 +1738,9 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     entry.projection = projection;
     entry.width = width;
     entry.height = height;
+    entry.camera = request.camera;
+    entry.fit = request.fit;
+    entry.pixelAspect = request.pixelAspect;
 
     if (!_gl) {
         // Host memory, which the GPU budget does not count.
@@ -2307,6 +2328,25 @@ setHydraGLContextFactory(const HydraGLContextFactory& factory)
 }
 
 namespace HydraRender {
+namespace {
+    CameraUtilConformWindowPolicy
+    windowPolicy(FitModeEnum fit)
+    {
+        switch (fit) {
+        case eFitModeFill:
+            return CameraUtilCrop;
+        case eFitModeHorizontal:
+            return CameraUtilMatchHorizontally;
+        case eFitModeVertical:
+            return CameraUtilMatchVertically;
+        case eFitModeExpand:
+            return CameraUtilFit;
+        }
+
+        return CameraUtilFit;
+    }
+} // anon namespace
+
 bool
 cameraFrustum(const UsdStageRefPtr& stage,
               const SdfPath& cameraPath,
@@ -2325,23 +2365,57 @@ cameraFrustum(const UsdStageRefPtr& stage,
         return false;
     }
     GfCamera gfCamera = camera.GetCamera(time);
-    CameraUtilConformWindowPolicy policy = CameraUtilCrop;
-    switch (fit) {
-    case eFitModeFill:
-        policy = CameraUtilCrop;
-        break;
-    case eFitModeHorizontal:
-        policy = CameraUtilMatchHorizontally;
-        break;
-    case eFitModeVertical:
-        policy = CameraUtilMatchVertically;
-        break;
-    case eFitModeExpand:
-        policy = CameraUtilFit;
-        break;
-    }
-    CameraUtilConformWindow(&gfCamera, policy, aspect);
+    CameraUtilConformWindow(&gfCamera, windowPolicy(fit), aspect);
     *frustum = gfCamera.GetFrustum();
+
+    return true;
+}
+
+void
+setEngineCamera(UsdImagingGLEngine* engine,
+                const EngineCamera& view,
+                bool* throughCamera)
+{
+    engine->SetRenderBufferSize(GfVec2i(view.width, view.height));
+    CameraUtilFraming framing(GfRect2i(GfVec2i(0, 0), view.width, view.height));
+    if (view.camera.IsEmpty() || !rendersThroughCamera(view.renderer, view.fit, view.pixelAspect)) {
+        if (*throughCamera) {
+            engine->SetCameraPath(SdfPath());
+            engine->SetOverrideWindowPolicy(std::nullopt);
+            *throughCamera = false;
+        }
+        engine->SetFraming(framing);
+        engine->SetCameraState(view.frustum.ComputeViewMatrix(), view.frustum.ComputeProjectionMatrix());
+
+        return;
+    }
+    // The framing's aspect, its pixels' included, is the one cameraFrustum() conformed to.
+    framing.pixelAspectRatio = (float)view.pixelAspect;
+    engine->SetFraming(framing);
+    engine->SetOverrideWindowPolicy(windowPolicy(view.fit));
+    engine->SetCameraPath(view.camera);
+    *throughCamera = true;
+}
+
+bool
+rendersThroughCamera(const std::string& renderer,
+                     FitModeEnum fit,
+                     double pixelAspect)
+{
+    struct Delegate {
+        bool (*matches)(const std::string&);
+        bool honoursFit;
+        bool honoursPixelAspect;
+    };
+    static const Delegate kDelegates[] = {
+        { &CyclesAovs::isCycles, false, false },
+        { &MoonRayAovs::isMoonRay, false, false },
+    };
+    for (const Delegate& delegate : kDelegates) {
+        if (delegate.matches(renderer)) {
+            return (delegate.honoursFit || (fit == eFitModeExpand)) && (delegate.honoursPixelAspect || (pixelAspect == 1.));
+        }
+    }
 
     return true;
 }
@@ -2722,7 +2796,7 @@ contextDescription(std::string* error)
 bool
 ProgressiveRender::View::operator==(const View& other) const
 {
-    return (width == other.width) && (height == other.height) && (time == other.time) && (frustum.ComputeViewMatrix() == other.frustum.ComputeViewMatrix()) && (frustum.ComputeProjectionMatrix() == other.frustum.ComputeProjectionMatrix());
+    return (width == other.width) && (height == other.height) && (time == other.time) && (frustum.ComputeViewMatrix() == other.frustum.ComputeViewMatrix()) && (frustum.ComputeProjectionMatrix() == other.frustum.ComputeProjectionMatrix()) && (camera == other.camera) && (fit == other.fit) && (pixelAspect == other.pixelAspect);
 }
 
 namespace {
@@ -2902,6 +2976,7 @@ struct ProgressiveRender::Implementation {
     bool rendererStopped = false;
     View engineView;
     bool engineHasView = false;
+    bool engineThroughCamera = false;
     // The count the engine's Cycles session was opened under, and the one the worker last asked
     // CyclesThreads for, -1 before it asked.
     int engineThreads = 0;
@@ -2956,6 +3031,7 @@ struct ProgressiveRender::Implementation {
         paused = false;
         rendererStopped = false;
         engineHasView = false;
+        engineThroughCamera = false;
     }
 
     // Under mutex, and again on return. The delegate's render is of before an edit: one that can
@@ -3095,6 +3171,7 @@ struct ProgressiveRender::Implementation {
         appliedCap = cap;
         paused = false;
         engineHasView = false;
+        engineThroughCamera = false;
         *defaultCap = cap;
 
         return true;
@@ -3586,9 +3663,15 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
                     appliedCap = cap;
                 }
                 if (!engineHasView || (engineView != v)) {
-                    engine->SetRenderBufferSize(GfVec2i(v.width, v.height));
-                    engine->SetFraming(CameraUtilFraming(GfRect2i(GfVec2i(0, 0), v.width, v.height)));
-                    engine->SetCameraState(v.frustum.ComputeViewMatrix(), v.frustum.ComputeProjectionMatrix());
+                    EngineCamera camera;
+                    camera.renderer = engineRenderer;
+                    camera.camera = v.camera;
+                    camera.fit = v.fit;
+                    camera.pixelAspect = v.pixelAspect;
+                    camera.frustum = v.frustum;
+                    camera.width = v.width;
+                    camera.height = v.height;
+                    setEngineCamera(engine.get(), camera, &engineThroughCamera);
                     engineView = v;
                     engineHasView = true;
                 }

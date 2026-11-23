@@ -712,6 +712,10 @@ USDRender::prepareRender(double time,
     if (!HydraRender::cameraFrustum(stage, cameraPath, active.time, aspect, fit, &setup->request.frustum, error)) {
         return false;
     }
+    setup->request.camera = cameraPath;
+    setup->request.fit = fit;
+    // The pixels' own: rounding at a proxy level can move the image's aspect off the format's.
+    setup->request.pixelAspect = aspect * setup->request.height / setup->request.width;
 
     return true;
 } // USDRender::prepareRender

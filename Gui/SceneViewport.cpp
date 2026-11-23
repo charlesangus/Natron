@@ -564,6 +564,8 @@ struct SceneViewportRenderer::Implementation {
     bool showGuidePurpose = false;
     LightingModeEnum lightingMode = eLightingModeScene;
     bool sceneLit = false;
+    // Whether the engine renders through a scene camera rather than a free one.
+    bool engineThroughCamera = false;
     FreeCamera freeCamera;
     ClipPlanes clipPlanes;
     bool framedOnce = false;
@@ -1043,6 +1045,33 @@ struct SceneViewportRenderer::Implementation {
         return !lookThrough.empty() && (lookThroughOverridePath == lookThrough);
     }
 
+    // The camera a delegate renders through: the one looked through, unless it is drawn from an
+    // override, a transform its prim does not have. Empty for the free camera. Needs stageMutex.
+    SdfPath renderCameraPath() const
+    {
+        if (hasLookThroughOverride() || !lookThroughCamera()) {
+            return SdfPath();
+        }
+
+        return SdfPath(lookThrough);
+    }
+
+    // What a delegate renders through at width x height, as computeFrustum() frames it. Needs
+    // stageMutex.
+    HydraRender::EngineCamera engineCamera(int width,
+                                           int height) const
+    {
+        HydraRender::EngineCamera camera;
+        camera.renderer = rendererId;
+        camera.camera = renderCameraPath();
+        camera.fit = HydraRender::eFitModeVertical;
+        camera.frustum = computeFrustum(width, height);
+        camera.width = width;
+        camera.height = height;
+
+        return camera;
+    }
+
     // The camera looked through at the shown time, drawn from the override when there is one.
     // Needs stageMutex.
     GfCamera lookThroughGfCamera(const UsdGeomCamera& camera) const
@@ -1064,7 +1093,8 @@ struct SceneViewportRenderer::Implementation {
 
         if (UsdGeomCamera camera = lookThroughCamera()) {
             GfCamera gfCamera = lookThroughGfCamera(camera);
-            // Keeps the camera's vertical aperture, as usdview does without a camera mask.
+            // Keeps the camera's vertical aperture, as usdview does without a camera mask; the
+            // fit engineCamera() gives is the same.
             CameraUtilConformWindow(&gfCamera, CameraUtilMatchVertically, aspect);
 
             return gfCamera.GetFrustum();
@@ -1186,6 +1216,7 @@ struct SceneViewportRenderer::Implementation {
             {
                 TfErrorMark mark;
                 engine.reset(new SelectionEngine(parameters));
+                engineThroughCamera = false;
                 selectedPathsChanged = true;
                 ++engineCount;
                 ++engineConstructionCount;
@@ -1534,13 +1565,9 @@ struct SceneViewportRenderer::Implementation {
         engine->SetLightingState(sceneLit ? GlfSimpleLightVector() : GlfSimpleLightVector(1, light), material, GfVec4f(ambient, ambient, ambient, 1.f));
     }
 
-    void setCamera(const GfFrustum& frustum,
-                   int width,
-                   int height)
+    void setCamera(const HydraRender::EngineCamera& camera)
     {
-        engine->SetRenderBufferSize(GfVec2i(width, height));
-        engine->SetFraming(CameraUtilFraming(GfRect2i(GfVec2i(0, 0), width, height)));
-        engine->SetCameraState(frustum.ComputeViewMatrix(), frustum.ComputeProjectionMatrix());
+        HydraRender::setEngineCamera(engine.get(), camera, &engineThroughCamera);
         setLights();
     }
 
@@ -3043,9 +3070,10 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
     }
 
     const UsdStageRefPtr stage = _imp->currentStage();
-    const GfFrustum frustum = _imp->computeFrustum(width, height);
+    const HydraRender::EngineCamera camera = _imp->engineCamera(width, height);
+    const GfFrustum& frustum = camera.frustum;
     _imp->sceneLit = _imp->usesSceneLights();
-    _imp->setCamera(frustum, width, height);
+    _imp->setCamera(camera);
     const UsdImagingGLRenderParams params = _imp->renderParams();
     bool converged = false;
     for (int i = 0; (i < kMaxRenderPasses) && !converged; ++i) {
@@ -3154,9 +3182,12 @@ SceneViewportRenderer::renderProgressive(unsigned int fbo,
         progressive.setRenderer(_imp->rendererId);
         _imp->refineRenderer = _imp->rendererId;
     }
-    const GfFrustum frustum = _imp->computeFrustum(width, height);
+    const HydraRender::EngineCamera camera = _imp->engineCamera(width, height);
     HydraRender::ProgressiveRender::View view;
-    view.frustum = frustum;
+    view.frustum = camera.frustum;
+    view.camera = camera.camera;
+    view.fit = camera.fit;
+    view.pixelAspect = camera.pixelAspect;
     view.width = width;
     view.height = height;
     view.time = UsdTimeCode(_imp->timeCode());

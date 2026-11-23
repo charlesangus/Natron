@@ -212,11 +212,14 @@ renderScene(const std::string& renderer,
     request.height = kSize;
     request.renderer = renderer;
     std::string error;
-    if (!HydraRender::cameraFrustum(stage, PXR_NS::SdfPath(kCamera), request.time, 1., HydraRender::eFitModeFill, &request.frustum, &error)) {
+    if (!HydraRender::cameraFrustum(stage, PXR_NS::SdfPath(kCamera), request.time, 1., HydraRender::eFitModeExpand, &request.frustum, &error)) {
         ADD_FAILURE() << error;
 
         return false;
     }
+    request.camera = PXR_NS::SdfPath(kCamera);
+    request.fit = HydraRender::eFitModeExpand;
+    request.pixelAspect = 1.;
     HydraRender::Result result;
     const bool rendered = HydraRender::render(request, &result, &error);
     HydraRender::release(&owner);
@@ -364,8 +367,8 @@ TEST(VolumeRenderCycles, AWrongGridNameDrawsNothing)
     expectAWrongGridNameDrawsNothing(kRenderDelegateCyclesId);
 }
 
-// Disabled: Hydra delegates receive only a frustum, never the scene camera, so the camera
-// shutter cannot reach the renderer and blurred and still renders come out identical.
+// Disabled: the Cycles delegate never turns on integrator motion blur, and leaves the volume's
+// velocity scale at 1, which reads the per-second velocity field as per shutter interval.
 TEST(VolumeRenderCycles, DISABLED_VelocityBlursTheVolume)
 {
     if (!CyclesTestUtils::cyclesOrSkip()) {
@@ -390,9 +393,7 @@ TEST(VolumeRenderMoonRay, AWrongGridNameDrawsNothing)
     expectAWrongGridNameDrawsNothing(kMoonRayRendererId);
 }
 
-// Disabled: Hydra delegates receive only a frustum, never the scene camera, so the camera
-// shutter cannot reach the renderer and blurred and still renders come out identical.
-TEST(VolumeRenderMoonRay, DISABLED_VelocityBlursTheVolume)
+TEST(VolumeRenderMoonRay, VelocityBlursTheVolume)
 {
     if (!moonRayOrSkip()) {
         return;

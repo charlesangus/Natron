@@ -609,7 +609,8 @@ protected:
     {
         ASSERT_TRUE(start(std::map<std::string, PXR_NS::VtValue>(), renderer));
         if (std::string(renderer) != kRenderDelegateCyclesId) {
-            _render->setMaxSamples(64);
+            // MoonRay's cap is its pixel_samples, the square root of the samples per pixel: 8 takes 64.
+            _render->setMaxSamples(8);
         }
         SceneDrawFilter::Rules rules;
         rules[PXR_NS::SdfPath("/World/Far")] = SceneDrawFilter::eRuleHidden;

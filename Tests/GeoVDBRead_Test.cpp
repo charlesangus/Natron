@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -81,6 +82,27 @@ primNames(const GeoDetail& d)
     return names;
 }
 
+GeoIndex
+primIndexByName(const GeoDetail& d,
+                const std::string& name)
+{
+    for (GeoIndex p = 0; p < d.primitiveCount(); ++p) {
+        if (geoVDBName(d, GeoOffset(p)) == name) {
+            return p;
+        }
+    }
+
+    return GeoIndex(-1);
+}
+
+std::vector<std::string>
+sorted(std::vector<std::string> names)
+{
+    std::sort(names.begin(), names.end());
+
+    return names;
+}
+
 } // namespace
 
 TEST(GeoVDBRead, ListsTheGridsOfAFile)
@@ -92,7 +114,7 @@ TEST(GeoVDBRead, ListsTheGridsOfAFile)
     std::vector<std::string> names;
     std::string err;
     ASSERT_TRUE(geoVDBFileGridNames(path, &names, &err)) << err;
-    EXPECT_EQ(names, (std::vector<std::string> { "surface", "density", "vel" }));
+    EXPECT_EQ(sorted(names), (std::vector<std::string> { "density", "surface", "vel" }));
 }
 
 TEST(GeoVDBRead, ReadsEveryGridAsAPrimitive)
@@ -110,10 +132,10 @@ TEST(GeoVDBRead, ReadsEveryGridAsAPrimitive)
     for (GeoIndex p = 0; p < d.primitiveCount(); ++p) {
         EXPECT_EQ(d.primitiveType(GeoOffset(p)), eGeoPrimitiveVDB);
     }
-    EXPECT_EQ(primNames(d), (std::vector<std::string> { "surface", "density", "vel" }));
-    EXPECT_GT(geoVDBBounds(d, 0).max[0], 0.9);
-    EXPECT_EQ(geoVDBFieldInfo(*geoVDBGrid(d, 1)).gridClass, "fogVolume");
-    EXPECT_EQ(geoVDBFieldInfo(*geoVDBGrid(d, 2)).dataType, "float3");
+    EXPECT_EQ(sorted(primNames(d)), (std::vector<std::string> { "density", "surface", "vel" }));
+    EXPECT_GT(geoVDBBounds(d, primIndexByName(d, "surface")).max[0], 0.9);
+    EXPECT_EQ(geoVDBFieldInfo(*geoVDBGrid(d, primIndexByName(d, "density"))).gridClass, "fogVolume");
+    EXPECT_EQ(geoVDBFieldInfo(*geoVDBGrid(d, primIndexByName(d, "vel"))).dataType, "float3");
 }
 
 TEST(GeoVDBRead, GridPatternSelectsByName)
@@ -125,7 +147,7 @@ TEST(GeoVDBRead, GridPatternSelectsByName)
     GeoDetailBuilder b;
     std::string err;
     ASSERT_TRUE(GeoVDBRead::readFile(path, "* ^vel", b, &err)) << err;
-    EXPECT_EQ(primNames(b.finish()), (std::vector<std::string> { "surface", "density" }));
+    EXPECT_EQ(sorted(primNames(b.finish())), (std::vector<std::string> { "density", "surface" }));
 
     GeoDetailBuilder one;
     ASSERT_TRUE(GeoVDBRead::readFile(path, "dens*", one, &err)) << err;

@@ -56,6 +56,7 @@ CLANG_DIAG_ON(uninitialized)
 NATRON_NAMESPACE_ENTER
 
 class SceneBreadcrumbBar;
+class GeoDisplayBar;
 class SceneViewport;
 
 struct ViewerTabPrivate
@@ -96,6 +97,8 @@ struct ViewerTabPrivate
     Button* refinementPausedButton;
     Button* renderEverythingButton;
     Label* refineSamplesLabel;
+    // The geometry display toggles, shown while the scene view shows geometry.
+    GeoDisplayBar* geoDisplayRow;
 
     /*1st row*/
     //ComboBox* viewerLayers;

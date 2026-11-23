@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <array>
+#include <cmath>
 #include <set>
 #include <string>
 #include <string_view>
@@ -271,4 +272,129 @@ TEST(GeoGroupTest, ComparisonsMayHaveSpacesAroundTheOperator)
     EXPECT_EQ(std::vector<GeoIndex>({ 1, 4 }), selected(eGeoAttribClassPrimitive, "left*"));
     EXPECT_EQ(std::vector<GeoIndex>({ 1, 3, 4 }), selected(eGeoAttribClassPrimitive, "leftEdge 3 leftCorner"));
     EXPECT_EQ(std::vector<GeoIndex>({ 1 }), selected(eGeoAttribClassPrimitive, "left* ^@name == bar"));
+}
+
+namespace {
+GeoDetail
+gridOfCells(int cells)
+{
+    GeoShapeParams p;
+    p.shape = eGeoShapeGrid;
+    p.gridSize = { double(cells), double(cells) };
+    p.gridRows = cells;
+    p.gridColumns = cells;
+    GeoDetailBuilder builder;
+    buildGeoShape(p, builder);
+
+    return builder.finish();
+}
+
+GeoGroupParams
+pointsNearOrigin(double extent)
+{
+    GeoGroupParams params;
+    params.name = "g";
+    params.elements = eGeoGroupElementPoints;
+    params.usePattern = false;
+    params.useBounding = true;
+    params.size = { extent, 1., extent };
+
+    return params;
+}
+} // namespace
+
+TEST(GeoGroupTest, ExpandGrowsAPointGroupIntoADiamond)
+{
+    const GeoDetail input = gridOfCells(6);
+    GeoGroupParams params = pointsNearOrigin(0.5);
+    EXPECT_EQ(1u, members(grouped(input, params), eGeoAttribClassPoint, "g").size());
+
+    params.expand = true;
+    params.expandSteps = 2;
+    const GeoDetail out = grouped(input, params);
+    const std::vector<GeoIndex> got = members(out, eGeoAttribClassPoint, "g");
+    EXPECT_EQ(13u, got.size());
+    for (GeoIndex index : got) {
+        const auto p = out.pointPosition(out.pointMap().offsetFromIndex(index));
+        EXPECT_LE(std::abs(p[0]) + std::abs(p[2]), 2. + 1e-6);
+    }
+
+    GeoGroupParams wide = pointsNearOrigin(2.5);
+    wide.expand = true;
+    wide.expandSteps = -1;
+    EXPECT_EQ(1u, members(grouped(input, wide), eGeoAttribClassPoint, "g").size());
+}
+
+TEST(GeoGroupTest, PromotePointBlockToPrimitives)
+{
+    const GeoDetail input = gridOfCells(3);
+    GeoGroupParams params = pointsNearOrigin(1.5);
+    params.promote = true;
+    params.promoteTo = eGeoGroupPromotePrimitives;
+    EXPECT_EQ(4u, members(grouped(input, pointsNearOrigin(1.5)), eGeoAttribClassPoint, "g").size());
+
+    params.entirelyContained = true;
+    GeoDetail out = grouped(input, params);
+    EXPECT_EQ(1u, members(out, eGeoAttribClassPrimitive, "g").size());
+    EXPECT_EQ(nullptr, out.findGroup(eGeoAttribClassPoint, "g"));
+
+    params.entirelyContained = false;
+    out = grouped(input, params);
+    EXPECT_EQ(9u, members(out, eGeoAttribClassPrimitive, "g").size());
+}
+
+TEST(GeoGroupTest, KeepOriginalLeavesThePointGroupInPlace)
+{
+    const GeoDetail input = gridOfCells(3);
+    GeoGroupParams params = pointsNearOrigin(1.5);
+    params.promote = true;
+    params.promoteTo = eGeoGroupPromotePrimitives;
+    params.entirelyContained = true;
+    params.keepOriginal = true;
+    const GeoDetail out = grouped(input, params);
+    EXPECT_EQ(4u, members(out, eGeoAttribClassPoint, "g").size());
+    EXPECT_EQ(1u, members(out, eGeoAttribClassPrimitive, "g").size());
+}
+
+TEST(GeoGroupTest, PromoteToEdgesAndExpandThenPromote)
+{
+    const GeoDetail input = gridOfCells(3);
+    GeoGroupParams params = pointsNearOrigin(1.5);
+    params.promote = true;
+    params.promoteTo = eGeoGroupPromoteEdges;
+    params.entirelyContained = true;
+    const GeoDetail edges = grouped(input, params);
+    const GeoEdgeGroup* group = edges.findEdgeGroup("g");
+    ASSERT_NE(nullptr, group);
+    EXPECT_EQ(4u, group->size());
+
+    GeoGroupParams both = pointsNearOrigin(1.5);
+    both.expand = true;
+    both.expandSteps = 1;
+    both.promote = true;
+    both.promoteTo = eGeoGroupPromotePrimitives;
+    both.entirelyContained = true;
+    // Growing the centre 2x2 point block by one ring leaves only the four grid corners unselected, so five quads are entirely contained.
+    EXPECT_EQ(5u, members(grouped(input, both), eGeoAttribClassPrimitive, "g").size());
+}
+
+TEST(GeoGroupTest, ExpandAndPromoteLeaveOtherPagesShared)
+{
+    const GeoDetail input = gridOfCells(6);
+    GeoGroupParams params = pointsNearOrigin(0.5);
+    params.expand = true;
+    params.promote = true;
+    params.promoteTo = eGeoGroupPromotePrimitives;
+    const GeoDetail out = grouped(input, params);
+
+    for (GeoAttribClassEnum cls : { eGeoAttribClassPoint, eGeoAttribClassPrimitive }) {
+        const GeoAttribute* in = input.findAttribute(cls, cls == eGeoAttribClassPoint ? GeoDetail::kPositionName : "name");
+        const GeoAttribute* after = out.findAttribute(cls, cls == eGeoAttribClassPoint ? GeoDetail::kPositionName : "name");
+        if (!in || !after) {
+            continue;
+        }
+        for (std::size_t i = 0; i < in->pageCount(); ++i) {
+            EXPECT_EQ(in->values().page(i).get(), after->values().page(i).get());
+        }
+    }
 }

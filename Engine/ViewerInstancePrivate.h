@@ -66,6 +66,7 @@
 NATRON_NAMESPACE_ENTER
 
 class GpuPlacementPlanner;
+class GeoViewerLayer;
 
 struct AbortableRenderInfo_CompareAge
 {
@@ -674,8 +675,10 @@ public:
     // An empty input reads as an image, yet the viewer may keep showing a scene through it.
     bool notifiedHasInputA = false;
 
-    mutable std::mutex lastSceneMutex; // protects lastScene, lastSceneError, lastSceneOk, lastSceneLoadSet, lastSceneReach
+    mutable std::mutex lastSceneMutex; // protects lastScene, lastSceneError, lastSceneOk, lastSceneLoadSet, lastSceneReach, geometryLayers
     ScenePayload lastScene[2];
+    // Made on the first geometry the input of each texture shows.
+    std::shared_ptr<GeoViewerLayer> geometryLayers[2];
     std::string lastSceneError[2];
     bool lastSceneOk[2];
     SceneLoadSetPtr lastSceneLoadSet[2];

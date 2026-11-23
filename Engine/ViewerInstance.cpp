@@ -78,6 +78,7 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/MemoryFile.h"
 #include "Engine/MemoryInfo.h" // printAsRAM
 #include "Engine/Node.h"
+#include "Engine/Nodes/Geometry/GeoViewerLayer.h"
 #include "Engine/Nodes/IO/OcioSpaceKnobs.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Raw/RawDisplay.h"
@@ -756,7 +757,7 @@ effectsRequestingOverlayImagesUpstream(const NodePtr& viewerNode,
             continue;
         }
         const EffectInstancePtr effect = node->getEffectInstance();
-        if (effect && effect->isOverlayImageRequested() && !node->isNodeDisabled() && !effect->producesDeepData() && !effect->producesSceneData()) {
+        if (effect && effect->isOverlayImageRequested() && !node->isNodeDisabled() && !effect->producesDeepData() && !effect->producesSceneData() && !effect->producesGeometryData()) {
             effects.push_back(effect);
         }
         const int nInputs = node->getNInputs();
@@ -1023,6 +1024,25 @@ ViewerInstance::initializeKnobs()
                                                                    "through that input, so it lines up with the viewed image. Off draws "
                                                                    "it in its own space."));
     mapSiblingOverlays->setDefaultValue(true);
+    createViewerKnob<KnobBool>(this, page, tr("Point Markers"), kViewerParamPointMarkers,
+                               tr("Marks every point of the geometry viewed in the 3D view."));
+    createViewerKnob<KnobBool>(this, page, tr("Point Numbers"), kViewerParamPointNumbers,
+                               tr("Writes the number of each point of the geometry viewed beside it, in the 3D view. "
+                                  "Only points in view are numbered, up to a limit per frame."));
+    createViewerKnob<KnobBool>(this, page, tr("Primitive Numbers"), kViewerParamPrimitiveNumbers,
+                               tr("Writes the number of each primitive of the geometry viewed at its centre, in the 3D view. "
+                                  "Only primitives in view are numbered, up to a limit per frame."));
+    createViewerKnob<KnobBool>(this, page, tr("Normals"), kViewerParamNormals,
+                               tr("Draws the N point attribute of the geometry viewed as a line from each point, in the 3D view."));
+    KnobDoublePtr normalScale = createViewerKnob<KnobDouble>(this, page, tr("Normal Scale"), kViewerParamNormalScale,
+                                                             tr("The length, in scene units, a normal of length 1 is drawn at."));
+    normalScale->setDefaultValue(0.1);
+    normalScale->setMinimum(0.);
+    normalScale->setDisplayMinimum(0.);
+    normalScale->setDisplayMaximum(10.);
+    createViewerKnob<KnobString>(this, page, tr("Highlight Group"), kViewerParamHighlightGroup,
+                                 tr("The point group, else the primitive group, of the geometry viewed to highlight in the 3D view. "
+                                    "Empty highlights nothing."));
 
     if (NodePtr node = getNode()) {
         node->declareLayerKnob(layer, 0, LayerKnobSpec::eRoleInputBound);
@@ -1141,6 +1161,7 @@ ViewerInstance::getColourToSave(bool* hasColour,
 
     return true;
 }
+
 bool
 ViewerInstance::knobChanged(KnobI* k,
                             ValueChangedReasonEnum reason,
@@ -1250,7 +1271,8 @@ ViewerInstance::redrawOrRenderForColorChange()
     // A scene has no 8-bit texture to bake into: Storm's view grades its pixels as it draws them,
     // and a render would only re-evaluate the scene and resync it. A progressive delegate's frames
     // come sRGB-encoded without the display transform, which a render would not change either.
-    const bool bakesDisplay = (_imp->uiContext->getBitDepth() == eImageBitDepthByte) && (getActiveInputDataKind() != eDataKindScene);
+    const DataKindEnum activeKind = getActiveInputDataKind();
+    const bool bakesDisplay = (_imp->uiContext->getBitDepth() == eImageBitDepthByte) && (activeKind != eDataKindScene) && (activeKind != eDataKindGeometry);
     if (bakesDisplay && !getApp()->getProject()->isLoadingProject()) {
         renderCurrentFrame(true);
     } else {
@@ -3911,7 +3933,8 @@ ViewerInstance::getRenderViewerArgsAndCheckCache(SequenceTime time,
     }
     // The scene action resolves disabled nodes itself, so a scene is evaluated from the input
     // as connected rather than from the nearest non-disabled node.
-    outArgs->sceneUpstream = upstreamInput && upstreamInput->producesSceneData();
+    outArgs->geometryUpstream = upstreamInput && upstreamInput->producesGeometryData();
+    outArgs->sceneUpstream = upstreamInput && (outArgs->geometryUpstream || upstreamInput->producesSceneData());
     if (outArgs->sceneUpstream) {
         outArgs->activeInputToRender = upstreamInput;
     }
@@ -3962,28 +3985,38 @@ ViewerInstance::evaluateSceneInput(ViewerArgs& inArgs)
     const int textureIndex = inArgs.params->textureIndex;
     ScenePayload scene;
     std::string error;
-    EffectInstance::RenderRoIRetCode code;
-    EffectInstance::takeLastPullFresh();
+    bool ok = false;
     const SceneEvaluationContext context(_imp->sceneContextId, getSceneLoadSet(), std::make_shared<SceneLoadReach>());
-    try {
-        code = inArgs.activeInputToRender->evaluateScene(EffectInstance::EvaluateSceneArgs(inArgs.params->time, inArgs.params->view, context), &scene, &error);
-    } catch (const std::exception& e) {
-        code = EffectInstance::eRenderRoIRetCodeFailed;
-        error = e.what();
-    } catch (...) {
-        code = EffectInstance::eRenderRoIRetCodeFailed;
-    }
-    if (EffectInstance::takeLastPullFresh() && (code == EffectInstance::eRenderRoIRetCodeOk)) {
-        getNode()->noteInputExecution(inArgs.activeInputIndex);
-    }
+    if (inArgs.geometryUpstream) {
+        bool aborted = false;
+        ok = evaluateGeometryInput(inArgs, &scene, &error, &aborted);
+        if (aborted) {
+            renderEndedWithoutImage(textureIndex, inArgs.params->abortInfo->getRenderAge());
 
-    if (code == EffectInstance::eRenderRoIRetCodeAborted) {
-        renderEndedWithoutImage(textureIndex, inArgs.params->abortInfo->getRenderAge());
+            return eViewerRenderRetCodeRedraw;
+        }
+    } else {
+        EffectInstance::RenderRoIRetCode code;
+        EffectInstance::takeLastPullFresh();
+        try {
+            code = inArgs.activeInputToRender->evaluateScene(EffectInstance::EvaluateSceneArgs(inArgs.params->time, inArgs.params->view, context), &scene, &error);
+        } catch (const std::exception& e) {
+            code = EffectInstance::eRenderRoIRetCodeFailed;
+            error = e.what();
+        } catch (...) {
+            code = EffectInstance::eRenderRoIRetCodeFailed;
+        }
+        if (EffectInstance::takeLastPullFresh() && (code == EffectInstance::eRenderRoIRetCodeOk)) {
+            getNode()->noteInputExecution(inArgs.activeInputIndex);
+        }
 
-        return eViewerRenderRetCodeRedraw;
+        if (code == EffectInstance::eRenderRoIRetCodeAborted) {
+            renderEndedWithoutImage(textureIndex, inArgs.params->abortInfo->getRenderAge());
+
+            return eViewerRenderRetCodeRedraw;
+        }
+        ok = (code == EffectInstance::eRenderRoIRetCodeOk);
     }
-
-    const bool ok = (code == EffectInstance::eRenderRoIRetCodeOk);
     if (!ok && error.empty()) {
         error = inArgs.activeInputToRender->getScriptName_mt_safe() + ": scene evaluation failed";
     }
@@ -4003,6 +4036,40 @@ ViewerInstance::evaluateSceneInput(ViewerArgs& inArgs)
     // itself, and Fail would stop playback and clear the whole viewer for what the 3D view shows.
     return eViewerRenderRetCodeBlack;
 } // ViewerInstance::evaluateSceneInput
+
+bool
+ViewerInstance::evaluateGeometryInput(ViewerArgs& inArgs,
+                                      ScenePayload* scene,
+                                      std::string* error,
+                                      bool* aborted)
+{
+    const int textureIndex = inArgs.params->textureIndex;
+    GeoDetailConstPtr detail;
+    EffectInstance::RenderRoIRetCode code;
+    try {
+        code = inArgs.activeInputToRender->evaluateGeometry(EffectInstance::EvaluateGeometryArgs(inArgs.params->time, inArgs.params->view), &detail, error);
+    } catch (const std::exception& e) {
+        code = EffectInstance::eRenderRoIRetCodeFailed;
+        *error = e.what();
+    } catch (...) {
+        code = EffectInstance::eRenderRoIRetCodeFailed;
+    }
+    *aborted = (code == EffectInstance::eRenderRoIRetCodeAborted);
+    if ((code != EffectInstance::eRenderRoIRetCodeOk) || ((textureIndex != 0) && (textureIndex != 1))) {
+        return false;
+    }
+
+    std::shared_ptr<GeoViewerLayer> layer;
+    {
+        std::lock_guard<std::mutex> k(_imp->lastSceneMutex);
+        if (!_imp->geometryLayers[textureIndex]) {
+            _imp->geometryLayers[textureIndex] = std::make_shared<GeoViewerLayer>("viewer-" + getScriptName_mt_safe() + "-" + std::to_string(textureIndex));
+        }
+        layer = _imp->geometryLayers[textureIndex];
+    }
+
+    return layer->serveFrame(detail, inArgs.params->time, inArgs.params->isSequential, scene, error);
+} // ViewerInstance::evaluateGeometryInput
 
 ViewerInstance::ViewerRenderRetCode
 ViewerInstance::renderViewer_internal(ViewIdx view,
@@ -6543,7 +6610,14 @@ ViewerInstance::getActiveInputDataKind() const
 bool
 ViewerInstance::isWipeDisabledByDataKind() const
 {
-    return (getInputDataKindForTexture(0) == eDataKindScene) || (getInputDataKindForTexture(1) == eDataKindScene);
+    for (int i = 0; i < 2; ++i) {
+        const DataKindEnum kind = getInputDataKindForTexture(i);
+        if ((kind == eDataKindScene) || (kind == eDataKindGeometry)) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 bool
@@ -6571,6 +6645,22 @@ ViewerInstance::getLastEvaluatedScene(int textureIndex,
     }
 
     return _imp->lastSceneOk[textureIndex];
+}
+
+bool
+ViewerInstance::showGeometryFrame(int textureIndex,
+                                  int frame)
+{
+    if ((textureIndex != 0) && (textureIndex != 1)) {
+        return false;
+    }
+    std::shared_ptr<GeoViewerLayer> layer;
+    {
+        std::lock_guard<std::mutex> k(_imp->lastSceneMutex);
+        layer = _imp->geometryLayers[textureIndex];
+    }
+
+    return layer && layer->showFrame(frame);
 }
 
 void
@@ -6659,11 +6749,15 @@ ViewerInstance::refreshActiveInputDataKind()
     getActiveInputs(a, b);
     const EffectInstancePtr inputA = (a >= 0) ? getInput(a) : EffectInstancePtr();
     const bool hasInputA = inputA && inputA->getNode();
-    const bool wipeDisabled = (kinds[0] == eDataKindScene) || (kinds[1] == eDataKindScene);
+    const bool shows3D[2] = { (kinds[0] == eDataKindScene) || (kinds[0] == eDataKindGeometry), (kinds[1] == eDataKindScene) || (kinds[1] == eDataKindGeometry) };
+    const bool wipeDisabled = shows3D[0] || shows3D[1];
     {
         std::lock_guard<std::mutex> k(_imp->lastSceneMutex);
         for (int i = 0; i < 2; ++i) {
-            if (kinds[i] != eDataKindScene) {
+            if (kinds[i] != eDataKindGeometry) {
+                _imp->geometryLayers[i].reset();
+            }
+            if (!shows3D[i]) {
                 _imp->lastScene[i] = ScenePayload();
                 _imp->lastSceneError[i].clear();
                 _imp->lastSceneOk[i] = false;

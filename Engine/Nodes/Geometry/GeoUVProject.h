@@ -122,6 +122,8 @@ public:
         .isWriter = false,
         .outputKind = eDataKindGeometry,
         .inputs = kInputs,
+        .geoGroupKnob = kGeoUVProjectParamGroup,
+        .geoGroupClasses = eGeoGroupClassPrimitives,
     };
 
     static EffectInstance* BuildEffect(NodePtr node)

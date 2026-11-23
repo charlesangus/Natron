@@ -33,12 +33,14 @@
 #include <vector>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/Geo/GeoOpUtils.h"
 #include "Engine/GeoDetail.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
 #define PLUGINID_NATRON_GEODISPLACE "GeoDisplace"
 
 #define kGeoDisplaceParamGroup "group"
+#define kGeoDisplaceParamGroupType "groupType"
 #define kGeoDisplaceParamDisplaceBy "displaceBy"
 #define kGeoDisplaceParamAmplitude "amplitude"
 #define kGeoDisplaceParamOffset "offset"
@@ -86,8 +88,10 @@ struct GeoDisplaceImage {
 };
 
 struct GeoDisplaceParams {
-    // A point group pattern (see geoSelectElements()); empty for every point.
+    // A group pattern over groupType's class (see geoSelectElements() and geoSelectEdges()); empty for every point.
     std::string group;
+    // Points or Edges, or Guess to read the class from the pattern.
+    GeoGroupTypeEnum groupType = eGeoGroupTypeGuess;
     GeoDisplaceByEnum displaceBy = eGeoDisplaceByNoise;
     double amplitude = 1.;
     double offset = 0.;
@@ -145,6 +149,9 @@ public:
         .isWriter = false,
         .outputKind = eDataKindGeometry,
         .inputs = kInputs,
+        .geoGroupKnob = kGeoDisplaceParamGroup,
+        .geoGroupClasses = eGeoGroupClassPoints | eGeoGroupClassEdges,
+        .geoGroupTypeKnob = kGeoDisplaceParamGroupType,
     };
 
     static EffectInstance* BuildEffect(NodePtr node)
@@ -181,6 +188,7 @@ private:
     void updateEnabled();
 
     KnobStringWPtr _group;
+    KnobChoiceWPtr _groupType;
     KnobChoiceWPtr _displaceBy;
     KnobDoubleWPtr _amplitude;
     KnobDoubleWPtr _offset;

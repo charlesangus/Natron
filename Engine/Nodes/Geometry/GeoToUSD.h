@@ -28,20 +28,26 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <memory>
 #include <string>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/Geo/GeoOpUtils.h"
+#include "Engine/GeoDetail.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
 // Free of USD: NativeRegistryAll.inc includes every node header into translation units that keep
 // Py_LIMITED_API, which USD's headers cannot be compiled under.
 
 #define PLUGINID_NATRON_GEOTOUSD "GeoToUSD"
+#define kGeoToUSDParamGroup "group"
+#define kGeoToUSDParamGroupType "groupType"
 #define kGeoToUSDParamRootPath "rootPath"
 #define kGeoToUSDParamAuthorTimeSamples "authorTimeSamples"
 #define kGeoToUSDParamPackedPrimitives "packedPrimitives"
 #define kGeoToUSDParamCopyIntoLayer "copyIntoLayer"
+#define kGeoToUSDParamDefaultPointWidth "defaultPointWidth"
 #define kGeoToUSDInputGeometry 0
 #define kGeoToUSDInputScene 1
 
@@ -53,6 +59,8 @@ NATRON_NAMESPACE_ENTER
  * it; a changed detail is applied to that layer in place, before the scene evaluation that needs
  * it takes its read scope (prepareSceneSources()). The layer is keyed by the node, plus the time
  * when anything upstream varies with it.
+ *
+ * Only the part of the detail the group selects (selectGeometry()) is gathered and converted.
  *
  * Primitives read from USD (kGeoUsdSourceAttr) whose path names a prim of the Scene input become
  * overrides of that prim, packed transforms written relative to its parent; other primitives
@@ -76,7 +84,8 @@ public:
     static constexpr NodeSpec kNodeSpec = {
         .id = PLUGINID_NATRON_GEOTOUSD,
         .label = "GeoToUSD",
-        .description = "Put geometry on the scene, over the optional Scene input. Each primitive's path attribute "
+        .description = "Put geometry on the scene, over the optional Scene input; Group restricts it to the selected "
+                       "points or primitives. Each primitive's path attribute "
                        "names the prim it becomes; primitives without one go under Root Path. Geometry read with "
                        "USDToGeo overrides the prim it was read from in place when the Scene input still holds it, "
                        "so once edited it comes back where it was read from; if that prim is gone it goes under "
@@ -89,6 +98,9 @@ public:
         .isWriter = false,
         .outputKind = eDataKindScene,
         .inputs = kInputs,
+        .geoGroupKnob = kGeoToUSDParamGroup,
+        .geoGroupClasses = eGeoGroupClassPoints | eGeoGroupClassPrimitives,
+        .geoGroupTypeKnob = kGeoToUSDParamGroupType,
     };
 
     static EffectInstance* BuildEffect(NodePtr node)
@@ -99,6 +111,27 @@ public:
     explicit GeoToUSD(NodePtr node);
 
     virtual ~GeoToUSD();
+
+    /**
+     * @brief hook is called with each frame a scene render has gathered the geometry of, on the
+     * thread that gathered it, until this is called again with an empty one.
+     **/
+    static void setFrameGatheredHookForTests(const std::function<void(double frame)>& hook);
+
+    /**
+     * @brief The part of @p detail a group pattern converts, in @p selected. A primitive group
+     * keeps the selected primitives and the points they use. A point group keeps the primitives
+     * whose points are all selected, their points, and the selected points no primitive uses.
+     * Element offsets and attribute values of what is kept do not change; a blank pattern, or
+     * one that selects everything, gives @p detail itself. @p groupType is points, primitives
+     * or guess, which resolves to points or primitives. False with @p error set for a malformed
+     * pattern or one that names another class.
+     **/
+    static bool selectGeometry(const GeoDetailConstPtr& detail,
+                               const std::string& group,
+                               GeoGroupTypeEnum groupType,
+                               GeoDetailConstPtr* selected,
+                               std::string* error);
 
 private:
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -117,10 +150,13 @@ private:
 
     void updateTimeSamplesEnabled();
 
+    KnobStringWPtr _group;
+    KnobChoiceWPtr _groupType;
     KnobStringWPtr _rootPath;
     KnobBoolWPtr _authorTimeSamples;
     KnobChoiceWPtr _packedPrimitives;
     KnobBoolWPtr _copyIntoLayer;
+    KnobDoubleWPtr _defaultPointWidth;
 
     struct Implementation;
     std::unique_ptr<Implementation> _imp;

@@ -30,6 +30,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <iterator>
 #include <type_traits>
 
 NATRON_NAMESPACE_ENTER
@@ -652,6 +653,129 @@ geoSelectElements(const GeoDetail& detail,
     return true;
 }
 
+std::string
+geoEncodePattern(const GeoDetail& detail,
+                 GeoAttribClassEnum cls,
+                 const GeoElementMask& mask,
+                 bool emptyMeansEverything)
+{
+    const GeoIndexMap& map = detail.indexMap(cls);
+    std::vector<GeoIndex> numbers;
+    map.forEachLiveRun([&](GeoIndex index, GeoOffset offset, GeoOffset count) {
+        for (GeoOffset i = 0; i < count; ++i) {
+            const std::size_t at = std::size_t(offset + i);
+            if (at < mask.size() && mask[at]) {
+                numbers.push_back(index + GeoIndex(i));
+            }
+        }
+    });
+    if (numbers.empty()) {
+        return emptyMeansEverything ? std::string() : std::string("^*");
+    }
+    if (numbers.size() > 1 && GeoIndex(numbers.size()) == map.size()) {
+        return "*";
+    }
+    std::string out;
+    const std::size_t n = numbers.size();
+    std::size_t i = 0;
+    while (i < n) {
+        std::size_t last = i;
+        GeoIndex step = 0;
+        if (i + 1 < n) {
+            step = numbers[i + 1] - numbers[i];
+            last = i + 1;
+            while (last + 1 < n && numbers[last + 1] - numbers[last] == step) {
+                ++last;
+            }
+        }
+        if (!out.empty()) {
+            out += ' ';
+        }
+        if (last - i + 1 >= 3) {
+            out += std::to_string(numbers[i]) + '-' + std::to_string(numbers[last]);
+            if (step != 1) {
+                out += ':' + std::to_string(step);
+            }
+            i = last + 1;
+        } else {
+            out += std::to_string(numbers[i]);
+            ++i;
+        }
+    }
+
+    return out;
+}
+
+std::string
+geoEncodeEdgePattern(const GeoDetail& detail,
+                     std::span<const GeoEdge> edges,
+                     bool emptyMeansEverything)
+{
+    const GeoIndexMap& points = detail.pointMap();
+    std::vector<std::pair<GeoIndex, GeoIndex>> pairs;
+    pairs.reserve(edges.size());
+    for (const GeoEdge& e : edges) {
+        if (e.p0 >= 0 && e.p1 >= 0 && points.isLive(e.p0) && points.isLive(e.p1) && e.p0 != e.p1) {
+            pairs.emplace_back(points.indexFromOffset(e.p0), points.indexFromOffset(e.p1));
+        }
+    }
+    std::sort(pairs.begin(), pairs.end());
+    pairs.erase(std::unique(pairs.begin(), pairs.end()), pairs.end());
+    if (pairs.empty()) {
+        return emptyMeansEverything ? std::string() : std::string("^*");
+    }
+
+    // Each entry of a point's list is (neighbour, edge); the lists come out ascending because
+    // the pairs are sorted and element numbers follow offset order.
+    std::vector<std::vector<std::pair<GeoIndex, std::size_t>>> adjacency(std::size_t(points.size()));
+    for (std::size_t e = 0; e < pairs.size(); ++e) {
+        adjacency[std::size_t(pairs[e].first)].emplace_back(pairs[e].second, e);
+        adjacency[std::size_t(pairs[e].second)].emplace_back(pairs[e].first, e);
+    }
+    std::vector<char> used(pairs.size(), 0);
+    std::vector<std::size_t> cursor(adjacency.size(), 0);
+    std::vector<std::size_t> remaining(adjacency.size(), 0);
+    for (std::size_t v = 0; v < adjacency.size(); ++v) {
+        remaining[v] = adjacency[v].size();
+    }
+
+    std::string out;
+    auto walkFrom = [&](std::size_t start) {
+        std::string path = "p" + std::to_string(start);
+        std::size_t current = start;
+        for (;;) {
+            auto& list = adjacency[current];
+            std::size_t& at = cursor[current];
+            while (at < list.size() && used[list[at].second]) {
+                ++at;
+            }
+            if (at == list.size()) {
+                break;
+            }
+            used[list[at].second] = 1;
+            --remaining[current];
+            --remaining[std::size_t(list[at].first)];
+            current = std::size_t(list[at].first);
+            path += '-' + std::to_string(current);
+        }
+        if (!out.empty()) {
+            out += ' ';
+        }
+        out += path;
+    };
+    // Starting at an odd-degree point first keeps the path count at its minimum: a walk from
+    // one can only end at another, so loops are left for the pass that follows.
+    for (int pass = 0; pass < 2; ++pass) {
+        for (std::size_t v = 0; v < adjacency.size(); ++v) {
+            while (remaining[v] > 0 && (pass == 1 || (remaining[v] & 1))) {
+                walkFrom(v);
+            }
+        }
+    }
+
+    return out;
+}
+
 std::optional<GeoAttributeDesc>
 geoPromotedDesc(const GeoAttributeDesc& a,
                 const GeoAttributeDesc& b)
@@ -877,6 +1001,273 @@ geoComposeTransform(const std::array<double, 3>& translate,
     m = geoMatrixMultiply(m, scaling);
 
     return geoMatrixMultiply(m, translation(-pivot[0], -pivot[1], -pivot[2]));
+}
+
+std::set<GeoEdge>
+geoAllEdges(const GeoDetail& detail)
+{
+    std::set<GeoEdge> edges;
+    geoForEachEdge(detail, [&](const GeoEdge& e, GeoOffset /*prim*/) {
+        edges.insert(e);
+    });
+
+    return edges;
+}
+
+namespace {
+
+bool
+parsePointPath(const GeoDetail& detail,
+               std::string_view token,
+               std::set<GeoEdge>* out)
+{
+    std::vector<GeoOffset> path;
+    std::size_t pos = 1;
+    while (pos <= token.size()) {
+        const std::size_t start = pos;
+        GeoIndex value = 0;
+        while (pos < token.size() && std::isdigit((unsigned char)token[pos])) {
+            value = value * 10 + GeoIndex(token[pos] - '0');
+            ++pos;
+        }
+        if (pos == start) {
+            return false;
+        }
+        path.push_back(value < detail.pointCount() ? detail.pointMap().offsetFromIndex(value) : GeoOffset(-1));
+        if (pos == token.size()) {
+            break;
+        }
+        if (token[pos] != '-') {
+            return false;
+        }
+        ++pos;
+    }
+    if (path.size() < 2) {
+        return false;
+    }
+    for (std::size_t i = 0; i + 1 < path.size(); ++i) {
+        if (path[i] >= 0 && path[i + 1] >= 0 && path[i] != path[i + 1]) {
+            out->insert(GeoEdge(path[i], path[i + 1]));
+        }
+    }
+
+    return true;
+}
+
+} // anonymous namespace
+
+bool
+geoSelectEdges(const GeoDetail& detail,
+               const std::string& pattern,
+               std::set<GeoEdge>* edges,
+               std::string* error)
+{
+    const std::set<GeoEdge> all = geoAllEdges(detail);
+    const std::vector<std::string_view> tokens = geoSplitPattern(pattern);
+    edges->clear();
+    if (tokens.empty()) {
+        *edges = all;
+
+        return true;
+    }
+    for (std::string_view token : tokens) {
+        const bool remove = token.front() == '^';
+        if (remove) {
+            token.remove_prefix(1);
+        }
+        const bool negate = !token.empty() && token.front() == '!';
+        if (negate) {
+            token.remove_prefix(1);
+        }
+        std::set<GeoEdge> hit;
+        if (token.empty()) {
+            continue;
+        } else if (token == "*") {
+            hit = all;
+        } else if (token.front() == '@') {
+            GeoAttribCompare compare;
+            if (!geoParseAttribCompare(token, &compare, error)) {
+                return false;
+            }
+            if (const GeoAttribute* a = detail.findAttribute(eGeoAttribClassPoint, compare.attribute)) {
+                for (const GeoEdge& e : all) {
+                    if (geoEvalAttribCompare(*a, std::size_t(e.p0), compare) && geoEvalAttribCompare(*a, std::size_t(e.p1), compare)) {
+                        hit.insert(e);
+                    }
+                }
+            }
+        } else if (token.size() > 1 && token.front() == 'p' && std::isdigit((unsigned char)token[1])) {
+            if (!parsePointPath(detail, token, &hit)) {
+                if (error) {
+                    *error = "malformed point path \"" + std::string(token) + "\"";
+                }
+
+                return false;
+            }
+        } else if (std::isdigit((unsigned char)token.front())) {
+            if (error) {
+                *error = "edges are named by point paths such as p0-1, not by numbers: \"" + std::string(token) + "\"";
+            }
+
+            return false;
+        } else {
+            for (const std::string& name : detail.edgeGroupNames()) {
+                if (!geoGlobMatch(token, name)) {
+                    continue;
+                }
+                if (const GeoEdgeGroup* group = detail.findEdgeGroup(name)) {
+                    for (const GeoEdge& e : group->edges()) {
+                        if (detail.pointMap().isLive(e.p0) && detail.pointMap().isLive(e.p1)) {
+                            hit.insert(e);
+                        }
+                    }
+                }
+            }
+        }
+        if (negate) {
+            std::set<GeoEdge> complement;
+            std::set_difference(all.begin(), all.end(), hit.begin(), hit.end(), std::inserter(complement, complement.end()));
+            hit.swap(complement);
+        }
+        for (const GeoEdge& e : hit) {
+            if (remove) {
+                edges->erase(e);
+            } else {
+                edges->insert(e);
+            }
+        }
+    }
+
+    return true;
+}
+
+namespace {
+
+struct GuessTerm {
+    bool classified = false;
+    GeoGroupTypeEnum type = eGeoGroupTypePoints;
+};
+
+GuessTerm
+classifyTerm(const GeoDetail& detail,
+             std::string_view token)
+{
+    GuessTerm term;
+    if (token.empty() || token == "*") {
+        return term;
+    }
+    const auto set = [&](GeoGroupTypeEnum type) {
+        term.classified = true;
+        term.type = type;
+    };
+    if (token.front() == '@') {
+        GeoAttribCompare compare;
+        std::string ignored;
+        if (!geoParseAttribCompare(token, &compare, &ignored)) {
+            return term;
+        }
+        if (detail.findAttribute(eGeoAttribClassPrimitive, compare.attribute)) {
+            set(eGeoGroupTypePrimitives);
+        } else if (detail.findAttribute(eGeoAttribClassPoint, compare.attribute)) {
+            set(eGeoGroupTypePoints);
+        }
+
+        return term;
+    }
+    if (token.size() > 1 && token.front() == 'p' && std::isdigit((unsigned char)token[1])) {
+        set(eGeoGroupTypeEdges);
+
+        return term;
+    }
+    if (std::isdigit((unsigned char)token.front())) {
+        return term;
+    }
+    const auto matches = [&](const std::vector<std::string>& names) {
+        return std::any_of(names.begin(), names.end(), [&](const std::string& n) {
+            return geoGlobMatch(token, n);
+        });
+    };
+    if (matches(detail.groupNames(eGeoAttribClassPrimitive))) {
+        set(eGeoGroupTypePrimitives);
+    } else if (matches(detail.groupNames(eGeoAttribClassPoint))) {
+        set(eGeoGroupTypePoints);
+    } else if (matches(detail.edgeGroupNames())) {
+        set(eGeoGroupTypeEdges);
+    }
+
+    return term;
+}
+
+const char*
+groupTypeName(GeoGroupTypeEnum type)
+{
+    switch (type) {
+    case eGeoGroupTypePoints:
+        return "points";
+    case eGeoGroupTypePrimitives:
+        return "primitives";
+    case eGeoGroupTypeEdges:
+        return "edges";
+    case eGeoGroupTypeGuess:
+        break;
+    }
+
+    return "guess";
+}
+
+} // anonymous namespace
+
+bool
+geoGuessGroupType(const GeoDetail& detail,
+                  std::string_view pattern,
+                  std::span<const GeoGroupTypeEnum> allowed,
+                  GeoGroupTypeEnum fallback,
+                  GeoGroupTypeEnum* type,
+                  std::string* error)
+{
+    const auto isAllowed = [&](GeoGroupTypeEnum t) {
+        return std::find(allowed.begin(), allowed.end(), t) != allowed.end();
+    };
+    bool found = false;
+    GeoGroupTypeEnum resolved = fallback;
+    std::string firstTerm;
+    for (std::string_view token : geoSplitPattern(pattern)) {
+        std::string_view bare = token;
+        if (!bare.empty() && bare.front() == '^') {
+            bare.remove_prefix(1);
+        }
+        if (!bare.empty() && bare.front() == '!') {
+            bare.remove_prefix(1);
+        }
+        const GuessTerm term = classifyTerm(detail, bare);
+        if (!term.classified) {
+            continue;
+        }
+        if (!isAllowed(term.type)) {
+            if (error) {
+                *error = "\"" + std::string(token) + "\" selects " + groupTypeName(term.type) + ", which this node does not take";
+            }
+
+            return false;
+        }
+        if (!found) {
+            found = true;
+            resolved = term.type;
+            firstTerm = std::string(token);
+        } else if (term.type != resolved) {
+            if (error) {
+                *error = "the group mixes " + std::string(groupTypeName(resolved)) + " (\"" + firstTerm + "\") and " + groupTypeName(term.type) + " (\"" + std::string(token) + "\"); set the group type instead of guessing";
+            }
+
+            return false;
+        }
+    }
+    if (!found && !isAllowed(fallback) && !allowed.empty()) {
+        resolved = allowed.front();
+    }
+    *type = resolved;
+
+    return true;
 }
 
 NATRON_NAMESPACE_EXIT

@@ -156,13 +156,14 @@ public:
 
     /**
      * @brief For a writer whose output kind is eDataKindGeometry: writes @p detail, the node's own
-     * output evaluated at @p time and @p view, for one frame of its render. Called from a render
-     * thread, frames possibly in parallel unless rendersFramesInOrder(). On failure, sets a
-     * persistent error naming the cause and returns eStatusFailed, which fails the render.
+     * output evaluated at @p time and @p view and never null, for one frame of its render. Called
+     * from a render thread, frames possibly in parallel unless rendersFramesInOrder(). On failure,
+     * sets @p error to the cause and returns eStatusFailed, which fails the render with it.
      **/
     virtual StatusEnum writeGeometryFrame(double /*time*/,
                                           ViewIdx /*view*/,
-                                          const GeoDetailConstPtr& /*detail*/)
+                                          const GeoDetailConstPtr& /*detail*/,
+                                          std::string* /*error*/)
     {
         return eStatusOK;
     }

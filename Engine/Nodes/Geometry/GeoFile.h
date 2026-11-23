@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <string>
+#include <vector>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/GeoDetail.h"
@@ -37,6 +38,7 @@
 #define PLUGINID_NATRON_GEOFILE "GeoFile"
 #define kGeoFileParamFile "file"
 #define kGeoFileParamMissingFrames "missingFrames"
+#define kGeoFileParamReload "reload"
 
 NATRON_NAMESPACE_ENTER
 
@@ -52,6 +54,9 @@ enum GeoFileMissingFrameEnum {
  * A frame whose file is absent is an error, holds the nearest frame on disk or reads as empty
  * geometry, per the Missing Frames knob; a file that exists but cannot be read is always an
  * error. An empty file name gives empty geometry.
+ *
+ * The files are stamped (FileStampRegistry) into the node hash, so geometry cached from them is
+ * served until Reload or a GeoFileCache writing them re-stamps them.
  **/
 class GeoFile
     : public NativeEffectBase {
@@ -105,6 +110,19 @@ public:
                                             ViewIdx view);
 
     /**
+     * @brief The FileStampRegistry stamp of the file or sequence @p pattern, an expandPattern()
+     * result, names; 0 for an empty pattern.
+     **/
+    static U64 patternStamp(const std::string& pattern);
+
+    /**
+     * @brief For refreshFileDependencies(): true when one of @p paths, just written or reloaded,
+     * is a file of @p pattern, whose stamps are then dropped.
+     **/
+    static bool invalidatePatternIfCovered(const std::string& pattern,
+                                           const std::vector<std::string>& paths);
+
+    /**
      * @brief Reads the frame of @p pattern through the missing-frame rule. False with @p error
      * set on failure; *detail is set on success.
      **/
@@ -119,6 +137,13 @@ public:
 private:
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void initializeKnobs() OVERRIDE FINAL;
+    virtual bool knobChanged(KnobI* k,
+                             ValueChangedReasonEnum reason,
+                             ViewSpec view,
+                             double time,
+                             bool originatedFromMainThread) OVERRIDE FINAL;
+    virtual void appendNodeContentHash(ContentHasher& h) const OVERRIDE FINAL;
+    virtual bool refreshFileDependencies(const std::vector<std::string>& paths) OVERRIDE FINAL;
     virtual StatusEnum getPreferredMetadataAt(double time,
                                               ViewIdx view,
                                               NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -126,7 +151,10 @@ private:
                                       GeoDetailConstPtr* outputDetail,
                                       std::string* errorMessage) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    std::string currentPattern() const;
+
     KnobFileWPtr _file;
+    KnobButtonWPtr _reload;
     KnobChoiceWPtr _missingFrames;
 };
 

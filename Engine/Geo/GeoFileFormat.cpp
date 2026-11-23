@@ -32,6 +32,7 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <set>
@@ -44,6 +45,9 @@
 #include <unistd.h>
 
 #include <zstd.h>
+
+#define XXH_INLINE_ALL
+#include "xxhash.h"
 
 #include "Engine/Geo/GeoPacked.h"
 
@@ -68,8 +72,25 @@ enum PageKindEnum : std::uint8_t {
     ePageZstd = 2,
 };
 
-// Smallest page record: kind byte plus stored length.
+// Smallest page record: kind byte plus stored length. Constant and raw pages also carry an XXH64
+// of their stored bytes; zstd pages rely on the frame's own checksum.
 constexpr std::size_t kMinPageRecordBytes = 1 + 8;
+
+// A compression level that stores every non-uniform page raw.
+constexpr int kNoCompression = -1000000;
+
+bool
+pageHasChecksum(PageKindEnum kind)
+{
+    return kind != ePageZstd;
+}
+
+std::uint64_t
+pageChecksum(const unsigned char* data,
+             std::size_t bytes)
+{
+    return XXH64(data, bytes, 0);
+}
 
 std::size_t
 pageCountFor(std::size_t size)
@@ -142,9 +163,6 @@ threadDCtx()
 
     return ctx.get();
 }
-
-// ---------------------------------------------------------------------------------------------
-// Writing
 
 class Sink {
 public:
@@ -220,6 +238,7 @@ struct EncodedPage {
     PageKindEnum kind = ePageRaw;
     const unsigned char* data = nullptr;
     std::size_t bytes = 0;
+    std::uint64_t checksum = 0;
     std::vector<unsigned char> compressed;
 };
 
@@ -230,20 +249,15 @@ encodePage(EncodedPage& out,
            std::size_t count,
            int level)
 {
-    if (ref.constant) {
-        out.kind = ePageConstant;
-        out.data = ref.data;
-        out.bytes = elementBytes;
-        return;
-    }
     bool uniform = true;
-    for (std::size_t i = 1; i < count && uniform; ++i) {
+    for (std::size_t i = 1; !ref.constant && i < count && uniform; ++i) {
         uniform = std::memcmp(ref.data, ref.data + i * elementBytes, elementBytes) == 0;
     }
     if (uniform) {
         out.kind = ePageConstant;
         out.data = ref.data;
         out.bytes = elementBytes;
+        out.checksum = pageChecksum(out.data, out.bytes);
         return;
     }
 
@@ -251,6 +265,10 @@ encodePage(EncodedPage& out,
     out.kind = ePageRaw;
     out.data = ref.data;
     out.bytes = rawBytes;
+    if (level == kNoCompression) {
+        out.checksum = pageChecksum(out.data, out.bytes);
+        return;
+    }
 
     ZSTD_CCtx* ctx = threadCCtx();
     ZSTD_CCtx_reset(ctx, ZSTD_reset_session_and_parameters);
@@ -265,6 +283,7 @@ encodePage(EncodedPage& out,
         out.bytes = n;
     } else {
         out.compressed.clear();
+        out.checksum = pageChecksum(out.data, out.bytes);
     }
 }
 
@@ -288,6 +307,9 @@ writeColumn(Sink& sink,
         for (const EncodedPage& e : batch) {
             sink.u8(e.kind);
             sink.u64(e.bytes);
+            if (pageHasChecksum(e.kind)) {
+                sink.u64(e.checksum);
+            }
             sink.write(e.data, e.bytes);
         }
     }
@@ -547,10 +569,43 @@ writeDetail(Sink& sink,
     sink.u32(kTagDetailEnd);
 }
 
+std::vector<unsigned char>
+uncompressedRecord(const GeoDetail& d)
+{
+    std::vector<unsigned char> bytes;
+    VectorSink sink(bytes);
+    writeDetail(sink, d, std::vector<std::uint64_t>(), kNoCompression);
+
+    return bytes;
+}
+
+// Equal content hashes are only a hint: two details share a record only once their shared details
+// match in order and their records match byte for byte.
+bool
+sameContent(const GeoDetail& a,
+            const GeoDetail& b)
+{
+    if (&a == &b) {
+        return true;
+    }
+    const auto& sa = a.sharedDetails();
+    const auto& sb = b.sharedDetails();
+    if (sa.size() != sb.size()) {
+        return false;
+    }
+    for (std::size_t i = 0; i < sa.size(); ++i) {
+        if (!sameContent(*sa[i], *sb[i])) {
+            return false;
+        }
+    }
+
+    return uncompressedRecord(a) == uncompressedRecord(b);
+}
+
 struct RecordPlan {
     std::vector<const GeoDetail*> details;
     std::vector<std::vector<std::uint64_t>> sharedIds;
-    std::unordered_map<U64, std::uint64_t> idByHash;
+    std::unordered_multimap<U64, std::uint64_t> idsByHash;
 };
 
 std::uint64_t
@@ -559,9 +614,11 @@ planRecord(RecordPlan& plan,
            bool isRoot)
 {
     if (!isRoot) {
-        const auto found = plan.idByHash.find(d.contentHash());
-        if (found != plan.idByHash.end()) {
-            return found->second;
+        const auto range = plan.idsByHash.equal_range(d.contentHash());
+        for (auto it = range.first; it != range.second; ++it) {
+            if (sameContent(*plan.details[it->second], d)) {
+                return it->second;
+            }
         }
     }
     std::vector<std::uint64_t> ids;
@@ -572,7 +629,7 @@ planRecord(RecordPlan& plan,
     plan.details.push_back(&d);
     plan.sharedIds.push_back(std::move(ids));
     if (!isRoot) {
-        plan.idByHash.emplace(d.contentHash(), id);
+        plan.idsByHash.emplace(d.contentHash(), id);
     }
 
     return id;
@@ -596,9 +653,6 @@ encodeTo(Sink& sink,
         writeDetail(sink, *plan.details[i], plan.sharedIds[i], options.compressionLevel);
     }
 }
-
-// ---------------------------------------------------------------------------------------------
-// Reading
 
 class Cursor {
 public:
@@ -683,6 +737,7 @@ struct ParsedPage {
     PageKindEnum kind;
     const unsigned char* data;
     std::size_t bytes;
+    std::uint64_t checksum;
 };
 
 struct ParsedColumn {
@@ -733,17 +788,17 @@ parseColumn(Cursor& c,
         } else if (kind != ePageZstd || stored == 0) {
             c.fail("page " + std::to_string(pi) + " has an unknown encoding");
         }
+        const std::uint64_t checksum = pageHasChecksum(PageKindEnum(kind)) ? c.u64() : 0;
         if (stored > c.remaining()) {
             c.fail("the file is truncated");
         }
         const unsigned char* data = c.bytes(std::size_t(stored));
-        col.pages.push_back(ParsedPage { PageKindEnum(kind), data, std::size_t(stored) });
+        col.pages.push_back(ParsedPage { PageKindEnum(kind), data, std::size_t(stored), checksum });
     }
 
     return col;
 }
 
-// Writes the page's valid elements into @p dst.
 void
 decodePage(const ParsedColumn& col,
            std::size_t pi,
@@ -753,6 +808,9 @@ decodePage(const ParsedColumn& col,
     const ParsedPage& page = col.pages[pi];
     const std::size_t count = pageElementCount(col.size, pi);
     const std::size_t rawBytes = count * col.elementBytes;
+    if (pageHasChecksum(page.kind) && pageChecksum(page.data, page.bytes) != page.checksum) {
+        throw GeoFileError(errors.error(col.section, "page " + std::to_string(pi) + " fails its checksum"));
+    }
     switch (page.kind) {
     case ePageConstant:
         for (std::size_t i = 0; i < count; ++i) {
@@ -974,11 +1032,8 @@ parseHeader(Cursor& c,
     c.bytes(sizeof(kMagic));
     GeoFileInfo info;
     info.version = c.u32();
-    if (info.version == 0) {
-        c.fail("bad format version 0");
-    }
-    if (info.version > kGeoFileFormatVersion) {
-        c.fail("written by geometry file format version " + std::to_string(info.version) + ", but this build reads versions up to "
+    if (info.version != kGeoFileFormatVersion) {
+        c.fail("written by geometry file format version " + std::to_string(info.version) + ", but this build reads only version "
                + std::to_string(kGeoFileFormatVersion));
     }
     if (c.u32() != 0) {
@@ -1393,6 +1448,18 @@ geoFileWrite(const GeoDetail& detail,
         const int err = errno;
         std::remove(temp.c_str());
         throw GeoFileError(osError(path, "replace", err));
+    }
+    // The rename is durable only once the directory entry is.
+    const std::string dir = std::filesystem::path(path).parent_path().string();
+    const int dirFd = ::open(dir.empty() ? "." : dir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (dirFd < 0) {
+        throw GeoFileError(osError(path, "sync the directory of", errno));
+    }
+    const int synced = ::fsync(dirFd);
+    const int err = errno;
+    ::close(dirFd);
+    if (synced != 0) {
+        throw GeoFileError(osError(path, "sync the directory of", err));
     }
 }
 

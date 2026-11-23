@@ -28,7 +28,9 @@
 
 #include "Global/Macros.h"
 
+#include <mutex>
 #include <string>
+#include <vector>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/GeoDetail.h"
@@ -58,7 +60,10 @@ NATRON_NAMESPACE_ENTER
  * nothing.
  *
  * The Filename takes GeoFile's frame tokens and project variables, and $VER or $VERN for the
- * Version, padded to N digits.
+ * Version, padded to N digits. A render over more than one frame needs a frame token.
+ *
+ * Once a render ends, the files it wrote are stamped again (FileStampRegistry), and this node and
+ * every GeoFile or GeoFileCache reading them drop what they cached of the old files.
  **/
 class GeoFileCache
     : public NativeEffectBase {
@@ -105,7 +110,9 @@ public:
                                          int version);
 
     /** @brief The file pattern the node's knobs name, as GeoFile::expandPattern() returns it. */
-    std::string currentPattern();
+    std::string currentPattern() const;
+
+    ModeEnum mode() const;
 
 private:
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -129,11 +136,14 @@ private:
                                       std::string* errorMessage) OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual StatusEnum writeGeometryFrame(double time,
                                           ViewIdx view,
-                                          const GeoDetailConstPtr& detail) OVERRIDE FINAL WARN_UNUSED_RETURN;
+                                          const GeoDetailConstPtr& detail,
+                                          std::string* error) OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool rendersFramesInOrder() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual void appendNodeContentHash(ContentHasher& h) const OVERRIDE FINAL;
+    virtual bool refreshFileDependencies(const std::vector<std::string>& paths) OVERRIDE FINAL;
 
-    ModeEnum mode() const;
     void refreshKnobVisibility();
+    void onRenderFinished(int retCode);
 
     KnobChoiceWPtr _mode;
     KnobOutputFileWPtr _file;
@@ -142,6 +152,9 @@ private:
     KnobChoiceWPtr _frameRange;
     KnobIntWPtr _firstFrame;
     KnobIntWPtr _lastFrame;
+
+    std::mutex _writtenPathsMutex;
+    std::vector<std::string> _writtenPaths;
 };
 
 NATRON_NAMESPACE_EXIT

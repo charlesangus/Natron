@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -390,4 +391,28 @@ TEST(GeoFileFormat, NewerVersionFails)
     std::memcpy(bytes.data() + 8, &future, sizeof(future));
     const std::string expected = "version " + std::to_string(future);
     expectFileError(bytes, expected.c_str());
+}
+
+TEST(GeoFileFormat, CorruptRawPageFailsNamingItsSection)
+{
+    GeoDetailBuilder b;
+    const GeoOffset first = b.appendPoints(kPoints);
+    GeoAttribute& noise = b.addAttribute(eGeoAttribClassPoint, desc("noise", eGeoStorageInt64));
+    // An LCG's output does not compress, so every page of the column is stored raw.
+    std::uint64_t state = 0x9e3779b97f4a7c15ull;
+    for (GeoIndex i = 0; i < kPoints; ++i) {
+        state = state * 6364136223846793005ull + 1442695040888963407ull;
+        noise.set<std::int64_t>(std::size_t(first + i), std::int64_t(state));
+    }
+    std::vector<unsigned char> bytes = geoFileEncode(b.finish());
+
+    const std::string name = "noise";
+    const auto at = std::search(bytes.begin(), bytes.end(), name.begin(), name.end());
+    ASSERT_TRUE(at != bytes.end());
+    // Past the attribute's description, default and page headers, inside its first page.
+    const std::size_t inPage = std::size_t(at - bytes.begin()) + name.size() + 256;
+    ASSERT_LT(inPage, bytes.size());
+    bytes[inPage] ^= 0x01;
+    expectFileError(bytes, "attribute 'noise'");
+    expectFileError(bytes, "checksum");
 }

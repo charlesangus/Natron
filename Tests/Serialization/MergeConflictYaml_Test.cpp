@@ -177,6 +177,11 @@ everyKind()
     value.mine.knob = colorKnob("white: [1, 1.25, 1, 1]\n");
     conflicts.push_back(value);
 
+    MergeConflict folded = value;
+    folded.knob = "black";
+    folded.dimension = Serialization::kMergeConflictAllDimensions;
+    conflicts.push_back(folded);
+
     MergeConflict curveKey;
     curveKey.kind = MergeConflictKind::eCurveKey;
     curveKey.templateKey = "grade_tpl";

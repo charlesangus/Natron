@@ -571,6 +571,45 @@ applyConflictKnobValue(const MergeConflict& conflict,
                        std::string* error)
 {
     const int dimension = conflict.dimension;
+    // One saved dimension stands for all of the knob's, as the merge compared them.
+    if ((dimension >= 0) && (state->dimensions.size() == 1) && (state->dimension > 1)) {
+        state->dimensions.resize(state->dimension, state->dimensions.front());
+    }
+    if (dimension == kMergeConflictAllDimensions) {
+        // A folded live knob takes the side's one dimension as it is, so it stays folded.
+        if (state->dimensions.empty()) {
+            return failWith(error, quoted(conflict.knob) + " has no dimension");
+        }
+        for (KnobDimensionSerialization& target : state->dimensions) {
+            if (conflict.kind == MergeConflictKind::eValue) {
+                if (value.knob && !value.knob->dimensions.empty()) {
+                    KnobDimensionSerialization recorded = value.knob->dimensions.front();
+                    if (!recorded.defaultValue) {
+                        recorded.defaultValue = target.defaultValue;
+                    }
+                    target = std::move(recorded);
+                } else {
+                    target = defaultDimensionLike(target);
+                }
+                continue;
+            }
+            if (!conflict.time) {
+                return failWith(error, "this key conflict has no time");
+            }
+            if (!target.curve) {
+                target.curve = CurveSerialization();
+            }
+            setKeyAt(&*target.curve, *conflict.time, value.key);
+            for (const KeyFrameSerialization& key : value.otherKeys) {
+                setKeyAt(&*target.curve, key.time, key);
+            }
+            if (target.curve->keyframes.empty()) {
+                target.curve.reset();
+            }
+        }
+
+        return true;
+    }
     if (conflict.kind == MergeConflictKind::eValue) {
         if (dimension < 0) {
             state->parametricCurves = value.knob ? value.knob->parametricCurves : std::nullopt;
@@ -580,9 +619,9 @@ applyConflictKnobValue(const MergeConflict& conflict,
             if (dimension >= int(state->dimensions.size())) {
                 return failWith(error, quoted(conflict.knob) + " has no dimension " + std::to_string(dimension));
             }
-            if (value.knob && (dimension < int(value.knob->dimensions.size()))) {
+            if (value.knob && !value.knob->dimensions.empty() && ((dimension < int(value.knob->dimensions.size())) || (value.knob->dimensions.size() == 1))) {
                 // A plug-in knob's default is not saved with the side it came from, so the live one stays.
-                KnobDimensionSerialization recorded = value.knob->dimensions[dimension];
+                KnobDimensionSerialization recorded = value.knob->dimensions[std::min(dimension, int(value.knob->dimensions.size()) - 1)];
                 if (!recorded.defaultValue) {
                     recorded.defaultValue = state->dimensions[dimension].defaultValue;
                 }

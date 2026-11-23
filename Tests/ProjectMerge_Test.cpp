@@ -274,6 +274,7 @@ TEST_F(ProjectMergeTest, AConflictedUpdateReturnsItsConflictsAndKeepsMine)
     const Serialization::MergeConflict& conflict = result.conflicts.front();
     EXPECT_EQ(conflict.kind, Serialization::MergeConflictKind::eValue);
     EXPECT_EQ(conflict.knob, kBlurParamSize);
+    EXPECT_EQ(conflict.dimension, Serialization::kMergeConflictAllDimensions);
     EXPECT_EQ(conflict.nodeId, blur1->getNodeId());
     EXPECT_EQ(conflict.templateKey, key);
 
@@ -357,16 +358,61 @@ TEST_F(ProjectMergeTest, AValueConflictResolvesToEachSideAndUndoes)
     setSize(blur1, 7.);
     const ProjectMerge::UpdateResult result = ProjectMerge::updateFromTemplate(project(), key, v2);
     ASSERT_TRUE(result.ok) << result.error.toStdString();
-    const Serialization::MergeConflict* conflict = conflictOf(result, Serialization::MergeConflictKind::eValue, 0);
+    ASSERT_EQ(result.conflicts.size(), 1u);
+    const Serialization::MergeConflict* conflict = conflictOf(result, Serialization::MergeConflictKind::eValue);
     ASSERT_NE(conflict, nullptr);
+    EXPECT_EQ(conflict->dimension, Serialization::kMergeConflictAllDimensions);
 
-    choose(*conflict, ProjectMerge::ConflictSide::eMine, [&] { EXPECT_DOUBLE_EQ(blurSize(blur1)->getValue(0), 7.); });
-    choose(*conflict, ProjectMerge::ConflictSide::eTheirs, [&] {
-        EXPECT_DOUBLE_EQ(blurSize(blur1)->getValue(0), 4.);
+    choose(*conflict, ProjectMerge::ConflictSide::eMine, [&] {
+        EXPECT_DOUBLE_EQ(blurSize(blur1)->getValue(0), 7.);
         EXPECT_DOUBLE_EQ(blurSize(blur1)->getValue(1), 7.);
     });
-    choose(*conflict, ProjectMerge::ConflictSide::eBase, [&] { EXPECT_DOUBLE_EQ(blurSize(blur1)->getValue(0), base); });
+    choose(*conflict, ProjectMerge::ConflictSide::eTheirs, [&] {
+        EXPECT_DOUBLE_EQ(blurSize(blur1)->getValue(0), 4.);
+        EXPECT_DOUBLE_EQ(blurSize(blur1)->getValue(1), 4.);
+    });
+    choose(*conflict, ProjectMerge::ConflictSide::eBase, [&] {
+        EXPECT_DOUBLE_EQ(blurSize(blur1)->getValue(0), base);
+        EXPECT_DOUBLE_EQ(blurSize(blur1)->getValue(1), base);
+    });
     EXPECT_DOUBLE_EQ(blurSize(blur1)->getValue(0), 7.);
+    EXPECT_DOUBLE_EQ(blurSize(blur1)->getValue(1), 7.);
+}
+
+TEST_F(ProjectMergeTest, AnUnfoldedSideConflictsDimensionByDimensionWithAFoldedOne)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    QString v1;
+    QString v2;
+    saveTemplateVersions(dir, &v1, &v2);
+    importShot(v1);
+    const std::string key = project()->getTemplateImports().front().key;
+    NodePtr blur1 = nodeNamed("Blur1");
+    KnobDoublePtr size = blurSize(blur1);
+    ASSERT_NE(size, nullptr);
+    size->setValue(7., ViewSpec::all(), 0);
+    size->setValue(8., ViewSpec::all(), 1);
+    const ProjectMerge::UpdateResult result = ProjectMerge::updateFromTemplate(project(), key, v2);
+    ASSERT_TRUE(result.ok) << result.error.toStdString();
+    ASSERT_EQ(result.conflicts.size(), 2u);
+    const Serialization::MergeConflict* first = conflictOf(result, Serialization::MergeConflictKind::eValue, 0);
+    const Serialization::MergeConflict* second = conflictOf(result, Serialization::MergeConflictKind::eValue, 1);
+    ASSERT_NE(first, nullptr);
+    ASSERT_NE(second, nullptr);
+    EXPECT_DOUBLE_EQ(size->getValue(0), 7.);
+    EXPECT_DOUBLE_EQ(size->getValue(1), 8.);
+
+    choose(*first, ProjectMerge::ConflictSide::eTheirs, [&] {
+        EXPECT_DOUBLE_EQ(size->getValue(0), 4.);
+        EXPECT_DOUBLE_EQ(size->getValue(1), 8.);
+    });
+    choose(*second, ProjectMerge::ConflictSide::eTheirs, [&] {
+        EXPECT_DOUBLE_EQ(size->getValue(0), 7.);
+        EXPECT_DOUBLE_EQ(size->getValue(1), 4.);
+    });
+    EXPECT_DOUBLE_EQ(size->getValue(0), 7.);
+    EXPECT_DOUBLE_EQ(size->getValue(1), 8.);
 }
 
 TEST_F(ProjectMergeTest, AnInputConflictResolvesToEachSidesSourceAndUndoes)

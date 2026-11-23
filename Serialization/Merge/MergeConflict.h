@@ -170,6 +170,10 @@ struct MergeConflictOption {
 
 inline constexpr std::string_view kMergeOptionKeepBothKeys = "keep-both-keys";
 
+// The dimension of a conflict on a knob every side saved folded, as one dimension standing for
+// all of them: its side's single dimension goes to every dimension.
+inline constexpr int kMergeConflictAllDimensions = -2;
+
 /**
  * @brief One place where the merge chose for the user. Every conflict is already resolved in the
  * merged snapshot, so the user only reviews it.
@@ -183,7 +187,8 @@ struct MergeConflict {
     // That node in the merged snapshot, or empty when the merge left it out.
     std::string nodeId;
     std::string knob;
-    // -1 for the whole knob. For a parametric knob's curve-key conflict, the curve's index.
+    // -1 for the whole knob, kMergeConflictAllDimensions for every dimension of a folded knob. For
+    // a parametric knob's curve-key conflict, the curve's index.
     int dimension = -1;
     // eCurveKey: the key's time.
     std::optional<double> time;

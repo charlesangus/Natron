@@ -206,7 +206,9 @@ describeConflict(const MergeConflict& conflict,
     }
     if (!conflict.knob.empty()) {
         where += "." + conflict.knob;
-        if (conflict.dimension >= 0) {
+        if (conflict.dimension == kMergeConflictAllDimensions) {
+            where += "[all]";
+        } else if (conflict.dimension >= 0) {
             where += "[" + std::to_string(conflict.dimension) + "]";
         }
     }

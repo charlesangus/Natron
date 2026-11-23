@@ -65,11 +65,35 @@ namespace {
         std::size_t count = 0;
         for (const KnobSerialization* knob : { a, b, c }) {
             if (knob) {
-                count = std::max(count, knob->dimensions.size());
+                count = std::max(count, std::max(knob->dimensions.size(), std::size_t(std::max(knob->dimension, 0))));
             }
         }
 
         return count;
+    }
+
+    // True when the knob saved one dimension standing for its several.
+    bool
+    isFolded(const KnobSerialization* knob)
+    {
+        return knob && (knob->dimension > 1) && (knob->dimensions.size() == 1);
+    }
+
+    // One saved dimension stands for all of a knob's dimensions (the folded form saving and the
+    // project file give a knob whose dimensions are all alike), so it is compared and merged as
+    // count copies of itself.
+    const KnobSerialization*
+    unfolded(const KnobSerialization* knob,
+             std::size_t count,
+             std::optional<KnobSerialization>* storage)
+    {
+        if (!knob || (knob->dimensions.size() != 1) || (count < 2)) {
+            return knob;
+        }
+        storage->emplace(*knob);
+        (*storage)->dimensions.resize(count, knob->dimensions.front());
+
+        return &**storage;
     }
 
     KnobDimensionSerialization
@@ -289,6 +313,10 @@ sameKnobState(const KnobSerialization* a,
         return false;
     }
     const std::size_t count = dimensionCount(a, b, nullptr);
+    std::optional<KnobSerialization> unfoldedA;
+    std::optional<KnobSerialization> unfoldedB;
+    a = unfolded(a, count, &unfoldedA);
+    b = unfolded(b, count, &unfoldedB);
     for (std::size_t i = 0; i < count; ++i) {
         if (dimensionState(a, i) != dimensionState(b, i)) {
             return false;
@@ -340,14 +368,24 @@ ScalarKnobMergeHandler::merge(const KnobSerialization* base,
                               std::vector<MergeConflict>* conflicts) const
 {
     merged->reset();
-    const KnobSerialization* frame = mine ? mine : theirs;
-    if (!frame) {
+    const KnobSerialization* folded = mine ? mine : theirs;
+    if (!folded) {
         return;
     }
+    // When every side saved the knob folded, its one dimension merges as the whole knob's and
+    // stays folded; otherwise a folded side is compared dimension by dimension.
+    const bool allFolded = isFolded(mine) && isFolded(theirs) && (!base || isFolded(base));
+    const std::size_t count = allFolded ? 1 : dimensionCount(base, mine, theirs);
+    std::optional<KnobSerialization> unfoldedBase;
+    std::optional<KnobSerialization> unfoldedMine;
+    std::optional<KnobSerialization> unfoldedTheirs;
+    base = unfolded(base, count, &unfoldedBase);
+    mine = unfolded(mine, count, &unfoldedMine);
+    theirs = unfolded(theirs, count, &unfoldedTheirs);
+    const KnobSerialization* frame = mine ? mine : theirs;
     const std::string& name = frame->name;
 
     KnobSerialization result = *frame;
-    const std::size_t count = dimensionCount(base, mine, theirs);
     result.dimensions.resize(count);
     for (std::size_t i = 0; i < count; ++i) {
         const Pick choice = pick(dimensionState(base, i), dimensionState(mine, i), dimensionState(theirs, i));
@@ -362,9 +400,14 @@ ScalarKnobMergeHandler::merge(const KnobSerialization* base,
             KnobDimensionSerialization dimension = result.dimensions[i];
             if (mergeDimension(base, mine, theirs, i, &dimension, &finer)) {
                 result.dimensions[i] = std::move(dimension);
+                if (allFolded) {
+                    for (MergeConflict& conflict : finer) {
+                        conflict.dimension = kMergeConflictAllDimensions;
+                    }
+                }
                 conflicts->insert(conflicts->end(), finer.begin(), finer.end());
             } else {
-                conflicts->push_back(valueConflict(name, int(i), base, mine, theirs));
+                conflicts->push_back(valueConflict(name, allFolded ? kMergeConflictAllDimensions : int(i), base, mine, theirs));
             }
         }
     }
@@ -389,6 +432,13 @@ ScalarKnobMergeHandler::merge(const KnobSerialization* base,
         }
     }
 
+    // A merge that leaves a folded knob as it was keeps its folded form.
+    if ((folded->dimensions.size() == 1) && (count > 1)
+        && std::all_of(result.dimensions.begin(), result.dimensions.end(), [&](const KnobDimensionSerialization& dimension) {
+               return dimension == folded->dimensions.front();
+           })) {
+        result.dimensions.resize(1);
+    }
     if (!isDefaultKnob(result)) {
         *merged = std::move(result);
     }

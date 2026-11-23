@@ -1,9 +1,9 @@
 """The Merge Conflicts panel, its resolution buttons and the conflict badge, in the real application.
 
 A template (Blur1 -> Blur2) is saved as version 1 and as version 2, where Blur1's size is 4. It is
-imported, the artist sets Blur1's size to 2, and the update to version 2 raises conflicts on that
-knob. The panel then lists them under Blur1 with the count in its tab, and Blur1 carries the badge.
-One conflict is resolved with Theirs, Base, Mine and Accept in turn, each undone with Edit > Undo,
+imported, the artist sets Blur1's size to 2, and the update to version 2 raises one conflict on that
+folded knob, for all its dimensions. The panel then lists it under Blur1 with the count in its tab,
+and Blur1 carries the badge. The conflict is resolved with Theirs, Base, Mine and Accept in turn, each undone with Edit > Undo,
 which brings the conflict back. Resolve All Theirs clears the list and the badge; undoing it brings
 them back, and the project saved like that and reopened shows the panel with the same count.
 
@@ -83,7 +83,9 @@ try:
         return widget(QPushButton, name)
 
     def rows():
-        """The conflict rows of the panel, as (node row text, conflict row item)."""
+        """The conflict rows of the panel, as (node row text, conflict row text, selected). A
+        child item's wrapper dies with its parent's, and every refresh() deletes the items, so only
+        plain values leave this function."""
         t = tree()
         found = []
         if t is None:
@@ -91,47 +93,33 @@ try:
         for g in range(t.topLevelItemCount()):
             group = t.topLevelItem(g)
             for i in range(group.childCount()):
-                found.append((group.text(0), group.child(i)))
+                row = group.child(i)
+                found.append((group.text(0), row.text(0), row.isSelected()))
         return found
 
-    def tab_label():
-        """The text of the tab the panel is docked in, or "" when it is in none."""
-        for bar in QApplication.allWidgets():
-            try:
-                if not isinstance(bar, QTabBar):
-                    continue
-                for i in range(bar.count()):
-                    if bar.tabText(i).startswith("Merge Conflicts"):
-                        return bar.tabText(i)
-            except RuntimeError:
-                continue
-        return ""
-
-    def size_of(node):
-        param = node.getParam(SIZE)
-        return (param.getValue(0), param.getValue(1))
-
-    def click(name):
-        b = button(name)
-        if not check(b is not None and b.isEnabled(), "the %s button is enabled" % name):
-            return False
-        b.click()
-        QApplication.processEvents()
-        return True
-
-    def select_row(item, label):
-        """Selects item and returns its text, or None when the row is gone or no longer selected
-        once events have run. Item wrappers do not survive processEvents, so the row is found again
-        by its text."""
+    def select_row(group_text, text, label):
+        """Selects the conflict row named text under the node row group_text and returns text, or
+        None when the row is gone or no longer selected once events have run."""
         t = tree()
-        t.clearSelection()
-        t.setCurrentItem(item)
-        item.setSelected(True)
-        text = item.text(0)
-        item = None
+        selected = False
+        for g in range(t.topLevelItemCount()):
+            group = t.topLevelItem(g)
+            if group.text(0) != group_text:
+                continue
+            for i in range(group.childCount()):
+                row = group.child(i)
+                if row.text(0) == text:
+                    t.clearSelection()
+                    t.setCurrentItem(row)
+                    row.setSelected(True)
+                    selected = True
+                    break
+            break
+        if not check(selected, "the %s row is in the panel (%r)" % (label, text)):
+            return None
         QApplication.processEvents()
-        again = [row for _, row in rows() if row.text(0) == text]
-        if not check(any(row.isSelected() for row in again), "the %s row stays selected (%r)" % (label, text)):
+        again = [chosen for g, r, chosen in rows() if g == group_text and r == text]
+        if not check(any(again), "the %s row stays selected (%r)" % (label, text)):
             return None
         return text
 
@@ -140,15 +128,15 @@ try:
         found = rows()
         if not check(t is not None and len(found) > 0, "the panel lists a conflict to select"):
             return None
-        return select_row(found[0][1], "first")
+        return select_row(found[0][0], found[0][1], "first")
 
     def select_under(node_name):
         """Selects the first conflict listed under node_name and returns its text, or None."""
         t = tree()
-        found = [item for group, item in rows() if node_name in group]
+        found = [(group, text) for group, text, _ in rows() if node_name in group]
         if not check(t is not None and len(found) > 0, "the panel lists a conflict under " + node_name):
             return None
-        return select_row(found[0], node_name)
+        return select_row(found[0][0], found[0][1], node_name)
 
     def source_of(node):
         source = node.getInput(0)
@@ -211,11 +199,12 @@ try:
 
         count = app.updateFromTemplate(key, v2)
         require(count > 0, "the update to version 2 raises conflicts (got %d)" % count)
+        check(count == 1, "the folded size raises one conflict for all its dimensions (got %d)" % count)
         ok = yield ("until", panel_shown, POLL_TIMEOUT_S)
         require(ok, "the Merge Conflicts panel is shown after the update")
         yield ("sleep", SETTLE_MS)
         check_panel(count, "after the update")
-        check(all("Blur1" in group for group, _ in rows()), "every conflict is listed under Blur1")
+        check(all("Blur1" in group for group, _, _ in rows()), "every conflict is listed under Blur1")
         check(size_of(blur1) == (ARTIST_SIZE, ARTIST_SIZE), "the update kept the artist's size (%r)" % (size_of(blur1),))
         check(app.isMergeConflictBadgeShown(blur1), "Blur1 carries the conflict badge")
         check(not app.isMergeConflictBadgeShown(blur2), "Blur2 carries no conflict badge")
@@ -231,7 +220,10 @@ try:
             yield ("sleep", SETTLE_MS)
             check_panel(count - 1, "after " + side)
             value = size_of(blur1)
-            if dim is not None:
+            if "all dimensions" in text:
+                want = base_size if expected is None else (expected, expected)
+                check(all(abs(value[i] - want[i]) < 1e-9 for i in range(2)), "%s gives every dimension %r (got %r)" % (side, want, value))
+            elif dim is not None:
                 want = base_size[dim] if expected is None else expected
                 check(abs(value[dim] - want) < 1e-9, "%s gives dimension %d %r (got %r)" % (side, dim, want, value))
                 check(abs(value[1 - dim] - ARTIST_SIZE) < 1e-9, "%s leaves the other dimension alone (%r)" % (side, value))

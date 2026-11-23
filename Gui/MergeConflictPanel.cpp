@@ -66,6 +66,14 @@ enum ColumnEnum {
 const int kConflictIndexRole = Qt::UserRole;
 const int kNodeIdRole = Qt::UserRole + 1;
 
+bool
+sameConflictPlace(const Serialization::MergeConflict& a,
+                  const Serialization::MergeConflict& b)
+{
+    return (a.kind == b.kind) && (a.templateKey == b.templateKey) && (a.baseNodeId == b.baseNodeId) && (a.nodeId == b.nodeId) && (a.knob == b.knob)
+        && (a.dimension == b.dimension) && (a.time == b.time) && (a.item == b.item) && (a.input == b.input);
+}
+
 QString
 valueText(const Serialization::KnobValueSerialization& value)
 {
@@ -158,13 +166,15 @@ sideText(const ProjectPtr& project,
         if (!side.knob) {
             return MergeConflictPanel::tr("Default");
         }
-        if (conflict.dimension < 0) {
+        // A conflict on every dimension of a folded knob shows the one dimension its sides saved.
+        const int index = (conflict.dimension == Serialization::kMergeConflictAllDimensions) ? 0 : conflict.dimension;
+        if (index < 0) {
             return MergeConflictPanel::tr("Changed");
         }
-        if (conflict.dimension >= (int)side.knob->dimensions.size()) {
+        if (index >= (int)side.knob->dimensions.size()) {
             return MergeConflictPanel::tr("Default");
         }
-        const Serialization::KnobDimensionSerialization& dim = side.knob->dimensions[conflict.dimension];
+        const Serialization::KnobDimensionSerialization& dim = side.knob->dimensions[index];
         if (!dim.expression.empty()) {
             return QString::fromUtf8("= ") + QString::fromStdString(dim.expression);
         }
@@ -189,6 +199,9 @@ conflictText(const Serialization::MergeConflict& conflict)
     const QString item = QString::fromStdString(conflict.item);
     switch (conflict.kind) {
     case Serialization::MergeConflictKind::eValue:
+        if (conflict.dimension == Serialization::kMergeConflictAllDimensions) {
+            return MergeConflictPanel::tr("%1, all dimensions").arg(knob);
+        }
         if (conflict.dimension < 0) {
             return MergeConflictPanel::tr("%1 (animation, options)").arg(knob);
         }
@@ -255,6 +268,8 @@ struct MergeConflictPanel::Implementation {
     std::vector<QPushButton*> optionButtons;
     // The nodes showing a conflict badge, by ID.
     std::set<std::string> badged;
+    // The conflicts the tree lists, in the order of their rows' indices.
+    std::vector<Serialization::MergeConflict> shown;
     bool refreshing;
 
     Implementation(Gui* gui)
@@ -272,6 +287,7 @@ struct MergeConflictPanel::Implementation {
         , optionLayout(0)
         , optionButtons()
         , badged()
+        , shown()
         , refreshing(false)
     {
     }
@@ -406,9 +422,17 @@ void
 MergeConflictPanel::refresh()
 {
     ProjectPtr project = _imp->project.lock();
+    // The rows are rebuilt from scratch, so the selection is kept by what each conflict is about.
+    std::vector<Serialization::MergeConflict> wasSelected;
+    for (std::size_t index : getSelectedConflicts()) {
+        if (index < _imp->shown.size()) {
+            wasSelected.push_back(_imp->shown[index]);
+        }
+    }
     _imp->refreshing = true;
     _imp->tree->clear();
     const std::vector<Serialization::MergeConflict> conflicts = project ? project->getMergeConflicts() : std::vector<Serialization::MergeConflict>();
+    _imp->shown = conflicts;
 
     std::map<std::string, QTreeWidgetItem*> groups;
     std::vector<std::string> order;
@@ -454,6 +478,16 @@ MergeConflictPanel::refresh()
         _imp->tree->addTopLevelItem(group);
         group->setExpanded(true);
     }
+    std::vector<std::size_t> reselect;
+    for (std::size_t i = 0; i < conflicts.size(); ++i) {
+        for (const Serialization::MergeConflict& previous : wasSelected) {
+            if (sameConflictPlace(conflicts[i], previous)) {
+                reselect.push_back(i);
+                break;
+            }
+        }
+    }
+    selectConflicts(reselect);
     _imp->refreshing = false;
 
     const int count = (int)conflicts.size();

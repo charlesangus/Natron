@@ -188,7 +188,10 @@ namespace {
         emitOptionalString(em, "baseNode", conflict.baseNodeId);
         emitOptionalString(em, "node", conflict.nodeId);
         emitOptionalString(em, "knob", conflict.knob);
-        if (conflict.dimension != -1) {
+        if (conflict.dimension == kMergeConflictAllDimensions) {
+            emitKey(em, "dim");
+            em << YAML::Value << std::string("all");
+        } else if (conflict.dimension != -1) {
             emitKey(em, "dim");
             em << YAML::Value;
             emitInt(em, conflict.dimension);
@@ -357,7 +360,11 @@ namespace {
             conflict.knob = readString(knob, context + ".knob");
         }
         if (YAML::Node dimension = reader.get("dim")) {
-            conflict.dimension = readInt(dimension, context + ".dim");
+            if (dimension.IsScalar() && (dimension.Scalar() == "all")) {
+                conflict.dimension = kMergeConflictAllDimensions;
+            } else {
+                conflict.dimension = readInt(dimension, context + ".dim");
+            }
         }
         if (YAML::Node time = reader.get("time")) {
             conflict.time = readDouble(time, context + ".time");

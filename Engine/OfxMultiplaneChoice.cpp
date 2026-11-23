@@ -25,7 +25,10 @@
 
 #include "OfxMultiplaneChoice.h"
 
+#include <cctype>
+
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/OfxLayerMapping.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -40,14 +43,16 @@ namespace {
     const char* const kPluginChannelOption0 = "0";
     const char* const kPluginChannelOption1 = "1";
 
+    // Channel names start with a letter and hold letters, digits and underscores. A fixed
+    // choice option such as "1.5" is not a plane.channel encoding.
     bool
     isChannelSuffix(const std::string& s)
     {
-        if (s.empty()) {
+        if (s.empty() || !std::isalpha((unsigned char)s[0])) {
             return false;
         }
-        for (std::string::size_type i = 0; i < s.size(); ++i) {
-            if ((s[i] < 'A') || (s[i] > 'Z')) {
+        for (std::string::size_type i = 1; i < s.size(); ++i) {
+            if (!std::isalnum((unsigned char)s[i]) && (s[i] != '_')) {
                 return false;
             }
         }
@@ -55,36 +60,16 @@ namespace {
         return true;
     }
 
-    // The built-in plane IDs ofxsMultiPlane.cpp's getHardCodedPlanes() knows about: every one of
-    // them is reverse-DNS-style and so may itself contain dots, unlike a custom (dynamically
-    // discovered) layer ID.
-    const char* const*
-    knownPluginPlaneIDs(std::size_t* count)
-    {
-        static const char* const ids[] = {
-            kNatronColorLayerID,
-            kNatronBackwardMotionVectorsLayerID,
-            kNatronForwardMotionVectorsLayerID,
-            kNatronDisparityLeftLayerID,
-            kNatronDisparityRightLayerID
-        };
-
-        *count = sizeof(ids) / sizeof(ids[0]);
-
-        return ids;
-    }
-
-    // Recognizes prefix as one of knownPluginPlaneIDs(), with or without a "<clip>." prepended
+    // Recognizes prefix as one of the built-in plug-in plane IDs, with or without a "<clip>." prepended
     // (clip names never contain a dot themselves). Returns false for anything else, including a
     // custom layer ID, which the caller falls back to handling generically.
     bool
     matchesKnownPluginPlaneID(const std::string& prefix, std::string* clipPrefix)
     {
-        std::size_t count = 0;
-        const char* const* ids = knownPluginPlaneIDs(&count);
+        const std::vector<std::string>& ids = OfxLayerMapping::builtinPlugInPlaneIDs();
 
-        for (std::size_t i = 0; i < count; ++i) {
-            const std::string knownID(ids[i]);
+        for (std::size_t i = 0; i < ids.size(); ++i) {
+            const std::string& knownID = ids[i];
             if (prefix == knownID) {
                 clipPrefix->clear();
 
@@ -114,15 +99,7 @@ channelValueToPluginOption(const std::string& value)
         return value;
     }
 
-    const std::string layerID = value.substr(0, dot);
-    const std::string channelName = value.substr(dot + 1);
-
-    if (ImageLayerDesc::isColorViewID(layerID) || (layerID == kNatronColorLayerID)) {
-        // Every colour view shares the one storage plane the plugin actually sees.
-        return std::string(kNatronColorLayerID) + "." + channelName;
-    }
-
-    return value;
+    return OfxLayerMapping::channelValueToPlugInOption(value.substr(0, dot), value.substr(dot + 1));
 }
 
 std::string
@@ -145,14 +122,7 @@ pluginOptionToChannelValue(const std::string& optionID)
         return std::string();
     }
 
-    const std::string planeID = optionID.substr(0, dot);
-    const std::string channelName = optionID.substr(dot + 1);
-
-    if ((planeID == kNatronColorLayerID) || (planeID == kNatronColorStorageLabel)) {
-        return std::string(kNatronColorViewRGBA) + "." + channelName;
-    }
-
-    return optionID;
+    return OfxLayerMapping::plugInOptionToChannelValue(optionID.substr(0, dot), optionID.substr(dot + 1));
 }
 
 std::string
@@ -162,11 +132,7 @@ layerValueToPluginPlaneOption(const std::string& value)
         return kPluginPlaneOptionNone;
     }
 
-    if (ImageLayerDesc::isColorViewID(value) || (value == kNatronColorLayerID)) {
-        return kNatronColorLayerID;
-    }
-
-    return value;
+    return OfxLayerMapping::layerIDToPlugInPlaneID(value);
 }
 
 std::string
@@ -176,11 +142,7 @@ pluginPlaneOptionToLayerValue(const std::string& optionID)
         return std::string();
     }
 
-    if ((optionID == kNatronColorLayerID) || (optionID == kNatronColorStorageLabel)) {
-        return kNatronColorViewRGBA;
-    }
-
-    return optionID;
+    return OfxLayerMapping::plugInPlaneIDToLayerID(optionID);
 }
 
 bool

@@ -138,7 +138,7 @@ Gui::setupUi()
     _imp->_errorLog->hide();
 
     createDefaultLayoutInternal(false);
-
+    noteDefaultLayout();
 
     initProjectGuiKnobs();
 

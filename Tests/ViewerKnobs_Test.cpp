@@ -446,6 +446,7 @@ TEST_F(ViewerKnobsTest, KnobEditsLeaveHashesUnchanged)
     knobOf<KnobDouble>(node, kViewerParamFps)->setValue(12.);
     knobOf<KnobInt>(node, kViewerParamMaxSamples)->setValue(64);
     knobOf<KnobBool>(node, kViewerParamRefinementPaused)->setValue(true);
+    knobOf<KnobBool>(node, kViewerParamMapSiblingOverlays)->setValue(false);
 
     EXPECT_EQ(viewerHash, node->getHashValue());
     EXPECT_EQ(dotHash, dot->getHashValue());
@@ -473,6 +474,8 @@ TEST_F(ViewerKnobsTest, RenderRequestedOnlyByProcessingKnobs)
     // The scene view's progressive render follows these itself.
     knobOf<KnobInt>(node, kViewerParamMaxSamples)->setValue(64);
     knobOf<KnobBool>(node, kViewerParamRefinementPaused)->setValue(true);
+    // Overlays are drawn over the frame, so mapping them only redraws.
+    knobOf<KnobBool>(node, kViewerParamMapSiblingOverlays)->setValue(false);
     EXPECT_EQ(start, viewer->getKnobRenderRequestCount());
 
     knobOf<KnobBool>(node, kViewerParamFullFrame)->setValue(true);
@@ -522,6 +525,19 @@ TEST_F(ViewerKnobsTest, RefinementKnobsDefaultToTheDelegatesCountUnpaused)
     EXPECT_FALSE(paused->getValue());
     EXPECT_FALSE(maxSamples->isAnimationEnabled());
     EXPECT_FALSE(paused->isAnimationEnabled());
+}
+
+// A new viewer maps sibling overlays through the input they share with the viewed node.
+TEST_F(ViewerKnobsTest, MapSiblingOverlaysDefaultsOn)
+{
+    NodePtr node = createViewer();
+    ASSERT_TRUE(bool(node));
+    KnobBoolPtr mapSiblings = knobOf<KnobBool>(node, kViewerParamMapSiblingOverlays);
+    ASSERT_TRUE(bool(mapSiblings));
+
+    EXPECT_EQ(std::string("Map Sibling Overlays"), mapSiblings->getLabel());
+    EXPECT_TRUE(mapSiblings->getValue());
+    EXPECT_FALSE(mapSiblings->isAnimationEnabled());
 }
 
 TEST_F(ViewerKnobsTest, ConnectingAnInputSetsTheInputKnobs)
@@ -580,6 +596,7 @@ TEST_F(ViewerKnobsTest, ValuesSurviveSaveAndLoad)
     knobOf<KnobChoice>(node, kViewerParamDownscaleLevel)->setValue(4);
     knobOf<KnobInt>(node, kViewerParamMaxSamples)->setValue(64);
     knobOf<KnobBool>(node, kViewerParamRefinementPaused)->setValue(true);
+    knobOf<KnobBool>(node, kViewerParamMapSiblingOverlays)->setValue(false);
 
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
@@ -642,6 +659,7 @@ TEST_F(ViewerKnobsTest, ValuesSurviveSaveAndLoad)
     EXPECT_EQ(5u, viewer->getMipmapLevel());
     EXPECT_EQ(64, knobOf<KnobInt>(loaded, kViewerParamMaxSamples)->getValue());
     EXPECT_TRUE(knobOf<KnobBool>(loaded, kViewerParamRefinementPaused)->getValue());
+    EXPECT_FALSE(knobOf<KnobBool>(loaded, kViewerParamMapSiblingOverlays)->getValue());
 }
 
 // A script run without the GUI that opens a project and saves it again keeps every viewer, its

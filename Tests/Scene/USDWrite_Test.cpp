@@ -59,6 +59,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
+#include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
@@ -68,8 +69,8 @@
 #include "Engine/Nodes/Scene/USDAssignMaterial.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
 #include "Engine/Nodes/Scene/USDCard.h"
-#include "Engine/Nodes/Scene/USDMaterial.h"
 #include "Engine/Nodes/Scene/USDMerge.h"
+#include "Engine/Nodes/Scene/USDPreviewSurface.h"
 #include "Engine/Nodes/Scene/USDProject3D.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDWrite.h"
@@ -77,6 +78,8 @@
 #include "Engine/Project.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/ViewIdx.h"
+#include "Tests/Scene/CyclesTestUtils.h"
+#include "Tests/Scene/LiveViewerRender.h"
 
 #include <OpenImageIO/imageio.h>
 
@@ -178,7 +181,7 @@ writeTextFile(const QString& path,
 //
 //   USDRead ----------------> USDXformPrim /Transform1 --\
 //                                                      USDMerge -> USDWrite
-//   USDMaterial -> Card ----> USDXformPrim /Transform2 --/
+//   USDPreviewSurface -> Card ----> USDXformPrim /Transform2 --/
 //
 // Each USDXformPrim references the layer stack of its input from an anonymous layer, and the card
 // so references its material's.
@@ -214,7 +217,7 @@ protected:
     {
         NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
         NodePtr transform1 = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
-        NodePtr material = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMATERIAL));
+        NodePtr material = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPREVIEWSURFACE));
         NodePtr card = createNode(QString::fromUtf8(kTestPluginIDSceneGeometry));
         NodePtr transform2 = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
         NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
@@ -227,7 +230,7 @@ protected:
         KnobDouble* offset = getKnob<KnobDouble>(reader, kUSDReadParamFrameOffset);
         KnobDouble* translate1 = getKnob<KnobDouble>(transform1, kSceneParamTranslate);
         KnobDouble* translate2 = getKnob<KnobDouble>(transform2, kSceneParamTranslate);
-        KnobColor* diffuse = getKnob<KnobColor>(material, kUSDMaterialParamDiffuseColor);
+        KnobColor* diffuse = getKnob<KnobColor>(material, kUSDPreviewSurfaceParamDiffuseColor);
         EXPECT_TRUE(file && offset && translate1 && translate2 && diffuse);
         if (!(file && offset && translate1 && translate2 && diffuse)) {
             return NodePtr();
@@ -512,7 +515,7 @@ TEST_F(USDWriteTest, ASharedMaterialAssignmentRoundTripsInBothModes)
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
-    NodePtr material = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMATERIAL));
+    NodePtr material = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPREVIEWSURFACE));
     NodePtr assign = createNode(QString::fromUtf8(PLUGINID_NATRON_USDASSIGNMATERIAL));
     NodePtr transform = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
     ASSERT_TRUE(reader && material && assign && transform);
@@ -752,7 +755,7 @@ sizeOf(const QString& path)
 }
 } // anonymous namespace
 
-// A USDMaterial whose Diffuse Color input is a Constant, its red 0.1, or keyed 0.1, 0.2 and 0.3 at
+// A USDPreviewSurface whose Diffuse Color input is a Constant, its red 0.1, or keyed 0.1, 0.2 and 0.3 at
 // frames 1 to 3 when animated.
 class USDWriteLiveTextureTest
     : public USDWriteTest {
@@ -760,9 +763,9 @@ protected:
     NodePtr createMaterial(bool animated)
     {
         NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
-        NodePtr material = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMATERIAL));
+        NodePtr material = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPREVIEWSURFACE));
         if (!constant || !material) {
-            ADD_FAILURE() << "Constant or USDMaterial is not registered";
+            ADD_FAILURE() << "Constant or USDPreviewSurface is not registered";
 
             return NodePtr();
         }
@@ -780,7 +783,7 @@ protected:
         } else {
             color->setValue(0.1, ViewSpec::all(), 0);
         }
-        EXPECT_TRUE(material->connectInput(constant, kUSDMaterialInputDiffuseColor));
+        EXPECT_TRUE(material->connectInput(constant, kUSDPreviewSurfaceInputDiffuseColor));
 
         return material;
     }
@@ -907,11 +910,11 @@ TEST_F(USDWriteLiveTextureTest, ADeletedSourceIsWrittenAsTheMaterialsOwnColourWi
     ASSERT_TRUE(tmp.isValid());
     NodePtr material = createMaterial(false);
     ASSERT_TRUE(bool(material));
-    NodePtr constant = material->getInput(kUSDMaterialInputDiffuseColor);
+    NodePtr constant = material->getInput(kUSDPreviewSurfaceInputDiffuseColor);
     ASSERT_TRUE(bool(constant));
     constant->destroyNode(true, false);
     constant.reset();
-    ASSERT_FALSE(material->getInput(kUSDMaterialInputDiffuseColor));
+    ASSERT_FALSE(material->getInput(kUSDPreviewSurfaceInputDiffuseColor));
 
     const USDWrite::ExportModeEnum modes[] = { USDWrite::eExportModeLayered, USDWrite::eExportModeFlattened };
     const bool exports[] = { true, false };
@@ -2046,6 +2049,154 @@ TEST_F(USDWriteTest, ExportsCarryNoNatronCustomData)
         }
         for (const std::pair<const QString, QByteArray>& file : fileContents(dir)) {
             EXPECT_FALSE(file.second.contains("natron:")) << file.first.toStdString();
+        }
+    }
+}
+
+// A viewer's Cycles render alive in the same process, its draw rules hiding the box and boxing the
+// card, leaves what USDWrite writes, in either mode, byte for byte as it is with no viewer: draw
+// states never reach a write.
+TEST_F(USDWriteTest, AViewersDrawRulesLeaveTheWriteAsItIs)
+{
+    if (!CyclesTestUtils::cyclesOrSkip()) {
+        return;
+    }
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    NodePtr merge = createGraph(kReferenceScene, 0.);
+    ASSERT_TRUE(bool(merge));
+    const QString outDir = tmp.path() + QString::fromUtf8("/out");
+    const QString path = outDir + QString::fromUtf8("/scene.usda");
+    const USDWrite::ExportModeEnum modes[] = { USDWrite::eExportModeLayered, USDWrite::eExportModeFlattened };
+    std::map<QString, QByteArray> alone[2];
+    for (int m = 0; m < 2; ++m) {
+        ASSERT_TRUE(QDir(outDir).removeRecursively());
+        NodePtr writer = createWriter(merge, path, modes[m], 1, 24);
+        ASSERT_TRUE(writer && getWriter(writer));
+        ASSERT_EQ(eStatusOK, getWriter(writer)->writeFrameRange(1, 24, ViewIdx(0)));
+        alone[m] = fileContents(outDir);
+        ASSERT_FALSE(alone[m].empty());
+    }
+
+    HydraRender::setRendererSettings(kRenderDelegateCyclesId, CyclesTestUtils::fixedSampling(16));
+    {
+        LiveViewerRender viewer;
+        SceneDrawFilter::Rules rules;
+        rules[PXR_NS::SdfPath("/Transform1/World/Box")] = SceneDrawFilter::eRuleHidden;
+        rules[PXR_NS::SdfPath("/Transform2")] = SceneDrawFilter::eRuleHide;
+        ScenePayload payload;
+        std::string error;
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, merge->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &payload, &error)) << error;
+        ASSERT_TRUE(viewer.start(payload, "/Transform1/World/Cam", 32, rules));
+        ASSERT_TRUE(viewer.waitUntilDone());
+        for (int m = 0; m < 2; ++m) {
+            ASSERT_TRUE(QDir(outDir).removeRecursively());
+            NodePtr writer = createWriter(merge, path, modes[m], 1, 24);
+            ASSERT_TRUE(writer && getWriter(writer));
+            ASSERT_EQ(eStatusOK, getWriter(writer)->writeFrameRange(1, 24, ViewIdx(0)));
+            EXPECT_TRUE(viewer.render().getStatus().active);
+            const std::map<QString, QByteArray> beside = fileContents(outDir);
+            EXPECT_TRUE(alone[m] == beside) << "the " << ((m == 0) ? "layered" : "flattened") << " write differs with a viewer alive";
+        }
+    }
+    HydraRender::setRendererSettings(kRenderDelegateCyclesId, std::map<std::string, PXR_NS::VtValue>());
+}
+
+namespace {
+SceneDrawRule
+makeDrawRule(const std::string& pattern,
+             SceneDrawStateEnum state,
+             const std::string& origin)
+{
+    SceneDrawRule rule;
+
+    rule.pattern = pattern;
+    rule.state = state;
+    rule.origin = origin;
+
+    return rule;
+}
+
+SceneTestOp*
+getTestOp(const NodePtr& node)
+{
+    return dynamic_cast<SceneTestOp*>(node->getEffectInstance().get());
+}
+} // anonymous namespace
+
+// Draw rules ride beside the stack: a merge hands them on in input order, after the rules its
+// inputs share, and the stack, its hash and a write of it are the same with or without them.
+// The graph's USDRead sets its Initial Draw rule upstream of every node here.
+TEST_F(USDWriteTest, DrawRulesReachDownstreamInInputOrderAndNeverReachAWrite)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    NodePtr merge = createGraph(kReferenceScene, 0.);
+    ASSERT_TRUE(bool(merge));
+    ScenePayload mergeScene;
+    std::string mergeError;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, merge->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &mergeScene, &mergeError)) << mergeError;
+    const SceneDrawRules readRules = mergeScene.getDrawRules();
+    ASSERT_EQ((std::size_t)1, readRules.size());
+    const auto after = [&readRules](const SceneDrawRules& rules) {
+        SceneDrawRules all = readRules;
+        all.insert(all.end(), rules.begin(), rules.end());
+
+        return all;
+    };
+    NodePtr plain = createNode(QString::fromUtf8(kTestPluginIDSceneOp));
+    NodePtr ruled = createNode(QString::fromUtf8(kTestPluginIDSceneOp));
+    ASSERT_TRUE(plain && ruled && getTestOp(plain) && getTestOp(ruled));
+    ASSERT_TRUE(plain->connectInput(merge, 0));
+    ASSERT_TRUE(ruled->connectInput(merge, 0));
+    const SceneDrawRule shared = makeDrawRule("/Transform1", eSceneDrawStateBBox, "DrawRuleShared");
+    const SceneDrawRule own = makeDrawRule("/Transform2//*", eSceneDrawStateHidden, "DrawRuleOwn");
+    getTestOp(ruled)->setDrawRules(SceneDrawRules { shared, own });
+
+    ScenePayload plainScene;
+    ScenePayload ruledScene;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, plain->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &plainScene, &error)) << error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, ruled->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &ruledScene, &error)) << error;
+    EXPECT_EQ(readRules, plainScene.getDrawRules());
+    EXPECT_EQ(after(SceneDrawRules { shared, own }), ruledScene.getDrawRules());
+    EXPECT_EQ(plainScene.getStackHash(), ruledScene.getStackHash());
+    EXPECT_EQ(exportStage(SceneOps::compose(plainScene)), exportStage(SceneOps::compose(ruledScene)));
+
+    // Each input's own rules follow the ones before it; the one both inputs carry stays first.
+    NodePtr second = createNode(QString::fromUtf8(kTestPluginIDSceneOp));
+    NodePtr together = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
+    NodePtr below = createNode(QString::fromUtf8(kTestPluginIDSceneOp));
+    ASSERT_TRUE(second && together && below && getTestOp(second) && getTestOp(below));
+    const SceneDrawRule secondOwn = makeDrawRule("/Transform1/World", eSceneDrawStateFull, "DrawRuleSecond");
+    const SceneDrawRule belowOwn = makeDrawRule("/Transform2", eSceneDrawStateChildren, "DrawRuleBelow");
+    getTestOp(second)->setDrawRules(SceneDrawRules { shared, secondOwn });
+    getTestOp(below)->setDrawRules(SceneDrawRules { belowOwn });
+    ASSERT_TRUE(second->connectInput(merge, 0));
+    ASSERT_TRUE(together->connectInput(ruled, 0));
+    ASSERT_TRUE(together->connectInput(second, 1));
+    ASSERT_TRUE(below->connectInput(together, 0));
+    ScenePayload belowScene;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, below->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &belowScene, &error)) << error;
+    EXPECT_EQ(after(SceneDrawRules { shared, own, secondOwn, belowOwn }), belowScene.getDrawRules());
+
+    const USDWrite::ExportModeEnum modes[] = { USDWrite::eExportModeLayered, USDWrite::eExportModeFlattened };
+    for (USDWrite::ExportModeEnum mode : modes) {
+        const QString suffix = QString::number((int)mode);
+        const QString plainDir = tmp.path() + QString::fromUtf8("/plain") + suffix;
+        const QString ruledDir = tmp.path() + QString::fromUtf8("/ruled") + suffix;
+        ASSERT_TRUE(QDir().mkpath(plainDir) && QDir().mkpath(ruledDir));
+        NodePtr plainWriter = createWriter(plain, plainDir + QString::fromUtf8("/scene.usda"), mode, 1, 24);
+        NodePtr ruledWriter = createWriter(ruled, ruledDir + QString::fromUtf8("/scene.usda"), mode, 1, 24);
+        ASSERT_TRUE(plainWriter && getWriter(plainWriter) && ruledWriter && getWriter(ruledWriter));
+        ASSERT_EQ(eStatusOK, writeOffMainThread(plainWriter, 1, 24));
+        ASSERT_EQ(eStatusOK, writeOffMainThread(ruledWriter, 1, 24));
+        const std::map<QString, QByteArray> plainFiles = fileContents(plainDir);
+        EXPECT_FALSE(plainFiles.empty());
+        EXPECT_TRUE(plainFiles == fileContents(ruledDir)) << "mode " << (int)mode;
+        for (const std::pair<const QString, QByteArray>& file : fileContents(ruledDir)) {
+            EXPECT_FALSE(file.second.contains("DrawRuleShared")) << file.first.toStdString();
+            EXPECT_FALSE(file.second.contains("DrawRuleOwn")) << file.first.toStdString();
         }
     }
 }

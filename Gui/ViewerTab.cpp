@@ -57,6 +57,7 @@
 #include "Engine/Utils.h" // convertFromPlainText
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
+#include "Serialization/NodeSerialization.h"
 
 #include "Gui/ActionShortcuts.h"
 #include "Gui/Button.h"
@@ -72,6 +73,7 @@
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
 #include "Gui/ScaleSliderQWidget.h"
+#include "Gui/SceneBreadcrumbBar.h"
 #include "Gui/SceneSelectionActions.h"
 #include "Gui/SceneTransformTarget.h"
 #include "Gui/SceneViewport.h"
@@ -117,7 +119,9 @@ const char* const kViewerKnobNames[] = {
     kViewerParamEnableDownscale,
     kViewerParamDownscaleLevel,
     kViewerParamMaxSamples,
+    kViewerParamRenderEverything,
     kViewerParamRefinementPaused,
+    kViewerParamMapSiblingOverlays,
 };
 
 // One value per dimension: numbers for bool/int/double knobs, strings for string knobs.
@@ -843,6 +847,15 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     QObject::connect( _imp->checkerboardButton, SIGNAL(clicked(bool)), this, SLOT(onCheckerboardButtonClicked()) );
     _imp->secondRowLayout->addWidget(_imp->checkerboardButton);
 
+    _imp->mapSiblingOverlaysButton = new Button(tr("Siblings"), _imp->secondSettingsRow);
+    _imp->mapSiblingOverlaysButton->setObjectName(QString::fromUtf8(kViewerParamMapSiblingOverlays));
+    _imp->mapSiblingOverlaysButton->setFocusPolicy(Qt::NoFocus);
+    _imp->mapSiblingOverlaysButton->setCheckable(true);
+    _imp->mapSiblingOverlaysButton->setChecked(true);
+    _imp->mapSiblingOverlaysButton->setDown(true);
+    QObject::connect(_imp->mapSiblingOverlaysButton, SIGNAL(clicked(bool)), this, SLOT(onMapSiblingOverlaysButtonClicked(bool)));
+    _imp->secondRowLayout->addWidget(_imp->mapSiblingOverlaysButton);
+
     _imp->viewsComboBox = new ComboBox(_imp->secondSettingsRow);
     _imp->viewsComboBox->setToolTip( QString::fromUtf8("<p><b>") + tr("Active view:") + QString::fromUtf8("</b></p>") + tr(
                                          "Tells the viewer what view should be displayed.") );
@@ -902,6 +915,17 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
                                                                                     NATRON_NAMESPACE::WhiteSpaceNormal));
     _imp->sceneRenderRowLayout->addWidget(_imp->refinementPausedButton);
 
+    _imp->renderEverythingButton = new Button(tr("Render Everything"), _imp->sceneRenderRow);
+    _imp->renderEverythingButton->setObjectName(QString::fromUtf8(kViewerParamRenderEverything));
+    _imp->renderEverythingButton->setFocusPolicy(Qt::NoFocus);
+    _imp->renderEverythingButton->setCheckable(true);
+    _imp->renderEverythingButton->setChecked(false);
+    _imp->renderEverythingButton->setDown(false);
+    _imp->renderEverythingButton->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tr("Renders the whole scene, ignoring the draw states, and loads every payload. "
+                                                                                       "Turning it off brings the draw states back and unloads nothing."),
+                                                                                    NATRON_NAMESPACE::WhiteSpaceNormal));
+    _imp->sceneRenderRowLayout->addWidget(_imp->renderEverythingButton);
+
     _imp->refineSamplesLabel = new Label(QString(), _imp->sceneRenderRow);
     _imp->refineSamplesLabel->setObjectName(QString::fromUtf8("refineSamples"));
     _imp->refineSamplesLabel->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tr("The samples per pixel of the frame shown, against the cap."),
@@ -914,6 +938,7 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     _imp->sceneRenderRow->ensurePolished();
     QObject::connect(_imp->maxSamplesBox, SIGNAL(valueChanged(double)), this, SLOT(onMaxSamplesBoxChanged(double)));
     QObject::connect(_imp->refinementPausedButton, SIGNAL(clicked(bool)), this, SLOT(onRefinementPausedButtonClicked(bool)));
+    QObject::connect(_imp->renderEverythingButton, SIGNAL(clicked(bool)), this, SLOT(onRenderEverythingButtonClicked(bool)));
     /*=============================================*/
 
     /*OpenGL viewer*/
@@ -1239,6 +1264,12 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
                            tr("When checked, the viewer will render the image in its entirety and not just the visible portion.").toStdString() + "</p>" +
                            "<p><b>" + tr("Keyboard shortcut: %1").toStdString() + "</b></p>", _imp->fullFrameProcessingButton);
 
+    setToolTipWithShortcut(kShortcutGroupViewer, kShortcutIDActionMapSiblingOverlays, "<p>" + tr("When checked, the overlay of a node on another branch of an input the viewed node shares "
+                                                                                                 "is drawn through that input, so it lines up with the viewed image. "
+                                                                                                 "Unchecked, it is drawn in its own space.")
+                                                                                                  .toStdString()
+                               + "</p>" + "<p><b>" + tr("Keyboard shortcut: %1").toStdString() + "</b></p>",
+                           _imp->mapSiblingOverlaysButton);
 
     std::list<std::string> roiActions;
     roiActions.push_back(kShortcutIDActionROIEnabled);
@@ -1375,6 +1406,13 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     QObject::connect( engine.get(), SIGNAL(renderFinished(int)), this, SLOT(onEngineStopped()) );
     QObject::connect( engine.get(), SIGNAL(renderStarted(bool)), this, SLOT(onEngineStarted(bool)) );
 
+    _imp->staleCueClock.start();
+    _imp->staleCueTimer.setSingleShot(true);
+    // A coarse timer may fire early, which would cost an extra wake-up before each deadline.
+    _imp->staleCueTimer.setTimerType(Qt::PreciseTimer);
+    QObject::connect(&_imp->staleCueTimer, &QTimer::timeout, this, &ViewerTab::onStaleCueTimeout);
+    QObject::connect(_imp->viewerNode, &ViewerInstance::staleChanged, this, &ViewerTab::onViewerStaleChanged);
+
     _imp->mustSetUpPlaybackButtonsTimer.setSingleShot(true);
     QObject::connect( &_imp->mustSetUpPlaybackButtonsTimer, SIGNAL(timeout()), this, SLOT(onSetDownPlaybackButtonsTimeout()) );
     manageSlotsForInfoWidget(0, true);
@@ -1383,6 +1421,11 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     QObject::connect( _imp->fullFrameProcessingButton, SIGNAL(clicked(bool)), this, SLOT(onFullFrameButtonToggle(bool)) );
     QObject::connect(_imp->autoProxyButton, SIGNAL(clicked(bool)), this, SLOT(onAutoProxyButtonToggle(bool)));
     QObject::connect(appPTR->getCurrentSettings().get(), &Settings::settingChanged, this, [this](KnobI* knob) {
+        if (knob && (knob->getName() == "staleCueStyle")) {
+            refreshStaleCue();
+
+            return;
+        }
         if (!knob || (knob->getName() != "autoProxyScrubbing")) {
             return;
         }
@@ -1491,12 +1534,27 @@ ViewerTab::onActiveInputDataKindChanged()
     refreshCompositingOperatorFromKnob();
 
     const bool scene = (node->getActiveInputDataKind() == eDataKindScene);
+    if (!scene && isShowingScene() && !getSceneViewedNode()) {
+        // An empty input keeps the scene view and its stage: showing the image viewer builds its GL
+        // context on the main thread, and a reconnect would flip straight back and reload.
+        Q_EMIT sceneViewChanged();
+
+        return;
+    }
     if (scene && !_imp->sceneViewport) {
         _imp->sceneViewport = new SceneViewport(_imp->viewerSubContainer);
         _imp->sceneViewport->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
         _imp->sceneViewport->hide();
         const int index = _imp->viewerSubContainerLayout->indexOf(_imp->viewer);
-        _imp->viewerSubContainerLayout->insertWidget(index + 1, _imp->sceneViewport, 1);
+        _imp->sceneBreadcrumbBar = new SceneBreadcrumbBar(_imp->sceneViewport, _imp->viewerSubContainer);
+        _imp->sceneBreadcrumbBar->hide();
+        QObject::connect(_imp->sceneBreadcrumbBar, &SceneBreadcrumbBar::showInSceneGraphRequested, this, [this](const QStringList& paths) {
+            if (Gui* gui = getGui()) {
+                gui->showPrimsInSceneGraph(this, paths);
+            }
+        });
+        _imp->viewerSubContainerLayout->insertWidget(index + 1, _imp->sceneBreadcrumbBar);
+        _imp->viewerSubContainerLayout->insertWidget(index + 2, _imp->sceneViewport, 1);
         // The USDEditTransform whose settings panel was opened last.
         const std::function<NodePtr()> openEditNode = [this]() -> NodePtr {
             Gui* gui = getGui();
@@ -1538,6 +1596,9 @@ ViewerTab::onActiveInputDataKindChanged()
             context.viewedNode = [this]() -> NodePtr {
                 return getSceneViewedNode();
             };
+            context.evaluationContext = [this]() -> SceneEvaluationContext {
+                return _imp->viewerNode->getSceneEvaluationContext();
+            };
             context.openEditNode = openEditNode;
             context.undoHistory = [this]() -> UndoHistory* {
                 Gui* gui = getGui();
@@ -1554,18 +1615,58 @@ ViewerTab::onActiveInputDataKindChanged()
         if (Gui* gui = getGui()) {
             _imp->sceneViewport->setUndoHistory(gui->getUndoHistory());
         }
+        {
+            // Called on the viewport's load thread, and not once the viewport is destroyed.
+            const std::weak_ptr<EffectInstance> viewer = _imp->viewerNode->shared_from_this();
+            const SceneViewportRenderer::LoadSetEvaluator evaluate = [viewer](const SceneLoadSetPtr& loadSet,
+                                                                              ScenePayload* payload,
+                                                                              SceneLoadReachPtr* reach) {
+                const EffectInstancePtr effect = viewer.lock();
+                ViewerInstance* instance = dynamic_cast<ViewerInstance*>(effect.get());
+                std::string error;
+
+                return instance && instance->evaluateSceneForLoadSet(loadSet, payload, reach, &error);
+            };
+            const SceneViewportRenderer::LoadSetCommitted committed = [this, viewer](const SceneLoadSetPtr& loadSet,
+                                                                                     bool reevaluate) {
+                const EffectInstancePtr effect = viewer.lock();
+                ViewerInstance* instance = dynamic_cast<ViewerInstance*>(effect.get());
+                if (!instance) {
+                    return;
+                }
+                // Set here rather than on the main thread, so an evaluation starting meanwhile
+                // already matches on what the stage now loads.
+                instance->setSceneLoadSet(loadSet);
+                if (!reevaluate) {
+                    return;
+                }
+                QMetaObject::invokeMethod(this, [this]() {
+                    if (_imp->viewerNode && isShowingScene()) {
+                        _imp->viewerNode->renderCurrentFrame(true);
+                    } }, Qt::QueuedConnection);
+            };
+            _imp->sceneViewport->setLoadSetEvaluator(evaluate, committed);
+        }
         QObject::connect(_imp->sceneViewport, &SceneViewport::rendererChanged, this, &ViewerTab::refreshSceneRenderRow);
         QObject::connect(_imp->sceneViewport, &SceneViewport::refineStateChanged, this, &ViewerTab::refreshRefineSamplesLabel);
         refreshSceneRenderFromKnobs();
+        // Before the first sync, so that the saved loads go out with the scene's first stage.
+        _imp->sceneViewport->restoreSceneView(node->getLoadedSceneView());
+        // They were saved against the scene shown now, which must not cancel them as another's.
+        _imp->sceneLoadsNode = getSceneViewedNode();
+        SceneViewport* viewport = _imp->sceneViewport;
+        node->setSceneViewSaver([viewport](Serialization::SceneViewSerialization* serialization) { viewport->saveSceneView(serialization); });
     }
     if (!_imp->sceneViewport) {
         return;
     }
     if (scene) {
         _imp->viewer->hide();
+        _imp->sceneBreadcrumbBar->show();
         _imp->sceneViewport->show();
         onSceneEvaluated(0);
     } else {
+        _imp->sceneBreadcrumbBar->hide();
         _imp->sceneViewport->hide();
         // Lets go of the scene's layers; the viewport keeps its stage and engine for the next one.
         _imp->sceneViewport->clearScene();
@@ -1619,9 +1720,16 @@ ViewerTab::onSceneEvaluated(int textureIndex)
     if ((textureIndex != 0) || !_imp->viewerNode || !isShowingScene()) {
         return;
     }
+    const NodePtr viewedNode = getSceneViewedNode();
+    if (viewedNode != _imp->sceneViewedNode.lock()) {
+        _imp->sceneViewedNode = viewedNode;
+        Q_EMIT sceneViewedNodeChanged();
+    }
     ScenePayload scene;
     std::string error;
-    const bool ok = _imp->viewerNode->getLastEvaluatedScene(0, &scene, &error);
+    SceneLoadSetPtr loadSet;
+    SceneLoadReachPtr reach;
+    const bool ok = _imp->viewerNode->getLastEvaluatedScene(0, &scene, &error, &loadSet, &reach);
     if (!ok && error.empty()) {
         // Not evaluated yet: the evaluation the kind change started reports back here.
         return;
@@ -1635,6 +1743,11 @@ ViewerTab::onSceneEvaluated(int textureIndex)
     if (getGui() && getGui()->getApp()) {
         fps = getGui()->getApp()->getProjectFrameRate();
     }
+    if (viewedNode != _imp->sceneLoadsNode.lock()) {
+        _imp->sceneLoadsNode = viewedNode;
+        _imp->sceneViewport->cancelPendingLoads();
+    }
+    _imp->sceneViewport->setSceneEvaluatedFor(loadSet, reach);
     _imp->sceneViewport->setScene(scene, getTimeLine()->currentFrame(), fps);
 }
 
@@ -1720,8 +1833,10 @@ ViewerTab::refreshFromViewerKnob(const std::string& name)
     } else if ((name == kViewerParamInPoint) || (name == kViewerParamOutPoint)) {
         refreshFrameRangeFromKnobs();
         abortViewersAndRefresh();
-    } else if ((name == kViewerParamMaxSamples) || (name == kViewerParamRefinementPaused)) {
+    } else if ((name == kViewerParamMaxSamples) || (name == kViewerParamRefinementPaused) || (name == kViewerParamRenderEverything)) {
         refreshSceneRenderFromKnobs();
+    } else if (name == kViewerParamMapSiblingOverlays) {
+        refreshMapSiblingOverlaysFromKnob();
     }
 }
 
@@ -1739,6 +1854,19 @@ ViewerTab::refreshAllFromViewerKnobs()
     refreshFpsFromKnobs();
     refreshFrameRangeFromKnobs();
     refreshSceneRenderFromKnobs();
+    refreshMapSiblingOverlaysFromKnob();
+}
+
+void
+ViewerTab::refreshMapSiblingOverlaysFromKnob()
+{
+    const bool mapped = _imp->viewerValue<bool>(kViewerParamMapSiblingOverlays, true);
+    {
+        QSignalBlocker b(_imp->mapSiblingOverlaysButton);
+        _imp->mapSiblingOverlaysButton->setChecked(mapped);
+        _imp->mapSiblingOverlaysButton->setDown(mapped);
+    }
+    _imp->viewer->redraw();
 }
 
 void
@@ -1824,9 +1952,12 @@ ViewerTab::refreshSceneRenderFromKnobs()
 {
     const int maxSamples = _imp->viewerValue<int>(kViewerParamMaxSamples, 0);
     const bool paused = _imp->viewerValue<bool>(kViewerParamRefinementPaused, false);
+    const bool everything = _imp->viewerValue<bool>(kViewerParamRenderEverything, false);
 
     {
-        QSignalBlocker b0(_imp->maxSamplesBox), b1(_imp->refinementPausedButton);
+        QSignalBlocker b0(_imp->maxSamplesBox), b1(_imp->refinementPausedButton), b2(_imp->renderEverythingButton);
+        _imp->renderEverythingButton->setChecked(everything);
+        _imp->renderEverythingButton->setDown(everything);
         if (_imp->maxSamplesBox->value() != maxSamples) {
             _imp->maxSamplesBox->setValue(maxSamples);
         }
@@ -1836,6 +1967,7 @@ ViewerTab::refreshSceneRenderFromKnobs()
     if (_imp->sceneViewport) {
         _imp->sceneViewport->setMaxSamples(maxSamples);
         _imp->sceneViewport->setRefinementPaused(paused);
+        _imp->sceneViewport->setRenderEverything(everything);
     }
 }
 
@@ -1851,6 +1983,15 @@ ViewerTab::onRefinementPausedButtonClicked(bool paused)
 {
     editViewerKnobs(tr("Refinement Paused"), [this, paused]() {
         _imp->setViewerValue<bool>(kViewerParamRefinementPaused, paused);
+    });
+    refreshSceneRenderFromKnobs();
+}
+
+void
+ViewerTab::onRenderEverythingButtonClicked(bool on)
+{
+    editViewerKnobs(tr("Render Everything"), [this, on]() {
+        _imp->setViewerValue<bool>(kViewerParamRenderEverything, on);
     });
     refreshSceneRenderFromKnobs();
 }

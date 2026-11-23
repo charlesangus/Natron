@@ -152,12 +152,6 @@ KnobChannelSelect::resolve(const std::list<ImageLayerDesc>& present,
     if (layerID.empty()) {
         return false;
     }
-    if (layerID == kNatronColorLayerID) {
-        // present lists the storage entry, which the lookup below would otherwise match; only
-        // its views are selectable.
-        return false;
-    }
-
     if (ImageLayerDesc::isColorViewID(layerID)) {
         for (std::list<ImageLayerDesc>::const_iterator it = present.begin(); it != present.end(); ++it) {
             if (!it->isColorLayer()) {
@@ -215,23 +209,6 @@ KnobChannelSelect::resolve(const std::list<ImageLayerDesc>& present,
     return false;
 }
 
-static std::string
-layerLabelForID(const std::string& layerID)
-{
-    if (ImageLayerDesc::isColorViewID(layerID)) {
-        return ImageLayerDesc::getColorView(layerID).getLayerLabel();
-    }
-    if (layerID == kNatronColorLayerID) {
-        return kNatronColorViewRGBA;
-    }
-    ImageLayerDesc desc = ImageLayerDesc::mapOFXPlaneStringToLayer(layerID);
-    if (desc) {
-        return desc.getLayerLabel();
-    }
-
-    return layerID;
-}
-
 std::string
 KnobChannelSelect::getSummary() const
 {
@@ -242,7 +219,7 @@ KnobChannelSelect::getSummary() const
     std::string layerID, channelName;
     getLayerIDAndChannel(&layerID, &channelName);
 
-    return layerLabelForID(layerID) + "." + channelName;
+    return layerID + "." + channelName;
 }
 
 void

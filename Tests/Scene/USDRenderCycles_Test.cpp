@@ -29,6 +29,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -36,11 +37,15 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <functional>
 #include <iostream>
 #include <limits>
 #include <list>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <string>
@@ -49,6 +54,7 @@
 
 #include <dirent.h>
 #include <sys/resource.h>
+#include <unistd.h>
 
 #include <gtest/gtest.h>
 
@@ -84,24 +90,27 @@
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/RenderSettingsKnobs.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
+#include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
 #include "Engine/Nodes/Scene/USDCard.h"
 #include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/Nodes/Scene/USDEmissiveMaterial.h"
 #include "Engine/Nodes/Scene/USDLight.h"
-#include "Engine/Nodes/Scene/USDMaterial.h"
 #include "Engine/Nodes/Scene/USDMerge.h"
+#include "Engine/Nodes/Scene/USDPreviewSurface.h"
 #include "Engine/Nodes/Scene/USDProject3D.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDRender.h"
 #include "Engine/Nodes/Scene/USDRenderSettings.h"
 #include "Engine/Project.h"
+#include "Engine/SceneLoadSet.h"
 #include "Engine/ViewIdx.h"
 #include "ProjectionTestUtils.h"
 #include "RenderBothWays.h"
 #include "RenderSettingsTestUtils.h"
 #include "Tests/Native/NativeGolden.h"
+#include "Tests/Scene/LiveViewerRender.h"
 #include "ofxNatron.h"
 
 NATRON_NAMESPACE_USING
@@ -237,9 +246,9 @@ processCpuSeconds()
 ImageLayerDesc
 normalLayer()
 {
-    static const char* const channels[] = { "X", "Y", "Z" };
+    static const char* const channels[] = { "x", "y", "z" };
 
-    return ImageLayerDesc("normal", "normal", "", std::vector<std::string>(channels, channels + 3));
+    return ImageLayerDesc("normal", std::vector<std::string>(channels, channels + 3));
 }
 
 std::list<ImageLayerDesc>
@@ -247,8 +256,8 @@ allPlanes()
 {
     std::list<ImageLayerDesc> layers;
     layers.push_back(ImageLayerDesc::getRGBAComponents());
-    layers.push_back(ImageLayerDesc("depth", "depth", "", std::vector<std::string>(1, "Z")));
-    layers.push_back(ImageLayerDesc("primId", "primId", "", std::vector<std::string>(1, "id")));
+    layers.push_back(ImageLayerDesc("depth", std::vector<std::string>(1, "Z")));
+    layers.push_back(ImageLayerDesc("primId", std::vector<std::string>(1, "id")));
     layers.push_back(normalLayer());
 
     return layers;
@@ -391,7 +400,7 @@ protected:
 
             return false;
         }
-        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(request->scene, &error);
+        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(request->scene, SceneLoadSet::everything(), &error);
         if (!lease.getStage()) {
             ADD_FAILURE() << error;
 
@@ -1437,6 +1446,193 @@ TEST_F(USDRenderCyclesTest, EveryDeclaredSettingHasAKnob)
     EXPECT_EQ(cyclesScriptNames(), reached);
 }
 
+namespace {
+// Two assets, each a payload holding a unit cube, left and right of the centre of /World/Cam's view.
+class PayloadPair {
+public:
+    PayloadPair()
+    {
+        static std::atomic<int> counter(0);
+
+        _dir = std::filesystem::temp_directory_path() / ("usdrender_payload_pair_" + std::to_string(::getpid()) + "_" + std::to_string(counter++));
+        std::filesystem::create_directories(_dir);
+        _dir = std::filesystem::canonical(_dir);
+        for (const char* side : { "left", "right" }) {
+            std::ofstream asset((_dir / (std::string(side) + ".usda")).string());
+            asset << "#usda 1.0\n(\n    defaultPrim = \"Asset\"\n)\ndef Xform \"Asset\"\n{\n    def Cube \"Geo\"\n    {\n        double size = 1\n    }\n}\n";
+        }
+        std::ofstream root(rootPath());
+        root << "#usda 1.0\n(\n    defaultPrim = \"World\"\n    metersPerUnit = 1\n    upAxis = \"Y\"\n)\ndef Xform \"World\"\n{\n"
+             << "    def Xform \"Left\" (\n        prepend payload = @./left.usda@\n    )\n    {\n"
+             << "        double3 xformOp:translate = (-1.5, 0, 0)\n        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n    }\n"
+             << "    def Xform \"Right\" (\n        prepend payload = @./right.usda@\n    )\n    {\n"
+             << "        double3 xformOp:translate = (1.5, 0, 0)\n        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n    }\n"
+             << "    def Camera \"Cam\"\n    {\n        float focalLength = 35\n        float horizontalAperture = 20.955\n"
+             << "        float verticalAperture = 20.955\n        double3 xformOp:translate = (0, 0, 10)\n"
+             << "        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n    }\n}\n";
+    }
+
+    ~PayloadPair()
+    {
+        std::error_code ignored;
+        std::filesystem::remove_all(_dir, ignored);
+    }
+
+    std::string rootPath() const
+    {
+        return (_dir / "root.usda").string();
+    }
+
+private:
+    std::filesystem::path _dir;
+};
+
+ScenePayload
+evaluated(const NodePtr& node,
+          const SceneEvaluationContext& context = SceneEvaluationContext())
+{
+    ScenePayload payload;
+    std::string error;
+    EXPECT_EQ(EffectInstance::eRenderRoIRetCodeOk, node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0), context), &payload, &error)) << error;
+
+    return payload;
+}
+
+// The prims a USDRender's primId plane shows, by the paths its metadata gives their ids.
+std::set<std::string>
+renderedPrims(const NodePtr& node,
+              const RenderedPlane& primId)
+{
+    std::set<std::string> paths;
+    NativeEffectBase* effect = dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get());
+    EXPECT_TRUE(effect != nullptr);
+    if (!effect) {
+        return paths;
+    }
+    const ImageMetadata metadata = effect->getOutputMetadata(1., ViewIdx(0));
+    std::set<std::uint32_t> ids;
+    for (float value : primId.pixels) {
+        if (bitsOf(value) != 0) {
+            ids.insert(bitsOf(value));
+        }
+    }
+    for (std::uint32_t id : ids) {
+        char key[32];
+        std::snprintf(key, sizeof(key), kUSDRenderMetadataPrimIdPrefix "%08x", id);
+        const std::optional<std::string> path = metadata.getString(key);
+        EXPECT_TRUE(path.has_value()) << key;
+        if (path) {
+            paths.insert(*path);
+        }
+    }
+
+    return paths;
+}
+
+// The planes differing in any bit, by name.
+std::vector<std::string>
+differingPlanes(const std::vector<RenderedPlane>& a,
+                const std::vector<RenderedPlane>& b)
+{
+    std::vector<std::string> names;
+    for (std::size_t p = 0; p < std::max(a.size(), b.size()); ++p) {
+        bool same = (p < a.size()) && (p < b.size()) && (a[p].pixels.size() == b[p].pixels.size());
+        for (std::size_t i = 0; same && (i < a[p].pixels.size()); ++i) {
+            same = bitsOf(a[p].pixels[i]) == bitsOf(b[p].pixels[i]);
+        }
+        if (!same) {
+            names.push_back((p < a.size()) ? a[p].layer.getLayerID() : std::to_string(p));
+        }
+    }
+
+    return names;
+}
+} // anon namespace
+
+// A viewer's Cycles render alive in the same process, its draw rules boxing the card and hiding
+// every light, leaves USDRender's planes bit for bit as they are with no viewer: the draw filter,
+// and the headlight that stands in for hidden lights, belong to the viewer's engine alone.
+TEST_F(USDRenderCyclesTest, AViewersDrawRulesLeaveTheRenderAsItIs)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    NodePtr reader;
+    NodePtr node = createGraph(&reader, kNormalMapFixture);
+    ASSERT_TRUE(bool(node));
+    std::vector<RenderedPlane> alone;
+    ASSERT_TRUE(renderAll(node, &alone));
+    // The render beside the viewer builds its engine while the viewer's lives.
+    HydraRender::releaseAllCpuEngines();
+    ASSERT_EQ(0u, HydraRender::getCpuEngineCount());
+
+    LiveViewerRender viewer;
+    SceneDrawFilter::Rules rules;
+    rules[PXR_NS::SdfPath("/World/Card")] = SceneDrawFilter::eRuleHide;
+    rules[PXR_NS::SdfPath("/World/Sun")] = SceneDrawFilter::eRuleHidden;
+    ASSERT_TRUE(viewer.start(evaluated(reader), kCamera, kSize, rules));
+    ASSERT_TRUE(viewer.waitUntilDone());
+    EXPECT_TRUE(viewer.pickedPrims().empty()) << "the viewer's rules do not reach its render";
+
+    std::vector<RenderedPlane> beside;
+    ASSERT_TRUE(renderAll(node, &beside));
+    EXPECT_TRUE(viewer.render().getStatus().active);
+    const std::vector<std::string> differing = differingPlanes(alone, beside);
+    EXPECT_TRUE(differing.empty()) << differing.size() << " planes differ with a viewer alive, the first " << (differing.empty() ? std::string() : differing.front());
+    EXPECT_EQ(renderedPrims(node, alone[2]), (std::set<std::string> { "/World/Card" }));
+}
+
+// A viewer's stage with nothing loaded, then every payload loaded and Render Everything on, holds the
+// prims USDRender's stage of the default evaluation context does, and its Cycles render shows the
+// prims USDRender's does, although its rules box one asset and hide the other.
+TEST_F(USDRenderCyclesTest, RenderEverythingMatchesTheRender)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    PayloadPair assets;
+    NodePtr reader;
+    NodePtr node = createGraph(&reader, assets.rootPath().c_str());
+    ASSERT_TRUE(bool(node));
+    std::vector<RenderedPlane> planes;
+    ASSERT_TRUE(renderAll(node, &planes));
+    const std::set<std::string> rendered = renderedPrims(node, planes[2]);
+    EXPECT_EQ((std::set<std::string> { "/World/Left/Geo", "/World/Right/Geo" }), rendered);
+    const std::set<std::string> renderStage = LiveViewerRender::primsOf(SceneOps::compose(evaluated(reader)));
+    EXPECT_EQ(1u, renderStage.count("/World/Left/Geo"));
+
+    LiveViewerRender viewer(PXR_NS::UsdStage::LoadNone);
+    const U64 contextId = SceneEvaluationContext::makeId();
+    SceneDrawFilter::Rules rules;
+    rules[PXR_NS::SdfPath("/World/Left")] = SceneDrawFilter::eRuleHide;
+    rules[PXR_NS::SdfPath("/World/Right")] = SceneDrawFilter::eRuleHidden;
+    ASSERT_TRUE(viewer.start(evaluated(reader, SceneEvaluationContext(contextId, viewer.stage().getLoadSet())), kCamera, kSize, rules));
+    ASSERT_TRUE(viewer.waitUntilDone());
+    EXPECT_TRUE(viewer.pickedPrims().empty());
+    EXPECT_NE(renderStage, viewer.stagePrims()) << "the viewer's stage loaded payloads nobody asked for";
+
+    // Render Everything, as the viewer turns it on: every payload asked for, then drawn regardless.
+    const std::uint64_t restarts = viewer.render().getRestartCount();
+    viewer.stage().requestLoad({ PXR_NS::SdfPath::AbsoluteRootPath() }, true);
+    const SceneStage::LockedSection locked = [&viewer](const std::function<void()>& section) {
+        std::lock_guard<std::mutex> lock(viewer.stageLock());
+        section();
+    };
+    ASSERT_TRUE(viewer.stage().serviceLoads(locked, locked));
+    SceneLoadSetPtr loadSet;
+    {
+        std::lock_guard<std::mutex> lock(viewer.stageLock());
+        loadSet = viewer.stage().getLoadSet();
+    }
+    viewer.sync(evaluated(reader, SceneEvaluationContext(contextId, loadSet)));
+    viewer.render().setRenderEverything(true);
+    viewer.render().invalidate();
+    ASSERT_TRUE(viewer.waitUntilDone(restarts));
+
+    EXPECT_EQ(renderStage, viewer.stagePrims());
+    EXPECT_EQ(rendered, viewer.pickedPrims());
+}
+
 /*
  * A Natron image on a card's material, through Cycles. Rendered off the main thread, where renders
  * run outside the tests: LiveTextureStore::prepare refuses the main thread, which is what the case
@@ -1480,7 +1676,7 @@ protected:
                                  bool emissive)
     {
         Graph graph;
-        NodePtr material = createNode(QString::fromUtf8(emissive ? PLUGINID_NATRON_USDEMISSIVEMATERIAL : PLUGINID_NATRON_USDMATERIAL));
+        NodePtr material = createNode(QString::fromUtf8(emissive ? PLUGINID_NATRON_USDEMISSIVEMATERIAL : PLUGINID_NATRON_USDPREVIEWSURFACE));
         NodePtr card = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
         NodePtr camera = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCAMERA));
         NodePtr light = createNode(QString::fromUtf8(PLUGINID_NATRON_USDLIGHT));
@@ -1507,7 +1703,7 @@ protected:
 
             return graph;
         }
-        connectNodes(source, material, emissive ? kUSDEmissiveMaterialInputEmissive : kUSDMaterialInputDiffuseColor, true);
+        connectNodes(source, material, emissive ? kUSDEmissiveMaterialInputEmissive : kUSDPreviewSurfaceInputDiffuseColor, true);
         connectNodes(material, card, 0, true);
         connectNodes(card, merge, 0, true);
         connectNodes(camera, merge, 1, true);
@@ -1812,7 +2008,7 @@ TEST_F(USDRenderCyclesLiveTextureTest, ALiveNormalMapBendsTheLighting)
     const NodePtr normal = createConstant(0.5, 0.5, 1.);
     const Graph graph = createLiveTextureGraph(createConstant(1., 1., 1.), false);
     ASSERT_TRUE(bool(graph.render));
-    connectNodes(normal, graph.material, kUSDMaterialInputNormal, true);
+    connectNodes(normal, graph.material, kUSDPreviewSurfaceInputNormal, true);
 
     const std::array<double, 4> flat = centreAtFrame(graph.render, 1.);
     ASSERT_GT(flat[0], 0.05);

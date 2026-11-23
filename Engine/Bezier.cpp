@@ -26,11 +26,12 @@
 #include "Bezier.h"
 
 #include <algorithm> // min, max
-#include <sstream>
-#include <locale>
-#include <limits>
-#include <cmath>
 #include <cassert>
+#include <cmath>
+#include <limits>
+#include <locale>
+#include <memory>
+#include <sstream>
 #include <stdexcept>
 
 #include <QLineF>
@@ -409,7 +410,7 @@ Bezier::bezierSegmentListBboxUpdate(bool useGuiCurves,
         const BezierCPPtr& p = points.front();
         p->getPositionAtTime(useGuiCurves, time, view, &p0.x, &p0.y);
         p0.z = 1;
-        p0 = Transform::matApply(transform, p0);
+        p0 = Transform::matApplyProjected(transform, p0);
         bbox->x1 = p0.x;
         bbox->x2 = p0.x;
         bbox->y1 = p0.y;
@@ -831,10 +832,10 @@ bezierSegmentMeetsPoint(bool useGuiCurves,
     last.getPositionAtTime(useGuiCurves, time, view, &p3.x, &p3.y);
     last.getLeftBezierPointAtTime(useGuiCurves, time, view, &p2.x, &p2.y);
 
-    p0 = Transform::matApply(transform, p0);
-    p1 = Transform::matApply(transform, p1);
-    p2 = Transform::matApply(transform, p2);
-    p3 = Transform::matApply(transform, p3);
+    p0 = Transform::matApplyProjected(transform, p0);
+    p1 = Transform::matApplyProjected(transform, p1);
+    p2 = Transform::matApplyProjected(transform, p2);
+    p3 = Transform::matApplyProjected(transform, p3);
 
     ///Use the control polygon to approximate segment length
     double length = ( std::sqrt( (p1.x - p0.x) * (p1.x - p0.x) + (p1.y - p0.y) * (p1.y - p0.y) ) +
@@ -896,7 +897,7 @@ isPointCloseTo(bool useGuiCurves,
 
     pos.z = 1;
     p.getPositionAtTime(useGuiCurves, time, view, &pos.x, &pos.y);
-    pos = Transform::matApply(transform, pos);
+    pos = Transform::matApplyProjected(transform, pos);
     if ( ( pos.x >= (x - acceptance) ) && ( pos.x <= (x + acceptance) ) && ( pos.y >= (y - acceptance) ) && ( pos.y <= (y + acceptance) ) ) {
         return true;
     }
@@ -958,9 +959,9 @@ Bezier::Bezier(const RotoCurveContextPtr& ctx,
 }
 
 bool
-Bezier::isOpenBezier() const
+Bezier::isOpenBezier(bool useGuiCurve) const
 {
-    return _imp->isOpenBezier;
+    return _imp->openFor(useGuiCurve);
 }
 
 class Bezier::EditSide {
@@ -1000,19 +1001,26 @@ bool
 Bezier::dequeueGuiActions()
 {
     bool all = false;
+    bool list = false;
     std::set<double> times;
     std::set<BezierCPPtr> dirtyPoints;
-    if (!_imp->takeGuiDirty(&all, &times, &dirtyPoints)) {
+    if (!_imp->takeGuiDirty(&all, &list, &times, &dirtyPoints)) {
         return false;
     }
 
     QMutexLocker k(&itemMutex);
 
+    if (list) {
+        // A render still iterating the old list keeps the points it holds alive.
+        _imp->copyGuiListsToRenderLists();
+        eraseOrientation(false);
+    }
     if (all) {
-        BezierCPs::iterator fit = _imp->featherPoints.begin();
-        for (BezierCPs::iterator it = _imp->points.begin(); it != _imp->points.end(); ++it, ++fit) {
+        for (BezierCPs::iterator it = _imp->guiPoints.begin(); it != _imp->guiPoints.end(); ++it) {
             (*it)->cloneGuiCurvesToInternalCurves();
-            (*fit)->cloneGuiCurvesToInternalCurves();
+        }
+        for (BezierCPs::iterator it = _imp->guiFeatherPoints.begin(); it != _imp->guiFeatherPoints.end(); ++it) {
+            (*it)->cloneGuiCurvesToInternalCurves();
         }
 
         _imp->isClockwiseOriented = _imp->guiIsClockwiseOriented;
@@ -1026,10 +1034,10 @@ Bezier::dequeueGuiActions()
             eraseOrientation(false);
         }
         for (std::set<double>::iterator t = times.begin(); t != times.end(); ++t) {
-            for (BezierCPs::iterator it = _imp->points.begin(); it != _imp->points.end(); ++it) {
+            for (BezierCPs::iterator it = _imp->guiPoints.begin(); it != _imp->guiPoints.end(); ++it) {
                 (*it)->cloneGuiCurvesToInternalCurvesAtTime(*t);
             }
-            for (BezierCPs::iterator it = _imp->featherPoints.begin(); it != _imp->featherPoints.end(); ++it) {
+            for (BezierCPs::iterator it = _imp->guiFeatherPoints.begin(); it != _imp->guiFeatherPoints.end(); ++it) {
                 (*it)->cloneGuiCurvesToInternalCurvesAtTime(*t);
             }
             copyOrientationAroundTime(false, *t);
@@ -1071,10 +1079,11 @@ Bezier::copyInternalPointsToGuiPoints()
     assert( !itemMutex.tryLock() );
     BezierPtr this_shared = std::dynamic_pointer_cast<Bezier>( shared_from_this() );
     assert(this_shared);
-    BezierCPs::iterator fit = _imp->featherPoints.begin();
-    for (BezierCPs::iterator it = _imp->points.begin(); it != _imp->points.end(); ++it, ++fit) {
+    for (BezierCPs::iterator it = _imp->guiPoints.begin(); it != _imp->guiPoints.end(); ++it) {
         (*it)->cloneInternalCurvesToGuiCurves();
-        (*fit)->cloneInternalCurvesToGuiCurves();
+    }
+    for (BezierCPs::iterator it = _imp->guiFeatherPoints.begin(); it != _imp->guiFeatherPoints.end(); ++it) {
+        (*it)->cloneInternalCurvesToGuiCurves();
     }
     _imp->guiIsClockwiseOriented = _imp->isClockwiseOriented;
     _imp->guiIsClockwiseOrientedStatic = _imp->isClockwiseOrientedStatic;
@@ -1085,10 +1094,10 @@ void
 Bezier::copyInternalPointsToGuiAtTime(double time)
 {
     assert(!itemMutex.tryLock());
-    for (BezierCPs::iterator it = _imp->points.begin(); it != _imp->points.end(); ++it) {
+    for (BezierCPs::iterator it = _imp->guiPoints.begin(); it != _imp->guiPoints.end(); ++it) {
         (*it)->cloneInternalCurvesToGuiCurvesAtTime(time);
     }
-    for (BezierCPs::iterator it = _imp->featherPoints.begin(); it != _imp->featherPoints.end(); ++it) {
+    for (BezierCPs::iterator it = _imp->guiFeatherPoints.begin(); it != _imp->guiFeatherPoints.end(); ++it) {
         (*it)->cloneInternalCurvesToGuiCurvesAtTime(time);
     }
     copyOrientationAroundTime(true, time);
@@ -1201,13 +1210,24 @@ void
 Bezier::clearAllPoints()
 {
     removeAnimation();
-    QMutexLocker k(&itemMutex);
-    _imp->points.clear();
-    _imp->featherPoints.clear();
-    eraseOrientation(false);
-    eraseOrientation(true);
-    _imp->finished = false;
-    invalidateContentHash();
+    const EditSide side(this);
+    const bool useGuiCurve = side.useGuiCurve();
+    {
+        QMutexLocker k(&itemMutex);
+        _imp->guiPoints.clear();
+        _imp->guiFeatherPoints.clear();
+        _imp->guiFinished = false;
+        eraseOrientation(true);
+        if (!useGuiCurve) {
+            _imp->copyGuiListsToRenderLists();
+            eraseOrientation(false);
+        }
+    }
+    if (useGuiCurve) {
+        _imp->markGuiDirtyList();
+    } else {
+        invalidateContentHash();
+    }
 }
 
 void
@@ -1242,52 +1262,93 @@ Bezier::clone(const RotoItem* other)
     assert(this_shared);
 
     const Bezier* otherBezier = dynamic_cast<const Bezier*>(other);
-    if (!otherBezier) {
+    if (!otherBezier || (otherBezier == this)) {
         return;
     }
 
-    const_cast<Bezier*>(otherBezier)->flushGuiEdits();
-    Q_EMIT aboutToClone();
+    // Built under the source's lock alone: the source's GUI list and state are what the user
+    // sees, and never behind its render side. The new points are in no list yet, so both of
+    // their sides can be written whichever side the lists end up taking.
+    std::list<BezierCPPtr> newPoints, newFeatherPoints;
+    bool isOpen, finished;
     {
-        bool useFeather = otherBezier->useFeatherPoints();
-        QMutexLocker l(&itemMutex);
-        assert(otherBezier->_imp->featherPoints.size() == otherBezier->_imp->points.size() || !useFeather);
-
-        bool useGuiCurve = !canSetInternalPoints();
-        if (useGuiCurve) {
-            _imp->markGuiDirtyAll();
-        }
-
-        _imp->featherPoints.clear();
-        _imp->points.clear();
-        BezierCPs::const_iterator itF = otherBezier->_imp->featherPoints.begin();
-        for (BezierCPs::const_iterator it = otherBezier->_imp->points.begin(); it != otherBezier->_imp->points.end(); ++it) {
+        const bool useFeather = otherBezier->useFeatherPoints();
+        QMutexLocker l(&otherBezier->itemMutex);
+        isOpen = otherBezier->_imp->guiIsOpenBezier;
+        finished = otherBezier->_imp->guiFinished && !isOpen;
+        BezierCPs::const_iterator itF = otherBezier->_imp->guiFeatherPoints.begin();
+        for (BezierCPs::const_iterator it = otherBezier->_imp->guiPoints.begin(); it != otherBezier->_imp->guiPoints.end(); ++it) {
             BezierCPPtr cp = std::make_shared<BezierCP>(this_shared);
-            cp->clone(**it);
-            // During a render the source's latest state may exist in its GUI copy only.
-            cp->cloneGuiState(**it, false);
-            _imp->points.push_back(cp);
-            if (useFeather) {
-                BezierCPPtr fp = std::make_shared<BezierCP>(this_shared);
-                fp->clone(**itF);
-                fp->cloneGuiState(**itF, false);
-                _imp->featherPoints.push_back(fp);
+            cp->cloneGuiState(**it, true);
+            newPoints.push_back(cp);
+            if (useFeather && (itF != otherBezier->_imp->guiFeatherPoints.end())) {
+                BezierCPPtr fp = std::make_shared<FeatherPoint>(this_shared);
+                fp->cloneGuiState(**itF, true);
+                newFeatherPoints.push_back(fp);
                 ++itF;
             }
         }
-
-        if (!useGuiCurve) {
-            copyInternalPointsToGuiPoints();
-        }
-        eraseOrientation(false);
-        eraseOrientation(true);
-
-        _imp->isOpenBezier = otherBezier->_imp->isOpenBezier;
-        _imp->finished = otherBezier->_imp->finished && !_imp->isOpenBezier;
     }
-    invalidateContentHash();
+
+    if (QThread::currentThread() == qApp->thread()) {
+        Q_EMIT aboutToClone();
+        applyClonedLists(&newPoints, &newFeatherPoints, isOpen, finished);
+        RotoDrawableItem::clone(other);
+        Q_EMIT cloned();
+
+        return;
+    }
+
+    // The render-start hold, and so the choice of side, exists on the main thread only, and
+    // main-thread readers iterate the GUI lists without expecting another thread to swap them.
+    // The knobs are cloned here, not in the queued call: Knob::clone needs the live source knob,
+    // and a detached snapshot of it would drop its expressions and links.
     RotoDrawableItem::clone(other);
-    Q_EMIT cloned();
+    std::weak_ptr<Bezier> weakThis = this_shared;
+    QMetaObject::invokeMethod(qApp, [weakThis, newPoints, newFeatherPoints, isOpen, finished]() mutable {
+        BezierPtr bezier = weakThis.lock();
+        if (!bezier) {
+            return;
+        }
+        // A shape whose context or node is gone is being torn down: nothing renders or shows
+        // it, and EditSide needs the node.
+        RotoCurveContextPtr context = bezier->getContext();
+        if (!context || !context->getNode()) {
+            return;
+        }
+        Q_EMIT bezier->aboutToClone();
+        bezier->applyClonedLists(&newPoints, &newFeatherPoints, isOpen, finished);
+        Q_EMIT bezier->cloned(); }, Qt::QueuedConnection);
+}
+
+void
+Bezier::applyClonedLists(std::list<BezierCPPtr>* points,
+                         std::list<BezierCPPtr>* featherPoints,
+                         bool isOpen,
+                         bool finished)
+{
+    assert(QThread::currentThread() == qApp->thread());
+    bool useGuiCurve = true;
+    {
+        const EditSide side(this);
+        useGuiCurve = side.useGuiCurve();
+        QMutexLocker l(&itemMutex);
+        _imp->guiIsOpenBezier = isOpen;
+        _imp->guiPoints.swap(*points);
+        _imp->guiFeatherPoints.swap(*featherPoints);
+        _imp->guiFinished = finished;
+        eraseOrientation(true);
+        if (useGuiCurve) {
+            _imp->markGuiDirtyAll();
+            _imp->markGuiDirtyList();
+        } else {
+            _imp->copyGuiListsToRenderLists();
+            eraseOrientation(false);
+        }
+    }
+    if (!useGuiCurve) {
+        invalidateContentHash();
+    }
 }
 
 Bezier::~Bezier()
@@ -1319,12 +1380,12 @@ Bezier::addControlPoint(double x,
     bool createdKeyframe = false;
     {
         QMutexLocker l(&itemMutex);
-        assert(!_imp->finished);
-        if ( _imp->points.empty() ) {
+        assert(!_imp->guiFinished);
+        if (_imp->guiPoints.empty()) {
             keyframeTime = time;
             createdKeyframe = autoKeying;
         } else {
-            keyframeTime = _imp->points.front()->getKeyframeTime(useGuiCurve, 0);
+            keyframeTime = _imp->guiPoints.front()->getKeyframeTime(useGuiCurve, 0);
             if (keyframeTime == std::numeric_limits<int>::max()) {
                 keyframeTime = getContext()->getTimelineCurrentTime();
             }
@@ -1340,12 +1401,7 @@ Bezier::addControlPoint(double x,
             p->setLeftBezierStaticPosition(useGuiCurve, x, y);
             p->setRightBezierStaticPosition(useGuiCurve, x, y);
         }
-        // A render reads the internal curves of every point in the list, and a new one's are
-        // unset: at the origin.
-        if (useGuiCurve) {
-            p->cloneGuiCurvesToInternalCurves();
-        }
-        _imp->points.insert(_imp->points.end(), p);
+        _imp->guiPoints.insert(_imp->guiPoints.end(), p);
 
         if ( useFeatherPoints() ) {
             BezierCPPtr fp = std::make_shared<FeatherPoint>(this_shared);
@@ -1358,27 +1414,28 @@ Bezier::addControlPoint(double x,
                 fp->setLeftBezierStaticPosition(useGuiCurve, x, y);
                 fp->setRightBezierStaticPosition(useGuiCurve, x, y);
             }
-            if (useGuiCurve) {
-                fp->cloneGuiCurvesToInternalCurves();
-            }
-            _imp->featherPoints.insert(_imp->featherPoints.end(), fp);
+            _imp->guiFeatherPoints.insert(_imp->guiFeatherPoints.end(), fp);
         }
 
         // The other points are untouched: the new ones only have to be copied whole.
-        BezierCP* newFp = useFeatherPoints() ? _imp->featherPoints.back().get() : 0;
+        BezierCP* newFp = useFeatherPoints() ? _imp->guiFeatherPoints.back().get() : 0;
         if (useGuiCurve) {
+            _imp->markGuiDirtyList();
             _imp->markGuiDirtyPoint(p);
             if (newFp) {
-                _imp->markGuiDirtyPoint(_imp->featherPoints.back());
+                _imp->markGuiDirtyPoint(_imp->guiFeatherPoints.back());
             }
         } else {
             copyInternalPointToGui(p.get(), newFp);
+            _imp->copyGuiListsToRenderLists();
         }
         eraseOrientation(false);
         eraseOrientation(true);
     }
 
-    invalidateContentHash();
+    if (!useGuiCurve) {
+        invalidateContentHash();
+    }
 
     if (createdKeyframe) {
         Q_EMIT keyframeSet(keyframeTime);
@@ -1405,13 +1462,16 @@ Bezier::addControlPointAfterIndex(int index,
     if ( useFeatherPoints() ) {
         fp = std::make_shared<FeatherPoint>(this_shared);
     }
+    // Read before itemMutex: the context's lock is taken around item locks by region-of-definition
+    // readers on render threads, so taking it under this item's lock can deadlock with them.
+    const int currentTime = getContext()->getTimelineCurrentTime();
+    const bool autoKeying = getContext()->isAutoKeyingEnabled();
     {
         QMutexLocker l(&itemMutex);
 
-        if ( ( index >= (int)_imp->points.size() ) || (index < -1) ) {
+        if ((index >= (int)_imp->guiPoints.size()) || (index < -1)) {
             throw std::invalid_argument("Spline control point index out of range.");
         }
-
 
         ///we set the new control point position to be in the exact position the curve would have at each keyframe
         std::set<double> existingKeyframes;
@@ -1419,39 +1479,39 @@ Bezier::addControlPointAfterIndex(int index,
 
         BezierCPs::const_iterator prev, next, prevF, nextF;
         if (index == -1) {
-            prev = _imp->points.end();
-            if ( prev != _imp->points.begin() ) {
+            prev = _imp->guiPoints.end();
+            if (prev != _imp->guiPoints.begin()) {
                 --prev;
             }
-            next = _imp->points.begin();
+            next = _imp->guiPoints.begin();
 
             if ( useFeatherPoints() ) {
-                prevF = _imp->featherPoints.end();
-                if ( prevF != _imp->featherPoints.begin() ) {
+                prevF = _imp->guiFeatherPoints.end();
+                if (prevF != _imp->guiFeatherPoints.begin()) {
                     --prevF;
                 }
-                nextF = _imp->featherPoints.begin();
+                nextF = _imp->guiFeatherPoints.begin();
             }
         } else {
             prev = _imp->atIndex(index);
             next = prev;
-            if ( next != _imp->points.end() ) {
+            if (next != _imp->guiPoints.end()) {
                 ++next;
             }
-            if ( _imp->finished && ( next == _imp->points.end() ) ) {
-                next = _imp->points.begin();
+            if (_imp->guiFinished && (next == _imp->guiPoints.end())) {
+                next = _imp->guiPoints.begin();
             }
-            assert( next != _imp->points.end() );
+            assert(next != _imp->guiPoints.end());
 
             if ( useFeatherPoints() ) {
-                prevF = _imp->featherPoints.begin();
+                prevF = _imp->guiFeatherPoints.begin();
                 std::advance(prevF, index);
                 nextF = prevF;
-                if ( nextF != _imp->featherPoints.end() ) {
+                if (nextF != _imp->guiFeatherPoints.end()) {
                     ++nextF;
                 }
-                if ( _imp->finished && ( nextF == _imp->featherPoints.end() ) ) {
-                    nextF = _imp->featherPoints.begin();
+                if (_imp->guiFinished && (nextF == _imp->guiFeatherPoints.end())) {
+                    nextF = _imp->guiFeatherPoints.begin();
                 }
             }
         }
@@ -1466,7 +1526,7 @@ Bezier::addControlPointAfterIndex(int index,
 
             Point p0f;
             Point p1f;
-            if (useFeatherPoints() && prevF != _imp->featherPoints.end() && *prevF) {
+            if (useFeatherPoints() && prevF != _imp->guiFeatherPoints.end() && *prevF) {
                 (*prevF)->getPositionAtTime(useGuiCurve, *it, ViewIdx(0), &p0f.x, &p0f.y);
                 (*prevF)->getRightBezierPointAtTime(useGuiCurve, *it, ViewIdx(0), &p1f.x, &p1f.y);
             } else {
@@ -1475,7 +1535,7 @@ Bezier::addControlPointAfterIndex(int index,
             }
             Point p2f;
             Point p3f;
-            if (useFeatherPoints() && nextF != _imp->featherPoints.end() && *nextF) {
+            if (useFeatherPoints() && nextF != _imp->guiFeatherPoints.end() && *nextF) {
                 (*nextF)->getPositionAtTime(useGuiCurve, *it, ViewIdx(0), &p3f.x, &p3f.y);
                 (*nextF)->getLeftBezierPointAtTime(useGuiCurve, *it, ViewIdx(0), &p2f.x, &p2f.y);
             } else {
@@ -1496,10 +1556,10 @@ Bezier::addControlPointAfterIndex(int index,
             (*next)->setLeftBezierPointAtTime(useGuiCurve, *it, p2p3.x, p2p3.y);
 
             if ( useFeatherPoints() ) {
-                if (prevF != _imp->featherPoints.end() && *prevF) {
+                if (prevF != _imp->guiFeatherPoints.end() && *prevF) {
                     (*prevF)->setRightBezierPointAtTime(useGuiCurve, *it, p0p1f.x, p0p1f.y);
                 }
-                if (nextF != _imp->featherPoints.end() && *nextF) {
+                if (nextF != _imp->guiFeatherPoints.end() && *nextF) {
                     (*nextF)->setLeftBezierPointAtTime(useGuiCurve, *it, p2p3f.x, p2p3f.y);
                 }
             }
@@ -1552,32 +1612,23 @@ Bezier::addControlPointAfterIndex(int index,
             }
         }
 
-        // A render reads the internal curves of every point in the list, and the new ones' are
-        // unset: at the origin.
-        if (useGuiCurve) {
-            p->cloneGuiCurvesToInternalCurves();
-            if (fp) {
-                fp->cloneGuiCurvesToInternalCurves();
-            }
-        }
-
         ////Insert the point into the container
         if (index != -1) {
-            BezierCPs::iterator it = _imp->points.begin();
+            BezierCPs::iterator it = _imp->guiPoints.begin();
             ///it will point at the element right after index
             std::advance(it, index + 1);
-            _imp->points.insert(it, p);
+            _imp->guiPoints.insert(it, p);
 
             if ( useFeatherPoints() ) {
                 ///insert the feather point
-                BezierCPs::iterator itF = _imp->featherPoints.begin();
+                BezierCPs::iterator itF = _imp->guiFeatherPoints.begin();
                 std::advance(itF, index + 1);
-                _imp->featherPoints.insert(itF, fp);
+                _imp->guiFeatherPoints.insert(itF, fp);
             }
         } else {
-            _imp->points.push_front(p);
+            _imp->guiPoints.push_front(p);
             if ( useFeatherPoints() ) {
-                _imp->featherPoints.push_front(fp);
+                _imp->guiFeatherPoints.push_front(fp);
             }
         }
 
@@ -1588,18 +1639,17 @@ Bezier::addControlPointAfterIndex(int index,
         changed.push_back(*next);
         if (useFeatherPoints()) {
             changed.push_back(fp);
-            if ((prevF != _imp->featherPoints.end()) && *prevF) {
+            if ((prevF != _imp->guiFeatherPoints.end()) && *prevF) {
                 changed.push_back(*prevF);
             }
-            if ((nextF != _imp->featherPoints.end()) && *nextF) {
+            if ((nextF != _imp->guiFeatherPoints.end()) && *nextF) {
                 changed.push_back(*nextF);
             }
         }
 
-        ///If auto-keying is enabled, set a new keyframe
-        int currentTime = getContext()->getTimelineCurrentTime();
+        /// If auto-keying is enabled, set a new keyframe
         bool keyedAllPoints = false;
-        if ( !_imp->hasKeyframeAtTime(useGuiCurve, currentTime) && getContext()->isAutoKeyingEnabled() ) {
+        if (autoKeying && !_imp->hasKeyframeAtTime(useGuiCurve, currentTime)) {
             keyedAllPoints = !_imp->hasKeyframeAtTime(true, currentTime);
             l.unlock();
             setKeyframeInternal(currentTime, useGuiCurve);
@@ -1620,11 +1670,18 @@ Bezier::addControlPointAfterIndex(int index,
                 copyInternalPointsToGuiAtTime(currentTime);
             }
         }
+        if (useGuiCurve) {
+            _imp->markGuiDirtyList();
+        } else {
+            _imp->copyGuiListsToRenderLists();
+        }
         eraseOrientation(false);
         eraseOrientation(true);
     }
 
-    invalidateContentHash();
+    if (!useGuiCurve) {
+        invalidateContentHash();
+    }
 
     RotoCurveContextPtr context = getContext();
     if (context) {
@@ -1635,11 +1692,11 @@ Bezier::addControlPointAfterIndex(int index,
 } // addControlPointAfterIndex
 
 int
-Bezier::getControlPointsCount() const
+Bezier::getControlPointsCount(bool useGuiCurve) const
 {
     QMutexLocker l(&itemMutex);
 
-    return (int)_imp->points.size();
+    return (int)_imp->pointsFor(useGuiCurve).size();
 }
 
 int
@@ -1660,8 +1717,8 @@ Bezier::isPointOnCurve(double x,
 
     ///special case: if the curve has only 1 control point, just check if the point
     ///is nearby that sole control point
-    if (_imp->points.size() == 1) {
-        const BezierCPPtr & cp = _imp->points.front();
+    if (_imp->guiPoints.size() == 1) {
+        const BezierCPPtr& cp = _imp->guiPoints.front();
         if ( isPointCloseTo(true, time, ViewIdx(0), *cp, x, y, transform, distance) ) {
             *feather = false;
 
@@ -1669,7 +1726,7 @@ Bezier::isPointOnCurve(double x,
         } else {
             if ( useFeatherPoints() ) {
                 ///do the same with the feather points
-                const BezierCPPtr & fp = _imp->featherPoints.front();
+                const BezierCPPtr& fp = _imp->guiFeatherPoints.front();
                 if ( isPointCloseTo(true, time, ViewIdx(0), *fp, x, y, transform, distance) ) {
                     *feather = true;
 
@@ -1685,26 +1742,26 @@ Bezier::isPointOnCurve(double x,
     int index = 0;
     bool useFeather = useFeatherPoints();
 
-    assert( _imp->featherPoints.size() == _imp->points.size() || !useFeather);
+    assert(_imp->guiFeatherPoints.size() == _imp->guiPoints.size() || !useFeather);
 
-    BezierCPs::const_iterator fp = _imp->featherPoints.begin();
-    for (BezierCPs::const_iterator it = _imp->points.begin(); it != _imp->points.end(); ++it, ++index) {
+    BezierCPs::const_iterator fp = _imp->guiFeatherPoints.begin();
+    for (BezierCPs::const_iterator it = _imp->guiPoints.begin(); it != _imp->guiPoints.end(); ++it, ++index) {
         BezierCPs::const_iterator next = it;
         BezierCPs::const_iterator nextFp = fp;
 
-        if ( useFeather && ( nextFp != _imp->featherPoints.end() ) ) {
+        if (useFeather && (nextFp != _imp->guiFeatherPoints.end())) {
             ++nextFp;
         }
-        if ( next != _imp->points.end() ) {
+        if (next != _imp->guiPoints.end()) {
             ++next;
         }
-        if ( next == _imp->points.end() ) {
-            if (!_imp->finished) {
+        if (next == _imp->guiPoints.end()) {
+            if (!_imp->guiFinished) {
                 return -1;
             } else {
-                next = _imp->points.begin();
+                next = _imp->guiPoints.begin();
                 if (useFeather) {
-                    nextFp = _imp->featherPoints.begin();
+                    nextFp = _imp->guiFeatherPoints.begin();
                 }
             }
         }
@@ -1724,7 +1781,6 @@ Bezier::isPointOnCurve(double x,
         }
     }
 
-
     return -1;
 } // isPointOnCurve
 
@@ -1735,15 +1791,28 @@ Bezier::setCurveFinished(bool finished)
     assert( QThread::currentThread() == qApp->thread() );
 
     bool changed = false;
-    if (!_imp->isOpenBezier) {
-        QMutexLocker l(&itemMutex);
-        changed = (_imp->finished != finished);
-        _imp->finished = finished;
+    bool useGuiCurve = true;
+    {
+        const EditSide side(this);
+        useGuiCurve = side.useGuiCurve();
+        if (!_imp->guiIsOpenBezier) {
+            QMutexLocker l(&itemMutex);
+            changed = (_imp->guiFinished != finished);
+            _imp->guiFinished = finished;
+            if (!useGuiCurve) {
+                _imp->finished = finished;
+            }
+        }
+    }
+    if (changed && useGuiCurve) {
+        _imp->markGuiDirtyList();
     }
 
     resetTransformCenter();
 
-    invalidateContentHash();
+    if (!useGuiCurve) {
+        invalidateContentHash();
+    }
     invalidatePolygonOrientation();
 
     RotoCurveContextPtr context = getContext();
@@ -1753,11 +1822,11 @@ Bezier::setCurveFinished(bool finished)
 }
 
 bool
-Bezier::isCurveFinished() const
+Bezier::isCurveFinished(bool useGuiCurve) const
 {
     QMutexLocker l(&itemMutex);
 
-    return _imp->finished;
+    return _imp->finishedFor(useGuiCurve);
 }
 
 void
@@ -1771,7 +1840,10 @@ Bezier::removeControlPointByIndex(int index)
         context->onControlPointAboutToBeRemoved(std::dynamic_pointer_cast<Bezier>(shared_from_this()), index);
     }
 
+    bool useGuiCurve = true;
     {
+        const EditSide side(this);
+        useGuiCurve = side.useGuiCurve();
         QMutexLocker l(&itemMutex);
         BezierCPs::iterator it;
         try {
@@ -1781,16 +1853,23 @@ Bezier::removeControlPointByIndex(int index)
             return;
         }
 
-        _imp->points.erase(it);
+        _imp->guiPoints.erase(it);
 
-        if ( useFeatherPoints() ) {
-            BezierCPs::iterator itF = _imp->featherPoints.begin();
+        if (useFeatherPoints() && (index < (int)_imp->guiFeatherPoints.size())) {
+            BezierCPs::iterator itF = _imp->guiFeatherPoints.begin();
             std::advance(itF, index);
-            _imp->featherPoints.erase(itF);
+            _imp->guiFeatherPoints.erase(itF);
+        }
+        if (!useGuiCurve) {
+            _imp->copyGuiListsToRenderLists();
         }
     }
 
-    invalidateContentHash();
+    if (useGuiCurve) {
+        _imp->markGuiDirtyList();
+    } else {
+        invalidateContentHash();
+    }
     invalidatePolygonOrientation();
 
     Q_EMIT controlPointRemoved();
@@ -1830,20 +1909,20 @@ Bezier::movePointByIndexInternal(bool useGuiCurve,
         BezierCPPtr cp;
         bool isOnKeyframe = false;
         if (!onlyFeather) {
-            BezierCPs::iterator it = _imp->points.begin();
-            if ( (index < 0) || ( index >= (int)_imp->points.size() ) ) {
+            BezierCPs::iterator it = _imp->guiPoints.begin();
+            if ((index < 0) || (index >= (int)_imp->guiPoints.size())) {
                 throw std::runtime_error("invalid index");
             }
             std::advance(it, index);
-            assert( it != _imp->points.end() );
+            assert(it != _imp->guiPoints.end());
             cp = *it;
             cp->getPositionAtTime(useGuiCurve, time, ViewIdx(0), &p.x, &p.y);
             isOnKeyframe |= cp->getLeftBezierPointAtTime(useGuiCurve, time, ViewIdx(0), &left.x, &left.y);
             cp->getRightBezierPointAtTime(useGuiCurve, time, ViewIdx(0), &right.x, &right.y);
 
-            p = Transform::matApply(trans, p);
-            left = Transform::matApply(trans, left);
-            right = Transform::matApply(trans, right);
+            p = Transform::matApplyProjected(trans, p);
+            left = Transform::matApplyProjected(trans, left);
+            right = Transform::matApplyProjected(trans, right);
 
             p.x += dx;
             p.y += dy;
@@ -1858,17 +1937,17 @@ Bezier::movePointByIndexInternal(bool useGuiCurve,
         pF.z = leftF.z = rightF.z = 1;
         BezierCPPtr fp;
         if (useFeather) {
-            BezierCPs::iterator itF = _imp->featherPoints.begin();
+            BezierCPs::iterator itF = _imp->guiFeatherPoints.begin();
             std::advance(itF, index);
-            assert( itF != _imp->featherPoints.end() );
+            assert(itF != _imp->guiFeatherPoints.end());
             fp = *itF;
             fp->getPositionAtTime(useGuiCurve, time, ViewIdx(0), &pF.x, &pF.y);
             isOnKeyframe |= fp->getLeftBezierPointAtTime(useGuiCurve, time, ViewIdx(0), &leftF.x, &leftF.y);
             fp->getRightBezierPointAtTime(useGuiCurve, time, ViewIdx(0), &rightF.x, &rightF.y);
 
-            pF = Transform::matApply(trans, pF);
-            rightF = Transform::matApply(trans, rightF);
-            leftF = Transform::matApply(trans, leftF);
+            pF = Transform::matApplyProjected(trans, pF);
+            rightF = Transform::matApplyProjected(trans, rightF);
+            leftF = Transform::matApplyProjected(trans, leftF);
 
             pF.x += dx;
             pF.y += dy;
@@ -1882,9 +1961,9 @@ Bezier::movePointByIndexInternal(bool useGuiCurve,
 
 
         if ( !onlyFeather && (autoKeying || isOnKeyframe) ) {
-            p = Transform::matApply(invTrans, p);
-            right = Transform::matApply(invTrans, right);
-            left = Transform::matApply(invTrans, left);
+            p = Transform::matApplyProjected(invTrans, p);
+            right = Transform::matApplyProjected(invTrans, right);
+            left = Transform::matApplyProjected(invTrans, left);
 
             assert(cp);
             cp->setPositionAtTime(useGuiCurve, time, p.x, p.y );
@@ -1899,9 +1978,9 @@ Bezier::movePointByIndexInternal(bool useGuiCurve,
             if (autoKeying || isOnKeyframe) {
                 assert(fp);
 
-                pF = Transform::matApply(invTrans, pF);
-                rightF = Transform::matApply(invTrans, rightF);
-                leftF = Transform::matApply(invTrans, leftF);
+                pF = Transform::matApplyProjected(invTrans, pF);
+                rightF = Transform::matApplyProjected(invTrans, rightF);
+                leftF = Transform::matApplyProjected(invTrans, leftF);
 
                 fp->setPositionAtTime(useGuiCurve, time, pF.x, pF.y);
                 fp->setLeftBezierPointAtTime(useGuiCurve, time, leftF.x, leftF.y);
@@ -1923,9 +2002,9 @@ Bezier::movePointByIndexInternal(bool useGuiCurve,
                     cp->getLeftBezierPointAtTime(useGuiCurve, *it2, ViewIdx(0), &left.x, &left.y);
                     cp->getRightBezierPointAtTime(useGuiCurve, *it2, ViewIdx(0), &right.x, &right.y);
 
-                    p = Transform::matApply(trans, p);
-                    left = Transform::matApply(trans, left);
-                    right = Transform::matApply(trans, right);
+                    p = Transform::matApplyProjected(trans, p);
+                    left = Transform::matApplyProjected(trans, left);
+                    right = Transform::matApplyProjected(trans, right);
 
                     p.x += dx;
                     p.y += dy;
@@ -1934,10 +2013,9 @@ Bezier::movePointByIndexInternal(bool useGuiCurve,
                     right.x += dx;
                     right.y += dy;
 
-                    p = Transform::matApply(invTrans, p);
-                    right = Transform::matApply(invTrans, right);
-                    left = Transform::matApply(invTrans, left);
-
+                    p = Transform::matApplyProjected(invTrans, p);
+                    right = Transform::matApplyProjected(invTrans, right);
+                    left = Transform::matApplyProjected(invTrans, left);
 
                     cp->setPositionAtTime(useGuiCurve, *it2, p.x, p.y );
                     cp->setLeftBezierPointAtTime(useGuiCurve, *it2, left.x, left.y);
@@ -1949,9 +2027,9 @@ Bezier::movePointByIndexInternal(bool useGuiCurve,
                     fp->getLeftBezierPointAtTime(useGuiCurve, *it2, ViewIdx(0), &leftF.x, &leftF.y);
                     fp->getRightBezierPointAtTime(useGuiCurve, *it2, ViewIdx(0), &rightF.x, &rightF.y);
 
-                    pF = Transform::matApply(trans, pF);
-                    rightF = Transform::matApply(trans, rightF);
-                    leftF = Transform::matApply(trans, leftF);
+                    pF = Transform::matApplyProjected(trans, pF);
+                    rightF = Transform::matApplyProjected(trans, rightF);
+                    leftF = Transform::matApplyProjected(trans, leftF);
 
                     pF.x += dx;
                     pF.y += dy;
@@ -1960,10 +2038,9 @@ Bezier::movePointByIndexInternal(bool useGuiCurve,
                     rightF.x += dx;
                     rightF.y += dy;
 
-                    pF = Transform::matApply(invTrans, pF);
-                    rightF = Transform::matApply(invTrans, rightF);
-                    leftF = Transform::matApply(invTrans, leftF);
-
+                    pF = Transform::matApplyProjected(invTrans, pF);
+                    rightF = Transform::matApplyProjected(invTrans, rightF);
+                    leftF = Transform::matApplyProjected(invTrans, leftF);
 
                     fp->setPositionAtTime(useGuiCurve, *it2, pF.x, pF.y);
                     fp->setLeftBezierPointAtTime(useGuiCurve, *it2, leftF.x, leftF.y);
@@ -2011,15 +2088,15 @@ Bezier::setPointByIndexInternal(bool useGuiCurve,
         Transform::Point3D right(0., 0., 1.);
         BezierCPPtr cp;
         BezierCPs::const_iterator it = _imp->atIndex(index);
-        assert( it != _imp->points.end() );
+        assert(it != _imp->guiPoints.end());
         cp = *it;
         cp->getPositionAtTime(useGuiCurve, time, ViewIdx(0), &p.x, &p.y);
         cp->getLeftBezierPointAtTime(useGuiCurve, time, ViewIdx(0), &left.x, &left.y);
         cp->getRightBezierPointAtTime(useGuiCurve, time, ViewIdx(0), &right.x, &right.y);
 
-        p = Transform::matApply(trans, p);
-        left = Transform::matApply(trans, left);
-        right = Transform::matApply(trans, right);
+        p = Transform::matApplyProjected(trans, p);
+        left = Transform::matApplyProjected(trans, left);
+        right = Transform::matApplyProjected(trans, right);
 
         dx = x - p.x;
         dy = y - p.y;
@@ -2088,10 +2165,10 @@ Bezier::scaleFeatherTangentsByIndex(int index,
 
     {
         QMutexLocker l(&itemMutex);
-        if (!useFeatherPoints() || (index < 0) || (index >= (int)_imp->featherPoints.size())) {
+        if (!useFeatherPoints() || (index < 0) || (index >= (int)_imp->guiFeatherPoints.size())) {
             return;
         }
-        BezierCPs::iterator it = _imp->featherPoints.begin();
+        BezierCPs::iterator it = _imp->guiFeatherPoints.begin();
         std::advance(it, index);
         editedFp = *it;
 
@@ -2182,9 +2259,9 @@ Bezier::moveBezierPointInternal(BezierCP* cpParam,
         if (cpParam) {
             cp = cpParam;
         } else {
-            BezierCPs::iterator cpIt = _imp->points.begin();
+            BezierCPs::iterator cpIt = _imp->guiPoints.begin();
             std::advance(cpIt, index);
-            assert( cpIt != _imp->points.end() );
+            assert(cpIt != _imp->guiPoints.end());
             cp = cpIt->get();
             assert(cp);
         }
@@ -2192,9 +2269,9 @@ Bezier::moveBezierPointInternal(BezierCP* cpParam,
         if (fpParam) {
             fp = fpParam;
         } else {
-            BezierCPs::iterator fpIt = _imp->featherPoints.begin();
+            BezierCPs::iterator fpIt = _imp->guiFeatherPoints.begin();
             std::advance(fpIt, index);
-            assert( fpIt != _imp->featherPoints.end() );
+            assert(fpIt != _imp->guiFeatherPoints.end());
             fp = fpIt->get();
             assert(fp);
         }
@@ -2207,11 +2284,11 @@ Bezier::moveBezierPointInternal(BezierCP* cpParam,
         left.z = right.z = 1;
         if (isLeft || moveBoth) {
             isOnKeyframe = (cp)->getLeftBezierPointAtTime(useGuiCurve, time, ViewIdx(0), &left.x, &left.y);
-            left = Transform::matApply(trans, left);
+            left = Transform::matApplyProjected(trans, left);
         }
         if (!isLeft || moveBoth) {
             isOnKeyframe = (cp)->getRightBezierPointAtTime(useGuiCurve, time, ViewIdx(0), &right.x, &right.y);
-            right = Transform::matApply(trans, right);
+            right = Transform::matApplyProjected(trans, right);
         }
 
         // Move the feather point if feather link is enabled
@@ -2221,7 +2298,7 @@ Bezier::moveBezierPointInternal(BezierCP* cpParam,
         if (useFeatherPoints() && fp) {
             if (isLeft || moveBoth) {
                 (fp)->getLeftBezierPointAtTime(useGuiCurve, time, ViewIdx(0), &leftF.x, &leftF.y);
-                leftF = Transform::matApply(trans, leftF);
+                leftF = Transform::matApplyProjected(trans, leftF);
 
                 // Move the feather point if it is identical to the control point
                 if ( (left.x == leftF.x) && (left.y == leftF.y) ) {
@@ -2230,7 +2307,7 @@ Bezier::moveBezierPointInternal(BezierCP* cpParam,
             }
             if (!isLeft || moveBoth) {
                 (fp)->getRightBezierPointAtTime(useGuiCurve, time, ViewIdx(0), &rightF.x, &rightF.y);
-                rightF = Transform::matApply(trans, rightF);
+                rightF = Transform::matApplyProjected(trans, rightF);
 
                 // Move the feather point if it is identical to the control point
                 if ( (right.x == rightF.x) && (right.y == rightF.y) ) {
@@ -2244,31 +2321,31 @@ Bezier::moveBezierPointInternal(BezierCP* cpParam,
                 if (isLeft || moveBoth) {
                     left.x += lx;
                     left.y += ly;
-                    left = Transform::matApply(invTrans, left);
+                    left = Transform::matApplyProjected(invTrans, left);
                     (cp)->setLeftBezierPointAtTime(useGuiCurve, time, left.x, left.y);
                 }
                 if (!isLeft || moveBoth) {
                     right.x += rx;
                     right.y += ry;
-                    right = Transform::matApply(invTrans, right);
+                    right = Transform::matApplyProjected(invTrans, right);
                     (cp)->setRightBezierPointAtTime(useGuiCurve, time, right.x, right.y);
                 }
-                (cp)->setBroken(breakTangents);
+                (cp)->setBroken(useGuiCurve, breakTangents);
             }
             if ( moveFeather && useFeatherPoints() ) {
                 if (isLeft || moveBoth) {
                     leftF.x += flx;
                     leftF.y += fly;
-                    leftF = Transform::matApply(invTrans, leftF);
+                    leftF = Transform::matApplyProjected(invTrans, leftF);
                     (fp)->setLeftBezierPointAtTime(useGuiCurve, time, leftF.x, leftF.y);
                 }
                 if (!isLeft || moveBoth) {
                     rightF.x += frx;
                     rightF.y += fry;
-                    rightF = Transform::matApply(invTrans, rightF);
+                    rightF = Transform::matApplyProjected(invTrans, rightF);
                     (fp)->setRightBezierPointAtTime(useGuiCurve, time, rightF.x, rightF.y);
                 }
-                (fp)->setBroken(breakTangents);
+                (fp)->setBroken(useGuiCurve, breakTangents);
             }
             if (!isOnKeyframe) {
                 keySet = true;
@@ -2281,31 +2358,31 @@ Bezier::moveBezierPointInternal(BezierCP* cpParam,
                 if (isLeft || moveBoth) {
                     left.x += lx;
                     left.y += ly;
-                    left = Transform::matApply(invTrans, left);
+                    left = Transform::matApplyProjected(invTrans, left);
                     (cp)->setLeftBezierStaticPosition(useGuiCurve, left.x, left.y);
                 }
                 if (!isLeft || moveBoth) {
                     right.x += rx;
                     right.y += ry;
-                    right = Transform::matApply(invTrans, right);
+                    right = Transform::matApplyProjected(invTrans, right);
                     (cp)->setRightBezierStaticPosition(useGuiCurve, right.x, right.y);
                 }
-                (cp)->setBroken(breakTangents);
+                (cp)->setBroken(useGuiCurve, breakTangents);
             }
             if ( moveFeather && useFeatherPoints() ) {
                 if (isLeft || moveBoth) {
                     leftF.x += flx;
                     leftF.y += fly;
-                    leftF = Transform::matApply(invTrans, leftF);
+                    leftF = Transform::matApplyProjected(invTrans, leftF);
                     (fp)->setLeftBezierStaticPosition(useGuiCurve, leftF.x, leftF.y);
                 }
                 if (!isLeft || moveBoth) {
                     rightF.x += frx;
                     rightF.y += fry;
-                    rightF = Transform::matApply(invTrans, rightF);
+                    rightF = Transform::matApplyProjected(invTrans, rightF);
                     (fp)->setRightBezierStaticPosition(useGuiCurve, rightF.x, rightF.y);
                 }
-                (fp)->setBroken(breakTangents);
+                (fp)->setBroken(useGuiCurve, breakTangents);
             }
         }
 
@@ -2320,36 +2397,36 @@ Bezier::moveBezierPointInternal(BezierCP* cpParam,
                 if (isLeft || moveBoth) {
                     if (moveControlPoint && !cp->isLinkedToTrack()) {
                         (cp)->getLeftBezierPointAtTime(useGuiCurve, *it2, ViewIdx(0), &left.x, &left.y);
-                        left = Transform::matApply(trans, left);
+                        left = Transform::matApplyProjected(trans, left);
                         left.x += lx; left.y += ly;
-                        left = Transform::matApply(invTrans, left);
+                        left = Transform::matApplyProjected(invTrans, left);
                         (cp)->setLeftBezierPointAtTime(useGuiCurve, *it2, left.x, left.y);
-                        (cp)->setBroken(breakTangents);
+                        (cp)->setBroken(useGuiCurve, breakTangents);
                     }
                     if (moveFeather && useFeatherPoints() && !fp->isLinkedToTrack()) {
                         (fp)->getLeftBezierPointAtTime(useGuiCurve, *it2, ViewIdx(0), &leftF.x, &leftF.y);
-                        leftF = Transform::matApply(trans, leftF);
+                        leftF = Transform::matApplyProjected(trans, leftF);
                         leftF.x += flx; leftF.y += fly;
-                        leftF = Transform::matApply(invTrans, leftF);
+                        leftF = Transform::matApplyProjected(invTrans, leftF);
                         (fp)->setLeftBezierPointAtTime(useGuiCurve, *it2, leftF.x, leftF.y);
-                        (fp)->setBroken(breakTangents);
+                        (fp)->setBroken(useGuiCurve, breakTangents);
                     }
                 } else {
                     if (moveControlPoint && !cp->isLinkedToTrack()) {
                         (cp)->getRightBezierPointAtTime(useGuiCurve, *it2, ViewIdx(0), &right.x, &right.y);
-                        right = Transform::matApply(trans, right);
+                        right = Transform::matApplyProjected(trans, right);
                         right.x += rx; right.y += ry;
-                        right = Transform::matApply(invTrans, right);
+                        right = Transform::matApplyProjected(invTrans, right);
                         (cp)->setRightBezierPointAtTime(useGuiCurve, *it2, right.x, right.y);
-                        (cp)->setBroken(breakTangents);
+                        (cp)->setBroken(useGuiCurve, breakTangents);
                     }
                     if (moveFeather && useFeatherPoints() && !fp->isLinkedToTrack()) {
                         (fp)->getRightBezierPointAtTime(useGuiCurve, *it2, ViewIdx(0), &rightF.x, &rightF.y);
-                        rightF = Transform::matApply(trans, rightF);
+                        rightF = Transform::matApplyProjected(trans, rightF);
                         rightF.x += frx; rightF.y += fry;
-                        rightF = Transform::matApply(invTrans, rightF);
+                        rightF = Transform::matApplyProjected(invTrans, rightF);
                         (fp)->setRightBezierPointAtTime(useGuiCurve, *it2, rightF.x, rightF.y);
-                        (fp)->setBroken(breakTangents);
+                        (fp)->setBroken(useGuiCurve, breakTangents);
                     }
                 }
             }
@@ -2439,12 +2516,12 @@ Bezier::setPointAtIndexInternal(bool setLeft,
         QMutexLocker l(&itemMutex);
         bool isOnKeyframe = _imp->hasKeyframeAtTime(useGuiCurve, time);
 
-        if ( index >= (int)_imp->points.size() ) {
+        if (index >= (int)_imp->guiPoints.size()) {
             throw std::invalid_argument("Bezier::setPointAtIndex: Index out of range.");
         }
 
-        BezierCPs::iterator fp = _imp->featherPoints.begin();
-        BezierCPs::iterator cp = _imp->points.begin();
+        BezierCPs::iterator fp = _imp->guiFeatherPoints.begin();
+        BezierCPs::iterator cp = _imp->guiPoints.begin();
         if (!feather && !featherAndCp) {
             fp = cp;
         }
@@ -2579,17 +2656,17 @@ Bezier::setPointPositionAtKeyframe(int index,
 
     {
         QMutexLocker l(&itemMutex);
-        if ((index < 0) || (index >= (int)_imp->points.size())) {
+        if ((index < 0) || (index >= (int)_imp->guiPoints.size())) {
             return false;
         }
-        BezierCPs::iterator cpIt = _imp->points.begin();
+        BezierCPs::iterator cpIt = _imp->guiPoints.begin();
         std::advance(cpIt, index);
         cp = *cpIt;
         if (!cp->hasKeyFrameAtTime(useGuiCurve, time)) {
             return false;
         }
-        if (useFeather && (index < (int)_imp->featherPoints.size())) {
-            BezierCPs::iterator fpIt = _imp->featherPoints.begin();
+        if (useFeather && (index < (int)_imp->guiFeatherPoints.size())) {
+            BezierCPs::iterator fpIt = _imp->guiFeatherPoints.begin();
             std::advance(fpIt, index);
             fp = *fpIt;
         }
@@ -2635,10 +2712,10 @@ Bezier::getPointPositionForEdit(int index,
 {
     QMutexLocker l(&itemMutex);
 
-    if ((index < 0) || (index >= (int)_imp->points.size())) {
+    if ((index < 0) || (index >= (int)_imp->guiPoints.size())) {
         return false;
     }
-    BezierCPs::const_iterator cpIt = _imp->points.begin();
+    BezierCPs::const_iterator cpIt = _imp->guiPoints.begin();
     std::advance(cpIt, index);
     // The GUI copy is never behind the internal one, and alone holds edits made during a render
     // until they are written back, possibly after that render has ended.
@@ -2722,16 +2799,16 @@ Bezier::removeFeatherAtIndex(int index)
     {
         QMutexLocker l(&itemMutex);
 
-        if (index >= (int)_imp->points.size()) {
+        if (index >= (int)_imp->guiPoints.size()) {
             throw std::invalid_argument("Bezier::removeFeatherAtIndex: Index out of range.");
         }
 
-        BezierCPs::iterator cpIt = _imp->points.begin();
+        BezierCPs::iterator cpIt = _imp->guiPoints.begin();
         std::advance(cpIt, index);
-        BezierCPs::iterator fpIt = _imp->featherPoints.begin();
+        BezierCPs::iterator fpIt = _imp->guiFeatherPoints.begin();
         std::advance(fpIt, index);
 
-        assert(cpIt != _imp->points.end() && fpIt != _imp->featherPoints.end());
+        assert(cpIt != _imp->guiPoints.end() && fpIt != _imp->guiFeatherPoints.end());
         cp = *cpIt;
         fp = *fpIt;
     }
@@ -2765,20 +2842,20 @@ Bezier::smoothOrCuspPointAtIndex(bool isSmooth,
 
     {
         QMutexLocker l(&itemMutex);
-        if ( index >= (int)_imp->points.size() ) {
+        if (index >= (int)_imp->guiPoints.size()) {
             throw std::invalid_argument("Bezier::smoothOrCuspPointAtIndex: Index out of range.");
         }
 
-        BezierCPs::iterator cp = _imp->points.begin();
+        BezierCPs::iterator cp = _imp->guiPoints.begin();
         std::advance(cp, index);
         BezierCPs::iterator fp;
         bool useFeather = useFeatherPoints();
 
         if (useFeather) {
-            fp = _imp->featherPoints.begin();
+            fp = _imp->guiFeatherPoints.begin();
             std::advance(fp, index);
         }
-        assert(cp != _imp->points.end() && fp != _imp->featherPoints.end());
+        assert(cp != _imp->guiPoints.end() && fp != _imp->guiFeatherPoints.end());
         editedCp = *cp;
         if (useFeather) {
             editedFp = *fp;
@@ -2821,10 +2898,10 @@ Bezier::setTangentsBroken(const BezierCPPtr& cp,
     {
         QMutexLocker l(&itemMutex);
         if (cp) {
-            cp->setBroken(true);
+            cp->setBroken(useGuiCurve, true);
         }
         if (fp) {
-            fp->setBroken(true);
+            fp->setBroken(useGuiCurve, true);
         }
     }
     invalidateContentHash();
@@ -2867,7 +2944,7 @@ collapseRightHandle(BezierCP& point,
             point.setRightBezierPointAtTime(useGuiCurve, *it, x, y);
         }
     }
-    point.setBroken(true);
+    point.setBroken(useGuiCurve, true);
 }
 
 } // namespace
@@ -2959,7 +3036,7 @@ Bezier::setKeyframeInternal(double time,
     {
         QMutexLocker l(&itemMutex);
         bool useFeather = useFeatherPoints();
-        assert(_imp->points.size() == _imp->featherPoints.size() || !useFeather);
+        assert(_imp->guiPoints.size() == _imp->guiFeatherPoints.size() || !useFeather);
 
         // Checked per point: an auto-keying edit has already keyed the points it edited, which
         // may include the first one, before the rest of the shape is keyed here.
@@ -2968,7 +3045,7 @@ Bezier::setKeyframeInternal(double time,
             if ((pass == 1) && !useFeather) {
                 break;
             }
-            BezierCPs& points = (pass == 0) ? _imp->points : _imp->featherPoints;
+            BezierCPs& points = (pass == 0) ? _imp->guiPoints : _imp->guiFeatherPoints;
             for (BezierCPs::iterator it = points.begin(); it != points.end(); ++it) {
                 if ((*it)->hasKeyFrameAtTime(useGuiCurve, time)) {
                     continue;
@@ -3002,8 +3079,8 @@ Bezier::setKeyframeInternal(double time,
     Q_EMIT keyframeSet(time);
 }
 
-void
-Bezier::removeKeyframe(double time)
+bool
+Bezier::removeKeyframeInternal(double time)
 {
     ///only called on the main-thread
     assert( QThread::currentThread() == qApp->thread() );
@@ -3013,13 +3090,13 @@ Bezier::removeKeyframe(double time)
         QMutexLocker l(&itemMutex);
 
         if (!_imp->hasKeyframeAtTime(useGuiCurve, time)) {
-            return;
+            return false;
         }
-        assert( _imp->featherPoints.size() == _imp->points.size() || !useFeatherPoints() );
+        assert(_imp->guiFeatherPoints.size() == _imp->guiPoints.size() || !useFeatherPoints());
 
         bool useFeather = useFeatherPoints();
-        BezierCPs::iterator fp = _imp->featherPoints.begin();
-        for (BezierCPs::iterator it = _imp->points.begin(); it != _imp->points.end(); ++it) {
+        BezierCPs::iterator fp = _imp->guiFeatherPoints.begin();
+        for (BezierCPs::iterator it = _imp->guiPoints.begin(); it != _imp->guiPoints.end(); ++it) {
             (*it)->removeKeyframe(useGuiCurve, time);
             if (useFeather) {
                 (*fp)->removeKeyframe(useGuiCurve, time);
@@ -3038,8 +3115,95 @@ Bezier::removeKeyframe(double time)
     } else {
         invalidateContentHash();
     }
+
+    return true;
+}
+
+void
+Bezier::removeKeyframe(double time)
+{
+    if (!removeKeyframeInternal(time)) {
+        return;
+    }
     getContext()->evaluateChange();
     Q_EMIT keyframeRemoved(time);
+}
+
+void
+Bezier::removeKeyframes(const std::set<double>& times)
+{
+    for (std::set<double>::const_iterator it = times.begin(); it != times.end(); ++it) {
+        if (removeKeyframeInternal(*it)) {
+            Q_EMIT keyframeRemoved(*it);
+        }
+    }
+}
+
+void
+Bezier::setFollowedPoints(double time,
+                          const std::vector<FollowedPoint>& points)
+{
+    assert(QThread::currentThread() == qApp->thread());
+
+    const EditSide side(this);
+    const bool useGuiCurve = side.useGuiCurve();
+    std::vector<BezierCPPtr> targets;
+    targets.reserve(points.size());
+    for (std::vector<FollowedPoint>::const_iterator it = points.begin(); it != points.end(); ++it) {
+        targets.push_back(it->feather ? getFeatherPointAtIndex(it->index) : getControlPointAtIndex(it->index));
+    }
+    bool keySet = false;
+    {
+        QMutexLocker l(&itemMutex);
+        keySet = !_imp->hasKeyframeAtTime(useGuiCurve, time);
+        if (keySet) {
+            const BezierCPs* const lists[] = { &_imp->points, useFeatherPoints() ? &_imp->featherPoints : nullptr };
+            for (const BezierCPs* list : lists) {
+                if (!list) {
+                    continue;
+                }
+                for (BezierCPs::const_iterator it = list->begin(); it != list->end(); ++it) {
+                    double x, y, leftX, leftY, rightX, rightY;
+                    (*it)->getPositionAtTime(useGuiCurve, time, ViewIdx(0), &x, &y);
+                    (*it)->getLeftBezierPointAtTime(useGuiCurve, time, ViewIdx(0), &leftX, &leftY);
+                    (*it)->getRightBezierPointAtTime(useGuiCurve, time, ViewIdx(0), &rightX, &rightY);
+                    (*it)->setPositionAtTime(useGuiCurve, time, x, y);
+                    (*it)->setLeftBezierPointAtTime(useGuiCurve, time, leftX, leftY);
+                    (*it)->setRightBezierPointAtTime(useGuiCurve, time, rightX, rightY);
+                }
+            }
+        }
+        for (std::size_t i = 0; i < points.size(); ++i) {
+            if (!targets[i]) {
+                continue;
+            }
+            targets[i]->setPositionAtTime(useGuiCurve, time, points[i].x, points[i].y);
+            targets[i]->setLeftBezierPointAtTime(useGuiCurve, time, points[i].leftX, points[i].leftY);
+            targets[i]->setRightBezierPointAtTime(useGuiCurve, time, points[i].rightX, points[i].rightY);
+        }
+    }
+    invalidateContentHash();
+    invalidatePolygonOrientation(useGuiCurve, time);
+    syncGuiAfterEdit(useGuiCurve, BezierCPPtr(), BezierCPPtr(), time, false, true);
+    if (keySet) {
+        Q_EMIT keyframeSet(time);
+    }
+}
+
+void
+Bezier::notifyKeyframesRestored(const std::set<double>& before,
+                                const std::set<double>& after)
+{
+    for (std::set<double>::const_iterator it = before.begin(); it != before.end(); ++it) {
+        if (after.find(*it) == after.end()) {
+            Q_EMIT keyframeRemoved(*it);
+        }
+    }
+    for (std::set<double>::const_iterator it = after.begin(); it != after.end(); ++it) {
+        if (before.find(*it) == before.end()) {
+            Q_EMIT keyframeSet(*it);
+        }
+    }
 }
 
 void
@@ -3054,11 +3218,11 @@ Bezier::removeAnimation()
     {
         QMutexLocker l(&itemMutex);
 
-        assert( _imp->featherPoints.size() == _imp->points.size() || !useFeatherPoints() );
+        assert(_imp->guiFeatherPoints.size() == _imp->guiPoints.size() || !useFeatherPoints());
 
         bool useFeather = useFeatherPoints();
-        BezierCPs::iterator fp = _imp->featherPoints.begin();
-        for (BezierCPs::iterator it = _imp->points.begin(); it != _imp->points.end(); ++it) {
+        BezierCPs::iterator fp = _imp->guiFeatherPoints.begin();
+        for (BezierCPs::iterator it = _imp->guiPoints.begin(); it != _imp->guiPoints.end(); ++it) {
             (*it)->removeAnimation(useGuiCurve, time);
             if (useFeather) {
                 (*fp)->removeAnimation(useGuiCurve, time);
@@ -3097,7 +3261,7 @@ Bezier::moveKeyframe(double oldTime,
             if ((pass == 1) && !useFeather) {
                 break;
             }
-            BezierCPs& points = (pass == 0) ? _imp->points : _imp->featherPoints;
+            BezierCPs& points = (pass == 0) ? _imp->guiPoints : _imp->guiFeatherPoints;
             for (BezierCPs::iterator it = points.begin(); it != points.end(); ++it) {
                 double x, y, lx, ly, rx, ry;
                 (*it)->getPositionAtTime(useGuiCurve, oldTime, ViewIdx(0), &x, &y);
@@ -3135,10 +3299,10 @@ Bezier::getKeyframesCount() const
 {
     QMutexLocker l(&itemMutex);
 
-    if ( _imp->points.empty() ) {
+    if (_imp->guiPoints.empty()) {
         return 0;
     } else {
-        return _imp->points.front()->getKeyframesCount(true);
+        return _imp->guiPoints.front()->getKeyframesCount(true);
     }
 }
 
@@ -3270,7 +3434,7 @@ Bezier::evaluateAtTime_DeCasteljau_internal(bool useGuiCurves,
 
     getTransformAtTime(time, &transform);
     QMutexLocker l(&itemMutex);
-    deCastelJau(isOpenBezier(), useGuiCurves, _imp->points, time, mipmapLevel, _imp->finished,
+    deCastelJau(_imp->openFor(useGuiCurves), useGuiCurves, _imp->pointsFor(useGuiCurves), time, mipmapLevel, _imp->finishedFor(useGuiCurves),
 #ifdef ROTO_BEZIER_EVAL_ITERATIVE
                 nbPointsPerSegment,
 #else
@@ -3339,29 +3503,32 @@ Bezier::evaluateFeatherPointsAtTime_DeCasteljau_internal(bool useGuiPoints,
 
     QMutexLocker l(&itemMutex);
 
-    if ( _imp->points.empty() ) {
+    const BezierCPs& cps = _imp->pointsFor(useGuiPoints);
+    const BezierCPs& fps = _imp->featherPointsFor(useGuiPoints);
+    const bool finished = _imp->finishedFor(useGuiPoints);
+    if (cps.empty()) {
         return;
     }
-    BezierCPs::const_iterator itCp = _imp->points.begin();
-    BezierCPs::const_iterator next = _imp->featherPoints.begin();
-    if ( next != _imp->featherPoints.end() ) {
+    BezierCPs::const_iterator itCp = cps.begin();
+    BezierCPs::const_iterator next = fps.begin();
+    if (next != fps.end()) {
         ++next;
     }
     BezierCPs::const_iterator nextCp = itCp;
-    if ( nextCp != _imp->points.end() ) {
+    if (nextCp != cps.end()) {
         ++nextCp;
     }
 
-    for (BezierCPs::const_iterator it = _imp->featherPoints.begin(); it != _imp->featherPoints.end();
+    for (BezierCPs::const_iterator it = fps.begin(); it != fps.end();
          ++it) {
-        if ( next == _imp->featherPoints.end() ) {
-            next = _imp->featherPoints.begin();
+        if (next == fps.end()) {
+            next = fps.begin();
         }
-        if ( nextCp == _imp->points.end() ) {
-            if (!_imp->finished) {
+        if (nextCp == cps.end()) {
+            if (!finished) {
                 break;
             }
-            nextCp = _imp->points.begin();
+            nextCp = cps.begin();
         }
         if ( !evaluateIfEqual && bezierSegmenEqual(useGuiPoints, time, ViewIdx(0), **itCp, **nextCp, **it, **next) ) {
             continue;
@@ -3377,7 +3544,7 @@ Bezier::evaluateFeatherPointsAtTime_DeCasteljau_internal(bool useGuiPoints,
                               transform, &segmentPoints, bbox);
 
             // If we are a closed bezier or we are not on the last segment, remove the last point so we don't add duplicates
-            if (!isOpenBezier() || next != _imp->featherPoints.end()) {
+            if (!_imp->openFor(useGuiPoints) || next != fps.end()) {
                 if (!segmentPoints.empty()) {
                     segmentPoints.pop_back();
                 }
@@ -3393,7 +3560,7 @@ Bezier::evaluateFeatherPointsAtTime_DeCasteljau_internal(bool useGuiPoints,
 #endif
                               transform, pointsSingleList, bbox);
             // If we are a closed bezier or we are not on the last segment, remove the last point so we don't add duplicates
-            if (!isOpenBezier() || next != _imp->featherPoints.end()) {
+            if (!_imp->openFor(useGuiPoints) || next != fps.end()) {
                 if (!pointsSingleList->empty()) {
                     pointsSingleList->pop_back();
                 }
@@ -3401,17 +3568,16 @@ Bezier::evaluateFeatherPointsAtTime_DeCasteljau_internal(bool useGuiPoints,
         }
 
         // increment for next iteration
-        if ( itCp != _imp->featherPoints.end() ) {
+        if (itCp != cps.end()) {
             ++itCp;
         }
-        if ( next != _imp->featherPoints.end() ) {
+        if (next != fps.end()) {
             ++next;
         }
-        if ( nextCp != _imp->featherPoints.end() ) {
+        if (nextCp != cps.end()) {
             ++nextCp;
         }
     } // for(it)
-
 }
 
 void
@@ -3438,6 +3604,7 @@ Bezier::evaluateFeatherPointsAtTime_DeCasteljau(bool useGuiPoints,
 
 void
 Bezier::getMotionBlurSettings(const double time,
+                              bool useGuiCurves,
                               double* startTime,
                               double* endTime,
                               double* timeStep) const
@@ -3446,7 +3613,7 @@ Bezier::getMotionBlurSettings(const double time,
 #ifdef NATRON_ROTO_ENABLE_MOTION_BLUR
 
     double motionBlurAmnt = getMotionBlurAmountKnob()->getValueAtTime(time);
-    if ( isOpenBezier() || (motionBlurAmnt == 0) ) {
+    if (isOpenBezier(useGuiCurves) || (motionBlurAmnt == 0)) {
         return;
     }
     int nbSamples = std::floor(motionBlurAmnt * 10 + 0.5);
@@ -3474,12 +3641,14 @@ Bezier::getMotionBlurSettings(const double time,
         assert(false);
     }
 
-
+#else
+    (void)useGuiCurves;
 #endif
 }
 
 RectD
-Bezier::getBoundingBox(double time) const
+Bezier::getBoundingBox(double time,
+                       bool useGuiCurves) const
 {
     double startTime = time, mbFrameStep = 1., endTime = time;
 
@@ -3487,7 +3656,7 @@ Bezier::getBoundingBox(double time) const
     int mbType_i = getContext()->getMotionBlurTypeKnob()->getValue();
     bool applyPerShapeMotionBlur = mbType_i == 0;
     if (applyPerShapeMotionBlur) {
-        getMotionBlurSettings(time, &startTime, &endTime, &mbFrameStep);
+        getMotionBlurSettings(time, useGuiCurves, &startTime, &endTime, &mbFrameStep);
     }
 #endif
 
@@ -3501,11 +3670,12 @@ Bezier::getBoundingBox(double time) const
         getTransformAtTime(t, &transform);
 
         QMutexLocker l(&itemMutex);
-        bezierSegmentListBboxUpdate(false, _imp->points, _imp->finished, _imp->isOpenBezier, t, ViewIdx(0), 0, transform, &subBbox);
+        const bool finished = _imp->finishedFor(useGuiCurves);
+        const bool isOpen = _imp->openFor(useGuiCurves);
+        bezierSegmentListBboxUpdate(useGuiCurves, _imp->pointsFor(useGuiCurves), finished, isOpen, t, ViewIdx(0), 0, transform, &subBbox);
 
-
-        if (useFeatherPoints() && !_imp->isOpenBezier) {
-            bezierSegmentListBboxUpdate(false, _imp->featherPoints, _imp->finished, _imp->isOpenBezier, t, ViewIdx(0), 0, transform, &subBbox);
+        if (useFeatherPoints() && !isOpen) {
+            bezierSegmentListBboxUpdate(useGuiCurves, _imp->featherPointsFor(useGuiCurves), finished, isOpen, t, ViewIdx(0), 0, transform, &subBbox);
             // EDIT: Partial fix, just pad the BBOX by the feather distance. This might not be accurate but gives at least something
             // enclosing the real bbox and close enough
             double featherDistance = getFeatherDistance(t);
@@ -3513,7 +3683,7 @@ Bezier::getBoundingBox(double time) const
             subBbox.x2 += featherDistance;
             subBbox.y1 -= featherDistance;
             subBbox.y2 += featherDistance;
-        } else if (_imp->isOpenBezier) {
+        } else if (isOpen) {
             double brushSize = getBrushSizeKnob()->getValueAtTime(t);
             double halfBrushSize = brushSize / 2. + 1;
             subBbox.x1 -= halfBrushSize;
@@ -3625,22 +3795,22 @@ Bezier::getControlPoints() const
     ///only called on the main-thread
     assert( QThread::currentThread() == qApp->thread() );
 
-    return _imp->points;
+    return _imp->guiPoints;
 }
 
 //protected only
 std::list<BezierCPPtr> &
 Bezier::getControlPoints_internal()
 {
-    return _imp->points;
+    return _imp->guiPoints;
 }
 
 std::list<BezierCPPtr>
-Bezier::getControlPoints_mt_safe() const
+Bezier::getControlPoints_mt_safe(bool useGuiCurve) const
 {
     QMutexLocker l(&itemMutex);
 
-    return _imp->points;
+    return _imp->pointsFor(useGuiCurve);
 }
 
 const std::list<BezierCPPtr> &
@@ -3649,15 +3819,15 @@ Bezier::getFeatherPoints() const
     ///only called on the main-thread
     assert( QThread::currentThread() == qApp->thread() );
 
-    return _imp->featherPoints;
+    return _imp->guiFeatherPoints;
 }
 
 std::list<BezierCPPtr>
-Bezier::getFeatherPoints_mt_safe() const
+Bezier::getFeatherPoints_mt_safe(bool useGuiCurve) const
 {
     QMutexLocker l(&itemMutex);
 
-    return _imp->featherPoints;
+    return _imp->featherPointsFor(useGuiCurve);
 }
 
 std::pair<BezierCPPtr, BezierCPPtr>
@@ -3678,18 +3848,18 @@ Bezier::isNearbyControlPoint(double x,
     switch (pref) {
     case eControlPointSelectionPrefFeatherFirst: {
         BezierCPs::const_iterator itF = _imp->findFeatherPointNearby(x, y, acceptance, time, ViewIdx(0), transform, index);
-        if ( itF != _imp->featherPoints.end() ) {
+        if (itF != _imp->guiFeatherPoints.end()) {
             fp = *itF;
-            BezierCPs::const_iterator it = _imp->points.begin();
+            BezierCPs::const_iterator it = _imp->guiPoints.begin();
             std::advance(it, *index);
             cp = *it;
 
             return std::make_pair(fp, cp);
         } else {
             BezierCPs::const_iterator it = _imp->findControlPointNearby(x, y, acceptance, time, ViewIdx(0), transform, index);
-            if ( it != _imp->points.end() ) {
+            if (it != _imp->guiPoints.end()) {
                 cp = *it;
-                itF = _imp->featherPoints.begin();
+                itF = _imp->guiFeatherPoints.begin();
                 std::advance(itF, *index);
                 fp = *itF;
 
@@ -3702,18 +3872,18 @@ Bezier::isNearbyControlPoint(double x,
     case eControlPointSelectionPrefWhateverFirst:
     default: {
         BezierCPs::const_iterator it = _imp->findControlPointNearby(x, y, acceptance, time, ViewIdx(0), transform, index);
-        if ( it != _imp->points.end() ) {
+        if (it != _imp->guiPoints.end()) {
             cp = *it;
-            BezierCPs::const_iterator itF = _imp->featherPoints.begin();
+            BezierCPs::const_iterator itF = _imp->guiFeatherPoints.begin();
             std::advance(itF, *index);
             fp = *itF;
 
             return std::make_pair(cp, fp);
         } else {
             BezierCPs::const_iterator itF = _imp->findFeatherPointNearby(x, y, acceptance, time, ViewIdx(0), transform, index);
-            if ( itF != _imp->featherPoints.end() ) {
+            if (itF != _imp->guiFeatherPoints.end()) {
                 fp = *itF;
-                it = _imp->points.begin();
+                it = _imp->guiPoints.begin();
                 std::advance(it, *index);
                 cp = *it;
 
@@ -3743,7 +3913,7 @@ Bezier::getControlPointIndex(const BezierCP* cp) const
     assert(cp);
     QMutexLocker l(&itemMutex);
     int i = 0;
-    for (BezierCPs::const_iterator it = _imp->points.begin(); it != _imp->points.end(); ++it, ++i) {
+    for (BezierCPs::const_iterator it = _imp->guiPoints.begin(); it != _imp->guiPoints.end(); ++it, ++i) {
         if (it->get() == cp) {
             return i;
         }
@@ -3759,7 +3929,7 @@ Bezier::getFeatherPointIndex(const BezierCPPtr & fp) const
     QMutexLocker l(&itemMutex);
     int i = 0;
 
-    for (BezierCPs::const_iterator it = _imp->featherPoints.begin(); it != _imp->featherPoints.end(); ++it, ++i) {
+    for (BezierCPs::const_iterator it = _imp->guiFeatherPoints.begin(); it != _imp->guiFeatherPoints.end(); ++it, ++i) {
         if (*it == fp) {
             return i;
         }
@@ -3773,11 +3943,11 @@ Bezier::getControlPointAtIndex(int index) const
 {
     QMutexLocker l(&itemMutex);
 
-    if ( (index < 0) || ( index >= (int)_imp->points.size() ) ) {
+    if ((index < 0) || (index >= (int)_imp->guiPoints.size())) {
         return BezierCPPtr();
     }
 
-    BezierCPs::const_iterator it = _imp->points.begin();
+    BezierCPs::const_iterator it = _imp->guiPoints.begin();
     std::advance(it, index);
 
     return *it;
@@ -3788,11 +3958,11 @@ Bezier::getFeatherPointAtIndex(int index) const
 {
     QMutexLocker l(&itemMutex);
 
-    if ( (index < 0) || ( index >= (int)_imp->featherPoints.size() ) ) {
+    if ((index < 0) || (index >= (int)_imp->guiFeatherPoints.size())) {
         return BezierCPPtr();
     }
 
-    BezierCPs::const_iterator it = _imp->featherPoints.begin();
+    BezierCPs::const_iterator it = _imp->guiFeatherPoints.begin();
     std::advance(it, index);
 
     return *it;
@@ -3932,17 +4102,37 @@ Bezier::unlinkPoint(int index,
     getContext()->evaluateChange();
 }
 
+BezierCPs
+Bezier::allPointsLocked() const
+{
+    assert(!itemMutex.tryLock());
+    BezierCPs ret = _imp->points;
+    ret.insert(ret.end(), _imp->featherPoints.begin(), _imp->featherPoints.end());
+    if ((_imp->points != _imp->guiPoints) || (_imp->featherPoints != _imp->guiFeatherPoints)) {
+        std::set<BezierCP*> seen;
+        for (BezierCPs::const_iterator it = ret.begin(); it != ret.end(); ++it) {
+            seen.insert(it->get());
+        }
+        for (int pass = 0; pass < 2; ++pass) {
+            const BezierCPs& list = (pass == 0) ? _imp->guiPoints : _imp->guiFeatherPoints;
+            for (BezierCPs::const_iterator it = list.begin(); it != list.end(); ++it) {
+                if (seen.insert(it->get()).second) {
+                    ret.push_back(*it);
+                }
+            }
+        }
+    }
+
+    return ret;
+}
+
 bool
 Bezier::hasTrackLinks() const
 {
     QMutexLocker l(&itemMutex);
 
-    for (BezierCPs::const_iterator it = _imp->points.begin(); it != _imp->points.end(); ++it) {
-        if ((*it)->isLinkedToTrack(false) || (*it)->isLinkedToTrack(true)) {
-            return true;
-        }
-    }
-    for (BezierCPs::const_iterator it = _imp->featherPoints.begin(); it != _imp->featherPoints.end(); ++it) {
+    const BezierCPs points = allPointsLocked();
+    for (BezierCPs::const_iterator it = points.begin(); it != points.end(); ++it) {
         if ((*it)->isLinkedToTrack(false) || (*it)->isLinkedToTrack(true)) {
             return true;
         }
@@ -3958,8 +4148,7 @@ Bezier::refreshTrackLinks(double time,
     BezierCPs points;
     {
         QMutexLocker l(&itemMutex);
-        points = _imp->points;
-        points.insert(points.end(), _imp->featherPoints.begin(), _imp->featherPoints.end());
+        points = allPointsLocked();
     }
     bool changed = false;
     for (BezierCPs::const_iterator it = points.begin(); it != points.end(); ++it) {
@@ -3989,8 +4178,7 @@ Bezier::appendLiveContentHash(ContentHasher& h) const
     BezierCPs points;
     {
         QMutexLocker l(&itemMutex);
-        points = _imp->points;
-        points.insert(points.end(), _imp->featherPoints.begin(), _imp->featherPoints.end());
+        points = allPointsLocked();
     }
     // Renders follow the internal link and the overlay the GUI one, which differ while a link
     // change made during a render waits to be written back.
@@ -4025,18 +4213,29 @@ Bezier::controlPointsWithinRect(double l,
     std::list<std::pair<BezierCPPtr, BezierCPPtr> > ret;
 
     ///only called on the main-thread
-    assert( QThread::currentThread() == qApp->thread() );
-    QMutexLocker locker(&itemMutex);
+    assert(QThread::currentThread() == qApp->thread());
     double time = getContext()->getTimelineCurrentTime();
+    // The rectangle is drawn over the points where the viewer shows them. Read before itemMutex,
+    // which a context's composeItemTransform may lock.
+    Transform::Matrix3x3 transform;
+    getTransformAtTime(time, &transform);
+    QMutexLocker locker(&itemMutex);
+    const auto shownPosition = [&](const BezierCP& cp, double* x, double* y) {
+        Transform::Point3D p(0., 0., 1.);
+        cp.getPositionAtTime(true, time, ViewIdx(0), &p.x, &p.y);
+        p = Transform::matApplyProjected(transform, p);
+        *x = p.x;
+        *y = p.y;
+    };
     int i = 0;
     if ( (mode == 0) || (mode == 1) ) {
-        for (BezierCPs::const_iterator it = _imp->points.begin(); it != _imp->points.end(); ++it, ++i) {
+        for (BezierCPs::const_iterator it = _imp->guiPoints.begin(); it != _imp->guiPoints.end(); ++it, ++i) {
             double x, y;
-            (*it)->getPositionAtTime(true, time, ViewIdx(0), &x, &y);
+            shownPosition(**it, &x, &y);
             if ( ( x >= (l - acceptance) ) && ( x <= (r + acceptance) ) && ( y >= (b - acceptance) ) && ( y <= (t - acceptance) ) ) {
                 std::pair<BezierCPPtr, BezierCPPtr> p;
                 p.first = *it;
-                BezierCPs::const_iterator itF = _imp->featherPoints.begin();
+                BezierCPs::const_iterator itF = _imp->guiFeatherPoints.begin();
                 std::advance(itF, i);
                 p.second = *itF;
                 ret.push_back(p);
@@ -4045,13 +4244,13 @@ Bezier::controlPointsWithinRect(double l,
     }
     i = 0;
     if ( (mode == 0) || (mode == 2) ) {
-        for (BezierCPs::const_iterator it = _imp->featherPoints.begin(); it != _imp->featherPoints.end(); ++it, ++i) {
+        for (BezierCPs::const_iterator it = _imp->guiFeatherPoints.begin(); it != _imp->guiFeatherPoints.end(); ++it, ++i) {
             double x, y;
-            (*it)->getPositionAtTime(true, time, ViewIdx(0), &x, &y);
+            shownPosition(**it, &x, &y);
             if ( ( x >= (l - acceptance) ) && ( x <= (r + acceptance) ) && ( y >= (b - acceptance) ) && ( y <= (t - acceptance) ) ) {
                 std::pair<BezierCPPtr, BezierCPPtr> p;
                 p.first = *it;
-                BezierCPs::const_iterator itF = _imp->points.begin();
+                BezierCPs::const_iterator itF = _imp->guiPoints.begin();
                 std::advance(itF, i);
                 p.second = *itF;
 
@@ -4119,10 +4318,10 @@ Bezier::leftDerivativeAtPoint(bool useGuiCurves,
     p1equalsP2 = p1.x == p2.x && p1.y == p2.y;
     p2equalsP3 = p2.x == p3.x && p2.y == p3.y;
 
-    p0 = Transform::matApply(transform, p0);
-    p1 = Transform::matApply(transform, p1);
-    p2 = Transform::matApply(transform, p2);
-    p3 = Transform::matApply(transform, p3);
+    p0 = Transform::matApplyProjected(transform, p0);
+    p1 = Transform::matApplyProjected(transform, p1);
+    p2 = Transform::matApplyProjected(transform, p2);
+    p3 = Transform::matApplyProjected(transform, p3);
 
     int degree = 3;
     if (p0equalsP1) {
@@ -4174,10 +4373,10 @@ Bezier::rightDerivativeAtPoint(bool useGuiCurves,
     p1equalsP2 = p1.x == p2.x && p1.y == p2.y;
     p2equalsP3 = p2.x == p3.x && p2.y == p3.y;
 
-    p0 = Transform::matApply(transform, p0);
-    p1 = Transform::matApply(transform, p1);
-    p2 = Transform::matApply(transform, p2);
-    p3 = Transform::matApply(transform, p3);
+    p0 = Transform::matApplyProjected(transform, p0);
+    p1 = Transform::matApplyProjected(transform, p1);
+    p2 = Transform::matApplyProjected(transform, p2);
+    p3 = Transform::matApplyProjected(transform, p3);
 
     int degree = 3;
     if (p0equalsP1) {
@@ -4220,10 +4419,10 @@ Bezier::getKeyframeTimesAndInterpolation(std::list<std::pair<double, KeyframeTyp
 {
     QMutexLocker l(&itemMutex);
 
-    if ( _imp->points.empty() ) {
+    if (_imp->guiPoints.empty()) {
         return;
     }
-    _imp->points.front()->getKeyFrames(true, keys);
+    _imp->guiPoints.front()->getKeyFrames(true, keys);
 }
 
 int
@@ -4263,11 +4462,11 @@ Bezier::getKeyFrameIndex(double time) const
 {
     QMutexLocker l(&itemMutex);
 
-    if ( _imp->points.empty() ) {
+    if (_imp->guiPoints.empty()) {
         return -1;
     }
 
-    return _imp->points.front()->getKeyFrameIndex(true, time);
+    return _imp->guiPoints.front()->getKeyFrameIndex(true, time);
 }
 
 void
@@ -4281,15 +4480,15 @@ Bezier::setKeyFrameInterpolation(KeyframeTypeEnum interp,
     {
         QMutexLocker l(&itemMutex);
         bool useFeather = useFeatherPoints();
-        BezierCPs::iterator fp = _imp->featherPoints.begin();
+        BezierCPs::iterator fp = _imp->guiFeatherPoints.begin();
 
-        if (!_imp->points.empty()) {
-            time = _imp->points.front()->getKeyframeTime(useGuiCurve, index);
+        if (!_imp->guiPoints.empty()) {
+            time = _imp->guiPoints.front()->getKeyframeTime(useGuiCurve, index);
             hasTime = time != std::numeric_limits<int>::max();
         }
         // The viewer overlay draws the GUI curves, and later edits copy key tangents from the
         // internal curves to them, so both must carry the same interpolation.
-        for (BezierCPs::iterator it = _imp->points.begin(); it != _imp->points.end(); ++it) {
+        for (BezierCPs::iterator it = _imp->guiPoints.begin(); it != _imp->guiPoints.end(); ++it) {
             if (!useGuiCurve) {
                 (*it)->setKeyFrameInterpolation(false, interp, index);
             }
@@ -4357,7 +4556,8 @@ Bezier::isFeatherPolygonClockwiseOrientedInternal(bool useGuiCurve,
                                                   double time) const
 {
     assert(!itemMutex.tryLock());
-    const int kfCount = _imp->points.empty() ? 0 : _imp->points.front()->getKeyframesCount(useGuiCurve);
+    const BezierCPs& cps = _imp->pointsFor(useGuiCurve);
+    const int kfCount = cps.empty() ? 0 : cps.front()->getKeyframesCount(useGuiCurve);
 
     if (kfCount == 0) {
         bool& dirty = useGuiCurve ? _imp->guiIsClockwiseOrientedStaticDirty : _imp->isClockwiseOrientedStaticDirty;
@@ -4427,13 +4627,14 @@ Bezier::getOrientationSpan(bool useGuiCurve,
                            double* from,
                            double* to) const
 {
-    if (_imp->points.empty()) {
+    const BezierCPs& cps = _imp->pointsFor(useGuiCurve);
+    if (cps.empty()) {
         *from = -std::numeric_limits<double>::infinity();
         *to = std::numeric_limits<double>::infinity();
 
         return;
     }
-    _imp->points.front()->getKeyframeTimesAround(useGuiCurve, time, 2, from, to);
+    cps.front()->getKeyframeTimesAround(useGuiCurve, time, 2, from, to);
 }
 
 void
@@ -4484,14 +4685,15 @@ Bezier::computePolygonOrientation(bool useGuiCurves,
     //Private - should already be locked
     assert( !itemMutex.tryLock() );
 
-    if (_imp->points.size() <= 1) {
+    const BezierCPs& points = _imp->pointsFor(useGuiCurves);
+    if (points.size() <= 1) {
         return;
     }
 
     bool useFeather = useFeatherPoints();
-    const BezierCPs& cps = useFeather ? _imp->featherPoints : _imp->points;
+    const BezierCPs& cps = useFeather ? _imp->featherPointsFor(useGuiCurves) : points;
     double polygonSurface = 0.;
-    if (_imp->points.size() == 2) {
+    if (points.size() == 2) {
         //It does not matter since there are only 2 points
         polygonSurface = -1;
     } else {

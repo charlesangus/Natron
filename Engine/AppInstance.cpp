@@ -465,6 +465,18 @@ AppInstance::getNodesBeingCreated() const
     return _imp->_creatingNodeQueue;
 }
 
+std::list<NodePtr>
+AppInstance::getViewerNodesByRecentActivity() const
+{
+    std::list<NodePtr> viewers;
+    const NodePtr active = getActiveViewerNode();
+    if (active) {
+        viewers.push_back(active);
+    }
+
+    return viewers;
+}
+
 void
 AppInstance::setViewerActiveForRenders(const Node* viewer)
 {

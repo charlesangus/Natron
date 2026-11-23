@@ -242,7 +242,7 @@ fi
 
 # Natron's output goes to a file: a caller that stops draining our stdout would otherwise block
 # Natron on a write and turn any failure into a timeout.
-rm -f "$OUT/results.txt"
+rm -f "$OUT/results.txt" "$OUT/bench_progress.oom"
 # Natron's SIGTERM handler only asks the main thread to quit, so a hung one needs the SIGKILL too.
 timeout -k 30 "$TIMEOUT" "$NATRON" "$SCRIPT" > "$OUT/natron.log" 2>&1 < /dev/null
 rc=$?
@@ -255,8 +255,12 @@ if [ "$rc" -ne 0 ]; then
     echo "--- last lines of $OUT/natron.log"
     tail -n 30 "$OUT/natron.log"
 fi
-if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+if [ -f "$OUT/bench_progress.oom" ]; then
+    echo "FAIL out of memory: killed by the memory watchdog or the kernel (see out_of_memory in the results, and bench_progress.rss)"
+elif [ "$rc" -eq 124 ]; then
     echo "FAIL timed out after ${TIMEOUT}s"
+elif [ "$rc" -eq 137 ]; then
+    echo "FAIL killed with SIGKILL (exit 137), not necessarily a timeout; no memory watchdog record, check dmesg for the OOM killer"
 fi
 echo "natron exit=$rc (results in $OUT)"
 exit "$rc"

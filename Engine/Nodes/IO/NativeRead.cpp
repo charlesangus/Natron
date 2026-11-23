@@ -1116,7 +1116,7 @@ NativeRead::getPreferredMetadataAt(double time,
                                    NodeMetadata& metadata)
 {
     metadata.setBitDepth(-1, eImageBitDepthFloat);
-    metadata.setComponentsType(-1, kNatronColorLayerID);
+    metadata.setComponentsType(-1, eImageComponentsTypeColor);
     metadata.setNComps(-1, 4);
 
     metadata.setIsFrameVarying(true);

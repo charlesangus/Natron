@@ -392,6 +392,12 @@ pixmapEnumToPath(PixmapEnum e)
     case NATRON_PIXMAP_TIME_GROUPING:
         path = NATRON_ICONS_PATH "lucide/clock.svg";
         break;
+    case NATRON_PIXMAP_RAW_GROUP:
+        path = NATRON_ICONS_PATH "lucide/aperture.svg";
+        break;
+    case NATRON_PIXMAP_LOOP_GROUP:
+        path = NATRON_ICONS_PATH "lucide/repeat.svg";
+        break;
     case NATRON_PIXMAP_PAINT_GROUPING:
         path = NATRON_ICONS_PATH "lucide/brush.svg";
         break;
@@ -1219,6 +1225,7 @@ NATRON_NAMESPACE_ANONYMOUS_ENTER
 // Group ordering is set at every place in the code where GROUP_ORDER appears in the comments
 const char* const namedGroupsOrdered[] = {
     PLUGIN_GROUP_IMAGE,
+    PLUGIN_GROUP_RAW,
     PLUGIN_GROUP_PAINT,
     PLUGIN_GROUP_TIME,
     PLUGIN_GROUP_CHANNEL,
@@ -1249,6 +1256,10 @@ getIconForGrouping(QIcon* icon,
     // Group ordering is set at every place in the code where GROUP_ORDER appears in the comments
     if (grouping == QString::fromUtf8(PLUGIN_GROUP_IMAGE)) {
         e = NATRON_PIXMAP_IO_GROUPING;
+    } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_RAW)) {
+        e = NATRON_PIXMAP_RAW_GROUP;
+    } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_LOOP)) {
+        e = NATRON_PIXMAP_LOOP_GROUP;
     } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_PAINT)) {
         e = NATRON_PIXMAP_PAINT_GROUPING;
     } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_TIME)) {

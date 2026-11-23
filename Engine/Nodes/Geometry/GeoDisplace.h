@@ -143,7 +143,7 @@ public:
         .description = "Push points along their normals (N) by a noise evaluated at their position, or by the Image "
                        "input sampled at their texture coordinates (uv). Normals are computed first when the input "
                        "has none, and can be recomputed from the displaced surface afterwards.",
-        .grouping = PLUGIN_GROUP_3D,
+        .grouping = PLUGIN_GROUP_GEOMETRY,
         .majorVersion = 1,
         .minorVersion = 0,
         .isWriter = false,

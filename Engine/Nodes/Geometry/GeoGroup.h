@@ -132,7 +132,7 @@ public:
         .description = "Create or edit a named group of points, primitives, vertices or edges: "
                        "by element numbers, existing groups and attribute comparisons, by a "
                        "bounding box or sphere, or both.",
-        .grouping = PLUGIN_GROUP_3D,
+        .grouping = PLUGIN_GROUP_GEOMETRY,
         .majorVersion = 1,
         .minorVersion = 0,
         .isWriter = false,

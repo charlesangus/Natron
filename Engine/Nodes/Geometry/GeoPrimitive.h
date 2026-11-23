@@ -121,7 +121,7 @@ public:
                        "on the vertices. The card stands in the XY plane facing +Z and the grid "
                        "lies in the XZ plane facing +Y; the others are centred on the origin "
                        "with Y up.",
-        .grouping = PLUGIN_GROUP_3D,
+        .grouping = PLUGIN_GROUP_GEOMETRY,
         .majorVersion = 1,
         .minorVersion = 0,
         .isWriter = false,

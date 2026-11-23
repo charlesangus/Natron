@@ -107,7 +107,7 @@ public:
                        "carry the surface's normals (N), texture coordinates (uv) and colour (Cd), interpolated at "
                        "each point, and which polygon each came from (sourceprim, sourceprimuv). The same seed "
                        "always gives the same points.",
-        .grouping = PLUGIN_GROUP_3D,
+        .grouping = PLUGIN_GROUP_GEOMETRY,
         .majorVersion = 1,
         .minorVersion = 0,
         .isWriter = false,

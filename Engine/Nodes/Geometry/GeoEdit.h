@@ -120,7 +120,7 @@ public:
                        "View this node, pick points, edges or primitives, and drag the handles. "
                        "Edits follow element numbers, so they are skipped with a warning when "
                        "the input's point or primitive count changes.",
-        .grouping = PLUGIN_GROUP_3D,
+        .grouping = PLUGIN_GROUP_GEOMETRY,
         .majorVersion = 1,
         .minorVersion = 0,
         .isWriter = false,

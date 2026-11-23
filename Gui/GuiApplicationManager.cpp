@@ -1330,6 +1330,7 @@ const char* const namedGroupsOrdered[] = {
     PLUGIN_GROUP_MERGE,
     PLUGIN_GROUP_TRANSFORM,
     PLUGIN_GROUP_3D,
+    PLUGIN_GROUP_GEOMETRY,
     PLUGIN_GROUP_DEEP,
     PLUGIN_GROUP_METADATA,
     PLUGIN_GROUP_LOOP,
@@ -1367,7 +1368,7 @@ getIconForGrouping(QIcon* icon,
         e = NATRON_PIXMAP_MERGE_GROUPING;
     } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_TRANSFORM)) {
         e = NATRON_PIXMAP_TRANSFORM_GROUPING;
-    } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_3D)) {
+    } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_3D) || grouping == QString::fromUtf8(PLUGIN_GROUP_GEOMETRY)) {
         e = NATRON_PIXMAP_3D_GROUPING;
     } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_DEEP)) {
         e = NATRON_PIXMAP_DEEP_GROUPING;

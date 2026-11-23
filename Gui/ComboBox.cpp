@@ -175,7 +175,7 @@ ComboBox::sizeForWidth(int w) const
         br = fm.boundingRect(0, 0, w / 4, 2000, flags, _currentText);
     }
 
-    const QSize contentsSize(_elidedWidth > 0 ? _elidedWidth : br.width() + hextra, br.height() + vextra);
+    const QSize contentsSize(_elidedWidth > 0 ? std::max(_elidedWidth - contentsMargin.width(), 0) : br.width() + hextra, br.height() + vextra);
 
     return (contentsSize + contentsMargin).expandedTo( minimumSize() );
 } // ComboBox::sizeForWidth

@@ -132,7 +132,7 @@ try:
         check(combo is not None, "found the %s combo" % what)
         if combo is None:
             return
-        check(combo.natronCurrentText == full, "%s combo holds %r (has %r)" % (what, full, combo.natronCurrentText))
+        check(combo.property("natronCurrentText") == full, "%s combo holds %r (has %r)" % (what, full, combo.property("natronCurrentText")))
         check(full in re.sub(r"<[^>]+>", "", combo.toolTip() or ""), "%s combo's tooltip carries the full name" % what)
         shown = combo.fontMetrics().elidedText(full, Qt.ElideMiddle, combo.width() - 12)
         check(shown != full, "%s combo (%d px) elides %r as %r" % (what, combo.width(), full, shown))
@@ -175,8 +175,8 @@ try:
         tab, row, parts = measure_row("first row, long names")
         combos = [w for w in parts if class_name(w) == "ComboBox"]
         a_combo, b_combo = combo_of(parts, "A:"), combo_of(parts, "B:")
-        report("NOTE A combo text %r, B combo text %r" % (a_combo.natronCurrentText if a_combo else None,
-                                                          b_combo.natronCurrentText if b_combo else None))
+        report("NOTE A combo text %r, B combo text %r" % (a_combo.property("natronCurrentText") if a_combo else None,
+                                                          b_combo.property("natronCurrentText") if b_combo else None))
         layer_combo = combos[0] if combos else None
         check_elided(layer_combo, long_layer, "layer")
         QApplication.processEvents()

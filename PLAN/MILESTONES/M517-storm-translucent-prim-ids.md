@@ -45,3 +45,4 @@ Make USDRender's primId plane, and the picking that reads it, see translucent pr
 - 2026-11-22 — P1.T2 (GUI picking check) dropped (user, 2026-11-22): nothing picks from USDRender's 2D output, and the gtests prove the id planes.
 - 2026-11-22 — Translucent ids use a private depth buffer (implementer): opaque/masked prims redraw depth into it, then translucent prims draw ids with depth test and write on, so the nearest translucent id wins; Storm's own colour and depth are untouched. Pending the user's confirmation (asked whether draw order would do; it would not — see Open questions).
 - 2026-11-23 — **Private id depth buffer approved (user):** translucent ids use the private depth buffer (nearest wins), as implemented in 0bb3f6fbd.
+- 2026-11-23 — Merged to main as 8005b91a1 (#354); review round closed.

@@ -13,3 +13,4 @@
 ## Decisions
 
 - 2026-11-23 — Filed by the PM after the same failure blocked three PRs.
+- 2026-11-23 — Merged to main as 4e478e0ff (#355); review round closed.

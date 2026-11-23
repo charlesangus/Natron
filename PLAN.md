@@ -570,12 +570,12 @@ future core work has solid ground to build on.
 | M549 | Faster Gate Packaging | done | - | | E2 | | | [M549-faster-gate-packaging.md](PLAN/MILESTONES/M549-faster-gate-packaging.md) |
 | M550 | Classic Graph Shift-Drop Creation | todo | M351 |  | E9 | | | [M550-classic-graph-shift-drop-creation.md](PLAN/MILESTONES/M550-classic-graph-shift-drop-creation.md) |
 | M551 | Second Background App Groups | todo | - |  | E2 | | | [M551-second-background-app-groups.md](PLAN/MILESTONES/M551-second-background-app-groups.md) |
-| M553 | Storm Project3D Test Flake | doing | - | bosley-executor | E2 | | | [M553-storm-project3d-test-flake.md](PLAN/MILESTONES/M553-storm-project3d-test-flake.md) |
+| M553 | Storm Project3D Test Flake | done | - | bosley-executor | E2 | | | [M553-storm-project3d-test-flake.md](PLAN/MILESTONES/M553-storm-project3d-test-flake.md) |
 | M552 | Shared Remote Run Watcher | done | - | | E2 | | | [M552-shared-remote-run-watcher.md](PLAN/MILESTONES/M552-shared-remote-run-watcher.md) |
 | M494 | Delegate Subdivision | doing | - | bosley-executor | E9 | | | [M494-delegate-subdivision.md](PLAN/MILESTONES/M494-delegate-subdivision.md) |
 | M495 | KeyMix GPU Edge Read Fix | doing | - | bosley-executor | E14 | | | [M495-keymix-gpu-edge-read-fix.md](PLAN/MILESTONES/M495-keymix-gpu-edge-read-fix.md) |
 | M496 | MoonRay Test Stability | todo | - |  | E9 | | | [M496-moonray-test-stability.md](PLAN/MILESTONES/M496-moonray-test-stability.md) |
-| M504 | GIL Lock Order Fix | doing | M336 | bosley-executor | E14 |  | | [M504-gil-lock-order-fix.md](PLAN/MILESTONES/M504-gil-lock-order-fix.md) |
+| M504 | GIL Lock Order Fix | done | M336 | bosley-executor | E14 |  | | [M504-gil-lock-order-fix.md](PLAN/MILESTONES/M504-gil-lock-order-fix.md) |
 | M505 | Deleted Knob Listener Dependencies | doing | M372 | bosley-executor | E14 | F16 | | [M505-deleted-knob-listener-dependencies.md](PLAN/MILESTONES/M505-deleted-knob-listener-dependencies.md) |
 | M506 | Deep Expression Chain Crash | todo | M262 |  | E14 |  | | [M506-deep-expression-chain-crash.md](PLAN/MILESTONES/M506-deep-expression-chain-crash.md) |
 | M507 | Lock-Free Knob Holder Lifetime | todo | - |  | E14 |  | | [M507-lock-free-knob-holder-lifetime.md](PLAN/MILESTONES/M507-lock-free-knob-holder-lifetime.md) |
@@ -593,7 +593,7 @@ future core work has solid ground to build on.
 | M514 | Utility Raster Mode | todo | M283, M472 |  | E19 |  | | [M514-utility-raster-mode.md](PLAN/MILESTONES/M514-utility-raster-mode.md) |
 | M515 | Storm Oversample And Motion Blur | todo | - |  | E9 |  | | [M515-storm-oversample-and-motion-blur.md](PLAN/MILESTONES/M515-storm-oversample-and-motion-blur.md) |
 | M516 | Port Groups And Folding | todo | M351 |  | E9 | F2 | | [M516-port-groups-and-folding.md](PLAN/MILESTONES/M516-port-groups-and-folding.md) |
-| M517 | Storm Translucent Prim Ids | doing | - | bosley-executor | E9 |  |  | [M517-storm-translucent-prim-ids.md](PLAN/MILESTONES/M517-storm-translucent-prim-ids.md) |
+| M517 | Storm Translucent Prim Ids | done | - | bosley-executor | E9 |  |  | [M517-storm-translucent-prim-ids.md](PLAN/MILESTONES/M517-storm-translucent-prim-ids.md) |
 | M518 | Save Prompt Key Shortcuts | doing | - | bosley-executor | E10 | F36 | | [M518-save-prompt-key-shortcuts.md](PLAN/MILESTONES/M518-save-prompt-key-shortcuts.md) |
 | M519 | Raw And Loop Toolbar Icons | done | - | bosley-executor | E10 | F36 | | [M519-raw-and-loop-toolbar-icons.md](PLAN/MILESTONES/M519-raw-and-loop-toolbar-icons.md) |
 | M520 | USD Toolbar Category And Submenus | doing | - | bosley-executor | E10 | F36 | | [M520-usd-toolbar-category-and-submenus.md](PLAN/MILESTONES/M520-usd-toolbar-category-and-submenus.md) |

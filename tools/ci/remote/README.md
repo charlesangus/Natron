@@ -138,7 +138,7 @@ account, so the script polls sparingly:
   the dispatched run, and between artifact download retries.
 
 With many gates in flight, set `NATRON_REMOTE_RUN_STATE_DIR` to a directory
-shared by all of them (for example `build/remote/run-state`). The first
+shared by all of them (an absolute path, for example `$HOME/git/Natron/build/remote/run-state`; `build.sh` resolves a relative one against the directory it was started from, so every worktree would otherwise get its own watcher). The first
 `build.sh` that finds no watcher starts `watch-runs.sh <dir>` detached. It
 polls every recent `remote-build.yml` run with one `gh run list` call per
 watch interval, whatever the number of gates, and writes `<dir>/<run-id>`
@@ -150,6 +150,11 @@ on `<dir>/watcher.lock` keeps one watcher per directory; its log is
 and no live client (`NATRON_REMOTE_WATCHER_IDLE_SECS` changes this). If the
 heartbeat is older than three intervals, or the run has left the watcher's
 list, `build.sh` polls the run itself and tries to restart the watcher.
+The heartbeat is written only after a successful poll (the `gh` call has a
+timeout of twice the interval) and removed when the watcher exits; state files
+of runs that left the list and stale temp files are pruned each poll. Clients
+and the watcher must share a host and PID namespace, and one state dir serves
+one repo. While waiting, `build.sh` prints "still <status>" every 10 minutes.
 Without the variable, each `build.sh` polls its own run.
 
 ## Shared remote ccache

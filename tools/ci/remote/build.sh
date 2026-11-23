@@ -347,6 +347,10 @@ if [[ "${DEBUG_SYMBOLS}" == "true" && "${WANT_APPIMAGE}" == "false" ]]; then
     exit 1
 fi
 
+if [[ -n "${NATRON_REMOTE_RUN_STATE_DIR:-}" && "${NATRON_REMOTE_RUN_STATE_DIR}" != /* ]]; then
+    NATRON_REMOTE_RUN_STATE_DIR="${PWD}/${NATRON_REMOTE_RUN_STATE_DIR}"
+fi
+
 cd "${REPO_ROOT}"
 
 BRANCH="$(git symbolic-ref --quiet --short HEAD || true)"
@@ -470,6 +474,9 @@ while [[ -z "${RUN_ID}" ]]; do
         RUN_ID="${RUN_ID%%$'\t'*}"
         break
     fi
+    if [[ -n "${RUN_STATE_DIR}" ]]; then
+        ensure_watcher
+    fi
     if (( SECONDS >= deadline )); then
         echo "build.sh: ERROR: no run with token ${TOKEN} appeared within ${FIND_TIMEOUT_SECS}s" >&2
         echo "Check the Actions tab for ${WORKFLOW} on ${BRANCH}." >&2
@@ -490,6 +497,7 @@ fi
 # `gh run view` may also fetch the jobs.
 RUN_CONCLUSION=""
 LAST_RUN_STATUS=""
+LAST_PROGRESS_SECS="${SECONDS}"
 while true; do
     RUN_STATE=""
     POLL_SECS="${WATCH_INTERVAL_SECS}"
@@ -511,6 +519,10 @@ while true; do
     if [[ -n "${RUN_STATE}" && "${RUN_STATE%% *}" != "${LAST_RUN_STATUS}" ]]; then
         LAST_RUN_STATUS="${RUN_STATE%% *}"
         echo "build.sh: run ${RUN_ID} is ${LAST_RUN_STATUS}"
+    fi
+    if (( SECONDS - LAST_PROGRESS_SECS >= 600 )); then
+        LAST_PROGRESS_SECS="${SECONDS}"
+        echo "build.sh: run ${RUN_ID} still ${LAST_RUN_STATUS:-unknown}"
     fi
     if [[ "${RUN_STATE%% *}" == "completed" ]]; then
         RUN_CONCLUSION="${RUN_STATE#* }"

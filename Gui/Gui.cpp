@@ -753,7 +753,7 @@ Gui::createMenuActions()
         _imp->menuEdit->addAction(makeBaseNode);
         _imp->menuEdit->addSeparator();
         QObject::connect(_imp->menuEdit, &QMenu::aboutToShow, this, [this, makeINode, makeBaseNode]() {
-            NodeGraph* graph = getLastSelectedGraph();
+            NodeGraph* graph = getLastSelectedGraph() ? getLastSelectedGraph() : getNodeGraph();
             QString reason = tr("No node graph is selected.");
             makeINode->setEnabled(graph && graph->canMakeINodeFromSelection(&reason));
             makeINode->setToolTip(makeINode->isEnabled()
@@ -764,13 +764,13 @@ Gui::createMenuActions()
             makeBaseNode->setToolTip(makeBaseNode->isEnabled() ? tr("Replace the I-node by its base node.") : reason);
         });
         QObject::connect(makeINode, &QAction::triggered, this, [this]() {
-            NodeGraph* graph = getLastSelectedGraph();
+            NodeGraph* graph = getLastSelectedGraph() ? getLastSelectedGraph() : getNodeGraph();
             if (graph) {
                 graph->makeINodeFromSelection();
             }
         });
         QObject::connect(makeBaseNode, &QAction::triggered, this, [this]() {
-            NodeGraph* graph = getLastSelectedGraph();
+            NodeGraph* graph = getLastSelectedGraph() ? getLastSelectedGraph() : getNodeGraph();
             if (graph) {
                 graph->makeBaseNodeFromSelection();
             }

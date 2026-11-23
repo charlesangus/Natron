@@ -155,9 +155,9 @@ try:
         long_layer = "a_layer_with_a_very_long_name_00000003"
         node_a = app.createNode("Constant")
         node_b = app.createNode("Constant")
-        node_a.setLabel(long_a)
         node_b.setLabel(long_b)
         shuffle = app.createNode("Shuffle")
+        shuffle.setLabel(long_a)
         shuffle.getParam("out1").setLayer(long_layer)
         shuffle.connectInput(0, node_a)
         require(viewer.connectInput(0, shuffle), "the Viewer shows the shuffled A input")
@@ -177,8 +177,10 @@ try:
         a_combo, b_combo = combo_of(parts, "A:"), combo_of(parts, "B:")
         report("NOTE A combo text %r, B combo text %r" % (a_combo.property("natronCurrentText") if a_combo else None,
                                                           b_combo.property("natronCurrentText") if b_combo else None))
-        layer_combo = combos[0] if combos else None
+        layer_combo = next((c for c in combos if c.property("natronCurrentText") == long_layer), None)
         check_elided(layer_combo, long_layer, "layer")
+        check_elided(a_combo, long_a, "A input")
+        check_elided(b_combo, long_b, "B input")
         QApplication.processEvents()
         shot("m511-viewer-toolbar-long-names.png")
 

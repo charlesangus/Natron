@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <string>
+#include <vector>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
@@ -114,7 +115,35 @@ private:
                                    ScenePayload* outputScene,
                                    std::string* errorMessage) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    virtual SceneEvaluationContext getSceneInputContext(int inputNb,
+                                                        const SceneEvaluationContext& ctx,
+                                                        double time,
+                                                        ViewIdx view) const OVERRIDE FINAL;
+
+    virtual void mapSceneInputReach(int inputNb,
+                                    double time,
+                                    ViewIdx view,
+                                    const std::vector<std::string>& in,
+                                    std::vector<std::string>* out) const OVERRIDE FINAL;
+
+    /**
+     * @brief Sets *targetPath to the arc's prim and *sourcePath to the Source input prim it points
+     * at, empty when that is the input's default or first root, known only once it is evaluated.
+     * False when the prim path is invalid.
+     **/
+    bool getArcPaths(std::string* targetPath,
+                     std::string* sourcePath) const;
+
+    // getArcPaths() with the knobs read at time and view.
+    bool getArcPaths(double time,
+                     ViewIdx view,
+                     std::string* targetPath,
+                     std::string* sourcePath) const;
+
     SourceEnum getSource() const;
+
+    SourceEnum getSource(double time,
+                         ViewIdx view) const;
     void refreshVisibility();
     void reloadFile();
 

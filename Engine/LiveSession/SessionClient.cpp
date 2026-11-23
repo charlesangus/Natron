@@ -480,18 +480,33 @@ struct SessionClient::Implementation {
     void reapplyPending(const ProjectPtr& p,
                         const std::optional<std::string>& onlyNode)
     {
-        std::vector<Serialization::GraphOp> ops;
+        std::vector<const Serialization::GraphOp*> all;
         for (const PendingEdit& edit : pending) {
             for (const Serialization::GraphOp& op : edit.ops) {
-                if (onlyNode) {
-                    const std::vector<std::string> ids = LiveSession::graphOpNodeIds(op);
-                    if (std::find(ids.begin(), ids.end(), *onlyNode) == ids.end()) {
-                        continue;
-                    }
-                }
-                ops.push_back(op);
+                all.push_back(&op);
             }
         }
+        // Only some pending edits are applied again, so one a later pending edit overrides, which
+        // is not applied again, would win here although the later one wins on the host: a
+        // connection from the node followed by a disconnection would leave the connection.
+        std::vector<Serialization::GraphOp> ops;
+        std::set<std::string> overridden;
+        for (std::vector<const Serialization::GraphOp*>::reverse_iterator it = all.rbegin(); it != all.rend(); ++it) {
+            const Serialization::GraphOp& op = **it;
+            const std::vector<std::string> keys = LiveSession::graphOpKeys(op);
+            bool later = false;
+            for (const std::string& key : keys) {
+                later = !overridden.insert(key).second || later;
+            }
+            if (onlyNode) {
+                const std::vector<std::string> ids = LiveSession::graphOpNodeIds(op);
+                if (later || (std::find(ids.begin(), ids.end(), *onlyNode) == ids.end())) {
+                    continue;
+                }
+            }
+            ops.push_back(op);
+        }
+        std::reverse(ops.begin(), ops.end());
         GraphEditRecorder::Suppress suppress;
         for (const Serialization::GraphOp& op : ops) {
             applyGraphOps(p, { withUntakenName(p, op) });

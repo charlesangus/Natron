@@ -73,6 +73,20 @@ public:
      **/
     static double dist2ToSegment(const QLineF& line, const QPointF& point);
 
+    /**
+     * @brief The distance in viewport pixels from which an edge can be grabbed, grown with the
+     * Pipe Width preference. A dangling edge (an unconnected input or an output stub) has no pipe
+     * to click along, only its short stub, so it gets the larger radius.
+     **/
+    static double grabRadiusPixels(bool dangling);
+
+    // An input with no source, or the output stub of a node that feeds nothing.
+    bool isDangling() const;
+
+    // Re-reads the Pipe Width preference into the pen. The caller re-lays the line, whose arrow
+    // head scales with the width.
+    void refreshPipeWidth();
+
     void setSource(const NodeGuiPtr & src);
 
     void setSourceAndDestination(const NodeGuiPtr & src, const NodeGuiPtr & dst);
@@ -166,18 +180,18 @@ private:
 // the coordinate space scenePos is in (scene space, for NodeGraph::hasItemNearbyMouse).
 struct EdgeNearbyCandidate {
     QLineF line;
-    bool isUnconnectedInput; // an input edge with no source: grabbed with unconnectedInputGrabRadius, not grabRadius
+    bool isDangling; // grabbed with danglingGrabRadius, not grabRadius
 };
 
 /**
  * @brief Returns the index into candidates of the one whose line is closest to scenePos, among
- * those within their own grab radius (unconnectedInputGrabRadius for an unconnected input stub,
+ * those within their own grab radius (danglingGrabRadius for an unconnected input or output stub,
  * grabRadius for everything else), or -1 if none qualify.
  **/
 int pickNearestEdgeCandidate(const QPointF& scenePos,
                              const std::vector<EdgeNearbyCandidate>& candidates,
                              double grabRadius,
-                             double unconnectedInputGrabRadius);
+                             double danglingGrabRadius);
 
 /**
  * @brief An arrow in the graph representing an expression between 2 nodes or that one node is a clone of another.

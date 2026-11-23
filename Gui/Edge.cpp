@@ -56,16 +56,27 @@
 #endif
 
 #define EDGE_LENGTH_MIN 0.1
-#define EDGE_PEN_WIDTH 2
 #define ARROW_OFFSET 3 // offset of the arrow tip from the object border
 #define ARROW_SIZE_CONNECTED 14
 #define ARROW_SIZE_DISCONNECTED 10
+// The arrow sizes above are for a pipe this wide; arrow heads scale with the Pipe Width preference.
+#define ARROW_SIZE_PEN_WIDTH 2.
 #define ARROW_HEAD_ANGLE ( (2 * M_PI) / 15 ) // 24 degrees opening angle is a nice thin arrow
 
-// number of offset pixels from the arrow that determine if a click is contained in the arrow or not
-#define kGraphicalContainerOffset 10
+// Grab radii in viewport pixels. The minimums are the radii of a 2-pixel pipe, so a thinner one is
+// never harder to grab.
+#define GRAB_RADIUS_MIN 10.
+#define GRAB_RADIUS_PER_WIDTH 2.5
+#define DANGLING_GRAB_RADIUS_MIN 18.
+#define DANGLING_GRAB_RADIUS_PER_WIDTH 5.
 
 NATRON_NAMESPACE_ENTER
+
+static int
+pipeWidthPreference()
+{
+    return std::max(1, appPTR->getCurrentSettings()->getPipeWidth());
+}
 
 struct EdgePrivate
 {
@@ -139,7 +150,7 @@ Edge::Edge(int inputNb_,
 {
     _imp->dest = dest_;
 
-    setPen(QPen(Qt::black, EDGE_PEN_WIDTH, Qt::SolidLine, Qt::SquareCap, Qt::BevelJoin));
+    setPen(QPen(Qt::black, pipeWidthPreference(), Qt::SolidLine, Qt::SquareCap, Qt::BevelJoin));
     _imp->initLabel();
     setAcceptedMouseButtons(Qt::LeftButton);
     initLine();
@@ -179,7 +190,7 @@ Edge::Edge(const NodeGuiPtr & src,
 {
     _imp->source = src;
     assert(src);
-    setPen(QPen(Qt::black, EDGE_PEN_WIDTH, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    setPen(QPen(Qt::black, pipeWidthPreference(), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
     setAcceptedMouseButtons(Qt::LeftButton);
     initLine();
     //setFlag(QGraphicsItem::ItemStacksBehindParent);
@@ -525,7 +536,7 @@ Edge::initLineNow()
     if (dest) {
         dst = destBBOX.center();
     } else if (source && !dest) {
-        dst = QPointF( sourceBBOX.x(), sourceBBOX.y() ) + QPointF(srcNodeSize.width() / 2., srcNodeSize.height() + 10);
+        dst = QPointF(sourceBBOX.x(), sourceBBOX.y()) + QPointF(srcNodeSize.width() / 2., srcNodeSize.height() + TO_DPIY(appPTR->getCurrentSettings()->getOutputStubLength()));
     }
 
     std::vector<QLineF> dstEdges;
@@ -685,6 +696,7 @@ Edge::initLineNow()
     } else {
         arrowSize = TO_DPIX(ARROW_SIZE_DISCONNECTED) * sc;
     }
+    arrowSize *= pen().widthF() / ARROW_SIZE_PEN_WIDTH;
     QPointF arrowP1 = arrowIntersect + QPointF(std::cos(a + ARROW_HEAD_ANGLE / 2) * arrowSize,
                                                std::sin(a + ARROW_HEAD_ANGLE / 2) * arrowSize);
     QPointF arrowP2 = arrowIntersect + QPointF(std::cos(a - ARROW_HEAD_ANGLE / 2) * arrowSize,
@@ -775,25 +787,67 @@ Edge::dist2ToSegment(const QLineF& line,
                               p1.y() + t * ( p2.y() - p1.y() ) ) );
 }
 
+double
+Edge::grabRadiusPixels(bool dangling)
+{
+    const double width = pipeWidthPreference();
+
+    if (dangling) {
+        return TO_DPIX(std::max(DANGLING_GRAB_RADIUS_MIN, DANGLING_GRAB_RADIUS_PER_WIDTH * width));
+    }
+
+    return TO_DPIX(std::max(GRAB_RADIUS_MIN, GRAB_RADIUS_PER_WIDTH * width));
+}
+
+bool
+Edge::isDangling() const
+{
+    return !_imp->source.lock() || !_imp->dest.lock();
+}
+
+void
+Edge::refreshPipeWidth()
+{
+    const int width = pipeWidthPreference();
+
+    if (pen().width() == width) {
+        return;
+    }
+    QPen p = pen();
+    p.setWidth(width);
+    setPen(p);
+}
+
 bool
 Edge::contains(const QPointF &point) const
 {
+    // The same radius NodeGraph::hasItemNearbyMouse() grabs with, mapped from the viewport.
+    NodeGuiPtr owner = _imp->isOutputEdge ? _imp->source.lock() : _imp->dest.lock();
+    NodeGraph* graph = owner ? owner->getDagGui() : NULL;
+    double radius = grabRadiusPixels(isDangling());
+
+    if (graph) {
+        const double zoomFactor = graph->transform().mapRect(QRectF(0, 0, 1, 1)).width();
+        if (zoomFactor > 0.) {
+            radius /= zoomFactor;
+        }
+    }
     double d2 = dist2ToSegment(line(), point);
 
-    return d2 <= kGraphicalContainerOffset * kGraphicalContainerOffset;
+    return d2 <= radius * radius;
 }
 
 int
 pickNearestEdgeCandidate(const QPointF& scenePos,
                          const std::vector<EdgeNearbyCandidate>& candidates,
                          double grabRadius,
-                         double unconnectedInputGrabRadius)
+                         double danglingGrabRadius)
 {
     int nearestIndex = -1;
     double nearestDist2 = 0.;
 
     for (std::size_t i = 0; i < candidates.size(); ++i) {
-        double radius = candidates[i].isUnconnectedInput ? unconnectedInputGrabRadius : grabRadius;
+        double radius = candidates[i].isDangling ? danglingGrabRadius : grabRadius;
         double d2 = Edge::dist2ToSegment(candidates[i].line, scenePos);
         if (d2 > radius * radius) {
             continue;
@@ -817,7 +871,7 @@ Edge::dragSource(const QPointF & src)
         a = 2 * M_PI - a;
     }
 
-    double arrowSize = TO_DPIX(ARROW_SIZE_DISCONNECTED);
+    double arrowSize = TO_DPIX(ARROW_SIZE_DISCONNECTED) * pen().widthF() / ARROW_SIZE_PEN_WIDTH;
     QPointF arrowP1 = line().p1() + QPointF(std::cos(a + ARROW_HEAD_ANGLE / 2) * arrowSize,
                                             std::sin(a + ARROW_HEAD_ANGLE / 2) * arrowSize);
     QPointF arrowP2 = line().p1() + QPointF(std::cos(a - ARROW_HEAD_ANGLE / 2) * arrowSize,
@@ -845,7 +899,7 @@ Edge::dragDest(const QPointF & dst)
         a = 2 * M_PI - a;
     }
 
-    double arrowSize = TO_DPIX(ARROW_SIZE_DISCONNECTED);
+    double arrowSize = TO_DPIX(ARROW_SIZE_DISCONNECTED) * pen().widthF() / ARROW_SIZE_PEN_WIDTH;
     QPointF arrowP1 = line().p1() + QPointF(std::cos(a + ARROW_HEAD_ANGLE / 2) * arrowSize,
                                             std::sin(a + ARROW_HEAD_ANGLE / 2) * arrowSize);
     QPointF arrowP2 = line().p1() + QPointF(std::cos(a - ARROW_HEAD_ANGLE / 2) * arrowSize,

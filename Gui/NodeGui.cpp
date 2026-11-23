@@ -1979,6 +1979,21 @@ NodeGui::refreshEdgesDataKindPenNow(bool force)
 }
 
 void
+NodeGui::refreshEdgesPipeStyle()
+{
+    for (InputEdges::const_iterator it = _inputEdges.begin(); it != _inputEdges.end(); ++it) {
+        if (*it) {
+            (*it)->refreshPipeWidth();
+            (*it)->initLine();
+        }
+    }
+    if (_outputEdge) {
+        _outputEdge->refreshPipeWidth();
+        _outputEdge->initLine();
+    }
+}
+
+void
 NodeGui::refreshKnobLinks()
 {
     for (LinkLines::iterator it = _linkLines.begin(); it != _linkLines.end(); ++it) {

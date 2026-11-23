@@ -259,6 +259,10 @@ public:
 
     int getDisconnectedArrowLength() const;
 
+    int getPipeWidth() const;
+
+    int getOutputStubLength() const;
+
     void getGeneratorColor(float *r, float *g, float *b) const;
     void getReaderColor(float *r, float *g, float *b) const;
     void getWriterColor(float *r, float *g, float *b) const;
@@ -731,7 +735,9 @@ private:
     KnobBoolPtr _autoTurbo;
     KnobBoolPtr _snapNodesToConnections;
     KnobIntPtr _maxUndoSteps;
+    KnobIntPtr _pipeWidth;
     KnobIntPtr _disconnectedArrowLength;
+    KnobIntPtr _outputStubLength;
     KnobBoolPtr _useInputAForMergeAutoConnect;
     KnobBoolPtr _showLinkLines;
     KnobBoolPtr _showExpressionLines;

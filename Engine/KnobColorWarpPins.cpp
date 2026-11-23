@@ -39,7 +39,6 @@
 
 #include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
-#include "Engine/KnobImpl.h"
 #include "Engine/UndoCommand.h"
 
 NATRON_NAMESPACE_ENTER

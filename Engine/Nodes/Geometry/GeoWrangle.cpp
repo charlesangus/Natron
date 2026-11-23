@@ -29,8 +29,10 @@
 #include <array>
 #include <atomic>
 #include <cctype>
+#include <cstddef>
 #include <cstdint>
 #include <iterator>
+#include <mutex>
 #include <set>
 #include <span>
 #include <string>
@@ -504,17 +506,31 @@ GeoWrangle::renderGeometry(const GeoRenderActionArgs& args,
         return stop;
     };
 
+    std::string rejection;
+    {
+        std::lock_guard<std::mutex> lock(compiled->gpuRejectionLock);
+        rejection = compiled->gpuRejection;
+    }
     gpu::GpuRuntime* runtime = nullptr;
     std::shared_ptr<void> runtimeHold;
 #ifdef NATRON_HAVE_GPU
+    const std::size_t elements = cls == eGeoAttribClassDetail ? 1 : std::size_t(inputs[0]->indexMap(cls).size());
     GpuContext* const gpuContext = appPTR ? appPTR->getGpuContext() : nullptr;
-    if (gpuContext && gpuContext->isAvailable()) {
+    if (rejection.empty() && gpuContext && gpuContext->isAvailable()
+        && geoKernelGpuPlaced(*compiled->program, compiled->gpuPlan, elements)) {
         runtimeHold = gpuContext->holdRuntime();
         runtime = runtimeHold ? gpuContext->runtime() : nullptr;
     }
 #endif
     GeoKernelGpuRunResult ran = geoKernelRunGpu(*compiled->program, compiled->gpuPlan, cls, std::span<const GeoDetail* const>(inputs), options, runtime);
     runtimeHold.reset();
+    if (ran.compilerRejected) {
+        std::lock_guard<std::mutex> lock(compiled->gpuRejectionLock);
+        compiled->gpuRejection = ran.fallback;
+    }
+    if (ran.fallback.empty()) {
+        ran.fallback = rejection;
+    }
     GeoKernelRunResult& result = ran.result;
     if (result.status == KernelRunStatus::eAborted) {
         return eStatusFailed;

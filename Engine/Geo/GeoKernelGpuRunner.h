@@ -28,6 +28,8 @@
 
 #include "Global/Macros.h"
 
+#include <cstddef>
+#include <cstdint>
 #include <span>
 #include <string>
 
@@ -48,13 +50,33 @@ struct GeoKernelGpuRunResult {
     // Why a run that had a device went to the CPU: the plan's reason, the compiler's message or the
     // device's error. Empty when it ran on the GPU or had no device.
     std::string fallback;
+    // Set when fallback is the GPU compiler's rejection of plan.source, which every later run of
+    // the same plan would meet again.
+    bool compilerRejected = false;
 };
+
+/**
+ * @brief What one element of program costs a GPU run, in the units of
+ * gpu::GpuRecordContext::chargeWork: its instructions and its column transfers.
+ **/
+std::uint64_t geoKernelGpuElementWork(const KernelProgram& program, const KernelGpuPlan& plan);
+
+/**
+ * @brief Whether GPU placement sends a run of program over elements elements to the GPU, by the
+ * weight rule image regions follow (gpuWeightAccepts): the elements count as pixels by the words
+ * they move, four to a pixel, the instructions as point-node weight, and a loop makes the run
+ * Heavy, as its cost per element has no bound the program states.
+ **/
+bool geoKernelGpuPlaced(const KernelProgram& program, const KernelGpuPlan& plan, std::size_t elements);
 
 /**
  * @brief Runs program, compiled against GeoKernelBinding(runOver), on runtime when plan (its plan
  * against geoKernelGpuTarget()) runs on the GPU, in page-aligned chunks that fit the device's
- * storage buffer limit. A CPU-only plan, a null runtime and every GPU failure other than an abort
- * run it on the CPU through geoKernelRun instead; a device error is reported to runtime first.
+ * storage buffer limit, each dispatched as bounded batches that the timeout and options.aborted
+ * apply to one at a time. The kernel is compiled before any value is gathered. A CPU-only plan, a
+ * null runtime and every GPU failure other than an abort run it on the CPU through geoKernelRun
+ * instead; a device error is reported to runtime first. A plan that stores nothing returns
+ * input 0 unchanged.
  **/
 GeoKernelGpuRunResult geoKernelRunGpu(const KernelProgram& program,
                                       const KernelGpuPlan& plan,

@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -45,6 +46,7 @@
 #include "Engine/Kernel/KernelParser.h"
 
 #ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuDevice.h"
 #include "Engine/Gpu/GpuRecord.h"
 #include "Engine/Gpu/GpuRuntime.h"
 #include "Engine/Gpu/GpuSizeClass.h"
@@ -324,6 +326,149 @@ TEST(GeoWrangleGpuTest, AddPointRunsOnTheCpuAndSaysWhy)
     EXPECT_FALSE(gpu.ranOnGpu);
     EXPECT_NE(std::string::npos, gpu.fallback.find("addpoint")) << gpu.fallback;
     EXPECT_EQ(kPointCount + 10, gpu.result.detail.pointCount());
+}
+
+TEST(GeoWrangleGpuTest, ACompilerRejectionRunsOnTheCpuWithTheMessage)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    const GeoKernelParameters parameters = testParameters();
+    const GeoDetail input = makePoints(kPointCount);
+    const GeoDetail* inputs[] = { &input };
+    const GeoKernelRunOptions options = runOptions(parameters);
+    const Snippet s { "@P.y += @ptnum * 0.5;", { "P" } };
+    KernelProgram program;
+    ASSERT_TRUE(compileSnippet(s.source, parameters, program));
+    KernelGpuPlan plan = kernelGpuPlan(program, geoKernelGpuTarget());
+    ASSERT_TRUE(plan.runsOnGpu()) << plan.cpuOnlyReason;
+    plan.source = "#version 450\nvoid main() { this is not glsl; }\n";
+
+    const GeoKernelGpuRunResult gpu = geoKernelRunGpu(program, plan, eGeoAttribClassPoint, std::span<const GeoDetail* const>(inputs),
+                                                      options, &runtime->runtime());
+    ASSERT_EQ(KernelRunStatus::eDone, gpu.result.status) << gpu.result.error;
+    EXPECT_FALSE(gpu.ranOnGpu);
+    EXPECT_TRUE(gpu.compilerRejected) << gpu.fallback;
+    EXPECT_NE(std::string::npos, gpu.fallback.find("compile")) << gpu.fallback;
+    EXPECT_FALSE(runtime->runtime().isLost());
+    const GeoKernelRunResult cpu = geoKernelRun(program, eGeoAttribClassPoint, std::span<const GeoDetail* const>(inputs), options);
+    ASSERT_EQ(KernelRunStatus::eDone, cpu.status) << cpu.error;
+    expectSame(cpu.detail, gpu.result.detail, s);
+}
+
+TEST(GeoWrangleGpuTest, ADeviceLostMidRunRerunsOnTheCpu)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    const GeoKernelParameters parameters = testParameters();
+    const GeoDetail input = makePoints(kPointCount);
+    const GeoDetail* inputs[] = { &input };
+    const GeoKernelRunOptions options = runOptions(parameters);
+    const Snippet s { "@P.y += sin(@P.x) * 2;", { "P" } };
+    KernelProgram program;
+    ASSERT_TRUE(compileSnippet(s.source, parameters, program));
+    const KernelGpuPlan plan = kernelGpuPlan(program, geoKernelGpuTarget());
+    ASSERT_TRUE(plan.runsOnGpu()) << plan.cpuOnlyReason;
+
+    gpu::GpuRecordContext::setBatchWorkForTests(1);
+    runtime->runtime().device().injectFault(gpu::GpuFaultPlan::Kind::DeviceLost, 4);
+    const GeoKernelGpuRunResult gpu = geoKernelRunGpu(program, plan, eGeoAttribClassPoint, std::span<const GeoDetail* const>(inputs),
+                                                      options, &runtime->runtime());
+    gpu::GpuRecordContext::setBatchWorkForTests(0);
+
+    ASSERT_EQ(KernelRunStatus::eDone, gpu.result.status) << gpu.result.error;
+    EXPECT_FALSE(gpu.ranOnGpu);
+    EXPECT_FALSE(gpu.fallback.empty());
+    EXPECT_FALSE(gpu.compilerRejected) << gpu.fallback;
+    EXPECT_TRUE(runtime->runtime().isLost());
+    const GeoKernelRunResult cpu = geoKernelRun(program, eGeoAttribClassPoint, std::span<const GeoDetail* const>(inputs), options);
+    ASSERT_EQ(KernelRunStatus::eDone, cpu.status) << cpu.error;
+    expectSame(cpu.detail, gpu.result.detail, s);
+}
+
+TEST(GeoWrangleGpuTest, AnAbortDuringAGpuRunStopsAtTheNextBatch)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    const GeoKernelParameters parameters = testParameters();
+    const GeoDetail input = makePoints(kPointCount);
+    const GeoDetail* inputs[] = { &input };
+    GeoKernelRunOptions options = runOptions(parameters);
+    std::atomic<bool> abort { false };
+    std::atomic<int> finished { 0 };
+    options.aborted = [&abort]() { return abort.load(); };
+    KernelProgram program;
+    ASSERT_TRUE(compileSnippet("@P.y += @P.x * 0.5;", parameters, program));
+    const KernelGpuPlan plan = kernelGpuPlan(program, geoKernelGpuTarget());
+    ASSERT_TRUE(plan.runsOnGpu()) << plan.cpuOnlyReason;
+
+    // One group of elements per command buffer, so the run is many batches long.
+    gpu::GpuRecordContext::setBatchWorkForTests(1);
+    gpu::GpuRecordContext::setBatchFinishedHookForTests([&]() {
+        ++finished;
+        abort.store(true);
+    });
+    const GeoKernelGpuRunResult gpu = geoKernelRunGpu(program, plan, eGeoAttribClassPoint, std::span<const GeoDetail* const>(inputs),
+                                                      options, &runtime->runtime());
+    gpu::GpuRecordContext::setBatchFinishedHookForTests({});
+    gpu::GpuRecordContext::setBatchWorkForTests(0);
+
+    EXPECT_EQ(KernelRunStatus::eAborted, gpu.result.status) << gpu.result.error;
+    EXPECT_FALSE(gpu.ranOnGpu);
+    EXPECT_EQ(1, finished.load());
+    EXPECT_FALSE(runtime->runtime().isLost());
+}
+
+TEST(GeoWrangleGpuTest, TrigonometryOfLargeArgumentsMatchesTheCpu)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    const GeoKernelParameters parameters = testParameters();
+    const GeoDetail input = makePoints(kPointCount);
+    const GeoDetail* inputs[] = { &input };
+    const GeoKernelRunOptions options = runOptions(parameters);
+    const Snippet s { "float a = @P.x * 123.7 + @P.y; f@s = sin(a); f@c = cos(a); f@t = tan(@P.x * 3.1); f@n = sin(-a);",
+                      { "s", "c", "t", "n" } };
+    KernelProgram program;
+    ASSERT_TRUE(compileSnippet(s.source, parameters, program));
+    const KernelGpuPlan plan = kernelGpuPlan(program, geoKernelGpuTarget());
+    ASSERT_TRUE(plan.runsOnGpu()) << plan.cpuOnlyReason;
+    const GeoKernelRunResult cpu = geoKernelRun(program, eGeoAttribClassPoint, std::span<const GeoDetail* const>(inputs), options);
+    ASSERT_EQ(KernelRunStatus::eDone, cpu.status) << cpu.error;
+    const GeoKernelGpuRunResult gpu = geoKernelRunGpu(program, plan, eGeoAttribClassPoint, std::span<const GeoDetail* const>(inputs),
+                                                      options, &runtime->runtime());
+    ASSERT_EQ(KernelRunStatus::eDone, gpu.result.status) << gpu.result.error;
+    EXPECT_TRUE(gpu.ranOnGpu) << gpu.fallback;
+    expectSame(cpu.detail, gpu.result.detail, s);
+}
+
+TEST(GeoWrangleGpuTest, APlanThatStoresNothingReturnsTheInput)
+{
+    std::unique_ptr<GpuParityRuntime> runtime;
+    if (!createRuntime(runtime)) {
+        return;
+    }
+    const GeoKernelParameters parameters = testParameters();
+    const GeoDetail input = makePoints(kPointCount);
+    const GeoDetail* inputs[] = { &input };
+    const GeoKernelRunOptions options = runOptions(parameters);
+    KernelProgram program;
+    ASSERT_TRUE(compileSnippet("float unused = @P.x * 2;", parameters, program));
+    const KernelGpuPlan plan = kernelGpuPlan(program, geoKernelGpuTarget());
+    ASSERT_TRUE(plan.runsOnGpu()) << plan.cpuOnlyReason;
+    const GeoKernelGpuRunResult gpu = geoKernelRunGpu(program, plan, eGeoAttribClassPoint, std::span<const GeoDetail* const>(inputs),
+                                                      options, &runtime->runtime());
+    ASSERT_EQ(KernelRunStatus::eDone, gpu.result.status) << gpu.result.error;
+    EXPECT_FALSE(gpu.ranOnGpu);
+    EXPECT_TRUE(gpu.fallback.empty()) << gpu.fallback;
+    expectSame(input, gpu.result.detail, Snippet { "", { "P" } });
 }
 
 #else

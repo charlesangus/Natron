@@ -110,6 +110,10 @@ private:
         std::shared_ptr<const KernelProgram> program;
         KernelCompileError error;
         KernelGpuPlan gpuPlan;
+        // The GPU compiler's rejection of gpuPlan.source, met by an earlier cook: later cooks go
+        // straight to the CPU with it.
+        mutable std::mutex gpuRejectionLock;
+        mutable std::string gpuRejection;
     };
 
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;

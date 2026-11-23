@@ -97,8 +97,8 @@ struct KernelGpuUniform {
  * Descriptor set 0: binding 0 "data" (the columns, read and written), binding 1 "uni" (the
  * uniforms, read only), binding 2 "status" (one word, set to non-zero when an element ran past
  * the jump budget, after which the outputs must be discarded). A binding the program does not use
- * may be absent from the compiled module. Push constants: count, stride and jump budget, three
- * uints.
+ * may be absent from the compiled module. Push constants: first, count, stride and jump budget,
+ * four uints; thread t runs element first + t when that is below count.
  **/
 struct KernelGpuPlan {
     // Empty when the program can run on the GPU.
@@ -116,9 +116,9 @@ struct KernelGpuPlan {
 };
 
 inline constexpr std::uint32_t kKernelGpuGroupSize = 64;
-inline constexpr std::uint32_t kKernelGpuPushBytes = 12;
+inline constexpr std::uint32_t kKernelGpuPushBytes = 16;
 
-/** @brief Backward jumps one element may take before a run is given up as runaway. */
+/** @brief The most backward jumps a run may let one element take before giving it up as runaway. */
 inline constexpr std::uint32_t kKernelGpuJumpBudget = 1u << 24;
 
 KernelGpuPlan kernelGpuPlan(const KernelProgram& program, const KernelGpuTarget& target);

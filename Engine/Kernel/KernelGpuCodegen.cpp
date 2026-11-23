@@ -51,7 +51,8 @@ namespace {
 // Float helpers that reproduce what the interpreter computes with <cmath> where GLSL leaves a case
 // undefined or rounds differently: division by zero, fmod's truncation, fmin and fmax with NaN,
 // pow of a negative base, atan2 at the origin, round half away from zero and the saturating
-// float to int conversion. Integer division and remainder go through unsigned operands because
+// float to int conversion. Vulkan bounds the native exp, pow, sin, cos and tan only loosely
+// (sin and cos absolutely, inside [-pi, pi]), so those are reduced to a small range first. Integer division and remainder go through unsigned operands because
 // some drivers get the signed remainder of a negative dividend wrong.
 const char* const kBasePrelude = R"GLSL(
 #define kNaN uintBitsToFloat(0x7fc00000u)
@@ -82,7 +83,7 @@ float kFMod(float x, float y)
     }
     precise float ax = abs(x);
     precise float ay = abs(y);
-    precise float r = ax - ay * trunc(ax / ay);
+    precise float r = fma(-ay, trunc(ax / ay), ax);
     if (r < 0.0) {
         r += ay;
     }
@@ -107,6 +108,104 @@ bool kOddInteger(float y)
     return abs(y) < 16777216.0 && trunc(y) == y && (int(abs(y)) & 1) == 1;
 }
 
+// 2^k * m without the intermediate overflow of one ldexp when k is near the exponent range's ends.
+float kScale(float m, int k)
+{
+    return ldexp(ldexp(m, k / 2), k - k / 2);
+}
+
+float kExp2(float t)
+{
+    if (isnan(t)) {
+        return t;
+    }
+    if (t >= 128.0) {
+        return uintBitsToFloat(0x7f800000u);
+    }
+    if (t < -150.0) {
+        return 0.0;
+    }
+    precise float k = roundEven(t);
+    return kScale(exp2(t - k), int(k));
+}
+
+float kExp(float x)
+{
+    if (isnan(x)) {
+        return x;
+    }
+    if (x > 88.72284) {
+        return uintBitsToFloat(0x7f800000u);
+    }
+    if (x < -103.97208) {
+        return 0.0;
+    }
+    // ln 2 in two parts, the first short enough that k times it is exact for every k in range.
+    precise float k = roundEven(x * 1.442695041);
+    precise float r = (x - k * 0.693145751953125) - k * 1.428606765330187e-06;
+    return kScale(exp2(r * 1.442695041), int(k));
+}
+
+float kLog10(float x)
+{
+    float r = log2(x) * 0.30102999566398120;
+    float n = round(r);
+    return abs(r - n) <= 4.8e-7 * max(abs(n), 1.0) ? n : r;
+}
+
+// x - k * pi/2 for the nearest integer k, returning k mod 4. pi/2 is split Cody-Waite style into
+// five 7-bit parts and a rounded sixth: for |k| below 2^17 every k * part is exact and each
+// subtraction cancels exactly, so the remainder keeps full precision up to |x| of about 2e5.
+int kReduceHalfPi(float x, out float r)
+{
+    precise float k = roundEven(x * 0.63661977236758134);
+    precise float t = x - k * 1.5625;
+    t = t - k * 0.0081787109375;
+    t = t - k * 0.00011730194091796875;
+    t = t - k * 3.129243850708008e-07;
+    t = t - k * 9.89530235528946e-10;
+    t = t - k * 2.5633440682570896e-12;
+    r = t;
+    return int(k) & 3;
+}
+
+float kSinPoly(float r)
+{
+    float z = r * r;
+    return ((-1.9515295891e-4 * z + 8.3321608736e-3) * z - 1.6666654611e-1) * z * r + r;
+}
+
+float kCosPoly(float r)
+{
+    float z = r * r;
+    return ((2.443315711809948e-5 * z - 1.388731625493765e-3) * z + 4.166664568298827e-2) * z * z - 0.5 * z + 1.0;
+}
+
+float kSin(float x)
+{
+    float r;
+    int q = kReduceHalfPi(x, r);
+    float v = (q & 1) == 0 ? kSinPoly(r) : kCosPoly(r);
+    return (q & 2) == 0 ? v : -v;
+}
+
+float kCos(float x)
+{
+    float r;
+    int q = kReduceHalfPi(x, r);
+    float v = (q & 1) == 0 ? kCosPoly(r) : kSinPoly(r);
+    return ((q + 1) & 2) == 0 ? v : -v;
+}
+
+float kTan(float x)
+{
+    float r;
+    int q = kReduceHalfPi(x, r);
+    float s = kSinPoly(r);
+    float c = kCosPoly(r);
+    return (q & 1) == 0 ? s / c : -c / s;
+}
+
 float kPow(float x, float y)
 {
     if (y == 0.0 || x == 1.0) {
@@ -125,15 +224,15 @@ float kPow(float x, float y)
     }
     if (x < 0.0) {
         if (isinf(y)) {
-            return pow(-x, y);
+            return x == -1.0 ? 1.0 : kExp2(y * log2(-x));
         }
         if (trunc(y) != y) {
             return kNaN;
         }
-        float r = pow(-x, y);
+        float r = kExp2(y * log2(-x));
         return kOddInteger(y) ? -r : r;
     }
-    return pow(x, y);
+    return kExp2(y * log2(x));
 }
 
 float kAtan2(float y, float x)
@@ -900,17 +999,17 @@ Generator::emitInstruction(std::uint32_t index, std::string& out)
     case KernelOp::eFSqrt:
         return f1("sqrt($a)");
     case KernelOp::eFExp:
-        return f1("exp($a)");
+        return f1("kExp($a)");
     case KernelOp::eFLog:
-        return f1("log($a)");
+        return f1("log2($a) * 0.69314718055994531");
     case KernelOp::eFLog10:
-        return f1("log2($a) * 0.30102999566398120");
+        return f1("kLog10($a)");
     case KernelOp::eFSin:
-        return f1("sin($a)");
+        return f1("kSin($a)");
     case KernelOp::eFCos:
-        return f1("cos($a)");
+        return f1("kCos($a)");
     case KernelOp::eFTan:
-        return f1("tan($a)");
+        return f1("kTan($a)");
     case KernelOp::eFAsin:
         return f1("asin($a)");
     case KernelOp::eFAcos:
@@ -1087,7 +1186,7 @@ Generator::assemble(const std::string& prologue, const std::string& body) const
           "layout(std430, set = 0, binding = 0) buffer Data { uint w[]; } data;\n"
           "layout(std430, set = 0, binding = 1) readonly buffer Uniforms { uint w[]; } uni;\n"
           "layout(std430, set = 0, binding = 2) buffer Status { uint runaway; } status;\n"
-          "layout(push_constant) uniform Push { uint count; uint stride; uint jumpBudget; } push;\n";
+          "layout(push_constant) uniform Push { uint first; uint count; uint stride; uint jumpBudget; } push;\n";
     s += kBasePrelude;
     if (_rand) {
         s += kRandPrelude;
@@ -1111,7 +1210,7 @@ Generator::assemble(const std::string& prologue, const std::string& body) const
     if (_quaternion) {
         s += kQuaternionPrelude;
     }
-    s += "\nvoid main()\n{\nuint e = gl_GlobalInvocationID.x;\nif (e >= push.count) {\nreturn;\n}\n";
+    s += "\nvoid main()\n{\nuint e = push.first + gl_GlobalInvocationID.x;\nif (e >= push.count) {\nreturn;\n}\n";
     for (std::int32_t r = 0; r < _program.floatRegisters; ++r) {
         s += "precise float " + fr(r) + " = 0.0;\n";
     }

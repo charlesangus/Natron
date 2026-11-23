@@ -171,7 +171,8 @@ typedef std::function<KernelRunResult(GeoKernelDenseValues& values)> GeoKernelDe
 /**
  * @brief As geoKernelRun, with the program's body replaced by body, which works on values gathered
  * for plan (a plan of program against geoKernelGpuTarget() that runs on the GPU). When body gives
- * the run up, declined receives its reason and the result is a failure to discard.
+ * the run up, declined receives its reason and the result is a failure to discard. A plan that
+ * stores no column never calls body and gives input 0 back.
  **/
 GeoKernelRunResult geoKernelRunDense(const KernelProgram& program,
                                      const KernelGpuPlan& plan,

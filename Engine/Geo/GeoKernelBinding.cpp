@@ -573,6 +573,27 @@ public:
         return std::make_unique<GeoKernelWorker>(*this);
     }
 
+    // The elements GeoKernelWorker::beginItem(item) selects, without staging their values.
+    std::size_t elementCount(std::size_t item) const
+    {
+        if (_runOver == eGeoAttribClassDetail) {
+            return 1;
+        }
+        std::size_t n = 0;
+        _input.indexMap(_runOver).forEachLiveRunInPage(GeoOffset(item), [&](GeoIndex, GeoOffset offset, GeoOffset count) {
+            if (!_group) {
+                n += std::size_t(count);
+                return;
+            }
+            for (GeoOffset k = 0; k < count; ++k) {
+                if (_group->contains(offset + k)) {
+                    ++n;
+                }
+            }
+        });
+        return n;
+    }
+
     GeoDetail finish()
     {
         _topology->apply(_builder, _queues);
@@ -1764,20 +1785,45 @@ geoKernelRunDense(const KernelProgram& program, const KernelGpuPlan& plan, GeoAt
     };
     try {
         GeoKernelRun run(program, runOver, inputs, options);
+        if (std::none_of(plan.columns.begin(), plan.columns.end(), [](const KernelGpuColumn& c) { return c.store; })) {
+            result.status = KernelRunStatus::eDone;
+            return result;
+        }
         const std::size_t items = run.itemCount();
         const std::size_t columns = plan.columns.size();
         const int lane0 = 0;
 
-        // Gathered per item, then laid out column by column for the whole run.
-        std::vector<std::vector<std::uint32_t>> itemWords(items);
         std::vector<std::size_t> itemCounts(items, 0);
-        std::vector<std::vector<std::uint32_t>> itemUniforms(items);
         std::string error;
-        KernelRunStatus status = forEachItem(program, run, options, error, [&](KernelRunWorker& worker, KernelRegisters& regs, std::size_t item) {
+        KernelRunStatus status = forEachItem(program, run, options, error, [&](KernelRunWorker&, KernelRegisters&, std::size_t item) {
+            itemCounts[item] = run.elementCount(item);
+        });
+        if (status != KernelRunStatus::eDone) {
+            return failed(status, error);
+        }
+        GeoKernelDenseValues values;
+        std::vector<std::size_t> itemBegin(items, 0);
+        std::size_t uniformItem = items;
+        for (std::size_t item = 0; item < items; ++item) {
+            itemBegin[item] = values.count;
+            values.count += itemCounts[item];
+            if (uniformItem == items && itemCounts[item] != 0) {
+                uniformItem = item;
+            }
+        }
+        if (values.count == 0) {
+            result.status = KernelRunStatus::eDone;
+            result.detail = run.finish();
+            return result;
+        }
+        values.uniforms.assign(plan.uniforms.size(), 0u);
+        values.words.assign(values.count * columns, 0u);
+
+        status = forEachItem(program, run, options, error, [&](KernelRunWorker& worker, KernelRegisters& regs, std::size_t item) {
             const std::size_t n = worker.beginItem(item);
-            itemCounts[item] = n;
-            std::vector<std::uint32_t>& words = itemWords[item];
-            words.assign(n * columns, 0u);
+            if (n != itemCounts[item]) {
+                throw KernelRunError("geometry kernel: the element count changed during the run");
+            }
             for (std::size_t first = 0; first < n; first += kKernelLaneCount) {
                 const int lanes = int(std::min<std::size_t>(kKernelLaneCount, n - first));
                 worker.gather(first, lanes, regs);
@@ -1787,16 +1833,15 @@ geoKernelRunDense(const KernelProgram& program, const KernelGpuPlan& plan, GeoAt
                         continue;
                     }
                     const KernelOperand o { col.bank, col.reg };
+                    std::uint32_t* words = values.words.data() + c * values.count + itemBegin[item] + first;
                     for (int l = 0; l < lanes; ++l) {
-                        words[c * n + first + std::size_t(l)] = registerWord(regs, o, l);
+                        words[l] = registerWord(regs, o, l);
                     }
                 }
-                if (first == 0) {
-                    std::vector<std::uint32_t>& uniforms = itemUniforms[item];
-                    uniforms.assign(plan.uniforms.size(), 0u);
+                if (first == 0 && item == uniformItem) {
                     for (std::size_t u = 0; u < plan.uniforms.size(); ++u) {
                         if (plan.uniforms[u].binding >= 0) {
-                            uniforms[u] = registerWord(regs, plan.uniforms[u].operand, lane0);
+                            values.uniforms[u] = registerWord(regs, plan.uniforms[u].operand, lane0);
                         }
                     }
                 }
@@ -1806,24 +1851,6 @@ geoKernelRunDense(const KernelProgram& program, const KernelGpuPlan& plan, GeoAt
             return failed(status, error);
         }
 
-        GeoKernelDenseValues values;
-        std::vector<std::size_t> itemBegin(items, 0);
-        for (std::size_t item = 0; item < items; ++item) {
-            itemBegin[item] = values.count;
-            values.count += itemCounts[item];
-        }
-        values.uniforms.assign(plan.uniforms.size(), 0u);
-        for (std::size_t item = 0; item < items; ++item) {
-            if (itemCounts[item] != 0) {
-                values.uniforms = itemUniforms[item];
-                break;
-            }
-        }
-        if (values.count == 0) {
-            result.status = KernelRunStatus::eDone;
-            result.detail = run.finish();
-            return result;
-        }
         {
             std::unique_ptr<KernelRunWorker> worker = run.createWorker();
             KernelRegisters regs(program);
@@ -1847,16 +1874,6 @@ geoKernelRunDense(const KernelProgram& program, const KernelGpuPlan& plan, GeoAt
                 worker->call(call);
                 values.uniforms[u] = registerWord(regs, uniform.operand, lane0);
             }
-        }
-        values.words.assign(values.count * columns, 0u);
-        for (std::size_t item = 0; item < items; ++item) {
-            const std::size_t n = itemCounts[item];
-            const std::vector<std::uint32_t>& words = itemWords[item];
-            for (std::size_t c = 0; c < columns && n != 0; ++c) {
-                std::copy(words.begin() + std::ptrdiff_t(c * n), words.begin() + std::ptrdiff_t((c + 1) * n),
-                          values.words.begin() + std::ptrdiff_t(c * values.count + itemBegin[item]));
-            }
-            std::vector<std::uint32_t>().swap(itemWords[item]);
         }
 
         const KernelRunResult ran = body(values);

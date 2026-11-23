@@ -376,7 +376,7 @@ setBool(const NodePtr& node,
 
 TEST_F(USDPreviewSurfaceTest, WithoutMultiplyByPrimvarTheNetworkHasNoCyclesSurface)
 {
-    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    NodePtr material = node(PLUGINID_NATRON_USDPREVIEWSURFACE, "Material1");
     ASSERT_TRUE(bool(material));
 
     PXR_NS::UsdStageRefPtr stage = compose(material);
@@ -402,7 +402,7 @@ TEST_F(USDPreviewSurfaceTest, WithoutMultiplyByPrimvarTheNetworkHasNoCyclesSurfa
 
 TEST_F(USDPreviewSurfaceTest, MultiplyByPrimvarMultipliesTheDiffuseKnobColorInTheCyclesSurface)
 {
-    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    NodePtr material = node(PLUGINID_NATRON_USDPREVIEWSURFACE, "Material1");
     ASSERT_TRUE(bool(material));
     setBool(material, kUSDPreviewSurfaceParamDiffuseMultiplyByPrimvar, true);
 
@@ -453,7 +453,7 @@ TEST_F(USDPreviewSurfaceTest, MultiplyByPrimvarMultipliesTheDiffuseKnobColorInTh
 
 TEST_F(USDPreviewSurfaceTest, MultiplyByPrimvarMultipliesTheDiffuseTextureAndTheNamedPrimvar)
 {
-    NodePtr material = node(PLUGINID_NATRON_USDMATERIAL, "Material1");
+    NodePtr material = node(PLUGINID_NATRON_USDPREVIEWSURFACE, "Material1");
     ASSERT_TRUE(bool(material));
     setString(material, kUSDPreviewSurfaceParamDiffuseTexture, std::string("/nonexistent/albedo.exr"));
     setBool(material, kUSDPreviewSurfaceParamDiffuseMultiplyByPrimvar, true);

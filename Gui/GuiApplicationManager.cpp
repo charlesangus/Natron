@@ -1625,6 +1625,36 @@ actionTextLessThan(const QAction* lhs,
     return lhs->text() < rhs->text();
 }
 
+// The USD submenus follow the order of the nodes' workflow rather than the alphabet.
+const char* const usdSubmenusOrdered[] = {
+    "Prims", "Lights", "Cameras", "Materials", "Composition", "Edit", "Render", "IO"
+};
+const int usdSubmenusCount = sizeof(usdSubmenusOrdered) / sizeof(usdSubmenusOrdered[0]);
+
+int
+usdSubmenuRank(const QAction* action)
+{
+    const QString grouping = action->property(kNodesMenuPropGrouping).toString();
+
+    for (int i = 0; i < usdSubmenusCount; ++i) {
+        if (grouping == QString::fromUtf8(usdSubmenusOrdered[i])) {
+            return i;
+        }
+    }
+
+    return usdSubmenusCount;
+}
+
+bool
+usdSubmenuLessThan(const QAction* lhs,
+                   const QAction* rhs)
+{
+    const int lhsRank = usdSubmenuRank(lhs);
+    const int rhsRank = usdSubmenuRank(rhs);
+
+    return lhsRank != rhsRank ? lhsRank < rhsRank : actionTextLessThan(lhs, rhs);
+}
+
 void
 sortPluginOwnedSubmenus(QMenu* menu)
 {
@@ -1632,7 +1662,11 @@ sortPluginOwnedSubmenus(QMenu* menu)
 
     for (int i = 0; i < actions.size(); ++i) {
         if (actions[i]->menu() && isPluginOwned(actions[i])) {
-            orderPluginOwnedActions(actions[i]->menu(), actionTextLessThan);
+            if (actions[i]->property(kNodesMenuPropGrouping).toString() == QString::fromUtf8(PLUGIN_GROUP_USD)) {
+                orderPluginOwnedActions(actions[i]->menu(), usdSubmenuLessThan);
+            } else {
+                orderPluginOwnedActions(actions[i]->menu(), actionTextLessThan);
+            }
             sortPluginOwnedSubmenus(actions[i]->menu());
         }
     }

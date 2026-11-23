@@ -533,7 +533,7 @@ future core work has solid ground to build on.
 | M435 | Overlays Deform Through Warps | todo | M432, M433, M434 |  | E23 | F25 | | [M435-overlays-deform-through-warps.md](PLAN/MILESTONES/M435-overlays-deform-through-warps.md) |
 | M436 | Overlays On Projected Geometry | todo | M435 |  | E23 | F25 | | [M436-overlays-on-projected-geometry.md](PLAN/MILESTONES/M436-overlays-on-projected-geometry.md) |
 | M437 | CardProject25D | todo | M433, M434 |  | E9 | F25 | | [M437-cardproject25d.md](PLAN/MILESTONES/M437-cardproject25d.md) |
-| M438 | Lens Distortion In The USD Scene | doing | - | bosley-executor | E9 |  | | [M438-lens-distortion-in-the-usd-scene.md](PLAN/MILESTONES/M438-lens-distortion-in-the-usd-scene.md) |
+| M438 | Lens Distortion In The USD Scene | done | - | bosley-executor | E9 |  | | [M438-lens-distortion-in-the-usd-scene.md](PLAN/MILESTONES/M438-lens-distortion-in-the-usd-scene.md) |
 | M439 | MaterialX Translation Spike | todo | - |  | E9 | F26 | | [M439-materialx-translation-spike.md](PLAN/MILESTONES/M439-materialx-translation-spike.md) |
 | M440 | MaterialX Translation Core | todo | M439 |  | E9 | F26 | | [M440-materialx-translation-core.md](PLAN/MILESTONES/M440-materialx-translation-core.md) |
 | M441 | MoonRay MaterialX Shaders Build | todo | - |  | E9 | F26 | | [M441-moonray-materialx-shaders-build.md](PLAN/MILESTONES/M441-moonray-materialx-shaders-build.md) |

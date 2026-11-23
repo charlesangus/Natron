@@ -748,3 +748,8 @@ ProgressiveRenderTest.ThePrimsSettingsAreTheEnginesAndTheCapAppliesOverThem is f
 ### 2026-11-17T08:00:00Z — change-request
 - refs: M153, M179
 - New milestone (user): image-driven warp providers for distortion concatenation. IDistort, STMap and IWarp feeding a downstream warp provide their inverse map to the chain M153 - Distortion Concatenation builds. Their UV image renders over the pulled-back window as a probe (M179 - Render Graph Continuation's probe → extend → continue), then the frame is extended to request only the source footprint those UVs point at, then the continuation samples it. Deps: M153, M179.
+
+### 2026-11-22T00:00:00Z — info
+- refs: M438
+- The lens follow-ups for M438 - Lens Distortion In The USD Scene are filed, as F34 - Scene Lens Distortion: M497 - Lens Schema And Camera Authoring, M498 - LensDistortion From Scene, M499 - Scene Lens In Projection Nodes, M500 - USDProject3D Lens Maps, M501 - Lens Maps In The Scene. The user dropped the sketch's D (USDRender Lens Redistort) and G (Natron Utility Distorted Rays) for now, during grilling on 2026-11-22. M438 can close.
+- applied 2026-11-23 by bosley-executor: M438 closed.

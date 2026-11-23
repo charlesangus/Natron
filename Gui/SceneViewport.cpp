@@ -89,6 +89,7 @@
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/RenderSettingsPrim.h"
 #include "Engine/Nodes/Scene/SceneDrawStates.h"
+#include "Engine/Nodes/Scene/SceneKindWalk.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
@@ -4428,6 +4429,34 @@ SceneViewportRenderer::requestStageUnload(const std::vector<std::string>& paths)
     if (stage) {
         stage->requestUnload(toSdfPaths(paths));
     }
+}
+
+bool
+SceneViewportRenderer::requestStageLoadToKind(const std::vector<std::string>& roots,
+                                              const std::string& kind)
+{
+    SceneStage* stage = _imp->loadStage;
+
+    if (!stage) {
+        return false;
+    }
+    stage->requestLoadToKind(toSdfPaths(roots), TfToken(kind));
+
+    return true;
+}
+
+bool
+SceneViewportRenderer::requestStageUnloadBelowKind(const std::vector<std::string>& roots,
+                                                   const std::string& kind)
+{
+    SceneStage* stage = _imp->loadStage;
+
+    if (!stage) {
+        return false;
+    }
+    stage->requestUnloadBelowKind(toSdfPaths(roots), TfToken(kind));
+
+    return true;
 }
 
 void
@@ -9389,6 +9418,210 @@ SceneViewport::resetDrawStatesToGraphOnRows(const QStringList& paths)
         edits.push_back(SceneDrawRowEdit { SceneDrawRowEdit::eKindClear, row, eSceneDrawStateFull });
     }
     editDrawStateRows(edits);
+}
+
+namespace {
+enum RowScopeEnum {
+    eRowScopeNone,
+    eRowScopeSelected,
+    eRowScopeBelow,
+    eRowScopeKind
+};
+
+RowScopeEnum
+parseRowScope(const QString& scope,
+              TfToken* kind)
+{
+    if (scope == QString::fromUtf8("selected")) {
+        return eRowScopeSelected;
+    }
+    if (scope == QString::fromUtf8("below")) {
+        return eRowScopeBelow;
+    }
+    const TfToken token(scope.toStdString());
+    if (isKindScope(token)) {
+        *kind = token;
+
+        return eRowScopeKind;
+    }
+
+    return eRowScopeNone;
+}
+
+QString
+countOf(std::size_t count,
+        const QString& singular,
+        const QString& plural)
+{
+    return QString::number(count) + QLatin1Char(' ') + ((count == 1) ? singular : plural);
+}
+
+QString
+rowsText(std::size_t count)
+{
+    return countOf(count, QString::fromUtf8("row"), QString::fromUtf8("rows"));
+}
+
+// "component", "components"; a custom kind reads as "natronTree prim", "natronTree prims".
+QString
+kindText(const TfToken& kind,
+         std::size_t count)
+{
+    const QString name = QString::fromStdString(kind.GetString());
+
+    if (isBuiltInKindScope(kind)) {
+        return countOf(count, name, name + QLatin1Char('s'));
+    }
+
+    return countOf(count, name + QString::fromUtf8(" prim"), name + QString::fromUtf8(" prims"));
+}
+
+QString
+kindPlural(const TfToken& kind)
+{
+    const QString name = QString::fromStdString(kind.GetString());
+
+    return isBuiltInKindScope(kind) ? (name + QLatin1Char('s')) : (name + QString::fromUtf8(" prims"));
+}
+
+QString
+drawStateLabel(SceneDrawStateEnum state)
+{
+    switch (state) {
+    case eSceneDrawStateBBox:
+        return QString::fromUtf8("BBox");
+    case eSceneDrawStateChildren:
+        return QString::fromUtf8("Children");
+    case eSceneDrawStateFull:
+        return QString::fromUtf8("Full");
+    case eSceneDrawStateLoadAll:
+        return QString::fromUtf8("Load All");
+    case eSceneDrawStateHidden:
+        return QString::fromUtf8("Hidden");
+    }
+
+    return QString();
+}
+} // anonymous namespace
+
+QString
+SceneViewport::loadRows(const QStringList& paths,
+                        const QString& scope)
+{
+    TfToken kind;
+    const RowScopeEnum parsed = parseRowScope(scope, &kind);
+    const std::vector<std::string> rows = drawStatePaths(paths);
+
+    if ((parsed == eRowScopeNone) || rows.empty() || (rows.size() != std::size_t(paths.size()))) {
+        return QString();
+    }
+    if (parsed != eRowScopeKind) {
+        requestLoad(paths, parsed == eRowScopeBelow);
+
+        return (parsed == eRowScopeBelow) ? QString::fromUtf8("Loading %1 and every payload below them").arg(rowsText(rows.size()))
+                                          : QString::fromUtf8("Loading %1").arg(rowsText(rows.size()));
+    }
+    if (!_imp->renderer.requestStageLoadToKind(rows, kind.GetString())) {
+        return QString::fromUtf8("No scene to load into yet");
+    }
+    {
+        std::lock_guard<std::mutex> lock(_imp->loadWakeMutex);
+    }
+    _imp->loadWake.notify_one();
+    publishState();
+
+    return QString::fromUtf8("Loading down to %1 under %2").arg(kindPlural(kind), rowsText(rows.size()));
+}
+
+QString
+SceneViewport::unloadRows(const QStringList& paths,
+                          const QString& scope)
+{
+    TfToken kind;
+    const RowScopeEnum parsed = parseRowScope(scope, &kind);
+    const std::vector<std::string> rows = drawStatePaths(paths);
+
+    if ((parsed == eRowScopeNone) || (parsed == eRowScopeBelow) || rows.empty() || (rows.size() != std::size_t(paths.size()))) {
+        return QString();
+    }
+    if (parsed == eRowScopeSelected) {
+        requestUnload(paths);
+
+        return QString::fromUtf8("Unloading %1").arg(rowsText(rows.size()));
+    }
+    forgetRestoredLoads();
+    if (!_imp->renderer.requestStageUnloadBelowKind(rows, kind.GetString())) {
+        return QString::fromUtf8("No scene to unload from yet");
+    }
+    {
+        std::lock_guard<std::mutex> lock(_imp->loadWakeMutex);
+    }
+    _imp->loadWake.notify_one();
+    publishState();
+
+    return QString::fromUtf8("Unloading below %1 under %2").arg(kindPlural(kind), rowsText(rows.size()));
+}
+
+QString
+SceneViewport::setDrawStateOnRowsScoped(const QStringList& paths,
+                                        const QString& state,
+                                        const QString& scope)
+{
+    TfToken kind;
+    const RowScopeEnum parsed = parseRowScope(scope, &kind);
+    const bool clearBelow = (state == QString::fromUtf8("clearBelow"));
+    SceneDrawStateEnum drawState = eSceneDrawStateFull;
+    const std::vector<std::string> rows = drawStatePaths(paths);
+
+    if ((parsed == eRowScopeNone) || (!clearBelow && !sceneDrawStateFromName(state.toStdString(), &drawState)) || (clearBelow && (parsed == eRowScopeBelow))
+        || rows.empty() || (rows.size() != std::size_t(paths.size()))) {
+        return QString();
+    }
+    std::vector<std::string> targets = rows;
+    QString targetsText = rowsText(rows.size());
+    QString skippedText;
+    if (parsed == eRowScopeKind) {
+        SceneKindWalkResult walk;
+        const bool read = _imp->renderer.tryReadStage([&](const SceneStage* stage) {
+            if (stage) {
+                walk = walkToKind(stage->getStage(), toSdfPaths(rows), kind);
+            }
+        });
+        if (!read) {
+            return QString::fromUtf8("The scene is busy loading: nothing was changed, try again");
+        }
+        targets.clear();
+        for (const SdfPath& match : walk.matches) {
+            targets.push_back(match.GetString());
+        }
+        targetsText = QString::fromUtf8("%1 under %2").arg(kindText(kind, targets.size()), rowsText(rows.size()));
+        if (!walk.unloadedPassThrough.empty()) {
+            skippedText = QString::fromUtf8("; %1 skipped").arg(countOf(walk.unloadedPassThrough.size(), QString::fromUtf8("unloaded payload"), QString::fromUtf8("unloaded payloads")));
+        }
+        if (targets.empty()) {
+            return QString::fromUtf8("No loaded %1 under %2%3").arg(kindPlural(kind), rowsText(rows.size()), skippedText);
+        }
+    }
+    std::vector<SceneDrawRowEdit> edits;
+    for (const std::string& target : targets) {
+        if (clearBelow) {
+            edits.push_back(SceneDrawRowEdit { SceneDrawRowEdit::eKindClearBelow, target, eSceneDrawStateFull });
+            continue;
+        }
+        edits.push_back(SceneDrawRowEdit { SceneDrawRowEdit::eKindSet, target, drawState });
+        if (parsed == eRowScopeBelow) {
+            edits.push_back(SceneDrawRowEdit { SceneDrawRowEdit::eKindClearBelow, target, eSceneDrawStateFull });
+        }
+    }
+    editDrawStateRows(edits);
+    if (clearBelow) {
+        return QString::fromUtf8("States cleared below %1%2").arg(targetsText, skippedText);
+    }
+    if (parsed == eRowScopeBelow) {
+        return QString::fromUtf8("%1 set on %2, states below cleared").arg(drawStateLabel(drawState), targetsText);
+    }
+
+    return QString::fromUtf8("%1 set on %2%3").arg(drawStateLabel(drawState), targetsText, skippedText);
 }
 
 bool

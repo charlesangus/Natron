@@ -105,6 +105,12 @@ public:
 
     void requestUnload(const QStringList& paths);
 
+    // SceneStage::requestLoadToKind() and requestUnloadBelowKind() on the worker, which services
+    // a load to a kind level after level, each level's batch followed by a setLoadsChanged() call.
+    void requestLoadToKind(const QStringList& roots, const std::string& kind);
+
+    void requestUnloadBelowKind(const QStringList& roots, const std::string& kind);
+
     /**
      * @brief Loads what a viewer's load rules load, as one batch: one setLoadsChanged() call
      * follows it, or none if the rules load nothing. A subtree a rule leaves out of its load
@@ -130,6 +136,8 @@ private:
         bool withDescendants = false;
         // The subtrees a descendant load leaves unloaded.
         std::vector<std::string> excluded;
+        // A load to this kind, or an unload below it, under the paths instead.
+        std::string kind;
     };
 
     void run();

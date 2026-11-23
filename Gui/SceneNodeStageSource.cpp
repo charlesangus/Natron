@@ -371,6 +371,37 @@ SceneNodeStageSource::requestUnload(const QStringList& paths)
 }
 
 void
+SceneNodeStageSource::requestLoadToKind(const QStringList& roots,
+                                        const std::string& kind)
+{
+    LoadRequest request;
+
+    request.paths = roots;
+    request.kind = kind;
+    {
+        std::lock_guard<std::mutex> lock(_queueMutex);
+        _loadRequests.push_back(request);
+    }
+    _queueChanged.notify_one();
+}
+
+void
+SceneNodeStageSource::requestUnloadBelowKind(const QStringList& roots,
+                                             const std::string& kind)
+{
+    LoadRequest request;
+
+    request.paths = roots;
+    request.load = false;
+    request.kind = kind;
+    {
+        std::lock_guard<std::mutex> lock(_queueMutex);
+        _loadRequests.push_back(request);
+    }
+    _queueChanged.notify_one();
+}
+
+void
 SceneNodeStageSource::requestLoadRules(const SceneLoadRules& rules)
 {
     std::vector<LoadRequest> requests;
@@ -466,7 +497,13 @@ SceneNodeStageSource::serviceLoads(const std::vector<LoadRequest>& requests)
         for (std::size_t i : pass.second) {
             const LoadRequest& request = requests[i];
             const PXR_NS::SdfPathVector paths = toSdfPaths(request.paths);
-            if (request.load) {
+            if (!request.kind.empty()) {
+                if (request.load) {
+                    _stage->requestLoadToKind(paths, PXR_NS::TfToken(request.kind));
+                } else {
+                    _stage->requestUnloadBelowKind(paths, PXR_NS::TfToken(request.kind));
+                }
+            } else if (request.load) {
                 PXR_NS::SdfPathVector excluded;
                 for (const std::string& path : request.excluded) {
                     if (PXR_NS::SdfPath::IsValidPathString(path)) {
@@ -485,17 +522,30 @@ SceneNodeStageSource::serviceLoads(const std::vector<LoadRequest>& requests)
             return;
         }
     }
+    const auto announce = [this]() {
+        std::weak_ptr<SceneNodeStageSource> self = weak_from_this();
+        postToContext([self]() {
+            std::shared_ptr<SceneNodeStageSource> source = self.lock();
+            if (source && !source->_stopRequested && source->_loadsChanged) {
+                source->_loadsChanged();
+            }
+        });
+    };
+    // A load to a kind asks for the next level once a batch has composed this one.
+    while (_stage->hasPendingLoads()) {
+        if (serviced) {
+            announce();
+        }
+        if (!_stage->serviceLoads(locked, committing, [this]() { return _stopRequested.load(); }, prepare) || _stopRequested) {
+            break;
+        }
+        serviced = true;
+    }
     // A batch that asked for nothing loadable is still answered, so that whoever asked is not left waiting.
     if (_stopRequested || (!serviced && requests.empty())) {
         return;
     }
-    std::weak_ptr<SceneNodeStageSource> self = weak_from_this();
-    postToContext([self]() {
-        std::shared_ptr<SceneNodeStageSource> source = self.lock();
-        if (source && !source->_stopRequested && source->_loadsChanged) {
-            source->_loadsChanged();
-        }
-    });
+    announce();
 }
 
 void

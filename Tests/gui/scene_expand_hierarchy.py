@@ -76,7 +76,7 @@ def Xform "%s" (
 
 try:
     from PySide6.QtCore import QItemSelectionModel, QModelIndex, Qt, QTimer
-    from PySide6.QtGui import QGuiApplication, QImage
+    from PySide6.QtGui import QAction, QGuiApplication, QImage
     from PySide6.QtWidgets import QApplication, QTreeView
     from pxr import Sdf
 
@@ -219,12 +219,14 @@ try:
             menu = QApplication.activePopupWidget()
             if menu is None:
                 return
-            for action in menu.actions():
+            # Unload is a submenu, whose entries are the menu's children.
+            for action in menu.findChildren(QAction):
                 if action.objectName():
                     seen[action.objectName()] = action.isEnabled()
-            for action in menu.actions():
+            for action in menu.findChildren(QAction):
                 if action.objectName() == action_name:
                     action.trigger()
+                    break
             menu.close()
 
         select_rows(paths)

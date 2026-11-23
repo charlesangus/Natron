@@ -35,6 +35,7 @@
 #include <mutex>
 #include <shared_mutex>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <QAction>
@@ -74,6 +75,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/SceneDrawStates.h"
+#include "Engine/Nodes/Scene/SceneKindWalk.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
@@ -567,6 +569,12 @@ struct SceneGraphPanel::Implementation {
     QToolButton* resetDrawStatesButton = nullptr;
     QToolButton* bakeDrawStatesButton = nullptr;
     QToolButton* cancelLoadsButton = nullptr;
+    // The scope the toolbar's commands act in: "selected", "below" or a kind, per panel, not saved.
+    QComboBox* bulkScope = nullptr;
+    // Action name and button, in the toolbar's order.
+    std::vector<std::pair<QString, QToolButton*>> bulkButtons;
+    QLabel* bulkStatus = nullptr;
+    QTimer bulkRefresh;
     QTreeView* changedHereTree = nullptr;
     SceneChangedHereModel* changedHereModel = nullptr;
     SceneGraphStageSourcePtr changedHereSource;
@@ -779,6 +787,7 @@ struct SceneGraphPanel::Implementation {
         if (!armedPick.isEmpty()) {
             text = SceneGraphPanel::tr("Pick for %1: select prims, Enter writes them, Esc cancels").arg(armedPick);
         }
+        bulkRefresh.start();
         status->setText(text);
         status->setStyleSheet(armedPick.isEmpty() ? QString() : QString::fromUtf8("QLabel { color: #e6a050; font-weight: bold; }"));
         if (!filterPattern.isEmpty()) {
@@ -1150,6 +1159,208 @@ struct SceneGraphPanel::Implementation {
         } else if (pinned && (model->getSource() == pinned)) {
             pinned->requestUnload(paths);
         }
+    }
+
+    static bool isBulkDrawAction(const QString& action)
+    {
+        SceneDrawStateEnum state;
+
+        return sceneDrawStateFromName(action.toStdString(), &state);
+    }
+
+    // "Component", or a custom kind as it is registered.
+    static QString kindLabel(const QString& kind)
+    {
+        if (!isBuiltInKindScope(PXR_NS::TfToken(kind.toStdString())) || kind.isEmpty()) {
+            return kind;
+        }
+
+        return kind.left(1).toUpper() + kind.mid(1);
+    }
+
+    static QString kindPluralText(const QString& kind)
+    {
+        return isBuiltInKindScope(PXR_NS::TfToken(kind.toStdString())) ? (kind + QLatin1Char('s')) : SceneGraphPanel::tr("%1 prims").arg(kind);
+    }
+
+    static QString rowsText(int count)
+    {
+        return (count == 1) ? SceneGraphPanel::tr("1 row") : SceneGraphPanel::tr("%1 rows").arg(count);
+    }
+
+    // What action does in scope, for its button's tooltip.
+    static QString bulkToolTip(const QString& action,
+                               const QString& scope)
+    {
+        const bool below = (scope == QString::fromUtf8("below"));
+        const bool selected = (scope == QString::fromUtf8("selected"));
+        const QString kind = kindPluralText(scope);
+
+        if (action == QString::fromUtf8("load")) {
+            if (selected) {
+                return SceneGraphPanel::tr("Load: loads the payloads of the selected rows, without what they hold.");
+            }
+            if (below) {
+                return SceneGraphPanel::tr("Load Below: loads the selected rows and every payload below them.");
+            }
+
+            return SceneGraphPanel::tr("Load To %1: loads level by level from the selected rows down to the %2 below them, "
+                                       "and the %2 themselves; payloads below the %2 stay unloaded.")
+                .arg(kindLabel(scope), kind);
+        }
+        if (action == QString::fromUtf8("unload")) {
+            if (selected) {
+                return SceneGraphPanel::tr("Unload: unloads the selected rows and everything below them.");
+            }
+            if (below) {
+                return SceneGraphPanel::tr("Unload already unloads everything below the rows; pick another scope.");
+            }
+
+            return SceneGraphPanel::tr("Unload Below %1: keeps the %2 below the selected rows loaded and unloads the payloads below them.").arg(kindLabel(scope), kind);
+        }
+        if (action == QString::fromUtf8("clearBelow")) {
+            if (selected) {
+                return SceneGraphPanel::tr("Clear Below: clears the draw states set below the selected rows; each row keeps its own.");
+            }
+            if (below) {
+                return SceneGraphPanel::tr("Every other command in Below scope clears the states below already; pick another scope.");
+            }
+
+            return SceneGraphPanel::tr("Clear Below Each %1: clears the draw states set below the loaded %2 below the selected rows.").arg(kindLabel(scope), kind);
+        }
+        SceneDrawStateEnum state = eSceneDrawStateFull;
+        sceneDrawStateFromName(action.toStdString(), &state);
+        const QString label = SceneGraphModel::drawStateLabel((int)state);
+        if (selected) {
+            return SceneGraphPanel::tr("%1: draws the selected rows %1 in the linked viewer.").arg(label);
+        }
+        if (below) {
+            return SceneGraphPanel::tr("%1 Below: draws the selected rows %1 in the linked viewer and clears the states set below them, as one change.").arg(label);
+        }
+
+        return SceneGraphPanel::tr("%1 To %2: draws the loaded %3 below the selected rows %1 in the linked viewer; "
+                                   "nothing inside an unloaded payload changes.")
+            .arg(label, kindLabel(scope), kind);
+    }
+
+    QString bulkScopeName() const
+    {
+        return bulkScope ? bulkScope->currentData().toString() : QString::fromUtf8("selected");
+    }
+
+    bool bulkActionEnabled(const QString& action,
+                           const QString& scope,
+                           bool hasRows) const
+    {
+        const bool below = (scope == QString::fromUtf8("below"));
+
+        if (!hasRows) {
+            return false;
+        }
+        if (action == QString::fromUtf8("load")) {
+            return loadsOnShownStage();
+        }
+        if (action == QString::fromUtf8("unload")) {
+            return loadsOnShownStage() && !below;
+        }
+        if (action == QString::fromUtf8("clearBelow")) {
+            return viewport && !below;
+        }
+
+        return bool(viewport);
+    }
+
+    void updateBulkButtons()
+    {
+        if (!bulkScope) {
+            return;
+        }
+        const QString scope = bulkScopeName();
+        const QStringList selection = panel->getSelection();
+
+        for (const std::pair<QString, QToolButton*>& entry : bulkButtons) {
+            QToolButton* button = entry.second;
+            button->setEnabled(bulkActionEnabled(entry.first, scope, !selection.isEmpty()));
+            button->setToolTip(bulkToolTip(entry.first, scope));
+            if (!button->isCheckable()) {
+                continue;
+            }
+            SceneDrawStateEnum state = eSceneDrawStateFull;
+            sceneDrawStateFromName(entry.first.toStdString(), &state);
+            bool all = viewport && !selection.isEmpty();
+            for (const QString& path : selection) {
+                if (!all) {
+                    break;
+                }
+                const QModelIndex index = model->indexOfPath(path, false);
+                const QVariant shown = index.data(SceneGraphModel::eDrawStateRole);
+                all = shown.isValid() && (shown.toInt() == (int)state)
+                    && (index.data(SceneGraphModel::eDrawStateOriginRole).toInt() == (int)eSceneDrawOriginViewer);
+            }
+            button->setChecked(all);
+        }
+    }
+
+    // Runs action in scope on paths, on the stage the rows are read from for loads and in the
+    // linked viewer for draw states, and shows what it did. Returns that summary, empty when the
+    // command does not apply.
+    QString runBulk(const QString& action,
+                    const QStringList& paths,
+                    const QString& scope)
+    {
+        QString summary;
+
+        if (!paths.isEmpty() && bulkActionEnabled(action, scope, true)) {
+            const bool kind = (scope != QString::fromUtf8("selected")) && (scope != QString::fromUtf8("below"));
+            if (action == QString::fromUtf8("load")) {
+                if (!kind) {
+                    requestLoad(paths, scope == QString::fromUtf8("below"));
+                    summary = (scope == QString::fromUtf8("below")) ? SceneGraphPanel::tr("Loading %1 and every payload below them").arg(rowsText(paths.size()))
+                                                                    : SceneGraphPanel::tr("Loading %1").arg(rowsText(paths.size()));
+                } else if (showsViewerStage()) {
+                    summary = viewport->loadRows(paths, scope);
+                    updateBakeButton();
+                } else if (pinned && (model->getSource() == pinned)) {
+                    pinned->requestLoadToKind(paths, scope.toStdString());
+                    summary = SceneGraphPanel::tr("Loading down to %1 under %2").arg(kindPluralText(scope), rowsText(paths.size()));
+                }
+            } else if (action == QString::fromUtf8("unload")) {
+                if (!kind) {
+                    requestUnload(paths);
+                    summary = SceneGraphPanel::tr("Unloading %1").arg(rowsText(paths.size()));
+                } else if (showsViewerStage()) {
+                    summary = viewport->unloadRows(paths, scope);
+                } else if (pinned && (model->getSource() == pinned)) {
+                    pinned->requestUnloadBelowKind(paths, scope.toStdString());
+                    summary = SceneGraphPanel::tr("Unloading below %1 under %2").arg(kindPluralText(scope), rowsText(paths.size()));
+                }
+            } else if (viewport) {
+                summary = viewport->setDrawStateOnRowsScoped(paths, action, scope);
+            }
+        }
+        bulkStatus->setText(summary);
+        bulkStatus->setVisible(!summary.isEmpty());
+        bulkRefresh.start();
+
+        return summary;
+    }
+
+    // The toolbar command a key is bound to in the Shortcut Editor, null when none is.
+    static const SceneGraphBulkKeyBinding* bulkCommandForKey(Qt::KeyboardModifiers modifiers,
+                                                             int key)
+    {
+        GuiApplicationManager* manager = dynamic_cast<GuiApplicationManager*>(AppManager::instance());
+
+        if (!manager || (key == 0) || (key == Qt::Key_unknown)) {
+            return nullptr;
+        }
+        for (const SceneGraphBulkKeyBinding& binding : getSceneGraphBulkKeyBindings()) {
+            if (manager->matchesKeybind(kShortcutGroupViewer3D, binding.actionID, modifiers, key)) {
+                return &binding;
+            }
+        }
+
+        return nullptr;
     }
 
     void closeRow(const QString& path)
@@ -1872,6 +2083,68 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     layout->addLayout(filterLayout);
     layout->addWidget(_imp->filterMessage);
 
+    QHBoxLayout* bulkLayout = new QHBoxLayout();
+    bulkLayout->setContentsMargins(0, 0, 2, 0);
+    bulkLayout->setSpacing(2);
+    _imp->bulkScope = new QComboBox(this);
+    _imp->bulkScope->setObjectName(QString::fromUtf8("sceneGraphBulkScope"));
+    _imp->bulkScope->setToolTip(tr("What the commands beside act on. Selected: the selected rows. Below: the selected rows and "
+                                   "everything below them. To <Kind>: the prims of that kind below the selected rows, down to the "
+                                   "first one on each branch; a custom kind matches itself only."));
+    _imp->bulkScope->addItem(tr("Selected"), QString::fromUtf8("selected"));
+    _imp->bulkScope->addItem(tr("Below"), QString::fromUtf8("below"));
+    _imp->bulkScope->addItem(tr("To Assembly"), QString::fromUtf8("assembly"));
+    _imp->bulkScope->addItem(tr("To Component"), QString::fromUtf8("component"));
+    _imp->bulkScope->addItem(tr("To Subcomponent"), QString::fromUtf8("subcomponent"));
+    const std::vector<PXR_NS::TfToken> customKinds = registeredCustomKinds();
+    if (!customKinds.empty()) {
+        _imp->bulkScope->insertSeparator(_imp->bulkScope->count());
+    }
+    for (const PXR_NS::TfToken& kind : customKinds) {
+        _imp->bulkScope->addItem(tr("To %1").arg(QString::fromStdString(kind.GetString())), QString::fromStdString(kind.GetString()));
+    }
+    bulkLayout->addWidget(_imp->bulkScope);
+    struct BulkButton {
+        const char* action;
+        const char* label;
+    };
+    const BulkButton bulkButtons[] = {
+        { "load", QT_TR_NOOP("Load") },
+        { "unload", QT_TR_NOOP("Unload") },
+        { "bbox", QT_TR_NOOP("BBox") },
+        { "children", QT_TR_NOOP("Children") },
+        { "full", QT_TR_NOOP("Full") },
+        { "loadAll", QT_TR_NOOP("Load All") },
+        { "hidden", QT_TR_NOOP("Hidden") },
+        { "clearBelow", QT_TR_NOOP("Clear Below") },
+    };
+    for (const BulkButton& entry : bulkButtons) {
+        const QString action = QString::fromUtf8(entry.action);
+        QToolButton* button = new QToolButton(this);
+        button->setObjectName(QString::fromUtf8("sceneGraphBulk_") + action);
+        button->setText(tr(entry.label));
+        button->setCheckable(Implementation::isBulkDrawAction(action));
+        button->setEnabled(false);
+        QObject::connect(button, &QToolButton::clicked, this, [this, action]() {
+            _imp->runBulk(action, getSelection(), _imp->bulkScopeName());
+        });
+        _imp->bulkButtons.push_back(std::make_pair(action, button));
+        bulkLayout->addWidget(button);
+    }
+    bulkLayout->addStretch(1);
+    layout->addLayout(bulkLayout);
+    _imp->bulkStatus = new QLabel(this);
+    _imp->bulkStatus->setObjectName(QString::fromUtf8("sceneGraphBulkStatus"));
+    _imp->bulkStatus->setContentsMargins(4, 0, 4, 0);
+    _imp->bulkStatus->setWordWrap(true);
+    _imp->bulkStatus->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    _imp->bulkStatus->setVisible(false);
+    layout->addWidget(_imp->bulkStatus);
+    _imp->bulkRefresh.setSingleShot(true);
+    _imp->bulkRefresh.setInterval(0);
+    QObject::connect(&_imp->bulkRefresh, &QTimer::timeout, this, [this]() { _imp->updateBulkButtons(); });
+    QObject::connect(_imp->bulkScope, static_cast<void (QComboBox::*)(int)>(&QComboBox::currentIndexChanged), this, [this]() { _imp->bulkRefresh.start(); });
+
     QSplitter* splitter = new QSplitter(Qt::Vertical, this);
     splitter->setChildrenCollapsible(false);
     _imp->stack = new QStackedWidget(splitter);
@@ -2011,6 +2284,11 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
         setFollow((index == (int)eFollowSelection) ? eFollowSelection : eFollowViewer);
     });
     QObject::connect(_imp->tree->selectionModel(), &QItemSelectionModel::selectionChanged, this, &SceneGraphPanel::onTreeSelectionChanged);
+    for (QAbstractItemView* view : { (QAbstractItemView*)_imp->tree, (QAbstractItemView*)_imp->results, (QAbstractItemView*)_imp->changedHereTree }) {
+        QObject::connect(view->selectionModel(), &QItemSelectionModel::selectionChanged, this, [this]() { _imp->bulkRefresh.start(); });
+    }
+    QObject::connect(_imp->model, &QAbstractItemModel::dataChanged, this, [this]() { _imp->bulkRefresh.start(); });
+    QObject::connect(_imp->model, &QAbstractItemModel::modelReset, this, [this]() { _imp->bulkRefresh.start(); });
     QObject::connect(_imp->tree->selectionModel(), &QItemSelectionModel::currentChanged, this, &SceneGraphPanel::onCurrentChanged);
     QObject::connect(_imp->results->selectionModel(), &QItemSelectionModel::selectionChanged, this, &SceneGraphPanel::onResultsSelectionChanged);
     QObject::connect(_imp->results->selectionModel(), &QItemSelectionModel::currentChanged, this, &SceneGraphPanel::onCurrentChanged);
@@ -2322,18 +2600,42 @@ SceneGraphPanel::showRowMenu(QAbstractItemView* view, const QPoint& pos)
         anyOther = anyOther || !unloaded;
     }
     const bool onViewerStage = _imp->loadsOnShownStage();
-    QAction* load = menu.addAction(tr("Load"));
-    load->setObjectName(QString::fromUtf8("sceneGraphLoad"));
-    load->setEnabled(onViewerStage && anyUnloaded);
-    QObject::connect(load, &QAction::triggered, this, [this, selection]() { _imp->requestLoad(selection, false); });
-    QAction* loadWithDescendants = menu.addAction(tr("Load With Descendants"));
-    loadWithDescendants->setObjectName(QString::fromUtf8("sceneGraphLoadWithDescendants"));
-    loadWithDescendants->setEnabled(onViewerStage && !selection.isEmpty());
-    QObject::connect(loadWithDescendants, &QAction::triggered, this, [this, selection]() { _imp->requestLoad(selection, true); });
-    QAction* unload = menu.addAction(tr("Unload"));
-    unload->setObjectName(QString::fromUtf8("sceneGraphUnload"));
-    unload->setEnabled(onViewerStage && anyOther);
-    QObject::connect(unload, &QAction::triggered, this, [this, selection]() { _imp->requestUnload(selection); });
+    std::vector<std::pair<QString, QString>> kindScopes = {
+        { QString::fromUtf8("assembly"), tr("Assembly") },
+        { QString::fromUtf8("component"), tr("Component") },
+        { QString::fromUtf8("subcomponent"), tr("Subcomponent") },
+    };
+    for (const PXR_NS::TfToken& kind : registeredCustomKinds()) {
+        kindScopes.push_back(std::make_pair(QString::fromStdString(kind.GetString()), QString::fromStdString(kind.GetString())));
+    }
+    const auto addBulk = [this, &selection](QMenu* into, const QString& text, const QString& objectName, const QString& action, const QString& scope, bool enabled) {
+        QAction* entry = into->addAction(text);
+        entry->setObjectName(objectName);
+        entry->setEnabled(enabled);
+        entry->setShortcut(Implementation::keySequenceOf((QString::fromUtf8("sceneGraphBulk_") + action + QLatin1Char('_') + scope).toUtf8().constData()));
+        QObject::connect(entry, &QAction::triggered, this, [this, selection, action, scope]() { _imp->runBulk(action, selection, scope); });
+
+        return entry;
+    };
+    const QString loadAction = QString::fromUtf8("load");
+    const QString unloadAction = QString::fromUtf8("unload");
+    QMenu* loadMenu = menu.addMenu(tr("Load"));
+    loadMenu->setObjectName(QString::fromUtf8("sceneGraphLoadMenu"));
+    loadMenu->setEnabled(onViewerStage && !selection.isEmpty());
+    addBulk(loadMenu, tr("Selected"), QString::fromUtf8("sceneGraphLoad"), loadAction, QString::fromUtf8("selected"), onViewerStage && anyUnloaded);
+    addBulk(loadMenu, tr("Below"), QString::fromUtf8("sceneGraphLoadWithDescendants"), loadAction, QString::fromUtf8("below"), onViewerStage && !selection.isEmpty());
+    loadMenu->addSeparator();
+    for (const std::pair<QString, QString>& kind : kindScopes) {
+        addBulk(loadMenu, tr("To %1").arg(kind.second), QString::fromUtf8("sceneGraphLoadTo_") + kind.first, loadAction, kind.first, onViewerStage && !selection.isEmpty());
+    }
+    QMenu* unloadMenu = menu.addMenu(tr("Unload"));
+    unloadMenu->setObjectName(QString::fromUtf8("sceneGraphUnloadMenu"));
+    unloadMenu->setEnabled(onViewerStage && !selection.isEmpty());
+    addBulk(unloadMenu, tr("Selected"), QString::fromUtf8("sceneGraphUnload"), unloadAction, QString::fromUtf8("selected"), onViewerStage && anyOther);
+    unloadMenu->addSeparator();
+    for (const std::pair<QString, QString>& kind : kindScopes) {
+        addBulk(unloadMenu, tr("Below %1").arg(kind.second), QString::fromUtf8("sceneGraphUnloadBelow_") + kind.first, unloadAction, kind.first, onViewerStage && !selection.isEmpty());
+    }
     menu.addSeparator();
     QAction* setOnNode = menu.addAction(tr(kShortcutDescActionViewer3DSetSelectionOnNode));
     setOnNode->setObjectName(QString::fromUtf8("sceneSetSelectionOnNode"));
@@ -2382,6 +2684,24 @@ SceneGraphPanel::showRowMenu(QAbstractItemView* view, const QPoint& pos)
             drawViewer->resetDrawStatesToGraphOnRows(selection);
         }
     });
+    drawMenu->addSeparator();
+    const bool canDraw = !drawViewer.isNull() && !selection.isEmpty();
+    QMenu* drawBelow = drawMenu->addMenu(tr("Below"));
+    drawBelow->setObjectName(QString::fromUtf8("sceneGraphDrawStateBelowMenu"));
+    for (int state = (int)eSceneDrawStateBBox; state <= (int)eSceneDrawStateHidden; ++state) {
+        const QString name = QString::fromUtf8(sceneDrawStateName((SceneDrawStateEnum)state));
+        addBulk(drawBelow, SceneGraphModel::drawStateLabel(state), QString::fromUtf8("sceneGraphDrawStateBelow_") + name, name, QString::fromUtf8("below"), canDraw);
+    }
+    for (const std::pair<QString, QString>& kind : kindScopes) {
+        QMenu* drawTo = drawMenu->addMenu(tr("To %1").arg(kind.second));
+        drawTo->setObjectName(QString::fromUtf8("sceneGraphDrawStateToMenu_") + kind.first);
+        for (int state = (int)eSceneDrawStateBBox; state <= (int)eSceneDrawStateHidden; ++state) {
+            const QString name = QString::fromUtf8(sceneDrawStateName((SceneDrawStateEnum)state));
+            addBulk(drawTo, SceneGraphModel::drawStateLabel(state), QString::fromUtf8("sceneGraphDrawStateTo_") + kind.first + QLatin1Char('_') + name, name, kind.first, canDraw);
+        }
+        drawTo->addSeparator();
+        addBulk(drawTo, tr("Clear Below Each"), QString::fromUtf8("sceneGraphDrawStateClearBelowEach_") + kind.first, QString::fromUtf8("clearBelow"), kind.first, canDraw);
+    }
     QAction* chosen = menu.exec(view->viewport()->mapToGlobal(pos));
     if (chosen == setOnNode) {
         _imp->runSelectionAction(1, selection);
@@ -2773,7 +3093,7 @@ bool
 SceneGraphPanel::eventFilter(QObject* watched,
                              QEvent* e)
 {
-    // Copy and the 3D viewer's selection keys work on the panel's selection. A key press is taken
+    // Copy, the 3D viewer's selection keys and the toolbar commands' keys work on the panel's selection. A key press is taken
     // before the view's own handling, which would spend Tab on moving the focus.
     if (((watched == _imp->tree) || (watched == _imp->results) || (watched == _imp->changedHereTree)) && ((e->type() == QEvent::ShortcutOverride) || (e->type() == QEvent::KeyPress))) {
         QKeyEvent* k = static_cast<QKeyEvent*>(e);
@@ -2791,6 +3111,14 @@ SceneGraphPanel::eventFilter(QObject* watched,
             e->accept();
             if (e->type() == QEvent::KeyPress) {
                 _imp->runSelectionAction(action, selection);
+            }
+
+            return true;
+        }
+        if (const SceneGraphBulkKeyBinding* bulk = Implementation::bulkCommandForKey(k->modifiers(), k->key())) {
+            e->accept();
+            if (e->type() == QEvent::KeyPress) {
+                _imp->runBulk(QString::fromStdString(bulk->action), getSelection(), QString::fromStdString(bulk->scope));
             }
 
             return true;

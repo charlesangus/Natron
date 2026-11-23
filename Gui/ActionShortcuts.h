@@ -30,8 +30,9 @@
  * @brief In this file all Natron's actions that can have their shortcut edited should be listed.
  **/
 
-#include <map>
 #include <list>
+#include <map>
+#include <string>
 #include <vector>
 
 #include "Global/Macros.h"
@@ -1118,6 +1119,22 @@ struct Viewer3DKeyBinding {
 
 // The 3D viewer's key actions with their default bindings, in the Shortcut Editor's order.
 const std::vector<Viewer3DKeyBinding>& getViewer3DDefaultKeyBindings();
+
+/**
+ * @brief A scene graph panel command, an action of its toolbar in one scope, as a key action of
+ * the 3D viewer group. None is bound by default. action is "load", "unload", a draw state name
+ * (sceneDrawStateName()) or "clearBelow"; scope is "selected", "below", "assembly", "component" or
+ * "subcomponent", as SceneViewport::loadRows() takes it. Below has no Unload or Clear Below.
+ **/
+struct SceneGraphBulkKeyBinding {
+    std::string actionID;
+    std::string description;
+    std::string action;
+    std::string scope;
+};
+
+// In the Shortcut Editor's order.
+const std::vector<SceneGraphBulkKeyBinding>& getSceneGraphBulkKeyBindings();
 
 // Writes an action's bindings into settings, which must be inside the action's group.
 void writeShortcutSettings(QSettings& settings, const QString& actionID, const BoundAction& action);

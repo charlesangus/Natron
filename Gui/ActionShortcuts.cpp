@@ -497,6 +497,61 @@ resetMouseActionBindings(MouseAction* action,
     action->buttons = action->defaultButtons;
 }
 
+const std::vector<SceneGraphBulkKeyBinding>&
+getSceneGraphBulkKeyBindings()
+{
+    static const std::vector<SceneGraphBulkKeyBinding> bindings = []() {
+        struct Named {
+            const char* id;
+            const char* label;
+        };
+        const Named actions[] = {
+            { "load", "Load" },
+            { "unload", "Unload" },
+            { "bbox", "Draw BBox" },
+            { "children", "Draw Children" },
+            { "full", "Draw Full" },
+            { "loadAll", "Draw Load All" },
+            { "hidden", "Draw Hidden" },
+            { "clearBelow", "Clear Draw States Below" },
+        };
+        const Named scopes[] = {
+            { "selected", "Selected" },
+            { "below", "Below" },
+            { "assembly", "Assembly" },
+            { "component", "Component" },
+            { "subcomponent", "Subcomponent" },
+        };
+        std::vector<SceneGraphBulkKeyBinding> all;
+        for (const Named& action : actions) {
+            const std::string id = action.id;
+            for (const Named& scope : scopes) {
+                const std::string where = scope.id;
+                if ((where == "below") && ((id == "unload") || (id == "clearBelow"))) {
+                    continue;
+                }
+                std::string description = std::string("Scene Graph ") + action.label;
+                if (where == "selected") {
+                    description += " Selected";
+                } else if (where == "below") {
+                    description += " Below";
+                } else if (id == "unload") {
+                    description += std::string(" Below ") + scope.label;
+                } else if (id == "clearBelow") {
+                    description += std::string(" Each ") + scope.label;
+                } else {
+                    description += std::string(" To ") + scope.label;
+                }
+                all.push_back(SceneGraphBulkKeyBinding { "sceneGraphBulk_" + id + "_" + where, description, id, where });
+            }
+        }
+
+        return all;
+    }();
+
+    return bindings;
+}
+
 const std::vector<Viewer3DKeyBinding>&
 getViewer3DDefaultKeyBindings()
 {

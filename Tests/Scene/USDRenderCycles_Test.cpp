@@ -1161,7 +1161,7 @@ cyclesLayout()
 {
     static const std::vector<CyclesGroupLayout> layout = {
         { "cyclesSampling", "cycles", true, { "cyclesSamples", "cyclesUseAdaptiveSampling", "cyclesAdaptiveThreshold", "cyclesAdaptiveMinSamples", "cyclesTimeLimit", "cyclesSeed" } },
-        { "cyclesDenoise", "cycles", true, { "cyclesUseDenoise", "cyclesDenoiserType", "cyclesDenoiserQuality", "cyclesDenoiserPrefilter", "cyclesDenoiserPasses", "cyclesDenoiseStartSample", "cyclesDenoiserUpscaleFactor", "cyclesDenoiseUseGpu", "cyclesDenoisingPassFollowReflections", "cyclesDenoisingPassUseAlbedoRoughnessWeighting" } },
+        { "cyclesDenoise", "cycles", false, { "cyclesUseDenoise", "cyclesDenoiserType", "cyclesDenoiserQuality", "cyclesDenoiserPrefilter", "cyclesDenoiserPasses", "cyclesDenoiseStartSample", "cyclesDenoiserUpscaleFactor", "cyclesDenoiseUseGpu", "cyclesDenoisingPassFollowReflections", "cyclesDenoisingPassUseAlbedoRoughnessWeighting" } },
         { "cyclesLightPaths", "cycles", true, { "cyclesBounces", "cyclesClamping", "cyclesCaustics", "cyclesFastGi" } },
         { "cyclesBounces", "cyclesLightPaths", false, { "cyclesMaxBounce", "cyclesMaxDiffuseBounce", "cyclesMaxGlossyBounce", "cyclesMaxTransmissionBounce", "cyclesMaxVolumeBounce", "cyclesTransparentMaxBounce" } },
         { "cyclesClamping", "cyclesLightPaths", false, { "cyclesSampleClampDirect", "cyclesSampleClampIndirect" } },

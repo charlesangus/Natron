@@ -25,6 +25,7 @@
 
 #include "SceneWriteBarrier.h"
 
+#include <atomic>
 #include <condition_variable>
 #include <map>
 #include <mutex>
@@ -41,21 +42,6 @@
 #include "Engine/AppManager.h"
 
 NATRON_NAMESPACE_ENTER
-
-PythonUnlockedWhileWaiting::PythonUnlockedWhileWaiting()
-    : _state(nullptr)
-{
-    if (Py_IsInitialized() && PyGILState_Check()) {
-        _state = PyEval_SaveThread();
-    }
-}
-
-PythonUnlockedWhileWaiting::~PythonUnlockedWhileWaiting()
-{
-    if (_state) {
-        PyEval_RestoreThread(_state);
-    }
-}
 
 namespace {
 struct BarrierState {
@@ -106,6 +92,9 @@ struct BarrierState {
     bool asyncStarting = false;
     int asyncPending = 0;
 };
+
+std::atomic<SceneWriteBarrier::TestHookFunction> testHook { nullptr };
+std::atomic<void*> testHookContext { nullptr };
 
 BarrierState&
 state()
@@ -459,6 +448,10 @@ SceneWriteBarrier::runExclusive(const std::function<void()>& write,
         std::unique_lock<std::mutex> lock(s.mutex);
         ++s.writersPending;
         s.changed.wait(lock, [&s]() { return s.readers == 0; });
+        lock.unlock();
+        if (const TestHookFunction hook = testHook.load()) {
+            hook(testHookContext.load());
+        }
     }
 
     // Lets readers in again however the write ends.
@@ -582,6 +575,13 @@ SceneWriteBarrier::waitForAsyncWrites(int timeoutMs)
             QThread::msleep(2);
         }
     }
+}
+
+void
+SceneWriteBarrier::setTestHook(TestHookFunction hook, void* context)
+{
+    testHookContext.store(context);
+    testHook.store(hook);
 }
 
 bool

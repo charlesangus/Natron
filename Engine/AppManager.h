@@ -1031,8 +1031,6 @@ public:
 
 // Releases the Python GIL for the lifetime of the object, only if the calling thread holds it.
 // Use it around a blocking wait: the thread being waited on may need the GIL to finish.
-// Defined in Engine/Nodes/Scene/SceneWriteBarrier.cpp: asking whether the GIL is held needs the
-// full Python API, which this header's includers are not compiled with.
 class PythonUnlockedWhileWaiting {
 public:
     PythonUnlockedWhileWaiting();

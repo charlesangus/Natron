@@ -610,6 +610,7 @@ future core work has solid ground to build on.
 | M546 | PyroSource And Rasterize | todo | M417, M359 |  | E22 | F35 | | [M546-pyrosource-and-rasterize.md](PLAN/MILESTONES/M546-pyrosource-and-rasterize.md) |
 | M547 | Pyro Look And Post-Process | todo | M543, M347 |  | E22 | F35 | | [M547-pyro-look-and-post-process.md](PLAN/MILESTONES/M547-pyro-look-and-post-process.md) |
 | M548 | Pyro Quick Setups And Checkpoints | todo | M544, M545, M546, M547 |  | E22 | F35 | | [M548-pyro-quick-setups-and-checkpoints.md](PLAN/MILESTONES/M548-pyro-quick-setups-and-checkpoints.md) |
+| M554 | Scene Camera For Delegate Renders | todo | M345 |  | E9 | F1 | | [M554-scene-camera-for-delegate-renders.md](PLAN/MILESTONES/M554-scene-camera-for-delegate-renders.md) |
 
 # Epics
 

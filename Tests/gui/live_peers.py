@@ -268,7 +268,7 @@ def drag_mix_slider(name):
     ok = yield from open_panel(name)
     if not ok:
         return "no panel for " + name
-    found = {"field": None}
+    found = {"field": None, "panel": None}
 
     def field():
         p = panel_of(name)
@@ -277,6 +277,9 @@ def drag_mix_slider(name):
         for w in p.findChildren(QWidget):
             try:
                 if w.objectName() == "dim-0" and w.isVisible() and "Mix factor" in w.toolTip():
+                    # A child wrapper dies with its parent's wrapper, so without this reference the
+                    # field found on one pass is never the same object on the next.
+                    found["panel"] = p
                     return w
             except RuntimeError:
                 continue
@@ -295,8 +298,12 @@ def drag_mix_slider(name):
             return "no mix field: the panel of %s is gone" % name
         firsts = [w for w in p.findChildren(QWidget) if w.objectName() == "dim-0"]
         matching = [w for w in firsts if "Mix factor" in w.toolTip()]
+        visible = len([w for w in matching if w.isVisible()])
+        if visible:
+            return ("the mix field in the panel of %s never stayed the same widget over two passes "
+                    "(%d first fields, %d matching, %d of those visible)" % (name, len(firsts), len(matching), visible))
         return ("no mix field in the panel of %s (%d first fields, %d matching, %d of those visible)"
-                % (name, len(firsts), len(matching), len([w for w in matching if w.isVisible()])))
+                % (name, len(firsts), len(matching), visible))
     slider = None
     a = found["field"].parentWidget()
     for _ in range(4):
@@ -317,7 +324,7 @@ def drag_mix_slider(name):
     after = app().getNode(name).getParam("mix").get()
     gt.close_all_panels()
     if abs(after - before) < 1e-6:
-        return "the drag left mix at %g" % after
+        return "the mix field and slider were found, but the drag left mix at %g" % after
     return "ok"
 
 

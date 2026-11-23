@@ -48,13 +48,13 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Image.h"
 #include "Engine/Settings.h"
 
-#include "Gui/KnobGui.h"
-#include "Gui/KnobUndoCommand.h"
-#include "Gui/GuiAppInstance.h"
 #include "Gui/Gui.h"
+#include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/GuiMacros.h"
-
+#include "Gui/KnobEditMode.h"
+#include "Gui/KnobGui.h"
+#include "Gui/KnobUndoCommand.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -153,6 +153,12 @@ KnobWidgetDnD::mousePress(QMouseEvent* e)
         _imp->dragging = true;
 
         return true;
+    }
+    // While a panel is in edit mode a plain drag of a knob's label carries the knob to it; the
+    // press still reaches the label so that a click does what it always did.
+    if (buttonDownIsLeft(e) && modCASIsNone(e) && (_imp->dimension == -1) && KnobEditMode::isAnyPanelEditing()) {
+        _imp->dragPos = e->pos();
+        _imp->dragging = true;
     }
 
     return false;

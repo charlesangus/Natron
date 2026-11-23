@@ -215,6 +215,14 @@ public:
         return false;
     }
 
+    /**
+     * @brief Whether user pages without any knob get a tab, so that the knob editor can fill them
+     **/
+    virtual bool showsEmptyUserPages() const
+    {
+        return false;
+    }
+
     //// Overridden from DockablePanelI
 
     /**

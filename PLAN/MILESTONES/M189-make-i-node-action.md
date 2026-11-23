@@ -43,3 +43,4 @@ The single entry point for I-nodes (user, 2026-10-24): a right-click **Make I-No
 - 2026-10-25 — **Wrapping drives nothing by default (user):** the user picks driven knobs in LoopEnd's driver table.
 
 **Verification gate:** the full build and ctest pass; the Xvfb GUI test passes; the GUI bench rule applies (`Gui/NodeGraph*`); screenshots of each action shared with the user before sign-off; an AppImage built with `package.sh` is handed over for UAT.
+- 2026-11-23 — Implemented in 441129ef4 (gate queued). PM choices, to confirm at F14 UAT: one LoopBegin per outside node feeding the selection (only several outputs disable Wrap); a lone Transform converts to ITransform, so the Transform/CornerPin/Defocus warning shows only when one is wrapped in a larger selection; Make I-Node is disabled on a node that is already an I-node; the Make Base Node confirmation (Map connected) is not GUI-tested since it is modal.

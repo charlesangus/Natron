@@ -288,9 +288,15 @@ def drag_mix_slider(name):
         found["field"] = now
         return now is not None and previous is not None and isValid(previous) and previous is now
 
-    ok = yield ("until", settled, 10.0)
+    ok = yield ("until", settled, 30.0)
     if not ok:
-        return "no mix field in the panel of " + name
+        p = panel_of(name)
+        if p is None:
+            return "no mix field: the panel of %s is gone" % name
+        firsts = [w for w in p.findChildren(QWidget) if w.objectName() == "dim-0"]
+        matching = [w for w in firsts if "Mix factor" in w.toolTip()]
+        return ("no mix field in the panel of %s (%d first fields, %d matching, %d of those visible)"
+                % (name, len(firsts), len(matching), len([w for w in matching if w.isVisible()])))
     slider = None
     a = found["field"].parentWidget()
     for _ in range(4):

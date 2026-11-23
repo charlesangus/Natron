@@ -27,3 +27,4 @@ In scope: `tools/ci/remote/build.sh` waiting and run-finding, a new shared watch
 
 - 2026-11-23 — **One watcher for everything (user):** interval change first for immediate relief, then a single watcher for all runs.
 - 2026-11-23 — T1 and T2 in bbe5d282f; three concurrent `--from-run` GUI dispatches sharing one watcher all passed (runs 45108088215, 45108121700, 45108152899). PR #343 in review. Flat API use to be confirmed once the old-style gates drain.
+- 2026-11-23 — Merged to main as PR #343; the PM queue sets NATRON_REMOTE_RUN_STATE_DIR for every gate.

@@ -571,7 +571,7 @@ future core work has solid ground to build on.
 | M550 | Classic Graph Shift-Drop Creation | todo | M351 |  | E9 | | | [M550-classic-graph-shift-drop-creation.md](PLAN/MILESTONES/M550-classic-graph-shift-drop-creation.md) |
 | M551 | Second Background App Groups | todo | - |  | E2 | | | [M551-second-background-app-groups.md](PLAN/MILESTONES/M551-second-background-app-groups.md) |
 | M553 | Storm Project3D Test Flake | doing | - | bosley-executor | E2 | | | [M553-storm-project3d-test-flake.md](PLAN/MILESTONES/M553-storm-project3d-test-flake.md) |
-| M552 | Shared Remote Run Watcher | doing | - | bosley-executor | E2 | | | [M552-shared-remote-run-watcher.md](PLAN/MILESTONES/M552-shared-remote-run-watcher.md) |
+| M552 | Shared Remote Run Watcher | done | - | | E2 | | | [M552-shared-remote-run-watcher.md](PLAN/MILESTONES/M552-shared-remote-run-watcher.md) |
 | M494 | Delegate Subdivision | doing | - | bosley-executor | E9 | | | [M494-delegate-subdivision.md](PLAN/MILESTONES/M494-delegate-subdivision.md) |
 | M495 | KeyMix GPU Edge Read Fix | doing | - | bosley-executor | E14 | | | [M495-keymix-gpu-edge-read-fix.md](PLAN/MILESTONES/M495-keymix-gpu-edge-read-fix.md) |
 | M496 | MoonRay Test Stability | todo | - |  | E9 | | | [M496-moonray-test-stability.md](PLAN/MILESTONES/M496-moonray-test-stability.md) |

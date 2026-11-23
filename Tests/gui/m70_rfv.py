@@ -1,10 +1,10 @@
-"""Declaring Reverse-Flow Variables from the GUI: the user-parameter dialog on a
-RFVSet node and the project settings' "Edit variables..." dialog.
+"""Declaring Reverse-Flow Variables from the GUI: the in-panel knob editor on a RFVSet node and
+the project settings' "Edit variables..." dialog.
 
 Sections:
-  - set node: the node's RFV group and its page are pinned (no Delete, Edit, Up or Down); a Double
-    and a String added with the group (or one of its variables) selected become variables; a
-    Python keyword is refused as a variable name;
+  - set node: in edit mode the node's RFV group and its page are pinned (they cannot be selected,
+    hence not edited or deleted); a Float dropped on the group and a String added after one of its
+    variables become variables; a Python keyword is refused as a variable name;
   - project: "Edit variables..." on the project settings' Variables page opens a dialog listing
     only the project's RFV group, without Pick; a Double added there is a project variable, shows
     on the panel, and app.<name> resolves in the Script Editor at once; a name that is an App
@@ -25,14 +25,14 @@ Sections:
     with the project's value, resets the drop-down to its prompt and stops offering the name;
     Ctrl+Z takes it back off and keeps the drop-down in its group;
   - right-click manage: a real right mouse press on a knob row of the Set node's panel opens the
-    panel's menu inside the row's press handler; "Manage user parameters..." opens the dialog, a
-    3-dimension Double added to the RFV group and an Int added outside it (no selection) go through
-    the dialog's Add flow, and a real mouse click on Close leaves Natron running with both knobs on
-    the node and its panel;
+    panel's menu inside the row's press handler; "Edit parameters" turns edit mode on, a Float
+    added after a variable is made 3-dimensional in the property form, an Int added with no
+    selection goes outside the RFV group, the pinned group cannot be moved by a drop, and a real
+    mouse click on the pencil leaves edit mode with both knobs on the node and its panel;
   - delete: deleting the project variable from the dialog drops app.<name> too.
 
-Every modal dialog is driven from QTimer callbacks (see run() in guitest.py): whatever raises it is
-fired from a single-shot timer or a queued call, and the script waits for QApplication's active
+The project dialogs are modal and driven from QTimer callbacks (see run() in guitest.py): whatever
+raises one is fired from a single-shot timer or a queued call, and the script waits for QApplication's active
 modal widget. Widget wrappers are looked up again after every yield, never kept across one.
 
 Usage (natron-dev container; see Tests/gui/run-gui-test.sh for the GL/Xvfb setup):
@@ -67,10 +67,11 @@ TYPE_TEXT = 11   # AddKnobDialog::eParamDataTypeTextInput
 try:
     import NatronEngine
     from PySide6.QtCore import QMetaObject, Q_ARG, QPoint, Qt, QTimer
-    from PySide6.QtWidgets import QAbstractButton, QApplication, QGraphicsView, QLabel, QLineEdit, QPlainTextEdit, QTabWidget, QTreeWidget, QWidget
+    from PySide6.QtWidgets import QAbstractButton, QApplication, QComboBox, QGraphicsView, QLabel, QLineEdit, QPlainTextEdit, QTabWidget, QTreeWidget, QWidget
 
     import guitest as gt
     from guitest import check, report, require
+    import knob_edit_common as cm
 
     try:
         from PySide6.QtTest import QTest
@@ -428,18 +429,8 @@ try:
         ok = yield ("until", lambda: modal_class() == "ManageUserParamsDialog", DIALOG_TIMEOUT_S)
         require(ok, "Edit variables... opened the variables dialog", "modal is %r" % modal_class())
 
-    MANAGE_ITEM = "Manage user parameters..."
-
-    def real_click_later(dialog_class, *texts):
-        """Like click_later, but with a real left mouse press and release on the button."""
-        def fn():
-            dialog = modal()
-            b = button_in(dialog, *texts) if dialog is not None and gt.class_name(dialog) == dialog_class else None
-            if b is None:
-                check(False, "%s is the modal dialog with a %r button to click (modal is %r)" % (dialog_class, texts, modal_class()))
-                return
-            QTest.mouseClick(b, Qt.LeftButton)
-        later(fn)
+    MANAGE_ITEM = "Edit parameters"
+    LINK_ENTRY = "LinkKnob"
 
     def row_container(panel, label_text):
         """The right-clickable row or page widget holding the visible label that starts with label_text."""
@@ -522,19 +513,38 @@ try:
         check(MANAGE_ITEM in seen["entries"],
               "the panel's menu has %r (entries %r)" % (MANAGE_ITEM, seen["entries"]))
         require(seen["chosen"], "chose %r from the menu" % MANAGE_ITEM)
-        ok = yield ("until", lambda: modal_class() == "ManageUserParamsDialog", DIALOG_TIMEOUT_S)
-        require(ok, "the manage dialog opened", "modal is %r" % modal_class())
+        ok = yield ("until", lambda: cm.is_editing(node_name), DIALOG_TIMEOUT_S)
+        require(ok, "the panel entered edit mode", "editing is %r" % cm.is_editing(node_name))
 
-    def close_with_mouse(dialog_class):
-        real_click_later(dialog_class, "Close")
-        ok = yield ("until", lambda: modal() is None, DIALOG_TIMEOUT_S)
-        require(ok, "a mouse click on Close closed the " + dialog_class, "modal is %r" % modal_class())
+    def enter_edit(node_name):
+        require(cm.set_editing(node_name, True), "the pencil of %s is enabled" % node_name)
+        ok = yield ("until", lambda: cm.is_editing(node_name), DIALOG_TIMEOUT_S)
+        require(ok, "%s's panel is in edit mode" % node_name)
 
-    def clear_selection():
-        tree = modal().findChildren(QTreeWidget)[0]
-        tree.clearSelection()
-        tree.setCurrentItem(None)
-        QApplication.processEvents()
+    def leave_edit(node_name):
+        require(cm.set_editing(node_name, False), "the pencil of %s is enabled" % node_name)
+        ok = yield ("until", lambda: not cm.is_editing(node_name), DIALOG_TIMEOUT_S)
+        require(ok, "%s's panel left edit mode" % node_name)
+
+    def drop_new(node_name, entry, target_label, fy):
+        """Drops the palette entry on the row labelled target_label, at fraction fy of its height."""
+        ov = cm.overlay(node_name)
+        w = cm.label_widget(node_name, target_label)
+        if not check(ov is not None and w is not None, "found the row of %r in the editor" % target_label):
+            return False
+        accepted = cm.send_drop(ov, cm.point_in(w, ov, fy), cm.mime_of(cm.EDITOR_MIME, cm.editor_payload(node_name, "new", entry)))
+        yield ("sleep", SETTLE_MS)
+        return accepted
+
+    def rename_selected(node_name, current, name, label):
+        """Gives the selected knob, now called current, its script name and label through the property form."""
+        require(cm.selected(node_name) == current, "%s is selected (selected %r)" % (current, cm.selected(node_name)))
+        check(cm.commit_line(node_name, "KnobEditPropertiesName", name), "typed %s into the script name" % name)
+        ok = yield ("until", lambda: cm.param(node_name, name) is not None, DIALOG_TIMEOUT_S)
+        require(ok, "the knob was renamed to " + name)
+        cm.select(node_name, name)
+        check(cm.commit_line(node_name, "KnobEditPropertiesLabel", label), "typed %r into the label" % label)
+        yield ("sleep", SETTLE_MS)
 
     def steps():
         ok = yield ("until", graph_up, STARTUP_TIMEOUT_S)
@@ -548,34 +558,38 @@ try:
         node_name = node.getScriptName()
         ok = yield ("until", lambda: node_panel(app.getNode(node_name)) is not None, DIALOG_TIMEOUT_S)
         require(ok, "the Set node's panel is open")
-        QMetaObject.invokeMethod(node_panel(app.getNode(node_name)), "onManageUserParametersActionTriggered", Qt.QueuedConnection)
-        ok = yield ("until", lambda: modal_class() == "ManageUserParamsDialog", DIALOG_TIMEOUT_S)
-        require(ok, "the manage user parameters dialog opened", "modal is %r" % modal_class())
+        group_label = app.getNode(node_name).getParam(RFV_GROUP).getLabel()
+        show_tab(node_panel(app.getNode(node_name)), "Variables")
+        yield from enter_edit(node_name)
 
-        require(select(RFV_GROUP), "the dialog lists the RFV group " + RFV_GROUP)
-        for text in ("Delete", "Edit...", "Up", "Down"):
-            check(enabled("ManageUserParamsDialog", text) is False, "the RFV group is pinned: %s is disabled" % text)
-        require(select(RFV_PAGE), "the dialog lists the page " + RFV_PAGE)
-        check(enabled("ManageUserParamsDialog", "Delete") is False, "the page holding the RFV group cannot be deleted")
-        check(enabled("ManageUserParamsDialog", "Edit...") is False, "the page holding the RFV group cannot be edited")
-        check(button_in(modal(), "Pick...").isVisible(), "Pick... is offered on a node")
+        check(not cm.select(node_name, RFV_GROUP), "the RFV group is pinned: it cannot be selected")
+        check(not cm.select(node_name, RFV_PAGE), "the page holding the RFV group is pinned: it cannot be selected")
+        check(cm.selected(node_name) in (None, ""), "no pinned knob became the selection (selected %r)" % cm.selected(node_name))
+        link = cm.palette_button(node_name, LINK_ENTRY)
+        check(link is not None and link.isVisible(), "the link entry is offered on a node")
 
-        select(RFV_GROUP)
-        yield from add_param("ManageUserParamsDialog", "setGain", "Set gain", TYPE_DOUBLE)
-        gain = app.getNode(node_name).getParam("setGain")
+        yield ("sleep", SETTLE_MS)
+        ok = yield from drop_new(node_name, "Float", group_label, 0.9)
+        require(ok, "dropped a Float on the RFV group")
+        gain = app.getNode(node_name).getParam("float1")
         check(gain is not None and parent_name(gain) == RFV_GROUP,
-              "a Double added on the selected RFV group is a variable (parent %r)" % parent_name(gain))
-        require(select("setGain"), "the dialog lists the new variable setGain")
-        check(enabled("ManageUserParamsDialog", "Delete") is True, "a variable can be deleted")
-        yield from add_param("ManageUserParamsDialog", "setName", "Set name", TYPE_TEXT)
-        name = app.getNode(node_name).getParam("setName")
+              "a Float dropped on the RFV group is a variable (parent %r)" % parent_name(gain))
+        yield from rename_selected(node_name, "float1", "setGain", "Set gain")
+        require(cm.param(node_name, "setGain") is not None, "the new variable is named setGain")
+        check(cm.select(node_name, "setGain"), "a variable can be selected, so it can be edited and deleted")
+        cm.add(node_name, "String")
+        ok = yield ("until", lambda: cm.selected(node_name) == "string1", DIALOG_TIMEOUT_S)
+        require(ok, "a String was added after the selected variable")
+        name = app.getNode(node_name).getParam("string1")
         check(name is not None and parent_name(name) == RFV_GROUP,
               "a String added with a variable selected is a variable too (parent %r)" % parent_name(name))
-        select(RFV_GROUP)
-        yield from add_refused("ManageUserParamsDialog", "class", TYPE_DOUBLE)
+        yield from rename_selected(node_name, "string1", "setName", "Set name")
+        check(cm.commit_line(node_name, "KnobEditPropertiesName", "class"), "typed a Python keyword into the script name")
+        ok = yield ("until", lambda: bool(cm.property_error(node_name)), DIALOG_TIMEOUT_S)
+        check(ok, "the keyword name is refused with an inline error (%r)" % cm.property_error(node_name))
         check(app.getNode(node_name).getParam("class") is None, "the keyword name was not added")
-        gt.shot("m70-set-node-dialog.png")
-        yield from close_dialog("ManageUserParamsDialog")
+        gt.shot("m70-set-node-editor.png")
+        yield from leave_edit(node_name)
         yield ("sleep", SETTLE_MS)
         panel = node_panel(app.getNode(node_name))
         check(panel is not None and panel_has_label(panel, "Set gain") and panel_has_label(panel, "Set name"),
@@ -796,41 +810,75 @@ try:
             # Inside the RFV group: the user's report. The press that opened the menu is still on
             # the stack of the row it hit while the dialog rebuilds the user pages.
             yield from manage_from_right_click(node_name, "Set gain")
-            require(select(RFV_GROUP), "the dialog lists the RFV group " + RFV_GROUP)
-            yield from add_param("ManageUserParamsDialog", "gainVec", "Gain vec", TYPE_DOUBLE_3D)
+            require(cm.select(node_name, "setGain"), "selected the variable setGain in the editor")
+            cm.add(node_name, "Float")
+            ok = yield ("until", lambda: cm.selected(node_name) == "float1", DIALOG_TIMEOUT_S)
+            require(ok, "a Float was added after the selected variable")
+            yield from rename_selected(node_name, "float1", "gainVec", "Gain vec")
+            dims = cm.visible_child(node_name, QComboBox, "KnobEditPropertiesDimensions")
+            require(dims is not None and dims.findData(3) >= 0, "the property form offers 3 dimensions for a Float")
+            index = dims.findData(3)
+            dims.setCurrentIndex(index)
+            dims.activated.emit(index)
+            dims = None
+            QApplication.processEvents()
+            ok = yield ("until", lambda: cm.param(node_name, "gainVec") is not None and cm.param(node_name, "gainVec").getNumDimensions() == 3, DIALOG_TIMEOUT_S)
+            check(ok, "the dimensions combo made gainVec a 3-dimension Float")
             gt.shot("m70-right-click-manage-added.png")
-            yield from close_with_mouse("ManageUserParamsDialog")
-            yield ("sleep", SETTLE_MS)
-            check(main_gui() is not None and graph_up(), "Natron is still running after Close")
             vec = app.getNode(node_name).getParam("gainVec")
-            check(vec is not None and vec.getNumDimensions() == 3, "the 3-dimension gainVec exists on the node")
             check(vec is not None and parent_name(vec) == RFV_GROUP, "gainVec is in the RFV group (parent %r)" % parent_name(vec))
             vec = None
-            show_tab(node_panel(app.getNode(node_name)), "Variables")
-            yield ("sleep", SETTLE_MS)
-            check(node_panel(app.getNode(node_name)) is not None and panel_has_label(node_panel(app.getNode(node_name)), "Gain vec"),
-                  "the panel shows gainVec")
-            gt.shot("m70-right-click-manage-closed.png")
 
-            # Outside the group: a plain user page.
-            yield from manage_from_right_click(node_name, "Gain vec")
-            clear_selection()
-            yield from add_param("ManageUserParamsDialog", "plainCount", "Plain count", TYPE_INT)
-            yield from close_with_mouse("ManageUserParamsDialog")
-            yield ("sleep", SETTLE_MS)
-            check(main_gui() is not None and graph_up(), "Natron is still running after Close with a plain user knob")
+            # Outside the group: no selection, so the knob goes to the first user page.
+            check(cm.select(node_name, ""), "cleared the selection")
+            cm.add(node_name, "Int")
+            ok = yield ("until", lambda: cm.selected(node_name) == "int1", DIALOG_TIMEOUT_S)
+            require(ok, "an Int was added with nothing selected")
+            yield from rename_selected(node_name, "int1", "plainCount", "Plain count")
             plain = app.getNode(node_name).getParam("plainCount")
             check(plain is not None and isinstance(plain, NatronEngine.IntParam), "the Int plainCount exists on the node")
             check(plain is not None and parent_name(plain) != RFV_GROUP,
                   "plainCount is outside the RFV group (parent %r)" % parent_name(plain))
             plain = None
+
+            # The pinned group is not movable: dragging it onto plainCount changes nothing.
+            page_before = cm.child_names(node_name, RFV_PAGE)
+            group_before = cm.child_names(node_name, RFV_GROUP)
+            parent_before = parent_name(app.getNode(node_name).getParam(RFV_GROUP))
+            ov = cm.overlay(node_name)
+            target = cm.label_widget(node_name, "Plain count")
+            if check(ov is not None and target is not None, "found the overlay and plainCount's row"):
+                cm.send_drop(ov, cm.point_in(target, ov, 0.1),
+                             cm.mime_of(cm.EDITOR_MIME, cm.editor_payload(node_name, "move", RFV_GROUP)))
+            ov = target = None
+            yield ("sleep", SETTLE_MS)
+            check(parent_name(app.getNode(node_name).getParam(RFV_GROUP)) == parent_before
+                  and cm.child_names(node_name, RFV_PAGE) == page_before
+                  and cm.child_names(node_name, RFV_GROUP) == group_before,
+                  "the pinned RFV group cannot be moved")
+
+            pencil = cm.pencil(node_name)
+            require(pencil is not None, "found the pencil")
+            QTest.mouseClick(pencil, Qt.LeftButton)
+            pencil = None
+            ok = yield ("until", lambda: not cm.is_editing(node_name), DIALOG_TIMEOUT_S)
+            require(ok, "a mouse click on the pencil left edit mode")
+            yield ("sleep", SETTLE_MS)
+            check(main_gui() is not None and graph_up(), "Natron is still running after leaving edit mode")
             panel = node_panel(app.getNode(node_name))
+            if panel is not None:
+                show_tab(panel, "Variables")
+            yield ("sleep", SETTLE_MS)
+            check(node_panel(app.getNode(node_name)) is not None and panel_has_label(node_panel(app.getNode(node_name)), "Gain vec"),
+                  "the panel shows gainVec")
+            gt.shot("m70-right-click-manage-closed.png")
             if panel is not None:
                 for tabs in panel.findChildren(QTabWidget):
                     for i in range(tabs.count()):
                         if tabs.tabText(i).replace("&", "") == "User":
                             tabs.setCurrentIndex(i)
                 QApplication.processEvents()
+            panel = None
             yield ("sleep", SETTLE_MS)
             check(node_panel(app.getNode(node_name)) is not None and panel_has_label(node_panel(app.getNode(node_name)), "Plain count"),
                   "the panel shows plainCount")

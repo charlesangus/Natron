@@ -101,6 +101,7 @@ set(Tests_SOURCES
     LinkedNode_Test.cpp
     NodeContentHash_Test.cpp
     NodeDestroyWatcher_Test.cpp
+    NodeConvert_Test.cpp
     NodeId_Test.cpp
     GraphOpApply_Test.cpp
     GraphEditRecorder_Test.cpp

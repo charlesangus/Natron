@@ -68,10 +68,12 @@ public:
     };
 
     // A condition on another curated setting of the same renderer: a bool holds when true, a
-    // number when above zero; inverted flips it.
+    // number when above zero, and any setting when equals is set and its value is equals;
+    // inverted flips it.
     struct EnabledBy {
         std::string key;
         bool inverted = false;
+        PXR_NS::VtValue equals;
     };
 
     struct CuratedSetting {
@@ -83,6 +85,10 @@ public:
         // overrideDefault is set; otherwise the delegate's declared default is the knob's.
         PXR_NS::VtValue defaultValue;
         bool overrideDefault = false;
+        // Every engine of the renderer is given defaultValue before a prim's settings
+        // (engineDefaults()), so it is the knob's default and what the delegate does without the
+        // setting, whatever the delegate declares.
+        bool engineDefault = false;
         // A menu when not empty: the value sent is the chosen entry's, or the declared default
         // for an entry with an empty value.
         std::vector<Choice> choices;
@@ -153,6 +159,9 @@ public:
 
     // The curated group of the renderer: Cycles' or MoonRay's, null for any other.
     static const Curated* curatedFor(const std::string& rendererId);
+
+    // The settings with engineDefault in rendererId's curated group, at their defaultValue.
+    static Values engineDefaults(const std::string& rendererId);
 
     /**
      * @brief Whether curated's groups can be made: names are non-empty and unique, none is

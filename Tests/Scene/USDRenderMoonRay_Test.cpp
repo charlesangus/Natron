@@ -1049,7 +1049,7 @@ TEST_F(USDRenderMoonRayTest, TableMatchesTheDelegate)
         }
         const PXR_NS::VtValue& declaredDefault = declared[c.key];
         EXPECT_EQ(declaredDefault.GetTypeName(), c.defaultValue.GetTypeName()) << c.key;
-        if (c.overrideDefault) {
+        if (c.engineDefault) {
             // Subdivision Surfaces, off, renders polygons, which hdMoonray does only when told to.
             EXPECT_EQ(std::string("forcePolygon"), c.key);
             EXPECT_EQ(PXR_NS::VtValue(false), declaredDefault);
@@ -1193,8 +1193,8 @@ TEST_F(USDRenderMoonRayTest, CuratedKnobsReachTheDelegate)
         ASSERT_EQ(1u, sent.count(key)) << key << " is not sent";
         EXPECT_EQ(sent[key], moonRayReported(node, key)) << key << " sent " << RenderSettingsKnobs::valueText(sent[key]);
     }
-    ASSERT_EQ(1u, sent.count("forcePolygon"));
-    EXPECT_EQ(PXR_NS::VtValue(true), sent["forcePolygon"]);
+    // Every engine is given it, so it is not sent.
+    EXPECT_EQ(0u, sent.count("forcePolygon"));
     EXPECT_EQ(PXR_NS::VtValue(true), moonRayReported(node, "forcePolygon"));
 
     KnobBool* enableDenoise = dynamic_cast<KnobBool*>(settings->knob(kMoonRayRendererId, denoise).get());
@@ -1263,7 +1263,8 @@ moonRaySubdivisionCube(const char* name,
         + extra + "    }\n";
 }
 
-// Writes a stage of meshes, usda text, under a dome light, seen by kCamera from ten units up +Z.
+// Writes a stage of meshes, usda text, under a dome light, seen by kCamera from ten units up +Z,
+// with a second camera, FarCam, far behind it.
 bool
 writeMoonRaySubdivisionStage(const QString& file,
                              const std::string& meshes)
@@ -1274,6 +1275,9 @@ writeMoonRaySubdivisionStage(const QString& file,
                    "        float horizontalAperture = 20.955\n        float verticalAperture = 20.955\n"
                    "        float2 clippingRange = (0.1, 100)\n"
                    "        double3 xformOp:translate = (0, 0, 10)\n        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n    }\n"
+                   "    def Camera \"FarCam\"\n    {\n        float focalLength = 50\n"
+                   "        float horizontalAperture = 20.955\n        float verticalAperture = 20.955\n"
+                   "        double3 xformOp:translate = (0, 0, 400)\n        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n    }\n"
                    "    def DomeLight \"Fill\"\n    {\n        float inputs:intensity = 1\n    }\n"
                    "}\n";
     std::FILE* f = std::fopen(file.toStdString().c_str(), "w");
@@ -1305,8 +1309,9 @@ moonRayCoverage(const std::vector<float>& rgba,
 class USDRenderMoonRaySubdivisionTest
     : public USDRenderMoonRayTest {
 protected:
-    // The USDRender of a stage of meshes; null after a gtest failure.
-    NodePtr createStageGraph(const std::string& meshes)
+    // The USDRender of a stage of meshes; null after a gtest failure. *reader gets the USDRead.
+    NodePtr createStageGraph(const std::string& meshes,
+                             NodePtr* reader = nullptr)
     {
         const QString file = _dir.path() + QString::fromUtf8("/subdivision") + QString::number(_files++) + QString::fromUtf8(".usda");
         if (!_dir.isValid() || !writeMoonRaySubdivisionStage(file, meshes)) {
@@ -1315,7 +1320,7 @@ protected:
             return NodePtr();
         }
 
-        return createGraph(file.toStdString().c_str());
+        return createGraph(file.toStdString().c_str(), reader);
     }
 
     // Renders the stage of meshes with pixelSamples(2) and settings on MoonRay's engine; false
@@ -1383,6 +1388,50 @@ TEST_F(USDRenderMoonRaySubdivisionTest, ForcePolygonGatesTheScheme)
     EXPECT_NEAR(moonRayCoverage(smoothOff), moonRayCoverage(noneOff), 0.5);
 }
 
+// A render with no USDRenderSettings, so no settings from a prim, renders a Catmull-Clark cube as
+// its cage.
+TEST_F(USDRenderMoonRaySubdivisionTest, WithoutRenderSettingsTheCageRenders)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    HydraRender::releaseAllCpuEngines();
+    NodePtr reader;
+    ASSERT_TRUE(bool(createStageGraph(moonRaySubdivisionCube("Cube", "catmullClark"), &reader)));
+    static const int owner = 0;
+    HydraRender::Request request;
+    ASSERT_TRUE(moonRayRequest(reader, &owner, &request));
+    EXPECT_TRUE(request.settings.empty());
+    HydraRender::Result result;
+    std::string error;
+    const bool rendered = HydraRender::render(request, &result, &error);
+    HydraRender::release(&owner);
+    ASSERT_TRUE(rendered) << error;
+    ASSERT_EQ((std::size_t)kSize * (std::size_t)kSize * 4, result.rgba.size());
+
+    EXPECT_NEAR(1.f, result.rgba[pixel(kCageCorner, kCageCorner) * 4 + 3], 1e-2f);
+}
+
+// With Adaptive Error above 0, tessellating as seen from a camera far behind the render camera
+// coarsens what the render camera sees.
+TEST_F(USDRenderMoonRaySubdivisionTest, AFarDicingCameraCoarsensTheMesh)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    const std::string cube = moonRaySubdivisionCube("Cube", "catmullClark");
+    std::map<std::string, PXR_NS::VtValue> adaptive;
+    adaptive["natron:adaptiveError"] = PXR_NS::VtValue(1.f);
+    adaptive["natron:meshResolution"] = PXR_NS::VtValue(8.f);
+    std::map<std::string, PXR_NS::VtValue> far = adaptive;
+    far["natron:dicingCamera"] = PXR_NS::VtValue(std::string("/World/FarCam"));
+    std::vector<float> nearRgba, farRgba;
+    ASSERT_TRUE(renderStage(cube, subdivided(adaptive), &nearRgba));
+    ASSERT_TRUE(renderStage(cube, subdivided(far), &farRgba));
+
+    EXPECT_LT(moonRayCoverage(farRgba), moonRayCoverage(nearRgba) - 1.);
+}
+
 // A moonray:mesh_resolution primvar replaces the global Mesh Resolution for its own mesh only.
 TEST_F(USDRenderMoonRaySubdivisionTest, MeshResolutionPrimvarOverridesOneMesh)
 {
@@ -1448,7 +1497,8 @@ TEST_F(USDRenderMoonRaySubdivisionTest, KnobsSubdivideAndSetTheResolution)
     ASSERT_TRUE(renderAll(node, &cage));
     subdivide->setValue(true);
     EXPECT_TRUE(resolution->isEnabled(0));
-    EXPECT_EQ(0u, settings->values(kMoonRayRendererId).count("forcePolygon"));
+    ASSERT_EQ(1u, settings->values(kMoonRayRendererId).count("forcePolygon"));
+    EXPECT_EQ(PXR_NS::VtValue(false), settings->values(kMoonRayRendererId).at("forcePolygon"));
     ASSERT_TRUE(renderAll(node, &smooth));
     resolution->setValue(1.);
     ASSERT_TRUE(renderAll(node, &coarse));

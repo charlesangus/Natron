@@ -581,6 +581,23 @@ RenderSettingsKnobs::curatedFor(const std::string& rendererId)
     return nullptr;
 }
 
+RenderSettingsKnobs::Values
+RenderSettingsKnobs::engineDefaults(const std::string& rendererId)
+{
+    Values out;
+    const Curated* curated = curatedFor(rendererId);
+
+    if (curated) {
+        for (const CuratedSetting& c : curated->settings) {
+            if (c.engineDefault) {
+                out[c.key] = c.defaultValue;
+            }
+        }
+    }
+
+    return out;
+}
+
 std::vector<std::string>
 RenderSettingsKnobs::declaredNamespaces(const std::string& rendererId)
 {
@@ -1093,8 +1110,8 @@ struct RenderSettingsKnobs::Impl {
         }
     } // setKnobValue
 
-    // Whether the knob of the setting named key, a bool or a number, satisfies the condition; a
-    // setting that is missing or neither leaves its dependents enabled.
+    // Whether the knob of the setting named key satisfies the condition; a setting that is
+    // missing, or neither a bool nor a number without equals, leaves its dependents enabled.
     bool conditionHolds(const std::string& renderer,
                         const EnabledBy& condition) const
     {
@@ -1104,7 +1121,9 @@ struct RenderSettingsKnobs::Impl {
         }
         const VtValue v = knobValue(*controller);
         bool on = true;
-        if (v.IsHolding<bool>()) {
+        if (!condition.equals.IsEmpty()) {
+            on = (v == condition.equals);
+        } else if (v.IsHolding<bool>()) {
             on = v.UncheckedGet<bool>();
         } else if (v.IsHolding<int>()) {
             on = v.UncheckedGet<int>() > 0;
@@ -1406,6 +1425,9 @@ RenderSettingsKnobs::addRenderer(const std::string& rendererId,
                 if ((d.key == c.key) && (kindOf(d.defaultValue) == kindOf(c.defaultValue))) {
                     delegateDefault = d.defaultValue;
                 }
+            }
+            if (c.engineDefault) {
+                delegateDefault = c.defaultValue;
             }
             VtValue knobDefault = c.overrideDefault ? c.defaultValue : delegateDefault;
             // A follower starts where its leader, listed before it, does.

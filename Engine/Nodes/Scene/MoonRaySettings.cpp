@@ -185,7 +185,7 @@ make()
     {
         RenderSettingsKnobs::CuratedSetting s = declared("forcePolygon", "Renders each mesh whose subdivision scheme is Catmull-Clark, Loop or bilinear as a subdivision surface, tessellated at render time; a mesh whose scheme is none stays as it is. USD's default scheme is Catmull-Clark, so with this on every mesh that does not author none is smoothed. Loop meshes are rendered as Catmull-Clark, with a warning. A subdivided mesh shades with its limit surface's normals and ignores authored ones. Off, the default, renders every mesh as its polygons. The viewer's refine level has no effect on this renderer.", VtValue(true));
         s.name = "subdivisionSurfaces";
-        s.overrideDefault = true;
+        s.engineDefault = true;
         s.inverted = true;
         add("subdivision", s);
     }
@@ -265,6 +265,7 @@ make()
             s.enabledBy.push_back(condition);
         }
     }
+    enabledBy("natron:dicingCamera", "natron:adaptiveError");
 
     return c;
 } // make

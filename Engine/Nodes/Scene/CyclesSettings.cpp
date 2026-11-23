@@ -296,6 +296,14 @@ make()
             s.enabledBy.push_back(condition);
         }
     }
+    for (RenderSettingsKnobs::CuratedSetting& s : c.settings) {
+        if (s.key == "natron:dicingCamera") {
+            RenderSettingsKnobs::EnabledBy condition;
+            condition.key = "natron:adaptiveSpace";
+            condition.equals = VtValue(TfToken("pixel"));
+            s.enabledBy.push_back(condition);
+        }
+    }
 
     // Cycles sets this from its tile count on every sync, so a value sent here is overwritten.
     c.excludedKeys.push_back("cycles:film:use_sample_count");

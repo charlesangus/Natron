@@ -50,7 +50,7 @@ worldToFrame(const ScenePayload& scene,
 
         return false;
     }
-    SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(scene, errorMessage);
+    SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(scene, SceneLoadSet::everything(), errorMessage);
     const PXR_NS::UsdStageRefPtr stage = lease.getStage();
     if (!stage) {
         if (errorMessage->empty()) {
@@ -101,7 +101,7 @@ cameraPaths(const ScenePayload& scene)
         return out;
     }
     std::string error;
-    SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(scene, &error);
+    SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(scene, SceneLoadSet::everything(), &error);
     const PXR_NS::UsdStageRefPtr stage = lease.getStage();
     if (!stage) {
         return out;

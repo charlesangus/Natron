@@ -291,7 +291,7 @@ USDToGeo::renderGeometry(const GeoRenderActionArgs& args,
         if (scene.isEmpty()) {
             return eStatusOK;
         }
-        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(scene, error);
+        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(scene, SceneLoadSet::everything(), error);
         const PXR_NS::UsdStageRefPtr stage = lease.getStage();
         if (!stage) {
             if (error->empty()) {

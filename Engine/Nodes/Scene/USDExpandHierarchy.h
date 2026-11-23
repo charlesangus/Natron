@@ -83,7 +83,7 @@ public:
         .description = "Sets how the viewers below it draw the prims each of its rules names: as a box, by their "
                        "children, in full, in full with every payload below them loaded, or hidden. The scene "
                        "itself passes through unchanged, and renders and written files draw every prim.",
-        .grouping = PLUGIN_GROUP_3D_USD,
+        .grouping = PLUGIN_GROUP_USD_COMPOSITION,
         .majorVersion = 1,
         .minorVersion = 0,
         .isWriter = false,

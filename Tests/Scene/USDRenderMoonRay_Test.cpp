@@ -1304,6 +1304,24 @@ moonRayCoverage(const std::vector<float>& rgba,
 
     return sum;
 }
+// How many pixels of a and b differ in any channel.
+std::size_t
+moonRayDifferingPixels(const std::vector<float>& a,
+                       const std::vector<float>& b)
+{
+    std::size_t differing = 0;
+    const std::size_t pixels = std::min(a.size(), b.size()) / 4;
+    for (std::size_t p = 0; p < pixels; ++p) {
+        for (int k = 0; k < 4; ++k) {
+            if (std::fabs(a[p * 4 + k] - b[p * 4 + k]) > 1e-4f) {
+                ++differing;
+                break;
+            }
+        }
+    }
+
+    return differing;
+}
 } // anon namespace
 
 class USDRenderMoonRaySubdivisionTest
@@ -1413,8 +1431,10 @@ TEST_F(USDRenderMoonRaySubdivisionTest, WithoutRenderSettingsTheCageRenders)
 }
 
 // With Adaptive Error above 0, tessellating as seen from a camera far behind the render camera
-// coarsens what the render camera sees.
-TEST_F(USDRenderMoonRaySubdivisionTest, AFarDicingCameraCoarsensTheMesh)
+// changes what the render camera sees. Coverage is no measure: a coarse tessellation of the limit
+// surface covers about as much as a fine one, so the renders are compared pixel by pixel, with the
+// render camera named as the dicing camera as the control that matches the default.
+TEST_F(USDRenderMoonRaySubdivisionTest, AFarDicingCameraChangesTheTessellation)
 {
     if (!moonRayOrSkip()) {
         return;
@@ -1423,13 +1443,17 @@ TEST_F(USDRenderMoonRaySubdivisionTest, AFarDicingCameraCoarsensTheMesh)
     std::map<std::string, PXR_NS::VtValue> adaptive;
     adaptive["natron:adaptiveError"] = PXR_NS::VtValue(1.f);
     adaptive["natron:meshResolution"] = PXR_NS::VtValue(8.f);
+    std::map<std::string, PXR_NS::VtValue> same = adaptive;
+    same["natron:dicingCamera"] = PXR_NS::VtValue(std::string(kCamera));
     std::map<std::string, PXR_NS::VtValue> far = adaptive;
     far["natron:dicingCamera"] = PXR_NS::VtValue(std::string("/World/FarCam"));
-    std::vector<float> nearRgba, farRgba;
+    std::vector<float> nearRgba, sameRgba, farRgba;
     ASSERT_TRUE(renderStage(cube, subdivided(adaptive), &nearRgba));
+    ASSERT_TRUE(renderStage(cube, subdivided(same), &sameRgba));
     ASSERT_TRUE(renderStage(cube, subdivided(far), &farRgba));
 
-    EXPECT_LT(moonRayCoverage(farRgba), moonRayCoverage(nearRgba) - 1.);
+    EXPECT_EQ(0u, moonRayDifferingPixels(nearRgba, sameRgba));
+    EXPECT_GT(moonRayDifferingPixels(nearRgba, farRgba), 0u);
 }
 
 // A moonray:mesh_resolution primvar replaces the global Mesh Resolution for its own mesh only.

@@ -162,6 +162,12 @@ Runs where the secret is empty, such as fork PRs, and runs where the server is
 down or slow, build with the local ccache only; the build never fails because
 of the cache.
 
+A branch whose history predates remote storage support never writes to it, so
+builds of objects only such branches have compiled find nothing remotely (0
+remote hits) until those changes reach a branch that has remote storage.
+Merging main into the branch fixes it. Presets differ too: most gates build
+`fast`, so a first `release` build of a change mostly misses.
+
 ## GUI checks in remote mode
 
 `--gui "<script> ..."` runs `Tests/gui/` scripts on GitHub Actions, one job

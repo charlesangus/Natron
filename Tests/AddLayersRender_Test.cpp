@@ -128,7 +128,7 @@ protected:
                        const std::vector<std::string>& channels)
     {
         std::string error;
-        const LayerRegistry::AddResultEnum result = getApp()->getProject()->addLayer(ImageLayerDesc(id, id, "", channels), LayerRegistryEntry::eOriginUser, &error);
+        const LayerRegistry::AddResultEnum result = getApp()->getProject()->addLayer(ImageLayerDesc(id, channels), LayerRegistryEntry::eOriginUser, &error);
         EXPECT_TRUE((result == LayerRegistry::eAddResultAdded) || (result == LayerRegistry::eAddResultGrown)) << id << ": " << error;
     }
 

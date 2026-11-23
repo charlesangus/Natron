@@ -95,6 +95,7 @@
 #define kViewerParamFractionDistance "fractionDistance"
 #define kViewerParamFractionPercent "fractionPercent"
 #define kViewerParamBudgetBoxes "budgetBoxes"
+#define kViewerParamMapSiblingOverlays "mapSiblingOverlays"
 
 NATRON_NAMESPACE_ENTER
 

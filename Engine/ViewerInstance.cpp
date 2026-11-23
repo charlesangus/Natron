@@ -1152,6 +1152,11 @@ ViewerInstance::initializeKnobs()
     budgetBoxes->populateChoices(getBudgetBoxesChoices());
     budgetBoxes->setDefaultValue((int)eBudgetBoxesBoxWire);
     k.budgetBoxes = budgetBoxes;
+    KnobBoolPtr mapSiblingOverlays = createViewerKnob<KnobBool>(this, page, tr("Map Sibling Overlays"), kViewerParamMapSiblingOverlays,
+                                                                tr("Draws the overlay of a node on another branch of a shared input "
+                                                                   "through that input, so it lines up with the viewed image. Off draws "
+                                                                   "it in its own space."));
+    mapSiblingOverlays->setDefaultValue(true);
 
     if (NodePtr node = getNode()) {
         node->declareLayerKnob(layer, 0, LayerKnobSpec::eRoleInputBound);
@@ -4886,7 +4891,7 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
         }
 
         if ( colorImage && stats && stats->isInDepthProfilingEnabled() ) {
-            stats->addRenderInfosForNode( getNode(), NodePtr(), colorImage->getComponents().getChannelsLabel(), viewerRenderRoI, viewerRenderTimeRecorder->getTimeSinceCreation() );
+            stats->addRenderInfosForNode(getNode(), NodePtr(), colorImage->getComponents().getUserFacingLabel(), viewerRenderRoI, viewerRenderTimeRecorder->getTimeSinceCreation());
         }
     } // for (std::vector<RectI>::iterator rect = splitRoi.begin(); rect != splitRoi.end(), ++rect) {
 

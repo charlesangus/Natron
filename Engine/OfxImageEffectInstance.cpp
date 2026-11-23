@@ -65,6 +65,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/NodeMetadata.h"
 #include "Engine/OfxClipInstance.h"
 #include "Engine/OfxEffectInstance.h"
+#include "Engine/OfxLayerMapping.h"
 #include "Engine/OfxMemory.h"
 #include "Engine/OfxOverlayInteract.h"
 #include "Engine/OfxParamInstance.h"
@@ -302,7 +303,7 @@ const std::vector<std::string>&
 OfxImageEffectInstance::getUserCreatedPlanes() const
 {
     OfxEffectInstancePtr effect = _ofxEffectInstance.lock();
-    const std::vector<std::string>& ofxPlanes = effect->getUserLayers();
+    const std::vector<std::string>& ofxPlanes = effect->getUserLayers(&OfxLayerMapping::layerToPlane);
     return ofxPlanes;
 }
 
@@ -370,7 +371,7 @@ OfxImageEffectInstance::getDimension(const std::string &name) const OFX_EXCEPTIO
         return OFX::Host::ImageEffect::Instance::getDimension(name);
     }
     try {
-        const std::vector<std::string>& ofxPlanes = effect->getUserLayers();
+        const std::vector<std::string>& ofxPlanes = effect->getUserLayers(&OfxLayerMapping::layerToPlane);
         return (int)ofxPlanes.size();
     } catch (...) {
         throw OFX::Host::Property::Exception(kOfxStatErrUnknown);
@@ -1242,19 +1243,7 @@ OfxImageEffectInstance::setupClipPreferencesArgsFromMetadata(NodeMetadata& metad
         OFX::Host::Property::PropSpec specComp = {componentParamName.c_str(),  OFX::Host::Property::eString, 0, false,          ""}; // note the support for multi-planar clips
         outArgs.createProperty(specComp);
 
-        std::string ofxClipComponentStr;
-        std::string componentsType = metadata.getComponentsType(inputNb);
-        int nComps = metadata.getNComps(inputNb);
-        ImageLayerDesc natronLayer = ImageLayerDesc::mapNCompsToColorLayer(nComps);
-        if (componentsType == kNatronColorLayerID) {
-            ofxClipComponentStr = ImageLayerDesc::mapLayerToOFXComponentsTypeString(natronLayer);
-        } else if (componentsType == kNatronDisparityComponentsLabel) {
-            ofxClipComponentStr = kFnOfxImageComponentStereoDisparity;
-        } else if (componentsType == kNatronMotionComponentsLabel) {
-            ofxClipComponentStr = kFnOfxImageComponentMotionVectors;
-        } else {
-            ofxClipComponentStr = ImageLayerDesc::mapLayerToOFXComponentsTypeString(natronLayer);
-        }
+        const std::string ofxClipComponentStr = OfxLayerMapping::componentsTypeToComponents(metadata.getComponentsType(inputNb), metadata.getNComps(inputNb));
 
         outArgs.setStringProperty( componentParamName.c_str(), ofxClipComponentStr.c_str() ); // as it is variable dimension, there is no default value, so we have to set it explicitly
 
@@ -1338,18 +1327,9 @@ OfxImageEffectInstance::getClipPreferences_safe(NodeMetadata& defaultPrefs)
             defaultPrefs.setBitDepth( inputNb, OfxClipInstance::ofxDepthToNatronDepth( outArgs.getStringProperty(depthParamName) ) );
             ImageLayerDesc layer, pairedLayer;
             std::string ofxComponentsType = outArgs.getStringProperty(componentParamName);
-            ImageLayerDesc::mapOFXComponentsTypeStringToLayers(ofxComponentsType, &layer, &pairedLayer);
+            OfxLayerMapping::componentsToLayers(ofxComponentsType, &layer, &pairedLayer);
             defaultPrefs.setNComps(inputNb, layer.getNumComponents());
-
-            if (layer.isColorLayer()) {
-                defaultPrefs.setComponentsType(inputNb, kNatronColorLayerID);
-            } else if (layer.getChannelsLabel() == kNatronMotionComponentsLabel) {
-                defaultPrefs.setComponentsType( inputNb, kNatronMotionComponentsLabel);
-            } else if (layer.getChannelsLabel() == kNatronDisparityComponentsLabel) {
-                defaultPrefs.setComponentsType( inputNb, kNatronDisparityComponentsLabel);
-            } else {
-                defaultPrefs.setComponentsType( inputNb, ofxComponentsType);
-            }
+            defaultPrefs.setComponentsType(inputNb, OfxLayerMapping::componentsToComponentsType(ofxComponentsType));
 
             defaultPrefs.setPixelAspectRatio( inputNb, outArgs.getDoubleProperty(parParamName) );
         }

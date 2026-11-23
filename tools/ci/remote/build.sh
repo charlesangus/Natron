@@ -6,7 +6,7 @@
 #
 # Usage:
 #   tools/ci/remote/build.sh <fast|release|debug> [--tests] [--scheduler <legacy|taskgraph>] [--record-goldens]
-#                            [--shuffle-seeds <n,n,...>] [--repeat-test <name>:<N>] [--no-appimage] [--debug-symbols] [--cmake-arg <arg>]... [--gui "<script> ..."]
+#                            [--shuffle-seeds <n,n,...>] [--repeat-test <name>:<N>] [--no-appimage] [--no-remote-ccache] [--debug-symbols] [--cmake-arg <arg>]... [--gui "<script> ..."]
 #   tools/ci/remote/build.sh <fast|release> --from-run <run-id> --gui "<script> ..."
 #   tools/ci/remote/build.sh --mode
 #
@@ -58,6 +58,9 @@
 #                        --debuginfo-path and <exe>.bin.syms listings for
 #                        heavy_scene_stack_window.py --symbols. The AppImage is the
 #                        same one a run without it ships. Needs the AppImage.
+#   --no-remote-ccache -> build with the local and actions/cache ccache only,
+#                        without the shared remote ccache storage (the
+#                        CCACHE_REMOTE_STORAGE repo secret).
 #   --cmake-arg <arg> -> pass <arg> to the remote cmake configure, e.g.
 #                        --cmake-arg -DNATRON_GPU=OFF. Repeatable. The args reach
 #                        the workflow as one space-separated input, so an arg
@@ -94,7 +97,7 @@ FIND_INTERVAL_SECS=5
 WATCH_INTERVAL_SECS=30
 
 usage() {
-    echo "usage: build.sh <fast|release|debug> [--tests] [--scheduler <legacy|taskgraph>] [--record-goldens] [--shuffle-seeds <n,n,...>] [--repeat-test <name>:<N>] [--no-appimage] [--debug-symbols] [--cmake-arg <arg>]... [--gui \"<script> ...\"]" >&2
+    echo "usage: build.sh <fast|release|debug> [--tests] [--scheduler <legacy|taskgraph>] [--record-goldens] [--shuffle-seeds <n,n,...>] [--repeat-test <name>:<N>] [--no-appimage] [--no-remote-ccache] [--debug-symbols] [--cmake-arg <arg>]... [--gui \"<script> ...\"]" >&2
     echo "       build.sh <fast|release> --from-run <run-id> [--gui-ref <ref>] --gui \"<script> ...\"" >&2
     echo "       build.sh --mode" >&2
 }
@@ -131,6 +134,7 @@ RUN_TESTS=false
 RECORD_GOLDENS=false
 WANT_APPIMAGE=true
 DEBUG_SYMBOLS=false
+REMOTE_CCACHE=true
 SHUFFLE_SEEDS=""
 REPEAT_TEST=""
 SCHEDULERS="legacy,taskgraph"
@@ -210,6 +214,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --debug-symbols)
             DEBUG_SYMBOLS=true
+            BUILD_OPTION=true
+            ;;
+        --no-remote-ccache)
+            REMOTE_CCACHE=false
             BUILD_OPTION=true
             ;;
         --cmake-arg)
@@ -381,6 +389,12 @@ if [[ "${DEBUG_SYMBOLS}" == "true" ]]; then
     REPEAT_ARGS+=(-f "debug_symbols=true")
 fi
 
+# Sent only when switched off, so a ref whose workflow predates the input still dispatches.
+REMOTE_CCACHE_ARGS=()
+if [[ "${REMOTE_CCACHE}" == false ]]; then
+    REMOTE_CCACHE_ARGS=(-f "remote_ccache=false")
+fi
+
 echo "== build.sh: dispatching ${WORKFLOW} on ${BRANCH} (${HEAD_SHA:0:10}) token=${TOKEN} =="
 gh workflow run "${WORKFLOW}" --ref "${BRANCH}" \
     -f "preset=${PRESET}" \
@@ -389,6 +403,7 @@ gh workflow run "${WORKFLOW}" --ref "${BRANCH}" \
     -f "appimage=${WANT_APPIMAGE}" \
     -f "shuffle_seeds=${SHUFFLE_SEEDS}" \
     ${REPEAT_ARGS[@]+"${REPEAT_ARGS[@]}"} \
+    ${REMOTE_CCACHE_ARGS[@]+"${REMOTE_CCACHE_ARGS[@]}"} \
     -f "schedulers=${SCHEDULERS}" \
     -f "cmake_args=${CMAKE_ARGS}" \
     -f "label=${LABEL}" \

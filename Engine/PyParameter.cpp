@@ -44,6 +44,7 @@
 #include "Engine/IsolatedJob.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
+#include "Engine/KnobColorWarpPins.h"
 #include "Engine/KnobDriver.h"
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobLinkGroup.h"
@@ -4645,6 +4646,389 @@ ParametricParam::setDefaultCurvesFromCurrentCurves()
         return;
     }
     param->setDefaultCurvesFromCurves();
+}
+
+////////////////////ColorWarpPinsParam
+
+ColorWarpPinsParam::ColorWarpPinsParam(const KnobColorWarpPinsPtr& knob)
+    : StringParamBase(std::dynamic_pointer_cast<KnobStringBase>(knob))
+    , _tKnob(knob)
+{
+}
+
+ColorWarpPinsParam::~ColorWarpPinsParam()
+{
+}
+
+bool
+ColorWarpPinsParam::readPin(int index,
+                            ColorWarpPinData* pin) const
+{
+    KnobColorWarpPinsPtr knob = _tKnob.lock();
+
+    if (!knob) {
+        return false;
+    }
+    const ColorWarpPinSet pins = knob->getPinSet();
+    if ((index < 0) || (index >= (int)pins.pins.size())) {
+        PyErr_SetString(PyExc_IndexError, "ColorWarp pin index out of range");
+
+        return false;
+    }
+    *pin = pins.pins[index];
+
+    return true;
+}
+
+bool
+ColorWarpPinsParam::beginEdit(int index,
+                              ColorWarpPinSet* pins)
+{
+    KnobColorWarpPinsPtr knob = _tKnob.lock();
+
+    if (!knob) {
+        return false;
+    }
+    *pins = knob->getPinSet();
+    if ((index < 0) || (index >= (int)pins->pins.size())) {
+        PyErr_SetString(PyExc_IndexError, "ColorWarp pin index out of range");
+
+        return false;
+    }
+    if (!checkIsEditable() || !recordEdit(getInternalKnob())) {
+        return false;
+    }
+
+    return true;
+}
+
+int
+ColorWarpPinsParam::getPinCount() const
+{
+    KnobColorWarpPinsPtr knob = _tKnob.lock();
+
+    return knob ? (int)knob->getPinSet().pins.size() : 0;
+}
+
+int
+ColorWarpPinsParam::addPin(double r,
+                           double g,
+                           double b,
+                           double x,
+                           double y,
+                           double frame)
+{
+    KnobColorWarpPinsPtr knob = _tKnob.lock();
+
+    if (!knob || !checkIsEditable() || !recordEdit(getInternalKnob())) {
+        return -1;
+    }
+    ColorWarpPinSet pins = knob->getPinSet();
+    const double source[3] = { r, g, b };
+    const int index = pins.addPin(source, x, y, frame);
+    knob->setPinSet(pins);
+
+    return index;
+}
+
+void
+ColorWarpPinsParam::removePin(int index)
+{
+    ColorWarpPinSet pins;
+
+    if (!beginEdit(index, &pins)) {
+        return;
+    }
+    pins.pins.erase(pins.pins.begin() + index);
+    _tKnob.lock()->setPinSet(pins);
+}
+
+QString
+ColorWarpPinsParam::getPinName(int index) const
+{
+    ColorWarpPinData pin;
+
+    return readPin(index, &pin) ? QString::fromStdString(pin.name) : QString();
+}
+
+void
+ColorWarpPinsParam::setPinName(int index,
+                               const QString& name)
+{
+    ColorWarpPinSet pins;
+
+    if (!beginEdit(index, &pins)) {
+        return;
+    }
+    pins.pins[index].name = name.toStdString();
+    _tKnob.lock()->setPinSet(pins);
+}
+
+bool
+ColorWarpPinsParam::getPinEnabled(int index) const
+{
+    ColorWarpPinData pin;
+
+    return readPin(index, &pin) && pin.enabled;
+}
+
+void
+ColorWarpPinsParam::setPinEnabled(int index,
+                                  bool enabled)
+{
+    ColorWarpPinSet pins;
+
+    if (!beginEdit(index, &pins)) {
+        return;
+    }
+    pins.pins[index].enabled = enabled;
+    _tKnob.lock()->setPinSet(pins);
+}
+
+ColorTuple
+ColorWarpPinsParam::getPinSource(int index) const
+{
+    ColorTuple ret = { 0., 0., 0., 1. };
+    ColorWarpPinData pin;
+
+    if (readPin(index, &pin)) {
+        ret.r = pin.source[0];
+        ret.g = pin.source[1];
+        ret.b = pin.source[2];
+    }
+
+    return ret;
+}
+
+void
+ColorWarpPinsParam::setPinSource(int index,
+                                 double r,
+                                 double g,
+                                 double b)
+{
+    ColorWarpPinSet pins;
+
+    if (!beginEdit(index, &pins)) {
+        return;
+    }
+    ColorWarpPinData& pin = pins.pins[index];
+    const double source[3] = { r, g, b };
+    for (int c = 0; c < 3; ++c) {
+        pin.target[c].offset(source[c] - pin.source[c]);
+        pin.source[c] = source[c];
+    }
+    _tKnob.lock()->setPinSet(pins);
+}
+
+Double2DTuple
+ColorWarpPinsParam::getPinPosition(int index) const
+{
+    Double2DTuple ret = { 0., 0. };
+    ColorWarpPinData pin;
+
+    if (readPin(index, &pin)) {
+        ret.x = pin.position[0];
+        ret.y = pin.position[1];
+    }
+
+    return ret;
+}
+
+double
+ColorWarpPinsParam::getPinFrame(int index) const
+{
+    ColorWarpPinData pin;
+
+    return readPin(index, &pin) ? pin.frame : 0.;
+}
+
+ColorTuple
+ColorWarpPinsParam::getPinTarget(int index,
+                                 double frame) const
+{
+    ColorTuple ret = { 0., 0., 0., 1. };
+    ColorWarpPinData pin;
+
+    if (readPin(index, &pin)) {
+        ret.r = pin.target[0].valueAt(frame);
+        ret.g = pin.target[1].valueAt(frame);
+        ret.b = pin.target[2].valueAt(frame);
+    }
+
+    return ret;
+}
+
+void
+ColorWarpPinsParam::setPinTarget(int index,
+                                 double r,
+                                 double g,
+                                 double b,
+                                 double frame)
+{
+    ColorWarpPinSet pins;
+
+    if (!beginEdit(index, &pins)) {
+        return;
+    }
+    const double target[3] = { r, g, b };
+    for (int c = 0; c < 3; ++c) {
+        pins.pins[index].target[c].set(frame, target[c]);
+    }
+    _tKnob.lock()->setPinSet(pins);
+}
+
+void
+ColorWarpPinsParam::setPinTargetKey(int index,
+                                    double r,
+                                    double g,
+                                    double b,
+                                    double frame)
+{
+    ColorWarpPinSet pins;
+
+    if (!beginEdit(index, &pins)) {
+        return;
+    }
+    const double target[3] = { r, g, b };
+    for (int c = 0; c < 3; ++c) {
+        pins.pins[index].target[c].setKey(frame, target[c]);
+    }
+    _tKnob.lock()->setPinSet(pins);
+}
+
+double
+ColorWarpPinsParam::getPinStrength(int index,
+                                   double frame) const
+{
+    ColorWarpPinData pin;
+
+    return readPin(index, &pin) ? pin.strength.valueAt(frame) : 0.;
+}
+
+void
+ColorWarpPinsParam::setPinStrength(int index,
+                                   double strength,
+                                   double frame)
+{
+    ColorWarpPinSet pins;
+
+    if (!beginEdit(index, &pins)) {
+        return;
+    }
+    pins.pins[index].strength.set(frame, strength);
+    _tKnob.lock()->setPinSet(pins);
+}
+
+void
+ColorWarpPinsParam::setPinStrengthKey(int index,
+                                      double strength,
+                                      double frame)
+{
+    ColorWarpPinSet pins;
+
+    if (!beginEdit(index, &pins)) {
+        return;
+    }
+    pins.pins[index].strength.setKey(frame, strength);
+    _tKnob.lock()->setPinSet(pins);
+}
+
+double
+ColorWarpPinsParam::getPinFalloff(int index,
+                                  double frame) const
+{
+    ColorWarpPinData pin;
+
+    return readPin(index, &pin) ? pin.falloff.valueAt(frame) : 0.;
+}
+
+void
+ColorWarpPinsParam::setPinFalloff(int index,
+                                  double falloff,
+                                  double frame)
+{
+    ColorWarpPinSet pins;
+
+    if (!beginEdit(index, &pins)) {
+        return;
+    }
+    pins.pins[index].falloff.set(frame, falloff);
+    _tKnob.lock()->setPinSet(pins);
+}
+
+void
+ColorWarpPinsParam::setPinFalloffKey(int index,
+                                     double falloff,
+                                     double frame)
+{
+    ColorWarpPinSet pins;
+
+    if (!beginEdit(index, &pins)) {
+        return;
+    }
+    pins.pins[index].falloff.setKey(frame, falloff);
+    _tKnob.lock()->setPinSet(pins);
+}
+
+bool
+ColorWarpPinsParam::getPinHasKey(int index,
+                                 double frame) const
+{
+    ColorWarpPinData pin;
+
+    if (!readPin(index, &pin)) {
+        return false;
+    }
+
+    return pin.target[0].hasKeyAt(frame) || pin.target[1].hasKeyAt(frame) || pin.target[2].hasKeyAt(frame) || pin.strength.hasKeyAt(frame) || pin.falloff.hasKeyAt(frame);
+}
+
+void
+ColorWarpPinsParam::removePinKeys(int index,
+                                  double frame)
+{
+    ColorWarpPinSet pins;
+
+    if (!beginEdit(index, &pins)) {
+        return;
+    }
+    ColorWarpPinData& pin = pins.pins[index];
+    for (int c = 0; c < 3; ++c) {
+        (void)pin.target[c].removeKey(frame);
+    }
+    (void)pin.strength.removeKey(frame);
+    (void)pin.falloff.removeKey(frame);
+    _tKnob.lock()->setPinSet(pins);
+}
+
+int
+ColorWarpPinsParam::getSelectedPin() const
+{
+    KnobColorWarpPinsPtr knob = _tKnob.lock();
+
+    return knob ? knob->getPinSet().indexOf(knob->getSelectedPinId()) : -1;
+}
+
+void
+ColorWarpPinsParam::setSelectedPin(int index)
+{
+    KnobColorWarpPinsPtr knob = _tKnob.lock();
+
+    if (!knob) {
+        return;
+    }
+    if (index < 0) {
+        knob->setSelectedPinId(0);
+
+        return;
+    }
+    const ColorWarpPinSet pins = knob->getPinSet();
+    if (index >= (int)pins.pins.size()) {
+        PyErr_SetString(PyExc_IndexError, "ColorWarp pin index out of range");
+
+        return;
+    }
+    knob->setSelectedPinId(pins.pins[index].id);
 }
 
 NATRON_PYTHON_NAMESPACE_EXIT

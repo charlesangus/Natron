@@ -1344,6 +1344,86 @@ public:
  **/
 std::map<std::string, std::string> getShuffleMapModifiedConnections(const KnobShuffleMapPtr& mappingKnob);
 
+/////////////////ColorWarpPinsParam
+
+/**
+ * @brief The pins of a ColorWarp node. Pins are addressed by index in the list, 0 first; a bad
+ * index raises IndexError. Values that may be animated are read at frame; a setter writes a key
+ * at frame when that value is animated and the static value otherwise, while the setXxxKey()
+ * setters always write a key. Each call is one undo step.
+ **/
+class ColorWarpPinsParam
+    : public StringParamBase {
+    KnobColorWarpPinsWPtr _tKnob;
+
+public:
+    ColorWarpPinsParam(const KnobColorWarpPinsPtr& knob);
+
+    virtual ~ColorWarpPinsParam();
+
+    int getPinCount() const;
+
+    /**
+     * @brief Adds a pin mapping (r, g, b) to itself, picked at canonical (x, y) on frame, and
+     * returns its index.
+     **/
+    int addPin(double r, double g, double b, double x, double y, double frame);
+
+    void removePin(int index);
+
+    QString getPinName(int index) const;
+    void setPinName(int index, const QString& name);
+
+    bool getPinEnabled(int index) const;
+    void setPinEnabled(int index, bool enabled);
+
+    ColorTuple getPinSource(int index) const;
+
+    /**
+     * @brief Moves the pin onto a new source colour, keeping its target - source shift.
+     **/
+    void setPinSource(int index, double r, double g, double b);
+
+    Double2DTuple getPinPosition(int index) const;
+    double getPinFrame(int index) const;
+
+    ColorTuple getPinTarget(int index, double frame) const;
+    void setPinTarget(int index, double r, double g, double b, double frame);
+    void setPinTargetKey(int index, double r, double g, double b, double frame);
+
+    double getPinStrength(int index, double frame) const;
+    void setPinStrength(int index, double strength, double frame);
+    void setPinStrengthKey(int index, double strength, double frame);
+
+    double getPinFalloff(int index, double frame) const;
+    void setPinFalloff(int index, double falloff, double frame);
+    void setPinFalloffKey(int index, double falloff, double frame);
+
+    /**
+     * @brief Whether any of the pin's target, strength or falloff has a key at frame.
+     **/
+    bool getPinHasKey(int index, double frame) const;
+
+    /**
+     * @brief Removes the pin's target, strength and falloff keys at frame.
+     **/
+    void removePinKeys(int index, double frame);
+
+    /**
+     * @brief The index of the selected pin, or -1.
+     **/
+    int getSelectedPin() const;
+
+    /**
+     * @brief Selects the pin at index, or none for -1. Not an undo step.
+     **/
+    void setSelectedPin(int index);
+
+private:
+    bool beginEdit(int index, ColorWarpPinSet* pins);
+    bool readPin(int index, ColorWarpPinData* pin) const;
+};
+
 /////////////////ButtonParam
 
 class ButtonParam

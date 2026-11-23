@@ -269,6 +269,11 @@ struct NodeConvertCommand::Implementation {
     std::list<KnobIWPtr> convertedLinked;
     std::vector<AliasBinding> aliases;
 
+    struct ExpressionReader {
+        KnobIWPtr knob;
+        int dimension;
+    };
+
     std::string targetKnobName(const KnobIPtr& knob) const
     {
         if (knob->isUserKnob()) {
@@ -470,6 +475,58 @@ struct NodeConvertCommand::Implementation {
         }
     }
 
+    // The expressions of other nodes that read a knob of node.
+    static std::vector<ExpressionReader> expressionReadersOf(const NodePtr& node)
+    {
+        std::vector<ExpressionReader> readers;
+        const EffectInstancePtr effect = node->getEffectInstance();
+        if (!effect) {
+            return readers;
+        }
+        const KnobsVec knobs = effect->getKnobs_mt_safe();
+        for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+            KnobI::ListenerDimsMap listeners;
+            (*it)->getListeners(listeners);
+            for (KnobI::ListenerDimsMap::const_iterator l = listeners.begin(); l != listeners.end(); ++l) {
+                const KnobIPtr listener = l->first.lock();
+                if (!listener || (listener->getHolder() == effect.get())) {
+                    continue;
+                }
+                for (std::size_t d = 0; d < l->second.size(); ++d) {
+                    if (l->second[d].isListening && l->second[d].isExpr) {
+                        ExpressionReader reader;
+                        reader.knob = listener;
+                        reader.dimension = (int)d;
+                        readers.push_back(reader);
+                    }
+                }
+            }
+        }
+
+        return readers;
+    }
+
+    // An expression that found the original's name while the replacement was still being filled
+    // validates against the original's knobs and keeps listening to them. Setting it again reads
+    // the replacement's.
+    static void rebindExpressions(const std::vector<ExpressionReader>& readers)
+    {
+        for (std::size_t i = 0; i < readers.size(); ++i) {
+            const KnobIPtr knob = readers[i].knob.lock();
+            if (!knob) {
+                continue;
+            }
+            const std::string expression = knob->getExpression(readers[i].dimension);
+            if (expression.empty()) {
+                continue;
+            }
+            try {
+                knob->setExpression(readers[i].dimension, expression, knob->isExpressionUsingRetVariable(readers[i].dimension), false);
+            } catch (...) {
+            }
+        }
+    }
+
     void create(const NodePtr& node)
     {
         const std::string name = node->getScriptName_mt_safe();
@@ -486,6 +543,7 @@ struct NodeConvertCommand::Implementation {
             }
         }
         const std::vector<Edge> readers = readersOf(node);
+        const std::vector<ExpressionReader> expressionReaders = expressionReadersOf(node);
 
         // Deactivating first frees the name for the replacement and marks the expressions that
         // read the node missing, to be rechecked against the replacement.
@@ -521,6 +579,7 @@ struct NodeConvertCommand::Implementation {
             }
         }
         recheckExpressionsNaming(replacement);
+        rebindExpressions(expressionReaders);
     }
 };
 

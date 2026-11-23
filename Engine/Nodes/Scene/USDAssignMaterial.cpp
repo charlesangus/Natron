@@ -740,7 +740,7 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
             app->getProject()->getFrameRange(&range.firstFrame, &range.lastFrame);
             const double framesPerSecond = app->getProject()->getProjectFrameRate();
             ContentHasher upstreamHasher;
-            upstreamHasher.appendU64(upstream.getStackHash());
+            upstreamHasher.appendU64(upstream.getContentHash());
             SceneNodeAuthoring::appendUpstreamMetadata(upstream, &upstreamHasher);
             const U64 upstreamKey = upstreamHasher.finalize();
             ContentHasher keyHasher;

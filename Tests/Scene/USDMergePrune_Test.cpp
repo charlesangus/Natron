@@ -99,6 +99,31 @@ layersOf(const ScenePayload& payload)
 
     return layers;
 }
+// The context flags of payload's entries, weakest first.
+std::vector<bool>
+contextOf(const ScenePayload& payload)
+{
+    std::vector<bool> flags;
+
+    for (const SceneLayerEntry& entry : SceneOps::getLayers(payload)) {
+        flags.push_back(entry.context);
+    }
+
+    return flags;
+}
+
+// payload with one fresh layer on top, defining a prim at path.
+ScenePayload
+stackPrim(const ScenePayload& payload,
+          const char* path,
+          U64 hash)
+{
+    PXR_NS::SdfLayerRefPtr layer = SceneOps::createNodeLayer("context-test");
+
+    PXR_NS::SdfCreatePrimInLayer(layer, PXR_NS::SdfPath(path))->SetSpecifier(PXR_NS::SdfSpecifierDef);
+
+    return SceneOps::appendLayer(payload, layer, hash);
+}
 } // anonymous namespace
 
 class USDMergePruneTest
@@ -383,4 +408,57 @@ TEST_F(USDMergePruneTest, ZeroMatchesWarnAndPassTheSceneThrough)
     setString(node, kUSDPruneParamPrimPattern, " ");
     EXPECT_TRUE(evaluate(node).isSameStack(input));
     EXPECT_FALSE(node->hasPersistentMessage());
+}
+
+TEST_F(USDMergePruneTest, MarkContextFlagsEveryEntryAndMovesTheHash)
+{
+    PXR_NS::SdfLayerRefPtr base = SceneOps::createNodeLayer("context-base");
+    base->SetDefaultPrim(PXR_NS::TfToken("World"));
+    PXR_NS::SdfCreatePrimInLayer(base, PXR_NS::SdfPath("/World"))->SetSpecifier(PXR_NS::SdfSpecifierDef);
+    const ScenePayload input = stackPrim(SceneOps::appendLayer(ScenePayload(), base, 0xba5eULL), "/World/Edit", 0xed17ULL);
+    EXPECT_FALSE(SceneOps::hasContext(input));
+
+    const ScenePayload marked = SceneOps::markContext(input);
+    EXPECT_EQ(std::vector<bool>({ true, true }), contextOf(marked));
+    EXPECT_TRUE(SceneOps::hasContext(marked));
+    EXPECT_TRUE(marked.isSameStack(input));
+    EXPECT_NE(input.getStackHash(), marked.getStackHash());
+    EXPECT_TRUE(marked.getMetadata() == input.getMetadata());
+    EXPECT_EQ(std::string("World"), marked.getMetadata().defaultPrim);
+
+    // Marking twice changes nothing more.
+    EXPECT_EQ(marked.getStackHash(), SceneOps::markContext(marked).getStackHash());
+
+    EXPECT_TRUE(SceneOps::stripContext(marked).isEmpty());
+    const ScenePayload edited = stackPrim(marked, "/World/After", 0xaf7eULL);
+    EXPECT_EQ(std::vector<bool>({ true, true, false }), contextOf(edited));
+    const ScenePayload stripped = SceneOps::stripContext(edited);
+    ASSERT_EQ(1u, stripped.getNumLayers());
+    EXPECT_EQ(SceneOps::getLayers(edited).back().layer, SceneOps::getLayers(stripped).front().layer);
+}
+
+TEST_F(USDMergePruneTest, AMergeKeepsAnUnbrokenBranchUnflagged)
+{
+    const ScenePayload broken = stackPrim(SceneOps::markContext(stackPrim(ScenePayload(), "/A", 0xaULL)), "/A/Edit", 0xaeULL);
+    const ScenePayload unbroken = stackPrim(stackPrim(ScenePayload(), "/B", 0xbULL), "/B/Edit", 0xbeULL);
+
+    EXPECT_EQ(std::vector<bool>({ true, false, false, false }), contextOf(USDMerge::mergeStacks({ broken, unbroken })));
+    EXPECT_EQ(std::vector<bool>({ false, false, true, false }), contextOf(USDMerge::mergeStacks({ unbroken, broken })));
+}
+
+TEST_F(USDMergePruneTest, ALayerSharedWithAnUnbrokenInputComesOutUnflagged)
+{
+    const ScenePayload source = stackPrim(ScenePayload(), "/World", 0x5ULL);
+    const ScenePayload broken = stackPrim(SceneOps::markContext(source), "/World/Lights", 0x1ULL);
+    const ScenePayload unbroken = stackPrim(source, "/World/Props", 0x2ULL);
+
+    for (const ScenePayload& merged : { USDMerge::mergeStacks({ broken, unbroken }), USDMerge::mergeStacks({ unbroken, broken }) }) {
+        ASSERT_EQ(3u, merged.getNumLayers());
+        EXPECT_EQ(std::vector<bool>({ false, false, false }), contextOf(merged));
+        EXPECT_EQ(SceneOps::getLayers(source).front().layer, SceneOps::getLayers(merged).front().layer);
+    }
+
+    // Reached only through breaks, it stays context.
+    const ScenePayload alsoBroken = stackPrim(SceneOps::markContext(source), "/World/Props", 0x2ULL);
+    EXPECT_EQ(std::vector<bool>({ true, false, false }), contextOf(USDMerge::mergeStacks({ broken, alsoBroken })));
 }

@@ -952,7 +952,7 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
     keyHasher.appendDouble(layerKey.firstFrame);
     keyHasher.appendDouble(layerKey.lastFrame);
     keyHasher.appendDouble(layerKey.framesPerSecond);
-    keyHasher.appendU64(cameraScene.getStackHash());
+    keyHasher.appendU64(cameraScene.getContentHash());
     keyHasher.appendString(cameraPath);
     keyHasher.appendDouble(aspect);
     const U64 samplesKey = keyHasher.finalize();

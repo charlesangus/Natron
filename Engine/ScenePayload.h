@@ -99,6 +99,13 @@ public:
      **/
     U64 getStackHash() const;
 
+    /**
+     * @brief The stack hash without the layers' context flags: what the composed stage holds, which
+     * a key on what a node reads from upstream takes, so that a USDLayerBreak toggled upstream,
+     * which changes nothing a node reads, does not re-author it. 0 only for the empty stack.
+     **/
+    U64 getContentHash() const;
+
     const SceneMetadata& getMetadata() const;
 
     /**

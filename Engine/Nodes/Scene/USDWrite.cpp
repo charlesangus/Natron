@@ -27,11 +27,13 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <iterator>
 #include <map>
 #include <optional>
 #include <set>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -58,6 +60,7 @@
 #include "Engine/Project.h"
 
 #include <pxr/usd/usd/primRange.h>
+#include <pxr/usd/usdUtils/stitch.h>
 
 #include <OpenImageIO/imageio.h>
 
@@ -354,22 +357,39 @@ anonymousArcs(const PXR_NS::SdfLayerRefPtr& layer)
     return arcs;
 }
 
+// Adds to *files the real paths of the files stage composes.
+void
+collectUsedFiles(const PXR_NS::UsdStageRefPtr& stage,
+                 std::set<QString>* files)
+{
+    for (const PXR_NS::SdfLayerHandle& layer : stage->GetUsedLayers()) {
+        const std::string realPath = layer ? layer->GetRealPath() : std::string();
+        if (!realPath.empty()) {
+            files->insert(QDir::cleanPath(QString::fromStdString(realPath)));
+        }
+    }
+}
+
 /**
- * @brief The anonymous layers run, strongest first, flattened into one layer of time codes per
- * second rootTcps, their times mapped to the root's. Null when USD cannot.
+ * @brief The layers run, strongest first, flattened into one layer of time codes per second
+ * rootTcps, their times mapped to the root's: the anonymous ones, and with them, in flattened
+ * mode, the files the scene reads. Adds the files it composes to *usedFiles when given. Null when
+ * USD cannot.
  **/
 PXR_NS::SdfLayerRefPtr
 flattenRun(const std::vector<StackItem>& run,
-           double rootTcps)
+           double rootTcps,
+           std::set<QString>* usedFiles = nullptr)
 {
     PXR_NS::SdfLayerRefPtr root = PXR_NS::SdfLayer::CreateAnonymous("natron-usdwrite-root");
 
     root->SetTimeCodesPerSecond(rootTcps);
     std::vector<std::string> paths;
     for (const StackItem& item : run) {
-        // The run's layers are copies, which are ours to edit.
+        // The anonymous layers are copies, which are ours to edit; a file is not, and the scene's
+        // nodes author no arcs in one.
         const double tcps = item.layer->GetTimeCodesPerSecond();
-        if (tcps != rootTcps) {
+        if (!item.external && (tcps != rootTcps)) {
             scaleArcOffsets(item.layer, tcps / rootTcps);
         }
         paths.push_back(item.layer->GetIdentifier());
@@ -382,6 +402,9 @@ flattenRun(const std::vector<StackItem>& run,
     if (!stage) {
         return PXR_NS::SdfLayerRefPtr();
     }
+    if (usedFiles) {
+        collectUsedFiles(stage, usedFiles);
+    }
 
     // The scene nodes' layers author anchored asset paths, kept as they are; a file's are resolved
     // against the file. The written layers make them relative afterwards when asked.
@@ -392,6 +415,118 @@ flattenRun(const std::vector<StackItem>& run,
 
         return assetPath; }, "natron-usdwrite");
 }
+
+/**
+ * @brief Bakes into layer the content of the anonymous layers its references and payloads name,
+ * as UsdStage::Flatten would, beneath layer's own opinions on the prims holding them: the scene's
+ * nodes author those layers, and nothing else writes them. Arcs to files or within the scene stay
+ * arcs. Adds the files it composes to *usedFiles. False when USD cannot compose them.
+ **/
+bool
+bakeAnonymousArcs(const PXR_NS::SdfLayerRefPtr& layer,
+                  std::set<QString>* usedFiles)
+{
+    const auto anonymousOnly = [](bool anonymous) {
+        return [anonymous](const auto& arc) -> std::optional<std::decay_t<decltype(arc)>> {
+            if (PXR_NS::SdfLayer::IsAnonymousLayerIdentifier(arc.GetAssetPath()) == anonymous) {
+                return arc;
+            }
+
+            return std::nullopt;
+        };
+    };
+    // A list op left with no operation is no opinion, while an explicit empty one still clears
+    // the weaker layers' arcs, as the baked arcs it named did.
+    const auto setOrErase = [&layer](const PXR_NS::SdfPath& path,
+                                     const PXR_NS::TfToken& field,
+                                     const auto& listOp) {
+        if (!listOp.HasKeys()) {
+            layer->EraseField(path, field);
+        } else {
+            layer->SetField(path, field, listOp);
+        }
+    };
+
+    PXR_NS::SdfLayerRefPtr arcs = PXR_NS::SdfLayer::CreateAnonymous("natron-usdwrite-arcs");
+    arcs->SetTimeCodesPerSecond(layer->GetTimeCodesPerSecond());
+    std::vector<PXR_NS::SdfPath> baked;
+    for (const PXR_NS::SdfPath& path : primSpecPaths(layer)) {
+        if (!path.IsPrimPath()) {
+            continue;
+        }
+        PXR_NS::SdfReferenceListOp references;
+        PXR_NS::SdfReferenceListOp anonymousReferences;
+        if (layer->HasField(path, PXR_NS::SdfFieldKeys->References, &references)) {
+            anonymousReferences = references;
+            anonymousReferences.ModifyOperations(anonymousOnly(true));
+        }
+        PXR_NS::SdfPayloadListOp payloads;
+        PXR_NS::SdfPayloadListOp anonymousPayloads;
+        if (layer->HasField(path, PXR_NS::SdfFieldKeys->Payload, &payloads)) {
+            anonymousPayloads = payloads;
+            anonymousPayloads.ModifyOperations(anonymousOnly(true));
+        }
+        const bool bakesReferences = !anonymousReferences.GetAppliedItems().empty();
+        const bool bakesPayloads = !anonymousPayloads.GetAppliedItems().empty();
+        if (!bakesReferences && !bakesPayloads) {
+            continue;
+        }
+        if (!PXR_NS::SdfCreatePrimInLayer(arcs, path)) {
+            return false;
+        }
+        if (bakesReferences) {
+            arcs->SetField(path, PXR_NS::SdfFieldKeys->References, anonymousReferences);
+            references.ModifyOperations(anonymousOnly(false));
+            setOrErase(path, PXR_NS::SdfFieldKeys->References, references);
+        }
+        if (bakesPayloads) {
+            arcs->SetField(path, PXR_NS::SdfFieldKeys->Payload, anonymousPayloads);
+            payloads.ModifyOperations(anonymousOnly(false));
+            setOrErase(path, PXR_NS::SdfFieldKeys->Payload, payloads);
+        }
+        baked.push_back(path);
+    }
+    if (baked.empty()) {
+        return true;
+    }
+    // The variant the written layer selects inside what an arc brings in is the one baked.
+    for (const PXR_NS::SdfPath& path : primSpecPaths(layer)) {
+        PXR_NS::VtValue selection;
+        if (!path.IsPrimPath() || !layer->HasField(path, PXR_NS::SdfFieldKeys->VariantSelection, &selection)) {
+            continue;
+        }
+        const bool underArc = std::any_of(baked.begin(), baked.end(), [&path](const PXR_NS::SdfPath& arc) {
+            return path.HasPrefix(arc);
+        });
+        if (underArc && PXR_NS::SdfCreatePrimInLayer(arcs, path)) {
+            arcs->SetField(path, PXR_NS::SdfFieldKeys->VariantSelection, selection);
+        }
+    }
+
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(arcs, PXR_NS::SdfLayerHandle(), PXR_NS::UsdStage::LoadAll);
+    if (!stage) {
+        return false;
+    }
+    collectUsedFiles(stage, usedFiles);
+    const PXR_NS::SdfLayerRefPtr flattened = stage->Flatten(false);
+    if (!flattened) {
+        return false;
+    }
+    // The prims holding the arcs are overs where the written layers only edit them, and are as
+    // defined as what the arcs bring in.
+    PXR_NS::UsdUtilsStitchLayers(layer, flattened, [](const PXR_NS::TfToken& field, const PXR_NS::SdfPath& path, const PXR_NS::SdfLayerHandle& strongLayer, bool fieldInStrongLayer, const PXR_NS::SdfLayerHandle& weakLayer, bool fieldInWeakLayer, PXR_NS::VtValue* stitchedValue) {
+        if ((field == PXR_NS::SdfFieldKeys->Specifier) && fieldInStrongLayer && fieldInWeakLayer
+            && (strongLayer->GetFieldAs<PXR_NS::SdfSpecifier>(path, field) == PXR_NS::SdfSpecifierOver)) {
+            *stitchedValue = weakLayer->GetField(path, field);
+
+            return PXR_NS::UsdUtilsStitchValueStatus::UseSuppliedValue;
+        }
+
+        return PXR_NS::UsdUtilsStitchValueStatus::UseDefaultValue;
+    });
+
+    return true;
+} // bakeAnonymousArcs
 
 /**
  * @brief A layer stack as layered mode writes it: its strongest run of anonymous layers flattened
@@ -887,6 +1022,44 @@ authorResolvedProjector(const PXR_NS::UsdShadeShader& shader,
 typedef std::pair<std::size_t, PXR_NS::SdfPath> WrittenSpec;
 typedef std::set<WrittenSpec> WrittenSpecs;
 
+// Whether the export writes something of the composed prim at a path.
+typedef std::function<bool(const PXR_NS::SdfPath&)> WrittenPrimFunc;
+
+// Appends layer and, recursively, the layers its sublayers bring in to *layers, each once.
+void
+appendSublayerClosure(const PXR_NS::SdfLayerRefPtr& layer,
+                      std::set<std::string>* seen,
+                      std::vector<PXR_NS::SdfLayerRefPtr>* layers)
+{
+    if (!layer || !seen->insert(layer->GetIdentifier()).second) {
+        return;
+    }
+    layers->push_back(layer);
+    for (const std::string& path : layer->GetSubLayerPaths()) {
+        appendSublayerClosure(PXR_NS::SdfLayer::FindOrOpenRelativeToLayer(layer, path), seen, layers);
+    }
+}
+
+// Whether layers hold a spec of the prim at path, or an arc on an ancestor of it, which brings
+// it in.
+bool
+writtenLayersReach(const std::vector<PXR_NS::SdfLayerRefPtr>& layers,
+                   const PXR_NS::SdfPath& path)
+{
+    for (const PXR_NS::SdfLayerRefPtr& layer : layers) {
+        if (layer->GetPrimAtPath(path)) {
+            return true;
+        }
+        for (PXR_NS::SdfPath ancestor = path.GetParentPath(); ancestor.IsPrimPath(); ancestor = ancestor.GetParentPath()) {
+            if (layer->HasField(ancestor, PXR_NS::SdfFieldKeys->References) || layer->HasField(ancestor, PXR_NS::SdfFieldKeys->Payload)) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
 /**
  * @brief Where the specs of the composed scene land among the written stacks. A file is written as it
  * is, so its specs land nowhere. A referenced layer's prims sit at other paths once composed, and one
@@ -970,13 +1143,15 @@ struct ProjectionBake {
  * camera or the mesh moves) and the material's surface becomes an unlit UsdPreviewSurface reading
  * the plate's texture through st. A material bound to nothing, inside an instance, or also bound to
  * a gprim that is not a mesh or lies inside an instance keeps its Storm shader, with a deferred
- * camera's values written out for it: overs cannot reach below an instance.
+ * camera's values written out for it: overs cannot reach below an instance. When writes is set,
+ * a projection whose material and bound gprims it writes none of is left alone.
  **/
 void
 bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
                 const PXR_NS::SdfLayerRefPtr& output,
                 const std::vector<double>& times,
                 const WrittenSpecLocator& locator,
+                const WrittenPrimFunc& writes,
                 ProjectionBake* result)
 {
     if (!scene || !output || times.empty()) {
@@ -1032,6 +1207,11 @@ bakeProjections(const PXR_NS::UsdStageRefPtr& scene,
         const PXR_NS::SdfPath& materialPath = entry.first;
         const PXR_NS::UsdShadeShader& shader = entry.second;
         const std::vector<PXR_NS::UsdPrim>& gprims = bound[materialPath];
+        if (writes && !writes(materialPath) && std::none_of(gprims.begin(), gprims.end(), [&writes](const PXR_NS::UsdPrim& prim) {
+                return writes(prim.GetPath());
+            })) {
+            continue;
+        }
         SceneGeometryProjection geometryProjection;
         SceneNodeAuthoring::readGeometryProjection(scene->GetPrimAtPath(materialPath), &geometryProjection);
         const std::vector<PXR_NS::UsdPrim>::const_iterator instanced = std::find_if(gprims.begin(), gprims.end(), [](const PXR_NS::UsdPrim& prim) {
@@ -1402,6 +1582,17 @@ USDWrite::initializeKnobs()
     page->addKnob(exportMode);
     _exportMode = exportMode;
 
+    KnobBoolPtr stripLayersAboveBreaks = createKnob<KnobBool>(tr("Strip Layers Above Breaks"));
+    stripLayersAboveBreaks->setName(kUSDWriteParamStripLayersAboveBreaks);
+    stripLayersAboveBreaks->setHintToolTip(tr("Leaves out of the file the context layers above a USDLayerBreak, and the files they "
+                                              "read, in either export mode, so the file holds only the edits made after the break. "
+                                              "Prims those edits change but only the context defines are written as overs. Off, "
+                                              "the whole scene is written as if there were no break."));
+    stripLayersAboveBreaks->setDefaultValue(true);
+    stripLayersAboveBreaks->setAnimationEnabled(false);
+    page->addKnob(stripLayersAboveBreaks);
+    _stripLayersAboveBreaks = stripLayersAboveBreaks;
+
     KnobChoicePtr pathMode = createKnob<KnobChoice>(tr("Asset Paths"));
     pathMode->setName(kUSDWriteParamPathMode);
     pathMode->setHintToolTip(tr("How the file refers to other files: the sublayers it reads in Layered mode, and the "
@@ -1595,6 +1786,8 @@ USDWrite::writeFrameRange(int firstFrame,
     KnobChoicePtr pathModeKnob = _pathMode.lock();
     const ExportModeEnum exportMode = (exportModeKnob && (exportModeKnob->getValue() == (int)eExportModeFlattened)) ? eExportModeFlattened : eExportModeLayered;
     const PathModeEnum pathMode = (pathModeKnob && (pathModeKnob->getValue() == (int)ePathModeAbsolute)) ? ePathModeAbsolute : ePathModeRelative;
+    KnobBoolPtr stripLayersAboveBreaksKnob = _stripLayersAboveBreaks.lock();
+    const bool stripContext = stripLayersAboveBreaksKnob && stripLayersAboveBreaksKnob->getValue() && SceneOps::hasContext(scene);
     AppInstancePtr app = getApp();
     const double fps = (app && app->getProject()) ? app->getProject()->getProjectFrameRate() : 24.;
     const SceneMetadata& metadata = scene.getMetadata();
@@ -1643,6 +1836,28 @@ USDWrite::writeFrameRange(int firstFrame,
         // is one stack, numbered among the sidecars in the order the written layers reference it,
         // so the same scene gets the same names.
         std::vector<WrittenStack> stacks(1);
+        // The files the context layers left out read, which the nodes reading them still need and
+        // which the write must not replace with the edits after them, and the layer stack of the
+        // layers written.
+        std::set<QString> contextFiles;
+        std::vector<PXR_NS::SdfLayerRefPtr> writtenLayers;
+        if (stripContext) {
+            const std::vector<SceneLayerEntry> layers = SceneOps::getLayers(scene);
+            std::set<std::string> seenWritten;
+            for (std::vector<SceneLayerEntry>::const_reverse_iterator it = layers.rbegin(); it != layers.rend(); ++it) {
+                if (!it->context) {
+                    appendSublayerClosure(it->layer, &seenWritten, &writtenLayers);
+                    continue;
+                }
+                for (const PXR_NS::SdfLayerRefPtr& file : SceneOps::getFileLayerClosure(it->layer)) {
+                    const std::string realPath = file->GetRealPath();
+                    if (!realPath.empty()) {
+                        contextFiles.insert(QDir::cleanPath(QString::fromStdString(realPath)));
+                    }
+                }
+            }
+            keep.insert(contextFiles.begin(), contextFiles.end());
+        }
         stacks[0].path = outputPath;
         stacks[0].tcps = metadata.timeCodesPerSecond;
         stacks[0].hasRange = true;
@@ -1661,7 +1876,37 @@ USDWrite::writeFrameRange(int firstFrame,
 
             return fail(tr("The scene could not be flattened%1").arg(errors.empty() ? QString::fromUtf8(".") : QString::fromUtf8(": ") + QString::fromStdString(errors)));
         };
-        if (exportMode == eExportModeFlattened) {
+        if ((exportMode == eExportModeFlattened) && stripContext) {
+            // Composed without the context, the written layers' list ops, variant selections and
+            // arcs to context prims would compose to nothing: their layer stack is flattened, which
+            // keeps them as authored, and only the stacks they reference are baked in.
+            std::vector<StackItem> items;
+            std::set<std::pair<std::string, std::pair<double, double>>> seenFiles;
+            const std::vector<SceneLayerEntry> layers = SceneOps::getLayers(scene);
+            for (std::vector<SceneLayerEntry>::const_reverse_iterator it = layers.rbegin(); it != layers.rend(); ++it) {
+                if (it->context) {
+                    continue;
+                }
+                const PXR_NS::SdfLayerOffset toRoot(0., metadata.timeCodesPerSecond / it->layer->GetTimeCodesPerSecond());
+                std::vector<StackItem> entryItems;
+                appendLayerStack(it->layer, toRoot, &entryItems);
+                for (const StackItem& item : entryItems) {
+                    // A file read twice the same way composes where it is strongest.
+                    if (item.external && !seenFiles.insert(std::make_pair(item.layer->GetIdentifier(), std::make_pair(item.toRoot.GetOffset(), item.toRoot.GetScale()))).second) {
+                        continue;
+                    }
+                    items.push_back(item);
+                }
+            }
+            std::set<QString> usedFiles;
+            stacks[0].layout.output = items.empty() ? PXR_NS::SdfLayer::CreateAnonymous("natron-usdwrite") : flattenRun(items, metadata.timeCodesPerSecond, &usedFiles);
+            if (!stacks[0].layout.output || !bakeAnonymousArcs(stacks[0].layout.output, &usedFiles)) {
+                return flattenFailure();
+            }
+            // The flattened file holds what these files author, but the nodes reading them, a
+            // USDRead of one, still need them.
+            keep.insert(usedFiles.begin(), usedFiles.end());
+        } else if (exportMode == eExportModeFlattened) {
             PXR_NS::UsdStageRefPtr stage = SceneOps::compose(scene);
             stacks[0].layout.output = stage ? stage->Flatten(false) : PXR_NS::SdfLayerRefPtr();
             if (!stacks[0].layout.output) {
@@ -1669,18 +1914,18 @@ USDWrite::writeFrameRange(int firstFrame,
             }
             // The flattened file holds what these files author, but the nodes reading them, a
             // USDRead of one, still need them.
-            for (const PXR_NS::SdfLayerHandle& layer : stage->GetUsedLayers()) {
-                const std::string realPath = layer ? layer->GetRealPath() : std::string();
-                if (!realPath.empty()) {
-                    keep.insert(QDir::cleanPath(QString::fromStdString(realPath)));
-                }
-            }
+            std::set<QString> usedFiles;
+            collectUsedFiles(stage, &usedFiles);
+            keep.insert(usedFiles.begin(), usedFiles.end());
         } else {
             for (std::size_t i = 0; i < stacks.size(); ++i) {
                 std::vector<StackItem> items;
                 if (i == 0) {
                     const std::vector<SceneLayerEntry> layers = SceneOps::getLayers(scene);
                     for (std::vector<SceneLayerEntry>::const_reverse_iterator it = layers.rbegin(); it != layers.rend(); ++it) {
+                        if (stripContext && it->context) {
+                            continue;
+                        }
                         // As composition maps a sublayer of the root: by the ratio of their time codes per second.
                         const PXR_NS::SdfLayerOffset toRoot(0., metadata.timeCodesPerSecond / it->layer->GetTimeCodesPerSecond());
                         appendLayerStack(it->layer, toRoot, &items);
@@ -1745,12 +1990,28 @@ USDWrite::writeFrameRange(int firstFrame,
             // The bake's overs go through schemas, which see a prim as a material or a shader only
             // where its definition composes: a layered stack whose strongest layers come from
             // another node, a USDRead above the geometry, holds those definitions below the output.
+            // Stripped, the context's definitions go back in, and the written layers' too, where
+            // the scene stacks them, which is not always weaker than every written layer.
             std::vector<std::string> definitions;
-            for (const StackItem& item : stacks[0].layout.sublayers) {
-                definitions.push_back(item.layer->GetIdentifier());
+            if (stripContext) {
+                const std::vector<SceneLayerEntry> layers = SceneOps::getLayers(scene);
+                for (std::vector<SceneLayerEntry>::const_reverse_iterator it = layers.rbegin(); it != layers.rend(); ++it) {
+                    definitions.push_back(it->layer->GetIdentifier());
+                }
+            } else {
+                for (const StackItem& item : stacks[0].layout.sublayers) {
+                    definitions.push_back(item.layer->GetIdentifier());
+                }
             }
             stacks[0].layout.output->SetSubLayerPaths(definitions);
-            bakeProjections(SceneOps::compose(scene), stacks[0].layout.output, times, locator, &projectionBake);
+            // Stripped, a projection the context alone authors, material and gprims, is no edit.
+            WrittenPrimFunc writes;
+            if (stripContext) {
+                writes = [&writtenLayers](const PXR_NS::SdfPath& path) {
+                    return writtenLayersReach(writtenLayers, path);
+                };
+            }
+            bakeProjections(SceneOps::compose(scene), stacks[0].layout.output, times, locator, writes, &projectionBake);
             stacks[0].layout.output->SetSubLayerPaths(std::vector<std::string>());
             if (projectionBake.failed.empty()) {
                 const std::map<std::size_t, std::vector<PXR_NS::SdfPath>> properties = getStrippableSpecs(projectionBake.baked.properties, projectionBake.kept.properties, projectionBake.networks.properties);
@@ -1871,6 +2132,11 @@ USDWrite::writeFrameRange(int firstFrame,
                         return fail(tr("%1 is read by the scene it would be overwritten with: write to another file, or use Flattened mode.").arg(w.path));
                     }
                 }
+            }
+        }
+        for (const Written& w : written) {
+            if (contextFiles.count(w.path) != 0) {
+                return fail(tr("%1 is read above a USDLayerBreak, so it would be overwritten with only the edits after the break: write to another file.").arg(w.path));
             }
         }
     }

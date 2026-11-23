@@ -28,6 +28,19 @@ Export Mode sets what goes into the file:
 - Flattened bakes the whole composed scene, the files it reads included, into
   the one file, which then stands on its own.
 
+Strip Layers Above Breaks (on by default) leaves out, in either mode, every
+layer above a USDLayerBreak (the context layers) and the files a USDRead above
+the break reads, so the file holds only the edits made after the break and
+layers over the scene it was made against. The file is not sublayered by path:
+it does not open on its own as a complete scene. Prims only the context defines,
+edited after the break, are written as `over` specs. In Layered mode the scenes
+a USDReference after the break references are still written as files beside the
+written one. In Flattened mode the layers after the break are merged into one
+layer, keeping list edits, variant selections, arcs and deactivations as they
+are authored; the scenes a USDReference after the break references are baked in.
+The stage metadata is the whole scene's either way. With no break upstream, or with the toggle off, the whole
+scene is written.
+
 Asset Paths sets how the file refers to other files (the sublayers of Layered
 mode, references, textures and other asset-valued attributes): relative to the
 written file's directory (the default), with `./` in front unless they start
@@ -59,7 +72,8 @@ place, so every viewer and node reading it shows the new content.
 
 The node sets an error, and the render fails, when File is empty or does not end
 in a USD extension, when the input scene fails, when Layered mode would
-overwrite a file the scene reads, or when a live texture whose node exists
+overwrite a file the scene reads, when a write that strips breaks would
+overwrite a file read above a break, or when a live texture whose node exists
 cannot be rendered or written.
 
 Tolerance: none recorded.

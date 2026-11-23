@@ -257,6 +257,24 @@ PXR_NS::SdfLayerRefPtr createStackLayer(const ScenePayload& input,
 std::vector<SceneLayerEntry> getLayers(const ScenePayload& payload);
 
 /**
+ * @brief payload's stack with every entry flagged as context (SceneLayerEntry::context): the same
+ * layers, composing the same stage with the same metadata, under another stack hash.
+ **/
+ScenePayload markContext(const ScenePayload& payload);
+
+/**
+ * @brief True when an entry of payload is flagged as context.
+ **/
+bool hasContext(const ScenePayload& payload);
+
+/**
+ * @brief payload's stack without its context entries, the others in order, keeping payload's
+ * metadata: the edits after a break, composed under the stage metadata of the whole scene. Empty
+ * when every entry is context.
+ **/
+ScenePayload stripContext(const ScenePayload& payload);
+
+/**
  * @brief Every live texture the payload's layers record, those of the stacks they compose from
  * (a grafted material's) included, each layer's once.
  **/

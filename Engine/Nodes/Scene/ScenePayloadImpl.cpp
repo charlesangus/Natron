@@ -59,6 +59,12 @@ ScenePayload::getStackHash() const
     return _imp ? _imp->stackHash : 0;
 }
 
+U64
+ScenePayload::getContentHash() const
+{
+    return _imp ? _imp->contentHash : 0;
+}
+
 const SceneMetadata&
 ScenePayload::getMetadata() const
 {

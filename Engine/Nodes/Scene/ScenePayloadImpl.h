@@ -69,6 +69,9 @@ struct SceneLayerEntry {
     std::shared_ptr<const LiveTextureSourceList> liveTextures;
     // The layer leaves projection cameras for the composed stage to resolve.
     bool deferredProjections = false;
+    // The layer sits above a USDLayerBreak: it composes like any other, but an export that strips
+    // breaks leaves it out of what it writes.
+    bool context = false;
 };
 
 /**
@@ -80,6 +83,7 @@ struct ScenePayloadImpl {
     SceneLayerEntry top;
     std::size_t numLayers = 0;
     U64 stackHash = 0;
+    U64 contentHash = 0;
     SceneMetadata metadata;
 };
 

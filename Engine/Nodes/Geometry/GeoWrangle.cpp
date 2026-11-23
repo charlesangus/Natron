@@ -34,6 +34,7 @@
 #include <set>
 #include <span>
 #include <string>
+#include <variant>
 #include <vector>
 
 #include <QString>
@@ -51,6 +52,7 @@
 #include "Engine/NodeMetadata.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/PythonUndoCommands.h"
+#include "Engine/RenderContext.h"
 #include "Engine/UndoRecorder.h"
 
 NATRON_NAMESPACE_ENTER
@@ -233,8 +235,25 @@ GeoWrangle::knobChanged(KnobI* k,
         return true;
     }
     _editGeneration.fetch_add(1, std::memory_order_relaxed);
+    if (k && (k == _snippet.lock().get())) {
+        invalidateRenderContextReads();
+    }
 
     return false;
+}
+
+RenderContextReadSet
+GeoWrangle::getExtraContextReads() const
+{
+    RenderContextReadSet reads;
+    KnobStringPtr snippet = _snippet.lock();
+
+    // A text match rather than a compile: it may read loop.dt when it does not, never the reverse.
+    if (snippet && (snippet->getValue().find("TimeInc") != std::string::npos)) {
+        reads.add(RenderContextName::loop("dt"));
+    }
+
+    return reads;
 }
 
 std::vector<std::string>
@@ -476,6 +495,16 @@ GeoWrangle::renderGeometry(const GeoRenderActionArgs& args,
     options.frame = args.time;
     const double fps = getApp() ? getApp()->getProjectFrameRate() : 0.;
     options.time = fps > 0. ? args.time / fps : 0.;
+    {
+        // loop.dt is the frames a geometry solver substep covers; outside one a step is a frame.
+        double frames = 1.;
+        const RenderContextPtr context = getCurrentRenderContext();
+        const RenderContextValue* dt = context ? context->find(RenderContextName::loop("dt")) : NULL;
+        if (const double* value = dt ? std::get_if<double>(dt) : NULL) {
+            frames = *value;
+        }
+        options.timeInc = fps > 0. ? frames / fps : 0.;
+    }
     options.group = cls == eGeoAttribClassDetail || !groupKnob ? std::string() : trimmed(groupKnob->getValue());
     options.parameters = &parameters;
     // The kernel polls from pool threads, where this node's abort state is not visible: they read

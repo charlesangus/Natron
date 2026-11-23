@@ -61,6 +61,9 @@ All of these are read-only.
 - `@elemnum` is the number of the element in the Run Over class.
 - `@numpt`, `@numprim`, `@numvtx` and `@numelem` are the element counts.
 - `@Frame` is the frame being rendered, and `@Time` is that frame in seconds at the project frame rate.
+- `@TimeInc` is the time in seconds one step covers: one frame, or inside a GeoSolverBegin and
+  GeoSolverEnd block, one substep (`loop.dt` frames). `@P += @v * @TimeInc` moves points by their
+  velocity in units per second.
 
 A snippet that reads `@Frame` or `@Time` renders anew on every frame.
 

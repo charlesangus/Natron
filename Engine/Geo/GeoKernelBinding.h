@@ -50,7 +50,8 @@ NATRON_NAMESPACE_ENTER
 /**
  * @brief Exposes geometry to the kernel language for a run over one element class.
  *
- * Builtins: @ptnum @primnum @vtxnum @elemnum @numpt @numprim @numvtx @numelem @Frame @Time.
+ * Builtins: @ptnum @primnum @vtxnum @elemnum @numpt @numprim @numvtx @numelem @Frame @Time
+ * @TimeInc.
  * Element numbers are dense; an element number that does not apply to the run class is -1.
  *
  * An @ attribute is looked up when the kernel runs: in the run class first, then, for a vertex
@@ -113,6 +114,8 @@ private:
 struct GeoKernelRunOptions {
     double frame = 0.;
     double time = 0.;
+    // Seconds one step of the run covers: a frame, or a solver substep.
+    double timeInc = 0.;
     // 0 uses the current thread budget.
     int threads = 0;
     std::function<bool()> aborted;
@@ -144,6 +147,9 @@ GeoKernelRunResult geoKernelRun(const KernelProgram& program,
 
 /** @brief Whether a program compiled against GeoKernelBinding reads @Frame or @Time. */
 bool geoKernelReadsTime(const KernelProgram& program);
+
+/** @brief Whether a program compiled against GeoKernelBinding reads @TimeInc. */
+bool geoKernelReadsTimeInc(const KernelProgram& program);
 
 /**
  * @brief Compiles source against GeoKernelBinding(runOver, options.parameters) and runs it; a

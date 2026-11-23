@@ -381,7 +381,6 @@ namespace {
         return !path->IsEmpty();
     }
 
-    // MoonRay's own words from the rest of a notice: "/World/Cube.material: no shader" gives "no shader".
     // hdMoonray cannot translate Natron's own frame-hold primvars and does not need them, so its notice about them is noise.
     bool
     isBenignNotice(const std::string& rest)
@@ -391,13 +390,14 @@ namespace {
         return std::regex_match(rest, benign);
     }
 
+    // MoonRay's own words from the rest of a notice: "/World/Cube.material: no shader" gives "no shader".
     std::string
     messageOf(const std::string& rest)
     {
         size_t start = 0;
         if (!rest.empty() && ((rest[0] == '.') || (rest[0] == ':'))) {
             const size_t colon = rest.find(':');
-            start = (colon == std::string::npos) ? rest.size() : colon + 1;
+            start = (colon != std::string::npos) ? colon + 1 : (rest[0] == '.' ? 1 : rest.size());
         }
         const size_t first = rest.find_first_not_of(" \t", start);
         if (first == std::string::npos) {

@@ -1914,7 +1914,6 @@ TEST_F(USDRenderMoonRayProjectionTest, AHalfAlphaPlateBlendsOverTheBackground)
 }
 
 // A frame-held projection bound to two cards through one assign renders the plate on both.
-// Every notice MoonRay logs, and the node's warning, go to stderr for the phase build to record.
 TEST_F(USDRenderMoonRayProjectionTest, AHeldProjectionOnTwoCardsRendersThePlateOnBoth)
 {
     if (!moonRayOrSkip()) {

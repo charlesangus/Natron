@@ -122,7 +122,7 @@ Requires M358 - Geometry Bridges And Display, M359 - Geometry Operators and M360
   - verify: test green in `build-and-test`.
   - size: M
 
-- [ ] M361.P2.T2 — Scale bench on the GPU host
+- [x] M361.P2.T2 — Scale bench on the GPU host (dropped: no GPU-host timing gates)
   - files: `tools/bench/geo_scale.py` (or the existing bench harness's equivalent), `Tests/GeoBench_Test.cpp` (bench-only, not in ctest)
   - approach: build a 10M-point grid and time `GeoTransform` → `GeoEdit`(5 points) → `GeoDelete`(half) → `GeoToUSD`, plus `geoEncodePattern` and Expand over a 1M-element selection, before and after, in one command on the GPU host (benches run together there). Record wall time and peak memory, with no thresholds.
   - verify: the bench runs to completion on the GPU host and its numbers are recorded in the member's PR body.
@@ -157,3 +157,4 @@ Requires M358 - Geometry Bridges And Display, M359 - Geometry Operators and M360
 
 - 2026-11-16 — GeoToUSD Group (b8170f9c6), accepted as proposed (user: "Sounds good"): blank converts all; a point group keeps primitives whose points are all selected, plus selected loose points as a point cloud; the three path-shift cases (single-type collapse to <path>, instance_<i> and proto_<k> renumbering) are left as documented, no converter change.
 - 2026-11-16 — Gate green at b8170f9c6 (run 43965560661). P2.T2's geo_scale bench runs on a rented Vast.ai NVIDIA VM after F4's acceptance bench (one VM on the tunnel at a time).
+- 2026-11-23 — P2.T2 dropped (PM): GPU-host timing benches are no longer gates; the geo_scale bench can run later as a measurement. M361 ships with F15 - Native Geometry once merged into the F15 branch.

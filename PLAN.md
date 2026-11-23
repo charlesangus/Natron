@@ -594,10 +594,10 @@ future core work has solid ground to build on.
 | M516 | Port Groups And Folding | todo | M351 |  | E9 | F2 | | [M516-port-groups-and-folding.md](PLAN/MILESTONES/M516-port-groups-and-folding.md) |
 | M517 | Storm Translucent Prim Ids | doing | - | bosley-executor | E9 |  | | [M517-storm-translucent-prim-ids.md](PLAN/MILESTONES/M517-storm-translucent-prim-ids.md) |
 | M518 | Save Prompt Key Shortcuts | doing | - | bosley-executor | E10 | F36 | | [M518-save-prompt-key-shortcuts.md](PLAN/MILESTONES/M518-save-prompt-key-shortcuts.md) |
-| M519 | Raw And Loop Toolbar Icons | todo | - |  | E10 | F36 | | [M519-raw-and-loop-toolbar-icons.md](PLAN/MILESTONES/M519-raw-and-loop-toolbar-icons.md) |
-| M520 | USD Toolbar Category And Submenus | todo | - |  | E10 | F36 | | [M520-usd-toolbar-category-and-submenus.md](PLAN/MILESTONES/M520-usd-toolbar-category-and-submenus.md) |
-| M521 | Easier Pipe Grabbing | todo | - |  | E10 | F36 | | [M521-easier-pipe-grabbing.md](PLAN/MILESTONES/M521-easier-pipe-grabbing.md) |
-| M522 | Geometry Toolbar Category | todo | - |  | E10 | F15 | | [M522-geometry-toolbar-category.md](PLAN/MILESTONES/M522-geometry-toolbar-category.md) |
+| M519 | Raw And Loop Toolbar Icons | doing | - | bosley-executor | E10 | F36 | | [M519-raw-and-loop-toolbar-icons.md](PLAN/MILESTONES/M519-raw-and-loop-toolbar-icons.md) |
+| M520 | USD Toolbar Category And Submenus | doing | - | bosley-executor | E10 | F36 | | [M520-usd-toolbar-category-and-submenus.md](PLAN/MILESTONES/M520-usd-toolbar-category-and-submenus.md) |
+| M521 | Easier Pipe Grabbing | doing | - | bosley-executor | E10 | F36 | | [M521-easier-pipe-grabbing.md](PLAN/MILESTONES/M521-easier-pipe-grabbing.md) |
+| M522 | Geometry Toolbar Category | doing | - | bosley-executor | E10 | F15 | | [M522-geometry-toolbar-category.md](PLAN/MILESTONES/M522-geometry-toolbar-category.md) |
 | M523 | USDSetAttribute Type From Stage | doing | - | bosley-executor | E9 |  | | [M523-usdsetattribute-type-from-stage.md](PLAN/MILESTONES/M523-usdsetattribute-type-from-stage.md) |
 | M524 | Vertical Node Style | todo | M351, M522 |  | E10 |  | | [M524-vertical-node-style.md](PLAN/MILESTONES/M524-vertical-node-style.md) |
 | M540 | Sparse Tile Field Core | todo | M417 |  | E22 | F35 | | [M540-sparse-tile-field-core.md](PLAN/MILESTONES/M540-sparse-tile-field-core.md) |

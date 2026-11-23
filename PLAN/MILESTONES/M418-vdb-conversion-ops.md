@@ -62,3 +62,4 @@ Member of F22 - Native VDB: branches off and merges into `feature/f22-native-vdb
 - 2026-11-12 — **Basic VDB op set split on sizing (/cat-plan):** conversion here, SDF ops and the wrangle in M419 - VDB SDF Ops And Wrangle.
 
 Shared design: `PLAN/DECISIONS/2026-11-12-geometry-simulation-expansion.md`.
+- 2026-11-23 — Implemented (gate queued). PM defaults, to confirm at F22 UAT: an open mesh to SDF gives an unsigned band with a note suggesting Fog, Fill Interior off, or closing the mesh; Fog output guesses an inside and warns; ConvertVDB polygons do not inherit the VDB name; VDBResample in Reference mode with no reference VDB errors.

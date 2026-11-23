@@ -60,3 +60,4 @@ Member of F18 - Geometry Loops And Solver: branches off and merges into `feature
 - 2026-11-12 — **RAM store with disk spill, reset on any edit (user):** as Houdini; jumping ahead sims forward from the last cached frame and can be cancelled.
 
 Shared design: `PLAN/DECISIONS/2026-11-12-geometry-simulation-expansion.md`.
+- 2026-11-23 — Implemented (gate queued). PM defaults, to confirm at F18 UAT: one output per Begin with a Method knob (Prev Frame or Input), per M402; a new GeoSimCache store; a per-node Cache Memory knob (2048 MB) rather than a Preferences share; frames spill under the disk cache location (no project cache directory exists).

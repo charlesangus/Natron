@@ -85,3 +85,4 @@ Today (origin/main): the row menu has Load, Load With Descendants and Unload ove
 - 2026-11-23 — Script access and editable shortcuts for every action and scope (user).
 - 2026-11-23 — A Load To <kind> walk is ended by Cancel Loads and by switching the viewer's node, not by every stage edit: pinned sources and the viewer re-sync on each commit, which would cut multi-level walks short (PM, from the implementer; revisit if stale loads show up).
 - 2026-11-23 — "Below" means in the prim hierarchy: the prim and its descendants, recursively, not rows lower in the panel (user).
+- 2026-11-23 — Walk cancellation confirmed as implemented (user).

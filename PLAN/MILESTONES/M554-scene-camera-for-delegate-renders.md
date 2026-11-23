@@ -78,3 +78,4 @@ Natron never hands a Hydra delegate the scene camera. `HydraRender::Request` car
 - 2026-11-23 — Volume velocity motion blur is in scope alongside the camera shutter fix (user): velocity blur on volumes is a standard way to blur them and must be supported.
 - 2026-11-23 — Claimed ahead of its Deps at the user's request; works on top of the dependency's branch.
 - 2026-11-23 — P2.T1: hdCycles and hdMoonray ignore the fit override and pixel aspect; MoonRay samples geometry with no time window; Cycles never enables integrator motion blur. Until fork patches (P2.T4/T5) land, Cycles/MoonRay use the camera path only for expand fit with square pixels, otherwise the frustum (PM default; reversible).
+- 2026-11-23 — Fallback accepted: merge the camera-path work with the Cycles/MoonRay frustum fallback, then the fork patches P2.T4/P2.T5 next (user).

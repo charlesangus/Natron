@@ -282,6 +282,8 @@ private:
             }
         }
         if (!value) {
+            restoreDefaultDimensionsFoldState(knob.get());
+
             return OpResult();
         }
         if (!knob->fromSerialization(*value)) {
@@ -329,9 +331,14 @@ private:
             return OpResult::invalid(node->getScriptName() + " has no input \"" + op.inputLabel + "\"");
         }
         const NodePtr previous = node->getRealInput(inputNb);
+        // The edit that recorded this operation changed the input where it was made, which set
+        // the input's mask switch there. Here the input may already be as the operation says,
+        // under a switch a node serialization restored for other inputs.
         if (op.sourceId.empty()) {
             if (previous) {
                 node->disconnectInput(inputNb);
+            } else {
+                node->refreshMaskEnabledNess(inputNb);
             }
 
             return OpResult();
@@ -344,6 +351,8 @@ private:
             return OpResult::invalid("the source is the node itself or is not in its group");
         }
         if (source == previous) {
+            node->refreshMaskEnabledNess(inputNb);
+
             return OpResult();
         }
         if (previous) {

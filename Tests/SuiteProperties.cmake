@@ -48,6 +48,8 @@ set(_natron_long_suite_timeouts
     StagedResampleTest 900
     # Debug: about 234 s on a quiet runner, 28 to 38 s per case under load.
     GraphScalingConnectTest 900
+    # Every seed starts its three clients as child Tests processes, each paying a process start-up.
+    Seeds/LiveSessionConvergenceTest 900
 )
 
 set(_natron_long_suites "")

@@ -52,6 +52,7 @@ struct RotoContextSerialization;
 struct RotoDrawableItemSerialization;
 struct RotoItemSerialization;
 struct RotoLayerChildSerialization;
+class ProjectBundleReader;
 struct RotoLayerSerialization;
 struct RotoStrokeCurvesSerialization;
 struct RotoStrokeItemSerialization;

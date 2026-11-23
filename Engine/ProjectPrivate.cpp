@@ -209,9 +209,9 @@ ProjectPrivate::restoreFromSerializedData(qint64 creationDate,
                 }
             }
             if (projectKnobs[i] == envVars) {
-                ///For eAppTypeBackgroundAutoRunLaunchedFromGui don't change the project path since it is controlled
-                ///by the main GUI process
-                if (appPTR->getAppType() != AppManager::eAppTypeBackgroundAutoRunLaunchedFromGui) {
+                // A render launched from the GUI has its project folder set by the GUI process, and a
+                // copy loaded without a file of its own keeps the folder it was saved in.
+                if ((appPTR->getAppType() != AppManager::eAppTypeBackgroundAutoRunLaunchedFromGui) && !path.isEmpty()) {
                     autoSetProjectDirectory(path);
                 }
             }

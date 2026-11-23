@@ -8220,6 +8220,14 @@ Node::isMaskChannelKnob(const KnobI* knob) const
     return -1;
 }
 
+KnobBoolPtr
+Node::getMaskEnabledKnob(int inputNb) const
+{
+    std::map<int, MaskSelector>::const_iterator it = _imp->maskSelectors.find(inputNb);
+
+    return (it != _imp->maskSelectors.end()) ? it->second.enabled.lock() : KnobBoolPtr();
+}
+
 bool
 Node::isMaskEnabled(int inputNb) const
 {
@@ -10186,6 +10194,9 @@ Node::refreshMaskEnabledNess(int inputNb)
         bool newValue = inp ? true : false;
         changed = curValue != newValue;
         if (changed) {
+            // Each copy of a shared project derives this from its own input change, which is
+            // shared already: shared too, it would land out of order with the inputs it follows.
+            GraphEditRecorder::Suppress derived;
             enabled->setValue(newValue);
         }
         enabled->unblockValueChanges();

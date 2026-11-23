@@ -28,9 +28,11 @@
 
 #include "Global/Macros.h"
 
+#include <cstddef>
 #include <functional>
 #include <map>
 #include <set>
+#include <span>
 #include <vector>
 
 CLANG_DIAG_OFF(deprecated)
@@ -138,6 +140,35 @@ public:
      * named by getProjectPath() + getProjectFilename() may not exist, or may hold another version.
      **/
     bool isLoadedFromFolder() const;
+
+    /**
+     * @brief Resets the project, then loads it from bundle bytes (.ntpz) as loadProject() loads a
+     * file, known by path + name. No autosave is looked for, no lock file is taken and nothing
+     * is saved after loading. Returns false with a message for the user in error when the
+     * bytes are not a readable project. Main thread only.
+     **/
+    bool loadProjectFromBundleBytes(std::span<const std::byte> bytes, const QString& path, const QString& name, QString* error);
+
+    enum class LiveSessionRole {
+        eNone,
+        eHost,
+        eClient,
+    };
+
+    /**
+     * @brief Binds the project to a live session, or unbinds it with eNone. A client's copy is
+     * titled title (projectNameChanged() gives it instead of the file name) and is never
+     * autosaved: its file is the host's, which AppInstance asks the host to save. Main thread only.
+     **/
+    void setLiveSessionRole(LiveSessionRole role, const QString& title);
+
+    LiveSessionRole getLiveSessionRole() const;
+
+    /**
+     * @brief Ends the binding of a client's copy that lost or left its session: the project is
+     * then an untitled, unsaved project with no file, as editable as any other. Main thread only.
+     **/
+    void detachFromLiveSession();
 
     bool hasMissingPluginNode() const;
 
@@ -315,6 +346,12 @@ public:
     bool hasProjectBeenSavedByUser() const WARN_UNUSED_RETURN;
 
     bool isSaveUpToDate() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Flags the project as changed since its last save, for edits made without the undo
+     * stack, such as a live session client's. Main thread only.
+     **/
+    void markUnsavedChanges();
 
     //QDateTime getProjectAgeSinceLastSave() const WARN_UNUSED_RETURN ;
 
@@ -873,7 +910,18 @@ private:
     bool loadProjectInternal(const QString& path, const QString& name, const QString& source,
                              bool isAutoSave, bool isUntitledAutosave, bool* mustSave);
 
+    /**
+     * @brief The part of loading that follows opening the bundle. filePath is the file read, for
+     * the autosave bookkeeping and the lock file, which is taken only when takeLock is set. The
+     * events processed at the end leave out the user's input unless acceptUserInput is set.
+     **/
+    bool restoreFromBundle(const Serialization::ProjectBundleReader& bundle, const QString& path, const QString& name,
+                           const QString& filePath, bool isAutoSave, bool isUntitledAutosave, bool takeLock,
+                           bool acceptUserInput, bool* mustSave);
+
     QString saveProjectInternal(const QString & path, const QString & name, bool autosave, bool updateProjectProperties);
+
+    void emitProjectNameChanged(const QString& filePath, bool modified);
 
     void reportLoadWarnings();
 

@@ -638,15 +638,34 @@ Project::loadProjectInternal(const QString& path,
         throw std::runtime_error(notAProjectMessage(QFileInfo(filePath).fileName()).toStdString());
     }
 
-    LoadProjectSplashScreen_RAII __raii_splashscreen__(getApp(), name);
-
     // Lives until loading ends: decoded data may still point into the mapped archive.
     std::unique_ptr<Serialization::ProjectBundleReader> bundle;
+    try {
+        bundle = std::make_unique<Serialization::ProjectBundleReader>(filePathStd);
+    } catch (const Serialization::ProjectBundleError& e) {
+        throw std::runtime_error(e.what());
+    }
+
+    return restoreFromBundle(*bundle, path, name, filePath, isAutoSave, isUntitledAutosave, true, true, mustSave);
+} // Project::loadProjectInternal
+
+bool
+Project::restoreFromBundle(const Serialization::ProjectBundleReader& bundle,
+                           const QString& path,
+                           const QString& name,
+                           const QString& filePath,
+                           bool isAutoSave,
+                           bool isUntitledAutosave,
+                           bool takeLock,
+                           bool acceptUserInput,
+                           bool* mustSave)
+{
+    LoadProjectSplashScreen_RAII __raii_splashscreen__(getApp(), name);
+
     Serialization::ProjectSerialization projectSerialization;
     Serialization::YamlWarnings warnings;
     try {
-        bundle = std::make_unique<Serialization::ProjectBundleReader>(filePathStd);
-        projectSerialization = bundle->readProject(&warnings);
+        projectSerialization = bundle.readProject(&warnings);
     } catch (const Serialization::ProjectBundleError& e) {
         throw std::runtime_error(e.what());
     } catch (const Serialization::YamlNewerFormatError& e) {
@@ -658,7 +677,7 @@ Project::loadProjectInternal(const QString& path,
         addLoadWarning(QString::fromUtf8(warning.c_str()));
     }
 
-    const Serialization::BundleManifest& manifest = bundle->manifest();
+    const Serialization::BundleManifest& manifest = bundle.manifest();
     projectSerialization.creationDate = manifest.creationDate;
 
     bool ret = false;
@@ -709,15 +728,15 @@ Project::loadProjectInternal(const QString& path,
 
         QString projectPath = QString::fromUtf8( _imp->getProjectPath().c_str() );
         QString projectFilename = QString::fromUtf8( _imp->getProjectFilename().c_str() );
-        Q_EMIT projectNameChanged(projectPath + projectFilename, true);
+        emitProjectNameChanged(projectPath + projectFilename, true);
     } else {
-        Q_EMIT projectNameChanged(path + name, false);
+        emitProjectNameChanged(path + name, false);
     }
 
     /// Try to take the project lock by creating a lock file
     // A render save is this process's own copy, removed once loaded: a lock beside it would
     // outlive it and guard nothing.
-    if (!isAutoSave && !isRenderSaveFile(filePath)) {
+    if (takeLock && !isAutoSave && !isRenderSaveFile(filePath)) {
         QString lockFilePath = getLockAbsoluteFilePath();
         if ( !QFile::exists(lockFilePath) ) {
             createLockFile();
@@ -733,11 +752,125 @@ Project::loadProjectInternal(const QString& path,
 #ifdef DEBUG
         boost_adaptbx::floating_point::exception_trapping trap(0);
 #endif
-        QCoreApplication::processEvents();
+        QCoreApplication::processEvents(acceptUserInput ? QEventLoop::AllEvents : QEventLoop::ExcludeUserInputEvents);
     }
 
     return ret;
-} // Project::loadProjectInternal
+} // Project::restoreFromBundle
+
+bool
+Project::loadProjectFromBundleBytes(std::span<const std::byte> bytes,
+                                    const QString& path,
+                                    const QString& name,
+                                    QString* error)
+{
+    reset(false, true);
+
+    try {
+        bool loadedOk = false;
+        {
+            FlagSetter loadingProjectRAII(true, &_imp->isLoadingProject, &_imp->isLoadingProjectMutex);
+            {
+                QMutexLocker k(&_imp->loadWarningsMutex);
+                _imp->loadWarnings.clear();
+            }
+            std::unique_ptr<Serialization::ProjectBundleReader> bundle;
+            try {
+                bundle = std::make_unique<Serialization::ProjectBundleReader>(bytes);
+            } catch (const Serialization::ProjectBundleError& e) {
+                throw std::runtime_error(e.what());
+            }
+            bool mustSave = false;
+            // A live session's copy loads from bytes, and an edit made while loading is not
+            // recorded, so it would never reach the other peers.
+            loadedOk = restoreFromBundle(*bundle, path, name, QString(), false, false, false, false, &mustSave);
+            QMutexLocker k(&_imp->projectLock);
+            _imp->loadedFromFolder = false;
+            // Without a path, saving the copy under name alone would write into the working
+            // directory: it must be given a file first.
+            if (path.isEmpty()) {
+                _imp->hasProjectBeenSavedByUser = false;
+            }
+        }
+        reportLoadWarnings();
+        if (!loadedOk) {
+            if (error) {
+                *error = tr("The project could not be restored.");
+            }
+
+            return false;
+        }
+    } catch (const std::exception& e) {
+        if (error) {
+            *error = QString::fromUtf8(e.what());
+        }
+
+        return false;
+    }
+
+    Q_EMIT loaded();
+    refreshViewersAndPreviews();
+
+    return true;
+} // Project::loadProjectFromBundleBytes
+
+void
+Project::emitProjectNameChanged(const QString& filePath,
+                                bool modified)
+{
+    QString title;
+    {
+        QMutexLocker k(&_imp->projectLock);
+        if (_imp->liveSessionRole == LiveSessionRole::eClient) {
+            title = _imp->liveSessionTitle;
+        }
+    }
+    Q_EMIT projectNameChanged(title.isEmpty() ? filePath : title, modified);
+}
+
+void
+Project::setLiveSessionRole(LiveSessionRole role,
+                            const QString& title)
+{
+    assert(QThread::currentThread() == qApp->thread());
+    {
+        QMutexLocker k(&_imp->projectLock);
+        _imp->liveSessionRole = role;
+        _imp->liveSessionTitle = (role == LiveSessionRole::eClient) ? title : QString();
+    }
+    if (role == LiveSessionRole::eClient) {
+        _imp->autoSaveTimer->stop();
+    }
+    emitProjectNameChanged(QString::fromUtf8(_imp->getProjectPath().c_str()) + QString::fromUtf8(_imp->getProjectFilename().c_str()), !isSaveUpToDate());
+}
+
+Project::LiveSessionRole
+Project::getLiveSessionRole() const
+{
+    QMutexLocker k(&_imp->projectLock);
+
+    return _imp->liveSessionRole;
+}
+
+void
+Project::detachFromLiveSession()
+{
+    assert(QThread::currentThread() == qApp->thread());
+    {
+        QMutexLocker k(&_imp->projectLock);
+        _imp->liveSessionRole = LiveSessionRole::eNone;
+        _imp->liveSessionTitle.clear();
+        _imp->hasProjectBeenSavedByUser = false;
+        _imp->loadedFromFolder = false;
+        _imp->ageSinceLastSave = QDateTime();
+    }
+    {
+        GraphEditRecorder::Suppress suppress;
+        _imp->setProjectPath(std::string());
+        _imp->setProjectFilename(NATRON_PROJECT_UNTITLED);
+    }
+    emitProjectNameChanged(QString::fromUtf8(NATRON_PROJECT_UNTITLED), true);
+}
 
 bool
 Project::saveProject(const QString & path,
@@ -1103,7 +1236,7 @@ Project::saveProjectInternal(const QString & path,
             _imp->loadedFromFolder = false;
             _imp->ageSinceLastSave = time;
         }
-        Q_EMIT projectNameChanged(path + name, false); //< notify the gui so it can update the title
+        emitProjectNameChanged(path + name, false); //< notify the gui so it can update the title
 
         //Create the lock file corresponding to the project
         createLockFile();
@@ -1111,7 +1244,7 @@ Project::saveProjectInternal(const QString & path,
         if (!isRenderSave) {
             QString projectPath = QString::fromUtf8( _imp->getProjectPath().c_str() );
             QString projectFilename = QString::fromUtf8( _imp->getProjectFilename().c_str() );
-            Q_EMIT projectNameChanged(projectPath + projectFilename, true);
+            emitProjectNameChanged(projectPath + projectFilename, true);
         }
     }
     if (updateProjectProperties) {
@@ -1330,7 +1463,7 @@ void
 Project::autoSave()
 {
     ///don't autosave in background mode...
-    if ( getApp()->isBackground() ) {
+    if (getApp()->isBackground() || (getLiveSessionRole() == LiveSessionRole::eClient)) {
         return;
     }
 
@@ -1350,6 +1483,10 @@ Project::triggerAutoSave()
     }
 
     if ( !hasProjectBeenSavedByUser() && !appPTR->getCurrentSettings()->isAutoSaveEnabledForUnsavedProjects() ) {
+        return;
+    }
+
+    if (getLiveSessionRole() == LiveSessionRole::eClient) {
         return;
     }
 
@@ -1842,7 +1979,7 @@ Project::initializeKnobs()
                                      "absolute is relative to [%1].")
                                       .arg(QString::fromUtf8(NATRON_PROJECT_ENV_VAR_NAME))
                                       .arg(QString::fromUtf8(NATRON_OCIO_ENV_VAR_NAME)));
-    _imp->envVars->setSecret(true);
+    _imp->envVars->setSecretByDefault(true);
     _imp->envVars->setMultiPath(true);
 
     page->addKnob(_imp->envVars);
@@ -3166,6 +3303,25 @@ Project::isSaveUpToDate() const
 }
 
 void
+Project::markUnsavedChanges()
+{
+    assert(QThread::currentThread() == qApp->thread());
+    bool wasUpToDate = false;
+    {
+        QMutexLocker l(&_imp->projectLock);
+        wasUpToDate = (_imp->ageSinceLastSave == _imp->lastAutoSave);
+        if (wasUpToDate) {
+            // A null save time would equal a null auto-save time.
+            _imp->lastAutoSave = _imp->ageSinceLastSave.isValid() ? QDateTime() : QDateTime::currentDateTime();
+        }
+    }
+    if (wasUpToDate) {
+        emitProjectNameChanged(QString::fromUtf8(_imp->getProjectPath().c_str()) + QString::fromUtf8(_imp->getProjectFilename().c_str()), true);
+    }
+    triggerAutoSave();
+}
+
+void
 Project::beginKnobsValuesChanged(ValueChangedReasonEnum /*reason*/)
 {
 }
@@ -3662,7 +3818,7 @@ Project::doResetEnd(bool aboutToQuit)
         }
         getApp()->removeAllKeyframesIndicators();
 
-        Q_EMIT projectNameChanged(QString::fromUtf8(NATRON_PROJECT_UNTITLED), false);
+        emitProjectNameChanged(QString::fromUtf8(NATRON_PROJECT_UNTITLED), false);
         _imp->clearRFVVariables();
         const KnobsVec & knobs = getKnobs();
 

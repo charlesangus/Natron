@@ -124,6 +124,7 @@ private:
     struct Implementation;
 
     static GraphEditRecorder* recorderFor(const AppInstance* app);
+    static void forgetDeleted(const Node* node);
 
     static std::atomic<int> _subscriptions;
 

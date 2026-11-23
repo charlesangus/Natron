@@ -585,6 +585,13 @@ public Q_SLOTS:
     void exportProjectAsGroup();
     void saveAndIncrVersion();
 
+    void hostLiveSession();
+    void joinLiveSession();
+    void leaveLiveSession();
+    void onLiveSessionChanged();
+    void onLiveSessionMessage(const QString& message);
+    void onLiveSessionEnded(const QString& reason);
+
     void autoSave();
 
     void createNewViewer();

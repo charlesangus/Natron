@@ -43,6 +43,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Project.h"
 #include "Engine/RotoLayer.h"
@@ -59,6 +60,8 @@ NATRON_NAMESPACE_ANONYMOUS_ENTER
 
 // Connects node's inputs to the siblings serialization names. An input that cannot be connected
 // is left disconnected; when report is set, that is a load warning naming the input and target.
+// Connecting turns an input's mask switch on, but the switch already holds the serialized state,
+// which may be off over a connected mask: that state is kept.
 void
 connectSerializedInputs(const NodeCollectionPtr& group,
                         const NodePtr& node,
@@ -80,11 +83,16 @@ connectSerializedInputs(const NodeCollectionPtr& group,
             problem = NodeCollection::tr("the node has no such input; left disconnected");
         } else {
             const NodePtr target = group->getNodeByName(it->second);
+            const KnobBoolPtr maskSwitch = node->getMaskEnabledKnob(index);
+            const bool serializedSwitch = maskSwitch && maskSwitch->getValue();
             if (!target) {
                 problem = NodeCollection::tr("node not found; input left disconnected");
             } else if (!group->connectNodes(index, target, node)) {
                 problem = NodeCollection::tr("the connection was refused; input left disconnected");
             } else {
+                if (maskSwitch && (maskSwitch->getValue() != serializedSwitch)) {
+                    maskSwitch->setValue(serializedSwitch);
+                }
                 continue;
             }
         }

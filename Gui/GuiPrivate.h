@@ -56,6 +56,8 @@ CLANG_DIAG_ON(uninitialized)
 
 NATRON_NAMESPACE_ENTER
 
+class LiveSessionStatus;
+
 #define NATRON_CONNECT_INPUT_NB (2 * 10)
 
 struct GuiPrivate
@@ -98,6 +100,11 @@ public:
     ActionWithShortcut *actionSaveAs_project;
     ActionWithShortcut *actionExportAsGroup;
     ActionWithShortcut *actionSaveAndIncrementVersion;
+    QAction* actionHostLiveSession;
+    QAction* actionJoinLiveSession;
+    QAction* actionLeaveLiveSession;
+    LiveSessionStatus* liveSessionStatus; //< created with the first session
+    bool leavingLiveSession; //< the user asked to leave: no need to say the session ended
     ActionWithShortcut *actionPreferences;
     ActionWithShortcut *actionExit;
     ActionWithShortcut *actionProject_settings;

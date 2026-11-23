@@ -1534,7 +1534,8 @@ GuiAppInstance::save(const std::string& filename)
 {
     if ( filename.empty() ) {
         ProjectPtr project = getProject();
-        if ( project->hasProjectBeenSavedByUser() ) {
+        // A joined client's file is the host's, which saveProject() asks the host to save.
+        if (project->hasProjectBeenSavedByUser() || (getLiveSessionState() == LiveSessionState::eJoined)) {
             return _imp->_gui->saveProject();
         } else {
             return _imp->_gui->saveProjectAs();

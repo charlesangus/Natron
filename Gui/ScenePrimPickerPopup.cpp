@@ -281,6 +281,7 @@ ScenePrimPickerPopup::ScenePrimPickerPopup(Gui* gui,
     _imp->tree->header()->setSectionResizeMode(SceneGraphModel::eColumnName, QHeaderView::Stretch);
     _imp->tree->header()->setSectionResizeMode(SceneGraphModel::eColumnType, QHeaderView::ResizeToContents);
     _imp->tree->header()->setSectionResizeMode(SceneGraphModel::eColumnKind, QHeaderView::ResizeToContents);
+    _imp->tree->header()->setSectionResizeMode(SceneGraphModel::eColumnPurpose, QHeaderView::ResizeToContents);
     layout->addWidget(_imp->tree, 1);
 
     _imp->extras = new QListWidget(this);

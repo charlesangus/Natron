@@ -8,6 +8,8 @@ QModelIndex alone.
 
 Checks:
   - the tree lists /World with Box, Ball and Cam under it, with their types;
+  - the Purpose column, right after Kind, reads default for each, inherited from nowhere and so
+    dimmed, with a tooltip saying so; the docked tree needs no horizontal scrollbar;
   - a pick in the viewer reveals a row the tree has not read yet: its ancestors open and its row
     is current, and the same while a filter hides the prim, which stays selected;
   - closing and opening a row stays in the tree: the stage's edit count and change notices do not
@@ -51,6 +53,8 @@ try:
     from guitest import FIXTURES, check, finish, plugin_problem, report, require, run, shot, viewer_up, widgets_of
 
     PATH_ROLE = Qt.UserRole + 1
+    PURPOSE_INHERITED_ROLE = Qt.UserRole + 9
+    PURPOSE_ORIGIN_ROLE = Qt.UserRole + 10
 
     scene_path = os.path.join(FIXTURES, "scene-reference.usda")
     require(os.path.isfile(scene_path), "fixture exists: " + scene_path)
@@ -351,6 +355,24 @@ try:
         types = dict((path_of(i), str(i.siblingAtColumn(1).data())) for i in rows(world))
         check(types.get(BOX) == "Cube" and types.get(BALL) == "Sphere" and types.get(CAM) == "Camera",
               "the type column reads Cube, Sphere and Camera (got %r)" % (types,))
+        m = model()
+        headers = [str(m.headerData(c, Qt.Horizontal)) for c in range(m.columnCount())]
+        check("Purpose" in headers and "Kind" in headers and headers.index("Purpose") == headers.index("Kind") + 1,
+              "the Purpose column follows Kind (got %r)" % (headers,))
+        if "Purpose" in headers:
+            column = headers.index("Purpose")
+            for i in rows(world):
+                cell = i.siblingAtColumn(column)
+                tip = str(cell.data(Qt.ToolTipRole))
+                check(str(cell.data()) == "default" and cell.data(PURPOSE_INHERITED_ROLE) is True
+                      and not cell.data(PURPOSE_ORIGIN_ROLE) and tip.startswith("Purpose: default"),
+                      "%s's purpose is the inherited fallback, default (got %r, %r, %r, %r)"
+                      % (path_of(i), cell.data(), cell.data(PURPOSE_INHERITED_ROLE), cell.data(PURPOSE_ORIGIN_ROLE), tip))
+            check(not tree().isColumnHidden(column) and tree().columnWidth(column) > 0, "the Purpose column is shown")
+        yield ("sleep", SETTLE_MS)
+        check(not tree().horizontalScrollBar().isVisible(),
+              "the docked tree fits its pane without a horizontal scrollbar (tree %d wide, columns %r)"
+              % (tree().viewport().width(), [tree().columnWidth(c) for c in range(m.columnCount())]))
         yield ("sleep", SETTLE_MS)
         shot("scene-graph-docked.png")
 

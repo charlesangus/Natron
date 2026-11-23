@@ -474,9 +474,9 @@ double frameToTimeCode(const ScenePayload& payload,
 /**
  * @brief Parses text as the USD path expression a prim selector holds (SdfPathExpression): paths
  * whose names may hold glob wildcards (/World/*, /World/B?x), // for any depth (/World//*,
- * //*Light*), predicates in braces ({isa:Mesh}), and the set operators: whitespace or + for union,
- * & for intersection, - for difference, ~ for complement, with parentheses. Blank text is the empty
- * expression, which selects nothing. Returns false with *errorMessage naming the failure when
+ * //*Light*), predicates in braces ({isa:Mesh}, {purpose:proxy}: ScenePredicates::library()),
+ * and the set operators: whitespace or + for union, & for intersection, - for difference, ~ for
+ * complement, with parentheses. Blank text is the empty expression, which selects nothing. Returns false with *errorMessage naming the failure when
  * text does not parse, holds a relative path, or references a collection (%name), which a node's
  * selector has nothing to resolve against.
  **/
@@ -488,8 +488,8 @@ bool parsePrimExpression(const std::string& text,
  * @brief The prims of stage that expression (parsePrimExpression()) selects, in depth-first stage
  * order. Only active, loaded, defined, non-abstract prims are visited, so a prim under an inactive one
  * never matches. Returns false with *errorMessage set, and *paths empty, when expression does not
- * parse; blank text selects nothing. With traverseInstanceProxies, prims inside native instances
- * are visited and can match too.
+ * parse or names a predicate ScenePredicates::library() lacks; blank text selects nothing. With
+ * traverseInstanceProxies, prims inside native instances are visited and can match too.
  **/
 bool selectPrims(const PXR_NS::UsdStageRefPtr& stage,
                  const std::string& expression,

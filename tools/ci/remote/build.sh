@@ -6,14 +6,14 @@
 #
 # Usage:
 #   tools/ci/remote/build.sh <fast|release|debug> [--tests] [--scheduler <legacy|taskgraph>] [--record-goldens]
-#                            [--shuffle-seeds <n,n,...>] [--repeat-test <name>:<N>] [--no-appimage] [--no-remote-ccache] [--debug-symbols] [--cmake-arg <arg>]... [--gui "<script> ..."]
+#                            [--shuffle-seeds <n,n,...>] [--repeat-test <name>:<N>] [--appimage] [--no-remote-ccache] [--debug-symbols] [--cmake-arg <arg>]... [--gui "<script> ..."]
 #   tools/ci/remote/build.sh <fast|release> --from-run <run-id> --gui "<script> ..."
 #   tools/ci/remote/build.sh --mode
 #
 #   fast | release | debug -> the build preset, same meaning as in local/build.sh.
 #                        debug never produces an AppImage: one cannot be packaged
 #                        in the container, because llvmpipe raises SIGFPE under
-#                        the -DDEBUG traps. It behaves as --no-appimage.
+#                        the -DDEBUG traps, so it takes neither --appimage nor --gui.
 #   --tests           -> also run the ctest suite and smoke tests remotely; the
 #                        ctest logs are downloaded even when the run fails.
 #   --scheduler <legacy|taskgraph> -> implies --tests; runs only that scheduler's
@@ -51,13 +51,18 @@
 #                        <name> <N>`), stopping at the first failure. The log is
 #                        ctest-<scheduler>-repeat.log next to the ctest log. <name>
 #                        must not contain a colon or whitespace.
-#   --no-appimage     -> skip packaging and downloading the AppImage.
-#   --debug-symbols   -> also download the symbol tables the bundle's strip removes,
+#   --appimage        -> also package the AppImage and download it into build/remote/<preset>/.
+#                        Without it (or --gui or --debug-symbols, which imply it) the
+#                        run builds no AppImage. Use it for UAT builds and for a run
+#                        meant as a later --from-run source.
+#   --no-appimage     -> the default: no AppImage. Rejected beside --appimage, --gui or
+#                        --debug-symbols.
+#   --debug-symbols   -> implies --appimage; also download the symbol tables the bundle's strip removes,
 #                        as natron-symbols.tar.gz beside the AppImage and unpacked into
 #                        build/remote/<preset>/symbols/: a .build-id tree for eu-stack
 #                        --debuginfo-path and <exe>.bin.syms listings for
 #                        heavy_scene_stack_window.py --symbols. The AppImage is the
-#                        same one a run without it ships. Needs the AppImage.
+#                        same one a run without it ships.
 #   --no-remote-ccache -> build with the local and actions/cache ccache only,
 #                        without the shared remote ccache storage (the
 #                        CCACHE_REMOTE_STORAGE repo secret).
@@ -70,13 +75,15 @@
 #                        job per script in parallel, and download each one's
 #                        screenshots, results.txt and natron.log into
 #                        build/remote/<preset>/gui/<name>/. Prints a PASS/FAIL
-#                        line per script and fails if any script failed. Needs
-#                        the AppImage, so not with debug or --no-appimage.
+#                        line per script and fails if any script failed. Implies
+#                        --appimage, so not with debug.
 #   --from-run <run-id> -> skip the build and run the --gui scripts against the
 #                        <preset> AppImage of an earlier remote-build run, using
 #                        the scripts and fixtures of the commit that run built
 #                        (so its branch need not carry this workflow). Takes no
-#                        build or test options, and needs --gui. Only
+#                        build or test options, and needs --gui. Fails before
+#                        dispatching when that run has no unexpired <preset>
+#                        AppImage (a run without --appimage or --gui has none). Only
 #                        build/remote/<preset>/gui/ is replaced.
 #   --gui-ref <ref>    -> with --from-run: check out this branch or sha for the
 #                        scripts, fixtures and run-gui-test.sh instead of the
@@ -97,7 +104,7 @@ FIND_INTERVAL_SECS=5
 WATCH_INTERVAL_SECS=30
 
 usage() {
-    echo "usage: build.sh <fast|release|debug> [--tests] [--scheduler <legacy|taskgraph>] [--record-goldens] [--shuffle-seeds <n,n,...>] [--repeat-test <name>:<N>] [--no-appimage] [--no-remote-ccache] [--debug-symbols] [--cmake-arg <arg>]... [--gui \"<script> ...\"]" >&2
+    echo "usage: build.sh <fast|release|debug> [--tests] [--scheduler <legacy|taskgraph>] [--record-goldens] [--shuffle-seeds <n,n,...>] [--repeat-test <name>:<N>] [--appimage] [--no-remote-ccache] [--debug-symbols] [--cmake-arg <arg>]... [--gui \"<script> ...\"]" >&2
     echo "       build.sh <fast|release> --from-run <run-id> [--gui-ref <ref>] --gui \"<script> ...\"" >&2
     echo "       build.sh --mode" >&2
 }
@@ -132,7 +139,8 @@ print_mode() {
 PRESET=""
 RUN_TESTS=false
 RECORD_GOLDENS=false
-WANT_APPIMAGE=true
+WANT_APPIMAGE=false
+NO_APPIMAGE=false
 DEBUG_SYMBOLS=false
 REMOTE_CCACHE=true
 SHUFFLE_SEEDS=""
@@ -208,12 +216,17 @@ while [[ $# -gt 0 ]]; do
             RUN_TESTS=true
             BUILD_OPTION=true
             ;;
+        --appimage)
+            WANT_APPIMAGE=true
+            BUILD_OPTION=true
+            ;;
         --no-appimage)
-            WANT_APPIMAGE=false
+            NO_APPIMAGE=true
             BUILD_OPTION=true
             ;;
         --debug-symbols)
             DEBUG_SYMBOLS=true
+            WANT_APPIMAGE=true
             BUILD_OPTION=true
             ;;
         --no-remote-ccache)
@@ -323,25 +336,44 @@ if [[ -n "${FROM_RUN}" ]]; then
         usage
         exit 1
     fi
-    WANT_APPIMAGE=false
-elif [[ -n "${GUI_SCRIPTS}" && ( "${PRESET}" == "debug" || "${WANT_APPIMAGE}" == "false" ) ]]; then
-    echo "build.sh: --gui runs against the AppImage, so it needs fast or release without --no-appimage" >&2
+elif [[ -n "${GUI_SCRIPTS}" ]]; then
+    WANT_APPIMAGE=true
+fi
+
+if [[ "${NO_APPIMAGE}" == "true" && "${WANT_APPIMAGE}" == "true" ]]; then
+    echo "build.sh: --no-appimage contradicts --appimage, --gui and --debug-symbols, which all package an AppImage" >&2
     usage
     exit 1
 fi
 
-if [[ "${PRESET}" == "debug" && "${WANT_APPIMAGE}" == "true" ]]; then
-    echo "build.sh: the debug preset builds no AppImage (llvmpipe raises SIGFPE under -DDEBUG traps in the container); behaving as --no-appimage" >&2
-    WANT_APPIMAGE=false
-fi
-
-if [[ "${DEBUG_SYMBOLS}" == "true" && "${WANT_APPIMAGE}" == "false" ]]; then
-    echo "build.sh: --debug-symbols keeps the symbols of the AppImage's bundle, so it needs fast or release without --no-appimage" >&2
+if [[ -z "${FROM_RUN}" && "${PRESET}" == "debug" && "${WANT_APPIMAGE}" == "true" ]]; then
+    echo "build.sh: the debug preset builds no AppImage (llvmpipe raises SIGFPE under -DDEBUG traps in the container), so it takes neither --appimage, --gui nor --debug-symbols" >&2
     usage
     exit 1
 fi
 
 cd "${REPO_ROOT}"
+
+# The workflow would fail on the same check, but only after the dev image job; asking here
+# fails in seconds.
+if [[ -n "${FROM_RUN}" ]]; then
+    if ! FROM_SHA="$(gh api "repos/{owner}/{repo}/actions/runs/${FROM_RUN}" --jq .head_sha 2>/dev/null)" || [[ -z "${FROM_SHA}" ]]; then
+        echo "build.sh: cannot look up run ${FROM_RUN}; is it a remote-build run id of this repository?" >&2
+        exit 1
+    fi
+    FROM_ARTIFACT="natron-${PRESET}-${FROM_SHA}"
+    if ! FROM_AVAILABLE="$(gh api --paginate "repos/{owner}/{repo}/actions/runs/${FROM_RUN}/artifacts" \
+        --jq '.artifacts[] | select(.expired | not) | .name' 2>/dev/null)"; then
+        echo "build.sh: cannot list the artifacts of run ${FROM_RUN}" >&2
+        exit 1
+    fi
+    if ! grep -qxF "${FROM_ARTIFACT}" <<<"${FROM_AVAILABLE}"; then
+        FROM_OTHERS="$(grep '^natron-' <<<"${FROM_AVAILABLE}" | grep -v '^natron-symbols-' | tr '\n' ' ' || true)"
+        echo "build.sh: run ${FROM_RUN} has no unexpired ${PRESET} AppImage (artifact ${FROM_ARTIFACT})." >&2
+        echo "Runs package only with --appimage or --gui; rebuild with --appimage to make a --from-run source. AppImages it does have: ${FROM_OTHERS:-none}" >&2
+        exit 1
+    fi
+fi
 
 BRANCH="$(git symbolic-ref --quiet --short HEAD || true)"
 if [[ -z "${BRANCH}" ]]; then

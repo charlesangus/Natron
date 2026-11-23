@@ -584,6 +584,34 @@ setString(const NodePtr& node,
     knob->setValue(value);
 }
 
+void
+setBool(const NodePtr& node,
+        const char* name,
+        bool value)
+{
+    KnobBool* knob = dynamic_cast<KnobBool*>(node->getKnobByName(name).get());
+    ASSERT_TRUE(knob != NULL) << name;
+    knob->setValue(value);
+}
+
+// "active", "inactive" or "absent": the prim at path in payload composed with loadSet.
+std::string
+activityOf(const ScenePayload& payload,
+           const SceneLoadSetPtr& loadSet,
+           const std::string& path)
+{
+    std::string error;
+    SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(payload, loadSet, &error);
+    const PXR_NS::UsdStageRefPtr stage = lease.getStage();
+    EXPECT_TRUE(bool(stage)) << error;
+    const PXR_NS::UsdPrim prim = stage ? stage->GetPrimAtPath(PXR_NS::SdfPath(path)) : PXR_NS::UsdPrim();
+    if (!prim) {
+        return "absent";
+    }
+
+    return prim.IsActive() ? "active" : "inactive";
+}
+
 // /Lib/A and /Lib/B, each a payload file holding one material, in a directory of their own.
 class PayloadMaterials {
 public:
@@ -1809,4 +1837,196 @@ TEST_F(SceneLoadSetCoverageTest, AViewerLoadReachingWhatAVariantMenuSearchedRefi
     EXPECT_TRUE(follow());
     EXPECT_EQ((std::vector<std::string> { "look" }), entryIds(sets));
     EXPECT_EQ((std::vector<std::string> { "plain", "tinted" }), entryIds(variants));
+}
+
+TEST_F(SceneLoadSetCoverageTest, PruneUnselectedWithALoadedMatchKeepsTheUnloadedPayloadsThePatternReachesAndPrunesTheOthers)
+{
+    CarCity city(2, 2);
+    NodePtr source = reader(city);
+    NodePtr node = prune(source, "/World/Block_0//car*");
+    ASSERT_TRUE(source && node);
+    setBool(node, kUSDPruneParamPruneUnselected, true);
+    const SceneLoadSetPtr first = loadingOnly({ "/World/Block_0/B_0" });
+    const SceneLoadReachPtr reach = std::make_shared<SceneLoadReach>();
+
+    ScenePayload payload;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+              node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0), SceneEvaluationContext(SceneEvaluationContext::makeId(), first, reach)), &payload, &error))
+        << error;
+    EXPECT_LE(city.openedBuildings(), 1);
+    EXPECT_FALSE(node->hasPersistentMessage());
+    EXPECT_EQ("active", activityOf(payload, first, "/World/Block_0/B_0/car_0"));
+    EXPECT_EQ("inactive", activityOf(payload, first, "/World/Block_0/B_0/Geo"));
+    EXPECT_EQ("active", activityOf(payload, first, "/World/Block_0/B_1"));
+    EXPECT_EQ("inactive", activityOf(payload, first, "/World/Block_1"));
+    EXPECT_EQ("inactive", activityOf(payload, first, "/World/Ground"));
+    EXPECT_EQ("active", activityOf(payload, first, "/World"));
+    // Any load changes what isolating prunes, even one the pattern cannot reach.
+    EXPECT_TRUE(SceneOps::loadChangeReaches(first.get(), loadingOnly({ "/World/Block_0" }).get(), reach->getPrefixes()));
+    EXPECT_TRUE(SceneOps::loadChangeReaches(first.get(), loadingOnly({ "/World/Block_0/B_0", "/World/Block_1" }).get(), reach->getPrefixes()));
+
+    expectParity(node, first);
+    expectParity(node, loadingOnly({ "/World/Block_0" }));
+
+    // A render loads everything: the cars' buildings keep the cars and the camera, the rest goes.
+    ScenePayload rendered;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+              node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &rendered, &error))
+        << error;
+    const SceneLoadSetPtr everything = SceneLoadSet::everything();
+    EXPECT_EQ("active", activityOf(rendered, everything, "/World/Block_0/B_0/car_0"));
+    EXPECT_EQ("active", activityOf(rendered, everything, "/World/Block_0/B_1/car_0"));
+    EXPECT_EQ("active", activityOf(rendered, everything, "/World/Block_0/B_0/Cam"));
+    EXPECT_EQ("inactive", activityOf(rendered, everything, "/World/Block_0/B_0/Geo"));
+    EXPECT_EQ("inactive", activityOf(rendered, everything, "/World/Block_1"));
+    EXPECT_EQ("inactive", activityOf(rendered, everything, "/World/Ground"));
+}
+
+TEST_F(SceneLoadSetCoverageTest, PruneUnselectedWithAPatternReachingEverywhereKeepsEveryUnloadedPayloadOnceAMatchLoads)
+{
+    CarCity city(2, 2);
+    NodePtr source = reader(city);
+    NodePtr node = prune(source, "//car*");
+    ASSERT_TRUE(source && node);
+    setBool(node, kUSDPruneParamPruneUnselected, true);
+    const SceneLoadSetPtr first = loadingOnly({ "/World/Block_0/B_0" });
+
+    ScenePayload payload;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+              node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0), SceneEvaluationContext(SceneEvaluationContext::makeId(), first, std::make_shared<SceneLoadReach>())), &payload, &error))
+        << error;
+    EXPECT_LE(city.openedBuildings(), 1);
+    EXPECT_EQ("active", activityOf(payload, first, "/World/Block_0/B_0/car_0"));
+    for (const char* path : { "/World/Block_0/B_1", "/World/Block_1/B_0", "/World/Block_1/B_1" }) {
+        EXPECT_EQ("active", activityOf(payload, first, path)) << path;
+    }
+    EXPECT_EQ("inactive", activityOf(payload, first, "/World/Ground"));
+
+    expectParity(node, first);
+    expectParity(node, loadingOnly({ "/World/Block_1" }));
+}
+
+TEST_F(SceneLoadSetCoverageTest, PruneUnselectedWithNoLoadedMatchPrunesEverything)
+{
+    CarCity city(2, 2);
+    NodePtr source = reader(city);
+    ASSERT_TRUE(bool(source));
+    const SceneLoadSetPtr none = std::make_shared<const SceneLoadSet>(SceneLoadSet::none());
+    const SceneLoadSetPtr everything = SceneLoadSet::everything();
+    std::string error;
+
+    // The cars lie inside unloaded payloads, which the viewer does not look into, even where
+    // the pattern reaches them.
+    std::vector<NodePtr> nodes;
+    for (const char* pattern : { "/World/Block_0//car*", "//car*" }) {
+        NodePtr node = prune(source, pattern);
+        ASSERT_TRUE(bool(node)) << pattern;
+        setBool(node, kUSDPruneParamPruneUnselected, true);
+        nodes.push_back(node);
+
+        ScenePayload payload;
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+                  node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0), SceneEvaluationContext(SceneEvaluationContext::makeId(), none, std::make_shared<SceneLoadReach>())), &payload, &error))
+            << pattern << ": " << error;
+        EXPECT_EQ(0, city.openedBuildings()) << pattern;
+        EXPECT_FALSE(node->hasPersistentMessage()) << pattern;
+        EXPECT_EQ("inactive", activityOf(payload, none, "/World")) << pattern;
+        EXPECT_EQ("absent", activityOf(payload, none, "/World/Block_0/B_0")) << pattern;
+    }
+
+    // A render loads the cars and keeps them.
+    for (const NodePtr& node : nodes) {
+        ScenePayload rendered;
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+                  node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &rendered, &error))
+            << error;
+        EXPECT_EQ("active", activityOf(rendered, everything, "/World/Block_0/B_0/car_0"));
+        EXPECT_EQ("inactive", activityOf(rendered, everything, "/World/Ground"));
+    }
+
+    // With everything loaded, a pattern matching nothing leaves only the loaded camera.
+    NodePtr node = prune(source, "//truck*");
+    ASSERT_TRUE(bool(node));
+    setBool(node, kUSDPruneParamPruneUnselected, true);
+    ScenePayload rendered;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+              node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &rendered, &error))
+        << error;
+    EXPECT_FALSE(node->hasPersistentMessage());
+    EXPECT_EQ("active", activityOf(rendered, everything, "/World/Block_0/B_0/Cam"));
+    EXPECT_EQ("inactive", activityOf(rendered, everything, "/World/Block_0/B_0/car_0"));
+    EXPECT_EQ("inactive", activityOf(rendered, everything, "/World/Block_0/B_1"));
+    EXPECT_EQ("inactive", activityOf(rendered, everything, "/World/Block_1"));
+    EXPECT_EQ("inactive", activityOf(rendered, everything, "/World/Ground"));
+}
+
+TEST_F(SceneLoadSetCoverageTest, PruneUnselectedWithAPlainPathIntoAnUnloadedPayloadPrunesEverythingLikeAWildcard)
+{
+    CarCity city(2, 2);
+    NodePtr source = reader(city);
+    ASSERT_TRUE(bool(source));
+    const SceneLoadSetPtr loadSets[] = { std::make_shared<const SceneLoadSet>(SceneLoadSet::none()), loadingOnly({ "/World/Block_1/B_0" }) };
+    const SceneLoadSetPtr everything = SceneLoadSet::everything();
+    std::string error;
+
+    std::vector<NodePtr> nodes;
+    for (const char* pattern : { "/World/Block_0/B_0/car_0", "/World/Block_0/B_0/car_*" }) {
+        NodePtr node = prune(source, pattern);
+        ASSERT_TRUE(bool(node)) << pattern;
+        setBool(node, kUSDPruneParamPruneUnselected, true);
+        nodes.push_back(node);
+
+        for (const SceneLoadSetPtr& loadSet : loadSets) {
+            ScenePayload payload;
+            ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+                      node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0), SceneEvaluationContext(SceneEvaluationContext::makeId(), loadSet, std::make_shared<SceneLoadReach>())), &payload, &error))
+                << pattern << ": " << error;
+            EXPECT_LE(city.openedBuildings(), 1) << pattern;
+            EXPECT_FALSE(node->hasPersistentMessage()) << pattern;
+            EXPECT_EQ("inactive", activityOf(payload, loadSet, "/World")) << pattern;
+        }
+    }
+
+    // A render loads the car and keeps it.
+    for (const NodePtr& node : nodes) {
+        ScenePayload rendered;
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+                  node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &rendered, &error))
+            << error;
+        EXPECT_EQ("active", activityOf(rendered, everything, "/World/Block_0/B_0/car_0"));
+        EXPECT_EQ("inactive", activityOf(rendered, everything, "/World/Block_0/B_0/Geo"));
+        EXPECT_EQ("inactive", activityOf(rendered, everything, "/World/Block_1"));
+    }
+}
+
+TEST_F(SceneLoadSetCoverageTest, PruneUnselectedPrunesACameraInAnUnreachedUnloadedPayloadInTheViewerAndKeepsItInARender)
+{
+    CarCity city(2, 2);
+    NodePtr source = reader(city);
+    NodePtr node = prune(source, "/World/Block_1//car*");
+    ASSERT_TRUE(source && node);
+    setBool(node, kUSDPruneParamPruneUnselected, true);
+    const SceneLoadSetPtr loaded = loadingOnly({ "/World/Block_1/B_0" });
+    std::string error;
+
+    // The camera lies in /World/Block_0/B_0, which is unloaded and which the pattern cannot reach.
+    ScenePayload payload;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+              node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0), SceneEvaluationContext(SceneEvaluationContext::makeId(), loaded, std::make_shared<SceneLoadReach>())), &payload, &error))
+        << error;
+    EXPECT_LE(city.openedBuildings(), 1);
+    EXPECT_EQ("active", activityOf(payload, loaded, "/World/Block_1/B_0/car_0"));
+    EXPECT_EQ("inactive", activityOf(payload, loaded, "/World/Block_0"));
+
+    const SceneLoadSetPtr everything = SceneLoadSet::everything();
+    ScenePayload rendered;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+              node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &rendered, &error))
+        << error;
+    EXPECT_EQ("active", activityOf(rendered, everything, "/World/Block_0/B_0/Cam"));
+    EXPECT_EQ("inactive", activityOf(rendered, everything, "/World/Block_0/B_0/Geo"));
+    EXPECT_EQ("inactive", activityOf(rendered, everything, "/World/Block_0/B_1"));
+    EXPECT_EQ("active", activityOf(rendered, everything, "/World/Block_1/B_0/car_0"));
 }

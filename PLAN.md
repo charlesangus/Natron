@@ -570,6 +570,7 @@ future core work has solid ground to build on.
 | M549 | Faster Gate Packaging | done | - | | E2 | | | [M549-faster-gate-packaging.md](PLAN/MILESTONES/M549-faster-gate-packaging.md) |
 | M550 | Classic Graph Shift-Drop Creation | todo | M351 |  | E9 | | | [M550-classic-graph-shift-drop-creation.md](PLAN/MILESTONES/M550-classic-graph-shift-drop-creation.md) |
 | M551 | Second Background App Groups | todo | - |  | E2 | | | [M551-second-background-app-groups.md](PLAN/MILESTONES/M551-second-background-app-groups.md) |
+| M553 | Storm Project3D Test Flake | doing | - | bosley-executor | E2 | | | [M553-storm-project3d-test-flake.md](PLAN/MILESTONES/M553-storm-project3d-test-flake.md) |
 | M552 | Shared Remote Run Watcher | doing | - | bosley-executor | E2 | | | [M552-shared-remote-run-watcher.md](PLAN/MILESTONES/M552-shared-remote-run-watcher.md) |
 | M494 | Delegate Subdivision | doing | - | bosley-executor | E9 | | | [M494-delegate-subdivision.md](PLAN/MILESTONES/M494-delegate-subdivision.md) |
 | M495 | KeyMix GPU Edge Read Fix | doing | - | bosley-executor | E14 | | | [M495-keymix-gpu-edge-read-fix.md](PLAN/MILESTONES/M495-keymix-gpu-edge-read-fix.md) |
@@ -582,7 +583,7 @@ future core work has solid ground to build on.
 | M509 | Cancel-Aware GPU Fence Wait | doing | - | bosley-executor | E5 |  | | [M509-cancel-aware-gpu-fence-wait.md](PLAN/MILESTONES/M509-cancel-aware-gpu-fence-wait.md) |
 | M510 | MoonRay Warning Text | doing | - | bosley-executor | E9 |  | | [M510-moonray-warning-text.md](PLAN/MILESTONES/M510-moonray-warning-text.md) |
 | M511 | Viewer Toolbar Fits 1920x1080 | doing | - | bosley-executor | E10 |  | | [M511-viewer-toolbar-fits-1920x1080.md](PLAN/MILESTONES/M511-viewer-toolbar-fits-1920x1080.md) |
-| M512 | Python importTemplate Binding | doing | M103 | bosley-executor | E12 | F33 | | [M512-python-importtemplate-binding.md](PLAN/MILESTONES/M512-python-importtemplate-binding.md) |
+| M512 | Python importTemplate Binding | done | M103 | | E12 | F33 | | [M512-python-importtemplate-binding.md](PLAN/MILESTONES/M512-python-importtemplate-binding.md) |
 | M513 | MoonRay OIDN Denoiser | todo | - |  | E9 |  | | [M513-moonray-oidn-denoiser.md](PLAN/MILESTONES/M513-moonray-oidn-denoiser.md) |
 | M497 | Lens Schema And Camera Authoring | todo | M132 |  | E9 | F34 | | [M497-lens-schema-and-camera-authoring.md](PLAN/MILESTONES/M497-lens-schema-and-camera-authoring.md) |
 | M498 | LensDistortion From Scene | todo | M497 |  | E9 | F34 | | [M498-lensdistortion-from-scene.md](PLAN/MILESTONES/M498-lensdistortion-from-scene.md) |

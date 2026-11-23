@@ -31,6 +31,7 @@ SETTLE_MS = 700
 CANCEL_TIMEOUT_S = float(os.environ.get("NATRON_TEST_CANCEL_TIMEOUT_S", "10"))
 MAX_GAP_MS = float(os.environ.get("NATRON_TEST_MAX_GAP_MS", "100"))
 LONG_COOK_MS = 3000
+LONG_SETTLE_MS = 750
 PIECE_SPACING = 3.0
 CUBE_FACES = 6
 CUBE_POINTS = 8
@@ -171,13 +172,16 @@ try:
 
         # cancel
         heartbeat.start()
-        long_edit_ms = now_ms()
         param(end, "iterations").setValue(LONG_ITERATIONS)
         param(end, "iterationMethod").setValue(ITERATE_COUNT)
+        # Each edit above can sync a quick intermediate scene (the pieces loop, or the old iteration count)
+        # before the long loop starts cooking, so the baseline is taken once those have landed.
+        yield ("sleep", LONG_SETTLE_MS)
+        baseline_ms = synced_at_ms()
         yield ("sleep", LONG_COOK_MS)
         # scene_drawn() stays true on the previous scene while a new one cooks, so it cannot show a cook running.
-        check(synced_at_ms() < long_edit_ms,
-              "the long loop is still cooking after %d ms (no scene synced since the edit)" % LONG_COOK_MS)
+        check(synced_at_ms() == baseline_ms,
+              "the long loop is still cooking after %d ms (no scene synced since its edit)" % LONG_COOK_MS)
         started = time.monotonic()
         short_edit_ms = now_ms()
         param(end, "iterations").setValue(SHORT_ITERATIONS)

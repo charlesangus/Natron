@@ -260,7 +260,6 @@ USDToGeo::renderGeometry(const GeoRenderActionArgs& args,
                          GeoDetailConstPtr* outputDetail,
                          std::string* errorMessage)
 {
-    const U64 hash = getHash();
     const std::string pattern = _primPattern.getExpression();
     const bool unpack = boolAt(_unpack, args.time, args.view);
     const bool flatten = unpack && boolAt(_flatten, args.time, args.view);
@@ -284,6 +283,9 @@ USDToGeo::renderGeometry(const GeoRenderActionArgs& args,
         }
     }
 
+    // Taken once the input is evaluated: the first evaluation of a file reader walks the file and
+    // moves its hash, and the node's with it.
+    const U64 hash = getHash();
     std::vector<std::string> skipped;
     std::vector<std::string> warnings;
     bool varying = false;

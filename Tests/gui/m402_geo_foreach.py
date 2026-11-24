@@ -181,6 +181,7 @@ try:
         heavy = make("GeoWrangle", 150, 250)
         param(heavy, "snippet").setValue("for (int k = 0; k < %d; k++) f@heavy += k * 0.5;\n" % HEAVY_STEPS)
         require(heavy.connectInput(0, move), "connect the GeoTransform into the GeoWrangle")
+        end.disconnectInput(0)
         require(end.connectInput(0, heavy), "connect the GeoWrangle into the GeoForEachEnd")
         param(end, "iterationMethod").setValue(ITERATE_COUNT)
         # Each edit above can sync a quick intermediate scene (the pieces loop, or the old iteration count)

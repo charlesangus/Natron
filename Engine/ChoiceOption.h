@@ -45,27 +45,33 @@ struct ChoiceOption
 
     // Can be set to display a tooltip when the user hovers the entry in the choice menu
     std::string tooltip;
-    
+
+    // Shown greyed in the GUI's menu, where it cannot be picked: a note rather than a choice.
+    bool disabled;
+
     ChoiceOption()
-    : id()
-    , label()
-    , tooltip()
+        : id()
+        , label()
+        , tooltip()
+        , disabled(false)
     {
         
     }
 
     explicit ChoiceOption(const std::string& id_)
-    : id(id_)
-    , label()
-    , tooltip()
+        : id(id_)
+        , label()
+        , tooltip()
+        , disabled(false)
     {
 
     }
 
     ChoiceOption(const std::string& id_, const std::string& label_, const std::string& tooltip_)
-    : id(id_)
-    , label(label_)
-    , tooltip(tooltip_)
+        : id(id_)
+        , label(label_)
+        , tooltip(tooltip_)
+        , disabled(false)
     {
         
     }

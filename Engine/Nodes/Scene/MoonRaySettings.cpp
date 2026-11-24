@@ -122,6 +122,7 @@ make()
     c.groups.push_back(groupSpec("denoise", "", true, "Asks MoonRay to remove noise from the image. In this build the denoiser it asks for is missing, so expect the image to stay noisy."));
     c.groups.push_back(groupSpec("sceneToggles", "", false, "Switches that change how the scene is read, mostly to speed up a render or track down a problem."));
     c.groups.push_back(groupSpec("prune", "sceneToggles", false, "Removes kinds of geometry from the render. Mostly useful for scenes that use MoonRay's studio geometry types."));
+    c.groups.push_back(groupSpec("subdivision", "", false, "Renders meshes as smooth subdivision surfaces, by the subdivision scheme each mesh authors, tessellated finer where they cover more of the image."));
     c.groups.push_back(groupSpec("performance", "", false, "How MoonRay runs on this machine and how often the image updates."));
     c.groups.push_back(groupSpec("remote", "", false, "Rendering on other machines, which Natron does not do. These controls stay disabled."));
     c.groups.push_back(groupSpec("logging", "", false, "How much MoonRay reports while it renders, for tracking down problems. It does not change the image."));
@@ -174,13 +175,41 @@ make()
     add("sceneToggles", declared("disableLighting", "Sets every light to zero, so only glowing surfaces show. Use it to check emission or to rule out lights while tracking down a problem; leave it off otherwise.", VtValue(false)));
     add("sceneToggles", declared("doubleSided", "Makes all geometry visible from both sides. It fixes surfaces that vanish when seen from behind, and shows geometry the scene meant to hide, so leave it off unless something is missing.", VtValue(false)));
     add("sceneToggles", declared("decodeNormals", "Treats normal map textures as raw data and remaps them from 0 to 1 into -1 to 1. Turn it on if normal maps look wrong because the material does not do this itself; otherwise leave it off.", VtValue(false)));
-    add("sceneToggles", declared("forcePolygon", "Renders subdivision surfaces as plain polygons. It saves time and memory, but curved surfaces show their facets. Good for previews; leave it off for finals.", VtValue(false)));
 
     add("prune", declared("pruneWillow", "Removes MoonRay's WillowGeometry from the render, which is faster but loses that geometry. The MoonRay bundled with Natron has no such geometry type, so it matters only with a scene that brings its own; leave it off otherwise.", VtValue(false)));
     add("prune", declared("pruneFurDeform", "Removes MoonRay's FurDeformGeometry from the render, which is faster but loses that geometry. The MoonRay bundled with Natron has no such geometry type, so it matters only with a scene that brings its own; leave it off otherwise.", VtValue(false)));
     add("prune", declared("pruneVolume", "Removes all volumes from the render. It is much faster when smoke or fog is slowing a preview, but they are gone from the image, so leave it off for finals.", VtValue(false)));
     add("prune", declared("pruneWrapDeform", "Removes MoonRay's WrapDeformGeometry from the render, which is faster but loses that geometry. The MoonRay bundled with Natron has no such geometry type, so it matters only with a scene that brings its own; leave it off otherwise.", VtValue(false)));
     add("prune", declared("pruneCurveDeform", "Removes MoonRay's CurveDeformGeometry from the render, which is faster but loses that geometry. The MoonRay bundled with Natron has no such geometry type, so it matters only with a scene that brings its own; leave it off otherwise.", VtValue(false)));
+
+    {
+        RenderSettingsKnobs::CuratedSetting s = declared("forcePolygon", "Renders each mesh whose subdivision scheme is Catmull-Clark, Loop or bilinear as a subdivision surface, tessellated at render time; a mesh whose scheme is none stays as it is. USD's default scheme is Catmull-Clark, so with this on every mesh that does not author none is smoothed. Loop meshes are rendered as Catmull-Clark, with a warning. A subdivided mesh shades with its limit surface's normals and ignores authored ones. Off, the default, renders every mesh as its polygons. The viewer's refine level has no effect on this renderer.", VtValue(true));
+        s.name = "subdivisionSurfaces";
+        s.engineDefault = true;
+        s.inverted = true;
+        add("subdivision", s);
+    }
+    {
+        RenderSettingsKnobs::CuratedSetting s = declared("natron:meshResolution", "How many times each side of a face is split, at most. Higher is smoother and takes more time and memory; 2 is a good start. With Adaptive Error above 0 it is the cap, and faces that cover little of the image are split less. A mesh's primvar moonray:mesh_resolution replaces it for that mesh.", VtValue(2.f));
+        s.name = "meshResolution";
+        s.hasRange = true;
+        s.minimum = 1;
+        s.displayMaximum = 16;
+        add("subdivision", s);
+    }
+    {
+        RenderSettingsKnobs::CuratedSetting s = declared("natron:adaptiveError", "The largest distance, in pixels, that the tessellation may stray from the smooth surface, as seen from the dicing camera. Above 0 it splits faces that cover more of the image more finely, up to Mesh Resolution; 0, the default, splits every face Mesh Resolution times. A mesh's primvar moonray:adaptive_error replaces it for that mesh.", VtValue(0.f));
+        s.name = "adaptiveError";
+        s.hasRange = true;
+        s.minimum = 0;
+        s.displayMaximum = 4;
+        add("subdivision", s);
+    }
+    {
+        RenderSettingsKnobs::CuratedSetting s = declared("natron:dicingCamera", "The path of the camera prim meshes that dice adaptively are tessellated as seen from, whether through the global Adaptive Error or a mesh's own moonray:adaptive_error. Empty uses the render camera. Faces outside its view get the coarsest tessellation, and its field of view sets how large a face looks, while the distance to a face is still measured from the render camera. Name a wider camera, for example, so that what lies outside the render camera's view is not left coarse.", VtValue(std::string()));
+        s.name = "dicingCamera";
+        add("subdivision", s);
+    }
 
     {
         RenderSettingsKnobs::CuratedSetting s = declared("executionMode", "Which render engine MoonRay uses. Auto picks the fastest one the scene supports and is the right choice. Scalar is slowest and supports every feature, so try it if a feature misbehaves. XPU needs a GPU path this build lacks. Changing it restarts MoonRay.", VtValue(std::string("auto")));
@@ -228,6 +257,14 @@ make()
     }
     enabledBy("denoiseAlbedoGuiding", "enableDenoise");
     enabledBy("denoiseNormalGuiding", "enableDenoise");
+    for (RenderSettingsKnobs::CuratedSetting& s : c.settings) {
+        if ((s.group == "subdivision") && (s.key != "forcePolygon")) {
+            RenderSettingsKnobs::EnabledBy condition;
+            condition.key = "forcePolygon";
+            condition.inverted = true;
+            s.enabledBy.push_back(condition);
+        }
+    }
 
     return c;
 } // make

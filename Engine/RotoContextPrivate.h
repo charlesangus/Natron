@@ -642,7 +642,7 @@ struct BezierPrivate
             Transform::Point3D p;
             p.z = 1;
             (*it)->getPositionAtTime(true, time, view, &p.x, &p.y);
-            p = Transform::matApply(transform, p);
+            p = Transform::matApplyProjected(transform, p);
             if ( ( p.x >= (x - acceptance) ) && ( p.x <= (x + acceptance) ) && ( p.y >= (y - acceptance) ) && ( p.y <= (y + acceptance) ) ) {
                 *index = i;
 
@@ -668,7 +668,7 @@ struct BezierPrivate
             Transform::Point3D p;
             p.z = 1;
             (*it)->getPositionAtTime(true, time, view, &p.x, &p.y);
-            p = Transform::matApply(transform, p);
+            p = Transform::matApplyProjected(transform, p);
             if ( ( p.x >= (x - acceptance) ) && ( p.x <= (x + acceptance) ) && ( p.y >= (y - acceptance) ) && ( p.y <= (y + acceptance) ) ) {
                 *index = i;
 
@@ -1586,6 +1586,10 @@ public:
     std::list<KnobIWPtr> shapeKnobs;
     // The knobs createTransformKnobs() made, empty when the host has no Transform page.
     std::list<KnobIWPtr> transformKnobs;
+    // The one selected item whose own transform knobs transformKnobs show and edit, if any.
+    RotoDrawableItemWPtr transformTiedItem;
+    // How many TransformTieSuspension objects are alive.
+    int transformTiesSuspended = 0;
 
     std::list<RotoItemPtr> selectedItems;
     // Selected only because a layer holding them was: edits on the node's item knobs skip them.

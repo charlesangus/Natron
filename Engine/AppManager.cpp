@@ -64,6 +64,7 @@
 #include <sstream> // stringstream
 #include <stdexcept>
 #include <thread>
+#include <vector>
 
 #include <QtGlobal> // for Q_OS_*
 #if defined(Q_OS_LINUX)
@@ -168,6 +169,8 @@
 #include "Engine/Nodes/NodeSpec.h"
 #include "Engine/Nodes/Scene/MoonRayRuntime.h"
 #include "Engine/Nodes/Scene/SceneCaches.h"
+#include "Engine/Nodes/Scene/SceneNodeKnobs.h"
+#include "Engine/Nodes/Scene/SceneTeardown.h"
 #include "Engine/Nodes/Test/OverlayImageGuiTestNode.h"
 #include "Engine/Nodes/Test/OverlayTestNode.h"
 
@@ -554,10 +557,19 @@ backTraceSigSegvHandler(int sig,
 static void
 setSigSegvSignal()
 {
+    // A stack overflow leaves no stack for the handler, so the crash would end without a backtrace.
+    // The alternate stack only covers the thread that installs it, the main thread.
+    static std::vector<char> altStack(256 * 1024);
+    stack_t ss;
+    ss.ss_sp = altStack.data();
+    ss.ss_size = altStack.size();
+    ss.ss_flags = 0;
+    const bool hasAltStack = sigaltstack(&ss, NULL) == 0;
+
     struct sigaction sa;
 
     sigemptyset (&sa.sa_mask);
-    sa.sa_flags = SA_RESTART | SA_SIGINFO;
+    sa.sa_flags = SA_RESTART | SA_SIGINFO | (hasAltStack ? SA_ONSTACK : 0);
     /* if SA_SIGINFO is set, sa_sigaction is to be used instead of sa_handler. */
     sa.sa_sigaction = backTraceSigSegvHandler;
 
@@ -810,6 +822,15 @@ AppManager::~AppManager()
             appsEmpty = _imp->_appInstances.empty();
         }
     }
+
+    // The nodes are gone, so every scene job is cancelled; they read the caches, Python and the
+    // QApplication torn down below. Bounded: a job stuck past it is left to the process exit.
+    setTeardownStage("waiting for the scene workers");
+    SceneWorker::joinAll(5000);
+
+    // What the closed projects let go of still uses OpenUSD, the caches and the plug-ins' libraries.
+    setTeardownStage("closing the released scenes");
+    SceneTeardown::shutdown();
 
     for (PluginsMap::iterator it = _imp->_plugins.begin(); it != _imp->_plugins.end(); ++it) {
         for (PluginVersionsOrdered::reverse_iterator itver = it->second.rbegin(); itver != it->second.rend(); ++itver) {
@@ -4784,6 +4805,21 @@ PythonGILUnlocker::~PythonGILUnlocker()
 #if PY_VERSION_HEX >= 0x030400F0
     assert(PyGILState_Check()); // Not available prior to Python 3.4
 #endif
+}
+
+PythonUnlockedWhileWaiting::PythonUnlockedWhileWaiting()
+    : _state(nullptr)
+{
+    if (Py_IsInitialized() && PyGILState_Check()) {
+        _state = PyEval_SaveThread();
+    }
+}
+
+PythonUnlockedWhileWaiting::~PythonUnlockedWhileWaiting()
+{
+    if (_state) {
+        PyEval_RestoreThread(_state);
+    }
 }
 
 static bool

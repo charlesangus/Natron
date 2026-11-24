@@ -77,7 +77,6 @@ public:
 
 } // anonymous namespace
 
-#ifdef NATRON_TRANSFORM_AFFECTS_OVERLAYS
 // OpenGL is column-major for matrixes
 static void
 transformToOpenGLMatrix(const Transform::Matrix3x3& mat,
@@ -88,8 +87,6 @@ transformToOpenGLMatrix(const Transform::Matrix3x3& mat,
     oglMat[2] = 0;     oglMat[6] = 0;     oglMat[10] = 1; oglMat[14] = 0;
     oglMat[3] = mat.g; oglMat[7] = mat.h; oglMat[11] = 0; oglMat[15] = mat.i;
 }
-
-#endif
 
 void
 ViewerTab::drawOverlays(double time,
@@ -126,57 +123,40 @@ ViewerTab::drawOverlays(double time,
 
     ///Draw overlays in reverse order of appearance so that the first (top) panel is drawn on top of everything else
     for (NodesList::reverse_iterator it = nodes.rbegin(); it != nodes.rend(); ++it) {
-        NodeGuiPtr nodeUi = std::dynamic_pointer_cast<NodeGui>( (*it)->getNodeGui() );
-#ifdef NATRON_TRANSFORM_AFFECTS_OVERLAYS
+        NodeGuiPtr nodeUi = std::dynamic_pointer_cast<NodeGui>((*it)->getNodeGui());
         if (!nodeUi) {
             continue;
         }
-        double transformedTime;
-        bool ok = _imp->getTimeTransform(time, view, *it, getInternalNode(), &transformedTime);
-        if (!ok && appPTR->getCurrentSettings()->viewerOverlaysPath()) {
-            // overlay is not visible in current viewer, even though its parameter panel is open.
+        const OverlayPathResult placement = _imp->resolveOverlay(time, view, *it);
+        if (!placement.visible) {
             continue;
         }
-        bool overlayDeemed = false;
-        if (ok) {
-            if (time != transformedTime) {
-                //when retimed, modify the overlay color so it looks deemed to indicate that the user
-                //cannot modify it
-                overlayDeemed = true;
-            }
-            time = transformedTime;
-        }
-        nodeUi->setOverlayLocked(overlayDeemed);
+        // A retimed overlay is drawn dimmed: it shows another frame of its node, which cannot be edited from here.
+        nodeUi->setOverlayLocked(placement.time != time);
 
-        Transform::Matrix3x3 mat(1, 0, 0, 0, 1, 0, 0, 0, 1);
-        ok = _imp->getOverlayTransform(time, view, *it, getInternalNode(), &mat);
+        const bool transformed = !placement.matrix.isIdentity();
         GLfloat oldMat[16];
-        if (ok) {
-            //Ok we've got a transform here, apply it to the OpenGL model view matrix
-
+        if (transformed) {
             GLdouble oglMat[16];
-            transformToOpenGLMatrix(mat, oglMat);
+            transformToOpenGLMatrix(placement.matrix, oglMat);
             glMatrixMode(GL_MODELVIEW);
             glGetFloatv(GL_MODELVIEW_MATRIX, oldMat);
             glMultMatrixd(oglMat);
         }
 
-#endif
         if (!_imp->isOverlayHiddenByViewerSlot(*it)) {
             EffectInstancePtr effect = (*it)->getEffectInstance();
             assert(effect);
             effect->setCurrentViewportForOverlays_public(_imp->viewer);
             effect->setDrawingPassiveOverlay(_imp->hasInactiveNodeViewerContext(*it));
-            effect->drawOverlay_public(time, renderScale, view);
+            effect->drawOverlay_public(placement.time, renderScale, view);
             effect->setDrawingPassiveOverlay(false);
         }
 
-#ifdef NATRON_TRANSFORM_AFFECTS_OVERLAYS
-        if (ok) {
+        if (transformed) {
             glMatrixMode(GL_MODELVIEW);
             glLoadMatrixf(oldMat);
         }
-#endif
     }
 } // ViewerTab::drawOverlays
 
@@ -184,47 +164,42 @@ bool
 ViewerTab::overlayTimeAndPosition(const NodePtr& node,
                                   const QPointF& pos,
                                   double* time,
-                                  QPointF* transformPos)
+                                  QPointF* transformPos,
+                                  bool keepBehind)
 {
-    *time = getGui()->getApp()->getTimeLine()->currentFrame();
-#ifndef NATRON_TRANSFORM_AFFECTS_OVERLAYS
-    Q_UNUSED(node);
-    *transformPos = pos;
-#else
-    ViewIdx view = getCurrentView();
-    double transformedTime;
-    bool ok = _imp->getTimeTransform(*time, view, node, getInternalNode(), &transformedTime);
-    if (ok) {
-        /*
-         * Do not allow interaction with retimed interacts otherwise the user may end up modifying keyframes at unexpected
-         * (or invalid for floating point) frames, which may be confusing. Rather we indicate with the overlay color hint
-         * that interact is not editable when it is retimed.
-         */
-        if (*time != transformedTime) {
-            return false;
-        }
-        *time = transformedTime;
-    }
+    const double viewerTime = getGui()->getApp()->getTimeLine()->currentFrame();
+    const OverlayPathResult placement = _imp->resolveOverlay(viewerTime, getCurrentView(), node);
 
-    Transform::Matrix3x3 mat(1, 0, 0, 0, 1, 0, 0, 0, 1);
-    ok = _imp->getOverlayTransform(*time, view, node, getInternalNode(), &mat);
-    if (!ok) {
-        *transformPos = pos;
-    } else {
-        mat = Transform::matInverse(mat);
-        Transform::Point3D p;
-        p.x = pos.x();
-        p.y = pos.y();
-        p.z = 1;
-        p = Transform::matApply(mat, p);
-        if (p.z < 0) {
-            // the transformed position has a negative z, don't send it
-            return false;
-        }
-        transformPos->rx() = p.x / p.z;
-        transformPos->ry() = p.y / p.z;
+    /*
+     * A retimed overlay takes no edits: they would key its node at a frame other than the one shown,
+     * possibly a fractional one. Its dimmed colour says so.
+     */
+    if (!placement.visible || (placement.time != viewerTime)) {
+        return false;
     }
-#endif
+    double x = 0., y = 0.;
+    if (!mapToOverlaySpace(placement, pos.x(), pos.y(), keepBehind, &x, &y)) {
+        return false;
+    }
+    *time = placement.time;
+    transformPos->rx() = x;
+    transformPos->ry() = y;
+
+    return true;
+}
+
+bool
+ViewerTab::overlayTime(const NodePtr& node,
+                       bool editable,
+                       double* time)
+{
+    const double viewerTime = getGui()->getApp()->getTimeLine()->currentFrame();
+    const OverlayPathResult placement = _imp->resolveOverlay(viewerTime, getCurrentView(), node);
+
+    if (!placement.visible || (editable && (placement.time != viewerTime))) {
+        return false;
+    }
+    *time = placement.time;
 
     return true;
 }
@@ -250,8 +225,11 @@ ViewerTab::notifyOverlaysPenDown_internal(const NodePtr& node,
         EffectInstancePtr effect = node->getEffectInstance();
         assert(effect);
         effect->setCurrentViewportForOverlays_public(_imp->viewer);
+        const OverlayPathResult placement = _imp->resolveOverlay(getGui()->getApp()->getTimeLine()->currentFrame(), view, node);
         bool didSmthing = effect->onOverlayPenDown_public(time, renderScale, view, viewportPos, transformPos, pressure, timestamp, pen);
         if (didSmthing) {
+            _imp->penDownOverlay = node;
+            _imp->penDownPlacement = placement;
             //http://openfx.sourceforge.net/Documentation/1.3/ofxProgrammingReference.html
             // if the instance returns kOfxStatOK, the host should not pass the pen motion
             // to any other interactive object it may own that shares the same view.
@@ -289,19 +267,13 @@ ViewerTab::notifyOverlaysPenDown(const RenderScale & renderScale,
 
     _imp->hasPenDown = true;
     _imp->hasCaughtPenMotionWhileDragging = false;
+    _imp->penDownOverlay.reset();
 
     NodesList nodes;
     getGui()->getNodesEntitledForOverlays(nodes);
 
-    ViewIdx view = getCurrentView();
     for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
-        double transformedTime;
-        bool ok = _imp->getTimeTransform(timestamp, view, *it, getInternalNode(), &transformedTime);
-        if (!ok && appPTR->getCurrentSettings()->viewerOverlaysPath()) {
-            // overlay is not visible in current viewer, even though its parameter panel is open.
-            continue;
-        }
-        if ( notifyOverlaysPenDown_internal(*it, renderScale, pen, viewportPos, pos, pressure, transformedTime) ) {
+        if (notifyOverlaysPenDown_internal(*it, renderScale, pen, viewportPos, pos, pressure, timestamp)) {
             return true;
         }
     }
@@ -325,13 +297,7 @@ ViewerTab::overlaysClaimAltPenDown(const QPointF& pos,
     NodesList nodes;
     getGui()->getNodesEntitledForOverlays(nodes);
 
-    ViewIdx view = getCurrentView();
     for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
-        double transformedTime;
-        bool ok = _imp->getTimeTransform(timestamp, view, *it, getInternalNode(), &transformedTime);
-        if (!ok && appPTR->getCurrentSettings()->viewerOverlaysPath()) {
-            continue;
-        }
         if (_imp->hasInactiveNodeViewerContext(*it)) {
             continue;
         }
@@ -387,39 +353,10 @@ ViewerTab::notifyOverlaysPenDoubleClick(const RenderScale & renderScale,
     ViewIdx view = getCurrentView();
     for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
         QPointF transformPos;
-        double time = getGui()->getApp()->getTimeLine()->currentFrame();
-#ifndef NATRON_TRANSFORM_AFFECTS_OVERLAYS
-        transformPos = pos;
-#else
-        double transformedTime;
-        bool ok = _imp->getTimeTransform(time, view, *it, getInternalNode(), &transformedTime);
-        if (!ok && appPTR->getCurrentSettings()->viewerOverlaysPath()) {
-            // overlay is not visible in current viewer, even though its parameter panel is open.
+        double time;
+        if (!overlayTimeAndPosition(*it, pos, &time, &transformPos)) {
             continue;
         }
-        time = transformedTime;
-
-        Transform::Matrix3x3 mat(1, 0, 0, 0, 1, 0, 0, 0, 1);
-        ok = _imp->getOverlayTransform(time, view, *it, getInternalNode(), &mat);
-        if (!ok) {
-            transformPos = pos;
-        } else {
-            mat = Transform::matInverse(mat);
-            {
-                Transform::Point3D p;
-                p.x = pos.x();
-                p.y = pos.y();
-                p.z = 1;
-                p = Transform::matApply(mat, p);
-                if (p.z < 0) {
-                    // the transformed position has a negative z, don't send it
-                    return false;
-                }
-                transformPos.rx() = p.x / p.z;
-                transformPos.ry() = p.y / p.z;
-            }
-        }
-#endif
 
         bool isInActiveViewerUI = _imp->hasInactiveNodeViewerContext(*it);
         if (!isInActiveViewerUI) {
@@ -449,53 +386,12 @@ ViewerTab::notifyOverlaysPenMotion_internal(const NodePtr& node,
                                             double pressure,
                                             double timestamp)
 {
-    double time = getGui()->getApp()->getTimeLine()->currentFrame();
     ViewIdx view = getCurrentView();
-
+    double time;
     QPointF transformPos;
-#ifndef NATRON_TRANSFORM_AFFECTS_OVERLAYS
-    transformPos = pos;
-#else
-    double transformedTime;
-    bool ok = _imp->getTimeTransform(time, view, node, getInternalNode(), &transformedTime);
-    if (!ok && appPTR->getCurrentSettings()->viewerOverlaysPath()) {
-        // overlay is not visible in current viewer, even though its parameter panel is open.
+    if (!overlayTimeAndPosition(node, pos, &time, &transformPos)) {
         return false;
     }
-    if (ok) {
-        /*
-         * Do not allow interaction with retimed interacts otherwise the user may end up modifying keyframes at unexpected
-         * (or invalid for floating point) frames, which may be confusing. Rather we indicate with the overlay color hint
-         * that interact is not editable when it is retimed.
-         */
-        if (time != transformedTime) {
-            return false;
-        }
-        time = transformedTime;
-    }
-
-
-    Transform::Matrix3x3 mat(1, 0, 0, 0, 1, 0, 0, 0, 1);
-    ok = _imp->getOverlayTransform(time, view, node, getInternalNode(), &mat);
-    if (!ok) {
-        transformPos = pos;
-    } else {
-        mat = Transform::matInverse(mat);
-        {
-            Transform::Point3D p;
-            p.x = pos.x();
-            p.y = pos.y();
-            p.z = 1;
-            p = Transform::matApply(mat, p);
-            if (p.z < 0) {
-                // the transformed position has a negative z, don't send it
-                return false;
-            }
-            transformPos.rx() = p.x / p.z;
-            transformPos.ry() = p.y / p.z;
-        }
-    }
-#endif
 
     bool isInActiveViewerUI = _imp->hasInactiveNodeViewerContext(node);
     if (!isInActiveViewerUI) {
@@ -588,44 +484,11 @@ ViewerTab::notifyOverlaysWheel(const RenderScale& renderScale,
     bool didSomething = false;
 
     for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
-        double time = getGui()->getApp()->getTimeLine()->currentFrame();
+        double time;
         QPointF transformPos;
-#ifndef NATRON_TRANSFORM_AFFECTS_OVERLAYS
-        transformPos = pos;
-#else
-        double transformedTime;
-        bool ok = _imp->getTimeTransform(time, view, *it, getInternalNode(), &transformedTime);
-        if (!ok && appPTR->getCurrentSettings()->viewerOverlaysPath()) {
-            // overlay is not visible in current viewer, even though its parameter panel is open.
+        if (!overlayTimeAndPosition(*it, pos, &time, &transformPos)) {
             continue;
         }
-        if (ok) {
-            // Like pen motion, retimed interacts are not editable.
-            if (time != transformedTime) {
-                continue;
-            }
-            time = transformedTime;
-        }
-
-        Transform::Matrix3x3 mat(1, 0, 0, 0, 1, 0, 0, 0, 1);
-        ok = _imp->getOverlayTransform(time, view, *it, getInternalNode(), &mat);
-        if (!ok) {
-            transformPos = pos;
-        } else {
-            mat = Transform::matInverse(mat);
-            Transform::Point3D p;
-            p.x = pos.x();
-            p.y = pos.y();
-            p.z = 1;
-            p = Transform::matApply(mat, p);
-            if (p.z < 0) {
-                // the transformed position has a negative z, don't send it
-                continue;
-            }
-            transformPos.rx() = p.x / p.z;
-            transformPos.ry() = p.y / p.z;
-        }
-#endif
 
         if (!_imp->hasInactiveNodeViewerContext(*it)) {
             EffectInstancePtr effect = (*it)->getEffectInstance();
@@ -680,57 +543,24 @@ ViewerTab::notifyOverlaysPenUp(const RenderScale & renderScale,
 
     _imp->hasPenDown = false;
     _imp->hasCaughtPenMotionWhileDragging = false;
+    NodePtr penDownOverlay = _imp->penDownOverlay.lock();
+    _imp->penDownOverlay.reset();
 
     NodesList nodes;
     getGui()->getNodesEntitledForOverlays(nodes);
 
-    double time = getGui()->getApp()->getTimeLine()->currentFrame();
     ViewIdx view = getCurrentView();
 
     for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
-        QPointF transformPos;
-#ifndef NATRON_TRANSFORM_AFFECTS_OVERLAYS
-        transformPos = pos;
-#else
-        double transformedTime;
-        bool ok = _imp->getTimeTransform(time, view, *it, getInternalNode(), &transformedTime);
-        if (!ok && appPTR->getCurrentSettings()->viewerOverlaysPath()) {
-            // overlay is not visible in current viewer, even though its parameter panel is open.
+        if (*it == penDownOverlay) {
             continue;
         }
-        if (ok) {
-            /*
-             * Do not allow interaction with retimed interacts otherwise the user may end up modifying keyframes at unexpected
-             * (or invalid for floating point) frames, which may be confusing. Rather we indicate with the overlay color hint
-             * that interact is not editable when it is retimed.
-             */
-            if (time != transformedTime) {
-                return false;
-            }
-            time = transformedTime;
+        double time;
+        QPointF transformPos;
+        // A release behind the projection still reaches the overlay, which may need it to end its gesture.
+        if (!overlayTimeAndPosition(*it, pos, &time, &transformPos, true)) {
+            continue;
         }
-
-        Transform::Matrix3x3 mat(1, 0, 0, 0, 1, 0, 0, 0, 1);
-        ok = _imp->getOverlayTransform(time, view, *it, getInternalNode(), &mat);
-        if (!ok) {
-            transformPos = pos;
-        } else {
-            mat = Transform::matInverse(mat);
-            {
-                Transform::Point3D p;
-                p.x = pos.x();
-                p.y = pos.y();
-                p.z = 1;
-                p = Transform::matApply(mat, p);
-                if (p.z < 0) {
-                    // the transformed position has a negative z, send it (because a penup may be necessary for a good execution of the plugin) but reverse z
-                    p.z = - p.z;
-                }
-                transformPos.rx() = p.x / p.z;
-                transformPos.ry() = p.y / p.z;
-            }
-        }
-#endif
 
         bool isInActiveViewerUI = _imp->hasInactiveNodeViewerContext(*it);
         if (!isInActiveViewerUI) {
@@ -741,6 +571,24 @@ ViewerTab::notifyOverlaysPenUp(const RenderScale & renderScale,
         }
     }
 
+    // The overlay that took the pen-down ends its gesture even if the drag hid it or locked it,
+    // at the placement it had when the gesture began.
+    if (penDownOverlay) {
+        double time;
+        QPointF transformPos;
+        if (!overlayTimeAndPosition(penDownOverlay, pos, &time, &transformPos, true)) {
+            double x = pos.x();
+            double y = pos.y();
+            mapToOverlaySpace(_imp->penDownPlacement, pos.x(), pos.y(), true, &x, &y);
+            time = _imp->penDownPlacement.time;
+            transformPos = QPointF(x, y);
+        }
+        EffectInstancePtr effect = penDownOverlay->getEffectInstance();
+        if (effect) {
+            effect->setCurrentViewportForOverlays_public(_imp->viewer);
+            didSomething |= effect->onOverlayPenUp_public(time, renderScale, view, viewportPos, transformPos, pressure, timestamp);
+        }
+    }
 
     if ( !mustTriggerRender && !didSomething && (getGui()->getApp()->getOverlayRedrawRequestsCount() > 0) ) {
         getGui()->getApp()->redrawAllViewers();
@@ -880,28 +728,11 @@ ViewerTab::notifyOverlaysKeyDown_internal(const NodePtr& node,
                                           Qt::Key qKey,
                                           const Qt::KeyboardModifiers& mods)
 {
-    double time = getGui()->getApp()->getTimeLine()->currentFrame();
     ViewIdx view = getCurrentView();
-
-#ifdef NATRON_TRANSFORM_AFFECTS_OVERLAYS
-    double transformedTime;
-    bool ok = _imp->getTimeTransform(time, ViewIdx(0), node, getInternalNode(), &transformedTime);
-    if (!ok && appPTR->getCurrentSettings()->viewerOverlaysPath()) {
-        // overlay is not visible in current viewer, even though its parameter panel is open.
+    double time;
+    if (!overlayTime(node, true, &time)) {
         return false;
     }
-    if (ok) {
-        /*
-         * Do not allow interaction with retimed interacts otherwise the user may end up modifying keyframes at unexpected
-         * (or invalid for floating point) frames, which may be confusing. Rather we indicate with the overlay color hint
-         * that interact is not editable when it is retimed.
-         */
-        if (time != transformedTime) {
-            return false;
-        }
-        time = transformedTime;
-    }
-#endif
 
     bool isInActiveViewerUI = _imp->hasInactiveNodeViewerContext(node);
     if (!isInActiveViewerUI) {
@@ -985,7 +816,6 @@ ViewerTab::notifyOverlaysKeyUp(const RenderScale & renderScale,
         return false;
     }
 
-    double time = getGui()->getApp()->getTimeLine()->currentFrame();
     ViewIdx view = getCurrentView();
     NodesList nodes;
     getGui()->getNodesEntitledForOverlays(nodes);
@@ -993,26 +823,10 @@ ViewerTab::notifyOverlaysKeyUp(const RenderScale & renderScale,
         EffectInstancePtr effect = (*it)->getEffectInstance();
         assert(effect);
 
-#ifdef NATRON_TRANSFORM_AFFECTS_OVERLAYS
-        double transformedTime;
-        bool ok = _imp->getTimeTransform(time, ViewIdx(0), *it, getInternalNode(), &transformedTime);
-        if (!ok && appPTR->getCurrentSettings()->viewerOverlaysPath()) {
-            // overlay is not visible in current viewer, even though its parameter panel is open.
+        double time;
+        if (!overlayTime(*it, true, &time)) {
             continue;
         }
-        if (ok) {
-            /*
-             * Do not allow interaction with retimed interacts otherwise the user may end up modifying keyframes at unexpected
-             * (or invalid for floating point) frames, which may be confusing. Rather we indicate with the overlay color hint
-             * that interact is not editable when it is retimed.
-             */
-            if (time != transformedTime) {
-                return false;
-            }
-            time = transformedTime;
-        }
-#endif
-
 
         bool isInActiveViewerUI = _imp->hasInactiveNodeViewerContext(*it);
         if (!isInActiveViewerUI) {
@@ -1052,27 +866,10 @@ ViewerTab::notifyOverlaysKeyRepeat_internal(const NodePtr& node,
                                             const Qt::KeyboardModifiers& mods)
 {
     ViewIdx view = getCurrentView();
-    double time = getGui()->getApp()->getTimeLine()->currentFrame();
-
-#ifdef NATRON_TRANSFORM_AFFECTS_OVERLAYS
-    double transformedTime;
-    bool ok = _imp->getTimeTransform(time, ViewIdx(0), node, getInternalNode(), &transformedTime);
-    if (!ok && appPTR->getCurrentSettings()->viewerOverlaysPath()) {
-        // overlay is not visible in current viewer, even though its parameter panel is open.
+    double time;
+    if (!overlayTime(node, true, &time)) {
         return false;
     }
-    if (ok) {
-        /*
-         * Do not allow interaction with retimed interacts otherwise the user may end up modifying keyframes at unexpected
-         * (or invalid for floating point) frames, which may be confusing. Rather we indicate with the overlay color hint
-         * that interact is not editable when it is retimed.
-         */
-        if (time != transformedTime) {
-            return false;
-        }
-        time = transformedTime;
-    }
-#endif
 
     bool isInActiveViewerUI = _imp->hasInactiveNodeViewerContext(node);
     if (!isInActiveViewerUI) {
@@ -1144,8 +941,6 @@ ViewerTab::notifyOverlaysFocusGained(const RenderScale & renderScale)
         return false;
     }
 
-
-    double time = getGui()->getApp()->getTimeLine()->currentFrame();
     ViewIdx view = getCurrentView();
     bool ret = false;
     NodesList nodes;
@@ -1154,17 +949,10 @@ ViewerTab::notifyOverlaysFocusGained(const RenderScale & renderScale)
         EffectInstancePtr effect = (*it)->getEffectInstance();
         assert(effect);
 
-#ifdef NATRON_TRANSFORM_AFFECTS_OVERLAYS
-        double transformedTime;
-        bool ok = _imp->getTimeTransform(time, ViewIdx(0), *it, getInternalNode(), &transformedTime);
-        if (!ok && appPTR->getCurrentSettings()->viewerOverlaysPath()) {
-            // overlay is not visible in current viewer, even though its parameter panel is open.
+        double time;
+        if (!overlayTime(*it, false, &time)) {
             continue;
         }
-        if (ok) {
-            time = transformedTime;
-        }
-#endif
 
         bool isInActiveViewerUI = _imp->hasInactiveNodeViewerContext(*it);
         if (!isInActiveViewerUI) {
@@ -1203,24 +991,15 @@ ViewerTab::notifyOverlaysFocusLost(const RenderScale & renderScale)
         return false;
     }
 
-
-    double time = getGui()->getApp()->getTimeLine()->currentFrame();
     ViewIdx view = getCurrentView();
     bool ret = false;
     NodesList nodes;
     getGui()->getNodesEntitledForOverlays(nodes);
     for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
-#ifdef NATRON_TRANSFORM_AFFECTS_OVERLAYS
-        double transformedTime;
-        bool ok = _imp->getTimeTransform(time, ViewIdx(0), *it, getInternalNode(), &transformedTime);
-        if (!ok && appPTR->getCurrentSettings()->viewerOverlaysPath()) {
-            // overlay is not visible in current viewer, even though its parameter panel is open.
+        double time;
+        if (!overlayTime(*it, false, &time)) {
             continue;
         }
-        if (ok) {
-            time = transformedTime;
-        }
-#endif
         bool isInActiveViewerUI = _imp->hasInactiveNodeViewerContext(*it);
         if (!isInActiveViewerUI) {
             EffectInstancePtr effect = (*it)->getEffectInstance();

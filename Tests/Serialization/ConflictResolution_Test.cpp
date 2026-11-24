@@ -68,6 +68,11 @@ struct Projects {
     {
         return Serialization::threeWayMerge(base, mine, theirs, Serialization::planMerge(base, mine, theirs, "grade_tpl"));
     }
+
+    Serialization::MergeResult mergeProjects() const
+    {
+        return Serialization::threeWayMerge(base, mine, theirs, Serialization::planProjectMerge(base, mine, theirs));
+    }
 };
 
 typedef std::function<bool(ProjectSerialization* snapshot, std::string* error)> Edit;
@@ -565,7 +570,7 @@ TEST(ConflictResolution, ADeletedProjectUserKnobGoesOnlyWhenTheDeletingSideIsCho
     Projects projects(templateScenario());
     projects.base.projectKnobs.push_back(userKnob("shotScale", 2.));
     projects.theirs.projectKnobs.push_back(userKnob("shotScale", 3.));
-    const Serialization::MergeResult result = projects.merge();
+    const Serialization::MergeResult result = projects.mergeProjects();
     const MergeConflict* conflict = nullptr;
     for (const MergeConflict& candidate : result.conflicts) {
         if ((candidate.kind == MergeConflictKind::eDeleteModify) && (candidate.knob == "shotScale")) {

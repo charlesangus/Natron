@@ -53,6 +53,7 @@
 #include "Serialization/NodeSerialization.h"
 #include "Serialization/Ops/SnapshotDiff.h"
 #include "Serialization/Sha256.h"
+#include "Serialization/Yaml/KnobYaml.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -215,6 +216,51 @@ namespace {
             }
             keepMineDefaultKnobs(mine, node->children);
         }
+    }
+
+    // A project read from a file carries only what the file saves of a plug-in knob (no type,
+    // default, label or menu, a choice by its option ID), a live one everything; both are put in
+    // the saved form so a knob compares by what it holds.
+    void
+    toSavedKnobs(std::list<Serialization::KnobSerialization>* knobs)
+    {
+        try {
+            *knobs = Serialization::decodeKnobsYaml(Serialization::encodeKnobsYaml(*knobs));
+        } catch (const std::exception&) {
+        }
+    }
+
+    void
+    toSavedKnobs(const std::list<Serialization::NodeSerializationPtr>& nodes)
+    {
+        for (const Serialization::NodeSerializationPtr& node : nodes) {
+            if (node) {
+                toSavedKnobs(&node->knobs);
+                toSavedKnobs(node->children);
+            }
+        }
+    }
+
+    void
+    toSavedKnobs(Serialization::ProjectSerialization* project)
+    {
+        toSavedKnobs(&project->projectKnobs);
+        toSavedKnobs(project->nodes.nodes);
+    }
+
+    // The ID of the node an input of node names, or the name itself when it names none.
+    std::string
+    inputSourceOf(const FlatNodes& nodes,
+                  const FlatNode& node,
+                  const std::string& label)
+    {
+        const std::string name = inputNamed(*node.node, label);
+        if (name.empty()) {
+            return name;
+        }
+        const std::string id = idOfScriptName(nodes, node.parentId, name);
+
+        return id.empty() ? name : id;
     }
 
     void
@@ -635,8 +681,10 @@ compare(const ProjectPtr& project,
     assert(QThread::currentThread() == qApp->thread());
     Serialization::ProjectSerialization live;
     project->toSerialization(&live);
-    const Serialization::ProjectSerialization before = Serialization::editableState(other);
-    const Serialization::ProjectSerialization after = Serialization::editableState(live);
+    Serialization::ProjectSerialization before = Serialization::editableState(other);
+    Serialization::ProjectSerialization after = Serialization::editableState(live);
+    toSavedKnobs(&before);
+    toSavedKnobs(&after);
 
     FlatNodes beforeNodes;
     FlatNodes afterNodes;
@@ -711,6 +759,28 @@ compare(const ProjectPtr& project,
             }
         } else if (std::holds_alternative<Serialization::SetProjectDataOp>(op)) {
             summary.projectData = true;
+        }
+    }
+
+    // The diff leaves out an input whose source is deleted, since deleting the source
+    // disconnects it; the node still lost that input.
+    for (const std::pair<const std::string, FlatNode>& entry : afterNodes) {
+        FlatNodes::const_iterator old = beforeNodes.find(entry.first);
+        if (old == beforeNodes.end()) {
+            continue;
+        }
+        std::set<std::string> labels;
+        for (const FlatNode* flat : { &old->second, &entry.second }) {
+            for (const std::pair<const std::string, std::string>& input : flat->node->inputs) {
+                labels.insert(input.first);
+            }
+        }
+        for (const std::string& label : labels) {
+            if (inputSourceOf(beforeNodes, old->second, label) != inputSourceOf(afterNodes, entry.second, label)) {
+                if (NodeChange* change = changeFor(entry.first)) {
+                    addUnique(&change->inputs, label);
+                }
+            }
         }
     }
 

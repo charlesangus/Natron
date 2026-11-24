@@ -224,6 +224,34 @@ ScenePrimitiveNode::authorLayer(const SceneLayerEdit& edit,
     return SceneNodeAuthoring::authorMaterialBinding(mesh.GetPrim(), graft.materialPath, errorMessage);
 } // ScenePrimitiveNode::authorLayer
 
+SceneEvaluationContext
+ScenePrimitiveNode::getSceneInputContext(int /*inputNb*/,
+                                         const SceneEvaluationContext& ctx,
+                                         double /*time*/,
+                                         ViewIdx /*view*/) const
+{
+    KnobStringPtr primPath = _primPath.lock();
+
+    return primPath ? SceneNodeAuthoring::getMaterialInputContext(ctx, primPath->getValue()) : ctx;
+}
+
+void
+ScenePrimitiveNode::mapSceneInputReach(int /*inputNb*/,
+                                       double /*time*/,
+                                       ViewIdx /*view*/,
+                                       const std::vector<std::string>& in,
+                                       std::vector<std::string>* out) const
+{
+    KnobStringPtr primPath = _primPath.lock();
+
+    if (!primPath) {
+        *out = in;
+
+        return;
+    }
+    SceneNodeAuthoring::mapMaterialInputReach(&_graftMemo, primPath->getValue(), in, out);
+}
+
 StatusEnum
 ScenePrimitiveNode::renderScene(const SceneRenderActionArgs& args,
                                 ScenePayload* outputScene,
@@ -237,7 +265,7 @@ ScenePrimitiveNode::renderScene(const SceneRenderActionArgs& args,
     }
 
     SceneMaterialGraft graft;
-    if (!SceneNodeAuthoring::graftMaterialInput(args.getInputScene(0), primPath->getValue(), getScriptName_mt_safe(), &_graftMemo, &graft, errorMessage)) {
+    if (!SceneNodeAuthoring::graftMaterialInput(args.getInputScene(0), args.getInputContext(0), primPath->getValue(), getScriptName_mt_safe(), &_graftMemo, &graft, errorMessage)) {
         setPersistentMessage(eMessageTypeError, *errorMessage);
 
         return eStatusFailed;

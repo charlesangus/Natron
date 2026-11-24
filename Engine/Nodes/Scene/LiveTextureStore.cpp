@@ -904,6 +904,14 @@ LiveTextureStore::prepare(const LiveTextureSourceList& sources,
                 continue;
             }
             ++numMissing;
+            // Kept as the texture's failure: the consumer's own next evaluation, which may come
+            // from any thread, would otherwise clear the warning below.
+            {
+                std::lock_guard<std::mutex> lock(_mutex);
+                if (_failures.find(uri) == _failures.end()) {
+                    recordFailureLocked(uri, "the image of " + nodeNameOfUri(uri) + " is not rendered on the main thread");
+                }
+            }
             const NodePtr consumer = source.consumer.lock();
             if (consumer) {
                 std::string& uris = missingByConsumer[consumer];

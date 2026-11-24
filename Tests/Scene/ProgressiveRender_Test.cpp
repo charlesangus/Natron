@@ -37,15 +37,20 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <functional>
 #include <iostream>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
+
+#include <sys/syscall.h>
+#include <unistd.h>
 
 #include <gtest/gtest.h>
 
@@ -66,6 +71,7 @@
 #include "Engine/Nodes/Scene/MoonRayRuntime.h"
 #include "Engine/Nodes/Scene/MoonRaySettings.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
+#include "Engine/Nodes/Scene/SceneDrawFilter.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
@@ -153,6 +159,106 @@ float
 centreDepth(const ProgressiveRender::Frame& frame)
 {
     return frame.depth[(std::size_t)(frame.height / 2) * (std::size_t)frame.width + (std::size_t)(frame.width / 2)];
+}
+
+bool
+anyUnder(const std::set<std::string>& paths,
+         const std::string& root)
+{
+    for (const std::string& path : paths) {
+        if ((path == root) || (path.compare(0, root.size() + 1, root + "/") == 0)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+SceneDrawDelta
+hiding(const std::string& path)
+{
+    SceneDrawDelta delta;
+    delta.hidden.push_back(path);
+
+    return delta;
+}
+
+const char* const kKey = "/World/Key";
+
+// base with a red distant light, /World/Key, shining down the view axis: its colour tells its
+// light apart from the white headlight and from a renderer's own default light.
+ScenePayload
+withKey(const ScenePayload& base)
+{
+    PXR_NS::SdfLayerRefPtr layer = SceneOps::createNodeLayer("ProgressiveRenderTestKey");
+    PXR_NS::SdfPrimSpecHandle prim = PXR_NS::SdfCreatePrimInLayer(layer, PXR_NS::SdfPath(kKey));
+    prim->SetSpecifier(PXR_NS::SdfSpecifierDef);
+    prim->SetTypeName("DistantLight");
+    PXR_NS::SdfAttributeSpecHandle intensity = PXR_NS::SdfAttributeSpec::New(prim, "inputs:intensity", PXR_NS::SdfValueTypeNames->Float);
+    intensity->SetDefaultValue(PXR_NS::VtValue(3.f));
+    PXR_NS::SdfAttributeSpecHandle color = PXR_NS::SdfAttributeSpec::New(prim, "inputs:color", PXR_NS::SdfValueTypeNames->Color3f);
+    color->SetDefaultValue(PXR_NS::VtValue(PXR_NS::GfVec3f(1.f, 0.f, 0.f)));
+    // hdMoonray reads an unnormalized distant light's intensity as the radiance of its half-degree
+    // disk, which leaves the cube all but black; hdCycles reads it as irradiance either way.
+    PXR_NS::SdfAttributeSpecHandle normalize = PXR_NS::SdfAttributeSpec::New(prim, "inputs:normalize", PXR_NS::SdfValueTypeNames->Bool);
+    normalize->SetDefaultValue(PXR_NS::VtValue(true));
+
+    return SceneOps::appendLayer(base, layer, 0x6b65790aULL);
+}
+
+float
+linearOf(unsigned char encoded)
+{
+    const float c = encoded / 255.f;
+
+    return (c <= 0.04045f) ? (c / 12.92f) : std::pow((c + 0.055f) / 1.055f, 2.4f);
+}
+
+// The mean linear value of channel, or of all three if channel is -1, over the pixels of frame
+// in columns [x0, x1) and rows [y0, y1) that keep(x, y) accepts; -1 if it accepts none.
+float
+meanOver(const ProgressiveRender::Frame& frame,
+         int x0,
+         int x1,
+         int y0,
+         int y1,
+         int channel,
+         const std::function<bool(int, int)>& keep)
+{
+    double sum = 0.;
+    int count = 0;
+    for (int y = std::max(0, y0); y < std::min(frame.height, y1); ++y) {
+        for (int x = std::max(0, x0); x < std::min(frame.width, x1); ++x) {
+            if (keep && !keep(x, y)) {
+                continue;
+            }
+            const unsigned char* px = &frame.rgba[((std::size_t)y * frame.width + x) * 4];
+            sum += (channel < 0) ? (linearOf(px[0]) + linearOf(px[1]) + linearOf(px[2])) / 3.f : linearOf(px[channel]);
+            ++count;
+        }
+    }
+
+    return count ? (float)(sum / count) : -1.f;
+}
+
+// The mean difference, in 8-bit levels, between two frames' colour channels.
+double
+meanLevelDifference(const ProgressiveRender::Frame& a,
+                    const ProgressiveRender::Frame& b)
+{
+    if ((a.width != b.width) || (a.height != b.height) || a.rgba.empty() || (a.rgba.size() != b.rgba.size())) {
+        return 255.;
+    }
+    double sum = 0.;
+    std::size_t count = 0;
+    for (std::size_t i = 0; i < a.rgba.size(); ++i) {
+        if ((i % 4) != 3) {
+            sum += std::abs((int)a.rgba[i] - (int)b.rgba[i]);
+            ++count;
+        }
+    }
+
+    return sum / count;
 }
 
 // A layer of grids meshes of size by size quads, children of parent, at most half a unit from
@@ -468,6 +574,126 @@ protected:
         }
 
         return finished;
+    }
+
+    // The prims frame's pixels show, from the engine's primId AOV.
+    std::set<std::string> pickedPrims(const ProgressiveRender::Frame& frame)
+    {
+        std::set<std::string> paths;
+        for (int y = 0; y < frame.height; ++y) {
+            for (int x = 0; x < frame.width; ++x) {
+                const std::string path = _render->pick(frame, x, y);
+                if (!path.empty()) {
+                    paths.insert(path);
+                }
+            }
+        }
+
+        return paths;
+    }
+
+    // Waits for the render to finish from the mark-th frame on, and gives its last frame.
+    std::shared_ptr<const ProgressiveRender::Frame> lastWhenDone(std::size_t mark)
+    {
+        std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+        if (!collectUntilDone(mark, &frames) || frames.empty()) {
+            return std::shared_ptr<const ProgressiveRender::Frame>();
+        }
+
+        return frames.back();
+    }
+
+    /**
+     * With the key light the only one and its row Hidden, renderer lights the near cube from the
+     * camera as Storm's viewer would: lit, white, and brightest where it faces the camera however
+     * the camera turns, which a renderer's own uniform default light is not. Showing the key again,
+     * or Render Everything, takes the headlight away without rebuilding the engine.
+     **/
+    void checkHeadlight(const char* renderer)
+    {
+        ASSERT_TRUE(start(std::map<std::string, PXR_NS::VtValue>(), renderer));
+        if (std::string(renderer) != kRenderDelegateCyclesId) {
+            // MoonRay's cap is its pixel_samples, the square root of the samples per pixel: 8 takes 64.
+            _render->setMaxSamples(8);
+        }
+        SceneDrawFilter::Rules rules;
+        rules[PXR_NS::SdfPath("/World/Far")] = SceneDrawFilter::eRuleHidden;
+        _render->setDrawRules(rules);
+        sync(withKey(_base));
+        const std::shared_ptr<const ProgressiveRender::Frame> keyOnly = lastWhenDone(0);
+        ASSERT_TRUE(bool(keyOnly));
+        const int c = kSize / 2;
+        const auto onNear = [this](const ProgressiveRender::Frame& frame) {
+            return [this, &frame](int x, int y) { return _render->pick(frame, x, y).compare(0, 11, "/World/Near") == 0; };
+        };
+        const float keyRed = meanOver(*keyOnly, c - 3, c + 3, c - 3, c + 3, 0, onNear(*keyOnly));
+        const float keyGreen = meanOver(*keyOnly, c - 3, c + 3, c - 3, c + 3, 1, onNear(*keyOnly));
+        ASSERT_GT(keyRed, 0.02f) << "the key light does not light the near cube";
+        ASSERT_LT(keyGreen, 0.1f * keyRed) << "something other than the red key lights the near cube";
+        const U64 builds = HydraRender::getEngineBuildCount();
+        const U64 remakesBefore = _render->getStatus().unseenRemakes;
+
+        rules[PXR_NS::SdfPath(kKey)] = SceneDrawFilter::eRuleHidden;
+        _render->setDrawRules(rules);
+        const std::shared_ptr<const ProgressiveRender::Frame> facing = lastWhenDone(publishedCount());
+        ASSERT_TRUE(bool(facing));
+        const float front = meanOver(*facing, c - 3, c + 3, c - 3, c + 3, -1, onNear(*facing));
+        EXPECT_GT(front, 0.02f) << "nothing lights the near cube with every light hidden";
+        EXPECT_GT(meanOver(*facing, c - 3, c + 3, c - 3, c + 3, 1, onNear(*facing)), 0.01f) << "the light on the near cube is not white";
+        // A renderer's own default light, such as hdMoonray's dome, would show in the background.
+        EXPECT_NEAR(meanOver(*keyOnly, 0, 4, 0, 4, -1, std::function<bool(int, int)>()),
+                    meanOver(*facing, 0, 4, 0, 4, -1, std::function<bool(int, int)>()), 0.01f);
+
+        // Turned 45 degrees about the cube, the camera sees two faces at the same angle to it.
+        ProgressiveRender::View turned = _view;
+        const double radius = _view.frustum.GetPosition().GetLength();
+        const double s45 = std::sqrt(0.5);
+        PXR_NS::GfMatrix4d cameraToWorld;
+        cameraToWorld.SetTransform(PXR_NS::GfRotation(PXR_NS::GfVec3d(0., 1., 0.), 45.), PXR_NS::GfVec3d(radius * s45, 0., radius * s45));
+        turned.frustum.SetPositionAndRotationFromMatrix(cameraToWorld);
+        _render->setView(turned);
+        const std::shared_ptr<const ProgressiveRender::Frame> corner = lastWhenDone(publishedCount());
+        ASSERT_TRUE(bool(corner));
+        const float left = meanOver(*corner, 0, c - 1, c - 3, c + 3, -1, onNear(*corner));
+        const float right = meanOver(*corner, c + 1, kSize, c - 3, c + 3, -1, onNear(*corner));
+        ASSERT_GT(left, 0.f) << "the turned view shows one face of the near cube";
+        ASSERT_GT(right, 0.f) << "the turned view shows one face of the near cube";
+        EXPECT_NEAR(left, right, 0.15f * front) << "the headlight does not turn with the camera";
+        EXPECT_GT(front, 1.15f * std::max(left, right)) << "the near cube is lit evenly, not from the camera";
+
+        _render->setView(_view);
+        rules.erase(PXR_NS::SdfPath(kKey));
+        _render->setDrawRules(rules);
+        const std::shared_ptr<const ProgressiveRender::Frame> keyAgain = lastWhenDone(publishedCount());
+        ASSERT_TRUE(bool(keyAgain));
+        EXPECT_LT(meanLevelDifference(*keyOnly, *keyAgain), 1.) << "the headlight stays with the key light shown";
+        EXPECT_NEAR(keyGreen, meanOver(*keyAgain, c - 3, c + 3, c - 3, c + 3, 1, onNear(*keyAgain)), 0.01f);
+
+        rules[PXR_NS::SdfPath(kKey)] = SceneDrawFilter::eRuleHidden;
+        _render->setDrawRules(rules);
+        ASSERT_TRUE(bool(lastWhenDone(publishedCount())));
+        _render->setRenderEverything(true);
+        const std::shared_ptr<const ProgressiveRender::Frame> everything = lastWhenDone(publishedCount());
+        ASSERT_TRUE(bool(everything));
+        const float everythingRed = meanOver(*everything, c - 3, c + 3, c - 3, c + 3, 0, onNear(*everything));
+        EXPECT_GT(everythingRed, 0.02f);
+        EXPECT_LT(meanOver(*everything, c - 3, c + 3, c - 3, c + 3, 1, onNear(*everything)), 0.1f * everythingRed)
+            << "the headlight stays with Render Everything on";
+        // Less the engines the worker makes again when a delegate is slow to show a restart.
+        EXPECT_EQ(builds + (_render->getStatus().unseenRemakes - remakesBefore), HydraRender::getEngineBuildCount());
+    }
+
+    // Waits for the render to finish from the mark-th frame on, and gives its last frame's prims.
+    bool pickedWhenDone(std::size_t mark,
+                        std::set<std::string>* paths)
+    {
+        std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+        if (!collectUntilDone(mark, &frames) || frames.empty()) {
+            return false;
+        }
+        *paths = pickedPrims(*frames.back());
+
+        return true;
     }
 
     // Sets settings, which makes the engine again, and returns once its first pass over the heavy
@@ -991,6 +1217,179 @@ TEST_F(ProgressiveRenderTest, ThePrimsSettingsAreTheEnginesAndTheCapAppliesOverT
     EXPECT_GT(HydraRender::getEngineBuildCount(), builds);
 }
 
+// A cap lowered mid-render to samples Cycles already has still ends the render at the cap, with a
+// frame whose prims can be picked.
+TEST_F(ProgressiveRenderTest, ACapLoweredBelowTheSamplesRenderedEndsAtIt)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(start());
+    // Held at its first frame while Cycles samples on, so that it has more than the cap below.
+    hold(true);
+    ASSERT_TRUE(waitUntil([this]() { return _held; }, "the first frame"));
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    const std::size_t mark = publishedCount();
+    _render->setMaxSamples(1);
+    hold(false);
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+    ASSERT_TRUE(collectUntilDone(mark, &frames));
+    ASSERT_FALSE(frames.empty());
+    EXPECT_EQ(1, frames.back()->samples);
+    const std::set<std::string> picked = pickedPrims(*frames.back());
+    EXPECT_TRUE(anyUnder(picked, "/World/Near"));
+}
+
+// A cap above the samples of the frame last read, but below those Cycles has rendered since, ends the
+// render at the cap all the same: Cycles samples on while the worker waits between passes.
+TEST_F(ProgressiveRenderTest, ACapLoweredAboveTheSamplesLastReadEndsAtIt)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    // A cap no pass reaches, so the first frame is partial however fast the runner is.
+    const int kHighCap = 1000000;
+    HydraRender::setRendererSettings(kRenderDelegateCyclesId, fixedSampling(kHighCap));
+    ASSERT_TRUE(start());
+    hold(true);
+    ASSERT_TRUE(waitUntil([this]() { return _held; }, "the first frame"));
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    const std::shared_ptr<const ProgressiveRender::Frame> first = _render->getFrame();
+    ASSERT_TRUE(first != nullptr);
+    const int cap = std::max(1, first->samples) + 1;
+    ASSERT_LT(cap, kHighCap);
+    const std::size_t mark = publishedCount();
+    _render->setMaxSamples(cap);
+    hold(false);
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+    ASSERT_TRUE(collectUntilDone(mark, &frames));
+    ASSERT_FALSE(frames.empty());
+    EXPECT_EQ(cap, frames.back()->samples);
+    const std::set<std::string> picked = pickedPrims(*frames.back());
+    EXPECT_TRUE(anyUnder(picked, "/World/Near"));
+}
+
+// A prim the draw rules hide leaves the frame, and what they leave stays.
+TEST_F(ProgressiveRenderTest, ThePrimsTheDrawRulesHideLeaveTheFrame)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(start());
+    std::set<std::string> shown;
+    ASSERT_TRUE(pickedWhenDone(0, &shown));
+    ASSERT_TRUE(anyUnder(shown, "/World/Near"));
+    ASSERT_TRUE(anyUnder(shown, "/World/Far"));
+
+    const std::size_t mark = publishedCount();
+    SceneDrawFilter::Rules rules;
+    rules[PXR_NS::SdfPath("/World/Near")] = SceneDrawFilter::eRuleHidden;
+    _render->setDrawRules(rules);
+    std::set<std::string> hidden;
+    ASSERT_TRUE(pickedWhenDone(mark, &hidden));
+    EXPECT_FALSE(anyUnder(hidden, "/World/Near"));
+    EXPECT_TRUE(anyUnder(hidden, "/World/Far"));
+    // Nothing else is behind the near cube at the centre.
+    EXPECT_NEAR(1.f, centreDepth(*_render->getFrame()), 1e-4f);
+}
+
+// Five draw changes in a burst restart the render once, and its frames follow the last of them.
+// The render is held in its listener while they come, so that it cannot restart between them.
+TEST_F(ProgressiveRenderTest, CoalescesDrawChangesIntoOneRestart)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(start());
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+    ASSERT_TRUE(collectUntilDone(0, &frames));
+    const U64 builds = HydraRender::getEngineBuildCount();
+    const U64 remakesBefore = _render->getStatus().unseenRemakes;
+    hold(true);
+    const std::size_t mark = publishedCount();
+    SceneDrawDelta boxFar;
+    boxFar.boxed.push_back("/World/Far");
+    _render->applyDrawDeltas(std::vector<SceneDrawDelta> { boxFar });
+    ASSERT_TRUE(waitUntil([this]() { return _held; }, "a frame with the far cube boxed"));
+    const ProgressiveRender::Status refining = _render->getStatus();
+
+    SceneDrawDelta clearFar;
+    clearFar.cleared.push_back("/World/Far");
+    SceneDrawDelta boxNear;
+    boxNear.boxed.push_back("/World/Near");
+    SceneDrawDelta clearNear;
+    clearNear.cleared.push_back("/World/Near");
+    const std::vector<SceneDrawDelta> burst { clearFar, boxNear, clearNear, hiding("/World/Far"), hiding("/World/Near") };
+    const std::chrono::steady_clock::time_point burstStart = std::chrono::steady_clock::now();
+    for (const SceneDrawDelta& delta : burst) {
+        _render->applyDrawDeltas(std::vector<SceneDrawDelta> { delta });
+    }
+    EXPECT_LT(std::chrono::steady_clock::now() - burstStart, std::chrono::milliseconds(20));
+    hold(false);
+    std::set<std::string> after;
+    ASSERT_TRUE(pickedWhenDone(mark, &after));
+    const ProgressiveRender::Status end = _render->getStatus();
+    // The worker makes its engine again when Cycles is slow to show a restart, a restart and an
+    // engine of its own that no draw change caused.
+    const U64 remade = end.unseenRemakes - refining.unseenRemakes;
+    EXPECT_EQ(refining.restarts + 1 + remade, end.restarts) << remade << " engine(s) made after the draw changes";
+    EXPECT_FALSE(anyUnder(after, "/World/Near"));
+    EXPECT_FALSE(anyUnder(after, "/World/Far"));
+    EXPECT_EQ(builds + (end.unseenRemakes - remakesBefore), HydraRender::getEngineBuildCount());
+}
+
+// Render Everything draws what the rules hide, and off again draws by them as before, all with
+// the one engine.
+TEST_F(ProgressiveRenderTest, RenderEverythingIgnoresTheDrawRulesUntilOff)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(start());
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+    ASSERT_TRUE(collectUntilDone(0, &frames));
+    std::size_t mark = publishedCount();
+    _render->applyDrawDeltas(std::vector<SceneDrawDelta> { hiding("/World/Near") });
+    std::set<std::string> ruled;
+    ASSERT_TRUE(pickedWhenDone(mark, &ruled));
+    ASSERT_FALSE(anyUnder(ruled, "/World/Near"));
+    ASSERT_FALSE(ruled.empty());
+    const U64 builds = HydraRender::getEngineBuildCount();
+    const U64 remakesBefore = _render->getStatus().unseenRemakes;
+
+    mark = publishedCount();
+    _render->setRenderEverything(true);
+    std::set<std::string> everything;
+    ASSERT_TRUE(pickedWhenDone(mark, &everything));
+    EXPECT_TRUE(anyUnder(everything, "/World/Near"));
+    EXPECT_TRUE(anyUnder(everything, "/World/Far"));
+
+    mark = publishedCount();
+    _render->setRenderEverything(false);
+    std::set<std::string> restored;
+    ASSERT_TRUE(pickedWhenDone(mark, &restored));
+    EXPECT_EQ(ruled, restored);
+    // Less the engines the worker makes again when Cycles is slow to show a restart.
+    EXPECT_EQ(builds + (_render->getStatus().unseenRemakes - remakesBefore), HydraRender::getEngineBuildCount());
+}
+
+TEST_F(ProgressiveRenderTest, AHeadlightStandsInForHiddenLightsOnCycles)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    checkHeadlight(kRenderDelegateCyclesId);
+}
+
+// hdMoonray lights a scene with no light by a white dome of its own, which the headlight keeps off.
+TEST_F(ProgressiveRenderTest, AHeadlightStandsInForHiddenLightsOnMoonRay)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    checkHeadlight(kMoonRayRendererId);
+}
+
 namespace {
 // The next worker pass, once armed, held up for sleepMs inside the worker's engine lock as a slow
 // delegate call would be, and whether it still is.
@@ -1301,6 +1700,212 @@ TEST_F(ProgressiveRenderTest, AFileReloadDuringAPassKeepsTheMainThreadAndReaders
     ASSERT_FALSE(after.empty());
     EXPECT_NEAR(windowDepth(_view.frustum, kNearDistance + kBack), centreDepth(*after.front()), 1e-4f) << "a frame of the file's old content came after the reload";
     EXPECT_NEAR(windowDepth(_view.frustum, kNearDistance + kBack), centreDepth(*after.back()), 1e-4f);
+}
+
+// A reader that holds the GIL and waits for a writer releases the GIL while it waits, and takes it
+// back only once it has let go of the barrier's lock, so another thread that took the GIL
+// meanwhile can still open a ReadScope. The threads of a deadlock cannot be joined, so a hang
+// ends the process.
+TEST_F(ProgressiveRenderTest, AReaderWaitingForAWriterTakesTheGilBackOutsideTheBarrierLock)
+{
+    ASSERT_TRUE(Py_IsInitialized() != 0);
+    _watchdog.setPhase("gil lock order");
+
+    std::mutex m;
+    std::condition_variable changed;
+    bool writing = false;
+    bool releaseWriter = false;
+    bool writerDone = false;
+    bool readerHasGil = false;
+    bool otherHasGil = false;
+    int finished = 0;
+    bool wrote = false;
+    std::string writeError;
+
+    auto setFlag = [&](bool& flag) {
+        {
+            std::lock_guard<std::mutex> l(m);
+            flag = true;
+        }
+        changed.notify_all();
+    };
+    auto finish = [&]() {
+        {
+            std::lock_guard<std::mutex> l(m);
+            ++finished;
+        }
+        changed.notify_all();
+    };
+    const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    auto waitFor = [&](const char* what, const std::function<bool()>& done) {
+        std::unique_lock<std::mutex> l(m);
+        if (!changed.wait_until(l, deadline, done)) {
+            ADD_FAILURE() << "the threads deadlocked waiting for " << what;
+            std::fprintf(stderr, "[  FAILED  ] the GIL and the barrier lock deadlocked waiting for %s\n", what);
+            std::fflush(stdout);
+            std::fflush(stderr);
+            std::_Exit(1);
+        }
+    };
+
+    std::thread writer([&]() {
+        wrote = SceneWriteBarrier::runExclusive([&]() {
+            std::unique_lock<std::mutex> l(m);
+            writing = true;
+            changed.notify_all();
+            changed.wait(l, [&]() { return releaseWriter; });
+        },
+                                                &writeError);
+        setFlag(writerDone);
+        finish();
+    });
+    waitFor("the write to start", [&]() { return writing; });
+
+    std::thread reader([&]() {
+        const PyGILState_STATE gil = PyGILState_Ensure();
+        setFlag(readerHasGil);
+        {
+            SceneWriteBarrier::ReadScope read;
+        }
+        PyGILState_Release(gil);
+        finish();
+    });
+    waitFor("the reader to take the GIL", [&]() { return readerHasGil; });
+
+    // Takes the GIL once the waiting reader has released it.
+    std::thread other([&]() {
+        const PyGILState_STATE gil = PyGILState_Ensure();
+        setFlag(otherHasGil);
+        {
+            std::unique_lock<std::mutex> l(m);
+            changed.wait(l, [&]() { return writerDone; });
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        {
+            SceneWriteBarrier::ReadScope read;
+        }
+        PyGILState_Release(gil);
+        finish();
+    });
+    waitFor("the other thread to take the GIL", [&]() { return otherHasGil; });
+
+    setFlag(releaseWriter);
+    waitFor("the writer and both readers to end", [&]() { return finished == 3; });
+    writer.join();
+    reader.join();
+    other.join();
+    EXPECT_TRUE(wrote) << writeError;
+}
+
+// A thread that holds the GIL and registers or unregisters a participant while a writer is inside
+// runExclusive releases the GIL while it waits for the writer lock, because the writer takes the
+// GIL back while it holds that lock. The writer is held, once its readers have drained and before
+// it takes the GIL back, until the registrant sleeps on the writer lock: a registrant that kept
+// the GIL then would block the writer for good. A hang ends the process.
+TEST_F(ProgressiveRenderTest, RegisteringAParticipantDuringAWriteReleasesTheGilWhileWaiting)
+{
+    ASSERT_TRUE(Py_IsInitialized() != 0);
+    _watchdog.setPhase("gil writer lock order");
+
+    std::mutex m;
+    std::condition_variable changed;
+    bool readerIn = false;
+    bool releaseReader = false;
+    bool writerHasGil = false;
+    bool registrantHasGil = false;
+    int finished = 0;
+    bool wrote = false;
+    std::string writeError;
+    std::atomic<long> registrantTid(0);
+
+    auto setFlag = [&](bool& flag) {
+        {
+            std::lock_guard<std::mutex> l(m);
+            flag = true;
+        }
+        changed.notify_all();
+    };
+    auto finish = [&]() {
+        {
+            std::lock_guard<std::mutex> l(m);
+            ++finished;
+        }
+        changed.notify_all();
+    };
+    auto deadlocked = [&](const char* what) {
+        ADD_FAILURE() << "the threads deadlocked waiting for " << what;
+        std::fprintf(stderr, "[  FAILED  ] the GIL and the writer lock deadlocked waiting for %s\n", what);
+        std::fflush(stdout);
+        std::fflush(stderr);
+        std::_Exit(1);
+    };
+    const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    auto waitFor = [&](const char* what, const std::function<bool()>& done) {
+        std::unique_lock<std::mutex> l(m);
+        if (!changed.wait_until(l, deadline, done)) {
+            deadlocked(what);
+        }
+    };
+    auto threadIsSleeping = [](long tid) {
+        std::ifstream stat("/proc/self/task/" + std::to_string(tid) + "/stat");
+        std::string line;
+        std::getline(stat, line);
+        const std::size_t close = line.rfind(')');
+        return close != std::string::npos && close + 2 < line.size() && (line[close + 2] == 'S' || line[close + 2] == 'D');
+    };
+
+    struct Hold {
+        std::function<void()> run;
+    } hold;
+    hold.run = [&]() {
+        while (!threadIsSleeping(registrantTid.load())) {
+            if (std::chrono::steady_clock::now() > deadline) {
+                deadlocked("the registrant to wait for the writer lock");
+            }
+            std::this_thread::yield();
+        }
+    };
+    SceneWriteBarrier::setTestHook([](void* context) { static_cast<Hold*>(context)->run(); }, &hold);
+
+    // Keeps the writer waiting for readers, with the writer lock held and the GIL released.
+    std::thread reader([&]() {
+        {
+            SceneWriteBarrier::ReadScope read;
+            setFlag(readerIn);
+            std::unique_lock<std::mutex> l(m);
+            changed.wait(l, [&]() { return releaseReader; });
+        }
+        finish();
+    });
+    waitFor("the reader to enter", [&]() { return readerIn; });
+
+    std::thread writer([&]() {
+        const PyGILState_STATE gil = PyGILState_Ensure();
+        setFlag(writerHasGil);
+        wrote = SceneWriteBarrier::runExclusive([]() { }, &writeError);
+        PyGILState_Release(gil);
+        finish();
+    });
+    waitFor("the writer to take the GIL", [&]() { return writerHasGil; });
+
+    std::thread registrant([&]() {
+        const PyGILState_STATE gil = PyGILState_Ensure();
+        registrantTid.store(static_cast<long>(syscall(SYS_gettid)));
+        setFlag(registrantHasGil);
+        const SceneWriteBarrier::ParticipantId id = SceneWriteBarrier::registerParticipant([]() { }, []() { });
+        SceneWriteBarrier::unregisterParticipant(id);
+        PyGILState_Release(gil);
+        finish();
+    });
+    waitFor("the registrant to take the GIL", [&]() { return registrantHasGil; });
+
+    setFlag(releaseReader);
+    waitFor("the reader, writer and registrant to end", [&]() { return finished == 3; });
+    reader.join();
+    writer.join();
+    registrant.join();
+    SceneWriteBarrier::setTestHook(nullptr, nullptr);
+    EXPECT_TRUE(wrote) << writeError;
 }
 
 // A drag preview set on the caller's stage reaches the worker's stage with the snapshot, and

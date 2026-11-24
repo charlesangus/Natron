@@ -53,7 +53,7 @@ PROP_SHORTCUT = "natronShortcut"
 PROP_GROUPING = "natronGrouping"
 PROP_TOOLBUTTON_ICON = "natronToolButtonIcon"
 
-NAMED_ORDER = ["Image", "Draw", "Time", "Channel", "Color", "Filter", "Keyer", "Merge", "Transform", "3D", "USD",
+NAMED_ORDER = ["Image", "Raw", "Draw", "Time", "Channel", "Color", "Filter", "Keyer", "Merge", "Transform", "3D", "USD",
                "Deep", "Metadata", "Loop", "Reverse Flow Variable", "Views", "ToolSets", "Other", "Misc"]
 DEFAULT_GROUPING = "Misc"
 MERGE_GROUPING = "Merge"

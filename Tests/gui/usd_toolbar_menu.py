@@ -27,7 +27,7 @@ SUBMENUS = [
     ("Lights", ["USDLight"]),
     ("Cameras", ["USDCamera", "USDProject3D", "USDProjectUV"]),
     ("Materials", ["USDAssignMaterial", "USDEmissiveMaterial", "USDPreviewSurface"]),
-    ("Composition", ["USDMerge", "USDReference", "USDVariant", "USDPrune"]),
+    ("Composition", ["USDMerge", "USDReference", "USDVariant", "USDPrune", "USDExpandHierarchy"]),
     ("Edit", ["USDEditPrim", "USDEditTransform", "USDSetAttribute"]),
     ("Render", ["USDRender", "USDRenderSettings"]),
     ("IO", ["USDRead", "USDWrite"]),
@@ -132,7 +132,19 @@ try:
         for a, _ in owned_submenus(menu):
             if a.property(PROP_GROUPING) == "Misc":
                 puzzle = pixels(a.icon())
+        # The menu icons are recoloured to the theme and drawn with the theme's stroke width, so
+        # they match their glyph by shape rather than by pixel: each must overlap its own glyph
+        # more than any other submenu's.
+        def mask(image):
+            return set((x, y) for y in range(image.height()) for x in range(image.width())
+                       if image.pixelColor(x, y).alpha() > 64)
+
+        def overlap(a, b):
+            union = len(a | b)
+            return len(a & b) / union if union else 0.
+
         images = {}
+        glyph_masks = {}
         for n, _ in SUBMENUS:
             if n not in by_name:
                 continue
@@ -141,9 +153,13 @@ try:
             if not QFile.exists(glyph_path):
                 check(False, "%s glyph resource %s exists" % (n, glyph_path))
                 continue
-            check(images[n] == pixels(QIcon(glyph_path)), "%s draws the %s glyph" % (n, GLYPHS[n]))
+            glyph_masks[n] = mask(pixels(QIcon(glyph_path)))
             if puzzle is not None:
                 check(images[n] != puzzle, "%s does not draw the default puzzle icon" % n)
+        for n in glyph_masks:
+            scores = dict((g, overlap(mask(images[n]), m)) for g, m in glyph_masks.items())
+            best = max(scores, key=scores.get)
+            check(best == n, "%s draws the %s glyph (closest glyph %s, overlaps %r)" % (n, GLYPHS[n], GLYPHS[best], scores))
         unique = set(img.constBits().tobytes() for img in images.values())
         check(len(unique) == len(images), "the eight USD submenus have eight different icons")
         usd_icon = usd_action.icon()

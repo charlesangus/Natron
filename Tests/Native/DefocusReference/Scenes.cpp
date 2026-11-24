@@ -165,7 +165,9 @@ makeFixtureScene(const std::string& name,
     } else if (name == "eclipsedBokeh") {
         s.camera = camera(width, height, 2., 1.);
         addFacingCard(&s, -8., -8., 8., 1.5, 12., Colour(0.03f, 0.03f, 0.04f));
-        addPointGrid(&s, 11.95, -3., 2., -1.8, 1.2, 0.6, 300.);
+        // The column at x = -0.19 projects just past the foreground edge, inside its blur, so several
+        // pinhole-visible discs are cut along that edge.
+        addPointGrid(&s, 11.95, -3.19, 1.81, -1.8, 1.2, 0.6, 300.);
         addFacingCard(&s, -0.5, -0.3, -0.02, 0.3, 0.8, Colour(0.3f, 0.2f, 0.15f));
         f.nearDepth = 0.8;
         f.farDepth = 12.;

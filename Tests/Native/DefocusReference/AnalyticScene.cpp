@@ -392,6 +392,8 @@ AnalyticScene::addPoints(double fx,
             const double dx = (fx - qx) * ppm;
             const double dy = (fy - qy) * ppm;
             if ((p.radius > 0.) && (dx * dx + dy * dy <= p.radius * p.radius)) {
+                // Near-focus points use the centre ray's transmittance, not one per aperture sample:
+                // an accepted approximation.
                 weight = transmittance(Vec3(), p.centre, scratch) / (kPi * p.radius * p.radius);
             }
         } else {

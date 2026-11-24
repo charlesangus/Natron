@@ -119,12 +119,15 @@ ImageLayerDesc defocusHarnessDepthLayer();
 /**
  * @brief Today's ZDefocus as a harness candidate: a harness source into a ZDefocus in Lens mode
  * at the scene camera's lens, depth in metres, Stretch edges and a Max Size that covers the
- * image's largest circle of confusion. Its nodes are made in `app`'s project on the first render
- * and reused.
+ * image's largest circle of confusion. Its nodes are made in `app`'s project on prepare() or the
+ * first render and reused.
  **/
 class ZDefocusCandidate {
 public:
     explicit ZDefocusCandidate(const AppInstancePtr& app);
+
+    // Makes and wires the nodes, so a timed render() does not pay for it. Safe to call again.
+    bool prepare(std::string* error);
 
     // Defocuses `pinhole` with `layers` depth slices into premultiplied RGBA of its size.
     bool render(const DefocusReference::Camera& camera,

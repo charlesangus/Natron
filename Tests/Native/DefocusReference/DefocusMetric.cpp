@@ -184,7 +184,6 @@ writeCrop(const std::string& path,
     const int ch = std::min(size, height);
     const int x1 = std::max(0, std::min(width - cw, centreX - cw / 2));
     const int y1 = std::max(0, std::min(height - ch, centreY - ch / 2));
-    std::vector<float> pixels((std::size_t)cw * ch * 4);
 
     if ((cw <= 0) || (ch <= 0) || (rgba.size() < (std::size_t)width * height * 4)) {
         if (error) {
@@ -193,6 +192,7 @@ writeCrop(const std::string& path,
 
         return false;
     }
+    std::vector<float> pixels((std::size_t)cw * ch * 4);
     // OpenImageIO's first scanline is the top one; the image's first row is its bottom.
     for (int y = 0; y < ch; ++y) {
         const float* src = &rgba[((std::size_t)(y1 + ch - 1 - y) * width + x1) * 4];

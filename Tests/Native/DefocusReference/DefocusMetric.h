@@ -38,6 +38,8 @@ std::vector<unsigned char> edgeBand(const Camera& camera, const std::vector<floa
  * over every channel. Halo is the colour a candidate adds where the truth is uncovered, the sum of
  * (1 - truth alpha) times its positive RGB error; hole is the colour it loses where the truth is
  * covered, the sum of truth alpha times its negative RGB error. Both are per pixel of the image.
+ * Both are RGB-only: alpha is the weight, so an alpha error is not a halo or a hole, and the RMSEs
+ * still count it.
  **/
 struct DefocusScore {
     double rmse = 0.;

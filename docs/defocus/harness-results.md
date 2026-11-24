@@ -27,7 +27,7 @@ Lowest edge RMSE per engine per scene; the last column is Niik-l's best over ZDe
 | aliasedEdge | layers8 | 0.03526 | snap-fill-split | 0.02365 | 0.67 |
 | grazingFloor | layers8 | 0.020349 | unmix-fill-fast | 0.024732 | 1.22 |
 | highlightsBehindEdge | layers32 | 0.11227 | off-fill-split | 0.10779 | 0.96 |
-| eclipsedBokeh | layers32 | 0.064328 | unmix-fill-split | 0.05536 | 0.86 |
+| eclipsedBokeh (re-run pending (scene reframed)) | layers32 | 0.064328 | unmix-fill-split | 0.05536 | 0.86 |
 
 ## Where each engine wins
 
@@ -44,7 +44,7 @@ ZDefocus does not get better with more layers. 8 layers is its best in four scen
 
 Neither engine reproduces the truth's bitten discs, and on this input neither can. In `harness/eclipsedBokeh-truth.exr` the bites are the thin crescents inside the foreground's blurred edge. They come from points that the pinhole view hides behind the foreground: part of the lens sees around the edge, so a sliver of each disc shows. Those points are not in either engine's input, and fill extends the wall's colour, not light that it never saw. Every candidate leaves the crescents out; `harness/eclipsedBokeh-niikl-unmix-fill-split.exr` matches ZDefocus at 16 and 32 layers there.
 
-The discs that the pinhole does see sit clear of the foreground's blur in this framing, so the scene does not yet test whether a visible disc is cut along the foreground's edge. Both engines draw those discs at the truth's size (ZDefocus from 16 layers up) and slightly dimmer, alike for every candidate, so that loss comes from the pinhole input. highlightsBehindEdge shows the same thing at a sharp edge: the truth has an extra, partly hidden column of discs that no candidate draws.
+In the framing measured here, the discs that the pinhole sees sat clear of the foreground's blur, so it did not test whether a visible disc is cut along the foreground's edge. The scene has since been reframed so that several visible discs fall under the blur; the numbers wait for a re-run. Both engines draw those discs at the truth's size (ZDefocus from 16 layers up) and slightly dimmer, alike for every candidate, so that loss comes from the pinhole input. highlightsBehindEdge shows the same thing at a sharp edge: the truth has an extra, partly hidden column of discs that no candidate draws.
 
 ## Position and normal
 
@@ -84,12 +84,12 @@ Edge RMSE without and with P/N for each Niik-l configuration:
 | highlightsBehindEdge | snap-nofill-split | 0.12149 | 0.12149 | 0 |
 | highlightsBehindEdge | off-fill-split | 0.10779 | 0.10779 | 0 |
 | highlightsBehindEdge | off-nofill-split | 0.12149 | 0.12149 | 0 |
-| eclipsedBokeh | unmix-fill-split | 0.05536 | 0.05536 | 0 |
-| eclipsedBokeh | unmix-nofill-split | 0.075587 | 0.075587 | 0 |
-| eclipsedBokeh | snap-fill-split | 0.056346 | 0.056346 | 0 |
-| eclipsedBokeh | snap-nofill-split | 0.075482 | 0.075482 | 0 |
-| eclipsedBokeh | off-fill-split | 0.056287 | 0.056287 | 0 |
-| eclipsedBokeh | off-nofill-split | 0.075477 | 0.075477 | 0 |
+| eclipsedBokeh (re-run pending (scene reframed)) | unmix-fill-split | 0.05536 | 0.05536 | 0 |
+| eclipsedBokeh (re-run pending (scene reframed)) | unmix-nofill-split | 0.075587 | 0.075587 | 0 |
+| eclipsedBokeh (re-run pending (scene reframed)) | snap-fill-split | 0.056346 | 0.056346 | 0 |
+| eclipsedBokeh (re-run pending (scene reframed)) | snap-nofill-split | 0.075482 | 0.075482 | 0 |
+| eclipsedBokeh (re-run pending (scene reframed)) | off-fill-split | 0.056287 | 0.056287 | 0 |
+| eclipsedBokeh (re-run pending (scene reframed)) | off-nofill-split | 0.075477 | 0.075477 | 0 |
 
 ## Which ideas account for the gap
 
@@ -102,7 +102,7 @@ Edge RMSE as Niik-l's ideas are added one at a time, against ZDefocus's best:
 | aliasedEdge | 0.03526 | 0.066243 | 0.049354 | 0.024011 | 0.024011 |
 | grazingFloor | 0.020349 | 0.135 | 0.071299 | 0.065936 | 0.024732 |
 | highlightsBehindEdge | 0.11227 | 0.12149 | 0.10779 | 0.10802 | 0.10802 |
-| eclipsedBokeh | 0.064328 | 0.075477 | 0.056287 | 0.05536 | 0.05536 |
+| eclipsedBokeh (re-run pending (scene reframed)) | 0.064328 | 0.075477 | 0.056287 | 0.05536 | 0.05536 |
 
 - **The scatter itself** accounts for none of the gain. On its own (no edge split, no fill) it is worse than ZDefocus in every scene, from 0.075477 against 0.064328 on eclipsedBokeh to 0.135 against 0.020349 on grazingFloor. Without fill it leaves a hole behind every foreground; grazingFloor's hole energy reaches 0.16181.
 - **Fill** is the largest single gain. It improves every scene and takes blurFgSharpBg from 0.12739 to 0.032236, about half of ZDefocus's 0.060859.
@@ -127,12 +127,18 @@ Both engines run on the CPU in this harness. ZDefocus already has a GPU path. Fo
 4. **Do not port** forced slice boundaries (no gain here, a large regression on grazingFloor, and twice the time) or P/N (no measured effect).
 5. **Find out why ZDefocus's error grows with layer count** (grazingFloor, aliasedEdge, sharpFgBlurBg) before designing Auto layers. 8 layers is too few for highlights, and 16 or 32 layers cost edge quality elsewhere.
 
+Decisions recorded for M294:
+
+- **Engine:** keep the layered GPU engine. Port the fill (alpha-weighted distance transform, jump flooding on the GPU) and the edge split (Unmix, with Snap as a switch).
+- **First step:** prototype both on the CPU and re-run this harness before any GPU work.
+- **Acceptance:** a better edge error in four scenes (blurFgSharpBg, aliasedEdge, highlightsBehindEdge, eclipsedBokeh), and no worse on grazingFloor and sharpFgBlurBg. On eclipsedBokeh this means the pinhole-visible discs cut along the foreground's edge, on the reframed scene.
+- **Out of scope:** bites from hidden points, which need data behind the foreground.
+
 Uncertain:
 
-- Fill and edge split were measured inside the scatter engine. Whether a layered gather gets the same gains is not proven. M294's first task should prototype both in ZDefocus's CPU path and re-run this harness before any GPU work. If the gather falls well short, the fallback is a GPU scatter with fill, edge split and Fast occlusion edges, which costs a new engine and an exact-parity guarantee.
-- M294's eclipsed-bokeh criterion cannot be checked on today's eclipsedBokeh scene, because its bites come from hidden points (see above). Either reframe the scene so that discs visible in the pinhole fall under the foreground's blur, which M294 can be held to, or accept that bites from hidden points need data from behind the foreground (a clean-plate input, or deep input in M295 - Native DeepDefocus). This needs the user's decision.
-- M294's acceptance asks for a better edge RMSE in every scene. On grazingFloor no Niik-l configuration beats ZDefocus at 8 layers, and sharpFgBlurBg is a tie, so for those two the bound should probably be "no worse".
-- P/N was tested only on clean analytic depth.
+- Fill and edge split were measured inside the scatter engine. Whether a layered gather gets the same gains is not proven; the CPU prototype settles it.
+- The eclipsedBokeh numbers in this report predate the scene reframe and are stale until the harness is re-run.
+- P/N was tested only on clean analytic depth. It is not ported.
 
 ## Per-scene results
 
@@ -255,23 +261,25 @@ Edge band: 15633 pixels. Bold: lowest edge RMSE in the scene. Italic: lowest ZDe
 
 ### eclipsedBokeh
 
+Re-run pending (scene reframed): the scene now places pinhole-visible discs within one blur radius of the foreground edge, and the numbers below and every eclipsedBokeh figure above are from the old framing.
+
 Edge band: 14338 pixels. Bold: lowest edge RMSE in the scene. Italic: lowest ZDefocus edge RMSE.
 
 | Engine | Layers / edge mode | Fill | Occlusion edges | P/N | RMSE | Edge RMSE | Halo | Hole | Seconds |
 |---|---|---|---|---|---:|---:|---:|---:|---:|
-| ZDefocus | 8 layers |  |  |  | 0.076955 | 0.078657 | 0.00022705 | 0.025409 | 0.4385 |
-| ZDefocus | 16 layers |  |  |  | 0.027489 | 0.064884 | 0.00027808 | 0.0090096 | 0.44055 |
-| ZDefocus | 32 layers |  |  |  | 0.027362 | *0.064328* | 0.00025608 | 0.0090143 | 0.52582 |
-| Niik-l | Unmix | on | Split | off | 0.025389 | **0.05536** | 3.178e-05 | 0.0090679 | 0.52998 |
-| Niik-l | Unmix | on | Split | on | 0.025389 | **0.05536** | 3.178e-05 | 0.0090679 | 0.56905 |
-| Niik-l | Unmix | off | Split | off | 0.030036 | 0.075587 | 1.7843e-05 | 0.0095493 | 0.54887 |
-| Niik-l | Unmix | off | Split | on | 0.030036 | 0.075587 | 1.7843e-05 | 0.0095493 | 0.50454 |
-| Niik-l | Snap | on | Split | off | 0.025599 | 0.056346 | 3.7462e-05 | 0.0090739 | 0.56733 |
-| Niik-l | Snap | on | Split | on | 0.025599 | 0.056346 | 3.7462e-05 | 0.0090739 | 0.65371 |
-| Niik-l | Snap | off | Split | off | 0.03001 | 0.075482 | 1.5292e-05 | 0.0095614 | 0.52947 |
-| Niik-l | Snap | off | Split | on | 0.03001 | 0.075482 | 1.5292e-05 | 0.0095614 | 0.51843 |
-| Niik-l | Off | on | Split | off | 0.025587 | 0.056287 | 3.7187e-05 | 0.009074 | 0.56946 |
-| Niik-l | Off | on | Split | on | 0.025587 | 0.056287 | 3.7187e-05 | 0.009074 | 0.57568 |
-| Niik-l | Off | off | Split | off | 0.030009 | 0.075477 | 1.5287e-05 | 0.0095613 | 0.50482 |
-| Niik-l | Off | off | Split | on | 0.030009 | 0.075477 | 1.5287e-05 | 0.0095613 | 0.54543 |
-| Niik-l | Unmix | on | Fast | off | 0.025389 | **0.05536** | 3.178e-05 | 0.0090679 | 0.57857 |
+| ZDefocus (re-run pending (scene reframed)) | 8 layers |  |  |  | 0.076955 | 0.078657 | 0.00022705 | 0.025409 | 0.4385 |
+| ZDefocus (re-run pending (scene reframed)) | 16 layers |  |  |  | 0.027489 | 0.064884 | 0.00027808 | 0.0090096 | 0.44055 |
+| ZDefocus (re-run pending (scene reframed)) | 32 layers |  |  |  | 0.027362 | *0.064328* | 0.00025608 | 0.0090143 | 0.52582 |
+| Niik-l (re-run pending (scene reframed)) | Unmix | on | Split | off | 0.025389 | **0.05536** | 3.178e-05 | 0.0090679 | 0.52998 |
+| Niik-l (re-run pending (scene reframed)) | Unmix | on | Split | on | 0.025389 | **0.05536** | 3.178e-05 | 0.0090679 | 0.56905 |
+| Niik-l (re-run pending (scene reframed)) | Unmix | off | Split | off | 0.030036 | 0.075587 | 1.7843e-05 | 0.0095493 | 0.54887 |
+| Niik-l (re-run pending (scene reframed)) | Unmix | off | Split | on | 0.030036 | 0.075587 | 1.7843e-05 | 0.0095493 | 0.50454 |
+| Niik-l (re-run pending (scene reframed)) | Snap | on | Split | off | 0.025599 | 0.056346 | 3.7462e-05 | 0.0090739 | 0.56733 |
+| Niik-l (re-run pending (scene reframed)) | Snap | on | Split | on | 0.025599 | 0.056346 | 3.7462e-05 | 0.0090739 | 0.65371 |
+| Niik-l (re-run pending (scene reframed)) | Snap | off | Split | off | 0.03001 | 0.075482 | 1.5292e-05 | 0.0095614 | 0.52947 |
+| Niik-l (re-run pending (scene reframed)) | Snap | off | Split | on | 0.03001 | 0.075482 | 1.5292e-05 | 0.0095614 | 0.51843 |
+| Niik-l (re-run pending (scene reframed)) | Off | on | Split | off | 0.025587 | 0.056287 | 3.7187e-05 | 0.009074 | 0.56946 |
+| Niik-l (re-run pending (scene reframed)) | Off | on | Split | on | 0.025587 | 0.056287 | 3.7187e-05 | 0.009074 | 0.57568 |
+| Niik-l (re-run pending (scene reframed)) | Off | off | Split | off | 0.030009 | 0.075477 | 1.5287e-05 | 0.0095613 | 0.50482 |
+| Niik-l (re-run pending (scene reframed)) | Off | off | Split | on | 0.030009 | 0.075477 | 1.5287e-05 | 0.0095613 | 0.54543 |
+| Niik-l (re-run pending (scene reframed)) | Unmix | on | Fast | off | 0.025389 | **0.05536** | 3.178e-05 | 0.0090679 | 0.57857 |

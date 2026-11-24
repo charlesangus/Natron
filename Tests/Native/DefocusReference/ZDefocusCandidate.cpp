@@ -94,7 +94,7 @@ defocusHarnessDepthLayer()
     rgb.push_back("G");
     rgb.push_back("B");
 
-    return ImageLayerDesc(kDefocusHarnessDepthLayerID, kDefocusHarnessDepthLayerID, "RGB", rgb);
+    return ImageLayerDesc(kDefocusHarnessDepthLayerID, rgb);
 }
 
 DefocusHarnessSourceTestEffect::DefocusHarnessSourceTestEffect(NodePtr n)
@@ -235,11 +235,7 @@ ZDefocusCandidate::ZDefocusCandidate(const AppInstancePtr& app)
 }
 
 bool
-ZDefocusCandidate::render(const DefocusReference::Camera& camera,
-                          const DefocusReference::PinholeImage& pinhole,
-                          int layers,
-                          std::vector<float>* rgba,
-                          std::string* error)
+ZDefocusCandidate::prepare(std::string* error)
 {
     const auto fail = [error](const std::string& why) {
         if (error) {
@@ -271,6 +267,28 @@ ZDefocusCandidate::render(const DefocusReference::Camera& camera,
             return fail("could not set up ZDefocus");
         }
     }
+
+    return true;
+} // ZDefocusCandidate::prepare
+
+bool
+ZDefocusCandidate::render(const DefocusReference::Camera& camera,
+                          const DefocusReference::PinholeImage& pinhole,
+                          int layers,
+                          std::vector<float>* rgba,
+                          std::string* error)
+{
+    if (!prepare(error)) {
+        return false;
+    }
+    const auto fail = [error](const std::string& why) {
+        if (error) {
+            *error = why;
+        }
+
+        return false;
+    };
+
     if (camera.millimetresPerUnit != 1000.) {
         return fail("the ZDefocus candidate takes scenes in metres");
     }

@@ -121,6 +121,10 @@ protected:
         std::vector<HarnessRow> rows;
         ZDefocusCandidate zdefocus(getApp());
         const std::vector<CandidateConfig> configs = candidateConfigs();
+        std::string prepareError;
+
+        // The nodes are made here so that no timed render pays for creating them.
+        EXPECT_TRUE(zdefocus.prepare(&prepareError)) << prepareError;
 
         for (const std::string& name : fixtureSceneNames()) {
             const FixtureScene f = makeFixtureScene(name, width, height);

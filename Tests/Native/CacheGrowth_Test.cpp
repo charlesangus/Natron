@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <initializer_list>
 #include <list>
 #include <map>
@@ -221,4 +222,77 @@ TEST_F(CacheGrowthTest, GrowingASharedEntryLeavesTheHeldImageIntact)
     ASSERT_TRUE(appPTR->getImage(held->getKey(), &cached));
     ASSERT_EQ(1u, cached.size()) << "the grown copy was cached next to the image it replaces";
     EXPECT_TRUE(cached.front() == grown);
+}
+
+// The render that grows a cached image renders into the grown copy, so that is where its rectangles must end up
+// marked rendered: a copy whose bitmap still shows them unrendered is rendered again by every later lookup.
+TEST_F(CacheGrowthTest, GrownCopyIsMarkedRenderedOverTheWholeWindow)
+{
+    NodePtr first;
+    NodePtr second;
+    createTwins(&first, &second);
+    ASSERT_FALSE(HasFatalFailure());
+
+    const RectI frame = paritySourceWindow(first, kTime, 0);
+    const RectI box(frame.x1 + 20, frame.y1 + 14, frame.x1 + 36, frame.y1 + 30);
+    ASSERT_TRUE(frame.contains(box));
+
+    const ImagePtr held = renderThroughCache(first, box);
+    ASSERT_TRUE(held.get() != 0);
+    const ImagePtr grown = renderThroughCache(second, frame);
+    ASSERT_TRUE(grown.get() != 0);
+    ASSERT_TRUE(grown != held) << "the cached image was not grown by copy";
+
+    std::list<RectI> rest;
+    grown->getRestToRender(frame, rest);
+    EXPECT_TRUE(rest.empty()) << "the grown copy is not marked rendered over the whole window";
+    rest.clear();
+    held->getRestToRender(box, rest);
+    EXPECT_TRUE(rest.empty()) << "the held image lost the marks of its own render";
+
+    const std::vector<float> grownPixels = pixelsOver(*grown, frame);
+    appPTR->clearNodeCache();
+    const ImagePtr reference = renderThroughCache(first, frame);
+    ASSERT_TRUE(reference.get() != 0);
+    EXPECT_TRUE(grownPixels == pixelsOver(*reference, frame)) << "the grown copy differs from a render of the whole window";
+}
+
+// A region another render has reserved in the cached image is still being written there when the image is grown, so
+// the copy holds whatever was in it at that moment: the render that grows the image must render that region itself
+// into the copy rather than trust the copied pixels.
+TEST_F(CacheGrowthTest, RegionsReservedInTheHeldImageAreRenderedAgainInTheCopy)
+{
+    NodePtr first;
+    NodePtr second;
+    createTwins(&first, &second);
+    ASSERT_FALSE(HasFatalFailure());
+
+    const RectI frame = paritySourceWindow(first, kTime, 0);
+    const RectI box(frame.x1 + 20, frame.y1 + 14, frame.x1 + 36, frame.y1 + 30);
+    ASSERT_TRUE(frame.contains(box));
+
+    const ImagePtr held = renderThroughCache(first, box);
+    ASSERT_TRUE(held.get() != 0);
+    const std::vector<float> boxPixels = pixelsOver(*held, box);
+    ASSERT_FALSE(boxPixels.empty());
+
+    const int nComps = (int)held->getComponentsCount();
+    {
+        Image::WriteAccess access = held->getWriteRights();
+        for (int y = box.y1; y < box.y2; ++y) {
+            float* row = (float*)access.pixelAt(box.x1, y);
+            ASSERT_TRUE(row != 0);
+            std::fill(row, row + (std::size_t)box.width() * nComps, 1e30f);
+        }
+    }
+    held->markForRendering(box);
+
+    const ImagePtr grown = renderThroughCache(second, frame);
+    ASSERT_TRUE(grown.get() != 0);
+    ASSERT_TRUE(grown != held) << "the cached image was not grown by copy";
+
+    EXPECT_TRUE(pixelsOver(*grown, box) == boxPixels) << "the grown copy kept the half-written pixels of the reserved region";
+    std::list<RectI> rest;
+    grown->getRestToRender(frame, rest);
+    EXPECT_TRUE(rest.empty()) << "the grown copy is not marked rendered over the whole window";
 }

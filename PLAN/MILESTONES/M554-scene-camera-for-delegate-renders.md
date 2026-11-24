@@ -26,17 +26,17 @@ Natron never hands a Hydra delegate the scene camera. `HydraRender::Request` car
 
 ## Phase 554.1: Camera Path
 
-- [ ] M554.P1.T1 — Carry the scene camera path on the render request
+- [x] M554.P1.T1 — Carry the scene camera path on the render request (through 1cfc1b7ea, m554-gate5)
   - files: `Engine/Nodes/Scene/HydraRenderImpl.h` (`Request`), `Engine/Nodes/Scene/HydraRenderImpl.cpp` (engine cache entry / reuse key), `Engine/Nodes/Scene/USDRender.cpp` (~:1122)
   - approach: add `SdfPath camera` (empty = free camera) and the aperture fit that `cameraFrustum` used to `Request`, with comments in the style of the neighbouring fields. `USDRender` sets both next to the frustum it already computes. Add the camera path to the "same render" reuse test and to whatever decides whether an engine's view moved, so a camera switch never reuses a render. No behaviour change yet: render sites still call `SetCameraState`.
   - verify: the build passes; existing `ctest -R 'USDRender|HydraRender'` stays green
   - size: M
-- [ ] M554.P1.T2 — Render through the camera path when the request names one
+- [x] M554.P1.T2 — Render through the camera path when the request names one (through 1cfc1b7ea, m554-gate5)
   - files: `Engine/Nodes/Scene/HydraRenderImpl.cpp` (the three `SetCameraState` sites), `Tests/Scene/` (new or existing HydraRender test)
   - approach: when `request.camera` is set, call `engine->SetCameraPath(camera)`, `SetFraming` with a framing whose display window and data window match the current width/height, and `SetOverrideWindowPolicy` with the `CameraUtilConformWindowPolicy` matching the request's aperture fit, so the delegate conforms exactly as `cameraFrustum` did. Free-camera requests keep `SetCameraState`. Switching between the two on one engine must clear the other (`SetCameraPath(SdfPath())` before `SetCameraState`). Add a gtest rendering a small fixture camera in Storm both ways (frustum vs path) at each supported fit and two aspects, comparing pixels exactly.
   - verify: the new parity test passes; full `ctest -R Scene` green
   - size: L
-- [ ] M554.P1.T3 — Viewer looks through a scene camera by path
+- [x] M554.P1.T3 — Viewer looks through a scene camera by path (through 1cfc1b7ea, m554-gate5)
   - files: `Gui/SceneViewport.cpp` (~:2812 and the look-through-camera code path)
   - approach: when the viewer is looking through a scene camera and renders with a delegate, pass the camera path as P1.T2 does; free navigation keeps `SetCameraState`. If the viewer has no look-through-camera mode, record that as a milestone decision and skip.
   - verify: a GUI script (or an extension of an existing `Tests/gui/` viewer camera script) looking through a camera in Storm matches the free-camera image at that camera's frustum
@@ -44,17 +44,17 @@ Natron never hands a Hydra delegate the scene camera. `HydraRender::Request` car
 
 ## Phase 554.2: Motion Blur
 
-- [ ] M554.P2.T1 — Check how hdCycles and hdMoonray take shutter and volume velocity
+- [x] M554.P2.T1 — Check how hdCycles and hdMoonray take shutter and volume velocity (through 1cfc1b7ea, m554-gate5)
   - files: read-only: the bundled hdCycles and hdMoonray sources (camera sprim sync, volume/field prims), `Tests/Scene/VolumeRender_Test.cpp` on `origin/feature/f1-vdb-volumes`
   - approach: consultant (opus) confirms both delegates read `shutter:open/close` from the camera sprim given `SetCameraPath`, which render settings turn on motion blur (`cycles:integrator:motion_blur`, MoonRay's equivalent), and how each turns a volume's VDB `velocity` grid into motion (field name, field binding on the `UsdVolVolume`, any scale/units setting). Name what Natron must author or set for each.
   - verify: a written answer with file:line in the delegate sources, recorded as a milestone decision
   - size: L
-- [ ] M554.P2.T2 — Camera shutter motion blur in Cycles and MoonRay
+- [x] M554.P2.T2 — Camera shutter motion blur in Cycles and MoonRay (through 1cfc1b7ea, m554-gate5)
   - files: `Engine/Nodes/Scene/USDRender.cpp` (delegate settings), `Tests/Scene/` (new motion-blur test)
   - approach: per P2.T1, turn the delegates' motion blur on when the camera's shutter interval is non-zero. Test: a cube translating over the shutter interval, rendered through a camera with an open shutter vs a zero shutter, in Cycles and in MoonRay at low samples; the two must differ along the motion direction. Bundled gtest is old: no `GTEST_SKIP`, no `ASSERT_TRUE(ptr)`.
   - verify: the new test passes on both delegates in a remote debug build
   - size: M
-- [ ] M554.P2.T3 — Velocity motion blur on volumes; re-enable the volume blur tests
+- [x] M554.P2.T3 — Velocity motion blur on volumes; re-enable the volume blur tests (through 1cfc1b7ea, m554-gate5)
   - files: per P2.T1 — likely the volume authoring in the F1 volume nodes and `Engine/Nodes/Scene/USDRender.cpp`; `Tests/Scene/VolumeRender_Test.cpp`
   - approach: author or set what P2.T1 named so a VDB's `velocity` grid blurs the volume in both delegates. Re-enable `VolumeRenderCycles.VelocityBlursTheVolume` and `VolumeRenderMoonRay.VelocityBlursTheVolume`, with `cycles:integrator:motion_blur` on for Cycles.
   - verify: both re-enabled tests pass (blurred and still renders differ)

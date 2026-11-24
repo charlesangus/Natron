@@ -15,12 +15,12 @@
 
 ## Phase 505.1: Engine fix
 
-- [ ] M505.P1.T1 — Drop dependencies on the deleted knob and recheck after it is detached
+- [x] M505.P1.T1 — Drop dependencies on the deleted knob and recheck after it is detached (merged)
   - files: `Engine/Knob.cpp` (`KnobHelper::deleteKnob`, `KnobHolder::deleteKnob`)
   - approach: in the listener loop, call `isHelper->removeExpressionDependencies(i, this)` while this knob still has its holder. Move the recheck out of `KnobHelper::deleteKnob` into `KnobHolder::deleteKnob`, after the `_imp->knobs` erase (collect the names first).
   - verify: `ctest -R "ProjectResetListeners|UserKnobEdit|Expression"` passes at the phase build
   - size: M
-- [ ] M505.P1.T2 — Regression test: a deleted knob kept alive, then a listener gets a new expression
+- [x] M505.P1.T2 — Regression test: a deleted knob kept alive, then a listener gets a new expression (merged)
   - files: `Tests/ProjectResetListeners_Test.cpp`
   - approach: Grade A's `white` reads B's user knob `k`. Hold a `KnobIPtr` to `k`, then `holder->deleteKnob(k)`. Check behaviour, not asserts (local builds define NDEBUG): A's expression is invalid, `k` has no listeners, A's node has no link to `k`. Then `setExpression` on A's `white` succeeds and evaluates. Old gtest: no `GTEST_SKIP`, no `ASSERT_TRUE(ptr)`.
   - verify: fails before P1.T1 (the listener still points at `k`; debug PR CI asserts); passes after
@@ -28,7 +28,7 @@
 
 ## Phase 505.2: Remove the M372 workarounds
 
-- [ ] M505.P2.T1 — Remove the clear-while-attached workarounds
+- [x] M505.P2.T1 — Remove the clear-while-attached workarounds (merged)
   - files: `Engine/PythonUndoCommands.cpp` (`clearUnlinkedExpressions` :830, its call at :879, `clearExpressions()` :1057 and calls at :1199/:1209), `Engine/UserKnobEdit.cpp` (:1507 loop)
   - approach: delete them. Dependents' expressions are re-set as before; check that nothing else relied on the clear.
   - verify: `ctest -R "UserKnobEdit|PythonUndo"` passes, including `UserKnobEdit.AnimatedIntToDoubleKeepsKeysAndDependents` (`Tests/UserKnobEdit_Test.cpp:467`)

@@ -24,12 +24,12 @@ At 1920x1080, scale 1, with the default layout full-screen, the viewer's first t
 
 ## Phase 511.1: Measure and decide
 
-- [ ] M511.P1.T1 — GUI script measuring the first viewer row in the default layout
+- [x] M511.P1.T1 — GUI script measuring the first viewer row in the default layout (merged)
   - files: `Tests/gui/m511_viewer_toolbar_fit.py` (new; model on `Tests/gui/m253_render_settings_layout.py`, `Tests/gui/guitest.py`)
   - approach: start in the default layout, full-screen at 1920x1080. Find the ViewerTab's first-row widgets and print each one's geometry, `sizeHint` and `minimumSizeHint`, plus the row and pane widths. Assert every widget lies inside the row and none overlaps its neighbour. Save one screenshot of the viewer toolbar. The assertion is expected to fail before the fix.
   - verify: PM runs it under Xvfb on the phase build and records the per-widget widths and the overflow as a decision
   - size: M
-- [ ] M511.P1.T2 — Choose how the row fits
+- [x] M511.P1.T2 — Choose how the row fits (merged)
   - files: read-only: `Gui/ViewerTab.cpp`, the P1.T1 numbers
   - approach: consultant (opus) works out how many pixels shrinkable combos (`AdjustToMinimumContentsLengthWithIcon` with a `minimumContentsLength`) and tighter spacers would save. If that is not enough, it sets out the options for the PM to put to the user with trade-offs: moving A/operator/B to the second row, or folding rarely used toggles into a menu.
   - verify: a decision recorded; any control move is approved by the user
@@ -37,7 +37,7 @@ At 1920x1080, scale 1, with the default layout full-screen, the viewer's first t
 
 ## Phase 511.2: Fix
 
-- [ ] M511.P2.T1 — Make the first row fit the default pane
+- [x] M511.P2.T1 — Make the first row fit the default pane (merged)
   - files: `Gui/ViewerTab.cpp` (and `Gui/ViewerTabPrivate.h` if a widget moves)
   - approach: apply the P1.T2 decision, with elided combo text and the full name in the tooltip. Labels and tooltips keep their current wording, and no control is removed.
   - verify: `Tests/gui/m511_viewer_toolbar_fit.py` passes under Xvfb on the phase build

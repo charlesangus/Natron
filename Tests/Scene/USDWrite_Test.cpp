@@ -2918,7 +2918,7 @@ TEST_F(USDWriteSaveRegionTest, SaveRegionMetadataIsAuthored)
     std::list<std::vector<std::string>> rows;
     rows.push_back({ "department", "String", "lighting" });
     customData->setTable(rows);
-    setString(region, kUSDConfigureLayerParamDefaultPrim, "World");
+    setString(region, kUSDConfigureLayerParamDefaultPrim, "Other");
     // Editing a value knob turns its toggle on; turn it back off to leave the value unauthored.
     KnobBool* defaultPrimAuthored = getKnob<KnobBool>(region, (std::string(kUSDConfigureLayerParamDefaultPrim) + "Authored").c_str());
     ASSERT_TRUE(defaultPrimAuthored != NULL);
@@ -2939,7 +2939,8 @@ TEST_F(USDWriteSaveRegionTest, SaveRegionMetadataIsAuthored)
     const PXR_NS::VtDictionary::const_iterator department = custom.find("department");
     ASSERT_TRUE(department != custom.end());
     EXPECT_EQ(PXR_NS::VtValue(std::string("lighting")), department->second);
-    EXPECT_FALSE(layer->HasDefaultPrim());
+    // The read file's own default prim reaches the region file; the untoggled value must not.
+    EXPECT_NE(PXR_NS::TfToken("Other"), layer->GetDefaultPrim());
     EXPECT_FALSE(layer->HasStartTimeCode());
 
     PXR_NS::SdfLayerRefPtr root = PXR_NS::SdfLayer::FindOrOpen(path.toStdString());
@@ -3069,7 +3070,8 @@ TEST_F(USDWriteSaveRegionTest, AFollowingRegionClosesAtAMerge)
 
     const QString path = tmp.path() + QString::fromUtf8("/shot.usda");
     ASSERT_TRUE(bool(write(c, path, USDWrite::eExportModeLayered)));
-    EXPECT_EQ(QStringList() << QString::fromUtf8("branch.usda") << QString::fromUtf8("shot.usda"), fileNames(tmp.path()));
+    // The read file lies below the region file in the stack, so it is written as a sidecar.
+    EXPECT_EQ(QStringList() << QString::fromUtf8("branch.usda") << QString::fromUtf8("shot.usda") << QString::fromUtf8("shot_layer1.usda"), fileNames(tmp.path()));
     PXR_NS::SdfLayerRefPtr branch = PXR_NS::SdfLayer::FindOrOpen((tmp.path() + QString::fromUtf8("/branch.usda")).toStdString());
     PXR_NS::SdfLayerRefPtr shot = PXR_NS::SdfLayer::FindOrOpen(path.toStdString());
     ASSERT_TRUE(branch && shot);

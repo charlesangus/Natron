@@ -26,18 +26,21 @@
 #include "MessageBox.h"
 
 #include <stdexcept>
+#include <utility>
+#include <vector>
 
 #include "Global/Macros.h"
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
-#include <QtGlobal> // for Q_OS_*
-#include <QHBoxLayout>
-#include <QVBoxLayout>
-#include <QStyle>
-#include <QPushButton>
-#include <QCheckBox>
-#include <QTextEdit>
 #include <QApplication>
+#include <QCheckBox>
+#include <QHBoxLayout>
+#include <QKeyEvent>
+#include <QPushButton>
+#include <QStyle>
+#include <QTextEdit>
+#include <QVBoxLayout>
+#include <QtGlobal> // for Q_OS_*
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
@@ -154,9 +157,12 @@ MessageBox::init(const QString & title,
     _imp->buttonBox = new DialogButtonBox(QDialogButtonBox::StandardButtons( int( QtEnumConvert::toQtStandarButtons(buttons) ) ),
                                           Qt::Horizontal);
     const QList<QAbstractButton*> stdButtons = _imp->buttonBox->buttons();
+    std::vector<std::pair<StandardButtonEnum, QAbstractButton*>> labelled;
     for (QAbstractButton* b : stdButtons) {
         b->setIcon(QIcon());
+        labelled.push_back(std::make_pair(QtEnumConvert::fromQtStandardButton((QMessageBox::StandardButton)_imp->buttonBox->standardButton(b)), b));
     }
+    QtEnumConvert::setStandardButtonMnemonics(labelled);
     QPushButton* defaultB = _imp->buttonBox->button( QDialogButtonBox::StandardButton(
                                                                                       (QDialogButtonBox::StandardButton)QtEnumConvert::toQtStandardButton(defaultButton) ) );
     if ( _imp->buttonBox->buttons().contains(defaultB) ) {
@@ -257,6 +263,25 @@ MessageBox::isCheckBoxChecked() const
     } else {
         return false;
     }
+}
+
+void
+MessageBox::keyPressEvent(QKeyEvent* e)
+{
+    if (!(e->modifiers() & (Qt::AltModifier | Qt::ControlModifier | Qt::MetaModifier))) {
+        const int key = e->key();
+        const QList<QAbstractButton*> buttons = _imp->buttonBox->buttons();
+        for (QAbstractButton* b : buttons) {
+            const QKeySequence shortcut = b->shortcut();
+            if (key && !shortcut.isEmpty() && (key == shortcut[0].key())) {
+                b->animateClick();
+                e->accept();
+
+                return;
+            }
+        }
+    }
+    QDialog::keyPressEvent(e);
 }
 
 void

@@ -78,6 +78,9 @@ public Q_SLOTS:
 
     void onButtonClicked(QAbstractButton* button);
 
+protected:
+    virtual void keyPressEvent(QKeyEvent* e) OVERRIDE;
+
 private:
 
     void init(const QString & title,

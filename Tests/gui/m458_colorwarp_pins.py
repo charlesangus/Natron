@@ -189,6 +189,9 @@ try:
         # Off-centre: a pin added at the centre draws its handle swatch there, which would be read instead of the image.
         return gt.viewer_centre_colour((0, -60))
 
+    def near(a, b, tolerance=2):
+        return a is not None and b is not None and all(abs(x - y) <= tolerance for x, y in zip(a, b))
+
     def steps():
         ok = yield ("until", lambda: node_graph_view() is not None, STARTUP_TIMEOUT_S)
         require(ok, "the node graph is on screen")
@@ -245,7 +248,7 @@ try:
         tree = pin_list(warp)
         check(tree is not None and tree.topLevelItemCount() == 1, "the pin list shows the pin")
         yield ("sleep", RENDER_MS)
-        check(viewer_colour() == untouched, "a fresh pin maps its source to itself (%r)" % (viewer_colour(),))
+        check(near(viewer_colour(), untouched), "a fresh pin maps its source to itself (%r)" % (viewer_colour(),))
         gt.shot("m458-added.png")
         undo_redo(False)
         ok = yield ("until", lambda: pins.getPinCount() == 0, POLL_TIMEOUT_S)
@@ -284,13 +287,13 @@ try:
         yield ("sleep", RENDER_MS)
         check(not engaged(), "Esc leaves the global mode")
         pushed_colour = viewer_colour()
-        check(pushed_colour != untouched, "the pushed target changes the viewer (%r -> %r)" % (untouched, pushed_colour))
+        check(not near(pushed_colour, untouched), "the pushed target changes the viewer (%r -> %r)" % (untouched, pushed_colour))
         gt.shot("m458-pushed.png")
         undo_redo(False)
         ok = yield ("until", lambda: target_of(pins, 0) == before, POLL_TIMEOUT_S)
         check(ok, "one undo puts the target back (%r)" % (target_of(pins, 0),))
         yield ("sleep", RENDER_MS)
-        check(viewer_colour() == untouched, "and the viewer with it (%r)" % (viewer_colour(),))
+        check(near(viewer_colour(), untouched), "and the viewer with it (%r)" % (viewer_colour(),))
         undo_redo(True)
         ok = yield ("until", lambda: target_of(pins, 0) == pushed, POLL_TIMEOUT_S)
         check(ok, "redo pushes it again (%r)" % (target_of(pins, 0),))

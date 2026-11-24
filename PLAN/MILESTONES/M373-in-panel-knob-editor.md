@@ -127,3 +127,5 @@ Code facts, read at `origin/main` on 2026-11-08; re-check line numbers before st
 - 2026-11-08 — Mockups are approved before the editor is built (user, grill).
 - 2026-11-23 — **Mockups approved (user):** the eight edit-mode mockups (pencil toggle, palette strip, property section for float/choice/button, inline duplicate-name error, drag-in drop line, knob context menu, "Edit parameters" entry) "look reasonable, proceed".
 - 2026-11-23 — P2.T1–T4, P3.T1–T2 in the lane (gate queued). P3.T3 deferred (PM): ManageUserParamsDialog still edits project path variables (ProjectGui::editVariables) until M247 - Project User Knobs And Root gives the project an in-panel editor, so the dialogs are removed after M247; Tests/gui/m70_rfv.py is ported to the editor now. Pasted clashing names get a number appended to the whole name (int1 -> int12).
+
+- 2026-11-23 (user): a knob dropped onto a panel with no user page creates a user page, as clicking a palette entry does, and lands there; built-in pages are still never drop targets.

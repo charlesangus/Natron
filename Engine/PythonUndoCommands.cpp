@@ -825,20 +825,6 @@ private:
     std::shared_ptr<PythonNodeLayout> _after;
 };
 
-// A linked dimension is left alone: clearing it would clear the knobs it is linked to.
-void
-clearUnlinkedExpressions(const KnobIPtr& knob)
-{
-    if (!knob) {
-        return;
-    }
-    for (int i = 0; i < knob->getDimension(); ++i) {
-        if (!knob->isLinked(i) && !knob->getExpression(i).empty()) {
-            knob->clearExpression(i, true);
-        }
-    }
-}
-
 } // anon namespace
 
 //================================================================
@@ -872,11 +858,6 @@ struct PythonUserKnobs {
             if ((*it)->isUserKnob() && !(*it)->isDeclaredByPlugin()) {
                 userKnobs.push_back(*it);
             }
-        }
-        // While every one of them is still on the node: one deleted after another it reads would
-        // unregister from a knob without a holder.
-        for (std::list<KnobIWPtr>::const_iterator it = userKnobs.begin(); it != userKnobs.end(); ++it) {
-            clearUnlinkedExpressions(it->lock());
         }
         node.deleteUserKnobs(userKnobs);
         node.restoreUserKnobs(serialization);
@@ -1050,25 +1031,6 @@ struct UserKnobDependentStates {
         return ret;
     }
 
-    /*
-     * Before the user knobs are rebuilt, while the ones these knobs read are still on the node. Linked
-     * dimensions too: their members are dependents as well, and apply() sets every expression again.
-     */
-    void clearExpressions() const
-    {
-        for (std::size_t d = 0; d < dependents.size(); ++d) {
-            KnobIPtr knob = dependents[d].knob.lock();
-            if (!knob || (knob->getDimension() != (int)dependents[d].expressions.size())) {
-                continue;
-            }
-            for (int i = 0; i < knob->getDimension(); ++i) {
-                if (!knob->getExpression(i).empty()) {
-                    knob->clearExpression(i, true);
-                }
-            }
-        }
-    }
-
     // Returns whether the dimension is in partner's group afterwards.
     static bool relink(const KnobIPtr& knob,
                        int dimension,
@@ -1135,7 +1097,14 @@ struct UserKnobDependentStates {
                 if (partner && (link.partnerDimension >= 0) && (link.partnerDimension < partner->getDimension()) && relink(knob, i, partner, link)) {
                     nodeLinks |= link.nodeLink || link.partnerNodeLink;
                     if (link.linked) {
-                        // A linked dimension shares the group's expression.
+                        // A linked dimension shares the group's expression. Members adopt it only when its text
+                        // changes, so one left invalid by a deleted knob is re-set, and the set reaches the group.
+                        if (!dependent.expressions[i].empty() && !knob->isExpressionValid(i, 0)) {
+                            try {
+                                knob->setExpression(i, dependent.expressions[i], dependent.expressionsHaveRet[i], false);
+                            } catch (...) {
+                            }
+                        }
                         continue;
                     }
                 }
@@ -1196,7 +1165,6 @@ public:
     {
         NodePtr node = _node.lock();
         if (node) {
-            _beforeDependents->clearExpressions();
             _before->apply(*node);
             _beforeDependents->apply(*node);
         }
@@ -1206,7 +1174,6 @@ public:
     {
         NodePtr node = _node.lock();
         if (node) {
-            _afterDependents->clearExpressions();
             _after->apply(*node);
             _afterDependents->apply(*node);
         }

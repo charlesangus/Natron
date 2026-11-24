@@ -1407,6 +1407,61 @@ TEST_F(UserKnobEdit, LinkedReadersFollowATypeChangeAndItsUndo)
     }
 }
 
+TEST_F(UserKnobEdit, ALinkedReaderOfARetypedKnobStaysValidThroughUndo)
+{
+    NodePtr blur = createBlur();
+    ASSERT_TRUE(blur != nullptr);
+    KnobDoublePtr p = addTyped<KnobDouble>(blur, "P");
+    KnobIntPtr u = addTyped<KnobInt>(blur, "U");
+    KnobDoublePtr size = std::dynamic_pointer_cast<KnobDouble>(blur->getKnobByName("size"));
+    ASSERT_TRUE(bool(p && u && size));
+    ASSERT_TRUE(size->linkTo(0, p, 0));
+    EXPECT_NO_THROW(size->setExpression(0, "thisNode.U.get()", false, true));
+    ASSERT_EQ(size->getExpression(0), p->getExpression(0));
+
+    const auto follows = [&](const std::string& typeName,
+                             double value) {
+        KnobIPtr current = blur->getKnobByName("U");
+        ASSERT_TRUE(current != nullptr);
+        EXPECT_EQ(typeName, current->typeName());
+        KnobIntPtr asInt = std::dynamic_pointer_cast<KnobInt>(current);
+        KnobDoublePtr asDouble = std::dynamic_pointer_cast<KnobDouble>(current);
+        if (asInt) {
+            asInt->setValue((int)value, ViewSpec::all(), 0);
+        } else {
+            ASSERT_TRUE(asDouble != nullptr);
+            asDouble->setValue(value, ViewSpec::all(), 0);
+        }
+        std::string error;
+        EXPECT_TRUE(size->isExpressionValid(0, &error)) << error;
+        EXPECT_TRUE(size->isLinked(0));
+        EXPECT_FALSE(size->getExpression(0).empty());
+        EXPECT_DOUBLE_EQ(value, size->getValue(0));
+    };
+    {
+        SCOPED_TRACE("before");
+        follows(KnobInt::typeNameStatic(), 2.);
+    }
+
+    recorder->commands.clear();
+    std::string error;
+    ASSERT_EQ(eUserKnobTypeChangeConverted, changeUserKnobType(holderOf(blur), u, KnobDouble::typeNameStatic(), 1, false, nullptr, &error)) << error;
+    {
+        SCOPED_TRACE("changed");
+        follows(KnobDouble::typeNameStatic(), 3.5);
+    }
+    undoAll();
+    {
+        SCOPED_TRACE("undone");
+        follows(KnobInt::typeNameStatic(), 4.);
+    }
+    redoAll();
+    {
+        SCOPED_TRACE("redone");
+        follows(KnobDouble::typeNameStatic(), 5.5);
+    }
+}
+
 TEST_F(UserKnobEdit, NodeLinksSurviveATypeChangeAndItsUndo)
 {
     NodePtr blur = createBlur();

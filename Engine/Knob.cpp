@@ -940,8 +940,13 @@ KnobHelper::deleteKnob()
         for (int i = 0; i < knob->getDimension(); ++i) {
             if (isHelper) {
                 // Restoring the nodes it was missing would not bring this parameter back.
-                QMutexLocker k(&isHelper->_imp->expressionMutex);
-                isHelper->_imp->expressions[i].missingNodes.clear();
+                {
+                    QMutexLocker k(&isHelper->_imp->expressionMutex);
+                    isHelper->_imp->expressions[i].missingNodes.clear();
+                }
+                // While this knob still has its holder: unregistering reaches the listener's
+                // holder with this knob as the master.
+                isHelper->removeExpressionDependencies(i, this);
             }
             knob->setExpressionInvalid( i, false, tr("%1: parameter does not exist").arg( QString::fromUtf8( getName().c_str() ) ).toStdString() );
             knob->unSlave(i, false);
@@ -959,16 +964,6 @@ KnobHelper::deleteKnob()
     }
 
     KnobHolder* holder = getHolder();
-    if ( holder && holder->getApp() ) {
-        std::set<std::string> names;
-        names.insert(getName());
-        EffectInstance* effect = dynamic_cast<EffectInstance*>(holder);
-        NodePtr node = effect ? effect->getNode() : NodePtr();
-        if (node) {
-            names.insert(node->getScriptName_mt_safe());
-        }
-        holder->getApp()->recheckInvalidExpressionsReferencing(names);
-    }
 
     for (int i = 0; i < getDimension(); ++i) {
         clearExpression(i, true);
@@ -9566,8 +9561,17 @@ KnobHolder::deleteKnob(KnobI* knob,
         knobs = _imp->knobs;
     }
     KnobIPtr sharedKnob;
+    std::set<std::string> recheckNames;
     for (KnobsVec::iterator it = knobs.begin(); it != knobs.end(); ++it) {
         if (it->get() == knob) {
+            if (getApp()) {
+                recheckNames.insert(knob->getName());
+                EffectInstance* effect = dynamic_cast<EffectInstance*>(this);
+                NodePtr node = effect ? effect->getNode() : NodePtr();
+                if (node) {
+                    recheckNames.insert(node->getScriptName_mt_safe());
+                }
+            }
             (*it)->deleteKnob();
             sharedKnob = *it;
             break;
@@ -9600,6 +9604,12 @@ KnobHolder::deleteKnob(KnobI* knob,
     if (helper) {
         KnobHolder* expected = this;
         helper->_imp->holder.compare_exchange_strong(expected, 0, std::memory_order_acq_rel);
+    }
+
+    // Only once the knob has left the list and its Python attribute is gone, or the recheck would
+    // bind the listeners straight back to it.
+    if (!recheckNames.empty() && getApp()) {
+        getApp()->recheckInvalidExpressionsReferencing(recheckNames);
     }
 }
 

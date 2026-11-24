@@ -157,13 +157,12 @@ namespace Optics {
     LensDatabase&
     LensDatabase::shared()
     {
-        std::string path;
-        {
+        static LensDatabase database([]() {
             std::lock_guard<std::mutex> lock(sharedMutex());
             sharedCreated() = true;
-            path = sharedPath().empty() ? defaultPath() : sharedPath();
-        }
-        static LensDatabase database(path);
+
+            return sharedPath().empty() ? defaultPath() : sharedPath();
+        }());
 
         return database;
     }

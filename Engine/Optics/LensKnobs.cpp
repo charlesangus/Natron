@@ -26,13 +26,16 @@
 
 #include <string>
 
+#include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/FileStampRegistry.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/KnobReader.h"
 #include "Engine/Optics/LensDatabase.h"
 #include "Engine/Optics/ZemaxParser.h"
+#include "Engine/Project.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -171,10 +174,8 @@ LensKnobs::hasBrowseHandler()
 }
 
 std::string
-LensKnobs::model(double time,
-                 ViewIdx view) const
+LensKnobs::model(const KnobReader& reader) const
 {
-    const KnobReader reader(time, view);
     KnobChoicePtr model = _model.lock();
     const int index = reader.value(model);
 
@@ -182,13 +183,11 @@ LensKnobs::model(double time,
 }
 
 bool
-LensKnobs::resolve(double time,
+LensKnobs::resolve(const KnobReader& reader,
                    Prescription* out,
-                   std::string* error,
-                   ViewIdx view) const
+                   std::string* error) const
 {
-    const KnobReader reader(time, view);
-    const std::string which = model(time, view);
+    const std::string which = model(reader);
     if (which == kLensModelDatabase) {
         const std::string id = reader.value(_lens);
         if (id.empty()) {
@@ -200,10 +199,18 @@ LensKnobs::resolve(double time,
         return LensDatabase::shared().prescription(id, out, error);
     }
     if (which == kLensModelFromFile) {
-        KnobFilePtr file = _file.lock();
-        const std::string path = file ? file->getSingleFilePath() : std::string();
+        std::string path = reader.value(_file);
         if (path.empty()) {
             *error = tr("No lens file is chosen.");
+
+            return false;
+        }
+        KnobFilePtr file = _file.lock();
+        if (file && file->getHolder() && file->getHolder()->getApp()) {
+            file->getHolder()->getApp()->getProject()->canonicalizePath(path);
+        }
+        if (FileStampRegistry::hasFramePattern(path)) {
+            *error = tr("A lens file cannot be an image sequence.");
 
             return false;
         }
@@ -222,27 +229,23 @@ LensKnobs::resolve(double time,
 }
 
 std::string
-LensKnobs::glassVendor(double time,
-                       ViewIdx view) const
+LensKnobs::glassVendor(const KnobReader& reader) const
 {
-    const KnobReader reader(time, view);
     KnobChoicePtr vendor = _glassVendor.lock();
 
     return vendor->getEntry(reader.value(vendor)).id;
 }
 
 double
-LensKnobs::abbeOffset(double time,
-                      ViewIdx view) const
+LensKnobs::abbeOffset(const KnobReader& reader) const
 {
-    return KnobReader(time, view).value(_abbeOffset);
+    return reader.value(_abbeOffset);
 }
 
 bool
-LensKnobs::useAspheric(double time,
-                       ViewIdx view) const
+LensKnobs::useAspheric(const KnobReader& reader) const
 {
-    return KnobReader(time, view).value(_useAspheric);
+    return reader.value(_useAspheric);
 }
 
 bool

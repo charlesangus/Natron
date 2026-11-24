@@ -32,8 +32,8 @@
 #include <vector>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/Nodes/KnobReader.h"
 #include "Engine/Optics/Prescription.h"
-#include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -80,28 +80,23 @@ public:
     static bool hasBrowseHandler();
 
     // The id of the active lensModel entry.
-    std::string model(double time,
-                      ViewIdx view = ViewIdx(0)) const WARN_UNUSED_RETURN;
+    std::string model(const KnobReader& reader) const WARN_UNUSED_RETURN;
 
     /**
      * @brief The Database or From File prescription. False with *error set for another model, a lens
-     * file that does not parse (the parser's line and message), or a lens id the database lacks (the
-     * error names the id; the knob keeps its value).
+     * file that does not parse (the parser's line and message) or names an image sequence, or a lens
+     * id the database lacks (the error names the id; the knob keeps its value).
      **/
-    bool resolve(double time,
+    bool resolve(const KnobReader& reader,
                  Prescription* out,
-                 std::string* error,
-                 ViewIdx view = ViewIdx(0)) const WARN_UNUSED_RETURN;
+                 std::string* error) const WARN_UNUSED_RETURN;
 
     // A GlassCatalogue vendor name.
-    std::string glassVendor(double time,
-                            ViewIdx view = ViewIdx(0)) const WARN_UNUSED_RETURN;
-    double abbeOffset(double time,
-                      ViewIdx view = ViewIdx(0)) const WARN_UNUSED_RETURN;
-    bool useAspheric(double time,
-                     ViewIdx view = ViewIdx(0)) const WARN_UNUSED_RETURN;
+    std::string glassVendor(const KnobReader& reader) const WARN_UNUSED_RETURN;
+    double abbeOffset(const KnobReader& reader) const WARN_UNUSED_RETURN;
+    bool useAspheric(const KnobReader& reader) const WARN_UNUSED_RETURN;
 
-    // True when k is one of these knobs.
+    // Refreshes visibility for lensModel and runs the browse handler for lensBrowse; true when k is one of these knobs.
     bool knobChanged(KnobI* k) const;
     // Shows lens, lensBrowse and lensFile for the active model; knobChanged() calls it.
     void refreshVisibility() const;

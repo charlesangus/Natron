@@ -91,6 +91,9 @@ namespace Optics {
     // skipped.
     std::vector<GhostPath> enumerateGhosts(const Prescription& lens);
 
+    // GLSL refract() for a unit d and n and eta = n1 / n2; false on total internal reflection.
+    bool refract(const Vec3& d, const Vec3& n, double eta, Vec3* out);
+
     class TraceSystem {
     public:
         // Each surface's medium is matched in the vendor's catalogue (see matchGlass) and evaluated at

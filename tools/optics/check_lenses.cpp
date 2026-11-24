@@ -20,7 +20,7 @@
  * The parse check behind tools/optics/convert_lenses.py: loads a lens archive through
  * Optics::LensDatabase, the way Natron does, and prints one "EXCLUDE\t<id>\t<reason>" line per lens
  * that fails to parse, has no paraxial focus, or parses differently from its original OpticsDatabase
- * file. Build it from the repository root (Engine/Optics has no Natron or Qt dependency):
+ * file. Build it from the repository root (the files listed here have no Natron or Qt dependency):
  *
  *   g++ -std=c++17 -O1 -I. tools/optics/check_lenses.cpp Engine/Optics/LensDatabase.cpp \
  *       Engine/Optics/ZemaxParser.cpp Engine/Optics/DatParser.cpp Engine/Optics/Prescription.cpp \

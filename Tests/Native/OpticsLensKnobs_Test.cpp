@@ -36,6 +36,7 @@
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/KnobReader.h"
 #include "Engine/Optics/LensDatabase.h"
 #include "Engine/Optics/LensKnobs.h"
 
@@ -81,6 +82,7 @@ protected:
     {
         BaseTest::SetUp();
         Optics::LensDatabase::setSharedArchivePath(kArchive);
+        ASSERT_TRUE(Optics::LensDatabase::shared().find("Nikon/Nikon 1 Nikkor 10mm f2.8") != nullptr);
     }
 };
 
@@ -103,7 +105,7 @@ TEST_F(OpticsLensKnobsTest, KnobsHaveTheirNamesAndDefaults)
     EXPECT_EQ(std::string(kLensModelDatabase), entries[1].id);
     EXPECT_EQ(std::string(kLensModelFromFile), entries[2].id);
     EXPECT_EQ(0, model->getDefaultValue(0));
-    EXPECT_EQ(std::string("procedural"), knobs.model(0.));
+    EXPECT_EQ(std::string("procedural"), knobs.model(KnobReader(0., ViewIdx(0))));
 
     KnobStringPtr lens = std::dynamic_pointer_cast<KnobString>(effect->getKnobByName("lens"));
     ASSERT_TRUE(bool(lens));
@@ -118,7 +120,7 @@ TEST_F(OpticsLensKnobsTest, KnobsHaveTheirNamesAndDefaults)
     ASSERT_TRUE(bool(vendor));
     EXPECT_EQ(std::string("Glass Vendor"), vendor->getLabel());
     EXPECT_EQ(6u, vendor->getEntries_mt_safe().size());
-    EXPECT_EQ(std::string("Schott"), knobs.glassVendor(0.));
+    EXPECT_EQ(std::string("Schott"), knobs.glassVendor(KnobReader(0., ViewIdx(0))));
 
     KnobDoublePtr abbe = std::dynamic_pointer_cast<KnobDouble>(effect->getKnobByName("abbeOffset"));
     ASSERT_TRUE(bool(abbe));
@@ -131,7 +133,7 @@ TEST_F(OpticsLensKnobsTest, KnobsHaveTheirNamesAndDefaults)
     ASSERT_TRUE(bool(aspheric));
     EXPECT_EQ(std::string("Use Aspheric"), aspheric->getLabel());
     EXPECT_TRUE(aspheric->getDefaultValue(0));
-    EXPECT_TRUE(knobs.useAspheric(0.));
+    EXPECT_TRUE(knobs.useAspheric(KnobReader(0., ViewIdx(0))));
 
     EXPECT_TRUE(lens->getIsSecret());
     EXPECT_TRUE(file->getIsSecret());
@@ -153,35 +155,35 @@ TEST_F(OpticsLensKnobsTest, ResolveReportsEachModel)
     ASSERT_TRUE(bool(model));
     ASSERT_TRUE(bool(lens));
     ASSERT_TRUE(bool(file));
-    EXPECT_EQ(std::string(kLensModelDatabase), knobs.model(0.));
+    EXPECT_EQ(std::string(kLensModelDatabase), knobs.model(KnobReader(0., ViewIdx(0))));
 
     Prescription out;
     std::string error;
-    EXPECT_TRUE(knobs.resolve(0., &out, &error)) << error;
+    EXPECT_TRUE(knobs.resolve(KnobReader(0., ViewIdx(0)), &out, &error)) << error;
     EXPECT_EQ(std::string("Classic Designs/dgauss50"), out.id);
 
     lens->setValue(std::string("Nikon/Nikon 1 Nikkor 10mm f2.8"));
     error.clear();
-    EXPECT_TRUE(knobs.resolve(0., &out, &error)) << error;
+    EXPECT_TRUE(knobs.resolve(KnobReader(0., ViewIdx(0)), &out, &error)) << error;
     EXPECT_EQ(std::string("Nikon/Nikon 1 Nikkor 10mm f2.8"), out.id);
     EXPECT_TRUE(out.hasAspheres());
 
     lens->setValue(std::string("Nikon/Renamed Upstream"));
     error.clear();
-    EXPECT_FALSE(knobs.resolve(0., &out, &error));
+    EXPECT_FALSE(knobs.resolve(KnobReader(0., ViewIdx(0)), &out, &error));
     EXPECT_NE(std::string::npos, error.find("Nikon/Renamed Upstream")) << error;
     EXPECT_EQ(std::string("Nikon/Renamed Upstream"), lens->getValue());
 
     model->setValue(modelIndex(model, kLensModelFromFile));
     file->setValue(std::string(kBadFile));
     error.clear();
-    EXPECT_FALSE(knobs.resolve(0., &out, &error));
+    EXPECT_FALSE(knobs.resolve(KnobReader(0., ViewIdx(0)), &out, &error));
     EXPECT_NE(std::string::npos, error.find("line 5")) << error;
     EXPECT_NE(std::string::npos, error.find("CURV")) << error;
 
     file->setValue(std::string(kTriplet));
     error.clear();
-    EXPECT_TRUE(knobs.resolve(0., &out, &error)) << error;
+    EXPECT_TRUE(knobs.resolve(KnobReader(0., ViewIdx(0)), &out, &error)) << error;
     EXPECT_EQ(1, out.stopCount());
 }
 

@@ -57,7 +57,9 @@ CLANG_DIAG_OFF(uninitialized)
 CLANG_DIAG_ON(uninitialized)
 
 #include "Engine/AppInstance.h"
+#include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
 #include "Engine/Optics/Glass.h"
 #include "Engine/Optics/LensDatabase.h"
 #include "Engine/Optics/Paraxial.h"
@@ -66,6 +68,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/GuiAppInstance.h"
 #include "Gui/KnobGui.h"
 #include "Gui/KnobUndoCommand.h"
+#include "Gui/NodeGui.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -88,7 +91,6 @@ enum Column {
 const int kLensIndexRole = Qt::UserRole + 1;
 const int kVendorRole = Qt::UserRole + 2;
 
-// Any, then a flag that must be on, then one that must be off.
 enum FlagFilter {
     eFlagAny,
     eFlagYes,
@@ -188,25 +190,6 @@ surfaceProfile(const Optics::TraceSystem& system,
     return points;
 }
 
-bool
-refract(const Optics::Vec3& d,
-        const Optics::Vec3& n,
-        double eta,
-        Optics::Vec3* out)
-{
-    const double cosi = d.x * n.x + d.y * n.y + d.z * n.z;
-    const double k = 1. - eta * eta * (1. - cosi * cosi);
-    if (k < 0.) {
-        return false;
-    }
-    const double s = eta * cosi + std::sqrt(k);
-    Optics::Vec3 r { d.x * eta - n.x * s, d.y * eta - n.y * s, d.z * eta - n.z * s };
-    const double len = std::sqrt(r.x * r.x + r.y * r.y + r.z * r.z);
-    *out = Optics::Vec3 { r.x / len, r.y / len, r.z / len };
-
-    return true;
-}
-
 // The vertices of a sequential trace at the d line, ending on the image plane; the tracer itself only
 // reports where a ray lands.
 RayPath
@@ -227,7 +210,7 @@ traceDrawn(const Optics::TraceSystem& system,
         ray.position = hit.position;
         path.points.push_back(QPointF(ray.position.z, ray.position.y));
         const double n1 = system.ior(i - 1, 0), n2 = system.ior(i, 0);
-        if (n1 != n2 && !refract(ray.direction, hit.normal, n1 / n2, &ray.direction)) {
+        if (n1 != n2 && !Optics::refract(ray.direction, hit.normal, n1 / n2, &ray.direction)) {
             return path;
         }
     }
@@ -831,6 +814,16 @@ LensBrowser::accept()
         const std::string newValue = id.toStdString();
         if (oldValue != newValue) {
             KnobGuiPtr knobGui = std::dynamic_pointer_cast<KnobGui>(lens->getKnobGuiPointer());
+            if (!knobGui) {
+                // The knob has no KnobGui until the node's settings panel exists, which a Python-triggered
+                // Browse can precede.
+                EffectInstance* effect = dynamic_cast<EffectInstance*>(lens->getHolder());
+                NodeGuiPtr nodeGui = effect ? std::dynamic_pointer_cast<NodeGui>(effect->getNode()->getNodeGui()) : NodeGuiPtr();
+                if (nodeGui) {
+                    nodeGui->ensurePanelCreated();
+                    knobGui = std::dynamic_pointer_cast<KnobGui>(lens->getKnobGuiPointer());
+                }
+            }
             if (knobGui) {
                 knobGui->pushUndoCommand(new KnobUndoCommand<std::string>(knobGui, oldValue, newValue));
             } else {

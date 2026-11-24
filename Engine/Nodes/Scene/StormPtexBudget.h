@@ -28,6 +28,8 @@
 
 #include "Global/Macros.h"
 
+#include <cstddef>
+
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -36,6 +38,14 @@ PXR_NAMESPACE_CLOSE_SCOPE
 
 NATRON_NAMESPACE_ENTER
 
+// HdStPtexMipmapTextureLoader::generateBuffers (v26.08 hdSt/ptexMipmapTextureLoader.cpp) computes
+// the size of its page buffer in an int, which overflows at 2 GiB. The limit counts the texels of
+// the blocks, not of the pages they land on, and the packing can put a single block on a page of
+// nearly four times its area: one face sets the page size and every other face is one level
+// smaller. 512 MiB is the largest power of two whose worst case stays under the overflow; 1 GiB
+// still overflows on a plain texture of 512 x 512 faces with one larger face.
+const std::size_t kStormPtexMemoryRequest = 512 * 1024 * 1024;
+
 /**
  * @brief Limits how much memory each Ptex texture may pack into in the Storm resource registry of
  * hgi, which is what keeps USD's 32-bit page buffer size from overflowing.
@@ -43,6 +53,9 @@ NATRON_NAMESPACE_ENTER
  * Call it after constructing an engine that runs Storm on hgi, every time: the registry lives only
  * as long as the engines using it, and the limit goes with it. Only for an engine known to run
  * Storm, as otherwise there is no registry to reach. A null hgi does nothing.
+ *
+ * Storm's GL context must be current: the total texture budget is chosen from the memory of the
+ * GPU behind it.
  *
  * A texture node with its own authored textureMemory input keeps that request instead: Storm only
  * applies this limit to textures no handle has an opinion on.

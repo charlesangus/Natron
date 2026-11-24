@@ -47,31 +47,31 @@ M103's P1.T4 decision before starting.
 
 ## Phase 104.2: Merge view and actions
 
-- [ ] M104.P2.T1 — Merge conflict panel
+- [x] M104.P2.T1 — Merge conflict panel (through 80cf994e2, m104-gate8)
   - files: new `Gui/MergeConflictPanel.h`, new `Gui/MergeConflictPanel.cpp`, `Gui/CMakeLists.txt`, the Gui pane registration (`Gui/Gui20.cpp` or wherever panes are registered)
   - approach: a dock widget backed by `Project`'s conflict list. Conflicts are grouped by node, with a count in the title. Selecting a row frames the node and opens its settings panel. It refreshes when the list changes.
   - verify: compiled at P2.T5. The P4.T1 GUI test opens a conflicted file and sees the panel with the right count.
   - size: M
 
-- [ ] M104.P2.T2 — Per-conflict resolution actions
+- [x] M104.P2.T2 — Per-conflict resolution actions (through 80cf994e2, m104-gate8)
   - files: `Gui/MergeConflictPanel.cpp`, new `Gui/MergeConflictResolve.cpp`, `Engine/ProjectMerge.cpp`
   - approach: Mine, Theirs and Base buttons, and handler options from the conflict's `handler options`. A resolution sets the knob, curve, input or structure through undoable commands and removes the conflict. Resolve-all applies to every conflict in the list or in the selected node. Undoing a resolution restores the conflict.
   - verify: compiled at P2.T5. A GUI test resolves one conflict each way, then undoes, then resolves all.
   - size: M
 
-- [ ] M104.P2.T3 — Conflict badge on nodes
+- [x] M104.P2.T3 — Conflict badge on nodes (through 80cf994e2, m104-gate8)
   - files: `Gui/NodeGui.h`, `Gui/NodeGui.cpp`
   - approach: a small warning glyph at the node's top-right corner while the node has unresolved conflicts, in the same style as the existing node-graph glyphs. It is not a label edit, and it updates when the conflict list changes.
   - verify: compiled at P2.T5. A GUI test sees the badge appear on a conflicted node and go away when it is resolved.
   - size: M
 
-- [ ] M104.P2.T4 — Import, update and compare menu actions
+- [x] M104.P2.T4 — Import, update and compare menu actions (through 80cf994e2, m104-gate8)
   - files: `Gui/Gui20.cpp` (menus), `Gui/NodeGraph35.cpp` or the file that builds the node-graph context menu, `Gui/GuiAppInstance.cpp`
   - approach: File > Import Template…, File > Update from Template… (a list of the project's templates), File > Compare with File…, and a node-graph context menu with "Update from Template" and "Compare with Template Base" on template-tagged nodes. Update applies through `ApplyGraphOpsCommand` and opens the panel when there are conflicts.
   - verify: compiled at P2.T5, and exercised by the P4.T1 GUI test.
   - size: M
 
-- [ ] M104.P2.T5 — Phase 104.2 build and test checkpoint
+- [x] M104.P2.T5 — Phase 104.2 build and test checkpoint (through 80cf994e2, m104-gate8)
   - files: none
   - approach: `NATRON_BUILD_JOBS=4 tools/ci/local/build.sh debug`, then `tools/ci/local/test.sh ctest debug`.
   - verify: green. The build is required.
@@ -79,19 +79,19 @@ M103's P1.T4 decision before starting.
 
 ## Phase 104.3: Diff overlay
 
-- [ ] M104.P3.T1 — Node-graph diff overlay
+- [x] M104.P3.T1 — Node-graph diff overlay (b2f6f4fcb, f1937bb32, m104-gate10)
   - files: new `Gui/NodeGraphDiffOverlay.h`, new `Gui/NodeGraphDiffOverlay.cpp`, `Gui/NodeGraph.h`, `Gui/NodeGraph.cpp`
   - approach: given `ProjectMerge::compare`'s summary, tint added, changed and removed nodes. Draw ghost items for removed nodes, with their wires to surviving neighbours drawn dashed. The overlay is view-only: ghosts are not selectable and not serialized. Escape or "Clear Comparison" removes it.
   - verify: compiled at P3.T3. A GUI test compares against a corpus base and checks the tint counts and ghost count.
   - size: M
 
-- [ ] M104.P3.T2 — Knob diff side panel
+- [x] M104.P3.T2 — Knob diff side panel (b2f6f4fcb, f1937bb32, m104-gate10)
   - files: new `Gui/NodeDiffPanel.h`, new `Gui/NodeDiffPanel.cpp`
   - approach: with the overlay active, selecting a changed node lists each changed knob as `name: base → current`. Curves show key-count and key-time changes, and inputs show their source change.
   - verify: compiled at P3.T3. A GUI test selects a changed node and reads the expected rows.
   - size: M
 
-- [ ] M104.P3.T3 — Phase 104.3 build and test checkpoint
+- [x] M104.P3.T3 — Phase 104.3 build and test checkpoint (b2f6f4fcb, f1937bb32, m104-gate10)
   - files: none
   - approach: `NATRON_BUILD_JOBS=4 tools/ci/local/build.sh debug`, then `tools/ci/local/test.sh ctest debug`.
   - verify: green. The build is required.

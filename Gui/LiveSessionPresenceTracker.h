@@ -32,6 +32,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include <QtCore/QObject>
 #include <QtCore/QPointer>
@@ -53,13 +54,18 @@ class SessionPresence;
  * panels and viewer, marks the nodes and panels other users are on, keeps the undo history clear
  * of entries remote edits invalidate, and makes a viewer follow another user's.
  *
- * Following stops on a mouse press or wheel in any viewer, or on a timeline move this user made.
- * The viewer input and channels are viewer node parameters, shared through the session like any
- * other, so following never writes them.
+ * Following shows the followed user's viewer node in this window, with their frame, zoom, pan,
+ * input A and display channels. Those are applied here only: they are not recorded as graph edits
+ * or undo entries, so they never reach another user.
+ *
+ * Following stops on a mouse press, wheel or key press in any viewer, on a timeline move this user
+ * made, and on an edit made here of the followed viewer's inputs or channels that leaves it
+ * showing something else than the followed user's.
  *
  * While in a session, the viewer whose state is sent holds it in its natronLiveSessionZoom,
- * natronLiveSessionCenterX and natronLiveSessionCenterY properties, for scripts. A followed
- * user's name shows in the viewer's liveSessionFollowLabel.
+ * natronLiveSessionCenterX, natronLiveSessionCenterY and natronLiveSessionViewer (the viewer
+ * node's script name) properties, for scripts. A followed user's name shows in the viewer's
+ * liveSessionFollowLabel.
  **/
 class LiveSessionPresenceTracker
     : public QObject {
@@ -117,6 +123,9 @@ private:
     void applyPanelMarks(const std::string& nodeId);
     void applyLeaderViewer();
     void showLeaderLabel(ViewerTab* tab, const QString& name);
+    void watchFollowedViewer(ViewerTab* tab);
+    void unwatchFollowedViewer();
+    void onFollowedViewerKnobChanged(bool mirrored);
     void showNote(const QString& note);
 
     Gui* _gui;
@@ -126,6 +135,8 @@ private:
     std::map<std::string, LiveSessionUserMarks> _panelMarks;
     std::optional<quint32> _leader;
     QPointer<QLabel> _leaderLabel;
+    QPointer<ViewerTab> _followedTab;
+    std::vector<QMetaObject::Connection> _followedTabKnobs;
     bool _applyingLeader = false;
 };
 

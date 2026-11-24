@@ -26,20 +26,26 @@
 #include "LiveSessionPresenceTracker.h"
 
 #include <algorithm>
+#include <iterator>
 #include <set>
 #include <vector>
 
 #include <QApplication>
 #include <QEvent>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QStatusBar>
 
 #include "Engine/AppInstance.h"
+#include "Engine/GraphEditRecorder.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/LiveSession/SessionPresence.h"
+#include "Engine/LiveSession/SessionRemoteEdits.h"
 #include "Engine/Node.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
 #include "Engine/TimeLine.h"
+#include "Engine/UndoRecorder.h"
 #include "Engine/ViewerInstance.h"
 
 #include "Gui/DockablePanel.h"
@@ -48,6 +54,7 @@
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
+#include "Gui/TabWidget.h"
 #include "Gui/UndoHistory.h"
 #include "Gui/ViewerGL.h"
 #include "Gui/ViewerTab.h"
@@ -75,6 +82,97 @@ viewerNodeIdOf(ViewerTab* tab)
     return node ? node->getNodeId() : std::string();
 }
 
+// In the order of the display channels knob's entries.
+const char* const kChannelsNames[] = { "Luminance", "RGB", "R", "G", "B", "A", "Matte" };
+
+std::string
+channelsNameAt(int index)
+{
+    return ((index >= 0) && (index < (int)std::size(kChannelsNames))) ? kChannelsNames[index] : std::string();
+}
+
+int
+channelsIndexOf(const std::string& name)
+{
+    for (int i = 0; i < (int)std::size(kChannelsNames); ++i) {
+        if (name == kChannelsNames[i]) {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+template <typename K>
+std::shared_ptr<K>
+viewerKnobOf(ViewerTab* tab,
+             const char* name)
+{
+    ViewerInstance* viewer = tab ? tab->getInternalNode() : nullptr;
+
+    return viewer ? std::dynamic_pointer_cast<K>(viewer->getKnobByName(name)) : std::shared_ptr<K>();
+}
+
+int
+inputAOf(ViewerTab* tab)
+{
+    int a = -1, b = -1;
+    tab->getActiveInputs(&a, &b);
+
+    return a;
+}
+
+std::string
+channelsOf(ViewerTab* tab)
+{
+    KnobChoicePtr channels = viewerKnobOf<KnobChoice>(tab, kViewerParamDisplayChannels);
+
+    return channels ? channelsNameAt(channels->getValue()) : tab->getChannelsString();
+}
+
+bool
+showsInputsOf(ViewerTab* tab,
+              const SessionPresence::ViewerState& state)
+{
+    return (inputAOf(tab) == state.inputIndex) && (channelsOf(tab) == state.channels);
+}
+
+// Writes the leader's input A and channels into this window's copy of the viewer node.
+void
+applyViewerInputs(ViewerTab* tab,
+                  const SessionPresence::ViewerState& state)
+{
+    KnobIntPtr input = viewerKnobOf<KnobInt>(tab, kViewerParamAInput);
+    if (input && (state.inputIndex >= input->getMinimum()) && (state.inputIndex <= input->getMaximum()) && (input->getValue() != state.inputIndex)) {
+        input->setValue(state.inputIndex, ViewSpec::all(), 0);
+    }
+    KnobChoicePtr channels = viewerKnobOf<KnobChoice>(tab, kViewerParamDisplayChannels);
+    const int channelsIndex = channelsIndexOf(state.channels);
+    if (channels && (channelsIndex != -1) && (channels->getValue() != channelsIndex)) {
+        channels->setValue(channelsIndex, ViewSpec::all(), 0);
+    }
+}
+
+// Modifier presses alone are forwarded to a viewer whatever has the focus, for overlays to track.
+bool
+isViewerInteraction(QEvent* e)
+{
+    switch (e->type()) {
+    case QEvent::MouseButtonPress:
+    case QEvent::Wheel:
+
+        return true;
+    case QEvent::KeyPress: {
+        const int key = static_cast<QKeyEvent*>(e)->key();
+
+        return (key != Qt::Key_Control) && (key != Qt::Key_Shift) && (key != Qt::Key_Alt) && (key != Qt::Key_Meta) && (key != Qt::Key_AltGr);
+    }
+    default:
+
+        return false;
+    }
+}
+
 bool
 isInsideViewer(QObject* watched,
                const std::list<ViewerTab*>& viewers)
@@ -90,6 +188,28 @@ isInsideViewer(QObject* watched,
     }
 
     return false;
+}
+
+void
+applyLeaderState(const TimeLinePtr& timeline,
+                 ViewerTab* tab,
+                 const SessionPresence::ViewerState& state)
+{
+    if (timeline && (timeline->currentFrame() != state.frame)) {
+        timeline->seekFrame(state.frame, false, nullptr, eTimelineChangeReasonOtherSeek);
+    }
+    applyViewerInputs(tab, state);
+    ViewerGL* gl = tab->getViewer();
+    if (gl && (state.zoomFactor > 0.) && (state.zoomAspectRatio > 0.)) {
+        double left = 0., bottom = 0., zoom = 1., aspect = 1.;
+        gl->getProjection(&left, &bottom, &zoom, &aspect);
+        const RectD visible = gl->getViewportRect();
+        // Same widget, other zoom: the visible extent scales by the zoom ratio.
+        const double halfWidth = (visible.x2 - visible.x1) / 2. * zoom / state.zoomFactor;
+        const double halfHeight = (visible.y2 - visible.y1) / 2. * (zoom * aspect) / (state.zoomFactor * state.zoomAspectRatio);
+        tab->setProjection(state.centerX - halfWidth, state.centerY - halfHeight, state.zoomFactor, state.zoomAspectRatio);
+        gl->update();
+    }
 }
 
 } // namespace
@@ -221,18 +341,19 @@ LiveSessionPresenceTracker::sendLocalViewer()
     SessionPresence::ViewerState state;
     state.frame = timeline->currentFrame();
     state.viewerNodeId = viewerNodeIdOf(tab);
-    int a = -1, b = -1;
-    tab->getActiveInputs(&a, &b);
-    state.inputIndex = a;
+    state.inputIndex = inputAOf(tab);
     double left = 0., bottom = 0.;
     gl->getProjection(&left, &bottom, &state.zoomFactor, &state.zoomAspectRatio);
     const RectD visible = gl->getViewportRect();
     state.centerX = (visible.x1 + visible.x2) / 2.;
     state.centerY = (visible.y1 + visible.y2) / 2.;
-    state.channels = tab->getChannelsString();
+    state.channels = channelsOf(tab);
     gl->setProperty("natronLiveSessionZoom", state.zoomFactor);
     gl->setProperty("natronLiveSessionCenterX", state.centerX);
     gl->setProperty("natronLiveSessionCenterY", state.centerY);
+    ViewerInstance* viewer = tab->getInternalNode();
+    NodePtr viewerNode = viewer ? viewer->getNode() : NodePtr();
+    gl->setProperty("natronLiveSessionViewer", viewerNode ? QString::fromStdString(viewerNode->getScriptName()) : QString());
     table->setLocalViewer(state);
 }
 
@@ -411,6 +532,7 @@ LiveSessionPresenceTracker::stopFollowing(const QString& note)
     }
     _leader.reset();
     qApp->removeEventFilter(this);
+    unwatchFollowedViewer();
     delete _leaderLabel.data();
     if (!note.isEmpty()) {
         showNote(note);
@@ -455,32 +577,82 @@ LiveSessionPresenceTracker::applyLeaderViewer()
     if (!tab) {
         return;
     }
-    showLeaderLabel(tab, QString::fromStdString(leader->name));
-    if (!leader->viewer) {
-        return;
-    }
-    const SessionPresence::ViewerState& state = *leader->viewer;
-    if ((state.zoomFactor <= 0.) || (state.zoomAspectRatio <= 0.)) {
+    GuiAppInstancePtr app = _gui->getApp();
+    if (!app) {
         return;
     }
     _applyingLeader = true;
-    GuiAppInstancePtr app = _gui->getApp();
-    TimeLinePtr timeline = app ? app->getTimeLine() : TimeLinePtr();
-    if (timeline && (timeline->currentFrame() != state.frame)) {
-        timeline->seekFrame(state.frame, false, nullptr, eTimelineChangeReasonOtherSeek);
-    }
-    ViewerGL* gl = tab->getViewer();
-    if (gl) {
-        double left = 0., bottom = 0., zoom = 1., aspect = 1.;
-        gl->getProjection(&left, &bottom, &zoom, &aspect);
-        const RectD visible = gl->getViewportRect();
-        // Same widget, other zoom: the visible extent scales by the zoom ratio.
-        const double halfWidth = (visible.x2 - visible.x1) / 2. * zoom / state.zoomFactor;
-        const double halfHeight = (visible.y2 - visible.y1) / 2. * (zoom * aspect) / (state.zoomFactor * state.zoomAspectRatio);
-        tab->setProjection(state.centerX - halfWidth, state.centerY - halfHeight, state.zoomFactor, state.zoomAspectRatio);
-        gl->update();
+    {
+        // The leader's viewer is shown here only: no graph operation, no undo entry.
+        LiveSession::RemoteApply remote;
+        GraphEditRecorder::Suppress suppress;
+        UndoSuppressGuard noUndo(app);
+        TabWidget* pane = tab->getParentPane();
+        if (pane && (pane->currentWidget() != tab)) {
+            pane->setCurrentWidget(tab);
+        }
+        _gui->setActiveViewer(tab);
+        if (leader->viewer) {
+            applyLeaderState(app->getTimeLine(), tab, *leader->viewer);
+        }
     }
     _applyingLeader = false;
+    showLeaderLabel(tab, QString::fromStdString(leader->name));
+    watchFollowedViewer(tab);
+}
+
+void
+LiveSessionPresenceTracker::watchFollowedViewer(ViewerTab* tab)
+{
+    if (_followedTab == tab) {
+        return;
+    }
+    unwatchFollowedViewer();
+    _followedTab = tab;
+    const std::pair<const char*, bool> knobs[] = {
+        { kViewerParamAInput, true },
+        { kViewerParamDisplayChannels, true },
+        { kViewerParamBInput, false },
+        { kViewerParamDisplayChannelsB, false },
+    };
+    for (const std::pair<const char*, bool>& knob : knobs) {
+        KnobIPtr found = viewerKnobOf<KnobI>(tab, knob.first);
+        KnobSignalSlotHandlerPtr handler = found ? found->getSignalSlotHandler() : KnobSignalSlotHandlerPtr();
+        if (handler) {
+            const bool mirrored = knob.second;
+            _followedTabKnobs.push_back(QObject::connect(handler.get(), &KnobSignalSlotHandler::valueChanged, this, [this, mirrored]() {
+                onFollowedViewerKnobChanged(mirrored);
+            }));
+        }
+    }
+}
+
+void
+LiveSessionPresenceTracker::unwatchFollowedViewer()
+{
+    for (const QMetaObject::Connection& connection : _followedTabKnobs) {
+        QObject::disconnect(connection);
+    }
+    _followedTabKnobs.clear();
+    _followedTab.clear();
+}
+
+void
+LiveSessionPresenceTracker::onFollowedViewerKnobChanged(bool mirrored)
+{
+    if (!_leader || _applyingLeader || LiveSession::RemoteApply::isApplying() || !_followedTab) {
+        return;
+    }
+    if (mirrored) {
+        // A change that leaves this viewer agreeing with the leader is no departure from it, such as
+        // the switch to A both viewers make for a single-channel layer.
+        SessionPresence* table = presence();
+        const SessionPresence::Entry* leader = table ? table->user(*_leader) : nullptr;
+        if (leader && leader->viewer && showsInputsOf(_followedTab, *leader->viewer)) {
+            return;
+        }
+    }
+    stopFollowing(tr("Stopped following: the viewer was used here"));
 }
 
 void
@@ -543,7 +715,7 @@ bool
 LiveSessionPresenceTracker::eventFilter(QObject* watched,
                                         QEvent* e)
 {
-    if (_leader && !_applyingLeader && ((e->type() == QEvent::MouseButtonPress) || (e->type() == QEvent::Wheel)) && isInsideViewer(watched, _gui->getViewersList())) {
+    if (_leader && !_applyingLeader && isViewerInteraction(e) && isInsideViewer(watched, _gui->getViewersList())) {
         stopFollowing(tr("Stopped following: the viewer was used here"));
     }
 

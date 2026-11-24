@@ -139,7 +139,7 @@ namespace Session {
     /**
      * @brief What a user's viewer shows: the frame, the viewer node and its input A, the zoom
      * factor and pixel aspect ratio, the point at the middle of the viewport in canonical
-     * coordinates, and the displayed channels as ViewerTab::getChannelsString() names them.
+     * coordinates, and input A's displayed channels: Luminance, RGB, R, G, B, A or Matte.
      **/
     struct PresenceViewerState {
         int frame = 0;

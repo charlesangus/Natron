@@ -24,6 +24,9 @@ ball show their display colours flat.
   /World/Cam again afterwards is unlocked.
 - Create Camera from View: from a tumbled free view, the menu entry makes a USDCamera; merged in
   and looked through, it shows what the free view showed.
+- Look through by path: Storm draws that look-through through the camera's path, unlocked, and it
+  matches the free camera at the camera's frustum. Free Camera then switches back and shows the
+  free view as it was.
 
 Mouse and key events are sent to the SceneViewport (synthesized window-system events do not reach
 Natron's widgets under Xvfb). Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go
@@ -41,6 +44,7 @@ STARTUP_TIMEOUT_S = 60.0
 NUKE = 0
 # The HUD lines at the top and bottom of the view are left out of image comparisons.
 HUD_MARGIN = 28
+STORM_ID = "HdStormRendererPlugin"
 
 try:
     import NatronEngine
@@ -560,6 +564,27 @@ try:
         if "red" in free_e and "red" in through_e:
             check(abs(free_e["red"][4] - through_e["red"][4]) <= 0.05 * free_e["red"][4] + 20,
                   "the cube covers as many pixels through the new camera (%d vs %d)" % (free_e["red"][4], through_e["red"][4]))
+
+        section("look through by path")
+        check(v.property("natronSceneActiveRenderer") == STORM_ID,
+              "Storm draws the look-through (%r)" % (v.property("natronSceneActiveRenderer"),))
+        check(look_through(v) == new_path and v.property("natronSceneLockView") is False,
+              "the view looks through %s by its path, unlocked (%r)" % (new_path, look_through(v)))
+        ok = yield from with_menu(v, "Free Camera")
+        require(ok, "pick Free Camera")
+        ok = yield ("until", lambda: bool(v.property("natronSceneSynced")) and look_through(v) == "", POLL_TIMEOUT_S)
+        check(ok, "Free Camera leaves the look-through (%r)" % (look_through(v),))
+        yield settle()
+        yield settle()
+        back_image = save_view("scene-views-free-after-path")
+        back_diff = mean_difference(free_image, back_image)
+        path_diff = mean_difference(through_image, back_image)
+        report("NOTE free before %r, through the path %r: mean differences %r and %r" % (
+            extents(free_image), extents(through_image), back_diff, path_diff))
+        check(back_diff is not None and back_diff < 1.0,
+              "back on the free camera, the view shows what it showed before the look-through (mean difference %r)" % (back_diff,))
+        check(path_diff is not None and path_diff < 6.0,
+              "the free camera at the camera's frustum shows what looking through its path did (mean difference %r)" % (path_diff,))
 
         navigation.setValue(original_navigation)
 

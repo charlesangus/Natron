@@ -43,6 +43,7 @@
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/MoonRayAovs.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
+#include "Engine/Nodes/Scene/RenderSettingsPrim.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/ScenePayload.h"
 
@@ -147,12 +148,14 @@ protected:
         HydraRender::release(this);
     }
 
-    // The request for width x height through kCamera per fit, through its path or its frustum.
+    // The request for width x height pixels pixelAspect wide through kCamera per fit, through its
+    // path or its frustum.
     bool request(HydraRender::FitModeEnum fit,
                  int width,
                  int height,
                  bool throughPath,
-                 HydraRender::Request* out)
+                 HydraRender::Request* out,
+                 double pixelAspect = 1.)
     {
         out->owner = this;
         out->scene = _scene;
@@ -161,7 +164,7 @@ protected:
         out->height = height;
         out->headlight = true;
         std::string error;
-        if (!HydraRender::cameraFrustum(_stage, PXR_NS::SdfPath(kCamera), out->time, double(width) / height, fit, &out->frustum, &error)) {
+        if (!HydraRender::cameraFrustum(_stage, PXR_NS::SdfPath(kCamera), out->time, width * pixelAspect / height, fit, &out->frustum, &error)) {
             ADD_FAILURE() << error;
 
             return false;
@@ -169,7 +172,7 @@ protected:
         if (throughPath) {
             out->camera = PXR_NS::SdfPath(kCamera);
             out->fit = fit;
-            out->pixelAspect = 1.;
+            out->pixelAspect = pixelAspect;
         }
 
         return true;
@@ -179,10 +182,11 @@ protected:
                 int width,
                 int height,
                 bool throughPath,
-                HydraRender::Result* result)
+                HydraRender::Result* result,
+                double pixelAspect = 1.)
     {
         HydraRender::Request r;
-        if (!request(fit, width, height, throughPath, &r)) {
+        if (!request(fit, width, height, throughPath, &r, pixelAspect)) {
             return false;
         }
         std::string error;
@@ -267,6 +271,35 @@ TEST_F(HydraRenderCameraTest, ThePathFramesAsTheFrustum)
     }
 }
 
+// Pixels twice as wide as they are tall: Storm frames the scene camera by its path as by the
+// frustum cameraFrustum() gives for the image's aspect, pixels included, at every fit.
+TEST_F(HydraRenderCameraTest, ThePathFramesAsTheFrustumWithWidePixels)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    const HydraRender::FitModeEnum fits[] = { HydraRender::eFitModeFill, HydraRender::eFitModeHorizontal, HydraRender::eFitModeVertical, HydraRender::eFitModeExpand };
+    const char* const fitNames[] = { "fill", "horizontal", "vertical", "expand" };
+    const double pixelAspect = 2.;
+    std::vector<float> squareRgba;
+    for (int f = 0; f < 4; ++f) {
+        const std::string what = std::string(fitNames[f]) + " at 32x32, pixel aspect 2";
+        HydraRender::Result frustum;
+        ASSERT_TRUE(render(fits[f], 32, 32, false, &frustum, pixelAspect)) << what;
+        HydraRender::Result path;
+        ASSERT_TRUE(render(fits[f], 32, 32, true, &path, pixelAspect)) << what;
+
+        EXPECT_TRUE(anyLit(frustum.rgba)) << what << ": nothing rendered";
+        EXPECT_EQ(0u, countDifferent(frustum.rgba, path.rgba)) << what << ": colour";
+        EXPECT_EQ(0u, countDifferent(frustum.depth, path.depth)) << what << ": depth";
+        if (fits[f] == HydraRender::eFitModeExpand) {
+            HydraRender::Result square;
+            ASSERT_TRUE(render(fits[f], 32, 32, true, &square)) << what;
+            EXPECT_NE(0u, countDifferent(square.rgba, path.rgba)) << what << ": the pixel aspect does not reach the path render";
+        }
+    }
+}
+
 // A path that names no camera of the scene fails the render, naming the path.
 TEST_F(HydraRenderCameraTest, APathToNoCameraFails)
 {
@@ -280,6 +313,45 @@ TEST_F(HydraRenderCameraTest, APathToNoCameraFails)
     std::string error;
     EXPECT_FALSE(HydraRender::render(r, &result, &error));
     EXPECT_NE(std::string::npos, error.find("/World/Nothing")) << error;
+}
+
+// A camera prim that is inactive fails the render, naming the path, rather than rendering with no
+// camera.
+TEST_F(HydraRenderCameraTest, AnInactiveCameraFails)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    HydraRender::Request r;
+    ASSERT_TRUE(request(HydraRender::eFitModeExpand, 32, 32, true, &r));
+    ASSERT_TRUE(_stage->GetPrimAtPath(PXR_NS::SdfPath(kCamera)).SetActive(false));
+    HydraRender::Result result;
+    std::string error;
+    EXPECT_FALSE(HydraRender::render(r, &result, &error));
+    EXPECT_NE(std::string::npos, error.find(kCamera)) << error;
+    EXPECT_NE(std::string::npos, error.find("inactive")) << error;
+}
+
+// The render settings' pixel aspect decides, not one worked back from the image's aspect: a
+// 2048x1556 format of square pixels, whose aspect times 1556 / 2048 is not exactly 1 in doubles,
+// reaches Cycles and MoonRay by path.
+TEST(HydraRenderCameraSelection, ASquarePixelFormatRendersThroughTheCamera)
+{
+    const PXR_NS::SdfLayerRefPtr layer = PXR_NS::SdfLayer::CreateAnonymous(".usda");
+    ASSERT_TRUE(layer->ImportFromString("#usda 1.0\n"
+                                        "def RenderSettings \"Settings\"\n"
+                                        "{\n"
+                                        "    uniform int2 resolution = (2048, 1556)\n"
+                                        "    uniform float pixelAspectRatio = 1\n"
+                                        "}\n"));
+    const PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(layer);
+    ASSERT_TRUE(stage);
+    const RenderSettingsPrim::StandardAttributes standard = RenderSettingsPrim::standardAttributes(PXR_NS::UsdRenderSettings(stage->GetPrimAtPath(PXR_NS::SdfPath("/Settings"))));
+    ASSERT_EQ(PXR_NS::GfVec2i(2048, 1556), standard.resolution);
+    const char* const ids[] = { kRenderDelegateCyclesId, kMoonRayRendererId };
+    for (int i = 0; i < 2; ++i) {
+        EXPECT_TRUE(HydraRender::rendersThroughCamera(ids[i], HydraRender::eFitModeExpand, standard.pixelAspectRatio)) << ids[i];
+    }
 }
 
 // Storm frames by the camera at any fit and pixel aspect; Cycles and MoonRay ignore the window

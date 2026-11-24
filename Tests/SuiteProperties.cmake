@@ -96,6 +96,13 @@ if(NOT "TextRenderer" IN_LIST NATRON_GTEST_SUITE_TESTS)
 endif()
 set_tests_properties(TextRenderer PROPERTIES ENVIRONMENT "NATRON_TEST_REQUIRE_GL=1")
 
+# The HydraRenderCameraTest suite compares Storm renders, which skip without a GL context.
+if(NOT "HydraRenderCameraTest" IN_LIST NATRON_GTEST_SUITE_TESTS)
+    message(FATAL_ERROR "SuiteProperties.cmake: 'HydraRenderCameraTest' is not a registered test; "
+                        "update the suite name or it would silently lose its properties.")
+endif()
+set_tests_properties(HydraRenderCameraTest PROPERTIES ENVIRONMENT "NATRON_TEST_REQUIRE_GL=1")
+
 # These suites skip when the MoonRay plug-in is missing, which would hide a bundling or plug-in
 # discovery regression in a build that does carry MoonRay.
 if(NATRON_MOONRAY_BUNDLED)

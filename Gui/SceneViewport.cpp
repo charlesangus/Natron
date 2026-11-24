@@ -1710,14 +1710,20 @@ struct SceneViewportRenderer::Implementation {
     }
 
     // The camera a delegate renders through: the one looked through, unless it is drawn from an
-    // override, a transform its prim does not have. Empty for the free camera. Needs stageMutex.
+    // override, a transform its prim does not have, or renderableCamera() rejects it. Empty for
+    // the free camera. Needs stageMutex.
     SdfPath renderCameraPath() const
     {
-        if (hasLookThroughOverride() || !lookThroughCamera()) {
+        const UsdGeomCamera camera = lookThroughCamera();
+        if (hasLookThroughOverride() || !camera) {
+            return SdfPath();
+        }
+        std::string error;
+        if (!HydraRender::renderableCamera(camera.GetPrim().GetStage(), camera.GetPath(), &error)) {
             return SdfPath();
         }
 
-        return SdfPath(lookThrough);
+        return camera.GetPath();
     }
 
     // What a delegate renders through at width x height, as computeFrustum() frames it. Needs

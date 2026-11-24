@@ -1124,8 +1124,7 @@ USDRender::prepareRender(double time,
     }
     setup->request.camera = cameraPath;
     setup->request.fit = fit;
-    // The pixels' own: rounding at a proxy level can move the image's aspect off the format's.
-    setup->request.pixelAspect = aspect * setup->request.height / setup->request.width;
+    setup->request.pixelAspect = par;
 
     return true;
 } // USDRender::prepareRender

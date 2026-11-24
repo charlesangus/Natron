@@ -110,6 +110,15 @@ bool cameraFrustum(const PXR_NS::UsdStageRefPtr& stage,
 std::vector<PXR_NS::SdfPath> cameraPaths(const PXR_NS::UsdStageRefPtr& stage) WARN_UNUSED_RETURN;
 
 /**
+ * @brief Whether a delegate can render through the prim at cameraPath on stage: a UsdGeomCamera
+ * that is active, loaded and defined, and not an instance proxy. False, with *error naming the
+ * path and what it lacks, otherwise.
+ **/
+bool renderableCamera(const PXR_NS::UsdStageRefPtr& stage,
+                      const PXR_NS::SdfPath& cameraPath,
+                      std::string* error) WARN_UNUSED_RETURN;
+
+/**
  * @brief What an engine renders through. With a camera, the delegate reads that UsdGeomCamera of
  * the stage it renders, shutter, lens and clipping range included, and conforms its aperture to
  * the width x height image of pixels pixelAspect wide per fit; frustum must then be the frustum
@@ -121,7 +130,8 @@ struct EngineCamera {
     std::string renderer;
     PXR_NS::SdfPath camera;
     FitModeEnum fit = eFitModeExpand;
-    // The width of a pixel over its height.
+    // The width of a pixel over its height, the format's. The framing the delegate is given
+    // conforms to the frustum's aspect instead, which a proxy's rounded size can differ from.
     double pixelAspect = 1.;
     PXR_NS::GfFrustum frustum;
     int width = 0;
@@ -168,8 +178,8 @@ struct Request {
     int width = 0;
     int height = 0;
     // The scene camera rendered through, as EngineCamera: frustum is then its frustum at time per
-    // fit and pixelAspect. A path that names no UsdGeomCamera of the scene fails the render. Empty
-    // for a free camera.
+    // fit and pixelAspect. A path renderableCamera() rejects fails the render. Empty for a free
+    // camera.
     PXR_NS::SdfPath camera;
     FitModeEnum fit = eFitModeExpand;
     double pixelAspect = 1.;

@@ -1560,9 +1560,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
         entry.rendered = false;
     }
     const UsdStageRefPtr& stage = entry.stage->getStage();
-    if (!request.camera.IsEmpty() && !UsdGeomCamera(stage->GetPrimAtPath(request.camera))) {
-        *error = "No camera at " + request.camera.GetString() + " on the input scene.";
-
+    if (!request.camera.IsEmpty() && !HydraRender::renderableCamera(stage, request.camera, error)) {
         return nullptr;
     }
     RendererSettings settings = request.settings;
@@ -1597,8 +1595,12 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     engineCamera.width = width;
     engineCamera.height = height;
     // Two cameras with one frustum can differ in what else the delegate reads of them, such as
-    // their shutter.
-    const bool cameraMoved = (entry.camera != request.camera) || (entry.fit != request.fit) || (entry.pixelAspect != request.pixelAspect);
+    // their shutter; a delegate given the frustum alone reads nothing else.
+    const bool throughPath = !request.camera.IsEmpty() && HydraRender::rendersThroughCamera(renderer, request.fit, request.pixelAspect);
+    const SdfPath effectiveCamera = throughPath ? request.camera : SdfPath();
+    const HydraRender::FitModeEnum effectiveFit = throughPath ? request.fit : HydraRender::eFitModeExpand;
+    const double effectivePixelAspect = throughPath ? request.pixelAspect : 1.;
+    const bool cameraMoved = (entry.camera != effectiveCamera) || (entry.fit != effectiveFit) || (entry.pixelAspect != effectivePixelAspect);
     const U64 writeCount = SceneWriteBarrier::getWriteCount();
     entry.lastUse = ++_useSerial;
     if (entry.rendered && !edited && (entry.writeCount == writeCount) && (entry.time == request.time) && (entry.view == view) && (entry.projection == projection) && (entry.width == width) && (entry.height == height) && !cameraMoved) {
@@ -1803,9 +1805,9 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     entry.projection = projection;
     entry.width = width;
     entry.height = height;
-    entry.camera = request.camera;
-    entry.fit = request.fit;
-    entry.pixelAspect = request.pixelAspect;
+    entry.camera = effectiveCamera;
+    entry.fit = effectiveFit;
+    entry.pixelAspect = effectivePixelAspect;
     entry.params = params;
 
     if (!_gl) {
@@ -2494,6 +2496,10 @@ setEngineCamera(UsdImagingGLEngine* engine,
 {
     engine->SetRenderBufferSize(GfVec2i(view.width, view.height));
     CameraUtilFraming framing(GfRect2i(GfVec2i(0, 0), view.width, view.height));
+    // The framing's aspect, its pixels' included, is the frustum's, which conforming to it then
+    // leaves as it is: the format's pixels, or a proxy's rounded size, can make it other than the
+    // image's width over its height.
+    framing.pixelAspectRatio = (float)(view.frustum.ComputeAspectRatio() * view.height / view.width);
     if (view.camera.IsEmpty() || !rendersThroughCamera(view.renderer, view.fit, view.pixelAspect)) {
         const GfMatrix4d viewMatrix = view.frustum.ComputeViewMatrix();
         const GfMatrix4d projection = view.frustum.ComputeProjectionMatrix();
@@ -2512,8 +2518,6 @@ setEngineCamera(UsdImagingGLEngine* engine,
 
         return;
     }
-    // The framing's aspect, its pixels' included, is the one cameraFrustum() conformed to.
-    framing.pixelAspectRatio = (float)view.pixelAspect;
     engine->SetFraming(framing);
     engine->SetOverrideWindowPolicy(windowPolicy(view.fit));
     engine->SetCameraPath(view.camera);
@@ -2558,6 +2562,43 @@ cameraPaths(const UsdStageRefPtr& stage)
     }
 
     return paths;
+}
+
+bool
+renderableCamera(const UsdStageRefPtr& stage,
+                 const SdfPath& cameraPath,
+                 std::string* error)
+{
+    const UsdPrim prim = stage ? stage->GetPrimAtPath(cameraPath) : UsdPrim();
+    const std::string at = "The camera at " + cameraPath.GetString() + " on the input scene ";
+
+    if (!UsdGeomCamera(prim)) {
+        *error = "No camera at " + cameraPath.GetString() + " on the input scene.";
+
+        return false;
+    }
+    if (!prim.IsDefined()) {
+        *error = at + "is not defined.";
+
+        return false;
+    }
+    if (!prim.IsActive()) {
+        *error = at + "is inactive.";
+
+        return false;
+    }
+    if (!prim.IsLoaded()) {
+        *error = at + "is not loaded.";
+
+        return false;
+    }
+    if (prim.IsInstanceProxy()) {
+        *error = at + "is inside an instance.";
+
+        return false;
+    }
+
+    return true;
 }
 
 std::uint32_t

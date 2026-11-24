@@ -7,7 +7,7 @@ Today (origin/main): the model's columns are `eColumnName`, `eColumnType`, `eCol
 ## Scope
 
 **In:**
-- A read-only, sortable Purpose column after Kind, computed with `UsdGeomImageable::ComputePurposeInfo`; inherited values dimmed, tooltip "Purpose: proxy (from /a/b)".
+- A read-only, Purpose column after Kind, computed with `UsdGeomImageable::ComputePurposeInfo`; inherited values dimmed, tooltip "Purpose: proxy (from /a/b)".
 - A `{purpose:<value>}` predicate (computed purpose) shared by the panel filter and node prim patterns; filter tooltip updated.
 
 **Out:**
@@ -48,3 +48,5 @@ Today (origin/main): the model's columns are `eColumnName`, `eColumnType`, `eCol
 - 2026-11-23 — Computed purpose, inherited values dimmed, read-only (user).
 - 2026-11-23 — `{purpose:}` filtering, in the panel and in node prim patterns (user).
 - 2026-11-23 — `{loaded:}` and `{active:}` stay panel-only: node output must not depend on viewer load state (planner, from the deferred-matching rule).
+
+- 2026-11-24 (PM): no Scene Graph column sorts, so Purpose does not either ("sorting matches Kind's"); review finding on #360 declined. Shared ScenePurposeDelegate dims inherited purposes in the prim picker too.

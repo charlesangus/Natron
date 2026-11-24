@@ -814,6 +814,13 @@ USDProjectUV::renderScene(const SceneRenderActionArgs& args,
     const bool cameraInput = bool(getInput(1));
     const ScenePayload cameraScene = cameraInput ? args.getInputScene(1) : upstream;
 
+    // Taken before any knob is read: a result computed from values an edit overtook must not be
+    // memoized under the edit's key.
+    SceneLayerMemo::Key layerKey;
+    if (!getSceneLayerKey(SceneLayerReads(), &layerKey, errorMessage)) {
+        return eStatusFailed;
+    }
+
     KnobChoicePtr projectionKnob = _projection.lock();
     KnobChoicePtr planeKnob = _plane.lock();
     KnobChoicePtr projectOnKnob = _projectOn.lock();
@@ -876,10 +883,6 @@ USDProjectUV::renderScene(const SceneRenderActionArgs& args,
         return eStatusFailed;
     }
 
-    SceneLayerMemo::Key layerKey;
-    if (!getSceneLayerKey(SceneLayerReads(), &layerKey, errorMessage)) {
-        return eStatusFailed;
-    }
     ContentHasher keyHasher;
     keyHasher.appendU64(layerKey.nodeDigest);
     keyHasher.appendDouble(layerKey.firstFrame);
@@ -1193,10 +1196,13 @@ USDProjectUV::renderScene(const SceneRenderActionArgs& args,
         computed->digest = digest.finalize();
 
         result = computed;
-        std::lock_guard<std::mutex> l(_imp->lock);
-        _imp->resultValid = true;
-        _imp->resultKey = resultKey;
-        _imp->result = result;
+        SceneLayerMemo::Key keyNow;
+        if (getSceneLayerKey(SceneLayerReads(), &keyNow, 0) && (keyNow == layerKey)) {
+            std::lock_guard<std::mutex> l(_imp->lock);
+            _imp->resultValid = true;
+            _imp->resultKey = resultKey;
+            _imp->result = result;
+        }
     }
     if (args.context.reach) {
         args.context.reach->add(result->loadReach);
@@ -1231,6 +1237,8 @@ USDProjectUV::renderScene(const SceneRenderActionArgs& args,
         reads.upstream = SceneLayerMemo::Key::eUpstreamReadFacts;
         reads.factsDigest = result->digest;
         reads.frameRange = result->animated;
+        reads.valuesRead = true;
+        reads.valuesReadUnder = layerKey;
         const std::string primvarName = settings.primvarName;
         SceneLayerMemo::AuthorFunc author = [result, primvarName](const SceneLayerEdit& edit,
                                                                   std::string* error) {

@@ -7,6 +7,8 @@ The checks, in order:
   discard        pressing d closes the project without writing its file
   save           pressing s writes the file and closes the project
   yes/no         a Yes/No question returns Yes for y and No for n
+  do not show    the same question with a Do Not Show This Again checkbox returns No for n, and
+  again          Escape with the box ticked reports it unticked
   message box    Natron's own message box (a long information dialog) shows &OK and closes on o
 
 The project counts as unsaved only once an auto-save has followed an edit, so each edit waits for
@@ -83,7 +85,7 @@ try:
 
         QTimer.singleShot(0, fire)
 
-    def answer(fn, key, text, label, shot_name=None):
+    def answer(fn, key, text, label, shot_name=None, expect_class=None):
         """Raises fn's dialog, presses key in it, and returns (fn's result, the dialog's button texts)."""
         result = {}
         call_later(fn, result)
@@ -91,6 +93,8 @@ try:
         require(ok and modal() is not None, label + ": a dialog appeared", "modal is %r" % modal_class())
         dialog = modal()
         texts = button_texts(dialog)
+        if expect_class:
+            check(modal_class() == expect_class, label + ": the dialog is a %s (got %r)" % (expect_class, modal_class()))
         yield ("sleep", 300)
         if shot_name:
             gt.shot(shot_name)
@@ -186,6 +190,44 @@ try:
         check(reply == Buttons.eStandardButtonYes, "y answered Yes (got %r)" % (reply,))
         reply, _ = yield from answer(ask, Qt.Key_N, "n", "n at a Yes/No question")
         check(reply == Buttons.eStandardButtonNo, "n answered No (got %r)" % (reply,))
+
+        gt.section("do not show again")
+        require(hasattr(guiapp, "questionDialogStopAsking"), "NatronGui.natron.questionDialogStopAsking is bound")
+        ask_stop = lambda: guiapp.questionDialogStopAsking("Question", "Answer with the checkbox offered?")
+
+        def enum_value(button):
+            return int(getattr(button, "value", button))
+
+        reply, texts = yield from answer(ask_stop, Qt.Key_N, "n", "n at a Yes/No question with the checkbox",
+                                  expect_class="MessageBox")
+        check(reply is not None and reply[0] == enum_value(Buttons.eStandardButtonNo),
+              "n answered No through the checkbox path (got %r)" % (reply,))
+        check(reply is not None and reply[1] == 0, "n left Do Not Show This Again unticked (got %r)" % (reply,))
+        check(texts == sorted(["&Yes", "&No"]), "its buttons read &Yes, &No (got %r)" % (texts,))
+
+        def tick_then_escape():
+            dialog = modal()
+            boxes = [b for b in dialog.findChildren(QAbstractButton) if gt.class_name(b) == "QCheckBox"]
+            require(len(boxes) == 1, "the dialog offers one Do Not Show This Again checkbox", "got %d" % len(boxes))
+            boxes[0].setChecked(True)
+            return dialog
+
+        result = {}
+        call_later(ask_stop, result)
+        ok = yield ("until", lambda: modal_class() == "MessageBox", DIALOG_TIMEOUT_S)
+        require(ok, "the checkbox question is a MessageBox", "modal is %r" % modal_class())
+        dialog = tick_then_escape()
+        check(dialog.isVisible(), "the checkbox question is showing")
+        yield ("sleep", 300)
+        press(modal(), Qt.Key_Escape, "\x1b")
+        ok = yield ("until", lambda: result.get("done"), DIALOG_TIMEOUT_S)
+        check(ok, "Escape closed the checkbox question")
+        if not ok and modal() is not None:
+            modal().reject()
+            yield ("until", lambda: result.get("done"), DIALOG_TIMEOUT_S)
+        value = result.get("value")
+        check(value is not None and value[1] == 0,
+              "Escape did not store Do Not Show This Again although it was ticked (got %r)" % (value,))
 
         gt.section("message box")
         # Long text goes to Natron's own message box instead of a QMessageBox.

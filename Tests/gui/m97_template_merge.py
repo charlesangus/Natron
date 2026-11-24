@@ -184,6 +184,7 @@ try:
         clean_v1 = os.path.join(gt.OUT, "m97_clean_v1.ntpz")
         clean_v2 = os.path.join(gt.OUT, "m97_clean_v2.ntpz")
         conflict_v1 = os.path.join(gt.OUT, "m97_conflict_v1.ntpz")
+        clean_after = os.path.join(gt.OUT, "m97_clean_after.ntpz")
         conflict_v2 = os.path.join(gt.OUT, "m97_conflict_v2.ntpz")
         shot = os.path.join(gt.OUT, "m97_shot.ntpz")
 
@@ -261,6 +262,7 @@ try:
                 check(snapshot(names) == after, "redo brings the updated graph back")
 
         gt.section("conflicted import")
+        require(app.saveProjectAs(clean_after), "save the clean scenario so the reset has no unsaved changes")
         require(app.resetProject(), "reset the project for the conflicted scenario")
         yield ("sleep", SETTLE_MS)
         shutil.copyfile(conflict_v1, live)

@@ -363,7 +363,7 @@ future core work has solid ground to build on.
 | M186 | Exact IDefocus | done | M131, M184 | bosley-native-nodes | E15 | | | [M186-exact-idefocus.md](PLAN/MILESTONES/M186-exact-idefocus.md) |
 | M187 | Variable Sharpen And Glow | blocked | M123, M184 |  | E15 | | | [M187-variable-sharpen-and-glow.md](PLAN/MILESTONES/M187-variable-sharpen-and-glow.md) |
 | M188 | Variable Median And DirBlur | blocked | M130, M184 |  | E15 | | | [M188-variable-median-and-dirblur.md](PLAN/MILESTONES/M188-variable-median-and-dirblur.md) |
-| M189 | Make I-Node Action | doing | M183, M184, M181 | bosley-executor | E15 | F14 | | [M189-make-i-node-action.md](PLAN/MILESTONES/M189-make-i-node-action.md) |
+| M189 | Make I-Node Action | done | M183, M184, M181 | bosley-executor | E15 | F14 | | [M189-make-i-node-action.md](PLAN/MILESTONES/M189-make-i-node-action.md) |
 | M190 | Cross-Frame Feedback | done | M182 | bosley-native-nodes | E15 | | | [M190-cross-frame-feedback.md](PLAN/MILESTONES/M190-cross-frame-feedback.md) |
 | M191 | Native VectorBlur | done | M120, M137 | bosley-native-nodes | E3 | | | [M191-native-vectorblur.md](PLAN/MILESTONES/M191-native-vectorblur.md) |
 | M177 | Renders Isolated From Edits | done | M167 |  | E14 | | | [M177-renders-isolated-from-edits.md](PLAN/MILESTONES/M177-renders-isolated-from-edits.md) |
@@ -666,7 +666,7 @@ future core work has solid ground to build on.
 | F11 | Texture Painting | open |  |  | feature/f11-texture-painting | Paint directly on meshes in the 3D view with UDIM textures, layering over existing materials, baking and paint-through inputs, including painting native geometry with its own UV operators, attribute painting, and a Viewer 2D/3D switch. |
 | F12 | Expression Speed | open | bosley-executor |  | feature/f12-expression-speed | Benchmark Python knob expressions and make them cheap on large graphs, through a lighter interpreter path, a result cache and a native evaluator. |
 | F13 | ZDefocus Rework | open | bosley-executor |  | feature/f13-zdefocus-rework | Measure ZDefocus against ground truth, add traced lenses and debug outputs, match or exceed Higx Optics' traced bokeh, and revisit its engine from the results. |
-| F14 | Map Blend I-Nodes | open |  |  | feature/f14-map-blend-i-nodes | Turn any subgraph into a Map-driven I-node through LoopEnd's Map blend and one Make I-Node action. |
+| F14 | Map Blend I-Nodes | shipping | bosley-executor |  | feature/f14-map-blend-i-nodes | Turn any subgraph into a Map-driven I-node through LoopEnd's Map blend and one Make I-Node action. |
 | F15 | Native Geometry | open |  |  | feature/f15-native-geometry | A SOP-style native geometry context: a Houdini-like detail, bridges to USD, operators, Python and VEX-like wrangles, point editing and a geometry spreadsheet. |
 | F16 | User Knob Editor | open | bosley-executor |  | feature/f16-user-knob-editor | Create and manage user knobs in place on the properties panel, with type changes, undo, button scripts, drag-in links and copy/paste. |
 | F17 | OpenNucleon Flag Day | open |  |  | feature/f17-opennucleon-flag-day | Rename Natron to OpenNucleon/Nucleon throughout, code included, with new art and the GPLv3 relicence, landed in one switchover at a quiet time the user chooses. |

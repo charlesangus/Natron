@@ -23,12 +23,12 @@ Today (origin/main): the model's columns are `eColumnName`, `eColumnType`, `eCol
 
 ## Phase 557.1: Column
 
-- [ ] M557.P1.T1 — Purpose column in the scene graph model
+- [x] M557.P1.T1 — Purpose column in the scene graph model (PR #360)
   - files: `Gui/SceneGraphModel.{h,cpp}`, `Tests/SceneGraphModel_Test.cpp`
   - approach: add `eColumnPurpose` after `eColumnKind`, a `ePurposeInheritedRole` (true when the purpose isn't authored on the prim) and a `ePurposeOriginRole` (source prim path). Cache `UsdGeomImageable::PurposeInfo` on the model's row node, computing a child's from its parent's cached info; blank for non-imageable prims. `DisplayRole` is the purpose token; sorting matches Kind's. Extend the model test with a fixture: an Xform authored `proxy` with a mesh child (inherited proxy), a mesh authored `guide`, a non-imageable `Scope`/`Material`.
   - verify: `ctest -R SceneGraphModel` passes with the new cases
   - size: M
-- [ ] M557.P1.T2 — Show the column with inherited values dimmed
+- [x] M557.P1.T2 — Show the column with inherited values dimmed (PR #360)
   - files: `Gui/SceneGraphPanel.cpp` (header resize modes ~:1903-1906, delegates ~:396-445)
   - approach: set the Purpose column's resize mode like Kind's; draw inherited values with the disabled text colour the Draw State column uses for inherited states (or the same delegate approach), and set the tooltip from `ePurposeOriginRole`. Check the default panel still fits a 1920x1080 screen at scale 1 without a horizontal scrollbar at its default docked width; narrow Kind/Purpose if not.
   - verify: an Xvfb screenshot of the panel on a fixture with each purpose, shared with the user; `Tests/gui/scene_graph_panel.py` extended to read a purpose cell and its inherited flag
@@ -36,7 +36,7 @@ Today (origin/main): the model's columns are `eColumnName`, `eColumnType`, `eCol
 
 ## Phase 557.2: Purpose Predicate
 
-- [ ] M557.P2.T1 — A shared `{purpose:}` predicate for the filter and node patterns
+- [x] M557.P2.T1 — A shared `{purpose:}` predicate for the filter and node patterns (PR #360)
   - files: new `Engine/Nodes/Scene/ScenePredicates.{h,cpp}` (register in Engine's CMake), `Engine/Nodes/Scene/SceneOps.cpp` (~:941, ~:1238), `Gui/SceneGraphModel.cpp` (`filterPredicateLibrary` ~:2970, filter tooltip in `Gui/SceneGraphPanel.cpp` ~:1606), `Tests/Scene/` (new `ScenePredicates_Test.cpp`)
   - approach: the engine library is `UsdGetCollectionPredicateLibrary()` plus `purpose` (`{purpose:proxy}` matches imageable prims whose computed purpose is that token; a bare `{purpose}` is an error). The panel's library becomes the engine library plus `loaded` and `active`. Switch SceneOps' two evaluators to evaluate with the engine library (as the panel does through `PathExprEval` with a custom library), keeping their incremental-search behaviour. Add `{purpose:…}` to the filter tooltip. Test the predicate on a fixture through both entry points (a node pattern evaluation and the panel walk).
   - verify: `ctest -R 'ScenePredicates|SceneOps|SceneGraphModel'` green; existing prim-pattern tests unchanged

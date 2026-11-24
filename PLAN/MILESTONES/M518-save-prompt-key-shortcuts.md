@@ -20,13 +20,13 @@ Let the "Save changes to …?" prompt, and every other question dialog, be answe
 
 ## Phase 518.1: Shortcuts
 
-- [ ] M518.P1.T1 — Mnemonics on stock question dialogs
+- [x] M518.P1.T1 — Mnemonics on stock question dialogs (PR #350)
   - files: `Gui/Gui30.cpp`, `Gui/QtEnumConvert.{h,cpp}` (or a small helper beside it), `Tests/gui/save_prompt_keys.py`
   - approach: after building the `QMessageBox` in `Gui::onDoDialog`'s question branch, set each standard button's text through one helper mapping `StandardButtonEnum` to a translated label with an `&` mnemonic (`&Save`, `&Discard`, `&Cancel`, `&Yes`, `&No`, `Yes to &All`, `N&o to All`, `&Ok`…), resolving clashes as in Edge cases. `QMessageBox::keyPressEvent` already fires a button whose shortcut matches a plain key with no modifier; confirm that in the Qt 6.8 source and, if not, handle the key in a small event filter on the box.
   - verify: an Xvfb script modifies a project, triggers close, sends `d`, and asserts the project closed without writing the file; repeats with `s` (file written) and `c` and Escape (project still open, still modified).
   - size: M
 
-- [ ] M518.P1.T2 — Mnemonics on Natron's MessageBox
+- [x] M518.P1.T2 — Mnemonics on Natron's MessageBox (PR #350)
   - files: `Gui/MessageBox.{h,cpp}`, `Tests/gui/save_prompt_keys.py`
   - approach: use the same helper for the buttons `MessageBox` creates, and make a plain letter press trigger the matching button (`keyPressEvent` or the buttons' `setShortcut`), keeping Escape and Enter as they are.
   - verify: the Xvfb script opens a dialog that uses the "Do Not Show This Again" overload (e.g. the auto-save prompt, `Gui/GuiAppInstance.cpp:562`), presses `n`, and asserts the "No" result.

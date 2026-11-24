@@ -43,7 +43,7 @@ Regions live on the stack, like M448's context flag. `SceneLayerEntry` gains a p
 
 ## Phase 449.1: Regions on the stack
 
-- [ ] M449.P1.T1 — Region model in the scene payload
+- [x] M449.P1.T1 — Region model in the scene payload (PR #359)
   - files: `Engine/Nodes/Scene/ScenePayloadImpl.h`, `Engine/ScenePayload.h` (opaque accessors only, no USD types), `Engine/Nodes/Scene/SceneOps.h`/`.cpp`, `Engine/Nodes/Scene/USDMerge.cpp`, `Tests/Scene/SceneLayerRegion_Test.cpp`, `Tests/CMakeLists.txt`
   - approach: add an immutable `SceneLayerRegion` with an id, the authoring node's name, a parent pointer and `SceneLayerRegionSettings` (save path, plus each optional metadata field and custom data). Add `std::shared_ptr<const SceneLayerRegion> region` to `SceneLayerEntry` and an open-region stack to `ScenePayloadImpl`. Add these `SceneOps` functions:
     - `openRegion(payload, settings)`
@@ -62,19 +62,19 @@ Regions live on the stack, like M448's context flag. `SceneLayerEntry` gains a p
     - Every change alters the hash.
   - size: L
 
-- [ ] M449.P1.T2 — `USDLayerBegin` and `USDLayerEnd` nodes
+- [x] M449.P1.T2 — `USDLayerBegin` and `USDLayerEnd` nodes (PR #359)
   - files: `Engine/Nodes/Scene/USDLayerBegin.h`/`.cpp`/`.reg.inc`, `Engine/Nodes/Scene/USDLayerEnd.h`/`.cpp`/`.reg.inc`, their `docs/*.md` pages and icons, `Tests/Scene/SceneLayerRegion_Test.cpp`
   - approach: knobless scene nodes on the USDLayerBreak pattern (M448.P1.T2). Begin returns `openRegion(input, {})` and End returns `closeRegion(input)`. End with no open region passes its input through and sets a warning persistent message. The docs explain regions, nesting, and that a merge closes them.
   - verify: unit test. Begin → edit → End → edit: the first edit is in a region and the second is not. End alone warns and passes through.
   - size: M
 
-- [ ] M449.P1.T3 — `USDConfigureLayer` node
+- [x] M449.P1.T3 — `USDConfigureLayer` node (PR #359)
   - files: `Engine/Nodes/Scene/USDConfigureLayer.h`/`.cpp`/`.reg.inc`, `Engine/Nodes/Scene/docs/USDConfigureLayer.md`, icon, `Tests/Scene/SceneLayerRegion_Test.cpp`
   - approach: one Scene input. Its knobs are `appliesTo` and `savePath` (a `KnobString` holding a file path, with path variables allowed). The metadata knobs from `## Scope` sit in an `AuthoredKnobSet` (M52.P1.T3), so only toggled fields are recorded. `upAxis` is a choice of Y | Z, and `colorConfiguration` is a file knob. Labels match script names. Preceding Layers returns `claimPreceding(input, settings)`. Following Layers returns `openRegion(input, settings)`. Inside an already-open Begin region with nothing before it in that region, it sets that region's settings instead (`setOpenRegionSettings`). The node authors no USD layer.
   - verify: unit tests. Each mode tags the expected entries. Only toggled fields appear in the region settings. A Following-mode node right after a Begin sets the Begin region's settings rather than nesting.
   - size: M
 
-- [ ] M449.P1.T4 — Custom data rows on `USDConfigureLayer`
+- [x] M449.P1.T4 — Custom data rows on `USDConfigureLayer` (PR #359)
   - files: `Engine/Nodes/Scene/USDConfigureLayer.cpp`, `Engine/Nodes/Scene/docs/USDConfigureLayer.md`, `Tests/Scene/SceneLayerRegion_Test.cpp`
   - approach: add a `customData` table knob with columns Name, Type and Value, following an existing `KnobTable` user (see `Gui/KnobGuiTable.cpp` for the GUI side). Values are parsed per type: arrays split on whitespace, String Array respects quotes, Token Array does not. A row that fails to parse is a node error naming the row. The parsed entries go into the region settings' custom data.
   - verify: unit test. One row of each type parses to the expected `VtValue` kind, and an Integer row holding text is an error.

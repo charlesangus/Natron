@@ -411,6 +411,8 @@ def client_steps(command):
 def client_do(line, timeout=COMMAND_TIMEOUT_S):
     _state["n"] += 1
     n = _state["n"]
+    if line == "quit":
+        _state["quit_sent"] = True
     sync = _state["sync"]
     ack = os.path.join(sync, "ack-%03d" % n)
     write_file(os.path.join(sync, "cmd-%03d" % n), line)
@@ -477,6 +479,9 @@ def host_cleanup():
     proc = _state["process"]
     if proc is None:
         return
+    if proc.poll() is None and not _state.get("quit_sent"):
+        _state["n"] += 1
+        write_file(os.path.join(_state["sync"], "cmd-%03d" % _state["n"]), "quit")
     try:
         proc.wait(30)
     except Exception:

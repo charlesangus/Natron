@@ -363,7 +363,9 @@ ViewerTab::getChannelsString(DisplayChannelsEnum c)
     case eDisplayChannelsY:
 
         return "Luminance";
-        break;
+    case eDisplayChannelsMatte:
+
+        return "Matte";
     default:
 
         return "";
@@ -381,11 +383,19 @@ ViewerTab::getChannelsString() const
 void
 ViewerTab::setChannels(const std::string & channelsStr)
 {
-    int index = _imp->viewerChannels->itemIndex( QString::fromUtf8( channelsStr.c_str() ) );
+    // The names are the knob's choice IDs; the toolbar menu labels some of them differently (Red for R).
+    KnobChoicePtr knob = _imp->viewerKnob<KnobChoice>(kViewerParamDisplayChannels);
+    if (!knob) {
+        return;
+    }
+    const std::vector<ChoiceOption> entries = knob->getEntries_mt_safe();
+    for (int index = 0; index < (int)entries.size(); ++index) {
+        if (entries[index].id == channelsStr) {
+            _imp->setViewerValue<int>(kViewerParamDisplayChannels, index);
+            _imp->setViewerValue<int>(kViewerParamDisplayChannelsB, index);
 
-    if (index != -1) {
-        _imp->setViewerValue<int>(kViewerParamDisplayChannels, index);
-        _imp->setViewerValue<int>(kViewerParamDisplayChannelsB, index);
+            return;
+        }
     }
 }
 

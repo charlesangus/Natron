@@ -2104,25 +2104,34 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
         _imp->bulkScope->addItem(tr("To %1").arg(QString::fromStdString(kind.GetString())), QString::fromStdString(kind.GetString()));
     }
     bulkLayout->addWidget(_imp->bulkScope);
-    const auto addDivider = [this, bulkLayout](int height) {
+    const int layoutSpacing = bulkLayout->spacing();
+    const int groupGap = 12;
+    const int iconGap = 4;
+    const auto addGap = [bulkLayout, layoutSpacing](int gap) {
+        bulkLayout->addSpacing(std::max(0, gap - 2 * layoutSpacing));
+    };
+    const auto addDivider = [this, bulkLayout, &addGap, groupGap](int height) {
         QFrame* divider = new QFrame(this);
         divider->setFrameShape(QFrame::VLine);
         divider->setFrameShadow(QFrame::Sunken);
-        if (height > 0) {
-            divider->setFixedHeight(height);
-        }
-        bulkLayout->addSpacing(2);
+        divider->setFixedHeight(height);
+        addGap(groupGap / 2);
         bulkLayout->addWidget(divider, 0, Qt::AlignVCenter);
-        bulkLayout->addSpacing(2);
+        addGap(groupGap / 2);
     };
-    const auto addSection = [this, bulkLayout, &addDivider](const char* objectName, const char* iconPath, const QString& tip) {
-        addDivider(0);
+    const auto addSection = [this, bulkLayout, &addGap, groupGap, iconGap](const char* objectName, const char* iconPath, const QString& tip) {
+        addGap(groupGap);
         QLabel* icon = new QLabel(this);
         icon->setObjectName(QString::fromUtf8(objectName));
+        icon->setFrameStyle(QFrame::NoFrame);
+        icon->setContentsMargins(0, 0, 0, 0);
+        icon->setAutoFillBackground(false);
+        icon->setStyleSheet(QString::fromUtf8("QLabel { background: transparent; border: none; margin: 0; padding: 0; }"));
         icon->setFixedSize(16, 16);
         icon->setToolTip(tip);
         ThemedIcon::setLabelIcon(icon, ThemedIcon::icon(QString::fromUtf8(iconPath), 16), 16);
         bulkLayout->addWidget(icon, 0, Qt::AlignVCenter);
+        addGap(iconGap);
     };
     struct BulkButton {
         const char* action;

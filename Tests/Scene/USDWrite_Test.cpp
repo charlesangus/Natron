@@ -3166,29 +3166,53 @@ TEST_F(USDWriteSaveRegionTest, RegionTimeCodesPerSecondKeepTheTiming)
     };
     NodePtr reader = read(kLayerStackScene);
     NodePtr outer = configure(reader, "following", "outer.usda");
-    NodePtr a = animate(outer, "a", 1., 2.);
-    NodePtr nested = configure(a, "following", "nested/inner.usda");
+    // b lies weaker than the nested region's file, so the write puts it in a sidecar of the
+    // outer file, at the outer file's rate; a lies stronger and stays in the outer file.
+    NodePtr b = animate(outer, "b", 1., 2.);
+    NodePtr nested = configure(b, "following", "nested/inner.usda");
     NodePtr c = animate(nested, "c", 3., 4.);
     NodePtr innerEnd = after(PLUGINID_NATRON_USDLAYEREND, c);
-    NodePtr outerEnd = after(PLUGINID_NATRON_USDLAYEREND, innerEnd);
+    NodePtr a = animate(innerEnd, "a", 7., 8.);
+    NodePtr outerEnd = after(PLUGINID_NATRON_USDLAYEREND, a);
     NodePtr d = animate(outerEnd, "d", 5., 6.);
     NodePtr root = configure(d, "preceding", "");
-    ASSERT_TRUE(reader && outer && a && nested && c && innerEnd && outerEnd && d && root);
+    ASSERT_TRUE(reader && outer && b && nested && c && innerEnd && a && outerEnd && d && root);
     setRate(outer, 48.);
     setRate(nested, 12.);
     setRate(root, 30.);
 
     const QString path = tmp.path() + QString::fromUtf8("/shot.usda");
     ASSERT_TRUE(bool(write(root, path, USDWrite::eExportModeLayered)));
+    const QString outerPath = tmp.path() + QString::fromUtf8("/outer.usda");
+    const QString innerPath = tmp.path() + QString::fromUtf8("/nested/inner.usda");
     PXR_NS::SdfLayerRefPtr shot = PXR_NS::SdfLayer::FindOrOpen(path.toStdString());
-    PXR_NS::SdfLayerRefPtr outerLayer = PXR_NS::SdfLayer::FindOrOpen((tmp.path() + QString::fromUtf8("/outer.usda")).toStdString());
-    PXR_NS::SdfLayerRefPtr innerLayer = PXR_NS::SdfLayer::FindOrOpen((tmp.path() + QString::fromUtf8("/nested/inner.usda")).toStdString());
+    PXR_NS::SdfLayerRefPtr outerLayer = PXR_NS::SdfLayer::FindOrOpen(outerPath.toStdString());
+    PXR_NS::SdfLayerRefPtr innerLayer = PXR_NS::SdfLayer::FindOrOpen(innerPath.toStdString());
     ASSERT_TRUE(shot && outerLayer && innerLayer);
     EXPECT_EQ(30., shot->GetTimeCodesPerSecond());
     EXPECT_EQ(48., outerLayer->GetTimeCodesPerSecond());
     EXPECT_EQ(12., innerLayer->GetTimeCodesPerSecond());
     EXPECT_TRUE(hasEdit(outerLayer, "a") && hasEdit(innerLayer, "c") && hasEdit(shot, "d"));
-    EXPECT_FALSE(hasEdit(outerLayer, "c") || hasEdit(shot, "a") || hasEdit(shot, "c"));
+    EXPECT_FALSE(hasEdit(outerLayer, "b") || hasEdit(outerLayer, "c") || hasEdit(shot, "a") || hasEdit(shot, "b") || hasEdit(shot, "c"));
+
+    // Composition scales a sublayer's times by parent rate / child rate, so each authored scale is
+    // child rate / parent rate, and the sidecar shares its parent's rate and needs none.
+    const QStringList shotSubLayers = absoluteSubLayers(shot);
+    const int outerIndex = shotSubLayers.indexOf(outerPath);
+    ASSERT_TRUE(outerIndex >= 0);
+    EXPECT_DOUBLE_EQ(48. / 30., shot->GetSubLayerOffset(outerIndex).GetScale());
+    EXPECT_DOUBLE_EQ(0., shot->GetSubLayerOffset(outerIndex).GetOffset());
+    const QStringList outerSubLayers = absoluteSubLayers(outerLayer);
+    ASSERT_EQ(2, outerSubLayers.size());
+    EXPECT_EQ(innerPath, outerSubLayers[0]);
+    EXPECT_DOUBLE_EQ(12. / 48., outerLayer->GetSubLayerOffset(0).GetScale());
+    EXPECT_DOUBLE_EQ(0., outerLayer->GetSubLayerOffset(0).GetOffset());
+    PXR_NS::SdfLayerRefPtr sidecar = PXR_NS::SdfLayer::FindOrOpen(outerSubLayers[1].toStdString());
+    ASSERT_TRUE(static_cast<bool>(sidecar));
+    EXPECT_TRUE(hasEdit(sidecar, "b"));
+    EXPECT_FALSE(hasEdit(sidecar, "a") || hasEdit(sidecar, "c"));
+    EXPECT_EQ(48., sidecar->GetTimeCodesPerSecond());
+    EXPECT_TRUE(outerLayer->GetSubLayerOffset(1).IsIdentity());
 
     const std::vector<double> times = { 1., 1.5, 2. };
     EXPECT_EQ(describeComposed(composeOutput(root), times), describeComposed(PXR_NS::UsdStage::Open(path.toStdString()), times));

@@ -230,7 +230,7 @@ public:
     // and the rows below it to the graph.
     typedef std::function<void(const QString& path, int state)> DrawStateWriter;
 
-    // "BBox", "Children", "Full", "Load All" or "Hidden".
+    // "BBox", "Expand", "Geometry", "Load + Draw" or "Hide".
     static QString drawStateLabel(int state);
 
     // The draw state column's tooltip for a SceneDrawOriginEnum, naming node for a graph-set row.

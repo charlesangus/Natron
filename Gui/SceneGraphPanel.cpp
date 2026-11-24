@@ -42,6 +42,7 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QComboBox>
+#include <QFrame>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QHideEvent>
@@ -1232,13 +1233,13 @@ struct SceneGraphPanel::Implementation {
         sceneDrawStateFromName(action.toStdString(), &state);
         const QString label = SceneGraphModel::drawStateLabel((int)state);
         if (selected) {
-            return SceneGraphPanel::tr("%1: draws the selected rows %1 in the linked viewer.").arg(label);
+            return SceneGraphPanel::tr("%1: sets %1 on the selected rows in the linked viewer.").arg(label);
         }
         if (below) {
-            return SceneGraphPanel::tr("%1 Below: draws the selected rows %1 in the linked viewer and clears the states set below them, as one change.").arg(label);
+            return SceneGraphPanel::tr("%1 Below: sets %1 on the selected rows in the linked viewer and clears the states set below them, as one change.").arg(label);
         }
 
-        return SceneGraphPanel::tr("%1 To %2: draws the loaded %3 below the selected rows %1 in the linked viewer; "
+        return SceneGraphPanel::tr("%1 To %2: sets %1 on the loaded %3 below the selected rows in the linked viewer; "
                                    "nothing inside an unloaded payload changes.")
             .arg(label, kindLabel(scope), kind);
     }
@@ -2057,14 +2058,15 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     filterLayout->setContentsMargins(0, 0, 2, 0);
     filterLayout->setSpacing(4);
     filterLayout->addWidget(_imp->filter, 1);
-    filterLayout->addWidget(_imp->applyButton);
     filterLayout->addWidget(_imp->changedHereButton);
+    layout->addLayout(filterLayout);
+    layout->addWidget(_imp->filterMessage);
+
     _imp->resetDrawStatesButton = new QToolButton(this);
     _imp->resetDrawStatesButton->setObjectName(QString::fromUtf8("sceneGraphResetDrawStates"));
     _imp->resetDrawStatesButton->setText(tr("Reset to Graph"));
     _imp->resetDrawStatesButton->setToolTip(tr("Clears every draw state set in the linked viewer, so that every prim is drawn as the graph says."));
     _imp->resetDrawStatesButton->setEnabled(false);
-    filterLayout->addWidget(_imp->resetDrawStatesButton);
     _imp->bakeDrawStatesButton = new QToolButton(this);
     _imp->bakeDrawStatesButton->setObjectName(QString::fromUtf8("sceneGraphBakeDrawStates"));
     _imp->bakeDrawStatesButton->setText(tr("Bake to Node"));
@@ -2072,16 +2074,12 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
                                               "one rule per prim, and clears them from the viewer, which then views that node. The viewed node "
                                               "takes the rules itself when it is a USDExpandHierarchy, and so does one directly below it."));
     _imp->bakeDrawStatesButton->setEnabled(false);
-    filterLayout->addWidget(_imp->bakeDrawStatesButton);
     _imp->cancelLoadsButton = new QToolButton(this);
     _imp->cancelLoadsButton->setObjectName(QString::fromUtf8("sceneGraphCancelLoads"));
     _imp->cancelLoadsButton->setText(tr("Cancel Loads"));
-    _imp->cancelLoadsButton->setToolTip(tr("Drops the payload loads the linked viewer has queued for prims set to Full or Load and not started yet, "
+    _imp->cancelLoadsButton->setToolTip(tr("Drops the payload loads the linked viewer has queued for prims set to Geometry or Load + Draw and not started yet, "
                                            "as switching the viewer to another node does. A load under way finishes, and what is loaded stays."));
     _imp->cancelLoadsButton->setEnabled(false);
-    filterLayout->addWidget(_imp->cancelLoadsButton);
-    layout->addLayout(filterLayout);
-    layout->addWidget(_imp->filterMessage);
 
     QHBoxLayout* bulkLayout = new QHBoxLayout();
     bulkLayout->setContentsMargins(0, 0, 2, 0);
@@ -2104,33 +2102,61 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
         _imp->bulkScope->addItem(tr("To %1").arg(QString::fromStdString(kind.GetString())), QString::fromStdString(kind.GetString()));
     }
     bulkLayout->addWidget(_imp->bulkScope);
+    const auto addDivider = [this, bulkLayout](int height) {
+        QFrame* divider = new QFrame(this);
+        divider->setFrameShape(QFrame::VLine);
+        divider->setFrameShadow(QFrame::Sunken);
+        if (height > 0) {
+            divider->setFixedHeight(height);
+        }
+        bulkLayout->addSpacing(2);
+        bulkLayout->addWidget(divider, 0, Qt::AlignVCenter);
+        bulkLayout->addSpacing(2);
+    };
+    const auto addSection = [this, bulkLayout, &addDivider](const char* objectName) {
+        addDivider(0);
+        QLabel* icon = new QLabel(this);
+        icon->setObjectName(QString::fromUtf8(objectName));
+        icon->setFixedSize(16, 16);
+        bulkLayout->addWidget(icon, 0, Qt::AlignVCenter);
+    };
     struct BulkButton {
         const char* action;
         const char* label;
     };
-    const BulkButton bulkButtons[] = {
+    const auto addBulkButtons = [this, bulkLayout](const std::vector<BulkButton>& buttons) {
+        for (const BulkButton& entry : buttons) {
+            const QString action = QString::fromUtf8(entry.action);
+            QToolButton* button = new QToolButton(this);
+            button->setObjectName(QString::fromUtf8("sceneGraphBulk_") + action);
+            button->setText(tr(entry.label));
+            button->setCheckable(Implementation::isBulkDrawAction(action));
+            button->setEnabled(false);
+            QObject::connect(button, &QToolButton::clicked, this, [this, action]() {
+                _imp->runBulk(action, getSelection(), _imp->bulkScopeName());
+            });
+            _imp->bulkButtons.push_back(std::make_pair(action, button));
+            bulkLayout->addWidget(button);
+        }
+    };
+    addSection("sceneGraphBulkLoadIcon");
+    addBulkButtons({
         { "load", QT_TR_NOOP("Load") },
         { "unload", QT_TR_NOOP("Unload") },
+    });
+    addSection("sceneGraphBulkDisplayIcon");
+    addBulkButtons({
         { "bbox", QT_TR_NOOP("BBox") },
-        { "children", QT_TR_NOOP("Children") },
-        { "full", QT_TR_NOOP("Full") },
-        { "loadAll", QT_TR_NOOP("Load All") },
-        { "hidden", QT_TR_NOOP("Hidden") },
+        { "expand", QT_TR_NOOP("Expand") },
+        { "geometry", QT_TR_NOOP("Geometry") },
+        { "loadAndDraw", QT_TR_NOOP("Load + Draw") },
+        { "hide", QT_TR_NOOP("Hide") },
+    });
+    addDivider(12);
+    addBulkButtons({
         { "clearBelow", QT_TR_NOOP("Clear Below") },
-    };
-    for (const BulkButton& entry : bulkButtons) {
-        const QString action = QString::fromUtf8(entry.action);
-        QToolButton* button = new QToolButton(this);
-        button->setObjectName(QString::fromUtf8("sceneGraphBulk_") + action);
-        button->setText(tr(entry.label));
-        button->setCheckable(Implementation::isBulkDrawAction(action));
-        button->setEnabled(false);
-        QObject::connect(button, &QToolButton::clicked, this, [this, action]() {
-            _imp->runBulk(action, getSelection(), _imp->bulkScopeName());
-        });
-        _imp->bulkButtons.push_back(std::make_pair(action, button));
-        bulkLayout->addWidget(button);
-    }
+    });
+    bulkLayout->addWidget(_imp->resetDrawStatesButton);
     bulkLayout->addStretch(1);
     layout->addLayout(bulkLayout);
     _imp->bulkStatus = new QLabel(this);
@@ -2147,7 +2173,21 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
 
     QSplitter* splitter = new QSplitter(Qt::Vertical, this);
     splitter->setChildrenCollapsible(false);
-    _imp->stack = new QStackedWidget(splitter);
+    QWidget* treePane = new QWidget(splitter);
+    treePane->setObjectName(QString::fromUtf8("sceneGraphTreePane"));
+    QVBoxLayout* treePaneLayout = new QVBoxLayout(treePane);
+    treePaneLayout->setContentsMargins(0, 0, 0, 0);
+    treePaneLayout->setSpacing(2);
+    _imp->stack = new QStackedWidget(treePane);
+    treePaneLayout->addWidget(_imp->stack, 1);
+    QHBoxLayout* nodeLayout = new QHBoxLayout();
+    nodeLayout->setContentsMargins(0, 0, 2, 0);
+    nodeLayout->setSpacing(4);
+    nodeLayout->addWidget(_imp->applyButton);
+    nodeLayout->addWidget(_imp->bakeDrawStatesButton);
+    nodeLayout->addStretch(1);
+    nodeLayout->addWidget(_imp->cancelLoadsButton);
+    treePaneLayout->addLayout(nodeLayout);
 
     _imp->model = new SceneGraphModel(this);
     _imp->model->setReadsOnWorker(true);
@@ -2221,7 +2261,7 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
             gui->showNodeSettingsPanel(std::dynamic_pointer_cast<NodeGui>(node->getNodeGui()));
         });
     }
-    splitter->addWidget(_imp->stack);
+    splitter->addWidget(treePane);
     splitter->addWidget(_imp->inspector);
     splitter->setStretchFactor(0, 3);
     splitter->setStretchFactor(1, 2);

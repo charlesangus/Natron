@@ -519,7 +519,7 @@ the viewer connection) and `to_first_frame` (from the connection to that frame).
 Loads count as over when nothing is pending or composing, every posted draw change is presented, no
 reveal runs, and the loaded layer count, load edits, prims added and posted changes have held still for
 `BENCH_SETTLE_S` (2 s). `load_all`, `reveal_load_all`, the scenarios that start from a settled scene and
-the workflow's Full + Load block and reopen wait for that, bounded by the scenario limit, and keep the
+the workflow's Load + Draw block and reopen wait for that, bounded by the scenario limit, and keep the
 counts before and after and the wait in a `*_settle` field; the time judged ends where the still window
 began.
 
@@ -661,7 +661,7 @@ M481 - Viewer Polygon Budgets lands.
 ### End-to-end budget run
 
 `workflow` chains what a user does on one scene in one process: `open`, a twirl into a payload,
-Full on one asset, Full + Load on a block, a pattern node (a USDEditTransform with a `primPattern`,
+Geometry on one asset, Load + Draw on a block, a pattern node (a USDEditTransform with a `primPattern`,
 `BENCH_PATTERN` or the branch's descendants) inserted below USDRead and viewed, a switch to that node
 with the Scene Graph panel following the selection, a prim selected in the inspector, a project save,
 and a reset and reopen of the saved project. Each step has its own `ms`, `stall_ms`, `stall_at`, `stalls_over_budget`, `started_at` and `ended_at` (the

@@ -149,8 +149,8 @@ A viewer's `sceneView` holds what the viewer set and never what the graph's node
 their knobs carry. It has three keys, each left out when empty:
 
 - `drawStates`: a map from prim path to the draw state set on that row, by script name: `bbox`,
-  `children`, `full`, `loadAll` or `hidden`. A path the scene no longer has is kept.
-- `impliedChildren`: the `drawStates` paths whose `children` the viewer set itself, to show a
+  `expand`, `geometry`, `loadAndDraw` or `hide`. A path the scene no longer has is kept.
+- `impliedExpand`: the `drawStates` paths whose `expand` the viewer set itself, to show a
   row below it, rather than the user setting it.
 - `loadRules`: the viewer stage's payload load rules, a map from prim path to `all` (the prim
   and its descendants), `only` (the prim alone) or `none`. The pseudo-root's `none` is left out.

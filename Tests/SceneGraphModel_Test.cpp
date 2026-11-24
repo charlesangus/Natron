@@ -1633,7 +1633,7 @@ TEST(SceneGraphModel, TheDrawStateColumnShowsTheViewersStatesAndEditsThem)
     const QModelIndex box = model.index(0, 0, world);
     const QModelIndex ball = model.index(1, 0, world);
     const QModelIndex cam = model.index(2, 0, world);
-    EXPECT_EQ(QString::fromUtf8("Full"), drawCell(box).data().toString());
+    EXPECT_EQ(QString::fromUtf8("Geometry"), drawCell(box).data().toString());
     EXPECT_EQ((int)eSceneDrawStateFull, box.data(SceneGraphModel::eDrawStateRole).toInt());
     EXPECT_TRUE(box.data(SceneGraphModel::eDrawStateInheritedRole).toBool());
     EXPECT_TRUE(drawCell(box).data(Qt::FontRole).value<QFont>().italic());
@@ -1641,7 +1641,7 @@ TEST(SceneGraphModel, TheDrawStateColumnShowsTheViewersStatesAndEditsThem)
     // A state set on a row reads as set; the rows below it inherit what it implies.
     EXPECT_TRUE(model.setData(drawCell(world), (int)eSceneDrawStateChildren));
     EXPECT_EQ(QStringList(QString::fromUtf8("/World=%1").arg((int)eSceneDrawStateChildren)), viewer.writes);
-    EXPECT_EQ(QString::fromUtf8("Children"), drawCell(world).data().toString());
+    EXPECT_EQ(QString::fromUtf8("Expand"), drawCell(world).data().toString());
     EXPECT_FALSE(world.data(SceneGraphModel::eDrawStateInheritedRole).toBool());
     EXPECT_FALSE(drawCell(world).data(Qt::FontRole).value<QFont>().italic());
     EXPECT_EQ(QString::fromUtf8("BBox"), drawCell(ball).data().toString());
@@ -1651,28 +1651,28 @@ TEST(SceneGraphModel, TheDrawStateColumnShowsTheViewersStatesAndEditsThem)
     EXPECT_TRUE(model.setData(drawCell(world), (int)eSceneDrawStateBBox));
     EXPECT_EQ(QString::fromUtf8("BBox"), drawCell(world).data().toString());
     EXPECT_TRUE(model.setData(drawCell(ball), (int)eSceneDrawStateFull));
-    EXPECT_EQ(QString::fromUtf8("Children"), drawCell(world).data().toString());
-    EXPECT_EQ(QString::fromUtf8("Full"), drawCell(ball).data().toString());
+    EXPECT_EQ(QString::fromUtf8("Expand"), drawCell(world).data().toString());
+    EXPECT_EQ(QString::fromUtf8("Geometry"), drawCell(ball).data().toString());
     EXPECT_FALSE(ball.data(SceneGraphModel::eDrawStateInheritedRole).toBool());
     EXPECT_EQ(QString::fromUtf8("BBox"), drawCell(box).data().toString());
     EXPECT_EQ(QString::fromUtf8("BBox"), drawCell(cam).data().toString());
 
     EXPECT_TRUE(model.setData(drawCell(cam), (int)eSceneDrawStateLoadAll));
-    EXPECT_EQ(QString::fromUtf8("Load All"), drawCell(cam).data().toString());
+    EXPECT_EQ(QString::fromUtf8("Load + Draw"), drawCell(cam).data().toString());
     EXPECT_TRUE(model.setData(drawCell(box), (int)eSceneDrawStateHidden));
-    EXPECT_EQ(QString::fromUtf8("Hidden"), drawCell(box).data().toString());
+    EXPECT_EQ(QString::fromUtf8("Hide"), drawCell(box).data().toString());
 
     // Out of range is refused without reaching the viewer.
     const int writes = viewer.writes.size();
     EXPECT_FALSE(model.setData(drawCell(box), 99));
-    EXPECT_FALSE(model.setData(drawCell(box), QString::fromUtf8("full")));
+    EXPECT_FALSE(model.setData(drawCell(box), QString::fromUtf8("geometry")));
     EXPECT_FALSE(model.setData(box, (int)eSceneDrawStateBBox));
     EXPECT_EQ(writes, viewer.writes.size());
 
     // Reset to Graph on a row clears it and everything below.
     EXPECT_TRUE(model.setData(drawCell(world), -1));
     for (const QModelIndex& row : { world, box, ball, cam }) {
-        EXPECT_EQ(QString::fromUtf8("Full"), drawCell(row).data().toString());
+        EXPECT_EQ(QString::fromUtf8("Geometry"), drawCell(row).data().toString());
         EXPECT_TRUE(row.data(SceneGraphModel::eDrawStateInheritedRole).toBool());
     }
 

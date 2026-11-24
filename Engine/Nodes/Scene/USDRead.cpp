@@ -330,10 +330,10 @@ USDRead::initializeKnobs()
                                        tr("The hierarchy opens below each top-level prim down to the first prim of the "
                                           "kind To Kind names, or of a kind derived from it, which draws as a box.")
                                            .toStdString()));
-        options.push_back(ChoiceOption(kUSDReadInitialDrawFull, tr("Full").toStdString(),
-                                       tr("The top-level prims draw in full, as far as their payloads are loaded.").toStdString()));
-        options.push_back(ChoiceOption(kUSDReadInitialDrawFullLoad, tr("Full + Load").toStdString(),
-                                       tr("The top-level prims draw in full, and viewers load every payload below them.").toStdString()));
+        options.push_back(ChoiceOption(kUSDReadInitialDrawGeometry, tr("Geometry").toStdString(),
+                                       tr("The top-level prims draw their geometry, as far as their payloads are loaded.").toStdString()));
+        options.push_back(ChoiceOption(kUSDReadInitialDrawLoadAndDraw, tr("Load + Draw").toStdString(),
+                                       tr("The top-level prims draw their geometry, and viewers load every payload below them.").toStdString()));
         initialDraw->populateChoices(options);
     }
     initialDraw->setDefaultValue(0);
@@ -430,9 +430,9 @@ USDRead::getInitialDrawRules(const std::string& path) const
         if (rule.toKind.empty()) {
             rule.toKind = PXR_NS::KindTokens->component.GetString();
         }
-    } else if (mode == kUSDReadInitialDrawFull) {
+    } else if (mode == kUSDReadInitialDrawGeometry) {
         rule.state = eSceneDrawStateFull;
-    } else if (mode == kUSDReadInitialDrawFullLoad) {
+    } else if (mode == kUSDReadInitialDrawLoadAndDraw) {
         rule.state = eSceneDrawStateLoadAll;
     } else {
         rule.state = eSceneDrawStateBBox;

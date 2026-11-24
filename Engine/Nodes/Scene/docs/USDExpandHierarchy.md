@@ -13,13 +13,13 @@ Each rule is one row:
 - Draw is what the matches draw as:
   - BBox draws one box around everything below the prim, whose payloads stay
     unloaded.
-  - Children draws each child by its own draw, and children no rule names as
+  - Expand draws each child by its own draw, and children no rule names as
     boxes.
-  - Full (the default) draws everything below the prim, as far as its payloads
-    are loaded. Nothing is loaded.
-  - Full + Load draws everything below the prim and has the viewers load every
+  - Geometry (the default) draws everything below the prim, as far as its
+    payloads are loaded. Nothing is loaded.
+  - Load + Draw draws everything below the prim and has the viewers load every
     payload below it.
-  - Hidden draws nothing, not even a box.
+  - Hide draws nothing, not even a box.
 - Levels opens that many levels below each match before Draw applies. 0 sets
   Draw on the matches themselves, 1 on their children, and so on. The levels
   above draw by their children. An unloaded payload on the way takes Draw where
@@ -35,7 +35,7 @@ the node as their origin.
 
 Each viewer matches the patterns against the prims it has loaded, and matches
 them again after each load. A pattern can therefore name prims inside a payload
-that is not loaded yet. A Full + Load rule loads the payloads below its matches,
+that is not loaded yet. A Load + Draw rule loads the payloads below its matches,
 then matches again, and loads what the new matches add. It stops when a match
 adds nothing new to load, and closing the viewer or showing another node
 cancels it. A pattern that matches nothing does nothing and shows no error. A

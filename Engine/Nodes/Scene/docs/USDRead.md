@@ -65,9 +65,9 @@ primitive merged with the read, which keep their own draw.
 - **To Kind** opens the hierarchy below each top-level prim down to the first
   prim whose kind is **To Kind** or derives from it (an Assembly is a Group;
   Groups and Components are Models), and boxes that prim.
-- **Full** draws the top-level prims in full, as far as their payloads are
-  loaded.
-- **Full + Load** draws them in full and has each viewer load every payload
+- **Geometry** draws the top-level prims' geometry, as far as their payloads
+  are loaded.
+- **Load + Draw** draws their geometry and has each viewer load every payload
   below them.
 
 Both walks stop at an unloaded payload, which is boxed where it is. These are

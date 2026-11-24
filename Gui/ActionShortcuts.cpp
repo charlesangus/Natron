@@ -509,10 +509,10 @@ getSceneGraphBulkKeyBindings()
             { "load", "Load" },
             { "unload", "Unload" },
             { "bbox", "Draw BBox" },
-            { "children", "Draw Children" },
-            { "full", "Draw Full" },
-            { "loadAll", "Draw Load All" },
-            { "hidden", "Draw Hidden" },
+            { "expand", "Draw Expand" },
+            { "geometry", "Draw Geometry" },
+            { "loadAndDraw", "Load + Draw" },
+            { "hide", "Hide" },
             { "clearBelow", "Clear Draw States Below" },
         };
         const Named scopes[] = {
@@ -585,9 +585,9 @@ getViewer3DDefaultKeyBindings()
         { kShortcutIDActionViewer3DSetSelectionOnNode, kShortcutDescActionViewer3DSetSelectionOnNode, Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_E, Qt::NoModifier, Qt::Key(0) },
         { kShortcutIDActionViewer3DCreateFromSelection, kShortcutDescActionViewer3DCreateFromSelection, Qt::NoModifier, Qt::Key_Tab, Qt::NoModifier, Qt::Key(0) },
         // Draw states of the picked box or the selection: down opens rows up, up boxes their parents.
-        { kShortcutIDActionViewer3DDrawChildren, kShortcutDescActionViewer3DDrawChildren, Qt::NoModifier, Qt::Key_Down, Qt::NoModifier, Qt::Key(0) },
-        { kShortcutIDActionViewer3DDrawFull, kShortcutDescActionViewer3DDrawFull, Qt::ShiftModifier, Qt::Key_Down, Qt::NoModifier, Qt::Key(0) },
-        { kShortcutIDActionViewer3DDrawLoadAll, kShortcutDescActionViewer3DDrawLoadAll, Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_Down, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DDrawExpand, kShortcutDescActionViewer3DDrawExpand, Qt::NoModifier, Qt::Key_Down, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DDrawGeometry, kShortcutDescActionViewer3DDrawGeometry, Qt::ShiftModifier, Qt::Key_Down, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DDrawLoadAndDraw, kShortcutDescActionViewer3DDrawLoadAndDraw, Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_Down, Qt::NoModifier, Qt::Key(0) },
         { kShortcutIDActionViewer3DDrawParentBBox, kShortcutDescActionViewer3DDrawParentBBox, Qt::NoModifier, Qt::Key_Up, Qt::NoModifier, Qt::Key(0) },
         // Maya's pickwalk, on Alt: the plain arrows step frames and set draw states.
         { kShortcutIDActionViewer3DPickwalkParent, kShortcutDescActionViewer3DPickwalkParent, Qt::AltModifier, Qt::Key_Left, Qt::NoModifier, Qt::Key(0) },

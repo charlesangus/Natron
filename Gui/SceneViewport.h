@@ -1292,8 +1292,8 @@ public Q_SLOTS:
     void cancelPendingLoads();
 
     /**
-     * @brief This viewer's draw state on a prim path, by script name: bbox, children, full, loadAll
-     * or hidden. False if the path or the name is not one. Never edits a stage or waits on Hydra.
+     * @brief This viewer's draw state on a prim path, by script name: bbox, expand, geometry, loadAndDraw
+     * or hide. False if the path or the name is not one. Never edits a stage or waits on Hydra.
      **/
     bool setDrawState(const QString& path, const QString& state);
     void clearDrawState(const QString& path);

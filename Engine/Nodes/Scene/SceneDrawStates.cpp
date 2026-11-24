@@ -221,13 +221,13 @@ sceneDrawStateName(SceneDrawStateEnum state)
     case eSceneDrawStateBBox:
         return "bbox";
     case eSceneDrawStateChildren:
-        return "children";
+        return "expand";
     case eSceneDrawStateFull:
-        return "full";
+        return "geometry";
     case eSceneDrawStateLoadAll:
-        return "loadAll";
+        return "loadAndDraw";
     case eSceneDrawStateHidden:
-        return "hidden";
+        return "hide";
     }
 
     return "";
@@ -859,7 +859,7 @@ sceneViewToSerialization(const std::vector<std::pair<std::string, SceneDrawState
     for (const std::pair<std::string, SceneDrawStates::Stored>& state : states) {
         serialization->drawStates[state.first] = sceneDrawStateName(state.second.state);
         if (!state.second.direct) {
-            serialization->impliedChildren.push_back(state.first);
+            serialization->impliedExpand.push_back(state.first);
         }
     }
     for (const std::pair<const std::string, SceneLoadRuleEnum>& rule : rules) {
@@ -874,7 +874,7 @@ sceneViewFromSerialization(const Serialization::SceneViewSerialization& serializ
 {
     states->clear();
     rules->clear();
-    const std::set<std::string> implied(serialization.impliedChildren.begin(), serialization.impliedChildren.end());
+    const std::set<std::string> implied(serialization.impliedExpand.begin(), serialization.impliedExpand.end());
     SceneDrawStates::PathLess less;
     for (const std::pair<const std::string, std::string>& saved : serialization.drawStates) {
         SceneDrawStateEnum state = eSceneDrawStateFull;

@@ -51,12 +51,12 @@ class SceneGraphModel;
  * the matching prims instead of the tree: by name, or, for text that starts with / or holds { or
  * %, by the path expression a prim pattern knob takes, whose matches are selected as they are
  * found and which Apply To Node writes to the current node's first prim pattern knob. Beside the
- * field, the expression's error or how many unloaded branches were not searched. Below the tree, a ScenePrimInspector on the current
- * prim at the viewer's frame. Rows drag their prim paths onto prim path and pattern knobs.
+ * field, the expression's error or how many unloaded branches were not searched. Below the tree, Apply To Node, Bake to Node and Cancel
+ * Loads, then a ScenePrimInspector on the current prim at the viewer's frame. Rows drag their prim paths onto prim path and pattern knobs.
  * Twirling open a row of an unloaded payload loads that payload alone, and the row menu loads and
  * unloads the selection, on the stage the rows are read from; closing a row never unloads. A
- * toolbar row under the filter runs Load, Unload, the draw states and Clear Below in the scope its
- * combo picks: the selected rows, everything below them, or the prims of a kind below them
+ * toolbar row under the filter runs Load, Unload, the draw states, Clear Below and Reset to Graph,
+ * the first four in the scope its combo picks: the selected rows, everything below them, or the prims of a kind below them
  * (SceneViewport::loadRows(), unloadRows() and setDrawStateOnRowsScoped()); the row menu holds the
  * same commands, and each built-in scope's has an unbound key in the Shortcut Editor.
  *
@@ -69,8 +69,9 @@ class SceneGraphModel;
  *
  * Scripts find its widgets by object name: sceneGraphTree, sceneGraphChangedHereTree,
  * sceneGraphResults, sceneGraphFilter, sceneGraphApplyToNode, sceneGraphFilterMessage, sceneGraphPin, sceneGraphFollow, sceneGraphNode,
- * sceneGraphChangedHere, sceneGraphStatus, sceneGraphBulkScope, sceneGraphBulk_<action> and
- * sceneGraphBulkStatus, and the inspector's. Rows the shown node's own layers
+ * sceneGraphChangedHere, sceneGraphStatus, sceneGraphBulkScope, sceneGraphBulk_<action>,
+ * sceneGraphBulkLoadIcon, sceneGraphBulkDisplayIcon, sceneGraphBulkStatus, sceneGraphResetDrawStates,
+ * sceneGraphBakeDrawStates, sceneGraphCancelLoads and sceneGraphTreePane, and the inspector's. Rows the shown node's own layers
  * author something on, and their ancestors, are marked (SceneGraphModel::eChangedHereRole); the
  * Changed Here button swaps the tree for one listing only those (SceneChangedHereModel), leaving
  * the tree as it was. It mirrors its state into the natronSceneGraphPinned, natronSceneGraphFollow

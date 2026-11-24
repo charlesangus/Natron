@@ -1065,8 +1065,8 @@ TEST_F(USDReadTest, EachInitialDrawSetsItsRuleOnTheSameStack)
     const Expected values[] = {
         { kUSDReadInitialDrawLevels, eSceneDrawStateBBox, 3, "" },
         { kUSDReadInitialDrawToKind, eSceneDrawStateBBox, 0, "group" },
-        { kUSDReadInitialDrawFull, eSceneDrawStateFull, 0, "" },
-        { kUSDReadInitialDrawFullLoad, eSceneDrawStateLoadAll, 0, "" },
+        { kUSDReadInitialDrawGeometry, eSceneDrawStateFull, 0, "" },
+        { kUSDReadInitialDrawLoadAndDraw, eSceneDrawStateLoadAll, 0, "" },
         { kUSDReadInitialDrawBBox, eSceneDrawStateBBox, 0, "" },
     };
     levels->setValue(3);
@@ -1109,7 +1109,7 @@ TEST_F(USDReadTest, LevelsAndToKindShowOnlyForTheirInitialDraw)
     setInitialDraw(reader, kUSDReadInitialDrawToKind);
     EXPECT_TRUE(levels->getIsSecret());
     EXPECT_FALSE(toKind->getIsSecret());
-    setInitialDraw(reader, kUSDReadInitialDrawFullLoad);
+    setInitialDraw(reader, kUSDReadInitialDrawLoadAndDraw);
     EXPECT_TRUE(levels->getIsSecret());
     EXPECT_TRUE(toKind->getIsSecret());
 }

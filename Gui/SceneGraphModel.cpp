@@ -2341,13 +2341,13 @@ SceneGraphModel::drawStateLabel(int state)
     case eSceneDrawStateBBox:
         return tr("BBox");
     case eSceneDrawStateChildren:
-        return tr("Children");
+        return tr("Expand");
     case eSceneDrawStateFull:
-        return tr("Full");
+        return tr("Geometry");
     case eSceneDrawStateLoadAll:
-        return tr("Load All");
+        return tr("Load + Draw");
     case eSceneDrawStateHidden:
-        return tr("Hidden");
+        return tr("Hide");
     default:
         return QString();
     }

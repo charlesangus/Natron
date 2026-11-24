@@ -4,16 +4,21 @@ the viewer's loadRows, unloadRows and setDrawStateOnRowsScoped.
 Opens Tests/fixtures/sceneKindPayloads/world.usda, whose island assembly holds payloads of
 components (two trees, a rock and a bush of the custom kind natronTestTree, which
 scene_graph_bulk.pxrplugins registers), each holding a subcomponent payload, and checks:
-  - the toolbar row fits the docked panel; the scope combo lists the built-in and custom kinds;
+  - the panel's three rows: the filter row holds the filter and Changed Here; the toolbar row the
+    scope combo, the Load section (Load, Unload), the Display section (the draw states, Clear Below,
+    Reset to Graph); the node row, between the tree and the prim inspector, Apply To Node and Bake to
+    Node on the left and Cancel Loads on the right; none overflows the docked panel, and each is
+    shot on its own;
+  - the scope combo lists the built-in and custom kinds;
   - with no row selected every command is disabled; in Below scope Unload and Clear Below are;
   - Load To Component on the island loads its components and leaves their subcomponents unloaded;
-  - Full To Component under a boxed island sets Full on each component and switches the island and
-    the grove, which would block them, to Children, and
-    Full shows checked when every selected row is set Full;
-  - Hidden To natronTestTree sets the bush alone;
-  - Children and BBox on selected rows, and Clear Below;
+  - Geometry To Component under a boxed island sets Geometry on each component and switches the island and
+    the grove, which would block them, to Expand, and
+    Geometry shows checked when every selected row is set Geometry;
+  - Hide To natronTestTree sets the bush alone;
+  - Expand and BBox on selected rows, and Clear Below;
   - Load Below loads everything, and Unload Below Component unloads what is below the components;
-  - Load All Below sets Load All on the island and clears the states below it, as one change;
+  - Load + Draw Below sets Load + Draw on the island and clears the states below it, as one change;
   - BBox To Component from the row menu, found by its object name;
   - the methods called by invokeMethod return what they did, and an empty string for a scope they
     do not take;
@@ -46,19 +51,19 @@ BERRIES = BUSH + "/Berries"
 CRATE = "/World/Props/Crate"
 COMPONENTS = [TREE_A, TREE_B, ROCK, BUSH]
 SUBCOMPONENTS = [LEAVES_A, LEAVES_B, MOSS, BERRIES]
-BUTTONS = ["load", "unload", "bbox", "children", "full", "loadAll", "hidden", "clearBelow"]
+BUTTONS = ["load", "unload", "bbox", "expand", "geometry", "loadAndDraw", "hide", "clearBelow"]
 
 STATE_NONE, STATE_UNLOADED, STATE_LOADING, STATE_LOADED, STATE_FAILED = range(5)
-DRAW_BBOX, DRAW_CHILDREN, DRAW_FULL, DRAW_LOAD_ALL, DRAW_HIDDEN = range(5)
+DRAW_BBOX, DRAW_EXPAND, DRAW_GEOMETRY, DRAW_LOAD_AND_DRAW, DRAW_HIDE = range(5)
 ORIGIN_VIEWER = 0
 
 try:
     import NatronEngine
-    from PySide6.QtCore import Q_ARG, Q_RETURN_ARG, QItemSelectionModel, QMetaObject, QModelIndex, Qt, QTimer
+    from PySide6.QtCore import Q_ARG, Q_RETURN_ARG, QItemSelectionModel, QMetaObject, QModelIndex, QPoint, QRect, Qt, QTimer
     from PySide6.QtGui import QAction
-    from PySide6.QtWidgets import QApplication, QComboBox, QLabel, QMenu, QToolButton, QTreeView
+    from PySide6.QtWidgets import QApplication, QComboBox, QLabel, QLineEdit, QMenu, QTabWidget, QToolButton, QTreeView, QWidget
 
-    from guitest import FIXTURES, check, finish, plugin_problem, report, require, run, shot, viewer_up, widgets_of
+    from guitest import FIXTURES, OUT, check, finish, plugin_problem, report, require, run, shot, viewer_up, widgets_of
 
     PATH_ROLE = Qt.UserRole + 1
     STATE_ROLE = Qt.UserRole + 3
@@ -266,6 +271,42 @@ try:
         QApplication.processEvents()
         return found == [True]
 
+    def panel_rect(widget):
+        """widget's rectangle in the panel's coordinates."""
+        return QRect(widget.mapTo(panel(), QPoint(0, 0)), widget.size())
+
+    def xywh(r):
+        return (r.x(), r.y(), r.width(), r.height())
+
+    def check_row(label, names):
+        """Checks that the row of the panel's children named names, in that order left to right,
+        shows each whole inside the panel; reports its extent and shoots it. Returns its rectangle."""
+        widgets = [child(QWidget, n) for n in names]
+        missing = [n for n, w in zip(names, widgets) if w is None]
+        require(not missing, "the %s row has %r (missing %r)" % (label, names, missing))
+        width = panel().width()
+        rects = [panel_rect(w) for w in widgets]
+        hidden = [n for n, w in zip(names, widgets) if not w.isVisible()]
+        out = [n for n, r in zip(names, rects) if r.left() < 0 or r.right() >= width]
+        squeezed = [n for n, w in zip(names, widgets) if w.width() < w.minimumSizeHint().width()]
+        ordered = all(rects[i].right() < rects[i + 1].left() for i in range(len(rects) - 1))
+        top = min(r.top() for r in rects)
+        bottom = max(r.bottom() for r in rects)
+        one_line = all(r.top() < rects[0].bottom() and r.bottom() > rects[0].top() for r in rects)
+        natural = sum(w.sizeHint().width() for w in widgets)
+        report("NOTE %s row: panel %d px wide, row from %d to %d, its widgets' natural widths add up to %d"
+               % (label, width, rects[0].left(), rects[-1].right(), natural))
+        check(not hidden and not out and not squeezed and ordered and one_line,
+              "the %s row fits the panel on one line in order (hidden %r, past the edge %r, squeezed %r, ordered %r, one line %r)"
+              % (label, hidden, out, squeezed, ordered, one_line))
+        area = QRect(0, top, width, bottom - top + 1)
+        path = os.path.join(OUT, "scene-graph-bulk-row-%s.png" % label)
+        if panel().grab(area).save(path):
+            report("SHOT " + path)
+        else:
+            report("NOTE could not save screenshot " + path)
+        return area
+
     def ancestor_of_class(widget, name):
         w = widget
         while w is not None:
@@ -307,10 +348,30 @@ try:
         check("natronTestTree" in scopes and "natronTestSet" in scopes, "the scope combo lists the registered custom kinds (got %r)" % (scopes,))
         missing = [a for a in BUTTONS if button(a) is None]
         require(not missing, "the toolbar has every command's button (missing %r)" % (missing,))
-        width = panel().width()
-        clipped = [a for a in BUTTONS if not button(a).isVisible() or button(a).mapTo(panel(), button(a).rect().bottomRight()).x() > width]
-        check(not clipped, "the toolbar row fits the panel, %d px wide (clipped %r)" % (width, clipped))
-        report("NOTE panel width %d, toolbar row ends at %d" % (width, button("clearBelow").mapTo(panel(), button("clearBelow").rect().bottomRight()).x()))
+        check(child(QLineEdit, "sceneGraphFilter") is not None, "the panel has the filter field")
+        filter_row = check_row("filter", ["sceneGraphFilter", "sceneGraphChangedHere"])
+        toolbar_row = check_row("toolbar", ["sceneGraphBulkScope", "sceneGraphBulkLoadIcon", "sceneGraphBulk_load", "sceneGraphBulk_unload",
+                                            "sceneGraphBulkDisplayIcon", "sceneGraphBulk_bbox", "sceneGraphBulk_expand",
+                                            "sceneGraphBulk_geometry", "sceneGraphBulk_loadAndDraw", "sceneGraphBulk_hide",
+                                            "sceneGraphBulk_clearBelow", "sceneGraphResetDrawStates"])
+        node_row = check_row("node", ["sceneGraphApplyToNode", "sceneGraphBakeDrawStates", "sceneGraphCancelLoads"])
+        labels = [str(button(a).text()) for a in BUTTONS]
+        check(labels == ["Load", "Unload", "BBox", "Expand", "Geometry", "Load + Draw", "Hide", "Clear Below"],
+              "the toolbar buttons read Load, Unload, BBox, Expand, Geometry, Load + Draw, Hide, Clear Below (got %r)" % (labels,))
+        tree_rect = panel_rect(tree())
+        tree_pane = child(QWidget, "sceneGraphTreePane")
+        check(tree_pane is not None and tree_pane.isAncestorOf(child(QWidget, "sceneGraphApplyToNode")),
+              "the tree and the node row share a pane")
+        check(filter_row.bottom() < toolbar_row.top() and toolbar_row.bottom() < tree_rect.top() and tree_rect.bottom() < node_row.top(),
+              "the filter row is above the toolbar row, the toolbar row above the tree, the node row below it (filter %r, toolbar %r, tree %r, node %r)"
+              % (xywh(filter_row), xywh(toolbar_row), xywh(tree_rect), xywh(node_row)))
+        tabs = child(QTabWidget, "sceneGraphInspectorTabs")
+        check(tabs is not None and node_row.bottom() < panel_rect(tabs).top(),
+              "the node row is above the prim inspector's tabs (tabs at %r)" % (xywh(panel_rect(tabs)) if tabs is not None else None,))
+        cancel = panel_rect(child(QWidget, "sceneGraphCancelLoads"))
+        bake = panel_rect(child(QWidget, "sceneGraphBakeDrawStates"))
+        check(cancel.left() > bake.right() + 20 and panel().width() - cancel.right() < 20,
+              "Cancel Loads sits at the node row's right end (bake ends %d, cancel %d to %d of %d)" % (bake.right(), cancel.left(), cancel.right(), panel().width()))
         check(child(QLabel, "sceneGraphBulkStatus") is not None, "the panel has the bulk status line")
 
         select_rows([])
@@ -351,35 +412,35 @@ try:
         tree().expand(find(GROVE))
         shot("scene-graph-bulk-load-to-component.png")
 
-        # Full To Component, under a boxed island the components' Full has to switch to Children.
+        # Geometry To Component, under a boxed island the components' Geometry has to switch to Expand.
         check(invoke("setDrawStateOnRowsScoped", [ISLAND], "bbox", "selected") == "BBox set on 1 row", "box the island")
         ok = yield ("until", lambda: set_here(ISLAND, DRAW_BBOX), POLL_TIMEOUT_S)
         check(ok, "the island is boxed (got %r)" % (draw(ISLAND),))
         select_rows([ISLAND])
-        summary = yield from press("full")
-        check(summary == "Full set on 4 components under 1 row", "Full To Component says what it did (got %r)" % (summary,))
-        ok = yield ("until", lambda: all(set_here(p, DRAW_FULL) for p in COMPONENTS), POLL_TIMEOUT_S)
-        check(ok, "Full To Component sets Full on every component (got %r)" % ([draw(p) for p in COMPONENTS],))
-        check(draw(ISLAND) is not None and draw(ISLAND)[0] == DRAW_CHILDREN and draw(GROVE) is not None and draw(GROVE)[0] == DRAW_CHILDREN,
-              "the island and the grove read Children (got %r, %r)" % (draw(ISLAND), draw(GROVE)))
+        summary = yield from press("geometry")
+        check(summary == "Geometry set on 4 components under 1 row", "Geometry To Component says what it did (got %r)" % (summary,))
+        ok = yield ("until", lambda: all(set_here(p, DRAW_GEOMETRY) for p in COMPONENTS), POLL_TIMEOUT_S)
+        check(ok, "Geometry To Component sets Geometry on every component (got %r)" % ([draw(p) for p in COMPONENTS],))
+        check(draw(ISLAND) is not None and draw(ISLAND)[0] == DRAW_EXPAND and draw(GROVE) is not None and draw(GROVE)[0] == DRAW_EXPAND,
+              "the island and the grove read Expand (got %r, %r)" % (draw(ISLAND), draw(GROVE)))
         yield ("sleep", SETTLE_MS)
-        check(not button("full").isChecked(), "Full is unchecked with the island selected")
+        check(not button("geometry").isChecked(), "Geometry is unchecked with the island selected")
         select_rows([TREE_A, TREE_B])
-        ok = yield ("until", lambda: button("full").isChecked(), POLL_TIMEOUT_S)
-        check(ok, "Full shows checked with two Full rows selected")
-        check(not button("bbox").isChecked(), "BBox is unchecked with two Full rows selected")
-        shot("scene-graph-bulk-full-to-component.png")
+        ok = yield ("until", lambda: button("geometry").isChecked(), POLL_TIMEOUT_S)
+        check(ok, "Geometry shows checked with two Geometry rows selected")
+        check(not button("bbox").isChecked(), "BBox is unchecked with two Geometry rows selected")
+        shot("scene-graph-bulk-geometry-to-component.png")
 
         # A custom kind matches itself alone.
         select_rows([ISLAND])
         set_scope("natronTestTree")
-        summary = yield from press("hidden")
-        check(summary == "Hidden set on 1 natronTestTree prim under 1 row", "Hidden To natronTestTree says what it did (got %r)" % (summary,))
-        ok = yield ("until", lambda: set_here(BUSH, DRAW_HIDDEN), POLL_TIMEOUT_S)
-        check(ok, "Hidden To natronTestTree hides the bush (got %r)" % (draw(BUSH),))
-        check(all(set_here(p, DRAW_FULL) for p in (TREE_A, TREE_B, ROCK)), "the other components stay Full (got %r)" % ([draw(p) for p in COMPONENTS],))
+        summary = yield from press("hide")
+        check(summary == "Hide set on 1 natronTestTree prim under 1 row", "Hide To natronTestTree says what it did (got %r)" % (summary,))
+        ok = yield ("until", lambda: set_here(BUSH, DRAW_HIDE), POLL_TIMEOUT_S)
+        check(ok, "Hide To natronTestTree hides the bush (got %r)" % (draw(BUSH),))
+        check(all(set_here(p, DRAW_GEOMETRY) for p in (TREE_A, TREE_B, ROCK)), "the other components stay Geometry (got %r)" % ([draw(p) for p in COMPONENTS],))
 
-        # Selected scope: Children, BBox and Clear Below.
+        # Selected scope: Expand, BBox and Clear Below.
         set_scope("selected")
         select_rows([ROCK])
         summary = yield from press("bbox")
@@ -387,11 +448,11 @@ try:
         ok = yield ("until", lambda: set_here(ROCK, DRAW_BBOX), POLL_TIMEOUT_S)
         check(ok, "BBox sets the rock (got %r)" % (draw(ROCK),))
         select_rows([GROVE])
-        yield from press("children")
-        ok = yield ("until", lambda: set_here(GROVE, DRAW_CHILDREN), POLL_TIMEOUT_S)
-        check(ok, "Children sets the grove (got %r)" % (draw(GROVE),))
-        ok = yield ("until", lambda: button("children").isChecked(), POLL_TIMEOUT_S)
-        check(ok, "Children shows checked with the grove selected")
+        yield from press("expand")
+        ok = yield ("until", lambda: set_here(GROVE, DRAW_EXPAND), POLL_TIMEOUT_S)
+        check(ok, "Expand sets the grove (got %r)" % (draw(GROVE),))
+        ok = yield ("until", lambda: button("expand").isChecked(), POLL_TIMEOUT_S)
+        check(ok, "Expand shows checked with the grove selected")
         select_rows([ROCK])
         summary = yield from press("clearBelow")
         check(summary.startswith("States cleared below 1 row"), "Clear Below says what it did (got %r)" % (summary,))
@@ -420,15 +481,15 @@ try:
         check(ok, "BBox To Component from the row menu boxes every component (got %r)" % ([draw(p) for p in COMPONENTS],))
         check(bulk_status() == "BBox set on 4 components under 1 row", "the menu entry writes the status line (got %r)" % (bulk_status(),))
 
-        # Load All Below, by invokeMethod.
-        summary = invoke("setDrawStateOnRowsScoped", [ISLAND], "loadAll", "below")
-        check(summary == "Load All set on 1 row, states below cleared", "setDrawStateOnRowsScoped returns what it did (got %r)" % (summary,))
-        ok = yield ("until", lambda: set_here(ISLAND, DRAW_LOAD_ALL) and all(draw(p) is not None and draw(p)[1] != ORIGIN_VIEWER for p in COMPONENTS + [GROVE]),
+        # Load + Draw Below, by invokeMethod.
+        summary = invoke("setDrawStateOnRowsScoped", [ISLAND], "loadAndDraw", "below")
+        check(summary == "Load + Draw set on 1 row, states below cleared", "setDrawStateOnRowsScoped returns what it did (got %r)" % (summary,))
+        ok = yield ("until", lambda: set_here(ISLAND, DRAW_LOAD_AND_DRAW) and all(draw(p) is not None and draw(p)[1] != ORIGIN_VIEWER for p in COMPONENTS + [GROVE]),
                     POLL_TIMEOUT_S)
-        check(ok, "Load All Below sets the island and clears the states below it (got %r, %r)" % (draw(ISLAND), [draw(p) for p in COMPONENTS + [GROVE]]))
+        check(ok, "Load + Draw Below sets the island and clears the states below it (got %r, %r)" % (draw(ISLAND), [draw(p) for p in COMPONENTS + [GROVE]]))
         ok = yield ("until", all_loaded(SUBCOMPONENTS), POLL_TIMEOUT_S)
-        check(ok, "Load All on the island loads the payloads below it (states %r)" % ([state(p) for p in SUBCOMPONENTS],))
-        shot("scene-graph-bulk-load-all-below.png")
+        check(ok, "Load + Draw on the island loads the payloads below it (states %r)" % ([state(p) for p in SUBCOMPONENTS],))
+        shot("scene-graph-bulk-load-and-draw-below.png")
 
         # Pinned to a node the viewer does not show, whose stage the panel reads itself, unloaded.
         pin = child(QToolButton, "sceneGraphPin")

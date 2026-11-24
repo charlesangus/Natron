@@ -456,17 +456,17 @@ CLANG_DIAG_ON(uninitialized)
 #define kShortcutIDActionViewer3DCreateFromSelection "createNodeFromSelection"
 #define kShortcutDescActionViewer3DCreateFromSelection "Create Node from Selection"
 
-#define kShortcutIDActionViewer3DDrawChildren "drawStateChildren"
-#define kShortcutDescActionViewer3DDrawChildren "Draw Children"
+#define kShortcutIDActionViewer3DDrawExpand "drawStateExpand"
+#define kShortcutDescActionViewer3DDrawExpand "Draw Expand"
 
-#define kShortcutIDActionViewer3DDrawFull "drawStateFull"
-#define kShortcutDescActionViewer3DDrawFull "Draw Full"
+#define kShortcutIDActionViewer3DDrawGeometry "drawStateGeometry"
+#define kShortcutDescActionViewer3DDrawGeometry "Draw Geometry"
 
-#define kShortcutIDActionViewer3DDrawLoadAll "drawStateLoadAll"
-#define kShortcutDescActionViewer3DDrawLoadAll "Load All"
+#define kShortcutIDActionViewer3DDrawLoadAndDraw "drawStateLoadAndDraw"
+#define kShortcutDescActionViewer3DDrawLoadAndDraw "Load + Draw"
 
 #define kShortcutIDActionViewer3DDrawParentBBox "drawStateParentBBox"
-#define kShortcutDescActionViewer3DDrawParentBBox "Box Parent"
+#define kShortcutDescActionViewer3DDrawParentBBox "BBox Parent"
 
 #define kShortcutIDActionViewer3DPickwalkParent "pickwalkParent"
 #define kShortcutDescActionViewer3DPickwalkParent "Pickwalk Parent"

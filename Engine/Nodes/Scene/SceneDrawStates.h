@@ -47,7 +47,7 @@ enum SceneDrawOriginEnum {
     eSceneDrawOriginDefault
 };
 
-/** @brief "bbox", "children", "full", "loadAll" or "hidden". */
+/** @brief "bbox", "expand", "geometry", "loadAndDraw" or "hide". */
 const char* sceneDrawStateName(SceneDrawStateEnum state);
 bool sceneDrawStateFromName(const std::string& name, SceneDrawStateEnum* state);
 

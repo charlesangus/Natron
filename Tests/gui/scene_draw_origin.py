@@ -2,7 +2,7 @@
 node's draw rule sets, and the ones a row inherits.
 
 Graph: USDRead of a small stage this script writes to $NATRON_GUI_TEST_OUT/scene_draw_origin.usda,
-with Initial Draw at Full, into a USDExpandHierarchy whose one rule boxes /World/A, into Viewer1.
+with Initial Draw at Geometry, into a USDExpandHierarchy whose one rule boxes /World/A, into Viewer1.
 Rows: /World holding /World/A and /World/B, each an Xform holding a Cube. The script checks:
   - /World is set by the USDRead and /World/A by the USDExpandHierarchy: each cell's origin is the
     graph, its tooltip names that node, and neither is inherited;
@@ -39,11 +39,11 @@ A_CUBE = "/World/A/Cube"
 B_CUBE = "/World/B/Cube"
 ROWS = [WORLD, A, A_CUBE, B, B_CUBE]
 # SceneDrawStateEnum, which the panel's draw state role holds, and the USDExpandHierarchy's Draw menu.
-STATES = ["bbox", "children", "full", "loadAll", "hidden"]
+STATES = ["bbox", "expand", "geometry", "loadAndDraw", "hide"]
 # SceneDrawOriginEnum, which the panel's origin role holds.
 ORIGINS = ["viewer", "graph", "inherited", "default"]
 # USDRead's Initial Draw menu, in order.
-INITIAL_DRAW = ["bbox", "levels", "toKind", "full", "fullLoad"]
+INITIAL_DRAW = ["bbox", "levels", "toKind", "geometry", "loadAndDraw"]
 
 SCENE = """#usda 1.0
 (
@@ -99,7 +99,7 @@ try:
         return node
 
     usd = make("USDRead", 0, 0)
-    usd.getParam("initialDraw").setValue(INITIAL_DRAW.index("full"))
+    usd.getParam("initialDraw").setValue(INITIAL_DRAW.index("geometry"))
     usd.getParam("filename").setValue(scene_path)
     expand = make("USDExpandHierarchy", 0, 150)
     expand.getParam("pattern0").setValue(A)
@@ -292,10 +292,10 @@ try:
 
     def graph_rows():
         return {
-            WORLD: ("full", "graph", USD_NAME, False),
+            WORLD: ("geometry", "graph", USD_NAME, False),
             A: ("bbox", "graph", EXPAND_NAME, False),
-            B: ("full", "inherited", "", True),
-            B_CUBE: ("full", "inherited", "", True),
+            B: ("geometry", "inherited", "", True),
+            B_CUBE: ("geometry", "inherited", "", True),
         }
 
     def steps():
@@ -346,9 +346,9 @@ try:
         check(EXPAND_NAME in tooltip(A), "the tooltip of /World/A names %s again (%r)" % (EXPAND_NAME, tooltip(A)))
 
         section("Reset to Graph on the panel")
-        check(pick_in_editor(A, "Hidden"), "Hidden on /World/A")
+        check(pick_in_editor(A, "Hide"), "Hide on /World/A")
         check(pick_in_editor(B, "BBox"), "BBox on /World/B")
-        yield from expect("both set", {A: ("hidden", "viewer", "", False), B: ("bbox", "viewer", "", False)})
+        yield from expect("both set", {A: ("hide", "viewer", "", False), B: ("bbox", "viewer", "", False)})
         button = panel().findChild(QToolButton, "sceneGraphResetDrawStates")
         require(button is not None and button.isEnabled(), "the panel has a Reset to Graph button")
         QTest.mouseClick(button, Qt.LeftButton)
@@ -358,12 +358,12 @@ try:
         shot("scene-draw-origin-reset.png")
 
         section("a change of rule alone")
-        expand.getParam("draw0").setValue(STATES.index("hidden"))
-        yield from expect("rule draw", {A: ("hidden", "graph", EXPAND_NAME, False)})
+        expand.getParam("draw0").setValue(STATES.index("hide"))
+        yield from expect("rule draw", {A: ("hide", "graph", EXPAND_NAME, False)})
         expand.getParam("pattern0").setValue(B)
         yield from expect("rule pattern", {
-            A: ("full", "inherited", "", True),
-            B: ("hidden", "graph", EXPAND_NAME, False),
+            A: ("geometry", "inherited", "", True),
+            B: ("hide", "graph", EXPAND_NAME, False),
         })
         check(EXPAND_NAME in tooltip(B), "the tooltip of /World/B names %s (%r)" % (EXPAND_NAME, tooltip(B)))
         yield ("sleep", SETTLE_MS)

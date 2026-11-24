@@ -9280,9 +9280,9 @@ struct DrawKey {
 };
 
 const DrawKey kDrawKeys[] = {
-    { kShortcutIDActionViewer3DDrawChildren, eSceneDrawStateChildren, false },
-    { kShortcutIDActionViewer3DDrawFull, eSceneDrawStateFull, false },
-    { kShortcutIDActionViewer3DDrawLoadAll, eSceneDrawStateLoadAll, false },
+    { kShortcutIDActionViewer3DDrawExpand, eSceneDrawStateChildren, false },
+    { kShortcutIDActionViewer3DDrawGeometry, eSceneDrawStateFull, false },
+    { kShortcutIDActionViewer3DDrawLoadAndDraw, eSceneDrawStateLoadAll, false },
     { kShortcutIDActionViewer3DDrawParentBBox, eSceneDrawStateBBox, true },
 };
 
@@ -9491,13 +9491,13 @@ drawStateLabel(SceneDrawStateEnum state)
     case eSceneDrawStateBBox:
         return QString::fromUtf8("BBox");
     case eSceneDrawStateChildren:
-        return QString::fromUtf8("Children");
+        return QString::fromUtf8("Expand");
     case eSceneDrawStateFull:
-        return QString::fromUtf8("Full");
+        return QString::fromUtf8("Geometry");
     case eSceneDrawStateLoadAll:
-        return QString::fromUtf8("Load All");
+        return QString::fromUtf8("Load + Draw");
     case eSceneDrawStateHidden:
-        return QString::fromUtf8("Hidden");
+        return QString::fromUtf8("Hide");
     }
 
     return QString();

@@ -169,6 +169,7 @@
 #include "Engine/Nodes/Scene/SceneCaches.h"
 #include "Engine/Nodes/Test/OverlayImageGuiTestNode.h"
 #include "Engine/Nodes/Test/OverlayTestNode.h"
+#include "Engine/Nodes/Test/PortTestNode.h"
 
 #include "Engine/NodeGroup.h"
 #include "Engine/Utils.h"
@@ -2199,6 +2200,7 @@ AppManager::loadBuiltinNodePlugins()
     if (qgetenv(kNatronGuiTestNodesEnvVar) == "1") {
         registerNativePlugin<OverlayTestNode>();
         registerNativePlugin<OverlayImageGuiTestNode>();
+        PortTestNode::registerPlugins();
     }
 
     // Registered in the background too, so that a script that loads and saves a project keeps its

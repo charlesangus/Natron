@@ -76,12 +76,8 @@ Acceptance sketch:
 
 **Verification gate:** remote `release --tests` green incl. `NativeRead*`/`LayeredDocs*` and smoke; GUI check passes; screenshots approved; no OFX reader loaded; AppImage for UAT.
 
-## Open questions (for the user)
-- Q1 Library choice (still undecided). Recommendation: in-tree OIIO ImageInputs on ZipStore and QXmlStreamReader (the scout named minizip-ng/pugixml, which Natron doesn't reference).
-- Q2 Layer model, and XCF's composite. Recommendation: the scout's model; for XCF the reader flattens visible layers with Normal over and lists other blend modes in metadata.
-- Q3 Fixtures. Recommendation: tiny files saved from GIMP and Krita (which also export PSD and ORA) plus hand-built edge cases, ≤32 px, a few KB.
-
 ## Decisions
 - 2026-10-28: elaborated (consultant); blocked on Q1–Q3 (the 2026-10-10 decision requires the library recommendation to go to the user first).
 - 2026-10-10 — **Library choice (user):** when M79 comes up, a consultant scouts decoding libraries per format and the PM puts the recommendation to the user before elaborating.
 - 2026-10-21 — Library scout (consultant, not yet put to a decision): no existing library fits. OIIO 3.1.16's psd reader aborts on any empty layer, and every PSD group is stored as one. OIIO #5562 skips them, dropping the group structure, and exposes no layer attributes either way. ImageMagick's xcf reader is 8-bit only, has no zlib tiles and no groups. Recommended: in-tree readers registered as OIIO `ImageInput` plugins (one subimage per layer plus the composite; full window = canvas). PSD to the Adobe spec; ORA with minizip-ng + pugixml + OIIO PNG (all already linked); KRA the same plus Krita's LZF tile format (port from Krita, GPL-2+); XCF from the spec only (GIMP code is GPL-3). Proposed layer model: stored composite as the colour plane; raw layers with mode, opacity, visibility and clipping in metadata; groups flattened into sanitised names (`LayerRegistry::validate` refuses spaces and dots); masks folded into alpha; RGB and Gray only. Claimed and released the same day: the user paused new milestones before deciding.
+- 2026-11-24 — Q1–Q3 settled (user): in-tree OIIO ImageInputs on the zip store and QXmlStreamReader; the scout's layer model, XCF flattening visible layers with Normal over and listing other blend modes in metadata; tiny (≤32 px) GIMP- and Krita-saved fixtures plus hand-built edge cases.

@@ -81,6 +81,9 @@ private:
     QTreeWidget* _list;
     QLabel* _empty;
     bool _refreshing = false;
+    // The item whose change is handled must outlive its setData, so the list is rebuilt after it.
+    bool _inItemChanged = false;
+    bool _refreshQueued = false;
 };
 
 NATRON_NAMESPACE_EXIT

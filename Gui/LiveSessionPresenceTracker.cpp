@@ -581,6 +581,9 @@ LiveSessionPresenceTracker::applyLeaderViewer()
     if (!app) {
         return;
     }
+    const std::optional<SessionPresence::ViewerState> state = leader->viewer;
+    QPointer<ViewerTab> guard(tab);
+    const bool wasApplying = _applyingLeader;
     _applyingLeader = true;
     {
         // The leader's viewer is shown here only: no graph operation, no undo entry.
@@ -592,11 +595,16 @@ LiveSessionPresenceTracker::applyLeaderViewer()
             pane->setCurrentWidget(tab);
         }
         _gui->setActiveViewer(tab);
-        if (leader->viewer) {
-            applyLeaderState(app->getTimeLine(), tab, *leader->viewer);
+        if (state && guard) {
+            applyLeaderState(app->getTimeLine(), tab, *state);
         }
     }
-    _applyingLeader = false;
+    _applyingLeader = wasApplying;
+    table = presence();
+    leader = (table && _leader) ? table->user(*_leader) : nullptr;
+    if (!leader || !guard) {
+        return;
+    }
     showLeaderLabel(tab, QString::fromStdString(leader->name));
     watchFollowedViewer(tab);
 }

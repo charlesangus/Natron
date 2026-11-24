@@ -106,6 +106,16 @@ LiveSessionUsersPanel::refresh()
     const std::vector<SessionPresence::Entry> users = presence ? presence->users() : std::vector<SessionPresence::Entry>();
     const std::optional<quint32> leader = _tracker ? _tracker->getLeader() : std::nullopt;
 
+    if (_inItemChanged) {
+        if (!_refreshQueued) {
+            _refreshQueued = true;
+            QMetaObject::invokeMethod(this, [this]() {
+                _refreshQueued = false;
+                refresh(); }, Qt::QueuedConnection);
+        }
+
+        return;
+    }
     _refreshing = true;
     _list->clear();
     for (const SessionPresence::Entry& user : users) {
@@ -144,7 +154,9 @@ LiveSessionUsersPanel::onItemChanged(QTreeWidgetItem* item,
         return;
     }
     const quint32 userId = item->data(eColumnUser, Qt::UserRole).toUInt();
-    if (item->checkState(eColumnFollow) == Qt::Checked) {
+    const bool checked = (item->checkState(eColumnFollow) == Qt::Checked);
+    _inItemChanged = true;
+    if (checked) {
         _tracker->follow(userId);
     } else {
         const std::optional<quint32> leader = _tracker->getLeader();
@@ -154,6 +166,7 @@ LiveSessionUsersPanel::onItemChanged(QTreeWidgetItem* item,
     }
     // Unchecks the user followed before, and a user that could not be followed.
     refresh();
+    _inItemChanged = false;
 }
 
 void

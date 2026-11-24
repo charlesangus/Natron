@@ -30,7 +30,7 @@ Give USD nodes their own top-level toolbar category, USD, instead of the 3D/USD 
 
 ## Phase 520.1: Category
 
-- [ ] M520.P1.T1 — Move USD nodes to a top-level category with submenus
+- [x] M520.P1.T1 — Move USD nodes to a top-level category with submenus (PR #351)
   - files: `Global/Macros.h`, `Engine/Node.cpp`, `Engine/Nodes/Scene/*.h`/`*.cpp` (the 24 `.grouping` lines), `Gui/GuiApplicationManager.cpp`, `Gui/Resources/Icons/`, `Gui/GuiResources.qrc`, `Gui/Resources/Icons/SOURCES.txt`, `Tests/gui/usd_toolbar_menu.py`
   - approach: replace `PLUGIN_GROUP_3D_USD` with `PLUGIN_GROUP_USD "USD"` and eight `PLUGIN_GROUP_USD_<NAME>` macros (`PLUGIN_GROUP_USD "/Prims"` …); retag the nodes per the In list; grep for every other use of `PLUGIN_GROUP_3D_USD` and the literal `"3D/USD"` (Tab menu, tests, docs, Python) and update it; change `domainCategoryFromGrouping` per Edge cases; add a USD icon to `getIconForGrouping` (a new `natron/usd.svg`, a simple prim-hierarchy glyph in the style of `natron/deep.svg`) and add USD to `namedGroupsOrdered[]` after 3D; give each submenu an icon path.
   - verify: an Xvfb script asserts the toolbar has a USD button, its menu has the eight submenus in order with the listed nodes, every USD node's category colour is unchanged, and no menu item uses the puzzle icon; a screenshot of the open menu goes to the user.

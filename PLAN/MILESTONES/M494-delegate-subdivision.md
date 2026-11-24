@@ -41,19 +41,19 @@ The fix lives in our delegate forks (charlesangus/cycles, charlesangus/hdMoonray
 
 ## Phase 494.1: Cycles
 
-- [ ] M494.P1.T1 — Cycles fork: subdivide by scheme behind a Subdivision Surfaces setting
+- [x] M494.P1.T1 — Cycles fork: subdivide by scheme behind a Subdivision Surfaces setting (PR #345)
   - files: charlesangus/cycles `natron/...` branch `src/hydra/mesh.cpp`, `src/hydra/render_delegate.{h,cpp}`; `tools/ci/local/Dockerfile` (`NATRON_CYCLES_COMMIT`, `NATRON_CYCLES_SHA256`); `Tests/Scene/USDRenderCycles_Test.cpp`
   - approach: add a boolean render setting (`natron:subdivisionSurfaces`, default false) to HdCyclesDelegate. In `HdCyclesMesh`, replace the `GetRefineLevel() > 0` gate: Catmull-Clark and Loop → `SUBDIVISION_CATMULL_CLARK` (Loop also logs a warning naming the prim through the delegate's existing TF_WARN/notice path), bilinear → `SUBDIVISION_LINEAR`, only when the setting is on. `subd_max_level` stops reading `refineLevel` and takes Cycles' default for now (T2 adds the control). A change to the setting marks every mesh rprim's topology dirty, the way other scene-affecting settings are handled in `render_delegate.cpp`. Push the fork commit, then bump the Dockerfile pin and checksum.
   - verify: `build-cycles.sh` builds the pinned commit in natron-dev. A gtest renders a Catmull-Clark cube with the setting set on the engine directly: on differs from off at the silhouette, off matches the current output, a scheme-`none` cube is unchanged either way, and a Loop mesh renders smooth with the warning captured.
   - size: L
 
-- [ ] M494.P1.T2 — Cycles fork: dicing rate, max level, adaptive space, dicing camera and per-prim overrides
+- [x] M494.P1.T2 — Cycles fork: dicing rate, max level, adaptive space, dicing camera and per-prim overrides (PR #345)
   - files: charlesangus/cycles `src/hydra/mesh.cpp`, `src/hydra/render_delegate.{h,cpp}`; `tools/ci/local/Dockerfile`; `Tests/Scene/USDRenderCycles_Test.cpp`
   - approach: render settings `natron:dicingRate`, `natron:maxSubdivisionLevel`, `natron:adaptiveSpace` (only if the pinned Cycles `Mesh` has an adaptive-space socket) and `natron:dicingCamera` (SdfPath; empty means the render camera → `scene->dicing_camera`). Per mesh: `subd_dicing_rate` = global rate × constant primvar `cycles:dicing_rate` (default 1), `subd_max_level` = primvar `cycles:max_level` if authored, else the global value. Changes dirty the meshes as in T1. Bump the pin.
   - verify: gtest — a subdivided sphere at dicing rate 0.5 and 8 renders differently, and the coarse one matches the cage-like faceting; a `cycles:max_level` of 1 on one of two meshes coarsens only that mesh; a dicing camera far from the render camera coarsens the result.
   - size: L
 
-- [ ] M494.P1.T3 — Natron Cycles subdivision knobs, shading check and docs
+- [x] M494.P1.T3 — Natron Cycles subdivision knobs, shading check and docs (PR #345)
   - files: `Engine/Nodes/Scene/CyclesSettings.cpp`, `Engine/Nodes/Scene/CyclesAovs.cpp`, `Engine/Nodes/Scene/docs/USDRender.md`, `Tests/gui/m253_render_settings_layout.py`, `Tests/Scene/USDRenderCycles_Test.cpp`
   - approach: register `subdivisionSurfaces` ("Subdivision Surfaces"), `dicingRate`, `maxSubdivisionLevel`, `adaptiveSpace` (menu, if T2 added it) and `dicingCamera` in a new "subdivision" group, mapped to T1/T2's setting keys, with tooltips that explain the scheme rule, that the toggle is off by default, and the per-prim primvars. In `CyclesAovs.cpp`, the bilinear shading branch tests the toggle instead of `refineLevel`, and the scene index's dirty locators follow. Document the subdivision controls in USDRender.md. Add the knobs to the layout script.
   - verify: gtest — USDRender's Subdivision Surfaces knob subdivides a Catmull-Clark cube and Dicing Rate changes it; the m253 layout script passes under Xvfb.
@@ -61,13 +61,13 @@ The fix lives in our delegate forks (charlesangus/cycles, charlesangus/hdMoonray
 
 ## Phase 494.2: MoonRay
 
-- [ ] M494.P2.T1 — hdMoonray fork: subdivide by scheme, dicing settings, Loop warning
+- [x] M494.P2.T1 — hdMoonray fork: subdivide by scheme, dicing settings, Loop warning (PR #345)
   - files: charlesangus/hdMoonray `natron/v2026.29.1` `lib/hydramoonray/Mesh.cc`, `lib/hydramoonray/RenderDelegate.{h,cc}`; the openmoonray super-repo gitlink; `tools/ci/local/Dockerfile` (`NATRON_MOONRAY_COMMIT` and checksum); `Tests/Scene/USDRenderMoonRay_Test.cpp`
   - approach: in `Mesh::syncSubdivScheme`, drop `refineLevel < 1` from `disableSubd`, so `forcePolygon`, flat shading and scheme `none` remain the only gates. `mesh_resolution` comes from a new render setting `natron:meshResolution` (MoonRay's default) unless the `moonray:mesh_resolution` primvar is authored, and `adaptive_error` from `natron:adaptiveError` unless `moonray:adaptive_error` is. A Loop mesh logs a warning starting with its prim path (MoonRayAovs surfaces it). Settings changes re-sync meshes the way `forcePolygon` does. Push the fork, update the super-repo gitlink, bump the Dockerfile pin.
   - verify: `build-moonray.sh` builds the pin in natron-dev. A gtest with `forcePolygon` false renders a Catmull-Clark cube rounder than with it true; a `moonray:mesh_resolution` primvar on one mesh overrides the global setting; a Loop mesh warns, naming the prim.
   - size: L
 
-- [ ] M494.P2.T2 — Natron MoonRay Subdivision Surfaces knob replaces Force Polygon
+- [x] M494.P2.T2 — Natron MoonRay Subdivision Surfaces knob replaces Force Polygon (PR #345)
   - files: `Engine/Nodes/Scene/MoonRaySettings.cpp`, `Engine/Nodes/Scene/MoonRayAovs.cpp` (warning text, if the Loop notice needs a mapping), `Engine/Nodes/Scene/docs/USDRender.md`, `Tests/Scene/USDRenderMoonRay_Test.cpp` (lines ~898 and ~932), `Tests/gui/m253_render_settings_layout.py`
   - approach: remove the `forcePolygon` declared setting and register `subdivisionSurfaces` ("Subdivision Surfaces", default off) that writes `forcePolygon` = !value, plus `meshResolution`, `adaptiveError` and `dicingCamera` (the `dicing_camera` scene variable, empty = render camera) in a "subdivision" group like Cycles'. No old-project mapping. Update the knob-list tests, the layout script and USDRender.md.
   - verify: gtest — the knob off renders the cage, on subdivides; the knob-list tests list the new names and not `moonrayForcePolygon`; the m253 layout script passes under Xvfb.

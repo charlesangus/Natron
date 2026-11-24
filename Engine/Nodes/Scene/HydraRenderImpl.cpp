@@ -2495,13 +2495,20 @@ setEngineCamera(UsdImagingGLEngine* engine,
     engine->SetRenderBufferSize(GfVec2i(view.width, view.height));
     CameraUtilFraming framing(GfRect2i(GfVec2i(0, 0), view.width, view.height));
     if (view.camera.IsEmpty() || !rendersThroughCamera(view.renderer, view.fit, view.pixelAspect)) {
+        const GfMatrix4d viewMatrix = view.frustum.ComputeViewMatrix();
+        const GfMatrix4d projection = view.frustum.ComputeProjectionMatrix();
         if (*throughCamera) {
             engine->SetCameraPath(SdfPath());
             engine->SetOverrideWindowPolicy(std::nullopt);
+            // The scene-index task controller points its tasks back at the free camera only when
+            // its matrices change, and they may be the ones it last rendered through: moved off
+            // them first, the tasks would otherwise keep the empty path, with no camera to draw or
+            // light by.
+            engine->SetCameraState(viewMatrix * GfMatrix4d(1.).SetTranslate(GfVec3d(1., 0., 0.)), projection);
             *throughCamera = false;
         }
         engine->SetFraming(framing);
-        engine->SetCameraState(view.frustum.ComputeViewMatrix(), view.frustum.ComputeProjectionMatrix());
+        engine->SetCameraState(viewMatrix, projection);
 
         return;
     }

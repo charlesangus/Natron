@@ -52,30 +52,29 @@ NATRON_NAMESPACE_USING
 // mixed, spread past what any fit of it shows: each fit and image aspect frames a different part.
 namespace {
 const char* const kCamera = "/World/Cam";
-const char* const kScene = "#usda 1.0\n"
-                           "(\n"
-                           "    defaultPrim = \"World\"\n"
-                           "    upAxis = \"Y\"\n"
-                           ")\n"
-                           "def Xform \"World\"\n"
-                           "{\n"
-                           "    def Camera \"Cam\"\n"
-                           "    {\n"
-                           "        float focalLength = 35\n"
-                           "        float horizontalAperture = 24\n"
-                           "        float verticalAperture = 18\n"
-                           "        float2 clippingRange = (0.5, 50)\n"
-                           "        double3 xformOp:translate = (0.3, -0.2, 10)\n"
-                           "        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"
-                           "    }\n"
-                           "}\n";
+const char* const kSceneHead = "#usda 1.0\n"
+                               "(\n"
+                               "    defaultPrim = \"World\"\n"
+                               "    upAxis = \"Y\"\n"
+                               ")\n"
+                               "def Xform \"World\"\n"
+                               "{\n"
+                               "    def Camera \"Cam\"\n"
+                               "    {\n"
+                               "        float focalLength = 35\n"
+                               "        float horizontalAperture = 24\n"
+                               "        float verticalAperture = 18\n"
+                               "        float2 clippingRange = (0.5, 50)\n"
+                               "        double3 xformOp:translate = (0.3, -0.2, 10)\n"
+                               "        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"
+                               "    }\n";
 
-// The wall: a quad per cell of an 8 x 8 grid 1.25 units apart, each its own colour, every other
-// one a unit nearer.
+// The wall, children of /World after the camera: a quad per cell of an 8 x 8 grid 1.25 units
+// apart, each its own colour, every other one a unit nearer.
 std::string
 wall()
 {
-    std::string text = "over \"World\"\n{\n";
+    std::string text;
     for (int row = 0; row < 8; ++row) {
         for (int column = 0; column < 8; ++column) {
             const double x = (column - 3.5) * 1.25;
@@ -97,7 +96,6 @@ wall()
             text += quad;
         }
     }
-    text += "}\n";
 
     return text;
 }
@@ -138,7 +136,7 @@ protected:
     void SetUp() override
     {
         _layer = PXR_NS::SdfLayer::CreateAnonymous(".usda");
-        ASSERT_TRUE(_layer->ImportFromString(std::string(kScene) + wall()));
+        ASSERT_TRUE(_layer->ImportFromString(std::string(kSceneHead) + wall() + "}\n"));
         _scene = SceneOps::appendLayer(ScenePayload(), _layer, 1);
         _stage = PXR_NS::UsdStage::Open(_layer);
         ASSERT_TRUE(_stage);

@@ -831,7 +831,9 @@ TEST_F(RenderSettingsKnobsTest, CyclesMotionBlurIsSentOnlyOnceChanged)
     RenderSettingsKnobs::setCuratedForTests(kRenderer, &table);
 
     for (int declaredDefault = 0; declaredDefault < 2; ++declaredDefault) {
+        // An empty list would drop the renderer altogether, so the case without the key declares another.
         RenderSettingsKnobs::DescriptorList declared;
+        declared.push_back(descriptor("test:flag", VtValue(false)));
         if (declaredDefault) {
             declared.push_back(descriptor(key.c_str(), VtValue(true)));
         }

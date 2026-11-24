@@ -98,6 +98,41 @@ const char* const kOpenShutter = "over \"World\"\n"
                                  "        double shutter:open = -0.25\n"
                                  "    }\n"
                                  "}\n";
+// The camera's shutter of kOpenShutter, and the frame 1 sphere of volume-sphere-dilated.0001.vdb,
+// whose velocity reaches past its density.
+const char* const kDilatedVelocity = "over \"World\"\n"
+                                     "{\n"
+                                     "    over \"Smoke\"\n"
+                                     "    {\n"
+                                     "        over \"density\"\n"
+                                     "        {\n"
+                                     "            asset filePath.timeSamples = { 1: @" NATRON_TESTS_FIXTURES_DIR "/volume-sphere-dilated.0001.vdb@ }\n"
+                                     "        }\n"
+                                     "        over \"velocity\"\n"
+                                     "        {\n"
+                                     "            asset filePath.timeSamples = { 1: @" NATRON_TESTS_FIXTURES_DIR "/volume-sphere-dilated.0001.vdb@ }\n"
+                                     "        }\n"
+                                     "    }\n"
+                                     "}\n";
+const char* const kDilatedVelocityOpenShutter = "over \"World\"\n"
+                                                "{\n"
+                                                "    over \"Cam\"\n"
+                                                "    {\n"
+                                                "        double shutter:close = 0.25\n"
+                                                "        double shutter:open = -0.25\n"
+                                                "    }\n"
+                                                "    over \"Smoke\"\n"
+                                                "    {\n"
+                                                "        over \"density\"\n"
+                                                "        {\n"
+                                                "            asset filePath.timeSamples = { 1: @" NATRON_TESTS_FIXTURES_DIR "/volume-sphere-dilated.0001.vdb@ }\n"
+                                                "        }\n"
+                                                "        over \"velocity\"\n"
+                                                "        {\n"
+                                                "            asset filePath.timeSamples = { 1: @" NATRON_TESTS_FIXTURES_DIR "/volume-sphere-dilated.0001.vdb@ }\n"
+                                                "        }\n"
+                                                "    }\n"
+                                                "}\n";
 
 // The dev image's /usr/local glvnd lists only NVIDIA; the system directory holds Mesa. Set before
 // the first EGL use, as the render thread's context is made once.
@@ -318,16 +353,19 @@ expectAWrongGridNameDrawsNothing(const std::string& renderer)
 }
 
 // With the shutter open a quarter frame either side of frame 1, the velocity field blurs the
-// sphere along its motion, into the card right of where it sits at the frame.
+// sphere along its motion, into the card right of where it sits at the frame. still and open are
+// the overrides of the render with a closed shutter and of the one with it open.
 void
-expectVelocityBlursTheVolume(const std::string& renderer)
+expectVelocityBlursTheVolume(const std::string& renderer,
+                             const std::string& still = std::string(),
+                             const std::string& open = kOpenShutter)
 {
     const RendererSettings settings(renderer);
-    Render still;
-    ASSERT_TRUE(renderScene(renderer, 1., std::string(), &still));
+    Render stillRender;
+    ASSERT_TRUE(renderScene(renderer, 1., still, &stillRender));
     Render blurred;
-    ASSERT_TRUE(renderScene(renderer, 1., kOpenShutter, &blurred));
-    const float stillTrail = meanOf(still, kTrailX0, kTrailX1);
+    ASSERT_TRUE(renderScene(renderer, 1., open, &blurred));
+    const float stillTrail = meanOf(stillRender, kTrailX0, kTrailX1);
     const float blurredTrail = meanOf(blurred, kTrailX0, kTrailX1);
     EXPECT_LT(blurredTrail, 0.95f * stillTrail) << renderer << ": blurred " << blurredTrail << ", still " << stillTrail;
 }
@@ -392,10 +430,12 @@ TEST(VolumeRenderMoonRay, AWrongGridNameDrawsNothing)
     expectAWrongGridNameDrawsNothing(kMoonRayRendererId);
 }
 
+// MoonRay blurs the density only as far as the velocity grid reaches, so this renders the sphere
+// whose velocity reaches past its density as far as the shutter moves it.
 TEST(VolumeRenderMoonRay, VelocityBlursTheVolume)
 {
     if (!moonRayOrSkip()) {
         return;
     }
-    expectVelocityBlursTheVolume(kMoonRayRendererId);
+    expectVelocityBlursTheVolume(kMoonRayRendererId, kDilatedVelocity, kDilatedVelocityOpenShutter);
 }

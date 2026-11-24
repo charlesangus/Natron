@@ -5,9 +5,10 @@ Usage, from the repository root: Tests/gui/run-gui-test.sh Tests/gui/geometry_ed
 Graph: GeoPrimitive -> GeoTransform, stacked, nothing selected and nothing rendering.
 
 Asserts:
-  - after the Native 3D colour preference is changed and saved, the pipe follows the new colour;
   - the pipe between the two nodes is drawn in that colour: across a strip at the pipe's middle,
-    the drawn pixel closest to the preference is within a few levels of it.
+    the drawn pixel closest to the preference is within a few levels of it;
+  - after the Native 3D colour preference is changed in Preferences and saved, the drawn pipe
+    follows the new colour.
 
 Shots: geometry-edge-colour.png and geometry-edge-colour-changed.png (the node graph around the pipe).
 """
@@ -80,6 +81,54 @@ try:
         return None
 
     def pipe_pixel(view, middle, expected):
+        image = view.viewport().grab().toImage()
+        centre = view.mapFromScene(middle)
+        best = None
+        for dy in (-4, 0, 4):
+            for dx in range(-STRIP_HALF_WIDTH, STRIP_HALF_WIDTH + 1):
+                x, y = centre.x() + dx, centre.y() + dy
+                if not (0 <= x < image.width() and 0 <= y < image.height()):
+                    continue
+                pixel = image.pixelColor(x, y)
+                if best is None or channel_error(pixel, expected) < channel_error(best, expected):
+                    best = pixel
+        return best
+
+    def save_preferences(panel):
+        save = [w for w in panel.findChildren(QPushButton) if w.text() == "Save" and w.isVisible()]
+        require(len(save) == 1, "found the Preferences Save button")
+        save[0].click()
+        QApplication.processEvents()
+
+    def steps():
+        ok = yield ("until", lambda: graph_view() is not None, STARTUP_TIMEOUT_S)
+        require(ok, "the node graph is up")
+        gt.close_all_panels()
+        yield ("sleep", SETTLE_MS)
+
+        gt.section("geometry edge colour")
+        settings = NatronGui.natron.getSettings()
+        native = settings.getParam("native3DNodesColor")
+        require(native is not None, "the Native 3D colour preference exists")
+        original = native.get()
+        expected = colour_of(native)
+
+        source = create("GeoPrimitive", 0, 0)
+        target = create("GeoTransform", 0, NODE_GAP)
+        require(target.connectInput(0, source), "connect the GeoTransform to the GeoPrimitive")
+        app.clearSelection()
+        yield ("sleep", SETTLE_MS)
+
+        sx, sy = source.getPosition()
+        sw, sh = source.getSize()
+        tx, ty = target.getPosition()
+        tw, _ = target.getSize()
+        middle = QPointF((sx + sw / 2.0 + tx + tw / 2.0) / 2.0, (sy + sh + ty) / 2.0)
+        view = graph_view()
+        view.centerOn(middle)
+        yield ("sleep", SETTLE_MS)
+        gt.shot("geometry-edge-colour.png")
+
         best = pipe_pixel(view, middle, expected)
         require(best is not None, "the pipe's middle is inside the node graph view")
         check(channel_error(best, expected) <= MAX_CHANNEL_ERROR,
@@ -90,13 +139,13 @@ try:
         changed = QColor(40, 220, 60)
         panel = open_preferences()
         require(panel is not None, "the Preferences panel opens")
+        _held.append(panel)
         native.set(changed.redF(), changed.greenF(), changed.blueF())
-        save = [w for w in panel.findChildren(QPushButton) if w.text() == "Save" and w.isVisible()]
-        require(len(save) == 1, "found the Preferences Save button")
-        save[0].click()
         QApplication.processEvents()
+        save_preferences(panel)
         yield ("sleep", SETTLE_MS)
         view = graph_view()
+        require(view is not None, "the node graph is still up")
         view.centerOn(middle)
         yield ("sleep", SETTLE_MS)
         gt.shot("geometry-edge-colour-changed.png")
@@ -105,7 +154,12 @@ try:
         check(channel_error(best, changed) <= MAX_CHANNEL_ERROR,
               "after changing the Native 3D colour the pipe is drawn in %s (closest pixel %s)"
               % (changed.name(), best.name()))
-        native.set(*original)
+
+        native.set(original.r, original.g, original.b)
+        QApplication.processEvents()
+        if panel.isVisible():
+            save_preferences(panel)
+            panel.close()
         yield ("sleep", SETTLE_MS)
 
         faulthandler.cancel_dump_traceback_later()

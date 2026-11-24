@@ -137,7 +137,11 @@ def steps():
     nodes = cm.visible_child(group, QComboBox, "KnobEditLinkNode")
     gt.require(nodes is not None, "the chooser has a node list")
     labels = [nodes.itemText(i) for i in range(nodes.count())]
-    index = [i for i, t in enumerate(labels) if inner.getLabel() in t]
+    inner_path = "%s.%s" % (group, inner_name)
+    index = [i for i in range(nodes.count()) if nodes.itemData(i) == inner_path]
+    shown = [nodes.itemText(i) for i in range(nodes.count())]
+    check(len(set(shown)) == len(shown), "the node list shows every node under a distinct text (%r)" % shown)
+    check(bool(index) and nodes.itemText(index[0]) == inner_path, "the inner node is shown by its path (%r)" % shown)
     gt.require(bool(index), "the node list offers the inner %s (%r)" % (inner_name, labels))
     nodes.setCurrentIndex(index[0])
     nodes.activated.emit(index[0])
@@ -161,6 +165,8 @@ def steps():
     gt.section("link drag outside edit mode")
     gt.require(cm.set_editing(group, False), "left edit mode")
     yield ("until", lambda: not cm.is_editing(group), 5.0)
+    source = yield from cm.open_blur(0, 200, editing=False)
+    src = cm.param(source, "size")
     other = yield from cm.open_blur(800, 0, editing=False)
 
     def other_label():
@@ -168,7 +174,7 @@ def steps():
         return (w, QPoint(w.width() // 2, w.height() // 2)) if w is not None else None
 
     result = []
-    drag_label_onto(blur, other_label, Qt.ControlModifier, Qt.NoModifier, result)
+    drag_label_onto(source, other_label, Qt.ControlModifier, Qt.NoModifier, result)
     yield ("sleep", 400)
     if not result:
         report("NOTE the knob drag never ran its drop: the drag's event loop did not run timers")

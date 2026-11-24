@@ -1708,6 +1708,24 @@ KnobEditMode::eventFilter(QObject* watched,
     return false;
 } // KnobEditMode::eventFilter
 
+static std::string
+linkNodeGroupPath(const NodePtr& n)
+{
+    NodeCollectionPtr collection = n->getGroup();
+    NodeGroup* isGroup = dynamic_cast<NodeGroup*>(collection.get());
+    NodePtr groupNode = isGroup ? isGroup->getNode() : NodePtr();
+
+    return groupNode ? groupNode->getFullyQualifiedName() : std::string();
+}
+
+static std::string
+linkNodeDisplayName(const NodePtr& n)
+{
+    const std::string prefix = linkNodeGroupPath(n);
+
+    return prefix.empty() ? n->getLabel() : prefix + "." + n->getLabel();
+}
+
 std::vector<NodePtr>
 KnobEditModePrivate::linkableNodes() const
 {
@@ -1741,7 +1759,15 @@ KnobEditModePrivate::linkableNodes() const
             }
         }
     }
-    std::sort(ret.begin(), ret.end(), [](const NodePtr& a, const NodePtr& b) { return a->getLabel() < b->getLabel(); });
+    std::stable_sort(ret.begin(), ret.end(), [](const NodePtr& a, const NodePtr& b) {
+        const bool aNested = linkNodeGroupPath(a) != std::string();
+        const bool bNested = linkNodeGroupPath(b) != std::string();
+        if (aNested != bNested) {
+            return !aNested;
+        }
+
+        return linkNodeDisplayName(a) < linkNodeDisplayName(b);
+    });
 
     return ret;
 }
@@ -1834,7 +1860,7 @@ KnobEditMode::showLinkChooser()
         QSignalBlocker blocker(_imp->linkNodeCombo.data());
         _imp->linkNodeCombo->clear();
         for (std::size_t i = 0; i < nodes.size(); ++i) {
-            _imp->linkNodeCombo->addItem(QString::fromUtf8(nodes[i]->getLabel().c_str()), QString::fromUtf8(nodes[i]->getFullyQualifiedName().c_str()));
+            _imp->linkNodeCombo->addItem(QString::fromUtf8(linkNodeDisplayName(nodes[i]).c_str()), QString::fromUtf8(nodes[i]->getFullyQualifiedName().c_str()));
         }
     }
     _imp->fillLinkKnobs();

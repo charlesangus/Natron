@@ -193,7 +193,7 @@ future core work has solid ground to build on.
 | M235 | USDCamera From File | done | M226 | bosley-native-nodes | E9 | | | [M235-usdcamera-from-file.md](PLAN/MILESTONES/M235-usdcamera-from-file.md) |
 | M236 | Shared Materials And Assignment | done | M226 | bosley-native-nodes | E9 | | | [M236-shared-materials-and-assignment.md](PLAN/MILESTONES/M236-shared-materials-and-assignment.md) |
 | M237 | CI Flake Fixes | done | - | bosley-native-nodes | E2 | | | [M237-ci-flake-fixes.md](PLAN/MILESTONES/M237-ci-flake-fixes.md) |
-| M238 | EdgeExtend Options | blocked | M123 | bosley-executor | E3 | | response | [M238-edgeextend-options.md](PLAN/MILESTONES/M238-edgeextend-options.md) |
+| M238 | EdgePush And Edge Fill Kit | blocked | M123 | bosley-executor | E3 | | response | [M238-edgeextend-options.md](PLAN/MILESTONES/M238-edgeextend-options.md) |
 | M239 | Weight-Based GPU Placement | done | - | gpu | E5 | | | [M239-weight-based-gpu-placement.md](PLAN/MILESTONES/M239-weight-based-gpu-placement.md) |
 | M240 | Float Trap And Denormal Audit | done | - | gpu | E14 | | | [M240-float-trap-and-denormal-audit.md](PLAN/MILESTONES/M240-float-trap-and-denormal-audit.md) |
 | M241 | Up Axis And Units Policy | done | M226 |  | E9 | | | [M241-up-axis-policy.md](PLAN/MILESTONES/M241-up-axis-policy.md) |
@@ -647,6 +647,11 @@ future core work has solid ground to build on.
 | M588 | Light Linker Drag And Drop Panel | todo | M567 |  | E27 | | | [M588-light-linker-drag-and-drop-panel.md](PLAN/MILESTONES/M588-light-linker-drag-and-drop-panel.md) |
 | M589 | Scene Graph Restructure Commands | todo | M575 |  | E27 | | | [M589-scene-graph-restructure-commands.md](PLAN/MILESTONES/M589-scene-graph-restructure-commands.md) |
 | M590 | Non-Modal Notifications | todo | - |  | | | | [M590-non-modal-notifications.md](PLAN/MILESTONES/M590-non-modal-notifications.md) |
+| M591 | Native EdgeClamp | todo | M238 |  | E3 | | | [M591-native-edgeclamp.md](PLAN/MILESTONES/M591-native-edgeclamp.md) |
+| M592 | Native EdgeSmear | todo | M238 |  | E3 | | | [M592-native-edgesmear.md](PLAN/MILESTONES/M592-native-edgesmear.md) |
+| M593 | Native EdgePushVector | todo | M238 |  | E3 | | | [M593-native-edgepushvector.md](PLAN/MILESTONES/M593-native-edgepushvector.md) |
+| M594 | Native EdgeDistort | todo | M238 |  | E3 | | | [M594-native-edgedistort.md](PLAN/MILESTONES/M594-native-edgedistort.md) |
+| M595 | Native EdgeDetail | todo | M238 |  | E3 | | | [M595-native-edgedetail.md](PLAN/MILESTONES/M595-native-edgedetail.md) |
 
 # Epics
 
@@ -782,7 +787,6 @@ future core work has solid ground to build on.
 - **Post-merge checks for the user (user, 2026-11-02):** these merged on approvals given against AppImages that predated their round-1 fixes; test the listed behaviour on main once merged. M228 - 3D Viewer Navigation (camera knobs as GUI edits, Storm GL lock), M229 - 3D Viewer Guides And Display (guide-size preference, sized light guides, number-knob layout), M230 - 3D Transform Widgets (VkResult in the GPU error), M245 - Write Path Variables (path variables on project RFVs, dialog, rename rewrite, undo). Batch merge of 2026-11-05 (lanes combined after their UAT builds; test on main): Keyer and ChromaKeyer with the M95 - Knob Cleanup And Keyer Redesign behaviour under the plain IDs from M111 - Native Node Identity Cleanup; Radial and the other shapes from M128 - Native Shape Generators have no Interactive Update or HiDPI knobs; ErodeDilate and M186 - Exact IDefocus together; M160 - Lensfun Lens Correction and M233/M234 live textures and projection under plain plugin IDs; the three `tools/bench/comps/*.ntpz` comps were edited by script and not loaded in Natron: load them, or regenerate with `COMP=keying_grade COMPS_OUT=tools/bench/comps NatronRenderer -b tools/bench/comps/build_comps.py`, once per COMP. M118 - Large Graph GUI Responsiveness (merged 2026-11-12, PR #259): on the laptop, wheel zoom in the node graph pivots on the cursor. M116 - GPU Region Overlay (merged 2026-11-12, PR #261; approved before its review fixes): with the overlay on, drag a region member (only its outline follows), zoom out to low detail and toggle the overlay (faded nodes fade and unfade), select all (no flicker); the tooltip now says it fades nodes that computed no pixels.
 - **M206 - Neural Raw Denoise:** remind the user later about the hand-made darktable 5 reference export (user, 2026-11-02: "remind me later").
 
-- M238 - EdgeExtend Options (bosley-native-nodes): the user is discussing the options with a plan agent (2026-11-24); which options to add (recommend all five), replace Size/Slices with push-pull (recommend yes), edge mask in an output channel (recommend yes). See the milestone's Open questions.
 
 
 - **M123 - Native Sharpen And Glow, Bloom design:** the user requires GPU residency (no CPU fallback) if at all possible; candidates are being spiked. Filter default (FIR Gaussian, recommended, or CImg's quasi-Gaussian) still open.

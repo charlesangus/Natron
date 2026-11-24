@@ -151,3 +151,4 @@
 - 2026-11-22 — vdb-pyro-solver: sparse 8³-tile pyro solver (GPU+CPU), VDB at the boundaries, one PyroSolver node with full control set, shipped as F35 - Pyro (user) → DECISIONS/2026-11-22-vdb-pyro-solver.md
 - 2026-11-22 — usd-toolbar-submenus: USD nodes get a top-level USD category with functional submenus; PLUGIN_GROUP_3D_USD removed → DECISIONS/2026-11-22-usd-toolbar-submenus.md
 - 2026-11-24 — feature-gap-survey-triage: survey items adopted as E27 (M562–M589), declined/kept-out list, survey stubs wait for approval → DECISIONS/2026-11-24-feature-gap-survey-triage.md
+- 2026-11-24 — edge-extend-node-family: EdgePush/Clamp/Smear/PushVector/Distort + separate EdgeDetail on a shared EdgeFillKit; straight in/out defaults; edge mask to a named layer (user) → DECISIONS/2026-11-24-edge-extend-node-family.md

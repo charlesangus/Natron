@@ -26,6 +26,7 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <set>
@@ -44,10 +45,13 @@
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/Geo/GeoSpreadsheet.h"
 #include "Engine/GeoDetail.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Filter/Blur.h"
+#include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Geometry/GeoCopyToPoints.h"
 #include "Engine/Nodes/Geometry/GeoDelete.h"
 #include "Engine/Nodes/Geometry/GeoDisplace.h"
@@ -58,6 +62,7 @@
 #include "Engine/Nodes/Geometry/GeoScatter.h"
 #include "Engine/Nodes/Geometry/GeoToUSD.h"
 #include "Engine/Nodes/Geometry/GeoTransform.h"
+#include "Engine/Nodes/Geometry/GeoUVProject.h"
 #include "Engine/Nodes/Geometry/GeoWrangle.h"
 #include "Engine/Nodes/Geometry/USDToGeo.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
@@ -333,6 +338,19 @@ protected:
     GeoDetailConstPtr pull(const NodePtr& node,
                            double time = 1.)
     {
+        GeoDetailConstPtr detail;
+        std::string error;
+
+        EXPECT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(node, &detail, &error, time)) << error;
+
+        return detail;
+    }
+
+    EffectInstance::RenderRoIRetCode evaluate(const NodePtr& node,
+                                              GeoDetailConstPtr* detail,
+                                              std::string* error,
+                                              double time = 1.)
+    {
         AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
         ParallelRenderArgsSetter frameRenderArgs(time,
                                                  ViewIdx(0),
@@ -346,14 +364,24 @@ protected:
                                                  false /*isAnalysis*/,
                                                  false /*draftMode*/,
                                                  RenderStatsPtr());
-        GeoDetailConstPtr detail;
-        std::string error;
 
-        EXPECT_EQ(EffectInstance::eRenderRoIRetCodeOk,
-                  node->getEffectInstance()->evaluateGeometry(EffectInstance::EvaluateGeometryArgs(time, ViewIdx(0)), &detail, &error))
-            << error;
+        return node->getEffectInstance()->evaluateGeometry(EffectInstance::EvaluateGeometryArgs(time, ViewIdx(0)), detail, error);
+    }
 
-        return detail;
+    // A 2 by 2 grid displaced by image on GeoDisplace's Image input, one unit per unit of luminance.
+    NodePtr displacedBy(const NodePtr& image)
+    {
+        const NodePtr source = grid(2, 2);
+        const NodePtr displace = source ? after(source, PLUGINID_NATRON_GEODISPLACE) : NodePtr();
+        if (!displace) {
+            return NodePtr();
+        }
+        setChoice(displace, kGeoDisplaceParamDisplaceBy, "image");
+        knob<KnobDouble>(displace, kGeoDisplaceParamAmplitude)->setValue(1.);
+        knob<KnobDouble>(displace, kGeoDisplaceParamOffset)->setValue(0.);
+        EXPECT_TRUE(displace->connectInput(image, 1));
+
+        return displace;
     }
 
     // Writes the scene node's output to a flattened file in the temp dir and opens it.
@@ -633,4 +661,101 @@ TEST_F(GeoPipelineTest, DeletingEdgesExportsTheSameMeshAsDeletingTheirPoints)
     EXPECT_GT(byEdge.faces, 0u);
     EXPECT_LT(byEdge.faces, std::size_t(input->primitiveCount()));
     EXPECT_EQ(byPoints, byEdge);
+}
+
+// A disabled node on the Image input renders as its pass-through input, as it would feeding any
+// other node; one with nothing to pass through leaves the input as if disconnected.
+TEST_F(GeoPipelineTest, ADisabledImageSourcePassesItsInputThrough)
+{
+    const NodePtr constant = make(PLUGINID_NATRON_CONSTANT);
+    ASSERT_TRUE(constant != nullptr);
+    KnobColor* color = knob<KnobColor>(constant, kConstantParamColor);
+    ASSERT_TRUE(color != NULL);
+    color->setValues(0.5, 0.5, 0.5, 1., ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
+    const NodePtr blur = after(constant, PLUGINID_NATRON_BLUR);
+    ASSERT_TRUE(blur != nullptr);
+    blur->setNodeDisabled(true);
+
+    const NodePtr direct = displacedBy(constant);
+    const NodePtr throughBlur = displacedBy(blur);
+    ASSERT_TRUE(direct != nullptr);
+    ASSERT_TRUE(throughBlur != nullptr);
+    const GeoDetailConstPtr expected = pull(direct);
+    const GeoDetailConstPtr got = pull(throughBlur);
+    const GeoDetailConstPtr flat = pull(direct->getInput(0));
+    ASSERT_TRUE(expected != nullptr);
+    ASSERT_TRUE(got != nullptr);
+    ASSERT_TRUE(flat != nullptr);
+    ASSERT_EQ(expected->pointCount(), got->pointCount());
+    ASSERT_EQ(flat->pointCount(), got->pointCount());
+    double moved = 0.;
+    for (GeoIndex i = 0; i < got->pointCount(); ++i) {
+        const std::array<double, 3> e = expected->pointPosition(expected->pointMap().offsetFromIndex(i));
+        const std::array<double, 3> g = got->pointPosition(got->pointMap().offsetFromIndex(i));
+        const std::array<double, 3> f = flat->pointPosition(flat->pointMap().offsetFromIndex(i));
+        for (int c = 0; c < 3; ++c) {
+            EXPECT_NEAR(e[c], g[c], kTolerance) << i << " " << c;
+            moved = std::max(moved, std::abs(g[c] - f[c]));
+        }
+    }
+    EXPECT_NEAR(0.5, moved, 1e-3);
+
+    const NodePtr unfed = make(PLUGINID_NATRON_BLUR);
+    ASSERT_TRUE(unfed != nullptr);
+    unfed->setNodeDisabled(true);
+    const NodePtr disconnected = displacedBy(unfed);
+    ASSERT_TRUE(disconnected != nullptr);
+    GeoDetailConstPtr detail;
+    std::string error;
+    EXPECT_NE(EffectInstance::eRenderRoIRetCodeOk, evaluate(disconnected, &detail, &error));
+    EXPECT_NE(std::string::npos, error.find("connect the Image input")) << error;
+}
+
+// The spreadsheet lists GeoUVProject's uv after a transform, on the vertices it writes it to.
+TEST_F(GeoPipelineTest, TheSpreadsheetListsTheUVsGeoUVProjectWrites)
+{
+    const NodePtr card = make(PLUGINID_NATRON_GEOPRIMITIVE);
+    const NodePtr transform = card ? after(card, PLUGINID_NATRON_GEOTRANSFORM) : NodePtr();
+    const NodePtr project = transform ? after(transform, PLUGINID_NATRON_GEOUVPROJECT) : NodePtr();
+    ASSERT_TRUE(project != nullptr);
+    setVector(transform, kGeoTransformParamTranslate, 0.5, 0.25, -0.75);
+
+    const GeoDetailConstPtr detail = pull(project);
+    ASSERT_TRUE(detail != nullptr);
+    ASSERT_TRUE(detail->findAttribute(eGeoAttribClassVertex, "uv") != nullptr);
+    const GeoDetailSpreadsheetSource source(detail);
+    std::set<std::string> names;
+    for (const GeoSpreadsheetColumn& column : source.columns(eGeoAttribClassVertex)) {
+        names.insert(column.name);
+    }
+    EXPECT_EQ(1u, names.count("uv[0]"));
+    EXPECT_EQ(1u, names.count("uv[1]"));
+    EXPECT_GT(source.rowCount(eGeoAttribClassVertex), 0);
+}
+
+// With Attribute Class on Point, the spreadsheet lists the uv on the points, and none on the vertices.
+TEST_F(GeoPipelineTest, TheSpreadsheetListsGeoUVProjectPointUVsOnThePoints)
+{
+    const NodePtr card = make(PLUGINID_NATRON_GEOPRIMITIVE);
+    const NodePtr project = card ? after(card, PLUGINID_NATRON_GEOUVPROJECT) : NodePtr();
+    ASSERT_TRUE(project != nullptr);
+    setChoice(project, kGeoUVProjectParamAttributeClass, "point");
+
+    const GeoDetailConstPtr detail = pull(project);
+    ASSERT_TRUE(detail != nullptr);
+    EXPECT_TRUE(detail->findAttribute(eGeoAttribClassVertex, "uv") == nullptr);
+    ASSERT_TRUE(detail->findAttribute(eGeoAttribClassPoint, "uv") != nullptr);
+    const GeoDetailSpreadsheetSource source(detail);
+    std::set<std::string> pointNames;
+    for (const GeoSpreadsheetColumn& column : source.columns(eGeoAttribClassPoint)) {
+        pointNames.insert(column.name);
+    }
+    std::set<std::string> vertexNames;
+    for (const GeoSpreadsheetColumn& column : source.columns(eGeoAttribClassVertex)) {
+        vertexNames.insert(column.name);
+    }
+    EXPECT_EQ(1u, pointNames.count("uv[0]"));
+    EXPECT_EQ(1u, pointNames.count("uv[1]"));
+    EXPECT_EQ(0u, vertexNames.count("uv[0]"));
+    EXPECT_EQ((std::int64_t)detail->pointCount(), source.rowCount(eGeoAttribClassPoint));
 }

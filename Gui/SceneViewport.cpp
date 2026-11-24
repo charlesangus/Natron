@@ -7702,6 +7702,72 @@ componentsOfPrimitives(const GeoDetail& detail,
     return out;
 }
 
+// The points of the viewed geometry whose centres the drawn view projects into region, through
+// whatever is drawn in front of them and whatever size they are drawn at; with nearest, the one
+// whose centre is closest to the region's centre, nearer the eye on a tie. A pick through the
+// renderer's id buffer would depend on depth and on how wide the points are drawn, and a marquee's
+// subset on how its region maps to the buffer's texels.
+GeoComponentSelection
+pointsProjectedIn(const GeoDisplay& display,
+                  const SceneViewportRenderer& renderer,
+                  int width,
+                  int height,
+                  const QRectF& region,
+                  bool nearest)
+{
+    GeoComponentSelection out;
+    out.type = eGeoComponentPoints;
+    const std::shared_ptr<const GeoUsdConvert> convert = display.componentConvert();
+    double m[16];
+    if (!convert || !convert->detail() || (width <= 0) || (height <= 0) || !renderer.getDrawnView(m, nullptr, nullptr)) {
+        return out;
+    }
+    const GeoDetail& detail = *convert->detail();
+    const QPointF centre = region.center();
+    const double radius = 0.5 * std::min(region.width(), region.height());
+    const double radius2 = radius * radius;
+    double bestDistance2 = std::numeric_limits<double>::max();
+    double bestDepth = std::numeric_limits<double>::max();
+    GeoIndex best = GeoIndexMap::kInvalidIndex;
+    detail.pointMap().forEachLive([&](GeoIndex index, GeoOffset offset) {
+        const std::array<double, 3> p = detail.pointPosition(offset);
+        double clip[4];
+        for (int j = 0; j < 4; ++j) {
+            clip[j] = p[0] * m[j] + p[1] * m[4 + j] + p[2] * m[8 + j] + m[12 + j];
+        }
+        if (!(clip[3] > 0.)) {
+            return;
+        }
+        const double depth = clip[2] / clip[3];
+        if ((depth < -1.) || (depth > 1.)) {
+            return;
+        }
+        const QPointF pixel((clip[0] / clip[3] + 1.) * 0.5 * width, (1. - clip[1] / clip[3]) * 0.5 * height);
+        if (!nearest) {
+            if ((pixel.x() >= region.left()) && (pixel.x() < region.right()) && (pixel.y() >= region.top()) && (pixel.y() < region.bottom())) {
+                out.elements.push_back(index);
+            }
+
+            return;
+        }
+        const double dx = pixel.x() - centre.x();
+        const double dy = pixel.y() - centre.y();
+        const double distance2 = dx * dx + dy * dy;
+        if ((distance2 > radius2) || (distance2 > bestDistance2) || ((distance2 == bestDistance2) && (depth >= bestDepth))) {
+            return;
+        }
+        bestDistance2 = distance2;
+        bestDepth = depth;
+        best = index;
+    });
+    if (nearest && (best != GeoIndexMap::kInvalidIndex)) {
+        out.elements.push_back(best);
+    }
+    out.normalize();
+
+    return out;
+}
+
 // Storm can miss points and edges that the faces around them hide: the point markers lie at the
 // faces' own depth, and its edge ids come from the delegate's shaders. The faces it picks in the
 // region give their points and edges there instead; faces hidden in the region give none.
@@ -8933,6 +8999,15 @@ struct SceneViewport::Implementation {
 
     // Whether the framebuffer holds a frame of a scene, which a composing status can stay out of.
     bool presentedScene = false;
+    // Whether the latest request edits the stack already asked for, as a knob drag upstream does.
+    bool composesInPlace = false;
+
+    // An edit of the scene on screen keeps its last frame up, unmarked, until the new one lands: a
+    // status over every step of a drag would hide what is being adjusted.
+    bool composingShowsStatus() const
+    {
+        return !presentedScene || !composesInPlace || rendererSwitchRunning;
+    }
     QElapsedTimer composingClock;
     QTimer* composingTimer = nullptr;
 
@@ -9616,6 +9691,7 @@ SceneViewport::requestSync(const ScenePayload& payload,
                            bool keepsFrame)
 {
     _imp->requestedError = error;
+    _imp->composesInPlace = !payload.isEmpty() && error.isEmpty() && payload.isSameStack(_imp->requestedPayload);
     const SceneDrawRules& rules = payload.getDrawRules();
     const bool mayMatch = (rules != _imp->requestedPayload.getDrawRules()) || (!payload.isSameStack(_imp->requestedPayload) && SceneOps::drawRulesNeedStage(rules));
     _imp->requestedPayload = payload;
@@ -10310,6 +10386,7 @@ SceneViewport::paintComposingStatus()
         glClearColor(background[0], background[1], background[2], 1.f);
         glClear(GL_COLOR_BUFFER_BIT);
     }
+    setProperty("natronSceneComposingPaints", QVariant::fromValue<qulonglong>(property("natronSceneComposingPaints").toULongLong() + 1));
     const QString text = tr("Composing scene...");
     QPainter painter(this);
     painter.setRenderHint(QPainter::TextAntialiasing);
@@ -11874,6 +11951,9 @@ SceneViewport::pickComponentsAt(const QPoint& pos,
     const int h = int(height() * dpr);
     // A face is under the pointer or not; a point or an edge is a few pixels wide at most.
     const int radius = (selection.type == eGeoComponentPrimitives) ? 0 : int(std::lround(kComponentPickRadius * dpr));
+    if (selection.type == eGeoComponentPoints) {
+        return pointsProjectedIn(*_imp->geoDisplay, _imp->renderer, w, h, QRectF(x - radius + 0.5, y - radius + 0.5, 2 * radius, 2 * radius), true);
+    }
     std::vector<GeoViewerLayer::ComponentHit> hits;
     runWithEngineContext([&]() { hits = _imp->renderer.pickComponents(selection.type, x - radius, y - radius, x + radius, y + radius, w, h, true, busy); });
     _imp->geoDisplay->mapComponentHits(hits, true, &selection);
@@ -11916,6 +11996,9 @@ SceneViewport::pickComponentsIn(const QRect& rect,
     const int bottom = int((r.bottom() + 1) * dpr) - 1;
     const int w = int(width() * dpr);
     const int h = int(height() * dpr);
+    if (selection.type == eGeoComponentPoints) {
+        return pointsProjectedIn(*_imp->geoDisplay, _imp->renderer, w, h, QRectF(left, top, right - left + 1, bottom - top + 1), false);
+    }
     std::vector<GeoViewerLayer::ComponentHit> hits;
     runWithEngineContext([&]() { hits = _imp->renderer.pickComponents(selection.type, left, top, right, bottom, w, h, false, busy); });
     _imp->geoDisplay->mapComponentHits(hits, false, &selection);
@@ -12957,7 +13040,7 @@ SceneViewport::paintGL()
     if (!_imp->error.isEmpty() || !rendererError.isEmpty()) {
         painter.setPen(QColor(230, 90, 80));
         painter.drawText(rect().adjusted(12, 12, -12, -12), Qt::AlignCenter | Qt::TextWordWrap, _imp->error.isEmpty() ? rendererError : _imp->error);
-    } else if (isComposing()) {
+    } else if (isComposing() && _imp->composingShowsStatus()) {
         painter.end();
         paintComposingStatus();
         painter.begin(this);

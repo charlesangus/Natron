@@ -143,8 +143,8 @@ void openScenePrimFullValue(QWidget* parent,
  * row naming the node or file that authored it. The Opinions tab lists the specs behind the prim
  * and behind the attribute or relationship last selected on it, strongest first. The Layer tab shows
  * the shown node's own layers as USDA, or the selected prim's composed definition. The Spreadsheet
- * tab lists the prim's points, vertices, primitives and detail, one column per component, or, for a node
- * that puts out geometry, the whole of that geometry whichever prim is selected. Reads run on a worker; a new prim cancels the read
+ * tab lists the prim's points, vertices, primitives and detail, one column per component; native geometry
+ * is the Geometry Spreadsheet panel's (GeoSpreadsheetPanel). Reads run on a worker; a new prim cancels the read
  * under way, and while a read has not finished, for instance with the stage lock busy with a load,
  * the last result stays up, greyed. A new frame lets the read under way finish, and a tab that varies
  * with the frame then reads the latest one. Nothing is read while the inspector is hidden.

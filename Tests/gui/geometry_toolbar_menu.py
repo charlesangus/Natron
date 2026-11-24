@@ -136,9 +136,13 @@ try:
                  if a.property(PROP_COLOR) != expected]
         check(not wrong, "every geometry node carries the Native 3D colour %s (differing: %r)" % (expected, wrong))
 
-        geo_button.showMenu()
+        # QToolButton.showMenu() runs the menu's own modal loop and would block this step until the
+        # watchdog fires; popup() returns at once and leaves the menu open for the shot.
+        geo_menu.popup(geo_button.mapToGlobal(geo_button.rect().bottomLeft()))
         yield ("sleep", SETTLE_MS)
+        check(geo_menu.isVisible(), "the Geometry menu opens from its button")
         gt.shot("geometry-toolbar-menu.png")
+        geo_menu.close()
         popup = QApplication.activePopupWidget()
         if isinstance(popup, QMenu):
             popup.close()

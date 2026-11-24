@@ -1,4 +1,4 @@
-"""The prim inspector's Spreadsheet tab sorting and filtering a large geometry.
+"""The Geometry Spreadsheet panel sorting and filtering a large geometry.
 
 Builds a GeoPrimitive grid of $NATRON_GUI_TEST_GRID (default 3000) rows and columns, about 9 million
 points at the default, turned on its side by a GeoTransform so that P[y] varies, with the Viewer on
@@ -22,8 +22,7 @@ sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd
 POLL_TIMEOUT_S = 30.0
 BUILD_TIMEOUT_S = 300.0
 STARTUP_TIMEOUT_S = 60.0
-SPREADSHEET = "sceneGraphSpreadsheet"
-SPREADSHEET_TITLE = "Spreadsheet"
+SPREADSHEET = "geometrySpreadsheet"
 GRID = int(os.environ.get("NATRON_GUI_TEST_GRID", "3000"))
 POINTS = (GRID + 1) * (GRID + 1)
 HALF = 0.5
@@ -36,7 +35,7 @@ FAR_ROW = 1000000
 
 try:
     from PySide6.QtCore import Qt
-    from PySide6.QtWidgets import QComboBox, QLabel, QTabWidget, QTableView, QWidget
+    from PySide6.QtWidgets import QComboBox, QLabel, QTableView, QWidget
 
     from guitest import OUT, check, finish, plugin_problem, report, require, run, section, shot, viewer_up, widgets_of
 
@@ -77,7 +76,7 @@ try:
 
     def panel():
         if "panel" not in _found:
-            panels = widgets_of("SceneGraphPanel")
+            panels = widgets_of("GeoSpreadsheetPanel")
             if panels:
                 _found["panel"] = hold(panels[0])
         return _found.get("panel")
@@ -94,11 +93,8 @@ try:
             _found[name] = c
         return _found[name]
 
-    def inspector():
-        return child(QWidget, "sceneGraphInspector")
-
-    def inspector_state(name):
-        return inspector().property("natronSceneGraphInspector" + name)
+    def panel_state(name):
+        return panel().property("natronGeometrySpreadsheet" + name)
 
     def view_node(node):
         require(viewer.connectInput(0, node), "view " + node.getScriptName())
@@ -168,16 +164,8 @@ try:
     def busy_label():
         return child(QLabel, SPREADSHEET + "Busy")
 
-    def show_spreadsheet_tab():
-        tabs = child(QTabWidget, "sceneGraphInspectorTabs")
-        titles = [tabs.tabText(i) for i in range(tabs.count())]
-        if SPREADSHEET_TITLE not in titles:
-            return False
-        tabs.setCurrentIndex(titles.index(SPREADSHEET_TITLE))
-        return True
-
     def loaded():
-        return (not inspector_state("Busy") and table().isVisible() and sheet_state("Class") == "Points"
+        return (not panel_state("Busy") and table().isVisible() and sheet_state("Class") == "Points"
                 and sheet_state("Rows") == POINTS and sort_idle())
 
     def descending_sort_section():
@@ -262,11 +250,11 @@ try:
         check(bool(sheet_state("SortBusy")), "a P[y] sort is building when the transform changes")
         order = header().sortIndicatorOrder()
         turned.getParam("translate").set(0.0, LIFT, 0.0)
-        ok = yield ("until", lambda: inspector_state("Busy") is False and sheet_state("SortsCancelled") > cancelled, BUILD_TIMEOUT_S)
+        ok = yield ("until", lambda: panel_state("Busy") is False and sheet_state("SortsCancelled") > cancelled, BUILD_TIMEOUT_S)
         sheet().setProperty("natronGeoSpreadsheetHoldSorts", False)
         check(ok, "the change cancelled the sort under way (cancelled %r, was %r)" % (sheet_state("SortsCancelled"), cancelled))
         want = HALF + LIFT if order == Qt.DescendingOrder else -HALF + LIFT
-        ok = yield ("until", lambda: sort_idle() and not inspector_state("Busy")
+        ok = yield ("until", lambda: sort_idle() and not panel_state("Busy")
                     and top_value("P[y]") is not None and abs(top_value("P[y]") - want) < 1e-3, BUILD_TIMEOUT_S)
         check(ok, "the new data is sorted, the top row's P[y] is %g (got %r)" % (want, top_value("P[y]")))
         check(header().sortIndicatorSection() == column_of("P[y]"), "the new snapshot keeps the sort column")
@@ -278,20 +266,18 @@ try:
         require(ok, "the viewer is up")
         ok = yield ("until", scene_drawn, BUILD_TIMEOUT_S)
         require(ok, "the scene view shows the grid")
-        require(panel() is not None, "the Scene Graph panel exists")
+        require(panel() is not None, "the Geometry Spreadsheet panel exists")
 
         home = ancestor_of_class(view(), "TabWidget")
         require(home is not None, "the scene view is in a pane")
         split = app.getTabWidget(home.objectName()).splitHorizontally()
         require(split is not None, "split the viewer's pane")
-        require(app.moveTab("sceneGraph", split), "move the Scene Graph panel beside the viewer")
+        require(app.moveTab("geometrySpreadsheet", split), "move the Geometry Spreadsheet panel beside the viewer")
         split = None
         ok = yield ("until", lambda: panel().isVisible(), POLL_TIMEOUT_S)
         require(ok, "the panel shows")
-        require(inspector() is not None, "the panel has its inspector")
-        require(show_spreadsheet_tab(), "the inspector has a Spreadsheet tab")
-        require(sheet() is not None and table() is not None, "the Spreadsheet tab has its table")
-        require(group_box() is not None and error_label() is not None and busy_label() is not None, "the Spreadsheet tab has its toolbar")
+        require(sheet() is not None and table() is not None, "the panel has its table")
+        require(group_box() is not None and error_label() is not None and busy_label() is not None, "the panel has its toolbar")
 
         yield from descending_sort_section()
         yield from cancel_section()

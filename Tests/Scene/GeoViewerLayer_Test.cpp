@@ -298,6 +298,33 @@ TEST(GeoViewerLayer, PlayedFramesWaitForTheTimeline)
     EXPECT_EQ(viewer.getDetail(), first);
 }
 
+TEST(GeoViewerLayer, LoopedPlaybackKeepsTheFramesPastTheWrap)
+{
+    GeoViewerLayer viewer("viewer-test-wrap");
+    const GeoDetailConstPtr d58 = makeDetail(58.), d59 = makeDetail(59.), d60 = makeDetail(60.), d1 = makeDetail(1.), d2 = makeDetail(2.);
+    ScenePayload payload;
+    std::string error;
+    ASSERT_TRUE(viewer.serveFrame(d58, 58, false, &payload, &error)) << error;
+    EXPECT_TRUE(viewer.showFrame(58));
+    ASSERT_TRUE(viewer.serveFrame(d59, 59, true, &payload, &error)) << error;
+    ASSERT_TRUE(viewer.serveFrame(d60, 60, true, &payload, &error)) << error;
+    ASSERT_TRUE(viewer.serveFrame(d1, 1, true, &payload, &error)) << error;
+    EXPECT_TRUE(viewer.showFrame(59));
+    ASSERT_TRUE(viewer.serveFrame(d2, 2, true, &payload, &error)) << error;
+    EXPECT_TRUE(viewer.showFrame(60));
+    EXPECT_EQ(viewer.getDetail(), d60);
+    EXPECT_TRUE(viewer.showFrame(1));
+    EXPECT_EQ(viewer.getDetail(), d1);
+    EXPECT_TRUE(viewer.showFrame(2));
+    EXPECT_EQ(viewer.getDetail(), d2);
+
+    // A frame passed before the wrap is let go of all the same.
+    ASSERT_TRUE(viewer.serveFrame(d58, 3, true, &payload, &error)) << error;
+    ASSERT_TRUE(viewer.serveFrame(d59, 4, true, &payload, &error)) << error;
+    EXPECT_TRUE(viewer.showFrame(4));
+    EXPECT_FALSE(viewer.showFrame(3));
+}
+
 TEST(GeoViewerLayer, PicksMapPrimsToPrimitiveNumbers)
 {
     GeoViewerLayer viewer("viewer-test-pick");

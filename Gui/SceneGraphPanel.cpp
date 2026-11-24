@@ -115,12 +115,16 @@ isExpressionFilter(const QString& text)
 // How many paths of a viewer selection are shown in the tree.
 const int kShownSelectionCap = 2000;
 
+bool
+putsOutScene(const NodePtr& node)
+{
+    EffectInstancePtr effect = node ? node->getEffectInstance() : EffectInstancePtr();
+
+    return effect && node->isActivated() && effect->producesSceneData();
+}
+
 // How often sources let go of are checked for their workers having quit, in milliseconds.
 const int kRetiredReapMs = 250;
-
-// How long the node selection must stay put before the panel reads the selected node, so that
-// clicking through nodes reads only the last.
-const int kSelectionSettleMs = 150;
 
 // How long edits must pause before the pinned node is read again, so that dragging a value reads
 // it once the drag rests rather than for every step.
@@ -251,59 +255,6 @@ public:
     {
         return Qt::CopyAction;
     }
-};
-
-// Lists the nodes putting out a scene each time it opens.
-class SceneNodeChooser
-    : public QComboBox {
-public:
-    SceneNodeChooser(Gui* gui,
-                     QWidget* parent)
-        : QComboBox(parent)
-        , _gui(gui)
-    {
-    }
-
-    void populate(const NodePtr& current)
-    {
-        clear();
-        addItem(followLabel, QString());
-        GuiAppInstancePtr app = _gui ? _gui->getApp() : GuiAppInstancePtr();
-        if (!app || !app->getProject()) {
-            return;
-        }
-        NodesList nodes;
-        app->getProject()->getNodes_recursive(nodes, true);
-        QStringList names;
-        for (const NodePtr& node : nodes) {
-            EffectInstancePtr effect = node->getEffectInstance();
-            if (effect && node->isActivated() && effect->producesSceneData()) {
-                names << QString::fromStdString(node->getFullyQualifiedName());
-            }
-        }
-        names.sort();
-        for (const QString& name : names) {
-            addItem(name, name);
-        }
-        const int index = current ? findData(QString::fromStdString(current->getFullyQualifiedName())) : 0;
-        setCurrentIndex(std::max(0, index));
-    }
-
-    std::function<NodePtr()> currentNode;
-
-    // The first item's text, which unpins.
-    QString followLabel = QObject::tr("(Active Viewer)");
-
-    void showPopup() override
-    {
-        const bool blocked = blockSignals(true);
-        populate(currentNode ? currentNode() : NodePtr());
-        blockSignals(blocked);
-        QComboBox::showPopup();
-    }
-
-private:
-    Gui* _gui;
 };
 
 // Paints a row's payload state at the end of its name, and before it a dashed square when the viewer
@@ -465,9 +416,7 @@ struct SceneGraphPanel::Implementation {
     SceneGraphPanel* panel;
     Gui* gui;
 
-    QToolButton* pinButton = nullptr;
-    QComboBox* followChooser = nullptr;
-    SceneNodeChooser* nodeChooser = nullptr;
+    NodeSourceBar* sourceBar = nullptr;
     QLabel* status = nullptr;
     QString armedPick;
     QLineEdit* filter = nullptr;
@@ -494,7 +443,6 @@ struct SceneGraphPanel::Implementation {
     std::shared_ptr<SceneNodeStageSource> pinned;
     // Why the last evaluation of pinned failed, empty when it did not.
     QString pinnedError;
-    bool userPinned = false;
     U64 pinnedMarkCount = 0;
     QTimer pinnedPoll;
     QTimer editSettle;
@@ -514,10 +462,6 @@ struct SceneGraphPanel::Implementation {
     bool switching = false;
     // Evaluations that reached a stage of the panel's own.
     U64 composeCount = 0;
-
-    SceneGraphPanel::FollowEnum follow = SceneGraphPanel::eFollowViewer;
-    NodeWPtr selectedNode;
-    QTimer selectionPoll;
 
     // Set while the panel and the viewer hand a selection to each other.
     bool syncingSelection = false;
@@ -611,7 +555,7 @@ struct SceneGraphPanel::Implementation {
 
     bool isPinned() const
     {
-        return userPinned && pinned;
+        return sourceBar->isPinned() && pinned;
     }
 
     // Whether the rows are the viewer's prims, so selections go both ways.
@@ -621,7 +565,7 @@ struct SceneGraphPanel::Implementation {
             return false;
         }
         if (!pinned) {
-            return follow == SceneGraphPanel::eFollowViewer;
+            return sourceBar->getFollow() == NodeSourceBar::eFollowViewer;
         }
         NodePtr node = pinned->getNode();
 
@@ -706,7 +650,7 @@ struct SceneGraphPanel::Implementation {
 
         panel->setProperty("natronSceneArmedPick", armedPick);
         panel->setProperty("natronSceneGraphPinned", isPinned());
-        panel->setProperty("natronSceneGraphFollow", (follow == SceneGraphPanel::eFollowSelection) ? QString::fromUtf8("selection") : QString::fromUtf8("viewer"));
+        panel->setProperty("natronSceneGraphFollow", NodeSourceBar::followName(sourceBar->getFollow()));
         panel->setProperty("natronSceneGraphNode", node ? QString::fromStdString(node->getFullyQualifiedName()) : QString());
         panel->setProperty("natronSceneGraphHasScene", hasScene());
         panel->setProperty("natronSceneGraphChangedHereOnly", changedHereOnly());
@@ -724,30 +668,8 @@ struct SceneGraphPanel::Implementation {
         panel->setProperty("natronSceneGraphComposeCount", QVariant::fromValue<qulonglong>(composeCount));
         panel->setProperty("natronSceneGraphSwitching", switching);
         panel->setProperty("natronSceneGraphCachedStages", (int)cachedStages.size());
-        panel->setProperty("natronSceneGraphTimersActive", pinnedPoll.isActive() || editSettle.isActive() || selectionPoll.isActive() || retiredReap.isActive());
+        panel->setProperty("natronSceneGraphTimersActive", pinnedPoll.isActive() || editSettle.isActive() || sourceBar->isSettling() || retiredReap.isActive());
         panel->setProperty("natronSceneGraphTopPath", topPath);
-    }
-
-    // The scene node last selected in the node graph, or null when none is selected.
-    NodePtr selectedSceneNode() const
-    {
-        NodeGraph* graph = gui ? gui->getLastSelectedGraph() : nullptr;
-        if (!graph && gui) {
-            graph = gui->getNodeGraph();
-        }
-        if (!graph) {
-            return NodePtr();
-        }
-        const NodesGuiList& selection = graph->getSelectedNodes();
-        for (NodesGuiList::const_reverse_iterator it = selection.rbegin(); it != selection.rend(); ++it) {
-            NodePtr node = *it ? (*it)->getNode() : NodePtr();
-            EffectInstancePtr effect = node ? node->getEffectInstance() : EffectInstancePtr();
-            if (effect && node->isActivated() && effect->producesSceneData()) {
-                return node;
-            }
-        }
-
-        return NodePtr();
     }
 
     void updateStatus()
@@ -767,7 +689,7 @@ struct SceneGraphPanel::Implementation {
             } else {
                 text = SceneGraphPanel::tr("Pinned to %1, which failed: %2").arg(name, pinnedError);
             }
-        } else if (follow == SceneGraphPanel::eFollowSelection) {
+        } else if (sourceBar->getFollow() == NodeSourceBar::eFollowSelection) {
             text = node ? SceneGraphPanel::tr("Selected: %1").arg(QString::fromStdString(node->getFullyQualifiedName()))
                         : SceneGraphPanel::tr("Select a node that puts out a scene");
         } else if (viewer) {
@@ -798,7 +720,7 @@ struct SceneGraphPanel::Implementation {
             return sharesViewerSelection() ? viewerSource : pinned;
         }
 
-        return (follow == SceneGraphPanel::eFollowViewer) ? viewerSource : SceneGraphStageSourcePtr();
+        return (sourceBar->getFollow() == NodeSourceBar::eFollowViewer) ? viewerSource : SceneGraphStageSourcePtr();
     }
 
     void applySource()
@@ -1786,33 +1708,15 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(2);
 
-    QWidget* header = new QWidget(this);
-    QHBoxLayout* headerLayout = new QHBoxLayout(header);
-    headerLayout->setContentsMargins(2, 2, 2, 0);
-    headerLayout->setSpacing(4);
-    _imp->pinButton = new QToolButton(header);
-    _imp->pinButton->setObjectName(QString::fromUtf8("sceneGraphPin"));
-    _imp->pinButton->setText(tr("Pin"));
-    _imp->pinButton->setCheckable(true);
-    _imp->pinButton->setToolTip(tr("Keeps showing the scene of the node shown now, whichever viewer is active, whatever it views and whatever is selected."));
-    headerLayout->addWidget(_imp->pinButton);
-    _imp->followChooser = new QComboBox(header);
-    _imp->followChooser->setObjectName(QString::fromUtf8("sceneGraphFollow"));
-    _imp->followChooser->addItem(tr("Viewer"));
-    _imp->followChooser->addItem(tr("Node Selection"));
-    _imp->followChooser->setToolTip(tr("What the panel follows when not pinned. Viewer: the scene the active viewer shows. "
-                                       "Node Selection: the scene of the node last selected in the node graph that puts out "
-                                       "one; selecting other nodes keeps it."));
-    headerLayout->addWidget(_imp->followChooser);
-    _imp->nodeChooser = new SceneNodeChooser(gui, header);
-    _imp->nodeChooser->setObjectName(QString::fromUtf8("sceneGraphNode"));
-    _imp->nodeChooser->setToolTip(tr("The node whose scene is shown: the one followed, or a node pinned by name."));
-    _imp->nodeChooser->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
-    _imp->nodeChooser->setMinimumContentsLength(12);
-    _imp->nodeChooser->currentNode = [this]() { return getPinnedNode(); };
-    _imp->nodeChooser->populate(NodePtr());
-    headerLayout->addWidget(_imp->nodeChooser, 1);
-    layout->addWidget(header);
+    NodeSourceBar::ToolTips toolTips;
+    toolTips.pin = tr("Keeps showing the scene of the node shown now, whichever viewer is active, whatever it views and whatever is selected.");
+    toolTips.follow = tr("What the panel follows when not pinned. Viewer: the scene the active viewer shows. "
+                         "Node Selection: the scene of the node last selected in the node graph that puts out "
+                         "one; selecting other nodes keeps it.");
+    toolTips.node = tr("The node whose scene is shown: the one followed, or a node pinned by name.");
+    _imp->sourceBar = new NodeSourceBar(gui, QString::fromUtf8("sceneGraph"), putsOutScene, toolTips, this);
+    _imp->sourceBar->setShownNode([this]() { return getShownNode(); });
+    layout->addWidget(_imp->sourceBar);
 
     _imp->status = new QLabel(this);
     _imp->status->setObjectName(QString::fromUtf8("sceneGraphStatus"));
@@ -1965,13 +1869,14 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     _imp->editSettle.setSingleShot(true);
     _imp->editSettle.setInterval(kEditSettleMs);
     _imp->retiredReap.setInterval(kRetiredReapMs);
-    _imp->selectionPoll.setSingleShot(true);
-    _imp->selectionPoll.setInterval(kSelectionSettleMs);
     _imp->viewRestore.setSingleShot(true);
     _imp->viewRestore.setInterval(0);
 
-    QObject::connect(_imp->pinButton, &QToolButton::toggled, this, &SceneGraphPanel::onPinToggled);
-    QObject::connect(_imp->nodeChooser, qOverload<int>(&QComboBox::activated), this, &SceneGraphPanel::onNodeChosen);
+    QObject::connect(_imp->sourceBar, &NodeSourceBar::targetChanged, this, [this]() {
+        showNodeScene(_imp->sourceBar->getTarget());
+        _imp->followViewer();
+    });
+    QObject::connect(_imp->sourceBar, &NodeSourceBar::settlingChanged, this, [this]() { _imp->publishState(); });
     QObject::connect(_imp->filter, &QLineEdit::textChanged, &_imp->filterDebounce, qOverload<>(&QTimer::start));
     QObject::connect(&_imp->filterDebounce, &QTimer::timeout, this, &SceneGraphPanel::onFilterEdited);
     QObject::connect(&_imp->filterStep, &QTimer::timeout, this, &SceneGraphPanel::onFilterStep);
@@ -2006,10 +1911,6 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
         }
     });
     QObject::connect(&_imp->retiredReap, &QTimer::timeout, this, [this]() { _imp->reapRetired(); });
-    QObject::connect(&_imp->selectionPoll, &QTimer::timeout, this, &SceneGraphPanel::onSelectionPoll);
-    QObject::connect(_imp->followChooser, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int index) {
-        setFollow((index == (int)eFollowSelection) ? eFollowSelection : eFollowViewer);
-    });
     QObject::connect(_imp->tree->selectionModel(), &QItemSelectionModel::selectionChanged, this, &SceneGraphPanel::onTreeSelectionChanged);
     QObject::connect(_imp->tree->selectionModel(), &QItemSelectionModel::currentChanged, this, &SceneGraphPanel::onCurrentChanged);
     QObject::connect(_imp->results->selectionModel(), &QItemSelectionModel::selectionChanged, this, &SceneGraphPanel::onResultsSelectionChanged);
@@ -2057,12 +1958,6 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     if (gui) {
         QObject::connect(gui, &Gui::activeViewerChanged, this, &SceneGraphPanel::onActiveViewerChanged);
         QObject::connect(gui, &Gui::viewersChanged, this, &SceneGraphPanel::onActiveViewerChanged);
-        QObject::connect(gui, &Gui::nodeSelectionChanged, this, [this]() {
-            if ((_imp->follow == eFollowSelection) && !_imp->userPinned) {
-                _imp->selectionPoll.start();
-                _imp->publishState();
-            }
-        });
         // Edits and deletions that may leave the shown node's stage stale or the node gone.
         QObject::connect(gui, &Gui::nodeGraphTopologyChanged, &_imp->pinnedPoll, qOverload<>(&QTimer::start));
         if (UndoHistory* history = gui->getUndoHistory()) {
@@ -2109,47 +2004,13 @@ SceneGraphPanel::getModel() const
 void
 SceneGraphPanel::pinNode(const NodePtr& node)
 {
-    _imp->userPinned = bool(node);
-    if (node) {
-        showNodeScene(node);
-    } else if (_imp->follow == eFollowSelection) {
-        if (NodePtr selected = _imp->selectedSceneNode()) {
-            _imp->selectedNode = selected;
-        }
-        showNodeScene(_imp->selectedNode.lock());
-    } else {
-        showNodeScene(NodePtr());
-    }
-    {
-        const bool blocked = _imp->pinButton->blockSignals(true);
-        _imp->pinButton->setChecked(bool(node));
-        _imp->pinButton->blockSignals(blocked);
-    }
-    {
-        const bool blocked = _imp->nodeChooser->blockSignals(true);
-        _imp->nodeChooser->populate(node);
-        _imp->nodeChooser->blockSignals(blocked);
-    }
-    _imp->followViewer();
+    _imp->sourceBar->pinNode(node);
 }
 
 void
 SceneGraphPanel::releaseNodeStages()
 {
-    _imp->selectedNode.reset();
-    if (_imp->userPinned) {
-        _imp->userPinned = false;
-        {
-            const bool blocked = _imp->pinButton->blockSignals(true);
-            _imp->pinButton->setChecked(false);
-            _imp->pinButton->blockSignals(blocked);
-        }
-        {
-            const bool blocked = _imp->nodeChooser->blockSignals(true);
-            _imp->nodeChooser->populate(NodePtr());
-            _imp->nodeChooser->blockSignals(blocked);
-        }
-    }
+    _imp->sourceBar->release();
     showNodeScene(NodePtr());
     for (const Implementation::CachedStage& cached : _imp->cachedStages) {
         _imp->retireSource(cached.source);
@@ -2191,33 +2052,15 @@ SceneGraphPanel::showNodeScene(const NodePtr& node)
 }
 
 void
-SceneGraphPanel::setFollow(FollowEnum follow)
+SceneGraphPanel::setFollow(NodeSourceBar::FollowEnum follow)
 {
-    if (_imp->follow != follow) {
-        _imp->follow = follow;
-        const bool blocked = _imp->followChooser->blockSignals(true);
-        _imp->followChooser->setCurrentIndex((int)follow);
-        _imp->followChooser->blockSignals(blocked);
-        _imp->nodeChooser->followLabel = (follow == eFollowSelection) ? tr("(Selected Node)") : tr("(Active Viewer)");
-        _imp->nodeChooser->setItemText(0, _imp->nodeChooser->followLabel);
-    }
-    if (follow == eFollowSelection) {
-        _imp->selectedNode = _imp->selectedSceneNode();
-        _imp->selectionPoll.start();
-    } else {
-        _imp->selectedNode.reset();
-        _imp->selectionPoll.stop();
-    }
-    if (!_imp->userPinned) {
-        showNodeScene((follow == eFollowSelection) ? _imp->selectedNode.lock() : NodePtr());
-    }
-    _imp->followViewer();
+    _imp->sourceBar->setFollow(follow);
 }
 
-SceneGraphPanel::FollowEnum
+NodeSourceBar::FollowEnum
 SceneGraphPanel::getFollow() const
 {
-    return _imp->follow;
+    return _imp->sourceBar->getFollow();
 }
 
 NodePtr
@@ -2232,7 +2075,7 @@ SceneGraphPanel::getShownNode() const
     if (_imp->pinned) {
         return _imp->pinned->getNode();
     }
-    if (_imp->follow == eFollowSelection) {
+    if (_imp->sourceBar->getFollow() == NodeSourceBar::eFollowSelection) {
         return NodePtr();
     }
 
@@ -2277,7 +2120,7 @@ SceneGraphPanel::revealPaths(const QStringList& paths)
 bool
 SceneGraphPanel::followsViewer(const ViewerTab* viewer) const
 {
-    return viewer && !_imp->userPinned && (_imp->follow == eFollowViewer) && (_imp->viewer == viewer);
+    return viewer && !_imp->sourceBar->isPinned() && (_imp->sourceBar->getFollow() == NodeSourceBar::eFollowViewer) && (_imp->viewer == viewer);
 }
 
 QStringList
@@ -2584,22 +2427,6 @@ SceneGraphPanel::onFilterStep()
 }
 
 void
-SceneGraphPanel::onPinToggled(bool pinned)
-{
-    pinNode(pinned ? getShownNode() : NodePtr());
-}
-
-void
-SceneGraphPanel::onNodeChosen(int index)
-{
-    const QString name = _imp->nodeChooser->itemData(index).toString();
-    GuiAppInstancePtr app = _imp->gui ? _imp->gui->getApp() : GuiAppInstancePtr();
-    NodePtr node = (app && !name.isEmpty()) ? app->getNodeByFullySpecifiedName(name.toStdString()) : NodePtr();
-
-    pinNode(node);
-}
-
-void
 SceneGraphPanel::onPinnedPoll()
 {
     _imp->dropDeletedCachedStages();
@@ -2611,13 +2438,7 @@ SceneGraphPanel::onPinnedPoll()
     }
     NodePtr node = _imp->pinned->getNode();
     if (!node || !node->isActivated()) {
-        if (_imp->userPinned) {
-            pinNode(NodePtr());
-        } else {
-            _imp->selectedNode.reset();
-            showNodeScene(NodePtr());
-            _imp->followViewer();
-        }
+        _imp->sourceBar->dropTarget();
 
         return;
     }
@@ -2690,26 +2511,6 @@ SceneGraphPanel::onCollapsed(const QModelIndex& index)
     }
     _imp->expanded.remove(_imp->model->pathOf(index));
     _imp->publishState();
-}
-
-void
-SceneGraphPanel::onSelectionPoll()
-{
-    if ((_imp->follow != eFollowSelection) || _imp->userPinned) {
-        _imp->publishState();
-
-        return;
-    }
-    // Selecting no scene node keeps the scene shown: only choosing another one switches.
-    NodePtr node = _imp->selectedSceneNode();
-    if (!node || (node == _imp->selectedNode.lock())) {
-        _imp->publishState();
-
-        return;
-    }
-    _imp->selectedNode = node;
-    showNodeScene(node);
-    _imp->followViewer();
 }
 
 void

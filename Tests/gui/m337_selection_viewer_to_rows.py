@@ -1,12 +1,12 @@
-"""Components picked in the 3D view become the selected rows of the prim inspector's Spreadsheet tab.
+"""Components picked in the 3D view become the selected rows of the Geometry Spreadsheet panel.
 
-Builds a GeoPrimitive cube (5 subdivisions each way) with the Viewer on it, and the Scene Graph panel
-beside the viewer. Picks are driven through the SceneViewport the way m361_geo_pick.py does. Checks:
+Builds a GeoPrimitive cube (5 subdivisions each way) with the Viewer on it, and the Geometry Spreadsheet
+panel beside the viewer. Picks are driven through the SceneViewport the way m361_geo_pick.py does. Checks:
   - a click on the cube's corner in points mode selects that point's row in Points and scrolls to it;
   - a marquee in primitives mode selects the primitives' rows in the Primitives tab;
   - an edge pick shows its two endpoints, selected, in the Points tab;
-  - under a descending sort a marquee selects the rows that show the picked points, and reordering
-    keeps the viewer's selection selected;
+  - a marquee over the top half of the cube picks some of its points; under a descending sort their
+    rows are the selected ones, and a new marquee selects the rows that show the picked points;
   - with a group filter hiding some of the picked points, the selection note reports how many;
   - Objects mode clears the rows and the note;
   - selecting rows in the table does not echo back into the viewer's selection.
@@ -26,8 +26,7 @@ PICK_TIMEOUT_S = 3.0
 SETTLE_MS = 500
 STARTUP_TIMEOUT_S = 60.0
 DEFAULT_NAVIGATION_PRESET = 0
-SPREADSHEET = "sceneGraphSpreadsheet"
-SPREADSHEET_TITLE = "Spreadsheet"
+SPREADSHEET = "geometrySpreadsheet"
 SUBDIVISIONS = 5
 POINTS = ("points", 1, "Points")
 EDGES = ("edges", 2, "Points")
@@ -39,7 +38,7 @@ try:
     from PySide6.QtCore import QEvent, QItemSelection, QItemSelectionModel, QPoint, QPointF, Qt
     from PySide6.QtGui import QGuiApplication, QMouseEvent
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication, QComboBox, QTabWidget, QTableView, QToolButton, QWidget
+    from PySide6.QtWidgets import QApplication, QComboBox, QTableView, QToolButton, QWidget
 
     from guitest import check, finish, plugin_problem, require, run, section, shot, viewer_up, widgets_of
 
@@ -108,7 +107,7 @@ try:
 
     def panel():
         if "panel" not in _found:
-            panels = widgets_of("SceneGraphPanel")
+            panels = widgets_of("GeoSpreadsheetPanel")
             if panels:
                 _found["panel"] = hold(panels[0])
         return _found.get("panel")
@@ -162,14 +161,6 @@ try:
     def rows_match_pick():
         elements, _ = selected_elements()
         return len(elements) > 0 and elements == picked_numbers()
-
-    def show_spreadsheet_tab():
-        tabs = child(QTabWidget, "sceneGraphInspectorTabs")
-        titles = [tabs.tabText(i) for i in range(tabs.count())]
-        if SPREADSHEET_TITLE not in titles:
-            return False
-        tabs.setCurrentIndex(titles.index(SPREADSHEET_TITLE))
-        return True
 
     def framebuffer():
         v = view()
@@ -297,7 +288,9 @@ try:
         section("sort")
         yield set_mode(POINTS)
         converted = pattern()
-        marquee(start, end)
+        # A box selects through faces, so one over the whole cube picks every point and would select
+        # every row under any sort; the top half picks a subset whose rows the sort moves.
+        marquee(start, QPoint(end.x(), view().height() // 2))
         ok = yield ("until", lambda: count() >= 2 and pattern() != converted and rows_match_pick(), POLL_TIMEOUT_S)
         require(ok, "a points marquee selects its rows (%r, was %r)" % (pattern(), converted))
         columns = table().model().columnCount()
@@ -427,12 +420,11 @@ try:
         require(home is not None, "the scene view is in a pane")
         split = app.getTabWidget(home.objectName()).splitHorizontally()
         require(split is not None, "split the viewer's pane")
-        require(app.moveTab("sceneGraph", split), "move the Scene Graph panel beside the viewer")
+        require(app.moveTab("geometrySpreadsheet", split), "move the Geometry Spreadsheet panel beside the viewer")
         split = None
         ok = yield ("until", lambda: panel() is not None and panel().isVisible(), POLL_TIMEOUT_S)
         require(ok, "the panel shows")
-        require(show_spreadsheet_tab(), "the inspector has a Spreadsheet tab")
-        require(sheet() is not None and table() is not None, "the Spreadsheet tab has its table")
+        require(sheet() is not None and table() is not None, "the panel has its table")
         ok = yield ("until", lambda: sheet_state("Rows") is not None and sheet_state("Rows") > 0 and table().isVisible(), POLL_TIMEOUT_S)
         require(ok, "the table lists the cube")
 

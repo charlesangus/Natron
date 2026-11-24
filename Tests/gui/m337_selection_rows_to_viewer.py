@@ -1,7 +1,7 @@
-"""Rows selected in the prim inspector's Spreadsheet tab become the 3D view's live selection.
+"""Rows selected in the Geometry Spreadsheet panel become the 3D view's live selection.
 
-Builds a GeoPrimitive grid (9 x 9 faces, 100 points) with the Viewer on it, and the Scene Graph panel
-beside the viewer. Checks, on the viewport's natronGeoSelection, natronGeoSelectionCount and
+Builds a GeoPrimitive grid (9 x 9 faces, 100 points) with the Viewer on it, and the Geometry Spreadsheet
+panel beside the viewer. Checks, on the viewport's natronGeoSelection, natronGeoSelectionCount and
 natronGeoPickMode properties:
   - selecting Points rows 0-9 puts the view in points mode with the selection 0-9;
   - selecting other Points rows replaces that selection;
@@ -25,8 +25,7 @@ POLL_TIMEOUT_S = 30.0
 BIG_TIMEOUT_S = 240.0
 STARTUP_TIMEOUT_S = 60.0
 SETTLE_MS = 400
-SPREADSHEET = "sceneGraphSpreadsheet"
-SPREADSHEET_TITLE = "Spreadsheet"
+SPREADSHEET = "geometrySpreadsheet"
 GRID = 9
 BIG_GRID = 2047
 HEARTBEAT_MS = 10
@@ -34,7 +33,7 @@ HEARTBEAT_BUDGET_MS = 500.0
 
 try:
     from PySide6.QtCore import QItemSelection, QItemSelectionModel, QTimer
-    from PySide6.QtWidgets import QTabWidget, QTableView, QToolButton, QWidget
+    from PySide6.QtWidgets import QTableView, QToolButton, QWidget
 
     from guitest import check, finish, plugin_problem, report, require, run, section, shot, viewer_up, widgets_of
 
@@ -68,7 +67,7 @@ try:
 
     def panel():
         if "panel" not in _found:
-            panels = widgets_of("SceneGraphPanel")
+            panels = widgets_of("GeoSpreadsheetPanel")
             if panels:
                 _found["panel"] = hold(panels[0])
         return _found.get("panel")
@@ -84,9 +83,6 @@ try:
                 return None
             _found[name] = c
         return _found[name]
-
-    def inspector():
-        return child(QWidget, "sceneGraphInspector")
 
     def scene_drawn():
         v = view()
@@ -136,14 +132,6 @@ try:
         model = t.model()
         selection = QItemSelection(model.index(first, 0), model.index(last, model.columnCount() - 1))
         t.selectionModel().select(selection, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
-
-    def show_spreadsheet_tab():
-        tabs = child(QTabWidget, "sceneGraphInspectorTabs")
-        titles = [tabs.tabText(i) for i in range(tabs.count())]
-        if SPREADSHEET_TITLE not in titles:
-            return False
-        tabs.setCurrentIndex(titles.index(SPREADSHEET_TITLE))
-        return True
 
     def main_thread_times_ms():
         """The calling thread's total time on a CPU, and total time ready to run without one."""
@@ -254,19 +242,17 @@ try:
         require(ok, "the viewer is up")
         ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)
         require(ok, "the scene view shows the grid")
-        require(panel() is not None, "the Scene Graph panel exists")
+        require(panel() is not None, "the Geometry Spreadsheet panel exists")
 
         home = ancestor_of_class(view(), "TabWidget")
         require(home is not None, "the scene view is in a pane")
         split = app.getTabWidget(home.objectName()).splitHorizontally()
         require(split is not None, "split the viewer's pane")
-        require(app.moveTab("sceneGraph", split), "move the Scene Graph panel beside the viewer")
+        require(app.moveTab("geometrySpreadsheet", split), "move the Geometry Spreadsheet panel beside the viewer")
         split = None
         ok = yield ("until", lambda: panel().isVisible(), POLL_TIMEOUT_S)
         require(ok, "the panel shows")
-        require(inspector() is not None, "the panel has its inspector")
-        require(show_spreadsheet_tab(), "the inspector has a Spreadsheet tab")
-        require(sheet() is not None and table() is not None, "the Spreadsheet tab has its table")
+        require(sheet() is not None and table() is not None, "the panel has its table")
 
         yield from points_section()
         yield from primitives_section()

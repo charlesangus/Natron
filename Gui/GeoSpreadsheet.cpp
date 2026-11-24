@@ -569,15 +569,13 @@ public:
         return _widget;
     }
 
-    bool readsWithoutPrim(const NodePtr& node) const override
-    {
-        return putsOutGeometry(node);
-    }
-
     std::function<void()> read(const ScenePrimInspectorRead& read) override
     {
-        if (putsOutGeometry(read.getNode())) {
-            return readGeometry(read);
+        if (geoSpreadsheetListsNode(read.getNode())) {
+            return [this]() {
+                _widget->setHighlightTarget(ViewerInstanceWPtr(), QString(), NodeWPtr());
+                _widget->showMessage(GeoSpreadsheetWidget::tr("Native geometry is listed in the Geometry Spreadsheet panel"));
+            };
         }
         const ScenePrimElements elements = SceneOps::readPrimElements(
             [&read](const std::function<void(const SceneStage* stage)>& readOne) { return read.readStage(readOne); },
@@ -640,68 +638,75 @@ public:
     }
 
 private:
-    static bool putsOutGeometry(const NodePtr& node)
-    {
-        const EffectInstancePtr effect = node ? node->getEffectInstance() : EffectInstancePtr();
-
-        return effect && node->isActivated() && effect->producesGeometryData();
-    }
-
-    // The node's whole detail: a prim selected in its scene, one of the layer the viewer made of
-    // it, narrows nothing.
-    std::function<void()> readGeometry(const ScenePrimInspectorRead& read)
-    {
-        GeoDetailConstPtr detail;
-        const ViewerInstancePtr& viewer = read.getViewer();
-        int servedFrame = 0;
-        // Texture 0 is input A, the input the 3D view shows and the only one getViewer() is set for. During
-        // playback the 3D view can still be on an earlier frame than the one asked for.
-        const bool fromViewer = viewer && viewer->getShownGeometry(0, &detail, &servedFrame) && detail
-            && (double(servedFrame) == read.getFrame());
-
-        // The viewer's own copy, when it has one, numbers the elements as its 3D view picks them.
-        if (!fromViewer) {
-            detail.reset();
-            const EffectInstancePtr effect = read.getNode()->getEffectInstance();
-            std::string error;
-            EffectInstance::RenderRoIRetCode code = EffectInstance::eRenderRoIRetCodeFailed;
-            try {
-                code = effect->evaluateGeometry(EffectInstance::EvaluateGeometryArgs(read.getFrame(), ViewIdx(0)), &detail, &error);
-            } catch (const std::exception& e) {
-                error = e.what();
-            } catch (...) {
-            }
-            appPTR->getAppTLS()->cleanupTLSForThread();
-            if (read.isCancelled()) {
-                return std::function<void()>();
-            }
-            if ((code != EffectInstance::eRenderRoIRetCodeOk) || !detail) {
-                const QString text = error.empty() ? GeoSpreadsheetWidget::tr("The geometry could not be evaluated")
-                                                   : GeoSpreadsheetWidget::tr("The geometry could not be evaluated: %1").arg(QString::fromStdString(error));
-
-                return [this, text]() {
-                    _widget->setHighlightTarget(ViewerInstanceWPtr(), QString(), NodeWPtr());
-                    _widget->showMessage(text);
-                };
-            }
-        }
-        if (read.isCancelled()) {
-            return std::function<void()>();
-        }
-        const GeoSpreadsheetModel::SourcePtr source = std::make_shared<GeoDetailSpreadsheetSource>(detail);
-        const ViewerInstanceWPtr target = fromViewer ? ViewerInstanceWPtr(viewer) : ViewerInstanceWPtr();
-
-        return [this, source, target]() {
-            _widget->setHighlightTarget(ViewerInstanceWPtr(), QString(), NodeWPtr());
-            _widget->setSelectionViewer(target);
-            _widget->setSnapshot(source);
-        };
-    }
-
     GeoSpreadsheetWidget* _widget;
 };
 
 } // anon namespace
+
+bool
+geoSpreadsheetListsNode(const NodePtr& node)
+{
+    const EffectInstancePtr effect = node ? node->getEffectInstance() : EffectInstancePtr();
+
+    return effect && node->isActivated() && effect->producesGeometryData();
+}
+
+GeoSpreadsheetNodeRead
+geoSpreadsheetReadNode(const NodePtr& node,
+                       const ViewerInstancePtr& viewer,
+                       double frame,
+                       const std::function<bool()>& isCancelled)
+{
+    GeoSpreadsheetNodeRead result;
+    GeoDetailConstPtr detail;
+    int servedFrame = 0;
+    NodePtr servedNode;
+    U64 servedHash = 0;
+    // Texture 0 is input A, the input the 3D view shows. During playback the 3D view can still be on
+    // an earlier frame than the one asked for, and right after the viewer is switched to another
+    // node, or the node is edited, it can still hold the geometry it had before.
+    const bool fromViewer = viewer && viewer->getShownGeometry(0, &detail, &servedFrame, &servedNode, &servedHash) && detail
+        && (double(servedFrame) == frame) && servedNode && (servedNode == node)
+        && (servedHash == servedNode->getHashValue());
+
+    // The viewer's own copy, when it has one, numbers the elements as its 3D view picks them.
+    if (!fromViewer) {
+        detail.reset();
+        const EffectInstancePtr effect = node->getEffectInstance();
+        std::string error;
+        EffectInstance::RenderRoIRetCode code = EffectInstance::eRenderRoIRetCodeFailed;
+        try {
+            code = effect->evaluateGeometry(EffectInstance::EvaluateGeometryArgs(frame, ViewIdx(0)), &detail, &error);
+        } catch (const std::exception& e) {
+            error = e.what();
+        } catch (...) {
+        }
+        appPTR->getAppTLS()->cleanupTLSForThread();
+        if (isCancelled()) {
+            result.cancelled = true;
+
+            return result;
+        }
+        if ((code != EffectInstance::eRenderRoIRetCodeOk) || !detail) {
+            result.error = error.empty() ? GeoSpreadsheetWidget::tr("The geometry could not be evaluated")
+                                         : GeoSpreadsheetWidget::tr("The geometry could not be evaluated: %1").arg(QString::fromStdString(error));
+
+            return result;
+        }
+    }
+    if (isCancelled()) {
+        result.cancelled = true;
+
+        return result;
+    }
+    result.source = std::make_shared<GeoDetailSpreadsheetSource>(detail);
+    result.fromViewer = fromViewer;
+    if (fromViewer) {
+        result.selectionViewer = viewer;
+    }
+
+    return result;
+}
 
 bool
 geoSpreadsheetFilterMask(const GeoSpreadsheetSource& source,

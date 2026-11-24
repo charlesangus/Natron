@@ -229,12 +229,12 @@ pixel(int row,
 std::list<ImageLayerDesc>
 allPlanes()
 {
-    static const char* const normalChannels[] = { "X", "Y", "Z" };
+    static const char* const normalChannels[] = { "x", "y", "z" };
     std::list<ImageLayerDesc> layers;
     layers.push_back(ImageLayerDesc::getRGBAComponents());
-    layers.push_back(ImageLayerDesc("depth", "depth", "", std::vector<std::string>(1, "Z")));
-    layers.push_back(ImageLayerDesc("primId", "primId", "", std::vector<std::string>(1, "id")));
-    layers.push_back(ImageLayerDesc("normal", "normal", "", std::vector<std::string>(normalChannels, normalChannels + 3)));
+    layers.push_back(ImageLayerDesc("depth", std::vector<std::string>(1, "Z")));
+    layers.push_back(ImageLayerDesc("primId", std::vector<std::string>(1, "id")));
+    layers.push_back(ImageLayerDesc("normal", std::vector<std::string>(normalChannels, normalChannels + 3)));
 
     return layers;
 }
@@ -449,7 +449,7 @@ protected:
 
             return false;
         }
-        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(request->scene, &error);
+        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(request->scene, SceneLoadSet::everything(), &error);
         if (!lease.getStage()) {
             ADD_FAILURE() << error;
 

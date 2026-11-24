@@ -85,7 +85,7 @@ listLayerEntriesForKnob(const NodePtr& node,
     for (std::list<ImageLayerDesc>::const_iterator it = descs.begin(); it != descs.end(); ++it) {
         LayerChannelRow::LayerEntry entry;
         entry.id = it->getLayerID();
-        entry.label = it->getLayerLabel();
+        entry.label = it->getLayerID();
         entry.channels = it->getChannels();
         entries.push_back(entry);
     }

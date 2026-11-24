@@ -7,8 +7,9 @@
 #
 # Everything the build needs (bar one documented exception below) is already
 # present in aswf/ci-vfxall:2027-clang21.1. This file adds the Cycles Hydra
-# render delegate, MoonRay and its Hydra render delegate, the Mesa relink and
-# the Slang and glslang toolchains, so no build downloads them.
+# render delegate, MoonRay and its Hydra render delegate, the Mesa relink,
+# the Slang and glslang toolchains and ccache's HTTPS storage helper, so no
+# build downloads them.
 #
 # Why ci-vfxall and not ci-baseqt (which this used through M7): ci-baseqt
 # ships Qt/PySide and the base libraries but no OpenColorIO, OpenImageIO, or
@@ -119,7 +120,27 @@ RUN NATRON_MOONRAY_REPO="$NATRON_MOONRAY_REPO" \
 
 # --- Additions on top of the base image ------------------
 # ccache, ninja, and gdb are already present in this base image (ccache and
-# ninja via Conan at /usr/local/bin, gdb as an RPM) -- nothing to install.
+# ninja via Conan at /usr/local/bin, gdb as an RPM).
+#
+# ccache's built-in remote storage client speaks plain HTTP only. An https://
+# remote_storage URL makes ccache run a helper named ccache-storage-https from
+# PATH, so the HTTP(S) storage helper is installed under that name alone.
+# Installing it as ccache-storage-http too would replace the built-in client
+# for plain-HTTP URLs.
+ARG NATRON_CCACHE_HTTPS_HELPER_VERSION=0.10.1
+ARG NATRON_CCACHE_HTTPS_HELPER_SHA256=679a8337cdc32a8bc670a2a91a2c11624d174b41881f0fa14d3c6bd06addf3fe
+ARG NATRON_CCACHE_HTTPS_HELPER_URL=https://github.com/ccache/ccache-storage-http-go/releases/download/v${NATRON_CCACHE_HTTPS_HELPER_VERSION}/ccache-storage-http-go-${NATRON_CCACHE_HTTPS_HELPER_VERSION}-linux-amd64.tar.gz
+RUN set -eu; \
+    tarball=/tmp/ccache-storage-http.tar.gz; \
+    unpacked=/tmp/ccache-storage-http; \
+    wget -q -O "$tarball" "$NATRON_CCACHE_HTTPS_HELPER_URL"; \
+    echo "${NATRON_CCACHE_HTTPS_HELPER_SHA256}  ${tarball}" | sha256sum -c -; \
+    mkdir -p "$unpacked"; \
+    tar -xzf "$tarball" -C "$unpacked" --strip-components=1; \
+    install -m 0755 "$unpacked/ccache-storage-http" /usr/local/bin/ccache-storage-https; \
+    rm -rf "$tarball" "$unpacked"; \
+    test ! -e /usr/local/bin/ccache-storage-http; \
+    test -x /usr/local/bin/ccache-storage-https
 
 # --- Mesa: bind its drivers to the system LLVM -----------------------------
 # Mesa's RPMs were built against the system /usr/lib64/libLLVM.so.21.1, but

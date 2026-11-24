@@ -50,6 +50,16 @@ NATRON_NAMESPACE_ENTER
  * consecutive queries along a chain, or of a stack one edit away, move a few sublayers instead
  * of composing a new stage.
  *
+ * Every borrower names its load set; whose it is depends on what the borrower serves:
+ *   - a node's authoring, menus and knob refreshes during an evaluation: that evaluation's set
+ *     (the viewer's, a Scene Graph panel's own), as the node's input context gives it
+ *   - outside an evaluation: the set of the most recently active viewer whose scene input
+ *     reaches the node, mapped down to the node's input, else none
+ *   - a reader of known paths: the owner's set widened by SceneLoadSet::withPaths for just
+ *     those paths and the prims on the way to them
+ *   - renders, USDWrite, scripts, and metadata built off the main thread: SceneLoadSet::everything()
+ *     with the reason at the call site
+ *
  * Bounded: past the capacity, the least recently returned idle stages are dropped. Idle stages
  * are dropped too on a cache purge and when a project closes (SceneCaches). MT-safe.
  **/
@@ -78,6 +88,9 @@ public:
         // The borrowed payload's projections whose camera the stage lacks.
         std::vector<SceneProjectionCameras::Unresolved> getUnresolvedProjections() const;
 
+        // How many times the stage's payload inclusion has changed in its life.
+        U64 getLoadEditCount() const;
+
         // Gives the stage back now.
         void release();
 
@@ -97,10 +110,15 @@ public:
     ~SceneQueryPool();
 
     /**
-     * @brief A stage composing payload, borrowed. Returns an invalid lease with *errorMessage set
-     * when OpenUSD is unusable.
+     * @brief A stage composing payload with the payloads of loadSet included, every one for a
+     * null or empty set (SceneLoadSet::everything()). Returns an invalid lease with *errorMessage
+     * set when OpenUSD is unusable. Prefers an idle stage that already includes the same
+     * payloads, then the one whose load set differs least, and loads and unloads only the
+     * difference. A stage borrowed again with the set it was given back with loads nothing.
      **/
-    Lease borrow(const ScenePayload& payload, std::string* errorMessage);
+    Lease borrow(const ScenePayload& payload,
+                 const SceneLoadSetPtr& loadSet,
+                 std::string* errorMessage);
 
     // Drops every idle stage, and the layers only they kept open.
     void releaseIdle();

@@ -270,7 +270,7 @@ Gui::abortProject(bool quitApp,
             }
         }
         centerAllNodeGraphsWithTimer();
-        restoreDefaultLayout();
+        restoreDefaultLayoutUnlessKept();
         setGuiAboutToClose(false);
     }
 

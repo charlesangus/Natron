@@ -285,13 +285,6 @@ private:
     ImageLayerDesc getOutputColorStorage(double time, ViewIdx view) WARN_UNUSED_RETURN;
 
     /**
-     * @brief The display label (e.g. "rgba", "diffuse") for layerID, resolved against
-     * inputNb's present layers when the project registry does not know it. Falls back to
-     * the raw ID so an unresolved layer never leaves the sub-label blank.
-     **/
-    std::string resolveLayerLabel(const std::string& layerID, int inputNb, double time, ViewIdx view);
-
-    /**
      * @brief Builds the node-graph sub-label text (unparenthesized) from the current
      * in1/in2/out1/out2 selections; Node wraps and displays it.
      **/

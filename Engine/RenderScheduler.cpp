@@ -440,7 +440,7 @@ formatTaskRecord(const FrameGraph::Task& task,
         if (it != task.components.begin()) {
             line.push_back(',');
         }
-        appendJSONString(it->getChannelsLabel(), &line);
+        appendJSONString(it->getUserFacingLabel(), &line);
     }
     std::snprintf(num, sizeof(num), "],\"bitDepth\":\"%s\",\"deps\":[", bitDepthName(task.bitdepth));
     line.append(num);

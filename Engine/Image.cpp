@@ -842,8 +842,6 @@ Image::diskParamsBytes(const ImageParams& params)
 
     const ImageLayerDesc& components = params.getComponents();
     bytes.putText(components.getLayerID());
-    bytes.putText(components.getLayerLabel());
-    bytes.putText(components.getChannelsLabel());
     const std::vector<std::string>& channels = components.getChannels();
     bytes.put<std::uint32_t>((std::uint32_t)channels.size());
     for (const std::string& channel : channels) {
@@ -863,9 +861,9 @@ Image::diskParamsFromBytes(const std::string& bytes,
     std::uint32_t mipmapLevel, textureTarget, channelCount;
     std::uint8_t isRoDProjectFormat;
     std::int32_t bitDepth, fielding, mode;
-    std::string layerID, layerLabel, channelsLabel;
+    std::string layerID;
 
-    if (!reader.get(&rod.x1) || !reader.get(&rod.y1) || !reader.get(&rod.x2) || !reader.get(&rod.y2) || !reader.get(&par) || !reader.get(&mipmapLevel) || !reader.get(&isRoDProjectFormat) || !reader.get(&bitDepth) || !reader.get(&fielding) || !reader.get(&mode) || !reader.get(&textureTarget) || !reader.getText(&layerID) || !reader.getText(&layerLabel) || !reader.getText(&channelsLabel) || !reader.get(&channelCount) || (channelCount == 0) || (channelCount > bytes.size())) {
+    if (!reader.get(&rod.x1) || !reader.get(&rod.y1) || !reader.get(&rod.x2) || !reader.get(&rod.y2) || !reader.get(&par) || !reader.get(&mipmapLevel) || !reader.get(&isRoDProjectFormat) || !reader.get(&bitDepth) || !reader.get(&fielding) || !reader.get(&mode) || !reader.get(&textureTarget) || !reader.getText(&layerID) || !reader.get(&channelCount) || (channelCount == 0) || (channelCount > bytes.size())) {
         return ImageParamsPtr();
     }
 
@@ -896,7 +894,7 @@ Image::diskParamsFromBytes(const std::string& bytes,
                                          (ImageBitDepthEnum)bitDepth,
                                          (ImageFieldingOrderEnum)fielding,
                                          isRoDProjectFormat != 0,
-                                         ImageLayerDesc(layerID, layerLabel, channelsLabel, channels),
+                                         ImageLayerDesc(layerID, channels),
                                          eStorageModeRAM,
                                          textureTarget);
 }
@@ -1878,7 +1876,11 @@ std::string
 Image::getFormatString(const ImageLayerDesc& comps,
                        ImageBitDepthEnum depth)
 {
-    std::string s = comps.getUserFacingLabel() + '.' + comps.getChannelsLabel();
+    std::string s = comps.getUserFacingLabel() + '.';
+    const std::vector<std::string>& channels = comps.getChannels();
+    for (std::size_t i = 0; i < channels.size(); ++i) {
+        s.append(channels[i]);
+    }
 
     s.append( getDepthString(depth) );
 

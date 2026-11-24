@@ -175,6 +175,9 @@ public:
      **/
     void scheduleLoopBlockRefresh(bool topology);
 
+    // Emits selectionChanged once control returns to the event loop.
+    void scheduleSelectionChanged();
+
     using PanelWidget::pushUndoCommand;
 
     /**
@@ -363,6 +366,10 @@ Q_SIGNALS:
      * nodes a loop's body holds.
      **/
     void topologyChanged();
+
+    // Emitted once for any number of nodes selected or deselected since the last return to the
+    // event loop.
+    void selectionChanged();
 
 public Q_SLOTS:
 

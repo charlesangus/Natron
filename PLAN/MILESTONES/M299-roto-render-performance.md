@@ -138,7 +138,7 @@ Coordination with M370 - Roto Point List Render Isolation, which runs in paralle
   - verify: A gtest renders two disjoint RoIs, then the full bbox, and matches a one-shot render bit for bit, rasterising each pixel once. The M300 partial-entry tests still pass.
   - size: L
 
-- [ ] M299.P3.T3 — Rasterise strokes in parallel row bands
+- [x] M299.P3.T3 — Rasterise strokes in parallel row bands (bb5d6e6ff)
   - files: Engine/RotoContext.cpp (renderStroke ~1656, renderMaskInternal's cairo path ~1405)
   - approach: Run this only if P1 ranks stroke raster high. Pre-evaluate the dab list on the render thread, then render bands in parallel. Each band is clipped to its rows on its own cairo surface and keeps the dab order and its own pressure-level pattern cache.
   - verify: Tests/Serialization/RotoPaintReference_Test and the M224 stroke golden stay bit-identical. A 1-band vs many-band gtest matches bit for bit.
@@ -205,3 +205,4 @@ Coordination with M370 - Roto Point List Render Isolation, which runs in paralle
     - Band-parallel via makeStageRowBands and parallelForCancellable.
     - NATRON_ROTO_INVERTIBLE and the motion-blur defines are compiled out.
 
+- 2026-11-24 — P3.T3 run without the stroke profile it was deferred on: the lane had stalled with nothing else to do; band equality tests (any band count byte-identical to one surface) guard it. Pattern reuse is keyed on exact radii and stops, not on rounded pressure, which would change output.

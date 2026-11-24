@@ -516,6 +516,8 @@ private:
 
     void dragPickedUpArrowToCursor();
 
+    void setHoverEdge(Edge* edge);
+
     void dropPickedUpArrow();
 
     bool handlePickUpPress(QMouseEvent* e);

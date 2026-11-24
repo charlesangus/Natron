@@ -383,6 +383,11 @@ public:
     bool _pickedUpArrowIsOutput = false;
     PickUpEndEnum _pickedUpArrowEnd = ePickUpEndSource;
 
+    // The edge a click at the cursor would pick up, highlighted while no button is down. Held by
+    // node and input number (-1 for the output stub), like the picked-up arrow.
+    NodeGuiWPtr _hoverEdgeNode;
+    int _hoverEdgeInput = -1;
+
     NodeGuiPtr _backdropResized; //< the backdrop being resized
     UndoGesture _dragGesture; //< from a press to its release, so one resize drag is one undo step
     IndexedNodeGuiList _selection; //< in the order the nodes were selected

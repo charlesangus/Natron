@@ -1526,6 +1526,18 @@ Settings::initializeKnobsNodeGraph()
     _outputStubLength->setMinimum(0);
     _nodegraphTab->addKnob(_outputStubLength);
 
+    _outputStyle = AppManager::createKnob<KnobChoice>(this, tr("Output Style"));
+    _outputStyle->setName("outputStyle");
+    {
+        std::vector<ChoiceOption> entries;
+        entries.push_back(ChoiceOption("arrow", "Arrow", tr("A short pipe with an arrow head, Output Stub Length long.").toStdString()));
+        entries.push_back(ChoiceOption("nub", "Nub", tr("A filled half circle under the node's bottom edge, sized from the Output Stub Length.").toStdString()));
+        _outputStyle->populateChoices(entries);
+    }
+    _outputStyle->setHintToolTip(tr("How the output of a node that feeds nothing is drawn. Either one is grabbed to drag a new "
+                                    "connection from the node."));
+    _nodegraphTab->addKnob(_outputStyle);
+
     _useInputAForMergeAutoConnect = AppManager::createKnob<KnobBool>( this, tr("Merge node connect to A input") );
     _useInputAForMergeAutoConnect->setName("mergeConnectToA");
     _useInputAForMergeAutoConnect->setHintToolTip( tr("If checked, upon creation of a new Merge node, or any other node with inputs named "
@@ -1975,9 +1987,10 @@ Settings::setDefaultValues()
     _autoTurbo->setDefaultValue(false);
     _snapNodesToConnections->setDefaultValue(true);
     _maxUndoSteps->setDefaultValue(200, 0);
-    _pipeWidth->setDefaultValue(3);
+    _pipeWidth->setDefaultValue(4);
     _disconnectedArrowLength->setDefaultValue(40);
     _outputStubLength->setDefaultValue(20);
+    _outputStyle->setDefaultValue((int)eOutputStyleNub);
     _useInputAForMergeAutoConnect->setDefaultValue(true);
     _showLinkLines->setDefaultValue(true);
     _showExpressionLines->setDefaultValue(true);
@@ -3737,6 +3750,12 @@ int
 Settings::getOutputStubLength() const
 {
     return _outputStubLength->getValue();
+}
+
+Settings::OutputStyleEnum
+Settings::getOutputStyle() const
+{
+    return (OutputStyleEnum)_outputStyle->getValue();
 }
 
 std::string

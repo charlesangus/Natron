@@ -117,6 +117,14 @@ public:
 
     void setUseSelected(bool val);
 
+    // Drawn in the highlight colour while a click at the cursor would pick this edge up. Scripts
+    // read the state back through QGraphicsItem::data(kHoverHighlightDataKey).
+    void setHoverHighlight(bool hover);
+
+    bool isHoverHighlighted() const;
+
+    static const int kHoverHighlightDataKey = 0;
+
     bool isOutputEdge() const;
 
     void setIsSpliceHint(bool hint);

@@ -113,6 +113,12 @@ public:
         eViewer3DLightingHeadlight
     };
 
+    // How the output of a node that feeds nothing is drawn below it.
+    enum OutputStyleEnum {
+        eOutputStyleArrow = 0,
+        eOutputStyleNub
+    };
+
     enum KnownHostNameEnum
     {
         eKnownHostNameNatron = 0,
@@ -262,6 +268,8 @@ public:
     int getPipeWidth() const;
 
     int getOutputStubLength() const;
+
+    OutputStyleEnum getOutputStyle() const;
 
     void getGeneratorColor(float *r, float *g, float *b) const;
     void getReaderColor(float *r, float *g, float *b) const;
@@ -738,6 +746,7 @@ private:
     KnobIntPtr _pipeWidth;
     KnobIntPtr _disconnectedArrowLength;
     KnobIntPtr _outputStubLength;
+    KnobChoicePtr _outputStyle;
     KnobBoolPtr _useInputAForMergeAutoConnect;
     KnobBoolPtr _showLinkLines;
     KnobBoolPtr _showExpressionLines;

@@ -1,11 +1,14 @@
 """Checks the node graph pipe preferences: Pipe Width sets the pen of every pipe, connected or not,
 Disconnected Arrow Length and Output Stub Length set where a dangling input and an output stub end,
-and the grab radius of a dangling pipe grows with the width but never shrinks below 18 viewport
-pixels. Screenshots a node at the default preferences.
+and the grab radii grow with the width (16 / 32 viewport pixels for a connected / dangling pipe at
+the default width 4) but never shrink below 10 / 18. Output Style draws an output that feeds nothing
+as an arrow stub or as a nub, a half circle under the node, which is grabbed to drag a connection
+like the stub. With no button down, the pipe a click would pick up is highlighted.
 
 Usage (natron-dev container; see Tests/gui/run-gui-test.sh):
     NATRON_GUI_TEST_OUT=build/pipe-grab/out Tests/gui/run-gui-test.sh Tests/gui/pipe_grab.py build/fast/App/Natron
-Shots: pipe-grab-defaults.png (the node graph viewport).
+Shots (the node graph viewport): pipe-grab-defaults.png, pipe-grab-nub.png and pipe-grab-arrow.png
+(the two output styles), pipe-grab-hover.png (a dangling input highlighted under the cursor).
 """
 import os
 import sys
@@ -19,10 +22,20 @@ SETTLE_MS = 400
 LINE_ITEM_TYPE = 6
 # Pipe ends are laid out from the node's outline, which can sit a pixel or two off getSize().
 POSITION_TOLERANCE = 3.0
-DEFAULTS = {"pipeWidth": 3, "disconnectedArrowLength": 40, "outputStubLength": 20}
+DEFAULTS = {"pipeWidth": 4, "disconnectedArrowLength": 40, "outputStubLength": 20}
 LABELS = {"pipeWidth": "Pipe Width", "disconnectedArrowLength": "Disconnected Arrow Length",
-          "outputStubLength": "Output Stub Length"}
+          "outputStubLength": "Output Stub Length", "outputStyle": "Output Style"}
+OUTPUT_STYLE_ARROW = 0
+OUTPUT_STYLE_NUB = 1
+OUTPUT_STYLE_IDS = ["arrow", "nub"]
+# Edge.cpp: the nub's radius is 0.6 of the Output Stub Length.
+NUB_RADIUS = 0.6 * DEFAULTS["outputStubLength"]
+GRAB_RADIUS_DEFAULT = 16.0
+DANGLING_RADIUS_DEFAULT = 32.0
+GRAB_RADIUS_MIN = 10.0
 DANGLING_RADIUS_MIN = 18.0
+# Edge::kHoverHighlightDataKey
+HOVER_DATA_KEY = 0
 DRAG_OFFSET = (-120, 0)
 
 try:
@@ -128,6 +141,30 @@ try:
                 continue
         return None
 
+    def dangling_input_hovered(node):
+        """Whether the upward dangling input of node is hover-highlighted, or None if it is not shown."""
+        graph = root_graph()
+        c = centre(node)
+        for it in (list(graph.items()) if graph is not None else []):
+            try:
+                if it.type() != LINE_ITEM_TYPE or not it.isVisible():
+                    continue
+                line = it.line()
+                p1 = it.mapToScene(line.p1())
+                p2 = it.mapToScene(line.p2())
+                if near((p1.x(), p1.y()), c) and abs(p2.x() - p1.x()) < 1.0 and p2.y() < p1.y():
+                    return bool(it.data(HOVER_DATA_KEY))
+            except RuntimeError:
+                continue
+        return None
+
+    def connected_pipe(src, dst, tol):
+        """The pipe from src into dst, as (dst end, src end), or None."""
+        for p1, p2, _ in pipes():
+            if near(p2, centre(src), tol) and near(p1, centre(dst), tol):
+                return (p1, p2)
+        return None
+
     def dist_to_segment(p, a, b):
         dx, dy = b[0] - a[0], b[1] - a[1]
         l2 = dx * dx + dy * dy
@@ -152,19 +189,36 @@ try:
         p = graph.mapToScene(int(view_pt[0]), int(view_pt[1]))
         return (p.x(), p.y())
 
-    def drag_from(press_view):
-        """Presses at press_view, drags by DRAG_OFFSET and returns the pipe ends seen at the drag's
-        end, then releases there over empty graph."""
-        target = (press_view[0] + DRAG_OFFSET[0], press_view[1] + DRAG_OFFSET[1])
+    def drag_between(press_view, target):
+        """Presses at press_view, drags to target and returns the pipe ends seen at the drag's end,
+        then releases there."""
         send_mouse(QEvent.MouseButtonPress, press_view, Qt.LeftButton, Qt.LeftButton)
         for i in range(1, 5):
             f = i / 4.0
-            p = (press_view[0] + DRAG_OFFSET[0] * f, press_view[1] + DRAG_OFFSET[1] * f)
+            p = (press_view[0] + (target[0] - press_view[0]) * f, press_view[1] + (target[1] - press_view[1]) * f)
             send_mouse(QEvent.MouseMove, p, Qt.NoButton, Qt.LeftButton)
         target_scene = to_scene(target)
         followed = [(p1, p2) for p1, p2, _ in pipes() if near(p1, target_scene) or near(p2, target_scene)]
         send_mouse(QEvent.MouseButtonRelease, target, Qt.LeftButton, Qt.NoButton)
         return followed
+
+    def drag_from(press_view):
+        """drag_between press_view and DRAG_OFFSET from it, over empty graph."""
+        return drag_between(press_view, (press_view[0] + DRAG_OFFSET[0], press_view[1] + DRAG_OFFSET[1]))
+
+    def beside_at(seg, frac, offset):
+        """The viewport point offset pixels left of the point frac along a near-vertical scene segment."""
+        pt = (seg[0][0] + (seg[1][0] - seg[0][0]) * frac, seg[0][1] + (seg[1][1] - seg[0][1]) * frac)
+        v = to_view(pt)
+        return (v[0] - offset, v[1])
+
+    def shoot(name):
+        graph = root_graph()
+        vp = graph.viewport()
+        origin = vp.mapToGlobal(vp.rect().topLeft())
+        pix = QGuiApplication.primaryScreen().grabWindow(0, origin.x(), origin.y(), vp.width(), vp.height())
+        path = os.path.join(gt.OUT, name)
+        report(("SHOT " if pix.save(path) else "NOTE could not save ") + path)
 
     def beside(seg, offset):
         """The viewport point offset pixels left of the midpoint of a vertical scene segment."""
@@ -202,6 +256,14 @@ try:
             check(p.getDefaultValue() == value, "%s defaults to %d (got %d)" % (name, value, p.getDefaultValue()))
             check(p.getLabel() == LABELS[name], "%s is labelled %r (got %r)" % (name, LABELS[name], p.getLabel()))
             set_pref(name, value)
+        style = settings.getParam("outputStyle")
+        require(style is not None, "Preferences have a parameter named outputStyle")
+        check(style.getDefaultValue() == OUTPUT_STYLE_NUB, "outputStyle defaults to Nub (got %r)" % style.getDefaultValue())
+        check(style.getLabel() == LABELS["outputStyle"], "outputStyle is labelled %r (got %r)"
+              % (LABELS["outputStyle"], style.getLabel()))
+        options = [str(o) for o in style.getOptions()]
+        check(options == OUTPUT_STYLE_IDS, "the output styles are %r (got %r)" % (OUTPUT_STYLE_IDS, options))
+        set_pref("outputStyle", OUTPUT_STYLE_NUB)
 
         lone = create("Blur", 0, 0)
         src = create("Constant", 300, -200)
@@ -227,19 +289,20 @@ try:
         check(abs((ly - inp[1][1]) - DEFAULTS["disconnectedArrowLength"]) <= POSITION_TOLERANCE,
               "the dangling input reaches %d px above the node (free end at y %g, node top %g)"
               % (DEFAULTS["disconnectedArrowLength"], inp[1][1], ly))
+        check(abs((stub[0][1] - (ly + lh)) - NUB_RADIUS) <= POSITION_TOLERANCE,
+              "the output nub reaches %g px below the node (free end at y %g, node bottom %g)"
+              % (NUB_RADIUS, stub[0][1], ly + lh))
+        connected = [w for p1, p2, w in pipes() if near(p2, centre(src), lh) and near(p1, centre(dst), lh)]
+        require(connected, "the Constant to Blur pipe is in view")
+        shoot("pipe-grab-defaults.png")
+
+        set_pref("outputStyle", OUTPUT_STYLE_ARROW)
+        yield ("sleep", SETTLE_MS)
+        stub = output_stub(lone)
+        require(stub is not None, "the lone Blur shows an output stub in the Arrow style")
         check(abs((stub[0][1] - (ly + lh)) - DEFAULTS["outputStubLength"]) <= POSITION_TOLERANCE,
               "the output stub reaches %d px below the node (free end at y %g, node bottom %g)"
               % (DEFAULTS["outputStubLength"], stub[0][1], ly + lh))
-        connected = [w for p1, p2, w in pipes() if near(p2, centre(src), lh) and near(p1, centre(dst), lh)]
-        require(connected, "the Constant to Blur pipe is in view")
-
-        graph = root_graph()
-        vp = graph.viewport()
-        origin = vp.mapToGlobal(vp.rect().topLeft())
-        pix = QGuiApplication.primaryScreen().grabWindow(0, origin.x(), origin.y(), vp.width(), vp.height())
-        path = os.path.join(gt.OUT, "pipe-grab-defaults.png")
-        report(("SHOT " if pix.save(path) else "NOTE could not save ") + path)
-        del graph, vp, pix
 
         gt.section("pipe-width")
         for width in (1, 6, DEFAULTS["pipeWidth"]):
@@ -284,6 +347,44 @@ try:
         followed = drag_from(press)
         check(any(near(b, centre(lone)) for _, b in followed),
               "a press 15 px beside the output stub drags it (%r)" % followed)
+        yield ("sleep", SETTLE_MS)
+
+        gt.section("grab-default-radii")
+        for offset, grabs in ((DANGLING_RADIUS_DEFAULT - 3, True), (DANGLING_RADIUS_DEFAULT + 4, False)):
+            inp = dangling_input(lone)
+            require(inp is not None, "the dangling input is shown")
+            press = beside(inp, offset)
+            nearest = nearest_pipe_px(press)
+            report("NOTE dangling input press %g px beside, nearest pipe %.1f px" % (offset, nearest))
+            if not grabs:
+                require(nearest > DANGLING_RADIUS_DEFAULT, "no pipe lies within %g px of the press (nearest %.1f px)"
+                        % (DANGLING_RADIUS_DEFAULT, nearest))
+            followed = drag_from(press)
+            dragged = any(near(a, centre(lone)) for a, _ in followed)
+            check(dragged == grabs, "at width %d a press %g px beside the dangling input %s (%r)"
+                  % (DEFAULTS["pipeWidth"], offset, "drags it" if grabs else "grabs nothing", followed))
+            yield ("sleep", SETTLE_MS)
+        for width, radius in ((DEFAULTS["pipeWidth"], GRAB_RADIUS_DEFAULT), (1, GRAB_RADIUS_MIN)):
+            set_pref("pipeWidth", width)
+            yield ("sleep", SETTLE_MS)
+            for offset, grabs in ((radius - 3, True), (radius + 3, False)):
+                pipe = connected_pipe(src, dst, lh)
+                require(pipe is not None, "the Constant to Blur pipe is shown")
+                press = beside_at(pipe, 0.35, offset)
+                nearest = nearest_pipe_px(press)
+                report("NOTE connected pipe press %g px beside, nearest pipe %.1f px" % (offset, nearest))
+                if not grabs:
+                    require(nearest > radius, "no pipe lies within %g px of the press (nearest %.1f px)"
+                            % (radius, nearest))
+                followed = drag_from(press)
+                dragged = any(near(a, centre(dst), lh) for a, _ in followed)
+                check(dragged == grabs, "at width %d a press %g px beside the connected pipe %s (%r)"
+                      % (width, offset, "drags it" if grabs else "grabs nothing", followed))
+                yield ("sleep", SETTLE_MS)
+                if not dst.getInput(0):
+                    dst.connectInput(0, src)
+                    yield ("sleep", SETTLE_MS)
+        set_pref("pipeWidth", DEFAULTS["pipeWidth"])
         yield ("sleep", SETTLE_MS)
 
         gt.section("grab-width-1")
@@ -344,8 +445,56 @@ try:
         yield ("sleep", SETTLE_MS)
         root_graph().resetTransform()
 
+        gt.section("output-nub")
+        set_pref("pipeWidth", DEFAULTS["pipeWidth"])
+        set_pref("outputStyle", OUTPUT_STYLE_NUB)
+        feeder = create("Blur", 600, 0)
+        taker = create("Blur", 600, 250)
+        app.clearSelection()
+        yield ("sleep", SETTLE_MS)
+        fc, tc = centre(feeder), centre(taker)
+        root_graph().centerOn((fc[0] + lc[0]) / 2.0, (fc[1] + tc[1]) / 2.0)
+        yield ("sleep", SETTLE_MS)
+        fx, fy = feeder.getPosition()
+        fw, fh = feeder.getSize()
+        nub = output_stub(feeder)
+        require(nub is not None, "the feeder shows an output nub")
+        check(abs((nub[0][1] - (fy + fh)) - NUB_RADIUS) <= POSITION_TOLERANCE,
+              "the nub reaches %g px below the node (free end at y %g, node bottom %g)"
+              % (NUB_RADIUS, nub[0][1], fy + fh))
+        shoot("pipe-grab-nub.png")
+        set_pref("outputStyle", OUTPUT_STYLE_ARROW)
+        yield ("sleep", SETTLE_MS)
+        shoot("pipe-grab-arrow.png")
+        set_pref("outputStyle", OUTPUT_STYLE_NUB)
+        yield ("sleep", SETTLE_MS)
+        press = to_view((fc[0], fy + fh + NUB_RADIUS / 2.0))
+        drag_between(press, to_view(tc))
+        yield ("sleep", SETTLE_MS)
+        fed = taker.getInput(0)
+        check(fed is not None and fed.getScriptName() == feeder.getScriptName(),
+              "a drag from the nub onto another Blur connects it (input %r)" % (fed.getScriptName() if fed else None))
+
+        gt.section("hover-highlight")
+        lc = centre(lone)
+        root_graph().centerOn(lc[0] + 150, lc[1])
+        yield ("sleep", SETTLE_MS)
+        inp = dangling_input(lone)
+        require(inp is not None, "the dangling input is shown")
+        check(dangling_input_hovered(lone) is False, "the dangling input starts without the hover highlight")
+        send_mouse(QEvent.MouseMove, beside(inp, 15), Qt.NoButton, Qt.NoButton)
+        yield ("sleep", SETTLE_MS)
+        check(dangling_input_hovered(lone) is True, "the dangling input is highlighted with the pointer 15 px beside it")
+        shoot("pipe-grab-hover.png")
+        away = beside(inp, 120)
+        require(nearest_pipe_px(away) > DANGLING_RADIUS_DEFAULT, "no pipe lies near the point away from the input")
+        send_mouse(QEvent.MouseMove, away, Qt.NoButton, Qt.NoButton)
+        yield ("sleep", SETTLE_MS)
+        check(dangling_input_hovered(lone) is False, "the highlight clears with the pointer away from every pipe")
+
         for name, value in sorted(DEFAULTS.items()):
             set_pref(name, value)
+        set_pref("outputStyle", OUTPUT_STYLE_NUB)
 
     gt.run(steps())
 except Exception:

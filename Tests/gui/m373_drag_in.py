@@ -18,7 +18,7 @@ import sys
 sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd()), "Tests", "gui"))
 
 import guitest as gt
-from guitest import check, report
+from guitest import check
 import knob_edit_common as cm
 
 from PySide6.QtCore import QPoint, Qt
@@ -173,11 +173,14 @@ def steps():
         w = cm.label_widget(other, SIZE_LABEL)
         return (w, QPoint(w.width() // 2, w.height() // 2)) if w is not None else None
 
+    ok = yield ("until", lambda: cm.label_widget(source, SIZE_LABEL) is not None and other_label() is not None, 5.0)
+    gt.require(ok, "%s and %s show their Size labels" % (source, other))
     result = []
-    drag_label_onto(source, other_label, Qt.ControlModifier, Qt.NoModifier, result)
+    # Ctrl stays held through the drop: a drop without it does not link.
+    gt.require(drag_label_onto(source, other_label, Qt.ControlModifier, Qt.ControlModifier, result),
+               "Ctrl-dragged %s's Size label" % source)
     yield ("sleep", 400)
-    if not result:
-        report("NOTE the knob drag never ran its drop: the drag's event loop did not run timers")
+    check(bool(result), "the drag ran its drop on %s's Size label" % other)
     set_value(src, 13.0)
     yield ("sleep", 300)
     check(abs(value(cm.param(other, "size")) - 13.0) < 1e-9, "a Ctrl-drag between panels outside edit mode still links")

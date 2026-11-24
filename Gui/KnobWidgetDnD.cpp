@@ -403,7 +403,7 @@ KnobWidgetDnD::drop(QDropEvent* e)
                 targetDim = -1;
             }
 
-            Qt::KeyboardModifiers mods = QApplication::keyboardModifiers();
+            Qt::KeyboardModifiers mods = e->modifiers();
             if ( ( mods & (Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier) ) == (Qt::ControlModifier | Qt::ShiftModifier) ) {
                 EffectInstance* effect = dynamic_cast<EffectInstance*>( source->getHolder() );
                 if (!effect) {

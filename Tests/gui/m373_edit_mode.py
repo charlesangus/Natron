@@ -11,8 +11,10 @@ The non-editable holder is a node whose plug-in is missing: the script saves a p
 Blur, renames the Blur's plug-in ID in the file and loads it back.
 """
 import os
+import re
 import sys
 import zipfile
+import zlib
 
 sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd()), "Tests", "gui"))
 
@@ -99,9 +101,21 @@ def steps():
         entries = [(i.filename, z.read(i.filename)) for i in z.infolist()]
     named = [n for n, data in entries if field in data]
     gt.require(bool(named), "the saved project names the Blur's plug-in ID")
+    edited = dict((n, data.replace(field, b'plugin: "net.natron.test.MissingPlugin"')) for n, data in entries if n in named)
+    # A manifest that no longer matches its members is a load warning, which would stop the load
+    # on its summary dialog, so the edited members' sizes and CRCs are written into it.
+    for n, data in entries:
+        if n.endswith("manifest.yaml"):
+            text = data.decode()
+            for member, new in edited.items():
+                text, count = re.subn(r'\{name: "%s", size: \d+, crc32: "[0-9a-f]{8}"\}' % re.escape(member.split("/")[-1]),
+                                      '{name: "%s", size: %d, crc32: "%08x"}' % (member.split("/")[-1], len(new), zlib.crc32(new) & 0xffffffff),
+                                      text)
+                gt.require(count == 1, "the manifest lists %s (%r)" % (member, text))
+            edited[n] = text.encode()
     with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as z:
         for n, data in entries:
-            z.writestr(n, data.replace(field, b'plugin: "net.natron.test.MissingPlugin"') if n in named else data)
+            z.writestr(n, edited.get(n, data))
     # The empty project loads the file in place. A placeholder counts as a load error, so the
     # call returns None even though the nodes are restored.
     app.loadProject(path)

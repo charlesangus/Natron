@@ -618,26 +618,26 @@ future core work has solid ground to build on.
 | M559 | Native Geometry UAT Round 1 | doing | - | bosley-executor | E9 | F15 | | [M559-native-geometry-uat-round-1.md](PLAN/MILESTONES/M559-native-geometry-uat-round-1.md) |
 | M560 | USDMerge Opinion Order | todo | - |  | E9 | | | [M560-usdmerge-opinion-order.md](PLAN/MILESTONES/M560-usdmerge-opinion-order.md) |
 | M561 | Live Session Personal Viewers | todo | M106 |  | E11 | F5 | | [M561-live-session-personal-viewers.md](PLAN/MILESTONES/M561-live-session-personal-viewers.md) |
-| M562 | USDEditPrim Relationship Knobs | todo | - |  | E27 | | | [M562-usdeditprim-relationship-knobs.md](PLAN/MILESTONES/M562-usdeditprim-relationship-knobs.md) |
-| M563 | USDSetAttribute Tweak Modes | todo | - |  | E27 | | | [M563-usdsetattribute-tweak-modes.md](PLAN/MILESTONES/M563-usdsetattribute-tweak-modes.md) |
-| M564 | USDConfigurePrim Node | todo | M449 |  | E27 | | | [M564-usdconfigureprim-node.md](PLAN/MILESTONES/M564-usdconfigureprim-node.md) |
-| M565 | USDConfigureLayer Node | todo | M449 |  | E27 | | | [M565-usdconfigurelayer-node.md](PLAN/MILESTONES/M565-usdconfigurelayer-node.md) |
-| M566 | USDCollection Node | todo | M562 |  | E27 | | | [M566-usdcollection-node.md](PLAN/MILESTONES/M566-usdcollection-node.md) |
-| M567 | USD Light Linking | todo | M562, M566 |  | E27 | | | [M567-usd-light-linking.md](PLAN/MILESTONES/M567-usd-light-linking.md) |
-| M568 | USD Render Geometry Settings | todo | M494 |  | E27 | | | [M568-usd-render-geometry-settings.md](PLAN/MILESTONES/M568-usd-render-geometry-settings.md) |
-| M569 | USDInline Node | todo | - |  | E27 | | | [M569-usdinline-node.md](PLAN/MILESTONES/M569-usdinline-node.md) |
-| M570 | Scene Query Expression API | todo | - |  | E27 | | | [M570-scene-query-expression-api.md](PLAN/MILESTONES/M570-scene-query-expression-api.md) |
-| M571 | Prim Inspector Value Sources | todo | - |  | E27 | | | [M571-prim-inspector-value-sources.md](PLAN/MILESTONES/M571-prim-inspector-value-sources.md) |
-| M572 | Render Region | todo | - |  | E27 | | | [M572-render-region.md](PLAN/MILESTONES/M572-render-region.md) |
-| M573 | USDLightMixer Node | todo | M520 |  | E27 | | | [M573-usdlightmixer-node.md](PLAN/MILESTONES/M573-usdlightmixer-node.md) |
-| M574 | Render Catalogue | todo | M104 |  | E27 | | | [M574-render-catalogue.md](PLAN/MILESTONES/M574-render-catalogue.md) |
-| M575 | USD Restructure And Graft | todo | M520, M567 |  | E27 | | | [M575-usd-restructure-and-graft.md](PLAN/MILESTONES/M575-usd-restructure-and-graft.md) |
-| M576 | Point Instance Extract And Prune | todo | M520 |  | E27 | | | [M576-point-instance-extract-and-prune.md](PLAN/MILESTONES/M576-point-instance-extract-and-prune.md) |
-| M577 | USDConstraint Node | todo | M520 |  | E27 | | | [M577-usdconstraint-node.md](PLAN/MILESTONES/M577-usdconstraint-node.md) |
-| M578 | Scene Diff Inspector And Writer | todo | M571, M520 |  | E27 | | | [M578-scene-diff-inspector-and-writer.md](PLAN/MILESTONES/M578-scene-diff-inspector-and-writer.md) |
-| M579 | USD Value Clip Sequences | todo | - |  | E27 | | | [M579-usd-value-clip-sequences.md](PLAN/MILESTONES/M579-usd-value-clip-sequences.md) |
-| M580 | Scene Load Masks | todo | M520 |  | E27 | | | [M580-scene-load-masks.md](PLAN/MILESTONES/M580-scene-load-masks.md) |
-| M581 | Edit Scope Design | todo | - |  | E27 | | | [M581-edit-scope-design.md](PLAN/MILESTONES/M581-edit-scope-design.md) |
+| M562 | USDEditPrim Relationship Knobs | todo | - |  | E27 | F38 | | [M562-usdeditprim-relationship-knobs.md](PLAN/MILESTONES/M562-usdeditprim-relationship-knobs.md) |
+| M563 | USDSetAttribute Tweak Modes | todo | - |  | E27 | F38 | | [M563-usdsetattribute-tweak-modes.md](PLAN/MILESTONES/M563-usdsetattribute-tweak-modes.md) |
+| M564 | USDConfigurePrim Node | todo | M449 |  | E27 | F38 | | [M564-usdconfigureprim-node.md](PLAN/MILESTONES/M564-usdconfigureprim-node.md) |
+| M565 | USDConfigureLayer Node | todo | M449 |  | E27 | F38 | | [M565-usdconfigurelayer-node.md](PLAN/MILESTONES/M565-usdconfigurelayer-node.md) |
+| M566 | USDCollection Node | todo | M562 |  | E27 | F38 | | [M566-usdcollection-node.md](PLAN/MILESTONES/M566-usdcollection-node.md) |
+| M567 | USD Light Linking | todo | M562, M566 |  | E27 | F38 | | [M567-usd-light-linking.md](PLAN/MILESTONES/M567-usd-light-linking.md) |
+| M568 | USD Render Geometry Settings | todo | M494 |  | E27 | F38 | | [M568-usd-render-geometry-settings.md](PLAN/MILESTONES/M568-usd-render-geometry-settings.md) |
+| M569 | USDInline Node | todo | - |  | E27 | F38 | | [M569-usdinline-node.md](PLAN/MILESTONES/M569-usdinline-node.md) |
+| M570 | Scene Query Expression API | todo | - |  | E27 | F38 | | [M570-scene-query-expression-api.md](PLAN/MILESTONES/M570-scene-query-expression-api.md) |
+| M571 | Prim Inspector Value Sources | todo | - |  | E27 | F38 | | [M571-prim-inspector-value-sources.md](PLAN/MILESTONES/M571-prim-inspector-value-sources.md) |
+| M572 | Render Region | todo | - |  | E27 | F38 | | [M572-render-region.md](PLAN/MILESTONES/M572-render-region.md) |
+| M573 | USDLightMixer Node | todo | M520 |  | E27 | F38 | | [M573-usdlightmixer-node.md](PLAN/MILESTONES/M573-usdlightmixer-node.md) |
+| M574 | Render Catalogue | todo | M104 |  | E27 | F38 | | [M574-render-catalogue.md](PLAN/MILESTONES/M574-render-catalogue.md) |
+| M575 | USD Restructure And Graft | todo | M520, M567 |  | E27 | F38 | | [M575-usd-restructure-and-graft.md](PLAN/MILESTONES/M575-usd-restructure-and-graft.md) |
+| M576 | Point Instance Extract And Prune | todo | M520 |  | E27 | F38 | | [M576-point-instance-extract-and-prune.md](PLAN/MILESTONES/M576-point-instance-extract-and-prune.md) |
+| M577 | USDConstraint Node | todo | M520 |  | E27 | F38 | | [M577-usdconstraint-node.md](PLAN/MILESTONES/M577-usdconstraint-node.md) |
+| M578 | Scene Diff Inspector And Writer | todo | M571, M520 |  | E27 | F38 | | [M578-scene-diff-inspector-and-writer.md](PLAN/MILESTONES/M578-scene-diff-inspector-and-writer.md) |
+| M579 | USD Value Clip Sequences | todo | - |  | E27 | F38 | | [M579-usd-value-clip-sequences.md](PLAN/MILESTONES/M579-usd-value-clip-sequences.md) |
+| M580 | Scene Load Masks | todo | M520 |  | E27 | F38 | | [M580-scene-load-masks.md](PLAN/MILESTONES/M580-scene-load-masks.md) |
+| M581 | Edit Scope Design | todo | - |  | E27 | F38 | | [M581-edit-scope-design.md](PLAN/MILESTONES/M581-edit-scope-design.md) |
 | M582 | Look Layers | todo |  |  | E27 | | | [M582-look-layers.md](PLAN/MILESTONES/M582-look-layers.md) |
 | M583 | Wedge And Task Dispatch | todo |  |  | E27 | | | [M583-wedge-and-task-dispatch.md](PLAN/MILESTONES/M583-wedge-and-task-dispatch.md) |
 | M584 | Layout Instance Painting | todo | M576 |  | E27 | | | [M584-layout-instance-painting.md](PLAN/MILESTONES/M584-layout-instance-painting.md) |
@@ -720,6 +720,7 @@ future core work has solid ground to build on.
 | F36 | UI Polish Batch II | open |  |  | feature/f36-ui-polish-batch-ii | Ship four small UI fixes — one-key answers in the save prompt, Raw and Loop toolbar icons, a USD toolbar category with functional submenus and easier-to-grab pipes — on one build and one merge. |
 | F35 | Pyro | open |  |  | feature/f35-pyro | A sparse-tile smoke and fire solver on native VDB volumes, with sourcing, shaping, collisions, look baking and quick setups, on GPU and CPU. Waits for F18 - Geometry Loops And Solver and F22 - Native VDB to land. |
 | F37 | Scene Graph Bulk Ops | open |  |  | feature/f37-scene-graph-bulk-ops | Load, draw and expand whole Scene Graph branches in one action, by row or down to a kind, with a Purpose column. |
+| F38 | Scene Authoring And Lighting | open |  |  | feature/f38-scene-authoring-and-lighting | The survey-driven scene authoring and lighting set (M562–M581): relationship, tweak, metadata and layer editing, collections, light linking and mixing, render attributes and regions, catalogue, restructure, instances, constraints, queries, inspection and load masks. |
 
 # Open questions
 - **M104 - Merge Resolution UI (2026-11-22):** Keep Both Keys puts theirs' key one frame after mine, or halfway to the next key when that's closer. Confirm, or give the rule you want.

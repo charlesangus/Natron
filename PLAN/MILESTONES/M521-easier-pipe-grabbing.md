@@ -24,13 +24,13 @@ Make unconnected inputs and outputs easy to grab: fatter pipes, a longer output 
 
 ## Phase 521.1: Pipes
 
-- [ ] M521.P1.T1 — Add pipe preferences and apply the width
+- [x] M521.P1.T1 — Add pipe preferences and apply the width
   - files: `Engine/Settings.{h,cpp}`, `Gui/Edge.{h,cpp}`, `Gui/NodeGraph*.cpp` (restyle on change), `Tests/gui/pipe_grab.py`
   - approach: add `pipeWidth` and `outputStubLength` `KnobInt`s beside `disconnectedArrowLength` on the Nodegraph page, with getters; relabel the existing knob and set the new defaults. Replace `EDGE_PEN_WIDTH` with the preference in both `Edge` constructors and `getDrawnPen()`, scale `ARROW_SIZE_*` by width / 2, use `outputStubLength` at `Edge.cpp:528`. On a preference change, re-init every edge in open graphs (as other Nodegraph knobs refresh).
   - verify: the Xvfb script sets each preference, asserts an edge's pen width and the output stub's end point follow it, and screenshots a node at defaults for the user.
   - size: M
 
-- [ ] M521.P1.T2 — Widen grab areas with the pipe
+- [x] M521.P1.T2 — Widen grab areas with the pipe
   - files: `Gui/NodeGraph10.cpp`, `Gui/Edge.cpp`, `Tests/gui/pipe_grab.py`
   - approach: make `grabRadius` `max(10, 2.5 * pipeWidth)` and the unconnected-input and output-stub radius `max(18, 5 * pipeWidth)` (screen px, divided by zoom); `Edge::contains` and `shape()` use the same radius so hover and click agree. Include the unconnected output stub as a candidate if it is not already one.
   - verify: the Xvfb script presses the mouse 15 px beside a dangling input and beside an output stub at default width and asserts a drag starts from each; at width 1 a press 25 px away grabs nothing.

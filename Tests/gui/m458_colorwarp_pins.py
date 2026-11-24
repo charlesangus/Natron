@@ -227,8 +227,10 @@ try:
         require(ok, "opened the ColorWarp's settings panel")
         ok = yield ("until", lambda: visible_viewer() is not None, POLL_TIMEOUT_S)
         require(ok, "a viewer is on screen")
-        yield ("sleep", RENDER_MS)
         require(pin_list(warp) is not None, "the settings panel holds the pin list")
+        # The identity checks below compare against this, so it must be the rendered input, not the empty viewer.
+        ok = yield ("until", lambda: (viewer_colour() or (0, 0, 0)) != (0, 0, 0), POLL_TIMEOUT_S)
+        require(ok, "the viewer shows the input with no pins (%r)" % (viewer_colour(),))
         untouched = viewer_colour()
         report("NOTE viewer centre with no pins: %r" % (untouched,))
         gt.shot("m458-no-pins.png")

@@ -25,6 +25,7 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <functional>
 #include <map>
 #include <memory>
@@ -516,4 +517,178 @@ TEST(ConflictResolution, ADeletedUserKnobGoesOnlyWhenTheDeletingSideIsChosen)
     }
     EXPECT_EQ(valuesOf(*nodeAt(resolved(result.merged, side(*conflict, ResolutionSide::eTheirs)), "Grade1"), "boost"), std::vector<double>({ 3. }));
     EXPECT_EQ(valuesOf(*nodeAt(resolved(result.merged, side(*conflict, ResolutionSide::eBase)), "Grade1"), "boost"), std::vector<double>({ 2. }));
+}
+
+TEST(ConflictResolution, ADeletedProjectUserKnobGoesOnlyWhenTheDeletingSideIsChosen)
+{
+    Projects projects(templateScenario());
+    projects.base.projectKnobs.push_back(userKnob("shotScale", 2.));
+    projects.theirs.projectKnobs.push_back(userKnob("shotScale", 3.));
+    const Serialization::MergeResult result = projects.merge();
+    const MergeConflict* conflict = nullptr;
+    for (const MergeConflict& candidate : result.conflicts) {
+        if ((candidate.kind == MergeConflictKind::eDeleteModify) && (candidate.knob == "shotScale")) {
+            conflict = &candidate;
+        }
+    }
+    ASSERT_TRUE(conflict != nullptr);
+    EXPECT_TRUE(conflict->nodeId.empty());
+    const auto scaleOf = [](const ProjectSerialization& project) {
+        Serialization::NodeSerialization holder;
+        holder.knobs = project.projectKnobs;
+
+        return valuesOf(holder, "shotScale");
+    };
+    {
+        const ProjectSerialization project = resolved(result.merged, side(*conflict, ResolutionSide::eMine));
+        const bool gone = std::none_of(project.projectKnobs.begin(), project.projectKnobs.end(), [](const Serialization::KnobSerialization& knob) {
+            return knob.name == "shotScale";
+        });
+        EXPECT_TRUE(gone);
+    }
+    EXPECT_EQ(scaleOf(resolved(result.merged, side(*conflict, ResolutionSide::eTheirs))), std::vector<double>({ 3. }));
+    EXPECT_EQ(scaleOf(resolved(result.merged, side(*conflict, ResolutionSide::eBase))), std::vector<double>({ 2. }));
+}
+
+TEST(ConflictResolution, BaseForADeletedNodePutsBackItsInputsAndLabel)
+{
+    Scenario scenario = templateScenario();
+    scenario.mine.remove("Grade1");
+    scenario.mine.get("Blur1").inputs["Source"] = "TplIn";
+    scenario.theirs.set("Grade1", "gamma", { 1.2 });
+    scenario.theirs.get("Grade1").inputs["Source"] = "Constant1";
+    Projects projects(scenario);
+    nodeAt(projects.theirs, "Grade1")->label = "Tweaked";
+    const Serialization::MergeResult result = projects.merge();
+    const MergeConflict* conflict = conflictOn(result, MergeConflictKind::eDeleteModify, "Grade1");
+    ASSERT_TRUE(conflict != nullptr);
+    EXPECT_TRUE(conflict->base.node != nullptr);
+    EXPECT_EQ(inputOf(result.merged, "Grade1", "Source"), "Constant1");
+
+    const ProjectSerialization project = resolved(result.merged, side(*conflict, ResolutionSide::eBase));
+    Serialization::NodeSerializationPtr grade = nodeAt(project, "Grade1");
+    ASSERT_TRUE(grade != nullptr);
+    EXPECT_EQ(inputOf(project, "Grade1", "Source"), "TplIn");
+    EXPECT_EQ(grade->label, nodeAt(projects.base, "Grade1")->label);
+    EXPECT_TRUE(valuesOf(*grade, "gamma").empty());
+    EXPECT_EQ(valuesOf(*grade, "white"), std::vector<double>({ 0.9 }));
+}
+
+namespace {
+
+Serialization::RotoLayerChildSerialization
+shapeChild(const std::string& name,
+           const std::string& layer,
+           std::size_t points)
+{
+    Serialization::RotoLayerChildSerialization child;
+    child.type = Serialization::eRotoLayerChildTypeBezier;
+    child.bezier.name = name;
+    child.bezier.parentLayerName = layer;
+    for (std::size_t i = 0; i < points; ++i) {
+        Serialization::BezierCPSerialization point;
+        point.x = double(i);
+        child.bezier.controlPoints.push_back(point);
+    }
+
+    return child;
+}
+
+// Layer1 holding a layer Inner of shapes A, B (with bPoints points) and C, B left out when
+// bPoints is 0.
+Serialization::RotoContextSerialization
+nestedRoto(std::size_t bPoints)
+{
+    Serialization::RotoLayerChildSerialization inner;
+    inner.type = Serialization::eRotoLayerChildTypeLayer;
+    inner.layer.name = "Inner";
+    inner.layer.parentLayerName = "Layer1";
+    inner.layer.children.push_back(shapeChild("A", "Inner", 1));
+    if (bPoints) {
+        inner.layer.children.push_back(shapeChild("B", "Inner", bPoints));
+    }
+    inner.layer.children.push_back(shapeChild("C", "Inner", 1));
+    Serialization::RotoContextSerialization roto;
+    roto.baseLayer.name = "Layer1";
+    roto.baseLayer.children.push_back(inner);
+
+    return roto;
+}
+
+std::vector<std::string>
+innerNames(const ProjectSerialization& project)
+{
+    std::vector<std::string> names;
+    const Serialization::RotoLayerSerialization& base = project.nodes.nodes.front()->rotoContext.baseLayer;
+    for (const Serialization::RotoLayerChildSerialization& child : base.children) {
+        if (child.type == Serialization::eRotoLayerChildTypeLayer) {
+            for (const Serialization::RotoLayerChildSerialization& item : child.layer.children) {
+                names.push_back((item.type == Serialization::eRotoLayerChildTypeLayer) ? item.layer.name : item.bezier.name);
+            }
+        } else {
+            names.push_back("<top>" + child.bezier.name);
+        }
+    }
+
+    return names;
+}
+
+} // namespace
+
+TEST(ConflictResolution, ARestoredRotoShapeGoesBackIntoItsLayerWhereItWas)
+{
+    const Serialization::RotoContextSerialization base = nestedRoto(1);
+    std::vector<MergeConflict> conflicts;
+    Serialization::NodeSerializationPtr node = std::make_shared<Serialization::NodeSerialization>();
+    node->scriptName = "Roto1";
+    node->pluginID = "Roto";
+    node->id = hexId("m:Roto1");
+    node->hasRotoContext = true;
+    node->rotoContext = Serialization::mergeRotoContexts(&base, nestedRoto(0), nestedRoto(2), Serialization::MergeHandlerRegistry::defaults(), &conflicts);
+    ProjectSerialization merged;
+    merged.nodes.nodes.push_back(node);
+    ASSERT_EQ(conflicts.size(), 1u);
+    MergeConflict conflict = conflicts.front();
+    conflict.nodeId = node->id;
+    EXPECT_EQ(conflict.item, "B");
+    EXPECT_EQ(conflict.base.itemsBefore, std::vector<std::string>({ "A" }));
+
+    const ProjectSerialization deleted = resolved(merged, side(conflict, ResolutionSide::eMine));
+    EXPECT_EQ(innerNames(deleted), std::vector<std::string>({ "A", "C" }));
+    for (ResolutionSide kept : { ResolutionSide::eBase, ResolutionSide::eTheirs }) {
+        SCOPED_TRACE(int(kept));
+        const ProjectSerialization restored = resolved(deleted, side(conflict, kept));
+        EXPECT_EQ(innerNames(restored), std::vector<std::string>({ "A", "B", "C" }));
+    }
+}
+
+TEST(ConflictResolution, ARestoredTrackGoesBackWhereItWas)
+{
+    Serialization::TrackerContextSerialization base;
+    base.tracks = { track("a", 0.), track("b", 0.), track("c", 0.) };
+    Serialization::TrackerContextSerialization mine;
+    mine.tracks = { track("a", 0.), track("b", 4.), track("c", 0.) };
+    Serialization::TrackerContextSerialization theirs;
+    theirs.tracks = { track("a", 0.), track("c", 0.) };
+    std::vector<MergeConflict> conflicts;
+    Serialization::NodeSerializationPtr node = std::make_shared<Serialization::NodeSerialization>();
+    node->scriptName = "Tracker1";
+    node->pluginID = "Tracker";
+    node->id = hexId("m:Tracker1");
+    node->hasTrackerContext = true;
+    node->trackerContext = Serialization::mergeTrackerContexts(&base, mine, theirs, Serialization::MergeHandlerRegistry::defaults(), &conflicts);
+    ProjectSerialization merged;
+    merged.nodes.nodes.push_back(node);
+    ASSERT_EQ(conflicts.size(), 1u);
+    MergeConflict conflict = conflicts.front();
+    conflict.nodeId = node->id;
+
+    const ProjectSerialization deleted = resolved(merged, side(conflict, ResolutionSide::eTheirs));
+    EXPECT_TRUE(trackIn(deleted, "b") == nullptr);
+    const ProjectSerialization restored = resolved(deleted, side(conflict, ResolutionSide::eBase));
+    std::vector<std::string> names;
+    for (const Serialization::TrackSerialization& entry : restored.nodes.nodes.front()->trackerContext.tracks) {
+        names.push_back(entry.scriptName);
+    }
+    EXPECT_EQ(names, std::vector<std::string>({ "a", "b", "c" }));
 }

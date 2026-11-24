@@ -33,7 +33,7 @@ namespace {
     bool
     hasSideValue(const MergeConflictValue& value)
     {
-        return value.knob.has_value() || value.key.has_value() || !value.otherKeys.empty() || !value.connections.empty() || value.parent.has_value() || value.knobs.has_value() || value.roto.has_value() || value.tracker.has_value();
+        return value.knob.has_value() || value.key.has_value() || !value.otherKeys.empty() || !value.connections.empty() || value.parent.has_value() || value.knobs.has_value() || value.node || value.roto.has_value() || value.tracker.has_value() || !value.itemsBefore.empty();
     }
 
     void
@@ -148,6 +148,11 @@ namespace {
         }
         InlineBlobSink sink;
         std::set<std::string> usedPaths;
+        if (value.node) {
+            emitKey(em, "node");
+            em << YAML::Value;
+            emitNodeMap(em, std::list<NodeSerializationPtr>(1, value.node), std::string(), sink, &usedPaths, true, true);
+        }
         if (value.roto) {
             emitKey(em, "roto");
             em << YAML::Value;
@@ -157,6 +162,11 @@ namespace {
             emitKey(em, "tracker");
             em << YAML::Value;
             emitTrackerContext(em, *value.tracker, BlobEncodeContext { &sink, nodeId, &usedPaths });
+        }
+        if (!value.itemsBefore.empty()) {
+            emitKey(em, "itemsBefore");
+            em << YAML::Value;
+            emitStringList(em, value.itemsBefore);
         }
     }
 
@@ -302,11 +312,21 @@ namespace {
                 knobReader.finish();
             }
         }
+        if (YAML::Node node = reader.get("node")) {
+            std::list<NodeSerializationPtr> nodes = readNodeMap(node, NoBlobSource(), context + ".node", warnings);
+            if ((nodes.size() != 1) || !nodes.front() || nodes.front()->id.empty()) {
+                fail(node, context + ".node", "expected exactly one node, with its id");
+            }
+            value.node = nodes.front();
+        }
         if (YAML::Node roto = reader.get("roto")) {
             value.roto = readRotoContext(roto, NoBlobSource(), context + ".roto", warnings);
         }
         if (YAML::Node tracker = reader.get("tracker")) {
             value.tracker = readTrackerContext(tracker, NoBlobSource(), context + ".tracker", warnings);
+        }
+        if (YAML::Node itemsBefore = reader.get("itemsBefore")) {
+            value.itemsBefore = readStringVector(itemsBefore, context + ".itemsBefore");
         }
 
         return value;

@@ -389,6 +389,45 @@ namespace MergeDetail {
             }
         }
 
+        // The base side of a node-level delete-modify conflict: the base node's own state under
+        // the merged node's identity, its group, and its inputs by merged IDs.
+        void
+        recordBaseNode(const MergeContext& context,
+                       const MergeGraph::Node& baseNode,
+                       MergeConflict* conflict)
+        {
+            const std::map<std::string, OutNode>::const_iterator out = context.out.find(conflict->nodeId);
+            if (out == context.out.end()) {
+                return;
+            }
+            const OutNode& merged = out->second;
+            NodeSerializationPtr node = std::make_shared<NodeSerialization>(*baseNode.node);
+            node->id = conflict->nodeId;
+            node->scriptName = merged.node->scriptName;
+            node->origin = merged.node->origin;
+            node->knobs.clear();
+            node->inputs.clear();
+            node->children.clear();
+            conflict->base.node = node;
+
+            std::string group = merged.parent;
+            if (baseNode.parentId.empty()) {
+                group.clear();
+                conflict->base.parent = group;
+            } else {
+                const std::string baseGroup = outOfBase(context, baseNode.parentId);
+                if (isReal(context, baseGroup)) {
+                    group = baseGroup;
+                    conflict->base.parent = group;
+                }
+            }
+            for (const std::pair<const std::string, std::string>& input : baseNode.inputs) {
+                for (MergeConflictConnection& connection : sideConnection(context, conflict->nodeId, input.first, sideSource(context, baseNode, input.first, 0), group)) {
+                    conflict->base.connections.push_back(std::move(connection));
+                }
+            }
+        }
+
         void
         mergeInputs(MergeContext* context,
                     OutNode* node)
@@ -785,6 +824,7 @@ namespace MergeDetail {
                 const MergeGraph::Node* baseNode = context->base.find(conflict.baseNodeId);
                 if (baseNode) {
                     conflict.base.knobs = renamedKnobs(context->base, *baseNode, baseNames);
+                    recordBaseNode(*context, *baseNode, &conflict);
                 }
                 continue;
             }

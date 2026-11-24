@@ -30,6 +30,7 @@ NATRON_NAMESPACE_ENTER
 namespace Serialization {
 
 using MergeDetail::mergedOrder;
+using MergeDetail::namesBefore;
 using MergeDetail::Pick;
 using MergeDetail::pick;
 using MergeDetail::takeChanged;
@@ -365,6 +366,9 @@ namespace {
                     kept.emplace(name, *present);
                 } else if (!sameChild(*b, *present)) {
                     addItemConflict(MergeConflictKind::eDeleteModify, name, m ? MergeSide::eTheirs : MergeSide::eMine, itemAlone(b), itemAlone(m), itemAlone(t), conflicts);
+                    conflicts->back().base.itemsBefore = namesBefore(childNames(*base), name);
+                    conflicts->back().mine.itemsBefore = namesBefore(childNames(mine), name);
+                    conflicts->back().theirs.itemsBefore = namesBefore(childNames(theirs), name);
                     kept.emplace(name, *present);
                 }
             }

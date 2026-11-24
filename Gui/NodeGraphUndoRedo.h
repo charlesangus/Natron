@@ -611,9 +611,9 @@ public:
     virtual void redo();
 
     /**
-     * @brief Applies ops to the project now, and records the change on the node graph's undo
-     * stack without applying it again. Returns one result per operation, as applyGraphOps() does.
-     * Nothing is recorded when the operations change nothing.
+     * @brief Applies ops to the project now, all or nothing, and records the change on the node
+     * graph's undo stack without applying it again. Returns one result per operation, as
+     * applyGraphOps() does. Nothing is recorded when the operations change nothing or one fails.
      **/
     static std::vector<Serialization::OpResult> applyAndPush(NodeGraph* graph,
                                                              const ProjectPtr& project,

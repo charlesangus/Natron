@@ -312,6 +312,44 @@ namespace {
         });
     }
 
+    RotoLayerSerialization*
+    findRotoLayer(RotoLayerSerialization* layer,
+                  const std::string& name)
+    {
+        if (layer->name == name) {
+            return layer;
+        }
+        for (RotoLayerChildSerialization& child : layer->children) {
+            if (child.type == eRotoLayerChildTypeLayer) {
+                if (RotoLayerSerialization* found = findRotoLayer(&child.layer, name)) {
+                    return found;
+                }
+            }
+        }
+
+        return nullptr;
+    }
+
+    // Where a restored item goes in its list: after the nearest item that came before it on the
+    // side it is restored from, or first when none of those is left.
+    template <typename Item, typename NameOf>
+    typename std::list<Item>::iterator
+    insertionPoint(std::list<Item>* items,
+                   const std::vector<std::string>& before,
+                   NameOf nameOf)
+    {
+        for (std::vector<std::string>::const_reverse_iterator name = before.rbegin(); name != before.rend(); ++name) {
+            typename std::list<Item>::iterator found = std::find_if(items->begin(), items->end(), [&](const Item& item) {
+                return nameOf(item) == *name;
+            });
+            if (found != items->end()) {
+                return std::next(found);
+            }
+        }
+
+        return items->begin();
+    }
+
     bool
     putItem(NodeSerialization* node,
             const std::string& item,
@@ -329,7 +367,13 @@ namespace {
                     owner->erase(found);
                 }
             } else if (wanted) {
-                node->rotoContext.baseLayer.children.push_back(*wanted);
+                // A layer the merge removed leaves the item in the base layer.
+                RotoLayerSerialization* layer = findRotoLayer(&node->rotoContext.baseLayer, rotoItemOf(*wanted).parentLayerName);
+                RotoChildren* children = layer ? &layer->children : &node->rotoContext.baseLayer.children;
+                children->insert(insertionPoint(children, value.itemsBefore, [](const RotoLayerChildSerialization& child) {
+                                     return rotoItemOf(child).name;
+                                 }),
+                                 *wanted);
             }
 
             return true;
@@ -344,7 +388,11 @@ namespace {
                     node->trackerContext.tracks.erase(found);
                 }
             } else if (wanted) {
-                node->trackerContext.tracks.push_back(*wanted);
+                std::list<TrackSerialization>* tracks = &node->trackerContext.tracks;
+                tracks->insert(insertionPoint(tracks, value.itemsBefore, [](const TrackSerialization& track) {
+                                   return track.scriptName;
+                               }),
+                               *wanted);
             }
 
             return true;
@@ -410,6 +458,22 @@ namespace {
         return true;
     }
 
+    // A recorded node's own state, other than knobs and inputs, onto the live node. The live
+    // node's identity, name and plug-in stay, as the rest of the graph knows it by them.
+    void
+    restoreNodeState(const NodeSerialization& recorded,
+                     NodeSerialization* live)
+    {
+        live->label = recorded.label;
+        live->layout = recorded.layout;
+        live->userPages = recorded.userPages;
+        live->pagesOrder = recorded.pagesOrder;
+        live->hasRotoContext = recorded.hasRotoContext;
+        live->rotoContext = recorded.rotoContext;
+        live->hasTrackerContext = recorded.hasTrackerContext;
+        live->trackerContext = recorded.trackerContext;
+    }
+
     bool
     applyState(const MergeConflict& conflict,
                const MergeConflictValue& value,
@@ -470,6 +534,15 @@ namespace {
 
             return true;
         case MergeConflictKind::eDeleteModify:
+            if (conflict.nodeId.empty() && conflict.baseNodeId.empty() && !conflict.knob.empty()) {
+                if (role && (*role == Role::eDeleter)) {
+                    putKnob(&snapshot->projectKnobs, conflict.knob, nullptr);
+                } else if (value.knob) {
+                    putKnob(&snapshot->projectKnobs, conflict.knob, &*value.knob);
+                }
+
+                return true;
+            }
             if (!hasNode) {
                 return failWith(error, "the node of this conflict is no longer in the project");
             }
@@ -504,6 +577,19 @@ namespace {
                 std::list<KnobSerialization> knobs = *value.knobs;
                 keepDefaultKnobs(found.node->knobs, &knobs);
                 found.node->knobs = std::move(knobs);
+            }
+            if (!value.node) {
+                return true;
+            }
+            restoreNodeState(*value.node, found.node.get());
+            if (value.parent && !moveToGroup(snapshot, conflict.nodeId, *value.parent, error)) {
+                return false;
+            }
+            found.node->inputs.clear();
+            for (const MergeConflictConnection& connection : value.connections) {
+                std::string ignored;
+                // A base source the merge left out of the node's group stays unconnected.
+                connect(snapshot, connection, &ignored);
             }
 
             return true;

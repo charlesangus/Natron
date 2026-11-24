@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <list>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -237,6 +238,7 @@ everyKind()
     deletedTrack.side = MergeSide::eTheirs;
     deletedTrack.base.tracker = trackAlone("track1", 0.);
     deletedTrack.mine.tracker = trackAlone("track1", 4.);
+    deletedTrack.base.itemsBefore = { "track0", "trackA" };
     conflicts.push_back(deletedTrack);
 
     MergeConflict deletedKnob;
@@ -260,6 +262,13 @@ everyKind()
     deleted.baseNodeId = "base-blur";
     deleted.side = MergeSide::eTheirs;
     deleted.base.knobs = std::list<Serialization::KnobSerialization>({ doubleKnob("size", 2.) });
+    deleted.base.node = std::make_shared<Serialization::NodeSerialization>();
+    deleted.base.node->id = "blur";
+    deleted.base.node->scriptName = "Blur1";
+    deleted.base.node->pluginID = "net.sf.cimg.CImgBlur";
+    deleted.base.node->label = "Soft";
+    deleted.base.parent = std::string();
+    deleted.base.connections = { connection("blur", "Source", "grade") };
     conflicts.push_back(deleted);
 
     MergeConflict reparent;

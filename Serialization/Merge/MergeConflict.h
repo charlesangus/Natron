@@ -30,6 +30,7 @@
 
 #include "Serialization/CurveSerialization.h"
 #include "Serialization/KnobSerialization.h"
+#include "Serialization/NodeSerialization.h"
 #include "Serialization/RotoSerialization.h"
 #include "Serialization/TrackerSerialization.h"
 
@@ -143,12 +144,19 @@ struct MergeConflictValue {
     // eDeleteModify of a node: the base's knobs. eAdopted: each side's state of the defaulted
     // knobs. A knob left out is at its default; unset when the side has nothing to put back.
     std::optional<std::list<KnobSerialization>> knobs;
+    // eDeleteModify of a node, on the base side: the base node by itself, under its merged ID and
+    // script name, without its inputs or children. Its knobs are in knobs, and its inputs and group
+    // in connections and parent. Null when the side has nothing to put back.
+    NodeSerializationPtr node;
     // eRotoShape and eDeleteModify of a roto item: the item alone in the base layer, with its
     // parentLayerName naming the layer it is in; for an empty item name, the spline-warp data.
     // Unset when the side has no such item.
     std::optional<RotoContextSerialization> roto;
     // eDeleteModify of a track: the track alone. Unset when the side has no such track.
     std::optional<TrackerContextSerialization> tracker;
+    // eDeleteModify of a roto item or track: the items of its layer, or the tracks, that come
+    // before it on this side, nearest last, so that it goes back where it was.
+    std::vector<std::string> itemsBefore;
 };
 
 // Roto and tracker data compare by state, as the merge compares them.

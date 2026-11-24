@@ -20,6 +20,8 @@
 #include "Serialization/Merge/MergeConflict.h"
 
 #include "Serialization/Merge/MergeRules.h"
+#include "Serialization/Ops/SnapshotDiff.h"
+#include "Serialization/ProjectSerialization.h"
 
 NATRON_NAMESPACE_ENTER
 namespace Serialization {
@@ -39,6 +41,25 @@ namespace {
         return !a || same(*a, *b);
     }
 
+    // Recorded nodes compare by editable state, as the graph would show them.
+    bool
+    sameNode(const NodeSerializationPtr& a,
+             const NodeSerializationPtr& b)
+    {
+        if (!a || !b) {
+            return !a && !b;
+        }
+        if (a->id != b->id) {
+            return false;
+        }
+        ProjectSerialization left;
+        left.nodes.nodes.push_back(a);
+        ProjectSerialization right;
+        right.nodes.nodes.push_back(b);
+
+        return diffSnapshots(editableState(left), editableState(right)).empty();
+    }
+
 } // namespace
 
 bool
@@ -46,7 +67,8 @@ operator==(const MergeConflictValue& a,
            const MergeConflictValue& b)
 {
     return (a.knob == b.knob) && (a.key == b.key) && (a.otherKeys == b.otherKeys) && (a.connections == b.connections) && (a.parent == b.parent) && (a.knobs == b.knobs)
-        && sameOptional(a.roto, b.roto, MergeDetail::sameRotoContexts) && sameOptional(a.tracker, b.tracker, MergeDetail::sameTrackerContexts);
+        && sameNode(a.node, b.node) && sameOptional(a.roto, b.roto, MergeDetail::sameRotoContexts) && sameOptional(a.tracker, b.tracker, MergeDetail::sameTrackerContexts)
+        && (a.itemsBefore == b.itemsBefore);
 }
 
 } // namespace Serialization

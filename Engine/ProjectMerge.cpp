@@ -254,6 +254,13 @@ namespace {
         return Serialization::ResolutionSide::eBase;
     }
 
+    // A user knob of the project that one side deleted and the other changed.
+    bool
+    projectKnobDeleted(const Serialization::MergeConflict& conflict)
+    {
+        return (conflict.kind == Serialization::MergeConflictKind::eDeleteModify) && conflict.nodeId.empty() && conflict.baseNodeId.empty() && !conflict.knob.empty();
+    }
+
     // The side, or with no side the handler option, applied to snapshot.
     typedef std::function<bool(Serialization::ProjectSerialization* snapshot, std::string* error)> SnapshotEdit;
 
@@ -297,7 +304,7 @@ namespace {
 
             return true;
         }
-        if (conflict.nodeId.empty()) {
+        if (conflict.nodeId.empty() && !projectKnobDeleted(conflict)) {
             return failWith(error, QCoreApplication::translate("ProjectMerge", "This conflict has no side to choose: the merge's choice can only be accepted"));
         }
 
@@ -329,6 +336,9 @@ namespace {
             if (conflict.item.empty()) {
                 return bool(conflictKnob(project, conflict));
             }
+        }
+        if (projectKnobDeleted(conflict)) {
+            return true;
         }
         if (conflict.nodeId.empty()) {
             return false;
@@ -366,7 +376,59 @@ namespace {
         return true;
     }
 
+    bool
+    allApplied(const std::vector<Serialization::GraphOp>& ops,
+               const std::vector<Serialization::OpResult>& results)
+    {
+        if (results.size() != ops.size()) {
+            return false;
+        }
+
+        return std::all_of(results.begin(), results.end(), [](const Serialization::OpResult& result) {
+            return result.applied();
+        });
+    }
+
+    // Puts the project back to state, an editable state taken earlier. False when an operation
+    // doing so fails.
+    bool
+    restoreState(const ProjectPtr& project,
+                 const Serialization::ProjectSerialization& state)
+    {
+        Serialization::ProjectSerialization live;
+        project->toSerialization(&live);
+        const std::vector<Serialization::GraphOp> back = Serialization::diffSnapshots(Serialization::editableState(live), state);
+        if (back.empty()) {
+            return true;
+        }
+
+        return allApplied(back, applyGraphOps(project, back));
+    }
+
 } // namespace
+
+std::vector<Serialization::OpResult>
+applyAllOrNothing(const ProjectPtr& project,
+                  const std::vector<Serialization::GraphOp>& ops,
+                  bool* restored)
+{
+    assert(QThread::currentThread() == qApp->thread());
+    if (restored) {
+        *restored = true;
+    }
+    Serialization::ProjectSerialization live;
+    project->toSerialization(&live);
+    const Serialization::ProjectSerialization before = Serialization::editableState(live);
+    std::vector<Serialization::OpResult> results = applyGraphOps(project, ops);
+    if (!allApplied(ops, results)) {
+        const bool back = restoreState(project, before);
+        if (restored) {
+            *restored = back;
+        }
+    }
+
+    return results;
+}
 
 const NodeChange*
 ChangeSummary::find(const std::string& nodeId) const
@@ -461,7 +523,7 @@ updateFromTemplate(const ProjectPtr& project,
     keepMineDefaultKnobs(before.projectKnobs, &after.projectKnobs);
     result.ops = Serialization::diffSnapshots(before, after);
     if (!result.ops.empty()) {
-        result.results = applier ? applier(result.ops) : applyGraphOps(project, result.ops);
+        result.results = applier ? applier(result.ops) : applyAllOrNothing(project, result.ops);
     }
     QStringList problems;
     for (const Serialization::OpResult& op : result.results) {
@@ -473,6 +535,10 @@ updateFromTemplate(const ProjectPtr& project,
         problems.push_back(QCoreApplication::translate("ProjectMerge", "the operations were not all applied"));
     }
     if (!problems.isEmpty()) {
+        // An applier may stop partway; the update is all or nothing.
+        if (!restoreState(project, before)) {
+            problems.push_back(QCoreApplication::translate("ProjectMerge", "the operations that did apply could not all be undone"));
+        }
         result.error = QCoreApplication::translate("ProjectMerge", "The update could not be applied: %1").arg(problems.join(QString::fromUtf8("; ")));
 
         return result;

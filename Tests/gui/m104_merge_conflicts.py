@@ -5,7 +5,8 @@ imported, the artist sets Blur1's size to 2, and the update to version 2 raises 
 folded knob, for all its dimensions. The panel then lists it under Blur1 with the count in its tab,
 and Blur1 carries the badge. The conflict is resolved with Theirs, Base, Mine and Accept in turn, each undone with Edit > Undo,
 which brings the conflict back. Resolve All Theirs clears the list and the badge; undoing it brings
-them back, and the project saved like that and reopened shows the panel with the same count.
+them back, and the project saved like that and reopened shows the panel with the same count;
+resolving everything there clears the badge the reopened Blur1 came up with.
 
 Then an input conflict: version 2 of a second template feeds Blur2 from a new Blur3, the artist
 feeds it from Artist, and the update keeps Artist with a conflict listed under Blur2. Theirs
@@ -284,6 +285,10 @@ try:
         check(QApplication.activeModalWidget() is None, "the conflicts are reported in the panel, not a modal dialog")
         check_panel(count, "after reopening")
         check(app.isMergeConflictBadgeShown(app.getNode("Blur1")), "the reopened Blur1 carries the badge")
+        require(click("mergeConflictAllTheirs"), "Resolve All Theirs in the reopened shot")
+        yield ("sleep", SETTLE_MS)
+        check_panel(0, "after resolving the reopened conflicts")
+        check(not app.isMergeConflictBadgeShown(app.getNode("Blur1")), "resolving the reopened conflicts clears the badge the load put on Blur1")
 
         gt.section("input templates")
         require(app.resetProject(), "reset the project for the input conflict")

@@ -29,6 +29,7 @@ NATRON_NAMESPACE_ENTER
 namespace Serialization {
 
 using MergeDetail::mergedOrder;
+using MergeDetail::namesBefore;
 using MergeDetail::Pick;
 using MergeDetail::pick;
 using MergeDetail::takeChanged;
@@ -191,6 +192,9 @@ mergeTrackerContexts(const TrackerContextSerialization* base,
                 conflict.base.tracker = trackAlone(b);
                 conflict.mine.tracker = trackAlone(m);
                 conflict.theirs.tracker = trackAlone(t);
+                conflict.base.itemsBefore = namesBefore(trackNames(*base), name);
+                conflict.mine.itemsBefore = namesBefore(trackNames(mine), name);
+                conflict.theirs.itemsBefore = namesBefore(trackNames(theirs), name);
                 conflicts->push_back(conflict);
                 kept.emplace(name, *present);
             }

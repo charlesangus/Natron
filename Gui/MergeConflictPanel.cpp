@@ -262,13 +262,11 @@ struct MergeConflictPanel::Implementation {
     QPushButton* accept;
     QPushButton* allMine;
     QPushButton* allTheirs;
-    // The handler options of the one selected conflict.
     QWidget* optionRow;
     QHBoxLayout* optionLayout;
     std::vector<QPushButton*> optionButtons;
-    // The nodes showing a conflict badge, by ID.
     std::set<std::string> badged;
-    // The conflicts the tree lists, in the order of their rows' indices.
+    // Indexed by the conflict index each row stores.
     std::vector<Serialization::MergeConflict> shown;
     bool refreshing;
 
@@ -321,12 +319,14 @@ struct MergeConflictPanel::Implementation {
                 }
             }
         }
+        // A node whose NodeGui does not exist yet badges itself when it is made, so it is tracked
+        // all the same, for its badge to clear once its conflicts are gone.
         badged.clear();
         for (const auto& entry : counts) {
             if (NodeGuiPtr nodeGui = nodeGuiOf(p->findNodeById(entry.first))) {
                 nodeGui->setMergeConflictCount(entry.second);
-                badged.insert(entry.first);
             }
+            badged.insert(entry.first);
         }
     }
 };
@@ -509,6 +509,8 @@ MergeConflictPanel::refresh()
 void
 MergeConflictPanel::onProjectLoaded()
 {
+    // The conflict list is set before the nodes are made, so the badges are refreshed now.
+    refresh();
     ProjectPtr project = _imp->project.lock();
     if (project && !project->getMergeConflicts().empty()) {
         _imp->gui->ensureMergeConflictPanelVisible();

@@ -41,14 +41,22 @@ NATRON_NAMESPACE_ENTER
 namespace ProjectMerge {
 /**
  * @brief Applies a batch of operations to the open project and returns one result per operation,
- * in order. applyGraphOps() is one; the node graph passes one that does the same inside an undo
- * command.
+ * in order. applyAllOrNothing() is one; the node graph passes one that does the same inside an
+ * undo command.
  **/
 typedef std::function<std::vector<Serialization::OpResult>(const std::vector<Serialization::GraphOp>&)> OpApplier;
 
+/**
+ * @brief applyGraphOps(), except that when any operation fails the ones that applied are undone,
+ * leaving the project as it was. restored, when given, is false when undoing them failed too.
+ **/
+std::vector<Serialization::OpResult> applyAllOrNothing(const ProjectPtr& project,
+                                                       const std::vector<Serialization::GraphOp>& ops,
+                                                       bool* restored = nullptr);
+
 struct UpdateResult {
     // False when nothing was merged or an operation could not be applied; error says why. The
-    // template import and the project's saved conflicts are then left as they were.
+    // graph, the template import and the project's saved conflicts are then left as they were.
     bool ok = false;
     QString error;
     // The conflicts this merge raised. Each is already resolved in the graph, mostly by keeping mine.
@@ -62,9 +70,10 @@ struct UpdateResult {
  * @brief Merges the current version of a template into the project: base is the import's stored
  * snapshot, mine is the live project, theirs is the template file newPath, or the path the import
  * recorded when newPath is empty. The operations that turn the live graph into the merged one go
- * through applier (applyGraphOps() when it is empty). When all of them apply, the import's base
- * becomes theirs and the project's saved conflicts become the earlier ones still open plus this
- * merge's; when merging the same file again the graph does not change.
+ * through applier (applyAllOrNothing() when it is empty). When one fails, the graph is put back as
+ * it was before the update. When all of them apply, the import's base becomes theirs and the
+ * project's saved conflicts become the earlier ones still open plus this merge's; when merging the
+ * same file again the graph does not change.
  **/
 UpdateResult updateFromTemplate(const ProjectPtr& project,
                                 const std::string& templateKey,

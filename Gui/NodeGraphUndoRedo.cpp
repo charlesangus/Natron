@@ -2621,6 +2621,17 @@ ViewerInputLockCommand::redo()
     }
 }
 
+namespace {
+bool
+allApplied(const std::vector<Serialization::GraphOp>& ops,
+           const std::vector<Serialization::OpResult>& results)
+{
+    return (results.size() == ops.size()) && std::all_of(results.begin(), results.end(), [](const Serialization::OpResult& result) {
+               return result.applied();
+           });
+}
+} // anonymous namespace
+
 ApplyGraphOpsCommand::ApplyGraphOpsCommand(NodeGraph* graph,
                                            const ProjectPtr& project,
                                            const std::vector<Serialization::GraphOp>& forward,
@@ -2680,12 +2691,14 @@ ApplyGraphOpsCommand::applyAndPush(NodeGraph* graph,
 {
     Serialization::ProjectSerialization before;
     project->toSerialization(&before);
-    const std::vector<Serialization::OpResult> results = applyGraphOps(project, ops);
+    const std::vector<Serialization::OpResult> results = ProjectMerge::applyAllOrNothing(project, ops);
 
     Serialization::ProjectSerialization after;
     project->toSerialization(&after);
-    if (ApplyGraphOpsCommand* command = makeCommand(graph, project, before, after, text, 0)) {
-        graph->pushUndoCommand(command, UndoScope());
+    if (allApplied(ops, results)) {
+        if (ApplyGraphOpsCommand* command = makeCommand(graph, project, before, after, text, 0)) {
+            graph->pushUndoCommand(command, UndoScope());
+        }
     }
 
     return results;
@@ -2719,11 +2732,13 @@ ApplyGraphOpsCommand::applyAndRecord(NodeGraph* graph,
 {
     Serialization::ProjectSerialization before;
     project->toSerialization(&before);
-    const std::vector<Serialization::OpResult> results = applyGraphOps(project, ops);
+    const std::vector<Serialization::OpResult> results = ProjectMerge::applyAllOrNothing(project, ops);
 
     Serialization::ProjectSerialization after;
     project->toSerialization(&after);
-    recordChange(graph, project, before, after, text, parent);
+    if (allApplied(ops, results)) {
+        recordChange(graph, project, before, after, text, parent);
+    }
 
     return results;
 }

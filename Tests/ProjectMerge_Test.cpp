@@ -305,6 +305,57 @@ TEST_F(ProjectMergeTest, AnUnknownKeyOrMissingFileFailsWithoutChangingTheProject
     EXPECT_DOUBLE_EQ(blurSize(nodeNamed("Blur1"))->getValue(0), blurSize(nodeNamed("Blur1"))->getValue(1));
 }
 
+TEST_F(ProjectMergeTest, AnUpdateWhoseOperationFailsLeavesTheGraphAsItWas)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    QString v1;
+    QString v2;
+    saveTemplateVersions(dir, &v1, &v2);
+    importShot(v1);
+    const std::string key = project()->getTemplateImports().front().key;
+    const std::string hash = project()->getTemplateImports().front().contentHash;
+    const Serialization::ProjectSerialization before = state();
+
+    // Every operation applies, but the applier reports the last one as failed, as one that stops
+    // partway would.
+    bool appliedSome = false;
+    const ProjectMerge::UpdateResult result = ProjectMerge::updateFromTemplate(project(), key, v2, [&](const std::vector<Serialization::GraphOp>& ops) {
+        std::vector<Serialization::OpResult> results = applyGraphOps(project(), ops);
+        appliedSome = !Serialization::diffSnapshots(before, state()).empty();
+        if (!results.empty()) {
+            results.back() = Serialization::OpResult::invalid("refused");
+        }
+
+        return results;
+    });
+    EXPECT_TRUE(appliedSome);
+    EXPECT_FALSE(result.ok);
+    EXPECT_FALSE(result.error.isEmpty());
+    EXPECT_TRUE(Serialization::diffSnapshots(state(), before).empty());
+    EXPECT_EQ(project()->getTemplateImports().front().contentHash, hash);
+    EXPECT_TRUE(project()->getMergeConflicts().empty());
+}
+
+TEST_F(ProjectMergeTest, ABatchWithAFailingOperationAppliesNoneOfIt)
+{
+    NodePtr blur = createBlur("Blur1");
+    ASSERT_NE(blur, nullptr);
+    setSize(blur, 3.);
+    const Serialization::ProjectSerialization before = state();
+
+    bool restored = false;
+    const std::vector<Serialization::GraphOp> ops = { Serialization::SetKnobOp { blur->getNodeId(), kBlurParamSize, std::nullopt },
+                                                      Serialization::SetKnobOp { blur->getNodeId(), "noSuchKnob", std::nullopt } };
+    const std::vector<Serialization::OpResult> results = ProjectMerge::applyAllOrNothing(project(), ops, &restored);
+    ASSERT_EQ(results.size(), 2u);
+    EXPECT_TRUE(results[0].applied());
+    EXPECT_FALSE(results[1].applied());
+    EXPECT_TRUE(restored);
+    EXPECT_DOUBLE_EQ(blurSize(blur)->getValue(0), 3.);
+    EXPECT_TRUE(Serialization::diffSnapshots(state(), before).empty());
+}
+
 TEST_F(ProjectMergeTest, CompareSummarisesAddedChangedAndRemovedNodes)
 {
     QTemporaryDir dir;

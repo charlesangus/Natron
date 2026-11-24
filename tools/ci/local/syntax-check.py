@@ -8,12 +8,18 @@ checkout's build/fast compile DB, with source paths rewritten to --root. Files
 are relative to --root. With no files, the TUs changed between --base and the
 working tree are checked. A header is checked through the .cpp beside it.
 
+Checks in different checkouts run concurrently. Reconfiguring a root's
+build/syntax waits for ninja/cmake on that directory and for any full local
+build, and checks on one root queue on a lock file there.
+
 Exit status is non-zero when any TU is FAIL or NO-COMMAND.
 """
 import argparse
+import fcntl
 import filecmp
 import json
 import os
+import posixpath
 import re
 import shlex
 import subprocess
@@ -85,9 +91,96 @@ def container_shell(cmd, cwd):
     return container_exec(["bash", "-lc", cmd], cwd)
 
 
-def ninja_running():
-    p = container_exec(["pgrep", "-x", "ninja"], "/")
-    return p.returncode == 0
+LIST_BUILD_PROCS = (
+    'for d in /proc/[0-9]*; do c=$(cat "$d/comm" 2>/dev/null); '
+    'case "$c" in ninja|cmake) '
+    'printf "%s\\t%s\\t%s\\n" "${d#/proc/}" "$(readlink "$d/cwd")" '
+    '"$(tr "\\0" " " < "$d/cmdline")";; esac; done'
+)
+BUILD_DIR_RE = re.compile(r"/build/([^/]+)(?:/|$)")
+WAIT_LIMIT_S = 600
+WAIT_POLL_S = 5
+
+
+def container_build_procs():
+    """Returns (pid, cwd, args) for each ninja/cmake process in the container."""
+    p = container_exec(["bash", "-c", LIST_BUILD_PROCS], "/")
+    procs = []
+    for line in p.stdout.splitlines():
+        parts = line.split("\t", 2)
+        if len(parts) == 3 and parts[0].isdigit():
+            procs.append((int(parts[0]), parts[1], parts[2].strip()))
+    return procs
+
+
+def proc_build_dir(cwd, args):
+    """The build directory a ninja/cmake process works on: its -C/-B argument, else its cwd."""
+    words = args.split()
+    for i, w in enumerate(words):
+        for flag in ("-C", "-B"):
+            if w == flag and i + 1 < len(words):
+                return posixpath.normpath(posixpath.join(cwd, words[i + 1]))
+            if w.startswith(flag) and len(w) > 2:
+                return posixpath.normpath(posixpath.join(cwd, w[2:]))
+    return posixpath.normpath(cwd) if cwd else ""
+
+
+def blocking_procs(root, procs=None):
+    """Processes that must finish before this root's build/syntax may be touched.
+
+    Those are ninja/cmake on this root's build/syntax, and any ninja build of a
+    build dir other than a build/syntax (a full local build). Other checkouts'
+    build/syntax work is independent and never blocks."""
+    syntax = os.path.join(os.path.realpath(root), "build", "syntax")
+    blockers = []
+    for pid, cwd, args in container_build_procs() if procs is None else procs:
+        bdir = proc_build_dir(cwd, args)
+        name = os.path.basename(args.split()[0]) if args else ""
+        if bdir == syntax or bdir.startswith(syntax + "/"):
+            blockers.append((pid, bdir, args))
+            continue
+        m = BUILD_DIR_RE.search(bdir + "/")
+        full_build = name == "ninja" and " -t " not in f" {args} "
+        if full_build and m and m.group(1) != "syntax":
+            blockers.append((pid, bdir, args))
+    return blockers
+
+
+def wait_for_clear(root):
+    deadline = time.time() + WAIT_LIMIT_S
+    last = None
+    while True:
+        blockers = blocking_procs(root)
+        if not blockers:
+            return
+        desc = "; ".join(f"pid {pid} in {bdir}" for pid, bdir, _ in blockers)
+        if desc != last:
+            print(f"waiting for {desc} to finish ...", flush=True)
+            last = desc
+        if time.time() >= deadline:
+            die(f"still blocked after {WAIT_LIMIT_S}s by {desc}", 1)
+        time.sleep(WAIT_POLL_S)
+
+
+class RootLock:
+    """Exclusive lock serializing checks that configure the same root's build/syntax."""
+
+    def __init__(self, bdir):
+        os.makedirs(bdir, exist_ok=True)
+        self.path = os.path.join(bdir, ".syntax-check.lock")
+        self.fd = None
+
+    def __enter__(self):
+        self.fd = os.open(self.path, os.O_CREAT | os.O_RDWR, 0o644)
+        try:
+            fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print(f"waiting for another syntax check on {os.path.dirname(self.path)} ...", flush=True)
+            fcntl.flock(self.fd, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc):
+        os.close(self.fd)
 
 
 # --- compile DB --------------------------------------------------------------
@@ -345,11 +438,18 @@ def deps_root_args(root, main):
 def ensure_gpu_db(root, main, needed_headers, moc_targets, cmake_files=(), generate=True):
     """Configures build/syntax and generates kernel headers; returns its CompDb.
 
-    The tree is reconfigured when older than the GPU sources or cmake_files."""
-    if ninja_running():
-        die(f"ninja is already running in the '{CONTAINER}' container; it is single-tenant, "
-            "so wait for that build to finish before a GPU syntax check reconfigures.", 1)
+    The tree is reconfigured when older than the GPU sources or cmake_files.
+    Configure and generation hold the root's lock and wait out ninja/cmake on
+    this build/syntax or a full local build; the later -fsyntax-only runs only
+    read the tree and run unlocked."""
     bdir = os.path.join(root, "build", "syntax")
+    with RootLock(bdir):
+        wait_for_clear(root)
+        return _ensure_gpu_db_locked(root, main, bdir, needed_headers, moc_targets,
+                                     cmake_files, generate)
+
+
+def _ensure_gpu_db_locked(root, main, bdir, needed_headers, moc_targets, cmake_files, generate):
     db_path = os.path.join(bdir, "compile_commands.json")
     newest = max([newest_gpu_mtime(root), *map(os.path.getmtime, cmake_files)])
     if not os.path.isfile(db_path) or os.path.getmtime(db_path) < newest:

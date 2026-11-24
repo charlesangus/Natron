@@ -33,6 +33,7 @@
 
 #include <QDebug>
 
+#include "Engine/Cache.h"
 #include "Engine/CacheDiskTier.h"
 #include "Engine/ContentHasher.h"
 
@@ -584,6 +585,12 @@ void
 Bitmap::markForRendering(const RectI & roi)
 {
     return markFor(roi, PIXEL_UNAVAILABLE);
+}
+
+void
+Bitmap::clearMarksForRendering()
+{
+    std::replace(_map.begin(), _map.end(), (char)PIXEL_UNAVAILABLE, (char)0);
 }
 
 #endif
@@ -1356,7 +1363,34 @@ Image::copyAndResizeIfNeeded(const RectI& newBounds,
     RectI merge = newBounds;
     merge.merge(_bounds);
 
-    resizeInternal(this, _bounds, merge, fillWithBlackAndTransparent, setBitmapTo1, usesBitMap(), output);
+    resizeInternal(this, _bounds, merge, fillWithBlackAndTransparent, setBitmapTo1, getCacheAPI() != NULL, output);
+    copyEntryState(*_header, (*output)->_header.get());
+#if NATRON_ENABLE_TRIMAP
+    // Renders under way write into this image, not into the copy, so what they reserved must be rendered again there.
+    if ((*output)->usesBitMap()) {
+        (*output)->_header->bitmap.clearMarksForRendering();
+    }
+#endif
+
+    return true;
+}
+
+bool
+Image::ensureBoundsByCopy(ImagePtr* image,
+                          const RectI& newBounds,
+                          bool fillWithBlackAndTransparent,
+                          bool setBitmapTo1)
+{
+    assert(image && *image);
+    ImagePtr grown;
+    if (!(*image)->copyAndResizeIfNeeded(newBounds, fillWithBlackAndTransparent, setBitmapTo1, &grown)) {
+        return false;
+    }
+    const Cache<Image>* cache = dynamic_cast<const Cache<Image>*>((*image)->getCacheAPI());
+    if (cache) {
+        const_cast<Cache<Image>*>(cache)->swapOrInsert(*image, grown);
+    }
+    *image = grown;
 
     return true;
 }

@@ -44,13 +44,17 @@ USDConfigureLayer) whose Save Path is set is written to that file, with the
 layers it holds flattened into it as the written file's are, and sublayered
 where its layers were: a region nested in another goes into the outer region's
 file, and a region opened after a USDRead that gathers the layers before it
-(Applies To set to Preceding Layers) sublayers that read file too. A Save Path
-is resolved against the written file's folder, with the project's path
-variables and the first frame and view of the range, as File is, and its
-folder is created. It must end in a USD extension, differ from File, not
-name a file the scene reads, and not take the name of a sidecar beside File
-(`name_layer1.usda`, ...), which a later render would remove as stale. Paths
-are compared through symbolic links, so two spellings of one file are the same
+(Applies To set to Preceding Layers) sublayers that read file too. A file is
+stronger than the files it sublayers, so layers of a region that lie weaker than
+a region nested in it (added before the nested region opened) go to a sidecar of
+the region's file (`name_layer1.usda`, ...), sublayered below the nested
+region's file, and only the layers stronger than it stay in the region's file. A
+Save Path is resolved against the written file's folder, with the project's path
+variables and the first frame and view of the range, as File is, and its folder
+is created. It must end in a USD extension, differ from File, not name a file
+the scene reads, and not take the name of a sidecar beside File
+(`name_layer1.usda`, ...), which a later render would remove as stale. Paths are
+compared through symbolic links, so two spellings of one file are the same
 Save Path. The region's metadata (default prim, comment,
 start and end time, time codes and frames per second, up axis, meters per unit,
 colour configuration and system, render settings prim and custom data) goes on

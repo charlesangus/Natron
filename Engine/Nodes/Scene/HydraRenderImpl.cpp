@@ -101,6 +101,7 @@
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Nodes/Scene/StormGLSection.h"
+#include "Engine/Nodes/Scene/StormIdPass.h"
 #include "Engine/Nodes/Scene/StormPtexBindingFilter.h"
 #include "Engine/Nodes/Scene/StormPtexBudget.h"
 #include "Engine/Nodes/Scene/StormTextureBudget.h"
@@ -337,6 +338,7 @@ HydraGLContextFactory gFactory;
 
 std::atomic<std::size_t> gMemoryBudget(kDefaultMemoryBudget);
 std::atomic<std::uint64_t> gEngineBuilds(0);
+std::atomic<bool> gStormTranslucentIds(true);
 
 typedef std::map<std::string, VtValue> RendererSettings;
 std::mutex gSettingsMutex;
@@ -455,10 +457,17 @@ private:
 // Closes the engine's Cycles session (CyclesThreads::open()) after the engine, which ends it, goes.
 struct EngineDeleter {
     bool cyclesSession = false;
+    // Whether the engine is a StormIdEngine, which UsdImagingGLEngine's destructor, not virtual,
+    // would not destroy.
+    bool stormIds = false;
 
     void operator()(UsdImagingGLEngine* engine) const
     {
-        delete engine;
+        if (stormIds) {
+            delete static_cast<StormIdEngine*>(engine);
+        } else {
+            delete engine;
+        }
         if (cyclesSession) {
             CyclesThreads::instance().close();
         }
@@ -469,25 +478,31 @@ typedef std::unique_ptr<UsdImagingGLEngine, EngineDeleter> EnginePtr;
 
 /**
  * A new engine of parameters. A Cycles one (cycles), whose session the caller has opened, is made
- * so that its CPU device renders on threads threads, and closes the session when it goes. Only an
- * engine made with wantFilter gets a SceneDrawFilter, whose renderInstanceId goes to *filterId if
- * given; the viewer's draw states mean nothing to the others.
+ * so that its CPU device renders on threads threads, and closes the session when it goes. A
+ * StormIdEngine (stormIds) is made for Storm on the GPU. Only an engine made with wantFilter gets
+ * a SceneDrawFilter, whose renderInstanceId goes to *filterId if given; the viewer's draw states
+ * mean nothing to the others.
  **/
 EnginePtr
 newEngine(const UsdImagingGLEngine::Parameters& parameters,
           bool cycles,
           int threads,
+          bool stormIds,
           bool wantFilter,
           std::string* filterId = nullptr)
 {
-    EnginePtr engine(nullptr, EngineDeleter { cycles });
+    EnginePtr engine(nullptr, EngineDeleter { cycles, stormIds });
     std::unique_ptr<SceneDrawFilter::EngineScope> scope;
     if (wantFilter) {
         SceneDrawFilter::registerForAllRenderers();
         scope.reset(new SceneDrawFilter::EngineScope);
     }
     const std::function<void()> make = [&]() {
-        engine.reset(new UsdImagingGLEngine(parameters));
+        if (stormIds) {
+            engine.reset(new StormIdEngine(parameters));
+        } else {
+            engine.reset(new UsdImagingGLEngine(parameters));
+        }
         if (scope && filterId) {
             *filterId = scope->getInstanceId();
         }
@@ -543,6 +558,9 @@ struct EngineEntry {
     std::uint64_t lastUse = 0;
     // The GPU memory the engine held after its last render.
     std::size_t bytes = 0;
+    // The part of bytes that is the translucent id pass's own depth buffer, which is made after
+    // the render and which Storm's count may leave out.
+    std::size_t idPassBytes = 0;
 
     // What the engine last rendered, which its AOVs hold until it renders again.
     bool rendered = false;
@@ -557,6 +575,8 @@ struct EngineEntry {
     GfMatrix4d projection;
     int width = 0;
     int height = 0;
+    // The parameters of that render's Render() calls, which the translucent id pass draws with.
+    UsdImagingGLRenderParams params;
 
     // That render's primId plane and the paths of its hashes, decoded on the CPU when first asked for.
     bool idsDecoded = false;
@@ -954,6 +974,17 @@ public:
         }
     }
 
+    const void* ownerOf(const EngineEntry& entry) const
+    {
+        for (std::map<const void*, EngineEntry>::const_iterator it = _engines.begin(); it != _engines.end(); ++it) {
+            if (&it->second == &entry) {
+                return it->first;
+            }
+        }
+
+        return nullptr;
+    }
+
     std::size_t engineCount() const
     {
         return _engineCount.load();
@@ -981,6 +1012,11 @@ public:
 
     bool decodeIds(EngineEntry& entry,
                    std::string* error);
+
+    // Writes the translucent prims' ids into a Storm render's primId and instanceId AOVs, before
+    // they are first decoded. False, with the engine dropped, if the pass threw.
+    bool translucentIds(EngineEntry& entry,
+                        std::string* error);
 
     bool packAvailable(std::string* error);
 
@@ -1390,7 +1426,7 @@ RenderThread::makeEngine(EngineEntry& entry,
     std::string startError;
     {
         TfErrorMark mark;
-        entry.engine = newEngine(parameters, cycles, threads, false);
+        entry.engine = newEngine(parameters, cycles, threads, _gl && RenderDelegates::isStorm(renderer), false);
         ++gEngineBuilds;
         // The engine reports a delegate it could not start as coding errors and renders nothing.
         if (entry.engine->GetCurrentRendererId() != TfToken(renderer)) {
@@ -1727,6 +1763,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     entry.projection = projection;
     entry.width = width;
     entry.height = height;
+    entry.params = params;
 
     if (!_gl) {
         // Host memory, which the GPU budget does not count.
@@ -1742,7 +1779,8 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     if ((used != stats.end()) && used->second.IsHolding<size_t>()) {
         bytes = std::max(bytes, used->second.UncheckedGet<size_t>());
     }
-    entry.bytes = bytes;
+    entry.idPassBytes = entry.engine.get_deleter().stormIds ? static_cast<StormIdEngine*>(engine)->getIdPassBytes() : 0;
+    entry.bytes = bytes + entry.idPassBytes;
     const void* owner = request.owner;
     enforceBudget(owner);
 
@@ -1914,6 +1952,9 @@ RenderThread::decodeIds(EngineEntry& entry,
     if (entry.idsDecoded) {
         return true;
     }
+    if (!translucentIds(entry, error)) {
+        return false;
+    }
     UsdImagingGLEngine* engine = entry.engine.get();
     const int width = entry.width;
     const int height = entry.height;
@@ -1960,6 +2001,52 @@ RenderThread::decodeIds(EngineEntry& entry,
 
     return true;
 } // RenderThread::decodeIds
+
+bool
+RenderThread::translucentIds(EngineEntry& entry,
+                             std::string* error)
+{
+    // The pass draws the stage as it is: once a write has changed it since the render, the ids
+    // would not be the render's.
+    if (!_gl || !entry.rendered || !entry.engine || !entry.engine.get_deleter().stormIds || !gStormTranslucentIds.load() || (entry.writeCount != SceneWriteBarrier::getWriteCount())) {
+        return true;
+    }
+    StormIdEngine* const engine = static_cast<StormIdEngine*>(entry.engine.get());
+    if (!engine->hasIdPass()) {
+        return true;
+    }
+    std::string failure;
+    bindFramebuffer(entry.width, entry.height);
+    try {
+        (void)engine->renderTranslucentIds(entry.params);
+    } catch (const std::exception& e) {
+        failure = e.what();
+        if (failure.empty()) {
+            failure = "unknown exception";
+        }
+    } catch (...) {
+        failure = "unknown exception";
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    if (failure.empty()) {
+        const std::size_t passBytes = engine->getIdPassBytes();
+        if (passBytes != entry.idPassBytes) {
+            const bool grew = (passBytes > entry.idPassBytes);
+            entry.bytes = entry.bytes - entry.idPassBytes + passBytes;
+            entry.idPassBytes = passBytes;
+            if (grew) {
+                enforceBudget(ownerOf(entry));
+            }
+        }
+
+        return true;
+    }
+    *error = "The " + entry.rendererName + " translucent id pass failed: " + failure;
+    entry.engine.reset();
+    entry.rendered = false;
+
+    return false;
+} // RenderThread::translucentIds
 
 bool
 RenderThread::frame(EngineEntry& entry,
@@ -2708,6 +2795,12 @@ getEngineBuildCount()
     return gEngineBuilds.load();
 }
 
+void
+setStormTranslucentIds(bool enabled)
+{
+    gStormTranslucentIds = enabled;
+}
+
 std::string
 contextDescription(std::string* error)
 {
@@ -3096,7 +3189,7 @@ struct ProgressiveRender::Implementation {
         std::string filterId;
         {
             TfErrorMark mark;
-            made = newEngine(parameters, cycles, threads, true, &filterId);
+            made = newEngine(parameters, cycles, threads, false, true, &filterId);
             ++gEngineBuilds;
             if (made->GetCurrentRendererId() != TfToken(id)) {
                 std::string reasons;

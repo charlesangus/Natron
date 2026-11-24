@@ -28,6 +28,8 @@
 
 #include "Global/Macros.h"
 
+#include <memory>
+
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Scene/PrimSelector.h"
@@ -39,6 +41,11 @@
 
 #define kUSDPruneParamPrimPattern "primPattern"
 #define kUSDPruneParamMode "mode"
+#define kUSDPruneParamPruneUnselected "pruneUnselected"
+#define kUSDPruneParamKeepLights "keepLights"
+#define kUSDPruneParamKeepCameras "keepCameras"
+#define kUSDPruneParamKeepMaterials "keepMaterials"
+#define kUSDPruneParamKeepRenderSettings "keepRenderSettings"
 
 NATRON_NAMESPACE_ENTER
 
@@ -46,8 +53,11 @@ NATRON_NAMESPACE_ENTER
  * @brief Removes the prims a prim pattern (a USD path expression) selects from its input scene, without deleting anything
  * the input authors: Deactivate authors active = false on each match, which drops it and its
  * descendants from the composed stage; Hide authors visibility = invisible on each match that
- * can be hidden, which keeps it on the stage but undrawn. A pattern that matches no prim leaves
- * the scene as it is and sets a node warning.
+ * can be hidden, which keeps it on the stage but undrawn. With Prune Unselected, the node keeps
+ * the matches, their ancestors and descendants, and the lights, cameras, materials and render
+ * settings its Keep knobs name, and prunes the highest prims off every kept path instead. A
+ * pattern that matches no prim leaves the scene as it is and sets a node warning, unless Prune
+ * Unselected is on: then everything but what the Keep knobs name is pruned.
  **/
 class USDPrune
     : public NativeEffectBase {
@@ -67,7 +77,9 @@ public:
         .description = "Remove the prims a pattern selects (a USD path expression: paths with * and ? wildcards, // for any "
                        "depth, set operators) from the input scene. "
                        "Deactivate drops them and their descendants from the stage; Hide keeps them but makes them "
-                       "invisible.",
+                       "invisible. With Prune Unselected on, it isolates the selection instead: it keeps the "
+                       "matches and prunes the rest of the scene, keeping lights, cameras, materials and render "
+                       "settings as the Keep checkboxes say; a pattern that matches nothing prunes everything else.",
         .grouping = PLUGIN_GROUP_USD_COMPOSITION,
         .majorVersion = 1,
         .minorVersion = 0,
@@ -94,13 +106,30 @@ public:
 private:
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void initializeKnobs() OVERRIDE FINAL;
+    virtual void onKnobsLoaded() OVERRIDE FINAL;
+    virtual bool knobChanged(KnobI* k,
+                             ValueChangedReasonEnum reason,
+                             ViewSpec view,
+                             double time,
+                             bool originatedFromMainThread) OVERRIDE FINAL;
     virtual StatusEnum renderScene(const SceneRenderActionArgs& args,
                                    ScenePayload* outputScene,
                                    std::string* errorMessage) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    void refreshKeepKnobs();
+
+    // The prims isolating prunes, per evaluation context; defined in USDPrune.cpp.
+    struct IsolateCache;
+
     PrimSelector _primPattern;
     KnobChoiceWPtr _mode;
+    KnobBoolWPtr _pruneUnselected;
+    KnobBoolWPtr _keepLights;
+    KnobBoolWPtr _keepCameras;
+    KnobBoolWPtr _keepMaterials;
+    KnobBoolWPtr _keepRenderSettings;
     PrimPatternCache _matches;
+    std::unique_ptr<IsolateCache> _isolateCache;
 };
 
 NATRON_NAMESPACE_EXIT

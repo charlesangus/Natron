@@ -27,6 +27,11 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
+#include <cerrno>
+#include <cstdlib>
+#include <limits>
+#include <map>
 #include <mutex>
 #include <set>
 #include <string>
@@ -260,12 +265,251 @@ findLayerStackLinks(const PXR_NS::SdfLayerRefPtr& layer)
     return links;
 }
 
+namespace {
+    // payload's strongest link, null for a payload without layers.
+    const ScenePayloadImpl*
+    topLink(const ScenePayload& payload)
+    {
+        const ScenePayloadImpl* link = payload.getImpl().get();
+
+        return (link && (link->numLayers != 0)) ? link : nullptr;
+    }
+
+    U64
+    foldOpenRegions(U64 closedStackHash,
+                    const std::vector<SceneLayerRegionPtr>& openRegions)
+    {
+        if (openRegions.empty()) {
+            return closedStackHash;
+        }
+        ContentHasher h;
+        h.appendU64(closedStackHash);
+        h.appendString("open");
+        for (const SceneLayerRegionPtr& region : openRegions) {
+            h.appendU64(region->id);
+        }
+        const U64 hash = h.finalize();
+
+        // 0 stands for the empty stack with no region open.
+        return (hash == 0) ? 1 : hash;
+    }
+
+    // Appends entry as it is, its region untouched, the result's open regions openRegions.
+    ScenePayload
+    appendRaw(const ScenePayload& base,
+              const SceneLayerEntry& entry,
+              const std::vector<SceneLayerRegionPtr>& openRegions)
+    {
+        const PXR_NS::SdfLayerRefPtr& layer = entry.layer;
+        const U64 layerHash = entry.hash;
+
+        if (!layer) {
+            return base;
+        }
+
+        std::shared_ptr<ScenePayloadImpl> imp = std::make_shared<ScenePayloadImpl>();
+        // A payload without layers is never the base of another link: the walks down a stack would
+        // meet its missing layer.
+        imp->base = base.isEmpty() ? std::shared_ptr<const ScenePayloadImpl>() : base.getImpl();
+        imp->top = entry;
+        imp->numLayers = base.getNumLayers() + 1;
+
+        ContentHasher content;
+        content.appendU64(base.getContentHash());
+        content.appendU64(layerHash);
+        imp->contentHash = content.finalize();
+        // 0 stands for the empty stack.
+        if (imp->contentHash == 0) {
+            imp->contentHash = 1;
+        }
+
+        ContentHasher h;
+        h.appendU64(base.getStackHash());
+        h.appendU64(layerHash);
+        // Each only when set, so a stack without breaks or regions hashes as it would without them.
+        if (entry.context) {
+            h.appendString("context");
+        }
+        if (entry.region) {
+            h.appendString("region");
+            h.appendU64(entry.region->id);
+        }
+        if (entry.sealed) {
+            h.appendString("sealed");
+        }
+        if (entry.mergeTop) {
+            h.appendString("mergeTop");
+        }
+        imp->closedStackHash = h.finalize();
+        // 0 stands for the empty stack.
+        if (imp->closedStackHash == 0) {
+            imp->closedStackHash = 1;
+        }
+        imp->openRegions = openRegions;
+        imp->stackHash = foldOpenRegions(imp->closedStackHash, openRegions);
+
+        imp->metadata = readLayerMetadata(layer, base.getMetadata());
+
+        return ScenePayload(imp);
+    }
+
+    const std::vector<SceneLayerRegionPtr>&
+    openRegionsOf(const ScenePayload& payload)
+    {
+        static const std::vector<SceneLayerRegionPtr> none;
+
+        return payload.getImpl() ? payload.getImpl()->openRegions : none;
+    }
+
+    // payload's layers with openRegions open on it.
+    ScenePayload
+    withOpenRegions(const ScenePayload& payload,
+                    const std::vector<SceneLayerRegionPtr>& openRegions)
+    {
+        if (openRegionsOf(payload) == openRegions) {
+            return payload;
+        }
+        if (payload.isEmpty() && openRegions.empty()) {
+            return ScenePayload();
+        }
+        std::shared_ptr<ScenePayloadImpl> imp = payload.isEmpty() ? std::make_shared<ScenePayloadImpl>() : std::make_shared<ScenePayloadImpl>(*payload.getImpl());
+        imp->openRegions = openRegions;
+        imp->stackHash = foldOpenRegions(imp->closedStackHash, openRegions);
+
+        return ScenePayload(imp);
+    }
+
+    // payload's links, weakest first.
+    std::vector<const ScenePayloadImpl*>
+    getStackLinks(const ScenePayload& payload)
+    {
+        std::vector<const ScenePayloadImpl*> links;
+
+        links.reserve(payload.getNumLayers());
+        for (const ScenePayloadImpl* link = topLink(payload); link; link = link->base.get()) {
+            links.push_back(link);
+        }
+        std::reverse(links.begin(), links.end());
+
+        return links;
+    }
+
+    // The payload of payload's count weakest layers, as it was when the next was appended.
+    ScenePayload
+    stackPrefix(const ScenePayload& payload,
+                std::size_t count)
+    {
+        std::shared_ptr<const ScenePayloadImpl> link = payload.isEmpty() ? std::shared_ptr<const ScenePayloadImpl>() : payload.getImpl();
+
+        while (link && (link->numLayers > count)) {
+            link = link->base;
+        }
+
+        return ScenePayload(link);
+    }
+
+    /**
+     * @brief payload's stack rebuilt from its first entry retag changes: retag maps each region to the
+     * one replacing it, and applies to the entries and to the regions open on each link. Links below
+     * the first changed entry are shared.
+     **/
+    ScenePayload
+    restack(const ScenePayload& payload,
+            const std::function<SceneLayerRegionPtr(const SceneLayerRegionPtr&)>& retag)
+    {
+        const std::vector<const ScenePayloadImpl*> links = getStackLinks(payload);
+        const auto retagAll = [&retag](const std::vector<SceneLayerRegionPtr>& regions) {
+            std::vector<SceneLayerRegionPtr> result;
+            result.reserve(regions.size());
+            for (const SceneLayerRegionPtr& region : regions) {
+                result.push_back(retag(region));
+            }
+
+            return result;
+        };
+        std::size_t first = 0;
+        while ((first < links.size()) && (retag(links[first]->top.region) == links[first]->top.region)
+               && (retagAll(links[first]->openRegions) == links[first]->openRegions)) {
+            ++first;
+        }
+        ScenePayload result = stackPrefix(payload, first);
+        for (std::size_t i = first; i < links.size(); ++i) {
+            SceneLayerEntry entry = links[i]->top;
+            entry.region = retag(entry.region);
+            result = appendRaw(result, entry, retagAll(links[i]->openRegions));
+        }
+
+        return withOpenRegions(result, retagAll(openRegionsOf(payload)));
+    }
+
+    U64
+    regionId(const std::string& kind,
+             const std::string& node,
+             U64 seed,
+             const SceneLayerRegionPtr& parent,
+             const SceneLayerRegionSettings& settings)
+    {
+        ContentHasher h;
+
+        h.appendString(kind);
+        h.appendString(node);
+        h.appendU64(seed);
+        h.appendU64(parent ? parent->id : 0);
+        h.appendU64(settings.hash());
+        const U64 id = h.finalize();
+
+        return (id == 0) ? 1 : id;
+    }
+
+    SceneLayerRegionPtr
+    makeRegion(U64 id,
+               const std::string& node,
+               const SceneLayerRegionPtr& parent,
+               const SceneLayerRegionSettings& settings,
+               bool gathers)
+    {
+        std::shared_ptr<SceneLayerRegion> region = std::make_shared<SceneLayerRegion>();
+
+        region->id = id;
+        region->node = node;
+        region->parent = parent;
+        region->settings = settings;
+        region->gathers = gathers;
+
+        return region;
+    }
+
+    bool
+    layerReadsFile(const PXR_NS::SdfLayerHandle& layer,
+                   int depth)
+    {
+        if (!layer->IsAnonymous()) {
+            return true;
+        }
+        // Anonymous layers sublayer each other only as a stack's wrappers do, a few levels deep.
+        if (depth > 64) {
+            return false;
+        }
+        for (const std::string& path : layer->GetSubLayerPaths()) {
+            if (!PXR_NS::SdfLayer::IsAnonymousLayerIdentifier(path)) {
+                return true;
+            }
+            const PXR_NS::SdfLayerHandle sublayer = PXR_NS::SdfLayer::Find(path);
+            if (sublayer && layerReadsFile(sublayer, depth + 1)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+} // anonymous namespace
+
 SceneLinkIndex
 getLinks(const ScenePayload& payload)
 {
     SceneLinkIndex links;
 
-    for (const ScenePayloadImpl* link = payload.getImpl().get(); link; link = link->base.get()) {
+    for (const ScenePayloadImpl* link = topLink(payload); link; link = link->base.get()) {
         if (link->top.links) {
             links.insert(links.end(), link->top.links->begin(), link->top.links->end());
         }
@@ -279,43 +523,15 @@ ScenePayload
 appendEntry(const ScenePayload& base,
             const SceneLayerEntry& entry)
 {
-    const PXR_NS::SdfLayerRefPtr& layer = entry.layer;
-    const U64 layerHash = entry.hash;
+    const std::vector<SceneLayerRegionPtr>& openRegions = openRegionsOf(base);
 
-    if (!layer) {
-        return base;
+    if (entry.region || openRegions.empty()) {
+        return appendRaw(base, entry, openRegions);
     }
+    SceneLayerEntry tagged = entry;
+    tagged.region = openRegions.back();
 
-    std::shared_ptr<ScenePayloadImpl> imp = std::make_shared<ScenePayloadImpl>();
-    imp->base = base.getImpl();
-    imp->top = entry;
-    imp->numLayers = base.getNumLayers() + 1;
-
-    ContentHasher content;
-    content.appendU64(base.getContentHash());
-    content.appendU64(layerHash);
-    imp->contentHash = content.finalize();
-    // 0 stands for the empty stack.
-    if (imp->contentHash == 0) {
-        imp->contentHash = 1;
-    }
-
-    ContentHasher h;
-    h.appendU64(base.getStackHash());
-    h.appendU64(layerHash);
-    // Only when set, so a stack without breaks hashes as it would without the flag.
-    if (entry.context) {
-        h.appendString("context");
-    }
-    imp->stackHash = h.finalize();
-    // 0 stands for the empty stack.
-    if (imp->stackHash == 0) {
-        imp->stackHash = 1;
-    }
-
-    imp->metadata = readLayerMetadata(layer, base.getMetadata());
-
-    return ScenePayload(imp);
+    return appendRaw(base, tagged, openRegions);
 }
 
 std::vector<SceneLayerEntry>
@@ -324,7 +540,7 @@ getLayers(const ScenePayload& payload)
     std::vector<SceneLayerEntry> layers;
 
     layers.reserve(payload.getNumLayers());
-    for (const ScenePayloadImpl* link = payload.getImpl().get(); link; link = link->base.get()) {
+    for (const ScenePayloadImpl* link = topLink(payload); link; link = link->base.get()) {
         layers.push_back(link->top);
     }
     std::reverse(layers.begin(), layers.end());
@@ -339,7 +555,7 @@ markContext(const ScenePayload& payload)
 
     for (SceneLayerEntry entry : getLayers(payload)) {
         entry.context = true;
-        result = appendEntry(result, entry);
+        result = appendRaw(result, entry, std::vector<SceneLayerRegionPtr>());
     }
 
     return result;
@@ -348,7 +564,7 @@ markContext(const ScenePayload& payload)
 bool
 hasContext(const ScenePayload& payload)
 {
-    for (const ScenePayloadImpl* link = payload.getImpl().get(); link; link = link->base.get()) {
+    for (const ScenePayloadImpl* link = topLink(payload); link; link = link->base.get()) {
         if (link->top.context) {
             return true;
         }
@@ -364,7 +580,7 @@ stripContext(const ScenePayload& payload)
 
     for (const SceneLayerEntry& entry : getLayers(payload)) {
         if (!entry.context) {
-            result = appendEntry(result, entry);
+            result = appendRaw(result, entry, std::vector<SceneLayerRegionPtr>());
         }
     }
     if (result.isEmpty()) {
@@ -375,6 +591,357 @@ stripContext(const ScenePayload& payload)
 
     return ScenePayload(imp);
 }
+
+std::vector<SceneLayerRegionPtr>
+getOpenRegions(const ScenePayload& payload)
+{
+    return openRegionsOf(payload);
+}
+
+SceneLayerRegionPtr
+getInnermostOpenRegion(const ScenePayload& payload)
+{
+    const std::vector<SceneLayerRegionPtr>& openRegions = openRegionsOf(payload);
+
+    return openRegions.empty() ? SceneLayerRegionPtr() : openRegions.back();
+}
+
+std::vector<SceneLayerRegionPtr>
+regionsOf(const ScenePayload& payload)
+{
+    std::vector<SceneLayerRegionPtr> regions;
+
+    for (const SceneLayerEntry& entry : getLayers(payload)) {
+        regions.push_back(entry.region);
+    }
+
+    return regions;
+}
+
+bool
+isRegionWithin(const SceneLayerRegion* region,
+               const SceneLayerRegion* ancestor)
+{
+    for (; region; region = region->parent.get()) {
+        if (region == ancestor) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+std::size_t
+countRegionEntries(const ScenePayload& payload,
+                   const SceneLayerRegion* region)
+{
+    std::size_t count = 0;
+
+    for (const ScenePayloadImpl* link = topLink(payload); link; link = link->base.get()) {
+        if (isRegionWithin(link->top.region.get(), region)) {
+            ++count;
+        }
+    }
+
+    return count;
+}
+
+bool
+isFileEntry(const SceneLayerEntry& entry)
+{
+    return entry.layer && layerReadsFile(entry.layer, 0);
+}
+
+ScenePayload
+openRegion(const ScenePayload& payload,
+           const std::string& node,
+           const SceneLayerRegionSettings& settings)
+{
+    std::vector<SceneLayerRegionPtr> openRegions = openRegionsOf(payload);
+    const SceneLayerRegionPtr parent = openRegions.empty() ? SceneLayerRegionPtr() : openRegions.back();
+
+    openRegions.push_back(makeRegion(regionId("open", node, payload.getStackHash(), parent, settings), node, parent, settings, false));
+
+    return withOpenRegions(payload, openRegions);
+}
+
+ScenePayload
+closeRegion(const ScenePayload& payload)
+{
+    std::vector<SceneLayerRegionPtr> openRegions = openRegionsOf(payload);
+
+    if (openRegions.empty()) {
+        return payload;
+    }
+    openRegions.pop_back();
+
+    return withOpenRegions(payload, openRegions);
+}
+
+ScenePayload
+closeAllRegions(const ScenePayload& payload)
+{
+    return withOpenRegions(payload, std::vector<SceneLayerRegionPtr>());
+}
+
+ScenePayload
+setOpenRegionSettings(const ScenePayload& payload,
+                      const SceneLayerRegionSettings& settings)
+{
+    const SceneLayerRegionPtr innermost = getInnermostOpenRegion(payload);
+
+    if (!innermost) {
+        return payload;
+    }
+    SceneLayerRegionSettings merged = innermost->settings;
+    merged.mergeFrom(settings);
+    ContentHasher h;
+    h.appendU64(innermost->id);
+    h.appendString("settings");
+    h.appendU64(merged.hash());
+    std::map<const SceneLayerRegion*, SceneLayerRegionPtr> replaced;
+    replaced[innermost.get()] = makeRegion(h.finalize(), innermost->node, innermost->parent, merged, innermost->gathers);
+
+    // The regions nested in the one replaced move under its replacement.
+    std::function<SceneLayerRegionPtr(const SceneLayerRegionPtr&)> retag = [&replaced, &retag](const SceneLayerRegionPtr& region) -> SceneLayerRegionPtr {
+        if (!region) {
+            return region;
+        }
+        const std::map<const SceneLayerRegion*, SceneLayerRegionPtr>::const_iterator found = replaced.find(region.get());
+        if (found != replaced.end()) {
+            return found->second;
+        }
+        const SceneLayerRegionPtr parent = retag(region->parent);
+        SceneLayerRegionPtr result = region;
+        if (parent != region->parent) {
+            ContentHasher moved;
+            moved.appendU64(region->id);
+            moved.appendString("parent");
+            moved.appendU64(parent->id);
+            result = makeRegion(moved.finalize(), region->node, parent, region->settings, region->gathers);
+        }
+        replaced[region.get()] = result;
+
+        return result;
+    };
+
+    return restack(payload, retag);
+}
+
+std::vector<std::size_t>
+getPrecedingRun(const ScenePayload& payload)
+{
+    const SceneLayerRegion* open = getInnermostOpenRegion(payload).get();
+    const std::vector<const ScenePayloadImpl*> links = getStackLinks(payload);
+    std::vector<std::size_t> run;
+    // Below a merge's strongest layer, each input's run is told by the entries' sealed flags.
+    bool belowMerge = false;
+
+    for (std::size_t i = links.size(); i-- > 0;) {
+        const SceneLayerEntry& entry = links[i]->top;
+        const bool claimable = !entry.context && !entry.sealed && (entry.region.get() == open) && !isFileEntry(entry);
+        if (!belowMerge) {
+            if (entry.mergeTop) {
+                belowMerge = true;
+            } else if (!claimable) {
+                break;
+            }
+        }
+        if (claimable) {
+            run.push_back(i);
+        }
+    }
+    std::reverse(run.begin(), run.end());
+
+    return run;
+}
+
+ScenePayload
+claimPreceding(const ScenePayload& payload,
+               const std::string& node,
+               const SceneLayerRegionSettings& settings)
+{
+    const std::vector<std::size_t> run = getPrecedingRun(payload);
+
+    if (run.empty()) {
+        return payload;
+    }
+    const SceneLayerRegionPtr parent = getInnermostOpenRegion(payload);
+    const SceneLayerRegionPtr region = makeRegion(regionId("claim", node, payload.getStackHash(), parent, settings), node, parent, settings, true);
+    const std::vector<const ScenePayloadImpl*> links = getStackLinks(payload);
+    const std::set<std::size_t> claimed(run.begin(), run.end());
+
+    ScenePayload result = stackPrefix(payload, run.front());
+    for (std::size_t i = run.front(); i < links.size(); ++i) {
+        SceneLayerEntry entry = links[i]->top;
+        if (claimed.count(i) != 0) {
+            entry.region = region;
+            // The claimed region is now the boundary; a later run must not reach past it into the merge.
+            entry.mergeTop = false;
+        }
+        result = appendRaw(result, entry, links[i]->openRegions);
+    }
+
+    return withOpenRegions(result, openRegionsOf(payload));
+}
+
+namespace {
+    // Whitespace-separated items; with quotes, a quoted item may hold spaces and a backslash
+    // escapes the next character.
+    bool
+    splitItems(const std::string& text,
+               bool quotes,
+               std::vector<std::string>* items,
+               std::string* error)
+    {
+        std::size_t i = 0;
+        while (i < text.size()) {
+            if (std::isspace((unsigned char)text[i])) {
+                ++i;
+                continue;
+            }
+            std::string item;
+            if (quotes && ((text[i] == '"') || (text[i] == '\''))) {
+                const char quote = text[i++];
+                bool closed = false;
+                while (i < text.size()) {
+                    const char c = text[i++];
+                    if ((c == '\\') && (i < text.size())) {
+                        item.push_back(text[i++]);
+                    } else if (c == quote) {
+                        closed = true;
+                        break;
+                    } else {
+                        item.push_back(c);
+                    }
+                }
+                if (!closed) {
+                    *error = "a quote is not closed.";
+
+                    return false;
+                }
+                if ((i < text.size()) && !std::isspace((unsigned char)text[i])) {
+                    *error = "a closing quote is not followed by a space.";
+
+                    return false;
+                }
+            } else {
+                while ((i < text.size()) && !std::isspace((unsigned char)text[i])) {
+                    item.push_back(text[i++]);
+                }
+            }
+            items->push_back(item);
+        }
+
+        return true;
+    }
+
+    std::string
+    trimmed(const std::string& text)
+    {
+        std::size_t first = 0;
+        std::size_t last = text.size();
+        while ((first < last) && std::isspace((unsigned char)text[first])) {
+            ++first;
+        }
+        while ((last > first) && std::isspace((unsigned char)text[last - 1])) {
+            --last;
+        }
+
+        return text.substr(first, last - first);
+    }
+} // anon namespace
+
+bool
+parseCustomDatum(const std::string& name,
+                 const std::string& type,
+                 const std::string& text,
+                 SceneLayerCustomDatum* datum,
+                 std::string* error)
+{
+    datum->name = trimmed(name);
+    datum->type = trimmed(type);
+    datum->text = text;
+    datum->value = PXR_NS::VtValue();
+    if (datum->name.empty()) {
+        *error = "the name is empty.";
+
+        return false;
+    }
+    if (!PXR_NS::SdfPath::IsValidNamespacedIdentifier(datum->name)) {
+        *error = "the name " + datum->name + " is not an identifier: use letters, digits and underscores, and colons to nest.";
+
+        return false;
+    }
+    const std::string value = trimmed(text);
+    if ((datum->type == "String") || (datum->type == "Token")) {
+        datum->value = (datum->type == "String") ? PXR_NS::VtValue(text) : PXR_NS::VtValue(PXR_NS::TfToken(value));
+
+        return true;
+    }
+    if ((datum->type == "String Array") || (datum->type == "Token Array")) {
+        std::vector<std::string> items;
+        if (!splitItems(text, datum->type == "String Array", &items, error)) {
+            return false;
+        }
+        if (datum->type == "String Array") {
+            datum->value = PXR_NS::VtValue(PXR_NS::VtStringArray(items.begin(), items.end()));
+        } else {
+            PXR_NS::VtTokenArray tokens;
+            for (const std::string& item : items) {
+                tokens.push_back(PXR_NS::TfToken(item));
+            }
+            datum->value = PXR_NS::VtValue(tokens);
+        }
+
+        return true;
+    }
+    if (datum->type == "Float") {
+        char* end = NULL;
+        errno = 0;
+        const double number = value.empty() ? 0. : std::strtod(value.c_str(), &end);
+        if (value.empty() || (end != value.c_str() + value.size()) || (errno == ERANGE)) {
+            *error = "\"" + value + "\" is not a number.";
+
+            return false;
+        }
+        datum->value = PXR_NS::VtValue(number);
+
+        return true;
+    }
+    if (datum->type == "Integer") {
+        char* end = NULL;
+        errno = 0;
+        const long long number = value.empty() ? 0 : std::strtoll(value.c_str(), &end, 10);
+        if (value.empty() || (end != value.c_str() + value.size()) || (errno == ERANGE)
+            || (number < std::numeric_limits<int>::min()) || (number > std::numeric_limits<int>::max())) {
+            *error = "\"" + value + "\" is not an integer.";
+
+            return false;
+        }
+        datum->value = PXR_NS::VtValue((int)number);
+
+        return true;
+    }
+    if (datum->type == "Boolean") {
+        std::string lower = value;
+        std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+        if ((lower == "true") || (lower == "1") || (lower == "yes") || (lower == "on")) {
+            datum->value = PXR_NS::VtValue(true);
+        } else if ((lower == "false") || (lower == "0") || (lower == "no") || (lower == "off")) {
+            datum->value = PXR_NS::VtValue(false);
+        } else {
+            *error = "\"" + value + "\" is not true or false.";
+
+            return false;
+        }
+
+        return true;
+    }
+    *error = "the type " + datum->type + " is not one of String, String Array, Token, Token Array, Float, Integer and Boolean.";
+
+    return false;
+} // parseCustomDatum
 
 namespace {
     void
@@ -391,7 +958,7 @@ namespace {
             }
             if (entry.dependencies) {
                 for (const ScenePayload& stack : entry.dependencies->stacks) {
-                    collectLiveTextures(stack.getImpl().get(), visited, seen, sources);
+                    collectLiveTextures(topLink(stack), visited, seen, sources);
                 }
             }
         }
@@ -405,7 +972,7 @@ getLiveTextures(const ScenePayload& payload)
     std::set<const ScenePayloadImpl*> visited;
     std::set<const LiveTextureSourceList*> seen;
 
-    collectLiveTextures(payload.getImpl().get(), &visited, &seen, &sources);
+    collectLiveTextures(topLink(payload), &visited, &seen, &sources);
 
     return sources;
 }
@@ -421,7 +988,7 @@ namespace {
             }
             if (link->top.dependencies) {
                 for (const ScenePayload& stack : link->top.dependencies->stacks) {
-                    if (findDeferredProjections(stack.getImpl().get(), visited)) {
+                    if (findDeferredProjections(topLink(stack), visited)) {
                         return true;
                     }
                 }
@@ -437,7 +1004,7 @@ hasDeferredProjections(const ScenePayload& payload)
 {
     std::set<const ScenePayloadImpl*> visited;
 
-    return findDeferredProjections(payload.getImpl().get(), &visited);
+    return findDeferredProjections(topLink(payload), &visited);
 }
 
 SceneMetadata
@@ -483,7 +1050,7 @@ getSubLayerPaths(const ScenePayload& payload)
     std::vector<std::string> subLayerPaths;
 
     subLayerPaths.reserve(payload.getNumLayers());
-    for (const ScenePayloadImpl* link = payload.getImpl().get(); link; link = link->base.get()) {
+    for (const ScenePayloadImpl* link = topLink(payload); link; link = link->base.get()) {
         subLayerPaths.push_back(link->top.layer->GetIdentifier());
     }
 
@@ -1788,9 +2355,15 @@ SceneLayerMemo::produce(const Key& key,
         // An upstream re-authored to the same content hashes the same but holds other layers:
         // the memoized layer goes on top of the stack actually handed in. The same layers can
         // also come back with other context flags, which only the stack hash tells apart.
+        // Nor do the regions a layer goes into show in what it reads.
         const ScenePayload memoizedBase(_imp->output.getImpl()->base);
-        if (!memoizedBase.isSameStack(upstream) || (memoizedBase.getStackHash() != upstream.getStackHash())) {
-            _imp->output = SceneOps::appendEntry(upstream, _imp->output.getImpl()->top);
+        const std::vector<SceneLayerRegionPtr>& openRegions = upstream.getImpl() ? upstream.getImpl()->openRegions : std::vector<SceneLayerRegionPtr>();
+        const SceneLayerRegionPtr region = openRegions.empty() ? SceneLayerRegionPtr() : openRegions.back();
+        if (!memoizedBase.isSameStack(upstream) || (memoizedBase.getStackHash() != upstream.getStackHash())
+            || (_imp->output.getImpl()->top.region != region)) {
+            SceneLayerEntry top = _imp->output.getImpl()->top;
+            top.region.reset();
+            _imp->output = SceneOps::appendEntry(upstream, top);
         }
         *output = _imp->output;
 

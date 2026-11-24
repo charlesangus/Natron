@@ -59,6 +59,10 @@
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/Project.h"
 
+#include <SequenceParsing.h>
+
+#include <pxr/usd/sdf/copyUtils.h>
+#include <pxr/usd/sdf/listOp.h>
 #include <pxr/usd/usd/primRange.h>
 #include <pxr/usd/usdUtils/stitch.h>
 
@@ -132,6 +136,41 @@ referencedFilePath(const std::string& assetPath)
     return QString::fromStdString(absolutePath(path));
 }
 
+// The names a layered write to outputInfo gives its sidecars: name_layerN.ext.
+QRegularExpression
+sidecarNamePattern(const QFileInfo& outputInfo)
+{
+    return QRegularExpression(QString::fromUtf8("^") + QRegularExpression::escape(outputInfo.completeBaseName()) + QString::fromUtf8("_layer[1-9][0-9]*\\.") + QRegularExpression::escape(outputInfo.suffix()) + QString::fromUtf8("$"));
+}
+
+/**
+ * @brief The path two spellings of one file, through symbolic links, share: the canonical path of
+ * the deepest part of path that exists, then the rest as written. For comparing paths only; files
+ * are written where their own spelling says.
+ **/
+QString
+comparisonPath(const QString& path)
+{
+    const QString clean = QDir::cleanPath(path);
+    QString existing = clean;
+    QStringList parts;
+    for (;;) {
+        const QString canonical = QFileInfo(existing).canonicalFilePath();
+        if (!canonical.isEmpty()) {
+            parts.prepend(canonical);
+
+            return QDir::cleanPath(parts.join(QLatin1Char('/')));
+        }
+        const QFileInfo info(existing);
+        const QString parent = info.path();
+        if (parent.isEmpty() || (parent == existing)) {
+            return clean;
+        }
+        parts.prepend(info.fileName());
+        existing = parent;
+    }
+}
+
 /**
  * @brief Removes the files beside outputInfo that carry its sidecar names, name_layerN.ext as the
  * layered write names them, except those in keep: what an earlier layered write left, which
@@ -144,7 +183,7 @@ removeStaleSidecars(const QFileInfo& outputInfo,
 {
     QStringList removed;
     const QDir dir(outputInfo.absolutePath());
-    const QRegularExpression sidecar(QString::fromUtf8("^") + QRegularExpression::escape(outputInfo.completeBaseName()) + QString::fromUtf8("_layer[1-9][0-9]*\\.") + QRegularExpression::escape(outputInfo.suffix()) + QString::fromUtf8("$"));
+    const QRegularExpression sidecar = sidecarNamePattern(outputInfo);
     const QStringList names = dir.entryList(QDir::Files | QDir::Hidden | QDir::System);
 
     // A symlinked output folder spells the same file two ways, so keep entries also match by
@@ -215,6 +254,13 @@ struct StackItem {
     bool external = false;
     // What an anonymous item's layer is a copy of.
     std::string source;
+    // Of the scene's own stack: the innermost layer region of the entry the item comes from, and
+    // that entry's index, strongest first.
+    const SceneLayerRegion* region = nullptr;
+    std::size_t entry = 0;
+    // A region file sublayered in the item's place, by its index among the written stacks; it has
+    // no layer.
+    int file = -1;
 };
 
 /**
@@ -530,9 +576,9 @@ bakeAnonymousArcs(const PXR_NS::SdfLayerRefPtr& layer,
 
 /**
  * @brief A layer stack as layered mode writes it: its strongest run of anonymous layers flattened
- * into output, and output's sublayers, strongest first: the files the stack reads, and between them
- * the runs of anonymous layers weaker than one, flattened in place so the written stack composes
- * with the strength order it had.
+ * into output, and output's sublayers, strongest first: the files the stack reads and the layer
+ * region files written in place of their layers, and between them the runs of anonymous layers
+ * weaker than one, flattened in place so the written stack composes with the strength order it had.
  **/
 struct StackLayout {
     PXR_NS::SdfLayerRefPtr output;
@@ -566,6 +612,11 @@ layOutStack(const std::vector<StackItem>& items,
     };
 
     for (const StackItem& item : items) {
+        if (item.file >= 0) {
+            endRun();
+            layout->sublayers.push_back(item);
+            continue;
+        }
         if (!item.external) {
             run.push_back(item);
             continue;
@@ -605,6 +656,11 @@ struct WrittenStack {
     bool hasRange = false;
     double startTime = 0.;
     double endTime = 0.;
+    // A layer region's file, whose items are laid out with the scene's stack.
+    bool region = false;
+    std::vector<StackItem> items;
+    // The region metadata the written layer gets.
+    SceneLayerRegionSettings settings;
 };
 
 // A written stack's reference to another's: toFrom maps the times of stack to those of stack from.
@@ -1525,6 +1581,494 @@ stripProjectionSpecs(const PXR_NS::SdfLayerRefPtr& layer,
         }
     }
 }
+
+// Why a layout of the layer regions into files fails, and the regions' nodes it names.
+struct RegionLayoutFailure {
+    enum KindEnum {
+        eKindNone = 0,
+        // Two regions name one Save Path and collisions are errors.
+        eKindCollision,
+        // A region's layers reach both inside and outside another region's.
+        eKindCrossing,
+        // One file would sit inside itself, or at two places of the layer stack.
+        eKindNested
+    };
+    KindEnum kind = eKindNone;
+    QString path;
+    QString first;
+    QString second;
+};
+
+// The file of a layer region a layered write writes: what it holds, strongest first, and the
+// metadata it gets.
+struct RegionFile {
+    QString path;
+    std::vector<StackItem> items;
+    SceneLayerRegionSettings settings;
+};
+
+QString
+regionNodeName(const SceneLayerRegion* region)
+{
+    return QString::fromStdString(region->settings.node.empty() ? region->node : region->settings.node);
+}
+
+bool
+isSameRegion(const SceneLayerRegion* a,
+             const SceneLayerRegion* b)
+{
+    return (a == b) || (a && b && (a->id == b->id));
+}
+
+/**
+ * @brief Lays the scene's stack, items strongest first, out into files: the output, first, then
+ * one per Save Path the regions name (savePaths, by region id), each holding its regions' items
+ * and, in place of the regions nested in it, an item naming their file. fileEntries tells, by
+ * entry, those that read a file.
+ *
+ * Layers keep their strength order. A region gathering the layers before it takes the file read
+ * right below them, which a file it sublayers stays weaker than. Layers of no region or of a
+ * region nested in it that lie between a region's layers, as a merge can leave them, go into its
+ * file with them; a region reaching both inside and outside another region's layers cannot be
+ * written that way. With merge, regions naming one Save Path are one file, where the strongest of
+ * them sits, and the layers between them go into it too.
+ *
+ * A file's metadata is that of the regions with no Save Path whose layers it holds, then that of
+ * the regions naming it, each the weaker first, so that the file's own regions win.
+ **/
+bool
+layOutRegionFiles(std::vector<StackItem> items,
+                  const std::vector<bool>& fileEntries,
+                  const std::map<U64, QString>& savePaths,
+                  bool merge,
+                  std::vector<RegionFile>* files,
+                  RegionLayoutFailure* failure)
+{
+    const auto isNamed = [&savePaths](const SceneLayerRegion* region) {
+        return savePaths.count(region->id) != 0;
+    };
+
+    std::map<const SceneLayerRegion*, std::size_t> weakestEntry;
+    for (const StackItem& item : items) {
+        if (item.region && item.region->gathers) {
+            std::size_t& weakest = weakestEntry[item.region];
+            weakest = std::max(weakest, item.entry);
+        }
+    }
+    for (const std::pair<const SceneLayerRegion* const, std::size_t>& gathering : weakestEntry) {
+        const std::size_t below = gathering.second + 1;
+        if ((below >= fileEntries.size()) || !fileEntries[below]) {
+            continue;
+        }
+        for (StackItem& item : items) {
+            if ((item.entry == below) && isSameRegion(item.region, gathering.first->parent.get())) {
+                item.region = gathering.first;
+            }
+        }
+    }
+
+    // The named regions around each item, outermost first, as the indices of their files' groups.
+    std::map<QString, std::size_t> groupOfPath;
+    std::vector<QString> groupPaths;
+    std::vector<std::vector<const SceneLayerRegion*>> members;
+    std::vector<std::vector<std::size_t>> chains(items.size());
+    for (std::size_t i = 0; i < items.size(); ++i) {
+        for (const SceneLayerRegion* region = items[i].region; region; region = region->parent.get()) {
+            if (!isNamed(region)) {
+                continue;
+            }
+            const QString& path = savePaths.find(region->id)->second;
+            std::map<QString, std::size_t>::const_iterator found = groupOfPath.find(path);
+            std::size_t group = groupPaths.size();
+            if (found == groupOfPath.end()) {
+                groupOfPath[path] = group;
+                groupPaths.push_back(path);
+                members.push_back(std::vector<const SceneLayerRegion*>());
+            } else {
+                group = found->second;
+            }
+            std::vector<const SceneLayerRegion*>& regions = members[group];
+            if (std::none_of(regions.begin(), regions.end(), [region](const SceneLayerRegion* other) {
+                    return isSameRegion(other, region);
+                })) {
+                if (!regions.empty() && !merge) {
+                    failure->kind = RegionLayoutFailure::eKindCollision;
+                    failure->path = path;
+                    failure->first = regionNodeName(regions.front());
+                    failure->second = regionNodeName(region);
+
+                    return false;
+                }
+                regions.push_back(region);
+            }
+            // With merge, a region inside one naming the same file is that file, not a file in it.
+            if (merge && !chains[i].empty() && (chains[i].back() == group)) {
+                continue;
+            }
+            if (std::find(chains[i].begin(), chains[i].end(), group) != chains[i].end()) {
+                failure->kind = RegionLayoutFailure::eKindNested;
+                failure->path = path;
+                failure->first = regionNodeName(region);
+
+                return false;
+            }
+            chains[i].push_back(group);
+        }
+        std::reverse(chains[i].begin(), chains[i].end());
+    }
+
+    files->assign(1, RegionFile());
+    std::vector<int> fileOfGroup(groupPaths.size(), -1);
+    std::vector<std::size_t> landing(items.size(), 0);
+    const auto nested = [&](std::size_t group) {
+        failure->kind = RegionLayoutFailure::eKindNested;
+        failure->path = groupPaths[group];
+        failure->first = regionNodeName(members[group].front());
+
+        return false;
+    };
+    std::function<bool(const std::vector<std::size_t>&, std::size_t, std::size_t)> place = [&](const std::vector<std::size_t>& elements, std::size_t depth, std::size_t file) -> bool {
+        const auto head = [&](std::size_t i) {
+            return (chains[i].size() > depth) ? (std::ptrdiff_t)chains[i][depth] : (std::ptrdiff_t)-1;
+        };
+        std::map<std::size_t, std::pair<std::size_t, std::size_t>> spans;
+        for (std::size_t p = 0; p < elements.size(); ++p) {
+            const std::ptrdiff_t group = head(elements[p]);
+            if (group < 0) {
+                continue;
+            }
+            if (spans.count((std::size_t)group) == 0) {
+                spans[(std::size_t)group] = std::make_pair(p, p);
+            } else {
+                spans[(std::size_t)group].second = p;
+            }
+        }
+        std::vector<std::size_t> order;
+        for (const std::pair<const std::size_t, std::pair<std::size_t, std::size_t>>& span : spans) {
+            order.push_back(span.first);
+        }
+        std::stable_sort(order.begin(), order.end(), [&spans](std::size_t a, std::size_t b) {
+            return (spans[a].second - spans[a].first) > (spans[b].second - spans[b].first);
+        });
+        // The widest span first, so that a region lying inside another's span is found inside it.
+        std::set<std::size_t> processed;
+        std::set<std::size_t> absorbed;
+        for (std::size_t group : order) {
+            if (absorbed.count(group) != 0) {
+                continue;
+            }
+            const std::pair<std::size_t, std::size_t> span = spans[group];
+            for (std::size_t p = span.first; p <= span.second; ++p) {
+                const std::size_t i = elements[p];
+                const std::ptrdiff_t other = head(i);
+                if (other == (std::ptrdiff_t)group) {
+                    continue;
+                }
+                if (other >= 0) {
+                    const std::pair<std::size_t, std::size_t> otherSpan = spans[(std::size_t)other];
+                    if ((processed.count((std::size_t)other) != 0) || (otherSpan.first < span.first) || (otherSpan.second > span.second)) {
+                        failure->kind = RegionLayoutFailure::eKindCrossing;
+                        failure->path = groupPaths[group];
+                        failure->first = regionNodeName(members[group].front());
+                        failure->second = regionNodeName(members[(std::size_t)other].front());
+
+                        return false;
+                    }
+                    absorbed.insert((std::size_t)other);
+                }
+                chains[i].insert(chains[i].begin() + depth, group);
+                if (std::find(chains[i].begin() + depth + 1, chains[i].end(), group) != chains[i].end()) {
+                    return nested(group);
+                }
+            }
+            processed.insert(group);
+        }
+
+        for (std::size_t p = 0; p < elements.size();) {
+            const std::ptrdiff_t group = head(elements[p]);
+            if (group < 0) {
+                (*files)[file].items.push_back(items[elements[p]]);
+                landing[elements[p]] = file;
+                ++p;
+                continue;
+            }
+            std::vector<std::size_t> inner;
+            for (; (p < elements.size()) && (head(elements[p]) == group); ++p) {
+                inner.push_back(elements[p]);
+            }
+            if (fileOfGroup[(std::size_t)group] >= 0) {
+                return nested((std::size_t)group);
+            }
+            const std::size_t innerFile = files->size();
+            fileOfGroup[(std::size_t)group] = (int)innerFile;
+            files->push_back(RegionFile());
+            (*files)[innerFile].path = groupPaths[(std::size_t)group];
+            StackItem sublayer;
+            sublayer.file = (int)innerFile;
+            (*files)[file].items.push_back(sublayer);
+            if (!place(inner, depth + 1, innerFile)) {
+                return false;
+            }
+        }
+
+        return true;
+    };
+    std::vector<std::size_t> all(items.size());
+    for (std::size_t i = 0; i < items.size(); ++i) {
+        all[i] = i;
+    }
+    if (!place(all, 0, 0)) {
+        return false;
+    }
+
+    std::vector<std::vector<const SceneLayerRegion*>> unnamedOf(files->size());
+    std::set<U64> seenUnnamed;
+    for (std::size_t i = items.size(); i-- > 0;) {
+        for (const SceneLayerRegion* region = items[i].region; region && !isNamed(region); region = region->parent.get()) {
+            if (seenUnnamed.insert(region->id).second) {
+                unnamedOf[landing[i]].push_back(region);
+            }
+        }
+    }
+    for (std::size_t file = 0; file < files->size(); ++file) {
+        SceneLayerRegionSettings settings;
+        for (const SceneLayerRegion* region : unnamedOf[file]) {
+            settings.mergeFrom(region->settings);
+        }
+        for (std::size_t group = 0; group < fileOfGroup.size(); ++group) {
+            if (fileOfGroup[group] == (int)file) {
+                for (std::vector<const SceneLayerRegion*>::const_reverse_iterator it = members[group].rbegin(); it != members[group].rend(); ++it) {
+                    settings.mergeFrom((*it)->settings);
+                }
+            }
+        }
+        (*files)[file].settings = settings;
+    }
+
+    return true;
+} // layOutRegionFiles
+
+/**
+ * @brief Authors on layer the metadata a layer region sets, over what it had. A colour
+ * configuration naming a file is written as the file's other asset paths are, from dir.
+ **/
+void
+authorRegionMetadata(const PXR_NS::SdfLayerRefPtr& layer,
+                     const SceneLayerRegionSettings& settings,
+                     const QString& dir,
+                     USDWrite::PathModeEnum pathMode)
+{
+    const PXR_NS::SdfPath& rootPath = PXR_NS::SdfPath::AbsoluteRootPath();
+
+    if (settings.defaultPrim) {
+        // A root prim's path names it as well as its name does.
+        const std::string& name = *settings.defaultPrim;
+        layer->SetDefaultPrim(PXR_NS::TfToken((!name.empty() && (name[0] == '/') && (name.find('/', 1) == std::string::npos)) ? name.substr(1) : name));
+    }
+    if (settings.comment) {
+        layer->SetComment(*settings.comment);
+    }
+    if (settings.startTime) {
+        layer->SetStartTimeCode(*settings.startTime);
+    }
+    if (settings.endTime) {
+        layer->SetEndTimeCode(*settings.endTime);
+    }
+    if (settings.timeCodesPerSecond) {
+        layer->SetTimeCodesPerSecond(*settings.timeCodesPerSecond);
+    }
+    if (settings.framesPerSecond) {
+        layer->SetFramesPerSecond(*settings.framesPerSecond);
+    }
+    if (settings.upAxis) {
+        layer->SetField(rootPath, PXR_NS::UsdGeomTokens->upAxis, (*settings.upAxis == SceneMetadata::eUpAxisZ) ? PXR_NS::UsdGeomTokens->z : PXR_NS::UsdGeomTokens->y);
+    }
+    if (settings.metersPerUnit) {
+        layer->SetField(rootPath, PXR_NS::UsdGeomTokens->metersPerUnit, *settings.metersPerUnit);
+    }
+    if (settings.colorConfiguration) {
+        const std::string& path = *settings.colorConfiguration;
+        layer->SetColorConfiguration(PXR_NS::SdfAssetPath(QDir::isAbsolutePath(QString::fromStdString(path)) ? rewriteAssetPath(path, dir, pathMode) : path));
+    }
+    if (settings.colorManagementSystem) {
+        layer->SetColorManagementSystem(PXR_NS::TfToken(*settings.colorManagementSystem));
+    }
+    if (settings.renderSettingsPrimPath) {
+        layer->SetField(rootPath, PXR_NS::UsdRenderTokens->renderSettingsPrimPath, *settings.renderSettingsPrimPath);
+    }
+    if (!settings.customData.empty()) {
+        PXR_NS::VtDictionary customData = layer->GetCustomLayerData();
+        for (const SceneLayerCustomDatum& datum : settings.customData) {
+            customData[datum.name] = datum.value;
+        }
+        layer->SetCustomLayerData(customData);
+    }
+} // authorRegionMetadata
+
+// path, absolute in a layer whose root prims are copied under prefix, as it reads there.
+PXR_NS::SdfPath
+rerootedPath(const PXR_NS::SdfPath& path,
+             const PXR_NS::SdfPath& prefix)
+{
+    if (!path.IsAbsolutePath() || (path == PXR_NS::SdfPath::AbsoluteRootPath())) {
+        return path;
+    }
+
+    return prefix.AppendPath(path.MakeRelativePath(PXR_NS::SdfPath::AbsoluteRootPath()));
+}
+
+/**
+ * @brief Re-roots under prefix the paths layer's specs author into its own namespace, before its
+ * root prims are copied there: relationship targets, attribute connections, inherits,
+ * specializes, and the prim paths of internal references and payloads.
+ **/
+void
+rerootLayerPaths(const PXR_NS::SdfLayerRefPtr& layer,
+                 const PXR_NS::SdfPath& prefix)
+{
+    std::vector<PXR_NS::SdfPath> specs;
+    layer->Traverse(PXR_NS::SdfPath::AbsoluteRootPath(), [&specs](const PXR_NS::SdfPath& path) {
+        specs.push_back(path);
+    });
+    const auto reroot = [&prefix](const PXR_NS::SdfPath& path) {
+        return std::optional<PXR_NS::SdfPath>(rerootedPath(path, prefix));
+    };
+    for (const PXR_NS::SdfPath& path : specs) {
+        for (const PXR_NS::TfToken& field : { PXR_NS::SdfFieldKeys->TargetPaths, PXR_NS::SdfFieldKeys->ConnectionPaths, PXR_NS::SdfFieldKeys->InheritPaths, PXR_NS::SdfFieldKeys->Specializes }) {
+            PXR_NS::SdfPathListOp paths;
+            if (layer->HasField(path, field, &paths)) {
+                paths.ModifyOperations(reroot);
+                layer->SetField(path, field, paths);
+            }
+        }
+        PXR_NS::SdfReferenceListOp references;
+        if (layer->HasField(path, PXR_NS::SdfFieldKeys->References, &references)) {
+            references.ModifyOperations([&prefix](const PXR_NS::SdfReference& reference) {
+                PXR_NS::SdfReference result = reference;
+                if (reference.GetAssetPath().empty()) {
+                    result.SetPrimPath(rerootedPath(reference.GetPrimPath(), prefix));
+                }
+
+                return std::optional<PXR_NS::SdfReference>(result);
+            });
+            layer->SetField(path, PXR_NS::SdfFieldKeys->References, references);
+        }
+        PXR_NS::SdfPayloadListOp payloads;
+        if (layer->HasField(path, PXR_NS::SdfFieldKeys->Payload, &payloads)) {
+            payloads.ModifyOperations([&prefix](const PXR_NS::SdfPayload& payload) {
+                PXR_NS::SdfPayload result = payload;
+                if (payload.GetAssetPath().empty()) {
+                    result.SetPrimPath(rerootedPath(payload.GetPrimPath(), prefix));
+                }
+
+                return std::optional<PXR_NS::SdfPayload>(result);
+            });
+            layer->SetField(path, PXR_NS::SdfFieldKeys->Payload, payloads);
+        }
+    }
+} // rerootLayerPaths
+
+// Where Flatten Layers copies the stack of an anonymous layer the scene references: under prefix,
+// in the written layer, whose times are its own.
+struct InlinedStack {
+    PXR_NS::SdfPath prefix;
+    PXR_NS::TfToken defaultPrim;
+    double tcps = 24.;
+};
+
+/**
+ * @brief Points the references and payloads layer, of time codes per second layerTcps, authors to
+ * the anonymous layers inlined names at their copies in the same layer. Composition scales an arc
+ * to another layer by the ratio of the two layers' time codes per second, and an internal one by
+ * nothing, so the offset takes that ratio. An arc naming no prim, to a stack with no default prim,
+ * composes nothing and is dropped.
+ **/
+void
+inlineAnonymousArcs(const PXR_NS::SdfLayerRefPtr& layer,
+                    double layerTcps,
+                    const std::map<std::string, InlinedStack>& inlined)
+{
+    const auto target = [&inlined, layerTcps](const std::string& assetPath,
+                                              const PXR_NS::SdfPath& primPath,
+                                              const PXR_NS::SdfLayerOffset& offset,
+                                              PXR_NS::SdfPath* path,
+                                              PXR_NS::SdfLayerOffset* inlinedOffset) {
+        const std::map<std::string, InlinedStack>::const_iterator found = inlined.find(assetPath);
+        if (found == inlined.end()) {
+            return false;
+        }
+        const InlinedStack& stack = found->second;
+        const PXR_NS::SdfPath named = !primPath.IsEmpty() ? primPath : (stack.defaultPrim.IsEmpty() ? PXR_NS::SdfPath() : PXR_NS::SdfPath::AbsoluteRootPath().AppendChild(stack.defaultPrim));
+        *path = named.IsEmpty() ? named : rerootedPath(named, stack.prefix);
+        *inlinedOffset = offset * PXR_NS::SdfLayerOffset(0., layerTcps / stack.tcps);
+
+        return true;
+    };
+    for (const PXR_NS::SdfPath& path : primSpecPaths(layer)) {
+        PXR_NS::SdfReferenceListOp references;
+        if (layer->HasField(path, PXR_NS::SdfFieldKeys->References, &references)) {
+            references.ModifyOperations([&target](const PXR_NS::SdfReference& reference) -> std::optional<PXR_NS::SdfReference> {
+                PXR_NS::SdfPath primPath;
+                PXR_NS::SdfLayerOffset offset;
+                if (!target(reference.GetAssetPath(), reference.GetPrimPath(), reference.GetLayerOffset(), &primPath, &offset)) {
+                    return reference;
+                }
+                if (primPath.IsEmpty()) {
+                    return std::nullopt;
+                }
+
+                return PXR_NS::SdfReference(std::string(), primPath, offset, reference.GetCustomData());
+            });
+            layer->SetField(path, PXR_NS::SdfFieldKeys->References, references);
+        }
+        PXR_NS::SdfPayloadListOp payloads;
+        if (layer->HasField(path, PXR_NS::SdfFieldKeys->Payload, &payloads)) {
+            payloads.ModifyOperations([&target](const PXR_NS::SdfPayload& payload) -> std::optional<PXR_NS::SdfPayload> {
+                PXR_NS::SdfPath primPath;
+                PXR_NS::SdfLayerOffset offset;
+                if (!target(payload.GetAssetPath(), payload.GetPrimPath(), payload.GetLayerOffset(), &primPath, &offset)) {
+                    return payload;
+                }
+                if (primPath.IsEmpty()) {
+                    return std::nullopt;
+                }
+
+                return PXR_NS::SdfPayload(std::string(), primPath, offset);
+            });
+            layer->SetField(path, PXR_NS::SdfFieldKeys->Payload, payloads);
+        }
+    }
+} // inlineAnonymousArcs
+
+/**
+ * @brief Copies the root prims of source under prefix in layer, which prefix's ancestors are
+ * created in as classes: a class composes no prim of its own on the stage, so only the arcs to
+ * the copies show them. False when USD cannot copy one.
+ **/
+bool
+copyUnderClass(const PXR_NS::SdfLayerRefPtr& source,
+               const PXR_NS::SdfLayerRefPtr& layer,
+               const PXR_NS::SdfPath& prefix)
+{
+    PXR_NS::SdfPrimSpecHandle parent = layer->GetPseudoRoot();
+    for (const PXR_NS::SdfPath& path : prefix.GetPrefixes()) {
+        PXR_NS::SdfPrimSpecHandle prim = layer->GetPrimAtPath(path);
+        if (!prim) {
+            prim = PXR_NS::SdfPrimSpec::New(parent, path.GetNameToken(), PXR_NS::SdfSpecifierClass);
+        }
+        if (!prim) {
+            return false;
+        }
+        parent = prim;
+    }
+    for (const PXR_NS::SdfPrimSpecHandle& root : source->GetRootPrims()) {
+        if (!PXR_NS::SdfCopySpec(source, root->GetPath(), layer, prefix.AppendChild(root->GetNameToken()))) {
+            return false;
+        }
+    }
+
+    return true;
+}
 } // anonymous namespace
 
 USDWrite::USDWrite(NodePtr node)
@@ -1568,7 +2112,18 @@ USDWrite::initializeKnobs()
                                           "a file of its own beside the written one (name_layer1.usda, ...), sublayered "
                                           "below it, and so does what a node places under one of its prims, as USDXformPrim "
                                           "does its inputs, which the written file references. Files of those names that the write does not produce, left by an earlier write, are "
-                                          "removed.")
+                                          "removed. The layer regions a USDConfigureLayer names a Save Path for go to those files, "
+                                          "which the file of the region around them sublayers in their place.")
+                                           .toStdString()));
+        options.push_back(ChoiceOption("flattenLayers", tr("Flatten Layers").toStdString(),
+                                       tr("Flattens the whole layer stack, the files the scene reads included, into the file, "
+                                          "with no sublayers and no files beside it, but keeps its references, payloads, "
+                                          "variants and list edits as they are authored, where Flattened bakes them in. A "
+                                          "reference to a file on disk stays a reference to it; the scenes nodes reference "
+                                          "from other branches, as USDReference and USDXformPrim do, are copied into the "
+                                          "file under /_references and referenced there. Save Paths are ignored. Sidecar "
+                                          "files a layered write to the same name left beside it are removed, with a "
+                                          "warning naming them, unless the scene reads them.")
                                            .toStdString()));
         options.push_back(ChoiceOption("flattened", tr("Flattened").toStdString(),
                                        tr("Bakes the whole composed scene, the files it reads included, into the file, which "
@@ -1592,6 +2147,26 @@ USDWrite::initializeKnobs()
     stripLayersAboveBreaks->setAnimationEnabled(false);
     page->addKnob(stripLayersAboveBreaks);
     _stripLayersAboveBreaks = stripLayersAboveBreaks;
+
+    KnobChoicePtr saveCollisions = createKnob<KnobChoice>(tr("Save Collisions"));
+    saveCollisions->setName(kUSDWriteParamSaveCollisions);
+    saveCollisions->setHintToolTip(tr("What a Layered write does when two layer regions name the same Save Path. A Save "
+                                      "Path naming this node's File, or a file the scene reads, is an error either way."));
+    {
+        std::vector<ChoiceOption> options;
+        options.push_back(ChoiceOption("error", tr("Error").toStdString(),
+                                       tr("Writes nothing and fails, naming the two USDConfigureLayer nodes.").toStdString()));
+        options.push_back(ChoiceOption("merge", tr("Merge Into One File").toStdString(),
+                                       tr("Writes the regions into the one file, in their order in the layer stack, where "
+                                          "the strongest of them sits. Where their metadata differs, the stronger region's "
+                                          "wins.")
+                                           .toStdString()));
+        saveCollisions->populateChoices(options);
+    }
+    saveCollisions->setDefaultValue(eSaveCollisionsError);
+    saveCollisions->setAnimationEnabled(false);
+    page->addKnob(saveCollisions);
+    _saveCollisions = saveCollisions;
 
     KnobChoicePtr pathMode = createKnob<KnobChoice>(tr("Asset Paths"));
     pathMode->setName(kUSDWriteParamPathMode);
@@ -1784,7 +2359,15 @@ USDWrite::writeFrameRange(int firstFrame,
 
     KnobChoicePtr exportModeKnob = _exportMode.lock();
     KnobChoicePtr pathModeKnob = _pathMode.lock();
-    const ExportModeEnum exportMode = (exportModeKnob && (exportModeKnob->getValue() == (int)eExportModeFlattened)) ? eExportModeFlattened : eExportModeLayered;
+    const int exportModeValue = exportModeKnob ? exportModeKnob->getValue() : (int)eExportModeLayered;
+    ExportModeEnum exportMode = eExportModeLayered;
+    if (exportModeValue == (int)eExportModeFlattened) {
+        exportMode = eExportModeFlattened;
+    } else if (exportModeValue == (int)eExportModeFlattenLayers) {
+        exportMode = eExportModeFlattenLayers;
+    }
+    KnobChoicePtr saveCollisionsKnob = _saveCollisions.lock();
+    const bool mergeCollisions = saveCollisionsKnob && (saveCollisionsKnob->getValue() == (int)eSaveCollisionsMerge);
     const PathModeEnum pathMode = (pathModeKnob && (pathModeKnob->getValue() == (int)ePathModeAbsolute)) ? ePathModeAbsolute : ePathModeRelative;
     KnobBoolPtr stripLayersAboveBreaksKnob = _stripLayersAboveBreaks.lock();
     const bool stripContext = stripLayersAboveBreaksKnob && stripLayersAboveBreaksKnob->getValue() && SceneOps::hasContext(scene);
@@ -1876,6 +2459,88 @@ USDWrite::writeFrameRange(int firstFrame,
 
             return fail(tr("The scene could not be flattened%1").arg(errors.empty() ? QString::fromUtf8(".") : QString::fromUtf8(": ") + QString::fromStdString(errors)));
         };
+        // The scene's own stack, strongest first, each item tagged with its entry and region, and
+        // by entry, whether it reads a file. The entries hold the regions the items point to.
+        const std::vector<SceneLayerEntry> sceneLayers = SceneOps::getLayers(scene);
+        std::vector<StackItem> sceneItems;
+        std::vector<bool> fileEntries;
+        for (std::vector<SceneLayerEntry>::const_reverse_iterator it = sceneLayers.rbegin(); it != sceneLayers.rend(); ++it) {
+            const std::size_t entry = fileEntries.size();
+            fileEntries.push_back(SceneOps::isFileEntry(*it));
+            if (stripContext && it->context) {
+                continue;
+            }
+            // As composition maps a sublayer of the root: by the ratio of their time codes per second.
+            const PXR_NS::SdfLayerOffset toRoot(0., metadata.timeCodesPerSecond / it->layer->GetTimeCodesPerSecond());
+            std::vector<StackItem> entryItems;
+            appendLayerStack(it->layer, toRoot, &entryItems);
+            for (StackItem& item : entryItems) {
+                item.region = it->region.get();
+                item.entry = entry;
+                sceneItems.push_back(item);
+            }
+        }
+        const auto regionFailure = [&](const RegionLayoutFailure& failure) {
+            switch (failure.kind) {
+            case RegionLayoutFailure::eKindCollision:
+                return fail(tr("%1 and %2 both save their layers to %3: give them different Save Paths, or set Save Collisions "
+                               "to Merge Into One File.")
+                                .arg(failure.first)
+                                .arg(failure.second)
+                                .arg(failure.path));
+            case RegionLayoutFailure::eKindCrossing:
+                return fail(tr("The layers %1 saves to %2 and those of %3 interleave in the layer stack, so neither file can hold "
+                               "its layers without changing their strength: give them the same Save Path and set Save Collisions "
+                               "to Merge Into One File, or configure the layers before they meet.")
+                                .arg(failure.first)
+                                .arg(failure.path)
+                                .arg(failure.second));
+            case RegionLayoutFailure::eKindNested:
+            case RegionLayoutFailure::eKindNone:
+                break;
+            }
+
+            return fail(tr("The layers %1 saves to %2 would be written at two places of the layer stack, one inside the other: "
+                           "give the regions different Save Paths.")
+                            .arg(failure.first)
+                            .arg(failure.path));
+        };
+        // Adds to stacks, at the end, each anonymous layer that layer of stack i references and is
+        // not yet written, with a sidecar path when sidecar is set, and to arcs, the references.
+        // Returns the identifier of a referenced layer that no longer exists, if one does not.
+        const auto addReferencedStacks = [&](const PXR_NS::SdfLayerRefPtr& layer,
+                                             std::size_t i,
+                                             bool sidecar) -> std::string {
+            for (const AnonymousArc& arc : anonymousArcs(layer)) {
+                std::map<std::string, std::size_t>::const_iterator found = stackOfLayer.find(arc.identifier);
+                std::size_t to = 0;
+                if (found != stackOfLayer.end()) {
+                    to = found->second;
+                } else {
+                    const PXR_NS::SdfLayerHandle referenced = PXR_NS::SdfLayer::Find(arc.identifier);
+                    if (!referenced) {
+                        return arc.identifier;
+                    }
+                    to = stacks.size();
+                    stackOfLayer[arc.identifier] = to;
+                    WrittenStack stack;
+                    stack.source = PXR_NS::SdfLayerRefPtr(referenced);
+                    if (sidecar) {
+                        stack.path = nextSidecarPath();
+                    }
+                    stack.tcps = referenced->GetTimeCodesPerSecond();
+                    stacks.push_back(stack);
+                }
+                // As composition maps a reference: its offset, then the scale between the two
+                // layers' time codes per second.
+                arcs.push_back(StackArc { i, to, arc.offset * PXR_NS::SdfLayerOffset(0., stacks[i].tcps / stacks[to].tcps) });
+            }
+
+            return std::string();
+        };
+        const auto missingLayer = [&](const std::string& identifier) {
+            return fail(tr("The scene refers to the layer %1, which no longer exists.").arg(QString::fromStdString(identifier)));
+        };
         if ((exportMode == eExportModeFlattened) && stripContext) {
             // Composed without the context, the written layers' list ops, variant selections and
             // arcs to context prims would compose to nothing: their layer stack is flattened, which
@@ -1917,24 +2582,141 @@ USDWrite::writeFrameRange(int firstFrame,
             std::set<QString> usedFiles;
             collectUsedFiles(stage, &usedFiles);
             keep.insert(usedFiles.begin(), usedFiles.end());
+        } else if (exportMode == eExportModeFlattenLayers) {
+            // Regions are not written, but their metadata goes to the one file, as that of a
+            // region with no Save Path does.
+            std::vector<RegionFile> files;
+            RegionLayoutFailure failure;
+            if (!layOutRegionFiles(sceneItems, fileEntries, std::map<U64, QString>(), false, &files, &failure)) {
+                return regionFailure(failure);
+            }
+            stacks[0].settings = files[0].settings;
+            for (std::size_t i = 0; i < stacks.size(); ++i) {
+                std::vector<StackItem> stackItems;
+                if (i == 0) {
+                    stackItems = sceneItems;
+                } else {
+                    appendLayerStack(stacks[i].source, PXR_NS::SdfLayerOffset(), &stackItems);
+                }
+                std::vector<StackItem> items;
+                std::set<std::pair<std::string, std::pair<double, double>>> seenFiles;
+                std::set<std::string> seenFileLayers;
+                for (const StackItem& item : stackItems) {
+                    if (!item.external) {
+                        locator.stacksOfLayer[item.source].push_back(i);
+                        items.push_back(item);
+                        continue;
+                    }
+                    // A file read twice the same way composes where it is strongest.
+                    if (!seenFiles.insert(std::make_pair(item.layer->GetIdentifier(), std::make_pair(item.toRoot.GetOffset(), item.toRoot.GetScale()))).second) {
+                        continue;
+                    }
+                    std::vector<PXR_NS::SdfLayerRefPtr> closure;
+                    appendSublayerClosure(item.layer, &seenFileLayers, &closure);
+                    for (const PXR_NS::SdfLayerRefPtr& file : closure) {
+                        locator.stacksOfLayer[file->GetIdentifier()].push_back(i);
+                    }
+                    items.push_back(item);
+                }
+                std::set<QString> usedFiles;
+                stacks[i].layout.output = items.empty() ? PXR_NS::SdfLayer::CreateAnonymous("natron-usdwrite") : flattenRun(items, stacks[i].tcps, &usedFiles);
+                if (!stacks[i].layout.output) {
+                    return flattenFailure();
+                }
+                // The file holds what these files author, but the nodes reading them, a USDRead of
+                // one, still need them.
+                keep.insert(usedFiles.begin(), usedFiles.end());
+                const std::string missing = addReferencedStacks(stacks[i].layout.output, i, false);
+                if (!missing.empty()) {
+                    return missingLayer(missing);
+                }
+            }
+            propagateRanges(arcs, &stacks);
         } else {
+            std::map<U64, QString> savePaths;
+            // By comparison path, the spelling of the first region saving there, which aliases of
+            // it share so that they are one file.
+            std::map<QString, QString> savePathOfKey;
+            const QString outputKey = comparisonPath(outputPath);
+            const QString outputDirKey = comparisonPath(outputDir);
+            const QRegularExpression sidecarName = sidecarNamePattern(outputInfo);
+            std::set<QString> sceneFiles;
+            bool sceneFilesKnown = false;
+            std::vector<std::string> views;
+            std::map<std::string, std::string> env;
+            if (app && app->getProject()) {
+                views = app->getProject()->getProjectViewNames();
+                app->getProject()->getEnvironmentVariables(env);
+            }
+            for (const StackItem& item : sceneItems) {
+                for (const SceneLayerRegion* region = item.region; region; region = region->parent.get()) {
+                    if (region->settings.savePath.empty() || (savePaths.count(region->id) != 0)) {
+                        continue;
+                    }
+                    // As File is: the project's path variables, then the view and frame patterns,
+                    // of the first frame.
+                    std::string pattern = region->settings.savePath;
+                    Project::expandVariable(env, pattern);
+                    const QString name = QString::fromStdString(SequenceParsing::generateFileNameFromPattern(pattern, views, firstFrame, (int)view));
+                    const QString path = QDir::cleanPath(QDir(outputDir).absoluteFilePath(name));
+                    const QString node = regionNodeName(region);
+                    const QString suffix = QFileInfo(path).suffix().toLower();
+                    if ((suffix != QString::fromUtf8("usd")) && (suffix != QString::fromUtf8("usda")) && (suffix != QString::fromUtf8("usdc"))) {
+                        return fail(tr("The Save Path of %1, %2, is not a USD file name: it must end in .usd, .usda or .usdc.").arg(node).arg(path));
+                    }
+                    const QString key = comparisonPath(path);
+                    if (key == outputKey) {
+                        return fail(tr("The Save Path of %1 is %2, which this node writes the root layer to: save the region to another file.").arg(node).arg(path));
+                    }
+                    // The sweep of stale sidecars would remove the file once the region is gone.
+                    if ((comparisonPath(QFileInfo(path).absolutePath()) == outputDirKey) && sidecarName.match(QFileInfo(path).fileName()).hasMatch()) {
+                        return fail(tr("The Save Path of %1, %2, has the name this node gives its sidecar files: save the region to another file.").arg(node).arg(path));
+                    }
+                    if (!sceneFilesKnown) {
+                        const PXR_NS::UsdStageRefPtr composed = SceneOps::compose(scene);
+                        if (composed) {
+                            std::set<QString> used;
+                            collectUsedFiles(composed, &used);
+                            for (const QString& file : used) {
+                                sceneFiles.insert(comparisonPath(file));
+                            }
+                        }
+                        sceneFilesKnown = true;
+                    }
+                    if (sceneFiles.count(key) != 0) {
+                        return fail(tr("The Save Path of %1, %2, is read by the scene it would be overwritten with: save the region to another file.").arg(node).arg(path));
+                    }
+                    savePaths[region->id] = savePathOfKey.insert(std::make_pair(key, path)).first->second;
+                }
+            }
+            std::vector<RegionFile> files;
+            RegionLayoutFailure failure;
+            if (!layOutRegionFiles(sceneItems, fileEntries, savePaths, mergeCollisions, &files, &failure)) {
+                return regionFailure(failure);
+            }
+            stacks[0].items = files[0].items;
+            stacks[0].settings = files[0].settings;
+            for (std::size_t f = 1; f < files.size(); ++f) {
+                WrittenStack stack;
+                stack.path = files[f].path;
+                stack.tcps = metadata.timeCodesPerSecond;
+                stack.hasRange = true;
+                stack.startTime = startTime;
+                stack.endTime = endTime;
+                stack.region = true;
+                stack.items = files[f].items;
+                stack.settings = files[f].settings;
+                stacks.push_back(stack);
+            }
             for (std::size_t i = 0; i < stacks.size(); ++i) {
                 std::vector<StackItem> items;
-                if (i == 0) {
-                    const std::vector<SceneLayerEntry> layers = SceneOps::getLayers(scene);
-                    for (std::vector<SceneLayerEntry>::const_reverse_iterator it = layers.rbegin(); it != layers.rend(); ++it) {
-                        if (stripContext && it->context) {
-                            continue;
-                        }
-                        // As composition maps a sublayer of the root: by the ratio of their time codes per second.
-                        const PXR_NS::SdfLayerOffset toRoot(0., metadata.timeCodesPerSecond / it->layer->GetTimeCodesPerSecond());
-                        appendLayerStack(it->layer, toRoot, &items);
-                    }
+                if ((i == 0) || stacks[i].region) {
+                    items = stacks[i].items;
                 } else {
                     appendLayerStack(stacks[i].source, PXR_NS::SdfLayerOffset(), &items);
                 }
                 for (const StackItem& item : items) {
-                    if (!item.external) {
+                    if (!item.external && (item.file < 0)) {
                         locator.stacksOfLayer[item.source].push_back(i);
                     }
                 }
@@ -1945,8 +2727,9 @@ USDWrite::writeFrameRange(int firstFrame,
                 std::vector<PXR_NS::SdfLayerRefPtr> layers(1, layout.output);
                 std::vector<QString> runPaths;
                 for (const StackItem& item : layout.sublayers) {
-                    runPaths.push_back(item.external ? QString() : nextSidecarPath());
-                    if (!item.external) {
+                    const bool run = !item.external && (item.file < 0);
+                    runPaths.push_back(run ? nextSidecarPath() : QString());
+                    if (run) {
                         layers.push_back(item.layer);
                     }
                 }
@@ -1954,27 +2737,9 @@ USDWrite::writeFrameRange(int firstFrame,
                 stacks[i].runPaths = runPaths;
 
                 for (const PXR_NS::SdfLayerRefPtr& layer : layers) {
-                    for (const AnonymousArc& arc : anonymousArcs(layer)) {
-                        std::map<std::string, std::size_t>::const_iterator found = stackOfLayer.find(arc.identifier);
-                        std::size_t to = 0;
-                        if (found != stackOfLayer.end()) {
-                            to = found->second;
-                        } else {
-                            const PXR_NS::SdfLayerHandle referenced = PXR_NS::SdfLayer::Find(arc.identifier);
-                            if (!referenced) {
-                                return fail(tr("The scene refers to the layer %1, which no longer exists.").arg(QString::fromStdString(arc.identifier)));
-                            }
-                            to = stacks.size();
-                            stackOfLayer[arc.identifier] = to;
-                            WrittenStack stack;
-                            stack.source = PXR_NS::SdfLayerRefPtr(referenced);
-                            stack.path = nextSidecarPath();
-                            stack.tcps = referenced->GetTimeCodesPerSecond();
-                            stacks.push_back(stack);
-                        }
-                        // As composition maps a reference: its offset, then the scale between the
-                        // two layers' time codes per second.
-                        arcs.push_back(StackArc { i, to, arc.offset * PXR_NS::SdfLayerOffset(0., stacks[i].tcps / stacks[to].tcps) });
+                    const std::string missing = addReferencedStacks(layer, i, true);
+                    if (!missing.empty()) {
+                        return missingLayer(missing);
                     }
                 }
             }
@@ -1999,9 +2764,17 @@ USDWrite::writeFrameRange(int firstFrame,
                     definitions.push_back(it->layer->GetIdentifier());
                 }
             } else {
-                for (const StackItem& item : stacks[0].layout.sublayers) {
-                    definitions.push_back(item.layer->GetIdentifier());
-                }
+                std::function<void(std::size_t)> appendDefinitions = [&](std::size_t stack) {
+                    for (const StackItem& item : stacks[stack].layout.sublayers) {
+                        if (item.file < 0) {
+                            definitions.push_back(item.layer->GetIdentifier());
+                            continue;
+                        }
+                        definitions.push_back(stacks[(std::size_t)item.file].layout.output->GetIdentifier());
+                        appendDefinitions((std::size_t)item.file);
+                    }
+                };
+                appendDefinitions(0);
             }
             stacks[0].layout.output->SetSubLayerPaths(definitions);
             // Stripped, a projection the context alone authors, material and gprims, is no edit.
@@ -2024,7 +2797,7 @@ USDWrite::writeFrameRange(int firstFrame,
                     const std::vector<PXR_NS::SdfPath>& primPaths = (stackPrims != prims.end()) ? stackPrims->second : none;
                     stripProjectionSpecs(stacks[i].layout.output, propertyPaths, primPaths);
                     for (const StackItem& item : stacks[i].layout.sublayers) {
-                        if (!item.external) {
+                        if (!item.external && (item.file < 0)) {
                             stripProjectionSpecs(item.layer, propertyPaths, primPaths);
                         }
                     }
@@ -2037,8 +2810,9 @@ USDWrite::writeFrameRange(int firstFrame,
             }
         }
 
-        const auto finish = [&](const PXR_NS::SdfLayerRefPtr& layer, const WrittenStack& stack) {
-            if (stack.hasRange) {
+        // Asset paths are written relative to dir, the directory of the file holding layer.
+        const auto finish = [&](const PXR_NS::SdfLayerRefPtr& layer, const WrittenStack& stack, const QString& dir, bool clip) {
+            if (clip && stack.hasRange) {
                 clipTimeSamples(layer, stack.startTime, stack.endTime);
             }
             for (const std::pair<const std::string, PXR_NS::SdfPath>& removed : removeTexturesReading(layer, deletedSourceUris)) {
@@ -2048,7 +2822,7 @@ USDWrite::writeFrameRange(int firstFrame,
             PXR_NS::UsdUtilsModifyAssetPaths(layer, [&](const std::string& assetPath) {
                 const std::map<std::string, std::size_t>::const_iterator sidecar = stackOfLayer.find(assetPath);
                 if (sidecar != stackOfLayer.end()) {
-                    return rewriteAssetPath(stacks[sidecar->second].path.toStdString(), outputDir, pathMode);
+                    return rewriteAssetPath(stacks[sidecar->second].path.toStdString(), dir, pathMode);
                 }
                 if (assetPath.compare(0, std::string(kLiveTextureScheme "://").size(), kLiveTextureScheme "://") == 0) {
                     const std::map<std::string, LiveTextureExport>::iterator live = liveTextures.find(assetPath);
@@ -2064,21 +2838,78 @@ USDWrite::writeFrameRange(int firstFrame,
                     }
                     live->second.needed = true;
 
-                    return rewriteAssetPath(live->second.path.toStdString(), outputDir, pathMode);
+                    return rewriteAssetPath(live->second.path.toStdString(), dir, pathMode);
                 }
                 const QString referenced = referencedFilePath(assetPath);
                 if (!referenced.isEmpty()) {
                     keep.insert(referenced);
                 }
 
-                return rewriteAssetPath(assetPath, outputDir, pathMode);
+                return rewriteAssetPath(assetPath, dir, pathMode);
             });
         };
+        if (exportMode == eExportModeFlattenLayers) {
+            // One file: each referenced stack is copied into it under a class, which the arcs to
+            // the stack point to in place of the sidecar layered mode writes.
+            std::map<std::string, InlinedStack> inlined;
+            std::vector<PXR_NS::SdfPath> prefixes(stacks.size());
+            for (const std::pair<const std::string, std::size_t>& stack : stackOfLayer) {
+                const std::size_t i = stack.second;
+                prefixes[i] = PXR_NS::SdfPath("/_references").AppendChild(PXR_NS::TfToken("stack" + std::to_string(i)));
+                InlinedStack target;
+                target.prefix = prefixes[i];
+                if (stacks[i].source->HasDefaultPrim()) {
+                    target.defaultPrim = stacks[i].source->GetDefaultPrim();
+                }
+                target.tcps = stacks[i].tcps;
+                inlined[stack.first] = target;
+            }
+            for (std::size_t i = 0; i < stacks.size(); ++i) {
+                const PXR_NS::SdfLayerRefPtr& output = stacks[i].layout.output;
+                if (stacks[i].hasRange) {
+                    clipTimeSamples(output, stacks[i].startTime, stacks[i].endTime);
+                }
+                if (i > 0) {
+                    rerootLayerPaths(output, prefixes[i]);
+                }
+                inlineAnonymousArcs(output, stacks[i].tcps, inlined);
+            }
+            const PXR_NS::SdfLayerRefPtr& root = stacks[0].layout.output;
+            for (std::size_t i = 1; i < stacks.size(); ++i) {
+                if (!copyUnderClass(stacks[i].layout.output, root, prefixes[i])) {
+                    return flattenFailure();
+                }
+            }
+            finish(root, stacks[0], outputDir, false);
+            authorStageMetadata(root, metadata, startTime, endTime, fps);
+            authorRegionMetadata(root, stacks[0].settings, outputDir, pathMode);
+            written.push_back(Written { stacks[0].path, root });
+        }
+        // The time codes per second a written stack's file declares: its regions' when they set
+        // one, which composition scales its sublayers by and it by in its parent.
+        const auto declaredTcps = [](const WrittenStack& stack) {
+            return stack.settings.timeCodesPerSecond ? *stack.settings.timeCodesPerSecond : stack.tcps;
+        };
         for (const WrittenStack& stack : stacks) {
+            if (exportMode == eExportModeFlattenLayers) {
+                break;
+            }
             const PXR_NS::SdfLayerRefPtr& output = stack.layout.output;
-            finish(output, stack);
-            if (!stack.source) {
+            const double fileTcps = declaredTcps(stack);
+            const QString dir = QFileInfo(stack.path).absolutePath();
+            finish(output, stack, dir, true);
+            if (stack.region) {
+                // Only a stage's root layer's metadata takes effect, but a region's file opened on
+                // its own reads as the scene it holds.
+                output->SetTimeCodesPerSecond(stack.tcps);
+                const PXR_NS::SdfPath& rootPath = PXR_NS::SdfPath::AbsoluteRootPath();
+                output->SetField(rootPath, PXR_NS::UsdGeomTokens->upAxis,
+                                 (metadata.upAxis == SceneMetadata::eUpAxisZ) ? PXR_NS::UsdGeomTokens->z : PXR_NS::UsdGeomTokens->y);
+                output->SetField(rootPath, PXR_NS::UsdGeomTokens->metersPerUnit, metadata.metersPerUnit);
+                authorRegionMetadata(output, stack.settings, dir, pathMode);
+            } else if (!stack.source) {
                 authorStageMetadata(output, metadata, startTime, endTime, fps);
+                authorRegionMetadata(output, stack.settings, dir, pathMode);
             } else {
                 // Only a stage's root layer's metadata takes effect, but a sidecar opened on its
                 // own reads as the layer it stands for.
@@ -2101,18 +2932,28 @@ USDWrite::writeFrameRange(int firstFrame,
             PXR_NS::SdfLayerOffsetVector subLayerOffsets;
             for (std::size_t i = 0; i < stack.layout.sublayers.size(); ++i) {
                 const StackItem& item = stack.layout.sublayers[i];
-                if (item.external) {
-                    subLayerPaths.push_back(rewriteAssetPath(item.layer->GetIdentifier(), outputDir, pathMode));
-                    // Authored so that composition, which scales by the ratio of the two layers' time
-                    // codes per second, arrives at the offset the stack had.
-                    subLayerOffsets.push_back(authoredOffset(item.toRoot, item.layer, stack.tcps));
+                if (item.file >= 0) {
+                    // Its layers keep their own offsets to the root, which the region's file shares:
+                    // a region's time codes per second are metadata, so the scale composition gives
+                    // the two files' ratio is undone.
+                    const WrittenStack& region = stacks[(std::size_t)item.file];
+                    subLayerPaths.push_back(rewriteAssetPath(region.path.toStdString(), dir, pathMode));
+                    subLayerOffsets.push_back(PXR_NS::SdfLayerOffset(0., declaredTcps(region) / fileTcps));
                     continue;
                 }
-                // A run below a file goes to a file of its own beside the written one.
-                finish(item.layer, stack);
-                item.layer->SetTimeCodesPerSecond(stack.tcps);
+                if (item.external) {
+                    subLayerPaths.push_back(rewriteAssetPath(item.layer->GetIdentifier(), dir, pathMode));
+                    // Authored so that composition, which scales by the ratio of the two layers' time
+                    // codes per second, arrives at the offset the stack had.
+                    subLayerOffsets.push_back(authoredOffset(item.toRoot, item.layer, fileTcps));
+                    continue;
+                }
+                // A run below a file goes to a file of its own beside the written one, at the same
+                // rate, so that composition leaves its times as they are.
+                finish(item.layer, stack, outputDir, true);
+                item.layer->SetTimeCodesPerSecond(fileTcps);
                 written.push_back(Written { stack.runPaths[i], item.layer });
-                subLayerPaths.push_back(rewriteAssetPath(stack.runPaths[i].toStdString(), outputDir, pathMode));
+                subLayerPaths.push_back(rewriteAssetPath(stack.runPaths[i].toStdString(), dir, pathMode));
                 subLayerOffsets.push_back(PXR_NS::SdfLayerOffset());
             }
             output->SetSubLayerPaths(subLayerPaths);
@@ -2122,20 +2963,30 @@ USDWrite::writeFrameRange(int firstFrame,
         }
         for (const WrittenStack& stack : stacks) {
             for (const StackItem& item : stack.layout.sublayers) {
-                if (!item.external) {
+                if (!item.external || (item.file >= 0)) {
                     continue;
                 }
                 const QString realPath = QDir::cleanPath(QString::fromStdString(item.layer->GetRealPath()));
                 keep.insert(realPath);
+                const QString realKey = comparisonPath(realPath);
                 for (const Written& w : written) {
-                    if (realPath == w.path) {
+                    if (realKey == comparisonPath(w.path)) {
                         return fail(tr("%1 is read by the scene it would be overwritten with: write to another file, or use Flattened mode.").arg(w.path));
                     }
                 }
             }
         }
+        std::set<QString> writtenPaths;
+        std::set<QString> contextKeys;
+        for (const QString& file : contextFiles) {
+            contextKeys.insert(comparisonPath(file));
+        }
         for (const Written& w : written) {
-            if (contextFiles.count(w.path) != 0) {
+            const QString key = comparisonPath(w.path);
+            if (!writtenPaths.insert(key).second) {
+                return fail(tr("%1 would be written twice by this node: give the layer regions saving to it different Save Paths.").arg(w.path));
+            }
+            if (contextKeys.count(key) != 0) {
                 return fail(tr("%1 is read above a USDLayerBreak, so it would be overwritten with only the edits after the break: write to another file.").arg(w.path));
             }
         }
@@ -2182,6 +3033,10 @@ USDWrite::writeFrameRange(int firstFrame,
     QStringList replaced;
     // The weakest first, so that a reader of the written file never finds a sublayer missing.
     for (std::vector<Written>::const_reverse_iterator it = written.rbegin(); it != written.rend(); ++it) {
+        const QString dir = QFileInfo(it->path).absolutePath();
+        if (!QDir().mkpath(dir)) {
+            return fail(tr("Cannot create the directory %1.").arg(dir));
+        }
         if (!it->layer->Export(it->path.toStdString())) {
             const std::string errors = takeUsdErrors(mark);
             QString message = tr("Cannot write %1%2").arg(it->path).arg(errors.empty() ? QString::fromUtf8(".") : QString::fromUtf8(": ") + QString::fromStdString(errors));
@@ -2273,7 +3128,7 @@ USDWrite::writeFrameRange(int firstFrame,
     }
     // A layered write replaces its own sidecars, as expected; a flattened one removes files the user
     // may not know the export mode made, so it says which.
-    if ((exportMode == eExportModeFlattened) && !removedSidecars.isEmpty()) {
+    if ((exportMode != eExportModeLayered) && !removedSidecars.isEmpty()) {
         const int kMaxNamed = 5;
         const QString what = (removedSidecars.size() <= kMaxNamed)
             ? removedSidecars.join(QString::fromUtf8(", "))

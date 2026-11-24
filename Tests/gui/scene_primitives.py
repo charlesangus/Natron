@@ -115,7 +115,7 @@ try:
         probe.disconnectInput(0)
         require(probe.connectInput(0, source), "connect the probe writer to %s" % source.getScriptName())
         probe.getParam("filename").setValue(path)
-        probe.getParam("exportMode").setValue(1)  # flattened
+        probe.getParam("exportMode").setValue(2)  # flattened
         if os.path.exists(path):
             os.remove(path)
         app.renderBlocking(probe, 1, 1)

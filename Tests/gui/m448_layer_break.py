@@ -124,7 +124,7 @@ try:
         require(viewer.connectInput(0, node), "connect the Viewer to %s" % node.getLabel())
 
     def write(mode, stripped):
-        """Writes the prune through the USDWrite (0 layered, 1 flattened) to a fresh directory and
+        """Writes the prune through the USDWrite (0 layered, 2 flattened) to a fresh directory and
         returns the written layer."""
         counter[0] += 1
         out_dir = os.path.join(work_dir, "write%d" % counter[0])
@@ -182,7 +182,7 @@ try:
         save_view("m448_readback_viewer")
 
         # 3. Flattened, stripped.
-        path, layer = write(1, True)
+        path, layer = write(2, True)
         holds_only_the_prune(layer, "flattened")
 
         # 4. The toggle off.
@@ -190,7 +190,7 @@ try:
         subs = sublayers(layer, path)
         check(subs is not None and os.path.normpath(layer_path) in subs,
               "layered, toggle off: the fixture is sublayered (%r)" % (subs,))
-        path, layer = write(1, False)
+        path, layer = write(2, False)
         check(layer is not None and bool(layer.GetPrimAtPath("/World/Asset/Geo")),
               "flattened, toggle off: /World/Asset/Geo is baked in")
 

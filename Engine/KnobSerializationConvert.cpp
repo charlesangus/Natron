@@ -54,6 +54,7 @@
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobDriver.h"
 #include "Engine/KnobFile.h"
+#include "Engine/KnobLayerCustomData.h"
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobLinkGroup.h"
 #include "Engine/KnobShuffleMap.h"
@@ -107,6 +108,8 @@ createDetachedKnob(const std::string& typeName,
         ret = std::make_shared<KnobChannelSelect>((KnobHolder*)NULL, std::string(), dimension, false);
     } else if (typeName == KnobShuffleMap::typeNameStatic()) {
         ret = std::make_shared<KnobShuffleMap>((KnobHolder*)NULL, std::string(), dimension, false);
+    } else if (typeName == KnobLayerCustomData::typeNameStatic()) {
+        ret = std::make_shared<KnobLayerCustomData>((KnobHolder*)NULL, std::string(), dimension, false);
     } else if (typeName == KnobFile::typeNameStatic()) {
         ret = std::make_shared<KnobFile>((KnobHolder*)NULL, std::string(), dimension, false);
     } else if (typeName == KnobOutputFile::typeNameStatic()) {
@@ -989,6 +992,8 @@ createUserKnobFromSerialization(KnobHolder* holder,
         knob = createOrReuseUserKnob<KnobChannelSelect>(holder, serialization, existingKnob);
     } else if (typeName == KnobShuffleMap::typeNameStatic()) {
         knob = createOrReuseUserKnob<KnobShuffleMap>(holder, serialization, existingKnob);
+    } else if (typeName == KnobLayerCustomData::typeNameStatic()) {
+        knob = createOrReuseUserKnob<KnobLayerCustomData>(holder, serialization, existingKnob);
     }
 
     if (!knob) {

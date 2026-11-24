@@ -83,9 +83,11 @@ public:
     /**
      * @brief The union of inputs, given in order from weakest to strongest: each one's layers
      * stacked over the ones before, each layer kept only at its first, weakest, position. A
-     * kept layer is context (SceneLayerEntry::context) only if it is in every input holding it.
+     * kept layer is context (SceneLayerEntry::context) only if it is in every input holding it,
+     * and sealed (SceneLayerEntry::sealed) only if no input holding it could gather it into a
+     * region; the strongest is the merge's top (SceneLayerEntry::mergeTop). No region stays open.
      * A payload that holds every layer of the first non-empty input in order, flagged the same,
-     * is built on that input's stack, so a single input passes through as it is.
+     * is built on that input's stack, and a single input passes through with its regions closed.
      **/
     static ScenePayload mergeStacks(const std::vector<ScenePayload>& inputs);
 

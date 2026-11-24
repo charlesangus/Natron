@@ -34,6 +34,7 @@
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobFile.h"
+#include "Engine/KnobLayerCustomData.h"
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobShuffleMap.h"
 #include "Engine/KnobTypes.h"
@@ -101,6 +102,7 @@ KnobFactory::loadBultinKnobs()
     _loadedKnobs.insert(knobFactoryEntry<KnobLayerSelect>());
     _loadedKnobs.insert(knobFactoryEntry<KnobChannelSelect>());
     _loadedKnobs.insert(knobFactoryEntry<KnobShuffleMap>());
+    _loadedKnobs.insert(knobFactoryEntry<KnobLayerCustomData>());
 }
 
 KnobHelperPtr KnobFactory::createKnob(const std::string &id,

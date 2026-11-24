@@ -198,7 +198,8 @@ SceneLinkIndex getLinks(const ScenePayload& payload);
 /**
  * @brief appendLayer() for an entry taken from another payload, keeping what it depends on alive
  * in the stack it returns too. Code that restacks layers goes through here, so a graft layer
- * never loses the wrapper it references.
+ * never loses the wrapper it references. An entry without a region goes into base's innermost
+ * open region, and the regions open on base stay open on the result.
  **/
 ScenePayload appendEntry(const ScenePayload& base,
                          const SceneLayerEntry& entry);
@@ -258,7 +259,8 @@ std::vector<SceneLayerEntry> getLayers(const ScenePayload& payload);
 
 /**
  * @brief payload's stack with every entry flagged as context (SceneLayerEntry::context): the same
- * layers, composing the same stage with the same metadata, under another stack hash.
+ * layers, composing the same stage with the same metadata, under another stack hash, and no
+ * region left open.
  **/
 ScenePayload markContext(const ScenePayload& payload);
 
@@ -273,6 +275,87 @@ bool hasContext(const ScenePayload& payload);
  * when every entry is context.
  **/
 ScenePayload stripContext(const ScenePayload& payload);
+
+/**
+ * @brief The regions open on payload, outermost first: appendEntry() puts an entry that has none
+ * into the innermost.
+ **/
+std::vector<SceneLayerRegionPtr> getOpenRegions(const ScenePayload& payload);
+
+// The innermost region open on payload, null when none is.
+SceneLayerRegionPtr getInnermostOpenRegion(const ScenePayload& payload);
+
+/**
+ * @brief The region of each of payload's entries, weakest first, null for an entry outside every
+ * region.
+ **/
+std::vector<SceneLayerRegionPtr> regionsOf(const ScenePayload& payload);
+
+// True when region is ancestor or nested in it.
+bool isRegionWithin(const SceneLayerRegion* region,
+                    const SceneLayerRegion* ancestor);
+
+// How many of payload's entries lie in region or a region nested in it.
+std::size_t countRegionEntries(const ScenePayload& payload,
+                               const SceneLayerRegion* region);
+
+/**
+ * @brief True when entry's layer is a file or sublayers one, as a USDRead's does: a boundary
+ * claimPreceding() stops at, since flattening layers on both sides of a file into one would change
+ * their strength against it.
+ **/
+bool isFileEntry(const SceneLayerEntry& entry);
+
+/**
+ * @brief payload with a new region, authored by node, open inside its innermost one: the entries
+ * appended next go into it. The layers are unchanged.
+ **/
+ScenePayload openRegion(const ScenePayload& payload,
+                        const std::string& node,
+                        const SceneLayerRegionSettings& settings);
+
+// payload with its innermost region closed; payload itself when none is open.
+ScenePayload closeRegion(const ScenePayload& payload);
+
+// payload with no region open, as a merge, a break or a re-parenting node leaves it.
+ScenePayload closeAllRegions(const ScenePayload& payload);
+
+/**
+ * @brief payload with settings merged into its innermost open region (stronger), the entries
+ * already in it and the regions nested in it moved to the region replacing it. payload itself
+ * when no region is open.
+ **/
+ScenePayload setOpenRegionSettings(const ScenePayload& payload,
+                                   const SceneLayerRegionSettings& settings);
+
+/**
+ * @brief The indices, weakest first, of the entries a USDConfigureLayer gathering the preceding
+ * layers claims: walking down from the strongest, every entry of the innermost open region (or of
+ * none) until a boundary: a file entry, a context entry, or an entry of another region. Below a
+ * merge's strongest layer the walk goes on through every input, skipping the entries sealed
+ * behind a boundary of their own input.
+ **/
+std::vector<std::size_t> getPrecedingRun(const ScenePayload& payload);
+
+/**
+ * @brief payload with getPrecedingRun()'s entries moved into a new region, authored by node,
+ * nested in the innermost open region. payload itself when the run is empty.
+ **/
+ScenePayload claimPreceding(const ScenePayload& payload,
+                            const std::string& node,
+                            const SceneLayerRegionSettings& settings);
+
+/**
+ * @brief Parses one custom data row into datum: a namespaced identifier name, type one of
+ * KnobLayerCustomData::typeNames(), and text read by it. Array items are separated by whitespace;
+ * a String Array item may be quoted to hold spaces. Float is a double and Integer an int. False,
+ * with error saying what is wrong, when the row does not parse.
+ **/
+bool parseCustomDatum(const std::string& name,
+                      const std::string& type,
+                      const std::string& text,
+                      SceneLayerCustomDatum* datum,
+                      std::string* error);
 
 /**
  * @brief Every live texture the payload's layers record, those of the stacks they compose from

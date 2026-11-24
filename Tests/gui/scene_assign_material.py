@@ -99,7 +99,7 @@ try:
 
     # Kept for the whole run: the child wrappers die with their parent wrapper.
     probe = make("USDWrite", 300, 240)
-    probe.getParam("exportMode").setValue(1)  # flattened
+    probe.getParam("exportMode").setValue(2)  # flattened
     counter = [0]
 
     def view():

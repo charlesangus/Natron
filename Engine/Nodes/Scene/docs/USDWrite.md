@@ -18,19 +18,67 @@ Export Mode sets what goes into the file:
 
 - Layered (the default) flattens every layer the project's nodes authored into
   the file, and keeps the USD files the scene reads (USDRead's) as sublayers
-  with the time offsets they were read with, as Solaris's USD ROP does with
-  Flatten Implicit Layers. Those files are referred to, not copied, and their
-  own time samples are not clipped. Every layer keeps its strength: what the
-  nodes authored above the strongest file goes into the written file, and what
-  they authored below a file goes, flattened, into a file of its own beside it
-  (`name_layer1.usda`, `name_layer2.usda`, ... for `name.usda`), sublayered in
-  its place. A file the scene reads above an authored edit still overrides it.
+  with the time offsets they were read with. Those files are referred to, not
+  copied, and their own time samples are not clipped. Every layer keeps its
+  strength: what the nodes authored above the strongest file goes into the
+  written file, and what they authored below a file goes, flattened, into a file
+  of its own beside it (`name_layer1.usda`, `name_layer2.usda`, ... for
+  `name.usda`), sublayered in its place. A file the scene reads above an
+  authored edit still overrides it. The layer regions given a Save Path go to
+  files of their own, described below.
+- Flatten Layers flattens the layer stack, the files the scene reads included,
+  into the one file without composing it: references, payloads, variant sets,
+  inherits and list edits stay as they are authored, so variants can still be
+  switched in the written file. A reference or payload to a USD file on disk
+  stays one, following Asset Paths. The scenes the nodes reference (a
+  USDReference of its input, or a USDXformPrim's grafted scene) are flattened
+  the same way and copied into the file under `/_references/stack1`,
+  `/_references/stack2`, ..., a `class` that draws nothing itself, and the
+  arcs to them point there, so the file stands on its own. Layer regions are
+  not written as files: their metadata goes to the one file.
 - Flattened bakes the whole composed scene, the files it reads included, into
   the one file, which then stands on its own.
 
-Strip Layers Above Breaks (on by default) leaves out, in either mode, every
-layer above a USDLayerBreak (the context layers) and the files a USDRead above
-the break reads, so the file holds only the edits made after the break and
+In Layered mode a layer region (see USDLayerBegin, USDLayerEnd and
+USDConfigureLayer) whose Save Path is set is written to that file, with the
+layers it holds flattened into it as the written file's are, and sublayered
+where its layers were: a region nested in another goes into the outer region's
+file, and a region opened after a USDRead that gathers the layers before it
+(Applies To set to Preceding Layers) sublayers that read file too. A file is
+stronger than the files it sublayers, so layers of a region that lie weaker than
+a region nested in it (added before the nested region opened) go to a sidecar of
+the region's file (`name_layer1.usda`, ...), sublayered below the nested
+region's file, and only the layers stronger than it stay in the region's file. A
+Save Path is resolved against the written file's folder, with the project's path
+variables and the first frame and view of the range, as File is, and its folder
+is created. It must end in a USD extension, differ from File, not name a file
+the scene reads, and not take the name of a sidecar beside File
+(`name_layer1.usda`, ...), which a later render would remove as stale. Paths are
+compared through symbolic links, so two spellings of one file are the same
+Save Path. The region's metadata (default prim, comment,
+start and end time, time codes and frames per second, up axis, meters per unit,
+colour configuration and system, render settings prim and custom data) goes on
+its file, each field only when its node authors it. A region with no Save Path
+stays in the file that holds it, and its metadata goes on that file, the
+written file's metadata included. A region's Time Codes Per Second is
+metadata: the sublayer offset to its file undoes the scaling composition gives
+two files of different rates, so its layers keep the times they have in the
+scene.
+
+Save Collisions sets what happens when two regions resolve to the same Save
+Path: Error (the default) fails the render, naming both nodes, before any file
+is written. Merge Into One File writes the regions' layers to the one file in
+the order they are stacked, the stronger region's metadata winning field by
+field; a region nested in one with the same Save Path is flattened into that
+file rather than sublayered by it. A region whose layers are interleaved with another region's in the
+layer stack, which happens when the layers a Preceding Layers configuration
+gathers after a USDMerge span a region of one branch, takes the layers between
+its own into its file, so every layer keeps its strength; two regions that
+each hold part of the other fail the render, naming both nodes.
+
+Strip Layers Above Breaks (on by default) leaves out, in every mode, every
+layer above a USDLayerBreak (the context layers), the files a USDRead above
+the break reads and the layer regions above it, which write no file, so the file holds only the edits made after the break and
 layers over the scene it was made against. The file is not sublayered by path:
 it does not open on its own as a complete scene. Prims only the context defines,
 edited after the break, are written as `over` specs. In Layered mode the scenes
@@ -73,7 +121,8 @@ place, so every viewer and node reading it shows the new content.
 The node sets an error, and the render fails, when File is empty or does not end
 in a USD extension, when the input scene fails, when Layered mode would
 overwrite a file the scene reads, when a write that strips breaks would
-overwrite a file read above a break, or when a live texture whose node exists
-cannot be rendered or written.
+overwrite a file read above a break, when a region's Save Path is not a USD
+file, is File, is read by the scene or collides under Error, or when a live
+texture whose node exists cannot be rendered or written.
 
 Tolerance: none recorded.

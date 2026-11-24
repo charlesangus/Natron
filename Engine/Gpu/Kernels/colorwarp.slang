@@ -14,7 +14,9 @@ static const uint CW_POST = 21;
 static const uint CW_INV_POST = 30;
 static const uint CW_INV_PRE = 39;
 static const uint CW_AFFINE = 48;
-static const uint CW_HEADER_WORDS = 64;
+static const uint CW_WEIGHT_SUM = 60;
+static const uint CW_WEIGHT_MOMENT = 63;
+static const uint CW_HEADER_WORDS = 72;
 static const uint CW_PIN_WORDS = 7;
 
 static const uint CW_KERNEL_GAUSSIAN = 0;
@@ -146,9 +148,18 @@ struct ColorWarpOp : IPixelOp
         return float3(0.0);
     }
 
+    // With R = |x|, s = |c|^2 - 2 x.c = r^2 - R^2 and r = |x - c|:
+    //   r^3 = R^3 - 3 R x.c + 1.5 R |c|^2 + s^2 (2 r + R) / (2 (r + R)^2)
+    //   -r = -R - s / (r + R)
+    // The R^3, R x.c and R terms summed over the pins are the weight sums times R, which keeps
+    // float from cancelling terms of order R^3 far outside the pins.
     float3 rbf(float3 w)
     {
         const float3 x = (w - origin) * invScale;
+        const float R = length(x);
+        const bool cubic = (kernel == CW_KERNEL_RBF_CUBIC);
+        const float3 weightSum = cwVector(CW_WEIGHT_SUM);
+        const float3 momentDotX = mul(cwMatrix(CW_WEIGHT_MOMENT), x);
         float3 d;
         [ForceUnroll]
         for (uint c = 0; c < 3; ++c)
@@ -156,11 +167,20 @@ struct ColorWarpOp : IPixelOp
             d[c] = wrapParamFloat(wrapAux, CW_AFFINE + c) + wrapParamFloat(wrapAux, CW_AFFINE + 3 + c * 3) * x.x +
                    wrapParamFloat(wrapAux, CW_AFFINE + 4 + c * 3) * x.y + wrapParamFloat(wrapAux, CW_AFFINE + 5 + c * 3) * x.z;
         }
+        d += cubic ? (weightSum * (R * R * R) - 3.0 * R * momentDotX) : (-R * weightSum);
         for (uint i = 0; i < pinCount; ++i)
         {
             const uint base = CW_HEADER_WORDS + i * CW_PIN_WORDS;
-            const float r = length(x - cwVector(base));
-            const float phi = (kernel == CW_KERNEL_RBF_CUBIC) ? r * r * r : -r;
+            const float3 c = cwVector(base);
+            const float cc = dot(c, c);
+            const float s = cc - 2.0 * dot(x, c);
+            const float r = length(x - c);
+            const float rR = r + R;
+            float phi;
+            if (cubic)
+                phi = 1.5 * R * cc + ((rR > 0.0) ? s * s * (2.0 * r + R) / (2.0 * rR * rR) : 0.0);
+            else
+                phi = (rR > 0.0) ? -s / rR : 0.0;
             d += cwVector(base + 3) * phi;
         }
         return d;

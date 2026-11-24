@@ -77,7 +77,9 @@ constexpr int kGpuPost = 21;
 constexpr int kGpuInvPost = 30;
 constexpr int kGpuInvPre = 39;
 constexpr int kGpuAffine = 48;
-constexpr int kGpuHeaderWords = 64;
+constexpr int kGpuWeightSum = 60;
+constexpr int kGpuWeightMoment = 63;
+constexpr int kGpuHeaderWords = 72;
 constexpr int kGpuPinWords = 7;
 
 constexpr std::uint32_t kGpuTransferNone = 0;
@@ -330,6 +332,26 @@ ColorWarpOp::gpu(const Params& params) const
         putFloat(words, kGpuAffine + i, field.affine()[i]);
     }
     const bool gaussian = (field.kernel() == eColorWarpKernelGaussian);
+    if (!gaussian) {
+        // The device evaluates the spline relative to |x| so that far from the pins it does not
+        // cancel large terms in float; these sums of the weights, and of the weights times the
+        // centres, carry the terms that rewrite factors out.
+        double weightSum[3] = { 0., 0., 0. };
+        double weightMoment[9] = { 0., 0., 0., 0., 0., 0., 0., 0., 0. };
+        for (int i = 0; i < pinCount; ++i) {
+            for (int c = 0; c < 3; ++c) {
+                const double w = field.coefficients()[i * 3 + c];
+                weightSum[c] += w;
+                for (int k = 0; k < 3; ++k) {
+                    weightMoment[c * 3 + k] += w * field.centres()[i * 3 + k];
+                }
+            }
+        }
+        for (int c = 0; c < 3; ++c) {
+            putFloat(words, kGpuWeightSum + c, weightSum[c]);
+        }
+        putMatrix(words, kGpuWeightMoment, weightMoment);
+    }
     for (int i = 0; i < pinCount; ++i) {
         const int base = kGpuHeaderWords + i * kGpuPinWords;
         for (int c = 0; c < 3; ++c) {

@@ -324,7 +324,7 @@ captureProjectSnapshot(const ProjectPtr& project)
         for (std::size_t c = 0; c < names.size(); ++c) {
             channels += (c ? "," : "") + names[c];
         }
-        builder.add("layer " + it->desc.getLayerID(), "label=" + it->desc.getLayerLabel() + " channelsLabel=" + it->desc.getChannelsLabel() + " channels=" + channels + " origin=" + std::to_string((int)it->origin));
+        builder.add("layer " + it->desc.getLayerID(), "channels=" + channels + " origin=" + std::to_string((int)it->origin));
     }
 
     std::list<Format> formats;

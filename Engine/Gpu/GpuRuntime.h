@@ -103,6 +103,7 @@ struct GpuRuntimeOptions {
 // Fault injection: GpuDeviceOptions::fault, or when that is unset the environment variable
 // NATRON_GPU_FAULT=lost@N or oom@N read by create(). N counts runtime operations from 1: every queue
 // submission (GpuDevice::submit, which covers transfers and record contexts) and every GpuRuntime::acquire.
+// lost@region:N and oom@region:N count only the operations a GPU region's run makes on its own thread.
 // The fault fires once, on operation N, and is not re-armed by recreate().
 //
 // Thread safety: state() is lock-free and the transitions are serialized. recreate() invalidates every

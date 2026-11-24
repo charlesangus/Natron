@@ -72,7 +72,10 @@ constexpr NodeSpec kEdgeBlurNodeSpec = {
                    "and a larger Edge Mult widens the blurred band. A pixel with no edge is left exactly as it is. "
                    "The blur is IBlur's box applied three times, an approximation of the Gaussian of standard deviation size/2.4. "
                    "The matte is the alpha of the source, or with External Matte the alpha of the Matte input; "
-                   "with External Matte on and no Matte connected the image is left unchanged. The Mask and Mix limit the result as usual.",
+                   "with External Matte on and no Matte connected the image is left unchanged. The Mask and Mix limit the result as usual.\n"
+                   "\n"
+                   "Outside the image the blur reads by the Edge Mode: Stretch repeats the edge pixels, Black darkens the blur towards the edges. "
+                   "The matte's edges always repeat its edge pixels, so the border of the image is no edge.",
     .grouping = PLUGIN_GROUP_FILTER,
     .majorVersion = PLUGIN_MAJOR_NATRON_EDGEBLUR,
     .icon = NATRON_IMAGES_PATH "NativeNodes/Blur.png",
@@ -80,7 +83,7 @@ constexpr NodeSpec kEdgeBlurNodeSpec = {
 };
 
 constexpr ImagePipelineSpec kEdgeBlurPipeline = {
-    .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed },
+    .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed, Stage::EdgeMode },
     .layers = LayerPolicy::color(true, true, true, true),
     .op = OpKind::Passes,
 };
@@ -362,8 +365,11 @@ EdgeBlur::edgePasses(const EdgeBlurParams& params,
     edges.nms = false;
     edges.expandRoD = true;
     edges.cropToFormat = true;
+    // Black would read a step at the border of an opaque matte, blurring every image edge.
+    PassContext matteContext = context;
+    matteContext.edgeMode = EdgeMode::Stretch;
 
-    return EdgeDetectOp().passes(edges, context);
+    return EdgeDetectOp().passes(edges, matteContext);
 }
 
 float
@@ -403,6 +409,7 @@ EdgeBlur::opPasses(double time,
     }
     const PassList edges = edgePasses(params, context);
     PassList list = blur;
+    list.stretchVaries = edgeVaries(params, edges, time, view, scale);
     if (!params.externalMatte) {
         list.passes.insert(list.passes.begin(), edgeReachPass(edges));
     }
@@ -420,15 +427,13 @@ EdgeBlur::opPasses(double time,
 }
 
 bool
-EdgeBlur::edgeRects(const EdgeBlurParams& params,
-                    const PassList& edges,
-                    double time,
-                    ViewIdx view,
-                    const RenderScale& scale,
-                    const RectI& output,
-                    RectI* matteRoD,
-                    RectI* edgeRoD,
-                    RectI* buffer) const
+EdgeBlur::edgeRegions(const EdgeBlurParams& params,
+                      const PassList& edges,
+                      double time,
+                      ViewIdx view,
+                      const RenderScale& scale,
+                      RectI* matteRoD,
+                      RectI* edgeRoD) const
 {
     const int input = matteInput(params);
     EffectInstancePtr matte = getInput(input);
@@ -445,10 +450,64 @@ EdgeBlur::edgeRects(const EdgeBlurParams& params,
         return false;
     }
     // EdgeDetect's own region of definition, cropped to the format as its Crop To Format does.
+    // Under Stretch the blur's earlier boxes run past the format, as Blur's do, so their weight
+    // there is the edge's own: a crop would change the pixels inside the format.
     *edgeRoD = passListRoD(*matteRoD, edges);
-    cropToFormatBorders(formatOf(getApp(), matte, time, view), scale, *matteRoD, edgeRoD);
+    if (getPassContext(time, view, scale).edgeMode != EdgeMode::Stretch) {
+        cropToFormatBorders(formatOf(getApp(), matte, time, view), scale, *matteRoD, edgeRoD);
+    }
 
-    return PassExec::intersectRects(passListSourceRoI(output, edges), *edgeRoD, buffer);
+    return true;
+}
+
+bool
+EdgeBlur::edgeRects(const EdgeBlurParams& params,
+                    const PassList& edges,
+                    double time,
+                    ViewIdx view,
+                    const RenderScale& scale,
+                    const RectI& output,
+                    RectI* matteRoD,
+                    RectI* edgeRoD,
+                    RectI* buffer) const
+{
+    if (!edgeRegions(params, edges, time, view, scale, matteRoD, edgeRoD)) {
+        return false;
+    }
+    if ((edges.edgeMode != EdgeMode::Stretch) || (edges.stretchReachX < 0) || (edges.stretchReachY < 0)) {
+        return PassExec::intersectRects(passListSourceRoI(output, edges), *edgeRoD, buffer);
+    }
+    // A pass past the first reads what the earlier ones computed past the matte, which differs
+    // from the matte's edge repeated: a buffer cut at the matte, whose passes then repeat that
+    // edge, would lose the gradient there.
+    RectI inside;
+    if (!PassExec::intersectRects(output, *edgeRoD, &inside)) {
+        return false;
+    }
+    RectI clip(matteRoD->x1 - edges.stretchReachX, matteRoD->y1 - edges.stretchReachY, matteRoD->x2 + edges.stretchReachX, matteRoD->y2 + edges.stretchReachY);
+    // The Gaussian's derivative recursions, as CImg's, skip a line's last sample and zero its
+    // first, so a line's edges depend on where it ends even past the matte. Lines end at the
+    // edges' region whatever output is, so that a tile's edges are the whole image's.
+    clip.merge(*edgeRoD);
+    clip.merge(inside);
+
+    return PassExec::intersectRects(passListSourceRoI(inside, edges), clip, buffer);
+}
+
+RectI
+EdgeBlur::edgeVaries(const EdgeBlurParams& params,
+                     const PassList& edges,
+                     double time,
+                     ViewIdx view,
+                     const RenderScale& scale) const
+{
+    RectI matteRoD;
+    RectI edgeRoD;
+    if (!edgeRegions(params, edges, time, view, scale, &matteRoD, &edgeRoD)) {
+        return RectI(0, 0, 0, 0);
+    }
+
+    return edgeRoD;
 }
 
 StatusEnum
@@ -508,17 +567,13 @@ EdgeBlur::computeEdges(const RenderActionArgs& args,
     // fillBuffer() reads EdgeDetect's source. Read on this thread, which holds the image's lock.
     RectI valid;
     if (PassExec::intersectRects(image->getBounds(), matteRoD, &valid)) {
-        const bool nearest = (edges.boundary == PassExec::Boundary::Nearest);
         Image::ReadAccess access(image.get());
         float* const slot0 = storage[0].data();
         for (int row = 0; row < height; ++row) {
             float* out = slot0 + (std::size_t)row * width;
             int y = buffer.y1 + row;
-            if ((y < valid.y1) || (y >= valid.y2)) {
-                if (!nearest) {
-                    continue;
-                }
-                y = std::min(std::max(y, valid.y1), valid.y2 - 1);
+            if (!EdgeSample::coord(y, valid.y1, valid.y2, edges.edgeMode, &y)) {
+                continue;
             }
             const float* srcRow = (const float*)access.pixelAt(valid.x1, y);
             if (!srcRow) {
@@ -526,11 +581,8 @@ EdgeBlur::computeEdges(const RenderActionArgs& args,
             }
             for (int i = 0; i < width; ++i) {
                 int x = buffer.x1 + i;
-                if ((x < valid.x1) || (x >= valid.x2)) {
-                    if (!nearest) {
-                        continue;
-                    }
-                    x = std::min(std::max(x, valid.x1), valid.x2 - 1);
+                if (!EdgeSample::coord(x, valid.x1, valid.x2, edges.edgeMode, &x)) {
+                    continue;
                 }
                 out[i] = srcRow[(std::size_t)(x - valid.x1) * nComps + channel];
             }
@@ -543,7 +595,7 @@ EdgeBlur::computeEdges(const RenderActionArgs& args,
     // The weight IBlur's radii read, remapped as its Map is.
     const IBlurParams blur = blurParams(params);
     RectI inside;
-    if (PassExec::intersectRects(window, buffer, &inside)) {
+    if (PassExec::intersectRects(window, buffer, &inside) && PassExec::intersectRects(inside, edgeRoD, &inside)) {
         const float* result = storage[(std::size_t)edges.resultSlot].data();
         for (int y = inside.y1; y < inside.y2; ++y) {
             const float* from = result + (std::size_t)(y - buffer.y1) * width + (inside.x1 - buffer.x1);
@@ -570,8 +622,14 @@ EdgeBlur::renderOp(const RenderActionArgs& args,
     const PassContext context = getPassContext(args.time, args.view, args.mappedScale);
     const PassList edges = edgePasses(params, context);
     // The weight over every pixel IBlur's passes read; the radii beyond it, over the reach the
-    // first pass carries, are 0 and reach no pixel of args.roi.
-    const RectI window = passListSourceRoI(args.roi, blurPasses(params, context));
+    // first pass carries, are 0 and reach no pixel of args.roi. Under Stretch that is the blur's
+    // scratch, onto which every pixel of the halo past it clamps, onto a pixel of the same weight.
+    PassList blur = blurPasses(params, context);
+    blur.stretchVaries = full.stretchVaries;
+    RectI window = passListSourceRoI(args.roi, blur);
+    if ((blur.edgeMode == EdgeMode::Stretch) && !passScratchRect(*this, plan, blur, args.roi, args.time, args.mappedScale, args.view, &window)) {
+        return eStatusFailed;
+    }
     std::shared_ptr<MapPlane> weight = std::make_shared<MapPlane>();
     const StatusEnum status = computeEdges(args, params, edges, window, weight.get());
     if (status != eStatusOK) {
@@ -582,6 +640,7 @@ EdgeBlur::renderOp(const RenderActionArgs& args,
         // No edge over the window: the image as it is.
         return runPassesCpu(*this, plan, args, list);
     }
+    list.stretchVaries = full.stretchVaries;
     if (!params.externalMatte) {
         list.passes.insert(list.passes.begin(), edgeReachPass(edges));
     }
@@ -646,6 +705,7 @@ EdgeBlur::recordGpu(const PassGpuIO& io,
         edgeView = packedView(edgeBuf, edgeOutput, matte.nComps);
         PassGpuIO edgeIO(ctx);
         edgeIO.source = matte;
+        edgeIO.edgeMode = edges.edgeMode;
         PassExec::intersectRects(matteValid, matteRoD, &edgeIO.sourceValid);
         edgeIO.filtered = edgeView;
         edgeIO.output = edgeOutput;
@@ -669,7 +729,7 @@ EdgeBlur::recordGpu(const PassGpuIO& io,
     }
     blurIO.inputs[kIBlurInputMap] = edgeView;
 
-    return IBlur::recordPassesGpu(blurIO, blurParams(params), getPassContext(time, view, scale), true, hasEdge ? edgeComp : -1);
+    return IBlur::recordPassesGpu(blurIO, blurParams(params), getPassContext(time, view, scale), true, hasEdge ? edgeComp : -1, EdgeMode::Black);
 #else
     Q_UNUSED(io);
     Q_UNUSED(time);

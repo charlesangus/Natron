@@ -32,6 +32,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/RectI.h"
 
@@ -61,9 +62,13 @@ NativeGenerator::NativeGenerator(EffectInstance* effect,
 }
 
 void
-NativeGenerator::createKnobs(const KnobPagePtr& page)
+NativeGenerator::createKnobs(const KnobPagePtr& page,
+                             bool blackOutside)
 {
     _extentKnobs.createKnobs(page);
+    if (blackOutside) {
+        _blackOutside = createBlackOutsideKnob(_effect, page);
+    }
     _extentKnobs.finishKnobs();
 }
 
@@ -153,7 +158,8 @@ NativeGenerator::getPreferredMetadataAt(double time,
 {
     metadata.setIsContinuous(true);
     metadata.setNComps(-1, 4);
-    metadata.setComponentsType(-1, kNatronColorLayerID);
+    metadata.setComponentsType(-1, eImageComponentsTypeColor);
+    metadata.setEdgeMode(readBlackOutside(_blackOutside, time, view));
 
     double par = 0.;
     switch (_extentKnobs.getExtent(time, view)) {

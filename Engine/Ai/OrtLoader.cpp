@@ -26,6 +26,7 @@
 #include "OrtLoader.h"
 
 #include <algorithm>
+#include <atomic>
 #include <filesystem>
 #include <mutex>
 #include <system_error>
@@ -34,6 +35,7 @@
 
 #include <onnxruntime_c_api.h>
 
+#include "Engine/Ai/AiLog.h"
 #include "Engine/AppManager.h"
 #include "Engine/Settings.h"
 #include "Engine/StandardPaths.h"
@@ -99,6 +101,8 @@ statusMessage(const OrtApi* api,
     return message;
 }
 
+std::atomic<bool> telemetryOptOut { true };
+
 std::string
 executableDir()
 {
@@ -106,6 +110,27 @@ executableDir()
     const std::filesystem::path exe = std::filesystem::read_symlink("/proc/self/exe", ec);
 
     return ec ? std::string() : exe.parent_path().string();
+}
+
+// A second layer behind the ORT_DISABLE_TELEMETRY variable, which is the only thing that stops the
+// uploader from starting: this call only marks the environment's events as disabled. Failing to
+// make it leaves the library usable, so it is reported and returned rather than thrown.
+bool
+disableTelemetry(const OrtApi* api,
+                 OrtEnv* env)
+{
+    OrtStatus* status = api->DisableTelemetryEvents(env);
+
+    if (!status) {
+        return true;
+    }
+    const std::string message = statusMessage(api, status);
+    static std::atomic<bool> warned { false };
+    if (!warned.exchange(true)) {
+        AiLog::warning("ONNX Runtime telemetry could not be switched off: " + message);
+    }
+
+    return false;
 }
 
 } // namespace
@@ -218,6 +243,7 @@ OrtLoader::loadLibrary(const std::string& file,
 
         return false;
     }
+    const bool optOutFailed = telemetryOptOut.load() && !disableTelemetry(api, env);
 
     std::vector<std::string> providers;
     char** names = nullptr;
@@ -246,6 +272,7 @@ OrtLoader::loadLibrary(const std::string& file,
     _handle = handle;
     _api = api;
     _env = env;
+    _telemetryOptOutFailed = optOutFailed;
     _apiVersion = apiVersion;
     _version = versionString;
     _libraryPath = file;
@@ -266,6 +293,12 @@ bool
 OrtLoader::hasProvider(const std::string& ortName) const
 {
     return std::find(_providers.begin(), _providers.end(), ortName) != _providers.end();
+}
+
+void
+OrtLoader::setTelemetryOptOutForTesting(bool optOut)
+{
+    telemetryOptOut.store(optOut);
 }
 
 const char*

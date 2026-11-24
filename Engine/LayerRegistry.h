@@ -90,7 +90,7 @@ public:
      * @brief Folds a registry snapshot down to storage-level planes: the colour views
      * (rgba/rgb/alpha/xy) collapse into the one getRGBAComponents() entry, at the position
      * of the first view found; every other entry is copied as-is. For OFX-facing consumers,
-     * which must see kFnOfxImagePlaneColour exactly once.
+     * which must see the colour plane exactly once.
      **/
     static void toStoragePlanes(const std::shared_ptr<const std::vector<LayerRegistryEntry>>& snapshot, std::list<ImageLayerDesc>* layers);
 

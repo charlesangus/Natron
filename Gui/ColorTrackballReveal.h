@@ -129,8 +129,8 @@ public:
     void setKnob(ColorKnobRoleEnum role, const LumaBasis& basis, const DisplayConverter& converter, double rim);
 
     /**
-     * @brief Shows the wheel for C and the disc for the others, in place, with that mode's
-     * pills. The disc keeps its place on screen.
+     * @brief Shows the wheel for C and the disc for the others, in place. The pills are the
+     * target's, set by setPillTexts(). The disc keeps its place on screen.
      **/
     void setMode(ColorGlobalModeEnum mode);
 
@@ -140,10 +140,16 @@ public:
     void setHudState(const ColorTrackballHudState& state);
 
     /**
-     * @brief Shows the value disc for kind with its direction pills in place of the colour
-     * wheel or mode disc, until the next setMode().
+     * @brief Shows the value disc for kind in place of the colour wheel or mode disc, until the
+     * next setMode().
      **/
     void setValueKind(GlobalModeKindEnum kind);
+
+    /**
+     * @brief The direction pills, from the target's GlobalModeTarget::directionLabels(); an
+     * empty label hides its pill. The disc keeps its place on screen.
+     **/
+    void setPillTexts(const ColorTrackballRevealLabels& labels);
 
     /**
      * @brief The value stroke's travel in screen pixels, which moves the value disc's puck.
@@ -223,8 +229,6 @@ private:
     // Lays the disc, pills and block out for the mode and state, sizes and masks the window,
     // and keeps the disc's centre where it was on screen.
     void relayout();
-
-    void setPillTexts(const ColorTrackballRevealLabels& labels);
 
     ColorWheelWidget* _wheel;
     ColorModeDiscWidget* _disc;

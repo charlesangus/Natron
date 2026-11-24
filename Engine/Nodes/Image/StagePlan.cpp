@@ -31,6 +31,7 @@
 #include <list>
 #include <map>
 #include <memory>
+#include <set>
 #include <utility>
 #include <vector>
 
@@ -45,6 +46,8 @@
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/PassExecutor.h"
 #include "Engine/Nodes/KnobReader.h"
 #include "Engine/Nodes/NativeEffectBase.h"
@@ -92,12 +95,14 @@ resolvePlanMask(EffectInstance& effect,
     plan->maskInput = -1;
     plan->maskLayer = ImageLayerDesc();
     plan->maskChannel = -1;
+    plan->maskEdgeMode = EdgeMode::Stretch;
     const int maskInput = stageMaskInput(effect);
     if (!applyMask || (maskInput < 0)) {
         return;
     }
     plan->applyMask = true;
     plan->maskInput = maskInput;
+    plan->maskEdgeMode = stageInputEdgeMode(effect, maskInput, plan->time, plan->view);
     ImageLayerDesc maskLayer;
     int maskChannel = -1;
     if (effect.resolveInputPlaneForRender(maskInput, plan->time, plan->view, &maskLayer, &maskChannel) && (maskChannel >= 0)) {
@@ -122,6 +127,8 @@ struct SourceImage {
     int nComps = 0;
     RectI bounds;
     std::shared_ptr<Image::ReadAccess> access;
+    // How it reads past bounds.
+    EdgeMode edgeMode = EdgeMode::Black;
 
     void lock()
     {
@@ -305,6 +312,9 @@ makeStageGpuWrap(const StagePlan& plan,
     if (hasSource && !toWrapView(args.inputs[sourceInput], &wrap->src)) {
         return false;
     }
+    // A Composite op's blend input is read at the output's own positions, as its other inputs are;
+    // every other op's source is handed over over the whole output unless the op says otherwise.
+    wrap->src.edgeMode = (plan.composite.empty() && !plan.blendSourceFollowsEdgeMode) ? EdgeMode::Black : plan.edgeMode;
 
     if (hasSource) {
         int component = -1;
@@ -328,6 +338,7 @@ makeStageGpuWrap(const StagePlan& plan,
             if ((component < 0) || (component >= maskView.nComps) || !toWrapView(maskView, &wrap->mask)) {
                 return false;
             }
+            wrap->mask.edgeMode = plan.maskEdgeMode;
             wrap->maskChannel = (uint32_t)component;
         }
     }
@@ -374,6 +385,7 @@ makeStageGpuInput(const StagePlan& plan,
 {
     *view = gpu::GpuWrapView();
     view->nComps = (uint32_t)args.query.nComps;
+    view->edgeMode = source.edgeMode;
     const int inputNb = source.inputNb;
     if (layers && !layers->mapped) {
         const GpuImageView* layerView = layers->read ? findStageGpuView(plan, args, inputNb, layers->layer, -1) : nullptr;
@@ -427,6 +439,7 @@ makeStageGpuAlpha(const StagePlan& plan,
     if (!toWrapView(*view, &alpha->view)) {
         return false;
     }
+    alpha->view.edgeMode = source.edgeMode;
     if (layers.alphaPerChannel()) {
         alpha->channel = stageAlphaPairsWrittenChannels(layers, plan.plane) ? gpu::kGpuWrapAlphaChannelPerWrittenChannel : gpu::kGpuWrapAlphaChannelPerChannel;
 
@@ -642,6 +655,18 @@ isStageMaskApplied(const EffectInstance& effect)
     return (maskInput >= 0) && effect.getInput(maskInput) && effect.isMaskEnabled(maskInput);
 }
 
+EdgeMode
+stageInputEdgeMode(const EffectInstance& effect,
+                   int inputNb,
+                   double time,
+                   ViewIdx view)
+{
+    const EffectInstancePtr input = (inputNb >= 0) ? effect.getInput(inputNb) : EffectInstancePtr();
+    const NodeMetadataConstPtr metadata = input ? input->getRenderMetadata(time, view) : NodeMetadataConstPtr();
+
+    return metadata ? metadata->getEdgeMode() : EdgeMode::Stretch;
+}
+
 void
 resolveStageOpMask(EffectInstance& effect,
                    StagePlan* plan)
@@ -659,7 +684,7 @@ stageMaskMissesWindow(const EffectInstance& effect,
 {
     EffectInstancePtr mask = effect.getInput(maskInput);
 
-    if (!mask) {
+    if (!mask || (stageInputEdgeMode(effect, maskInput, time, view) != EdgeMode::Black)) {
         return false;
     }
     const RenderScale maskScale = mask->supportsRenderScale() ? scale : RenderScale::identity;
@@ -672,6 +697,231 @@ stageMaskMissesWindow(const EffectInstance& effect,
 
     return !roi.intersects(maskPixels);
 }
+
+namespace {
+
+void
+stretchInterval(double roi1,
+                double roi2,
+                double rod1,
+                double rod2,
+                double pixel,
+                double* out1,
+                double* out2)
+{
+    if ((roi1 < rod2) && (roi2 > rod1)) {
+        *out1 = std::max(roi1, rod1);
+        *out2 = std::min(roi2, rod2);
+    } else if (roi2 <= rod1) {
+        *out1 = rod1;
+        *out2 = std::min(rod1 + pixel, rod2);
+    } else {
+        *out1 = std::max(rod2 - pixel, rod1);
+        *out2 = rod2;
+    }
+}
+
+} // namespace
+
+RectD
+stretchRegionOfInterest(const RectD& roi,
+                        const RectD& rod,
+                        double pixelWidth,
+                        double pixelHeight)
+{
+    if (roi.isNull() || rod.isNull()) {
+        return roi;
+    }
+    // Overlapping on both axes, the host's clip to rod already keeps every nearest pixel.
+    if ((roi.x1 < rod.x2) && (roi.x2 > rod.x1) && (roi.y1 < rod.y2) && (roi.y2 > rod.y1)) {
+        return roi;
+    }
+    RectD band;
+    stretchInterval(roi.x1, roi.x2, rod.x1, rod.x2, pixelWidth, &band.x1, &band.x2);
+    stretchInterval(roi.y1, roi.y2, rod.y1, rod.y2, pixelHeight, &band.y1, &band.y2);
+
+    return band;
+}
+
+EdgeMode
+resolveInputEdgeMode(const EffectInstance& effect,
+                     const StageSet& stages,
+                     const StageKnobs& knobs,
+                     int sourceInput,
+                     int inputNb,
+                     double time,
+                     ViewIdx view)
+{
+    const EdgeMode inputMode = stageInputEdgeMode(effect, inputNb, time, view);
+
+    if ((inputNb >= 0) && (inputNb == sourceInput) && stages.has(Stage::EdgeMode)) {
+        return resolveEdgeMode(readEdgeModeChoice(knobs.edgeMode, time, view), inputMode);
+    }
+
+    return inputMode;
+}
+
+void
+clampStretchRegionsOfInterest(const EffectInstance& effect,
+                              double time,
+                              const RenderScale& scale,
+                              ViewIdx view,
+                              const InputMatrixMap* transforms,
+                              const std::function<EdgeMode(int inputNb)>& inputEdgeMode,
+                              RoIMap* rois)
+{
+    clampStretchRegionsOfInterest(effect, scale, view, transforms, [time](int) { return std::vector<double>(1, time); }, [&](int inputNb, double) { return inputEdgeMode(inputNb); }, rois);
+}
+
+void
+clampStretchRegionsOfInterest(const EffectInstance& effect,
+                              const RenderScale& scale,
+                              ViewIdx view,
+                              const InputMatrixMap* transforms,
+                              const std::function<std::vector<double>(int inputNb)>& inputTimes,
+                              const std::function<EdgeMode(int inputNb, double time)>& inputEdgeMode,
+                              RoIMap* rois)
+{
+    const int nInputs = effect.getNInputs();
+    // Several inputs, or one input at several times, may fetch from one effect, which then has one
+    // region: every read of it is gathered before that region is replaced.
+    std::map<EffectInstancePtr, std::vector<std::pair<double, EdgeMode>>> reads;
+
+    for (int i = 0; i < nInputs; ++i) {
+        EffectInstancePtr fetched = effect.getInput(i);
+        if (!fetched) {
+            continue;
+        }
+        if (transforms) {
+            const InputMatrixMap::const_iterator found = transforms->find(i);
+            if ((found != transforms->end()) && found->second.newInputEffect) {
+                fetched = found->second.newInputEffect->getInput(found->second.newInputNbToFetchFrom);
+            }
+        }
+        if (!fetched || (rois->find(fetched) == rois->end())) {
+            continue;
+        }
+        for (double t : inputTimes(i)) {
+            reads[fetched].push_back(std::make_pair(t, inputEdgeMode(i, t)));
+        }
+    }
+    for (const auto& entry : reads) {
+        const EffectInstancePtr& fetched = entry.first;
+        bool anyStretch = false;
+        for (const std::pair<double, EdgeMode>& read : entry.second) {
+            anyStretch = anyStretch || (read.second == EdgeMode::Stretch);
+        }
+        if (!anyStretch) {
+            continue;
+        }
+        const RenderScale fetchedScale = fetched->supportsRenderScale() ? scale : RenderScale::identity;
+        RectD& roi = (*rois)[fetched];
+        RectD clamped;
+        bool any = false;
+        for (const std::pair<double, EdgeMode>& read : entry.second) {
+            RectD needed;
+            RectD rod;
+            bool isProjectFormat = false;
+            // An infinite input has no edge, so there is nothing to clamp; getRegionOfDefinition_public()
+            // would report the project format in its place and clamp to a false edge.
+            if ((read.second == EdgeMode::Stretch) && fetched->isRegionOfDefinitionInfinite(read.first, view)) {
+                needed = roi;
+            } else if (fetched->getRegionOfDefinition_public(fetched->getRenderHash(), read.first, fetchedScale, view, &rod, &isProjectFormat) == eStatusFailed) {
+                continue;
+            } else if (read.second == EdgeMode::Stretch) {
+                const NodeMetadataConstPtr metadata = fetched->getRenderMetadata(read.first, view);
+                // A full-scale pixel encloses at least one pixel at every mipmap level.
+                needed = stretchRegionOfInterest(roi, rod, metadata ? metadata->getPixelAspectRatio(-1) : 1., 1.);
+            } else {
+                needed = roi.intersect(rod);
+            }
+            if (needed.isNull()) {
+                continue;
+            }
+            if (any) {
+                clamped.merge(needed);
+            } else {
+                clamped = needed;
+                any = true;
+            }
+        }
+        if (any) {
+            roi = clamped;
+        }
+    }
+} // clampStretchRegionsOfInterest
+
+RectI
+stretchGpuInputRoI(const EffectInstance& effect,
+                   EdgeMode mode,
+                   int inputNb,
+                   double time,
+                   ViewIdx view,
+                   const RectI& rect,
+                   const RenderScale& scale)
+{
+    return stretchGpuInputRoI(effect, inputNb, std::vector<double>(1, time), [mode](double) { return mode; }, view, rect, scale);
+}
+
+RectI
+stretchGpuInputRoI(const EffectInstance& effect,
+                   int inputNb,
+                   const std::vector<double>& times,
+                   const std::function<EdgeMode(double time)>& modeAt,
+                   ViewIdx view,
+                   const RectI& rect,
+                   const RenderScale& scale)
+{
+    const EffectInstancePtr input = (inputNb >= 0) ? effect.getInput(inputNb) : EffectInstancePtr();
+
+    if (!input || rect.isNull()) {
+        return rect;
+    }
+    std::vector<EdgeMode> modes;
+    bool anyStretch = false;
+    for (double t : times) {
+        modes.push_back(modeAt(t));
+        anyStretch = anyStretch || (modes.back() == EdgeMode::Stretch);
+    }
+    if (!anyStretch) {
+        return rect;
+    }
+    const RenderScale inputScale = input->supportsRenderScale() ? scale : RenderScale::identity;
+    RectI result;
+    bool any = false;
+    for (std::size_t k = 0; k < times.size(); ++k) {
+        RectI needed;
+        RectD rod;
+        bool isProjectFormat = false;
+        // An infinite input has no edge, so there is nothing to clamp; getRegionOfDefinition_public()
+        // would report the project format in its place and clamp to a false edge.
+        if ((modes[k] == EdgeMode::Stretch) && input->isRegionOfDefinitionInfinite(times[k], view)) {
+            needed = rect;
+        } else if (input->getRegionOfDefinition_public(input->getRenderHash(), times[k], inputScale, view, &rod, &isProjectFormat) == eStatusFailed) {
+            continue;
+        } else {
+            const NodeMetadataConstPtr metadata = input->getRenderMetadata(times[k], view);
+            const RectI rodPixel = PassExec::toPixelEnclosing(rod, scale, metadata ? metadata->getPixelAspectRatio(-1) : 1.);
+            if (modes[k] == EdgeMode::Stretch) {
+                const RectD band = stretchRegionOfInterest(RectD(rect.x1, rect.y1, rect.x2, rect.y2), RectD(rodPixel.x1, rodPixel.y1, rodPixel.x2, rodPixel.y2), 1., 1.);
+                needed = RectI((int)band.x1, (int)band.y1, (int)band.x2, (int)band.y2);
+            } else {
+                needed = rect.intersect(rodPixel);
+            }
+        }
+        if (needed.isNull()) {
+            continue;
+        }
+        if (any) {
+            result.merge(needed);
+        } else {
+            result = needed;
+            any = true;
+        }
+    }
+
+    return any ? result : rect;
+} // stretchGpuInputRoI
 
 StagePlan
 resolveStagePlan(EffectInstance& effect,
@@ -689,6 +939,7 @@ resolveStagePlan(EffectInstance& effect,
     plan.processChannels = processChannels;
     plan.stages = stages;
     plan.sourceInput = sourceInput;
+    plan.edgeMode = resolveInputEdgeMode(effect, stages, knobs, sourceInput, sourceInput, time, view);
 
     if (stages.has(Stage::MaskMix)) {
         const KnobReader reader(time, view);
@@ -713,15 +964,18 @@ resolveStagePlan(EffectInstance& effect,
 } // resolveStagePlan
 
 void
-resolveStageSources(const NodeSpec* spec,
+resolveStageSources(const EffectInstance& effect,
+                    const NodeSpec* spec,
                     const CompositeInputs& inputs,
                     StagePlan* plan)
 {
     const int nSpecInputs = spec ? spec->inputCount() : 0;
-    const auto resolve = [spec, nSpecInputs](const CompositeInput& input) {
+    const auto resolve = [&effect, plan, spec, nSpecInputs](const CompositeInput& input) {
         StageSource source;
         source.inputNb = input.inputNb;
         source.layerInput = input.inputNb;
+        // The blend input's mode is the one the plan resolved, a forced Edge Mode included.
+        source.edgeMode = ((input.inputNb >= 0) && (input.inputNb == plan->sourceInput)) ? plan->edgeMode : stageInputEdgeMode(effect, input.inputNb, plan->time, plan->view);
 
         // Every step of a pairing names a distinct input, so a chain longer than the inputs loops.
         const InputSpec* layerSpec = spec ? spec->resolveInput(source.inputNb).spec : nullptr;
@@ -909,7 +1163,7 @@ readStagePerChannelAlphaRow(const SourceImage& alpha,
 {
     const int alphaNComps = alpha.nComps;
     scratch->resize((std::size_t)width * alphaNComps);
-    PassExec::readSourceRow(alpha.image.get(), alpha.access.get(), alpha.bounds, alphaNComps, x0, y, width, alphaNComps, scratch->data());
+    PassExec::readSourceRow(alpha.image.get(), alpha.access.get(), alpha.bounds, alphaNComps, x0, y, width, alphaNComps, alpha.edgeMode, scratch->data());
     std::fill(row, row + (std::size_t)width * nComps, 0.f);
     int alphaOf[4] = { -1, -1, -1, -1 };
     const int nMapped = std::min(nComps, 4);
@@ -943,26 +1197,15 @@ readStageSourceRow(const ImageLayerDesc& plane,
                    float* row)
 {
     if (!source.image || (source.nComps != 1) || (nComps == 1) || (plane.getNumComponents() != 1) || plane.isColorLayer()) {
-        PassExec::readSourceRow(source.image.get(), source.access.get(), source.bounds, source.nComps, x0, y, width, nComps, row);
+        PassExec::readSourceRow(source.image.get(), source.access.get(), source.bounds, source.nComps, x0, y, width, nComps, source.edgeMode, row);
 
         return;
     }
     std::fill(row, row + (std::size_t)width * nComps, 0.f);
-    if ((y < source.bounds.y1) || (y >= source.bounds.y2)) {
-        return;
-    }
-    const int xStart = std::max(x0, source.bounds.x1);
-    const int xEnd = std::min(x0 + width, source.bounds.x2);
-    if (xStart >= xEnd) {
-        return;
-    }
-    const float* srcPix = (const float*)source.access->pixelAt(xStart, y);
-    if (!srcPix) {
-        return;
-    }
-    float* dstPix = row + (std::size_t)(xStart - x0) * nComps;
-    for (int x = xStart; x < xEnd; ++x, ++srcPix, dstPix += nComps) {
-        dstPix[0] = *srcPix;
+    std::vector<float> channel((std::size_t)std::max(0, width));
+    PassExec::readChannelRow(source.image.get(), source.access.get(), source.bounds, 1, 0, x0, y, width, source.edgeMode, channel.data());
+    for (int x = 0; x < width; ++x) {
+        row[(std::size_t)x * nComps] = channel[(std::size_t)x];
     }
 }
 } // anonymous namespace
@@ -1114,11 +1357,13 @@ runStagesCpu(EffectInstance& effect,
         }
         for (std::size_t s = 0; s < nFolded; ++s) {
             jobSources[j][s].image = fetchStageSource(effect, plan.composite[s], sourceLayers[s], args);
+            jobSources[j][s].edgeMode = plan.composite[s].edgeMode;
             if (!PassExec::isFloatImage(jobSources[j][s].image)) {
                 return eStatusFailed;
             }
             if (foldAlpha) {
                 jobAlphas[j][s].image = fetchStageSourceAlpha(effect, plan.composite[s], sourceLayers[s], args);
+                jobAlphas[j][s].edgeMode = plan.composite[s].edgeMode;
                 if (!PassExec::isFloatImage(jobAlphas[j][s].image)) {
                     return eStatusFailed;
                 }
@@ -1136,6 +1381,7 @@ runStagesCpu(EffectInstance& effect,
     // compute pixel addresses through these accesses.
     PassExec::MaskInput maskSource;
     maskSource.image = mask;
+    maskSource.edgeMode = plan.maskEdgeMode;
     maskSource.lock();
     std::vector<RowBand> bands;
     const int nThreads = appPTR->getNCPUsAvailableForEffect();
@@ -1173,6 +1419,8 @@ runStagesCpu(EffectInstance& effect,
         // The same image fetched twice reads the same row, so the source row serves as the base.
         const bool baseIsSource = (nFolded > 0) && job.src && (jobSources[band.job][0].image == job.src);
         const bool readsSource = (nFolded == 0) || !direct || baseIsSource;
+        // A Composite op's blend input is read at the output's own positions, as its other inputs are.
+        const EdgeMode sourceEdgeMode = ((nFolded > 0) || plan.blendSourceFollowsEdgeMode) ? plan.edgeMode : EdgeMode::Black;
         std::vector<float> sourceRow(readsSource ? rowSize : 0);
         std::vector<float> dividedRow(divides ? rowSize : 0);
         std::vector<float> kernelRow(direct ? 0 : rowSize);
@@ -1213,7 +1461,7 @@ runStagesCpu(EffectInstance& effect,
                 span.pixelStride = nComps;
                 span.channelStride = 1;
             } else {
-                PassExec::readChannelRow(alpha.image.get(), alpha.access.get(), alpha.bounds, alpha.nComps, sourceLayers[s].alphaChannel, roi.x1, y, width, 0.f, buffer);
+                PassExec::readChannelRow(alpha.image.get(), alpha.access.get(), alpha.bounds, alpha.nComps, sourceLayers[s].alphaChannel, roi.x1, y, width, alpha.edgeMode, buffer);
                 span.data = buffer;
                 span.pixelStride = 1;
             }
@@ -1244,7 +1492,7 @@ runStagesCpu(EffectInstance& effect,
             }
 
             if (readsSource) {
-                PassExec::readSourceRow(job.src.get(), job.srcAccess.get(), job.srcBounds, job.srcNComps, roi.x1, y, width, nComps, sourceRow.data());
+                PassExec::readSourceRow(job.src.get(), job.srcAccess.get(), job.srcBounds, job.srcNComps, roi.x1, y, width, nComps, sourceEdgeMode, sourceRow.data());
             }
             if (job.divisor) {
                 PassExec::readChannelRow(job.divisor.get(), job.divisorAccess.get(), job.divisorBounds, job.divisorNComps, job.divisorChannel, roi.x1, y, width, 1.f, &divisorRow[0]);
@@ -1265,7 +1513,7 @@ runStagesCpu(EffectInstance& effect,
                 }
             }
             if (doMask) {
-                PassExec::readChannelRow(mask.get(), maskSource.access.get(), maskSource.bounds, maskSource.nComps, maskChannel, roi.x1, y, width, 0.f, &maskRow[0]);
+                PassExec::readChannelRow(mask.get(), maskSource.access.get(), maskSource.bounds, maskSource.nComps, maskChannel, roi.x1, y, width, maskSource.edgeMode, &maskRow[0]);
             }
             io.y = y;
             if (nFolded > 0) {

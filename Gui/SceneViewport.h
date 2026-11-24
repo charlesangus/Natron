@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <string>
@@ -44,6 +45,8 @@
 #include <OpenColorIO/OpenColorIO.h>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/Nodes/Scene/SceneDrawStates.h"
+#include "Engine/SceneLoadSet.h"
 #include "Engine/ScenePayload.h"
 
 // Free of USD: the viewer tab includes it, and USD's headers need the full Python API. Everything
@@ -52,11 +55,17 @@
 class QContextMenuEvent;
 class QKeyEvent;
 class QMouseEvent;
+class QOpenGLContextGroup;
+class QResizeEvent;
 class QWheelEvent;
 
 NATRON_NAMESPACE_ENTER
 
 class SceneStage;
+struct SceneDrawDelta;
+struct SceneDrawChange;
+class SceneDrawStates;
+class SceneDrawTiming;
 class UndoHistory;
 class SceneTransformTarget;
 struct SceneTransformDrag;
@@ -75,13 +84,18 @@ struct SceneTransformDrag;
  * an edit upstream reaches the engine as the stage's change notices, which it applies to the
  * changed prims alone. The engine is made
  * once per GL context, at the first render() in it, and must be released with releaseGL() in
- * that context: when the context goes away or the renderer does, never because the scene changed.
+ * that context: when the context goes away, when GPU memory is freed, and before this renderer is
+ * destroyed; never because the scene or the chosen delegate changed.
  *
- * The stage and the engine are guarded by one lock, the viewer lock: syncScene() holds it while
- * it edits the stage, and render(), pick(), frameScene() and getStageCameraPaths() while they read.
- * It also takes part in SceneWriteBarrier, so a layer reload keeps them all out.
+ * The stage and the engine are guarded by one lock, the viewer lock: syncScene() and the commit of
+ * a payload load hold it exclusively while they edit the stage, as do render() and pick(), which
+ * touch the engine. What only reads the stage shares it, with renderBackgroundFrame() among them,
+ * so that a first render taking seconds keeps out edits and no reader.
  *
- * syncScene() may run on any thread; everything else is for the main thread.
+ * syncScene() and serviceStageLoads() may run on any thread, and the stage load requests are safe
+ * from any. renderBackgroundFrame() runs in the GL context of render(), with no thread waiting for
+ * it; it reads only what prepareBackgroundFrame() copied. Everything else is for one thread at a
+ * time, normally the main thread; render() and pick() may run on another while that thread waits.
  **/
 class SceneViewportRenderer {
 public:
@@ -210,8 +224,26 @@ public:
      **/
     void readStage(const std::function<void(const SceneStage* stage)>& read) const;
 
+    // readStage() unless an edit holds the stage: then false, without waiting or calling read.
+    bool tryReadStage(const std::function<void(const SceneStage* stage)>& read) const;
+
+    /**
+     * @brief Called, on the reader's thread, when a readStage() that kept out a try for the lock
+     * to edit has ended. Readers announce nothing else, unlike syncs, loads and frames.
+     **/
+    void setReadEndedCallback(const std::function<void()>& callback);
+
+    /**
+     * @brief Called, on any thread, when stage loads held back for a scene being torn down can
+     * run. Cleared by the owner before it is destroyed.
+     **/
+    void setLoadsWakeCallback(const std::function<void()>& callback);
+
     // The shown stage's edit count, without the lock: 0 before the first sync.
     U64 getStageEditCount() const;
+
+    // The serial of the last sync the stage took, counts and summary included: 0 before the first.
+    U64 getStageSyncSerial() const;
 
     // Whether the free camera has been framed on a scene, or placed, yet.
     bool isFramed() const;
@@ -224,6 +256,304 @@ public:
 
     // Whether the renderer holds an engine, which the next render() makes when it does not.
     bool hasEngine() const;
+
+    /**
+     * @brief Whether the shown stage, or a setting that decides Storm's shaders (draw mode, lighting,
+     * purposes, display transform), changed since the engine last rendered, or there is no engine:
+     * the render that follows does the Hydra work, however long that takes, rather than only
+     * drawing, or a selection change has yet to be drawn. Main thread.
+     **/
+    bool needsBackgroundFrame() const;
+
+    /**
+     * @brief needsBackgroundFrame() less a selection change yet to be drawn: what a pick resolves
+     * against is the same either way. Main thread.
+     **/
+    bool needsStageFrame() const;
+
+    /**
+     * @brief Queues a draw state change for this renderer's engine; needsBackgroundFrame() holds
+     * until a frame has taken it in. revealBatch 0 shows everything in one go, and kRevealPaced in
+     * batches sized from the frames' cost. startedAt is when the change was asked for, for
+     * drawTiming(). Main thread; takes no lock a frame or a sync holds.
+     **/
+    void postDrawDelta(const SceneDrawDelta& delta,
+                       std::size_t revealBatch,
+                       std::chrono::steady_clock::time_point startedAt = std::chrono::steady_clock::time_point());
+
+    /** @brief Render thread. Sends what postDrawDelta() queued to the engine's filter. */
+    void applyPendingDrawDeltas();
+
+    /**
+     * @brief Takes in one change of the viewer's draw states: posts its delta as postDrawDelta()
+     * does, drops the stage's queued loads at the change's cancelled paths and asks the stage for
+     * its loads, which serviceStageLoads() then takes. Never edits the stage. True if a delta was
+     * posted, for applyPendingDrawDeltas() to send. Main thread.
+     **/
+    bool postDrawChange(const SceneDrawChange& change, std::size_t revealBatch);
+
+    static constexpr std::size_t kRevealPaced = static_cast<std::size_t>(-1);
+
+    bool isDrawRevealing() const;
+
+    /**
+     * @brief Whether Storm's geometry is still coming into Hydra: a batch a presented image, sized
+     * to keep a frame within the fill budget, nearest first by the stand-in's rows, none while the
+     * camera moves. noteDrawRevealPresented() lets the next batch go. Any thread.
+     **/
+    bool isDrawFilling() const;
+
+    // Each fill batch admits this many prims; 0, the default, sizes it from the frames' cost. Any thread.
+    void setDrawFillBatch(std::size_t prims);
+
+    // The share of the prims Hydra has been given that have come in, 1 with none to come. Any thread.
+    double getFillProgress() const;
+
+    // No prim and no texture still to come in. Any thread.
+    bool isFillComplete() const;
+
+    // The passes the last Storm frame ran, and whether the fill was complete when it began. Any thread.
+    int getLastFramePasses() const;
+    bool wasFillCompleteAtLastFrameStart() const;
+
+    /** @brief The image of the last reveal step is on screen, so the next step may go. */
+    void noteDrawRevealPresented();
+
+    /**
+     * @brief Whether renders leave the stage out, drawing the background and overlays only, so that
+     * no frame shows prims before the policy that applies to them. Main thread.
+     **/
+    void setStageHeld(bool held);
+    bool isStageHeld() const;
+
+    /**
+     * @brief How long a reveal still waits for the camera, in milliseconds: none goes out while the
+     * user moves it, so the frames it asks for come at the scene's own cost. Main thread.
+     **/
+    int getRevealYieldMs() const;
+
+    struct DrawFilterStats {
+        bool filterBound = false;
+        bool revealing = false;
+        // The batch the next paced reveal step shows, and the frame cost the pacer has fitted.
+        unsigned long long revealBatch = 0;
+        double revealFixedMs = 0.;
+        double revealPerPrimUs = 0.;
+        unsigned long long revealSteps = 0;
+        double lastApplyMs = 0.;
+        std::size_t ruleCount = 0;
+        unsigned long long posted = 0;
+        unsigned long long absorbed = 0;
+        unsigned long long inputAdded = 0;
+        unsigned long long inputRemoved = 0;
+        unsigned long long inputDirtied = 0;
+        unsigned long long hiddenSent = 0;
+        unsigned long long shownSent = 0;
+        // Of hiddenSent and shownSent, those sent as a visibility change.
+        unsigned long long visibilitySent = 0;
+        unsigned long long heldInvisible = 0;
+        // Native instances turned off in their instancer's mask.
+        unsigned long long maskedInstances = 0;
+        long long lastInputAddedEpochMs = 0;
+        unsigned long long stageEdits = 0;
+        unsigned long long stageLoadEdits = 0;
+        unsigned long long stageNotices = 0;
+        unsigned long long resyncedPaths = 0;
+        unsigned long long infoOnlyPaths = 0;
+    };
+    DrawFilterStats getDrawFilterStats() const;
+
+    // The boxes and the markers of boxed rows the last frame drew.
+    int getDrawnBoxCount() const;
+    int getDrawnMarkerCount() const;
+
+    // A box or marker the last render drew: its row, kind (box, unloaded, marker or pending),
+    // whether it holds a selected prim, its projected centre and the screen rectangle of its
+    // corners, in pixels counted from the top left, for scripts to aim at.
+    struct DrawnBox {
+        std::string path;
+        std::string kind;
+        bool highlighted = false;
+        double x = 0.;
+        double y = 0.;
+        double left = 0.;
+        double top = 0.;
+        double right = 0.;
+        double bottom = 0.;
+    };
+
+    // Off by default: building the records costs nine projections per box.
+    void setRecordDrawnBoxes(bool record);
+
+    const std::vector<DrawnBox>& getDrawnBoxes() const;
+
+    // Null unless NATRON_DRAW_STATE_TIMING is 1.
+    SceneDrawTiming* drawTiming() const;
+
+    /**
+     * @brief Copies what renderBackgroundFrame() needs for a width x height frame. False when no
+     * such frame is needed, or a sync holds the viewer lock; the sync's end is the time to retry.
+     * A frame is needed when needsBackgroundFrame() holds, or when the view (camera, size, render
+     * params, background or display transform) is not that of the last frame prepared; *viewOnly
+     * tells the latter alone. Not to be called while a background frame runs. Main thread.
+     **/
+    bool prepareBackgroundFrame(int width, int height, bool* viewOnly = nullptr);
+
+    /**
+     * @brief The last frame prepared did not leave a finished image, and the next
+     * prepareBackgroundFrame() prepares another even for the same view. Main thread.
+     **/
+    void forgetBackgroundView();
+
+    /**
+     * @brief Whether the frame prepared last only grades the engine's last render again and draws
+     * the selection over it, rendering no pass, as when only the selection changed since that
+     * render. Main thread.
+     **/
+    bool isBackgroundFrameTintOnly() const;
+
+    /**
+     * @brief Makes the engine if needed and renders the prepared frame into fbo, without overlays.
+     * If the next render() is of the same view into the same fbo with nothing changed, it keeps this
+     * image and only draws the overlays. Needs the context of render() current. Renders up to a
+     * few passes, and after the first ends early for stopBackgroundFrame() or a thread waiting to
+     * edit the stage; then it keeps nothing for render() to reuse. True if it rendered a pass;
+     * *finished, if given, tells whether the image converged.
+     **/
+    bool renderBackgroundFrame(unsigned int fbo, bool* finished = nullptr);
+
+    /**
+     * @brief Draws the overlays (grid, boxes, guides, transform handles) into fbo of the current
+     * context, width x height, with the current camera, over an image already there and
+     * depth-tested against the depth buffer fbo has. Main thread, in any context sharing the one of
+     * render(), for frames rendered elsewhere: it never waits for the viewer lock, and when a sync
+     * holds it draws what it last read of the stage. The GL objects it makes belong to that context
+     * and go with releaseOverlayGL(). Leaves the GL state as it found it.
+     **/
+    void drawOverlays(unsigned int fbo, int width, int height, bool standIn = false);
+
+    /**
+     * @brief Whether drawOverlays() keeps a stand-in for the scene ready: one box per model prim
+     * with byModel, see SceneDrawBoxes::standInRows(). The boxes are measured on a thread of their
+     * own only while enabled. drawOverlays() with standIn draws them first, as wireframe, for a view
+     * cleared beforehand. Main thread.
+     **/
+    void setStandIn(bool enabled, bool byModel);
+
+    /**
+     * @brief Whether drawOverlays() draws, over a frame of the fill, the stand-in's boxes of the rows
+     * whose prims are still to come in, and what a fill frame is paced to. Main thread.
+     **/
+    void setFill(bool boxesShown, double budgetMs);
+
+    // The stand-in boxes and markers the last drawOverlays() drew. Any thread.
+    int getStandInBoxCount() const;
+
+    // Whether the stand-in's boxes answer the stage, rules and time it was last given. Any thread.
+    bool isStandInListComplete() const;
+
+    // Frees what drawOverlays() made, in its context. Main thread.
+    void releaseOverlayGL();
+
+    /**
+     * @brief Ends the background frame running, or the one prepared, after its current pass, and
+     * never before its first: what it drew is taken in as for a full frame. Any thread.
+     **/
+    void stopBackgroundFrame();
+
+    /**
+     * @brief Ends the background frame running, or the one prepared, before its next pass, the
+     * first included, and then it takes nothing in. Any thread.
+     **/
+    void cancelBackgroundFrame();
+
+    /**
+     * @brief Passes load requests on to the stage, which takes them when serviceStageLoads() next
+     * runs. Before the first sync has made the stage they wait, in order, for it to; the cancels
+     * drop them alike. See SceneStage::requestLoad().
+     **/
+    void requestStageLoad(const std::vector<std::string>& paths,
+                          bool withDescendants,
+                          const std::vector<std::string>& excluded = std::vector<std::string>());
+
+    void requestStageUnload(const std::vector<std::string>& paths);
+
+    void cancelStageLoads();
+
+    // Drops the load requests at paths that no batch has taken yet.
+    void cancelStageLoads(const std::vector<std::string>& paths);
+
+    bool hasPendingStageLoads() const;
+
+    // Whether a load request waits, before the stage exists too, or a batch is being serviced.
+    bool hasOutstandingStageLoads() const;
+
+    /**
+     * @brief Services the pending requests, opening their files with the viewer lock released.
+     * Returns, committing nothing, once cancelled() turns true. See SceneStage::serviceLoads().
+     **/
+    bool serviceStageLoads(const std::function<bool()>& cancelled = std::function<bool()>());
+
+    /**
+     * @brief The scene as evaluated with a load set: evaluate sets *payload to the viewed node's
+     * output with nodes' patterns matched on that set, and *reach to where those patterns reach,
+     * returning false when it cannot. committed is told each load set the stage commits, under
+     * the viewer lock in the same step, and whether the scene must be evaluated again for it.
+     **/
+    typedef std::function<bool(const SceneLoadSetPtr& loadSet, ScenePayload* payload, SceneLoadReachPtr* reach)> LoadSetEvaluator;
+    typedef std::function<void(const SceneLoadSetPtr& loadSet, bool reevaluate)> LoadSetCommitted;
+
+    /**
+     * @brief Has serviceStageLoads() evaluate the scene for the load set a batch makes, once its
+     * files are open, when the patterns of the scene on the stage reach what the batch loads or
+     * unloads, and sync that scene in the same commit as the loads, so that a prim a node
+     * deactivates by pattern never shows while its payload comes in. A batch no pattern reaches
+     * evaluates nothing, as a load is no edit of the scene. committed is told to evaluate again
+     * when the stage's scene still matched on another set once the batch commits: its evaluation
+     * failed, it has live textures, which the worker renders first, or a sync came meanwhile. It
+     * is also told when a sync is dropped as evaluated for a set its patterns no longer match.
+     * Any thread.
+     **/
+    void setLoadSetEvaluator(const LoadSetEvaluator& evaluate,
+                             const LoadSetCommitted& committed);
+
+    // The hash of the load set the stage last committed (SceneLoadSet::getHash()).
+    U64 getCommittedLoadSetHash() const;
+
+    /**
+     * @brief The load set the payload of the next syncScene() was evaluated for and the reach of
+     * the patterns it matched, a null reach for none in particular. A payload whose patterns
+     * reach what changed between that set and the stage's is stale, the committed callback is
+     * told to evaluate it again, and that sync changes nothing.
+     **/
+    void setSyncEvaluatedFor(const SceneLoadSetPtr& loadSet,
+                             const SceneLoadReachPtr& reach);
+
+    // How many load commits edited the stage, and how long the last batch held the viewer lock.
+    U64 getStageLoadEditCount() const;
+
+    double getLastStageLoadHoldMs() const;
+
+    /**
+     * @brief How long the main thread has waited, in total and at most at once, in milliseconds:
+     * for the viewer lock where it takes it without a try, and for the render thread, which the
+     * viewport adds with addMainThreadWait(). Main thread.
+     **/
+    double getMainThreadWaitMs() const;
+
+    double getMainThreadWaitMaxMs() const;
+
+    void addMainThreadWait(double ms);
+
+    // The prims whose last load failed, each with why.
+    std::vector<std::pair<std::string, std::string>> getStageLoadFailures() const;
+
+    /**
+     * @brief The stage's payload load rules as its last load commit left them, kept while no scene
+     * is shown, the root's left out when it loads nothing. False before the first sync has made
+     * the stage. Any thread; never waits on the stage lock.
+     **/
+    bool getStageLoadRules(SceneLoadRules* rules) const;
 
     // The stage timecode shown, the project frame mapped by seconds.
     double getTimeCode() const;
@@ -330,9 +660,28 @@ public:
      * @brief What a width x height view shows: through the camera looked through, or through the
      * free camera, whose pivotDepth is its distance. For a stage camera, cameraToWorld is the
      * prim's own transform (with any scale), parentToWorld its parent's, and pivotDepth the depth
-     * of the scene's centre ahead of it. False only for a stage camera that cannot be read.
+     * ahead of it of the scene's centre, as computeFrameBounds() last found it. False only for a
+     * stage camera that cannot be read.
      **/
-    bool getViewPose(int width, int height, CameraPose* pose) const;
+    bool getViewPose(int width, int height, CameraPose* pose, bool* busy = nullptr) const;
+
+    // What a framing frames, worked out apart from moving the camera.
+    struct FrameBounds {
+        double min[3] = { 0., 0., 0. };
+        double max[3] = { 0., 0., 0. };
+        bool empty = true;
+        bool selection = false;
+    };
+
+    /**
+     * @brief The bounds of the prims at the paths in selection at timeCode, or of the scene when it
+     * is empty. A stage walk, so any thread other than the one painting. Prims with no payload
+     * loaded count by their extent hints, and no payload is read.
+     **/
+    FrameBounds computeFrameBounds(const std::vector<std::string>& selection, double timeCode) const;
+
+    // Frames the free camera on bounds, and looks through it. Main thread.
+    void applyFrameBounds(const FrameBounds& bounds);
 
     // Frames the free camera on the bounds of the scene at the shown time, and looks through it.
     void frameScene();
@@ -353,7 +702,7 @@ public:
     // Moves the free camera towards (factor < 1) or away from (factor > 1) its pivot.
     void dolly(double factor);
 
-    // The paths of the stage's UsdGeomCamera prims, in stage order.
+    // The paths of the stage's UsdGeomCamera prims, in stage order, as of the last sync or load.
     std::vector<std::string> getStageCameraPaths() const;
 
     /**
@@ -430,16 +779,21 @@ public:
     bool hasTransformHandles() const;
 
     // Whether the handles drawn are the transform widget's on the selection.
-    bool hasSelectionHandles() const;
+    bool hasSelectionHandles(bool* busy = nullptr) const;
+
+    /*
+     * The calls below taking busy are for the main thread, which must not wait out a load. They do
+     * not wait for the lock: when an edit holds it they set busy and return the empty result.
+     */
 
     /**
      * @brief The handles drawn, as pixels to aim at in a width x height view, and the frame they
      * point along: origin then the three axes, 12 values. False when none are drawn.
      **/
-    bool getDrawnTransformHandles(int width, int height, std::vector<int>* handles, std::vector<double>* pixels, std::vector<double>* frame) const;
+    bool getDrawnTransformHandles(int width, int height, std::vector<int>* handles, std::vector<double>* pixels, std::vector<double>* frame, bool* busy = nullptr) const;
 
     // The handle (a SceneGizmo handle) under the pixel (x, y) of a width x height view, or -1.
-    int hitTestTransformHandles(double x, double y, int width, int height) const;
+    int hitTestTransformHandles(double x, double y, int width, int height, bool* busy = nullptr) const;
 
     // The handle drawn highlighted, -1 for none.
     void setHighlightedTransformHandle(int handle);
@@ -454,7 +808,7 @@ public:
      * handles as they are now, and a drag of the selection's widget moves the prims it has now.
      * Clears any drag preview first. False if the handle is not drawn.
      **/
-    bool beginTransformDrag(int handle, double x, double y, int width, int height);
+    bool beginTransformDrag(int handle, double x, double y, int width, int height, bool* busy = nullptr);
 
     // Whether the drag under way moves the selection, rather than an op's values.
     bool isSelectionTransformDrag() const;
@@ -464,14 +818,14 @@ public:
      * added to the translate or rotate value of the handle's axis, or the factor its scale value
      * is multiplied by. False if the drag says nothing, as for a ring seen edge-on.
      **/
-    bool getTransformDragChange(double x, double y, int width, int height, double* change) const;
+    bool getTransformDragChange(double x, double y, int width, int height, double* change, bool* busy = nullptr) const;
 
     /**
      * @brief Draws the prims the drag under way moves as a change of change would leave them,
      * without editing any node: a transient transform on the renderer's own layer. Returns
      * whether any prim is drawn moved.
      **/
-    bool previewTransformDrag(double change);
+    bool previewTransformDrag(double change, bool* busy = nullptr);
 
     /**
      * @brief The selection drag under way, for a change, as a target writes it. False if the drag
@@ -481,8 +835,8 @@ public:
 
     void endTransformDrag();
 
-    // Drops the drag preview now.
-    void clearTransformPreview();
+    // Drops the drag preview now. False if an edit holds the stage: it is still there.
+    bool clearTransformPreview();
 
     // Drops the drag preview when a scene requested after serial is synced.
     void clearTransformPreviewAfter(U64 serial);
@@ -491,6 +845,8 @@ public:
      * @brief Draws into the framebuffer fbo of the current context, width x height pixels, and
      * leaves the GL state as it found it. Clears to the background when there is no scene.
      * Returns false if Storm has not converged yet and another render would refine the image.
+     * Draws all of the geometry, for a caller that waits for the final picture: background frames,
+     * renderIfIdle() and an engine anything else makes fill in paced batches, before and after.
      **/
     bool render(unsigned int fbo, int width, int height);
 
@@ -503,49 +859,86 @@ public:
     RenderStatusEnum renderIfIdle(unsigned int fbo, int width, int height);
 
     /**
+     * @brief renderIfIdle() while the delegate is not Storm, in any context sharing the one
+     * render() runs in: the refinement makes its frames on its own thread, and drawing one needs
+     * no engine. Draws nothing and returns eRenderStatusBusy while the delegate is Storm.
+     **/
+    RenderStatusEnum renderRefinementIfIdle(unsigned int fbo, int width, int height);
+
+    /**
      * @brief Under Scene Default, renders with the renderer the stage's prim names from the next
      * render on; true if that changed the renderer. A change destroys the engine, so it needs the
-     * context of render() current.
+     * context of render() current. Never waits for the viewer lock: while a sync or a load holds
+     * it, nothing changes, busy (if given) is set, and the readEnded callback or the holder's own
+     * signal tells the viewport when to try again.
      **/
-    bool followSceneRenderer();
+    bool followSceneRenderer(bool* busy = nullptr);
 
     // Whether the last renderIfIdle() drew with a renderer Scene Default no longer names.
     bool hasPendingRendererSwitch() const;
 
     /**
      * @brief The path of the prim drawn nearest to the pixel (x, y), counted from the top left of
-     * a width x height view, or empty if none is: a guide within a few pixels wins over a prim
-     * behind it. Needs the context of render() current.
+     * a width x height view, or empty if none is: a guide within a few pixels, or a boxed row's box
+     * or marker, wins over a prim behind it. Needs the context of render() current.
      **/
-    std::string pick(int x, int y, int width, int height);
+    std::string pick(int x, int y, int width, int height, bool* busy = nullptr);
 
     /**
      * @brief The paths of the prims and guides drawn in the rectangle with corners (x0, y0) and
      * (x1, y1), pixels of a width x height view counted from the top left, sorted. Needs the context of
      * render() current.
      **/
-    std::vector<std::string> pickRect(int x0, int y0, int x1, int y1, int width, int height);
+    std::vector<std::string> pickRect(int x0, int y0, int x1, int y1, int width, int height, bool* busy = nullptr);
 
     // Destroys the engine. Needs the context of render() current.
     void releaseGL();
+
+    // releaseGL() but for the overlays' GL objects, which releaseOverlayGL() frees in the context
+    // they are drawn in. Needs the context of render() current.
+    void releaseEngineGL();
+
+    // releaseGL(), unless the viewer lock is held: false then, doing nothing. Whoever holds it
+    // lets the viewport know when it lets go, as for followSceneRenderer().
+    bool tryReleaseGL();
+
+    /**
+     * @brief releaseGL(), but the engine is handed back instead of destroyed: on a stage of a
+     * million prims its destruction takes seconds. Whoever drops the last reference destroys it,
+     * and must have that context current then; nothing else may still edit the stage it listens
+     * to. Null if no engine was held. Needs the context of render() current.
+     **/
+    std::shared_ptr<void> releaseGLKeepingEngine();
+
+    // Destroys the Storm engine alone, leaving what draws another delegate's frames. Needs the
+    // context of render() current.
+    void releaseStormEngine();
+
+    // releaseStormEngine(), unless the viewer lock is held, as tryReleaseGL().
+    bool tryReleaseStormEngine();
 
     /**
      * @brief Renders with the Hydra render delegate id from the next render() on, Storm's for an
      * empty id. kRenderDelegateSceneDefaultId renders with the renderer the stage's active render
      * settings prim names (natron:renderer), Storm's without one, following it as the stage
-     * changes. A change destroys the engine, so it needs the context of render() current.
+     * changes. The Storm engine is kept while another delegate renders, hearing the stage's edits, so
+     * that switching back to Storm costs a frame, not a population of the whole stage; only
+     * releaseGL() or releaseStormEngine() frees it.
      **/
     void setRendererId(const std::string& id);
 
+    // setRendererId(), unless the viewer lock is held, as tryReleaseGL().
+    bool trySetRendererId(const std::string& id);
+
     // The renderer chosen: a delegate's id, or kRenderDelegateSceneDefaultId.
-    const std::string& getRendererId() const;
+    std::string getRendererId() const;
 
     // The delegate rendering: the one chosen, or for Scene Default the one the prim names as of
     // the last render.
-    const std::string& getActiveRendererId() const;
+    std::string getActiveRendererId() const;
 
     // Why the chosen delegate could not render, empty if it can or has not been tried yet.
-    const std::string& getRendererError() const;
+    std::string getRendererError() const;
 
     // The error of a render that threw, which discarded the engine; cleared by reading it.
     std::string takeRenderError();
@@ -565,6 +958,12 @@ public:
 
     // The cap in force: the one set, or the delegate's default once known, else 0.
     int getMaxSamples() const;
+
+    /**
+     * @brief Renders the whole scene past its draw states; turning it on also asks the stage to
+     * load every payload. Off restores the draw states and unloads nothing.
+     **/
+    void setRenderEverything(bool on);
 
     // Pausing keeps a progressive render's samples; unpausing continues from them.
     void setRefinementPaused(bool paused);
@@ -602,6 +1001,16 @@ private:
  *
  * setScene() hands the payload to a worker thread, which syncs the renderer's stage; a paint that
  * finds the worker syncing keeps the last frame, and the widget repaints once the sync is done.
+ *
+ * The engine lives on the widget's render thread, in a context of its own sharing textures with the
+ * widget's, drawing into a texture that paints copy to the screen. A QOpenGLWidget's context cannot
+ * leave the main thread, and an engine cannot change context. A frame that takes in a stage change
+ * renders there with the main thread free, showing the old image or a composing status meanwhile;
+ * any other frame is a paint waiting for the render thread to draw. Where Qt or the driver cannot
+ * share a context across threads, the engine stays in the widget's context on the main thread.
+ *
+ * The stage opens with payloads unloaded. requestLoad() and requestUnload() go through a thread of
+ * their own, so that slow file opens hold up neither syncs nor the main thread.
  **/
 class SceneViewport
     : public QOpenGLWidget {
@@ -620,10 +1029,27 @@ public:
      **/
     void setScene(const ScenePayload& payload, double frame, double framesPerSecond);
 
-    // Whether every setScene(), setError() and clearScene() so far has been synced.
+    // Whether every setScene(), setError() and clearScene() so far has been synced and, in a
+    // visible view, taken in by the engine, so that the next paint shows it.
     bool isSceneSynced() const;
 
+    // Whether the stage tryReadStage() reads is the one the last setScene(), setError() or
+    // clearScene() asked for. Unlike isSceneSynced(), this does not wait for the engine's frame, so
+    // readers of the stage are not left waiting on a frame that announces nothing when it ends.
+    bool isStageSynced() const;
+
     void setFrame(double frame, double framesPerSecond);
+
+    /**
+     * @brief What the payload of the next setScene() was evaluated for. See
+     * SceneViewportRenderer::setSyncEvaluatedFor().
+     **/
+    void setSceneEvaluatedFor(const SceneLoadSetPtr& loadSet,
+                              const SceneLoadReachPtr& reach);
+
+    // See SceneViewportRenderer::setLoadSetEvaluator().
+    void setLoadSetEvaluator(const SceneViewportRenderer::LoadSetEvaluator& evaluate,
+                             const SceneViewportRenderer::LoadSetCommitted& committed);
 
     // Shows message instead of a scene.
     void setError(const QString& message);
@@ -654,6 +1080,8 @@ public:
     // viewer's Max Samples and Refinement Paused knobs drive these.
     void setMaxSamples(int samples);
 
+    void setRenderEverything(bool on);
+
     void setRefinementPaused(bool paused);
 
     void setLookThroughCamera(const QString& path);
@@ -662,11 +1090,28 @@ public:
 
     void frameSelection();
 
-    // The prim drawn at pos (widget coordinates), empty for none.
-    QString pickPrimAt(const QPoint& pos);
+    enum PickwalkEnum {
+        ePickwalkParent,
+        ePickwalkChild,
+        ePickwalkPrevSibling,
+        ePickwalkNextSibling
+    };
+
+    /**
+     * @brief Moves every selected prim one step through the stage by the children the scene graph
+     * lists, and merges prims that land on one: the current prim stays last. A prim with nowhere
+     * to go stays; siblings wrap. Child takes the child last left by a Parent walk of the same
+     * parent, else the first. Returns false, changing nothing, when the stage is busy, as reading
+     * it must not wait on the stage's writers.
+     **/
+    bool pickwalk(PickwalkEnum direction);
+
+    // The prim drawn at pos (widget coordinates), empty for none. If the scene can't be picked
+    // without waiting, sets busy instead: an empty result then says nothing about pos.
+    QString pickPrimAt(const QPoint& pos, bool* busy = nullptr);
 
     // The prims drawn in rect (widget coordinates).
-    QStringList pickPrimsIn(const QRect& rect);
+    QStringList pickPrimsIn(const QRect& rect, bool* busy = nullptr);
 
     // How a click or marquee combines its prims with the selection.
     enum SelectionModeEnum {
@@ -724,6 +1169,10 @@ public:
 
     void setSelectionActions(const SelectionActions& actions);
 
+    // Shows, and publishes as natronSceneArmedPick, the knob an armed pick writes to, "node.knob";
+    // empty when none is armed.
+    void setArmedPick(const QString& label);
+
     // The Camera node that made the camera prim at a path of the shown scene, null for none.
     void setCameraNodeProvider(const std::function<NodePtr(const std::string&)>& provider);
 
@@ -759,11 +1208,118 @@ public:
     /**
      * @brief Destroys the renderer's engine and the GPU memory it holds, in this widget's context,
      * and repaints, which makes another. The stage stays: it holds no GPU memory, and making it
-     * again would mean syncing the whole scene again. A scene showing live textures is requested
-     * again, as the store they live in is emptied alongside, and the repaint waits for that sync.
-     * Main thread; waits for a sync under way.
+     * again would mean syncing the whole scene again. While another delegate renders, only the
+     * Storm engine kept behind it goes, and that render goes on. A scene showing live textures is
+     * requested again, as the store they live in is emptied alongside, and the repaint waits for
+     * that sync. Main thread; never waits for a sync under way, the engine going once it ends.
      **/
     void releaseEngine();
+
+    /**
+     * @brief Calls read with this viewer's draw states, unless an edit of many rows holds them,
+     * which returns false at once. Main thread.
+     **/
+    bool tryReadDrawStates(const std::function<void(const SceneDrawStates&)>& read) const;
+
+    /**
+     * @brief This viewer's set draw states and its stage's load set, as a project saves them. A
+     * payload whose load failed is kept, so that a file found again loads on reopening, and so are
+     * the loads a restore still waits on. Saves the states as the last edit left them and the load
+     * rules as the last load commit did, so it waits on neither. Any thread.
+     **/
+    void saveSceneView(Serialization::SceneViewSerialization* serialization) const;
+
+    /**
+     * @brief Puts the saved states in place of this viewer's as one draw state edit, and asks for
+     * the saved load set, before the first sync if need be. Both go the way an edit's and a twirl's
+     * go: cancelPendingLoads() stops the loads, a later state change cancels the ones it no longer
+     * wants, and a load that fails shows on its row. Main thread.
+     **/
+    void restoreSceneView(const Serialization::SceneViewSerialization& serialization);
+
+    /**
+     * @brief Every draw state this viewer sets, effective or remembered, in path order, as the last
+     * edit left them. Any thread; never waits on an edit.
+     **/
+    std::vector<std::pair<std::string, SceneDrawStates::Stored>> getSetDrawStates() const;
+
+    // Puts states in place of every draw state this viewer sets, as one edit. Main thread.
+    void replaceSetDrawStates(const std::vector<std::pair<std::string, SceneDrawStates::Stored>>& states);
+
+    // Puts states in place of this viewer's at their paths, as one edit; the others stay. Main thread.
+    void mergeSetDrawStates(const std::vector<std::pair<std::string, SceneDrawStates::Stored>>& states);
+
+    // Clears this viewer's states at paths, as one edit; the others stay. Main thread.
+    void clearSetDrawStates(const std::vector<std::string>& paths);
+
+    // Whether this viewer sets any draw state, as the last edit left them. Any thread; never waits on an edit.
+    bool hasSetDrawStates() const;
+
+    /**
+     * @brief Runs edit, an edit of this viewer's draw states, once the worker has matched the graph
+     * policy of a sync requested from now on or of rules published from now on, or after a short
+     * while at most, so that a graph edit made now and edit show in one frame. Drawing goes on
+     * meanwhile with the states and policy the view has. Main thread.
+     **/
+    void editWithGraphPolicy(const std::function<void()>& edit);
+
+    /**
+     * @brief Whether the graph policy of the scene shown may still change the draw states, and so the
+     * loads they ask for: a sync whose rules are new has not come back, a match or a load batch with
+     * the match after it is under way, its policy has not reached the draw states, or the first
+     * frames of a newly viewed node leave the stage out for it. Main thread.
+     **/
+    bool isDrawPolicyPending() const;
+
+public Q_SLOTS:
+    // Replaces the selection. A slot, so that scripts reach it through the meta object.
+    void selectPaths(const QStringList& paths);
+
+    // Prim paths. A slot, so that scripts reach it through the meta object.
+    void requestLoad(const QStringList& paths, bool withDescendants);
+
+    void requestUnload(const QStringList& paths);
+
+    // Drops the load requests no batch has taken yet; a batch under way finishes.
+    void cancelPendingLoads();
+
+    /**
+     * @brief This viewer's draw state on a prim path, by script name: bbox, children, full, loadAll
+     * or hidden. False if the path or the name is not one. Never edits a stage or waits on Hydra.
+     **/
+    bool setDrawState(const QString& path, const QString& state);
+    void clearDrawState(const QString& path);
+    // Clears the rows below path; its own state stays.
+    void clearDrawStatesBelow(const QString& path);
+    // Clears path and the rows below it, which then follow the graph's policy or the default.
+    void resetDrawStatesToGraph(const QString& path);
+    /**
+     * @brief The same edits on many rows, made as one edit with one change, so nothing is drawn or
+     * loaded between rows. setDrawStateOnRows() is false, and edits nothing, if a path or the
+     * name is not one.
+     **/
+    bool setDrawStateOnRows(const QStringList& paths, const QString& state);
+    void clearDrawStatesBelowRows(const QStringList& paths);
+    void resetDrawStatesToGraphOnRows(const QStringList& paths);
+    void clearDrawStates();
+    // The state a path resolves to, effective or inherited. Waits for an edit under way.
+    QString resolvedDrawState(const QString& path) const;
+    /**
+     * @brief What a change shows, and what its loads bring in, goes out this many prims per frame; 0
+     * shows it at once. Below 0, the default, each frame's batch is sized from what the frames before
+     * it cost, so the viewer keeps its frame rate.
+     **/
+    void setDrawRevealBatch(int prims);
+    /**
+     * @brief While Storm fills, each presented image admits this many prims into Hydra; 0 or below,
+     * the default, sizes each batch from what the frames before it cost.
+     **/
+    void setDrawFillBatch(int prims);
+    /**
+     * @brief With NATRON_DRAW_STATE_TIMING=1, traces the frames of the changes that follow, until
+     * called with false. Every presented change publishes its record to natronSceneDrawTimings.
+     **/
+    void setDrawTimingTrace(bool trace);
 
 Q_SIGNALS:
 
@@ -778,10 +1334,26 @@ Q_SIGNALS:
     // The renderer's stage holds the latest requested scene, or none (main thread).
     void sceneSynced();
 
+    // Emitted on the main thread after a batch of payload requests is serviced or the waiting ones
+    // are cancelled.
+    void stageLoadsChanged();
+
+    // A draw state edit has reached the renderer (main thread).
+    void drawStatesChanged();
+
+    // Neither isDrawPolicyPending() nor the stage's outstanding loads hold any longer (main thread).
+    // May come again while nothing changed.
+    void drawPolicySettled();
+
+    // First thing in the destructor, with the renderer still whole (main thread).
+    void closing();
+
 protected:
     void initializeGL() override;
     void resizeGL(int w, int h) override;
     void paintGL() override;
+    void paintEvent(QPaintEvent* e) override;
+    void resizeEvent(QResizeEvent* e) override;
     void mousePressEvent(QMouseEvent* e) override;
     void mouseMoveEvent(QMouseEvent* e) override;
     void mouseReleaseEvent(QMouseEvent* e) override;
@@ -801,13 +1373,16 @@ private:
     // natronSceneShowGuides, natronScenePurposes and natronSceneLighting, and the progressive
     // render's state into natronSceneSamples, natronSceneMaxSamples, natronSceneRefining,
     // natronSceneRefinementStopped, natronSceneRefineConverged, natronSceneRestartCount and
-    // natronSceneUploadMs.
+    // natronSceneUploadMs, and the main thread's blocking waits (see
+    // SceneViewportRenderer::getMainThreadWaitMs()) into natronSceneMainWaitMs and
+    // natronSceneMainWaitMaxMs.
     void publishState();
 
     void publishRefineState();
 
-    // Starts dragging the transform handle at pos (widget coordinates). False if none is there.
-    bool beginHandleDrag(const QPoint& pos);
+    // Starts dragging the transform handle at pos (widget coordinates). False if none is there, or
+    // with busy set if an edit holds the stage and it can't tell.
+    bool beginHandleDrag(const QPoint& pos, bool* busy = nullptr);
 
     void dragHandle(const QPoint& pos);
 
@@ -850,14 +1425,102 @@ private:
     // A menu of the cameras at paths, under the pointer: the one picked is looked through, locked.
     void showLockCameraMenu(const std::vector<std::string>& paths);
 
-    // Queues payload for the worker; the error shown once it is synced.
-    void requestSync(const ScenePayload& payload, const QString& error);
+    // Queues payload for the worker; the error shown once it is synced. keepsFrame lets a frame
+    // rendering the stage go on, for a payload that likely leaves the stage as it is.
+    void requestSync(const ScenePayload& payload, const QString& error, bool keepsFrame = false);
 
-    // Main thread: the worker synced request serial, with error set on failure.
-    void onSynced(U64 serial, bool ok, const QString& error);
+    /**
+     * @brief Main thread: the worker synced request serial, with error set on failure. Drawing
+     * waits for the worker's match awaitedMatch, if not 0, before it shows the stage.
+     **/
+    void onSynced(U64 serial, bool ok, const QString& error, const SceneViewportRenderer::FrameBounds& bounds, U64 awaitedMatch);
 
-    // Main thread, outside a paint: Scene Default's switch to the renderer the prim now names.
+    // Puts a framing on the worker. selection is empty for the scene.
+    void requestFraming(const std::vector<std::string>& selection);
+
+    void onFramingComputed(U64 id, const SceneViewportRenderer::FrameBounds& bounds);
+
+    // Main thread: starts the frame that takes in a stage change, if one is due and can start.
+    void startBackgroundFrame();
+    // rows: how many rows the edit brings in, which sends a large one to the worker.
+    void editDrawStates(const std::function<SceneDrawDelta(SceneDrawStates*)>& edit, std::size_t rows = 0);
+    void editDrawStateRows(const std::vector<SceneDrawRowEdit>& edits);
+    void deliverDrawChange(const SceneDrawChange& change);
+    // Main thread: the graph policy the scene's draw rules, of the generation given, matched; matchId
+    // numbers the worker's matches and serial is the sync matched for, both 0 for one after loads.
+    void onDrawRulesMatched(U64 generation, U64 matchId, U64 serial, const SceneDrawStates::PolicyStates& policy);
+    // Main thread: the worker's match matchId was cancelled and hands over no policy.
+    void onDrawRulesMatchDropped(U64 matchId);
+    void noteDrawPolicySettled();
+    // Main thread: frames leave the stage out until the worker's match matchId lands and its policy
+    // is in the draw states, for kPolicyHoldMs at most.
+    void holdStageUntilMatch(U64 matchId);
+    void runPolicyEdits();
+    void releasePolicyHoldIfDone();
+    void releasePolicyHold();
+    void wakeLoadsAskedBeforeStage();
+    // A restore's load set stops standing in for loads the stage has yet to take.
+    void forgetRestoredLoads();
+    void publishDrawStats();
+
+    void onBackgroundFrameDone();
+
+    // Main thread: turns the widget's updates off while the render thread has work, and back on,
+    // asking for the paint held back and carrying out a resize held back, once it has none. A
+    // frame running for a view the camera or size has left ends at its next pass.
+    void refreshPaintHold();
+
+    // Main thread: starts the frame a paint asked for, once the window has composed that paint.
+    void startOwedFrame();
+
+    // Main thread, the widget's new context current: has the render thread make its context, or
+    // make it again, sharing that one, any old engine going first, without waiting for it.
+    void rebuildRenderContext();
+
+    // Main thread: the render thread made its context for the widget context numbered
+    // shareGeneration, of share group group, or could not if group is null.
+    void onRenderContextRebuilt(U64 shareGeneration, QOpenGLContextGroup* group);
+
+    // Main thread: the render thread released the engine for releaseEngine().
+    void onEngineReleased();
+
+    // Main thread, without a render thread: an engine release or a renderer switch that found the
+    // viewer lock held, tried again.
+    void serviceOwedEngineWork();
+
+    // Main thread: the render thread took in draw changes posted to it.
+    void onDrawChangesTakenIn();
+
+    // Main thread: asks for the paint that shows the frame on the GPU once the render thread has
+    // found it finished. Makes no context current.
+    void pollPresent();
+
+    // Main thread: the render thread has switched to the renderer id for the switch numbered serial.
+    void onRendererSwitched(const QString& id, U64 serial);
+
+    // Main thread: the load thread's round loadRound committed its batch, leaving the stage at
+    // loadEditCount, and matched the rules after it.
+    void onStageLoadsServiced(const SceneViewportRenderer::FrameBounds& bounds, U64 loadEditCount, U64 loadRound);
+    // Whether a pick has to wait for a background frame, which this starts if it is due.
+    bool pickMustWait();
+
+    // Main thread: something that held the stage has let go; carries out the input that found it held.
+    void serviceDeferredInput();
+
+    // Runs fn with the engine's context current, on whichever thread that context lives.
+    void runWithEngineContext(const std::function<void()>& fn);
+
+    // Draws the composing status over what the framebuffer has, or the background if it has no scene.
+    void paintComposingStatus();
+
+    bool isComposing() const;
+
+    // Main thread, outside a paint: Scene Default's switch to the renderer the prim now names. With
+    // a render thread the switch is posted there and onSceneRendererFollowed() takes its outcome.
     void followSceneRenderer();
+
+    // Main thread: the render thread has followed the scene's renderer for followSceneRenderer().
+    void onSceneRendererFollowed(bool changed, bool busy);
 
     /**
      * @brief Publishes the delegate rendering and emits rendererChanged() if it changed. Never from

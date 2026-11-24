@@ -64,6 +64,36 @@ struct FrameGraph {
         Gpu
     };
 
+    /**
+     * @brief Why placeGraph() kept a task out of the region of a dependency: on the CPU, or, for WouldFormCycle only,
+     * possibly in a region of its own or of another dependency.
+     **/
+    enum class PlacementReason {
+        None,
+
+        // The dependencies of the graph have a cycle, so nothing was placed.
+        InvalidGraph,
+
+        // The node cannot render this task on the GPU, for a reason other than DownscaleUnsupported.
+        NoGpuPath,
+
+        // The task is asked for a downscaled image that the node can only render at full scale.
+        DownscaleUnsupported,
+        Cached,
+
+        // An identity task only follows its single dependency into a region, which this one could not.
+        Identity,
+
+        // Another task of its raw run stays on the CPU, and a run is all or nothing.
+        RawRunAllOrNothing,
+
+        // Joining the region of a dependency would have made a path leave that region and come back.
+        WouldFormCycle,
+
+        // The region gains nothing with this task, or was given up with it.
+        CostModel
+    };
+
     struct Task {
         FrameStore::TaskKey key;
 
@@ -79,6 +109,11 @@ struct FrameGraph {
         // One entry per edge, so an input wired to two inputs of the same consumer appears twice in both lists.
         std::vector<int> dependencies;
         std::vector<int> consumerTasks;
+
+        // The input of this task that each entry of dependencies feeds, as TaskEdge::inputNb gives it (negative for
+        // an edge that is not an input read); the same length and order as dependencies. For a task standing for a
+        // region, the input number is the one on the member that owns the edge.
+        std::vector<int> dependencyInputNbs;
 
         // How many times the store entry of this task is released; 0 for the root, whose planes go to the future.
         int consumers = 0;
@@ -109,6 +144,27 @@ struct FrameGraph {
         // The level renderRoI renders at: 0 for an effect without render scale support.
         unsigned int cacheMipmapLevel = 0;
 
+        // renderRoI would look its output up in the cache. An entry can serve a task that wouldn't store its own, an
+        // earlier render having stored it, so this is no question of sharesCachedOutput.
+        bool probesCachedOutput = false;
+
+        // The planned cache hit let its dependencies go, all of them or those only the cached part of its output read.
+        // Such a task can't join a GPU region, which renders the whole RoI from the region's inputs, unless the hit is
+        // a partial one of the device tier (deviceMissingRoI).
+        bool servedFromCache = false;
+
+        // Where the entries that serve the task were found; meaningful when servedFromCache.
+        EffectInstance::OutputCacheTier servedTier = EffectInstance::OutputCacheTier::Memory;
+
+        // For a partial hit whose every entry is in the device tier: the bounding rectangle, within renderedRoI, of
+        // what the entries miss, which a region renders alone into an image grown from theirs. Null otherwise. The
+        // dependencies servedFromCache let go are unread by this rectangle only.
+        RectI deviceMissingRoI;
+
+        // Empty when the request doesn't know the region of definition.
+        RectI pixelRoD;
+        double pixelAspectRatio = 1.;
+
         Device device = Device::Cpu;
 
         // Where renderRoI allocates the task's images when it runs on its own.
@@ -116,6 +172,18 @@ struct FrameGraph {
 
         // Index in regions of the region this task belongs to, or -1; every member of a region has device Gpu.
         int regionId = -1;
+
+        // Stored on the consumer because every edge from another region into a task ends that region for the same
+        // reason, so one record answers for all of the task's input edges. It is only meaningful for such an edge: a
+        // task that later merged with the region it first refused keeps its WouldFormCycle.
+        PlacementReason placementReason = PlacementReason::None;
+
+        // What the node said about the refusal, when placementReason comes from asking it and it had something to say.
+        std::string placementDetail;
+
+        // A task of a render continuation's extension whose output the store already holds under key, from a graph
+        // the extension extends: it renders nothing, and its consumers release that entry.
+        bool reusesStore = false;
 
         // Only read or written under the scheduler's mutex once the graph is submitted.
         int remainingDeps = 0;
@@ -160,6 +228,17 @@ struct FrameGraph {
 };
 
 /**
+ * @brief A GPU region that did not run on the GPU. reason is the cause GpuRegionTask names, empty when the device was
+ * lost, in which case the whole frame is rendered again on the CPU.
+ **/
+struct RegionFallback {
+    int region = -1;
+    std::string reason;
+    bool deviceLost = false;
+    int retries = 0;
+};
+
+/**
  * @brief The outcome of a frame submitted to the RenderScheduler.
  **/
 class FrameFuture {
@@ -184,16 +263,24 @@ public:
      **/
     std::map<ImageLayerDesc, ImagePtr> getRootPlanes() const;
 
+    /**
+     * @brief The regions that fell back to the CPU, in the order they ended; empty until the frame finished.
+     **/
+    std::vector<RegionFallback> getRegionFallbacks() const;
+
 private:
     friend class RenderScheduler;
 
-    void finish(EffectInstance::RenderRoIRetCode retCode, std::map<ImageLayerDesc, ImagePtr> rootPlanes);
+    void finish(EffectInstance::RenderRoIRetCode retCode,
+                std::map<ImageLayerDesc, ImagePtr> rootPlanes,
+                std::vector<RegionFallback> fallbacks = std::vector<RegionFallback>());
 
     mutable QMutex _mutex;
     QWaitCondition _finishedCond;
     bool _finished;
     EffectInstance::RenderRoIRetCode _retCode;
     std::map<ImageLayerDesc, ImagePtr> _rootPlanes;
+    std::vector<RegionFallback> _fallbacks;
 };
 
 /**
@@ -228,6 +315,18 @@ private:
  * ones returned, whatever they produced is dropped with the store, every task is placed on the CPU and the leaves are
  * queued again, the future still waiting. A frame with regions holds the GPU runtime from submit() until it finished
  * or was restarted, so that the runtime is not recreated under the device images in its store.
+ *
+ * A CPU task whose effect has a render continuation (EffectInstance::getRenderContinuation()) that names outputs is
+ * extended: the outputs are planned by an incremental request pass into a request map of the extension's own, which
+ * no planned task reads, and built into an extension frame. The extension shares the store, abort info, priority and
+ * sequence of the frame it extends, and its tasks go through the same admission under the bytes budget; its store
+ * keys carry a generation of their own so that its entries never collide with the planned ones, and an output the
+ * store already holds over the region is reused instead of rendered. While the extension runs, the probing task holds
+ * no thread and no reservation; once the extension finished, it is queued ahead of admission and runs its continuation
+ * and its render under the extension's context. An extension may itself be extended, up to
+ * EffectInstance::kMaxRenderContinuationDepth levels. Aborting the frame drops the extension's queued tasks, and the
+ * frame finishes, without running the continuation, once the extension's running tasks returned. A failed extension
+ * task fails the frame.
  **/
 class RenderScheduler {
 public:
@@ -255,6 +354,25 @@ public:
         // The strips the region ran as, 0 when it ran whole, and the most of them in flight at once.
         int strips = 0;
         int stripsInFlight = 0;
+
+        // The device bytes the plan of a region run whole expects at most without and with its outputs kept for the
+        // device tier, both 0 for one run as strips; and what the region's buffers held at most.
+        unsigned long long wholePeakDeviceBytes = 0;
+        unsigned long long plannedPeakDeviceBytes = 0;
+        unsigned long long peakDeviceBytes = 0;
+
+        // The member outputs the region left in the device tier.
+        int publishedToDevice = 0;
+
+        // The member outputs the region read back to RAM and admitted to the host tier.
+        int admittedToHost = 0;
+
+        // What each task of Region::members rendered, over all its planes: less than its renderedRoI where the device
+        // tier held the rest. Null for an identity task.
+        std::vector<RectI> renderedRects;
+
+        // The member outputs grown from a partial entry of the device tier, its pixels copied in on the device.
+        int grownFromDevice = 0;
 
         // The region fits the device whole and was stripped anyway, to overlap its transfers with its compute.
         bool overlapStrips = false;
@@ -328,8 +446,16 @@ public:
         // Why the members were rendered on the CPU rather than the GPU; empty when they were not.
         std::string cpuFallback;
 
+        // The cache state each CPU-fallback member rendered with, in Region::members order; shorter than the
+        // members when a member failed or the frame aborted, and empty when the GPU ran them.
+        std::vector<EffectInstance::RenderCacheStateEnum> memberCache;
+
         // How many times the region was run again on the GPU after running out of device memory.
         int retries = 0;
+
+        // Per member, in Region::members order: whether device work recording it was submitted, in any run of the
+        // region, those before a retry or a CPU fallback included. Empty when nothing was submitted.
+        std::vector<char> memberRanOnDevice;
     };
 
     /**
@@ -373,6 +499,29 @@ public:
                                  unsigned int mipmapLevel);
 
     /**
+     * @brief As buildGraph(), from several roots: roots[i] is tasks[i], or the task of an earlier root with the same
+     * key. A root no other task reads has no consumer. Roots the request does not reach make an empty graph.
+     **/
+    static FrameGraph buildGraph(const FrameRenderContextPtr& context,
+                                 const std::vector<FrameStore::TaskKey>& roots);
+
+    /**
+     * @brief Removes from a graph buildGraph returned the tasks only a cache hit's render would have read: a task whose
+     * output is cached in full loses its dependencies, one cached in part those its missing part doesn't read, and tasks
+     * left without a consumer go with them; the first rootCount tasks are the roots and stay, in their order. Must run
+     * before placeRenderGraph, on the thread buildGraph ran on, and after the caller has settled the roots' regions,
+     * layers and depths.
+     *
+     * At most one probe per task, none on a task behind a hit, and the cache lock is only held per key. Nothing is pinned:
+     * an entry evicted before its task runs is rendered again, its inputs then being pulled as unplanned reads, which is
+     * correct but slower. A plan-wide pin would keep what memory pressure has to evict and bypass the admission of tasks
+     * by bytes in flight.
+     **/
+    static void pruneBehindCacheHits(FrameGraph& graph,
+                                     const FrameRenderContextPtr& context,
+                                     int rootCount = 1);
+
+    /**
      * @brief Renders graph.tasks[task] with renderRoI as the scheduler runs a task outside every region, its images
      * allocated with storage, on the calling thread, which must have the frame context installed. Leaves the frame's
      * store alone.
@@ -381,6 +530,18 @@ public:
                                                             int task,
                                                             StorageModeEnum storage,
                                                             std::map<ImageLayerDesc, ImagePtr>* planes);
+
+    /**
+     * @brief Records what renderTaskOnCpu() did for graph.tasks[task], which left cacheState and executed (see
+     * EffectInstance::takeLastRenderExecuted()): when the effect executed, a CPU execution of its node and a fresh
+     * output in context. A task the cache did not serve but that executed nothing, an identity one among them, has a
+     * fresh output when one of its dependencies has.
+     **/
+    static void noteTaskRanOnCpu(const FrameRenderContext& context,
+                                 const FrameGraph& graph,
+                                 int task,
+                                 EffectInstance::RenderCacheStateEnum cacheState,
+                                 bool executed);
 
     /**
      * @brief Queues the tasks of graph. The context must stay unchanged until the future finished. An empty graph
@@ -517,6 +678,47 @@ private:
 
     void executeTask(const FramePtr& frame, int task, int budget, std::vector<FramePtr>* finished);
 
+    struct Continuation;
+    enum class ProbeOutcome {
+        // The effect has no render continuation here, or one with nothing left to render first.
+        Render,
+
+        // The task waits for its extension, on no thread.
+        Parked,
+        Failed,
+        Aborted
+    };
+
+    /**
+     * @brief Asks the effect of a CPU task for its render continuation and, when it names outputs, plans and submits the
+     * extension that renders them. On Render, continuation holds what to run before the render, if anything.
+     **/
+    ProbeOutcome probeRenderContinuation(const FramePtr& frame,
+                                         int task,
+                                         int budget,
+                                         std::unique_ptr<Continuation>* continuation);
+
+    /**
+     * @brief Marks the tasks of an extension graph whose outputs the store holds from a graph it extends as reusing
+     * them, drops the tasks only those read, and sets every remaining task's store generation. The continuation reads
+     * tasks[i] rootReads[i] times; rootKeys gets one key per read, as the store holds it.
+     **/
+    static void planExtensionReuse(FrameGraph& graph,
+                                   const std::vector<int>& rootReads,
+                                   const FrameRenderContext& extension,
+                                   std::vector<FrameStore::TaskKey>* rootKeys);
+
+    static bool canFinishLocked(const Frame& frame);
+
+    // A continuation's callback holds captures of the effect's own, whose destructors may call into the scheduler: the
+    // locked paths hand it here, and destroyRetiredContinuations() destroys it once the mutex is released.
+    void retireContinuationLocked(std::unique_ptr<Continuation> continuation);
+    void retireContinuationsLocked(Frame* frame);
+    void destroyRetiredContinuations();
+
+    // An extension frame finished: resumes the task it was made for, or ends that task's frame when either died.
+    void finishExtensionLocked(const FramePtr& extension, std::vector<FramePtr>* finished);
+
     std::shared_ptr<void> leaseCpuFallback(int* budget);
 
     int cpuTaskBudgetLocked() const;
@@ -615,6 +817,12 @@ private:
 
     // The tasks inside renderRoI, counted without the mutex.
     std::atomic<int> _tasksRendering;
+
+    // The store generation the next extension writes under: 0 is the planned graphs'.
+    std::atomic<int> _nextStoreGeneration;
+
+    // Guarded by _mutex.
+    std::vector<std::unique_ptr<Continuation>> _retiredContinuations;
 };
 
 NATRON_NAMESPACE_EXIT

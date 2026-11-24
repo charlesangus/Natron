@@ -58,12 +58,14 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Format.h"
 #include "Engine/Knob.h"
 #include "Engine/KnobFactory.h"
+#include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/MemoryInfo.h" // printAsRAM
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/OfxClipInstance.h"
 #include "Engine/OfxEffectInstance.h"
+#include "Engine/OfxLayerMapping.h"
 #include "Engine/OfxMemory.h"
 #include "Engine/OfxOverlayInteract.h"
 #include "Engine/OfxParamInstance.h"
@@ -301,7 +303,7 @@ const std::vector<std::string>&
 OfxImageEffectInstance::getUserCreatedPlanes() const
 {
     OfxEffectInstancePtr effect = _ofxEffectInstance.lock();
-    const std::vector<std::string>& ofxPlanes = effect->getUserLayers();
+    const std::vector<std::string>& ofxPlanes = effect->getUserLayers(&OfxLayerMapping::layerToPlane);
     return ofxPlanes;
 }
 
@@ -369,7 +371,7 @@ OfxImageEffectInstance::getDimension(const std::string &name) const OFX_EXCEPTIO
         return OFX::Host::ImageEffect::Instance::getDimension(name);
     }
     try {
-        const std::vector<std::string>& ofxPlanes = effect->getUserLayers();
+        const std::vector<std::string>& ofxPlanes = effect->getUserLayers(&OfxLayerMapping::layerToPlane);
         return (int)ofxPlanes.size();
     } catch (...) {
         throw OFX::Host::Property::Exception(kOfxStatErrUnknown);
@@ -807,12 +809,33 @@ struct PageOrdered
 typedef std::shared_ptr<PageOrdered> PageOrderedPtr;
 typedef std::list<PageOrderedPtr> PageOrderedPtrList;
 
+// A plugin cannot call KnobFile::createReloadButton(), so the Reload button it declares right after
+// a file param, on the same row, takes the place of the icon.
+static void
+handFileKnobsToTheirReloadButtons(const std::list<OFX::Host::Param::Instance*>& params)
+{
+    KnobFilePtr previousFile;
+
+    for (std::list<OFX::Host::Param::Instance*>::const_iterator it = params.begin(); it != params.end(); ++it) {
+        OfxParamToKnob* isKnownKnob = dynamic_cast<OfxParamToKnob*>(*it);
+        KnobIPtr knob = isKnownKnob ? isKnownKnob->getKnob() : KnobIPtr();
+        KnobButtonPtr button = std::dynamic_pointer_cast<KnobButton>(knob);
+        if (previousFile && button && !previousFile->isNewLineActivated()
+            && QString::fromStdString(button->getLabel()).contains(QString::fromUtf8("reload"), Qt::CaseInsensitive)) {
+            previousFile->setReloadButton(button);
+        }
+        previousFile = std::dynamic_pointer_cast<KnobFile>(knob);
+    }
+}
+
 void
 OfxImageEffectInstance::addParamsToTheirParents()
 {
     //All parameters in their order of declaration by the plug-in
     const std::list<OFX::Host::Param::Instance*> & params = getParamList();
     OfxEffectInstancePtr effect = getOfxEffectInstance();
+
+    handFileKnobsToTheirReloadButtons(params);
 
     //Extract pages and their children and add knobs to groups
     PageOrderedPtrList finalPages;
@@ -1220,19 +1243,7 @@ OfxImageEffectInstance::setupClipPreferencesArgsFromMetadata(NodeMetadata& metad
         OFX::Host::Property::PropSpec specComp = {componentParamName.c_str(),  OFX::Host::Property::eString, 0, false,          ""}; // note the support for multi-planar clips
         outArgs.createProperty(specComp);
 
-        std::string ofxClipComponentStr;
-        std::string componentsType = metadata.getComponentsType(inputNb);
-        int nComps = metadata.getNComps(inputNb);
-        ImageLayerDesc natronLayer = ImageLayerDesc::mapNCompsToColorLayer(nComps);
-        if (componentsType == kNatronColorLayerID) {
-            ofxClipComponentStr = ImageLayerDesc::mapLayerToOFXComponentsTypeString(natronLayer);
-        } else if (componentsType == kNatronDisparityComponentsLabel) {
-            ofxClipComponentStr = kFnOfxImageComponentStereoDisparity;
-        } else if (componentsType == kNatronMotionComponentsLabel) {
-            ofxClipComponentStr = kFnOfxImageComponentMotionVectors;
-        } else {
-            ofxClipComponentStr = ImageLayerDesc::mapLayerToOFXComponentsTypeString(natronLayer);
-        }
+        const std::string ofxClipComponentStr = OfxLayerMapping::componentsTypeToComponents(metadata.getComponentsType(inputNb), metadata.getNComps(inputNb));
 
         outArgs.setStringProperty( componentParamName.c_str(), ofxClipComponentStr.c_str() ); // as it is variable dimension, there is no default value, so we have to set it explicitly
 
@@ -1316,18 +1327,9 @@ OfxImageEffectInstance::getClipPreferences_safe(NodeMetadata& defaultPrefs)
             defaultPrefs.setBitDepth( inputNb, OfxClipInstance::ofxDepthToNatronDepth( outArgs.getStringProperty(depthParamName) ) );
             ImageLayerDesc layer, pairedLayer;
             std::string ofxComponentsType = outArgs.getStringProperty(componentParamName);
-            ImageLayerDesc::mapOFXComponentsTypeStringToLayers(ofxComponentsType, &layer, &pairedLayer);
+            OfxLayerMapping::componentsToLayers(ofxComponentsType, &layer, &pairedLayer);
             defaultPrefs.setNComps(inputNb, layer.getNumComponents());
-
-            if (layer.isColorLayer()) {
-                defaultPrefs.setComponentsType(inputNb, kNatronColorLayerID);
-            } else if (layer.getChannelsLabel() == kNatronMotionComponentsLabel) {
-                defaultPrefs.setComponentsType( inputNb, kNatronMotionComponentsLabel);
-            } else if (layer.getChannelsLabel() == kNatronDisparityComponentsLabel) {
-                defaultPrefs.setComponentsType( inputNb, kNatronDisparityComponentsLabel);
-            } else {
-                defaultPrefs.setComponentsType( inputNb, ofxComponentsType);
-            }
+            defaultPrefs.setComponentsType(inputNb, OfxLayerMapping::componentsToComponentsType(ofxComponentsType));
 
             defaultPrefs.setPixelAspectRatio( inputNb, outArgs.getDoubleProperty(parParamName) );
         }

@@ -7,8 +7,9 @@
 #
 # Everything the build needs (bar one documented exception below) is already
 # present in aswf/ci-vfxall:2027-clang21.1. This file adds the Cycles Hydra
-# render delegate, MoonRay and its Hydra render delegate, the Mesa relink and
-# the Slang and glslang toolchains, so no build downloads them.
+# render delegate, MoonRay and its Hydra render delegate, the Mesa relink,
+# the Slang and glslang toolchains and ccache's HTTPS storage helper, so no
+# build downloads them.
 #
 # Why ci-vfxall and not ci-baseqt (which this used through M7): ci-baseqt
 # ships Qt/PySide and the base libraries but no OpenColorIO, OpenImageIO, or
@@ -42,8 +43,8 @@ FROM aswf/ci-vfxall:2027-clang21.1
 # compressed it adds to the AppImage.
 # NATRON_CYCLES_SHA256 is of <NATRON_CYCLES_REPO>/archive/<commit>.tar.gz.
 ARG NATRON_CYCLES_REPO=https://github.com/charlesangus/cycles
-ARG NATRON_CYCLES_COMMIT=3dbd87c101841755d282fe7dee0139096576103e
-ARG NATRON_CYCLES_SHA256=f052447fab95a23f78b4653801c217446077128b31482dc1bc5c703a453c7d30
+ARG NATRON_CYCLES_COMMIT=18a83a2d068da290444ea768a5fc6e0ea3c89687
+ARG NATRON_CYCLES_SHA256=994dcb94456ad299f810a1baf461e4d02588d4ae1aab059858039ae3afd6e3eb
 ARG NATRON_CYCLES_OIDN=ON
 COPY build-cycles.sh /tmp/build-cycles.sh
 RUN NATRON_CYCLES_REPO="$NATRON_CYCLES_REPO" \
@@ -53,22 +54,24 @@ RUN NATRON_CYCLES_REPO="$NATRON_CYCLES_REPO" \
     bash /tmp/build-cycles.sh && rm -f /tmp/build-cycles.sh
 
 # --- MoonRay: renderer and Hydra render delegate, CPU only ----------------
-# Built from DreamWorks' openmoonray super-repository against this image's
+# Built from Natron's fork of DreamWorks' openmoonray super-repository
+# (charlesangus/openmoonray, branch natron/v2026.29.1) against this image's
 # USD, TBB, Boost, Embree, OpenVDB, OpenImageIO, OpenEXR and OpenImageDenoise,
 # and installed relocatably into /opt/moonray: hdMoonray's plug-ins under
 # plugin/, the rdl2 scene-object DSOs in rdl2dso/, MoonRay's own libraries in
 # lib64/ and the execComp render process in bin/. Natron finds it there at
 # start-up (Engine/AppManager.cpp) and tools/release/stage-bundle.sh copies it
-# into the bundle as moonray/. The tag is pinned to its commit, and that commit
-# pins every submodule; ISPC (the upstream-pinned release binary, checksummed)
+# into the bundle as moonray/. The fork is pinned by commit, and that commit
+# pins every submodule; the forks carry Natron's changes, so the build applies
+# no source patches. ISPC (the upstream-pinned release binary, checksummed)
 # is fetched for the build only. Right after Cycles: the other slow layer,
 # changed more often than Cycles, so its rebuilds leave the Cycles layer cached.
-ARG NATRON_MOONRAY_VERSION=v2026.29.1
-ARG NATRON_MOONRAY_COMMIT=d96c6e30a8c280d4b5eb3bafa5e54efc445d7ea8
+ARG NATRON_MOONRAY_REPO=https://github.com/charlesangus/openmoonray.git
+ARG NATRON_MOONRAY_COMMIT=ee4955e34243094c8331ec2cdd17724a449ba94c
 ARG NATRON_MOONRAY_ISPC_VERSION=v1.21.0
 ARG NATRON_MOONRAY_ISPC_SHA256=fe658893799af46c9cac0153f0bdc9a2ff93541fff9b17cf6b09ffc7576cfdcc
 COPY build-moonray.sh /tmp/build-moonray.sh
-RUN NATRON_MOONRAY_VERSION="$NATRON_MOONRAY_VERSION" \
+RUN NATRON_MOONRAY_REPO="$NATRON_MOONRAY_REPO" \
     NATRON_MOONRAY_COMMIT="$NATRON_MOONRAY_COMMIT" \
     NATRON_MOONRAY_ISPC_VERSION="$NATRON_MOONRAY_ISPC_VERSION" \
     NATRON_MOONRAY_ISPC_SHA256="$NATRON_MOONRAY_ISPC_SHA256" \
@@ -117,7 +120,27 @@ RUN NATRON_MOONRAY_VERSION="$NATRON_MOONRAY_VERSION" \
 
 # --- Additions on top of the base image ------------------
 # ccache, ninja, and gdb are already present in this base image (ccache and
-# ninja via Conan at /usr/local/bin, gdb as an RPM) -- nothing to install.
+# ninja via Conan at /usr/local/bin, gdb as an RPM).
+#
+# ccache's built-in remote storage client speaks plain HTTP only. An https://
+# remote_storage URL makes ccache run a helper named ccache-storage-https from
+# PATH, so the HTTP(S) storage helper is installed under that name alone.
+# Installing it as ccache-storage-http too would replace the built-in client
+# for plain-HTTP URLs.
+ARG NATRON_CCACHE_HTTPS_HELPER_VERSION=0.10.1
+ARG NATRON_CCACHE_HTTPS_HELPER_SHA256=679a8337cdc32a8bc670a2a91a2c11624d174b41881f0fa14d3c6bd06addf3fe
+ARG NATRON_CCACHE_HTTPS_HELPER_URL=https://github.com/ccache/ccache-storage-http-go/releases/download/v${NATRON_CCACHE_HTTPS_HELPER_VERSION}/ccache-storage-http-go-${NATRON_CCACHE_HTTPS_HELPER_VERSION}-linux-amd64.tar.gz
+RUN set -eu; \
+    tarball=/tmp/ccache-storage-http.tar.gz; \
+    unpacked=/tmp/ccache-storage-http; \
+    wget -q -O "$tarball" "$NATRON_CCACHE_HTTPS_HELPER_URL"; \
+    echo "${NATRON_CCACHE_HTTPS_HELPER_SHA256}  ${tarball}" | sha256sum -c -; \
+    mkdir -p "$unpacked"; \
+    tar -xzf "$tarball" -C "$unpacked" --strip-components=1; \
+    install -m 0755 "$unpacked/ccache-storage-http" /usr/local/bin/ccache-storage-https; \
+    rm -rf "$tarball" "$unpacked"; \
+    test ! -e /usr/local/bin/ccache-storage-http; \
+    test -x /usr/local/bin/ccache-storage-https
 
 # --- Mesa: bind its drivers to the system LLVM -----------------------------
 # Mesa's RPMs were built against the system /usr/lib64/libLLVM.so.21.1, but

@@ -33,6 +33,7 @@
 #include <functional>
 #include <vector>
 
+#include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Image/TransformMath.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
@@ -371,22 +372,23 @@ struct SourceImage {
 /**
  * @brief Samples src at (fx, fy) with the unscaled filter, writing src.nComps floats to out.
  * Impulse and box read the nearest pixel; every other filter weights the pixels inside its
- * support, normalised over all of them, including those outside the bounds. With blackOutside,
- * taps outside the bounds read 0; otherwise their coordinates are clamped into the bounds.
+ * support, normalised over all of them, including those outside the bounds. Taps outside the
+ * bounds read by edgeMode (EdgeSample::coord()): 0 for Black, the nearest pixel for Stretch.
  * Returns false (and writes zeros) when every tap is outside, i.e. the point is in the black
  * surround. clamp only acts on the filters filterHonoursClamp() names.
  **/
-bool interpolate(const FilterSpec& filter, bool clamp, double fx, double fy, const SourceImage& src, bool blackOutside, float* out);
+bool interpolate(const FilterSpec& filter, bool clamp, double fx, double fy, const SourceImage& src, EdgeMode edgeMode, float* out);
 
 /**
  * @brief Samples src at (fx, fy) for a destination pixel whose back-transform has the given
  * Jacobian. The kernel widens per source axis by kernelScale() of the Jacobian's row, so
  * magnification, 1:1, pure rotation and a zeroed row use the plain kernel. Past
- * kFilterMaxTapsPerAxis taps, that many spread evenly over the whole footprint with bilinear
- * reads. A zero Jacobian samples like interpolate(), and so does impulse with any Jacobian. The
+ * kFilterMaxTapsPerAxis taps, that many spread evenly with bilinear reads over the part of the
+ * footprint where the source varies, and each part beyond the source, where every read is the
+ * edge pixel or black, is one read weighted by the kernel's integral over it. A zero Jacobian samples like interpolate(), and so does impulse with any Jacobian. The
  * box filter instead integrates src over the bounding box of the back-transformed pixel.
  **/
-void interpolateSuper(const FilterSpec& filter, bool clamp, double fx, double fy, double Jxx, double Jxy, double Jyx, double Jyy, const SourceImage& src, bool blackOutside, float* out);
+void interpolateSuper(const FilterSpec& filter, bool clamp, double fx, double fy, double Jxx, double Jxy, double Jyx, double Jyy, const SourceImage& src, EdgeMode edgeMode, float* out);
 
 ///////////////////////////////////////////////////////////////////////////////
 // Per-pixel coordinates (STMap, IDistort, lens distortion)
@@ -394,7 +396,7 @@ void interpolateSuper(const FilterSpec& filter, bool clamp, double fx, double fy
 /**
  * @brief How a coordinate-map sample folds a coordinate back into the wrap domain [lo, hi) of
  * one axis (w = hi - lo), before sampling:
- *  - eWrapNone leaves it alone, so outside the source blackOutside decides;
+ *  - eWrapNone leaves it alone, so outside the source edgeMode decides;
  *  - eWrapClamp clamps it to the centres of the edge pixels, [lo + 0.5, hi - 0.5];
  *  - eWrapRepeat tiles the domain: s - w * floor((s - lo) / w);
  *  - eWrapMirror tiles it mirrored, period 2w: r = (s - lo) - 2w * floor((s - lo) / (2w)),
@@ -415,14 +417,14 @@ enum WrapMode {
  * sampled, any further ones 0). Per pixel:
  *  1. each coordinate is wrapped (WrapMode) in wrapDomain, src.bounds when null or empty;
  *  2. a coordinate that is not finite after wrapping (NaN, or an infinity under any mode but
- *     eWrapClamp) is outside the source and the pixel is 0 whatever blackOutside says;
+ *     eWrapClamp) is outside the source and the pixel is 0 whatever edgeMode says;
  *     finite ones are clamped to +-2^30;
  *  3. eFilterImpulse, or a null jacobian, samples with interpolate();
  *  4. otherwise jacobian holds four floats per pixel, (Jxx, Jxy, Jyx, Jyy) as interpolateSuper()
  *     takes them. Non-finite entries read 0; an axis eWrapClamp moved has its row zeroed (Jxx,
  *     Jxy for x, Jyx, Jyy for y); then, as resampleRow() does, an axis whose coordinate s has
  *     no pixel within half a pixel (s + 0.5 < bounds lo or s - 0.5 >= bounds hi, src.bounds)
- *     has its row zeroed, both rows when blackOutside and either axis is out; and the pixel
+ *     has its row zeroed, both rows for Black and either axis is out; and the pixel
  *     goes through interpolateSuper().
  * The Jacobian is not changed by wrapping (bar the clamp rule), as in openfx-misc.
  **/
@@ -433,7 +435,7 @@ void resampleRowFromCoords(const SourceImage& src,
                            int n,
                            const FilterSpec& filter,
                            bool clamp,
-                           bool blackOutside,
+                           EdgeMode edgeMode,
                            WrapMode wrapU,
                            WrapMode wrapV,
                            float* out,
@@ -618,7 +620,7 @@ struct ResampleParams {
     std::size_t count;
     FilterSpec filter;
     bool clamp;
-    bool blackOutside;
+    EdgeMode edgeMode;
     double motionBlur;
 
     ResampleParams()
@@ -627,21 +629,21 @@ struct ResampleParams {
         , count(0)
         , filter(eFilterCubic)
         , clamp(false)
-        , blackOutside(true)
+        , edgeMode(EdgeMode::Black)
         , motionBlur(0.)
     {
     }
 };
 
-ResampleParams makeResampleParams(const SamplingTransforms& transforms, const FilterSpec& filter, bool clamp, bool blackOutside);
+ResampleParams makeResampleParams(const SamplingTransforms& transforms, const FilterSpec& filter, bool clamp, EdgeMode edgeMode);
 
 /**
  * @brief Resamples destination pixels [x1, x2) of row y into dst, src.nComps floats per pixel,
  * without mask or mix. Each pixel centre (x + 0.5, y + 0.5) is mapped through the inverse
  * matrix; a point at or behind infinity (z <= 0) is 0. Impulse samples the nearest pixel,
  * every other filter goes through interpolateSuper() with the Jacobian of the matrix at that
- * point (zeroed along an axis whose sample falls outside the source, or along both when
- * blackOutside and either does). With motionBlur != 0 and several matrices, each pixel is a
+ * point, also past the source's bounds, so that the footprint filters the source extended by
+ * edgeMode as it would that image materialised. With motionBlur != 0 and several matrices, each pixel is a
  * Monte Carlo average over the matrices: at least motionBlurMinSamples() stratified samples,
  * then more until the standard error falls under motionBlurMaxError() or
  * motionBlurMaxIterations() is reached, the sequence seeded by (x, y, motionBlur) so the result
@@ -681,10 +683,10 @@ void transformRegion(const CanonicalTransformFn& fn,
                      RectD* rectTo);
 
 /**
- * @brief Grows a non-empty RoD by one output pixel on each finite side when blackOutside, so
+ * @brief Grows a non-empty RoD by one output pixel on each finite side for Black, so
  * the edge fades to black. (sx, sy) is the render scale and par the output's.
  **/
-void expandRoD(double par, double sx, double sy, bool blackOutside, RectD* rod);
+void expandRoD(double par, double sx, double sy, EdgeMode edgeMode, RectD* rod);
 
 /**
  * @brief Grows srcRoI, the back-transformed roi, by filterRoIExpansion() source pixels on each
@@ -703,7 +705,7 @@ struct RegionParams {
     bool invert;
     BlurSettings blur;
     FilterSpec filter;
-    bool blackOutside;
+    EdgeMode edgeMode;
     bool isIdentity;
     bool doMasking;
     double mix;
@@ -713,7 +715,7 @@ struct RegionParams {
         : invert(false)
         , blur()
         , filter(eFilterCubic)
-        , blackOutside(true)
+        , edgeMode(EdgeMode::Black)
         , isIdentity(false)
         , doMasking(false)
         , mix(1.)

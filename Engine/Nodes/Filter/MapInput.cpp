@@ -40,6 +40,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Image/PassExecutor.h"
+#include "Engine/Nodes/Image/StagePlan.h"
 #include "Engine/Nodes/KnobReader.h"
 
 NATRON_NAMESPACE_ENTER
@@ -149,10 +150,12 @@ MapInputParams::sizeAt(float map,
 
 void
 MapPlane::reset(const RectI& window,
-                float fill)
+                float fill,
+                EdgeMode mode)
 {
     _window = window;
     _outside = fill;
+    _edgeMode = mode;
     const std::size_t count = window.isNull() ? 0 : (std::size_t)window.width() * (std::size_t)window.height();
     _values.assign(count, fill);
 }
@@ -162,7 +165,11 @@ MapPlane::at(int x,
              int y) const
 {
     if (!_window.contains(x, y)) {
-        return _outside;
+        if ((_edgeMode == EdgeMode::Black) || _window.isNull()) {
+            return _outside;
+        }
+        x = std::clamp(x, _window.x1, _window.x2 - 1);
+        y = std::clamp(y, _window.y1, _window.y2 - 1);
     }
 
     return _values[(std::size_t)(y - _window.y1) * (std::size_t)_window.width() + (std::size_t)(x - _window.x1)];
@@ -187,11 +194,19 @@ MapPlane::tileRange(const RectI& rect) const
     if (rect.isNull()) {
         return range;
     }
-    const RectI inside = _window.isNull() ? RectI() : _window.intersect(rect);
+    if (_window.isNull()) {
+        return range;
+    }
+    const bool stretch = (_edgeMode == EdgeMode::Stretch);
+    RectI inside = _window.intersect(rect);
+    if (stretch) {
+        inside = RectI(std::clamp(rect.x1, _window.x1, _window.x2 - 1), std::clamp(rect.y1, _window.y1, _window.y2 - 1),
+                       std::clamp(rect.x2, _window.x1 + 1, _window.x2), std::clamp(rect.y2, _window.y1 + 1, _window.y2));
+    }
     if (inside.isNull()) {
         return range;
     }
-    const bool reachesOutside = !_window.contains(rect);
+    const bool reachesOutside = !stretch && !_window.contains(rect);
     range.min = reachesOutside ? _outside : row(inside.y1)[inside.x1 - _window.x1];
     range.max = range.min;
     for (int y = inside.y1; y < inside.y2; ++y) {
@@ -382,7 +397,7 @@ MapInput::read(EffectInstance* effect,
             return eStatusFailed;
         }
     }
-    fill(image.get(), channel, params, window, plane);
+    fill(image.get(), channel, params, window, plane, stageInputEdgeMode(*effect, inputNb, time, view));
 
     return eStatusOK;
 }
@@ -392,20 +407,34 @@ MapInput::fill(const Image* image,
                int channel,
                const MapInputParams& params,
                const RectI& window,
-               MapPlane* plane)
+               MapPlane* plane,
+               EdgeMode mode)
 {
-    // Beyond the Map's image the Map reads as a black pixel, so an inverted Map gives the full
+    // Beyond the Map's image a Black Map reads as a black pixel, so an inverted Map gives the full
     // effect there.
-    plane->reset(window, params.remap(0.f));
+    plane->reset(window, params.remap(0.f), mode);
     if (!image || window.isNull() || (channel < 0) || (channel >= (int)image->getComponentsCount())) {
         return;
     }
     const RectI bounds = image->getBounds();
+    const int nComps = (int)image->getComponentsCount();
+    if ((mode == EdgeMode::Stretch) && !bounds.isNull()) {
+        Image::ReadAccess access(image);
+        const int width = window.width();
+        for (int y = window.y1; y < window.y2; ++y) {
+            float* row = plane->row(y);
+            PassExec::readChannelRow(image, &access, bounds, nComps, channel, window.x1, y, width, EdgeMode::Stretch, row);
+            for (int x = 0; x < width; ++x) {
+                row[x] = params.remap(row[x]);
+            }
+        }
+
+        return;
+    }
     const RectI inside = window.intersect(bounds);
     if (inside.isNull()) {
         return;
     }
-    const int nComps = (int)image->getComponentsCount();
     Image::ReadAccess access(image);
     const int width = inside.width();
     for (int y = inside.y1; y < inside.y2; ++y) {

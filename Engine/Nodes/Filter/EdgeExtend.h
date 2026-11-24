@@ -92,9 +92,9 @@ inline constexpr InputSpec kEdgeExtendInputs[] = {
  * and elsewhere the solid colour nearby. The output is the extended colour, straight, or with
  * premultiplyOutput multiplied by the source's alpha; its alpha is always the source's.
  *
- * The blurs are FIR Gaussians (Blur's "Gaussian (FIR)") with the nearest pixel repeated outside
- * the image, so the region of definition is the source's, and nothing spreads past the reach of
- * the slices' kernels. The node works on the four channels of a pixel at once; with fewer of them
+ * The blurs are FIR Gaussians (Blur's "Gaussian (FIR)") that read outside the image by the Edge
+ * Mode; the region of definition is the source's, and nothing spreads past the reach of the
+ * slices' kernels. The node works on the four channels of a pixel at once; with fewer of them
  * processed, there is no matte to extend from, and the processed channels are passed through, as
  * the OpenFX CImg EdgeExtend does. Nothing is clamped.
  **/
@@ -112,6 +112,8 @@ struct EdgeExtendOp {
                        "\n"
                        "The output alpha is always the input's. The output colour is the extended colour, straight (unpremultiplied); with Premultiply Output it is multiplied by the input's alpha, which gives a premultiplied image whose soft edges carry the extended colour.\n"
                        "\n"
+                       "Outside the image the blurs read by the edge mode: Stretch repeats the edge pixels, Black reads transparent black.\n"
+                       "\n"
                        "The node needs the red, green, blue and alpha channels: with fewer of them processed, it passes the input through.",
         .grouping = PLUGIN_GROUP_FILTER,
         .majorVersion = PLUGIN_MAJOR_NATRON_EDGEEXTEND,
@@ -121,7 +123,7 @@ struct EdgeExtendOp {
     };
 
     static constexpr ImagePipelineSpec kPipeline = {
-        .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed },
+        .stages = { Stage::MaskMix, Stage::PassThroughUnprocessed, Stage::EdgeMode },
         .layers = LayerPolicy::color(true, true, true, true),
         .op = OpKind::Passes,
     };

@@ -109,6 +109,7 @@ ActionWithShortcut::ActionWithShortcut(const std::string & group,
     (void)QT_TR_NOOP(kShortcutDescActionPauseViewer);
     (void)QT_TR_NOOP(kShortcutDescActionPauseViewerInputA);
     (void)QT_TR_NOOP(kShortcutDescActionProxyEnabled);
+    (void)QT_TR_NOOP(kShortcutDescActionAutoProxyScrubbing);
     (void)QT_TR_NOOP(kShortcutDescActionProxyLevel2);
     (void)QT_TR_NOOP(kShortcutDescActionProxyLevel4);
     (void)QT_TR_NOOP(kShortcutDescActionProxyLevel8);
@@ -142,6 +143,7 @@ ActionWithShortcut::ActionWithShortcut(const std::string & group,
     (void)QT_TR_NOOP(kShortcutDescActionGraphRearrangeNodes);
     (void)QT_TR_NOOP(kShortcutDescActionGraphRemoveNodes);
     (void)QT_TR_NOOP(kShortcutDescActionGraphShowLinkLines);
+    (void)QT_TR_NOOP(kShortcutDescActionGraphShowGpuRegions);
     (void)QT_TR_NOOP(kShortcutDescActionGraphNavigateUpstream);
     (void)QT_TR_NOOP(kShortcutDescActionGraphNavigateDownstram);
     (void)QT_TR_NOOP(kShortcutDescActionGraphSelectUp);
@@ -168,6 +170,26 @@ ActionWithShortcut::ActionWithShortcut(const std::string & group,
     (void)QT_TR_NOOP(kShortcutDescActionGraphExtractNode);
     (void)QT_TR_NOOP(kShortcutDescActionGraphMakeGroup);
     (void)QT_TR_NOOP(kShortcutDescActionGraphExpandGroup);
+    (void)QT_TR_NOOP(kShortcutDescActionGraphLockViewerInput1);
+    (void)QT_TR_NOOP(kShortcutDescActionGraphLockViewerInput2);
+    (void)QT_TR_NOOP(kShortcutDescActionGraphLockViewerInput3);
+    (void)QT_TR_NOOP(kShortcutDescActionGraphLockViewerInput4);
+    (void)QT_TR_NOOP(kShortcutDescActionGraphLockViewerInput5);
+    (void)QT_TR_NOOP(kShortcutDescActionGraphLockViewerInput6);
+    (void)QT_TR_NOOP(kShortcutDescActionGraphLockViewerInput7);
+    (void)QT_TR_NOOP(kShortcutDescActionGraphLockViewerInput8);
+    (void)QT_TR_NOOP(kShortcutDescActionGraphLockViewerInput9);
+    (void)QT_TR_NOOP(kShortcutDescActionGraphLockViewerInput10);
+    (void)QT_TR_NOOP(kShortcutDescActionGraphUnlockViewerInput1);
+    (void)QT_TR_NOOP(kShortcutDescActionGraphUnlockViewerInput2);
+    (void)QT_TR_NOOP(kShortcutDescActionGraphUnlockViewerInput3);
+    (void)QT_TR_NOOP(kShortcutDescActionGraphUnlockViewerInput4);
+    (void)QT_TR_NOOP(kShortcutDescActionGraphUnlockViewerInput5);
+    (void)QT_TR_NOOP(kShortcutDescActionGraphUnlockViewerInput6);
+    (void)QT_TR_NOOP(kShortcutDescActionGraphUnlockViewerInput7);
+    (void)QT_TR_NOOP(kShortcutDescActionGraphUnlockViewerInput8);
+    (void)QT_TR_NOOP(kShortcutDescActionGraphUnlockViewerInput9);
+    (void)QT_TR_NOOP(kShortcutDescActionGraphUnlockViewerInput10);
     (void)QT_TR_NOOP(kShortcutDescActionCurveEditorRemoveKeys);
     (void)QT_TR_NOOP(kShortcutDescActionCurveEditorConstant);
     (void)QT_TR_NOOP(kShortcutDescActionCurveEditorLinear);
@@ -207,6 +229,10 @@ ActionWithShortcut::ActionWithShortcut(const std::string & group,
     (void)QT_TR_NOOP(kShortcutDescActionViewer3DCycleTool);
     (void)QT_TR_NOOP(kShortcutDescActionViewer3DToggleSpace);
     (void)QT_TR_NOOP(kShortcutDescActionViewer3DTogglePivot);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DPickwalkParent);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DPickwalkChild);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DPickwalkPrevSibling);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DPickwalkNextSibling);
 
     QString actionIDStr = QString::fromUtf8( actionID.c_str() );
     std::list<QKeySequence> seq = getKeybind(_group, actionIDStr);
@@ -503,6 +529,16 @@ getViewer3DDefaultKeyBindings()
         { kShortcutIDActionViewer3DTogglePivot, kShortcutDescActionViewer3DTogglePivot, Qt::NoModifier, Qt::Key(0), Qt::NoModifier, Qt::Key(0) },
         { kShortcutIDActionViewer3DSetSelectionOnNode, kShortcutDescActionViewer3DSetSelectionOnNode, Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_E, Qt::NoModifier, Qt::Key(0) },
         { kShortcutIDActionViewer3DCreateFromSelection, kShortcutDescActionViewer3DCreateFromSelection, Qt::NoModifier, Qt::Key_Tab, Qt::NoModifier, Qt::Key(0) },
+        // Draw states of the picked box or the selection: down opens rows up, up boxes their parents.
+        { kShortcutIDActionViewer3DDrawChildren, kShortcutDescActionViewer3DDrawChildren, Qt::NoModifier, Qt::Key_Down, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DDrawFull, kShortcutDescActionViewer3DDrawFull, Qt::ShiftModifier, Qt::Key_Down, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DDrawLoadAll, kShortcutDescActionViewer3DDrawLoadAll, Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_Down, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DDrawParentBBox, kShortcutDescActionViewer3DDrawParentBBox, Qt::NoModifier, Qt::Key_Up, Qt::NoModifier, Qt::Key(0) },
+        // Maya's pickwalk, on Alt: the plain arrows step frames and set draw states.
+        { kShortcutIDActionViewer3DPickwalkParent, kShortcutDescActionViewer3DPickwalkParent, Qt::AltModifier, Qt::Key_Left, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DPickwalkChild, kShortcutDescActionViewer3DPickwalkChild, Qt::AltModifier, Qt::Key_Right, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DPickwalkPrevSibling, kShortcutDescActionViewer3DPickwalkPrevSibling, Qt::AltModifier, Qt::Key_Up, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DPickwalkNextSibling, kShortcutDescActionViewer3DPickwalkNextSibling, Qt::AltModifier, Qt::Key_Down, Qt::NoModifier, Qt::Key(0) },
     };
 
     return bindings;

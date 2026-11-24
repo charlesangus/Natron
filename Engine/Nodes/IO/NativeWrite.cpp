@@ -589,7 +589,7 @@ writtenLayer(const ImageLayerDesc& layer,
         names.push_back(all[(std::size_t)channels.source[i]]);
     }
 
-    return ImageLayerDesc(layer.getLayerID(), layer.getLayerLabel(), std::string(), names);
+    return ImageLayerDesc(layer.getLayerID(), names);
 }
 
 // `planes` indexes the candidates the file gets, colour first, and `channels` and `outputs` run
@@ -1157,7 +1157,7 @@ NativeWrite::getPreferredMetadataAt(double time,
     if (!header) {
         // An RGBA input whose file gets no alpha, because the format has none or the channel set
         // leaves it out, makes an RGB output: the alpha is not in the file, so not in the output.
-        if ((metadata.getComponentsType(-1) == kNatronColorLayerID) && (metadata.getNComps(-1) == 4) && getNode()->getLayerKnob()) {
+        if ((metadata.getComponentsType(-1) == eImageComponentsTypeColor) && (metadata.getNComps(-1) == 4) && getNode()->getLayerKnob()) {
             const ImageLayerDesc rgba = ImageLayerDesc::getRGBAComponents();
             ResolvedLayer colour;
             colour.desc = rgba;
@@ -2342,7 +2342,7 @@ NativeWrite::render(const RenderActionArgs& args)
                 plane.names = plan.channels[p].names;
                 const ImageLayerDesc& layer = plan.outputs[p];
                 frame.colour = layer.isColorLayer();
-                plane.label = layer.isColorLayer() ? std::string(kNatronColorStorageLabel) : layer.getLayerID();
+                plane.label = layer.isColorLayer() ? std::string(kNatronColorLayerID) : layer.getLayerID();
                 planes.planes.push_back(plane);
             }
             viewPlanes.push_back(planes);

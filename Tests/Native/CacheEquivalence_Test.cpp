@@ -1346,11 +1346,11 @@ TEST_F(CacheEquivalenceTest, LayerRegistryChanges)
         s->output = add;
         s->steps.push_back(Step { "mask registered", [p]() {
                                      std::string error;
-                                     ignore_result(p->addLayer(ImageLayerDesc("mask", "mask", "", std::vector<std::string>(1, "A")), LayerRegistryEntry::eOriginUser, &error));
+                                     ignore_result(p->addLayer(ImageLayerDesc("mask", std::vector<std::string>(1, "A")), LayerRegistryEntry::eOriginUser, &error));
                                  } });
         s->steps.push_back(Step { "unused layer registered", [p]() {
                                      std::string error;
-                                     ignore_result(p->addLayer(ImageLayerDesc("extra", "extra", "", std::vector<std::string>(1, "X")), LayerRegistryEntry::eOriginUser, &error));
+                                     ignore_result(p->addLayer(ImageLayerDesc("extra", std::vector<std::string>(1, "X")), LayerRegistryEntry::eOriginUser, &error));
                                  } });
         s->steps.push_back(Step { "unused layer removed", [p]() {
                                      std::string error;
@@ -1659,12 +1659,12 @@ protected:
         }
     }
 
-    // A Group or a Precomp renders nothing of its own: what consumes one pulls the node its output
+    // A Precomp renders nothing of its own: what consumes one pulls the node its output
     // redirects to, so a Dot below it stands in for that consumer. Anything else is rendered itself.
     NodePtr consumerOf(const NodePtr& node)
     {
         EffectInstancePtr effect = node->getEffectInstance();
-        if (!std::dynamic_pointer_cast<NodeGroup>(effect) && !std::dynamic_pointer_cast<PrecompNode>(effect)) {
+        if (!std::dynamic_pointer_cast<PrecompNode>(effect)) {
             return NodePtr();
         }
         NodePtr dot = create(PLUGINID_NATRON_DOT);

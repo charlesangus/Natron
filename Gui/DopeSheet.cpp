@@ -28,7 +28,11 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <set>
 #include <stdexcept>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 // Qt includes
 #include <QDebug>
@@ -38,6 +42,7 @@
 
 // Natron includes
 #include "Engine/Bezier.h"
+#include "Engine/EffectInstance.h"
 #include "Engine/GroupInput.h"
 #include "Engine/GroupOutput.h"
 #include "Engine/Knob.h"
@@ -50,6 +55,7 @@
 #include "Engine/Nodes/Time/TimeOffset.h"
 #include "Engine/RotoCurveContext.h"
 #include "Engine/RotoDrawableItem.h"
+#include "Engine/RotoStrokeItem.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
 
@@ -158,31 +164,37 @@ public:
     ~DopeSheetPrivate();
 
     /* functions */
-    Node * getNearestTimeFromOutputs_recursive(Node *node, std::list<Node*>& markedNodes) const;
-    Node * getNearestReaderFromInputs_recursive(Node *node, std::list<Node*>& markedNodes) const;
-    void getInputsConnected_recursive(Node *node, std::vector<DSNodePtr> *result) const;
+    Node* getNearestTimeFromOutputs(Node* node) const;
+    Node* getNearestReaderFromInputs(Node* node) const;
+    void getInputsConnected_recursive(Node* node, std::unordered_set<Node*>* visited, std::vector<DSNodePtr>* result) const;
 
     void pushUndoCommand(QUndoCommand* cmd, const UndoScope& scope);
 
     /* attributes */
     DopeSheet *q_ptr;
     DSTreeItemNodeMap treeItemNodeMap;
+    // The keys of treeItemNodeMap whose row is each node's, in that map's order.
+    std::unordered_map<const NodeGui*, std::set<QTreeWidgetItem*>> treeItemsByNodeGui;
     DopeSheetSelectionModel* selectionModel;
     std::vector<DopeSheetKey> keyframesClipboard;
     TimeLinePtr timeline;
     DopeSheetEditor* editor;
     UndoGesture editGesture;
+    // Keyed by each stroke's Lifetime frame knob, so a frame change finds its row directly.
+    std::unordered_map<const KnobI*, DSKnobWPtr> paintedFrameRows;
 };
 
 DopeSheetPrivate::DopeSheetPrivate(DopeSheetEditor* editor,
                                    DopeSheet* qq)
     : q_ptr(qq)
     , treeItemNodeMap()
+    , treeItemsByNodeGui()
     , selectionModel(new DopeSheetSelectionModel(qq))
     , keyframesClipboard()
     , timeline()
     , editor(editor)
     , editGesture()
+    , paintedFrameRows()
 {
 }
 
@@ -312,62 +324,83 @@ scopeForNode(const NodePtr& node)
 }
 } // anon namespace
 
-Node*
-DopeSheetPrivate::getNearestTimeFromOutputs_recursive(Node *node,
-                                                      std::list<Node*>& markedNodes) const
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+bool
+isTimeNodePluginID(const std::string& pluginID)
 {
-    const NodesWList &outputs = node->getGuiOutputs();
+    return (pluginID == PLUGINID_NATRON_RETIME)
+        || (pluginID == PLUGINID_NATRON_TIMEOFFSET)
+        || (pluginID == PLUGINID_NATRON_FRAMERANGE)
+        || (pluginID == PLUGINID_NATRON_APPENDCLIP);
+}
 
-    if ( std::find(markedNodes.begin(), markedNodes.end(), node) != markedNodes.end() ) {
-        return 0;
-    }
-    markedNodes.push_back(node);
-    for (NodesWList::const_iterator it = outputs.begin(); it != outputs.end(); ++it) {
-        NodePtr output = it->lock();
-        std::string pluginID = output->getPluginID();
+NATRON_NAMESPACE_ANONYMOUS_EXIT
 
-        if ((pluginID == PLUGINID_NATRON_RETIME)
-            || (pluginID == PLUGINID_NATRON_TIMEOFFSET)
-            || (pluginID == PLUGINID_NATRON_FRAMERANGE)
-            || (pluginID == PLUGINID_NATRON_APPENDCLIP)) {
+// Iterative, so that a long chain cannot overflow the stack; the visit order is the depth-first
+// order of the outputs, and the first time node reached wins.
+Node*
+DopeSheetPrivate::getNearestTimeFromOutputs(Node* start) const
+{
+    struct Frame {
+        NodesWList::const_iterator it, end;
+    };
+
+    std::unordered_set<Node*> visited;
+    std::vector<Frame> stack;
+    visited.insert(start);
+    const NodesWList& startOutputs = start->getGuiOutputs();
+    stack.push_back(Frame { startOutputs.begin(), startOutputs.end() });
+    while (!stack.empty()) {
+        Frame& frame = stack.back();
+        if (frame.it == frame.end) {
+            stack.pop_back();
+            continue;
+        }
+        NodePtr output = (frame.it++)->lock();
+        if (!output) {
+            continue;
+        }
+        if (isTimeNodePluginID(output->getPluginID())) {
             return output.get();
-        } else {
-            Node* ret =  getNearestTimeFromOutputs_recursive(output.get(), markedNodes);
-            if (ret) {
-                return ret;
-            }
+        }
+        if (visited.insert(output.get()).second) {
+            const NodesWList& outputs = output->getGuiOutputs();
+            stack.push_back(Frame { outputs.begin(), outputs.end() });
         }
     }
 
     return 0;
 }
 
-Node *
-DopeSheetPrivate::getNearestReaderFromInputs_recursive(Node *node,
-                                                       std::list<Node*>& markedNodes) const
+Node*
+DopeSheetPrivate::getNearestReaderFromInputs(Node* start) const
 {
-    const std::vector<NodeWPtr> &inputs = node->getGuiInputs();
+    struct Frame {
+        Node* node;
+        std::size_t next;
+    };
 
-    if ( std::find(markedNodes.begin(), markedNodes.end(), node) != markedNodes.end() ) {
-        return 0;
-    }
-    markedNodes.push_back(node);
-    for (std::vector<NodeWPtr>::const_iterator it = inputs.begin(); it != inputs.end(); ++it) {
-        NodePtr input = it->lock();
-
+    std::unordered_set<Node*> visited;
+    std::vector<Frame> stack;
+    visited.insert(start);
+    stack.push_back(Frame { start, 0 });
+    while (!stack.empty()) {
+        Frame& frame = stack.back();
+        const std::vector<NodeWPtr>& inputs = frame.node->getGuiInputs();
+        if (frame.next >= inputs.size()) {
+            stack.pop_back();
+            continue;
+        }
+        NodePtr input = inputs[frame.next++].lock();
         if (!input) {
             continue;
         }
-
-        std::string pluginID = input->getPluginID();
-        if (pluginID == PLUGINID_NATRON_READ) {
-
+        if (input->getPluginID() == PLUGINID_NATRON_READ) {
             return input.get();
-        } else {
-            Node* ret = getNearestReaderFromInputs_recursive(input.get(), markedNodes);
-            if (ret) {
-                return ret;
-            }
+        }
+        if (visited.insert(input.get()).second) {
+            stack.push_back(Frame { input.get(), 0 });
         }
     }
 
@@ -375,15 +408,16 @@ DopeSheetPrivate::getNearestReaderFromInputs_recursive(Node *node,
 }
 
 void
-DopeSheetPrivate::getInputsConnected_recursive(Node *node,
-                                               std::vector<DSNodePtr> *result) const
+DopeSheetPrivate::getInputsConnected_recursive(Node* node,
+                                               std::unordered_set<Node*>* visited,
+                                               std::vector<DSNodePtr>* result) const
 {
     const std::vector<NodeWPtr> &inputs = node->getGuiInputs();
 
     for (std::vector<NodeWPtr>::const_iterator it = inputs.begin(); it != inputs.end(); ++it) {
         NodePtr input = it->lock();
 
-        if (!input) {
+        if (!input || !visited->insert(input.get()).second) {
             continue;
         }
 
@@ -393,7 +427,7 @@ DopeSheetPrivate::getInputsConnected_recursive(Node *node,
             result->push_back(dsNode);
         }
 
-        getInputsConnected_recursive(input.get(), result);
+        getInputsConnected_recursive(input.get(), visited, result);
     }
 }
 
@@ -409,6 +443,7 @@ DopeSheet::DopeSheet(Gui *gui,
 DopeSheet::~DopeSheet()
 {
     _imp->treeItemNodeMap.clear();
+    _imp->treeItemsByNodeGui.clear();
 }
 
 DSTreeItemNodeMap
@@ -467,7 +502,9 @@ DopeSheet::addNode(NodeGuiPtr nodeGui)
 
     DSNodePtr dsNode = createDSNode(nodeGui, nodeType);
 
-    _imp->treeItemNodeMap.insert( TreeItemAndDSNode(dsNode->getTreeItem(), dsNode) );
+    if (_imp->treeItemNodeMap.insert(TreeItemAndDSNode(dsNode->getTreeItem(), dsNode)).second) {
+        _imp->treeItemsByNodeGui[dsNode->getNodeGui().get()].insert(dsNode->getTreeItem());
+    }
 
     Q_EMIT nodeAdded( dsNode.get() );
 } // DopeSheet::addNode
@@ -475,23 +512,37 @@ DopeSheet::addNode(NodeGuiPtr nodeGui)
 void
 DopeSheet::removeNode(NodeGui *node)
 {
+    std::unordered_map<const NodeGui*, std::set<QTreeWidgetItem*>>::iterator rows = _imp->treeItemsByNodeGui.find(node);
+    if (rows == _imp->treeItemsByNodeGui.end()) {
+        return;
+    }
+    // A row only holds its node weakly, so one indexed under this address may be another node's
+    // that was destroyed there before.
     DSTreeItemNodeMap::iterator toRemove = _imp->treeItemNodeMap.end();
-
-    for (DSTreeItemNodeMap::iterator it = _imp->treeItemNodeMap.begin();
-         it != _imp->treeItemNodeMap.end();
-         ++it) {
-        if ( (*it).second->getNodeGui().get() == node ) {
-            toRemove = it;
-
-            break;
+    while (!rows->second.empty() && (toRemove == _imp->treeItemNodeMap.end())) {
+        DSTreeItemNodeMap::iterator row = _imp->treeItemNodeMap.find(*rows->second.begin());
+        rows->second.erase(rows->second.begin());
+        if ((row != _imp->treeItemNodeMap.end()) && (row->second->getNodeGui().get() == node)) {
+            toRemove = row;
         }
     }
-
+    if (rows->second.empty()) {
+        _imp->treeItemsByNodeGui.erase(rows);
+    }
     if ( toRemove == _imp->treeItemNodeMap.end() ) {
         return;
     }
 
     DSNodePtr dsNode = (*toRemove).second;
+
+    std::unordered_set<const DSKnob*> paintedRows;
+    const DSTreeItemKnobMap& knobRows = dsNode->getItemKnobMap();
+    for (DSTreeItemKnobMap::const_iterator it = knobRows.begin(); it != knobRows.end(); ++it) {
+        if (it->second->isPaintedFrame()) {
+            paintedRows.insert(it->second.get());
+        }
+    }
+    unregisterPaintedFrameRows(paintedRows);
 
     _imp->selectionModel->onNodeAboutToBeRemoved(dsNode);
 
@@ -678,7 +729,9 @@ std::vector<DSNodePtr> DopeSheet::getImportantNodes(DSNode *dsNode) const
             }
         }
     } else if ( dsNode->isTimeNode() ) {
-        _imp->getInputsConnected_recursive(dsNode->getInternalNode().get(), &ret);
+        std::unordered_set<Node*> visited;
+        visited.insert(dsNode->getInternalNode().get());
+        _imp->getInputsConnected_recursive(dsNode->getInternalNode().get(), &visited, &ret);
     }
 
 
@@ -692,8 +745,7 @@ std::vector<DSNodePtr> DopeSheet::getImportantNodes(DSNode *dsNode) const
  */
 DSNodePtr DopeSheet::getNearestTimeNodeFromOutputs(DSNode *dsNode) const
 {
-    std::list<Node*> markedNodes;
-    Node *timeNode = _imp->getNearestTimeFromOutputs_recursive(dsNode->getInternalNode().get(), markedNodes);
+    Node* timeNode = _imp->getNearestTimeFromOutputs(dsNode->getInternalNode().get());
 
     return findDSNode(timeNode);
 }
@@ -702,8 +754,7 @@ Node *
 DopeSheet::getNearestReader(DSNode *timeNode) const
 {
     assert( timeNode->isTimeNode() );
-    std::list<Node*> markedNodes;
-    Node *nearestReader = _imp->getNearestReaderFromInputs_recursive(timeNode->getInternalNode().get(), markedNodes);
+    Node* nearestReader = _imp->getNearestReaderFromInputs(timeNode->getInternalNode().get());
 
     return nearestReader;
 }
@@ -727,9 +778,23 @@ DopeSheet::deleteSelectedKeyframes()
         return;
     }
 
-    std::vector<DopeSheetKey> toRemove = _imp->selectionModel->getKeyframesSelectionCopy();
+    std::vector<DopeSheetKey> toRemove;
+    std::vector<DopeSheetKey> kept;
+    {
+        std::vector<DopeSheetKey> selected = _imp->selectionModel->getKeyframesSelectionCopy();
+        for (std::vector<DopeSheetKey>::const_iterator it = selected.begin(); it != selected.end(); ++it) {
+            if (it->isDisplayOnly()) {
+                kept.push_back(*it);
+            } else {
+                toRemove.push_back(*it);
+            }
+        }
+    }
+    if (toRemove.empty()) {
+        return;
+    }
 
-    _imp->selectionModel->clearKeyframeSelection();
+    _imp->selectionModel->makeSelection(kept, std::vector<DSNodePtr>(), DopeSheetSelectionModel::SelectionTypeClear);
 
     _imp->pushUndoCommand(wrapDriverEdits(new DSRemoveKeysCommand(toRemove, _imp->editor), toRemove), scopeForKeys(toRemove));
 }
@@ -801,7 +866,7 @@ DopeSheet::moveSelectedKeysAndNodes(double dt)
     std::vector<DopeSheetKeyPtr> vect;
     for (DopeSheetKeyPtrList::iterator it = selectedKeyframes.begin(); it != selectedKeyframes.end(); ++it) {
         DSKnobPtr knobDs = (*it)->getContext();
-        if (!knobDs) {
+        if (!knobDs || knobDs->isPaintedFrame()) {
             continue;
         }
         // Read through the row so shape keys clamp the same way as knob keys.
@@ -827,6 +892,9 @@ DopeSheet::moveSelectedKeysAndNodes(double dt)
     dt = std::min(dt, maxRight);
     dt = std::max(dt, maxLeft);
     if (dt == 0) {
+        return;
+    }
+    if (vect.empty() && selectedNodes.empty()) {
         return;
     }
 
@@ -1076,7 +1144,7 @@ DopeSheet::pasteKeys(const std::vector<DopeSheetKey>& keys, bool relative)
     // Shape keys hold a whole shape, not a value, so they don't paste.
     std::vector<DopeSheetKey> toPaste;
     for (std::vector<DopeSheetKey>::const_iterator it = keys.begin(); it != keys.end(); ++it) {
-        if (it->bezier.expired()) {
+        if (it->bezier.expired() && !it->isDisplayOnly()) {
             toPaste.push_back(*it);
         }
     }
@@ -1088,7 +1156,7 @@ DopeSheet::pasteKeys(const std::vector<DopeSheetKey>& keys, bool relative)
     _imp->editor->getHierarchyView()->getSelectedDSKnobs(&selectedKnobs);
     std::list<DSKnobPtr> dstKnobs;
     for (std::list<DSKnobPtr>::const_iterator it = selectedKnobs.begin(); it != selectedKnobs.end(); ++it) {
-        if (!(*it)->isShape()) {
+        if (!(*it)->isShape() && !(*it)->isPaintedFrame()) {
             dstKnobs.push_back(*it);
         }
     }
@@ -1121,6 +1189,13 @@ DopeSheet::setSelectedKeysInterpolation(KeyframeTypeEnum keyType)
     DopeSheetKeyPtrList selectedKeyframes;
     std::vector<DSNodePtr> selectedNodes;
     _imp->selectionModel->getCurrentSelection(&selectedKeyframes, &selectedNodes);
+    for (DopeSheetKeyPtrList::iterator it = selectedKeyframes.begin(); it != selectedKeyframes.end();) {
+        if ((*it)->isDisplayOnly()) {
+            it = selectedKeyframes.erase(it);
+        } else {
+            ++it;
+        }
+    }
     std::list<DSKeyInterpolationChange> changes;
 
     for (DopeSheetKeyPtrList::iterator it = selectedKeyframes.begin();
@@ -1132,6 +1207,10 @@ DopeSheet::setSelectedKeysInterpolation(KeyframeTypeEnum keyType)
         DSKeyInterpolationChange change(keyPtr->key.getInterpolation(), keyType, keyPtr, oldTangents);
 
         changes.push_back(change);
+    }
+
+    if (changes.empty()) {
+        return;
     }
 
     _imp->pushUndoCommand(wrapDriverEdits(new DSSetSelectedKeysInterpolationCommand(changes, _imp->editor), selectedKeyframes), scopeForKeys(selectedKeyframes));
@@ -1146,6 +1225,16 @@ DopeSheet::transformSelectedKeys(const Transform::Matrix3x3& transform)
     DopeSheetKeyPtrList selectedKeyframes;
     std::vector<DSNodePtr> selectedNodes;
     _imp->selectionModel->getCurrentSelection(&selectedKeyframes, &selectedNodes);
+    for (DopeSheetKeyPtrList::iterator it = selectedKeyframes.begin(); it != selectedKeyframes.end();) {
+        if ((*it)->isDisplayOnly()) {
+            it = selectedKeyframes.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    if (selectedKeyframes.empty()) {
+        return;
+    }
 
     DSTransformKeysCommand* cmd = new DSTransformKeysCommand(selectedKeyframes, transform, _imp->editor);
     cmd->setGestureKey(_imp->editGesture.key());
@@ -1280,6 +1369,54 @@ DopeSheet::onShapeKeyframesChanged()
 }
 
 void
+DopeSheet::onPaintedFrameChanged()
+{
+    KnobSignalSlotHandler* handler = qobject_cast<KnobSignalSlotHandler*>(sender());
+    KnobIPtr knob = handler ? handler->getKnob() : KnobIPtr();
+
+    if (!knob) {
+        return;
+    }
+    std::unordered_map<const KnobI*, DSKnobWPtr>::iterator found = _imp->paintedFrameRows.find(knob.get());
+    if (found == _imp->paintedFrameRows.end()) {
+        return;
+    }
+    DSKnobPtr row = found->second.lock();
+    RotoDrawableItemPtr item = row ? row->getRotoItem() : RotoDrawableItemPtr();
+    // A knob freed and another allocated at its address must not reach the old row.
+    if (!item || (item->getLifeTimeFrameKnob() != knob)) {
+        _imp->paintedFrameRows.erase(found);
+
+        return;
+    }
+    Q_EMIT keyframeSetOrRemoved(row.get());
+    Q_EMIT modelChanged();
+}
+
+void
+DopeSheet::registerPaintedFrameRow(const KnobIPtr& frameKnob,
+                                   const DSKnobPtr& row)
+{
+    _imp->paintedFrameRows[frameKnob.get()] = row;
+}
+
+void
+DopeSheet::unregisterPaintedFrameRows(const std::unordered_set<const DSKnob*>& rows)
+{
+    if (rows.empty()) {
+        return;
+    }
+    for (std::unordered_map<const KnobI*, DSKnobWPtr>::iterator it = _imp->paintedFrameRows.begin(); it != _imp->paintedFrameRows.end();) {
+        DSKnobPtr row = it->second.lock();
+        if (!row || rows.count(row.get())) {
+            it = _imp->paintedFrameRows.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+void
 DopeSheet::onItemKnobKeyframesChanged()
 {
     KnobSignalSlotHandler* handler = qobject_cast<KnobSignalSlotHandler*>(sender());
@@ -1313,6 +1450,7 @@ public:
     std::list<DSKnob*> driverRows;
     RotoDrawableItemWPtr item;
     BezierWPtr bezier;
+    bool paintedFrame;
 };
 
 DSKnobPrivate::DSKnobPrivate()
@@ -1324,6 +1462,7 @@ DSKnobPrivate::DSKnobPrivate()
     , driverRows()
     , item()
     , bezier()
+    , paintedFrame(false)
 {}
 
 DSKnobPrivate::~DSKnobPrivate()
@@ -1401,6 +1540,18 @@ DSKnob::DSKnob(QTreeWidgetItem* nameItem,
     _imp->nameItem = nameItem;
     _imp->item = bezier;
     _imp->bezier = bezier;
+}
+
+DSKnob::DSKnob(QTreeWidgetItem* nameItem,
+               const RotoStrokeItemPtr& stroke)
+    : _imp(new DSKnobPrivate)
+{
+    assert(stroke);
+
+    _imp->dimension = 0;
+    _imp->nameItem = nameItem;
+    _imp->item = stroke;
+    _imp->paintedFrame = true;
 }
 
 DSKnob::~DSKnob()
@@ -1498,6 +1649,12 @@ DSKnob::isShape() const
     return !_imp->bezier.expired();
 }
 
+bool
+DSKnob::isPaintedFrame() const
+{
+    return _imp->paintedFrame;
+}
+
 CurvePtr
 DSKnob::getCurve(int dimension) const
 {
@@ -1516,7 +1673,6 @@ DSKnob::getCurve(int dimension) const
         return CurvePtr();
     }
 
-    // A selected item's knobs are slaved to the node's proxies; the keys are the item's own.
     return knob->getCurve(ViewIdx(0), dimension, true);
 }
 
@@ -1526,6 +1682,16 @@ DSKnob::getKeyFrames(int dimension) const
     KeyFrameSet ret;
     BezierPtr bezier = getBezier();
 
+    if (_imp->paintedFrame) {
+        RotoDrawableItemPtr item = getRotoItem();
+        KnobIntPtr frameKnob = item ? item->getLifeTimeFrameKnob() : KnobIntPtr();
+        if (frameKnob) {
+            const int frame = frameKnob->getValueAtTime(frameKnob->getCurrentTime(), 0, ViewIdx(0), false, true);
+            ret.insert(KeyFrame(frame, 0., 0., 0., eKeyframeTypeConstant));
+        }
+
+        return ret;
+    }
     if (bezier) {
         std::list<std::pair<double, KeyframeTypeEnum>> keys;
         bezier->getKeyframeTimesAndInterpolation(&keys);
@@ -2149,8 +2315,12 @@ DSNode::rebuildItemRows()
         return;
     }
 
+    std::unordered_set<const DSKnob*> oldPaintedRows;
     for (DSTreeItemKnobMap::iterator it = _imp->itemKnobMap.begin(); it != _imp->itemKnobMap.end();) {
         if (isUnderItem(it->first, _imp->itemRows)) {
+            if (it->second->isPaintedFrame()) {
+                oldPaintedRows.insert(it->second.get());
+            }
             _imp->itemKnobMap.erase(it++);
         } else {
             ++it;
@@ -2160,6 +2330,7 @@ DSNode::rebuildItemRows()
         delete *it;
     }
     _imp->itemRows.clear();
+    _imp->dopeSheetModel->unregisterPaintedFrameRows(oldPaintedRows);
 
     std::list<RotoDrawableItemPtr> items = context->getCurvesByRenderOrder(false);
     for (std::list<RotoDrawableItemPtr>::const_iterator it = items.begin(); it != items.end(); ++it) {
@@ -2179,6 +2350,19 @@ DSNode::rebuildItemRows()
                                            SIGNAL(cloned()), SIGNAL(animationRemoved()) };
             for (std::size_t i = 0; i < sizeof(shapeSignals) / sizeof(shapeSignals[0]); ++i) {
                 QObject::connect(bezier.get(), shapeSignals[i], _imp->dopeSheetModel, SLOT(onShapeKeyframesChanged()), Qt::UniqueConnection);
+            }
+        }
+
+        RotoStrokeItemPtr stroke = std::dynamic_pointer_cast<RotoStrokeItem>(item);
+        KnobIntPtr frameKnob = stroke ? stroke->getLifeTimeFrameKnob() : KnobIntPtr();
+        if (frameKnob) {
+            QTreeWidgetItem* paintedRow = createKnobNameItem(QObject::tr("Painted Frame"), eDopeSheetItemTypePaintedFrame, 0, itemRow);
+            DSKnobPtr paintedKnob = std::make_shared<DSKnob>(paintedRow, stroke);
+            _imp->itemKnobMap.insert(std::make_pair(paintedRow, paintedKnob));
+            _imp->dopeSheetModel->registerPaintedFrameRow(frameKnob, paintedKnob);
+            KnobSignalSlotHandlerPtr frameHandler = frameKnob->getSignalSlotHandler();
+            if (frameHandler) {
+                QObject::connect(frameHandler.get(), SIGNAL(valueChanged(ViewSpec, int, int)), _imp->dopeSheetModel, SLOT(onPaintedFrameChanged()), Qt::UniqueConnection);
             }
         }
 

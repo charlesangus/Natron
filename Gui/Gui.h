@@ -114,6 +114,9 @@ public:
 
     void setActiveViewer(ViewerTab* viewer);
     ViewerTab* getActiveViewer() const;
+
+    // Every viewer tab that was made active or given the click focus, most recent first.
+    std::list<ViewerTab*> getViewersByRecentFocus() const;
     NodeCollectionPtr getLastSelectedNodeCollection() const;
 
     /**
@@ -299,6 +302,9 @@ public:
 
     bool isDraggingPanel() const;
 
+    // Whether the layout is being torn down and made again, when panes defer showing their tabs.
+    bool isRebuildingLayout() const;
+
     void updateRecentFileActions();
 
     static QPixmap screenShot(QWidget* w);
@@ -350,7 +356,34 @@ public:
     ScriptEditor* getScriptEditor() const;
     ProgressPanel* getProgressPanel() const;
 
+    // The first Scene Graph panel, "sceneGraph", which closing only hides.
     SceneGraphPanel* getSceneGraphPanel() const;
+
+    // A further Scene Graph panel following the active viewer, not yet in a pane. scriptName, a
+    // layout's sceneGraph<N> with N >= 2, is used when no tab has it; otherwise the lowest free N is.
+    SceneGraphPanel* addNewSceneGraphPanel(const std::string& scriptName = std::string());
+
+    // Destroys a panel addNewSceneGraphPanel made; the first panel is never destroyed.
+    void removeSceneGraphPanel(SceneGraphPanel* panel);
+
+    // Whether name is a script name addNewSceneGraphPanel can give, sceneGraph<N> with N >= 2.
+    static bool isExtraSceneGraphScriptName(const std::string& name);
+
+    // Whether panel is one addNewSceneGraphPanel made.
+    bool isExtraSceneGraphPanel(const PanelWidget* panel) const;
+
+    // Every Scene Graph panel, the first one first.
+    std::list<SceneGraphPanel*> getSceneGraphPanels() const;
+
+    // Brings up a Scene Graph panel following viewer, the first that does or a new one in the
+    // first pane other than the viewer's, and reveals paths in it. With the viewer's pane the only
+    // one, the panel is added there but not raised over the viewer. A pin is never changed.
+    // Returns the panel, null if there is no pane to show it in.
+    SceneGraphPanel* showPrimsInSceneGraph(ViewerTab* viewer, const QStringList& paths);
+
+    // Destroys the panels addNewSceneGraphPanel made that are in no pane.
+    void removeSceneGraphPanelsOutsidePanes();
+
     QVBoxLayout* getPropertiesLayout() const;
     PropertiesBinWrapper* getPropertiesBin() const;
     const RegisteredTabs & getRegisteredTabs() const;
@@ -448,6 +481,8 @@ public:
     void abortAllViewers();
 
     void centerAllNodeGraphsWithTimer();
+
+    void onProjectNodesRestoredInNodeGraphs();
 
     void setLastEnteredTabWidget(TabWidget* tab);
 
@@ -547,6 +582,12 @@ Q_SIGNALS:
 
     void activeViewerChanged();
 
+    // A node graph's selection changed, emitted once per return to the event loop.
+    void nodeSelectionChanged();
+
+    // A node or a connection of a node graph came or went.
+    void nodeGraphTopologyChanged();
+
     void s_doProgressStartOnMainThread(KnobHolder* effect, const QString &message, const QString &messageid, bool canCancel);
 
     void s_doProgressEndOnMainThread(KnobHolder* effect);
@@ -617,6 +658,9 @@ public Q_SLOTS:
     void setVisibleProjectSettingsPanel(bool minimized = false);
 
     void putSettingsPanelFirst(DockablePanel* panel);
+
+    // Opens the node's settings panel, creating it if need be, and puts it first in the properties bin.
+    void showNodeSettingsPanel(const NodeGuiPtr& node);
 
     void buildTabFocusOrderPropertiesBin();
 
@@ -699,6 +743,8 @@ private:
 
     void setCurrentPanelFocus(PanelWidget* widget);
 
+    void noteViewerFocused(ViewerTab* viewer);
+
     AppInstancePtr openProjectInternal(const std::string & absoluteFileName, bool attemptToLoadAutosave) WARN_UNUSED_RETURN;
 
     void setupUi();
@@ -706,6 +752,11 @@ private:
     void wipeLayout();
 
     void createDefaultLayoutInternal(bool wipePrevious);
+
+    // Records the layout once it has settled as the default, for a reset to know it was kept.
+    void noteDefaultLayout();
+
+    void restoreDefaultLayoutUnlessKept();
 
     void createMenuActions();
 

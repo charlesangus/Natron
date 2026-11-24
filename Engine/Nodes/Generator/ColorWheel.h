@@ -202,6 +202,10 @@ struct ColorWheelOp {
         .op = OpKind::Point,
     };
 
+    // Past the shape the image is zero, so the region keeps a border of it and a Stretch read
+    // repeats that rather than the shape's edge.
+    static constexpr bool kOutsideColourBorder = true;
+
     void createKnobs(KnobHolder* holder,
                      const KnobPagePtr& page);
 

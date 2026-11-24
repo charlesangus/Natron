@@ -1,3 +1,5 @@
+import edgesample;
+
 // Defocus's passes, after the workers of Engine/Nodes/Filter/Defocus.cpp and the gather of
 // Engine/Nodes/Filter/BokehKernel.cpp. The work buffer covers the CPU's scratch rect, the domain
 // of domWidth x domHeight pixels from (domX1, domY1): the boosted source, `channels` floats per
@@ -35,7 +37,7 @@ struct DefocusParams
     uint localOffset;
     uint totalOffset;
     uint runCount;
-    // kBoost while the highlight boost is on.
+    // kBoost while the highlight boost is on, kEdgeBlackFlag when the source reads 0 past its pixels.
     uint flags;
     float threshold;
     float gain;
@@ -66,6 +68,7 @@ struct DefocusParams
 static const uint kBlock = 256;
 static const uint kBoost = 1;
 static const uint kLens = 2;
+static const uint kEdgeBlackFlag = 4;
 
 bool isFiniteValue(float v)
 {
@@ -82,7 +85,7 @@ uint totalIndex(uint c, uint y, uint k)
     return params.totalOffset + (c * params.domHeight + y) * params.nBlocks + k;
 }
 
-// boostWorker(): the source with its highlights boosted, 0 outside the source.
+// boostWorker(): the source with its highlights boosted, read past the source by the edge mode.
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void defocus_load(uint3 tid : SV_DispatchThreadID)
@@ -93,12 +96,13 @@ void defocus_load(uint3 tid : SV_DispatchThreadID)
     const uint dst = (tid.y * params.domWidth + tid.x) * n;
     const int x = params.domX1 + int(tid.x);
     const int y = params.domY1 + int(tid.y);
-    if (x < params.srcX1 || x >= params.srcX2 || y < params.srcY1 || y >= params.srcY2) {
+    int2 at;
+    if (!edgePixel(int2(x, y), int4(params.srcX1, params.srcY1, params.srcX2, params.srcY2), edgeModeFromFlags(params.flags, kEdgeBlackFlag), at)) {
         for (uint c = 0; c < n && c < 4; ++c)
             workBuf[dst + c] = 0.0;
         return;
     }
-    const uint src = params.srcOffset + uint(y - params.srcY1) * params.srcStride + uint(x - params.srcX1) * n;
+    const uint src = params.srcOffset + uint(at.y - params.srcY1) * params.srcStride + uint(at.x - params.srcX1) * n;
     const bool boost = (params.flags & kBoost) != 0u;
     for (uint c = 0; c < n && c < 4; ++c) {
         const float v = asfloat(srcBuf[src + c]);
@@ -153,23 +157,37 @@ void gatherRuns(uint first, uint count, uint mask, int x, int y, inout float acc
     const uint n = params.channels;
     const int w = int(params.domWidth);
     const int h = int(params.domHeight);
+    const bool stretch = (params.flags & kEdgeBlackFlag) == 0u && w > 0 && h > 0;
     for (uint r = 0; r < count; ++r) {
         const uint run = first + 4 * r;
         const int dy = int(runBuf[run]);
         const int dx0 = int(runBuf[run + 1]);
         const int length = int(runBuf[run + 2]);
         const float weight = asfloat(runBuf[run + 3]);
-        const int sy = y - dy;
-        if (sy < 0 || sy >= h)
-            continue;
+        int sy = y - dy;
+        if (sy < 0 || sy >= h) {
+            if (!stretch)
+                continue;
+            sy = clamp(sy, 0, h - 1);
+        }
         // Pixel x sums the source over [x - dx0 - length + 1, x - dx0 + 1).
-        const int a = clamp(x - dx0 - length + 1, 0, w);
-        const int b = clamp(x - dx0 + 1, 0, w);
-        if (a >= b)
-            continue;
+        const int start = x - dx0 - length + 1;
+        const int end = x - dx0 + 1;
+        const int a = clamp(start, 0, w);
+        const int b = clamp(end, 0, w);
+        // Under Stretch a run's part past either end of the row adds that end's pixel per column,
+        // read as the block prefixes give it so that a value that is not finite counts as 0.
+        const float before = (stretch && start < 0) ? float(min(end, 0) - start) : 0.0;
+        const float after = (stretch && end > w) ? float(end - max(start, w)) : 0.0;
         for (uint c = 0; c < n && c < 4; ++c) {
-            if ((mask & (1u << c)) != 0u)
+            if ((mask & (1u << c)) == 0u)
+                continue;
+            if (a < b)
                 acc[c] += weight * rangeSum(c, uint(sy), uint(a), uint(b));
+            if (before > 0.0)
+                acc[c] += weight * (before * rangeSum(c, uint(sy), 0u, 1u));
+            if (after > 0.0)
+                acc[c] += weight * (after * rangeSum(c, uint(sy), uint(w - 1), uint(w)));
         }
     }
 }

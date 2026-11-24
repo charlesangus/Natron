@@ -215,7 +215,7 @@ ScenePrimitiveNode::authorLayer(const SceneLayerEdit& edit,
         return false;
     }
     // The mesh's ancestors are typeless, so its transform op is its local to world transform.
-    if (!SceneNodeAuthoring::authorProjectionGeometryFrame(stage, edit, graft, animated, transformAt)) {
+    if (!SceneNodeAuthoring::authorProjectionFrame(mesh.GetPrim(), edit, graft.projection, animated, transformAt)) {
         *errorMessage = tr("USD could not author the projection's geometry frame for %1.").arg(pathString).toStdString();
 
         return false;
@@ -223,6 +223,34 @@ ScenePrimitiveNode::authorLayer(const SceneLayerEdit& edit,
 
     return SceneNodeAuthoring::authorMaterialBinding(mesh.GetPrim(), graft.materialPath, errorMessage);
 } // ScenePrimitiveNode::authorLayer
+
+SceneEvaluationContext
+ScenePrimitiveNode::getSceneInputContext(int /*inputNb*/,
+                                         const SceneEvaluationContext& ctx,
+                                         double /*time*/,
+                                         ViewIdx /*view*/) const
+{
+    KnobStringPtr primPath = _primPath.lock();
+
+    return primPath ? SceneNodeAuthoring::getMaterialInputContext(ctx, primPath->getValue()) : ctx;
+}
+
+void
+ScenePrimitiveNode::mapSceneInputReach(int /*inputNb*/,
+                                       double /*time*/,
+                                       ViewIdx /*view*/,
+                                       const std::vector<std::string>& in,
+                                       std::vector<std::string>* out) const
+{
+    KnobStringPtr primPath = _primPath.lock();
+
+    if (!primPath) {
+        *out = in;
+
+        return;
+    }
+    SceneNodeAuthoring::mapMaterialInputReach(&_graftMemo, primPath->getValue(), in, out);
+}
 
 StatusEnum
 ScenePrimitiveNode::renderScene(const SceneRenderActionArgs& args,
@@ -237,7 +265,7 @@ ScenePrimitiveNode::renderScene(const SceneRenderActionArgs& args,
     }
 
     SceneMaterialGraft graft;
-    if (!SceneNodeAuthoring::graftMaterialInput(args.getInputScene(0), primPath->getValue(), getScriptName_mt_safe(), &_graftMemo, &graft, errorMessage)) {
+    if (!SceneNodeAuthoring::graftMaterialInput(args.getInputScene(0), args.getInputContext(0), primPath->getValue(), getScriptName_mt_safe(), &_graftMemo, &graft, errorMessage)) {
         setPersistentMessage(eMessageTypeError, *errorMessage);
 
         return eStatusFailed;
@@ -250,9 +278,7 @@ ScenePrimitiveNode::renderScene(const SceneRenderActionArgs& args,
     // What the layer reads of the graft, without the payload it is stacked on.
     SceneMaterialGraft binding;
     binding.materialPath = graft.materialPath;
-    binding.geometryProjectionShader = graft.geometryProjectionShader;
-    binding.projectionHeld = graft.projectionHeld;
-    binding.projectionHoldFrame = graft.projectionHoldFrame;
+    binding.projection = graft.projection;
     if (!emitSceneLayer(graft.payload, reads, [this, binding](const SceneLayerEdit& edit, std::string* error) { return authorLayer(edit, binding, error); }, outputScene, errorMessage)) {
         setPersistentMessage(eMessageTypeError, *errorMessage);
 

@@ -25,8 +25,9 @@
 
 #include "Gui/ComboBox.h"
 
-#include <cassert>
 #include <algorithm> // min, max
+#include <cassert>
+#include <cstdlib>
 #include <stdexcept>
 
 #include <QLayout>
@@ -410,16 +411,17 @@ ComboBox::wheelEvent(QWheelEvent *e)
     // a standard wheel click is 120
     _currentDelta += e->angleDelta().y();
 
-    if ( (_currentDelta <= -120) || (120 <= _currentDelta) ) {
-        int c = count();
-        int i = activeIndex();
+    if ((_currentDelta <= -120) || (120 <= _currentDelta)) {
         int delta = _currentDelta / 120;
         _currentDelta -= delta * 120;
-        i = (i - delta) % c;
-        if (i < 0) {
-            i += c;
+        int i = activeIndex();
+        const int step = (delta > 0) ? -1 : 1;
+        for (int n = std::abs(delta); (n > 0) && (i >= 0); --n) {
+            i = stepToEnabledIndex(i, step);
         }
-        setCurrentIndex(i);
+        if (i >= 0) {
+            setCurrentIndex(i);
+        }
     }
 }
 
@@ -431,10 +433,11 @@ ComboBox::keyPressEvent(QKeyEvent* e)
     } else {
         if (_menuOnlySelection) {
             QFrame::keyPressEvent(e);
-        } else if (e->key() == Qt::Key_Up) {
-            setCurrentIndex( (activeIndex() - 1 < 0) ? count() - 1 : activeIndex() - 1 );
-        } else if (e->key() == Qt::Key_Down) {
-            setCurrentIndex( (activeIndex() + 1) % count() );
+        } else if ((e->key() == Qt::Key_Up) || (e->key() == Qt::Key_Down)) {
+            const int next = stepToEnabledIndex(activeIndex(), (e->key() == Qt::Key_Up) ? -1 : 1);
+            if (next >= 0) {
+                setCurrentIndex(next);
+            }
         } else {
             QFrame::keyPressEvent(e);
         }
@@ -447,7 +450,7 @@ setEnabledRecursive(bool enabled,
                     ComboBoxMenuNode* node)
 {
     if (node->isLeaf) {
-        node->isLeaf->setEnabled(enabled);
+        node->isLeaf->setEnabled(enabled && !node->disabled);
     } else {
         assert(node->isMenu);
         for (std::size_t i = 0; i < node->children.size(); ++i) {
@@ -463,7 +466,7 @@ ComboBox::createMenu()
         _rootNode->isMenu->clear();
         QAction* activeAction = 0;
         for (U32 i = 0; i < _rootNode->children.size(); ++i) {
-            _rootNode->children[i]->isLeaf->setEnabled( _enabled && !_readOnly );
+            _rootNode->children[i]->isLeaf->setEnabled(_enabled && !_readOnly && !_rootNode->children[i]->disabled);
             _rootNode->isMenu->addAction(_rootNode->children[i]->isLeaf);
             if ((int)i == _currentIndex) {
                 activeAction = _rootNode->children[i]->isLeaf;
@@ -897,7 +900,7 @@ ComboBox::setCurrentIndex_internal(int index)
 void
 ComboBox::setCurrentIndex(int index)
 {
-    if (_readOnly || !_enabled) {
+    if (_readOnly || !_enabled || !isItemEnabled(index)) {
         return;
     }
     if ( setCurrentIndex_internal(index) ) {
@@ -1078,6 +1081,7 @@ ComboBox::disableItem(int index)
     ComboBoxMenuNode* node = getCurrentIndexNode( index, _rootNode.get() );
 
     if (node) {
+        node->disabled = true;
         if (node->isLeaf) {
             node->isLeaf->setEnabled(false);
         } else if (node->isMenu) {
@@ -1092,12 +1096,41 @@ ComboBox::enableItem(int index)
     ComboBoxMenuNode* node = getCurrentIndexNode( index, _rootNode.get() );
 
     if (node) {
+        node->disabled = false;
         if (node->isLeaf) {
             node->isLeaf->setEnabled(true);
         } else if (node->isMenu) {
             node->isMenu->setEnabled(true);
         }
     }
+}
+
+bool
+ComboBox::isItemEnabled(int index) const
+{
+    const ComboBoxMenuNode* node = getCurrentIndexNode(index, _rootNode.get());
+
+    return node && !node->disabled;
+}
+
+int
+ComboBox::stepToEnabledIndex(int from,
+                             int step) const
+{
+    const int c = count();
+
+    if (c <= 0) {
+        return -1;
+    }
+    int i = (from >= 0) ? from : ((step > 0) ? -1 : c);
+    for (int tried = 0; tried < c; ++tried) {
+        i = ((i + step) % c + c) % c;
+        if (isItemEnabled(i)) {
+            return i;
+        }
+    }
+
+    return -1;
 }
 
 void

@@ -60,10 +60,23 @@ namespace {
 // How long the calling thread of parallelForCancellable() waits for the helpers before it asks
 // the effect again whether the render was aborted.
 const unsigned long kCancelPollMilliseconds = 10;
+
+// Set by markOutputMetadataProvisional() during the deriveOutputMetadata() call the thread is in;
+// one per thread because a derivation asks the nodes upstream for theirs on the same thread.
+thread_local bool derivingProvisionalMetadata = false;
 } // anonymous namespace
 
 RenderCancellation::RenderCancellation(const EffectInstance* effect)
     : _effect(effect)
+    , _asked()
+    , _owner(std::this_thread::get_id())
+    , _cancelled(false)
+{
+}
+
+RenderCancellation::RenderCancellation(std::function<bool()> cancelled)
+    : _effect(nullptr)
+    , _asked(std::move(cancelled))
     , _owner(std::this_thread::get_id())
     , _cancelled(false)
 {
@@ -75,7 +88,7 @@ RenderCancellation::check()
     if (_cancelled.load(std::memory_order_relaxed)) {
         return true;
     }
-    if ((std::this_thread::get_id() == _owner) && _effect && _effect->aborted()) {
+    if ((std::this_thread::get_id() == _owner) && ((_effect && _effect->aborted()) || (_asked && _asked()))) {
         _cancelled.store(true, std::memory_order_relaxed);
 
         return true;
@@ -506,8 +519,13 @@ NativeEffectBase::getOutputMetadata(double time,
 
     // Derived with the lock released: it asks upstream nodes, which take their own locks.
     const CleanHashSnapshot clean(node, context);
+    const bool outerProvisional = derivingProvisionalMetadata;
+    derivingProvisionalMetadata = false;
     ImageMetadata derived = deriveOutputMetadata(time, view);
-    const bool storable = clean.allowsStoreUnder(hash);
+    const bool provisional = derivingProvisionalMetadata;
+    // A provisional answer upstream makes the caller's answer, derived from it, provisional too.
+    derivingProvisionalMetadata = outerProvisional || provisional;
+    const bool storable = !provisional && clean.allowsStoreUnder(hash);
 
     {
         std::lock_guard<std::mutex> locker(_metadataCacheMutex);
@@ -546,6 +564,12 @@ NativeEffectBase::deriveOutputMetadata(double time,
                                        ViewIdx view)
 {
     return getUpstreamMetadata(time, view);
+}
+
+void
+NativeEffectBase::markOutputMetadataProvisional()
+{
+    derivingProvisionalMetadata = true;
 }
 
 void
@@ -987,7 +1011,7 @@ NativeEffectBase::getSceneLayerKey(const SceneLayerReads& reads,
     NodePtr node = getNode();
     AppInstancePtr app = getApp();
 
-    if (!node || !app || !app->getProject()) {
+    if (!node || node->isBeingDestroyed() || !app || !app->getProject()) {
         if (errorMessage) {
             *errorMessage = "The node is being destroyed";
         }
@@ -1044,10 +1068,20 @@ NativeEffectBase::emitSceneLayer(const ScenePayload& upstream,
         return false;
     }
 
-    const SceneLayerMemo::KeyCheckFunc keyStillValid = [this, reads](const SceneLayerMemo::Key& authoredUnder) {
+    // Values read before an edit that landed ahead of key would be memoized under the edit's key.
+    // The fields reads sets are the caller's own and need not match the pre-read key's.
+    bool valuesPredateKey = false;
+    if (reads.valuesRead) {
+        SceneLayerMemo::Key readUnder = reads.valuesReadUnder;
+        readUnder.upstreamRead = key.upstreamRead;
+        readUnder.factsDigest = key.factsDigest;
+        readUnder.readsFrameRange = key.readsFrameRange;
+        valuesPredateKey = (readUnder != key);
+    }
+    const SceneLayerMemo::KeyCheckFunc keyStillValid = [this, reads, valuesPredateKey](const SceneLayerMemo::Key& authoredUnder) {
         SceneLayerMemo::Key now;
 
-        return getSceneLayerKey(reads, &now, 0) && (now == authoredUnder);
+        return !valuesPredateKey && getSceneLayerKey(reads, &now, 0) && (now == authoredUnder);
     };
 
     _sceneLayerMemo.setOwner(getNode());

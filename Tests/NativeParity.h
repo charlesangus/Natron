@@ -165,6 +165,7 @@ private:
     KnobBoolWPtr _noise;
     KnobIntWPtr _nonFinite;
     KnobStringWPtr _cells;
+    KnobBoolWPtr _blackOutside;
 };
 
 ImageLayerDesc paritySourceExtraLayer();
@@ -235,7 +236,7 @@ bool isPluginMajorRegistered(const std::string& id, int major);
 /**
  * @brief Creates the node at its exact major and a parity source connected to its input 0. With a
  * non-empty `maskInputLabel`, also creates a second parity source and connects it to the input
- * bearing that label. A node that cannot be created is reported with ADD_FAILURE() and leaves
+ * bearing that label. Every source it creates has Black Outside on. A node that cannot be created is reported with ADD_FAILURE() and leaves
  * `native` null.
  **/
 ParityPair makeParityPair(const AppInstancePtr& app,
@@ -245,7 +246,7 @@ ParityPair makeParityPair(const AppInstancePtr& app,
 
 /**
  * @brief Creates another parity source and connects it to the input labelled `inputLabel` on the
- * node. Returns it, or null after an ADD_FAILURE() when the node lacks the input or the
+ * node, with Black Outside on. Returns it, or null after an ADD_FAILURE() when the node lacks the input or the
  * connection is refused.
  **/
 NodePtr connectParityInput(ParityPair& pair, const std::string& inputLabel);
@@ -269,6 +270,8 @@ void setParitySourceOrigin(const NodePtr& source, int x, int y);
 void setParitySourceNoise(const NodePtr& source, bool noise);
 void setParitySourceNonFinite(const NodePtr& source, const RectI& rect);
 void setParitySourceCells(const NodePtr& source, const std::vector<float>& values);
+// Turns the Black Outside knob of a parity source, a generator or a Read on or off.
+void setBlackOutside(const NodePtr& source, bool blackOutside);
 
 /**
  * @brief The source's region of definition in pixel coordinates at `mipmapLevel`.

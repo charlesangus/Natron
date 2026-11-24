@@ -24,6 +24,7 @@
 // ***** END PYTHON BLOCK *****
 
 #include "Global/Macros.h"
+#include "Global/ThirdPartyTelemetry.h"
 
 #include <stdio.h>
 
@@ -80,6 +81,10 @@ GTEST_API_ int
 main(int argc, char** argv)
 #endif
 {
+    // Ai/OrtTelemetry_Test.cpp sets this to show what the opt-out prevents.
+    if (!std::getenv("NATRON_TEST_ORT_KEEP_TELEMETRY")) {
+        disableThirdPartyTelemetry();
+    }
     printf("Running main() from guimain.cpp\n");
     ::testing::InitGoogleTest(&argc, argv);
     // ctest lists the suites before every run. Every test is registered statically, so the list

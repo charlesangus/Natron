@@ -71,10 +71,10 @@ struct GodRaysParams {
     double gamma = 1.;
     int samples = 32;
     bool max = false;
-    // How every copy is resampled, as the Transform node's Filter, Clamp and Black outside.
+    // How every copy is resampled, as the Transform node's Filter, Clamp and Edge Mode.
     Resampler::FilterSpec filter;
     bool clamp = false;
-    bool blackOutside = true;
+    EdgeMode edgeMode = EdgeMode::Black;
 };
 
 /**
@@ -197,7 +197,6 @@ private:
     KnobBoolWPtr _max;
     KnobChoiceWPtr _filter;
     KnobBoolWPtr _clamp;
-    KnobBoolWPtr _blackOutside;
     Resampler::FilterKnobs _filterKnobs;
 };
 

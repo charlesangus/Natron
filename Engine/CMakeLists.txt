@@ -49,10 +49,17 @@ file(GLOB NatronEngineAi_HEADERS Ai/*.h)
 file(GLOB NatronEngineAi_SOURCES Ai/*.cpp)
 list(APPEND NatronEngine_HEADERS ${NatronEngineAi_HEADERS})
 list(APPEND NatronEngine_SOURCES ${NatronEngineAi_SOURCES})
+# Engine/Flow/ is the optical-flow library. It knows nothing of nodes, images or Qt.
+file(GLOB NatronEngineFlow_HEADERS Flow/*.h)
+file(GLOB NatronEngineFlow_SOURCES Flow/*.cpp)
+list(APPEND NatronEngine_HEADERS ${NatronEngineFlow_HEADERS})
+list(APPEND NatronEngine_SOURCES ${NatronEngineFlow_SOURCES})
 # OpenUSD's headers (Nodes/Scene/UsdIncludes.h) include its Python bindings' headers, which need
 # the full Python API, and libshiboken puts Py_LIMITED_API on everything that links it.
-file(GLOB NatronEngineScene_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Scene/*.cpp)
+file(GLOB NatronEngineScene_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Scene/*.cpp)
 set_source_files_properties(${NatronEngineScene_SOURCES} PROPERTIES COMPILE_OPTIONS -UPy_LIMITED_API)
+# Releases the Python lock only if its caller holds it, which the limited API cannot ask.
+set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/VectorFollowTask.cpp PROPERTIES COMPILE_OPTIONS -UPy_LIMITED_API)
 
 # Native node registration fragments (see Engine/Nodes/NativeRegistry.h), aggregated into
 # NativeRegistryAll.inc. Sorted so the registration order does not depend on the filesystem.
@@ -258,6 +265,19 @@ set(NatronEngine_PROJECT3D_GLSLFX ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Scene/shader
 configure_file(${NatronEngine_PROJECT3D_GLSLFX} ${CMAKE_BINARY_DIR}/Resources/usd/natronLiveTexture/natronProject3D.glslfx COPYONLY)
 install(FILES ${NatronEngine_PROJECT3D_GLSLFX} DESTINATION Resources/usd/natronLiveTexture)
 
+# Serves live textures to OIIO in the Cycles delegate and in MoonRay's execComp, found at run time from
+# <bin>/../lib/oiio (SceneCaches::registerLiveTextures). A separate library as execComp loads it too.
+# Not named "natron": OIIO's EXR writer drops metadata prefixed with a format's name, natron:outputHash
+# included.
+add_library(NatronLiveTextureOiio MODULE Nodes/Scene/LiveTextureOiio/natronimageio.cpp)
+set_target_properties(NatronLiveTextureOiio PROPERTIES
+    PREFIX ""
+    OUTPUT_NAME natronlive.imageio
+    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib/oiio)
+target_link_libraries(NatronLiveTextureOiio PRIVATE OpenImageIO::OpenImageIO)
+add_dependencies(NatronEngine NatronLiveTextureOiio)
+install(TARGETS NatronLiveTextureOiio LIBRARY DESTINATION lib/oiio)
+
 # darktable's noise profiles, read at run time by DenoiseProfiled from the same directory.
 set(NatronEngine_NOISE_PROFILES_JSON ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Filter/data/noiseprofiles.json)
 configure_file(${NatronEngine_NOISE_PROFILES_JSON} ${CMAKE_BINARY_DIR}/Resources/darktable/noiseprofiles.json COPYONLY)
@@ -292,6 +312,7 @@ target_include_directories(NatronEngine
         .
         ..
         ../Global
+        ../libs/Eigen3
         ../libs/SequenceParsing
         ../libs/xxhash
         ${X11_INCLUDE_DIR}

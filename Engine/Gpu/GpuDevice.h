@@ -26,6 +26,8 @@ struct GpuStatus {
     // Set on an out-of-memory from the buffer pool when the request fits its budget but the buffers held by their
     // owners fill it: the device itself did not refuse, and the room comes back as the owners release them.
     bool budgetContention = false;
+    // Set when a GpuRecordContext stopped recording because its abort check fired; result is VK_INCOMPLETE.
+    bool aborted = false;
 
     bool ok() const { return result == VK_SUCCESS; }
     explicit operator bool() const { return ok(); }
@@ -35,6 +37,8 @@ enum class QueueKind {
     Compute,
     Upload,
     Download,
+    // Only on a device with GpuDeviceInfo::graphicsQueue.
+    Graphics,
 };
 
 using GpuDebugMessageFn = std::function<void(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
@@ -52,12 +56,31 @@ struct GpuFaultPlan {
     Kind kind = Kind::Off;
     uint64_t atOperation = 0;
 
-    // Parses "lost@N" or "oom@N" with N >= 1.
+    // Only the operations a thread makes while a GpuRegionFaultScope lives on it are counted, so that the fault lands
+    // in a GPU region's run whatever start-up, hand-offs and other work did before.
+    bool regionOnly = false;
+
+    // Parses "lost@N", "oom@N", "lost@region:N" or "oom@region:N" with N >= 1.
     static bool parse(const std::string& text, GpuFaultPlan& out);
 };
 
+// Marks the calling thread as running a GPU region, for a fault plan with regionOnly set. Scopes nest.
+class GpuRegionFaultScope {
+public:
+    GpuRegionFaultScope();
+    ~GpuRegionFaultScope();
+    GpuRegionFaultScope(const GpuRegionFaultScope&) = delete;
+    GpuRegionFaultScope& operator=(const GpuRegionFaultScope&) = delete;
+
+    static bool active();
+
+private:
+    bool previous_;
+};
+
 struct GpuDeviceOptions {
-    // Empty means: consult NATRON_GPU_DEVICE, then fall back to the ranked pick.
+    // Empty means: consult NATRON_GPU_DEVICE, then fall back to the ranked pick, which never chooses a CPU-type
+    // device (lavapipe, llvmpipe); naming one here or in NATRON_GPU_DEVICE is the only way to get it.
     std::string deviceSelector;
     // NATRON_GPU_VALIDATION=1 also enables it. Silently off when the Khronos layer is not installed.
     bool enableValidation = false;
@@ -94,6 +117,12 @@ struct GpuDeviceInfo {
     uint32_t downloadQueueIndex = 0;
     // True when uploads and downloads submit to the very VkQueue compute does, so they cannot overlap it.
     bool transferSharesComputeQueue = false;
+    // A family with graphics and compute, which raster record contexts submit to. When it is computeFamily the
+    // graphics queue is the compute queue itself; otherwise it is the first queue of graphicsFamily.
+    bool graphicsQueue = false;
+    uint32_t graphicsFamily = 0;
+    uint32_t graphicsQueueIndex = 0;
+    bool graphicsSharesComputeQueue = false;
 
     bool validationEnabled = false;
     bool debugMessenger = false;
@@ -103,6 +132,18 @@ struct GpuDeviceInfo {
     bool externalMemoryHost = false;
     bool memoryBudget = false;
     bool pushDescriptor = false;
+    // Vulkan 1.3 dynamic rendering, enabled whenever the device offers it.
+    bool dynamicRendering = false;
+    // Storage writes and atomics from the vertex and fragment stages, enabled whenever the device offers them.
+    bool vertexPipelineStores = false;
+    bool fragmentStores = false;
+    // graphicsQueue, dynamicRendering, vertexPipelineStores and fragmentStores, plus colour-attachment blending of
+    // R32G32B32A32_SFLOAT and R32_SFLOAT. The stores are required because a raster's storage buffers are bound
+    // to both stages and may be written from either. Raster users take their CPU path when it is false.
+    bool rasterFloatBlend = false;
+    // Without it an indirect draw of several commands is recorded as one draw per command.
+    bool multiDrawIndirect = false;
+    uint32_t maxDrawIndirectCount = 1;
 
     // Effective values: the device limit, or the GpuDeviceOptions override when that is smaller.
     uint64_t maxStorageBufferRange = 0;
@@ -137,8 +178,8 @@ struct GpuAutoPick {
 
 // The automatic choice: best type (discrete, integrated, virtual, cpu, other), then the larger device-local heap, then
 // the lower index, so it does not depend on the loader's enumeration order. Candidates that fail the requirements are
-// never picked. A CPU-type device is picked when nothing better qualifies; refusing it in auto mode is the caller's
-// policy. Empty when no candidate qualifies.
+// never picked. A CPU-type device is picked when nothing better qualifies; GpuDevice::create excludes them
+// before calling this. Empty when no candidate qualifies.
 std::optional<GpuAutoPick> pickAutoDevice(const std::vector<GpuDeviceCandidate>& candidates);
 
 // The queues a device opens and the one each QueueKind submits to; the fields match GpuDeviceInfo's.
@@ -152,11 +193,18 @@ struct GpuQueuePlan {
     uint32_t computeQueues = 0;
     uint32_t transferQueues = 0;
     bool transferSharesComputeQueue = false;
+    // graphicsQueues is 0 when there is no graphics family or it is computeFamily, whose compute queue it then shares.
+    bool graphics = false;
+    uint32_t graphicsFamily = 0;
+    uint32_t graphicsQueueIndex = 0;
+    uint32_t graphicsQueues = 0;
+    bool graphicsSharesComputeQueue = false;
 };
 
 // Routes uploads and downloads to the first transfer-only family when there is one, else to extra queues of the
 // compute family, which itself is the first one without graphics, else the first with compute. Empty when no family
-// has compute.
+// has compute. The graphics queue is in the compute family when that has graphics, else in the first family with
+// graphics and compute; the compute choice never depends on it.
 std::optional<GpuQueuePlan> planQueues(std::span<const VkQueueFamilyProperties> families);
 
 // A RADV_PERFTEST-style list (current may be null) with token appended, unless it already holds token.
@@ -166,6 +214,10 @@ std::string withPerftestToken(const char* current, std::string_view token);
 // main thread before any thread that reads the environment is started; GpuDevice::create calls it too for programs
 // without that early call.
 void requestTransferOnlyFamily();
+
+// The type of each Vulkan physical device, in the order GpuDevice's numeric selector indexes them, read through a
+// throwaway instance. Empty when there is no loader or no device.
+std::vector<VkPhysicalDeviceType> enumeratePhysicalDeviceTypes();
 
 class GpuDevice {
 public:
@@ -243,13 +295,15 @@ private:
 
     // The distinct VkQueues, each with the lock Vulkan's external synchronization of vkQueueSubmit2 needs, and
     // the one each QueueKind submits to.
-    std::array<Queue, 3> queues_;
-    std::array<Queue*, 3> route_ {};
+    std::array<Queue, 4> queues_;
+    std::array<Queue*, 4> route_ {};
 
     // The fault plan, written by injectFault() while other threads count operations; faultAt_ 0 means none.
     std::atomic<GpuFaultPlan::Kind> faultKind_ { GpuFaultPlan::Kind::Off };
     std::atomic<uint64_t> faultAt_ { 0 };
+    std::atomic<bool> faultRegionOnly_ { false };
     std::atomic<uint64_t> operations_ { 0 };
+    std::atomic<uint64_t> regionOperations_ { 0 };
     std::function<void()> onDeviceLost_;
     std::atomic<bool> lost_ { false };
     std::atomic<bool> abandoned_ { false };

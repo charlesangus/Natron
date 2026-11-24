@@ -137,7 +137,11 @@ public:
     bool claimShortcutOverride(QKeyEvent* e);
 
 private:
-    bool overlayTimeAndPosition(const NodePtr& node, const QPointF& pos, double* time, QPointF* transformPos);
+    // The overlay node's frame and position for a pointer event at pos; false when the event must not reach it.
+    bool overlayTimeAndPosition(const NodePtr& node, const QPointF& pos, double* time, QPointF* transformPos, bool keepBehind = false);
+
+    // The overlay node's frame for an event without a position; editable refuses a retimed overlay.
+    bool overlayTime(const NodePtr& node, bool editable, double* time);
 
     bool notifyOverlaysPenDown_internal(const NodePtr& node, const RenderScale & renderScale, PenType pen, const QPointF & viewportPos, const QPointF & pos, double pressure, double timestamp);
 
@@ -224,11 +228,6 @@ private:
     void writeUserRoIKnobs(const RectD& r);
 
 public:
-
-    bool isAutoContrastEnabled() const;
-
-    void setAutoContrastEnabled(bool b);
-
     void setMipmapLevel(unsigned int level);
 
     unsigned int getMipmapLevel() const;
@@ -377,6 +376,9 @@ Q_SIGNALS:
     // The tab switched between the scene view and the 2D viewer.
     void sceneViewChanged();
 
+    // The scene view shows another node, or none, as its input was reconnected or disconnected.
+    void sceneViewedNodeChanged();
+
 public Q_SLOTS:
 
     // Shows the scene view or the 2D viewer, whichever the active input's data kind needs, and
@@ -411,6 +413,7 @@ public Q_SLOTS:
     void togglePlaybackMode();
     void onViewerChannelsChanged(int);
     void onFullFrameButtonToggle(bool);
+    void onAutoProxyButtonToggle(bool);
     void onClipToProjectButtonToggle(bool);
     void onTimeLineTimeChanged(SequenceTime time, int);
     void onCurrentTimeSpinBoxChanged(double);
@@ -430,8 +433,6 @@ public Q_SLOTS:
 
     void onCreateNewRoIPressed();
 
-    void onAutoContrastChanged(bool b);
-
     void onRenderScaleButtonClicked(bool checked);
 
     void onDisplayTransformComboBoxChanged(int index);
@@ -440,9 +441,9 @@ public Q_SLOTS:
 
     void onCompositingOperatorIndexChanged(int index);
 
-    void onFirstInputNameChanged(const QString & text);
+    void onFirstInputMenuChanged(int menuIndex);
 
-    void onSecondInputNameChanged(const QString & text);
+    void onSecondInputMenuChanged(int menuIndex);
 
     void switchInputAAndB();
 
@@ -482,6 +483,8 @@ public Q_SLOTS:
 
     void onCheckerboardButtonClicked();
 
+    void onMapSiblingOverlaysButtonClicked(bool mapped);
+
     void onPickerButtonClicked(bool);
 
     void onSpinboxFpsChanged(double fps);
@@ -490,6 +493,11 @@ public Q_SLOTS:
     void onEngineStarted(bool forward);
 
     void onSetDownPlaybackButtonsTimeout();
+
+    void onViewerStaleChanged(bool stale);
+    void onStaleCueTimeout();
+    // Pushes the timing's visibility to the selected style and re-arms the timer at its next deadline.
+    void refreshStaleCue();
 
     void refreshViewerRenderingState();
 
@@ -542,6 +550,8 @@ private Q_SLOTS:
 
     void onRefinementPausedButtonClicked(bool paused);
 
+    void onRenderEverythingButtonClicked(bool on);
+
     // Shows the scene view's renderer row only for a progressive renderer.
     void refreshSceneRenderRow();
 
@@ -561,6 +571,7 @@ private:
     void refreshViewsMenuFromKnob();
     // Also hands Max Samples and Refinement Paused to the scene view.
     void refreshSceneRenderFromKnobs();
+    void refreshMapSiblingOverlaysFromKnob();
 
     // The fps playback runs at: the input's or the project's while the fps is locked.
     double getLockedFps() const;
@@ -575,7 +586,9 @@ private:
     void refreshDisplayTransformMenus();
 
     // The input index whose menu entry reads text, -1 for none.
-    int inputIndexForMenuText(const QString& text) const;
+    int inputForMenuIndex(int menuIndex) const;
+    int menuIndexForInput(int inputNb) const;
+    void rebuildInputMenus();
 
     // Gives the scene viewport the menus' display and view, as the GL viewer has them.
     void refreshSceneDisplayTransform();

@@ -175,6 +175,10 @@ private:
                                int* height,
                                bool* empty);
 
+    // window and the Map's region of definition with a one-pixel border, past which the Map
+    // repeats its nearest pixel within them; window alone without a Map.
+    RectI mapVaries(double time, ViewIdx view, const RenderScale& scale, const RectI& window) WARN_UNUSED_RETURN;
+
     void setWarning(const std::string& message);
     std::string idleWarning() const WARN_UNUSED_RETURN;
     void refreshWarning();

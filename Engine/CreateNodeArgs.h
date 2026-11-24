@@ -128,6 +128,15 @@
 
 /**
  * @brief optional x1 bool property
+ * Default Value - false
+ * If true, the properties panel that kCreateNodeArgsPropSettingsOpened opens is built after the graph has
+ * painted the new node rather than before createNode() returns. Meant for a user's single-node creation,
+ * where the panel's build would otherwise hold back the node's first paint.
+ **/
+#define kCreateNodeArgsPropDeferSettingsPanel "CreateNodeArgsPropDeferSettingsPanel"
+
+/**
+ * @brief optional x1 bool property
  * Default Value - true
  * If true, Natron will try to automatically connect the node to others depending on the user selection. If the property kCreateNodeArgsPropNodeSerialization is set, this has no effect.
  **/
@@ -306,6 +315,7 @@ class CreateNodeArgs
         createProperty<bool>(kCreateNodeArgsPropOutOfProject, false);
         createProperty<bool>(kCreateNodeArgsPropNoNodeGUI, false);
         createProperty<bool>(kCreateNodeArgsPropSettingsOpened, true);
+        createProperty<bool>(kCreateNodeArgsPropDeferSettingsPanel, false);
         createProperty<bool>(kCreateNodeArgsPropAutoConnect, true);
         createProperty<bool>(kCreateNodeArgsPropAllowNonUserCreatablePlugins, false);
         createProperty<bool>(kCreateNodeArgsPropSilent, false);

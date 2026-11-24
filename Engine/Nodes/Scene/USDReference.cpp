@@ -42,6 +42,7 @@
 #include "Engine/Nodes/Scene/ScenePayloadImpl.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
+#include "Engine/SceneLoadSet.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -84,13 +85,19 @@ findInputSourcePrim(const PXR_NS::UsdStageRefPtr& stage,
     return path;
 }
 
-// Composes upstream, or returns null with *errorMessage set.
+// Composes upstream with the payloads on the way to paths loaded on top of the evaluation's
+// load set, or returns null with *errorMessage set.
 bool
 borrowStage(const ScenePayload& payload,
+            const SceneEvaluationContext& context,
+            const std::vector<std::string>& paths,
             SceneQueryPool::Lease* lease,
             std::string* errorMessage)
 {
-    *lease = SceneQueryPool::instance().borrow(payload, errorMessage);
+    if (context.reach) {
+        context.reach->add(paths);
+    }
+    *lease = SceneQueryPool::instance().borrow(payload, SceneLoadSet::withPaths(context.loadSet, paths), errorMessage);
     if (lease->getStage()) {
         return true;
     }
@@ -170,16 +177,13 @@ USDReference::initializeKnobs()
     file->setHintToolTip(tr("The USD file (.usd, .usda, .usdc, .usdz) or Alembic file (.abc) to reference."));
     file->setFileExtensions({ "usd", "usda", "usdc", "usdz", "abc" });
     file->setAnimationEnabled(false);
-    file->setShowsReloadButton(false);
-    file->setAddNewLine(false);
     page->addKnob(file);
     _file = file;
 
-    KnobButtonPtr reload = createKnob<KnobButton>(tr("Reload"));
-    reload->setName(kUSDReferenceParamReload);
-    reload->setHintToolTip(tr("Reads the file again, and every file it sublayers, references or loads as a payload, in "
-                              "place: every scene using them shows their content on disk. Renders reading scenes are "
-                              "stopped or waited for first."));
+    KnobButtonPtr reload = file->createReloadButton(kUSDReferenceParamReload,
+                                                    tr("Reads the file again, and every file it sublayers, references or loads as a payload, in "
+                                                       "place: every scene using them shows their content on disk. Renders reading scenes are "
+                                                       "stopped or waited for first."));
     page->addKnob(reload);
     _reload = reload;
 
@@ -211,6 +215,15 @@ USDReference::getSource() const
     return (source && (source->getValue() == (int)eSourceInput)) ? eSourceInput : eSourceFile;
 }
 
+USDReference::SourceEnum
+USDReference::getSource(double time,
+                        ViewIdx view) const
+{
+    KnobChoicePtr source = _source.lock();
+
+    return (source && (source->getValueAtTime(time, 0, view) == (int)eSourceInput)) ? eSourceInput : eSourceFile;
+}
+
 void
 USDReference::refreshVisibility()
 {
@@ -226,23 +239,42 @@ USDReference::reloadFile()
     KnobFilePtr file = _file.lock();
     const std::string path = SceneNodeAuthoring::getAnchoredFilePath(file);
     PXR_NS::SdfLayerHandle open = path.empty() ? PXR_NS::SdfLayerHandle() : PXR_NS::SdfLayer::Find(path);
-    std::string error;
-
+    // As USDRead: the node's hash moves once the layers hold the new content, and a reload that
+    // ends inside this call leaves the render to the Reload bracket.
+    const std::shared_ptr<bool> inCall = std::make_shared<bool>(true);
+    const std::weak_ptr<EffectInstance> self = weak_from_this();
+    const auto finish = [this, self, inCall](bool ok,
+                                             const std::string& error) {
+        const EffectInstancePtr alive = self.lock();
+        if (!alive) {
+            return;
+        }
+        if (!ok) {
+            setPersistentMessage(eMessageTypeError, tr("Reload failed: %1").arg(QString::fromStdString(error)).toStdString());
+        } else {
+            clearPersistentMessage(false);
+        }
+        KnobFilePtr reloadedFile = _file.lock();
+        if (reloadedFile) {
+            reloadedFile->invalidateFileStamp();
+        }
+        invalidateSceneLayer();
+        clearActionsCache();
+        NodePtr node = getNode();
+        if (node) {
+            node->markHashDirty();
+        }
+        if (!*inCall) {
+            evaluate(true, true);
+        }
+    };
     // A file no stage has open yet is read fresh when it is first composed.
-    if (open && !SceneOps::reloadFileLayers(SceneOps::getFileLayerClosure(PXR_NS::SdfLayerRefPtr(open)), &error)) {
-        setPersistentMessage(eMessageTypeError, tr("Reload failed: %1").arg(QString::fromStdString(error)).toStdString());
+    if (open) {
+        SceneOps::requestFileLayerReload(SceneOps::withoutStalePendingLayers(SceneOps::getOpenFileLayers(PXR_NS::SdfLayerRefPtr(open))), finish);
     } else {
-        clearPersistentMessage(false);
+        finish(true, std::string());
     }
-    if (file) {
-        file->invalidateFileStamp();
-    }
-    invalidateSceneLayer();
-    clearActionsCache();
-    NodePtr node = getNode();
-    if (node) {
-        node->markHashDirty();
-    }
+    *inCall = false;
 }
 
 bool
@@ -273,6 +305,76 @@ void
 USDReference::onKnobsLoaded()
 {
     refreshVisibility();
+}
+
+bool
+USDReference::getArcPaths(std::string* targetPath,
+                          std::string* sourcePath) const
+{
+    return getArcPaths(getCurrentTime(), ViewIdx(0), targetPath, sourcePath);
+}
+
+bool
+USDReference::getArcPaths(double time,
+                          ViewIdx view,
+                          std::string* targetPath,
+                          std::string* sourcePath) const
+{
+    PXR_NS::SdfPath target;
+    std::string error;
+    if (!SceneNodeAuthoring::getPrimPath(_primPath.lock(), time, view, &target, &error)) {
+        return false;
+    }
+    *targetPath = target.GetString();
+    KnobStringPtr sourcePrimKnob = _sourcePrim.lock();
+    const std::string sourcePrim = sourcePrimKnob ? sourcePrimKnob->getValueAtTime(time, 0, view) : std::string();
+    const bool valid = PXR_NS::SdfPath::IsValidPathString(sourcePrim) && PXR_NS::SdfPath(sourcePrim).IsAbsolutePath() && PXR_NS::SdfPath(sourcePrim).IsPrimPath();
+    *sourcePath = valid ? sourcePrim : std::string();
+
+    return true;
+}
+
+SceneEvaluationContext
+USDReference::getSceneInputContext(int inputNb,
+                                   const SceneEvaluationContext& ctx,
+                                   double time,
+                                   ViewIdx view) const
+{
+    if (inputNb != 1) {
+        return ctx;
+    }
+    // Referencing a file, the node reads nothing of the Source input.
+    if (getSource(time, view) == eSourceFile) {
+        return SceneEvaluationContext(ctx.id, std::make_shared<const SceneLoadSet>(SceneLoadSet::none()));
+    }
+    std::string targetPath;
+    std::string sourcePath;
+    if (!getArcPaths(time, view, &targetPath, &sourcePath) || sourcePath.empty()) {
+        return SceneEvaluationContext(ctx.id, SceneLoadSetPtr());
+    }
+
+    return SceneEvaluationContext(ctx.id, SceneOps::mapReferenceLoadSet(ctx.loadSet, targetPath, sourcePath));
+}
+
+void
+USDReference::mapSceneInputReach(int inputNb,
+                                 double time,
+                                 ViewIdx view,
+                                 const std::vector<std::string>& in,
+                                 std::vector<std::string>* out) const
+{
+    if (inputNb != 1) {
+        *out = in;
+
+        return;
+    }
+    out->clear();
+    std::string targetPath;
+    std::string sourcePath;
+    if ((getSource() == eSourceFile) || !getArcPaths(time, view, &targetPath, &sourcePath)) {
+        return;
+    }
+    SceneOps::mapReferenceReach(targetPath, sourcePath, in, out);
 }
 
 StatusEnum
@@ -318,7 +420,13 @@ USDReference::renderScene(const SceneRenderActionArgs& args,
         source = args.getInputScene(1);
         if (!source.isEmpty()) {
             SceneQueryPool::Lease lease;
-            if (!borrowStage(source, &lease, errorMessage)) {
+            std::vector<std::string> sourcePaths;
+            if (!sourcePrim.empty()) {
+                sourcePaths.push_back(sourcePrim);
+            } else if (!source.getMetadata().defaultPrim.empty()) {
+                sourcePaths.push_back("/" + source.getMetadata().defaultPrim);
+            }
+            if (!borrowStage(source, args.getInputContext(1), sourcePaths, &lease, errorMessage)) {
                 setPersistentMessage(eMessageTypeError, *errorMessage);
 
                 return eStatusFailed;
@@ -358,7 +466,7 @@ USDReference::renderScene(const SceneRenderActionArgs& args,
     }
     if (!upstream.isEmpty()) {
         SceneQueryPool::Lease lease;
-        if (!borrowStage(upstream, &lease, errorMessage)) {
+        if (!borrowStage(upstream, args.context, { path.GetString() }, &lease, errorMessage)) {
             setPersistentMessage(eMessageTypeError, *errorMessage);
 
             return eStatusFailed;

@@ -33,13 +33,63 @@
 #include <vector>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/Nodes/Scene/PrimSelector.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
+#include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
+#include "Engine/SceneLoadSet.h"
 
 NATRON_NAMESPACE_ENTER
 
 class ContentHasher;
+
+/**
+ * @brief What a USDProject3D projection in Geometry space asks of the prims bound to it:
+ * see SceneNodeAuthoring::readGeometryProjection().
+ **/
+struct SceneGeometryProjection {
+    // The constant matrix primvar its shader reads each prim's placement from. Empty when the
+    // material is not such a projection.
+    std::string framePrimvar;
+    // The vertex primvar its shader projects from, for prims whose points move. Empty unless it
+    // holds its camera.
+    std::string referencePrimvar;
+    // Whether it holds its camera, and at which project frame.
+    bool held = false;
+    double holdFrame = 0.;
+};
+
+/**
+ * @brief A prim's points as a held projection takes them: see SceneNodeAuthoring::readReferencePoints().
+ **/
+struct SceneReferencePoints {
+    enum StatusEnum {
+        // Its points neither move nor are skinned: the frame primvar places it.
+        eStatusStill,
+        // points holds its world-space points at the hold.
+        eStatusRead,
+        // Its points cannot apply over the frame range, so it stays rigid.
+        eStatusTopologyChanges,
+        eStatusCannotSkin
+    };
+
+    StatusEnum status = eStatusStill;
+    PXR_NS::VtVec3fArray points;
+};
+
+/**
+ * @brief What SceneNodeAuthoring::readReferencePoints() shares across the prims of one stage. The
+ * time codes are the hold's and the project frame range's.
+ **/
+struct SceneReferenceContext {
+    double holdTime = 0.;
+    double firstTime = 0.;
+    double lastTime = 0.;
+    PXR_NS::UsdSkelCache skinning;
+    // Populating walks the whole skeleton root, so it must not repeat for each prim under one.
+    PXR_NS::SdfPathSet populatedRoots;
+};
 
 /**
  * @brief What a geometry node's Material input adds to its scene: see
@@ -52,13 +102,8 @@ struct SceneMaterialGraft {
     // Where the input's first material landed, which the geometry binds itself to. Empty when the
     // input holds no material.
     std::string materialPath;
-    // When that material is a USDProject3D projection in Geometry space: the grafted path of its
-    // shader, which the geometry gives its own placement (authorProjectionGeometryFrame()). Empty
-    // otherwise.
-    std::string geometryProjectionShader;
-    // Whether that projection holds its camera, and at which project frame.
-    bool projectionHeld = false;
-    double projectionHoldFrame = 0.;
+    // That material's placement, for the geometry to author on itself (authorProjectionFrame()).
+    SceneGeometryProjection projection;
     // A hash of what the geometry's layer reads of payload: its metadata, materialPath and the
     // projection's fields. A
     // geometry node keys its layer on it (SceneLayerMemo::Key::eUpstreamReadFacts).
@@ -102,11 +147,41 @@ std::string getAnchoredFilePath(const KnobFilePtr& knob);
  * renders: the node, its content hash and whether it varies over time, without rendering it, over
  * the project's frame range. False when nothing is connected. A node keys its layer on these (appendLiveTextureSource) and
  * authors them through recordLiveTexture().
+ *
+ * An empty input whose source was deleted (recordDeletedTextureSource) has a source too, with a null
+ * node and content hash 0, which no rendered image's URI has: it fails to render as any texture whose
+ * node is gone does, so every renderer shows it as missing and the consumer warns, naming the node.
  **/
 bool getLiveTextureSource(const EffectInstance& consumer,
                           int inputNb,
                           const std::string& layer,
                           LiveTextureSource* source);
+
+/**
+ * @brief Why source, from getLiveTextureSource(), shows kLiveTextureMissingColour at time, or empty
+ * when nothing says it does. A deleted source is known from the source alone, so its consumer warns
+ * however its texture was last rendered, even when no render has failed since the store was emptied.
+ **/
+std::string getLiveTextureFailure(const LiveTextureSource& source,
+                                  double time);
+
+/**
+ * @brief The knob of a node with live textures that remembers which inputs lost their source to a
+ * deletion: only a deletion leaves them magenta, while an input never connected or disconnected on
+ * purpose keeps the material's own colour, and the empty input looks the same in all of them. It
+ * persists so a reopened project shows the same, and it is hashed so the node's layer follows it.
+ **/
+void createDeletedTextureSourcesKnob(KnobHolder* holder,
+                                     const KnobPagePtr& page);
+
+// For a node's EffectInstance::onInputSourceDeleted().
+void recordDeletedTextureSource(const EffectInstance& consumer,
+                                int inputNb,
+                                const std::string& sourceName);
+
+// For a node's EffectInstance::onInputChanged(): connecting the input replaces what it lost.
+void forgetDeletedTextureSourceIfConnected(const EffectInstance& consumer,
+                                           int inputNb);
 
 // What a layer authoring source reads of it.
 void appendLiveTextureSource(const LiveTextureSource& source,
@@ -176,6 +251,13 @@ bool getPrimPath(const KnobStringPtr& knob,
                  PXR_NS::SdfPath* path,
                  std::string* errorMessage);
 
+// getPrimPath() with the knob read at time and view.
+bool getPrimPath(const KnobStringPtr& knob,
+                 double time,
+                 ViewIdx view,
+                 PXR_NS::SdfPath* path,
+                 std::string* errorMessage);
+
 // Whether any dimension of knob has keyframes or an expression.
 bool isAnimated(const KnobIPtr& knob);
 
@@ -220,10 +302,12 @@ authorValue(const PXR_NS::UsdAttribute& attribute,
  * primPath and its missing ancestors typeless: the geometry's own layer, stacked on
  * graft->payload, gives them their types and binds the prim with authorMaterialBinding().
  * graft->materialPath is the grafted path of material's first UsdShadeMaterial, depth first.
+ * materialContext is the context material was evaluated on (getMaterialInputContext()).
  * Returns false with *errorMessage set when primPath is not an absolute prim path, a root of
  * material is at primPath itself, or authoring fails.
  **/
 bool graftMaterialInput(const ScenePayload& material,
+                        const SceneEvaluationContext& materialContext,
                         const std::string& primPath,
                         const std::string& layerTag,
                         SceneGraftMemo* memo,
@@ -231,39 +315,81 @@ bool graftMaterialInput(const ScenePayload& material,
                         std::string* errorMessage);
 
 /**
+ * @brief The context the material input of graftMaterialInput() is evaluated on, for an output
+ * evaluated on ctx, and the reach that input gathers as output paths, for the geometry at primPath.
+ **/
+SceneEvaluationContext getMaterialInputContext(const SceneEvaluationContext& ctx,
+                                               const std::string& primPath);
+void mapMaterialInputReach(SceneGraftMemo* memo,
+                           const std::string& primPath,
+                           const std::vector<std::string>& in,
+                           std::vector<std::string>* out);
+
+/**
  * @brief Whether shader is a USDProject3D projection: its glslfx source is the projection shader.
  **/
 bool isProjectionShader(const PXR_NS::UsdShadeShader& shader);
 
 /**
- * @brief For a geometry node whose Material input is a projection in Geometry space
- * (graft.geometryProjectionShader set): authors the shader's geometryFrame input on stage, the
- * geometry's local to world transform as the node places it, frameAt(frame) at a project frame:
- * once at the projection's hold frame when it holds its camera, else as a default or, when
- * animated, at every frame of getSampleFrames(). Does nothing for any other material.
+ * @brief Reads material as a USDProject3D projection in Geometry space. Returns false, leaving
+ * *projection empty, for any other material.
  **/
-bool authorProjectionGeometryFrame(const PXR_NS::UsdStageRefPtr& stage,
-                                   const SceneLayerEdit& edit,
-                                   const SceneMaterialGraft& graft,
-                                   bool animated,
-                                   const std::function<PXR_NS::GfMatrix4d(double)>& frameAt);
+bool readGeometryProjection(const PXR_NS::UsdPrim& material,
+                            SceneGeometryProjection* projection);
+
+/**
+ * @brief Authors projection's frame primvar on prim, its local to world transform as the node
+ * places it, frameAt(frame) at a project frame: once at the projection's hold frame when it holds
+ * its camera, else as a default or, when animated, at every frame of getSampleFrames(), with
+ * the columns Cycles reads (SceneProjectionCameras::frameColumnPrimvar()) and the parts MoonRay
+ * reads (SceneProjectionCameras::moonRayFramePrimvar()) beside it. Does nothing when projection
+ * is empty.
+ **/
+bool authorProjectionFrame(const PXR_NS::UsdPrim& prim,
+                           const SceneLayerEdit& edit,
+                           const SceneGeometryProjection& projection,
+                           bool animated,
+                           const std::function<PXR_NS::GfMatrix4d(double)>& frameAt);
+
+/**
+ * @brief Reads prim's points as a projection held at context.holdTime takes them: its world-space
+ * points there, skinned when it is bound to a skeleton. xforms is a cache at the hold. A prim whose
+ * points neither move nor are skinned, or that is no UsdGeomPointBased, reads as still.
+ **/
+SceneReferencePoints readReferencePoints(const PXR_NS::UsdPrim& prim,
+                                         SceneReferenceContext* context,
+                                         PXR_NS::UsdGeomXformCache* xforms);
+
+/**
+ * @brief Authors points on prim as projection's reference primvar.
+ **/
+bool authorReferencePoints(const PXR_NS::UsdPrim& prim,
+                           const SceneGeometryProjection& projection,
+                           const PXR_NS::VtVec3fArray& points);
 
 /**
  * @brief Binds prim to the material at materialPath (material:binding, with
- * UsdShadeMaterialBindingAPI applied). Does nothing when materialPath is empty.
+ * UsdShadeMaterialBindingAPI applied). Does nothing when materialPath is empty. A purpose of
+ * full or preview binds material:binding:<purpose>; an empty or allPurpose one binds
+ * material:binding. A non-empty strength (UsdShadeTokens->strongerThanDescendants or
+ * weakerThanDescendants) is authored as the binding's bindMaterialAs.
  **/
 bool authorMaterialBinding(const PXR_NS::UsdPrim& prim,
                            const std::string& materialPath,
-                           std::string* errorMessage);
+                           std::string* errorMessage,
+                           const PXR_NS::TfToken& purpose = PXR_NS::TfToken(),
+                           const PXR_NS::TfToken& strength = PXR_NS::TfToken());
 
 /**
  * @brief For a node assigning one shared material: grafts every root prim of material under the
  * scope root /<scope> (typed Scope) through SceneOps::reparentRoots, memoized in memo, a root named
  * like the scope passed through rather than nested. graft->materialPath is the grafted path of
- * material's first UsdShadeMaterial, depth first. Returns false with *errorMessage set when scope
- * is empty or authoring fails.
+ * material's first UsdShadeMaterial, depth first. materialContext is the context material was
+ * evaluated on (getSharedMaterialContext()). Returns false with *errorMessage set when scope is
+ * empty or authoring fails.
  **/
 bool graftSharedMaterial(const ScenePayload& material,
+                         const SceneEvaluationContext& materialContext,
                          const std::string& scope,
                          const std::string& layerTag,
                          SceneGraftMemo* memo,
@@ -271,11 +397,121 @@ bool graftSharedMaterial(const ScenePayload& material,
                          std::string* errorMessage);
 
 /**
+ * @brief The context the material input of graftSharedMaterial() is evaluated on, for an output
+ * evaluated on ctx, and the reach that input gathers as output paths, for scope.
+ **/
+SceneEvaluationContext getSharedMaterialContext(const SceneEvaluationContext& ctx,
+                                                const std::string& scope);
+void mapSharedMaterialReach(SceneGraftMemo* memo,
+                            const std::string& scope,
+                            const std::vector<std::string>& in,
+                            std::vector<std::string>* out);
+
+/**
+ * @brief Sets *mapped to the context target evaluates on when consumer evaluates on ctx: ctx is
+ * mapped through each node between them by getSceneInputContext(), and the sets of several routes
+ * are united. Its id is the one target's evaluation on the first route stores its result under.
+ * *ownSet, when given, is set to whether the united set differs from that route's, in which case
+ * an evaluation on it needs an id of its own. False, leaving *mapped alone, when no scene input
+ * chain leads from consumer to target.
+ **/
+bool mapContextDownToNode(const EffectInstance* consumer,
+                          const EffectInstance* target,
+                          const SceneEvaluationContext& ctx,
+                          double time,
+                          ViewIdx view,
+                          SceneEvaluationContext* mapped,
+                          bool* ownSet = nullptr);
+
+/**
+ * @brief The context of the viewer showing effect, for work on effect's scene done outside an
+ * evaluation, mapped down to effect's own paths: of the viewers whose scene input reaches effect,
+ * the most recently active, else the first. *viewerContext, when given, is set to that viewer's
+ * own context, unmapped, and *ownSet to mapContextDownToNode()'s. False, leaving them alone, when
+ * no viewer's scene input reaches effect. Main thread.
+ **/
+bool getShowingViewerContext(EffectInstance* effect,
+                             SceneEvaluationContext* context,
+                             SceneEvaluationContext* viewerContext = nullptr,
+                             bool* ownSet = nullptr);
+
+/**
+ * @brief Evaluates input at time on context into *scene for a menu refresh running as job, and
+ * borrows its stage into *lease with context's load set. False when job is cancelled, input is
+ * gone or the scene is empty or does not compose. Off the main thread, the reference to input
+ * it takes is released on the main thread (releaseOnMainThread()).
+ **/
+bool borrowMenuScene(const EffectInstanceWPtr& input,
+                     double time,
+                     const SceneEvaluationContext& context,
+                     const SceneMenuJob& job,
+                     ScenePayload* scene,
+                     SceneQueryPool::Lease* lease);
+
+/**
+ * @brief Releases *effect, on the main thread when called off it: a worker that dropped an
+ * effect's last reference would destroy its node there.
+ **/
+void releaseOnMainThread(std::shared_ptr<const EffectInstance>* effect);
+
+// Holds an effect for a scope that may end on a worker, and releases it with releaseOnMainThread().
+class EffectReleasedOnMainThread {
+public:
+    explicit EffectReleasedOnMainThread(EffectInstancePtr effect)
+        : _effect(std::move(effect))
+    {
+    }
+
+    ~EffectReleasedOnMainThread()
+    {
+        std::shared_ptr<const EffectInstance> effect = std::move(_effect);
+        releaseOnMainThread(&effect);
+    }
+
+    EffectReleasedOnMainThread(const EffectReleasedOnMainThread&) = delete;
+    EffectReleasedOnMainThread& operator=(const EffectReleasedOnMainThread&) = delete;
+
+    const EffectInstancePtr& get() const
+    {
+        return _effect;
+    }
+
+private:
+    EffectInstancePtr _effect;
+};
+
+/**
+ * @brief How many unloaded payloads a menu listing what the whole of stage holds did not search:
+ * 0 when context loads everything.
+ **/
+std::size_t countMenuUnsearched(const PXR_NS::UsdStageRefPtr& stage,
+                                const SceneEvaluationContext& context);
+
+/**
+ * @brief The context a camera input that is read but not composed into the output is evaluated
+ * on: only the payloads on the way to cameraPath, whatever ctx loads, so that no load of the
+ * output reaches it. ctx itself when cameraPath is not an absolute prim path, as when the first
+ * camera of the input is looked for.
+ **/
+SceneEvaluationContext getCameraInputContext(const SceneEvaluationContext& ctx,
+                                             const std::string& cameraPath);
+
+/**
+ * @brief The context a camera menu searches a camera input on: what the viewer's ctx loads,
+ * so the cameras the viewer loaded are listed, and the payloads on the way to cameraPath, so
+ * the chosen camera is. ctx itself when cameraPath is not an absolute prim path.
+ **/
+SceneEvaluationContext getCameraMenuContext(const SceneEvaluationContext& ctx,
+                                            const std::string& cameraPath);
+
+/**
  * @brief One collection-based material binding authorCollectionBinding() writes on a root prim.
  **/
 struct SceneCollectionBinding {
     // The prims the collection includes, its expansion rule expandPrims taking their descendants.
     std::vector<PXR_NS::SdfPath> includes;
+    // Prims under the includes the collection leaves out, with their descendants.
+    std::vector<PXR_NS::SdfPath> excludes;
     std::string materialPath;
     // Names both the collection (collection:<name>) and the binding; a single identifier.
     std::string bindingName;
@@ -296,7 +532,8 @@ std::vector<PXR_NS::TfToken> getCollectionBindingNames(const PXR_NS::UsdPrim& pr
 
 /**
  * @brief Binds binding.materialPath to the prims binding.includes names, on root: applies
- * UsdCollectionAPI collection:<name> including them (expandPrims) and UsdShadeMaterialBindingAPI,
+ * UsdCollectionAPI collection:<name> including them (expandPrims) and excluding binding.excludes,
+ * and UsdShadeMaterialBindingAPI,
  * authors material:binding:collection[:<purpose>]:<name> = [collection, material] with
  * bindMaterialAs = binding.strength, and writes root's propertyOrder with that binding first, then
  * binding.existingBindings, so it is the strongest collection binding on root. Returns false with
@@ -354,6 +591,54 @@ PXR_NS::GfMatrix4d composeRotationMatrix(const PXR_NS::GfVec3d& rotate,
 PXR_NS::GfVec3d decomposeRotationMatrix(const PXR_NS::GfMatrix4d& rotation,
                                         SceneRotateOrderEnum rotateOrder,
                                         const PXR_NS::GfVec3d& hint);
+
+// What matchPattern() found.
+struct PatternMatches {
+    std::vector<PXR_NS::SdfPath> paths;
+    /**
+     * In an evaluation that leaves payloads unloaded, when nothing matched: how many unloaded
+     * payloads lie where the pattern could match and were not searched.
+     **/
+    std::size_t unsearched = 0;
+};
+
+// Whether a prim the pattern selects is one the node acts on.
+typedef std::function<bool(const PXR_NS::UsdPrim& prim)> PatternFilter;
+
+/**
+ * @brief The prims pattern selects on upstream composed with context's load set that filter (if
+ * set) keeps, in SceneOps::selectPrims() order. A union of plain prim paths in an evaluation that leaves payloads unloaded
+ * is not searched for: a path matches when its prim exists, or when the prim above it that
+ * exists is an unloaded payload and there is no filter, so a render loading that payload
+ * finds the node's edit on it. filterKey stands for what filter keeps, so cache, which
+ * remembers the matches per context, can tell when they still hold: for the same upstream,
+ * pattern and filterKey, and a load set equal to the remembered one or changed only where the
+ * pattern cannot reach, they are taken without a query. A stage is borrowed into *lease, with
+ * context's load set, when there is none yet and one is needed; a caller reading the stage
+ * afterwards borrows it the same way when *lease is still empty. The pattern's reach goes to
+ * context's reach, when set. With traverseInstanceProxies, prims inside native instances are
+ * searched and can match too (SceneOps::selectPrims()). Returns false with *errorMessage set when
+ * pattern does not parse or the stage does not compose.
+ **/
+bool matchPattern(PrimPatternCache* cache,
+                  const ScenePayload& upstream,
+                  const std::string& pattern,
+                  const SceneEvaluationContext& context,
+                  U64 filterKey,
+                  const PatternFilter& filter,
+                  SceneQueryPool::Lease* lease,
+                  PatternMatches* matches,
+                  std::string* errorMessage,
+                  bool traverseInstanceProxies = false);
+
+/**
+ * @brief The warning a node gives when pattern matches nothing, saying how many unloaded
+ * branches were not searched when there are some. consequence finishes the sentence, such as
+ * "the scene is passed through unchanged".
+ **/
+std::string describeNoMatch(const std::string& pattern,
+                            const PatternMatches& matches,
+                            const std::string& consequence);
 
 } // namespace SceneNodeAuthoring
 

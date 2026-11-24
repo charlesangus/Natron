@@ -1,21 +1,35 @@
 #include "GpuKernelRegistry.h"
 
+#include <array>
+#include <atomic>
+#include <tuple>
+
 namespace gpu {
 
 #define GPU_KERNELS_TABLE
 #include "GpuKernels.inc"
 #undef GPU_KERNELS_TABLE
 
+#define GPU_RASTERS_TABLE
+#include "GpuKernels.inc"
+#undef GPU_RASTERS_TABLE
+
 namespace {
 
     constexpr size_t kGeneratedCount = sizeof(kGpuKernelTable) / sizeof(kGpuKernelTable[0]);
     static_assert(kGeneratedCount == static_cast<size_t>(GpuKernelId::Count),
                   "kernel table and id enum come from the same list");
+    constexpr size_t kGeneratedRasterCount = std::tuple_size_v<decltype(kGpuRasterTable)>;
+    static_assert(kGeneratedRasterCount == static_cast<size_t>(GpuRasterId::Count),
+                  "raster table and id enum come from the same list");
+
+    std::atomic<uint64_t> gNextRegistrySerial { 1 };
 
 } // namespace
 
 GpuKernelRegistry::GpuKernelRegistry(GpuDevice& device)
     : device_(device)
+    , serial_(gNextRegistrySerial.fetch_add(1, std::memory_order_relaxed))
     , slots_(kGeneratedCount)
 {
 }
@@ -34,6 +48,28 @@ GpuKernelRegistry::registerKernel(const GpuKernelDesc& desc)
     registered_.push_back(desc);
     slots_.emplace_back();
     return static_cast<GpuKernelId>(kGeneratedCount + registered_.size() - 1);
+}
+
+GpuRasterId
+GpuKernelRegistry::registerRaster(const GpuRasterDesc& desc)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    registeredRasters_.push_back(desc);
+    return static_cast<GpuRasterId>(kGeneratedRasterCount + registeredRasters_.size() - 1);
+}
+
+const GpuRasterDesc*
+GpuKernelRegistry::rasterDesc(GpuRasterId id) const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    const size_t i = static_cast<size_t>(id);
+    if (i < kGeneratedRasterCount) {
+        return &kGpuRasterTable[i];
+    }
+    if (i - kGeneratedRasterCount < registeredRasters_.size()) {
+        return &registeredRasters_[i - kGeneratedRasterCount];
+    }
+    return nullptr;
 }
 
 GpuKernelId
@@ -128,21 +164,23 @@ GpuKernelRegistry::invalidate()
 }
 
 GpuStatus
-GpuKernelRegistry::commandPoolForThisThread(VkCommandPool& out)
+GpuKernelRegistry::commandPoolForThisThread(VkCommandPool& out, QueueKind queue)
 {
     std::lock_guard<std::mutex> lock(mutex_);
-    auto it = pools_.find(std::this_thread::get_id());
+    const uint32_t family = device_.queueFamily(queue);
+    const auto key = std::make_pair(std::this_thread::get_id(), family);
+    auto it = pools_.find(key);
     if (it == pools_.end()) {
         VkCommandPoolCreateInfo ci { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
         ci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-        ci.queueFamilyIndex = device_.queueFamily(QueueKind::Compute);
+        ci.queueFamilyIndex = family;
         VkCommandPool pool = VK_NULL_HANDLE;
         if (GpuStatus s = device_.check(vkCreateCommandPool(device_.device(), &ci, nullptr, &pool),
                                         "vkCreateCommandPool");
             !s) {
             return s;
         }
-        it = pools_.emplace(std::this_thread::get_id(), pool).first;
+        it = pools_.emplace(key, pool).first;
     }
     out = it->second;
     return {};

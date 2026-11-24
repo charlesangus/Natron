@@ -53,6 +53,12 @@ UndoRecorderI::openLabelledStep(const std::string& text)
     openStep(text);
 }
 
+bool
+UndoRecorderI::isReplaying() const
+{
+    return false;
+}
+
 void
 UndoRecorderI::suppress()
 {

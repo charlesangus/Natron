@@ -70,8 +70,6 @@ public:
     typedef std::shared_ptr<ImageCache> ImageCachePtr;
     typedef Cache<FrameEntry> FrameEntryCache;
     typedef std::shared_ptr<FrameEntryCache> FrameEntryCachePtr;
-    typedef Cache<DeepImageCacheEntry> DeepImageCache;
-    typedef std::shared_ptr<DeepImageCache> DeepImageCachePtr;
 
     AppTLS globalTLS;
     AppManager::AppTypeEnum _appType; //< the type of app
@@ -85,14 +83,13 @@ public:
     std::unique_ptr<OfxHost> ofxHost; //< OpenFX host
     std::unique_ptr<KnobFactory> _knobFactory; //< knob maker
     ImageCachePtr _nodeCache; //< Images cache
-    ImageCachePtr _diskCache; //< Images disk cache (used by DiskCache nodes)
     FrameEntryCachePtr _viewerCache; //< Viewer textures cache
-    DeepImageCachePtr _deepImageCache; //< Deep image cache, own memory budget separate from _nodeCache
     mutable QMutex diskCachesLocationMutex;
     QString diskCachesLocation;
     std::unique_ptr<ProcessInputChannel> _backgroundIPC; //< object used to communicate with the main app
     //if this app is background, see the ProcessInputChannel def
     bool _loaded; //< true when the first instance is completely loaded.
+    bool terminationRequested = false; //< requestTermination() has run, main thread only
     QString _binaryPath; //< the path to the application's binary
 
     // Sticky: once a headless render has failed, this stays true for the
@@ -120,6 +117,10 @@ public:
 
     // Created once the settings are loaded; destroyed with the private data.
     std::unique_ptr<GpuContext> gpuContext;
+
+    // Declared after gpuContext, so that it goes first: its images return their buffers to the runtime's pool.
+    std::mutex deviceTierMutex;
+    CacheDeviceTierPtr deviceTier;
 
     //The idea here is to keep track of the number of threads launched by Natron (except the ones of the global thread pool of QtConcurrent)
     //So that we can properly have an estimation of how much the cores of the CPU are used.
@@ -242,6 +243,9 @@ public:
     void tearDownGL();
 
     void setViewerCacheTileSize();
+
+    // Detaches the device tier from the image cache and empties it, before the GPU context it belongs to goes.
+    void dropDeviceTier();
 
     void handleCommandLineArgs(int argc, char** argv);
     void handleCommandLineArgsW(int argc, wchar_t** argv);

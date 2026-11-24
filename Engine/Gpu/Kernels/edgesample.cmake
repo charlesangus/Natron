@@ -1,0 +1,1 @@
+slang_add_kernel(edgesample_test Kernels/edgesample_test.slang ENTRY edgesample_test_main REGISTRY NatronGpu)

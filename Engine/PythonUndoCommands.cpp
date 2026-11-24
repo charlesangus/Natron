@@ -602,6 +602,7 @@ public:
         std::list<ViewerInstance*> viewers;
         collectViewers(node, &viewers);
         node->deactivate(outputs(), false, _autoReconnect, true, false);
+        node->notifyOutputsOfDeletion();
         _removed = true;
         refreshAfterGraphEdit(node, viewers);
     }
@@ -942,6 +943,21 @@ recordPythonKnobEdit(const KnobIPtr& knob)
     return true;
 }
 
+bool
+recordPythonKnobEdit(const KnobIPtr& knob,
+                     const NodePtr& itemNode)
+{
+    if (!knob || knob->getHolder() || !itemNode) {
+        return recordPythonKnobEdit(knob);
+    }
+    if (IsolatedJob::refusesPythonWrite(knob.get())) {
+        return false;
+    }
+    recordRotoItemKnobEdit(itemNode, knob);
+
+    return true;
+}
+
 void
 recordKnobEdit(const KnobIPtr& knob)
 {
@@ -960,6 +976,22 @@ recordKnobEdit(const KnobIPtr& knob)
     touched.knobs.push_back(knob);
     std::shared_ptr<KnobStateCommand> command = std::make_shared<KnobStateCommand>(knob);
     recorder->record(command, touched);
+    recorder->watchSuppression(command);
+}
+
+void
+recordRotoItemKnobEdit(const NodePtr& node,
+                       const KnobIPtr& knob)
+{
+    if (!node || !knob) {
+        return;
+    }
+    UndoRecorderPtr recorder = recorderForNode(node);
+    if (!recorder || !recorder->claimKnob(knob)) {
+        return;
+    }
+    std::shared_ptr<KnobStateCommand> command = std::make_shared<KnobStateCommand>(knob);
+    recorder->record(command, touchedNode(node));
     recorder->watchSuppression(command);
 }
 

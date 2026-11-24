@@ -42,16 +42,21 @@ sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd
 STARTUP_TIMEOUT_S = 60.0
 WATCHDOG_S = 240
 SETTLE_MS = 400
+# Longer than the navigator thumbnail's re-render delay.
+NAVIGATOR_SETTLE_MS = 600
 MARGIN = 80.0
 MAX_ZOOM = 1.8
 HINT_CHANNEL_TOLERANCE = 40
 DRAG_STEPS = 4
+# kSpliceRectTolerance in Gui/NodeGraph20.cpp: how far outside a dragged node a pipe still splices.
+SPLICE_TOLERANCE = 10.0
+SIZE_ROUND_TRIPS = 10
 
 try:
     import NatronEngine
-    from PySide6.QtCore import QEvent, QMetaObject, QPointF, Q_ARG, Qt, QTimer
-    from PySide6.QtGui import QGuiApplication, QKeyEvent, QMouseEvent
-    from PySide6.QtWidgets import QApplication, QDialogButtonBox, QMainWindow, QPushButton, QWidget
+    from PySide6.QtCore import QEvent, QMetaObject, QPoint, QPointF, Q_ARG, Qt, QTimer
+    from PySide6.QtGui import QFontMetrics, QGuiApplication, QHelpEvent, QKeyEvent, QMouseEvent, QWheelEvent
+    from PySide6.QtWidgets import QApplication, QDialogButtonBox, QMainWindow, QPushButton, QToolTip, QWidget
 
     import guitest as gt
     from guitest import check, report
@@ -115,10 +120,21 @@ try:
         x, y, w, h = box(effect)
         return (x + w / 2.0, y + h / 2.0)
 
+    def pipe_x_at(src, dst, y):
+        """The scene x of the pipe from src to dst at height y. Edge::initLineNow() runs a
+        connected pipe along the line between the two nodes' centres, so it slants whenever their
+        widths differ even when their left edges line up."""
+        (sx, sy), (dx, dy) = node_center_scene(src), node_center_scene(dst)
+        if dy == sy:
+            return sx
+        return sx + (dx - sx) * (y - sy) / (dy - sy)
+
     def point_in_box(px, py, bx, by, bw, bh, pad=3.0):
         return (bx - pad) <= px <= (bx + bw + pad) and (by - pad) <= py <= (by + bh + pad)
 
-    def frame(graph, nodes, margin=MARGIN, max_zoom=MAX_ZOOM):
+    # Not called "frame": setting an expression runs "frame=0" and "view=0" in the globals this
+    # script runs in, which would replace a helper of either name with an int.
+    def frame_nodes(graph, nodes, margin=MARGIN, max_zoom=MAX_ZOOM):
         if graph is None or not nodes:
             return
         xs, ys, xe, ye = [], [], [], []
@@ -430,7 +446,9 @@ try:
         apart from that leftover state unless it first puts another tab back in front of the
         Progress panel's pane itself. TabBar.setCurrentIndex is a slot wired to
         TabWidget::makeCurrentTab, so driving it switches the pane for real, not just the tab
-        bar's own highlight."""
+        bar's own highlight. The Node Graph shares that pane, and later sections need it in front,
+        so the tabs are stepped through until it is the one showing; a pane already showing it is
+        left alone, since stepping on from there would wrap round to the Progress panel."""
         panels = [w for w in gt.widgets_of("ProgressPanel") if w.parentWidget() is not None]
         if panels:
             pane = panels[0].parentWidget()
@@ -440,8 +458,12 @@ try:
                 count = bar.property("count")
                 current = bar.property("currentIndex")
                 if count is not None and current is not None and count > 1:
-                    QMetaObject.invokeMethod(bar, "setCurrentIndex", Q_ARG(int, (current + 1) % count))
-                    QApplication.processEvents()
+                    for step in range(count):
+                        if step:
+                            QMetaObject.invokeMethod(bar, "setCurrentIndex", Q_ARG(int, (current + step) % count))
+                            QApplication.processEvents()
+                        if not progress_panel_is_current_tab() and root_graph() is not None:
+                            break
         check(not progress_panel_is_current_tab(),
              "%s: the Progress panel is not the current tab before starting the render" % label)
 
@@ -460,6 +482,51 @@ try:
         gt.close_all_panels()
         yield ("sleep", SETTLE_MS)
 
+        # ---- size-round-trip: getSize() reports the size setSize() takes, so feeding one into
+        # the other leaves a node and a backdrop exactly as they were.
+        gt.section("size-round-trip")
+        sized_node = create("Blur", -4000, 0)
+        sized_backdrop = create("Backdrop", -4000, 300)
+        gt.close_all_panels()
+        yield ("sleep", SETTLE_MS)
+        for label, sized in (("node", sized_node), ("backdrop", sized_backdrop)):
+            start_size = sized.getSize()
+            for _ in range(SIZE_ROUND_TRIPS):
+                w, h = sized.getSize()
+                sized.setSize(w, h)
+            yield ("sleep", SETTLE_MS)
+            end_size = sized.getSize()
+            check(tuple(end_size) == tuple(start_size),
+                  "size-round-trip: %d getSize()->setSize() round trips leave the %s at %s (got %s)"
+                  % (SIZE_ROUND_TRIPS, label, tuple(start_size), tuple(end_size)))
+
+        # ---- wheel-zoom-pivot: after a plain hover, wheel zoom keeps the scene point under the
+        # cursor where it was. Hover moves never reach QGraphicsView::mouseMoveEvent, so a pivot
+        # taken from Qt's last mouse scene point would sit wherever the last drag ended.
+        gt.section("wheel-zoom-pivot")
+        frame_nodes(root_graph(), [sized_node, sized_backdrop])
+        yield ("sleep", SETTLE_MS)
+        graph_w = root_graph()
+        vp_w = graph_w.viewport()
+        cursor = QPoint(int(vp_w.width() * 0.25), int(vp_w.height() * 0.3))
+        send_mouse(vp_w, QEvent.MouseMove, cursor, Qt.NoButton, Qt.NoButton)
+        for label, notches in (("in", 1), ("in", 1), ("out", -1), ("out", -1)):
+            before = graph_w.mapToScene(cursor)
+            start_zoom = graph_w.transform().m11()
+            QApplication.sendEvent(vp_w, QWheelEvent(QPointF(cursor), QPointF(vp_w.mapToGlobal(cursor)), QPoint(0, 0),
+                                                     QPoint(0, 120 * notches), Qt.NoButton, Qt.NoModifier,
+                                                     Qt.NoScrollPhase, False))
+            QApplication.processEvents()
+            zoom = graph_w.transform().m11()
+            after = graph_w.mapToScene(cursor)
+            drift = max(abs(after.x() - before.x()), abs(after.y() - before.y())) * zoom
+            check(zoom != start_zoom, "wheel-zoom-pivot: a wheel notch %s changes the zoom (%.4f -> %.4f)"
+                  % (label, start_zoom, zoom))
+            check(drift <= 1.0, "wheel-zoom-pivot: zooming %s keeps the scene point under the off-centre cursor "
+                  "within 1 px (drift %.2f px)" % (label, drift))
+        del vp_w
+        del graph_w
+
         # =====================================================================================
         # Splice into pipe: always on, unconnected nodes/chains only. Holding Ctrl during the
         # drag aims a kiss connection instead and hides the splice hint until it is released.
@@ -475,7 +542,7 @@ try:
         gt.close_all_panels()
         yield ("sleep", SETTLE_MS)
         graph_v = root_graph()
-        frame(graph_v, [src_v, dst_v, mover_v])
+        frame_nodes(graph_v, [src_v, dst_v, mover_v])
         yield ("sleep", SETTLE_MS)
 
         pipe_rect_v = (0.0, 0.0, 400.0, 450.0)
@@ -485,11 +552,11 @@ try:
             graph_shot(graph_v, "splice-01-hover-vertical")
             check_hint_present(graph_v, pipe_rect_v, "splice-vertical: hover shows the highlight")
 
-        # The highlighted pipe sits below node bodies, so the node is dropped just beside the pipe
-        # (still inside the splice tolerance) to leave the highlight in view.
-        beside_v = box(mover_v)[2] / 2.0 + 9.0
-        target_v = (node_center_scene(src_v)[0] + beside_v,
-                    (node_center_scene(src_v)[1] + node_center_scene(dst_v)[1]) / 2.0)
+        # The highlighted pipe sits below node bodies, so the node is dropped with its left edge
+        # beside the pipe, half the splice tolerance clear of it, to leave the highlight in view.
+        target_y_v = (node_center_scene(src_v)[1] + node_center_scene(dst_v)[1]) / 2.0
+        target_v = (pipe_x_at(src_v, dst_v, target_y_v) + box(mover_v)[2] / 2.0 + SPLICE_TOLERANCE / 2.0,
+                    target_y_v)
         drag_node_to(graph_v, mover_v, target_v, modifiers=Qt.NoModifier, at_each_step=None,
                     release=False)
         mid_check_v(target_v)
@@ -538,7 +605,7 @@ try:
         gt.close_all_panels()
         yield ("sleep", SETTLE_MS)
         graph_d = root_graph()
-        frame(graph_d, [src_d, dst_d, mover_d])
+        frame_nodes(graph_d, [src_d, dst_d, mover_d])
         yield ("sleep", SETTLE_MS)
 
         pipe_rect_d = (900.0, 0.0, 1300.0, 400.0)
@@ -575,7 +642,7 @@ try:
         gt.close_all_panels()
         yield ("sleep", SETTLE_MS)
         graph_c = root_graph()
-        frame(graph_c, [src_c, dst_c, chain_entry, chain_exit])
+        frame_nodes(graph_c, [src_c, dst_c, chain_entry, chain_exit])
         yield ("sleep", SETTLE_MS)
 
         app.setSelection([chain_entry, chain_exit])
@@ -635,7 +702,7 @@ try:
         gt.close_all_panels()
         yield ("sleep", SETTLE_MS)
         graph_n = root_graph()
-        frame(graph_n, [src_n1, mid_n, src_n2, dst_n2])
+        frame_nodes(graph_n, [src_n1, mid_n, src_n2, dst_n2])
         yield ("sleep", SETTLE_MS)
 
         pipe_rect_n2 = (box(src_n2)[0], box(src_n2)[1],
@@ -674,7 +741,7 @@ try:
         gt.close_all_panels()
         yield ("sleep", SETTLE_MS)
         graph_f = root_graph()
-        frame(graph_f, [src_f1, full_f, src_f2, dst_f2])
+        frame_nodes(graph_f, [src_f1, full_f, src_f2, dst_f2])
         yield ("sleep", SETTLE_MS)
 
         pipe_rect_f2 = (box(src_f2)[0], box(src_f2)[1],
@@ -706,7 +773,7 @@ try:
         gt.close_all_panels()
         yield ("sleep", SETTLE_MS)
         graph_ctrl = root_graph()
-        frame(graph_ctrl, [src_ctrl, dst_ctrl, mover_ctrl])
+        frame_nodes(graph_ctrl, [src_ctrl, dst_ctrl, mover_ctrl])
         yield ("sleep", SETTLE_MS)
 
         pipe_rect_ctrl = (3800.0, 0.0, 4200.0, 450.0)
@@ -1024,6 +1091,160 @@ try:
             open_render_dialog_and(render_button_neg.click, configure_negative,
                                    "render-background-negative-range")
         yield ("sleep", SETTLE_MS)
+
+        # ---- navigator: the thumbnail in the bottom-right corner shows the graph when it does not
+        # fit the view, and is re-rendered shortly after a node is added out of view.
+        gt.section("navigator")
+        gt.close_all_panels()
+        nav_a = create("Blur", 6200, 1500)
+        nav_b = create("Blur", 6600, 1500)
+        app.clearSelection()
+        graph_n = root_graph()
+        frame_nodes(graph_n, [nav_a])
+        yield ("sleep", NAVIGATOR_SETTLE_MS)
+
+        def navigator_region():
+            _pix, img = viewport_image(graph_n)
+            w = int(img.width() * 0.2)
+            h = int(img.height() * 0.2)
+            return img.copy(img.width() - w, img.height() - h, w, h)
+
+        def distinct_colours(img, step=4):
+            colours = set()
+            for y in range(0, img.height(), step):
+                for x in range(0, img.width(), step):
+                    colours.add(img.pixel(x, y))
+            return len(colours)
+
+        before = navigator_region()
+        check(distinct_colours(before) > 2,
+              "navigator: the thumbnail draws the graph when it does not fit the view")
+        graph_shot(graph_n, "navigator-01-before")
+        create("Blur", 6200, -6000)
+        app.clearSelection()
+        yield ("sleep", NAVIGATOR_SETTLE_MS)
+        after = navigator_region()
+        check(after != before, "navigator: the thumbnail changes after a node is added out of view")
+        check(distinct_colours(after) > 2, "navigator: the re-rendered thumbnail is not blank")
+        graph_shot(graph_n, "navigator-02-after")
+
+        # ---- badge tooltip: a node's expression badge still shows its tooltip on hover.
+        gt.section("badge-tooltip")
+        size_b = nav_b.getParam("size")
+        set_ok = size_b is not None and size_b.setExpression("%s.size.get()[0]" % nav_a.getScriptName(), False, 0)
+        if check(bool(set_ok), "badge-tooltip: an expression on another node's parameter is set"):
+            frame_nodes(graph_n, [nav_b])
+            yield ("sleep", SETTLE_MS)
+            graph_shot(graph_n, "badge-01-expression")
+            bx, by, bw, _bh = box(nav_b)
+            badge_view = graph_n.mapFromScene(QPointF(bx + bw, by))
+            vp = graph_n.viewport()
+            QToolTip.hideText()
+            ev = QHelpEvent(QEvent.ToolTip, badge_view, vp.mapToGlobal(badge_view))
+            QApplication.sendEvent(vp, ev)
+            QApplication.processEvents()
+            tip = QToolTip.text() if QToolTip.isVisible() else ""
+            report("NOTE badge-tooltip: tooltip %r" % tip[:80])
+            check("expression" in tip, "badge-tooltip: hovering the expression badge shows its tooltip")
+            QToolTip.hideText()
+            off_view = QPoint(badge_view.x(), vp.height() - 30)
+            ev = QHelpEvent(QEvent.ToolTip, off_view, vp.mapToGlobal(off_view))
+            QApplication.sendEvent(vp, ev)
+            # Qt hides a shown tooltip on a 300 ms timer, so it still reads as visible straight away.
+            yield ("sleep", 600)
+            check(not QToolTip.isVisible(),
+                  "badge-tooltip: empty graph space shows no badge tooltip")
+            QToolTip.hideText()
+
+        # ---- pan-fit: a middle-button pan scrolls the view, so every node moves on screen by the
+        # pan and keeps its scene position, and fitting again puts each node back where it was.
+        gt.section("pan-fit")
+        gt.close_all_panels()
+        app.clearSelection()
+        graph_p = root_graph()
+        probes = [nav_a, nav_b, src_v]
+
+        def fit_all():
+            QMetaObject.invokeMethod(graph_p, "centerOnAllNodes")
+            QApplication.processEvents()
+
+        def view_positions():
+            out = []
+            for n in probes:
+                p = graph_p.mapFromScene(QPointF(*node_center_scene(n)))
+                out.append((p.x(), p.y()))
+            return out
+
+        def near(a, b, tol=1.0):
+            return all(abs(pa[0] - pb[0]) <= tol and abs(pa[1] - pb[1]) <= tol for pa, pb in zip(a, b))
+
+        fit_all()
+        yield ("sleep", SETTLE_MS)
+        graph_shot(graph_p, "panfit-01-fitted")
+        fitted = view_positions()
+        scene_before = [n.getPosition() for n in probes]
+        hbar_before = graph_p.horizontalScrollBar().value()
+        vbar_before = graph_p.verticalScrollBar().value()
+
+        vp = graph_p.viewport()
+        start = QPointF(vp.width() / 2.0, vp.height() / 2.0)
+        pan = QPointF(120.0, 70.0)
+        send_mouse(vp, QEvent.MouseMove, start, Qt.NoButton, Qt.NoButton)
+        send_mouse(vp, QEvent.MouseButtonPress, start, Qt.MiddleButton, Qt.MiddleButton)
+        for i in range(1, DRAG_STEPS + 1):
+            send_mouse(vp, QEvent.MouseMove, start + pan * (i / float(DRAG_STEPS)), Qt.NoButton, Qt.MiddleButton)
+        send_mouse(vp, QEvent.MouseButtonRelease, start + pan, Qt.MiddleButton, Qt.NoButton)
+        yield ("sleep", SETTLE_MS)
+        graph_shot(graph_p, "panfit-02-panned")
+
+        panned = view_positions()
+        want = [(x + pan.x(), y + pan.y()) for x, y in fitted]
+        report("NOTE pan-fit: fitted %r, panned %r" % (fitted, panned))
+        check(near(panned, want), "pan-fit: a middle-button pan moves every node on screen by the pan")
+        check([n.getPosition() for n in probes] == scene_before, "pan-fit: a pan leaves the nodes' positions alone")
+        check(graph_p.horizontalScrollBar().value() == hbar_before - int(pan.x())
+              and graph_p.verticalScrollBar().value() == vbar_before - int(pan.y()),
+              "pan-fit: the pan scrolls the view by the pan")
+
+        fit_all()
+        yield ("sleep", SETTLE_MS)
+        graph_shot(graph_p, "panfit-03-refitted")
+        check(near(view_positions(), fitted), "pan-fit: fitting after a pan puts every node back where the first fit had it")
+
+        # ---- lod: the same graph far out, just inside the low level of detail and close up. The
+        # graph switches to its low level once the application font would be drawn under 4 px
+        # tall (NATRON_NODEGRAPH_LOW_DETAIL_TEXT_HEIGHT_PX).
+        gt.section("lod")
+        gt.close_all_panels()
+        app.clearSelection()
+        graph_l = root_graph()
+        lod_nodes = []
+        for col in range(6):
+            prev = create("Constant", 14000 + col * 220, 0)
+            lod_nodes.append(prev)
+            for row in range(1, 5):
+                cur = create("Blur" if (row % 2) else "Grade", 14000 + col * 220, row * 160)
+                connect(cur, 0, prev)
+                lod_nodes.append(cur)
+                prev = cur
+        lod_nodes[7].setColor(0.8, 0.3, 0.2)
+        lod_nodes[13].setColor(0.2, 0.6, 0.3)
+        gt.close_all_panels()
+        app.clearSelection()
+        app.selectNode(lod_nodes[9], False)
+        yield ("sleep", SETTLE_MS)
+        switch_zoom = 4.0 / QFontMetrics(QApplication.font()).height()
+        report("NOTE lod: the low level of detail starts below zoom %.3f" % switch_zoom)
+        xs = [box(n)[0] for n in lod_nodes]
+        ys = [box(n)[1] for n in lod_nodes]
+        centre = ((min(xs) + max(xs) + box(lod_nodes[0])[2]) / 2.0, (min(ys) + max(ys) + box(lod_nodes[0])[3]) / 2.0)
+        for name, zoom in (("lod-far.png", switch_zoom * 0.3), ("lod-mid.png", switch_zoom * 0.9), ("lod-close.png", 1.0)):
+            graph_l.resetTransform()
+            graph_l.scale(zoom, zoom)
+            graph_l.centerOn(centre[0], centre[1])
+            graph_l.viewport().update()
+            yield ("sleep", SETTLE_MS)
+            gt.shot(name)
 
         faulthandler.cancel_dump_traceback_later()
 

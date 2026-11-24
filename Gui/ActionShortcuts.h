@@ -288,6 +288,9 @@ CLANG_DIAG_ON(uninitialized)
 #define kShortcutIDActionProxyEnabled "proxyEnabled"
 #define kShortcutDescActionProxyEnabled "Enable Proxy Rendering"
 
+#define kShortcutIDActionAutoProxyScrubbing "autoProxyScrubbing"
+#define kShortcutDescActionAutoProxyScrubbing "Auto Proxy Scrubbing"
+
 #define kShortcutIDActionProxyLevel2 "proxy2"
 #define kShortcutDescActionProxyLevel2 "Proxy Level 2"
 
@@ -314,6 +317,9 @@ CLANG_DIAG_ON(uninitialized)
 
 #define kShortcutIDActionHideOverlays "hideOverlays"
 #define kShortcutDescActionHideOverlays "Show/Hide Overlays"
+
+#define kShortcutIDActionMapSiblingOverlays "mapSiblingOverlays"
+#define kShortcutDescActionMapSiblingOverlays "Map Sibling Overlays"
 
 #define kShortcutIDActionHidePlayer "hidePlayer"
 #define kShortcutDescActionHidePlayer "Show/Hide Player"
@@ -449,6 +455,30 @@ CLANG_DIAG_ON(uninitialized)
 #define kShortcutIDActionViewer3DCreateFromSelection "createNodeFromSelection"
 #define kShortcutDescActionViewer3DCreateFromSelection "Create Node from Selection"
 
+#define kShortcutIDActionViewer3DDrawChildren "drawStateChildren"
+#define kShortcutDescActionViewer3DDrawChildren "Draw Children"
+
+#define kShortcutIDActionViewer3DDrawFull "drawStateFull"
+#define kShortcutDescActionViewer3DDrawFull "Draw Full"
+
+#define kShortcutIDActionViewer3DDrawLoadAll "drawStateLoadAll"
+#define kShortcutDescActionViewer3DDrawLoadAll "Load All"
+
+#define kShortcutIDActionViewer3DDrawParentBBox "drawStateParentBBox"
+#define kShortcutDescActionViewer3DDrawParentBBox "Box Parent"
+
+#define kShortcutIDActionViewer3DPickwalkParent "pickwalkParent"
+#define kShortcutDescActionViewer3DPickwalkParent "Pickwalk Parent"
+
+#define kShortcutIDActionViewer3DPickwalkChild "pickwalkChild"
+#define kShortcutDescActionViewer3DPickwalkChild "Pickwalk Child"
+
+#define kShortcutIDActionViewer3DPickwalkPrevSibling "pickwalkPrevSibling"
+#define kShortcutDescActionViewer3DPickwalkPrevSibling "Pickwalk Previous Sibling"
+
+#define kShortcutIDActionViewer3DPickwalkNextSibling "pickwalkNextSibling"
+#define kShortcutDescActionViewer3DPickwalkNextSibling "Pickwalk Next Sibling"
+
 #define kShortcutIDToggleWipe "toggleWipe"
 #define kShortcutDescToggleWipe "Toggle Wipe"
 
@@ -520,6 +550,9 @@ CLANG_DIAG_ON(uninitialized)
 
 #define kShortcutIDActionGraphShowLinkLines "showLinkLines"
 #define kShortcutDescActionGraphShowLinkLines "Show Link Lines"
+
+#define kShortcutIDActionGraphShowGpuRegions "showGpuRegions"
+#define kShortcutDescActionGraphShowGpuRegions "Show GPU Regions"
 
 #define kShortcutIDActionGraphNavigateUpstream "navigateUp"
 #define kShortcutDescActionGraphNavigateUpstream "Navigate Tree Upward"
@@ -627,6 +660,66 @@ CLANG_DIAG_ON(uninitialized)
 
 #define kShortcutIDActionGraphFeedLastIntoOthers "feedLastIntoOthers"
 #define kShortcutDescActionGraphFeedLastIntoOthers "Connect Last Selected into Other Selected Nodes"
+
+#define kShortcutIDActionGraphLockViewerInput1 "lockViewerInput1"
+#define kShortcutDescActionGraphLockViewerInput1 "Lock Viewer Input 1"
+
+#define kShortcutIDActionGraphLockViewerInput2 "lockViewerInput2"
+#define kShortcutDescActionGraphLockViewerInput2 "Lock Viewer Input 2"
+
+#define kShortcutIDActionGraphLockViewerInput3 "lockViewerInput3"
+#define kShortcutDescActionGraphLockViewerInput3 "Lock Viewer Input 3"
+
+#define kShortcutIDActionGraphLockViewerInput4 "lockViewerInput4"
+#define kShortcutDescActionGraphLockViewerInput4 "Lock Viewer Input 4"
+
+#define kShortcutIDActionGraphLockViewerInput5 "lockViewerInput5"
+#define kShortcutDescActionGraphLockViewerInput5 "Lock Viewer Input 5"
+
+#define kShortcutIDActionGraphLockViewerInput6 "lockViewerInput6"
+#define kShortcutDescActionGraphLockViewerInput6 "Lock Viewer Input 6"
+
+#define kShortcutIDActionGraphLockViewerInput7 "lockViewerInput7"
+#define kShortcutDescActionGraphLockViewerInput7 "Lock Viewer Input 7"
+
+#define kShortcutIDActionGraphLockViewerInput8 "lockViewerInput8"
+#define kShortcutDescActionGraphLockViewerInput8 "Lock Viewer Input 8"
+
+#define kShortcutIDActionGraphLockViewerInput9 "lockViewerInput9"
+#define kShortcutDescActionGraphLockViewerInput9 "Lock Viewer Input 9"
+
+#define kShortcutIDActionGraphLockViewerInput10 "lockViewerInput10"
+#define kShortcutDescActionGraphLockViewerInput10 "Lock Viewer Input 10"
+
+#define kShortcutIDActionGraphUnlockViewerInput1 "unlockViewerInput1"
+#define kShortcutDescActionGraphUnlockViewerInput1 "Unlock Viewer Input 1"
+
+#define kShortcutIDActionGraphUnlockViewerInput2 "unlockViewerInput2"
+#define kShortcutDescActionGraphUnlockViewerInput2 "Unlock Viewer Input 2"
+
+#define kShortcutIDActionGraphUnlockViewerInput3 "unlockViewerInput3"
+#define kShortcutDescActionGraphUnlockViewerInput3 "Unlock Viewer Input 3"
+
+#define kShortcutIDActionGraphUnlockViewerInput4 "unlockViewerInput4"
+#define kShortcutDescActionGraphUnlockViewerInput4 "Unlock Viewer Input 4"
+
+#define kShortcutIDActionGraphUnlockViewerInput5 "unlockViewerInput5"
+#define kShortcutDescActionGraphUnlockViewerInput5 "Unlock Viewer Input 5"
+
+#define kShortcutIDActionGraphUnlockViewerInput6 "unlockViewerInput6"
+#define kShortcutDescActionGraphUnlockViewerInput6 "Unlock Viewer Input 6"
+
+#define kShortcutIDActionGraphUnlockViewerInput7 "unlockViewerInput7"
+#define kShortcutDescActionGraphUnlockViewerInput7 "Unlock Viewer Input 7"
+
+#define kShortcutIDActionGraphUnlockViewerInput8 "unlockViewerInput8"
+#define kShortcutDescActionGraphUnlockViewerInput8 "Unlock Viewer Input 8"
+
+#define kShortcutIDActionGraphUnlockViewerInput9 "unlockViewerInput9"
+#define kShortcutDescActionGraphUnlockViewerInput9 "Unlock Viewer Input 9"
+
+#define kShortcutIDActionGraphUnlockViewerInput10 "unlockViewerInput10"
+#define kShortcutDescActionGraphUnlockViewerInput10 "Unlock Viewer Input 10"
 
 ///////////CURVEEDITOR SHORTCUTS
 #define kShortcutIDActionCurveEditorRemoveKeys "remove"

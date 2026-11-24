@@ -57,6 +57,7 @@
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Filter/VectorBlur.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/NodeSpec.h"
 #include "Engine/Plugin.h"
@@ -92,7 +93,7 @@ const RectI kSquare(24, 16, 40, 32);
 ImageLayerDesc
 depthLayer()
 {
-    return ImageLayerDesc("depth", "depth", "Z", std::vector<std::string> { "Z" });
+    return ImageLayerDesc("depth", std::vector<std::string> { "Z" });
 }
 
 // The RGBA of each scene at pixel (x, y), black outside the 64x48 source.
@@ -478,6 +479,8 @@ protected:
         EXPECT_TRUE(node && dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get()));
         if (node && source) {
             connectNodes(source, node, kVectorBlurInputSource, true);
+            // The test source is black past its frame, and its own bit says Stretch.
+            EXPECT_TRUE(setKnobValue(node, kEdgeModeParam, std::string("black")));
         }
 
         return node;

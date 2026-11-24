@@ -31,6 +31,7 @@
 #include "ViewerInstance.h"
 
 #include <algorithm> // min, max
+#include <atomic>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
@@ -64,6 +65,7 @@
 
 NATRON_NAMESPACE_ENTER
 
+class GpuPlacementPlanner;
 
 struct AbortableRenderInfo_CompareAge
 {
@@ -140,11 +142,13 @@ public:
         , viewerParamsAlphaLayer( ImageLayerDesc::getRGBAComponents() )
         , viewerParamsAlphaChannelName("a")
         , knobWritesFromSetter(0)
+        , lockColourApplied(false)
+        , colourBeforeLock(false)
+        , savedColour{0., 0., 0.}
         , knobRenderRequests(0)
         , knobEditDepth(0)
         , knobEditRenderPending(false)
         , knobs()
-        , activateInputChangedFromViewer(false)
         , lastRenderParamsMutex()
         , lastRenderParams()
         , lastLookupMutex()
@@ -274,6 +278,31 @@ public:
         Q_EMIT mustRedrawViewer();
     }
 
+    // Which state of the overlay and of the graph a plan was started against.
+    struct GpuPlacementStamp {
+        U64 overlayGeneration = 0;
+        U64 graphEdits = 0;
+
+        bool operator==(const GpuPlacementStamp&) const = default;
+    };
+
+    GpuPlacementStamp currentGpuPlacementStamp() const;
+
+    // Whether a dry run already planned the current state of the graph.
+    bool hasDryRunGpuPlacement() const;
+
+    /**
+     * @brief Returns whether this changed what getGpuPlacementSnapshot() returns, by more than the identity of the
+     * snapshot.
+     *
+     * The regions shown come from the dry run of the current state, which plans the whole displayed frame. A real
+     * render only adds what it alone can know, which nodes computed pixels and which regions fell back, because what
+     * it placed may cover only the tiles it had to render. It stands in for the regions until the dry run publishes.
+     **/
+    bool publishGpuPlacement(const GpuPlacementSnapshotBuilder& builder,
+                             const GpuPlacementStamp& stamp,
+                             bool isDryRun);
+
 public:
 
     virtual void lock(const FrameEntryPtr& entry) OVERRIDE FINAL
@@ -347,6 +376,7 @@ public:
         }
         lastRequest[texIndex] = info;
         lastRequestSequential[texIndex] = isSequential;
+        updateStaleLocked();
 
         return info;
     }
@@ -397,8 +427,67 @@ public:
             return false;
         }
         displayAge[texIndex] = age;
+        updateStaleLocked();
 
         return true;
+    }
+
+    /**
+     * @brief Same as checkAndUpdateDisplayAge() for a render that ended without an image and was
+     * not failed or black, but only when no newer request exists: a newer one is still on its way
+     * to the display, and raising the display age past an older render that is still running would
+     * make the display drop it.
+     **/
+    bool checkAndUpdateDisplayAgeIfNewest(int texIndex,
+                                          U64 age)
+    {
+        QMutexLocker k(&renderAgeMutex);
+
+        const U64 next = (age == std::numeric_limits<U64>::max()) ? 0 : age + 1;
+        if ((next != renderAge[texIndex]) || (age <= displayAge[texIndex])) {
+            return false;
+        }
+        displayAge[texIndex] = age;
+        updateStaleLocked();
+
+        return true;
+    }
+
+    /**
+     * @brief True while either input has a request newer than the last one it displayed or
+     * failed. renderAge is the age the next request will get, so the newest request is renderAge - 1.
+     **/
+    bool isStale() const
+    {
+        QMutexLocker k(&renderAgeMutex);
+
+        return computeStaleLocked();
+    }
+
+    // Called with renderAgeMutex held. The notifier only posts a queued event, so it never
+    // runs a receiver under the lock, and posting under it keeps transitions in order.
+    void updateStaleLocked()
+    {
+        const bool stale = computeStaleLocked();
+
+        if (stale == notifiedStale) {
+            return;
+        }
+        notifiedStale = stale;
+        if (staleNotifier) {
+            staleNotifier(stale);
+        }
+    }
+
+    bool computeStaleLocked() const
+    {
+        for (int i = 0; i < 2; ++i) {
+            if (renderAge[i] > 1 && renderAge[i] - 1 > displayAge[i]) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     bool addOngoingRender(int texIndex,
@@ -447,6 +536,8 @@ public:
     OpenGLViewerI* uiContext; // written in the main thread before render thread creation, accessed from render thread
     mutable QMutex forceRenderMutex;
     bool forceRender[2]; /*!< true when we want to by-pass the cache*/
+    mutable QMutex adaptiveDraftMutex;
+    AdaptiveDraft adaptiveDraft;
     mutable QMutex isViewerPausedMutex;
     bool isViewerPaused[2]; /*!< When true we should no longer refresh the viewer */
 
@@ -466,9 +557,29 @@ public:
     ImageLayerDesc viewerParamsAlphaLayer;
     std::string viewerParamsAlphaChannelName;
 
+    std::mutex gpuPlacementPublishMutex;
+    mutable std::mutex gpuPlacementSnapshotMutex;
+    GpuPlacementSnapshotPtr gpuPlacementSnapshot;
+    GpuPlacementStamp gpuPlacementSnapshotStamp;
+    GpuPlacementSnapshotPtr gpuPlacementRegions;
+    GpuPlacementStamp gpuPlacementRegionsStamp;
+    bool gpuPlacementRegionsFromDryRun = false;
+    bool gpuPlacementRegionsPlaced = false;
+    GpuPlacementSnapshotPtr gpuPlacementRun;
+    GpuPlacementStamp gpuPlacementRunStamp;
+    std::atomic<U64> gpuPlacementGraphEdits { 0 };
+    std::shared_ptr<GpuPlacementPlanner> gpuPlacementPlanner;
+
+    // Held by the planner while it reads uiContext and by the main thread while it writes it, so that closing the
+    // viewer waits only for such a read rather than for a whole dry run.
+    mutable std::mutex gpuPlacementUiContextMutex;
+
     // Main thread only. Non-zero while a ViewerInstance setter writes knobs: the setter applies the
     // change itself, so knobChanged() must not apply it a second time.
     int knobWritesFromSetter;
+    bool lockColourApplied; // the grey lock colour was set by refreshLockDecoration
+    bool colourBeforeLock; // the node had a user colour before the first lock
+    double savedColour[3];
     unsigned int knobRenderRequests; // main thread only
     // Main thread only. Non-zero inside beginKnobEdits()/endKnobEdits(), which hold the knobs'
     // render requests back to one at the outermost end.
@@ -480,7 +591,6 @@ public:
         KnobDoubleWPtr gain; // f-stops
         KnobBoolWPtr enableGamma;
         KnobDoubleWPtr gamma;
-        KnobBoolWPtr autoContrast;
         KnobBoolWPtr checkerboard;
         // First entries: Project default for the display and view, None for the look.
         KnobChoiceWPtr display;
@@ -491,6 +601,7 @@ public:
         KnobLayerSelectWPtr layer;
         KnobChannelSelectWPtr alphaChannel;
         KnobIntWPtr inputs[2]; // input numbers, -1 for none
+        KnobStringWPtr lockedInputs[10]; // script names in this viewer's collection, empty for none
         KnobChoiceWPtr operation;
         KnobDoubleWPtr wipeCenter;
         KnobDoubleWPtr wipeAmount;
@@ -508,13 +619,12 @@ public:
         KnobBoolWPtr fullFrame;
         KnobBoolWPtr enableDownscale;
         KnobChoiceWPtr downscaleLevel;
+        KnobBoolWPtr renderEverything;
         KnobIntWPtr maxSamples; // 0: the render delegate's own count
         KnobBoolWPtr refinementPaused;
     };
     Knobs knobs;
 
-    ///Only accessed from MT
-    bool activateInputChangedFromViewer;
     mutable QMutex textureBeingRenderedMutex;
     QWaitCondition textureBeingRenderedCond;
     std::list<FrameEntryPtr> textureBeingRendered; ///< a list of all the texture being rendered simultaneously
@@ -546,6 +656,8 @@ public:
     mutable QMutex renderAgeMutex; // protects renderAge lastRenderAge currentRenderAges
     U64 renderAge[2];
     U64 displayAge[2];
+    bool notifiedStale = false; // protected by renderAgeMutex
+    std::function<void(bool)> staleNotifier; // set once at construction, before any request
 
     //A priority list recording the ongoing renders. This is used for abortable renders (i.e: when moving a slider or scrubbing the timeline)
     //The purpose of this is to always at least keep 1 active render (non abortable) and abort more recent renders that do no longer make sense
@@ -559,11 +671,20 @@ public:
     // What activeInputDataKindChanged() last announced. Only accessed from MT
     DataKindEnum notifiedInputDataKind = eDataKindImage;
     bool notifiedWipeDisabled = false;
+    // An empty input reads as an image, yet the viewer may keep showing a scene through it.
+    bool notifiedHasInputA = false;
 
-    mutable std::mutex lastSceneMutex; // protects lastScene, lastSceneError, lastSceneOk
+    mutable std::mutex lastSceneMutex; // protects lastScene, lastSceneError, lastSceneOk, lastSceneLoadSet, lastSceneReach
     ScenePayload lastScene[2];
     std::string lastSceneError[2];
     bool lastSceneOk[2];
+    SceneLoadSetPtr lastSceneLoadSet[2];
+    SceneLoadReachPtr lastSceneReach[2];
+
+    // Keeps the nodes' memoized layers for this viewer's evaluations apart from other evaluators'.
+    const U64 sceneContextId = SceneEvaluationContext::makeId();
+    mutable std::mutex sceneLoadSetMutex; // protects sceneLoadSet
+    SceneLoadSetPtr sceneLoadSet = std::make_shared<const SceneLoadSet>(SceneLoadSet::none());
 
 #ifdef NATRON_HAVE_GPU
     // Only accessed from MT

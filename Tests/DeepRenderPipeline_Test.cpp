@@ -415,6 +415,38 @@ TEST_F(DeepRenderPipelineTest, SecondRenderOfTheSameFrameIsACacheHit)
     EXPECT_EQ(2, deepRenderTestGainRenderCount().load());
 }
 
+TEST_F(DeepRenderPipelineTest, ADeepInputLightsOnlyWhenItsUpstreamRan)
+{
+    const RectI roi(0, 0, kDeepRenderTestWidth, kDeepRenderTestHeight);
+    _source->takeExecutionCount(Node::eExecutionDeviceCpu);
+    _gain->takeExecutionCount(Node::eExecutionDeviceCpu);
+    _gain->takeInputExecutionCount(0);
+
+    DeepImagePtr first;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(_gain, 1., roi, &first));
+    EXPECT_EQ(1, _source->takeExecutionCount(Node::eExecutionDeviceCpu));
+    EXPECT_EQ(1, _gain->takeExecutionCount(Node::eExecutionDeviceCpu));
+    EXPECT_GT(_gain->takeInputExecutionCount(0), 0) << "the source ran";
+
+    DeepImagePtr cached;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(_gain, 1., roi, &cached));
+    EXPECT_EQ(0, _source->takeExecutionCount(Node::eExecutionDeviceCpu));
+    EXPECT_EQ(0, _gain->takeExecutionCount(Node::eExecutionDeviceCpu)) << "a cache hit is no execution";
+    EXPECT_EQ(0, _gain->takeInputExecutionCount(0));
+
+    first.reset();
+    cached.reset();
+    appPTR->removeAllCacheEntriesForHolder(_gain.get(), true);
+
+    DeepImagePtr again;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(_gain, 1., roi, &again));
+    EXPECT_EQ(1, deepRenderTestSourceRenderCount().load());
+    EXPECT_EQ(2, deepRenderTestGainRenderCount().load());
+    EXPECT_EQ(0, _source->takeExecutionCount(Node::eExecutionDeviceCpu));
+    EXPECT_EQ(1, _gain->takeExecutionCount(Node::eExecutionDeviceCpu));
+    EXPECT_EQ(0, _gain->takeInputExecutionCount(0)) << "the input came from the deep cache";
+}
+
 TEST_F(DeepRenderPipelineTest, BoundsGrowthReRendersOverTheUnionOfRequestedRoIs)
 {
     const RectI fullFrame(0, 0, kDeepRenderTestWidth, kDeepRenderTestHeight);
@@ -527,6 +559,34 @@ TEST_F(DeepRenderPipelineTest, BoundsGrowthRetractsTheSupersededDeepCacheEntry)
     const std::vector<RectI> gainCached = cachedDeepEntryBounds(_gain, 1.);
     ASSERT_EQ((std::size_t)1, gainCached.size());
     EXPECT_TRUE(fullFrame == gainCached[0]);
+}
+
+TEST_F(DeepRenderPipelineTest, ARenderedDeepImagePinsItsCacheEntryWhileHeld)
+{
+    const RectI roi(0, 0, kDeepRenderTestWidth, kDeepRenderTestHeight);
+
+    DeepImagePtr held;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(_gain, 1., roi, &held));
+    ASSERT_TRUE(held != NULL);
+
+    while (appPTR->evictLRUFromMemoryCaches()) {
+    }
+    EXPECT_EQ((std::size_t)1, cachedDeepEntryBounds(_gain, 1.).size());
+    EXPECT_TRUE(cachedDeepEntryBounds(_source, 1.).empty());
+
+    // The same again for a pointer served from the cache rather than from the render.
+    DeepImagePtr served;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(_gain, 1., roi, &served));
+    EXPECT_EQ(held.get(), served.get());
+    held.reset();
+    while (appPTR->evictLRUFromMemoryCaches()) {
+    }
+    EXPECT_EQ((std::size_t)1, cachedDeepEntryBounds(_gain, 1.).size());
+
+    served.reset();
+    while (appPTR->evictLRUFromMemoryCaches()) {
+    }
+    EXPECT_TRUE(cachedDeepEntryBounds(_gain, 1.).empty());
 }
 
 TEST_F(DeepRenderPipelineTest, AbortBeforeRenderingIsHonoured)
@@ -973,7 +1033,7 @@ diffuseLayer()
     channels.push_back("G");
     channels.push_back("B");
 
-    return ImageLayerDesc("diffuse", "diffuse", "", channels);
+    return ImageLayerDesc("diffuse", channels);
 }
 
 // The same layer ID and width as diffuseLayer(), over other channels.
@@ -986,7 +1046,7 @@ diffuseXyzLayer()
     channels.push_back("Y");
     channels.push_back("Z");
 
-    return ImageLayerDesc("diffuse", "diffuse", "", channels);
+    return ImageLayerDesc("diffuse", channels);
 }
 
 // Every pixel of image holds the front-to-back flatten of the named deep channels, in order.
@@ -1223,11 +1283,15 @@ TEST_F(DeepFlattenLayersTest, EachLayerKeepsItsOwnCacheEntry)
     EXPECT_EQ(4, (int)rgba->getComponentsCount());
     writeSentinel(rgba, -2.f);
 
-    // Both entries live under one key, the node's hash, so a return to this state finds both.
-    EXPECT_TRUE(diffuse->getKey() == rgba->getKey());
-    std::list<ImagePtr> cached;
-    ASSERT_TRUE(appPTR->getImage(diffuse->getKey(), &cached));
-    EXPECT_EQ((std::size_t)2, cached.size());
+    // Each layer has its own key under the node's hash, so a return to this state finds each.
+    EXPECT_FALSE(diffuse->getKey() == rgba->getKey());
+    EXPECT_EQ(diffuse->getKey().getTreeVersion(), rgba->getKey().getTreeVersion());
+    for (const ImagePtr& image : { diffuse, rgba }) {
+        std::list<ImagePtr> cached;
+        ASSERT_TRUE(appPTR->getImage(image->getKey(), &cached));
+        ASSERT_EQ((std::size_t)1, cached.size());
+        EXPECT_EQ(image.get(), cached.front().get());
+    }
 
     const ImagePtr diffuseAgain = renderFlattenedLayer(source, diffuseLayer());
     const ImagePtr rgbaAgain = renderFlattenedLayer(source, ImageLayerDesc::getRGBAComponents());
@@ -1329,6 +1393,7 @@ TEST_F(DeepFlattenLayersTest, EveryLayerFollowsTheStateAndAPurgeDropsThemAll)
     writeSentinel(diffuse, -1.f);
     writeSentinel(rgba, -2.f);
     const ImageKey firstKey = diffuse->getKey();
+    const ImageKey firstRgbaKey = rgba->getKey();
     EXPECT_EQ(source->getHashValue(), firstKey.getTreeVersion());
 
     // Another state is another key, flattened afresh.
@@ -1343,6 +1408,7 @@ TEST_F(DeepFlattenLayersTest, EveryLayerFollowsTheStateAndAPurgeDropsThemAll)
     EXPECT_EQ(source->getHashValue(), diffuseOther->getKey().getTreeVersion());
     expectLayeredFlatten(diffuseOther, diffuseChannels);
     const ImageKey otherKey = diffuseOther->getKey();
+    const ImageKey otherRgbaKey = rgbaOther->getKey();
 
     // Back in the first state, every layer cached in it is served again.
     slot->setValue(firstSlot);
@@ -1358,6 +1424,8 @@ TEST_F(DeepFlattenLayersTest, EveryLayerFollowsTheStateAndAPurgeDropsThemAll)
     source->removeAllImagesFromCache(false);
     EXPECT_TRUE(waitUntilFlattenedImagesAbsent(firstKey));
     EXPECT_TRUE(waitUntilFlattenedImagesAbsent(otherKey));
+    EXPECT_TRUE(waitUntilFlattenedImagesAbsent(firstRgbaKey));
+    EXPECT_TRUE(waitUntilFlattenedImagesAbsent(otherRgbaKey));
 
     const ImagePtr diffuseAfter = renderFlattenedLayer(source, diffuseLayer());
     const ImagePtr rgbaAfter = renderFlattenedLayer(source, ImageLayerDesc::getRGBAComponents());

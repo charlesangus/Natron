@@ -68,10 +68,12 @@ public:
     };
 
     // A condition on another curated setting of the same renderer: a bool holds when true, a
-    // number when above zero; inverted flips it.
+    // number when above zero, and any setting when equals is set and its value is equals;
+    // inverted flips it.
     struct EnabledBy {
         std::string key;
         bool inverted = false;
+        PXR_NS::VtValue equals;
     };
 
     struct CuratedSetting {
@@ -83,6 +85,10 @@ public:
         // overrideDefault is set; otherwise the delegate's declared default is the knob's.
         PXR_NS::VtValue defaultValue;
         bool overrideDefault = false;
+        // Every engine of the renderer is given defaultValue before a prim's settings
+        // (engineDefaults()), so it is the knob's default and what the delegate does without the
+        // setting, whatever the delegate declares.
+        bool engineDefault = false;
         // A menu when not empty: the value sent is the chosen entry's, or the declared default
         // for an entry with an empty value.
         std::vector<Choice> choices;
@@ -97,10 +103,16 @@ public:
         double minimum = 0.;
         double displayMaximum = 0.;
         bool hasRange = false;
+        // A hard maximum as well, with hasRange.
+        double maximum = 0.;
+        bool hasMaximum = false;
         // The name of the GroupSpec the knob goes in; empty for the curated group.
         std::string group;
         // The next setting's knob shares this one's row.
         bool sameRowAsNext = false;
+        // For a bool setting: the knob is on while the value sent is false. defaultValue and
+        // EnabledBy conditions on it are in the delegate's terms.
+        bool inverted = false;
     };
 
     // A named section of the renderer's page. Its script name is the renderer's prefix followed by name.
@@ -123,7 +135,7 @@ public:
         // The sections settings name in CuratedSetting::group. One is made when its first setting
         // (or a setting of a group inside it) is added, so the order of settings sets the order of groups.
         std::vector<GroupSpec> groups;
-        // Declared keys Natron sets itself, given no knob.
+        // Declared keys Natron sets itself or keeps off, given no knob.
         std::vector<std::string> excludedKeys;
         // Declared keys of the "Other Settings" group whose knob is shown disabled, with the reason.
         std::vector<std::pair<std::string, std::string>> disabledKeys;
@@ -147,6 +159,9 @@ public:
 
     // The curated group of the renderer: Cycles' or MoonRay's, null for any other.
     static const Curated* curatedFor(const std::string& rendererId);
+
+    // The settings with engineDefault in rendererId's curated group, at their defaultValue.
+    static Values engineDefaults(const std::string& rendererId);
 
     /**
      * @brief Whether curated's groups can be made: names are non-empty and unique, none is

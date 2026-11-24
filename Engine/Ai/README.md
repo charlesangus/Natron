@@ -44,6 +44,13 @@ unavailable, and `unavailableReason()` names every path it tried and why each on
 never throws. A failed load is retried when the Preferences path changes. A successful load lasts
 for the life of the process, so switching to another library takes a restart.
 
+Microsoft's release builds upload usage events to `mobile.events.data.microsoft.com`. The only full
+opt-out is the `ORT_DISABLE_TELEMETRY` environment variable, read when ONNX Runtime starts, so every
+Natron executable's `main()` calls `disableThirdPartyTelemetry()` (`Global/ThirdPartyTelemetry.h`)
+before any thread exists. It keeps a value the user already set. The loader also calls
+`DisableTelemetryEvents` on every environment as a second layer, and logs a warning if that fails.
+`Tests/Ai/OrtTelemetry_Test.cpp` checks that ONNX Runtime makes no lookup or outbound connection.
+
 The loader lists the execution providers (EPs) the library offers. This is ORT's own list plus any
 EP whose `OrtSessionOptionsAppendExecutionProvider_*` symbol the library exports but the list leaves
 out. The Preferences "AI Detected Providers" line shows the result.
@@ -169,6 +176,15 @@ comes from, the package files it runs, the asset's URL, sha256 and size, its wei
 training-data licences, darktable-ai's OSAID classification, and a link to its model card.
 `tools/ai/update-manifest.py` regenerates the file from a release tag; run with no arguments, it
 reproduces the committed file. It refuses a model whose weight licence is not GPL-3-compatible.
+
+darktable-ai ships no optical-flow model, so the `optical-flow` task's model, SEA-RAFT M
+(`optical-flow-searaft-m`, BSD-3-Clause), is a package of Natron's own, listed in the script's
+`NATRON_MODELS` and hosted on the charlesangus/natron-models releases. `tools/ai/export-flow-model.py` builds it from the
+published SEA-RAFT checkpoint and a SEA-RAFT checkout at the pinned commit: it exports the network
+to ONNX with the image size and the refinement iteration count as run-time inputs, packs it with
+fixed timestamps so a second run with the same torch and onnx gives the same sha256, and with
+`--verify` checks it against SEA-RAFT's PyTorch forward and on a shifted 1024x576 pair under ONNX
+Runtime on the CPU.
 
 A package can hold several models: RealPLKSR and BSRGAN each ship their 2x and 4x models in one,
 and RawNIND its Bayer and linear models. The manifest lists each model on its own, so a node picks

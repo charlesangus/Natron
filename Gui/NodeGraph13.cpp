@@ -97,11 +97,6 @@ NodeGraph::deselect()
     }
 
     _imp->_selection.clear();
-
-    if (_imp->_magnifiedNode && _imp->_magnifOn) {
-        _imp->_magnifOn = false;
-        _imp->_magnifiedNode->setScale_natron(_imp->_nodeSelectedScaleBeforeMagnif);
-    }
 }
 
 NATRON_NAMESPACE_EXIT

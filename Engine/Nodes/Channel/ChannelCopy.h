@@ -26,6 +26,7 @@
 #include <Python.h>
 // ***** END PYTHON BLOCK *****
 
+#include "Global/EdgeMode.h"
 #include "Global/Macros.h"
 
 #include <bitset>
@@ -95,11 +96,14 @@ struct ChannelRouteSource {
     int inputNb;
     ImageLayerDesc layer;
     NonFloatEnum nonFloat;
+    // How the source reads past its image: its input's own edge mode.
+    EdgeMode edgeMode;
 
     ChannelRouteSource()
         : inputNb(-1)
         , layer()
         , nonFloat(eNonFloatReadsZero)
+        , edgeMode(EdgeMode::Black)
     {
     }
 
@@ -109,6 +113,7 @@ struct ChannelRouteSource {
         : inputNb(inputNb_)
         , layer(layer_)
         , nonFloat(nonFloat_)
+        , edgeMode(EdgeMode::Black)
     {
     }
 };
@@ -260,14 +265,25 @@ public:
 
     virtual bool canRenderOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    virtual RectI getGpuInputRoI(int /*inputNb*/,
-                                 double /*time*/,
-                                 ViewIdx /*view*/,
+    /**
+     * @brief outputRect, moved into input inputNb's region when that input reads Stretch and
+     * outputRect misses it (stretchGpuInputRoI()).
+     **/
+    virtual RectI getGpuInputRoI(int inputNb,
+                                 double time,
+                                 ViewIdx view,
                                  const RectI& outputRect,
-                                 const RenderScale& /*scale*/) const OVERRIDE FINAL WARN_UNUSED_RETURN
-    {
-        return outputRect;
-    }
+                                 const RenderScale& scale) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Moves the regions of interest of Stretch inputs that miss their input into it
+     * (clampStretchRegionsOfInterest()), so a routed read past the edge has the edge to repeat.
+     **/
+    virtual void adjustInputRegionsOfInterest(double time,
+                                              const RenderScale& scale,
+                                              ViewIdx view,
+                                              const InputMatrixMap* transforms,
+                                              RoIMap* ret) OVERRIDE FINAL;
 
     /**
      * @brief The first layer the route of plane reads input inputNb in, or plane itself when the

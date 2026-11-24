@@ -26,6 +26,7 @@
 #include "USDCamera.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <limits>
 #include <string>
@@ -45,6 +46,7 @@
 #include "Engine/Nodes/Scene/SceneFileSource.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
+#include "Engine/Nodes/Scene/SceneTeardown.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/Project.h"
@@ -331,6 +333,10 @@ struct FileCameraValues {
 // The file a file camera comes from.
 struct USDCamera::FileCamera {
     SceneFileSource source;
+    // Whether a read of the file for the knobs waits for SceneTeardown to be idle, and whether
+    // one of those reads asked to select the first camera.
+    std::atomic<bool> knobReadWaiting { false };
+    std::atomic<bool> selectFirstWaiting { false };
 };
 
 // The knobs an authoring with Read From File reads, read once before it.
@@ -388,15 +394,13 @@ USDCamera::initializeKnobs()
     file->setName(kUSDCameraParamFile);
     file->setHintToolTip(tr("The USD file (.usd, .usda, .usdc, .usdz) or Alembic file (.abc) holding the camera."));
     file->setFileExtensions({ "usd", "usda", "usdc", "usdz", "abc" });
-    file->setAddNewLine(false);
     page->addKnob(file);
     _file = file;
 
-    KnobButtonPtr reload = createKnob<KnobButton>(tr("Reload"));
-    reload->setName(kUSDCameraParamReload);
-    reload->setHintToolTip(tr("Reads the file again, and every file it brings in, so the camera follows files changed on "
-                              "disk. Each changed file is read again in place: every scene using it shows the new content. "
-                              "Renders reading scenes are stopped or waited for first."));
+    KnobButtonPtr reload = file->createReloadButton(kUSDCameraParamReload,
+                                                    tr("Reads the file again, and every file it brings in, so the camera follows files changed on "
+                                                       "disk. Each changed file is read again in place: every scene using it shows the new content. "
+                                                       "Renders reading scenes are stopped or waited for first."));
     page->addKnob(reload);
     _reload = reload;
 
@@ -536,7 +540,7 @@ USDCamera::refreshCameraChoices(bool selectFirst)
         return;
     }
     const std::string path = file->getSingleFilePath();
-    if (path.empty()) {
+    if (path.empty() || deferKnobReadWhileTeardownPending(selectFirst)) {
         return;
     }
     std::vector<ChoiceOption> options;
@@ -558,6 +562,55 @@ USDCamera::refreshCameraChoices(bool selectFirst)
         cameraPrim->setValueFromID(options.front().id, 0);
     }
 } // USDCamera::refreshCameraChoices
+
+bool
+USDCamera::deferKnobReadWhileTeardownPending(bool selectFirst)
+{
+    // Stating each file to tell a closed scene's stale layer from a current one would be disk
+    // access on the main thread, so any pending teardown puts the read off.
+    if (SceneTeardown::getPendingCount() == 0) {
+        return false;
+    }
+    if (selectFirst) {
+        _fileCamera->selectFirstWaiting = true;
+    }
+    if (_fileCamera->knobReadWaiting.exchange(true)) {
+        return true;
+    }
+    const std::weak_ptr<EffectInstance> owner = weak_from_this();
+    SceneTeardown::notifyWhenIdle([this, owner]() {
+        const EffectInstancePtr alive = owner.lock();
+        if (!alive) {
+            return;
+        }
+        _fileCamera->knobReadWaiting = false;
+        refreshCameraChoices(_fileCamera->selectFirstWaiting.exchange(false));
+        showFileValues(getCurrentTime());
+    });
+
+    return true;
+}
+
+void
+USDCamera::rekeyAfterTeardown()
+{
+    KnobFilePtr file = _file.lock();
+
+    // Its hash holds the stamp the file had when the closed scene read it.
+    if (file) {
+        file->invalidateContentHash();
+    }
+    invalidateSceneLayer();
+    clearActionsCache();
+    clearPersistentMessage(false);
+    NodePtr node = getNode();
+    if (node) {
+        node->markHashDirty();
+    }
+    refreshCameraChoices(false);
+    showFileValues(getCurrentTime());
+    evaluate(true, true);
+}
 
 void
 USDCamera::showFileValues(double time)
@@ -587,7 +640,7 @@ USDCamera::showFileValues(double time,
         return;
     }
     const std::string path = file->getSingleFilePath();
-    if (path.empty()) {
+    if (path.empty() || deferKnobReadWhileTeardownPending(false)) {
         return;
     }
     AppInstancePtr app = getApp();
@@ -741,24 +794,32 @@ USDCamera::knobChanged(KnobI* k,
     }
 
     if (k == reload.get()) {
-        std::vector<std::string> reloaded;
-        std::string error;
-        if (!_fileCamera->source.reload(file->getSingleFilePath(), &error, &reloaded)) {
-            setPersistentMessage(eMessageTypeError, tr("Reload failed: %1").arg(QString::fromStdString(error)).toStdString());
-        } else {
-            clearPersistentMessage(false);
-        }
-        purgeCaches();
-        // Same as USDRead: the Reload bracket hashed this node before purgeCaches() moved its
-        // hash inputs.
-        NodePtr node = getNode();
-        if (node) {
-            node->markHashDirty();
-        }
-        SceneFileSource::reloadOtherReaders(reloaded, file->getResolvedPath(), this);
-        // A camera gone from the file stays selected, so the node reports it.
-        refreshCameraChoices(false);
-        showFileValues(time);
+        // As USDRead: the node's hash moves once the layers hold the new content, and a reload
+        // that ends inside this call leaves the render to the Reload bracket.
+        const std::shared_ptr<bool> inCall = std::make_shared<bool>(true);
+        _fileCamera->source.reload(file->getSingleFilePath(), weak_from_this(), [this, inCall](bool ok, const std::string& error, const std::vector<std::string>& reloaded) {
+            KnobFilePtr reloadedFile = _file.lock();
+            if (!ok) {
+                setPersistentMessage(eMessageTypeError, tr("Reload failed: %1").arg(QString::fromStdString(error)).toStdString());
+            } else {
+                clearPersistentMessage(false);
+            }
+            purgeCaches();
+            // Same as USDRead: the Reload bracket hashed this node before purgeCaches() moved its
+            // hash inputs.
+            NodePtr node = getNode();
+            if (node) {
+                node->markHashDirty();
+            }
+            SceneFileSource::reloadOtherReaders(reloaded, reloadedFile ? reloadedFile->getResolvedPath() : std::string(), this);
+            // A camera gone from the file stays selected, so the node reports it.
+            refreshCameraChoices(false);
+            showFileValues(getCurrentTime());
+            if (!*inCall) {
+                evaluate(true, true);
+            }
+        });
+        *inCall = false;
 
         return true;
     }
@@ -1030,6 +1091,22 @@ USDCamera::renderScene(const SceneRenderActionArgs& /*args*/,
         file.editTransform = editTransform && editTransform->getValue();
         file.editLens = editLens && editLens->getValue();
         file.editClipping = editClipping && editClipping->getValue();
+    }
+
+    const SceneFileSource::WalkResultEnum walked = file.enabled ? _fileCamera->source.walk(file.path) : SceneFileSource::eWalkUnchanged;
+    if (walked == SceneFileSource::eWalkDeferred) {
+        // Nothing memoizes an empty scene under this hash: the layer memo is not reached, and
+        // the digest stays an unwalked one, which the re-key replaces.
+        setPersistentMessage(eMessageTypeWarning, tr("Waiting for the previous scene to close.").toStdString());
+        _fileCamera->source.rekeyWhenTeardownIdle(weak_from_this(), [this]() { rekeyAfterTeardown(); });
+
+        return eStatusOK;
+    }
+    if (walked == SceneFileSource::eWalkDigestMoved) {
+        NodePtr node = getNode();
+        if (node) {
+            node->markHashDirty();
+        }
     }
 
     SceneLayerReads reads;

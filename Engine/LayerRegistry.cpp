@@ -76,21 +76,22 @@ static bool
 isRefusedReservedName(const std::string& id)
 {
     static const char* const refused[] = {
-        "none", "all", "Backward", "Forward", "DisparityLeft", "DisparityRight", "Motion", "Disparity",
-        "Color", "A", kNatronColorLayerID
+        "none", "all", "A"
     };
 
     if (matchesAnyCaseInsensitive(id, refused, sizeof(refused) / sizeof(refused[0]))) {
         return true;
     }
 
-    // The exact colour view IDs are legitimate re-registrations of the built-ins (handled by
+    // The exact built-in names are legitimate re-registrations of the built-ins (handled by
     // add()'s built-in-conflict path below); any other case variant is refused.
-    static const char* const colorViews[] = {
-        kNatronColorViewRGBA, kNatronColorViewRGB, kNatronColorViewAlpha, kNatronColorViewXY
+    static const char* const builtins[] = {
+        kNatronColorViewRGBA, kNatronColorViewRGB, kNatronColorViewAlpha, kNatronColorViewXY,
+        kNatronForwardMotionVectorsLayerID, kNatronBackwardMotionVectorsLayerID,
+        kNatronDisparityLeftLayerID, kNatronDisparityRightLayerID
     };
-    for (std::size_t i = 0; i < sizeof(colorViews) / sizeof(colorViews[0]); ++i) {
-        if (id != colorViews[i] && equalsCaseInsensitive(id, colorViews[i])) {
+    for (std::size_t i = 0; i < sizeof(builtins) / sizeof(builtins[0]); ++i) {
+        if (id != builtins[i] && equalsCaseInsensitive(id, builtins[i])) {
             return true;
         }
     }
@@ -198,7 +199,7 @@ LayerRegistry::LayerRegistry()
     {
         static const char* depthChannels[1] = { "Z" };
         LayerRegistryEntry e;
-        e.desc = ImageLayerDesc("depth", "depth", "", depthChannels, 1);
+        e.desc = ImageLayerDesc("depth", depthChannels, 1);
         e.origin = LayerRegistryEntry::eOriginUser;
         initial.push_back(e);
     }
@@ -207,16 +208,16 @@ LayerRegistry::LayerRegistry()
         // USDRender's per-pixel prim identity: a hash of the prim path, bit-cast to float.
         static const char* primIdChannels[1] = { "id" };
         LayerRegistryEntry e;
-        e.desc = ImageLayerDesc("primId", "primId", "", primIdChannels, 1);
+        e.desc = ImageLayerDesc("primId", primIdChannels, 1);
         e.origin = LayerRegistryEntry::eOriginUser;
         initial.push_back(e);
     }
 
     {
         // USDRender's shading normal from the delegates that render one, in camera space.
-        static const char* normalChannels[3] = { "X", "Y", "Z" };
+        static const char* normalChannels[3] = { "x", "y", "z" };
         LayerRegistryEntry e;
-        e.desc = ImageLayerDesc("normal", "normal", "", normalChannels, 3);
+        e.desc = ImageLayerDesc("normal", normalChannels, 3);
         e.origin = LayerRegistryEntry::eOriginUser;
         initial.push_back(e);
     }
@@ -274,8 +275,7 @@ LayerRegistry::add(const ImageLayerDesc& descIn, LayerRegistryEntry::OriginEnum 
         return eAddResultRefused;
     }
 
-    // Non-built-in layers always display as typed: label == ID.
-    const ImageLayerDesc desc(id, id, descIn.getChannelsLabel(), descIn.getChannels());
+    const ImageLayerDesc desc(id, descIn.getChannels());
 
     QMutexLocker l(&_mutex);
     std::shared_ptr<const std::vector<LayerRegistryEntry>> current = _entries;
@@ -318,7 +318,7 @@ LayerRegistry::add(const ImageLayerDesc& descIn, LayerRegistryEntry::OriginEnum 
         }
 
         std::shared_ptr<std::vector<LayerRegistryEntry>> next(new std::vector<LayerRegistryEntry>(*current));
-        (*next)[i].desc = ImageLayerDesc(id, id, "", unioned);
+        (*next)[i].desc = ImageLayerDesc(id, unioned);
         _entries = next;
         return eAddResultGrown;
     }
@@ -454,14 +454,14 @@ LayerRegistry::groupChannelNames(const std::vector<std::string>& flat, std::vect
                     ordered.push_back(g.channels[c]);
                 }
             }
-            layers->push_back(ImageLayerDesc(kNatronColorLayerID, kNatronColorStorageLabel, "", ordered));
+            layers->push_back(ImageLayerDesc(kNatronColorLayerID, ordered));
             break;
         }
         case eLayerGroupKindDepth:
-            layers->push_back(ImageLayerDesc("depth", "depth", "", std::vector<std::string>(1, "Z")));
+            layers->push_back(ImageLayerDesc("depth", std::vector<std::string>(1, "Z")));
             break;
         case eLayerGroupKindOther:
-            layers->push_back(ImageLayerDesc(order[i], order[i], "", g.channels));
+            layers->push_back(ImageLayerDesc(order[i], g.channels));
             break;
         }
     }

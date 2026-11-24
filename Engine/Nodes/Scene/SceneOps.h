@@ -28,15 +28,23 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
+#include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <limits>
 #include <memory>
+#include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/Nodes/Scene/SceneDrawStates.h"
 #include "Engine/Nodes/Scene/SceneLayerMemo.h"
 #include "Engine/Nodes/Scene/ScenePayloadImpl.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
+#include "Engine/SceneLoadSet.h"
 #include "Engine/ScenePayload.h"
 
 NATRON_NAMESPACE_ENTER
@@ -100,6 +108,10 @@ struct SceneReparentArgs {
     SceneLayerMemo::Key overridesKey;
     // Names the authored layers, for debugging.
     std::string layerTag;
+    // The context each input was evaluated on, index for index with inputs, whose load set its
+    // roots and links are read with and whose reach gathers where loads change those reads.
+    // Empty: SceneEvaluationContext::current() for every input.
+    std::vector<SceneEvaluationContext> inputContexts;
 };
 
 /**
@@ -144,6 +156,8 @@ struct SceneMetricsCorrection {
     // Maps the source stage's times to the target layer's, for the time samples it rescales.
     PXR_NS::SdfLayerOffset sourceToLayer;
 };
+
+class SceneStage;
 
 /**
  * @brief The thin interface scene nodes use to author layers, stack them into payloads and
@@ -240,6 +254,75 @@ bool reparentRoots(const SceneReparentArgs& args,
                    std::string* errorMessage);
 
 /**
+ * @brief The load set an input of a graft under destinationPath is read with, for an output
+ * evaluated on loadSet: what loadSet includes under destinationPath/<C> for the input root C,
+ * under /<passThroughRoot> for that root, and destinationPath's rule for every other root. With
+ * autoRename, the rules under destinationPath/<stem>_<n> count for the root <stem> as well, both
+ * names kept, since the names a graft gives are known only once it has read its inputs. Never
+ * includes less than the graft's output needs; null (everything) for a null set or an invalid
+ * destination.
+ **/
+SceneLoadSetPtr mapGraftLoadSet(const SceneLoadSetPtr& loadSet,
+                                const std::string& destinationPath,
+                                const std::string& passThroughRoot,
+                                bool autoRename);
+
+/**
+ * @brief Sets *out to the reach in, gathered on the paths of input inputIndex of the graft memo
+ * holds for SceneEvaluationContext::current(), as paths of the graft's output: a path under a
+ * grafted root moves under the child it was grafted as, one under passThroughRoot stays, and "/"
+ * or a path under a root the graft did not graft becomes destinationPath and /<passThroughRoot>,
+ * where such a root lands once loaded.
+ **/
+void mapGraftReach(SceneGraftMemo* memo,
+                   std::size_t inputIndex,
+                   const std::string& destinationPath,
+                   const std::string& passThroughRoot,
+                   const std::vector<std::string>& in,
+                   std::vector<std::string>* out);
+
+/**
+ * @brief The load set the input of a wrap moving wrappedPath to movedPath is read with, for an
+ * output evaluated on loadSet: what loadSet includes under movedPath, under wrappedPath instead,
+ * and the rest as it is. Null stays null.
+ **/
+SceneLoadSetPtr mapWrapLoadSet(const SceneLoadSetPtr& loadSet,
+                               const std::string& wrappedPath,
+                               const std::string& movedPath);
+
+/**
+ * @brief Sets *out to the reach in, on the paths of the input of a wrap moving wrappedPath to
+ * movedPath, as paths of its output: a path at or under wrappedPath moves under movedPath, an
+ * ancestor of wrappedPath stays and adds movedPath, the rest stays.
+ **/
+void mapWrapReach(const std::string& wrappedPath,
+                  const std::string& movedPath,
+                  const std::vector<std::string>& in,
+                  std::vector<std::string>* out);
+
+/**
+ * @brief The load set the scene a reference or payload arc at targetPath points into, at
+ * sourcePath, is read with, for an output evaluated on loadSet: what loadSet includes under
+ * targetPath, under sourcePath instead, and nothing off sourcePath's chain. UsdStage decides the
+ * payloads of the arc's ancestral opinions, those above sourcePath, by targetPath's own rule, so
+ * sourcePath's ancestors load exactly when targetPath's own payload does. Null stays null.
+ **/
+SceneLoadSetPtr mapReferenceLoadSet(const SceneLoadSetPtr& loadSet,
+                                    const std::string& targetPath,
+                                    const std::string& sourcePath);
+
+/**
+ * @brief Sets *out to the reach in, on the paths of the scene a reference at targetPath points
+ * into at sourcePath, as output paths: a path at or under sourcePath moves under targetPath, an
+ * ancestor of it becomes targetPath, and the rest, which the output does not show, is dropped.
+ * An empty sourcePath, not known, maps every path to targetPath.
+ **/
+void mapReferenceReach(const std::string& targetPath,
+                       const std::string& sourcePath,
+                       const std::vector<std::string>& in,
+                       std::vector<std::string>* out);
+
+/**
  * @brief An anonymous, read-only layer sublayering input's stack, strongest first, and carrying
  * the stage metadata its layers author: a layer of one node's stack can reference or load as a
  * payload a prim of another input's composed scene through it, every layer of that input
@@ -290,10 +373,11 @@ void writeRootMetadata(const PXR_NS::SdfLayerRefPtr& root,
                        const SceneMetadata* applied);
 
 /**
- * @brief Opens a stage on root with no session layer and every payload loaded. Every stage Natron
- * composes is opened here, so getStageOpenCount() counts them all.
+ * @brief Opens a stage on root with no session layer, its payloads loaded as load says. Every stage
+ * Natron composes is opened here, so getStageOpenCount() counts them all.
  **/
-PXR_NS::UsdStageRefPtr openStage(const PXR_NS::SdfLayerRefPtr& root);
+PXR_NS::UsdStageRefPtr openStage(const PXR_NS::SdfLayerRefPtr& root,
+                                 PXR_NS::UsdStage::InitialLoadSet load = PXR_NS::UsdStage::LoadAll);
 
 /**
  * @brief How many stages openStage() has opened in this process.
@@ -309,15 +393,30 @@ U64 getStageOpenCount();
 PXR_NS::UsdStageRefPtr compose(const ScenePayload& payload);
 
 /**
+ * @brief The payload asset paths layer authors anywhere in its prims and variants, as authored.
+ **/
+std::set<std::string> getAuthoredPayloadAssets(const PXR_NS::SdfLayerRefPtr& layer);
+
+/**
  * @brief The file layers layer composes: layer itself when it is backed by a file, then every
- * layer its sublayers, references and payloads name, recursively, each once. Asset paths resolve
- * relative to the layer naming them. Files that cannot be opened are skipped, without posting
- * errors to the caller's TfErrorMark, and their anchored asset paths are appended to
- * *missingPaths when it is given, each once. Opens the layers not yet open, and the returned
- * references keep them open.
+ * layer its sublayers and references name, recursively, each once. Asset paths resolve relative
+ * to the layer naming them. Files that cannot be opened are skipped, without posting errors to
+ * the caller's TfErrorMark, and their anchored asset paths are appended to *missingPaths when it
+ * is given, each once. Opens the layers not yet open, and the returned references keep them open.
+ * Payload arcs are never opened, so a stage's unloaded payloads stay unread: their anchored asset
+ * paths are appended to *payloadPaths when it is given, each once, and what they bring in is not
+ * followed.
  **/
 std::vector<PXR_NS::SdfLayerRefPtr> getFileLayerClosure(const PXR_NS::SdfLayerRefPtr& layer,
-                                                        std::vector<std::string>* missingPaths = nullptr);
+                                                        std::vector<std::string>* missingPaths = nullptr,
+                                                        std::vector<std::string>* payloadPaths = nullptr);
+
+/**
+ * @brief The file layers already open that layer brings in through sublayers, references and
+ * payloads, layer's own first, recursively. Opens nothing, so a Reload reaches the payloads a
+ * stage has loaded and leaves the others closed.
+ **/
+std::vector<PXR_NS::SdfLayerRefPtr> getOpenFileLayers(const PXR_NS::SdfLayerRefPtr& layer);
 
 /**
  * @brief Reloads the file layers among layers in place (SdfLayer::ReloadLayers: only those whose
@@ -331,11 +430,37 @@ bool reloadFileLayers(const std::vector<PXR_NS::SdfLayerRefPtr>& layers,
                       std::string* errorMessage);
 
 /**
+ * @brief reloadFileLayers() for the main thread, which it does not block while the viewers'
+ * renders stop (SceneWriteBarrier::runExclusiveAsync()). done is called on the main thread once
+ * the layers are reloaded, with whether they all were and the error otherwise; before returning
+ * when nothing had to stop. Requests made while one waits are reloaded together, in one change
+ * block. Off the main thread it blocks, as reloadFileLayers() does.
+ **/
+void requestFileLayerReload(const std::vector<PXR_NS::SdfLayerRefPtr>& layers,
+                            const std::function<void(bool ok, const std::string& errorMessage)>& done);
+
+/**
  * @brief How many times reloadFileLayers() has reloaded layers in this process. A reload can
  * change what any open file layer sublayers, references or loads as a payload, so a
  * getFileLayerClosure() result taken at one count may be stale at a later one.
  **/
 std::uint64_t getFileLayerReloadCount();
+
+/**
+ * @brief Whether layer may be a closed scene's copy of a file that changed on disk since: true
+ * while SceneTeardown has something pending, for a file layer whose file is no longer the one
+ * FileStampRegistry recorded for it. Such a layer must be neither read nor reloaded: it goes once
+ * the teardown is done, and the next FindOrOpen() reads the file. A file whose identity was never
+ * recorded is taken as read now, so this misses a stale layer only a stage's composition opened.
+ * Stats the file when something is pending, so not for the main thread.
+ **/
+bool isStalePendingLayer(const PXR_NS::SdfLayerRefPtr& layer);
+
+/**
+ * @brief layers without those isStalePendingLayer() is true of: what a reload that found its
+ * layers by path may reload.
+ **/
+std::vector<PXR_NS::SdfLayerRefPtr> withoutStalePendingLayers(const std::vector<PXR_NS::SdfLayerRefPtr>& layers);
 
 /**
  * @brief The timecode of payload's composed stage at frame of a project running at
@@ -363,12 +488,169 @@ bool parsePrimExpression(const std::string& text,
  * @brief The prims of stage that expression (parsePrimExpression()) selects, in depth-first stage
  * order. Only active, loaded, defined, non-abstract prims are visited, so a prim under an inactive one
  * never matches. Returns false with *errorMessage set, and *paths empty, when expression does not
- * parse; blank text selects nothing.
+ * parse; blank text selects nothing. With traverseInstanceProxies, prims inside native instances
+ * are visited and can match too.
  **/
 bool selectPrims(const PXR_NS::UsdStageRefPtr& stage,
                  const std::string& expression,
                  std::vector<PXR_NS::SdfPath>* paths,
-                 std::string* errorMessage);
+                 std::string* errorMessage,
+                 bool traverseInstanceProxies = false);
+
+/**
+ * @brief selectPrims() that polls cancelled as it walks and gives up as soon as it turns true,
+ * returning false with *paths and *errorMessage empty.
+ **/
+bool selectPrims(const PXR_NS::UsdStageRefPtr& stage,
+                 const std::string& expression,
+                 std::vector<PXR_NS::SdfPath>* paths,
+                 std::string* errorMessage,
+                 const std::function<bool()>& cancelled);
+
+/**
+ * @brief Whether matchDrawRules() needs a stage for rules: false when every rule names plain paths
+ * only and walks nothing below them, so loads cannot change what they match.
+ **/
+bool drawRulesNeedStage(const SceneDrawRules& rules);
+
+/**
+ * @brief The graph policy rules ask for on stage, in their order (sceneAddDrawRuleMatch()). A
+ * pattern matches the active, defined, non-abstract prims stage has composed, an unloaded payload's
+ * own prim included; plain paths are taken without a stage, whether they exist or not. A rule
+ * that matches nothing, or whose pattern does not parse, adds nothing and is no error. stage may
+ * be null. Polls cancelled as it walks; returns false with *policy empty once it turns true.
+ **/
+bool matchDrawRules(const PXR_NS::UsdStageRefPtr& stage,
+                    const SceneDrawRules& rules,
+                    SceneDrawStates::PolicyStates* policy,
+                    const std::function<bool()>& cancelled);
+
+// One prim a draw rule's pattern matched, and the rows the rule sets at and below it, in order.
+struct SceneDrawRuleMatch {
+    std::string path;
+    std::vector<std::pair<std::string, SceneDrawStateEnum>> rows;
+};
+
+// For each rule, in the rules' order, its matches in path order.
+typedef std::vector<std::vector<SceneDrawRuleMatch>> SceneDrawRuleMatches;
+
+/**
+ * @brief matchDrawRules() stopping short of the policy: what each rule matched, which
+ * rematchDrawRulesUnder() can bring up to date after loads, and getDrawRulePolicy() turns into the
+ * policy. Returns false with *matches empty once cancelled turns true.
+ **/
+bool matchDrawRules(const PXR_NS::UsdStageRefPtr& stage,
+                    const SceneDrawRules& rules,
+                    SceneDrawRuleMatches* matches,
+                    const std::function<bool()>& cancelled);
+
+/**
+ * @brief Brings *matches, made by matchDrawRules() for rules on stage, up to date with the prims
+ * now at and below roots, which loads or unloads changed: only those subtrees are walked, and a
+ * match outside them keeps its rows unless its walk reaches into one. Returns false, leaving
+ * *matches unusable, once cancelled turns true.
+ **/
+bool rematchDrawRulesUnder(const PXR_NS::UsdStageRefPtr& stage,
+                           const SceneDrawRules& rules,
+                           const std::vector<std::string>& roots,
+                           SceneDrawRuleMatches* matches,
+                           const std::function<bool()>& cancelled);
+
+// The graph policy matches make for rules, as matchDrawRules() returns it.
+void getDrawRulePolicy(const SceneDrawRules& rules,
+                       const SceneDrawRuleMatches& matches,
+                       SceneDrawStates::PolicyStates* policy);
+
+// The stage load rules loadSet stands for: every payload for a null one.
+PXR_NS::UsdStageLoadRules getLoadRules(const SceneLoadSet* loadSet);
+
+// rules as a load set, without the rules that change nothing.
+SceneLoadSetPtr makeLoadSet(const PXR_NS::UsdStageLoadRules& rules);
+
+/**
+ * @brief prefixes (PrimSelector::Reach::prefixes), each replaced by the outermost prim above it
+ * on stage that carries a payload: loading or unloading that payload adds or removes what lies
+ * at the prefix, whatever else is loaded. Paths already present are not repeated.
+ **/
+std::vector<std::string> getLoadReach(const PXR_NS::UsdStageRefPtr& stage,
+                                      const std::vector<std::string>& prefixes);
+
+/**
+ * @brief Whether what a pattern reaching below prefixes selects can differ between stages loading
+ * the payloads of from and of to, null standing for every payload. prefixes come from
+ * getLoadReach() on a stage composed with from, so that a payload above a prefix counts.
+ **/
+bool loadChangeReaches(const SceneLoadSet* from,
+                       const SceneLoadSet* to,
+                       const std::vector<std::string>& prefixes);
+
+/**
+ * @brief Makes the payloads stage includes those of loadSet (every one for a null set) with
+ * LoadAndUnload(), which recomposes only the prims whose inclusion changes. Rules on paths the
+ * stage cannot load yet, with no prim at or above them but the root, are left out. Returns
+ * whether anything was loaded or unloaded.
+ **/
+bool applyLoadSet(const PXR_NS::UsdStageRefPtr& stage,
+                  const SceneLoadSet* loadSet);
+
+/**
+ * @brief How many payloads stage leaves unloaded at or below the prims of paths, counting a
+ * nested payload only once the one above it is loaded. A path with no prim counts the unloaded
+ * payload above it, if there is one.
+ **/
+std::size_t countUnloadedPayloads(const PXR_NS::UsdStageRefPtr& stage,
+                                  const std::vector<std::string>& paths);
+
+/**
+ * @brief A prim selection evaluated on a private stage that loads every payload, so it reaches
+ * what an evaluator has left unloaded, for previews only: what it finds never feeds an
+ * evaluation, and no other stage is touched. The search runs on a thread of its own and stops
+ * as soon as it is cancelled, or stopWhen() turns true, even in the middle of a payload file.
+ **/
+class UnloadedSearch {
+public:
+    enum StatusEnum {
+        eStatusRunning,
+        eStatusDone,
+        eStatusCancelled,
+        eStatusFailed
+    };
+
+    // Searches scene for the prims expression selects.
+    static std::shared_ptr<UnloadedSearch> start(const ScenePayload& scene,
+                                                 const std::string& expression,
+                                                 const std::function<bool()>& stopWhen = std::function<bool()>());
+
+    // Searches what effect's input inputNb evaluates to, as a render sees it.
+    static std::shared_ptr<UnloadedSearch> start(const EffectInstancePtr& effect,
+                                                 int inputNb,
+                                                 const std::string& expression,
+                                                 const std::function<bool()>& stopWhen = std::function<bool()>());
+
+    // Cancels the search and waits for its thread.
+    ~UnloadedSearch();
+
+    void cancel();
+
+    StatusEnum getStatus() const;
+
+    // Waits for the search to end, at most timeoutMs when it is not negative. Returns whether it has.
+    bool wait(double timeoutMs = -1.) const;
+
+    // The selected prims, in depth-first stage order, once the status is eStatusDone.
+    std::vector<std::string> getMatches() const;
+
+    // Why the search failed, for eStatusFailed.
+    std::string getError() const;
+
+    struct State;
+
+private:
+    UnloadedSearch();
+
+    std::shared_ptr<State> _state;
+    std::thread _thread;
+};
 
 /**
  * @brief The rotation about X, in degrees, that turns correction's from up axis into its to up
@@ -412,6 +694,44 @@ void setLayerOwner(const ScenePayload& payload,
 NodePtr getLayerOwner(const PXR_NS::SdfLayerHandle& layer);
 
 /**
+ * @brief The prims owner's own layers in payload hold specs for, sorted and without repeats: a
+ * property's spec counts for its prim. Reads the layers, not any stage, so the cost follows what
+ * the node authored. Empty when no layer of payload is recorded as owner's.
+ **/
+std::vector<std::string> getAuthoredPrimPaths(const ScenePayload& payload,
+                                              const NodePtr& owner);
+
+/**
+ * @brief The layers of payload recorded as owner's, in payload order. Empty when none is.
+ **/
+std::vector<PXR_NS::SdfLayerRefPtr> getOwnedLayers(const ScenePayload& payload,
+                                                   const NodePtr& owner);
+
+/**
+ * @brief layers as USDA, one after the other, each under a comment naming its identifier. Reads
+ * the layers only, whatever their size.
+ **/
+std::string exportLayersText(const std::vector<PXR_NS::SdfLayerRefPtr>& layers);
+
+/**
+ * @brief A new in-memory stage holding prim's composed definition at its path: specifier, type,
+ * and the metadata that is not a composition arc. Its properties are added by
+ * flattenPropertyInto(), so a caller can release the stage lock between them. Null when prim is
+ * invalid. Caller holds the stage lock.
+ **/
+PXR_NS::UsdStageRefPtr beginPrimDefinition(const PXR_NS::UsdPrim& prim);
+
+/**
+ * @brief Copies property's composed opinion onto the prim of definition at the same path.
+ * Caller holds the lock of property's stage.
+ **/
+void flattenPropertyInto(const PXR_NS::UsdStageRefPtr& definition,
+                         const PXR_NS::UsdProperty& property);
+
+// definition as USDA. Needs no stage lock.
+std::string exportDefinitionText(const PXR_NS::UsdStageRefPtr& definition);
+
+/**
  * @brief The node whose layer holds the opinion attribute resolves to at time: the strongest spec
  * with a default value, time samples or a spline. Null when no recorded layer holds it, a file
  * read in by a node or a schema fallback; *layerIdentifier is then that spec's layer, or empty
@@ -420,6 +740,202 @@ NodePtr getLayerOwner(const PXR_NS::SdfLayerHandle& layer);
 NodePtr authoringNodeOf(const PXR_NS::UsdAttribute& attribute,
                         PXR_NS::UsdTimeCode time,
                         std::string* layerIdentifier);
+
+/**
+ * @brief One arc of a prim's composition, strongest first, as the inspector shows it.
+ **/
+struct ScenePrimArc {
+    enum Type {
+        eRoot,
+        eInherit,
+        eVariant,
+        eRelocate,
+        eReference,
+        ePayload,
+        eSpecialize
+    };
+
+    Type type = eRoot;
+    int depth = 0;
+    bool ancestral = false;
+    bool implicit = false;
+    // False for an authored payload that is not loaded, which has no target in the prim index.
+    bool loaded = true;
+    // Variant arcs carry the selection, as in /Asset{shadingVariant=red}.
+    std::string targetPath;
+    std::string targetLayer;
+    std::string introducingLayer;
+    // Null for a file or an anonymous layer no node recorded.
+    NodePtr targetOwner;
+    NodePtr introducingOwner;
+};
+
+struct ScenePrimComposition {
+    std::vector<ScenePrimArc> arcs;
+    // Set for a prototype or an instance proxy, which have no prim index of their own to walk.
+    std::string prototypePath;
+    bool isPrototype = false;
+    bool isInstanceProxy = false;
+};
+
+/**
+ * @brief The arcs composing prim: its prim index in strength order, then the payloads authored on
+ * it that are not loaded. Constructs a UsdPrimCompositionQuery, which recomputes the arcs every
+ * time, so call it for the selected prim only. Caller holds the stage lock.
+ **/
+ScenePrimComposition getPrimComposition(const PXR_NS::UsdPrim& prim);
+
+/**
+ * @brief One spec contributing an opinion to a prim or to one of its properties.
+ **/
+struct SceneOpinion {
+    // The node that authored the spec's layer, or null for a file or an unrecorded layer.
+    NodePtr owner;
+    std::string layerIdentifier;
+    // "def Xform" for a prim spec, empty for a property spec.
+    std::string primDescription;
+    // Null for a prim spec. Lets readOpinionValue() read the value under a later lock.
+    PXR_NS::SdfPropertySpecHandle propertySpec;
+    // Set by readOpinionValue(): the default value of an attribute spec, or the target paths of a
+    // relationship spec; empty when the spec holds neither.
+    PXR_NS::VtValue value;
+    std::size_t numTimeSamples = 0;
+    bool hasSpline = false;
+    double layerOffset = 0.;
+    double layerScale = 1.;
+};
+
+/**
+ * @brief The specs composing prim, strongest first, each with the node that authored its layer.
+ * Caller holds the stage lock.
+ **/
+std::vector<SceneOpinion> getPrimOpinions(const PXR_NS::UsdPrim& prim);
+
+/**
+ * @brief The specs composing the property of prim named name, strongest first, as of time, without
+ * their values, which can hold millions of elements: see readOpinionValue(). Empty when the prim
+ * has no such property. Caller holds the stage lock.
+ **/
+std::vector<SceneOpinion> getPropertyOpinions(const PXR_NS::UsdPrim& prim,
+                                              const PXR_NS::TfToken& name,
+                                              PXR_NS::UsdTimeCode time);
+
+/**
+ * @brief Fills opinion's value from its property spec, doing nothing for a prim spec or a spec gone
+ * since it was listed. One spec per call, so that a caller can release the stage lock between
+ * them. Caller holds the stage lock.
+ **/
+void readOpinionValue(SceneOpinion* opinion);
+
+/**
+ * @brief value as text, at most maxLength bytes of it, stopping there rather than formatting the
+ * rest and cutting it, so that the cost follows maxLength whatever the value's size. Sets *cut if
+ * the text stops short of the value's end. Also stops once *cancelled is set. A VtValue shares its
+ * data by reference counts, so this needs no stage lock.
+ **/
+std::string valueText(const PXR_NS::VtValue& value,
+                      std::size_t maxLength = std::numeric_limits<std::size_t>::max(),
+                      const std::atomic<bool>* cancelled = nullptr,
+                      bool* cut = nullptr);
+
+// The file of a layer identifier, without its arguments, or empty for an anonymous layer.
+std::string layerFileOf(const std::string& layerIdentifier);
+
+struct SceneAuthor {
+    // Null for a file or an unrecorded layer.
+    NodePtr node;
+    std::string layerIdentifier;
+    bool schemaFallback = false;
+};
+
+enum SceneValueSource {
+    eSceneValueSourceNone,
+    eSceneValueSourceFallback,
+    eSceneValueSourceDefault,
+    eSceneValueSourceTimeSamples,
+    eSceneValueSourceValueClips,
+    eSceneValueSourceSpline
+};
+
+struct ScenePrimAttribute {
+    std::string typeName;
+    PXR_NS::VtValue value;
+    SceneValueSource source = eSceneValueSourceNone;
+    SceneAuthor author;
+};
+
+struct ScenePrimRelationship {
+    std::vector<std::string> targets;
+    SceneAuthor author;
+};
+
+struct ScenePrimMetadata {
+    struct Field {
+        std::string key;
+        PXR_NS::VtValue value;
+        SceneAuthor author;
+    };
+
+    std::vector<Field> fields;
+    // The prototype of an instance or of an instance proxy's prim.
+    std::string prototypePath;
+    bool isPrototype = false;
+};
+
+/*
+ * The reads below address a prim by path, so a caller needs no pxr call to make them. Each is one
+ * short read for one row: an attribute can hold millions of points and the main thread may be
+ * waiting for the lock, so a caller takes the lock once per row. Caller holds the stage lock. A
+ * path naming no prim, or a name it does not have, reads as empty or false.
+ */
+std::vector<std::string> getAttributeNames(const SceneStage& stage,
+                                           const std::string& primPath);
+
+bool readAttribute(const SceneStage& stage,
+                   const std::string& primPath,
+                   const std::string& name,
+                   double frame,
+                   double framesPerSecond,
+                   ScenePrimAttribute* attribute);
+
+std::vector<std::string> getRelationshipNames(const SceneStage& stage,
+                                              const std::string& primPath);
+
+bool readRelationship(const SceneStage& stage,
+                      const std::string& primPath,
+                      const std::string& name,
+                      ScenePrimRelationship* relationship);
+
+bool readMetadata(const SceneStage& stage,
+                  const std::string& primPath,
+                  ScenePrimMetadata* metadata);
+
+bool getPrimComposition(const SceneStage& stage,
+                        const std::string& primPath,
+                        ScenePrimComposition* composition);
+
+bool getPrimOpinions(const SceneStage& stage,
+                     const std::string& primPath,
+                     std::vector<SceneOpinion>* opinions);
+
+std::vector<SceneOpinion> getPropertyOpinions(const SceneStage& stage,
+                                              const std::string& primPath,
+                                              const std::string& name,
+                                              double frame,
+                                              double framesPerSecond);
+
+// beginPrimDefinition(), with the names of the properties to flatten into it. Null if no such prim.
+PXR_NS::UsdStageRefPtr beginPrimDefinition(const SceneStage& stage,
+                                           const std::string& primPath,
+                                           std::vector<std::string>* propertyNames);
+
+void flattenPropertyInto(const PXR_NS::UsdStageRefPtr& definition,
+                         const SceneStage& stage,
+                         const std::string& primPath,
+                         const std::string& name);
+
+// One address per layer, to tell whether two reads got the same layers.
+std::vector<const void*> getLayerIdentities(const std::vector<PXR_NS::SdfLayerRefPtr>& layers);
 } // namespace SceneOps
 
 NATRON_NAMESPACE_EXIT

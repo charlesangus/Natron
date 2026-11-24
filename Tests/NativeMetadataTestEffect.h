@@ -35,6 +35,7 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/ViewIdx.h"
@@ -66,6 +67,7 @@ public:
         , _nodeMetadataDerivations(0)
         , _identityEvaluations(0)
         , _deriveHook()
+        , _forcedEdgeMode(-1)
     {
     }
 
@@ -122,6 +124,15 @@ public:
                               const ImageMetadata& extra)
     {
         _viewExtra[view.value()] = extra;
+    }
+
+    // Makes the source report that edge mode, as a node that sets one does. Read without a lock,
+    // so it must be set from the thread that asks for metadata; invisible to the node hash, so it
+    // drops the metadata already cached here and downstream.
+    void setForcedEdgeMode(EdgeMode mode)
+    {
+        _forcedEdgeMode = static_cast<int>(mode);
+        invalidateOutputMetadata();
     }
 
     int derivationCount() const
@@ -216,6 +227,9 @@ private:
     void applyNodeMetadata(double time,
                            NodeMetadata& metadata)
     {
+        if (_forcedEdgeMode >= 0) {
+            metadata.setEdgeMode(static_cast<EdgeMode>(_forcedEdgeMode));
+        }
         KnobIntPtr nComps = _nComps.lock();
         KnobIntPtr bitDepth = _bitDepth.lock();
         KnobDoublePtr par = _par.lock();
@@ -224,7 +238,7 @@ private:
             return;
         }
         metadata.setNComps(-1, nComps->getValueAtTime(time));
-        metadata.setComponentsType(-1, kNatronColorLayerID);
+        metadata.setComponentsType(-1, eImageComponentsTypeColor);
         metadata.setBitDepth(-1, static_cast<ImageBitDepthEnum>(bitDepth->getValueAtTime(time)));
         metadata.setPixelAspectRatio(-1, par->getValueAtTime(time));
         const int width = format->getValueAtTime(time, 0);
@@ -295,6 +309,7 @@ private:
     std::atomic<int> _nodeMetadataDerivations;
     std::atomic<int> _identityEvaluations;
     std::function<void()> _deriveHook;
+    int _forcedEdgeMode;
 };
 
 // A one-input filter that counts its identity evaluations, so a test can tell a cached

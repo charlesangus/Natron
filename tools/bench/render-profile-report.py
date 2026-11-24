@@ -22,7 +22,8 @@ import sys
 import tempfile
 
 
-REQUIRED_FIELDS = ("frame", "task", "plugin", "node", "deps", "roiPixels", "estimatedBytes", "wallNs")
+CACHE_STATES = ("hit", "partial", "miss", "bypass")
+REQUIRED_FIELDS = ("frame", "task", "plugin", "node", "deps", "roiPixels", "estimatedBytes", "wallNs", "cache")
 
 
 def load_records(paths):
@@ -154,6 +155,14 @@ def transfer_ms(nbytes, gbps):
     return nbytes / (gbps * 1e9) * 1000.0
 
 
+def cache_row(node, counts):
+    """Hits are tasks served whole from the cache; every other state ran the node's render."""
+    hit = counts["hit"]
+    total = sum(counts[state] for state in CACHE_STATES)
+    return {"node": node, "hit": hit, "partial": counts["partial"], "miss": counts["miss"],
+            "bypass": counts["bypass"], "execute": total - hit}
+
+
 def analyse(frames, args):
     """Per-input-file analysis; returns a list of dicts, one per file.
 
@@ -167,6 +176,7 @@ def analyse(frames, args):
         plugin_ms = collections.defaultdict(float)
         plugin_heavy_ms = collections.defaultdict(float)
         fallbacks = collections.Counter()
+        cache_by_node = collections.OrderedDict()
         heavy_ms = 0.0
         sigs = collections.OrderedDict()
         gain_pcie = gain_unified = 0.0
@@ -182,6 +192,8 @@ def analyse(frames, args):
                 plugin_ms[rec["plugin"]] += ms
                 if is_fallback(rec):
                     fallbacks[rec["plugin"]] += 1
+                counts = cache_by_node.setdefault(rec["node"], collections.Counter())
+                counts[rec["cache"]] += 1
                 if t in heavy:
                     heavy_ms += ms
                     plugin_heavy_ms[rec["plugin"]] += ms
@@ -221,6 +233,7 @@ def analyse(frames, args):
             "offloaded_region_instances": offloaded_regions,
             "region_signatures": regions_out,
             "gpu_fallbacks": dict(sorted(fallbacks.items())),
+            "cache_by_node": [cache_row(node, counts) for node, counts in cache_by_node.items()],
             "net_gain_ms": gain_pcie,
             "net_gain_unified_ms": gain_unified,
             "net_gain_share": gain_pcie / wall_ms if wall_ms else 0.0,
@@ -248,6 +261,10 @@ def print_report(results, args):
         if res["gpu_fallbacks"]:
             print("GPU region members that fell back to the CPU: %s"
                   % ", ".join("%s x%d" % (p, n) for p, n in res["gpu_fallbacks"].items()))
+        print("%-28s %6s %8s %6s %7s %8s" % ("node", "hit", "partial", "miss", "bypass", "execute"))
+        for row in res["cache_by_node"]:
+            print("%-28s %6d %8d %6d %7d %8d" % (row["node"][:28], row["hit"], row["partial"],
+                                                 row["miss"], row["bypass"], row["execute"]))
         sizes = [len(r["nodes"]) for r in res["region_signatures"] for _ in range(r["frames"])]
         print("regions: %d (sizes %s), offloaded over PCIe-like link: %d"
               % (len(sizes), sorted(sizes), res["offloaded_region_instances"]))
@@ -295,21 +312,25 @@ def self_test(args):
         with open(gpu_path, "w", encoding="utf-8") as out:
             out.write('{"kind":"region","frame":0,"regionId":3,"tasks":[0]}\n')
             out.write('{"frame":0,"task":0,"plugin":"Blur","node":"B","deps":[],"roiPixels":1,'
-                      '"estimatedBytes":1,"wallNs":1,"device":"gpu","regionId":3,"ok":true}\n')
+                      '"estimatedBytes":1,"wallNs":1,"device":"gpu","regionId":3,"ok":true,"cache":"bypass"}\n')
         rec = load_records([gpu_path])[(gpu_path, 0)][0]
         assert rec["device"] == "gpu" and rec["regionId"] == 3, rec
         assert analyse(load_records([gpu_path]), args)[0]["gpu_fallbacks"] == {}
         fb_path = os.path.join(tmp, "fallback.jsonl")
         with open(fb_path, "w", encoding="utf-8") as out:
             out.write('{"frame":0,"task":0,"plugin":"Blur","node":"B","deps":[],"roiPixels":1,'
-                      '"estimatedBytes":1,"wallNs":1,"device":"cpu","regionId":3,"ok":true}\n')
+                      '"estimatedBytes":1,"wallNs":1,"device":"cpu","regionId":3,"ok":true,"cache":"bypass"}\n')
             out.write('{"frame":0,"task":1,"plugin":"Grade","node":"G","deps":[0],"roiPixels":1,'
-                      '"estimatedBytes":1,"wallNs":1,"device":"cpu","regionId":3,"ok":true}\n')
+                      '"estimatedBytes":1,"wallNs":1,"device":"cpu","regionId":3,"ok":true,"cache":"bypass"}\n')
             out.write('{"frame":0,"task":2,"plugin":"Blur","node":"B2","deps":[1],"roiPixels":1,'
-                      '"estimatedBytes":1,"wallNs":1,"device":"cpu","regionId":-1,"ok":true}\n')
+                      '"estimatedBytes":1,"wallNs":1,"device":"cpu","regionId":-1,"ok":true,"cache":"bypass"}\n')
             out.write('{"kind":"region","frame":0,"regionId":3,"tasks":[0,1],"fallback":"out of device memory",'
                       '"retries":2}\n')
         assert analyse(load_records([fb_path]), args)[0]["gpu_fallbacks"] == {"Blur": 1, "Grade": 1}
+    cache = {row["node"]: row for row in res["cache_by_node"]}
+    assert cache["Read1"]["hit"] == 1 and cache["Read1"]["execute"] == 0, cache["Read1"]
+    assert cache["Defocus1"]["partial"] == 1 and cache["Defocus1"]["execute"] == 1, cache["Defocus1"]
+    assert cache["Blur1"]["miss"] == 1 and cache["Blur1"]["execute"] == 1, cache["Blur1"]
     assert close(res["total_task_ms"], 427.0), res["total_task_ms"]
     assert close(res["heavy_task_ms"], 400.0), res["heavy_task_ms"]
     regions = {tuple(r["nodes"]): r for r in res["region_signatures"]}

@@ -26,8 +26,8 @@ with ZDefocus.
      single tap, so the node is the identity, and posts a warning.
 3. **Gather.** Each output pixel is the sum of the source under the kernel. The CPU builds a prefix
    table per row, in double, and sums the kernel's runs of equal weight from it, so the gather is
-   exact whatever the size; a larger size costs only the kernel's rows. The image is black
-   outside its region of definition. The Mask and Mix limit the result as the standard knobs do:
+   exact whatever the size; a larger size costs only the kernel's rows. Beyond its image the
+   source reads as Edge Mode says: black, or its edge pixels extended outwards. The Mask and Mix limit the result as the standard knobs do:
    each processed channel of the output is `in + mix * (out - in)`.
 
 | Parameter | Label | Default | Meaning |
@@ -41,6 +41,7 @@ with ZDefocus.
 | `kernelChannel` | Kernel Channel | `rgba.A` | Image kernel: the Kernel input's channel that holds the bokeh; a channel it lacks, or None, reads 0 |
 | `highlightThreshold` | Highlight Threshold | 1 | Values above it are highlights, at least 0 |
 | `highlightGain` | Highlight Gain | 1 | Factor on the highlights' excess over the threshold, 1 to 1000; 1 leaves them as they are |
+| `edgeMode` | Edge Mode | Input | What the bokeh reads beyond the image: the Source's own mode (Input), black (Black) or its edge pixels (Stretch) |
 
 The standard channel, mask, mix and unprocessed-channel knobs follow. The inputs are Source, an
 optional Mask and an optional Kernel. Every layer of the source is defocused.

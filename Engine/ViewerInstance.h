@@ -30,9 +30,11 @@
 
 #include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "Engine/EngineFwd.h"
@@ -40,15 +42,17 @@
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/OverlayImage.h"
 #include "Engine/ProjectColorManagement.h"
+#include "Engine/RenderScheduler.h"
+#include "Engine/SceneLoadSet.h"
 #include "Engine/SchedulerEligibility.h"
 #include "Engine/ViewIdx.h"
+#include "Serialization/SerializationFwd.h"
 
 // Script names of the Viewer node's knobs.
 #define kViewerParamEnableGain "enableGain"
 #define kViewerParamGain "gain"
 #define kViewerParamEnableGamma "enableGamma"
 #define kViewerParamGamma "gamma"
-#define kViewerParamAutoContrast "autoContrast"
 #define kViewerParamCheckerboard "enableCheckerBoard"
 #define kViewerParamDisplay "display"
 #define kViewerParamView "view"
@@ -59,6 +63,8 @@
 #define kViewerParamAlphaChannel "alphaChannel"
 #define kViewerParamAInput "aInput"
 #define kViewerParamBInput "bInput"
+// Followed by the input number, counted from 1.
+#define kViewerParamLockedInputPrefix "lockedInput"
 #define kViewerParamOperation "operation"
 #define kViewerParamWipeCenter "wipeCenter"
 #define kViewerParamWipeAmount "wipeAmount"
@@ -78,7 +84,9 @@
 #define kViewerParamEnableDownscale "enableDownscale"
 #define kViewerParamDownscaleLevel "downscaleLevel"
 #define kViewerParamMaxSamples "maxSamples"
+#define kViewerParamRenderEverything "renderEverything"
 #define kViewerParamRefinementPaused "refinementPaused"
+#define kViewerParamMapSiblingOverlays "mapSiblingOverlays"
 
 NATRON_NAMESPACE_ENTER
 
@@ -87,6 +95,167 @@ class ScenePayload;
 class CleanHashSnapshot; // Node.h
 
 typedef std::map<NodePtr, NodeRenderStats > RenderStatsMap;
+
+struct ShadowPlacement;
+
+/**
+ * @brief The GPU regions of one viewer render, as the cache-ignoring shadow plan placed them, for the GUI thread to read
+ * after the render is over. Nodes are held weakly because they may be gone by then, and a node with several tasks, or in
+ * several merged graphs, appears once. No regions and no node runs means there is nothing to draw.
+ **/
+struct GpuPlacementSnapshot {
+    // An input of a node, which is how the node graph finds a pipe.
+    struct Pipe {
+        NodeWPtr destNode;
+        int inputNb = -1;
+    };
+
+    struct Member {
+        NodeWPtr node;
+
+        // Some task of the node stayed out of every region in the shadow plan.
+        bool mixed = false;
+    };
+
+    // A pipe that ends a region. A region feeding the viewer has none for it: the viewer is not a task of the graph.
+    struct Exit {
+        Pipe pipe;
+        FrameGraph::PlacementReason reason = FrameGraph::PlacementReason::None;
+        std::string detail;
+
+        // The tasks reading this pipe differ on the reason, or on whether the pipe ends a region at all.
+        bool mixed = false;
+    };
+
+    struct Region {
+        std::vector<Member> members;
+        std::vector<Exit> exits;
+
+        // Pipes bringing an image in from the CPU. A pipe from another region is one of that region's exits instead.
+        std::vector<Pipe> entries;
+
+        // The real plan's region on these members did not run on the GPU, which only a real render can know.
+        bool fellBack = false;
+        std::string fallbackReason;
+        bool deviceLost = false;
+        int retries = 0;
+
+        // The merged graphs differ on whether or why this region fell back.
+        bool fallbackMixed = false;
+    };
+
+    std::vector<Region> regions;
+
+    // A node with a task in the real render, on the GPU or not.
+    struct NodeRun {
+        NodeWPtr node;
+
+        // Some task of the node computed pixels rather than taking them all from the cache or passing its input
+        // through.
+        bool ran = false;
+    };
+
+    // Empty when the snapshot does not come from a render that recorded which nodes computed pixels.
+    std::vector<NodeRun> nodeRuns;
+};
+
+typedef std::shared_ptr<const GpuPlacementSnapshot> GpuPlacementSnapshotPtr;
+
+/**
+ * @brief Gathers the graphs one viewer render builds, one per split RoI rect and one per A/B input, on its render thread,
+ * and merges them. Regions of different graphs that share a node become one region.
+ **/
+class GpuPlacementSnapshotBuilder {
+public:
+    // shadow must come from placing real.
+    void addGraph(const FrameGraph& real, const ShadowPlacement& shadow);
+
+    // For a graph placement left alone because there is no GPU, which contributes no region.
+    void addUnplacedGraph();
+
+    // As addUnplacedGraph(), keeping real's tasks so that finishGraph() can tell which of them ran.
+    void addUnplacedGraph(const FrameGraph& real);
+
+    /**
+     * @brief Called once the most recently added graph has rendered. renderedNodes are the nodes that computed pixels
+     * in it; null when the render did not record them.
+     **/
+    void finishGraph(EffectInstance::RenderRoIRetCode retCode,
+                     const std::vector<RegionFallback>& fallbacks,
+                     const std::unordered_set<const Node*>* renderedNodes = nullptr);
+
+    /**
+     * @brief The merged snapshot. Null when no graph was added, or one was aborted: a newer render has then been asked
+     * for, which may already have published, so this one must not overwrite it.
+     **/
+    GpuPlacementSnapshotPtr build() const;
+
+    // Whether some graph was added with a shadow plan, rather than left unplaced.
+    bool hasPlacedGraph() const;
+
+private:
+    struct TaskPlan {
+        NodeWPtr node;
+        int region = -1;
+        int realRegion = -1;
+        bool ran = false;
+        FrameGraph::PlacementReason reason = FrameGraph::PlacementReason::None;
+        std::string detail;
+    };
+
+    struct EdgePlan {
+        int source = -1;
+        int dest = -1;
+        int inputNb = -1;
+    };
+
+    struct GraphPlan {
+        std::vector<TaskPlan> tasks;
+        std::vector<EdgePlan> edges;
+        int regionCount = 0;
+        std::vector<RegionFallback> fallbacks;
+        bool recordsRuns = false;
+    };
+
+    std::vector<GraphPlan> _graphs;
+    bool _aborted = false;
+    bool _placed = false;
+};
+
+/**
+ * @brief Whether a viewer edit drafts. It keeps a rolling estimate of what an update would cost at the viewer's
+ * own level, from the updates rendered so far scaled by their pixel ratio, and turns draft off once that fits the
+ * frame budget, back on once it overruns it. The gap between the two thresholds keeps it from toggling per frame.
+ **/
+class AdaptiveDraft {
+public:
+    static constexpr double kBudgetMs = 1000. / 30.;
+    static constexpr double kEnterFullRatio = 0.8;
+    static constexpr double kLeaveFullRatio = 1.25;
+
+    /**
+     * @brief Notes an update rendered at renderedLevel in ms, for a viewer whose own level is fullLevel.
+     **/
+    void noteRender(double ms, unsigned int renderedLevel, unsigned int fullLevel);
+
+    // Whether the next update drafts. True until a render has been noted.
+    bool drafts() const
+    {
+        return !_full;
+    }
+
+    // The estimated cost of an update at the viewer's own level, negative before any render has been noted.
+    double predictedFullMs() const
+    {
+        return _predictedFullMs;
+    }
+
+    void reset();
+
+private:
+    double _predictedFullMs = -1.;
+    bool _full = false;
+};
 
 class ViewerArgs
 {
@@ -105,7 +274,6 @@ public:
     RenderingFlagSetterPtr isRenderingFlag;
     bool draftModeEnabled;
     unsigned int mipmapLevelWithDraft, mipmapLevelWithoutDraft;
-    bool autoContrast;
     DisplayChannelsEnum channels;
     bool userRoIEnabled;
     bool mustComputeRoDAndLookupCache;
@@ -127,6 +295,8 @@ GCC_DIAG_SUGGEST_OVERRIDE_OFF
 GCC_DIAG_SUGGEST_OVERRIDE_ON
 
     friend class ViewerCurrentFrameRequestScheduler;
+    friend class GpuPlacementPlanner;
+    friend struct ViewerInstanceTestAccess;
 
 public:
     static EffectInstance* BuildEffect(NodePtr n) WARN_UNUSED_RETURN;
@@ -135,6 +305,12 @@ public:
 
     virtual ~ViewerInstance();
 
+    /**
+     * @brief Whether any viewer of the process has an input connected, or one queued to connect.
+     * When none has, no walk downstream of a node other than a viewer can reach a viewer.
+     **/
+    static bool isAnyViewerConnected() WARN_UNUSED_RETURN;
+
     OpenGLViewerI* getUiContext() const WARN_UNUSED_RETURN;
 
     /**
@@ -142,6 +318,24 @@ public:
      * when that input is not raw.
      **/
     std::string getRawDisplayLabel(int textureIndex) const WARN_UNUSED_RETURN;
+
+    typedef std::function<void(Serialization::SceneViewSerialization*)> SceneViewSaver;
+
+    /**
+     * @brief The draw states and loads of the 3D view as the project was opened with them, or once
+     * setSceneViewSaver() is called, as the saver saves them. Main thread.
+     **/
+    Serialization::SceneViewSerialization getLoadedSceneView() const;
+
+    /**
+     * @brief Hands saving the 3D view to saver, which any thread that saves the project runs, and
+     * forgets the view the project was opened with. An empty saver saves nothing; this returns
+     * once a saver running has.
+     **/
+    void setSceneViewSaver(const SceneViewSaver& saver);
+
+    // What the project saves of the 3D view. Any thread.
+    void sceneViewToSerialization(Serialization::SceneViewSerialization* serialization) const;
 
     ///Called upon node creation and then never changed
     void setUiContext(OpenGLViewerI* viewer);
@@ -207,6 +401,44 @@ public:
      * empty hook removes it.
      **/
     static void setSchedulerResultHookForTests(const SchedulerResultHook& hook);
+
+    /**
+     * @brief Whether viewer renders place a shadow plan and publish a snapshot. Off by default, for every viewer.
+     * Turning it on discards every earlier snapshot and asks each viewer for a dry run.
+     **/
+    static void setGpuPlacementOverlayEnabled(bool enabled);
+    static bool isGpuPlacementOverlayEnabled();
+
+    /**
+     * @brief Asks for a plan of the current frame and view, without rendering, on a thread of the viewer once the
+     * requests have paused. A burst of requests gives one plan. It does nothing while the overlay is off and it is held
+     * during playback, a paint stroke, tracking and a project load. May be called from any thread.
+     **/
+    void requestGpuPlacementDryRun();
+    static void requestGpuPlacementDryRunForEveryViewer();
+
+    /**
+     * @brief How many dry runs viewers have carried out in this process.
+     **/
+    static int getGpuPlacementDryRunCountForTests();
+
+    /**
+     * @brief Makes every viewer behave as if it were playing back.
+     **/
+    static void setGpuPlacementFrozenForTests(bool frozen);
+
+    void getRenderAgesForTests(int textureIndex, U64* renderAge, U64* displayAge) const;
+
+    /**
+     * @brief How many shadow plans viewer renders have placed in this process.
+     **/
+    static int getGpuShadowPlacementCountForTests();
+
+    /**
+     * @brief The placement of the last viewer render that reached the RenderScheduler or of the last dry run, null while
+     * the overlay is off or before either since it was turned on. May be called from any thread.
+     **/
+    GpuPlacementSnapshotPtr getGpuPlacementSnapshot() const;
 
 private:
     /**
@@ -325,6 +557,19 @@ public:
      **/
     void disconnectTextureAfterRender(int index, bool clearRod, U64 renderAge);
 
+    /**
+     * @brief A render request that will not produce an image because it failed outside the
+     * render itself (an exception, a lost UI context): like renderEndedWithoutImage(), and the
+     * render also leaves the viewer's list of ongoing renders.
+     **/
+    void renderFailed(int textureIndex, U64 renderAge);
+
+    /**
+     * @brief A render request that ended aborted or with no image to show. It counts as shown
+     * unless a newer request exists, in which case that one decides what the viewer shows.
+     **/
+    void renderEndedWithoutImage(int textureIndex, U64 renderAge);
+
     double getGain() const WARN_UNUSED_RETURN;
 
     unsigned int getMipmapLevel() const WARN_UNUSED_RETURN;
@@ -337,6 +582,40 @@ public:
      * processing is on.
      **/
     unsigned int getMipmapLevelWithoutDraft() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The mipmap level of a zoom factor: the nearest finer one (48% renders at 50%, 51% at 100%), or with
+     * nearest, the nearest power of two (33% renders at 25%). Zooms of 100% and more are level 0.
+     **/
+    static unsigned int mipmapLevelForZoom(double zoomFactor, bool nearest) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The level a draft update renders at under auto-proxy: at least autoProxyLevel, less one per doubling
+     * of a zoom above 100%, and never finer than withoutDraft.
+     **/
+    static unsigned int autoProxyMipmapLevel(unsigned int withoutDraft, double zoomFactor, unsigned int autoProxyLevel) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Whether an update drafts, and at which level: auto-proxy and draft are on, the edits call for it
+     * (AppInstance::draftAppliesToEdits()) and adaptive draft does not predict that the viewer's own level keeps up.
+     **/
+    static void resolveDraft(bool draftOn,
+                             bool editsDraft,
+                             bool autoProxy,
+                             const AdaptiveDraft& adaptive,
+                             unsigned int withoutDraft,
+                             double zoomFactor,
+                             unsigned int autoProxyLevel,
+                             bool* draftModeEnabled,
+                             unsigned int* withDraft);
+
+    /**
+     * @brief Notes how long an interactive update took for adaptive draft. Ignored while draft is off.
+     **/
+    void noteInteractiveRender(double ms, unsigned int renderedLevel, unsigned int fullLevel);
+
+    // A copy of the viewer's adaptive draft state, for tests.
+    AdaptiveDraft getAdaptiveDraft() const WARN_UNUSED_RETURN;
 
     /**
      * @brief The display settings and tiles of the last full-quality texture-cache lookup of input
@@ -357,6 +636,11 @@ public:
 
     bool isLatestRender(int textureIndex, U64 renderAge) const;
 
+    /**
+     * @brief True while the image shown is older than the newest render requested on either input.
+     * A render that failed counts as shown, so a failure with nothing newer queued is not stale.
+     **/
+    bool isStale() const;
 
     void setDisplayChannels(DisplayChannelsEnum channels, bool bothInputs);
 
@@ -365,10 +649,6 @@ public:
     ImageLayerDesc getActiveLayer() const;
 
     void setAlphaChannel(const ImageLayerDesc& layer, const std::string& channelName, bool doRender);
-
-    bool isAutoContrastEnabled() const WARN_UNUSED_RETURN;
-
-    void onAutoContrastChanged(bool autoContrast, bool refresh);
 
     /**
      * @brief Returns the current view, MT-safe
@@ -431,6 +711,29 @@ public:
     void getActiveInputs(int & a, int &b) const;
 
     /**
+     * @brief The script name of the node the input is locked to, empty if it is not locked.
+     **/
+    std::string getLockedInput(int inputNb) const;
+
+    /**
+     * @brief Also keeps the viewer's label and colour in step with its locks. Main thread only.
+     **/
+    void setLockedInput(int inputNb, const std::string& nodeName);
+
+    /**
+     * @brief Brings the node's lock lines and colour in line with the locks. Main thread only.
+     **/
+    void refreshLockDecoration();
+
+    /**
+     * @brief While the lock colour is on the node, the colour the node has apart from it: returns
+     * true with *hasColour false when it has none. Returns false, leaving the outputs alone, when
+     * the node's colour is not the lock colour. Saving writes this so the lock grey is never
+     * stored as the node's own colour.
+     **/
+    bool getColourToSave(bool* hasColour, double* rgb) const;
+
+    /**
      * @brief The data kind the A input delivers, as the graph resolves it, which decides whether
      * the viewer shows a 2D image or a scene. eDataKindImage when A has nothing connected, and
      * eDataKindPolymorphic when the input is ambiguous. MT-safe.
@@ -452,9 +755,43 @@ public:
     /**
      * @brief What the last evaluation of a scene on the given texture's input produced. Returns
      * false when that input is not a scene or has not been evaluated yet, or when the evaluation
-     * failed, in which case *error carries the message. Either pointer may be null. MT-safe.
+     * failed, in which case *error carries the message. *loadSet and *reach get the load set it
+     * was evaluated with and the reach of the patterns it matched. Any pointer may be null.
+     * MT-safe.
      **/
-    bool getLastEvaluatedScene(int textureIndex, ScenePayload* scene, std::string* error) const;
+    bool getLastEvaluatedScene(int textureIndex,
+                               ScenePayload* scene,
+                               std::string* error,
+                               SceneLoadSetPtr* loadSet = nullptr,
+                               SceneLoadReachPtr* reach = nullptr) const;
+
+    /**
+     * @brief The payloads the viewer's scene evaluations include, which follow what its 3D view's
+     * stage loads: pattern nodes match only those. None until set. A change queues the knob
+     * menus filled from the scene to follow it (SceneMenuRefresh::followLoadChanges()). MT-safe.
+     **/
+    void setSceneLoadSet(const SceneLoadSetPtr& loadSet);
+
+    SceneLoadSetPtr getSceneLoadSet() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Who the viewer's scene evaluations are for: its id, which keeps the nodes' memoized
+     * layers and matches for it apart from other evaluators', and its current load set. Without
+     * a reach. MT-safe.
+     **/
+    SceneEvaluationContext getSceneEvaluationContext() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Evaluates the scene of the A input as the viewer would with loadSet in its place, for
+     * what a load about to be committed shows, at the current frame. getLastEvaluatedScene() is
+     * left as it is. *reach, when given, is set to the reach of the patterns the evaluation
+     * matched. Returns false when that input is not a scene or its evaluation fails, with *error
+     * set for a failure. For a thread other than the main one. MT-safe.
+     **/
+    bool evaluateSceneForLoadSet(const SceneLoadSetPtr& loadSet,
+                                 ScenePayload* scene,
+                                 SceneLoadReachPtr* reach,
+                                 std::string* error);
 
     /**
      * @brief Every node upstream of the A and B inputs that has a persistent message, nearest
@@ -500,11 +837,6 @@ public:
 
     virtual void reportStats(int time, ViewIdx view, double wallTime, const RenderStatsMap& stats, const RenderStatsPtr& renderStats) OVERRIDE FINAL;
 
-    ///Only callable on MT
-    void setActivateInputChangeRequestedFromViewer(bool fromViewer);
-
-    bool isInputChangeRequestedFromViewer() const;
-
     void setViewerPaused(bool paused, bool allInputs);
 
     bool isViewerPaused(int texIndex) const;
@@ -540,8 +872,8 @@ public Q_SLOTS:
     void executeDisconnectTextureRequestOnMainThread(int index, bool clearRoD);
 
     /**
-     * @brief Re-reads the active input's data kind and whether wipe is disabled, and emits
-     * activeInputDataKindChanged() when either changed. Callable from any thread; the work runs
+     * @brief Re-reads the active input's data kind, whether it is connected and whether wipe is
+     * disabled, and emits activeInputDataKindChanged() when any of them changed. Callable from any thread; the work runs
      * on the main thread.
      **/
     void refreshActiveInputDataKind();
@@ -569,21 +901,54 @@ Q_SIGNALS:
 
     void disconnectTextureRequest(int index,bool clearRoD);
 
+    // Emitted queued, so it is safe for it to originate on a render thread. The argument is
+    // the state the viewer entered.
+    void staleChanged(bool stale);
+
     void viewerRenderingStarted();
     void viewerRenderingEnded();
 
-    // getActiveInputDataKind() or isWipeDisabledByDataKind() changed. Emitted on the main thread.
+    // Emitted on the main thread when getActiveInputDataKind(), whether input A is connected,
+    // or isWipeDisabledByDataKind() now reads differently.
     void activeInputDataKindChanged();
 
     // A scene was evaluated for the input of textureIndex; getLastEvaluatedScene() has the
     // result. Emitted from the render thread.
     void sceneEvaluated(int textureIndex);
 
+    // getGpuPlacementSnapshot() changed. Emitted from the thread that published it, a render thread or the viewer's
+    // planner, and not during playback.
+    void gpuPlacementSnapshotChanged();
+
 private:
+    bool isGpuPlacementFrozen() const;
+    bool isGpuPlacementDryRunHeld() const;
+    void runGpuPlacementDryRun(const AbortableRenderInfoPtr& abortInfo);
+
+    struct GpuPlacementUiState;
+
+    // What a dry run reads of the UI context, false once it is gone.
+    bool readGpuPlacementUiState(GpuPlacementUiState* state) const;
+    bool getGpuPlacementRoI(int textureIndex,
+                            const RectD& rod,
+                            double par,
+                            unsigned int mipmapLevel,
+                            bool exact,
+                            RectI* roi) const;
+    void planGpuPlacementOfInput(int textureIndex,
+                                 SequenceTime time,
+                                 const GpuPlacementUiState& ui,
+                                 const AbortableRenderInfoPtr& abortInfo,
+                                 GpuPlacementSnapshotBuilder* builder);
+    void computeMipmapLevels(double zoomFactor, ViewerArgs* outArgs) const;
+    void computeMipmapLevels(double zoomFactor, bool draftOn, ViewerArgs* outArgs) const;
+
     /*******************************************
      ******OVERRIDDEN FROM EFFECT INSTANCE******
      *******************************************/
 
+    virtual void onNodeHashChanged(U64 hash) OVERRIDE FINAL;
+    virtual void quitBackgroundWork(bool blocking) OVERRIDE FINAL;
     virtual bool isOutput() const OVERRIDE FINAL
     {
         return true;
@@ -653,6 +1018,7 @@ private:
                                               bool useTLS,
                                               const ViewerCurrentFrameRequestSchedulerStartArgsPtr& request,
                                               const RenderStatsPtr& stats,
+                                              GpuPlacementSnapshotBuilder* placementBuilder,
                                               ViewerArgs& inArgs) WARN_UNUSED_RETURN;
 
     virtual void getRegionsOfInterest(double time,
@@ -672,6 +1038,7 @@ private:
                              double time,
                              bool originatedFromMainThread) OVERRIDE FINAL;
     virtual void onKnobsLoaded() OVERRIDE FINAL;
+    virtual void onKnobsAboutToBeLoaded(const Serialization::NodeSerializationPtr& serialization) OVERRIDE FINAL;
 
     // Re-resolves the layer and alpha knobs against what the A input carries; a value that
     // resolves to nothing keeps the previous description. Returns whether a description changed.
@@ -689,6 +1056,9 @@ private:
     std::unique_ptr<ViewerInstancePrivate> _imp;
     mutable std::mutex _rawDisplayLabelMutex;
     std::string _rawDisplayLabel[2];
+    mutable std::mutex _sceneViewMutex;
+    std::unique_ptr<Serialization::SceneViewSerialization> _loadedSceneView;
+    SceneViewSaver _sceneViewSaver;
 };
 
 enum ViewerDisplayOutputEnum {

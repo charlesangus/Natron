@@ -1147,7 +1147,7 @@ protected:
     void registerMask()
     {
         std::string error;
-        const LayerRegistry::AddResultEnum result = getApp()->getProject()->addLayer(ImageLayerDesc("mask", "mask", "", std::vector<std::string>(1, "A")), LayerRegistryEntry::eOriginUser, &error);
+        const LayerRegistry::AddResultEnum result = getApp()->getProject()->addLayer(ImageLayerDesc("mask", std::vector<std::string>(1, "A")), LayerRegistryEntry::eOriginUser, &error);
 
         EXPECT_NE(LayerRegistry::eAddResultRefused, result) << error;
     }

@@ -873,6 +873,22 @@ Knob<T>::isValueChangeAtCurrentTime(const T& value,
 }
 
 template <typename T>
+std::list<KeyFrame>
+Knob<T>::getQueuedKeyFrames(int dimension) const
+{
+    std::list<KeyFrame> keys;
+    QMutexLocker kql(&_setValuesQueueMutex);
+
+    for (typename std::list<QueuedSetValuePtr>::const_iterator it = _setValuesQueue.begin(); it != _setValuesQueue.end(); ++it) {
+        if (((*it)->dimension() == dimension) && ((*it)->useKey() || (*it)->isSetValueAtTime())) {
+            keys.push_back((*it)->key());
+        }
+    }
+
+    return keys;
+}
+
+template <typename T>
 bool
 Knob<T>::getValueFromCurve(double time,
                            ViewSpec view,
@@ -1183,6 +1199,9 @@ Knob<T>::setValue(const T & v,
         return eValueChangedReturnCodeNothingChanged;
     }
     if (IsolatedJob::refusesValueWrite(this, reason)) {
+        return eValueChangedReturnCodeNothingChanged;
+    }
+    if (refusesValue(v, dimension)) {
         return eValueChangedReturnCodeNothingChanged;
     }
 
@@ -1705,6 +1724,9 @@ Knob<T>::setValueAtTime(double time,
         assert(curve);
 
         setInternalCurveHasChanged(view, dimension, true);
+        if (_signalSlotHandler && (QThread::currentThread() == qApp->thread())) {
+            _signalSlotHandler->s_curveEditHeldForRender(view, dimension);
+        }
 
         KeyFrame k;
         bool hasAnimation = curve->isAnimated();
@@ -1744,6 +1766,7 @@ Knob<T>::setValueAtTime(double time,
     bool newKeyFrame = curve->addKeyFrame(*newKey);
     if (newKeyFrame) {
         ret = eValueChangedReturnCodeKeyframeAdded;
+        invalidateTimelineMarkers();
     }
 
     guiCurveCloneInternalCurve(eCurveChangeReasonInternal, view, dimension, reason);
@@ -1919,10 +1942,11 @@ Knob<T>::unSlaveInternal(int dimension,
                          ValueChangedReasonEnum reason,
                          bool copyState)
 {
-    if ( !isSlave(dimension) ) {
+    // One read, which keeps the master alive: a second could find it expired after the first did not.
+    std::pair<int, KnobIPtr> master = getMaster(dimension);
+    if (!master.second) {
         return;
     }
-    std::pair<int, KnobIPtr> master = getMaster(dimension);
     KnobHelperPtr masterHelper = std::dynamic_pointer_cast<KnobHelper>(master.second);
 
     if (masterHelper->getSignalSlotHandler() && _signalSlotHandler) {
@@ -2391,6 +2415,9 @@ Knob<T>::setKeyFrame(const KeyFrame& key,
     }
 
     bool ret = curve->addKeyFrame(key);
+    if (ret) {
+        invalidateTimelineMarkers();
+    }
 
     if (!useGuiCurve) {
         // A slaved knob writes the master's curve, but its own values and key removals stay on its own
@@ -2402,6 +2429,8 @@ Knob<T>::setKeyFrame(const KeyFrame& key,
         }
         guiCurveCloneInternalCurve(eCurveChangeReasonInternal, view, dimension, reason);
         evaluateValueChange(dimension, key.getTime(), view, reason);
+    } else if (_signalSlotHandler) {
+        _signalSlotHandler->s_curveEditHeldForRender(view, dimension);
     }
 
     return ret;
@@ -3124,12 +3153,32 @@ insertDequeuedValueChange(std::map<int, ValueChangedReasonEnum>& dimensionChange
 }
 
 template <typename T>
+void
+Knob<T>::discardQueuedValues()
+{
+    {
+        QMutexLocker kql(&_setValuesQueueMutex);
+        if (_setValuesQueue.empty()) {
+            return;
+        }
+        _setValuesQueue.clear();
+        // The main thread's values showed the dropped writes.
+        QMutexLocker k(&_valueMutex);
+        _guiValues = _values;
+    }
+    if (_signalSlotHandler) {
+        _signalSlotHandler->s_valueChanged(ViewSpec::all(), -1, eValueChangedReasonNatronInternalEdited);
+    }
+}
+
+template <typename T>
 bool
 Knob<T>::dequeueValuesSet(bool disableEvaluation)
 {
     std::map<int, ValueChangedReasonEnum> dimensionChanged;
     bool ret = false;
     bool valueWritten = false;
+    bool keyWritten = false;
 
     cloneGuiCurvesIfNeeded(dimensionChanged);
     // Every setValue drains the queue first; an empty one is no write.
@@ -3148,7 +3197,7 @@ Knob<T>::dequeueValuesSet(bool disableEvaluation)
                 if ( (*it)->useKey() ) {
                     CurvePtr curve = getCurve( (*it)->view(), (*it)->dimension() );
                     if (curve) {
-                        curve->addKeyFrame( (*it)->key() );
+                        keyWritten |= curve->addKeyFrame((*it)->key());
                     }
                 } else {
                     if ( _values[(*it)->dimension()] != (*it)->value() ) {
@@ -3170,7 +3219,7 @@ Knob<T>::dequeueValuesSet(bool disableEvaluation)
                         if (!blockValueChanges) {
                             insertDequeuedValueChange(dimensionChanged, (*it)->dimension(), (*it)->reason());
                         }
-                        curve->addKeyFrame( key );
+                        keyWritten |= curve->addKeyFrame(key);
                     }
                 }
             }
@@ -3179,6 +3228,9 @@ Knob<T>::dequeueValuesSet(bool disableEvaluation)
     }
     if (valueWritten) {
         invalidateContentHash();
+    }
+    if (keyWritten) {
+        invalidateTimelineMarkers();
     }
     if (write) {
         write->finish();

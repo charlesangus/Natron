@@ -114,6 +114,11 @@ public:
      * The author reads the node's knobs as they are while it runs, so an edit landing meanwhile
      * may be in the layer while key predates it. When keyStillValid is set and says key no longer
      * holds after authoring, the layer is returned but not memoized, and the previous one stays.
+     *
+     * A layer is memoized per evaluation context (SceneEvaluationContext::current()), a few
+     * contexts at once, the least recently used one forgotten first, so that a viewer's and a
+     * render's evaluations do not evict each other. A context finding the layer another one has
+     * for the same key and upstream takes it rather than authoring it again.
      **/
     bool produce(const Key& key,
                  const ScenePayload& upstream,
@@ -124,8 +129,8 @@ public:
                  const KeyCheckFunc& keyStillValid = KeyCheckFunc());
 
     /**
-     * @brief Forgets the memoized layer, so the next produce() authors a new one. For a change the
-     * key does not see.
+     * @brief Forgets every context's memoized layer, so the next produce() authors a new one. For
+     * a change the key does not see.
      **/
     void invalidate();
 
@@ -134,6 +139,9 @@ public:
 
     // How many layers produce() has authored.
     U64 getAuthorCount() const;
+
+    // How many layers produce() and SceneOps::reparentRoots() have authored on the calling thread, with any memo.
+    static U64 getLayersAuthoredOnThread();
 
 private:
     struct Implementation;
@@ -146,6 +154,12 @@ private:
  * overrides layer (the destination's own opinions, its transform), and one wrapper plus one graft
  * layer per input. An unchanged input keeps its graft layer, so a stage synced to the result
  * recomposes only the roots of the input that changed. SceneOps::reparentRoots fills and reads it.
+ *
+ * What it read and grafted is kept per evaluation context (SceneEvaluationContext::current()),
+ * a few contexts at once as SceneLayerMemo keeps them, so a viewer's and a render's evaluations
+ * do not evict each other. An input's roots and links are read on the context's load set; a
+ * context finding another's reads on the same load set, or its graft layer for the same links,
+ * takes them rather than reading or authoring again.
  *
  * Free of pxr types so NativeEffectBase can hold one; implemented in SceneOps.cpp. MT-safe:
  * reparenting is serialized per memo.
@@ -161,6 +175,9 @@ public:
 
     // How many graft layers reparentRoots() has authored with this memo.
     U64 getGraftLayerAuthorCount() const;
+
+    // How many times reparentRoots() has composed an input to read its roots and links.
+    U64 getInputReadCount() const;
 
     // SceneOps' view of the memoized layers; defined in SceneOps.cpp.
     struct State;

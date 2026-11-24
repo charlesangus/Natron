@@ -71,6 +71,13 @@ def steps():
     src = cm.param(blur, "size")
     gt.require(src is not None, "%s has a size" % blur)
 
+    # Built-in pages never take drops and a new Group has only those, so a user adds a page first.
+    gt.require(cm.add(group, "Page"), "clicked the Page palette entry on %s" % group)
+    ok = yield ("until", lambda: cm.selected(group) == "page1", 5.0)
+    gt.require(ok, "added page1 to %s" % group)
+    gt.require(cm.show_page(group, "page1"), "showed page1")
+    yield ("sleep", 300)
+
     gt.section("plain drop links")
     result = []
     gt.require(drag_label_onto(blur, overlay_end(group), Qt.NoModifier, Qt.NoModifier, result), "dragged %s's Size label" % blur)
@@ -87,6 +94,8 @@ def steps():
         check(abs(value(src) - 3.0) < 1e-9, "and %s.size follows it" % blur)
 
     gt.section("Ctrl-drop copies")
+    gt.require(cm.show_page(group, "page1"), "showed page1")
+    yield ("sleep", 300)
     result = []
     drag_label_onto(blur, overlay_end(group), Qt.NoModifier, Qt.ControlModifier, result)
     ok = yield ("until", lambda: cm.param(group, "size1") is not None, 5.0)

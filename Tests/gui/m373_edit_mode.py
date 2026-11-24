@@ -17,10 +17,11 @@ import zipfile
 sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd()), "Tests", "gui"))
 
 import guitest as gt
-from guitest import check, report
+from guitest import check
 
 import knob_edit_common as cm
 
+from PySide6.QtCore import QMetaObject
 from PySide6.QtWidgets import QWidget
 
 
@@ -89,31 +90,42 @@ def steps():
     plugin_id = app.getNode(blur).getPluginID()
     path = os.path.join(gt.OUT, "m373_missing_plugin.ntpz")
     gt.require(app.saveProjectAs(path), "saved the project to " + path)
+    # Loading the file a window already has open only raises that window, so the project is closed first.
+    gt.require(app.resetProject(), "closed the saved project")
+    ok = yield ("until", lambda: not app.getChildren(), 10.0)
+    gt.require(ok, "the closed project's nodes are gone")
+    field = ('plugin: "%s"' % plugin_id).encode()
     with zipfile.ZipFile(path) as z:
         entries = [(i.filename, z.read(i.filename)) for i in z.infolist()]
-    named = [n for n, data in entries if plugin_id.encode() in data]
+    named = [n for n, data in entries if field in data]
     gt.require(bool(named), "the saved project names the Blur's plug-in ID")
     with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as z:
         for n, data in entries:
-            z.writestr(n, data.replace(plugin_id.encode(), b"net.natron.test.MissingPlugin") if n in named else data)
-    loaded = app.loadProject(path)
-    gt.require(loaded is not None, "loaded the project back")
-    cm.use_app(loaded)
+            z.writestr(n, data.replace(field, b'plugin: "net.natron.test.MissingPlugin"') if n in named else data)
+    # The empty project loads the file in place. A placeholder counts as a load error, so the
+    # call returns None even though the nodes are restored.
+    app.loadProject(path)
     yield ("sleep", 1000)
-    node = loaded.getNode(blur)
+    node = app.getNode(blur)
     gt.require(node is not None, "the node with the missing plug-in is in the loaded project")
-    if cm.panel_of(blur) is None:
-        loaded.selectNode(node, True)
-    ok = yield ("until", lambda: cm.panel_of(blur) is not None, 10.0)
-    if not ok:
-        report("NOTE the missing-plugin node's panel did not open, so its pencil can't be checked")
-    else:
-        b = cm.pencil(blur)
-        check(b is None or not b.isEnabled(), "the pencil is disabled on a node whose plug-in is missing")
-        cm.toggle_from_menu(blur)
-        yield ("sleep", 300)
-        check(not cm.is_editing(blur), "Edit parameters does nothing on that node")
-        gt.shot("m373_edit_not_editable.png")
+    gt.require(node.getPluginID() != plugin_id, "the loaded node is a placeholder, not a Blur (%s)" % node.getPluginID())
+    app.selectNode(node, True)
+    graph = cm.root_graph()
+    gt.require(graph is not None, "found the node graph")
+    QMetaObject.invokeMethod(graph, "showSelectedNodeSettingsPanel")
+
+    def panel_open():
+        p = cm.panel_of(blur)
+        return p is not None and p.isVisible()
+
+    ok = yield ("until", panel_open, 10.0)
+    gt.require(ok, "opened the missing-plugin node's panel")
+    b = cm.pencil(blur)
+    check(b is None or not b.isEnabled(), "the pencil is disabled on a node whose plug-in is missing")
+    cm.toggle_from_menu(blur)
+    yield ("sleep", 300)
+    check(not cm.is_editing(blur), "Edit parameters does nothing on that node")
+    gt.shot("m373_edit_not_editable.png")
 
 
 cm.start(steps())

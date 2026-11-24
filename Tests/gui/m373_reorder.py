@@ -64,12 +64,16 @@ def drag_tab(node, label, to_index):
     src = [i for i in range(bar.count()) if cm.plain_text(bar.tabText(i)) == label]
     if not src:
         return False
-    start = QPointF(bar.tabRect(src[0]).center())
-    end = QPointF(bar.tabRect(to_index).left() + 2, start.y())
-    mid = QPointF((start.x() + end.x()) / 2.0, start.y())
+    rect = bar.tabRect(src[0])
+    start = QPointF(rect.center())
+    # The tab bar only moves the dragged tab past a neighbour while the tab's leading edge is over
+    # it, so the drag ends with that edge just inside the target tab, reached in small steps.
+    end = QPointF(bar.tabRect(to_index).left() + 2 + (start.x() - rect.left()), start.y())
+    count = max(1, int(abs(start.x() - end.x()) // 4))
+    path = [QPointF(start.x() + (end.x() - start.x()) * i / count, start.y()) for i in range(1, count + 1)]
     QApplication.sendEvent(bar, QMouseEvent(QEvent.MouseButtonPress, start, bar.mapToGlobal(start), Qt.LeftButton,
                                             Qt.LeftButton, Qt.NoModifier))
-    for p in (mid, end):
+    for p in path:
         QApplication.sendEvent(bar, QMouseEvent(QEvent.MouseMove, p, bar.mapToGlobal(p), Qt.NoButton, Qt.LeftButton,
                                                 Qt.NoModifier))
     QApplication.sendEvent(bar, QMouseEvent(QEvent.MouseButtonRelease, end, bar.mapToGlobal(end), Qt.LeftButton,
@@ -126,6 +130,7 @@ def steps():
     check(ok, "one undo restored the page order (%r)" % cm.child_names(blur))
 
     gt.section("palette drop")
+    gt.require(cm.show_page(blur, page), "showed %s, which holds float1" % page)
     gt.require(cm.select(blur, "float1"), "selected float1")
     yield ("sleep", 300)
     ov = cm.overlay(blur)

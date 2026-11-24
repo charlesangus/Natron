@@ -3,7 +3,7 @@ settings panels. Every helper looks its widgets up again, so no PySide wrapper o
 is held across processEvents (the editor rebuilds the panel's knob widgets after every edit)."""
 from PySide6.QtCore import QByteArray, QEvent, QMetaObject, QMimeData, QObject, QPoint, QPointF, Qt, Q_ARG, Q_RETURN_ARG
 from PySide6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent, QMouseEvent
-from PySide6.QtWidgets import QAbstractButton, QApplication, QLabel, QLineEdit, QMainWindow, QWidget
+from PySide6.QtWidgets import QAbstractButton, QApplication, QLabel, QLineEdit, QMainWindow, QTabWidget, QWidget
 
 import NatronEngine
 import shiboken6
@@ -118,15 +118,23 @@ def panel_of(name):
     if node is None:
         return None
     label = node.getLabel()
+    hidden = None
     for p in gt.widgets_of("NodeSettingsPanel"):
         if not shiboken6.isValid(p):
             continue
         for le in p.findChildren(QLineEdit):
             if shiboken6.isValid(le) and gt.class_name(le) == "LineEdit" and le.text() == label:
+                if not p.isVisible():
+                    # A closed panel stays alive hidden, and may belong to another node with that label.
+                    if hidden is None:
+                        hidden = p
+                    break
                 # A child's wrapper dies with its parent's, so callers' child widgets need the panel's wrapper kept.
                 _panel_wrappers[name] = p
                 return p
-    return None
+    if hidden is not None:
+        _panel_wrappers[name] = hidden
+    return hidden
 
 
 def mode_of(name):
@@ -152,6 +160,24 @@ def pencil(name):
         if shiboken6.isValid(b) and b.isVisible():
             return b
     return None
+
+
+def show_page(name, page):
+    """Clicks the tab of that page knob, as a user does to see the knobs on it."""
+    p = panel_of(name)
+    knob = param(name, page)
+    if p is None or knob is None:
+        return False
+    label = knob.getLabel()
+    for t in p.findChildren(QTabWidget):
+        if not t.isVisible():
+            continue
+        for i in range(t.count()):
+            if plain_text(t.tabText(i)) == label:
+                t.tabBar().setCurrentIndex(i)
+                QApplication.processEvents()
+                return True
+    return False
 
 
 def set_editing(name, on):

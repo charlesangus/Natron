@@ -128,6 +128,8 @@ private:
                   const RenderContextPtr& context) const WARN_UNUSED_RETURN;
     void postMessage(MessageTypeEnum type,
                      const std::string& message);
+    // Warns when end is null (no GeoForEachEnd closes this loop, or several do), else clears.
+    void refreshPairingMessage(const std::shared_ptr<GeoForEachEnd>& end);
 
     KnobChoiceWPtr _method;
 

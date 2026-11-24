@@ -202,7 +202,11 @@ private:
     StatusEnum fail(const std::string& message,
                     std::string* errorMessage);
 
-    // The iterations before the first the stop condition is true for, or -1 with error set.
+    static constexpr int kStopFailed = -1;
+    static constexpr int kStopAborted = -2;
+
+    // The iterations before the first the stop condition is true for, kStopFailed with error
+    // set, or kStopAborted when the render is aborted while evaluating.
     int evaluateStop(const std::vector<Iteration>& iterations,
                      const std::string& loopName,
                      double time,

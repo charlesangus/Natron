@@ -819,8 +819,13 @@ GeoForEachEnd::evaluateStop(const std::vector<Iteration>& iterations,
         }
     }
 
+    bool wasAborted = false;
     int k = 0;
     for (; ok && (k < count); ++k) {
+        if (aborted()) {
+            wasAborted = true;
+            break;
+        }
         const Iteration& iteration = iterations[(std::size_t)k];
         const double t = (count > 1) ? (double)k / (double)(count - 1) : 0.;
         PyObject* variables = PyDict_New();
@@ -866,13 +871,16 @@ GeoForEachEnd::evaluateStop(const std::vector<Iteration>& iterations,
         }
     }
     stopAt = std::min(k, count);
-    if (!function || !ok) {
+    if (wasAborted) {
+        PyErr_Clear();
+        stopAt = kStopAborted;
+    } else if (!function || !ok) {
         if (failure.empty()) {
             failure = "the expression could not be evaluated";
         }
         PyErr_Clear();
         *error = tr("Stop Condition failed at iteration %1: %2").arg(stopAt).arg(QString::fromUtf8(failure.c_str())).toStdString();
-        stopAt = -1;
+        stopAt = kStopFailed;
     }
     Py_XDECREF(enclosing);
     Py_XDECREF(noArgs);
@@ -931,6 +939,9 @@ GeoForEachEnd::renderGeometry(const GeoRenderActionArgs& args,
         if (!partition) {
             return fail(partitionError, errorMessage);
         }
+        if (partition->size() > (std::size_t)s.maxIterations) {
+            return fail(tr("%1 iterations is more than Max Iterations (%2).").arg(partition->size()).arg(s.maxIterations).toStdString(), errorMessage);
+        }
         iterations.resize(partition->size());
         for (std::size_t k = 0; k < partition->size(); ++k) {
             Iteration& it = iterations[k];
@@ -947,6 +958,9 @@ GeoForEachEnd::renderGeometry(const GeoRenderActionArgs& args,
             }
         }
     } else {
+        if (s.iterations > s.maxIterations) {
+            return fail(tr("%1 iterations is more than Max Iterations (%2).").arg(s.iterations).arg(s.maxIterations).toStdString(), errorMessage);
+        }
         iterations.resize((std::size_t)s.iterations);
         for (int k = 0; k < s.iterations; ++k) {
             Iteration& it = iterations[(std::size_t)k];
@@ -957,15 +971,15 @@ GeoForEachEnd::renderGeometry(const GeoRenderActionArgs& args,
         }
     }
 
-    if ((int)iterations.size() > s.maxIterations) {
-        return fail(tr("%1 iterations is more than Max Iterations (%2).").arg(iterations.size()).arg(s.maxIterations).toStdString(), errorMessage);
-    }
     const std::int64_t numIterations = (std::int64_t)iterations.size();
 
     int runCount = (int)iterations.size();
     if (!s.stopCondition.empty()) {
         std::string stopError;
         runCount = evaluateStop(iterations, loopName, args.time, &stopError);
+        if (runCount == kStopAborted) {
+            return eStatusFailed;
+        }
         if (runCount < 0) {
             return fail(stopError, errorMessage);
         }

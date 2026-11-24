@@ -101,6 +101,38 @@ positionIn(const std::vector<std::size_t>& sorted,
     return std::size_t(std::lower_bound(sorted.begin(), sorted.end(), std::size_t(offset)) - sorted.begin());
 }
 
+// Renumbers pieces so values are in ascending order, numeric for integers and lexical
+// for strings, and rewrites the value lookup and every element's piece to match.
+template <typename Value, typename Lookup>
+void
+sortPieces(std::vector<Value>* values,
+           Lookup* byValue,
+           std::vector<std::size_t>* pieceOf)
+{
+    std::vector<std::size_t> order(values->size());
+    for (std::size_t k = 0; k < order.size(); ++k) {
+        order[k] = k;
+    }
+    std::sort(order.begin(), order.end(), [values](std::size_t a, std::size_t b) {
+        return (*values)[a] < (*values)[b];
+    });
+    std::vector<std::size_t> renumbered(order.size());
+    std::vector<Value> sorted;
+    sorted.reserve(order.size());
+    for (std::size_t k = 0; k < order.size(); ++k) {
+        renumbered[order[k]] = k;
+        sorted.push_back(std::move((*values)[order[k]]));
+    }
+    *values = std::move(sorted);
+    byValue->clear();
+    for (std::size_t k = 0; k < values->size(); ++k) {
+        byValue->emplace((*values)[k], k);
+    }
+    for (std::size_t& piece : *pieceOf) {
+        piece = renumbered[piece];
+    }
+}
+
 } // anonymous namespace
 
 const std::string&
@@ -191,6 +223,7 @@ GeoForEachPieces::partition(const GeoDetail& detail,
                 }
                 pieceOf[i] = inserted.first->second;
             }
+            sortPieces(&out->_stringValues, &out->_byString, &pieceOf);
             count = out->_stringValues.size();
         } else {
             for (std::size_t i = 0; i < live.size(); ++i) {
@@ -201,6 +234,7 @@ GeoForEachPieces::partition(const GeoDetail& detail,
                 }
                 pieceOf[i] = inserted.first->second;
             }
+            sortPieces(&out->_intValues, &out->_byInt, &pieceOf);
             count = out->_intValues.size();
         }
         break;

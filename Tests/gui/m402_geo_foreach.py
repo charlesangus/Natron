@@ -10,8 +10,11 @@ Sections:
   - pieces: the stage holds every piece, 6 faces of 4 points each, spread along x by the driver,
     and the scene view shows it with no error;
   - cancel: with a heartbeat running (a 5 ms Qt timer on the main thread, recording the wall-clock
-    gap between ticks), the End is switched to Iteration Method Count with LONG_ITERATIONS
-    iterations. While that loop cooks, Iterations is set to SHORT_ITERATIONS. The scene view must
+    gap between ticks), a GeoWrangle running HEAVY_STEPS steps per point is put between the
+    GeoTransform and the End, and the End is switched to Iteration Method Count with LONG_ITERATIONS
+    iterations and Max Iterations set to match. After LONG_COOK_MS the End and the GeoWrangle must
+    report no error and no scene may have synced, so the long loop is still cooking. Iterations is
+    then set to SHORT_ITERATIONS. The scene view must
     show the short loop within CANCEL_TIMEOUT_S, and the longest heartbeat gap must stay under
     MAX_GAP_MS. After the heartbeat stops, the stage must hold SHORT_ITERATIONS cubes.
 Screenshots: m402_geo_foreach_pieces.png and m402_geo_foreach_cancelled.png in $NATRON_GUI_TEST_OUT.
@@ -35,7 +38,8 @@ LONG_SETTLE_MS = 750
 PIECE_SPACING = 3.0
 CUBE_FACES = 6
 CUBE_POINTS = 8
-LONG_ITERATIONS = 5000000
+LONG_ITERATIONS = 100000
+HEAVY_STEPS = 2000000
 SHORT_ITERATIONS = 3
 # GeoPrimitive's Type, GeoForEachBegin's Method, GeoForEachEnd's choices.
 SHAPE_CUBE = 2
@@ -172,7 +176,12 @@ try:
 
         # cancel
         heartbeat.start()
+        param(end, "maxIterations").setValue(LONG_ITERATIONS)
         param(end, "iterations").setValue(LONG_ITERATIONS)
+        heavy = make("GeoWrangle", 150, 250)
+        param(heavy, "snippet").setValue("for (int k = 0; k < %d; k++) f@heavy += k * 0.5;\n" % HEAVY_STEPS)
+        require(heavy.connectInput(0, move), "connect the GeoTransform into the GeoWrangle")
+        require(end.connectInput(0, heavy), "connect the GeoWrangle into the GeoForEachEnd")
         param(end, "iterationMethod").setValue(ITERATE_COUNT)
         # Each edit above can sync a quick intermediate scene (the pieces loop, or the old iteration count)
         # before the long loop starts cooking, so the baseline is taken once those have landed.
@@ -182,6 +191,9 @@ try:
         # scene_drawn() stays true on the previous scene while a new one cooks, so it cannot show a cook running.
         check(synced_at_ms() == baseline_ms,
               "the long loop is still cooking after %d ms (no scene synced since its edit)" % LONG_COOK_MS)
+        for node in (end, heavy):
+            message = str(node.getPersistentMessage() or "")
+            require(not message, "%s reports no error while the long loop cooks (%r)" % (node.getScriptName(), message))
         started = time.monotonic()
         short_edit_ms = now_ms()
         param(end, "iterations").setValue(SHORT_ITERATIONS)

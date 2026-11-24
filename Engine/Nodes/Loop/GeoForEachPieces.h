@@ -64,9 +64,10 @@ struct GeoPieceSettings {
 };
 
 /**
- * @brief A detail's elements split into pieces, in the order of each piece's first element.
- * A piece is named by its value: the attribute's value under eGeoPieceMethodAttribute, its
- * position in that order otherwise. Immutable once built.
+ * @brief A detail's elements split into pieces. Under eGeoPieceMethodAttribute, pieces are in
+ * ascending value order (numeric for integers, lexical for strings) and named by their value;
+ * otherwise they are in the order of each piece's first element and named by their position in
+ * that order. Immutable once built.
  **/
 class GeoPiecePartition {
 public:

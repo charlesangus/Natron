@@ -136,6 +136,41 @@ referencedFilePath(const std::string& assetPath)
     return QString::fromStdString(absolutePath(path));
 }
 
+// The names a layered write to outputInfo gives its sidecars: name_layerN.ext.
+QRegularExpression
+sidecarNamePattern(const QFileInfo& outputInfo)
+{
+    return QRegularExpression(QString::fromUtf8("^") + QRegularExpression::escape(outputInfo.completeBaseName()) + QString::fromUtf8("_layer[1-9][0-9]*\\.") + QRegularExpression::escape(outputInfo.suffix()) + QString::fromUtf8("$"));
+}
+
+/**
+ * @brief The path two spellings of one file, through symbolic links, share: the canonical path of
+ * the deepest part of path that exists, then the rest as written. For comparing paths only; files
+ * are written where their own spelling says.
+ **/
+QString
+comparisonPath(const QString& path)
+{
+    const QString clean = QDir::cleanPath(path);
+    QString existing = clean;
+    QStringList parts;
+    for (;;) {
+        const QString canonical = QFileInfo(existing).canonicalFilePath();
+        if (!canonical.isEmpty()) {
+            parts.prepend(canonical);
+
+            return QDir::cleanPath(parts.join(QLatin1Char('/')));
+        }
+        const QFileInfo info(existing);
+        const QString parent = info.path();
+        if (parent.isEmpty() || (parent == existing)) {
+            return clean;
+        }
+        parts.prepend(info.fileName());
+        existing = parent;
+    }
+}
+
 /**
  * @brief Removes the files beside outputInfo that carry its sidecar names, name_layerN.ext as the
  * layered write names them, except those in keep: what an earlier layered write left, which
@@ -148,7 +183,7 @@ removeStaleSidecars(const QFileInfo& outputInfo,
 {
     QStringList removed;
     const QDir dir(outputInfo.absolutePath());
-    const QRegularExpression sidecar(QString::fromUtf8("^") + QRegularExpression::escape(outputInfo.completeBaseName()) + QString::fromUtf8("_layer[1-9][0-9]*\\.") + QRegularExpression::escape(outputInfo.suffix()) + QString::fromUtf8("$"));
+    const QRegularExpression sidecar = sidecarNamePattern(outputInfo);
     const QStringList names = dir.entryList(QDir::Files | QDir::Hidden | QDir::System);
 
     // A symlinked output folder spells the same file two ways, so keep entries also match by
@@ -1666,6 +1701,10 @@ layOutRegionFiles(std::vector<StackItem> items,
                 }
                 regions.push_back(region);
             }
+            // With merge, a region inside one naming the same file is that file, not a file in it.
+            if (merge && !chains[i].empty() && (chains[i].back() == group)) {
+                continue;
+            }
             if (std::find(chains[i].begin(), chains[i].end(), group) != chains[i].end()) {
                 failure->kind = RegionLayoutFailure::eKindNested;
                 failure->path = path;
@@ -2595,6 +2634,12 @@ USDWrite::writeFrameRange(int firstFrame,
             propagateRanges(arcs, &stacks);
         } else {
             std::map<U64, QString> savePaths;
+            // By comparison path, the spelling of the first region saving there, which aliases of
+            // it share so that they are one file.
+            std::map<QString, QString> savePathOfKey;
+            const QString outputKey = comparisonPath(outputPath);
+            const QString outputDirKey = comparisonPath(outputDir);
+            const QRegularExpression sidecarName = sidecarNamePattern(outputInfo);
             std::set<QString> sceneFiles;
             bool sceneFilesKnown = false;
             std::vector<std::string> views;
@@ -2619,20 +2664,29 @@ USDWrite::writeFrameRange(int firstFrame,
                     if ((suffix != QString::fromUtf8("usd")) && (suffix != QString::fromUtf8("usda")) && (suffix != QString::fromUtf8("usdc"))) {
                         return fail(tr("The Save Path of %1, %2, is not a USD file name: it must end in .usd, .usda or .usdc.").arg(node).arg(path));
                     }
-                    if (path == outputPath) {
+                    const QString key = comparisonPath(path);
+                    if (key == outputKey) {
                         return fail(tr("The Save Path of %1 is %2, which this node writes the root layer to: save the region to another file.").arg(node).arg(path));
+                    }
+                    // The sweep of stale sidecars would remove the file once the region is gone.
+                    if ((comparisonPath(QFileInfo(path).absolutePath()) == outputDirKey) && sidecarName.match(QFileInfo(path).fileName()).hasMatch()) {
+                        return fail(tr("The Save Path of %1, %2, has the name this node gives its sidecar files: save the region to another file.").arg(node).arg(path));
                     }
                     if (!sceneFilesKnown) {
                         const PXR_NS::UsdStageRefPtr composed = SceneOps::compose(scene);
                         if (composed) {
-                            collectUsedFiles(composed, &sceneFiles);
+                            std::set<QString> used;
+                            collectUsedFiles(composed, &used);
+                            for (const QString& file : used) {
+                                sceneFiles.insert(comparisonPath(file));
+                            }
                         }
                         sceneFilesKnown = true;
                     }
-                    if (sceneFiles.count(path) != 0) {
+                    if (sceneFiles.count(key) != 0) {
                         return fail(tr("The Save Path of %1, %2, is read by the scene it would be overwritten with: save the region to another file.").arg(node).arg(path));
                     }
-                    savePaths[region->id] = path;
+                    savePaths[region->id] = savePathOfKey.insert(std::make_pair(key, path)).first->second;
                 }
             }
             std::vector<RegionFile> files;
@@ -2831,11 +2885,17 @@ USDWrite::writeFrameRange(int firstFrame,
             authorRegionMetadata(root, stacks[0].settings, outputDir, pathMode);
             written.push_back(Written { stacks[0].path, root });
         }
+        // The time codes per second a written stack's file declares: its regions' when they set
+        // one, which composition scales its sublayers by and it by in its parent.
+        const auto declaredTcps = [](const WrittenStack& stack) {
+            return stack.settings.timeCodesPerSecond ? *stack.settings.timeCodesPerSecond : stack.tcps;
+        };
         for (const WrittenStack& stack : stacks) {
             if (exportMode == eExportModeFlattenLayers) {
                 break;
             }
             const PXR_NS::SdfLayerRefPtr& output = stack.layout.output;
+            const double fileTcps = declaredTcps(stack);
             const QString dir = QFileInfo(stack.path).absolutePath();
             finish(output, stack, dir, true);
             if (stack.region) {
@@ -2873,21 +2933,25 @@ USDWrite::writeFrameRange(int firstFrame,
             for (std::size_t i = 0; i < stack.layout.sublayers.size(); ++i) {
                 const StackItem& item = stack.layout.sublayers[i];
                 if (item.file >= 0) {
-                    // Its layers keep their own offsets to the root, which the region's file shares.
-                    subLayerPaths.push_back(rewriteAssetPath(stacks[(std::size_t)item.file].path.toStdString(), dir, pathMode));
-                    subLayerOffsets.push_back(PXR_NS::SdfLayerOffset());
+                    // Its layers keep their own offsets to the root, which the region's file shares:
+                    // a region's time codes per second are metadata, so the scale composition gives
+                    // the two files' ratio is undone.
+                    const WrittenStack& region = stacks[(std::size_t)item.file];
+                    subLayerPaths.push_back(rewriteAssetPath(region.path.toStdString(), dir, pathMode));
+                    subLayerOffsets.push_back(PXR_NS::SdfLayerOffset(0., declaredTcps(region) / fileTcps));
                     continue;
                 }
                 if (item.external) {
                     subLayerPaths.push_back(rewriteAssetPath(item.layer->GetIdentifier(), dir, pathMode));
                     // Authored so that composition, which scales by the ratio of the two layers' time
                     // codes per second, arrives at the offset the stack had.
-                    subLayerOffsets.push_back(authoredOffset(item.toRoot, item.layer, stack.tcps));
+                    subLayerOffsets.push_back(authoredOffset(item.toRoot, item.layer, fileTcps));
                     continue;
                 }
-                // A run below a file goes to a file of its own beside the written one.
+                // A run below a file goes to a file of its own beside the written one, at the same
+                // rate, so that composition leaves its times as they are.
                 finish(item.layer, stack, outputDir, true);
-                item.layer->SetTimeCodesPerSecond(stack.tcps);
+                item.layer->SetTimeCodesPerSecond(fileTcps);
                 written.push_back(Written { stack.runPaths[i], item.layer });
                 subLayerPaths.push_back(rewriteAssetPath(stack.runPaths[i].toStdString(), dir, pathMode));
                 subLayerOffsets.push_back(PXR_NS::SdfLayerOffset());
@@ -2904,19 +2968,25 @@ USDWrite::writeFrameRange(int firstFrame,
                 }
                 const QString realPath = QDir::cleanPath(QString::fromStdString(item.layer->GetRealPath()));
                 keep.insert(realPath);
+                const QString realKey = comparisonPath(realPath);
                 for (const Written& w : written) {
-                    if (realPath == w.path) {
+                    if (realKey == comparisonPath(w.path)) {
                         return fail(tr("%1 is read by the scene it would be overwritten with: write to another file, or use Flattened mode.").arg(w.path));
                     }
                 }
             }
         }
         std::set<QString> writtenPaths;
+        std::set<QString> contextKeys;
+        for (const QString& file : contextFiles) {
+            contextKeys.insert(comparisonPath(file));
+        }
         for (const Written& w : written) {
-            if (!writtenPaths.insert(QDir::cleanPath(w.path)).second) {
+            const QString key = comparisonPath(w.path);
+            if (!writtenPaths.insert(key).second) {
                 return fail(tr("%1 would be written twice by this node: give the layer regions saving to it different Save Paths.").arg(w.path));
             }
-            if (contextFiles.count(w.path) != 0) {
+            if (contextKeys.count(key) != 0) {
                 return fail(tr("%1 is read above a USDLayerBreak, so it would be overwritten with only the edits after the break: write to another file.").arg(w.path));
             }
         }

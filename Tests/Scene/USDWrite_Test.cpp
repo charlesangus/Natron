@@ -3034,6 +3034,166 @@ TEST_F(USDWriteSaveCollisionTest, ARegionSavedAsTheOutputAlwaysFails)
     }
 }
 
+// A region nested in another saving to the same file is that file: under Merge Into One File it
+// is flattened into it rather than sublayered by it, and under Error it collides.
+TEST_F(USDWriteSaveCollisionTest, NestedRegionsSharingASavePath)
+{
+    NodePtr reader = read(kLayerStackScene);
+    NodePtr outer = configure(reader, "following", "lights.usda");
+    NodePtr a = edit(outer, "a", 1.);
+    NodePtr inner = configure(a, "following", "lights.usda");
+    NodePtr b = edit(inner, "b", 2.);
+    NodePtr innerEnd = after(PLUGINID_NATRON_USDLAYEREND, b);
+    NodePtr outerEnd = after(PLUGINID_NATRON_USDLAYEREND, innerEnd);
+    NodePtr d = edit(outerEnd, "d", 4.);
+    ASSERT_TRUE(reader && outer && a && inner && b && innerEnd && outerEnd && d);
+
+    {
+        QTemporaryDir tmp;
+        ASSERT_TRUE(tmp.isValid());
+        const QString outDir = tmp.path() + QString::fromUtf8("/out");
+        NodePtr writer = write(d, outDir + QString::fromUtf8("/shot.usda"), USDWrite::eExportModeLayered, eStatusFailed);
+        ASSERT_TRUE(bool(writer));
+        const QString text = message(writer);
+        EXPECT_TRUE(text.contains(QString::fromStdString(outer->getFullyQualifiedName()))) << text.toStdString();
+        EXPECT_TRUE(text.contains(QString::fromStdString(inner->getFullyQualifiedName()))) << text.toStdString();
+        EXPECT_TRUE(fileNames(outDir).isEmpty());
+    }
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString outDir = tmp.path() + QString::fromUtf8("/out");
+    const QString path = outDir + QString::fromUtf8("/shot.usda");
+    NodePtr writer = createWriter(d, path, USDWrite::eExportModeLayered, 1, 2);
+    ASSERT_TRUE(writer && getWriter(writer));
+    setSaveCollisions(writer, USDWrite::eSaveCollisionsMerge);
+    ASSERT_EQ(eStatusOK, writeOffMainThread(writer, 1, 2)) << message(writer).toStdString();
+
+    const QString lightsPath = outDir + QString::fromUtf8("/lights.usda");
+    PXR_NS::SdfLayerRefPtr lights = PXR_NS::SdfLayer::FindOrOpen(lightsPath.toStdString());
+    PXR_NS::SdfLayerRefPtr shot = PXR_NS::SdfLayer::FindOrOpen(path.toStdString());
+    ASSERT_TRUE(lights && shot);
+    EXPECT_TRUE(hasEdit(lights, "a") && hasEdit(lights, "b"));
+    EXPECT_FALSE(hasEdit(lights, "d"));
+    EXPECT_FALSE(absoluteSubLayers(lights).contains(lightsPath));
+    EXPECT_TRUE(absoluteSubLayers(shot).contains(lightsPath));
+    EXPECT_TRUE(hasEdit(shot, "d"));
+    EXPECT_EQ(describeGraph(d), describeFile(path));
+}
+
+// Two spellings of one file through a symbolic link are one Save Path: they collide, and an alias
+// of the output is the output.
+TEST_F(USDWriteSaveCollisionTest, SymbolicLinkAliasesAreOneSavePath)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString realDir = tmp.path() + QString::fromUtf8("/real");
+    const QString aliasDir = tmp.path() + QString::fromUtf8("/alias");
+    ASSERT_TRUE(QDir().mkpath(realDir));
+    ASSERT_TRUE(QFile::link(realDir, aliasDir));
+
+    NodePtr reader = read(kLayerStackScene);
+    NodePtr a = edit(reader, "a", 1.);
+    NodePtr first = configure(a, "preceding", (realDir + QString::fromUtf8("/lights.usda")).toStdString().c_str());
+    NodePtr key = light("/Key");
+    NodePtr second = configure(key, "preceding", (aliasDir + QString::fromUtf8("/lights.usda")).toStdString().c_str());
+    ASSERT_TRUE(reader && a && first && key && second);
+    NodePtr graph = merge({ first, second });
+    ASSERT_TRUE(bool(graph));
+
+    NodePtr writer = write(graph, realDir + QString::fromUtf8("/shot.usda"), USDWrite::eExportModeLayered, eStatusFailed);
+    ASSERT_TRUE(bool(writer));
+    QString text = message(writer);
+    EXPECT_TRUE(text.contains(QString::fromStdString(first->getFullyQualifiedName()))) << text.toStdString();
+    EXPECT_TRUE(text.contains(QString::fromStdString(second->getFullyQualifiedName()))) << text.toStdString();
+    EXPECT_TRUE(fileNames(realDir).isEmpty());
+
+    setString(first, kUSDConfigureLayerParamSavePath, (aliasDir + QString::fromUtf8("/shot.usda")).toStdString().c_str());
+    setString(second, kUSDConfigureLayerParamSavePath, "key.usda");
+    writer = write(graph, realDir + QString::fromUtf8("/shot.usda"), USDWrite::eExportModeLayered, eStatusFailed);
+    ASSERT_TRUE(bool(writer));
+    text = message(writer);
+    EXPECT_TRUE(text.contains(QString::fromStdString(first->getFullyQualifiedName()))) << text.toStdString();
+    EXPECT_TRUE(fileNames(realDir).isEmpty());
+}
+
+// A Save Path named as the output's sidecars would be removed by a later write's sweep of stale
+// sidecars once the region is gone, so it is refused.
+TEST_F(USDWriteSaveCollisionTest, ASavePathNamedAsASidecarFails)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    NodePtr reader = read(kLayerStackScene);
+    NodePtr a = edit(reader, "a", 1.);
+    NodePtr region = configure(a, "preceding", "shot_layer1.usda");
+    ASSERT_TRUE(reader && a && region);
+
+    NodePtr writer = write(region, tmp.path() + QString::fromUtf8("/shot.usda"), USDWrite::eExportModeLayered, eStatusFailed);
+    ASSERT_TRUE(bool(writer));
+    EXPECT_TRUE(message(writer).contains(QString::fromStdString(region->getFullyQualifiedName()))) << message(writer).toStdString();
+    EXPECT_TRUE(fileNames(tmp.path()).isEmpty());
+
+    // Elsewhere than beside the output, the sweep never reaches it.
+    setString(region, kUSDConfigureLayerParamSavePath, "sub/shot_layer1.usda");
+    ASSERT_TRUE(bool(write(region, tmp.path() + QString::fromUtf8("/shot.usda"), USDWrite::eExportModeLayered)));
+    EXPECT_TRUE(QFileInfo(tmp.path() + QString::fromUtf8("/sub/shot_layer1.usda")).exists());
+}
+
+// Time codes per second set on a region are metadata: the written files compose to the graph's
+// stage at the times the graph has, whatever rates the root, an outer and a nested region declare.
+TEST_F(USDWriteSaveRegionTest, RegionTimeCodesPerSecondKeepTheTiming)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const auto animate = [this](const NodePtr& input, const char* name, double first, double second) {
+        NodePtr node = edit(input, name, first);
+        KnobDouble* knob = node ? getKnob<KnobDouble>(node, kUSDSetAttributeParamValue) : NULL;
+        EXPECT_TRUE(knob != NULL) << name;
+        if (knob) {
+            knob->setValueAtTime(1., first, ViewSpec::all(), 0);
+            knob->setValueAtTime(2., second, ViewSpec::all(), 0);
+        }
+
+        return node;
+    };
+    const auto setRate = [](const NodePtr& node, double tcps) {
+        KnobDouble* knob = getKnob<KnobDouble>(node, kUSDConfigureLayerParamTimeCodesPerSecond);
+        EXPECT_TRUE(knob != NULL);
+        if (knob) {
+            knob->setValue(tcps);
+        }
+        author(node, kUSDConfigureLayerParamTimeCodesPerSecond);
+    };
+    NodePtr reader = read(kLayerStackScene);
+    NodePtr outer = configure(reader, "following", "outer.usda");
+    NodePtr a = animate(outer, "a", 1., 2.);
+    NodePtr nested = configure(a, "following", "nested/inner.usda");
+    NodePtr c = animate(nested, "c", 3., 4.);
+    NodePtr innerEnd = after(PLUGINID_NATRON_USDLAYEREND, c);
+    NodePtr outerEnd = after(PLUGINID_NATRON_USDLAYEREND, innerEnd);
+    NodePtr d = animate(outerEnd, "d", 5., 6.);
+    NodePtr root = configure(d, "preceding", "");
+    ASSERT_TRUE(reader && outer && a && nested && c && innerEnd && outerEnd && d && root);
+    setRate(outer, 48.);
+    setRate(nested, 12.);
+    setRate(root, 30.);
+
+    const QString path = tmp.path() + QString::fromUtf8("/shot.usda");
+    ASSERT_TRUE(bool(write(root, path, USDWrite::eExportModeLayered)));
+    PXR_NS::SdfLayerRefPtr shot = PXR_NS::SdfLayer::FindOrOpen(path.toStdString());
+    PXR_NS::SdfLayerRefPtr outerLayer = PXR_NS::SdfLayer::FindOrOpen((tmp.path() + QString::fromUtf8("/outer.usda")).toStdString());
+    PXR_NS::SdfLayerRefPtr innerLayer = PXR_NS::SdfLayer::FindOrOpen((tmp.path() + QString::fromUtf8("/nested/inner.usda")).toStdString());
+    ASSERT_TRUE(shot && outerLayer && innerLayer);
+    EXPECT_EQ(30., shot->GetTimeCodesPerSecond());
+    EXPECT_EQ(48., outerLayer->GetTimeCodesPerSecond());
+    EXPECT_EQ(12., innerLayer->GetTimeCodesPerSecond());
+    EXPECT_TRUE(hasEdit(outerLayer, "a") && hasEdit(innerLayer, "c") && hasEdit(shot, "d"));
+    EXPECT_FALSE(hasEdit(outerLayer, "c") || hasEdit(shot, "a") || hasEdit(shot, "c"));
+
+    const std::vector<double> times = { 1., 1.5, 2. };
+    EXPECT_EQ(describeComposed(composeOutput(root), times), describeComposed(PXR_NS::UsdStage::Open(path.toStdString()), times));
+}
+
 TEST_F(USDWriteSaveRegionTest, ARegionAboveABreakWritesNoFile)
 {
     QTemporaryDir tmp;

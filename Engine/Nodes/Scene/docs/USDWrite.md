@@ -47,20 +47,26 @@ file, and a region opened after a USDRead that gathers the layers before it
 (Applies To set to Preceding Layers) sublayers that read file too. A Save Path
 is resolved against the written file's folder, with the project's path
 variables and the first frame and view of the range, as File is, and its
-folder is created. It must end in a USD extension, differ from File, and not
-name a file the scene reads. The region's metadata (default prim, comment,
+folder is created. It must end in a USD extension, differ from File, not
+name a file the scene reads, and not take the name of a sidecar beside File
+(`name_layer1.usda`, ...), which a later render would remove as stale. Paths
+are compared through symbolic links, so two spellings of one file are the same
+Save Path. The region's metadata (default prim, comment,
 start and end time, time codes and frames per second, up axis, meters per unit,
 colour configuration and system, render settings prim and custom data) goes on
 its file, each field only when its node authors it. A region with no Save Path
 stays in the file that holds it, and its metadata goes on that file, the
-written file's metadata included. A region file's time codes per second are the
-scene's: composition scales its layers as it did when the scene composed them.
+written file's metadata included. A region's Time Codes Per Second is
+metadata: the sublayer offset to its file undoes the scaling composition gives
+two files of different rates, so its layers keep the times they have in the
+scene.
 
 Save Collisions sets what happens when two regions resolve to the same Save
 Path: Error (the default) fails the render, naming both nodes, before any file
 is written. Merge Into One File writes the regions' layers to the one file in
 the order they are stacked, the stronger region's metadata winning field by
-field. A region whose layers are interleaved with another region's in the
+field; a region nested in one with the same Save Path is flattened into that
+file rather than sublayered by it. A region whose layers are interleaved with another region's in the
 layer stack, which happens when the layers a Preceding Layers configuration
 gathers after a USDMerge span a region of one branch, takes the layers between
 its own into its file, so every layer keeps its strength; two regions that

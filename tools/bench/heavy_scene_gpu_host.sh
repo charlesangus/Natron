@@ -2,6 +2,7 @@
 # Usage: tools/bench/heavy_scene_gpu_host.sh gate <Natron.AppImage> [results.jsonl]
 #        tools/bench/heavy_scene_gpu_host.sh budget <Natron.AppImage> [results.jsonl]
 #        tools/bench/heavy_scene_gpu_host.sh acceptance <Natron.AppImage> [results.jsonl]
+#        tools/bench/heavy_scene_gpu_host.sh polybudget <Natron.AppImage> [results.jsonl]
 #        tools/bench/heavy_scene_gpu_host.sh fixtures
 #
 # Heavy scene runs on a host with a real GPU and a desktop session. One JSON line per scenario goes
@@ -46,6 +47,8 @@
 #             heavy_scene_budget_table.py's table when there are draw_budget records. Island is skipped, with a record, when it is not found or under
 #             ISLAND_MIN_RAM_GB; its loaded run picks rows from the fully loaded scene, so
 #             BENCH_PICK_LIMIT_S is raised for it (default 3600).
+#   polybudget  budget_orbit (the polygon budget at its defaults under an orbit, ten stops) on the loaded
+#             city and on Island under its RAM guard, with NATRON_DRAW_STATE_TIMING=1.
 #   fixtures Only makes the fixtures; needs neither a display nor an AppImage.
 #
 # A scenario that outlasts its limit gets a timed_out record and ends its process, so the run moves
@@ -174,6 +177,7 @@ usage() {
     echo "usage: $0 gate <Natron.AppImage> [results.jsonl]" >&2
     echo "       $0 budget <Natron.AppImage> [results.jsonl]" >&2
     echo "       $0 acceptance <Natron.AppImage> [results.jsonl]" >&2
+    echo "       $0 polybudget <Natron.AppImage> [results.jsonl]" >&2
     echo "       $0 fixtures" >&2
     exit 2
 }
@@ -181,7 +185,7 @@ usage() {
 [ $# -ge 1 ] || usage
 MODE="$1"
 case "$MODE" in
-    gate | budget | acceptance) [ $# -ge 2 ] || usage ;;
+    gate | budget | acceptance | polybudget) [ $# -ge 2 ] || usage ;;
     fixtures) ;;
     *) usage ;;
 esac
@@ -688,6 +692,17 @@ budget_runs() {
     fi
 }
 
+polybudget_runs() {
+    local reason
+    launch polybudget-city city "$CITY" populate_full,load_all,budget_orbit BENCH_LOAD_ALL=1 NATRON_DRAW_STATE_TIMING=1
+    reason="$(island_unfit)"
+    if [ -z "$reason" ]; then
+        launch polybudget-island scene "$ISLAND" populate_full,load_all,budget_orbit BENCH_LOAD_ALL=1 BENCH_PICK_LIMIT_S="${BENCH_PICK_LIMIT_S:-3600}" NATRON_DRAW_STATE_TIMING=1
+    else
+        record_skip polybudget-island "$reason"
+    fi
+}
+
 # The workflow reopens the project, so each one runs alone in its process.
 acceptance_runs() {
     local reason loaded="populate_full,load_all,draw_budget,reveal_wide,reveal_cancel_paced,orbit10k,orbit_full"
@@ -721,6 +736,12 @@ warm_shader_cache
 
 if [ "$MODE" = acceptance ]; then
     acceptance_runs
+    summarize
+    exit 0
+fi
+
+if [ "$MODE" = polybudget ]; then
+    polybudget_runs
     summarize
     exit 0
 fi

@@ -573,6 +573,7 @@ whose engine lost the filter fails rather than reporting a cheap nothing.
 | `orbit10k`, `boxes_shot` | orbit10k: `children` on every prim above the depth whose geometry-holding prims number nearest `BENCH_BOXES`, so each prim at that depth is one box, then, once that is on screen, an orbit; boxes_shot: `bbox` on the root and a grab | `orbit_fps`, `boxes_drawn`, `box_depth`, `boxes_presented_ms`, `stand_in_mode` (orbit10k forces Off and restores the previous mode), `paint_count` (orbit10k); skipped until the viewer publishes `natronSceneDrawBoxes` |
 | `draw_budget` | once the loads settled, an unjudged warm-up `bbox` and clear on the sibling row; then `bbox` then clear on the sibling row and on the widest row, `BENCH_BUDGET_REPEATS` times (default 2), then once more each with a trace | `draw_changes`, one entry per change; `sibling_picture_ms_max`, `wide_picture_ms_max`; `traced_stall_ms`; `warmup_change_ms` and `warmup_restore_ms` |
 | `budget_apply_probe` | once every draw change is on screen and no load is pending, each change a polygon budget would make, then its clear: 1%, 10% and 50% of the gprims no instancer draws held invisible, the same shares of every instancer's instances masked off, half the faces of 1,000 meshes listed invisible; needs `NATRON_BUDGET_PROBE=1` | per step (`gprims_1`, `gprims_10`, `gprims_50`, `instances_*`, `faces_50`, each with a `_clear`): `<step>_stall_ms` judged, the frame's parts and `*_over_steady` in `budget_steps`; `budget_probes`, one entry per step; `budget_probe_skip` when no probe serves the engine |
+| `budget_orbit` | the polygon budget at its defaults: an orbit of `BENCH_BUDGET_ORBIT_S` (default 2) seconds, a stop, a wait for the stop's budget to reach the screen, `BENCH_BUDGET_STOPS` times (default 10); the interaction stand-in is Off during it and restored; not applicable when the viewer publishes no `natronSceneBudget` or the Viewer's budget is off | `budget_stops` (per stop: `applied_ms`, `stall_ms`, `worst_frame_ms`, `frames`, `counted`, `drawn`, `demoted`, `culled`, `masked`, `faced_meshes`), `budget_orbit_fps`, `budget_stop_stall_ms`, `budget_stop_worst_frame_ms`; budgets `budget_orbit_fps` at least 30 (GPU only), `budget_stop_stall_ms` and `budget_stop_worst_frame_ms` at most 100, `budget_stops_applied` equal to the stops; judged on Island as well as the city |
 
 `frame_ms` is `total_ms` less `apply_ms`: from the call to the image that shows the change, without the
 render thread's time sending notices. `total_ms` is polled every 50 ms, so it bounds the time rather
@@ -639,6 +640,17 @@ a change, reveal steps included. The results go to `build/bench-gpu/heavy-scene-
 ```
 DISPLAY=:0 XAUTHORITY=$HOME/.Xauthority tools/bench/heavy_scene_gpu_host.sh budget /path/to/Natron.AppImage
 ```
+
+```
+DISPLAY=:0 XAUTHORITY=$HOME/.Xauthority tools/bench/heavy_scene_gpu_host.sh polybudget /path/to/Natron.AppImage
+```
+
+`polybudget` runs `budget_orbit` after `populate_full` and `load_all` on the city and on Island (textures
+staged next to the scene), under Island's RAM guard, with `NATRON_DRAW_STATE_TIMING=1`. Ten stops of two
+seconds of orbit each, about a minute per scene plus the loads. The results go to
+`build/bench-gpu/heavy-scene-polybudget.jsonl`. Locally it runs under Xvfb on the city
+(`BENCH_FIXTURE=city BENCH_LOAD_ALL=1 BENCH_SCENARIOS=populate_full,load_all,budget_orbit
+Tests/gui/run-gui-test.sh tools/bench/heavy_scene_bench.py <AppImage>`); frame figures are not valid there.
 
 `budget` runs only `draw_budget`, with `NATRON_DRAW_STATE_TIMING=1`, for a budget table without the gate: on flat after `populate_full`, on
 the city and Lobby after `populate_full` and `load_all`, and on Island after `populate_full`, under its

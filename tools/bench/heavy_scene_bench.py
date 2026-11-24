@@ -9,6 +9,9 @@
         BENCH_FILE       overrides the fixture path (the fixture kind still selects the budgets)
         BENCH_SCENARIOS  comma-separated actions run in order (default open,orbit)
         BENCH_ORBIT_S    seconds the orbit, orbit10k and orbit_full actions run (default 5)
+        BENCH_BUDGET_STOPS      camera stops the budget_orbit action makes (default 10)
+        BENCH_BUDGET_ORBIT_S    seconds of orbit before each stop of budget_orbit (default 2)
+        BENCH_BUDGET_APPLY_S    seconds budget_orbit waits for a stop's budget to reach the screen (default 60)
         BENCH_LOAD_PATHS comma-separated prims the load action asks to load (default the fixture's
                          load_building row, or load_block with BENCH_LOAD_DESCENDANTS=1); on the city,
                          /World/BlockN with BENCH_LOAD_DESCENDANTS=1 is a larger load
@@ -232,14 +235,15 @@ HOLD_S = float(os.environ.get("BENCH_HOLD_S", "120"))
 OPEN_SCENARIOS = ("open", "populate_full", "populate_pruned", "load_all")
 DRAW_SCENARIOS = ("populate_full", "populate_pruned", "prune_restore", "reveal", "reveal_cancel", "orbit10k", "boxes_shot",
                   "sibling_state", "sibling_shot", "noedit", "draw_budget", "reveal_load_all", "reveal_wide", "reveal_cancel_paced",
-                  "orbit_fill", "budget_apply_probe")
+                  "orbit_fill", "budget_apply_probe", "budget_orbit")
 # A wide row's restore puts the whole scene back into Hydra, several times over.
 LONG_SCENARIOS = OPEN_SCENARIOS + ("draw_budget", "reveal_load_all", "reveal_wide", "workflow", "orbit_fill",
-                                   "budget_apply_probe")
+                                   "budget_apply_probe", "budget_orbit")
 FILL_ORBIT_DELAY_S = float(os.environ.get("BENCH_FILL_ORBIT_DELAY_S", "1"))
 PICTURE_SCENARIOS = ("prune_restore", "sibling_state", "draw_budget")
 # Payloads still landing from a Full + Load open would be measured along with these.
-SETTLED_SCENARIOS = ("reveal", "reveal_cancel", "reveal_wide", "reveal_cancel_paced", "orbit", "orbit10k", "orbit_full", "draw_budget")
+SETTLED_SCENARIOS = ("reveal", "reveal_cancel", "reveal_wide", "reveal_cancel_paced", "orbit", "orbit10k", "orbit_full", "draw_budget",
+                     "budget_orbit")
 DRAW_TIMING = os.environ.get("NATRON_DRAW_STATE_TIMING") == "1"
 SOFTWARE_RENDERERS = ("llvmpipe", "softpipe", "swrast")
 ROW_RECORD_KEYS = ("root", "branch", "branch_gprims", "widest_row", "widest_children", "sibling_row", "sibling_kind",
@@ -1927,6 +1931,134 @@ try:
         # The grabs, the comparison and the choices are this harness's cost, not the viewer's.
         heartbeat.start()
 
+    def action_budget_orbit(m):
+        """The polygon budget at its defaults under use: orbit, let go, wait for the budget the camera stop
+        asks for to reach the screen, BENCH_BUDGET_STOPS times. Per stop it records the main thread's longest
+        gap and the longest gap between presented frames from the moment the camera went idle; over the run,
+        the frame rate of the orbit segments. The interaction stand-in is Off while it runs, as in orbit10k,
+        so that moving frames are counted; the previous mode is restored on every exit."""
+        mode = NatronEngine.natron.getSettings().getParam("sceneStandInMode")
+        previous = mode.getValue() if mode is not None else None
+        if mode is not None:
+            mode.setValue(0)
+        try:
+            yield from budget_orbit_body(m)
+        finally:
+            if mode is not None and previous is not None:
+                mode.setValue(previous)
+
+    def budget_state():
+        value = prop("natronSceneBudget")
+        return dict(value) if value else {}
+
+    def budget_orbit_body(m):
+        navigation = NatronEngine.natron.getSettings().getParam("viewer3DNavigation")
+        require(navigation is not None, "Preferences have a viewer3DNavigation parameter")
+        v = view()
+        require(v is not None and shown(), "budget_orbit: a scene view is visible and showing the scene")
+        yield from clear_draw_states()
+        ok = yield ("until", draw_settled(v), TIMEOUT_S)
+        check(ok, "budget_orbit: the scene's draw changes are on screen")
+        first = budget_state()
+        if not first:
+            m.not_applicable = "the viewer publishes no natronSceneBudget"
+            return
+        if not first.get("on"):
+            m.not_applicable = "the Viewer's polygon budget is off"
+            return
+        stops_wanted = max(1, int(os.environ.get("BENCH_BUDGET_STOPS", "10")))
+        segment_s = float(os.environ.get("BENCH_BUDGET_ORBIT_S", "2"))
+        apply_limit_s = float(os.environ.get("BENCH_BUDGET_APPLY_S", "60"))
+        original = navigation.getValue()
+        navigation.setValue(1)
+        v.activateWindow()
+        v.setFocus()
+        QApplication.processEvents()
+        centre = v.rect().center()
+
+        def mouse(kind, pos, button, buttons):
+            event = QMouseEvent(kind, QPointF(pos), QPointF(v.mapToGlobal(pos)), button, buttons, Qt.AltModifier)
+            QApplication.sendEvent(v, event)
+
+        stops = []
+        orbit_frames = 0
+        orbit_time = 0.0
+        step = 0
+        try:
+            for stop in range(stops_wanted):
+                requested_before = int(budget_state().get("requested", 0))
+                presented = int(prop("natronScenePresentedFrames", 0) or 0)
+                started = time.time()
+                mouse(QEvent.MouseButtonPress, centre, Qt.LeftButton, Qt.LeftButton)
+                while time.time() < started + segment_s:
+                    step += 1
+                    offset = QPoint(int((step % 40) * 4 - 80), int((step % 20) * 2 - 20))
+                    mouse(QEvent.MouseMove, centre + offset, Qt.NoButton, Qt.LeftButton)
+                    yield ("sleep", POLL_MS)
+                mouse(QEvent.MouseButtonRelease, centre, Qt.LeftButton, Qt.NoButton)
+                released = time.time()
+                orbit_time += released - started
+                now_presented = int(prop("natronScenePresentedFrames", 0) or 0)
+                orbit_frames += now_presented - presented
+                presented = now_presented
+
+                heartbeat.start()
+                last = time.perf_counter()
+                idle_seen = False
+                applied = False
+                applied_ms = None
+                worst = 0.0
+                frames = 0
+                applied_frames = None
+                deadline = released + apply_limit_s
+                while time.time() < deadline:
+                    yield ("sleep", POLL_MS)
+                    state = budget_state()
+                    if not idle_seen and not state.get("idlePending", False) and int(state.get("requested", 0)) > requested_before:
+                        idle_seen = True
+                        last = time.perf_counter()
+                    now_presented = int(prop("natronScenePresentedFrames", 0) or 0)
+                    if now_presented > presented:
+                        now = time.perf_counter()
+                        frames += now_presented - presented
+                        presented = now_presented
+                        if idle_seen:
+                            worst = max(worst, (now - last) * 1000.0)
+                        last = now
+                    if not applied and idle_seen and int(state.get("serial", 0)) >= int(state.get("requested", 0)) > requested_before:
+                        applied = True
+                        applied_ms = round((time.time() - released) * 1000.0, 1)
+                        applied_frames = frames
+                    if applied and frames > applied_frames:
+                        break
+                    if applied and time.time() > released + applied_ms / 1000.0 + 3.0:
+                        break
+                stall = heartbeat.stop()
+                if stall >= m.stall_floor_ms:
+                    m.stall_floor_at = heartbeat.longest_at
+                m.stall_floor_ms = max(m.stall_floor_ms, stall)
+                check(applied, "budget_orbit: stop %d: the budget reached the screen" % stop)
+                state = budget_state()
+                stops.append({"stop": stop, "applied": applied, "applied_ms": applied_ms, "stall_ms": round(stall, 1),
+                              "worst_frame_ms": round(worst, 1), "frames": frames,
+                              "counted": int(state.get("counted", 0)), "drawn": int(state.get("drawn", 0)),
+                              "demoted": int(state.get("demoted", 0)), "culled": int(state.get("culled", 0)),
+                              "masked": int(state.get("masked", 0)), "faced_meshes": int(state.get("facedMeshes", 0)),
+                              "ended_at": round(time.time(), 3)})
+        finally:
+            navigation.setValue(original)
+        last_state = budget_state()
+        m.values["budget_limit"] = int(last_state.get("limit", 0))
+        m.values["budget_stops"] = stops
+        m.values["budget_stop_count"] = len(stops)
+        m.values["budget_stops_applied"] = sum(1 for s in stops if s["applied"])
+        m.values["budget_stop_stall_ms"] = max(s["stall_ms"] for s in stops) if stops else None
+        m.values["budget_stop_worst_frame_ms"] = max(s["worst_frame_ms"] for s in stops) if stops else None
+        m.values["budget_orbit_s"] = round(orbit_time, 2)
+        m.values["budget_orbit_frames"] = orbit_frames
+        m.values["budget_orbit_fps"] = round(orbit_frames / orbit_time, 1) if orbit_time > 0 else None
+        heartbeat.start()
+
     def viewport_image(file_name, area):
         return QImage(file_name).copy(area).convertToFormat(QImage.Format_RGBX8888)
 
@@ -2319,7 +2451,8 @@ try:
                "sibling_shot": action_sibling_shot, "noedit": action_noedit, "draw_budget": action_draw_budget,
                "reveal_load_all": action_reveal_load_all, "reveal_wide": action_reveal_wide,
                "reveal_cancel_paced": action_reveal_cancel_paced, "node_switch": action_node_switch,
-               "workflow": action_workflow, "budget_apply_probe": action_budget_apply_probe}
+               "workflow": action_workflow, "budget_apply_probe": action_budget_apply_probe,
+               "budget_orbit": action_budget_orbit}
 
     def verdict(value, limit, below_is_good, valid=True, applicable=True, reason=None):
         if not applicable:
@@ -2477,6 +2610,11 @@ try:
             budgets["filter_bound"] = verdict(1 if m.values["filter_bound"] else 0, 1, False)
         for step, entry in sorted(m.values.get("budget_steps", {}).items()):
             budgets[step + "_stall_ms"] = verdict(entry.get("stall_ms"), STALL_BUDGET_MS, True, applicable=entry["applicable"])
+        if "budget_orbit_fps" in m.values:
+            budgets["budget_orbit_fps"] = verdict(m.values["budget_orbit_fps"], ORBIT_BUDGET_FPS, False, valid=gpu)
+            budgets["budget_stop_stall_ms"] = verdict(m.values["budget_stop_stall_ms"], STALL_BUDGET_MS, True)
+            budgets["budget_stop_worst_frame_ms"] = verdict(m.values["budget_stop_worst_frame_ms"], STALL_BUDGET_MS, True, valid=gpu)
+            budgets["budget_stops_applied"] = verdict(m.values["budget_stops_applied"], m.values["budget_stop_count"], False)
         if "control_changed_pixels" in m.values:
             budgets["control_changed_pixels"] = verdict(m.values["control_changed_pixels"], 1, False)
         return budgets

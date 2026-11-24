@@ -178,7 +178,17 @@ private:
 struct Render {
     std::vector<float> rgba;
     std::string warning;
+    HydraRender::RenderTrace trace;
 };
+
+// For a failure that may be a render the delegate cut short.
+std::string
+traceOf(const Render& render)
+{
+    const HydraRender::RenderTrace& t = render.trace;
+
+    return std::string(" (") + (t.freshEngine ? "fresh" : "reused") + " engine, " + (t.watched ? "watched" : "trusted") + ", " + std::to_string(t.passes) + " passes, " + std::to_string(t.remakes) + " remakes, " + std::to_string(t.samples) + " samples, resets requested " + std::to_string(t.resetsRequested) + " written " + std::to_string(t.resetsWritten) + " converged " + std::to_string(t.resetsConverged) + ", " + (t.converged ? "converged" : "not converged") + ")";
+}
 
 // kScene at time with overrides layered on top, rendered by renderer. False after a gtest failure.
 bool
@@ -232,6 +242,7 @@ renderScene(const std::string& renderer,
     }
     render->rgba = result.rgba;
     render->warning = result.warning;
+    render->trace = result.trace;
 
     return true;
 }
@@ -294,10 +305,10 @@ expectTheVolumeDarkensItsSide(const std::string& renderer)
     ASSERT_GT(leftOf(card), 0.1f) << renderer << " does not draw the card";
     ASSERT_GT(rightOf(card), 0.1f) << renderer << " does not draw the card";
 
-    EXPECT_LT(leftOf(frame1), 0.6f * leftOf(card)) << renderer << ": frame 1 left " << leftOf(frame1) << ", card " << leftOf(card);
-    EXPECT_GT(rightOf(frame1), 0.9f * rightOf(card)) << renderer << ": frame 1 right " << rightOf(frame1) << ", card " << rightOf(card);
-    EXPECT_GT(leftOf(frame2), 0.9f * leftOf(card)) << renderer << ": frame 2 left " << leftOf(frame2) << ", card " << leftOf(card);
-    EXPECT_LT(rightOf(frame2), 0.6f * rightOf(card)) << renderer << ": frame 2 right " << rightOf(frame2) << ", card " << rightOf(card);
+    EXPECT_LT(leftOf(frame1), 0.6f * leftOf(card)) << renderer << ": frame 1 left " << leftOf(frame1) << ", card " << leftOf(card) << traceOf(frame1);
+    EXPECT_GT(rightOf(frame1), 0.9f * rightOf(card)) << renderer << ": frame 1 right " << rightOf(frame1) << ", card " << rightOf(card) << traceOf(frame1);
+    EXPECT_GT(leftOf(frame2), 0.9f * leftOf(card)) << renderer << ": frame 2 left " << leftOf(frame2) << ", card " << leftOf(card) << traceOf(frame2);
+    EXPECT_LT(rightOf(frame2), 0.6f * rightOf(card)) << renderer << ": frame 2 right " << rightOf(frame2) << ", card " << rightOf(card) << traceOf(frame2);
 }
 
 // A density field naming a grid its file lacks draws nothing, and the render warns of it.

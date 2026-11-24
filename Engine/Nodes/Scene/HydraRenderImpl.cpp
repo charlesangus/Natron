@@ -235,6 +235,7 @@ public:
     // not rendered has no pixels from before, and a delegate that is not watched is trusted.
     void restart(bool seen)
     {
+        _fresh = false;
         _trusted = seen;
         _seen = seen;
         _converged = seen;
@@ -244,6 +245,17 @@ public:
         _inFlight = false;
         _busy = false;
         _overCap = false;
+    }
+
+    // An engine that has not rendered has no pixels from before, but its first render is not yet
+    // the one its buffers must show: a pass that finds its scene changed again, as one taken while
+    // the session loads its kernels may, resets it anew, and the render that reset cuts short still
+    // marks the buffers converged. Its buffers show the new render once one began at or after its
+    // last reset wrote them; until its first reset it is still syncing, and is restarting().
+    void restartFresh()
+    {
+        restart(false);
+        _fresh = true;
     }
 
     // A Cycles that counts no resets is trusted, as every delegate was before its counts were
@@ -270,6 +282,18 @@ public:
             return true;
         }
         const std::int64_t requested = countOf(stats, "resetsRequested");
+        if (_fresh) {
+            if (requested < 0) {
+                restart(true);
+
+                return true;
+            }
+            _inFlight = (requested == 0) || (countOf(stats, "resetsWritten") < requested);
+            _seen = !_inFlight;
+            _converged = _seen && (countOf(stats, "resetsConverged") >= requested);
+
+            return _seen;
+        }
         const bool asked = (_requestsAtRestart >= 0) && (requested > _requestsAtRestart);
         // More samples than the cap the restart set are the render of before: Cycles takes a lower
         // sample count only from a session it makes, and renders on to the count it had.
@@ -320,6 +344,7 @@ public:
     }
 
 private:
+    bool _fresh = false;
     bool _trusted = true;
     bool _seen = true;
     bool _converged = true;
@@ -580,6 +605,7 @@ struct EngineEntry {
     // log, and the errors it logged naming no prim of it; empty for a delegate that reports neither.
     std::string warning;
     std::string errors;
+    HydraRender::RenderTrace trace;
     UsdTimeCode time;
     GfMatrix4d view;
     GfMatrix4d projection;
@@ -1670,7 +1696,15 @@ RenderThread::renderEngine(const HydraRender::Request& request,
         }
         std::chrono::steady_clock::time_point restarted = std::chrono::steady_clock::now();
         RestartWatch restartWatch;
-        restartWatch.restart(!watchRestart);
+        const bool watchFresh = freshEngine && RestartWatch::watches(renderer);
+        if (watchFresh) {
+            restartWatch.restartFresh();
+        } else {
+            restartWatch.restart(!watchRestart);
+        }
+        entry.trace = HydraRender::RenderTrace();
+        entry.trace.freshEngine = freshEngine;
+        entry.trace.watched = watchFresh || watchRestart;
         if (watchRestart) {
             VtDictionary stats = engine->GetRenderStats();
             while (!RestartWatch::idle(stats) && engine->IsConverged() && !(cancel && cancel->load()) && (std::chrono::steady_clock::now() - restarted < kIdleSettle)) {
@@ -1708,6 +1742,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
                 return nullptr;
             }
             passRan = true;
+            ++entry.trace.passes;
             if (!renderGuarded(engine, stage->GetPseudoRoot(), params, &renderFailure)) {
                 break;
             }
@@ -1717,7 +1752,13 @@ RenderThread::renderEngine(const HydraRender::Request& request,
             // converged, it goes.
             const VtDictionary stats = engine->GetRenderStats();
             const bool restartSeen = restartWatch.after(stats, samplesOf(stats, 0));
-            if (restartSeen && restartWatch.converged() && engine->IsConverged() && !(cancel && cancel->load())) {
+            const bool converged = engine->IsConverged();
+            entry.trace.samples = samplesOf(stats, 0);
+            entry.trace.resetsRequested = countOf(stats, "resetsRequested");
+            entry.trace.resetsWritten = countOf(stats, "resetsWritten");
+            entry.trace.resetsConverged = countOf(stats, "resetsConverged");
+            entry.trace.converged = converged;
+            if (restartSeen && restartWatch.converged() && converged && !(cancel && cancel->load())) {
                 break;
             }
             // A MoonRay session that could not start or broke never converges.
@@ -1749,7 +1790,8 @@ RenderThread::renderEngine(const HydraRender::Request& request,
                     log.reset();
                     log.reset(new MoonRayAovs::LogCapture);
                 }
-                restartWatch.restart(true);
+                restartWatch.restartFresh();
+                ++entry.trace.remakes;
                 restarted = now;
                 passRan = false;
                 continue;
@@ -1914,6 +1956,7 @@ RenderThread::cpuFrame(EngineEntry& entry,
 
     result->warning = entry.warning;
     result->errors = entry.errors;
+    result->trace = entry.trace;
 
     if (!decodeIds(entry, error)) {
         return false;
@@ -2108,6 +2151,7 @@ RenderThread::frame(EngineEntry& entry,
     result->primPaths = entry.primPaths;
     result->warning = entry.warning;
     result->errors = entry.errors;
+    result->trace = entry.trace;
 
     return true;
 }

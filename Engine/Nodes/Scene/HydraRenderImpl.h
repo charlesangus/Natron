@@ -148,6 +148,20 @@ struct Request {
     std::map<std::string, PXR_NS::VtValue> settings;
 };
 
+// How a path tracer's render ended: what its delegate reported when the render stopped waiting on
+// it. A count is -1 where the delegate reports none, as every delegate but Cycles.
+struct RenderTrace {
+    bool freshEngine = false; // the engine was made for this render, and had rendered nothing
+    bool watched = false; // the render waited on the delegate's reset counts
+    int passes = 0;
+    int remakes = 0; // engines made again after no restart showed
+    int samples = -1;
+    std::int64_t resetsRequested = -1;
+    std::int64_t resetsWritten = -1;
+    std::int64_t resetsConverged = -1;
+    bool converged = false;
+};
+
 // The AOVs, width x height pixels each, the bottom row first as Natron's images.
 struct Result {
     std::vector<float> rgba; // 4 per pixel, as Storm shades it, with no colour transform
@@ -162,6 +176,8 @@ struct Result {
     std::string warning;
     // The errors the delegate logged that name no prim of the scene, one per line; empty if none.
     std::string errors;
+    // Default for Storm, which renders on the render thread.
+    RenderTrace trace;
 };
 
 /**

@@ -68,6 +68,7 @@ Code facts, read at `origin/main` on 2026-11-08; re-check line numbers before st
   - approach: Produce PNG mockups at 1920x1080 scale 1 of a Blur panel: edit mode off; edit mode on with the pencil, palette strip, a selected user knob and the property section for a float, a choice and a button (script editor); a drag-in drop indicator; the copy/paste context menu. Send each PNG to the user separately and park the milestone as `response` until approved; record the answer and any changes in `## Decisions`.
   - verify: The user's approval is recorded in this file's `## Decisions`.
   - size: M
+- 2026-11-24 — **Load-warnings dialog (user):** keep the modal project load-warnings summary for now; the GUI test writes a consistent manifest so no warning is raised. Follow-up: M590 - Non-Modal Notifications.
 
 ## Phase 373.2: Editor core
 

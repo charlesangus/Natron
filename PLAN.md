@@ -646,6 +646,7 @@ future core work has solid ground to build on.
 | M587 | Physics Drop Layout | todo |  |  | E27 | | | [M587-physics-drop-layout.md](PLAN/MILESTONES/M587-physics-drop-layout.md) |
 | M588 | Light Linker Drag And Drop Panel | todo | M567 |  | E27 | | | [M588-light-linker-drag-and-drop-panel.md](PLAN/MILESTONES/M588-light-linker-drag-and-drop-panel.md) |
 | M589 | Scene Graph Restructure Commands | todo | M575 |  | E27 | | | [M589-scene-graph-restructure-commands.md](PLAN/MILESTONES/M589-scene-graph-restructure-commands.md) |
+| M590 | Non-Modal Notifications | todo | - |  | | | | [M590-non-modal-notifications.md](PLAN/MILESTONES/M590-non-modal-notifications.md) |
 
 # Epics
 

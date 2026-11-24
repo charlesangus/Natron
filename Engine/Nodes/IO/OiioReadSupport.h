@@ -296,7 +296,8 @@ bool decode(const std::string& path,
  * dropped: `Exif:` and `GPS:` attributes give `exif/`, `dpx:` `dpx/`, `cineon:` `cin/`,
  * `tiff:` `tiff/`, `openexr:` `exr/`, and `oiio:` `oiio/` (so `oiio:ColorSpace` is
  * `oiio/ColorSpace`). An attribute whose name already is a key in a metadata namespace
- * (`natron/`, `exr/`, `exif/`, `tiff/`, `dpx/`, `cin/`, `oiio/`, `quicktime/`) gives that key
+ * (`natron/`, `exr/`, `exif/`, `tiff/`, `dpx/`, `cin/`, `oiio/`, `quicktime/`, and `layered/`, which
+ * layered documents publish, see LayeredDocs::LayeredDocument::describe) gives that key
  * unchanged, in every format. An attribute with no prefix of its own gives `exr/` in an OpenEXR file and
  * `exif/` in any other, and one with any other prefix is dropped. The SMPTE timecode and keycode give the standard `natron/timecode` and
  * `natron/edgecode`. Integers give ints (wider ones doubles), floats and rationals doubles,
@@ -306,10 +307,12 @@ ImageMetadata attributeMetadata(const std::string& path,
                                 const OIIO::ImageSpec& spec);
 
 /**
- * @brief The file extensions the native Read decodes through OIIO: every extension in OIIO's
- * runtime "extension_list" except those of a format in kExcludedOiioFormats and the camera raw
- * ones (RawExtensions::kExtensions), which the Read claims first for rawspeed. Lower case, sorted.
- * An extension that an excluded format shares with a kept one stays. Computed once. Thread-safe.
+ * @brief The file extensions the native Read decodes through OIIO: those the in-tree layered
+ * document formats claim (LayeredDocs::extensionClaims), then every extension in OIIO's runtime
+ * "extension_list" except those of a format in kExcludedOiioFormats and the camera raw ones
+ * (RawExtensions::kExtensions), which the Read claims first for rawspeed. Lower case, sorted.
+ * An extension that an excluded format shares with a kept one stays. Computed again only when an
+ * in-tree format is registered or dropped; a returned reference stays valid. Thread-safe.
  **/
 const std::vector<std::string>& readableExtensions();
 
@@ -319,7 +322,7 @@ const std::vector<std::string>& readableExtensions();
 extern const char* const kExcludedOiioFormats[5];
 
 /**
- * @brief The name of the kept OIIO format that claims `extension` (case-insensitive, with or
+ * @brief The name of the in-tree layered format or kept OIIO format that claims `extension` (case-insensitive, with or
  * without a leading dot), or an empty string if no kept format does.
  **/
 std::string formatNameForExtension(const std::string& extension);

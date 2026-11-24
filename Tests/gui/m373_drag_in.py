@@ -1,5 +1,6 @@
-"""A GUI test of bringing knobs into a panel in edit mode: dragging a Blur's size onto a Group's panel
-makes a linked user knob, a Ctrl-drop makes an independent copy, "Link knob..." links a knob of a
+"""A GUI test of bringing knobs into a panel in edit mode: dropping a Blur's size on a Group that has
+no user page creates the User page with the knob on it in one undo entry, dragging it onto a user
+page of the Group makes a linked user knob, a Ctrl-drop makes an independent copy, "Link knob..." links a knob of a
 node inside the Group, and outside edit mode a Ctrl-drag between two panels still links the two
 knobs as before. Driven by Tests/gui/run-gui-test.sh.
 
@@ -25,6 +26,7 @@ from PySide6.QtGui import QDrag
 from PySide6.QtWidgets import QAbstractButton, QApplication, QComboBox, QWidget
 
 SIZE_LABEL = "Size"
+USER_PAGE = "userNatron"
 
 
 def set_value(p, v):
@@ -71,7 +73,21 @@ def steps():
     src = cm.param(blur, "size")
     gt.require(src is not None, "%s has a size" % blur)
 
-    # Built-in pages never take drops and a new Group has only those, so a user adds a page first.
+    gt.section("a drop on a panel with no user page creates one")
+    gt.require(cm.param(group, USER_PAGE) is None and cm.param(group, "page1") is None, "%s starts with no user page" % group)
+    result = []
+    gt.require(drag_label_onto(blur, overlay_end(group), Qt.NoModifier, Qt.NoModifier, result), "dragged %s's Size label" % blur)
+    ok = yield ("until", lambda: cm.param(group, "size") is not None, 5.0)
+    check(result[:1] == [True], "the built-in page accepted the drop")
+    check(ok, "the drop made a size knob on %s" % group)
+    check(cm.param(group, USER_PAGE) is not None, "the drop created the %s page" % USER_PAGE)
+    check(cm.child_names(group, USER_PAGE) == ["size"], "size is on %s (%r)" % (USER_PAGE, cm.child_names(group, USER_PAGE)))
+    gt.require(cm.undo(), "undo")
+    ok = yield ("until", lambda: cm.param(group, "size") is None, 5.0)
+    check(ok, "one undo removed the dropped knob")
+    check(cm.param(group, USER_PAGE) is None, "and the page it created")
+
+    # With a user page, built-in pages take no drops, so the knobs go onto the explicit page.
     gt.require(cm.add(group, "Page"), "clicked the Page palette entry on %s" % group)
     ok = yield ("until", lambda: cm.selected(group) == "page1", 5.0)
     gt.require(ok, "added page1 to %s" % group)

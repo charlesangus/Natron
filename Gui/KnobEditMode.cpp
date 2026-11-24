@@ -224,6 +224,8 @@ indexOfPage(const std::vector<KnobPagePtr>& pages,
  **/
 struct KnobEditDropTarget {
     bool valid;
+    // The drop creates the holder's User page and puts the knob there.
+    bool createsUserPage;
     KnobIWPtr parent;
     int index;
     int y;
@@ -232,6 +234,7 @@ struct KnobEditDropTarget {
 
     KnobEditDropTarget()
         : valid(false)
+        , createsUserPage(false)
         , parent()
         , index(-1)
         , y(0)
@@ -379,6 +382,20 @@ private:
         return page && page->isUserKnob();
     }
 
+    // A built-in page takes drops only while the holder has no user page to put them on.
+    bool createsUserPageOnDrop() const
+    {
+        KnobPagePtr page = _page.lock();
+        KnobHolder* holder = _mode->getHolder();
+        if (!page || page->isUserKnob() || !holder) {
+            return false;
+        }
+        std::list<KnobPage*> userPages;
+        holder->getUserPages(userPages);
+
+        return userPages.empty();
+    }
+
     virtual bool eventFilter(QObject* watched, QEvent* event) OVERRIDE FINAL
     {
         if ((watched == _host) && (event->type() == QEvent::Resize)) {
@@ -397,6 +414,7 @@ private:
         }
         if (!page->isUserKnob()) {
             p.fillRect(rect(), QColor(30, 30, 30, 140));
+            paintDrop(p);
 
             return;
         }
@@ -423,6 +441,11 @@ private:
             p.drawText(rect().adjusted(8, 8, -8, -8), Qt::AlignHCenter | Qt::AlignTop | Qt::TextWordWrap,
                        QObject::tr("Empty page: click a palette entry or drag one here."));
         }
+        paintDrop(p);
+    } // paintEvent
+
+    void paintDrop(QPainter& p)
+    {
         if (_drop.valid) {
             p.setPen(QPen(kSelectionColor, 2));
             p.drawLine(_drop.indent, _drop.y, width() - 1, _drop.y);
@@ -444,7 +467,7 @@ private:
             p.setPen(Qt::white);
             p.drawText(hintRect, Qt::AlignCenter, _dragHint);
         }
-    } // paintEvent
+    }
 
     virtual void mousePressEvent(QMouseEvent* e) OVERRIDE FINAL
     {
@@ -566,7 +589,7 @@ private:
                           QString* value,
                           KnobIPtr* source) const
     {
-        if (!mimeData || !isUserPage()) {
+        if (!mimeData || (!isUserPage() && !createsUserPageOnDrop())) {
             return eDragKindNone;
         }
         if (mimeData->hasFormat(QString::fromUtf8(NATRON_KNOB_EDITOR_MIME_TYPE))) {
@@ -618,6 +641,16 @@ private:
         KnobEditDropTarget ret;
         KnobPagePtr page = _page.lock();
         if (!page) {
+            return ret;
+        }
+        if (!page->isUserKnob()) {
+            if (!moving && createsUserPageOnDrop()) {
+                ret.valid = true;
+                ret.createsUserPage = true;
+                ret.y = 4;
+                ret.text = QObject::tr("Insert into a new %1 page").arg(QString::fromUtf8(NATRON_USER_MANAGED_KNOBS_PAGE_LABEL));
+            }
+
             return ret;
         }
         const std::vector<Row> rs = rows();
@@ -763,8 +796,22 @@ private:
         KnobEditMode* mode = _mode;
         const KnobIWPtr parentW = target.parent;
         const KnobIWPtr sourceW = source;
+        const bool createsUserPage = target.createsUserPage;
         int index = target.index;
-        QTimer::singleShot(0, mode, [mode, kind, value, parentW, sourceW, index, copy]() {
+        QTimer::singleShot(0, mode, [mode, kind, value, parentW, sourceW, index, copy, createsUserPage]() {
+            // With no parent, adding the knob creates the User page inside the same undo entry.
+            if (createsUserPage) {
+                if (kind == eDragKindNew) {
+                    mode->addKnob(value, KnobIPtr(), -1);
+                } else if (kind == eDragKindLink) {
+                    KnobIPtr knob = sourceW.lock();
+                    if (knob) {
+                        mode->addKnobFrom(knob, copy, KnobIPtr(), -1);
+                    }
+                }
+
+                return;
+            }
             KnobIPtr parent = parentW.lock();
             if (!parent) {
                 return;

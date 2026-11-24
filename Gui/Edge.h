@@ -65,8 +65,6 @@ public:
 
     QPainterPath shape() const OVERRIDE WARN_UNUSED_RETURN;
 
-    bool contains(const QPointF &point) const OVERRIDE WARN_UNUSED_RETURN;
-
     /**
      * @brief Squared distance from point to the closest point on the segment (clamped to its
      * endpoints, not the infinite line through it). Both must be in the same coordinate space.

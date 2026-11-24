@@ -2723,21 +2723,6 @@ NodeGui::connectEdge(int edgeNumber)
 }
 
 Edge*
-NodeGui::hasEdgeNearbyPoint(const QPointF & pt)
-{
-    for (InputEdges::const_iterator it = _inputEdges.begin(); it != _inputEdges.end(); ++it) {
-        if ( (*it) && (*it)->contains( (*it)->mapFromScene(pt) ) ) {
-            return (*it);
-        }
-    }
-    if ( _outputEdge && _outputEdge->contains( _outputEdge->mapFromScene(pt) ) ) {
-        return _outputEdge;
-    }
-
-    return NULL;
-}
-
-Edge*
 NodeGui::hasBendPointNearbyPoint(const QPointF & pt)
 {
     for (InputEdges::const_iterator it = _inputEdges.begin(); it != _inputEdges.end(); ++it) {

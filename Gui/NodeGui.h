@@ -402,9 +402,6 @@ public:
     // The laid-out body size that resize() takes: no outline pen.
     virtual QRectF bodyRect() const;
 
-    /*Returns an edge if the node has an edge close to the
-       point pt. pt is in scene coord.*/
-    Edge* hasEdgeNearbyPoint(const QPointF& pt);
     Edge* hasBendPointNearbyPoint(const QPointF & pt);
 
     void refreshPosition( double x, double y, bool skipMagnet = false, const QPointF & mouseScenePos = QPointF() );

@@ -111,6 +111,23 @@ try:
                 return (p1, p2)
         return None
 
+    def dangling_extent(node):
+        """The boundingRect height of the upward dangling input of node (line pad plus arrow head), or None."""
+        graph = root_graph()
+        c = centre(node)
+        for it in (list(graph.items()) if graph is not None else []):
+            try:
+                if it.type() != LINE_ITEM_TYPE or not it.isVisible():
+                    continue
+                line = it.line()
+                p1 = it.mapToScene(line.p1())
+                p2 = it.mapToScene(line.p2())
+                if near((p1.x(), p1.y()), c) and abs(p2.x() - p1.x()) < 1.0 and p2.y() < p1.y():
+                    return it.boundingRect().height()
+            except RuntimeError:
+                continue
+        return None
+
     def dist_to_segment(p, a, b):
         dx, dy = b[0] - a[0], b[1] - a[1]
         l2 = dx * dx + dy * dy
@@ -274,6 +291,12 @@ try:
         yield ("sleep", SETTLE_MS)
         inp = dangling_input(lone)
         require(inp is not None, "the dangling input is shown at width 1")
+        followed = drag_from(beside(inp, 15))
+        check(any(near(a, centre(lone)) for a, _ in followed),
+              "at width 1 a press 15 px beside the dangling input still drags it (%r)" % followed)
+        yield ("sleep", SETTLE_MS)
+        inp = dangling_input(lone)
+        require(inp is not None, "the dangling input is back at width 1")
         press = beside(inp, 25)
         nearest = nearest_pipe_px(press)
         require(nearest > DANGLING_RADIUS_MIN, "no pipe lies within %g px of the press (nearest %.1f px)"
@@ -293,6 +316,33 @@ try:
         check(any(near(a, centre(lone)) for a, _ in followed),
               "at width 6 a press 25 px beside the dangling input drags it (%r)" % followed)
         yield ("sleep", SETTLE_MS)
+
+        gt.section("arrow-head-scales")
+        extents = {}
+        for width in (2, 6):
+            set_pref("pipeWidth", width)
+            yield ("sleep", SETTLE_MS)
+            extents[width] = dangling_extent(lone)
+            require(extents[width] is not None, "the dangling input is shown at width %d" % width)
+        check(extents[6] - extents[2] >= 2.0,
+              "the dangling input's bounds (line pad and arrow head) grow from width 2 to 6 (%g -> %g)"
+              % (extents[2], extents[6]))
+
+        gt.section("grab-zoom-half")
+        set_pref("pipeWidth", DEFAULTS["pipeWidth"])
+        graph = root_graph()
+        graph.scale(0.5, 0.5)
+        lc = centre(lone)
+        graph.centerOn(lc[0] + 150, lc[1])
+        yield ("sleep", SETTLE_MS)
+        check(abs(root_graph().transform().m11() - 0.5) < 1e-9, "the graph is at zoom 0.5")
+        inp = dangling_input(lone)
+        require(inp is not None, "the dangling input is shown at zoom 0.5")
+        followed = drag_from(beside(inp, 15))
+        check(any(near(a, centre(lone)) for a, _ in followed),
+              "at zoom 0.5 a press 15 viewport px beside the dangling input drags it (%r)" % followed)
+        yield ("sleep", SETTLE_MS)
+        root_graph().resetTransform()
 
         for name, value in sorted(DEFAULTS.items()):
             set_pref(name, value)

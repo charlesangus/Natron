@@ -280,6 +280,7 @@ NodeGraph::onSettingsSaved()
     for (std::size_t i = 0; i < sizeof(graphEdges) / sizeof(graphEdges[0]); ++i) {
         if (graphEdges[i]) {
             graphEdges[i]->refreshPipeWidth();
+            graphEdges[i]->initLine();
         }
     }
     // scene()->update() below repaints everything.

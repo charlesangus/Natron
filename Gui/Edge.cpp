@@ -63,8 +63,8 @@
 #define ARROW_SIZE_PEN_WIDTH 2.
 #define ARROW_HEAD_ANGLE ( (2 * M_PI) / 15 ) // 24 degrees opening angle is a nice thin arrow
 
-// Grab radii in viewport pixels. The minimums are the radii of a 2-pixel pipe, so a thinner one is
-// never harder to grab.
+// Grab radii in viewport pixels. The minimums are the fixed radii used before the radius followed
+// the pipe width, so a thin pipe is never harder to grab than it was.
 #define GRAB_RADIUS_MIN 10.
 #define GRAB_RADIUS_PER_WIDTH 2.5
 #define DANGLING_GRAB_RADIUS_MIN 18.
@@ -75,6 +75,7 @@ NATRON_NAMESPACE_ENTER
 static int
 pipeWidthPreference()
 {
+    // Knob::setValue does not enforce the knob minimum, so a Python script can still store 0 or less.
     return std::max(1, appPTR->getCurrentSettings()->getPipeWidth());
 }
 
@@ -730,7 +731,8 @@ Edge::boundingRect() const
     QRectF headRect = _imp->arrowHead.boundingRect();
 
     if (!headRect.isNull()) {
-        const qreal margin = pen().widthF() / 2.;
+        // The head is stroked with a miter join, which pokes out up to miterLimit pen widths.
+        const qreal margin = pen().widthF() * pen().miterLimit();
         rect = rect.united(headRect.adjusted(-margin, -margin, margin, margin));
     }
 
@@ -816,25 +818,6 @@ Edge::refreshPipeWidth()
     QPen p = pen();
     p.setWidth(width);
     setPen(p);
-}
-
-bool
-Edge::contains(const QPointF &point) const
-{
-    // The same radius NodeGraph::hasItemNearbyMouse() grabs with, mapped from the viewport.
-    NodeGuiPtr owner = _imp->isOutputEdge ? _imp->source.lock() : _imp->dest.lock();
-    NodeGraph* graph = owner ? owner->getDagGui() : NULL;
-    double radius = grabRadiusPixels(isDangling());
-
-    if (graph) {
-        const double zoomFactor = graph->transform().mapRect(QRectF(0, 0, 1, 1)).width();
-        if (zoomFactor > 0.) {
-            radius /= zoomFactor;
-        }
-    }
-    double d2 = dist2ToSegment(line(), point);
-
-    return d2 <= radius * radius;
 }
 
 int
@@ -1005,8 +988,9 @@ Edge::getDrawnPen() const
     QPen myPen = pen();
     if (_imp->paintWithDash) {
         QVector<qreal> dashStyle;
-        qreal space = 4;
-        dashStyle << 3 << space;
+        // Dash lengths are in pen widths; scale so they stay the pixel lengths of a 2-pixel pipe.
+        const qreal unit = ARROW_SIZE_PEN_WIDTH / std::max(myPen.widthF(), 1.);
+        dashStyle << 3 * unit << 4 * unit;
         myPen.setDashPattern(dashStyle);
     } else {
         myPen.setStyle(Qt::SolidLine);

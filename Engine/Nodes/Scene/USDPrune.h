@@ -80,7 +80,7 @@ public:
                        "invisible. With Prune Unselected on, it isolates the selection instead: it keeps the "
                        "matches and prunes the rest of the scene, keeping lights, cameras, materials and render "
                        "settings as the Keep checkboxes say; a pattern that matches nothing prunes everything else.",
-        .grouping = PLUGIN_GROUP_3D_USD,
+        .grouping = PLUGIN_GROUP_USD_COMPOSITION,
         .majorVersion = 1,
         .minorVersion = 0,
         .icon = NATRON_IMAGES_PATH "NativeNodes/USDPrune.png",

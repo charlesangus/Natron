@@ -89,7 +89,7 @@ public:
                        "Match Project Up Axis or Match Project Units converts them to the project's. "
                        "Time maps by seconds: a frame reads the file at the timecode of the same instant, "
                        "shifted by the frame offset.",
-        .grouping = PLUGIN_GROUP_3D_USD,
+        .grouping = PLUGIN_GROUP_USD_IO,
         .majorVersion = 1,
         .minorVersion = 0,
         .isWriter = false,

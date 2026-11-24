@@ -92,7 +92,7 @@ public:
         .description = "Write the input scene to a USD file (.usd, .usda, .usdc), once per render, with the time "
                        "samples of the frame range. Layered mode keeps the files the scene reads as sublayers and "
                        "flattens what Natron authored; Flattened mode bakes everything into one layer.",
-        .grouping = PLUGIN_GROUP_3D_USD,
+        .grouping = PLUGIN_GROUP_USD_IO,
         .majorVersion = 1,
         .minorVersion = 0,
         .icon = NATRON_IMAGES_PATH "NativeNodes/USDWrite.png",

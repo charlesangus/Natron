@@ -83,7 +83,7 @@ public:
                        "depth of field switches, whether the background is transparent, the renderer that renders it by default, and each installed "
                        "renderer's own settings on a page of its own. Make Active makes it the scene's render settings, "
                        "which USDRender renders with unless it is told otherwise.",
-        .grouping = PLUGIN_GROUP_3D_USD,
+        .grouping = PLUGIN_GROUP_USD_RENDER,
         .majorVersion = 1,
         .minorVersion = 0,
         .isWriter = false,

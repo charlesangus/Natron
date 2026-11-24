@@ -59,7 +59,7 @@ public:
                        "unless Auto Rename gives it a free name. In Wrap mode, define the Xform beside the input 0 prim "
                        "at Prim Path instead and move that prim and everything under it beneath the Xform. Animated "
                        "knobs are written as time samples.",
-        .grouping = PLUGIN_GROUP_3D_USD,
+        .grouping = PLUGIN_GROUP_USD_PRIMS,
         .majorVersion = 1,
         .minorVersion = 0,
         .icon = NATRON_IMAGES_PATH "NativeNodes/USDXformPrim.png",

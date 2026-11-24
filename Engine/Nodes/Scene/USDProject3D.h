@@ -123,7 +123,7 @@ public:
                        "The image's format fills the camera's frame. The material is a Storm shader: it "
                        "shows in the Viewer and USDRender; USDWrite bakes it to texture coordinates and a "
                        "UsdPreviewSurface for other renderers.",
-        .grouping = PLUGIN_GROUP_3D_USD,
+        .grouping = PLUGIN_GROUP_USD_CAMERAS,
         .majorVersion = 1,
         .minorVersion = 0,
         .isWriter = false,

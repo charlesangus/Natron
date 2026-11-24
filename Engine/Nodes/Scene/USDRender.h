@@ -82,7 +82,7 @@ public:
                        "normal layer: the shading normal in camera space, 0 where nothing was hit. Only the scene's lights light it, unless Headlight "
                        "adds one at the camera. Without a render settings prim, the scene's first camera renders the "
                        "project's format.",
-        .grouping = PLUGIN_GROUP_3D_USD,
+        .grouping = PLUGIN_GROUP_USD_RENDER,
         .majorVersion = 1,
         .minorVersion = 0,
         .icon = NATRON_IMAGES_PATH "NativeNodes/USDRender.png",

@@ -461,6 +461,9 @@ pixmapEnumToPath(PixmapEnum e)
     case NATRON_PIXMAP_DEEP_GROUPING:
         path = NATRON_ICONS_PATH "natron/deep.svg";
         break;
+    case NATRON_PIXMAP_USD_GROUPING:
+        path = NATRON_ICONS_PATH "natron/usd.svg";
+        break;
     case NATRON_PIXMAP_METADATA_GROUPING:
         path = NATRON_ICONS_PATH "lucide/tags.svg";
         break;
@@ -1337,6 +1340,7 @@ const char* const namedGroupsOrdered[] = {
     PLUGIN_GROUP_MERGE,
     PLUGIN_GROUP_TRANSFORM,
     PLUGIN_GROUP_3D,
+    PLUGIN_GROUP_USD,
     PLUGIN_GROUP_DEEP,
     PLUGIN_GROUP_METADATA,
     PLUGIN_GROUP_LOOP,
@@ -1380,6 +1384,8 @@ getIconForGrouping(QIcon* icon,
         e = NATRON_PIXMAP_TRANSFORM_GROUPING;
     } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_3D)) {
         e = NATRON_PIXMAP_3D_GROUPING;
+    } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_USD)) {
+        e = NATRON_PIXMAP_USD_GROUPING;
     } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_DEEP)) {
         e = NATRON_PIXMAP_DEEP_GROUPING;
     } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_METADATA)) {
@@ -1396,12 +1402,47 @@ getIconForGrouping(QIcon* icon,
     appPTR->getIcon(e, size, icon);
 }
 
+QString
+usdSubmenuIconPath(const PluginGroupNode& node)
+{
+    if (!node.hasParent() || node.getChildren().empty() || node.getParent()->hasParent() || node.getParent()->getLabel() != QString::fromUtf8(PLUGIN_GROUP_USD)) {
+        return QString();
+    }
+    const QString& label = node.getLabel();
+    if (label == QString::fromUtf8("Prims")) {
+        return QString::fromUtf8(NATRON_ICONS_PATH "lucide/shapes.svg");
+    }
+    if (label == QString::fromUtf8("Lights")) {
+        return QString::fromUtf8(NATRON_ICONS_PATH "lucide/sun.svg");
+    }
+    if (label == QString::fromUtf8("Cameras")) {
+        return QString::fromUtf8(NATRON_ICONS_PATH "lucide/camera.svg");
+    }
+    if (label == QString::fromUtf8("Materials")) {
+        return QString::fromUtf8(NATRON_ICONS_PATH "lucide/palette.svg");
+    }
+    if (label == QString::fromUtf8("Composition")) {
+        return QString::fromUtf8(NATRON_ICONS_PATH "lucide/layers.svg");
+    }
+    if (label == QString::fromUtf8("Edit")) {
+        return QString::fromUtf8(NATRON_ICONS_PATH "lucide/pencil.svg");
+    }
+    if (label == QString::fromUtf8("Render")) {
+        return QString::fromUtf8(NATRON_ICONS_PATH "lucide/circle-play.svg");
+    }
+    if (label == QString::fromUtf8("IO")) {
+        return QString::fromUtf8(NATRON_ICONS_PATH "lucide/hard-drive.svg");
+    }
+
+    return QString();
+}
+
 void
 makePluginGroupIcons(const PluginGroupNode& node,
                      QIcon* menuIcon,
                      QIcon* toolButtonIcon)
 {
-    const QString& iconPath = node.getIconPath();
+    const QString iconPath = node.getIconPath().isEmpty() ? usdSubmenuIconPath(node) : node.getIconPath();
 
     if (!iconPath.isEmpty() && QFile::exists(iconPath)) {
         int menuSize = TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE);
@@ -1696,6 +1737,36 @@ actionTextLessThan(const QAction* lhs,
     return lhs->text() < rhs->text();
 }
 
+// The USD submenus follow the order of the nodes' workflow rather than the alphabet.
+const char* const usdSubmenusOrdered[] = {
+    "Prims", "Lights", "Cameras", "Materials", "Composition", "Edit", "Render", "IO"
+};
+const int usdSubmenusCount = sizeof(usdSubmenusOrdered) / sizeof(usdSubmenusOrdered[0]);
+
+int
+usdSubmenuRank(const QAction* action)
+{
+    const QString grouping = action->property(kNodesMenuPropGrouping).toString();
+
+    for (int i = 0; i < usdSubmenusCount; ++i) {
+        if (grouping == QString::fromUtf8(usdSubmenusOrdered[i])) {
+            return i;
+        }
+    }
+
+    return usdSubmenusCount;
+}
+
+bool
+usdSubmenuLessThan(const QAction* lhs,
+                   const QAction* rhs)
+{
+    const int lhsRank = usdSubmenuRank(lhs);
+    const int rhsRank = usdSubmenuRank(rhs);
+
+    return lhsRank != rhsRank ? lhsRank < rhsRank : actionTextLessThan(lhs, rhs);
+}
+
 void
 sortPluginOwnedSubmenus(QMenu* menu)
 {
@@ -1703,7 +1774,11 @@ sortPluginOwnedSubmenus(QMenu* menu)
 
     for (int i = 0; i < actions.size(); ++i) {
         if (actions[i]->menu() && isPluginOwned(actions[i])) {
-            orderPluginOwnedActions(actions[i]->menu(), actionTextLessThan);
+            if (actions[i]->property(kNodesMenuPropGrouping).toString() == QString::fromUtf8(PLUGIN_GROUP_USD)) {
+                orderPluginOwnedActions(actions[i]->menu(), usdSubmenuLessThan);
+            } else {
+                orderPluginOwnedActions(actions[i]->menu(), actionTextLessThan);
+            }
             sortPluginOwnedSubmenus(actions[i]->menu());
         }
     }
@@ -1836,7 +1911,8 @@ GuiApplicationManagerPrivate::populateNodesMenuGroup(QMenu* parent,
         QIcon menuIcon, toolButtonIcon;
         makePluginGroupIcons(group, &menuIcon, &toolButtonIcon);
         menu = new Menu(parent);
-        menu->setTitle(escapedMenuText(group.getLabel()));
+        // "/" would nest a submenu in a grouping string, so the I/O segment is spelled IO and only its title shows the slash.
+        menu->setTitle(escapedMenuText(group.getLabel() == QString::fromUtf8("IO") ? QString::fromUtf8("I/O") : group.getLabel()));
         menu->setIcon(menuIcon);
         QAction* menuAction = menu->menuAction();
         menuAction->setProperty(kNodesMenuPropPluginOwned, true);

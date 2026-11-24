@@ -67,7 +67,7 @@ public:
         .label = "USDVariant",
         .description = "Select a variant of a variant set on the prims a pattern matches, switching what composes under "
                        "them: a model's shading, level of detail or any alternative the set holds.",
-        .grouping = PLUGIN_GROUP_3D_USD,
+        .grouping = PLUGIN_GROUP_USD_COMPOSITION,
         .majorVersion = 1,
         .minorVersion = 0,
         .icon = NATRON_IMAGES_PATH "NativeNodes/USDVariant.png",

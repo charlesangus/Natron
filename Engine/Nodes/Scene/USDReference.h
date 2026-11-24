@@ -83,7 +83,7 @@ public:
         .description = "Reference a prim of a USD file, or of the scene connected to the Source input, at a prim path of "
                        "the input scene: the source prim and everything under it compose there. "
                        "A payload is a reference the viewer and renders may leave unloaded.",
-        .grouping = PLUGIN_GROUP_3D_USD,
+        .grouping = PLUGIN_GROUP_USD_COMPOSITION,
         .majorVersion = 1,
         .minorVersion = 0,
         .icon = NATRON_IMAGES_PATH "NativeNodes/USDReference.png",

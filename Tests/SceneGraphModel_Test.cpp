@@ -1694,3 +1694,200 @@ TEST(SceneGraphModel, TheDrawStateColumnShowsTheViewersStatesAndEditsThem)
     EXPECT_FALSE(model.flags(drawCell(world)) & Qt::ItemIsEditable);
     EXPECT_TRUE(modelTestMessages.isEmpty()) << modelTestMessages.join(QLatin1Char('\n')).toStdString();
 }
+
+namespace {
+
+void
+authorPurpose(const PXR_NS::SdfPrimSpecHandle& prim,
+              const std::string& purpose)
+{
+    PXR_NS::SdfAttributeSpecHandle attribute = PXR_NS::SdfAttributeSpec::New(prim, PXR_NS::UsdGeomTokens->purpose, PXR_NS::SdfValueTypeNames->Token, PXR_NS::SdfVariabilityUniform);
+
+    attribute->SetDefaultValue(PXR_NS::VtValue(PXR_NS::TfToken(purpose)));
+}
+
+// /World with an Xform of purpose proxyPurpose holding a Mesh and, under a typeless prim, another;
+// a guide Mesh, a Scope that authors nothing, and a typeless prim whose purpose USD ignores.
+ScenePayload
+purposeScene(const std::string& proxyPurpose,
+             U64 hash)
+{
+    using namespace PXR_NS;
+
+    SdfLayerRefPtr layer = SceneOps::createNodeLayer("SceneGraphModelTest");
+    SdfPrimSpecHandle world = SdfPrimSpec::New(layer->GetPseudoRoot(), "World", SdfSpecifierDef, "Xform");
+    SdfPrimSpecHandle proxy = SdfPrimSpec::New(world, "Proxy", SdfSpecifierDef, "Xform");
+    authorPurpose(proxy, proxyPurpose);
+    SdfPrimSpec::New(proxy, "Mesh", SdfSpecifierDef, "Mesh");
+    SdfPrimSpecHandle group = SdfPrimSpec::New(proxy, "Group", SdfSpecifierDef, "");
+    SdfPrimSpec::New(group, "Geo", SdfSpecifierDef, "Mesh");
+    SdfPrimSpecHandle guide = SdfPrimSpec::New(world, "Guide", SdfSpecifierDef, "Mesh");
+    authorPurpose(guide, "guide");
+    SdfPrimSpec::New(world, "Plain", SdfSpecifierDef, "Scope");
+    SdfPrimSpecHandle typeless = SdfPrimSpec::New(world, "Typeless", SdfSpecifierDef, "");
+    authorPurpose(typeless, "proxy");
+
+    return SceneOps::appendLayer(ScenePayload(), layer, hash);
+}
+
+const char* const kPurposePaths[] = { "/World", "/World/Proxy", "/World/Proxy/Mesh", "/World/Proxy/Group", "/World/Proxy/Group/Geo",
+                                      "/World/Guide", "/World/Plain", "/World/Typeless" };
+
+// Fails the test where a row's purpose cell differs from what USD computes on the stage.
+void
+expectPurposesMatchUsd(SceneGraphModel& model,
+                       const TestStageSource& source)
+{
+    for (const char* path : kPurposePaths) {
+        const QModelIndex cell = model.indexOfPath(QString::fromUtf8(path), true).siblingAtColumn(SceneGraphModel::eColumnPurpose);
+        ASSERT_TRUE(cell.isValid()) << path;
+        source.readStage([&](const SceneStage* stage) {
+            ASSERT_TRUE(stage != nullptr);
+            const PXR_NS::UsdPrim prim = stage->getStage()->GetPrimAtPath(PXR_NS::SdfPath(path));
+            if (!prim.IsA<PXR_NS::UsdGeomImageable>()) {
+                EXPECT_FALSE(cell.data().isValid()) << path;
+
+                return;
+            }
+            const PXR_NS::UsdGeomImageable::PurposeInfo info = PXR_NS::UsdGeomImageable(prim).ComputePurposeInfo();
+            EXPECT_EQ(QString::fromStdString(info.purpose.GetString()), cell.data().toString()) << path;
+        });
+    }
+}
+
+} // anon namespace
+
+TEST(SceneGraphModel, ThePurposeColumnShowsComputedPurposes)
+{
+    ModelTestMessageScope messages;
+    std::shared_ptr<TestStageSource> source = std::make_shared<TestStageSource>();
+    source->sync(purposeScene("proxy", 1));
+    SceneGraphModel model;
+    QAbstractItemModelTester tester(&model, QAbstractItemModelTester::FailureReportingMode::Warning);
+    model.setSource(source);
+    EXPECT_EQ(QString::fromUtf8("Purpose"), model.headerData(SceneGraphModel::eColumnPurpose, Qt::Horizontal).toString());
+    EXPECT_EQ(SceneGraphModel::eColumnKind + 1, (int)SceneGraphModel::eColumnPurpose);
+
+    const auto cellOf = [&model](const char* path) {
+        return model.indexOfPath(QString::fromUtf8(path), true).siblingAtColumn(SceneGraphModel::eColumnPurpose);
+    };
+
+    const QModelIndex proxy = cellOf("/World/Proxy");
+    EXPECT_EQ(QString::fromUtf8("proxy"), proxy.data().toString());
+    EXPECT_FALSE(proxy.data(SceneGraphModel::ePurposeInheritedRole).toBool());
+    EXPECT_EQ(QString::fromUtf8("/World/Proxy"), proxy.data(SceneGraphModel::ePurposeOriginRole).toString());
+    EXPECT_FALSE(proxy.data(Qt::FontRole).value<QFont>().italic());
+    EXPECT_EQ(SceneGraphModel::purposeTip(QString::fromUtf8("proxy"), false, QString::fromUtf8("/World/Proxy")), proxy.data(Qt::ToolTipRole).toString());
+
+    // Inherited, also through a prim that is not imageable.
+    for (const char* path : { "/World/Proxy/Mesh", "/World/Proxy/Group/Geo" }) {
+        const QModelIndex cell = cellOf(path);
+        EXPECT_EQ(QString::fromUtf8("proxy"), cell.data().toString()) << path;
+        EXPECT_TRUE(cell.data(SceneGraphModel::ePurposeInheritedRole).toBool()) << path;
+        EXPECT_EQ(QString::fromUtf8("/World/Proxy"), cell.data(SceneGraphModel::ePurposeOriginRole).toString()) << path;
+        EXPECT_TRUE(cell.data(Qt::FontRole).value<QFont>().italic()) << path;
+        EXPECT_EQ(QString::fromUtf8("Purpose: proxy (from /World/Proxy)"), cell.data(Qt::ToolTipRole).toString()) << path;
+    }
+
+    const QModelIndex guide = cellOf("/World/Guide");
+    EXPECT_EQ(QString::fromUtf8("guide"), guide.data().toString());
+    EXPECT_FALSE(guide.data(SceneGraphModel::ePurposeInheritedRole).toBool());
+
+    // The fallback: nothing above authors a purpose.
+    const QModelIndex plain = cellOf("/World/Plain");
+    EXPECT_EQ(QString::fromUtf8("default"), plain.data().toString());
+    EXPECT_TRUE(plain.data(SceneGraphModel::ePurposeInheritedRole).toBool());
+    EXPECT_TRUE(plain.data(SceneGraphModel::ePurposeOriginRole).toString().isEmpty());
+
+    // Not imageable: a blank cell, its authored purpose ignored.
+    for (const char* path : { "/World/Proxy/Group", "/World/Typeless" }) {
+        const QModelIndex cell = cellOf(path);
+        ASSERT_TRUE(cell.isValid()) << path;
+        EXPECT_FALSE(cell.data().isValid()) << path;
+        EXPECT_FALSE(cell.data(SceneGraphModel::ePurposeInheritedRole).isValid()) << path;
+        EXPECT_FALSE(cell.data(SceneGraphModel::ePurposeOriginRole).isValid()) << path;
+    }
+    EXPECT_FALSE(model.flags(proxy) & Qt::ItemIsEditable);
+
+    expectPurposesMatchUsd(model, *source);
+    EXPECT_TRUE(modelTestMessages.isEmpty()) << modelTestMessages.join(QLatin1Char('\n')).toStdString();
+}
+
+TEST(SceneGraphModel, AnEditOfAnAncestorsPurposeReachesTheRowsBelow)
+{
+    ModelTestMessageScope messages;
+    std::shared_ptr<TestStageSource> source = std::make_shared<TestStageSource>();
+    source->sync(purposeScene("proxy", 1));
+    SceneGraphModel model;
+    QAbstractItemModelTester tester(&model, QAbstractItemModelTester::FailureReportingMode::Warning);
+    model.setSource(source);
+    expectPurposesMatchUsd(model, *source);
+
+    source->sync(purposeScene("render", 2));
+    model.refresh();
+    expectPurposesMatchUsd(model, *source);
+    const QModelIndex geo = model.indexOfPath(QString::fromUtf8("/World/Proxy/Group/Geo"), false).siblingAtColumn(SceneGraphModel::eColumnPurpose);
+    EXPECT_EQ(QString::fromUtf8("render"), geo.data().toString());
+    EXPECT_EQ(QString::fromUtf8("Purpose: render (from /World/Proxy)"), geo.data(Qt::ToolTipRole).toString());
+
+    EXPECT_TRUE(modelTestMessages.isEmpty()) << modelTestMessages.join(QLatin1Char('\n')).toStdString();
+}
+
+TEST(SceneChangedHereRows, ShowPurposesAsTheTreeDoes)
+{
+    std::shared_ptr<TestStageSource> source = std::make_shared<TestStageSource>();
+    source->sync(purposeScene("proxy", 1));
+    QSet<QString> paths;
+    for (const char* path : kPurposePaths) {
+        paths.insert(QString::fromUtf8(path));
+    }
+    SceneChangedHereModel changed;
+    QAbstractItemModelTester tester(&changed, QAbstractItemModelTester::FailureReportingMode::Warning);
+    changed.setRows(buildChangedHereRows(*source, paths));
+
+    SceneGraphModel tree;
+    tree.setSource(source);
+    const int roles[] = { Qt::DisplayRole, SceneGraphModel::ePurposeInheritedRole, SceneGraphModel::ePurposeOriginRole };
+    for (const char* path : kPurposePaths) {
+        const QModelIndex mine = changed.indexOfPath(QString::fromUtf8(path)).siblingAtColumn(SceneGraphModel::eColumnPurpose);
+        const QModelIndex theirs = tree.indexOfPath(QString::fromUtf8(path), true).siblingAtColumn(SceneGraphModel::eColumnPurpose);
+        ASSERT_TRUE(mine.isValid()) << path;
+        ASSERT_TRUE(theirs.isValid()) << path;
+        for (int role : roles) {
+            EXPECT_EQ(theirs.data(role), mine.data(role)) << path << " role " << role;
+        }
+        EXPECT_EQ(theirs.data(Qt::FontRole).value<QFont>().italic(), mine.data(Qt::FontRole).value<QFont>().italic()) << path;
+        if (theirs.data().isValid()) {
+            EXPECT_EQ(theirs.data(Qt::ToolTipRole).toString(), mine.data(Qt::ToolTipRole).toString()) << path;
+        }
+    }
+}
+
+TEST(SceneGraphPrimWalk, MatchesPurposeAsANodePatternDoes)
+{
+    std::shared_ptr<TestStageSource> source = std::make_shared<TestStageSource>();
+    source->sync(purposeScene("proxy", 1));
+
+    SceneGraphPrimWalk walk(1);
+    QString error;
+    ASSERT_TRUE(walk.setExpression(QString::fromUtf8("//{purpose:proxy}"), &error)) << error.toStdString();
+    QStringList found;
+    walk.start();
+    finishWalk(*source, &walk, 0, &found);
+    EXPECT_EQ((QStringList { QString::fromUtf8("/World/Proxy"), QString::fromUtf8("/World/Proxy/Mesh"), QString::fromUtf8("/World/Proxy/Group/Geo") }), found);
+
+    std::vector<PXR_NS::SdfPath> selected;
+    std::string selectError;
+    source->readStage([&](const SceneStage* stage) {
+        ASSERT_TRUE(stage != nullptr);
+        EXPECT_TRUE(SceneOps::selectPrims(stage->getStage(), "//{purpose:proxy}", &selected, &selectError));
+    });
+    QStringList selectedPaths;
+    for (const PXR_NS::SdfPath& path : selected) {
+        selectedPaths << QString::fromStdString(path.GetString());
+    }
+    EXPECT_EQ(selectedPaths, found);
+
+    EXPECT_FALSE(walk.setExpression(QString::fromUtf8("//{purpose}"), &error));
+    EXPECT_FALSE(error.isEmpty());
+}

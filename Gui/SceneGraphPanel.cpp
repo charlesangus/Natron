@@ -90,6 +90,7 @@
 #include "Gui/SceneGraphModel.h"
 #include "Gui/SceneNodeStageSource.h"
 #include "Gui/ScenePrimInspector.h"
+#include "Gui/ScenePurposeDelegate.h"
 #include "Gui/SceneSelectionActions.h"
 #include "Gui/UndoHistory.h"
 #include "Gui/ViewerTab.h"
@@ -1608,9 +1609,11 @@ struct SceneGraphPanel::Implementation {
         return SceneGraphPanel::tr("Text without /, { or % lists the prims whose names hold it; * and ? match any text and any character.\n"
                                    "Text that starts with / or holds a {predicate} is a path expression, as prim pattern knobs take it: "
                                    "/World/* selects the children of /World, //*Light* any prim whose name holds Light, at any depth, "
-                                   "//{kind:component} every component, /World//{isa:Mesh} the meshes below /World. "
+                                   "//{kind:component} every component, /World//{isa:Mesh} the meshes below /World, "
+                                   "//{purpose:proxy} the prims whose purpose, authored or inherited, is proxy "
+                                   "(default, render, proxy or guide). "
                                    "Separate patterns with spaces for their union, and combine them with &, - and ~.\n"
-                                   "Besides USD's predicates, {loaded:false} matches prims whose payload is unloaded and "
+                                   "Here only, not in prim pattern knobs, {loaded:false} matches prims whose payload is unloaded and "
                                    "{active:false} inactive prims. The matches are selected as they are found; "
                                    "Apply To Node writes the expression to the prim pattern of the current node.");
     }
@@ -1899,6 +1902,7 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     _imp->tree->setUniformRowHeights(true);
     _imp->tree->setItemDelegateForColumn(SceneGraphModel::eColumnName, new PayloadBadgeDelegate(_imp->tree));
     _imp->tree->setItemDelegateForColumn(SceneGraphModel::eColumnDrawState, new DrawStateDelegate(_imp->tree));
+    _imp->tree->setItemDelegateForColumn(SceneGraphModel::eColumnPurpose, new ScenePurposeDelegate(_imp->tree));
     _imp->tree->setDragEnabled(true);
     _imp->tree->setDragDropMode(QAbstractItemView::DragOnly);
     _imp->tree->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -1906,6 +1910,7 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     _imp->tree->header()->setSectionResizeMode(SceneGraphModel::eColumnName, QHeaderView::Stretch);
     _imp->tree->header()->setSectionResizeMode(SceneGraphModel::eColumnType, QHeaderView::ResizeToContents);
     _imp->tree->header()->setSectionResizeMode(SceneGraphModel::eColumnKind, QHeaderView::ResizeToContents);
+    _imp->tree->header()->setSectionResizeMode(SceneGraphModel::eColumnPurpose, QHeaderView::ResizeToContents);
     _imp->tree->header()->setSectionResizeMode(SceneGraphModel::eColumnDrawState, QHeaderView::ResizeToContents);
     _imp->stack->addWidget(_imp->tree);
 
@@ -1921,6 +1926,7 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     _imp->changedHereTree->setContextMenuPolicy(Qt::CustomContextMenu);
     _imp->changedHereTree->header()->setStretchLastSection(false);
     _imp->changedHereTree->header()->setSectionResizeMode(SceneGraphModel::eColumnName, QHeaderView::Stretch);
+    _imp->changedHereTree->setItemDelegateForColumn(SceneGraphModel::eColumnPurpose, new ScenePurposeDelegate(_imp->changedHereTree));
     // Its rows hold no draw state.
     _imp->changedHereTree->setColumnHidden(SceneGraphModel::eColumnDrawState, true);
     _imp->stack->addWidget(_imp->changedHereTree);

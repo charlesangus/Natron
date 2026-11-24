@@ -117,9 +117,10 @@ public:
     /**
      * @brief Makes step() match prims with text, a USD path expression as a prim pattern knob takes
      * it (SceneOps::parsePrimExpression()), rather than by name; empty text goes back to names. The
-     * expression's predicates are USD's collection predicates and two more, {loaded} and {active},
-     * each taking false as in {loaded:false}. Inactive prims are matched too, so that
-     * {active:false} can find them; the walk never goes below one. The search is incremental: a
+     * expression's predicates are a node pattern's (ScenePredicates::library(), {purpose:proxy}
+     * among them) and two more, {loaded} and {active}, each taking false as in {loaded:false}.
+     * Inactive prims are matched too, so that {active:false} can find them; the walk never goes
+     * below one. The search is incremental: a
      * prim under which the expression can't match has its children skipped. Returns false with
      * *errorMessage set, matching nothing, when text doesn't parse or names a predicate the library
      * lacks. The next step() starts over.
@@ -186,6 +187,8 @@ public:
         eColumnName = 0,
         eColumnType,
         eColumnKind,
+        // The prim's computed purpose: default, render, proxy or guide; blank when it is not imageable.
+        eColumnPurpose,
         // The row's draw state in the viewer the panel is linked to.
         eColumnDrawState,
         eColumnCount
@@ -211,6 +214,12 @@ public:
         // The script name of the node whose draw rule set the row's state, for a state the graph
         // sets on the row itself; empty otherwise, and when the rule names no node.
         eDrawStateOriginNodeRole,
+        // Whether the prim's purpose is not authored on it, so that it comes from an ancestor or
+        // is the fallback, a bool. Invalid for a prim that is not imageable.
+        ePurposeInheritedRole,
+        // The path of the prim the purpose is authored on, a QString, empty for the fallback.
+        // Invalid for a prim that is not imageable.
+        ePurposeOriginRole,
     };
 
     enum PayloadStateEnum {
@@ -235,6 +244,9 @@ public:
 
     // The draw state column's tooltip for a SceneDrawOriginEnum, naming node for a graph-set row.
     static QString drawOriginTip(int origin, const QString& node);
+
+    // The purpose column's tooltip: the purpose and the prim it is authored on, if not the row's.
+    static QString purposeTip(const QString& purpose, bool inherited, const QString& origin);
 
     // The mime type of dragged prim paths: UTF-8, one path per line.
     static QString primPathsMimeType();
@@ -401,6 +413,14 @@ struct SceneChangedHereRow {
     QString name;
     QString type;
     QString kind;
+    // As SceneGraphModel's purpose column and roles show them, for an imageable prim: a prim that
+    // is not passes its parent's purpose through to the rows below.
+    bool imageable = false;
+    QString purpose;
+    bool purposeInherited = false;
+    QString purposeOrigin;
+    // Whether the rows below take this row's purpose when they author none.
+    bool purposeInheritable = false;
     // Indexes into SceneChangedHereRows::rows; a top-level row has no parent, -1.
     int parent = -1;
     int rowInParent = 0;

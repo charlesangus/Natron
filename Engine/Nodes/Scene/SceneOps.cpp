@@ -54,6 +54,7 @@
 #include "Engine/Nodes/Scene/PrimSelector.h"
 #include "Engine/Nodes/Scene/SceneCaches.h"
 #include "Engine/Nodes/Scene/SceneLayerMemo.h"
+#include "Engine/Nodes/Scene/ScenePredicates.h"
 #include "Engine/Nodes/Scene/SceneProjectionCameras.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
@@ -938,8 +939,14 @@ namespace {
         if (!stage || parsed.IsEmpty()) {
             return true;
         }
-        const PXR_NS::UsdObjectCollectionExpressionEvaluator evaluator(stage, parsed);
-        PXR_NS::UsdObjectCollectionExpressionEvaluator::IncrementalSearcher searcher = evaluator.MakeIncrementalSearcher();
+        ScenePredicates::PathEval eval;
+        std::string linkError;
+        if (!ScenePredicates::link(parsed, ScenePredicates::library(), &eval, &linkError)) {
+            *errorMessage = "\"" + expression + "\" can't be evaluated: " + linkError;
+
+            return false;
+        }
+        ScenePredicates::Searcher searcher = eval.MakeIncrementalSearcher(ScenePredicates::PrimOfPath { PXR_NS::UsdStageWeakPtr(stage) });
         PXR_NS::UsdPrimRange range = stage->Traverse(predicate);
         std::size_t visited = 0;
         for (PXR_NS::UsdPrimRange::iterator it = range.begin(); it != range.end(); ++it) {
@@ -1234,8 +1241,11 @@ namespace {
         if (!stage || !parsePrimExpression(expression, &parsed, &error) || parsed.IsEmpty()) {
             return true;
         }
+        ScenePredicates::PathEval eval;
+        if (!ScenePredicates::link(parsed, ScenePredicates::library(), &eval, &error)) {
+            return true;
+        }
         const PXR_NS::Usd_PrimFlagsPredicate& predicate = drawRulePredicate();
-        const PXR_NS::UsdObjectCollectionExpressionEvaluator evaluator(stage, parsed);
         std::size_t visited = 0;
         for (const std::string& root : roots) {
             const PXR_NS::SdfPath rootPath(root);
@@ -1243,7 +1253,7 @@ namespace {
             if (!prim || !predicate(prim)) {
                 continue;
             }
-            PXR_NS::UsdObjectCollectionExpressionEvaluator::IncrementalSearcher searcher = evaluator.MakeIncrementalSearcher();
+            ScenePredicates::Searcher searcher = eval.MakeIncrementalSearcher(ScenePredicates::PrimOfPath { PXR_NS::UsdStageWeakPtr(stage) });
             bool pruned = false;
             for (const PXR_NS::SdfPath& ancestor : rootPath.GetPrefixes()) {
                 if (ancestor == rootPath) {

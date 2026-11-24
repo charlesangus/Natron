@@ -69,3 +69,4 @@ Fix the product races in our code or the MoonRay fork (M325 - MoonRay Fork: char
 
 **Verification gate:** P3.T1 green on both schedulers; the dev image builds on the new MoonRay pin; full debug PR CI green.
 - 2026-11-24 — Two more ProgressiveRenderTest segfaults: PR #346 (M510) task-graph leg run 45154296436, and m554-gate4 legacy leg; both passed on the in-job rerun.
+- 2026-11-24 — USDRenderStormTest failed once more on m559-gate7 (task-graph leg), passing on rerun; m106-gate5 and m559-gate5 saw the same.

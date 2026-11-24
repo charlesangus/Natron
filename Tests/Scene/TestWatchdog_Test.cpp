@@ -43,3 +43,13 @@ TEST(TestWatchdog, StopBeforeTheLimitDoesNothing)
     std::this_thread::sleep_for(std::chrono::milliseconds(1200));
     SUCCEED();
 }
+
+TEST(TestWatchdog, ASegfaultPrintsThePhaseAndStacks)
+{
+    ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+    ASSERT_DEATH({
+        TestWatchdog watchdog;
+        watchdog.start(60);
+        watchdog.setPhase("crashing");
+        *static_cast<volatile int*>(nullptr) = 1; }, "watchdog: fatal signal 11 in TestWatchdog.ASegfaultPrintsThePhaseAndStacks, phase 'crashing'");
+}

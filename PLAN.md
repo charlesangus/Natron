@@ -436,7 +436,7 @@ future core work has solid ground to build on.
 | M290 | Native Cryptomatte Keyer | todo | M285 |  | E19 | | | [M290-native-cryptomatte-keyer.md](PLAN/MILESTONES/M290-native-cryptomatte-keyer.md) |
 | M289 | Utility Adaptive Subdivision | todo | M284 |  | E19 | | | [M289-utility-adaptive-subdivision.md](PLAN/MILESTONES/M289-utility-adaptive-subdivision.md) |
 | M287 | Utility Renderer Displacement | todo | M289 |  | E19 | | | [M287-utility-renderer-displacement.md](PLAN/MILESTONES/M287-utility-renderer-displacement.md) |
-| M291 | Defocus Reference Harness | doing | M131, M133 | bosley-executor | E24 | F13 | | [M291-defocus-reference-harness.md](PLAN/MILESTONES/M291-defocus-reference-harness.md) |
+| M291 | Defocus Reference Harness | done | M131, M133 | | E24 | F13 | | [M291-defocus-reference-harness.md](PLAN/MILESTONES/M291-defocus-reference-harness.md) |
 | M292 | Traced Lens Bokeh | todo | M131, M133, M462, M463, M465 |  | E24 | F13 | | [M292-traced-lens-bokeh.md](PLAN/MILESTONES/M292-traced-lens-bokeh.md) |
 | M293 | ZDefocus Debug Outputs | done | M131, M133 | | E3 | F13 | | [M293-zdefocus-debug-outputs.md](PLAN/MILESTONES/M293-zdefocus-debug-outputs.md) |
 | M473 | Lens Camera And Focus Controls | todo | M292 |  | E24 | F13 | | [M473-lens-camera-and-focus-controls.md](PLAN/MILESTONES/M473-lens-camera-and-focus-controls.md) |
@@ -573,7 +573,7 @@ future core work has solid ground to build on.
 | M553 | Storm Project3D Test Flake | done | - | | E2 | | | [M553-storm-project3d-test-flake.md](PLAN/MILESTONES/M553-storm-project3d-test-flake.md) |
 | M552 | Shared Remote Run Watcher | done | - | | E2 | | | [M552-shared-remote-run-watcher.md](PLAN/MILESTONES/M552-shared-remote-run-watcher.md) |
 | M494 | Delegate Subdivision | done | - | | E9 | | | [M494-delegate-subdivision.md](PLAN/MILESTONES/M494-delegate-subdivision.md) |
-| M495 | KeyMix GPU Edge Read Fix | doing | - | bosley-executor | E14 | | | [M495-keymix-gpu-edge-read-fix.md](PLAN/MILESTONES/M495-keymix-gpu-edge-read-fix.md) |
+| M495 | KeyMix GPU Edge Read Fix | done | - | | E14 | | | [M495-keymix-gpu-edge-read-fix.md](PLAN/MILESTONES/M495-keymix-gpu-edge-read-fix.md) |
 | M496 | MoonRay Test Stability | doing | - | bosley-executor | E9 | | | [M496-moonray-test-stability.md](PLAN/MILESTONES/M496-moonray-test-stability.md) |
 | M504 | GIL Lock Order Fix | done | M336 | | E14 |  | | [M504-gil-lock-order-fix.md](PLAN/MILESTONES/M504-gil-lock-order-fix.md) |
 | M505 | Deleted Knob Listener Dependencies | done | M372 | | E14 | F16 | | [M505-deleted-knob-listener-dependencies.md](PLAN/MILESTONES/M505-deleted-knob-listener-dependencies.md) |

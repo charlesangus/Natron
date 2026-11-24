@@ -193,7 +193,7 @@ future core work has solid ground to build on.
 | M235 | USDCamera From File | done | M226 | bosley-native-nodes | E9 | | | [M235-usdcamera-from-file.md](PLAN/MILESTONES/M235-usdcamera-from-file.md) |
 | M236 | Shared Materials And Assignment | done | M226 | bosley-native-nodes | E9 | | | [M236-shared-materials-and-assignment.md](PLAN/MILESTONES/M236-shared-materials-and-assignment.md) |
 | M237 | CI Flake Fixes | done | - | bosley-native-nodes | E2 | | | [M237-ci-flake-fixes.md](PLAN/MILESTONES/M237-ci-flake-fixes.md) |
-| M238 | EdgePush And Edge Fill Kit | blocked | M123 | bosley-executor | E3 | F39 | response | [M238-edgeextend-options.md](PLAN/MILESTONES/M238-edgeextend-options.md) |
+| M238 | EdgePush And Edge Fill Kit | todo | M123 |  | E3 | F39 | response | [M238-edgeextend-options.md](PLAN/MILESTONES/M238-edgeextend-options.md) |
 | M239 | Weight-Based GPU Placement | done | - | gpu | E5 | | | [M239-weight-based-gpu-placement.md](PLAN/MILESTONES/M239-weight-based-gpu-placement.md) |
 | M240 | Float Trap And Denormal Audit | done | - | gpu | E14 | | | [M240-float-trap-and-denormal-audit.md](PLAN/MILESTONES/M240-float-trap-and-denormal-audit.md) |
 | M241 | Up Axis And Units Policy | done | M226 |  | E9 | | | [M241-up-axis-policy.md](PLAN/MILESTONES/M241-up-axis-policy.md) |

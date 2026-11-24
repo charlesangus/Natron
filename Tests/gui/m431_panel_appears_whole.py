@@ -62,6 +62,7 @@ LAZY_PLUGINS = ("Merge", "Transform", "Grade", "ColorCorrect", "Blur", "Shuffle"
 LAZY_SKIP = ("read", "write", "viewer", "group", "backdrop", "dot", "input", "output", "precomp",
              "tracker", "roto", "cache", "disk")
 LAZY_SCAN_LIMIT = 60
+LAZY_PANEL_LIMIT = 12
 SECOND_PANEL_PLUGIN = "Blur"
 # Tried in turn for a page other than the one a new panel shows, holding unmodified rows.
 UNMODIFIED_PLUGINS = ("Merge", "Transform", "Grade", "Blur", "ColorCorrect")
@@ -755,17 +756,41 @@ try:
                 return p, page
         return None, None
 
+    def has_numeric_on_many_pages(node):
+        """Whether the node has more than one page and a visible labelled one-dimensional Int or
+        Double parameter directly on a page: only then is its panel worth opening."""
+        params = node.getParams()
+        pages = set(p.getScriptName() for p in params if isinstance(p, NatronEngine.PageParam))
+        if len(pages) < 2:
+            return False
+        for p in params:
+            if not isinstance(p, (NatronEngine.IntParam, NatronEngine.DoubleParam)) or p.getNumDimensions() != 1:
+                continue
+            parent = p.getParent()
+            if parent is not None and parent.getScriptName() in pages and p.getIsVisible() and p.getLabel():
+                return True
+        return False
+
     def lazy_page_steps():
         tag = "lazy page"
         gt.section(tag)
         yield from quiet()
         node = param = None
         page = None
-        for pid in UNMODIFIED_PLUGINS:
+        ids = list(UNMODIFIED_PLUGINS)
+        for pid in sorted(str(i) for i in NatronEngine.natron.getPluginIDs()):
+            if pid not in ids and not any(k in pid.lower() for k in LAZY_SKIP):
+                ids.append(pid)
+        opened = 0
+        for pid in ids[:LAZY_SCAN_LIMIT]:
             node = app.createNode(pid)
             if node is None:
-                report("NOTE %s: %s is not available: %s" % (tag, pid, gt.plugin_problem(pid)))
                 continue
+            if opened >= LAZY_PANEL_LIMIT or not has_numeric_on_many_pages(node):
+                node.destroy()
+                node = None
+                continue
+            opened += 1
             node.setPosition(-300, -250)
             ok = yield from open_panel(node)
             panel = panel_of(node) if ok else None
@@ -779,8 +804,8 @@ try:
             gt.close_all_panels()
             node.destroy()
             node = None
-        if not check(param is not None, "%s: one of %r has an unbuilt numeric row on a page not yet shown"
-                     % (tag, UNMODIFIED_PLUGINS)):
+        if not check(param is not None, "%s: a plug-in has an unbuilt numeric row on a page not yet shown"
+                     % tag):
             return
         label = param.getLabel()
         report("NOTE %s: %s page %r, parameter %r" % (tag, node.getPluginID(), page, label))

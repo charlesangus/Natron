@@ -36,4 +36,25 @@ Make unconnected inputs and outputs easy to grab: fatter pipes, a longer output 
   - verify: the Xvfb script presses the mouse 15 px beside a dangling input and beside an output stub at default width and asserts a drag starts from each; at width 1 a press 25 px away grabs nothing.
   - size: M
 
+## Phase 521.2: Default grab and explorations
+
+- [ ] M521.P2.T1 — Wider grab at the default width
+  - files: `Gui/Edge.cpp`, `Engine/Settings.cpp`, `Tests/gui/pipe_grab.py`
+  - approach: grab radius `max(10, 4 * pipeWidth)` for connected pipes and `max(18, 8 * pipeWidth)` for dangling inputs and output stubs; `pipeWidth` default 4.
+  - verify: pipe_grab.py asserts the default radii (16 / 32 px) and that width 1 still floors at 10 / 18.
+  - size: M
+
+- [ ] M521.P2.T2 — Output nub (exploration)
+  - files: `Gui/Edge.cpp`, `Gui/NodeGui.cpp`, `Engine/Settings.{h,cpp}`, `Tests/gui/pipe_grab.py`
+  - approach: an unconnected output draws as a filled half circle under the node's bottom edge instead of the arrow stub, radius about the current stub length; grabbing it starts a connection drag as the stub did. Screenshots for the user to choose between stub and nub.
+  - verify: GUI script grabs the nub and connects it; screenshots at defaults.
+  - size: M
+
+- [ ] M521.P2.T3 — Highlight grabbable pipes on hover (exploration)
+  - files: `Gui/NodeGraph*.cpp`, `Gui/Edge.cpp`, `Tests/gui/pipe_grab.py`
+  - approach: while the mouse is over the graph with no button down, the dangling input, output stub/nub or pipe that a click would pick up (same search as `hasItemNearbyMouse`) draws highlighted; it clears when the pointer leaves the radius.
+  - verify: GUI script moves the mouse beside a dangling input and asserts it is highlighted, then away and asserts it is not; screenshot of the hover.
+  - size: M
+
 **Verification gate:** release gate green per `.local/build-mode`; `Tests/gui/pipe_grab.py` passes under Xvfb at 1920x1080; GUI bench rule (`tools/bench/gui/run.sh --xvfb`, compared to `baselines/xvfb.jsonl`) with no regression, recorded in `## Decisions`; screenshots OK'd at F36 - UI Polish Batch II's UAT.
+- 2026-11-24 — **Default grab (user):** grab radii `max(10, 4 × width)` / `max(18, 8 × width)` and default Pipe Width 4. Explore an output nub (a half circle about the stub's size) and hover highlighting of whatever a click would pick up; screenshots to the user.

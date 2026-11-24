@@ -87,3 +87,5 @@ Today (origin/main): the row menu has Load, Load With Descendants and Unload ove
 - 2026-11-23 — "Below" means in the prim hierarchy: the prim and its descendants, recursively, not rows lower in the panel (user).
 - 2026-11-23 — Walk cancellation confirmed as implemented (user).
 - 2026-11-23 — Draw <state> To <kind>: only ancestors that would block the target rows (BBox, Hidden, or an unset child of a Children row) switch to Children; ancestors inheriting Full stay Full.
+- 2026-11-23 — Layout (user): row 1 keeps the filter controls only (Filter, Changed Here). Row 2: scope combo | Load section (unpack icon, divider): Load, Unload | Display section (eye icon, divider): draw states, then Clear Below and Reset to Graph with the display buttons. New row 3 below the tree and above the detail tabs: Apply To Node and Bake To Node on the left, Cancel Loads on the right.
+- 2026-11-23 — Names (user, partial): BBox (not Box), Geometry (was Full), Load + Draw (was Load All), Hide (was Hidden); Children's name and meaning to be rethought; icons for each state under discussion.

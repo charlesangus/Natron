@@ -2105,8 +2105,8 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     }
     bulkLayout->addWidget(_imp->bulkScope);
     const int layoutSpacing = bulkLayout->spacing();
-    const int groupGap = 12;
-    const int iconGap = 4;
+    const int groupGap = 16;
+    const int iconGap = groupGap / 2;
     const auto addGap = [bulkLayout, layoutSpacing](int gap) {
         bulkLayout->addSpacing(std::max(0, gap - 2 * layoutSpacing));
     };
@@ -2119,8 +2119,8 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
         bulkLayout->addWidget(divider, 0, Qt::AlignVCenter);
         addGap(groupGap / 2);
     };
-    const auto addSection = [this, bulkLayout, &addGap, groupGap, iconGap](const char* objectName, const char* iconPath, const QString& tip) {
-        addGap(groupGap);
+    const auto addSection = [this, bulkLayout, &addGap, iconGap](const char* objectName, const char* iconPath, const QString& tip) {
+        addGap(iconGap);
         QLabel* icon = new QLabel(this);
         icon->setObjectName(QString::fromUtf8(objectName));
         icon->setFrameStyle(QFrame::NoFrame);

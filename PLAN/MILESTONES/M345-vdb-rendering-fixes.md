@@ -31,7 +31,7 @@ Make a USD `Volume` with `OpenVDBAsset` fields render correctly in Storm, Cycles
 
 ## Phase 345.1: Cycles
 
-- [ ] M345.P1.T1 — Build Cycles with NanoVDB
+- [x] M345.P1.T1 — Build Cycles with NanoVDB (on branch; restacked on M494 pins in d3187019a)
   - files: `tools/ci/local/build-cycles.sh`
   - approach: Set `-DWITH_CYCLES_NANOVDB=ON`. `src/scene/volume.cpp`'s `create_volume_mesh` only builds a volume mesh under `WITH_OPENVDB && WITH_NANOVDB`, so with it off a volume can never render. Find out why M249 - Bundle Cycles Delegate turned it off (commit 680e291ca) and resolve that reason. If the image lacks `nanovdb/NanoVDB.h`, add the headers from the OpenVDB tag matching `libopenvdb.so.13.0`.
   - verify: The script's configure output reports NanoVDB enabled, and `nm -C` on the built `hdCycles.so` shows `VolumeMeshBuilder` symbols or `openvdb_to_nanovdb`.
@@ -74,22 +74,22 @@ All patches go in the fork from M325 - MoonRay Fork, not as `sed` lines in `buil
 
 ## Phase 345.3: Natron reporting and tests
 
-- [ ] M345.P3.T1 — Stop the false surface warning on volume materials
+- [x] M345.P3.T1 — Stop the false surface warning on volume materials (on branch; restacked on M494 pins in d3187019a)
   - files: `Engine/Nodes/Scene/DelegateSupport.cpp`, `Tests/Scene/RenderDelegates_Test.cpp`
   - approach: `warningText` reports "finds no surface" using only `ComputeSurfaceSource`. Also accept `ComputeVolumeSource(contexts)` so a material with only a volume output for this renderer's contexts isn't flagged.
   - verify: A new test case passes: a material with only `outputs:cycles:volume` raises no surface warning for Cycles, and a material with neither for its contexts still does.
   - size: M
-- [ ] M345.P3.T2 — Add a shared VDB file query helper
+- [x] M345.P3.T2 — Add a shared VDB file query helper (on branch; restacked on M494 pins in d3187019a)
   - files: `Engine/Nodes/Scene/VolumeFields.h`, `Engine/Nodes/Scene/VolumeFields.cpp`, `Engine/CMakeLists.txt`, `Tests/Scene/VolumeFields_Test.cpp`
   - approach: A small helper returning per-file grid names, value types, bounding boxes and voxel sizes, reading metadata only and calling `openvdb::initialize()` itself. Link `OpenVDB::openvdb` (the stand-in target from `cmake/usd-image-deps/`). M346 - USDVolume Node and M348 - Volume Viewer Support reuse it. Missing or unreadable files return an error, never throw.
   - verify: The new test reads a fixture's grid list and reports an error for a missing file and a non-VDB file.
   - size: M
-- [ ] M345.P3.T3 — Warn about volume problems
+- [x] M345.P3.T3 — Warn about volume problems (on branch; restacked on M494 pins in d3187019a)
   - files: `Engine/Nodes/Scene/DelegateSupport.cpp`, `Engine/Nodes/Scene/DelegateSupport.h`, `Tests/Scene/RenderDelegates_Test.cpp`
   - approach: Extend `warningText` to walk `UsdVolVolume` prims and report by prim path, through the same persistent message path: file not found, grid not in file, and for MoonRay, fields from more than one file or names other than density, emission and velocity. Keep the walk cheap per M327 - Heavy Scene Spike's concerns: query each distinct file once.
   - verify: New test cases assert each warning's text and that a valid volume raises none.
   - size: M
-- [ ] M345.P3.T4 — Add VDB fixtures and a cross-delegate render test
+- [x] M345.P3.T4 — Add VDB fixtures and a cross-delegate render test (on branch; restacked on M494 pins in d3187019a)
   - files: `Tests/fixtures/volume-sphere.0001.vdb`, `Tests/fixtures/volume-sphere.0002.vdb`, `Tests/fixtures/make-volume-fixtures.py`, `Tests/fixtures/scene-volume.usda`, `Tests/Scene/VolumeRender_Test.cpp`, `Tests/CMakeLists.txt`
   - approach: Commit small fixtures (about 32³, `density`, `temperature` and `velocity` grids, sphere offset left on frame 1 and right on frame 2), with the Python generator kept for regeneration. Don't generate them at test time: an in-process writer would call `openvdb::initialize()` and hide a regression of M345.P1.T2. Check `du` per the LFS rule. For each delegate, assert that the volume darkens the correct side compared with a mesh-only scene, moves on frame 2, and that a wrong grid name draws nothing. Add a velocity motion blur case for Cycles and MoonRay. Build on `CyclesTestUtils.h`.
   - verify: `VolumeRender` passes in ctest for all three delegates, run in its own process.

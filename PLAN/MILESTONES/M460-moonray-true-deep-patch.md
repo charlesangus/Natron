@@ -19,7 +19,7 @@ Make MoonRay's deep output true deep in our MoonRay fork. Upstream MoonRay recor
 
 ## Phase 460.1: True deep in the MoonRay fork
 
-- [ ] M460.P1.T1 — Every presence layer gets a deep record
+- [x] M460.P1.T1 — Every presence layer gets a deep record (fork 799d47e pinned in a4bb52fe3; presence probes RMSE 1e-4)
   - files: charlesangus/moonray (`lib/rendering/pbr/integrator/PathIntegrator.{h,cc}`, `lib/rendering/pbr/handlers/ShadeBundleHandler.cc`), the openmoonray pin, `tools/ci/local/Dockerfile`, `tools/ci/local/build-moonray.sh`
   - approach: land `spike/m255/moonray/moonray-true-deep.patch` on the fork's Natron branch; bump the pin; publish the image and recreate natron-dev.
   - verify: `spike/m255/moonray/variants.sh` on the new image: presence vector and scalar flattened RMSE ≤ 1e-3; opaque and glass outputs unchanged.

@@ -85,6 +85,16 @@ sceneTestSourceHook()
     return hook;
 }
 
+// Called by SceneTestOp in upstreamRead mode 3 between taking its pre-read key and reading its
+// "value" knob, as a node whose knob reads an edit can overtake.
+inline std::function<void()>&
+sceneTestOpReadHook()
+{
+    static std::function<void()> hook;
+
+    return hook;
+}
+
 // Defined in Tests/Scene/SceneTestAuthoring.cpp, the only test file outside the scene tests that
 // sees USD: this header is included by wmain.cpp, which must stay free of pxr.
 // Called by SceneTestSource while it authors, before it reads its "value" knob, as a node that
@@ -260,7 +270,8 @@ private:
         page->addKnob(value);
         _value = value;
         // 0: keys on the whole upstream stack; 1: reads nothing upstream; 2: reads only the
-        // source value, through SceneQueryPool, and keys on it.
+        // source value, through SceneQueryPool, and keys on it; 3: as 0, but reads "value" after
+        // taking its key and hands emitSceneLayer() that key.
         KnobIntPtr upstreamRead = createKnob<KnobInt>(std::string("Upstream Read"));
         upstreamRead->setName("upstreamRead");
         upstreamRead->setAnimationEnabled(false);
@@ -283,6 +294,21 @@ private:
             SceneLayerReads reads;
             reads.upstream = SceneLayerMemo::Key::eUpstreamReadNothing;
             return emitSceneLayer(upstream, reads, [value](const SceneLayerEdit& edit, std::string* error) { return sceneTestAuthorOp(edit, value, error); }, outputScene, errorMessage) ? eStatusOK : eStatusFailed;
+        }
+        if (mode == 3) {
+            SceneLayerReads reads;
+            if (!getSceneLayerKey(reads, &reads.valuesReadUnder, errorMessage)) {
+                return eStatusFailed;
+            }
+            reads.valuesRead = true;
+            // A copy, so the hook may replace itself.
+            const std::function<void()> hook = sceneTestOpReadHook();
+            if (hook) {
+                hook();
+            }
+            const int readValue = valueKnob ? valueKnob->getValue() : 0;
+
+            return emitSceneLayer(upstream, reads, [readValue](const SceneLayerEdit& edit, std::string* error) { return sceneTestAuthorOp(edit, readValue, error); }, outputScene, errorMessage) ? eStatusOK : eStatusFailed;
         }
         if (mode == 2) {
             int sourceValue = 0;

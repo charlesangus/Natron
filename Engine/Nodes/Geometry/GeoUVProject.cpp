@@ -224,7 +224,6 @@ projectGeoUVs(GeoDetailBuilder& detail,
     }
 
     const bool onPoints = (params.attributeClass == eGeoAttribClassPoint);
-    // Offsets of the vertices, or of the points, written, with their uv.
     std::vector<std::pair<GeoOffset, std::array<double, 2>>> uvs;
     {
         const GeoDetail& d = detail.detail();

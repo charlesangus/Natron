@@ -5,11 +5,11 @@ Usage, from the repository root: Tests/gui/run-gui-test.sh Tests/gui/geometry_ed
 Graph: GeoPrimitive -> GeoTransform, stacked, nothing selected and nothing rendering.
 
 Asserts:
-  - the Geometry edges preference equals the Native 3D colour preference;
+  - after the Native 3D colour preference is changed and saved, the pipe follows the new colour;
   - the pipe between the two nodes is drawn in that colour: across a strip at the pipe's middle,
     the drawn pixel closest to the preference is within a few levels of it.
 
-Shot: geometry-edge-colour.png (the node graph around the pipe).
+Shots: geometry-edge-colour.png and geometry-edge-colour-changed.png (the node graph around the pipe).
 """
 import os
 import sys
@@ -30,9 +30,10 @@ try:
     import NatronGui
     from PySide6.QtCore import QPointF
     from PySide6.QtGui import QColor
+    from PySide6.QtWidgets import QApplication, QMainWindow, QPushButton
 
     import guitest as gt
-    from guitest import check, report, require
+    from guitest import check, menu_of, report, require
 
     import faulthandler
     _watchdog_file = open(os.path.join(gt.OUT, "watchdog.txt"), "w")
@@ -62,54 +63,50 @@ try:
     def channel_error(a, b):
         return max(abs(a.red() - b.red()), abs(a.green() - b.green()), abs(a.blue() - b.blue()))
 
-    def steps():
-        ok = yield ("until", lambda: graph_view() is not None, STARTUP_TIMEOUT_S)
-        require(ok, "the node graph is up")
-        gt.close_all_panels()
-        yield ("sleep", SETTLE_MS)
-
-        gt.section("geometry edge colour")
-        settings = NatronGui.natron.getSettings()
-        native = settings.getParam("native3DNodesColor")
-        edge_pref = settings.getParam("edgeGeometryColor")
-        require(native is not None, "the Native 3D colour preference exists")
-        require(edge_pref is not None, "the Geometry edges preference exists")
-        expected = colour_of(native)
-        check(colour_of(edge_pref).name() == expected.name(),
-              "the Geometry edges preference equals the Native 3D colour %s (got %s)"
-              % (expected.name(), colour_of(edge_pref).name()))
-
-        source = create("GeoPrimitive", 0, 0)
-        target = create("GeoTransform", 0, NODE_GAP)
-        require(target.connectInput(0, source), "connect the GeoTransform to the GeoPrimitive")
-        app.clearSelection()
-        yield ("sleep", SETTLE_MS)
-
-        sx, sy = source.getPosition()
-        sw, sh = source.getSize()
-        tx, ty = target.getPosition()
-        tw, _ = target.getSize()
-        middle = QPointF((sx + sw / 2.0 + tx + tw / 2.0) / 2.0, (sy + sh + ty) / 2.0)
-        view = graph_view()
-        view.centerOn(middle)
-        yield ("sleep", SETTLE_MS)
-        gt.shot("geometry-edge-colour.png")
-
-        image = view.viewport().grab().toImage()
-        centre = view.mapFromScene(middle)
-        best = None
-        for dy in (-4, 0, 4):
-            for dx in range(-STRIP_HALF_WIDTH, STRIP_HALF_WIDTH + 1):
-                x, y = centre.x() + dx, centre.y() + dy
-                if not (0 <= x < image.width() and 0 <= y < image.height()):
+    def open_preferences():
+        for win in QApplication.topLevelWidgets():
+            if not isinstance(win, QMainWindow) or win.menuBar() is None:
+                continue
+            for act in win.menuBar().actions():
+                menu = menu_of(act)
+                if menu is None or "edit" not in act.text().lower():
                     continue
-                pixel = image.pixelColor(x, y)
-                if best is None or channel_error(pixel, expected) < channel_error(best, expected):
-                    best = pixel
+                for a in menu.actions():
+                    if "preferences" in a.text().lower():
+                        a.trigger()
+                        QApplication.processEvents()
+                        panels = [w for w in gt.widgets_of("PreferencesPanel") if w.isVisible()]
+                        return panels[0] if len(panels) == 1 else None
+        return None
+
+    def pipe_pixel(view, middle, expected):
+        best = pipe_pixel(view, middle, expected)
         require(best is not None, "the pipe's middle is inside the node graph view")
         check(channel_error(best, expected) <= MAX_CHANNEL_ERROR,
               "the GeoPrimitive -> GeoTransform pipe is drawn in the Native 3D colour %s (closest pixel %s)"
               % (expected.name(), best.name()))
+
+        gt.section("geometry edge follows the preference")
+        changed = QColor(40, 220, 60)
+        panel = open_preferences()
+        require(panel is not None, "the Preferences panel opens")
+        native.set(changed.redF(), changed.greenF(), changed.blueF())
+        save = [w for w in panel.findChildren(QPushButton) if w.text() == "Save" and w.isVisible()]
+        require(len(save) == 1, "found the Preferences Save button")
+        save[0].click()
+        QApplication.processEvents()
+        yield ("sleep", SETTLE_MS)
+        view = graph_view()
+        view.centerOn(middle)
+        yield ("sleep", SETTLE_MS)
+        gt.shot("geometry-edge-colour-changed.png")
+        best = pipe_pixel(view, middle, changed)
+        require(best is not None, "the pipe's middle is inside the node graph view")
+        check(channel_error(best, changed) <= MAX_CHANNEL_ERROR,
+              "after changing the Native 3D colour the pipe is drawn in %s (closest pixel %s)"
+              % (changed.name(), best.name()))
+        native.set(*original)
+        yield ("sleep", SETTLE_MS)
 
         faulthandler.cancel_dump_traceback_later()
 

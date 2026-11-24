@@ -67,12 +67,13 @@ struct GeoSpreadsheetPanel::Implementation {
         U64 generation = 0;
     };
 
-    // What the rows shown were read from.
     struct Shown {
         NodeWPtr node;
         double frame = 0.;
         U64 hash = 0;
         bool fromViewer = false;
+        ViewerInstanceWPtr viewer;
+        QPointer<SceneViewport> viewport;
         bool valid = false;
     };
 
@@ -138,7 +139,6 @@ struct GeoSpreadsheetPanel::Implementation {
         status->setToolTip(text);
     }
 
-    // What the rows of node are, by how the panel came to show it.
     QString statusOf(const NodePtr& node) const
     {
         const QString name = QString::fromStdString(node->getFullyQualifiedName());
@@ -154,7 +154,6 @@ struct GeoSpreadsheetPanel::Implementation {
         return GeoSpreadsheetPanel::tr("%1 shows %2").arg(QString::fromStdString(viewerName), name);
     }
 
-    // The node the panel is to list: the bar's target, or when following the viewer the node it views.
     NodePtr wantedNode() const
     {
         if (sourceBar->isPinned() || (sourceBar->getFollow() == NodeSourceBar::eFollowSelection)) {
@@ -296,7 +295,10 @@ struct GeoSpreadsheetPanel::Implementation {
         const double frame = currentFrame();
         const U64 hash = node->getHashValue();
         if (!busy && shown.valid && (shown.node.lock() == node) && (shown.frame == frame) && (shown.hash == hash)
-            && (shown.fromViewer || !viewerServes(instance, node, frame, hash))) {
+            && (shown.fromViewer ? (shown.viewer.lock() == instance && shown.viewport == viewport)
+                                 : !viewerServes(instance, node, frame, hash))) {
+            // A viewer-sourced snapshot stays bound to the viewer and viewport it came from, so a
+            // switch to another viewer, or a recreated viewport, reads again to rebind the selection.
             // Pinning or unpinning the node already listed changes how it came to be shown.
             setStatus(statusOf(node));
             publishState();
@@ -346,6 +348,8 @@ struct GeoSpreadsheetPanel::Implementation {
         shown.frame = runningFrame;
         shown.hash = runningHash;
         shown.fromViewer = read.fromViewer;
+        shown.viewer = read.selectionViewer;
+        shown.viewport = viewport;
         shown.valid = bool(node);
         if (node) {
             setStatus(statusOf(node));

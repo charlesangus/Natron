@@ -354,6 +354,10 @@ try:
                                             "sceneGraphBulkDisplayIcon", "sceneGraphBulk_bbox", "sceneGraphBulk_expand",
                                             "sceneGraphBulk_geometry", "sceneGraphBulk_loadAndDraw", "sceneGraphBulk_hide",
                                             "sceneGraphBulk_clearBelow", "sceneGraphResetDrawStates"])
+        for header in ("sceneGraphBulkLoadIcon", "sceneGraphBulkDisplayIcon"):
+            header_label = child(QLabel, header)
+            header_pixmap = header_label.pixmap() if header_label is not None else None
+            check(header_pixmap is not None and not header_pixmap.isNull(), "the %s section header shows an icon" % header)
         node_row = check_row("node", ["sceneGraphApplyToNode", "sceneGraphBakeDrawStates", "sceneGraphCancelLoads"])
         labels = [str(button(a).text()) for a in BUTTONS]
         check(labels == ["Load", "Unload", "BBox", "Expand", "Geometry", "Load + Draw", "Hide", "Clear Below"],

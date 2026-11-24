@@ -87,6 +87,7 @@
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h"
+#include "Gui/GuiMacros.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
@@ -94,6 +95,7 @@
 #include "Gui/SceneNodeStageSource.h"
 #include "Gui/ScenePrimInspector.h"
 #include "Gui/SceneSelectionActions.h"
+#include "Gui/ThemedIcon.h"
 #include "Gui/UndoHistory.h"
 #include "Gui/ViewerTab.h"
 
@@ -2113,11 +2115,13 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
         bulkLayout->addWidget(divider, 0, Qt::AlignVCenter);
         bulkLayout->addSpacing(2);
     };
-    const auto addSection = [this, bulkLayout, &addDivider](const char* objectName) {
+    const auto addSection = [this, bulkLayout, &addDivider](const char* objectName, const char* iconPath, const QString& tip) {
         addDivider(0);
         QLabel* icon = new QLabel(this);
         icon->setObjectName(QString::fromUtf8(objectName));
         icon->setFixedSize(16, 16);
+        icon->setToolTip(tip);
+        ThemedIcon::setLabelIcon(icon, ThemedIcon::icon(QString::fromUtf8(iconPath), 16), 16);
         bulkLayout->addWidget(icon, 0, Qt::AlignVCenter);
     };
     struct BulkButton {
@@ -2139,12 +2143,12 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
             bulkLayout->addWidget(button);
         }
     };
-    addSection("sceneGraphBulkLoadIcon");
+    addSection("sceneGraphBulkLoadIcon", NATRON_ICONS_PATH "lucide/package-open.svg", tr("Load"));
     addBulkButtons({
         { "load", QT_TR_NOOP("Load") },
         { "unload", QT_TR_NOOP("Unload") },
     });
-    addSection("sceneGraphBulkDisplayIcon");
+    addSection("sceneGraphBulkDisplayIcon", NATRON_ICONS_PATH "lucide/eye.svg", tr("Display"));
     addBulkButtons({
         { "bbox", QT_TR_NOOP("BBox") },
         { "expand", QT_TR_NOOP("Expand") },

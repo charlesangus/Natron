@@ -31,7 +31,7 @@
 #include <QCoreApplication>
 #include <QString>
 #include <QStringList>
-#include <QtConcurrentRun> // QtCore on Qt4, QtConcurrent on Qt5
+#include <QtConcurrentRun>
 
 #include "Engine/AppInstance.h"
 #include "Engine/ChoiceOption.h"
@@ -223,6 +223,8 @@ USDSetAttribute::knobChanged(KnobI* k,
     KnobChoicePtr valueType = _valueType.lock();
 
     if (valueType && (k == valueType.get())) {
+        // A lookup still running would replace the type the user just chose.
+        ++_lookupGeneration;
         rebuildValueKnob();
 
         return true;
@@ -298,13 +300,20 @@ USDSetAttribute::startTypeLookup()
     }
     const double time = getCurrentTime();
     NodeWPtr weakNode = getNode();
+    const EffectInstanceWPtr weakInput = input;
+    input.reset();
 
-    QtConcurrent::run([input, weakNode, generation, pattern, name, primvar, time, context]() {
+    QtConcurrent::run([weakInput, weakNode, generation, pattern, name, primvar, time, context]() {
         USDSetAttributeLookup::Result result;
         {
+            // The worker may hold the last reference to the input; it is released on the main thread.
+            SceneNodeAuthoring::EffectReleasedOnMainThread held(weakInput.lock());
+            if (!held.get()) {
+                return;
+            }
             ScenePayload scene;
             std::string error;
-            if ((input->evaluateScene(EvaluateSceneArgs(time, ViewIdx(0), context), &scene, &error) != eRenderRoIRetCodeOk) || scene.isEmpty()) {
+            if ((held.get()->evaluateScene(EvaluateSceneArgs(time, ViewIdx(0), context), &scene, &error) != eRenderRoIRetCodeOk) || scene.isEmpty()) {
                 return;
             }
             SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(scene, context.loadSet, &error);

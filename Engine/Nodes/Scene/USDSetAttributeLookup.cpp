@@ -125,7 +125,8 @@ lookup(const PXR_NS::UsdStageRefPtr& stage,
         } else if (type != firstType && !result.conflict) {
             result.conflict = true;
             result.conflictPath = path.GetString();
-            result.conflictTypeName = type.GetAsToken().GetString();
+            const PXR_NS::SdfValueTypeName shown = (!result.unsupported && primvar && type.IsArray()) ? type.GetScalarType() : type;
+            result.conflictTypeName = shown.GetAsToken().GetString();
         }
     }
 

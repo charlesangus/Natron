@@ -367,8 +367,7 @@ TEST(VolumeRenderCycles, AWrongGridNameDrawsNothing)
     expectAWrongGridNameDrawsNothing(kRenderDelegateCyclesId);
 }
 
-// Disabled: the Cycles delegate never turns on integrator motion blur, and leaves the volume's
-// velocity scale at 1, which reads the per-second velocity field as per shutter interval.
+// Disabled until the image's Cycles turns motion blur on from the shutter and scales velocity by it.
 TEST(VolumeRenderCycles, DISABLED_VelocityBlursTheVolume)
 {
     if (!CyclesTestUtils::cyclesOrSkip()) {

@@ -3183,8 +3183,9 @@ SceneViewportRenderer::renderProgressive(unsigned int fbo,
         _imp->refineRenderer = _imp->rendererId;
     }
     const HydraRender::EngineCamera camera = _imp->engineCamera(width, height);
+    const GfFrustum& frustum = camera.frustum;
     HydraRender::ProgressiveRender::View view;
-    view.frustum = camera.frustum;
+    view.frustum = frustum;
     view.camera = camera.camera;
     view.fit = camera.fit;
     view.pixelAspect = camera.pixelAspect;

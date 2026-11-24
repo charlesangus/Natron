@@ -49,6 +49,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Scene/CyclesSettings.h"
 #include "Engine/Nodes/Scene/RenderSettingsKnobs.h"
 #include "Engine/Nodes/Scene/RenderSettingsPrim.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
@@ -818,4 +819,36 @@ TEST_F(RenderSettingsKnobsTest, DumpEveryDelegatesDescriptors)
 
     std::printf("renderer\tkey\ttype\tdefault\tname\n%s", dump.c_str());
     EXPECT_FALSE(dump.empty());
+}
+
+// The Cycles table's motion blur setting is sent only once its knob leaves the delegate's default,
+// so the camera's shutter drives the blur until the user changes it.
+TEST_F(RenderSettingsKnobsTest, CyclesMotionBlurIsSentOnlyOnceChanged)
+{
+    const std::string key = "cycles:integrator:motion_blur";
+    const std::string knobName = "natronTestSettingsRendererMotionBlur";
+    RenderSettingsKnobs::Curated table = CyclesSettings::curated();
+    RenderSettingsKnobs::setCuratedForTests(kRenderer, &table);
+
+    for (int declaredDefault = 0; declaredDefault < 2; ++declaredDefault) {
+        RenderSettingsKnobs::DescriptorList declared;
+        if (declaredDefault) {
+            declared.push_back(descriptor(key.c_str(), VtValue(true)));
+        }
+        RenderSettingsKnobs::setDescriptorsForTests(kRenderer, declared);
+        NodePtr node = createSettings();
+        ASSERT_TRUE(bool(node));
+        const RenderSettingsKnobs* settings = settingsOf(node);
+        ASSERT_TRUE(settings != nullptr);
+
+        EXPECT_EQ(0u, settings->values(kRenderer).count(key)) << declaredDefault;
+        const bool changed = !declaredDefault;
+        setKnob(node, knobName, VtValue(changed));
+        const RenderSettingsKnobs::Values sent = settings->values(kRenderer);
+        ASSERT_EQ(1u, sent.count(key)) << declaredDefault;
+        EXPECT_EQ(VtValue(changed), sent.find(key)->second) << declaredDefault;
+        setKnob(node, knobName, VtValue(!changed));
+        EXPECT_EQ(0u, settings->values(kRenderer).count(key)) << declaredDefault;
+        getApp()->getProject()->reset(false, true);
+    }
 }

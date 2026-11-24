@@ -140,7 +140,7 @@ try:
         panel = open_preferences()
         require(panel is not None, "the Preferences panel opens")
         _held.append(panel)
-        native.set(changed.redF(), changed.greenF(), changed.blueF())
+        native.set(changed.redF(), changed.greenF(), changed.blueF(), 1.0)
         QApplication.processEvents()
         save_preferences(panel)
         yield ("sleep", SETTLE_MS)
@@ -155,7 +155,7 @@ try:
               "after changing the Native 3D colour the pipe is drawn in %s (closest pixel %s)"
               % (changed.name(), best.name()))
 
-        native.set(original.r, original.g, original.b)
+        native.set(original.r, original.g, original.b, 1.0)
         QApplication.processEvents()
         if panel.isVisible():
             save_preferences(panel)

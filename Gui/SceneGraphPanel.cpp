@@ -90,6 +90,7 @@
 #include "Gui/SceneGraphModel.h"
 #include "Gui/SceneNodeStageSource.h"
 #include "Gui/ScenePrimInspector.h"
+#include "Gui/ScenePurposeDelegate.h"
 #include "Gui/SceneSelectionActions.h"
 #include "Gui/UndoHistory.h"
 #include "Gui/ViewerTab.h"
@@ -455,25 +456,6 @@ protected:
             option->icon = graphOriginIcon();
             option->decorationSize = QSize(kMarkSize, kMarkSize);
             option->decorationPosition = QStyleOptionViewItem::Left;
-        }
-    }
-};
-
-// Draws a purpose the row inherits dimmed, as the draw state column does, so that the rows that
-// author one stand out.
-class PurposeDelegate
-    : public QStyledItemDelegate {
-public:
-    using QStyledItemDelegate::QStyledItemDelegate;
-
-protected:
-    void initStyleOption(QStyleOptionViewItem* option,
-                         const QModelIndex& index) const override
-    {
-        QStyledItemDelegate::initStyleOption(option, index);
-        if (index.data(SceneGraphModel::ePurposeInheritedRole).toBool()) {
-            option->palette.setColor(QPalette::Text, option->palette.color(QPalette::Disabled, QPalette::Text));
-            option->palette.setColor(QPalette::HighlightedText, option->palette.color(QPalette::Disabled, QPalette::HighlightedText));
         }
     }
 };
@@ -1920,7 +1902,7 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     _imp->tree->setUniformRowHeights(true);
     _imp->tree->setItemDelegateForColumn(SceneGraphModel::eColumnName, new PayloadBadgeDelegate(_imp->tree));
     _imp->tree->setItemDelegateForColumn(SceneGraphModel::eColumnDrawState, new DrawStateDelegate(_imp->tree));
-    _imp->tree->setItemDelegateForColumn(SceneGraphModel::eColumnPurpose, new PurposeDelegate(_imp->tree));
+    _imp->tree->setItemDelegateForColumn(SceneGraphModel::eColumnPurpose, new ScenePurposeDelegate(_imp->tree));
     _imp->tree->setDragEnabled(true);
     _imp->tree->setDragDropMode(QAbstractItemView::DragOnly);
     _imp->tree->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -1944,7 +1926,7 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     _imp->changedHereTree->setContextMenuPolicy(Qt::CustomContextMenu);
     _imp->changedHereTree->header()->setStretchLastSection(false);
     _imp->changedHereTree->header()->setSectionResizeMode(SceneGraphModel::eColumnName, QHeaderView::Stretch);
-    _imp->changedHereTree->setItemDelegateForColumn(SceneGraphModel::eColumnPurpose, new PurposeDelegate(_imp->changedHereTree));
+    _imp->changedHereTree->setItemDelegateForColumn(SceneGraphModel::eColumnPurpose, new ScenePurposeDelegate(_imp->changedHereTree));
     // Its rows hold no draw state.
     _imp->changedHereTree->setColumnHidden(SceneGraphModel::eColumnDrawState, true);
     _imp->stack->addWidget(_imp->changedHereTree);

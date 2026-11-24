@@ -1772,7 +1772,6 @@ TEST(SceneGraphModel, ThePurposeColumnShowsComputedPurposes)
         return model.indexOfPath(QString::fromUtf8(path), true).siblingAtColumn(SceneGraphModel::eColumnPurpose);
     };
 
-    // Authored here.
     const QModelIndex proxy = cellOf("/World/Proxy");
     EXPECT_EQ(QString::fromUtf8("proxy"), proxy.data().toString());
     EXPECT_FALSE(proxy.data(SceneGraphModel::ePurposeInheritedRole).toBool());

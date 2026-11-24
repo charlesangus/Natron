@@ -51,6 +51,7 @@
 #include "Gui/Gui.h"
 #include "Gui/SceneGraphModel.h"
 #include "Gui/SceneNodeStageSource.h"
+#include "Gui/ScenePurposeDelegate.h"
 #include "Gui/SceneSelectionActions.h"
 #include "Gui/SceneViewport.h"
 #include "Gui/ViewerTab.h"
@@ -282,6 +283,7 @@ ScenePrimPickerPopup::ScenePrimPickerPopup(Gui* gui,
     _imp->tree->header()->setSectionResizeMode(SceneGraphModel::eColumnType, QHeaderView::ResizeToContents);
     _imp->tree->header()->setSectionResizeMode(SceneGraphModel::eColumnKind, QHeaderView::ResizeToContents);
     _imp->tree->header()->setSectionResizeMode(SceneGraphModel::eColumnPurpose, QHeaderView::ResizeToContents);
+    _imp->tree->setItemDelegateForColumn(SceneGraphModel::eColumnPurpose, new ScenePurposeDelegate(_imp->tree));
     layout->addWidget(_imp->tree, 1);
 
     _imp->extras = new QListWidget(this);

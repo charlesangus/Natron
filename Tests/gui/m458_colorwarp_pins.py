@@ -186,7 +186,8 @@ try:
         return (round(p.x, 2), round(p.y, 2))
 
     def viewer_colour():
-        return gt.viewer_centre_colour()
+        # Off-centre: a pin added at the centre draws its handle swatch there, which would be read instead of the image.
+        return gt.viewer_centre_colour((0, -60))
 
     def steps():
         ok = yield ("until", lambda: node_graph_view() is not None, STARTUP_TIMEOUT_S)

@@ -218,14 +218,17 @@ GeoViewerLayer::showFrame(int frame)
         return false;
     }
     const GeoDetailConstPtr detail = found->second.detail;
+    const U64 shownOrder = found->second.order;
     _slot->sourceNode = found->second.sourceNode;
     _slot->sourceHash = found->second.sourceHash;
     _slot->held.erase(found);
     // Frames the timeline has passed are never shown by playback, so letting them sit would pin
     // them until the next non-sequential evaluation. The direction is read off the last frame shown.
+    // Looping playback evaluates the frames past the wrap before the timeline gets there, and
+    // they lie behind it in that direction: a frame evaluated after this one is ahead and stays.
     const bool backwards = _slot->hasFrame && (frame < _slot->frame);
     for (auto it = _slot->held.begin(); it != _slot->held.end();) {
-        if (backwards ? (it->first > frame) : (it->first < frame)) {
+        if ((it->second.order < shownOrder) && (backwards ? (it->first > frame) : (it->first < frame))) {
             it = _slot->held.erase(it);
         } else {
             ++it;

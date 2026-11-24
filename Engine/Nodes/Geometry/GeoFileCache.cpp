@@ -509,6 +509,12 @@ GeoFileCache::writeGeometryFrame(double time,
     return eStatusOK;
 }
 
+std::string
+GeoFileCache::outputFilePattern()
+{
+    return currentPattern();
+}
+
 bool
 GeoFileCache::rendersFramesInOrder() const
 {

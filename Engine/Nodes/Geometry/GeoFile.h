@@ -102,8 +102,9 @@ public:
                                    ViewIdx view);
 
     /**
-     * @brief The existing file of the sequence @p pattern names whose frame is closest to
-     * @p frame, the earlier one on a tie; empty when the name has no frame token or no frame exists.
+     * @brief The file of the sequence @p pattern names, among those its FileStampRegistry stamp
+     * recorded as existing, whose frame is closest to @p frame, the earlier one on a tie; empty
+     * when the name has no frame token or no frame was recorded.
      **/
     static std::string nearestExistingFrame(const std::string& pattern,
                                             int frame,
@@ -123,8 +124,11 @@ public:
                                            const std::vector<std::string>& paths);
 
     /**
-     * @brief Reads the frame of @p pattern through the missing-frame rule. False with @p error
-     * set on failure; *detail is set on success.
+     * @brief Reads the frame of @p pattern through the missing-frame rule, pinned to what
+     * patternStamp() recorded: which files exist and their identities. A file added, removed or
+     * rewritten since, before or while it is decoded, fails with
+     * FileStampRegistry::changedOnDiskMessage() until the stamp is invalidated. False with
+     * @p error set on failure; *detail is set on success.
      **/
     static bool readFrame(EffectInstance* effect,
                           const std::string& pattern,

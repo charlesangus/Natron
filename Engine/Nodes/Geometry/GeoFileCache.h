@@ -139,6 +139,7 @@ private:
                                           const GeoDetailConstPtr& detail,
                                           std::string* error) OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool rendersFramesInOrder() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual std::string outputFilePattern() OVERRIDE FINAL;
     virtual void appendNodeContentHash(ContentHasher& h) const OVERRIDE FINAL;
     virtual bool refreshFileDependencies(const std::vector<std::string>& paths) OVERRIDE FINAL;
 

@@ -139,9 +139,6 @@ unsupportedOutputKindMessage(const NodePtr& writer)
     return std::string("No scheduler support for the output data kind of ") + writer->getScriptName_mt_safe() + " yet";
 }
 
-// Evaluates a geometry writer's own output and hands it to its writeGeometryFrame(). False when the
-// render must stop with *error, which is then never empty; true otherwise, with *retCode the
-// evaluation's code.
 bool
 evaluateAndWriteGeometryFrame(const OutputEffectInstancePtr& writer,
                               double time,

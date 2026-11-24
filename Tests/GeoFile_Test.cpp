@@ -25,8 +25,12 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <cstdio>
+#include <fstream>
+#include <iterator>
 #include <string>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -238,4 +242,71 @@ TEST_F(GeoFileNodeTest, AFramelessFileIsReadOnceAcrossFramesUntilReload)
     ASSERT_TRUE(reload != NULL);
     reload->trigger();
     EXPECT_EQ(8, pointCountAt(3.));
+}
+
+TEST_F(GeoFileNodeTest, ACorruptAttributeNameIsAnError)
+{
+    GeoDetailBuilder b;
+    const GeoOffset first = b.appendPoints(4);
+    for (GeoIndex i = 0; i < 4; ++i) {
+        b.setPointPosition(first + i, double(i), 0., 0.);
+    }
+    (void)b.addAttribute(eGeoAttribClassPoint, GeoAttributeDesc { "marker", eGeoStorageInt32, 1, eGeoTypeInfoNone, false });
+    geoFileWrite(b.finish(), path("mesh.ngeo"));
+
+    std::vector<char> bytes;
+    {
+        std::ifstream in(path("mesh.ngeo"), std::ios::binary);
+        ASSERT_TRUE(in.good());
+        bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    const std::string name = "marker";
+    const std::vector<char>::iterator at = std::search(bytes.begin(), bytes.end(), name.begin(), name.end());
+    ASSERT_TRUE(at != bytes.end());
+    // "markes": still a valid name, so only the content hash can tell.
+    *(at + (name.size() - 1)) = 's';
+    {
+        std::ofstream out(path("mesh.ngeo"), std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(out.good());
+        out.write(bytes.data(), (std::streamsize)bytes.size());
+    }
+
+    const KnobFilePtr file = fileKnob();
+    ASSERT_TRUE(file != NULL);
+    file->setValue(path("mesh.ngeo"));
+    std::string error;
+    EXPECT_EQ(-1, pointCountAt(1., &error));
+    EXPECT_NE(std::string::npos, error.find("mesh.ngeo")) << error;
+    EXPECT_NE(std::string::npos, error.find("content hash")) << error;
+}
+
+TEST_F(GeoFileNodeTest, ASequenceIsReadAsStampedUntilReload)
+{
+    geoFileWrite(makePoints(3), path("mesh.0001.ngeo"));
+    geoFileWrite(makePoints(6), path("mesh.0003.ngeo"));
+    const KnobFilePtr file = fileKnob();
+    ASSERT_TRUE(file != NULL);
+    file->setValue(path("mesh.####.ngeo"));
+    setMissingFrames(eGeoFileMissingFrameHoldNearest);
+    EXPECT_EQ(3, pointCountAt(1.));
+
+    geoFileWrite(makePoints(7), path("mesh.0001.ngeo"));
+    geoFileWrite(makePoints(4), path("mesh.0002.ngeo"));
+    ASSERT_EQ(0, std::remove(path("mesh.0003.ngeo").c_str()));
+    appPTR->removeAllCacheEntriesForHolder(_reader.get(), true);
+
+    std::string error;
+    EXPECT_EQ(-1, pointCountAt(1., &error));
+    EXPECT_NE(std::string::npos, error.find("changed on disk")) << error;
+    EXPECT_EQ(-1, pointCountAt(2., &error));
+    EXPECT_NE(std::string::npos, error.find("mesh.0002.ngeo")) << error;
+    EXPECT_EQ(-1, pointCountAt(3., &error));
+    EXPECT_NE(std::string::npos, error.find("mesh.0003.ngeo")) << error;
+
+    KnobButton* reload = dynamic_cast<KnobButton*>(_reader->getKnobByName(kGeoFileParamReload).get());
+    ASSERT_TRUE(reload != NULL);
+    reload->trigger();
+    EXPECT_EQ(7, pointCountAt(1.));
+    EXPECT_EQ(4, pointCountAt(2.));
+    EXPECT_EQ(4, pointCountAt(3.));
 }

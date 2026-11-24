@@ -800,6 +800,17 @@ parseColumn(Cursor& c,
 }
 
 void
+verifyPageChecksum(const ParsedColumn& col,
+                   std::size_t pi,
+                   const Cursor& errors)
+{
+    const ParsedPage& page = col.pages[pi];
+    if (pageHasChecksum(page.kind) && pageChecksum(page.data, page.bytes) != page.checksum) {
+        throw GeoFileError(errors.error(col.section, "page " + std::to_string(pi) + " fails its checksum"));
+    }
+}
+
+void
 decodePage(const ParsedColumn& col,
            std::size_t pi,
            unsigned char* dst,
@@ -808,9 +819,7 @@ decodePage(const ParsedColumn& col,
     const ParsedPage& page = col.pages[pi];
     const std::size_t count = pageElementCount(col.size, pi);
     const std::size_t rawBytes = count * col.elementBytes;
-    if (pageHasChecksum(page.kind) && pageChecksum(page.data, page.bytes) != page.checksum) {
-        throw GeoFileError(errors.error(col.section, "page " + std::to_string(pi) + " fails its checksum"));
-    }
+    verifyPageChecksum(col, pi, errors);
     switch (page.kind) {
     case ePageConstant:
         for (std::size_t i = 0; i < count; ++i) {
@@ -1098,6 +1107,7 @@ fillValues(GeoAttribute& a,
             dense.push_back(pi);
             continue;
         }
+        verifyPageChecksum(col, pi, errors);
         std::array<T, GeoAttribute::kMaxTupleSize> value;
         std::memcpy(value.data(), page.data, col.elementBytes);
         if constexpr (std::is_same_v<T, std::int32_t>) {

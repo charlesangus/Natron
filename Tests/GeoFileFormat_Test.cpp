@@ -416,3 +416,27 @@ TEST(GeoFileFormat, CorruptRawPageFailsNamingItsSection)
     expectFileError(bytes, "attribute 'noise'");
     expectFileError(bytes, "checksum");
 }
+
+TEST(GeoFileFormat, CorruptConstantPageFailsNamingItsAttributeAndPage)
+{
+    GeoDetailBuilder b;
+    const GeoOffset first = b.appendPoints(kPoints);
+    GeoAttribute& tag = b.addAttribute(eGeoAttribClassPoint, desc("tag", eGeoStorageInt32));
+    const std::int32_t value = 0x13572468;
+    for (GeoIndex i = 0; i < kPoints; ++i) {
+        tag.set<std::int32_t>(std::size_t(first + i), value);
+    }
+    std::vector<unsigned char> bytes = geoFileEncode(b.finish());
+
+    const std::string name = "tag";
+    const auto at = std::search(bytes.begin(), bytes.end(), name.begin(), name.end());
+    ASSERT_TRUE(at != bytes.end());
+    unsigned char valueBytes[sizeof(value)];
+    std::memcpy(valueBytes, &value, sizeof(value));
+    const auto stored = std::search(at, bytes.end(), valueBytes, valueBytes + sizeof(value));
+    ASSERT_TRUE(stored != bytes.end());
+    *stored ^= 0x01;
+    expectFileError(bytes, "attribute 'tag'");
+    expectFileError(bytes, "page 0");
+    expectFileError(bytes, "checksum");
+}

@@ -41,7 +41,9 @@ the viewer and the cache follow it.
   normalised, so a falloff value reaches about as far in every space.
 - **Kernel:** the Gaussian (the default) moves the colours within each pin's falloff and lands
   each source exactly on its target. RBF Linear and RBF Cubic interpolate smoothly through every
-  pin and reach the whole colour volume; they ignore Falloff.
+  pin and ignore Falloff. Their move is full everywhere within the sphere around the pins and fades
+  smoothly to none beyond it, over the larger of that sphere's radius and twice the largest pin
+  move, so far-away colours, HDR values among them, pass through unchanged.
 - **Lightness Falloff:** how far a pin reaches along lightness compared with hue and chroma. At 1
   (the default) the reach is the same in every direction; at 2 it reaches twice as far in
   lightness.

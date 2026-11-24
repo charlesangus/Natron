@@ -79,7 +79,9 @@ constexpr int kGpuInvPre = 39;
 constexpr int kGpuAffine = 48;
 constexpr int kGpuWeightSum = 60;
 constexpr int kGpuWeightMoment = 63;
-constexpr int kGpuHeaderWords = 72;
+constexpr int kGpuFadeRadius = 72;
+constexpr int kGpuFadeInvWidth = 73;
+constexpr int kGpuHeaderWords = 74;
 constexpr int kGpuPinWords = 7;
 
 constexpr std::uint32_t kGpuTransferNone = 0;
@@ -161,9 +163,9 @@ ColorWarpOp::createKnobs(KnobHolder* h,
         options.push_back(ChoiceOption("gaussian", EffectInstance::tr("Gaussian").toStdString(),
                                        EffectInstance::tr("Each pin moves the colours within its falloff and lands its source exactly on its target.").toStdString()));
         options.push_back(ChoiceOption("rbflinear", EffectInstance::tr("RBF Linear").toStdString(),
-                                       EffectInstance::tr("A smooth interpolation through every pin that reaches the whole colour volume; falloff is ignored.").toStdString()));
+                                       EffectInstance::tr("A smooth interpolation through every pin that fades to no change away from the pins; falloff is ignored.").toStdString()));
         options.push_back(ChoiceOption("rbfcubic", EffectInstance::tr("RBF Cubic").toStdString(),
-                                       EffectInstance::tr("A smoother interpolation through every pin that reaches the whole colour volume; falloff is ignored.").toStdString()));
+                                       EffectInstance::tr("A smoother interpolation through every pin that fades to no change away from the pins; falloff is ignored.").toStdString()));
         kernelKnob->populateChoices(options);
     }
     kernelKnob->setDefaultValue((int)eColorWarpKernelGaussian);
@@ -351,6 +353,8 @@ ColorWarpOp::gpu(const Params& params) const
             putFloat(words, kGpuWeightSum + c, weightSum[c]);
         }
         putMatrix(words, kGpuWeightMoment, weightMoment);
+        putFloat(words, kGpuFadeRadius, field.fadeRadius());
+        putFloat(words, kGpuFadeInvWidth, field.fadeInvWidth());
     }
     for (int i = 0; i < pinCount; ++i) {
         const int base = kGpuHeaderWords + i * kGpuPinWords;

@@ -63,8 +63,13 @@ struct ColorWarpPin {
  *   flattens the field's gradient to zero at each pin.
  * - RbfLinear, RbfCubic: polyharmonic splines, phi(r) = -r and phi(r) = r^3, with an affine
  *   part, solved per displacement axis and regularised by adding the regularisation to the
- *   system's diagonal. Exact through every pin up to that regularisation, smooth everywhere,
- *   but global: they ignore falloff, and with no hold pins one moved pin shifts every colour.
+ *   system's diagonal. Exact through every pin up to that regularisation and smooth. They
+ *   ignore falloff; instead the displacement is multiplied by colorWarpFade(), which is 1 within
+ *   the sphere around the pins' centroid that holds every pin and falls to exactly 0 one fade
+ *   width beyond it. The width is the larger of that sphere's radius and
+ *   kColorWarpFadeDisplacementWidth times the largest pin displacement, so a lone pin still
+ *   fades, and the fade does not fold colours moved by up to that displacement. Colours that far out, HDR
+ *   values among them, pass through unchanged instead of following the spline's extrapolation.
  **/
 enum ColorWarpKernelEnum {
     eColorWarpKernelGaussian,
@@ -79,6 +84,14 @@ const char* colorWarpKernelName(ColorWarpKernelEnum kernel);
 inline constexpr double kColorWarpGaussianCutoff = 4.;
 inline constexpr double kColorWarpDefaultRegularisation = 1e-6;
 inline constexpr double kColorWarpDefaultLightnessFalloff = 1.;
+inline constexpr double kColorWarpFadeDisplacementWidth = 2.;
+
+/**
+ * @brief The RBF kernels' fade weight at a distance from the pins' centroid: 1 up to radius,
+ * then 1 - smoothstep down to exactly 0 at radius + 1 / invWidth. An invWidth that is not
+ * positive is a zero-width fade.
+ **/
+double colorWarpFade(double distance, double radius, double invWidth);
 
 /**
  * @brief A prepared warp field. prepare() does all the per-change work; apply() evaluates one
@@ -97,6 +110,8 @@ inline constexpr double kColorWarpDefaultLightnessFalloff = 1.;
  * - lightnessAxis and lightnessStretch: the Gaussian's r^2 is |x - c|^2 + stretch * ((x - c) . axis)^2;
  * - affine: 12 values, the RBF's constant term per axis then its 3x3 slope matrix (row = axis)
  *   in normalised coordinates;
+ * - fadeRadius and fadeInvWidth: colorWarpFade()'s radius and inverse width for the RBF
+ *   kernels, in normalised coordinates;
  * - the space conversion: basis()'s matrices, plus the OKLab matrices and log-toe constants
  *   ColorWarpSpace.h exposes.
  **/
@@ -141,6 +156,8 @@ public:
     const double* affine() const { return _affine; }
     const double* origin() const { return _origin; }
     double invScale() const { return _invScale; }
+    double fadeRadius() const { return _fadeRadius; }
+    double fadeInvWidth() const { return _fadeInvWidth; }
 
 private:
     void prepareGaussian(const std::vector<double>& centres, const std::vector<double>& displacements, const std::vector<double>& falloffs);
@@ -158,6 +175,8 @@ private:
     double _affine[12];
     double _origin[3];
     double _invScale;
+    double _fadeRadius;
+    double _fadeInvWidth;
 };
 
 NATRON_NAMESPACE_EXIT

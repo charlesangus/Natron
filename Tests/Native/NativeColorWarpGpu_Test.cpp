@@ -104,14 +104,15 @@ effectOf(const NodePtr& node)
 }
 
 #ifdef NATRON_HAVE_GPU
-// Chart-like colours, greys, HDR and negative values, and a few non-finite pixels, which both
+// Chart-like colours, greys, HDR values inside, across and far beyond the RBF fade, negative
+// values, and a few non-finite pixels, which both
 // paths pass through.
 std::vector<float>
 testValues(std::size_t count,
            int nComps)
 {
     const float inf = std::numeric_limits<float>::infinity();
-    const float specials[] = { 0.f, 0.18f, 0.54f, 0.31f, 0.22f, 1.f, 4.f, 25.f, -0.05f, -0.5f, 1e-6f };
+    const float specials[] = { 0.f, 0.18f, 0.54f, 0.31f, 0.22f, 1.f, 4.f, 25.f, -0.05f, -0.5f, 1e-6f, 1e4f, 2.f };
     std::vector<float> values(count);
     unsigned state = 2654435761u;
     for (std::size_t i = 0; i < count; ++i) {

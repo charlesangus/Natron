@@ -500,6 +500,100 @@ TEST(ColorWarpField, RbfIsExactThroughEveryPinOfAFivePinLook)
     }
 }
 
+TEST(ColorWarpField, FadeIsOneInsideTheRadiusAndZeroOneWidthBeyond)
+{
+    EXPECT_EQ(colorWarpFade(0., 1., 2.), 1.);
+    EXPECT_EQ(colorWarpFade(1., 1., 2.), 1.);
+    EXPECT_EQ(colorWarpFade(1.5, 1., 2.), 0.);
+    EXPECT_EQ(colorWarpFade(7., 1., 2.), 0.);
+    EXPECT_EQ(colorWarpFade(INFINITY, 1., 2.), 0.);
+    EXPECT_NEAR(colorWarpFade(1.25, 1., 2.), 0.5, 1e-15);
+    EXPECT_EQ(colorWarpFade(0., 0., 0.), 1.);
+    EXPECT_EQ(colorWarpFade(1e-300, 0., 0.), 0.);
+    double previous = 1.;
+    for (int i = 0; i <= 100; ++i) {
+        const double fade = colorWarpFade(1. + i * 0.005, 1., 2.);
+        EXPECT_LE(fade, previous) << i;
+        previous = fade;
+    }
+}
+
+TEST(ColorWarpField, RbfFadesToIdentityFarFromThePinsAndStaysExactAtThem)
+{
+    const ColorWarpSpaceBasis basis(kRec709ToXYZ);
+    const double lone[3] = { 0.40, 0.10, 0.06 };
+    const double loneTarget[3] = { 0.40, 0.29, 0.06 };
+    const double sources[5][3] = {
+        { 0.54, 0.31, 0.22 }, { 0.05, 0.12, 0.35 }, { 0.10, 0.30, 0.06 }, { 0.18, 0.18, 0.18 }, { 0.80, 0.78, 0.75 }
+    };
+    const double targets[5][3] = {
+        { 0.58, 0.30, 0.17 }, { 0.03, 0.18, 0.30 }, { 0.16, 0.30, 0.05 }, { 0.18, 0.18, 0.18 }, { 0.80, 0.78, 0.75 }
+    };
+    struct PinSet {
+        const char* name;
+        std::vector<ColorWarpPin> pins;
+        std::vector<const double*> far;
+    };
+    const double negative[3] = { -0.5, -0.5, -0.5 };
+    const double bright[3] = { 25., 25., 25. };
+    const double huge[3] = { 1e4, 1e4, 1e4 };
+    const double mixed[3] = { 1e4, 25., 0.18 };
+    std::vector<PinSet> sets;
+    sets.push_back({ "lone", { makePin(lone, loneTarget, 1., 1.) }, { negative, bright, huge, mixed } });
+    sets.push_back({ "identical", { makePin(lone, loneTarget, 1., 1.), makePin(lone, loneTarget, 1., 1.), makePin(lone, loneTarget, 1., 1.) }, { negative, bright, huge, mixed } });
+    PinSet look = { "look", {}, { bright, huge, mixed } };
+    for (int i = 0; i < 5; ++i) {
+        look.pins.push_back(makePin(sources[i], targets[i], 1., 1.));
+    }
+    sets.push_back(look);
+
+    for (const PinSet& set : sets) {
+        for (int s = 0; s < kColorWarpSpaceCount; ++s) {
+            for (ColorWarpKernelEnum kernel : { eColorWarpKernelRbfLinear, eColorWarpKernelRbfCubic }) {
+                const Combo combo = { static_cast<ColorWarpSpaceEnum>(s), kernel };
+                SCOPED_TRACE(std::string(set.name) + " " + comboName(combo));
+                ColorWarpField field;
+                field.prepare(set.pins, combo.space, basis, kernel, 0.);
+                ASSERT_FALSE(field.isIdentity());
+                EXPECT_GT(field.fadeInvWidth(), 0.);
+                for (const double* rgb : set.far) {
+                    double out[3];
+                    field.apply(rgb, out);
+                    expectNear3(out, rgb, 1e-9);
+                }
+                for (const ColorWarpPin& pin : set.pins) {
+                    double out[3];
+                    field.apply(pin.source, out);
+                    expectNear3(out, pin.target, 1e-7);
+                }
+            }
+        }
+    }
+}
+
+TEST(ColorWarpField, RbfPinsOnTheirTargetsStayAnExactIdentityFarOut)
+{
+    const ColorWarpSpaceBasis basis(kRec709ToXYZ);
+    const double grey[3] = { 0.18, 0.18, 0.18 };
+    const double red[3] = { 0.5, 0.1, 0.1 };
+    const double far[][3] = { { -0.5, -0.5, -0.5 }, { 25., 25., 25. }, { 1e4, 1e4, 1e4 }, { 0.3, 0.2, 0.1 } };
+
+    for (int s = 0; s < kColorWarpSpaceCount; ++s) {
+        for (ColorWarpKernelEnum kernel : { eColorWarpKernelRbfLinear, eColorWarpKernelRbfCubic }) {
+            const Combo combo = { static_cast<ColorWarpSpaceEnum>(s), kernel };
+            SCOPED_TRACE(comboName(combo));
+            ColorWarpField field;
+            field.prepare({ makePin(grey, grey, 1., 1.), makePin(red, red, 1., 1.) }, combo.space, basis, kernel);
+            EXPECT_TRUE(field.isIdentity());
+            for (const double* rgb : far) {
+                double out[3];
+                field.apply(rgb, out);
+                expectBitExact(out, rgb);
+            }
+        }
+    }
+}
+
 TEST(ColorWarpField, NonFiniteInputPassesThrough)
 {
     const ColorWarpSpaceBasis basis(kRec709ToXYZ);

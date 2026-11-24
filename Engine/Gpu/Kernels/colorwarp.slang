@@ -16,7 +16,9 @@ static const uint CW_INV_PRE = 39;
 static const uint CW_AFFINE = 48;
 static const uint CW_WEIGHT_SUM = 60;
 static const uint CW_WEIGHT_MOMENT = 63;
-static const uint CW_HEADER_WORDS = 72;
+static const uint CW_FADE_RADIUS = 72;
+static const uint CW_FADE_INV_WIDTH = 73;
+static const uint CW_HEADER_WORDS = 74;
 static const uint CW_PIN_WORDS = 7;
 
 static const uint CW_KERNEL_GAUSSIAN = 0;
@@ -73,6 +75,8 @@ struct ColorWarpOp : IPixelOp
     float3 origin;
     float invScale;
     float cutoff;
+    float fadeRadius;
+    float fadeInvWidth;
     float3x3 pre;
     float3x3 post;
     float3x3 invPost;
@@ -88,6 +92,8 @@ struct ColorWarpOp : IPixelOp
         origin = cwVector(CW_ORIGIN);
         invScale = wrapParamFloat(params, CW_INV_SCALE);
         cutoff = wrapParamFloat(params, CW_CUTOFF);
+        fadeRadius = wrapParamFloat(params, CW_FADE_RADIUS);
+        fadeInvWidth = wrapParamFloat(params, CW_FADE_INV_WIDTH);
         pre = cwMatrix(CW_PRE);
         post = cwMatrix(CW_POST);
         invPost = cwMatrix(CW_INV_POST);
@@ -148,6 +154,19 @@ struct ColorWarpOp : IPixelOp
         return float3(0.0);
     }
 
+    // colorWarpFade(): 1 up to fadeRadius, then 1 - smoothstep to 0 one fade width further.
+    float fade(float R)
+    {
+        if (!(R > fadeRadius))
+            return 1.0;
+        if (fadeInvWidth <= 0.0)
+            return 0.0;
+        const float t = (R - fadeRadius) * fadeInvWidth;
+        if (!(t < 1.0))
+            return 0.0;
+        return 1.0 - t * t * (3.0 - 2.0 * t);
+    }
+
     // With R = |x|, s = |c|^2 - 2 x.c = r^2 - R^2 and r = |x - c|:
     //   r^3 = R^3 - 3 R x.c + 1.5 R |c|^2 + s^2 (2 r + R) / (2 (r + R)^2)
     //   -r = -R - s / (r + R)
@@ -157,6 +176,9 @@ struct ColorWarpOp : IPixelOp
     {
         const float3 x = (w - origin) * invScale;
         const float R = length(x);
+        const float weight = fade(R);
+        if (weight <= 0.0)
+            return float3(0.0);
         const bool cubic = (kernel == CW_KERNEL_RBF_CUBIC);
         const float3 weightSum = cwVector(CW_WEIGHT_SUM);
         const float3 momentDotX = mul(cwMatrix(CW_WEIGHT_MOMENT), x);
@@ -183,7 +205,7 @@ struct ColorWarpOp : IPixelOp
                 phi = (rR > 0.0) ? -s / rR : 0.0;
             d += cwVector(base + 3) * phi;
         }
-        return d;
+        return d * weight;
     }
 
     float4 apply(float4 v, int2 xy)

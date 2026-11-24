@@ -184,7 +184,7 @@ KnobGuiLayerSelect::openNewLayerDialog()
     if (!knob) {
         return;
     }
-    runNewLayerDialog(knob, getGui(), [this, knob](const std::string& layerID, const std::string& /*layerLabel*/) {
+    runNewLayerDialog(knob, getGui(), [this, knob](const std::string& layerID) {
         pushValue(knob->encode(layerID, std::vector<std::string>()));
     });
 }
@@ -192,7 +192,7 @@ KnobGuiLayerSelect::openNewLayerDialog()
 void
 runNewLayerDialog(const KnobIPtr& knob,
                   QWidget* parent,
-                  const std::function<void(const std::string& layerID, const std::string& layerLabel)>& push)
+                  const std::function<void(const std::string& layerID)>& push)
 {
     EffectInstance* effect = knob ? dynamic_cast<EffectInstance*>(knob->getHolder()) : 0;
     NodePtr node = effect ? effect->getNode() : NodePtr();
@@ -215,7 +215,7 @@ runNewLayerDialog(const KnobIPtr& knob,
 
         return;
     }
-    push(desc.getLayerID(), desc.getLayerLabel());
+    push(desc.getLayerID());
 }
 
 NATRON_NAMESPACE_EXIT

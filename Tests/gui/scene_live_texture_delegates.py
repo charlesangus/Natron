@@ -2,7 +2,7 @@
 A Natron image on a card in the scene view's CPU renderers: an edit upstream of the material reaches
 the delegate, which reads the new image and starts refining again.
 
-Constant1 feeds USDMaterial1's Diffuse Color input, USDMaterial1 feeds USDCard1's Material input, and
+Constant1 feeds USDPreviewSurface1's Diffuse Color input, USDPreviewSurface1 feeds USDCard1's Material input, and
 USDCard1 and a USDLight1 are merged into Viewer1. For Cycles and then MoonRay: pick the renderer from
 the view's context menu, see the card red at the centre of the view, set the Constant to green and
 touch nothing else. The view must show the card green, with no error, within the timeout, and its
@@ -48,7 +48,7 @@ try:
     project_format.setValue(next((i for i, o in enumerate(format_options) if "liveTextureCard" in str(o)), len(format_options) - 1))
 
     constant = make("Constant", 0, 0)
-    material = make("USDMaterial", 0, 100)
+    material = make("USDPreviewSurface", 0, 100)
     card = make("USDCard", 0, 200)
     light = make("USDLight", 200, 200)
     merge = make("USDMerge", 0, 300)
@@ -212,8 +212,8 @@ try:
         save_shots("scene_live_texture_%s_green" % slug)
 
     def steps():
-        require(material.connectInput(0, constant), "connect Constant1 to USDMaterial1's Diffuse Color input")
-        require(card.connectInput(0, material), "connect USDMaterial1 to USDCard1's Material input")
+        require(material.connectInput(0, constant), "connect Constant1 to USDPreviewSurface1's Diffuse Color input")
+        require(card.connectInput(0, material), "connect USDPreviewSurface1 to USDCard1's Material input")
         require(merge.connectInput(0, card), "connect USDCard1 to USDMerge1")
         require(merge.connectInput(1, light), "connect USDLight1 to USDMerge1")
         require(viewer.connectInput(0, merge), "connect the Viewer to USDMerge1")

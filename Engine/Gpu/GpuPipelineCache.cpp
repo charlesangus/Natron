@@ -267,6 +267,67 @@ GpuPipelineCache::clearMemory()
     std::lock_guard<std::mutex> lock(mutex_);
     entries_.clear();
     lru_.clear();
+    rasters_.clear();
+}
+
+GpuStatus
+GpuPipelineCache::raster(const GpuKernelRegistry& registry, GpuRasterId raster, VkFormat colourFormat,
+                         GpuRasterBlend blend, std::shared_ptr<GpuRasterPipeline>& out)
+{
+    out.reset();
+    if (&registry.device() != &device_) {
+        return { VK_ERROR_INITIALIZATION_FAILED, "GpuPipelineCache::raster: the registry is for another device" };
+    }
+    const GpuRasterDesc* desc = registry.rasterDesc(raster);
+    if (!desc) {
+        return { VK_ERROR_INITIALIZATION_FAILED, "GpuPipelineCache::raster: unknown raster id" };
+    }
+    const uint32_t id = static_cast<uint32_t>(raster);
+    const uint64_t registrySerial = id < static_cast<uint32_t>(GpuRasterId::Count) ? 0 : registry.serial();
+    const RasterKey key { registrySerial, id, colourFormat, blend };
+
+    std::shared_future<RasterResult> future;
+    std::promise<RasterResult> promise;
+    bool owner = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = rasters_.find(key);
+        if (it != rasters_.end()) {
+            out = it->second;
+            return {};
+        }
+        auto fl = rasterInflight_.find(key);
+        if (fl != rasterInflight_.end()) {
+            future = fl->second;
+        } else {
+            future = promise.get_future().share();
+            rasterInflight_.emplace(key, future);
+            owner = true;
+        }
+    }
+
+    if (owner) {
+        RasterResult result;
+        std::unique_ptr<GpuRasterPipeline> built;
+        result.status = GpuRasterPipeline::create(device_, *desc, colourFormat, blend, built);
+        result.pipeline = std::move(built);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            rasterInflight_.erase(key);
+            if (result.status) {
+                rasters_[key] = result.pipeline;
+                ++stats_.rasterBuilds;
+            }
+        }
+        promise.set_value(std::move(result));
+    }
+
+    const RasterResult& r = future.get();
+    if (!r.status) {
+        return r.status;
+    }
+    out = r.pipeline;
+    return {};
 }
 
 GpuPipelineCache::Stats

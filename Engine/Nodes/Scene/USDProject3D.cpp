@@ -628,6 +628,7 @@ USDProject3D::USDProject3D(NodePtr node)
     , _imp(new Implementation())
     , _cameraMenuRefreshPending(false)
 {
+    _cameraMenuRefresh.setRerun([this]() { return refreshCameraMenu(); });
 }
 
 USDProject3D::~USDProject3D()
@@ -856,22 +857,53 @@ USDProject3D::scheduleCameraMenuRefresh()
         refreshCameraMenu(); }, Qt::QueuedConnection);
 }
 
-void
+std::shared_ptr<SceneMenuJob>
 USDProject3D::refreshCameraMenu()
 {
-    std::vector<std::string> cameras;
-    EffectInstancePtr input = getInput(kUSDProject3DInputCamera);
-    ScenePayload scene;
-    std::string error;
-    if (input && (input->evaluateScene(EvaluateSceneArgs(getCurrentTime(), ViewIdx(0)), &scene, &error) == eRenderRoIRetCodeOk) && !scene.isEmpty()) {
-        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(scene, &error);
-        if (lease.isValid()) {
-            for (const PXR_NS::SdfPath& path : HydraRender::cameraPaths(lease.getStage())) {
-                cameras.push_back(path.GetString());
-            }
+    bool noViewer = false;
+    const SceneEvaluationContext viewerContext = _cameraMenuRefresh.getContext(this, &noViewer);
+    const int inputNb = kUSDProject3DInputCamera;
+    const EffectInstancePtr input = getInput(inputNb);
+    const double time = getCurrentTime();
+    SceneEvaluationContext context = viewerContext;
+    if (input) {
+        context = SceneNodeAuthoring::getCameraMenuContext(viewerContext, _camera.getPath());
+        if (!context.hasSameLoadSet(viewerContext)) {
+            context.id = _cameraMenuRefresh.getMappedContextId();
         }
+        context.reach = std::make_shared<SceneLoadReach>();
     }
-    _camera.refreshMenu(cameras, true);
+    SceneMenuRefresh::WorkFunc work = [weakInput = EffectInstanceWPtr(input), time, context](const SceneMenuJob& job,
+                                                                                             SceneMenuJob::Result* result) {
+        result->lists.resize(1);
+        // The menu lists what the whole stage holds.
+        if (context.reach) {
+            context.reach->add(std::vector<std::string>(1, std::string("/")));
+        }
+        ScenePayload scene;
+        SceneQueryPool::Lease lease;
+        if (!SceneNodeAuthoring::borrowMenuScene(weakInput, time, context, job, &scene, &lease)) {
+            return;
+        }
+        for (const PXR_NS::SdfPath& path : HydraRender::cameraPaths(lease.getStage())) {
+            result->lists[0].push_back(path.GetString());
+        }
+        result->unsearched = SceneNodeAuthoring::countMenuUnsearched(lease.getStage(), context);
+    };
+
+    return _cameraMenuRefresh.start(this, context, noViewer, work, [this](const std::shared_ptr<SceneMenuJob>& job) { applyCameraMenu(job); });
+}
+
+bool
+USDProject3D::applyCameraMenu(const std::shared_ptr<SceneMenuJob>& job)
+{
+    if (!_cameraMenuRefresh.take(job)) {
+        return false;
+    }
+    const SceneMenuJob::Result result = job->getResult();
+    _camera.refreshMenu(result.lists.empty() ? std::vector<std::string>() : result.lists[0], true, result.unsearched, job->hasNoViewer());
+
+    return true;
 }
 
 double
@@ -895,12 +927,43 @@ USDProject3D::getPlateAspect(double time) const
     return (format.height() > 0) ? format.width() * format.getPixelAspectRatio() / format.height() : 1.;
 }
 
+SceneEvaluationContext
+USDProject3D::getSceneInputContext(int inputNb,
+                                   const SceneEvaluationContext& ctx,
+                                   double /*time*/,
+                                   ViewIdx /*view*/) const
+{
+    return (inputNb == kUSDProject3DInputCamera) ? SceneNodeAuthoring::getCameraInputContext(ctx, _camera.getPath()) : ctx;
+}
+
+void
+USDProject3D::mapSceneInputReach(int inputNb,
+                                 double /*time*/,
+                                 ViewIdx /*view*/,
+                                 const std::vector<std::string>& in,
+                                 std::vector<std::string>* out) const
+{
+    // A camera input read on its own context loads the same whatever the output loads.
+    if (inputNb == kUSDProject3DInputCamera) {
+        out->clear();
+    } else {
+        *out = in;
+    }
+}
+
 StatusEnum
 USDProject3D::renderScene(const SceneRenderActionArgs& args,
                           ScenePayload* outputScene,
                           std::string* errorMessage)
 {
     const ScenePayload cameraScene = args.getInputScene(kUSDProject3DInputCamera);
+
+    // Taken before any knob is read, so that an edit landing during the reads moves the key
+    // emitSceneLayer() takes past this one and the values read are not memoized under it.
+    SceneLayerMemo::Key layerKey;
+    if (!getSceneLayerKey(SceneLayerReads(), &layerKey, errorMessage)) {
+        return eStatusFailed;
+    }
 
     KnobChoicePtr projectOnKnob = _projectOn.lock();
     KnobBoolPtr cropKnob = _crop.lock();
@@ -943,10 +1006,6 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
     const double frameHold = frameHoldKnob->getValue();
     const double aspect = getPlateAspect(args.time);
 
-    SceneLayerMemo::Key layerKey;
-    if (!getSceneLayerKey(SceneLayerReads(), &layerKey, errorMessage)) {
-        return eStatusFailed;
-    }
     ContentHasher keyHasher;
     keyHasher.appendU64(layerKey.nodeDigest);
     keyHasher.appendDouble(layerKey.firstFrame);
@@ -955,6 +1014,14 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
     keyHasher.appendU64(cameraScene.getStackHash());
     keyHasher.appendString(cameraPath);
     keyHasher.appendDouble(aspect);
+    // Looking for the first camera searches the scene as the camera input loads it.
+    if (cameraPath.empty()) {
+        const SceneEvaluationContext& cameraContext = args.getInputContext(kUSDProject3DInputCamera);
+        keyHasher.appendBool(cameraContext.includesEverything());
+        if (!cameraContext.includesEverything()) {
+            keyHasher.appendU64(cameraContext.loadSet->getHash());
+        }
+    }
     const U64 samplesKey = keyHasher.finalize();
 
     std::shared_ptr<const CameraSamples> samples;
@@ -1006,7 +1073,14 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
             }
             computed = missingSamples();
         } else {
-            SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(cameraScene, errorMessage);
+            // A named camera needs only the payloads on its path; the first camera is searched for
+            // in the whole scene as the camera input loads it.
+            if (cameraPath.empty() && args.context.reach) {
+                args.context.reach->add(std::vector<std::string>(1, "/"));
+            }
+            const SceneLoadSetPtr cameraLoadSet = cameraPath.empty() ? args.getInputContext(kUSDProject3DInputCamera).loadSet
+                                                                     : SceneLoadSet::withPaths(args.getInputContext(kUSDProject3DInputCamera).loadSet, std::vector<std::string>(1, cameraPath));
+            SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(cameraScene, cameraLoadSet, errorMessage);
             const PXR_NS::UsdStageRefPtr stage = lease.getStage();
             if (!stage) {
                 if (errorMessage->empty()) {
@@ -1066,10 +1140,14 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
         }
 
         samples = computed;
-        std::lock_guard<std::mutex> l(_imp->lock);
-        _imp->samplesValid = true;
-        _imp->samplesKey = samplesKey;
-        _imp->samples = samples;
+        // Samples read across a knob or project edit must not serve the new key.
+        SceneLayerMemo::Key keyNow;
+        if (getSceneLayerKey(SceneLayerReads(), &keyNow, 0) && (keyNow == layerKey)) {
+            std::lock_guard<std::mutex> l(_imp->lock);
+            _imp->samplesValid = true;
+            _imp->samplesKey = samplesKey;
+            _imp->samples = samples;
+        }
     }
 
     // The image's identity and hash, without rendering it: the layer reads nothing else of it.
@@ -1097,6 +1175,8 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
     reads.upstream = SceneLayerMemo::Key::eUpstreamReadFacts;
     reads.factsDigest = facts.finalize();
     reads.frameRange = !samples->frames.empty() || (hasPlate && plate.varying);
+    reads.valuesRead = true;
+    reads.valuesReadUnder = layerKey;
 
     PXR_NS::SdfPath path;
     if (!SceneNodeAuthoring::getPrimPath(primPathKnob, &path, errorMessage)) {

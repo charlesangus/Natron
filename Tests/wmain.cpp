@@ -43,6 +43,7 @@
 #include "TestOfxPluginPath.h"
 #include "TestPlaneChoiceTakeOvers.h"
 #include "TestRetiredOfxIds.h"
+#include "TwoPlaneTestEffect.h"
 
 using namespace NATRON_NAMESPACE;
 
@@ -123,6 +124,9 @@ registerMultiplanarTestPlugins()
     // Registered so LayerKnobsRender_Test.cpp can exercise a multiplanar effect that never
     // produces Color, which no shipped plugin does today.
     registerTestBuiltInPlugin<MultiplanarDiffuseOnlyTestEffect>();
+    // Registered so TwoPlaneRender_Test.cpp can tell two planes of one layout apart by their values.
+    registerTestBuiltInPlugin<TwoPlaneSourceTestEffect>();
+    registerTestBuiltInPlugin<TwoPlaneReaderTestEffect>();
 }
 
 void
@@ -143,6 +147,7 @@ registerSceneTestPlugins()
     registerTestBuiltInPlugin<SceneTestOp>();
     registerTestBuiltInPlugin<SceneTestGeometry>();
     registerTestBuiltInPlugin<SceneTestAuthored>();
+    registerTestBuiltInPlugin<SceneTestContextProbe>();
 }
 
 void

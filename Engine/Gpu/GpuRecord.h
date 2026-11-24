@@ -10,11 +10,14 @@
 #include <array>
 #include <cstddef>
 #include <deque>
+#include <functional>
 #include <initializer_list>
+#include <map>
 #include <memory>
 #include <span>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <type_traits>
 #include <vector>
 
@@ -22,11 +25,16 @@ namespace gpu {
 
 class GpuPipelineCache;
 
-// One command buffer on the compute queue, recorded and submitted by the thread that created it.
-// Node code goes through this class and never sees a Vulkan handle.
+// One piece of work on the compute queue, or on the graphics queue for a raster context, recorded and submitted
+// by the thread that created it, in one command buffer unless chargeWork() split it. Node code goes through this
+// class and never sees a Vulkan handle.
 //
-// The command buffer comes from a pool owned by the registry and private to the creating
+// The command buffers come from a pool owned by the registry and private to the creating
 // thread, so a context must be used and destroyed on that thread.
+//
+// Buffers are exclusive to one queue family. A buffer that crosses between a compute context and a raster
+// context in another family is released in the context that last used it with releaseToOtherQueue() and
+// acquired in the next with acquireFromOtherQueue(), the second submitted to wait for the first.
 class GpuRecordContext {
 public:
     // Without a pool the context cannot hand out scratch buffers; without a pipeline cache it cannot
@@ -34,6 +42,73 @@ public:
     static GpuStatus create(GpuKernelRegistry& registry, std::unique_ptr<GpuRecordContext>& out,
                             GpuBufferPool* pool = nullptr, GpuPipelineCache* pipelines = nullptr,
                             GpuTextureCache* textures = nullptr);
+
+    // As create(), for a context on the graphics queue that also records draws; its dispatches and copies
+    // work as a compute context's. When the graphics family is not the compute family, textures stay with the
+    // compute family where they are uploaded: such a context refuses texture(), cachedTexture() and texture
+    // bindings, as it refuses acquireFromTransfer(). Fails with VK_ERROR_FEATURE_NOT_PRESENT when the device
+    // lacks GpuDeviceInfo::rasterFloatBlend. Without a pipeline cache the context builds its own raster pipelines.
+    static GpuStatus createRaster(GpuKernelRegistry& registry, std::unique_ptr<GpuRecordContext>& out,
+                                  GpuBufferPool* pool = nullptr, GpuPipelineCache* pipelines = nullptr,
+                                  GpuTextureCache* textures = nullptr);
+
+    bool isRaster() const { return queue_ == QueueKind::Graphics; }
+
+    // Makes every later dispatch and draw, and every chunk of an indirect draw, first call `aborted`, and fail
+    // with GpuStatus::aborted set once it returns true; from then on the context records nothing, and submit()
+    // and submitAndWait() run none of its commands and fail with GpuStatus::aborted set. Empty removes the check.
+    void setAbortCheck(std::function<bool()> aborted);
+
+    // Starts rendering into `attachment`, a GpuTexture::createAttachment() texture that outlives the
+    // context's work, cleared to `clear` (one value per channel, the first for R32_SFLOAT). Storage and
+    // transfer writes recorded before it are visible to the draws. Until endRaster() the context records only
+    // draws. Raster contexts only.
+    GpuStatus beginRaster(const GpuTexture& attachment, const std::array<float, 4>& clear);
+
+    // Draws vertexCount vertices of instanceCount instances of `raster` with `blend`. `buffers` holds one
+    // entry per storage binding of the raster and `push` is exactly its push-constant block.
+    GpuStatus draw(GpuRasterId raster, GpuRasterBlend blend, std::span<const GpuBuffer* const> buffers,
+                   std::span<const std::byte> push, uint32_t vertexCount, uint32_t instanceCount = 1);
+
+    GpuStatus draw(GpuRasterId raster, GpuRasterBlend blend, std::initializer_list<const GpuBuffer*> buffers,
+                   std::span<const std::byte> push, uint32_t vertexCount, uint32_t instanceCount = 1)
+    {
+        return draw(raster, blend, std::span<const GpuBuffer* const>(buffers.begin(), buffers.size()), push,
+                    vertexCount, instanceCount);
+    }
+
+    // Draws the drawCount VkDrawIndexedIndirectCommand of `indirectBuffer`, tightly packed from its start, with
+    // the 32-bit indices of `indexBuffer`. The commands may come from a dispatch recorded before beginRaster().
+    // indirectBuffer needs VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT and indexBuffer VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+    // drawCount commands must fit in indirectBuffer, which is checked. Nothing bounds what the commands read:
+    // robust buffer access is not enabled, so the caller keeps every command's index range inside indexBuffer
+    // and every index inside the vertex data the raster pulls. Recorded as one indirect draw per
+    // maxDrawIndirectCount() commands.
+    GpuStatus drawIndexedIndirect(GpuRasterId raster, GpuRasterBlend blend, std::span<const GpuBuffer* const> buffers,
+                                  std::span<const std::byte> push, const GpuBuffer& indexBuffer,
+                                  const GpuBuffer& indirectBuffer, uint32_t drawCount);
+
+    GpuStatus drawIndexedIndirect(GpuRasterId raster, GpuRasterBlend blend,
+                                  std::initializer_list<const GpuBuffer*> buffers, std::span<const std::byte> push,
+                                  const GpuBuffer& indexBuffer, const GpuBuffer& indirectBuffer, uint32_t drawCount)
+    {
+        return drawIndexedIndirect(raster, blend, std::span<const GpuBuffer* const>(buffers.begin(), buffers.size()),
+                                   push, indexBuffer, indirectBuffer, drawCount);
+    }
+
+    // Ends rendering. Storage writes of the draws are visible to later dispatches and copies.
+    GpuStatus endRaster();
+
+    // Copies the attachment of the last endRaster() into the start of `dst`, texels tightly packed as
+    // GpuTexture::packedBytes() counts them, visible to later dispatches, draws and copies and to the host
+    // once the work is done.
+    GpuStatus copyToImage(const GpuBuffer& dst);
+
+    // The halves of a queue-family ownership transfer of a buffer range between a compute context and a raster
+    // context: the context that used the range last releases it, and the one that uses it next, submitted to
+    // wait for the first, acquires it with the same range. Nothing is recorded when both queues are in one family.
+    GpuStatus releaseToOtherQueue(const GpuBuffer& buffer, VkDeviceSize offset, VkDeviceSize bytes);
+    GpuStatus acquireFromOtherQueue(const GpuBuffer& buffer, VkDeviceSize offset, VkDeviceSize bytes);
     ~GpuRecordContext();
     GpuRecordContext(const GpuRecordContext&) = delete;
     GpuRecordContext& operator=(const GpuRecordContext&) = delete;
@@ -79,7 +154,8 @@ public:
     GpuStatus texture(const GpuTextureDesc& desc, std::span<const float> texels, const GpuTexture*& out);
 
     // The texture the runtime's texture cache keeps under `key`, as GpuTextureCache::acquire, held until
-    // the context is destroyed. Without a texture cache it is a texture() of its own.
+    // the context is destroyed. Without a texture cache it is a texture() of its own. Both are refused by a
+    // raster context outside the compute family.
     GpuStatus cachedTexture(const std::string& key, const GpuTextureDesc& desc, std::span<const float> texels,
                             const GpuTexture*& out);
 
@@ -108,16 +184,25 @@ public:
     // removes the cap.
     static void setMaxStorageBufferBytesForTests(uint64_t bytes);
 
+    // The most commands one indirect draw records: the device's maxDrawIndirectCount, 1 without
+    // multiDrawIndirect, or the cap of setMaxDrawIndirectCountForTests() when smaller.
+    uint32_t maxDrawIndirectCount() const;
+
+    // Caps maxDrawIndirectCount() in every context, so that a test sees what a device with that limit or
+    // without multiDrawIndirect does; 0 removes the cap.
+    static void setMaxDrawIndirectCountForTests(uint32_t count);
+
     // Records a write of `data` into dst at `offset`, visible to later dispatches. Both offset and size
     // must be multiples of 4, and the size at most 65536 bytes.
     GpuStatus updateBuffer(const GpuBuffer& dst, VkDeviceSize offset, std::span<const std::byte> data);
 
     // The compute-side halves of the ownership transfers of uploads and downloads made with
-    // ComputeHandoff::Record; the range must match the transfer's exactly.
-    void acquireFromTransfer(const GpuTransfer& transfer, const GpuBuffer& buffer, VkDeviceSize offset,
-                             VkDeviceSize bytes);
-    void releaseToTransfer(const GpuTransfer& transfer, const GpuBuffer& buffer, VkDeviceSize offset,
-                           VkDeviceSize bytes);
+    // ComputeHandoff::Record; the range must match the transfer's exactly. A raster context outside the compute
+    // family refuses them: its buffers come from a compute context through acquireFromOtherQueue().
+    GpuStatus acquireFromTransfer(const GpuTransfer& transfer, const GpuBuffer& buffer, VkDeviceSize offset,
+                                  VkDeviceSize bytes);
+    GpuStatus releaseToTransfer(const GpuTransfer& transfer, const GpuBuffer& buffer, VkDeviceSize offset,
+                                VkDeviceSize bytes);
 
     // The device the context records for.
     GpuDevice& device() const;
@@ -150,28 +235,84 @@ public:
     // Writes the time at which every command recorded before it, in this buffer and before it on the queue, is done.
     void writeTimestamp(VkQueryPool pool, uint32_t query);
 
+    // Charges `work` to the open command buffer and, once it holds batchWork(), ends it and opens another, so a
+    // long multi-pass node runs as bounded submits that a caller's stop can fall between. Call it only where every
+    // later command may run in a later submit, which is anywhere after computeBarrier(): the barrier's scope
+    // spans command buffers in submission order. One unit of work is about one sampled value.
+    GpuStatus chargeWork(uint64_t work);
+
+    // The work a command buffer holds before chargeWork() ends it: what the device was last seen to finish in about
+    // a tenth of a second, or setBatchWorkForTests().
+    uint64_t batchWork() const;
+
+    // The command buffers the context's work is split into so far.
+    size_t batchCount() const { return finished_.size() + 1; }
+
+    // Overrides batchWork() in every context: 1 ends a buffer at every charge, UINT64_MAX never does; 0 removes the
+    // override.
+    static void setBatchWorkForTests(uint64_t work);
+
+    // The most work any command buffer chargeWork() ended held, over every context, since setBatchWorkForTests() was
+    // last called; only buffers ended under an override count.
+    static uint64_t largestBatchWorkForTests();
+
+    // Calls `hook` on the submitting thread after each command buffer but the last has finished, before `stop` is
+    // asked; an empty hook removes it.
+    static void setBatchFinishedHookForTests(const std::function<void()>& hook);
+
     // Ends the buffer, submits it and blocks until the queue finished it. The context cannot record afterwards.
     // Work still running after timeoutNs fails at once with VK_ERROR_DEVICE_LOST, through
     // GpuDevice::abandonInFlightWork(): what the context holds is parked, and the buffers the caller bound are not
-    // freed when it destroys them, so the work never writes released memory.
-    GpuStatus submitAndWait(uint64_t timeoutNs = 30'000'000'000ull);
+    // freed when it destroys them, so the work never writes released memory. A split context applies timeoutNs to
+    // each command buffer; when `stop` returns true between them, it fails with VK_INCOMPLETE and none of its work
+    // is left on the device.
+    GpuStatus submitAndWait(uint64_t timeoutNs = 30'000'000'000ull, const std::function<bool()>& stop = {});
 
-    // Ends the buffer and submits it once every wait is reached, signalling `signal` when it is done, without
-    // blocking. The context holds the command buffer and its scratch buffers, so it must not be destroyed before
-    // `signal` is reached.
-    GpuStatus submit(std::span<const TimelineValue> waits, TimelineValue signal);
+    // Ends the buffer and submits it once every wait is reached, signalling `signal` when it is done. The context
+    // holds the command buffer and its scratch buffers, so it must not be destroyed before `signal` is reached.
+    // Only a split context blocks: until all its command buffers but the last have finished, one at a time. When
+    // `stop` returns true between them it fails with VK_INCOMPLETE, `signal` is never signalled, and none of its work
+    // is left on the device. An aborted context submits the waits and the signal alone, so `signal` is still
+    // reached, and returns GpuStatus::aborted.
+    GpuStatus submit(std::span<const TimelineValue> waits, TimelineValue signal, const std::function<bool()>& stop = {});
 
 private:
+    struct FinishedBatch {
+        VkCommandBuffer cmd = VK_NULL_HANDLE;
+        uint64_t work = 0;
+    };
+
+    static GpuStatus createOn(QueueKind queue, GpuKernelRegistry& registry, std::unique_ptr<GpuRecordContext>& out,
+                              GpuBufferPool* pool, GpuPipelineCache* pipelines, GpuTextureCache* textures);
+    GpuStatus beginCommandBuffer(VkCommandBuffer& out);
+    // A null `cmd` submits the waits alone.
+    GpuStatus submitFenced(VkCommandBuffer cmd, std::span<const VkSemaphoreSubmitInfo> waits, uint64_t timeoutNs);
+    GpuStatus waitBeforeBatches(std::span<const TimelineValue> waits, uint64_t timeoutNs, const std::function<bool()>& stop);
+    GpuStatus runBatchesBeforeLast(std::span<const VkSemaphoreSubmitInfo> waits, uint64_t timeoutNs, const std::function<bool()>& stop);
+    void abandonWork(const char* what);
     void parkInFlightWork();
     std::vector<VkSemaphoreSubmitInfo> externalWaitInfos() const;
     GpuStatus checkBindable(const char* where, uint32_t binding, VkDeviceSize bytes) const;
+    bool outsideComputeFamily() const;
+    GpuStatus checkTextureBindings(const char* where, std::span<const GpuBinding> bindings) const;
+    // Fails when the context was submitted, aborted, or is between beginRaster() and endRaster().
+    GpuStatus recordable(const char* where) const;
+    // As recordable(), then runs the abort check.
+    GpuStatus checkAbort(const char* where);
+    GpuStatus drawable(const char* where);
+    GpuStatus bindRaster(const char* where, GpuRasterId raster, GpuRasterBlend blend,
+                         std::span<const GpuBuffer* const> buffers, std::span<const std::byte> push);
+    GpuStatus rasterPipeline(GpuRasterId raster, GpuRasterBlend blend, std::shared_ptr<GpuRasterPipeline>& out);
+    GpuStatus rasterDescriptorSet(VkDescriptorSetLayout layout, uint32_t storageBuffers, VkDescriptorSet& out);
+    void ownershipBarrier(const GpuBuffer& buffer, VkDeviceSize offset, VkDeviceSize bytes, bool release);
 
-    GpuRecordContext(GpuKernelRegistry& registry, GpuBufferPool* pool, GpuPipelineCache* pipelines,
+    GpuRecordContext(QueueKind queue, GpuKernelRegistry& registry, GpuBufferPool* pool, GpuPipelineCache* pipelines,
                      GpuTextureCache* textures)
         : registry_(registry)
         , bufferPool_(pool)
         , pipelines_(pipelines)
         , textureCache_(textures)
+        , queue_(queue)
     {
     }
 
@@ -188,8 +329,20 @@ private:
     std::vector<VkSemaphore> externalWaits_;
     VkCommandPool pool_ = VK_NULL_HANDLE;
     VkCommandBuffer cmd_ = VK_NULL_HANDLE;
+    std::vector<FinishedBatch> finished_;
+    uint64_t work_ = 0;
     bool open_ = false;
     bool outOfMemory_ = false;
+
+    const QueueKind queue_;
+    std::function<bool()> abortCheck_;
+    bool aborted_ = false;
+    const GpuTexture* rasterTarget_ = nullptr;
+    const GpuTexture* rendered_ = nullptr;
+    std::vector<std::shared_ptr<GpuRasterPipeline>> rasterPipelines_;
+    std::map<std::tuple<uint32_t, VkFormat, GpuRasterBlend>, std::shared_ptr<GpuRasterPipeline>> ownRasters_;
+    PFN_vkCmdPushDescriptorSetKHR pushDescriptorFn_ = nullptr;
+    std::vector<VkDescriptorPool> descriptorPools_;
 };
 
 } // namespace gpu

@@ -46,15 +46,18 @@ NATRON_NAMESPACE_ENTER
 namespace GLContextLoss {
 /**
  * @brief Runs release with the widget's context current when that context is about to be destroyed,
- * then makes current again whatever context was current before. Call it from initializeGL(); a later
- * call replaces the earlier release and connection. Does nothing while the widget has no context.
+ * and leaves the dying context current for the rest of its destruction. Call it first thing in
+ * initializeGL(), so that the handler runs before the slots others connect to the context later. A
+ * later call for the same context replaces the release only. Does nothing while the widget has no
+ * context.
  **/
 void watch(QOpenGLWidget* widget, std::function<void()> release);
 
 /**
- * @brief Runs the watched release now, with the widget's context current, and stops watching. Call it
- * from the widget's destructor, before the members release touches are gone. Does nothing if
- * initializeGL() never ran or the context was already released.
+ * @brief Runs the watched release now, with the widget's context current, then makes current again
+ * whatever was current before. The context is still made current when QOpenGLWidget's destructor
+ * deletes it. Call it from the widget's destructor, before the members release touches are gone. Does
+ * nothing if initializeGL() never ran or the context was already released.
  **/
 void releaseNow(QOpenGLWidget* widget);
 

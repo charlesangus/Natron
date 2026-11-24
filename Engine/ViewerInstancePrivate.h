@@ -619,6 +619,7 @@ public:
         KnobBoolWPtr fullFrame;
         KnobBoolWPtr enableDownscale;
         KnobChoiceWPtr downscaleLevel;
+        KnobBoolWPtr renderEverything;
         KnobIntWPtr maxSamples; // 0: the render delegate's own count
         KnobBoolWPtr refinementPaused;
     };
@@ -670,11 +671,20 @@ public:
     // What activeInputDataKindChanged() last announced. Only accessed from MT
     DataKindEnum notifiedInputDataKind = eDataKindImage;
     bool notifiedWipeDisabled = false;
+    // An empty input reads as an image, yet the viewer may keep showing a scene through it.
+    bool notifiedHasInputA = false;
 
-    mutable std::mutex lastSceneMutex; // protects lastScene, lastSceneError, lastSceneOk
+    mutable std::mutex lastSceneMutex; // protects lastScene, lastSceneError, lastSceneOk, lastSceneLoadSet, lastSceneReach
     ScenePayload lastScene[2];
     std::string lastSceneError[2];
     bool lastSceneOk[2];
+    SceneLoadSetPtr lastSceneLoadSet[2];
+    SceneLoadReachPtr lastSceneReach[2];
+
+    // Keeps the nodes' memoized layers for this viewer's evaluations apart from other evaluators'.
+    const U64 sceneContextId = SceneEvaluationContext::makeId();
+    mutable std::mutex sceneLoadSetMutex; // protects sceneLoadSet
+    SceneLoadSetPtr sceneLoadSet = std::make_shared<const SceneLoadSet>(SceneLoadSet::none());
 
 #ifdef NATRON_HAVE_GPU
     // Only accessed from MT

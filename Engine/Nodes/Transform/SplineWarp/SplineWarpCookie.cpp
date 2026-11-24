@@ -89,7 +89,7 @@ curvePixels(const Bezier& curve,
             bool whole,
             RectI* pixels)
 {
-    RectD box = curve.getBoundingBox(time);
+    RectD box = curve.getBoundingBox(time, false);
     if (box.isNull() || box.isInfinite()) {
         return false;
     }

@@ -41,6 +41,8 @@
 #include <QJsonValue>
 #include <QString>
 
+#include <ofxImageEffect.h>
+
 #include "Engine/Nodes/Filter/DenoiseProfiled.h"
 #include "Engine/Nodes/IO/RawMetadata.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"

@@ -139,6 +139,16 @@ private:
      **/
     void stampFileClosure();
 
+    // Once a closed scene's stale layers are gone: keys the node on the files as they are now.
+    void rekeyAfterTeardown();
+
+    /**
+     * @brief Whether a main-thread read of the file for the knobs waits for SceneTeardown to be
+     * idle, after which the camera menu and the file values are read again. selectFirst is kept
+     * for that read.
+     **/
+    bool deferKnobReadWhileTeardownPending(bool selectFirst);
+
     virtual bool knobChanged(KnobI* k,
                              ValueChangedReasonEnum reason,
                              ViewSpec view,

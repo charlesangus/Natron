@@ -63,6 +63,7 @@ try:
 
     usd = app.createNode("USDRead")
     require(usd is not None, "create USDRead", plugin_problem("USDRead"))
+    usd.getParam("initialDraw").setValue(3)
     usd.getParam("filename").setValue(scene_path)
     viewer = app.getNode("Viewer1")
     if viewer is None:
@@ -136,6 +137,9 @@ try:
         return sorted(path_of(i) for i in rows(world)) if world.isValid() else []
 
     def select(paths):
+        """Selects paths' rows once the model, which reads them on its worker, has them."""
+        ok = yield ("until", lambda: all(row_of(path, row_of(WORLD)).isValid() for path in paths), POLL_TIMEOUT_S)
+        require(ok, "the tree lists %r" % (paths,))
         world = row_of(WORLD)
         selection = tree().selectionModel()
         selection.clearSelection()
@@ -304,7 +308,7 @@ try:
         require(tree() is not None, "the Scene Graph panel's tree exists")
         ok = yield ("until", lambda: world_children() == sorted([BOX, BALL, CAM]), POLL_TIMEOUT_S)
         require(ok, "the tree lists Box, Ball and Cam under /World (got %r)" % (world_children(),))
-        select([BOX, BALL])
+        yield from select([BOX, BALL])
         ok = yield ("until", lambda: viewer_selection() == sorted([BOX, BALL]), POLL_TIMEOUT_S)
         require(ok, "Box and Ball are selected in the 3D view (got %r)" % (viewer_selection(),))
 
@@ -353,7 +357,7 @@ try:
         check(ok, "after Undo the prims come back (got %r)" % (world_children(),))
 
         # The Scene Graph panel opens the same menu.
-        select([BOX])
+        yield from select([BOX])
         popup, line_edit, list_view = yield from open_menu(tree())
         if check(popup is not None, "Tab on the Scene Graph panel's tree opens the tab menu"):
             check_filtered(line_edit, list_view, "Scene Graph panel")
@@ -380,7 +384,7 @@ try:
         require(branch is not None, "create USDEditTransform", plugin_problem("USDEditTransform"))
         branch.setPosition(300, 200)
         require(branch.connectInput(0, usd), "connect the USDEditTransform to the USDRead")
-        select([BOX])
+        yield from select([BOX])
         ok = yield ("until", lambda: viewer_selection() == [BOX], POLL_TIMEOUT_S)
         require(ok, "Box is selected in the 3D view (got %r)" % (viewer_selection(),))
         spliced = yield from create_from_menu(view(), PRUNE_ID)
@@ -400,7 +404,7 @@ try:
 
         # An empty selection from the panel: the filtered menu, an empty pattern, no wrap.
         yield from make_branch_first_output(branch)
-        select([])
+        yield from select([])
         ok = yield ("until", lambda: viewer_selection() == [], POLL_TIMEOUT_S)
         require(ok, "nothing is selected in the 3D view (got %r)" % (viewer_selection(),))
         yield from check_context_menu_create_enabled()
@@ -420,7 +424,7 @@ try:
         # A Wrap node from a selection, through the real Undo and Redo; the pinned panel shows what
         # the node after the wrap outputs, while the Viewer stays on the viewed USDRead.
         yield from make_branch_first_output(branch)
-        select([BOX])
+        yield from select([BOX])
         ok = yield ("until", lambda: viewer_selection() == [BOX], POLL_TIMEOUT_S)
         require(ok, "Box is selected in the 3D view (got %r)" % (viewer_selection(),))
         yield from pin_panel_to(branch)

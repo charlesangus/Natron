@@ -29,11 +29,13 @@
 #include "Global/Macros.h"
 
 #include <atomic>
+#include <memory>
 #include <string>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Scene/PrimSelector.h"
+#include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 
 // Free of USD, like every node header.
 
@@ -84,12 +86,22 @@ public:
     virtual ~USDVariant();
 
     /**
-     * @brief Fills the Variant Sets menu with the variant sets of the first prim the pattern
-     * matches in the input scene at the current frame, and the Variants menu with the variants of
-     * the set named in Variant Set. Main thread only; the node calls it itself, queued, whenever
-     * its input, its pattern or anything upstream changes.
+     * @brief Starts, on a worker, listing the variant sets of the first prim the pattern matches
+     * in the input scene at the current frame, and the variants of the set named in Variant Set,
+     * on the load set of the viewer showing the node (nothing loaded when none does), and
+     * returns at once. The menus keep their entries until applyVariantMenus() fills them with
+     * the job's result, which the job queues to the main thread when it ends; a later refresh
+     * supersedes it. Both menus end with a row counting the unloaded branches not searched, when
+     * there are some. Main thread only; the node calls it itself, queued, whenever its input,
+     * its pattern or anything upstream changes.
      **/
-    void refreshVariantMenus();
+    std::shared_ptr<SceneMenuJob> refreshVariantMenus();
+
+    /**
+     * @brief Fills the menus from job, unless a later refresh superseded it or it is not done.
+     * Returns whether it did. Main thread.
+     **/
+    bool applyVariantMenus(const std::shared_ptr<SceneMenuJob>& job);
 
 private:
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -109,11 +121,13 @@ private:
     void scheduleMenuRefresh();
 
     PrimSelector _primPattern;
+    PrimPatternCache _matches;
     KnobStringWPtr _variantSet;
     KnobChoiceWPtr _variantSets;
     KnobStringWPtr _variant;
     KnobChoiceWPtr _variants;
     std::atomic<bool> _menuRefreshPending;
+    SceneMenuRefresh _menuRefresh;
     // Set while the node itself moves a menu, which must not write the menu's entry back.
     bool _syncingMenus;
 };

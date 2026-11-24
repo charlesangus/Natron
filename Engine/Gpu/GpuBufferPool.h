@@ -38,6 +38,9 @@ struct GpuBufferPoolStats {
     uint64_t peakBytes = 0;
     uint64_t evictions = 0;
     uint64_t budgetBytes = 0;
+    // Released while retiring device work that uses them was pending, and kept out of reuse until it is reaped.
+    // They count against the budget like pooled bytes.
+    uint64_t quarantinedBytes = 0;
 };
 
 namespace detail {
@@ -143,9 +146,10 @@ private:
     void linkLocked(detail::BufferLease* lease);
     detail::BufferLease* takeVictimLocked(std::function<void()>& cb);
     uint64_t computeBudget();
-    uint64_t usageLocked() const { return stats_.liveBytes + stats_.pooledBytes; }
+    uint64_t usageLocked() const { return stats_.liveBytes + stats_.pooledBytes + stats_.quarantinedBytes; }
     void reserveLocked(uint64_t bytes);
     GpuStatus fillWithPoison(const GpuBuffer& buffer);
+    void returnQuarantined();
 
     GpuDevice& dev_;
     GpuBufferPoolOptions options_;
@@ -155,6 +159,12 @@ private:
     std::atomic<uint64_t> allocations_ { 0 };
     std::atomic<bool> poison_ { false };
     std::map<VkDeviceSize, std::vector<GpuBuffer>> free_;
+    struct Quarantined {
+        GpuBuffer buffer;
+        // GpuDevice::retiringMark() of the buffer when it was released.
+        uint64_t mark = 0;
+    };
+    std::vector<Quarantined> quarantine_;
     // Evictable live buffers that must be downloaded on eviction, ordered by last use, oldest first.
     std::map<uint64_t, detail::BufferLease*> lru_;
     // Evictable live buffers that may be dropped, ordered by score then last use.

@@ -258,6 +258,11 @@ KnobGuiChoice::onCurrentIndexChanged(int i)
     if (!knob) {
         return;
     }
+    if (knob->isEntryDisabled(i)) {
+        updateGUI(0);
+
+        return;
+    }
     pushUndoCommand( new KnobUndoCommand<int>(shared_from_this(), knob->getValue(0), i, 0, false, 0) );
 }
 
@@ -265,7 +270,7 @@ void
 KnobGuiChoice::onCurrentIndexReselected(int i)
 {
     KnobChoicePtr knob = _knob.lock();
-    if (!knob || !knob->getNotifiesOnReselect()) {
+    if (!knob || !knob->getNotifiesOnReselect() || knob->isEntryDisabled(i)) {
         return;
     }
     ignore_result(knob->setValue(i, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL, true));
@@ -298,7 +303,9 @@ KnobGuiChoice::onEntryAppended()
         } else {
             _comboBox->addItem(QString::fromUtf8(options[i].label.c_str()), QIcon(), QKeySequence(), QString::fromUtf8(options[i].tooltip.c_str()));
         }
-
+        if (options[i].disabled) {
+            _comboBox->disableItem(i);
+        }
     }
 
     updateGUI(0);
@@ -323,6 +330,9 @@ KnobGuiChoice::onEntriesPopulated()
 
     for (U32 i = 0; i < entries.size(); ++i) {
         _comboBox->addItem( QString::fromUtf8( entries[i].label.c_str() ), QIcon(), QKeySequence(), QString::fromUtf8( entries[i].tooltip.c_str() ) );
+        if (entries[i].disabled) {
+            _comboBox->disableItem(i);
+        }
     } // for all entries
 
     // the "New" menu is only added to known parameters (e.g. the choice of output channels)

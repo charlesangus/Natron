@@ -30,10 +30,14 @@ sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd
 
 POLL_TIMEOUT_S = 20.0
 SETTLE_MS = 800
+PAINT_MS = 200
 STARTUP_TIMEOUT_S = 60.0
 CTRL_LEFT_TUMBLE_NAVIGATION = 0
+INITIAL_DRAW_FULL = 3
 GRID_COLUMNS = 40
 GRID_ROWS = 22
+# Pixels between the clicks that look again around a prim, for a part of another drawn narrower than a grid step.
+DENSE_STEP = 4
 CARD = "/World/Card"
 BOX = "/World/Box"
 BACKDROP = "/World/Backdrop"
@@ -150,6 +154,9 @@ try:
 
     param(stage_read, "filename").setValue(scene_path)
     param(slab_read, "filename").setValue(slab_path)
+    # Full: the prims draw and pick themselves, not one box per top-level prim.
+    param(stage_read, "initialDraw").setValue(INITIAL_DRAW_FULL)
+    param(slab_read, "initialDraw").setValue(INITIAL_DRAW_FULL)
     param(plate, "color").set(1.0, 0.0, 0.0, 0.5)
     param(camera, "translate").set(0.0, 0.0, 8.0)
     param(assign, "primPattern").set(CARD)
@@ -176,10 +183,18 @@ try:
         QApplication.sendEvent(v, event)
 
     def click(pos, modifiers=Qt.NoModifier):
+        """Steps that click once no frame is owed, and return the selection. A click while a frame
+        is owed or rendering picks only after it, so the selection read at once would be the old
+        one; a selection change owes the frame that tints it, which the next paint reports."""
+        yield ("until", scene_drawn, POLL_TIMEOUT_S)
+        before = selection()
         mouse(QEvent.MouseButtonPress, pos, Qt.LeftButton, Qt.LeftButton, modifiers)
         mouse(QEvent.MouseButtonRelease, pos, Qt.LeftButton, Qt.NoButton, modifiers)
         QApplication.processEvents()
-        return selection()
+        after = selection()
+        if after != before:
+            yield ("sleep", PAINT_MS)
+        return after
 
     def key(k, modifiers=Qt.NoModifier):
         v = view()
@@ -190,10 +205,14 @@ try:
         QApplication.processEvents()
 
     def settle():
+        """Waits for the frame of the last change: frames render on their own thread, and a
+        selection, draw mode or framing change shows only once that frame is presented."""
         v = view()
         if v is not None:
             v.update()
-        return ("sleep", SETTLE_MS)
+        yield ("sleep", PAINT_MS)
+        yield ("until", scene_drawn, POLL_TIMEOUT_S)
+        yield ("sleep", SETTLE_MS)
 
     def crop():
         v = view()
@@ -251,20 +270,33 @@ try:
         y = sum(p.y() for p in points) / float(len(points))
         return nearest(points, QPoint(int(x), int(y)))
 
-    def probe():
-        """Where each prim is drawn, by clicking a grid of points; leaves the selection empty."""
+    def probe_rows(rows, hits):
+        """Clicks each row of points, recording what each one picks in hits."""
+        for points in rows:
+            for p in points:
+                picked = yield from click(p)
+                hits.setdefault(picked[0] if len(picked) == 1 else "", []).append(p)
+            yield ("sleep", 0)
+
+    def probe(dense_around=None):
+        """Where each prim is drawn, by clicking a grid of points; leaves the selection empty.
+        Around the prim dense_around, rows the grid found it on are clicked again every
+        DENSE_STEP pixels, a grid step to either side of it, for a sliver narrower than a step."""
         v = view()
         sx = max(1, v.width() // GRID_COLUMNS)
         sy = max(1, v.height() // GRID_ROWS)
         hits = {}
-        for row in range(GRID_ROWS):
-            for column in range(GRID_COLUMNS):
-                p = QPoint(sx // 2 + column * sx, sy // 2 + row * sy)
-                picked = click(p)
-                hits.setdefault(picked[0] if len(picked) == 1 else "", []).append(p)
-            yield ("sleep", 0)
+        rows = [[QPoint(sx // 2 + column * sx, sy // 2 + row * sy) for column in range(GRID_COLUMNS)] for row in range(GRID_ROWS)]
+        yield from probe_rows(rows, hits)
+        if dense_around in hits:
+            xs = [p.x() for p in hits[dense_around]]
+            ys = sorted(set(p.y() for p in hits[dense_around]))
+            left = max(0, min(xs) - sx)
+            right = min(v.width() - 1, max(xs) + sx)
+            dense = [[QPoint(x, y) for x in range(left, right + 1, DENSE_STEP)] for y in ys]
+            yield from probe_rows(dense, hits)
         if "" in hits:
-            click(nearest(hits[""], QPoint(0, 0)))
+            yield from click(nearest(hits[""], QPoint(0, 0)))
         return hits
 
     def steps():
@@ -281,14 +313,14 @@ try:
         require(ok, "the scene view shows the scene (%r)" % (v.property("natronSceneError") if v else None,))
         report("NOTE scene view %dx%d" % (v.width(), v.height()))
         key(Qt.Key_G, CTRL | SHIFT)
-        yield settle()
+        yield from settle()
         require(view().property("natronSceneShowGuides") is False, "Ctrl+Shift+G hides the guides")
         key(Qt.Key_G, CTRL)
-        yield settle()
+        yield from settle()
         require(view().property("natronSceneShowGrid") is False, "Ctrl+G hides the grid")
         key(Qt.Key_Z)
         key(Qt.Key_A)
-        yield settle()
+        yield from settle()
 
         section("nothing selected")
         hits = yield from probe()
@@ -299,15 +331,15 @@ try:
         box = centre_of(hits[BOX])
         backdrop = min(hits[BACKDROP], key=lambda p: p.x())
         check(selection() == [], "the probe leaves nothing selected (%r)" % (selection(),))
-        yield settle()
+        yield from settle()
         plain = save_view("m278_nothing_selected")
         require(plain is not None, "the scene view can be grabbed")
 
         section("card and box selected")
-        click(card)
-        click(box, SHIFT)
+        yield from click(card)
+        yield from click(box, SHIFT)
         check(selection() == sorted([CARD, BOX]), "the card and the box are selected (%r)" % (selection(),))
-        yield settle()
+        yield from settle()
         selected = save_view("m278_card_and_box_selected")
         box_move = move_toward_tint(plain, selected, box)
         card_move = move_toward_tint(plain, selected, card)
@@ -319,11 +351,11 @@ try:
 
         section("wireframe")
         key(Qt.Key_4, CTRL)
-        yield settle()
+        yield from settle()
         check(view().property("natronSceneDrawMode") == "wireframe", "Ctrl+4 selects wireframe")
         wire = save_view("m278_wireframe_selected")
-        click(nearest(hits[""], QPoint(0, 0)))
-        yield settle()
+        yield from click(nearest(hits[""], QPoint(0, 0)))
+        yield from settle()
         wire_plain = crop()
         selected_lines = yellowish_pixels(wire)
         plain_lines = yellowish_pixels(wire_plain)
@@ -331,24 +363,24 @@ try:
         check(selected_lines >= plain_lines + MIN_WIRE_PIXELS,
               "the selected prims' wireframe lines are tinted (%d against %d)" % (selected_lines, plain_lines))
         key(Qt.Key_5, CTRL)
-        yield settle()
+        yield from settle()
 
         section("selected behind an opaque prim")
         require(merge.connectInput(1, slab_read), "connect USDRead2 to USDMerge1")
         ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)
         require(ok, "the scene view shows the slab")
         key(Qt.Key_A)
-        yield settle()
-        hits = yield from probe()
+        yield from settle()
+        hits = yield from probe(dense_around=SLAB)
         report("NOTE grid hits: %r" % dict((k, len(p)) for k, p in hits.items()))
         require(SLAB in hits and BOX in hits and "" in hits, "the grid finds the slab and the part of the box in the open")
         slab = centre_of(hits[SLAB])
         open_box = centre_of(hits[BOX])
-        yield settle()
+        yield from settle()
         before = save_view("m278_slab_nothing_selected")
-        click(open_box)
+        yield from click(open_box)
         check(selection() == [BOX], "the box is selected (%r)" % (selection(),))
-        yield settle()
+        yield from settle()
         behind = save_view("m278_selected_behind_opaque")
         open_move = move_toward_tint(before, behind, open_box)
         slab_move = abs(move_toward_tint(before, behind, slab))

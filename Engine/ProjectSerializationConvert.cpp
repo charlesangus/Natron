@@ -281,6 +281,10 @@ Node::toSerialization(Serialization::NodeSerialization* serialization,
         tracker->toSerialization(&serialization->trackerContext);
     }
 
+    if (const ViewerInstance* viewer = dynamic_cast<const ViewerInstance*>(effect.get())) {
+        viewer->sceneViewToSerialization(&serialization->sceneView);
+    }
+
     NodeGroup* isGroupNode = isEffectGroup();
     if (isGroupNode) {
         NodesList groupNodes;

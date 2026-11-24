@@ -599,7 +599,7 @@ future core work has solid ground to build on.
 | M520 | USD Toolbar Category And Submenus | doing | - | bosley-executor | E10 | F36 | | [M520-usd-toolbar-category-and-submenus.md](PLAN/MILESTONES/M520-usd-toolbar-category-and-submenus.md) |
 | M521 | Easier Pipe Grabbing | doing | - | bosley-executor | E10 | F36 | | [M521-easier-pipe-grabbing.md](PLAN/MILESTONES/M521-easier-pipe-grabbing.md) |
 | M522 | Geometry Toolbar Category | done | - | bosley-executor | E10 | F15 | | [M522-geometry-toolbar-category.md](PLAN/MILESTONES/M522-geometry-toolbar-category.md) |
-| M523 | USDSetAttribute Type From Stage | doing | - | bosley-executor | E9 |  | | [M523-usdsetattribute-type-from-stage.md](PLAN/MILESTONES/M523-usdsetattribute-type-from-stage.md) |
+| M523 | USDSetAttribute Type From Stage | done | - | | E9 |  | | [M523-usdsetattribute-type-from-stage.md](PLAN/MILESTONES/M523-usdsetattribute-type-from-stage.md) |
 | M524 | Vertical Node Style | todo | M351, M522 |  | E10 |  | | [M524-vertical-node-style.md](PLAN/MILESTONES/M524-vertical-node-style.md) |
 | M540 | Sparse Tile Field Core | todo | M417 |  | E22 | F35 | | [M540-sparse-tile-field-core.md](PLAN/MILESTONES/M540-sparse-tile-field-core.md) |
 | M541 | Pyro Advection And Pressure | todo | M540 |  | E22 | F35 | | [M541-pyro-advection-and-pressure.md](PLAN/MILESTONES/M541-pyro-advection-and-pressure.md) |

@@ -297,6 +297,10 @@ struct GeoSpreadsheetPanel::Implementation {
         const U64 hash = node->getHashValue();
         if (!busy && shown.valid && (shown.node.lock() == node) && (shown.frame == frame) && (shown.hash == hash)
             && (shown.fromViewer || !viewerServes(instance, node, frame, hash))) {
+            // Pinning or unpinning the node already listed changes how it came to be shown.
+            setStatus(statusOf(node));
+            publishState();
+
             return;
         }
         cancelRead();

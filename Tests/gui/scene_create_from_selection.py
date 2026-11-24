@@ -1,7 +1,8 @@
 """Create Node from Selection: the scene-filtered tab menu, from the 3D view.
 
-Graph: USDRead(scene-reference.usda) -> Viewer1. Box and Ball are selected through the Scene Graph
-panel's tree with QModelIndex, which selects them in the 3D view too.
+Graph: USDRead(scene-reference.usda) -> Viewer1, with the Scene Graph panel docked beside the viewer.
+Box and Ball are selected through the panel's tree with QModelIndex, which selects them in the 3D view
+too.
 
 Checks:
   - Tab on the 3D view opens the tab menu, filtered to scene nodes with a prim path or pattern
@@ -149,6 +150,14 @@ try:
             selection.select(index, QItemSelectionModel.Select | QItemSelectionModel.Rows)
             selection.setCurrentIndex(index, QItemSelectionModel.NoUpdate)
         QApplication.processEvents()
+
+    def ancestor_of_class(widget, name):
+        w = widget
+        while w is not None:
+            if w.metaObject().className().split("::")[-1] == name:
+                return w
+            w = w.parentWidget()
+        return None
 
     def input_name(node, i=0):
         inp = node.getInput(i) if node is not None else None
@@ -306,6 +315,16 @@ try:
         require(ok, "the viewer is up")
         ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)
         require(ok, "the scene view shows the scene")
+        require(panel() is not None, "the Scene Graph panel exists")
+        # A hidden Scene Graph panel defers reading its rows, and the default layout docks it nowhere.
+        home = ancestor_of_class(view(), "TabWidget")
+        require(home is not None, "the scene view is in a pane")
+        split = app.getTabWidget(home.objectName()).splitHorizontally()
+        require(split is not None, "split the viewer's pane")
+        require(app.moveTab("sceneGraph", split), "move the Scene Graph panel beside the viewer")
+        split = None
+        ok = yield ("until", lambda: panel().isVisible(), POLL_TIMEOUT_S)
+        require(ok, "the Scene Graph panel shows")
         require(tree() is not None, "the Scene Graph panel's tree exists")
         ok = yield ("until", lambda: world_children() == sorted([BOX, BALL, CAM]), POLL_TIMEOUT_S)
         require(ok, "the tree lists Box, Ball and Cam under /World (got %r)" % (world_children(),))

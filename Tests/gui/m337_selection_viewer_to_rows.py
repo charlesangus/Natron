@@ -5,8 +5,8 @@ panel beside the viewer. Picks are driven through the SceneViewport the way m361
   - a click on the cube's corner in points mode selects that point's row in Points and scrolls to it;
   - a marquee in primitives mode selects the primitives' rows in the Primitives tab;
   - an edge pick shows its two endpoints, selected, in the Points tab;
-  - under a descending sort a marquee selects the rows that show the picked points, and reordering
-    keeps the viewer's selection selected;
+  - a marquee over the top half of the cube picks some of its points; under a descending sort their
+    rows are the selected ones, and a new marquee selects the rows that show the picked points;
   - with a group filter hiding some of the picked points, the selection note reports how many;
   - Objects mode clears the rows and the note;
   - selecting rows in the table does not echo back into the viewer's selection.
@@ -288,7 +288,9 @@ try:
         section("sort")
         yield set_mode(POINTS)
         converted = pattern()
-        marquee(start, end)
+        # A box selects through faces, so one over the whole cube picks every point and would select
+        # every row under any sort; the top half picks a subset whose rows the sort moves.
+        marquee(start, QPoint(end.x(), view().height() // 2))
         ok = yield ("until", lambda: count() >= 2 and pattern() != converted and rows_match_pick(), POLL_TIMEOUT_S)
         require(ok, "a points marquee selects its rows (%r, was %r)" % (pattern(), converted))
         columns = table().model().columnCount()

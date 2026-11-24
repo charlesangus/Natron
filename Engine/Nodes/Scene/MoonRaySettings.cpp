@@ -206,7 +206,7 @@ make()
         add("subdivision", s);
     }
     {
-        RenderSettingsKnobs::CuratedSetting s = declared("natron:dicingCamera", "The path of the camera prim meshes are tessellated as seen from, with Adaptive Error above 0. Empty uses the render camera. Faces outside its view get the coarsest tessellation, and its field of view sets how large a face looks, while the distance to a face is still measured from the render camera. Name a wider camera, for example, so that what lies outside the render camera's view is not left coarse.", VtValue(std::string()));
+        RenderSettingsKnobs::CuratedSetting s = declared("natron:dicingCamera", "The path of the camera prim meshes that dice adaptively are tessellated as seen from, whether through the global Adaptive Error or a mesh's own moonray:adaptive_error. Empty uses the render camera. Faces outside its view get the coarsest tessellation, and its field of view sets how large a face looks, while the distance to a face is still measured from the render camera. Name a wider camera, for example, so that what lies outside the render camera's view is not left coarse.", VtValue(std::string()));
         s.name = "dicingCamera";
         add("subdivision", s);
     }
@@ -265,7 +265,6 @@ make()
             s.enabledBy.push_back(condition);
         }
     }
-    enabledBy("natron:dicingCamera", "natron:adaptiveError");
 
     return c;
 } // make

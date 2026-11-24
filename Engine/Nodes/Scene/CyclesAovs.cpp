@@ -601,7 +601,6 @@ namespace {
         mutable std::map<SdfPath, ShadingEnum> _shading;
     };
 
-    // What withSubdivision() runs under, for the engine it makes.
     std::mutex gSubdivisionMutex;
     std::atomic<bool> gSubdivides(false);
 } // anon namespace

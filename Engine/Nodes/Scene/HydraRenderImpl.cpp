@@ -1315,6 +1315,19 @@ componentToFloat(HdFormat componentFormat,
     }
 }
 
+// A finite value stays finite as a half: past the largest half it saturates, where a plain
+// conversion gives infinity, which no later scale such as the viewer's exposure can bring back.
+GfHalf
+saturatedHalf(float value)
+{
+    const float largest = 65504.f;
+    if (std::isnan(value)) {
+        return GfHalf(value);
+    }
+
+    return GfHalf(std::min(std::max(value, -largest), largest));
+}
+
 std::int32_t
 readInt(const unsigned char* at)
 {
@@ -1386,9 +1399,7 @@ RenderThread::makeEngine(EngineEntry& entry,
     for (RendererSettings::const_iterator it = settings.begin(); it != settings.end(); ++it) {
         entry.engine->SetRendererSetting(TfToken(it->first), it->second);
     }
-    // Last: a prim's settings must not override these. Storm would apply a scene camera's
-    // exposure when rendering through it; Natron applies camera exposure itself, never the delegate.
-    entry.engine->SetRendererSetting(HdRenderSettingsTokens->enableExposureCompensation, VtValue(false));
+    // Last: a prim's settings must not override these.
     if (CyclesAovs::isCycles(renderer)) {
         CyclesAovs::configureEngine(entry.engine.get());
     } else if (MoonRayAovs::isMoonRay(renderer)) {
@@ -3123,7 +3134,7 @@ struct ProgressiveRender::Implementation {
                 const float* from = reinterpret_cast<const float*>(color.pixel(0));
                 GfHalf* to = out->rgba.data();
                 for (std::size_t i = 0; i < pixels * 4; ++i) {
-                    to[i] = GfHalf(from[i]);
+                    to[i] = saturatedHalf(from[i]);
                 }
             } else {
                 for (std::size_t i = 0; i < pixels; ++i) {
@@ -3133,7 +3144,7 @@ struct ProgressiveRender::Implementation {
                         c[k] = componentToFloat(componentFormat, at + k * componentSize);
                     }
                     for (int k = 0; k < 4; ++k) {
-                        out->rgba[i * 4 + k] = GfHalf(c[k]);
+                        out->rgba[i * 4 + k] = saturatedHalf(c[k]);
                     }
                 }
             }
@@ -3371,6 +3382,8 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             status.converged = false;
             status.paused = false;
             status.samples = -1;
+            status.headlightAsked = false;
+            status.headlight = false;
             if ((renderer == failedRenderer) && (sceneEdits != failedEdits)) {
                 if (pending) {
                     const Clock::time_point due = std::min(lastPending + kRestartQuiet, firstPending + kRestartMaxWait);
@@ -3431,6 +3444,8 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             lastConverged = false;
             engineFresh = true;
             ++status.engines;
+            status.headlightAsked = engineHeadlightAsked;
+            status.headlight = engineHeadlight;
             needRestart = true;
             continue;
         }

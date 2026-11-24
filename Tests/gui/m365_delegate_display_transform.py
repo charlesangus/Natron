@@ -13,16 +13,19 @@ Stages: an emissive card (no lights), read once at an emission of 0.3 for refere
   - neither the gain nor the view change restarts the render (natronSceneRestartCount);
   - on the lit card, the Headlight lighting mode restarts the render, changes the card's pixel and
     shows as natronSceneLighting "headlight"; Auto, the stage having a light, renders as Scene
-    Lights without a restart; Scene Lights again brings back the first pixel;
+    Lights without a restart; Scene Lights again brings back the first pixel; natronSceneLightingEffective
+    reads "scene" under Scene Lights and "headlight" under Headlight, Cycles having a distant light;
   - looking through a camera at exposure 1 (Look Through submenu) in front of the 0.15 card: the
     toolbar's cameraExposure label reads "1.0", natronSceneCameraExposure is [True, 1, 2], and the
     card shows as the 0.3 card did at gain 1. Clicking the toolbar's applyCameraExposure button
     clears the knob and shows the card at 0.15, without restarting the render; clicking it again
-    brings exposure back. Back on the free camera the label is empty and disabled.
+    brings exposure back. Back on the free camera the label is empty and disabled;
+  - with Storm, through the same camera, the 0.15 card shows as Storm's own 0.3 card on the free camera:
+    the exposure applies once, by the viewer, not again by Storm.
 
 Screenshots for sign-off, each with a CAPTION line in results.txt: m365-reference, m365-plain,
 m365-gain-2, m365-view, m365-scene-lights, m365-headlight, m365-auto, m365-camera-exposure,
-m365-camera-exposure-off.
+m365-camera-exposure-off, m365-storm-reference, m365-storm-camera-exposure.
 
 Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go to $NATRON_GUI_TEST_OUT
 (default build/gui-test-out/). Exit status 0 only if every check passed.
@@ -39,6 +42,7 @@ REFINE_TIMEOUT_S = 180.0
 SETTLE_MS = 700
 STARTUP_TIMEOUT_S = 60.0
 CYCLES_ID = "HdCyclesPlugin"
+STORM_ID = "HdStormRendererPlugin"
 MAX_SAMPLES = 16
 HUD_MARGIN = 28
 # Screen pixels are 8-bit, and a converged path-traced frame keeps a little noise.
@@ -274,8 +278,9 @@ try:
             QTest.keyClick(p, Qt.Key_Escape)
             QApplication.processEvents()
 
-    def pick_cycles():
-        """Steps that pick Cycles from the Renderer submenu; return False when the build has none."""
+    def pick_renderer(label_start):
+        """Steps that pick the first Renderer submenu entry whose label starts with label_start;
+        return False when the build has none that can render."""
         gui = main_gui()
         if gui is not None:
             gui.activateWindow()
@@ -296,13 +301,21 @@ try:
         menu.setActiveAction(action)
         QTest.keyClick(menu, Qt.Key_Right)
         yield ("until", lambda: sub.isVisible(), 5.0)
-        cycles = [a for a in sub.actions() if a.text().replace("&", "").startswith("Cycles")]
-        usable = bool(cycles) and cycles[0].isEnabled() and "unavailable" not in cycles[0].text()
+        found = [a for a in sub.actions() if a.text().replace("&", "").startswith(label_start)]
+        usable = bool(found) and found[0].isEnabled() and "unavailable" not in found[0].text()
         if usable:
-            cycles[0].trigger()
+            found[0].trigger()
         close_menus()
         yield ("until", lambda: state.get("closed", False), POLL_TIMEOUT_S)
         return usable
+
+    def load_storm(path, what):
+        t0 = time.time() * 1000.0
+        usd.getParam("filename").setValue(path)
+        ok = yield ("until", lambda: (prop("natronSceneSyncedAtMs", 0) or 0) >= t0 and scene_drawn(), POLL_TIMEOUT_S)
+        require(ok, "the view syncs " + what + " under Storm")
+        ok = yield from repaint()
+        require(ok, "Storm draws " + what)
 
     def pick_look_through(text):
         """Steps that pick the Look Through submenu's entry labelled text; return whether it was found."""
@@ -342,9 +355,6 @@ try:
                 _held.append(w)
                 return w
         return None
-
-    def view_centre(image):
-        return (image.width() // 2, image.height() // 2)
 
     def crop():
         v = view()
@@ -400,6 +410,12 @@ try:
                 n += 1
         return tuple(t / float(n) for t in total)
 
+    def card_colour(image, background, what):
+        """The card's colour at its centre in image, wherever the view frames it."""
+        centre, n = card_centre(image, background)
+        require(centre is not None and n >= MIN_PIXELS, "the card is drawn in %s (%d pixels)" % (what, n))
+        return mean_around(image, centre)
+
     def check_corners(before, after, what):
         for x, y in corners(before):
             a, b = rgb(before, x, y), rgb(after, x, y)
@@ -436,7 +452,7 @@ try:
         yield from repaint()
 
         before = restarts()
-        usable = yield from pick_cycles()
+        usable = yield from pick_renderer("Cycles")
         if not usable:
             report("SKIP Cycles is not available in this build")
             return
@@ -507,6 +523,8 @@ try:
         section("lighting")
         yield from load(lit_path, "the lit card")
         check(prop("natronSceneLighting") == "scene", "the view lights with the scene's lights (%r)" % (prop("natronSceneLighting"),))
+        check(prop("natronSceneLightingEffective") == "scene", "Cycles renders with the scene's lights (%r)"
+              % (prop("natronSceneLightingEffective"),))
         scene_lit_image = capture("m365-scene-lights", "Cycles, Scene Lights: the grey card under the stage's dim distant light")
         scene_lit = mean_around(scene_lit_image, centre)
 
@@ -518,6 +536,8 @@ try:
         check(ok, "the headlight restarts the render (%d -> %d)" % (before, restarts()))
         headlit_image = capture("m365-headlight", "Cycles, Headlight: the stage's light off, a light at the camera on")
         headlit = mean_around(headlit_image, centre)
+        check(prop("natronSceneLightingEffective") == "headlight", "Cycles renders with the headlight, no fallback (%r)"
+              % (prop("natronSceneLightingEffective"),))
         check(differs(headlit, scene_lit, COLOUR_SLACK * 2), "the headlight changes the lit card (%r -> %r)" % (scene_lit, headlit))
 
         before = restarts()
@@ -561,7 +581,7 @@ try:
         check(ok and label.isEnabled(), "the camera exposure label reads 1.0 (%r, enabled %r)" % (label.text(), label.isEnabled()))
         check(button.isEnabled() and button.isChecked(), "the Apply Camera Exposure button is enabled and on")
         exposed_image = capture("m365-camera-exposure", "Cycles through a camera at exposure 1: the 0.15 card shows as the 0.3 card at gain 1")
-        exposed = mean_around(exposed_image, view_centre(exposed_image))
+        exposed = card_colour(exposed_image, background, "the frame through the camera")
         check(not differs(exposed, twice, COLOUR_SLACK), "camera exposure 1 shows the 0.15 card as the 0.3 one (%r vs %r)"
               % (exposed, twice))
 
@@ -572,14 +592,14 @@ try:
         check(ok and not button.isChecked(), "the button clears the applyCameraExposure knob")
         yield from repaint()
         off_image = capture("m365-camera-exposure-off", "Cycles through the same camera with Apply Camera Exposure off: the card at 0.15")
-        off = mean_around(off_image, view_centre(off_image))
+        off = card_colour(off_image, background, "the frame with camera exposure off")
         check(not differs(off, once, COLOUR_SLACK), "with camera exposure off the card shows at 0.15 (%r vs %r)" % (off, once))
         check(label.text() == "1.0", "the label still shows the camera's exposure (%r)" % (label.text(),))
         QTest.mouseClick(button, Qt.LeftButton)
         ok = yield ("until", lambda: bool(knobs["applyCameraExposure"].get()), POLL_TIMEOUT_S)
         check(ok and button.isChecked(), "clicking again sets the knob")
         yield from repaint()
-        again = mean_around(crop(), view_centre(exposed_image))
+        again = card_colour(crop(), background, "the frame with camera exposure back on")
         check(not differs(again, exposed, COLOUR_SLACK), "camera exposure applies again (%r vs %r)" % (again, exposed))
         check(restarts() == settled, "toggling camera exposure restarts no render (%d -> %d)" % (settled, restarts()))
 
@@ -591,6 +611,25 @@ try:
         ok = yield ("until", lambda: label.text() == "" and not label.isEnabled(), POLL_TIMEOUT_S)
         check(ok, "on the free camera the label is empty and disabled (%r)" % (label.text(),))
         check(not button.isEnabled(), "on the free camera the button is disabled")
+
+        section("camera exposure, Storm")
+        found = yield from pick_renderer("Storm")
+        require(found, "the Renderer submenu lists Storm")
+        ok = yield ("until", lambda: prop("natronSceneRenderer") == STORM_ID and scene_drawn(), POLL_TIMEOUT_S)
+        require(ok, "picking Storm switches the view (%r)" % (prop("natronSceneRenderer"),))
+        yield from load_storm(reference_path, "the 0.3 card")
+        storm_reference = capture("m365-storm-reference", "Storm, the card emitting 0.3 at gain 1, on the free camera")
+        storm_twice = card_colour(storm_reference, background, "Storm's 0.3 card")
+        yield from load_storm(camera_path, "the 0.15 card with a camera at exposure 1")
+        found = yield from pick_look_through(CAMERA_PATH)
+        require(found, "the Look Through submenu lists %s under Storm" % CAMERA_PATH)
+        ok = yield ("until", lambda: prop("natronSceneLookThrough") == CAMERA_PATH, POLL_TIMEOUT_S)
+        require(ok, "Storm looks through %s (%r)" % (CAMERA_PATH, prop("natronSceneLookThrough")))
+        yield from repaint()
+        storm_exposed_image = capture("m365-storm-camera-exposure", "Storm through a camera at exposure 1: the 0.15 card shows as Storm's 0.3 card")
+        storm_exposed = card_colour(storm_exposed_image, background, "Storm's frame through the camera")
+        check(not differs(storm_exposed, storm_twice, COLOUR_SLACK), "Storm applies camera exposure 1 once: the 0.15 card shows as the 0.3 one (%r vs %r)"
+              % (storm_exposed, storm_twice))
 
     def all_steps():
         try:

@@ -786,7 +786,7 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     _imp->gainSlider->setToolTip(gainTt);
     _imp->secondRowLayout->addWidget(_imp->gainSlider);
 
-    _imp->applyCameraExposureButton = new Button(tr("Cam"), _imp->secondSettingsRow);
+    _imp->applyCameraExposureButton = new Button(tr("Cam Exp"), _imp->secondSettingsRow);
     _imp->applyCameraExposureButton->setObjectName(QString::fromUtf8(kViewerParamApplyCameraExposure));
     _imp->applyCameraExposureButton->setCheckable(true);
     _imp->applyCameraExposureButton->setChecked(true);

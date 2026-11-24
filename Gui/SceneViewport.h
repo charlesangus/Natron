@@ -177,6 +177,10 @@ public:
         U64 frames = 0;
         // The samples per pixel of the frame drawn last, -1 if unknown or none was.
         int drawnSamples = -1;
+        // Whether the lighting mode asked the delegate for the headlight, and whether it lights
+        // with one: a delegate that cannot renders the stage's lights instead.
+        bool headlightAsked = false;
+        bool headlight = false;
     };
 
     /**
@@ -834,8 +838,8 @@ private:
     // properties, the display settings into natronSceneDrawMode, natronSceneShowGrid,
     // natronSceneShowGuides, natronScenePurposes and natronSceneLighting, and the progressive
     // render's state into natronSceneSamples, natronSceneMaxSamples, natronSceneRefining,
-    // natronSceneRefinementStopped, natronSceneRefineConverged, natronSceneRestartCount and
-    // natronSceneUploadMs.
+    // natronSceneRefinementStopped, natronSceneRefineConverged, natronSceneRestartCount,
+    // natronSceneUploadMs and natronSceneLightingEffective.
     void publishState();
 
     void publishRefineState();

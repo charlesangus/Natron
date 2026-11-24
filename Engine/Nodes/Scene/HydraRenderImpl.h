@@ -412,6 +412,10 @@ public:
         // machine may not.
         std::uint64_t engines = 0;
         std::uint64_t frames = 0;
+        // Whether setHeadlightOnly() asked the engine rendering for a light at the camera, and
+        // whether it has one: MoonRay without a distant light renders the stage's lights instead.
+        bool headlightAsked = false;
+        bool headlight = false;
         // Why the delegate cannot render, empty if it can.
         std::string error;
     };

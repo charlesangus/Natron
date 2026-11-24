@@ -205,10 +205,11 @@ const char* const kGradeVertexShader = "#version 400 compatibility\n"
  * frame, onto the framebuffer, around displayFunction, which defines vec4 toDisplay(vec4). The
  * colour is premultiplied over a transparent clear, and a display transform is not linear, so each
  * pixel is graded unpremultiplied (gain, toDisplay, then gamma, as the 2D viewer applies them) and
- * premultiplied again for the blend over the ungraded background. Pixels nothing was rendered to
- * are left to the background. The colour's depth goes with it, for the grid and guides drawn
- * after; without one, what was rendered stays in front of them. A colour of another size than the
- * view is stretched over it, filtered.
+ * premultiplied again for the blend over the ungraded background. Light that covers nothing, at
+ * alpha 0, such as a light Cycles sees straight from the camera, is graded as it is and added to
+ * the background. Pixels nothing was rendered to are left to the background. The colour's depth
+ * goes with it, for the grid and guides drawn after; without one, what was rendered stays in
+ * front of them. A colour of another size than the view is stretched over it, filtered.
  **/
 std::string
 gradeFragmentShader(const std::string& displayFunction)
@@ -228,16 +229,17 @@ gradeFragmentShader(const std::string& displayFunction)
               "    ivec2 p = ivec2(gl_FragCoord.xy);\n"
               "    vec4 c = stretched ? texture(colorAov, gl_FragCoord.xy / viewSize) : texelFetch(colorAov, p, 0);\n"
               "    float a = clamp(c.a, 0.0, 1.0);\n"
-              "    if (a <= 0.0) {\n"
+              "    if ((a <= 0.0) && (max(max(c.r, c.g), c.b) <= 0.0)) {\n"
               "        discard;\n"
               "    }\n"
-              "    vec3 shown = toDisplay(vec4(c.rgb / a * gain, 1.0)).rgb;\n"
+              "    float cover = (a > 0.0) ? a : 1.0;\n"
+              "    vec3 shown = toDisplay(vec4(c.rgb / cover * gain, 1.0)).rgb;\n"
               "    if (gamma <= 0.0) {\n"
               "        shown = vec3(greaterThanEqual(shown, vec3(1.0)));\n"
               "    } else {\n"
               "        shown = pow(max(shown, vec3(0.0)), vec3(1.0 / gamma));\n"
               "    }\n"
-              "    gl_FragColor = vec4(shown * a, a);\n"
+              "    gl_FragColor = vec4(shown * cover, a);\n"
               "    gl_FragDepth = hasDepth ? texelFetch(depthAov, p, 0).r : 0.0;\n"
               "}\n";
 
@@ -3592,6 +3594,8 @@ SceneViewportRenderer::getRefineStatus() const
     result.restarts = status.restarts;
     result.frames = status.frames;
     result.drawnSamples = _imp->drawnSamples;
+    result.headlightAsked = status.headlightAsked;
+    result.headlight = status.headlight;
 
     return result;
 }
@@ -4489,6 +4493,10 @@ SceneViewport::publishRefineState()
     setProperty("natronSceneRefineFrames", QVariant::fromValue<qulonglong>(status.frames));
     setProperty("natronSceneUploadMs", _imp->renderer.getLastUploadMs());
     setProperty("natronSceneUploadPixels", _imp->renderer.getLastUploadPixels());
+    // The lighting the view renders with, "scene" or "headlight": natronSceneLighting is the mode
+    // asked for, which a delegate without a light at the camera renders with the stage's lights.
+    const bool headlight = status.active ? status.headlight : !_imp->renderer.isSceneLit();
+    setProperty("natronSceneLightingEffective", QString::fromUtf8(headlight ? "headlight" : "scene"));
     Q_EMIT refineStateChanged();
 }
 
@@ -5434,6 +5442,9 @@ SceneViewport::paintGL()
             }
             if (refine.stopped) {
                 hud += tr(" (paused)");
+            }
+            if (refine.headlightAsked && !refine.headlight) {
+                hud += tr(" | no headlight: scene lights");
             }
         }
         const std::vector<std::string>& selected = _imp->renderer.getSelectedPrims();

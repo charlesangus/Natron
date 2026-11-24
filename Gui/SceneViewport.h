@@ -940,6 +940,9 @@ public:
     // Why the chosen delegate could not render, empty if it can or has not been tried yet.
     std::string getRendererError() const;
 
+    // Why the camera looked through is not the one drawn from, empty if it is or none is looked through.
+    std::string getCameraWarning() const;
+
     // The error of a render that threw, which discarded the engine; cleared by reading it.
     std::string takeRenderError();
 

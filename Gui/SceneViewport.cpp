@@ -1057,6 +1057,9 @@ struct SceneViewportRenderer::Implementation {
     // Why the refinement's delegate is not rendering now, from its status: unlike rendererError it
     // does not stop the refinement, which tries the delegate again at the next edit.
     std::string refineError;
+    // Why the camera looked through is not the one rendered from; written by the render path and
+    // read by paintGL under rendererErrorMutex.
+    mutable std::string cameraWarning;
     // Why the last render threw, until a paint takes it.
     std::string renderError;
     // Whether the last render that kept its renderer found Scene Default naming another.
@@ -1711,17 +1714,22 @@ struct SceneViewportRenderer::Implementation {
 
     // The camera a delegate renders through: the one looked through, unless it is drawn from an
     // override, a transform its prim does not have, or renderableCamera() rejects it. Empty for
-    // the free camera. Needs stageMutex.
+    // the free camera, with cameraWarning saying why when the camera was rejected. Needs stageMutex.
     SdfPath renderCameraPath() const
     {
         const UsdGeomCamera camera = lookThroughCamera();
         if (hasLookThroughOverride() || !camera) {
+            setCameraWarningCopy(std::string());
+
             return SdfPath();
         }
         std::string error;
         if (!HydraRender::renderableCamera(camera.GetPrim().GetStage(), camera.GetPath(), &error)) {
+            setCameraWarningCopy("Looking through " + camera.GetPath().GetString() + " failed: " + error + " Showing the free camera.");
+
             return SdfPath();
         }
+        setCameraWarningCopy(std::string());
 
         return camera.GetPath();
     }
@@ -2004,6 +2012,15 @@ struct SceneViewportRenderer::Implementation {
         std::lock_guard<std::mutex> lock(rendererErrorMutex);
 
         rendererError = error;
+    }
+
+    void setCameraWarningCopy(const std::string& warning) const
+    {
+        std::lock_guard<std::mutex> lock(rendererErrorMutex);
+
+        if (cameraWarning != warning) {
+            cameraWarning = warning;
+        }
     }
 
     void setRefineErrorCopy(const std::string& error)
@@ -6339,6 +6356,14 @@ SceneViewportRenderer::takeRenderError()
     error.swap(_imp->renderError);
 
     return error;
+}
+
+std::string
+SceneViewportRenderer::getCameraWarning() const
+{
+    std::lock_guard<std::mutex> lock(_imp->rendererErrorMutex);
+
+    return _imp->cameraWarning;
 }
 
 std::string
@@ -11158,6 +11183,8 @@ SceneViewport::paintGL()
     }
     const QString rendererError = QString::fromStdString(_imp->renderer.getRendererError());
     setProperty("natronSceneRendererError", rendererError);
+    const QString cameraWarning = QString::fromStdString(_imp->renderer.getCameraWarning());
+    setProperty("natronSceneCameraWarning", cameraWarning);
     if (_imp->announcedRenderer != _imp->renderer.getActiveRendererId()) {
         // The render row shown or hidden resizes this widget, which inside its paint frees the
         // texture Qt then composes the window from.
@@ -11234,6 +11261,11 @@ SceneViewport::paintGL()
         if (!_imp->lockMessage.isEmpty()) {
             painter.setPen(QColor(230, 160, 80));
             painter.drawText(rect().adjusted(8, 6, -8, -6), Qt::AlignLeft | Qt::AlignBottom, _imp->lockMessage);
+        }
+        if (!cameraWarning.isEmpty()) {
+            painter.setPen(QColor(230, 160, 80));
+            const int above = _imp->lockMessage.isEmpty() ? 6 : 24;
+            painter.drawText(rect().adjusted(8, 6, -8, -above), Qt::AlignLeft | Qt::AlignBottom | Qt::TextWordWrap, cameraWarning);
         }
     }
     if (!_imp->armedPick.isEmpty()) {

@@ -83,6 +83,7 @@ Deps: M131 - Native Defocus Family, M133 - ZDefocus Lens Aberrations (ZDefocus m
   - size: M
 
 **Verification gate:** the full build and `ctest` pass, including `DefocusReference` and the `DefocusHarness` smoke case. The full harness report is shared with the user (SendUserFile), and the user chooses M294 - ZDefocus Engine Revisit's direction from it. Record that choice in this file's `## Decisions` and in M294's `Blocked on:` line.
+- 2026-11-24 — **The four scenes (user):** M294's "better in four scenes" means blurFgSharpBg, aliasedEdge, highlightsBehindEdge and eclipsedBokeh.
 
 ## Decisions
 

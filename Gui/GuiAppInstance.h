@@ -124,6 +124,7 @@ public:
                                               Natron::StandardButtonEnum defaultButton,
                                               bool* stopAsking) OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void onProjectNodesRestored() OVERRIDE FINAL;
+    virtual void aboutToDestroyProjectNodes() OVERRIDE FINAL;
     virtual void notifyRenderStarted(const QString & sequenceName,
                                      int firstFrame, int lastFrame,
                                      int frameStep, bool canPause,
@@ -160,6 +161,7 @@ public:
     virtual void setLastViewerUsingTimeline(const NodePtr& node) OVERRIDE FINAL;
     virtual ViewerInstance* getLastViewerUsingTimeline() const OVERRIDE FINAL;
     virtual NodePtr getActiveViewerNode() const OVERRIDE FINAL;
+    virtual std::list<NodePtr> getViewerNodesByRecentActivity() const OVERRIDE FINAL;
 
     void discardLastViewerUsingTimeline();
 

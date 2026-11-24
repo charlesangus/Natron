@@ -1308,7 +1308,7 @@ RotoObjectSelect::draw(double /*time*/)
     }
     if (!text.empty()) {
         const RectD viewport = overlay->getViewportRect();
-        overlay->renderText(viewport.x1 + 12. * psx, viewport.y2 - 40. * psy, text, 1., 0.8, 0.3);
+        overlay->renderViewportText(viewport.x1 + 12. * psx, viewport.y2 - 40. * psy, text, 1., 0.8, 0.3);
     }
     glCheckError();
 } // RotoObjectSelect::draw

@@ -7,7 +7,8 @@ scene_graph_bulk.pxrplugins registers), each holding a subcomponent payload, and
   - the toolbar row fits the docked panel; the scope combo lists the built-in and custom kinds;
   - with no row selected every command is disabled; in Below scope Unload and Clear Below are;
   - Load To Component on the island loads its components and leaves their subcomponents unloaded;
-  - Full To Component sets Full on each component and the island and the grove read Children, and
+  - Full To Component under a boxed island sets Full on each component and switches the island and
+    the grove, which would block them, to Children, and
     Full shows checked when every selected row is set Full;
   - Hidden To natronTestTree sets the bush alone;
   - Children and BBox on selected rows, and Clear Below;
@@ -55,7 +56,7 @@ try:
     import NatronEngine
     from PySide6.QtCore import Q_ARG, Q_RETURN_ARG, QItemSelectionModel, QMetaObject, QModelIndex, Qt, QTimer
     from PySide6.QtGui import QAction
-    from PySide6.QtWidgets import QApplication, QComboBox, QLabel, QToolButton, QTreeView
+    from PySide6.QtWidgets import QApplication, QComboBox, QLabel, QMenu, QToolButton, QTreeView
 
     from guitest import FIXTURES, check, finish, plugin_problem, report, require, run, shot, viewer_up, widgets_of
 
@@ -218,6 +219,53 @@ try:
         QApplication.processEvents()
         return found == [True]
 
+    def shoot_menu(path, action_name, name):
+        """Opens the row menu on path down to the action named action_name and shoots it, triggering nothing."""
+        found = []
+
+        def close_popups():
+            for _ in range(8):
+                popup = QApplication.activePopupWidget()
+                if popup is None:
+                    return
+                popup.close()
+
+        def take():
+            shot(name)
+            close_popups()
+
+        def expand():
+            popup = QApplication.activePopupWidget()
+            if popup is None:
+                return
+            target = None
+            for action in popup.findChildren(QAction):
+                if action.objectName() == action_name:
+                    target = action
+                    break
+            if target is None:
+                close_popups()
+                return
+            menus = []
+            holder = target.parent()
+            while isinstance(holder, QMenu) and holder is not popup:
+                menus.append(holder)
+                holder = holder.parent()
+            above = popup
+            for menu in reversed(menus):
+                above.setActiveAction(menu.menuAction())
+                above = menu
+            above.setActiveAction(target)
+            found.append(True)
+            QTimer.singleShot(SETTLE_MS, take)
+
+        select_rows([path])
+        t = tree()
+        QTimer.singleShot(300, expand)
+        t.customContextMenuRequested.emit(t.visualRect(find(path)).center())
+        QApplication.processEvents()
+        return found == [True]
+
     def ancestor_of_class(widget, name):
         w = widget
         while w is not None:
@@ -293,6 +341,8 @@ try:
         check(summary == "Loading down to components under 1 row", "Load To Component says what it does (got %r)" % (summary,))
         ok = yield ("until", all_loaded([ISLAND] + COMPONENTS), POLL_TIMEOUT_S)
         check(ok, "Load To Component on the island loads it and its components (states %r)" % ([state(p) for p in [ISLAND] + COMPONENTS],))
+        ok = yield ("until", lambda: all(state(p) is not None for p in SUBCOMPONENTS), POLL_TIMEOUT_S)
+        check(ok, "the components' subcomponent rows are listed")
         yield ("sleep", SETTLE_MS)
         check(all(state(p) == STATE_UNLOADED for p in SUBCOMPONENTS),
               "the components' subcomponents stay unloaded (states %r)" % ([state(p) for p in SUBCOMPONENTS],))
@@ -301,7 +351,10 @@ try:
         tree().expand(find(GROVE))
         shot("scene-graph-bulk-load-to-component.png")
 
-        # Full To Component.
+        # Full To Component, under a boxed island the components' Full has to switch to Children.
+        check(invoke("setDrawStateOnRowsScoped", [ISLAND], "bbox", "selected") == "BBox set on 1 row", "box the island")
+        ok = yield ("until", lambda: set_here(ISLAND, DRAW_BBOX), POLL_TIMEOUT_S)
+        check(ok, "the island is boxed (got %r)" % (draw(ISLAND),))
         select_rows([ISLAND])
         summary = yield from press("full")
         check(summary == "Full set on 4 components under 1 row", "Full To Component says what it did (got %r)" % (summary,))
@@ -360,6 +413,8 @@ try:
         shot("scene-graph-bulk-unload-below-component.png")
 
         # BBox To Component from the row menu.
+        check(shoot_menu(ISLAND, "sceneGraphDrawStateTo_component_bbox", "scene-graph-bulk-row-menu.png"),
+              "the row menu opens down to Draw State, To Component, BBox")
         check(pick_in_menu(ISLAND, "sceneGraphDrawStateTo_component_bbox"), "the row menu offers BBox To Component, enabled")
         ok = yield ("until", lambda: all(set_here(p, DRAW_BBOX) for p in COMPONENTS), POLL_TIMEOUT_S)
         check(ok, "BBox To Component from the row menu boxes every component (got %r)" % ([draw(p) for p in COMPONENTS],))
@@ -398,6 +453,8 @@ try:
         check(summary == "Loading down to components under 1 row", "pinned, Load To Component says what it does (got %r)" % (summary,))
         ok = yield ("until", all_loaded([ISLAND] + COMPONENTS), POLL_TIMEOUT_S)
         check(ok, "pinned, Load To Component loads the panel's own stage (states %r)" % ([state(p) for p in [ISLAND] + COMPONENTS],))
+        ok = yield ("until", lambda: all(state(p) is not None for p in SUBCOMPONENTS), POLL_TIMEOUT_S)
+        check(ok, "pinned, the subcomponent rows are listed")
         yield ("sleep", SETTLE_MS)
         check(all(state(p) == STATE_UNLOADED for p in SUBCOMPONENTS),
               "pinned, the subcomponents stay unloaded (states %r)" % ([state(p) for p in SUBCOMPONENTS],))

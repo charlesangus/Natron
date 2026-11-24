@@ -239,7 +239,10 @@ TEST(SceneKindWalk, InactiveAndAbstractPrimsAreSkipped)
     PXR_NS::UsdStageRefPtr stage = openStage(R"(
 def Xform "World" (kind = "group")
 {
-    def Xform "Off" (active = false, kind = "component")
+    def Xform "Off" (
+        active = false
+        kind = "component"
+    )
     {
     }
     class Xform "Template" (kind = "component")

@@ -96,6 +96,7 @@
 #include "Engine/Nodes/Scene/MoonRayAovs.h"
 #include "Engine/Nodes/Scene/MoonRaySettings.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
+#include "Engine/Nodes/Scene/RenderSettingsKnobs.h"
 #include "Engine/Nodes/Scene/SceneCaches.h"
 #include "Engine/Nodes/Scene/SceneDrawFilter.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
@@ -478,15 +479,17 @@ typedef std::unique_ptr<UsdImagingGLEngine, EngineDeleter> EnginePtr;
 
 /**
  * A new engine of parameters. A Cycles one (cycles), whose session the caller has opened, is made
- * so that its CPU device renders on threads threads, and closes the session when it goes. A
- * StormIdEngine (stormIds) is made for Storm on the GPU. Only an engine made with wantFilter gets
- * a SceneDrawFilter, whose renderInstanceId goes to *filterId if given; the viewer's draw states
+ * so that its CPU device renders on threads threads, and closes the session when it goes. A Cycles
+ * engine made with subdivides subdivides the meshes that author subdivision. A StormIdEngine
+ * (stormIds) is made for Storm on the GPU. Only an engine made with wantFilter gets a
+ * SceneDrawFilter, whose renderInstanceId goes to *filterId if given; the viewer's draw states
  * mean nothing to the others.
  **/
 EnginePtr
 newEngine(const UsdImagingGLEngine::Parameters& parameters,
           bool cycles,
           int threads,
+          bool subdivides,
           bool stormIds,
           bool wantFilter,
           std::string* filterId = nullptr)
@@ -514,7 +517,7 @@ newEngine(const UsdImagingGLEngine::Parameters& parameters,
         return engine;
     }
     try {
-        CyclesAovs::withThreadBudget(threads, make);
+        CyclesAovs::withSubdivision(subdivides, [&]() { CyclesAovs::withThreadBudget(threads, make); });
     } catch (...) {
         if (!engine) {
             CyclesThreads::instance().close();
@@ -1426,7 +1429,7 @@ RenderThread::makeEngine(EngineEntry& entry,
     std::string startError;
     {
         TfErrorMark mark;
-        entry.engine = newEngine(parameters, cycles, threads, _gl && RenderDelegates::isStorm(renderer), false);
+        entry.engine = newEngine(parameters, cycles, threads, cycles && CyclesAovs::subdivides(settings), _gl && RenderDelegates::isStorm(renderer), false);
         ++gEngineBuilds;
         // The engine reports a delegate it could not start as coding errors and renders nothing.
         if (entry.engine->GetCurrentRendererId() != TfToken(renderer)) {
@@ -1448,6 +1451,10 @@ RenderThread::makeEngine(EngineEntry& entry,
         applyStormPtexBudget(_hgi.get());
     }
     entry.engine->SetEnablePresentation(false);
+    // Before the prim's settings, which override them.
+    for (const std::pair<const std::string, VtValue>& setting : RenderSettingsKnobs::engineDefaults(renderer)) {
+        entry.engine->SetRendererSetting(TfToken(setting.first), setting.second);
+    }
     for (RendererSettings::const_iterator it = settings.begin(); it != settings.end(); ++it) {
         entry.engine->SetRendererSetting(TfToken(it->first), it->second);
     }
@@ -3185,11 +3192,19 @@ struct ProgressiveRender::Implementation {
         CyclesAovs::registerSceneIndices();
         MoonRayAovs::registerSceneIndices();
         LiveTextureSceneIndex::registerSceneIndices();
+        // The renderer's engine defaults, the prim's settings, then those set for tests, as a USDRender's engine takes them.
+        RendererSettings settings = RenderSettingsKnobs::engineDefaults(id);
+        for (const std::pair<const std::string, VtValue>& setting : primSettings) {
+            settings[setting.first] = setting.second;
+        }
+        for (const std::pair<const std::string, VtValue>& setting : rendererSettings(id)) {
+            settings[setting.first] = setting.second;
+        }
         EnginePtr made;
         std::string filterId;
         {
             TfErrorMark mark;
-            made = newEngine(parameters, cycles, threads, false, true, &filterId);
+            made = newEngine(parameters, cycles, threads, cycles && CyclesAovs::subdivides(settings), false, true, &filterId);
             ++gEngineBuilds;
             if (made->GetCurrentRendererId() != TfToken(id)) {
                 std::string reasons;
@@ -3205,11 +3220,6 @@ struct ProgressiveRender::Implementation {
         }
         made->SetEnablePresentation(false);
         const bool moonRay = MoonRayAovs::isMoonRay(id);
-        // The prim's settings, then those set for tests, as a USDRender's engine takes them.
-        RendererSettings settings = primSettings;
-        for (const std::pair<const std::string, VtValue>& setting : rendererSettings(id)) {
-            settings[setting.first] = setting.second;
-        }
         for (RendererSettings::const_iterator it = settings.begin(); it != settings.end(); ++it) {
             made->SetRendererSetting(TfToken(it->first), it->second);
         }

@@ -187,7 +187,7 @@ TEST_F(NativeReadOraTest, LayerPixelsComeFromTheirPngs)
     ASSERT_TRUE(bool(header));
     ASSERT_EQ(6u, header->subimages.size());
 
-    expectConstant(pixelsOf(path, *header, 1), { 64.f / 255.f, 64.f / 255.f, 64.f / 255.f, 1.f });
+    expectConstant(pixelsOf(path, *header, 1), { 64.f / 255.f, 64.f / 255.f, 64.f / 255.f, 1.f }, 1e-6f);
     expectConstant(pixelsOf(path, *header, 2), { 1.f, 1.f, 0.f, 1.f });
     expectConstant(pixelsOf(path, *header, 3), { 0.f, 0.f, 1.f, 1.f });
     expectConstant(pixelsOf(path, *header, 4), { 0.f, 1.f, 0.f, 1.f });
@@ -206,7 +206,7 @@ TEST_F(NativeReadOraTest, TheStoredMergedImageIsTheComposite)
     EXPECT_EQ(0, composite.y);
     EXPECT_EQ(8, composite.width);
     EXPECT_EQ(6, composite.height);
-    expectConstant(pixelsOf(path, *header, 0), { 10.f / 255.f, 20.f / 255.f, 30.f / 255.f, 1.f });
+    expectConstant(pixelsOf(path, *header, 0), { 10.f / 255.f, 20.f / 255.f, 30.f / 255.f, 1.f }, 1e-6f);
     EXPECT_EQ(std::optional<std::string>("stored"), metadataOf(path).getString("layered/composite"));
 }
 

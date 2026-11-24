@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <functional>
 #include <iostream>
 #include <list>
@@ -944,6 +945,80 @@ TEST_F(NativeLoopFeedbackTest, TheLoopBeginHashFollowsTheBody)
     EXPECT_EQ(hash, begin->getContentHash()) << "edit below the loop";
     ASSERT_TRUE(setDoubleKnob(end, kLoopEndParamFrameStep, 3.));
     EXPECT_EQ(hash, begin->getContentHash()) << "LoopEnd knob set to its value";
+}
+
+// A node feeding a Feedback or Cross Frame LoopEnd's Map is read where the LoopEnd is, outside its
+// body, directly or through a Group: it is not among the nodes the LoopBegin folds in, and an edit
+// to it leaves the LoopBegin's hash and its caches as they are.
+TEST_F(NativeLoopFeedbackTest, AMapInputIsNotInTheBody)
+{
+    for (int crossFrame = 0; crossFrame < 2; ++crossFrame) {
+        for (int throughGroup = 0; throughGroup < 2; ++throughGroup) {
+            SCOPED_TRACE(std::string(crossFrame ? "cross frame" : "feedback") + (throughGroup ? ", through a group" : ", direct"));
+            getApp()->getProject()->reset(false, true);
+            NodePtr constant = createConstant(1.);
+            NodePtr begin = createLoopBegin();
+            NodePtr body = createCounting(1.);
+            NodePtr end = createFeedbackEnd(3);
+            NodePtr mapSide = createCounting(2.);
+            ASSERT_TRUE(constant && begin && body && end && mapSide);
+            ASSERT_TRUE(setLoopName(end, "fb"));
+            ASSERT_TRUE(setBoolKnob(end, kLoopEndParamCrossFrame, crossFrame != 0));
+            ASSERT_TRUE(begin->connectInput(constant, 0));
+            ASSERT_TRUE(body->connectInput(begin, 0));
+            ASSERT_TRUE(end->connectInput(body, kLoopEndInputSource));
+
+            NodePtr mapTail = mapSide;
+            NodePtr mapFeed = mapSide;
+            if (throughGroup) {
+                CreateNodeArgs groupArgs(PLUGINID_NATRON_GROUP, getApp()->getProject());
+                groupArgs.setProperty<bool>(kCreateNodeArgsPropNodeGroupDisableCreateInitialNodes, true);
+                groupArgs.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
+                NodePtr group = getApp()->createNode(groupArgs);
+                ASSERT_TRUE(bool(group));
+                NodeCollectionPtr inside = std::dynamic_pointer_cast<NodeCollection>(group->getEffectInstance());
+                ASSERT_TRUE(bool(inside));
+                const auto createInside = [&](const char* pluginID) {
+                    CreateNodeArgs args(pluginID, inside);
+                    args.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
+
+                    return getApp()->createNode(args);
+                };
+                NodePtr groupInput = createInside(PLUGINID_NATRON_INPUT);
+                NodePtr groupCounting = createInside(kTestPluginIDCounting);
+                NodePtr groupOutput = createInside(PLUGINID_NATRON_OUTPUT);
+                ASSERT_TRUE(groupInput && groupCounting && groupOutput);
+                ASSERT_TRUE(groupCounting->connectInput(groupInput, 0));
+                ASSERT_TRUE(groupOutput->connectInput(groupCounting, 0));
+                ASSERT_GE(group->getNInputs(), 1);
+                ASSERT_TRUE(group->connectInput(mapSide, 0));
+                mapTail = groupCounting;
+                mapFeed = group;
+            }
+            ASSERT_TRUE(end->connectInput(mapFeed, kLoopEndInputMap));
+            ASSERT_TRUE(mapTail == end->getInput(kLoopEndInputMap));
+
+            const auto feedbackBeginsOf = [](const NodePtr& node) {
+                LoopEnd::FeedbackBeginsLookup lookup;
+                std::vector<NodePtr> begins;
+                lookup.appendFeedbackBeginsOf(node, &begins);
+
+                return begins;
+            };
+            const std::vector<NodePtr> bodyBegins = feedbackBeginsOf(body);
+            EXPECT_NE(std::find(bodyBegins.begin(), bodyBegins.end(), begin), bodyBegins.end()) << "body";
+            const std::vector<NodePtr> mapBegins = feedbackBeginsOf(mapSide);
+            EXPECT_EQ(std::find(mapBegins.begin(), mapBegins.end(), begin), mapBegins.end()) << "Map input";
+            const std::vector<NodePtr> tailBegins = feedbackBeginsOf(mapTail);
+            EXPECT_EQ(std::find(tailBegins.begin(), tailBegins.end(), begin), tailBegins.end()) << "node the Map reads";
+
+            const U64 hash = begin->getContentHash();
+            ASSERT_TRUE(setDoubleKnob(mapSide, "value", 4.));
+            EXPECT_EQ(hash, begin->getContentHash()) << "edit feeding the Map";
+            ASSERT_TRUE(setDoubleKnob(body, "value", 3.));
+            EXPECT_NE(hash, begin->getContentHash()) << "edit in the body";
+        }
+    }
 }
 
 // A Group inside the body is part of it: edits to the nodes inside the Group move the LoopBegin's

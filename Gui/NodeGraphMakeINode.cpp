@@ -41,7 +41,6 @@
 #include "Gui/Gui.h"
 #include "Gui/NodeGui.h"
 
-// How long the loop warning stays in the status bar.
 #define kMakeINodeWarningTimeoutMs 10000
 
 NATRON_NAMESPACE_ENTER

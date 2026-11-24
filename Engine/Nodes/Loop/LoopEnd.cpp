@@ -198,6 +198,16 @@ reachesOnlyAside(const NodePtr& end,
     return false;
 }
 
+// getInput() resolves through groups, their GroupInputs and GroupOutputs to the node feeding
+// them, so the edges leaving those nodes are named by the node that entered them.
+bool
+passesThrough(const NodePtr& node)
+{
+    const EffectInstance* effect = node->getEffectInstance().get();
+
+    return node->isEffectGroup() || dynamic_cast<const GroupOutput*>(effect) || dynamic_cast<const GroupInput*>(effect);
+}
+
 void
 collectPairedEnds(const NodePtr& begin,
                   std::set<Node*>* found)
@@ -226,10 +236,7 @@ collectPairedEnds(const NodePtr& begin,
         if (!node) {
             continue;
         }
-        // getInput() resolves through groups, their GroupInputs and GroupOutputs to the node
-        // feeding them, so the edges leaving those nodes are named by the node that entered them.
-        const EffectInstance* effect = node->getEffectInstance().get();
-        const bool passedThrough = node->isEffectGroup() || dynamic_cast<const GroupOutput*>(effect) || dynamic_cast<const GroupInput*>(effect);
+        const bool passedThrough = passesThrough(node);
         // A LoopEnd reached through its Map reads it outside its own body, at this depth.
         const bool aside = LoopEnd::isLoopEnd(node) && reachesOnlyAside(node, from);
         if (!visited.insert(std::make_tuple(node.get(), 2 * depth + (aside ? 1 : 0), passedThrough ? from.get() : (Node*)0)).second) {
@@ -571,32 +578,46 @@ LoopEnd::refreshLoopsOf(const NodePtr& node)
 }
 
 std::size_t
-LoopEnd::FeedbackBeginsLookup::StepHash::operator()(const std::pair<const Node*, int>& step) const
+LoopEnd::FeedbackBeginsLookup::StepHash::operator()(const Step& step) const
 {
-    return std::hash<const Node*>()(step.first) ^ (std::hash<int>()(step.second) * 0x9e3779b97f4a7c15ULL);
+    std::size_t hash = std::hash<const Node*>()(std::get<0>(step));
+
+    hash ^= std::hash<int>()(std::get<1>(step)) * 0x9e3779b97f4a7c15ULL;
+    hash ^= std::hash<const Node*>()(std::get<2>(step)) * 0xc2b2ae3d27d4eb4fULL;
+
+    return hash;
 }
 
 const std::vector<NodePtr>&
 LoopEnd::FeedbackBeginsLookup::pairedEndsAt(const NodePtr& node,
-                                            int depth)
+                                            int depth,
+                                            const NodePtr& from)
 {
-    typedef std::pair<const Node*, int> Step;
     // The walk collectPairedEnds() runs from each output, each step's ends found once for every
     // node asked about. Post-order, so a step unions the ends of the steps below it, found first.
     struct Pending {
         NodePtr node;
         int depth;
+        NodePtr from;
         bool expanded;
     };
-    std::vector<Pending> stack(1, Pending { node, depth, false });
+    const auto stepOf = [](const NodePtr& at, int atDepth, const NodePtr& atFrom) {
+        const bool passedThrough = passesThrough(at);
+        const bool aside = LoopEnd::isLoopEnd(at) && reachesOnlyAside(at, atFrom);
+
+        return Step(at.get(), 2 * atDepth + (aside ? 1 : 0), passedThrough ? atFrom.get() : (const Node*)0);
+    };
+    std::vector<Pending> stack(1, Pending { node, depth, from, false });
     std::vector<NodePtr> outputs;
 
     while (!stack.empty()) {
         Pending& top = stack.back();
-        const Step step(top.node.get(), top.depth);
+        const Step step = stepOf(top.node, top.depth, top.from);
+        const bool aside = (std::get<1>(step) & 1) != 0;
+        const NodePtr enteredFrom = std::get<2>(step) ? top.from : top.node;
         int below = top.depth;
         bool ends = false;
-        if (LoopEnd::isLoopEnd(top.node)) {
+        if (LoopEnd::isLoopEnd(top.node) && !aside) {
             ends = (below == 0);
             --below;
         } else if (LoopBegin::isLoopBegin(top.node)) {
@@ -609,7 +630,10 @@ LoopEnd::FeedbackBeginsLookup::pairedEndsAt(const NodePtr& node,
             outputs.clear();
             current->appendOutputsWithGroupRedirection(&outputs);
             for (const NodePtr& output : outputs) {
-                const auto it = _pairedEnds.find(Step(output.get(), below));
+                if (!output) {
+                    continue;
+                }
+                const auto it = _pairedEnds.find(stepOf(output, below, enteredFrom));
                 if (it != _pairedEnds.end()) {
                     found.insert(found.end(), it->second.begin(), it->second.end());
                 }
@@ -635,13 +659,13 @@ LoopEnd::FeedbackBeginsLookup::pairedEndsAt(const NodePtr& node,
         outputs.clear();
         current->appendOutputsWithGroupRedirection(&outputs);
         for (NodePtr& output : outputs) {
-            if (output && (_pairedEnds.find(Step(output.get(), below)) == _pairedEnds.end())) {
-                stack.push_back(Pending { std::move(output), below, false });
+            if (output && (_pairedEnds.find(stepOf(output, below, enteredFrom)) == _pairedEnds.end())) {
+                stack.push_back(Pending { std::move(output), below, enteredFrom, false });
             }
         }
     }
 
-    return _pairedEnds[Step(node.get(), depth)];
+    return _pairedEnds[stepOf(node, depth, from)];
 }
 
 void
@@ -664,7 +688,7 @@ LoopEnd::FeedbackBeginsLookup::appendFeedbackBeginsOf(const NodePtr& node,
                 if (!output) {
                     continue;
                 }
-                const std::vector<NodePtr>& ends = pairedEndsAt(output, 0);
+                const std::vector<NodePtr>& ends = pairedEndsAt(output, 0, start);
                 for (const NodePtr& end : ends) {
                     if (seen.insert(end.get()).second) {
                         next.push_back(end);

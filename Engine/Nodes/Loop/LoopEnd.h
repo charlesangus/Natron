@@ -34,6 +34,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
@@ -207,15 +208,20 @@ public:
                                     std::vector<NodePtr>* begins);
 
     private:
+        // A node, its depth and whether it is a LoopEnd reached aside, and for a node that
+        // getInput() resolves through, the node that entered it.
+        typedef std::tuple<const Node*, int, const Node*> Step;
+
         struct StepHash {
-            std::size_t operator()(const std::pair<const Node*, int>& step) const;
+            std::size_t operator()(const Step& step) const;
         };
 
-        // The LoopEnds the walk down from node, entering it at depth, pairs with.
+        // The LoopEnds the walk down from node, entering it at depth from the node from, pairs with.
         const std::vector<NodePtr>& pairedEndsAt(const NodePtr& node,
-                                                 int depth);
+                                                 int depth,
+                                                 const NodePtr& from);
 
-        std::unordered_map<std::pair<const Node*, int>, std::vector<NodePtr>, StepHash> _pairedEnds;
+        std::unordered_map<Step, std::vector<NodePtr>, StepHash> _pairedEnds;
         std::unordered_map<const Node*, std::vector<NodePtr>> _feedbackBegins;
     };
 

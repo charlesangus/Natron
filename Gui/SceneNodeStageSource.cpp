@@ -176,6 +176,7 @@ SceneNodeStageSource::~SceneNodeStageSource()
     }
     liveSources().changed.notify_all();
     EffectInstance::retireSceneContextId(_contextId);
+    _loadStage = nullptr;
     std::unique_ptr<SceneStage> stage;
     {
         SceneWriteBarrier::ReadScope readScope;
@@ -402,6 +403,33 @@ SceneNodeStageSource::requestUnloadBelowKind(const QStringList& roots,
 }
 
 void
+SceneNodeStageSource::cancelPendingLoads()
+{
+    {
+        std::lock_guard<std::mutex> lock(_queueMutex);
+        _loadRequests.clear();
+    }
+    if (SceneStage* stage = _loadStage.load()) {
+        stage->cancelPendingLoads();
+    }
+    _queueChanged.notify_one();
+}
+
+bool
+SceneNodeStageSource::hasPendingLoads() const
+{
+    {
+        std::lock_guard<std::mutex> lock(_queueMutex);
+        if (!_loadRequests.empty()) {
+            return true;
+        }
+    }
+    const SceneStage* stage = _loadStage.load();
+
+    return stage && stage->hasOutstandingLoads();
+}
+
+void
 SceneNodeStageSource::requestLoadRules(const SceneLoadRules& rules)
 {
     std::vector<LoadRequest> requests;
@@ -493,6 +521,7 @@ SceneNodeStageSource::serviceLoads(const std::vector<LoadRequest>& requests)
         };
     };
     bool serviced = false;
+    bool lastServiced = false;
     for (const std::pair<const std::size_t, std::vector<std::size_t>>& pass : passes) {
         for (std::size_t i : pass.second) {
             const LoadRequest& request = requests[i];
@@ -515,37 +544,33 @@ SceneNodeStageSource::serviceLoads(const std::vector<LoadRequest>& requests)
                 _stage->requestUnload(paths);
             }
         }
-        if (_stage->serviceLoads(locked, committing, [this]() { return _stopRequested.load(); }, prepare)) {
-            serviced = true;
-        }
+        lastServiced = _stage->serviceLoads(locked, committing, [this]() { return _stopRequested.load(); }, prepare);
+        serviced = serviced || lastServiced;
         if (_stopRequested) {
             return;
         }
     }
-    const auto announce = [this]() {
-        std::weak_ptr<SceneNodeStageSource> self = weak_from_this();
-        postToContext([self]() {
-            std::shared_ptr<SceneNodeStageSource> source = self.lock();
-            if (source && !source->_stopRequested && source->_loadsChanged) {
-                source->_loadsChanged();
-            }
-        });
-    };
-    // A load to a kind asks for the next level once a batch has composed this one.
-    while (_stage->hasPendingLoads()) {
-        if (serviced) {
-            announce();
+    // A load to a kind asks for its next level once this batch has composed this one. That level
+    // waits for the next turn of run(), so that an evaluation or a newer request queued meanwhile
+    // is taken first and a kind request it replaces is not walked further.
+    if (lastServiced && _stage->hasPendingLoads()) {
+        {
+            std::lock_guard<std::mutex> lock(_queueMutex);
+            _loadsReady = true;
         }
-        if (!_stage->serviceLoads(locked, committing, [this]() { return _stopRequested.load(); }, prepare) || _stopRequested) {
-            break;
-        }
-        serviced = true;
+        _queueChanged.notify_one();
     }
     // A batch that asked for nothing loadable is still answered, so that whoever asked is not left waiting.
-    if (_stopRequested || (!serviced && requests.empty())) {
+    if (!serviced && requests.empty()) {
         return;
     }
-    announce();
+    std::weak_ptr<SceneNodeStageSource> self = weak_from_this();
+    postToContext([self]() {
+        std::shared_ptr<SceneNodeStageSource> source = self.lock();
+        if (source && !source->_stopRequested && source->_loadsChanged) {
+            source->_loadsChanged();
+        }
+    });
 }
 
 void
@@ -603,6 +628,7 @@ SceneNodeStageSource::run()
                     }
                     source->_queueChanged.notify_one();
                 });
+                _loadStage = _stage.get();
             }
             _stage->sync(ok ? payload : ScenePayload());
             _shown = ok && !payload.isEmpty();

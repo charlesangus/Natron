@@ -18,8 +18,8 @@ Files: $NATRON_INSTANCES_FILE (by default the script writes it under $NATRON_GUI
 $LOBBY_FILE (default .local/World_Lobby.usd); the Lobby section is skipped, and says so, when the Lobby is absent.
 
 Screenshots for sign-off: scene-instances-shown, scene-instances-one-boxed,
-scene-instances-row-boxed, scene-instances-row-hidden, scene-instances-scatter-boxed,
-scene-lobby-base-hidden, scene-lobby-geometry-boxed.
+scene-instances-row-boxed, scene-instances-row-hide, scene-instances-scatter-boxed,
+scene-lobby-base-hide, scene-lobby-geometry-boxed.
 
 Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go to $NATRON_GUI_TEST_OUT
 (default build/gui-test-out/). Exit status 0 only if every check passed.
@@ -183,7 +183,7 @@ try:
         row, masked = yield from changes_and_restores(INSTANCED, "bbox", "scene-instances-row-boxed", base)
         check(masked == INSTANCE_COUNT, "BBox on the row masks all %d instances (%d)" % (INSTANCE_COUNT, masked))
         check(row > one, "the row changes more pixels than one instance (%d, %d)" % (row, one))
-        hidden, masked = yield from changes_and_restores(INSTANCED, "hide", "scene-instances-row-hidden", base)
+        hidden, masked = yield from changes_and_restores(INSTANCED, "hide", "scene-instances-row-hide", base)
         check(masked == INSTANCE_COUNT, "Hide on the row masks all %d instances (%d)" % (INSTANCE_COUNT, masked))
         check(int(draw_stats().get("maskedInstances", -1)) == 0, "no instance stays masked once the rows are clear")
 
@@ -201,7 +201,7 @@ try:
         report("NOTE BBox on Geometry inside the base building changes %r pixels (its shell hides it)" % (occluded,))
         yield from clear_state(GEOMETRY)
         yield from set_state(BASE_BUILDING, "hide")
-        opened = save("scene-lobby-base-hidden")
+        opened = save("scene-lobby-base-hide")
         check(bool(changed_pixels(lobby, opened)), "Hide on the base building changes the image")
         changed, _ = yield from changes_and_restores(GEOMETRY, "bbox", "scene-lobby-geometry-boxed", opened)
         report("NOTE with the base building set to Hide, BBox on Geometry changes %d pixels" % changed)

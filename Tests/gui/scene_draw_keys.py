@@ -12,8 +12,8 @@ beside the viewer. Keys are real key events sent to the focused SceneViewport. T
   - Ctrl+Shift+Down sets Load + Draw on the picked /World/Group;
   - with Draw Expand rebound to J in Preferences, Down does nothing and J sets Expand.
 
-Screenshots for sign-off: scene-keys-boxed, scene-keys-children, scene-keys-inner-children,
-scene-keys-leaf-full, scene-keys-up, scene-keys-up-again, scene-keys-load-all,
+Screenshots for sign-off: scene-keys-boxed, scene-keys-expand, scene-keys-inner-expand,
+scene-keys-leaf-geometry, scene-keys-up, scene-keys-up-again, scene-keys-load-and-draw,
 scene-keys-shortcut-editor, scene-keys-rebound.
 
 Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go to $NATRON_GUI_TEST_OUT
@@ -289,7 +289,7 @@ try:
                         return panels[0] if len(panels) == 1 else None
         return None
 
-    def rebind_draw_children():
+    def rebind_draw_expand():
         """Binds Draw Expand to J in the Shortcut Editor; False when a step of it is missing."""
         prefs = open_preferences()
         require(prefs is not None, "the Preferences panel opens")
@@ -359,7 +359,7 @@ try:
         yield from expect("Down", GROUP, "Expand")
         ok = yield ("until", lambda: INNER in drawn_boxes(), POLL_TIMEOUT_S)
         check(ok, "the viewer boxes /World/Group/Inner (%r)" % sorted(drawn_boxes()))
-        shot("scene-keys-children.png")
+        shot("scene-keys-expand.png")
 
         section("down on the box drawn for the selection")
         yield from select_in_tree(LEAF)
@@ -368,10 +368,10 @@ try:
         yield from key(Qt.Key_Down)
         yield from expect("Down with the leaf selected", INNER, "Expand")
         check(state(LEAF) == ("BBox", False), "the leaf inherits BBox (%r)" % (state(LEAF),))
-        shot("scene-keys-inner-children.png")
+        shot("scene-keys-inner-expand.png")
         yield from key(Qt.Key_Down, Qt.ShiftModifier)
         yield from expect("Shift+Down", LEAF, "Geometry")
-        shot("scene-keys-leaf-full.png")
+        shot("scene-keys-leaf-geometry.png")
 
         section("up")
         yield from key(Qt.Key_Up)
@@ -382,16 +382,16 @@ try:
         check(selection() == [LEAF], "the keys keep the selection (%r)" % selection())
         shot("scene-keys-up-again.png")
 
-        section("load all")
+        section("load + draw")
         yield from pick(GROUP)
         yield from key(Qt.Key_Down, Qt.ControlModifier | Qt.ShiftModifier)
         yield from expect("Ctrl+Shift+Down", GROUP, "Load + Draw")
-        shot("scene-keys-load-all.png")
+        shot("scene-keys-load-and-draw.png")
 
         section("rebound")
         set_state(GROUP, "bbox")
         yield from expect("the script", GROUP, "BBox")
-        rebind_draw_children()
+        rebind_draw_expand()
         yield ("sleep", SETTLE_MS)
         yield from pick(GROUP)
         before = posted()

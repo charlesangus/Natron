@@ -11,6 +11,10 @@ scene_graph_bulk.pxrplugins registers), each holding a subcomponent payload, and
     shot on its own;
   - the scope combo lists the built-in and custom kinds;
   - with no row selected every command is disabled; in Below scope Unload and Clear Below are;
+  - BBox To Component on the unloaded island changes nothing and says it skipped the island's
+    payload;
+  - Cancel Loads, pressed as Load To Subcomponent starts, stops the walk before the subcomponents
+    load, on the viewer's stage and, pinned, on the panel's own;
   - Load To Component on the island loads its components and leaves their subcomponents unloaded;
   - Geometry To Component under a boxed island sets Geometry on each component and switches the island and
     the grove, which would block them, to Expand, and
@@ -20,6 +24,8 @@ scene_graph_bulk.pxrplugins registers), each holding a subcomponent payload, and
   - Load Below loads everything, and Unload Below Component unloads what is below the components;
   - Load + Draw Below sets Load + Draw on the island and clears the states below it, as one change;
   - BBox To Component from the row menu, found by its object name;
+  - with Scene Graph: Draw BBox To Component bound to J in the Shortcut Editor, J in the tree boxes
+    the components, whatever the scope combo says;
   - the methods called by invokeMethod return what they did, and an empty string for a scope they
     do not take;
   - pinned to a node the viewer does not show, Load is enabled and Load To Component loads the
@@ -61,9 +67,11 @@ try:
     import NatronEngine
     from PySide6.QtCore import Q_ARG, Q_RETURN_ARG, QItemSelectionModel, QMetaObject, QModelIndex, QPoint, QRect, Qt, QTimer
     from PySide6.QtGui import QAction
-    from PySide6.QtWidgets import QApplication, QComboBox, QLabel, QLineEdit, QMenu, QTabWidget, QToolButton, QTreeView, QWidget
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import (QApplication, QComboBox, QLabel, QLineEdit, QMainWindow, QMenu, QPushButton, QTabWidget, QToolButton,
+                                   QTreeView, QTreeWidget, QWidget)
 
-    from guitest import FIXTURES, OUT, check, finish, plugin_problem, report, require, run, shot, viewer_up, widgets_of
+    from guitest import FIXTURES, OUT, check, finish, menu_of, plugin_problem, report, require, run, shot, viewer_up, widgets_of
 
     PATH_ROLE = Qt.UserRole + 1
     STATE_ROLE = Qt.UserRole + 3
@@ -319,6 +327,98 @@ try:
         viewer.disconnectInput(0)
         return viewer.connectInput(0, node)
 
+    def cancel_button():
+        return child(QToolButton, "sceneGraphCancelLoads")
+
+    def cancel_mid_walk(where):
+        """Starts Load To Subcomponent on the unloaded island and presses Cancel Loads at once: at most
+        the island's own payload, the walk's first level, loads. Unloads the island again after."""
+        select_rows([ISLAND])
+        set_scope("subcomponent")
+        summary = yield from press("load")
+        check(summary == "Loading down to subcomponents under 1 row", "%s, Load To Subcomponent says what it does (got %r)" % (where, summary))
+        check(cancel_button().isEnabled(), "%s, Cancel Loads is enabled while the walk runs" % where)
+        cancel_button().click()
+        ok = yield ("until", lambda: not cancel_button().isEnabled(), POLL_TIMEOUT_S)
+        check(ok, "%s, Cancel Loads disables itself once the walk is cancelled" % where)
+        ok = yield ("until", lambda: state(ISLAND) in (STATE_UNLOADED, STATE_LOADED), POLL_TIMEOUT_S)
+        check(ok, "%s, the island settles after the cancel (state %r)" % (where, state(ISLAND)))
+        yield ("sleep", SETTLE_MS * 2)
+        check(all(state(p) != STATE_LOADED for p in COMPONENTS) and all(state(p) != STATE_LOADED for p in SUBCOMPONENTS),
+              "%s, the cancelled walk loads neither the components nor the subcomponents (states %r, %r)"
+              % (where, [state(p) for p in COMPONENTS], [state(p) for p in SUBCOMPONENTS]))
+        if state(ISLAND) == STATE_LOADED:
+            set_scope("selected")
+            yield from press("unload")
+            ok = yield ("until", lambda: state(ISLAND) == STATE_UNLOADED, POLL_TIMEOUT_S)
+            check(ok, "%s, Unload unloads the island again (state %r)" % (where, state(ISLAND)))
+
+    def find_item(tree, text, parent_text=None):
+        # Model indexes, not QTreeWidgetItem wrappers: the Preferences trees' item wrappers
+        # report their C++ object deleted by the time they are used (see m45_tab_menu.py).
+        m = tree.model()
+        for idx in m.match(m.index(0, 0), Qt.DisplayRole, text, -1, Qt.MatchExactly | Qt.MatchRecursive):
+            parent = idx.parent()
+            if parent_text is None or (parent.isValid() and parent.data() == parent_text):
+                return idx
+        return None
+
+    def open_preferences():
+        for win in QApplication.topLevelWidgets():
+            if not isinstance(win, QMainWindow) or win.menuBar() is None:
+                continue
+            for act in win.menuBar().actions():
+                menu = menu_of(act)
+                if menu is None or "edit" not in act.text().lower():
+                    continue
+                for a in menu.actions():
+                    if "preferences" in a.text().lower():
+                        a.trigger()
+                        QApplication.processEvents()
+                        panels = [w for w in widgets_of("PreferencesPanel") if w.isVisible()]
+                        return panels[0] if len(panels) == 1 else None
+        return None
+
+    def rebind(label, key, key_name):
+        """Binds the 3DViewer group's command label to key in the Shortcut Editor."""
+        prefs = open_preferences()
+        require(prefs is not None, "the Preferences panel opens")
+        page_trees = [w for w in prefs.findChildren(QTreeWidget) if w.columnCount() == 1]
+        page = find_item(page_trees[0], "Shortcut Editor") if len(page_trees) == 1 else None
+        require(page is not None, "found the Shortcut Editor page")
+        page_trees[0].setCurrentIndex(page)
+        QApplication.processEvents()
+        shortcut_trees = [w for w in prefs.findChildren(QTreeWidget)
+                          if w.columnCount() == 3 and w.headerItem() is not None and w.headerItem().text(0) == "Command"]
+        require(len(shortcut_trees) == 1, "found the shortcuts tree")
+        keys = shortcut_trees[0]
+        group = find_item(keys, "3DViewer")
+        require(group is not None, "the shortcuts tree has a 3DViewer group")
+        keys.expand(group)
+        for listed in ("Scene Graph: Load Selected", "Scene Graph: Load To Component", "Scene Graph: Unload Below Component",
+                       "Scene Graph: Draw Geometry Below", "Scene Graph: Clear Below Each Component"):
+            check(find_item(keys, listed, "3DViewer") is not None, "the 3DViewer group lists %s" % listed)
+        row = find_item(keys, label, "3DViewer")
+        require(row is not None, "the 3DViewer group has a %s row" % label)
+        check(not str(row.siblingAtColumn(1).data() or ""), "%s is unbound by default (got %r)" % (label, row.siblingAtColumn(1).data()))
+        keys.setCurrentIndex(row)
+        keys.scrollTo(row)
+        QApplication.processEvents()
+        editors = [w for w in prefs.findChildren(QLineEdit) if w.placeholderText() == "Type to set shortcut" and w.isVisible()]
+        validate = [w for w in prefs.findChildren(QPushButton) if w.text() == "Validate" and w.isVisible()]
+        require(len(editors) == 1 and len(validate) == 1, "found the %s field and its Validate button" % label)
+        editors[0].clear()
+        QTest.keyClick(editors[0], key)
+        QApplication.processEvents()
+        check(key_name in editors[0].text(), "the field records %s (%r)" % (key_name, editors[0].text()))
+        validate[0].click()
+        QApplication.processEvents()
+        row = find_item(keys, label, "3DViewer")
+        check(row is not None and key_name in str(row.siblingAtColumn(1).data()), "the %s row shows %s (%r)"
+              % (label, key_name, row.siblingAtColumn(1).data() if row is not None else None))
+        prefs.close()
+        QApplication.processEvents()
+
     def steps():
         require(viewer.connectInput(0, usd), "connect the Viewer to the USDRead")
         ok = yield ("until", lambda: viewer_up() or view() is not None, STARTUP_TIMEOUT_S)
@@ -400,6 +500,17 @@ try:
         check(invoke("loadRows", [ISLAND], "nonsense") == "", "loadRows takes no unknown scope")
         check(invoke("loadRows", ["not a path"], "selected") == "", "loadRows takes no invalid path")
 
+        # Draw To a kind acts on loaded prims only, and says what it skipped.
+        summary = invoke("setDrawStateOnRowsScoped", [ISLAND], "bbox", "component")
+        check(summary == "No loaded components under 1 row; 1 unloaded payload skipped",
+              "BBox To Component on the unloaded island says it skipped its payload (got %r)" % (summary,))
+        yield ("sleep", SETTLE_MS)
+        check(not set_here(ISLAND, DRAW_BBOX), "BBox To Component on the unloaded island sets nothing (got %r)" % (draw(ISLAND),))
+
+        yield from cancel_mid_walk("on the viewer's stage")
+        select_rows([ISLAND])
+        set_scope("component")
+
         # Load To Component.
         check(state(ISLAND) == STATE_UNLOADED and state(CRATE) == STATE_UNLOADED, "nothing is loaded at first")
         summary = yield from press("load")
@@ -412,6 +523,9 @@ try:
         check(all(state(p) == STATE_UNLOADED for p in SUBCOMPONENTS),
               "the components' subcomponents stay unloaded (states %r)" % ([state(p) for p in SUBCOMPONENTS],))
         check(state(CRATE) == STATE_UNLOADED, "the crate, outside the selection, stays unloaded (state %r)" % (state(CRATE),))
+        summary = invoke("setDrawStateOnRowsScoped", [ISLAND], "bbox", "subcomponent")
+        check(summary == "No loaded subcomponents under 1 row; 4 unloaded payloads skipped",
+              "BBox To Subcomponent counts the components' unloaded payloads (got %r)" % (summary,))
         tree().expand(find(ISLAND))
         tree().expand(find(GROVE))
         shot("scene-graph-bulk-load-to-component.png")
@@ -495,6 +609,24 @@ try:
         check(ok, "Load + Draw on the island loads the payloads below it (states %r)" % ([state(p) for p in SUBCOMPONENTS],))
         shot("scene-graph-bulk-load-and-draw-below.png")
 
+        # A bound bulk shortcut, pressed in the tree, runs in its own scope.
+        rebind("Scene Graph: Draw BBox To Component", Qt.Key_J, "J")
+        yield ("sleep", SETTLE_MS)
+        set_scope("selected")
+        select_rows([ISLAND])
+        panel().activateWindow()
+        ok = yield ("until", lambda: panel().isActiveWindow(), POLL_TIMEOUT_S)
+        check(ok, "the panel's window is active before the key")
+        tree().setFocus()
+        QApplication.processEvents()
+        check(tree().hasFocus(), "the tree has the focus")
+        QTest.keyClick(tree(), Qt.Key_J)
+        QApplication.processEvents()
+        ok = yield ("until", lambda: all(set_here(p, DRAW_BBOX) for p in COMPONENTS), POLL_TIMEOUT_S)
+        check(ok, "J boxes every component under the island (got %r)" % ([draw(p) for p in COMPONENTS],))
+        check(bulk_status() == "BBox set on 4 components under 1 row", "the shortcut writes the status line (got %r)" % (bulk_status(),))
+        shot("scene-graph-bulk-shortcut.png")
+
         # Pinned to a node the viewer does not show, whose stage the panel reads itself, unloaded.
         pin = child(QToolButton, "sceneGraphPin")
         require(pin is not None, "the panel has a pin button")
@@ -513,6 +645,8 @@ try:
         yield ("sleep", SETTLE_MS)
         check(not button("unload").isEnabled() and not button("clearBelow").isEnabled(),
               "pinned, Below scope still disables Unload and Clear Below (enabled %r)" % (enabled_buttons(),))
+        yield from cancel_mid_walk("pinned")
+        select_rows([ISLAND])
         set_scope("component")
         summary = yield from press("load")
         check(summary == "Loading down to components under 1 row", "pinned, Load To Component says what it does (got %r)" % (summary,))

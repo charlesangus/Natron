@@ -513,7 +513,7 @@ getSceneGraphBulkKeyBindings()
             { "geometry", "Draw Geometry" },
             { "loadAndDraw", "Load + Draw" },
             { "hide", "Hide" },
-            { "clearBelow", "Clear Draw States Below" },
+            { "clearBelow", "Clear Below" },
         };
         const Named scopes[] = {
             { "selected", "Selected" },
@@ -525,14 +525,19 @@ getSceneGraphBulkKeyBindings()
         std::vector<SceneGraphBulkKeyBinding> all;
         for (const Named& action : actions) {
             const std::string id = action.id;
+            const bool loads = (id == "load") || (id == "unload");
             for (const Named& scope : scopes) {
                 const std::string where = scope.id;
                 if ((where == "below") && ((id == "unload") || (id == "clearBelow"))) {
                     continue;
                 }
-                std::string description = std::string("Scene Graph ") + action.label;
+                // Worded as the row menu's path, where Load has a Selected entry and Draw State's
+                // own entries act on the selection.
+                std::string description = std::string("Scene Graph: ") + action.label;
                 if (where == "selected") {
-                    description += " Selected";
+                    if (loads) {
+                        description += " Selected";
+                    }
                 } else if (where == "below") {
                     description += " Below";
                 } else if (id == "unload") {

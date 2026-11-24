@@ -218,6 +218,35 @@ TEST(SceneKindWalk, CustomKindWithNoLevelStopsOnlyWhereItMatches)
     EXPECT_EQ(std::vector<std::string>({ "/World/Park/Grove" }), strings(result.matches));
 }
 
+TEST(SceneKindWalk, CustomKindWithNoLevelWalksUnmatchedBranchesToTheBottom)
+{
+    PXR_NS::SdfLayerRefPtr door = PXR_NS::SdfLayer::CreateAnonymous(".usda");
+
+    ASSERT_TRUE(door->ImportFromString("#usda 1.0\n(\n    defaultPrim = \"Door\"\n)\ndef Xform \"Door\" (kind = \"subcomponent\")\n{\n}\n"));
+    PXR_NS::SdfLayerRefPtr house = PXR_NS::SdfLayer::CreateAnonymous(".usda");
+    ASSERT_TRUE(house->ImportFromString("#usda 1.0\n(\n    defaultPrim = \"House\"\n)\ndef Xform \"House\" (kind = \"component\")\n{\n"
+                                        "    def Xform \"Door\" (\n        prepend payload = @"
+                                        + door->GetIdentifier() + "@\n    )\n    {\n    }\n}\n"));
+    PXR_NS::UsdStageRefPtr stage = openStage("def Xform \"World\" (kind = \"group\")\n{\n    def Xform \"House\" (\n        prepend payload = @"
+                                                 + house->GetIdentifier() + "@\n    )\n    {\n    }\n}\n",
+                                             PXR_NS::UsdStage::LoadNone);
+
+    SceneKindWalkResult result = walkToKind(stage, paths({ "/World" }), kSet);
+    EXPECT_EQ(std::vector<std::string>(), strings(result.matches));
+    EXPECT_EQ(std::vector<std::string>({ "/World/House" }), strings(result.unloadedPassThrough));
+
+    // No natronTestSet anywhere below: the component stops nothing, so a load to the kind would
+    // go on into the door's payload, as a load below would.
+    stage->Load(PXR_NS::SdfPath("/World/House"), PXR_NS::UsdLoadWithoutDescendants);
+    result = walkToKind(stage, paths({ "/World" }), kSet);
+    EXPECT_EQ(std::vector<std::string>(), strings(result.matches));
+    EXPECT_EQ(std::vector<std::string>({ "/World/House/Door" }), strings(result.unloadedPassThrough));
+
+    result = walkToKind(stage, paths({ "/World" }), PXR_NS::KindTokens->component);
+    EXPECT_EQ(std::vector<std::string>({ "/World/House" }), strings(result.matches));
+    EXPECT_EQ(std::vector<std::string>(), strings(result.unloadedPassThrough));
+}
+
 TEST(SceneKindWalk, NestedRootsAreWalkedOnce)
 {
     PXR_NS::UsdStageRefPtr stage = openStage(kWorld);
@@ -258,7 +287,7 @@ def Xform "World" (kind = "group")
     EXPECT_EQ(std::vector<std::string>({ "/World/On" }), strings(result.matches));
 }
 
-TEST(SceneKindWalk, UnloadedPayloadsAreReportedAndCounted)
+TEST(SceneKindWalk, UnloadedPayloadsAreReported)
 {
     PXR_NS::SdfLayerRefPtr asset = PXR_NS::SdfLayer::CreateAnonymous(".usda");
 
@@ -282,21 +311,20 @@ def Xform "Asset" (kind = "component")
     PXR_NS::UsdStageRefPtr stage = openStage("def Xform \"World\" (\n    prepend payload = @" + set->GetIdentifier() + "@\n)\n{\n}\n",
                                              PXR_NS::UsdStage::LoadNone);
 
-    SceneKindWalkResult result = walkToKind(stage, paths({ "/" }), PXR_NS::KindTokens->component, true);
+    SceneKindWalkResult result = walkToKind(stage, paths({ "/" }), PXR_NS::KindTokens->component);
     EXPECT_EQ(std::vector<std::string>(), strings(result.matches));
     EXPECT_EQ(std::vector<std::string>({ "/World" }), strings(result.unloadedPassThrough));
 
     stage->Load(PXR_NS::SdfPath("/World"), PXR_NS::UsdLoadWithoutDescendants);
-    result = walkToKind(stage, paths({ "/" }), PXR_NS::KindTokens->component, true);
+    result = walkToKind(stage, paths({ "/" }), PXR_NS::KindTokens->component);
     EXPECT_EQ(std::vector<std::string>(), strings(result.matches));
     // The house's payload holds its kind: until it loads the walk cannot tell it is a component.
     EXPECT_EQ(std::vector<std::string>({ "/World/House" }), strings(result.unloadedPassThrough));
 
     stage->Load(PXR_NS::SdfPath("/World/House"), PXR_NS::UsdLoadWithoutDescendants);
-    result = walkToKind(stage, paths({ "/" }), PXR_NS::KindTokens->component, true);
+    result = walkToKind(stage, paths({ "/" }), PXR_NS::KindTokens->component);
     EXPECT_EQ(std::vector<std::string>({ "/World/House" }), strings(result.matches));
     EXPECT_EQ(std::vector<std::string>(), strings(result.unloadedPassThrough));
-    EXPECT_EQ(1u, result.unloadedBelowMatches);
 
     EXPECT_EQ(std::vector<std::string>({ "/World/House/Part" }), strings(payloadsBelow(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/House")))));
     EXPECT_EQ(std::vector<std::string>({ "/World" }), strings(payloadsBelow(stage->GetPseudoRoot())));
@@ -312,7 +340,7 @@ TEST(SceneKindWalk, CancelStopsTheWalk)
     body += "}\n";
     PXR_NS::UsdStageRefPtr stage = openStage(body);
     int polls = 0;
-    const SceneKindWalkResult result = walkToKind(stage, paths({ "/World" }), PXR_NS::KindTokens->component, false, [&]() {
+    const SceneKindWalkResult result = walkToKind(stage, paths({ "/World" }), PXR_NS::KindTokens->component, [&]() {
         return ++polls >= 2;
     });
 

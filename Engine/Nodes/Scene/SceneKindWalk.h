@@ -71,8 +71,6 @@ struct SceneKindWalkResult {
     // The prims the walk went through, not of the target kind nor below its level, whose payload
     // is unloaded: what they would compose is not walked.
     PXR_NS::SdfPathVector unloadedPassThrough;
-    // The unloaded payloads composed below the matches, counted only when asked for.
-    std::size_t unloadedBelowMatches = 0;
     bool cancelled = false;
 };
 
@@ -90,7 +88,6 @@ struct SceneKindWalkResult {
 SceneKindWalkResult walkToKind(const PXR_NS::UsdStageRefPtr& stage,
                                const PXR_NS::SdfPathVector& roots,
                                const PXR_NS::TfToken& target,
-                               bool countBelowMatches = false,
                                const std::function<bool()>& cancelled = std::function<bool()>());
 
 /**

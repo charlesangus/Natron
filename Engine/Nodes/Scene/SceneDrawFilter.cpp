@@ -185,7 +185,7 @@ underHiddenRow(RulePtr rule)
     return rule && (rule->second == SceneDrawFilter::eRuleHidden);
 }
 
-// A light is hidden by a Hidden row alone: boxed geometry is no reason to darken the scene.
+// A light is hidden by a Hide row alone: boxed geometry is no reason to darken the scene.
 bool
 hiddenFor(RulePtr rule,
           const SdfPath& path,
@@ -251,7 +251,7 @@ maskLocators()
     return locators;
 }
 
-// Under a Children row too: an instance draws only what lies below it.
+// Under an Expand row too: an instance draws only what lies below it.
 bool
 instanceHiddenBy(RulePtr rule)
 {

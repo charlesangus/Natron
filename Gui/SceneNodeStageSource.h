@@ -111,6 +111,14 @@ public:
 
     void requestUnloadBelowKind(const QStringList& roots, const std::string& kind);
 
+    // Drops the loads and unloads not yet serviced, a load to a kind's later levels among them. A
+    // batch being serviced still commits.
+    void cancelPendingLoads();
+
+    // Whether a load or an unload is queued, pending on the stage or being serviced, a load to a
+    // kind's next level among them.
+    bool hasPendingLoads() const;
+
     /**
      * @brief Loads what a viewer's load rules load, as one batch: one setLoadsChanged() call
      * follows it, or none if the rules load nothing. A subtree a rule leaves out of its load
@@ -159,13 +167,16 @@ private:
     double _time = 0.;
     mutable std::mutex _stageMutex;
     std::unique_ptr<SceneStage> _stage;
+    // _stage for the context's thread, which reads it without _stageMutex: set once, after the
+    // worker creates it, and valid until the source is destroyed.
+    std::atomic<SceneStage*> _loadStage { nullptr };
     std::atomic<bool> _shown { false };
     std::atomic<U64> _editCount { 0 };
     std::atomic<U64> _composeCount { 0 };
     std::function<void()> _loadsChanged;
     std::atomic<bool> _stopRequested { false };
     std::atomic<bool> _finished { false };
-    std::mutex _queueMutex;
+    mutable std::mutex _queueMutex;
     std::condition_variable _queueChanged;
     bool _pending = false;
     // Loads the stage put off for a closed scene's stale layer can be serviced again.

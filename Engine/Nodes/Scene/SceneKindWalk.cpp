@@ -138,7 +138,6 @@ SceneKindWalkResult
 walkToKind(const PXR_NS::UsdStageRefPtr& stage,
            const PXR_NS::SdfPathVector& roots,
            const PXR_NS::TfToken& target,
-           bool countBelowMatches,
            const std::function<bool()>& cancelled)
 {
     SceneKindWalkResult result;
@@ -177,17 +176,6 @@ walkToKind(const PXR_NS::UsdStageRefPtr& stage,
             if (stops) {
                 if (matches) {
                     result.matches.push_back(it->GetPath());
-                    if (countBelowMatches) {
-                        const PXR_NS::UsdPrimRange below(*it, walkPredicate(*it));
-                        for (PXR_NS::UsdPrimRange::const_iterator b = below.begin(); b != below.end(); ++b) {
-                            if (pollCancelled()) {
-                                return result;
-                            }
-                            if ((*b != *it) && isUnloadedPayload(*b)) {
-                                ++result.unloadedBelowMatches;
-                            }
-                        }
-                    }
                 }
                 it.PruneChildren();
                 continue;

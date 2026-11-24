@@ -70,7 +70,7 @@ struct SceneDrawLoadRequest {
  * @brief What one edit changed, as rules over subtrees. A path's nearest listed ancestor decides it,
  * and no rule at all means drawn.
  *
- * The model knows set paths and not the hierarchy, so a Children row is its own list: the row's own
+ * The model knows set paths and not the hierarchy, so an Expand row is its own list: the row's own
  * prim is drawn and every child not listed is a box, which only the scene can enumerate.
  */
 struct SceneDrawDelta {
@@ -97,12 +97,12 @@ struct SceneDrawDelta {
  * @brief One viewer's draw states by prim path. Paths are absolute USD prim paths and need not exist
  * at the viewed node: a missing path is kept, so returning to a node with it restores the state.
  *
- * Resolution is the viewer's state, then the graph policy, then Full. The nearest set state wins. A
- * Children row's unset children are boxes. BBox and Hidden stop everything below, and what is set
- * below is remembered.
+ * Resolution is the viewer's state, then the graph policy, then Geometry. The nearest set state
+ * wins. An Expand row's unset children are boxes. BBox and Hide stop everything below, and what is
+ * set below is remembered.
  *
- * Load All loads what it draws. A BBox or Hidden row below it stays out of the load, and so does a
- * Children row's subtree, whose unset children are boxes the model cannot name: the Children row
+ * Load + Draw loads what it draws. A BBox or Hide row below it stays out of the load, and so does
+ * an Expand row's subtree, whose unset children are boxes the model cannot name: the Expand row
  * loads on its own and the rows drawn below it load by their own requests.
  */
 // One row's edit in SceneDrawStates::editRows().
@@ -186,7 +186,7 @@ public:
 
     struct Stored {
         SceneDrawStateEnum state;
-        // False on an ancestor switched to Children for a row below: nobody asked to load that row.
+        // False on an ancestor switched to Expand for a row below: nobody asked to load that row.
         bool direct;
     };
 
@@ -246,7 +246,7 @@ private:
 
 /**
  * @brief Adds one prim a draw rule decides to *policy, over what earlier rules put there: a later
- * rule wins on the same path, and a later Full or Full + Load switches to Children the ancestors
+ * rule wins on the same path, and a later Geometry or Load + Draw switches to Expand the ancestors
  * that would block it, as setting it in the viewer does.
  **/
 void sceneAddDrawRuleMatch(const std::string& path,

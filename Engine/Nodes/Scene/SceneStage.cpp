@@ -817,7 +817,7 @@ SceneStage::serviceLoads(const LockedSection& readLocked,
             }
         }
         for (std::pair<const PXR_NS::SdfPath, KindRequest>& request : kindRequests) {
-            const SceneKindWalkResult walk = walkToKind(_stage, PXR_NS::SdfPathVector(1, request.first), request.second.kind, false, isCancelled);
+            const SceneKindWalkResult walk = walkToKind(_stage, PXR_NS::SdfPathVector(1, request.first), request.second.kind, isCancelled);
             if (walk.cancelled) {
                 walkCancelled = true;
 

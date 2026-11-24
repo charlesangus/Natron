@@ -47,8 +47,8 @@ const int kNoRequest = -1;
 struct Frame {
     std::string path;
     FrameKindEnum kind;
-    // A Load All above wants what is drawn here. Only a drawn frame is covered by a load with
-    // descendants; a Children row has left that load, so what its rows draw must be asked for anew.
+    // A Load + Draw above wants what is drawn here. Only a drawn frame is covered by a load with
+    // descendants; an Expand row has left that load, so what its rows draw must be asked for anew.
     bool loading;
     // The row in this walk whose load covers this frame, or kNoRequest if that row is above the root.
     int request;
@@ -309,14 +309,14 @@ SceneDrawStates::effectsUnder(const std::string& root,
         const Frame parent = stack.back();
         std::string skip;
         if ((parent.kind == eFrameExpanded) && (parentOf(path) != parent.path)) {
-            // An unset child of a Children row is a box, which stops this row and its neighbours.
+            // An unset child of an Expand row is a box, which stops this row and its neighbours.
             skip = pastSubtree(childTowards(parent.path, path));
         } else {
             const bool covered = coveredByLoad(parent);
             Effect effect { path, eRuleNone, eLoadNone, std::vector<std::string>() };
             switch (state) {
             case eSceneDrawStateBBox:
-                // A box is what a Children row's child is already.
+                // A box is what an Expand row's child is already.
                 effect.rule = (parent.kind == eFrameExpanded) ? eRuleNone : eRuleBoxed;
                 break;
             case eSceneDrawStateHidden:
@@ -436,7 +436,7 @@ SceneDrawStates::rootOf(const SceneDrawRowEdit& edit) const
     if ((edit.kind != SceneDrawRowEdit::eKindSet) || ((edit.state != eSceneDrawStateFull) && (edit.state != eSceneDrawStateLoadAll))) {
         return edit.path;
     }
-    // Drawing the row switches the ancestors that block it to Children: the topmost one is the root.
+    // Drawing the row switches the ancestors that block it to Expand: the topmost one is the root.
     Frame frame { std::string(), eFrameDrawn, false, kNoRequest };
     for (const std::string& ancestor : ancestorsOf(edit.path)) {
         SceneDrawStateEnum ancestorState = eSceneDrawStateFull;
@@ -650,7 +650,7 @@ sceneAddDrawRuleMatch(const std::string& path,
                       SceneDrawStates::PolicyStates* policy)
 {
     if ((state == eSceneDrawStateFull) || (state == eSceneDrawStateLoadAll)) {
-        // Whether the row above is a Children row, whose unset children are boxes.
+        // Whether the row above is an Expand row, whose unset children are boxes.
         bool expanded = false;
         for (const std::string& ancestor : ancestorsOf(path)) {
             const SceneDrawStates::PolicyStates::iterator found = policy->find(ancestor);

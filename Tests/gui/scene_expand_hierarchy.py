@@ -11,7 +11,7 @@ payload. The USDRead goes into a USDExpandHierarchy, into Viewer1. The script ch
   - deleting the node changes nothing more;
   - Unload from the row menu unloads the buildings.
 
-Screenshots for sign-off: scene-expand-hierarchy-default, scene-expand-hierarchy-full-load,
+Screenshots for sign-off: scene-expand-hierarchy-default, scene-expand-hierarchy-load-and-draw,
 scene-expand-hierarchy-removed.
 
 Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go to $NATRON_GUI_TEST_OUT
@@ -293,7 +293,7 @@ try:
         save("scene-expand-hierarchy-default")
         check(opened_payloads() == [], "no payload file is open (%r)" % opened_payloads())
 
-        section("full + load on one block")
+        section("load + draw on one block")
         expand.getParam("pattern0").setValue("/Wor*")
         expand.getParam("draw0").setValue(STATES.index("loadAndDraw"))
         ok = yield ("until", lambda: opened_payloads() == world_payloads(), LOAD_TIMEOUT_S)
@@ -305,10 +305,10 @@ try:
         check(ok, "the scene view shows the loaded block")
         yield ("sleep", SETTLE_MS)
         check(opened_payloads() == world_payloads(), "no /Annex payload loads (%r)" % opened_payloads())
-        yield from listed("full + load", ["/Annex/" + b for b in BUILDINGS])
+        yield from listed("load + draw", ["/Annex/" + b for b in BUILDINGS])
         check(all(load_state("/Annex/" + b) == STATE_UNLOADED for b in BUILDINGS),
               "the /Annex buildings stay unloaded (%r)" % [load_state("/Annex/" + b) for b in BUILDINGS])
-        save("scene-expand-hierarchy-full-load")
+        save("scene-expand-hierarchy-load-and-draw")
 
         section("node taken out")
         # connectInput refuses an input that is already connected.

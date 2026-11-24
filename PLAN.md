@@ -617,6 +617,7 @@ future core work has solid ground to build on.
 | M558 | Scene Graph Expand Commands | todo | M556 |  | E9 | F37 | | [M558-scene-graph-expand-commands.md](PLAN/MILESTONES/M558-scene-graph-expand-commands.md) |
 | M559 | Native Geometry UAT Round 1 | doing | - | bosley-executor | E9 | F15 | | [M559-native-geometry-uat-round-1.md](PLAN/MILESTONES/M559-native-geometry-uat-round-1.md) |
 | M560 | USDMerge Opinion Order | todo | - |  | E9 | | | [M560-usdmerge-opinion-order.md](PLAN/MILESTONES/M560-usdmerge-opinion-order.md) |
+| M561 | Live Session Personal Viewers | todo | M106 |  | E11 | F5 | | [M561-live-session-personal-viewers.md](PLAN/MILESTONES/M561-live-session-personal-viewers.md) |
 
 # Epics
 

@@ -100,3 +100,5 @@ and CI are green, and the user signs off the UAT.
 
 - 2026-10-11 — **User decision:** v1 includes presence, per-user undo, and follow-a-user's-viewer.
 - 2026-10-11 — Per-user undo replays the user's own inverse as new operations (last-writer-wins). Commands invalidated by remote deletes are dropped, not transformed.
+
+- 2026-11-24 (user): viewers stay shared graph nodes (input/channel edits are ordinary shared edits); each user gets a personal viewer on join, shown in their default viewer pane — M561 - Live Session Personal Viewers. M106 keeps following local to the follower.

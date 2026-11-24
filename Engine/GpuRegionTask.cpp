@@ -281,6 +281,9 @@ struct Slot {
 
     // For an external input in RAM: the float image uploaded from, and the bytes uploaded of it.
     ImagePtr source;
+    // Held from when the layout takes the source's bounds until the upload, so the pixels uploaded are the ones the
+    // bounds describe.
+    std::shared_ptr<Image::ReadAccess> sourceAccess;
     std::size_t uploadBytes = 0;
 
     // The buffer the upload lands in. A region run whole issues its uploads after recording every member, by which
@@ -1429,6 +1432,7 @@ private:
                 return fail(input.key.node, "its output is not in the frame store");
             }
             ImagePtr image = images.front();
+            std::shared_ptr<Image::ReadAccess> access = std::make_shared<Image::ReadAccess>(image.get());
             const RectI bounds = image->getBounds();
             if ((image->getBitDepth() != eImageBitDepthFloat) || ((int)image->getComponentsCount() != slot.layout.nComps()) || (image->getStorageMode() == eStorageModeGLTex)) {
                 ImagePtr converted;
@@ -1440,6 +1444,7 @@ private:
                 }
                 image->convertToFormat(bounds, 3, false, converted.get());
                 image = converted;
+                access = std::make_shared<Image::ReadAccess>(image.get());
             }
             slot.layout.rod = image->getRoD();
             slot.layout.bounds = bounds;
@@ -1448,6 +1453,7 @@ private:
             slot.layout.fielding = image->getFieldingOrder();
             slot.layout.key = image->getKey();
             slot.source = image;
+            slot.sourceAccess = access;
         }
 
         return true;
@@ -1482,8 +1488,8 @@ private:
                 continue;
             }
             const ImagePtr& image = slot.source;
+            const std::shared_ptr<Image::ReadAccess> access = slot.sourceAccess;
             const RectI bounds = image->getBounds();
-            std::shared_ptr<Image::ReadAccess> access = std::make_shared<Image::ReadAccess>(image.get());
             const unsigned char* data = access->pixelAt(bounds.x1, bounds.y1);
             if (!data) {
                 return fail(_graph.tasks[slot.externalTask].key.node, "its image has no pixels");
@@ -1780,8 +1786,7 @@ private:
             }
             const std::size_t bytes = gpuHostTransferBytes(*slot.source);
             const RectI bounds = slot.source->getBounds();
-            Image::ReadAccess access(slot.source.get());
-            const unsigned char* data = access.pixelAt(bounds.x1, bounds.y1);
+            const unsigned char* data = slot.sourceAccess->pixelAt(bounds.x1, bounds.y1);
             if (!mayCacheImport(data, bytes)) {
                 continue;
             }
@@ -2393,6 +2398,7 @@ private:
         _uploadsDone.clear();
         _uploadAccesses.clear();
         for (Slot& slot : _slots) {
+            slot.sourceAccess.reset();
             slot.source.reset();
             slot.uploadTarget = gpu::GpuBufferHandle();
         }
@@ -3908,6 +3914,7 @@ private:
         _recycled.clear();
         for (Slot& slot : _slots) {
             slot.uploadTarget = gpu::GpuBufferHandle();
+            slot.sourceAccess.reset();
             if (slot.downloadImage) {
                 _runtime.wait(slot.downloadDone);
                 slot.downloadDone = gpu::TimelineValue();

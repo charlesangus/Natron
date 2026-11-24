@@ -1623,35 +1623,20 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                     it->second.fullscaleImage->setRoD(oldRod);
                 }
 
-
                 /*
                  * Another thread might have allocated the same image in the cache but with another RoI, make sure
                  * it is big enough for us, or resize it to our needs.
+                 * Growing in place would swap the buffer of an image other renders hold and read; a grown copy takes
+                 * its place in the cache instead. That also takes no write lock on it, which a caller of getImage()
+                 * holding it for read would deadlock on.
                  */
-                bool hasResized;
-
-                if (args.calledFromGetImage) {
-                    /*
-                     * When called from EffectInstance::getImage() we must prevent from taking any write lock because
-                     * this image probably already has a lock for read on it. To overcome the write lock, we resize in a
-                     * separate image and then we swap the images in the cache directly, without taking the image write lock.
-                     */
-
-                    hasResized = it->second.fullscaleImage->copyAndResizeIfNeeded(renderFullScaleThenDownscale ? upscaledImageBounds : downscaledImageBounds, fillGrownBoundsWithZeroes, fillGrownBoundsWithZeroes, &it->second.cacheSwapImage);
-                    if (hasResized) {
-                        ///Work on the swapImg and then swap in the cache
-                        ImagePtr swapImg = it->second.cacheSwapImage;
-                        it->second.cacheSwapImage = it->second.fullscaleImage;
-                        it->second.fullscaleImage = swapImg;
-                        if (!renderFullScaleThenDownscale) {
-                            it->second.downscaleImage = it->second.fullscaleImage;
-                        }
-                    }
-                } else {
-                    hasResized = it->second.fullscaleImage->ensureBounds(renderFullScaleThenDownscale ? upscaledImageBounds : downscaledImageBounds,
-                                                                         fillGrownBoundsWithZeroes, fillGrownBoundsWithZeroes);
+                const ImagePtr cachedImage = it->second.fullscaleImage;
+                const bool hasResized = Image::ensureBoundsByCopy(&it->second.fullscaleImage,
+                                                                  renderFullScaleThenDownscale ? upscaledImageBounds : downscaledImageBounds,
+                                                                  fillGrownBoundsWithZeroes, fillGrownBoundsWithZeroes);
+                if (hasResized && (it->second.downscaleImage == cachedImage)) {
+                    it->second.downscaleImage = it->second.fullscaleImage;
                 }
-
 
                 /*
                  * Note that the image has been resized and the bitmap explicitly set to 1 in the newly allocated portions (for rotopaint purpose).
@@ -1971,17 +1956,6 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
 
     //bool multiplanar = isMultiPlanar();
     for (std::map<ImageLayerDesc, EffectInstance::LayerToRender>::iterator it = layersToRender->layers.begin(); it != layersToRender->layers.end(); ++it) {
-        //If we have worked on a local swapped image, swap it in the cache
-        if (it->second.cacheSwapImage && keepRenderedInCache) {
-            const CacheAPI* cache = it->second.cacheSwapImage->getCacheAPI();
-            const Cache<Image>* imgCache = dynamic_cast<const Cache<Image>*>(cache);
-            if (imgCache) {
-                Cache<Image>* ccImgCache = const_cast<Cache<Image>*>(imgCache);
-                assert(ccImgCache);
-                ccImgCache->swapOrInsert(it->second.cacheSwapImage, it->second.fullscaleImage);
-            }
-        }
-
         //We have to return the downscale image, so make sure it has been computed
         if ((renderRetCode != eRenderRoIStatusRenderFailed) && renderFullScaleThenDownscale && (it->second.fullscaleImage->getMipmapLevel() != mipmapLevel) && !hasSomethingToRender) {
             assert(it->second.fullscaleImage->getMipmapLevel() == 0);

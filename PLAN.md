@@ -193,7 +193,7 @@ future core work has solid ground to build on.
 | M235 | USDCamera From File | done | M226 | bosley-native-nodes | E9 | | | [M235-usdcamera-from-file.md](PLAN/MILESTONES/M235-usdcamera-from-file.md) |
 | M236 | Shared Materials And Assignment | done | M226 | bosley-native-nodes | E9 | | | [M236-shared-materials-and-assignment.md](PLAN/MILESTONES/M236-shared-materials-and-assignment.md) |
 | M237 | CI Flake Fixes | done | - | bosley-native-nodes | E2 | | | [M237-ci-flake-fixes.md](PLAN/MILESTONES/M237-ci-flake-fixes.md) |
-| M238 | EdgePush And Edge Fill Kit | blocked | M123 | bosley-executor | E3 | | response | [M238-edgeextend-options.md](PLAN/MILESTONES/M238-edgeextend-options.md) |
+| M238 | EdgePush And Edge Fill Kit | blocked | M123 | bosley-executor | E3 | F39 | response | [M238-edgeextend-options.md](PLAN/MILESTONES/M238-edgeextend-options.md) |
 | M239 | Weight-Based GPU Placement | done | - | gpu | E5 | | | [M239-weight-based-gpu-placement.md](PLAN/MILESTONES/M239-weight-based-gpu-placement.md) |
 | M240 | Float Trap And Denormal Audit | done | - | gpu | E14 | | | [M240-float-trap-and-denormal-audit.md](PLAN/MILESTONES/M240-float-trap-and-denormal-audit.md) |
 | M241 | Up Axis And Units Policy | done | M226 |  | E9 | | | [M241-up-axis-policy.md](PLAN/MILESTONES/M241-up-axis-policy.md) |
@@ -647,11 +647,11 @@ future core work has solid ground to build on.
 | M588 | Light Linker Drag And Drop Panel | todo | M567 |  | E27 | | | [M588-light-linker-drag-and-drop-panel.md](PLAN/MILESTONES/M588-light-linker-drag-and-drop-panel.md) |
 | M589 | Scene Graph Restructure Commands | todo | M575 |  | E27 | | | [M589-scene-graph-restructure-commands.md](PLAN/MILESTONES/M589-scene-graph-restructure-commands.md) |
 | M590 | Non-Modal Notifications | todo | - |  | | | | [M590-non-modal-notifications.md](PLAN/MILESTONES/M590-non-modal-notifications.md) |
-| M591 | Native EdgeClamp | todo | M238 |  | E3 | | | [M591-native-edgeclamp.md](PLAN/MILESTONES/M591-native-edgeclamp.md) |
-| M592 | Native EdgeSmear | todo | M238 |  | E3 | | | [M592-native-edgesmear.md](PLAN/MILESTONES/M592-native-edgesmear.md) |
-| M593 | Native EdgePushVector | todo | M238 |  | E3 | | | [M593-native-edgepushvector.md](PLAN/MILESTONES/M593-native-edgepushvector.md) |
-| M594 | Native EdgeDistort | todo | M238 |  | E3 | | | [M594-native-edgedistort.md](PLAN/MILESTONES/M594-native-edgedistort.md) |
-| M595 | Native EdgeDetail | todo | M238 |  | E3 | | | [M595-native-edgedetail.md](PLAN/MILESTONES/M595-native-edgedetail.md) |
+| M591 | Native EdgeClamp | todo | M238 |  | E3 | F39 | | [M591-native-edgeclamp.md](PLAN/MILESTONES/M591-native-edgeclamp.md) |
+| M592 | Native EdgeSmear | todo | M238 |  | E3 | F39 | | [M592-native-edgesmear.md](PLAN/MILESTONES/M592-native-edgesmear.md) |
+| M593 | Native EdgePushVector | todo | M238 |  | E3 | F39 | | [M593-native-edgepushvector.md](PLAN/MILESTONES/M593-native-edgepushvector.md) |
+| M594 | Native EdgeDistort | todo | M238 |  | E3 | F39 | | [M594-native-edgedistort.md](PLAN/MILESTONES/M594-native-edgedistort.md) |
+| M595 | Native EdgeDetail | todo | M238 |  | E3 | F39 | | [M595-native-edgedetail.md](PLAN/MILESTONES/M595-native-edgedetail.md) |
 
 # Epics
 
@@ -727,6 +727,7 @@ future core work has solid ground to build on.
 | F35 | Pyro | open |  |  | feature/f35-pyro | A sparse-tile smoke and fire solver on native VDB volumes, with sourcing, shaping, collisions, look baking and quick setups, on GPU and CPU. Waits for F18 - Geometry Loops And Solver and F22 - Native VDB to land. |
 | F37 | Scene Graph Bulk Ops | open |  |  | feature/f37-scene-graph-bulk-ops | Load, draw and expand whole Scene Graph branches in one action, by row or down to a kind, with a Purpose column. |
 | F38 | Scene Authoring And Lighting | open |  |  | feature/f38-scene-authoring-and-lighting | The survey-driven scene authoring and lighting set (M562–M581): relationship, tweak, metadata and layer editing, collections, light linking and mixing, render attributes and regions, catalogue, restructure, instances, constraints, queries, inspection and load masks. |
+| F39 | Edge Extend Family | open |  |  | feature/f39-edge-extend-family | Native edge-extend nodes (EdgePush, EdgeClamp, EdgeSmear, EdgePushVector, EdgeDistort) on a shared fill kit, plus EdgeDetail for restoring detail. |
 
 # Open questions
 - **M104 - Merge Resolution UI (2026-11-22):** Keep Both Keys puts theirs' key one frame after mine, or halfway to the next key when that's closer. Confirm, or give the rule you want.

@@ -359,6 +359,7 @@ public:
 
     SceneGraphPanel* getSceneGraphPanel() const;
     MergeConflictPanel* getMergeConflictPanel() const;
+    NodeDiffPanel* getNodeDiffPanel() const;
     QVBoxLayout* getPropertiesLayout() const;
     PropertiesBinWrapper* getPropertiesBin() const;
     const RegisteredTabs & getRegisteredTabs() const;
@@ -404,6 +405,9 @@ public:
      * is in none, in a pane holding neither the node graph nor the properties, which it is used with.
      **/
     void ensureMergeConflictPanelVisible();
+
+    // Like ensureMergeConflictPanelVisible(), for the Node Diff panel.
+    void ensureNodeDiffPanelVisible();
 
     /*Useful function that saves on disk the image in png format.
        The name of the image will be the hash key of the image.*/
@@ -751,6 +755,8 @@ public:
 private:
 
     void setCurrentPanelFocus(PanelWidget* widget);
+
+    void ensureSidePanelVisible(PanelWidget* panel);
 
     void noteViewerFocused(ViewerTab* viewer);
 

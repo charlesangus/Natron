@@ -66,7 +66,7 @@ bool
 operator==(const MergeConflictValue& a,
            const MergeConflictValue& b)
 {
-    return (a.knob == b.knob) && (a.key == b.key) && (a.otherKeys == b.otherKeys) && (a.connections == b.connections) && (a.parent == b.parent) && (a.knobs == b.knobs)
+    return (a.knob == b.knob) && (a.key == b.key) && (a.otherKeys == b.otherKeys) && (a.connections == b.connections) && (a.removedNodes == b.removedNodes) && (a.parent == b.parent) && (a.knobs == b.knobs)
         && sameNode(a.node, b.node) && sameOptional(a.roto, b.roto, MergeDetail::sameRotoContexts) && sameOptional(a.tracker, b.tracker, MergeDetail::sameTrackerContexts)
         && (a.itemsBefore == b.itemsBefore);
 }

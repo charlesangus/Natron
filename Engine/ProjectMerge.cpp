@@ -106,6 +106,82 @@ namespace {
         return change;
     }
 
+    std::optional<Serialization::KnobSerialization>
+    knobNamed(const Serialization::NodeSerialization& node,
+              const std::string& name)
+    {
+        for (const Serialization::KnobSerialization& knob : node.knobs) {
+            if (knob.name == name) {
+                return knob;
+            }
+        }
+
+        return std::nullopt;
+    }
+
+    std::string
+    inputNamed(const Serialization::NodeSerialization& node,
+               const std::string& label)
+    {
+        std::map<std::string, std::string>::const_iterator input = node.inputs.find(label);
+
+        return (input == node.inputs.end()) ? std::string() : input->second;
+    }
+
+    // The node of nodes in group parentId with that script name, by ID, or empty.
+    std::string
+    idOfScriptName(const FlatNodes& nodes,
+                   const std::string& parentId,
+                   const std::string& scriptName)
+    {
+        for (const std::pair<const std::string, FlatNode>& entry : nodes) {
+            if ((entry.second.parentId == parentId) && (entry.second.node->scriptName == scriptName)) {
+                return entry.first;
+            }
+        }
+
+        return std::string();
+    }
+
+    void
+    describeChange(const FlatNode& before,
+                   const FlatNode& after,
+                   NodeChange* change)
+    {
+        for (const std::string& name : change->knobs) {
+            change->knobChanges.push_back(NodeChange::KnobChange { name, knobNamed(*before.node, name), knobNamed(*after.node, name) });
+        }
+        for (const std::string& label : change->inputs) {
+            change->inputChanges.push_back(NodeChange::InputChange { label, inputNamed(*before.node, label), inputNamed(*after.node, label) });
+        }
+        if (change->renamed) {
+            change->previousScriptName = before.node->scriptName;
+        }
+    }
+
+    void
+    describeLinks(const FlatNodes& nodes,
+                  const FlatNode& removed,
+                  NodeChange* change)
+    {
+        for (const std::pair<const std::string, std::string>& input : removed.node->inputs) {
+            const std::string source = idOfScriptName(nodes, removed.parentId, input.second);
+            if (!source.empty()) {
+                change->sources.push_back(NodeChange::Link { input.first, source });
+            }
+        }
+        for (const std::pair<const std::string, FlatNode>& entry : nodes) {
+            if (entry.second.parentId != removed.parentId) {
+                continue;
+            }
+            for (const std::pair<const std::string, std::string>& input : entry.second.node->inputs) {
+                if (input.second == removed.node->scriptName) {
+                    change->readers.push_back(NodeChange::Link { input.first, entry.first });
+                }
+            }
+        }
+    }
+
     // The merge leaves out a knob at its defaults, but some knobs are saved even then (a channel
     // set always is). Without mine's copy back, the diff resets every such knob on every update.
     void
@@ -642,12 +718,15 @@ compare(const ProjectPtr& project,
         if (beforeNodes.find(id) == beforeNodes.end()) {
             summary.nodes.push_back(describe(afterNodes.at(id), NodeChange::eAdded));
         } else if (auto it = changed.find(id); it != changed.end()) {
+            describeChange(beforeNodes.at(id), afterNodes.at(id), &it->second);
             summary.nodes.push_back(it->second);
         }
     }
     for (const std::string& id : beforeOrder) {
         if (afterNodes.find(id) == afterNodes.end()) {
-            summary.nodes.push_back(describe(beforeNodes.at(id), NodeChange::eRemoved));
+            NodeChange removed = describe(beforeNodes.at(id), NodeChange::eRemoved);
+            describeLinks(beforeNodes, beforeNodes.at(id), &removed);
+            summary.nodes.push_back(std::move(removed));
         }
     }
 

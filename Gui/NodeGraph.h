@@ -175,6 +175,11 @@ public:
      **/
     void scheduleLoopBlockRefresh(bool topology);
 
+    NodeGraphDiffOverlay* getDiffOverlay() const;
+
+    // Call when a node of this graph was selected or deselected.
+    void noteSelectionChanged();
+
     using PanelWidget::pushUndoCommand;
 
     /**

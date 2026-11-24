@@ -33,7 +33,7 @@ namespace {
     bool
     hasSideValue(const MergeConflictValue& value)
     {
-        return value.knob.has_value() || value.key.has_value() || !value.otherKeys.empty() || !value.connections.empty() || value.parent.has_value() || value.knobs.has_value() || value.node || value.roto.has_value() || value.tracker.has_value() || !value.itemsBefore.empty();
+        return value.knob.has_value() || value.key.has_value() || !value.otherKeys.empty() || !value.connections.empty() || !value.removedNodes.empty() || value.parent.has_value() || value.knobs.has_value() || value.node || value.roto.has_value() || value.tracker.has_value() || !value.itemsBefore.empty();
     }
 
     void
@@ -127,6 +127,11 @@ namespace {
                 em << YAML::EndMap;
             }
             em << YAML::EndSeq;
+        }
+        if (!value.removedNodes.empty()) {
+            emitKey(em, "removedNodes");
+            em << YAML::Value;
+            emitStringList(em, value.removedNodes);
         }
         if (value.parent) {
             emitKey(em, "parent");
@@ -288,6 +293,9 @@ namespace {
                 connectionReader.finish();
                 value.connections.push_back(std::move(connection));
             }
+        }
+        if (YAML::Node removedNodes = reader.get("removedNodes")) {
+            value.removedNodes = readStringVector(removedNodes, context + ".removedNodes");
         }
         if (YAML::Node parent = reader.get("parent")) {
             value.parent = readString(parent, context + ".parent");

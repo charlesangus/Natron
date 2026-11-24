@@ -54,6 +54,8 @@ bool applyConflictKnobValue(const MergeConflict& conflict,
  * side's recorded state stands for, leaving everything else as it is:
  * - value and curve key: the knob of the node, of its roto item or track, or of the project;
  * - input and inserted chain: the recorded connections, whose sources must be beside their node;
+ *   for an inserted chain, the nodes inserted on the link that the side does not have are
+ *   deleted, except those something else still reads from;
  * - group: the node moves into the side's group with its ID and takes the side's inputs whose
  *   sources are there; the nodes reading from it in the group it left are disconnected;
  * - adopted node: the knobs it left at their default take the side's state;

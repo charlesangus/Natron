@@ -61,6 +61,7 @@
 #include "Gui/GuiApplicationManager.h" // appPTR
 #include "Gui/GuiPrivate.h"
 #include "Gui/MergeConflictPanel.h"
+#include "Gui/NodeDiffPanel.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
@@ -554,6 +555,12 @@ Gui::getMergeConflictPanel() const
     return _imp->_mergeConflictPanel;
 }
 
+NodeDiffPanel*
+Gui::getNodeDiffPanel() const
+{
+    return _imp->_nodeDiffPanel;
+}
+
 PropertiesBinWrapper*
 Gui::getPropertiesBin() const
 {
@@ -769,7 +776,18 @@ Gui::ensureScriptEditorVisible()
 void
 Gui::ensureMergeConflictPanelVisible()
 {
-    MergeConflictPanel* panel = _imp->_mergeConflictPanel;
+    ensureSidePanelVisible(_imp->_mergeConflictPanel);
+}
+
+void
+Gui::ensureNodeDiffPanelVisible()
+{
+    ensureSidePanelVisible(_imp->_nodeDiffPanel);
+}
+
+void
+Gui::ensureSidePanelVisible(PanelWidget* panel)
+{
     if (!panel) {
         return;
     }
@@ -798,7 +816,7 @@ Gui::ensureMergeConflictPanelVisible()
     if (!target) {
         target = propertiesPane ? propertiesPane : tabs.front();
     }
-    target->moveMergeConflictsHere();
+    TabWidget::moveTab(panel, panel, target);
 }
 
 PanelWidget*

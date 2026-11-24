@@ -138,6 +138,9 @@ struct MergeConflictValue {
     // wiring. Empty when it cannot be put back, as when the side's source is not in the merged
     // snapshot.
     std::vector<MergeConflictConnection> connections;
+    // eStructuralInsert: the nodes inserted on the link that this side does not have. Choosing
+    // the side deletes them, except those that something outside them still reads from.
+    std::vector<std::string> removedNodes;
     // eReparent: the group holding the node, empty for the top level; unset when that group is
     // not in the merged snapshot.
     std::optional<std::string> parent;

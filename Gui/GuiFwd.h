@@ -199,6 +199,8 @@ class PanelWidget;
 class PreferencesPanel;
 class ProgressPanel;
 class MergeConflictPanel;
+class NodeDiffPanel;
+class NodeGraphDiffOverlay;
 class SceneGraphPanel;
 class ProgressTaskInfo;
 class ProjectGui;

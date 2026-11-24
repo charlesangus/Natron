@@ -303,7 +303,10 @@ everyKind()
     insert.input = "Source";
     insert.base.connections = { connection("blur", "Source", "grade") };
     insert.mine.connections = { connection("blur", "Source", "artist-blur"), connection("artist-blur", "Source", "grade") };
+    insert.base.removedNodes = { "artist-blur", "transform" };
     insert.theirs.connections = { connection("blur", "Source", "transform") };
+    insert.mine.removedNodes = { "transform" };
+    insert.theirs.removedNodes = { "artist-blur" };
     conflicts.push_back(insert);
 
     MergeConflict adopted;

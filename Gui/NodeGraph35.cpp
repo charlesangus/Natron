@@ -651,6 +651,13 @@ NodeGraph::showMenu(const QPoint & pos)
         compareWithTemplateBaseAction->setObjectName(QString::fromUtf8("actionGraphCompareWithTemplateBase"));
     }
 
+    QAction* clearComparisonAction = 0;
+    if (getGui()->getGraphComparison()) {
+        _imp->_menu->addSeparator();
+        clearComparisonAction = _imp->_menu->addAction(tr("Clear Comparison"));
+        clearComparisonAction->setObjectName(QString::fromUtf8("actionGraphClearComparison"));
+    }
+
     _imp->_menu->addSeparator();
 
     QMenu* nodesMenu = appPTR->getNodesMenu();
@@ -667,6 +674,8 @@ NodeGraph::showMenu(const QPoint & pos)
         getGui()->updateFromTemplate(templateKey);
     } else if (ret == compareWithTemplateBaseAction) {
         getGui()->compareWithTemplateBase(templateKey);
+    } else if (ret == clearComparisonAction) {
+        getGui()->clearGraphComparison();
     } else if (ret == findAction) {
         popFindDialog();
     } else if (ret == createNode) {

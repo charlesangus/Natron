@@ -23,6 +23,7 @@
 #include "Global/Macros.h"
 
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -101,6 +102,36 @@ struct NodeChange {
     // eChanged: what differs, by knob name and input label.
     std::vector<std::string> knobs;
     std::vector<std::string> inputs;
+
+    struct KnobChange {
+        std::string name;
+        // Absent when the knob is at its default on that side.
+        std::optional<Serialization::KnobSerialization> before;
+        std::optional<Serialization::KnobSerialization> after;
+    };
+
+    struct InputChange {
+        std::string label;
+        // The source's script name, empty when unconnected.
+        std::string before;
+        std::string after;
+    };
+
+    // eChanged: knobs and inputs again, in the same order, with each side's state.
+    std::vector<KnobChange> knobChanges;
+    std::vector<InputChange> inputChanges;
+    // eChanged with renamed: the script name in the other snapshot.
+    std::string previousScriptName;
+
+    struct Link {
+        std::string input;
+        std::string nodeId;
+    };
+
+    // eRemoved: in the other snapshot, the node's sources by its input label, and the nodes in its
+    // group that read from it by their input label.
+    std::vector<Link> sources;
+    std::vector<Link> readers;
     bool renamed = false;
     bool appearance = false;
     bool userKnobs = false;

@@ -450,6 +450,10 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
     bool accept = true;
 
     if (key == Qt::Key_Escape) {
+        // Escape first cancels a gesture; only an idle one clears the comparison.
+        if ((_imp->_evtState == eEventStateNone) && getGui() && getGui()->getGraphComparison()) {
+            getGui()->clearGraphComparison();
+        }
         if (_imp->_evtState == eEventStateCutting) {
             clearCutLine();
             _imp->_evtState = eEventStateNone;

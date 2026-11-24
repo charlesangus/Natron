@@ -226,6 +226,37 @@ namespace MergeDetail {
             return std::make_pair(std::string(), std::string());
         }
 
+        // Every node chainTail() walks through from start, up to target.
+        template <typename Accept>
+        std::vector<std::string>
+        chainNodes(const MergeContext& context,
+                   const std::string& start,
+                   const std::string& target,
+                   Accept inChain)
+        {
+            std::vector<std::string> found;
+            std::set<std::string> seen;
+            std::deque<std::string> queue;
+            queue.push_back(start);
+            while (!queue.empty()) {
+                const std::string id = queue.front();
+                queue.pop_front();
+                if (id == target) {
+                    continue;
+                }
+                std::map<std::string, OutNode>::const_iterator node = context.out.find(id);
+                if ((node == context.out.end()) || !inChain(node->second) || !seen.insert(id).second) {
+                    continue;
+                }
+                found.push_back(id);
+                for (const std::pair<const std::string, std::string>& input : node->second.inputIds) {
+                    queue.push_back(input.second);
+                }
+            }
+
+            return found;
+        }
+
         std::string
         outOfBase(const MergeContext& context,
                   const std::string& baseId)
@@ -474,9 +505,10 @@ namespace MergeDetail {
                         continue;
                     }
                     const std::pair<std::string, std::string> mineTail = chainTail(*context, m, b, mineChain);
-                    const std::pair<std::string, std::string> theirsTail = chainTail(*context, t, b, [](const OutNode& candidate) {
+                    const auto theirsChain = [](const OutNode& candidate) {
                         return !candidate.fromMine && candidate.baseId.empty();
-                    });
+                    };
+                    const std::pair<std::string, std::string> theirsTail = chainTail(*context, t, b, theirsChain);
                     MergeConflict conflict;
                     conflict.baseNodeId = node->baseId;
                     conflict.nodeId = node->node->id;
@@ -485,11 +517,16 @@ namespace MergeDetail {
                     if (isReal(*context, b) && !mineTail.first.empty() && !theirsTail.first.empty()) {
                         context->out[mineTail.first].inputIds[mineTail.second] = t;
                         conflict.kind = MergeConflictKind::eStructuralInsert;
-                        // Each side's chain alone; the other's inserted nodes stay, unconnected.
                         const std::string& id = node->node->id;
+                        const std::vector<std::string> mineNodes = chainNodes(*context, m, b, mineChain);
+                        const std::vector<std::string> theirsNodes = chainNodes(*context, t, b, theirsChain);
                         conflict.base.connections = { MergeConflictConnection { id, label, b } };
+                        conflict.base.removedNodes = mineNodes;
+                        conflict.base.removedNodes.insert(conflict.base.removedNodes.end(), theirsNodes.begin(), theirsNodes.end());
                         conflict.mine.connections = { MergeConflictConnection { id, label, m }, MergeConflictConnection { mineTail.first, mineTail.second, b } };
+                        conflict.mine.removedNodes = theirsNodes;
                         conflict.theirs.connections = { MergeConflictConnection { id, label, t } };
+                        conflict.theirs.removedNodes = mineNodes;
                         context->conflicts.push_back(conflict);
                     } else if (reparent != context->reparentConflicts.end()) {
                         context->conflicts[reparent->second].inputs.push_back(label);

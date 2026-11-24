@@ -385,6 +385,9 @@ TEST_F(ProjectMergeTest, CompareSummarisesAddedChangedAndRemovedNodes)
     EXPECT_EQ(changed->kind, ProjectMerge::NodeChange::eChanged);
     EXPECT_EQ(changed->knobs, std::vector<std::string>(1, kBlurParamSize));
     EXPECT_TRUE(changed->inputs.empty());
+    ASSERT_EQ(changed->knobChanges.size(), 1u);
+    EXPECT_EQ(changed->knobChanges[0].name, kBlurParamSize);
+    EXPECT_TRUE(changed->knobChanges[0].after.has_value());
     const ProjectMerge::NodeChange* removed = summary.find(blur2Id);
     ASSERT_NE(removed, nullptr);
     EXPECT_EQ(removed->kind, ProjectMerge::NodeChange::eRemoved);

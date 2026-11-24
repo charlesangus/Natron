@@ -98,6 +98,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/MergeConflictPanel.h"
 #include "Gui/MessageBox.h"
 #include "Gui/MultiInstancePanel.h"
+#include "Gui/NodeDiffPanel.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
@@ -204,6 +205,7 @@ GuiPrivate::GuiPrivate(const GuiAppInstancePtr& app,
     , _progressPanel(0)
     , _sceneGraphPanel(0)
     , _mergeConflictPanel(0)
+    , _nodeDiffPanel(0)
     , menuUpdateFromTemplate(0)
     , graphComparison()
     , _dopeSheetEditor(0)
@@ -467,6 +469,15 @@ GuiPrivate::createMergeConflictPanelGui()
     _mergeConflictPanel->setScriptName("mergeConflicts");
     _mergeConflictPanel->setVisible(false);
     _gui->registerTab(_mergeConflictPanel, _mergeConflictPanel);
+}
+
+void
+GuiPrivate::createNodeDiffPanelGui()
+{
+    _nodeDiffPanel = new NodeDiffPanel(_gui);
+    _nodeDiffPanel->setScriptName("nodeDiff");
+    _nodeDiffPanel->setVisible(false);
+    _gui->registerTab(_nodeDiffPanel, _nodeDiffPanel);
 }
 
 TabWidget*

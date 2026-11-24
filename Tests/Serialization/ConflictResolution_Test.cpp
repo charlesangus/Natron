@@ -332,22 +332,63 @@ TEST(ConflictResolution, AnInputConflictReconnectsToTheChosenSidesSource)
     EXPECT_EQ(inputOf(resolved(result.merged, side(*conflict, ResolutionSide::eBase)), "Merge1", "A"), "Constant1");
 }
 
-TEST(ConflictResolution, AStructuralInsertKeepsOneSidesChain)
+TEST(ConflictResolution, AStructuralInsertOnMineDeletesTheirsChain)
 {
     const Serialization::MergeResult result = Projects(scenarios().at("both-insert-input0")).merge();
     const MergeConflict* conflict = conflictOn(result, MergeConflictKind::eStructuralInsert, "Blur1");
     ASSERT_TRUE(conflict != nullptr);
-    {
-        const ProjectSerialization project = resolved(result.merged, side(*conflict, ResolutionSide::eMine));
-        EXPECT_EQ(inputOf(project, "Blur1", "Source"), "ArtistBlur");
-        EXPECT_EQ(inputOf(project, "ArtistBlur", "Source"), "Grade1");
-    }
-    {
-        const ProjectSerialization project = resolved(result.merged, side(*conflict, ResolutionSide::eTheirs));
-        EXPECT_EQ(inputOf(project, "Blur1", "Source"), "TplTransform");
-        EXPECT_EQ(inputOf(project, "TplTransform", "Source"), "Grade1");
-    }
-    EXPECT_EQ(inputOf(resolved(result.merged, side(*conflict, ResolutionSide::eBase)), "Blur1", "Source"), "Grade1");
+    const ProjectSerialization project = resolved(result.merged, side(*conflict, ResolutionSide::eMine));
+    EXPECT_EQ(inputOf(project, "Blur1", "Source"), "ArtistBlur");
+    EXPECT_EQ(inputOf(project, "ArtistBlur", "Source"), "Grade1");
+    EXPECT_TRUE(nodeAt(project, "TplTransform") == nullptr);
+}
+
+TEST(ConflictResolution, AStructuralInsertOnTheirsDeletesMineChain)
+{
+    const Serialization::MergeResult result = Projects(scenarios().at("both-insert-input0")).merge();
+    const MergeConflict* conflict = conflictOn(result, MergeConflictKind::eStructuralInsert, "Blur1");
+    ASSERT_TRUE(conflict != nullptr);
+    const ProjectSerialization project = resolved(result.merged, side(*conflict, ResolutionSide::eTheirs));
+    EXPECT_EQ(inputOf(project, "Blur1", "Source"), "TplTransform");
+    EXPECT_EQ(inputOf(project, "TplTransform", "Source"), "Grade1");
+    EXPECT_TRUE(nodeAt(project, "ArtistBlur") == nullptr);
+}
+
+TEST(ConflictResolution, AStructuralInsertOnBaseDeletesBothChains)
+{
+    const Serialization::MergeResult result = Projects(scenarios().at("both-insert-input0")).merge();
+    const MergeConflict* conflict = conflictOn(result, MergeConflictKind::eStructuralInsert, "Blur1");
+    ASSERT_TRUE(conflict != nullptr);
+    const ProjectSerialization project = resolved(result.merged, side(*conflict, ResolutionSide::eBase));
+    EXPECT_EQ(inputOf(project, "Blur1", "Source"), "Grade1");
+    EXPECT_TRUE(nodeAt(project, "ArtistBlur") == nullptr);
+    EXPECT_TRUE(nodeAt(project, "TplTransform") == nullptr);
+}
+
+TEST(ConflictResolution, AStructuralInsertDeletesEveryNodeOfTheOtherChain)
+{
+    Scenario scenario = scenarios().at("both-insert-input0");
+    insertBefore(&scenario.theirs, "TplCrop", "Transform", "t:new2", "Blur1", "Source");
+    const Serialization::MergeResult result = Projects(scenario).merge();
+    const MergeConflict* conflict = conflictOn(result, MergeConflictKind::eStructuralInsert, "Blur1");
+    ASSERT_TRUE(conflict != nullptr);
+    const ProjectSerialization project = resolved(result.merged, side(*conflict, ResolutionSide::eMine));
+    EXPECT_EQ(inputOf(project, "Blur1", "Source"), "ArtistBlur");
+    EXPECT_TRUE(nodeAt(project, "TplCrop") == nullptr);
+    EXPECT_TRUE(nodeAt(project, "TplTransform") == nullptr);
+}
+
+TEST(ConflictResolution, AStructuralInsertKeepsAnInsertedNodeReadElsewhere)
+{
+    Scenario scenario = scenarios().at("both-insert-input0");
+    scenario.mine.add("ArtistView", "Dot", "m:view", { { "", "ArtistBlur" } });
+    const Serialization::MergeResult result = Projects(scenario).merge();
+    const MergeConflict* conflict = conflictOn(result, MergeConflictKind::eStructuralInsert, "Blur1");
+    ASSERT_TRUE(conflict != nullptr);
+    const ProjectSerialization project = resolved(result.merged, side(*conflict, ResolutionSide::eTheirs));
+    EXPECT_EQ(inputOf(project, "Blur1", "Source"), "TplTransform");
+    EXPECT_TRUE(nodeAt(project, "ArtistBlur") != nullptr);
+    EXPECT_EQ(inputOf(project, "ArtistView", ""), "ArtistBlur");
 }
 
 TEST(ConflictResolution, AReparentPutsTheNodeInTheChosenSidesGroup)

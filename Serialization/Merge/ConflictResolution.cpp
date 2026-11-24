@@ -164,6 +164,59 @@ namespace {
         }
     }
 
+    // Deletes the nodes of ids that nothing outside them reads from, and disconnects what read
+    // from them. A node an artist also wired elsewhere stays, and so do the nodes it reads from.
+    void
+    removeUnreadNodes(ProjectSerialization* snapshot,
+                      const std::vector<std::string>& ids)
+    {
+        std::vector<FoundNode> doomed;
+        for (const std::string& id : ids) {
+            FoundNode found;
+            if (findNode(&snapshot->nodes.nodes, std::string(), id, &found)) {
+                doomed.push_back(found);
+            }
+        }
+        const auto isDoomed = [&doomed](const NodeSerializationPtr& node) {
+            return std::any_of(doomed.begin(), doomed.end(), [&node](const FoundNode& entry) {
+                return entry.node == node;
+            });
+        };
+        bool changed = true;
+        while (changed) {
+            changed = false;
+            for (std::vector<FoundNode>::iterator it = doomed.begin(); it != doomed.end();) {
+                bool readOutside = false;
+                for (const NodeSerializationPtr& reader : *it->siblings) {
+                    if (!reader || (reader == it->node) || isDoomed(reader)) {
+                        continue;
+                    }
+                    for (const std::pair<const std::string, std::string>& input : reader->inputs) {
+                        if (input.second == it->node->scriptName) {
+                            readOutside = true;
+                            break;
+                        }
+                    }
+                    if (readOutside) {
+                        break;
+                    }
+                }
+                if (readOutside) {
+                    it = doomed.erase(it);
+                    changed = true;
+                } else {
+                    ++it;
+                }
+            }
+        }
+        for (const FoundNode& entry : doomed) {
+            entry.siblings->remove(entry.node);
+        }
+        for (const FoundNode& entry : doomed) {
+            disconnectConsumers(entry.siblings, entry.node->scriptName);
+        }
+    }
+
     bool
     connect(ProjectSerialization* snapshot,
             const MergeConflictConnection& connection,
@@ -493,6 +546,9 @@ namespace {
                 if (!connect(snapshot, connection, error)) {
                     return false;
                 }
+            }
+            if (conflict.kind == MergeConflictKind::eStructuralInsert) {
+                removeUnreadNodes(snapshot, value.removedNodes);
             }
 
             return true;

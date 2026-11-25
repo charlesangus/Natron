@@ -72,25 +72,25 @@ Code facts, read at `origin/main` on 2026-11-08; re-check line numbers before st
 
 ## Phase 373.2: Editor core
 
-- [ ] M373.P2.T1 — Edit mode toggle and selection
+- [x] M373.P2.T1 — Edit mode toggle and selection
   - files: Gui/DockablePanel.cpp, Gui/DockablePanel.h, Gui/DockablePanelPrivate.cpp, Gui/DockablePanelPrivate.h, Gui/KnobGuiContainerHelper.cpp, Gui/KnobGuiContainerHelper.h, Gui/NodeSettingsPanel.cpp, new Gui/KnobEditMode.h, new Gui/KnobEditMode.cpp, Gui/CMakeLists.txt, new Tests/gui/m373_edit_mode.py
   - approach: Add the pencil toggle to the panel header and replace "Manage user parameters..." with "Edit parameters" in the right-click menu and `NodeSettingsPanel`'s action; both toggle a `KnobEditMode` object owned by the panel. Entering keeps the PyPlug confirm and `setPyPlugEdited(true)`. In edit mode, user knobs, groups and pages are selectable (highlight per the mockup), built-ins dimmed. Leaving, panel close and node deletion exit cleanly.
   - verify: Build. m373_edit_mode.py under Xvfb: toggle on a Blur via the pencil and the menu, select a user knob, check built-ins can't be selected, toggle off; on a non-editable holder both entries are disabled; screenshots saved.
   - size: L
 
-- [ ] M373.P2.T2 — Palette strip with click to add
+- [x] M373.P2.T2 — Palette strip with click to add
   - files: Gui/KnobEditMode.cpp, Gui/KnobEditMode.h, new Gui/KnobEditPalette.h, new Gui/KnobEditPalette.cpp, Gui/CMakeLists.txt, new Tests/gui/m373_palette.py
   - approach: A palette strip at the top of the panel in edit mode with one entry per type (M372's full set plus page, group, separator, label). Click creates the knob through `createUserKnob` with a unique default name after the selection (or on the first user page, creating one if none exists), selects it and focuses the property section's name field.
   - verify: m373_palette.py adds one knob of every type to a Blur, checks each exists with the right type, and that one Ctrl+Z removes the last one.
   - size: L
 
-- [ ] M373.P2.T3 — Property section
+- [x] M373.P2.T3 — Property section
   - files: Gui/KnobEditMode.cpp, Gui/KnobEditMode.h, new Gui/KnobEditProperties.h, new Gui/KnobEditProperties.cpp, Gui/CMakeLists.txt, new Tests/gui/m373_properties.py
   - approach: A collapsible section below the knobs showing fields for the selected knob built from `specFromKnob` (common fields, then the type's own: ranges, defaults per dimension, menu items with help, text/file/path/layer flags, parametric curves, button script in a monospace multi-line editor). Commit a field on editing-finished through `applySpec`, showing `validateSpec` errors inline instead of committing. The type combo calls `changeUserKnobType` and asks before a reset. Port the project path-variable rename (`RenamePathVariableCommand`) from AddKnobDialog so renaming a path variable still updates its users.
   - verify: m373_properties.py: rename a user float that another node expresses on (expression rewritten), change its range and tooltip, change Int (animated)→Float keeping keys, try a duplicate name (inline error, nothing changes), set a button script and click the button; each edit is one Ctrl+Z.
   - size: L
 
-- [ ] M373.P2.T4 — Drag to reorder and drag from the palette
+- [x] M373.P2.T4 — Drag to reorder and drag from the palette
   - files: Gui/KnobEditMode.cpp, Gui/KnobEditMode.h, Gui/KnobEditPalette.cpp, Gui/KnobGuiContainerHelper.cpp, new Tests/gui/m373_reorder.py
   - approach: In edit mode, drag a user knob, group or page to a new position among user pages (drop indicator per the mockup), and drag user page tabs among built-in pages; drag a palette entry to create at the drop position. Moves go through the M372 API as one undo entry each. Built-in pages and knobs are never drop targets for knobs.
   - verify: m373_reorder.py moves a knob into a group, a group to another user page, a user page before a built-in page, and drags a palette entry to a position; checks order after each and after undo.
@@ -98,19 +98,19 @@ Code facts, read at `origin/main` on 2026-11-08; re-check line numbers before st
 
 ## Phase 373.3: Drag-in, copy/paste, dialog removal
 
-- [ ] M373.P3.T1 — Drag knobs in from other panels, and Link knob...
+- [x] M373.P3.T1 — Drag knobs in from other panels, and Link knob...
   - files: Gui/KnobEditMode.cpp, Gui/KnobEditMode.h, Gui/KnobGui.cpp, Gui/KnobGuiPrivate.h (or wherever knob drag starts), Gui/KnobEditPalette.cpp, new Tests/gui/m373_drag_in.py
   - approach: While a panel is in edit mode, accept knob drags from any other panel: plain drop creates a linked user knob via `createDuplicateOnHolder` (alias), Ctrl-drop an unlinked copy, inside one undo entry. For a Group or PyPlug, its inner nodes' panels are valid sources. Add a "Link knob..." palette entry that opens an inline node-then-knob chooser (reuse PickKnobDialog's node list logic: the holder's node plus a Group's inner nodes). Outside edit mode the existing knob-to-knob link drag is untouched.
   - verify: m373_drag_in.py drags a Blur's size onto a Group's panel in edit mode (linked: changing one changes the other), Ctrl-drags another (independent), uses Link knob... for an inner node, and checks that a normal link drag between two panels outside edit mode still links as before.
   - size: L
 
-- [ ] M373.P3.T2 — Copy and paste between panels
+- [x] M373.P3.T2 — Copy and paste between panels
   - files: Gui/KnobEditMode.cpp, Gui/KnobEditMode.h, new Tests/gui/m373_copy_paste.py
   - approach: In edit mode, Ctrl+C/Ctrl+V and context-menu Copy/Paste on selected user knobs, groups or pages, through `copyUserKnobs`/`pasteUserKnobs` and the system clipboard (a Natron MIME type plus plain-text YAML). Paste goes after the selection on the target panel.
   - verify: m373_copy_paste.py copies a user page with a group and knobs from one Blur, pastes into a second Blur's panel, checks definitions and values, and that one Ctrl+Z removes the paste.
   - size: M
 
-- [ ] M373.P3.T3 — Remove the old dialogs
+- [x] ~~M373.P3.T3 — Remove the old dialogs~~ (moved to a follow-up after M247, filed to the inbox)
   - files: Gui/ManageUserParamsDialog.cpp, Gui/ManageUserParamsDialog.h, Gui/AddKnobDialog.cpp, Gui/AddKnobDialog.h, Gui/PickKnobDialog.cpp, Gui/PickKnobDialog.h, Gui/CMakeLists.txt, Gui/DockablePanel.cpp, any other includer found by grep
   - approach: Delete the three dialogs and every reference (includes, actions, CMake). Anything still used — validation, the path-variable rename, PickKnobDialog's node listing — must already live in M372's API or the editor (P2.T3, P3.T1); move any leftover the grep finds rather than keeping a dialog file.
   - verify: Build; `git grep -n 'ManageUserParamsDialog\|AddKnobDialog\|PickKnobDialog'` finds nothing; all m373_*.py GUI scripts still pass.
@@ -130,3 +130,4 @@ Code facts, read at `origin/main` on 2026-11-08; re-check line numbers before st
 - 2026-11-23 — P2.T1–T4, P3.T1–T2 in the lane (gate queued). P3.T3 deferred (PM): ManageUserParamsDialog still edits project path variables (ProjectGui::editVariables) until M247 - Project User Knobs And Root gives the project an in-panel editor, so the dialogs are removed after M247; Tests/gui/m70_rfv.py is ported to the editor now. Pasted clashing names get a number appended to the whole name (int1 -> int12).
 
 - 2026-11-23 (user): a knob dropped onto a panel with no user page creates a user page, as clicking a palette entry does, and lands there; built-in pages are still never drop targets.
+- 2026-11-24 (PM) — gate9 green on b98699418. P3.T3 struck from M373 and filed to the inbox as a follow-up after M247 - Project User Knobs And Root, since ManageUserParamsDialog still edits project path variables until then and M247 depends on this milestone.

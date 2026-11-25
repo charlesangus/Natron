@@ -112,3 +112,7 @@ Reference: Nuke 17's EdgeExtend (`.local/docs/nuke/html/content/reference_guide/
 - 2026-11-24 — Fill extent is the source RoD by default, with an option for the union of the source RoD and the format (user). There is no separate reach limit.
 - 2026-11-24 — Detail restoration is the separate M595 - Native EdgeDetail node (user), not knobs here.
 ````
+
+### 2026-11-25T04:17:08Z — change-request
+- refs: M247
+- New milestone after M247 - Project User Knobs And Root (E10, F16 - User Knob Editor or standalone): **Remove The Old User Knob Dialogs** — the former M373.P3.T3. Delete Gui/ManageUserParamsDialog.{h,cpp}, Gui/AddKnobDialog.{h,cpp}, Gui/PickKnobDialog.{h,cpp} and every reference (includes, actions, Gui/CMakeLists.txt, DockablePanel.cpp, ProjectGui::editVariables). Anything still used — validation, the path-variable rename, PickKnobDialog's node listing — must already live in M372's API, the in-panel editor (M373) or M247's project editor; move leftovers rather than keeping a dialog. Verify: build; `git grep -n "ManageUserParamsDialog\|AddKnobDialog\|PickKnobDialog"` finds nothing; all m373_*.py GUI scripts pass. Blocked on M247 because the dialog still edits project path variables until M247 gives the project an in-panel editor.

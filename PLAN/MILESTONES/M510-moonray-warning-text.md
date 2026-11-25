@@ -24,7 +24,7 @@
 
 ## Phase 510.1: Capture
 
-- [ ] M510.P1.T1 — Scene test that renders two cards under a frame-held projection and logs the notices
+- [x] M510.P1.T1 — Scene test that renders two cards under a frame-held projection and logs the notices
   - files: `Tests/Scene/USDRenderMoonRay_Test.cpp` (the `USDRenderMoonRayProjectionTest` fixture, ~:1833)
   - approach: extend the fixture graph with a second card. Assign the frame-held projection material (`kUSDProject3DParamUseFrameHold`, `kUSDProject3DParamFrameHold`) to both through `USDAssignMaterial`, render one frame, and write every captured notice (level and text) and the node's warning to stderr. For now, assert only that the render succeeds and both cards show the plate.
   - verify: PM runs it at the phase build and records the exact notice text, and whether it is benign, as a milestone decision
@@ -32,12 +32,12 @@
 
 ## Phase 510.2: Fix
 
-- [ ] M510.P2.T1 — Show MoonRay's message and filter the benign notice
+- [x] M510.P2.T1 — Show MoonRay's message and filter the benign notice
   - files: `Engine/Nodes/Scene/MoonRayAovs.cpp`, `Engine/Nodes/Scene/MoonRayAovs.h`, `Tests/Scene/MoonRayAovs_Test.cpp` (update `WarnsOnePerKindAndKeepsOtherErrorsForTheNode`, :163)
   - approach: keep one line per kind, but name each prim with MoonRay's remaining text (`rest` from `leadingPath`), e.g. `/World/Card1 (<MoonRay's text>)`, deduplicated. Add a small exact-match filter for the notices P1.T1 recorded as benign, with a comment saying why each is harmless. Never mention other products in the comments.
   - verify: `ctest -R MoonRayAovs` passes at the phase build
   - size: M
-- [ ] M510.P2.T2 — Regression tests for the captured notice
+- [x] M510.P2.T2 — Regression tests for the captured notice
   - files: `Tests/Scene/MoonRayAovs_Test.cpp`, `Tests/Scene/USDRenderMoonRay_Test.cpp`
   - approach: in `MoonRayAovs_Test`, the captured notice text gives no warning (if benign) or a warning carrying MoonRay's text, and an unknown prim warning keeps its text. In the P1.T1 scene test, assert the node's warning is empty (or carries MoonRay's text) and drop the stderr dump. Bundled gtest is old: no `GTEST_SKIP`, `INSTANTIATE_TEST_CASE_P` only, no `ASSERT_TRUE(ptr)`.
   - verify: `ctest -R "MoonRayAovs|USDRenderMoonRay"` passes at the phase build

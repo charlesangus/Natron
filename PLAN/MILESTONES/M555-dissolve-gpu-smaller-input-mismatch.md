@@ -38,7 +38,7 @@
 
 ## Phase 555.3: Gate (PM runs)
 
-- [ ] M555.P3.T1 — Repeat under parallel load
+- [x] M555.P3.T1 — Repeat under parallel load
   - files: none
   - approach: `tools/ci/remote/build.sh debug --tests --repeat-test NativeEdgeInputsGpu:20`, both schedulers
   - verify: 20/20 per scheduler, no GPU-vs-CPU mismatch
@@ -52,3 +52,4 @@
 - 2026-11-23 — Diagnosis (opus consultant): no unguarded GPU read found on the KeyMix/Dissolve composite path (bounded reads in pixelwrap.slang/compositestep.slang; working buffers fully written). Dissolve's bad pixel (20,15) lies inside the small input's box, which points at buffer reuse/race, not an edge read. The ×20 repeat timeout looks like overload (≈8 lavapipe debug processes, 300 s ctest TIMEOUT) rather than a hang. Next: pool-poison test option + shared helper used by KeyMix, Merge and Dissolve rows; upload repeat logs/stacks; repeat parallel/timeout knobs. Poisoned failure → crop inputs to region in makeStageGpuInput/makeStageGpuWrap (covers both); poisoned pass → trace strips and RAM-upload path.
 - 2026-11-23 — Root cause (opus consultant, from pixel values): the bad pixels are a 16-wide box read straight on from (20,14) of a 64-wide image — a cached RAM image enlarged in place (Image::ensureBounds, EffectInstanceRenderRoI.cpp:1651) while ResampleExecutor read its bounds (:532) before taking the read lock (:535). Two parity sources with identical hashes share one cache entry. Same cause for Dissolve. Fix: an image the cache has handed out is never enlarged in place (enlarge by copy and swap the cache entry); read bounds and pointer under one lock in ResampleExecutor and GpuRegionTask resolveInputs/issueUploads; deterministic test holding a box-sized image across a full-frame render of an identical node. The old 5.79e36 failure may be a second issue.
 - 2026-11-24 (PM, sonnet check) — M495 - KeyMix GPU Edge Read Fix (dd296e880, #363) already fixes Dissolve's path: render-path grows use Image::ensureBoundsByCopy (EffectInstanceRenderRoI.cpp:1334, EffectInstance.cpp:2828), and ResampleExecutor/GpuRegionTask take the read lock before reading bounds; Dissolve has no reader of its own. P2.T1 struck. P2.T2 is satisfied by M495's poisoned-pool DissolveSmallerInput variant (NativeEdgeInputsGpu_Test.cpp:356-372) plus CacheGrowth_Test's shared-entry grow. The branch carries no code; P3.T1's repeat runs on main's code.
+- 2026-11-24 (PM) — P3.T1 green: NativeEdgeInputsGpu ×20 under load on both schedulers (debug, run of m555-rep1 on main's code dd296e880), no mismatch. The fix shipped in M495 - KeyMix GPU Edge Read Fix (#363) and main's PR CI is green, so this milestone closes with no code and no PR of its own.

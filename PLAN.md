@@ -611,7 +611,7 @@ future core work has solid ground to build on.
 | M547 | Pyro Look And Post-Process | todo | M543, M347 |  | E22 | F35 | | [M547-pyro-look-and-post-process.md](PLAN/MILESTONES/M547-pyro-look-and-post-process.md) |
 | M548 | Pyro Quick Setups And Checkpoints | todo | M544, M545, M546, M547 |  | E22 | F35 | | [M548-pyro-quick-setups-and-checkpoints.md](PLAN/MILESTONES/M548-pyro-quick-setups-and-checkpoints.md) |
 | M554 | Scene Camera For Delegate Renders | doing | M345 | bosley-executor | E9 | F1 | | [M554-scene-camera-for-delegate-renders.md](PLAN/MILESTONES/M554-scene-camera-for-delegate-renders.md) |
-| M555 | Dissolve GPU Smaller-Input Mismatch | doing | M495 | bosley-executor | E14 |  | | [M555-dissolve-gpu-smaller-input-mismatch.md](PLAN/MILESTONES/M555-dissolve-gpu-smaller-input-mismatch.md) |
+| M555 | Dissolve GPU Smaller-Input Mismatch | done | M495 | | E14 |  | | [M555-dissolve-gpu-smaller-input-mismatch.md](PLAN/MILESTONES/M555-dissolve-gpu-smaller-input-mismatch.md) |
 | M556 | Scene Graph Bulk Commands | doing | - | bosley-executor | E9 | F37 | | [M556-scene-graph-bulk-commands.md](PLAN/MILESTONES/M556-scene-graph-bulk-commands.md) |
 | M557 | Scene Graph Purpose Column | done | - | | E9 | F37 | | [M557-scene-graph-purpose-column.md](PLAN/MILESTONES/M557-scene-graph-purpose-column.md) |
 | M558 | Scene Graph Expand Commands | todo | M556 |  | E9 | F37 | | [M558-scene-graph-expand-commands.md](PLAN/MILESTONES/M558-scene-graph-expand-commands.md) |

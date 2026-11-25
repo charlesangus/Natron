@@ -956,6 +956,14 @@ struct DirectFoldInput {
                       float* row) const
     {
         PassExec::readSourceRow(image.get(), access.get(), bounds, nComps, x0, y, width, 4, EdgeMode::Black, row);
+        // The effect's over of its empty source, kept so that -0 and NaN come out as it writes them.
+        for (int x = 0; x < width; ++x) {
+            float* pix = row + (std::size_t)x * 4;
+            const double under = 0.0 * (1.0 - double(pix[3]));
+            for (int c = 0; c < 4; ++c) {
+                pix[c] = float(double(pix[c]) + under);
+            }
+        }
     }
 
     void readRow(int x0,
@@ -1116,7 +1124,7 @@ renderConcatenatedTree(RotoPaint& self,
         }
         const NodeMetadataConstPtr metadata = merge.getRenderMetadata(time, view);
         bool isProjectFormat = false;
-        if (!metadata || (merge.getRegionOfDefinition_public(hash, time, args.mappedScale, view, &direct.rod, &isProjectFormat) == eStatusFailed)) {
+        if (!metadata || (metadata->getBitDepth(-1) != eImageBitDepthFloat) || (merge.getRegionOfDefinition_public(hash, time, args.mappedScale, view, &direct.rod, &isProjectFormat) == eStatusFailed)) {
             return DirectTreeResult::NodePath;
         }
         direct.par = metadata->getPixelAspectRatio(-1);
@@ -1200,6 +1208,10 @@ renderConcatenatedTree(RotoPaint& self,
                 return DirectTreeResult::Aborted;
             }
             input.image = item->renderMaskFromStroke(maskComps, time, view, maskDepth, mipmapLevel, rotoSrcRod);
+            if (!input.image) {
+                // A mask that failed to render is not an empty one: the node path owns the failure.
+                return self.aborted() ? DirectTreeResult::Aborted : DirectTreeResult::NodePath;
+            }
             if (!isFloatRGBA(input.image)) {
                 return DirectTreeResult::NodePath;
             }

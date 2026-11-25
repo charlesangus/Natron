@@ -1268,7 +1268,9 @@ RotoDrawableItem::renderMaskFromStroke(const ImageLayerDesc& components,
     const U64 mergeNodeHash = mergeEffect->getRenderHash();
     const RenderContextPtr mergeContext = mergeEffect->getCurrentRestrictedRenderContext();
     const U64 contentHash = getContentHash();
-    const bool frameInvariant = isMaskFrameInvariant(contentHash);
+    // An inactive item's mask is empty, so it is kept to its frame rather than served at frames
+    // where the item is active.
+    const bool frameInvariant = isActivated(time) && isMaskFrameInvariant(contentHash);
     U64 rotoHash;
     {
         Hash64 hash;
@@ -1710,11 +1712,11 @@ RotoContextPrivate::evaluateStrokeDabs(const std::list<std::list<std::pair<Point
                                        unsigned int mipmapLevel,
                                        StrokeDabs* dabs)
 {
-    if ( strokes.empty() ) {
+    if (strokes.empty()) {
         return distToNext;
     }
 
-    if ( !stroke || !stroke->isActivated(time) ) {
+    if (!stroke || !stroke->isActivated(time)) {
         return distToNext;
     }
 
@@ -1726,7 +1728,6 @@ RotoContextPrivate::evaluateStrokeDabs(const std::list<std::list<std::pair<Point
         return distToNext;
     }
 
-
     brushSpacing = std::max(brushSpacing, 0.05);
 
     KnobDoublePtr brushHardnessKnob = stroke->getBrushHardnessKnob();
@@ -1734,7 +1735,7 @@ RotoContextPrivate::evaluateStrokeDabs(const std::list<std::list<std::pair<Point
     KnobDoublePtr visiblePortionKnob = stroke->getBrushVisiblePortionKnob();
     double writeOnStart = visiblePortionKnob->getValueAtTime(time, 0);
     double writeOnEnd = visiblePortionKnob->getValueAtTime(time, 1);
-    if ( (writeOnEnd - writeOnStart) <= 0. ) {
+    if ((writeOnEnd - writeOnStart) <= 0.) {
         return distToNext;
     }
 
@@ -1746,7 +1747,7 @@ RotoContextPrivate::evaluateStrokeDabs(const std::list<std::list<std::pair<Point
     bool pressureAffectsHardness = pressureHardnessKnob->getValueAtTime(time);
     double brushSizePixel = brushSize;
     if (mipmapLevel != 0) {
-        brushSizePixel = std::max( 1., brushSizePixel / (1 << mipmapLevel) );
+        brushSizePixel = std::max(1., brushSizePixel / (1 << mipmapLevel));
     }
 
     std::vector<std::pair<double, double>> opacityStops;
@@ -1765,41 +1766,40 @@ RotoContextPrivate::evaluateStrokeDabs(const std::list<std::list<std::pair<Point
         return spacing;
     };
 
-    for (std::list<std::list<std::pair<Point, double> > >::const_iterator strokeIt = strokes.begin(); strokeIt != strokes.end(); ++strokeIt) {
-        int firstPoint = (int)std::floor( (strokeIt->size() * writeOnStart) );
-        int endPoint = (int)std::ceil( (strokeIt->size() * writeOnEnd) );
-        assert( firstPoint >= 0 && firstPoint < (int)strokeIt->size() && endPoint > firstPoint && endPoint <= (int)strokeIt->size() );
+    for (std::list<std::list<std::pair<Point, double>>>::const_iterator strokeIt = strokes.begin(); strokeIt != strokes.end(); ++strokeIt) {
+        int firstPoint = (int)std::floor((strokeIt->size() * writeOnStart));
+        int endPoint = (int)std::ceil((strokeIt->size() * writeOnEnd));
+        assert(firstPoint >= 0 && firstPoint < (int)strokeIt->size() && endPoint > firstPoint && endPoint <= (int)strokeIt->size());
 
-
-        ///The visible portion of the paint's stroke with points adjusted to pixel coordinates
-        std::list<std::pair<Point, double> > visiblePortion;
-        std::list<std::pair<Point, double> >::const_iterator startingIt = strokeIt->begin();
-        std::list<std::pair<Point, double> >::const_iterator endingIt = strokeIt->begin();
+        /// The visible portion of the paint's stroke with points adjusted to pixel coordinates
+        std::list<std::pair<Point, double>> visiblePortion;
+        std::list<std::pair<Point, double>>::const_iterator startingIt = strokeIt->begin();
+        std::list<std::pair<Point, double>>::const_iterator endingIt = strokeIt->begin();
         std::advance(startingIt, firstPoint);
         std::advance(endingIt, endPoint);
-        for (std::list<std::pair<Point, double> >::const_iterator it = startingIt; it != endingIt; ++it) {
+        for (std::list<std::pair<Point, double>>::const_iterator it = startingIt; it != endingIt; ++it) {
             visiblePortion.push_back(*it);
         }
-        if ( visiblePortion.empty() ) {
+        if (visiblePortion.empty()) {
             return distToNext;
         }
 
-        std::list<std::pair<Point, double> >::iterator it = visiblePortion.begin();
+        std::list<std::pair<Point, double>>::iterator it = visiblePortion.begin();
 
         if (visiblePortion.size() == 1) {
             addDab(it->first, it->second);
             continue;
         }
 
-        std::list<std::pair<Point, double> >::iterator next = it;
+        std::list<std::pair<Point, double>>::iterator next = it;
         ++next;
 
-        while ( next != visiblePortion.end() ) {
-            //Render for each point a dot. Spacing is a percentage of brushSize:
-            //Spacing at 1 means no dot is overlapping another (so the spacing is in fact brushSize)
-            //Spacing at 0 we do not render the stroke
+        while (next != visiblePortion.end()) {
+            // Render for each point a dot. Spacing is a percentage of brushSize:
+            // Spacing at 1 means no dot is overlapping another (so the spacing is in fact brushSize)
+            // Spacing at 0 we do not render the stroke
 
-            double dist = std::sqrt( (next->first.x - it->first.x) * (next->first.x - it->first.x) +  (next->first.y - it->first.y) * (next->first.y - it->first.y) );
+            double dist = std::sqrt((next->first.x - it->first.x) * (next->first.x - it->first.x) + (next->first.y - it->first.y) * (next->first.y - it->first.y));
 
             // while the next point can be drawn on this segment, draw a point and advance
             while (distToNext <= dist) {
@@ -1834,17 +1834,108 @@ RotoContextPrivate::renderStroke(cairo_t* cr,
                                  double time,
                                  unsigned int mipmapLevel)
 {
-    assert(dotPatterns.size() == ROTO_PRESSURE_LEVELS);
-
-    StrokeDabs dabs;
-    distToNext = evaluateStrokeDabs(strokes, distToNext, stroke, alpha, time, mipmapLevel, &dabs);
-    if (dabs.dabs.empty()) {
+    if (strokes.empty()) {
         return distToNext;
     }
+
+    if (!stroke || !stroke->isActivated(time)) {
+        return distToNext;
+    }
+
+    assert(dotPatterns.size() == ROTO_PRESSURE_LEVELS);
+
+    KnobDoublePtr brushSizeKnob = stroke->getBrushSizeKnob();
+    double brushSize = brushSizeKnob->getValueAtTime(time);
+    KnobDoublePtr brushSpacingKnob = stroke->getBrushSpacingKnob();
+    double brushSpacing = brushSpacingKnob->getValueAtTime(time);
+    if (brushSpacing == 0.) {
+        return distToNext;
+    }
+
+    brushSpacing = std::max(brushSpacing, 0.05);
+
+    KnobDoublePtr brushHardnessKnob = stroke->getBrushHardnessKnob();
+    double brushHardness = brushHardnessKnob->getValueAtTime(time);
+    KnobDoublePtr visiblePortionKnob = stroke->getBrushVisiblePortionKnob();
+    double writeOnStart = visiblePortionKnob->getValueAtTime(time, 0);
+    double writeOnEnd = visiblePortionKnob->getValueAtTime(time, 1);
+    if ((writeOnEnd - writeOnStart) <= 0.) {
+        return distToNext;
+    }
+
+    KnobBoolPtr pressureOpacityKnob = stroke->getPressureOpacityKnob();
+    KnobBoolPtr pressureSizeKnob = stroke->getPressureSizeKnob();
+    KnobBoolPtr pressureHardnessKnob = stroke->getPressureHardnessKnob();
+    bool pressureAffectsOpacity = pressureOpacityKnob->getValueAtTime(time);
+    bool pressureAffectsSize = pressureSizeKnob->getValueAtTime(time);
+    bool pressureAffectsHardness = pressureHardnessKnob->getValueAtTime(time);
+    double brushSizePixel = brushSize;
+    if (mipmapLevel != 0) {
+        brushSizePixel = std::max(1., brushSizePixel / (1 << mipmapLevel));
+    }
     cairo_set_operator(cr, doBuildup ? CAIRO_OPERATOR_OVER : CAIRO_OPERATOR_LIGHTEN);
-    for (std::size_t i = 0; i < dabs.dabs.size(); ++i) {
-        const StrokeDab& dab = dabs.dabs[i];
-        renderDot(cr, &dotPatterns, dab.center, dab.internalRadius, dab.externalRadius, dab.pressure, doBuildup, dabs.stopLists[dab.stops], alpha);
+
+    for (std::list<std::list<std::pair<Point, double>>>::const_iterator strokeIt = strokes.begin(); strokeIt != strokes.end(); ++strokeIt) {
+        int firstPoint = (int)std::floor((strokeIt->size() * writeOnStart));
+        int endPoint = (int)std::ceil((strokeIt->size() * writeOnEnd));
+        assert(firstPoint >= 0 && firstPoint < (int)strokeIt->size() && endPoint > firstPoint && endPoint <= (int)strokeIt->size());
+
+        /// The visible portion of the paint's stroke with points adjusted to pixel coordinates
+        std::list<std::pair<Point, double>> visiblePortion;
+        std::list<std::pair<Point, double>>::const_iterator startingIt = strokeIt->begin();
+        std::list<std::pair<Point, double>>::const_iterator endingIt = strokeIt->begin();
+        std::advance(startingIt, firstPoint);
+        std::advance(endingIt, endPoint);
+        for (std::list<std::pair<Point, double>>::const_iterator it = startingIt; it != endingIt; ++it) {
+            visiblePortion.push_back(*it);
+        }
+        if (visiblePortion.empty()) {
+            return distToNext;
+        }
+
+        std::list<std::pair<Point, double>>::iterator it = visiblePortion.begin();
+
+        if (visiblePortion.size() == 1) {
+            double internalDotRadius, externalDotRadius, spacing;
+            std::vector<std::pair<double, double>> opacityStops;
+            getRenderDotParams(alpha, brushSizePixel, brushHardness, brushSpacing, it->second, pressureAffectsOpacity, pressureAffectsSize, pressureAffectsHardness, &internalDotRadius, &externalDotRadius, &spacing, &opacityStops);
+            renderDot(cr, &dotPatterns, it->first, internalDotRadius, externalDotRadius, it->second, doBuildup, opacityStops, alpha);
+            continue;
+        }
+
+        std::list<std::pair<Point, double>>::iterator next = it;
+        ++next;
+
+        while (next != visiblePortion.end()) {
+            // Render for each point a dot. Spacing is a percentage of brushSize:
+            // Spacing at 1 means no dot is overlapping another (so the spacing is in fact brushSize)
+            // Spacing at 0 we do not render the stroke
+
+            double dist = std::sqrt((next->first.x - it->first.x) * (next->first.x - it->first.x) + (next->first.y - it->first.y) * (next->first.y - it->first.y));
+
+            // while the next point can be drawn on this segment, draw a point and advance
+            while (distToNext <= dist) {
+                double a = dist == 0. ? 0. : distToNext / dist;
+                Point center = {
+                    it->first.x * (1 - a) + next->first.x * a,
+                    it->first.y * (1 - a) + next->first.y * a
+                };
+                double pressure = it->second * (1 - a) + next->second * a;
+
+                // draw the dot
+                double internalDotRadius, externalDotRadius, spacing;
+                std::vector<std::pair<double, double>> opacityStops;
+                getRenderDotParams(alpha, brushSizePixel, brushHardness, brushSpacing, pressure, pressureAffectsOpacity, pressureAffectsSize, pressureAffectsHardness, &internalDotRadius, &externalDotRadius, &spacing, &opacityStops);
+                renderDot(cr, &dotPatterns, center, internalDotRadius, externalDotRadius, pressure, doBuildup, opacityStops, alpha);
+
+                distToNext += spacing;
+            }
+
+            // go to the next segment
+            distToNext -= dist;
+            ++next;
+            ++it;
+        }
     }
 
     return distToNext;

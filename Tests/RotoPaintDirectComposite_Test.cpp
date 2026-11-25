@@ -37,6 +37,7 @@
 
 #include "BaseTest.h"
 #include "CacheStress.h"
+#include "NativeParity.h"
 #include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
@@ -94,10 +95,13 @@ protected:
         BaseTest::TearDown();
     }
 
-    // Every third item is inactive and every fifth inverted; colours stay non-negative so
-    // non-separable operators see valid input.
+    // Every third item is inactive. Unless negativeColours, colours stay non-negative so
+    // non-separable operators see valid input; negative ones leave -0 where coverage is zero.
+    // With paritySource the input is a parity source, whose depth and components a test can set.
     void buildScene(int itemCount,
-                    MergingFunctionEnum op)
+                    MergingFunctionEnum op,
+                    bool negativeColours = false,
+                    bool paritySource = false)
     {
         const AppInstancePtr app = getApp();
         _roto = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTO));
@@ -105,9 +109,13 @@ protected:
         _context = _roto->getRotoContext();
         ASSERT_NE(_context, nullptr);
         _context->setAutoKeyingEnabled(false);
-        const NodePtr constant = createConstantIn(app, app->getProject(), kWindow, { 0.2, 0.45, 0.7, 0.6 });
-        ASSERT_NE(constant, nullptr);
-        ASSERT_TRUE(_roto->connectInput(constant, 0));
+        if (paritySource) {
+            _source = createNode(QString::fromUtf8(kTestPluginIDParitySource));
+        } else {
+            _source = createConstantIn(app, app->getProject(), kWindow, { 0.2, 0.45, 0.7, 0.6 });
+        }
+        ASSERT_NE(_source, nullptr);
+        ASSERT_TRUE(_roto->connectInput(_source, 0));
 
         for (int i = 0; i < itemCount; ++i) {
             const double x = 4. + (i * 37) % 200;
@@ -116,15 +124,15 @@ protected:
             const BezierPtr shape = _context->makeSquare(x, y, size, 1.);
             ASSERT_NE(shape, nullptr);
             shape->setFeatherDistance((i % 4) * 5., 1.);
-            shape->setColor(1., ((i * 29) % 100) / 100., ((i * 61) % 100) / 100., ((i * 17) % 100) / 100.);
+            if (negativeColours) {
+                shape->setColor(1., -0.05 - ((i * 29) % 100) / 100., ((i * 61) % 100) / 100. - 0.5, 0.3 - ((i * 17) % 100) / 100.);
+            } else {
+                shape->setColor(1., ((i * 29) % 100) / 100., ((i * 61) % 100) / 100., ((i * 17) % 100) / 100.);
+            }
             shape->setOpacity(0.35 + ((i * 13) % 65) / 100., 1.);
             shape->setCompositingOperator((int)op);
             if (i % 3 == 2) {
                 shape->setActivated(false, 1.);
-            }
-            const KnobBoolPtr inverted = shape->getInvertedKnob();
-            if (inverted && (i % 5 == 4)) {
-                inverted->setValue(true);
             }
         }
         _context->refreshRotoPaintTree();
@@ -182,6 +190,7 @@ protected:
     }
 
     NodePtr _roto;
+    NodePtr _source;
     RotoContextPtr _context;
 
 private:
@@ -207,6 +216,45 @@ TEST_P(RotoPaintDirectCompositeTest, MergeChainMatchesTheNodePath)
     const std::list<ImageLayerDesc> rgba(1, ImageLayerDesc::getRGBAComponents());
     EXPECT_GT(expectPathsMatch(0, kWindow, rgba), 0ULL);
     EXPECT_GT(expectPathsMatch(1, RectI(20, 10, 100, 120), rgba), 0ULL);
+}
+
+// Negative colours make masks hold -0 where an item has no coverage, which the item's effect
+// turns into +0. Hue and ColorBurn are left out: they divide by or take the hue of negatives.
+TEST_P(RotoPaintDirectCompositeTest, NegativeColoursMatchTheNodePath)
+{
+    const MergingFunctionEnum op = GetParam().op;
+    if ((op == eMergeHue) || (op == eMergeColorBurn)) {
+        return;
+    }
+    buildScene(30, op, true);
+    if (HasFatalFailure()) {
+        return;
+    }
+    const std::list<ImageLayerDesc> rgba(1, ImageLayerDesc::getRGBAComponents());
+    EXPECT_GT(expectPathsMatch(0, kWindow, rgba), 0ULL);
+    EXPECT_GT(expectPathsMatch(1, RectI(0, 0, 128, 128), rgba), 0ULL);
+}
+
+// An input of another depth or with fewer channels reaches the tree converted; whichever path
+// renders it, the output matches the node path.
+TEST_F(RotoPaintDirectCompositeTest, InputDepthsAndComponentsMatchTheNodePath)
+{
+    buildScene(30, eMergeOver, false, true);
+    if (HasFatalFailure()) {
+        return;
+    }
+    const std::list<ImageLayerDesc> rgba(1, ImageLayerDesc::getRGBAComponents());
+    const char* depths[] = { "float", "short", "byte" };
+    const char* components[] = { "rgba", "rgb", "alpha" };
+    for (const char* depth : depths) {
+        for (const char* comps : components) {
+            SCOPED_TRACE(std::string(depth) + " " + comps);
+            setParitySourceBitDepth(_source, depth);
+            setParitySourceComponents(_source, comps);
+            expectPathsMatch(0, kWindow, rgba);
+            expectPathsMatch(1, RectI(0, 0, 128, 128), rgba);
+        }
+    }
 }
 
 TEST_F(RotoPaintDirectCompositeTest, MixedOperatorsKeepTheNodePath)

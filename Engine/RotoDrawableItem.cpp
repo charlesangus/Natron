@@ -756,12 +756,13 @@ RotoDrawableItem::isMaskFrameInvariant(U64 contentHash) const
 
 namespace {
 
-// A single keyframe holds its value at every frame, so only a second one makes a knob vary.
+// A single keyframe holds its value at every frame, so only a second one makes a knob vary. A
+// knob keeps one curve per dimension for every view, so view 0's count is every view's.
 bool
 knobVariesOverFrames(const KnobIPtr& knob)
 {
     for (int i = 0; i < knob->getDimension(); ++i) {
-        if ((knob->getKeyFramesCount(ViewIdx(0), i) > 1) || !knob->getExpression(i).empty()) {
+        if (knob->getKeyFramesCount(ViewIdx(0), i) > 1) {
             return true;
         }
     }
@@ -793,7 +794,6 @@ RotoDrawableItem::computeMaskFrameInvariant() const
         if (isBezier->hasTrackLinks()) {
             return false;
         }
-        // A single keyframe holds the same pose at every frame.
         const std::list<BezierCPPtr> points = isBezier->getControlPoints_mt_safe(false);
         for (std::list<BezierCPPtr>::const_iterator it = points.begin(); it != points.end(); ++it) {
             if ((*it)->getKeyframesCount(false) > 1) {

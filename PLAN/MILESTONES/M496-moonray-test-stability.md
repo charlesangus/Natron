@@ -38,7 +38,7 @@ Fix the product races in our code or the MoonRay fork (M325 - MoonRay Fork: char
 
 ## Phase 496.2: Fixes
 
-- [ ] M496.P2.T1 — Wait for the previous MoonRay render context before tearing down its arras client
+- [x] ~~M496.P2.T1 — Wait for the previous MoonRay render context before tearing down its arras client~~
   - files: MoonRay fork (`hdMoonray` render delegate/render pass teardown, `arras4_core` `Client.cc` as needed), `tools/ci/local/build-moonray.sh` pin
   - approach: consultant-confirmed design first (opus): find where hdMoonray starts the new context while the old one tears down asynchronously, and make teardown join the old context's arras client thread (or keep its socket buffers alive until that thread exits) before freeing them. Commit on the fork's `natron/...` branch, then move the pin and checksum in `build-moonray.sh`.
   - verify: the fork builds in the dev image job; `ctest -R USDRenderMoonRay` passes
@@ -70,3 +70,6 @@ Fix the product races in our code or the MoonRay fork (M325 - MoonRay Fork: char
 **Verification gate:** P3.T1 green on both schedulers; the dev image builds on the new MoonRay pin; full debug PR CI green.
 - 2026-11-24 — Two more ProgressiveRenderTest segfaults: PR #346 (M510) task-graph leg run 45154296436, and m554-gate4 legacy leg; both passed on the in-job rerun.
 - 2026-11-24 — USDRenderStormTest failed once more on m559-gate7 (task-graph leg), passing on rerun; m106-gate5 and m559-gate5 saw the same.
+
+## Decisions
+- 2026-11-24 (PM, opus consultant) — P2.T1 struck: the arras client join-before-free fix is already pinned (Dockerfile:70 NATRON_MOONRAY_COMMIT 9cc77b5, arras4_core d673d57, PR #301, 2026-11-17; Client::shutdownConnection joins mThread/mSendThread before deleting endpoints). Today's USDRenderMoonRayTest 300 s timeouts are hangs, not crashes. Hypothesis to confirm with stacks: endUpdate holds ArrasRenderer::mMutex while reconnect joins the delivery thread, which waits on mMutex in messageHandler. rep2 repeats USDRenderMoonRayTest and ProgressiveRenderTest ×20 with the watchdog to capture stacks before P2.T2/P2.T3.

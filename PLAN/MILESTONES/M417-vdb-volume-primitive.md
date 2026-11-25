@@ -24,7 +24,7 @@ Member of F22 - Native VDB: branches off and merges into `feature/f22-native-vdb
 **Edge cases:**
 - Session cache growth: files are content-addressed and pruned with the session cache's existing eviction; never capped by size (memory: no hand-holding size caps).
 - Grids with unsupported value types for a delegate: written anyway; the delegate's own warning stands.
-- Two VDB prims with the same name: both exported, the second's USD field name suffixed, with an info message.
+- Two VDB prims with the same name: the second starts the next Volume prim (`volume_1`), with an info message (decision 2026-11-25).
 - Cycles drawing nothing for unbound volumes until M345 - VDB Rendering Fixes lands: known; Storm is the reference for this milestone's tests.
 
 **Assumptions:**

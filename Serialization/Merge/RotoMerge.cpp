@@ -30,6 +30,7 @@ NATRON_NAMESPACE_ENTER
 namespace Serialization {
 
 using MergeDetail::mergedOrder;
+using MergeDetail::namesBefore;
 using MergeDetail::Pick;
 using MergeDetail::pick;
 using MergeDetail::takeChanged;
@@ -186,16 +187,49 @@ namespace {
         return true;
     }
 
+    std::optional<RotoContextSerialization>
+    itemAlone(const RotoLayerChildSerialization* child)
+    {
+        if (!child) {
+            return std::nullopt;
+        }
+        RotoContextSerialization context;
+        context.baseLayer.children.push_back(*child);
+
+        return context;
+    }
+
+    std::optional<RotoContextSerialization>
+    splineWarpAlone(const RotoContextSerialization* roto)
+    {
+        if (!roto) {
+            return std::nullopt;
+        }
+        RotoContextSerialization context;
+        context.hasSplineWarp = roto->hasSplineWarp;
+        if (roto->hasSplineWarp) {
+            context.splineWarp = roto->splineWarp;
+        }
+
+        return context;
+    }
+
     void
     addItemConflict(MergeConflictKind kind,
                     const std::string& item,
                     MergeSide side,
+                    std::optional<RotoContextSerialization> base,
+                    std::optional<RotoContextSerialization> mine,
+                    std::optional<RotoContextSerialization> theirs,
                     std::vector<MergeConflict>* conflicts)
     {
         MergeConflict conflict;
         conflict.kind = kind;
         conflict.item = item;
         conflict.side = side;
+        conflict.base.roto = std::move(base);
+        conflict.mine.roto = std::move(mine);
+        conflict.theirs.roto = std::move(theirs);
         conflicts->push_back(conflict);
     }
 
@@ -218,18 +252,31 @@ namespace {
                                       const MergeHandlerRegistry& handlers,
                                       std::vector<MergeConflict>* conflicts);
 
+    struct ItemSides {
+        const RotoLayerChildSerialization* base;
+        const RotoLayerChildSerialization& mine;
+        const RotoLayerChildSerialization& theirs;
+    };
+
+    void
+    addShapeConflict(const ItemSides& sides,
+                     std::vector<MergeConflict>* conflicts)
+    {
+        addItemConflict(MergeConflictKind::eRotoShape, itemOf(sides.mine).name, MergeSide::eMine, itemAlone(sides.base), itemAlone(&sides.mine), itemAlone(&sides.theirs), conflicts);
+    }
+
     template <typename Geometry>
     void
     mergeGeometry(const std::optional<Geometry>& base,
                   const Geometry& mine,
                   const Geometry& theirs,
-                  const std::string& name,
+                  const ItemSides& sides,
                   Geometry* merged,
                   std::vector<MergeConflict>* conflicts)
     {
         const Pick choice = pick(base, std::optional<Geometry>(mine), std::optional<Geometry>(theirs));
         if (choice == Pick::eConflict) {
-            addItemConflict(MergeConflictKind::eRotoShape, name, MergeSide::eMine, conflicts);
+            addShapeConflict(sides, conflicts);
         }
         *merged = (choice == Pick::eTheirs) ? theirs : mine;
     }
@@ -242,8 +289,9 @@ namespace {
                std::vector<MergeConflict>* conflicts)
     {
         const std::string& name = itemOf(mine).name;
+        const ItemSides sides { base, mine, theirs };
         if (mine.type != theirs.type) {
-            addItemConflict(MergeConflictKind::eRotoShape, name, MergeSide::eMine, conflicts);
+            addShapeConflict(sides, conflicts);
 
             return mine;
         }
@@ -275,11 +323,11 @@ namespace {
 
         if (mine.type == eRotoLayerChildTypeBezier) {
             BezierGeometry geometry;
-            mergeGeometry(base ? std::optional<BezierGeometry>(geometryOf(base->bezier)) : std::nullopt, geometryOf(mine.bezier), geometryOf(theirs.bezier), name, &geometry, conflicts);
+            mergeGeometry(base ? std::optional<BezierGeometry>(geometryOf(base->bezier)) : std::nullopt, geometryOf(mine.bezier), geometryOf(theirs.bezier), sides, &geometry, conflicts);
             std::tie(result.bezier.controlPoints, result.bezier.featherPoints, result.bezier.closed, result.bezier.isOpenBezier) = geometry;
         } else {
             StrokeGeometry geometry;
-            mergeGeometry(base ? std::optional<StrokeGeometry>(geometryOf(base->stroke)) : std::nullopt, geometryOf(mine.stroke), geometryOf(theirs.stroke), name, &geometry, conflicts);
+            mergeGeometry(base ? std::optional<StrokeGeometry>(geometryOf(base->stroke)) : std::nullopt, geometryOf(mine.stroke), geometryOf(theirs.stroke), sides, &geometry, conflicts);
             std::tie(result.stroke.brushType, result.stroke.strokes) = geometry;
         }
 
@@ -317,7 +365,10 @@ namespace {
                 if (!b) {
                     kept.emplace(name, *present);
                 } else if (!sameChild(*b, *present)) {
-                    addItemConflict(MergeConflictKind::eDeleteModify, name, m ? MergeSide::eTheirs : MergeSide::eMine, conflicts);
+                    addItemConflict(MergeConflictKind::eDeleteModify, name, m ? MergeSide::eTheirs : MergeSide::eMine, itemAlone(b), itemAlone(m), itemAlone(t), conflicts);
+                    conflicts->back().base.itemsBefore = namesBefore(childNames(*base), name);
+                    conflicts->back().mine.itemsBefore = namesBefore(childNames(mine), name);
+                    conflicts->back().theirs.itemsBefore = namesBefore(childNames(theirs), name);
                     kept.emplace(name, *present);
                 }
             }
@@ -365,7 +416,7 @@ mergeRotoContexts(const RotoContextSerialization* base,
     const std::optional<std::tuple<bool, SplineWarpSerialization>> baseWarp = base ? std::optional<std::tuple<bool, SplineWarpSerialization>>(splineWarpOf(*base)) : std::nullopt;
     const Pick warp = pick(baseWarp, std::optional<std::tuple<bool, SplineWarpSerialization>>(splineWarpOf(mine)), std::optional<std::tuple<bool, SplineWarpSerialization>>(splineWarpOf(theirs)));
     if (warp == Pick::eConflict) {
-        addItemConflict(MergeConflictKind::eRotoShape, std::string(), MergeSide::eMine, conflicts);
+        addItemConflict(MergeConflictKind::eRotoShape, std::string(), MergeSide::eMine, splineWarpAlone(base), splineWarpAlone(&mine), splineWarpAlone(&theirs), conflicts);
     } else if (warp == Pick::eTheirs) {
         result.hasSplineWarp = theirs.hasSplineWarp;
         result.splineWarp = theirs.splineWarp;

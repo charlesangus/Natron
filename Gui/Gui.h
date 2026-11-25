@@ -55,6 +55,10 @@ CLANG_DIAG_ON(uninitialized)
 
 NATRON_NAMESPACE_ENTER
 
+namespace ProjectMerge {
+struct ChangeSummary;
+}
+
 struct GuiPrivate;
 
 class Gui
@@ -354,6 +358,8 @@ public:
     ProgressPanel* getProgressPanel() const;
 
     SceneGraphPanel* getSceneGraphPanel() const;
+    MergeConflictPanel* getMergeConflictPanel() const;
+    NodeDiffPanel* getNodeDiffPanel() const;
     QVBoxLayout* getPropertiesLayout() const;
     PropertiesBinWrapper* getPropertiesBin() const;
     const RegisteredTabs & getRegisteredTabs() const;
@@ -393,6 +399,15 @@ public:
 
     PanelWidget* ensureProgressPanelVisible();
     void ensureScriptEditorVisible();
+
+    /**
+     * @brief Makes the Merge Conflicts panel the current tab of its pane, docking it first, when it
+     * is in none, in a pane holding neither the node graph nor the properties, which it is used with.
+     **/
+    void ensureMergeConflictPanelVisible();
+
+    // Like ensureMergeConflictPanelVisible(), for the Node Diff panel.
+    void ensureNodeDiffPanelVisible();
 
     /*Useful function that saves on disk the image in png format.
        The name of the image will be the hash key of the image.*/
@@ -560,6 +575,9 @@ Q_SIGNALS:
 
     void s_showLogOnMainThread();
 
+    // Emitted when getGraphComparison() changes, or goes away.
+    void graphComparisonChanged();
+
 public Q_SLOTS:
 
     void onShowLogOnMainThreadReceived();
@@ -584,6 +602,16 @@ public Q_SLOTS:
     bool saveProjectAs();
     void exportProjectAsGroup();
     void saveAndIncrVersion();
+
+    /**
+     * @brief Asks for a template file and imports it into the graph last worked in.
+     **/
+    void importTemplate();
+
+    /**
+     * @brief Asks for a project file and compares the open project with it.
+     **/
+    void compareWithFile();
 
     void autoSave();
 
@@ -699,10 +727,36 @@ public Q_SLOTS:
 #ifdef Q_OS_DARWIN
     void dockClicked();
 #endif
-    
+
+    void onUpdateFromTemplateMenuAboutToShow();
+    void onUpdateFromTemplateActionTriggered();
+
+public:
+    /**
+     * @brief Merges the current version of the template import templateKey into the project, as one
+     * undo step. Asks for the template file when the one the import recorded is gone. Returns the
+     * number of conflicts the update raised, or -1 when it was cancelled or failed, which a dialog
+     * reports.
+     **/
+    int updateFromTemplate(const std::string& templateKey);
+
+    /**
+     * @brief Compares the nodes of the template import templateKey with its stored base.
+     **/
+    void compareWithTemplateBase(const std::string& templateKey);
+
+    /**
+     * @brief The comparison the node graph shows, or null for none. Main thread only.
+     **/
+    const ProjectMerge::ChangeSummary* getGraphComparison() const;
+    void setGraphComparison(const ProjectMerge::ChangeSummary& summary);
+    void clearGraphComparison();
+
 private:
 
     void setCurrentPanelFocus(PanelWidget* widget);
+
+    void ensureSidePanelVisible(PanelWidget* panel);
 
     void noteViewerFocused(ViewerTab* viewer);
 

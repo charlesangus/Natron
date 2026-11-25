@@ -55,6 +55,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/GuiMacros.h"
+#include "Gui/NodeGraphDiffOverlay.h"
 #include "Gui/NodeGraphLowDetailLayer.h"
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
@@ -427,6 +428,9 @@ NodeGraph::noteNodeGeometryChanged(NodeGui* node)
     NodeGraphLowDetailLayer::applyDetailLevel(node, true, _imp->lowDetail);
     if (_imp->_gpuRegions) {
         _imp->_gpuRegions->noteNodeChanged(node);
+    }
+    if (_imp->_diffOverlay) {
+        _imp->_diffOverlay->noteNodeChanged(node);
     }
     repaintLowDetailItem(node);
     _imp->nodesBoundsPending.insert(node);

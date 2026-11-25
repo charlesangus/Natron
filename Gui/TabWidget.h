@@ -312,6 +312,10 @@ public Q_SLOTS:
 
     void moveSceneGraphHere();
 
+    void moveMergeConflictsHere();
+
+    void moveNodeDiffHere();
+
     void onSplitHorizontally()
     {
         splitHorizontally();

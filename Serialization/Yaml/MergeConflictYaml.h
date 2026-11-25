@@ -43,7 +43,10 @@ inline constexpr std::string_view kMergeConflictsMember = "merge/conflicts.yaml"
 
 /**
  * @brief Writes conflicts in their order. A side's knob is written as project.yaml writes it,
- * with its type and dimension count beside it; a side's key as a one-key curve.
+ * with its type and dimension count beside it; a side's key as a one-key curve, its other keys
+ * as a curve; its connections as node, input and source IDs; its knobs as a list, each with its
+ * name, type and dimension count; its roto and tracker data as project.yaml writes them, with
+ * every blob inline. A handler option is written with its name, label and the same state keys.
  **/
 std::string encodeMergeConflictsYaml(const std::vector<MergeConflict>& conflicts);
 

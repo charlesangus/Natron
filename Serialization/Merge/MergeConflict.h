@@ -22,6 +22,7 @@
 
 #include "Global/Macros.h"
 
+#include <list>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -29,6 +30,9 @@
 
 #include "Serialization/CurveSerialization.h"
 #include "Serialization/KnobSerialization.h"
+#include "Serialization/NodeSerialization.h"
+#include "Serialization/RotoSerialization.h"
+#include "Serialization/TrackerSerialization.h"
 
 NATRON_NAMESPACE_ENTER
 namespace Serialization {
@@ -107,16 +111,79 @@ mergeConflictKindFromName(std::string_view name)
 }
 
 /**
- * @brief What one side holds where a value or curve-key conflict is.
+ * @brief One input connection of the merged snapshot, by merged node IDs.
+ **/
+struct MergeConflictConnection {
+    std::string nodeId;
+    std::string input;
+    // Empty for an unconnected input.
+    std::string sourceId;
+
+    bool operator==(const MergeConflictConnection&) const = default;
+};
+
+/**
+ * @brief What one side holds where a conflict is, in the merged snapshot's node IDs: the state
+ * that choosing the side puts back. Each kind fills the fields that it names.
  **/
 struct MergeConflictValue {
-    // The knob, absent when the side leaves it at its default or has no such knob.
+    // eValue, and eDeleteModify of a user knob: the knob, absent when the side leaves it at its
+    // default or has no such knob.
     std::optional<KnobSerialization> knob;
     // eCurveKey: the key at the conflict's time, absent when the side has no key there.
     std::optional<KeyFrameSerialization> key;
-
-    bool operator==(const MergeConflictValue&) const = default;
+    // eCurveKey: keys at other times that the choice adds beside key.
+    std::vector<KeyFrameSerialization> otherKeys;
+    // eInput, eStructuralInsert and eReparent: the connections that give the graph this side's
+    // wiring. Empty when it cannot be put back, as when the side's source is not in the merged
+    // snapshot.
+    std::vector<MergeConflictConnection> connections;
+    // eStructuralInsert: the nodes inserted on the link that this side does not have. Choosing
+    // the side deletes them, except those that something outside them still reads from.
+    std::vector<std::string> removedNodes;
+    // eReparent: the group holding the node, empty for the top level; unset when that group is
+    // not in the merged snapshot.
+    std::optional<std::string> parent;
+    // eDeleteModify of a node: the base's knobs. eAdopted: each side's state of the defaulted
+    // knobs. A knob left out is at its default; unset when the side has nothing to put back.
+    std::optional<std::list<KnobSerialization>> knobs;
+    // eDeleteModify of a node, on the base side: the base node by itself, under its merged ID and
+    // script name, without its inputs or children. Its knobs are in knobs, and its inputs and group
+    // in connections and parent. Null when the side has nothing to put back.
+    NodeSerializationPtr node;
+    // eRotoShape and eDeleteModify of a roto item: the item alone in the base layer, with its
+    // parentLayerName naming the layer it is in; for an empty item name, the spline-warp data.
+    // Unset when the side has no such item.
+    std::optional<RotoContextSerialization> roto;
+    // eDeleteModify of a track: the track alone. Unset when the side has no such track.
+    std::optional<TrackerContextSerialization> tracker;
+    // eDeleteModify of a roto item or track: the items of its layer, or the tracks, that come
+    // before it on this side, nearest last, so that it goes back where it was.
+    std::vector<std::string> itemsBefore;
 };
+
+// Roto and tracker data compare by state, as the merge compares them.
+bool operator==(const MergeConflictValue& a, const MergeConflictValue& b);
+
+/**
+ * @brief An extra choice a handler offers for a conflict beside Mine, Theirs and Base, such as
+ * keeping both keys of a curve-key conflict. Choosing it puts its state back as choosing a side
+ * puts back that side's.
+ **/
+struct MergeConflictOption {
+    // Stable across saves, e.g. "keep-both-keys".
+    std::string name;
+    std::string label;
+    MergeConflictValue state;
+
+    bool operator==(const MergeConflictOption&) const = default;
+};
+
+inline constexpr std::string_view kMergeOptionKeepBothKeys = "keep-both-keys";
+
+// The dimension of a conflict on a knob every side saved folded, as one dimension standing for
+// all of them: its side's single dimension goes to every dimension.
+inline constexpr int kMergeConflictAllDimensions = -2;
 
 /**
  * @brief One place where the merge chose for the user. Every conflict is already resolved in the
@@ -131,7 +198,8 @@ struct MergeConflict {
     // That node in the merged snapshot, or empty when the merge left it out.
     std::string nodeId;
     std::string knob;
-    // -1 for the whole knob. For a parametric knob's curve-key conflict, the curve's index.
+    // -1 for the whole knob, kMergeConflictAllDimensions for every dimension of a folded knob. For
+    // a parametric knob's curve-key conflict, the curve's index.
     int dimension = -1;
     // eCurveKey: the key's time.
     std::optional<double> time;
@@ -147,6 +215,7 @@ struct MergeConflict {
     MergeConflictValue base;
     MergeConflictValue mine;
     MergeConflictValue theirs;
+    std::vector<MergeConflictOption> options;
 
     bool operator==(const MergeConflict&) const = default;
 };

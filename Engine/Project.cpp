@@ -658,10 +658,8 @@ Project::loadProjectInternal(const QString& path,
         addLoadWarning(QString::fromUtf8(warning.c_str()));
     }
     const std::size_t conflictCount = projectSerialization.mergeConflicts.size();
-    if (conflictCount == 1) {
-        addLoadWarning(tr("1 unresolved merge conflict"));
-    } else if (conflictCount > 1) {
-        addLoadWarning(tr("%1 unresolved merge conflicts").arg(conflictCount));
+    if (conflictCount > 0) {
+        addLoadWarning(mergeConflictWarning(conflictCount));
     }
 
     const Serialization::BundleManifest& manifest = bundle->manifest();
@@ -1447,11 +1445,20 @@ Project::setTemplateImport(const Serialization::TemplateImportSerialization& ent
     for (Serialization::TemplateImportSerialization& existing : _imp->templateImports) {
         if (existing.key == entry.key) {
             existing = entry;
+            Q_EMIT templateImportsChanged();
 
             return;
         }
     }
     _imp->templateImports.push_back(entry);
+    Q_EMIT templateImportsChanged();
+}
+
+void
+Project::setTemplateImports(const std::list<Serialization::TemplateImportSerialization>& imports)
+{
+    _imp->templateImports = imports;
+    Q_EMIT templateImportsChanged();
 }
 
 const std::vector<Serialization::MergeConflict>&
@@ -1464,12 +1471,26 @@ void
 Project::setMergeConflicts(const std::vector<Serialization::MergeConflict>& conflicts)
 {
     _imp->mergeConflicts = conflicts;
+    Q_EMIT mergeConflictsChanged();
+}
+
+QString
+Project::mergeConflictWarning(std::size_t count)
+{
+    return (count == 1) ? tr("1 unresolved merge conflict") : tr("%1 unresolved merge conflicts").arg(count);
 }
 
 void
 Project::reportLoadWarnings()
 {
-    const QStringList warnings = getLoadWarnings();
+    QStringList warnings = getLoadWarnings();
+
+    // The Merge Conflicts panel lists the conflicts and opens by itself, so a dialog on top would
+    // only be one more thing to dismiss; the error log still holds the line.
+    const std::size_t conflictCount = getMergeConflicts().size();
+    if (conflictCount > 0) {
+        warnings.removeAll(mergeConflictWarning(conflictCount));
+    }
 
     if (warnings.isEmpty()) {
         return;
@@ -3770,6 +3791,8 @@ Project::doResetEnd(bool aboutToQuit)
     _imp->projectId = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
     _imp->templateImports.clear();
     _imp->mergeConflicts.clear();
+    Q_EMIT templateImportsChanged();
+    Q_EMIT mergeConflictsChanged();
 
     QString lockFilePath = getLockAbsoluteFilePath();
     QString projectPath = QString::fromUtf8( _imp->getProjectPath().c_str() );

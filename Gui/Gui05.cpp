@@ -124,6 +124,8 @@ Gui::setupUi()
     _imp->createScriptEditorGui();
     _imp->createProgressPanelGui();
     _imp->createSceneGraphPanelGui();
+    _imp->createMergeConflictPanelGui();
+    _imp->createNodeDiffPanelGui();
     ///Must be absolutely called once _nodeGraphArea has been initialized.
     _imp->createPropertiesBinGui();
 

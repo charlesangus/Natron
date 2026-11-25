@@ -438,12 +438,19 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
         groupEdited = isGroup->getNode()->hasPyPlugBeenEdited();
     }
 
+    Qt::KeyboardModifiers modifiers = e->modifiers();
+    Qt::Key key = (Qt::Key)e->key();
+
+    // Escape first cancels a gesture; only an idle one clears the comparison, which a locked
+    // group's graph shows too.
+    if ((key == Qt::Key_Escape) && (_imp->_evtState == eEventStateNone) && getGui() && getGui()->getGraphComparison()) {
+        getGui()->clearGraphComparison();
+    }
+
     if (!groupEdited) {
         return;
     }
 
-    Qt::KeyboardModifiers modifiers = e->modifiers();
-    Qt::Key key = (Qt::Key)e->key();
     // Shift or Alt can turn a digit into another symbol, depending on the keyboard layout.
     const Qt::Key digitKey = (Qt::Key)Gui::handleNativeKeys(e->key(), e->nativeScanCode(), e->nativeVirtualKey());
     int viewerInput = -1;

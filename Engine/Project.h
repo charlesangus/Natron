@@ -208,6 +208,7 @@ public:
      * it moves the base to the new template version. Main thread only.
      **/
     void setTemplateImport(const Serialization::TemplateImportSerialization& entry);
+    void setTemplateImports(const std::list<Serialization::TemplateImportSerialization>& imports);
 
     /**
      * @brief The conflicts the last update merge left unresolved, saved with the project until
@@ -873,6 +874,13 @@ Q_SIGNALS:
     // the config was loaded again or a file default was edited.
     void fileColorSpacesChanged();
 
+    // Emitted on the main thread when the list getMergeConflicts() returns may have changed,
+    // including when a project is loaded or closed.
+    void mergeConflictsChanged();
+
+    // Emitted on the main thread when the list getTemplateImports() returns may have changed.
+    void templateImportsChanged();
+
 private:
     U64 computeContentDigestWithoutFileStamps(const std::shared_ptr<const std::vector<LayerRegistryEntry>>& layers,
                                               const std::string& ocioSource,
@@ -916,6 +924,8 @@ private:
                              bool isAutoSave, bool isUntitledAutosave, bool* mustSave);
 
     QString saveProjectInternal(const QString & path, const QString & name, bool autosave, bool updateProjectProperties);
+
+    static QString mergeConflictWarning(std::size_t count);
 
     void reportLoadWarnings();
 

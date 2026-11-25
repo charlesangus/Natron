@@ -60,11 +60,14 @@
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h" // appPTR
 #include "Gui/GuiPrivate.h"
+#include "Gui/MergeConflictPanel.h"
+#include "Gui/NodeDiffPanel.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
 #include "Gui/ProgressPanel.h"
 #include "Gui/ProjectGui.h"
+#include "Gui/PropertiesBinWrapper.h"
 #include "Gui/RenderDialog.h"
 #include "Gui/RenderStatsDialog.h"
 #include "Gui/ScriptEditor.h"
@@ -546,6 +549,18 @@ Gui::getSceneGraphPanel() const
     return _imp->_sceneGraphPanel;
 }
 
+MergeConflictPanel*
+Gui::getMergeConflictPanel() const
+{
+    return _imp->_mergeConflictPanel;
+}
+
+NodeDiffPanel*
+Gui::getNodeDiffPanel() const
+{
+    return _imp->_nodeDiffPanel;
+}
+
 PropertiesBinWrapper*
 Gui::getPropertiesBin() const
 {
@@ -756,6 +771,52 @@ Gui::ensureScriptEditorVisible()
         assert(pane);
         pane->moveScriptEditorHere();
     }
+}
+
+void
+Gui::ensureMergeConflictPanelVisible()
+{
+    ensureSidePanelVisible(_imp->_mergeConflictPanel);
+}
+
+void
+Gui::ensureNodeDiffPanelVisible()
+{
+    ensureSidePanelVisible(_imp->_nodeDiffPanel);
+}
+
+void
+Gui::ensureSidePanelVisible(PanelWidget* panel)
+{
+    if (!panel) {
+        return;
+    }
+    if (TabWidget* pane = panel->getParentPane()) {
+        pane->setCurrentWidget(panel);
+
+        return;
+    }
+    std::list<TabWidget*> tabs;
+    {
+        QMutexLocker k(&_imp->_panesMutex);
+        tabs = _imp->_panes;
+    }
+    if (tabs.empty()) {
+        return;
+    }
+    TabWidget* graphPane = _imp->_nodeGraphArea ? _imp->_nodeGraphArea->getParentPane() : 0;
+    TabWidget* propertiesPane = _imp->_propertiesBin ? _imp->_propertiesBin->getParentPane() : 0;
+    TabWidget* target = 0;
+    for (TabWidget* pane : tabs) {
+        if ((pane != graphPane) && (pane != propertiesPane)) {
+            target = pane;
+            break;
+        }
+    }
+    if (!target) {
+        target = propertiesPane ? propertiesPane : tabs.front();
+    }
+    TabWidget::moveTab(panel, panel, target);
 }
 
 PanelWidget*

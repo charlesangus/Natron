@@ -114,6 +114,16 @@ namespace MergeDetail {
         return result;
     }
 
+    // The names before name in order, nearest last; empty when name is first or absent.
+    inline std::vector<std::string>
+    namesBefore(const std::vector<std::string>& order,
+                const std::string& name)
+    {
+        const std::vector<std::string>::const_iterator found = std::find(order.begin(), order.end(), name);
+
+        return (found == order.end()) ? std::vector<std::string>() : std::vector<std::string>(order.begin(), found);
+    }
+
     bool sameRotoContexts(const RotoContextSerialization& a,
                           const RotoContextSerialization& b);
 

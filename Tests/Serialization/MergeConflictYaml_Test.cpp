@@ -26,9 +26,11 @@
 #include "Global/Macros.h"
 
 #include <list>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -80,6 +82,83 @@ key(double time,
     return result;
 }
 
+// A plugin knob as the YAML carries it: no default, which the live node supplies on load. Roto
+// items and tracks store knobs untyped, so their values here are not whole numbers, which would
+// read back as ints.
+Serialization::KnobSerialization
+doubleKnob(const std::string& name,
+           double value)
+{
+    Serialization::KnobSerialization knob;
+    knob.name = name;
+    knob.typeName = "Double";
+    knob.dimension = 1;
+    knob.dimensions.resize(1);
+    knob.dimensions[0].value = Serialization::KnobValueSerialization(value);
+
+    return knob;
+}
+
+// A context holding one square shape, as a roto conflict records an item.
+Serialization::RotoContextSerialization
+shapeAlone(const std::string& name,
+           double x,
+           double opacity)
+{
+    Serialization::RotoLayerChildSerialization child;
+    child.type = Serialization::eRotoLayerChildTypeBezier;
+    child.bezier.name = name;
+    child.bezier.label = name;
+    child.bezier.activated = true;
+    child.bezier.closed = true;
+    for (const std::pair<double, double>& point : std::vector<std::pair<double, double>>({ { x, 0. }, { 10., 0. }, { 10., 10. }, { 0., 10. } })) {
+        Serialization::BezierCPSerialization cp;
+        cp.x = point.first;
+        cp.y = point.second;
+        child.bezier.controlPoints.push_back(cp);
+        child.bezier.featherPoints.push_back(cp);
+    }
+    child.bezier.knobs.push_back(doubleKnob("opacity", opacity));
+    Serialization::RotoContextSerialization context;
+    context.baseLayer.name = "Layer1";
+    context.baseLayer.children.push_back(child);
+
+    return context;
+}
+
+Serialization::TrackerContextSerialization
+trackAlone(const std::string& name,
+           double centre)
+{
+    Serialization::TrackSerialization track;
+    track.scriptName = name;
+    track.label = name;
+    track.userKeys = { 1, 5 };
+    Serialization::KnobSerialization knob = doubleKnob("centerPoint", centre);
+    knob.dimensions[0].value.reset();
+    Serialization::CurveSerialization curve;
+    curve.keyframes.push_back(key(1., centre, 1));
+    knob.dimensions[0].curve = curve;
+    track.knobs.push_back(knob);
+    Serialization::TrackerContextSerialization context;
+    context.tracks.push_back(track);
+
+    return context;
+}
+
+Serialization::MergeConflictConnection
+connection(const std::string& node,
+           const std::string& input,
+           const std::string& source)
+{
+    Serialization::MergeConflictConnection result;
+    result.nodeId = node;
+    result.input = input;
+    result.sourceId = source;
+
+    return result;
+}
+
 std::vector<Serialization::MergeConflict>
 everyKind()
 {
@@ -99,6 +178,13 @@ everyKind()
     value.mine.knob = colorKnob("white: [1, 1.25, 1, 1]\n");
     conflicts.push_back(value);
 
+    MergeConflict folded = value;
+    folded.knob = "black";
+    folded.dimension = Serialization::kMergeConflictAllDimensions;
+    folded.base.knob = colorKnob("black: 0.1\n");
+    folded.mine.knob = colorKnob("black: 0.25\n");
+    conflicts.push_back(folded);
+
     MergeConflict curveKey;
     curveKey.kind = MergeConflictKind::eCurveKey;
     curveKey.templateKey = "grade_tpl";
@@ -113,6 +199,12 @@ everyKind()
     broken.rightDerivative = 0.75;
     curveKey.mine.key = broken;
     curveKey.theirs.key = key(10.5, 1.8, 1);
+    Serialization::MergeConflictOption keepBoth;
+    keepBoth.name = std::string(Serialization::kMergeOptionKeepBothKeys);
+    keepBoth.label = "Keep Both Keys";
+    keepBoth.state.key = broken;
+    keepBoth.state.otherKeys = { key(11.5, 1.8, 1) };
+    curveKey.options.push_back(keepBoth);
     conflicts.push_back(curveKey);
 
     MergeConflict shape;
@@ -121,13 +213,62 @@ everyKind()
     shape.baseNodeId = "base-roto";
     shape.nodeId = "roto";
     shape.item = "Garbage";
+    shape.base.roto = shapeAlone("Garbage", 0., 0.75);
+    shape.mine.roto = shapeAlone("Garbage", 5., 0.75);
+    shape.theirs.roto = shapeAlone("Garbage", 0., 0.5);
     conflicts.push_back(shape);
+
+    MergeConflict deletedShape;
+    deletedShape.kind = MergeConflictKind::eDeleteModify;
+    deletedShape.templateKey = "roto_tpl";
+    deletedShape.baseNodeId = "base-roto";
+    deletedShape.nodeId = "roto";
+    deletedShape.item = "Core";
+    deletedShape.side = MergeSide::eMine;
+    deletedShape.base.roto = shapeAlone("Core", 0., 0.75);
+    deletedShape.theirs.roto = shapeAlone("Core", 0., 0.5);
+    conflicts.push_back(deletedShape);
+
+    MergeConflict deletedTrack;
+    deletedTrack.kind = MergeConflictKind::eDeleteModify;
+    deletedTrack.templateKey = "track_tpl";
+    deletedTrack.baseNodeId = "base-tracker";
+    deletedTrack.nodeId = "tracker";
+    deletedTrack.item = "track1";
+    deletedTrack.side = MergeSide::eTheirs;
+    deletedTrack.base.tracker = trackAlone("track1", 0.);
+    deletedTrack.mine.tracker = trackAlone("track1", 4.);
+    deletedTrack.base.itemsBefore = { "track0", "trackA" };
+    conflicts.push_back(deletedTrack);
+
+    MergeConflict deletedKnob;
+    deletedKnob.kind = MergeConflictKind::eDeleteModify;
+    deletedKnob.templateKey = "grade_tpl";
+    deletedKnob.baseNodeId = "base-grade";
+    deletedKnob.nodeId = "grade";
+    deletedKnob.knob = "boost";
+    deletedKnob.side = MergeSide::eMine;
+    Serialization::KnobSerialization boost = doubleKnob("boost", 2.);
+    boost.isUserKnob = true;
+    boost.dimensions[0].defaultValue = Serialization::KnobValueSerialization(1.);
+    deletedKnob.base.knob = boost;
+    boost.dimensions[0].value = Serialization::KnobValueSerialization(3.);
+    deletedKnob.theirs.knob = boost;
+    conflicts.push_back(deletedKnob);
 
     MergeConflict deleted;
     deleted.kind = MergeConflictKind::eDeleteModify;
     deleted.templateKey = "grade_tpl";
     deleted.baseNodeId = "base-blur";
     deleted.side = MergeSide::eTheirs;
+    deleted.base.knobs = std::list<Serialization::KnobSerialization>({ doubleKnob("size", 2.) });
+    deleted.base.node = std::make_shared<Serialization::NodeSerialization>();
+    deleted.base.node->id = "blur";
+    deleted.base.node->scriptName = "Blur1";
+    deleted.base.node->pluginID = "net.sf.cimg.CImgBlur";
+    deleted.base.node->label = "Soft";
+    deleted.base.parent = std::string();
+    deleted.base.connections = { connection("blur", "Source", "grade") };
     conflicts.push_back(deleted);
 
     MergeConflict reparent;
@@ -136,6 +277,11 @@ everyKind()
     reparent.baseNodeId = "base-grade";
     reparent.nodeId = "grade";
     reparent.inputs = { "Source", "Mask" };
+    reparent.base.parent = std::string();
+    reparent.base.connections = { connection("grade", "Source", "read"), connection("grade", "Mask", "") };
+    reparent.mine.parent = "look";
+    reparent.mine.connections = { connection("grade", "Source", "look-in") };
+    reparent.theirs.parent = "other-look";
     conflicts.push_back(reparent);
 
     MergeConflict input;
@@ -144,6 +290,9 @@ everyKind()
     input.baseNodeId = "base-grade";
     input.nodeId = "grade";
     input.input = "Source";
+    input.base.connections = { connection("grade", "Source", "read") };
+    input.mine.connections = { connection("grade", "Source", "") };
+    input.theirs.connections = { connection("grade", "Source", "plate") };
     conflicts.push_back(input);
 
     MergeConflict insert;
@@ -152,6 +301,12 @@ everyKind()
     insert.baseNodeId = "base-blur";
     insert.nodeId = "blur";
     insert.input = "Source";
+    insert.base.connections = { connection("blur", "Source", "grade") };
+    insert.mine.connections = { connection("blur", "Source", "artist-blur"), connection("artist-blur", "Source", "grade") };
+    insert.base.removedNodes = { "artist-blur", "transform" };
+    insert.theirs.connections = { connection("blur", "Source", "transform") };
+    insert.mine.removedNodes = { "transform" };
+    insert.theirs.removedNodes = { "artist-blur" };
     conflicts.push_back(insert);
 
     MergeConflict adopted;
@@ -161,6 +316,9 @@ everyKind()
     adopted.nodeId = "grade";
     adopted.side = MergeSide::eTheirs;
     adopted.defaultedKnobs = { "white", "gamma" };
+    adopted.base.knobs = std::list<Serialization::KnobSerialization>({ colorKnob("white: [0.9, 0.9, 0.9, 1]\n") });
+    adopted.mine.knobs = std::list<Serialization::KnobSerialization>();
+    adopted.theirs.knobs = std::list<Serialization::KnobSerialization>({ colorKnob("white: [0.8, 0.9, 0.9, 1]\n"), doubleKnob("gamma", 1.2) });
     conflicts.push_back(adopted);
 
     return conflicts;

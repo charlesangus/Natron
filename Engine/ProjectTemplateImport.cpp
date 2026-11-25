@@ -264,6 +264,7 @@ Project::importTemplate(const QString& filePath,
 
         return NodesList();
     }
+    Q_EMIT templateImportsChanged();
     if (!problems.isEmpty()) {
         setError(problems.join(QString::fromUtf8("; ")));
     }

@@ -634,6 +634,29 @@ NodeGraph::showMenu(const QPoint & pos)
     QObject::connect( frameAllNodes, SIGNAL(triggered()), this, SLOT(centerOnAllNodes()) );
     viewMenu->addAction(frameAllNodes);
 
+    std::string templateKey;
+    if (selectedNodes.size() == 1) {
+        const std::string origin = selectedNodes.front()->getNode()->getOriginTemplate();
+        if (!origin.empty() && getGui()->getApp()->getProject()->hasTemplateImport(origin)) {
+            templateKey = origin;
+        }
+    }
+    QAction* updateFromTemplateAction = 0;
+    QAction* compareWithTemplateBaseAction = 0;
+    if (!templateKey.empty()) {
+        _imp->_menu->addSeparator();
+        updateFromTemplateAction = _imp->_menu->addAction(tr("Update from Template"));
+        updateFromTemplateAction->setObjectName(QString::fromUtf8("actionGraphUpdateFromTemplate"));
+        compareWithTemplateBaseAction = _imp->_menu->addAction(tr("Compare with Template Base"));
+        compareWithTemplateBaseAction->setObjectName(QString::fromUtf8("actionGraphCompareWithTemplateBase"));
+    }
+
+    QAction* clearComparisonAction = 0;
+    if (getGui()->getGraphComparison()) {
+        _imp->_menu->addSeparator();
+        clearComparisonAction = _imp->_menu->addAction(tr("Clear Comparison"));
+        clearComparisonAction->setObjectName(QString::fromUtf8("actionGraphClearComparison"));
+    }
 
     _imp->_menu->addSeparator();
 
@@ -644,10 +667,19 @@ NodeGraph::showMenu(const QPoint & pos)
     appPTR->setNodesMenuTarget(getGui(), _imp->_menu);
 
     QAction* ret = _imp->_menu->exec(pos);
-    if (ret == findAction) {
+    if (!ret) {
+        return;
+    }
+    if (ret == updateFromTemplateAction) {
+        getGui()->updateFromTemplate(templateKey);
+    } else if (ret == compareWithTemplateBaseAction) {
+        getGui()->compareWithTemplateBase(templateKey);
+    } else if (ret == clearComparisonAction) {
+        getGui()->clearGraphComparison();
+    } else if (ret == findAction) {
         popFindDialog();
     } else if (ret == createNode) {
-            popCreateNodeDialog();
+        popCreateNodeDialog();
     } else if (ret == duplicateAction) {
         // Duplicate at mouse click position:
         QPointF scenePos = mapToScene( mapFromGlobal(pos) );

@@ -29,6 +29,7 @@ NATRON_NAMESPACE_ENTER
 namespace Serialization {
 
 using MergeDetail::mergedOrder;
+using MergeDetail::namesBefore;
 using MergeDetail::Pick;
 using MergeDetail::pick;
 using MergeDetail::takeChanged;
@@ -79,6 +80,18 @@ namespace {
               const TrackSerialization& b)
     {
         return (a.scriptName == b.scriptName) && (a.label == b.label) && (a.enabled == b.enabled) && (a.isPatternMatching == b.isPatternMatching) && (userKeysOf(&a) == userKeysOf(&b)) && sameKnobLists(a.knobs, b.knobs);
+    }
+
+    std::optional<TrackerContextSerialization>
+    trackAlone(const TrackSerialization* track)
+    {
+        if (!track) {
+            return std::nullopt;
+        }
+        TrackerContextSerialization context;
+        context.tracks.push_back(*track);
+
+        return context;
     }
 
     TrackSerialization
@@ -176,6 +189,12 @@ mergeTrackerContexts(const TrackerContextSerialization* base,
                 conflict.kind = MergeConflictKind::eDeleteModify;
                 conflict.item = name;
                 conflict.side = m ? MergeSide::eTheirs : MergeSide::eMine;
+                conflict.base.tracker = trackAlone(b);
+                conflict.mine.tracker = trackAlone(m);
+                conflict.theirs.tracker = trackAlone(t);
+                conflict.base.itemsBefore = namesBefore(trackNames(*base), name);
+                conflict.mine.itemsBefore = namesBefore(trackNames(mine), name);
+                conflict.theirs.itemsBefore = namesBefore(trackNames(theirs), name);
                 conflicts->push_back(conflict);
                 kept.emplace(name, *present);
             }

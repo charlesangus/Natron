@@ -65,11 +65,37 @@ namespace {
         std::size_t count = 0;
         for (const KnobSerialization* knob : { a, b, c }) {
             if (knob) {
-                count = std::max(count, knob->dimensions.size());
+                count = std::max(count, std::max(knob->dimensions.size(), std::size_t(std::max(knob->dimension, 0))));
             }
         }
 
         return count;
+    }
+
+    // True when the knob saved one dimension standing for its knobDimensions. The count comes from
+    // every side because a side read from a project file does not record a plug-in knob's dimension.
+    bool
+    isFolded(const KnobSerialization* knob,
+             std::size_t knobDimensions)
+    {
+        return knob && (knobDimensions > 1) && (knob->dimensions.size() == 1);
+    }
+
+    // One saved dimension stands for all of a knob's dimensions (the folded form saving and the
+    // project file give a knob whose dimensions are all alike), so it is compared and merged as
+    // count copies of itself.
+    const KnobSerialization*
+    unfolded(const KnobSerialization* knob,
+             std::size_t count,
+             std::optional<KnobSerialization>* storage)
+    {
+        if (!knob || (knob->dimensions.size() != 1) || (count < 2)) {
+            return knob;
+        }
+        storage->emplace(*knob);
+        (*storage)->dimensions.resize(count, knob->dimensions.front());
+
+        return &**storage;
     }
 
     KnobDimensionSerialization
@@ -118,10 +144,44 @@ namespace {
         return conflict;
     }
 
+    // Theirs' key moves to one frame later, or halfway to the next key when that comes sooner, so
+    // it lands where neither the merged curve nor another conflict has a key.
+    std::optional<MergeConflictOption>
+    keepBothKeys(const CurveKeyConflict& key,
+                 const CurveSerialization& merged,
+                 const std::vector<CurveKeyConflict>& keys)
+    {
+        if (!key.mine || !key.theirs) {
+            return std::nullopt;
+        }
+        std::optional<double> next;
+        auto consider = [&](double time) {
+            if ((time > key.time) && (!next || (time < *next))) {
+                next = time;
+            }
+        };
+        for (const KeyFrameSerialization& existing : merged.keyframes) {
+            consider(existing.time);
+        }
+        for (const CurveKeyConflict& other : keys) {
+            consider(other.time);
+        }
+        MergeConflictOption option;
+        option.name = std::string(kMergeOptionKeepBothKeys);
+        option.label = "Keep Both Keys";
+        option.state.key = key.mine;
+        KeyFrameSerialization moved = *key.theirs;
+        moved.time = (next && (*next <= key.time + 1.)) ? (key.time + *next) / 2. : key.time + 1.;
+        option.state.otherKeys.push_back(moved);
+
+        return option;
+    }
+
     void
     addKeyConflicts(const std::string& name,
                     int dimension,
                     const std::vector<CurveKeyConflict>& keys,
+                    const CurveSerialization& merged,
                     std::vector<MergeConflict>* conflicts)
     {
         for (const CurveKeyConflict& key : keys) {
@@ -133,6 +193,9 @@ namespace {
             conflict.base.key = key.base;
             conflict.mine.key = key.mine;
             conflict.theirs.key = key.theirs;
+            if (std::optional<MergeConflictOption> both = keepBothKeys(key, merged, keys)) {
+                conflict.options.push_back(std::move(*both));
+            }
             conflicts->push_back(conflict);
         }
     }
@@ -162,7 +225,7 @@ namespace {
         for (int index = 0; m != mine->parametricCurves->end(); ++b, ++m, ++t, ++index) {
             std::vector<CurveKeyConflict> keys;
             merged->push_back(mergeCurves(*b, *m, *t, &keys));
-            addKeyConflicts(mine->name, index, keys, conflicts);
+            addKeyConflicts(mine->name, index, keys, merged->back(), conflicts);
         }
 
         return true;
@@ -252,6 +315,10 @@ sameKnobState(const KnobSerialization* a,
         return false;
     }
     const std::size_t count = dimensionCount(a, b, nullptr);
+    std::optional<KnobSerialization> unfoldedA;
+    std::optional<KnobSerialization> unfoldedB;
+    a = unfolded(a, count, &unfoldedA);
+    b = unfolded(b, count, &unfoldedB);
     for (std::size_t i = 0; i < count; ++i) {
         if (dimensionState(a, i) != dimensionState(b, i)) {
             return false;
@@ -303,14 +370,25 @@ ScalarKnobMergeHandler::merge(const KnobSerialization* base,
                               std::vector<MergeConflict>* conflicts) const
 {
     merged->reset();
-    const KnobSerialization* frame = mine ? mine : theirs;
-    if (!frame) {
+    const KnobSerialization* folded = mine ? mine : theirs;
+    if (!folded) {
         return;
     }
+    // When every side saved the knob folded, its one dimension merges as the whole knob's and
+    // stays folded; otherwise a folded side is compared dimension by dimension.
+    const std::size_t knobDimensions = dimensionCount(base, mine, theirs);
+    const bool allFolded = isFolded(mine, knobDimensions) && isFolded(theirs, knobDimensions) && (!base || isFolded(base, knobDimensions));
+    const std::size_t count = allFolded ? 1 : knobDimensions;
+    std::optional<KnobSerialization> unfoldedBase;
+    std::optional<KnobSerialization> unfoldedMine;
+    std::optional<KnobSerialization> unfoldedTheirs;
+    base = unfolded(base, count, &unfoldedBase);
+    mine = unfolded(mine, count, &unfoldedMine);
+    theirs = unfolded(theirs, count, &unfoldedTheirs);
+    const KnobSerialization* frame = mine ? mine : theirs;
     const std::string& name = frame->name;
 
     KnobSerialization result = *frame;
-    const std::size_t count = dimensionCount(base, mine, theirs);
     result.dimensions.resize(count);
     for (std::size_t i = 0; i < count; ++i) {
         const Pick choice = pick(dimensionState(base, i), dimensionState(mine, i), dimensionState(theirs, i));
@@ -325,9 +403,14 @@ ScalarKnobMergeHandler::merge(const KnobSerialization* base,
             KnobDimensionSerialization dimension = result.dimensions[i];
             if (mergeDimension(base, mine, theirs, i, &dimension, &finer)) {
                 result.dimensions[i] = std::move(dimension);
+                if (allFolded) {
+                    for (MergeConflict& conflict : finer) {
+                        conflict.dimension = kMergeConflictAllDimensions;
+                    }
+                }
                 conflicts->insert(conflicts->end(), finer.begin(), finer.end());
             } else {
-                conflicts->push_back(valueConflict(name, int(i), base, mine, theirs));
+                conflicts->push_back(valueConflict(name, allFolded ? kMergeConflictAllDimensions : int(i), base, mine, theirs));
             }
         }
     }
@@ -352,6 +435,13 @@ ScalarKnobMergeHandler::merge(const KnobSerialization* base,
         }
     }
 
+    // A merge that leaves a folded knob as it was keeps its folded form.
+    if ((folded->dimensions.size() == 1) && (count > 1)
+        && std::all_of(result.dimensions.begin(), result.dimensions.end(), [&](const KnobDimensionSerialization& dimension) {
+               return dimension == folded->dimensions.front();
+           })) {
+        result.dimensions.resize(1);
+    }
     if (!isDefaultKnob(result)) {
         *merged = std::move(result);
     }
@@ -386,8 +476,8 @@ ScalarKnobMergeHandler::mergeDimension(const KnobSerialization* base,
     const CurveSerialization none;
     CurveSerialization curve = mergeCurves((b && b->curve) ? *b->curve : none, *m->curve, *t->curve, &keys);
     *merged = (rest == Pick::eTheirs) ? theirs->dimensions[index] : mine->dimensions[index];
+    addKeyConflicts(mine->name, int(index), keys, curve, conflicts);
     merged->curve = std::move(curve);
-    addKeyConflicts(mine->name, int(index), keys, conflicts);
 
     return true;
 }

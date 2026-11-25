@@ -60,3 +60,4 @@ Member of F18 - Geometry Loops And Solver: branches off and merges into `feature
 
 Shared design: `PLAN/DECISIONS/2026-11-12-geometry-simulation-expansion.md`.
 - 2026-11-23 — PR #348 review fixes in a5caadde8: file stamps (path, mtime, size, inode) in the node hash, Reload button on GeoFile, readers reloaded after a GeoFileCache save; format version 2 with per-page XXH64. A file changed outside Natron is picked up on Reload or after a save, as with NativeRead.
+- 2026-11-25 (PM) — merged into F18 as #348 after the review-fix gate went green.

@@ -14,6 +14,7 @@ The format is described in Engine/Nodes/docs/shader-manifest.md.
 import argparse
 import json
 import os
+import re
 import sys
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -26,6 +27,23 @@ KINDS = {
     "cycles": {"shader", "texture", "displacement", "utility"},
     "moonray": {"material", "map", "normal_map", "displacement", "volume"},
 }
+
+
+FORBIDDEN_NAMES = re.compile(r"\b(nuke|houdini|sidefx|foundry)\b", re.IGNORECASE)
+
+
+def forbidden_strings(value, where):
+    """Every string under value that names a product the docs must not mention."""
+    if isinstance(value, str):
+        return [where] if FORBIDDEN_NAMES.search(value) else []
+    found = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            found.extend(forbidden_strings(item, "%s.%s" % (where, key)))
+    elif isinstance(value, list):
+        for i, item in enumerate(value):
+            found.extend(forbidden_strings(item, "%s[%d]" % (where, i)))
+    return found
 
 
 def load_json(path):
@@ -55,6 +73,9 @@ def validate_manifest(manifest, renderer):
     nodes = manifest.get("nodes")
     if not isinstance(nodes, list) or not nodes:
         return errors + ["%s: no nodes" % renderer]
+    for node in nodes:
+        for where in forbidden_strings(node, "%s.%s" % (renderer, node.get("id"))):
+            errors.append("%s: names a product docs must not mention (rewrite it in the generator)" % where)
     ids = [n.get("id") for n in nodes]
     if ids != sorted(ids):
         errors.append("%s: nodes are not sorted by id" % renderer)

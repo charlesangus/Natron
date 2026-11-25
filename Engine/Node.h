@@ -34,6 +34,7 @@
 #include <list>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -50,6 +51,7 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/EngineFwd.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/Markdown.h"
+#include "Engine/Nodes/Network/PortDescriptor.h"
 #include "Engine/RenderContext.h"
 #include "Engine/ViewIdx.h"
 #include "Global/KeySymbols.h"
@@ -858,6 +860,17 @@ public:
     void setInputVisible(int inputNb, bool visible);
 
     int getInputNumberFromLabel(const std::string& inputLabel) const;
+
+    /**
+     * @brief The port input inputNb connects, for a network node. A classic node, and an input out
+     * of range, have none.
+     **/
+    std::optional<PortDescriptor> getInputPortDescriptor(int inputNb) const;
+
+    /**
+     * @brief The named outputs of a network node, in order; empty for a classic node.
+     **/
+    std::vector<OutputPortDescriptor> getOutputPorts() const;
 
     bool isInputOnlyAlpha(int inputNb) const;
 

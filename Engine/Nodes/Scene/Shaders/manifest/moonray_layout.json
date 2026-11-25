@@ -71,15 +71,6 @@
     "SwitchNormalMap": {
       "key_ports": ["choice"]
     },
-    "TestInputsDisplacement": {
-      "key_ports": ["select", "inFloat", "inColor", "inVec3f"]
-    },
-    "TestInputsMaterial": {
-      "key_ports": ["select", "inFloat", "inColor", "inVec3f"]
-    },
-    "TestInputsNormalMap": {
-      "key_ports": ["select", "inFloat", "inColor", "inVec3f"]
-    },
     "UsdPreviewSurface": {
       "key_ports": ["diffuseColor", "emissiveColor", "specularColor", "metallic", "roughness", "clearcoat", "clearcoatRoughness", "opacity", "ior", "normal", "displacement", "occlusion"]
     }

@@ -1,0 +1,969 @@
+/* ***** BEGIN LICENSE BLOCK *****
+ * This file is part of Natron <https://natrongithub.github.io/>,
+ * (C) 2018-2023 The Natron developers
+ * (C) 2013-2018 INRIA and Alexandre Gauthier-Foichat
+ *
+ * Natron is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * Natron is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
+ * ***** END LICENSE BLOCK ***** */
+
+// ***** BEGIN PYTHON BLOCK *****
+// from <https://docs.python.org/3/c-api/intro.html#include-files>:
+// "Since Python may define some pre-processor definitions which affect the standard headers on some systems, you must include Python.h before any standard headers are included."
+#include <Python.h>
+// ***** END PYTHON BLOCK *****
+
+#include "NetworkNode.h"
+
+#include <algorithm>
+#include <cctype>
+#include <mutex>
+#include <set>
+#include <sstream>
+#include <variant>
+
+#include <QCoreApplication>
+#include <QString>
+#include <QStringList>
+#include <QThread>
+
+#include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
+#include "Engine/ChoiceOption.h"
+#include "Engine/KnobFile.h"
+#include "Engine/KnobTypes.h"
+#include "Engine/LibraryBinary.h"
+#include "Engine/Node.h"
+#include "Engine/Plugin.h"
+#include "Engine/Project.h"
+
+#include "Serialization/KnobSerialization.h"
+#include "Serialization/NodeSerialization.h"
+
+NATRON_NAMESPACE_ENTER
+
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+struct LayoutRegistry {
+    std::mutex mutex;
+    std::map<std::string, const NetworkNodeLayout*> byId;
+    std::deque<std::unique_ptr<NetworkNodeLayout>> storage;
+};
+
+LayoutRegistry&
+layoutRegistry()
+{
+    static LayoutRegistry registry;
+
+    return registry;
+}
+
+const NetworkNodeLayout&
+emptyLayout()
+{
+    static const NetworkNodeLayout layout;
+
+    return layout;
+}
+
+std::string
+knobScriptName(const std::string& text)
+{
+    std::string ret;
+
+    for (char c : text) {
+        ret += std::isalnum((unsigned char)c) ? c : '_';
+    }
+
+    return ret;
+}
+
+bool
+isNumericClass(PortTypeClass typeClass)
+{
+    switch (typeClass) {
+    case PortTypeClass::Float:
+    case PortTypeClass::Int:
+    case PortTypeClass::Vector3:
+    case PortTypeClass::Normal:
+    case PortTypeClass::Point:
+    case PortTypeClass::Color:
+        return true;
+    default:
+        return false;
+    }
+}
+
+KnobIPtr
+createAttributeKnob(EffectInstance* holder,
+                    const NetworkAttribute& attribute)
+{
+    const int dims = std::max(1, attribute.dimensions);
+    KnobIPtr knob;
+
+    switch (attribute.knob) {
+    case NetworkKnobKind::None:
+        return KnobIPtr();
+    case NetworkKnobKind::Double: {
+        KnobDoublePtr k = AppManager::createKnob<KnobDouble>(holder, attribute.label, dims);
+        for (int d = 0; d < dims; ++d) {
+            if (d < (int)attribute.defaults.size()) {
+                k->setDefaultValue(attribute.defaults[d], d);
+            }
+            if (attribute.hasDisplayMinimum) {
+                k->setDisplayMinimum(attribute.displayMinimum, d);
+            }
+            if (attribute.hasDisplayMaximum) {
+                k->setDisplayMaximum(attribute.displayMaximum, d);
+            }
+        }
+        knob = k;
+        break;
+    }
+    case NetworkKnobKind::Int: {
+        KnobIntPtr k = AppManager::createKnob<KnobInt>(holder, attribute.label, dims);
+        for (int d = 0; d < dims; ++d) {
+            if (d < (int)attribute.defaults.size()) {
+                k->setDefaultValue((int)attribute.defaults[d], d);
+            }
+            if (attribute.hasDisplayMinimum) {
+                k->setDisplayMinimum((int)attribute.displayMinimum, d);
+            }
+            if (attribute.hasDisplayMaximum) {
+                k->setDisplayMaximum((int)attribute.displayMaximum, d);
+            }
+        }
+        knob = k;
+        break;
+    }
+    case NetworkKnobKind::Bool: {
+        KnobBoolPtr k = AppManager::createKnob<KnobBool>(holder, attribute.label, 1);
+        if (!attribute.defaults.empty()) {
+            k->setDefaultValue(attribute.defaults[0] != 0.);
+        }
+        knob = k;
+        break;
+    }
+    case NetworkKnobKind::Choice: {
+        KnobChoicePtr k = AppManager::createKnob<KnobChoice>(holder, attribute.label, 1);
+        std::vector<ChoiceOption> options;
+        for (const NetworkChoice& choice : attribute.choices) {
+            options.push_back(ChoiceOption(choice.id, choice.label, std::string()));
+        }
+        (void)k->populateChoices(options);
+        k->setDefaultValue(attribute.defaultChoice);
+        knob = k;
+        break;
+    }
+    case NetworkKnobKind::Color: {
+        KnobColorPtr k = AppManager::createKnob<KnobColor>(holder, attribute.label, dims);
+        for (int d = 0; d < dims; ++d) {
+            if (d < (int)attribute.defaults.size()) {
+                k->setDefaultValue(attribute.defaults[d], d);
+            }
+            if (attribute.hasDisplayMinimum) {
+                k->setDisplayMinimum(attribute.displayMinimum, d);
+            }
+            if (attribute.hasDisplayMaximum) {
+                k->setDisplayMaximum(attribute.displayMaximum, d);
+            }
+        }
+        knob = k;
+        break;
+    }
+    case NetworkKnobKind::String:
+    case NetworkKnobKind::Table: {
+        KnobStringPtr k = AppManager::createKnob<KnobString>(holder, attribute.label, 1);
+        if (attribute.knob == NetworkKnobKind::Table) {
+            k->setAsMultiLine();
+        }
+        k->setDefaultValue(attribute.defaultText);
+        k->setAnimationEnabled(false);
+        knob = k;
+        break;
+    }
+    case NetworkKnobKind::File: {
+        KnobFilePtr k = AppManager::createKnob<KnobFile>(holder, attribute.label, 1);
+        k->setDefaultValue(attribute.defaultText);
+        k->setAnimationEnabled(false);
+        knob = k;
+        break;
+    }
+    case NetworkKnobKind::Parametric: {
+        KnobParametricPtr k = AppManager::createKnob<KnobParametric>(holder, attribute.label, dims);
+        static const double colours[3][3] = { { 0.71, 0.16, 0.16 }, { 0., 0.55, 0. }, { 0.29, 0.29, 0.84 } };
+        k->setParametricRange(0., 1.);
+        for (int d = 0; d < dims; ++d) {
+            if (dims == 3) {
+                k->setCurveColor(d, colours[d][0], colours[d][1], colours[d][2]);
+            }
+            StatusEnum first = k->addControlPoint(eValueChangedReasonPluginEdited, d, 0., 0., eKeyframeTypeCubic);
+            StatusEnum second = k->addControlPoint(eValueChangedReasonPluginEdited, d, 1., 1., eKeyframeTypeCubic);
+            Q_UNUSED(first);
+            Q_UNUSED(second);
+        }
+        k->setDefaultCurvesFromCurves();
+        knob = k;
+        break;
+    }
+    }
+    for (int d = 0; (d < dims) && (d < (int)attribute.dimensionNames.size()); ++d) {
+        knob->setDimensionName(d, attribute.dimensionNames[d]);
+    }
+    knob->setName(NetworkNode::knobNameOf(attribute.name));
+    if (!attribute.hint.empty()) {
+        knob->setHintToolTip(attribute.hint);
+    }
+
+    return knob;
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+
+std::string
+networkJoinPorts(const std::vector<std::string>& ports)
+{
+    std::string ret;
+
+    for (const std::string& port : ports) {
+        if (!ret.empty()) {
+            ret += ' ';
+        }
+        ret += port;
+    }
+
+    return ret;
+}
+
+std::vector<std::string>
+networkSplitPorts(const std::string& text)
+{
+    std::vector<std::string> ret;
+    std::istringstream in(text);
+    std::string port;
+
+    while (in >> port) {
+        ret.push_back(port);
+    }
+
+    return ret;
+}
+
+const NetworkNodeLayout*
+NetworkNode::addLayout(const NetworkNodeLayout& layout)
+{
+    LayoutRegistry& registry = layoutRegistry();
+    std::lock_guard<std::mutex> lock(registry.mutex);
+
+    registry.storage.push_back(std::make_unique<NetworkNodeLayout>(layout));
+    const NetworkNodeLayout* ret = registry.storage.back().get();
+    registry.byId[layout.pluginId] = ret;
+
+    return ret;
+}
+
+const NetworkNodeLayout*
+NetworkNode::findLayout(const std::string& pluginId)
+{
+    LayoutRegistry& registry = layoutRegistry();
+    std::lock_guard<std::mutex> lock(registry.mutex);
+    const std::map<std::string, const NetworkNodeLayout*>::const_iterator it = registry.byId.find(pluginId);
+
+    return (it == registry.byId.end()) ? nullptr : it->second;
+}
+
+Plugin*
+NetworkNode::registerPlugin(const NetworkNodeLayout& layout)
+{
+    std::map<std::string, void (*)()> functions;
+
+    functions.insert(std::make_pair("BuildEffect", (void (*)())&NetworkNode::BuildEffect));
+    LibraryBinary* binary = new LibraryBinary(functions);
+    const QString label = QString::fromUtf8(layout.label.c_str());
+    const QStringList grouping = QString::fromUtf8(layout.grouping.c_str()).split(QLatin1Char('/'), Qt::SkipEmptyParts);
+    Plugin* plugin = appPTR->registerPlugin(QString(), grouping, QString::fromUtf8(layout.pluginId.c_str()), label,
+                                            QString(), QStringList(), false, false, binary, false, 1, 0, false);
+
+    if (!plugin) {
+        return nullptr;
+    }
+    plugin->setForInternalUseOnly(true);
+    plugin->setFirstInputDataKind(true, eDataKindNetwork);
+    plugin->setInputDataKinds({ eDataKindNetwork });
+    // Plug-ins registered after AppManager::load() get no script-name label from it.
+    plugin->setLabelWithoutSuffix(Plugin::makeLabelWithoutSuffix(label));
+
+    return plugin;
+}
+
+NetworkNode::NetworkNode(NodePtr node)
+    : NativeEffectBase(node)
+    , _layout(nullptr)
+    , _specs()
+    , _current(nullptr)
+    , _applyingPorts(false)
+    , _portUpstreams()
+    , _attributeKnobs()
+    , _portsKnob()
+    , _inputOutputsKnob()
+{
+    const Plugin* plugin = node ? node->getPlugin() : nullptr;
+
+    _layout = plugin ? findLayout(plugin->getPluginID().toStdString()) : nullptr;
+    if (!_layout) {
+        _layout = &emptyLayout();
+    }
+    publishSpec(sanitizePorts(_layout->defaultPorts));
+}
+
+NetworkNode::~NetworkNode()
+{
+}
+
+const NetworkAttribute*
+NetworkNode::findAttribute(const std::string& name) const
+{
+    for (const NetworkAttribute& attribute : _layout->attributes) {
+        if (attribute.name == name) {
+            return &attribute;
+        }
+    }
+
+    return nullptr;
+}
+
+const OutputPortDescriptor*
+NetworkNode::findOutput(const std::string& name) const
+{
+    if (name.empty()) {
+        return _layout->outputs.empty() ? nullptr : &_layout->outputs.front();
+    }
+    for (const OutputPortDescriptor& output : _layout->outputs) {
+        if (output.name == name) {
+            return &output;
+        }
+    }
+
+    return nullptr;
+}
+
+std::string
+NetworkNode::knobNameOf(const std::string& attribute)
+{
+    std::string ret = knobScriptName(attribute);
+
+    if (!ret.empty() && std::isdigit((unsigned char)ret[0])) {
+        ret.insert(ret.begin(), '_');
+    }
+
+    return ret;
+}
+
+KnobIPtr
+NetworkNode::getAttributeKnob(const std::string& attribute) const
+{
+    const std::map<std::string, KnobIWPtr>::const_iterator it = _attributeKnobs.find(attribute);
+
+    return (it == _attributeKnobs.end()) ? KnobIPtr() : it->second.lock();
+}
+
+void
+NetworkNode::initializeKnobs()
+{
+    std::map<std::string, KnobPagePtr> pages;
+    std::map<std::pair<std::string, std::string>, KnobGroupPtr> groups;
+    KnobPagePtr firstPage;
+
+    for (const std::string& pageLabel : _layout->pages) {
+        KnobPagePtr page = createKnob<KnobPage>(pageLabel);
+        page->setName(knobScriptName(pageLabel) + "Page");
+        pages[pageLabel] = page;
+        if (!firstPage) {
+            firstPage = page;
+        }
+    }
+    if (!firstPage) {
+        firstPage = createKnob<KnobPage>(tr("Controls").toStdString());
+    }
+
+    for (const NetworkAttribute& attribute : _layout->attributes) {
+        KnobIPtr knob = createAttributeKnob(this, attribute);
+        if (!knob) {
+            continue;
+        }
+        const std::map<std::string, KnobPagePtr>::const_iterator pageIt = pages.find(attribute.page);
+        KnobPagePtr page = (pageIt == pages.end()) ? firstPage : pageIt->second;
+        if (attribute.group.empty()) {
+            page->addKnob(knob);
+        } else {
+            const std::pair<std::string, std::string> key(attribute.page, attribute.group);
+            KnobGroupPtr& group = groups[key];
+            if (!group) {
+                group = createKnob<KnobGroup>(attribute.group);
+                group->setName(knobScriptName(attribute.page) + "_" + knobScriptName(attribute.group));
+                page->addKnob(group);
+            }
+            group->addKnob(knob);
+        }
+        _attributeKnobs[attribute.name] = knob;
+    }
+
+    KnobStringPtr ports = createKnob<KnobString>(tr("Ports").toStdString());
+    ports->setName(kNetworkNodeParamPorts);
+    ports->setDefaultValue(networkJoinPorts(sanitizePorts(_layout->defaultPorts)));
+    ports->setAnimationEnabled(false);
+    ports->setEvaluateOnChange(false);
+    ports->setSecret(true);
+    firstPage->addKnob(ports);
+    _portsKnob = ports;
+
+    KnobStringPtr inputOutputs = createKnob<KnobString>(tr("Input Outputs").toStdString());
+    inputOutputs->setName(kNetworkNodeParamInputOutputs);
+    inputOutputs->setAnimationEnabled(false);
+    inputOutputs->setEvaluateOnChange(false);
+    inputOutputs->setSecret(true);
+    firstPage->addKnob(inputOutputs);
+    _inputOutputsKnob = inputOutputs;
+}
+
+std::vector<std::string>
+NetworkNode::sanitizePorts(const std::vector<std::string>& ports) const
+{
+    std::vector<std::string> ret;
+    std::set<std::string> seen;
+
+    for (const std::string& port : ports) {
+        const NetworkAttribute* attribute = findAttribute(port);
+        if (attribute && canPromote(*attribute) && seen.insert(port).second) {
+            ret.push_back(port);
+        }
+    }
+    for (const NetworkAttribute& attribute : _layout->attributes) {
+        if (attribute.portOnly && seen.insert(attribute.name).second) {
+            ret.push_back(attribute.name);
+        }
+    }
+
+    return ret;
+}
+
+void
+NetworkNode::publishSpec(const std::vector<std::string>& ports)
+{
+    std::unique_ptr<SpecStorage> storage(new SpecStorage);
+
+    for (const std::string& port : ports) {
+        storage->labels.push_back(port);
+        const NetworkAttribute* attribute = findAttribute(port);
+        PortDescriptor descriptor = attribute ? attribute->port : PortDescriptor();
+        descriptor.promoted = true;
+        storage->ports.push_back(descriptor);
+    }
+    storage->inputs.reserve(storage->labels.size());
+    for (const std::string& label : storage->labels) {
+        storage->inputs.push_back(InputSpec { .label = label, .kind = eDataKindNetwork, .role = InputRole::Aux, .optional = true });
+    }
+    storage->spec = NodeSpec {
+        .id = _layout->pluginId,
+        .label = _layout->label,
+        .description = _layout->description,
+        .grouping = _layout->grouping,
+        .majorVersion = 1,
+        .minorVersion = 0,
+        .internal = true,
+        .outputKind = eDataKindNetwork,
+        .inputs = storage->inputs,
+    };
+    _current.store(storage.get(), std::memory_order_release);
+    _specs.push_back(std::move(storage));
+}
+
+std::vector<std::string>
+NetworkNode::getPorts() const
+{
+    const SpecStorage* current = _current.load(std::memory_order_acquire);
+
+    return std::vector<std::string>(current->labels.begin(), current->labels.end());
+}
+
+std::optional<PortDescriptor>
+NetworkNode::getInputPortDescriptor(int inputNb) const
+{
+    const SpecStorage* current = _current.load(std::memory_order_acquire);
+
+    if ((inputNb < 0) || (inputNb >= (int)current->ports.size())) {
+        return std::nullopt;
+    }
+
+    return current->ports[inputNb];
+}
+
+std::vector<PortDescriptor>
+NetworkNode::getPortDescriptors() const
+{
+    const std::vector<std::string> ports = getPorts();
+    std::vector<PortDescriptor> ret;
+
+    for (const NetworkAttribute& attribute : _layout->attributes) {
+        if (!attribute.linkable) {
+            continue;
+        }
+        PortDescriptor descriptor = attribute.port;
+        descriptor.promoted = std::find(ports.begin(), ports.end(), attribute.name) != ports.end();
+        ret.push_back(descriptor);
+    }
+
+    return ret;
+}
+
+void
+NetworkNode::applyPorts(const std::vector<std::string>& requested)
+{
+    const std::vector<std::string> ports = sanitizePorts(requested);
+    const std::vector<std::string> old = getPorts();
+
+    if (ports == old) {
+        return;
+    }
+    NodePtr node = getNode();
+    std::map<std::string, NodePtr> upstream;
+
+    for (std::size_t i = 0; i < old.size(); ++i) {
+        NodePtr input = node->getInput((int)i);
+        if (input) {
+            upstream[old[i]] = input;
+        }
+    }
+    // initializeInputs() keeps connections by input number, so every connection whose port moves
+    // or goes away is undone first, which also clears it from the upstream node's outputs.
+    _applyingPorts = true;
+    for (std::size_t i = 0; i < old.size(); ++i) {
+        if (upstream.count(old[i]) && ((i >= ports.size()) || (ports[i] != old[i]))) {
+            node->disconnectInput((int)i);
+        }
+    }
+    publishSpec(ports);
+    node->initializeInputs();
+    for (std::size_t i = 0; i < ports.size(); ++i) {
+        const std::map<std::string, NodePtr>::const_iterator it = upstream.find(ports[i]);
+        if ((it != upstream.end()) && !node->getInput((int)i)) {
+            node->connectInput(it->second, (int)i);
+        }
+    }
+    _applyingPorts = false;
+    pruneInputOutputs();
+    refreshKnobsEnabled();
+}
+
+void
+NetworkNode::setPorts(const std::vector<std::string>& ports)
+{
+    applyPorts(ports);
+    KnobStringPtr knob = _portsKnob.lock();
+    const std::string text = networkJoinPorts(getPorts());
+    if (knob && (knob->getValue() != text)) {
+        knob->setValue(text);
+    }
+}
+
+bool
+NetworkNode::promotePort(const std::string& name)
+{
+    const NetworkAttribute* attribute = findAttribute(name);
+
+    if (!attribute || !canPromote(*attribute)) {
+        return false;
+    }
+    std::vector<std::string> ports = getPorts();
+    if (std::find(ports.begin(), ports.end(), name) == ports.end()) {
+        ports.push_back(name);
+        setPorts(ports);
+    }
+
+    return true;
+}
+
+bool
+NetworkNode::demotePort(const std::string& name)
+{
+    const NetworkAttribute* attribute = findAttribute(name);
+
+    if (!attribute || !canDemote(*attribute)) {
+        return false;
+    }
+    std::vector<std::string> ports = getPorts();
+    const std::vector<std::string>::iterator it = std::find(ports.begin(), ports.end(), name);
+    if (it != ports.end()) {
+        ports.erase(it);
+        setPorts(ports);
+    }
+
+    return true;
+}
+
+void
+NetworkNode::refreshKnobsEnabled()
+{
+    NodePtr node = getNode();
+    const std::vector<std::string> ports = getPorts();
+    std::set<std::string> connected;
+
+    for (std::size_t i = 0; node && (i < ports.size()); ++i) {
+        if (node->getInput((int)i)) {
+            connected.insert(ports[i]);
+        }
+    }
+    for (const auto& entry : _attributeKnobs) {
+        KnobIPtr knob = entry.second.lock();
+        if (!knob) {
+            continue;
+        }
+        const bool enabled = (connected.count(entry.first) == 0);
+        if (knob->isEnabled(0) != enabled) {
+            knob->setAllDimensionsEnabled(enabled);
+        }
+    }
+}
+
+void
+NetworkNode::onKnobsAboutToBeLoaded(const Serialization::NodeSerializationPtr& serialization)
+{
+    if (!serialization) {
+        return;
+    }
+    // The inputs must exist before the loader connects them, and it connects them by label.
+    for (const Serialization::KnobSerialization& knob : serialization->knobs) {
+        if ((knob.name != kNetworkNodeParamPorts) || knob.dimensions.empty() || !knob.dimensions[0].value) {
+            continue;
+        }
+        if (const std::string* text = std::get_if<std::string>(&*knob.dimensions[0].value)) {
+            applyPorts(networkSplitPorts(*text));
+        }
+    }
+    // A renderer upgrade can remove an attribute: its saved value has no knob to go to.
+    AppInstancePtr app = getApp();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+    if (!project) {
+        return;
+    }
+    const QString nodeName = QString::fromUtf8(serialization->scriptName.c_str());
+    for (const Serialization::KnobSerialization& knob : serialization->knobs) {
+        if (getKnobByName(NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(knob.name))) {
+            continue;
+        }
+        project->addLoadWarning(tr("%1.%2: %3 has no such parameter; its value was dropped")
+                                    .arg(nodeName)
+                                    .arg(QString::fromUtf8(knob.name.c_str()))
+                                    .arg(QString::fromUtf8(_layout->pluginId.c_str())));
+    }
+}
+
+void
+NetworkNode::onKnobsLoaded()
+{
+    refreshKnobsEnabled();
+}
+
+bool
+NetworkNode::knobChanged(KnobI* k,
+                         ValueChangedReasonEnum /*reason*/,
+                         ViewSpec /*view*/,
+                         double /*time*/,
+                         bool /*originatedFromMainThread*/)
+{
+    KnobStringPtr ports = _portsKnob.lock();
+
+    if (!ports || (k != ports.get()) || (QThread::currentThread() != qApp->thread())) {
+        return false;
+    }
+    applyPorts(networkSplitPorts(ports->getValue()));
+
+    return true;
+}
+
+std::map<std::string, std::string>
+NetworkNode::getInputOutputs() const
+{
+    std::map<std::string, std::string> ret;
+    KnobStringPtr knob = _inputOutputsKnob.lock();
+
+    if (!knob) {
+        return ret;
+    }
+    for (const std::string& entry : networkSplitPorts(knob->getValue())) {
+        const std::size_t eq = entry.find('=');
+        if ((eq != std::string::npos) && (eq > 0)) {
+            ret[entry.substr(0, eq)] = entry.substr(eq + 1);
+        }
+    }
+
+    return ret;
+}
+
+std::string
+NetworkNode::getOutputForInput(const std::string& inputLabel) const
+{
+    const std::map<std::string, std::string> outputs = getInputOutputs();
+    const std::map<std::string, std::string>::const_iterator it = outputs.find(inputLabel);
+
+    return (it == outputs.end()) ? std::string() : it->second;
+}
+
+void
+NetworkNode::setInputOutputs(const std::map<std::string, std::string>& outputs)
+{
+    std::vector<std::string> entries;
+
+    for (const auto& entry : outputs) {
+        entries.push_back(entry.first + "=" + entry.second);
+    }
+    KnobStringPtr knob = _inputOutputsKnob.lock();
+    const std::string text = networkJoinPorts(entries);
+    if (knob && (knob->getValue() != text)) {
+        knob->setValue(text);
+    }
+}
+
+void
+NetworkNode::setOutputForInput(const std::string& inputLabel,
+                               const std::string& outputName)
+{
+    std::map<std::string, std::string> outputs = getInputOutputs();
+
+    if (outputName.empty()) {
+        outputs.erase(inputLabel);
+    } else {
+        outputs[inputLabel] = outputName;
+    }
+    setInputOutputs(outputs);
+}
+
+void
+NetworkNode::pruneInputOutputs()
+{
+    const std::vector<std::string> ports = getPorts();
+    const std::map<std::string, std::string> outputs = getInputOutputs();
+    std::map<std::string, std::string> kept;
+
+    for (const auto& entry : outputs) {
+        if (std::find(ports.begin(), ports.end(), entry.first) != ports.end()) {
+            kept.insert(entry);
+        }
+    }
+    for (std::map<std::string, NodeWPtr>::iterator it = _portUpstreams.begin(); it != _portUpstreams.end();) {
+        if (std::find(ports.begin(), ports.end(), it->first) == ports.end()) {
+            it = _portUpstreams.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    if (kept.size() != outputs.size()) {
+        setInputOutputs(kept);
+    }
+}
+
+void
+NetworkNode::onInputChanged(int inputNb)
+{
+    if (_applyingPorts) {
+        return;
+    }
+    refreshKnobsEnabled();
+    const std::vector<std::string> ports = getPorts();
+    if ((inputNb < 0) || (inputNb >= (int)ports.size())) {
+        return;
+    }
+    NodePtr node = getNode();
+    NodePtr input = node ? node->getInput(inputNb) : NodePtr();
+    // A disconnect keeps the name: deleting the upstream node disconnects the input, and undoing
+    // the delete reconnects the same node, which must read the same output again.
+    if (!input) {
+        return;
+    }
+    const std::string& label = ports[inputNb];
+    const std::map<std::string, NodeWPtr>::const_iterator previous = _portUpstreams.find(label);
+    const bool otherUpstream = (previous != _portUpstreams.end()) && (previous->second.lock() != input);
+    _portUpstreams[label] = input;
+    const std::string output = getOutputForInput(label);
+    if (output.empty()) {
+        return;
+    }
+    const NetworkNode* upstream = dynamic_cast<const NetworkNode*>(input->getEffectInstance().get());
+    // A loader or a paste connects inputs one at a time after all their names are set, with no
+    // previous upstream, so only the changed input's entry is checked.
+    if (otherUpstream || !upstream || !upstream->findOutput(output)) {
+        setOutputForInput(label, std::string());
+    }
+}
+
+bool
+NetworkNode::portTypesConvert(const OutputPortDescriptor& from,
+                              const PortDescriptor& to)
+{
+    if (from.type == to.type) {
+        return true;
+    }
+    if (isNumericClass(from.typeClass) && isNumericClass(to.typeClass)) {
+        return true;
+    }
+    // A texture evaluates to a value at every point, so it feeds any port whose value varies.
+    if ((from.typeClass == PortTypeClass::Texture) && to.varying) {
+        return true;
+    }
+    if ((from.typeClass == PortTypeClass::Custom) || (from.typeClass == PortTypeClass::String)) {
+        return false;
+    }
+
+    return from.typeClass == to.typeClass;
+}
+
+NetworkNode::ConnectionCheckEnum
+NetworkNode::checkConnection(const NetworkNode& upstream,
+                             const std::string& outputName,
+                             const NetworkNode& downstream,
+                             const std::string& inputLabel)
+{
+    bool sharesTarget = false;
+
+    for (const std::string& target : upstream.layout().targets) {
+        const std::vector<std::string>& theirs = downstream.layout().targets;
+        if (std::find(theirs.begin(), theirs.end(), target) != theirs.end()) {
+            sharesTarget = true;
+            break;
+        }
+    }
+    if (!sharesTarget) {
+        return eConnectionNoCommonTarget;
+    }
+    const OutputPortDescriptor* output = upstream.findOutput(outputName);
+    if (!output) {
+        return eConnectionNoSuchOutput;
+    }
+    const std::vector<std::string> ports = downstream.getPorts();
+    const NetworkAttribute* attribute = downstream.findAttribute(inputLabel);
+    if (!attribute || (std::find(ports.begin(), ports.end(), inputLabel) == ports.end())) {
+        return eConnectionNoSuchInput;
+    }
+
+    return portTypesConvert(*output, attribute->port) ? eConnectionOk : eConnectionTypeMismatch;
+}
+
+StatusEnum
+NetworkNode::render(const RenderActionArgs& /*args*/)
+{
+    return eStatusFailed;
+}
+
+NetworkEditPortsCommand::NetworkEditPortsCommand(const NodePtr& node,
+                                                 const std::vector<std::string>& ports,
+                                                 const std::string& text)
+    : UndoCommand(text)
+    , _node(node)
+    , _before()
+    , _after(ports)
+    , _connections()
+    , _outputs()
+{
+    NetworkNode* effect = node ? dynamic_cast<NetworkNode*>(node->getEffectInstance().get()) : nullptr;
+
+    if (!effect) {
+        return;
+    }
+    _before = effect->getPorts();
+    for (std::size_t i = 0; i < _before.size(); ++i) {
+        NodePtr input = node->getInput((int)i);
+        if (input) {
+            _connections[_before[i]] = input;
+        }
+        const std::string output = effect->getOutputForInput(_before[i]);
+        if (!output.empty()) {
+            _outputs[_before[i]] = output;
+        }
+    }
+}
+
+void
+NetworkEditPortsCommand::redo()
+{
+    NodePtr node = _node.lock();
+    NetworkNode* effect = node ? dynamic_cast<NetworkNode*>(node->getEffectInstance().get()) : nullptr;
+
+    if (effect) {
+        effect->setPorts(_after);
+    }
+}
+
+void
+NetworkEditPortsCommand::undo()
+{
+    NodePtr node = _node.lock();
+    NetworkNode* effect = node ? dynamic_cast<NetworkNode*>(node->getEffectInstance().get()) : nullptr;
+
+    if (!effect) {
+        return;
+    }
+    effect->setPorts(_before);
+    for (std::size_t i = 0; i < _before.size(); ++i) {
+        const std::map<std::string, NodeWPtr>::const_iterator it = _connections.find(_before[i]);
+        NodePtr input = (it == _connections.end()) ? NodePtr() : it->second.lock();
+        if (input && !node->getInput((int)i)) {
+            node->connectInput(input, (int)i);
+        }
+    }
+    for (const auto& output : _outputs) {
+        effect->setOutputForInput(output.first, output.second);
+    }
+}
+
+bool
+promoteNetworkPort(const NodePtr& node,
+                   const std::string& attribute)
+{
+    NetworkNode* effect = node ? dynamic_cast<NetworkNode*>(node->getEffectInstance().get()) : nullptr;
+    const NetworkAttribute* found = effect ? effect->findAttribute(attribute) : nullptr;
+
+    if (!found || !NetworkNode::canPromote(*found)) {
+        return false;
+    }
+    std::vector<std::string> ports = effect->getPorts();
+    if (std::find(ports.begin(), ports.end(), attribute) != ports.end()) {
+        return true;
+    }
+    ports.push_back(attribute);
+    node->pushUndoCommand(std::make_shared<NetworkEditPortsCommand>(node, ports, "Promote " + found->label));
+
+    return true;
+}
+
+bool
+demoteNetworkPort(const NodePtr& node,
+                  const std::string& attribute)
+{
+    NetworkNode* effect = node ? dynamic_cast<NetworkNode*>(node->getEffectInstance().get()) : nullptr;
+    const NetworkAttribute* found = effect ? effect->findAttribute(attribute) : nullptr;
+
+    if (!found || !NetworkNode::canDemote(*found)) {
+        return false;
+    }
+    std::vector<std::string> ports = effect->getPorts();
+    const std::vector<std::string>::iterator it = std::find(ports.begin(), ports.end(), attribute);
+    if (it == ports.end()) {
+        return true;
+    }
+    ports.erase(it);
+    node->pushUndoCommand(std::make_shared<NetworkEditPortsCommand>(node, ports, "Demote " + found->label));
+
+    return true;
+}
+
+NATRON_NAMESPACE_EXIT

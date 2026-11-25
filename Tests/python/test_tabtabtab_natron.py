@@ -1050,6 +1050,24 @@ class NatronAdapterTests(unittest.TestCase):
 
         self.assertEqual(self._labels(items), ["Blur", "DeepFromImage", "DeepHoldout", "Dot", "Preferences", "Project3D"])
 
+    def test_network_nodes_are_listed_only_for_a_network_kind(self):
+        h = self._load_adapter()
+        self._selected_kind_menu(h)
+        shader = _plugin_action("Principled BSDF", "cycles_principled_bsdf")
+        shader._properties["natronInputKind"] = "network"
+        shader._properties["natronInputKinds"] = "network"
+        self._set_nodes_menu(h, [
+            _submenu("Filter", [_plugin_action("Blur", "Blur")]),
+            _submenu("Shader", [shader]),
+        ])
+
+        h.module.launch(_FakeApp())
+        self.assertEqual(self._labels(h.module._plugin.get_items()), ["Blur", "Preferences"])
+        h.module.launch(_FakeApp(), {"selectedKind": "image"})
+        self.assertNotIn("Principled BSDF", self._labels(h.module._plugin.get_items()))
+        h.module.launch(_FakeApp(), {"selectedKind": "network"})
+        self.assertIn("Principled BSDF", self._labels(h.module._plugin.get_items()))
+
     def test_selected_scene_node_lists_and_runs_menu_commands(self):
         h = self._load_adapter()
         self._selected_kind_menu(h)

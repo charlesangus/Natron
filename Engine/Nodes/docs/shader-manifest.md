@@ -21,7 +21,7 @@ Both generators run inside the dev image, which carries the bundled renderers:
 
 ```
 python3 tools/shaders/generate_moonray_manifest.py
-cmake -S tools/shaders -B build/shader-tools -DCYCLES_SOURCE_DIR=<cycles source at hdCycles' commit>
+cmake -S tools/shaders -B build/shader-tools -DCYCLES_SOURCE_DIR=/usr/local/share/cycles-src
 cmake --build build/shader-tools
 build/shader-tools/dump_cycles_manifest --library /usr/local/plugin/usd/hdCycles.so \
     --source /usr/local/plugin/usd/hdCycles/SOURCE \
@@ -32,12 +32,16 @@ The image builds Cycles only into `hdCycles.so`, with its symbols hidden. The du
 plug-in, finds `ccl::NodeType::type_names` and `ccl::NodeType::find` in the library's ELF symbol
 table, and reads the registry through the headers of the same Cycles commit. Output is
 deterministic: regenerating from the same renderers gives the same bytes.
+The image keeps the headers of hdCycles' Cycles commit in `/usr/local/share/cycles-src`
+(`tools/ci/local/build-cycles.sh`), which is all the dump tool compiles against.
+
 `tools/shaders/check_manifest_drift.sh` regenerates both manifests in the image and compares them
 with the committed files, naming every node, attribute and output that changed, so a renderer
-upgrade cannot change shaders unnoticed:
+upgrade cannot change shaders unnoticed. `.github/workflows/dev-image.yml` runs it in every newly
+built image before pushing it, with the checkout mounted; by hand, in the image:
 
 ```
-tools/shaders/check_manifest_drift.sh --cycles-source <cycles source at hdCycles' commit>
+tools/shaders/check_manifest_drift.sh
 ```
 
 ## Format
@@ -112,7 +116,9 @@ Optional renderer metadata, kept so later milestones need not regenerate:
   `mix_closure_weight`. Internal sockets (`SocketType::INTERNAL`, such as Principled BSDF's
   `surface_mix_weight`) are not attributes.
 - MoonRay: display filters, and every class that is not a material, map, normal map, displacement
-  or volume shader (lights, light filters, cameras, geometry, sets, render outputs).
+  or volume shader (lights, light filters, cameras, geometry, sets, render outputs). The `Test*`
+  classes MoonRay builds for its own unit tests (`TestInputsMap`, `TestColorOutputMap`, ...) are
+  not user shaders and are left out too.
 
 ## Layout tables
 
@@ -140,3 +146,16 @@ Optional renderer metadata, kept so later milestones need not regenerate:
 `check_manifest.py` fails when a table names a node or attribute the manifest does not have, puts
 an attribute in two groups, misses a node, or lists key ports that are not linkable, and it reports
 every Cycles attribute that no group names: those land in an "Other" group.
+
+## Node docs and the coverage audit
+
+`tools/shaders/audit_shader_nodes.py --docs` writes one page per shader under
+`Engine/Nodes/Scene/docs/shaders/<renderer>/<id>.md`: its outputs, and per page every attribute
+with its label, script name, type, default and whether it is a knob, a port or both.
+`--check-docs` (ctest `ShaderDocsPython`) fails when a committed page differs from the manifests;
+regenerate the pages whenever a manifest or layout table changes.
+
+The same script audits the nodes Natron builds: `Tests/Scene/ShaderAudit_Test.cpp` runs its
+`audit()` in the test application, which creates every shader of both renderers by ID and checks
+each manifest attribute's knob (type, dimensions, label, default, options) or port, which
+attributes can be promoted, and the ports a new node starts with. It must report no problem.

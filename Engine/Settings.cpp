@@ -3794,6 +3794,7 @@ Settings::getEdgeKindColor(DataKindEnum kind,
         return true;
     case eDataKindImage:
     case eDataKindPolymorphic:
+    case eDataKindNetwork:
     default:
         return false;
     }

@@ -202,6 +202,7 @@ renderNodeImageImpl(const NodePtr& node,
     case eDataKindDeep:
     // Raw values are camera-native, per-photosite on a mosaic: no RGBA reading of them means anything.
     case eDataKindRaw:
+    case eDataKindNetwork:
         return ImagePtr();
     case eDataKindImage:
     case eDataKindScene:

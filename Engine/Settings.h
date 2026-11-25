@@ -299,8 +299,8 @@ public:
 
     /**
      * @brief The colour an edge should tint itself with for the given data kind, if any. Returns
-     * false for eDataKindImage and eDataKindPolymorphic, which have no knob of their own and stay
-     * untinted (the edge keeps its own default colour), leaving r/g/b untouched.
+     * false for eDataKindImage, eDataKindPolymorphic and eDataKindNetwork, which have no knob of
+     * their own and stay untinted (the edge keeps its own default colour), leaving r/g/b untouched.
      **/
     bool getEdgeKindColor(DataKindEnum kind, float* r, float* g, float* b) const;
 

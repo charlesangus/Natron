@@ -208,6 +208,18 @@ qt_add_resources(NatronEngine AiModelManifest
     BASE "${CMAKE_CURRENT_SOURCE_DIR}/Ai/data"
     FILES "${CMAKE_CURRENT_SOURCE_DIR}/Ai/data/ai_models.json"
 )
+# The renderers' shader manifests and page layouts Nodes/Scene/Shaders/ShaderManifest reads, as
+# :/Shaders/<renderer>.json and :/Shaders/<renderer>_layout.json.
+set(NatronEngine_SHADER_MANIFEST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Scene/Shaders/manifest")
+qt_add_resources(NatronEngine ShaderManifest
+    PREFIX "/Shaders"
+    BASE "${NatronEngine_SHADER_MANIFEST_DIR}"
+    FILES
+        "${NatronEngine_SHADER_MANIFEST_DIR}/cycles.json"
+        "${NatronEngine_SHADER_MANIFEST_DIR}/cycles_layout.json"
+        "${NatronEngine_SHADER_MANIFEST_DIR}/moonray.json"
+        "${NatronEngine_SHADER_MANIFEST_DIR}/moonray_layout.json"
+)
 target_link_libraries(NatronEngine
     PUBLIC
         HostSupport

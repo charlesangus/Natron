@@ -84,6 +84,9 @@ struct InputLayer {
 /**
  * @brief Statically describes one input, or for InputRole::Variadic a run of count inputs
  * labelled label followed by firstNumber, firstNumber + 1, ...
+ *
+ * A network node builds its inputs at run time from its ports; what each one carries is its
+ * PortDescriptor (Node::getInputPortDescriptor()), which this static description has no room for.
  **/
 struct InputSpec {
     std::string_view label;

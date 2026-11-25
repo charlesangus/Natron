@@ -58,6 +58,7 @@
 #include "Engine/Nodes/Metadata/MetadataTimeCode.h"
 #include "Engine/Nodes/Metadata/MetadataView.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/Network/NetworkNode.h"
 #include "Engine/Nodes/RFV/RFVRead.h"
 #include "Engine/Nodes/RFV/RFVSet.h"
 #include "Engine/Nodes/RFV/RFVSwitch.h"
@@ -168,7 +169,8 @@ TEST_F(NativePluginListTest, EveryFragmentIsRegisteredAndEveryNativePluginHasAFr
                 }
             }
             if (!matchesFragment) {
-                if (testRegisteredPluginIds().count(versions.first)) {
+                // Network plug-ins are registered from their manifests, not from fragments.
+                if (testRegisteredPluginIds().count(versions.first) || ((void (*)())builder.second == (void (*)())&NetworkNode::BuildEffect)) {
                     continue;
                 }
                 EffectInstancePtr effect(builder.second(NodePtr()));

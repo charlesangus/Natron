@@ -49,6 +49,7 @@
 #include "Engine/NodeGroup.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Metadata/EffectMetadata.h"
+#include "Engine/Nodes/Network/NetworkNode.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpContext.h"
 #include "Engine/Project.h"
 #include "Engine/PyParameter.h" // checkHolderIsEditable
@@ -566,6 +567,86 @@ Effect::getInputLabel(int inputNumber)
     }
 
     return QString();
+}
+
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+NetworkNode*
+networkEffectOf(const NodePtr& node)
+{
+    return node ? dynamic_cast<NetworkNode*>(node->getEffectInstance().get()) : nullptr;
+}
+
+QStringList
+toQStringList(const std::vector<std::string>& list)
+{
+    QStringList ret;
+
+    for (const std::string& item : list) {
+        ret.push_back(QString::fromUtf8(item.c_str()));
+    }
+
+    return ret;
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+
+QStringList
+Effect::getPorts() const
+{
+    NetworkNode* effect = networkEffectOf(getInternalNode());
+
+    return effect ? toQStringList(effect->getPorts()) : QStringList();
+}
+
+QStringList
+Effect::getPortAttributes() const
+{
+    NetworkNode* effect = networkEffectOf(getInternalNode());
+    QStringList ret;
+
+    if (!effect) {
+        return ret;
+    }
+    for (const PortDescriptor& descriptor : effect->getPortDescriptors()) {
+        ret.push_back(QString::fromUtf8(descriptor.attribute.c_str()));
+    }
+
+    return ret;
+}
+
+bool
+Effect::promotePort(const QString& attribute)
+{
+    return promoteNetworkPort(getInternalNode(), attribute.toStdString());
+}
+
+bool
+Effect::demotePort(const QString& attribute)
+{
+    return demoteNetworkPort(getInternalNode(), attribute.toStdString());
+}
+
+QString
+Effect::getOutputForInput(const QString& inputLabel) const
+{
+    NetworkNode* effect = networkEffectOf(getInternalNode());
+
+    return effect ? QString::fromUtf8(effect->getOutputForInput(inputLabel.toStdString()).c_str()) : QString();
+}
+
+bool
+Effect::setOutputForInput(const QString& inputLabel,
+                          const QString& outputName)
+{
+    NetworkNode* effect = networkEffectOf(getInternalNode());
+
+    if (!effect) {
+        return false;
+    }
+    effect->setOutputForInput(inputLabel.toStdString(), outputName.toStdString());
+
+    return true;
 }
 
 QString

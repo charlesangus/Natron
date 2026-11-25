@@ -67,6 +67,7 @@ class ShaderManifestTest(unittest.TestCase):
         self.assertFalse([i for i in ids if i.endswith("DisplayFilter")])
         for absent in ("RectLight", "PerspectiveCamera", "RdlMeshGeometry", "DecayLightFilter"):
             self.assertNotIn(absent, ids)
+        self.assertFalse([i for i in ids if i.startswith("Test")])
         for present in ("ImageMap", "ImageNormalMap", "NormalDisplacement", "VdbVolume", "UsdPreviewSurface"):
             self.assertIn(present, ids)
 

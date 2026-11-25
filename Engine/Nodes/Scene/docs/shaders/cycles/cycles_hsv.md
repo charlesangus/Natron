@@ -1,0 +1,21 @@
+# HSV
+
+Cycles utility `cycles_hsv`, for the cycles target.
+
+Generated from the Cycles shader manifest by `tools/shaders/audit_shader_nodes.py`.
+
+## Outputs
+
+| Name | Type |
+| --- | --- |
+| color | color |
+
+## Inputs
+
+| Label | Script name | Type | Default | Port | Description |
+| --- | --- | --- | --- | --- | --- |
+| Hue | `hue` | float | 0.5 | port | Hue |
+| Saturation | `saturation` | float | 1 | port | Saturation |
+| Value | `value` | float | 1 | port | Value |
+| Fac | `fac` | float | 1 | port | Fac |
+| Color | `color` | color | 0 0 0 | port | Color |

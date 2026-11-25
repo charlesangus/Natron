@@ -1,8 +1,9 @@
 # Standalone build of the Cycles manifest dump tool. It is not part of Natron's build: Natron reads
 # the committed manifests and needs no renderer. Configure it inside the dev image, where hdCycles
-# is installed, against the Cycles source of the commit hdCycles was built from:
+# is installed, against the Cycles headers of the commit hdCycles was built from, which the image
+# keeps in /usr/local/share/cycles-src:
 #
-#   cmake -S tools/shaders -B build/shader-tools -DCYCLES_SOURCE_DIR=<cycles checkout>
+#   cmake -S tools/shaders -B build/shader-tools -DCYCLES_SOURCE_DIR=/usr/local/share/cycles-src
 #   cmake --build build/shader-tools
 #   build/shader-tools/dump_cycles_manifest --library /usr/local/plugin/usd/hdCycles.so \
 #       --source /usr/local/plugin/usd/hdCycles/SOURCE \
@@ -13,9 +14,9 @@
 cmake_minimum_required(VERSION 3.20)
 project(NatronShaderTools LANGUAGES CXX)
 
-set(CYCLES_SOURCE_DIR "" CACHE PATH "Cycles source tree at the commit hdCycles was built from")
+set(CYCLES_SOURCE_DIR "/usr/local/share/cycles-src" CACHE PATH "Cycles headers at the commit hdCycles was built from")
 if(NOT EXISTS "${CYCLES_SOURCE_DIR}/src/graph/node_type.h")
-    message(FATAL_ERROR "CYCLES_SOURCE_DIR must name a Cycles checkout (src/graph/node_type.h)")
+    message(FATAL_ERROR "CYCLES_SOURCE_DIR must name a Cycles source or header tree (src/graph/node_type.h)")
 endif()
 
 find_path(OIIO_INCLUDE_DIR OpenImageIO/ustring.h HINTS /usr/local/include REQUIRED)

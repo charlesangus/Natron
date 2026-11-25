@@ -7,7 +7,8 @@ the DSO's attribute declarations with every include resolved. The image installs
 so the manifest reflects the DSOs themselves; both give the same manifest.
 
 Kept: materials, maps, normal maps, displacements and volume shaders. Display filters, lights,
-cameras, geometry and the other scene classes are not shaders and are left out.
+cameras, geometry and the other scene classes are not shaders and are left out, and so are the
+Test* classes MoonRay builds for its own unit tests.
 
 The manifest format is described in Engine/Nodes/docs/shader-manifest.md.
 """
@@ -37,6 +38,9 @@ KINDS = {
     "Displacement": "displacement",
     "Volume": "volume",
 }
+
+# MoonRay's own test shaders (TestInputsMap, TestColorOutputMap, ...) are not user shaders.
+TEST_CLASS_PREFIX = "Test"
 
 SOURCE_SUBMODULES = ("moonray/moonray", "moonray/moonshine", "moonray/scene_rdl2")
 
@@ -138,6 +142,20 @@ def is_array(attr_type):
     return attr_type.endswith("Vector") or attr_type.endswith("Indexable")
 
 
+FORBIDDEN_NAMES = re.compile(r"\b(nuke|houdini|sidefx|foundry)\b", re.IGNORECASE)
+
+# MoonRay comments that name another product, rewritten to neutral wording.
+COMMENT_REWRITES = (
+    ("in the style of Nuke where the pivot is at 0.18", "with the pivot at 0.18"),
+)
+
+
+def clean_comment(text):
+    for old, new in COMMENT_REWRITES:
+        text = text.replace(old, new)
+    return text
+
+
 def attribute_entry(name, attr, group):
     attr_type = attr["attrType"]
     meta = attr.get("metadata") or {}
@@ -156,7 +174,7 @@ def attribute_entry(name, attr, group):
     if meta.get("subgroup"):
         entry["subgroup"] = meta["subgroup"]
     if meta.get("comment"):
-        entry["comment"] = meta["comment"]
+        entry["comment"] = clean_comment(meta["comment"])
     if "interface" in attr:
         entry["interface"] = attr["interface"]
     if attr.get("filename"):
@@ -217,7 +235,8 @@ def build_manifest(root, json_dir):
     source = read_source(root)
     source["moonray_version"] = ",".join(versions)
     source["generator"] = "tools/shaders/generate_moonray_manifest.py"
-    nodes = [node_entry(n, c) for n, c in sorted(classes.items()) if c.get("type") in KINDS]
+    nodes = [node_entry(n, c) for n, c in sorted(classes.items())
+             if c.get("type") in KINDS and not n.startswith(TEST_CLASS_PREFIX)]
     return {"schema": SCHEMA, "renderer": "moonray", "source": source, "nodes": nodes}
 
 
@@ -237,6 +256,13 @@ def main(argv=None):
             manifest = build_manifest(args.moonray_root, tmp)
     else:
         manifest = build_manifest(args.moonray_root, os.path.join(args.moonray_root, "coredata"))
+
+    offenders = ["%s.%s" % (n["id"], a["name"]) for n in manifest["nodes"] for a in n["attributes"]
+                 if FORBIDDEN_NAMES.search(a.get("comment", ""))]
+    if offenders:
+        print("generate_moonray_manifest: comments name a product that docs must not mention; "
+              "add a COMMENT_REWRITES entry for: " + ", ".join(offenders), file=sys.stderr)
+        return 1
 
     text = format_json(manifest) + "\n"
     if args.output == "-":

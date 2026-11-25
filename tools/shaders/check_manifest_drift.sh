@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # Regenerates the Cycles and MoonRay shader manifests from the renderers installed in the dev image
 # and fails, naming each node and attribute that changed, when they differ from the committed
-# manifests. Run it in the image (or at image build, once the renderers are installed), so a
-# renderer upgrade cannot change shaders unnoticed.
+# manifests. The dev image's workflow (.github/workflows/dev-image.yml) runs it in every newly built
+# image before pushing it, with this checkout mounted, so a renderer upgrade cannot change shaders
+# unnoticed. It can be run in the image by hand the same way.
 #
 # Usage: check_manifest_drift.sh [options]
 #   --manifest-dir DIR    committed manifests (default: Engine/Nodes/Scene/Shaders/manifest)
-#   --cycles-source DIR   Cycles source at hdCycles' commit, to build the dump tool
+#   --cycles-source DIR   Cycles headers at hdCycles' commit, to build the dump tool (default:
+#                         /usr/local/share/cycles-src, which tools/ci/local/build-cycles.sh keeps)
 #   --dump-tool PATH      an already built dump_cycles_manifest, instead of --cycles-source
 #   --hdcycles PATH       the plug-in (default: /usr/local/plugin/usd/hdCycles.so)
 #   --moonray-root DIR    the MoonRay install (default: /opt/moonray)
@@ -18,7 +20,7 @@ set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 manifest_dir="${root}/Engine/Nodes/Scene/Shaders/manifest"
-cycles_source=""
+cycles_source="/usr/local/share/cycles-src"
 dump_tool=""
 hdcycles="/usr/local/plugin/usd/hdCycles.so"
 moonray_root="${NATRON_MOONRAY_ROOT:-/opt/moonray}"
@@ -50,8 +52,9 @@ fi
 
 if [[ -z "${only}" || "${only}" == "cycles" ]]; then
     if [[ -z "${dump_tool}" ]]; then
-        if [[ -z "${cycles_source}" ]]; then
-            echo "check_manifest_drift.sh: Cycles needs --cycles-source or --dump-tool" >&2
+        if [[ ! -f "${cycles_source}/src/graph/node_type.h" ]]; then
+            echo "check_manifest_drift.sh: no Cycles headers in ${cycles_source};" \
+                "pass --cycles-source or --dump-tool" >&2
             exit 2
         fi
         cmake -S "${root}/tools/shaders" -B "${work}/tools" -DCMAKE_BUILD_TYPE=Release \

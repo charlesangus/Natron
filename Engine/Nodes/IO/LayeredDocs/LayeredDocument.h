@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -46,13 +47,43 @@ namespace LayeredDocs {
 #define kLayeredMetadataPrefix "layered/"
 
 /**
+ * @brief A rectangle of a plane in the plane's own pixels: columns [x1, x2) and rows [y1, y2),
+ * rows counted down from the plane's top.
+ **/
+struct Region {
+    int x1 = 0;
+    int y1 = 0;
+    int x2 = 0;
+    int y2 = 0;
+
+    int width() const
+    {
+        return x2 - x1;
+    }
+
+    int height() const
+    {
+        return y2 - y1;
+    }
+};
+
+/**
  * @brief Pixels of a layered document: a rectangle of the canvas, whose rows run downwards from
  * the canvas's top, and how to decode it.
  *
- * `load` fills `pixels` with all `width * height` pixels of the rectangle, interleaved in
- * `channels` order, top row first, as `type`, with alpha associated (premultiplied), the way
- * OIIO hands out every other file. It may be called from any thread, at most once per document
- * unless it fails.
+ * Pixels are interleaved in `channels` order, top row first, as `type`, with alpha associated
+ * (premultiplied), the way OIIO hands out every other file. A reader sets one of the decoders:
+ *
+ * - `loadRegion` decodes only `region`, writing its `region.width() * region.height()` pixels
+ *   contiguously to `dst`. Reads go straight to it, so that a read of a few rows of a huge plane
+ *   decodes only those. It may be called from any thread, any number of times.
+ * - `load`, for a format that can only decode a plane whole, fills `pixels` with all
+ *   `width * height` pixels. The document keeps the result, so it is called at most once unless it
+ *   fails, and may be called from any thread.
+ *
+ * `tileWidth` and `tileHeight`, when a `loadRegion` reader sets both, are the size of the blocks
+ * it decodes in; the plane is then read as OIIO tiles of that size rather than as scanlines, so
+ * that a read of a few columns does not decode whole rows.
  **/
 struct Plane {
     int x = 0;
@@ -62,7 +93,33 @@ struct Plane {
     std::vector<std::string> channels;
     OIIO::TypeDesc type = OIIO::TypeDesc::UINT8;
     std::function<bool(std::vector<unsigned char>* pixels, std::string* error)> load;
+    std::function<bool(const Region& region, unsigned char* dst, std::string* error)> loadRegion;
+    int tileWidth = 0;
+    int tileHeight = 0;
+
+    bool decodable() const
+    {
+        return bool(load) || bool(loadRegion);
+    }
+
+    bool tiled() const
+    {
+        return bool(loadRegion) && tileWidth > 0 && tileHeight > 0;
+    }
 };
+
+/**
+ * @brief Adds `rows` to the count of stored rows the readers have decoded: a reader counts each
+ * row of each stored channel or tile row it decompresses or copies out of the file, and a plane
+ * decoded whole counts all of its rows. Lets a test see how much of a file a read decoded.
+ * Thread-safe.
+ **/
+void countDecodedRows(std::uint64_t rows);
+
+/**
+ * @brief The count countDecodedRows keeps, since the process started.
+ **/
+std::uint64_t decodedRows();
 
 /**
  * @brief A raster layer. `plane` always has the channels R, G, B and A, so that a mask folds into
@@ -107,7 +164,7 @@ public:
     int width = 0;
     int height = 0;
 
-    // The stored composite; one without `load` is rebuilt by flattening the layers.
+    // The stored composite; one with no decoder is rebuilt by flattening the layers.
     Plane composite;
 
     std::vector<Layer> layers;
@@ -136,20 +193,24 @@ public:
 
     /**
      * @brief The header of `subimage`: its data window within the full window, which is the
-     * canvas, its channels and type, `oiio:subimagename` set to the layer ID for a layer, and the
-     * document's metadata (describe) on the composite.
+     * canvas, its channels and type, its tile size for a tiled plane, `oiio:subimagename` set to
+     * the layer ID for a layer, and the document's metadata (describe) on the composite.
      **/
     OIIO::ImageSpec specOf(int subimage) const;
 
     /**
-     * @brief Rows [y1, y2) of the data window of `subimage`, in canvas rows counted down from the
-     * top, interleaved as its spec gives them. Thread-safe.
+     * @brief Columns [x1, x2) and rows [y1, y2) of the data window of `subimage`, in canvas pixels
+     * with rows counted down from the top, interleaved as its spec gives them, row after row with
+     * no padding. Only the part asked for is decoded when the reader can window its planes.
+     * Thread-safe.
      **/
-    bool readRows(int subimage,
-                  int y1,
-                  int y2,
-                  void* dst,
-                  std::string* error) const;
+    bool readRegion(int subimage,
+                    int x1,
+                    int y1,
+                    int x2,
+                    int y2,
+                    void* dst,
+                    std::string* error) const;
 
     /**
      * @brief Adds the document's metadata to `spec` as attributes under kLayeredMetadataPrefix:
@@ -170,10 +231,20 @@ private:
                   const std::vector<unsigned char>** pixels,
                   std::string* error) const;
 
-    bool flatten(std::vector<unsigned char>* pixels,
+    bool flatten(int x1,
+                 int y1,
+                 int x2,
+                 int y2,
+                 void* dst,
                  std::string* error) const;
 
     const Plane& planeOf(int subimage) const;
+
+    void windowOf(int subimage,
+                  int* x,
+                  int* y,
+                  int* w,
+                  int* h) const;
 
     bool _flattened = false;
     int _compositeX = 0;

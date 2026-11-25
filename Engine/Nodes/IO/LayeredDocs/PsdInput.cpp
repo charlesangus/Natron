@@ -32,8 +32,10 @@
 #include <cstring>
 #include <fstream>
 #include <initializer_list>
+#include <mutex>
 #include <new>
 #include <stdexcept>
+#include <utility>
 
 #include <zlib.h>
 
@@ -546,10 +548,25 @@ namespace {
         return info;
     }
 
+    void
+    readExactly(const std::string& path,
+                std::uint64_t offset,
+                unsigned char* dst,
+                std::uint64_t length)
+    {
+        Reader in(path);
+
+        if (offset > in.size()) {
+            throw PsdError("The file is truncated");
+        }
+        in.seek(offset);
+        in.read(dst, length);
+    }
+
     std::vector<unsigned char>
-    readAt(const std::string& path,
-           std::uint64_t offset,
-           std::uint64_t length)
+    bytesAt(const std::string& path,
+            std::uint64_t offset,
+            std::uint64_t length)
     {
         Reader in(path);
 
@@ -558,7 +575,7 @@ namespace {
         }
         in.seek(offset);
 
-        return in.bytes(std::min(length, in.size() - offset));
+        return in.bytes(length);
     }
 
     void
@@ -664,103 +681,168 @@ namespace {
         }
     }
 
-    // `planes` planes of width x height samples from data compressed with `compression`, where
-    // the data holds `storedPlanes` planes (only RLE needs to know, for its row-length table).
-    std::vector<float>
-    decodePlanes(int compression,
-                 const unsigned char* data,
-                 std::size_t size,
-                 std::size_t planes,
-                 std::size_t storedPlanes,
-                 std::size_t width,
-                 std::size_t height,
-                 int depth,
-                 bool psb)
+    std::size_t
+    sampleBytesOf(int depth)
     {
-        const std::size_t sampleBytes = (std::size_t)depth / 8;
-        const std::size_t rowBytes = width * sampleBytes;
-        const std::size_t planeBytes = rowBytes * height;
-        std::vector<unsigned char> raw(planeBytes * planes);
+        return (std::size_t)depth / 8;
+    }
 
-        switch (compression) {
-        case 0:
-            if (size < raw.size()) {
-                throw PsdError("Raw channel data is truncated");
-            }
-            std::memcpy(raw.data(), data, raw.size());
-            break;
-        case 1: {
-            const std::size_t countBytes = psb ? 4 : 2;
-            const std::size_t rows = storedPlanes * height;
-            if (size / countBytes < rows) {
-                throw PsdError("The RLE row table is truncated");
-            }
-            std::size_t offset = rows * countBytes;
-            for (std::size_t r = 0; r < planes * height; ++r) {
-                const unsigned char* entry = data + r * countBytes;
-                const std::size_t length = psb ? be32(entry) : be16(entry);
-                if (offset > size || length > size - offset) {
-                    throw PsdError("RLE data is truncated");
-                }
-                unpackBits(data + offset, length, raw.data() + r * rowBytes, rowBytes);
-                offset += length;
-            }
-            break;
-        }
-        case 2:
-        case 3:
-            inflateInto(data, size, raw.data(), raw.size());
-            if (compression == 3) {
-                unpredict(raw.data(), width, planes * height, depth);
-            }
-            break;
-        default:
-            throw PsdError("Unknown channel compression " + std::to_string(compression));
-        }
-
-        const std::size_t count = width * height * planes;
-        std::vector<float> values(count);
-        for (std::size_t i = 0; i < count; ++i) {
-            const unsigned char* p = raw.data() + i * sampleBytes;
+    // Big-endian samples [x1, x2) of a stored row as floats, `stride` floats apart.
+    void
+    samplesToFloat(const unsigned char* row,
+                   std::size_t x1,
+                   std::size_t x2,
+                   int depth,
+                   float* out,
+                   std::size_t stride)
+    {
+        for (std::size_t x = x1; x < x2; ++x, out += stride) {
             if (depth == 8) {
-                values[i] = p[0] / 255.f;
+                *out = row[x] / 255.f;
             } else if (depth == 16) {
-                values[i] = be16(p) / 65535.f;
+                *out = be16(row + x * 2) / 65535.f;
             } else {
-                const std::uint32_t bits = be32(p);
-                std::memcpy(&values[i], &bits, sizeof(float));
+                const std::uint32_t bits = be32(row + x * 4);
+                std::memcpy(out, &bits, sizeof(float));
+            }
+        }
+    }
+
+    // Samples stored one plane after another, all compressed together: a layer channel (one
+    // plane) or the merged image data (a plane per channel). Raw and RLE rows are read from the
+    // file only when asked for, RLE through the row lengths that open the data; ZIP data has no
+    // way to start mid-stream, so it is decompressed whole on the first read and kept.
+    class StoredPlanes {
+    public:
+        // `planes` are those ever read; the data holds `storedPlanes`, which only RLE's row table
+        // needs to know.
+        StoredPlanes(const std::shared_ptr<const Source>& source,
+                     std::uint64_t offset,
+                     std::uint64_t length,
+                     std::size_t width,
+                     std::size_t height,
+                     std::size_t planes,
+                     std::size_t storedPlanes)
+            : _source(source)
+            , _offset(offset)
+            , _length(length)
+            , _width(width)
+            , _height(height)
+            , _planes(planes)
+            , _storedPlanes(storedPlanes)
+        {
+        }
+
+        std::size_t rowBytes() const
+        {
+            return _width * sampleBytesOf(_source->depth);
+        }
+
+        // Rows [y1, y2) of `plane`, rowBytes() each, as stored big-endian samples.
+        void rows(std::size_t plane,
+                  std::size_t y1,
+                  std::size_t y2,
+                  unsigned char* dst)
+        {
+            {
+                std::lock_guard<std::mutex> lock(_mutex);
+                if (!_prepared) {
+                    prepare();
+                    _prepared = true;
+                }
+            }
+            if (plane >= _planes || y2 > _height || y1 > y2) {
+                throw PsdError("Channel rows out of range");
+            }
+            const std::size_t rb = rowBytes();
+            const std::size_t first = plane * _height + y1;
+            const std::size_t last = plane * _height + y2;
+            switch (_compression) {
+            case 0:
+                readExactly(_source->path, _offset + 2 + (std::uint64_t)first * rb, dst, (std::uint64_t)(last - first) * rb);
+                countDecodedRows(last - first);
+                break;
+            case 1: {
+                const std::vector<unsigned char> packed = bytesAt(_source->path, _rowStarts[first], _rowStarts[last] - _rowStarts[first]);
+                for (std::size_t r = first; r < last; ++r) {
+                    unpackBits(packed.data() + (_rowStarts[r] - _rowStarts[first]), (std::size_t)(_rowStarts[r + 1] - _rowStarts[r]), dst + (r - first) * rb, rb);
+                }
+                countDecodedRows(last - first);
+                break;
+            }
+            default:
+                std::memcpy(dst, _inflated.data() + first * rb, (last - first) * rb);
+                break;
             }
         }
 
-        return values;
-    }
-
-    std::vector<float>
-    decodeChannel(const Source& source,
-                  const Channel& channel,
-                  long long width,
-                  long long height)
-    {
-        if (width <= 0 || height <= 0) {
-            return std::vector<float>();
+    private:
+        void prepare()
+        {
+            if (_length < 2) {
+                throw PsdError("A channel is truncated");
+            }
+            unsigned char word[2];
+            readExactly(_source->path, _offset, word, 2);
+            _compression = be16(word);
+            const std::uint64_t size = _length - 2;
+            const std::size_t rb = rowBytes();
+            const std::size_t rows = _planes * _height;
+            switch (_compression) {
+            case 0:
+                if (size / std::max<std::size_t>(rb, 1) < rows) {
+                    throw PsdError("Raw channel data is truncated");
+                }
+                break;
+            case 1: {
+                const std::size_t countBytes = _source->psb ? 4 : 2;
+                if (size / countBytes < (std::uint64_t)_storedPlanes * _height) {
+                    throw PsdError("The RLE row table is truncated");
+                }
+                const std::vector<unsigned char> table = bytesAt(_source->path, _offset + 2, (std::uint64_t)rows * countBytes);
+                const std::uint64_t end = _offset + _length;
+                _rowStarts.resize(rows + 1);
+                _rowStarts[0] = _offset + 2 + (std::uint64_t)_storedPlanes * _height * countBytes;
+                for (std::size_t r = 0; r < rows; ++r) {
+                    const unsigned char* entry = table.data() + r * countBytes;
+                    const std::uint64_t length = _source->psb ? be32(entry) : be16(entry);
+                    if (_rowStarts[r] > end || length > end - _rowStarts[r]) {
+                        throw PsdError("RLE data is truncated");
+                    }
+                    _rowStarts[r + 1] = _rowStarts[r] + length;
+                }
+                break;
+            }
+            case 2:
+            case 3: {
+                const std::vector<unsigned char> data = bytesAt(_source->path, _offset + 2, size);
+                _inflated.resize(rows * rb);
+                inflateInto(data.data(), data.size(), _inflated.data(), _inflated.size());
+                if (_compression == 3) {
+                    unpredict(_inflated.data(), _width, rows, _source->depth);
+                }
+                countDecodedRows(rows);
+                break;
+            }
+            default:
+                throw PsdError("Unknown channel compression " + std::to_string(_compression));
+            }
         }
-        const std::vector<unsigned char> bytes = readAt(source.path, channel.offset, channel.length);
-        if (bytes.size() < 2 || bytes.size() != channel.length) {
-            throw PsdError("A layer channel is truncated");
-        }
 
-        return decodePlanes(be16(bytes.data()), bytes.data() + 2, bytes.size() - 2, 1, 1, (std::size_t)width, (std::size_t)height, source.depth, source.psb);
-    }
+        std::shared_ptr<const Source> _source;
+        std::uint64_t _offset;
+        std::uint64_t _length;
+        std::size_t _width;
+        std::size_t _height;
+        std::size_t _planes;
+        std::size_t _storedPlanes;
 
-    bool
-    toStoredType(const std::vector<float>& values,
-                 OIIO::TypeDesc type,
-                 std::vector<unsigned char>* pixels)
-    {
-        pixels->resize(values.size() * type.size());
-
-        return convertValues(OIIO::TypeDesc::FLOAT, values.data(), type, pixels->data(), values.size());
-    }
+        std::mutex _mutex;
+        bool _prepared = false;
+        int _compression = 0;
+        std::vector<std::uint64_t> _rowStarts;
+        std::vector<unsigned char> _inflated;
+    };
 
     bool
     hasChannel(const Record& record,
@@ -769,57 +851,116 @@ namespace {
         return std::any_of(record.channels.begin(), record.channels.end(), [id](const Channel& c) { return c.id == id; });
     }
 
-    bool
-    loadLayer(const Source& source,
-              const Record& record,
-              std::vector<unsigned char>* pixels,
-              std::string* error)
+    struct LayerPixels {
+        std::shared_ptr<const Source> source;
+        Record record;
+        // Channel IDs: -1 is the transparency, 0 and up the colour channels.
+        std::vector<std::pair<int, std::shared_ptr<StoredPlanes>>> channels;
+        const Mask* mask = nullptr;
+        // Null when the mask holds no pixels, so that all of the layer is outside it.
+        std::shared_ptr<StoredPlanes> maskPlanes;
+    };
+
+    std::shared_ptr<const LayerPixels>
+    layerPixelsOf(const std::shared_ptr<const Source>& source,
+                  const Record& record)
     {
+        const std::shared_ptr<LayerPixels> pixels = std::make_shared<LayerPixels>();
+
+        pixels->source = source;
+        pixels->record = record;
+        const Record& r = pixels->record;
+        const std::size_t width = (std::size_t)((long long)r.right - r.left);
+        const std::size_t height = (std::size_t)((long long)r.bottom - r.top);
+        int maskId = 0;
+        if (hasChannel(r, -3) && r.realMask.present && !r.realMask.disabled) {
+            pixels->mask = &r.realMask;
+            maskId = -3;
+        } else if (hasChannel(r, -2) && r.userMask.present && !r.userMask.disabled) {
+            pixels->mask = &r.userMask;
+            maskId = -2;
+        }
+        for (const Channel& channel : r.channels) {
+            if (channel.id == -1 || (channel.id >= 0 && channel.id < source->colourChannels)) {
+                pixels->channels.push_back(std::make_pair(channel.id, std::make_shared<StoredPlanes>(source, channel.offset, channel.length, width, height, 1, 1)));
+            } else if (pixels->mask && channel.id == maskId) {
+                const long long maskWidth = (long long)pixels->mask->right - pixels->mask->left;
+                const long long maskHeight = (long long)pixels->mask->bottom - pixels->mask->top;
+                if (maskWidth > 0 && maskHeight > 0 && maskWidth <= kMaxLayerSide && maskHeight <= kMaxLayerSide) {
+                    pixels->maskPlanes = std::make_shared<StoredPlanes>(source, channel.offset, channel.length, (std::size_t)maskWidth, (std::size_t)maskHeight, 1, 1);
+                }
+            }
+        }
+
+        return pixels;
+    }
+
+    bool
+    loadLayerRegion(const LayerPixels& layer,
+                    const Region& region,
+                    unsigned char* dst,
+                    std::string* error)
+    {
+        const Source& source = *layer.source;
+        const Record& record = layer.record;
+
         try {
-            const long long width = (long long)record.right - record.left;
-            const long long height = (long long)record.bottom - record.top;
-            const std::size_t count = (std::size_t)width * (std::size_t)height;
+            const std::size_t width = (std::size_t)region.width();
+            const std::size_t height = (std::size_t)region.height();
+            const std::size_t count = width * height;
             std::vector<float> rgba(count * 4, 0.f);
             for (std::size_t p = 0; p < count; ++p) {
                 rgba[p * 4 + 3] = 1.f;
             }
 
-            const Mask* mask = nullptr;
-            int maskId = 0;
-            if (hasChannel(record, -3) && record.realMask.present && !record.realMask.disabled) {
-                mask = &record.realMask;
-                maskId = -3;
-            } else if (hasChannel(record, -2) && record.userMask.present && !record.userMask.disabled) {
-                mask = &record.userMask;
-                maskId = -2;
-            }
-            std::vector<float> maskValues;
-            for (const Channel& channel : record.channels) {
-                if (channel.id == -1 || (channel.id >= 0 && channel.id < source.colourChannels)) {
-                    const std::vector<float> values = decodeChannel(source, channel, width, height);
-                    const int first = channel.id == -1 ? 3 : channel.id;
-                    const int last = channel.id == -1 ? 3 : source.colourChannels == 1 ? 2
-                                                                                       : channel.id;
-                    for (std::size_t p = 0; p < count; ++p) {
+            std::vector<unsigned char> rows;
+            std::vector<float> values(width);
+            for (const std::pair<int, std::shared_ptr<StoredPlanes>>& channel : layer.channels) {
+                const std::size_t rb = channel.second->rowBytes();
+                rows.resize(height * rb);
+                channel.second->rows(0, (std::size_t)region.y1, (std::size_t)region.y2, rows.data());
+                const int first = channel.first == -1 ? 3 : channel.first;
+                const int last = channel.first == -1 ? 3 : source.colourChannels == 1 ? 2
+                                                                                      : channel.first;
+                for (std::size_t y = 0; y < height; ++y) {
+                    samplesToFloat(rows.data() + y * rb, (std::size_t)region.x1, (std::size_t)region.x2, source.depth, values.data(), 1);
+                    for (std::size_t x = 0; x < width; ++x) {
                         for (int k = first; k <= last; ++k) {
-                            rgba[p * 4 + (std::size_t)k] = values[p];
+                            rgba[(y * width + x) * 4 + (std::size_t)k] = values[x];
                         }
                     }
-                } else if (mask && channel.id == maskId) {
-                    maskValues = decodeChannel(source, channel, (long long)mask->right - mask->left, (long long)mask->bottom - mask->top);
                 }
             }
 
-            if (mask) {
-                const long long maskWidth = (long long)mask->right - mask->left;
-                const float outside = mask->defaultColour / 255.f;
-                for (long long y = 0; y < height; ++y) {
-                    const long long canvasY = record.top + y;
-                    for (long long x = 0; x < width; ++x) {
-                        const long long canvasX = record.left + x;
-                        const bool inside = !maskValues.empty() && canvasX >= mask->left && canvasX < mask->right && canvasY >= mask->top && canvasY < mask->bottom;
-                        const float m = inside ? maskValues[(std::size_t)((canvasY - mask->top) * maskWidth + (canvasX - mask->left))] : outside;
-                        rgba[((std::size_t)(y * width + x)) * 4 + 3] *= m;
+            if (layer.mask) {
+                const Mask& mask = *layer.mask;
+                const float outside = mask.defaultColour / 255.f;
+                const long long top = (long long)record.top + region.y1;
+                const long long left = (long long)record.left + region.x1;
+                const long long my1 = std::max<long long>(top, mask.top);
+                const long long my2 = std::min<long long>(top + (long long)height, mask.bottom);
+                const long long mx1 = std::max<long long>(left, mask.left);
+                const long long mx2 = std::min<long long>(left + (long long)width, mask.right);
+                const bool overlaps = layer.maskPlanes && my2 > my1 && mx2 > mx1;
+                std::vector<unsigned char> maskRows;
+                std::vector<float> maskValues;
+                std::size_t mrb = 0;
+                if (overlaps) {
+                    mrb = layer.maskPlanes->rowBytes();
+                    maskRows.resize((std::size_t)(my2 - my1) * mrb);
+                    layer.maskPlanes->rows(0, (std::size_t)(my1 - mask.top), (std::size_t)(my2 - mask.top), maskRows.data());
+                    maskValues.resize((std::size_t)(mx2 - mx1));
+                }
+                for (std::size_t y = 0; y < height; ++y) {
+                    const long long canvasY = top + (long long)y;
+                    const bool rowInside = overlaps && canvasY >= my1 && canvasY < my2;
+                    if (rowInside) {
+                        samplesToFloat(maskRows.data() + (std::size_t)(canvasY - my1) * mrb, (std::size_t)(mx1 - mask.left), (std::size_t)(mx2 - mask.left), source.depth, maskValues.data(), 1);
+                    }
+                    for (std::size_t x = 0; x < width; ++x) {
+                        const long long canvasX = left + (long long)x;
+                        const bool inside = rowInside && canvasX >= mx1 && canvasX < mx2;
+                        rgba[(y * width + x) * 4 + 3] *= inside ? maskValues[(std::size_t)(canvasX - mx1)] : outside;
                     }
                 }
             }
@@ -830,7 +971,7 @@ namespace {
                 v[1] *= v[3];
                 v[2] *= v[3];
             }
-            if (!toStoredType(rgba, source.type, pixels)) {
+            if (!convertValues(OIIO::TypeDesc::FLOAT, rgba.data(), source.type, dst, rgba.size())) {
                 throw PsdError("Could not convert the pixels of layer " + record.name);
             }
         } catch (const PsdError& e) {
@@ -849,29 +990,29 @@ namespace {
     // Photoshop mattes a merged image that has transparency against white, so the white is taken
     // back out to leave colour associated with alpha.
     bool
-    loadComposite(const Source& source,
-                  std::uint64_t offset,
-                  bool alpha,
-                  std::size_t storedPlanes,
-                  int width,
-                  int height,
-                  std::vector<unsigned char>* pixels,
-                  std::string* error)
+    loadCompositeRegion(const Source& source,
+                        StoredPlanes& stored,
+                        bool alpha,
+                        const Region& region,
+                        unsigned char* dst,
+                        std::string* error)
     {
         try {
-            const std::vector<unsigned char> bytes = readAt(source.path, offset, UINT64_MAX);
-            if (bytes.size() < 2) {
-                throw PsdError("The merged image data is truncated");
-            }
             const std::size_t planes = (std::size_t)source.colourChannels + (alpha ? 1 : 0);
-            const std::vector<float> planar = decodePlanes(be16(bytes.data()), bytes.data() + 2, bytes.size() - 2, planes, storedPlanes, (std::size_t)width, (std::size_t)height, source.depth, source.psb);
-            const std::size_t count = (std::size_t)width * (std::size_t)height;
+            const std::size_t width = (std::size_t)region.width();
+            const std::size_t height = (std::size_t)region.height();
+            const std::size_t count = width * height;
+            const std::size_t rb = stored.rowBytes();
             std::vector<float> values(count * planes);
-            for (std::size_t p = 0; p < count; ++p) {
-                for (std::size_t c = 0; c < planes; ++c) {
-                    values[p * planes + c] = planar[c * count + p];
+            std::vector<unsigned char> rows(height * rb);
+            for (std::size_t c = 0; c < planes; ++c) {
+                stored.rows(c, (std::size_t)region.y1, (std::size_t)region.y2, rows.data());
+                for (std::size_t y = 0; y < height; ++y) {
+                    samplesToFloat(rows.data() + y * rb, (std::size_t)region.x1, (std::size_t)region.x2, source.depth, values.data() + y * width * planes + c, planes);
                 }
-                if (alpha) {
+            }
+            if (alpha) {
+                for (std::size_t p = 0; p < count; ++p) {
                     const float a = values[p * planes + planes - 1];
                     for (std::size_t c = 0; c + 1 < planes; ++c) {
                         float& v = values[p * planes + c];
@@ -879,7 +1020,7 @@ namespace {
                     }
                 }
             }
-            if (!toStoredType(values, source.type, pixels)) {
+            if (!convertValues(OIIO::TypeDesc::FLOAT, values.data(), source.type, dst, values.size())) {
                 throw PsdError("Could not convert the merged image");
             }
         } catch (const PsdError& e) {
@@ -1055,9 +1196,9 @@ namespace {
                 layer.plane.height = (int)layerHeight;
                 layer.plane.channels = { "R", "G", "B", "A" };
                 layer.plane.type = source->type;
-                const std::shared_ptr<const Record> shared = std::make_shared<Record>(record);
-                layer.plane.load = [source, shared](std::vector<unsigned char>* pixels, std::string* loadError) {
-                    return loadLayer(*source, *shared, pixels, loadError);
+                const std::shared_ptr<const LayerPixels> pixels = layerPixelsOf(source, record);
+                layer.plane.loadRegion = [pixels](const Region& region, unsigned char* dst, std::string* loadError) {
+                    return loadLayerRegion(*pixels, region, dst, loadError);
                 };
             }
             topFirst.push_back(std::move(layer));
@@ -1078,11 +1219,10 @@ namespace {
                 composite.channels.push_back("A");
             }
             composite.type = source->type;
-            const std::size_t storedPlanes = (std::size_t)channels;
-            const int w = (int)width;
-            const int h = (int)height;
-            composite.load = [source, sectionEnd, alpha, storedPlanes, w, h](std::vector<unsigned char>* pixels, std::string* loadError) {
-                return loadComposite(*source, sectionEnd, alpha, storedPlanes, w, h, pixels, loadError);
+            const std::size_t planes = (std::size_t)source->colourChannels + (alpha ? 1 : 0);
+            const std::shared_ptr<StoredPlanes> stored = std::make_shared<StoredPlanes>(source, sectionEnd, in.size() - sectionEnd, (std::size_t)width, (std::size_t)height, planes, (std::size_t)channels);
+            composite.loadRegion = [source, stored, alpha](const Region& region, unsigned char* dst, std::string* loadError) {
+                return loadCompositeRegion(*source, *stored, alpha, region, dst, loadError);
             };
         }
 

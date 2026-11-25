@@ -25,7 +25,9 @@
 
 #include "LayeredImageInput.h"
 
+#include <algorithm>
 #include <array>
+#include <cstring>
 #include <mutex>
 #include <utility>
 
@@ -193,6 +195,7 @@ namespace {
         }
 
         using OIIO::ImageInput::read_native_scanlines;
+        using OIIO::ImageInput::read_native_tiles;
 
         bool read_native_scanline(int subimage,
                                   int miplevel,
@@ -217,17 +220,102 @@ namespace {
 
                 return false;
             }
+
+            return readInto(subimage, m_spec.x, m_spec.x + m_spec.width, ybegin, yend, data);
+        }
+
+        bool read_native_tile(int subimage,
+                              int miplevel,
+                              int x,
+                              int y,
+                              int /*z*/,
+                              void* data) override
+        {
+            std::lock_guard<OIIO::ImageInput> lock(*this);
+
+            if (!seek_subimage(subimage, miplevel) || m_spec.tile_width <= 0 || m_spec.tile_height <= 0) {
+                errorfmt("No tiled subimage {} in this document", subimage);
+
+                return false;
+            }
+
+            return readInto(subimage, x, x + m_spec.tile_width, y, y + m_spec.tile_height, data);
+        }
+
+        bool read_native_tiles(int subimage,
+                               int miplevel,
+                               int xbegin,
+                               int xend,
+                               int ybegin,
+                               int yend,
+                               int /*zbegin*/,
+                               int /*zend*/,
+                               void* data) override
+        {
+            std::lock_guard<OIIO::ImageInput> lock(*this);
+
+            if (!seek_subimage(subimage, miplevel) || m_spec.tile_width <= 0 || m_spec.tile_height <= 0) {
+                errorfmt("No tiled subimage {} in this document", subimage);
+
+                return false;
+            }
+
+            return readInto(subimage, xbegin, xend, ybegin, yend, data);
+        }
+
+    private:
+        // Fills `data`, laid out as columns [x1, x2) by rows [y1, y2), from the part of that
+        // rectangle inside the current subimage's data window. An edge tile reaches past the
+        // window; its outside is zero.
+        bool readInto(int subimage,
+                      int x1,
+                      int x2,
+                      int y1,
+                      int y2,
+                      void* data)
+        {
+            const int cx1 = std::max(x1, m_spec.x);
+            const int cy1 = std::max(y1, m_spec.y);
+            const int cx2 = std::min(x2, m_spec.x + m_spec.width);
+            const int cy2 = std::min(y2, m_spec.y + m_spec.height);
             std::string error;
-            if (!_document->readRows(subimage, ybegin, yend, data, &error)) {
+
+            if (x2 < x1 || y2 < y1) {
+                errorfmt("An empty region was asked for");
+
+                return false;
+            }
+            if (cx1 == x1 && cy1 == y1 && cx2 == x2 && cy2 == y2) {
+                if (!_document->readRegion(subimage, x1, y1, x2, y2, data, &error)) {
+                    errorfmt("{}", error);
+
+                    return false;
+                }
+
+                return true;
+            }
+
+            const std::size_t pixelBytes = m_spec.pixel_bytes(true);
+            const std::size_t rowBytes = (std::size_t)(x2 - x1) * pixelBytes;
+            unsigned char* out = static_cast<unsigned char*>(data);
+            std::memset(out, 0, rowBytes * (std::size_t)(y2 - y1));
+            if (cx2 <= cx1 || cy2 <= cy1) {
+                return true;
+            }
+            const std::size_t partRowBytes = (std::size_t)(cx2 - cx1) * pixelBytes;
+            std::vector<unsigned char> part(partRowBytes * (std::size_t)(cy2 - cy1));
+            if (!_document->readRegion(subimage, cx1, cy1, cx2, cy2, part.data(), &error)) {
                 errorfmt("{}", error);
 
                 return false;
+            }
+            for (int y = cy1; y < cy2; ++y) {
+                std::memcpy(out + (std::size_t)(y - y1) * rowBytes + (std::size_t)(cx1 - x1) * pixelBytes, part.data() + (std::size_t)(y - cy1) * partRowBytes, partRowBytes);
             }
 
             return true;
         }
 
-    private:
         int _slot;
         std::string _name;
         std::shared_ptr<const LayeredDocument> _document;

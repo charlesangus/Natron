@@ -26,6 +26,7 @@
 #include "LayeredDocument.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <climits>
 #include <cstring>
@@ -154,6 +155,8 @@ namespace {
         return joined(path, "/");
     }
 
+    std::atomic<std::uint64_t> g_decodedRows { 0 };
+
     void
     stringArrayAttribute(OIIO::ImageSpec* spec,
                          const std::string& name,
@@ -169,6 +172,18 @@ namespace {
         spec->attribute(name, OIIO::TypeDesc(OIIO::TypeDesc::STRING, (int)strings.size()), strings.data());
     }
 } // anonymous namespace
+
+void
+countDecodedRows(std::uint64_t rows)
+{
+    g_decodedRows.fetch_add(rows, std::memory_order_relaxed);
+}
+
+std::uint64_t
+decodedRows()
+{
+    return g_decodedRows.load(std::memory_order_relaxed);
+}
 
 std::vector<std::string>
 sanitisedLayerIds(const std::vector<std::vector<std::string>>& paths)
@@ -278,7 +293,7 @@ LayeredDocument::finalise(std::string* error)
     std::vector<Layer> kept;
     for (Layer& layer : layers) {
         const bool inside = intersect(layer.plane.x, layer.plane.y, layer.plane.width, layer.plane.height, width, height, &layer.windowX, &layer.windowY, &layer.windowWidth, &layer.windowHeight);
-        if (!layer.plane.load || layer.plane.width <= 0 || layer.plane.height <= 0) {
+        if (!layer.plane.decodable() || layer.plane.width <= 0 || layer.plane.height <= 0) {
             skipped.push_back(pathOf(layer) + " (empty)");
         } else if (!inside) {
             skipped.push_back(pathOf(layer) + " (outside the canvas)");
@@ -299,7 +314,7 @@ LayeredDocument::finalise(std::string* error)
         layers[i].id = ids[i];
     }
 
-    _flattened = !composite.load || !intersect(composite.x, composite.y, composite.width, composite.height, width, height, &_compositeX, &_compositeY, &_compositeWidth, &_compositeHeight);
+    _flattened = !composite.decodable() || !intersect(composite.x, composite.y, composite.width, composite.height, width, height, &_compositeX, &_compositeY, &_compositeWidth, &_compositeHeight);
     if (_flattened) {
         OIIO::TypeDesc type = OIIO::TypeDesc::UINT8;
         for (const Layer& layer : layers) {
@@ -330,23 +345,37 @@ LayeredDocument::planeOf(int subimage) const
     return subimage == 0 ? composite : layers[(std::size_t)subimage - 1].plane;
 }
 
+void
+LayeredDocument::windowOf(int subimage,
+                          int* x,
+                          int* y,
+                          int* w,
+                          int* h) const
+{
+    if (subimage == 0) {
+        *x = _compositeX;
+        *y = _compositeY;
+        *w = _compositeWidth;
+        *h = _compositeHeight;
+    } else {
+        const Layer& layer = layers[(std::size_t)subimage - 1];
+        *x = layer.windowX;
+        *y = layer.windowY;
+        *w = layer.windowWidth;
+        *h = layer.windowHeight;
+    }
+}
+
 OIIO::ImageSpec
 LayeredDocument::specOf(int subimage) const
 {
     const Plane& plane = planeOf(subimage);
-    int x = _compositeX;
-    int y = _compositeY;
-    int w = _compositeWidth;
-    int h = _compositeHeight;
+    int x = 0;
+    int y = 0;
+    int w = 0;
+    int h = 0;
 
-    if (subimage > 0) {
-        const Layer& layer = layers[(std::size_t)subimage - 1];
-        x = layer.windowX;
-        y = layer.windowY;
-        w = layer.windowWidth;
-        h = layer.windowHeight;
-    }
-
+    windowOf(subimage, &x, &y, &w, &h);
     OIIO::ImageSpec spec(w, h, (int)plane.channels.size(), plane.type);
     spec.x = x;
     spec.y = y;
@@ -355,6 +384,11 @@ LayeredDocument::specOf(int subimage) const
     spec.full_width = width;
     spec.full_height = height;
     spec.channelnames = plane.channels;
+    if (plane.tiled()) {
+        spec.tile_width = plane.tileWidth;
+        spec.tile_height = plane.tileHeight;
+        spec.tile_depth = 1;
+    }
     spec.alpha_channel = -1;
     for (std::size_t c = 0; c < plane.channels.size(); ++c) {
         if (plane.channels[c] == "A") {
@@ -382,8 +416,7 @@ LayeredDocument::pixelsOf(int subimage,
     if (!cache.loaded) {
         const Plane& plane = planeOf(subimage);
         std::vector<unsigned char> loaded;
-        const bool ok = (subimage == 0 && _flattened) ? flatten(&loaded, error) : plane.load(&loaded, error);
-        if (!ok) {
+        if (!plane.load(&loaded, error)) {
             return false;
         }
         const std::size_t expected = (std::size_t)plane.width * (std::size_t)plane.height * plane.channels.size() * plane.type.size();
@@ -399,43 +432,69 @@ LayeredDocument::pixelsOf(int subimage,
 }
 
 bool
-LayeredDocument::readRows(int subimage,
-                          int y1,
-                          int y2,
-                          void* dst,
-                          std::string* error) const
+LayeredDocument::readRegion(int subimage,
+                            int x1,
+                            int y1,
+                            int x2,
+                            int y2,
+                            void* dst,
+                            std::string* error) const
 {
     if (subimage < 0 || subimage >= subimageCount() || _caches.size() != (std::size_t)subimageCount()) {
         return fail(error, "No subimage " + std::to_string(subimage));
     }
-    const OIIO::ImageSpec spec = specOf(subimage);
-    if (y1 < spec.y || y2 > spec.y + spec.height || y2 < y1) {
-        return fail(error, "Rows out of range");
+    int wx = 0;
+    int wy = 0;
+    int ww = 0;
+    int wh = 0;
+    windowOf(subimage, &wx, &wy, &ww, &wh);
+    if (x1 < wx || x2 > wx + ww || x2 < x1 || y1 < wy || y2 > wy + wh || y2 < y1) {
+        return fail(error, "Region out of range");
     }
+    if (x1 == x2 || y1 == y2) {
+        return true;
+    }
+    if (subimage == 0 && _flattened) {
+        return flatten(x1, y1, x2, y2, dst, error);
+    }
+
+    const Plane& plane = planeOf(subimage);
+    if (plane.loadRegion) {
+        Region region;
+        region.x1 = (int)((long long)x1 - plane.x);
+        region.y1 = (int)((long long)y1 - plane.y);
+        region.x2 = (int)((long long)x2 - plane.x);
+        region.y2 = (int)((long long)y2 - plane.y);
+
+        return plane.loadRegion(region, static_cast<unsigned char*>(dst), error);
+    }
+
     const std::vector<unsigned char>* pixels = nullptr;
     if (!pixelsOf(subimage, &pixels, error)) {
         return false;
     }
-
-    const Plane& plane = planeOf(subimage);
     const std::size_t pixelBytes = plane.channels.size() * plane.type.size();
     const std::size_t sourceRowBytes = (std::size_t)plane.width * pixelBytes;
-    const std::size_t rowBytes = (std::size_t)spec.width * pixelBytes;
-    const std::size_t column = (std::size_t)(spec.x - plane.x) * pixelBytes;
+    const std::size_t rowBytes = (std::size_t)(x2 - x1) * pixelBytes;
+    const std::size_t column = (std::size_t)((long long)x1 - plane.x) * pixelBytes;
     unsigned char* out = static_cast<unsigned char*>(dst);
     for (int y = y1; y < y2; ++y) {
-        std::memcpy(out + (std::size_t)(y - y1) * rowBytes, pixels->data() + (std::size_t)(y - plane.y) * sourceRowBytes + column, rowBytes);
+        std::memcpy(out + (std::size_t)(y - y1) * rowBytes, pixels->data() + (std::size_t)((long long)y - plane.y) * sourceRowBytes + column, rowBytes);
     }
 
     return true;
 }
 
 bool
-LayeredDocument::flatten(std::vector<unsigned char>* pixels,
+LayeredDocument::flatten(int x1,
+                         int y1,
+                         int x2,
+                         int y2,
+                         void* dst,
                          std::string* error) const
 {
-    const std::size_t canvasPixels = (std::size_t)width * (std::size_t)height;
-    std::vector<float> out(canvasPixels * 4, 0.f);
+    const std::size_t width = (std::size_t)(x2 - x1);
+    std::vector<float> out(width * (std::size_t)(y2 - y1) * 4, 0.f);
 
     for (std::size_t i = 0; i < layers.size(); ++i) {
         const Layer& layer = layers[i];
@@ -443,25 +502,33 @@ LayeredDocument::flatten(std::vector<unsigned char>* pixels,
         if (!layer.visible || !layer.groupVisible || opacity <= 0.) {
             continue;
         }
-        const std::vector<unsigned char>* stored = nullptr;
-        if (!pixelsOf((int)i + 1, &stored, error)) {
-            return false;
+        const int ix1 = std::max(x1, layer.windowX);
+        const int iy1 = std::max(y1, layer.windowY);
+        const int ix2 = std::min(x2, layer.windowX + layer.windowWidth);
+        const int iy2 = std::min(y2, layer.windowY + layer.windowHeight);
+        if (ix2 <= ix1 || iy2 <= iy1) {
+            continue;
         }
         const Plane& plane = layer.plane;
-        const std::size_t count = (std::size_t)plane.width * (std::size_t)plane.height;
+        const std::size_t partWidth = (std::size_t)(ix2 - ix1);
+        const std::size_t count = partWidth * (std::size_t)(iy2 - iy1);
         const std::size_t nChannels = plane.channels.size();
+        std::vector<unsigned char> stored(count * nChannels * plane.type.size());
+        if (!readRegion((int)i + 1, ix1, iy1, ix2, iy2, stored.data(), error)) {
+            return false;
+        }
         std::vector<float> values(count * nChannels);
-        if (!convertValues(plane.type, stored->data(), OIIO::TypeDesc::FLOAT, values.data(), values.size())) {
+        if (!convertValues(plane.type, stored.data(), OIIO::TypeDesc::FLOAT, values.data(), values.size())) {
             return fail(error, "Could not convert the pixels of layer " + layer.name);
         }
         std::vector<float> rgba(count * 4);
         toRgba(values.data(), count, plane.channels, rgba.data());
 
         const float o = (float)opacity;
-        for (int y = layer.windowY; y < layer.windowY + layer.windowHeight; ++y) {
-            for (int x = layer.windowX; x < layer.windowX + layer.windowWidth; ++x) {
-                const float* s = &rgba[((std::size_t)(y - plane.y) * (std::size_t)plane.width + (std::size_t)(x - plane.x)) * 4];
-                float* d = &out[((std::size_t)y * (std::size_t)width + (std::size_t)x) * 4];
+        for (int y = iy1; y < iy2; ++y) {
+            for (int x = ix1; x < ix2; ++x) {
+                const float* s = &rgba[((std::size_t)(y - iy1) * partWidth + (std::size_t)(x - ix1)) * 4];
+                float* d = &out[((std::size_t)(y - y1) * width + (std::size_t)(x - x1)) * 4];
                 const float keep = 1.f - s[3] * o;
                 for (int k = 0; k < 4; ++k) {
                     d[k] = s[k] * o + d[k] * keep;
@@ -470,8 +537,7 @@ LayeredDocument::flatten(std::vector<unsigned char>* pixels,
         }
     }
 
-    pixels->resize(out.size() * composite.type.size());
-    if (!convertValues(OIIO::TypeDesc::FLOAT, out.data(), composite.type, pixels->data(), out.size())) {
+    if (!convertValues(OIIO::TypeDesc::FLOAT, out.data(), composite.type, dst, out.size())) {
         return fail(error, "Could not convert the flattened composite");
     }
 

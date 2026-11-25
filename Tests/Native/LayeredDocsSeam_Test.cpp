@@ -30,6 +30,7 @@
 #include <cstring>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -144,6 +145,107 @@ readSeamDocument(const std::string& path,
     return document;
 }
 
+const char kTiledFormat[] = "natron_seamtiles";
+const char kTiledExtension[] = "nltiles";
+
+// The R of the tiled layer and of the windowed composite at `col`, `row` of their planes.
+unsigned char
+regionValue(int col,
+            int row)
+{
+    return (unsigned char)(col * 10 + row + 1);
+}
+
+// The regions the windowed decoders of the tiled document were asked for, in plane pixels.
+struct Requests {
+    std::mutex mutex;
+    std::vector<LayeredDocs::Region> layer;
+    std::vector<LayeredDocs::Region> composite;
+
+    void clear()
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        layer.clear();
+        composite.clear();
+    }
+};
+
+Requests&
+requests()
+{
+    static Requests instance;
+
+    return instance;
+}
+
+bool
+fillRegion(const LayeredDocs::Region& region,
+           unsigned char* dst,
+           std::vector<LayeredDocs::Region>* log)
+{
+    {
+        std::lock_guard<std::mutex> lock(requests().mutex);
+        log->push_back(region);
+    }
+    for (int row = region.y1; row < region.y2; ++row) {
+        for (int col = region.x1; col < region.x2; ++col) {
+            const unsigned char pixel[4] = { regionValue(col, row), 0, 0, 255 };
+            std::memcpy(dst, pixel, sizeof(pixel));
+            dst += sizeof(pixel);
+        }
+    }
+
+    return true;
+}
+
+// A 5x3 canvas whose composite decodes by region as scanlines, and one layer, 6x3 at -1,0 so
+// cropped to the canvas on its left, that decodes by region in 2x2 tiles.
+std::shared_ptr<LayeredDocs::LayeredDocument>
+readTiledDocument(const std::string& /*path*/,
+                  std::string* error)
+{
+    const std::shared_ptr<LayeredDocs::LayeredDocument> document = std::make_shared<LayeredDocs::LayeredDocument>();
+    document->width = 5;
+    document->height = 3;
+
+    LayeredDocs::Plane& composite = document->composite;
+    composite.width = 5;
+    composite.height = 3;
+    composite.channels = { "R", "G", "B", "A" };
+    composite.type = OIIO::TypeDesc::UINT8;
+    composite.loadRegion = [](const LayeredDocs::Region& region, unsigned char* dst, std::string*) {
+        return fillRegion(region, dst, &requests().composite);
+    };
+
+    LayeredDocs::Layer tiles;
+    tiles.name = "Tiles";
+    tiles.plane.x = -1;
+    tiles.plane.y = 0;
+    tiles.plane.width = 6;
+    tiles.plane.height = 3;
+    tiles.plane.channels = { "R", "G", "B", "A" };
+    tiles.plane.type = OIIO::TypeDesc::UINT8;
+    tiles.plane.tileWidth = 2;
+    tiles.plane.tileHeight = 2;
+    tiles.plane.loadRegion = [](const LayeredDocs::Region& region, unsigned char* dst, std::string*) {
+        return fillRegion(region, dst, &requests().layer);
+    };
+    document->layers.push_back(tiles);
+
+    if (!document->finalise(error)) {
+        return std::shared_ptr<LayeredDocs::LayeredDocument>();
+    }
+
+    return document;
+}
+
+bool
+sameRegion(const LayeredDocs::Region& a,
+           const LayeredDocs::Region& b)
+{
+    return a.x1 == b.x1 && a.y1 == b.y1 && a.x2 == b.x2 && a.y2 == b.y2;
+}
+
 void
 registerSeamFormat(const std::string& name,
                    const std::vector<std::string>& extensions)
@@ -210,6 +312,7 @@ protected:
     {
         LayeredDocs::unregisterFormat(kSeamFormat);
         LayeredDocs::unregisterFormat(kPsdFormat);
+        LayeredDocs::unregisterFormat(kTiledFormat);
         restoreBuiltinPsd();
         OiioReadSupport::clearHeaderCache();
     }
@@ -394,4 +497,74 @@ TEST_F(LayeredDocsSeamTest, PsdResolvesToTheInTreeFormatThatClaimsIt)
     EXPECT_TRUE(OiioReadSupport::formatNameForExtension("psd").empty());
     EXPECT_FALSE(contains(OiioReadSupport::readableExtensions(), "psd"));
     EXPECT_FALSE(OiioReadSupport::isReadablePath(path));
+}
+
+TEST_F(LayeredDocsSeamTest, AWindowedPlaneIsAskedForOnlyTheRowsOrTilesAReadCovers)
+{
+    LayeredDocs::Format format;
+    format.name = kTiledFormat;
+    format.extensions = { kTiledExtension };
+    format.read = readTiledDocument;
+    std::string error;
+    ASSERT_TRUE(LayeredDocs::registerFormat(format, &error)) << error;
+    requests().clear();
+
+    const std::string path = writeFile(dir, "tiles.nltiles", "good");
+    const std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(path, &error);
+    ASSERT_TRUE(bool(header)) << error;
+    ASSERT_EQ(2u, header->subimages.size());
+    EXPECT_EQ(0, header->subimages[0].tile_width);
+    const OIIO::ImageSpec& layer = header->subimages[1];
+    EXPECT_EQ(2, layer.tile_width);
+    EXPECT_EQ(2, layer.tile_height);
+    EXPECT_EQ(0, layer.x);
+    EXPECT_EQ(5, layer.width);
+    EXPECT_TRUE(requests().layer.empty());
+    EXPECT_TRUE(requests().composite.empty());
+
+    // Natron rows count up from the bottom, so Natron row y is file row 2 - y.
+    const RectI layerWindow = OiioReadSupport::dataWindowOf(layer);
+    std::vector<float> whole(5 * 3 * 4);
+    ASSERT_TRUE(OiioReadSupport::decode(path, 1, 0, 4, layerWindow, whole.data(), 5 * 4, &error)) << error;
+    for (int y = 0; y < 3; ++y) {
+        for (int x = 0; x < 5; ++x) {
+            const float* pixel = &whole[(std::size_t)(y * 5 + x) * 4];
+            EXPECT_FLOAT_EQ(regionValue(x + 1, 2 - y) / 255.f, pixel[0]) << x << "," << y;
+            EXPECT_FLOAT_EQ(1.f, pixel[3]) << x << "," << y;
+        }
+    }
+    for (const LayeredDocs::Region& region : requests().layer) {
+        EXPECT_GE(region.x1, 1);
+        EXPECT_LE(region.x2, 6);
+        EXPECT_GE(region.y1, 0);
+        EXPECT_LE(region.y2, 3);
+        EXPECT_GT(region.width(), 0);
+        EXPECT_GT(region.height(), 0);
+        EXPECT_LE(region.width(), 2);
+        EXPECT_LE(region.height(), 2);
+    }
+
+    requests().clear();
+    std::vector<float> corner(4);
+    ASSERT_TRUE(OiioReadSupport::decode(path, 1, 0, 4, RectI(4, 0, 5, 1), corner.data(), 4, &error)) << error;
+    EXPECT_FLOAT_EQ(regionValue(5, 2) / 255.f, corner[0]);
+    LayeredDocs::Region cornerTile;
+    cornerTile.x1 = 5;
+    cornerTile.y1 = 2;
+    cornerTile.x2 = 6;
+    cornerTile.y2 = 3;
+    ASSERT_EQ(1u, requests().layer.size());
+    EXPECT_TRUE(sameRegion(cornerTile, requests().layer[0]));
+
+    std::vector<float> row(5 * 4);
+    ASSERT_TRUE(OiioReadSupport::decode(path, 0, 0, 4, RectI(2, 1, 4, 2), row.data(), 5 * 4, &error)) << error;
+    EXPECT_FLOAT_EQ(regionValue(2, 1) / 255.f, row[0]);
+    EXPECT_FLOAT_EQ(regionValue(3, 1) / 255.f, row[4]);
+    LayeredDocs::Region compositeRow;
+    compositeRow.x1 = 0;
+    compositeRow.y1 = 1;
+    compositeRow.x2 = 5;
+    compositeRow.y2 = 2;
+    ASSERT_EQ(1u, requests().composite.size());
+    EXPECT_TRUE(sameRegion(compositeRow, requests().composite[0]));
 }

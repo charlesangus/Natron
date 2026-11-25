@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <fstream>
 #include <memory>
 #include <optional>
@@ -417,14 +418,16 @@ TEST_F(NativeReadPsdTest, APsbReadsWithEightByteLengthsAndItsRealUserMask)
 TEST_F(NativeReadPsdTest, AWidePsbParsesWithoutDecodingItsComposite)
 {
     const std::string path = fixture("wide.psb");
+    const std::uint64_t before = LayeredDocs::decodedRows();
     const std::shared_ptr<const OiioReadSupport::Header> header = headerOf(path);
     ASSERT_TRUE(bool(header));
-    ASSERT_EQ(2u, header->subimages.size());
+    ASSERT_EQ(3u, header->subimages.size());
+    EXPECT_EQ(before, LayeredDocs::decodedRows());
 
     const OIIO::ImageSpec& composite = header->subimages[0];
     EXPECT_EQ(300000, composite.full_width);
-    EXPECT_EQ(2, composite.full_height);
-    expectWindow(composite, { 0, 0, 300000, 2 });
+    EXPECT_EQ(4, composite.full_height);
+    expectWindow(composite, { 0, 0, 300000, 4 });
 
     const OIIO::ImageSpec& strip = header->subimages[1];
     EXPECT_EQ(std::optional<std::string>("Strip"), subimageNameOf(strip));
@@ -433,6 +436,69 @@ TEST_F(NativeReadPsdTest, AWidePsbParsesWithoutDecodingItsComposite)
 
     const RectI full = OiioReadSupport::dataWindowOf(composite);
     expectConstant(pixelsIn(path, *header, 0, RectI(full.x1, full.y1, full.x1 + 4, full.y2)), { 0.f, 0.f, 0.f });
+}
+
+TEST_F(NativeReadPsdTest, AWindowOfAWidePsbDecodesOnlyTheRowsItCovers)
+{
+    const std::string path = fixture("wide.psb");
+    const std::shared_ptr<const OiioReadSupport::Header> header = headerOf(path);
+    ASSERT_TRUE(bool(header));
+    ASSERT_EQ(3u, header->subimages.size());
+    const OIIO::ImageSpec& band = header->subimages[2];
+    EXPECT_EQ(std::optional<std::string>("Band"), subimageNameOf(band));
+    expectWindow(band, { 0, 0, 300000, 4 });
+
+    // Natron rows count up from the bottom of the 4-row canvas, so Natron row 1 is file row 2.
+    std::uint64_t before = LayeredDocs::decodedRows();
+    expectConstant(pixelsIn(path, *header, 2, RectI(150000, 1, 150004, 2)), { 120.f / 255.f, 0.f, 0.f, 1.f });
+    EXPECT_EQ(before + 1, LayeredDocs::decodedRows()) << "one RLE row of the one stored channel";
+
+    before = LayeredDocs::decodedRows();
+    expectConstant(pixelsIn(path, *header, 2, RectI(0, 3, 2, 4)), { 40.f / 255.f, 0.f, 0.f, 1.f });
+    EXPECT_EQ(before + 1, LayeredDocs::decodedRows());
+
+    before = LayeredDocs::decodedRows();
+    expectConstant(pixelsIn(path, *header, 1, RectI(299996, 3, 300000, 4)), { 1.f, 0.f, 0.f, 1.f });
+    EXPECT_EQ(before + 3, LayeredDocs::decodedRows()) << "one raw row of each of three channels";
+
+    before = LayeredDocs::decodedRows();
+    expectConstant(pixelsIn(path, *header, 0, RectI(0, 0, 4, 1)), { 0.f, 0.f, 0.f });
+    EXPECT_EQ(before + 3 * 4, LayeredDocs::decodedRows()) << "ZIP planes decode whole";
+
+    before = LayeredDocs::decodedRows();
+    expectConstant(pixelsIn(path, *header, 0, RectI(1000, 2, 1004, 4)), { 0.f, 0.f, 0.f });
+    EXPECT_EQ(before, LayeredDocs::decodedRows()) << "decoded ZIP planes are kept";
+}
+
+TEST_F(NativeReadPsdTest, EveryRowWindowMatchesTheWholeRead)
+{
+    for (const char* name : { "groups8.psd", "deep16.psd", "float32.psd", "layers.psb" }) {
+        SCOPED_TRACE(name);
+        const std::string path = fixture(name);
+        const std::shared_ptr<const OiioReadSupport::Header> header = headerOf(path);
+        ASSERT_TRUE(bool(header));
+        for (std::size_t s = 0; s < header->subimages.size(); ++s) {
+            SCOPED_TRACE("subimage " + std::to_string(s));
+            const int subimage = (int)s;
+            const RectI window = OiioReadSupport::dataWindowOf(header->subimages[s]);
+            const std::size_t nChannels = (std::size_t)header->subimages[s].nchannels;
+            const std::vector<float> whole = pixelsOf(path, *header, subimage);
+            const int x1 = window.width() > 1 ? window.x1 + 1 : window.x1;
+            const std::size_t rowValues = (std::size_t)(window.x2 - x1) * nChannels;
+            for (int y = window.y1; y < window.y2; ++y) {
+                const std::vector<float> part = pixelsIn(path, *header, subimage, RectI(x1, y, window.x2, y + 1));
+                ASSERT_EQ(rowValues, part.size());
+                const std::size_t start = ((std::size_t)(window.y2 - 1 - y) * (std::size_t)window.width() + (std::size_t)(x1 - window.x1)) * nChannels;
+                std::size_t mismatches = 0;
+                for (std::size_t i = 0; i < rowValues; ++i) {
+                    if (part[i] != whole[start + i] && ++mismatches <= 3) {
+                        ADD_FAILURE() << "row " << y << " value " << i << ": got " << part[i] << ", want " << whole[start + i];
+                    }
+                }
+                EXPECT_EQ(0u, mismatches) << "row " << y;
+            }
+        }
+    }
 }
 
 TEST_F(NativeReadPsdTest, ACmykDocumentIsRefusedNamingItsMode)

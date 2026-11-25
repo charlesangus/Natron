@@ -21,7 +21,8 @@
 # layers.psb, PSB 8-bit RGB 8x6: Base (8x6 at 100, RLE with 4-byte row counts) and, in the
 #   closed hidden group "Hidden Group", Spot (2x2 yellow at 2,2, RLE) with an empty user mask and
 #   a real user mask of 0 over its top row whose outside is 255. The merged image is 1/2/3, RLE.
-# wide.psb, PSB 8-bit RGB 300000x2: Strip (4x2 red at 299996,0, raw); the merged image is black,
+# wide.psb, PSB 8-bit RGB 300000x4: Strip (4x2 red at 299996,0, raw) and Band (300000x4 at 0,0,
+#   RLE, only a red channel, whose rows are 40, 80, 120, 160); the merged image is black,
 #   ZIP-compressed.
 # cmyk.psd, a 2x2 CMYK document.
 import os
@@ -259,10 +260,15 @@ def layers_psb():
 
 def wide_psb():
     width = 300000
+    height = 4
     strip = [channel(c, constant(4, 2, 255 if c == 0 else 0)) for c in (0, 1, 2)]
-    layers = [Layer("Strip", (0, width - 4, 2, width), strip, compression=0)]
-    merged = be("H", 2) + zlib.compress(b"\0" * (width * 2 * 3), 9)
-    return document(width, 2, 8, 3, 3, layers, merged, psb=True)
+    band = [channel(0, [[40 * (row + 1)] * width for row in range(height)])]
+    layers = [
+        Layer("Strip", (0, width - 4, 2, width), strip, compression=0),
+        Layer("Band", (0, 0, height, width), band, compression=1),
+    ]
+    merged = be("H", 2) + zlib.compress(b"\0" * (width * height * 3), 9)
+    return document(width, height, 8, 3, 3, layers, merged, psb=True)
 
 
 def cmyk():

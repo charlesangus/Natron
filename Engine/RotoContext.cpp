@@ -162,6 +162,32 @@ RotoContext::setWhileCreatingPaintStrokeOnMergeNodes(bool b)
     }
 }
 
+NodesList
+RotoContext::getRotoPaintMergeChain(const std::list<RotoDrawableItemPtr>& items) const
+{
+    NodesList chain;
+    int bop;
+
+    if (items.empty() || !isRotoPaintTreeConcatenatableInternal(items, &bop)) {
+        return chain;
+    }
+    NodesList mergeNodes;
+    {
+        QMutexLocker k(&_imp->rotoContextMutex);
+        mergeNodes = _imp->globalMergeNodes;
+    }
+    // Past one Merge's A inputs the items continue in Merges chained through their B input;
+    // spare Merges after the chain are disconnected.
+    for (NodesList::const_iterator it = mergeNodes.begin(); it != mergeNodes.end(); ++it) {
+        if (!chain.empty() && ((*it)->getInput(0) != chain.back())) {
+            break;
+        }
+        chain.push_back(*it);
+    }
+
+    return chain;
+}
+
 NodePtr
 RotoContext::getRotoPaintBottomMergeNode() const
 {
@@ -171,25 +197,9 @@ RotoContext::getRotoPaintBottomMergeNode() const
         return NodePtr();
     }
 
-    int bop;
-    if ( isRotoPaintTreeConcatenatableInternal(items, &bop) ) {
-        NodesList mergeNodes;
-        {
-            QMutexLocker k(&_imp->rotoContextMutex);
-            mergeNodes = _imp->globalMergeNodes;
-        }
-        if (!mergeNodes.empty()) {
-            // Past one Merge's A inputs the items continue in Merges chained through their B
-            // input, so the output is the last Merge of that chain; spare Merges after it are
-            // disconnected.
-            NodesList::const_iterator it = mergeNodes.begin();
-            NodePtr bottom = *it;
-            for (++it; it != mergeNodes.end() && (*it)->getInput(0) == bottom; ++it) {
-                bottom = *it;
-            }
-
-            return bottom;
-        }
+    const NodesList chain = getRotoPaintMergeChain(items);
+    if (!chain.empty()) {
+        return chain.back();
     }
 
     const RotoDrawableItemPtr& firstStrokeItem = items.back();

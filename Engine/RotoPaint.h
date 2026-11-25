@@ -58,6 +58,18 @@ public:
 
     bool isDefaultBehaviourPaintContext() const;
 
+    /**
+     * @brief Whether render() composites a concatenated tree's masks itself rather than
+     * rendering its internal nodes; on by default. Process-wide, for tests comparing the two.
+     **/
+    static void setDirectCompositeEnabled(bool enabled);
+    static bool isDirectCompositeEnabled();
+
+    /**
+     * @brief The renders of any RotoPaint that composited their tree directly so far.
+     **/
+    static unsigned long long getDirectCompositeRenderCount();
+
     virtual bool isRotoPaintNode() const OVERRIDE FINAL WARN_UNUSED_RETURN  { return true; }
 
     virtual CurveContextKindEnum getCurveContextKind() const OVERRIDE FINAL WARN_UNUSED_RETURN { return eCurveContextKindPaint; }

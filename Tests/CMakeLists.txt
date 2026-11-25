@@ -131,6 +131,7 @@ set(Tests_SOURCES
     RotoKeyDuringRender_Test.cpp
     RotoRenderProfile_Test.cpp
     RotoMaskCache_Test.cpp
+    RotoPaintDirectComposite_Test.cpp
     RotoStrokeBands_Test.cpp
     RotoPaintExtraBgRoD_Test.cpp
     StrokeRenderCoalescer_Test.cpp

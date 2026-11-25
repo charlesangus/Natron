@@ -954,22 +954,35 @@ StagedImageEffect::render(const RenderActionArgs& args)
         return renderOp(args, resolveRenderPlan(args.time, args.view, args.processChannels));
     }
     const ImageLayerDesc plane = args.outputLayers.empty() ? ImageLayerDesc() : args.outputLayers.front().first;
-    const CompositeInputs inputs = opInputsForPlane(args.time, args.view, plane);
-    StagePlan plan = resolveStagePlan(*this, imagePipelineSpec().stages, _stageKnobs, inputs.blend(), args.time, args.view, args.processChannels);
-    resolveStageSources(*this, nodeSpec(), inputs, &plan);
-    plan.plane = plane;
-    std::optional<std::string> error = checksRawStage ? rawStageError(args.time, args.view) : std::nullopt;
-    if (!error) {
-        error = opError(args.time, args.view);
-    }
-    if (!error) {
-        error = stageSourcesError(*this, plan, args.time, args.view);
-    }
+    std::optional<std::string> error;
+    const StagePlan plan = resolveCompositeRenderPlan(args.time, args.view, plane, args.processChannels, &error);
     if (!postStageError(error)) {
         return eStatusFailed;
     }
 
     return renderOp(args, plan);
+}
+
+StagePlan
+StagedImageEffect::resolveCompositeRenderPlan(double time,
+                                              ViewIdx view,
+                                              const ImageLayerDesc& plane,
+                                              const std::bitset<4>& processChannels,
+                                              std::optional<std::string>* error)
+{
+    const CompositeInputs inputs = opInputsForPlane(time, view, plane);
+    StagePlan plan = resolveStagePlan(*this, imagePipelineSpec().stages, _stageKnobs, inputs.blend(), time, view, processChannels);
+    resolveStageSources(*this, nodeSpec(), inputs, &plan);
+    plan.plane = plane;
+    *error = (imagePipelineSpec().rawStage != RawStageRequirement::Any) ? rawStageError(time, view) : std::nullopt;
+    if (!*error) {
+        *error = opError(time, view);
+    }
+    if (!*error) {
+        *error = stageSourcesError(*this, plan, time, view);
+    }
+
+    return plan;
 }
 
 NATRON_NAMESPACE_EXIT

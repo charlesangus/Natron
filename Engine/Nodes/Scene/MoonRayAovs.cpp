@@ -382,10 +382,11 @@ namespace {
     }
 
     // hdMoonray cannot translate Natron's own frame-hold primvars and does not need them, so its notice about them is noise.
+    // The frame token mirrors the "%.17g" encoding of the primvar name: '-' is 'm', '.' is '_', '+' is 'p'.
     bool
     isBenignNotice(const std::string& rest)
     {
-        static const std::regex benign("\\.primvars:natronProjectionFrameHold[0-9]+(Column[0-2])?:[ \t]*[^ \t]+ not translated[ \t\r\n]*");
+        static const std::regex benign("\\.primvars:natronProjectionFrameHoldm?[0-9]+(_[0-9]+)?(e[pm][0-9]+)?(Column[0-2])?:[ \t]*[^ \t]+ not translated[ \t\r\n]*");
 
         return std::regex_match(rest, benign);
     }
@@ -639,6 +640,7 @@ warningText(const UsdStageRefPtr& stage,
 {
     std::vector<std::string> names[eKindCount];
 
+    std::vector<std::string> lightMessages(unsupported.size());
     for (const Light& light : unsupported) {
         appendName(&names[eKindLight], light.path.GetString() + " (" + light.type + ")");
     }
@@ -671,8 +673,14 @@ warningText(const UsdStageRefPtr& stage,
             if (kind == eKindLight) {
                 // The scan above already names the light with its type.
                 bool named = false;
-                for (const Light& light : unsupported) {
-                    named = named || (light.path == prim.GetPath());
+                const std::string message = messageOf(rest);
+                for (size_t i = 0; i < unsupported.size(); ++i) {
+                    if (unsupported[i].path == prim.GetPath()) {
+                        named = true;
+                        if (!message.empty() && (lightMessages[i].find(message) == std::string::npos)) {
+                            lightMessages[i] += (lightMessages[i].empty() ? "" : "; ") + message;
+                        }
+                    }
                 }
                 if (named) {
                     continue;
@@ -680,6 +688,17 @@ warningText(const UsdStageRefPtr& stage,
             }
             const std::string message = messageOf(rest);
             appendName(&names[kind], message.empty() ? name : name + " (" + message + ")");
+        }
+    }
+    for (size_t i = 0; i < unsupported.size(); ++i) {
+        if (lightMessages[i].empty()) {
+            continue;
+        }
+        const std::string base = unsupported[i].path.GetString() + " (" + unsupported[i].type + ")";
+        std::vector<std::string>& lights = names[eKindLight];
+        const std::vector<std::string>::iterator found = std::find(lights.begin(), lights.end(), base);
+        if (found != lights.end()) {
+            *found = unsupported[i].path.GetString() + " (" + unsupported[i].type + ": " + lightMessages[i] + ")";
         }
     }
     std::string text;

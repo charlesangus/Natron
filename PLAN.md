@@ -554,7 +554,7 @@ future core work has solid ground to build on.
 | M456 | File Dialog Toolbar And Split | done | - | | E10 |  F29 | | [M456-file-dialog-toolbar-and-split.md](PLAN/MILESTONES/M456-file-dialog-toolbar-and-split.md) |
 | M457 | ColorWarp Space Spike | done | - | | E3 | F28 | | [M457-colorwarp-space-spike.md](PLAN/MILESTONES/M457-colorwarp-space-spike.md) |
 | M458 | ColorWarp Node | done | M457 | | E3 | F28 | | [M458-colorwarp-node.md](PLAN/MILESTONES/M458-colorwarp-node.md) |
-| M459 | ColorWarp 3D View | todo | M458 |  | E3 | F28 | | [M459-colorwarp-3d-view.md](PLAN/MILESTONES/M459-colorwarp-3d-view.md) |
+| M459 | ColorWarp 3D View | doing | M458 | bosley-executor | E3 | F28 | | [M459-colorwarp-3d-view.md](PLAN/MILESTONES/M459-colorwarp-3d-view.md) |
 | M482 | Geometry VOP Node | todo | M351, M360 |  | E25 | | | [M482-geometry-vop-node.md](PLAN/MILESTONES/M482-geometry-vop-node.md) |
 | M483 | Particle VOP Node | todo | M482, M406 |  | E25 | | | [M483-particle-vop-node.md](PLAN/MILESTONES/M483-particle-vop-node.md) |
 | M484 | Image Kernel Binding And Wrangle | todo | M360, M408 |  | E25 | | | [M484-image-kernel-binding-and-wrangle.md](PLAN/MILESTONES/M484-image-kernel-binding-and-wrangle.md) |
@@ -614,7 +614,7 @@ future core work has solid ground to build on.
 | M555 | Dissolve GPU Smaller-Input Mismatch | done | M495 | | E14 |  | | [M555-dissolve-gpu-smaller-input-mismatch.md](PLAN/MILESTONES/M555-dissolve-gpu-smaller-input-mismatch.md) |
 | M556 | Scene Graph Bulk Commands | done | - | | E9 | F37 | | [M556-scene-graph-bulk-commands.md](PLAN/MILESTONES/M556-scene-graph-bulk-commands.md) |
 | M557 | Scene Graph Purpose Column | done | - | | E9 | F37 | | [M557-scene-graph-purpose-column.md](PLAN/MILESTONES/M557-scene-graph-purpose-column.md) |
-| M558 | Scene Graph Expand Commands | todo | M556 |  | E9 | F37 | | [M558-scene-graph-expand-commands.md](PLAN/MILESTONES/M558-scene-graph-expand-commands.md) |
+| M558 | Scene Graph Expand Commands | doing | M556 | bosley-executor | E9 | F37 | | [M558-scene-graph-expand-commands.md](PLAN/MILESTONES/M558-scene-graph-expand-commands.md) |
 | M559 | Native Geometry UAT Round 1 | done | - | | E9 | F15 | | [M559-native-geometry-uat-round-1.md](PLAN/MILESTONES/M559-native-geometry-uat-round-1.md) |
 | M560 | USDMerge Opinion Order | todo | - |  | E9 | | | [M560-usdmerge-opinion-order.md](PLAN/MILESTONES/M560-usdmerge-opinion-order.md) |
 | M561 | Live Session Personal Viewers | todo | M106 |  | E11 | F5 | | [M561-live-session-personal-viewers.md](PLAN/MILESTONES/M561-live-session-personal-viewers.md) |

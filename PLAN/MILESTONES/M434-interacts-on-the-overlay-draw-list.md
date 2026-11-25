@@ -134,3 +134,4 @@ Scouted 2026-11-14 on `origin/main`:
 
   **Found:** adding Roto shapes is worse than O(N²) (about 4 s per add at 100 shapes, 20 s at 200), likely in DSNode::rebuildItemRows (Gui/DopeSheet.cpp:2309), which rebuilds every item's rows per insert. Logged as a /cat-plan follow-up. Before/after bench queued for when the container is free.
 
+- 2026-11-25 — **Dashed lines (user):** the new geometry dashes are accepted as a renderer difference from main's GL line stipple (same period, phase under a pixel off, darker on llvmpipe); the parity check gives dashed scenes a 1 px radius and leaves the Ramp line's pixels out of its count. Tracker's unselected cross was a real difference (main drew it unblended, a solid 13x3 bar) and is fixed to match.

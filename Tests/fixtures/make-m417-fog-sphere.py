@@ -9,6 +9,8 @@
 #
 # The image has no OpenVDB Python module, so this compiles a small writer against the image's
 # libopenvdb and runs it. Run it inside the dev container (tools/ci/local/devshell.sh).
+# NATRON_OPENVDB_PREFIX names another install prefix, NATRON_IMATH_LIB the Imath library to link.
+import glob
 import os
 import shutil
 import subprocess
@@ -67,8 +69,21 @@ int main(int argc, char** argv)
 """
 
 
+def imath_library(lib):
+    # The library's name carries its version (Imath-3_1, Imath-3_2), which differs between images.
+    override = os.environ.get("NATRON_IMATH_LIB")
+    if override:
+        return override
+    for path in sorted(glob.glob(os.path.join(lib, "libImath*.so"))):
+        name = os.path.basename(path)[len("lib"):-len(".so")]
+        if name.startswith("Imath"):
+            return name
+    raise RuntimeError("no libImath*.so in %s; set NATRON_IMATH_LIB" % lib)
+
+
 def main(directory):
     prefix = os.environ.get("NATRON_OPENVDB_PREFIX", "/usr/local")
+    lib = os.path.join(prefix, "lib")
     compiler = shutil.which("c++") or shutil.which("g++") or shutil.which("clang++")
     if compiler is None:
         raise RuntimeError("no C++ compiler on PATH")
@@ -80,9 +95,9 @@ def main(directory):
         subprocess.check_call([
             compiler, "-std=c++17", "-O1", source, "-o", binary,
             "-I" + os.path.join(prefix, "include"),
-            "-L" + os.path.join(prefix, "lib"),
-            "-Wl,-rpath," + os.path.join(prefix, "lib"),
-            "-lopenvdb", "-ltbb", "-lImath-3_2",
+            "-L" + lib,
+            "-Wl,-rpath," + lib,
+            "-lopenvdb", "-ltbb", "-l" + imath_library(lib),
         ])
         path = os.path.join(directory, NAME)
         subprocess.check_call([binary, path])

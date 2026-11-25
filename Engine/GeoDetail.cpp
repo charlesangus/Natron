@@ -30,6 +30,7 @@
 #include <mutex>
 #include <numeric>
 #include <stdexcept>
+#include <unordered_set>
 
 #include "Engine/ContentHasher.h"
 #include "Engine/Geo/GeoPacked.h"
@@ -481,8 +482,13 @@ GeoDetail::getSizeInBytes() const
     for (const GeoDetailConstPtr& shared : _sharedDetails) {
         bytes += sizeof(GeoDetailConstPtr) + shared->getSizeInBytes();
     }
+    // Copies of one grid under other transforms share its tree, which is held once.
+    std::unordered_set<const void*> trees;
     for (const GeoVDBGridConstPtr& grid : _sharedGrids) {
-        bytes += sizeof(GeoVDBGridConstPtr) + grid->getSizeInBytes();
+        bytes += sizeof(GeoVDBGridConstPtr);
+        if (trees.insert(grid->treeIdentity()).second) {
+            bytes += grid->getSizeInBytes();
+        }
     }
 
     return bytes;

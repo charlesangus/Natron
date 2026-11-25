@@ -77,8 +77,8 @@ typedef std::shared_ptr<const openvdb::GridBase> GeoVDBGridBaseConstPtr;
  * @brief One shared grid with its content hash: the value type, grid class, vector type, world
  * space flag, half-float saving, transform, background, and every tile and leaf of the tree
  * (topology and values, active or not), the leaves hashed in parallel. The grid's name and
- * other metadata do not enter it. Computed on first use and cached; a wrapper made by
- * withGrid() over the same tree reuses the tree's part.
+ * other metadata do not enter it. Computed on first use and cached; wrappers made by withGrid()
+ * over the same tree share the tree's hash and its measured memory.
  **/
 class GeoVDBGrid {
 public:
@@ -93,25 +93,35 @@ public:
         return _grid;
     }
 
-    /** @brief A new wrapper around @p grid, reusing this one's tree hash when the tree is the same. */
+    /** @brief A new wrapper around @p grid, sharing this one's tree state when the tree is the same. */
     GeoVDBGridConstPtr withGrid(GeoVDBGridBaseConstPtr grid) const;
+
+    /** @brief The tree this grid holds: equal for wrappers whose grids share one tree. */
+    const void* treeIdentity() const;
 
     /** @brief Never 0. */
     U64 contentHash() const;
 
     U64 treeHash() const;
 
-    /** @brief The grid's tree memory, measured once at construction. */
+    /** @brief The grid's tree memory, measured once per tree. */
     std::size_t getSizeInBytes() const
     {
-        return _bytes;
+        return _tree->bytes;
     }
 
 private:
+    struct TreeState {
+        std::size_t bytes = 0;
+        std::atomic<U64> hash { 0 };
+    };
+
+    GeoVDBGrid(GeoVDBGridBaseConstPtr grid,
+               std::shared_ptr<TreeState> tree);
+
     GeoVDBGridBaseConstPtr _grid;
-    std::size_t _bytes = 0;
+    std::shared_ptr<TreeState> _tree;
     mutable std::atomic<U64> _hash { 0 };
-    mutable std::atomic<U64> _treeHash { 0 };
 };
 
 /** @brief openvdb::initialize(), once per process; every grid I/O entry point calls it. */
@@ -124,6 +134,12 @@ void geoInitializeOpenVDB();
 GeoOffset geoAppendVDB(GeoDetailBuilder& builder,
                        GeoOffset point,
                        GeoVDBGridBaseConstPtr grid,
+                       std::string_view name);
+
+/** @brief As above with an existing wrapper, whose cached hashes and measured memory carry over. */
+GeoOffset geoAppendVDB(GeoDetailBuilder& builder,
+                       GeoOffset point,
+                       GeoVDBGridConstPtr grid,
                        std::string_view name);
 
 /** @brief As above, on a new point placed at the grid's index-space origin. */
@@ -169,6 +185,9 @@ GeoBounds geoVDBBounds(const GeoDetail& detail,
 /** @brief World-space bounds of @p grid's active voxels, voxel extents included; zero when empty. */
 GeoBounds geoVDBGridBounds(const openvdb::GridBase& grid);
 
+/** @brief The name stored on @p grid, empty when it has none. */
+std::string geoVDBGridName(const openvdb::GridBase& grid);
+
 /** @brief A grid described with the tokens of a USD OpenVDB field asset. */
 struct GeoVDBFieldInfo {
     // Empty when no fieldDataType token names the value type.
@@ -202,7 +221,8 @@ bool geoReadVDBGrid(const std::string& path,
 
 /**
  * @brief Writes @p grid, named @p name, as the only grid of the .vdb file at @p path. The file
- * is written next to its final name and renamed into place, so a reader never sees half of it.
+ * is written next to its final name under a dot-prefixed name and renamed into place, so a reader
+ * never sees half of it.
  **/
 bool geoWriteVDBFile(const openvdb::GridBase& grid,
                      std::string_view name,
@@ -211,7 +231,8 @@ bool geoWriteVDBFile(const openvdb::GridBase& grid,
 
 /**
  * @brief The content-addressed file of @p grid stored as @p name, <directory>/<hash>.vdb, written
- * when absent. The hash covers the grid's content hash and the name, which the file holds.
+ * when absent. The hash covers the grid's content hash and the name, which the file holds. In the
+ * disk tier's files section, a file found is marked used and a file written is charged to the tier.
  **/
 bool geoEnsureVDBFile(const GeoVDBGrid& grid,
                       std::string_view name,
@@ -219,8 +240,14 @@ bool geoEnsureVDBFile(const GeoVDBGrid& grid,
                       std::string* path,
                       std::string* errorMessage);
 
-/** @brief Where volumes handed to renderers are written: <disk cache location>/vdb. */
+/**
+ * @brief Where volumes handed to renderers are written: the node cache's disk tier files section,
+ * which evicts them by last use under the tier's budget, or <disk cache location>/vdb without a tier.
+ **/
 std::string geoVDBCacheDirectory();
+
+/** @brief Removes every file of geoVDBCacheDirectory(), as clearing the disk cache does. */
+void geoClearVDBCacheDirectory();
 
 NATRON_NAMESPACE_EXIT
 

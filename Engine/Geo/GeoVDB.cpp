@@ -42,6 +42,7 @@
 #include "Engine/Geo/GeoOpenVDB.h"
 
 #include "Engine/AppManager.h"
+#include "Engine/CacheDiskTier.h"
 #include "Engine/ContentHasher.h"
 #include "Engine/Geo/GeoOpUtils.h"
 #include "Engine/Geo/GeoPage.h"
@@ -268,27 +269,40 @@ GeoVDBGrid::GeoVDBGrid(GeoVDBGridBaseConstPtr grid)
     if (!_grid) {
         throw std::invalid_argument("GeoVDBGrid: null grid");
     }
-    _bytes = std::size_t(_grid->memUsage());
+    _tree = std::make_shared<TreeState>();
+    _tree->bytes = std::size_t(_grid->memUsage());
+}
+
+GeoVDBGrid::GeoVDBGrid(GeoVDBGridBaseConstPtr grid,
+                       std::shared_ptr<TreeState> tree)
+    : _grid(std::move(grid))
+    , _tree(std::move(tree))
+{
 }
 
 GeoVDBGridConstPtr
 GeoVDBGrid::withGrid(GeoVDBGridBaseConstPtr grid) const
 {
-    std::shared_ptr<GeoVDBGrid> out = std::make_shared<GeoVDBGrid>(std::move(grid));
-    if (out->_grid->constBaseTreePtr() == _grid->constBaseTreePtr()) {
-        out->_treeHash.store(_treeHash.load(std::memory_order_acquire), std::memory_order_relaxed);
+    if (grid && (grid->constBaseTreePtr() == _grid->constBaseTreePtr())) {
+        return GeoVDBGridConstPtr(new GeoVDBGrid(std::move(grid), _tree));
     }
 
-    return out;
+    return std::make_shared<const GeoVDBGrid>(std::move(grid));
+}
+
+const void*
+GeoVDBGrid::treeIdentity() const
+{
+    return _grid->constBaseTreePtr().get();
 }
 
 U64
 GeoVDBGrid::treeHash() const
 {
-    U64 h = _treeHash.load(std::memory_order_acquire);
+    U64 h = _tree->hash.load(std::memory_order_acquire);
     if (h == 0) {
         h = computeTreeHash(*_grid);
-        _treeHash.store(h, std::memory_order_release);
+        _tree->hash.store(h, std::memory_order_release);
     }
 
     return h;
@@ -335,7 +349,18 @@ geoAppendVDB(GeoDetailBuilder& builder,
              GeoVDBGridBaseConstPtr grid,
              std::string_view name)
 {
-    GeoVDBGridConstPtr wrapped = std::make_shared<const GeoVDBGrid>(std::move(grid));
+    return geoAppendVDB(builder, point, std::make_shared<const GeoVDBGrid>(std::move(grid)), name);
+}
+
+GeoOffset
+geoAppendVDB(GeoDetailBuilder& builder,
+             GeoOffset point,
+             GeoVDBGridConstPtr wrapped,
+             std::string_view name)
+{
+    if (!wrapped) {
+        throw std::invalid_argument("geoAppendVDB: null grid");
+    }
     ensureAttribute(builder, kGeoVDBGridAttr, eGeoStorageInt32, 1);
     ensureAttribute(builder, kGeoVDBBoundsAttr, eGeoStorageFloat64, 6);
     ensureAttribute(builder, kGeoNameAttr, eGeoStorageString, 1);
@@ -464,6 +489,12 @@ geoVDBGridBounds(const openvdb::GridBase& grid)
                        { world.max().x(), world.max().y(), world.max().z() } };
 }
 
+std::string
+geoVDBGridName(const openvdb::GridBase& grid)
+{
+    return grid.getName();
+}
+
 GeoVDBFieldInfo
 geoVDBFieldInfo(const openvdb::GridBase& grid)
 {
@@ -532,24 +563,13 @@ geoVDBFieldInfo(const openvdb::GridBase& grid)
 
 namespace {
 
-// A file name holding a grid stored under a duplicate name is "name[N]"; the grid's own name lacks the suffix.
+// A file lists a grid stored under a duplicate name as "name[N]", as it would a grid really named
+// so; only the grid's own metadata tells the two apart.
 std::string
-plainGridName(const std::string& unique)
+plainGridName(openvdb::io::File& file,
+              const std::string& unique)
 {
-    if (unique.empty() || unique.back() != ']') {
-        return unique;
-    }
-    const std::size_t open = unique.rfind('[');
-    if (open == std::string::npos || open + 2 > unique.size() - 1) {
-        return unique;
-    }
-    for (std::size_t i = open + 1; i + 1 < unique.size(); ++i) {
-        if (unique[i] < '0' || unique[i] > '9') {
-            return unique;
-        }
-    }
-
-    return unique.substr(0, open);
+    return file.readGridMetadata(unique)->getName();
 }
 
 template <typename Fn>
@@ -586,7 +606,7 @@ geoVDBFileGridNames(const std::string& path,
 
     return withVDBFile(path, errorMessage, [&](openvdb::io::File& file) {
         for (auto it = file.beginName(); it != file.endName(); ++it) {
-            names->push_back(plainGridName(it.gridName()));
+            names->push_back(plainGridName(file, it.gridName()));
         }
     });
 }
@@ -602,7 +622,7 @@ geoReadVDBFile(const std::string& path,
     return withVDBFile(path, errorMessage, [&](openvdb::io::File& file) {
         for (auto it = file.beginName(); it != file.endName(); ++it) {
             const std::string unique = it.gridName();
-            const std::string name = plainGridName(unique);
+            const std::string name = plainGridName(file, unique);
             if (!geoNameMatchesPattern(pattern, name)) {
                 continue;
             }
@@ -642,10 +662,11 @@ geoWriteVDBFile(const openvdb::GridBase& grid,
 {
     geoInitializeOpenVDB();
     static std::atomic<std::uint64_t> counter { 0 };
-    const std::string partial = path + ".partial-" + std::to_string(::getpid()) + "-" + std::to_string(counter.fetch_add(1));
+    const std::filesystem::path target(path);
+    const std::string partial = (target.parent_path() / ("." + target.filename().string() + ".partial-" + std::to_string(::getpid()) + "-" + std::to_string(counter.fetch_add(1)))).string();
     try {
         std::error_code ec;
-        const std::filesystem::path parent = std::filesystem::path(path).parent_path();
+        const std::filesystem::path parent = target.parent_path();
         if (!parent.empty()) {
             std::filesystem::create_directories(parent, ec);
         }
@@ -671,6 +692,27 @@ geoWriteVDBFile(const openvdb::GridBase& grid,
     return true;
 }
 
+namespace {
+
+CacheDiskTierPtr
+vdbDiskTier()
+{
+    const AppManager* app = AppManager::instance();
+
+    return app ? app->getNodeCacheDiskTier() : CacheDiskTierPtr();
+}
+
+std::string
+fallbackVDBCacheDirectory()
+{
+    const AppManager* app = AppManager::instance();
+    const QString base = app ? app->getDiskCacheLocation() : StandardPaths::writableLocation(StandardPaths::eStandardLocationCache);
+
+    return base.toStdString() + "/vdb";
+}
+
+} // namespace
+
 bool
 geoEnsureVDBFile(const GeoVDBGrid& grid,
                  std::string_view name,
@@ -684,21 +726,43 @@ geoEnsureVDBFile(const GeoVDBGrid& grid,
     char hex[17];
     std::snprintf(hex, sizeof(hex), "%016llx", (unsigned long long)hasher.finalize());
     *path = directory + "/" + hex + ".vdb";
+    const CacheDiskTierPtr tier = vdbDiskTier();
     std::error_code ec;
     if (std::filesystem::exists(*path, ec)) {
+        if (tier) {
+            tier->noteFileUsed(*path);
+        }
+
         return true;
     }
+    if (!geoWriteVDBFile(*grid.grid(), name, *path, errorMessage)) {
+        return false;
+    }
+    if (tier) {
+        tier->noteFileWritten(*path);
+    }
 
-    return geoWriteVDBFile(*grid.grid(), name, *path, errorMessage);
+    return true;
 }
 
 std::string
 geoVDBCacheDirectory()
 {
-    const AppManager* app = AppManager::instance();
-    const QString base = app ? app->getDiskCacheLocation() : StandardPaths::writableLocation(StandardPaths::eStandardLocationCache);
+    if (const CacheDiskTierPtr tier = vdbDiskTier()) {
+        return tier->filesDirectory("vdb");
+    }
 
-    return base.toStdString() + "/vdb";
+    return fallbackVDBCacheDirectory();
+}
+
+void
+geoClearVDBCacheDirectory()
+{
+    if (const CacheDiskTierPtr tier = vdbDiskTier()) {
+        tier->clearFiles();
+    }
+    std::error_code ignored;
+    std::filesystem::remove_all(fallbackVDBCacheDirectory(), ignored);
 }
 
 NATRON_NAMESPACE_EXIT

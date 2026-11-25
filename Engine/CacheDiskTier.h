@@ -279,6 +279,17 @@ public:
     // entry still in RAM and write it into the emptied tier.
     void clearAuto();
 
+    // Plain files kept for readers outside the cache, such as a renderer's volume files, under
+    // <build>/files/<section>. They share the tier's budget and its eviction, which ranks them by
+    // modification time; a name starting with a dot is a write in progress.
+    std::string filesDirectory(const std::string& section) const;
+    // Charges a file just renamed into a files directory to the tier. Ignores any other path.
+    void noteFileWritten(const std::string& path);
+    // Marks a file there as just used.
+    void noteFileUsed(const std::string& path);
+    // Moves this build's plain files aside for the scanner to delete.
+    void clearFiles();
+
     enum PinOutcomeEnum {
         ePinOutcomePublished,
         ePinOutcomeAlreadyThere,

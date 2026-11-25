@@ -145,6 +145,35 @@ TEST(GeoVDBTest, TransformSharesTheTree)
     EXPECT_NEAR(geoVDBBounds(moved, 0).min[0], geoVDBBounds(d, 0).min[0] + 5., 1e-9);
 }
 
+TEST(GeoVDBTest, CopiesUnderOtherTransformsShareOneTreeAndCountItOnce)
+{
+    const GeoDetail source = makeDetail(makeSphere());
+    const GeoVDBGridConstPtr& original = geoVDB(source, 0);
+
+    GeoDetailBuilder b;
+    const int kCopies = 4;
+    for (int i = 0; i < kCopies; ++i) {
+        const GeoOffset prim = geoAppendVDB(b, b.appendPoints(1), original, "density");
+        GeoMatrix4 m = geoMatrixIdentity();
+        m[3] = double(i + 1);
+        geoTransformVDB(b, prim, m);
+    }
+    const GeoDetail copies = b.finish();
+    ASSERT_EQ(copies.sharedGrids().size(), std::size_t(kCopies));
+
+    // Hashing one copy hashes the tree for all of them.
+    const U64 treeHash = copies.sharedGrids()[0]->treeHash();
+    for (const GeoVDBGridConstPtr& grid : copies.sharedGrids()) {
+        EXPECT_EQ(grid->treeIdentity(), original->treeIdentity());
+    }
+    EXPECT_EQ(original->treeHash(), treeHash);
+
+    const GeoDetail one = makeDetail(geoVDBGrid(source, 0));
+    const std::size_t tree = original->getSizeInBytes();
+    ASSERT_GT(tree, std::size_t(0));
+    EXPECT_LT(copies.getSizeInBytes(), one.getSizeInBytes() + tree);
+}
+
 TEST(GeoVDBTest, DeletedPrimitiveDropsItsGrid)
 {
     const openvdb::FloatGrid::Ptr a = makeSphere();
@@ -172,5 +201,7 @@ TEST(GeoVDBTest, NonVDBPrimitiveThrows)
     b.appendPrimitive(eGeoPrimitivePolygon, pts);
     const GeoDetail d = b.finish();
     EXPECT_THROW(geoVDBGrid(d, 0), std::invalid_argument);
-    EXPECT_THROW(geoAppendVDB(b, GeoVDBGridBaseConstPtr(), "x"), std::invalid_argument);
+    GeoDetailBuilder fresh;
+    EXPECT_THROW(geoAppendVDB(fresh, GeoVDBGridBaseConstPtr(), "x"), std::invalid_argument);
+    EXPECT_THROW(geoAppendVDB(fresh, fresh.appendPoints(1), GeoVDBGridConstPtr(), "x"), std::invalid_argument);
 }

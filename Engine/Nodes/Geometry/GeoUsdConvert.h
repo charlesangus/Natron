@@ -55,6 +55,13 @@ inline constexpr const char* kGeoUsdWorldSpaceAttr = "usdWorldSpace";
  **/
 inline constexpr const char* kGeoUsdSourceAttr = "usdSource";
 
+/**
+ * @brief A primitive string attribute on VDB primitives read from a USD volume: the field
+ * relationship the grid came through, without its namespace. An override of that volume authors
+ * the same field again rather than adding one beside it. Not exported.
+ **/
+inline constexpr const char* kGeoUsdFieldAttr = "usdField";
+
 /** @brief How packed geometry primitives become USD prims. */
 enum GeoUsdPackedModeEnum {
     eGeoUsdPackedPointInstancer = 0,
@@ -85,6 +92,8 @@ struct GeoUsdInputPrim {
     // Attribute values at the conversion's time, primvars flattened; "<primvar>:indices" is
     // present when the primvar is indexed. Only captured for prims the detail itself names.
     std::unordered_map<PXR_NS::TfToken, PXR_NS::VtValue, PXR_NS::TfToken::HashFunctor> values;
+    // A volume's OpenVDB field relationships, namespace stripped, and the field prims they target.
+    std::vector<std::pair<PXR_NS::TfToken, PXR_NS::SdfPath>> fields;
     U64 hash = 0;
 };
 

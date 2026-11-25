@@ -1801,6 +1801,7 @@ AppManager::clearDiskCache()
     if (_imp->_nodeCache) {
         _imp->_nodeCache->clearPins();
     }
+    geoClearVDBCacheDirectory();
 }
 
 void
@@ -3524,7 +3525,7 @@ AppManager::getNodeCacheHost() const
 std::shared_ptr<CacheDiskTier>
 AppManager::getNodeCacheDiskTier() const
 {
-    return _imp->_nodeCache->diskTier();
+    return _imp->_nodeCache ? _imp->_nodeCache->diskTier() : std::shared_ptr<CacheDiskTier>();
 }
 
 void

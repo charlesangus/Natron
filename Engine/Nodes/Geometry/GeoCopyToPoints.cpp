@@ -604,7 +604,7 @@ expandCopy(const GeoDetail& source,
         if (type == eGeoPrimitiveVDB) {
             flush();
             const GeoOffset pivot = firstPoint + localPoint[(std::size_t)source.vertexPoint(range.start)];
-            const GeoOffset vdb = geoAppendVDB(output, pivot, geoVDBGrid(source, primitive), geoVDBName(source, primitive));
+            const GeoOffset vdb = geoAppendVDB(output, pivot, geoVDB(source, primitive), geoVDBName(source, primitive));
             geoTransformVDB(output, vdb, xform.m);
             finishPrimitive(primitive, vdb);
 

@@ -230,3 +230,123 @@ TEST(GeoVDBBridge, SameNamedGridsGetSuffixedFields)
     EXPECT_EQ(geoVDBName(back, 0), "density");
     EXPECT_EQ(geoVDBName(back, 1), "density");
 }
+
+namespace {
+
+// An input volume whose field relationships are named apart from the grids they hold.
+UsdStageRefPtr
+inputVolumeStage(const QTemporaryDir& dir)
+{
+    const std::string densityFile = dir.path().toStdString() + "/input-density.vdb";
+    const std::string heatFile = dir.path().toStdString() + "/input-heat.vdb";
+    EXPECT_TRUE(geoWriteVDBFile(*makeSphere(1.f), "density", densityFile, nullptr));
+    EXPECT_TRUE(geoWriteVDBFile(*makeSphere(2.f), "temperature", heatFile, nullptr));
+
+    const UsdStageRefPtr stage = UsdStage::CreateInMemory("input.usda");
+    const UsdVolVolume volume = UsdVolVolume::Define(stage, SdfPath("/scene/vol"));
+    const auto field = [&](const char* relationship, const char* prim, const char* grid, const std::string& file) {
+        const UsdVolOpenVDBAsset asset = UsdVolOpenVDBAsset::Define(stage, SdfPath("/scene/vol").AppendChild(TfToken(prim)));
+        asset.CreateFilePathAttr().Set(SdfAssetPath(file));
+        asset.CreateFieldNameAttr().Set(TfToken(grid));
+        volume.CreateFieldRelationship(TfToken(relationship), asset.GetPath());
+    };
+    field("dens", "densityGrid", "density", densityFile);
+    field("heat", "heatGrid", "temperature", heatFile);
+
+    return stage;
+}
+
+UsdStageRefPtr
+composedOver(const UsdStageRefPtr& input,
+             const GeoDetailConstPtr& detail,
+             const QTemporaryDir& dir,
+             SdfLayerRefPtr* converted)
+{
+    GeoUsdConvertOptions options = optionsIn(dir);
+    const GeoUsdDetailPaths paths = geoUsdDetailPaths(*detail, options);
+    options.inputScene = geoUsdCaptureInputScene(input, UsdTimeCode::Default(), paths.paths, paths.sourcePaths);
+    const GeoUsdConvert convert(detail, options);
+    *converted = authored(convert);
+    EXPECT_TRUE(convert.volumeWriteFailures().empty());
+
+    const SdfLayerRefPtr root = SdfLayer::CreateAnonymous("composed.usda");
+    root->InsertSubLayerPath((*converted)->GetIdentifier());
+    root->InsertSubLayerPath(input->GetRootLayer()->GetIdentifier(), 1);
+
+    return UsdStage::Open(root);
+}
+
+} // namespace
+
+TEST(GeoVDBBridge, AFieldWithNoGridNameTakesTheGridsOwnName)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string file = dir.path().toStdString() + "/unnamed-field.vdb";
+    ASSERT_TRUE(geoWriteVDBFile(*makeSphere(1.f), "density", file, nullptr));
+    const UsdStageRefPtr stage = UsdStage::CreateInMemory("unnamed.usda");
+    const UsdVolVolume volume = UsdVolVolume::Define(stage, SdfPath("/vol"));
+    const UsdVolOpenVDBAsset asset = UsdVolOpenVDBAsset::Define(stage, SdfPath("/vol/smoke"));
+    asset.CreateFilePathAttr().Set(SdfAssetPath(file));
+    volume.CreateFieldRelationship(TfToken("smoke"), asset.GetPath());
+
+    GeoDetailBuilder b;
+    std::vector<std::string> warnings;
+    std::string err;
+    ASSERT_TRUE(geoUsdReadPrim(stage->GetPrimAtPath(SdfPath("/vol")), UsdTimeCode::Default(), nullptr, b, &warnings, &err)) << err;
+    const GeoDetail back = b.finish();
+    ASSERT_EQ(back.primitiveCount(), GeoIndex(1));
+    EXPECT_EQ(geoVDBName(back, 0), "density");
+}
+
+TEST(GeoVDBBridge, OverridingAnInputVolumeReauthorsItsFieldsAndBlocksDroppedOnes)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const UsdStageRefPtr input = inputVolumeStage(dir);
+
+    GeoDetailBuilder read;
+    std::vector<std::string> warnings;
+    std::string err;
+    ASSERT_TRUE(geoUsdReadPrim(input->GetPrimAtPath(SdfPath("/scene/vol")), UsdTimeCode::Default(), nullptr, read, &warnings, &err)) << err;
+    const GeoDetailConstPtr both = std::make_shared<const GeoDetail>(read.finish());
+    ASSERT_EQ(both->primitiveCount(), GeoIndex(2));
+    const GeoAttribute* recorded = both->findAttribute(eGeoAttribClassPrimitive, kGeoUsdFieldAttr);
+    ASSERT_NE(recorded, nullptr);
+    EXPECT_EQ(recorded->getString(0), "dens");
+    EXPECT_EQ(recorded->getString(1), "heat");
+
+    SdfLayerRefPtr converted;
+    const UsdStageRefPtr composed = composedOver(input, both, dir, &converted);
+    ASSERT_TRUE(static_cast<bool>(composed));
+    UsdVolVolume::FieldMap fields = UsdVolVolume(composed->GetPrimAtPath(SdfPath("/scene/vol"))).GetFieldPaths();
+    ASSERT_EQ(fields.size(), 2u);
+    EXPECT_EQ(fields[TfToken("dens")], SdfPath("/scene/vol/densityGrid"));
+    EXPECT_EQ(fields[TfToken("heat")], SdfPath("/scene/vol/heatGrid"));
+    EXPECT_FALSE(static_cast<bool>(converted->GetPrimAtPath(SdfPath("/scene/vol/density"))));
+
+    // Only the density grid is left: the heat field must not outlive its grid.
+    GeoDetailBuilder kept;
+    geoAppendVDB(kept, geoVDBGrid(*both, 0), "density");
+    GeoAttributeDesc pathDesc;
+    pathDesc.name = "path";
+    pathDesc.storage = eGeoStorageString;
+    kept.addAttribute(eGeoAttribClassPrimitive, pathDesc).setString(0, "/scene/vol");
+    GeoAttributeDesc sourceDesc;
+    sourceDesc.name = kGeoUsdSourceAttr;
+    sourceDesc.storage = eGeoStorageInt32;
+    kept.addAttribute(eGeoAttribClassPrimitive, sourceDesc).set<std::int32_t>(0, 1);
+    GeoAttributeDesc fieldDesc;
+    fieldDesc.name = kGeoUsdFieldAttr;
+    fieldDesc.storage = eGeoStorageString;
+    kept.addAttribute(eGeoAttribClassPrimitive, fieldDesc).setString(0, "dens");
+    const GeoDetailConstPtr single = std::make_shared<const GeoDetail>(kept.finish());
+
+    SdfLayerRefPtr convertedSingle;
+    const UsdStageRefPtr composedSingle = composedOver(input, single, dir, &convertedSingle);
+    ASSERT_TRUE(static_cast<bool>(composedSingle));
+    fields = UsdVolVolume(composedSingle->GetPrimAtPath(SdfPath("/scene/vol"))).GetFieldPaths();
+    ASSERT_EQ(fields.size(), 1u);
+    EXPECT_EQ(fields.begin()->first, TfToken("dens"));
+    EXPECT_EQ(fields.begin()->second, SdfPath("/scene/vol/densityGrid"));
+}

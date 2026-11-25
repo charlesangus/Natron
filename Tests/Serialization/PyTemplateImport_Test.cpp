@@ -44,6 +44,7 @@
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Project.h"
+#include "Serialization/ProjectSerialization.h"
 
 NATRON_NAMESPACE_USING
 NATRON_PYTHON_NAMESPACE_USING

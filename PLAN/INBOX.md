@@ -17,3 +17,5 @@
   - `m224_shape_drag`: the script locks onto viewer text. Its fix (e9347fd229) is on M299 - Roto Render Performance's branch and lands with it.
 
 - **Layered document flatten: clipping and group isolation** (PM, 2026-11-25, from the M79 - Layered Document Readers review): when a PSD or KRA has no stored composite, the flattened composite ignores clipping masks and group isolation; only Normal-over is documented. PSD and Krita clip differently, so this is a design task.
+
+- **For-Each loop thread scaling** (PM, 2026-11-25, from the M402 - Geometry Loops bench): 10,000 connectivity pieces cook in 1684 ms on 1 thread and 1404 ms on 4 (1.20x). Profile where the per-piece work serialises (piece extraction, merge, per-iteration setup or a lock), and re-bench on a many-core host.

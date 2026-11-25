@@ -33,7 +33,7 @@ Member of F18 - Geometry Loops And Solver: branches off and merges into `feature
 
 ## Phase 402.1: Contexts on the geometry path
 
-- [ ] M402.P1.T1 — Mix the render-context key into geometry evaluation and caching
+- [x] M402.P1.T1 — Mix the render-context key into geometry evaluation and caching
   - files: `Engine/EffectInstanceRenderGeometry.cpp`, `Engine/GeoDetailKey.{h,cpp}`, `Engine/EffectInstance.h`, `Tests/GeoRender_Test.cpp`
   - approach: Thread the current render context through `EvaluateGeometryArgs` the way `renderRoI` carries it for images (`mixRenderContextKey`, `Engine/EffectInstance.cpp:685`/`:7820`, `Engine/ParallelRenderArgs.cpp:922`). Add the context key to `GeoDetailKey` only when the node's upstream read-set names a context variable, so nodes that don't read it keep one cache entry. Knob reads inside `renderGeometry()` must see the context's variable values through the existing driver path.
   - verify: new `GeoRender_Test` cases: a `GeoTransform` whose translate is driven by a test context variable cooks different details under two contexts and hits the cache on a repeat; a node that doesn't read the variable produces one cache entry for both.
@@ -41,17 +41,17 @@ Member of F18 - Geometry Loops And Solver: branches off and merges into `feature
 
 ## Phase 402.2: The For-Each block
 
-- [ ] M402.P2.T1 — `GeoForEachBegin` and `GeoForEachEnd` nodes with count and feedback modes
+- [x] M402.P2.T1 — `GeoForEachBegin` and `GeoForEachEnd` nodes with count and feedback modes
   - files: `Engine/Nodes/Loop/GeoForEachBegin.{h,cpp,reg.inc}`, `Engine/Nodes/Loop/GeoForEachEnd.{h,cpp,reg.inc}`, `Engine/CMakeLists.txt`, `Tests/Native/GeoForEach_Test.cpp`
   - approach: Mirror `LoopBegin`/`LoopEnd`'s pairing, driver and `getInputContexts` (`LoopEnd.cpp:3446`) with geometry inputs and outputs. Count mode iterates N times over the full input; feedback passes each iteration's result to the next through Begin's Feedback output. Gather by merge (GeoMerge's attribute promotion rules) or feedback (last iteration). Merge-mode iterations evaluate in parallel on the thread pool and merge in iteration order. Stop condition and single-pass knobs as on `LoopEnd`. Labels match script names.
   - verify: `GeoForEach_Test`: count mode of 5 with a context-driven `GeoTransform` merges 5 offset copies; feedback mode of 5 applies the transform 5 times cumulatively; the stop condition ends early; results are identical with 1 and 8 threads.
   - size: L
-- [ ] M402.P2.T2 — Piece and point iteration modes
+- [x] M402.P2.T2 — Piece and point iteration modes
   - files: `Engine/Nodes/Loop/GeoForEachBegin.{h,cpp}`, `Engine/Geo/GeoConnectivity.{h,cpp}`, `Tests/Native/GeoForEach_Test.cpp`
   - approach: By-piece mode splits the input by a primitive or point attribute's unique values, or by connected components (union-find over `GeoReverseTopology`, in a reusable `GeoConnectivity` helper M415 - Geometry Attribute Ops' Connectivity node will reuse). The Piece output is that subset, extracted by building a detail with only those elements (pages shared where possible). By-point mode yields one point per iteration. `GeoForEachEnd`'s optional Piece-source input lets the user extract pieces from a different stream, as the SOP's "Fetch Piece" source does.
   - verify: `GeoForEach_Test`: three boxes merged, iterated by `name` and by connectivity, each piece scaled about its own centroid, give the expected bounds per box; a missing attribute errors with its name; zero pieces gives an empty detail and an info message.
   - size: L
-- [ ] M402.P2.T3 — Metadata output and loop variables
+- [x] M402.P2.T3 — Metadata output and loop variables
   - files: `Engine/Nodes/Loop/GeoForEachBegin.{h,cpp}`, `Tests/Native/GeoForEach_Test.cpp`, `Engine/Nodes/Loop/docs/GeoForEach.md`
   - approach: Begin's Metadata output is a detail-only `GeoDetail` with `iteration`, `numiterations`, `value`, `ivalue` and `svalue` detail attributes for the current context. Publish the same values as the `loop.*` variables the image loop's drivers use, so knobs read them directly. Write the node docs fresh (no SideFX text).
   - verify: `GeoForEach_Test`: a `GeoWrangle` reading `detail(1, "iteration")` from Metadata on its second input, and a `GeoTransform` knob driven by `loop.iteration`, both produce the same per-piece offsets.
@@ -59,7 +59,7 @@ Member of F18 - Geometry Loops And Solver: branches off and merges into `feature
 
 ## Phase 402.3: Proof
 
-- [ ] M402.P3.T1 — Scale bench and GUI check
+- [x] M402.P3.T1 — Scale bench and GUI check
   - files: `tools/bench/geo/foreach_pieces.py`, `Tests/gui/m402_geo_foreach.py`
   - approach: Bench a For-Each over 10,000 connectivity pieces (a scattered box field) with a per-piece transform, reporting cook time at 1 and all threads; no threshold. GUI script builds `GeoPrimitive → GeoForEachBegin → GeoTransform → GeoForEachEnd → GeoToUSD` and checks the viewer shows every piece, then cancels a long loop and checks the UI stays responsive.
   - verify: the bench runs headless through a gtest-style harness that cooks `GeoForEachEnd` directly (geometry has no headless render target until M403 - Geometry File Cache); the GUI script passes under Xvfb.
@@ -80,3 +80,5 @@ Member of F18 - Geometry Loops And Solver: branches off and merges into `feature
 Shared design: `PLAN/DECISIONS/2026-11-12-geometry-simulation-expansion.md`.
 - 2026-11-22 — GeoForEachBegin has a Method knob (Extract Piece or Point / Fetch Feedback / Fetch Metadata / Fetch Input) and several Begin nodes pair with one End, instead of three outputs (user, 2026-11-22): nodes have exactly one output.
 - 2026-11-22 — P1.T1: the context key reaches the geometry cache through the node hash, as for images; `GeoDetailKey` is unchanged. Scope-set contexts, direct evaluations and `EvaluateGeometryArgs::context` now carry it (f179a850c).
+- 2026-11-25 (PM) — Merged into F18 as #365. gate14 (520225b27) is green, and its GUI check confirms that a held-back edit aborts a long cook. The review round-1 fixes are in.
+  - **P3.T1 bench:** run from that gate's Tests binary in published image fea31bf10eb9466e, on the dev host's 4 threads. 10,000 pieces cook in 1684.4 ms on 1 thread and 1404.4 ms on 4, a 1.20x speed-up. The For-Each loop barely scales with threads; filed to the inbox.

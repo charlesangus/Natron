@@ -150,7 +150,7 @@ private:
 
     void run();
 
-    void serviceLoads(const std::vector<LoadRequest>& requests);
+    void serviceLoads(const std::vector<LoadRequest>& requests, U64 cancelCount);
 
     void postToContext(const std::function<void()>& call);
 
@@ -184,6 +184,16 @@ private:
     bool _quit = false;
     double _pendingTime = 0.;
     std::vector<LoadRequest> _loadRequests;
+    // Requests the worker has taken off _loadRequests but not yet handed to the stage are seen by
+    // neither the queue nor the stage, so a cancel then would miss them: the worker hands each pass
+    // over under _handOffMutex only if no cancel has come since it took the batch, and
+    // cancelPendingLoads() holds it while it clears both.
+    std::mutex _handOffMutex;
+    // Written under _handOffMutex and _queueMutex, read under either.
+    U64 _cancelCount = 0;
+    // Under _queueMutex: whether the worker holds requests it has taken, no cancel has dropped
+    // since, and it has not yet serviced.
+    bool _loadsTaken = false;
     std::thread _worker;
 };
 

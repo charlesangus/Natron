@@ -406,11 +406,16 @@ void
 SceneNodeStageSource::cancelPendingLoads()
 {
     {
-        std::lock_guard<std::mutex> lock(_queueMutex);
-        _loadRequests.clear();
-    }
-    if (SceneStage* stage = _loadStage.load()) {
-        stage->cancelPendingLoads();
+        std::lock_guard<std::mutex> handOff(_handOffMutex);
+        {
+            std::lock_guard<std::mutex> lock(_queueMutex);
+            _loadRequests.clear();
+            _loadsTaken = false;
+            ++_cancelCount;
+        }
+        if (SceneStage* stage = _loadStage.load()) {
+            stage->cancelPendingLoads();
+        }
     }
     _queueChanged.notify_one();
 }
@@ -420,7 +425,7 @@ SceneNodeStageSource::hasPendingLoads() const
 {
     {
         std::lock_guard<std::mutex> lock(_queueMutex);
-        if (!_loadRequests.empty()) {
+        if (!_loadRequests.empty() || _loadsTaken) {
             return true;
         }
     }
@@ -452,7 +457,8 @@ SceneNodeStageSource::requestLoadRules(const SceneLoadRules& rules)
 }
 
 void
-SceneNodeStageSource::serviceLoads(const std::vector<LoadRequest>& requests)
+SceneNodeStageSource::serviceLoads(const std::vector<LoadRequest>& requests,
+                                   U64 cancelCount)
 {
     // Only this worker creates the stage, so reading the pointer needs no lock.
     if (!_stage || (requests.empty() && !_stage->hasPendingLoads())) {
@@ -523,6 +529,13 @@ SceneNodeStageSource::serviceLoads(const std::vector<LoadRequest>& requests)
     bool serviced = false;
     bool lastServiced = false;
     for (const std::pair<const std::size_t, std::vector<std::size_t>>& pass : passes) {
+        std::unique_lock<std::mutex> handOff(_handOffMutex);
+        {
+            std::lock_guard<std::mutex> lock(_queueMutex);
+            if (_cancelCount != cancelCount) {
+                break;
+            }
+        }
         for (std::size_t i : pass.second) {
             const LoadRequest& request = requests[i];
             const PXR_NS::SdfPathVector paths = toSdfPaths(request.paths);
@@ -544,6 +557,7 @@ SceneNodeStageSource::serviceLoads(const std::vector<LoadRequest>& requests)
                 _stage->requestUnload(paths);
             }
         }
+        handOff.unlock();
         lastServiced = _stage->serviceLoads(locked, committing, [this]() { return _stopRequested.load(); }, prepare);
         serviced = serviced || lastServiced;
         if (_stopRequested) {
@@ -580,6 +594,7 @@ SceneNodeStageSource::run()
         double time = 0.;
         bool evaluate = false;
         std::vector<LoadRequest> loads;
+        U64 cancelCount = 0;
         {
             std::unique_lock<std::mutex> lock(_queueMutex);
             _queueChanged.wait(lock, [this]() { return _quit || _pending || _loadsReady || !_loadRequests.empty(); });
@@ -599,9 +614,16 @@ SceneNodeStageSource::run()
             _loadsReady = false;
             time = _pendingTime;
             loads.swap(_loadRequests);
+            _loadsTaken = !loads.empty();
+            cancelCount = _cancelCount;
         }
+        const auto service = [this, &loads, cancelCount]() {
+            serviceLoads(loads, cancelCount);
+            std::lock_guard<std::mutex> lock(_queueMutex);
+            _loadsTaken = false;
+        };
         if (!evaluate) {
-            serviceLoads(loads);
+            service();
             continue;
         }
         _time = time;
@@ -609,6 +631,8 @@ SceneNodeStageSource::run()
         std::string error;
         const bool ok = evaluateNode(_node, SceneEvaluationContext(_contextId, _loadSet), time, _abortInfo, &payload, &error);
         if (_stopRequested) {
+            std::lock_guard<std::mutex> lock(_queueMutex);
+            _loadsTaken = false;
             continue;
         }
         {
@@ -644,7 +668,7 @@ SceneNodeStageSource::run()
             }
         });
         // Asked for against the composition just synced.
-        serviceLoads(loads);
+        service();
     }
 }
 

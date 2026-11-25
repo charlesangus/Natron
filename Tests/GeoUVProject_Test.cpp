@@ -202,3 +202,82 @@ TEST(GeoUVProject, MalformedGroupFails)
     EXPECT_FALSE(projectGeoUVs(b, params, &error));
     EXPECT_FALSE(error.empty());
 }
+
+TEST(GeoUVProject, PointClassWritesEachPointOnceWithTheUVOfItsVertices)
+{
+    const GeoDetail grid = xyGrid(4, 0., 2., 0., 2.);
+    GeoUVProjectParams params;
+    params.translate = { 1., 1., 0. };
+    params.scale = { 2., 2., 1. };
+    const GeoDetail onVertices = project(grid, params);
+    params.attributeClass = eGeoAttribClassPoint;
+    const GeoDetail onPoints = project(grid, params);
+
+    EXPECT_EQ(nullptr, onPoints.findAttribute(eGeoAttribClassVertex, "uv"));
+    const GeoAttribute* pointUV = onPoints.findAttribute(eGeoAttribClassPoint, "uv");
+    ASSERT_NE(nullptr, pointUV);
+    EXPECT_EQ(nullptr, onVertices.findAttribute(eGeoAttribClassPoint, "uv"));
+    const GeoAttribute* vertexUV = onVertices.findAttribute(eGeoAttribClassVertex, "uv");
+    ASSERT_NE(nullptr, vertexUV);
+
+    onPoints.pointMap().forEachLive([&](GeoIndex, GeoOffset point) {
+        const std::array<double, 3> p = onPoints.pointPosition(point);
+        EXPECT_NEAR(p[0] / 2., pointUV->get<float>((std::size_t)point, 0), 1e-6);
+        EXPECT_NEAR(p[1] / 2., pointUV->get<float>((std::size_t)point, 1), 1e-6);
+    });
+    // The inner points are shared by four quads: every vertex of a point agrees with the point.
+    int shared = 0;
+    onVertices.vertexMap().forEachLive([&](GeoIndex, GeoOffset vertex) {
+        const GeoOffset point = onVertices.vertexPoint(vertex);
+        const std::array<double, 3> p = onVertices.pointPosition(point);
+        if ((p[0] > 0.) && (p[0] < 2.) && (p[1] > 0.) && (p[1] < 2.)) {
+            ++shared;
+        }
+        for (int k = 0; k < 2; ++k) {
+            EXPECT_EQ(vertexUV->get<float>((std::size_t)vertex, k), pointUV->get<float>((std::size_t)point, k));
+        }
+    });
+    EXPECT_EQ(9 * 4, shared);
+}
+
+TEST(GeoUVProject, PointClassReplacesTheVertexAttributeAndSeedsThePointsNotWritten)
+{
+    const GeoDetail grid = xyGrid(4, 0., 1., 0., 1.);
+    GeoUVProjectParams params;
+    params.invertU = true;
+    const GeoDetail seededFrom = project(grid, params);
+
+    params.invertU = false;
+    params.group = "left";
+    params.attributeClass = eGeoAttribClassPoint;
+    const GeoDetail out = project(seededFrom, params);
+    EXPECT_EQ(nullptr, out.findAttribute(eGeoAttribClassVertex, "uv"));
+    const GeoAttribute* uv = out.findAttribute(eGeoAttribClassPoint, "uv");
+    ASSERT_NE(nullptr, uv);
+    out.pointMap().forEachLive([&](GeoIndex, GeoOffset point) {
+        const double x = out.pointPosition(point)[0];
+        const float u = uv->get<float>((std::size_t)point, 0);
+        // The left column of quads spans x 0 to 0.25: its points, those on its right edge shared
+        // with the next column included, are projected; the others keep the inverted uv.
+        if (x <= 0.25 + 1e-9) {
+            EXPECT_NEAR(0.5 + x, u, 1e-6);
+        } else {
+            EXPECT_NEAR(0.5 - x, u, 1e-6);
+        }
+    });
+}
+
+TEST(GeoUVProject, VertexClassReplacesThePointAttribute)
+{
+    const GeoDetail grid = xyGrid(2, 0., 1., 0., 1.);
+    GeoUVProjectParams params;
+    params.attributeClass = eGeoAttribClassPoint;
+    const GeoDetail onPoints = project(grid, params);
+    params.attributeClass = eGeoAttribClassVertex;
+    const GeoDetail out = project(onPoints, params);
+    EXPECT_EQ(nullptr, out.findAttribute(eGeoAttribClassPoint, "uv"));
+    forEachUV(out, [](const std::array<double, 3>& p, float u, float v) {
+        EXPECT_NEAR(0.5 + p[0], u, 1e-6);
+        EXPECT_NEAR(0.5 + p[1], v, 1e-6);
+    });
+}

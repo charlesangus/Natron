@@ -331,15 +331,16 @@ PlaneJob::PlaneJob()
 void
 PlaneJob::lock()
 {
+    // Each image's bounds are read under the lock that pins its buffer, so they describe the buffer read through it.
     if (src) {
+        srcAccess = std::make_shared<Image::ReadAccess>(src.get());
         srcBounds = src->getBounds();
         srcNComps = (int)src->getComponentsCount();
-        srcAccess = std::make_shared<Image::ReadAccess>(src.get());
     }
     if (divisor) {
+        divisorAccess = std::make_shared<Image::ReadAccess>(divisor.get());
         divisorBounds = divisor->getBounds();
         divisorNComps = (int)divisor->getComponentsCount();
-        divisorAccess = std::make_shared<Image::ReadAccess>(divisor.get());
     }
     if (dst) {
         dstAccess = std::make_shared<Image::WriteAccess>(dst.get());
@@ -360,9 +361,9 @@ void
 MaskInput::lock()
 {
     if (image) {
+        access = std::make_shared<Image::ReadAccess>(image.get());
         bounds = image->getBounds();
         nComps = (int)image->getComponentsCount();
-        access = std::make_shared<Image::ReadAccess>(image.get());
     }
 }
 

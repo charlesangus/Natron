@@ -27,18 +27,37 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <exception>
+#include <list>
+#include <map>
 #include <mutex>
+#include <ostream>
 #include <set>
+#include <streambuf>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
+#include <pxr/usd/sdf/listOp.h>
+#include <pxr/usd/sdf/payload.h>
+#include <pxr/usd/sdf/primSpec.h>
+#include <pxr/usd/sdf/schema.h>
+#include <pxr/usd/sdf/variantSetSpec.h>
+#include <pxr/usd/sdf/variantSpec.h>
+
 #include "Engine/ContentHasher.h"
+#include "Engine/EffectInstance.h"
+#include "Engine/FileStampRegistry.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Scene/PrimSelector.h"
 #include "Engine/Nodes/Scene/SceneCaches.h"
 #include "Engine/Nodes/Scene/SceneLayerMemo.h"
 #include "Engine/Nodes/Scene/SceneProjectionCameras.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
+#include "Engine/Nodes/Scene/SceneStage.h"
+#include "Engine/Nodes/Scene/SceneTeardown.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 
 NATRON_NAMESPACE_ENTER
@@ -75,6 +94,23 @@ struct GraftSlot {
     std::vector<std::string> childNames;
     // Null layer for an input without roots.
     SceneLayerEntry graft;
+    // The load set rootNames, links and passThroughHoldsGprim were read on.
+    SceneLoadSetPtr loadSet;
+    // Where a load set change can change the reads of rootNames and links, and of
+    // passThroughHoldsGprim, given to every evaluation reusing them.
+    std::vector<std::string> readReach;
+    std::vector<std::string> passThroughReach;
+};
+
+// Evaluation contexts a node keeps a layer for at once: the renders' and a few viewers'.
+const std::size_t kSceneLayerMemoSlots = 4;
+
+// What reparentRoots() last grafted for one evaluation context.
+struct GraftContext {
+    U64 context = 0;
+    // The inputs of the context's last successful reparentRoots(), in input order.
+    std::vector<GraftSlot> slots;
+    ScenePayload output;
 };
 } // anonymous namespace
 
@@ -85,10 +121,40 @@ struct SceneGraftMemo::State {
     std::string structureAncestorType;
     SceneLayerEntry structure;
     SceneLayerMemo overrides;
-    // The inputs of the last successful reparentRoots(), in input order.
-    std::vector<GraftSlot> slots;
-    ScenePayload output;
+    // Most recently used first, at most kSceneLayerMemoSlots.
+    std::list<GraftContext> contexts;
     U64 graftLayerAuthorCount = 0;
+    U64 inputReadCount = 0;
+
+    GraftContext* find(U64 context)
+    {
+        for (GraftContext& entry : contexts) {
+            if (entry.context == context) {
+                return &entry;
+            }
+        }
+
+        return nullptr;
+    }
+
+    // The entry of context, moved first, or a new one there, evicting the least recently used.
+    GraftContext& use(U64 context)
+    {
+        for (std::list<GraftContext>::iterator it = contexts.begin(); it != contexts.end(); ++it) {
+            if (it->context == context) {
+                contexts.splice(contexts.begin(), contexts, it);
+
+                return contexts.front();
+            }
+        }
+        contexts.push_front(GraftContext());
+        contexts.front().context = context;
+        if (contexts.size() > kSceneLayerMemoSlots) {
+            contexts.pop_back();
+        }
+
+        return contexts.front();
+    }
 };
 
 namespace {
@@ -479,7 +545,8 @@ namespace {
 }
 
 PXR_NS::UsdStageRefPtr
-openStage(const PXR_NS::SdfLayerRefPtr& root)
+openStage(const PXR_NS::SdfLayerRefPtr& root,
+          PXR_NS::UsdStage::InitialLoadSet load)
 {
     if (!root) {
         return PXR_NS::UsdStageRefPtr();
@@ -489,7 +556,7 @@ openStage(const PXR_NS::SdfLayerRefPtr& root)
     // The session layer is passed explicitly as null: the Open overload without one creates an
     // anonymous session layer (stage.h). Nothing edits these stages but their owner, through the
     // root layer.
-    return PXR_NS::UsdStage::Open(root, PXR_NS::SdfLayerHandle(), PXR_NS::UsdStage::LoadAll);
+    return PXR_NS::UsdStage::Open(root, PXR_NS::SdfLayerHandle(), load);
 }
 
 U64
@@ -530,9 +597,42 @@ compose(const ScenePayload& payload)
     return openStage(resolved);
 }
 
+namespace {
+    void
+    collectAuthoredPayloads(const PXR_NS::SdfPrimSpecHandle& spec,
+                            std::set<std::string>* assets)
+    {
+        for (const PXR_NS::SdfPayload& payload : spec->GetFieldAs<PXR_NS::SdfPayloadListOp>(PXR_NS::SdfFieldKeys->Payload).GetAppliedItems()) {
+            assets->insert(payload.GetAssetPath());
+        }
+        for (const PXR_NS::SdfPrimSpecHandle& child : spec->GetNameChildren()) {
+            collectAuthoredPayloads(child, assets);
+        }
+        for (const auto& variantSet : spec->GetVariantSets()) {
+            const PXR_NS::SdfVariantSetSpecHandle set = variantSet.second;
+            for (const PXR_NS::SdfVariantSpecHandle& variant : set->GetVariantList()) {
+                collectAuthoredPayloads(variant->GetPrimSpec(), assets);
+            }
+        }
+    }
+} // anonymous namespace
+
+std::set<std::string>
+getAuthoredPayloadAssets(const PXR_NS::SdfLayerRefPtr& layer)
+{
+    std::set<std::string> assets;
+
+    if (layer) {
+        collectAuthoredPayloads(layer->GetPseudoRoot(), &assets);
+    }
+
+    return assets;
+}
+
 std::vector<PXR_NS::SdfLayerRefPtr>
 getFileLayerClosure(const PXR_NS::SdfLayerRefPtr& layer,
-                    std::vector<std::string>* missingPaths)
+                    std::vector<std::string>* missingPaths,
+                    std::vector<std::string>* payloadPaths)
 {
     std::vector<PXR_NS::SdfLayerRefPtr> closure;
 
@@ -541,9 +641,12 @@ getFileLayerClosure(const PXR_NS::SdfLayerRefPtr& layer,
     }
 
     // GetCompositionAssetDependencies lists one layer's own sublayer, reference and payload asset
-    // paths, without recursing (sdf/layer.h), so the walk recurses itself.
+    // paths, without recursing (sdf/layer.h), so the walk recurses itself. It does not say which
+    // is which, so the layer's payloads are subtracted: an asset both referenced and payloaded
+    // goes unopened here, and the stage composing the reference opens it.
     std::set<std::string> visited;
     std::set<std::string> missing;
+    std::set<std::string> payloads;
     std::vector<PXR_NS::SdfLayerRefPtr> pending(1, layer);
     PXR_NS::TfErrorMark mark;
     while (!pending.empty()) {
@@ -555,8 +658,16 @@ getFileLayerClosure(const PXR_NS::SdfLayerRefPtr& layer,
         if (!current->IsAnonymous()) {
             closure.push_back(current);
         }
+        const std::set<std::string> authoredPayloads = getAuthoredPayloadAssets(current);
         for (const std::string& assetPath : current->GetCompositionAssetDependencies()) {
             if (assetPath.empty()) {
+                continue;
+            }
+            if (authoredPayloads.count(assetPath)) {
+                const std::string anchored = PXR_NS::SdfComputeAssetPathRelativeToLayer(current, assetPath);
+                if (payloadPaths && !anchored.empty() && payloads.insert(anchored).second) {
+                    payloadPaths->push_back(anchored);
+                }
                 continue;
             }
             // Resolves assetPath against current's location; FindOrOpenRelativeToLayer needs a
@@ -577,6 +688,39 @@ getFileLayerClosure(const PXR_NS::SdfLayerRefPtr& layer,
     mark.Clear();
 
     return closure;
+}
+
+std::vector<PXR_NS::SdfLayerRefPtr>
+getOpenFileLayers(const PXR_NS::SdfLayerRefPtr& layer)
+{
+    std::vector<PXR_NS::SdfLayerRefPtr> open;
+
+    if (!layer) {
+        return open;
+    }
+    std::set<std::string> visited;
+    std::vector<PXR_NS::SdfLayerRefPtr> pending(1, layer);
+    while (!pending.empty()) {
+        const PXR_NS::SdfLayerRefPtr current = pending.back();
+        pending.pop_back();
+        if (!visited.insert(current->GetIdentifier()).second) {
+            continue;
+        }
+        if (!current->IsAnonymous()) {
+            open.push_back(current);
+        }
+        for (const std::string& assetPath : current->GetCompositionAssetDependencies()) {
+            if (assetPath.empty()) {
+                continue;
+            }
+            const PXR_NS::SdfLayerHandle dependency = PXR_NS::SdfLayer::FindRelativeToLayer(current, assetPath);
+            if (dependency) {
+                pending.push_back(PXR_NS::SdfLayerRefPtr(dependency));
+            }
+        }
+    }
+
+    return open;
 }
 
 namespace {
@@ -700,6 +844,33 @@ getFileLayerReloadCount()
     return fileLayerReloadCount.load();
 }
 
+bool
+isStalePendingLayer(const PXR_NS::SdfLayerRefPtr& layer)
+{
+    if (!layer || layer->IsAnonymous() || (SceneTeardown::getPendingCount() == 0)) {
+        return false;
+    }
+    const std::string path = layer->GetRealPath();
+    if (path.empty()) {
+        return false;
+    }
+
+    return !FileStampRegistry::instance().matchesDisk(path);
+}
+
+std::vector<PXR_NS::SdfLayerRefPtr>
+withoutStalePendingLayers(const std::vector<PXR_NS::SdfLayerRefPtr>& layers)
+{
+    std::vector<PXR_NS::SdfLayerRefPtr> kept;
+    for (const PXR_NS::SdfLayerRefPtr& layer : layers) {
+        if (!isStalePendingLayer(layer)) {
+            kept.push_back(layer);
+        }
+    }
+
+    return kept;
+}
+
 double
 frameToTimeCode(const ScenePayload& payload,
                 double frame,
@@ -747,6 +918,50 @@ parsePrimExpression(const std::string& text,
     return true;
 }
 
+namespace {
+    // Prims visited between two polls of a selection's cancel function.
+    const std::size_t kSelectCancelPollPrims = 1024;
+
+    bool
+    selectPrimsImpl(const PXR_NS::UsdStageRefPtr& stage,
+                    const std::string& expression,
+                    std::vector<PXR_NS::SdfPath>* paths,
+                    std::string* errorMessage,
+                    const std::function<bool()>& cancelled,
+                    const PXR_NS::Usd_PrimFlagsPredicate& predicate = PXR_NS::UsdPrimDefaultPredicate)
+    {
+        paths->clear();
+        PXR_NS::SdfPathExpression parsed;
+        if (!parsePrimExpression(expression, &parsed, errorMessage)) {
+            return false;
+        }
+        if (!stage || parsed.IsEmpty()) {
+            return true;
+        }
+        const PXR_NS::UsdObjectCollectionExpressionEvaluator evaluator(stage, parsed);
+        PXR_NS::UsdObjectCollectionExpressionEvaluator::IncrementalSearcher searcher = evaluator.MakeIncrementalSearcher();
+        PXR_NS::UsdPrimRange range = stage->Traverse(predicate);
+        std::size_t visited = 0;
+        for (PXR_NS::UsdPrimRange::iterator it = range.begin(); it != range.end(); ++it) {
+            if (cancelled && ((++visited % kSelectCancelPollPrims) == 0) && cancelled()) {
+                paths->clear();
+
+                return false;
+            }
+            const PXR_NS::SdfPredicateFunctionResult result = searcher.Next(it->GetPath());
+            if (result.GetValue()) {
+                paths->push_back(it->GetPath());
+            } else if (result.IsConstant()) {
+                // Nothing below can match: a literal path such as /World/Box costs its depth, not
+                // the stage's size.
+                it.PruneChildren();
+            }
+        }
+
+        return true;
+    }
+} // anonymous namespace
+
 bool
 selectPrims(const PXR_NS::UsdStageRefPtr& stage,
             const std::string& expression,
@@ -754,30 +969,831 @@ selectPrims(const PXR_NS::UsdStageRefPtr& stage,
             std::string* errorMessage,
             bool traverseInstanceProxies)
 {
-    paths->clear();
-    PXR_NS::SdfPathExpression parsed;
-    if (!parsePrimExpression(expression, &parsed, errorMessage)) {
-        return false;
+    return selectPrimsImpl(stage,
+                           expression,
+                           paths,
+                           errorMessage,
+                           std::function<bool()>(),
+                           traverseInstanceProxies ? PXR_NS::UsdTraverseInstanceProxies() : PXR_NS::Usd_PrimFlagsPredicate(PXR_NS::UsdPrimDefaultPredicate));
+}
+
+bool
+selectPrims(const PXR_NS::UsdStageRefPtr& stage,
+            const std::string& expression,
+            std::vector<PXR_NS::SdfPath>* paths,
+            std::string* errorMessage,
+            const std::function<bool()>& cancelled)
+{
+    return selectPrimsImpl(stage, expression, paths, errorMessage, cancelled);
+}
+
+namespace {
+    // Unlike a node's selection, a viewer's rules match an unloaded payload's own prim: it is
+    // what the viewer draws a box for.
+    const PXR_NS::Usd_PrimFlagsPredicate&
+    drawRulePredicate()
+    {
+        static const PXR_NS::Usd_PrimFlagsPredicate predicate = PXR_NS::UsdPrimIsActive && PXR_NS::UsdPrimIsDefined && !PXR_NS::UsdPrimIsAbstract;
+
+        return predicate;
     }
-    if (!stage || parsed.IsEmpty()) {
-        return true;
+
+    bool
+    isUnloadedPayload(const PXR_NS::UsdPrim& prim)
+    {
+        return prim.HasAuthoredPayloads() && !prim.IsLoaded();
     }
-    const PXR_NS::UsdObjectCollectionExpressionEvaluator evaluator(stage, parsed);
-    PXR_NS::UsdObjectCollectionExpressionEvaluator::IncrementalSearcher searcher = evaluator.MakeIncrementalSearcher();
-    PXR_NS::UsdPrimRange range = traverseInstanceProxies ? stage->Traverse(PXR_NS::UsdTraverseInstanceProxies()) : stage->Traverse();
-    for (PXR_NS::UsdPrimRange::iterator it = range.begin(); it != range.end(); ++it) {
-        const PXR_NS::SdfPredicateFunctionResult result = searcher.Next(it->GetPath());
-        if (result.GetValue()) {
-            paths->push_back(it->GetPath());
-        } else if (result.IsConstant()) {
-            // Nothing below can match: a literal path such as /World/Box costs its depth, not
-            // the stage's size.
-            it.PruneChildren();
+
+    // Whether path is root or below it.
+    bool
+    isAtOrBelowPath(const std::string& path,
+                    const std::string& root)
+    {
+        if (root == "/") {
+            return true;
+        }
+
+        return (path.size() >= root.size()) && (path.compare(0, root.size(), root) == 0) && ((path.size() == root.size()) || (path[root.size()] == '/'));
+    }
+
+    // Whether path is at or below one of roots, which are sorted with PathLess and none below another.
+    bool
+    isUnderAny(const std::string& path,
+               const std::vector<std::string>& roots)
+    {
+        // Each root's subtree follows it in that order, so only the last root not after path can hold it.
+        std::vector<std::string>::const_iterator it = std::upper_bound(roots.begin(), roots.end(), path, SceneDrawStates::PathLess());
+
+        return (it != roots.begin()) && isAtOrBelowPath(path, *(it - 1));
+    }
+
+    // Whether one of roots, sorted as for isUnderAny(), is strictly below path.
+    bool
+    hasRootBelow(const std::string& path,
+                 const std::vector<std::string>& roots)
+    {
+        std::vector<std::string>::const_iterator it = std::upper_bound(roots.begin(), roots.end(), path, SceneDrawStates::PathLess());
+
+        return (it != roots.end()) && isAtOrBelowPath(*it, path);
+    }
+
+    struct DrawRuleWalk {
+        const SceneDrawRule& rule;
+        PXR_NS::TfToken kind;
+        const std::function<bool()>& cancelled;
+        // The layers of the stage's own layer stack that are the rule's and that are not; both
+        // empty when the rule keeps to no layers.
+        std::vector<PXR_NS::SdfLayerHandle> ownLayers;
+        std::vector<PXR_NS::SdfLayerHandle> otherLayers;
+        std::set<const PXR_NS::SdfLayer*> otherLayerSet;
+        std::vector<std::pair<std::string, SceneDrawStateEnum>>* rows = nullptr;
+        std::size_t visited = 0;
+        bool stopped = false;
+
+        DrawRuleWalk(const SceneDrawRule& rule,
+                     const PXR_NS::UsdStageRefPtr& stage,
+                     const std::function<bool()>& cancelled)
+            : rule(rule)
+            , kind(rule.toKind)
+            , cancelled(cancelled)
+        {
+            if (rule.layers.empty() || !stage) {
+                return;
+            }
+            const std::set<std::string> own(rule.layers.begin(), rule.layers.end());
+            for (const PXR_NS::SdfLayerHandle& layer : stage->GetLayerStack(true)) {
+                if (!layer) {
+                    continue;
+                }
+                if (own.find(layer->GetIdentifier()) == own.end()) {
+                    otherLayers.push_back(layer);
+                    otherLayerSet.insert(PXR_NS::get_pointer(layer));
+                } else {
+                    ownLayers.push_back(layer);
+                }
+            }
+            if (otherLayers.empty()) {
+                ownLayers.clear();
+            }
+        }
+
+        bool walks() const
+        {
+            return (rule.levels > 0) || !rule.toKind.empty();
+        }
+
+        bool poll()
+        {
+            if (!stopped && cancelled && ((++visited % kSelectCancelPollPrims) == 0) && cancelled()) {
+                stopped = true;
+            }
+
+            return !stopped;
+        }
+
+        // Whether only the other layers of the stage's own stack author prim: a node other than the
+        // rule's added it, so its draw is not the rule's to set. A spec through a reference or a
+        // payload is in none of them, and keeps the prim.
+        bool addedElsewhere(const PXR_NS::UsdPrim& prim) const
+        {
+            if (otherLayers.empty()) {
+                return false;
+            }
+            const PXR_NS::SdfPath& path = prim.GetPath();
+            for (const PXR_NS::SdfLayerHandle& layer : ownLayers) {
+                if (layer->HasSpec(path)) {
+                    return false;
+                }
+            }
+            bool other = false;
+            for (const PXR_NS::SdfLayerHandle& layer : otherLayers) {
+                if (layer->HasSpec(path)) {
+                    other = true;
+                    break;
+                }
+            }
+            if (!other) {
+                return false;
+            }
+            // Composing the prim's stack is costly, so only a prim another layer authors gets it,
+            // to find whether a reference or a payload authors it too.
+            for (const PXR_NS::SdfPrimSpecHandle& spec : prim.GetPrimStack()) {
+                if (spec && (otherLayerSet.find(PXR_NS::get_pointer(spec->GetLayer())) == otherLayerSet.end())) {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        void add(const PXR_NS::UsdPrim& prim,
+                 SceneDrawStateEnum state)
+        {
+            rows->emplace_back(prim.GetPath().GetString(), state);
+        }
+
+        void levels(const PXR_NS::UsdPrim& prim,
+                    int depth)
+        {
+            if (!poll()) {
+                return;
+            }
+            if ((depth >= rule.levels) || isUnloadedPayload(prim)) {
+                add(prim, rule.state);
+
+                return;
+            }
+            add(prim, eSceneDrawStateChildren);
+            for (const PXR_NS::UsdPrim& child : prim.GetFilteredChildren(drawRulePredicate())) {
+                if (!addedElsewhere(child)) {
+                    levels(child, depth + 1);
+                }
+            }
+        }
+
+        // Whether prim or a prim below it took the rule's state.
+        bool toKind(const PXR_NS::UsdPrim& prim)
+        {
+            if (!poll()) {
+                return false;
+            }
+            PXR_NS::TfToken primKind;
+            if ((PXR_NS::UsdModelAPI(prim).GetKind(&primKind) && PXR_NS::KindRegistry::IsA(primKind, kind)) || isUnloadedPayload(prim)) {
+                add(prim, rule.state);
+
+                return true;
+            }
+            bool reached = false;
+            for (const PXR_NS::UsdPrim& child : prim.GetFilteredChildren(drawRulePredicate())) {
+                if (!addedElsewhere(child)) {
+                    reached = toKind(child) || reached;
+                }
+            }
+            if (reached) {
+                // After the prims below: Children blocks nothing, so it switches none of them.
+                add(prim, eSceneDrawStateChildren);
+            }
+
+            return reached;
+        }
+
+        // Fills match's rows. False once cancelled.
+        bool match(const PXR_NS::UsdStageRefPtr& stage,
+                   SceneDrawRuleMatch* match)
+        {
+            match->rows.clear();
+            if (!walks()) {
+                match->rows.emplace_back(match->path, rule.state);
+
+                return true;
+            }
+            if (!stage) {
+                return true;
+            }
+            const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(PXR_NS::SdfPath(match->path));
+            if (!prim || !prim.IsActive() || !prim.IsDefined() || prim.IsAbstract()) {
+                return true;
+            }
+            rows = &match->rows;
+            if (rule.toKind.empty()) {
+                levels(prim, 0);
+            } else {
+                toKind(prim);
+            }
+            rows = nullptr;
+
+            return !stopped;
+        }
+    };
+
+    void
+    getLiteralPaths(const PrimSelector::Reach& reach,
+                    std::vector<std::string>* paths)
+    {
+        for (const std::string& literal : reach.literals) {
+            if (PXR_NS::SdfPath::IsValidPathString(literal) && PXR_NS::SdfPath(literal).IsAbsoluteRootOrPrimPath()) {
+                paths->push_back(literal);
+            }
         }
     }
 
+    /**
+     * @brief selectPrimsImpl() over the subtrees at roots only, sorted as for isUnderAny(). The
+     * ancestors of each root go through the search first, as a whole traversal would take them,
+     * since a pattern can match below a prim only because of what is above it.
+     **/
+    bool
+    selectPrimsUnder(const PXR_NS::UsdStageRefPtr& stage,
+                     const std::string& expression,
+                     const std::vector<std::string>& roots,
+                     std::vector<std::string>* paths,
+                     const std::function<bool()>& cancelled)
+    {
+        PXR_NS::SdfPathExpression parsed;
+        std::string error;
+        if (!stage || !parsePrimExpression(expression, &parsed, &error) || parsed.IsEmpty()) {
+            return true;
+        }
+        const PXR_NS::Usd_PrimFlagsPredicate& predicate = drawRulePredicate();
+        const PXR_NS::UsdObjectCollectionExpressionEvaluator evaluator(stage, parsed);
+        std::size_t visited = 0;
+        for (const std::string& root : roots) {
+            const PXR_NS::SdfPath rootPath(root);
+            const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(rootPath);
+            if (!prim || !predicate(prim)) {
+                continue;
+            }
+            PXR_NS::UsdObjectCollectionExpressionEvaluator::IncrementalSearcher searcher = evaluator.MakeIncrementalSearcher();
+            bool pruned = false;
+            for (const PXR_NS::SdfPath& ancestor : rootPath.GetPrefixes()) {
+                if (ancestor == rootPath) {
+                    break;
+                }
+                // A whole traversal never reaches below a prim the predicate leaves out.
+                const PXR_NS::UsdPrim above = stage->GetPrimAtPath(ancestor);
+                if (!above || !predicate(above)) {
+                    pruned = true;
+                    break;
+                }
+                const PXR_NS::SdfPredicateFunctionResult result = searcher.Next(ancestor);
+                if (!result.GetValue() && result.IsConstant()) {
+                    pruned = true;
+                    break;
+                }
+            }
+            if (pruned) {
+                continue;
+            }
+            PXR_NS::UsdPrimRange range(prim, predicate);
+            for (PXR_NS::UsdPrimRange::iterator it = range.begin(); it != range.end(); ++it) {
+                if (cancelled && ((++visited % kSelectCancelPollPrims) == 0) && cancelled()) {
+                    return false;
+                }
+                const PXR_NS::SdfPredicateFunctionResult result = searcher.Next(it->GetPath());
+                if (result.GetValue()) {
+                    paths->push_back(it->GetPath().GetString());
+                } else if (result.IsConstant()) {
+                    it.PruneChildren();
+                }
+            }
+        }
+
+        return true;
+    }
+
+    void
+    sortMatches(std::vector<SceneDrawRuleMatch>* matches)
+    {
+        const SceneDrawStates::PathLess less;
+        std::sort(matches->begin(), matches->end(), [&less](const SceneDrawRuleMatch& a, const SceneDrawRuleMatch& b) { return less(a.path, b.path); });
+    }
+} // anonymous namespace
+
+bool
+drawRulesNeedStage(const SceneDrawRules& rules)
+{
+    for (const SceneDrawRule& rule : rules) {
+        if ((rule.levels > 0) || !rule.toKind.empty()) {
+            return true;
+        }
+        PrimSelector::Reach reach;
+        std::string error;
+        if (PrimSelector::getReach(rule.pattern, &reach, &error) && !reach.literalOnly) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool
+matchDrawRules(const PXR_NS::UsdStageRefPtr& stage,
+               const SceneDrawRules& rules,
+               SceneDrawRuleMatches* matches,
+               const std::function<bool()>& cancelled)
+{
+    matches->assign(rules.size(), std::vector<SceneDrawRuleMatch>());
+    for (std::size_t i = 0; i < rules.size(); ++i) {
+        const SceneDrawRule& rule = rules[i];
+        PrimSelector::Reach reach;
+        std::string error;
+        if (PrimSelector::isBlank(rule.pattern) || !PrimSelector::getReach(rule.pattern, &reach, &error)) {
+            // The node that set the rule reports its own bad pattern.
+            continue;
+        }
+        std::vector<std::string> paths;
+        if (reach.literalOnly) {
+            getLiteralPaths(reach, &paths);
+        } else if (stage) {
+            std::vector<PXR_NS::SdfPath> selected;
+            if (!selectPrimsImpl(stage, rule.pattern, &selected, &error, cancelled, drawRulePredicate())) {
+                if (cancelled && cancelled()) {
+                    matches->clear();
+
+                    return false;
+                }
+                continue;
+            }
+            paths.reserve(selected.size());
+            for (const PXR_NS::SdfPath& path : selected) {
+                paths.push_back(path.GetString());
+            }
+        }
+        DrawRuleWalk walk(rule, stage, cancelled);
+        std::vector<SceneDrawRuleMatch>& ruleMatches = (*matches)[i];
+        ruleMatches.resize(paths.size());
+        for (std::size_t j = 0; j < paths.size(); ++j) {
+            ruleMatches[j].path = paths[j];
+            if (!walk.match(stage, &ruleMatches[j])) {
+                matches->clear();
+
+                return false;
+            }
+        }
+        sortMatches(&ruleMatches);
+    }
+
+    return true;
+} // matchDrawRules
+
+bool
+rematchDrawRulesUnder(const PXR_NS::UsdStageRefPtr& stage,
+                      const SceneDrawRules& rules,
+                      const std::vector<std::string>& roots,
+                      SceneDrawRuleMatches* matches,
+                      const std::function<bool()>& cancelled)
+{
+    if (matches->size() != rules.size()) {
+        return matchDrawRules(stage, rules, matches, cancelled);
+    }
+    std::vector<std::string> covering;
+    {
+        // A changed load below a payload changes what the outermost payload above it composes.
+        std::vector<std::string> sorted = getLoadReach(stage, roots);
+        std::sort(sorted.begin(), sorted.end(), SceneDrawStates::PathLess());
+        for (const std::string& root : sorted) {
+            if (covering.empty() || !isAtOrBelowPath(root, covering.back())) {
+                covering.push_back(root);
+            }
+        }
+    }
+    if (covering.empty()) {
+        return true;
+    }
+    for (std::size_t i = 0; i < rules.size(); ++i) {
+        const SceneDrawRule& rule = rules[i];
+        PrimSelector::Reach reach;
+        std::string error;
+        if (PrimSelector::isBlank(rule.pattern) || !PrimSelector::getReach(rule.pattern, &reach, &error)) {
+            continue;
+        }
+        DrawRuleWalk walk(rule, stage, cancelled);
+        if (reach.literalOnly && !walk.walks()) {
+            // Plain paths, as they are, whatever the stage holds.
+            continue;
+        }
+        std::vector<SceneDrawRuleMatch>& ruleMatches = (*matches)[i];
+        std::vector<SceneDrawRuleMatch> next;
+        std::vector<std::string> redo;
+        next.reserve(ruleMatches.size());
+        for (SceneDrawRuleMatch& match : ruleMatches) {
+            const bool under = isUnderAny(match.path, covering);
+            if (under && !reach.literalOnly) {
+                // Selected again below, with what the subtree holds now.
+                continue;
+            }
+            if (under || (walk.walks() && hasRootBelow(match.path, covering))) {
+                redo.push_back(match.path);
+            } else {
+                next.push_back(std::move(match));
+            }
+        }
+        if (!reach.literalOnly && !selectPrimsUnder(stage, rule.pattern, covering, &redo, cancelled)) {
+            return false;
+        }
+        for (const std::string& path : redo) {
+            next.emplace_back();
+            next.back().path = path;
+            if (!walk.match(stage, &next.back())) {
+                return false;
+            }
+        }
+        sortMatches(&next);
+        ruleMatches.swap(next);
+    }
+
+    return true;
+} // rematchDrawRulesUnder
+
+void
+getDrawRulePolicy(const SceneDrawRules& rules,
+                  const SceneDrawRuleMatches& matches,
+                  SceneDrawStates::PolicyStates* policy)
+{
+    policy->clear();
+    for (std::size_t i = 0; (i < rules.size()) && (i < matches.size()); ++i) {
+        for (const SceneDrawRuleMatch& match : matches[i]) {
+            for (const std::pair<std::string, SceneDrawStateEnum>& row : match.rows) {
+                sceneAddDrawRuleMatch(row.first, row.second, rules[i].origin, policy);
+            }
+        }
+    }
+}
+
+bool
+matchDrawRules(const PXR_NS::UsdStageRefPtr& stage,
+               const SceneDrawRules& rules,
+               SceneDrawStates::PolicyStates* policy,
+               const std::function<bool()>& cancelled)
+{
+    SceneDrawRuleMatches matches;
+    if (!matchDrawRules(stage, rules, &matches, cancelled)) {
+        policy->clear();
+
+        return false;
+    }
+    getDrawRulePolicy(rules, matches, policy);
+
     return true;
 }
+
+PXR_NS::UsdStageLoadRules
+getLoadRules(const SceneLoadSet* loadSet)
+{
+    PXR_NS::UsdStageLoadRules rules;
+
+    if (!loadSet) {
+        return rules;
+    }
+    std::vector<std::pair<PXR_NS::SdfPath, PXR_NS::UsdStageLoadRules::Rule>> entries;
+    entries.reserve(loadSet->getEntries().size());
+    for (const SceneLoadSet::Entry& entry : loadSet->getEntries()) {
+        const PXR_NS::SdfPath path(entry.path);
+        if (!path.IsAbsoluteRootOrPrimPath()) {
+            continue;
+        }
+        PXR_NS::UsdStageLoadRules::Rule rule = PXR_NS::UsdStageLoadRules::AllRule;
+        if (entry.rule == SceneLoadSet::eRuleOnly) {
+            rule = PXR_NS::UsdStageLoadRules::OnlyRule;
+        } else if (entry.rule == SceneLoadSet::eRuleNone) {
+            rule = PXR_NS::UsdStageLoadRules::NoneRule;
+        }
+        entries.emplace_back(path, rule);
+    }
+    // USD loads the ancestors of every path a rule loads, so an OnlyRule above another loading
+    // rule says nothing for its own path; and UsdStageLoadRules::Minimize() drops any rule
+    // nested under an OnlyRule as redundant, which would unload the inner path. Where the rule
+    // inherited from above excludes the siblings anyway, such an OnlyRule is dropped; under an
+    // AllRule or no rule it is what keeps the rest of its subtree unloaded, so it becomes a
+    // NoneRule, which does the same and which Minimize() leaves the inner rules under.
+    std::sort(entries.begin(), entries.end(), [](const std::pair<PXR_NS::SdfPath, PXR_NS::UsdStageLoadRules::Rule>& a, const std::pair<PXR_NS::SdfPath, PXR_NS::UsdStageLoadRules::Rule>& b) {
+        return a.first < b.first;
+    });
+    std::vector<std::pair<PXR_NS::SdfPath, PXR_NS::UsdStageLoadRules::Rule>> kept;
+    kept.reserve(entries.size());
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        bool implied = false;
+        bool inheritsExclusion = false;
+        for (std::size_t j = i; j > 0; --j) {
+            if (entries[i].first.HasPrefix(entries[j - 1].first)) {
+                inheritsExclusion = (entries[j - 1].second != PXR_NS::UsdStageLoadRules::AllRule);
+                break;
+            }
+        }
+        bool loadsBelow = false;
+        if (entries[i].second == PXR_NS::UsdStageLoadRules::OnlyRule) {
+            // Sorted, so the paths below entries[i] follow it.
+            for (std::size_t j = i + 1; (j < entries.size()) && entries[j].first.HasPrefix(entries[i].first); ++j) {
+                if (entries[j].second != PXR_NS::UsdStageLoadRules::NoneRule) {
+                    loadsBelow = true;
+                    break;
+                }
+            }
+        }
+        implied = loadsBelow && inheritsExclusion;
+        if (!implied) {
+            kept.push_back(entries[i]);
+            if (loadsBelow) {
+                kept.back().second = PXR_NS::UsdStageLoadRules::NoneRule;
+            }
+        }
+    }
+    rules.SetRules(std::move(kept));
+
+    return rules;
+}
+
+SceneLoadSetPtr
+makeLoadSet(const PXR_NS::UsdStageLoadRules& rules)
+{
+    PXR_NS::UsdStageLoadRules minimal = rules;
+    minimal.Minimize();
+    std::vector<SceneLoadSet::Entry> entries;
+    entries.reserve(minimal.GetRules().size());
+    for (const std::pair<PXR_NS::SdfPath, PXR_NS::UsdStageLoadRules::Rule>& rule : minimal.GetRules()) {
+        SceneLoadSet::RuleEnum value = SceneLoadSet::eRuleAll;
+        if (rule.second == PXR_NS::UsdStageLoadRules::OnlyRule) {
+            value = SceneLoadSet::eRuleOnly;
+        } else if (rule.second == PXR_NS::UsdStageLoadRules::NoneRule) {
+            value = SceneLoadSet::eRuleNone;
+        }
+        entries.push_back(SceneLoadSet::Entry { rule.first.GetString(), value });
+    }
+
+    return std::make_shared<const SceneLoadSet>(entries);
+}
+
+namespace {
+    // Whether LoadAndUnload() takes path on stage: USD reports an error for a path with no prim at or
+    // above it but the root, and for one at or under an inactive prim or a prototype.
+    bool
+    canLoadAt(const PXR_NS::UsdStageRefPtr& stage,
+              const PXR_NS::SdfPath& path)
+    {
+        if (path.IsAbsoluteRootPath()) {
+            return true;
+        }
+        PXR_NS::SdfPath at = path;
+        PXR_NS::UsdPrim prim;
+        while (!at.IsAbsoluteRootPath() && !(prim = stage->GetPrimAtPath(at))) {
+            at = at.GetParentPath();
+        }
+
+        return prim && prim.IsActive() && !prim.IsInPrototype() && !prim.IsPrototype();
+    }
+
+    // The paths of paths that no other of them is an ancestor of.
+    PXR_NS::SdfPathSet
+    getOutermost(const PXR_NS::SdfPathSet& paths)
+    {
+        PXR_NS::SdfPathSet outermost;
+
+        for (const PXR_NS::SdfPath& path : paths) {
+            // Sorted, so an ancestor comes before the paths below it.
+            if (outermost.empty() || !path.HasPrefix(*outermost.rbegin())) {
+                outermost.insert(path);
+            }
+        }
+
+        return outermost;
+    }
+} // anonymous namespace
+
+std::vector<std::string>
+getLoadReach(const PXR_NS::UsdStageRefPtr& stage,
+             const std::vector<std::string>& prefixes)
+{
+    std::vector<std::string> reach;
+
+    for (const std::string& text : prefixes) {
+        const PXR_NS::SdfPath prefix(text);
+        PXR_NS::SdfPath widened = prefix;
+        if (stage && prefix.IsPrimPath()) {
+            // The range climbs from the parent, so the last payload it meets is the outermost.
+            for (const PXR_NS::SdfPath& ancestor : prefix.GetParentPath().GetAncestorsRange()) {
+                const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(ancestor);
+                if (prim && prim.HasAuthoredPayloads()) {
+                    widened = ancestor;
+                }
+            }
+        }
+        const std::string path = widened.IsEmpty() ? text : widened.GetString();
+        if (std::find(reach.begin(), reach.end(), path) == reach.end()) {
+            reach.push_back(path);
+        }
+    }
+
+    return reach;
+} // getLoadReach
+
+bool
+loadChangeReaches(const SceneLoadSet* from,
+                  const SceneLoadSet* to,
+                  const std::vector<std::string>& prefixes)
+{
+    if (prefixes.empty()) {
+        return false;
+    }
+    // A changed rule changes the effective rule of its own path, of what lies below it and of
+    // its ancestors. An ancestor's own payload is the only thing of an ancestor that loads, and
+    // getLoadReach() has already widened every prefix to the outermost payload above it.
+    for (const std::string& path : SceneLoadSet::getChangedPaths(from, to)) {
+        const PXR_NS::SdfPath changed(path);
+        for (const std::string& prefix : prefixes) {
+            const PXR_NS::SdfPath reach(prefix);
+            if (changed.HasPrefix(reach) || reach.HasPrefix(changed)) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+} // loadChangeReaches
+
+bool
+applyLoadSet(const PXR_NS::UsdStageRefPtr& stage,
+             const SceneLoadSet* loadSet)
+{
+    if (!stage) {
+        return false;
+    }
+    const PXR_NS::UsdStageLoadRules target = getLoadRules(loadSet);
+    PXR_NS::UsdStageLoadRules current = stage->GetLoadRules();
+    PXR_NS::UsdStageLoadRules minimalTarget = target;
+    current.Minimize();
+    minimalTarget.Minimize();
+    if (current == minimalTarget) {
+        return false;
+    }
+
+    // What is loaded now and the target leaves out goes first, which reads no file.
+    PXR_NS::SdfPathSet unloads;
+    for (const PXR_NS::SdfPath& loaded : stage->GetLoadSet()) {
+        if (!target.IsLoaded(loaded)) {
+            unloads.insert(loaded);
+        }
+    }
+    unloads = getOutermost(unloads);
+    bool edited = false;
+    if (!unloads.empty()) {
+        stage->LoadAndUnload(PXR_NS::SdfPathSet(), unloads, PXR_NS::UsdLoadWithDescendants);
+        edited = true;
+    }
+
+    // Then the target's own rules, the outer ones first: an inner rule only has a prim to apply
+    // to once the payload above it is in. Each LoadAndUnload() call composes the payloads it
+    // loads before the next call can restrict them, so a subtree that loads in full except for
+    // a rule below it is never loaded with descendants: it loads without them and its children
+    // are visited one depth further down, each loading in full unless a rule lies below it too.
+    PXR_NS::SdfPathSet ruled;
+    PXR_NS::SdfPathSet allRules, onlyRules;
+    for (const std::pair<PXR_NS::SdfPath, PXR_NS::UsdStageLoadRules::Rule>& rule : minimalTarget.GetRules()) {
+        ruled.insert(rule.first);
+        if (rule.second == PXR_NS::UsdStageLoadRules::AllRule) {
+            allRules.insert(rule.first);
+        } else if (rule.second == PXR_NS::UsdStageLoadRules::OnlyRule) {
+            onlyRules.insert(rule.first);
+        }
+    }
+    const PXR_NS::SdfPath& root = PXR_NS::SdfPath::AbsoluteRootPath();
+    if (ruled.find(root) == ruled.end()) {
+        allRules.insert(root);
+    }
+    const auto hasRuleBelow = [&ruled](const PXR_NS::SdfPath& path) {
+        // Sorted, so the paths below path follow it.
+        const PXR_NS::SdfPathSet::const_iterator next = ruled.upper_bound(path);
+
+        return (next != ruled.end()) && next->HasPrefix(path);
+    };
+    std::map<std::size_t, std::pair<PXR_NS::SdfPathSet, PXR_NS::SdfPathSet>> byDepth;
+    for (const PXR_NS::SdfPath& path : allRules) {
+        byDepth[path.GetPathElementCount()].first.insert(path);
+    }
+    for (const PXR_NS::SdfPath& path : onlyRules) {
+        byDepth[path.GetPathElementCount()].second.insert(path);
+    }
+    // Inserting deeper keys while iterating is safe: std::map iterators stay valid and the
+    // iteration reaches the new keys in order.
+    for (std::pair<const std::size_t, std::pair<PXR_NS::SdfPathSet, PXR_NS::SdfPathSet>>& depth : byDepth) {
+        const auto loadable = [&stage](PXR_NS::SdfPathSet* paths) {
+            for (PXR_NS::SdfPathSet::iterator it = paths->begin(); it != paths->end();) {
+                it = canLoadAt(stage, *it) ? std::next(it) : paths->erase(it);
+            }
+        };
+        loadable(&depth.second.first);
+        loadable(&depth.second.second);
+        PXR_NS::SdfPathSet whole, carved;
+        for (const PXR_NS::SdfPath& path : depth.second.first) {
+            // An instance has no children of its own to visit; its prototype loads as a whole.
+            const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(path);
+            const bool instance = prim && prim.IsInstance();
+            ((hasRuleBelow(path) && !instance) ? carved : whole).insert(path);
+        }
+        PXR_NS::SdfPathSet alone = depth.second.second;
+        for (const PXR_NS::SdfPath& path : carved) {
+            if (!path.IsAbsoluteRootPath()) {
+                alone.insert(path);
+            }
+        }
+        if (!whole.empty()) {
+            stage->LoadAndUnload(whole, PXR_NS::SdfPathSet(), PXR_NS::UsdLoadWithDescendants);
+            edited = true;
+        }
+        if (!alone.empty()) {
+            stage->LoadAndUnload(alone, PXR_NS::SdfPathSet(), PXR_NS::UsdLoadWithoutDescendants);
+            edited = true;
+        }
+        for (const PXR_NS::SdfPath& path : carved) {
+            const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(path);
+            if (!prim) {
+                continue;
+            }
+            for (const PXR_NS::UsdPrim& child : prim.GetAllChildren()) {
+                // A child with a rule of its own is already queued under that rule.
+                if (ruled.find(child.GetPath()) == ruled.end()) {
+                    byDepth[depth.first + 1].first.insert(child.GetPath());
+                }
+            }
+        }
+    }
+    PXR_NS::SdfPathSet reloaded;
+    for (const PXR_NS::SdfPath& loaded : stage->GetLoadSet()) {
+        if (!target.IsLoaded(loaded)) {
+            reloaded.insert(loaded);
+        }
+    }
+    reloaded = getOutermost(reloaded);
+    if (!reloaded.empty()) {
+        stage->LoadAndUnload(PXR_NS::SdfPathSet(), reloaded, PXR_NS::UsdLoadWithDescendants);
+        edited = true;
+    }
+
+    return edited;
+} // applyLoadSet
+
+std::size_t
+countUnloadedPayloads(const PXR_NS::UsdStageRefPtr& stage,
+                      const std::vector<std::string>& paths)
+{
+    if (!stage) {
+        return 0;
+    }
+    PXR_NS::SdfPathSet roots;
+    for (const std::string& text : paths) {
+        const PXR_NS::SdfPath path(text);
+        if (path.IsAbsoluteRootOrPrimPath()) {
+            roots.insert(path);
+        }
+    }
+    PXR_NS::SdfPathSet counted;
+    for (const PXR_NS::SdfPath& root : getOutermost(roots)) {
+        PXR_NS::SdfPath at = root;
+        PXR_NS::UsdPrim prim;
+        while (!(prim = stage->GetPrimAtPath(at)) && !at.IsAbsoluteRootPath()) {
+            at = at.GetParentPath();
+        }
+        if (!prim || !prim.IsActive()) {
+            continue;
+        }
+        if (at != root) {
+            // The path lies inside a payload not loaded, or names no prim at all.
+            if (prim.HasAuthoredPayloads() && !prim.IsLoaded()) {
+                counted.insert(at);
+            }
+            continue;
+        }
+        // The predicate leaves IsLoaded out, or the walk would not see what it counts.
+        const PXR_NS::UsdPrimRange range(prim, PXR_NS::UsdPrimIsActive && PXR_NS::UsdPrimIsDefined && !PXR_NS::UsdPrimIsAbstract);
+        for (PXR_NS::UsdPrimRange::const_iterator it = range.begin(); it != range.end(); ++it) {
+            if (it->HasAuthoredPayloads() && !it->IsLoaded()) {
+                counted.insert(it->GetPath());
+                it.PruneChildren();
+            }
+        }
+    }
+
+    return counted.size();
+} // countUnloadedPayloads
 
 double
 getMetricsCorrectionAngle(const SceneMetricsCorrection& correction)
@@ -1059,6 +2075,144 @@ getLayerOwner(const PXR_NS::SdfLayerHandle& layer)
     return found->second.owner.lock();
 }
 
+std::vector<std::string>
+getAuthoredPrimPaths(const ScenePayload& payload,
+                     const NodePtr& owner)
+{
+    std::set<PXR_NS::SdfPath> paths;
+
+    if (!owner) {
+        return std::vector<std::string>();
+    }
+    for (const SceneLayerEntry& entry : getLayers(payload)) {
+        if (!entry.layer || (getLayerOwner(entry.layer) != owner)) {
+            continue;
+        }
+        entry.layer->Traverse(PXR_NS::SdfPath::AbsoluteRootPath(), [&paths](const PXR_NS::SdfPath& path) {
+            const PXR_NS::SdfPath primPath = path.GetPrimPath().StripAllVariantSelections();
+            if (!primPath.IsEmpty() && (primPath != PXR_NS::SdfPath::AbsoluteRootPath())) {
+                paths.insert(primPath);
+            }
+        });
+    }
+    std::vector<std::string> result;
+
+    result.reserve(paths.size());
+    for (const PXR_NS::SdfPath& path : paths) {
+        result.push_back(path.GetString());
+    }
+
+    return result;
+}
+
+std::vector<PXR_NS::SdfLayerRefPtr>
+getOwnedLayers(const ScenePayload& payload,
+               const NodePtr& owner)
+{
+    std::vector<PXR_NS::SdfLayerRefPtr> layers;
+
+    if (!owner) {
+        return layers;
+    }
+    for (const SceneLayerEntry& entry : getLayers(payload)) {
+        if (entry.layer && (getLayerOwner(entry.layer) == owner)) {
+            layers.push_back(entry.layer);
+        }
+    }
+
+    return layers;
+}
+
+std::string
+exportLayersText(const std::vector<PXR_NS::SdfLayerRefPtr>& layers)
+{
+    std::string text;
+
+    for (const PXR_NS::SdfLayerRefPtr& layer : layers) {
+        std::string layerText;
+
+        if (!layer->ExportToString(&layerText)) {
+            continue;
+        }
+        if (!text.empty()) {
+            text += "\n";
+        }
+        text += "# Layer: " + layer->GetIdentifier() + "\n" + layerText;
+    }
+
+    return text;
+}
+
+PXR_NS::UsdStageRefPtr
+beginPrimDefinition(const PXR_NS::UsdPrim& prim)
+{
+    if (!prim) {
+        return PXR_NS::UsdStageRefPtr();
+    }
+    const PXR_NS::UsdStageRefPtr definition = PXR_NS::UsdStage::CreateInMemory();
+    PXR_NS::UsdPrim copy;
+
+    switch (prim.GetSpecifier()) {
+    case PXR_NS::SdfSpecifierClass:
+        copy = definition->CreateClassPrim(prim.GetPath());
+        break;
+    case PXR_NS::SdfSpecifierOver:
+        copy = definition->OverridePrim(prim.GetPath());
+        break;
+    default:
+        copy = definition->DefinePrim(prim.GetPath(), prim.GetTypeName());
+        break;
+    }
+    if (!copy) {
+        return definition;
+    }
+    static const std::set<PXR_NS::TfToken> arcFields = {
+        PXR_NS::SdfFieldKeys->Specifier,
+        PXR_NS::SdfFieldKeys->TypeName,
+        PXR_NS::SdfFieldKeys->References,
+        PXR_NS::SdfFieldKeys->Payload,
+        PXR_NS::SdfFieldKeys->InheritPaths,
+        PXR_NS::SdfFieldKeys->Specializes,
+        PXR_NS::SdfFieldKeys->VariantSetNames,
+        PXR_NS::SdfFieldKeys->VariantSelection,
+        PXR_NS::SdfFieldKeys->PrimOrder,
+        PXR_NS::SdfFieldKeys->PropertyOrder,
+    };
+    for (const auto& field : prim.GetAllAuthoredMetadata()) {
+        if (arcFields.find(field.first) == arcFields.end()) {
+            copy.SetMetadata(field.first, field.second);
+        }
+    }
+
+    return definition;
+}
+
+void
+flattenPropertyInto(const PXR_NS::UsdStageRefPtr& definition,
+                    const PXR_NS::UsdProperty& property)
+{
+    if (!definition || !property) {
+        return;
+    }
+    const PXR_NS::UsdPrim target = definition->GetPrimAtPath(property.GetPrimPath());
+
+    if (target) {
+        property.FlattenTo(target);
+    }
+}
+
+std::string
+exportDefinitionText(const PXR_NS::UsdStageRefPtr& definition)
+{
+    std::string text;
+
+    if (definition) {
+        definition->GetRootLayer()->ExportToString(&text);
+    }
+
+    return text;
+}
+
 NodePtr
 authoringNodeOf(const PXR_NS::UsdAttribute& attribute,
                 PXR_NS::UsdTimeCode time,
@@ -1091,33 +2245,696 @@ authoringNodeOf(const PXR_NS::UsdAttribute& attribute,
 }
 
 namespace {
-    // The defined, non-abstract root prims of input's composed stage, and the properties under
-    // them its link index lists whose composed targets leave their root. Pure overs define nothing
-    // to graft, and classes stay where the input's inherits expect them.
+    ScenePrimArc::Type
+    arcTypeOf(PXR_NS::PcpArcType type)
+    {
+        switch (type) {
+        case PXR_NS::PcpArcTypeInherit:
+            return ScenePrimArc::eInherit;
+        case PXR_NS::PcpArcTypeVariant:
+            return ScenePrimArc::eVariant;
+        case PXR_NS::PcpArcTypeRelocate:
+            return ScenePrimArc::eRelocate;
+        case PXR_NS::PcpArcTypeReference:
+            return ScenePrimArc::eReference;
+        case PXR_NS::PcpArcTypePayload:
+            return ScenePrimArc::ePayload;
+        case PXR_NS::PcpArcTypeSpecialize:
+            return ScenePrimArc::eSpecialize;
+        default:
+            break;
+        }
+
+        return ScenePrimArc::eRoot;
+    }
+
+    std::string
+    identifierOf(const PXR_NS::SdfLayerHandle& layer)
+    {
+        return layer ? layer->GetIdentifier() : std::string();
+    }
+
+    // The query's target layer is the root of the target's layer stack. In a node graph that root
+    // is the stage's composed root or a graft's wrapper, which only sublayer the nodes' layers and
+    // belong to no node, so the layer to name is the strongest that holds the target's spec.
+    PXR_NS::SdfLayerHandle
+    targetSpecLayerOf(const PXR_NS::UsdPrimCompositionQueryArc& arc)
+    {
+        const PXR_NS::PcpNodeRef node = arc.GetTargetNode();
+
+        for (const PXR_NS::SdfLayerRefPtr& layer : node.GetLayerStack()->GetLayers()) {
+            if (layer->HasSpec(node.GetPath())) {
+                return layer;
+            }
+        }
+
+        return arc.GetTargetLayer();
+    }
+} // anonymous namespace
+
+ScenePrimComposition
+getPrimComposition(const PXR_NS::UsdPrim& prim)
+{
+    ScenePrimComposition composition;
+
+    if (!prim) {
+        return composition;
+    }
+    if (prim.IsPrototype()) {
+        composition.isPrototype = true;
+
+        return composition;
+    }
+    if (prim.IsInstanceProxy()) {
+        composition.isInstanceProxy = true;
+        composition.prototypePath = prim.GetPrimInPrototype().GetPath().GetString();
+
+        return composition;
+    }
+    PXR_NS::UsdPrimCompositionQuery query(prim);
+    for (const PXR_NS::UsdPrimCompositionQueryArc& queried : query.GetCompositionArcs()) {
+        ScenePrimArc arc;
+        arc.type = arcTypeOf(queried.GetArcType());
+        for (PXR_NS::PcpNodeRef node = queried.GetTargetNode().GetParentNode(); node; node = node.GetParentNode()) {
+            ++arc.depth;
+        }
+        arc.ancestral = queried.IsAncestral();
+        arc.implicit = queried.IsImplicit();
+        arc.targetPath = queried.GetTargetPrimPath().GetString();
+        const PXR_NS::SdfLayerHandle target = targetSpecLayerOf(queried);
+        arc.targetLayer = identifierOf(target);
+        arc.targetOwner = getLayerOwner(target);
+        if (arc.type != ScenePrimArc::eRoot) {
+            const PXR_NS::SdfLayerHandle introducing = queried.GetIntroducingLayer();
+            arc.introducingLayer = identifierOf(introducing);
+            arc.introducingOwner = getLayerOwner(introducing);
+        }
+        composition.arcs.push_back(std::move(arc));
+    }
+    if (prim.HasAuthoredPayloads() && !prim.IsLoaded()) {
+        PXR_NS::SdfLayerHandle introducing;
+        for (const PXR_NS::SdfPrimSpecHandle& spec : prim.GetPrimStack()) {
+            if (spec && spec->HasField(PXR_NS::SdfFieldKeys->Payload)) {
+                introducing = spec->GetLayer();
+                break;
+            }
+        }
+        PXR_NS::VtValue value;
+        prim.GetMetadata(PXR_NS::SdfFieldKeys->Payload, &value);
+        if (value.IsHolding<PXR_NS::SdfPayloadListOp>()) {
+            for (const PXR_NS::SdfPayload& payload : value.UncheckedGet<PXR_NS::SdfPayloadListOp>().GetAppliedItems()) {
+                ScenePrimArc arc;
+                arc.type = ScenePrimArc::ePayload;
+                arc.depth = 1;
+                arc.loaded = false;
+                arc.targetPath = payload.GetPrimPath().GetString();
+                arc.targetLayer = payload.GetAssetPath();
+                arc.introducingLayer = identifierOf(introducing);
+                arc.introducingOwner = getLayerOwner(introducing);
+                composition.arcs.push_back(std::move(arc));
+            }
+        }
+    }
+
+    return composition;
+}
+
+namespace {
+    SceneOpinion
+    opinionOf(const PXR_NS::SdfLayerHandle& layer,
+              const PXR_NS::SdfLayerOffset& offset)
+    {
+        SceneOpinion opinion;
+
+        opinion.owner = getLayerOwner(layer);
+        opinion.layerIdentifier = identifierOf(layer);
+        opinion.layerOffset = offset.GetOffset();
+        opinion.layerScale = offset.GetScale();
+
+        return opinion;
+    }
+} // anonymous namespace
+
+std::vector<SceneOpinion>
+getPrimOpinions(const PXR_NS::UsdPrim& prim)
+{
+    std::vector<SceneOpinion> opinions;
+
+    if (!prim) {
+        return opinions;
+    }
+    for (const auto& entry : prim.GetPrimStackWithLayerOffsets()) {
+        const PXR_NS::SdfPrimSpecHandle& spec = entry.first;
+        if (!spec) {
+            continue;
+        }
+        SceneOpinion opinion = opinionOf(spec->GetLayer(), entry.second);
+        switch (spec->GetSpecifier()) {
+        case PXR_NS::SdfSpecifierDef:
+            opinion.primDescription = "def";
+            break;
+        case PXR_NS::SdfSpecifierOver:
+            opinion.primDescription = "over";
+            break;
+        default:
+            opinion.primDescription = "class";
+            break;
+        }
+        if (!spec->GetTypeName().IsEmpty()) {
+            opinion.primDescription += " " + spec->GetTypeName().GetString();
+        }
+        opinions.push_back(std::move(opinion));
+    }
+
+    return opinions;
+}
+
+std::vector<SceneOpinion>
+getPropertyOpinions(const PXR_NS::UsdPrim& prim,
+                    const PXR_NS::TfToken& name,
+                    PXR_NS::UsdTimeCode time)
+{
+    std::vector<SceneOpinion> opinions;
+
+    if (!prim) {
+        return opinions;
+    }
+    const PXR_NS::UsdProperty property = prim.GetProperty(name);
+    if (!property) {
+        return opinions;
+    }
+    for (const auto& entry : property.GetPropertyStackWithLayerOffsets(time)) {
+        const PXR_NS::SdfPropertySpecHandle& spec = entry.first;
+        if (!spec) {
+            continue;
+        }
+        const PXR_NS::SdfLayerHandle layer = spec->GetLayer();
+        SceneOpinion opinion = opinionOf(layer, entry.second);
+        opinion.propertySpec = spec;
+        if (layer) {
+            opinion.numTimeSamples = layer->GetNumTimeSamplesForPath(spec->GetPath());
+        }
+        const PXR_NS::SdfAttributeSpecHandle attributeSpec = PXR_NS::TfDynamic_cast<PXR_NS::SdfAttributeSpecHandle>(spec);
+        opinion.hasSpline = attributeSpec && attributeSpec->HasSpline();
+        opinions.push_back(std::move(opinion));
+    }
+
+    return opinions;
+}
+
+void
+readOpinionValue(SceneOpinion* opinion)
+{
+    const PXR_NS::SdfPropertySpecHandle& spec = opinion->propertySpec;
+
+    if (!spec) {
+        return;
+    }
+    if (spec->HasDefaultValue()) {
+        opinion->value = spec->GetDefaultValue();
+    } else if (spec->HasField(PXR_NS::SdfFieldKeys->TargetPaths)) {
+        opinion->value = spec->GetField(PXR_NS::SdfFieldKeys->TargetPaths);
+    }
+}
+
+namespace {
+    struct ValueTextStopped {
+    };
+
+    // Throwing is the only way out of a value's stream operator, which otherwise goes on formatting
+    // every element of an array after the stream has failed.
+    class BoundedTextBuffer
+        : public std::streambuf {
+    public:
+        BoundedTextBuffer(std::size_t maxLength,
+                          const std::atomic<bool>* cancelled)
+            : _maxLength(maxLength)
+            , _cancelled(cancelled)
+        {
+        }
+
+        std::string text;
+        bool cut = false;
+
+    protected:
+        int_type overflow(int_type c) override
+        {
+            if (!traits_type::eq_int_type(c, traits_type::eof())) {
+                const char asChar = traits_type::to_char_type(c);
+                xsputn(&asChar, 1);
+            }
+
+            return traits_type::not_eof(c);
+        }
+
+        std::streamsize xsputn(const char* s,
+                               std::streamsize n) override
+        {
+            if (_cancelled && *_cancelled) {
+                throw ValueTextStopped();
+            }
+            const std::size_t room = _maxLength - text.size();
+            if (room >= (std::size_t)n) {
+                text.append(s, (std::size_t)n);
+
+                return n;
+            }
+            text.append(s, room);
+            cut = true;
+            throw ValueTextStopped();
+        }
+
+    private:
+        std::size_t _maxLength;
+        const std::atomic<bool>* _cancelled;
+    };
+
+    PXR_NS::UsdPrim
+    primAt(const SceneStage& stage,
+           const std::string& primPath)
+    {
+        if (!stage.getStage() || !PXR_NS::SdfPath::IsValidPathString(primPath)) {
+            return PXR_NS::UsdPrim();
+        }
+
+        return stage.getStage()->GetPrimAtPath(PXR_NS::SdfPath(primPath));
+    }
+
+    SceneAuthor
+    authorOfLayer(const PXR_NS::SdfLayerHandle& layer,
+                  bool schemaFallback)
+    {
+        SceneAuthor author;
+
+        author.node = getLayerOwner(layer);
+        author.layerIdentifier = identifierOf(layer);
+        author.schemaFallback = !layer && schemaFallback;
+
+        return author;
+    }
+
+    SceneValueSource
+    valueSourceOf(PXR_NS::UsdResolveInfoSource source)
+    {
+        switch (source) {
+        case PXR_NS::UsdResolveInfoSourceFallback:
+            return eSceneValueSourceFallback;
+        case PXR_NS::UsdResolveInfoSourceDefault:
+            return eSceneValueSourceDefault;
+        case PXR_NS::UsdResolveInfoSourceTimeSamples:
+            return eSceneValueSourceTimeSamples;
+        case PXR_NS::UsdResolveInfoSourceValueClips:
+            return eSceneValueSourceValueClips;
+        case PXR_NS::UsdResolveInfoSourceSpline:
+            return eSceneValueSourceSpline;
+        case PXR_NS::UsdResolveInfoSourceNone:
+            break;
+        }
+
+        return eSceneValueSourceNone;
+    }
+
+    // The strongest spec authoring targets, else the strongest declaring the relationship.
+    PXR_NS::SdfLayerHandle
+    targetsLayer(const PXR_NS::UsdRelationship& relationship)
+    {
+        PXR_NS::SdfLayerHandle declaring;
+
+        for (const PXR_NS::SdfPropertySpecHandle& spec : relationship.GetPropertyStack()) {
+            if (!spec) {
+                continue;
+            }
+            if (spec->HasField(PXR_NS::SdfFieldKeys->TargetPaths)) {
+                return spec->GetLayer();
+            }
+            if (!declaring) {
+                declaring = spec->GetLayer();
+            }
+        }
+
+        return declaring;
+    }
+
+    // A prim's specifier composes to its strongest non-over, whichever layer last wrote an over.
+    PXR_NS::SdfLayerHandle
+    metadataLayer(const PXR_NS::SdfPrimSpecHandleVector& stack,
+                  const PXR_NS::TfToken& key)
+    {
+        const bool isSpecifier = (key == PXR_NS::SdfFieldKeys->Specifier);
+        PXR_NS::SdfLayerHandle strongest;
+
+        for (const PXR_NS::SdfPrimSpecHandle& spec : stack) {
+            if (!spec || !spec->HasField(key)) {
+                continue;
+            }
+            if (!strongest) {
+                strongest = spec->GetLayer();
+            }
+            if (!isSpecifier || (spec->GetSpecifier() != PXR_NS::SdfSpecifierOver)) {
+                return spec->GetLayer();
+            }
+        }
+
+        return strongest;
+    }
+} // anonymous namespace
+
+std::string
+valueText(const PXR_NS::VtValue& value,
+          std::size_t maxLength,
+          const std::atomic<bool>* cancelled,
+          bool* cut)
+{
+    if (cut) {
+        *cut = false;
+    }
+    if (value.IsEmpty()) {
+        return std::string();
+    }
+    BoundedTextBuffer buffer(maxLength, cancelled);
+    std::ostream stream(&buffer);
+
+    // Without this the stream swallows the buffer's exception and the operator carries on.
+    stream.exceptions(std::ios::badbit);
+    try {
+        stream << value;
+    } catch (const ValueTextStopped&) {
+    } catch (const std::exception&) {
+    }
+    if (buffer.cut) {
+        // The cut may split a UTF-8 sequence, which would not convert to text.
+        while (!buffer.text.empty() && ((buffer.text.back() & 0xC0) == 0x80)) {
+            buffer.text.pop_back();
+        }
+        if (!buffer.text.empty() && (buffer.text.back() & 0x80)) {
+            buffer.text.pop_back();
+        }
+    }
+    if (cut) {
+        *cut = buffer.cut;
+    }
+
+    return std::move(buffer.text);
+}
+
+std::string
+layerFileOf(const std::string& layerIdentifier)
+{
+    if (layerIdentifier.empty() || PXR_NS::SdfLayer::IsAnonymousLayerIdentifier(layerIdentifier)) {
+        return std::string();
+    }
+
+    return PXR_NS::SdfLayer::SplitIdentifier(layerIdentifier).first;
+}
+
+std::vector<std::string>
+getAttributeNames(const SceneStage& stage,
+                  const std::string& primPath)
+{
+    std::vector<std::string> names;
+
+    if (const PXR_NS::UsdPrim prim = primAt(stage, primPath)) {
+        for (const PXR_NS::UsdAttribute& attribute : prim.GetAttributes()) {
+            names.push_back(attribute.GetName().GetString());
+        }
+    }
+
+    return names;
+}
+
+bool
+readAttribute(const SceneStage& stage,
+              const std::string& primPath,
+              const std::string& name,
+              double frame,
+              double framesPerSecond,
+              ScenePrimAttribute* attribute)
+{
+    const PXR_NS::UsdPrim prim = primAt(stage, primPath);
+    const PXR_NS::UsdAttribute usdAttribute = prim ? prim.GetAttribute(PXR_NS::TfToken(name)) : PXR_NS::UsdAttribute();
+
+    if (!usdAttribute.IsDefined()) {
+        return false;
+    }
+    const PXR_NS::UsdTimeCode time(frameToTimeCode(stage.getPayload(), frame, framesPerSecond));
+
+    attribute->typeName = usdAttribute.GetTypeName().GetAsToken().GetString();
+    usdAttribute.Get(&attribute->value, time);
+    attribute->source = valueSourceOf(usdAttribute.GetResolveInfo(time).GetSource());
+    attribute->author.node = authoringNodeOf(usdAttribute, time, &attribute->author.layerIdentifier);
+    attribute->author.schemaFallback = (attribute->source == eSceneValueSourceFallback);
+
+    return true;
+}
+
+std::vector<std::string>
+getRelationshipNames(const SceneStage& stage,
+                     const std::string& primPath)
+{
+    std::vector<std::string> names;
+
+    if (const PXR_NS::UsdPrim prim = primAt(stage, primPath)) {
+        for (const PXR_NS::UsdRelationship& relationship : prim.GetRelationships()) {
+            names.push_back(relationship.GetName().GetString());
+        }
+    }
+
+    return names;
+}
+
+bool
+readRelationship(const SceneStage& stage,
+                 const std::string& primPath,
+                 const std::string& name,
+                 ScenePrimRelationship* relationship)
+{
+    const PXR_NS::UsdPrim prim = primAt(stage, primPath);
+    const PXR_NS::UsdRelationship usdRelationship = prim ? prim.GetRelationship(PXR_NS::TfToken(name)) : PXR_NS::UsdRelationship();
+
+    if (!usdRelationship.IsDefined()) {
+        return false;
+    }
+    PXR_NS::SdfPathVector targets;
+    usdRelationship.GetTargets(&targets);
+    for (const PXR_NS::SdfPath& target : targets) {
+        relationship->targets.push_back(target.GetString());
+    }
+    relationship->author = authorOfLayer(targetsLayer(usdRelationship), true);
+
+    return true;
+}
+
+bool
+readMetadata(const SceneStage& stage,
+             const std::string& primPath,
+             ScenePrimMetadata* metadata)
+{
+    const PXR_NS::UsdPrim prim = primAt(stage, primPath);
+
+    if (!prim) {
+        return false;
+    }
+    const PXR_NS::UsdMetadataValueMap all = prim.GetAllMetadata();
+    const PXR_NS::SdfPrimSpecHandleVector stack = prim.GetPrimStack();
+    // A prototype has no prim index, so its empty stack says nothing of who authored its metadata.
+    const bool schemaFallback = !prim.IsPrototype();
+
+    metadata->fields.reserve(all.size());
+    for (const auto& item : all) {
+        metadata->fields.push_back({ item.first.GetString(), item.second, authorOfLayer(metadataLayer(stack, item.first), schemaFallback) });
+    }
+    metadata->isPrototype = prim.IsPrototype();
+    if (prim.IsInstance()) {
+        metadata->prototypePath = prim.GetPrototype().GetPath().GetString();
+    } else if (prim.IsInstanceProxy()) {
+        metadata->prototypePath = prim.GetPrimInPrototype().GetPath().GetString();
+    }
+
+    return true;
+}
+
+bool
+getPrimComposition(const SceneStage& stage,
+                   const std::string& primPath,
+                   ScenePrimComposition* composition)
+{
+    const PXR_NS::UsdPrim prim = primAt(stage, primPath);
+
+    if (!prim) {
+        return false;
+    }
+    *composition = getPrimComposition(prim);
+
+    return true;
+}
+
+bool
+getPrimOpinions(const SceneStage& stage,
+                const std::string& primPath,
+                std::vector<SceneOpinion>* opinions)
+{
+    const PXR_NS::UsdPrim prim = primAt(stage, primPath);
+
+    if (!prim) {
+        return false;
+    }
+    *opinions = getPrimOpinions(prim);
+
+    return true;
+}
+
+std::vector<SceneOpinion>
+getPropertyOpinions(const SceneStage& stage,
+                    const std::string& primPath,
+                    const std::string& name,
+                    double frame,
+                    double framesPerSecond)
+{
+    const PXR_NS::UsdTimeCode time(frameToTimeCode(stage.getPayload(), frame, framesPerSecond));
+
+    return getPropertyOpinions(primAt(stage, primPath), PXR_NS::TfToken(name), time);
+}
+
+PXR_NS::UsdStageRefPtr
+beginPrimDefinition(const SceneStage& stage,
+                    const std::string& primPath,
+                    std::vector<std::string>* propertyNames)
+{
+    const PXR_NS::UsdPrim prim = primAt(stage, primPath);
+
+    if (!prim) {
+        return PXR_NS::UsdStageRefPtr();
+    }
+    for (const PXR_NS::UsdProperty& property : prim.GetAuthoredProperties()) {
+        propertyNames->push_back(property.GetName().GetString());
+    }
+
+    return beginPrimDefinition(prim);
+}
+
+ScenePrimElements
+readPrimElements(const ScenePrimElementsStageReader& readStage,
+                 const std::string& primPath,
+                 double frame,
+                 double framesPerSecond,
+                 const std::atomic<bool>* cancelled)
+{
+    ScenePrimElementsRead read(primPath, frame, framesPerSecond);
+    ScenePrimElements result;
+    bool more = true;
+
+    while (more) {
+        if (cancelled && cancelled->load()) {
+            result.status = eScenePrimElementsStatusCancelled;
+
+            return result;
+        }
+        if (!readStage([&](const SceneStage* stage) { more = read.step(stage); })) {
+            result.status = eScenePrimElementsStatusCancelled;
+
+            return result;
+        }
+    }
+    result.status = read.getStatus();
+    result.source = read.takeSource();
+
+    return result;
+}
+
+void
+flattenPropertyInto(const PXR_NS::UsdStageRefPtr& definition,
+                    const SceneStage& stage,
+                    const std::string& primPath,
+                    const std::string& name)
+{
+    if (const PXR_NS::UsdPrim prim = primAt(stage, primPath)) {
+        flattenPropertyInto(definition, prim.GetProperty(PXR_NS::TfToken(name)));
+    }
+}
+
+std::vector<const void*>
+getLayerIdentities(const std::vector<PXR_NS::SdfLayerRefPtr>& layers)
+{
+    std::vector<const void*> identities;
+
+    identities.reserve(layers.size());
+    for (const PXR_NS::SdfLayerRefPtr& layer : layers) {
+        identities.push_back(get_pointer(layer));
+    }
+
+    return identities;
+}
+
+namespace {
+    bool
+    sameLoadSet(const SceneLoadSetPtr& a,
+                const SceneLoadSetPtr& b)
+    {
+        const bool aEverything = !a || a->getEntries().empty();
+        const bool bEverything = !b || b->getEntries().empty();
+
+        if (aEverything || bEverything) {
+            return aEverything == bEverything;
+        }
+
+        return *a == *b;
+    }
+
+    bool
+    sameLinks(const std::vector<InputLink>& a,
+              const std::vector<InputLink>& b)
+    {
+        if (a.size() != b.size()) {
+            return false;
+        }
+        for (std::size_t i = 0; i < a.size(); ++i) {
+            if ((a[i].property != b[i].property) || (a[i].targets != b[i].targets) || (a[i].isConnection != b[i].isConnection) || (a[i].custom != b[i].custom) || (a[i].variability != b[i].variability) || (a[i].typeName != b[i].typeName)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    // The defined, non-abstract root prims of input's stage composed with loadSet, and the
+    // properties under them its link index lists whose composed targets leave their root. Pure
+    // overs define nothing to graft, and classes stay where the input's inherits expect them.
+    // Adds to *reach the paths whose loading can change what was read.
     bool
     readInput(const ScenePayload& input,
+              const SceneLoadSetPtr& loadSet,
               std::vector<std::string>* names,
               std::vector<InputLink>* links,
+              std::vector<std::string>* reach,
               std::string* errorMessage)
     {
         if (input.isEmpty()) {
             return true;
         }
-        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(input, errorMessage);
+        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(input, loadSet, errorMessage);
         if (!lease.isValid()) {
             return false;
         }
         const PXR_NS::UsdStageRefPtr stage = lease.getStage();
-        for (const PXR_NS::UsdPrim& root : stage->GetPseudoRoot().GetFilteredChildren(PXR_NS::UsdPrimIsDefined && !PXR_NS::UsdPrimIsAbstract)) {
-            names->push_back(root.GetName().GetString());
+        for (const PXR_NS::UsdPrim& root : stage->GetPseudoRoot().GetAllChildren()) {
+            if (root.IsDefined() && !root.IsAbstract()) {
+                names->push_back(root.GetName().GetString());
+            } else if (!root.IsDefined() && root.HasAuthoredPayloads() && !root.IsLoaded()) {
+                // An over's specifier can come from its payload, which may define it.
+                reach->push_back(root.GetPath().GetString());
+            }
         }
 
         const std::set<std::string> roots(names->begin(), names->end());
+        // A payload on the way to a link's prim can hold the prim or opinions on its targets; the
+        // link is read only as far as the load set includes them.
+        std::vector<std::string> linkPrims;
         for (const PXR_NS::SdfPath& property : getLinks(input)) {
             const PXR_NS::SdfPath root = rootPrimOf(property);
             if (root.IsEmpty() || !roots.count(root.GetName())) {
                 continue;
             }
+            linkPrims.push_back(property.GetPrimPath().GetString());
             const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(property.GetPrimPath());
             if (!prim) {
                 continue;
@@ -1143,6 +2960,8 @@ namespace {
                 links->push_back(link);
             }
         }
+        const std::vector<std::string> linkReach = getLoadReach(stage, linkPrims);
+        reach->insert(reach->end(), linkReach.begin(), linkReach.end());
 
         return true;
     }
@@ -1166,14 +2985,19 @@ namespace {
         return destination.AppendChild(PXR_NS::TfToken(slot.childNames[rootIndex]));
     }
 
+    // Whether the root prim name of input's stage composed with loadSet is or holds a gprim.
+    // Adds the root to *reach: loading or unloading a payload under it can change the answer.
     bool
     rootHoldsGprim(const ScenePayload& input,
+                   const SceneLoadSetPtr& loadSet,
                    const std::string& name,
                    bool* holdsGprim,
+                   std::vector<std::string>* reach,
                    std::string* errorMessage)
     {
         *holdsGprim = false;
-        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(input, errorMessage);
+        reach->push_back("/" + name);
+        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(input, loadSet, errorMessage);
         if (!lease.isValid()) {
             return false;
         }
@@ -1370,33 +3194,60 @@ namespace {
         return onlyOvers;
     }
 
-    // The first slot not yet consumed that matches, which it marks consumed, so two inputs
-    // connected to the same stack each keep a slot of their own.
+    // The first slot for input not yet consumed whose reads were made on *loadSet, when set, and
+    // whose graft layer is one for graft's destination, pass-through root, names and links, when
+    // set. With consumed, marks it consumed, so two inputs connected to the same stack each keep
+    // a slot of their own.
     const GraftSlot*
     findSlot(const std::vector<GraftSlot>& slots,
              std::vector<bool>* consumed,
              const ScenePayload& input,
-             const std::string* destinationPath,
-             const std::string* passThroughRoot,
-             const std::vector<std::string>* childNames)
+             const SceneLoadSetPtr* loadSet,
+             const GraftSlot* graft)
     {
         for (std::size_t i = 0; i < slots.size(); ++i) {
             const GraftSlot& slot = slots[i];
-            if ((*consumed)[i] || !slot.input.isSameStack(input)) {
+            if ((consumed && (*consumed)[i]) || !slot.input.isSameStack(input)) {
                 continue;
             }
-            if (destinationPath && ((slot.destinationPath != *destinationPath) || !slot.graft.layer)) {
+            if (loadSet && !sameLoadSet(slot.loadSet, *loadSet)) {
                 continue;
             }
-            if (passThroughRoot && (slot.passThroughRoot != *passThroughRoot)) {
+            if (graft && (!slot.graft.layer || (slot.destinationPath != graft->destinationPath) || (slot.passThroughRoot != graft->passThroughRoot) || (slot.childNames != graft->childNames) || !sameLinks(slot.links, graft->links))) {
                 continue;
             }
-            if (childNames && (slot.childNames != *childNames)) {
-                continue;
+            if (consumed) {
+                (*consumed)[i] = true;
             }
-            (*consumed)[i] = true;
 
             return &slot;
+        }
+
+        return NULL;
+    }
+
+    // findSlot() in the slots of context, then, without consuming, in those of the other
+    // contexts: what another evaluation read or authored for the same stack is the same.
+    const GraftSlot*
+    findSlotShared(const SceneGraftMemo::State& state,
+                   const GraftContext* context,
+                   std::vector<bool>* consumed,
+                   const ScenePayload& input,
+                   const SceneLoadSetPtr* loadSet,
+                   const GraftSlot* graft)
+    {
+        if (context) {
+            if (const GraftSlot* found = findSlot(context->slots, consumed, input, loadSet, graft)) {
+                return found;
+            }
+        }
+        for (const GraftContext& other : state.contexts) {
+            if (&other == context) {
+                continue;
+            }
+            if (const GraftSlot* found = findSlot(other.slots, NULL, input, loadSet, graft)) {
+                return found;
+            }
         }
 
         return NULL;
@@ -1438,30 +3289,48 @@ reparentRoots(const SceneReparentArgs& args,
     SceneWriteBarrier::ReadScope read;
     SceneGraftMemo::State& state = memo->getState();
     std::lock_guard<std::mutex> lock(state.mutex);
+    const SceneEvaluationContext& context = SceneEvaluationContext::current();
+    const GraftContext* memoized = state.find(context.id);
+    const std::size_t memoizedSlots = memoized ? memoized->slots.size() : 0;
 
-    // An input seen last time keeps its root names and wrapper: the same stack composes the same.
+    // An input seen on the same load set keeps its root names and links, and one seen at all its
+    // wrapper: the same stack composes the same.
     std::vector<GraftSlot> slots(args.inputs.size());
-    std::vector<bool> readConsumed(state.slots.size(), false);
+    std::vector<bool> readConsumed(memoizedSlots, false);
+    // Where loads change each input's reads, on the paths of the context it was read on.
+    std::vector<std::vector<std::string>> reaches(args.inputs.size());
     for (std::size_t i = 0; i < args.inputs.size(); ++i) {
         GraftSlot& slot = slots[i];
+        const SceneEvaluationContext& inputContext = (i < args.inputContexts.size()) ? args.inputContexts[i] : context;
         slot.input = args.inputs[i];
         slot.destinationPath = args.destinationPath;
         slot.passThroughRoot = args.passThroughRoot;
+        slot.loadSet = inputContext.loadSet;
         bool gprimChecked = false;
-        if (const GraftSlot* previous = findSlot(state.slots, &readConsumed, slot.input, NULL, NULL, NULL)) {
+        if (const GraftSlot* previous = findSlotShared(state, memoized, &readConsumed, slot.input, &inputContext.loadSet, NULL)) {
             slot.rootNames = previous->rootNames;
             slot.links = previous->links;
             slot.wrapper = previous->wrapper;
+            slot.readReach = previous->readReach;
             if (previous->passThroughRoot == slot.passThroughRoot) {
                 slot.passThroughHoldsGprim = previous->passThroughHoldsGprim;
+                slot.passThroughReach = previous->passThroughReach;
                 gprimChecked = true;
             }
-        } else if (!readInput(slot.input, &slot.rootNames, &slot.links, errorMessage)) {
+        } else {
+            if (const GraftSlot* other = findSlotShared(state, memoized, NULL, slot.input, NULL, NULL)) {
+                slot.wrapper = other->wrapper;
+            }
+            if (!readInput(slot.input, inputContext.loadSet, &slot.rootNames, &slot.links, &slot.readReach, errorMessage)) {
+                return false;
+            }
+            ++state.inputReadCount;
+        }
+        if (!gprimChecked && !slot.passThroughRoot.empty() && (std::find(slot.rootNames.begin(), slot.rootNames.end(), slot.passThroughRoot) != slot.rootNames.end()) && !rootHoldsGprim(slot.input, inputContext.loadSet, slot.passThroughRoot, &slot.passThroughHoldsGprim, &slot.passThroughReach, errorMessage)) {
             return false;
         }
-        if (!gprimChecked && !slot.passThroughRoot.empty() && (std::find(slot.rootNames.begin(), slot.rootNames.end(), slot.passThroughRoot) != slot.rootNames.end()) && !rootHoldsGprim(slot.input, slot.passThroughRoot, &slot.passThroughHoldsGprim, errorMessage)) {
-            return false;
-        }
+        reaches[i].insert(reaches[i].end(), slot.readReach.begin(), slot.readReach.end());
+        reaches[i].insert(reaches[i].end(), slot.passThroughReach.begin(), slot.passThroughReach.end());
         if (destination.IsRootPrimPath()) {
             for (const std::string& root : slot.rootNames) {
                 if ((root == destination.GetName()) && (root != slot.passThroughRoot)) {
@@ -1523,12 +3392,12 @@ reparentRoots(const SceneReparentArgs& args,
     }
 
     U64 graftLayersAuthored = 0;
-    std::vector<bool> graftConsumed(state.slots.size(), false);
+    std::vector<bool> graftConsumed(memoizedSlots, false);
     for (GraftSlot& slot : slots) {
         if (slot.rootNames.empty()) {
             continue;
         }
-        if (const GraftSlot* previous = findSlot(state.slots, &graftConsumed, slot.input, &slot.destinationPath, &slot.passThroughRoot, &slot.childNames)) {
+        if (const GraftSlot* previous = findSlotShared(state, memoized, &graftConsumed, slot.input, NULL, &slot)) {
             slot.wrapper = previous->wrapper;
             slot.graft = previous->graft;
             continue;
@@ -1559,6 +3428,16 @@ reparentRoots(const SceneReparentArgs& args,
         for (std::size_t i = 0; i < slot.rootNames.size(); ++i) {
             h.appendString(slot.rootNames[i]);
             h.appendString(slot.childNames[i]);
+        }
+        // The links read depend on the load set: two evaluations reading different ones author
+        // different layers on the same stack.
+        h.appendU64(slot.links.size());
+        for (const InputLink& link : slot.links) {
+            h.appendString(link.property.GetString());
+            h.appendU64(link.targets.size());
+            for (const PXR_NS::SdfPath& target : link.targets) {
+                h.appendString(target.GetString());
+            }
         }
         slot.graft.layer = layer;
         slot.graft.hash = h.finalize();
@@ -1604,22 +3483,33 @@ reparentRoots(const SceneReparentArgs& args,
             result = appendEntry(result, slot.graft);
         }
     }
-    if (result.isSameStack(state.output)) {
-        result = state.output;
+    for (const GraftContext& other : state.contexts) {
+        if (result.isSameStack(other.output)) {
+            result = other.output;
+            break;
+        }
     }
 
     state.structurePath = args.destinationPath;
     state.structureDestinationType = args.destinationType;
     state.structureAncestorType = args.ancestorType;
     state.structure = structure;
-    state.slots.swap(slots);
-    state.output = result;
+    // memoized is not read past here: use() may move or evict entries.
+    GraftContext& committed = state.use(context.id);
+    committed.slots.swap(slots);
+    committed.output = result;
     state.graftLayerAuthorCount += graftLayersAuthored;
+    for (std::size_t i = 0; i < reaches.size(); ++i) {
+        const SceneEvaluationContext& inputContext = (i < args.inputContexts.size()) ? args.inputContexts[i] : context;
+        if (inputContext.reach && !reaches[i].empty()) {
+            inputContext.reach->add(reaches[i]);
+        }
+    }
 
     if (grafts) {
         grafts->clear();
-        for (std::size_t i = 0; i < state.slots.size(); ++i) {
-            const GraftSlot& slot = state.slots[i];
+        for (std::size_t i = 0; i < committed.slots.size(); ++i) {
+            const GraftSlot& slot = committed.slots[i];
             for (std::size_t j = 0; j < slot.rootNames.size(); ++j) {
                 SceneRootGraft graft;
                 graft.inputIndex = i;
@@ -1633,8 +3523,8 @@ reparentRoots(const SceneReparentArgs& args,
     }
     if (unmappedLinks) {
         unmappedLinks->clear();
-        for (std::size_t i = 0; i < state.slots.size(); ++i) {
-            const GraftSlot& slot = state.slots[i];
+        for (std::size_t i = 0; i < committed.slots.size(); ++i) {
+            const GraftSlot& slot = committed.slots[i];
             for (const InputLink& link : slot.links) {
                 for (const PXR_NS::SdfPath& target : link.targets) {
                     if (graftedPathOf(slot, destination, target).IsEmpty()) {
@@ -1653,6 +3543,313 @@ reparentRoots(const SceneReparentArgs& args,
     return true;
 } // reparentRoots
 
+namespace {
+    // path as the absolute root or an absolute prim path; the empty path when it is neither.
+    PXR_NS::SdfPath
+    loadSetPath(const std::string& path)
+    {
+        if (!PXR_NS::SdfPath::IsValidPathString(path)) {
+            return PXR_NS::SdfPath();
+        }
+        const PXR_NS::SdfPath parsed(path);
+
+        return (parsed.IsAbsoluteRootPath() || (parsed.IsAbsolutePath() && parsed.IsPrimPath())) ? parsed : PXR_NS::SdfPath();
+    }
+
+    // Whether every entry of loadSet is a valid path loadSetPath() accepts.
+    bool
+    hasValidPaths(const SceneLoadSet& loadSet)
+    {
+        for (const SceneLoadSet::Entry& entry : loadSet.getEntries()) {
+            if (loadSetPath(entry.path).IsEmpty()) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    // The rules of loadSet strictly below from, moved below to.
+    void
+    appendMovedBelow(const SceneLoadSet& loadSet,
+                     const PXR_NS::SdfPath& from,
+                     const PXR_NS::SdfPath& to,
+                     std::vector<SceneLoadSet::Entry>* entries)
+    {
+        for (const SceneLoadSet::Entry& entry : loadSet.getEntries()) {
+            const PXR_NS::SdfPath path(entry.path);
+            if ((path != from) && path.HasPrefix(from)) {
+                entries->push_back(SceneLoadSet::Entry { path.ReplacePrefix(from, to).GetString(), entry.rule });
+            }
+        }
+    }
+
+    // What loadSet includes at and below from, at and below to.
+    void
+    appendMovedSubtree(const SceneLoadSet& loadSet,
+                       const PXR_NS::SdfPath& from,
+                       const PXR_NS::SdfPath& to,
+                       std::vector<SceneLoadSet::Entry>* entries)
+    {
+        entries->push_back(SceneLoadSet::Entry { to.GetString(), loadSet.getRuleAt(from.GetString()) });
+        appendMovedBelow(loadSet, from, to, entries);
+    }
+
+    // entries as a load set, null when it includes everything. Redundant entries are dropped so
+    // that a mapped set equals, and hashes as, the same set written directly.
+    SceneLoadSetPtr
+    makeMappedLoadSet(const std::vector<SceneLoadSet::Entry>& entries)
+    {
+        return SceneLoadSet::minimal(entries);
+    }
+
+    void
+    addOnce(const std::string& path,
+            std::vector<std::string>* out)
+    {
+        if (std::find(out->begin(), out->end(), path) == out->end()) {
+            out->push_back(path);
+        }
+    }
+
+    // The root name autoRename would have given the suffix of name to, empty when name has none.
+    std::string
+    getRenamedStem(const std::string& name)
+    {
+        const std::string::size_type underscore = name.rfind('_');
+
+        if ((underscore == std::string::npos) || (underscore == 0) || (underscore + 1 == name.size()) || (name[underscore + 1] == '0')) {
+            return std::string();
+        }
+        for (std::string::size_type i = underscore + 1; i < name.size(); ++i) {
+            if ((name[i] < '0') || (name[i] > '9')) {
+                return std::string();
+            }
+        }
+
+        return name.substr(0, underscore);
+    }
+} // anonymous namespace
+
+SceneLoadSetPtr
+mapGraftLoadSet(const SceneLoadSetPtr& loadSet,
+                const std::string& destinationPath,
+                const std::string& passThroughRoot,
+                bool autoRename)
+{
+    if (!loadSet || loadSet->getEntries().empty()) {
+        return SceneLoadSetPtr();
+    }
+    const PXR_NS::SdfPath destination = loadSetPath(destinationPath);
+    if (destination.IsEmpty() || destination.IsAbsoluteRootPath() || !hasValidPaths(*loadSet)) {
+        return SceneLoadSetPtr();
+    }
+    // The destination prim is the graft's own: nothing loads at it, and what lies above it holds
+    // no input prim. Its rule for what lies below is every root's that no rule under it names.
+    const SceneLoadSet::RuleEnum destinationRule = (loadSet->getRuleAt(destinationPath) == SceneLoadSet::eRuleAll) ? SceneLoadSet::eRuleAll : SceneLoadSet::eRuleNone;
+    const SceneLoadSet::Entry closed { std::string("/"), SceneLoadSet::eRuleNone };
+
+    // The children of the destination that rules name, by the input root each can be grafted from.
+    std::map<std::string, std::set<std::string>> childrenByRoot;
+    const std::size_t childDepth = destination.GetPathElementCount() + 1;
+    for (const SceneLoadSet::Entry& entry : loadSet->getEntries()) {
+        const PXR_NS::SdfPath path(entry.path);
+        if ((path.GetPathElementCount() < childDepth) || !path.HasPrefix(destination)) {
+            continue;
+        }
+        const std::string child = path.GetPrefixes()[childDepth - 1].GetName();
+        childrenByRoot[child].insert(child);
+        const std::string stem = autoRename ? getRenamedStem(child) : std::string();
+        if (!stem.empty()) {
+            childrenByRoot[stem].insert(child);
+        }
+    }
+    childrenByRoot.erase(passThroughRoot);
+
+    std::vector<SceneLoadSet::Entry> entries(1, SceneLoadSet::Entry { std::string("/"), destinationRule });
+    for (const std::pair<const std::string, std::set<std::string>>& root : childrenByRoot) {
+        const PXR_NS::SdfPath rootPath = PXR_NS::SdfPath::AbsoluteRootPath().AppendChild(PXR_NS::TfToken(root.first));
+        std::vector<SceneLoadSetPtr> candidates;
+        for (const std::string& child : root.second) {
+            std::vector<SceneLoadSet::Entry> candidate(1, closed);
+            appendMovedSubtree(*loadSet, destination.AppendChild(PXR_NS::TfToken(child)), rootPath, &candidate);
+            candidates.push_back(std::make_shared<const SceneLoadSet>(candidate));
+        }
+        if (autoRename) {
+            // The root may as well have landed under a suffix no rule names.
+            candidates.push_back(std::make_shared<const SceneLoadSet>(std::vector<SceneLoadSet::Entry> { closed, SceneLoadSet::Entry { rootPath.GetString(), destinationRule } }));
+        }
+        SceneLoadSetPtr united = candidates.front();
+        for (std::size_t i = 1; i < candidates.size(); ++i) {
+            united = SceneLoadSet::unite(united, candidates[i]);
+        }
+        if (!united) {
+            return SceneLoadSetPtr();
+        }
+        entries.push_back(SceneLoadSet::Entry { rootPath.GetString(), united->getRuleAt(rootPath.GetString()) });
+        appendMovedBelow(*united, rootPath, rootPath, &entries);
+    }
+    if (!passThroughRoot.empty() && PXR_NS::SdfPath::IsValidIdentifier(passThroughRoot)) {
+        const PXR_NS::SdfPath passed = PXR_NS::SdfPath::AbsoluteRootPath().AppendChild(PXR_NS::TfToken(passThroughRoot));
+        appendMovedSubtree(*loadSet, passed, passed, &entries);
+    }
+
+    return makeMappedLoadSet(entries);
+} // mapGraftLoadSet
+
+void
+mapGraftReach(SceneGraftMemo* memo,
+              std::size_t inputIndex,
+              const std::string& destinationPath,
+              const std::string& passThroughRoot,
+              const std::vector<std::string>& in,
+              std::vector<std::string>* out)
+{
+    out->clear();
+    if (in.empty()) {
+        return;
+    }
+    const PXR_NS::SdfPath destination = loadSetPath(destinationPath);
+    if (destination.IsEmpty() || destination.IsAbsoluteRootPath()) {
+        out->push_back("/");
+
+        return;
+    }
+    std::vector<std::string> rootNames;
+    std::vector<std::string> childNames;
+    if (memo) {
+        SceneGraftMemo::State& state = memo->getState();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        const GraftContext* grafted = state.find(SceneEvaluationContext::current().id);
+        if (grafted && (inputIndex < grafted->slots.size()) && (grafted->slots[inputIndex].destinationPath == destinationPath)) {
+            rootNames = grafted->slots[inputIndex].rootNames;
+            childNames = grafted->slots[inputIndex].childNames;
+        }
+    }
+
+    for (const std::string& prefix : in) {
+        const PXR_NS::SdfPath path = loadSetPath(prefix);
+        if (path.IsEmpty()) {
+            addOnce("/", out);
+            continue;
+        }
+        if (!path.IsAbsoluteRootPath()) {
+            const PXR_NS::SdfPath root = path.GetPrefixes().front();
+            const std::string name = root.GetName();
+            if (name == passThroughRoot) {
+                addOnce(prefix, out);
+                continue;
+            }
+            const std::vector<std::string>::const_iterator found = std::find(rootNames.begin(), rootNames.end(), name);
+            if (found != rootNames.end()) {
+                const PXR_NS::TfToken child(childNames[found - rootNames.begin()]);
+                addOnce(path.ReplacePrefix(root, destination.AppendChild(child)).GetString(), out);
+                continue;
+            }
+        }
+        addOnce(destinationPath, out);
+        if (!passThroughRoot.empty()) {
+            addOnce("/" + passThroughRoot, out);
+        }
+    }
+} // mapGraftReach
+
+SceneLoadSetPtr
+mapWrapLoadSet(const SceneLoadSetPtr& loadSet,
+               const std::string& wrappedPath,
+               const std::string& movedPath)
+{
+    if (!loadSet || loadSet->getEntries().empty()) {
+        return SceneLoadSetPtr();
+    }
+    const PXR_NS::SdfPath wrapped = loadSetPath(wrappedPath);
+    const PXR_NS::SdfPath moved = loadSetPath(movedPath);
+    if (wrapped.IsEmpty() || wrapped.IsAbsoluteRootPath() || moved.IsEmpty() || moved.IsAbsoluteRootPath() || !hasValidPaths(*loadSet)) {
+        return SceneLoadSetPtr();
+    }
+
+    // The wrapped prim is deactivated where it was: only its moved copy loads.
+    std::vector<SceneLoadSet::Entry> entries;
+    for (const SceneLoadSet::Entry& entry : loadSet->getEntries()) {
+        const PXR_NS::SdfPath path(entry.path);
+        if (!path.HasPrefix(wrapped) && !path.HasPrefix(moved)) {
+            entries.push_back(entry);
+        }
+    }
+    appendMovedSubtree(*loadSet, moved, wrapped, &entries);
+
+    return makeMappedLoadSet(entries);
+}
+
+void
+mapWrapReach(const std::string& wrappedPath,
+             const std::string& movedPath,
+             const std::vector<std::string>& in,
+             std::vector<std::string>* out)
+{
+    out->clear();
+    const PXR_NS::SdfPath wrapped = loadSetPath(wrappedPath);
+    const PXR_NS::SdfPath moved = loadSetPath(movedPath);
+    for (const std::string& prefix : in) {
+        const PXR_NS::SdfPath path = loadSetPath(prefix);
+        if (path.IsEmpty() || wrapped.IsEmpty() || moved.IsEmpty()) {
+            addOnce("/", out);
+        } else if (path.HasPrefix(wrapped)) {
+            addOnce(path.ReplacePrefix(wrapped, moved).GetString(), out);
+        } else if (wrapped.HasPrefix(path)) {
+            addOnce(prefix, out);
+            addOnce(movedPath, out);
+        } else {
+            addOnce(prefix, out);
+        }
+    }
+}
+
+SceneLoadSetPtr
+mapReferenceLoadSet(const SceneLoadSetPtr& loadSet,
+                    const std::string& targetPath,
+                    const std::string& sourcePath)
+{
+    if (!loadSet || loadSet->getEntries().empty()) {
+        return SceneLoadSetPtr();
+    }
+    const PXR_NS::SdfPath target = loadSetPath(targetPath);
+    const PXR_NS::SdfPath source = loadSetPath(sourcePath);
+    if (target.IsEmpty() || target.IsAbsoluteRootPath() || source.IsEmpty() || source.IsAbsoluteRootPath() || !hasValidPaths(*loadSet)) {
+        return SceneLoadSetPtr();
+    }
+
+    std::vector<SceneLoadSet::Entry> entries(1, SceneLoadSet::Entry { std::string("/"), SceneLoadSet::eRuleNone });
+    if (loadSet->getRuleAt(targetPath) != SceneLoadSet::eRuleNone) {
+        for (PXR_NS::SdfPath ancestor = source.GetParentPath(); !ancestor.IsAbsoluteRootPath(); ancestor = ancestor.GetParentPath()) {
+            entries.push_back(SceneLoadSet::Entry { ancestor.GetString(), SceneLoadSet::eRuleOnly });
+        }
+    }
+    appendMovedSubtree(*loadSet, target, source, &entries);
+
+    return makeMappedLoadSet(entries);
+}
+
+void
+mapReferenceReach(const std::string& targetPath,
+                  const std::string& sourcePath,
+                  const std::vector<std::string>& in,
+                  std::vector<std::string>* out)
+{
+    out->clear();
+    const PXR_NS::SdfPath source = sourcePath.empty() ? PXR_NS::SdfPath() : loadSetPath(sourcePath);
+    for (const std::string& prefix : in) {
+        const PXR_NS::SdfPath path = loadSetPath(prefix);
+        if (source.IsEmpty() || path.IsEmpty()) {
+            addOnce(targetPath, out);
+        } else if (path.HasPrefix(source)) {
+            addOnce(path.ReplacePrefix(source, PXR_NS::SdfPath(targetPath)).GetString(), out);
+        } else if (source.HasPrefix(path)) {
+            addOnce(targetPath, out);
+        }
+    }
+}
+
 PXR_NS::SdfLayerRefPtr
 createStackLayer(const ScenePayload& input,
                  const std::string& tag)
@@ -1664,15 +3861,211 @@ createStackLayer(const ScenePayload& input,
     return createWrapper(input, tag);
 }
 
+struct UnloadedSearch::State {
+    mutable std::mutex mutex;
+    mutable std::condition_variable changed;
+    StatusEnum status = eStatusRunning;
+    std::vector<std::string> matches;
+    std::string error;
+    std::atomic<bool> cancelled { false };
+    std::function<bool()> stopWhen;
+
+    bool shouldStop() const
+    {
+        return cancelled.load() || (stopWhen && stopWhen());
+    }
+
+    void finish(StatusEnum result,
+                const std::vector<PXR_NS::SdfPath>& found,
+                const std::string& message)
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        status = result;
+        matches.clear();
+        for (const PXR_NS::SdfPath& path : found) {
+            matches.push_back(path.GetString());
+        }
+        error = message;
+        changed.notify_all();
+    }
+
+    void search(const ScenePayload& scene,
+                const std::string& expression)
+    {
+        std::string errorMessage;
+        PXR_NS::SdfPathExpression parsed;
+        if (!checkUsdRuntime(&errorMessage) || !parsePrimExpression(expression, &parsed, &errorMessage)) {
+            finish(eStatusFailed, std::vector<PXR_NS::SdfPath>(), errorMessage);
+
+            return;
+        }
+        if (scene.isEmpty() || parsed.IsEmpty()) {
+            finish(shouldStop() ? eStatusCancelled : eStatusDone, std::vector<PXR_NS::SdfPath>(), std::string());
+
+            return;
+        }
+        // Held across the file reads too, as a query stage's lease is: the layers it composes
+        // must not be reloaded under it.
+        SceneWriteBarrier::ReadScope read;
+        // Composed with no payload first, so that every payload file opens where the load can
+        // give up on it.
+        SceneStage stage(PXR_NS::UsdStage::LoadNone);
+        if (!stage.isValid()) {
+            finish(eStatusFailed, std::vector<PXR_NS::SdfPath>(), "Could not open a USD stage.");
+
+            return;
+        }
+        stage.sync(scene);
+        stage.requestLoad(PXR_NS::SdfPathVector(1, PXR_NS::SdfPath::AbsoluteRootPath()), true);
+        const SceneStage::LockedSection unlocked = [](const std::function<void()>& section) { section(); };
+        const std::function<bool()> stop = [this]() { return shouldStop(); };
+        while (stage.hasPendingLoads() && !shouldStop()) {
+            stage.serviceLoads(unlocked, unlocked, stop);
+        }
+        std::vector<PXR_NS::SdfPath> found;
+        if (shouldStop() || !selectPrims(stage.getStage(), expression, &found, &errorMessage, stop)) {
+            if (errorMessage.empty()) {
+                finish(eStatusCancelled, std::vector<PXR_NS::SdfPath>(), std::string());
+            } else {
+                finish(eStatusFailed, std::vector<PXR_NS::SdfPath>(), errorMessage);
+            }
+
+            return;
+        }
+        finish(eStatusDone, found, std::string());
+    } // search
+};
+
+UnloadedSearch::UnloadedSearch()
+    : _state(std::make_shared<State>())
+{
+}
+
+UnloadedSearch::~UnloadedSearch()
+{
+    cancel();
+    if (_thread.joinable()) {
+        _thread.join();
+    }
+}
+
+std::shared_ptr<UnloadedSearch>
+UnloadedSearch::start(const ScenePayload& scene,
+                      const std::string& expression,
+                      const std::function<bool()>& stopWhen)
+{
+    std::shared_ptr<UnloadedSearch> search(new UnloadedSearch);
+    search->_state->stopWhen = stopWhen;
+    const std::shared_ptr<State> state = search->_state;
+    search->_thread = std::thread([state, scene, expression]() { state->search(scene, expression); });
+
+    return search;
+}
+
+std::shared_ptr<UnloadedSearch>
+UnloadedSearch::start(const EffectInstancePtr& effect,
+                      int inputNb,
+                      const std::string& expression,
+                      const std::function<bool()>& stopWhen)
+{
+    std::shared_ptr<UnloadedSearch> search(new UnloadedSearch);
+    search->_state->stopWhen = stopWhen;
+    const std::shared_ptr<State> state = search->_state;
+    const EffectInstancePtr input = effect ? effect->getInput(inputNb) : EffectInstancePtr();
+    const double time = effect ? effect->getCurrentTime() : 0.;
+    search->_thread = std::thread([state, input, time, expression]() {
+        ScenePayload scene;
+        std::string error;
+        // As a render sees it: the input's own pattern nodes match every payload too.
+        if (input && input->producesSceneData()
+            && (input->evaluateScene(EffectInstance::EvaluateSceneArgs(time, ViewIdx(0)), &scene, &error) != EffectInstance::eRenderRoIRetCodeOk)) {
+            state->finish(eStatusFailed, std::vector<PXR_NS::SdfPath>(), error);
+
+            return;
+        }
+        state->search(scene, expression);
+    });
+
+    return search;
+}
+
+void
+UnloadedSearch::cancel()
+{
+    _state->cancelled = true;
+}
+
+UnloadedSearch::StatusEnum
+UnloadedSearch::getStatus() const
+{
+    std::lock_guard<std::mutex> lock(_state->mutex);
+
+    return _state->status;
+}
+
+bool
+UnloadedSearch::wait(double timeoutMs) const
+{
+    std::unique_lock<std::mutex> lock(_state->mutex);
+    const auto ended = [this]() { return _state->status != eStatusRunning; };
+    if (timeoutMs < 0.) {
+        _state->changed.wait(lock, ended);
+
+        return true;
+    }
+
+    return _state->changed.wait_for(lock, std::chrono::duration<double, std::milli>(timeoutMs), ended);
+}
+
+std::vector<std::string>
+UnloadedSearch::getMatches() const
+{
+    std::lock_guard<std::mutex> lock(_state->mutex);
+
+    return _state->matches;
+}
+
+std::string
+UnloadedSearch::getError() const
+{
+    std::lock_guard<std::mutex> lock(_state->mutex);
+
+    return _state->error;
+}
+
 } // namespace SceneOps
 
 struct SceneLayerMemo::Implementation {
+    struct Slot {
+        U64 context = 0;
+        U64 layerHash = 0;
+        ScenePayload output;
+    };
+
     std::mutex mutex;
-    bool valid = false;
-    U64 layerHash = 0;
-    ScenePayload output;
+    // Most recently used first.
+    std::list<Slot> slots;
     U64 authorCount = 0;
     NodeWPtr owner;
+
+    // The slot of context, moved first, or a new one there, evicting the least recently used.
+    Slot& use(U64 context)
+    {
+        for (std::list<Slot>::iterator it = slots.begin(); it != slots.end(); ++it) {
+            if (it->context == context) {
+                slots.splice(slots.begin(), slots, it);
+
+                return slots.front();
+            }
+        }
+        slots.push_front(Slot());
+        slots.front().context = context;
+        if (slots.size() > kSceneLayerMemoSlots) {
+            slots.pop_back();
+        }
+
+        return slots.front();
+    }
 };
 
 SceneLayerMemo::SceneLayerMemo()
@@ -1727,14 +4120,26 @@ SceneLayerMemo::produce(const Key& key,
     SceneWriteBarrier::ReadScope read;
     // Held while authoring: two threads evaluating the same node author one layer, not two.
     std::lock_guard<std::mutex> lock(_imp->mutex);
-    if (_imp->valid && (_imp->layerHash == layerHash)) {
+    const U64 context = SceneEvaluationContext::current().id;
+    const Implementation::Slot* memoized = nullptr;
+    for (const Implementation::Slot& slot : _imp->slots) {
+        if (slot.layerHash != layerHash) {
+            continue;
+        }
+        // Another context's layer for the same key is the same layer: it is shared, not authored again.
+        if (!memoized || (slot.context == context)) {
+            memoized = &slot;
+        }
+    }
+    if (memoized) {
         // An upstream re-authored to the same content hashes the same but holds other layers:
         // the memoized layer goes on top of the stack actually handed in.
-        const ScenePayload memoizedBase(_imp->output.getImpl()->base);
-        if (!memoizedBase.isSameStack(upstream)) {
-            _imp->output = SceneOps::appendEntry(upstream, _imp->output.getImpl()->top);
-        }
-        *output = _imp->output;
+        const ScenePayload found = memoized->output;
+        const ScenePayload memoizedBase(found.getImpl()->base);
+        Implementation::Slot& slot = _imp->use(context);
+        slot.layerHash = layerHash;
+        slot.output = memoizedBase.isSameStack(upstream) ? found : SceneOps::appendEntry(upstream, found.getImpl()->top);
+        *output = slot.output;
 
         return true;
     }
@@ -1804,11 +4209,11 @@ SceneLayerMemo::produce(const Key& key,
 
         return true;
     }
-    _imp->output = SceneOps::appendEntry(upstream, entry);
-    _imp->layerHash = layerHash;
-    _imp->valid = true;
-    *output = _imp->output;
-    SceneOps::setLayerOwner(_imp->output, _imp->owner.lock(), true);
+    Implementation::Slot& slot = _imp->use(context);
+    slot.output = SceneOps::appendEntry(upstream, entry);
+    slot.layerHash = layerHash;
+    *output = slot.output;
+    SceneOps::setLayerOwner(slot.output, _imp->owner.lock(), true);
 
     return true;
 } // SceneLayerMemo::produce
@@ -1818,8 +4223,7 @@ SceneLayerMemo::invalidate()
 {
     std::lock_guard<std::mutex> lock(_imp->mutex);
 
-    _imp->valid = false;
-    _imp->output = ScenePayload();
+    _imp->slots.clear();
 }
 
 void
@@ -1861,8 +4265,7 @@ SceneGraftMemo::invalidate()
     _state->structure = SceneLayerEntry();
     _state->structurePath.clear();
     _state->overrides.invalidate();
-    _state->slots.clear();
-    _state->output = ScenePayload();
+    _state->contexts.clear();
 }
 
 U64
@@ -1871,6 +4274,14 @@ SceneGraftMemo::getGraftLayerAuthorCount() const
     std::lock_guard<std::mutex> lock(_state->mutex);
 
     return _state->graftLayerAuthorCount;
+}
+
+U64
+SceneGraftMemo::getInputReadCount() const
+{
+    std::lock_guard<std::mutex> lock(_state->mutex);
+
+    return _state->inputReadCount;
 }
 
 SceneGraftMemo::State&

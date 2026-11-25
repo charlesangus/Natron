@@ -32,6 +32,7 @@
 #include <string>
 #include <vector>
 
+#include "Engine/SceneLoadSet.h"
 #include "Engine/ScenePayload.h"
 
 NATRON_NAMESPACE_ENTER
@@ -48,6 +49,10 @@ namespace GeoCameraProjection {
  * at @p framesPerSecond. The aperture is conformed to @p aspect (width over height) per
  * @p fitMode, a HydraRender::FitModeEnum. Fails, with *errorMessage set, when there is no
  * camera.
+ *
+ * The stage loads @p loadSet's payloads, widened by those on the way to @p cameraPath when it
+ * is given; the first camera is looked for among what @p loadSet loads. The default is the set
+ * of the evaluation running on the calling thread, every payload outside one.
  **/
 bool worldToFrame(const ScenePayload& scene,
                   const std::string& cameraPath,
@@ -57,10 +62,16 @@ bool worldToFrame(const ScenePayload& scene,
                   int fitMode,
                   std::array<double, 16>* matrix,
                   std::string* usedPath,
-                  std::string* errorMessage);
+                  std::string* errorMessage,
+                  const SceneLoadSetPtr& loadSet = SceneEvaluationContext::current().loadSet);
 
-/** @brief Every camera's path in the scene, in traversal order. Empty when it cannot be composed. */
-std::vector<std::string> cameraPaths(const ScenePayload& scene);
+/**
+ * @brief The path of every camera @p loadSet's payloads hold, in traversal order, so that a menu
+ * listing them loads nothing more than the evaluation it serves. Empty when the scene cannot be
+ * composed.
+ **/
+std::vector<std::string> cameraPaths(const ScenePayload& scene,
+                                     const SceneLoadSetPtr& loadSet = SceneEvaluationContext::current().loadSet);
 }
 
 NATRON_NAMESPACE_EXIT

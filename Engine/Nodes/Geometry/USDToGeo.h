@@ -62,12 +62,14 @@ public:
                        "packed primitive carrying its path, transforms and bounds, so moving prims stays cheap; "
                        "Unpack reads meshes, points, curves and volumes as editable geometry. Each primitive's path "
                        "attribute names the prim it came from.",
-        .grouping = PLUGIN_GROUP_3D,
+        .grouping = PLUGIN_GROUP_GEOMETRY,
         .majorVersion = 1,
         .minorVersion = 0,
         .isWriter = false,
         .outputKind = eDataKindGeometry,
         .inputs = kInputs,
+        .primPathKnob = kUSDToGeoParamPrimPattern,
+        .primPathKnobTakesPattern = true,
     };
 
     static EffectInstance* BuildEffect(NodePtr node)

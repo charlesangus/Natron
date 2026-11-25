@@ -453,6 +453,14 @@ protected:
     void invalidateOutputMetadata();
 
     /**
+     * @brief Called from deriveOutputMetadata() when its answer is incomplete for now: neither it
+     * nor the answers of the nodes downstream derived from it in the same call are cached, so they
+     * are derived again when next asked. The node calls invalidateOutputMetadata() once the
+     * complete answer is available, so that the readers that were given the incomplete one ask again.
+     **/
+    void markOutputMetadataProvisional();
+
+    /**
      * @brief Sets the text getSublabel() returns and shows it in the node graph.
      **/
     void setSublabel(const std::string& sublabel);
@@ -663,6 +671,10 @@ protected:
         // For eUpstreamReadFacts: a hash of every upstream fact the author reads.
         U64 factsDigest = 0;
         bool frameRange = true;
+        // For an author handed values read before emitSceneLayer(): getSceneLayerKey() taken
+        // before those reads. A knob or project edit after it leaves the layer unmemoized.
+        bool valuesRead = false;
+        SceneLayerMemo::Key valuesReadUnder;
     };
 
     /**

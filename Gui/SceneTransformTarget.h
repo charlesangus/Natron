@@ -35,6 +35,7 @@
 #include <QtCore/QString>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/SceneLoadSet.h"
 #include "Gui/GuiFwd.h"
 
 // Where a drag of the 3D view's transform widget lands. Matrices are Gf (row-vector) matrices
@@ -152,6 +153,18 @@ void applySceneKnobEdits(const NodePtr& node,
                          const QString& text);
 
 /**
+ * @brief Writes newValue to knob, a knob of node, then records the change from oldValue in history
+ * as one command labelled text. oldValue may differ from the knob's value before this call, so a
+ * change already shown while it was being made undoes to where it started.
+ **/
+void applySceneStringEdit(const NodePtr& node,
+                          const KnobStringPtr& knob,
+                          const std::string& oldValue,
+                          const std::string& newValue,
+                          UndoHistory* history,
+                          const QString& text);
+
+/**
  * @brief The policy the Preferences choose: the knobs of each prim's owner node (or the
  * matrix of its owning Replace-mode USDEditTransform), else an
  * USDEditTransform; the USDEditTransform whose panel is open; or one at the end of the viewed
@@ -164,6 +177,9 @@ public:
     struct Context {
         // The node the 3D view shows.
         std::function<NodePtr()> viewedNode;
+        // The evaluation context of the viewer showing it: where a Replace-mode
+        // USDEditTransform's matches are looked up.
+        std::function<SceneEvaluationContext()> evaluationContext;
         // The USDEditTransform whose settings panel is open, if any.
         std::function<NodePtr()> openEditNode;
         std::function<UndoHistory*()> undoHistory;
@@ -183,9 +199,10 @@ private:
  * Path is the prim's, reached through re-parenting nodes (which graft their inputs under their
  * own Prim Path). An enabled Replace-mode USDEditTransform whose pattern names the prim on the
  * way discards everything upstream of it, so it is the owner. Null for a prim no such node
- * makes, such as one read from a file.
+ * makes, such as one read from a file. context is the asking viewer's, whose load set a stale
+ * pattern is matched on.
  **/
-NodePtr findSceneTransformOwner(const NodePtr& viewed, const std::string& primPath);
+NodePtr findSceneTransformOwner(const NodePtr& viewed, const std::string& primPath, const SceneEvaluationContext& context);
 
 NATRON_NAMESPACE_EXIT
 

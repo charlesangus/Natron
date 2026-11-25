@@ -3678,16 +3678,18 @@ RotoCurveInteract::drawRippleEditBorder(double screenPixelRatio,
     double insetX = 0.5 * lineWidth * pixelScale.first;
     double insetY = 0.5 * lineWidth * pixelScale.second;
 
-    GLProtectAttrib a(GL_ENABLE_BIT | GL_LINE_BIT | GL_CURRENT_BIT);
-    glDisable(GL_LINE_SMOOTH);
-    glLineWidth(lineWidth);
-    glColor3d(0.9, 0.1, 0.1);
-    glBegin(GL_LINE_LOOP);
-    glVertex2d(view.x1 + insetX, view.y1 + insetY);
-    glVertex2d(view.x2 - insetX, view.y1 + insetY);
-    glVertex2d(view.x2 - insetX, view.y2 - insetY);
-    glVertex2d(view.x1 + insetX, view.y2 - insetY);
-    glEnd();
+    _host->getCurrentViewportForOverlays()->drawInViewportSpace([&]() {
+        GLProtectAttrib a(GL_ENABLE_BIT | GL_LINE_BIT | GL_CURRENT_BIT);
+        glDisable(GL_LINE_SMOOTH);
+        glLineWidth(lineWidth);
+        glColor3d(0.9, 0.1, 0.1);
+        glBegin(GL_LINE_LOOP);
+        glVertex2d(view.x1 + insetX, view.y1 + insetY);
+        glVertex2d(view.x2 - insetX, view.y1 + insetY);
+        glVertex2d(view.x2 - insetX, view.y2 - insetY);
+        glVertex2d(view.x1 + insetX, view.y2 - insetY);
+        glEnd();
+    });
 }
 
 void

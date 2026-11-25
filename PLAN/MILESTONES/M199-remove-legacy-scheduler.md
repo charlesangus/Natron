@@ -32,7 +32,7 @@ Delete the Legacy render scheduler mode (`renderSchedulerMode`, `Engine/Settings
 
 ## Phase 199.1: Delete the Legacy mode
 
-- [ ] M199.P1.T1 — Run one task-graph ctest leg in CI and the gate scripts
+- [x] M199.P1.T1 — Run one task-graph ctest leg in CI and the gate scripts
   - files: `.github/workflows/remote-build.yml` (input `schedulers` :65-69; `NATRON_RENDER_SCHEDULER: legacy` in the golden/parity record steps :245,:296; `ctest-legs` job :500-526; matrix and `matrix.scheduler` uses :529-728; cross-scheduler compare :731-776), `.github/workflows/ci.yml` (matrix :340-453; `build-and-test` compare :456-493), `tools/ci/remote/build.sh` (`--scheduler`, `SCHEDULERS` :8-55,120,163,201-207,484,668-670), `tools/ci/local/test.sh` (:13,19,227), `tools/ci/smoke_test.py` (`_compare_or_stash_render` :553-580, `_report_render_scheduler_mode` :986-1018), `tools/ci/local/README.md` (:385,408), `tools/ci/remote/README.md` (:66-72,91,123)
   - approach: Drop the matrix and the `schedulers` input. Keep one ctest/smoke job and keep the check name `Build and test`. Artifact and log names lose the scheduler suffix; `tools/ci/summary.sh` gets one fixed label. Remove the record steps' Legacy env. `build.sh --scheduler` becomes an unknown option. Remove the smoke reference-dir comparison and the mode report. The engine still accepts the env var until P1.T4.
   - verify: actionlint/`yq` parse both workflows; `build.sh --help` no longer lists `--scheduler`; a `build.sh debug --tests` gate shows one ctest leg, green; a PR CI run shows one Test job and a green `Build and test`.

@@ -26,7 +26,7 @@ import knob_edit_common as cm
 
 from PySide6.QtCore import QMetaObject, QPoint, Qt, QTimer
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtWidgets import QAbstractButton, QApplication, QWidget
 
 EDIT_ITEM = "Edit parameters"
 
@@ -52,13 +52,14 @@ def bare_point(widget):
 
 def menu_target(name):
     """The widget and point a user right-clicks for the panel's menu: the editor overlay in edit
-    mode, otherwise a bare spot of a row or page of the panel."""
+    mode, otherwise a bare spot of a row or page of the panel. A panel with no such spot, such as a
+    placeholder's, offers the same menu from its header's settings button, which is left-clicked."""
     ov = cm.overlay(name)
     if ov is not None:
-        return ov, QPoint(ov.width() // 2, max(1, ov.height() - 4))
+        return ov, QPoint(ov.width() // 2, max(1, ov.height() - 4)), Qt.RightButton
     p = cm.panel_of(name)
     if p is None:
-        return None, None
+        return None, None, None
     for w in p.findChildren(QWidget):
         try:
             if gt.class_name(w) != "RightClickableWidget" or not w.isVisible():
@@ -67,8 +68,14 @@ def menu_target(name):
             continue
         pt = bare_point(w)
         if pt is not None:
-            return w, pt
-    return None, None
+            return w, pt, Qt.RightButton
+    for b in p.findChildren(QAbstractButton):
+        try:
+            if b.isVisible() and b.isEnabled() and "Settings and presets" in b.toolTip():
+                return b, b.rect().center(), Qt.LeftButton
+        except RuntimeError:
+            continue
+    return None, None, None
 
 
 def right_click_menu(name, choose=None):
@@ -76,7 +83,7 @@ def right_click_menu(name, choose=None):
     of every entry of the menu that opens, then chooses the entry labelled choose or closes the
     menu. The panel's own menu runs inside the press, so the press is sent from a timer."""
     seen = {"entries": None, "chosen": False, "failed": False}
-    widget, pt = menu_target(name)
+    widget, pt, button = menu_target(name)
     if widget is None:
         check(False, "found a spot of %s's panel to right-click" % name)
         seen["failed"] = True
@@ -102,7 +109,7 @@ def right_click_menu(name, choose=None):
 
     def press():
         try:
-            QTest.mouseClick(widget, Qt.RightButton, Qt.NoModifier, pt)
+            QTest.mouseClick(widget, button, Qt.NoModifier, pt)
         except RuntimeError:
             check(False, "the right click completed: " + traceback.format_exc())
 

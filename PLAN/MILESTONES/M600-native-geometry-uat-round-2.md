@@ -63,3 +63,7 @@ Fixes from the user's second UAT pass over the F15 - Native Geometry AppImage (2
   - approach: for native geometry the breadcrumb always shows the same thing; hide it, or show something meaningful (the displayed geometry node and selection) — match Houdini when in doubt
   - verify: GUI script checks the breadcrumb for a native geometry view
   - size: S
+
+## Decisions
+
+- GeoUVProject's Group selects what gets uv: blank means every element of the attribute class, free points included. A point group writes only those points. A primitive group writes only those primitives' points or vertices. When in doubt, match Houdini. (User, 2026-11-25)

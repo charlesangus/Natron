@@ -410,6 +410,7 @@ boundCard(const std::string& outputs)
 
 const char* const kCyclesVolumeOutput = "        token outputs:cycles:volume.connect = </Looks/Mat/Volume.outputs:volume>\n";
 const char* const kRiSurfaceOutput = "        token outputs:ri:surface.connect = </Looks/Mat/Surface.outputs:out>\n";
+const char* const kRiVolumeOutput = "        token outputs:ri:volume.connect = </Looks/Mat/Volume.outputs:volume>\n";
 
 std::string
 supportWarning(const std::string& body)
@@ -483,6 +484,13 @@ TEST(DelegateSupportWarnings, AMaterialWithNeitherForTheRenderersContextsStillWa
 {
     const std::string warning = supportWarning(boundCard(kRiSurfaceOutput));
     EXPECT_TRUE(has(warning, "finds no surface")) << warning;
+    EXPECT_TRUE(has(warning, "/Looks/Mat")) << warning;
+}
+
+TEST(DelegateSupportWarnings, AMaterialWithOnlyAnotherRenderersVolumeWarns)
+{
+    const std::string warning = supportWarning(boundCard(kRiVolumeOutput));
+    EXPECT_TRUE(has(warning, "finds no surface or volume")) << warning;
     EXPECT_TRUE(has(warning, "/Looks/Mat")) << warning;
 }
 

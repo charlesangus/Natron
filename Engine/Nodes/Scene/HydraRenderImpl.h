@@ -151,7 +151,7 @@ struct Request {
 // How a path tracer's render ended: what its delegate reported when the render stopped waiting on
 // it. A count is -1 where the delegate reports none, as every delegate but Cycles.
 struct RenderTrace {
-    bool freshEngine = false; // the engine was made for this render, and had rendered nothing
+    bool freshEngine = false;
     bool watched = false; // the render waited on the delegate's reset counts
     int passes = 0;
     int remakes = 0; // engines made again after no restart showed

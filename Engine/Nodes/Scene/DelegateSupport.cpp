@@ -233,8 +233,8 @@ warningText(const UsdStageRefPtr& stage,
         const UsdShadeShader surface = material.ComputeSurfaceSource(contexts);
         const UsdShadeShader volume = material.ComputeVolumeSource(contexts);
         if (!surface && !volume) {
-            // One with no surface at all is not authored for another renderer.
-            if (!material.GetSurfaceOutputs().empty()) {
+            // One with no surface or volume output at all is not authored for another renderer.
+            if (!material.GetSurfaceOutputs().empty() || !material.GetVolumeOutputs().empty()) {
                 appendName(&noSurface, path.GetString());
             }
             continue;
@@ -262,7 +262,7 @@ warningText(const UsdStageRefPtr& stage,
         lines.push_back(rendererName + " cannot build shader " + kind.first + " in materials: " + joinNames(kind.second));
     }
     if (!noSurface.empty()) {
-        lines.push_back(rendererName + " finds no surface for its render contexts in materials: " + joinNames(noSurface));
+        lines.push_back(rendererName + " finds no surface or volume for its render contexts in materials: " + joinNames(noSurface));
     }
     std::string text;
     for (const std::string& line : lines) {

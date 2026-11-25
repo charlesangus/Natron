@@ -62,8 +62,8 @@ Support probe(const std::string& rendererId) WARN_UNUSED_RETURN;
 /**
  * @brief The node's warning about what rendererName cannot render of stage, one line per kind:
  * per Hydra prim type it does not make, per shader id it does not build, and for materials with
- * no surface in its render contexts, each line naming the kind and its prims. Empty when it
- * renders everything.
+ * neither a surface nor a volume in its render contexts, each line naming the kind and its prims.
+ * Empty when it renders everything.
  **/
 std::string warningText(const PXR_NS::UsdStageRefPtr& stage,
                         const Support& support,

@@ -1659,14 +1659,22 @@ RenderThread::renderEngine(const HydraRender::Request& request,
         entry.volumesFound = true;
         entry.volumeChecked = false;
     }
-    if (!entry.volumeChecked || (entry.volumeTime != request.time)) {
-        const DelegateSupport::VolumeLimits limits = MoonRayAovs::isMoonRay(renderer) ? DelegateSupport::VolumeLimits::moonRay() : DelegateSupport::VolumeLimits();
-        entry.volumeWarning = DelegateSupport::volumeWarningText(stage, entry.volumes, request.time, limits, entry.rendererName);
-        entry.volumeTime = request.time;
-        entry.volumeChecked = true;
-    }
-    entry.warning = entry.volumeWarning;
+    // Reading the fields' files initialises OpenVDB for the whole process, so it waits until the
+    // delegate has read them: one that does not initialise the library itself then fails its own
+    // first read instead of passing on Natron's.
+    const auto volumeWarning = [&]() -> const std::string& {
+        if (!entry.volumeChecked || (entry.volumeTime != request.time)) {
+            const DelegateSupport::VolumeLimits limits = MoonRayAovs::isMoonRay(renderer) ? DelegateSupport::VolumeLimits::moonRay() : DelegateSupport::VolumeLimits();
+            entry.volumeWarning = DelegateSupport::volumeWarningText(stage, entry.volumes, request.time, limits, entry.rendererName);
+            entry.volumeTime = request.time;
+            entry.volumeChecked = true;
+        }
+
+        return entry.volumeWarning;
+    };
+    entry.warning.clear();
     entry.errors.clear();
+    entry.trace = HydraRender::RenderTrace();
     if (_gl) {
         for (int pass = 0; pass < kMaxRenderPasses; ++pass) {
             if (cancel && cancel->load()) {
@@ -1686,6 +1694,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
             // live texture through shared memory, so the next render goes on with it.
             return nullptr;
         }
+        entry.warning = volumeWarning();
     } else {
         // A path tracer renders on threads of its own and converges when it is done; each Render()
         // syncs the stage's changes into it. MoonRay's log is taken off the console for the
@@ -1702,7 +1711,6 @@ RenderThread::renderEngine(const HydraRender::Request& request,
         } else {
             restartWatch.restart(!watchRestart);
         }
-        entry.trace = HydraRender::RenderTrace();
         entry.trace.freshEngine = freshEngine;
         entry.trace.watched = watchFresh || watchRestart;
         if (watchRestart) {
@@ -1799,6 +1807,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
             yieldToBarrier();
             std::this_thread::sleep_for(kConvergencePoll);
         }
+        entry.warning = volumeWarning();
         // Only Cycles is probed: making a delegate to ask it its types may start a render.
         if (!entry.supportChecked) {
             entry.supportWarning = CyclesAovs::isCycles(renderer) ? DelegateSupport::warningText(stage, CyclesAovs::support(), entry.rendererName) : std::string();

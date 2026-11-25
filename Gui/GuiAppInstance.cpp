@@ -84,6 +84,8 @@
 #include "Gui/NodeGui.h"
 #include "Gui/ProgressPanel.h"
 #include "Gui/PythonUndoRecorder.h"
+#include "Gui/SceneGraphPanel.h"
+#include "Gui/SceneNodeStageSource.h"
 #include "Gui/ScriptEditor.h"
 #include "Gui/SplashScreen.h"
 #include "Gui/UndoHistory.h"
@@ -355,6 +357,9 @@ GuiAppInstance::aboutToQuit()
             _imp->_gui->getUndoHistory()->setReplayHook(std::function<void(bool)>());
         }
 
+        // The scene stages of closed panels still stopping: none may evaluate a node the project
+        // reset destroys.
+        SceneNodeStageSource::joinReaped();
         AppInstance::aboutToQuit();
 
         _imp->_isClosing = true;
@@ -366,6 +371,8 @@ GuiAppInstance::aboutToQuit()
         qApp->processEvents();
         // Make sure all deleteLater calls are reached
         qApp->sendPostedEvents(0, QEvent::DeferredDelete);
+        // Those the panels just destroyed handed over.
+        SceneNodeStageSource::joinReaped();
 
         _imp->_gui = 0;
     }
@@ -989,6 +996,19 @@ GuiAppInstance::onProjectNodesRestored()
 }
 
 void
+GuiAppInstance::aboutToDestroyProjectNodes()
+{
+    if (_imp->_gui) {
+        const std::list<SceneGraphPanel*> panels = _imp->_gui->getSceneGraphPanels();
+        for (SceneGraphPanel* panel : panels) {
+            panel->releaseNodeStages();
+        }
+    }
+    SceneNodeStageSource::stopAll();
+    SceneNodeStageSource::joinReaped();
+}
+
+void
 GuiAppInstance::setupViewersForViews(const std::vector<std::string>& viewNames)
 {
     _imp->_gui->updateViewersViewsMenu(viewNames);
@@ -1326,6 +1346,26 @@ GuiAppInstance::getLastViewerUsingTimeline() const
     }
 
     return _imp->lastTimelineViewer->isEffectViewer();
+}
+
+std::list<NodePtr>
+GuiAppInstance::getViewerNodesByRecentActivity() const
+{
+    std::list<NodePtr> viewers;
+    const NodePtr active = getActiveViewerNode();
+    if (active) {
+        viewers.push_back(active);
+    }
+    const std::list<ViewerTab*> focused = _imp->_gui ? _imp->_gui->getViewersByRecentFocus() : std::list<ViewerTab*>();
+    for (ViewerTab* tab : focused) {
+        ViewerInstance* viewer = tab ? tab->getInternalNode() : 0;
+        const NodePtr node = viewer ? viewer->getNode() : NodePtr();
+        if (node && (std::find(viewers.begin(), viewers.end(), node) == viewers.end())) {
+            viewers.push_back(node);
+        }
+    }
+
+    return viewers;
 }
 
 NodePtr

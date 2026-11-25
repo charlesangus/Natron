@@ -449,6 +449,7 @@ TabWidget::createMenu(const QPoint& globalPos)
     menu.addAction( tr("Script editor here"), this, SLOT(moveScriptEditorHere()) );
     menu.addAction( tr("Progress Panel here"), this, SLOT(moveProgressPanelHere()) );
     menu.addAction(tr("Scene Graph here"), this, SLOT(moveSceneGraphHere()));
+    menu.addAction(tr("New Scene Graph"), this, SLOT(newSceneGraphHere()));
     menu.addAction(tr("Merge Conflicts here"), this, SLOT(moveMergeConflictsHere()));
     menu.addAction(tr("Node Diff here"), this, SLOT(moveNodeDiffHere()));
 
@@ -608,15 +609,15 @@ TabWidget::closeSplitterAndMoveOtherSplitToParent(Splitter* container)
     if (parentSplitter) {
         QList<int> mainContainerSizes = parentSplitter->sizes();
 
-        /*Removing the splitter container from its parent*/
         int containerIndexInParentSplitter = parentSplitter->indexOf(container);
-        parentSplitter->removeChild_mt_safe(container);
-
-        /*moving the other split to the mainContainer*/
+        // The other split moves straight across before the container goes: through a parentless
+        // container it would leave the window, and each GL widget in it would lose its context.
         if (otherSplit) {
             parentSplitter->insertChild_mt_safe(containerIndexInParentSplitter, otherSplit);
             otherSplit->setVisible(true);
         }
+        container->setVisible(false);
+        container->setParent(_imp->gui);
 
         /*restore the main container sizes*/
         parentSplitter->setSizes_mt_safe(mainContainerSizes);
@@ -903,6 +904,16 @@ TabWidget::moveNodeDiffHere()
     moveTab(_imp->gui->getNodeDiffPanel(), _imp->gui->getNodeDiffPanel(), this);
 }
 
+void
+TabWidget::newSceneGraphHere()
+{
+    SceneGraphPanel* panel = _imp->gui->addNewSceneGraphPanel();
+
+    appendTab(panel, panel);
+
+    _imp->gui->getApp()->triggerAutoSave();
+}
+
 TabWidget*
 TabWidget::splitInternal(bool autoSave,
                          Qt::Orientation orientation)
@@ -938,6 +949,13 @@ TabWidget::splitInternal(bool autoSave,
     newSplitter->setOrientation(orientation);
     _imp->gui->registerSplitter(newSplitter);
 
+    // The new splitter joins the parent splitter before this pane moves into it: through a
+    // parentless splitter the pane would leave the window, and each GL widget in it would lose
+    // its context.
+    if (parentIsSplitter) {
+        parentIsSplitter->insertChild_mt_safe(oldIndexInParentSplitter, newSplitter);
+    }
+
     /*Add this to the new splitter*/
     newSplitter->addWidget_mt_safe(this);
 
@@ -968,9 +986,6 @@ TabWidget::splitInternal(bool autoSave,
     newSplitter->setSizes_mt_safe(sizes);
 
     if (parentIsSplitter) {
-        /*Inserting back the new splitter at the original index*/
-        parentIsSplitter->insertChild_mt_safe(oldIndexInParentSplitter, newSplitter);
-
         /*restore the container original sizes*/
         parentIsSplitter->setSizes_mt_safe(oldSizeInParentSplitter);
     } else {
@@ -978,7 +993,6 @@ TabWidget::splitInternal(bool autoSave,
         parentIsFloating->setWidget(newSplitter);
         parentIsFloating->resize(splitterSize);
     }
-
 
     if (!_imp->gui->getApp()->getProject()->isLoadingProject() && autoSave) {
         _imp->gui->getApp()->triggerAutoSave();
@@ -1044,7 +1058,13 @@ TabWidget::appendTab(const QIcon & icon,
         _imp->floatButton->setEnabled(true);
     }
     _imp->declareTabToPython( widget, object->getScriptName() );
-    makeCurrentTab(_imp->tabs.size() - 1);
+    if (_imp->gui && _imp->gui->isRebuildingLayout()) {
+        // Parented here hidden, as a tab that is not current is: the rebuild shows the pane's current
+        // tab once at its end.
+        widget->getWidget()->setParent(this);
+    } else {
+        makeCurrentTab(_imp->tabs.size() - 1);
+    }
 
     return true;
 }
@@ -1148,7 +1168,12 @@ TabWidget::removeTab(int index,
         _imp->modifyingTabBar = true;
         _imp->tabBar->removeTab(index);
         _imp->modifyingTabBar = false;
-        if (_imp->tabs.size() > 0) {
+        if ((_imp->tabs.size() > 0) && _imp->gui && _imp->gui->isRebuildingLayout()) {
+            if (_imp->currentWidget == tab) {
+                QObject::disconnect(w, SIGNAL(destroyed()), this, SLOT(onCurrentTabDeleted()));
+                _imp->currentWidget = 0;
+            }
+        } else if (_imp->tabs.size() > 0) {
             l.unlock();
             int i;
             if (newIndex == -1) {
@@ -1193,6 +1218,10 @@ TabWidget::removeTab(int index,
             _imp->gui->removeHistogram(isHisto);
 
             //Return because at this point isHisto is invalid
+            return;
+        } else if (_imp->gui && _imp->gui->isExtraSceneGraphPanel(tab)) {
+            _imp->gui->removeSceneGraphPanel(dynamic_cast<SceneGraphPanel*>(tab));
+
             return;
         } else {
             ///Do not delete unique widgets such as the properties bin, node graph or curve editor

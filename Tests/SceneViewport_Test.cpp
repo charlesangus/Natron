@@ -30,9 +30,13 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <functional>
+#include <future>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -42,9 +46,12 @@
 #include <utility>
 #include <vector>
 
+#include <unistd.h>
+
 #include <gtest/gtest.h>
 
 // Before Qt's OpenGL headers.
+#include "Gui/SceneDrawStateQueue.h"
 #include "Gui/SceneGizmo.h"
 #include "Gui/SceneViewport.h"
 #include "Gui/SelectionEngine.h"
@@ -63,6 +70,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/Scene/CyclesAovs.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
+#include "Engine/Nodes/Scene/SceneDrawStates.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
@@ -1350,6 +1358,28 @@ TEST_F(SceneViewportStorm, TheHeadlightLightsTheShadedSceneOnlyWhenChosen)
     EXPECT_EQ(U64(1), _renderer.getEngineCount()) << "changing the lighting keeps the engine";
 }
 
+TEST_F(SceneViewportStorm, HandsTheEngineBackForItsHolderToDestroy)
+{
+    if (_skip) {
+        return;
+    }
+    EXPECT_EQ(nullptr, _renderer.releaseGLKeepingEngine()) << "no engine is held before the first render";
+    ASSERT_GT(countNonBackground(render()), 0);
+    ASSERT_TRUE(_renderer.hasEngine());
+
+    std::shared_ptr<void> kept = _renderer.releaseGLKeepingEngine();
+    ASSERT_NE(nullptr, kept) << "the engine is handed back, not destroyed";
+    EXPECT_EQ(1, kept.use_count());
+    EXPECT_FALSE(_renderer.hasEngine());
+
+    EXPECT_GT(countNonBackground(render()), 0) << "the next render makes an engine of its own";
+    EXPECT_EQ(U64(2), _renderer.getEngineCount());
+
+    const std::uint64_t sections = StormGLSection::getSectionCount();
+    kept.reset();
+    EXPECT_GT(StormGLSection::getSectionCount(), sections) << "the kept engine is destroyed inside a Storm section";
+}
+
 // The 3D views' lighting is the Viewer 3D Lighting preference: Scene Lights (no headlight) by
 // default, and saved and restored like any other.
 TEST(SceneViewportLighting, ThePreferenceIsSceneLightsByDefaultAndSavesAndLoads)
@@ -1709,6 +1739,41 @@ TEST_F(SceneViewportStorm, PaintSkipsWhileTheViewerLockIsHeld)
     EXPECT_NE(SceneViewportRenderer::eRenderStatusBusy, _renderer.renderIfIdle(_fbo->handle(), kSize, kSize));
 }
 
+// A setting that changes Storm's shaders costs a render like a stage change, so the viewer takes it
+// in with a background frame, which leaves nothing for the paint after it to compile.
+TEST_F(SceneViewportStorm, AShaderSettingIsTakenInByABackgroundFrame)
+{
+    if (_skip) {
+        return;
+    }
+    (void)render();
+    EXPECT_FALSE(_renderer.needsBackgroundFrame());
+
+    _renderer.setDrawMode(SceneViewportRenderer::eDrawModeShaded);
+    EXPECT_TRUE(_renderer.needsBackgroundFrame());
+    ASSERT_TRUE(_renderer.prepareBackgroundFrame(kSize, kSize));
+    _renderer.renderBackgroundFrame(_fbo->handle());
+    EXPECT_FALSE(_renderer.needsBackgroundFrame()) << "the frame took the draw mode in";
+
+    _renderer.setLightingMode(SceneViewportRenderer::eLightingModeHeadlight);
+    EXPECT_TRUE(_renderer.needsBackgroundFrame());
+    ASSERT_TRUE(_renderer.prepareBackgroundFrame(kSize, kSize));
+    _renderer.renderBackgroundFrame(_fbo->handle());
+    EXPECT_FALSE(_renderer.needsBackgroundFrame()) << "the frame took the lighting in";
+
+    // A camera move only draws.
+    SceneViewportRenderer::FreeCamera camera = _renderer.getFreeCamera();
+    camera.azimuth += 30.;
+    _renderer.setFreeCamera(camera);
+    EXPECT_FALSE(_renderer.needsBackgroundFrame());
+
+    // A render, as a paint does without the render thread, takes a setting in too.
+    _renderer.setDrawMode(SceneViewportRenderer::eDrawModeWireframe);
+    EXPECT_TRUE(_renderer.needsBackgroundFrame());
+    (void)render();
+    EXPECT_FALSE(_renderer.needsBackgroundFrame());
+}
+
 // Switching the viewer to a delegate that cannot load shows the loader's error instead of a
 // frame and keeps the Storm engine; switching back draws with that engine.
 TEST_F(SceneViewportStorm, SwitchesToAnUnavailableRendererAndBackToStorm)
@@ -1964,6 +2029,10 @@ TEST_F(SceneViewportStorm, AnExceptionFromHydraDiscardsTheEngineAndTheNextRender
     ASSERT_TRUE(_renderer.hasEngine());
     const U64 engines = _renderer.getEngineCount();
 
+    // An unchanged view is a tint-only frame, which never calls into the engine's Render.
+    SceneViewportRenderer::FreeCamera camera = _renderer.getFreeCamera();
+    camera.azimuth += 30.;
+    _renderer.setFreeCamera(camera);
     RenderDelegates::setRenderFaultHook([]() { throw std::runtime_error("texture commit failed"); });
     EXPECT_TRUE(renderFrame());
     RenderDelegates::setRenderFaultHook(nullptr);
@@ -2007,6 +2076,433 @@ TEST_F(SceneViewportStorm, DelegatesOnOneHgiShareAResourceRegistry)
     }
 
     engine.reset();
+}
+
+TEST_F(SceneViewportStorm, ACancelledBackgroundFrameRendersNoPassAndStaysDue)
+{
+    if (_skip) {
+        return;
+    }
+    (void)render();
+    _renderer.setDrawMode(SceneViewportRenderer::eDrawModeShaded);
+    ASSERT_TRUE(_renderer.prepareBackgroundFrame(kSize, kSize));
+    _renderer.cancelBackgroundFrame();
+
+    int passes = 0;
+    RenderDelegates::setRenderFaultHook([&passes]() { ++passes; });
+    _renderer.renderBackgroundFrame(_fbo->handle());
+    RenderDelegates::setRenderFaultHook(nullptr);
+
+    EXPECT_EQ(0, passes);
+    EXPECT_TRUE(_renderer.needsBackgroundFrame()) << "the cancelled frame took nothing in";
+
+    // A cancel ends only the frame it found.
+    ASSERT_TRUE(_renderer.prepareBackgroundFrame(kSize, kSize));
+    _renderer.renderBackgroundFrame(_fbo->handle());
+    EXPECT_FALSE(_renderer.needsBackgroundFrame());
+}
+
+TEST_F(SceneViewportStorm, AStoppedBackgroundFrameRendersOnePassAndTakesItIn)
+{
+    if (_skip) {
+        return;
+    }
+    (void)render();
+    _renderer.setDrawMode(SceneViewportRenderer::eDrawModeShaded);
+    ASSERT_TRUE(_renderer.prepareBackgroundFrame(kSize, kSize));
+
+    int passes = 0;
+    RenderDelegates::setRenderFaultHook([this, &passes]() {
+        ++passes;
+        _renderer.stopBackgroundFrame();
+    });
+    _renderer.renderBackgroundFrame(_fbo->handle());
+    RenderDelegates::setRenderFaultHook(nullptr);
+
+    EXPECT_EQ(1, passes);
+    EXPECT_FALSE(_renderer.needsBackgroundFrame());
+    EXPECT_GT(countNonBackground(render()), 0);
+}
+
+// A selection change alone grades the AOVs the last render left and tints them, rendering no
+// pass, on the render thread's frame and on the main thread's alike, a pick in between included.
+// A camera move still renders.
+TEST_F(SceneViewportStorm, ASelectionChangeAloneTintsWithoutARenderPass)
+{
+    if (_skip) {
+        return;
+    }
+    const QImage unselected = render();
+    const Rgb box = pixel(unselected, 128, 128);
+    const Rgb ball = pixel(unselected, 221, 128);
+
+    int passes = 0;
+    RenderDelegates::setRenderFaultHook([&passes]() { ++passes; });
+    _renderer.setSelectedPrims({ "/World/Box" });
+    ASSERT_TRUE(_renderer.prepareBackgroundFrame(kSize, kSize));
+    EXPECT_FALSE(_renderer.needsStageFrame());
+    EXPECT_TRUE(_renderer.isBackgroundFrameTintOnly());
+    bool finished = false;
+    EXPECT_TRUE(_renderer.renderBackgroundFrame(_fbo->handle(), &finished));
+    const QImage framed = _fbo->toImage();
+    EXPECT_EQ(0, passes);
+    EXPECT_EQ(0, _renderer.getLastFramePasses());
+    EXPECT_TRUE(finished);
+    EXPECT_FALSE(_renderer.needsBackgroundFrame()) << "the tint-only frame took the selection in";
+    EXPECT_GT(difference(pixel(framed, 128, 128), box), 30) << "the box is tinted: " << box << " -> " << pixel(framed, 128, 128);
+    EXPECT_LE(difference(pixel(framed, 221, 128), ball), 6) << "the ball is not selected";
+
+    EXPECT_EQ(std::string("/World/Ball"), _renderer.pick(221, 128, kSize, kSize));
+    _renderer.setSelectedPrims({});
+    const QImage cleared = render();
+    EXPECT_EQ(0, passes);
+    EXPECT_LE(difference(pixel(cleared, 128, 128), box), 6) << "clearing the selection left the box tinted: " << box << " -> " << pixel(cleared, 128, 128);
+
+    SceneViewportRenderer::FreeCamera camera = _renderer.getFreeCamera();
+    camera.azimuth += 30.;
+    _renderer.setFreeCamera(camera);
+    _renderer.setSelectedPrims({ "/World/Box" });
+    ASSERT_TRUE(_renderer.prepareBackgroundFrame(kSize, kSize));
+    EXPECT_FALSE(_renderer.isBackgroundFrameTintOnly()) << "the AOVs are of another view";
+    _renderer.renderBackgroundFrame(_fbo->handle());
+    RenderDelegates::setRenderFaultHook(nullptr);
+    EXPECT_GT(passes, 0);
+}
+
+// A sync blocked on the viewer lock ends the background frame holding it at its next pass, rather
+// than waiting out every pass of it.
+TEST_F(SceneViewportStorm, ASyncDuringABackgroundFrameEndsTheFrameAtItsNextPass)
+{
+    if (_skip) {
+        return;
+    }
+    (void)render();
+    const U64 edits = _renderer.getStageEditCount();
+    _renderer.setDrawMode(SceneViewportRenderer::eDrawModeShaded);
+    ASSERT_TRUE(_renderer.prepareBackgroundFrame(kSize, kSize));
+
+    int passes = 0;
+    bool synced = false;
+    std::string error;
+    std::thread writer;
+    RenderDelegates::setRenderFaultHook([&]() {
+        if (passes++ > 0) {
+            return;
+        }
+        writer = std::thread([&]() { synced = _renderer.syncScene(sceneWithOp(), &error); });
+        // Long enough for the writer to be waiting on the lock this frame holds.
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    });
+    _renderer.renderBackgroundFrame(_fbo->handle());
+    RenderDelegates::setRenderFaultHook(nullptr);
+    ASSERT_TRUE(writer.joinable());
+    writer.join();
+
+    EXPECT_EQ(1, passes);
+    EXPECT_TRUE(synced) << error;
+    EXPECT_GT(_renderer.getStageEditCount(), edits);
+    EXPECT_TRUE(_renderer.needsBackgroundFrame()) << "the edit came after what the frame took in";
+}
+
+namespace {
+
+// Collects what a queue posts, from any thread, for the test to run on its own.
+class PostedRuns {
+public:
+    SceneDrawStateQueue::Post post()
+    {
+        return [this](const std::function<void()>& run) {
+            std::lock_guard<std::mutex> lock(_mutex);
+            _runs.push_back(run);
+            _changed.notify_all();
+        };
+    }
+
+    // Waits up to ten seconds for count runs to be posted.
+    bool waitFor(std::size_t count)
+    {
+        std::unique_lock<std::mutex> lock(_mutex);
+
+        return _changed.wait_for(lock, std::chrono::seconds(10), [this, count]() { return _runs.size() >= count; });
+    }
+
+    void runAll()
+    {
+        std::vector<std::function<void()>> runs;
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            runs.swap(_runs);
+        }
+        for (const std::function<void()>& run : runs) {
+            run();
+        }
+    }
+
+    std::size_t count()
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        return _runs.size();
+    }
+
+private:
+    std::mutex _mutex;
+    std::condition_variable _changed;
+    std::vector<std::function<void()>> _runs;
+};
+
+bool
+contains(const std::vector<std::string>& paths,
+         const std::string& path)
+{
+    return std::find(paths.begin(), paths.end(), path) != paths.end();
+}
+
+const SceneDrawLoadRequest*
+findLoad(const SceneDrawChange& change,
+         const std::string& path)
+{
+    for (const SceneDrawLoadRequest& load : change.delta.loads) {
+        if (load.path == path) {
+            return &load;
+        }
+    }
+
+    return nullptr;
+}
+
+// /World/Block_<b>/B_<n> on disk, each building a payload of its own file.
+class DrawCity {
+public:
+    DrawCity(int blocks,
+             int buildingsPerBlock)
+    {
+        static std::atomic<int> counter(0);
+
+        _dir = std::filesystem::temp_directory_path() / ("scene_viewport_city_" + std::to_string(::getpid()) + "_" + std::to_string(counter++));
+        std::filesystem::create_directories(_dir / "buildings");
+        // Compared with what SdfLayer::GetRealPath() gives.
+        _dir = std::filesystem::canonical(_dir);
+        std::ofstream root((_dir / "root.usda").string());
+        root << "#usda 1.0\n(\n    defaultPrim = \"World\"\n    upAxis = \"Y\"\n)\ndef Xform \"World\"\n{\n";
+        for (int b = 0; b < blocks; ++b) {
+            root << "    def Xform \"Block_" << b << "\"\n    {\n";
+            for (int n = 0; n < buildingsPerBlock; ++n) {
+                const std::string name = "b" + std::to_string(b) + "_" + std::to_string(n) + ".usda";
+                std::ofstream building((_dir / "buildings" / name).string());
+                building << "#usda 1.0\n(\n    defaultPrim = \"Building\"\n)\ndef Xform \"Building\"\n{\n    def Cube \"Geo\"\n    {\n    }\n}\n";
+                root << "        def Xform \"B_" << n << "\" (\n            prepend payload = @./buildings/" << name << "@\n        )\n        {\n"
+                     << "            double3 xformOp:translate = (" << (3 * n) << ", 0, " << (-3 * b) << ")\n"
+                     << "            uniform token[] xformOpOrder = [\"xformOp:translate\"]\n        }\n";
+            }
+            root << "    }\n";
+        }
+        root << "}\n";
+    }
+
+    ~DrawCity()
+    {
+        std::error_code ignored;
+        std::filesystem::remove_all(_dir, ignored);
+    }
+
+    ScenePayload payload() const
+    {
+        PXR_NS::SdfLayerRefPtr layer = SceneOps::createNodeLayer("SceneViewportDrawCity");
+        layer->InsertSubLayerPath((_dir / "root.usda").string());
+
+        return SceneOps::appendLayer(ScenePayload(), layer, 0xc17e5ULL);
+    }
+
+    // The buildings' files open anywhere in the process, by file name.
+    std::vector<std::string> loadedBuildings() const
+    {
+        const std::string prefix = (_dir / "buildings").string();
+        std::vector<std::string> names;
+
+        for (const PXR_NS::SdfLayerHandle& layer : PXR_NS::SdfLayer::GetLoadedLayers()) {
+            const std::string path = layer->GetRealPath();
+            if (path.compare(0, prefix.size(), prefix) == 0) {
+                names.push_back(std::filesystem::path(path).filename().string());
+            }
+        }
+        std::sort(names.begin(), names.end());
+
+        return names;
+    }
+
+private:
+    std::filesystem::path _dir;
+};
+
+} // namespace
+
+TEST(SceneDrawStateQueue, AnEditOfFewRowsIsDeliveredAtOnce)
+{
+    PostedRuns posted;
+    std::vector<SceneDrawChange> delivered;
+    SceneDrawStateQueue queue(posted.post(), [&delivered](const SceneDrawChange& change) { delivered.push_back(change); });
+
+    queue.edit([](SceneDrawStates* states) { return states->setState("/World/A", eSceneDrawStateBBox); });
+
+    ASSERT_EQ(delivered.size(), std::size_t(1));
+    EXPECT_TRUE(contains(delivered[0].delta.boxed, "/World/A"));
+    EXPECT_EQ(posted.count(), std::size_t(0));
+    EXPECT_EQ(queue.getOutstandingCount(), 0);
+    bool read = false;
+    EXPECT_TRUE(queue.tryRead([&read](const SceneDrawStates& states) { read = (states.resolve("/World/A").state == eSceneDrawStateBBox); }));
+    EXPECT_TRUE(read);
+}
+
+TEST(SceneDrawStateQueue, AnEditOfManyRowsRunsOffTheCallerAndArrivesInOrder)
+{
+    PostedRuns posted;
+    std::vector<SceneDrawChange> delivered;
+    SceneDrawStateQueue queue(posted.post(), [&delivered](const SceneDrawChange& change) { delivered.push_back(change); }, 2);
+    for (const char* path : { "/World/A", "/World/B", "/World/C" }) {
+        const std::string row(path);
+        queue.edit([row](SceneDrawStates* states) { return states->setState(row, eSceneDrawStateBBox); });
+    }
+    ASSERT_EQ(delivered.size(), std::size_t(3));
+
+    std::promise<void> release;
+    std::shared_future<void> released = release.get_future().share();
+    std::promise<void> started;
+    queue.edit([released, &started](SceneDrawStates* states) {
+        started.set_value();
+        released.wait();
+
+        return states->clearAllStates();
+    });
+    // Waiting for a later edit keeps it after the one under way.
+    queue.edit([](SceneDrawStates* states) { return states->setState("/World/D", eSceneDrawStateHidden); });
+    started.get_future().wait();
+
+    EXPECT_EQ(delivered.size(), std::size_t(3));
+    EXPECT_EQ(queue.getOutstandingCount(), 2);
+    EXPECT_FALSE(queue.tryRead([](const SceneDrawStates&) { }));
+    release.set_value();
+    ASSERT_TRUE(posted.waitFor(2));
+    EXPECT_EQ(delivered.size(), std::size_t(3)) << "a change arrives only through what the queue posts";
+    posted.runAll();
+
+    ASSERT_EQ(delivered.size(), std::size_t(5));
+    EXPECT_TRUE(contains(delivered[3].delta.cleared, "/World/A"));
+    EXPECT_TRUE(contains(delivered[4].delta.hidden, "/World/D"));
+    EXPECT_EQ(queue.getOutstandingCount(), 0);
+    bool hidden = false;
+    EXPECT_TRUE(queue.tryRead([&hidden](const SceneDrawStates& states) {
+        hidden = (states.storedCount() == 1) && (states.resolve("/World/D").state == eSceneDrawStateHidden);
+    }));
+    EXPECT_TRUE(hidden);
+}
+
+TEST(SceneDrawStateQueue, AStateChangeCancelsTheQueuedLoadsNoRowAsksForAnyMore)
+{
+    PostedRuns posted;
+    std::vector<SceneDrawChange> delivered;
+    SceneDrawStateQueue queue(posted.post(), [&delivered](const SceneDrawChange& change) { delivered.push_back(change); });
+
+    queue.edit([](SceneDrawStates* states) { return states->setState("/World/A", eSceneDrawStateLoadAll); });
+    queue.edit([](SceneDrawStates* states) { return states->setState("/World/B", eSceneDrawStateLoadAll); });
+    ASSERT_EQ(delivered.size(), std::size_t(2));
+    ASSERT_NE(findLoad(delivered[0], "/World/A"), nullptr);
+
+    queue.edit([](SceneDrawStates* states) { return states->setState("/World/A", eSceneDrawStateBBox); });
+    ASSERT_EQ(delivered.size(), std::size_t(3));
+    EXPECT_EQ(delivered[2].cancelledLoads, std::vector<std::string>({ "/World/A" }));
+
+    // A box below a queued load with descendants asks for that load again, leaving the box out.
+    queue.edit([](SceneDrawStates* states) { return states->setState("/World/B/Shed", eSceneDrawStateBBox); });
+    ASSERT_EQ(delivered.size(), std::size_t(4));
+    EXPECT_TRUE(delivered[3].cancelledLoads.empty());
+    const SceneDrawLoadRequest* again = findLoad(delivered[3], "/World/B");
+    ASSERT_NE(again, nullptr);
+    EXPECT_TRUE(again->withDescendants);
+    EXPECT_EQ(again->excluded, std::vector<std::string>({ "/World/B/Shed" }));
+
+    // Once the stage has taken them, there is nothing left to cancel.
+    queue.forgetIssuedLoads();
+    queue.edit([](SceneDrawStates* states) { return states->setState("/World/B", eSceneDrawStateHidden); });
+    ASSERT_EQ(delivered.size(), std::size_t(5));
+    EXPECT_TRUE(delivered[4].cancelledLoads.empty());
+}
+
+TEST(SceneDrawStateQueue, AnEditSaidToTouchManyRowsRunsOffTheCaller)
+{
+    PostedRuns posted;
+    std::vector<SceneDrawChange> delivered;
+    SceneDrawStateQueue queue(posted.post(), [&delivered](const SceneDrawChange& change) { delivered.push_back(change); }, 2);
+
+    queue.edit([](SceneDrawStates* states) { return states->setState("/World/A", eSceneDrawStateBBox); }, std::chrono::steady_clock::time_point(), 3);
+
+    ASSERT_TRUE(posted.waitFor(1));
+    EXPECT_TRUE(delivered.empty());
+    posted.runAll();
+    ASSERT_EQ(delivered.size(), std::size_t(1));
+    EXPECT_TRUE(contains(delivered[0].delta.boxed, "/World/A"));
+}
+
+TEST(SceneDrawStateQueue, OnlyTheQueuedLoadsUnderADeltasRootsAreChecked)
+{
+    PostedRuns posted;
+    std::vector<SceneDrawChange> delivered;
+    SceneDrawStateQueue queue(posted.post(), [&delivered](const SceneDrawChange& change) { delivered.push_back(change); });
+    queue.edit([](SceneDrawStates* states) { return states->setState("/World/A", eSceneDrawStateLoadAll); });
+    queue.edit([](SceneDrawStates* states) { return states->setState("/World/C", eSceneDrawStateLoadAll); });
+
+    queue.edit([](SceneDrawStates* states) {
+        SceneDrawDelta delta = states->setState("/World/A", eSceneDrawStateBBox);
+        delta.roots = { "/World/C" };
+
+        return delta;
+    });
+    ASSERT_EQ(delivered.size(), std::size_t(3));
+    EXPECT_TRUE(delivered[2].cancelledLoads.empty());
+
+    queue.edit([](SceneDrawStates* states) { return states->setState("/World/C", eSceneDrawStateBBox); });
+    ASSERT_EQ(delivered.size(), std::size_t(4));
+    EXPECT_EQ(delivered[3].cancelledLoads, std::vector<std::string>({ "/World/C" }));
+}
+
+TEST_F(SceneViewportStorm, ADrawStateChangeReachesTheFilterAndLoadsOnlyWhatItAsksFor)
+{
+    if (_skip) {
+        return;
+    }
+    DrawCity city(3, 2);
+    std::string error;
+    ASSERT_TRUE(_renderer.setScene(city.payload(), 1., 24., &error)) << error;
+    (void)render();
+    ASSERT_TRUE(city.loadedBuildings().empty());
+    const U64 edits = _renderer.getStageEditCount();
+    const U64 loadEdits = _renderer.getStageLoadEditCount();
+
+    PostedRuns posted;
+    SceneDrawStateQueue queue(posted.post(), [this](const SceneDrawChange& change) { _renderer.postDrawChange(change, 0); });
+    queue.edit([](SceneDrawStates* states) { return states->setState("/World", eSceneDrawStateLoadAll); });
+    queue.edit([](SceneDrawStates* states) { return states->setState("/World/Block_1", eSceneDrawStateBBox); });
+    queue.edit([](SceneDrawStates* states) { return states->setState("/World/Block_2/B_0", eSceneDrawStateHidden); });
+    // Children on the first block's buildings, then BBox: the first load is cancelled before it runs.
+    queue.edit([](SceneDrawStates* states) { return states->setState("/World/Block_0/B_0", eSceneDrawStateChildren); });
+    queue.edit([](SceneDrawStates* states) { return states->setState("/World/Block_0/B_0", eSceneDrawStateBBox); });
+    EXPECT_EQ(posted.count(), std::size_t(0));
+    EXPECT_TRUE(_renderer.hasPendingStageLoads());
+    EXPECT_TRUE(city.loadedBuildings().empty()) << "asking for a load opens nothing";
+
+    (void)render();
+    const SceneViewportRenderer::DrawFilterStats stats = _renderer.getDrawFilterStats();
+    EXPECT_TRUE(stats.filterBound);
+    EXPECT_GT(stats.posted, 0ULL);
+    EXPECT_EQ(stats.absorbed, stats.posted) << "the frame took in every change";
+    EXPECT_GT(stats.ruleCount, std::size_t(0));
+
+    while (_renderer.hasPendingStageLoads()) {
+        ASSERT_TRUE(_renderer.serviceStageLoads());
+    }
+    EXPECT_EQ(city.loadedBuildings(), std::vector<std::string>({ "b0_1.usda", "b2_1.usda" }));
+    EXPECT_EQ(_renderer.getStageEditCount(), edits) << "a draw state never edits the stage";
+    EXPECT_GT(_renderer.getStageLoadEditCount(), loadEdits);
 }
 
 namespace {

@@ -174,6 +174,10 @@ PXR_NS::VtDictionary outputSettings(const AovRequest& request);
 bool isForAnotherDelegate(const std::string& aovName,
                           const std::string& rendererId) WARN_UNUSED_RETURN;
 
+// The AOV name after rendererId's own namespace ("ao" of "cycles:ao" for Cycles), else aovName.
+std::string withoutOwnNamespace(const std::string& aovName,
+                                const std::string& rendererId) WARN_UNUSED_RETURN;
+
 /**
  * @brief The name rendererId's delegate knows the AOV aovName by: the name after rendererId's own
  * namespace when the delegate lists that name and not aovName (a checklist tick of Cycles' normal

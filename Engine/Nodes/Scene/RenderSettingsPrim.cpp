@@ -368,8 +368,8 @@ isForAnotherDelegate(const std::string& aovName,
 }
 
 std::string
-delegateAovName(const std::string& aovName,
-                const std::string& rendererId)
+withoutOwnNamespace(const std::string& aovName,
+                    const std::string& rendererId)
 {
     const std::string::size_type colon = aovName.find(':');
 
@@ -380,8 +380,20 @@ delegateAovName(const std::string& aovName,
     if (std::find(own.begin(), own.end(), aovName.substr(0, colon)) == own.end()) {
         return aovName;
     }
+
+    return aovName.substr(colon + 1);
+}
+
+std::string
+delegateAovName(const std::string& aovName,
+                const std::string& rendererId)
+{
+    const std::string bare = withoutOwnNamespace(aovName, rendererId);
+
+    if (bare == aovName) {
+        return aovName;
+    }
     const std::vector<std::string> available = DelegateSupport::availableAovs(rendererId);
-    const std::string bare = aovName.substr(colon + 1);
     if ((std::find(available.begin(), available.end(), aovName) == available.end()) && (std::find(available.begin(), available.end(), bare) != available.end())) {
         return bare;
     }

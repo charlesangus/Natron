@@ -503,6 +503,14 @@ TEST_F(USDRenderCyclesTest, AvailableAovs)
     const std::vector<std::string>& published = CyclesAovs::support().publishedAovs;
     if (!published.empty()) {
         EXPECT_EQ(published, aovs);
+        for (const char* name : { "cycles:diffuse_direct", "cycles:ao", "cycles:mist" }) {
+            EXPECT_NE(aovs.end(), std::find(aovs.begin(), aovs.end(), name)) << name;
+            EXPECT_EQ(std::string(name), RenderSettingsPrim::delegateAovName(name, kRenderDelegateCyclesId));
+        }
+        EXPECT_EQ(aovs.end(), std::find(aovs.begin(), aovs.end(), "elementId"));
+        EXPECT_EQ(aovs.end(), std::find(aovs.begin(), aovs.end(), "cycles:elementId"));
+        EXPECT_EQ(std::string("moonray:normal"), RenderSettingsPrim::delegateAovName("moonray:normal", kRenderDelegateCyclesId));
+        EXPECT_EQ(std::string("primvars:st"), RenderSettingsPrim::delegateAovName("primvars:st", kRenderDelegateCyclesId));
 
         return;
     }

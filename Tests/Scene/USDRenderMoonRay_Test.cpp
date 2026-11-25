@@ -1244,8 +1244,9 @@ TEST_F(USDRenderMoonRayTest, RenderVarSettingsReachTheDelegateAndItsStatsTheLaye
     HydraRender::setRenderStatsForTests(kMoonRayRendererId, stats);
 
     const std::string path = filePath.toStdString();
-    NodePtr node = createGraph(path.c_str());
-    ASSERT_TRUE(bool(node));
+    NodePtr reader;
+    NodePtr node = createGraph(path.c_str(), &reader);
+    ASSERT_TRUE(node && reader);
     std::vector<RenderedPlane> planes;
     ASSERT_TRUE(renderAll(node, &planes, true));
 
@@ -1271,6 +1272,71 @@ TEST_F(USDRenderMoonRayTest, RenderVarSettingsReachTheDelegateAndItsStatsTheLaye
     ASSERT_TRUE(value.has_value());
     EXPECT_EQ(std::string("{\"/World/Left\":\"3f800000\"}"), *value);
     EXPECT_EQ(std::optional<std::string>("MurmurHash3_32"), metadata.getString(kUSDRenderMetadataAovPrefix "P/hash"));
+
+    const QString otherPath = tmp.path() + QString::fromUtf8("/position-var-other-filter.usda");
+    {
+        QByteArray other = scene;
+        other.replace("math_filter = 0", "math_filter = 1");
+        ASSERT_NE(other, scene);
+        QFile otherFile(otherPath);
+        ASSERT_TRUE(otherFile.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        ASSERT_EQ((qint64)other.size(), otherFile.write(other));
+    }
+    const std::string otherFile = otherPath.toStdString();
+
+    // Back on a hash whose frame is cached, the frame keeps its render's metadata.
+    KnobFile* file = knob<KnobFile>(reader, kUSDReadParamFile);
+    ASSERT_TRUE(file != nullptr);
+    const U64 renderedHash = node->getHashValue();
+    file->setValue(otherFile);
+    EXPECT_NE(renderedHash, node->getHashValue());
+    EXPECT_FALSE(effect->getOutputMetadata(1., ViewIdx(0)).getString(kUSDRenderMetadataAovPrefix "P/manifest").has_value());
+    file->setValue(path);
+    ASSERT_EQ(renderedHash, node->getHashValue());
+    EXPECT_EQ(std::optional<std::string>("{\"/World/Left\":\"3f800000\"}"), effect->getOutputMetadata(1., ViewIdx(0)).getString(kUSDRenderMetadataAovPrefix "P/manifest"));
+
+    // hdMoonray applies the setting: a math_filter other than average combines each pixel's two
+    // samples into other P values.
+    auto renderP = [](const NodePtr& render, std::vector<float>* pixels) {
+        std::list<ImageLayerDesc> present;
+        render->getEffectInstance()->getPresentLayers(1., ViewIdx(0), -1, &present);
+        std::list<ImageLayerDesc> layers;
+        for (const ImageLayerDesc& layer : present) {
+            if (layer.getLayerID() == "P") {
+                layers.push_back(layer);
+            }
+        }
+        if (layers.size() != 1) {
+            ADD_FAILURE() << "the render has no P layer";
+
+            return false;
+        }
+        std::vector<RenderedPlane> planes;
+        std::string error;
+        if (!renderNodePlanesDirect(render, 1., ViewIdx(0), 0, RectI(0, 0, kSize, kSize), layers, &planes, &error) || (planes.size() != 1)) {
+            ADD_FAILURE() << error;
+
+            return false;
+        }
+        *pixels = planes[0].pixels;
+
+        return true;
+    };
+    std::vector<float> average;
+    ASSERT_TRUE(renderP(node, &average));
+    NodePtr otherNode = createGraph(otherFile.c_str());
+    ASSERT_TRUE(bool(otherNode));
+    std::vector<float> filtered;
+    ASSERT_TRUE(renderP(otherNode, &filtered));
+    ASSERT_EQ(average.size(), filtered.size());
+    float largest = 0.f;
+    for (std::size_t i = 0; i < average.size(); ++i) {
+        if (std::isfinite(average[i]) && std::isfinite(filtered[i])) {
+            largest = std::max(largest, std::fabs(average[i] - filtered[i]));
+        }
+    }
+    // Over the half-float rounding of a P a few units from the origin.
+    EXPECT_GT(largest, 0.01f) << "the P layer is the same whatever math_filter the RenderVar sets";
 }
 
 // Every setting MoonRay declares, but those Natron sets itself, is reached by a knob of the

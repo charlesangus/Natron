@@ -815,7 +815,7 @@ namespace {
 // Fixed checklists for Cycles and MoonRay, each a stand-in renderer when its delegate is not installed.
 class ChecklistRenderers {
 public:
-    ChecklistRenderers()
+    explicit ChecklistRenderers(const std::vector<std::string>& cyclesAovs = { "color", "depth", "normal" })
     {
         const std::vector<std::string> ids = RenderSettingsKnobs::rendererIds();
         RenderSettingsKnobs::Descriptor flag;
@@ -828,7 +828,7 @@ public:
                 _standIns.push_back(id);
             }
         }
-        DelegateSupport::setAvailableAovsForTests(kRenderDelegateCyclesId, { "color", "depth", "normal" });
+        DelegateSupport::setAvailableAovsForTests(kRenderDelegateCyclesId, cyclesAovs);
         DelegateSupport::setAvailableAovsForTests(kMoonRayRendererId, { "beauty", "albedo" });
     }
 
@@ -1073,6 +1073,41 @@ TEST_F(USDRenderSettingsTest, TheAovChecklistAuthorsRenderVars)
     }
     EXPECT_TRUE(haveNormal);
     EXPECT_TRUE(haveSt);
+}
+
+// A list in the renderer's own namespace, as hdCycles publishes it, names each tick after the AOV
+// without that namespace; a name in another namespace keeps it.
+TEST_F(USDRenderSettingsTest, ChecklistTicksAreNamedWithoutTheRenderersNamespace)
+{
+    const ChecklistRenderers renderers({ "cycles:ao", "cycles:diffuse_direct", "cycles:normal", "cycles:lightgroup:key", "primvars:st" });
+    NodePtr cam = camera("/Cam");
+    NodePtr node = settings(cam);
+    ASSERT_TRUE(bool(node));
+    const std::string prefix = RenderSettingsKnobs::scriptPrefix(kRenderDelegateCyclesId);
+    const std::vector<std::pair<std::string, std::string>> expected = {
+        { "AovAo", "AO" },
+        { "AovDiffuseDirect", "Diffuse Direct" },
+        { "AovNormal", "Normal" },
+        { "AovLightgroupKey", "Lightgroup Key" },
+        { "AovPrimvarsSt", "Primvars St" },
+    };
+    for (const std::pair<std::string, std::string>& tick : expected) {
+        KnobBool* k = knob<KnobBool>(node, (prefix + tick.first).c_str());
+        EXPECT_TRUE(k != nullptr) << prefix + tick.first;
+        if (k) {
+            EXPECT_EQ(tick.second, k->getLabel()) << prefix + tick.first;
+        }
+    }
+    EXPECT_TRUE(node->getKnobByName(prefix + "AovCyclesAo") == nullptr);
+
+    KnobBool* ao = knob<KnobBool>(node, (prefix + "AovAo").c_str());
+    ASSERT_TRUE(ao != nullptr);
+    ao->setValue(true);
+    SceneQueryPool::Lease lease;
+    const std::vector<AuthoredVar> vars = productVars(stageOf(node, &lease));
+    lease = SceneQueryPool::Lease();
+    ASSERT_EQ(1u, vars.size());
+    EXPECT_EQ(std::string("cycles:ao"), vars[0].sourceName);
 }
 
 // Scripts author custom vars through the Custom AOVs table; a malformed row raises instead of

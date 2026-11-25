@@ -1,6 +1,6 @@
-"""Delegate AOV selection (M256 - Delegate AOV Selection), the Phase 256.3 gate: three Cycles passes
-ticked plus one custom primvar var give four extra layers in the viewer and in one EXR, and a
-MoonRay tick in the same node adds no warning to the Cycles render.
+"""Delegate AOV selection: three Cycles passes ticked plus one custom primvar var give four extra
+layers in the viewer and in one EXR, and a MoonRay tick in the same node adds no warning to the
+Cycles render. Each tick is found by its script name, cyclesAovAo for Cycles' cycles:ao.
 
 Graph: USDSphere into USDProjectUV (Perspective, through USDCamera1: the st primvar it authors is a
 ramp across the sphere), merged with USDCamera1 and a USDLight, into USDRenderSettings (Default
@@ -83,9 +83,6 @@ try:
             if word in str(node.getInputLabel(i)).lower():
                 return i
         return None
-
-    def normal(text):
-        return re.sub(r"[^a-z0-9]", "", text.lower())
 
     def choose_containing(p, word):
         options = [str(o) for o in p.getOptions()]
@@ -249,10 +246,10 @@ try:
         return found
 
     def find_tick(prefix, aov):
-        want = normal(aov)
+        """The tick of an AOV, whose script name is the prefix, Aov and the AOV's name without the renderer's namespace."""
+        want = prefix + "Aov" + "".join(w[:1].upper() + w[1:] for w in re.split(r"[^A-Za-z0-9]+", aov) if w)
         for name, p in ticks(prefix):
-            # A pass the delegate names in its own namespace is Cycles...: cyclesAovCyclesAo.
-            if normal(name[len(prefix) + 3:]).replace(prefix, "", 1) == want:
+            if name == want:
                 return name, p
         return None, None
 

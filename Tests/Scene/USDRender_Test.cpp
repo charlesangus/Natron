@@ -66,11 +66,13 @@
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/Scene/AovLayers.h"
 #include "Engine/Nodes/Scene/CyclesAovs.h"
+#include "Engine/Nodes/Scene/DelegateSupport.h"
 #include "Engine/Nodes/Scene/HeadlessGLContext.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/MoonRayAovs.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/RenderSettingsKnobs.h"
+#include "Engine/Nodes/Scene/RenderSettingsPrim.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
@@ -1362,6 +1364,125 @@ TEST_F(USDRenderAovTest, AFilesRenderVarsRenderWithoutASettingsNode)
     EXPECT_TRUE(findLayer(present, "instance"));
     int type = -1;
     EXPECT_EQ(std::string(), persistentMessage(node, &type));
+}
+
+namespace {
+// Cycles' own normal pass, and the colour under a layer of another name with a setting for the delegate.
+const char* const kOwnNormalAndNamedColourVars = R"(
+def Scope "Render"
+{
+    def RenderSettings "rendersettings"
+    {
+        rel products = </Render/product>
+    }
+
+    def RenderProduct "product"
+    {
+        rel orderedVars = [</Render/product/ownNormal>, </Render/product/colour>]
+
+        def RenderVar "ownNormal"
+        {
+            uniform string sourceName = "cycles:normal"
+        }
+
+        def RenderVar "colour"
+        {
+            uniform string sourceName = "color"
+            string natron:layer = "beauty"
+            int driver:parameters:aov:natronTestSetting = 1
+        }
+    }
+}
+)";
+} // anon namespace
+
+// A texCoord2f var keeps its two channels when Cycles gives three: a render after the first moves
+// neither the layers nor the metadata.
+TEST_F(USDRenderAovTest, ARenderedTexCoordLayerSettles)
+{
+    if (!CyclesTestUtils::cyclesOrSkip()) {
+        return;
+    }
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const std::string withVars = writeScene(tmp, "vars.usda", std::string(kAovWorld) + kDiffuseAndStVars);
+    ASSERT_FALSE(withVars.empty());
+    NodePtr node = createRender(withVars.c_str());
+    ASSERT_TRUE(bool(node));
+    ASSERT_TRUE(selectRenderer(rendererKnob(node), kRenderDelegateCyclesId));
+    const std::list<ImageLayerDesc> declared = presentLayers(node);
+    const ImageLayerDesc* st = findLayer(declared, "st");
+    ASSERT_TRUE(st != nullptr);
+    EXPECT_EQ(std::vector<std::string>({ "U", "V" }), st->getChannels());
+    const std::list<ImageLayerDesc> layers(1, *st);
+    std::vector<RenderedPlane> planes;
+    std::string error;
+    ASSERT_TRUE(renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, kWidth, kHeight), layers, &planes, &error)) << error;
+    QCoreApplication::processEvents();
+    const U64 revision = node->getMetadataRevision();
+    planes.clear();
+    ASSERT_TRUE(renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, kWidth, kHeight), layers, &planes, &error)) << error;
+    QCoreApplication::processEvents();
+    EXPECT_EQ(revision, node->getMetadataRevision()) << "the second render of st queued a metadata refresh";
+    const std::list<ImageLayerDesc> rendered = presentLayers(node);
+    st = findLayer(rendered, "st");
+    ASSERT_TRUE(st != nullptr);
+    EXPECT_EQ(std::vector<std::string>({ "U", "V" }), st->getChannels());
+}
+
+// On the list hdCycles publishes, its cycles:normal pass is the normal every Cycles render has,
+// not a second layer of that name; a var of the colour keeps the rgba layer and says its own
+// layer is ignored.
+TEST_F(USDRenderAovTest, ACyclesPassOfAnAovEveryRenderHasRendersToItsLayer)
+{
+    if (!CyclesTestUtils::cyclesOrSkip()) {
+        return;
+    }
+    const std::vector<std::string> published = DelegateSupport::availableAovs(kRenderDelegateCyclesId);
+    if (std::find(published.begin(), published.end(), "cycles:normal") == published.end()) {
+        std::printf("[  SKIPPED ] hdCycles publishes no cycles:normal pass\n");
+
+        return;
+    }
+    EXPECT_EQ(std::string("cycles:normal"), RenderSettingsPrim::delegateAovName("cycles:normal", kRenderDelegateCyclesId));
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const std::string withVars = writeScene(tmp, "vars.usda", std::string(kAovWorld) + kOwnNormalAndNamedColourVars);
+    ASSERT_FALSE(withVars.empty());
+    NodePtr node = createRender(withVars.c_str());
+    ASSERT_TRUE(bool(node));
+    ASSERT_TRUE(selectRenderer(rendererKnob(node), kRenderDelegateCyclesId));
+    std::list<ImageLayerDesc> layers;
+    layers.push_back(ImageLayerDesc::getRGBAComponents());
+    layers.push_back(AovLayers::normalLayer());
+    std::vector<RenderedPlane> planes;
+    std::string error;
+    ASSERT_TRUE(renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, kWidth, kHeight), layers, &planes, &error, false)) << error;
+    ASSERT_EQ(2u, planes.size());
+    const std::size_t centre = (std::size_t)(kHeight / 2) * kWidth + (std::size_t)(kWidth / 2);
+    ASSERT_EQ((std::size_t)kWidth * kHeight * 3, planes[1].pixels.size());
+    EXPECT_GT(std::fabs(planes[1].pixels[centre * 3 + 2]), 0.5f);
+
+    int type = -1;
+    const std::string message = persistentMessage(node, &type);
+    EXPECT_EQ(std::string::npos, message.find("/Render/product/ownNormal")) << message;
+    EXPECT_NE(std::string::npos, message.find("/Render/product/colour")) << message;
+    EXPECT_NE(std::string::npos, message.find("beauty")) << message;
+    int normals = 0;
+    for (const ImageLayerDesc& layer : presentLayers(node)) {
+        normals += (layer.getLayerID() == "normal") ? 1 : 0;
+        EXPECT_NE(std::string("beauty"), layer.getLayerID());
+        EXPECT_NE(std::string("cycles_normal"), layer.getLayerID());
+    }
+    EXPECT_EQ(1, normals);
+
+    // The colour var's setting reaches the delegate's colour AOV.
+    PXR_NS::VtDictionary settings;
+    const void* owner = dynamic_cast<USDRender*>(node->getEffectInstance().get());
+    ASSERT_TRUE(HydraRender::engineAovSettings(owner, "color", &settings));
+    PXR_NS::VtDictionary::const_iterator setting = settings.find("driver:parameters:aov:natronTestSetting");
+    ASSERT_TRUE(setting != settings.end());
+    EXPECT_EQ(PXR_NS::VtValue(1), setting->second);
 }
 
 // Free GPU Memory drops USDRender's Storm engines and the device buffers the GPU runtime's pool

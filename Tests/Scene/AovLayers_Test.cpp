@@ -105,6 +105,19 @@ TEST(AovLayersTest, DataTypeGivesTheChannels)
     EXPECT_FALSE(AovLayers::layoutFromDataType("matrix4d", &layout));
 }
 
+// The 64 of the 64-bit integer types is their width: each is one channel.
+TEST(AovLayersTest, SixtyFourBitIntegersAreScalars)
+{
+    for (const char* dataType : { "int64", "uint64" }) {
+        AovLayers::Layout layout;
+        EXPECT_TRUE(AovLayers::layoutFromDataType(dataType, &layout)) << dataType;
+        EXPECT_EQ(AovLayers::eKindScalar, layout.kind) << dataType;
+        EXPECT_EQ(1, layout.channels) << dataType;
+    }
+    EXPECT_EQ(channels("Y"), layerOf("primvars:objectIndex", "int64").getChannels());
+    EXPECT_EQ(channels("Y"), layerOf("primvars:count", "uint64").getChannels());
+}
+
 TEST(AovLayersTest, FormatWinsOverDataTypeWithAWarning)
 {
     std::string warning;

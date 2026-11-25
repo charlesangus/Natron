@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <atomic>
+#include <cstddef>
 #include <list>
 #include <map>
 #include <memory>
@@ -215,9 +216,54 @@ private:
 
     typedef std::pair<double, int> FrameKey;
 
+    // The frames whose entries a playback back and forth over a few frames reuses.
+    static const std::size_t kRecentFrames = 8;
+
+    // The latest kRecentFrames entries by key, the most recently used first.
+    template <typename Key, typename Value>
+    class RecentFrames {
+    public:
+        const Value* find(const Key& key)
+        {
+            for (typename std::list<std::pair<Key, Value>>::iterator it = _entries.begin(); it != _entries.end(); ++it) {
+                if (it->first == key) {
+                    _entries.splice(_entries.begin(), _entries, it);
+
+                    return &_entries.front().second;
+                }
+            }
+
+            return nullptr;
+        }
+
+        // The entry of key, a default one when there is none, which drops the least recently used beyond kRecentFrames.
+        Value& get(const Key& key)
+        {
+            if (!find(key)) {
+                _entries.emplace_front(key, Value());
+                if (_entries.size() > kRecentFrames) {
+                    _entries.pop_back();
+                }
+            }
+
+            return _entries.front().second;
+        }
+
+        void clear()
+        {
+            _entries.clear();
+        }
+
+    private:
+        std::list<std::pair<Key, Value>> _entries;
+    };
+
+    // The node's hash with the frame: an image served from the cache under an earlier hash keeps that render's metadata.
+    typedef std::pair<U64, FrameKey> HashedFrameKey;
+
     /**
-     * The AOVs the active prim's RenderVars ask the active renderer for, of the frame, cached until
-     * the node's hash moves. Read from active when it is not null and the frame is not cached; null
+     * The AOVs the active prim's RenderVars ask the active renderer for, of the frame, cached for
+     * the kRecentFrames last frames until the node's hash moves. Read from active when it is not null and the frame is not cached; null
      * when the scene cannot be read.
      **/
     std::shared_ptr<const SpecAovs> specAovs(double time, ViewIdx view, const ActiveSettings* active) const;
@@ -225,7 +271,8 @@ private:
     void clearSpecAovs();
 
     // Keeps the layers and metadata to what the render gave, and returns the warning naming the RenderVars that render nothing.
-    std::string followRenderedAovs(double time,
+    std::string followRenderedAovs(U64 hash,
+                                   double time,
                                    ViewIdx view,
                                    const RenderSetup& setup,
                                    const HydraRender::Result& result);
@@ -253,11 +300,11 @@ private:
     KnobChoiceWPtr _renderer;
     std::atomic<bool> _settingsPrimMenuRefreshPending;
     mutable std::mutex _specMutex;
-    mutable std::map<FrameKey, std::shared_ptr<const SpecAovs>> _specAovs;
+    mutable RecentFrames<FrameKey, std::shared_ptr<const SpecAovs>> _specAovs;
     // The AOVs each renderer gave no buffer for in its last render, whose layers are left out.
     std::set<std::pair<std::string, std::string>> _refusedAovs;
-    // The layer metadata of the last render of each frame, from the delegate's render stats.
-    std::map<FrameKey, ImageMetadata> _aovMetadata;
+    // The layer metadata of the last render of each frame under each hash, from the delegate's render stats.
+    RecentFrames<HashedFrameKey, ImageMetadata> _aovMetadata;
 };
 
 NATRON_NAMESPACE_EXIT

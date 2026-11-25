@@ -89,17 +89,17 @@ const DelegateSupport::Support& support();
 const std::vector<std::string>& catalogue();
 
 /**
- * @brief Sets up a Cycles engine just made, before its first render. Cycles scales the camera and
- * the geometry by its stageMetersPerUnit setting (0.01 unless set), which would put depth in
- * metres; it is set to 1 so that depth is in scene units, as Storm's.
- **/
-/**
  * @brief The layout of a Cycles pass, "cycles:<pass>", or of a light group, "cycles:lightgroup:<group>",
  * which is the group's lighting in RGB. False for any other name.
  **/
 bool passLayout(const std::string& aovName,
                 AovLayers::Layout* layout) WARN_UNUSED_RETURN;
 
+/**
+ * @brief Sets up a Cycles engine just made, before its first render. Cycles scales the camera and
+ * the geometry by its stageMetersPerUnit setting (0.01 unless set), which would put depth in
+ * metres; it is set to 1 so that depth is in scene units, as Storm's.
+ **/
 void configureEngine(PXR_NS::UsdImagingGLEngine* engine);
 
 /**

@@ -66,7 +66,8 @@ takes this node's source, data type and layer.
   MoonRay AOVs, Storm AOVs, ...), with a switch per AOV. The list is the
   renderer's own when its delegate publishes one, else the AOVs Natron knows it
   renders. A switch's script name is the renderer's prefix, `Aov` and the AOV's
-  name (`cyclesAovNormal`, `moonrayAovP`).
+  name without the renderer's namespace (`cyclesAovAo` for `cycles:ao`,
+  `cyclesAovDiffuseDirect` for `cycles:diffuse_direct`, `moonrayAovP`).
 - A ticked AOV is authored in the renderer's namespace (`cycles:normal`,
   `moonray:P`), so other renderers leave it out: ticks for several renderers
   can sit on one node, and each render takes only its own.
@@ -81,7 +82,11 @@ takes this node's source, data type and layer.
 
 USDRender renders each RenderVar to a layer of its own. A RenderVar the
 renderer does not render gets a warning on the USDRender, and the other layers
-still render.
+still render. A RenderVar of an AOV every render has (`color`, `depth`,
+`primId`, and `normal` with the renderers other than Storm), named with or
+without the renderer's namespace (`cycles:normal`), fills that AOV's layer: its
+settings still go to the renderer, and a Layer it names is ignored with a
+warning.
 
 ## Renderer tabs
 

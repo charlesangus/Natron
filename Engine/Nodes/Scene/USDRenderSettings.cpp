@@ -225,7 +225,7 @@ USDRenderSettings::initializeKnobs()
         firstGroup = false;
         for (const std::string& aov : aovs) {
             const std::string sourceName = (aov.find(':') == std::string::npos) ? ns + ":" + aov : aov;
-            std::string camel = RenderSettingsKnobs::camelCaseFromKey(aov, true);
+            std::string camel = RenderSettingsKnobs::camelCaseFromKey(RenderSettingsPrim::withoutOwnNamespace(aov, id), true);
             if (!camel.empty()) {
                 camel[0] = (char)std::toupper((unsigned char)camel[0]);
             }

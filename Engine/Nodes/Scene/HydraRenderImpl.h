@@ -168,6 +168,9 @@ struct Request {
     // The AOVs to render besides color, depth, primId, instanceId and the normal. A change of them
     // makes the owner's engine again.
     std::vector<Aov> aovs;
+    // The settings RenderVars give the AOVs every render has, by the delegate's name of each. A
+    // change of them makes the owner's engine again.
+    std::vector<Aov> builtInAovs;
 };
 
 // The AOVs, width x height pixels each, the bottom row first as Natron's images.
@@ -186,7 +189,7 @@ struct Result {
     std::string errors;
     // The request's aovs the delegate rendered, in the request's order.
     std::vector<AovPlane> aovs;
-    // The request's aovs it gave no buffer for, which elementId always is.
+    // The request's aovs it gave no buffer for.
     std::vector<PXR_NS::TfToken> rejectedAovs;
     // The dictionary the delegate's render stats hold for an AOV under "aovMetadata:<aov>", by AOV.
     std::map<PXR_NS::TfToken, PXR_NS::VtDictionary> aovMetadata;

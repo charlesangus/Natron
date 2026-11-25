@@ -106,6 +106,13 @@ layoutFromDataType(const std::string& dataType,
     if (!base.empty() && ((base.back() == 'f') || (base.back() == 'h') || (base.back() == 'd')) && (base.size() > 1) && std::isdigit((unsigned char)base[base.size() - 2])) {
         base.pop_back();
     }
+    // The 64 of int64 and uint64 is their width, not a component count.
+    if ((base == "int64") || (base == "uint64")) {
+        layout->kind = eKindScalar;
+        layout->channels = 1;
+
+        return true;
+    }
     std::string::size_type digits = base.size();
     while ((digits > 0) && std::isdigit((unsigned char)base[digits - 1])) {
         --digits;
@@ -130,7 +137,7 @@ layoutFromDataType(const std::string& dataType,
             return false;
         }
         layout->kind = eKindUv;
-    } else if ((base == "float") || (base == "half") || (base == "double") || (base == "int") || (base == "uint") || (base == "int64") || (base == "uint64")) {
+    } else if ((base == "float") || (base == "half") || (base == "double") || (base == "int") || (base == "uint")) {
         if (count == 1) {
             layout->kind = eKindScalar;
         } else if (((base == "float") || (base == "half") || (base == "double")) && (count >= 3)) {

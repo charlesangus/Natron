@@ -567,6 +567,7 @@ struct EngineEntry {
     // The request's AOVs the engine was made with, and those of them it was not asked to render.
     std::vector<HydraRender::Aov> aovs;
     std::vector<TfToken> refusedAovs;
+    std::vector<HydraRender::Aov> builtInAovs;
     // What DelegateSupport finds the delegate cannot render of the stage, and whether that was
     // found since the stage or the delegate last changed.
     std::string supportWarning;
@@ -1017,8 +1018,9 @@ public:
                     std::string* error);
 
     // The whole frame's planes of entry's render, as pack() gives them, or converted on the CPU
-    // when the context cannot pack.
+    // when the context cannot pack. cancel, when set, stops it between the requested AOVs.
     bool frame(EngineEntry& entry,
+               const std::atomic<bool>* cancel,
                HydraRender::Result* result,
                std::string* error);
 
@@ -1051,6 +1053,7 @@ public:
 
 private:
     bool cpuFrame(EngineEntry& entry,
+                  const std::atomic<bool>* cancel,
                   HydraRender::Result* result,
                   std::string* error);
 
@@ -1385,11 +1388,14 @@ componentToFloat(HdFormat componentFormat,
     }
 }
 
-// The request's AOVs of entry's last render, and the metadata its delegate's stats hold for them.
-void
+// The request's AOVs of entry's last render, and the metadata its delegate's stats hold for them;
+// false when cancel is set before they are all read.
+bool
 readAovs(const EngineEntry& entry,
+         const std::atomic<bool>* cancel,
          HydraRender::Result* result)
 {
+    const int kRowsPerCancelCheck = 64;
     const std::size_t pixels = (std::size_t)entry.width * (std::size_t)entry.height;
 
     result->aovs.clear();
@@ -1413,17 +1419,23 @@ readAovs(const EngineEntry& entry,
         plane.name = aov.name;
         plane.channels = (int)components;
         plane.pixels.resize(pixels * components);
-        for (std::size_t i = 0; i < pixels; ++i) {
-            const unsigned char* at = mapped.pixel(i);
-            for (std::size_t c = 0; c < components; ++c) {
-                plane.pixels[i * components + c] = componentToFloat(componentFormat, at + c * componentSize);
+        for (int y = 0; y < entry.height; ++y) {
+            if (cancel && ((y % kRowsPerCancelCheck) == 0) && cancel->load()) {
+                return false;
+            }
+            const std::size_t rowStart = (std::size_t)y * (std::size_t)entry.width;
+            for (std::size_t i = rowStart; i < rowStart + (std::size_t)entry.width; ++i) {
+                const unsigned char* at = mapped.pixel(i);
+                for (std::size_t c = 0; c < components; ++c) {
+                    plane.pixels[i * components + c] = componentToFloat(componentFormat, at + c * componentSize);
+                }
             }
         }
         AovLayers::rememberFormatChannels(entry.renderer, aov.name.GetString(), plane.channels);
         result->aovs.push_back(std::move(plane));
     }
     if (entry.aovs.empty()) {
-        return;
+        return true;
     }
     VtDictionary stats = entry.engine->GetRenderStats();
     for (const std::pair<const std::string, VtValue>& stat : testStats(entry.renderer)) {
@@ -1435,6 +1447,8 @@ readAovs(const EngineEntry& entry,
             result->aovMetadata[TfToken(stat.first.substr(prefix.size()))] = stat.second.UncheckedGet<VtDictionary>();
         }
     }
+
+    return true;
 }
 
 std::int32_t
@@ -1533,11 +1547,12 @@ RenderThread::makeEngine(EngineEntry& entry,
         }
     }
     entry.aovs = request.aovs;
+    entry.builtInAovs = request.builtInAovs;
     entry.refusedAovs.clear();
     TfTokenVector extras;
     for (const HydraRender::Aov& aov : request.aovs) {
         // Cycles' elementId buffer holds no ids, only instanceId's again.
-        if (aov.name == HdAovTokens->elementId) {
+        if (CyclesAovs::isCycles(renderer) && (aov.name == HdAovTokens->elementId)) {
             entry.refusedAovs.push_back(aov.name);
         } else if (std::find(aovs.begin(), aovs.end(), aov.name) == aovs.end()) {
             extras.push_back(aov.name);
@@ -1567,6 +1582,11 @@ RenderThread::makeEngine(EngineEntry& entry,
     OutputEngine* output = static_cast<OutputEngine*>(entry.engine.get());
     for (const HydraRender::Aov& aov : request.aovs) {
         if (!aov.settings.empty() && (std::find(extras.begin(), extras.end(), aov.name) != extras.end())) {
+            (void)output->setAovSettings(aov.name, aov.settings);
+        }
+    }
+    for (const HydraRender::Aov& aov : request.builtInAovs) {
+        if (!aov.settings.empty() && (std::find(aovs.begin(), aovs.end(), aov.name) != aovs.end())) {
             (void)output->setAovSettings(aov.name, aov.settings);
         }
     }
@@ -1640,7 +1660,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     // thread budget.
     const bool budgetChanged = MoonRayAovs::isMoonRay(renderer) && (request.threads != entry.threads);
     bool freshEngine = false;
-    if (!entry.engine || (request.headlight != entry.headlight) || (settings != entry.settings) || budgetChanged || (request.aovs != entry.aovs)) {
+    if (!entry.engine || (request.headlight != entry.headlight) || (settings != entry.settings) || budgetChanged || (request.aovs != entry.aovs) || (request.builtInAovs != entry.builtInAovs)) {
         if (!makeEngine(entry, request, renderer, settings, cancel, error)) {
             return nullptr;
         }
@@ -1867,6 +1887,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
 
 bool
 RenderThread::cpuFrame(EngineEntry& entry,
+                       const std::atomic<bool>* cancel,
                        HydraRender::Result* result,
                        std::string* error)
 {
@@ -1963,7 +1984,11 @@ RenderThread::cpuFrame(EngineEntry& entry,
 
     result->warning = entry.warning;
     result->errors = entry.errors;
-    readAovs(entry, result);
+    if (!readAovs(entry, cancel, result)) {
+        *error = "The " + entry.rendererName + " render was cancelled.";
+
+        return false;
+    }
 
     if (!decodeIds(entry, error)) {
         return false;
@@ -1982,7 +2007,7 @@ RenderThread::cpuWindow(EngineEntry& entry,
 {
     if (entry.cpuSerial != entry.serial) {
         HydraRender::Result converted;
-        if (!cpuFrame(entry, &converted, error)) {
+        if (!cpuFrame(entry, nullptr, &converted, error)) {
             return false;
         }
         entry.cpuResult = std::move(converted);
@@ -2080,6 +2105,7 @@ RenderThread::decodeIds(EngineEntry& entry,
 
 bool
 RenderThread::frame(EngineEntry& entry,
+                    const std::atomic<bool>* cancel,
                     HydraRender::Result* result,
                     std::string* error)
 {
@@ -2087,7 +2113,7 @@ RenderThread::frame(EngineEntry& entry,
     enterGLSection(&section);
     std::string packError;
     if (!_gl || !packAvailable(&packError)) {
-        return cpuFrame(entry, result, error);
+        return cpuFrame(entry, cancel, result, error);
     }
     HydraRender::PlaneWindow window;
     window.x2 = entry.width;
@@ -2107,7 +2133,11 @@ RenderThread::frame(EngineEntry& entry,
         return false;
     }
     result->primPaths = entry.primPaths;
-    readAovs(entry, result);
+    if (!readAovs(entry, cancel, result)) {
+        *error = "The " + entry.rendererName + " render was cancelled.";
+
+        return false;
+    }
 
     return true;
 }
@@ -2595,7 +2625,7 @@ render(const Request& request,
         const LiveTextureStore::ExportAbortScope exportAbort([&cancel]() { return cancel.load(); });
         try {
             EngineEntry* entry = thread.renderEngine(request, &cancel, error);
-            ok = entry && thread.frame(*entry, result, error);
+            ok = entry && thread.frame(*entry, &cancel, result, error);
         } catch (const std::exception& e) {
             *error = std::string("Hydra failed: ") + e.what();
             ok = false;

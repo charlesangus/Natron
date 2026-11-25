@@ -8,7 +8,7 @@ Delete the Legacy render scheduler mode (`renderSchedulerMode`, `Engine/Settings
 - The Legacy mode is gone: `RenderSchedulerModeEnum` (`Global/Enums.h:549`), the `renderSchedulerMode` knob (`Engine/Settings.cpp:396-413,1947,2762,3028`), the env parsing and API (`Engine/AppManager.cpp:616,1204,3521-3616`, `AppManager.h:477-510`, `AppManagerPrivate.*`), and every mode branch (`Engine/OutputSchedulerThread.cpp:1657,2593,4499`, `Engine/ViewerInstance.cpp:2855,4139`, `Engine/Nodes/Loop/LoopBegin.cpp:450`, `Engine/Nodes/Loop/LoopEnd.cpp:293` `foldsAsTasks()`).
 - CI runs one ctest leg: `.github/workflows/remote-build.yml`, `.github/workflows/ci.yml`, `tools/ci/remote/build.sh`, `tools/ci/local/test.sh`, `tools/ci/smoke_test.py`, with their READMEs.
 - Tests stop switching modes. The both-ways helpers compare the direct `renderRoI` pull against the scheduler, not Legacy against Task graph.
-- Frame args come from the `FrameRenderContext` installed on the thread. `EffectTLSData::frameArgs` is deleted.
+- Frame args come from a per-thread immutable overlay chain whose base is the scheduler task's `FrameRenderContext`. `EffectTLSData::frameArgs` is deleted.
 - The scheduler owns frame admission for writers and viewer playback. `RenderThreadTask` and the dead `DefaultScheduler::processFrame` are deleted.
 - Live docs and bench scripts that mention the setting or the env var.
 
@@ -70,25 +70,31 @@ Delete the Legacy render scheduler mode (`renderSchedulerMode`, `Engine/Settings
   - verify: whole ctest green; `FrameRenderContext_Test` gains a case: a context installed without the marker reports no scheduled frame.
   - size: M
 
-- [ ] M199.P2.T2 — `ParallelRenderArgsSetter` installs a FrameRenderContext; getters read it first
-  - files: `Engine/ParallelRenderArgs.h`, `Engine/ParallelRenderArgs.cpp`, `Engine/FrameRenderContext.h`, `Engine/FrameRenderContext.cpp` (`createFromSetter` :270), `Engine/EffectInstance.cpp` (`getParallelRenderArgsTLS` :594)
-  - approach: The setter builds its context with `buildArgsMap()` and holds a `FrameContextScope` for its lifetime, nesting as a stack; when the scheduler already installed a context it reuses it. `getParallelRenderArgsTLS()` reads `currentFrameContext()->getArgs(node)` before the TLS list. TLS pushes stay for now. Spawned host-frame-threading threads inherit the context through `SpawnedThreadScope`.
-  - verify: whole ctest green; `GraphScalingTLS_Test` and `FrameRenderContext_Test` unchanged and green; a new `FrameRenderContext_Test` case: nested setters restore the outer args.
+- [ ] M199.P2.T2 — Thread frame-args overlay chain, not yet read
+  - files: new `Engine/FrameArgsOverlay.{h,cpp}`, `Engine/TLSHolder.{h,cpp}` (`SpawnedThreadScope` gains a head argument), the `SpawnedThreadScope` sites (`Engine/OfxHost.cpp` ~1246,1307, `Engine/EffectInstance.cpp` ~3389, `Engine/Nodes/NativeEffectBase.cpp` ~693), `Tests/FrameRenderContext_Test.cpp`
+  - approach: an immutable parent-linked `FrameArgsOverlay` node (one (node, args) entry or a shared setter map) and a `thread_local` head; `FrameArgsScope` saves the head, pushes, and restores the saved head on exit; lookup walks newest-first, then falls back to `currentFrameContext()->getArgs(node)`; spawned threads capture the head at creation (O(1), no race). Scheduler tasks install their context as the chain's base. Nothing calls lookup yet.
+  - verify: new cases for nested restore, per-node shadowing, a spawned thread seeing only the captured chain, fallback to the context's key-0 args, and null with no context; whole ctest green.
+  - size: M
+
+- [ ] M199.P2.T3 — One scoped push API, still storing on the TLS list
+  - files: `Engine/EffectInstance.{h,cpp}` (~439-600), `Engine/ParallelRenderArgs.cpp` (setter, `ContextFrameArgsScope` ~1862), `Engine/EffectInstanceRenderDeep.cpp` (~130,266-284), `Engine/EffectInstanceRenderScene.cpp` (~76,187-205), `Engine/ViewerInstance.cpp` (~1540-1550)
+  - approach: every frame-args push and pop goes through one RAII token; the two in-place setters (`setNodeRequestThreadLocal`, `setDuringPaintStrokeCreationThreadLocal`) become "push a modified copy". No behaviour change.
+  - verify: `rg 'frameArgs\.(push_back|pop_back)' Engine` lists only the token implementation; whole ctest green.
+  - size: M
+
+- [ ] M199.P2.T4 — Shadow the overlay chain and count mismatches
+  - files: the token implementation, the getter (`Engine/EffectInstance.cpp` ~594)
+  - approach: each token also pushes a `FrameArgsScope`. The getter still returns the TLS answer, compares it with the chain lookup and counts mismatches (a counter, not an assert: the debug build defines NDEBUG), and logs the maximum chain depth.
+  - verify: whole ctest plus `GraphScalingTLS_Test` end with zero mismatches, or every mismatch is listed and explained; the maximum depth on deep Loop and Group graphs is recorded in Decisions.
+  - size: M
+
+- [ ] M199.P2.T5 — Flip reads to the chain, then delete the TLS list
+  - files: `Engine/EffectInstance.h` (~3724,3750 `EffectTLSData::frameArgs`), `Engine/TLSHolderImpl.h` (~55-71,164-185), `Engine/TLSHolder.cpp` (the outermost-scope wipe must no longer be what clears frame args), `Engine/FrameRenderContext.*` (`getArgsForHolder`/`_argsByHolder` if unused), the shadow counter, `Tests/GraphScalingTLS_Test.cpp`, `Tests/FrameRenderContext_Test.cpp`
+  - approach: the getter reads the chain only; remove `frameArgs`, the lazy fill, the copy-on-spawn and the shadow code; rewrite both suites to the chain model.
+  - verify: `rg frameArgs Engine/EffectInstance.h Engine/TLSHolder*` is empty; whole ctest green incl. `GroupDirectRender_Test`, `Tests/Native/NativeLoop*`, `RenderContinuation_Test`; the scaling test shows no regression.
   - size: L
 
-- [ ] M199.P2.T3 — Route the render entry points' own frame args through the context
-  - files: `Engine/EffectInstanceRenderRoI.cpp:561-578`, `Engine/EffectInstanceRenderDeep.cpp:130,266-284,681`, `Engine/EffectInstanceRenderScene.cpp:76,187-205`, `Engine/EffectInstance.cpp:439-600` (set/invalidate, roto-paint args), `Engine/FrameRenderContext.*`
-  - approach: Where a pull with no args builds local frame args and pushes them on TLS, add them to the current context (or a scoped child context) instead. `setDuringPaintStrokeCreation`/`getRotoPaintNodes` read and write the context's args.
-  - verify: whole ctest green, including `GroupDirectRender_Test`, `Tests/Native/NativeLoop*`, `RenderContinuation_Test`; `rg 'frameArgs\.push_back' Engine` lists only `TLSHolderImpl.h`.
-  - size: L
-
-- [ ] M199.P2.T4 — Delete per-effect TLS frame args
-  - files: `Engine/EffectInstance.h:3724,3750` (`EffectTLSData::frameArgs`), `Engine/TLSHolder.h`, `Engine/TLSHolderImpl.h:164-185` (`createFromFrameContext`), `Engine/EffectInstance.cpp` (TLS set/invalidate API), `Tests/GraphScalingTLS_Test.cpp`, `Tests/FrameRenderContext_Test.cpp`
-  - approach: Remove the list, the on-demand materialisation and the TLS frame-args API; frame args come only from the context. Rewrite the two suites to the new model: args per context, inheritance across spawned threads, nesting, no args outside a context.
-  - verify: `rg 'frameArgs' Engine/EffectInstance.h Engine/TLSHolder*` is empty; whole ctest green.
-  - size: L
-
-- [ ] M199.P2.T5 — Rename `getParallelRenderArgsTLS` to `getFrameArgs`
+- [ ] M199.P2.T6 — Rename `getParallelRenderArgsTLS` to `getFrameArgs`
   - files: callers from `rg -l getParallelRenderArgsTLS Engine Gui Tests` (`Engine/EffectInstance.*`, `ParallelRenderArgs.*`, `EffectInstanceRenderRoI.cpp`, `RenderScheduler.cpp`, `PyRFV.cpp`, `OfxEffectInstance.cpp`, `Node.cpp`, `Nodes/Loop/LoopBegin.cpp`, `Nodes/Loop/LoopEnd.cpp`, `Nodes/RFV/RFVSwitch.cpp`, `Nodes/Transform/SplineWarp/SplineWarp.cpp`)
   - approach: Mechanical rename, no behaviour change; update the doc comment.
   - verify: `rg getParallelRenderArgsTLS` is empty; `tools/ci/local/syntax-check.py` clean on the touched TUs; whole ctest green.
@@ -135,3 +141,4 @@ Delete the Legacy render scheduler mode (`renderSchedulerMode`, `Engine/Settings
 - 2026-11-25 — Elaborated (opus consultant) from origin/main 00d15bf9a. Findings: task-graph fallbacks still use the direct `renderRoI` pull (ineligible frames, deep writer outputs, viewer deep input), so only the mode branches are deleted and the pull stays (Scope/Out); the both-ways parity helpers lose their Legacy reference and switch to the direct pull (P1.T2, assumption to confirm); viewer playback has feeder threads too (P3.T4); `FrameView_compare_less` is already a valid ordering, so that carried fix is dropped.
 - 2026-11-25 (PM) — P1.T2 in 2ba946ea29: the direct pull matches the Legacy pull except in LoopEnd/LoopBegin, which plan only the last fold step without a frame context (render() still folds every step, same order; earlier iterations' RoI/RoD are computed on the fly, and an identity LoopEnd hops to the last iteration's context). NativeLoopCrossFrame/NativeLoopFeedback direct pulls now take that path — watch them at the phase build. The writer reference pulls the writer itself through renderRoI on the test thread (frame args make it write its own EXRs) rather than the writer's input, so the data-window/channel/colour checks stay.
 - 2026-11-25 (PM) — P1.T3 in f8ace4fe7f: deleted ViewerDeviceRoot.InLegacyModeADryRunPublishesAnEmptySnapshot and SwitchingTheSchedulerModeReplansEveryViewer (pinned Legacy only); NativeWriteRange's both-modes test now renders once and checks frames, files and zero unplanned pulls; SchedulerEquivalence's joint reference is each writer rendered alone. About 25 Native tests still say 'BothSchedulerModes' in their names: rename them in P1.T5's sweep.
+- 2026-11-25 — **Frame-args design (user, after a six-design comparison):** a per-thread immutable overlay chain (design 2), scheduler tasks installing their context as the chain base; renders do not install a FrameRenderContext of their own (the planned design hid ContextFrameArgsScope's keyed pushes and would race on the shared context). Explicit argument passing can't be the end state: OFX callbacks and Python reach the host with no render handle, so a per-thread lookup must exist. Phase 2 re-sliced into T2 primitive, T3 one scoped push API, T4 shadow-compare, T5 flip and delete, T6 rename. Follow-up for making every render a scheduler task (design 6) filed to the inbox.

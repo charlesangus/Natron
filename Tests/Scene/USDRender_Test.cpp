@@ -1223,6 +1223,17 @@ protected:
 
         return false;
     }
+
+    // A USDRead's hash is a placeholder until an evaluation walks the file it names. With a
+    // renderer chosen, nothing on the USDRender's hash path evaluates upstream, so the walk
+    // would otherwise land at whichever later call first evaluates the reader.
+    static void settleReader(const NodePtr& reader)
+    {
+        ASSERT_TRUE(bool(reader));
+        ScenePayload scene;
+        std::string error;
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, reader->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &scene, &error)) << error;
+    }
 };
 
 TEST_F(USDRenderAovTest, RenderVarsRenderTheirLayersAndAWarningNamesTheVarNoneRendersFor)
@@ -1308,14 +1319,14 @@ TEST_F(USDRenderAovTest, TheLayersAndHashFollowTheRenderVarsOfTheRenderer)
     ASSERT_TRUE(renderer);
     ASSERT_TRUE(selectRenderer(renderer, kRenderDelegateCyclesId));
     EXPECT_FALSE(findLayer(presentLayers(node), "diffuse_direct"));
+    const NodePtr reader = settingsNode->getInput(0);
+    settleReader(reader);
     const U64 plainHash = node->getHashValue();
 
-    KnobFile* file = dynamic_cast<KnobFile*>(settingsNode->getInput(0)->getKnobByName(kUSDReadParamFile).get());
+    KnobFile* file = dynamic_cast<KnobFile*>(reader->getKnobByName(kUSDReadParamFile).get());
     ASSERT_TRUE(file);
     file->setValue(withVars);
-    // A USDRead's hash is a placeholder until an evaluation walks the file it now names.
-    std::string error;
-    ASSERT_FALSE(activeRendererOf(node, &error).empty()) << error;
+    settleReader(reader);
     const U64 varsHash = node->getHashValue();
     EXPECT_NE(plainHash, varsHash);
     std::list<ImageLayerDesc> present = presentLayers(node);

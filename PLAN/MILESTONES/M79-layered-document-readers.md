@@ -56,7 +56,7 @@ Acceptance sketch:
   - verify: `ctest -R NativeReadKra` incl. an LZF round trip on a known vector.
   - size: L
 
-- [ ] M79.P2.T3 — Per-window decode through the seam
+- [x] M79.P2.T3 — Per-window decode through the seam
   - files: the layered-document seam from P1.T1 (`Engine/Nodes/IO/LayeredDocs/LayeredImageInput.{h,cpp}`, `LayeredDocument.{h,cpp}`), `PsdInput.cpp`, `OraInput` as needed, `Tests/Native/NativeReadPsd_Test.cpp`
   - approach: the seam decodes a layer or composite as one whole plane, so a 300 000 px PSB layer decodes in full on first read, against the Scope edge case. Let a reader decode only the rows (or tiles) a requested window needs: PSD/PSB via the RLE row-offset table and raw row strides (ZIP channels may still decode whole, cached per channel); keep the whole-plane path for formats that can't window. Krita (P2.T2) and XCF (P3.T1) tiles should fit the same interface.
   - verify: `ctest -R "NativeReadPsd|LayeredDocsSeam|NativeReadOra"`; a test reads a small window of `wide.psb` and asserts the decoder touched only that window's rows

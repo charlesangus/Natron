@@ -644,7 +644,6 @@ jobs:
 
       - name: Run Python bindings smoke test
         if: success() || failure()
-        env:
         run: tools/ci/local/test.sh smoke "$PRESET"
 
       - name: Upload ctest log

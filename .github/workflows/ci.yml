@@ -423,7 +423,6 @@ jobs:
 
       - name: Run Python bindings smoke test (debug)
         if: success() || failure()
-        env:
         run: tools/ci/local/test.sh smoke debug
 
       - name: Job summary

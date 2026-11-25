@@ -75,7 +75,10 @@ set_tests_properties(${_natron_serial_suites} ${_natron_core_hogging_suites} PRO
 set(_natron_i 0)
 foreach(_suite IN LISTS _natron_long_suites)
     list(GET _natron_long_timeouts ${_natron_i} _timeout)
-    set_tests_properties(${_suite} PROPERTIES TIMEOUT ${_timeout})
+    # The test process dumps its stacks shortly before its own timeout (Tests/TestWatchdog.h), and
+    # has no other way to learn it. No later ENVIRONMENT may be set on these suites, as it would
+    # replace this one.
+    set_tests_properties(${_suite} PROPERTIES TIMEOUT ${_timeout} ENVIRONMENT "NATRON_TEST_CTEST_TIMEOUT_S=${_timeout}")
     math(EXPR _natron_i "${_natron_i} + 1")
 endforeach()
 

@@ -18,7 +18,11 @@
  * ***** END LICENSE BLOCK ***** */
 
 #include <chrono>
+#include <cstdlib>
+#include <string>
 #include <thread>
+
+#include <signal.h>
 
 #include <gtest/gtest.h>
 
@@ -52,4 +56,60 @@ TEST(TestWatchdog, ASegfaultPrintsThePhaseAndStacks)
         watchdog.start(60);
         watchdog.setPhase("crashing");
         *static_cast<volatile int*>(nullptr) = 1; }, "watchdog: fatal signal 11 in TestWatchdog.ASegfaultPrintsThePhaseAndStacks, phase 'crashing'");
+}
+
+// No TestWatchdog is started: the handler comes from the environment every test process sets up.
+TEST(TestWatchdog, ACrashInAnySuiteDumpsStacksAndDiesOfTheSignal)
+{
+    ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+    ASSERT_EXIT({ *static_cast<volatile int*>(nullptr) = 1; }, ::testing::KilledBySignal(SIGSEGV), "watchdog: fatal signal 11 in TestWatchdog.ACrashInAnySuiteDumpsStacksAndDiesOfTheSignal, phase 'start'; crashing thread then every thread follows");
+}
+
+TEST(TestWatchdog, AnAbortInAnySuiteDumpsStacksAndDiesOfTheSignal)
+{
+    ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+    ASSERT_EXIT({ std::abort(); }, ::testing::KilledBySignal(SIGABRT), "watchdog: fatal signal 6 in TestWatchdog.AnAbortInAnySuiteDumpsStacksAndDiesOfTheSignal");
+}
+
+// The child exits by itself, so the dump left it running.
+TEST(TestWatchdog, AStallDumpsStacksOnceAndTheProcessGoesOn)
+{
+    ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+    ASSERT_EXIT({
+        TestWatchdog::armStallDump(1);
+        for (int i = 0; i < 600 && !TestWatchdog::stallDumpTaken(); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        std::_Exit(TestWatchdog::stallDumpTaken() ? 0 : 1); }, ::testing::ExitedWithCode(0), "watchdog: TestWatchdog.AStallDumpsStacksOnceAndTheProcessGoesOn still running 1 s after the process started, phase 'start'; stack dump follows, then the process goes on");
+}
+
+TEST(TestWatchdog, ADisarmedExitLimitDoesNothing)
+{
+    ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+    ASSERT_EXIT({
+        TestWatchdog::armExitWatchdog(1);
+        TestWatchdog::disarmExitWatchdog();
+        std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+        std::_Exit(0); }, ::testing::ExitedWithCode(0), "");
+}
+
+TEST(TestWatchdog, TheStallDumpComesAheadOfTheCtestTimeout)
+{
+    const char* previous = std::getenv("NATRON_TEST_CTEST_TIMEOUT_S");
+    const std::string saved = previous ? previous : "";
+
+    unsetenv("NATRON_TEST_CTEST_TIMEOUT_S");
+    EXPECT_EQ(255, TestWatchdog::stallDumpSeconds());
+    setenv("NATRON_TEST_CTEST_TIMEOUT_S", "900", 1);
+    EXPECT_EQ(855, TestWatchdog::stallDumpSeconds());
+    setenv("NATRON_TEST_CTEST_TIMEOUT_S", "60", 1);
+    EXPECT_EQ(30, TestWatchdog::stallDumpSeconds());
+    setenv("NATRON_TEST_CTEST_TIMEOUT_S", "0", 1);
+    EXPECT_EQ(0, TestWatchdog::stallDumpSeconds());
+
+    if (previous) {
+        setenv("NATRON_TEST_CTEST_TIMEOUT_S", saved.c_str(), 1);
+    } else {
+        unsetenv("NATRON_TEST_CTEST_TIMEOUT_S");
+    }
 }

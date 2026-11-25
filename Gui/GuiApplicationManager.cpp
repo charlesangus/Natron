@@ -69,6 +69,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Nodes/Merge/Merge.h" // PLUGINID_NATRON_NATIVE_MERGE
 #include "Engine/Nodes/Scene/SceneTeardown.h"
 #include "Engine/Nodes/Transform/Transform.h"
+#include "Engine/Optics/LensKnobs.h"
 #include "Engine/Plugin.h"
 #include "Engine/PluginActionShortcut.h"
 #include "Engine/RotoLatencyProbe.h"
@@ -79,6 +80,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiDefines.h"
 #include "Gui/KnobGuiFactory.h"
+#include "Gui/LensBrowser.h"
 #include "Gui/Menu.h"
 #include "Gui/PreviewThread.h"
 #include "Gui/QtEnumConvert.h"
@@ -1204,6 +1206,8 @@ GuiApplicationManager::initGui(const CLArgs& args)
     // Never stopped: render threads may still hold it at exit, and each line is flushed as written.
     RotoLatencyProbe::startFromEnvironment();
     NodeCreationStageLog::startFromEnvironment();
+
+    Optics::LensKnobs::setBrowseHandler([](const KnobStringPtr& lens, const Optics::LensPreviewContext& context) { LensBrowser::open(lens, context); });
 
     return exec();
 } // GuiApplicationManager::initGui

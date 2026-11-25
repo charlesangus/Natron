@@ -96,11 +96,13 @@
 #include "Engine/Nodes/Scene/MoonRayAovs.h"
 #include "Engine/Nodes/Scene/MoonRaySettings.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
+#include "Engine/Nodes/Scene/RenderSettingsKnobs.h"
 #include "Engine/Nodes/Scene/SceneCaches.h"
 #include "Engine/Nodes/Scene/SceneDrawFilter.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Nodes/Scene/StormGLSection.h"
+#include "Engine/Nodes/Scene/StormIdPass.h"
 #include "Engine/Nodes/Scene/StormPtexBindingFilter.h"
 #include "Engine/Nodes/Scene/StormPtexBudget.h"
 #include "Engine/Nodes/Scene/StormTextureBudget.h"
@@ -337,6 +339,7 @@ HydraGLContextFactory gFactory;
 
 std::atomic<std::size_t> gMemoryBudget(kDefaultMemoryBudget);
 std::atomic<std::uint64_t> gEngineBuilds(0);
+std::atomic<bool> gStormTranslucentIds(true);
 
 typedef std::map<std::string, VtValue> RendererSettings;
 std::mutex gSettingsMutex;
@@ -455,10 +458,17 @@ private:
 // Closes the engine's Cycles session (CyclesThreads::open()) after the engine, which ends it, goes.
 struct EngineDeleter {
     bool cyclesSession = false;
+    // Whether the engine is a StormIdEngine, which UsdImagingGLEngine's destructor, not virtual,
+    // would not destroy.
+    bool stormIds = false;
 
     void operator()(UsdImagingGLEngine* engine) const
     {
-        delete engine;
+        if (stormIds) {
+            delete static_cast<StormIdEngine*>(engine);
+        } else {
+            delete engine;
+        }
         if (cyclesSession) {
             CyclesThreads::instance().close();
         }
@@ -469,25 +479,33 @@ typedef std::unique_ptr<UsdImagingGLEngine, EngineDeleter> EnginePtr;
 
 /**
  * A new engine of parameters. A Cycles one (cycles), whose session the caller has opened, is made
- * so that its CPU device renders on threads threads, and closes the session when it goes. Only an
- * engine made with wantFilter gets a SceneDrawFilter, whose renderInstanceId goes to *filterId if
- * given; the viewer's draw states mean nothing to the others.
+ * so that its CPU device renders on threads threads, and closes the session when it goes. A Cycles
+ * engine made with subdivides subdivides the meshes that author subdivision. A StormIdEngine
+ * (stormIds) is made for Storm on the GPU. Only an engine made with wantFilter gets a
+ * SceneDrawFilter, whose renderInstanceId goes to *filterId if given; the viewer's draw states
+ * mean nothing to the others.
  **/
 EnginePtr
 newEngine(const UsdImagingGLEngine::Parameters& parameters,
           bool cycles,
           int threads,
+          bool subdivides,
+          bool stormIds,
           bool wantFilter,
           std::string* filterId = nullptr)
 {
-    EnginePtr engine(nullptr, EngineDeleter { cycles });
+    EnginePtr engine(nullptr, EngineDeleter { cycles, stormIds });
     std::unique_ptr<SceneDrawFilter::EngineScope> scope;
     if (wantFilter) {
         SceneDrawFilter::registerForAllRenderers();
         scope.reset(new SceneDrawFilter::EngineScope);
     }
     const std::function<void()> make = [&]() {
-        engine.reset(new UsdImagingGLEngine(parameters));
+        if (stormIds) {
+            engine.reset(new StormIdEngine(parameters));
+        } else {
+            engine.reset(new UsdImagingGLEngine(parameters));
+        }
         if (scope && filterId) {
             *filterId = scope->getInstanceId();
         }
@@ -499,7 +517,7 @@ newEngine(const UsdImagingGLEngine::Parameters& parameters,
         return engine;
     }
     try {
-        CyclesAovs::withThreadBudget(threads, make);
+        CyclesAovs::withSubdivision(subdivides, [&]() { CyclesAovs::withThreadBudget(threads, make); });
     } catch (...) {
         if (!engine) {
             CyclesThreads::instance().close();
@@ -543,6 +561,9 @@ struct EngineEntry {
     std::uint64_t lastUse = 0;
     // The GPU memory the engine held after its last render.
     std::size_t bytes = 0;
+    // The part of bytes that is the translucent id pass's own depth buffer, which is made after
+    // the render and which Storm's count may leave out.
+    std::size_t idPassBytes = 0;
 
     // What the engine last rendered, which its AOVs hold until it renders again.
     bool rendered = false;
@@ -557,6 +578,8 @@ struct EngineEntry {
     GfMatrix4d projection;
     int width = 0;
     int height = 0;
+    // The parameters of that render's Render() calls, which the translucent id pass draws with.
+    UsdImagingGLRenderParams params;
 
     // That render's primId plane and the paths of its hashes, decoded on the CPU when first asked for.
     bool idsDecoded = false;
@@ -954,6 +977,17 @@ public:
         }
     }
 
+    const void* ownerOf(const EngineEntry& entry) const
+    {
+        for (std::map<const void*, EngineEntry>::const_iterator it = _engines.begin(); it != _engines.end(); ++it) {
+            if (&it->second == &entry) {
+                return it->first;
+            }
+        }
+
+        return nullptr;
+    }
+
     std::size_t engineCount() const
     {
         return _engineCount.load();
@@ -981,6 +1015,11 @@ public:
 
     bool decodeIds(EngineEntry& entry,
                    std::string* error);
+
+    // Writes the translucent prims' ids into a Storm render's primId and instanceId AOVs, before
+    // they are first decoded. False, with the engine dropped, if the pass threw.
+    bool translucentIds(EngineEntry& entry,
+                        std::string* error);
 
     bool packAvailable(std::string* error);
 
@@ -1390,7 +1429,7 @@ RenderThread::makeEngine(EngineEntry& entry,
     std::string startError;
     {
         TfErrorMark mark;
-        entry.engine = newEngine(parameters, cycles, threads, false);
+        entry.engine = newEngine(parameters, cycles, threads, cycles && CyclesAovs::subdivides(settings), _gl && RenderDelegates::isStorm(renderer), false);
         ++gEngineBuilds;
         // The engine reports a delegate it could not start as coding errors and renders nothing.
         if (entry.engine->GetCurrentRendererId() != TfToken(renderer)) {
@@ -1412,6 +1451,10 @@ RenderThread::makeEngine(EngineEntry& entry,
         applyStormPtexBudget(_hgi.get());
     }
     entry.engine->SetEnablePresentation(false);
+    // Before the prim's settings, which override them.
+    for (const std::pair<const std::string, VtValue>& setting : RenderSettingsKnobs::engineDefaults(renderer)) {
+        entry.engine->SetRendererSetting(TfToken(setting.first), setting.second);
+    }
     for (RendererSettings::const_iterator it = settings.begin(); it != settings.end(); ++it) {
         entry.engine->SetRendererSetting(TfToken(it->first), it->second);
     }
@@ -1727,6 +1770,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     entry.projection = projection;
     entry.width = width;
     entry.height = height;
+    entry.params = params;
 
     if (!_gl) {
         // Host memory, which the GPU budget does not count.
@@ -1742,7 +1786,8 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     if ((used != stats.end()) && used->second.IsHolding<size_t>()) {
         bytes = std::max(bytes, used->second.UncheckedGet<size_t>());
     }
-    entry.bytes = bytes;
+    entry.idPassBytes = entry.engine.get_deleter().stormIds ? static_cast<StormIdEngine*>(engine)->getIdPassBytes() : 0;
+    entry.bytes = bytes + entry.idPassBytes;
     const void* owner = request.owner;
     enforceBudget(owner);
 
@@ -1914,6 +1959,9 @@ RenderThread::decodeIds(EngineEntry& entry,
     if (entry.idsDecoded) {
         return true;
     }
+    if (!translucentIds(entry, error)) {
+        return false;
+    }
     UsdImagingGLEngine* engine = entry.engine.get();
     const int width = entry.width;
     const int height = entry.height;
@@ -1960,6 +2008,52 @@ RenderThread::decodeIds(EngineEntry& entry,
 
     return true;
 } // RenderThread::decodeIds
+
+bool
+RenderThread::translucentIds(EngineEntry& entry,
+                             std::string* error)
+{
+    // The pass draws the stage as it is: once a write has changed it since the render, the ids
+    // would not be the render's.
+    if (!_gl || !entry.rendered || !entry.engine || !entry.engine.get_deleter().stormIds || !gStormTranslucentIds.load() || (entry.writeCount != SceneWriteBarrier::getWriteCount())) {
+        return true;
+    }
+    StormIdEngine* const engine = static_cast<StormIdEngine*>(entry.engine.get());
+    if (!engine->hasIdPass()) {
+        return true;
+    }
+    std::string failure;
+    bindFramebuffer(entry.width, entry.height);
+    try {
+        (void)engine->renderTranslucentIds(entry.params);
+    } catch (const std::exception& e) {
+        failure = e.what();
+        if (failure.empty()) {
+            failure = "unknown exception";
+        }
+    } catch (...) {
+        failure = "unknown exception";
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    if (failure.empty()) {
+        const std::size_t passBytes = engine->getIdPassBytes();
+        if (passBytes != entry.idPassBytes) {
+            const bool grew = (passBytes > entry.idPassBytes);
+            entry.bytes = entry.bytes - entry.idPassBytes + passBytes;
+            entry.idPassBytes = passBytes;
+            if (grew) {
+                enforceBudget(ownerOf(entry));
+            }
+        }
+
+        return true;
+    }
+    *error = "The " + entry.rendererName + " translucent id pass failed: " + failure;
+    entry.engine.reset();
+    entry.rendered = false;
+
+    return false;
+} // RenderThread::translucentIds
 
 bool
 RenderThread::frame(EngineEntry& entry,
@@ -2672,6 +2766,32 @@ releaseAllCpuEngines()
     (void)thread.post([&thread]() { thread.releaseAllEngines(); }, false);
 }
 
+bool
+releaseAllCpuEnginesAndWait(int timeoutMs)
+{
+    RenderThread& thread = RenderThread::cpu();
+    // Shared with the job, which outlives a wait that times out.
+    std::shared_ptr<std::promise<void>> released = std::make_shared<std::promise<void>>();
+    std::future<void> done = released->get_future();
+
+    const auto job = [&thread, released]() {
+        // Set however the release ends, a throw included, so the wait reports it rather than
+        // running out.
+        struct SetOnExit {
+            std::promise<void>& promise;
+            ~SetOnExit() { promise.set_value(); }
+        } setOnExit { *released };
+        thread.releaseAllEngines();
+    };
+
+    // A thread that never started holds no engine.
+    if (!thread.post(job, false)) {
+        return true;
+    }
+
+    return done.wait_for(std::chrono::milliseconds(std::max(0, timeoutMs))) == std::future_status::ready;
+}
+
 void
 setMemoryBudget(std::size_t bytes)
 {
@@ -2706,6 +2826,12 @@ std::uint64_t
 getEngineBuildCount()
 {
     return gEngineBuilds.load();
+}
+
+void
+setStormTranslucentIds(bool enabled)
+{
+    gStormTranslucentIds = enabled;
 }
 
 std::string
@@ -3092,11 +3218,19 @@ struct ProgressiveRender::Implementation {
         CyclesAovs::registerSceneIndices();
         MoonRayAovs::registerSceneIndices();
         LiveTextureSceneIndex::registerSceneIndices();
+        // The renderer's engine defaults, the prim's settings, then those set for tests, as a USDRender's engine takes them.
+        RendererSettings settings = RenderSettingsKnobs::engineDefaults(id);
+        for (const std::pair<const std::string, VtValue>& setting : primSettings) {
+            settings[setting.first] = setting.second;
+        }
+        for (const std::pair<const std::string, VtValue>& setting : rendererSettings(id)) {
+            settings[setting.first] = setting.second;
+        }
         EnginePtr made;
         std::string filterId;
         {
             TfErrorMark mark;
-            made = newEngine(parameters, cycles, threads, true, &filterId);
+            made = newEngine(parameters, cycles, threads, cycles && CyclesAovs::subdivides(settings), false, true, &filterId);
             ++gEngineBuilds;
             if (made->GetCurrentRendererId() != TfToken(id)) {
                 std::string reasons;
@@ -3112,11 +3246,6 @@ struct ProgressiveRender::Implementation {
         }
         made->SetEnablePresentation(false);
         const bool moonRay = MoonRayAovs::isMoonRay(id);
-        // The prim's settings, then those set for tests, as a USDRender's engine takes them.
-        RendererSettings settings = primSettings;
-        for (const std::pair<const std::string, VtValue>& setting : rendererSettings(id)) {
-            settings[setting.first] = setting.second;
-        }
         for (RendererSettings::const_iterator it = settings.begin(); it != settings.end(); ++it) {
             made->SetRendererSetting(TfToken(it->first), it->second);
         }
@@ -4221,6 +4350,12 @@ void
 releaseCpuRenderEngines()
 {
     HydraRender::releaseAllCpuEngines();
+}
+
+bool
+releaseCpuRenderEnginesAndWait(int timeoutMs)
+{
+    return HydraRender::releaseAllCpuEnginesAndWait(timeoutMs);
 }
 
 bool

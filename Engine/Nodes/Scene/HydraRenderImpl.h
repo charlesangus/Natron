@@ -286,6 +286,12 @@ void releaseAll();
 void releaseAllCpuEngines();
 
 /**
+ * @brief Drops every owner's stage and engine of a delegate other than Storm, waiting up to
+ * timeoutMs for their thread to have done so. False if it had not by then.
+ **/
+bool releaseAllCpuEnginesAndWait(int timeoutMs);
+
+/**
  * @brief The GPU memory, in bytes, the engines may hold together before the least recently used
  * ones other than the one rendering are dropped. Checked after each render.
  **/
@@ -300,6 +306,13 @@ std::size_t getCpuEngineCount();
 
 // How many engines, of every delegate, have been made in this process.
 std::uint64_t getEngineBuildCount();
+
+/**
+ * @brief Whether Storm renders write the ids of translucent prims into their primId plane, as
+ * they do unless turned off; for tests, to compare against Storm's own ids. Read when a render's
+ * ids are first decoded.
+ **/
+void setStormTranslucentIds(bool enabled);
 
 /**
  * @brief The thread count every Cycles session is made under, 0 for any: Cycles' task scheduler is

@@ -1126,10 +1126,20 @@ NativeEffectBase::emitSceneLayer(const ScenePayload& upstream,
         return false;
     }
 
-    const SceneLayerMemo::KeyCheckFunc keyStillValid = [this, reads](const SceneLayerMemo::Key& authoredUnder) {
+    // Values read before an edit that landed ahead of key would be memoized under the edit's key.
+    // The fields reads sets are the caller's own and need not match the pre-read key's.
+    bool valuesPredateKey = false;
+    if (reads.valuesRead) {
+        SceneLayerMemo::Key readUnder = reads.valuesReadUnder;
+        readUnder.upstreamRead = key.upstreamRead;
+        readUnder.factsDigest = key.factsDigest;
+        readUnder.readsFrameRange = key.readsFrameRange;
+        valuesPredateKey = (readUnder != key);
+    }
+    const SceneLayerMemo::KeyCheckFunc keyStillValid = [this, reads, valuesPredateKey](const SceneLayerMemo::Key& authoredUnder) {
         SceneLayerMemo::Key now;
 
-        return getSceneLayerKey(reads, &now, 0) && (now == authoredUnder);
+        return !valuesPredateKey && getSceneLayerKey(reads, &now, 0) && (now == authoredUnder);
     };
 
     _sceneLayerMemo.setOwner(getNode());

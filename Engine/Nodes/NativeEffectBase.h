@@ -671,6 +671,10 @@ protected:
         // For eUpstreamReadFacts: a hash of every upstream fact the author reads.
         U64 factsDigest = 0;
         bool frameRange = true;
+        // For an author handed values read before emitSceneLayer(): getSceneLayerKey() taken
+        // before those reads. A knob or project edit after it leaves the layer unmemoized.
+        bool valuesRead = false;
+        SceneLayerMemo::Key valuesReadUnder;
     };
 
     /**

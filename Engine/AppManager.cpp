@@ -4858,6 +4858,21 @@ PythonGILUnlocker::~PythonGILUnlocker()
 #endif
 }
 
+PythonUnlockedWhileWaiting::PythonUnlockedWhileWaiting()
+    : _state(nullptr)
+{
+    if (Py_IsInitialized() && PyGILState_Check()) {
+        _state = PyEval_SaveThread();
+    }
+}
+
+PythonUnlockedWhileWaiting::~PythonUnlockedWhileWaiting()
+{
+    if (_state) {
+        PyEval_RestoreThread(_state);
+    }
+}
+
 static bool
 getGroupInfosInternal(const std::string& modulePath,
                       const std::string& pythonModule,

@@ -25,9 +25,11 @@
 
 #include "SceneWriteBarrier.h"
 
+#include <atomic>
 #include <condition_variable>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <vector>
 
 #include <QCoreApplication>
@@ -91,6 +93,9 @@ struct BarrierState {
     int asyncPending = 0;
 };
 
+std::atomic<SceneWriteBarrier::TestHookFunction> testHook { nullptr };
+std::atomic<void*> testHookContext { nullptr };
+
 BarrierState&
 state()
 {
@@ -101,29 +106,6 @@ state()
 }
 
 thread_local int readDepth = 0;
-
-// Releases the Python GIL while the calling thread waits, if it holds it: a reader may need the
-// GIL (expressions) to finish the evaluation the writer is waiting for.
-class PythonUnlockedWhileWaiting {
-public:
-    PythonUnlockedWhileWaiting()
-        : _state(nullptr)
-    {
-        if (Py_IsInitialized() && PyGILState_Check()) {
-            _state = PyEval_SaveThread();
-        }
-    }
-
-    ~PythonUnlockedWhileWaiting()
-    {
-        if (_state) {
-            PyEval_RestoreThread(_state);
-        }
-    }
-
-private:
-    PyThreadState* _state;
-};
 
 bool
 onMainThread()
@@ -256,11 +238,16 @@ void
 waitAllParked()
 {
     BarrierState& s = state();
+    // Declared before the lock so the GIL is re-taken only after s.mutex is released: a thread
+    // holding the GIL may be waiting for s.mutex.
+    std::optional<PythonUnlockedWhileWaiting> unlocked;
     std::unique_lock<std::mutex> lock(s.mutex);
     if (allParked(s)) {
         return;
     }
-    PythonUnlockedWhileWaiting unlocked;
+    lock.unlock();
+    unlocked.emplace();
+    lock.lock();
     s.changed.wait(lock, [&s]() { return allParked(s); });
 }
 
@@ -338,9 +325,14 @@ SceneWriteBarrier::ReadScope::ReadScope()
     }
 
     BarrierState& s = state();
+    // Declared before the lock so the GIL is re-taken only after s.mutex is released: a thread
+    // holding the GIL may be waiting for s.mutex.
+    std::optional<PythonUnlockedWhileWaiting> unlocked;
     std::unique_lock<std::mutex> lock(s.mutex);
     if (s.writersPending > 0) {
-        PythonUnlockedWhileWaiting unlocked;
+        lock.unlock();
+        unlocked.emplace();
+        lock.lock();
         s.changed.wait(lock, [&s]() { return s.writersPending == 0; });
     }
     ++s.readers;
@@ -408,6 +400,9 @@ SceneWriteBarrier::registerParticipant(const std::function<void()>& quiesce,
             park(parked);
         }
     }
+    // Declared before the lock so the GIL is re-taken only after writerMutex is released:
+    // runExclusive() takes the GIL back while it holds writerMutex.
+    PythonUnlockedWhileWaiting unlocked;
     std::lock_guard<std::mutex> lock(s.writerMutex);
     s.participants[id] = BarrierState::Participant { quiesce, resume, order };
 
@@ -419,6 +414,8 @@ SceneWriteBarrier::unregisterParticipant(ParticipantId id)
 {
     BarrierState& s = state();
     {
+        // Declared before the lock so the GIL is re-taken only after writerMutex is released.
+        PythonUnlockedWhileWaiting unlocked;
         std::lock_guard<std::mutex> lock(s.writerMutex);
         s.participants.erase(id);
     }
@@ -456,6 +453,9 @@ SceneWriteBarrier::runExclusive(const std::function<void()>& write,
     } parkHold;
     waitAllParked();
 
+    // The GIL is taken back below while writerLock is held. That is safe because every other taker
+    // of writerMutex (registerParticipant, unregisterParticipant) releases the GIL before locking
+    // it, so none waits for writerMutex while holding the GIL this thread needs.
     std::unique_lock<std::mutex> writerLock(s.writerMutex, std::defer_lock);
     {
         PythonUnlockedWhileWaiting unlocked;
@@ -463,6 +463,10 @@ SceneWriteBarrier::runExclusive(const std::function<void()>& write,
         std::unique_lock<std::mutex> lock(s.mutex);
         ++s.writersPending;
         s.changed.wait(lock, [&s]() { return s.readers == 0; });
+        lock.unlock();
+        if (const TestHookFunction hook = testHook.load()) {
+            hook(testHookContext.load());
+        }
     }
 
     // Lets readers in again however the write ends.
@@ -586,6 +590,13 @@ SceneWriteBarrier::waitForAsyncWrites(int timeoutMs)
             QThread::msleep(2);
         }
     }
+}
+
+void
+SceneWriteBarrier::setTestHook(TestHookFunction hook, void* context)
+{
+    testHookContext.store(context);
+    testHook.store(hook);
 }
 
 bool

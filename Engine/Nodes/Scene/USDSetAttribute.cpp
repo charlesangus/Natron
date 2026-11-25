@@ -30,7 +30,10 @@
 
 #include <QCoreApplication>
 #include <QString>
+#include <QStringList>
+#include <QtConcurrentRun>
 
+#include "Engine/AppInstance.h"
 #include "Engine/ChoiceOption.h"
 #include "Engine/ContentHasher.h"
 #include "Engine/KnobTypes.h"
@@ -38,7 +41,9 @@
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/SchemaKnobMapper.h"
+#include "Engine/Nodes/Scene/USDSetAttributeLookup.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
+#include "Engine/Project.h"
 #include "Engine/ScenePayload.h"
 #include "Serialization/KnobSerialization.h"
 #include "Serialization/NodeSerialization.h"
@@ -46,36 +51,6 @@
 NATRON_NAMESPACE_ENTER
 
 namespace {
-// Every type has a knob SchemaKnobMapper maps (describeValueType()).
-const char* const kValueTypes[] = {
-    "bool",
-    "int",
-    "uint",
-    "half",
-    "float",
-    "double",
-    "float2",
-    "float3",
-    "float4",
-    "double2",
-    "double3",
-    "double4",
-    "color3f",
-    "color4f",
-    "color3d",
-    "color4d",
-    "point3f",
-    "point3d",
-    "normal3f",
-    "normal3d",
-    "vector3f",
-    "vector3d",
-    "texCoord2f",
-    "texCoord2d",
-    "string",
-    "token",
-    "asset",
-};
 const char* const kDefaultValueType = "float";
 
 const std::string kPrimvarsPrefix("primvars:");
@@ -116,6 +91,7 @@ struct Target {
 USDSetAttribute::USDSetAttribute(NodePtr node)
     : NativeEffectBase(node)
     , _guiRefreshPending(false)
+    , _lookupGeneration(0)
 {
 }
 
@@ -159,7 +135,7 @@ USDSetAttribute::initializeKnobs()
                                  "schema gives it."));
     {
         std::vector<ChoiceOption> options;
-        for (const char* type : kValueTypes) {
+        for (const std::string& type : USDSetAttributeLookup::getValueTypes()) {
             options.push_back(ChoiceOption(type, type, ""));
         }
         valueType->populateChoices(options);
@@ -239,7 +215,7 @@ USDSetAttribute::rebuildValueKnob()
 
 bool
 USDSetAttribute::knobChanged(KnobI* k,
-                             ValueChangedReasonEnum /*reason*/,
+                             ValueChangedReasonEnum reason,
                              ViewSpec /*view*/,
                              double /*time*/,
                              bool /*originatedFromMainThread*/)
@@ -247,7 +223,15 @@ USDSetAttribute::knobChanged(KnobI* k,
     KnobChoicePtr valueType = _valueType.lock();
 
     if (valueType && (k == valueType.get())) {
+        // A lookup still running would replace the type the user just chose.
+        ++_lookupGeneration;
         rebuildValueKnob();
+
+        return true;
+    }
+    const bool edited = (reason == eValueChangedReasonUserEdited) || (reason == eValueChangedReasonNatronGuiEdited) || (reason == eValueChangedReasonNatronInternalEdited);
+    if (edited && ((k == _attributeName.lock().get()) || (k == _primvar.lock().get()) || (k == _primPattern.getKnob().get()))) {
+        startTypeLookup();
 
         return true;
     }
@@ -282,6 +266,74 @@ void
 USDSetAttribute::onKnobsLoaded()
 {
     rebuildValueKnob();
+}
+
+void
+USDSetAttribute::onInputChanged(int inputNo)
+{
+    NativeEffectBase::onInputChanged(inputNo);
+    startTypeLookup();
+}
+
+void
+USDSetAttribute::startTypeLookup()
+{
+    AppInstancePtr app = getApp();
+    KnobStringPtr nameKnob = _attributeName.lock();
+    KnobBoolPtr primvarKnob = _primvar.lock();
+    // A saved type must survive the load, which connects inputs and sets every knob.
+    if (!app || !app->getProject() || app->getProject()->isLoadingProject() || !nameKnob || !primvarKnob) {
+        return;
+    }
+    const int generation = ++_lookupGeneration;
+    const std::string pattern = _primPattern.getExpression();
+    const std::string name = nameKnob->getValue();
+    const bool primvar = primvarKnob->getValue();
+    EffectInstancePtr input = getInput(0);
+    if (!input || PrimSelector::isBlank(pattern) || name.empty()) {
+        return;
+    }
+    // Without a showing viewer there is no load set the user chose, and the lookup must not load payloads on its own.
+    SceneEvaluationContext context;
+    if (!SceneNodeAuthoring::getShowingViewerContext(this, &context)) {
+        return;
+    }
+    const double time = getCurrentTime();
+    NodeWPtr weakNode = getNode();
+    const EffectInstanceWPtr weakInput = input;
+    input.reset();
+
+    QtConcurrent::run([weakInput, weakNode, generation, pattern, name, primvar, time, context]() {
+        USDSetAttributeLookup::Result result;
+        {
+            // The worker may hold the last reference to the input; it is released on the main thread.
+            SceneNodeAuthoring::EffectReleasedOnMainThread held(weakInput.lock());
+            if (!held.get()) {
+                return;
+            }
+            ScenePayload scene;
+            std::string error;
+            if ((held.get()->evaluateScene(EvaluateSceneArgs(time, ViewIdx(0), context), &scene, &error) != eRenderRoIRetCodeOk) || scene.isEmpty()) {
+                return;
+            }
+            SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(scene, context.loadSet, &error);
+            if (!USDSetAttributeLookup::lookupExistingAttribute(lease.getStage(), pattern, name, primvar, &result, &error)) {
+                return;
+            }
+        }
+        if (!result.found || result.unsupported || !qApp) {
+            return;
+        }
+        QMetaObject::invokeMethod(qApp, [weakNode, generation, result]() {
+            NodePtr node = weakNode.lock();
+            USDSetAttribute* effect = node ? dynamic_cast<USDSetAttribute*>( node->getEffectInstance().get() ) : NULL;
+            KnobChoicePtr valueType = effect ? effect->_valueType.lock() : KnobChoicePtr();
+            if (!valueType || (effect->_lookupGeneration.load() != generation)) {
+                return;
+            }
+            valueType->setValueFromID(result.typeName, 0);
+            effect->rebuildValueKnob(); }, Qt::QueuedConnection);
+    });
 }
 
 StatusEnum
@@ -333,6 +385,7 @@ USDSetAttribute::renderScene(const SceneRenderActionArgs& args,
     const PXR_NS::SdfValueTypeName authoredType = primvar ? scalarType.GetArrayType() : scalarType;
 
     std::vector<Target> targets;
+    USDSetAttributeLookup::Result existing;
     SceneNodeAuthoring::PatternMatches found;
     {
         SceneQueryPool::Lease lease;
@@ -377,6 +430,27 @@ USDSetAttribute::renderScene(const SceneRenderActionArgs& args,
                 target.uniform = (defined.GetVariability() == PXR_NS::SdfVariabilityUniform);
             }
             targets.push_back(target);
+        }
+        existing = USDSetAttributeLookup::lookup(stage, matches, name, primvar);
+    }
+    QStringList warnings;
+    if (existing.found) {
+        const QString attributeText = QString::fromStdString(attributeName);
+        const QString chosenText = QString::fromStdString(scalarType.GetAsToken().GetString());
+        const QString existingType = QString::fromStdString(existing.typeName);
+        const QString primText = QString::fromStdString(existing.primPath);
+        if (existing.unsupported) {
+            warnings += tr("%1 on %2 is a %3 attribute; %3 is not supported.").arg(attributeText).arg(primText).arg(existingType);
+        } else if (existingType != chosenText) {
+            warnings += tr("%1 on %2 is a %3 attribute; authoring %4 over it").arg(attributeText).arg(primText).arg(existingType).arg(chosenText);
+        }
+        if (existing.conflict) {
+            warnings += tr("%1 has different types on the matched prims: %2 on %3, %4 on %5.")
+                            .arg(attributeText)
+                            .arg(existingType)
+                            .arg(primText)
+                            .arg(QString::fromStdString(existing.conflictTypeName))
+                            .arg(QString::fromStdString(existing.conflictPath));
         }
     }
     if (targets.empty()) {
@@ -444,7 +518,11 @@ USDSetAttribute::renderScene(const SceneRenderActionArgs& args,
 
         return eStatusFailed;
     }
-    clearPersistentMessage(false);
+    if (warnings.isEmpty()) {
+        clearPersistentMessage(false);
+    } else {
+        setPersistentMessage(eMessageTypeWarning, warnings.join(QLatin1Char('\n')).toStdString());
+    }
 
     return eStatusOK;
 } // USDSetAttribute::renderScene

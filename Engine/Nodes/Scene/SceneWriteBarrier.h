@@ -162,6 +162,12 @@ public:
 
     // How many writes have run in this process.
     static U64 getWriteCount();
+
+    // Called, if set, on the writing thread of runExclusive() once the readers have drained: it
+    // holds writerMutex there and has not yet taken the GIL back. Lets a test hold the writer at
+    // the point where a lock-order mistake would show. Pass nullptr to clear.
+    typedef void (*TestHookFunction)(void* context);
+    static void setTestHook(TestHookFunction hook, void* context);
 };
 
 NATRON_NAMESPACE_EXIT

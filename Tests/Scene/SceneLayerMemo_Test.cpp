@@ -36,6 +36,7 @@
 #include "BaseTest.h"
 #include "SceneTestEffect.h"
 
+#include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -44,6 +45,7 @@
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
+#include "Engine/Project.h"
 #include "Engine/SceneLoadSet.h"
 #include "Engine/ScenePayload.h"
 
@@ -523,6 +525,64 @@ TEST_F(SceneLayerChainTest, AKnobEditDuringAuthoringIsNotServedAfterUndo)
     EXPECT_EQ(authored + 1, authorCount(_source));
     ASSERT_TRUE(sceneTestReadSourceValue(payload, &value, &error)) << error;
     EXPECT_EQ(2, value);
+}
+
+namespace {
+class ProjectFrameRateRestorer {
+public:
+    ProjectFrameRateRestorer(KnobDouble* knob,
+                             double original)
+        : _knob(knob)
+        , _original(original)
+    {
+    }
+
+    ~ProjectFrameRateRestorer()
+    {
+        _knob->setValue(_original);
+    }
+
+private:
+    ProjectFrameRateRestorer(const ProjectFrameRateRestorer&);
+    ProjectFrameRateRestorer& operator=(const ProjectFrameRateRestorer&);
+
+    KnobDouble* _knob;
+    double _original;
+};
+} // namespace
+
+// A project rate edit landing while a node reads its knobs leaves the node digest alone but moves
+// the key the layer is emitted under; the layer, read against the old rate, must not be memoized
+// under the new one.
+TEST_F(SceneLayerChainTest, AProjectEditDuringKnobReadsIsNotMemoized)
+{
+    ScenePayload payload;
+    std::string error;
+
+    KnobInt* readKnob = dynamic_cast<KnobInt*>(_last->getKnobByName("upstreamRead").get());
+    ASSERT_TRUE(readKnob != NULL);
+    readKnob->setValue(3);
+    KnobDouble* frameRate = dynamic_cast<KnobDouble*>(getApp()->getProject()->getKnobByName("frameRate").get());
+    ASSERT_TRUE(frameRate != NULL);
+    const double originalFrameRate = getApp()->getProjectFrameRate();
+    ProjectFrameRateRestorer restore(frameRate, originalFrameRate);
+
+    const U64 authoredBefore = authorCount(_last);
+    sceneTestOpReadHook() = [frameRate, originalFrameRate]() {
+        sceneTestOpReadHook() = std::function<void()>();
+        frameRate->setValue(originalFrameRate + 12.);
+    };
+    const EffectInstance::RenderRoIRetCode edited = evaluate(&payload, &error);
+    sceneTestOpReadHook() = std::function<void()>();
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, edited) << error;
+    ASSERT_DOUBLE_EQ(originalFrameRate + 12., getApp()->getProjectFrameRate());
+    EXPECT_EQ(authoredBefore + 1, authorCount(_last));
+
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(&payload, &error)) << error;
+    EXPECT_EQ(authoredBefore + 2, authorCount(_last));
+
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(&payload, &error)) << error;
+    EXPECT_EQ(authoredBefore + 2, authorCount(_last));
 }
 
 TEST_F(SceneLayerChainTest, ChangingTheLastNodeReAuthorsOnlyItsLayer)

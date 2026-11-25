@@ -66,7 +66,7 @@ list(APPEND NatronEngine_HEADERS ${NatronEngineFlow_HEADERS})
 list(APPEND NatronEngine_SOURCES ${NatronEngineFlow_SOURCES})
 # OpenUSD's headers (Nodes/Scene/UsdIncludes.h) include its Python bindings' headers, which need
 # the full Python API, and libshiboken puts Py_LIMITED_API on everything that links it.
-file(GLOB NatronEngineScene_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Scene/*.cpp)
+file(GLOB NatronEngineScene_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Scene/*.cpp)
 set_source_files_properties(${NatronEngineScene_SOURCES} PROPERTIES COMPILE_OPTIONS -UPy_LIMITED_API)
 # The geometry nodes translate to and from USD, so they include the same headers.
 file(GLOB NatronEngineGeometry_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Geometry/*.cpp)

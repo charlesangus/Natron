@@ -107,6 +107,7 @@ ComboBox::ComboBox(QWidget* parent)
     , _align(Qt::AlignLeft | Qt::AlignVCenter | Qt::TextExpandTabs)
     , _currentDelta(0)
     , _elidedWidth(0)
+    , _textToolTip(false)
     , ignoreWheelEvent(false)
 {
     _rootNode = std::make_shared<ComboBoxMenuNode>();
@@ -175,7 +176,7 @@ ComboBox::sizeForWidth(int w) const
         br = fm.boundingRect(0, 0, w / 4, 2000, flags, _currentText);
     }
 
-    const QSize contentsSize(_elidedWidth > 0 ? _elidedWidth : br.width() + hextra, br.height() + vextra);
+    const QSize contentsSize(_elidedWidth > 0 ? std::max(_elidedWidth - contentsMargin.width(), 0) : br.width() + hextra, br.height() + vextra);
 
     return (contentsSize + contentsMargin).expandedTo( minimumSize() );
 } // ComboBox::sizeForWidth
@@ -215,6 +216,10 @@ void
 ComboBox::updateLabel()
 {
     _validHints = false;
+    if (_textToolTip) {
+        const QString current = _currentText.toHtmlEscaped();
+        setToolTip(current.isEmpty() ? _baseToolTip : _baseToolTip + QString::fromUtf8("<p>") + current + QString::fromUtf8("</p>"));
+    }
     updateGeometry(); //< force a call to minmumSizeHint
     update();
     Q_EMIT minimumSizeChanged(_msh);
@@ -795,6 +800,14 @@ ComboBox::setElidedWidth(int w)
         setMaximumWidth(QWIDGETSIZE_MAX);
     }
     updateLabel();
+}
+
+void
+ComboBox::setElidedWidthWithTextToolTip(int w)
+{
+    _baseToolTip = toolTip();
+    _textToolTip = true;
+    setElidedWidth(w);
 }
 
 int

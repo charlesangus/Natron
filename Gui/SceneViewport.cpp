@@ -256,32 +256,6 @@ toSdfPaths(const std::vector<std::string>& paths)
     return result;
 }
 
-// Releases the Python GIL while the calling thread waits for the render thread, if it holds it: a
-// script may have caused the paint, and an evaluation the render thread waits behind may need the GIL.
-class PythonUnlockedWhileWaiting {
-public:
-    PythonUnlockedWhileWaiting()
-        : _state(nullptr)
-    {
-        if (Py_IsInitialized() && PyGILState_Check()) {
-            _state = PyEval_SaveThread();
-        }
-    }
-
-    ~PythonUnlockedWhileWaiting()
-    {
-        if (_state) {
-            PyEval_RestoreThread(_state);
-        }
-    }
-
-    PythonUnlockedWhileWaiting(const PythonUnlockedWhileWaiting&) = delete;
-    PythonUnlockedWhileWaiting& operator=(const PythonUnlockedWhileWaiting&) = delete;
-
-private:
-    PyThreadState* _state;
-};
-
 const double kMinElevation = -89.;
 // The radius framed around a selection without extent, in scene units.
 const double kDefaultFrameRadius = 1.;

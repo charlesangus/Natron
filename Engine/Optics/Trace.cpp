@@ -259,7 +259,6 @@ namespace Optics {
 
     } // namespace
 
-    // GLSL refract(): false on total internal reflection.
     bool
     refract(const Vec3& d,
             const Vec3& n,

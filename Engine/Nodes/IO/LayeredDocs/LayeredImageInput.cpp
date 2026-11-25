@@ -419,6 +419,12 @@ registerBuiltinFormats()
         kra.extensions = { "kra" };
         kra.read = readKra;
         registerFormat(kra, nullptr);
+
+        Format xcf;
+        xcf.name = "natron_xcf";
+        xcf.extensions = { "xcf" };
+        xcf.read = readXcf;
+        registerFormat(xcf, nullptr);
     });
 }
 

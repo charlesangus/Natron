@@ -55,6 +55,7 @@ struct Format {
 std::shared_ptr<LayeredDocument> readOra(const std::string& path, std::string* error);
 std::shared_ptr<LayeredDocument> readPsd(const std::string& path, std::string* error);
 std::shared_ptr<LayeredDocument> readKra(const std::string& path, std::string* error);
+std::shared_ptr<LayeredDocument> readXcf(const std::string& path, std::string* error);
 
 /**
  * @brief Declares the in-tree formats to OIIO, once. Thread-safe.

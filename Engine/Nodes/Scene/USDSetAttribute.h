@@ -67,7 +67,7 @@ public:
         .id = PLUGINID_NATRON_USDSETATTRIBUTE,
         .label = "USDSetAttribute",
         .description = "Set an attribute of any name and type, or a constant primvar, on the prims a pattern matches.",
-        .grouping = PLUGIN_GROUP_3D_USD,
+        .grouping = PLUGIN_GROUP_USD_EDIT,
         .majorVersion = 1,
         .minorVersion = 0,
         .icon = NATRON_IMAGES_PATH "NativeNodes/USDSetAttribute.png",
@@ -112,6 +112,7 @@ private:
     KnobChoiceWPtr _valueType;
     KnobBoolWPtr _primvar;
     KnobPageWPtr _page;
+    PrimPatternCache _matches;
     mutable std::mutex _lock;
     // Under _lock: renders read them while the main thread rebuilds.
     std::string _builtType;

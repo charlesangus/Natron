@@ -54,7 +54,7 @@ public:
         .description = "Define a Scope prim, a grouping with no transform, and place the root prims of every input "
                        "under it. Where two inputs have a root prim of the same name, the later input is stronger, "
                        "unless Auto Rename gives it a free name.",
-        .grouping = PLUGIN_GROUP_3D_USD,
+        .grouping = PLUGIN_GROUP_USD_PRIMS,
         .majorVersion = 1,
         .minorVersion = 0,
         .icon = NATRON_IMAGES_PATH "NativeNodes/USDScopePrim.png",

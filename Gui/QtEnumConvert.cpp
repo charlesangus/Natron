@@ -25,8 +25,12 @@
 
 #include "QtEnumConvert.h"
 
+#include <QAbstractButton>
+#include <QCoreApplication>
 #include <QDebug>
+#include <algorithm>
 #include <stdexcept>
+#include <vector>
 
 NATRON_NAMESPACE_ENTER
 
@@ -1925,6 +1929,156 @@ QtEnumConvert::toQtCursor(CursorEnum c,
 
     return b;
 } // toQtCursor
+
+namespace {
+
+QString
+standardButtonLabel(StandardButtonEnum b)
+{
+    switch (b) {
+    case eStandardButtonOk:
+        return QCoreApplication::translate("StandardButton", "&OK");
+    case eStandardButtonSave:
+        return QCoreApplication::translate("StandardButton", "&Save");
+    case eStandardButtonSaveAll:
+        return QCoreApplication::translate("StandardButton", "Save &All");
+    case eStandardButtonOpen:
+        return QCoreApplication::translate("StandardButton", "&Open");
+    case eStandardButtonYes:
+        return QCoreApplication::translate("StandardButton", "&Yes");
+    case eStandardButtonYesToAll:
+        return QCoreApplication::translate("StandardButton", "Yes to &All");
+    case eStandardButtonNo:
+        return QCoreApplication::translate("StandardButton", "&No");
+    case eStandardButtonNoToAll:
+        return QCoreApplication::translate("StandardButton", "N&o to All");
+    case eStandardButtonAbort:
+        return QCoreApplication::translate("StandardButton", "&Abort");
+    case eStandardButtonRetry:
+        return QCoreApplication::translate("StandardButton", "&Retry");
+    case eStandardButtonIgnore:
+        return QCoreApplication::translate("StandardButton", "&Ignore");
+    case eStandardButtonClose:
+        return QCoreApplication::translate("StandardButton", "&Close");
+    case eStandardButtonCancel:
+        return QCoreApplication::translate("StandardButton", "&Cancel");
+    case eStandardButtonDiscard:
+        return QCoreApplication::translate("StandardButton", "&Discard");
+    case eStandardButtonHelp:
+        return QCoreApplication::translate("StandardButton", "&Help");
+    case eStandardButtonApply:
+        return QCoreApplication::translate("StandardButton", "&Apply");
+    case eStandardButtonReset:
+        return QCoreApplication::translate("StandardButton", "&Reset");
+    case eStandardButtonRestoreDefaults:
+        return QCoreApplication::translate("StandardButton", "Restore &Defaults");
+    case eStandardButtonNoButton:
+    case eStandardButtonEscape:
+        break;
+    }
+
+    return QString();
+}
+
+struct MnemonicSlot {
+    QString text; // label without its ampersand
+    std::vector<int> candidates; // positions in text, the label's own mnemonic first
+    int pick;
+};
+
+// Depth-first so an earlier (higher priority) button keeps its preferred letter whenever the rest still fit.
+bool
+assignMnemonics(std::vector<MnemonicSlot>& slots, std::size_t index, QString& used, bool allowUnlettered)
+{
+    if (index == slots.size()) {
+        return true;
+    }
+    MnemonicSlot& slot = slots[index];
+    for (int at : slot.candidates) {
+        const QChar c = slot.text[at].toLower();
+        if (used.contains(c)) {
+            continue;
+        }
+        slot.pick = at;
+        used.append(c);
+        if (assignMnemonics(slots, index + 1, used, allowUnlettered)) {
+            return true;
+        }
+        used.chop(1);
+    }
+    if (allowUnlettered) {
+        slot.pick = -1;
+
+        return assignMnemonics(slots, index + 1, used, allowUnlettered);
+    }
+
+    return false;
+}
+
+} // anon namespace
+
+void
+QtEnumConvert::setStandardButtonMnemonics(const std::vector<std::pair<StandardButtonEnum, QAbstractButton*>>& buttons)
+{
+    // The answers people reach for first claim their letters before any button that could clash with them.
+    static const StandardButtonEnum priority[] = {
+        eStandardButtonSave,
+        eStandardButtonDiscard,
+        eStandardButtonCancel,
+        eStandardButtonYes,
+        eStandardButtonNo,
+        eStandardButtonOk,
+        eStandardButtonYesToAll,
+        eStandardButtonNoToAll,
+        eStandardButtonSaveAll,
+        eStandardButtonOpen,
+        eStandardButtonAbort,
+        eStandardButtonRetry,
+        eStandardButtonIgnore,
+        eStandardButtonClose,
+        eStandardButtonHelp,
+        eStandardButtonApply,
+        eStandardButtonReset,
+        eStandardButtonRestoreDefaults,
+    };
+    std::vector<MnemonicSlot> slots;
+    std::vector<QAbstractButton*> targets;
+
+    for (StandardButtonEnum which : priority) {
+        for (const std::pair<StandardButtonEnum, QAbstractButton*>& b : buttons) {
+            if ((b.first != which) || !b.second) {
+                continue;
+            }
+            MnemonicSlot slot;
+            slot.text = standardButtonLabel(which);
+            const int amp = std::max(0, (int)slot.text.indexOf(QLatin1Char('&')));
+            slot.text.remove(QLatin1Char('&'));
+            slot.pick = -1;
+            for (int i = 0; i < slot.text.size(); ++i) {
+                const int at = (amp + i) % slot.text.size();
+                if (slot.text[at].isLetter()) {
+                    slot.candidates.push_back(at);
+                }
+            }
+            slots.push_back(slot);
+            targets.push_back(b.second);
+        }
+    }
+
+    // A complete assignment wins over one that leaves a button without a letter.
+    QString used;
+    if (!assignMnemonics(slots, 0, used, false)) {
+        used.clear();
+        assignMnemonics(slots, 0, used, true);
+    }
+    for (std::size_t i = 0; i < slots.size(); ++i) {
+        QString label = slots[i].text;
+        if (slots[i].pick >= 0) {
+            label.insert(slots[i].pick, QLatin1Char('&'));
+        }
+        targets[i]->setText(label);
+    }
+}
 
 NATRON_NAMESPACE_EXIT
 

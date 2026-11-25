@@ -2623,6 +2623,7 @@ NodeGui::setUserSelected(bool b)
     }
     if (changed && _graph) {
         _graph->scheduleLoopBlockRefresh(false);
+        _graph->scheduleSelectionChanged();
     }
     // Selecting a node again still brings its open panel's viewer interface forward.
     if (_settingsPanel) {

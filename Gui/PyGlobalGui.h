@@ -107,6 +107,18 @@ public:
         return Dialogs::questionDialog(title.toStdString(), message.toStdString(), false);
     }
 
+    // Returns [answer, stopAsking]: the dialog also offers a "Do Not Show This Again" checkbox.
+    std::list<int> questionDialogStopAsking(const QString& title,
+                                            const QString& message)
+    {
+        bool stopAsking = false;
+        const StandardButtonEnum answer = Dialogs::questionDialog(title.toStdString(), message.toStdString(), false,
+                                                                  StandardButtons(eStandardButtonYes | eStandardButtonNo),
+                                                                  eStandardButtonNo, &stopAsking);
+
+        return std::list<int> { (int)answer, stopAsking ? 1 : 0 };
+    }
+
     QMenu* nodesMenu() const
     {
         GuiApplicationManager* manager = dynamic_cast<GuiApplicationManager*>(AppManager::instance());

@@ -88,7 +88,7 @@ public:
         .description = "Create a scene holding one camera prim (UsdGeomCamera). "
                        "Focal length and aperture are in millimetres, written in USD's camera units (tenths of a scene unit); "
                        "clipping and focus distance are in scene units. Animated knobs are written as time samples.",
-        .grouping = PLUGIN_GROUP_3D_USD,
+        .grouping = PLUGIN_GROUP_USD_CAMERAS,
         .majorVersion = 1,
         .minorVersion = 0,
         .icon = NATRON_IMAGES_PATH "NativeNodes/USDCamera.png",
@@ -138,6 +138,16 @@ private:
      * node is created or loaded.
      **/
     void stampFileClosure();
+
+    // Once a closed scene's stale layers are gone: keys the node on the files as they are now.
+    void rekeyAfterTeardown();
+
+    /**
+     * @brief Whether a main-thread read of the file for the knobs waits for SceneTeardown to be
+     * idle, after which the camera menu and the file values are read again. selectFirst is kept
+     * for that read.
+     **/
+    bool deferKnobReadWhileTeardownPending(bool selectFirst);
 
     virtual bool knobChanged(KnobI* k,
                              ValueChangedReasonEnum reason,

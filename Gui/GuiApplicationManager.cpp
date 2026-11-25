@@ -27,6 +27,7 @@
 #include "GuiApplicationManagerPrivate.h"
 
 #include <algorithm>
+#include <chrono>
 #include <limits>
 #include <stdexcept>
 
@@ -36,6 +37,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QApplication>
 #include <QColor>
 #include <QDebug>
+#include <QDynamicPropertyChangeEvent>
 #include <QFile>
 #include <QFontDatabase>
 #include <QIcon>
@@ -65,6 +67,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Merge/Merge.h" // PLUGINID_NATRON_NATIVE_MERGE
+#include "Engine/Nodes/Scene/SceneTeardown.h"
 #include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/Plugin.h"
 #include "Engine/PluginActionShortcut.h"
@@ -93,6 +96,99 @@ CLANG_DIAG_ON(uninitialized)
 NATRON_NAMESPACE_ENTER
 
 namespace {
+
+/**
+ * With NATRON_MAIN_HEARTBEAT=1, ticks every 10 ms on the main thread and publishes the gaps between
+ * ticks as properties of itself, a child of the application named natronMainHeartbeat. A script's
+ * timer needs the GIL, so a thread holding it would pass for the main thread stalling; this does not.
+ *
+ * natronMainGapMaxMs and natronMainGapMaxAt: the longest gap and when it began, in epoch seconds.
+ * natronMainGapsOver100: each gap over 100 ms as [ms, began at], oldest first.
+ * Setting natronMainGapReset clears them; setting natronMainGapSample counts the gap up to now, for
+ * a reader that has kept the main thread busy since the last tick. Both act before setProperty()
+ * returns, and only for a value other than the last: Qt sends no change for the same one.
+ **/
+class MainHeartbeat
+    : public QObject {
+public:
+    explicit MainHeartbeat(QObject* parent)
+        : QObject(parent)
+    {
+        setObjectName(QString::fromUtf8("natronMainHeartbeat"));
+        _timer.setTimerType(Qt::PreciseTimer);
+        _timer.setInterval(10);
+        QObject::connect(&_timer, &QTimer::timeout, this, [this]() { tick(); });
+        reset();
+        _timer.start();
+    }
+
+    static bool isWanted()
+    {
+        const QByteArray value = qgetenv("NATRON_MAIN_HEARTBEAT");
+
+        return value == "1";
+    }
+
+protected:
+    virtual bool event(QEvent* e) OVERRIDE FINAL
+    {
+        if (e->type() == QEvent::DynamicPropertyChange) {
+            const QByteArray name = static_cast<QDynamicPropertyChangeEvent*>(e)->propertyName();
+            if (name == "natronMainGapReset") {
+                reset();
+            } else if (name == "natronMainGapSample") {
+                tick();
+            }
+        }
+
+        return QObject::event(e);
+    }
+
+private:
+    void reset()
+    {
+        _last = std::chrono::steady_clock::now();
+        _maxMs = 0.;
+        _maxAt = 0.;
+        _over.clear();
+        publish();
+    }
+
+    void tick()
+    {
+        const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+        const double gapMs = std::chrono::duration<double, std::milli>(now - _last).count();
+        _last = now;
+        const bool longest = gapMs > _maxMs;
+        const bool over = gapMs > 100.;
+        if (!longest && !over) {
+            return;
+        }
+        const double epochNow = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+        const double began = epochNow - gapMs / 1000.;
+        if (longest) {
+            _maxMs = gapMs;
+            _maxAt = began;
+        }
+        if (over) {
+            _over.push_back(QVariant(QVariantList { gapMs, began }));
+        }
+        publish();
+    }
+
+    void publish()
+    {
+        setProperty("natronMainGapMaxMs", _maxMs);
+        setProperty("natronMainGapMaxAt", (_maxMs > 0.) ? QVariant(_maxAt) : QVariant());
+        setProperty("natronMainGapsOver100", _over);
+    }
+
+    QTimer _timer;
+    std::chrono::steady_clock::time_point _last;
+    double _maxMs = 0.;
+    double _maxAt = 0.;
+    QVariantList _over;
+};
 
 StartupGLDiag::QtGLState
 currentQtGLState()
@@ -365,6 +461,9 @@ pixmapEnumToPath(PixmapEnum e)
     case NATRON_PIXMAP_DEEP_GROUPING:
         path = NATRON_ICONS_PATH "natron/deep.svg";
         break;
+    case NATRON_PIXMAP_USD_GROUPING:
+        path = NATRON_ICONS_PATH "natron/usd.svg";
+        break;
     case NATRON_PIXMAP_METADATA_GROUPING:
         path = NATRON_ICONS_PATH "lucide/tags.svg";
         break;
@@ -391,6 +490,12 @@ pixmapEnumToPath(PixmapEnum e)
         break;
     case NATRON_PIXMAP_TIME_GROUPING:
         path = NATRON_ICONS_PATH "lucide/clock.svg";
+        break;
+    case NATRON_PIXMAP_RAW_GROUP:
+        path = NATRON_ICONS_PATH "lucide/aperture.svg";
+        break;
+    case NATRON_PIXMAP_LOOP_GROUP:
+        path = NATRON_ICONS_PATH "lucide/repeat.svg";
         break;
     case NATRON_PIXMAP_PAINT_GROUPING:
         path = NATRON_ICONS_PATH "lucide/brush.svg";
@@ -994,6 +1099,12 @@ GuiApplicationManager::getLinkToMultCursor() const
 bool
 GuiApplicationManager::initGui(const CLArgs& args)
 {
+    // Closing a heavy scene must not freeze the window.
+    SceneTeardown::setDeferred(true);
+    if (MainHeartbeat::isWanted() && qApp && !qApp->findChild<QObject*>(QString::fromUtf8("natronMainHeartbeat"), Qt::FindDirectChildrenOnly)) {
+        new MainHeartbeat(qApp);
+    }
+
     QSettings settings( QString::fromUtf8(NATRON_ORGANIZATION_NAME), QString::fromUtf8(NATRON_APPLICATION_NAME) );
 
     //load custom fonts
@@ -1219,6 +1330,7 @@ NATRON_NAMESPACE_ANONYMOUS_ENTER
 // Group ordering is set at every place in the code where GROUP_ORDER appears in the comments
 const char* const namedGroupsOrdered[] = {
     PLUGIN_GROUP_IMAGE,
+    PLUGIN_GROUP_RAW,
     PLUGIN_GROUP_PAINT,
     PLUGIN_GROUP_TIME,
     PLUGIN_GROUP_CHANNEL,
@@ -1228,6 +1340,7 @@ const char* const namedGroupsOrdered[] = {
     PLUGIN_GROUP_MERGE,
     PLUGIN_GROUP_TRANSFORM,
     PLUGIN_GROUP_3D,
+    PLUGIN_GROUP_USD,
     PLUGIN_GROUP_DEEP,
     PLUGIN_GROUP_METADATA,
     PLUGIN_GROUP_LOOP,
@@ -1249,6 +1362,10 @@ getIconForGrouping(QIcon* icon,
     // Group ordering is set at every place in the code where GROUP_ORDER appears in the comments
     if (grouping == QString::fromUtf8(PLUGIN_GROUP_IMAGE)) {
         e = NATRON_PIXMAP_IO_GROUPING;
+    } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_RAW)) {
+        e = NATRON_PIXMAP_RAW_GROUP;
+    } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_LOOP)) {
+        e = NATRON_PIXMAP_LOOP_GROUP;
     } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_PAINT)) {
         e = NATRON_PIXMAP_PAINT_GROUPING;
     } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_TIME)) {
@@ -1267,6 +1384,8 @@ getIconForGrouping(QIcon* icon,
         e = NATRON_PIXMAP_TRANSFORM_GROUPING;
     } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_3D)) {
         e = NATRON_PIXMAP_3D_GROUPING;
+    } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_USD)) {
+        e = NATRON_PIXMAP_USD_GROUPING;
     } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_DEEP)) {
         e = NATRON_PIXMAP_DEEP_GROUPING;
     } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_METADATA)) {
@@ -1283,12 +1402,47 @@ getIconForGrouping(QIcon* icon,
     appPTR->getIcon(e, size, icon);
 }
 
+QString
+usdSubmenuIconPath(const PluginGroupNode& node)
+{
+    if (!node.hasParent() || node.getChildren().empty() || node.getParent()->hasParent() || node.getParent()->getLabel() != QString::fromUtf8(PLUGIN_GROUP_USD)) {
+        return QString();
+    }
+    const QString& label = node.getLabel();
+    if (label == QString::fromUtf8("Prims")) {
+        return QString::fromUtf8(NATRON_ICONS_PATH "lucide/shapes.svg");
+    }
+    if (label == QString::fromUtf8("Lights")) {
+        return QString::fromUtf8(NATRON_ICONS_PATH "lucide/sun.svg");
+    }
+    if (label == QString::fromUtf8("Cameras")) {
+        return QString::fromUtf8(NATRON_ICONS_PATH "lucide/camera.svg");
+    }
+    if (label == QString::fromUtf8("Materials")) {
+        return QString::fromUtf8(NATRON_ICONS_PATH "lucide/palette.svg");
+    }
+    if (label == QString::fromUtf8("Composition")) {
+        return QString::fromUtf8(NATRON_ICONS_PATH "lucide/layers.svg");
+    }
+    if (label == QString::fromUtf8("Edit")) {
+        return QString::fromUtf8(NATRON_ICONS_PATH "lucide/pencil.svg");
+    }
+    if (label == QString::fromUtf8("Render")) {
+        return QString::fromUtf8(NATRON_ICONS_PATH "lucide/circle-play.svg");
+    }
+    if (label == QString::fromUtf8("IO")) {
+        return QString::fromUtf8(NATRON_ICONS_PATH "lucide/hard-drive.svg");
+    }
+
+    return QString();
+}
+
 void
 makePluginGroupIcons(const PluginGroupNode& node,
                      QIcon* menuIcon,
                      QIcon* toolButtonIcon)
 {
-    const QString& iconPath = node.getIconPath();
+    const QString iconPath = node.getIconPath().isEmpty() ? usdSubmenuIconPath(node) : node.getIconPath();
 
     if (!iconPath.isEmpty() && QFile::exists(iconPath)) {
         int menuSize = TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE);
@@ -1583,6 +1737,36 @@ actionTextLessThan(const QAction* lhs,
     return lhs->text() < rhs->text();
 }
 
+// The USD submenus follow the order of the nodes' workflow rather than the alphabet.
+const char* const usdSubmenusOrdered[] = {
+    "Prims", "Lights", "Cameras", "Materials", "Composition", "Edit", "Render", "IO"
+};
+const int usdSubmenusCount = sizeof(usdSubmenusOrdered) / sizeof(usdSubmenusOrdered[0]);
+
+int
+usdSubmenuRank(const QAction* action)
+{
+    const QString grouping = action->property(kNodesMenuPropGrouping).toString();
+
+    for (int i = 0; i < usdSubmenusCount; ++i) {
+        if (grouping == QString::fromUtf8(usdSubmenusOrdered[i])) {
+            return i;
+        }
+    }
+
+    return usdSubmenusCount;
+}
+
+bool
+usdSubmenuLessThan(const QAction* lhs,
+                   const QAction* rhs)
+{
+    const int lhsRank = usdSubmenuRank(lhs);
+    const int rhsRank = usdSubmenuRank(rhs);
+
+    return lhsRank != rhsRank ? lhsRank < rhsRank : actionTextLessThan(lhs, rhs);
+}
+
 void
 sortPluginOwnedSubmenus(QMenu* menu)
 {
@@ -1590,7 +1774,11 @@ sortPluginOwnedSubmenus(QMenu* menu)
 
     for (int i = 0; i < actions.size(); ++i) {
         if (actions[i]->menu() && isPluginOwned(actions[i])) {
-            orderPluginOwnedActions(actions[i]->menu(), actionTextLessThan);
+            if (actions[i]->property(kNodesMenuPropGrouping).toString() == QString::fromUtf8(PLUGIN_GROUP_USD)) {
+                orderPluginOwnedActions(actions[i]->menu(), usdSubmenuLessThan);
+            } else {
+                orderPluginOwnedActions(actions[i]->menu(), actionTextLessThan);
+            }
             sortPluginOwnedSubmenus(actions[i]->menu());
         }
     }
@@ -1723,7 +1911,8 @@ GuiApplicationManagerPrivate::populateNodesMenuGroup(QMenu* parent,
         QIcon menuIcon, toolButtonIcon;
         makePluginGroupIcons(group, &menuIcon, &toolButtonIcon);
         menu = new Menu(parent);
-        menu->setTitle(escapedMenuText(group.getLabel()));
+        // "/" would nest a submenu in a grouping string, so the I/O segment is spelled IO and only its title shows the slash.
+        menu->setTitle(escapedMenuText(group.getLabel() == QString::fromUtf8("IO") ? QString::fromUtf8("I/O") : group.getLabel()));
         menu->setIcon(menuIcon);
         QAction* menuAction = menu->menuAction();
         menuAction->setProperty(kNodesMenuPropPluginOwned, true);

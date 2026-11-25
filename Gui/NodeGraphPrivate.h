@@ -309,6 +309,7 @@ public:
     QGraphicsItem* _root;
     QGraphicsItem* _nodeRoot; ///< this is the parent of all nodes
     LoopBlockOverlay* _loopBlocks;
+    bool _selectionChangeScheduled = false;
     GpuRegionOverlay* _gpuRegions;
     NodeGraphLowDetailLayer* lowDetailEdgeLayer;
     NodeGraphLowDetailLayer* lowDetailNodeLayer;

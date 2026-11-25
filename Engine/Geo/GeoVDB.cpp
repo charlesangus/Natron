@@ -767,18 +767,38 @@ bool
 geoReadVDBGrid(const std::string& path,
                const std::string& name,
                GeoVDBGridBaseConstPtr* grid,
-               std::string* errorMessage)
+               std::string* errorMessage,
+               int index)
 {
     grid->reset();
     bool found = false;
     const bool opened = withVDBFile(path, errorMessage, [&](openvdb::io::File& file) {
-        if (file.hasGrid(name)) {
-            *grid = file.readGrid(name);
-            found = true;
+        if (index <= 0) {
+            if (file.hasGrid(name)) {
+                *grid = file.readGrid(name);
+                found = true;
+            }
+
+            return;
+        }
+        int seen = 0;
+        for (auto it = file.beginName(); it != file.endName(); ++it) {
+            const std::string unique = it.gridName();
+            if (plainGridName(file, unique) != name) {
+                continue;
+            }
+            if (seen++ == index) {
+                const openvdb::GridBase::Ptr read = file.readGrid(unique);
+                read->setName(name);
+                *grid = read;
+                found = true;
+
+                return;
+            }
         }
     });
     if (opened && !found && errorMessage) {
-        *errorMessage = path + ": no grid is named " + name;
+        *errorMessage = path + ": no grid is named " + name + ((index > 0) ? " at index " + std::to_string(index) : std::string());
     }
 
     return opened && found;
@@ -868,8 +888,7 @@ public:
 } // namespace
 
 bool
-geoWriteVDBFile(const openvdb::GridBase& grid,
-                std::string_view name,
+geoWriteVDBFile(const std::vector<GeoVDBNamedGrid>& grids,
                 const std::string& path,
                 std::string* errorMessage,
                 const GeoVDBAbortFunc& aborted)
@@ -887,11 +906,18 @@ geoWriteVDBFile(const openvdb::GridBase& grid,
         if (!parent.empty()) {
             std::filesystem::create_directories(parent, ec);
         }
-        // The class, vector type and half-float flags are metadata too, so the map is copied whole.
-        openvdb::MetaMap meta(static_cast<const openvdb::MetaMap&>(grid));
-        meta.removeMeta(openvdb::GridBase::META_GRID_NAME);
-        meta.insertMeta(openvdb::GridBase::META_GRID_NAME, openvdb::StringMetadata(std::string(name)));
-        openvdb::GridCPtrVec out { grid.copyGridReplacingMetadata(meta) };
+        openvdb::GridCPtrVec out;
+        out.reserve(grids.size());
+        for (const GeoVDBNamedGrid& named : grids) {
+            if (!named.grid) {
+                throw std::runtime_error("a grid is missing");
+            }
+            // The class, vector type and half-float flags are metadata too, so the map is copied whole.
+            openvdb::MetaMap meta(static_cast<const openvdb::MetaMap&>(*named.grid));
+            meta.removeMeta(openvdb::GridBase::META_GRID_NAME);
+            meta.insertMeta(openvdb::GridBase::META_GRID_NAME, openvdb::StringMetadata(named.name));
+            out.push_back(named.grid->copyGridReplacingMetadata(meta));
+        }
         std::filebuf file;
         if (!file.open(partial, std::ios_base::out | std::ios_base::binary | std::ios_base::trunc)) {
             throw std::runtime_error("the file could not be created");
@@ -920,6 +946,16 @@ geoWriteVDBFile(const openvdb::GridBase& grid,
     return true;
 }
 
+bool
+geoWriteVDBFile(const openvdb::GridBase& grid,
+                std::string_view name,
+                const std::string& path,
+                std::string* errorMessage,
+                const GeoVDBAbortFunc& aborted)
+{
+    return geoWriteVDBFile(std::vector<GeoVDBNamedGrid> { GeoVDBNamedGrid { &grid, std::string(name) } }, path, errorMessage, aborted);
+}
+
 namespace {
 
 CacheDiskTierPtr
@@ -942,24 +978,37 @@ fallbackVDBCacheDirectory()
 } // namespace
 
 bool
-geoEnsureVDBFile(const GeoVDBGrid& grid,
-                 std::string_view name,
+geoEnsureVDBFile(const std::vector<GeoVDBStoredGrid>& grids,
                  const std::string& directory,
                  std::string* path,
                  std::string* errorMessage,
                  const GeoVDBAbortFunc& aborted)
 {
-    if (!grid.computeHashes(aborted)) {
-        path->clear();
-        if (errorMessage) {
-            *errorMessage = "aborted";
-        }
-
-        return false;
-    }
     ContentHasher hasher;
-    hasher.appendU64(grid.contentHash());
-    hasher.appendString(std::string(name));
+    hasher.appendU64(U64(grids.size()));
+    std::vector<GeoVDBNamedGrid> named;
+    named.reserve(grids.size());
+    for (const GeoVDBStoredGrid& stored : grids) {
+        if (!stored.grid) {
+            path->clear();
+            if (errorMessage) {
+                *errorMessage = "a grid is missing";
+            }
+
+            return false;
+        }
+        if (!stored.grid->computeHashes(aborted)) {
+            path->clear();
+            if (errorMessage) {
+                *errorMessage = "aborted";
+            }
+
+            return false;
+        }
+        hasher.appendU64(stored.grid->contentHash());
+        hasher.appendString(stored.name);
+        named.push_back(GeoVDBNamedGrid { stored.grid->grid().get(), stored.name });
+    }
     char hex[17];
     std::snprintf(hex, sizeof(hex), "%016llx", (unsigned long long)hasher.finalize());
     *path = directory + "/" + hex + ".vdb";
@@ -972,7 +1021,7 @@ geoEnsureVDBFile(const GeoVDBGrid& grid,
 
         return true;
     }
-    if (!geoWriteVDBFile(*grid.grid(), name, *path, errorMessage, aborted)) {
+    if (!geoWriteVDBFile(named, *path, errorMessage, aborted)) {
         return false;
     }
     if (tier) {
@@ -980,6 +1029,17 @@ geoEnsureVDBFile(const GeoVDBGrid& grid,
     }
 
     return true;
+}
+
+bool
+geoEnsureVDBFile(const GeoVDBGrid& grid,
+                 std::string_view name,
+                 const std::string& directory,
+                 std::string* path,
+                 std::string* errorMessage,
+                 const GeoVDBAbortFunc& aborted)
+{
+    return geoEnsureVDBFile(std::vector<GeoVDBStoredGrid> { GeoVDBStoredGrid { &grid, std::string(name) } }, directory, path, errorMessage, aborted);
 }
 
 std::string

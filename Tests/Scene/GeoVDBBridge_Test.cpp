@@ -25,6 +25,8 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -37,11 +39,14 @@
 
 #include "Engine/Geo/GeoOpenVDB.h"
 
+#include "Engine/Geo/GeoPacked.h"
 #include "Engine/Geo/GeoVDB.h"
+#include "Engine/Nodes/Geometry/GeoCopyToPoints.h"
 #include "Engine/Nodes/Geometry/GeoUsdConvert.h"
 
 #include <pxr/usd/sdf/assetPath.h>
 #include <pxr/usd/usd/stage.h>
+#include <pxr/usd/usdGeom/pointInstancer.h>
 #include <pxr/usd/usdGeom/xform.h>
 #include <pxr/usd/usdGeom/xformCache.h>
 #include <pxr/usd/usdVol/openVDBAsset.h>
@@ -207,30 +212,120 @@ TEST(GeoVDBBridge, SecondExportReusesTheFile)
     EXPECT_NE(fieldFile(biggerStage, field), file);
 }
 
-TEST(GeoVDBBridge, SameNamedGridsGetSuffixedFields)
+TEST(GeoVDBBridge, ARepeatedFieldNameStartsTheNextVolume)
 {
     QTemporaryDir dir;
     ASSERT_TRUE(dir.isValid());
     const GeoUsdConvert convert(makeVolume({ { makeSphere(1.f), "density" }, { makeSphere(2.f), "density" } }), optionsIn(dir));
+    std::vector<SdfPath> volumes;
+    for (std::size_t i = 0; i < convert.partitionCount(); ++i) {
+        if (convert.partitionKind(i) == eGeoUsdPrimVolume) {
+            volumes.push_back(convert.partitionPath(i));
+        }
+    }
+    ASSERT_EQ(volumes.size(), 2u);
+    const SdfPath root = GeoUsdConvertOptions().rootPath;
+    EXPECT_EQ(volumes[0], root.AppendChild(TfToken("volume_0")));
+    EXPECT_EQ(volumes[1], root.AppendChild(TfToken("volume_1")));
+    EXPECT_EQ(convert.volumeNotes().size(), 1u);
+    EXPECT_TRUE(convert.volumeWriteFailures().empty());
+
+    const UsdStageRefPtr stage = UsdStage::Open(authored(convert));
+    ASSERT_TRUE(static_cast<bool>(stage));
+    std::vector<std::string> files;
+    for (const SdfPath& path : volumes) {
+        const UsdVolVolume::FieldMap fields = UsdVolVolume(stage->GetPrimAtPath(path)).GetFieldPaths();
+        ASSERT_EQ(fields.size(), 1u);
+        EXPECT_EQ(fields.begin()->first, TfToken("density"));
+        files.push_back(fieldFile(stage, fields.begin()->second));
+
+        GeoDetailBuilder b;
+        std::vector<std::string> warnings;
+        std::string err;
+        ASSERT_TRUE(geoUsdReadPrim(stage->GetPrimAtPath(path), UsdTimeCode::Default(), nullptr, b, &warnings, &err)) << err;
+        const GeoDetail back = b.finish();
+        ASSERT_EQ(back.primitiveCount(), GeoIndex(1));
+        EXPECT_EQ(geoVDBName(back, 0), "density");
+    }
+    EXPECT_NE(files[0], files[1]);
+}
+
+TEST(GeoVDBBridge, AVolumesGridsShareOneFile)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const GeoUsdConvert convert(makeVolume({ { makeSphere(1.f), "density" }, { makeSphere(2.f), "temperature" } }), optionsIn(dir));
+    const SdfPath path = volumePath(convert);
+    const UsdStageRefPtr stage = UsdStage::Open(authored(convert));
+    ASSERT_TRUE(static_cast<bool>(stage));
+    EXPECT_TRUE(convert.volumeNotes().empty());
+
+    const UsdVolVolume::FieldMap fields = UsdVolVolume(stage->GetPrimAtPath(path)).GetFieldPaths();
+    ASSERT_EQ(fields.size(), 2u);
+    const SdfPath density = fields.at(TfToken("density"));
+    const SdfPath temperature = fields.at(TfToken("temperature"));
+    const std::string file = fieldFile(stage, density);
+    EXPECT_EQ(fieldFile(stage, temperature), file);
+    for (const auto& [field, prim] : fields) {
+        const UsdVolOpenVDBAsset asset(stage->GetPrimAtPath(prim));
+        TfToken fieldName;
+        int index = -1;
+        asset.GetFieldNameAttr().Get(&fieldName);
+        asset.GetFieldIndexAttr().Get(&index);
+        EXPECT_EQ(fieldName, field);
+        EXPECT_EQ(index, 0);
+    }
+
+    std::vector<std::string> names;
+    std::string err;
+    ASSERT_TRUE(geoVDBFileGridNames(file, &names, &err)) << err;
+    EXPECT_EQ(names, (std::vector<std::string> { "density", "temperature" }));
+    std::size_t files = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(dir.path().toStdString())) {
+        (void)entry;
+        ++files;
+    }
+    EXPECT_EQ(files, 1u);
+}
+
+TEST(GeoVDBBridge, SameNamedGridsOfOneVolumeAreToldApartByFieldIndex)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const openvdb::FloatGrid::Ptr small = makeSphere(1.f);
+    const openvdb::FloatGrid::Ptr large = makeSphere(2.f);
+    GeoDetailBuilder b;
+    geoAppendVDB(b, small, "density");
+    geoAppendVDB(b, large, "density");
+    GeoAttributeDesc fieldDesc;
+    fieldDesc.name = kGeoUsdFieldAttr;
+    fieldDesc.storage = eGeoStorageString;
+    GeoAttribute& recorded = b.addAttribute(eGeoAttribClassPrimitive, fieldDesc);
+    recorded.setString(0, "inner");
+    recorded.setString(1, "outer");
+    const GeoUsdConvert convert(std::make_shared<const GeoDetail>(b.finish()), optionsIn(dir));
     const SdfPath path = volumePath(convert);
     const UsdStageRefPtr stage = UsdStage::Open(authored(convert));
     ASSERT_TRUE(static_cast<bool>(stage));
 
     const UsdVolVolume::FieldMap fields = UsdVolVolume(stage->GetPrimAtPath(path)).GetFieldPaths();
     ASSERT_EQ(fields.size(), 2u);
-    EXPECT_EQ(fields.count(TfToken("density")), 1u);
-    EXPECT_EQ(fields.count(TfToken("density_1")), 1u);
-    EXPECT_EQ(convert.volumeNotes().size(), 1u);
-    EXPECT_TRUE(convert.volumeWriteFailures().empty());
+    int inner = -1;
+    int outer = -1;
+    UsdVolOpenVDBAsset(stage->GetPrimAtPath(fields.at(TfToken("inner")))).GetFieldIndexAttr().Get(&inner);
+    UsdVolOpenVDBAsset(stage->GetPrimAtPath(fields.at(TfToken("outer")))).GetFieldIndexAttr().Get(&outer);
+    EXPECT_EQ(inner, 0);
+    EXPECT_EQ(outer, 1);
 
-    GeoDetailBuilder b;
+    GeoDetailBuilder read;
     std::vector<std::string> warnings;
     std::string err;
-    ASSERT_TRUE(geoUsdReadPrim(stage->GetPrimAtPath(path), UsdTimeCode::Default(), nullptr, b, &warnings, &err)) << err;
-    const GeoDetail back = b.finish();
+    ASSERT_TRUE(geoUsdReadPrim(stage->GetPrimAtPath(path), UsdTimeCode::Default(), nullptr, read, &warnings, &err)) << err;
+    const GeoDetail back = read.finish();
     ASSERT_EQ(back.primitiveCount(), GeoIndex(2));
-    EXPECT_EQ(geoVDBName(back, 0), "density");
-    EXPECT_EQ(geoVDBName(back, 1), "density");
+    std::vector<openvdb::Index64> counts { geoVDBGrid(back, 0)->activeVoxelCount(), geoVDBGrid(back, 1)->activeVoxelCount() };
+    std::sort(counts.begin(), counts.end());
+    EXPECT_EQ(counts, (std::vector<openvdb::Index64> { small->activeVoxelCount(), large->activeVoxelCount() }));
 }
 
 namespace {
@@ -475,6 +570,9 @@ TEST(GeoVDBBridge, ReauthoredFieldsIndexTheirOwnFile)
     QTemporaryDir dir;
     ASSERT_TRUE(dir.isValid());
     const UsdStageRefPtr input = inputVolumeStage(dir);
+    const openvdb::FloatGrid::Ptr first = makeSphere(0.5f);
+    const openvdb::FloatGrid::Ptr second = makeSphere(1.f);
+    ASSERT_TRUE(geoWriteVDBFile({ { first.get(), "density" }, { second.get(), "density" } }, dir.path().toStdString() + "/input-density.vdb", nullptr));
     UsdVolOpenVDBAsset(input->GetPrimAtPath(SdfPath("/scene/vol/densityGrid"))).CreateFieldIndexAttr().Set(1);
 
     GeoDetailBuilder read;
@@ -482,6 +580,12 @@ TEST(GeoVDBBridge, ReauthoredFieldsIndexTheirOwnFile)
     std::string err;
     ASSERT_TRUE(geoUsdReadPrim(input->GetPrimAtPath(SdfPath("/scene/vol")), UsdTimeCode::Default(), nullptr, read, &warnings, &err)) << err;
     const GeoDetailConstPtr both = std::make_shared<const GeoDetail>(read.finish());
+    ASSERT_EQ(both->primitiveCount(), GeoIndex(2));
+    GeoIndex density = 0;
+    if (geoVDBName(*both, 1) == "density") {
+        density = 1;
+    }
+    EXPECT_EQ(geoVDBGrid(*both, density)->activeVoxelCount(), second->activeVoxelCount());
 
     SdfLayerRefPtr converted;
     const UsdStageRefPtr composed = composedOver(input, both, dir, &converted);
@@ -510,4 +614,108 @@ TEST(GeoVDBBridge, EnsuringVolumeFilesPutsBackOneThatIsGone)
     std::filesystem::remove(file);
     ASSERT_TRUE(geoUsdEnsureVolumeFiles(*detail, options, GeoVDBAbortFunc()));
     EXPECT_TRUE(std::filesystem::exists(file));
+}
+
+namespace {
+
+// 500 packed copies of a density volume, on points spread and scaled apart.
+GeoDetailConstPtr
+packedVolumeCopies()
+{
+    constexpr int kCopies = 500;
+    GeoDetailBuilder targets;
+    const GeoOffset first = targets.appendPoints(kCopies);
+    GeoAttribute& pscale = targets.addAttribute(eGeoAttribClassPoint, GeoAttributeDesc { "pscale", eGeoStorageFloat32, 1, eGeoTypeInfoNone, false });
+    for (int i = 0; i < kCopies; ++i) {
+        targets.setPointPosition(first + i, 3. * (i % 25), 3. * (i / 25), 0.5 * i);
+        pscale.set<float>((std::size_t)(first + i), 1.f + 0.01f * i);
+    }
+    const GeoDetail target = targets.finish();
+
+    GeoCopyToPointsParams params;
+    params.packAndInstance = true;
+    params.useTargetOrientations = false;
+    params.useImplicitNormal = false;
+    GeoDetailBuilder out;
+    std::string error;
+    EXPECT_TRUE(copyGeometryToPoints(makeVolume({ { makeSphere(1.f), "density" } }), target, params, out, &error)) << error;
+
+    return std::make_shared<const GeoDetail>(out.finish());
+}
+
+std::size_t
+filesIn(const QTemporaryDir& dir)
+{
+    std::size_t files = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(dir.path().toStdString())) {
+        (void)entry;
+        ++files;
+    }
+
+    return files;
+}
+
+} // namespace
+
+TEST(GeoVDBBridge, PackedVolumeCopiesAreOnePrototypeOfAPointInstancer)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const GeoDetailConstPtr copies = packedVolumeCopies();
+    ASSERT_EQ(copies->primitiveCount(), GeoIndex(500));
+    const GeoUsdConvert convert(copies, optionsIn(dir));
+    EXPECT_TRUE(convert.volumeWriteFailures().empty());
+    SdfPath instancerPath;
+    for (std::size_t i = 0; i < convert.partitionCount(); ++i) {
+        EXPECT_NE(convert.partitionKind(i), eGeoUsdPrimVolume);
+        if (convert.partitionKind(i) == eGeoUsdPrimInstancer) {
+            EXPECT_TRUE(instancerPath.IsEmpty());
+            instancerPath = convert.partitionPath(i);
+        }
+    }
+    ASSERT_FALSE(instancerPath.IsEmpty());
+    EXPECT_EQ(filesIn(dir), 1u);
+
+    const UsdStageRefPtr stage = UsdStage::Open(authored(convert));
+    ASSERT_TRUE(static_cast<bool>(stage));
+    const UsdGeomPointInstancer instancer(stage->GetPrimAtPath(instancerPath));
+    ASSERT_TRUE(static_cast<bool>(instancer));
+    VtMatrix4dArray xforms;
+    ASSERT_TRUE(instancer.ComputeInstanceTransformsAtTime(&xforms, UsdTimeCode::Default(), UsdTimeCode::Default()));
+    ASSERT_EQ(xforms.size(), 500u);
+    for (std::size_t i = 0; i < xforms.size(); ++i) {
+        const GeoMatrix4 expected = geoPackedTransform(*copies, copies->primitiveMap().offsetFromIndex(GeoIndex(i)));
+        const GeoMatrix4 got = geoMatrixFromUsd(xforms[i]);
+        for (std::size_t k = 0; k < 16; ++k) {
+            ASSERT_NEAR(got[k], expected[k], 1e-3 * (1. + std::abs(expected[k]))) << "instance " << i << " element " << k;
+        }
+    }
+
+    SdfPathVector prototypes;
+    instancer.GetPrototypesRel().GetTargets(&prototypes);
+    ASSERT_EQ(prototypes.size(), 1u);
+    std::vector<UsdVolVolume> volumes;
+    for (const UsdPrim& prim : stage->Traverse()) {
+        if (prim.IsA<UsdVolVolume>()) {
+            volumes.emplace_back(prim);
+        }
+    }
+    ASSERT_EQ(volumes.size(), 1u);
+    EXPECT_TRUE(volumes[0].GetPath().HasPrefix(prototypes[0]));
+    const UsdVolVolume::FieldMap fields = volumes[0].GetFieldPaths();
+    ASSERT_EQ(fields.size(), 1u);
+    EXPECT_TRUE(fields.begin()->second.HasPrefix(prototypes[0]));
+    const UsdVolOpenVDBAsset asset(stage->GetPrimAtPath(fields.begin()->second));
+    ASSERT_TRUE(static_cast<bool>(asset));
+    TfToken fieldName;
+    asset.GetFieldNameAttr().Get(&fieldName);
+    EXPECT_EQ(fieldName, TfToken("density"));
+    const std::string file = fieldFile(stage, fields.begin()->second);
+    EXPECT_EQ(std::filesystem::path(file).parent_path(), std::filesystem::path(dir.path().toStdString()));
+    EXPECT_TRUE(std::filesystem::exists(file));
+
+    std::filesystem::remove(file);
+    ASSERT_TRUE(geoUsdEnsureVolumeFiles(*copies, optionsIn(dir), GeoVDBAbortFunc()));
+    EXPECT_TRUE(std::filesystem::exists(file));
+    EXPECT_EQ(filesIn(dir), 1u);
 }

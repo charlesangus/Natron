@@ -295,3 +295,58 @@ TEST(GeoVDBTest, EnsuredFileIsWrittenOnceAndAgainWhenGone)
     EXPECT_EQ(again, path);
     EXPECT_TRUE(std::filesystem::exists(path));
 }
+
+TEST(GeoVDBTest, AFileOfSeveralGridsHoldsThemInOrderAndIsNamedByAllOfThem)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const openvdb::FloatGrid::Ptr sphere = makeSphere();
+    const GeoVDBGrid density(sphere);
+    const GeoVDBGrid temperature(makeSphere(2.f));
+    std::string path;
+    std::string error;
+    ASSERT_TRUE(geoEnsureVDBFile({ { &density, "density" }, { &temperature, "temperature" } }, dir.path().toStdString(), &path, &error)) << error;
+    std::vector<std::string> names;
+    ASSERT_TRUE(geoVDBFileGridNames(path, &names, &error)) << error;
+    EXPECT_EQ(names, (std::vector<std::string> { "density", "temperature" }));
+
+    std::string again;
+    ASSERT_TRUE(geoEnsureVDBFile({ { &density, "density" }, { &temperature, "temperature" } }, dir.path().toStdString(), &again, &error)) << error;
+    EXPECT_EQ(again, path);
+
+    std::string renamed;
+    ASSERT_TRUE(geoEnsureVDBFile({ { &density, "density" }, { &temperature, "heat" } }, dir.path().toStdString(), &renamed, &error)) << error;
+    EXPECT_NE(renamed, path);
+
+    const openvdb::FloatGrid::Ptr moved = sphere->copy();
+    moved->setTransform(openvdb::math::Transform::createLinearTransform(0.2));
+    const GeoVDBGrid movedDensity(moved);
+    std::string elsewhere;
+    ASSERT_TRUE(geoEnsureVDBFile({ { &movedDensity, "density" }, { &temperature, "temperature" } }, dir.path().toStdString(), &elsewhere, &error)) << error;
+    EXPECT_NE(elsewhere, path);
+
+    std::string alone;
+    ASSERT_TRUE(geoEnsureVDBFile({ { &density, "density" } }, dir.path().toStdString(), &alone, &error)) << error;
+    EXPECT_NE(alone, path);
+}
+
+TEST(GeoVDBTest, AnIndexReadsALaterGridOfTheSameName)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const openvdb::FloatGrid::Ptr small = makeSphere(1.f);
+    const openvdb::FloatGrid::Ptr large = makeSphere(2.f);
+    const std::string path = dir.path().toStdString() + "/twice.vdb";
+    std::string error;
+    ASSERT_TRUE(geoWriteVDBFile({ { small.get(), "density" }, { large.get(), "density" } }, path, &error)) << error;
+
+    GeoVDBGridBaseConstPtr first;
+    GeoVDBGridBaseConstPtr second;
+    ASSERT_TRUE(geoReadVDBGrid(path, "density", &first, &error)) << error;
+    ASSERT_TRUE(geoReadVDBGrid(path, "density", &second, &error, 1)) << error;
+    EXPECT_EQ(first->activeVoxelCount(), small->activeVoxelCount());
+    EXPECT_EQ(second->activeVoxelCount(), large->activeVoxelCount());
+    EXPECT_EQ(second->getName(), "density");
+    GeoVDBGridBaseConstPtr missing;
+    EXPECT_FALSE(geoReadVDBGrid(path, "density", &missing, &error, 2));
+}

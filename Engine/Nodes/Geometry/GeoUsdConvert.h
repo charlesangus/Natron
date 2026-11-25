@@ -189,15 +189,20 @@ GeoUsdInputSceneConstPtr geoUsdCaptureInputScene(const PXR_NS::UsdStageRefPtr& s
  * normal and vector attributes then follow the points back into prim space.
  *
  * VDB primitives sharing a `path` (the `name` attribute names their grids, not their prim)
- * become one UsdVolVolume, unpathed ones volume_0 under the root. Each grid is written once to a
- * content-addressed file under the volume directory (geoEnsureVDBFile()) and becomes an
- * OpenVDBAsset child prim named after the grid, bound by a field:<name> relationship. The file
- * stores the grid under, and the field's fieldName names it by, the grid's name, else the field
- * it was read through, else "field"; fieldIndex is 0. A second
- * grid of the same name in one volume gets a suffixed field name, noted in volumeNotes(). Grid
+ * gather into one UsdVolVolume, unpathed ones into volume_0 under the root. In primitive order, a
+ * field name already in the current volume starts the next one: the volumes of one path are its
+ * volume_0, volume_1... children (under the root when unpathed), noted in volumeNotes(). Each grid
+ * becomes an OpenVDBAsset child prim named after its field, the grid's name, else the field it
+ * was read through, else "field", bound by a field:<name> relationship. All of a volume's grids
+ * are written, in primitive order, to one content-addressed file under the volume directory
+ * (geoEnsureVDBFile()), which every field's filePath names. The file stores each grid under, and
+ * its field's fieldName names it by, the grid's name, else the field it was read through, else
+ * "field"; fieldIndex tells same-named grids of the file apart and is 0 for the others. Grid
  * transforms are in the space of the volume prim, as points are: a new prim gets an identity
  * transform and an over keeps the input's, unless the detail is in world space, when the volume
- * prim's transform cancels its parents'.
+ * prim's transform cancels its parents'. Packed geometry holding volumes becomes a point
+ * instancer as any other, so a volume copied by packed primitives is one prototype and one file
+ * however many copies there are.
  *
  * With an input scene, a partition read from USD (kGeoUsdSourceAttr) whose prim the input holds
  * becomes an over of it. Meshes, curves and points of the input's type then carry points, plus
@@ -249,7 +254,7 @@ public:
         return _shearedInstances;
     }
 
-    /** @brief The volume fields renamed because another grid of the volume has the same name. */
+    /** @brief The paths whose grids make several volumes, and the fields renamed for an input's field prims. */
     const std::vector<std::string>& volumeNotes() const
     {
         return _volumeNotes;
@@ -367,11 +372,11 @@ private:
 PXR_NS::GfMatrix4d geoUsdMatrix(const GeoMatrix4& m);
 
 /**
- * @brief Ensures the file of every VDB primitive of @p detail is in place as GeoUsdConvert writes
- * it, under @p options' volume directory: marks a file found as used, and writes one that is gone,
- * such as after the disk cache was cleared or evicted it. Asks @p aborted between and within
- * grids (geoEnsureVDBFile()) and returns false once it says so; a write that fails is left for
- * GeoUsdConvert to report.
+ * @brief Ensures the file of every volume of @p detail and of the packed geometry in it is in
+ * place as GeoUsdConvert writes it, under @p options' volume directory: marks a file found as
+ * used, and writes one that is gone, such as after the disk cache was cleared or evicted it. Asks
+ * @p aborted between and within files (geoEnsureVDBFile()) and returns false once it says so; a
+ * write that fails is left for GeoUsdConvert to report.
  **/
 bool geoUsdEnsureVolumeFiles(const GeoDetail& detail,
                              const GeoUsdConvertOptions& options,

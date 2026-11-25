@@ -90,7 +90,13 @@ public:
                        "USDToGeo overrides the prim it was read from in place when the Scene input still holds it, "
                        "so once edited it comes back where it was read from; if that prim is gone it goes under "
                        "Root Path. Other geometry only defines new prims: a path outside Root Path that the Scene "
-                       "input already holds goes under Root Path, with a warning. The geometry is served to the scene as it is, "
+                       "input already holds goes under Root Path, with a warning. VDB primitives become Volume prims, "
+                       "their grids the fields: grids sharing a path gather into one volume, and a field name that repeats "
+                       "starts the next volume. Each volume's grids are written together to one .vdb file in the disk cache. "
+                       "Packed copies of a volume, unless Packed Primitives unpacks them, share one prototype written "
+                       "once however many copies there are; MoonRay renders instanced volumes without transform motion "
+                       "blur. "
+                       "The geometry is served to the scene as it is, "
                        "without a copy; Copy Into Layer copies it into the node's layer instead.",
         .grouping = PLUGIN_GROUP_GEOMETRY,
         .majorVersion = 1,

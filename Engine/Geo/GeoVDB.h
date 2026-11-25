@@ -229,30 +229,60 @@ bool geoReadVDBFile(const std::string& path,
                     std::string* errorMessage,
                     const GeoVDBAbortFunc& aborted = GeoVDBAbortFunc());
 
-/** @brief Reads the first grid named @p name from the .vdb file at @p path. */
+/**
+ * @brief Reads the grid named @p name from the .vdb file at @p path: the first one, or with
+ * @p index the one after @p index others of that name, in file order.
+ **/
 bool geoReadVDBGrid(const std::string& path,
                     const std::string& name,
                     GeoVDBGridBaseConstPtr* grid,
-                    std::string* errorMessage);
+                    std::string* errorMessage,
+                    int index = 0);
+
+/** @brief A grid to write to a file and the name it is stored under there. */
+struct GeoVDBNamedGrid {
+    const openvdb::GridBase* grid = nullptr;
+    std::string name;
+};
 
 /**
- * @brief Writes @p grid, named @p name, as the only grid of the .vdb file at @p path. The file
- * is written next to its final name under a dot-prefixed name and renamed into place, so a reader
- * never sees half of it. @p aborted is asked every few megabytes written; once it says so, the
- * partial file is removed and the write fails.
+ * @brief Writes @p grids, in order and each under its name, as the grids of the .vdb file at
+ * @p path; same-named grids keep their order. The file is written next to its final name under a
+ * dot-prefixed name and renamed into place, so a reader never sees half of it. @p aborted is asked
+ * every few megabytes written; once it says so, the partial file is removed and the write fails.
  **/
+bool geoWriteVDBFile(const std::vector<GeoVDBNamedGrid>& grids,
+                     const std::string& path,
+                     std::string* errorMessage,
+                     const GeoVDBAbortFunc& aborted = GeoVDBAbortFunc());
+
+/** @brief As above, @p grid named @p name the only grid of the file. */
 bool geoWriteVDBFile(const openvdb::GridBase& grid,
                      std::string_view name,
                      const std::string& path,
                      std::string* errorMessage,
                      const GeoVDBAbortFunc& aborted = GeoVDBAbortFunc());
 
+/** @brief A shared grid to store in a content-addressed file and the name it is stored under. */
+struct GeoVDBStoredGrid {
+    const GeoVDBGrid* grid = nullptr;
+    std::string name;
+};
+
 /**
- * @brief The content-addressed file of @p grid stored as @p name, <directory>/<hash>.vdb, written
- * when absent. The hash covers the grid's content hash and the name, which the file holds. In the
- * disk tier's files section, a file found is marked used and a file written is charged to the tier.
- * Hashing and writing ask @p aborted as GeoVDBGrid::computeHashes() and geoWriteVDBFile() do.
+ * @brief The content-addressed file of @p grids, <directory>/<hash>.vdb, written when absent with
+ * the grids in order (geoWriteVDBFile()). The hash covers, in order, every grid's content hash
+ * (value type, class, transform and tree) and the name it is stored under. In the disk tier's
+ * files section, a file found is marked used and a file written is charged to the tier. Hashing
+ * and writing ask @p aborted as GeoVDBGrid::computeHashes() and geoWriteVDBFile() do.
  **/
+bool geoEnsureVDBFile(const std::vector<GeoVDBStoredGrid>& grids,
+                      const std::string& directory,
+                      std::string* path,
+                      std::string* errorMessage,
+                      const GeoVDBAbortFunc& aborted = GeoVDBAbortFunc());
+
+/** @brief As above, @p grid stored as @p name the only grid of the file. */
 bool geoEnsureVDBFile(const GeoVDBGrid& grid,
                       std::string_view name,
                       const std::string& directory,

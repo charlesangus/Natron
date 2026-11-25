@@ -47,10 +47,14 @@ Cut GitHub runner slot use. The 20-concurrent-job cap is the bottleneck, not bui
   - approach: when the branch's newest ccache entry predates the latest merge of main into the branch, restore `ccache-linux-<preset>-main-` first. Check the merge commit's date against the cache entry's date (`gh api` cache list or `actions/cache/restore` lookup-only), and fall back to the current order otherwise.
   - verify: on a branch just merged with main, the log shows the main entry restored and a higher hit rate than the prior run of that branch.
   - size: M
-- [ ] M599.P2.T3 — Find and fix near-zero remote ccache hits on fast builds
+- [ ] M599.P2.T3 — Make remote ccache stats readable (no hit-rate fault exists)
   - files: `tools/ci/ccache-remote-setup.sh`, `tools/ci/ccache-remote-layout.sh`, `.github/workflows/remote-build.yml` (ccache env), `CMakePresets.json` (fast preset)
   - approach: fast builds hit 19/1313 and 0/23 remotely while debug hits 55/60. Compare `ccache -p` and the remote layout key for fast and debug: compiler flags that differ per run (`-ffile-prefix-map`, absolute paths, timestamps), `CCACHE_BASEDIR`, `hash_dir`, and a layout key that includes the preset or run id. Fix the cause in the setup script or preset.
-  - verify: two consecutive fast gates on the same SHA: the second shows a remote hit rate above 90% in `ccache -s`; the debug hit rate doesn't drop.
+  - verify: on a branch gate right after a main merge, remote hits are at least 90% of the local misses outside the TUs the branch changed; the "Show ccache stats" step prints a one-line summary (remote hits / local misses; true compiles = remote misses) and the masked remote_storage/base_dir/hash_dir/compiler_check config.
   - size: L
 
 **Verification gate:** actionlint passes on every changed workflow. A full remote gate with `--tests --gui` on at least 12 scripts is green. The PR body has a before/after table of job count, peak concurrent runner slots and wall time, for that gate and for one PR CI run.
+
+## Decisions
+- 2026-11-25 (PM, opus consultant over 62 Build jobs) — Remote ccache works: the 'Remote storage: Hits x/y' denominator is local misses, so misses are TUs nobody compiled yet. Runs restoring main's entry hit 97-99% remotely (796/801, 906/928, 1738/1744); runs restoring their own branch entry miss only the TUs they changed. "19/1313" was F15 right after a main merge (main+F15 combos never built); "0/23" was 15 new .cpp files; debug "55/60" was a same-SHA re-run. The only avoidable cost is branches whose workflow predates M493 (no remote at all) — fixed by merging main. P2.T3 becomes a readability change (stats summary + masked config) with a rewritten verify; no ccache config fix.
+- 2026-11-25 (PM) — Draft PR #379 live check: on a draft, Build·debug/release, Dev image and Test were skipped; only Format, Lint CI, Code rules and the deliberately failing Build and test ran.

@@ -106,16 +106,15 @@ protected:
         return second;
     }
 
-    // Renders root's RGBA through the given scheduler and returns its first pixel's red, or -1.
+    // Renders root's RGBA through the scheduler and returns its first pixel's red, or -1.
     float renderFirstPixel(const NodePtr& root,
-                           RenderSchedulerModeEnum mode,
                            double time,
                            ViewIdx view)
     {
         std::vector<RenderedPlane> planes;
         std::string error;
         const RectI roi(0, 0, kCountingTestSize, kCountingTestSize);
-        if (!renderNodePlanesInMode(root, time, view, 0 /*mipmapLevel*/, roi, std::list<ImageLayerDesc>(), mode, true /*byPassCache*/, &planes, &error)) {
+        if (!renderNodePlanesScheduled(root, time, view, 0 /*mipmapLevel*/, roi, true /*byPassCache*/, &planes, &error)) {
             ADD_FAILURE() << error;
 
             return -1.f;
@@ -181,8 +180,7 @@ TEST_F(IdentityHop, TimeShiftChainPullsTheDoublyShiftedSource)
     ASSERT_TRUE(bool(chain));
     const float expected = identityHopFrameValue(kHopTime - 2., ViewIdx(0));
 
-    EXPECT_EQ(expected, renderFirstPixel(chain, eRenderSchedulerModeLegacy, kHopTime, ViewIdx(0)));
-    EXPECT_EQ(expected, renderFirstPixel(chain, eRenderSchedulerModeTaskGraph, kHopTime, ViewIdx(0)));
+    EXPECT_EQ(expected, renderFirstPixel(chain, kHopTime, ViewIdx(0)));
 }
 
 // The same chain as input B of a node that is an identity of B over every tile but the one holding
@@ -276,8 +274,7 @@ TEST_F(IdentityHop, SelfIdentityAtAnotherViewRendersThatView)
     ASSERT_TRUE(bool(node));
     const float expected = identityHopFrameValue(kHopTime, ViewIdx(0));
 
-    EXPECT_EQ(expected, renderFirstPixel(node, eRenderSchedulerModeLegacy, kHopTime, ViewIdx(1)));
-    EXPECT_EQ(expected, renderFirstPixel(node, eRenderSchedulerModeTaskGraph, kHopTime, ViewIdx(1)));
+    EXPECT_EQ(expected, renderFirstPixel(node, kHopTime, ViewIdx(1)));
 }
 
 // The deep path takes the same hop: view 1 is the node's deep image at view 0.

@@ -71,26 +71,6 @@ const int kHeight = 24;
 const int kUnset = std::numeric_limits<int>::min();
 const int kUnbounded = std::numeric_limits<int>::max();
 
-class SchedulerModeGuard {
-public:
-    explicit SchedulerModeGuard(RenderSchedulerModeEnum mode)
-        : _saved(appPTR->getRenderSchedulerMode())
-    {
-        appPTR->setRenderSchedulerMode(mode);
-    }
-
-    ~SchedulerModeGuard()
-    {
-        appPTR->setRenderSchedulerMode(_saved);
-    }
-
-    SchedulerModeGuard(const SchedulerModeGuard&) = delete;
-    SchedulerModeGuard& operator=(const SchedulerModeGuard&) = delete;
-
-private:
-    RenderSchedulerModeEnum _saved;
-};
-
 std::string
 numbered(const std::string& stem,
          int frame)
@@ -481,13 +461,13 @@ TEST_F(NativeWriteRangeTest, TheFileNameIsTheSubLabel)
     EXPECT_EQ(std::string("label.####.exr"), _writer->getSublabel());
 }
 
-TEST_F(NativeWriteRangeTest, BothSchedulerModesWriteTheSameFilesWithoutUnplannedPulls)
+TEST_F(NativeWriteRangeTest, WritesEveryFrameOfTheRangeWithoutUnplannedPulls)
 {
     std::shared_ptr<std::mutex> mutex = std::make_shared<std::mutex>();
     std::shared_ptr<std::vector<ObservedFrame>> observed = std::make_shared<std::vector<ObservedFrame>>();
 
     DefaultScheduler::setFrameStatsObserverForTests([mutex, observed](int time, ViewIdx /*view*/, const RenderStatsPtr& stats) {
-        if (!stats || (appPTR->getRenderSchedulerMode() != eRenderSchedulerModeTaskGraph)) {
+        if (!stats) {
             return;
         }
         ObservedFrame frame;
@@ -497,30 +477,16 @@ TEST_F(NativeWriteRangeTest, BothSchedulerModesWriteTheSameFilesWithoutUnplanned
         observed->push_back(frame);
     });
 
-    setFile(_writer, pathOf("legacy.####.exr"));
-    {
-        SchedulerModeGuard mode(eRenderSchedulerModeLegacy);
-        render(_writer, 1, 3, 1);
-    }
     setFile(_writer, pathOf("graph.####.exr"));
-    {
-        SchedulerModeGuard mode(eRenderSchedulerModeTaskGraph);
-        render(_writer, 1, 3, 1);
-    }
+    render(_writer, 1, 3, 1);
 
     for (int frame = 1; frame <= 3; ++frame) {
         SCOPED_TRACE(frame);
-        OIIO::ImageSpec legacySpec;
-        OIIO::ImageSpec graphSpec;
-        std::vector<float> legacyPixels;
-        std::vector<float> graphPixels;
+        OIIO::ImageSpec spec;
+        std::vector<float> pixels;
 
-        ASSERT_TRUE(readPixels(pathOf(numbered("legacy", frame)), &legacySpec, &legacyPixels));
-        ASSERT_TRUE(readPixels(pathOf(numbered("graph", frame)), &graphSpec, &graphPixels));
-        EXPECT_EQ(legacySpec.width, graphSpec.width);
-        EXPECT_EQ(legacySpec.height, graphSpec.height);
-        EXPECT_EQ(legacySpec.nchannels, graphSpec.nchannels);
-        EXPECT_TRUE(legacyPixels == graphPixels);
+        ASSERT_TRUE(readPixels(pathOf(numbered("graph", frame)), &spec, &pixels));
+        EXPECT_FALSE(pixels.empty());
     }
 
     std::lock_guard<std::mutex> lock(*mutex);

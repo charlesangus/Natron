@@ -348,7 +348,6 @@ protected:
         , _rendering(false)
         , _probeStarted(false)
         , _probeInHook(false)
-        , _savedMode(eRenderSchedulerModeLegacy)
         , _viewer(0)
     {
     }
@@ -356,8 +355,6 @@ protected:
     virtual void SetUp() OVERRIDE
     {
         BaseTest::SetUp();
-        _savedMode = appPTR->getRenderSchedulerMode();
-        appPTR->setRenderSchedulerMode(eRenderSchedulerModeTaskGraph);
         CountingTestRegistry::reset();
         ProjectPtr project = getApp()->getProject();
         project->reset(false, true);
@@ -376,7 +373,6 @@ protected:
         _viewerNode.reset();
         _slow.reset();
         getApp()->getProject()->reset(false, true);
-        appPTR->setRenderSchedulerMode(_savedMode);
         BaseTest::TearDown();
     }
 
@@ -457,7 +453,6 @@ protected:
     bool _probeInHook;
     RenderEnginePtr _probeEngine;
     AbortProbe _probe;
-    RenderSchedulerModeEnum _savedMode;
     ViewerInstance* _viewer;
     AbortFakeViewerUi _ui;
 };

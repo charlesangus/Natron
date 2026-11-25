@@ -117,19 +117,22 @@ blurRangeViolation(const std::vector<float>& pixels,
     return out.str();
 }
 
-// The colour plane of node over window (pixels at mipmapLevel), as RGBA from the bottom row.
+// The colour plane of node over window (pixels at mipmapLevel), as RGBA from the bottom row, from a
+// frame run by the scheduler or a direct pull.
 inline bool
 renderBlurRangePlane(const NodePtr& node,
                      double time,
                      unsigned int mipmapLevel,
                      const RectI& window,
-                     RenderSchedulerModeEnum mode,
+                     bool scheduled,
                      bool byPassCache,
                      std::vector<float>* pixels,
                      std::string* error)
 {
     std::vector<RenderedPlane> planes;
-    if (!renderNodePlanesInMode(node, time, ViewIdx(0), mipmapLevel, window, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), mode, byPassCache, &planes, error)) {
+    const bool rendered = scheduled ? renderNodePlanesScheduled(node, time, ViewIdx(0), mipmapLevel, window, byPassCache, &planes, error)
+                                    : renderNodePlanesDirect(node, time, ViewIdx(0), mipmapLevel, window, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, error, byPassCache);
+    if (!rendered) {
         return false;
     }
     for (const RenderedPlane& plane : planes) {

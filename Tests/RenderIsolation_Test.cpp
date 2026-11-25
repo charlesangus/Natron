@@ -875,16 +875,13 @@ TEST_F(RenderIsolation, RefusedEditRenderStress)
     ASSERT_TRUE(bool(_writer));
 
     struct StressScope {
-        RenderSchedulerModeEnum savedMode;
         int savedPoolThreads;
         int savedParallelRenders;
 
         StressScope()
-            : savedMode(appPTR->getRenderSchedulerMode())
-            , savedPoolThreads(QThreadPool::globalInstance()->maxThreadCount())
+            : savedPoolThreads(QThreadPool::globalInstance()->maxThreadCount())
             , savedParallelRenders(appPTR->getCurrentSettings()->getNumberOfParallelRenders())
         {
-            appPTR->setRenderSchedulerMode(eRenderSchedulerModeTaskGraph);
             // Room for more frame threads than the caps below allow, whatever the runner's core count.
             QThreadPool::globalInstance()->setMaxThreadCount(std::max(6, savedPoolThreads));
         }
@@ -893,7 +890,6 @@ TEST_F(RenderIsolation, RefusedEditRenderStress)
         {
             appPTR->getCurrentSettings()->setNumberOfParallelRenders(savedParallelRenders);
             QThreadPool::globalInstance()->setMaxThreadCount(savedPoolThreads);
-            appPTR->setRenderSchedulerMode(savedMode);
         }
     } stress;
 

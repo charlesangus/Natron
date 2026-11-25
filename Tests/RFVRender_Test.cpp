@@ -135,6 +135,11 @@ waitUntil(const std::function<bool()>& done)
 class RFVRender
     : public BaseTest {
 protected:
+    enum RenderPull {
+        eRenderPullScheduled,
+        eRenderPullDirect
+    };
+
     virtual void SetUp() OVERRIDE
     {
         BaseTest::SetUp();
@@ -307,10 +312,10 @@ protected:
         return stat;
     }
 
-    // Renders root's RGBA at time and view through the given scheduler, bypassing the cache
+    // Renders root's RGBA at time and view through the given pull, bypassing the cache
     // unless told otherwise, and returns its first pixel's red, or -1.
     float renderFirstPixel(const NodePtr& root,
-                           RenderSchedulerModeEnum mode,
+                           RenderPull mode,
                            double time = 1.,
                            ViewIdx view = ViewIdx(0),
                            bool byPassCache = true)
@@ -318,7 +323,7 @@ protected:
         std::vector<RenderedPlane> planes;
         std::string error;
         const RectI roi(0, 0, kCountingTestSize, kCountingTestSize);
-        if (!renderNodePlanesInMode(root, time, view, 0 /*mipmapLevel*/, roi, std::list<ImageLayerDesc>(), mode, byPassCache, &planes, &error)) {
+        if (!(mode == eRenderPullScheduled) ? renderNodePlanesScheduled(root, time, view, 0 /*mipmapLevel*/, roi, byPassCache, &planes, &error) : renderNodePlanesDirect(root, time, view, 0 /*mipmapLevel*/, roi, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error, byPassCache)) {
             ADD_FAILURE() << error;
 
             return -1.f;
@@ -498,8 +503,8 @@ TEST_F(RFVRender, GraphWithoutASetSeesTheProjectValue)
     addProjectDouble("p", 4.);
     NodePtr reader = createReader("rfv.p or 0");
     ASSERT_TRUE(bool(reader));
-    EXPECT_EQ(4.f, renderFirstPixel(reader, eRenderSchedulerModeTaskGraph));
-    EXPECT_EQ(4.f, renderFirstPixel(reader, eRenderSchedulerModeLegacy));
+    EXPECT_EQ(4.f, renderFirstPixel(reader, eRenderPullScheduled));
+    EXPECT_EQ(4.f, renderFirstPixel(reader, eRenderPullDirect));
 }
 
 // A -> Set1 and A -> Set2 -> Merge: A renders once per Set, its context-free ancestor once.
@@ -536,12 +541,12 @@ TEST_F(RFVRender, DiamondRendersTheReaderOncePerSet)
 
     CountingTestRegistry::reset();
     // The merge holds its value 1 plus the reader under v = 1 (1 + 1) and under v = 2 (2 + 1).
-    EXPECT_EQ(1.f + 2.f + 3.f, renderFirstPixel(merge, eRenderSchedulerModeTaskGraph));
+    EXPECT_EQ(1.f + 2.f + 3.f, renderFirstPixel(merge, eRenderPullScheduled));
     EXPECT_EQ(2, CountingTestRegistry::renders(reader));
     EXPECT_EQ(1, CountingTestRegistry::renders(ancestor));
     EXPECT_EQ(1, CountingTestRegistry::renders(merge));
 
-    EXPECT_EQ(1.f + 2.f + 3.f, renderFirstPixel(merge, eRenderSchedulerModeLegacy));
+    EXPECT_EQ(1.f + 2.f + 3.f, renderFirstPixel(merge, eRenderPullDirect));
 
     const RenderMismatch m = renderBothWaysDirect(merge, 1., ViewIdx(0), 0 /*mipmapLevel*/, RectI(0, 0, kCountingTestSize, kCountingTestSize), std::vector<int> { 1, 4 });
     EXPECT_FALSE(m.any) << describe(m);
@@ -558,10 +563,10 @@ TEST_F(RFVRender, AnimatedVariableFollowsTheFrame)
     v->setValueAtTime(2., 20., ViewSpec::all(), 0);
     connectNodes(reader, set, 0, true);
 
-    EXPECT_EQ(10.f, renderFirstPixel(set, eRenderSchedulerModeTaskGraph, 1.));
-    EXPECT_EQ(20.f, renderFirstPixel(set, eRenderSchedulerModeTaskGraph, 2.));
-    EXPECT_EQ(10.f, renderFirstPixel(set, eRenderSchedulerModeLegacy, 1.));
-    EXPECT_EQ(20.f, renderFirstPixel(set, eRenderSchedulerModeLegacy, 2.));
+    EXPECT_EQ(10.f, renderFirstPixel(set, eRenderPullScheduled, 1.));
+    EXPECT_EQ(20.f, renderFirstPixel(set, eRenderPullScheduled, 2.));
+    EXPECT_EQ(10.f, renderFirstPixel(set, eRenderPullDirect, 1.));
+    EXPECT_EQ(20.f, renderFirstPixel(set, eRenderPullDirect, 2.));
 }
 
 // Through the cache, an animated Set variable keys each frame apart: going back to a frame gives
@@ -576,7 +581,7 @@ TEST_F(RFVRender, AnimatedVariableThroughTheCacheFollowsTheFrame)
     v->setValueAtTime(2., 20., ViewSpec::all(), 0);
     connectNodes(reader, set, 0, true);
 
-    for (RenderSchedulerModeEnum mode : { eRenderSchedulerModeTaskGraph, eRenderSchedulerModeLegacy }) {
+    for (RenderPull mode : { eRenderPullScheduled, eRenderPullDirect }) {
         EXPECT_EQ(10.f, renderFirstPixel(set, mode, 1., ViewIdx(0), false /*byPassCache*/));
         EXPECT_EQ(20.f, renderFirstPixel(set, mode, 2., ViewIdx(0), false /*byPassCache*/));
         EXPECT_EQ(10.f, renderFirstPixel(set, mode, 1., ViewIdx(0), false /*byPassCache*/));
@@ -599,7 +604,7 @@ TEST_F(RFVRender, SetVariableExpressionThroughTheCacheFollowsTheKnobItReads)
     connectNodes(reader, set, 0, true);
 
     double expected = 5.;
-    for (RenderSchedulerModeEnum mode : { eRenderSchedulerModeTaskGraph, eRenderSchedulerModeLegacy }) {
+    for (RenderPull mode : { eRenderPullScheduled, eRenderPullDirect }) {
         EXPECT_EQ((float)expected, renderFirstPixel(set, mode, 1., ViewIdx(0), false /*byPassCache*/));
         expected += 2.;
         sourceValue->setValue(expected);
@@ -643,7 +648,7 @@ TEST_F(RFVRender, BoundVariableEditedDuringAReadersRenderCachesNothingUnderTheOl
     });
     float overlappedRed = -1.f;
     std::thread overlapped([&]() {
-        overlappedRed = renderFirstPixel(set, eRenderSchedulerModeLegacy, time, ViewIdx(0), false /*byPassCache*/);
+        overlappedRed = renderFirstPixel(set, eRenderPullDirect, time, ViewIdx(0), false /*byPassCache*/);
     });
     const bool reached = waitUntil([&]() { return stage.load() >= 1; });
     if (reached) {
@@ -658,7 +663,7 @@ TEST_F(RFVRender, BoundVariableEditedDuringAReadersRenderCachesNothingUnderTheOl
 
     ASSERT_NO_THROW(v->setExpression(0, "frame * 10", false, true));
     const int readerRenders = CountingTestRegistry::renders(reader);
-    EXPECT_EQ(10.f, renderFirstPixel(set, eRenderSchedulerModeLegacy, time, ViewIdx(0), false /*byPassCache*/));
+    EXPECT_EQ(10.f, renderFirstPixel(set, eRenderPullDirect, time, ViewIdx(0), false /*byPassCache*/));
     EXPECT_GT(CountingTestRegistry::renders(reader), readerRenders) << "the reader's image was kept under the binding before the edit";
 }
 
@@ -674,10 +679,10 @@ TEST_F(RFVRender, SetVariableExpressionReadsTheDownstreamValue)
     connectNodes(reader, inner, 0, true);
     connectNodes(inner, outer, 0, true);
 
-    EXPECT_EQ(6.f, renderFirstPixel(outer, eRenderSchedulerModeTaskGraph));
-    EXPECT_EQ(6.f, renderFirstPixel(outer, eRenderSchedulerModeLegacy));
+    EXPECT_EQ(6.f, renderFirstPixel(outer, eRenderPullScheduled));
+    EXPECT_EQ(6.f, renderFirstPixel(outer, eRenderPullDirect));
     // Without the outer Set, y is unset.
-    EXPECT_EQ(0.f, renderFirstPixel(inner, eRenderSchedulerModeTaskGraph));
+    EXPECT_EQ(0.f, renderFirstPixel(inner, eRenderPullScheduled));
 
     const RenderMismatch m = renderBothWaysDirect(outer, 1., ViewIdx(0), 0 /*mipmapLevel*/, RectI(0, 0, kCountingTestSize, kCountingTestSize), std::vector<int> { 1, 4 });
     EXPECT_FALSE(m.any) << describe(m);
@@ -716,7 +721,7 @@ TEST_F(RFVRender, MotionBlurSamplesTheSetVariableAcrossTheShutter)
     std::vector<RenderedPlane> blurred;
     ASSERT_TRUE(renderNodePlanesDirect(set, 1., ViewIdx(0), 0, roi, layers, &blurred, &error)) << error;
     std::vector<RenderedPlane> blurredTaskGraph;
-    ASSERT_TRUE(renderNodePlanesInMode(set, 1., ViewIdx(0), 0, roi, layers, eRenderSchedulerModeTaskGraph, true /*byPassCache*/, &blurredTaskGraph, &error)) << error;
+    ASSERT_TRUE(renderNodePlanesScheduled(set, 1., ViewIdx(0), 0, roi, true /*byPassCache*/, &blurredTaskGraph, &error)) << error;
 
     // The same Transform with translate.x set to v's value at frame 1, without motion blur.
     NodePtr plain = createNode(QString::fromUtf8(PLUGINID_NATRON_TRANSFORM), PLUGIN_MAJOR_NATRON_TRANSFORM);
@@ -755,8 +760,8 @@ TEST_F(RFVRender, TimeOffsetAboveTheSetReadsTheVariableAtTheShiftedFrame)
     ASSERT_TRUE(bool(offset));
     connectNodes(offset, set, 0, true);
 
-    EXPECT_EQ(10.f, renderFirstPixel(set, eRenderSchedulerModeTaskGraph, 3.));
-    EXPECT_EQ(10.f, renderFirstPixel(set, eRenderSchedulerModeLegacy, 3.));
+    EXPECT_EQ(10.f, renderFirstPixel(set, eRenderPullScheduled, 3.));
+    EXPECT_EQ(10.f, renderFirstPixel(set, eRenderPullDirect, 3.));
 
     const RenderMismatch m = renderBothWaysDirect(set, 3., ViewIdx(0), 0 /*mipmapLevel*/, RectI(0, 0, kCountingTestSize, kCountingTestSize), std::vector<int> { 1, 4 });
     EXPECT_FALSE(m.any) << describe(m);
@@ -776,8 +781,8 @@ TEST_F(RFVRender, TimeOffsetBelowTheSetReadsTheVariableAtTheShiftedFrame)
     NodePtr offset = createTimeOffset(set, 2);
     ASSERT_TRUE(bool(offset));
 
-    EXPECT_EQ(10.f, renderFirstPixel(offset, eRenderSchedulerModeTaskGraph, 3.));
-    EXPECT_EQ(10.f, renderFirstPixel(offset, eRenderSchedulerModeLegacy, 3.));
+    EXPECT_EQ(10.f, renderFirstPixel(offset, eRenderPullScheduled, 3.));
+    EXPECT_EQ(10.f, renderFirstPixel(offset, eRenderPullDirect, 3.));
 
     const RenderMismatch m = renderBothWaysDirect(offset, 3., ViewIdx(0), 0 /*mipmapLevel*/, RectI(0, 0, kCountingTestSize, kCountingTestSize), std::vector<int> { 1, 4 });
     EXPECT_FALSE(m.any) << describe(m);
@@ -801,8 +806,8 @@ TEST_F(RFVRender, NestedSetVariableReadsAtAFractionalTime)
     const double expected = y->getValueAtTime(1.5);
     ASSERT_GT(expected, 10.);
     ASSERT_LT(expected, 20.);
-    EXPECT_FLOAT_EQ((float)expected, renderFirstPixel(outer, eRenderSchedulerModeTaskGraph, 1.5));
-    EXPECT_FLOAT_EQ((float)expected, renderFirstPixel(outer, eRenderSchedulerModeLegacy, 1.5));
+    EXPECT_FLOAT_EQ((float)expected, renderFirstPixel(outer, eRenderPullScheduled, 1.5));
+    EXPECT_FLOAT_EQ((float)expected, renderFirstPixel(outer, eRenderPullDirect, 1.5));
 }
 
 // A right-view render reads a project variable at the right view: the variable's expression is
@@ -817,10 +822,10 @@ TEST_F(RFVRender, RightViewRenderReadsTheProjectVariableAtThatView)
     NodePtr reader = createReader("rfv.perView or 0");
     ASSERT_TRUE(bool(reader));
 
-    EXPECT_EQ(11.f, renderFirstPixel(reader, eRenderSchedulerModeTaskGraph, 1., ViewIdx(1)));
-    EXPECT_EQ(11.f, renderFirstPixel(reader, eRenderSchedulerModeLegacy, 1., ViewIdx(1)));
-    EXPECT_EQ(1.f, renderFirstPixel(reader, eRenderSchedulerModeTaskGraph, 1., ViewIdx(0)));
-    EXPECT_EQ(1.f, renderFirstPixel(reader, eRenderSchedulerModeLegacy, 1., ViewIdx(0)));
+    EXPECT_EQ(11.f, renderFirstPixel(reader, eRenderPullScheduled, 1., ViewIdx(1)));
+    EXPECT_EQ(11.f, renderFirstPixel(reader, eRenderPullDirect, 1., ViewIdx(1)));
+    EXPECT_EQ(1.f, renderFirstPixel(reader, eRenderPullScheduled, 1., ViewIdx(0)));
+    EXPECT_EQ(1.f, renderFirstPixel(reader, eRenderPullDirect, 1., ViewIdx(0)));
 }
 
 // A project variable whose expression reads an animated project variable gives a render at frame
@@ -836,10 +841,10 @@ TEST_F(RFVRender, NestedProjectVariableReadsAtTheRenderedFrame)
     ASSERT_TRUE(bool(reader));
     getApp()->getTimeLine()->seekFrame(1, false, NULL, eTimelineChangeReasonOtherSeek);
 
-    EXPECT_EQ(100.f, renderFirstPixel(reader, eRenderSchedulerModeTaskGraph, 10.));
-    EXPECT_EQ(100.f, renderFirstPixel(reader, eRenderSchedulerModeLegacy, 10.));
-    EXPECT_EQ(10.f, renderFirstPixel(reader, eRenderSchedulerModeTaskGraph, 1.));
-    EXPECT_EQ(10.f, renderFirstPixel(reader, eRenderSchedulerModeLegacy, 1.));
+    EXPECT_EQ(100.f, renderFirstPixel(reader, eRenderPullScheduled, 10.));
+    EXPECT_EQ(100.f, renderFirstPixel(reader, eRenderPullDirect, 10.));
+    EXPECT_EQ(10.f, renderFirstPixel(reader, eRenderPullScheduled, 1.));
+    EXPECT_EQ(10.f, renderFirstPixel(reader, eRenderPullDirect, 1.));
 }
 
 // A reader of the project variable derived, whose expression reads rfv.source, under two Sets
@@ -876,9 +881,9 @@ TEST_F(RFVRender, DiamondThroughADerivedProjectVariable)
 
     CountingTestRegistry::reset();
     // The merge holds its value 1 plus the reader under source = 1 and under source = 2.
-    EXPECT_EQ(1.f + 1.f + 2.f, renderFirstPixel(merge, eRenderSchedulerModeTaskGraph));
+    EXPECT_EQ(1.f + 1.f + 2.f, renderFirstPixel(merge, eRenderPullScheduled));
     EXPECT_EQ(2, CountingTestRegistry::renders(reader));
-    EXPECT_EQ(1.f + 1.f + 2.f, renderFirstPixel(merge, eRenderSchedulerModeLegacy));
+    EXPECT_EQ(1.f + 1.f + 2.f, renderFirstPixel(merge, eRenderPullDirect));
 
     const RenderMismatch m = renderBothWaysDirect(merge, 1., ViewIdx(0), 0 /*mipmapLevel*/, RectI(0, 0, kCountingTestSize, kCountingTestSize), std::vector<int> { 1, 4 });
     EXPECT_FALSE(m.any) << describe(m);
@@ -951,8 +956,8 @@ TEST_F(RFVRender, UnsetVariableIsNone)
     ASSERT_TRUE(reader && set);
     connectNodes(reader, set, 0, true);
 
-    EXPECT_EQ(-1.f, renderFirstPixel(set, eRenderSchedulerModeTaskGraph));
-    EXPECT_EQ(-1.f, renderFirstPixel(set, eRenderSchedulerModeLegacy));
+    EXPECT_EQ(-1.f, renderFirstPixel(set, eRenderPullScheduled));
+    EXPECT_EQ(-1.f, renderFirstPixel(set, eRenderPullDirect));
 }
 
 // Checkerboard -> Grade -> Set(var = 'a') as input B of a node that is an identity of B over every
@@ -1245,7 +1250,7 @@ TEST_F(RFVRender, DriverFollowsAnAnimatedSetVariable)
     connectNodes(reader, set, 0, true);
     EXPECT_TRUE(reader->getEffectInstance()->getHasAnimation());
 
-    for (RenderSchedulerModeEnum mode : { eRenderSchedulerModeTaskGraph, eRenderSchedulerModeLegacy }) {
+    for (RenderPull mode : { eRenderPullScheduled, eRenderPullDirect }) {
         EXPECT_EQ(10.f, renderFirstPixel(set, mode, 1.));
         EXPECT_EQ(20.f, renderFirstPixel(set, mode, 2.));
         EXPECT_EQ(10.f, renderFirstPixel(set, mode, 1., ViewIdx(0), false /*byPassCache*/));
@@ -1279,7 +1284,7 @@ TEST_F(RFVRender, DriverFallsBackToTheProjectVariable)
     NodePtr reader = createDrivenReader("p");
     ASSERT_TRUE(p && reader);
 
-    for (RenderSchedulerModeEnum mode : { eRenderSchedulerModeTaskGraph, eRenderSchedulerModeLegacy }) {
+    for (RenderPull mode : { eRenderPullScheduled, eRenderPullDirect }) {
         p->setValue(4.);
         EXPECT_EQ(4.f, renderFirstPixel(reader, mode));
         EXPECT_EQ(4.f, renderFirstPixel(reader, mode, 1., ViewIdx(0), false /*byPassCache*/));
@@ -1290,8 +1295,8 @@ TEST_F(RFVRender, DriverFallsBackToTheProjectVariable)
     NodePtr set = createSet("p", 2., NULL);
     ASSERT_TRUE(bool(set));
     connectNodes(reader, set, 0, true);
-    EXPECT_EQ(2.f, renderFirstPixel(set, eRenderSchedulerModeTaskGraph));
-    EXPECT_EQ(2.f, renderFirstPixel(set, eRenderSchedulerModeLegacy));
+    EXPECT_EQ(2.f, renderFirstPixel(set, eRenderPullScheduled));
+    EXPECT_EQ(2.f, renderFirstPixel(set, eRenderPullDirect));
 }
 
 // A driver set before the project declares its variable follows it once declared.
@@ -1301,7 +1306,7 @@ TEST_F(RFVRender, DriverFollowsAProjectVariableDeclaredAfterIt)
     ASSERT_TRUE(bool(reader));
     KnobDoublePtr q = addProjectDouble("q", 3.);
     ASSERT_TRUE(bool(q));
-    EXPECT_EQ(3.f, renderFirstPixel(reader, eRenderSchedulerModeTaskGraph, 1., ViewIdx(0), false /*byPassCache*/));
+    EXPECT_EQ(3.f, renderFirstPixel(reader, eRenderPullScheduled, 1., ViewIdx(0), false /*byPassCache*/));
     q->setValue(5.);
-    EXPECT_EQ(5.f, renderFirstPixel(reader, eRenderSchedulerModeTaskGraph, 1., ViewIdx(0), false /*byPassCache*/));
+    EXPECT_EQ(5.f, renderFirstPixel(reader, eRenderPullScheduled, 1., ViewIdx(0), false /*byPassCache*/));
 }

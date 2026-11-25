@@ -101,26 +101,6 @@ private:
     int _saved;
 };
 
-class SchedulerModeGuard {
-public:
-    explicit SchedulerModeGuard(RenderSchedulerModeEnum mode)
-        : _saved(appPTR->getRenderSchedulerMode())
-    {
-        appPTR->setRenderSchedulerMode(mode);
-    }
-
-    ~SchedulerModeGuard()
-    {
-        appPTR->setRenderSchedulerMode(_saved);
-    }
-
-    SchedulerModeGuard(const SchedulerModeGuard&) = delete;
-    SchedulerModeGuard& operator=(const SchedulerModeGuard&) = delete;
-
-private:
-    RenderSchedulerModeEnum _saved;
-};
-
 struct FrameRun {
     AbortableRenderInfoPtr abortInfo;
     RenderStatsPtr stats;
@@ -370,13 +350,13 @@ protected:
         return code;
     }
 
-    float renderLegacyFirstPixel(const NodePtr& root,
+    float renderDirectFirstPixel(const NodePtr& root,
                                  bool byPassCache = true)
     {
         std::vector<RenderedPlane> planes;
         std::string error;
         const RectI roi(0, 0, kCountingTestSize, kCountingTestSize);
-        if (!renderNodePlanesInMode(root, 1., ViewIdx(0), 0 /*mipmapLevel*/, roi, std::list<ImageLayerDesc>(), eRenderSchedulerModeLegacy, byPassCache, &planes, &error)) {
+        if (!renderNodePlanesDirect(root, 1., ViewIdx(0), 0 /*mipmapLevel*/, roi, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error, byPassCache)) {
             return -1.f;
         }
         if (planes.empty() || planes.front().pixels.empty()) {
@@ -548,13 +528,13 @@ TEST_F(RenderContinuation, ProbeRendersOnlyTheDataDependentSubset)
     }
 }
 
-TEST_F(RenderContinuation, LegacyRunsTheContinuationInlineAndMatchesTheTaskGraph)
+TEST_F(RenderContinuation, DirectPullRunsTheContinuationInlineAndMatchesTheTaskGraph)
 {
     NodePtr source, control, probe;
     ASSERT_NO_FATAL_FAILURE(buildProbe(kSubsetMask, 0, &source, &control, &probe));
 
     resetCounters();
-    EXPECT_EQ(kSubsetSum, renderLegacyFirstPixel(probe));
+    EXPECT_EQ(kSubsetSum, renderDirectFirstPixel(probe));
     EXPECT_EQ(kSubsetSize, CountingTestRegistry::renders(source));
     EXPECT_EQ(1, ContinuationTestRegistry::continuationCount());
 
@@ -649,11 +629,11 @@ TEST_F(RenderContinuation, RecursionReachesTheDepthLimitAndFailsPastIt)
 
     ASSERT_NO_FATAL_FAILURE(setInt(recursive, "depth", EffectInstance::kMaxRenderContinuationDepth));
     recursive->clearPersistentMessage(false);
-    EXPECT_EQ((float)kRecursiveSum, renderLegacyFirstPixel(recursive));
+    EXPECT_EQ((float)kRecursiveSum, renderDirectFirstPixel(recursive));
 
     ASSERT_NO_FATAL_FAILURE(setInt(recursive, "depth", EffectInstance::kMaxRenderContinuationDepth + 1));
     resetCounters();
-    EXPECT_EQ(-1.f, renderLegacyFirstPixel(recursive));
+    EXPECT_EQ(-1.f, renderDirectFirstPixel(recursive));
     EXPECT_EQ(0, ContinuationTestRegistry::continuationCount());
     EXPECT_TRUE(waitForPersistentMessage(recursive));
 }
@@ -793,7 +773,7 @@ TEST_F(RenderContinuation, IncrementalRequestPassReportsOnlyTheUncoveredPartOfAn
 
 // Each render of a varying control yields another mask, so the outputs match only when the probe and the render read
 // the control from one render, as the task graph does.
-TEST_F(RenderContinuation, LegacyProbeAndRenderReadTheOneRenderOfAVaryingControl)
+TEST_F(RenderContinuation, DirectProbeAndRenderReadTheOneRenderOfAVaryingControl)
 {
     NodePtr source = createNode(QString::fromUtf8(kTestPluginIDContinuationSource));
     NodePtr control = createNode(QString::fromUtf8(kTestPluginIDContinuationSource));
@@ -805,8 +785,8 @@ TEST_F(RenderContinuation, LegacyProbeAndRenderReadTheOneRenderOfAVaryingControl
     connectNodes(control, probe, 1, true);
 
     resetCounters();
-    const float legacy = renderLegacyFirstPixel(probe);
-    EXPECT_EQ(1.f, legacy);
+    const float direct = renderDirectFirstPixel(probe);
+    EXPECT_EQ(1.f, direct);
     EXPECT_EQ(1, CountingTestRegistry::renders(control));
     EXPECT_EQ(1, ContinuationTestRegistry::continuationCount());
 
@@ -818,7 +798,7 @@ TEST_F(RenderContinuation, LegacyProbeAndRenderReadTheOneRenderOfAVaryingControl
         std::vector<float> values;
         ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderScheduled(probe, &values));
         ASSERT_FALSE(values.empty());
-        EXPECT_EQ(legacy, values.front());
+        EXPECT_EQ(direct, values.front());
         EXPECT_EQ(1, CountingTestRegistry::renders(control));
         expectPoolDrained();
     }
@@ -857,7 +837,7 @@ TEST_F(RenderContinuation, CachedContinuationNodeIsNotProbedInAnExtension)
     }
 
     resetCounters();
-    EXPECT_EQ(uncached.front(), renderLegacyFirstPixel(probe, false /*byPassCache*/));
+    EXPECT_EQ(uncached.front(), renderDirectFirstPixel(probe, false /*byPassCache*/));
     EXPECT_EQ(0, CountingTestRegistry::renders(recursive));
     EXPECT_EQ(1, ContinuationTestRegistry::probeCount());
 }

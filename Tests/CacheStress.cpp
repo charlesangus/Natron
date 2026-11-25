@@ -1771,23 +1771,6 @@ renderProbeScheduled(const NodePtr& node,
     return pickColourPlane(planes, out, error);
 }
 
-bool
-renderProbe(const NodePtr& node,
-            double time,
-            unsigned mipmapLevel,
-            const RectI& window,
-            RenderSchedulerModeEnum mode,
-            bool byPassCache,
-            RenderedPlane* out,
-            std::string* error)
-{
-    if (mode == eRenderSchedulerModeTaskGraph) {
-        return renderProbeScheduled(node, time, mipmapLevel, window, byPassCache, out, error);
-    }
-
-    return renderProbeDirect(node, time, mipmapLevel, window, byPassCache, out, error);
-}
-
 std::string
 compareExact(const RenderedPlane& reference,
              const RenderedPlane& got)

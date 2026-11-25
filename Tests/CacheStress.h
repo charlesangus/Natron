@@ -250,17 +250,6 @@ bool renderProbeScheduled(const NodePtr& node,
                           RenderedPlane* out,
                           std::string* error);
 
-// renderProbeScheduled() for the Task graph mode, renderProbeDirect() otherwise. The mode is not
-// switched.
-bool renderProbe(const NodePtr& node,
-                 double time,
-                 unsigned mipmapLevel,
-                 const RectI& window,
-                 RenderSchedulerModeEnum mode,
-                 bool byPassCache,
-                 RenderedPlane* out,
-                 std::string* error);
-
 // "" when both planes have the same window, layer and channels, and every sample is bit-exact;
 // otherwise the first difference.
 std::string compareExact(const RenderedPlane& reference, const RenderedPlane& got);

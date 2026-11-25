@@ -160,19 +160,6 @@ bool renderNodePlanesScheduled(const NodePtr& node,
                                std::vector<RenderedPlane>* out,
                                std::string* error = 0);
 
-// renderNodePlanesScheduled() for the Task graph mode; renderNodePlanesDirect() with `layers`, RGBA
-// when it is empty, otherwise. The mode is not switched.
-bool renderNodePlanesInMode(const NodePtr& node,
-                            double time,
-                            ViewIdx view,
-                            unsigned mipmapLevel,
-                            const RectI& roi,
-                            const std::list<ImageLayerDesc>& layers,
-                            RenderSchedulerModeEnum mode,
-                            bool byPassCache,
-                            std::vector<RenderedPlane>* out,
-                            std::string* error = 0);
-
 NATRON_NAMESPACE_EXIT
 
 #endif // NATRON_TESTS_RENDERBOTHWAYS_H

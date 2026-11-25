@@ -117,26 +117,6 @@ hasReasonMentioning(const std::map<std::string, int>& reasons,
     return false;
 }
 
-class SchedulerModeGuard {
-public:
-    explicit SchedulerModeGuard(RenderSchedulerModeEnum mode)
-        : _saved(appPTR->getRenderSchedulerMode())
-    {
-        appPTR->setRenderSchedulerMode(mode);
-    }
-
-    ~SchedulerModeGuard()
-    {
-        appPTR->setRenderSchedulerMode(_saved);
-    }
-
-    SchedulerModeGuard(const SchedulerModeGuard&) = delete;
-    SchedulerModeGuard& operator=(const SchedulerModeGuard&) = delete;
-
-private:
-    RenderSchedulerModeEnum _saved;
-};
-
 } // namespace
 
 class SchedulerWriters
@@ -151,7 +131,7 @@ protected:
 
         std::shared_ptr<Observed> observed = _observed;
         DefaultScheduler::setFrameStatsObserverForTests([observed](int time, ViewIdx /*view*/, const RenderStatsPtr& stats) {
-            if (!stats || (appPTR->getRenderSchedulerMode() != eRenderSchedulerModeTaskGraph)) {
+            if (!stats) {
                 return;
             }
             ObservedFrame frame;
@@ -356,7 +336,6 @@ TEST_F(SchedulerWriters, DeepOutputFramesFallBackToLegacyAndNameTheReason)
     const int firstFrame = 1;
     const int lastFrame = 2;
     {
-        SchedulerModeGuard mode(eRenderSchedulerModeTaskGraph);
         int finishedCode = -1;
         RenderEnginePtr engine = writerEffect->getRenderEngine();
         // renderFinished() is emitted from the scheduler thread while this thread is blocked, so only a direct

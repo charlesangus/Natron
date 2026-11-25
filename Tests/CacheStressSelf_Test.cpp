@@ -148,11 +148,11 @@ TEST_F(CacheStressSelfTest, APlantedMemberCacheHoleIsCaught)
     options.scripted[0].kind = eOpSetValue;
     options.scripted[0].prims.push_back(setValuePrim(0, 0, 2.));
 
-    for (int mode = 0; mode < 2; ++mode) {
-        options.direct = mode == 0;
-        options.scheduled = mode == 1;
+    for (bool scheduled : { false, true }) {
+        options.direct = !scheduled;
+        options.scheduled = scheduled;
         const Result r = run(getApp(), buildPlantedHole, 7u, options);
-        EXPECT_FALSE(r.ok) << (mode == 0 ? "direct" : "scheduled");
+        EXPECT_FALSE(r.ok) << (scheduled ? "scheduled" : "direct");
         EXPECT_EQ(1, r.failedStep) << r.report;
         EXPECT_NE(std::string::npos, r.report.find("NATRON_CACHE_STRESS_SEED=7")) << r.report;
         EXPECT_NE(std::string::npos, r.report.find("setValue")) << r.report;
@@ -215,7 +215,7 @@ TEST_F(CacheStressSelfTest, TheReferenceEqualsAFreshAppLoadOfTheSavedProject)
 
     clearEverything(app);
     RenderedPlane reference;
-    ASSERT_TRUE(renderProbe(blur, 3., 0, kWindow, eRenderSchedulerModeLegacy, true, &reference, &error)) << error;
+    ASSERT_TRUE(renderProbeDirect(blur, 3., 0, kWindow, true, &reference, &error)) << error;
 
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
@@ -242,10 +242,10 @@ TEST_F(CacheStressSelfTest, TheReferenceEqualsAFreshAppLoadOfTheSavedProject)
     ASSERT_TRUE(bool(loaded));
     EXPECT_EQ(blurCacheID, loaded->getCacheID());
 
-    for (int mode = 0; mode < 2; ++mode) {
+    for (bool scheduled : { false, true }) {
         clearEverything(app);
         RenderedPlane fresh;
-        ASSERT_TRUE(renderProbe(loaded, 3., 0, kWindow, mode == 0 ? eRenderSchedulerModeLegacy : eRenderSchedulerModeTaskGraph, true, &fresh, &error)) << error;
-        EXPECT_EQ(std::string(), compareExact(reference, fresh)) << (mode == 0 ? "legacy" : "task graph");
+        ASSERT_TRUE((scheduled ? renderProbeScheduled : renderProbeDirect)(loaded, 3., 0, kWindow, true, &fresh, &error)) << error;
+        EXPECT_EQ(std::string(), compareExact(reference, fresh)) << (scheduled ? "scheduled" : "direct");
     }
 }

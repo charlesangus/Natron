@@ -464,7 +464,7 @@ runScripted(const AppInstancePtr& app,
             if (pass == 0) {
                 clearEverything(app);
                 RenderedPlane reference;
-                if (!renderProbe(probe, 1., 0, g.window, eRenderSchedulerModeLegacy, true, &reference, &error)) {
+                if (!renderProbeDirect(probe, 1., 0, g.window, true, &reference, &error)) {
                     return "the CPU reference of step " + std::to_string(i) + " (" + what + ") failed: " + error;
                 }
                 references.push_back(reference);

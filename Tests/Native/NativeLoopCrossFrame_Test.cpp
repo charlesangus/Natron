@@ -79,6 +79,9 @@ NATRON_NAMESPACE_USING
 
 namespace {
 
+enum RenderPull { eRenderPullDirect,
+                  eRenderPullScheduled };
+
 const int kDotSize = 4;
 
 // node's RGBA over roi at time, rendered the way mode renders a frame.
@@ -86,14 +89,16 @@ bool
 renderAt(const NodePtr& node,
          double time,
          const RectI& roi,
-         RenderSchedulerModeEnum mode,
+         RenderPull mode,
          bool byPassCache,
          RenderedPlane* plane)
 {
     std::vector<RenderedPlane> planes;
     std::string error;
 
-    if (!renderNodePlanesInMode(node, time, ViewIdx(0), 0, roi, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), mode, byPassCache, &planes, &error)) {
+    if (!(mode == eRenderPullScheduled)
+            ? renderNodePlanesScheduled(node, time, ViewIdx(0), 0, roi, byPassCache, &planes, &error)
+            : renderNodePlanesDirect(node, time, ViewIdx(0), 0, roi, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error, byPassCache)) {
         ADD_FAILURE() << error;
 
         return false;
@@ -445,7 +450,7 @@ TEST_F(NativeLoopCrossFrameTest, ATrailDecaysFrameByFrameAndFollowsEdits)
     ASSERT_TRUE(bool(t.end));
 
     RenderedPlane plane;
-    ASSERT_TRUE(renderAt(t.end, 10., kTrailWindow, eRenderSchedulerModeLegacy, false, &plane));
+    ASSERT_TRUE(renderAt(t.end, 10., kTrailWindow, eRenderPullDirect, false, &plane));
     // The dot covers 11,11 at frame 1 only: nine frames of decay since.
     EXPECT_NEAR(std::pow(0.9, 9), redAt(plane, 11, 11), 1e-5);
     EXPECT_NEAR(std::pow(0.9, 5), redAt(plane, 51, 11), 1e-5);
@@ -454,10 +459,10 @@ TEST_F(NativeLoopCrossFrameTest, ATrailDecaysFrameByFrameAndFollowsEdits)
     EXPECT_EQ(0.f, redAt(plane, 11, 9));
 
     ASSERT_TRUE(setKnobValues(t.constant, kConstantParamColor, { 0.5 }));
-    ASSERT_TRUE(renderAt(t.end, 10., kTrailWindow, eRenderSchedulerModeLegacy, false, &plane));
+    ASSERT_TRUE(renderAt(t.end, 10., kTrailWindow, eRenderPullDirect, false, &plane));
     EXPECT_NEAR(0.5 * std::pow(0.9, 9), redAt(plane, 11, 11), 1e-5);
     EXPECT_EQ(0.5f, redAt(plane, 101, 11));
-    ASSERT_TRUE(renderAt(t.end, 10., kTrailWindow, eRenderSchedulerModeTaskGraph, false, &plane));
+    ASSERT_TRUE(renderAt(t.end, 10., kTrailWindow, eRenderPullScheduled, false, &plane));
     EXPECT_NEAR(0.5 * std::pow(0.9, 9), redAt(plane, 11, 11), 1e-5);
 }
 
@@ -471,18 +476,18 @@ TEST_F(NativeLoopCrossFrameTest, JumpingAheadAndScrubbingBackMatchPlayback)
     ASSERT_TRUE(cache != 0);
 
     RenderedPlane jumped;
-    ASSERT_TRUE(renderAt(t.end, 20., kTrailWindow, eRenderSchedulerModeLegacy, true, &jumped));
+    ASSERT_TRUE(renderAt(t.end, 20., kTrailWindow, eRenderPullDirect, true, &jumped));
 
     cache->clear();
     std::vector<RenderedPlane> played(21);
     for (int frame = 1; frame <= 20; ++frame) {
-        ASSERT_TRUE(renderAt(t.end, (double)frame, kTrailWindow, eRenderSchedulerModeLegacy, true, &played[frame]));
+        ASSERT_TRUE(renderAt(t.end, (double)frame, kTrailWindow, eRenderPullDirect, true, &played[frame]));
     }
     expectSamePixels(jumped, played[20], 0.f, "frame 20, jumped to and played");
 
     for (int frame = 19; frame >= 1; frame -= 3) {
         RenderedPlane scrubbed;
-        ASSERT_TRUE(renderAt(t.end, (double)frame, kTrailWindow, eRenderSchedulerModeTaskGraph, true, &scrubbed));
+        ASSERT_TRUE(renderAt(t.end, (double)frame, kTrailWindow, eRenderPullScheduled, true, &scrubbed));
         expectSamePixels(played[frame], scrubbed, 0.f, "frame " + std::to_string(frame) + " scrubbed back to");
     }
 }
@@ -520,8 +525,8 @@ TEST_F(NativeLoopCrossFrameTest, FeedbackIterationsAreSubstepsOfEachFrame)
 
     const RectI roi(0, 0, 64, 48);
     RenderedPlane simulated, reference;
-    ASSERT_TRUE(renderAt(nodes[1][3], (double)frame, roi, eRenderSchedulerModeLegacy, true, &reference));
-    ASSERT_TRUE(renderAt(nodes[0][3], (double)frame, roi, eRenderSchedulerModeLegacy, true, &simulated));
+    ASSERT_TRUE(renderAt(nodes[1][3], (double)frame, roi, eRenderPullDirect, true, &reference));
+    ASSERT_TRUE(renderAt(nodes[0][3], (double)frame, roi, eRenderPullDirect, true, &simulated));
     // A different render structure: equal up to rounding.
     expectSamePixels(reference, simulated, 1e-5f, "frame 3 of 4 substeps against 12 iterations");
     EXPECT_GT(redAt(simulated, 22, 22), 0.f);
@@ -539,7 +544,7 @@ TEST_F(NativeLoopCrossFrameTest, FramesRecomputedFromACheckpointAreBitIdentical)
 
     std::vector<RenderedPlane> expected(21);
     for (int frame = 1; frame <= 20; ++frame) {
-        ASSERT_TRUE(renderAt(t.end, (double)frame, kTrailWindow, eRenderSchedulerModeLegacy, true, &expected[frame]));
+        ASSERT_TRUE(renderAt(t.end, (double)frame, kTrailWindow, eRenderPullDirect, true, &expected[frame]));
     }
     const std::size_t everyFrame = cache->bytes();
     ASSERT_GT(everyFrame, (std::size_t)0);
@@ -547,12 +552,12 @@ TEST_F(NativeLoopCrossFrameTest, FramesRecomputedFromACheckpointAreBitIdentical)
     cache->clear();
     cache->setBudget(everyFrame / 5);
     RenderedPlane plane;
-    ASSERT_TRUE(renderAt(t.end, 20., kTrailWindow, eRenderSchedulerModeLegacy, true, &plane));
+    ASSERT_TRUE(renderAt(t.end, 20., kTrailWindow, eRenderPullDirect, true, &plane));
     expectSamePixels(expected[20], plane, 0.f, "frame 20 under the tight budget");
     EXPECT_LE(cache->bytes(), everyFrame / 5);
     const int order[] = { 7, 13, 2, 19, 20, 11 };
     for (int frame : order) {
-        ASSERT_TRUE(renderAt(t.end, (double)frame, kTrailWindow, eRenderSchedulerModeTaskGraph, true, &plane));
+        ASSERT_TRUE(renderAt(t.end, (double)frame, kTrailWindow, eRenderPullScheduled, true, &plane));
         expectSamePixels(expected[frame], plane, 0.f, "frame " + std::to_string(frame) + " recomputed");
     }
 }
@@ -567,9 +572,9 @@ TEST_F(NativeLoopCrossFrameTest, ThreadCountsAndSchedulersAgree)
 
     RenderedPlane expected;
     bool first = true;
-    const RenderSchedulerModeEnum modes[] = { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph };
+    const RenderPull modes[] = { eRenderPullDirect, eRenderPullScheduled };
     const int threads[] = { 1, 4 };
-    for (RenderSchedulerModeEnum mode : modes) {
+    for (RenderPull mode : modes) {
         for (int count : threads) {
             ThreadCountGuard guard(count);
             cache->clear();
@@ -579,7 +584,7 @@ TEST_F(NativeLoopCrossFrameTest, ThreadCountsAndSchedulersAgree)
                 expected = plane;
                 first = false;
             } else {
-                expectSamePixels(expected, plane, 0.f, std::string(mode == eRenderSchedulerModeLegacy ? "legacy" : "task graph") + ", " + std::to_string(count) + " threads");
+                expectSamePixels(expected, plane, 0.f, std::string(mode == eRenderPullDirect ? "direct" : "scheduled") + ", " + std::to_string(count) + " threads");
             }
         }
     }
@@ -593,12 +598,12 @@ TEST_F(NativeLoopCrossFrameTest, BeforeTheStartFrameTheInputPassesThrough)
 
     for (int frame = 3; frame <= 5; ++frame) {
         RenderedPlane plane;
-        ASSERT_TRUE(renderAt(t.end, (double)frame, kTrailWindow, eRenderSchedulerModeLegacy, false, &plane));
+        ASSERT_TRUE(renderAt(t.end, (double)frame, kTrailWindow, eRenderPullDirect, false, &plane));
         EXPECT_EQ(1.f, redAt(plane, 10 * frame + 1, 11)) << "frame " << frame;
         EXPECT_EQ(0.f, redAt(plane, 10 * (frame - 1) + 1, 11)) << "frame " << frame;
     }
     RenderedPlane plane;
-    ASSERT_TRUE(renderAt(t.end, 6., kTrailWindow, eRenderSchedulerModeLegacy, false, &plane));
+    ASSERT_TRUE(renderAt(t.end, 6., kTrailWindow, eRenderPullDirect, false, &plane));
     EXPECT_NEAR(0.9, redAt(plane, 51, 11), 1e-6);
     EXPECT_EQ(0.f, redAt(plane, 41, 11));
 }
@@ -628,19 +633,19 @@ TEST_F(NativeLoopCrossFrameTest, AnUntickedLoopBeginPassesItsInputThrough)
     EXPECT_FALSE(bool(LoopEnd::chainingEndOf(source)));
 
     RenderedPlane plane;
-    ASSERT_TRUE(renderAt(t.end, 10., kTrailWindow, eRenderSchedulerModeLegacy, false, &plane));
+    ASSERT_TRUE(renderAt(t.end, 10., kTrailWindow, eRenderPullDirect, false, &plane));
     EXPECT_NEAR(std::pow(0.9, 9), redAt(plane, 11, 11), 1e-5);
     EXPECT_NEAR(std::pow(0.9, 5), redAt(plane, 51, 11), 1e-5);
     EXPECT_EQ(1.f, redAt(plane, 101, 11));
     EXPECT_EQ(0.f, redAt(plane, 111, 11));
-    RenderedPlane taskGraph;
-    ASSERT_TRUE(renderAt(t.end, 10., kTrailWindow, eRenderSchedulerModeTaskGraph, false, &taskGraph));
-    expectSamePixels(plane, taskGraph, 0.f, "frame 10, two LoopBegins, both schedulers");
+    RenderedPlane scheduled;
+    ASSERT_TRUE(renderAt(t.end, 10., kTrailWindow, eRenderPullScheduled, false, &scheduled));
+    expectSamePixels(plane, scheduled, 0.f, "frame 10, two LoopBegins, direct and scheduled");
 
     end->setFeedsBack(source, true);
     ASSERT_TRUE(end->feedsBack(source));
     EXPECT_EQ(2u, end->getChainingBegins().size());
-    ASSERT_TRUE(renderAt(t.end, 10., kTrailWindow, eRenderSchedulerModeLegacy, false, &plane));
+    ASSERT_TRUE(renderAt(t.end, 10., kTrailWindow, eRenderPullDirect, false, &plane));
     EXPECT_EQ(1.f, redAt(plane, 11, 11));
     EXPECT_EQ(0.f, redAt(plane, 51, 11));
     EXPECT_EQ(0.f, redAt(plane, 101, 11));
@@ -655,14 +660,14 @@ TEST_F(NativeLoopCrossFrameTest, ATrailLeavingTheFormatComesBack)
     const int right = drift.right;
 
     const RectI inside(right - 16, 8, right, 16);
-    // Across the edge: a window wholly outside the frame's region renders no plane under Legacy.
+    // Across the edge: a window wholly outside the frame's region renders no plane in a direct pull.
     const RectI across(right - 16, 8, right + 132, 16);
     RenderedPlane plane;
-    ASSERT_TRUE(renderAt(end, 4., across, eRenderSchedulerModeLegacy, false, &plane));
+    ASSERT_TRUE(renderAt(end, 4., across, eRenderPullDirect, false, &plane));
     EXPECT_EQ(1.f, redAt(plane, right + 114, 11)) << "frame 4, past the format";
     EXPECT_EQ(0.f, redAt(plane, right - 6, 11)) << "frame 4, inside the format";
 
-    for (RenderSchedulerModeEnum mode : { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph }) {
+    for (RenderPull mode : { eRenderPullDirect, eRenderPullScheduled }) {
         LoopFrameCache* cache = frameCacheOf(end);
         ASSERT_TRUE(cache != 0);
         cache->clear();
@@ -761,7 +766,7 @@ TEST_F(NativeLoopCrossFrameTest, BakedFramesLoadWithoutRenderingTheBody)
     const RectI window(0, 0, kCountingTestSize, kCountingTestSize);
 
     RenderedPlane computed;
-    ASSERT_TRUE(renderAt(endNode, 12., window, eRenderSchedulerModeLegacy, true, &computed));
+    ASSERT_TRUE(renderAt(endNode, 12., window, eRenderPullDirect, true, &computed));
     EXPECT_EQ(24.25f, redAt(computed, 0, 0));
 
     ASSERT_TRUE(setCacheFile(endNode, dir.path() + QString::fromUtf8("/sim.####.exr")));
@@ -773,7 +778,7 @@ TEST_F(NativeLoopCrossFrameTest, BakedFramesLoadWithoutRenderingTheBody)
     cache->clear();
     ASSERT_TRUE(setKnobValues(endNode, kLoopEndParamLoadFromCache, { 1. }));
 
-    for (RenderSchedulerModeEnum mode : { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph }) {
+    for (RenderPull mode : { eRenderPullDirect, eRenderPullScheduled }) {
         cache->clear();
         CountingTestRegistry::reset();
         RenderedPlane loaded;
@@ -789,14 +794,14 @@ TEST_F(NativeLoopCrossFrameTest, BakedFramesLoadWithoutRenderingTheBody)
     // Past the bake: two frames of four substeps from the last frame baked.
     CountingTestRegistry::reset();
     RenderedPlane past;
-    ASSERT_TRUE(renderAt(endNode, 14., window, eRenderSchedulerModeLegacy, true, &past));
+    ASSERT_TRUE(renderAt(endNode, 14., window, eRenderPullDirect, true, &past));
     EXPECT_EQ(28.25f, redAt(past, 0, 0));
     EXPECT_EQ(8, CountingTestRegistry::renders(counting));
 
     ASSERT_TRUE(setKnobValues(constant, kConstantParamColor, { 0.5 }));
     CountingTestRegistry::reset();
     RenderedPlane edited;
-    ASSERT_TRUE(renderAt(endNode, 12., window, eRenderSchedulerModeLegacy, true, &edited));
+    ASSERT_TRUE(renderAt(endNode, 12., window, eRenderPullDirect, true, &edited));
     EXPECT_EQ(0, CountingTestRegistry::renders(counting));
     expectSamePixels(computed, edited, 0.f, "frame 12 loaded after an upstream edit");
     persistentMessageOf(endNode, &message, &type);
@@ -912,14 +917,17 @@ TEST_F(NativeLoopCrossFrameTest, ABodyAskingAnotherFrameOfItsLoopFailsAtOnce)
     const RectI window(0, 0, kCountingTestSize, kCountingTestSize);
 
     ThreadCountGuard threads(4);
-    for (RenderSchedulerModeEnum mode : { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph }) {
+    for (RenderPull mode : { eRenderPullDirect, eRenderPullScheduled }) {
         LoopFrameCache* cache = frameCacheOf(end);
         ASSERT_TRUE(cache != 0);
         cache->clear();
         end->clearPersistentMessage(false);
         std::vector<RenderedPlane> planes;
         std::string error;
-        EXPECT_FALSE(renderNodePlanesInMode(end, 3., ViewIdx(0), 0, window, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), mode, true, &planes, &error)) << "mode " << (int)mode;
+        const bool rendered = (mode == eRenderPullScheduled)
+            ? renderNodePlanesScheduled(end, 3., ViewIdx(0), 0, window, true, &planes, &error)
+            : renderNodePlanesDirect(end, 3., ViewIdx(0), 0, window, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error, true);
+        EXPECT_FALSE(rendered) << "mode " << (int)mode;
         QString message;
         int type = 0;
         persistentMessageOf(end, &message, &type);
@@ -939,7 +947,7 @@ TEST_F(NativeLoopCrossFrameTest, SubstepsSampleTheInputBetweenFrames)
     ASSERT_TRUE(cache != 0);
     const RectI window(0, 8, 40, 16);
 
-    for (RenderSchedulerModeEnum mode : { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph }) {
+    for (RenderPull mode : { eRenderPullDirect, eRenderPullScheduled }) {
         cache->clear();
         RenderedPlane plane;
         ASSERT_TRUE(renderAt(m.end, 3., window, mode, true, &plane));
@@ -954,7 +962,7 @@ TEST_F(NativeLoopCrossFrameTest, SubstepsSampleTheInputBetweenFrames)
     ASSERT_TRUE(setKnobValues(m.end, kLoopEndParamSubframes, { 0. }));
     cache->clear();
     RenderedPlane whole;
-    ASSERT_TRUE(renderAt(m.end, 3., window, eRenderSchedulerModeLegacy, true, &whole));
+    ASSERT_TRUE(renderAt(m.end, 3., window, eRenderPullDirect, true, &whole));
     const int covered[] = { 8, 11, 16, 19, 24, 27 };
     const int gaps[] = { 2, 7, 12, 15, 20, 23 };
     for (int x : covered) {
@@ -998,7 +1006,7 @@ TEST_F(NativeLoopCrossFrameTest, SubstepTimesAreCachedApart)
     cache->clear();
     CountingTestRegistry::reset();
     RenderedPlane plane;
-    ASSERT_TRUE(renderAt(m.end, 1., window, eRenderSchedulerModeLegacy, false, &plane));
+    ASSERT_TRUE(renderAt(m.end, 1., window, eRenderPullDirect, false, &plane));
     EXPECT_EQ(1, CountingTestRegistry::renders(counting));
     for (double time : CountingTestRegistry::renderTimes(counting)) {
         EXPECT_EQ(1., time);
@@ -1007,7 +1015,7 @@ TEST_F(NativeLoopCrossFrameTest, SubstepTimesAreCachedApart)
     ASSERT_TRUE(setKnobValues(m.end, kLoopEndParamSubframes, { 1. }));
     cache->clear();
     CountingTestRegistry::reset();
-    ASSERT_TRUE(renderAt(m.end, 1., window, eRenderSchedulerModeLegacy, false, &plane));
+    ASSERT_TRUE(renderAt(m.end, 1., window, eRenderPullDirect, false, &plane));
     EXPECT_EQ(3, CountingTestRegistry::renders(counting));
     // The counting node ignores the time it is asked for, like a reader of whole frames: it is
     // still asked for the fractional times, and renders.

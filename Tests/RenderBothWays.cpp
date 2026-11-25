@@ -777,26 +777,6 @@ renderNodePlanesScheduled(const NodePtr& node,
     return renderPlanes(node, time, view, mipmapLevel, roi, std::list<ImageLayerDesc>(), true /*throughScheduler*/, byPassCache, out, error);
 }
 
-bool
-renderNodePlanesInMode(const NodePtr& node,
-                       double time,
-                       ViewIdx view,
-                       unsigned mipmapLevel,
-                       const RectI& roi,
-                       const std::list<ImageLayerDesc>& layers,
-                       RenderSchedulerModeEnum mode,
-                       bool byPassCache,
-                       std::vector<RenderedPlane>* out,
-                       std::string* error)
-{
-    if (mode == eRenderSchedulerModeTaskGraph) {
-        return renderNodePlanesScheduled(node, time, view, mipmapLevel, roi, byPassCache, out, error);
-    }
-    const std::list<ImageLayerDesc> directLayers = layers.empty() ? std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()) : layers;
-
-    return renderNodePlanesDirect(node, time, view, mipmapLevel, roi, directLayers, out, error, byPassCache);
-}
-
 GpuPlacementOffGuard::GpuPlacementOffGuard()
 {
     GpuContextOptions options;

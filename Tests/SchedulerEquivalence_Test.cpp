@@ -180,20 +180,18 @@ compareImages(const FlatExrImage& legacy,
     return RenderMismatch();
 }
 
-// Restores the pool size and the mode the app was in, with empty caches, however a joint
+// Restores the pool size the app was in, with empty caches, however a joint
 // comparison exits, so a failed comparison cannot leak its state into later tests.
 class JointRenderGuard {
 public:
     JointRenderGuard()
         : _savedPoolSize(QThreadPool::globalInstance()->maxThreadCount())
-        , _savedMode(appPTR->getRenderSchedulerMode())
     {
     }
 
     ~JointRenderGuard()
     {
         QThreadPool::globalInstance()->setMaxThreadCount(_savedPoolSize);
-        appPTR->setRenderSchedulerMode(_savedMode);
         appPTR->clearAllCaches();
     }
 
@@ -202,7 +200,6 @@ public:
 
 private:
     int _savedPoolSize;
-    RenderSchedulerModeEnum _savedMode;
 };
 
 struct JointOutput {
@@ -258,8 +255,9 @@ renderJointly(const std::vector<JointOutput>& outputs,
     return RenderMismatch();
 }
 
-// renderBothWays() for several writers started together: one joint Legacy render, then one joint
-// Task graph render per pool size, every output frame of every writer compared bit for bit.
+// renderBothWays() for several writers started together: each writer rendered alone as the
+// reference, then one joint render per pool size, every output frame of every writer compared bit
+// for bit.
 RenderMismatch
 renderJointlyBothWays(const std::vector<NodePtr>& writers)
 {
@@ -292,23 +290,28 @@ renderJointlyBothWays(const std::vector<NodePtr>& writers)
     JointRenderGuard guard;
     GpuPlacementOffGuard cpuOnly;
 
-    appPTR->setRenderSchedulerMode(eRenderSchedulerModeLegacy);
     appPTR->clearAllCaches();
-    JointFrames legacy;
-    RenderMismatch m = renderJointly(outputs, viewNames, &legacy);
+    JointFrames separate;
+    RenderMismatch m;
+    for (std::size_t i = 0; i < outputs.size() && !m.any; ++i) {
+        JointFrames alone;
+        m = renderJointly(std::vector<JointOutput>(1, outputs[i]), viewNames, &alone);
+        for (JointFrames::const_iterator it = alone.begin(); it != alone.end(); ++it) {
+            separate[std::make_pair(i, it->first.second)] = it->second;
+        }
+    }
     if (m.any) {
-        m.error = "Legacy: " + m.error;
+        m.error = "Separate: " + m.error;
 
         return m;
     }
 
     for (std::size_t p = 0; p < poolSizes().size(); ++p) {
         QThreadPool::globalInstance()->setMaxThreadCount(poolSizes()[p]);
-        appPTR->setRenderSchedulerMode(eRenderSchedulerModeTaskGraph);
         appPTR->clearAllCaches();
         JointFrames taskGraph;
         m = renderJointly(outputs, viewNames, &taskGraph);
-        for (JointFrames::const_iterator it = legacy.begin(); !m.any && it != legacy.end(); ++it) {
+        for (JointFrames::const_iterator it = separate.begin(); !m.any && it != separate.end(); ++it) {
             const std::string path = SequenceParsing::generateFileNameFromPattern(outputs[it->first.first].pattern, viewNames, it->first.second, 0);
             m = compareImages(it->second, taskGraph[it->first], it->first.second, path);
         }
@@ -336,7 +339,7 @@ protected:
 
         std::shared_ptr<Observed> observed = _observed;
         DefaultScheduler::setFrameStatsObserverForTests([observed](int time, ViewIdx /*view*/, const RenderStatsPtr& stats) {
-            if (!stats || (appPTR->getRenderSchedulerMode() != eRenderSchedulerModeTaskGraph)) {
+            if (!stats) {
                 return;
             }
             ObservedFrame frame;

@@ -190,8 +190,43 @@ struct EndToEndResult {
     // Why tasks of the GPU frame were moved back to the CPU, with how many.
     std::map<std::string, int> cpuFallbackReasons;
 
+    // Per region, the nodes of the tasks outside it that its members read: each one rendered either on the CPU and
+    // uploaded, or by another region.
+    std::vector<std::vector<NodePtr>> regionExternalInputs;
+
+    // How the scheduler ran the GPU frame's regions.
+    int gpuRegionsRun = 0;
+    int gpuRegionRetries = 0;
+    int gpuStripHalvings = 0;
+    int gpuStripPipelinesSerialized = 0;
+    int gpuPipelinedRegions = 0;
+    int evictions = 0;
+
+    // Whether the forced context's pool poisoned what it handed out (GpuPoolPoisonScope).
+    bool poolPoisoned = false;
+
     bool ranInRegion(const NodePtr& node) const;
 };
+
+// While one lives, renderEndToEnd() makes its forced context's buffer pool fill every buffer it hands out with a
+// NaN (gpu::kGpuPoolPoisonBits), so a GPU frame that reads memory nothing wrote differs from the CPU one wherever
+// it does, instead of only when a previous user happened to leave different values there. Scopes nest.
+class GpuPoolPoisonScope {
+public:
+    GpuPoolPoisonScope();
+    ~GpuPoolPoisonScope();
+    GpuPoolPoisonScope(const GpuPoolPoisonScope&) = delete;
+    GpuPoolPoisonScope& operator=(const GpuPoolPoisonScope&) = delete;
+};
+
+// For a GPU frame that differs from its CPU frame: where and how many pixels differ, the values at the first of
+// them, how many of the GPU's are the pool's poison, which render is wrong against `reference` (an independent CPU
+// render of the same case; pass an empty vector when there is none), and how the frame was placed and run: its
+// regions, where each region's external inputs came from, strip and retry counts, uploads, downloads and CPU
+// fallbacks. An intermittent mismatch cannot be rerun at will, so the report has to say it all.
+std::string describeGpuMismatch(const EndToEndResult& result,
+                                const std::vector<float>& reference,
+                                const ParityTolerance& tolerance);
 
 // Called once the forced GPU context is installed and before the GPU frame is planned, so a test can
 // register kernels on its runtime (appPTR->getGpuContext()->runtime()). Returning false fails the run

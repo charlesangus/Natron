@@ -27,11 +27,15 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
+#include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
 
+#include "Engine/Geo/GeoOpUtils.h"
 #include "Engine/GeoDetail.h"
 #include "Engine/Nodes/Geometry/GeoDelete.h"
 #include "Engine/Nodes/Geometry/GeoGroup.h"
@@ -102,7 +106,125 @@ expectPagesShared(const GeoDetail& a,
         EXPECT_EQ(x->values().page(i).get(), y->values().page(i).get()) << name << " page " << i;
     }
 }
+
+GeoDetail
+twoByTwoQuads()
+{
+    GeoShapeParams p;
+    p.shape = eGeoShapeGrid;
+    p.gridSize = { 2., 2. };
+    p.gridRows = 2;
+    p.gridColumns = 2;
+    GeoDetailBuilder builder;
+    buildGeoShape(p, builder);
+
+    return builder.finish();
+}
+
+// The first two points of the first primitive, which share an edge.
+std::pair<GeoOffset, GeoOffset>
+firstEdge(const GeoDetail& d)
+{
+    std::pair<GeoOffset, GeoOffset> edge { 0, 0 };
+    bool found = false;
+    d.primitiveMap().forEachLive([&](GeoIndex /*index*/, GeoOffset prim) {
+        if (found) {
+            return;
+        }
+        const GeoVertexRange range = d.primitiveVertices(prim);
+        edge = { d.vertexPoint(range.start), d.vertexPoint(range.start + 1) };
+        found = true;
+    });
+
+    return edge;
+}
+
+std::string
+edgePattern(const std::pair<GeoOffset, GeoOffset>& edge)
+{
+    return "p" + std::to_string(edge.first) + "-" + std::to_string(edge.second);
+}
+
+std::string
+pointPattern(const std::pair<GeoOffset, GeoOffset>& edge)
+{
+    return std::to_string(edge.first) + " " + std::to_string(edge.second);
+}
+
+std::set<std::array<double, 3>>
+livePositions(const GeoDetail& d)
+{
+    std::set<std::array<double, 3>> result;
+    d.pointMap().forEachLive([&](GeoIndex /*index*/, GeoOffset point) {
+        result.insert(d.pointPosition(point));
+    });
+
+    return result;
+}
+
+void
+expectSameResult(const GeoDetail& a,
+                 const GeoDetail& b)
+{
+    EXPECT_EQ(a.pointCount(), b.pointCount());
+    EXPECT_EQ(a.primitiveCount(), b.primitiveCount());
+    EXPECT_EQ(livePositions(a), livePositions(b));
+}
 } // namespace
+
+TEST(GeoDeleteTest, DeletingAnEdgeDeletesItsPointsLikeThePointsMode)
+{
+    const GeoDetail input = twoByTwoQuads();
+    const auto edge = firstEdge(input);
+    GeoDeleteParams edges;
+    edges.group = edgePattern(edge);
+    edges.groupType = eGeoGroupTypeEdges;
+    const GeoDetail byEdge = deleted(input, edges);
+
+    GeoDeleteParams points;
+    points.group = pointPattern(edge);
+    points.groupType = eGeoGroupTypePoints;
+    const GeoDetail byPoints = deleted(input, points);
+
+    EXPECT_EQ(input.pointCount() - 2, byEdge.pointCount());
+    EXPECT_LT(byEdge.primitiveCount(), input.primitiveCount());
+    expectSameResult(byEdge, byPoints);
+}
+
+TEST(GeoDeleteTest, DeleteNonSelectedEdgesKeepsOnlyTheEdgePoints)
+{
+    const GeoDetail input = twoByTwoQuads();
+    const auto edge = firstEdge(input);
+    GeoDeleteParams edges;
+    edges.group = edgePattern(edge);
+    edges.groupType = eGeoGroupTypeEdges;
+    edges.deleteNonSelected = true;
+    const GeoDetail byEdge = deleted(input, edges);
+
+    GeoDeleteParams points;
+    points.group = pointPattern(edge);
+    points.groupType = eGeoGroupTypePoints;
+    points.deleteNonSelected = true;
+    const GeoDetail byPoints = deleted(input, points);
+
+    EXPECT_EQ(2, byEdge.pointCount());
+    expectSameResult(byEdge, byPoints);
+}
+
+TEST(GeoDeleteTest, GuessResolvesAnEdgePathToEdges)
+{
+    const GeoDetail input = twoByTwoQuads();
+    GeoDeleteParams guessed;
+    guessed.group = edgePattern(firstEdge(input));
+    const GeoDetail byGuess = deleted(input, guessed);
+
+    GeoDeleteParams explicitEdges = guessed;
+    explicitEdges.groupType = eGeoGroupTypeEdges;
+    const GeoDetail byEdge = deleted(input, explicitEdges);
+
+    EXPECT_EQ(input.pointCount() - 2, byGuess.pointCount());
+    expectSameResult(byGuess, byEdge);
+}
 
 TEST(GeoDeleteTest, DeletingLeftPointsKeepsTheRightHalf)
 {

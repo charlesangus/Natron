@@ -41,6 +41,7 @@
 #define kGeoScatterParamCount "count"
 #define kGeoScatterParamDensity "density"
 #define kGeoScatterParamSeed "seed"
+#define kGeoScatterParamPscale "pscale"
 #define kGeoScatterParamRelaxPoints "relaxPoints"
 #define kGeoScatterParamRelaxIterations "relaxIterations"
 #define kGeoScatterParamTransferN "transferN"
@@ -62,6 +63,8 @@ struct GeoScatterParams {
     int count = 1000;
     double density = 10.;
     int seed = 0;
+    // Written to every point as pscale, so the points draw as small as the geometry they sit on.
+    double pscale = 0.01;
     bool relaxPoints = false;
     int relaxIterations = 10;
     bool transferN = false;
@@ -104,12 +107,14 @@ public:
                        "carry the surface's normals (N), texture coordinates (uv) and colour (Cd), interpolated at "
                        "each point, and which polygon each came from (sourceprim, sourceprimuv). The same seed "
                        "always gives the same points.",
-        .grouping = PLUGIN_GROUP_3D,
+        .grouping = PLUGIN_GROUP_GEOMETRY,
         .majorVersion = 1,
         .minorVersion = 0,
         .isWriter = false,
         .outputKind = eDataKindGeometry,
         .inputs = kInputs,
+        .geoGroupKnob = kGeoScatterParamGroup,
+        .geoGroupClasses = eGeoGroupClassPrimitives,
     };
 
     static EffectInstance* BuildEffect(NodePtr node)
@@ -143,6 +148,7 @@ private:
     KnobIntWPtr _count;
     KnobDoubleWPtr _density;
     KnobIntWPtr _seed;
+    KnobDoubleWPtr _pscale;
     KnobBoolWPtr _relaxPoints;
     KnobIntWPtr _relaxIterations;
     KnobBoolWPtr _transferN;

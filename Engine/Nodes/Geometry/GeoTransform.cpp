@@ -31,6 +31,7 @@
 #include <cstddef>
 #include <exception>
 #include <limits>
+#include <set>
 #include <span>
 #include <string>
 #include <vector>
@@ -39,6 +40,7 @@
 
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
+#include "Engine/Geo/GeoGroupOps.h"
 #include "Engine/Geo/GeoTopology.h"
 #include "Engine/KnobTypes.h"
 
@@ -288,8 +290,21 @@ selectForTransform(const GeoDetail& detail,
         return true;
     }
     sel->vertices.assign(std::size_t(detail.vertexMap().offsetSize()), 0);
-    if (groupType == eGeoGroupTypePoints) {
-        if (!geoSelectElements(detail, eGeoAttribClassPoint, group, &sel->points, error)) {
+    if (groupType == eGeoGroupTypeGuess) {
+        const GeoGroupTypeEnum allowed[] = { eGeoGroupTypePoints, eGeoGroupTypeEdges, eGeoGroupTypePrimitives };
+        if (!geoGuessGroupType(detail, group, allowed, eGeoGroupTypePrimitives, &groupType, error)) {
+            return false;
+        }
+    }
+    if (groupType == eGeoGroupTypePoints || groupType == eGeoGroupTypeEdges) {
+        if (groupType == eGeoGroupTypeEdges) {
+            std::set<GeoEdge> edges;
+            if (!geoSelectEdges(detail, group, &edges, error)) {
+                return false;
+            }
+            const std::vector<GeoEdge> sorted(edges.begin(), edges.end());
+            sel->points = geoPromoteEdgesToPoints(detail, sorted);
+        } else if (!geoSelectElements(detail, eGeoAttribClassPoint, group, &sel->points, error)) {
             return false;
         }
         detail.vertexMap().forEachLive([&](GeoIndex /*index*/, GeoOffset v) {
@@ -528,14 +543,20 @@ GeoTransform::initializeKnobs()
 
     KnobChoicePtr groupType = createKnob<KnobChoice>(tr("Group Type").toStdString());
     groupType->setName(kGeoTransformParamGroupType);
-    groupType->setHintToolTip(tr("Whether the group pattern selects points or primitives.").toStdString());
+    groupType->setHintToolTip(tr("Whether the group pattern selects points, edges or primitives.").toStdString());
     std::vector<ChoiceOption> types;
     types.push_back(ChoiceOption("points", tr("Points").toStdString(),
                                  tr("The selected points and the vertices and packed primitives on them.").toStdString()));
     types.push_back(ChoiceOption("primitives", tr("Primitives").toStdString(),
                                  tr("The selected primitives and their vertices and points.").toStdString()));
+    types.push_back(ChoiceOption("edges", tr("Edges").toStdString(),
+                                 tr("The points at the ends of the selected edges, named by point paths such as p0-1-2 or edge groups.").toStdString()));
+    types.push_back(ChoiceOption("guess", tr("Guess from Group").toStdString(),
+                                 tr("The class the group pattern names: edge paths mean edges, a group name means the class that has it, "
+                                    "and plain numbers mean primitives.")
+                                     .toStdString()));
     groupType->populateChoices(types);
-    groupType->setDefaultValue((int)eGeoGroupTypePrimitives);
+    groupType->setDefaultValue((int)eGeoGroupTypeGuess);
     groupType->setAnimationEnabled(false);
     page->addKnob(groupType);
     _groupType = groupType;
@@ -681,7 +702,9 @@ GeoTransform::readParams(double time,
     GeoTransformParams p;
     p.group = valueAt<std::string>(_group, p.group, time, view);
     const int groupType = valueAt<int>(_groupType, (int)p.groupType, time, view);
-    p.groupType = groupType == eGeoGroupTypePoints ? eGeoGroupTypePoints : eGeoGroupTypePrimitives;
+    if (groupType >= eGeoGroupTypePoints && groupType <= eGeoGroupTypeGuess) {
+        p.groupType = (GeoGroupTypeEnum)groupType;
+    }
     for (int d = 0; d < 3; ++d) {
         p.translate[d] = valueAt<double>(_translate, p.translate[d], time, view, d);
         p.rotate[d] = valueAt<double>(_rotate, p.rotate[d], time, view, d);

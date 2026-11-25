@@ -26,12 +26,16 @@
 #include "GeoDelete.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <exception>
+#include <set>
+#include <span>
 #include <string>
 #include <vector>
 
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
+#include "Engine/Geo/GeoGroupOps.h"
 #include "Engine/KnobTypes.h"
 
 NATRON_NAMESPACE_ENTER
@@ -53,15 +57,42 @@ valueAt(const std::weak_ptr<Knob<T>>& knob,
 }
 } // anonymous namespace
 
+namespace {
+
+bool
+isBlank(const std::string& text)
+{
+    return text.find_first_not_of(" \t\r\n") == std::string::npos;
+}
+} // anonymous namespace
+
 bool
 GeoDelete::deleteElements(GeoDetailBuilder& builder,
                           const GeoDeleteParams& params,
                           std::string* error)
 {
     const GeoDetail& detail = builder.detail();
-    const GeoAttribClassEnum cls = params.groupType == eGeoGroupTypePoints ? eGeoAttribClassPoint : eGeoAttribClassPrimitive;
+    GeoGroupTypeEnum groupType = params.groupType;
+    if (groupType == eGeoGroupTypeGuess) {
+        groupType = eGeoGroupTypePrimitives;
+        if (!isBlank(params.group)) {
+            const GeoGroupTypeEnum allowed[] = { eGeoGroupTypePoints, eGeoGroupTypeEdges, eGeoGroupTypePrimitives };
+            if (!geoGuessGroupType(detail, params.group, allowed, eGeoGroupTypePrimitives, &groupType, error)) {
+                return false;
+            }
+        }
+    }
+    const GeoAttribClassEnum cls = groupType == eGeoGroupTypePrimitives ? eGeoAttribClassPrimitive : eGeoAttribClassPoint;
     GeoElementMask selected(detail.elementOffsetSize(cls), 0);
-    if (!geoSelectElements(detail, cls, params.group, &selected, error)) {
+    if (groupType == eGeoGroupTypeEdges) {
+        std::set<GeoEdge> edges;
+        if (!geoSelectEdges(detail, params.group, &edges, error)) {
+            return false;
+        }
+        const std::vector<GeoEdge> edgeList(edges.begin(), edges.end());
+        selected = geoPromoteEdgesToPoints(detail, edgeList);
+        selected.resize(detail.elementOffsetSize(cls), 0);
+    } else if (!geoSelectElements(detail, cls, params.group, &selected, error)) {
         return false;
     }
     if (params.deleteNonSelected) {
@@ -131,13 +162,20 @@ GeoDelete::initializeKnobs()
 
     KnobChoicePtr groupType = AppManager::createKnob<KnobChoice>(this, tr("Group Type").toStdString());
     groupType->setName(kGeoDeleteParamGroupType);
-    groupType->setHintToolTip(tr("Whether the group selects points or primitives.").toStdString());
+    groupType->setHintToolTip(tr("Whether the group pattern selects points, edges or primitives.").toStdString());
     std::vector<ChoiceOption> types;
     types.push_back(ChoiceOption("points", tr("Points").toStdString(),
                                  tr("Deleting a point also deletes the primitives that use it.").toStdString()));
     types.push_back(ChoiceOption("primitives", tr("Primitives").toStdString(), ""));
+    types.push_back(ChoiceOption("edges", tr("Edges").toStdString(),
+                                 tr("Deletes the points the selected edges use, and the primitives that use those points.")
+                                     .toStdString()));
+    types.push_back(ChoiceOption("guess", tr("Guess from Group").toStdString(),
+                                 tr("The class the group pattern names: edge paths mean edges, a group name means the class that has it, "
+                                    "and plain numbers mean primitives.")
+                                     .toStdString()));
     groupType->populateChoices(types);
-    groupType->setDefaultValue((int)eGeoGroupTypePrimitives);
+    groupType->setDefaultValue((int)eGeoGroupTypeGuess);
     groupType->setAnimationEnabled(false);
     page->addKnob(groupType);
     _groupType = groupType;
@@ -167,7 +205,8 @@ GeoDelete::updateVisibility()
     const KnobChoicePtr groupType = _groupType.lock();
     const KnobBoolPtr unused = _deleteUnusedPoints.lock();
     if (groupType && unused) {
-        unused->setSecret(groupType->getValue() != eGeoGroupTypePrimitives);
+        const int type = groupType->getValue();
+        unused->setSecret(type == eGeoGroupTypePoints || type == eGeoGroupTypeEdges);
     }
 }
 
@@ -201,8 +240,10 @@ GeoDelete::renderGeometry(const GeoRenderActionArgs& args,
 {
     GeoDeleteParams p;
     p.group = valueAt<std::string>(_group, p.group, args.time, args.view);
-    p.groupType = valueAt<int>(_groupType, (int)p.groupType, args.time, args.view) == eGeoGroupTypePoints ? eGeoGroupTypePoints
-                                                                                                          : eGeoGroupTypePrimitives;
+    const int groupType = valueAt<int>(_groupType, (int)p.groupType, args.time, args.view);
+    if (groupType >= eGeoGroupTypePoints && groupType <= eGeoGroupTypeGuess) {
+        p.groupType = (GeoGroupTypeEnum)groupType;
+    }
     p.deleteNonSelected = valueAt<bool>(_deleteNonSelected, p.deleteNonSelected, args.time, args.view);
     p.deleteUnusedPoints = valueAt<bool>(_deleteUnusedPoints, p.deleteUnusedPoints, args.time, args.view);
 

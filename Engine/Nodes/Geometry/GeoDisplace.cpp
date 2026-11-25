@@ -30,6 +30,7 @@
 #include <cmath>
 #include <cstddef>
 #include <exception>
+#include <set>
 #include <span>
 #include <string>
 #include <thread>
@@ -39,6 +40,7 @@
 #include <QString>
 
 #include "Engine/ChoiceOption.h"
+#include "Engine/Geo/GeoGroupOps.h"
 #include "Engine/Geo/GeoOpUtils.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
@@ -267,7 +269,21 @@ displaceGeometry(GeoDetailBuilder& detail,
                  std::string* errorMessage)
 {
     GeoElementMask points;
-    if (!geoSelectElements(detail.detail(), eGeoAttribClassPoint, params.group, &points, errorMessage)) {
+    GeoGroupTypeEnum groupType = params.groupType;
+    if (groupType == eGeoGroupTypeGuess) {
+        const GeoGroupTypeEnum allowed[] = { eGeoGroupTypePoints, eGeoGroupTypeEdges };
+        if (!geoGuessGroupType(detail.detail(), params.group, allowed, eGeoGroupTypePoints, &groupType, errorMessage)) {
+            return false;
+        }
+    }
+    if (groupType == eGeoGroupTypeEdges) {
+        std::set<GeoEdge> edges;
+        if (!geoSelectEdges(detail.detail(), params.group, &edges, errorMessage)) {
+            return false;
+        }
+        const std::vector<GeoEdge> sorted(edges.begin(), edges.end());
+        points = geoPromoteEdgesToPoints(detail.detail(), sorted);
+    } else if (!geoSelectElements(detail.detail(), eGeoAttribClassPoint, params.group, &points, errorMessage)) {
         return false;
     }
     if (params.displaceBy == eGeoDisplaceByImage) {
@@ -416,11 +432,23 @@ GeoDisplace::initializeKnobs()
 
     KnobStringPtr group = createKnob<KnobString>(tr("Group").toStdString());
     group->setName(kGeoDisplaceParamGroup);
-    group->setHintToolTip(tr("The points to move, as a point group pattern; empty for every point.").toStdString());
+    group->setHintToolTip(tr("The part of the geometry to move, as a group pattern over the group type: point numbers, edge point paths such as p0-1-2, group names and globs, @attribute comparisons; empty for every point.").toStdString());
     group->setAnimationEnabled(false);
     page->addKnob(group);
     _group = group;
 
+    {
+        std::vector<ChoiceOption> options;
+        options.push_back(ChoiceOption("points", tr("Points").toStdString(), tr("The selected points.").toStdString()));
+        options.push_back(ChoiceOption("edges", tr("Edges").toStdString(),
+                                       tr("The points at the ends of the selected edges, named by point paths such as p0-1-2 or edge groups.").toStdString()));
+        options.push_back(ChoiceOption("guess", tr("Guess from Group").toStdString(),
+                                       tr("The class the group pattern names: edge paths mean edges, a group name means the class that has it, "
+                                          "and plain numbers mean points.")
+                                           .toStdString()));
+        _groupType = createChoice(tr("Group Type"), kGeoDisplaceParamGroupType,
+                                  tr("Whether the group pattern selects points or edges."), options, 2);
+    }
     {
         std::vector<ChoiceOption> options;
         options.push_back(ChoiceOption("noise", tr("Noise").toStdString(),
@@ -620,6 +648,13 @@ GeoDisplace::readParams(double time,
     if (const KnobStringPtr group = _group.lock()) {
         p.group = group->getValue();
     }
+    if (const KnobChoicePtr groupType = _groupType.lock()) {
+        constexpr GeoGroupTypeEnum kTypes[] = { eGeoGroupTypePoints, eGeoGroupTypeEdges, eGeoGroupTypeGuess };
+        const int index = groupType->getValue();
+        if (index >= 0 && index < 3) {
+            p.groupType = kTypes[index];
+        }
+    }
     if (const KnobChoicePtr displaceBy = _displaceBy.lock()) {
         p.displaceBy = displaceBy->getValue() == (int)eGeoDisplaceByImage ? eGeoDisplaceByImage : eGeoDisplaceByNoise;
     }
@@ -659,7 +694,7 @@ GeoDisplace::fetchImage(double time,
                         std::string* errorMessage) const
 {
     const EffectInstancePtr input = getInput(1);
-    const NodePtr node = input ? input->getNode() : NodePtr();
+    const NodePtr node = resolveDisabledNode(input ? input->getNode() : NodePtr(), time);
     if (!node) {
         return false;
     }

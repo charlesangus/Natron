@@ -252,6 +252,19 @@ renderNodeImage(const NodePtr& node,
     return renderNodeImageImpl(node, time, view, mipmapLevel, pixelRect, layer, nullptr, renderedRect, abortInfo, &rendered);
 }
 
+NodePtr
+resolveDisabledNode(const NodePtr& node,
+                    double time)
+{
+    NodePtr resolved = node;
+
+    while (resolved && resolved->isNodeDisabled(time)) {
+        resolved = resolved->getPreferredInputNode();
+    }
+
+    return resolved;
+}
+
 bool
 getNodeImageWindow(const NodePtr& node,
                    double time,

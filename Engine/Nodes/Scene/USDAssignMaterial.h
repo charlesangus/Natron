@@ -30,9 +30,11 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/Scene/PrimSelector.h"
 #include "Engine/Nodes/Scene/SceneLayerMemo.h"
 
 // Free of USD: NativeRegistryAll.inc includes every node header into translation units that keep
@@ -119,13 +121,26 @@ private:
                                    ScenePayload* outputScene,
                                    std::string* errorMessage) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    virtual SceneEvaluationContext getSceneInputContext(int inputNb,
+                                                        const SceneEvaluationContext& ctx,
+                                                        double time,
+                                                        ViewIdx view) const OVERRIDE FINAL;
+
+    virtual void mapSceneInputReach(int inputNb,
+                                    double time,
+                                    ViewIdx view,
+                                    const std::vector<std::string>& in,
+                                    std::vector<std::string>* out) const OVERRIDE FINAL;
+
     void refreshMaterialPathEnabled();
 
     KnobStringWPtr _primPattern;
     KnobStringWPtr _materialPath;
     KnobChoiceWPtr _purpose;
     KnobChoiceWPtr _strength;
-    SceneGraftMemo _graftMemo;
+    // Mutable for mapSceneInputReach(), which reads what the last graft of a context named.
+    mutable SceneGraftMemo _graftMemo;
+    PrimPatternCache _patternMatches;
 
     // The last placement read for a projection in Geometry space, which costs frames x gprims.
     struct PlacementMemo;

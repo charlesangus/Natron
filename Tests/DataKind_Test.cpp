@@ -626,6 +626,20 @@ TEST_F(BaseTest, GeometrySourceRejectedByImageSink)
     EXPECT_EQ(Node::eCanConnectInput_incompatibleDataKind, imageSink->canConnectInput(geoSource, 0));
 }
 
+// The image input that refuses geometry above is the Viewer's kind too; the Viewer alone takes it,
+// to show it in its 3D view.
+TEST_F(BaseTest, GeometrySourceAcceptedByViewer)
+{
+    NodePtr geoSource = createNode(QString::fromUtf8(kTestPluginIDDataKindGeometrySource));
+    NodePtr viewer = createNode(QString::fromUtf8(PLUGINID_NATRON_VIEWER));
+
+    ASSERT_TRUE(geoSource && viewer);
+
+    EXPECT_EQ(Node::eCanConnectInput_ok, viewer->canConnectInput(geoSource, 0));
+    EXPECT_TRUE(viewer->connectInput(geoSource, 0));
+    EXPECT_FALSE(viewer->hasPersistentMessage());
+}
+
 TEST_F(BaseTest, GeometrySourceConnectsThroughDotToGeometrySink)
 {
     NodePtr geoSource = createNode(QString::fromUtf8(kTestPluginIDDataKindGeometrySource));

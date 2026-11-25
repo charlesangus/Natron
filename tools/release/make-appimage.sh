@@ -9,6 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CMAKELISTS="$SCRIPT_DIR/../../CMakeLists.txt"
 CHECK_RELOCATABLE="$SCRIPT_DIR/check-relocatable.sh"
 CHECK_STARTUP="$SCRIPT_DIR/check-startup.sh"
+RELOCATABLE_STAMP="$SCRIPT_DIR/relocatable-stamp.sh"
 APPIMAGETOOL_URL="https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
 
 if [[ $# -ne 2 ]]; then
@@ -60,8 +61,13 @@ for f in "$DESKTOP_FILE" "$ICON_FILE" "$APPDATA_FILE"; do
     fi
 done
 
-echo "==> Checking bundle relocatability"
-"$CHECK_RELOCATABLE" "$STAGING_DIR"
+# The stamp covers the stage's real path plus the checker and excludelist contents.
+if "$RELOCATABLE_STAMP" check "$STAGING_DIR"; then
+    echo "==> Bundle relocatability already verified by stage-bundle.sh for this exact tree"
+else
+    echo "==> Checking bundle relocatability"
+    "$CHECK_RELOCATABLE" "$STAGING_DIR"
+fi
 
 echo "==> Checking the bundle starts"
 "$CHECK_STARTUP" "$STAGING_DIR"

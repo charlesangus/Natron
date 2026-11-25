@@ -140,6 +140,15 @@ public:
     ///the user was the last time.
     QString _lastLoadSequenceOpenedDir;
     QString _lastLoadProjectOpenedDir;
+    // The default layout's panes, splits and tabs as last made, which is what a reset that keeps the
+    // layout must find unchanged; empty until it has settled once.
+    std::string defaultLayoutStructure;
+    // The tabs of each of its panes, by pane name, for a reset that closes the panes added since.
+    std::map<std::string, std::list<std::string>> defaultPaneTabs;
+    // While set, adding or removing a tab leaves which tab a pane shows to the rebuild's end.
+    bool rebuildingLayout = false;
+    // Bumped by every layout made, so a snapshot queued for an earlier one is dropped.
+    unsigned int layoutGeneration = 0;
     QString _lastSaveSequenceOpenedDir;
     QString _lastSaveProjectOpenedDir;
     QString _lastPluginDir;
@@ -176,6 +185,8 @@ public:
     CurveEditor *_curveEditor;
     ProgressPanel* _progressPanel;
     SceneGraphPanel* _sceneGraphPanel;
+    GeoSpreadsheetPanel* _geoSpreadsheetPanel;
+    std::list<SceneGraphPanel*> _extraSceneGraphPanels;
 
     // The dope sheet
     DopeSheetEditor *_dopeSheetEditor;
@@ -291,6 +302,8 @@ public:
     void createProgressPanelGui();
 
     void createSceneGraphPanelGui();
+
+    void createGeoSpreadsheetPanelGui();
 
     ///If there's only 1 non-floating pane in the main window, return it, otherwise returns NULL
     TabWidget* getOnly1NonFloatingPane(int & count) const;

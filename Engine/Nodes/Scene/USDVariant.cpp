@@ -58,6 +58,23 @@ makeOptions(const std::vector<std::string>& names)
     return options;
 }
 
+// Points menu at value when it lists it.
+void
+selectEntry(KnobChoice* menu,
+            const std::string& value)
+{
+    const std::vector<ChoiceOption> entries = menu->getEntries_mt_safe();
+
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        if (entries[i].id == value) {
+            if (menu->getValue() != (int)i) {
+                menu->setValue((int)i);
+            }
+            break;
+        }
+    }
+}
+
 // Repopulates menu only when its entries change (repopulating moves the node's hash, which
 // schedules another refresh), and points it at value when it lists it.
 void
@@ -69,19 +86,12 @@ syncMenu(const KnobChoicePtr& menu,
     bool same = current.size() == options.size();
 
     for (std::size_t i = 0; same && (i < options.size()); ++i) {
-        same = current[i].id == options[i].id;
+        same = (current[i].id == options[i].id) && (current[i].label == options[i].label);
     }
     if (!same) {
         menu->populateChoices(options);
     }
-    for (std::size_t i = 0; i < options.size(); ++i) {
-        if (options[i].id == value) {
-            if (menu->getValue() != (int)i) {
-                menu->setValue((int)i);
-            }
-            break;
-        }
-    }
+    selectEntry(menu.get(), value);
 }
 } // anonymous namespace
 
@@ -90,6 +100,7 @@ USDVariant::USDVariant(NodePtr node)
     , _menuRefreshPending(false)
     , _syncingMenus(false)
 {
+    _menuRefresh.setRerun([this]() { return refreshVariantMenus(); });
 }
 
 USDVariant::~USDVariant()
@@ -168,7 +179,12 @@ USDVariant::knobChanged(KnobI* k,
         KnobChoice* menu = static_cast<KnobChoice*>(k);
         const int index = menu->getValue();
         if (!_syncingMenus && (index >= 0) && (index < menu->getNumEntries())) {
-            ((k == variantSets.get()) ? variantSet : variant)->setValue(menu->getEntry(index).id);
+            const KnobStringPtr name = (k == variantSets.get()) ? variantSet : variant;
+            const ChoiceOption picked = menu->getEntry(index);
+            // A script can still set a disabled note row, which names nothing.
+            if (!picked.disabled) {
+                name->setValue(picked.id);
+            }
         }
 
         return true;
@@ -215,43 +231,85 @@ USDVariant::scheduleMenuRefresh()
         refreshVariantMenus(); }, Qt::QueuedConnection);
 }
 
-void
+std::shared_ptr<SceneMenuJob>
 USDVariant::refreshVariantMenus()
 {
+    bool noViewer = false;
+    const SceneEvaluationContext context = _menuRefresh.getContext(this, &noViewer);
+    KnobStringPtr variantSet = _variantSet.lock();
+    const std::string setName = variantSet ? variantSet->getValue() : std::string();
+    const std::string pattern = _primPattern.getExpression();
+    const EffectInstancePtr input = getInput(0);
+    const double time = getCurrentTime();
+    SceneMenuRefresh::WorkFunc work = [weakInput = EffectInstanceWPtr(input), pattern, setName, time, context](const SceneMenuJob& job,
+                                                                                                               SceneMenuJob::Result* result) {
+        result->lists.resize(2);
+        std::string error;
+        if (PrimSelector::isBlank(pattern) || !PrimSelector::validate(pattern, &error)) {
+            return;
+        }
+        ScenePayload scene;
+        SceneQueryPool::Lease lease;
+        if (!SceneNodeAuthoring::borrowMenuScene(weakInput, time, context, job, &scene, &lease)) {
+            return;
+        }
+        // Not the node's cache: a menu's search must not evict what an evaluation remembers.
+        PrimPatternCache cache;
+        SceneNodeAuthoring::PatternMatches found;
+        if (!SceneNodeAuthoring::matchPattern(&cache, scene, pattern, context, 0, SceneNodeAuthoring::PatternFilter(), &lease, &found, &error)) {
+            return;
+        }
+        result->unsearched = found.unsearched;
+        if (found.paths.empty() || job.isCancelled() || !lease.isValid()) {
+            return;
+        }
+        const PXR_NS::UsdPrim prim = lease.getStage()->GetPrimAtPath(found.paths.front());
+        // Its variant sets may be authored inside the payload left unloaded.
+        if (!prim || (prim.HasAuthoredPayloads() && !prim.IsLoaded())) {
+            result->unsearched = 1;
+            if (context.reach) {
+                context.reach->add(std::vector<std::string>(1, found.paths.front().GetString()));
+            }
+
+            return;
+        }
+        PXR_NS::UsdVariantSets sets = prim.GetVariantSets();
+        result->lists[0] = sets.GetNames();
+        if (!setName.empty() && sets.HasVariantSet(setName)) {
+            result->lists[1] = sets.GetVariantSet(setName).GetVariantNames();
+        }
+    };
+
+    return _menuRefresh.start(this, context, noViewer, work, [this](const std::shared_ptr<SceneMenuJob>& job) { applyVariantMenus(job); });
+}
+
+bool
+USDVariant::applyVariantMenus(const std::shared_ptr<SceneMenuJob>& job)
+{
+    if (!_menuRefresh.take(job)) {
+        return false;
+    }
     KnobStringPtr variantSet = _variantSet.lock();
     KnobChoicePtr variantSets = _variantSets.lock();
     KnobStringPtr variant = _variant.lock();
     KnobChoicePtr variants = _variants.lock();
-
     if (!variantSet || !variantSets || !variant || !variants) {
-        return;
+        return false;
     }
-    const std::string setName = variantSet->getValue();
-    std::vector<std::string> setNames;
-    std::vector<std::string> variantNames;
-    EffectInstancePtr input = getInput(0);
-    const std::string pattern = _primPattern.getExpression();
-    ScenePayload scene;
-    std::string error;
-    if (input && !PrimSelector::isBlank(pattern) && PrimSelector::validate(pattern, &error) && (input->evaluateScene(EvaluateSceneArgs(getCurrentTime(), ViewIdx(0)), &scene, &error) == eRenderRoIRetCodeOk) && !scene.isEmpty()) {
-        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(scene, &error);
-        std::vector<PXR_NS::SdfPath> matches;
-        if (lease.isValid() && SceneOps::selectPrims(lease.getStage(), pattern, &matches, &error) && !matches.empty()) {
-            PXR_NS::UsdPrim prim = lease.getStage()->GetPrimAtPath(matches.front());
-            if (prim) {
-                PXR_NS::UsdVariantSets sets = prim.GetVariantSets();
-                setNames = sets.GetNames();
-                if (!setName.empty() && sets.HasVariantSet(setName)) {
-                    variantNames = sets.GetVariantSet(setName).GetVariantNames();
-                }
-            }
-        }
+    const SceneMenuJob::Result result = job->getResult();
+    std::vector<ChoiceOption> setOptions = makeOptions((result.lists.size() > 0) ? result.lists[0] : std::vector<std::string>());
+    std::vector<ChoiceOption> variantOptions = makeOptions((result.lists.size() > 1) ? result.lists[1] : std::vector<std::string>());
+    if (result.unsearched > 0) {
+        setOptions.push_back(makeSceneUnsearchedOption(result.unsearched, job->hasNoViewer()));
+        variantOptions.push_back(makeSceneUnsearchedOption(result.unsearched, job->hasNoViewer()));
     }
     _syncingMenus = true;
-    syncMenu(variantSets, makeOptions(setNames), setName);
-    syncMenu(variants, makeOptions(variantNames), variant->getValue());
+    syncMenu(variantSets, setOptions, variantSet->getValue());
+    syncMenu(variants, variantOptions, variant->getValue());
     _syncingMenus = false;
-} // USDVariant::refreshVariantMenus
+
+    return true;
+} // USDVariant::applyVariantMenus
 
 StatusEnum
 USDVariant::renderScene(const SceneRenderActionArgs& args,
@@ -288,10 +346,18 @@ USDVariant::renderScene(const SceneRenderActionArgs& args,
         return eStatusFailed;
     }
 
-    std::vector<PXR_NS::SdfPath> matches;
+    SceneNodeAuthoring::PatternMatches found;
     std::vector<std::string> lacking;
     {
-        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(upstream, errorMessage);
+        SceneQueryPool::Lease lease;
+        if (!SceneNodeAuthoring::matchPattern(&_matches, upstream, pattern, args.context, 0, SceneNodeAuthoring::PatternFilter(), &lease, &found, errorMessage)) {
+            setPersistentMessage(eMessageTypeError, *errorMessage);
+
+            return eStatusFailed;
+        }
+        if (!lease.isValid()) {
+            lease = SceneQueryPool::instance().borrow(upstream, args.context.loadSet, errorMessage);
+        }
         PXR_NS::UsdStageRefPtr stage = lease.getStage();
         if (!stage) {
             if (errorMessage->empty()) {
@@ -301,24 +367,28 @@ USDVariant::renderScene(const SceneRenderActionArgs& args,
 
             return eStatusFailed;
         }
-        if (!SceneOps::selectPrims(stage, pattern, &matches, errorMessage)) {
-            setPersistentMessage(eMessageTypeError, *errorMessage);
-
-            return eStatusFailed;
-        }
-        for (const PXR_NS::SdfPath& path : matches) {
+        std::vector<std::string> unchecked;
+        for (const PXR_NS::SdfPath& path : found.paths) {
             const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(path);
-            if (!prim || !prim.GetVariantSets().HasVariantSet(setName)) {
+            // The set may be authored inside a payload that is not loaded in this evaluation.
+            if (!prim || (prim.HasAuthoredPayloads() && !prim.IsLoaded())) {
+                unchecked.push_back(path.GetString());
+                continue;
+            }
+            if (!prim.GetVariantSets().HasVariantSet(setName)) {
                 lacking.push_back(path.GetString());
             }
         }
+        // Loading them would let the check see their sets.
+        if (args.context.reach && !unchecked.empty()) {
+            args.context.reach->add(unchecked);
+        }
     }
+    const std::vector<PXR_NS::SdfPath>& matches = found.paths;
     if (matches.empty()) {
         *outputScene = upstream;
-        setPersistentMessage(eMessageTypeWarning, tr("The prim pattern \"%1\" matches no prim; the scene is passed through "
-                                                     "unchanged.")
-                                                      .arg(QString::fromStdString(pattern))
-                                                      .toStdString());
+        setPersistentMessage(eMessageTypeWarning,
+                             SceneNodeAuthoring::describeNoMatch(pattern, found, tr("the scene is passed through unchanged").toStdString()));
 
         return eStatusOK;
     }

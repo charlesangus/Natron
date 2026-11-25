@@ -32,7 +32,7 @@ Member of F22 - Native VDB: branches off and merges into `feature/f22-native-vdb
 
 ## Phase 417.1: Primitive
 
-- [ ] M417.P1.T1 — Link OpenVDB and add the VDB primitive type
+- [x] M417.P1.T1 — Link OpenVDB and add the VDB primitive type
   - files: `Engine/CMakeLists.txt`, `cmake/NatronUsd.cmake`, `Engine/Geo/GeoTopology.h`, `Engine/Geo/GeoVDB.{h,cpp}`, `Engine/GeoDetail.{h,cpp}`, `Tests/GeoVDB_Test.cpp`
   - approach: `find_package(OpenVDB)` against the image's install (the config USD already uses), link to Engine, initialise once in app startup. Add the primitive type holding a `std::shared_ptr<const openvdb::GridBase>`, builder API to add and replace grids (replacing creates a new pointer, never mutates), and cached per-grid content hash (hash of active voxel topology and values, computed by a parallel tree walk).
   - verify: `GeoVDB_Test`: a sphere SDF grid added to a detail survives copy-on-write sharing (same pointer in a copy, new pointer after replace); the detail hash changes when a voxel changes.
@@ -40,7 +40,7 @@ Member of F22 - Native VDB: branches off and merges into `feature/f22-native-vdb
 
 ## Phase 417.2: I/O and bridges
 
-- [ ] M417.P2.T1 — `GeoVDBRead` and the USD bridges
+- [x] M417.P2.T1 — `GeoVDBRead` and the USD bridges
   - files: `Engine/Nodes/Geometry/GeoVDBRead.{h,cpp,reg.inc}`, `Engine/Nodes/Geometry/GeoUsdConvert.cpp`, `Engine/Nodes/Geometry/GeoSdfData.cpp`, `Tests/GeoVDBRead_Test.cpp`, `Tests/GeoToUSD_Test.cpp` (or M358's bridge test)
   - approach: Reader follows `GeoImportOBJ`/`GeoFile` file handling. Bridge: a VDB partition writes each grid to `<session cache>/vdb/<hash>.vdb` if absent and authors `UsdVolVolume` with `OpenVDBAsset` fields (`filePath`, `fieldName`, `fieldDataType`, `vectorDataRoleHint`) under the partition path; `USDToGeo` reads file-backed `OpenVDBAsset` fields into prims.
   - verify: `GeoVDBRead_Test` reads a fixture `.vdb` (small, synthetic, under the LFS budget) and lists its grids; the bridge test round-trips a grid through `GeoToUSD` and `USDToGeo` with an identical content hash and checks the same file is reused on a second export.
@@ -48,7 +48,7 @@ Member of F22 - Native VDB: branches off and merges into `feature/f22-native-vdb
 
 ## Phase 417.3: Proof
 
-- [ ] M417.P3.T1 — GUI check
+- [x] M417.P3.T1 — GUI check
   - files: `Tests/gui/m417_vdb_primitive.py`
   - approach: `GeoVDBRead` → `GeoToUSD` → viewer and `USDRender` (Storm); check the volume draws and the bounding-box guide shows.
   - verify: the script passes under Xvfb; a screenshot sent with SendUserFile for the Feature's UAT.

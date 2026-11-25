@@ -386,7 +386,7 @@ try:
         node = create("RotoPaint", 0, 0)
         gt.require(node.connectInput(0, bg), "the Constant feeds the RotoPaint")
         gt.require(node.getRotoContext() is not None, "the RotoPaint node has a roto context")
-        param(node, "sizeSpinbox").setValue(12.0)
+        param(node, "sizeSpinbox").setValue(4.0)
         show(node)
         yield ("sleep", RENDER_MS)
         events = 24
@@ -404,7 +404,22 @@ try:
         # A finished stroke is image content; the overlay only draws once the stroke is selected.
         QApplication.sendEvent(held["gl"], QKeyEvent(QEvent.KeyPress, Qt.Key_Q, Qt.NoModifier))
         QApplication.sendEvent(held["gl"], QKeyEvent(QEvent.KeyRelease, Qt.Key_Q, Qt.NoModifier))
-        click_canonical(*held["anchor"])
+        # The viewer's select tool picks Beziers only, so the stroke is selected in the panel's item
+        # tree, by model index (the tree's item wrappers die with their parents).
+        selected = False
+        for tree in QApplication.allWidgets():
+            if tree.metaObject().className() != "QTreeWidget" or not tree.isVisible():
+                continue
+            model = tree.model()
+            for row in range(model.rowCount()):
+                layer = model.index(row, 0)
+                for child in range(model.rowCount(layer)):
+                    index = model.index(child, 0, layer)
+                    if str(model.data(index)).startswith("Brush"):
+                        tree.setCurrentIndex(index)
+                        selected = True
+        gt.require(selected, "the RotoPaint item tree lists the brush stroke")
+        QApplication.processEvents()
         yield ("sleep", SETTLE_MS)
 
     def scene_tracker(t):

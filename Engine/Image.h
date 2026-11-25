@@ -173,16 +173,25 @@ public:
 
     /**
      * @brief Resizes this image so it contains newBounds, copying all the content of the current bounds of the image into
-     * a new buffer. This is not thread-safe and should be called only while under an ImageLocker
+     * a new buffer. Only for an image no other thread can hold: one that came from the cache goes through
+     * ensureBoundsByCopy(), because a reader that took its bounds and then its pixels would pair the old bounds with
+     * the new buffer.
      **/
     bool ensureBounds(const RectI& newBounds, bool fillWithBlackAndTransparent = false, bool setBitmapTo1 = false);
 
     /**
      * @brief Same as ensureBounds() except that if a resize is needed, it will do the resize in the output image instead to avoid taking the
-     * write lock from this image.
+     * write lock from this image. The output is created in this image's cache when it has one, and regions that
+     * renders under way had reserved in this image are left to render again in the output.
      **/
     bool copyAndResizeIfNeeded(const RectI& newBounds, bool fillWithBlackAndTransparent, bool setBitmapTo1, ImagePtr* output);
 
+    /**
+     * @brief Makes *image contain newBounds without touching the image others may hold: when it is too small, a grown
+     * copy takes its place in the cache and in *image, and the old image keeps its bounds and buffer.
+     * Returns true if *image was replaced.
+     **/
+    static bool ensureBoundsByCopy(ImagePtr* image, const RectI& newBounds, bool fillWithBlackAndTransparent = false, bool setBitmapTo1 = false);
 
     static void applyTextureMapping(const RectI& bounds, const RectI& roi);
 

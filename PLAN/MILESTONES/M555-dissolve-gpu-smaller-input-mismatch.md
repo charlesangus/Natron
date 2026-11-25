@@ -17,7 +17,7 @@
 
 ## Phase 555.1: Diagnose
 
-- [ ] M555.P1.T1 — Find the GPU read that makes Dissolve's smaller-input case wrong
+- [x] M555.P1.T1 — Find the GPU read that makes Dissolve's smaller-input case wrong
   - files: read-only: `Tests/Native/NativeEdgeInputsGpu_Test.cpp` (~:270, ~:352), Dissolve's node and GPU op (`Engine/Nodes/Merge/`), its Slang kernel (`Engine/Gpu/Kernels/`), the GPU edge-fill and texture-pool code (`Engine/Gpu/`), and M495 - KeyMix GPU Edge Read Fix's `## Decisions` and merged fix
   - approach: consultant (opus) checks first whether M495's fix (shared edge fill or pool clear) covers Dissolve's path; if it does, say so and name the test that proves it. Otherwise trace how the smaller input's texture is sized and filled in black edge mode and whether Dissolve samples texels never written, naming the read and the missing write.
   - verify: a written diagnosis with file:line, recorded as a milestone decision
@@ -25,12 +25,12 @@
 
 ## Phase 555.2: Fix
 
-- [ ] M555.P2.T1 — Make Dissolve's GPU path never read unwritten texels
+- [x] ~~M555.P2.T1 — Make Dissolve's GPU path never read unwritten texels~~
   - files: per P1.T1 — Dissolve's GPU op or kernel, or the shared GPU edge-fill/pool code under `Engine/Gpu/`
   - approach: fix at the point P1.T1 named, matching the CPU result for the edge mode; prefer the shared fill or pool when the bug lives there. If P1.T1 found M495's fix already covers it, this task is the regression test only (P2.T2) and is struck through.
   - verify: `ctest -R NativeEdgeInputsGpu` passes at the phase build
   - size: M
-- [ ] M555.P2.T2 — A regression test that hands Dissolve a dirty texture
+- [x] M555.P2.T2 — A regression test that hands Dissolve a dirty texture
   - files: `Tests/Native/NativeEdgeInputsGpu_Test.cpp`
   - approach: before the Dissolve render, fill the GPU texture pool with textures holding a sentinel (NaN or 1e30) and release them so the render reuses dirty memory deterministically, then compare GPU against CPU — the same technique as M495's regression test; reuse its helper if one exists. Bundled gtest is old: no `GTEST_SKIP`, `INSTANTIATE_TEST_CASE_P`, no `ASSERT_TRUE(ptr)`.
   - verify: the test passes with the fix and its reasoning shows it would fail without it
@@ -51,3 +51,4 @@
 - 2026-11-23 — Claimed ahead of its Deps at the user's request; works on top of the dependency's branch.
 - 2026-11-23 — Diagnosis (opus consultant): no unguarded GPU read found on the KeyMix/Dissolve composite path (bounded reads in pixelwrap.slang/compositestep.slang; working buffers fully written). Dissolve's bad pixel (20,15) lies inside the small input's box, which points at buffer reuse/race, not an edge read. The ×20 repeat timeout looks like overload (≈8 lavapipe debug processes, 300 s ctest TIMEOUT) rather than a hang. Next: pool-poison test option + shared helper used by KeyMix, Merge and Dissolve rows; upload repeat logs/stacks; repeat parallel/timeout knobs. Poisoned failure → crop inputs to region in makeStageGpuInput/makeStageGpuWrap (covers both); poisoned pass → trace strips and RAM-upload path.
 - 2026-11-23 — Root cause (opus consultant, from pixel values): the bad pixels are a 16-wide box read straight on from (20,14) of a 64-wide image — a cached RAM image enlarged in place (Image::ensureBounds, EffectInstanceRenderRoI.cpp:1651) while ResampleExecutor read its bounds (:532) before taking the read lock (:535). Two parity sources with identical hashes share one cache entry. Same cause for Dissolve. Fix: an image the cache has handed out is never enlarged in place (enlarge by copy and swap the cache entry); read bounds and pointer under one lock in ResampleExecutor and GpuRegionTask resolveInputs/issueUploads; deterministic test holding a box-sized image across a full-frame render of an identical node. The old 5.79e36 failure may be a second issue.
+- 2026-11-24 (PM, sonnet check) — M495 - KeyMix GPU Edge Read Fix (dd296e880, #363) already fixes Dissolve's path: render-path grows use Image::ensureBoundsByCopy (EffectInstanceRenderRoI.cpp:1334, EffectInstance.cpp:2828), and ResampleExecutor/GpuRegionTask take the read lock before reading bounds; Dissolve has no reader of its own. P2.T1 struck. P2.T2 is satisfied by M495's poisoned-pool DissolveSmallerInput variant (NativeEdgeInputsGpu_Test.cpp:356-372) plus CacheGrowth_Test's shared-entry grow. The branch carries no code; P3.T1's repeat runs on main's code.

@@ -49,6 +49,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/KnobGui.h"
 #include "Gui/KnobGuiContainerI.h"
 #include "Gui/KnobGuiValue.h"
+#include "Gui/ValueModeDiscWidget.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -380,7 +381,14 @@ ValueGlobalModeTargetBase::syncReveal(ColorTrackballReveal* reveal,
     const bool stroking = strokeActive && _session.isActive();
 
     reveal->setValueKind(getStrokeKind());
+    reveal->setPillTexts(directionLabels());
     reveal->setValueTravel(stroking ? _stroke.getTotalDx() : 0., stroking ? _stroke.getTotalDy() : 0.);
+}
+
+ColorTrackballRevealLabels
+ValueGlobalModeTargetBase::directionLabels() const
+{
+    return valueModeRevealDirectionLabels(getStrokeKind());
 }
 
 ValueKnobGlobalModeTarget::ValueKnobGlobalModeTarget(const KnobGuiPtr& knobGui)

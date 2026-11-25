@@ -26,6 +26,8 @@
 #include <Python.h>
 // ***** END PYTHON BLOCK *****
 
+#include <functional>
+
 #include "Global/Macros.h"
 
 CLANG_DIAG_OFF(deprecated)
@@ -174,6 +176,41 @@ public:
         Q_UNUSED(flags);
 
         return false;
+    }
+
+    /**
+     * @brief Draws text at (x, y) in the coordinates of getViewportRect(), whatever transform the
+     * overlay is being drawn through, for text pinned to the viewport rather than to the image.
+     **/
+    virtual bool renderViewportText(double x,
+                                    double y,
+                                    const std::string& string,
+                                    double r,
+                                    double g,
+                                    double b,
+                                    int flags = 0)
+    {
+        return renderText(x, y, string, r, g, b, flags);
+    }
+
+    /**
+     * @brief Runs \p draw with the overlay's path transform removed, so GL calls made in it are in
+     * the coordinates of getViewportRect(). For elements pinned to the viewport, such as a frame
+     * around it.
+     **/
+    virtual void drawInViewportSpace(const std::function<void()>& draw)
+    {
+        draw();
+    }
+
+    /**
+     * @brief The cursor position in the coordinates the overlay is being drawn in, that is
+     * getCursorPosition() taken back through the overlay's path transform.
+     **/
+    virtual void getCursorPositionInOverlay(double& x,
+                                            double& y) const
+    {
+        getCursorPosition(x, y);
     }
 
     /**

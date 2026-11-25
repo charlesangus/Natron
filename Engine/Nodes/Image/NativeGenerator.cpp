@@ -158,7 +158,7 @@ NativeGenerator::getPreferredMetadataAt(double time,
 {
     metadata.setIsContinuous(true);
     metadata.setNComps(-1, 4);
-    metadata.setComponentsType(-1, kNatronColorLayerID);
+    metadata.setComponentsType(-1, eImageComponentsTypeColor);
     metadata.setEdgeMode(readBlackOutside(_blackOutside, time, view));
 
     double par = 0.;

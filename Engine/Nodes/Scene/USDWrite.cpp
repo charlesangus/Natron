@@ -1423,7 +1423,7 @@ USDWrite::initializeKnobs()
 
     KnobBoolPtr exportLiveTextures = createKnob<KnobBool>(tr("Export Live Textures"));
     exportLiveTextures->setName(kUSDWriteParamExportLiveTextures);
-    exportLiveTextures->setHintToolTip(tr("Renders the images a USDMaterial's image inputs feed the scene to OpenEXR files in "
+    exportLiveTextures->setHintToolTip(tr("Renders the images a USDPreviewSurface's image inputs feed the scene to OpenEXR files in "
                                           "<file name>_textures beside the file, one per frame for an image that changes over "
                                           "time, and points the materials at them. Off, the file names the images as only this "
                                           "Natron session can read them."));
@@ -1906,7 +1906,7 @@ USDWrite::writeFrameRange(int firstFrame,
         std::vector<PXR_NS::SdfLayerRefPtr> open;
         for (const QString& path : paths) {
             const PXR_NS::SdfLayerHandle layer = PXR_NS::SdfLayer::Find(path.toStdString());
-            if (layer) {
+            if (layer && !SceneOps::isStalePendingLayer(PXR_NS::SdfLayerRefPtr(layer))) {
                 open.push_back(PXR_NS::SdfLayerRefPtr(layer));
             }
         }

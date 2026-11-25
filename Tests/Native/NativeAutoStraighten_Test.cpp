@@ -607,6 +607,48 @@ TEST_F(NativeAutoStraightenTest, TooFewDrawnLinesFail)
     EXPECT_EQ(AutoStraighten::eLineOrientationVertical, orientation);
 }
 
+// A point inserted into a guide line while the node renders exists on the GUI side only, with
+// empty render-side curves: the drawn lines must place it on the line, not at the origin.
+TEST_F(NativeAutoStraightenTest, DrawnLinesReadAPointInsertedDuringARender)
+{
+    const int width = 160, height = 120;
+    NodePtr node = createChain(width, height, pattern);
+    ASSERT_TRUE(bool(node));
+    AutoStraighten* effect = effectOf(node);
+    ASSERT_TRUE(effect != nullptr);
+
+    const TransformMath::Mat3 identity = Ashift::homography(Ashift::Model(), width, height, true);
+    BezierPtr line = drawLine(node, identity, height, GuideLine { 40., 10., 40., 100. });
+    ASSERT_TRUE(bool(line));
+    effect->setLineOrientation(line, AutoStraighten::eLineOrientationVertical);
+
+    const auto expectOnTheLine = [](const Ashift::LineSet& set) {
+        ASSERT_EQ(2u, set.lines.size());
+        for (const Ashift::Line& l : set.lines) {
+            for (const double* p : { l.p1, l.p2 }) {
+                EXPECT_NEAR(40., p[0], 1e-6);
+                EXPECT_GE(p[1], 10. - 1e-6);
+                EXPECT_LE(p[1], 100. + 1e-6);
+            }
+        }
+        EXPECT_NEAR(set.lines[0].p2[1], set.lines[1].p1[1], 1e-6);
+        EXPECT_GT(set.lines[0].p2[1], 10. + 1.);
+        EXPECT_LT(set.lines[0].p2[1], 100. - 1.);
+    };
+
+    {
+        RenderingFlagSetter rendering(node);
+        ASSERT_TRUE(node->isNodeRendering());
+        ASSERT_TRUE(line->addControlPointAfterIndex(0, 0.5) != nullptr);
+        ASSERT_EQ(2, line->getControlPointsCount(false));
+        ASSERT_EQ(3, line->getControlPointsCount());
+        expectOnTheLine(effect->drawnLines(kTime, ViewIdx(0)));
+    }
+    line->dequeueGuiActions();
+    ASSERT_EQ(3, line->getControlPointsCount(false));
+    expectOnTheLine(effect->drawnLines(kTime, ViewIdx(0)));
+}
+
 // dt_iop_ashift_params_t against the knobs: each field's knob, default and range. The crop box
 // is computed, not stored (its interactive adjustment belongs to the viewer work of M165), the
 // drawn lines are the node's curves with their own orientation knob, and last_quad_lines is the

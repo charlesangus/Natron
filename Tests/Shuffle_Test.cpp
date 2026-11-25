@@ -401,7 +401,7 @@ TEST_F(ShuffleTest, ProducesOnlyItsOutputLayerAndPassesTheRestThroughFromTheSour
     rgb.push_back("G");
     rgb.push_back("B");
     std::string error;
-    ASSERT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("spec2", "spec2", "", rgb), LayerRegistryEntry::eOriginUser, &error)) << error;
+    ASSERT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("spec2", rgb), LayerRegistryEntry::eOriginUser, &error)) << error;
 
     NodePtr shuffle = createShuffleOnReader();
     ASSERT_TRUE(bool(shuffle));

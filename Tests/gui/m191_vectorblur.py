@@ -2,7 +2,7 @@
 
 The source is a small bright box at the format centre (Constant + Crop) fed through a ShuffleCopy
 whose second input is a Constant holding the motion vector in its red/green; the ShuffleCopy writes
-that into the built-in Forward motion layer, which the node's Auto layer entry reads. The Viewer is set
+that into the built-in forward motion layer, which the node's Auto layer entry reads. The Viewer is set
 to the Un-tone-mapped view; every comparison is relative, between renders of the same viewer region
 at 100% zoom (lit-pixel bounding box of the viewer crop; the occlusion probe measures red only,
 since the depth rides in green and lights the far bar).
@@ -49,7 +49,7 @@ VECTOR_PX = 60.0
 NEAR_LEFT, NEAR_BOTTOM, NEAR_SIZE = 940, 520, 40
 OCCLUSION_SHARP_TOL = 10
 COLOUR_LAYER = "rgba"  # rgba
-MOTION_LAYER = "uk.co.thefoundry.OfxImagePlaneForwardMotionVector"  # the built-in Forward layer (U, V); VectorBlur Auto picks it
+MOTION_LAYER = "forward"  # the built-in forward layer (u, v); VectorBlur Auto picks it
 EXTENT_MIN = 20  # sampled viewer pixels (stride 2 => 40 px)
 
 try:
@@ -343,13 +343,13 @@ try:
                 "the vector constant is (%r, %r) (read back %r, %r)" % (vx, vy, got.r, got.g))
 
     def route_motion(shuffle):
-        """Out 1 = Forward (U, V from input 1's R, G); Out 2 = rgba copied from input 2 (the main input, the box).
+        """Out 1 = forward (u, v from input 1's R, G); Out 2 = rgba copied from input 2 (the main input, the box).
 
         In ShuffleCopy slot 1 reads input 1 and slot 2 reads input 2; only the layers named by Out 1 / Out 2
-        are written, so the box's rgba has to be re-written through Out 2 to survive next to Forward."""
+        are written, so the box's rgba has to be re-written through Out 2 to survive next to forward."""
         out1 = param(shuffle, "out1")
         out1.setLayer(MOTION_LAYER)
-        require(out1.getLayer() == MOTION_LAYER, "%s's Out 1 is the Forward motion layer (read back %r)" % (
+        require(out1.getLayer() == MOTION_LAYER, "%s's Out 1 is the forward motion layer (read back %r)" % (
             shuffle.getLabel(), out1.getLayer()))
         in1 = param(shuffle, "in1")
         in1.setLayer(COLOUR_LAYER)

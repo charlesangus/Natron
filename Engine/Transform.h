@@ -268,6 +268,10 @@ Point3D matApply(const Matrix3x3 & m, const Point3D & p);
 
 void matApply(const Matrix3x3 & m, double* x, double *y, double *z);
 
+// Applies m to p (z = 1 on input) and divides by the resulting z, giving the point on the plane
+// that a homography such as a perspective follow maps p to.
+Point3D matApplyProjected(const Matrix3x3& m, const Point3D& p);
+
 struct Matrix4x4
 {
     double data[16];

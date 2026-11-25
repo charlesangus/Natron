@@ -29,11 +29,13 @@
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpContext.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpInteract.h"
 #include "Engine/RotoItem.h"
+#include "Engine/VectorFollowKnobs.h"
 
 NATRON_NAMESPACE_ENTER
 
 SplineWarpPanelHook::SplineWarpPanelHook(const std::shared_ptr<SplineWarpInteract>& interact)
     : _interact(interact)
+    , _follow(nullptr)
 {
 }
 
@@ -114,18 +116,45 @@ SplineWarpPanelHook::getItemMenuActions(const std::list<RotoItemPtr>& items) con
     std::shared_ptr<SplineWarpInteract> ui = _interact.lock();
 
     // The viewer's right-click menu on a curve lists the same actions.
-    return ui ? ui->getCurveMenuActions(items) : std::vector<MenuAction>();
+    std::vector<MenuAction> actions = ui ? ui->getCurveMenuActions(items) : std::vector<MenuAction>();
+    if (_follow) {
+        const std::vector<MenuAction> follow = _follow->getItemMenuActions(items);
+        actions.insert(actions.end(), follow.begin(), follow.end());
+    }
+
+    return actions;
 }
 
 void
 SplineWarpPanelHook::onItemMenuActionTriggered(const std::string& actionId,
                                                const std::list<RotoItemPtr>& items)
 {
+    if (_follow) {
+        for (const MenuAction& action : _follow->getItemMenuActions(items)) {
+            if (action.id == actionId) {
+                _follow->onItemMenuActionTriggered(actionId, items);
+
+                return;
+            }
+        }
+    }
     std::shared_ptr<SplineWarpInteract> ui = _interact.lock();
 
     if (ui) {
         ui->runCurveMenuAction(actionId, items);
     }
+}
+
+VectorFollowControls*
+SplineWarpPanelHook::getVectorFollowControls() const
+{
+    return _follow;
+}
+
+void
+SplineWarpPanelHook::setVectorFollowControls(VectorFollowControls* follow)
+{
+    _follow = follow;
 }
 
 NATRON_NAMESPACE_EXIT

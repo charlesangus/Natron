@@ -963,7 +963,7 @@ BezierCPCurveGui::evaluate(bool /*useExpr*/,
         return 0.;
     }
     double px = 0., py = 0.;
-    _cp->getPositionAtTime(false, x, ViewIdx(0), &px, &py);
+    _cp->getPositionAtTime(true, x, ViewIdx(0), &px, &py);
 
     return _dimension == 0 ? px : py;
 }

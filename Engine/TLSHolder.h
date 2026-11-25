@@ -129,6 +129,13 @@ public:
     static const FrameRenderContext* currentFrameContext();
 
     /**
+     * @brief Whether the current thread is running a task of the render scheduler, as opposed to merely having a frame
+     * installed: only the scheduler's scopes set it. Code that needs the scheduler's plan or frame store asks this;
+     * code that only wants the frame's args asks currentFrameContext().
+     **/
+    static bool isRunningScheduledTask();
+
+    /**
      * @brief Threads the task running on the current thread may use for its own parallelism, as granted by the
      * scheduler; 0 when no scope set it.
      **/
@@ -156,7 +163,8 @@ public:
         SpawnedThreadScope(QThread* fromThread,
                            const FrameRenderContext* frameContext,
                            const IsolatedJob* job,
-                           SpawnKindEnum kind = eSpawnKindMultiThreadSuite);
+                           SpawnKindEnum kind = eSpawnKindMultiThreadSuite,
+                           bool scheduledTask = false);
 
         ~SpawnedThreadScope();
 
@@ -169,19 +177,21 @@ public:
         const IsolatedJob* _previousJob;
         int _previousBudget;
         int _previousOpenMPThreads;
+        bool _previousScheduledTask;
     };
 
     /**
      * @brief Installs a frame, the task's thread budget and its pool priority on the current thread for the time of
      * a task, and puts the thread in the context of the frame's IsolatedJob, or in none if the frame has none. A
-     * null context leaves the thread's job context as it is. The outermost scope cleans up the thread's TLS on
-     * destruction.
+     * null context leaves the thread's job context as it is. scheduledTask marks the thread as running a scheduler
+     * task (see isRunningScheduledTask()). The outermost scope cleans up the thread's TLS on destruction.
      **/
     class FrameContextScope {
     public:
         explicit FrameContextScope(const FrameRenderContext* context,
                                    int budget = 0,
-                                   int runnablePriority = 0);
+                                   int runnablePriority = 0,
+                                   bool scheduledTask = false);
 
         ~FrameContextScope();
 
@@ -193,6 +203,7 @@ public:
         const IsolatedJob* _previousJob;
         int _previousBudget;
         int _previousPriority;
+        bool _previousScheduledTask;
     };
 
     /**

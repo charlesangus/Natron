@@ -1845,7 +1845,7 @@ RenderScheduler::executeTask(const FramePtr& frame,
             renders = false;
             retCode = EffectInstance::eRenderRoIRetCodeAborted;
         } else if (continuation->callback) {
-            AppTLS::FrameContextScope scope(continuation->context.get(), budget, runnablePriorityOf(frame->priority));
+            AppTLS::FrameContextScope scope(continuation->context.get(), budget, runnablePriorityOf(frame->priority), true);
             OpenMPThreadsScope openMPThreads(budget);
             ContextFrameArgsScope contextArgs(effect, task.key.contextKey ? continuation->context->getArgs(NodeCtxKey(task.key.node, task.key.contextKey)) : ParallelRenderArgsPtr());
             EffectInstance::RenderContinuationHandledScope handled(task.key.node.get(), task.key.time, task.key.view, task.key.contextKey, frame->depth + 1);
@@ -1864,7 +1864,7 @@ RenderScheduler::executeTask(const FramePtr& frame,
 
     if (renders) {
         const FrameRenderContextPtr& renderContext = continuation ? continuation->context : frame->context;
-        AppTLS::FrameContextScope scope(renderContext.get(), budget, runnablePriorityOf(frame->priority));
+        AppTLS::FrameContextScope scope(renderContext.get(), budget, runnablePriorityOf(frame->priority), true);
         OpenMPThreadsScope openMPThreads(budget);
         // A partial cache hit was not probed: renderRoI probes it inline if something is left to render.
         std::optional<EffectInstance::RenderContinuationHandledScope> handled;
@@ -1969,7 +1969,7 @@ RenderScheduler::probeRenderContinuation(const FramePtr& frame,
 {
     const FrameGraph::Task& task = frame->graph.tasks[taskIndex];
     const EffectInstancePtr effect = task.key.node->getEffectInstance();
-    AppTLS::FrameContextScope scope(frame->context.get(), budget, runnablePriorityOf(frame->priority));
+    AppTLS::FrameContextScope scope(frame->context.get(), budget, runnablePriorityOf(frame->priority), true);
     EffectInstance::RenderContinuation probed;
     bool hasContinuation = false;
     {
@@ -2071,7 +2071,7 @@ RenderScheduler::probeRenderContinuation(const FramePtr& frame,
     const FrameRenderContextPtr extensionContext = FrameRenderContext::createExtension(frame->context, request, _nextStoreGeneration++);
     FrameGraph graph;
     {
-        AppTLS::FrameContextScope extensionScope(extensionContext.get(), budget, runnablePriorityOf(frame->priority));
+        AppTLS::FrameContextScope extensionScope(extensionContext.get(), budget, runnablePriorityOf(frame->priority), true);
         graph = buildGraph(extensionContext, rootKeys);
         if (graph.tasks.size() < rootKeys.size()) {
             failTaskWithReason(effect, "asked its render continuation for outputs the request pass did not reach");
@@ -2288,7 +2288,7 @@ RenderScheduler::executeRegion(const FramePtr& frame,
     bool deviceLost = false;
 
     if (body) {
-        AppTLS::FrameContextScope scope(frame->context.get(), budget, runnablePriorityOf(frame->priority));
+        AppTLS::FrameContextScope scope(frame->context.get(), budget, runnablePriorityOf(frame->priority), true);
         OpenMPThreadsScope openMPThreads(budget);
         const int rendering = ++_tasksRendering;
         if (frame->context->getStats()) {

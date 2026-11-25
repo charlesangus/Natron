@@ -2175,6 +2175,7 @@ EffectInstance::renderRoIInternal(EffectInstance* self,
             tiledArgs->layers = layersToRender;
             tiledArgs->compsNeeded = compsNeeded;
             tiledArgs->frameContext = AppTLS::currentFrameContext();
+            tiledArgs->scheduledTask = AppTLS::isRunningScheduledTask();
             tiledArgs->isolatedJob = IsolatedJob::current();
 
 #ifdef NATRON_HOSTFRAMETHREADING_SEQUENTIAL

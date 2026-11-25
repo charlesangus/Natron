@@ -58,6 +58,7 @@ thread_local std::size_t tNumInheritedCopies = 0;
 thread_local const FrameRenderContext* tCurrentFrameContext = 0;
 thread_local int tThreadBudget = 0;
 thread_local int tRunnablePriority = 0;
+thread_local bool tScheduledTask = false;
 
 NATRON_NAMESPACE_ANONYMOUS_EXIT
 
@@ -114,6 +115,12 @@ const FrameRenderContext*
 AppTLS::currentFrameContext()
 {
     return tCurrentFrameContext;
+}
+
+bool
+AppTLS::isRunningScheduledTask()
+{
+    return tScheduledTask;
 }
 
 int
@@ -223,16 +230,19 @@ AppTLS::cleanupTLSForThread()
 AppTLS::SpawnedThreadScope::SpawnedThreadScope(QThread* fromThread,
                                                const FrameRenderContext* frameContext,
                                                const IsolatedJob* job,
-                                               SpawnKindEnum kind)
+                                               SpawnKindEnum kind,
+                                               bool scheduledTask)
     : _spawned(fromThread && fromThread != QThread::currentThread())
     , _previousFrameContext(tCurrentFrameContext)
     , _previousJob(NULL)
     , _previousBudget(tThreadBudget)
     , _previousOpenMPThreads(0)
+    , _previousScheduledTask(tScheduledTask)
 {
     if (_spawned) {
         appPTR->getAppTLS()->softCopy(fromThread, QThread::currentThread(), kind);
         tCurrentFrameContext = frameContext;
+        tScheduledTask = scheduledTask;
         _previousJob = IsolatedJob::exchangeCurrent(job);
         // The spawner already counted this thread as one of its own; nesting more parallelism here oversubscribes.
         tThreadBudget = 1;
@@ -245,6 +255,7 @@ AppTLS::SpawnedThreadScope::~SpawnedThreadScope()
     if (_spawned) {
         appPTR->getAppTLS()->cleanupTLSForThread();
         tCurrentFrameContext = _previousFrameContext;
+        tScheduledTask = _previousScheduledTask;
         IsolatedJob::exchangeCurrent(_previousJob);
         tThreadBudget = _previousBudget;
         if (_previousOpenMPThreads > 0) {
@@ -255,13 +266,16 @@ AppTLS::SpawnedThreadScope::~SpawnedThreadScope()
 
 AppTLS::FrameContextScope::FrameContextScope(const FrameRenderContext* context,
                                              int budget,
-                                             int runnablePriority)
+                                             int runnablePriority,
+                                             bool scheduledTask)
     : _previous(tCurrentFrameContext)
     , _previousJob(IsolatedJob::current())
     , _previousBudget(tThreadBudget)
     , _previousPriority(tRunnablePriority)
+    , _previousScheduledTask(tScheduledTask)
 {
     tCurrentFrameContext = context;
+    tScheduledTask = scheduledTask;
     if (context) {
         IsolatedJob::exchangeCurrent(context->getIsolatedJob());
     }
@@ -275,6 +289,7 @@ AppTLS::FrameContextScope::~FrameContextScope()
     IsolatedJob::exchangeCurrent(_previousJob);
     tThreadBudget = _previousBudget;
     tRunnablePriority = _previousPriority;
+    tScheduledTask = _previousScheduledTask;
     // A task run inline from within another task's scope must not drop the data the outer task is rendering with.
     if (!_previous) {
         appPTR->getAppTLS()->cleanupTLSForThread();

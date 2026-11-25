@@ -209,6 +209,40 @@ TEST_F(FrameRenderContextTest, TaskThreadGetsFrameArgsFromContext)
     EXPECT_FALSE(bool(constantEffect->getParallelRenderArgsTLS())) << "the context must not install args on the thread that created it";
 }
 
+TEST_F(FrameRenderContextTest, ContextWithoutSchedulerMarkerReportsNoScheduledTask)
+{
+    NodePtr constant = createNode(QString::fromUtf8(kConstantPluginID));
+    ASSERT_NE(constant, nullptr);
+
+    AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(false, 0);
+    FrameRenderContextPtr context = FrameRenderContext::create(1.,
+                                                               ViewIdx(0),
+                                                               false /*isRenderUserInteraction*/,
+                                                               false /*isSequential*/,
+                                                               abortInfo,
+                                                               constant,
+                                                               0 /*textureIndex*/,
+                                                               getApp()->getTimeLine().get(),
+                                                               NodePtr(),
+                                                               false /*isAnalysis*/,
+                                                               false /*draftMode*/,
+                                                               RenderStatsPtr());
+    ASSERT_TRUE(bool(context));
+
+    EXPECT_FALSE(AppTLS::isRunningScheduledTask());
+    {
+        AppTLS::FrameContextScope plain(context.get());
+        EXPECT_EQ(context.get(), AppTLS::currentFrameContext());
+        EXPECT_FALSE(AppTLS::isRunningScheduledTask());
+        {
+            AppTLS::FrameContextScope task(context.get(), 1, 0, true);
+            EXPECT_TRUE(AppTLS::isRunningScheduledTask());
+        }
+        EXPECT_FALSE(AppTLS::isRunningScheduledTask());
+    }
+    EXPECT_EQ(nullptr, AppTLS::currentFrameContext());
+}
+
 TEST_F(FrameRenderContextTest, FrameStorePutFindRelease)
 {
     FrameStore store;

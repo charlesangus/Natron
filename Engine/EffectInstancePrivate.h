@@ -527,6 +527,7 @@ public:
         std::bitset<4> processChannels;
         ImageLayersToRenderPtr layers;
         const FrameRenderContext* frameContext;
+        bool scheduledTask;
         const IsolatedJob* isolatedJob;
     };
 

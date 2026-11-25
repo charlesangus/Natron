@@ -3613,7 +3613,7 @@ LoopEnd::abortIfEditedSinceFrameStart() const
 bool
 LoopEnd::feedbackUsesFrameStore()
 {
-    return AppTLS::currentFrameContext() != 0;
+    return AppTLS::isRunningScheduledTask();
 }
 
 bool
@@ -3731,7 +3731,7 @@ LoopEnd::render(const RenderActionArgs& args)
     const int count = resolved.folded;
     const int step = foldStepOf(context, count);
     // Outside a scheduler task there is no store to find the previous step in.
-    const bool chained = AppTLS::currentFrameContext() != 0;
+    const bool chained = AppTLS::isRunningScheduledTask();
 
     // Feedback without a frame store outputs the chain's last iteration, driven once per render
     // whatever the number of rectangles rendered: the host does not pre-render the input.

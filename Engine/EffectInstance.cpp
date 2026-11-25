@@ -1340,7 +1340,7 @@ EffectInstance::getThreadLocalRegionsOfInterests(RoIMap & roiMap) const
 OSGLContextPtr
 EffectInstance::getRenderGLContext(const ParallelRenderArgsPtr& frameArgs)
 {
-    if (AppTLS::currentFrameContext()) {
+    if (AppTLS::isRunningScheduledTask()) {
         return appPTR->getGPUContextPool()->getOrCreateContextForCurrentThread();
     }
     if (!frameArgs) {
@@ -3355,7 +3355,7 @@ EffectInstance::renderInputImagesForRoI(const FrameViewRequest* request,
 {
     // With transforms the map would name the effects the transforms redirect to rather than the inputs. Without a frame
     // context there is no plan that can have left an input out, and the planned RoI is read as before.
-    const bool asksRenderWindow = renderWindowIsPartOfRoI && AppTLS::currentFrameContext() && (!inputTransforms || inputTransforms->empty());
+    const bool asksRenderWindow = renderWindowIsPartOfRoI && AppTLS::isRunningScheduledTask() && (!inputTransforms || inputTransforms->empty());
     if (!request || asksRenderWindow) {
         getRegionsOfInterest_public(time, renderMappedScale, rod, canonicalRenderWindow, view, inputsRoi);
     }
@@ -3386,7 +3386,7 @@ EffectInstance::Implementation::tiledRenderingFunctor(EffectInstance::Implementa
                                                       QThread* callingThread)
 {
     ///Make the thread-storage live as long as the render action is called if we're in a newly launched thread in eRenderSafetyFullySafeFrame mode
-    AppTLS::SpawnedThreadScope spawnedThreadTLS(callingThread, args.frameContext, args.isolatedJob, AppTLS::eSpawnKindHostFrameThreading);
+    AppTLS::SpawnedThreadScope spawnedThreadTLS(callingThread, args.frameContext, args.isolatedJob, AppTLS::eSpawnKindHostFrameThreading, args.scheduledTask);
 
     EffectInstance::RenderingFunctorRetEnum ret = tiledRenderingFunctor(specificData,
                                                                         args.renderFullScaleThenDownscale,

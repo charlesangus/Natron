@@ -84,30 +84,6 @@ frameGatheredHook()
     return frameGatheredHookStorage;
 }
 
-class PythonUnlockedWhileWaiting {
-public:
-    explicit PythonUnlockedWhileWaiting(bool unlock)
-        : _state(nullptr)
-    {
-        if (unlock && Py_IsInitialized() && PyGILState_Check()) {
-            _state = PyEval_SaveThread();
-        }
-    }
-
-    ~PythonUnlockedWhileWaiting()
-    {
-        if (_state) {
-            PyEval_RestoreThread(_state);
-        }
-    }
-
-    PythonUnlockedWhileWaiting(const PythonUnlockedWhileWaiting&) = delete;
-    PythonUnlockedWhileWaiting& operator=(const PythonUnlockedWhileWaiting&) = delete;
-
-private:
-    PyThreadState* _state;
-};
-
 const char*
 packedModeArgument(GeoUsdPackedModeEnum mode)
 {
@@ -910,7 +886,10 @@ GeoToUSD::renderScene(const SceneRenderActionArgs& args,
     {
         // An upstream expression a helper evaluates needs the GIL, which a script evaluating this
         // node may hold while it waits for the helpers.
-        PythonUnlockedWhileWaiting unlocked(frames.size() > 1);
+        std::optional<PythonUnlockedWhileWaiting> unlocked;
+        if (frames.size() > 1) {
+            unlocked.emplace();
+        }
         parallelForCancellable((int)frames.size(), appPTR ? appPTR->getNCPUsAvailableForEffect() : 1, cancel, gatherFrame);
     }
     if (cancel.check()) {

@@ -50,7 +50,7 @@ Delete the Legacy render scheduler mode (`renderSchedulerMode`, `Engine/Settings
   - verify: `rg 'RenderSchedulerMode|SchedulerModeGuard' Tests` lists only `RenderSchedulerMode_Test.cpp`; whole ctest green at the phase build.
   - size: M
 
-- [ ] M199.P1.T4 — Delete the mode from the engine
+- [x] M199.P1.T4 — Delete the mode from the engine
   - files: `Global/Enums.h`, `Engine/Settings.h`, `Engine/Settings.cpp`, `Engine/AppManager.h`, `Engine/AppManager.cpp`, `Engine/AppManagerPrivate.h`, `Engine/AppManagerPrivate.cpp`, `Engine/OutputSchedulerThread.cpp`, `Engine/ViewerInstance.cpp`, `Engine/Nodes/Loop/LoopBegin.cpp`, `Engine/Nodes/Loop/LoopEnd.cpp`, `Tests/RenderSchedulerMode_Test.cpp` (delete), `Tests/CMakeLists.txt:219`
   - approach: Delete what Scope/In lists. Each `taskGraphMode` branch keeps its task-graph arm; the Legacy `else` of `adjustNumberOfThreads` (:1680-1705) and the `ViewerCurrentFrameRequestScheduler` pool branch (:4500-4505) go. `foldsAsTasks()` is deleted and its callers keep their true arm. The fallback `renderRoI` calls stay (Scope/Out).
   - verify: `rg -i 'renderSchedulerMode|NATRON_RENDER_SCHEDULER|SchedulerModeLegacy|SchedulerModeTaskGraph' Engine Global Gui Tests` is empty; whole ctest green, including `SchedulerWriters.*` and `RenderSchedulerAbortTiming.WriterRangeStopsSoonAfterEngineAbort`.

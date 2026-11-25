@@ -1653,10 +1653,10 @@ TEST_F(NativeLoopBlockTest, AnEditHeldBackByTheRenderAbortsTheLoopsRender)
                 rendering.reset(new RenderingFlagSetter(end));
                 if (editBody) {
                     delay->setValue(1);
-                    heldBack = (delay->getValue() == 0);
+                    heldBack = (delay->getRawValue(0) == 0);
                 } else {
                     count->setValue(iterations - 1);
-                    heldBack = (count->getValue() == iterations);
+                    heldBack = (count->getRawValue(0) == iterations);
                 }
             };
             bool edited = false;

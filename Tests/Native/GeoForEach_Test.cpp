@@ -596,7 +596,7 @@ TEST_F(GeoForEachTest, AnEditHeldBackByALongCookAbortsIt)
         } else {
             iterations->setValue(kGeoForEachEndDefaultMaxIterations - 1);
         }
-        const bool heldBack = editBody ? (translate->getValue(1) == 0.) : (iterations->getValue() == kGeoForEachEndDefaultMaxIterations);
+        const bool heldBack = editBody ? (translate->getRawValue(1) == 0.) : (iterations->getRawValue(0) == kGeoForEachEndDefaultMaxIterations);
         cook.join();
         rendering.reset();
 

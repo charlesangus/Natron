@@ -27,34 +27,19 @@
 
 #include <algorithm>
 #include <cstddef>
-#include <fstream>
 #include <span>
-
-#include <OpenImageIO/filesystem.h>
 
 #include <QByteArray>
 #include <QString>
 #include <QXmlStreamReader>
 
-#include "Serialization/Bundle/ZipStore.h"
+#include "Engine/Nodes/IO/LayeredDocs/ZipArchive.h"
 
 NATRON_NAMESPACE_ENTER
 
 namespace LayeredDocs {
 namespace {
     const char* const kMimeType = "image/openraster";
-
-    struct Archive {
-        std::vector<std::byte> bytes;
-        std::unique_ptr<Serialization::ZipReader> zip;
-    };
-
-    struct PngInfo {
-        int width = 0;
-        int height = 0;
-        std::vector<std::string> channels;
-        OIIO::TypeDesc type = OIIO::TypeDesc::UINT8;
-    };
 
     std::shared_ptr<LayeredDocument>
     failed(std::string* error,
@@ -65,121 +50,6 @@ namespace {
         }
 
         return std::shared_ptr<LayeredDocument>();
-    }
-
-    bool
-    readWholeFile(const std::string& path,
-                  std::vector<std::byte>* bytes)
-    {
-        std::ifstream file(path, std::ios::binary | std::ios::ate);
-
-        if (!file) {
-            return false;
-        }
-        const std::streamoff size = file.tellg();
-        if (size < 0) {
-            return false;
-        }
-        bytes->resize((std::size_t)size);
-        file.seekg(0);
-
-        return size == 0 || (bool)file.read(reinterpret_cast<char*>(bytes->data()), size);
-    }
-
-    // OIIO keeps a PNG's alpha associated, as when it reads a PNG file, unless asked otherwise.
-    OIIO::ImageInput::unique_ptr
-    openPng(const std::string& member,
-            OIIO::Filesystem::IOMemReader* reader,
-            std::string* error)
-    {
-        OIIO::ImageInput::unique_ptr input = OIIO::ImageInput::open(member, nullptr, reader);
-
-        if (!input) {
-            const std::string detail = OIIO::geterror();
-            *error = "Could not decode " + member + (detail.empty() ? std::string() : ": " + detail);
-        }
-        return input;
-    }
-
-    bool
-    pngInfoOf(const Archive& archive,
-              const std::string& member,
-              PngInfo* info,
-              std::string* error)
-    {
-        try {
-            const std::span<const std::byte> data = archive.zip->data(member);
-            OIIO::Filesystem::IOMemReader reader(data.data(), data.size());
-            OIIO::ImageInput::unique_ptr input = openPng(member, &reader, error);
-            if (!input) {
-                return false;
-            }
-            const OIIO::ImageSpec& spec = input->spec();
-            info->width = spec.width;
-            info->height = spec.height;
-            info->channels = spec.channelnames;
-            info->type = spec.format;
-            input->close();
-        } catch (const Serialization::ZipError& e) {
-            *error = e.what();
-
-            return false;
-        }
-
-        return true;
-    }
-
-    // The member's pixels as `info` gives them, or as R, G, B, A.
-    bool
-    decodePng(const Archive& archive,
-              const std::string& member,
-              const PngInfo& info,
-              bool rgba,
-              std::vector<unsigned char>* pixels,
-              std::string* error)
-    {
-        try {
-            const std::span<const std::byte> data = archive.zip->data(member);
-            OIIO::Filesystem::IOMemReader reader(data.data(), data.size());
-            OIIO::ImageInput::unique_ptr input = openPng(member, &reader, error);
-            if (!input) {
-                return false;
-            }
-            const OIIO::ImageSpec& spec = input->spec();
-            if (spec.width != info.width || spec.height != info.height || spec.channelnames != info.channels) {
-                *error = member + " changed while it was read";
-
-                return false;
-            }
-            const std::size_t count = (std::size_t)spec.width * (std::size_t)spec.height;
-            std::vector<float> values(count * (std::size_t)spec.nchannels);
-            if (!input->read_image(0, 0, 0, spec.nchannels, OIIO::TypeDesc::FLOAT, values.data())) {
-                *error = "Could not decode " + member + ": " + input->geterror();
-
-                return false;
-            }
-            input->close();
-
-            std::vector<float> out;
-            if (rgba) {
-                out.resize(count * 4);
-                toRgba(values.data(), count, info.channels, out.data());
-            } else {
-                out.swap(values);
-            }
-            pixels->resize(out.size() * info.type.size());
-            if (!convertValues(OIIO::TypeDesc::FLOAT, out.data(), info.type, pixels->data(), out.size())) {
-                *error = "Could not convert the pixels of " + member;
-
-                return false;
-            }
-        } catch (const Serialization::ZipError& e) {
-            *error = e.what();
-
-            return false;
-        }
-
-        return true;
     }
 
     std::string
@@ -230,13 +100,10 @@ readOra(const std::string& path,
 {
     const std::shared_ptr<Archive> archive = std::make_shared<Archive>();
 
-    if (!readWholeFile(path, &archive->bytes)) {
-        return failed(error, "Could not read " + path);
-    }
-    try {
-        archive->zip = std::make_unique<Serialization::ZipReader>(std::span<const std::byte>(archive->bytes));
-    } catch (const Serialization::ZipError& e) {
-        return failed(error, path + " is not an OpenRaster file: " + e.what());
+    std::string readError;
+    std::string zipError;
+    if (!readArchive(path, archive.get(), &readError, &zipError)) {
+        return failed(error, readError.empty() ? path + " is not an OpenRaster file: " + zipError : readError);
     }
 
     std::span<const std::byte> stackXml;

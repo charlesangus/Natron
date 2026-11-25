@@ -413,6 +413,12 @@ registerBuiltinFormats()
         psd.extensions = { "psd", "psb", "pdd" };
         psd.read = readPsd;
         registerFormat(psd, nullptr);
+
+        Format kra;
+        kra.name = "natron_kra";
+        kra.extensions = { "kra" };
+        kra.read = readKra;
+        registerFormat(kra, nullptr);
     });
 }
 

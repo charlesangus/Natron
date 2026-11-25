@@ -107,6 +107,7 @@
 #include "RenderBothWays.h"
 #include "RenderSettingsTestUtils.h"
 #include "Tests/Native/NativeGolden.h"
+#include "Tests/TestWatchdog.h"
 #include "ofxNatron.h"
 
 NATRON_NAMESPACE_USING
@@ -333,17 +334,28 @@ class USDRenderMoonRayTest
 protected:
     virtual void SetUp() OVERRIDE
     {
+        _watchdog.start();
+        TestWatchdog::setPhase("setup");
         BaseTest::SetUp();
         HydraRender::setRendererSettings(kMoonRayRendererId, pixelSamples(2));
+        TestWatchdog::setPhase("test body");
     }
 
     virtual void TearDown() OVERRIDE
     {
+        _watchdog.start();
+        TestWatchdog::setPhase("teardown: renderer settings");
         HydraRender::setRendererSettings(kMoonRayRendererId, std::map<std::string, PXR_NS::VtValue>());
+        TestWatchdog::setPhase("teardown: release cpu engines");
         HydraRender::releaseAllCpuEngines();
+        TestWatchdog::setPhase("teardown: release scene queries");
         SceneQueryPool::instance().releaseIdle();
+        TestWatchdog::setPhase("teardown: base");
         BaseTest::TearDown();
+        _watchdog.stop();
     }
+
+    TestWatchdog _watchdog;
 
     template <typename KNOB>
     static KNOB* knob(const NodePtr& node,
@@ -419,7 +431,9 @@ protected:
         if (keepEngine) {
             appPTR->clearAllCaches();
         }
+        TestWatchdog::setPhase("render");
         const bool ok = renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, kSize, kSize), allPlanes(), planes, &error, !keepEngine);
+        TestWatchdog::setPhase("test body");
         EXPECT_TRUE(ok) << error;
         if (!ok) {
             return false;
@@ -596,7 +610,9 @@ TEST_F(USDRenderMoonRayTest, AbortEndsTheRenderProcessPromptly)
     };
     HydraRender::Result result;
     std::string error;
+    TestWatchdog::setPhase("render until abort");
     EXPECT_FALSE(HydraRender::render(request, &result, &error));
+    TestWatchdog::setPhase("abort shutdown");
     ASSERT_TRUE(abortSeen) << "the render ended before it was aborted: " << error;
     EXPECT_NE(std::string::npos, error.find("cancelled")) << error;
     const std::chrono::milliseconds kShutdownBound(2500);
@@ -1621,6 +1637,7 @@ protected:
 
     virtual void TearDown() OVERRIDE
     {
+        TestWatchdog::setPhase("teardown: live textures");
         LiveTextureStore::instance().clear();
         USDRenderMoonRayTest::TearDown();
     }

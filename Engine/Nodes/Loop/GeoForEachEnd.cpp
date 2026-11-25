@@ -955,7 +955,8 @@ GeoForEachEnd::abortIfEditedSince(const RunningCook& cook) const
     }
     const NodePtr node = getNode();
     U64 current = 0;
-    if (!node || (node->getHashValueIfUpToDate(&current) && (current == cook.startHash))) {
+    const bool madeBeforeEdit = cook.abortInfo->getRenderSequence() <= _editedAtRenderSequence.load();
+    if (!node || (!madeBeforeEdit && node->getHashValueIfUpToDate(&current) && (current == cook.startHash))) {
         return false;
     }
     cook.abortInfo->setAborted();
@@ -968,6 +969,19 @@ GeoForEachEnd::onNodeHashChanged(U64 hash)
 {
     NativeEffectBase::onNodeHashChanged(hash);
 
+    abortRunningCooks(&hash);
+}
+
+void
+GeoForEachEnd::abortCooksStaleAfterEdit()
+{
+    noteEditAtLatestRenderSequence(&_editedAtRenderSequence);
+    abortRunningCooks(nullptr);
+}
+
+void
+GeoForEachEnd::abortRunningCooks(const U64* keepHash)
+{
     const AppInstancePtr app = getApp();
     if (app && app->isDraftRenderEnabled()) {
         return;
@@ -976,7 +990,7 @@ GeoForEachEnd::onNodeHashChanged(U64 hash)
     {
         QMutexLocker k(&_runningMutex);
         for (const RunningCook& cook : _running) {
-            if (cook.startHash != hash) {
+            if (!keepHash || (cook.startHash != *keepHash)) {
                 stale.push_back(cook.abortInfo);
             }
         }

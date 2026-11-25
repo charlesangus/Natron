@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
 #include <cstdint>
 #include <list>
 #include <memory>
@@ -192,6 +193,7 @@ private:
                                     const RenderContextPtr& context) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void appendExtraHashDependents(std::vector<NodePtr>* dependents) const OVERRIDE FINAL;
     virtual void onNodeHashChanged(U64 hash) OVERRIDE FINAL;
+    virtual void abortCooksStaleAfterEdit() OVERRIDE FINAL;
     virtual StatusEnum renderGeometry(const GeoRenderActionArgs& args,
                                       GeoDetailConstPtr* outputDetail,
                                       std::string* errorMessage) OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -245,7 +247,8 @@ private:
     std::string _posted;
 
     // A viewer cook of this node and the hash it started under. An edit keeps the oldest viewer
-    // render running, and a loop can cook for minutes, so the cook is aborted once the hash moves.
+    // render running, and a loop can cook for minutes, so the cook is aborted once the hash moves
+    // or an edit of this node or its body is held back by the render it cooks in.
     struct RunningCook {
         U64 startHash = 0;
         AbortableRenderInfoPtr abortInfo;
@@ -253,9 +256,13 @@ private:
     class RunningCookScope;
 
     bool abortIfEditedSince(const RunningCook& cook) const WARN_UNUSED_RETURN;
+    // Aborts the running cooks, but those started under keepHash when one is given; not during a drag.
+    void abortRunningCooks(const U64* keepHash);
 
     QMutex _runningMutex;
     std::list<RunningCook> _running;
+    // See noteEditAtLatestRenderSequence().
+    std::atomic<U64> _editedAtRenderSequence { 0 };
 };
 
 NATRON_NAMESPACE_EXIT

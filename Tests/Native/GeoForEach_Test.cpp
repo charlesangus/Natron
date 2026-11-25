@@ -555,6 +555,63 @@ TEST_F(GeoForEachTest, AbortingTheMaximumIterationCountReturnsPromptly)
     }
 }
 
+// An edit made while a viewer cooks the loop is held back until the renders reading the edited
+// node end, so no hash moves while the cook runs. Whether of the loop's own knobs or of its body,
+// it still aborts the cook within moments.
+TEST_F(GeoForEachTest, AnEditHeldBackByALongCookAbortsIt)
+{
+    struct QueueWritesScope {
+        QueueWritesScope() { EffectInstance::setQueuesWritesDuringBackgroundRendersForTesting(true); }
+        ~QueueWritesScope() { EffectInstance::setQueuesWritesDuringBackgroundRendersForTesting(false); }
+    };
+
+    for (int editBody = 0; editBody < 2; ++editBody) {
+        SCOPED_TRACE(editBody ? "body" : "loop");
+        NodePtr input = begin(_cube, eGeoForEachBeginFetchFeedback);
+        NodePtr move = transform(input);
+        drive(move, kGeoTransformParamTranslate, 0, "loop.iteration", 0., 1.);
+        NodePtr loop = end(move, eGeoForEachIterateCount, eGeoForEachGatherFeedback);
+        setInt(loop, kGeoForEachEndParamIterations, kGeoForEachEndDefaultMaxIterations);
+        ASSERT_TRUE(loop != NULL);
+        KnobIntPtr iterations = std::dynamic_pointer_cast<KnobInt>(loop->getKnobByName(kGeoForEachEndParamIterations));
+        KnobDoublePtr translate = std::dynamic_pointer_cast<KnobDouble>(move->getKnobByName(kGeoTransformParamTranslate));
+        ASSERT_TRUE(iterations != NULL);
+        ASSERT_TRUE(translate != NULL);
+
+        const QueueWritesScope queueWrites;
+        std::unique_ptr<RenderingFlagSetter> rendering(new RenderingFlagSetter(loop));
+        AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
+        EffectInstance::RenderRoIRetCode code = EffectInstance::eRenderRoIRetCodeFailed;
+        std::string error;
+        std::chrono::steady_clock::time_point returnedAt;
+        std::thread cook([&]() {
+            GeoDetailConstPtr result;
+            code = pull(loop, &result, &error, true, abortInfo);
+            returnedAt = std::chrono::steady_clock::now();
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        const std::chrono::steady_clock::time_point editedAt = std::chrono::steady_clock::now();
+        if (editBody) {
+            translate->setValue(1., ViewSpec::all(), 1);
+        } else {
+            iterations->setValue(kGeoForEachEndDefaultMaxIterations - 1);
+        }
+        const bool heldBack = editBody ? (translate->getValue(1) == 0.) : (iterations->getValue() == kGeoForEachEndDefaultMaxIterations);
+        cook.join();
+        rendering.reset();
+
+        EXPECT_TRUE(heldBack) << "the edit applied while the loop rendered";
+        if ((code == EffectInstance::eRenderRoIRetCodeOk) && (returnedAt <= editedAt)) {
+            // A machine fast enough to finish before the edit has nothing left to abort.
+            continue;
+        }
+        EXPECT_EQ(EffectInstance::eRenderRoIRetCodeAborted, code) << error;
+        EXPECT_TRUE(abortInfo->isAborted());
+        const double ms = std::chrono::duration<double, std::milli>(returnedAt - editedAt).count();
+        EXPECT_LT(ms, 2000.) << "the loop went on for " << ms << " ms after the edit";
+    }
+}
+
 TEST_F(GeoForEachTest, PiecesByNameAreScaledAboutTheirOwnCentroids)
 {
     expectBoxesScaledAboutTheirCentroids(eGeoPieceMethodAttribute);

@@ -7656,6 +7656,10 @@ EffectInstance::abortViewerRendersForEdit()
     if (Node::deferViewerAbortToCascade(getNode())) {
         return;
     }
+    const NodePtr node = getNode();
+    if (node) {
+        node->abortCooksStaleAfterEditDownstream();
+    }
     std::list<OutputEffectInstance*> outputNodes;
     getDownstreamOutputs(&outputNodes);
     for (std::list<OutputEffectInstance*>::const_iterator it = outputNodes.begin(); it != outputNodes.end(); ++it) {

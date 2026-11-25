@@ -3130,6 +3130,15 @@ public:
     virtual void onNodeHashChanged(U64 hash);
 
     /**
+     * @brief Called for an edit of this node or of any node upstream of it made while that node
+     * renders (Node::abortCooksStaleAfterEditDownstream()). Such an edit is queued until the
+     * renders reading the edited node end, so it moves no hash while they run and
+     * onNodeHashChanged() does not hear of it. An effect whose own cooks outlast edits aborts the
+     * ones the edit leaves stale. Called on the editing thread, possibly while cooks run. MT-safe.
+     **/
+    virtual void abortCooksStaleAfterEdit() { }
+
+    /**
      * @brief Drops every output metadata result this effect cached, its inputs' included, with no
      * other effect touched. Called when metadata upstream changed under an unchanged hash, which
      * the caches are otherwise keyed on. Takes no lock but the caches' own; callable from any thread.

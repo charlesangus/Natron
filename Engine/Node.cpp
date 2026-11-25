@@ -5259,6 +5259,7 @@ walkDownstreamUntil(const Node* start,
 
 thread_local int removalBatchDepth = 0;
 thread_local std::unordered_set<const Node*> removalBatchOutputWalkVisited;
+thread_local std::unordered_set<const Node*> removalBatchStaleCookWalkVisited;
 
 int pythonDeclarationBatchDepth = 0;
 // Each deactivated node with the name its variable was deleted under, and the script deleting all.
@@ -5312,6 +5313,7 @@ Node::RemovalBatch::~RemovalBatch()
 {
     if (--removalBatchDepth == 0) {
         removalBatchOutputWalkVisited.clear();
+        removalBatchStaleCookWalkVisited.clear();
     }
 }
 
@@ -5506,6 +5508,38 @@ Node::hasOutputNodesConnected(std::list<OutputEffectInstance*>* writers) const
     });
 }
 
+void
+Node::abortCooksStaleAfterEditDownstream()
+{
+    // A paint tree's nodes are read through the paint node, below which its outputs are.
+    NodePtr start = shared_from_this();
+    RotoDrawableItemPtr attachedStroke = getAttachedRotoItem();
+    if (attachedStroke) {
+        RotoCurveContextPtr context = attachedStroke->getContext();
+        NodePtr paintNode = context ? context->getNode() : NodePtr();
+        if (!paintNode) {
+            return;
+        }
+        start = paintNode;
+    }
+    // Only the start is tested, as an edit of a node no render reads applies at once. The walk
+    // does not stop at nodes below it that are not marked rendering: a group's inner nodes may
+    // render unmarked.
+    if (!start->isNodeRendering()) {
+        return;
+    }
+    std::unordered_set<const Node*> visited;
+    // A node an earlier walk of the batch reached already heard of an edit at least as old.
+    walkDownstreamUntil(start.get(), (removalBatchDepth > 0) ? &removalBatchStaleCookWalkVisited : &visited, [](const Node* node) {
+        const EffectInstancePtr effect = node->getEffectInstance();
+        if (effect) {
+            effect->abortCooksStaleAfterEdit();
+        }
+
+        return false;
+    });
+}
+
 bool
 Node::couldReachConnectedViewer() const
 {
@@ -5539,6 +5573,7 @@ Node::abortViewerRendersForInputEdit(std::list<ViewerInstance*>* viewersDownstre
     if (deferViewerAbortToCascade(shared_from_this())) {
         return false;
     }
+    abortCooksStaleAfterEditDownstream();
     if (!couldReachConnectedViewer()) {
         return true;
     }

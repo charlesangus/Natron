@@ -71,7 +71,7 @@ add_custom_command(
 add_custom_target(NatronTabTabTabResources DEPENDS ${NatronTabTabTab_STAMP})
 add_dependencies(Natron NatronTabTabTabResources)
 
-# The optics library's GlassCatalogue::defaultPath() is <bin>/../Resources/optics/glass.json;
+# The optics library reads <bin>/../Resources/optics/ (GlassCatalogue::defaultPath(), LensDatabase::defaultPath());
 # copied and shipped as the tabtabtab files are.
 set(NatronOptics_SOURCE_DIR ${CMAKE_SOURCE_DIR}/Gui/Resources/Optics)
 set(NatronOptics_STAMP ${CMAKE_CURRENT_BINARY_DIR}/NatronOpticsResources.stamp)

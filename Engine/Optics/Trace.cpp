@@ -257,24 +257,23 @@ namespace Optics {
             return d - n * (2. * dot(n, d));
         }
 
-        // GLSL refract(): false on total internal reflection.
-        bool
-        refract(const Vec3& d,
-                const Vec3& n,
-                double eta,
-                Vec3* out)
-        {
-            const double cosi = dot(n, d);
-            const double k = 1. - eta * eta * (1. - cosi * cosi);
-            if (k < 0.) {
-                return false;
-            }
-            *out = normalised(d * eta - n * (eta * cosi + std::sqrt(k)));
-
-            return true;
-        }
-
     } // namespace
+
+    bool
+    refract(const Vec3& d,
+            const Vec3& n,
+            double eta,
+            Vec3* out)
+    {
+        const double cosi = dot(n, d);
+        const double k = 1. - eta * eta * (1. - cosi * cosi);
+        if (k < 0.) {
+            return false;
+        }
+        *out = normalised(d * eta - n * (eta * cosi + std::sqrt(k)));
+
+        return true;
+    }
 
     std::vector<GhostPath>
     enumerateGhosts(const Prescription& lens)

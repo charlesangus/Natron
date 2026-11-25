@@ -1,8 +1,18 @@
 glass.json is converted by tools/optics/convert_glass.py from the .mtrl files of
 OpticsDatabase (https://github.com/amegahed/OpticsDatabase, commit
 1b007269eda014b9e4d23670d5d5d7dd2dfe6de5), whose glass data comes from the
-refractiveindex.info database by Mikhail Polyanskiy (CC0 1.0). OpticsDatabase is
-licensed as follows.
+refractiveindex.info database by Mikhail Polyanskiy (CC0 1.0).
+
+lenses.zmx.gz is converted by tools/optics/convert_lenses.py from the
+Optics/Photography .zmx files of the same OpticsDatabase commit. Each lens keeps
+its original path (#SOURCE) and NOTE lines. OpticsDatabase credits these
+contributors for its content:
+ - Bill Claff - https://photonstophotos.net
+ - Mikhail Polyanskiy - https://refractiveindex.info
+ - Michael Hayford - https://github.com/mjhoptics
+ - Katsumoto (Kats) Ikeda - https://www.pencilofrays.com
+
+OpticsDatabase is licensed as follows.
 
 # MIT License
 

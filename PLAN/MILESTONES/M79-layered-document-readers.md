@@ -74,7 +74,7 @@ Acceptance sketch:
   - approach: formats, layer model, metadata keys, what's refused.
   - verify: every key in the code documented.
   - size: M
-- [ ] M79.P3.T3 — Xvfb GUI check
+- [x] M79.P3.T3 — Xvfb GUI check (m79_layered_read.py green on gate9, 707eda2c8)
   - files: `Tests/gui/m79_layered_read.py`
   - approach: Read each fixture; layer menu lists document layers; view composite and one layer; screenshots.
   - verify: passes on the remote GUI runner.

@@ -63,6 +63,14 @@ bool isKindScope(const PXR_NS::TfToken& kind);
 std::vector<PXR_NS::TfToken> registeredCustomKinds();
 
 /**
+ * @brief Whether a walk to target stops at a prim of kind, with *matches set to whether that prim
+ * is one of the target's: walkToKind()'s rule, for walks over something other than the stage.
+ **/
+bool kindWalkStopsAt(const PXR_NS::TfToken& kind,
+                     const PXR_NS::TfToken& target,
+                     bool* matches);
+
+/**
  * @brief The prims under some roots that a kind scope acts on, as walkToKind() finds them.
  **/
 struct SceneKindWalkResult {

@@ -2838,6 +2838,23 @@ SceneGraphModel::canFetchMore(const QModelIndex& parent) const
     return !item->namesRead || (item->children.size() < item->childNames->size());
 }
 
+bool
+SceneGraphModel::hasFetchedAll(const QModelIndex& parent) const
+{
+    if (parent.isValid() && (parent.column() != 0)) {
+        return true;
+    }
+    const Item* item = _imp->itemOf(parent);
+    if (!item->data.hasChildren) {
+        return true;
+    }
+    if (_imp->owedFetches.count(item->path) || _imp->fetchingUnder.count(item->path)) {
+        return false;
+    }
+
+    return item->namesRead && (item->children.size() >= item->childNames->size());
+}
+
 void
 SceneGraphModel::fetchMore(const QModelIndex& parent)
 {

@@ -55,6 +55,7 @@
 #include <QListView>
 #include <QMenu>
 #include <QMimeData>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QPixmap>
 #include <QPointer>
@@ -91,6 +92,7 @@
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
+#include "Gui/SceneGraphExpander.h"
 #include "Gui/SceneGraphModel.h"
 #include "Gui/SceneNodeStageSource.h"
 #include "Gui/ScenePrimInspector.h"
@@ -578,6 +580,10 @@ struct SceneGraphPanel::Implementation {
     std::vector<std::pair<QString, QToolButton*>> bulkButtons;
     QLabel* bulkStatus = nullptr;
     QTimer bulkRefresh;
+    // Opens and closes branches of the tree a slice at a time; its rows never load a payload.
+    std::unique_ptr<SceneGraphExpander> expander;
+    QToolButton* expandButton = nullptr;
+    QToolButton* collapseButton = nullptr;
     QTreeView* changedHereTree = nullptr;
     SceneChangedHereModel* changedHereModel = nullptr;
     SceneGraphStageSourcePtr changedHereSource;
@@ -737,6 +743,9 @@ struct SceneGraphPanel::Implementation {
         panel->setProperty("natronSceneGraphCachedStages", (int)cachedStages.size());
         panel->setProperty("natronSceneGraphTimersActive", pinnedPoll.isActive() || editSettle.isActive() || selectionPoll.isActive() || retiredReap.isActive());
         panel->setProperty("natronSceneGraphTopPath", topPath);
+        panel->setProperty("natronSceneGraphExpanding", expander && expander->isRunning());
+        panel->setProperty("natronSceneGraphExpandSlices", expander ? expander->getProgress().slices : 0);
+        panel->setProperty("natronSceneGraphExpandedCount", (int)expanded.size());
     }
 
     // The scene node last selected in the node graph, or null when none is selected.
@@ -1321,6 +1330,12 @@ struct SceneGraphPanel::Implementation {
             }
             button->setChecked(all);
         }
+        for (QToolButton* button : { expandButton, collapseButton }) {
+            if (button) {
+                button->setEnabled(!selection.isEmpty());
+                button->setToolTip(expandToolTip(button == collapseButton, scope));
+            }
+        }
     }
 
     // Runs action in scope on paths, on the stage the rows are read from for loads and in the
@@ -1368,22 +1383,97 @@ struct SceneGraphPanel::Implementation {
         return summary;
     }
 
-    // The toolbar command a key is bound to in the Shortcut Editor, null when none is.
-    static const SceneGraphBulkKeyBinding* bulkCommandForKey(Qt::KeyboardModifiers modifiers,
-                                                             int key)
+    // The command of bindings a key is bound to in the Shortcut Editor, null when none is.
+    static const SceneGraphBulkKeyBinding* commandForKey(const std::vector<SceneGraphBulkKeyBinding>& bindings,
+                                                         Qt::KeyboardModifiers modifiers,
+                                                         int key)
     {
         GuiApplicationManager* manager = dynamic_cast<GuiApplicationManager*>(AppManager::instance());
 
         if (!manager || (key == 0) || (key == Qt::Key_unknown)) {
             return nullptr;
         }
-        for (const SceneGraphBulkKeyBinding& binding : getSceneGraphBulkKeyBindings()) {
+        for (const SceneGraphBulkKeyBinding& binding : bindings) {
             if (manager->matchesKeybind(kShortcutGroupViewer3D, binding.actionID, modifiers, key)) {
                 return &binding;
             }
         }
 
         return nullptr;
+    }
+
+    static const SceneGraphBulkKeyBinding* bulkCommandForKey(Qt::KeyboardModifiers modifiers,
+                                                             int key)
+    {
+        return commandForKey(getSceneGraphBulkKeyBindings(), modifiers, key);
+    }
+
+    static const SceneGraphBulkKeyBinding* expandCommandForKey(Qt::KeyboardModifiers modifiers,
+                                                               int key)
+    {
+        return commandForKey(getSceneGraphExpandKeyBindings(), modifiers, key);
+    }
+
+    // Expands or collapses the tree's rows at paths in scope: Selected and Below expand all below,
+    // a kind expands to it; collapsing is always all below.
+    void runExpand(bool collapse,
+                   const QStringList& paths,
+                   const QString& scope)
+    {
+        if (paths.isEmpty()) {
+            return;
+        }
+        if (collapse) {
+            expander->start(SceneGraphExpander::eModeCollapseBelow, paths);
+        } else if ((scope == QString::fromUtf8("selected")) || (scope == QString::fromUtf8("below"))) {
+            expander->start(SceneGraphExpander::eModeExpandBelow, paths);
+        } else {
+            expander->start(SceneGraphExpander::eModeExpandToKind, paths, scope);
+        }
+    }
+
+    void showExpandProgress(const SceneGraphExpander::Progress& progress)
+    {
+        bulkStatus->setText(SceneGraphExpander::progressText(progress));
+        bulkStatus->setVisible(true);
+        publishState();
+    }
+
+    static QString expandToolTip(bool collapse,
+                                 const QString& scope)
+    {
+        if (collapse) {
+            return SceneGraphPanel::tr("Collapse All Below: closes the selected rows and every row below them, whatever the scope. Esc stops it.");
+        }
+        if ((scope == QString::fromUtf8("selected")) || (scope == QString::fromUtf8("below"))) {
+            return SceneGraphPanel::tr("Expand All Below: opens every row below the selected rows. Rows of unloaded payloads stay closed "
+                                       "and unloaded. Esc stops it.");
+        }
+
+        return SceneGraphPanel::tr("Expand To %1: opens the rows from the selected rows down to the %2 below them and leaves the %2 "
+                                   "closed. Rows of unloaded payloads stay closed and unloaded. Esc stops it.")
+            .arg(kindLabel(scope), SceneGraphModel::kindPluralText(scope));
+    }
+
+    // The row whose branch arrow is at pos in the tree's viewport, invalid when pos is on none.
+    QModelIndex branchArrowAt(const QPoint& pos) const
+    {
+        const QModelIndex at = tree->indexAt(pos);
+
+        if (!at.isValid()) {
+            return QModelIndex();
+        }
+        const QModelIndex index = at.siblingAtColumn(0);
+        if (!model->hasChildren(index) || (!index.parent().isValid() && !tree->rootIsDecorated())) {
+            return QModelIndex();
+        }
+        // The name column's rect starts after the row's indentation, whose last step holds the arrow.
+        const QRect rect = tree->visualRect(index);
+        if ((pos.y() < rect.top()) || (pos.y() > rect.bottom())) {
+            return QModelIndex();
+        }
+
+        return ((pos.x() >= rect.left() - tree->indentation()) && (pos.x() < rect.left())) ? index : QModelIndex();
     }
 
     void closeRow(const QString& path)
@@ -2205,6 +2295,21 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
         { "clearBelow", QT_TR_NOOP("Clear Below") },
     });
     bulkLayout->addWidget(_imp->resetDrawStatesButton);
+    addDivider(12);
+    const auto addExpandButton = [this, bulkLayout](const char* objectName, const QString& label, const char* iconPath, bool collapse) {
+        QToolButton* button = new QToolButton(this);
+        button->setObjectName(QString::fromUtf8(objectName));
+        button->setText(label);
+        button->setIcon(ThemedIcon::icon(QString::fromUtf8(iconPath), 16));
+        button->setToolButtonStyle(Qt::ToolButtonIconOnly);
+        button->setEnabled(false);
+        QObject::connect(button, &QToolButton::clicked, this, [this, collapse]() { _imp->runExpand(collapse, getSelection(), _imp->bulkScopeName()); });
+        bulkLayout->addWidget(button);
+
+        return button;
+    };
+    _imp->expandButton = addExpandButton("sceneGraphExpand", tr("Expand"), NATRON_ICONS_PATH "lucide/chevrons-down.svg", false);
+    _imp->collapseButton = addExpandButton("sceneGraphCollapse", tr("Collapse"), NATRON_ICONS_PATH "lucide/chevrons-down-up.svg", true);
     bulkLayout->addStretch(1);
     layout->addLayout(bulkLayout);
     _imp->bulkStatus = new QLabel(this);
@@ -2394,12 +2499,16 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     QObject::connect(_imp->model, &QAbstractItemModel::modelReset, this, &SceneGraphPanel::onModelReset, Qt::QueuedConnection);
     // Keys are claimed in the views' own event filter so a window-level shortcut cannot take them.
     _imp->tree->installEventFilter(this);
+    // Shift-clicks on branch arrows are taken before the view toggles the row.
+    _imp->tree->viewport()->installEventFilter(this);
     _imp->results->installEventFilter(this);
     _imp->changedHereTree->installEventFilter(this);
     _imp->results->setContextMenuPolicy(Qt::CustomContextMenu);
     QObject::connect(_imp->tree, &QWidget::customContextMenuRequested, this, [this](const QPoint& pos) { showRowMenu(_imp->tree, pos); });
     QObject::connect(_imp->changedHereTree, &QWidget::customContextMenuRequested, this, [this](const QPoint& pos) { showRowMenu(_imp->changedHereTree, pos); });
     QObject::connect(_imp->results, &QWidget::customContextMenuRequested, this, [this](const QPoint& pos) { showRowMenu(_imp->results, pos); });
+    _imp->expander.reset(new SceneGraphExpander(_imp->tree, _imp->model, &_imp->expanded));
+    _imp->expander->setProgressCallback([this](const SceneGraphExpander::Progress& progress) { _imp->showExpandProgress(progress); });
     QObject::connect(_imp->tree, &QTreeView::expanded, this, &SceneGraphPanel::onExpanded);
     QObject::connect(_imp->tree, &QTreeView::collapsed, this, &SceneGraphPanel::onCollapsed);
     QObject::connect(_imp->tree->verticalScrollBar(), &QScrollBar::valueChanged, this, [this]() { _imp->rememberTopPath(); });
@@ -2696,6 +2805,26 @@ SceneGraphPanel::showRowMenu(QAbstractItemView* view, const QPoint& pos)
     for (const PXR_NS::TfToken& kind : registeredCustomKinds()) {
         kindScopes.push_back(std::make_pair(QString::fromStdString(kind.GetString()), QString::fromStdString(kind.GetString())));
     }
+    // Only the tree's rows open and close; the filter's list and Changed Here have no branches to walk.
+    const bool canExpand = (view == _imp->tree) && !selection.isEmpty();
+    const auto addExpand = [this, &selection, canExpand](QMenu* into, const QString& text, const QString& objectName, bool collapse, const QString& scope) {
+        QAction* entry = into->addAction(text);
+        entry->setObjectName(objectName);
+        entry->setEnabled(canExpand);
+        entry->setToolTip(Implementation::expandToolTip(collapse, scope));
+        entry->setShortcut(Implementation::keySequenceOf(objectName.toUtf8().constData()));
+        QObject::connect(entry, &QAction::triggered, this, [this, selection, collapse, scope]() { _imp->runExpand(collapse, selection, scope); });
+    };
+    addExpand(&menu, tr("Expand All Below"), QString::fromUtf8("sceneGraphExpandBelow"), false, QString::fromUtf8("below"));
+    QMenu* expandTo = menu.addMenu(tr("Expand To"));
+    expandTo->setObjectName(QString::fromUtf8("sceneGraphExpandToMenu"));
+    expandTo->setToolTipsVisible(true);
+    expandTo->setEnabled(canExpand);
+    for (const std::pair<QString, QString>& kind : kindScopes) {
+        addExpand(expandTo, kind.second, QString::fromUtf8("sceneGraphExpandTo_") + kind.first, false, kind.first);
+    }
+    addExpand(&menu, tr("Collapse All Below"), QString::fromUtf8("sceneGraphCollapseBelow"), true, QString::fromUtf8("below"));
+    menu.addSeparator();
     const auto addBulk = [this, &selection](QMenu* into, const QString& text, const QString& objectName, const QString& action, const QString& scope, bool enabled) {
         QAction* entry = into->addAction(text);
         entry->setObjectName(objectName);
@@ -3083,6 +3212,10 @@ SceneGraphPanel::onExpanded(const QModelIndex& index)
     }
     const QString path = _imp->model->pathOf(index);
     _imp->expanded.insert(path);
+    // The expander opens no unloaded payload row, and publishes once a slice rather than per row.
+    if (_imp->expander && _imp->expander->isApplying()) {
+        return;
+    }
     const SceneGraphModel::PayloadStateEnum state = _imp->model->getPayloadState(path);
     if (((state == SceneGraphModel::ePayloadStateUnloaded) || (state == SceneGraphModel::ePayloadStateFailed)) && _imp->loadsOnShownStage()) {
         _imp->requestLoad(QStringList(path), false);
@@ -3097,6 +3230,9 @@ SceneGraphPanel::onCollapsed(const QModelIndex& index)
         return;
     }
     _imp->expanded.remove(_imp->model->pathOf(index));
+    if (_imp->expander && _imp->expander->isApplying()) {
+        return;
+    }
     _imp->publishState();
 }
 
@@ -3181,6 +3317,53 @@ bool
 SceneGraphPanel::eventFilter(QObject* watched,
                              QEvent* e)
 {
+    // Shift-click on a branch arrow expands all below it, or, on an open row, collapses all below.
+    // A plain click is the view's, which loads an unloaded row it opens.
+    if ((watched == _imp->tree->viewport()) && ((e->type() == QEvent::MouseButtonPress) || (e->type() == QEvent::MouseButtonRelease) || (e->type() == QEvent::MouseButtonDblClick))) {
+        QMouseEvent* m = static_cast<QMouseEvent*>(e);
+        const Qt::KeyboardModifiers held = m->modifiers() & (Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier);
+        if ((m->button() == Qt::LeftButton) && (held == Qt::ShiftModifier)) {
+            const QModelIndex index = _imp->branchArrowAt(m->position().toPoint());
+            if (index.isValid()) {
+                if (e->type() == QEvent::MouseButtonPress) {
+                    _imp->runExpand(_imp->tree->isExpanded(index), QStringList(_imp->model->pathOf(index)), QString::fromUtf8("below"));
+                }
+                e->accept();
+
+                return true;
+            }
+        }
+    }
+    if ((watched == _imp->tree) && ((e->type() == QEvent::ShortcutOverride) || (e->type() == QEvent::KeyPress))) {
+        QKeyEvent* k = static_cast<QKeyEvent*>(e);
+        if ((k->key() == Qt::Key_Escape) && _imp->expander && _imp->expander->isRunning()) {
+            if (e->type() == QEvent::KeyPress) {
+                _imp->expander->cancel();
+            }
+            e->accept();
+
+            return true;
+        }
+        if (const SceneGraphBulkKeyBinding* command = Implementation::expandCommandForKey(k->modifiers(), k->key())) {
+            if (e->type() == QEvent::KeyPress) {
+                _imp->runExpand(command->action == "collapse", getSelection(), QString::fromStdString(command->scope));
+            }
+            e->accept();
+
+            return true;
+        }
+        // The view's own * expands recursively, which would load every payload it opened.
+        const Qt::KeyboardModifiers held = k->modifiers() & ~(Qt::KeypadModifier | Qt::ShiftModifier);
+        if ((e->type() == QEvent::KeyPress) && (k->key() == Qt::Key_Asterisk) && (held == Qt::NoModifier)) {
+            const QModelIndex current = _imp->tree->currentIndex();
+            if (current.isValid()) {
+                _imp->runExpand(false, QStringList(_imp->model->pathOf(current.siblingAtColumn(0))), QString::fromUtf8("below"));
+            }
+            e->accept();
+
+            return true;
+        }
+    }
     // Copy, the 3D viewer's selection keys and the toolbar commands' keys work on the panel's selection. A key press is taken
     // before the view's own handling, which would spend Tab on moving the focus.
     if (((watched == _imp->tree) || (watched == _imp->results) || (watched == _imp->changedHereTree)) && ((e->type() == QEvent::ShortcutOverride) || (e->type() == QEvent::KeyPress))) {
@@ -3221,6 +3404,12 @@ SceneGraphPanel::keyPressEvent(QKeyEvent* e)
 {
     if ((e->key() == Qt::Key_Escape) && _imp->filter->hasFocus() && !_imp->filter->text().isEmpty()) {
         _imp->filter->clear();
+        e->accept();
+
+        return;
+    }
+    if ((e->key() == Qt::Key_Escape) && _imp->expander && _imp->expander->isRunning()) {
+        _imp->expander->cancel();
         e->accept();
 
         return;

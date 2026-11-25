@@ -401,6 +401,11 @@ public:
     // The draw state column takes a SceneDrawStateEnum, or -1 to reset the row to the graph.
     bool setData(const QModelIndex& index, const QVariant& value, int role = Qt::EditRole) override;
     bool canFetchMore(const QModelIndex& parent) const override;
+    /**
+     * @brief Whether every child of parent has a row: none is left to fetch, none is being read and
+     * no read of them is owed. True for a row with no children.
+     **/
+    bool hasFetchedAll(const QModelIndex& parent) const;
     void fetchMore(const QModelIndex& parent) override;
     QStringList mimeTypes() const override;
     QMimeData* mimeData(const QModelIndexList& indexes) const override;

@@ -557,6 +557,20 @@ getSceneGraphBulkKeyBindings()
     return bindings;
 }
 
+const std::vector<SceneGraphBulkKeyBinding>&
+getSceneGraphExpandKeyBindings()
+{
+    static const std::vector<SceneGraphBulkKeyBinding> bindings = {
+        { "sceneGraphExpandBelow", "Scene Graph: Expand All Below", "expand", "below" },
+        { "sceneGraphExpandTo_assembly", "Scene Graph: Expand To Assembly", "expand", "assembly" },
+        { "sceneGraphExpandTo_component", "Scene Graph: Expand To Component", "expand", "component" },
+        { "sceneGraphExpandTo_subcomponent", "Scene Graph: Expand To Subcomponent", "expand", "subcomponent" },
+        { "sceneGraphCollapseBelow", "Scene Graph: Collapse All Below", "collapse", "below" },
+    };
+
+    return bindings;
+}
+
 const std::vector<Viewer3DKeyBinding>&
 getViewer3DDefaultKeyBindings()
 {

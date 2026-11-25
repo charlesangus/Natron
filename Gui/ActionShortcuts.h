@@ -1136,6 +1136,13 @@ struct SceneGraphBulkKeyBinding {
 // In the Shortcut Editor's order.
 const std::vector<SceneGraphBulkKeyBinding>& getSceneGraphBulkKeyBindings();
 
+/**
+ * @brief The scene graph panel's Expand All Below, Expand To <kind> for the built-in kinds and
+ * Collapse All Below, as key actions of the 3D viewer group with the row menu entries' object names
+ * as IDs; none is bound by default. action is "expand" or "collapse"; scope is "below" or a kind.
+ **/
+const std::vector<SceneGraphBulkKeyBinding>& getSceneGraphExpandKeyBindings();
+
 // Writes an action's bindings into settings, which must be inside the action's group.
 void writeShortcutSettings(QSettings& settings, const QString& actionID, const BoundAction& action);
 

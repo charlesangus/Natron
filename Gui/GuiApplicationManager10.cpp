@@ -1035,6 +1035,9 @@ GuiApplicationManager::populateShortcuts()
         for (const SceneGraphBulkKeyBinding& b : getSceneGraphBulkKeyBindings()) {
             registerKeybind(kShortcutGroupViewer3D, b.actionID, b.description, Qt::NoModifier, Qt::Key(0));
         }
+        for (const SceneGraphBulkKeyBinding& b : getSceneGraphExpandKeyBindings()) {
+            registerKeybind(kShortcutGroupViewer3D, b.actionID, b.description, Qt::NoModifier, Qt::Key(0));
+        }
     }
 
     ///Player

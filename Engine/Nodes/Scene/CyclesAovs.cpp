@@ -26,6 +26,7 @@
 #include "CyclesAovs.h"
 
 #include <algorithm>
+#include <atomic>
 #include <iterator>
 #include <limits>
 #include <map>
@@ -177,14 +178,15 @@ namespace {
     // without normals, and an 8-point cube shaded smooth has normals tilted across each face like a
     // sphere's.
     ShadingEnum
-    shading(const HdContainerDataSourceHandle& prim)
+    shading(const HdContainerDataSourceHandle& prim,
+            bool subdivides)
     {
         const HdMeshSchema mesh = HdMeshSchema::GetFromParent(prim);
         TfToken scheme = UsdGeomTokens->catmullClark;
         if (HdTokenDataSourceHandle ds = mesh.GetSubdivisionScheme()) {
             scheme = ds->GetTypedValue(0.f);
         }
-        if ((scheme != UsdGeomTokens->none) && (scheme != UsdGeomTokens->bilinear)) {
+        if ((scheme != UsdGeomTokens->none) && (subdivides || (scheme != UsdGeomTokens->bilinear))) {
             return eShadingAsAuthored;
         }
         const HdPrimvarsSchema primvars = HdPrimvarsSchema::GetFromParent(prim);
@@ -200,13 +202,6 @@ namespace {
         }
         if (interpolation != HdPrimvarSchemaTokens->faceVarying) {
             return eShadingAsAuthored;
-        }
-        // The delegate reads no normals of a mesh it subdivides.
-        if (scheme == UsdGeomTokens->bilinear) {
-            const HdIntDataSourceHandle refine = HdLegacyDisplayStyleSchema::GetFromParent(prim).GetRefineLevel();
-            if (refine && (refine->GetTypedValue(0.f) > 0)) {
-                return eShadingAsAuthored;
-            }
         }
         const HdMeshTopologySchema topology = mesh.GetTopology();
         const HdIntArrayDataSourceHandle countsDs = topology.GetFaceVertexCounts();
@@ -472,9 +467,10 @@ namespace {
     class CyclesMeshSceneIndex
         : public HdSingleInputFilteringSceneIndexBase {
     public:
-        static CyclesMeshSceneIndexRefPtr New(const HdSceneIndexBaseRefPtr& input)
+        static CyclesMeshSceneIndexRefPtr New(const HdSceneIndexBaseRefPtr& input,
+                                              bool subdivides)
         {
-            return TfCreateRefPtr(new CyclesMeshSceneIndex(input));
+            return TfCreateRefPtr(new CyclesMeshSceneIndex(input, subdivides));
         }
 
         HdSceneIndexPrim GetPrim(const SdfPath& path) const override
@@ -541,7 +537,7 @@ namespace {
         void _PrimsDirtied(const HdSceneIndexBase& /*sender*/,
                            const HdSceneIndexObserver::DirtiedPrimEntries& entries) override
         {
-            static const HdDataSourceLocatorSet decides = { HdMeshSchema::GetDefaultLocator(), HdPrimvarsSchema::GetNormalsLocator(), HdPrimvarsSchema::GetPointsLocator(), HdLegacyDisplayStyleSchema::GetRefineLevelLocator() };
+            static const HdDataSourceLocatorSet decides = { HdMeshSchema::GetDefaultLocator(), HdPrimvarsSchema::GetNormalsLocator(), HdPrimvarsSchema::GetPointsLocator() };
             static const HdDataSourceLocatorSet reshaped = { HdMeshSchema::GetTopologyLocator(), HdPrimvarsSchema::GetDefaultLocator(), HdLegacyDisplayStyleSchema::GetFlatShadingEnabledLocator() };
             HdSceneIndexObserver::DirtiedPrimEntries forwarded = entries;
             for (HdSceneIndexObserver::DirtiedPrimEntry& entry : forwarded) {
@@ -574,8 +570,10 @@ namespace {
         }
 
     private:
-        explicit CyclesMeshSceneIndex(const HdSceneIndexBaseRefPtr& input)
+        CyclesMeshSceneIndex(const HdSceneIndexBaseRefPtr& input,
+                             bool subdivides)
             : HdSingleInputFilteringSceneIndexBase(input)
+            , _subdivides(subdivides)
         {
         }
 
@@ -591,16 +589,20 @@ namespace {
                     return found->second;
                 }
             }
-            const ShadingEnum computed = shading(prim);
+            const ShadingEnum computed = shading(prim, _subdivides);
             std::lock_guard<std::mutex> lock(_mutex);
             _shading[path] = computed;
 
             return computed;
         }
 
+        const bool _subdivides;
         mutable std::mutex _mutex;
         mutable std::map<SdfPath, ShadingEnum> _shading;
     };
+
+    std::mutex gSubdivisionMutex;
+    std::atomic<bool> gSubdivides(false);
 } // anon namespace
 
 void
@@ -615,7 +617,7 @@ registerSceneIndices()
         HdSceneIndexPluginRegistry::GetInstance().RegisterSceneIndexForRenderer(
             kRenderDelegateCyclesDisplayName,
             [](const std::string& /*renderInstanceId*/, const HdSceneIndexBaseRefPtr& input, const HdContainerDataSourceHandle& args) -> HdSceneIndexBaseRefPtr {
-                return meshShadingSceneIndex(HdsiImplicitSurfaceSceneIndex::New(input, args));
+                return meshShadingSceneIndex(HdsiImplicitSurfaceSceneIndex::New(input, args), gSubdivides.load());
             },
             HdRetainedContainerDataSource::New(count, types.data(), modes.data()),
             0,
@@ -624,9 +626,31 @@ registerSceneIndices()
 }
 
 HdSceneIndexBaseRefPtr
-meshShadingSceneIndex(const HdSceneIndexBaseRefPtr& input)
+meshShadingSceneIndex(const HdSceneIndexBaseRefPtr& input,
+                      bool subdivides)
 {
-    return CyclesMeshSceneIndex::New(input);
+    return CyclesMeshSceneIndex::New(input, subdivides);
+}
+
+bool
+subdivides(const std::map<std::string, VtValue>& settings)
+{
+    const std::map<std::string, VtValue>::const_iterator found = settings.find(kCyclesSubdivisionSurfacesKey);
+
+    return (found != settings.end()) && found->second.IsHolding<bool>() && found->second.UncheckedGet<bool>();
+}
+
+void
+withSubdivision(bool subdivide,
+                const std::function<void()>& job)
+{
+    struct Reset {
+        ~Reset() { gSubdivides = false; }
+    };
+    std::lock_guard<std::mutex> lock(gSubdivisionMutex);
+    Reset reset;
+    gSubdivides = subdivide;
+    job();
 }
 
 const DelegateSupport::Support&

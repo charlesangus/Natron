@@ -200,6 +200,7 @@ RetouchInteract::drawPaintToolOverlay(double screenPixelRatio,
         if (!viewport->getViewportRect().contains(x, y)) {
             return;
         }
+        viewport->getCursorPositionInOverlay(x, y);
         centre = QPointF(x, y);
     }
     GLdouble projection[16];

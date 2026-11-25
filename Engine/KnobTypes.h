@@ -768,6 +768,9 @@ public:
 
     int getNumEntries() const;
 
+    // Whether entry index is a disabled option, which the GUI shows but never lets the user pick.
+    bool isEntryDisabled(int index) const;
+
     /// Can this type be animated?
     /// ChoiceParam animation may not be quite perfect yet,
     /// @see Curve::getValueAt() for the animation code.
@@ -868,6 +871,8 @@ private:
     virtual bool cloneExtraDataAndCheckIfChanged(KnobI* other, int dimension = -1, int otherDimension = -1) OVERRIDE FINAL;
     virtual void cloneExtraData(KnobI* other, double offset, const RangeD* range, int dimension = -1, int otherDimension = -1) OVERRIDE FINAL;
     virtual void appendExtraContentHash(ContentHasher& h, int dimension) const OVERRIDE FINAL;
+    // A disabled entry names nothing to choose.
+    virtual bool refusesValue(const int& v, int dimension) const OVERRIDE FINAL;
 
 private:
 

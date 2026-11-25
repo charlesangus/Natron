@@ -851,6 +851,133 @@ countBatchesOfFrame(const std::vector<NodePtr>& graph,
 }
 #endif // NATRON_HAVE_GPU
 
+namespace {
+
+std::atomic<int> gPoolPoisonScopes { 0 };
+
+void
+appendPixel(std::string* out,
+            const char* label,
+            const std::vector<float>& frame,
+            std::size_t pixel)
+{
+    *out += std::string(" ") + label + "=(";
+    for (int c = 0; c < 4; ++c) {
+        const std::size_t i = pixel * 4 + (std::size_t)c;
+        *out += (c ? "," : "") + ((i < frame.size()) ? std::to_string(frame[i]) : std::string("?"));
+    }
+    *out += ")";
+}
+
+int
+regionOf(const EndToEndResult& result,
+         const NodePtr& node)
+{
+    for (std::size_t r = 0; r < result.regionNodes.size(); ++r) {
+        const std::vector<NodePtr>& nodes = result.regionNodes[r];
+        if (std::find(nodes.begin(), nodes.end(), node) != nodes.end()) {
+            return (int)r;
+        }
+    }
+
+    return -1;
+}
+
+} // namespace
+
+GpuPoolPoisonScope::GpuPoolPoisonScope()
+{
+    ++gPoolPoisonScopes;
+}
+
+GpuPoolPoisonScope::~GpuPoolPoisonScope()
+{
+    --gPoolPoisonScopes;
+}
+
+std::string
+describeGpuMismatch(const EndToEndResult& result,
+                    const std::vector<float>& reference,
+                    const ParityTolerance& tolerance)
+{
+    const int width = result.window.width();
+    std::size_t pixels = 0;
+    std::size_t poisonFloats = 0;
+    RectI bbox;
+    std::map<int, int> perRow;
+    std::vector<std::size_t> firsts;
+    for (std::size_t p = 0; (p * 4 + 3) < result.cpu.size() && (p * 4 + 3) < result.gpu.size(); ++p) {
+        bool differs = false;
+        for (int c = 0; c < 4; ++c) {
+            const float got = result.gpu[p * 4 + c];
+            if (!tolerance.accepts(result.cpu[p * 4 + c], got)) {
+                differs = true;
+#ifdef NATRON_HAVE_GPU
+                std::uint32_t bits = 0;
+                std::memcpy(&bits, &got, sizeof(bits));
+                poisonFloats += (bits == gpu::kGpuPoolPoisonBits) ? 1 : 0;
+#endif
+            }
+        }
+        if (!differs) {
+            continue;
+        }
+        const int x = result.window.x1 + (int)(p % (std::size_t)width);
+        const int y = result.window.y1 + (int)(p / (std::size_t)width);
+        bbox = pixels ? RectI(std::min(bbox.x1, x), std::min(bbox.y1, y), std::max(bbox.x2, x + 1), std::max(bbox.y2, y + 1)) : RectI(x, y, x + 1, y + 1);
+        ++pixels;
+        ++perRow[y];
+        if (firsts.size() < 4) {
+            firsts.push_back(p);
+        }
+    }
+
+    std::string out = "\n  " + std::to_string(pixels) + " pixels differ, within " + std::to_string(bbox.x1) + "," + std::to_string(bbox.y1) + "-" + std::to_string(bbox.x2) + "," + std::to_string(bbox.y2) + "; per row:";
+    for (const std::pair<const int, int>& row : perRow) {
+        out += " y" + std::to_string(row.first) + "=" + std::to_string(row.second);
+    }
+    out += "\n  pool poisoned: " + std::string(result.poolPoisoned ? "yes" : "no") + "; differing GPU floats holding the poison: " + std::to_string(poisonFloats);
+    if (!reference.empty() && (reference.size() == result.cpu.size())) {
+        out += "\n  against the independent CPU render: the CPU frame differs at " + std::to_string(compareImages(reference, result.cpu, tolerance).mismatches) + " floats, the GPU frame at " + std::to_string(compareImages(reference, result.gpu, tolerance).mismatches);
+    }
+    for (std::size_t p : firsts) {
+        out += "\n  at " + std::to_string(result.window.x1 + (int)(p % (std::size_t)width)) + "," + std::to_string(result.window.y1 + (int)(p / (std::size_t)width)) + ":";
+        appendPixel(&out, "cpu", result.cpu, p);
+        appendPixel(&out, "gpu", result.gpu, p);
+        if (!reference.empty()) {
+            appendPixel(&out, "independent", reference, p);
+        }
+    }
+    out += "\n  regions:";
+    for (std::size_t r = 0; r < result.regionNodes.size(); ++r) {
+        const std::vector<NodePtr>& nodes = result.regionNodes[r];
+        out += " " + std::to_string(r) + "=[";
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            out += (i ? " " : "") + (nodes[i] ? nodes[i]->getScriptName_mt_safe() : std::string("?"));
+        }
+        out += "]";
+        if (r < result.regionExternalInputs.size()) {
+            out += " reading";
+            for (const NodePtr& input : result.regionExternalInputs[r]) {
+                const int from = regionOf(result, input);
+                out += " " + (input ? input->getScriptName_mt_safe() : std::string("?"));
+                out += (from < 0) ? std::string(" (CPU render, uploaded from RAM)") : " (GPU render of region " + std::to_string(from) + ")";
+            }
+        }
+    }
+    out += "\n  regions run " + std::to_string(result.gpuRegionsRun) + ", retries " + std::to_string(result.gpuRegionRetries) + ", strip halvings " + std::to_string(result.gpuStripHalvings) + ", strip pipelines serialized " + std::to_string(result.gpuStripPipelinesSerialized) + ", pipelined regions " + std::to_string(result.gpuPipelinedRegions) + ", evictions " + std::to_string(result.evictions);
+    out += "; GPU tasks:";
+    for (const std::pair<const std::string, int>& t : result.gpuTasksPerNode) {
+        out += " " + t.first + "=" + std::to_string(t.second);
+    }
+    out += "; uploads " + std::to_string(result.uploads) + ", downloads " + std::to_string(result.downloads) + "; CPU fallbacks:";
+    for (const std::pair<const std::string, int>& f : result.cpuFallbackReasons) {
+        out += " '" + f.first + "'=" + std::to_string(f.second);
+    }
+
+    return out;
+}
+
 bool
 EndToEndResult::ranInRegion(const NodePtr& node) const
 {
@@ -989,6 +1116,10 @@ renderEndToEnd(const std::vector<NodePtr>& graph,
 
         return result;
     }
+#ifdef NATRON_HAVE_GPU
+    result.poolPoisoned = gPoolPoisonScopes.load() > 0;
+    appPTR->getGpuContext()->runtime()->pool().setPoisonOnAcquire(result.poolPoisoned);
+#endif
     if (onGpuContext && !onGpuContext(&result.error)) {
         return result;
     }
@@ -1018,6 +1149,11 @@ renderEndToEnd(const std::vector<NodePtr>& graph,
                 nodes.push_back(run.graph.tasks[member].key.node);
             }
             result.regionNodes.push_back(nodes);
+            std::vector<NodePtr> inputs;
+            for (int input : region.externalInputs) {
+                inputs.push_back(run.graph.tasks[input].key.node);
+            }
+            result.regionExternalInputs.push_back(inputs);
         }
         run.future = scheduler->submit(run.context, std::move(run.graph), RenderScheduler::Priority::Interactive);
         QElapsedTimer timer;
@@ -1060,6 +1196,12 @@ renderEndToEnd(const std::vector<NodePtr>& graph,
         result.uploads = run.stats->getUploadCount();
         result.downloads = run.stats->getDownloadCount();
         result.cpuFallbackReasons = run.stats->getCpuFallbackReasons();
+        result.gpuRegionsRun = run.stats->getGpuRegionsRun();
+        result.gpuRegionRetries = run.stats->getGpuRegionRetries();
+        result.gpuStripHalvings = run.stats->getGpuStripHalvings();
+        result.gpuStripPipelinesSerialized = run.stats->getGpuStripPipelinesSerialized();
+        result.gpuPipelinedRegions = run.stats->getGpuPipelinedRegions();
+        result.evictions = run.stats->getEvictions();
 #ifdef NATRON_HAVE_GPU
         result.poolPeakBytes = appPTR->getGpuContext()->runtime()->pool().stats().peakBytes;
 #endif

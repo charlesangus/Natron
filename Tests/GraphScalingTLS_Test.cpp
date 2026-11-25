@@ -247,28 +247,29 @@ TEST_F(GraphScalingTLS, InheritsOnlyTouchedHolders)
     FrameArgsToken tokenOthers(othersPushes);
     ASSERT_EQ(argsA.get(), effectA->getParallelRenderArgsTLS().get());
 
+    FrameArgsOverlay::resetStats();
     QThread* mainThread = QThread::currentThread();
+    const FrameArgsOverlayPtr mainHead = FrameArgsOverlay::currentHead();
     ParallelRenderArgsPtr workerArgsA, workerArgsB, nestedArgsA;
     std::size_t workerCopies = 0;
     std::size_t nestedCopies = 0;
     runOnNewThread([&]() {
         QThread* worker = QThread::currentThread();
-        appPTR->getAppTLS()->softCopy(mainThread, worker);
+        AppTLS::SpawnedThreadScope spawned(mainThread, NULL, mainHead, NULL);
+        const FrameArgsOverlayPtr workerHead = FrameArgsOverlay::currentHead();
 
         // The worker has not touched A, so the nested thread must find A's data on main through the chain.
         runOnNewThread([&]() {
-            appPTR->getAppTLS()->softCopy(worker, QThread::currentThread());
+            AppTLS::SpawnedThreadScope nested(worker, NULL, workerHead, NULL);
             const std::size_t before = AppTLS::getNumInheritedCopies();
             nestedArgsA = effectA->getParallelRenderArgsTLS();
             nestedCopies = AppTLS::getNumInheritedCopies() - before;
-            appPTR->getAppTLS()->cleanupTLSForThread();
         });
 
         const std::size_t before = AppTLS::getNumInheritedCopies();
         workerArgsA = effectA->getParallelRenderArgsTLS();
         workerCopies = AppTLS::getNumInheritedCopies() - before;
         workerArgsB = effectB->getParallelRenderArgsTLS();
-        appPTR->getAppTLS()->cleanupTLSForThread();
     });
 
     EXPECT_EQ(argsA.get(), workerArgsA.get());
@@ -283,14 +284,15 @@ TEST_F(GraphScalingTLS, InheritsOnlyTouchedHolders)
 
     ParallelRenderArgsPtr freshArgsA;
     bool freshArgsRead = false;
+    const FrameArgsOverlayPtr poppedHead = FrameArgsOverlay::currentHead();
     runOnNewThread([&]() {
-        appPTR->getAppTLS()->softCopy(mainThread, QThread::currentThread());
+        AppTLS::SpawnedThreadScope spawned(mainThread, NULL, poppedHead, NULL);
         freshArgsA = effectA->getParallelRenderArgsTLS();
         freshArgsRead = true;
-        appPTR->getAppTLS()->cleanupTLSForThread();
     });
     EXPECT_TRUE(freshArgsRead);
     EXPECT_FALSE(bool(freshArgsA)) << "a worker spawned after main popped its args must not see them";
+    EXPECT_EQ(0u, FrameArgsOverlay::stats().mismatches);
 }
 
 TEST_F(GraphScalingTLS, MultithreadedPixelsMatchSingleThreaded)

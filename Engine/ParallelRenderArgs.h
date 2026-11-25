@@ -585,10 +585,12 @@ public:
     void leaveInstalled();
 
     /**
-     * @brief Gives the thread-local frame args of a thread that has none their first args, without a token to pop
-     * them: they live as long as the thread's data.
+     * @brief Makes args, the thread's frame's args, the only thread-local frame args of a thread on which no token
+     * pushed any, without a token to pop them; none when args is null. *seeded tells whether frameArgs holds such
+     * args.
      **/
     static void seed(std::list<ParallelRenderArgsPtr>* frameArgs,
+                     bool* seeded,
                      const ParallelRenderArgsPtr& args);
 
 private:

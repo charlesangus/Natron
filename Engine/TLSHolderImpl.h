@@ -68,6 +68,7 @@ makeInheritedTLSData(const EffectInstance::EffectTLSData& from,
     ret->canSetValue = from.canSetValue;
 #endif
     ret->frameArgs = from.frameArgs;
+    ret->frameArgsSeeded = from.frameArgsSeeded;
 
     return ret;
 }
@@ -178,9 +179,23 @@ TLSHolder<T>::createFromFrameContext([[maybe_unused]] const QThread* curThread) 
         }
 
         std::shared_ptr<T> data = std::make_shared<T>();
-        FrameArgsToken::seed(&data->frameArgs, args);
+        FrameArgsToken::seed(&data->frameArgs, &data->frameArgsSeeded, args);
 
         return insertForThread(curThread, data);
+    }
+}
+
+template <typename T>
+void
+TLSHolder<T>::followFrameContext([[maybe_unused]] const QThread* curThread) const
+{
+    if constexpr (std::is_same<T, EffectInstance::EffectTLSData>::value) {
+        const std::shared_ptr<T> data = findDataForThread(curThread);
+        if (!data || (data->frameArgs.size() != (data->frameArgsSeeded ? 1u : 0u))) {
+            return;
+        }
+        const FrameRenderContext* context = AppTLS::currentFrameContext();
+        FrameArgsToken::seed(&data->frameArgs, &data->frameArgsSeeded, context ? context->getArgsForHolder(this) : ParallelRenderArgsPtr());
     }
 }
 

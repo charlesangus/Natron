@@ -52,6 +52,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/FrameArgsOverlay.h"
 #include "Engine/FrameRenderContext.h"
 #include "Engine/GpuPlacement.h"
 #include "Engine/Image.h"
@@ -499,6 +500,7 @@ TEST_F(RenderContinuation, ProbeRendersOnlyTheDataDependentSubset)
     NodePtr source, control, probe;
     ASSERT_NO_FATAL_FAILURE(buildProbe(kSubsetMask, kSourceDelayMs, &source, &control, &probe));
 
+    FrameArgsOverlay::resetStats();
     for (std::size_t p = 0; p < sizeof(kPoolSizes) / sizeof(kPoolSizes[0]); ++p) {
         const int poolSize = kPoolSizes[p];
         SCOPED_TRACE("pool size " + std::to_string(poolSize));
@@ -526,6 +528,7 @@ TEST_F(RenderContinuation, ProbeRendersOnlyTheDataDependentSubset)
         EXPECT_EQ(subset, full);
         expectPoolDrained();
     }
+    EXPECT_EQ(0u, FrameArgsOverlay::stats().mismatches) << "every task must read the args of the frame it runs under";
 }
 
 TEST_F(RenderContinuation, DirectPullRunsTheContinuationInlineAndMatchesTheTaskGraph)

@@ -646,9 +646,14 @@ FrameArgsToken::leaveInstalled()
 
 void
 FrameArgsToken::seed(std::list<ParallelRenderArgsPtr>* frameArgs,
+                     bool* seeded,
                      const ParallelRenderArgsPtr& args)
 {
-    frameArgs->push_back(args);
+    frameArgs->clear();
+    if (args) {
+        frameArgs->push_back(args);
+    }
+    *seeded = bool(args);
 }
 
 ParallelRenderArgsPtr

@@ -68,6 +68,11 @@ protected:
      * @brief Must clean-up any data stored for the given thread 'curThread'
      **/
     virtual void cleanupPerThreadData(const QThread* curThread) const = 0;
+
+    /**
+     * @brief Called on the current thread when its frame changes, see AppTLS::FrameContextScope.
+     **/
+    virtual void followFrameContext(const QThread* /*curThread*/) const { }
 };
 
 /**
@@ -91,14 +96,6 @@ public:
     };
 
     typedef std::vector<SpawnerLink> SpawnerChain;
-
-    /**
-     * @brief Registers fromThread for the current thread toThread, as soon as toThread starts
-     * its task. A holder touched by toThread without data for it copies the data of the closest
-     * thread up the spawner chain that has some. Any data toThread still holds from a previous
-     * task is dropped first.
-     **/
-    void softCopy(QThread* fromThread, QThread* toThread, SpawnKindEnum kind = eSpawnKindMultiThreadSuite);
 
     /**
      * @brief Should be called by any thread using TLS when done to cleanup its TLS
@@ -190,8 +187,9 @@ public:
      * a task, and puts the thread in the context of the frame's IsolatedJob, or in none if the frame has none. A
      * null context leaves the thread's job context as it is. scheduledTask marks the thread as running a scheduler
      * task (see isRunningScheduledTask()) and makes the frame the base of a frame-args chain of its own, so that the
-     * task reads no args pushed by whatever ran it inline. The outermost scope cleans up the thread's TLS on
-     * destruction.
+     * task reads no args pushed by whatever ran it inline. The thread-local frame args of effects that no
+     * FrameArgsToken pushed on this thread follow the frame in and out of the scope, as the chain's base does. The
+     * outermost scope cleans up the thread's TLS on destruction.
      **/
     class FrameContextScope {
     public:
@@ -206,6 +204,7 @@ public:
         FrameContextScope& operator=(const FrameContextScope&) = delete;
 
     private:
+        const FrameRenderContext* _context;
         const FrameRenderContext* _previous;
         std::shared_ptr<const FrameArgsOverlay> _previousFrameArgsHead;
         const IsolatedJob* _previousJob;
@@ -232,7 +231,22 @@ public:
     };
 
 private:
+    /**
+     * @brief Registers fromThread for the current thread toThread, as soon as toThread starts
+     * its task. A holder touched by toThread without data for it copies the data of the closest
+     * thread up the spawner chain that has some. Any data toThread still holds from a previous
+     * task is dropped first. Only SpawnedThreadScope calls it, so that a spawned thread never gets
+     * its spawner's thread-local frame args without its frame and frame-args chain.
+     **/
+    void softCopy(QThread* fromThread, QThread* toThread, SpawnKindEnum kind);
+
     static void cleanupHoldersOfCurrentThread(const QThread* curThread);
+
+    /**
+     * @brief Makes the frame args of the current thread's data that no FrameArgsToken pushed follow
+     * currentFrameContext(), as data created under it would have.
+     **/
+    static void followFrameContextOfCurrentThread();
 
     struct SpawnEntry {
         const QThread* spawner;
@@ -275,6 +289,7 @@ public:
 
 private:
     virtual void cleanupPerThreadData(const QThread* curThread) const OVERRIDE FINAL;
+    virtual void followFrameContext(const QThread* curThread) const OVERRIDE FINAL;
 
     std::shared_ptr<T> findDataForThread(const QThread* curThread) const WARN_UNUSED_RETURN;
     std::shared_ptr<T> inheritFromSpawner(const QThread* curThread) const WARN_UNUSED_RETURN;

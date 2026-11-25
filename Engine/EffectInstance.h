@@ -3695,6 +3695,8 @@ public:
         ///knobChanged : set ParallelRenderArgs TLS for analysis
         ///timelineGoTo calls getRenderviewerArgs on the MT which overrides this TLS
         std::list<ParallelRenderArgsPtr> frameArgs;
+        // Whether frameArgs.front() came from the thread's frame rather than from a FrameArgsToken.
+        bool frameArgsSeeded;
         EffectInstance::RenderArgs currentRenderArgs;
 
         std::vector<std::string> userLayerStrings;
@@ -3721,6 +3723,7 @@ public:
             , canSetValue()
 #endif
             , frameArgs()
+            , frameArgsSeeded(false)
             , currentRenderArgs()
             , userLayerStrings()
             , resolvingLayersPassThrough(false)

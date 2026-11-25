@@ -211,6 +211,21 @@ AppTLS::getSpawnerChain(const QThread* curThread,
 }
 
 void
+AppTLS::followFrameContextOfCurrentThread()
+{
+    if (tHoldersWithData.empty()) {
+        return;
+    }
+    const QThread* curThread = QThread::currentThread();
+    for (std::vector<TLSHolderBaseConstWPtr>::const_iterator it = tHoldersWithData.begin(); it != tHoldersWithData.end(); ++it) {
+        TLSHolderBaseConstPtr p = it->lock();
+        if (p) {
+            p->followFrameContext(curThread);
+        }
+    }
+}
+
+void
 AppTLS::cleanupTLSForThread()
 {
     QThread* curThread = QThread::currentThread();
@@ -273,7 +288,8 @@ AppTLS::FrameContextScope::FrameContextScope(const FrameRenderContext* context,
                                              int budget,
                                              int runnablePriority,
                                              bool scheduledTask)
-    : _previous(tCurrentFrameContext)
+    : _context(context)
+    , _previous(tCurrentFrameContext)
     , _previousFrameArgsHead()
     , _previousJob(IsolatedJob::current())
     , _previousBudget(tThreadBudget)
@@ -291,6 +307,9 @@ AppTLS::FrameContextScope::FrameContextScope(const FrameRenderContext* context,
     }
     tThreadBudget = budget;
     tRunnablePriority = runnablePriority;
+    if (_context != _previous) {
+        followFrameContextOfCurrentThread();
+    }
 }
 
 AppTLS::FrameContextScope::~FrameContextScope()
@@ -306,6 +325,8 @@ AppTLS::FrameContextScope::~FrameContextScope()
     // A task run inline from within another task's scope must not drop the data the outer task is rendering with.
     if (!_previous) {
         appPTR->getAppTLS()->cleanupTLSForThread();
+    } else if (_context != _previous) {
+        followFrameContextOfCurrentThread();
     }
 }
 

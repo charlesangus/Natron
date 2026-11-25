@@ -359,6 +359,9 @@ try:
             check(app.isMergeConflictBadgeShown(blur2), "undoing the input Theirs keeps the badge")
 
         gt.section("scripting import")
+        # The input section left the project modified; saving it first keeps the reset from asking
+        # a modal "save changes?" question that nothing in this script answers.
+        require(app.saveProjectAs(os.path.join(gt.OUT, "m104_input_shot.ntpz")), "save the project so the reset asks nothing")
         require(app.resetProject(), "reset the project for the scripting import")
         yield ("sleep", SETTLE_MS)
         undo_before = undo_text()

@@ -652,6 +652,7 @@ future core work has solid ground to build on.
 | M593 | Native EdgePushVector | todo | M238 |  | E3 | F39 | | [M593-native-edgepushvector.md](PLAN/MILESTONES/M593-native-edgepushvector.md) |
 | M594 | Native EdgeDistort | todo | M238 |  | E3 | F39 | | [M594-native-edgedistort.md](PLAN/MILESTONES/M594-native-edgedistort.md) |
 | M595 | Native EdgeDetail | todo | M238 |  | E3 | F39 | | [M595-native-edgedetail.md](PLAN/MILESTONES/M595-native-edgedetail.md) |
+| M596 | Remove Old User Knob Dialogs | todo | M247 |  | E10 | | | [M596-remove-old-user-knob-dialogs.md](PLAN/MILESTONES/M596-remove-old-user-knob-dialogs.md) |
 
 # Epics
 

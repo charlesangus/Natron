@@ -536,13 +536,23 @@ try:
         yield ("sleep", SETTLE_MS)
         return accepted
 
+    def form_shows(node_name, knob_name):
+        """True once the property form, which rebuilds on the next event-loop turn after a selection or rename, edits knob_name."""
+        edit = cm.visible_child(node_name, QLineEdit, "KnobEditPropertiesName")
+        return (edit is not None and edit.text() == knob_name
+                and cm.visible_child(node_name, QLineEdit, "KnobEditPropertiesLabel") is not None)
+
     def rename_selected(node_name, current, name, label):
         """Gives the selected knob, now called current, its script name and label through the property form."""
         require(cm.selected(node_name) == current, "%s is selected (selected %r)" % (current, cm.selected(node_name)))
+        ok = yield ("until", lambda: form_shows(node_name, current), DIALOG_TIMEOUT_S)
+        require(ok, "the property form shows %s" % current)
         check(cm.commit_line(node_name, "KnobEditPropertiesName", name), "typed %s into the script name" % name)
         ok = yield ("until", lambda: cm.param(node_name, name) is not None, DIALOG_TIMEOUT_S)
         require(ok, "the knob was renamed to " + name)
         cm.select(node_name, name)
+        ok = yield ("until", lambda: form_shows(node_name, name), DIALOG_TIMEOUT_S)
+        require(ok, "the property form shows %s" % name)
         check(cm.commit_line(node_name, "KnobEditPropertiesLabel", label), "typed %r into the label" % label)
         yield ("sleep", SETTLE_MS)
 

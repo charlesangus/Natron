@@ -1,9 +1,9 @@
 name: Remote build
 
-# The "what ran" part is format('build{0}{1}{2}{3}{4}', ...) where each
+# The "what ran" part is format('build{0}{1}{2}{3}{4}{5}', ...) where each
 # conditional fragment carries its own leading ", ", so no trailing separator
 # can appear. A from_run dispatch builds nothing and replaces the list.
-run-name: ${{ github.event_name == 'push' && format('Remote build · fast · {0} (cache warm)', github.ref_name) || format('Remote build · {0} · {1}{2}{3}', inputs.preset, inputs.from_run != '' && format('GUI only (from run {0})', inputs.from_run) || format('build{0}{1}{2}{3}{4}', inputs.tests && ', tests' || '', inputs.appimage && ', AppImage' || '', inputs.gui_scripts != '' && ', GUI' || '', inputs.record_goldens && ', goldens' || '', inputs.cmake_args != '' && format(', cmake:{0}', inputs.cmake_args) || ''), inputs.label != '' && format(' · {0}', inputs.label) || '', inputs.token != '' && format(' · {0}', inputs.token) || '') }}
+run-name: ${{ github.event_name == 'push' && format('Remote build · fast · {0} (cache warm)', github.ref_name) || format('Remote build · {0} · {1}{2}{3}', inputs.preset, inputs.from_run != '' && format('GUI only (from run {0})', inputs.from_run) || format('build{0}{1}{2}{3}{4}{5}', inputs.tests && ', tests' || '', inputs.appimage && ', AppImage' || '', inputs.gui_scripts != '' && ', GUI' || '', inputs.record_goldens && ', goldens' || '', inputs.cmake_args != '' && format(', cmake:{0}', inputs.cmake_args) || '', inputs.ctest_regex != '' && format(', ctest -R {0}', inputs.ctest_regex) || ''), inputs.label != '' && format(' · {0}', inputs.label) || '', inputs.token != '' && format(' · {0}', inputs.token) || '') }}
 
 on:
   # A push run builds fast with no tests and no AppImage; it exists to
@@ -871,6 +871,10 @@ jobs:
             | map({name: "group \(.key + 1) of \($g)",
                    scripts: (.value | map(.script)),
                    names: (.value | map(.name))})' <<<"$matrix")
+          if [[ "$(jq --argjson n "$GUI_UPLOAD_SLOTS" '[.[] | select((.names | length) > $n)] | length' <<<"$matrix")" -gt 0 ]]; then
+            echo "::error::a GUI group has more than $GUI_UPLOAD_SLOTS scripts, the number of upload steps in the gui job"
+            exit 1
+          fi
           if [[ -n "$FROM_RUN" ]]; then
             if ! [[ "$FROM_RUN" =~ ^[0-9]+$ ]]; then
               echo "::error::from_run '$FROM_RUN' is not a run id"
@@ -928,6 +932,9 @@ jobs:
       !cancelled() && needs.gui-matrix.result == 'success'
       && (inputs.from_run != '' || needs.package.outputs.appimage == 'success')
     runs-on: ubuntu-latest
+    # The scripts step is capped at 300 minutes so the always() upload steps keep the rest of
+    # the 360-minute job limit.
+    timeout-minutes: 355
     strategy:
       fail-fast: false
       matrix:
@@ -999,7 +1006,7 @@ jobs:
       # Each script's output, its exit status in exit-status included, goes to
       # build/gui-out/<name>/, which build.sh reads its result from.
       - name: Run the group's scripts
-        timeout-minutes: 340
+        timeout-minutes: 300
         env:
           SCRIPTS: ${{ join(matrix.scripts, ' ') }}
           GUI_TEST_SCREEN_SIZE: 1920x1080
@@ -1039,6 +1046,8 @@ jobs:
             exit 1
           fi
 
+      # One upload step per script slot; GUI_UPLOAD_SLOTS in gui-matrix must equal the number of
+      # steps below, and gui-matrix fails a group with more names than that.
       - name: Upload GUI output · ${{ matrix.names[0] }}
         if: always() && matrix.names[0]
         uses: actions/upload-artifact@v7.0.1

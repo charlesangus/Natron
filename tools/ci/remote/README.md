@@ -46,10 +46,11 @@ tools/ci/remote/build.sh --mode    # prints the resolved mode
   packages an AppImage: llvmpipe raises SIGFPE under the `-DDEBUG` traps in
   the container, so `debug` takes neither `--appimage` nor `--gui`. Use it with
   `--tests` to reproduce a PR CI failure.
-  PR CI (`ci.yml`) runs only for a PR that is ready for review: a draft gets
-  no CI until it is marked ready (`gh pr ready`), which starts the full run.
-  On a draft only the `Build and test` check runs, and it fails on purpose,
-  because a skipped required check would count as passing.
+  PR CI (`ci.yml`) builds and tests only a PR that is ready for review: on a
+  draft its build and test legs are skipped until the PR is marked ready
+  (`gh pr ready`), which starts the full run. Format, Lint CI and Code rules
+  still run on a draft, and the `Build and test` aggregator fails on purpose
+  with a message, because a skipped required check would count as passing.
 - Performance: a `release` AppImage (-O2), measured on the target host. Never take performance numbers from a GitHub runner.
 
 `stage-bundle.sh` strips the ELF files of every preset's bundle, `fast`

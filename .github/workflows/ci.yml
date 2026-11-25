@@ -5,7 +5,8 @@ on:
   push:
     branches:
     - main
-  # A draft PR gets no CI; marking it ready (ready_for_review) starts the full run.
+  # A draft PR skips this workflow's build and test legs, and the "Build and test" check fails on
+  # purpose with a message; marking it ready (ready_for_review) starts the full run.
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     branches:

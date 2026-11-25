@@ -9,6 +9,11 @@
 # branch entry was built from; it then puts main's prefix first. Any lookup
 # failure keeps the usual order, so this can only cost a lookup, never a cache.
 #
+# The merge base is taken from HEAD_SHA, so a pull_request build of
+# refs/pull/N/merge, which also contains main's tip, does not see main moving
+# on its own: this covers remote-build, and PR merge builds keep the branch
+# entry first.
+#
 # Environment:
 #   FAMILY         key family, e.g. ccache-linux-debug
 #   BRANCH         branch name used in the keys

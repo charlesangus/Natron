@@ -28,13 +28,13 @@ Sources: OpticsDatabase (`https://github.com/amegahed/OpticsDatabase`, MIT; cred
 
 ## Phase 463.1: Database
 
-- [ ] M463.P1.T1 — Converter and bundled archive
+- [x] M463.P1.T1 — Converter and bundled archive
   - files: `tools/optics/convert_lenses.py` (new), `Gui/Resources/Optics/lenses.zmx.gz` (new, generated, committed), `Gui/Resources/Optics/LICENSE-OpticsDatabase.txt`, `Gui/Resources/Optics/README.md` (new: pinned commit, how to re-run), `App/CMakeLists.txt` (M462's `Resources/optics` copy rule picks the archive up; add it to the stamp's dependencies)
   - approach: Arguments: a local OpticsDatabase checkout and its commit hash. For each `Optics/Photography/<Vendor>/*.zmx`, decode (UTF-16 or UTF-8), keep only the lines M462's parser reads plus `NOTE`, prefix a `#LENSID <vendor>/<stem>` header, concatenate and gzip. Write the commit hash into the archive header. Deterministic output (sorted, fixed gzip mtime).
   - verify: rerunning on the same checkout gives a byte-identical archive; archive size reported; every lens in it parses with M462's parser (the script calls a small parse check through the test binary or reports failures it excluded).
   - size: M
 
-- [ ] M463.P1.T2 — LensDatabase loader
+- [x] M463.P1.T2 — LensDatabase loader
   - files: `Engine/Optics/LensDatabase.{h,cpp}` (new), `Engine/Optics/BuiltinLenses.cpp`, `Tests/Native/OpticsDatabase_Test.cpp` (new)
   - approach: Load the archive from the installed resources once, lazily and thread-safely; index lens ids and metadata (paraxial focal length and f-number from M462, element count, any aspheric surface, any cylinder → anamorphic). Add M462's 9 built-ins as vendor "Classic Designs". `prescription(id)` parses on demand and caches.
   - verify: gtest: more than 1,000 lenses load; ids are unique; Classic Designs has 9; `prescription()` of a Nikon lens matches parsing its original file from the fixture; concurrent first loads from 8 threads load once.
@@ -42,13 +42,13 @@ Sources: OpticsDatabase (`https://github.com/amegahed/OpticsDatabase`, MIT; cred
 
 ## Phase 463.2: Knobs and browser
 
-- [ ] M463.P2.T1 — Shared lens knobs
+- [x] M463.P2.T1 — Shared lens knobs
   - files: `Engine/Optics/LensKnobs.{h,cpp}` (new, in the Engine library since it creates knobs), `Engine/Nodes/README.md`
   - approach: A helper that adds `lensModel` (the caller supplies extra leading choices such as Procedural), `lens` (string, default a caller-chosen id), a `lensBrowse` button ("Browse…"), `lensFile` (file, `.zmx`/`.dat`), `glassVendor` (choice: Schott, Ohara, Hoya, CDGM, Hikari, Sumita), `abbeOffset` (0, range ±20), `useAspheric` (on). Labels follow script names. `resolve(time)` returns the prescription or an error string. The browse button calls a GUI hook (`LensKnobs::setBrowseHandler`), so the engine has no GUI dependency.
   - verify: gtest with a test effect: switching `lensModel` to From File with a bad file gives the parse error; Database with an unknown id gives the missing-id error; a valid id returns its prescription.
   - size: M
 
-- [ ] M463.P2.T2 — Lens browser dialog
+- [x] M463.P2.T2 — Lens browser dialog
   - files: `Gui/LensBrowser.{h,cpp}` (new), `Gui/CMakeLists.txt`, `Gui/GuiApplicationManager.cpp` (register the browse handler)
   - approach: A non-modal dialog: vendor tree on the left (Classic Designs first), a searchable, sortable table (name, focal length, f-number, elements, aspheric, anamorphic) with filters for focal length and f-number ranges, element count and the two flags; a details pane; a cross-section diagram drawn with QPainter from M462's `layout()` with a few traced axial and marginal rays. OK writes the id into the node's `lens` knob as one undoable edit. `LensBrowser::addPreviewProvider(name, fn)` adds a tab per provider, rendered on a worker thread and cancelled on selection change. Fits 1920x1080.
   - verify: `Tests/gui/m463_lens_browser.py` under Xvfb: open the browser from a test node, filter to 50 mm primes, select a lens, confirm, and check the knob value; screenshot the dialog with the diagram.
@@ -61,3 +61,4 @@ Sources: OpticsDatabase (`https://github.com/amegahed/OpticsDatabase`, MIT; cred
 - 2026-11-16 — **The full OpticsDatabase ships, bundled (user):** converted once and committed in-repo, no runtime network.
 - 2026-11-16 — **A browser that organises the lenses, with live previews and pre-rendered thumbnails (user):** this milestone ships the browser and diagram; flare previews and thumbnails are M471 - Lens Browser Previews, the bokeh preview is M292 - Traced Lens Bokeh.
 - 2026-11-23 — Implemented in 60834a682: 986 of 1,041 OpticsDatabase lenses (48 without an aperture stop, 7 malformed, dropped), archive 505 KB; with the 9 Classic Designs lenses the browser lists 995, so the verify line is >= 995. **F30 ships with its first lens node (user):** no node uses the lens knobs yet, so the browser GUI test and UAT move to F31 - Lens Flares or F13 traced bokeh, whichever lands first; M463 is gated on ctest only.
+- 2026-11-24 (PM) — gate2's only failure was the known USDRenderMoonRayTest timeout (M496 - MoonRay Test Stability); Codex review: one nit, fixed. Merged into F30 as 91bd03d85 (#371).

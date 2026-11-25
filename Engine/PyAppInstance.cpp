@@ -49,6 +49,8 @@
 
 #include "Engine/EngineFwd.h"
 
+#include "Serialization/ProjectSerialization.h"
+
 NATRON_NAMESPACE_ENTER
 NATRON_PYTHON_NAMESPACE_ENTER
 
@@ -560,7 +562,20 @@ App::importTemplateChecked(const QString& filename,
         } else if (isEffect) {
             NodePtr node = isEffect->getInternalNode();
             if (node && node->getApp() == app && node->getEffectInstance()) {
-                collection = std::dynamic_pointer_cast<NodeGroup>(node->getEffectInstance()->shared_from_this());
+                NodeGroupPtr isGroup = std::dynamic_pointer_cast<NodeGroup>(node->getEffectInstance()->shared_from_this());
+                if (!isGroup) {
+                    *errorKind = eImportTemplateErrorBadGroup;
+                    *error = QString::fromUtf8("%1 is not a group").arg(QString::fromStdString(node->getScriptName_mt_safe()));
+
+                    return ret;
+                }
+                if (Project::isLockedPyPlug(isGroup)) {
+                    *errorKind = eImportTemplateErrorBadGroup;
+                    *error = QString::fromUtf8("%1 is a PyPlug that is not unlocked for editing").arg(QString::fromStdString(node->getScriptName_mt_safe()));
+
+                    return ret;
+                }
+                collection = isGroup;
             }
         }
         if (!collection) {
@@ -573,10 +588,15 @@ App::importTemplateChecked(const QString& filename,
         collection = std::dynamic_pointer_cast<NodeCollection>(app->getProject());
     }
 
+    const ProjectPtr project = app->getProject();
+    const std::list<Serialization::TemplateImportSerialization> importsBefore = project->getTemplateImports();
     QString importError;
-    NodesList nodes = app->getProject()->importTemplate(filename, collection, &importError);
+    NodesList nodes = project->importTemplate(filename, collection, &importError);
     for (const NodePtr& node : nodes) {
         recordPythonNodeCreated(node);
+    }
+    if (project->getTemplateImports().size() > importsBefore.size()) {
+        recordPythonTemplateImport(project, importsBefore, nodes);
     }
     if (!importError.isEmpty()) {
         *errorKind = eImportTemplateErrorFailed;

@@ -62,6 +62,8 @@ graphOpName(const GraphOp& op)
             return "setRotoData";
         } else if constexpr (std::is_same_v<T, SetTrackerDataOp>) {
             return "setTrackerData";
+        } else if constexpr (std::is_same_v<T, SetOriginOp>) {
+            return "setOrigin";
         } else {
             static_assert(std::is_same_v<T, SetProjectDataOp>);
 

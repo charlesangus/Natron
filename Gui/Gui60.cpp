@@ -26,6 +26,7 @@
 #include "Gui.h"
 
 #include <list>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -55,17 +56,17 @@ projectFileFilters()
     return filters;
 }
 
-const Serialization::TemplateImportSerialization*
+std::optional<Serialization::TemplateImportSerialization>
 findImport(const ProjectPtr& project,
            const std::string& key)
 {
     for (const Serialization::TemplateImportSerialization& entry : project->getTemplateImports()) {
         if (entry.key == key) {
-            return &entry;
+            return entry;
         }
     }
 
-    return 0;
+    return std::nullopt;
 }
 } // anon namespace
 
@@ -77,8 +78,11 @@ Gui::importTemplate()
         return;
     }
     QString error;
-    if (MergeConflictResolve::importTemplate(this, QString::fromStdString(path), &error).empty()) {
+    const std::string key = MergeConflictResolve::importTemplate(this, QString::fromStdString(path), &error);
+    if (key.empty()) {
         errorDialog(tr("Import Template").toStdString(), error.toStdString(), false);
+    } else if (!error.isEmpty()) {
+        warningDialog(tr("Import Template").toStdString(), tr("Only part of the template could be imported: %1").arg(error).toStdString(), false);
     }
 }
 
@@ -86,7 +90,7 @@ int
 Gui::updateFromTemplate(const std::string& templateKey)
 {
     const ProjectPtr project = getApp()->getProject();
-    const Serialization::TemplateImportSerialization* entry = findImport(project, templateKey);
+    const std::optional<Serialization::TemplateImportSerialization> entry = findImport(project, templateKey);
     if (!entry) {
         errorDialog(tr("Update from Template").toStdString(),
                     tr("The project has no template import %1.").arg(QString::fromStdString(templateKey)).toStdString(), false);

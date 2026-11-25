@@ -232,6 +232,18 @@ TEST(GraphOpYaml, SetRotoAndTrackerData)
     EXPECT_FALSE(std::get<SetTrackerDataOp>(roundTrip(SetTrackerDataOp { "id000001", std::nullopt })).tracker.has_value());
 }
 
+TEST(GraphOpYaml, SetOriginTellsSetFromCleared)
+{
+    const SetOriginOp set = std::get<SetOriginOp>(roundTrip(SetOriginOp { "id000001", "grade_tpl", "id000002" }));
+    EXPECT_EQ(set.nodeId, "id000001");
+    EXPECT_EQ(set.templateKey, "grade_tpl");
+    EXPECT_EQ(set.templateNodeId, "id000002");
+    const SetOriginOp cleared = std::get<SetOriginOp>(roundTrip(SetOriginOp { "id000001", std::string(), std::string() }));
+    EXPECT_EQ(cleared.nodeId, "id000001");
+    EXPECT_TRUE(cleared.templateKey.empty());
+    EXPECT_TRUE(cleared.templateNodeId.empty());
+}
+
 TEST(GraphOpYaml, SetProjectData)
 {
     SetProjectDataOp op;

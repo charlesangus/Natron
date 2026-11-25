@@ -193,14 +193,21 @@ public:
      * name a template node follow it when it has to be renamed. Each import makes its own entry,
      * whose key is made from the file name and made unique, and keeps the imported snapshot as the
      * base of the next update merge. Returns the created top-level nodes, or nothing with error
-     * set when the file cannot be read or its nodes cannot be created.
+     * set when the file cannot be read, its nodes cannot be created or group is a locked PyPlug.
+     * When only some nodes could be created, they are returned with error listing the problems.
      **/
     NodesList importTemplate(const QString& filePath, const NodeCollectionPtr& group, QString* error);
 
     /**
-     * @brief The template imports of the project, in import order. Main thread only.
+     * @brief Whether group is a PyPlug whose graph the user has not unlocked for editing, which
+     * nodes must not be added to.
      **/
-    const std::list<Serialization::TemplateImportSerialization>& getTemplateImports() const;
+    static bool isLockedPyPlug(const NodeCollectionPtr& group);
+
+    /**
+     * @brief A copy of the template imports of the project, in import order. MT-safe.
+     **/
+    std::list<Serialization::TemplateImportSerialization> getTemplateImports() const;
     bool hasTemplateImport(const std::string& key) const;
 
     /**
@@ -212,9 +219,9 @@ public:
 
     /**
      * @brief The conflicts the last update merge left unresolved, saved with the project until
-     * they are resolved. Main thread only.
+     * they are resolved. The getter returns a copy and is MT-safe; the setter is main thread only.
      **/
-    const std::vector<Serialization::MergeConflict>& getMergeConflicts() const;
+    std::vector<Serialization::MergeConflict> getMergeConflicts() const;
     void setMergeConflicts(const std::vector<Serialization::MergeConflict>& conflicts);
 
     /**

@@ -133,6 +133,17 @@ struct SetTrackerDataOp {
 };
 
 /**
+ * @brief Sets the template import a node came from, by its key in the project's template list, and
+ * the ID of the node in that template. An empty templateKey clears both: the node is then the
+ * artist's own.
+ **/
+struct SetOriginOp {
+    std::string nodeId;
+    std::string templateKey;
+    std::string templateNodeId;
+};
+
+/**
  * @brief Replaces the project's additional formats, its layer registry and/or its variables (the
  * user knobs of its variables group, in order, with their definitions and state); an unset field
  * is kept. Either every field is applied or none is.
@@ -156,6 +167,7 @@ typedef std::variant<CreateNodeOp,
                      SetUserKnobsOp,
                      SetRotoDataOp,
                      SetTrackerDataOp,
+                     SetOriginOp,
                      SetProjectDataOp>
     GraphOp;
 

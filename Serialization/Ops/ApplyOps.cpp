@@ -428,6 +428,18 @@ namespace {
             return OpResult();
         }
 
+        OpResult applyOne(const SetOriginOp& op)
+        {
+            const IndexedNode* found = find(op.nodeId);
+            if (!found) {
+                return missing(op.nodeId);
+            }
+            found->node->origin.templateKey = op.templateKey;
+            found->node->origin.nodeId = op.templateKey.empty() ? std::string() : op.templateNodeId;
+
+            return OpResult();
+        }
+
         OpResult applyOne(const SetProjectDataOp& op)
         {
             if (op.variables) {

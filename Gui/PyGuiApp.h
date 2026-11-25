@@ -186,10 +186,13 @@ public:
     void triggerTabMenuAction(QAction* action);
 
     /**
-     * @brief Imports the template file at filePath into the graph last worked in, as one undo step.
-     * Returns the new import's key, or an empty string when it failed.
+     * @brief Imports the template file at filePath into the graph last worked in, as one undo step,
+     * the way File > Import Template does. Returns the new import's key, or an empty string when
+     * nothing was imported; the reason, or the problems of an import that was only partly made, go
+     * to the script editor. App.importTemplate() is the scripting variant, which returns the
+     * created nodes.
      **/
-    QString importTemplate(const QString& filePath);
+    QString importTemplateAsUndoStep(const QString& filePath);
 
     /**
      * @brief Merges the current version of the template import templateKey into the project as one

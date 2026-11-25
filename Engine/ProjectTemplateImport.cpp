@@ -155,6 +155,18 @@ collectInputOps(const std::list<Serialization::NodeSerializationPtr>& topLevel,
 
 } // namespace
 
+bool
+Project::isLockedPyPlug(const NodeCollectionPtr& group)
+{
+    NodeGroupPtr isGroup = std::dynamic_pointer_cast<NodeGroup>(group);
+    NodePtr node = isGroup ? isGroup->getNode() : NodePtr();
+    if (!node || !node->isPyPlug()) {
+        return false;
+    }
+
+    return !isGroup->isSubGraphEditable() || !node->hasPyPlugBeenEdited();
+}
+
 NodesList
 Project::importTemplate(const QString& filePath,
                         const NodeCollectionPtr& group,
@@ -173,6 +185,11 @@ Project::importTemplate(const QString& filePath,
         NodePtr groupNode = isGroup->getNode();
         if (!groupNode) {
             setError(tr("The group to import into has no node"));
+
+            return NodesList();
+        }
+        if (isLockedPyPlug(isGroup)) {
+            setError(tr("%1 is a PyPlug that is not unlocked for editing").arg(QString::fromStdString(groupNode->getScriptName_mt_safe())));
 
             return NodesList();
         }
@@ -196,7 +213,7 @@ Project::importTemplate(const QString& filePath,
     }
     // A template's own imports are its business: only its nodes are the merge base here.
     imported.templates.clear();
-    entry.key = uniqueTemplateKey(templateKeyStem(filePath), _imp->templateImports);
+    entry.key = uniqueTemplateKey(templateKeyStem(filePath), getTemplateImports());
     entry.path = QFileInfo(filePath).absoluteFilePath().toStdString();
     entry.importedAt = QDateTime::currentDateTimeUtc().toString(Qt::ISODate).toStdString();
     entry.base = std::make_shared<Serialization::ProjectSerialization>(imported);
@@ -240,7 +257,10 @@ Project::importTemplate(const QString& filePath,
     const std::size_t createCount = ops.size();
     collectInputOps(nodes, &ops);
 
-    _imp->templateImports.push_back(entry);
+    {
+        QMutexLocker k(&_imp->mergeStateMutex);
+        _imp->templateImports.push_back(entry);
+    }
     const std::vector<Serialization::OpResult> results = applyGraphOps(self, ops);
     NodesList created;
     QStringList problems;
@@ -259,7 +279,10 @@ Project::importTemplate(const QString& filePath,
         ++i;
     }
     if (created.empty() && !nodes.empty()) {
-        _imp->templateImports.pop_back();
+        {
+            QMutexLocker k(&_imp->mergeStateMutex);
+            _imp->templateImports.pop_back();
+        }
         setError(tr("No node of %1 could be created: %2").arg(filePath).arg(problems.join(QString::fromUtf8("; "))));
 
         return NodesList();

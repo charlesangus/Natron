@@ -80,7 +80,9 @@ private:
 namespace MergeConflictResolve {
 /**
  * @brief Imports the template file at path into the graph last worked in. Returns the new
- * import's key, or an empty string with error set.
+ * import's key, or an empty string with error set when nothing was imported. A template without
+ * nodes is still imported. When only part of it could be imported, the key is returned and error
+ * lists the problems.
  **/
 std::string importTemplate(Gui* gui,
                            const QString& path,

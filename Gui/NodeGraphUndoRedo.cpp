@@ -2639,6 +2639,7 @@ ApplyGraphOpsCommand::ApplyGraphOpsCommand(NodeGraph* graph,
                                            const QString& text,
                                            QUndoCommand* parent)
     : QUndoCommand(parent)
+    , _gui(graph ? graph->getGui() : 0)
     , _graph(graph)
     , _project(project)
     , _forward(forward)
@@ -2662,10 +2663,14 @@ ApplyGraphOpsCommand::apply(const std::vector<Serialization::GraphOp>& ops)
         return;
     }
     applyGraphOps(project, ops);
-    _graph->clearSelection();
-    GuiAppInstancePtr app = _graph->getGui()->getApp();
-    app->triggerAutoSave();
-    app->renderAllViewers(true);
+    if (_graph) {
+        _graph->clearSelection();
+    }
+    GuiAppInstancePtr app = _gui ? _gui->getApp() : GuiAppInstancePtr();
+    if (app) {
+        app->triggerAutoSave();
+        app->renderAllViewers(true);
+    }
 }
 
 void

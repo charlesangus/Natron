@@ -357,8 +357,11 @@ Project::toSerialization(Serialization::ProjectSerialization* serialization) con
     serialization->projectId = getProjectId();
 
     nodesToSerialization(&serialization->nodes);
-    serialization->templates = _imp->templateImports;
-    serialization->mergeConflicts = _imp->mergeConflicts;
+    {
+        QMutexLocker k(&_imp->mergeStateMutex);
+        serialization->templates = _imp->templateImports;
+        serialization->mergeConflicts = _imp->mergeConflicts;
+    }
 
     std::list<Format> additionalFormats;
     getAdditionalFormats(&additionalFormats);
@@ -457,8 +460,11 @@ ProjectPrivate::restoreFromSerialization(const Serialization::ProjectSerializati
     if (!serialization.projectId.empty()) {
         projectId = serialization.projectId;
     }
-    templateImports = serialization.templates;
-    mergeConflicts = serialization.mergeConflicts;
+    {
+        QMutexLocker k(&mergeStateMutex);
+        templateImports = serialization.templates;
+        mergeConflicts = serialization.mergeConflicts;
+    }
     Q_EMIT _publicInterface->templateImportsChanged();
     Q_EMIT _publicInterface->mergeConflictsChanged();
 

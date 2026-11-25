@@ -574,7 +574,7 @@ updateFromTemplate(const ProjectPtr& project,
     UpdateResult result;
 
     const Serialization::TemplateImportSerialization* found = nullptr;
-    const std::list<Serialization::TemplateImportSerialization>& imports = project->getTemplateImports();
+    const std::list<Serialization::TemplateImportSerialization> imports = project->getTemplateImports();
     for (const Serialization::TemplateImportSerialization& entry : imports) {
         if (entry.key == templateKey) {
             found = &entry;
@@ -914,8 +914,9 @@ compareWithTemplateBase(const ProjectPtr& project,
                         QString* error)
 {
     assert(QThread::currentThread() == qApp->thread());
+    const std::list<Serialization::TemplateImportSerialization> imports = project->getTemplateImports();
     const Serialization::TemplateImportSerialization* found = nullptr;
-    for (const Serialization::TemplateImportSerialization& entry : project->getTemplateImports()) {
+    for (const Serialization::TemplateImportSerialization& entry : imports) {
         if (entry.key == templateKey) {
             found = &entry;
             break;

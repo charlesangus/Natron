@@ -234,10 +234,13 @@ runMerge(const std::string& basePath,
 {
     const LoadedProject base = load(basePath);
     const LoadedProject mine = load(minePath);
-    const LoadedProject theirs = load(theirsPath);
+    LoadedProject theirs = load(theirsPath);
     MergePlan plan;
     MergeOptions options;
     if (templateKey) {
+        // A template's own imports and conflicts are not the shot's, as when updating in Natron.
+        theirs.project.templates.clear();
+        theirs.project.mergeConflicts.clear();
         const bool imported = std::any_of(mine.project.templates.begin(), mine.project.templates.end(), [&](const TemplateImportSerialization& entry) { return entry.key == *templateKey; });
         if (!imported) {
             throw std::runtime_error(minePath + ": no template import has the key " + *templateKey);

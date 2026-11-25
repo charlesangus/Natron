@@ -424,7 +424,8 @@ public:
      * unreadable or not a project (no node is created), when only part of the template could be
      * imported (the nodes that were created stay in place, and the message lists the problems),
      * and when called from a thread other than the main one. Raises ValueError when group is not
-     * a group of this application.
+     * a group of this application, is a node that is not a group, or is a PyPlug that is not
+     * unlocked for editing.
      **/
     std::list<Effect*> importTemplate(const QString& filename, Group* group = 0);
 
@@ -438,7 +439,7 @@ public:
      * @brief Internal variant of importTemplate() that reports a failure instead of raising it.
      * errorKind is set to eImportTemplateErrorNone on success, eImportTemplateErrorFailed when the
      * import failed in whole or in part (error holds the message) and eImportTemplateErrorBadGroup
-     * when group does not belong to this application. The list is empty on any failure.
+     * when group cannot take the nodes. The list is empty on any failure.
      **/
     std::list<Effect*> importTemplateChecked(const QString& filename, Group* group, QString* error, ImportTemplateError* errorKind);
 

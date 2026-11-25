@@ -30,6 +30,8 @@ SUPERVISOR_SIZE = 4.0
 try:
     from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QPushButton, QTabBar, QTreeWidget
 
+    import NatronEngine
+
     import guitest as gt
     from guitest import check, report, require
 
@@ -58,6 +60,12 @@ try:
         a.trigger()
         QApplication.processEvents()
         return True
+
+    def undo_text():
+        a = edit_menu_action("undo")
+        if a is None:
+            return None
+        return (a.isEnabled(), a.text())
 
     def widget(cls, name):
         for w in QApplication.allWidgets():
@@ -214,7 +222,7 @@ try:
         yield ("sleep", SETTLE_MS)
 
         gt.section("update")
-        key = app.importTemplate(v1)
+        key = app.importTemplateAsUndoStep(v1)
         require(bool(key), "import template version 1")
         yield ("sleep", SETTLE_MS)
         blur1 = app.getNode("Blur1")
@@ -319,7 +327,7 @@ try:
         require(artist is not None, "create Artist", gt.plugin_problem(BLUR))
         artist.setScriptName("Artist")
         artist.setPosition(-200, 100)
-        in_key = app.importTemplate(in_v1)
+        in_key = app.importTemplateAsUndoStep(in_v1)
         require(bool(in_key), "import the input template version 1")
         yield ("sleep", SETTLE_MS)
         blur2 = app.getNode("Blur2")
@@ -349,6 +357,27 @@ try:
             check_panel(in_count, "after undoing the input Theirs")
             check(source_of(blur2) == "Artist", "undoing Theirs feeds Blur2 from Artist again (%r)" % source_of(blur2))
             check(app.isMergeConflictBadgeShown(blur2), "undoing the input Theirs keeps the badge")
+
+        gt.section("scripting import")
+        require(app.resetProject(), "reset the project for the scripting import")
+        yield ("sleep", SETTLE_MS)
+        undo_before = undo_text()
+        effects = app.importTemplate(v1)
+        check(isinstance(effects, list), "app.importTemplate returns a list in the GUI (%r)" % (effects,))
+        names = sorted(e.getScriptName() for e in effects if isinstance(e, NatronEngine.Effect))
+        check(names == ["Blur1", "Blur2"], "app.importTemplate returns the created Effects (%r)" % (names,))
+        into_root = app.importTemplate(v1, app)
+        check(isinstance(into_root, list) and len(into_root) == 2,
+              "app.importTemplate takes a group in the GUI and returns its Effects (%r)" % (into_root,))
+        yield ("sleep", SETTLE_MS)
+        check(undo_text() == undo_before, "app.importTemplate pushes no undo step of its own (%r, was %r)" % (undo_text(), undo_before))
+        raised = None
+        try:
+            app.importTemplate(os.path.join(gt.OUT, "m104_missing_template.ntpz"))
+        except RuntimeError as e:
+            raised = str(e)
+        check(raised is not None, "app.importTemplate raises RuntimeError for a missing file in the GUI")
+        check(QApplication.activeModalWidget() is None, "a failed scripting import raises no modal dialog")
 
     gt.run(steps())
 except Exception:

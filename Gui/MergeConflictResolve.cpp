@@ -27,10 +27,12 @@
 
 #include <algorithm>
 #include <functional>
+#include <optional>
 #include <set>
 
 #include <QCoreApplication>
 
+#include "Engine/GraphOpApply.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/Project.h"
@@ -40,6 +42,9 @@
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGraphUndoRedo.h"
 #include "Gui/UndoHistory.h"
+
+#include "Serialization/Ops/SnapshotDiff.h"
+#include "Serialization/ProjectSerialization.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -168,15 +173,16 @@ importTemplate(Gui* gui,
     Serialization::ProjectSerialization before;
     project->toSerialization(&before);
     const std::size_t importsBefore = project->getTemplateImports().size();
-    const NodesList created = project->importTemplate(path, group, error);
+    error->clear();
+    ignore_result(project->importTemplate(path, group, error));
 
     Serialization::ProjectSerialization after;
     project->toSerialization(&after);
     ApplyGraphOpsCommand::recordChange(graph, project, before, after, command->text(), command);
     push(gui, command);
 
-    const std::list<Serialization::TemplateImportSerialization>& imports = project->getTemplateImports();
-    if (created.empty() || (imports.size() <= importsBefore)) {
+    const std::list<Serialization::TemplateImportSerialization> imports = project->getTemplateImports();
+    if (imports.size() <= importsBefore) {
         return std::string();
     }
 
@@ -205,8 +211,47 @@ updateFromTemplate(Gui* gui,
 }
 
 namespace {
+    bool
+    allApplied(const std::vector<Serialization::GraphOp>& ops,
+               const std::vector<Serialization::OpResult>& results,
+               QString* message)
+    {
+        for (const Serialization::OpResult& result : results) {
+            if (!result.applied()) {
+                *message = QString::fromStdString(result.message);
+
+                return false;
+            }
+        }
+        if (results.size() != ops.size()) {
+            *message = QCoreApplication::translate("MergeConflictResolve", "The resolution was not applied.");
+
+            return false;
+        }
+
+        return true;
+    }
+
+    // Puts the graph back to state, then applies replay.
+    bool
+    restoreAndReplay(const ProjectPtr& project,
+                     const Serialization::ProjectSerialization& state,
+                     const std::vector<Serialization::GraphOp>& replay)
+    {
+        Serialization::ProjectSerialization live;
+        project->toSerialization(&live);
+        const std::vector<Serialization::GraphOp> back = Serialization::diffSnapshots(Serialization::editableState(live), state);
+        QString message;
+        if (!back.empty() && !allApplied(back, applyGraphOps(project, back), &message)) {
+            return false;
+        }
+
+        return replay.empty() || allApplied(replay, applyGraphOps(project, replay), &message);
+    }
+
     // Each conflict's operations are built from the graph as the ones before it left it, so that
-    // conflicts on the same node compose.
+    // conflicts on the same node compose. The whole batch is one change of the graph, recorded from
+    // one snapshot taken before it and one after it.
     bool
     resolveWith(Gui* gui,
                 const std::vector<std::size_t>& indices,
@@ -232,6 +277,12 @@ namespace {
                 present.insert(conflicts[index].nodeId);
             }
         }
+
+        Serialization::ProjectSerialization before;
+        project->toSerialization(&before);
+        std::optional<Serialization::ProjectSerialization> beforeState;
+        // The operations of the resolutions applied so far, in order.
+        std::vector<Serialization::GraphOp> kept;
         for (std::size_t index : indices) {
             if ((index >= conflicts.size()) || !seen.insert(index).second) {
                 continue;
@@ -248,20 +299,29 @@ namespace {
                 continue;
             }
             if (!ops.empty()) {
-                const std::vector<Serialization::OpResult> results = ApplyGraphOpsCommand::applyAndRecord(graph, project, ops, command->text(), command);
-                const std::vector<Serialization::OpResult>::const_iterator bad = std::find_if(results.begin(), results.end(), [](const Serialization::OpResult& result) {
-                    return !result.applied();
-                });
-                if (bad != results.end()) {
-                    failed(QString::fromStdString(bad->message));
+                QString message;
+                if (!allApplied(ops, applyGraphOps(project, ops), &message)) {
+                    failed(message);
+                    // Only this resolution is dropped: the graph goes back to what the ones before it made.
+                    if (!beforeState) {
+                        beforeState = Serialization::editableState(before);
+                    }
+                    if (!restoreAndReplay(project, *beforeState, kept)) {
+                        ignore_result(restoreAndReplay(project, *beforeState, std::vector<Serialization::GraphOp>()));
+                        kept.clear();
+                        applied.clear();
+                        break;
+                    }
                     continue;
                 }
-                if (results.size() != ops.size()) {
-                    failed(QCoreApplication::translate("MergeConflictResolve", "The resolution was not applied."));
-                    continue;
-                }
+                kept.insert(kept.end(), ops.begin(), ops.end());
             }
             applied.insert(index);
+        }
+        if (!kept.empty()) {
+            Serialization::ProjectSerialization after;
+            project->toSerialization(&after);
+            ApplyGraphOpsCommand::recordChange(graph, project, before, after, command->text(), command);
         }
         removeConflicts(project, applied);
         push(gui, command);

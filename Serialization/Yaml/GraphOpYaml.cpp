@@ -164,6 +164,14 @@ namespace {
                 } else {
                     emitNullEntry(em, "tracker");
                 }
+            } else if constexpr (std::is_same_v<T, SetOriginOp>) {
+                emitStringEntry(em, "node", op.nodeId);
+                if (op.templateKey.empty()) {
+                    emitNullEntry(em, "template");
+                } else {
+                    emitStringEntry(em, "template", op.templateKey);
+                    emitStringEntry(em, "templateNode", op.templateNodeId);
+                }
             } else {
                 static_assert(std::is_same_v<T, SetProjectDataOp>);
                 if (op.formats) {
@@ -362,6 +370,18 @@ namespace {
             YAML::Node tracker = required(reader, map, "tracker");
             if (!tracker.IsNull()) {
                 op.tracker = readTrackerContext(tracker, NoBlobSource(), context + ".tracker", warnings);
+            }
+            result = std::move(op);
+        } else if (name == "setOrigin") {
+            SetOriginOp op;
+            op.nodeId = requiredId(reader, map, "node");
+            YAML::Node templateKey = required(reader, map, "template");
+            if (!templateKey.IsNull()) {
+                op.templateKey = readString(templateKey, context + ".template");
+                if (op.templateKey.empty()) {
+                    fail(templateKey, context + ".template", "expected a template key or null");
+                }
+                op.templateNodeId = requiredId(reader, map, "templateNode");
             }
             result = std::move(op);
         } else if (name == "setProjectData") {

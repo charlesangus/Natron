@@ -434,6 +434,37 @@ TEST(NatronMerge, ATemplateMergeRecordsWhereTheTemplateCameFrom)
     ASSERT_TRUE(updated.base != nullptr);
 }
 
+TEST(NatronMerge, ATemplateMergeIgnoresTheTemplatesOwnImportsAndConflicts)
+{
+    ScratchDir dir;
+    const Serialization::ProjectSerialization base = plainProject();
+    writeBundle(base, dir.file("base.ntpz"));
+    Serialization::ProjectSerialization mine = plainProject();
+    Serialization::TemplateImportSerialization entry;
+    entry.key = "grade_tpl";
+    entry.path = "/elsewhere/grade.ntpz";
+    entry.base = std::make_shared<Serialization::ProjectSerialization>(base);
+    mine.templates.push_back(entry);
+    writeBundle(mine, dir.file("mine.ntpz"));
+    Serialization::ProjectSerialization theirs = plainProject([](SimGraph* g) { g->set("Blur1", "size", { 4., 4. }); });
+    Serialization::TemplateImportSerialization inner;
+    inner.key = "inner_tpl";
+    inner.path = "/elsewhere/inner.ntpz";
+    inner.base = std::make_shared<Serialization::ProjectSerialization>(base);
+    theirs.templates.push_back(inner);
+    theirs.mergeConflicts.push_back(savedConflict("b:Grade1", "multiply"));
+    writeBundle(theirs, dir.file("theirs.ntpz"));
+    const std::string out = dir.file("out.ntpz");
+
+    const RunResult run = runNatronMerge({ "merge", "--scope", "template:grade_tpl", dir.file("base.ntpz"), dir.file("mine.ntpz"), dir.file("theirs.ntpz"), "-o", out });
+    EXPECT_EQ(run.status, 0) << run.out;
+    ASSERT_TRUE(fs::exists(out));
+    const Serialization::ProjectSerialization merged = readBundle(out);
+    ASSERT_EQ(merged.templates.size(), 1u);
+    EXPECT_EQ(merged.templates.front().key, "grade_tpl");
+    EXPECT_TRUE(merged.mergeConflicts.empty());
+}
+
 TEST(NatronMerge, TheGitDriverMergesIntoTheCurrentFile)
 {
     ScratchDir dir;

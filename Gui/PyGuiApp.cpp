@@ -949,11 +949,11 @@ PyViewer::getCurrentView() const
 }
 
 QString
-GuiApp::importTemplate(const QString& filePath)
+GuiApp::importTemplateAsUndoStep(const QString& filePath)
 {
     QString error;
     const std::string key = MergeConflictResolve::importTemplate(getInternalGuiApp()->getGui(), filePath, &error);
-    if (key.empty()) {
+    if (!error.isEmpty()) {
         getInternalGuiApp()->appendToScriptEditor(error.toStdString());
     }
 

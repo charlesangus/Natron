@@ -246,7 +246,7 @@ TEST_F(ProjectMergeTest, ACleanUpdateChangesTheTemplateNodesAndKeepsTheArtistsOv
         EXPECT_EQ(knob->knobName, kBlurParamSize);
     }
 
-    const Serialization::TemplateImportSerialization& entry = project()->getTemplateImports().front();
+    const Serialization::TemplateImportSerialization entry = project()->getTemplateImports().front();
     EXPECT_NE(entry.contentHash, oldHash);
     ASSERT_NE(entry.base, nullptr);
 
@@ -254,6 +254,56 @@ TEST_F(ProjectMergeTest, ACleanUpdateChangesTheTemplateNodesAndKeepsTheArtistsOv
     ASSERT_TRUE(again.ok) << again.error.toStdString();
     EXPECT_TRUE(again.ops.empty());
     EXPECT_TRUE(again.conflicts.empty());
+}
+
+TEST_F(ProjectMergeTest, AnUpdateTagsTheNodeThatStandsInForADeletedTemplateNode)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    QString v1;
+    QString v2;
+    saveTemplateVersions(dir, &v1, &v2);
+    QString error;
+    ASSERT_EQ(project()->importTemplate(v1, NodeCollectionPtr(), &error).size(), 2u) << error.toStdString();
+    const std::string key = project()->getTemplateImports().front().key;
+    NodePtr original = nodeNamed("Blur1");
+    NodePtr blur2 = nodeNamed("Blur2");
+    ASSERT_NE(original, nullptr);
+    ASSERT_NE(blur2, nullptr);
+    const std::string templateNode = original->getOriginNode();
+    ASSERT_FALSE(templateNode.empty());
+
+    NodePtr copy = createBlur("Blur1_copy");
+    ASSERT_NE(copy, nullptr);
+    EXPECT_TRUE(copy->getOriginTemplate().empty());
+    const std::vector<Serialization::GraphOp> deletion = { Serialization::DeleteNodeOp { original->getNodeId() } };
+    for (const Serialization::OpResult& result : applyGraphOps(project(), deletion)) {
+        ASSERT_TRUE(result.applied()) << result.message;
+    }
+    original.reset();
+    ASSERT_TRUE(NodeCollection::connectNodes(0, copy, blur2, false));
+
+    const Serialization::ProjectSerialization before = state();
+    const ProjectMerge::UpdateResult result = ProjectMerge::updateFromTemplate(project(), key, v2);
+    ASSERT_TRUE(result.ok) << result.error.toStdString();
+    bool tagged = false;
+    for (const Serialization::GraphOp& op : result.ops) {
+        if (const Serialization::SetOriginOp* origin = std::get_if<Serialization::SetOriginOp>(&op)) {
+            EXPECT_EQ(origin->nodeId, copy->getNodeId());
+            tagged = true;
+        }
+    }
+    EXPECT_TRUE(tagged);
+    EXPECT_EQ(copy->getOriginTemplate(), key);
+    EXPECT_EQ(copy->getOriginNode(), templateNode);
+    EXPECT_DOUBLE_EQ(blurSize(copy)->getValue(0), 4.);
+
+    const Serialization::ProjectSerialization after = state();
+    for (const Serialization::OpResult& undone : applyGraphOps(project(), Serialization::diffSnapshots(after, before))) {
+        EXPECT_TRUE(undone.applied()) << undone.message;
+    }
+    EXPECT_TRUE(copy->getOriginTemplate().empty());
+    EXPECT_TRUE(copy->getOriginNode().empty());
 }
 
 TEST_F(ProjectMergeTest, AConflictedUpdateReturnsItsConflictsAndKeepsMine)

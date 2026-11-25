@@ -163,8 +163,10 @@ public:
     // Keyed by originKey(), see Project::findActiveNodeWithOrigin().
     std::unordered_multimap<std::string, NodeWPtr> nodesByOrigin; //< guarded by nodesByIdMutex
 
-    std::list<Serialization::TemplateImportSerialization> templateImports; //< main thread only
-    std::vector<Serialization::MergeConflict> mergeConflicts; //< main thread only
+    // Written on the main thread only; the auto-save reads them from its own thread.
+    mutable QMutex mergeStateMutex;
+    std::list<Serialization::TemplateImportSerialization> templateImports; //< guarded by mergeStateMutex
+    std::vector<Serialization::MergeConflict> mergeConflicts; //< guarded by mergeStateMutex
 
     static std::string originKey(const std::string& templateKey, const std::string& templateNodeId);
     static void eraseOrigin(std::unordered_multimap<std::string, NodeWPtr>* index, const std::string& key, const Node* node);

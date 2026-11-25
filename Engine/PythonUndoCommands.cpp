@@ -46,6 +46,7 @@
 #include "Engine/ViewerInstance.h"
 #include "Serialization/KnobSerialization.h"
 #include "Serialization/NodeSerialization.h"
+#include "Serialization/ProjectSerialization.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -503,6 +504,39 @@ private:
 };
 
 //================================================================
+
+class TemplateImportsCommand
+    : public UndoCommand {
+public:
+    TemplateImportsCommand(const ProjectPtr& project,
+                           const std::list<Serialization::TemplateImportSerialization>& before,
+                           const std::list<Serialization::TemplateImportSerialization>& after)
+        : UndoCommand("Import Template")
+        , _project(project)
+        , _before(before)
+        , _after(after)
+    {
+    }
+
+    virtual void undo() OVERRIDE FINAL
+    {
+        if (ProjectPtr project = _project.lock()) {
+            project->setTemplateImports(_before);
+        }
+    }
+
+    virtual void redo() OVERRIDE FINAL
+    {
+        if (ProjectPtr project = _project.lock()) {
+            project->setTemplateImports(_after);
+        }
+    }
+
+private:
+    ProjectWPtr _project;
+    std::list<Serialization::TemplateImportSerialization> _before;
+    std::list<Serialization::TemplateImportSerialization> _after;
+};
 
 class NodeCreatedCommand
     : public UndoCommand {
@@ -1003,6 +1037,20 @@ recordPythonNodeCreated(const NodePtr& node)
     if (recorder) {
         recorder->record(std::make_shared<NodeCreatedCommand>(node), touchedNode(node));
     }
+}
+
+void
+recordPythonTemplateImport(const ProjectPtr& project,
+                           const std::list<Serialization::TemplateImportSerialization>& importsBefore,
+                           const NodesList& created)
+{
+    UndoRecorderPtr recorder = project ? recorderFor(project->getApp()) : UndoRecorderPtr();
+    if (!recorder) {
+        return;
+    }
+    UndoTouched touched;
+    touched.nodes = created;
+    recorder->record(std::make_shared<TemplateImportsCommand>(project, importsBefore, project->getTemplateImports()), touched);
 }
 
 void

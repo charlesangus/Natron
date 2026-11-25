@@ -32,8 +32,9 @@
 #include <vector>
 #include <map>
 
-#include <QPointF>
 #include <QCoreApplication>
+#include <QPointF>
+#include <QPointer>
 #include <QUndoCommand>
 
 #include "Global/GlobalDefines.h"
@@ -657,7 +658,9 @@ private:
 
     void apply(const std::vector<Serialization::GraphOp>& ops);
 
-    NodeGraph* _graph;
+    // The graph may be a group's, which the operations themselves can delete.
+    Gui* _gui;
+    QPointer<NodeGraph> _graph;
     ProjectWPtr _project;
     std::vector<Serialization::GraphOp> _forward;
     std::vector<Serialization::GraphOp> _inverse;

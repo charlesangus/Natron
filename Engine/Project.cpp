@@ -1421,15 +1421,18 @@ Project::onNodeOriginChanged(const NodePtr& node,
     }
 }
 
-const std::list<Serialization::TemplateImportSerialization>&
+std::list<Serialization::TemplateImportSerialization>
 Project::getTemplateImports() const
 {
+    QMutexLocker k(&_imp->mergeStateMutex);
+
     return _imp->templateImports;
 }
 
 bool
 Project::hasTemplateImport(const std::string& key) const
 {
+    QMutexLocker k(&_imp->mergeStateMutex);
     for (const Serialization::TemplateImportSerialization& entry : _imp->templateImports) {
         if (entry.key == key) {
             return true;
@@ -1442,35 +1445,48 @@ Project::hasTemplateImport(const std::string& key) const
 void
 Project::setTemplateImport(const Serialization::TemplateImportSerialization& entry)
 {
-    for (Serialization::TemplateImportSerialization& existing : _imp->templateImports) {
-        if (existing.key == entry.key) {
-            existing = entry;
-            Q_EMIT templateImportsChanged();
-
-            return;
+    {
+        QMutexLocker k(&_imp->mergeStateMutex);
+        bool replaced = false;
+        for (Serialization::TemplateImportSerialization& existing : _imp->templateImports) {
+            if (existing.key == entry.key) {
+                existing = entry;
+                replaced = true;
+                break;
+            }
+        }
+        if (!replaced) {
+            _imp->templateImports.push_back(entry);
         }
     }
-    _imp->templateImports.push_back(entry);
     Q_EMIT templateImportsChanged();
 }
 
 void
 Project::setTemplateImports(const std::list<Serialization::TemplateImportSerialization>& imports)
 {
-    _imp->templateImports = imports;
+    {
+        QMutexLocker k(&_imp->mergeStateMutex);
+        _imp->templateImports = imports;
+    }
     Q_EMIT templateImportsChanged();
 }
 
-const std::vector<Serialization::MergeConflict>&
+std::vector<Serialization::MergeConflict>
 Project::getMergeConflicts() const
 {
+    QMutexLocker k(&_imp->mergeStateMutex);
+
     return _imp->mergeConflicts;
 }
 
 void
 Project::setMergeConflicts(const std::vector<Serialization::MergeConflict>& conflicts)
 {
-    _imp->mergeConflicts = conflicts;
+    {
+        QMutexLocker k(&_imp->mergeStateMutex);
+        _imp->mergeConflicts = conflicts;
+    }
     Q_EMIT mergeConflictsChanged();
 }
 
@@ -3791,8 +3807,11 @@ Project::doResetEnd(bool aboutToQuit)
 {
     _imp->runOnProjectCloseCallback();
     _imp->projectId = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
-    _imp->templateImports.clear();
-    _imp->mergeConflicts.clear();
+    {
+        QMutexLocker k(&_imp->mergeStateMutex);
+        _imp->templateImports.clear();
+        _imp->mergeConflicts.clear();
+    }
     Q_EMIT templateImportsChanged();
     Q_EMIT mergeConflictsChanged();
 

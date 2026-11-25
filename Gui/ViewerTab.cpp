@@ -889,11 +889,9 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     });
     _imp->secondRowLayout->addWidget(_imp->colorSpaceOutputButton);
     _imp->colorSpaceOutputButton->hide();
-    if (NodeGraph* graph = gui->getNodeGraph()) {
-        QObject::connect(graph, &NodeGraph::selectionChanged, this, [this]() {
-            refreshColorSpaceView();
-        });
-    }
+    QObject::connect(gui, &Gui::nodeSelectionChanged, this, [this]() {
+        refreshColorSpaceView();
+    });
 
     _imp->viewsComboBox = new ComboBox(_imp->secondSettingsRow);
     _imp->viewsComboBox->setToolTip( QString::fromUtf8("<p><b>") + tr("Active view:") + QString::fromUtf8("</b></p>") + tr(
@@ -1727,7 +1725,11 @@ ViewerTab::refreshColorSpaceView()
     NodePtr candidate = getSceneViewedNode();
     if (!isColorWarp(candidate)) {
         candidate.reset();
-        NodeGraph* graph = getGui() ? getGui()->getNodeGraph() : nullptr;
+        Gui* gui = getGui();
+        NodeGraph* graph = gui ? gui->getLastSelectedGraph() : nullptr;
+        if (!graph && gui) {
+            graph = gui->getNodeGraph();
+        }
         if (graph) {
             const std::list<NodeGuiPtr>& selected = graph->getSelectedNodes();
             if (selected.size() == 1) {

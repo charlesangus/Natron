@@ -42,6 +42,7 @@
 #include <QColor>
 #include <QCoreApplication>
 #include <QFont>
+#include <QKeyEvent>
 #include <QMatrix4x4>
 #include <QMouseEvent>
 #include <QOpenGLContext>
@@ -59,6 +60,7 @@
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/Knob.h"
+#include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobColorWarpPins.h"
 #include "Engine/Node.h"
 #include "Engine/NodeColorSampler.h"
@@ -87,6 +89,8 @@ constexpr double kDefaultYaw = 0.7;
 constexpr double kDefaultPitch = 0.35;
 constexpr double kMaxPitch = 1.55;
 constexpr double kHandleShare = 0.18;
+// How often edits upstream of the cloud are looked for; a burst of them within it costs one fetch.
+constexpr int kEditPollMs = 150;
 
 GuiApplicationManager*
 guiManager()
@@ -152,6 +156,50 @@ readPixels(const Image& image,
             }
         }
     }
+}
+
+bool
+readImagePixels(const Image& image,
+                const std::vector<std::pair<int, int>>& coords,
+                const int index[4],
+                std::vector<float>* rgba)
+{
+    switch (image.getBitDepth()) {
+    case eImageBitDepthByte:
+        readPixels<unsigned char, 255>(image, coords, index, rgba);
+
+        return true;
+    case eImageBitDepthShort:
+        readPixels<unsigned short, 65535>(image, coords, index, rgba);
+
+        return true;
+    case eImageBitDepthFloat:
+        readPixels<float, 1>(image, coords, index, rgba);
+
+        return true;
+    default:
+
+        return false;
+    }
+}
+
+// The index in image's pixels of the channel called name, else of fallback when image has that
+// many channels, else -1.
+int
+channelIndexIn(const Image& image,
+               const std::string& name,
+               int fallback)
+{
+    const std::vector<std::string>& present = image.getComponents().getChannels();
+    const std::size_t nComps = std::min<std::size_t>(present.size(), image.getComponentsCount());
+
+    for (std::size_t i = 0; i < nComps; ++i) {
+        if (present[i] == name) {
+            return (int)i;
+        }
+    }
+
+    return ((fallback >= 0) && ((std::size_t)fallback < image.getComponentsCount())) ? fallback : -1;
 }
 
 void
@@ -220,7 +268,9 @@ struct CloudRequest {
     NodePtr node;
     double time = 0.;
     ViewIdx view;
-    int alphaSlot = -1;
+    // The channel colours are divided by, divisorChannel of divisorLayer, or none when -1.
+    ImageLayerDesc divisorLayer;
+    int divisorChannel = -1;
     ColorSpaceView::DisplayConverter display;
 };
 
@@ -305,33 +355,45 @@ fetchCloud(const CloudRequest& r,
     }
 
     std::vector<float> rgba;
-    switch (image->getBitDepth()) {
-    case eImageBitDepthByte:
-        readPixels<unsigned char, 255>(*image, coords, index, &rgba);
-        break;
-    case eImageBitDepthShort:
-        readPixels<unsigned short, 65535>(*image, coords, index, &rgba);
-        break;
-    case eImageBitDepthFloat:
-        readPixels<float, 1>(*image, coords, index, &rgba);
-        break;
-    default:
-        return false;
-    }
-    if (abortInfo->isAborted()) {
+    if (!readImagePixels(*image, coords, index, &rgba) || abortInfo->isAborted()) {
         return false;
     }
 
     const std::size_t n = coords.size();
+    // A divisor in a layer other than RGBA is rendered on its own, over the same pixels.
+    std::vector<float> divisors;
+    const std::vector<std::string>& divisorChannels = r.divisorLayer.getChannels();
+    if ((r.divisorChannel >= 0) && (r.divisorChannel < (int)divisorChannels.size())) {
+        ImagePtr divisorImage = image;
+        if (!(r.divisorLayer == ImageLayerDesc::getRGBAComponents())) {
+            RectI divisorRendered;
+            divisorImage = renderNodeImage(r.node, r.time, r.view, level, pixelRect, r.divisorLayer, &divisorRendered, abortInfo);
+            if (abortInfo->isAborted()) {
+                return false;
+            }
+        }
+        const int channel = divisorImage ? channelIndexIn(*divisorImage, divisorChannels[r.divisorChannel], r.divisorChannel) : -1;
+        if (channel >= 0) {
+            const int divisorIndex[4] = { channel, -1, -1, -1 };
+            std::vector<float> values;
+            if (readImagePixels(*divisorImage, coords, divisorIndex, &values)) {
+                divisors.resize(n);
+                for (std::size_t i = 0; i < n; ++i) {
+                    divisors[i] = values[i * 4];
+                }
+            }
+        }
+        if (abortInfo->isAborted()) {
+            return false;
+        }
+    }
+
     out->rgb.resize(n * 3);
     for (std::size_t i = 0; i < n; ++i) {
         float* px = &rgba[i * 4];
-        if ((r.alphaSlot >= 0) && (r.alphaSlot <= 3) && (index[r.alphaSlot] >= 0)) {
-            const float divisor = px[r.alphaSlot];
-            if (divisor > 0.f) {
-                for (int c = 0; c < 3; ++c) {
-                    px[c] = Image::unPremultiplyValue(px[c], divisor);
-                }
+        if (!divisors.empty() && (divisors[i] > 0.f)) {
+            for (int c = 0; c < 3; ++c) {
+                px[c] = Image::unPremultiplyValue(px[c], divisors[i]);
             }
         }
         for (int c = 0; c < 3; ++c) {
@@ -361,7 +423,8 @@ fetchCloud(const CloudRequest& r,
     return true;
 } // fetchCloud
 
-// Fetches run on one worker thread, latest request first; a newer request aborts the render in flight.
+// Fetches run on one worker thread, latest request first; a newer request aborts the render in
+// flight. The worker holds the fetcher, so shutting down never waits for it.
 struct CloudFetcher {
     std::mutex mutex;
     std::condition_variable wake;
@@ -380,9 +443,11 @@ struct CloudFetcher {
             running->setAborted();
         }
         if (!worker.joinable()) {
-            worker = std::thread([this, token]() {
-                run(token);
-            });
+            if (const std::shared_ptr<CloudFetcher> self = token.lock()) {
+                worker = std::thread([self, token]() {
+                    self->run(token);
+                });
+            }
         }
         wake.notify_one();
     }
@@ -435,17 +500,15 @@ struct CloudFetcher {
 
     void shutdown()
     {
-        {
-            std::lock_guard<std::mutex> locker(mutex);
-            quit = true;
-            pending.reset();
-            if (running) {
-                running->setAborted();
-            }
-            wake.notify_one();
+        std::lock_guard<std::mutex> locker(mutex);
+        quit = true;
+        pending.reset();
+        if (running) {
+            running->setAborted();
         }
+        wake.notify_one();
         if (worker.joinable()) {
-            worker.join();
+            worker.detach();
         }
     }
 };
@@ -476,16 +539,25 @@ struct ColorSpaceView::Implementation {
     bool active = false;
     bool showOutput = false;
     std::unique_ptr<QObject> connections;
+    QTimer* editPoll = nullptr;
 
     std::shared_ptr<CloudFetcher> fetcher;
     std::uint64_t requestSerial = 0;
     bool fetching = false;
     bool fetchQueued = false;
     bool frameOnNextCloud = false;
+    // What the last fetch was asked of, to tell when the cloud no longer shows it.
+    NodeWPtr fetchedSource;
+    U64 fetchedMarks = 0;
+    U64 fetchedHash = 0;
+    bool fetchedHashKnown = false;
 
+    // The fetched colours, working-space and display RGB, three floats per pixel.
     std::vector<float> cloudRgb;
     std::vector<float> cloudDisplay;
+    // The pixels whose warp-space position is finite: their positions and display colours.
     std::vector<float> cloudWarp;
+    std::vector<float> cloudWarpDisplay;
     ColorWarpSpaceEnum cloudSpace = eColorWarpSpaceOklabLog;
     bool vboDirty = true;
     unsigned int vbo = 0;
@@ -501,6 +573,7 @@ struct ColorSpaceView::Implementation {
     double distance = 3.;
 
     DragEnum drag = eDragNone;
+    bool spaceHeld = false;
     QPointF lastPos;
     int dragPinId = 0;
     int dragAxis = -1;
@@ -708,16 +781,23 @@ struct ColorSpaceView::Implementation {
     {
         const ColorWarpSpaceEnum sp = space();
         const ColorWarpSpaceBasis b = basis();
-        const std::size_t n = cloudRgb.size() / 3;
+        const std::size_t n = std::min(cloudRgb.size(), cloudDisplay.size()) / 3;
 
         cloudSpace = sp;
-        cloudWarp.resize(n * 3);
+        cloudWarp.clear();
+        cloudWarpDisplay.clear();
+        cloudWarp.reserve(n * 3);
+        cloudWarpDisplay.reserve(n * 3);
         for (std::size_t i = 0; i < n; ++i) {
             const double rgb[3] = { cloudRgb[i * 3], cloudRgb[i * 3 + 1], cloudRgb[i * 3 + 2] };
             double w[3];
             toWarpSpace(sp, b, rgb, w);
+            if (!std::isfinite(w[0]) || !std::isfinite(w[1]) || !std::isfinite(w[2])) {
+                continue;
+            }
             for (int c = 0; c < 3; ++c) {
-                cloudWarp[i * 3 + c] = std::isfinite(w[c]) ? (float)w[c] : 0.f;
+                cloudWarp.push_back((float)w[c]);
+                cloudWarpDisplay.push_back(cloudDisplay[i * 3 + c]);
             }
         }
         vboDirty = true;
@@ -788,6 +868,50 @@ struct ColorSpaceView::Implementation {
         });
     }
 
+    // The node whose output the cloud shows: the ColorWarp, or the node its input passes on.
+    NodePtr sourceNode() const
+    {
+        ColorWarp* cw = colorWarp();
+        const NodePtr n = node.lock();
+        if (!cw || !n) {
+            return NodePtr();
+        }
+        if (showOutput) {
+            return n;
+        }
+        EffectInstancePtr input = cw->getInput(0);
+        input = input ? input->getNearestNonDisabled(currentTime()) : EffectInstancePtr();
+
+        return input ? input->getNode() : NodePtr();
+    }
+
+    // Re-fetches when the source is another node, or when an edit of it or of anything upstream
+    // may have changed its hash: its hash mark count moves with every such edit.
+    void pollEdits()
+    {
+        if (!active || fetchQueued) {
+            return;
+        }
+        const NodePtr source = sourceNode();
+        if (source != fetchedSource.lock()) {
+            scheduleFetch();
+
+            return;
+        }
+        if (!source) {
+            return;
+        }
+        const U64 marks = source->getHashMarkCount();
+        if (marks == fetchedMarks) {
+            return;
+        }
+        fetchedMarks = marks;
+        U64 hash = 0;
+        if (!fetchedHashKnown || !source->getHashValueIfUpToDate(&hash) || (hash != fetchedHash)) {
+            scheduleFetch();
+        }
+    }
+
     void fetch()
     {
         ColorWarp* cw = colorWarp();
@@ -797,13 +921,11 @@ struct ColorSpaceView::Implementation {
         }
         const double time = currentTime();
         const ViewIdx v = view();
-        NodePtr source = n;
-        if (!showOutput) {
-            EffectInstancePtr input = cw->getInput(0);
-            input = input ? input->getNearestNonDisabled(time) : EffectInstancePtr();
-            source = input ? input->getNode() : NodePtr();
-        }
+        const NodePtr source = sourceNode();
         ++requestSerial;
+        fetchedSource = source;
+        fetchedMarks = source ? source->getHashMarkCount() : 0;
+        fetchedHashKnown = source && source->getHashValueIfUpToDate(&fetchedHash);
         if (!source) {
             fetcher->abort();
             fetching = false;
@@ -819,7 +941,9 @@ struct ColorSpaceView::Implementation {
         r.node = source;
         r.time = time;
         r.view = v;
-        r.alphaSlot = cw->getUnPremultRgbaSlot(time, v);
+        if (!cw->getUnPremultChannel(time, v, &r.divisorLayer, &r.divisorChannel)) {
+            r.divisorChannel = -1;
+        }
         r.display = makeDisplayConverter ? makeDisplayConverter() : DisplayConverter();
         fetching = true;
         fetcher->request(r, fetcher);
@@ -833,6 +957,9 @@ struct ColorSpaceView::Implementation {
         }
         fetching = false;
         if (!result.ok) {
+            cloudRgb.clear();
+            cloudDisplay.clear();
+            rebuildWarp();
             redraw();
 
             return;
@@ -849,14 +976,23 @@ struct ColorSpaceView::Implementation {
 
     void connectNode()
     {
-        // A fetch queued on the old context is dropped with it.
+        // A fetch queued on the old context is dropped with it, and so is its poll.
         connections.reset(new QObject);
+        editPoll = nullptr;
         fetchQueued = false;
         ColorWarp* cw = colorWarp();
         if (!cw) {
             return;
         }
         QObject* ctx = connections.get();
+        editPoll = new QTimer(ctx);
+        editPoll->setInterval(kEditPollMs);
+        QObject::connect(editPoll, &QTimer::timeout, ctx, [this]() {
+            pollEdits();
+        });
+        if (active) {
+            editPoll->start();
+        }
         if (const KnobColorWarpPinsPtr knob = cw->getPinsKnob()) {
             QObject::connect(knob.get(), &KnobColorWarpPins::selectedPinChanged, ctx, [this](int) {
                 redraw();
@@ -866,6 +1002,7 @@ struct ColorSpaceView::Implementation {
                     if (showOutput) {
                         scheduleFetch();
                     }
+                    rebuildBounds();
                     redraw();
                 });
             }
@@ -885,6 +1022,14 @@ struct ColorSpaceView::Implementation {
             }
         }
         const NodePtr n = node.lock();
+        // The divisor changes the input cloud without moving the input's hash.
+        if (const KnobChannelSelectPtr unPremultBy = n ? n->getUnPremultBySelector() : KnobChannelSelectPtr()) {
+            if (const std::shared_ptr<KnobSignalSlotHandler> handler = unPremultBy->getSignalSlotHandler()) {
+                QObject::connect(handler.get(), &KnobSignalSlotHandler::valueChanged, ctx, [this](ViewSpec, int, int) {
+                    scheduleFetch();
+                });
+            }
+        }
         const AppInstancePtr app = n ? n->getApp() : AppInstancePtr();
         if (const TimeLinePtr timeline = app ? app->getTimeLine() : TimeLinePtr()) {
             QObject::connect(timeline.get(), &TimeLine::frameChanged, ctx, [this](SequenceTime, int) {
@@ -906,12 +1051,12 @@ struct ColorSpaceView::Implementation {
             return;
         }
         vboDirty = false;
-        const std::size_t n = std::min(cloudWarp.size(), cloudDisplay.size()) / 3;
+        const std::size_t n = std::min(cloudWarp.size(), cloudWarpDisplay.size()) / 3;
         std::vector<float> interleaved(n * 6);
         for (std::size_t i = 0; i < n; ++i) {
             for (int c = 0; c < 3; ++c) {
                 interleaved[i * 6 + c] = cloudWarp[i * 3 + c];
-                interleaved[i * 6 + 3 + c] = cloudDisplay[i * 3 + c];
+                interleaved[i * 6 + 3 + c] = cloudWarpDisplay[i * 3 + c];
             }
         }
         if (!vbo) {
@@ -1131,6 +1276,7 @@ ColorSpaceView::~ColorSpaceView()
     _imp->fetcher->deliver = nullptr;
     _imp->fetcher->shutdown();
     _imp->fetcher.reset();
+    _imp->editPoll = nullptr;
     _imp->connections.reset();
 }
 
@@ -1172,6 +1318,14 @@ ColorSpaceView::setActive(bool active)
         return;
     }
     _imp->active = active;
+    _imp->spaceHeld = false;
+    if (_imp->editPoll) {
+        if (active) {
+            _imp->editPoll->start();
+        } else {
+            _imp->editPoll->stop();
+        }
+    }
     if (active) {
         _imp->scheduleFetch();
     } else {
@@ -1477,7 +1631,14 @@ ColorSpaceView::mousePress(QMouseEvent* e)
     }
     const QPointF pos = e->position();
     _imp->lastPos = pos;
-    if ((e->button() == Qt::LeftButton) && (e->modifiers() == Qt::NoModifier)) {
+    const Qt::KeyboardModifiers modifiers = mouseBindingModifiers(e->modifiers(), _imp->spaceHeld);
+    if (matchesMouseBinding(kShortcutIDMouseViewer3DTumble, modifiers, e->button())) {
+        _imp->drag = Implementation::eDragTumble;
+    } else if (matchesMouseBinding(kShortcutIDMouseViewer3DPan, modifiers, e->button())) {
+        _imp->drag = Implementation::eDragPan;
+    } else if (matchesMouseBinding(kShortcutIDMouseViewer3DDolly, modifiers, e->button())) {
+        _imp->drag = Implementation::eDragDolly;
+    } else if (matchesMouseBinding(kShortcutIDMouseViewer3DSelect, modifiers, e->button())) {
         int pinId = 0;
         int part = 0;
         if (_imp->pick(pos, &pinId, &part)) {
@@ -1519,17 +1680,6 @@ ColorSpaceView::mousePress(QMouseEvent* e)
             }
             _imp->redraw();
         }
-        e->accept();
-
-        return true;
-    }
-    const Qt::KeyboardModifiers modifiers = mouseBindingModifiers(e->modifiers(), false);
-    if (matchesMouseBinding(kShortcutIDMouseViewer3DTumble, modifiers, e->button())) {
-        _imp->drag = Implementation::eDragTumble;
-    } else if (matchesMouseBinding(kShortcutIDMouseViewer3DPan, modifiers, e->button())) {
-        _imp->drag = Implementation::eDragPan;
-    } else if (matchesMouseBinding(kShortcutIDMouseViewer3DDolly, modifiers, e->button())) {
-        _imp->drag = Implementation::eDragDolly;
     }
     e->accept();
 
@@ -1593,7 +1743,7 @@ ColorSpaceView::wheel(QWheelEvent* e)
     const QPoint angle = e->angleDelta();
     const double steps = ((angle.y() != 0) ? angle.y() : angle.x()) / 120.;
 
-    if ((steps == 0.) || !matchesMouseBinding(kShortcutIDMouseViewer3DDollyWheel, mouseBindingModifiers(e->modifiers(), false), Qt::NoButton)) {
+    if ((steps == 0.) || !matchesMouseBinding(kShortcutIDMouseViewer3DDollyWheel, mouseBindingModifiers(e->modifiers(), _imp->spaceHeld), Qt::NoButton)) {
         return false;
     }
     _imp->distance = std::max(1e-6, _imp->distance * std::pow(0.85, steps));
@@ -1601,6 +1751,36 @@ ColorSpaceView::wheel(QWheelEvent* e)
     e->accept();
 
     return true;
+}
+
+bool
+ColorSpaceView::event(QEvent* e)
+{
+    switch (e->type()) {
+    case QEvent::ShortcutOverride:
+    case QEvent::KeyPress:
+    case QEvent::KeyRelease: {
+        QKeyEvent* k = static_cast<QKeyEvent*>(e);
+        if (!_imp->active || (k->key() != Qt::Key_Space) || !viewer3DMouseBindingsUseSpace()) {
+            return false;
+        }
+        if (e->type() == QEvent::KeyPress) {
+            _imp->spaceHeld = true;
+        } else if ((e->type() == QEvent::KeyRelease) && !k->isAutoRepeat()) {
+            _imp->spaceHeld = false;
+        }
+        e->accept();
+
+        return true;
+    }
+    case QEvent::FocusOut:
+        _imp->spaceHeld = false;
+
+        return false;
+    default:
+
+        return false;
+    }
 }
 
 QVariantMap

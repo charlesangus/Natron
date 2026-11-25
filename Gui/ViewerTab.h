@@ -85,7 +85,8 @@ public:
 
     /**
      * @brief Offers the Colour Space mode for the ColorWarp the viewer shows on input A, else for
-     * the one ColorWarp selected in the node graph, and turns the mode off when there is neither.
+     * the one ColorWarp selected in the node graph last focused (the root graph when none is), and
+     * turns the mode off when there is neither.
      **/
     void refreshColorSpaceView();
 

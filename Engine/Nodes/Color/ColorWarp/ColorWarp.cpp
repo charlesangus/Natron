@@ -573,6 +573,24 @@ ColorWarp::unPremultDivisor(double time,
                             ImageLayerDesc* layer,
                             int* slot)
 {
+    int divisorChannel = -1;
+
+    if (!getUnPremultChannel(time, view, layer, &divisorChannel)) {
+        return false;
+    }
+    const std::vector<std::string>& channels = layer->getChannels();
+    // sampleNodeColor() puts a layer's "A" channel in rgba[3] and the others in order.
+    *slot = (channels[divisorChannel] == "A") ? 3 : divisorChannel;
+
+    return *slot <= 3;
+}
+
+bool
+ColorWarp::getUnPremultChannel(double time,
+                               ViewIdx view,
+                               ImageLayerDesc* layer,
+                               int* channelIndex)
+{
     const NodePtr node = getNode();
     const KnobChannelSelectPtr unPremultBy = node ? node->getUnPremultBySelector() : KnobChannelSelectPtr();
 
@@ -581,29 +599,9 @@ ColorWarp::unPremultDivisor(double time,
     }
     std::list<ImageLayerDesc> availableLayers;
     getAvailableLayers(time, view, 0, &availableLayers);
-    const int divisorChannel = node->getUnPremultChannel(availableLayers, layer);
-    const std::vector<std::string>& channels = layer->getChannels();
-    if ((divisorChannel < 0) || (divisorChannel >= (int)channels.size())) {
-        return false;
-    }
-    // sampleNodeColor() puts a layer's "A" channel in rgba[3] and the others in order.
-    *slot = (channels[divisorChannel] == "A") ? 3 : divisorChannel;
+    *channelIndex = node->getUnPremultChannel(availableLayers, layer);
 
-    return *slot <= 3;
-}
-
-int
-ColorWarp::getUnPremultRgbaSlot(double time,
-                                ViewIdx view)
-{
-    ImageLayerDesc layer;
-    int slot = -1;
-
-    if (!unPremultDivisor(time, view, &layer, &slot) || !(layer == ImageLayerDesc::getRGBAComponents())) {
-        return -1;
-    }
-
-    return slot;
+    return (*channelIndex >= 0) && (*channelIndex < (int)layer->getChannels().size());
 }
 
 ColorWarpSpaceEnum

@@ -6541,33 +6541,6 @@ pickwalkForKey(Qt::KeyboardModifiers modifiers,
     return -1;
 }
 
-// Whether a mouse binding of the 3D viewer needs Space held.
-bool
-bindingsUseSpace()
-{
-    GuiApplicationManager* manager = guiManager();
-    if (!manager) {
-        return false;
-    }
-    const AppShortcuts& shortcuts = manager->getAllShortcuts();
-    AppShortcuts::const_iterator group = shortcuts.find(QString::fromUtf8(kShortcutGroupViewer3D));
-    if (group == shortcuts.end()) {
-        return false;
-    }
-    for (GroupShortcuts::const_iterator it = group->second.begin(); it != group->second.end(); ++it) {
-        if (!dynamic_cast<const MouseAction*>(it->second)) {
-            continue;
-        }
-        for (std::list<Qt::KeyboardModifiers>::const_iterator m = it->second->modifiers.begin(); m != it->second->modifiers.end(); ++m) {
-            if (*m & kShortcutModifierSpace) {
-                return true;
-            }
-        }
-    }
-
-    return false;
-}
-
 QKeySequence
 keySequenceOf(const char* actionID)
 {
@@ -11676,7 +11649,7 @@ SceneViewport::event(QEvent* e)
             || matchesKeyBinding(kShortcutIDActionViewer3DSetSelectionOnNode, k->modifiers(), k->key())
             || matchesKeyBinding(kShortcutIDActionViewer3DCreateFromSelection, k->modifiers(), k->key()) || drawKeyFor(k->modifiers(), k->key())
             || (pickwalkForKey(k->modifiers(), k->key()) >= 0)
-            || ((k->key() == Qt::Key_Escape) && (_imp->handle != SceneGizmo::kNoHandle)) || ((k->key() == Qt::Key_Space) && bindingsUseSpace())) {
+            || ((k->key() == Qt::Key_Escape) && (_imp->handle != SceneGizmo::kNoHandle)) || ((k->key() == Qt::Key_Space) && viewer3DMouseBindingsUseSpace())) {
             e->accept();
 
             return true;
@@ -11698,7 +11671,7 @@ SceneViewport::event(QEvent* e)
 void
 SceneViewport::keyPressEvent(QKeyEvent* e)
 {
-    if ((e->key() == Qt::Key_Space) && bindingsUseSpace()) {
+    if ((e->key() == Qt::Key_Space) && viewer3DMouseBindingsUseSpace()) {
         _imp->spaceHeld = true;
         e->accept();
 

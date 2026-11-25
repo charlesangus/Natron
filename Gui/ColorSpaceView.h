@@ -38,6 +38,7 @@
 #include "Gui/GuiFwd.h"
 
 class QColor;
+class QEvent;
 class QFont;
 class QMouseEvent;
 class QWheelEvent;
@@ -113,6 +114,13 @@ public:
     bool mouseMove(QMouseEvent* e);
     bool mouseRelease(QMouseEvent* e);
     bool wheel(QWheelEvent* e);
+
+    /**
+     * @brief Takes Space, while a 3D viewer mouse binding needs it held, out of the key events the
+     * viewer gets, shortcut overrides included, and forgets it on a focus loss. Returns whether e
+     * was taken.
+     **/
+    bool event(QEvent* e);
 
     /**
      * @brief A read-only summary for scripts: node, output, pointCount, arrowCount, holdCount,

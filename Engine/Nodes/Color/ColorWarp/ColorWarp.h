@@ -155,12 +155,13 @@ public:
     std::vector<KnobIPtr> getFieldKnobs() const WARN_UNUSED_RETURN;
 
     /**
-     * @brief The RGBA slot (0 to 3) the warp divides colours by before warping them, as the
-     * (Un)premult By selector picks it, or -1 when it divides by nothing or by a channel of
-     * another layer.
+     * @brief The layer and the index in it of the channel the warp divides colours by before
+     * warping them, as the (Un)premult By selector picks it, or false when it divides by nothing.
      **/
-    int getUnPremultRgbaSlot(double time,
-                             ViewIdx view) WARN_UNUSED_RETURN;
+    bool getUnPremultChannel(double time,
+                             ViewIdx view,
+                             ImageLayerDesc* layer,
+                             int* channelIndex) WARN_UNUSED_RETURN;
 
     /**
      * @brief Adds a pin on the source input's colour at canonical (x, y) and time, as one undo

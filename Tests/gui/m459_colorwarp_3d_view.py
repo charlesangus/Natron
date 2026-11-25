@@ -1,15 +1,19 @@
 """ColorWarp's Colour Space viewer mode in the real application: the viewer swaps the image for a 3D
 view of the ColorWarp's colours, with its pins as arrows, and swaps back with its pan and zoom.
 
-A CheckerBoard with four known colours (one of them above 1) feeds a ColorWarp feeding the viewer,
-with the ColorWarp's settings panel open. Two pins are added through Python: one maps the red box
-to another colour, one holds the blue box. The script turns the mode on and checks, through
+A CheckerBoard with four known colours (one of them above 1) feeds a Grade feeding a ColorWarp
+feeding the viewer, in a 1920x1080 main window with the ColorWarp's settings panel open. Two pins
+are added through Python: one maps the red box to another colour, one holds the blue box. The
+script turns the mode on and checks that the viewer's second row still fits, and, through
 ViewerGL::colorSpaceViewState() and colorSpaceViewProbe(), that the cloud and the pins are drawn and
-that each box colour has a cloud point on it; it orbits, toggles the cloud between input and
-output, clicks a pin's target to select it and checks the panel follows, drags the selected target
-along one axis handle and reads the knob back, undoes the drag, and turns the mode off and checks
-the 2D pan and zoom came back. Last, viewing the CheckerBoard instead turns the mode off and
-disables the toggle. Saves a screenshot of every state.
+that each box colour has a cloud point on it. It orbits, toggles the cloud between input and output,
+and checks the cloud follows the mix, clears when the ColorWarp cannot render, follows a Grade
+upstream and follows a frame change. It clicks a pin's target to select it and checks the panel
+follows, drags the selected target along one axis handle and reads the knob back, undoes the drag,
+edits a pin from Python and checks the view and its bounds follow, drags the target freely in the
+screen plane and undoes it, and turns the mode off and checks the 2D pan and zoom came back. Last,
+viewing the CheckerBoard instead turns the mode off and disables the toggle, and selecting the
+ColorWarp offers the mode again until the selection clears. Saves a screenshot of every state.
 
 Usage (natron-dev container; see Tests/gui/run-gui-test.sh for the GL symlink/Xvfb setup):
     docker exec -e NATRON_GUI_TEST_OUT=build/m459-shots -e GUI_TEST_TIMEOUT=300 \\
@@ -39,6 +43,16 @@ BOXES = [
     (0.2, 0.2, 0.7),
 ]
 MOVED_TARGET = (0.3, 0.5, 0.9)
+# Where the moved pin's colour lands at a mix of 0.5: halfway from the red box to MOVED_TARGET.
+HALF_MIXED = tuple(0.5 * (a + b) for a, b in zip(BOXES[0], MOVED_TARGET))
+GRADE_GAIN = 2.0
+FRAME_STEP = 5
+# The green box's colour FRAME_STEP frames on.
+LATER_GREEN = (0.9, 0.9, 0.1)
+# A target well outside the cloud, to check the view's bounds grow to it.
+FAR_TARGET = (4.0, 0.2, 3.0)
+FREE_DRAG = (25.0, -20.0)  # screen pixels
+SCREEN_TOLERANCE = 2.0
 ON_POINT = 1e-3  # warp-space distance under which a colour counts as a point of the cloud
 
 try:
@@ -48,7 +62,7 @@ try:
     from PySide6.QtCore import QEvent, QMetaObject, QPoint, QPointF, Qt, Q_ARG, Q_RETURN_ARG
     from PySide6.QtGui import QCursor, QMouseEvent, QWheelEvent
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QMainWindow, QPushButton, QTreeWidget
+    from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QMainWindow, QPushButton, QTreeWidget, QWidget
 
     import guitest as gt
     from guitest import check, report, require
@@ -202,6 +216,58 @@ try:
         d = nearest(rgb)
         return 0.0 <= d <= ON_POINT
 
+    def wait_cloud(predicate):
+        """Waits for a settled cloud for which predicate() holds."""
+        return ("until", lambda: cloud_ready() and predicate(), POLL_TIMEOUT_S)
+
+    def describe(w):
+        text = ""
+        if hasattr(w, "text"):
+            try:
+                text = w.text()
+            except Exception:
+                text = ""
+        return "%s %r %r" % (gt.class_name(w), w.objectName(), text)
+
+    def viewer_tab_of(widget):
+        w = widget
+        while w is not None and gt.class_name(w) != "ViewerTab":
+            w = w.parentWidget()
+        return w
+
+    def measure_second_row(toggle):
+        """The Colour Space toggle's row fits its ViewerTab with the mode on, nothing overlapping."""
+        row = hold(toggle.parentWidget())
+        tab = viewer_tab_of(toggle)
+        require(row is not None and tab is not None, "found the toggle's row and its ViewerTab")
+        hold(tab)
+        row_w = row.width()
+        tab_w = tab.width()
+        hint = row.sizeHint().width()
+        report("NOTE ViewerTab width %d, second row width %d, sizeHint %d" % (tab_w, row_w, hint))
+        parts = []
+        for w in row.children():
+            try:
+                if not isinstance(w, QWidget) or not w.isVisible():
+                    continue
+            except RuntimeError:
+                continue
+            parts.append(hold(w))
+        parts.sort(key=lambda w: w.x())
+        require(len(parts) > 0, "the second row has visible controls")
+        for w in parts:
+            report("NOTE x=%4d w=%4d right=%4d sizeHint=%4d  %s"
+                   % (w.x(), w.width(), w.x() + w.width(), w.sizeHint().width(), describe(w)))
+        check(row_w <= tab_w, "the second row (%d) is no wider than its ViewerTab (%d)" % (row_w, tab_w))
+        check(hint <= row_w, "the second row's layout sizeHint (%d) fits the row (%d)" % (hint, row_w))
+        for w in parts:
+            right = w.x() + w.width()
+            check(w.x() >= 0 and right <= row_w, "inside the second row: %s (x %d..%d of %d)" % (describe(w), w.x(), right, row_w))
+        for left, right in zip(parts, parts[1:]):
+            check(left.x() + left.width() <= right.x(),
+                  "no overlap: %s (right %d) and %s (left %d)" % (describe(left), left.x() + left.width(),
+                                                                   describe(right), right.x()))
+
     def steps():
         ok = yield ("until", lambda: node_graph_view() is not None, STARTUP_TIMEOUT_S)
         require(ok, "the node graph is on screen")
@@ -211,6 +277,10 @@ try:
         win.raise_()
         ok = yield ("until", lambda: win.isActiveWindow(), 10.0)
         require(ok, "the main window is active")
+        if win.isMaximized() or win.isFullScreen():
+            win.showNormal()
+        win.resize(1920, 1080)
+        QApplication.processEvents()
         gt.close_all_panels()
         yield ("sleep", SETTLE_MS)
 
@@ -228,10 +298,14 @@ try:
             param = chart.getParam(name)
             if param is not None:
                 param.set(0.0)
+        grade = app.createNode("Grade")
+        require(grade is not None, "created a Grade", gt.plugin_problem("Grade"))
+        grade.setPosition(0, 150)
+        require(grade.connectInput(0, chart), "connected the CheckerBoard to the Grade")
         warp = app.createNode("ColorWarp")
         require(warp is not None, "created a ColorWarp", gt.plugin_problem("ColorWarp"))
         warp.setPosition(0, 300)
-        require(warp.connectInput(0, chart), "connected the CheckerBoard to the ColorWarp")
+        require(warp.connectInput(0, grade), "connected the Grade to the ColorWarp")
         require(viewer.connectInput(0, warp), "connected the ColorWarp to the viewer")
         pins = hold(warp.getParam("pins"))
         require(pins is not None and hasattr(pins, "getPinCount"), "the ColorWarp has a pins parameter with the pin API")
@@ -286,6 +360,10 @@ try:
         check(output_toggle is not None and output_toggle.isVisible(), "the Output toggle shows with the mode")
         gt.shot("m459-input-cloud.png")
 
+        gt.section("second-row-fit")
+        check(win.width() == 1920 and win.height() == 1080, "the main window is 1920x1080 (%dx%d)" % (win.width(), win.height()))
+        measure_second_row(toggle)
+
         gt.section("orbit")
         camera = state().get("camera")
         gl = visible_viewer()
@@ -311,12 +389,66 @@ try:
         check(not on_cloud(BOXES[0]), "and no longer the colour it moved (%.2g)" % nearest(BOXES[0]))
         check(on_cloud(BOXES[3]), "the held colour stays (%.2g)" % nearest(BOXES[3]))
         gt.shot("m459-output-cloud.png")
+
+        gt.section("mix")
+        mix = hold(warp.getParam("mix"))
+        require(mix is not None, "the ColorWarp has a mix parameter")
+        mix.setValue(0.5)
+        ok = yield wait_cloud(lambda: on_cloud(HALF_MIXED) and not on_cloud(MOVED_TARGET))
+        check(ok, "a mix of 0.5 re-fetches the output: the moved colour lands halfway (%.2g, target %.2g)"
+              % (nearest(HALF_MIXED), nearest(MOVED_TARGET)))
+        gt.shot("m459-output-mix.png")
+        mix.setValue(1.0)
+        ok = yield wait_cloud(lambda: on_cloud(MOVED_TARGET))
+        check(ok, "a mix of 1 brings the moved target back (%.2g)" % nearest(MOVED_TARGET))
+
+        gt.section("failed-fetch")
+        warp.disconnectInput(0)
+        ok = yield ("until", lambda: (lambda st: bool(st) and not st.get("fetching", True)
+                                      and st.get("pointCount", -1) == 0)(state()), POLL_TIMEOUT_S)
+        check(ok, "a ColorWarp that cannot render clears the cloud (%r)"
+              % ({k: v for k, v in state().items() if k != "pins"},))
+        gt.shot("m459-failed-fetch.png")
+        require(warp.connectInput(0, grade), "reconnected the Grade to the ColorWarp")
+        ok = yield wait_cloud(lambda: on_cloud(MOVED_TARGET))
+        check(ok, "reconnecting the input brings the output cloud back")
         output_toggle.click()
         QApplication.processEvents()
         ok = yield ("until", lambda: state().get("output") is False and cloud_ready(), POLL_TIMEOUT_S)
         check(ok, "the cloud switches back to the input")
         check(state().get("pointCount") == count, "the input cloud has the same points again (%r)" % state().get("pointCount"))
         check(on_cloud(BOXES[0]), "with the moved colour back on it")
+
+        gt.section("upstream-edit")
+        gain = hold(grade.getParam("multiply"))
+        require(gain is not None, "the Grade has a multiply parameter")
+        graded = tuple(GRADE_GAIN * c for c in BOXES[1])
+        gain.set(GRADE_GAIN, GRADE_GAIN, GRADE_GAIN, 1.0)
+        ok = yield wait_cloud(lambda: on_cloud(graded) and not on_cloud(BOXES[1]))
+        check(ok, "a Grade change upstream re-fetches the input (%.2g graded, %.2g plain)"
+              % (nearest(graded), nearest(BOXES[1])))
+        gt.shot("m459-upstream-grade.png")
+        gain.set(1.0, 1.0, 1.0, 1.0)
+        ok = yield wait_cloud(lambda: on_cloud(BOXES[1]) and not on_cloud(graded))
+        check(ok, "undoing the Grade change re-fetches it again")
+
+        gt.section("frame-change")
+        green = hold(chart.getParam("color1"))
+        for d in range(3):
+            green.setValueAtTime(BOXES[1][d], time, d)
+            green.setValueAtTime(LATER_GREEN[d], time + FRAME_STEP, d)
+        py_viewer = app.getViewer(viewer.getScriptName())
+        require(py_viewer is not None, "found the Python viewer")
+        ok = yield wait_cloud(lambda: on_cloud(BOXES[1]))
+        check(ok, "keying the green box leaves the current frame's cloud")
+        py_viewer.seek(time + FRAME_STEP)
+        ok = yield wait_cloud(lambda: on_cloud(LATER_GREEN) and not on_cloud(BOXES[1]))
+        check(ok, "moving %d frames on re-fetches the cloud at the new frame (%.2g later, %.2g first)"
+              % (FRAME_STEP, nearest(LATER_GREEN), nearest(BOXES[1])))
+        gt.shot("m459-frame-change.png")
+        py_viewer.seek(time)
+        ok = yield wait_cloud(lambda: on_cloud(BOXES[1]) and not on_cloud(LATER_GREEN))
+        check(ok, "moving back re-fetches the first frame's cloud")
 
         gt.section("select")
         entry = pin_entry(held_pin)
@@ -378,6 +510,49 @@ try:
         ok = yield ("until", lambda: close(target_of(pins, moved), knob_before), POLL_TIMEOUT_S)
         check(ok, "and undo takes it back for the rest of the check")
 
+        gt.section("pin-from-python")
+        pins.setPinTarget(moved, FAR_TARGET[0], FAR_TARGET[1], FAR_TARGET[2], app.timelineGetTime())
+        far_warp = probe(FAR_TARGET).get("warp", [])
+        require(len(far_warp) == 3, "the probe maps the far target to the warp space")
+        ok = yield ("until", lambda: pin_entry(moved) is not None
+                    and close(list(pin_entry(moved)["targetWarp"]), far_warp, 1e-4), POLL_TIMEOUT_S)
+        entry = pin_entry(moved)
+        check(ok, "a target set from Python moves the drawn target (%r, want %r)"
+              % (entry["targetWarp"] if entry else None, far_warp))
+        s = state()
+        lo = s.get("boundsMin", [])
+        hi = s.get("boundsMax", [])
+        check(len(lo) == 3 and all(lo[k] <= far_warp[k] <= hi[k] for k in range(3)),
+              "the view's bounds grow to the new target (%r in %r..%r)" % (far_warp, lo, hi))
+        gt.shot("m459-pin-from-python.png")
+        pins.setPinTarget(moved, knob_before[0], knob_before[1], knob_before[2], app.timelineGetTime())
+        ok = yield ("until", lambda: pin_entry(moved) is not None
+                    and close(list(pin_entry(moved)["targetWarp"]), warp_before, 1e-4), POLL_TIMEOUT_S)
+        check(ok, "setting it back from Python moves the drawn target back")
+
+        gt.section("drag-free")
+        entry = pin_entry(moved)
+        require(entry is not None, "the moved pin is still listed")
+        start = QPointF(entry["target"][0], entry["target"][1])
+        offset = QPointF(FREE_DRAG[0], FREE_DRAG[1])
+        knob_free_before = target_of(pins, moved)
+        drag(gl, start, start + offset)
+        yield ("sleep", RENDER_MS)
+        entry = pin_entry(moved)
+        moved_to = QPointF(entry["target"][0], entry["target"][1]) if entry else start
+        aim = start + offset
+        report("NOTE free drag: target on screen %r -> %r, aim %r" % (start, moved_to, aim))
+        check(math.hypot(moved_to.x() - aim.x(), moved_to.y() - aim.y()) <= SCREEN_TOLERANCE,
+              "dragging the target itself keeps it under the pointer (%r, aim %r)" % (moved_to, aim))
+        knob_free_after = target_of(pins, moved)
+        check(not close(knob_free_after, knob_free_before), "the pins parameter holds the dragged target (%r)" % (knob_free_after,))
+        source = pins.getPinSource(moved)
+        check(close((source.r, source.g, source.b), BOXES[0]), "the source stays")
+        gt.shot("m459-dragged-free.png")
+        undo_redo(False)
+        ok = yield ("until", lambda: close(target_of(pins, moved), knob_free_before), POLL_TIMEOUT_S)
+        check(ok, "one undo puts the freely dragged target back (%r)" % (target_of(pins, moved),))
+
         gt.section("off")
         toggle = button("colorSpaceView")
         toggle.click()
@@ -404,6 +579,22 @@ try:
         check(not toggle.isChecked() and state() == {}, "and the mode is off")
         check(close(projection(), before_2d, 1e-6), "with the 2D pan and zoom restored (%r)" % (projection(),))
         gt.shot("m459-not-a-colorwarp.png")
+
+        gt.section("selected-not-viewed")
+        app.selectNode(warp, True)
+        ok = yield ("until", lambda: toggle.isEnabled(), POLL_TIMEOUT_S)
+        check(ok, "selecting a ColorWarp the viewer does not show enables the toggle")
+        toggle.click()
+        QApplication.processEvents()
+        ok = yield ("until", cloud_ready, POLL_TIMEOUT_S)
+        check(ok, "the mode shows the selected ColorWarp's cloud")
+        check(state().get("node") == warp.getScriptName(), "for the selected ColorWarp (%r)" % (state().get("node"),))
+        check(on_cloud(BOXES[0]), "its input cloud holds the red box (%.2g)" % nearest(BOXES[0]))
+        gt.shot("m459-selected-not-viewed.png")
+        app.clearSelection()
+        ok = yield ("until", lambda: not toggle.isEnabled(), POLL_TIMEOUT_S)
+        check(ok, "clearing the selection disables the toggle")
+        check(not toggle.isChecked() and state() == {}, "and turns the mode off")
         viewer.disconnectInput(0)
         require(viewer.connectInput(0, warp), "the viewer views the ColorWarp again")
         ok = yield ("until", lambda: toggle.isEnabled(), POLL_TIMEOUT_S)

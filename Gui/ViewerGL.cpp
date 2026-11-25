@@ -3780,6 +3780,9 @@ ViewerGL::enterEvent(QEnterEvent* e)
 bool
 ViewerGL::event(QEvent* e)
 {
+    if (_imp->colorSpaceView && _imp->colorSpaceView->event(e)) {
+        return true;
+    }
     if ((e->type() == QEvent::ShortcutOverride) && _imp->viewerTab && _imp->viewerTab->claimShortcutOverride(static_cast<QKeyEvent*>(e))) {
         return true;
     }

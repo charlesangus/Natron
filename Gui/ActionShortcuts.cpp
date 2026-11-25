@@ -450,6 +450,32 @@ mouseBindingModifiers(Qt::KeyboardModifiers modifiers,
     return ret;
 }
 
+bool
+viewer3DMouseBindingsUseSpace()
+{
+    GuiApplicationManager* manager = dynamic_cast<GuiApplicationManager*>(AppManager::instance());
+    if (!manager) {
+        return false;
+    }
+    const AppShortcuts& shortcuts = manager->getAllShortcuts();
+    AppShortcuts::const_iterator group = shortcuts.find(QString::fromUtf8(kShortcutGroupViewer3D));
+    if (group == shortcuts.end()) {
+        return false;
+    }
+    for (GroupShortcuts::const_iterator it = group->second.begin(); it != group->second.end(); ++it) {
+        if (!dynamic_cast<const MouseAction*>(it->second)) {
+            continue;
+        }
+        for (std::list<Qt::KeyboardModifiers>::const_iterator m = it->second->modifiers.begin(); m != it->second->modifiers.end(); ++m) {
+            if (*m & kShortcutModifierSpace) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
 QString
 mouseBindingToString(const MouseBinding& binding,
                      bool wheel)

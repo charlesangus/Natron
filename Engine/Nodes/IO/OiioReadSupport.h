@@ -86,18 +86,23 @@ void setHeaderParsedHookForTests(const std::function<void(const std::string&)>& 
 RectI dataWindowOf(const OIIO::ImageSpec& spec);
 
 /**
- * @brief A layer of a file other than its colour: the layer, the subimage that holds it, and the
- * index in that subimage of each of the layer's channels, in the layer's order.
+ * @brief A layer of a file other than its colour: the layer, the subimage that holds it, the
+ * index in that subimage of each of the layer's channels, in the layer's order, and whether it is
+ * a colour picture encoded like the file's colour (kLayeredColourLayerAttribute on its subimage,
+ * set by the layered document readers), which is converted to the working space as the colour
+ * is. Any other layer is data and is read as stored.
  **/
 struct FileLayer {
     ImageLayerDesc desc;
     int subimage;
     std::vector<int> channels;
+    bool colour;
 
     FileLayer()
         : desc()
         , subimage(0)
         , channels()
+        , colour(false)
     {
     }
 };

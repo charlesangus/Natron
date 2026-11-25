@@ -6,7 +6,9 @@ the pixels the committed fixture was built with (Tests/fixtures/layered/make-*-f
     have no pixels;
   - the composite and each probed layer show the expected colours at known canvas pixels. The
     colours go through the display transform, so each probe tests a colour family (red, blue, grey,
-    black, ...) rather than an exact value, and an ordering probe tests that stepped values rise.
+    black, ...) rather than an exact value, and an ordering probe tests that stepped values rise;
+  - a layer is converted from the input colourspace like the composite, so where the composite is
+    exactly one layer the two show the same colour on screen.
 A format's fixtures are skipped, with a note, when the file is missing or a Git LFS pointer.
 
 Shots, under $NATRON_GUI_TEST_OUT: m79-<fixture>-composite.png and m79-<fixture>-<layer>.png.
@@ -24,11 +26,14 @@ MENU_TIMEOUT_S = 90.0
 PROBE_TIMEOUT_S = 90.0
 POLL_MS = 500
 FRAME_FRACTION = 0.2
+# Through the default ACES 2.0 SDR view an 8-bit sRGB value of 40 shows at about 2, 64 at 35 and
+# 255 white at 180.
 DOMINANCE = 40
-DARK_MAX = 40
-LIT_MIN = 40
+DARK_MAX = 20
+LIT_MIN = 25
 GREY_SPREAD = 14
-WHITE_MIN = 180
+WHITE_MIN = 150
+AGREE_TOLERANCE = 2
 NO_LAYER_ITEM = "-"
 
 try:
@@ -68,9 +73,6 @@ try:
     def white(c):
         return min(c) > WHITE_MIN
 
-    def lit(c):
-        return max(c) > LIT_MIN
-
     def bright(c):
         return min(c) > 120
 
@@ -79,7 +81,9 @@ try:
 
     # name, file, canvas size, layers listed, layers not listed, probes. A probe set is
     # (item or None for the composite, [(x, y, predicate)], [x of points whose red must rise]) with
-    # the ordering points taken on the row y given as the fourth element.
+    # the ordering points taken on the row y given as the fourth element. "agree" lists
+    # (item, x, y) points, probed in both the composite and the item, where the composite is that
+    # layer alone.
     FIXTURES = [
         {
             "name": "flatten-ora", "file": "flatten.ora", "size": (4, 4),
@@ -87,9 +91,10 @@ try:
             "states": [
                 (None, [(0, 0, blue), (1, 1, purple), (3, 3, blue)], None),
                 ("Top", [(1, 1, red), (0, 0, dark)], None),
-                ("Background", [(0, 0, blue)], None),
+                ("Background", [(0, 0, blue), (3, 3, blue)], None),
                 ("Hidden", [(0, 0, white)], None),
             ],
+            "agree": [("Background", 0, 0), ("Background", 3, 3)],
         },
         {
             "name": "layers-psb", "file": "layers.psb", "size": (8, 6),
@@ -116,7 +121,7 @@ try:
             "layers": ["Strip"], "absent": [],
             "states": [
                 (None, [(32, 32, dark), (224, 32, dark)], None),
-                ("Strip", [(32, 32, red_only), (96, 32, red_only), (160, 32, dark), (224, 32, red_only)],
+                ("Strip", [(32, 32, dark), (96, 32, red_only), (160, 32, dark), (224, 32, red_only)],
                  (32, [32, 96, 224])),
             ],
         },
@@ -124,10 +129,12 @@ try:
             "name": "tiles-xcf", "file": "tiles.xcf", "size": (256, 64),
             "layers": ["Strip"], "absent": [],
             "states": [
-                (None, [(32, 32, red_only), (96, 32, red_only), (160, 32, red_only), (224, 32, red_only)],
+                (None, [(32, 32, dark), (96, 32, red_only), (160, 32, red_only), (224, 32, red_only)],
                  (32, [32, 96, 160, 224])),
-                ("Strip", [(32, 32, red_only), (224, 32, red_only)], (32, [32, 96, 160, 224])),
+                ("Strip", [(32, 32, dark), (96, 32, red_only), (160, 32, red_only), (224, 32, red_only)],
+                 (32, [32, 96, 160, 224])),
             ],
+            "agree": [("Strip", 32, 32), ("Strip", 96, 32), ("Strip", 160, 32), ("Strip", 224, 32)],
         },
     ]
 
@@ -233,7 +240,7 @@ try:
         colours, rises, _reds = got
         return all(p(c) for c, (_x, _y, p) in zip(colours, probes)) and rises is not False
 
-    def show_state(label, fixture, item, probes, ordering, rect_holder):
+    def show_state(label, fixture, item, probes, ordering, rect_holder, seen):
         size = fixture["size"]
         shot = "m79-%s-%s.png" % (fixture["name"], label)
         waited = 0.0
@@ -256,6 +263,7 @@ try:
         got = read_probes(size, probes, ordering, rect)
         colours, rises, reds = got
         for c, (x, y, p) in zip(colours, probes):
+            seen[(item, x, y)] = c
             check(p(c), "%s %s: pixel (%d, %d) is %s, got %r" % (fixture["name"], label, x, y, p.__name__, c))
         if ordering:
             check(rises, "%s %s: the red steps rise along row %d, got %r" % (fixture["name"], label, ordering[0], reds))
@@ -298,6 +306,7 @@ try:
             report("NOTE %s composite menu item: %r" % (fixture["name"], composite))
 
             rect_holder = {}
+            seen = {}
             for item, probes, ordering in fixture["states"]:
                 target = composite if item is None else item
                 if not choose(target):
@@ -305,7 +314,14 @@ try:
                     continue
                 fit_viewer()
                 label = "composite" if item is None else item
-                yield from show_state(label, fixture, item, probes, ordering, rect_holder)
+                yield from show_state(label, fixture, item, probes, ordering, rect_holder, seen)
+            for layer, x, y in fixture.get("agree", []):
+                composite_colour = seen.get((None, x, y))
+                layer_colour = seen.get((layer, x, y))
+                check(composite_colour is not None and layer_colour is not None
+                      and max(abs(a - b) for a, b in zip(composite_colour, layer_colour)) <= AGREE_TOLERANCE,
+                      "%s: the composite and %s agree at (%d, %d), got %r and %r"
+                      % (fixture["name"], layer, x, y, composite_colour, layer_colour))
 
             viewer.disconnectInput(0)
             read.destroy()

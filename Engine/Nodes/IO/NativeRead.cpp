@@ -1466,6 +1466,7 @@ NativeRead::render(const RenderActionArgs& args)
 
         RectI dataWindow;
         int subimage = 0;
+        bool colourPicture = it->first.isColorLayer();
         std::vector<int> fileChannels((std::size_t)nComps, -1);
         if (rawHeader) {
             if (it->first.isColorLayer()) {
@@ -1492,6 +1493,7 @@ NativeRead::render(const RenderActionArgs& args)
                     continue;
                 }
                 subimage = layer->subimage;
+                colourPicture = layer->colour;
                 dataWindow = OiioReadSupport::dataWindowOf(header->subimages[(std::size_t)subimage]);
                 const std::vector<std::string>& present = layer->desc.getChannels();
                 for (int c = 0; c < nComps && (std::size_t)c < wanted.size(); ++c) {
@@ -1531,7 +1533,7 @@ NativeRead::render(const RenderActionArgs& args)
         plane.subimage = subimage;
         plane.fileChannels = fileChannels;
         plane.rawChannels = rawHeader ? rawHeader->channels : 0;
-        if (it->first.isColorLayer() && (nComps == 3 || nComps == 4)) {
+        if (colourPicture && (nComps == 3 || nComps == 4)) {
             plane.toWorking = toWorking;
         }
 

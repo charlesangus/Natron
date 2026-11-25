@@ -532,6 +532,7 @@ fileLayers(const Header& header,
     std::set<std::string> seen;
     for (std::size_t s = 0; s < viewSubimages.size(); ++s) {
         const std::string part = isColourPartName(viewSubimages[s].part) ? std::string() : viewSubimages[s].part;
+        const bool colour = header.subimages[(std::size_t)viewSubimages[s].subimage].get_int_attribute(kLayeredColourLayerAttribute, 0) != 0;
 
         std::vector<std::string> flat;
         std::vector<int> fileIndex;
@@ -557,6 +558,7 @@ fileLayers(const Header& header,
             FileLayer layer;
             layer.desc = desc;
             layer.subimage = viewSubimages[s].subimage;
+            layer.colour = colour;
             const std::vector<std::string>& channels = desc.getChannels();
             for (std::size_t c = 0; c < channels.size(); ++c) {
                 for (std::size_t f = 0; f < flat.size(); ++f) {

@@ -397,6 +397,7 @@ LayeredDocument::specOf(int subimage) const
     }
     if (subimage > 0) {
         spec.attribute("oiio:subimagename", layers[(std::size_t)subimage - 1].id);
+        spec.attribute(kLayeredColourLayerAttribute, 1);
     } else {
         describe(&spec);
     }

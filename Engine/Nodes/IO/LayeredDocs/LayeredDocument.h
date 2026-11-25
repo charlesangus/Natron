@@ -47,6 +47,13 @@ namespace LayeredDocs {
 #define kLayeredMetadataPrefix "layered/"
 
 /**
+ * @brief The int attribute, 1, on the header of every layer subimage: the layer is a picture in the
+ * same colour encoding as the composite, so a reader converts its colour the way it converts the
+ * composite's. Its ':' keeps it out of the published metadata.
+ **/
+#define kLayeredColourLayerAttribute "natron:colourLayer"
+
+/**
  * @brief A rectangle of a plane in the plane's own pixels: columns [x1, x2) and rows [y1, y2),
  * rows counted down from the plane's top.
  **/
@@ -194,7 +201,8 @@ public:
     /**
      * @brief The header of `subimage`: its data window within the full window, which is the
      * canvas, its channels and type, its tile size for a tiled plane, `oiio:subimagename` set to
-     * the layer ID for a layer, and the document's metadata (describe) on the composite.
+     * the layer ID and kLayeredColourLayerAttribute for a layer, and the document's metadata
+     * (describe) on the composite.
      **/
     OIIO::ImageSpec specOf(int subimage) const;
 

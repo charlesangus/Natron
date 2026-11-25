@@ -345,6 +345,26 @@ TEST_F(NativeReadLayersTest, EveryLayerOfASinglePartFileIsProducedBitForBit)
     expectPlaneMatchesOiio(node, path, ImageLayerDesc::getRGBAComponents(), colour);
 }
 
+TEST_F(NativeReadLayersTest, DataLayersAreReadAsStoredWhateverTheInputColourspace)
+{
+    const std::string path = std::string(NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr");
+    NodePtr node = createRead(path);
+    ASSERT_TRUE(bool(node));
+    setFileColorspace(node, "sRGB Encoded Rec.709 (sRGB)");
+
+    const std::list<ImageLayerDesc> produced = producedLayers(node);
+    const char* const ids[] = { "diffuse", "specular" };
+    for (const char* id : ids) {
+        const ImageLayerDesc* layer = findProduced(produced, id);
+        ASSERT_TRUE(layer != NULL) << id;
+        std::vector<FileChannel> sources;
+        for (const char* channel : { "R", "G", "B" }) {
+            sources.push_back(FileChannel { 0, std::string(id) + "." + channel });
+        }
+        expectPlaneMatchesOiio(node, path, *layer, sources);
+    }
+}
+
 TEST_F(NativeReadLayersTest, AFileWithoutColourProducesItsLayersAndABlackColourPlane)
 {
     const std::string path = std::string(NATRON_TESTS_FIXTURES_DIR "/flat-no-color-layers.exr");

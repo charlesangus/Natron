@@ -134,7 +134,13 @@ script-name prefix so the Write can share it.
     and group opacity, whatever the blend mode (other blend modes are not
     re-composited; they are listed in the metadata). Every layer that has
     pixels becomes a Natron layer, so a layer's pixels appear in the layer
-    menu next to the colour plane. A layer mask (PSD user mask, XCF layer
+    menu next to the colour plane. A layer is a picture in the composite's
+    encoding, so its colour is converted from the `colorspace` input space to
+    the working space like the composite's, alpha untouched; each layer
+    subimage carries the `natron:colourLayer` attribute that tells
+    `OiioReadSupport::fileLayers()` so (`FileLayer::colour`). The layers of
+    other formats, such as EXR depth or motion, are data and are read as
+    stored. A layer mask (PSD user mask, XCF layer
     mask, Krita transparency mask) is folded into the layer's alpha. A layer
     outside the canvas is cropped to it. A group is not a layer of its own: its
     path becomes part of each member's name.

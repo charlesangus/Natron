@@ -49,6 +49,7 @@
 #include "Engine/LayerRegistry.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Color/Grade.h"
+#include "Engine/Nodes/IO/IoColorSpace.h"
 #include "Engine/Nodes/IO/LayeredDocs/LayeredImageInput.h"
 #include "Engine/Nodes/IO/NativeRead.h"
 #include "Engine/Nodes/IO/OiioReadSupport.h"
@@ -286,4 +287,53 @@ TEST_F(NativeReadLayeredDocsTest, LayerMetadataReachesANodeBehindADot)
     EXPECT_EQ(std::optional<int>(0), metadata.getInt("layered/Top_Layer/clipping"));
     EXPECT_EQ(std::optional<std::string>("Group A/Deep"), metadata.getString("layered/Group_A_Deep_Leaf/group"));
     EXPECT_EQ(std::optional<std::string>("stored"), metadata.getString("layered/composite"));
+}
+
+TEST_F(NativeReadLayeredDocsTest, ALayerIsConvertedFromTheInputSpaceLikeTheComposite)
+{
+    const std::string input = "sRGB Encoded Rec.709 (sRGB)";
+    NodePtr node = createRead(fixture("flatten.ora"));
+    ASSERT_TRUE(bool(node));
+    setFileColorspace(node, input);
+
+    Project& project = *getApp()->getProject();
+    OCIO_NAMESPACE::ConstCPUProcessorRcPtr toWorking;
+    std::string error;
+    ASSERT_TRUE(IoColorSpace::toWorkingProcessor(project, input, project.getWorkingColorSpace(), std::vector<std::pair<std::string, std::string>>(), &toWorking, &error)) << error;
+    ASSERT_TRUE(bool(toWorking));
+    const auto converted = [&](std::vector<float> pixel) {
+        std::string conversionError;
+        EXPECT_TRUE(IoColorSpace::convertRow(*toWorking, pixel.data(), 1, (int)pixel.size(), &conversionError)) << conversionError;
+
+        return pixel;
+    };
+
+    const std::vector<float> blue = converted({ 0.f, 0.f, 1.f, 1.f });
+    ASSERT_NE(0.f, blue[0]);
+    const std::vector<float> halfRed = converted({ 128.f / 255.f, 0.f, 0.f, 128.f / 255.f });
+    EXPECT_EQ(128.f / 255.f, halfRed[3]);
+
+    const std::list<ImageLayerDesc> produced = producedLayers(node);
+    const ImageLayerDesc* background = findProduced(produced, "Background");
+    const ImageLayerDesc* hidden = findProduced(produced, "Hidden");
+    const ImageLayerDesc* top = findProduced(produced, "Top");
+    ASSERT_TRUE(background != NULL);
+    ASSERT_TRUE(hidden != NULL);
+    ASSERT_TRUE(top != NULL);
+    expectRendered(node, *background, RectI(0, 0, 4, 4), RectI(0, 0, 4, 4), blue);
+    expectRendered(node, *hidden, RectI(0, 0, 4, 4), RectI(0, 0, 4, 4), converted({ 1.f, 1.f, 1.f, 1.f }));
+    expectRendered(node, *top, RectI(0, 0, 4, 4), RectI(1, 1, 3, 3), halfRed);
+
+    // The flattened composite is the Background alone outside the Top layer's 2x2.
+    std::vector<RenderedPlane> composite;
+    ASSERT_TRUE(renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, 4, 4), std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &composite, &error)) << error;
+    ASSERT_EQ(1u, composite.size());
+    ASSERT_EQ(4u * 4u * 4u, composite[0].pixels.size());
+    const int corners[4][2] = { { 0, 0 }, { 3, 0 }, { 0, 3 }, { 3, 3 } };
+    for (const auto& corner : corners) {
+        const std::size_t pixel = (std::size_t)corner[1] * 4u + (std::size_t)corner[0];
+        for (std::size_t c = 0; c < 4; ++c) {
+            EXPECT_NEAR(blue[c], composite[0].pixels[pixel * 4u + c], 1e-6f) << corner[0] << "," << corner[1] << " channel " << c;
+        }
+    }
 }

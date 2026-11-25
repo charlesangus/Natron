@@ -281,7 +281,7 @@ future core work has solid ground to build on.
 | M114 | Global Undo Correctness | done | M93 | bosley-native-nodes | E7 | | | [M114-global-undo-correctness.md](PLAN/MILESTONES/M114-global-undo-correctness.md) |
 | M102 | Graph Edit Operations | done | M16 | bosley-native-nodes | E7 | | | [M102-graph-edit-operations.md](PLAN/MILESTONES/M102-graph-edit-operations.md) |
 | M103 | Graph Diff And Merge | done | M102 |  | E12 | F33 | | [M103-graph-diff-and-merge.md](PLAN/MILESTONES/M103-graph-diff-and-merge.md) |
-| M104 | Merge Resolution UI | doing | M103 | bosley-executor | E12 | F33 | | [M104-merge-resolution-ui.md](PLAN/MILESTONES/M104-merge-resolution-ui.md) |
+| M104 | Merge Resolution UI | done | M103 | | E12 | F33 | | [M104-merge-resolution-ui.md](PLAN/MILESTONES/M104-merge-resolution-ui.md) |
 | M105 | Live Session Core | done | M102 | | E11 | F5 | | [M105-live-session-core.md](PLAN/MILESTONES/M105-live-session-core.md) |
 | M106 | Live Session Presence And Undo | done | M105 | | E11 | F5 | | [M106-live-session-presence-and-undo.md](PLAN/MILESTONES/M106-live-session-presence-and-undo.md) |
 | M70 | RFV Declaration And Storage | done |  |  | E13 | | | [M70-rfv-declaration-and-storage.md](PLAN/MILESTONES/M70-rfv-declaration-and-storage.md) |
@@ -553,7 +553,7 @@ future core work has solid ground to build on.
 | M455 | Keyframe Markers For Visible Pages | done | M421 | | E10 |  F29 | | [M455-keyframe-markers-for-visible-pages.md](PLAN/MILESTONES/M455-keyframe-markers-for-visible-pages.md) |
 | M456 | File Dialog Toolbar And Split | done | - | | E10 |  F29 | | [M456-file-dialog-toolbar-and-split.md](PLAN/MILESTONES/M456-file-dialog-toolbar-and-split.md) |
 | M457 | ColorWarp Space Spike | done | - | | E3 | F28 | | [M457-colorwarp-space-spike.md](PLAN/MILESTONES/M457-colorwarp-space-spike.md) |
-| M458 | ColorWarp Node | doing | M457 | bosley-executor | E3 | F28 | | [M458-colorwarp-node.md](PLAN/MILESTONES/M458-colorwarp-node.md) |
+| M458 | ColorWarp Node | done | M457 | | E3 | F28 | | [M458-colorwarp-node.md](PLAN/MILESTONES/M458-colorwarp-node.md) |
 | M459 | ColorWarp 3D View | todo | M458 |  | E3 | F28 | | [M459-colorwarp-3d-view.md](PLAN/MILESTONES/M459-colorwarp-3d-view.md) |
 | M482 | Geometry VOP Node | todo | M351, M360 |  | E25 | | | [M482-geometry-vop-node.md](PLAN/MILESTONES/M482-geometry-vop-node.md) |
 | M483 | Particle VOP Node | todo | M482, M406 |  | E25 | | | [M483-particle-vop-node.md](PLAN/MILESTONES/M483-particle-vop-node.md) |
@@ -612,7 +612,7 @@ future core work has solid ground to build on.
 | M548 | Pyro Quick Setups And Checkpoints | todo | M544, M545, M546, M547 |  | E22 | F35 | | [M548-pyro-quick-setups-and-checkpoints.md](PLAN/MILESTONES/M548-pyro-quick-setups-and-checkpoints.md) |
 | M554 | Scene Camera For Delegate Renders | doing | M345 | bosley-executor | E9 | F1 | | [M554-scene-camera-for-delegate-renders.md](PLAN/MILESTONES/M554-scene-camera-for-delegate-renders.md) |
 | M555 | Dissolve GPU Smaller-Input Mismatch | done | M495 | | E14 |  | | [M555-dissolve-gpu-smaller-input-mismatch.md](PLAN/MILESTONES/M555-dissolve-gpu-smaller-input-mismatch.md) |
-| M556 | Scene Graph Bulk Commands | doing | - | bosley-executor | E9 | F37 | | [M556-scene-graph-bulk-commands.md](PLAN/MILESTONES/M556-scene-graph-bulk-commands.md) |
+| M556 | Scene Graph Bulk Commands | done | - | | E9 | F37 | | [M556-scene-graph-bulk-commands.md](PLAN/MILESTONES/M556-scene-graph-bulk-commands.md) |
 | M557 | Scene Graph Purpose Column | done | - | | E9 | F37 | | [M557-scene-graph-purpose-column.md](PLAN/MILESTONES/M557-scene-graph-purpose-column.md) |
 | M558 | Scene Graph Expand Commands | todo | M556 |  | E9 | F37 | | [M558-scene-graph-expand-commands.md](PLAN/MILESTONES/M558-scene-graph-expand-commands.md) |
 | M559 | Native Geometry UAT Round 1 | done | - | | E9 | F15 | | [M559-native-geometry-uat-round-1.md](PLAN/MILESTONES/M559-native-geometry-uat-round-1.md) |

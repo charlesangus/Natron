@@ -41,6 +41,9 @@
 #include "PerProcessUserDirs.h"
 #include "TestOfxPluginPath.h"
 #include "TestPlaneChoiceTakeOvers.h"
+// Registers the fatal-signal stack dump and the stall dump for every suite, not only the ones
+// that start a TestWatchdog.
+#include "TestWatchdog.h"
 
 using namespace NATRON_NAMESPACE;
 

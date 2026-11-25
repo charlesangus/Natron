@@ -656,6 +656,7 @@ future core work has solid ground to build on.
 | M597 | Curve Editor Expanded Knob Rows | todo | - |  | E10 | | | [M597-curve-editor-expanded-knob-rows.md](PLAN/MILESTONES/M597-curve-editor-expanded-knob-rows.md) |
 | M598 | Progressive Render GIL Flake | todo | - |  | E14 | | | [M598-progressive-render-gil-flake.md](PLAN/MILESTONES/M598-progressive-render-gil-flake.md) |
 | M599 | Runner Efficiency | doing | - | bosley-executor | E2 | | | [M599-runner-efficiency.md](PLAN/MILESTONES/M599-runner-efficiency.md) |
+| M600 | Native Geometry UAT Round 2 | doing | - | bosley-executor | E9 | F15 | | [M600-native-geometry-uat-round-2.md](PLAN/MILESTONES/M600-native-geometry-uat-round-2.md) |
 
 # Epics
 
@@ -707,7 +708,7 @@ future core work has solid ground to build on.
 | F12 | Expression Speed | open | bosley-executor |  | feature/f12-expression-speed | Benchmark Python knob expressions and make them cheap on large graphs, through a lighter interpreter path, a result cache and a native evaluator. |
 | F13 | ZDefocus Rework | open | bosley-executor |  | feature/f13-zdefocus-rework | Measure ZDefocus against ground truth, add traced lenses and debug outputs, match or exceed Higx Optics' traced bokeh, and revisit its engine from the results. |
 | F14 | Map Blend I-Nodes | shipping | bosley-executor | uat | feature/f14-map-blend-i-nodes | Turn any subgraph into a Map-driven I-node through LoopEnd's Map blend and one Make I-Node action. |
-| F15 | Native Geometry | shipping | bosley-executor | uat | feature/f15-native-geometry | A SOP-style native geometry context: a Houdini-like detail, bridges to USD, operators, Python and VEX-like wrangles, point editing and a geometry spreadsheet. |
+| F15 | Native Geometry | shipping | bosley-executor |  | feature/f15-native-geometry | A SOP-style native geometry context: a Houdini-like detail, bridges to USD, operators, Python and VEX-like wrangles, point editing and a geometry spreadsheet. |
 | F16 | User Knob Editor | open | bosley-executor |  | feature/f16-user-knob-editor | Create and manage user knobs in place on the properties panel, with type changes, undo, button scripts, drag-in links and copy/paste. |
 | F17 | OpenNucleon Flag Day | open |  |  | feature/f17-opennucleon-flag-day | Rename Natron to OpenNucleon/Nucleon throughout, code included, with new art and the GPLv3 relicence, landed in one switchover at a quiet time the user chooses. |
 | F18 | Geometry Loops And Solver | open |  |  | feature/f18-geometry-loops-and-solver | Loop and solve native geometry: For-Each blocks on render contexts, a native geometry file cache, and a Solver SOP with a sim cache. |

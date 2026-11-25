@@ -96,9 +96,9 @@ renderAt(const NodePtr& node,
     std::vector<RenderedPlane> planes;
     std::string error;
 
-    if (!(mode == eRenderPullScheduled)
-            ? renderNodePlanesScheduled(node, time, ViewIdx(0), 0, roi, byPassCache, &planes, &error)
-            : renderNodePlanesDirect(node, time, ViewIdx(0), 0, roi, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error, byPassCache)) {
+    if (!(mode == eRenderPullScheduled
+              ? renderNodePlanesScheduled(node, time, ViewIdx(0), 0, roi, byPassCache, &planes, &error)
+              : renderNodePlanesDirect(node, time, ViewIdx(0), 0, roi, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error, byPassCache))) {
         ADD_FAILURE() << error;
 
         return false;

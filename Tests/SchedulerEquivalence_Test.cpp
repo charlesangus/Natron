@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <cstring>
+#include <functional>
 #include <iostream>
 #include <list>
 #include <map>
@@ -257,9 +258,10 @@ renderJointly(const std::vector<JointOutput>& outputs,
 
 // renderBothWays() for several writers started together: each writer rendered alone as the
 // reference, then one joint render per pool size, every output frame of every writer compared bit
-// for bit.
+// for bit. `referenceRendered` runs between the reference renders and the joint ones.
 RenderMismatch
-renderJointlyBothWays(const std::vector<NodePtr>& writers)
+renderJointlyBothWays(const std::vector<NodePtr>& writers,
+                      const std::function<void()>& referenceRendered)
 {
     if (writers.empty()) {
         return failure("no writers", kFirstFrame);
@@ -305,6 +307,7 @@ renderJointlyBothWays(const std::vector<NodePtr>& writers)
 
         return m;
     }
+    referenceRendered();
 
     for (std::size_t p = 0; p < poolSizes().size(); ++p) {
         QThreadPool::globalInstance()->setMaxThreadCount(poolSizes()[p]);
@@ -782,8 +785,7 @@ TEST_F(SchedulerEquivalence, TwoWritersOnTwoBranchesRenderedTogether)
     renderAndCheck(leftWriter);
     renderAndCheck(rightWriter);
 
-    clearObserved();
-    const RenderMismatch m = renderJointlyBothWays({ leftWriter, rightWriter });
+    const RenderMismatch m = renderJointlyBothWays({ leftWriter, rightWriter }, [this]() { clearObserved(); });
     EXPECT_FALSE(m.any) << describe(m);
     checkObserved("both writers", 2, 0);
 }

@@ -323,7 +323,7 @@ protected:
         std::vector<RenderedPlane> planes;
         std::string error;
         const RectI roi(0, 0, kCountingTestSize, kCountingTestSize);
-        if (!(mode == eRenderPullScheduled) ? renderNodePlanesScheduled(root, time, view, 0 /*mipmapLevel*/, roi, byPassCache, &planes, &error) : renderNodePlanesDirect(root, time, view, 0 /*mipmapLevel*/, roi, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error, byPassCache)) {
+        if (!(mode == eRenderPullScheduled ? renderNodePlanesScheduled(root, time, view, 0 /*mipmapLevel*/, roi, byPassCache, &planes, &error) : renderNodePlanesDirect(root, time, view, 0 /*mipmapLevel*/, roi, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error, byPassCache))) {
             ADD_FAILURE() << error;
 
             return -1.f;

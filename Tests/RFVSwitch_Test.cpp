@@ -384,7 +384,7 @@ protected:
     {
         std::vector<RenderedPlane> planes;
         const RectI roi(0, 0, kCountingTestSize, kCountingTestSize);
-        if (!(mode == eRenderPullScheduled) ? renderNodePlanesScheduled(root, time, ViewIdx(0), 0 /*mipmapLevel*/, roi, byPassCache, &planes, error) : renderNodePlanesDirect(root, time, ViewIdx(0), 0 /*mipmapLevel*/, roi, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, error, byPassCache)) {
+        if (!(mode == eRenderPullScheduled ? renderNodePlanesScheduled(root, time, ViewIdx(0), 0 /*mipmapLevel*/, roi, byPassCache, &planes, error) : renderNodePlanesDirect(root, time, ViewIdx(0), 0 /*mipmapLevel*/, roi, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, error, byPassCache))) {
             return false;
         }
         if (planes.empty() || planes.front().pixels.empty()) {

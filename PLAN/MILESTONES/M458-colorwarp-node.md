@@ -26,13 +26,13 @@ Second member of F28 - Colour Warp. A native `ColorWarp` colour node built on M4
 
 ## Phase 458.1: Node and pins
 
-- [ ] M458.P1.T1 — ColorWarp node with pin items
+- [x] M458.P1.T1 — ColorWarp node with pin items
   - files: `Engine/Nodes/Color/ColorWarp/ColorWarp.{h,cpp,reg.inc}` (new), `Engine/Nodes/Color/ColorWarp/ColorWarpPin.{h,cpp}` (new), `Serialization/ColorWarpSerialization.h` (new), `Engine/CMakeLists.txt`, `Tests/Native/NativeColorWarp_Test.cpp` (new)
   - approach: a native point-op node (`ImageNode<ColorWarpOp>` pattern) whose op holds a prepared `ColorWarpField` built from the enabled pins at the render time; pins are `KnobHolder` items like `TrackMarker`, each with the knobs above (labels match script names: `sourceColor` "Source Color", `targetColor` "Target Color", `strength`, `falloff`, `enabled`), owned by the node and saved/loaded through its own serialisation like SplineWarp's curves. Python access: `node.getPins()` style accessors only if the item model already provides them for Tracker; otherwise out.
   - verify: gtest — a node with one pin maps a chart patch's colour to the target; two pins and a hold pin behave as `ColorWarpField` does; save/load round-trips pins and keys; no pins is bit-exact pass-through.
   - size: L
 
-- [ ] M458.P1.T2 — Pin list in the panel
+- [x] M458.P1.T2 — Pin list in the panel
   - files: `Gui/ColorWarpPanel.{h,cpp}` (new), `Gui/CMakeLists.txt`, `Gui/DockablePanel.cpp` or the node's custom-panel hook (follow how `RotoPanel`/`TrackerPanel` are attached)
   - approach: a list of pins (name, enabled checkbox, source/target swatches) with add/delete buttons; selecting a row shows that pin's knobs below the list and tells the overlay; selection syncs both ways with the viewer.
   - verify: syntax-check; P3.T2's GUI script.
@@ -40,7 +40,7 @@ Second member of F28 - Colour Warp. A native `ColorWarp` colour node built on M4
 
 ## Phase 458.2: Render
 
-- [ ] M458.P2.T1 — GPU kernel with parity
+- [x] M458.P2.T1 — GPU kernel with parity
   - files: `Engine/Gpu/Kernels/colorwarp.slang` (new), `Engine/Gpu/Kernels/colorwarp.cmake` (new), `Engine/Nodes/Color/ColorWarp/ColorWarp.cpp`, `Tests/Native/NativeColorWarpGpu_Test.cpp` (new)
   - approach: mirror `colorlookup`'s kernel and params pattern; upload the prepared field's flat arrays (pin positions, displacements or RBF weights, affine part, space conversion matrices) as a buffer; evaluate per pixel with the same maths as the CPU path.
   - verify: GPU vs CPU within the usual parity tolerance on the chart with the three M457 pin sets.
@@ -48,13 +48,13 @@ Second member of F28 - Colour Warp. A native `ColorWarp` colour node built on M4
 
 ## Phase 458.3: Viewer
 
-- [ ] M458.P3.T1 — Sample the input at a canvas position
+- [x] M458.P3.T1 — Sample the input at a canvas position
   - files: `Engine/EffectInstance.h`, `Engine/EffectInstance.cpp` (or a small helper beside the overlay code), `Tests/Native/NativeColorWarp_Test.cpp`
   - approach: a helper that returns the node's input pixel value at a canvas position and time by requesting a 1×1 RoI render of the input through the normal render path (cache-friendly), usable from an overlay pen event; returns nothing outside the RoD. No native node can do this today (`setInteractColourPicker` is a no-op for native nodes).
   - verify: gtest — on a known constant/ramp input the helper returns the expected value; outside the RoD returns none.
   - size: M
 
-- [ ] M458.P3.T2 — Pin overlay, picking and global mode
+- [x] M458.P3.T2 — Pin overlay, picking and global mode
   - files: `Engine/Nodes/Color/ColorWarp/ColorWarpInteract.{h,cpp}` (new), `Engine/Nodes/Color/ColorWarp/ColorWarp.cpp`, `Gui/ColorTrackballGlobalMode.cpp` (only if a hook is needed to set the last-touched knob), `Tests/gui/m458_colorwarp_pins.py` (new)
   - approach: overlay hooks like SplineWarp's: draw pins at their pick positions (source and target swatches, selected highlight); click empty adds a pin with P3.T1's sample; drag re-picks the source live and keeps target − source; Delete removes; selecting a pin makes its `targetColor` the global mode's last-touched colour knob so Ctrl+E drags push it. One undo step per add, move, delete. GUI script: add three pins on a chart, push one with global mode C, drag another to a new patch, delete the third, undo/redo each; check the output pixels and screenshot.
   - verify: the script passes in the remote gate.
@@ -62,7 +62,7 @@ Second member of F28 - Colour Warp. A native `ColorWarp` colour node built on M4
 
 ## Phase 458.4: Docs
 
-- [ ] M458.P4.T1 — Node docs
+- [x] M458.P4.T1 — Node docs
   - files: `Engine/Nodes/Color/ColorWarp/docs/ColorWarp.md` (new), wherever native node docs are registered (follow `ColorLookup`'s)
   - approach: describe pins, hold pins, falloff, strength, the viewer workflow and global mode; no third-party product names.
   - verify: the docs build picks the page up.

@@ -49,6 +49,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobFile.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/IO/LayeredDocs/LayeredImageInput.h"
 #include "Engine/Nodes/IO/NativeRead.h"
 #include "Engine/Nodes/IO/OiioReadSupport.h"
 #include "Engine/Nodes/IO/RawExtensions.h"
@@ -72,11 +73,16 @@ isExcluded(const std::string& format)
     return false;
 }
 
-// The extensions of `format` in OIIO's own list, which is "format:ext,ext;format:ext".
+// The extensions of `format`: the in-tree layered formats' claims, then OIIO's own list ("format:ext,ext;format:ext").
 std::set<std::string>
 oiioExtensionsOf(const std::string& format)
 {
     std::set<std::string> result;
+    for (const auto& claim : LayeredDocs::extensionClaims()) {
+        if (claim.second == format) {
+            result.insert(claim.first);
+        }
+    }
     std::stringstream formats(OIIO::get_string_attribute("extension_list"));
     std::string entry;
     while (std::getline(formats, entry, ';')) {
@@ -125,6 +131,9 @@ TEST(NativeReadFormats, ExcludedFormatsAreAbsentUnlessAKeptFormatClaimsTheExtens
     const std::set<std::string> readable = readableSet();
 
     std::set<std::string> kept;
+    for (const auto& claim : LayeredDocs::extensionClaims()) {
+        kept.insert(claim.first);
+    }
     std::stringstream formats(OIIO::get_string_attribute("extension_list"));
     std::string entry;
     while (std::getline(formats, entry, ';')) {
@@ -141,7 +150,7 @@ TEST(NativeReadFormats, ExcludedFormatsAreAbsentUnlessAKeptFormatClaimsTheExtens
             EXPECT_EQ(kept.count(ext) > 0 && !RawExtensions::isRawExtension(ext), readable.count(ext) > 0) << *name << " extension " << ext;
         }
     }
-    for (const char* ext : { "null", "term", "psd" }) {
+    for (const char* ext : { "null", "term" }) {
         if (!kept.count(ext)) {
             EXPECT_FALSE(readable.count(ext)) << ext;
         }
@@ -229,7 +238,7 @@ TEST_F(NativeReadFormatsTest, AFileOutsideTheSetPostsAnUnsupportedFormatMessageA
     QTemporaryDir dir;
     ASSERT_TRUE(dir.isValid());
     const QString source = QString::fromUtf8(NATRON_TESTS_FIXTURES_DIR "/png-8bit.png");
-    const QString unsupported = dir.path() + QString::fromUtf8("/shot.psd");
+    const QString unsupported = dir.path() + QString::fromUtf8("/shot.unsupportedext");
     ASSERT_TRUE(QFile::copy(source, unsupported));
 
     NodePtr node = createRead();

@@ -5,7 +5,7 @@ with a reference crop under Tests/gui/references/m434/.
 Scenes (M434_PARITY_SCENES picks a comma-separated subset):
     roto              a feathered Roto Bezier with one point selected, so its tangents draw
     rotodrag          the same Bezier with a point held mid-drag
-    rotopaint         a RotoPaint brush stroke with the brush cursor beside it
+    rotopaint         a RotoPaint brush stroke, selected
     tracker           a Tracker with two tracks
     trackerselected   the same Tracker with one track clicked, so its pattern and search boxes draw
     splinewarp        a SplineWarp source curve linked to a destination curve
@@ -17,7 +17,7 @@ Scenes (M434_PARITY_SCENES picks a comma-separated subset):
     rectangle         a Rectangle's box and its handles
     ramp              a Ramp's two points over its own gradient
 
-Every scene but the ramp sits on a mid-grey Constant, so the black shadows under the interacts
+Every scene but the ramp sits on a Constant of 0.18 (mid-grey when displayed), so the black shadows under the interacts
 show. With M434_PARITY_RECORD=1 the crops are written as the references instead of compared. A
 pixel passes when some reference pixel within PARITY_RADIUS of it (0 by default: the same pixel)
 is within PARITY_TOLERANCE on every channel. The overlay's own pixels are those that change when
@@ -175,7 +175,7 @@ try:
         gt.require(p is not None, "%s has a parameter %r" % (owner, name))
         return p
 
-    GREY = 0.5
+    GREY = 0.18
 
     def background():
         constant = create("Constant", 0, -200, panel=False)
@@ -369,9 +369,10 @@ try:
             yield ("sleep", 8)
         mouse(QEvent.MouseButtonRelease, path[-1][0], path[-1][1], Qt.LeftButton, Qt.NoButton)
         yield ("sleep", RENDER_MS)
-        cx, cy = to_widget(*anchored(40.0, -70.0))
-        mouse(QEvent.MouseMove, cx, cy, Qt.NoButton, Qt.NoButton)
-        held["keep_cursor"] = True
+        # A finished stroke is image content; the overlay only draws once the stroke is selected.
+        QApplication.sendEvent(held["gl"], QKeyEvent(QEvent.KeyPress, Qt.Key_Q, Qt.NoModifier))
+        QApplication.sendEvent(held["gl"], QKeyEvent(QEvent.KeyRelease, Qt.Key_Q, Qt.NoModifier))
+        click_canonical(*held["anchor"])
         yield ("sleep", SETTLE_MS)
 
     def scene_tracker(t):

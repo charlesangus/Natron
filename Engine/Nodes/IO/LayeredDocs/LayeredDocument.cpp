@@ -37,6 +37,10 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <QChar>
+#include <QList>
+#include <QString>
+
 #include <OpenImageIO/ustring.h>
 
 NATRON_NAMESPACE_ENTER
@@ -83,12 +87,17 @@ namespace {
     std::string
     sanitisedName(const std::string& name)
     {
-        std::string result = name;
+        const QString decomposed = QString::fromUtf8(name.c_str(), (int)name.size()).normalized(QString::NormalizationForm_KD);
+        std::string result;
 
-        for (char& c : result) {
-            const unsigned char u = (unsigned char)c;
-            if (u >= 0x80 || (!std::isalnum(u) && c != '_')) {
-                c = '_';
+        for (const uint codePoint : decomposed.toUcs4()) {
+            if (QChar::category(codePoint) == QChar::Mark_NonSpacing) {
+                continue;
+            }
+            if (codePoint < 0x80 && (std::isalnum((int)codePoint) || codePoint == '_')) {
+                result += (char)codePoint;
+            } else {
+                result += '_';
             }
         }
 

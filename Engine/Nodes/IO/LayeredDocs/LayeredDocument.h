@@ -316,8 +316,9 @@ private:
 
 /**
  * @brief Natron layer IDs for layers at `paths` (each the enclosing group names, outermost first,
- * then the layer's name), in order. A path's names are joined by "_", and every character but
- * ASCII letters, digits and "_" becomes "_", so that LayerRegistry::validate accepts the ID. An ID
+ * then the layer's name), in order. A path's names are joined by "_". Names are Unicode-decomposed
+ * (NFKD) and combining marks dropped, so "\u00ef" becomes "i"; every other Unicode code point but
+ * ASCII letters, digits and "_" becomes one "_", so that LayerRegistry::validate accepts the ID. An ID
  * that is empty, names the colour plane or another reserved or built-in layer, or repeats an
  * earlier one gets the first free suffix of "_2", "_3"...
  **/

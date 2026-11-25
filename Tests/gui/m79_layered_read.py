@@ -35,6 +35,7 @@ GREY_SPREAD = 14
 WHITE_MIN = 150
 AGREE_TOLERANCE = 2
 NO_LAYER_ITEM = "-"
+COLOUR_PLANE_ITEM = "rgba"
 
 try:
     from PySide6.QtCore import Q_ARG, QMetaObject
@@ -206,6 +207,10 @@ try:
     def menu_items():
         return layer_combo()[1]
 
+    def current_item():
+        combo, _items = layer_combo()
+        return None if combo is None else str(combo.property("natronCurrentText"))
+
     def choose(item):
         combo, items = layer_combo()
         if combo is None or item not in items:
@@ -301,8 +306,7 @@ try:
             check(ok, "%s: the layer menu lists %r" % (fixture["name"], expected))
             for name in fixture["absent"]:
                 check(name not in items, "%s: the layer menu has no %r" % (fixture["name"], name))
-            others = [i for i in items if i != NO_LAYER_ITEM and i not in expected]
-            composite = others[0] if others else NO_LAYER_ITEM
+            composite = COLOUR_PLANE_ITEM
             report("NOTE %s composite menu item: %r" % (fixture["name"], composite))
 
             rect_holder = {}
@@ -312,6 +316,10 @@ try:
                 if not choose(target):
                     check(False, "%s: the layer menu offers %r" % (fixture["name"], target))
                     continue
+                if item is None:
+                    check(current_item() == COLOUR_PLANE_ITEM,
+                          "%s: the composite is the %r menu item, got %r"
+                          % (fixture["name"], COLOUR_PLANE_ITEM, current_item()))
                 fit_viewer()
                 label = "composite" if item is None else item
                 yield from show_state(label, fixture, item, probes, ordering, rect_holder, seen)

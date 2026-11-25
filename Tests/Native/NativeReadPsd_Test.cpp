@@ -348,7 +348,7 @@ TEST_F(NativeReadPsdTest, GroupsBecomeGroupedLayersBottomToTop)
     ASSERT_TRUE(bool(header));
     ASSERT_EQ(6u, header->subimages.size());
 
-    const char* const ids[] = { "Background", "Group_A_Inner", "Group_A_Masked", "Top_Layer", "H__dden" };
+    const char* const ids[] = { "Background", "Group_A_Inner", "Group_A_Masked", "Top_Layer", "Hidden" };
     const Window windows[] = { { 0, 0, 8, 6 }, { 2, 1, 2, 2 }, { 4, 3, 4, 2 }, { 6, 4, 2, 2 }, { 0, 0, 2, 2 } };
     for (int i = 0; i < 5; ++i) {
         const OIIO::ImageSpec& spec = header->subimages[(std::size_t)i + 1];
@@ -458,9 +458,9 @@ TEST_F(NativeReadPsdTest, LayerRecordsBecomeLayerMetadata)
     EXPECT_EQ(std::optional<std::string>("Group A"), metadata.getString("layered/Group_A_Inner/group"));
     EXPECT_EQ(std::optional<std::string>("H\xc3\xaf"
                                          "dden"),
-              metadata.getString("layered/H__dden/name"));
-    EXPECT_EQ(std::optional<int>(0), metadata.getInt("layered/H__dden/visible"));
-    EXPECT_EQ(std::optional<std::string>("Background, Group_A_Inner, Group_A_Masked, Top_Layer, H__dden"), metadata.getString("layered/layers"));
+              metadata.getString("layered/Hidden/name"));
+    EXPECT_EQ(std::optional<int>(0), metadata.getInt("layered/Hidden/visible"));
+    EXPECT_EQ(std::optional<std::string>("Background, Group_A_Inner, Group_A_Masked, Top_Layer, Hidden"), metadata.getString("layered/layers"));
 }
 
 TEST_F(NativeReadPsdTest, SixteenBitGrayLayersFromLr16KeepTheirDepthAndFillRgb)

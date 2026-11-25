@@ -152,7 +152,7 @@ Coordination with M370 - Roto Point List Render Isolation, which runs in paralle
   - verify: A gtest checks that inserting, removing, reordering and changing an operator each refresh the list. RotoLayer_Test and RotoSelectionProxy_Test pass.
   - size: M
 
-- [ ] M299.P4.T2 — Composite concatenatable trees directly in RotoPaint::render
+- [x] M299.P4.T2 — Composite concatenatable trees directly in RotoPaint::render
   - files: Engine/RotoPaint.cpp (render ~822), Engine/RotoContext.cpp, Engine/Nodes/Merge/Merge.h (reuse its operator kernels)
   - approach: Run this only if P1 shows that the per-item Constant + Merge renders dominate. When `isRotoPaintTreeConcatenatable` holds (Beziers and solid strokes, one operator), fetch each active item's cached mask and composite colour × mask onto the background with the Merge operator's own per-pixel function, skipping the internal nodes. All other trees keep the node path.
   - verify: A parity gtest renders 30-item trees for each operator in use through both paths and compares them bit for bit across depths and components, including inverted and inactive items.

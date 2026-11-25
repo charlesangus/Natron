@@ -123,7 +123,8 @@ def steps():
     node = app.getNode(blur)
     gt.require(node is not None, "the node with the missing plug-in is in the loaded project")
     gt.require(node.getPluginID() != plugin_id, "the loaded node is a placeholder, not a Blur (%s)" % node.getPluginID())
-    app.selectNode(node, True)
+    import NatronGui
+    NatronGui.natron.getGuiInstance(app.getAppID()).selectNode(node, True)
     graph = cm.root_graph()
     gt.require(graph is not None, "found the node graph")
     QMetaObject.invokeMethod(graph, "showSelectedNodeSettingsPanel")

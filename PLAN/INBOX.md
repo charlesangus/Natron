@@ -15,3 +15,5 @@
   - `m275_viewer_widget_editing`: translate/scale snap back after release, a real value change, not timing.
   - `m121_routing_mix`: `[adjustbbox]` Num Pixels 0 leaves the centre empty.
   - `m224_shape_drag`: the script locks onto viewer text. Its fix (e9347fd229) is on M299 - Roto Render Performance's branch and lands with it.
+
+- **Layered document flatten: clipping and group isolation** (PM, 2026-11-25, from the M79 - Layered Document Readers review): when a PSD or KRA has no stored composite, the flattened composite ignores clipping masks and group isolation; only Normal-over is documented. PSD and Krita clip differently, so this is a design task.

@@ -27,17 +27,17 @@ Acceptance sketch:
 
 ## Phase 79.1: Reader seam, layer model and OpenRaster
 
-- [ ] M79.P1.T1 — In-tree ImageInput seam
+- [x] M79.P1.T1 — In-tree ImageInput seam
   - files: `Engine/Nodes/IO/LayeredDocs/LayeredDocument.{h,cpp}`, `LayeredImageInput.{h,cpp}` (new), `Engine/Nodes/IO/OiioReadSupport.cpp`, `Engine/CMakeLists.txt`, `Tests/Native/LayeredDocsSeam_Test.cpp`
   - approach: LayeredDocument (canvas, composite, layers with name path/bounds/mode/opacity/visible/clipping/depth, per-window fetch) exposed by LayeredImageInput as subimages; each format declared once with declare_imageio_format before readableExtensions(); remove `psd` from kExcludedOiioFormats (:820), add psb, pdd, kra, ora, xcf; prove with a test-only format.
   - verify: extensions listed; test format opens through readHeader; subimages match; `.psd` resolves to ours.
   - size: L
-- [ ] M79.P1.T2 — Document layers as Natron layers and metadata
+- [x] M79.P1.T2 — Document layers as Natron layers and metadata
   - files: `OiioReadSupport.cpp` (fileLayers, attributeMetadata), `LayeredDocument.cpp`, `Tests/Native/NativeReadLayeredDocs_Test.cpp`
   - approach: sanitising/collisions per Scope; metadata `layered/<layer>/{blendMode,opacity,visible,clipping,group}`; composite = colour plane; Gray fills RGB (M75).
   - verify: Read lists the sanitised layers and renders each; metadata reaches a downstream Dot.
   - size: M
-- [ ] M79.P1.T3 — OpenRaster reader
+- [x] M79.P1.T3 — OpenRaster reader
   - files: `Engine/Nodes/IO/LayeredDocs/OraInput.cpp`, `Tests/Native/NativeReadOra_Test.cpp`, `Tests/fixtures/layered/*.ora`
   - approach: stack.xml (nested stacks → groups, offsets, opacity, visibility, composite-op), layer PNGs, mergedimage.png; fixtures ≤32 px incl. a nested group and an empty layer.
   - verify: `ctest -R NativeReadOra`.

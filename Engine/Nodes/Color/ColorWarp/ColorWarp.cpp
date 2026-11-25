@@ -25,15 +25,24 @@
 
 #include "ColorWarp.h"
 
+#include <algorithm>
 #include <cfloat>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <thread>
 #include <utility>
 
+#include <QtCore/QCoreApplication>
+#include <QtCore/QMetaObject>
+
+#include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
+#include "Engine/Image.h"
+#include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobColorWarpPins.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -176,7 +185,8 @@ ColorWarpOp::createKnobs(KnobHolder* h,
     KnobDoublePtr lightnessKnob = AppManager::createKnob<KnobDouble>(h, EffectInstance::tr("Lightness Falloff").toStdString());
     lightnessKnob->setName(kColorWarpParamLightnessFalloff);
     lightnessKnob->setHintToolTip(EffectInstance::tr("How far each pin reaches along lightness relative to its reach in hue and chroma. "
-                                                     "2 reaches twice as far in lightness; 1 reaches as far in every direction.")
+                                                     "2 reaches twice as far in lightness; 1 reaches as far in every direction. "
+                                                     "Ignored by the RBF kernels.")
                                       .toStdString());
     lightnessKnob->setDefaultValue(kColorWarpDefaultLightnessFalloff);
     lightnessKnob->setMinimum(0.01);
@@ -375,14 +385,107 @@ ColorWarpOp::gpu(const Params& params) const
 #endif
 }
 
+struct ColorWarp::DragSampler {
+    struct Request {
+        std::uint64_t serial = 0;
+        int pinId = 0;
+        double x = 0.;
+        double y = 0.;
+        double time = 0.;
+        ViewIdx view;
+    };
+
+    ColorWarp* owner = nullptr;
+    std::mutex mutex;
+    std::condition_variable wake;
+    std::optional<Request> pending;
+    AbortableRenderInfoPtr running;
+    bool quit = false;
+    std::thread worker;
+
+    void request(const Request& r,
+                 const std::weak_ptr<DragSampler>& token)
+    {
+        std::lock_guard<std::mutex> locker(mutex);
+        pending = r;
+        if (running) {
+            running->setAborted();
+        }
+        if (!worker.joinable()) {
+            worker = std::thread([this, token]() {
+                run(token);
+            });
+        }
+        wake.notify_one();
+    }
+
+    void run(const std::weak_ptr<DragSampler>& token)
+    {
+        std::unique_lock<std::mutex> locker(mutex);
+        for (;;) {
+            wake.wait(locker, [this]() {
+                return quit || pending.has_value();
+            });
+            if (quit) {
+                return;
+            }
+            const Request r = *pending;
+            pending.reset();
+            running = AbortableRenderInfo::create(true, 0);
+            const AbortableRenderInfoPtr abortInfo = running;
+            locker.unlock();
+            std::optional<std::array<double, 3>> source = owner->sampleSource(r.x, r.y, r.time, r.view, abortInfo);
+            if (abortInfo->isAborted()) {
+                source.reset();
+            }
+            locker.lock();
+            running.reset();
+            if (quit) {
+                return;
+            }
+            if (QCoreApplication::instance()) {
+                ColorWarp* self = owner;
+                QMetaObject::invokeMethod(QCoreApplication::instance(), [token, self, r, source]() {
+                    if (token.lock()) {
+                        self->onDragSampled(r.serial, r.pinId, r.x, r.y, r.time, source);
+                    } }, Qt::QueuedConnection);
+            }
+        }
+    }
+
+    void shutdown()
+    {
+        {
+            std::lock_guard<std::mutex> locker(mutex);
+            quit = true;
+            pending.reset();
+            if (running) {
+                running->setAborted();
+            }
+            wake.notify_one();
+        }
+        if (!worker.joinable()) {
+            return;
+        }
+        if (worker.get_id() == std::this_thread::get_id()) {
+            worker.detach();
+        } else {
+            worker.join();
+        }
+    }
+};
+
 ColorWarp::ColorWarp(NodePtr node)
     : ImageNode<ColorWarpOp>(node)
     , _interact()
+    , _dragSampler(std::make_shared<DragSampler>())
 {
+    _dragSampler->owner = this;
 }
 
 ColorWarp::~ColorWarp()
 {
+    _dragSampler->shutdown();
 }
 
 void
@@ -431,15 +534,114 @@ std::optional<std::array<double, 3>>
 ColorWarp::sampleSource(double x,
                         double y,
                         double time,
-                        ViewIdx view) const
+                        ViewIdx view,
+                        const AbortableRenderInfoPtr& abortInfo)
 {
-    const std::optional<std::array<float, 4>> sample = sampleNodeInputAt(getNode(), 0, time, view, x, y);
+    const NodePtr node = getNode();
+    const std::optional<std::array<float, 4>> sample = sampleNodeInputAt(node, 0, time, view, x, y, ImageLayerDesc::getRGBAComponents(), abortInfo);
 
     if (!sample) {
         return std::nullopt;
     }
+    std::array<double, 3> rgb { (*sample)[0], (*sample)[1], (*sample)[2] };
 
-    return std::array<double, 3> { (*sample)[0], (*sample)[1], (*sample)[2] };
+    const KnobChannelSelectPtr unPremultBy = node ? node->getUnPremultBySelector() : KnobChannelSelectPtr();
+    if (!unPremultBy || unPremultBy->isNone() || !getInput(0)) {
+        return rgb;
+    }
+    std::list<ImageLayerDesc> availableLayers;
+    getAvailableLayers(time, view, 0, &availableLayers);
+    ImageLayerDesc divisorLayer;
+    const int divisorChannel = node->getUnPremultChannel(availableLayers, &divisorLayer);
+    const std::vector<std::string>& channels = divisorLayer.getChannels();
+    if ((divisorChannel < 0) || (divisorChannel >= (int)channels.size())) {
+        return rgb;
+    }
+    // sampleNodeColor() puts a layer's "A" channel in rgba[3] and the others in order.
+    const int slot = (channels[divisorChannel] == "A") ? 3 : divisorChannel;
+    if (slot > 3) {
+        return rgb;
+    }
+    float divisor = (*sample)[slot];
+    if (!(divisorLayer == ImageLayerDesc::getRGBAComponents())) {
+        const std::optional<std::array<float, 4>> other = sampleNodeInputAt(node, 0, time, view, x, y, divisorLayer, abortInfo);
+        if (!other) {
+            return rgb;
+        }
+        divisor = (*other)[slot];
+    }
+    if (divisor > 0.f) {
+        for (double& v : rgb) {
+            v = Image::unPremultiplyValue((float)v, divisor);
+        }
+    }
+
+    return rgb;
+}
+
+void
+ColorWarp::requestDragSample(double x,
+                             double y,
+                             double time,
+                             ViewIdx view)
+{
+    DragSampler::Request r;
+
+    r.serial = ++_dragSerial;
+    r.pinId = _interact.dragId();
+    r.x = x;
+    r.y = y;
+    r.time = time;
+    r.view = view;
+    _dragSampler->request(r, _dragSampler);
+}
+
+void
+ColorWarp::onDragSampled(std::uint64_t serial,
+                         int pinId,
+                         double x,
+                         double y,
+                         double time,
+                         const std::optional<std::array<double, 3>>& source)
+{
+    _dragSettledSerial = std::max(_dragSettledSerial, serial);
+    const KnobColorWarpPinsPtr pinsKnob = getPinsKnob();
+    const bool current = (serial >= _dragFirstSerial) && (_interact.isDragging() || _moveBefore.has_value());
+    if (pinsKnob && source && current) {
+        ColorWarpPinSet pins = pinsKnob->getPinSet();
+        if (ColorWarpInteract::movePin(&pins, pinId, source->data(), x, y, time)) {
+            pinsKnob->setPinSet(pins);
+        }
+        redrawOverlayInteract();
+    }
+    commitMoveWhenSettled();
+}
+
+void
+ColorWarp::commitMoveWhenSettled()
+{
+    if (_moveBefore && (_dragSettledSerial >= _dragSerial)) {
+        commitMoveNow();
+    }
+}
+
+void
+ColorWarp::commitMoveNow()
+{
+    if (!_moveBefore) {
+        return;
+    }
+    const ColorWarpPinSet before = *_moveBefore;
+    _moveBefore.reset();
+    // A sample still in flight belongs to the move recorded here; it must not land after it.
+    _dragSettledSerial = _dragSerial;
+    _dragFirstSerial = _dragSerial + 1;
+    if (const KnobColorWarpPinsPtr pinsKnob = getPinsKnob()) {
+        const ColorWarpPinSet after = pinsKnob->getPinSet();
+        if (after != before) {
+            pinsKnob->editPinSet(before, after, tr("Move Pin").toStdString());
+        }
+    }
 }
 
 int
@@ -529,10 +731,12 @@ ColorWarp::onOverlayPenDown(double time,
     if (!pinsKnob || (pen == ePenTypeMMB) || (pen == ePenTypeRMB) || !pixelScale(&scaleX, &scaleY)) {
         return false;
     }
+    commitMoveNow();
     const ColorWarpPinSet pins = pinsKnob->getPinSet();
     const int hit = ColorWarpInteract::hitTest(pins, pos.x(), pos.y(), scaleX, scaleY);
     if (hit != 0) {
         pinsKnob->setSelectedPinId(hit);
+        _dragFirstSerial = _dragSerial + 1;
         _interact.beginDrag(hit, pins);
         redrawOverlayInteract();
 
@@ -560,15 +764,7 @@ ColorWarp::onOverlayPenMotion(double time,
     if (!pinsKnob || !_interact.isDragging()) {
         return false;
     }
-    const std::optional<std::array<double, 3>> source = sampleSource(pos.x(), pos.y(), time, view);
-    if (!source) {
-        return true;
-    }
-    ColorWarpPinSet pins = pinsKnob->getPinSet();
-    if (ColorWarpInteract::movePin(&pins, _interact.dragId(), source->data(), pos.x(), pos.y(), time)) {
-        pinsKnob->setPinSet(pins);
-    }
-    redrawOverlayInteract();
+    requestDragSample(pos.x(), pos.y(), time, view);
 
     return true;
 }
@@ -587,9 +783,9 @@ ColorWarp::onOverlayPenUp(double /*time*/,
     if (!pinsKnob || !_interact.isDragging()) {
         return false;
     }
-    const ColorWarpPinSet before = _interact.dragBefore();
+    _moveBefore = _interact.dragBefore();
     _interact.endDrag();
-    pinsKnob->editPinSet(before, pinsKnob->getPinSet(), tr("Move Pin").toStdString());
+    commitMoveWhenSettled();
     redrawOverlayInteract();
 
     return true;
@@ -609,6 +805,7 @@ ColorWarp::onOverlayKeyDown(double /*time*/,
     if (!pinsKnob || _interact.isDragging()) {
         return false;
     }
+    commitMoveNow();
     const int selected = pinsKnob->getSelectedPinId();
     if ((selected == 0) || !removePin(selected)) {
         return false;

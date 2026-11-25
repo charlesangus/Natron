@@ -62,6 +62,13 @@ reachFor(ColorWarpSpaceEnum space)
     return 0.25;
 }
 
+// The pin falloff that reaches warpReach in space's own units.
+double
+pinFalloff(ColorWarpSpaceEnum space, double warpReach)
+{
+    return warpReach / colorWarpFalloffScale(space);
+}
+
 ColorWarpPin
 makePin(const double source[3], const double target[3], double strength, double falloff)
 {
@@ -209,13 +216,13 @@ TEST(ColorWarpField, LonePinMapsSourceToTargetAndHalfWayAtHalfStrength)
         SCOPED_TRACE(comboName(combo));
         const double reach = reachFor(combo.space);
         ColorWarpField full;
-        full.prepare({ makePin(source, target, 1., reach) }, combo.space, basis, combo.kernel);
+        full.prepare({ makePin(source, target, 1., pinFalloff(combo.space, reach)) }, combo.space, basis, combo.kernel);
         double out[3];
         full.apply(source, out);
         expectNear3(out, target, 1e-9);
 
         ColorWarpField half;
-        half.prepare({ makePin(source, target, 0.5, reach) }, combo.space, basis, combo.kernel);
+        half.prepare({ makePin(source, target, 0.5, pinFalloff(combo.space, reach)) }, combo.space, basis, combo.kernel);
         double s[3], t[3], mid[3], expected[3];
         toWarpSpace(combo.space, basis, source, s);
         toWarpSpace(combo.space, basis, target, t);
@@ -239,7 +246,7 @@ TEST(ColorWarpField, GaussianLeavesColoursBeyondTheFalloffUnchanged)
         SCOPED_TRACE(colorWarpSpaceName(space));
         const double reach = reachFor(space) * 0.25;
         ColorWarpField field;
-        field.prepare({ makePin(source, target, 1., reach) }, space, basis, eColorWarpKernelGaussian);
+        field.prepare({ makePin(source, target, 1., pinFalloff(space, reach)) }, space, basis, eColorWarpKernelGaussian);
 
         double ws[3];
         toWarpSpace(space, basis, source, ws);
@@ -274,7 +281,7 @@ TEST(ColorWarpField, HoldPinStaysFixedWhileANeighbourMoves)
         SCOPED_TRACE(comboName(combo));
         const double reach = reachFor(combo.space);
         ColorWarpField field;
-        field.prepare({ makePin(skin, warmer, 1., reach), makePin(grey, grey, 1., reach) }, combo.space, basis, combo.kernel);
+        field.prepare({ makePin(skin, warmer, 1., pinFalloff(combo.space, reach)), makePin(grey, grey, 1., pinFalloff(combo.space, reach)) }, combo.space, basis, combo.kernel);
         double out[3];
         field.apply(grey, out);
         expectNear3(out, grey, 1e-5);
@@ -282,7 +289,7 @@ TEST(ColorWarpField, HoldPinStaysFixedWhileANeighbourMoves)
         expectNear3(out, warmer, 1e-5);
 
         ColorWarpField moving;
-        moving.prepare({ makePin(skin, warmer, 1., reach) }, combo.space, basis, combo.kernel);
+        moving.prepare({ makePin(skin, warmer, 1., pinFalloff(combo.space, reach)) }, combo.space, basis, combo.kernel);
         double unheld[3];
         const double* probe = grey;
         double nearGrey[3];
@@ -336,7 +343,7 @@ TEST(ColorWarpField, CoincidentPinsAverageAndAMovedPinBeatsAHoldPin)
         fromWarpSpace(combo.space, basis, mean, expected);
 
         ColorWarpField averaged;
-        averaged.prepare({ makePin(source, a, 1., reach), makePin(source, b, 1., reach), makePin(source, b, 1., reach) },
+        averaged.prepare({ makePin(source, a, 1., pinFalloff(combo.space, reach)), makePin(source, b, 1., pinFalloff(combo.space, reach)), makePin(source, b, 1., pinFalloff(combo.space, reach)) },
                          combo.space, basis, combo.kernel);
         double out[3];
         averaged.apply(source, out);
@@ -353,7 +360,7 @@ TEST(ColorWarpField, CoincidentPinsAverageAndAMovedPinBeatsAHoldPin)
         }
 
         ColorWarpField held;
-        held.prepare({ makePin(source, source, 1., reach), makePin(source, a, 1., reach), makePin(source, b, 1., reach) },
+        held.prepare({ makePin(source, source, 1., pinFalloff(combo.space, reach)), makePin(source, a, 1., pinFalloff(combo.space, reach)), makePin(source, b, 1., pinFalloff(combo.space, reach)) },
                      combo.space, basis, combo.kernel);
         held.apply(source, out);
         expectNear3(out, expected, 1e-9);
@@ -376,7 +383,7 @@ TEST(ColorWarpField, NearCoincidentAndCoplanarPinsStayFinite)
         SCOPED_TRACE(comboName(combo));
         const double reach = reachFor(combo.space);
         const std::vector<ColorWarpPin> pins = {
-            makePin(p0, t0, 1., reach), makePin(p1, t1, 1., reach), makePin(p2, p2, 1., reach), makePin(p3, p3, 1., reach)
+            makePin(p0, t0, 1., pinFalloff(combo.space, reach)), makePin(p1, t1, 1., pinFalloff(combo.space, reach)), makePin(p2, p2, 1., pinFalloff(combo.space, reach)), makePin(p3, p3, 1., pinFalloff(combo.space, reach))
         };
         ColorWarpField field;
         field.prepare(pins, combo.space, basis, combo.kernel);
@@ -471,7 +478,7 @@ TEST(ColorWarpField, CoincidentPinsMergeOnlyTheirPositiveFalloffs)
         SCOPED_TRACE(colorWarpSpaceName(space));
         const double reach = reachFor(space);
         ColorWarpField field;
-        field.prepare({ makePin(source, target, 1., -1.), makePin(source, target, 1., reach), makePin(source, target, 1., 0.) },
+        field.prepare({ makePin(source, target, 1., -1.), makePin(source, target, 1., pinFalloff(space, reach)), makePin(source, target, 1., 0.) },
                       space, basis, eColorWarpKernelGaussian);
         ASSERT_TRUE(field.pinCount() == 1);
         EXPECT_NEAR(field.invTwoSigma2()[0], 2. / (reach * reach), 1e-12 / (reach * reach));
@@ -668,8 +675,8 @@ TEST(ColorWarpField, LightnessFalloffStretchesReachAlongTheNeutralAxisOnly)
         }
 
         ColorWarpField round, stretched;
-        round.prepare({ makePin(source, target, 1., reach) }, space, basis, eColorWarpKernelGaussian);
-        stretched.prepare({ makePin(source, target, 1., reach) }, space, basis, eColorWarpKernelGaussian, kColorWarpDefaultRegularisation, 4.);
+        round.prepare({ makePin(source, target, 1., pinFalloff(space, reach)) }, space, basis, eColorWarpKernelGaussian);
+        stretched.prepare({ makePin(source, target, 1., pinFalloff(space, reach)) }, space, basis, eColorWarpKernelGaussian, kColorWarpDefaultRegularisation, 4.);
 
         double out[3];
         round.apply(alongRgb, out);
@@ -696,13 +703,13 @@ TEST(ColorWarpField, DefaultLightnessFalloffMatchesARoundReach)
         const ColorWarpSpaceEnum space = static_cast<ColorWarpSpaceEnum>(s);
         SCOPED_TRACE(colorWarpSpaceName(space));
         ColorWarpField field;
-        field.prepare({ makePin(source, target, 1., reachFor(space)) }, space, basis, eColorWarpKernelGaussian);
+        field.prepare({ makePin(source, target, 1., pinFalloff(space, reachFor(space))) }, space, basis, eColorWarpKernelGaussian);
         EXPECT_EQ(field.lightnessStretch(), 0.);
         double ref[3];
         field.apply(probe, ref);
         for (double bad : badFalloffs) {
             ColorWarpField other;
-            other.prepare({ makePin(source, target, 1., reachFor(space)) }, space, basis, eColorWarpKernelGaussian, kColorWarpDefaultRegularisation, bad);
+            other.prepare({ makePin(source, target, 1., pinFalloff(space, reachFor(space))) }, space, basis, eColorWarpKernelGaussian, kColorWarpDefaultRegularisation, bad);
             double out[3];
             other.apply(probe, out);
             expectBitExact(out, ref);
@@ -718,4 +725,121 @@ TEST(ColorWarpField, FalloffScaleIsPositivePerSpace)
         EXPECT_GT(colorWarpFalloffScale(space), 0.);
     }
     EXPECT_NEAR(colorWarpFalloffScale(eColorWarpSpaceOklabLog), 1., 0.1);
+}
+
+namespace {
+double
+srgbToLinear(double v)
+{
+    return (v <= 0.04045) ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4);
+}
+
+// A coarse stand-in for the comparison harness's chart, each part weighted by its share of that
+// chart's pixels: colour checker, exposure ramps over +-7 stops and a hue/saturation sweep.
+struct WeightedChart {
+    std::vector<double> rgb;
+    std::vector<double> weight;
+
+    void add(const double c[3], double w)
+    {
+        rgb.insert(rgb.end(), c, c + 3);
+        weight.push_back(w);
+    }
+};
+
+WeightedChart
+makeWeightedChart()
+{
+    static const int kChecker[24][3] = {
+        { 115, 82, 68 }, { 194, 150, 130 }, { 98, 122, 157 }, { 87, 108, 67 }, { 133, 128, 177 }, { 103, 189, 170 }, { 214, 126, 44 }, { 80, 91, 166 }, { 193, 90, 99 }, { 94, 60, 108 }, { 157, 188, 64 }, { 224, 163, 46 }, { 56, 61, 150 }, { 70, 148, 73 }, { 175, 54, 60 }, { 231, 199, 31 }, { 187, 86, 149 }, { 8, 133, 161 }, { 243, 243, 242 }, { 200, 200, 200 }, { 160, 160, 160 }, { 122, 122, 121 }, { 85, 85, 85 }, { 52, 52, 52 }
+    };
+    const double checkerShare = 192., rampShare = 256., sweepShare = 128.;
+    WeightedChart chart;
+
+    for (const int* s : kChecker) {
+        const double c[3] = { srgbToLinear(s[0] / 255.), srgbToLinear(s[1] / 255.), srgbToLinear(s[2] / 255.) };
+        chart.add(c, checkerShare / 24.);
+    }
+
+    std::vector<std::vector<double>> bases;
+    for (int h = 0; h < 6; ++h) {
+        const double hsv[3] = { 60. * h, 0.8, 1. };
+        std::vector<double> c(3);
+        colorWarpHsvToRgb(hsv, c.data());
+        bases.push_back(c);
+    }
+    bases.push_back({ 0.54, 0.31, 0.22 });
+    bases.push_back({ 1., 1., 1. });
+    const int stops = 112;
+    for (const std::vector<double>& base : bases) {
+        const double lum = kRec709ToXYZ[3] * base[0] + kRec709ToXYZ[4] * base[1] + kRec709ToXYZ[5] * base[2];
+        for (int i = 0; i < stops; ++i) {
+            const double k = 0.18 / lum * std::exp2(-7. + 14. * (i + 0.5) / stops);
+            const double c[3] = { base[0] * k, base[1] * k, base[2] * k };
+            chart.add(c, rampShare / (bases.size() * stops));
+        }
+    }
+
+    const int hues = 72, sats = 16;
+    for (int si = 0; si < sats; ++si) {
+        for (int hi = 0; hi < hues; ++hi) {
+            const double hsv[3] = { 360. * (hi + 0.5) / hues, static_cast<double>(si) / (sats - 1), 0.45 };
+            double c[3];
+            colorWarpHsvToRgb(hsv, c);
+            chart.add(c, sweepShare / (hues * sats));
+        }
+    }
+
+    return chart;
+}
+
+double
+changedShare(const ColorWarpField& field, const WeightedChart& chart)
+{
+    double changed = 0., total = 0.;
+
+    for (std::size_t i = 0; i < chart.weight.size(); ++i) {
+        const double* in = &chart.rgb[i * 3];
+        double out[3];
+        field.apply(in, out);
+        double diff = 0., mag = 1e-6;
+        for (int c = 0; c < 3; ++c) {
+            diff = std::max(diff, std::fabs(out[c] - in[c]));
+            mag = std::max(mag, std::fabs(in[c]));
+        }
+        if (diff > 0.01 * mag) {
+            changed += chart.weight[i];
+        }
+        total += chart.weight[i];
+    }
+
+    return changed / total;
+}
+} // anon namespace
+
+TEST(ColorWarpField, OneFalloffChangesAboutTheSameShareOfTheChartInEverySpace)
+{
+    const ColorWarpSpaceBasis basis(kRec709ToXYZ);
+    const WeightedChart chart = makeWeightedChart();
+    const double source[3] = { 0.40, 0.10, 0.06 };
+    double hsv[3], target[3];
+    colorWarpRgbToHsv(source, hsv);
+    hsv[0] += 35.;
+    colorWarpHsvToRgb(hsv, target);
+
+    double shares[kColorWarpSpaceCount];
+    for (int s = 0; s < kColorWarpSpaceCount; ++s) {
+        const ColorWarpSpaceEnum space = static_cast<ColorWarpSpaceEnum>(s);
+        ColorWarpField field;
+        field.prepare({ makePin(source, target, 1., 1.) }, space, basis, eColorWarpKernelGaussian);
+        shares[s] = changedShare(field, chart);
+    }
+    const double lo = *std::min_element(shares, shares + kColorWarpSpaceCount);
+    const double hi = *std::max_element(shares, shares + kColorWarpSpaceCount);
+    for (int s = 0; s < kColorWarpSpaceCount; ++s) {
+        SCOPED_TRACE(colorWarpSpaceName(static_cast<ColorWarpSpaceEnum>(s)));
+        EXPECT_GT(shares[s], 0.05);
+        EXPECT_LT(shares[s], 0.4);
+    }
+    EXPECT_LT(hi, 2. * lo);
 }

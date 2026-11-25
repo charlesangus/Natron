@@ -32,6 +32,7 @@
 #include <optional>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/RectI.h"
 #include "Engine/ViewIdx.h"
 
@@ -99,6 +100,7 @@ bool renderNodeImageOverWindow(const NodePtr& node,
  *
  * Returns false, leaving rgba untouched, for a null, deactivated, disabled or deep node, a node with
  * a mandatory input disconnected, a pixelRect that misses the region of definition, or a failed render.
+ * abortInfo stops the render as for renderNodeImage(), and the call then returns false.
  **/
 bool sampleNodeColor(const NodePtr& node,
                      double time,
@@ -106,25 +108,28 @@ bool sampleNodeColor(const NodePtr& node,
                      unsigned int mipmapLevel,
                      const RectI& pixelRect,
                      const ImageLayerDesc& layer,
-                     float rgba[4]);
+                     float rgba[4],
+                     const AbortableRenderInfoPtr& abortInfo = AbortableRenderInfoPtr());
 
 /**
- * @brief The RGBA of the pixel of node's input inputNb that holds the canonical position (x, y) at
- * time and view, rendered at full scale through sampleNodeColor(), so a frame the input already has
- * in the cache costs a lookup. A disabled input is looked through to the node it passes on. The
- * input's own pixel aspect ratio places (x, y) in its pixels. Channels read as sampleNodeColor()
- * reads them.
+ * @brief The channels of layer (RGBA unless given) of the pixel of node's input inputNb that holds
+ * the canonical position (x, y) at time and view, rendered at full scale through sampleNodeColor(),
+ * so a frame the input already has in the cache costs a lookup. A disabled input is looked through
+ * to the node it passes on. The input's own pixel aspect ratio places (x, y) in its pixels. Channels
+ * read as sampleNodeColor() reads them.
  *
  * None when node has no such input connected, (x, y) is outside the input's region of definition,
- * or in the other cases sampleNodeColor() returns false. Main thread or any thread not rendering
- * node; an overlay pen event may call it.
+ * or in the other cases sampleNodeColor() returns false, an abort through abortInfo included. Main
+ * thread or any thread not rendering node; an overlay pen event may call it.
  **/
 std::optional<std::array<float, 4>> sampleNodeInputAt(const NodePtr& node,
                                                       int inputNb,
                                                       double time,
                                                       ViewIdx view,
                                                       double x,
-                                                      double y);
+                                                      double y,
+                                                      const ImageLayerDesc& layer = ImageLayerDesc::getRGBAComponents(),
+                                                      const AbortableRenderInfoPtr& abortInfo = AbortableRenderInfoPtr());
 
 NATRON_NAMESPACE_EXIT
 

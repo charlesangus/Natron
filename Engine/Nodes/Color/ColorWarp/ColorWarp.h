@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <array>
+#include <cstdint>
 #include <list>
 #include <memory>
 #include <mutex>
@@ -58,7 +59,7 @@ inline constexpr InputSpec kColorWarpInputs[] = {
 
 struct ColorWarpOp {
     struct Params {
-        // Null when no pin is enabled.
+        // Null when the warp is an identity.
         std::shared_ptr<const ColorWarpField> field;
     };
 
@@ -199,12 +200,48 @@ private:
     bool pixelScale(double* scaleX,
                     double* scaleY) const;
 
+    /**
+     * @brief The source input's colour at canonical (x, y), unpremultiplied by the (Un)premult By
+     * channel when one is set and above 0, as the warp sees it. abortInfo stops the render.
+     **/
     std::optional<std::array<double, 3>> sampleSource(double x,
                                                       double y,
                                                       double time,
-                                                      ViewIdx view) const;
+                                                      ViewIdx view,
+                                                      const AbortableRenderInfoPtr& abortInfo = AbortableRenderInfoPtr());
+
+    void requestDragSample(double x,
+                           double y,
+                           double time,
+                           ViewIdx view);
+    void onDragSampled(std::uint64_t serial,
+                       int pinId,
+                       double x,
+                       double y,
+                       double time,
+                       const std::optional<std::array<double, 3>>& source);
+
+    /**
+     * @brief Records a finished drag's move as one undo step once its last sample has landed.
+     **/
+    void commitMoveWhenSettled();
+
+    /**
+     * @brief Records a finished drag's move now, whether or not its last sample has landed.
+     **/
+    void commitMoveNow();
+
+    struct DragSampler;
 
     ColorWarpInteract _interact;
+    // Pen motion samples the source off the main thread, latest position first; a newer position
+    // aborts the sample in flight.
+    std::shared_ptr<DragSampler> _dragSampler;
+    std::uint64_t _dragSerial = 0;
+    std::uint64_t _dragSettledSerial = 0;
+    // Samples older than this belong to an earlier drag.
+    std::uint64_t _dragFirstSerial = 1;
+    std::optional<ColorWarpPinSet> _moveBefore;
 };
 
 NATRON_NAMESPACE_EXIT

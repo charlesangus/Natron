@@ -4915,7 +4915,7 @@ ColorWarpPinsParam::setPinStrength(int index,
     if (!beginEdit(index, &pins)) {
         return;
     }
-    pins.pins[index].strength.set(frame, strength);
+    pins.pins[index].strength.set(frame, colorWarpClampPinStrength(strength));
     _tKnob.lock()->setPinSet(pins);
 }
 
@@ -4929,7 +4929,7 @@ ColorWarpPinsParam::setPinStrengthKey(int index,
     if (!beginEdit(index, &pins)) {
         return;
     }
-    pins.pins[index].strength.setKey(frame, strength);
+    pins.pins[index].strength.setKey(frame, colorWarpClampPinStrength(strength));
     _tKnob.lock()->setPinSet(pins);
 }
 
@@ -4952,7 +4952,7 @@ ColorWarpPinsParam::setPinFalloff(int index,
     if (!beginEdit(index, &pins)) {
         return;
     }
-    pins.pins[index].falloff.set(frame, falloff);
+    pins.pins[index].falloff.set(frame, colorWarpClampPinFalloff(falloff));
     _tKnob.lock()->setPinSet(pins);
 }
 
@@ -4966,7 +4966,7 @@ ColorWarpPinsParam::setPinFalloffKey(int index,
     if (!beginEdit(index, &pins)) {
         return;
     }
-    pins.pins[index].falloff.setKey(frame, falloff);
+    pins.pins[index].falloff.setKey(frame, colorWarpClampPinFalloff(falloff));
     _tKnob.lock()->setPinSet(pins);
 }
 

@@ -71,6 +71,14 @@ enum PinColumnEnum {
     ePinColumnCount
 };
 
+enum PinEditorEnum {
+    ePinEditorTargetR = 0,
+    ePinEditorTargetG,
+    ePinEditorTargetB,
+    ePinEditorStrength,
+    ePinEditorFalloff
+};
+
 enum PinKeyEnum {
     ePinKeyTarget = 0,
     ePinKeyStrength,
@@ -451,7 +459,7 @@ KnobGuiColorWarpPins::createWidget(QHBoxLayout* layout)
     grid->addWidget(new QLabel(tr("Falloff"), _imp->editors), 2, 0);
     _imp->falloff = new SpinBox(_imp->editors, SpinBox::eSpinBoxTypeDouble);
     _imp->falloff->decimals(3);
-    _imp->falloff->setMinimum(0.001);
+    _imp->falloff->setMinimum(kColorWarpMinPinFalloff);
     _imp->falloff->setIncrement(0.05);
     _imp->falloff->setToolTip(tr("How far from its source colour the pin reaches."));
     grid->addWidget(_imp->falloff, 2, 1);
@@ -483,15 +491,16 @@ KnobGuiColorWarpPins::createWidget(QHBoxLayout* layout)
         onDeleteClicked();
     });
     for (int c = 0; c < 3; ++c) {
-        connect(_imp->target[c], &SpinBox::valueChanged, this, [this](double) {
-            onEditorValueChanged();
+        SpinBox* box = _imp->target[c];
+        connect(box, &SpinBox::valueChanged, this, [this, box, c](double v) {
+            onEditorValueChanged(ePinEditorTargetR + c, v, box->getGestureKey());
         });
     }
-    connect(_imp->strength, &SpinBox::valueChanged, this, [this](double) {
-        onEditorValueChanged();
+    connect(_imp->strength, &SpinBox::valueChanged, this, [this](double v) {
+        onEditorValueChanged(ePinEditorStrength, v, _imp->strength->getGestureKey());
     });
-    connect(_imp->falloff, &SpinBox::valueChanged, this, [this](double) {
-        onEditorValueChanged();
+    connect(_imp->falloff, &SpinBox::valueChanged, this, [this](double v) {
+        onEditorValueChanged(ePinEditorFalloff, v, _imp->falloff->getGestureKey());
     });
 
     if (knob) {
@@ -742,7 +751,7 @@ KnobGuiColorWarpPins::onAddClicked()
 
     ColorWarpPinSet pins = knob->getPinSet();
     const double grey[3] = { 0.18, 0.18, 0.18 };
-    const int index = pins.addPin(grey, 0., 0., getEditTime());
+    const int index = pins.addUnpickedPin(grey);
     const int id = pins.pins[index].id;
 
     knob->editPinSet(pins, tr("Add Pin").toStdString());
@@ -770,7 +779,9 @@ KnobGuiColorWarpPins::onDeleteClicked()
 }
 
 void
-KnobGuiColorWarpPins::onEditorValueChanged()
+KnobGuiColorWarpPins::onEditorValueChanged(int editor,
+                                           double value,
+                                           quint64 gestureKey)
 {
     KnobColorWarpPinsPtr knob = _imp->knob.lock();
 
@@ -787,16 +798,26 @@ KnobGuiColorWarpPins::onEditorValueChanged()
 
     ColorWarpPinData& pin = pins.pins[index];
     const double time = getEditTime();
+    const ColorWarpPinSet before = pins;
 
-    for (int c = 0; c < 3; ++c) {
-        pin.target[c].set(time, _imp->target[c]->value());
+    switch (editor) {
+    case ePinEditorStrength:
+        pin.strength.set(time, colorWarpClampPinStrength(value));
+        break;
+    case ePinEditorFalloff:
+        pin.falloff.set(time, colorWarpClampPinFalloff(value));
+        break;
+    default:
+        if ((editor < ePinEditorTargetR) || (editor > ePinEditorTargetB)) {
+            return;
+        }
+        pin.target[editor - ePinEditorTargetR].set(time, value);
+        break;
     }
-    pin.strength.set(time, std::clamp(_imp->strength->value(), 0., 1.));
-    pin.falloff.set(time, std::max(_imp->falloff->value(), 0.001));
-    if (pins == knob->getPinSet()) {
+    if (pins == before) {
         return;
     }
-    knob->editPinSet(pins, tr("Edit Pin").toStdString());
+    knob->editPinSet(before, pins, tr("Edit Pin").toStdString(), gestureKey);
 }
 
 void

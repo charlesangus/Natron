@@ -40,8 +40,9 @@ NATRON_NAMESPACE_ENTER
  * is zero (target equal to source, or strength 0) is a hold pin: it keeps its full weight and
  * pulls nearby colours back towards identity.
  *
- * falloff is the pin's reach in warp-space units, so its meaning changes with the space. Only
- * the Gaussian kernel reads it; a pin with a falloff that is not positive has no Gaussian
+ * falloff is the pin's reach in falloff-knob units: prepare() multiplies it by
+ * colorWarpFalloffScale() of the field's space, so one value reaches about as far in every space.
+ * Only the Gaussian kernel reads it; a pin with a falloff that is not positive has no Gaussian
  * influence except on its exact source colour.
  **/
 struct ColorWarpPin {
@@ -56,9 +57,9 @@ struct ColorWarpPin {
  * @brief How pin displacements spread through the colour volume.
  *
  * - Gaussian: D(x) = sum(w_i d_i) / (1 + sum(w_i)), w_i = exp(-r^2 / 2 s^2) * s^2 / r^2,
- *   s = falloff / 2, r the warp-space distance to pin i, measured with the lightness component
+ *   s = falloff * colorWarpFalloffScale(space) / 2, r the warp-space distance to pin i, measured with the lightness component
  *   divided by the field's lightness falloff (see ColorWarpField::prepare()). The 1 is an identity weight, so colours
- *   far from every pin are unchanged (exactly, past kColorWarpGaussianCutoff falloffs). The
+ *   far from every pin are unchanged (exactly, past kColorWarpGaussianCutoff scaled falloffs). The
  *   1 / r^2 factor makes the blend pass exactly through every pin, hold pins included; it also
  *   flattens the field's gradient to zero at each pin.
  * - RbfLinear, RbfCubic: polyharmonic splines, phi(r) = -r and phi(r) = r^3, with an affine
@@ -100,7 +101,7 @@ double colorWarpFade(double distance, double radius, double invWidth);
  * Pins whose sources coincide in warp space are merged before anything else: if any of them
  * moves, the merged pin carries the mean of the moving pins' displacements and the hold pins
  * among them are dropped (a moved pin wins at its own source); otherwise they become one hold
- * pin. The merged falloff is the mean of the contributing positive falloffs, or 0 when none is
+ * pin. The merged falloff is the mean of the contributing positive scaled falloffs, or 0 when none is
  * positive.
  *
  * The evaluated form is plain arrays so a GPU kernel can evaluate the same thing:

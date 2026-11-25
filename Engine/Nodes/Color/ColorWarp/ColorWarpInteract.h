@@ -42,7 +42,7 @@ public:
     static constexpr double kPinHalfSize = 8.;
 
     /**
-     * @brief The id of the pin whose swatch is under canonical (x, y), the last drawn first, or 0.
+     * @brief The id of the picked pin whose swatch is under canonical (x, y), the last drawn first, or 0.
      * pixelScaleX and pixelScaleY are the canonical units per screen pixel.
      **/
     static int hitTest(const ColorWarpPinSet& pins,
@@ -52,7 +52,7 @@ public:
                        double pixelScaleY) WARN_UNUSED_RETURN;
 
     /**
-     * @brief Each pin as a swatch at its pick position, source on the left and its target at time
+     * @brief Each picked pin as a swatch at its pick position, source on the left and its target at time
      * on the right, the selected pin outlined brighter; disabled pins are drawn faded.
      **/
     static void build(const ColorWarpPinSet& pins,

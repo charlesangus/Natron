@@ -67,7 +67,8 @@ The selected pin has a white outline, and disabled pins are drawn faded.
 
 The pin list shows each pin's Enabled box, its name (double-click to rename it), and its source
 and target swatches. Selecting a pin in the list selects it in the viewer too, and the other way
-round. **Add Pin** adds a pin on mid grey. **Delete Pin** removes the selected pin.
+round. **Add Pin** adds a pin on mid grey; it was picked nowhere, so it has no position and is
+not drawn in the viewer. **Delete Pin** removes the selected pin.
 
 Below the list are the selected pin's Target, Strength and Falloff. Each has a **Key** button that
 sets a key at the current frame, or removes the key there.
@@ -92,11 +93,13 @@ list:
 - `getPinCount()`, `addPin(r, g, b, x, y, frame)` (returns the new pin's index) and
   `removePin(index)`.
 - `getPinName` and `setPinName`, `getPinEnabled` and `setPinEnabled`.
-- `getPinSource` and `setPinSource` (keeps the pin's move), `getPinPosition` and `getPinFrame`.
+- `getPinSource` and `setPinSource` (keeps the pin's move), `getPinPosition` and `getPinFrame`
+  (0 for a pin added in the panel, which was not picked).
 - `getPinTarget(index, frame)` and `setPinTarget(index, r, g, b, frame)`, with `setPinTargetKey`
   to set a key.
 - `getPinStrength`, `setPinStrength` and `setPinStrengthKey`; `getPinFalloff`, `setPinFalloff` and
-  `setPinFalloffKey`.
+  `setPinFalloffKey`. As in the panel, a strength is clamped to [0, 1] and a falloff to at least
+  0.001.
 - `getPinHasKey(index, frame)` and `removePinKeys(index, frame)`.
 - `getSelectedPin()` (-1 when none is selected) and `setSelectedPin(index)`.
 

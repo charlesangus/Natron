@@ -320,10 +320,11 @@ sampleNodeColor(const NodePtr& node,
                 unsigned int mipmapLevel,
                 const RectI& pixelRect,
                 const ImageLayerDesc& layer,
-                float rgba[4])
+                float rgba[4],
+                const AbortableRenderInfoPtr& abortInfo)
 {
     RectI roi;
-    const ImagePtr image = renderNodeImage(node, time, view, mipmapLevel, pixelRect, layer, &roi);
+    const ImagePtr image = renderNodeImage(node, time, view, mipmapLevel, pixelRect, layer, &roi, abortInfo);
     if (!image) {
         return false;
     }
@@ -385,7 +386,9 @@ sampleNodeInputAt(const NodePtr& node,
                   double time,
                   ViewIdx view,
                   double x,
-                  double y)
+                  double y,
+                  const ImageLayerDesc& layer,
+                  const AbortableRenderInfoPtr& abortInfo)
 {
     if (!node || !std::isfinite(x) || !std::isfinite(y)) {
         return std::nullopt;
@@ -410,7 +413,7 @@ sampleNodeInputAt(const NodePtr& node,
     }
     const RectI pixel((int)px, (int)py, (int)px + 1, (int)py + 1);
     std::array<float, 4> rgba;
-    if (!sampleNodeColor(effective->getNode(), time, view, 0, pixel, ImageLayerDesc::getRGBAComponents(), rgba.data())) {
+    if (!sampleNodeColor(effective->getNode(), time, view, 0, pixel, layer, rgba.data(), abortInfo)) {
         return std::nullopt;
     }
 

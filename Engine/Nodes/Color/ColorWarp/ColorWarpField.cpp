@@ -256,6 +256,7 @@ ColorWarpField::prepare(const std::vector<ColorWarpPin>& pins,
     const double k = (std::isfinite(lightnessFalloff) && (lightnessFalloff > 0.)) ? lightnessFalloff : 1.;
     _lightnessStretch = (kernel == eColorWarpKernelGaussian) ? (1. / (k * k) - 1.) : 0.;
 
+    const double falloffScale = colorWarpFalloffScale(space);
     std::vector<double> sources, displacements, falloffs;
     for (const ColorWarpPin& pin : pins) {
         if (!pin.enabled) {
@@ -275,7 +276,7 @@ ColorWarpField::prepare(const std::vector<ColorWarpPin>& pins,
         }
         sources.insert(sources.end(), s, s + 3);
         displacements.insert(displacements.end(), d, d + 3);
-        falloffs.push_back(pin.falloff);
+        falloffs.push_back(pin.falloff * falloffScale);
     }
 
     const int n = static_cast<int>(falloffs.size());

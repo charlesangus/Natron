@@ -309,6 +309,8 @@ try:
             send_mouse(gl, QEvent.MouseMove, QPointF(centre) + QPointF(DRAG_BY[0] * f, DRAG_BY[1] * f),
                        Qt.NoButton, Qt.LeftButton)
         send_mouse(gl, QEvent.MouseButtonRelease, centre + QPoint(*DRAG_BY), Qt.LeftButton, Qt.NoButton)
+        # Drag samples land asynchronously; the move is recorded once the last one has.
+        yield ("until", lambda: position_of(pins, 0) != start_pos, POLL_TIMEOUT_S)
         yield ("sleep", RENDER_MS)
         end_pos = position_of(pins, 0)
         check(pins.getPinCount() == 3, "a drag on a pin adds none (%d pins)" % pins.getPinCount())

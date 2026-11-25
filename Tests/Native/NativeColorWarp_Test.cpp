@@ -41,6 +41,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobColorWarpPins.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -51,6 +52,8 @@
 #include "Engine/Project.h"
 #include "Engine/RectI.h"
 #include "Engine/ViewIdx.h"
+#include "Serialization/KnobSerialization.h"
+#include "Serialization/Yaml/KnobYaml.h"
 
 NATRON_NAMESPACE_USING
 
@@ -286,6 +289,56 @@ TEST_F(NativeColorWarpTest, PinsSurviveTheKnobValue)
     EXPECT_TRUE(knob->getPinSet() == pins);
 }
 
+TEST_F(NativeColorWarpTest, PinsAndKeysSurviveAProjectSaveAndLoad)
+{
+    NodePtr warp = makeWarp({ 0.5, 0.5, 0.5, 1. });
+    KnobColorWarpPinsPtr knob = pinsKnob(warp);
+    ASSERT_TRUE(knob != nullptr);
+
+    const double picked[3] = { 0.6, 0.3, 0.2 };
+    const double grey[3] = { 0.18, 0.18, 0.18 };
+    ColorWarpPinSet pins;
+    (void)pins.addPin(picked, 12.5, -3., 7.);
+    pins.pins[0].name = "skin \"warm\"";
+    pins.pins[0].target[0].setKey(1., 0.7);
+    pins.pins[0].target[0].setKey(10., 0.9);
+    pins.pins[0].strength.setKey(3., 0.25);
+    pins.pins[0].strength.setKey(8., 1.);
+    pins.pins[0].falloff.setKey(5., 1.25);
+    (void)pins.addUnpickedPin(grey);
+    pins.pins[1].enabled = false;
+    pins.pins[1].target[2].set(0., 0.4);
+    knob->setPinSet(pins);
+
+    Serialization::KnobSerialization saved;
+    knob->toSerialization(&saved);
+    const std::list<Serialization::KnobSerialization> decoded = Serialization::decodeKnobsYaml(Serialization::encodeKnobsYaml({ saved }));
+    ASSERT_EQ(1u, decoded.size());
+    Serialization::KnobSerialization loaded = decoded.front();
+
+    NodePtr fresh = makeWarp({ 0.5, 0.5, 0.5, 1. });
+    KnobColorWarpPinsPtr restored = pinsKnob(fresh);
+    ASSERT_TRUE(restored != nullptr);
+    Serialization::completeKnobSerialization(&loaded, KnobColorWarpPins::typeNameStatic(), restored->getDimension());
+    EXPECT_TRUE(restored->fromSerialization(loaded));
+
+    const ColorWarpPinSet back = restored->getPinSet();
+    EXPECT_TRUE(back == pins);
+    ASSERT_EQ(2u, back.pins.size());
+    EXPECT_EQ(pins.nextId, back.nextId);
+    EXPECT_TRUE(back.pins[0].picked);
+    EXPECT_DOUBLE_EQ(12.5, back.pins[0].position[0]);
+    EXPECT_DOUBLE_EQ(7., back.pins[0].frame);
+    EXPECT_TRUE(back.pins[0].target[0].hasKeyAt(1.));
+    EXPECT_TRUE(back.pins[0].target[0].hasKeyAt(10.));
+    EXPECT_TRUE(back.pins[0].strength.hasKeyAt(8.));
+    EXPECT_TRUE(back.pins[0].falloff.hasKeyAt(5.));
+    EXPECT_DOUBLE_EQ(pins.pins[0].strength.valueAt(5.), back.pins[0].strength.valueAt(5.));
+    EXPECT_FALSE(back.pins[1].picked);
+    EXPECT_FALSE(back.pins[1].enabled);
+    EXPECT_DOUBLE_EQ(0.4, back.pins[1].target[2].valueAt(0.));
+}
+
 TEST_F(NativeColorWarpTest, NoPinsOrAllDisabledIsBitExactPassThrough)
 {
     const float rgb[3] = { 0.123456f, -0.5f, 7.25f };
@@ -337,6 +390,30 @@ TEST_F(NativeColorWarpTest, PinEditsChangeTheHashAndTheRender)
     pins.pins[0].strength.setKey(5., 0.5);
     knob->setPinSet(pins);
     EXPECT_NE(moved, knob->getContentHash());
+}
+
+TEST_F(NativeColorWarpTest, AddPinAtSamplesTheSourceUnpremultipliedWhenUnpremultByIsSet)
+{
+    NodePtr warp = makeWarp({ 0.2, 0.1, 0.05, 0.5 });
+    KnobColorWarpPinsPtr knob = pinsKnob(warp);
+    ColorWarp* effect = warp ? dynamic_cast<ColorWarp*>(warp->getEffectInstance().get()) : NULL;
+    ASSERT_TRUE(knob != nullptr);
+    ASSERT_TRUE(effect != NULL);
+    KnobChannelSelectPtr unPremultBy = warp->getUnPremultBySelector();
+    ASSERT_NE(unPremultBy, nullptr);
+
+    unPremultBy->setNone();
+    ASSERT_NE(0, effect->addPinAt(4.5, 4.5, kTime, ViewIdx(0)));
+    unPremultBy->set(std::string(kNatronColorViewRGBA) + ".A");
+    ASSERT_NE(0, effect->addPinAt(4.5, 4.5, kTime, ViewIdx(0)));
+
+    const ColorWarpPinSet pins = knob->getPinSet();
+    ASSERT_EQ(2u, pins.pins.size());
+    EXPECT_NEAR(0.2, pins.pins[0].source[0], 1e-5);
+    EXPECT_NEAR(0.05, pins.pins[0].source[2], 1e-5);
+    EXPECT_NEAR(0.4, pins.pins[1].source[0], 1e-5);
+    EXPECT_NEAR(0.2, pins.pins[1].source[1], 1e-5);
+    EXPECT_NEAR(0.1, pins.pins[1].source[2], 1e-5);
 }
 
 TEST_F(NativeColorWarpTest, AddPinAtSamplesTheInputAndUndoesInOneStep)

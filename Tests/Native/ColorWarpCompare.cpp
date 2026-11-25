@@ -249,9 +249,11 @@ changedFraction(const Image& a, const Image& b)
     return static_cast<double>(changed) / pixels;
 }
 
-// Falloff units differ per space, so a fixed number would compare different localities. Each
+// Warp-space units differ per space, so a fixed reach would compare different localities. Each
 // space's reach is instead the one at which the single-hue pin, under the Gaussian kernel,
-// changes kCalibratedChangedFraction of the chart; every pin set then uses that reach.
+// changes kCalibratedChangedFraction of the chart; every pin set then uses that reach. Reaches
+// stay in warp-space units, the units colorWarpFalloffScale() is measured in, so pin falloffs
+// are divided by it to undo the field's own normalisation.
 const double kCalibratedChangedFraction = 0.15;
 
 double
@@ -263,7 +265,7 @@ calibrateReach(ColorWarpSpaceEnum space, const ColorWarpSpaceBasis& basis, const
         const double mid = 0.5 * (lo + hi);
         std::vector<ColorWarpPin> pins = set.pins;
         for (ColorWarpPin& p : pins) {
-            p.falloff = std::exp(mid);
+            p.falloff = std::exp(mid) / colorWarpFalloffScale(space);
         }
         ColorWarpField field;
         field.prepare(pins, space, basis, eColorWarpKernelGaussian);
@@ -722,7 +724,7 @@ TEST(DISABLED_ColorWarpCompare, WriteImagesAndMetrics)
             const ColorWarpSpaceEnum space = static_cast<ColorWarpSpaceEnum>(s);
             std::vector<ColorWarpPin> pins = set.pins;
             for (ColorWarpPin& p : pins) {
-                p.falloff = reach[s];
+                p.falloff = reach[s] / colorWarpFalloffScale(space);
             }
             for (int k = 0; k < kColorWarpKernelCount; ++k) {
                 const ColorWarpKernelEnum kernel = static_cast<ColorWarpKernelEnum>(k);

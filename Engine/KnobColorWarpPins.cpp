@@ -40,6 +40,7 @@
 #include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/UndoCommand.h"
+#include "Engine/UndoGesture.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -122,17 +123,21 @@ tripleFromJson(const QJsonValue& json,
 }
 
 class ColorWarpPinsUndoCommand
-    : public UndoCommand {
+    : public UndoCommand,
+      public UndoGestureMember {
 public:
     ColorWarpPinsUndoCommand(const KnobColorWarpPinsPtr& knob,
                              const ColorWarpPinSet& before,
                              const ColorWarpPinSet& after,
-                             const std::string& text)
+                             const std::string& text,
+                             quint64 gestureKey)
         : UndoCommand(text)
+        , UndoGestureMember()
         , _knob(knob)
         , _before(before)
         , _after(after)
     {
+        setGestureKey(gestureKey);
     }
 
     virtual void redo() OVERRIDE FINAL
@@ -147,6 +152,18 @@ public:
         if (KnobColorWarpPinsPtr knob = _knob.lock()) {
             knob->setPinSet(_before);
         }
+    }
+
+    virtual bool mergeWith(const UndoCommandPtr& other) OVERRIDE FINAL
+    {
+        const ColorWarpPinsUndoCommand* o = dynamic_cast<const ColorWarpPinsUndoCommand*>(other.get());
+
+        if (!o || !inSameGestureAs(*o) || (o->_knob.lock() != _knob.lock())) {
+            return false;
+        }
+        _after = o->_after;
+
+        return true;
     }
 
 private:
@@ -257,7 +274,7 @@ ColorWarpPinData::evaluate(double time) const
 bool
 ColorWarpPinData::operator==(const ColorWarpPinData& other) const
 {
-    return (id == other.id) && (name == other.name) && (enabled == other.enabled) && std::equal(source, source + 3, other.source) && std::equal(position, position + 2, other.position) && (frame == other.frame) && std::equal(target, target + 3, other.target) && (strength == other.strength) && (falloff == other.falloff);
+    return (id == other.id) && (name == other.name) && (enabled == other.enabled) && std::equal(source, source + 3, other.source) && (picked == other.picked) && std::equal(position, position + 2, other.position) && (frame == other.frame) && std::equal(target, target + 3, other.target) && (strength == other.strength) && (falloff == other.falloff);
 }
 
 int
@@ -292,6 +309,16 @@ ColorWarpPinSet::addPin(const double source[3],
     pins.push_back(pin);
 
     return (int)pins.size() - 1;
+}
+
+int
+ColorWarpPinSet::addUnpickedPin(const double source[3])
+{
+    const int index = addPin(source, 0., 0., 0.);
+
+    pins[index].picked = false;
+
+    return index;
 }
 
 const std::string KnobColorWarpPins::_typeNameStr("ColorWarpPins");
@@ -333,8 +360,10 @@ KnobColorWarpPins::encode(const ColorWarpPinSet& set)
         object.insert(QStringLiteral("name"), QString::fromStdString(pin.name));
         object.insert(QStringLiteral("enabled"), pin.enabled);
         object.insert(QStringLiteral("source"), tripleToJson(pin.source, 3));
-        object.insert(QStringLiteral("position"), tripleToJson(pin.position, 2));
-        object.insert(QStringLiteral("frame"), pin.frame);
+        if (pin.picked) {
+            object.insert(QStringLiteral("position"), tripleToJson(pin.position, 2));
+            object.insert(QStringLiteral("frame"), pin.frame);
+        }
         QJsonArray target;
         for (int c = 0; c < 3; ++c) {
             target.append(channelToJson(pin.target[c]));
@@ -370,8 +399,11 @@ KnobColorWarpPins::decode(const std::string& raw)
         pin.name = object.value(QStringLiteral("name")).toString().toStdString();
         pin.enabled = object.value(QStringLiteral("enabled")).toBool(true);
         tripleFromJson(object.value(QStringLiteral("source")), pin.source, 3);
-        tripleFromJson(object.value(QStringLiteral("position")), pin.position, 2);
-        pin.frame = object.value(QStringLiteral("frame")).toDouble();
+        pin.picked = object.contains(QStringLiteral("position"));
+        if (pin.picked) {
+            tripleFromJson(object.value(QStringLiteral("position")), pin.position, 2);
+            pin.frame = object.value(QStringLiteral("frame")).toDouble();
+        }
         const QJsonArray target = object.value(QStringLiteral("target")).toArray();
         for (int c = 0; c < 3; ++c) {
             pin.target[c] = channelFromJson(target.at(c), pin.source[c]);
@@ -432,7 +464,8 @@ KnobColorWarpPins::setPinSet(const ColorWarpPinSet& pins)
 void
 KnobColorWarpPins::editPinSet(const ColorWarpPinSet& before,
                               const ColorWarpPinSet& after,
-                              const std::string& text)
+                              const std::string& text,
+                              quint64 gestureKey)
 {
     if (before == after) {
         setPinSet(after);
@@ -446,14 +479,15 @@ KnobColorWarpPins::editPinSet(const ColorWarpPinSet& before,
 
         return;
     }
-    effect->pushUndoCommand(new ColorWarpPinsUndoCommand(self, before, after, text));
+    effect->pushUndoCommand(new ColorWarpPinsUndoCommand(self, before, after, text, gestureKey));
 }
 
 void
 KnobColorWarpPins::editPinSet(const ColorWarpPinSet& after,
-                              const std::string& text)
+                              const std::string& text,
+                              quint64 gestureKey)
 {
-    editPinSet(getPinSet(), after, text);
+    editPinSet(getPinSet(), after, text, gestureKey);
 }
 
 int

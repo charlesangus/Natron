@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <cmath>
 #include <string>
 #include <utility>
 #include <vector>
@@ -95,15 +96,37 @@ struct ColorWarpPinChannel {
     }
 };
 
+inline constexpr double kColorWarpMinPinFalloff = 0.001;
+
 /**
- * @brief A pin maps its source colour to its target colour with a strength. Its pick position
- * (canonical coordinates) and frame say where the source was sampled, for display.
+ * @brief The range the panel, the viewer and Python keep a pin's strength in: [0, 1], NaN reading as 0.
+ **/
+inline double
+colorWarpClampPinStrength(double strength)
+{
+    return std::fmin(1., std::fmax(0., strength));
+}
+
+/**
+ * @brief The range kept for a pin's falloff: at least kColorWarpMinPinFalloff, NaN reading as it.
+ **/
+inline double
+colorWarpClampPinFalloff(double falloff)
+{
+    return std::fmax(kColorWarpMinPinFalloff, falloff);
+}
+
+/**
+ * @brief A pin maps its source colour to its target colour with a strength. When picked, its
+ * pick position (canonical coordinates) and frame say where the source was sampled, for display;
+ * a pin added without a pick has neither and is not drawn in the viewer.
  **/
 struct ColorWarpPinData {
     int id = 0;
     std::string name;
     bool enabled = true;
     double source[3] = { 0., 0., 0. };
+    bool picked = true;
     double position[2] = { 0., 0. };
     double frame = 0.;
     ColorWarpPinChannel target[3];
@@ -132,6 +155,11 @@ struct ColorWarpPinSet {
      * @brief Appends a pin whose target is its source, with a fresh id and name; returns its index.
      **/
     int addPin(const double source[3], double x, double y, double frame);
+
+    /**
+     * @brief As addPin(), for a pin with no pick position or frame.
+     **/
+    int addUnpickedPin(const double source[3]);
 
     bool operator==(const ColorWarpPinSet& other) const
     {
@@ -194,13 +222,16 @@ public:
 
     /**
      * @brief Replaces the pins as one undo step named text, from before to after. With no undo
-     * stack (no interface) the change is just made.
+     * stack (no interface) the change is just made. Consecutive edits of this knob carrying the
+     * same non-zero gestureKey (UndoGesture) fold into one undo step.
      **/
     void editPinSet(const ColorWarpPinSet& before,
                     const ColorWarpPinSet& after,
-                    const std::string& text);
+                    const std::string& text,
+                    quint64 gestureKey = 0);
     void editPinSet(const ColorWarpPinSet& after,
-                    const std::string& text);
+                    const std::string& text,
+                    quint64 gestureKey = 0);
 
     /**
      * @brief The id of the selected pin, or 0 when none is selected or it no longer exists.

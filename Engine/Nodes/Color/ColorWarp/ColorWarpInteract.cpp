@@ -77,7 +77,7 @@ ColorWarpInteract::hitTest(const ColorWarpPinSet& pins,
 
     for (std::size_t i = pins.pins.size(); i > 0; --i) {
         const ColorWarpPinData& pin = pins.pins[i - 1];
-        if ((std::abs(x - pin.position[0]) <= hx) && (std::abs(y - pin.position[1]) <= hy)) {
+        if (pin.picked && (std::abs(x - pin.position[0]) <= hx) && (std::abs(y - pin.position[1]) <= hy)) {
             return pin.id;
         }
     }
@@ -97,6 +97,9 @@ ColorWarpInteract::build(const ColorWarpPinSet& pins,
     const double hy = kPinHalfSize * pixelScaleY;
 
     for (const ColorWarpPinData& pin : pins.pins) {
+        if (!pin.picked) {
+            continue;
+        }
         const bool selected = (pin.id == selectedId);
         const float alpha = pin.enabled ? 1.f : 0.4f;
         const double x = pin.position[0];
@@ -132,6 +135,7 @@ ColorWarpInteract::movePin(ColorWarpPinSet* pins,
         pin.target[c].offset(source[c] - pin.source[c]);
         pin.source[c] = source[c];
     }
+    pin.picked = true;
     pin.position[0] = x;
     pin.position[1] = y;
     pin.frame = frame;

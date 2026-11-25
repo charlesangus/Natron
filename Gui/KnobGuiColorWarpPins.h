@@ -98,7 +98,7 @@ private:
     void onListItemChanged(int row, int column);
     void onAddClicked();
     void onDeleteClicked();
-    void onEditorValueChanged();
+    void onEditorValueChanged(int editor, double value, quint64 gestureKey);
     void onKeyClicked(int which);
 
     std::unique_ptr<KnobGuiColorWarpPinsPrivate> _imp;

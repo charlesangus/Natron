@@ -55,7 +55,7 @@ public:
         .label = "USDCube",
         .description = "Create a scene holding a cube: a box mesh of Size along X, Y and Z about the origin, each face divided by "
                        "the Subdivisions along its axes and carrying the whole [0, 1] texture square. Texture it through a "
-                       "USDMaterial on its Material input. Animated knobs are written as time samples.",
+                       "USDPreviewSurface on its Material input. Animated knobs are written as time samples.",
         .grouping = PLUGIN_GROUP_3D_USD,
         .majorVersion = 1,
         .minorVersion = 0,

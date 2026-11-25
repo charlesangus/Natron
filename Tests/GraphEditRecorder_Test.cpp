@@ -519,7 +519,7 @@ TEST_F(GraphEditRecorderTest, AddingALayerGivesOneSetProjectData)
 
     std::string error;
     ASSERT_EQ(LayerRegistry::eAddResultAdded,
-              project()->addLayer(ImageLayerDesc("mask", "mask", "", std::vector<std::string>(1, "A")), LayerRegistryEntry::eOriginUser, &error))
+              project()->addLayer(ImageLayerDesc("mask", std::vector<std::string>(1, "A")), LayerRegistryEntry::eOriginUser, &error))
         << error;
     const std::vector<GraphOp> ops = take();
     ASSERT_EQ(ops.size(), 1u);

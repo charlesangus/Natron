@@ -84,7 +84,7 @@ metadataSourceOf(const NodePtr& node)
 int
 outputNComps(const NodeMetadataConstPtr& metadata)
 {
-    if ((metadata->getOutputStorageNComps() > 0) && (metadata->getComponentsType(-1) == kNatronColorLayerID)) {
+    if ((metadata->getOutputStorageNComps() > 0) && (metadata->getComponentsType(-1) == eImageComponentsTypeColor)) {
         return metadata->getOutputStorageNComps();
     }
 

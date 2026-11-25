@@ -265,9 +265,7 @@ KnobLayerSelect::resolve(const std::list<ImageLayerDesc>& present,
 
     getLayerAndChannels(&layerID, &channels);
 
-    // A row naming the retired storage ID matches nothing, even though the storage-level
-    // colour entry in present carries that same ID: only the view IDs name the colour plane.
-    if (layerID.empty() || (layerID == kNatronLayerSelectAll) || (layerID == kNatronColorLayerID)) {
+    if (layerID.empty() || (layerID == kNatronLayerSelectAll)) {
         return false;
     }
 
@@ -304,23 +302,6 @@ KnobLayerSelect::resolve(const std::list<ImageLayerDesc>& present,
     return false;
 }
 
-static std::string
-layerLabelForID(const std::string& layerID)
-{
-    if (layerID == kNatronColorLayerID) {
-        return kNatronColorViewRGBA;
-    }
-    if (ImageLayerDesc::isColorViewID(layerID)) {
-        return layerID;
-    }
-    ImageLayerDesc desc = ImageLayerDesc::mapOFXPlaneStringToLayer(layerID);
-    if (desc) {
-        return desc.getLayerLabel();
-    }
-
-    return layerID;
-}
-
 std::string
 KnobLayerSelect::getSummary() const
 {
@@ -336,7 +317,7 @@ KnobLayerSelect::getSummary() const
         return getAllLabel();
     }
 
-    std::string summary = layerLabelForID(layerID);
+    std::string summary = layerID;
 
     if (channels.empty()) {
         return summary;

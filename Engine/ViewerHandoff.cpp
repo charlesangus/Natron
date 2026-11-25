@@ -111,6 +111,85 @@ pathOf(ViewerHandoffRung rung)
     }
 }
 
+// Building a trial interop for every rung costs each new viewer's first initializeGL a Vulkan export,
+// a GL import and their teardown, and the answer only depends on the devices and the driver. A
+// choice is kept only when a path built; a device loss forgets them all.
+struct HandoffChoiceCache {
+    std::mutex mutex;
+    std::vector<std::pair<std::string, gpu::GlHandoffChoice>> entries;
+};
+
+HandoffChoiceCache&
+handoffChoiceCache()
+{
+    static HandoffChoiceCache cache;
+
+    return cache;
+}
+
+std::string
+handoffChoiceKey(const gpu::GlInteropCaps& caps,
+                 gpu::GlHandoffPath first)
+{
+    std::string key;
+    auto add = [&key](const std::array<uint8_t, 16>& uuid) {
+        key.append(reinterpret_cast<const char*>(uuid.data()), uuid.size());
+    };
+    add(caps.vkDeviceUuid);
+    add(caps.vkDriverUuid);
+    add(caps.glDeviceUuid);
+    add(caps.glDriverUuid);
+    key += '\n' + caps.glVendor + '\n' + caps.glRenderer + '\n' + caps.glVersion + '\n' + std::to_string((int)first);
+
+    return key;
+}
+
+std::optional<gpu::GlHandoffChoice>
+cachedHandoffChoice(const std::string& key)
+{
+    HandoffChoiceCache& cache = handoffChoiceCache();
+    std::lock_guard<std::mutex> k(cache.mutex);
+    for (const std::pair<std::string, gpu::GlHandoffChoice>& entry : cache.entries) {
+        if (entry.first == key) {
+            return entry.second;
+        }
+    }
+
+    return std::nullopt;
+}
+
+void
+rememberHandoffChoice(const std::string& key,
+                      const gpu::GlHandoffChoice& choice)
+{
+    HandoffChoiceCache& cache = handoffChoiceCache();
+    std::lock_guard<std::mutex> k(cache.mutex);
+    if (choice.lost) {
+        cache.entries.clear();
+
+        return;
+    }
+    if (!choice.path) {
+        return;
+    }
+    for (std::pair<std::string, gpu::GlHandoffChoice>& entry : cache.entries) {
+        if (entry.first == key) {
+            entry.second = choice;
+
+            return;
+        }
+    }
+    cache.entries.emplace_back(key, choice);
+}
+
+void
+forgetHandoffChoices()
+{
+    HandoffChoiceCache& cache = handoffChoiceCache();
+    std::lock_guard<std::mutex> k(cache.mutex);
+    cache.entries.clear();
+}
+
 gpu::GlPixelFormat
 pixelFormatOf(ViewerHandoffFormat format)
 {
@@ -528,6 +607,7 @@ struct ViewerHandoff::Imp {
         if (lost) {
             buildFailed = false;
             reserveFailed = {};
+            forgetHandoffChoices();
         }
     }
 
@@ -700,11 +780,16 @@ struct ViewerHandoff::Imp {
         }
 
         const ViewerHandoffRung first = forced ? *forced : ViewerHandoffRung::ZeroCopy;
-        const gpu::GlHandoffChoice choice = gpu::chooseHandoffPath(caps, pathOf(first), [&](gpu::GlHandoffPath path) {
+        const std::string choiceKey = handoffChoiceKey(caps, pathOf(first));
+        std::optional<gpu::GlHandoffChoice> cached = cachedHandoffChoice(choiceKey);
+        const gpu::GlHandoffChoice choice = cached ? *cached : gpu::chooseHandoffPath(caps, pathOf(first), [&](gpu::GlHandoffPath path) {
             std::unique_ptr<gpu::GlInterop> trial;
 
             return gpu::GlInterop::create(dev->runtime->device(), loader, kProbeCapacity, path, trial);
         });
+        if (!cached) {
+            rememberHandoffChoice(choiceKey, choice);
+        }
         if (choice.lost) {
             setReason("device lost while building the GL interop");
 

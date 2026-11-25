@@ -39,6 +39,7 @@
 #include "Engine/NodeGroup.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Image/EdgeModeKnob.h"
+#include "Engine/ParallelRenderArgs.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoDrawableItem.h"
 #include "Engine/RotoObjectSelect.h"
@@ -48,6 +49,7 @@
 #include "Engine/RotoUndoCommand.h"
 #include "Engine/TimeLine.h"
 #include "Engine/Transform.h"
+#include "Engine/VectorFollowKnobs.h"
 #include "Engine/ViewIdx.h"
 
 #include "Global/GLIncludes.h"
@@ -55,6 +57,7 @@
 
 
 #define ROTOPAINT_MASK_INPUT_INDEX 10
+#define ROTOPAINT_VECTORS_INPUT_INDEX 11
 
 #define ROTOPAINT_VIEWER_UI_SECTIONS_SPACING_PX 5
 
@@ -148,6 +151,8 @@ RotoPaint::getInputLabel (int inputNb) const
 {
     if (inputNb == ROTOPAINT_MASK_INPUT_INDEX) {
         return "Mask";
+    } else if (inputNb == ROTOPAINT_VECTORS_INPUT_INDEX) {
+        return kVectorFollowInputLabel;
     } else if (inputNb == 0) {
         return "Bg";
     } else {
@@ -158,10 +163,32 @@ RotoPaint::getInputLabel (int inputNb) const
     }
 }
 
+std::string
+RotoPaint::getInputHint(int inputNb) const
+{
+    if (inputNb == ROTOPAINT_VECTORS_INPUT_INDEX) {
+        return tr(kVectorFollowInputHint).toStdString();
+    }
+
+    return EffectInstance::getInputHint(inputNb);
+}
+
 bool
 RotoPaint::isInputMask(int inputNb) const
 {
     return inputNb == ROTOPAINT_MASK_INPUT_INDEX;
+}
+
+bool
+RotoPaint::isInputFirstOnSide(int inputNb) const
+{
+    return inputNb == ROTOPAINT_VECTORS_INPUT_INDEX;
+}
+
+int
+RotoPaint::getHostMaskInputNb() const
+{
+    return ROTOPAINT_MASK_INPUT_INDEX;
 }
 
 void
@@ -427,6 +454,11 @@ RotoPaint::initializeKnobs()
     addKnobToViewerUI(sourceType);
     addKnobToViewerUI(resetCloneOffset);
 
+    _vectorFollow.reset(new VectorFollowControls(this, _imp->ui.get(), ROTOPAINT_VECTORS_INPUT_INDEX));
+    KnobPagePtr shapePage = std::dynamic_pointer_cast<KnobPage>(getKnobByName("Shape"));
+    assert(shapePage);
+    _vectorFollow->createKnobs(generalPage, shapePage ? shapePage : generalPage);
+
     KnobPagePtr toolbar = _imp->ui->createToolbarKnobs(eRotoCurveToolSetAll | eRotoCurveToolSetObjectSelect);
     _imp->ui->createObjectSelectKnobs(generalPage);
 
@@ -620,6 +652,7 @@ RotoPaint::getPluginShortcuts(std::list<PluginActionShortcut>* shortcuts)
     shortcuts->push_back( PluginActionShortcut(kRotoUIParamPressureHardness, kRotoUIParamPressureHardnessLabel) );
     shortcuts->push_back( PluginActionShortcut(kRotoUIParamBuildUp, kRotoUIParamBuildUpLabel) );
     shortcuts->push_back( PluginActionShortcut(kRotoUIParamResetCloneOffset, kRotoUIParamResetCloneOffsetLabel) );
+    VectorFollowControls::getShortcuts(shortcuts);
 
     RotoCurveInteract::getToolbarShortcuts(eRotoCurveToolSetAll | eRotoCurveToolSetObjectSelect, shortcuts);
     shortcuts->push_back( PluginActionShortcut(kRotoUIParamPaintBrushToolButton, kRotoUIParamPaintBrushToolButtonLabel, Key_N) );
@@ -667,6 +700,9 @@ RotoPaint::onKnobsLoaded()
     _imp->ui->setCurrentTool(defaultAction);
     _imp->ui->onRoleChangedInternal(defaultRole);
     _imp->ui->onToolChangedInternal(defaultAction);
+    if (_vectorFollow) {
+        _vectorFollow->onKnobsLoaded();
+    }
 }
 
 bool
@@ -690,6 +726,9 @@ RotoPaint::knobChanged(KnobI* k,
     if (_imp->ui->onKnobChanged(k, time, &ret)) {
         return ret;
     }
+    if (_vectorFollow && _vectorFollow->onKnobChanged(k)) {
+        return true;
+    }
 
     return ctx->knobChanged(k, reason, view, time, originatedFromMainThread);
 } // RotoPaint::knobChanged
@@ -708,7 +747,7 @@ RotoPaint::getPreferredMetadataAt(double /*time*/,
                                   NodeMetadata& metadata)
 {
     metadata.setNComps( -1, 4 );
-    metadata.setComponentsType(-1, kNatronColorLayerID);
+    metadata.setComponentsType(-1, eImageComponentsTypeColor);
 
     return eStatusOK;
 }
@@ -724,16 +763,44 @@ RotoPaint::onInputChanged(int inputNb)
 }
 
 StatusEnum
-RotoPaint::getRegionOfDefinition(U64 hash,
+RotoPaint::getRegionOfDefinition(U64 /*hash*/,
                                  double time,
-                                 const RenderScale & scale,
+                                 const RenderScale& scale,
                                  ViewIdx view,
                                  RectD* rod)
 {
-    StatusEnum st = EffectInstance::getRegionOfDefinition(hash, time, scale, view, rod);
-
-    if (st != eStatusOK) {
-        rod->x1 = rod->y1 = rod->x2 = rod->y2 = 0.;
+    // The background inputs' union, without the Vectors input: only the follow tools read it.
+    // An input whose region fails adds nothing instead of failing the whole union: an empty
+    // region (a disabled node, an unconnected Read, an empty Roto) answers as a failure, and
+    // one such extra Bg would otherwise drop the main Bg and leave only the shapes' region.
+    rod->clear();
+    bool first = true;
+    for (int i = 0; i < getNInputs(); ++i) {
+        if (isInputMask(i) || (i == ROTOPAINT_VECTORS_INPUT_INDEX)) {
+            continue;
+        }
+        EffectInstancePtr input = getInput(i);
+        if (!input) {
+            continue;
+        }
+        RectD inputRod;
+        bool isProjectFormat;
+        StatusEnum st;
+        {
+            RenderContextPtr inputContext;
+            const bool overlaid = getInputActionContext(i, time, view, &inputContext);
+            ActionContextScope acting(overlaid, inputContext);
+            st = input->getRegionOfDefinition_public(input->getRenderHash(), time, scale, view, &inputRod, &isProjectFormat);
+        }
+        if ((st == eStatusFailed) || inputRod.isNull()) {
+            continue;
+        }
+        if (first) {
+            *rod = inputRod;
+            first = false;
+        } else {
+            rod->merge(inputRod);
+        }
     }
     RectD maskRod;
     getNode()->getRotoContext()->getMaskRegionOfDefinition(time, view, &maskRod);
@@ -779,6 +846,21 @@ RotoPaint::getRegionsOfInterest(double time,
         ret->insert( std::make_pair(bottomMerge->getEffectInstance(), renderWindow) );
     }
     EffectInstance::getRegionsOfInterest(time, scale, outputRoD, renderWindow, view, ret);
+
+    // The vectors are read by the follow tools, never rendered with the shapes.
+    EffectInstancePtr vectors = getInput(ROTOPAINT_VECTORS_INPUT_INDEX);
+    if (!vectors) {
+        return;
+    }
+    for (int i = 0; i < getNInputs(); ++i) {
+        if ((i != ROTOPAINT_VECTORS_INPUT_INDEX) && (getInput(i) == vectors)) {
+            return;
+        }
+    }
+    if (bottomMerge && (bottomMerge->getEffectInstance() == vectors)) {
+        return;
+    }
+    ret->erase(vectors);
 }
 
 bool
@@ -1142,6 +1224,12 @@ bool
 RotoPaint::isObjectSelectEncoding() const
 {
     return _imp->ui && _imp->ui->objectSelect && _imp->ui->objectSelect->isEncoding();
+}
+
+RotoCurvePanelHook*
+RotoPaint::getCurvePanelHook() const
+{
+    return _vectorFollow.get();
 }
 
 void

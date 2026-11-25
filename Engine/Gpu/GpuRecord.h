@@ -25,10 +25,11 @@ namespace gpu {
 
 class GpuPipelineCache;
 
-// One command buffer on the compute queue, or on the graphics queue for a raster context, recorded and
-// submitted by the thread that created it. Node code goes through this class and never sees a Vulkan handle.
+// One piece of work on the compute queue, or on the graphics queue for a raster context, recorded and submitted
+// by the thread that created it, in one command buffer unless chargeWork() split it. Node code goes through this
+// class and never sees a Vulkan handle.
 //
-// The command buffer comes from a pool owned by the registry and private to the creating
+// The command buffers come from a pool owned by the registry and private to the creating
 // thread, so a context must be used and destroyed on that thread.
 //
 // Buffers are exclusive to one queue family. A buffer that crosses between a compute context and a raster
@@ -211,6 +212,12 @@ public:
     // destroyed.
     void waitExternalSemaphore(VkSemaphore semaphore);
 
+    // For tests that need work left pending on the device: makes submit() and submitAndWait() also wait for
+    // `value`, a timeline semaphore value that may be signalled later, before any command of the context runs. The
+    // caller keeps the semaphore alive until the work is done. An aborted context drops the wait unless it also has
+    // an external semaphore to consume, as it then submits the waits alone.
+    void waitTimeline(TimelineValue value);
+
     // Keeps `object` alive until the context is destroyed, or for good when the device is lost with the
     // context's work in flight.
     void hold(std::shared_ptr<void> object);
@@ -234,21 +241,71 @@ public:
     // Writes the time at which every command recorded before it, in this buffer and before it on the queue, is done.
     void writeTimestamp(VkQueryPool pool, uint32_t query);
 
+    // Charges `work` to the open command buffer and, once it holds batchWork(), ends it and opens another, so a
+    // long multi-pass node runs as bounded submits that a caller's stop can fall between. Call it only where every
+    // later command may run in a later submit, which is anywhere after computeBarrier(): the barrier's scope
+    // spans command buffers in submission order. One unit of work is about one sampled value.
+    GpuStatus chargeWork(uint64_t work);
+
+    // The work a command buffer holds before chargeWork() ends it: what the device was last seen to finish in about
+    // a tenth of a second, or setBatchWorkForTests().
+    uint64_t batchWork() const;
+
+    // The command buffers the context's work is split into so far.
+    size_t batchCount() const { return finished_.size() + 1; }
+
+    // Overrides batchWork() in every context: 1 ends a buffer at every charge, UINT64_MAX never does; 0 removes the
+    // override.
+    static void setBatchWorkForTests(uint64_t work);
+
+    // The most work any command buffer chargeWork() ended held, over every context, since setBatchWorkForTests() was
+    // last called; only buffers ended under an override count.
+    static uint64_t largestBatchWorkForTests();
+
+    // Calls `hook` on the submitting thread after each command buffer but the last has finished, before `stop` is
+    // asked; an empty hook removes it.
+    static void setBatchFinishedHookForTests(const std::function<void()>& hook);
+
     // Ends the buffer, submits it and blocks until the queue finished it. The context cannot record afterwards.
     // Work still running after timeoutNs fails at once with VK_ERROR_DEVICE_LOST, through
     // GpuDevice::abandonInFlightWork(): what the context holds is parked, and the buffers the caller bound are not
-    // freed when it destroys them, so the work never writes released memory.
-    GpuStatus submitAndWait(uint64_t timeoutNs = 30'000'000'000ull);
+    // freed when it destroys them, so the work never writes released memory. A split context applies timeoutNs to
+    // each command buffer. `stop` is asked between command buffers and every 20 ms of a wait; once it returns
+    // true the call fails with VK_INCOMPLETE. A command buffer already submitted is then left to finish: the device
+    // keeps it, its fence and everything the context holds until it does (GpuDevice::retireWhenSignalled()), and the
+    // pooled buffers, buffers and textures the caller releases meanwhile are neither reused nor freed before then.
+    // Later work on the same queue is ordered after it by its own barriers, as submission order counts toward them;
+    // work on another queue is not ordered after it at all, so must not touch what it writes. The device is not
+    // treated as lost.
+    GpuStatus submitAndWait(uint64_t timeoutNs = 30'000'000'000ull, const std::function<bool()>& stop = {});
 
-    // Ends the buffer and submits it once every wait is reached, signalling `signal` when it is done, without
-    // blocking. The context holds the command buffer and its scratch buffers, so it must not be destroyed before
-    // `signal` is reached. An aborted context submits the waits and the signal alone, so `signal` is still
-    // reached, and returns GpuStatus::aborted.
-    GpuStatus submit(std::span<const TimelineValue> waits, TimelineValue signal);
+    // Ends the buffer and submits it once every wait is reached, signalling `signal` when it is done. The context
+    // holds the command buffer and its scratch buffers, so it must not be destroyed before `signal` is reached.
+    // Only a split context blocks: until all its command buffers but the last have finished, one at a time. When
+    // `stop` returns true meanwhile it fails with VK_INCOMPLETE and `signal` is never signalled; a command buffer
+    // already submitted is left to finish as submitAndWait() leaves one. An aborted context submits the waits and
+    // the signal alone, so `signal` is still reached, and returns GpuStatus::aborted.
+    GpuStatus submit(std::span<const TimelineValue> waits, TimelineValue signal, const std::function<bool()>& stop = {});
 
 private:
+    struct FinishedBatch {
+        VkCommandBuffer cmd = VK_NULL_HANDLE;
+        uint64_t work = 0;
+    };
+
     static GpuStatus createOn(QueueKind queue, GpuKernelRegistry& registry, std::unique_ptr<GpuRecordContext>& out,
                               GpuBufferPool* pool, GpuPipelineCache* pipelines, GpuTextureCache* textures);
+    GpuStatus beginCommandBuffer(VkCommandBuffer& out);
+    // A null `cmd` submits the waits alone.
+    GpuStatus submitFenced(VkCommandBuffer cmd, std::span<const VkSemaphoreSubmitInfo> waits, uint64_t timeoutNs,
+                           const std::function<bool()>& stop);
+    // Hands the submitted work behind `fence`, and everything the context holds, to GpuDevice::retireWhenSignalled().
+    void retireWork(VkFence fence);
+    std::shared_ptr<void> takeHoldings(std::shared_ptr<void> finalizer);
+    GpuStatus waitBeforeBatches(std::span<const TimelineValue> waits, uint64_t timeoutNs, const std::function<bool()>& stop);
+    GpuStatus runBatchesBeforeLast(std::span<const VkSemaphoreSubmitInfo> waits, uint64_t timeoutNs, const std::function<bool()>& stop);
+    void abandonWork(const char* what);
+    void touchBindings(std::span<const GpuBinding> bindings);
     void parkInFlightWork();
     std::vector<VkSemaphoreSubmitInfo> externalWaitInfos() const;
     GpuStatus checkBindable(const char* where, uint32_t binding, VkDeviceSize bytes) const;
@@ -286,10 +343,17 @@ private:
     std::vector<std::shared_ptr<GpuKernel>> kernels_;
     std::vector<std::shared_ptr<void>> heldObjects_;
     std::vector<VkSemaphore> externalWaits_;
+    std::vector<TimelineValue> timelineWaits_;
+    // Every buffer the commands read or write, for GpuDevice::retireWhenSignalled().
+    std::vector<VkBuffer> touched_;
     VkCommandPool pool_ = VK_NULL_HANDLE;
     VkCommandBuffer cmd_ = VK_NULL_HANDLE;
+    std::vector<FinishedBatch> finished_;
+    uint64_t work_ = 0;
     bool open_ = false;
     bool outOfMemory_ = false;
+    // The work was handed to the device to retire, which ends the registry's recording for it.
+    bool retired_ = false;
 
     const QueueKind queue_;
     std::function<bool()> abortCheck_;

@@ -475,12 +475,12 @@ try:
         return any(b.isChecked() for b in named("ColorGlobalModeButton"))
 
     def hud():
-        # The hint block's own window, by the pointer while engaged in Crosshair + reveal with no
-        # stroke; with a disc up the block is the reveal's child "ColorTrackballHudBlock".
+        # The pointer window holding the hint block, by the pointer while engaged in Crosshair +
+        # reveal with no stroke; with a disc up the block is the reveal's child instead.
         return first_named("ColorTrackballHudWindow")
 
     def hud_block():
-        return first_named("ColorTrackballHudWindow", True) or first_named("ColorTrackballHudBlock", True)
+        return first_named("ColorTrackballHudBlock", True)
 
     def hud_mode_text():
         w = hud_block()

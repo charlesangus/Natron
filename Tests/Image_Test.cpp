@@ -431,13 +431,13 @@ TEST(ImageConvertToFormatTest, XyToRgbaReadsBlueAndAlphaAsZero)
 // back from channel 0, so it must land in every channel, not only alpha.
 TEST(ImageConvertToFormatTest, NonColorPlanesKeepReplicationAndAlphaOne)
 {
-    const ImageLayerDesc depth("depth", "depth", "", std::vector<std::string>(1, "Z"));
+    const ImageLayerDesc depth("depth", std::vector<std::string>(1, "Z"));
     const std::vector<float> expectedDepth = { 0.7f, 0.7f, 0.7f, 0.7f };
 
     EXPECT_EQ(expectedDepth, convertOnePixel(depth, { 0.7f }, ImageLayerDesc::getRGBAComponents()));
 
     const std::vector<std::string> xyz = { "X", "Y", "Z" };
-    const ImageLayerDesc normals("normals", "normals", "", xyz);
+    const ImageLayerDesc normals("normals", xyz);
     const std::vector<float> expectedNormals = { 0.2f, 0.4f, 0.6f, 1.f };
 
     EXPECT_EQ(expectedNormals, convertOnePixel(normals, { 0.2f, 0.4f, 0.6f }, ImageLayerDesc::getRGBAComponents()));

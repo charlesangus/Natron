@@ -82,13 +82,13 @@ const double kTime = 1.;
 ImageLayerDesc
 uvMapLayer()
 {
-    return ImageLayerDesc("uvmap", "uvmap", "UV", std::vector<std::string> { "U", "V" });
+    return ImageLayerDesc("uvmap", std::vector<std::string> { "U", "V" });
 }
 
 ImageLayerDesc
 uOnlyLayer()
 {
-    return ImageLayerDesc("uonly", "uonly", "U", std::vector<std::string> { "U" });
+    return ImageLayerDesc("uonly", std::vector<std::string> { "U" });
 }
 
 /**

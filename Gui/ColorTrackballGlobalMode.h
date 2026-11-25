@@ -61,8 +61,10 @@ class QWheelEvent;
 
 NATRON_NAMESPACE_ENTER
 
-class ColorTrackballHudBlock;
+class ColorTrackballGlobalModeTestAccess;
+class ColorTrackballPointerHud;
 struct ColorTrackballHudState;
+struct ColorTrackballRevealLabels;
 class ColorTrackballReveal;
 class WindowHighlightFrame;
 
@@ -157,6 +159,13 @@ struct ColorGlobalModeFeedbackState {
 bool colorGlobalModeReturnPointer(const QPoint& target);
 
 ColorGlobalModeFeedbackState colorGlobalModeFeedbackState(Settings::ColorTrackballFeedbackEnum feedback, bool engaged, bool strokeActive);
+
+/**
+ * @brief Brings the pointer window in line with state: hidden unless the hint block follows
+ * the pointer, otherwise showing the target's direction labels (none where they are empty, as
+ * in C) and hudState, placed by the pointer at globalPointer.
+ **/
+void colorGlobalModeSyncPointerHud(ColorTrackballPointerHud& hud, const ColorGlobalModeFeedbackState& state, const ColorTrackballRevealLabels& labels, const ColorTrackballHudState& hudState, const QPoint& globalPointer);
 
 /**
  * @brief The feedback global mode works with. A change arriving mid-stroke is held until the
@@ -354,6 +363,7 @@ public:
     virtual bool handleKey(int key, Qt::KeyboardModifiers modifiers, bool strokeActive) OVERRIDE FINAL;
     virtual void fillHudState(ColorTrackballHudState* state) const OVERRIDE FINAL;
     virtual void syncReveal(ColorTrackballReveal* reveal, bool strokeActive) OVERRIDE FINAL;
+    virtual ColorTrackballRevealLabels directionLabels() const OVERRIDE FINAL;
 
     ColorGlobalModeEnum getMode() const
     {
@@ -535,6 +545,8 @@ Q_SIGNALS:
     void knobListEndReached(int direction);
 
 private:
+    friend class ColorTrackballGlobalModeTestAccess;
+
     explicit ColorTrackballGlobalMode(Gui* gui);
 
     void setTarget(const std::shared_ptr<GlobalModeTarget>& target);
@@ -545,10 +557,11 @@ private:
     ColorGlobalModeTarget* getColorTarget() const;
     void setGear(double gearFactor);
 
-    ColorTrackballHudBlock* ensureHudBlock();
+    ColorTrackballPointerHud* ensurePointerHud();
     ColorTrackballReveal* ensureReveal();
     void syncReveal();
-    void syncHudBlock(const ColorGlobalModeFeedbackState& state);
+    void syncPointerHud(const ColorGlobalModeFeedbackState& state, const std::shared_ptr<GlobalModeTarget>& target);
+    void followPointer(const QPoint& globalPos);
     void showChrome();
     void hideChrome();
     ColorTrackballHudState hudState() const;
@@ -607,7 +620,7 @@ private:
     QPoint _pointerPos;
     QPoint _strokeStartPos;
 
-    QPointer<ColorTrackballHudBlock> _hudBlock;
+    QPointer<ColorTrackballPointerHud> _pointerHud;
     QPointer<ColorTrackballReveal> _reveal;
     bool _revealFollowing;
     std::vector<QPointer<WindowHighlightFrame>> _highlightFrames;

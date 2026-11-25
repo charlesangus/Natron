@@ -225,7 +225,7 @@ future core work has solid ground to build on.
 | M360 | Geometry Kernel Language | done | M54 | | E9 | F15 | | [M360-geometry-kernel-language.md](PLAN/MILESTONES/M360-geometry-kernel-language.md) |
 | M361 | Geometry Point Editing | done | M358, M359, M360, M376 | | E9 | F15 | | [M361-geometry-point-editing.md](PLAN/MILESTONES/M361-geometry-point-editing.md) |
 | M362 | Geometry Operators II | todo | M359, M360 |  | E9 | F21 | | [M362-geometry-operators-ii.md](PLAN/MILESTONES/M362-geometry-operators-ii.md) |
-| M363 | Geometry Display Extras | todo | M358, M376 |  | E9 |  | | [M363-geometry-display-extras.md](PLAN/MILESTONES/M363-geometry-display-extras.md) |
+| M363 | Geometry Display Extras | todo | M358, M376, M607 |  | E9 |  | | [M363-geometry-display-extras.md](PLAN/MILESTONES/M363-geometry-display-extras.md) |
 | M402 | Geometry Loops | doing | M180, M181, M190, M359, M360 | bosley-executor | E22 | F18 | | [M402-geometry-loops.md](PLAN/MILESTONES/M402-geometry-loops.md) |
 | M403 | Geometry File Cache | done | M54, M359 |  | E22 | F18 | | [M403-geometry-file-cache.md](PLAN/MILESTONES/M403-geometry-file-cache.md) |
 | M404 | Geometry Solver | doing | M402, M403 | bosley-executor | E22 | F18 | | [M404-geometry-solver.md](PLAN/MILESTONES/M404-geometry-solver.md) |
@@ -658,6 +658,18 @@ future core work has solid ground to build on.
 | M599 | Runner Efficiency | doing | - | bosley-executor | E2 | | | [M599-runner-efficiency.md](PLAN/MILESTONES/M599-runner-efficiency.md) |
 | M600 | Native Geometry UAT Round 2 | doing | - | bosley-executor | E9 | F15 | | [M600-native-geometry-uat-round-2.md](PLAN/MILESTONES/M600-native-geometry-uat-round-2.md) |
 | M601 | Every Render A Scheduler Task | todo | M199 |  | E14 | | | [M601-every-render-a-scheduler-task.md](PLAN/MILESTONES/M601-every-render-a-scheduler-task.md) |
+| M602 | 3D Viewer Toolbars | todo | M376, M361 |  | E28 | F40 | | [M602-3d-viewer-toolbars.md](PLAN/MILESTONES/M602-3d-viewer-toolbars.md) |
+| M603 | Combined Transform Handle | todo | M602 |  | E28 | F40 | | [M603-combined-transform-handle.md](PLAN/MILESTONES/M603-combined-transform-handle.md) |
+| M604 | GeoTransform Viewer Handles | todo | M603 |  | E28 | F40 | | [M604-geotransform-viewer-handles.md](PLAN/MILESTONES/M604-geotransform-viewer-handles.md) |
+| M605 | GeoEdit Component Transforms | todo | M603 |  | E28 | F40 | | [M605-geoedit-component-transforms.md](PLAN/MILESTONES/M605-geoedit-component-transforms.md) |
+| M606 | Viewer Snapping | todo | M603 |  | E28 | F40 | | [M606-viewer-snapping.md](PLAN/MILESTONES/M606-viewer-snapping.md) |
+| M607 | Geometry Marker Controls | todo | M602 |  | E28 | F40 | | [M607-geometry-marker-controls.md](PLAN/MILESTONES/M607-geometry-marker-controls.md) |
+| M608 | Geometry Group Picker | todo | M602, M359 |  | E28 | F40 | | [M608-geometry-group-picker.md](PLAN/MILESTONES/M608-geometry-group-picker.md) |
+| M609 | GeoToUSD Path And Placement | todo | M358 |  | E9 |  | | [M609-geotousd-path-and-placement.md](PLAN/MILESTONES/M609-geotousd-path-and-placement.md) |
+| M610 | GeoToUSD Attribute And Material Controls | todo | M609 |  | E9 |  | | [M610-geotousd-attribute-and-material-controls.md](PLAN/MILESTONES/M610-geotousd-attribute-and-material-controls.md) |
+| M611 | USDToGeo Source Controls | todo | M358 |  | E9 |  | | [M611-usdtogeo-source-controls.md](PLAN/MILESTONES/M611-usdtogeo-source-controls.md) |
+| M612 | USDGeoModify Node | todo | M609, M610, M611, M159 |  | E9 |  | | [M612-usdgeomodify-node.md](PLAN/MILESTONES/M612-usdgeomodify-node.md) |
+| M613 | Geometry Node Handles Rollout | todo | M604 |  | E28 |  | | [M613-geometry-node-handles-rollout.md](PLAN/MILESTONES/M613-geometry-node-handles-rollout.md) |
 
 # Epics
 
@@ -690,6 +702,7 @@ future core work has solid ground to build on.
 | E25 | Kernel Networks | Build kernel code as node graphs: geometry, particle and image VOPs on the generic port-network core, plus an image wrangle. |
 | E26 | Channel Networks | Drive animation from channel networks: cooked channel graphs exported onto knobs and shapes, with sources and animation layers. |
 | E27 | Scene Authoring And Lighting | Close the feature-gap survey: prim, collection and light-link authoring, render attributes and regions, light mixing, render catalogue, restructure and instance edits, and scene inspection. |
+| E28 | 3D Viewer Tools | Edit scenes and native geometry directly in the 3D viewer: tool, display and top toolbars, transform handles, snapping, marker controls and group pickers. |
 
 # Features
 
@@ -734,6 +747,7 @@ future core work has solid ground to build on.
 | F37 | Scene Graph Bulk Ops | open |  |  | feature/f37-scene-graph-bulk-ops | Load, draw and expand whole Scene Graph branches in one action, by row or down to a kind, with a Purpose column. |
 | F38 | Scene Authoring And Lighting | open |  |  | feature/f38-scene-authoring-and-lighting | The survey-driven scene authoring and lighting set (M562–M581): relationship, tweak, metadata and layer editing, collections, light linking and mixing, render attributes and regions, catalogue, restructure, instances, constraints, queries, inspection and load masks. |
 | F39 | Edge Extend Family | open |  |  | feature/f39-edge-extend-family | Native edge-extend nodes (EdgePush, EdgeClamp, EdgeSmear, EdgePushVector, EdgeDistort) on a shared fill kit, plus EdgeDetail for restoring detail. |
+| F40 | 3D Viewer Tools | open |  |  | feature/f40-3d-viewer-tools | Three-bar 3D viewer toolbars, a combined transform handle, geometry handles and component transforms, snapping, marker controls and group pickers, accepted in one UAT. |
 
 # Open questions
 - **M104 - Merge Resolution UI (2026-11-22):** Keep Both Keys puts theirs' key one frame after mine, or halfway to the next key when that's closer. Confirm, or give the rule you want.

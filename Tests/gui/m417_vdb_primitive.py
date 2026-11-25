@@ -7,7 +7,8 @@ float grid named "density"; $NATRON_M417_VDB overrides its path. The script chec
     volume's bounding box, and the pixels near it are the guide colour;
   - the volume is drawn: with the grid hidden and the Viewer's gain at 3 f-stops, the centre of the
     framed view differs from the empty view's background;
-  - with Viewer1 on the USDRender (Storm), the render's centre differs from its corner.
+  - with Viewer1 on the USDRender (Storm) showing alpha, the render's centre differs from its
+    corner.
 
 Screenshots for sign-off: m417-volume-scene, m417-volume-drawn, m417-volume-empty, m417-volume-render.
 
@@ -28,6 +29,8 @@ SEARCH_RADIUS = 4
 COLOUR_DIFFERENCE = 24
 PATCH_RADIUS = 4
 VOLUME_GAIN_STOPS = 3.0
+# The Viewer's displayChannels entry that shows the alpha channel.
+DISPLAY_ALPHA = 5
 
 try:
     import NatronEngine
@@ -192,6 +195,11 @@ try:
         require(viewer.connectInput(0, render), "connect the Viewer to the USDRender")
         ok = yield ("until", lambda: any(w.isVisible() for w in widgets_of("ViewerGL")), POLL_TIMEOUT_S)
         require(ok, "the image viewer is up")
+        # Without scene lights Storm's default volume only absorbs, so its colour is black over the
+        # black background; the volume shows in the alpha Storm writes, 1 - transmittance.
+        channels = viewer.getParam("displayChannels")
+        require(channels is not None, "the Viewer has a displayChannels parameter")
+        channels.set(DISPLAY_ALPHA)
         yield ("sleep", 3000)
         report("NOTE viewer messages %r" % (viewer_messages(),))
         gl = [w for w in widgets_of("ViewerGL") if w.isVisible()][0]

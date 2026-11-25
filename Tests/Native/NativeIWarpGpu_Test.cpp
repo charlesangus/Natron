@@ -36,6 +36,7 @@
 #include "BaseTest.h"
 #include "Native/FilterKnobRenderChecks.h"
 #include "Native/NativeGpuParity.h"
+#include "Native/SplineWarpTestCurves.h"
 #include "NativeParity.h"
 
 #include "Engine/AppInstance.h"
@@ -53,6 +54,7 @@
 #include "Engine/Nodes/Transform/CornerPin.h"
 #include "Engine/Nodes/Transform/ICornerPin.h"
 #include "Engine/Nodes/Transform/ITransform.h"
+#include "Engine/Nodes/Transform/SplineWarp/SplineWarp.h"
 #include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/Project.h"
 #include "Engine/RectI.h"
@@ -71,6 +73,29 @@ const RectI kWindow(0, 0, kParitySourceWidth, kParitySourceHeight);
 // The resampler's own CPU and GPU bound: the GPU evaluates the matrix curve and the sample point
 // in two floats where the CPU uses doubles, and both round the point to float.
 const ParityTolerance kWarpTolerance = ParityTolerance::resampling();
+
+// The pixels of a packed image of window more than margin pixels inside its edges.
+std::vector<float>
+interiorOf(const std::vector<float>& pixels,
+           const RectI& window,
+           int margin)
+{
+    const std::size_t area = (std::size_t)window.width() * window.height();
+    const std::size_t nComps = area ? pixels.size() / area : 0;
+    std::vector<float> interior;
+    for (int y = margin; y < window.height() - margin; ++y) {
+        for (int x = margin; x < window.width() - margin; ++x) {
+            const std::size_t at = ((std::size_t)y * window.width() + x) * nComps;
+            interior.insert(interior.end(), pixels.begin() + at, pixels.begin() + at + nComps);
+        }
+    }
+
+    return interior;
+}
+
+// A chain of map steps samples past the edges of the image upstream, where a frame rendered
+// through it may differ, so a concatenated frame is held to the CPU one in its interior.
+const int kChainInteriorMargin = 4;
 
 GpuQuery
 eligibleQuery()
@@ -484,4 +509,51 @@ TEST_F(NativeIWarpGpuTest, MaskedMatchesTheCpu)
     ASSERT_TRUE(setKnobValues(node, kOfxMixParamName, { 0.5 }));
 
     expectParity(std::vector<NodePtr>({ node }), node, "mask, mix 0.5");
+}
+
+// A SplineWarp concatenated into the Source of ITransform and ICornerPin is sampled through on the
+// GPU, and pixels the Map holds at 0 read the Source upstream where the chain takes their centres.
+// Matrix-only chains are never concatenated into them, so a Transform upstream renders on its own.
+TEST_F(NativeIWarpGpuTest, ConcatenatedWarpsMatchTheCpu)
+{
+    for (bool spline : { false, true }) {
+        NodePtr source = makeParitySource();
+        ASSERT_TRUE(bool(source));
+        NodePtr upstream = createNode(QString::fromUtf8(spline ? PLUGINID_NATRON_SPLINEWARP : PLUGINID_NATRON_TRANSFORM),
+                                      spline ? PLUGIN_MAJOR_NATRON_SPLINEWARP : PLUGIN_MAJOR_NATRON_TRANSFORM);
+        ASSERT_TRUE(bool(upstream));
+        connectNodes(source, upstream, 0, true);
+        if (spline) {
+            ASSERT_TRUE(setKnobValues(upstream, kSplineWarpParamBoundaryBBox, { 0. }));
+            ASSERT_TRUE(bool(SplineWarpTestCurves::linkQuad(SplineWarpTestCurves::contextOf(upstream), 32., 24., 12., 2., -1.5, 1.05)));
+        } else {
+            ASSERT_TRUE(setKnobValues(upstream, kTransformNodeParamCenter, { 32., 24. }));
+            ASSERT_TRUE(setKnobValues(upstream, kTransformNodeParamRotate, { 6. }));
+        }
+        NodePtr map = makeParitySource();
+        NodePtr itransform = makeITransform(upstream, map);
+        NodePtr icornerpin = makeICornerPin(upstream, map);
+        ASSERT_TRUE(itransform && icornerpin);
+
+        for (const NodePtr& node : { itransform, icornerpin }) {
+            const std::string name = node->getPluginID() + (spline ? " after a SplineWarp" : " after a Transform");
+            for (const char* filter : { "impulse", "cubic" }) {
+                ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string(filter)));
+                const EndToEndResult result = renderEndToEnd(std::vector<NodePtr>({ upstream, node }), node, kWindow, kTime);
+                if (result.skipped) {
+                    return;
+                }
+                const std::string what = name + ", " + filter;
+                ASSERT_TRUE(result.ok) << what << ": " << result.error;
+                EXPECT_TRUE(result.ranInRegion(node)) << what;
+                EXPECT_EQ(1u, result.gpuTasksPerNode.count(node->getScriptName_mt_safe())) << what << ": the region fell back to the CPU";
+                EXPECT_EQ(spline ? 0u : 1u, result.gpuTasksPerNode.count(upstream->getScriptName_mt_safe())) << what << (spline ? ": the concatenated warp rendered" : ": the upstream Transform did not render");
+                EXPECT_TRUE(result.cpuFallbackReasons.empty()) << what;
+                ASSERT_EQ(result.cpu.size(), result.gpu.size()) << what;
+                const ImageDiff diff = compareImages(interiorOf(result.cpu, kWindow, kChainInteriorMargin), interiorOf(result.gpu, kWindow, kChainInteriorMargin), kWarpTolerance);
+                EXPECT_GT(diff.compared, 0u) << what;
+                EXPECT_EQ(0u, diff.mismatches) << what << ": first at interior float " << diff.firstMismatchIndex << ", worst " << diff.worstAbsolute << " at interior float " << diff.worstIndex;
+            }
+        }
+    }
 }

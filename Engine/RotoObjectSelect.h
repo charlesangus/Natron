@@ -152,7 +152,9 @@ public:
     // The prompts are for one frame: moving to another drops them.
     void onTimeChanged(double time);
 
-    void buildOverlay(OverlayDrawListPen& pen);
+    // Text pinned to the viewport goes to viewportPen, which is drawn without the overlay's path
+    // transform.
+    void buildOverlay(OverlayDrawListPen& pen, OverlayDrawListPen& viewportPen);
     // Appends to hasher everything buildOverlay() draws from.
     void appendOverlaySignature(ContentHasher* hasher) const;
     bool penDown(double time, const QPointF& pos, bool negative);

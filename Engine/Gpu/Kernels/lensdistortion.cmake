@@ -1,1 +1,2 @@
 slang_add_kernel(lensdistortion Kernels/lensdistortion.slang ENTRY lensdistortion_main REGISTRY NatronGpu)
+slang_add_kernel(lensdistortion_chain Kernels/lensdistortion.slang ENTRY lensdistortion_main REGISTRY NatronGpu FLAGS -DWARP_CHAIN)

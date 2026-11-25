@@ -223,7 +223,7 @@ public:
 
     /**
      * @brief For a Resample op, resampleTransform() at time, view and renderScale; the default
-     * reply for every other op.
+     * reply for every other op, and for the offset form while a mask is applied or mix is not 1.
      **/
     virtual StatusEnum getTransform(double time,
                                     const RenderScale& renderScale,
@@ -231,6 +231,17 @@ public:
                                     ViewIdx view,
                                     EffectInstancePtr* inputToTransform,
                                     Transform::Matrix3x3* transform) OVERRIDE WARN_UNUSED_RETURN;
+
+    /**
+     * @brief For a Resample op, resampleTransform() at time, view and renderScale unless a mask
+     * applies or the mix is 0, whatever the mix otherwise; getTransform() for every other op.
+     **/
+    virtual StatusEnum getOverlayTransform(double time,
+                                           const RenderScale& renderScale,
+                                           bool draftRender,
+                                           ViewIdx view,
+                                           EffectInstancePtr* inputToTransform,
+                                           Transform::Matrix3x3* transform) OVERRIDE WARN_UNUSED_RETURN;
 
     /**
      * @brief The input a Point, Passes or Resample op reads and the stages blend against: the
@@ -338,6 +349,21 @@ protected:
      **/
     virtual std::optional<EdgeMode> getConcatenationEdgeMode(double time,
                                                              ViewIdx view) const OVERRIDE WARN_UNUSED_RETURN;
+
+    /**
+     * @brief For an op with a matrix, its source unless the op blurs over several matrices: the
+     * CPU resample maps each pixel centre through one matrix and then the chain.
+     **/
+    virtual bool acceptsInverseWarpChain(int inputNb,
+                                         double time,
+                                         ViewIdx view) const OVERRIDE WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The radius of opResample()'s filter.
+     **/
+    virtual double getInverseWarpChainFilterSupport(int inputNb,
+                                                    double time,
+                                                    ViewIdx view) const OVERRIDE WARN_UNUSED_RETURN;
 
     /**
      * @brief Where route() chooses an input, whatever the op kind, only that input at the time
@@ -576,6 +602,13 @@ protected:
         return false;
     }
 
+protected:
+    /**
+     * @brief The MaskMix and PassThroughUnprocessed stages as they stand at time and view.
+     **/
+    ResampleRegionStages getResampleRegionStages(double time,
+                                                 ViewIdx view) const WARN_UNUSED_RETURN;
+
 private:
     /**
      * @brief The persistent error for a source at the wrong raw stage at time and view, or
@@ -599,9 +632,6 @@ private:
      * them, in an otherwise empty plan.
      **/
     StagePlan resolveSourcesPlan(double time, ViewIdx view, const ImageLayerDesc& plane) const WARN_UNUSED_RETURN;
-
-    ResampleRegionStages getResampleRegionStages(double time,
-                                                 ViewIdx view) const WARN_UNUSED_RETURN;
 
     StageKnobs _stageKnobs;
     mutable StageGpuShaderGate _gpuShaderGate;

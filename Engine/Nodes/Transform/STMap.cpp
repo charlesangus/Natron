@@ -29,6 +29,8 @@
 #include <bitset>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <utility>
@@ -38,6 +40,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
 #include "Engine/Image.h"
+#include "Engine/InverseWarpChain.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -47,6 +50,7 @@
 #include "Engine/Nodes/Image/StagePlan.h"
 #include "Engine/Nodes/KnobReader.h"
 #include "Engine/Nodes/Transform/WarpGpu.h"
+#include "Engine/OverlayMapFetch.h"
 #include "Engine/TimeLine.h"
 
 #ifdef NATRON_HAVE_GPU
@@ -119,6 +123,38 @@ RectI
 uvEdgeBounds(const UVPlane& plane)
 {
     return (plane.access && (plane.edgeMode == EdgeMode::Stretch)) ? plane.bounds : RectI();
+}
+
+// One source-pixel coordinate folded into [lo, hi) the way the render's resampler does it; a
+// coordinate left non-finite is outside the source.
+double
+wrapSourceCoord(double s,
+                Resampler::WrapMode mode,
+                double lo,
+                double hi)
+{
+    const double w = hi - lo;
+    if (!(w > 0.)) {
+        return s;
+    }
+    switch (mode) {
+    case Resampler::eWrapClamp:
+        return std::min(std::max(s, lo + 0.5), hi - 0.5);
+    case Resampler::eWrapRepeat:
+        return std::isfinite(s) ? s - w * std::floor((s - lo) / w) : s;
+    case Resampler::eWrapMirror:
+        if (std::isfinite(s)) {
+            const double r = (s - lo) - 2. * w * std::floor((s - lo) / (2. * w));
+
+            return lo + ((r <= w) ? r : (2. * w - r));
+        }
+
+        return s;
+    case Resampler::eWrapNone:
+        break;
+    }
+
+    return s;
 }
 } // namespace
 
@@ -427,6 +463,197 @@ STMap::getSourceDomain(double time,
     return !domain->isNull();
 }
 
+namespace {
+U64
+mixHash(U64 h,
+        U64 v)
+{
+    h ^= v + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+
+    return h;
+}
+
+U64
+mixHash(U64 h,
+        double v)
+{
+    U64 bits = 0;
+
+    std::memcpy(&bits, &v, sizeof(bits));
+
+    return mixHash(h, bits);
+}
+} // anon namespace
+
+OverlayPointMap::Result
+STMap::mapOverlayPoint(double time,
+                       ViewIdx view,
+                       int inputNb,
+                       OverlayPointMap::Direction direction,
+                       const Point& in,
+                       Point* out)
+{
+    if ((inputNb != kSTMapInputSource) || !getInput(kSTMapInputSource) || !getInput(kSTMapInputUV) || (getMixValue(time, view) == 0.)) {
+        return OverlayPointMap::eIdentity;
+    }
+    RectI domain;
+    if (!getSourceDomain(time, view, RenderScale::identity, &domain)) {
+        return OverlayPointMap::eUnmappable;
+    }
+    Settings settings;
+    readSettings(time, view, &settings);
+    UVChannel uvChannels[2];
+    resolveUVChannels(time, view, &uvChannels[0], &uvChannels[1]);
+    std::vector<OverlayMapFetch::Channel> channels;
+    int uIndex = -1;
+    int vIndex = -1;
+    for (int i = 0; i < 2; ++i) {
+        if (!uvChannels[i].valid) {
+            continue;
+        }
+        OverlayMapFetch::Channel c;
+        c.layer = uvChannels[i].layer;
+        c.index = uvChannels[i].channel;
+        (i == 0 ? uIndex : vIndex) = (int)channels.size();
+        channels.push_back(c);
+    }
+    // UV Alpha gates on the alpha of the layer U (else V) reads from, as the render does.
+    int alphaIndex = -1;
+    if (settings.uvAlpha && !channels.empty()) {
+        const UVChannel alpha = uvAlphaChannel(uvChannels[0], uvChannels[1]);
+        if (alpha.valid) {
+            OverlayMapFetch::Channel c;
+            c.layer = alpha.layer;
+            c.index = alpha.channel;
+            alphaIndex = (int)channels.size();
+            channels.push_back(c);
+        }
+    }
+    const EffectInstancePtr self = shared_from_this();
+    OverlayPointMap::Result fetched = OverlayPointMap::eMapped;
+    OverlayMapFetch::MapImageConstPtr uv;
+    if (!channels.empty()) {
+        uv = OverlayMapFetch::fetch(self, kSTMapInputUV, time, view, channels, &fetched);
+        if (!uv) {
+            return fetched;
+        }
+    }
+    const NodeMetadataConstPtr metadata = getMetadata(time, view);
+    const double outputPar = metadata ? metadata->getPixelAspectRatio(-1) : 1.;
+    const double sourcePar = metadata ? metadata->getPixelAspectRatio(kSTMapInputSource) : 1.;
+    const bool mapped = (bool)getInput(kSTMapInputMap);
+    const MapOverlaySampler mapSampler = _map.overlaySampler(self, kSTMapInputMap, time, view);
+    if (mapped && (mapSampler.status() == OverlayPointMap::eUnmappable)) {
+        return OverlayPointMap::eUnmappable;
+    }
+    // A pending Map leaves the point unmoved until its copy arrives.
+    const bool mapPending = mapped && (mapSampler.status() == OverlayPointMap::ePending);
+    const OverlayPointMap::PointFn toSource = [&](const Point& p, Point* s) {
+        float values[3] = { 0.f, 0.f, 1.f };
+        if (uv && !uv->sample(p.x, p.y, values)) {
+            return OverlayPointMap::eUnmappable;
+        }
+        float alpha = 1.f;
+        if (uv && (alphaIndex >= 0)) {
+            // The render gates per pixel, so the alpha is that of the pixel holding p.
+            const double scale = (double)(1u << uv->mipmapLevel);
+            const int ax = std::min(uv->bounds.x2 - 1, std::max(uv->bounds.x1, (int)std::floor(p.x / (scale * uv->par))));
+            const int ay = std::min(uv->bounds.y2 - 1, std::max(uv->bounds.y1, (int)std::floor(p.y / scale)));
+            const float* pix = uv->pixel(ax, ay);
+            if (!pix) {
+                return OverlayPointMap::eUnmappable;
+            }
+            alpha = pix[alphaIndex];
+        }
+        const double uRaw = (uIndex >= 0) ? values[uIndex] : 0.;
+        const double vRaw = (vIndex >= 0) ? values[vIndex] : 0.;
+        const double u = (uRaw - settings.uOffset) * settings.uScale;
+        const double v = (vRaw - settings.vOffset) * settings.vScale;
+        double px = domain.x1 + u * domain.width();
+        double py = domain.y1 + v * domain.height();
+        bool pinned = false;
+        bool gated = true;
+        if (mapped) {
+            const double m = mapSampler.value(p);
+            const double cx = p.x / outputPar;
+            const double cy = p.y;
+            px = cx + (px - cx) * m;
+            py = cy + (py - cy) * m;
+            // A Map of 0 or less is not gated by UV Alpha, and where it is 0 the pixel is the Source
+            // pixel itself, never wrapped.
+            pinned = (m == 0.);
+            gated = (m > 0.);
+        }
+        if (gated && !(alpha > 0.f)) {
+            return OverlayPointMap::eUnmappable;
+        }
+        if (!pinned) {
+            px = wrapSourceCoord(px, settings.wrapU, domain.x1, domain.x2);
+            py = wrapSourceCoord(py, settings.wrapV, domain.y1, domain.y2);
+        }
+        s->x = px * sourcePar;
+        s->y = py;
+        if (!std::isfinite(s->x) || !std::isfinite(s->y)) {
+            return OverlayPointMap::eUnmappable;
+        }
+
+        return OverlayPointMap::eMapped;
+    };
+    OverlayPointMap::Result result = OverlayPointMap::eUnmappable;
+    if (direction == OverlayPointMap::eDirectionInverse) {
+        result = toSource(in, out);
+    } else if (uv) {
+        U64 key = mixHash((U64)0, (U64)(std::uintptr_t)this);
+        for (const double v : { settings.uOffset, settings.vOffset, settings.uScale, settings.vScale, outputPar, sourcePar,
+                                (double)domain.x1, (double)domain.y1, (double)domain.x2, (double)domain.y2 }) {
+            key = mixHash(key, v);
+        }
+        key = mixHash(key, (U64)settings.wrapU);
+        key = mixHash(key, (U64)settings.wrapV);
+        key = mixHash(key, (U64)(alphaIndex >= 0 ? 1 : 0));
+        key = mixHash(key, (U64)(mapped ? getInput(kSTMapInputMap)->getHash() : 0));
+        // The node's own hash covers its Map knobs (invert, response, gamma).
+        key = mixHash(key, getHash());
+        const RectD sourceRegion(domain.x1 * sourcePar, domain.y1, domain.x2 * sourcePar, domain.y2);
+        const std::function<std::shared_ptr<const OverlayPointMap::SeedGrid>()> buildSeeds = [&]() {
+            std::shared_ptr<OverlayPointMap::SeedGrid> grid = std::make_shared<OverlayPointMap::SeedGrid>(sourceRegion, uv->bounds.width(), uv->bounds.height());
+            for (int y = uv->bounds.y1; y < uv->bounds.y2; ++y) {
+                for (int x = uv->bounds.x1; x < uv->bounds.x2; ++x) {
+                    const Point c = uv->pixelCentre(x, y);
+                    Point s;
+                    if (toSource(c, &s) == OverlayPointMap::eMapped) {
+                        grid->add(s, c);
+                    }
+                }
+            }
+            grid->fillHoles();
+
+            return std::shared_ptr<const OverlayPointMap::SeedGrid>(grid);
+        };
+        // A grid scattered with the Map read as 1 is wrong once the Map arrives, so it is not kept.
+        const std::shared_ptr<const OverlayPointMap::SeedGrid> seeds = mapPending ? buildSeeds() : uv->seedGrid(key, buildSeeds);
+        Point seed = *out;
+        if (seeds && !seeds->lookup(in, &seed)) {
+            return mapPending ? OverlayPointMap::ePending : OverlayPointMap::eUnmappable;
+        }
+        OverlayPointMap::InvertOptions options;
+        // The UV copy holds floats, which bounds how closely the polish can land.
+        options.tolerance = 1e-4;
+        result = OverlayPointMap::invertNumerically(toSource, in, seed, out, options);
+    } else {
+        return OverlayPointMap::eUnmappable;
+    }
+
+    return mapPending ? OverlayPointMap::ePending : result;
+} // STMap::mapOverlayPoint
+
+OverlayPointMap::Kind
+STMap::overlayMapKind(double time,
+                      ViewIdx view)
+{
+    return (getInput(kSTMapInputSource) && getInput(kSTMapInputUV) && (getMixValue(time, view) != 0.)) ? OverlayPointMap::eKindNonLinear : OverlayPointMap::eKindNone;
+}
+
 Route
 STMap::route(double time,
              ViewIdx view)
@@ -605,6 +832,15 @@ STMap::renderOp(const RenderActionArgs& args,
     RectI domain;
     const bool hasDomain = getSourceDomain(args.time, args.view, args.mappedScale, &domain);
 
+    // With warps concatenated into the Source, the image fetched is upstream of them: each
+    // coordinate is wrapped in this node's Source as ever, then taken on through them.
+    const NodeMetadataConstPtr metadata = getRenderMetadata(args.time, args.view);
+    const double par = metadata ? metadata->getPixelAspectRatio(-1) : 1.;
+    const InverseWarpChainConstPtr chain = hasDomain ? getPreparedWarpChain(kSTMapInputSource, args.time, args.view, args.mappedScale, PassExec::toCanonical(args.roi, args.mappedScale, par)) : InverseWarpChainConstPtr();
+    if (chain && chain->hasError()) {
+        return eStatusFailed;
+    }
+
     // The Map, copied out over the window grown by one pixel, for the Jacobians, before any image
     // is locked: fetching renders upstream.
     const bool mapped = hasDomain && getInput(kSTMapInputMap);
@@ -716,8 +952,29 @@ STMap::renderOp(const RenderActionArgs& args,
                 }
                 source = Resampler::SourceImage(&converted[0], srcBounds, nComps);
             }
+            if (chain && src) {
+                source = source.cropped(chain->getSourcePixels(src->getPixelAspectRatio()));
+            }
         }
         const bool sampled = (bool)src;
+        const bool chained = sampled && chain;
+
+        // n coordinates (sx, sy) of this node's Source, with Jacobians J (null for the identity),
+        // wrapped unless wrap is false, through the chain and sampled into out.
+        const auto sampleThroughChain = [&](const float* sx, const float* sy, const float* J, int n, bool wrap, float* out) {
+            // runStagesCpu() hands rows to any of its threads, so the scratch is per thread.
+            thread_local Resampler::ChainRowScratch chainRow;
+            chainRow.resize((std::size_t)n, jacobians);
+            for (int i = 0; i < n; ++i) {
+                chainRow.x[i] = sx[i];
+                chainRow.y[i] = sy[i];
+            }
+            chainRow.loadJacobians((std::size_t)n, J);
+            if (wrap) {
+                Resampler::wrapRow(chainRow.x.data(), chainRow.y.data(), chainRow.jacobianData(), n, settings.wrapU, settings.wrapV, domain);
+            }
+            Resampler::sampleRowThroughChain(*chain, (std::size_t)n, &chainRow, source, settings.filter, settings.clamp, settings.edgeMode, out, nComps);
+        };
 
         const auto row = [&](const RowIO& io) {
             const int n = io.width + 2;
@@ -766,9 +1023,13 @@ STMap::renderOp(const RenderActionArgs& args,
                     Resampler::coordJacobiansWithinBounds(&sx[0], &sx[n], &sx[2 * n], &sy[0], &sy[n], &sy[2 * n], io.x0 - 1, io.y, n,
                                                           uvEdgeBounds(uvPlanes[0]), uvEdgeBounds(uvPlanes[1]), 0., 0., &jacobian[0]);
                 }
-                Resampler::resampleRowFromCoords(source, &sx[n + 1], &sy[n + 1], jacobians ? &jacobian[4] : 0, io.width,
-                                                 settings.filter, settings.clamp, settings.edgeMode, settings.wrapU, settings.wrapV,
-                                                 &out[0], io.nComps, &domain);
+                if (chained) {
+                    sampleThroughChain(&sx[n + 1], &sy[n + 1], jacobians ? &jacobian[4] : 0, io.width, true, &out[0]);
+                } else {
+                    Resampler::resampleRowFromCoords(source, &sx[n + 1], &sy[n + 1], jacobians ? &jacobian[4] : 0, io.width,
+                                                     settings.filter, settings.clamp, settings.edgeMode, settings.wrapU, settings.wrapV,
+                                                     &out[0], io.nComps, &domain);
+                }
                 if (gated) {
                     std::vector<float> alphaRow(io.width);
                     alphaPlane.readRow(io.x0, io.y, io.width, &alphaRow[0]);
@@ -782,12 +1043,21 @@ STMap::renderOp(const RenderActionArgs& args,
                 if (mapped) {
                     // Where the Map is 0 the output is the Source pixel itself, never resampled
                     // through the wrap, which would move positions outside the Source format.
+                    std::vector<float> held;
+                    if (chained) {
+                        std::vector<float> cx(io.width), cy(io.width, (float)io.y + 0.5f);
+                        for (int i = 0; i < io.width; ++i) {
+                            cx[i] = (float)(io.x0 + i) + 0.5f;
+                        }
+                        held.resize((std::size_t)io.width * io.nComps);
+                        sampleThroughChain(cx.data(), cy.data(), NULL, io.width, false, held.data());
+                    }
                     for (int i = 0; i < io.width; ++i) {
                         if (mapPlane.at(io.x0 + i, io.y) != 0.f) {
                             continue;
                         }
                         float* dst = &out[(std::size_t)i * io.nComps];
-                        const float* pix = source.pixel(io.x0 + i, io.y);
+                        const float* pix = chained ? &held[(std::size_t)i * io.nComps] : source.pixel(io.x0 + i, io.y);
                         if (pix) {
                             std::copy(pix, pix + io.nComps, dst);
                         } else {
@@ -849,10 +1119,39 @@ STMap::resolveGpuUVLayer(double time,
 }
 
 bool
+STMap::acceptsInverseWarpChain(int inputNb,
+                               double time,
+                               ViewIdx view) const
+{
+    if (inputNb != kSTMapInputSource) {
+        return false;
+    }
+    const ResampleRegionStages stages = getResampleRegionStages(time, view);
+
+    return !stages.doMasking && (stages.mix == 1.) && !stages.readsUnprocessed;
+}
+
+double
+STMap::getInverseWarpChainFilterSupport(int /*inputNb*/,
+                                        double time,
+                                        ViewIdx view) const
+{
+    return Resampler::filterRoIExpansion(_filterKnobs.read(time, view)) + 0.5;
+}
+
+std::optional<EdgeMode>
+STMap::getConcatenationEdgeMode(double time,
+                                ViewIdx view) const
+{
+    return resolvedEdgeMode(time, view);
+}
+
+bool
 STMap::canRenderOpOnGpu(const GpuQuery& query) const
 {
 #ifdef NATRON_HAVE_GPU
-    if ((query.bitDepth != eImageBitDepthFloat) || !canRunStagesGpu(resolveGpuPlan(query), query)) {
+    const StagePlan plan = resolveGpuPlan(query);
+    if ((query.bitDepth != eImageBitDepthFloat) || !canRunStagesGpu(plan, query) || (query.hasConcatenatedInput && !warpGpuTakesChain(plan, query))) {
         return false;
     }
     ImageLayerDesc layer;
@@ -989,7 +1288,7 @@ STMap::renderOpGpu(const GpuRenderArgs& args)
         map.params = _map.bake(KnobReader(query.time, query.view));
     }
 
-    return recordWarpGpu(*this, resolveGpuPlan(query), args, (int)gpu::GpuKernelId::stmap, params, kSTMapInputUV, uvLayer, uChannel, vChannel, map, alphaChannel);
+    return recordWarpGpu(*this, resolveGpuPlan(query), args, (int)gpu::GpuKernelId::stmap, (int)gpu::GpuKernelId::stmap_chain, params, kSTMapInputUV, uvLayer, uChannel, vChannel, map, alphaChannel);
 #else
     Q_UNUSED(args);
 

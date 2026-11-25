@@ -52,8 +52,8 @@
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDAssignMaterial.h"
 #include "Engine/Nodes/Scene/USDCard.h"
-#include "Engine/Nodes/Scene/USDMaterial.h"
 #include "Engine/Nodes/Scene/USDMerge.h"
+#include "Engine/Nodes/Scene/USDPreviewSurface.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDScopePrim.h"
 #include "Engine/Nodes/Scene/USDXformPrim.h"
@@ -200,10 +200,10 @@ protected:
         return reader;
     }
 
-    // A USDMaterial defining its material at path.
+    // A USDPreviewSurface defining its material at path.
     NodePtr material(const char* path)
     {
-        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMATERIAL));
+        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPREVIEWSURFACE));
 
         EXPECT_TRUE(bool(node));
         if (node) {

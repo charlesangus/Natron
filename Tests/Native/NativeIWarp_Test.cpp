@@ -44,11 +44,14 @@
 #include "NativeGolden.h"
 #include "NativeParity.h"
 #include "RenderBothWays.h"
+#include "WarpChainSampling.h"
+#include "WarpChainTestEffects.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/InverseWarpChain.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Filter/Blur.h"
@@ -750,4 +753,46 @@ TEST_F(NativeIWarpTest, GoldenICornerPin)
         return knobs(g) && setKnobValues(g.node, kOfxMixParamName, { 0.5 }) && setKnobValues(g.node, kOfxMaskInvertParamName, { 1. });
     }));
     runGoldenCases(getApp(), spec, v);
+}
+
+// A warp upstream concatenates into the ITransform: its map and the ITransform's matrix are
+// sampled through once, as each node's map applied by hand to the source in a single resample.
+TEST_F(NativeIWarpTest, ITransformSamplesAnUpstreamWarpOnce)
+{
+    NodePtr source = makeParitySource();
+    ASSERT_TRUE(bool(source));
+    // Around the provider's centre (256, 256), so its map lands inside the source.
+    setParitySourceOrigin(source, 224, 232);
+    NodePtr provider = createNode(QString::fromUtf8(kTestPluginIDWarpChainProvider));
+    ASSERT_TRUE(bool(provider));
+    connectNodes(source, provider, 0, true);
+    NodePtr white = makeConstant(RectI(160, 160, 352, 352), { 1., 1., 1., 1. });
+    ASSERT_TRUE(bool(white));
+    NodePtr itransform = makeNode(PLUGINID_NATRON_ITRANSFORM, PLUGIN_MAJOR_NATRON_ITRANSFORM, provider, white);
+    ASSERT_TRUE(bool(itransform));
+    ASSERT_TRUE(setKnobValues(itransform, kTransformNodeParamTranslate, { 2.5, -1.5 }));
+    ASSERT_TRUE(setKnobValue(itransform, kResamplerParamFilterType, std::string("bilinear")));
+    EffectInstancePtr effect = itransform->getEffectInstance();
+
+    InputMatrixMap transforms;
+    effect->tryConcatenateTransforms(kTime, false, ViewIdx(0), RenderScale::identity, &transforms);
+    ASSERT_EQ(1u, transforms.count(0));
+    EXPECT_TRUE(bool(transforms[0].warpChain));
+    const std::optional<EdgeMode> edgeMode = effect->getConcatenationEdgeMode(kTime, ViewIdx(0));
+    ASSERT_TRUE(edgeMode.has_value());
+
+    const RectI window = paritySourceWindow(source, kTime, 0);
+    RenderedPlane image, warped;
+    ASSERT_TRUE(renderRGBA(source, window, &image));
+    ASSERT_TRUE(renderRGBA(itransform, window, &warped));
+    const WarpChainTestMap map(RenderScale::identity);
+    const RenderedPlane reference = WarpChainSampling::sampleThrough([&](std::size_t n, double* sx, double* sy, double* J) {
+        for (std::size_t i = 0; i < n; ++i) {
+            sx[i] -= 2.5;
+            sy[i] += 1.5;
+        }
+        map.mapRow(n, sx, sy, J); }, image, window, Resampler::eFilterBilinear, *edgeMode);
+    const RectI inside(window.x1 + 8, window.y1 + 8, window.x2 - 8, window.y2 - 8);
+    EXPECT_LE(WarpChainSampling::maxDiff(warped, reference, inside), kWarpTolerance);
+    EXPECT_GT(WarpChainSampling::maxDiff(image, reference, inside), 1e-3) << "the warps should move the Source";
 }

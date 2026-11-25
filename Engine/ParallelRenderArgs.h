@@ -89,7 +89,9 @@ isPlannedRange(const RangeD& range)
 struct InputMatrix
 {
     EffectInstancePtr newInputEffect;
+    // Set only when every node of the chain offered a matrix; warpChain holds any other chain.
     Transform::Matrix3x3Ptr cat;
+    InverseWarpChainConstPtr warpChain;
     int newInputNbToFetchFrom;
 };
 
@@ -459,6 +461,31 @@ public:
 };
 
 /**
+ * @brief Where an incremental request pass starts: node's output under context (restricted to what
+ * node's output reads by the pass) at time/view, over roi in canonical coordinates.
+ **/
+struct RequestPassRoot {
+    NodePtr node;
+    RenderContextPtr context;
+    double time = 0.;
+    ViewIdx view;
+    unsigned int mipmapLevel = 0;
+    RectD roi;
+};
+
+/**
+ * @brief A region an incremental request pass added to an entry's final RoI: the whole request when
+ * the entry is new, otherwise one of the disjoint rectangles the merged final RoI covers and the
+ * previous one did not. A region already inside it is not reported.
+ **/
+struct RequestPassNewWork {
+    NodeCtxKey key;
+    double time = 0.;
+    ViewIdx view;
+    RectD roi;
+};
+
+/**
  * @brief The count of contexts a node may render under in one frame before a warning names the
  * nodes fanning them out, and the most action-cache states a node keeps for them.
  **/
@@ -613,6 +640,9 @@ public:
      * relying on other nodes that do not belong in the tree through expressions.
      * When setUpstreamArgs is false only treeRoot gets TLS: callers that do not render use this to avoid walking the
      * whole graph, and EffectInstance::getImage installs args on an input lazily if it ends up being pulled.
+     * Such a setter attaches no OpenGL context either, so its args carry none: those callers run on the main
+     * thread, where creating the first context of the pool stalls the UI for over 100 ms, and a render they pull
+     * through getImage gets its context from the setter getImage installs.
      **/
     ParallelRenderArgsSetter(double time,
                              ViewIdx view,

@@ -39,9 +39,17 @@ node's without the input.
 - The Jacobian takes the Map's gradient with the UV's, so the Map is read one pixel past the
   render window. A hard Map edge between black and white tears the image along it when the UV
   moves pixels far; soften the Map to bend the image instead.
-- STMap is a per-pixel warp: it never concatenates with transforms above or below it.
+- STMap is a per-pixel warp and offers nothing to concatenate, so a transform below it resamples
+  the image again. Transforms and warps above the Source (Transform, CornerPin, SplineWarp,
+  LensDistortion) fold into its resample, unless a mask, a mix below 1 or a partial channel
+  selection is set: each coordinate is wrapped in the Source format as before, then taken on
+  through them, and the image above them is sampled once. A warp above it over an infinite region
+  of definition fails the render with an error; crop the image above the warp.
 - The GPU reads the Map as an extra input and remaps it with `mapremap.slang`, the CPU's remap
   operation for operation.
+- The GPU samples through concatenated transforms and warps as the CPU does, the chain packed on
+  the host and evaluated per pixel by `warpchain.slang`, after the wrap.
+  With a mask, a mix below 1 or a partial channel selection the node renders on the CPU.
 
 Tolerance:
 

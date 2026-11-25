@@ -740,11 +740,23 @@ makeGpuQueryForTaskPlane(const FrameGraph::Task& task,
 
     // The same redirections renderRoI() hands getImage().
     query->hasConcatenatedInput = false;
+    query->concatenatedSteps.clear();
     const FrameViewRequest* frameView = nodeRequest->second->getFrameViewRequest(task.key.time, task.key.view);
     if (frameView && frameView->globalData.transforms) {
         for (InputMatrixMap::const_iterator it = frameView->globalData.transforms->begin(); it != frameView->globalData.transforms->end(); ++it) {
-            query->hasConcatenatedInput = query->hasConcatenatedInput || bool(it->second.newInputEffect);
+            if (!it->second.newInputEffect || (it->first < 0)) {
+                continue;
+            }
+            query->hasConcatenatedInput = true;
+            if ((int)query->concatenatedSteps.size() <= it->first) {
+                query->concatenatedSteps.resize(it->first + 1, 0u);
+            }
+            query->concatenatedSteps[it->first] = it->second.warpChain ? it->second.warpChain->getGpuSteps() : (unsigned)InverseWarpChain::eGpuStepMatrix;
         }
+    }
+    // The chains are in pixels at the scale the request pass concatenated them at.
+    if (query->hasConcatenatedInput && !(nodeRequest->second->mappedScale == query->mappedScale)) {
+        return false;
     }
     const ParallelRenderArgsPtr frameArgs = context.getArgs(nodeKey);
     query->draftMode = frameArgs && frameArgs->draftMode;
@@ -1007,6 +1019,33 @@ taskGpuWeight(const FrameGraph::Task& task)
     return native->gpuWeight(task.key.time, task.key.view, task.key.mipmapLevel);
 }
 
+// taskGpuWeight(task) with the weights of the map providers concatenated into the task's inputs,
+// which have no task of their own once the task samples through them.
+GpuWeight
+taskGpuWeightWithChains(const FrameGraph::Task& task,
+                        const FrameRenderContextPtr& context)
+{
+    GpuWeight weight = taskGpuWeight(task);
+    if (!task.key.node || !context || !context->getRequest()) {
+        return weight;
+    }
+    FrameRequestMap::const_iterator nodeRequest = context->getRequest()->find(NodeCtxKey(task.key.node, task.key.contextKey));
+    if ((nodeRequest == context->getRequest()->end()) || !nodeRequest->second) {
+        return weight;
+    }
+    const FrameViewRequest* frameView = nodeRequest->second->getFrameViewRequest(task.key.time, task.key.view);
+    if (!frameView || !frameView->globalData.transforms) {
+        return weight;
+    }
+    for (InputMatrixMap::const_iterator it = frameView->globalData.transforms->begin(); it != frameView->globalData.transforms->end(); ++it) {
+        if (it->second.newInputEffect && (it->first >= 0) && it->second.warpChain) {
+            weight = it->second.warpChain->addMapGpuWeights(weight);
+        }
+    }
+
+    return weight;
+}
+
 // Long enough for any driver to come up; past it, a context still initializing is presumed stuck.
 const std::chrono::seconds kGpuInitWaitLimit(10);
 
@@ -1044,10 +1083,16 @@ makeRenderPlacementInputs(const FrameRenderContextPtr& context)
         if (!context) {
             return false;
         }
+        const EffectInstancePtr effect = task.key.node ? task.key.node->getEffectInstance() : EffectInstancePtr();
+        if (effect && effect->offersRenderContinuation()) {
+            refusal->reason = FrameGraph::PlacementReason::NoGpuPath;
+            refusal->detail = "the node offers a render continuation, which only CPU tasks are probed for";
+
+            return false;
+        }
         if (makeGpuTaskPlanes(task, *context, &planes, &refusal->detail)) {
             return true;
         }
-        const EffectInstancePtr effect = task.key.node ? task.key.node->getEffectInstance() : EffectInstancePtr();
         const NativeEffectBase* native = dynamic_cast<const NativeEffectBase*>(effect.get());
         if (refusal->detail.empty() && native && native->opKind() && isDownscaleUnsupported(task, *native)) {
             refusal->reason = FrameGraph::PlacementReason::DownscaleUnsupported;
@@ -1056,7 +1101,9 @@ makeRenderPlacementInputs(const FrameRenderContextPtr& context)
         return false;
     };
     inputs.readsRaw = taskReadsRaw;
-    inputs.taskWeight = taskGpuWeight;
+    inputs.taskWeight = [context](const FrameGraph::Task& task) {
+        return taskGpuWeightWithChains(task, context);
+    };
 #ifdef NATRON_HAVE_GPU
     inputs.rootOnDevice = context && context->wantsRootOnDevice();
 #endif

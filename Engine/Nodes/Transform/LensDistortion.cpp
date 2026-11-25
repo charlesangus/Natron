@@ -26,8 +26,10 @@
 #include "LensDistortion.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <cstddef>
+#include <cstring>
 #include <fstream>
 #include <limits>
 #include <memory>
@@ -39,6 +41,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
 #include "Engine/Image.h"
+#include "Engine/InverseWarpChain.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -255,6 +258,108 @@ mappedBoundingBox(const LensModels::Model& model,
 
     return any;
 }
+
+// The model as one entry of a warp chain: points in the output's pixels at scale to the Source's.
+class LensInverseWarpMap
+    : public InverseWarpMap {
+public:
+    // A point outside crop, the output's region of definition in pixels at scale, is read the way
+    // a consumer reads the rendered output there: no source under a black edge, else the nearest
+    // point inside.
+    LensInverseWarpMap(const RenderScale& scale,
+                       double par,
+                       const LensModels::Model& model,
+                       LensModels::Direction direction,
+                       double toSourceX,
+                       const RectI& crop,
+                       EdgeMode edgeMode)
+        : InverseWarpMap(scale, par)
+        , _model(model)
+        , _direction(direction)
+        , _toSourceX(toSourceX)
+        , _crop(crop)
+        , _edgeMode(edgeMode)
+    {
+    }
+
+    virtual void mapRow(std::size_t n,
+                        double* sx,
+                        double* sy,
+                        double* J) const OVERRIDE FINAL
+    {
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        const OfxPointD s = getScale().toOfxPointD();
+        for (std::size_t i = 0; i < n; ++i) {
+            if (std::isnan(sx[i]) || std::isnan(sy[i])) {
+                continue;
+            }
+            double x = sx[i];
+            double y = sy[i];
+            if (!((x >= _crop.x1) && (x <= _crop.x2) && (y >= _crop.y1) && (y <= _crop.y2))) {
+                if ((_edgeMode == EdgeMode::Black) || _crop.isNull()) {
+                    sx[i] = nan;
+                    sy[i] = nan;
+                    continue;
+                }
+                x = std::min(std::max(x, _crop.x1 + 0.5), _crop.x2 - 0.5);
+                y = std::min(std::max(y, _crop.y1 + 0.5), _crop.y2 - 0.5);
+            }
+            LensModels::Sample lens;
+            if (!_model.map(_direction, x / s.x, y / s.y, &lens) || !std::isfinite(lens.x) || !std::isfinite(lens.y)) {
+                sx[i] = nan;
+                sy[i] = nan;
+                continue;
+            }
+            sx[i] = productOrInfinity(productOrInfinity(lens.x, _toSourceX), s.x);
+            sy[i] = productOrInfinity(lens.y, s.y);
+            if (J) {
+                // D, the model's derivative in pixels at scale, as renderOp() samples with it.
+                const double d0 = productOrInfinity(lens.J[0], _toSourceX);
+                const double d1 = quotientOrInfinity(productOrInfinity(productOrInfinity(lens.J[1], _toSourceX), s.x), s.y);
+                const double d2 = quotientOrInfinity(productOrInfinity(lens.J[2], s.y), s.x);
+                const double d3 = lens.J[3];
+                double* j = &J[i * 4];
+                const double j0 = j[0], j1 = j[1], j2 = j[2], j3 = j[3];
+                j[0] = d0 * j0 + d1 * j2;
+                j[1] = d0 * j1 + d1 * j3;
+                j[2] = d2 * j0 + d3 * j2;
+                j[3] = d2 * j1 + d3 * j3;
+            }
+        }
+    }
+
+    // The block warpchain.slang's warpChainLens() reads.
+    virtual uint32_t packGpu(std::vector<uint32_t>* words) const OVERRIDE FINAL
+    {
+        const OfxPointD s = getScale().toOfxPointD();
+        const std::size_t start = words->size();
+        words->push_back(InverseWarpChain::kGpuCropFlag | ((_edgeMode == EdgeMode::Black) ? InverseWarpChain::kGpuEdgeBlackFlag : 0u));
+        words->push_back((uint32_t)_crop.x1);
+        words->push_back((uint32_t)_crop.y1);
+        words->push_back((uint32_t)_crop.x2);
+        words->push_back((uint32_t)_crop.y2);
+        words->push_back((uint32_t)_direction);
+        InverseWarp::pushGpuDouble(words, s.x);
+        InverseWarp::pushGpuDouble(words, s.y);
+        InverseWarp::pushGpuDouble(words, _toSourceX);
+        assert(words->size() - start == 12);
+        Q_UNUSED(start);
+        const LensModelGpu model = packLensModelGpu(_model);
+        const std::size_t n = sizeof(model) / sizeof(uint32_t);
+        const std::size_t at = words->size();
+        words->resize(at + n);
+        std::memcpy(&(*words)[at], &model, sizeof(model));
+
+        return InverseWarpChain::kGpuTagLens;
+    }
+
+private:
+    LensModels::Model _model;
+    LensModels::Direction _direction;
+    double _toSourceX;
+    RectI _crop;
+    EdgeMode _edgeMode;
+};
 } // namespace
 
 LensDistortion::LensDistortion(NodePtr node)
@@ -695,6 +800,54 @@ LensDistortion::getGeometry(double time,
                              (int)std::floor(reference.y2 + 0.5) + padY);
 } // LensDistortion::getGeometry
 
+OverlayPointMap::Result
+LensDistortion::mapOverlayPoint(double time,
+                                ViewIdx view,
+                                int inputNb,
+                                OverlayPointMap::Direction direction,
+                                const Point& in,
+                                Point* out)
+{
+    if ((inputNb != kLensDistortionInputSource) || !getInput(kLensDistortionInputSource) || (getMixValue(time, view) == 0.)) {
+        return OverlayPointMap::eIdentity;
+    }
+    Settings settings;
+    readSettings(time, view, &settings);
+    if (settings.stmap) {
+        return OverlayPointMap::eIdentity;
+    }
+    Geometry geometry;
+    getGeometry(time, view, false, &geometry);
+    const LensModels::Model model = buildModel(time, view, geometry);
+    if (!model.valid) {
+        return OverlayPointMap::eUnmappable;
+    }
+    const LensModels::Direction opposite = (settings.direction == LensModels::eDirectionDistort) ? LensModels::eDirectionUndistort : LensModels::eDirectionDistort;
+    const LensModels::Direction lens = (direction == OverlayPointMap::eDirectionForward) ? settings.direction : opposite;
+    const double par = (geometry.par > 0.) ? geometry.par : 1.;
+    LensModels::Sample s;
+    if (!model.map(lens, in.x / par, in.y, &s) || !std::isfinite(s.x) || !std::isfinite(s.y)) {
+        return OverlayPointMap::eUnmappable;
+    }
+    out->x = s.x * par;
+    out->y = s.y;
+
+    return OverlayPointMap::eMapped;
+}
+
+OverlayPointMap::Kind
+LensDistortion::overlayMapKind(double time,
+                               ViewIdx view)
+{
+    if (!getInput(kLensDistortionInputSource) || (getMixValue(time, view) == 0.)) {
+        return OverlayPointMap::eKindNone;
+    }
+    Settings settings;
+    readSettings(time, view, &settings);
+
+    return settings.stmap ? OverlayPointMap::eKindNone : OverlayPointMap::eKindNonLinear;
+}
+
 LensModels::Model
 LensDistortion::buildModel(double time,
                            ViewIdx view,
@@ -977,6 +1130,95 @@ LensDistortion::getRegionsOfInterest(double time,
 }
 
 bool
+LensDistortion::canChainSource(double time,
+                               ViewIdx view) const
+{
+    EffectInstancePtr source = getInput(kLensDistortionInputSource);
+    if (!source) {
+        return false;
+    }
+    Settings settings;
+    readSettings(time, view, &settings);
+    if (settings.stmap) {
+        return false;
+    }
+    const ResampleRegionStages stages = getResampleRegionStages(time, view);
+    if (stages.doMasking || (stages.mix != 1.) || stages.readsUnprocessed) {
+        return false;
+    }
+    const NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
+    const NodeMetadataConstPtr sourceMetadata = source->getRenderMetadata(time, view);
+    const double par = metadata ? metadata->getPixelAspectRatio(-1) : 1.;
+    const double sourcePar = sourceMetadata ? sourceMetadata->getPixelAspectRatio(-1) : 1.;
+
+    return par == sourcePar;
+}
+
+bool
+LensDistortion::canOfferInverseWarp(double time,
+                                    ViewIdx view,
+                                    bool /*draftRender*/,
+                                    int* inputNb) const
+{
+    if (!canChainSource(time, view)) {
+        return false;
+    }
+    if (inputNb) {
+        *inputNb = kLensDistortionInputSource;
+    }
+
+    return true;
+}
+
+InverseWarpMapConstPtr
+LensDistortion::getInverseWarpMap(double time,
+                                  ViewIdx view,
+                                  const RenderScale& scale,
+                                  bool /*draftRender*/,
+                                  const RectD& /*window*/)
+{
+    Settings settings;
+    readSettings(time, view, &settings);
+    Geometry geometry;
+    getGeometry(time, view, false, &geometry);
+    const LensModels::Model model = buildModel(time, view, geometry);
+    const LensModels::Direction inverse = (settings.direction == LensModels::eDirectionDistort) ? LensModels::eDirectionUndistort : LensModels::eDirectionDistort;
+    const NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
+    const double par = metadata ? metadata->getPixelAspectRatio(-1) : geometry.par;
+    RectD rod;
+    bool isProjectFormat = false;
+    if (getRegionOfDefinition_public(getRenderHash(), time, scale, view, &rod, &isProjectFormat) != eStatusOK) {
+        rod.clear();
+    }
+    const RectI crop = rod.isNull() ? RectI() : rod.toPixelEnclosing(scale, par);
+
+    return std::make_shared<const LensInverseWarpMap>(scale, par, model, inverse, geometry.par / geometry.sourcePar, crop, settings.edgeMode);
+}
+
+bool
+LensDistortion::acceptsInverseWarpChain(int inputNb,
+                                        double time,
+                                        ViewIdx view) const
+{
+    return (inputNb == kLensDistortionInputSource) && canChainSource(time, view);
+}
+
+double
+LensDistortion::getInverseWarpChainFilterSupport(int /*inputNb*/,
+                                                 double time,
+                                                 ViewIdx view) const
+{
+    return Resampler::filterRoIExpansion(_filterKnobs.read(time, view)) + 0.5;
+}
+
+std::optional<EdgeMode>
+LensDistortion::getConcatenationEdgeMode(double time,
+                                         ViewIdx view) const
+{
+    return resolvedEdgeMode(time, view);
+}
+
+bool
 LensDistortion::isOpIdentity(double /*time*/,
                              const RenderScale& /*scale*/,
                              const RectI& /*roi*/,
@@ -1009,6 +1251,15 @@ LensDistortion::renderOp(const RenderActionArgs& args,
     const double toSourceX = geometry.par / geometry.sourcePar;
     const RectD sourceFormat = geometry.sourceFormat;
     const bool stmap = settings.stmap;
+
+    // With warps concatenated into the Source, the image fetched is upstream of them and every
+    // Source coordinate the model gives is taken on through them.
+    const NodeMetadataConstPtr metadata = getRenderMetadata(args.time, args.view);
+    const double outputPar = metadata ? metadata->getPixelAspectRatio(-1) : 1.;
+    const InverseWarpChainConstPtr chain = stmap ? InverseWarpChainConstPtr() : getPreparedWarpChain(kLensDistortionInputSource, args.time, args.view, args.mappedScale, PassExec::toCanonical(args.roi, args.mappedScale, outputPar));
+    if (chain && chain->hasError()) {
+        return eStatusFailed;
+    }
 
     for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
         if (!it->second) {
@@ -1048,6 +1299,9 @@ LensDistortion::renderOp(const RenderActionArgs& args,
                 }
                 source = Resampler::SourceImage(&converted[0], srcBounds, nComps);
             }
+            if (chain && src) {
+                source = source.cropped(chain->getSourcePixels(src->getPixelAspectRatio()));
+            }
         }
         const bool sampled = (bool)src;
 
@@ -1085,35 +1339,46 @@ LensDistortion::renderOp(const RenderActionArgs& args,
             } else if (sampled) {
                 // Source pixel coordinates at the render scale, NaN where the model has no
                 // solution, which the resampler reads as black.
-                const float nan = std::numeric_limits<float>::quiet_NaN();
-                std::vector<float> sx(io.width);
-                std::vector<float> sy(io.width);
-                std::vector<float> jacobian;
-                if (jacobians) {
-                    jacobian.resize((std::size_t)4 * io.width);
-                }
+                const double nan = std::numeric_limits<double>::quiet_NaN();
+                const std::size_t width = (std::size_t)io.width;
+                std::vector<double> mx(width);
+                std::vector<double> my(width);
+                std::vector<double> mj(jacobians ? 4 * width : 0);
                 const double y = (io.y + 0.5) / scaleY;
-                for (int i = 0; i < io.width; ++i) {
+                for (std::size_t i = 0; i < width; ++i) {
                     LensModels::Sample s;
-                    const double x = (io.x0 + i + 0.5) / scaleX;
+                    const double x = (io.x0 + (int)i + 0.5) / scaleX;
                     if (!model.map(inverse, x, y, &s) || !std::isfinite(s.x) || !std::isfinite(s.y)) {
-                        sx[i] = nan;
-                        sy[i] = nan;
+                        mx[i] = nan;
+                        my[i] = nan;
                         if (jacobians) {
-                            std::fill(&jacobian[(std::size_t)4 * i], &jacobian[(std::size_t)4 * i + 4], 0.f);
+                            std::fill(&mj[4 * i], &mj[4 * i + 4], 0.);
                         }
                         continue;
                     }
-                    sx[i] = knobValueAsFloat(productOrInfinity(productOrInfinity(s.x, toSourceX), scaleX));
-                    sy[i] = knobValueAsFloat(productOrInfinity(s.y, scaleY));
+                    mx[i] = productOrInfinity(productOrInfinity(s.x, toSourceX), scaleX);
+                    my[i] = productOrInfinity(s.y, scaleY);
                     if (jacobians) {
                         // d(source at scale) / d(output at scale), from the model's full-resolution one.
-                        float* J = &jacobian[(std::size_t)4 * i];
-                        J[0] = knobValueAsFloat(productOrInfinity(s.J[0], toSourceX));
-                        J[1] = knobValueAsFloat(quotientOrInfinity(productOrInfinity(productOrInfinity(s.J[1], toSourceX), scaleX), scaleY));
-                        J[2] = knobValueAsFloat(quotientOrInfinity(productOrInfinity(s.J[2], scaleY), scaleX));
-                        J[3] = knobValueAsFloat(s.J[3]);
+                        double* J = &mj[4 * i];
+                        J[0] = productOrInfinity(s.J[0], toSourceX);
+                        J[1] = quotientOrInfinity(productOrInfinity(productOrInfinity(s.J[1], toSourceX), scaleX), scaleY);
+                        J[2] = quotientOrInfinity(productOrInfinity(s.J[2], scaleY), scaleX);
+                        J[3] = s.J[3];
                     }
+                }
+                if (chain) {
+                    chain->mapRow(width, mx.data(), my.data(), jacobians ? mj.data() : NULL);
+                }
+                std::vector<float> sx(width);
+                std::vector<float> sy(width);
+                std::vector<float> jacobian(mj.size());
+                for (std::size_t i = 0; i < width; ++i) {
+                    sx[i] = knobValueAsFloat(mx[i]);
+                    sy[i] = knobValueAsFloat(my[i]);
+                }
+                for (std::size_t k = 0; k < mj.size(); ++k) {
+                    jacobian[k] = knobValueAsFloat(mj[k]);
                 }
                 Resampler::resampleRowFromCoords(source, &sx[0], &sy[0], jacobians ? &jacobian[0] : 0, io.width,
                                                  settings.filter, settings.clamp, settings.edgeMode, Resampler::eWrapNone, Resampler::eWrapNone,
@@ -1173,13 +1438,33 @@ const uint32_t kLensDistortionGpuClamp = 1;
 const uint32_t kLensDistortionGpuJacobian = 4;
 const uint32_t kLensDistortionGpuSample = 8;
 const uint32_t kLensDistortionGpuSTMap = 16;
+const uint32_t kLensDistortionGpuChain = 32;
 } // namespace
 
 bool
 LensDistortion::canRenderOpOnGpu(const GpuQuery& query) const
 {
 #ifdef NATRON_HAVE_GPU
-    return (query.bitDepth == eImageBitDepthFloat) && canRunStagesGpu(resolveGpuPlan(query), query);
+    const StagePlan plan = resolveGpuPlan(query);
+    if ((query.bitDepth != eImageBitDepthFloat) || !canRunStagesGpu(plan, query)) {
+        return false;
+    }
+    if (!query.hasConcatenatedInput) {
+        return true;
+    }
+    // The finishing stages blend against the Source fetched, which is upstream of the
+    // concatenated nodes.
+    if (plan.applyMask || (plan.mix != 1.) || (query.mix != 1.) || !plan.processChannels.all()) {
+        return false;
+    }
+    // An STMap output reads no Source pixel, so the CPU takes the Source unconcatenated.
+    Settings settings;
+    readSettings(query.time, query.view, &settings);
+    if (settings.stmap) {
+        return false;
+    }
+
+    return query.concatenatedStepsWithin(InverseWarpChain::eGpuStepMatrix | InverseWarpChain::eGpuStepSplineWarp | InverseWarpChain::eGpuStepLens);
 #else
     Q_UNUSED(query);
 
@@ -1274,12 +1559,23 @@ LensDistortion::renderOpGpu(const GpuRenderArgs& args)
     if (!sourceStaged || !cropped.inputs[sourceInput].buffer) {
         params.flags &= ~kLensDistortionGpuSample;
     }
+    GpuImageView chainView;
+    if (params.flags & kLensDistortionGpuSample) {
+        if (!stageGpuChainView(args, sourceInput, std::vector<uint32_t>(), &chainView)) {
+            return eStatusFailed;
+        }
+        if (chainView.buffer) {
+            params.flags |= kLensDistortionGpuChain;
+        } else if (query.concatenatedStepsOf(sourceInput)) {
+            return eStatusFailed;
+        }
+    }
 
     PixelKernelGpu op;
-    op.kernel = (int)gpu::GpuKernelId::lensdistortion;
+    op.kernel = (int)(chainView.buffer ? gpu::GpuKernelId::lensdistortion_chain : gpu::GpuKernelId::lensdistortion);
     op.setParams(params);
 
-    return recordStagesGpuKernelInputs(plan, cropped, op, std::span<const GpuImageView>());
+    return recordStagesGpuKernelInputs(plan, cropped, op, std::span<const GpuImageView>(&chainView, 1));
 #else
     Q_UNUSED(args);
 

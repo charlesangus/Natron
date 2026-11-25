@@ -195,9 +195,23 @@ private:
     virtual StatusEnum renderOp(const RenderActionArgs& args,
                                 const StagePlan& plan) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    // The Source takes warps concatenated upstream: every displaced coordinate is taken on
+    // through them, so the warps and the displacement resample once.
+    virtual bool acceptsInverseWarpChain(int inputNb,
+                                         double time,
+                                         ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual double getInverseWarpChainFilterSupport(int inputNb,
+                                                    double time,
+                                                    ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual std::optional<EdgeMode> getConcatenationEdgeMode(double time,
+                                                             ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     /**
      * @brief Accepts what the stages accept in float, when U and V resolve to one layer of 1 to 4
-     * channels or to none, and so does the Map's channel.
+     * channels or to none, and so does the Map's channel, and the GPU takes what the Source
+     * concatenated, as warpGpuTakesChain() decides.
      **/
     virtual bool canRenderOpOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
@@ -221,6 +235,20 @@ private:
     void readSettings(double time, ViewIdx view, Settings* settings) const;
 
     void resolveUVChannels(double time, ViewIdx view, UVChannel* u, UVChannel* v);
+
+    /**
+     * @brief Inverse: the displacement of a small copy of the UV input at the point, bilinearly,
+     * times the Map. Forward: Newton from the point itself.
+     **/
+    virtual OverlayPointMap::Result mapOverlayPoint(double time,
+                                                    ViewIdx view,
+                                                    int inputNb,
+                                                    OverlayPointMap::Direction direction,
+                                                    const Point& in,
+                                                    Point* out) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual OverlayPointMap::Kind overlayMapKind(double time,
+                                                 ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     void updateFilterVisibility(double time, ViewIdx view);
 

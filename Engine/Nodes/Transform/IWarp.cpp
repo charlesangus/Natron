@@ -39,15 +39,18 @@
 #include "Engine/AppManager.h"
 #include "Engine/Format.h"
 #include "Engine/Image.h"
+#include "Engine/InverseWarpChain.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Image/PassExecutor.h"
 #include "Engine/Nodes/Image/PixelKernel.h"
 #include "Engine/Nodes/Image/StagePlan.h"
 #include "Engine/Nodes/KnobReader.h"
 #include "Engine/Nodes/Transform/WarpGpu.h"
+#include "Engine/OverlayMapFetch.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
+#include "Engine/Transform.h"
 
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuRecord.h"
@@ -73,6 +76,7 @@ const uint32_t kIWarpGpuMapRead = 32;
 const uint32_t kIWarpGpuMapInvert = 64;
 const uint32_t kIWarpGpuMapSmooth = 128;
 const uint32_t kIWarpGpuMapEdgeBlack = 256;
+const uint32_t kIWarpGpuChain = 512;
 
 bool
 rectIsEmpty(const RectD& r)
@@ -596,6 +600,88 @@ IWarp::isOpIdentity(double time,
     return isTransformIdentity(time, view);
 }
 
+namespace {
+OverlayPointMap::Result
+applyMat3(const TransformMath::Mat3& c,
+          const Point& in,
+          Point* out)
+{
+    Transform::Matrix3x3 m(c.m[0], c.m[1], c.m[2], c.m[3], c.m[4], c.m[5], c.m[6], c.m[7], c.m[8]);
+
+    return OverlayPointMap::applyMatrix(m, in, out);
+}
+} // anon namespace
+
+OverlayPointMap::Result
+IWarp::mapOverlayPoint(double time,
+                       ViewIdx view,
+                       int inputNb,
+                       OverlayPointMap::Direction direction,
+                       const Point& in,
+                       Point* out)
+{
+    if ((inputNb != kIWarpInputSource) || isTransformIdentity(time, view) || (getMixValue(time, view) == 0.)) {
+        return OverlayPointMap::eIdentity;
+    }
+    WarpSettings settings;
+    warpSettings(time, view, &settings);
+    const bool mapped = (bool)getInput(kIWarpInputMap);
+    if (!mapped) {
+        TransformMath::Mat3 c;
+        const bool toOutput = (direction == OverlayPointMap::eDirectionForward);
+        if (!canonicalMatrixFn(time, view, toOutput ? !settings.invert : settings.invert)(1., &c)) {
+            return OverlayPointMap::eUnmappable;
+        }
+
+        return applyMat3(c, in, out);
+    }
+    const EffectInstancePtr self = shared_from_this();
+    const TransformInterp::MatrixFn toSourceAt = canonicalMatrixFn(time, view, settings.invert);
+    const MapOverlaySampler mapSampler = _map.overlaySampler(self, kIWarpInputMap, time, view);
+    if (mapSampler.status() == OverlayPointMap::eUnmappable) {
+        return OverlayPointMap::eUnmappable;
+    }
+    const bool mapPending = (mapSampler.status() == OverlayPointMap::ePending);
+    const OverlayPointMap::PointFn toSource = [&](const Point& p, Point* s) {
+        TransformMath::Mat3 c;
+        if (!toSourceAt(mapSampler.value(p), &c)) {
+            return OverlayPointMap::eUnmappable;
+        }
+
+        return applyMat3(c, p, s);
+    };
+    OverlayPointMap::Result result;
+    if (direction == OverlayPointMap::eDirectionInverse) {
+        result = toSource(in, out);
+    } else {
+        // The Map at 1 everywhere is the seed: exact where the Map is white.
+        TransformMath::Mat3 c;
+        Point seed = *out;
+        if (canonicalMatrixFn(time, view, !settings.invert)(1., &c)) {
+            Point s;
+            if (applyMat3(c, in, &s) == OverlayPointMap::eMapped) {
+                seed = s;
+            }
+        }
+        OverlayPointMap::InvertOptions options;
+        options.tolerance = 1e-4;
+        result = OverlayPointMap::invertNumerically(toSource, in, seed, out, options);
+    }
+
+    return mapPending ? OverlayPointMap::ePending : result;
+} // IWarp::mapOverlayPoint
+
+OverlayPointMap::Kind
+IWarp::overlayMapKind(double time,
+                      ViewIdx view)
+{
+    if (isTransformIdentity(time, view) || (getMixValue(time, view) == 0.)) {
+        return OverlayPointMap::eKindNone;
+    }
+
+    return getInput(kIWarpInputMap) ? OverlayPointMap::eKindNonLinear : OverlayPointMap::eKindMatrix;
+}
+
 StatusEnum
 IWarp::renderOp(const RenderActionArgs& args,
                 const StagePlan& plan)
@@ -671,9 +757,18 @@ IWarp::renderOp(const RenderActionArgs& args,
     // A single amount scales the Map: 1 without a directional blur.
     const double amountScale = dirAmounts.empty() ? 1. : dirAmounts[0];
 
+    // With warps concatenated into the Source, the image fetched is upstream of them and every
+    // Source coordinate is taken on through them; acceptsInverseWarpChain() declines the blurs.
+    const RectI& roi = args.roi;
+    const NodeMetadataConstPtr metadata = getRenderMetadata(args.time, args.view);
+    const double par = metadata ? metadata->getPixelAspectRatio(-1) : 1.;
+    const InverseWarpChainConstPtr chain = (sourceInput >= 0) ? getPreparedWarpChain(sourceInput, args.time, args.view, args.mappedScale, PassExec::toCanonical(roi, args.mappedScale, par)) : InverseWarpChainConstPtr();
+    if (chain && (chain->hasError() || sampled)) {
+        return eStatusFailed;
+    }
+
     // Every image is fetched before any is locked: fetching renders upstream, which may write
     // into a cached image this render would otherwise already hold a read lock on.
-    const RectI& roi = args.roi;
     const int width = roi.width();
     const bool mapped = (bool)getInput(kIWarpInputMap);
     MapPlane mapPlane;
@@ -770,6 +865,9 @@ IWarp::renderOp(const RenderActionArgs& args,
                 }
                 plane.source = Resampler::SourceImage(plane.converted.empty() ? (const float*)0 : &plane.converted[0], plane.srcBounds, nComps);
             }
+            if (chain) {
+                plane.source = plane.source.cropped(chain->getSourcePixels(plane.src->getPixelAspectRatio()));
+            }
         } else {
             plane.source = Resampler::SourceImage((const float*)0, RectI(), nComps);
         }
@@ -841,6 +939,18 @@ IWarp::renderOp(const RenderActionArgs& args,
         std::vector<float> sx(width);
         std::vector<float> sy(width);
         std::vector<float> jacobian(impulse ? 0 : (std::size_t)width * 4);
+        const bool chained = chain && hasSource;
+        const std::size_t chainSize = chained ? (std::size_t)width : 0;
+        Resampler::ChainRowScratch chainRow;
+        chainRow.resize(chainSize, !impulse);
+        // The immediate Source at the pixel centres, which a held or unmixed pixel shows.
+        std::vector<float> heldRow((chained && (mapped || !direct)) ? rowSize : 0);
+        // chainRow's points, with J their Jacobians (null for the identity), through the chain and
+        // sampled into row.
+        const auto sampleChainRow = [&](const float* J, float* row) {
+            chainRow.loadJacobians(chainSize, J);
+            Resampler::sampleRowThroughChain(*chain, chainSize, &chainRow, plane.source, settings.filter, settings.clamp, settings.edgeMode, row, nComps);
+        };
         std::vector<float> one(nComps);
         std::vector<double> accPix(nComps);
         std::vector<double> accPix2(nComps);
@@ -973,8 +1083,23 @@ IWarp::renderOp(const RenderActionArgs& args,
                         }
                     }
                 }
-                Resampler::resampleRowFromCoords(plane.source, sx.data(), sy.data(), impulse ? NULL : jacobian.data(), width, settings.filter, settings.clamp, settings.edgeMode,
-                                                 Resampler::eWrapNone, Resampler::eWrapNone, outRow, nComps);
+                if (chained) {
+                    for (int i = 0; i < width; ++i) {
+                        chainRow.x[i] = sx[i];
+                        chainRow.y[i] = sy[i];
+                    }
+                    sampleChainRow(impulse ? NULL : jacobian.data(), outRow);
+                } else {
+                    Resampler::resampleRowFromCoords(plane.source, sx.data(), sy.data(), impulse ? NULL : jacobian.data(), width, settings.filter, settings.clamp,
+                                                     settings.edgeMode, Resampler::eWrapNone, Resampler::eWrapNone, outRow, nComps);
+                }
+            }
+            if (!heldRow.empty()) {
+                for (int i = 0; i < width; ++i) {
+                    chainRow.x[i] = roi.x1 + i + 0.5;
+                    chainRow.y[i] = y + 0.5;
+                }
+                sampleChainRow(NULL, heldRow.data());
             }
             if (mapped && hasSource) {
                 // Where the Map is 0 the output is the Source pixel itself, never filtered, which
@@ -984,7 +1109,7 @@ IWarp::renderOp(const RenderActionArgs& args,
                         continue;
                     }
                     float* dst = &outRow[(std::size_t)i * nComps];
-                    const float* pix = plane.source.pixel(roi.x1 + i, y);
+                    const float* pix = chained ? &heldRow[(std::size_t)i * nComps] : plane.source.pixel(roi.x1 + i, y);
                     if (pix) {
                         std::copy(pix, pix + nComps, dst);
                     } else {
@@ -995,13 +1120,16 @@ IWarp::renderOp(const RenderActionArgs& args,
             if (direct) {
                 continue;
             }
-            PassExec::readSourceRow(plane.src.get(), plane.srcAccess.get(), plane.srcBounds, plane.src ? plane.srcNComps : nComps, roi.x1, y, width, nComps, &referenceRow[0]);
+            if (!chained) {
+                PassExec::readSourceRow(plane.src.get(), plane.srcAccess.get(), plane.srcBounds, plane.src ? plane.srcNComps : nComps, roi.x1, y, width, nComps, &referenceRow[0]);
+            }
+            const float* const reference = chained ? heldRow.data() : referenceRow.data();
             if (doMask) {
                 PassExec::readChannelRow(mask.get(), maskSource.access.get(), maskSource.bounds, maskSource.nComps, maskChannel, roi.x1, y, width, maskSource.edgeMode, &maskRow[0]);
             }
 
             for (int i = 0; i < width; ++i, dstPix += nComps) {
-                const float* srcPix = &referenceRow[(std::size_t)i * nComps];
+                const float* srcPix = &reference[(std::size_t)i * nComps];
                 const float* outPix = &warpedRow[(std::size_t)i * nComps];
                 float alpha = mix;
                 if (doMask) {
@@ -1032,6 +1160,38 @@ IWarp::renderOp(const RenderActionArgs& args,
 } // IWarp::renderOp
 
 bool
+IWarp::acceptsInverseWarpChain(int inputNb,
+                               double time,
+                               ViewIdx view) const
+{
+    if (inputNb != kIWarpInputSource) {
+        return false;
+    }
+    WarpSettings settings;
+    warpSettings(time, view, &settings);
+
+    return !hasTimeBlur(settings) && !hasDirectionalBlur(settings);
+}
+
+double
+IWarp::getInverseWarpChainFilterSupport(int /*inputNb*/,
+                                        double time,
+                                        ViewIdx view) const
+{
+    WarpSettings settings;
+    warpSettings(time, view, &settings);
+
+    return Resampler::filterRoIExpansion(settings.filter) + 0.5;
+}
+
+std::optional<EdgeMode>
+IWarp::getConcatenationEdgeMode(double time,
+                                ViewIdx view) const
+{
+    return resolvedEdgeMode(time, view);
+}
+
+bool
 IWarp::resolveGpuMapChannel(double time,
                             ViewIdx view,
                             ImageLayerDesc* layer,
@@ -1044,7 +1204,8 @@ bool
 IWarp::canRenderOpOnGpu(const GpuQuery& query) const
 {
 #ifdef NATRON_HAVE_GPU
-    if ((query.bitDepth != eImageBitDepthFloat) || !canRunStagesGpu(resolveGpuPlan(query), query)) {
+    const StagePlan plan = resolveGpuPlan(query);
+    if ((query.bitDepth != eImageBitDepthFloat) || !canRunStagesGpu(plan, query) || (query.hasConcatenatedInput && !warpGpuTakesChain(plan, query))) {
         return false;
     }
     WarpSettings settings;
@@ -1149,6 +1310,17 @@ IWarp::renderOpGpu(const GpuRenderArgs& args)
         }
     }
     const bool hasSource = (sourceInput >= 0) && (sourceInput < (int)cropped.inputs.size()) && cropped.inputs[sourceInput].buffer;
+    // With warps concatenated into the Source, the Source staged is the image upstream of them
+    // and their chain is bound after the Map.
+    GpuImageView chainView;
+    if (hasSource) {
+        if (!stageGpuChainView(args, sourceInput, std::vector<uint32_t>(), &chainView)) {
+            return eStatusFailed;
+        }
+        if (!chainView.buffer && query.concatenatedStepsOf(sourceInput)) {
+            return eStatusFailed;
+        }
+    }
 
     GpuImageView mapView;
     if (!stageGpuInputView(*this, args, kIWarpInputMap, &mapView)) {
@@ -1157,7 +1329,7 @@ IWarp::renderOpGpu(const GpuRenderArgs& args)
 
     // The header, word for word as iwarp.slang loads it, then the curve.
     uint32_t header[kGpuHeaderWords] = {};
-    uint32_t flags = ((settings.clamp && Resampler::filterHonoursClamp(settings.filter.filter)) ? kIWarpGpuClamp : 0u) | (settings.edgeMode == EdgeMode::Black ? kWarpGpuEdgeBlack : 0u) | ((settings.filter.filter != Resampler::eFilterImpulse) ? kIWarpGpuJacobian : 0u) | (hasSource ? kIWarpGpuSample : 0u) | (mapParams.invert ? kIWarpGpuMapInvert : 0u) | (mapParams.smooth ? kIWarpGpuMapSmooth : 0u);
+    uint32_t flags = ((settings.clamp && Resampler::filterHonoursClamp(settings.filter.filter)) ? kIWarpGpuClamp : 0u) | (settings.edgeMode == EdgeMode::Black ? kWarpGpuEdgeBlack : 0u) | ((settings.filter.filter != Resampler::eFilterImpulse) ? kIWarpGpuJacobian : 0u) | (hasSource ? kIWarpGpuSample : 0u) | (mapParams.invert ? kIWarpGpuMapInvert : 0u) | (mapParams.smooth ? kIWarpGpuMapSmooth : 0u) | (chainView.buffer ? kIWarpGpuChain : 0u);
     int32_t mapComponent = -1;
     if (getInput(kIWarpInputMap)) {
         flags |= kIWarpGpuMapConnected;
@@ -1195,12 +1367,14 @@ IWarp::renderOpGpu(const GpuRenderArgs& args)
     curve.pack(&lut);
 
     PixelKernelGpu op;
-    op.kernel = (int)gpu::GpuKernelId::iwarp;
+    op.kernel = (int)(chainView.buffer ? gpu::GpuKernelId::iwarp_chain : gpu::GpuKernelId::iwarp);
     op.params.resize(sizeof(header) + lut.size() * sizeof(float));
     std::memcpy(op.params.data(), header, sizeof(header));
     std::memcpy(op.params.data() + sizeof(header), lut.data(), lut.size() * sizeof(float));
 
-    return recordStagesGpuKernelInputs(plan, cropped, op, std::span<const GpuImageView>(&mapView, 1));
+    const GpuImageView views[2] = { mapView, chainView };
+
+    return recordStagesGpuKernelInputs(plan, cropped, op, std::span<const GpuImageView>(views, 2));
 #else
     Q_UNUSED(args);
 

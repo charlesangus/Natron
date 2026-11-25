@@ -34,12 +34,14 @@
 
 #include "BaseTest.h"
 #include "Native/NativeGpuParity.h"
+#include "Native/SplineWarpTestCurves.h"
 #include "NativeParity.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/InverseWarpChain.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Image/EdgeModeKnob.h"
@@ -47,6 +49,8 @@
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/Nodes/Transform/LensDistortion.h"
+#include "Engine/Nodes/Transform/SplineWarp/SplineWarp.h"
+#include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/Project.h"
 #include "Engine/RectI.h"
 #include "Engine/ViewIdx.h"
@@ -314,6 +318,16 @@ TEST_F(NativeLensDistortionGpuTest, EligibilityFollowsTheSupportedSettings)
         q.hasMask = true;
         q.mix = 0.5;
         EXPECT_EQ(supported, effect->canRenderOnGpu(q)) << what << " mask and mix";
+
+        GpuQuery c = eligibleQuery();
+        c.hasConcatenatedInput = true;
+        c.concatenatedSteps = { InverseWarpChain::eGpuStepMatrix | InverseWarpChain::eGpuStepSplineWarp | InverseWarpChain::eGpuStepLens };
+        EXPECT_EQ(supported && !stmap, effect->canRenderOnGpu(c)) << what << " warps concatenated from upstream";
+        c.concatenatedSteps = { InverseWarpChain::eGpuStepMatrix | InverseWarpChain::eGpuStepUnsupported };
+        EXPECT_FALSE(effect->canRenderOnGpu(c)) << what << " a warp with no GPU form concatenated from upstream";
+        c.concatenatedSteps = { InverseWarpChain::eGpuStepMatrix };
+        c.mix = 0.5;
+        EXPECT_FALSE(effect->canRenderOnGpu(c)) << what << " a mix over a transform concatenated from upstream";
     }
 }
 
@@ -405,4 +419,69 @@ TEST_F(NativeLensDistortionGpuTest, NonConvergentFisheyeEdgeMatchesTheCpu)
             expectParity(source, node, std::string(direction) + " " + outputMode(stmap));
         }
     }
+}
+
+// Lens distortion between two Transforms concatenates into the second, which samples the Source
+// through the whole chain on the GPU.
+TEST_F(NativeLensDistortionGpuTest, TransformTakesAChainThroughTheLensOnTheGpu)
+{
+    resetProject();
+    NodePtr source = makeSource();
+    ASSERT_TRUE(bool(source));
+    NodePtr first = createNode(QString::fromUtf8(PLUGINID_NATRON_TRANSFORM), PLUGIN_MAJOR_NATRON_TRANSFORM);
+    ASSERT_TRUE(bool(first));
+    connectNodes(source, first, 0, true);
+    ASSERT_TRUE(setKnobValues(first, kTransformNodeParamTranslate, { 2.5, -1.75 }));
+    NodePtr lens = makeLensDistortion(first, modelSetups().front());
+    ASSERT_TRUE(bool(lens));
+    NodePtr last = createNode(QString::fromUtf8(PLUGINID_NATRON_TRANSFORM), PLUGIN_MAJOR_NATRON_TRANSFORM);
+    ASSERT_TRUE(bool(last));
+    connectNodes(lens, last, 0, true);
+    ASSERT_TRUE(setKnobValues(last, kTransformNodeParamCenter, { 32., 24. }));
+    ASSERT_TRUE(setKnobValues(last, kTransformNodeParamRotate, { 6. }));
+
+    const RectI window = paritySourceWindow(source, kTime, 0);
+    const EndToEndResult result = renderEndToEnd(std::vector<NodePtr>({ first, lens, last }), last, window, kTime);
+    if (result.skipped) {
+        return;
+    }
+    ASSERT_TRUE(result.ok) << result.error;
+    EXPECT_TRUE(result.ranInRegion(last));
+    EXPECT_EQ(1u, result.gpuTasksPerNode.count(last->getScriptName_mt_safe())) << "the region fell back to the CPU";
+    EXPECT_EQ(0u, result.gpuTasksPerNode.count(lens->getScriptName_mt_safe())) << "the concatenated lens rendered";
+    EXPECT_EQ(0u, result.gpuTasksPerNode.count(first->getScriptName_mt_safe())) << "the concatenated Transform rendered";
+    EXPECT_TRUE(result.cpuFallbackReasons.empty());
+    ASSERT_EQ(result.cpu.size(), result.gpu.size());
+    const ImageDiff diff = compareImages(result.cpu, result.gpu, ParityTolerance::resampling());
+    EXPECT_EQ(0u, diff.mismatches) << "worst " << diff.worstAbsolute << ", first at float " << diff.firstMismatchIndex;
+}
+
+// A SplineWarp concatenates into the lens, which samples the Source through the warp's field on
+// the GPU.
+TEST_F(NativeLensDistortionGpuTest, LensTakesASplineWarpOnTheGpu)
+{
+    resetProject();
+    NodePtr source = makeSource();
+    ASSERT_TRUE(bool(source));
+    NodePtr warp = createNode(QString::fromUtf8(PLUGINID_NATRON_SPLINEWARP), PLUGIN_MAJOR_NATRON_SPLINEWARP);
+    ASSERT_TRUE(bool(warp));
+    connectNodes(source, warp, kSplineWarpInputSource, true);
+    ASSERT_TRUE(setKnobValues(warp, kSplineWarpParamBoundaryBBox, { 0. }));
+    ASSERT_TRUE(bool(SplineWarpTestCurves::linkQuad(SplineWarpTestCurves::contextOf(warp), 32., 24., 12., 2., -1.5, 1.05)));
+    NodePtr lens = makeLensDistortion(warp, modelSetups().front());
+    ASSERT_TRUE(bool(lens));
+
+    const RectI window = paritySourceWindow(source, kTime, 0);
+    const EndToEndResult result = renderEndToEnd(std::vector<NodePtr>({ warp, lens }), lens, window, kTime);
+    if (result.skipped) {
+        return;
+    }
+    ASSERT_TRUE(result.ok) << result.error;
+    EXPECT_TRUE(result.ranInRegion(lens));
+    EXPECT_EQ(1u, result.gpuTasksPerNode.count(lens->getScriptName_mt_safe())) << "the region fell back to the CPU";
+    EXPECT_EQ(0u, result.gpuTasksPerNode.count(warp->getScriptName_mt_safe())) << "the concatenated SplineWarp rendered";
+    EXPECT_TRUE(result.cpuFallbackReasons.empty());
+    ASSERT_EQ(result.cpu.size(), result.gpu.size());
+    const ImageDiff diff = compareImages(result.cpu, result.gpu, ParityTolerance::resampling());
+    EXPECT_EQ(0u, diff.mismatches) << "worst " << diff.worstAbsolute << ", first at float " << diff.firstMismatchIndex;
 }

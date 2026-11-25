@@ -34,6 +34,7 @@
 
 #include "Engine/EffectInstance.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/InverseWarpChain.h"
 #include "Engine/Nodes/Filter/MapInput.h"
 #include "Engine/Nodes/Image/GpuRender.h"
 #include "Engine/Nodes/Image/PixelKernel.h"
@@ -98,6 +99,18 @@ inline constexpr uint32_t kWarpGpuMapInvert = 64;
 inline constexpr uint32_t kWarpGpuMapSmooth = 128;
 inline constexpr uint32_t kWarpGpuUVEdgeBlack = 256;
 inline constexpr uint32_t kWarpGpuMapEdgeBlack = 512;
+inline constexpr uint32_t kWarpGpuChain = 1024;
+
+// Whether a warp rendered through plan takes query's concatenated warps on the GPU. The finishing
+// stages would blend against, or divide by, the Source upstream of them, where renderOp() uses
+// this node's immediate input; and each step needs a GPU form.
+inline bool
+warpGpuTakesChain(const StagePlan& plan,
+                  const GpuQuery& query)
+{
+    return !plan.applyMask && (plan.mix == 1.) && (query.mix == 1.) && plan.processChannels.all() && (plan.divisorChannel < 0)
+        && query.concatenatedStepsWithin(InverseWarpChain::eGpuStepMatrix | InverseWarpChain::eGpuStepSplineWarp | InverseWarpChain::eGpuStepLens);
+}
 
 // The Map input of a warp and its knobs at the render's time and view; input -1 for a node
 // without one.
@@ -203,15 +216,18 @@ warpGpuInputRoI(const EffectInstance& effect,
     return uvRoI;
 }
 
-// Records kernel, stmap.slang's stmap or idistort entry, through plan: the Source cropped to its
-// region of definition, as the CPU fetches it, is both sampled and blended under the mask and mix.
+// Records kernel, stmap.slang's stmap or idistort entry, through plan, or chainKernel, the entry's
+// build that samples through a chain, when one is bound: the Source cropped to its region of
+// definition, as the CPU fetches it, is both sampled and blended under the mask and mix.
 // uChannel, vChannel and alphaChannel are channels of uvLayer, -1 for none. map is the Map input,
-// which scales the warp per pixel while it is connected.
+// which scales the warp per pixel while it is connected. With warps concatenated into the Source,
+// the Source staged is the image upstream of them and their chain is bound after the Map.
 inline StatusEnum
 recordWarpGpu(EffectInstance& effect,
               const StagePlan& plan,
               const GpuRenderArgs& args,
               int kernel,
+              int chainKernel,
               WarpGpuParams params,
               int uvInput,
               const ImageLayerDesc& uvLayer,
@@ -230,6 +246,17 @@ recordWarpGpu(EffectInstance& effect,
     const bool hasSource = (sourceInput >= 0) && (sourceInput < (int)cropped.inputs.size()) && cropped.inputs[sourceInput].buffer;
     if (!hasSource) {
         params.flags &= ~kWarpGpuSample;
+    }
+    GpuImageView chainView;
+    if (params.flags & kWarpGpuSample) {
+        if (!stageGpuChainView(args, sourceInput, std::vector<uint32_t>(), &chainView)) {
+            return eStatusFailed;
+        }
+        if (chainView.buffer) {
+            params.flags |= kWarpGpuChain;
+        } else if (args.query.concatenatedStepsOf(sourceInput)) {
+            return eStatusFailed;
+        }
     }
 
     GpuImageView uv;
@@ -285,11 +312,11 @@ recordWarpGpu(EffectInstance& effect,
     }
 
     PixelKernelGpu op;
-    op.kernel = kernel;
+    op.kernel = chainView.buffer ? chainKernel : kernel;
     op.setParams(params);
-    const GpuImageView views[2] = { uv, mapView };
+    const GpuImageView views[3] = { uv, mapView, chainView };
 
-    return recordStagesGpuKernelInputs(plan, cropped, op, std::span<const GpuImageView>(views, 2));
+    return recordStagesGpuKernelInputs(plan, cropped, op, std::span<const GpuImageView>(views, 3));
 }
 
 NATRON_NAMESPACE_EXIT

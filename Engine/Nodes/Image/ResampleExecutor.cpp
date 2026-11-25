@@ -40,6 +40,7 @@
 #include "Engine/Format.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/InverseWarpChain.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Image/EdgeSample.h"
 #include "Engine/Nodes/Image/PassExecutor.h"
@@ -86,6 +87,9 @@ struct ResamplePlane {
     bool resampleReference = false;
     Resampler::SamplingTransforms referenceTransforms;
     Resampler::ResampleParams referenceParams;
+    // The source is the chain's, sampled at each pixel centre through inverse then the chain.
+    bool chained = false;
+    TransformMath::Mat3 inverse;
 
     ResamplePlane() = default;
     ResamplePlane(const ResamplePlane&) = delete;
@@ -340,8 +344,8 @@ isFiniteMatrix(const Mat3& H)
 }
 
 // The matrices a GPU render of request samples at time and scale, built as runResampleCpu()
-// builds them for a source without a concatenated transform; false when there are none or one
-// is not finite.
+// builds them, with the source's pixel aspect ratio srcPar when positive, and the source clip's
+// otherwise; false when there are none or one is not finite.
 bool
 gpuSamplingTransforms(const EffectInstance& effect,
                       int sourceInput,
@@ -349,7 +353,8 @@ gpuSamplingTransforms(const EffectInstance& effect,
                       double time,
                       ViewIdx view,
                       const RenderScale& scale,
-                      Resampler::SamplingTransforms* transforms)
+                      Resampler::SamplingTransforms* transforms,
+                      double srcPar = 0.)
 {
     if ((request.form != ResampleRequest::Form::Matrix) || !request.transform || (sourceInput < 0)) {
         return false;
@@ -360,7 +365,7 @@ gpuSamplingTransforms(const EffectInstance& effect,
     }
     const OfxPointD s = scale.toOfxPointD();
     const NodeMetadataConstPtr metadata = effect.getRenderMetadata(time, view);
-    Resampler::buildSamplingTransforms(request.transform, time, request.settings.invert, blur, s.x, s.y, false, metadata->getPixelAspectRatio(sourceInput), metadata->getPixelAspectRatio(-1), transforms);
+    Resampler::buildSamplingTransforms(request.transform, time, request.settings.invert, blur, s.x, s.y, false, (srcPar > 0.) ? srcPar : metadata->getPixelAspectRatio(sourceInput), metadata->getPixelAspectRatio(-1), transforms);
     if (transforms->invTransforms.empty()) {
         return false;
     }
@@ -424,6 +429,41 @@ recordResampleMatrixGpu(gpu::GpuRecordContext& ctx,
         resample.blur.maxError = Resampler::motionBlurMaxError(quality);
         resample.blur.seedOffset = (uint32_t)(unsigned int)(0x10000 * quality);
         resample.blur.weighted = !transforms.alphas.empty();
+    }
+    resample.dst = PassExec::toGpuBlurImage(dst);
+    resample.output = PassExec::toGpuBlurRect(rect);
+
+    return bool(gpu::recordResample(ctx, resample));
+}
+
+// Records the matrix form's resample of source through the inverse matrix H and then the packed
+// chain into dst over rect, as runResampleCpu() resamples a chained plane.
+bool
+recordResampleChainGpu(gpu::GpuRecordContext& ctx,
+                       const ResampleSettings& settings,
+                       const Mat3& H,
+                       const std::vector<uint32_t>& chain,
+                       bool draftMode,
+                       int nComps,
+                       const GpuImageView& source,
+                       const GpuImageView& dst,
+                       const RectI& rect)
+{
+    const Resampler::FilterSpec filter = draftMode ? Resampler::FilterSpec(Resampler::eFilterImpulse) : settings.filter;
+    gpu::GpuResample resample;
+    if (source.buffer) {
+        resample.src = PassExec::toGpuBlurImage(source);
+    }
+    resample.channels = (uint32_t)nComps;
+    resample.filter = (uint32_t)filter.filter;
+    resample.lobes = filter.lobes;
+    resample.B = filter.B;
+    resample.C = filter.C;
+    resample.clamp = settings.clamp && Resampler::filterHonoursClamp(filter.filter);
+    resample.edgeMode = settings.edgeMode;
+    resample.chain = &chain;
+    for (int k = 0; k < 9; ++k) {
+        resample.chainMatrix[k] = H.m[k];
     }
     resample.dst = PassExec::toGpuBlurImage(dst);
     resample.output = PassExec::toGpuBlurRect(rect);
@@ -503,6 +543,10 @@ runResampleCpu(EffectInstance& effect,
     }
     const OfxPointD s = args.mappedScale.toOfxPointD();
     const double dstPar = effect.getRenderMetadata(args.time, args.view)->getPixelAspectRatio(-1);
+    const InverseWarpChainConstPtr chain = (matrix && (sourceInput >= 0)) ? effect.getPreparedWarpChain(sourceInput, args.time, args.view, args.mappedScale, PassExec::toCanonical(roi, args.mappedScale, dstPar)) : InverseWarpChainConstPtr();
+    if (chain && chain->hasError()) {
+        return eStatusFailed;
+    }
     const PixelOffset offset = request.offset;
     const bool matted = !matrix && request.matte.isSet();
     MatteAxis matteColumns;
@@ -529,10 +573,11 @@ runResampleCpu(EffectInstance& effect,
         }
         const int nComps = plane.nComps;
         if (plane.src) {
+            // Bounds read under the lock that pins the buffer, so the pointer below is into the buffer they describe.
+            plane.srcAccess = std::make_shared<Image::ReadAccess>(plane.src.get());
             plane.srcBounds = plane.src->getBounds();
             plane.readable = (!matrix && request.clipSourceToRoI) ? plane.srcBounds.intersect(plane.srcRoI) : plane.srcBounds;
             plane.srcNComps = (int)plane.src->getComponentsCount();
-            plane.srcAccess = std::make_shared<Image::ReadAccess>(plane.src.get());
             if (plane.srcNComps == nComps) {
                 plane.source = Resampler::SourceImage((const float*)plane.srcAccess->pixelAt(plane.srcBounds.x1, plane.srcBounds.y1), plane.srcBounds, nComps);
             } else {
@@ -542,7 +587,15 @@ runResampleCpu(EffectInstance& effect,
             if (matrix) {
                 const double srcPar = plane.src->getPixelAspectRatio();
                 Resampler::buildSamplingTransforms(request.transform, args.time, request.settings.invert, blur, s.x, s.y, false, srcPar, dstPar, &plane.transforms);
-                if (plane.inputTransform) {
+                if (chain && !plane.inputTransform) {
+                    // acceptsInverseWarpChain() declines the blurs that average several matrices.
+                    if (plane.transforms.invTransforms.size() != 1) {
+                        return eStatusFailed;
+                    }
+                    plane.chained = true;
+                    plane.inverse = plane.transforms.invTransforms.front();
+                    plane.source = plane.source.cropped(chain->getSourcePixels(srcPar));
+                } else if (plane.inputTransform) {
                     const Mat3 inputTransform = TransformMath::fromEngineMatrix(*plane.inputTransform);
                     Resampler::concatenateInputTransform(inputTransform, &plane.transforms);
                     if (readsReference) {
@@ -579,6 +632,18 @@ runResampleCpu(EffectInstance& effect,
         std::vector<float> resampledRow(direct ? 0 : rowSize);
         std::vector<float> referenceRow(direct ? 0 : rowSize);
         std::vector<float> maskRow(doMask ? width : 0);
+        const bool impulse = filter.filter == Resampler::eFilterImpulse;
+        const std::size_t chainSize = plane.chained ? (std::size_t)width : 0;
+        Resampler::ChainRowScratch chainRow;
+        chainRow.resize(chainSize, !impulse);
+        // Row y through the chain into row, after this node's own inverse matrix when throughOp.
+        const auto resampleRowThroughChain = [&](int y, bool throughOp, float* row) {
+            chainRow.loadPixelCentres(chainSize, roi.x1, y);
+            if (throughOp) {
+                InverseWarp::mapRowThroughMatrix(plane.inverse.m, chainSize, chainRow.x.data(), chainRow.y.data(), chainRow.jacobianData());
+            }
+            Resampler::sampleRowThroughChain(*chain, chainSize, &chainRow, plane.source, filter, request.settings.clamp, request.settings.edgeMode, row, nComps);
+        };
 
         for (int y = band.y1; y < band.y2; ++y) {
             if ((((y - band.y1) % kAbortCheckRows) == 0) && cancel.check()) {
@@ -592,6 +657,8 @@ runResampleCpu(EffectInstance& effect,
             float* const outRow = direct ? dstPix : resampledRow.data();
             if (!hasSource) {
                 std::fill(outRow, outRow + rowSize, 0.f);
+            } else if (plane.chained) {
+                resampleRowThroughChain(y, true, outRow);
             } else if (matrix) {
                 Resampler::resampleRow(plane.params, plane.source, y, roi.x1, roi.x2, outRow);
             } else {
@@ -605,7 +672,9 @@ runResampleCpu(EffectInstance& effect,
                 continue;
             }
             if (readsReference) {
-                if (plane.resampleReference) {
+                if (plane.chained) {
+                    resampleRowThroughChain(y, false, &referenceRow[0]);
+                } else if (plane.resampleReference) {
                     Resampler::resampleRow(plane.referenceParams, plane.source, y, roi.x1, roi.x2, &referenceRow[0]);
                 } else {
                     readSourceImageRow(plane.source, plane.readable, EdgeMode::Black, roi.x1, y, width, &referenceRow[0]);
@@ -772,6 +841,16 @@ resampleTransform(EffectInstance& effect,
                   EffectInstancePtr* inputToTransform,
                   Transform::Matrix3x3* transform)
 {
+    if (request.form == ResampleRequest::Form::Offset) {
+        EffectInstancePtr input = (sourceInput >= 0) ? effect.getInput(sourceInput) : EffectInstancePtr();
+        if (!input) {
+            return eStatusFailed;
+        }
+        *transform = Transform::Matrix3x3(1., 0., request.offset.x, 0., 1., request.offset.y, 0., 0., 1.);
+        *inputToTransform = input;
+
+        return eStatusOK;
+    }
     if ((request.form != ResampleRequest::Form::Matrix) || !request.transform) {
         return eStatusReplyDefault;
     }
@@ -815,14 +894,28 @@ canRecordResampleGpu(const EffectInstance& effect,
         return false;
     }
     if (request.form == ResampleRequest::Form::Offset) {
-        return true;
+        // runResampleCpu() never folds concatenated transforms into an offset.
+        return !query.hasConcatenatedInput;
     }
+    const unsigned steps = query.concatenatedStepsOf(plan.sourceInput);
     if (query.hasConcatenatedInput) {
-        return false;
+        // The finishing stages would blend against the source upstream of the concatenated
+        // nodes, where runResampleCpu() resamples this node's immediate input.
+        const bool finish = plan.applyMask || (plan.mix != 1.) || (query.mix != 1.) || !plan.processChannels.all();
+        if (finish || !query.concatenatedStepsWithin(InverseWarpChain::eGpuStepMatrix | InverseWarpChain::eGpuStepSplineWarp | InverseWarpChain::eGpuStepLens)) {
+            return false;
+        }
     }
     Resampler::SamplingTransforms transforms;
+    if (!gpuSamplingTransforms(effect, plan.sourceInput, request, query.time, query.view, query.mappedScale, &transforms)) {
+        return false;
+    }
+    if (steps & ~(unsigned)InverseWarpChain::eGpuStepMatrix) {
+        // A chain with a map is sampled through one matrix, as acceptsInverseWarpChain() asks.
+        return transforms.invTransforms.size() == 1;
+    }
 
-    return gpuSamplingTransforms(effect, plan.sourceInput, request, query.time, query.view, query.mappedScale, &transforms) && (transforms.invTransforms.size() <= gpu::kGpuResampleMaxMatrices);
+    return transforms.invTransforms.size() <= gpu::kGpuResampleMaxMatrices;
 #else
     Q_UNUSED(effect);
     Q_UNUSED(plan);
@@ -905,8 +998,27 @@ recordResampleGpu(EffectInstance& effect,
     const bool matrix = request.form == ResampleRequest::Form::Matrix;
     const double time = query.time;
     const RenderScale& scale = query.mappedScale;
+    // Through concatenated nodes the source's view holds the image upstream of them.
+    const GpuInputChain* chain = args.chainOf(sourceInput);
+    if (query.hasConcatenatedInput && !chain && (sourceInput >= 0) && query.concatenatedStepsOf(sourceInput)) {
+        return eStatusFailed;
+    }
+    EffectInstancePtr input = chain ? chain->source : effect.getInput(sourceInput);
+    const double srcPar = input ? input->getRenderMetadata(time, query.view)->getPixelAspectRatio(-1) : 0.;
     Resampler::SamplingTransforms transforms;
-    if (matrix && !gpuSamplingTransforms(effect, sourceInput, request, time, query.view, scale, &transforms)) {
+    if (matrix && !gpuSamplingTransforms(effect, sourceInput, request, time, query.view, scale, &transforms, chain ? srcPar : 0.)) {
+        return eStatusFailed;
+    }
+    if (chain && chain->cat) {
+        Resampler::concatenateInputTransform(TransformMath::fromEngineMatrix(*chain->cat), &transforms);
+        for (const Mat3& H : transforms.invTransforms) {
+            if (!isFiniteMatrix(H)) {
+                return eStatusFailed;
+            }
+        }
+    }
+    const bool mapped = chain && chain->warpChain;
+    if (mapped && (!chain->gpuWords || (transforms.invTransforms.size() != 1))) {
         return eStatusFailed;
     }
 
@@ -915,7 +1027,6 @@ recordResampleGpu(EffectInstance& effect,
     // over its region of interest; its offset form reads past that region unless the request
     // clips to it.
     GpuImageView source;
-    EffectInstancePtr input = effect.getInput(sourceInput);
     if (input && (sourceInput < (int)args.inputs.size()) && args.inputs[sourceInput].buffer) {
         const GpuImageView& inputView = args.inputs[sourceInput];
         if (!PassExec::isUsableGpuView(inputView, nComps)) {
@@ -924,7 +1035,9 @@ recordResampleGpu(EffectInstance& effect,
         RectD srcRoD;
         if (sourceRegionOfDefinition(input, time, scale, query.view, &srcRoD)) {
             RectI valid = intersectPixels(inputView.bounds, clampedPixelEnclosing(srcRoD, scale, input->getRenderMetadata(time, query.view)->getPixelAspectRatio(-1)));
-            if (matrix) {
+            if (matrix && chain) {
+                valid = chain->sourceRoI ? Resampler::cropToNearest(valid, chain->sourceRoI(rect)) : valid;
+            } else if (matrix) {
                 valid = intersectPixels(valid, resampleGpuSourceRoI(effect, sourceInput, time, query.view, rect, scale));
             } else if (request.clipSourceToRoI) {
                 // runResampleCpu() clips to the region getImage() reports, which encloses the
@@ -954,7 +1067,11 @@ recordResampleGpu(EffectInstance& effect,
             return eStatusFailed;
         }
     }
-    if (matrix) {
+    if (mapped) {
+        if (!recordResampleChainGpu(ctx, request.settings, transforms.invTransforms.front(), *chain->gpuWords, query.draftMode, nComps, source, filtered, rect)) {
+            return eStatusFailed;
+        }
+    } else if (matrix) {
         if (!recordResampleMatrixGpu(ctx, request.settings, transforms, query.draftMode, nComps, source, filtered, rect)) {
             return eStatusFailed;
         }

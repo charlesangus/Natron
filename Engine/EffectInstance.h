@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <bitset>
+#include <functional>
 #include <list>
 #include <mutex>
 #include <optional>
@@ -39,14 +40,17 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/ImageLocker.h"
+#include "Engine/InverseWarpChain.h"
 #include "Engine/Knob.h" // for KnobHolder
 #include "Engine/NodeMetadata.h"
+#include "Engine/OverlayPointMap.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/PluginActionShortcut.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
 #include "Engine/RenderStats.h"
+#include "Engine/SceneLoadSet.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/ViewIdx.h"
 
@@ -688,6 +692,15 @@ public:
         return false;
     }
 
+    /**
+     * @brief Whether the node graph draws inputNb on the node's left side, ahead of its other
+     * side inputs, so it can be reached without connecting the inputs that come before it.
+     **/
+    virtual bool isInputFirstOnSide(int /*inputNb*/) const WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
     virtual int getRotoBrushInputIndex() const WARN_UNUSED_RETURN
     {
         return -1;
@@ -1018,17 +1031,29 @@ public:
         // is the same at every time.
         double time;
         ViewIdx view;
+        // Who the scene is for, and which payloads it is matched against.
+        SceneEvaluationContext context;
+        // Lets a call made outside of a render, which has no abort flag of its own, be aborted:
+        // every node it evaluates checks it between steps. Inside a render the render's flag
+        // is checked instead.
+        AbortableRenderInfoPtr abortInfo;
 
         EvaluateSceneArgs()
             : time(0)
             , view(0)
+            , context()
+            , abortInfo()
         {
         }
 
         EvaluateSceneArgs(double time_,
-                          ViewIdx view_)
+                          ViewIdx view_,
+                          const SceneEvaluationContext& context_ = SceneEvaluationContext(),
+                          const AbortableRenderInfoPtr& abortInfo_ = AbortableRenderInfoPtr())
             : time(time_)
             , view(view_)
+            , context(context_)
+            , abortInfo(abortInfo_)
         {
         }
     };
@@ -1201,6 +1226,17 @@ public:
                                          const RectD & renderWindow,
                                          const NodePtr & treeRoot,
                                          FrameRequestMap & request);
+
+    /**
+     * @brief Runs the request pass from each of roots in turn against request, which may already hold a pass's
+     * entries: an entry reached again has its final RoI grown to the union of the regions requested from it, as the
+     * planned pass does, and only what a root adds is walked upstream. When newWork is set, appends to it each region
+     * the pass added to an entry, in the order the pass added them. Not MT-safe on request: run it on a map no
+     * other thread reads. Implem is in ParallelRenderArgs.cpp
+     **/
+    static StatusEnum extendRequestPass(const std::vector<RequestPassRoot>& roots,
+                                        FrameRequestMap& request,
+                                        std::vector<RequestPassNewWork>* newWork);
 
     /**
      * @brief Pre-renders the input frames node needs before rendering. Implem is in ParallelRenderArgs.cpp
@@ -1779,12 +1815,18 @@ public:
         // The payload of each connected input that produces a scene, by input number.
         std::map<int, ScenePayload> inputScenes;
         bool isRenderResponseToUserInteraction;
+        SceneEvaluationContext context;
+        // The context of each input evaluated on another load set than context's, by input
+        // number (see getSceneInputContext()).
+        std::map<int, SceneEvaluationContext> inputContexts;
 
         SceneRenderActionArgs()
             : time(0)
             , view(0)
             , inputScenes()
             , isRenderResponseToUserInteraction(false)
+            , context()
+            , inputContexts()
         {
         }
 
@@ -1793,6 +1835,13 @@ public:
          * not produce a scene.
          **/
         ScenePayload getInputScene(int inputNb) const;
+
+        /**
+         * @brief The context inputNb was evaluated on, which a node reading that input's scene
+         * borrows its stage with and adds the reach of its matches to: context unless the input
+         * evaluated on a load set of its own.
+         **/
+        const SceneEvaluationContext& getInputContext(int inputNb) const;
     };
 
 protected:
@@ -1842,6 +1891,44 @@ protected:
         return eStatusReplyDefault;
     }
 
+    /**
+     * @brief The context scene input inputNb evaluates on when this node evaluates on ctx: ctx
+     * itself by default. Load sets are on the paths of the node's output, so a node showing an
+     * input's prims at other paths (a graft, a wrap, a reference) maps ctx's set onto the
+     * input's paths, erring towards loading more, null when it cannot tell.
+     *
+     * Only the load set of the result counts, and whether its reach is ctx's: a node whose input
+     * paths differ from its output's returns another reach (null will do), so that the input's
+     * reach is mapped even where the two sets happen to include the same payloads. When the set or
+     * the reach differs from ctx's, evaluateScene() gives the input an id kept for this node,
+     * inputNb and ctx's id, so that a node reached both through the mapping and directly memoizes
+     * each apart, and a reach of its own that mapSceneInputReach() brings back to ctx.
+     **/
+    virtual SceneEvaluationContext getSceneInputContext(int /*inputNb*/,
+                                                        const SceneEvaluationContext& ctx,
+                                                        double /*time*/,
+                                                        ViewIdx /*view*/) const
+    {
+        return ctx;
+    }
+
+    /**
+     * @brief Sets *out to the reach in, gathered on input inputNb's paths when the node evaluated
+     * at time and view, as paths of this node's output; *out starts empty. Called by evaluateScene() for an input that evaluated on a load
+     * set of its own, after renderScene() and with the node's own context current
+     * (SceneEvaluationContext::current()), so that it may map through what renderScene() memoized
+     * for that context. A path it cannot map should become a prefix above every place the input's
+     * prims can land, "/" at worst. The default copies in.
+     **/
+    virtual void mapSceneInputReach(int /*inputNb*/,
+                                    double /*time*/,
+                                    ViewIdx /*view*/,
+                                    const std::vector<std::string>& in,
+                                    std::vector<std::string>* out) const
+    {
+        *out = in;
+    }
+
     virtual StatusEnum getTransform(double /*time*/,
                                     const RenderScale & /*renderScale*/,
                                     bool /*draftRender*/,
@@ -1851,6 +1938,42 @@ protected:
     {
         return eStatusReplyDefault;
     }
+
+    /**
+     * @brief The matrix an overlay drawn upstream follows through this node, in the form
+     * getTransform answers. getTransform refuses wherever the matrix alone would not reproduce the
+     * render, a partial mix for one, since concatenation would drop what it leaves out; an overlay
+     * follows the matrix whenever the node moves the image at all. The default is getTransform.
+     **/
+    virtual StatusEnum getOverlayTransform(double time,
+                                           const RenderScale& renderScale,
+                                           bool draftRender,
+                                           ViewIdx view,
+                                           EffectInstancePtr* inputToTransform,
+                                           Transform::Matrix3x3* transform) WARN_UNUSED_RETURN
+    {
+        return getTransform(time, renderScale, draftRender, view, inputToTransform, transform);
+    }
+
+    /**
+     * @brief Maps an overlay point between input inputNb and the output, in canonical coordinates
+     * at scale 1. On entry *out holds a seed for numeric inverses. The default applies the
+     * draft-mode getOverlayTransform matrix, or its inverse, and is the identity for an input the
+     * matrix does not apply to or a node with no matrix.
+     **/
+    virtual OverlayPointMap::Result mapOverlayPoint(double time,
+                                                    ViewIdx view,
+                                                    int inputNb,
+                                                    OverlayPointMap::Direction direction,
+                                                    const Point& in,
+                                                    Point* out) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Whether mapOverlayPoint is the identity, a matrix or a non-linear map. The default
+     * answers matrix when getOverlayTransform gives one in draft mode.
+     **/
+    virtual OverlayPointMap::Kind overlayMapKind(double time,
+                                                 ViewIdx view) WARN_UNUSED_RETURN;
 
 public:
 
@@ -1862,7 +1985,86 @@ public:
                                    ViewIdx view,
                                    EffectInstancePtr* inputToTransform,
                                    Transform::Matrix3x3* transform) WARN_UNUSED_RETURN;
+    StatusEnum getOverlayTransform_public(double time,
+                                          const RenderScale& renderScale,
+                                          bool draftRender,
+                                          ViewIdx view,
+                                          EffectInstancePtr* inputToTransform,
+                                          Transform::Matrix3x3* transform) WARN_UNUSED_RETURN;
 
+    /**
+     * @brief mapOverlayPoint, with a disabled node mapping every point to itself. The seed, when
+     * given, starts numeric inverses; otherwise they start at in.
+     **/
+    OverlayPointMap::Result mapOverlayPoint_public(double time,
+                                                   ViewIdx view,
+                                                   int inputNb,
+                                                   OverlayPointMap::Direction direction,
+                                                   const Point& in,
+                                                   Point* out,
+                                                   const Point* seed = 0) WARN_UNUSED_RETURN;
+    OverlayPointMap::Kind overlayMapKind_public(double time,
+                                                ViewIdx view) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The canonical forward matrix getOverlayTransform gives at scale 1 in draft mode when
+     * it applies to input inputNb. The pixel matrix is converted with the input's pixel aspect ratio
+     * on the source side and the output's on the destination side.
+     **/
+    bool getOverlayCanonicalMatrix(double time,
+                                   ViewIdx view,
+                                   int inputNb,
+                                   Transform::Matrix3x3* forward) WARN_UNUSED_RETURN;
+
+    // getSceneInputContext() for a caller that maps a context through this node outside evaluateScene().
+    SceneEvaluationContext getSceneInputContext_public(int inputNb,
+                                                       const SceneEvaluationContext& ctx,
+                                                       double time,
+                                                       ViewIdx view) const
+    {
+        return getSceneInputContext(inputNb, ctx, time, view);
+    }
+
+    /**
+     * @brief The context input inputNb evaluates on when this node evaluates on ctx, with the id
+     * evaluateScene() gives it, so that a caller outside an evaluation finds what that evaluation
+     * stored for the input. Its reach is ctx's when the input shares ctx's, else null.
+     **/
+    SceneEvaluationContext getEvaluatedSceneInputContext(int inputNb,
+                                                         const SceneEvaluationContext& ctx,
+                                                         double time,
+                                                         ViewIdx view) const;
+
+    /**
+     * @brief Whether evaluateScene() at time and view passes a scene through instead of rendering
+     * one, as isIdentity_public() tells it: *identityInputNb, *identityTime and *identityView are
+     * then what it evaluates instead, on the same context. False when it cannot tell.
+     **/
+    bool getSceneIdentity(double time,
+                          ViewIdx view,
+                          double* identityTime,
+                          ViewIdx* identityView,
+                          int* identityInputNb) const;
+
+    /**
+     * @brief Called by the owner of a context id when it stops evaluating with it: the ids every
+     * node gave its inputs for it, and those mapped from them in turn, are forgotten.
+     **/
+    static void retireSceneContextId(U64 id);
+
+private:
+    /**
+     * @brief The id evaluateScene() gives input inputNb when it maps ctxId's context onto another
+     * load set. A miss makes a new id, kept for later calls only with registerMiss.
+     **/
+    U64 getSceneInputContextId(U64 ctxId,
+                               int inputNb,
+                               bool registerMiss) const;
+
+    // Forgets the ids this node gave its inputs, on its destruction.
+    void retireSceneInputContextIds();
+
+public:
 protected:
 /**
  * @brief Can be overloaded to indicates whether the effect is an identity, i.e it doesn't produce
@@ -2102,6 +2304,112 @@ public:
         return std::nullopt;
     }
 
+    /**
+     * @brief Whether this kind of node can ever offer an inverse warp map, cached by the node as
+     * getCanTransform() is.
+     **/
+    virtual bool getCanInverseWarp() const WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
+    /**
+     * @brief Whether this node offers its inverse warp to a consumer downstream at time and view,
+     * decided from its knobs only, before any window is known. A node that masks or mixes its
+     * output declines, since the chain skips its render. When it offers, *inputNb is the input
+     * its map samples.
+     **/
+    virtual bool canOfferInverseWarp(double /*time*/,
+                                     ViewIdx /*view*/,
+                                     bool /*draftRender*/,
+                                     int* /*inputNb*/) const WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
+    /**
+     * @brief The map canOfferInverseWarp() offered, covering window, a canonical region of this
+     * node's output, at scale. Null when it has none.
+     **/
+    virtual InverseWarpMapConstPtr getInverseWarpMap(double /*time*/,
+                                                     ViewIdx /*view*/,
+                                                     const RenderScale& /*scale*/,
+                                                     bool /*draftRender*/,
+                                                     const RectD& /*window*/) WARN_UNUSED_RETURN
+    {
+        return InverseWarpMapConstPtr();
+    }
+
+    /**
+     * @brief Whether this node samples inputNb through an InverseWarpChain, and so lets
+     * tryConcatenateTransforms() go through upstream map providers on that input.
+     **/
+    virtual bool acceptsInverseWarpChain(int /*inputNb*/,
+                                         double /*time*/,
+                                         ViewIdx /*view*/) const WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
+    /**
+     * @brief The InverseWarpChain::GpuStep bit of the maps getInverseWarpMap() builds.
+     **/
+    virtual unsigned getInverseWarpGpuStep() const WARN_UNUSED_RETURN
+    {
+        return InverseWarpChain::eGpuStepUnsupported;
+    }
+
+    /**
+     * @brief The radius, in source pixels before the chain's stretch, of the filter this node
+     * samples a chain on inputNb with; transformInputRois() grows each map's pullback by it.
+     **/
+    virtual double getInverseWarpChainFilterSupport(int /*inputNb*/,
+                                                    double /*time*/,
+                                                    ViewIdx /*view*/) const WARN_UNUSED_RETURN
+    {
+        return 0.;
+    }
+
+    /**
+     * @brief The chain the current render concatenated on inputNb, from the thread's transform
+     * redirections; null outside a render or when the input concatenated matrices only.
+     **/
+    InverseWarpChainConstPtr getConcatenatedWarpChain(int inputNb) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief getConcatenatedWarpChain() prepared over this node's region of interest on inputNb
+     * for renderWindow, a canonical region of its output, as transformInputRois() prepares it.
+     * Null when the input concatenated no map. With no such region, every map gives no source.
+     * Every call of one render whose region of interest is the same, and the request pass's
+     * transformInputRois() over it, share one prepared chain, whatever thread they are on.
+     * A chain with an error (InverseWarpChain::hasError()) is posted as the node's
+     * persistent error, which the consumer's render then fails with; a later call without one
+     * withdraws it.
+     **/
+    InverseWarpChainConstPtr getPreparedWarpChain(int inputNb,
+                                                  double time,
+                                                  ViewIdx view,
+                                                  const RenderScale& scale,
+                                                  const RectD& renderWindow) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief getPreparedWarpChain() for chain, the warpChain of inputNb's InputMatrix, which a
+     * GPU render takes from its frame's request rather than the thread's redirections.
+     **/
+    InverseWarpChainConstPtr getPreparedWarpChain(const InverseWarpChainConstPtr& chain,
+                                                  int inputNb,
+                                                  double time,
+                                                  ViewIdx view,
+                                                  const RenderScale& scale,
+                                                  const RectD& renderWindow) WARN_UNUSED_RETURN;
+
+private:
+    /**
+     * @brief Posts chain's error as the node's persistent error, or, with none, withdraws the one
+     * an earlier call posted.
+     **/
+    void postWarpChainError(const InverseWarpChainConstPtr& chain);
+
 protected:
     /**
      * @brief Can be derived to indicate for each input node what is the frame range(s) (which can be discontinuous)
@@ -2275,6 +2583,159 @@ public:
                                         std::vector<ContextNodeRequest>* /*requests*/) const
     {
     }
+
+    /**
+     * @brief Outputs a native effect asks for once part of its render is known, and what to run when they are
+     * rendered. See getRenderContinuation().
+     **/
+    struct RenderContinuationRequest {
+        NodePtr node;
+        // Restricted to what node's output reads before the request is planned; null for the empty context.
+        RenderContextPtr context;
+        double time = 0.;
+        ViewIdx view;
+        // In canonical coordinates.
+        RectD roi;
+        // Defaults to RGBA.
+        std::list<ImageLayerDesc> comps;
+    };
+
+    struct RenderContinuationArgs {
+        double time = 0.;
+        ViewIdx view;
+        unsigned int mipmapLevel = 0;
+        // The pixel region the effect is about to render.
+        RectI roi;
+        // The context the effect renders under, null for the empty one.
+        RenderContextPtr context;
+        // 0 for a render the frame planned; n for one an extension n levels deep asked for.
+        int depth = 0;
+    };
+
+    struct RenderContinuation {
+        std::vector<RenderContinuationRequest> requests;
+        // Run once, on the thread about to render the effect, after every request is rendered and before the render
+        // action; may be null. A status other than eStatusOK fails the render.
+        std::function<StatusEnum()> continuation;
+    };
+
+    /**
+     * @brief The deepest extension a probe may ask for: a probe at this depth that names requests fails its frame.
+     **/
+    static constexpr int kMaxRenderContinuationDepth = 8;
+
+    /**
+     * @brief The probe of a render continuation, called before the effect renders args.roi with its planned inputs
+     * rendered: returns true and fills continuation to have more outputs rendered first. Under the task-graph
+     * scheduler the requests are planned by an incremental request pass, rendered as tasks in parallel under the
+     * frame's budget, and continuation runs on the thread that then renders the effect, where it and the render
+     * read the requested outputs with pullRenderContinuationRequest() as store hits. A request for an output the
+     * frame already holds over the region is served from it without a task. Under the legacy scheduler, on a frame
+     * the task graph does not take, and for an effect pulled unplanned, the requests are rendered one after the
+     * other on the probing thread, then continuation runs inline.
+     *
+     * Called on a render thread with the effect's frame args installed, possibly on several threads at once for
+     * different regions, times or contexts. The probe must not keep the images it reads past its return; whatever
+     * continuation captures lives until it has run or the render is dropped. An aborted frame drops its extension
+     * and never runs continuation. A request naming an extension deeper than kMaxRenderContinuationDepth fails the
+     * frame with a message on the effect. Public to native effects only: neither OpenFX nor Python reach it.
+     **/
+    virtual bool getRenderContinuation(const RenderContinuationArgs& /*args*/,
+                                       RenderContinuation* /*continuation*/)
+    {
+        return false;
+    }
+
+    /**
+     * @brief Whether getRenderContinuation() may return true for some frame. GPU placement keeps such an effect on the
+     * CPU, since only CPU tasks are probed and the answer depends on pixels placement cannot read.
+     **/
+    virtual bool offersRenderContinuation() const WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
+    /**
+     * @brief Pulls the output request names from the render the calling thread runs for this effect: a store hit
+     * when the frame or an extension holds it, otherwise rendered on this thread. For the probe and continuation
+     * of getRenderContinuation(), and the render action after them.
+     **/
+    RenderRoIRetCode pullRenderContinuationRequest(const RenderContinuationRequest& request,
+                                                   unsigned int mipmapLevel,
+                                                   std::map<ImageLayerDesc, ImagePtr>* planes);
+
+    /**
+     * @brief Marks, for its lifetime, the render of node at time/view under contextKey the calling thread runs as one whose render
+     * continuation the scheduler already ran, so that renderRoI() does not probe it again, and the renders it pulls
+     * as belonging to an extension depth levels deep.
+     **/
+    class RenderContinuationHandledScope {
+    public:
+        RenderContinuationHandledScope(const Node* node,
+                                       double time,
+                                       ViewIdx view,
+                                       U64 contextKey,
+                                       int depth);
+        ~RenderContinuationHandledScope();
+
+        RenderContinuationHandledScope(const RenderContinuationHandledScope&) = delete;
+        RenderContinuationHandledScope& operator=(const RenderContinuationHandledScope&) = delete;
+
+        static bool isHandled(const Node* node,
+                              double time,
+                              ViewIdx view,
+                              U64 contextKey);
+
+    private:
+        const Node* _previousNode;
+        double _previousTime;
+        ViewIdx _previousView;
+        U64 _previousContextKey;
+        int _previousDepth;
+    };
+
+    /**
+     * @brief Whether renderRoI() runs the render continuation of this effect at time/view on the calling thread: the
+     * effect offers one and the scheduler did not already run it.
+     **/
+    bool probesRenderContinuationInline(double time,
+                                        ViewIdx view) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Holds, for its lifetime, every output consumer pulls on the calling thread through the frame store or a
+     * render, from the pre-render of its planned inputs through its probe, continuation and render, so that a later
+     * pullRenderContinuationRequest() of the same output reads the same image, as the task graph reads one stored
+     * image. A null consumer holds nothing, and keeps a consumer that an enclosing scope names from holding the pulls
+     * of the inputs it renders.
+     **/
+    class RenderContinuationHoldScope {
+    public:
+        explicit RenderContinuationHoldScope(const EffectInstance* consumer);
+        ~RenderContinuationHoldScope();
+
+        RenderContinuationHoldScope(const RenderContinuationHoldScope&) = delete;
+        RenderContinuationHoldScope& operator=(const RenderContinuationHoldScope&) = delete;
+
+    private:
+        std::size_t _heldBegin;
+        const Node* _previousConsumer;
+    };
+
+    /**
+     * @brief Runs the render continuation of this effect at time/view over roi on the calling thread: the probe, each
+     * request pulled in turn, then the continuation. For when probesRenderContinuationInline(), under a
+     * RenderContinuationHoldScope naming this effect.
+     **/
+    RenderRoIRetCode runRenderContinuationInline(double time,
+                                                 ViewIdx view,
+                                                 unsigned int mipmapLevel,
+                                                 const RectI& roi);
+
+    /**
+     * @brief Sets the error a probe asking for an extension deeper than kMaxRenderContinuationDepth leaves on this
+     * effect.
+     **/
+    void failRenderContinuationTooDeep();
 
     /**
      * @brief Override to initialize the overlay interact. It is called only on the
@@ -2561,7 +3022,6 @@ public:
            In the event where the fullScaleImage is in the cache but we must resize it to render a portion unallocated yet and
            if the render is issues directly from getImage() we swap image in cache instead of taking the write lock of fullScaleImage
          */
-        ImagePtr cacheSwapImage;
         void* originalCachedImage;
 
         /**
@@ -2574,7 +3034,6 @@ public:
             , downscaleImage()
             , renderMappedImage()
             , tmpImage()
-            , cacheSwapImage()
             , originalCachedImage(0)
             , isAllocatedOnTheFly(false)
         {
@@ -2914,8 +3373,9 @@ public:
 
     /**
      * @brief True while the render running on this thread is the node's overlay image pass, the
-     * only render in which addOverlayImageTile() does anything. Whatever the answer, the render
-     * must write the same pixels to its output: the pass can fill the cache.
+     * only render in which addOverlayImageTile() does anything; a pass that reads planes is no
+     * render, so this stays false during it until addOverlayImagesFromPlanes(). Whatever the answer,
+     * the render must write the same pixels to its output: the pass can fill the cache.
      **/
     bool isOverlayImageRender() const;
 
@@ -2944,8 +3404,9 @@ public:
 
     /**
      * @brief Runs the node's render action over the part of request.visibleCanonical in its region
-     * of definition and publishes the tiles it adds, all at once, on success. A failed pass publishes
-     * an empty frame, so that the node's last mask does not pass for this state and the failure is not
+     * of definition, or requests the planes overlayImageSourcePlanes() names over it and hands them
+     * to addOverlayImagesFromPlanes(), and publishes the tiles added, all at once, on success. A
+     * failed pass publishes an empty frame, so that the node's last mask does not pass for this state and the failure is not
      * retried until the state changes. An aborted pass publishes nothing, nor does one that
      * refreshOverlayImages() overtook while it ran: it may have rendered the view before. Returns
      * whether the pass published what it rendered. Must not be called under another render's frame
@@ -3020,6 +3481,32 @@ public:
     }
 
     /**
+     * @brief The planes of this node its overlay images are read from. Empty, the default, means
+     * that the render action adds the tiles itself and has to run on every pass, cached or not. For
+     * any other answer the pass requests these planes as any render does, so that the cache answers
+     * it when it can, then calls addOverlayImagesFromPlanes(). This suits an overlay that is a
+     * reading of the node's own output: a view knob that only changes the reading costs no render.
+     **/
+    virtual std::list<ImageLayerDesc> overlayImageSourcePlanes(double /*time*/,
+                                                               ViewIdx /*view*/)
+    {
+        return std::list<ImageLayerDesc>();
+    }
+
+    /**
+     * @brief Adds the pass's tiles with addOverlayImageTile(), from the planes overlayImageSourcePlanes()
+     * named. Runs on the pass's thread once the planes are rendered, outside the render action.
+     * canonicalWindow is the part of the node the pass covers; only that part of each image is
+     * sure to be rendered.
+     **/
+    virtual void addOverlayImagesFromPlanes(const std::map<ImageLayerDesc, ImagePtr>& /*planes*/,
+                                            double /*time*/,
+                                            ViewIdx /*view*/,
+                                            const RectD& /*canonicalWindow*/)
+    {
+    }
+
+    /**
      * @brief Return true to have the viewer draw the list buildOverlay() fills.
      **/
     virtual bool hasOverlayDrawList() const
@@ -3070,11 +3557,19 @@ public:
      * Note that in this case this is expected that getNInputs returns the number of inputs *with* the mask.
      * The function getInputLabel should also return the appropriate label for the mask.
      * The function isInputMask should also return true for this mask index.
-     * The mask will be the last input, i.e its index will be getNInputs() - 1.
+     * The mask is the input getHostMaskInputNb() returns.
      **/
     virtual bool isHostMaskingEnabled() const
     {
         return false;
+    }
+
+    /**
+     * @brief The input host masking reads: the last one unless reimplemented.
+     **/
+    virtual int getHostMaskInputNb() const
+    {
+        return getNInputs() - 1;
     }
 
     /**
@@ -3262,7 +3757,10 @@ public:
     // getPresentLayers() plus, for inputNb == -1 only, every layer registered at the project level.
     void getAvailableLayers(double time, ViewIdx view, int inputNb, std::list<ImageLayerDesc>* availableLayers);
 
-    const std::vector<std::string>& getUserLayers() const;
+    /**
+     * @brief The project's registered layers, each one through encode(), into a per-thread vector.
+     **/
+    const std::vector<std::string>& getUserLayers(std::string (*encode)(const ImageLayerDesc&)) const;
 
     /**
      * @brief The input whose layers pass through this effect at (time, view), and the time and
@@ -3326,11 +3824,12 @@ public:
                                   const RenderScale & scale,
                                   InputMatrixMap* inputTransforms);
 
-
     static void transformInputRois(const EffectInstance* self,
                                    const InputMatrixMapPtr& inputTransforms,
+                                   double time,
+                                   ViewIdx view,
                                    double par,
-                                   const RenderScale & scale,
+                                   const RenderScale& scale,
                                    RoIMap* inputRois,
                                    std::map<int, EffectInstancePtr>* reroutesMap);
     struct RenderArgs

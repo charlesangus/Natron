@@ -493,7 +493,7 @@ Image::extractChannels(const std::vector<int>& channelIndices) const
     if (channels.empty()) {
         return ImagePtr();
     }
-    ImageLayerDesc subset(layer.getLayerID(), layer.getLayerLabel(), std::string(), channels);
+    ImageLayerDesc subset(layer.getLayerID(), channels);
 
     ReadAccess acc(this);
     ImagePtr output = std::make_shared<Image>(subset,

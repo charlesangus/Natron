@@ -58,6 +58,7 @@
 #include "Engine/GPUContextPool.h"
 #include "Engine/Image.h"
 #include "Engine/ImageParams.h"
+#include "Engine/InverseWarpChain.h"
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobLayerSelect.h"
@@ -65,6 +66,7 @@
 #include "Engine/Log.h"
 #include "Engine/MemoryInfo.h" // printAsRAM
 #include "Engine/Node.h"
+#include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/OSGLContext.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/OfxImageEffectInstance.h"
@@ -250,6 +252,7 @@ EffectInstance::~EffectInstance()
     if (qApp && (QThread::currentThread() == qApp->thread())) {
         closeOverlayEditStepOf(this);
     }
+    retireSceneInputContextIds();
 }
 
 EffectInstancePtr
@@ -363,7 +366,7 @@ containsIdenticalLayer(const std::list<ImageLayerDesc>& list,
 }
 
 const std::vector<std::string>&
-EffectInstance::getUserLayers() const
+EffectInstance::getUserLayers(std::string (*encode)(const ImageLayerDesc&)) const
 {
     EffectTLSDataPtr tls = _imp->tlsData->getOrCreateTLSData();
     assert(tls);
@@ -372,7 +375,7 @@ EffectInstance::getUserLayers() const
     std::list<ImageLayerDesc> projectLayers = getRegisteredProjectLayersList(getApp()->getProject());
 
     for (std::list<ImageLayerDesc>::iterator it = projectLayers.begin(); it != projectLayers.end(); ++it) {
-        tls->userLayerStrings.push_back(ImageLayerDesc::mapLayerToOFXPlaneString(*it));
+        tls->userLayerStrings.push_back(encode(*it));
     }
     return tls->userLayerStrings;
 }
@@ -625,7 +628,7 @@ EffectInstance::getHash() const
 {
     NodePtr n = _node.lock();
 
-    return n->getHashValue();
+    return n ? n->getHashValue() : 0;
 }
 
 namespace {
@@ -1190,7 +1193,9 @@ EffectInstance::hasOutputConnected() const
 EffectInstancePtr
 EffectInstance::getInput(int n) const
 {
-    NodePtr inputNode = getNode()->getInput(n);
+    // No node once it is destroyed while a scene worker's job still holds this effect.
+    const NodePtr node = getNode();
+    NodePtr inputNode = node ? node->getInput(n) : NodePtr();
 
     if (inputNode) {
         return inputNode->getEffectInstance();
@@ -1473,7 +1478,16 @@ EffectInstance::lookupFrameStore(const EffectInstancePtr& input,
         }
     }
 
-    return context->getStore().find(key, comps, neededRoI, out);
+    // An extension's tasks read its own outputs first, then those of the graphs it extends.
+    const std::vector<int>& generations = context->getStoreGenerations();
+    for (std::vector<int>::const_iterator it = generations.begin(); it != generations.end(); ++it) {
+        key.generation = *it;
+        if (context->getStore().find(key, comps, neededRoI, out)) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 bool
@@ -1489,6 +1503,16 @@ EffectInstance::frameStoreImagesMatch(const std::list<ImagePtr>& images,
 
     return true;
 }
+
+namespace {
+
+void holdPulledOutput(const EffectInstance* consumer,
+                      const NodePtr& node,
+                      U64 contextKey,
+                      const EffectInstance::RenderRoIArgs& args,
+                      const std::map<ImageLayerDesc, ImagePtr>& layers);
+
+} // namespace
 
 EffectInstance::RenderRoIRetCode
 EffectInstance::renderInputOrTakeFromStore(const EffectInstancePtr& input,
@@ -1524,6 +1548,7 @@ EffectInstance::renderInputOrTakeFromStore(const EffectInstancePtr& input,
         if (freshInput) {
             *freshInput = frameContext && frameContext->hasFreshOutput(inputNode.get(), args->time, args->view);
         }
+        holdPulledOutput(consumer, inputNode, inputContext->contextKey(), *args, *layers);
 
         return eRenderRoIRetCodeOk;
     }
@@ -1556,8 +1581,288 @@ EffectInstance::renderInputOrTakeFromStore(const EffectInstancePtr& input,
     if (freshInput) {
         *freshInput = fresh;
     }
+    holdPulledOutput(consumer, inputNode, inputContext->contextKey(), *args, *layers);
 
     return code;
+}
+
+namespace {
+
+struct HeldContinuationResult {
+    const Node* consumer = 0;
+    NodePtr node;
+    U64 contextKey = 0;
+    double time = 0.;
+    ViewIdx view;
+    unsigned int mipmapLevel = 0;
+    std::map<ImageLayerDesc, ImagePtr> planes;
+};
+
+// With the cache bypassed, an output pulled again would render again, and an uncached or varying one could then differ
+// between the probe and the render, which the task graph serves from one stored image.
+thread_local std::vector<HeldContinuationResult> tHeldContinuationResults;
+
+thread_local const Node* tHoldingConsumer = 0;
+
+// Depth of the extension the render running on this thread belongs to.
+thread_local int tRenderContinuationDepth = 0;
+
+thread_local const Node* tHandledContinuationNode = 0;
+thread_local double tHandledContinuationTime = 0.;
+thread_local ViewIdx tHandledContinuationView;
+thread_local U64 tHandledContinuationContextKey = 0;
+
+class RenderContinuationDepthScope {
+public:
+    explicit RenderContinuationDepthScope(int depth)
+        : _previous(tRenderContinuationDepth)
+    {
+        tRenderContinuationDepth = depth;
+    }
+
+    ~RenderContinuationDepthScope()
+    {
+        tRenderContinuationDepth = _previous;
+    }
+
+    RenderContinuationDepthScope(const RenderContinuationDepthScope&) = delete;
+    RenderContinuationDepthScope& operator=(const RenderContinuationDepthScope&) = delete;
+
+private:
+    int _previous;
+};
+
+std::list<ImageLayerDesc>
+continuationRequestComponents(const EffectInstance::RenderContinuationRequest& request)
+{
+    return request.comps.empty() ? std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()) : request.comps;
+}
+
+void
+holdPulledOutput(const EffectInstance* consumer,
+                 const NodePtr& node,
+                 U64 contextKey,
+                 const EffectInstance::RenderRoIArgs& args,
+                 const std::map<ImageLayerDesc, ImagePtr>& layers)
+{
+    if (!tHoldingConsumer || !consumer || !node || (consumer->getNode().get() != tHoldingConsumer)) {
+        return;
+    }
+    HeldContinuationResult held;
+    for (const ImageLayerDesc& comp : args.components) {
+        std::map<ImageLayerDesc, ImagePtr>::const_iterator plane = layers.find(comp);
+        if ((plane == layers.end()) || !plane->second) {
+            return;
+        }
+        held.planes.insert(*plane);
+    }
+    if (held.planes.empty()) {
+        return;
+    }
+    held.consumer = tHoldingConsumer;
+    held.node = node;
+    held.contextKey = contextKey;
+    held.time = args.time;
+    held.view = args.view;
+    held.mipmapLevel = args.mipmapLevel;
+    tHeldContinuationResults.push_back(std::move(held));
+}
+
+bool
+takeHeldContinuationResult(const Node* consumer,
+                           const NodePtr& node,
+                           U64 contextKey,
+                           double time,
+                           ViewIdx view,
+                           unsigned int mipmapLevel,
+                           const std::list<ImageLayerDesc>& comps,
+                           const RectI& pixelRoI,
+                           std::map<ImageLayerDesc, ImagePtr>* planes)
+{
+    for (std::vector<HeldContinuationResult>::const_reverse_iterator it = tHeldContinuationResults.rbegin(); it != tHeldContinuationResults.rend(); ++it) {
+        if ((it->consumer != consumer) || (it->node != node) || (it->contextKey != contextKey) || (it->time != time) || (it->view != view) || (it->mipmapLevel != mipmapLevel)) {
+            continue;
+        }
+        std::map<ImageLayerDesc, ImagePtr> found;
+        for (const ImageLayerDesc& comp : comps) {
+            std::map<ImageLayerDesc, ImagePtr>::const_iterator plane = it->planes.find(comp);
+            if ((plane == it->planes.end()) || !plane->second || !plane->second->getBounds().contains(pixelRoI)) {
+                found.clear();
+                break;
+            }
+            found.insert(*plane);
+        }
+        if (!found.empty()) {
+            planes->insert(found.begin(), found.end());
+
+            return true;
+        }
+    }
+
+    return false;
+}
+
+} // namespace
+
+EffectInstance::RenderContinuationHandledScope::RenderContinuationHandledScope(const Node* node,
+                                                                               double time,
+                                                                               ViewIdx view,
+                                                                               U64 contextKey,
+                                                                               int depth)
+    : _previousNode(tHandledContinuationNode)
+    , _previousTime(tHandledContinuationTime)
+    , _previousView(tHandledContinuationView)
+    , _previousContextKey(tHandledContinuationContextKey)
+    , _previousDepth(tRenderContinuationDepth)
+{
+    tHandledContinuationNode = node;
+    tHandledContinuationTime = time;
+    tHandledContinuationView = view;
+    tHandledContinuationContextKey = contextKey;
+    tRenderContinuationDepth = depth;
+}
+
+EffectInstance::RenderContinuationHandledScope::~RenderContinuationHandledScope()
+{
+    tHandledContinuationNode = _previousNode;
+    tHandledContinuationTime = _previousTime;
+    tHandledContinuationView = _previousView;
+    tHandledContinuationContextKey = _previousContextKey;
+    tRenderContinuationDepth = _previousDepth;
+}
+
+EffectInstance::RenderContinuationHoldScope::RenderContinuationHoldScope(const EffectInstance* consumer)
+    : _heldBegin(tHeldContinuationResults.size())
+    , _previousConsumer(tHoldingConsumer)
+{
+    tHoldingConsumer = consumer ? consumer->getNode().get() : 0;
+}
+
+EffectInstance::RenderContinuationHoldScope::~RenderContinuationHoldScope()
+{
+    tHoldingConsumer = _previousConsumer;
+    if (_heldBegin < tHeldContinuationResults.size()) {
+        tHeldContinuationResults.resize(_heldBegin);
+    }
+}
+
+bool
+EffectInstance::RenderContinuationHandledScope::isHandled(const Node* node,
+                                                          double time,
+                                                          ViewIdx view,
+                                                          U64 contextKey)
+{
+    return node && (tHandledContinuationNode == node) && (tHandledContinuationTime == time) && (tHandledContinuationView == view)
+        && (tHandledContinuationContextKey == contextKey);
+}
+
+EffectInstance::RenderRoIRetCode
+EffectInstance::pullRenderContinuationRequest(const RenderContinuationRequest& request,
+                                              unsigned int mipmapLevel,
+                                              std::map<ImageLayerDesc, ImagePtr>* planes)
+{
+    const EffectInstancePtr input = request.node ? request.node->getEffectInstance() : EffectInstancePtr();
+    if (!input || !planes) {
+        return eRenderRoIRetCodeFailed;
+    }
+    const std::list<ImageLayerDesc> comps = continuationRequestComponents(request);
+    InputContextScope scope(this, request.context);
+    InputContextArgs inputContext(this, input, -1, request.time, request.view);
+    double par = 1.;
+    ImageBitDepthEnum depth = eImageBitDepthFloat;
+    {
+        ActionContextScope actions(true, request.context);
+        const NodeMetadataConstPtr metadata = input->getRenderMetadata(request.time, request.view);
+        if (metadata) {
+            par = metadata->getPixelAspectRatio(-1);
+            depth = metadata->getBitDepth(-1);
+        }
+    }
+    const RectI pixelRoI = request.roi.toPixelEnclosing(mipmapLevel, par);
+    if (takeHeldContinuationResult(getNode().get(), request.node, inputContext.contextKey(), request.time, request.view, mipmapLevel, comps, pixelRoI, planes)) {
+        return eRenderRoIRetCodeOk;
+    }
+    RenderRoIArgs args(request.time,
+                       RenderScale::fromMipmapLevel(mipmapLevel),
+                       mipmapLevel,
+                       request.view,
+                       false /*byPassCache*/,
+                       pixelRoI,
+                       RectD(),
+                       comps,
+                       depth,
+                       false /*calledFromGetImage*/,
+                       this,
+                       eStorageModeRAM,
+                       request.time);
+
+    return renderInputOrTakeFromStore(input, -1, &args, planes, this, &inputContext);
+}
+
+bool
+EffectInstance::probesRenderContinuationInline(double time,
+                                               ViewIdx view) const
+{
+    if (!offersRenderContinuation()) {
+        return false;
+    }
+    const NodePtr node = getNode();
+    const ParallelRenderArgsPtr frameArgs = getParallelRenderArgsTLS();
+
+    return node && !RenderContinuationHandledScope::isHandled(node.get(), time, view, frameArgs ? frameArgs->contextKey : 0);
+}
+
+EffectInstance::RenderRoIRetCode
+EffectInstance::runRenderContinuationInline(double time,
+                                            ViewIdx view,
+                                            unsigned int mipmapLevel,
+                                            const RectI& roi)
+{
+    const ParallelRenderArgsPtr frameArgs = getParallelRenderArgsTLS();
+    RenderContinuationArgs probeArgs;
+    probeArgs.time = time;
+    probeArgs.view = view;
+    probeArgs.mipmapLevel = mipmapLevel;
+    probeArgs.roi = roi;
+    probeArgs.context = frameArgs ? frameArgs->context : RenderContextPtr();
+    probeArgs.depth = tRenderContinuationDepth;
+    RenderContinuation continuation;
+    if (!getRenderContinuation(probeArgs, &continuation)) {
+        return eRenderRoIRetCodeOk;
+    }
+    if (!continuation.requests.empty()) {
+        if (probeArgs.depth >= kMaxRenderContinuationDepth) {
+            failRenderContinuationTooDeep();
+
+            return eRenderRoIRetCodeFailed;
+        }
+        RenderContinuationDepthScope deeper(probeArgs.depth + 1);
+        for (const RenderContinuationRequest& request : continuation.requests) {
+            if (aborted()) {
+                return eRenderRoIRetCodeAborted;
+            }
+            std::map<ImageLayerDesc, ImagePtr> planes;
+            const RenderRoIRetCode code = pullRenderContinuationRequest(request, mipmapLevel, &planes);
+            if (code != eRenderRoIRetCodeOk) {
+                return code;
+            }
+        }
+    }
+    if (aborted()) {
+        return eRenderRoIRetCodeAborted;
+    }
+    if (continuation.continuation && (continuation.continuation() != eStatusOK)) {
+        return eRenderRoIRetCodeFailed;
+    }
+
+    return eRenderRoIRetCodeOk;
+}
+
+void
+EffectInstance::failRenderContinuationTooDeep()
+{
+    const std::string message = tr("%1 asks for a render continuation deeper than %2 levels.").arg(QString::fromUtf8(getScriptName_mt_safe().c_str())).arg(kMaxRenderContinuationDepth).toStdString();
+    setPersistentMessage(eMessageTypeError, message);
 }
 
 bool
@@ -2168,8 +2473,8 @@ EffectInstance::getImage(int inputNb,
         } else {
             cc = components;
         }
-        qDebug() << "WARNING:" << node->getScriptName_mt_safe().c_str() << "requested" << cc.getChannelsLabel().c_str() << "but" << inputEffect->getScriptName_mt_safe().c_str() << "returned an image with"
-                 << inputImg->getComponents().getChannelsLabel().c_str();
+        qDebug() << "WARNING:" << node->getScriptName_mt_safe().c_str() << "requested" << cc.getUserFacingLabel().c_str() << "but" << inputEffect->getScriptName_mt_safe().c_str() << "returned an image with"
+                 << inputImg->getComponents().getUserFacingLabel().c_str();
     }
 
 #endif
@@ -2523,9 +2828,7 @@ getOrCreateFromCacheInternal(const ImageKey& key,
          * Another thread might have allocated the same image in the cache but with another RoI, make sure
          * it is big enough for us, or resize it to our needs.
          */
-
-
-        (*image)->ensureBounds( params->getBounds() );
+        Image::ensureBoundsByCopy(image, params->getBounds());
     }
 }
 
@@ -2803,6 +3106,17 @@ EffectInstance::getImageFromCacheAndConvertIfNeeded(bool /*useCache*/,
     }
 } // EffectInstance::getImageFromCacheAndConvertIfNeeded
 
+namespace {
+struct ConcatenatedStep {
+    Transform::Matrix3x3 matrix;
+    EffectInstancePtr provider;
+    // The node the step goes through, and the redirection before it.
+    EffectInstancePtr node;
+    EffectInstancePtr previousEffect;
+    int previousInputNb = -1;
+};
+} // namespace
+
 void
 EffectInstance::tryConcatenateTransforms(double time,
                                          bool draftRender,
@@ -2819,6 +3133,28 @@ EffectInstance::tryConcatenateTransforms(double time,
 
     assert(inputHoldingTransforms.empty() || canApplyTransform);
 
+    // An input that takes a warp chain without holding a transform is only redirected through a
+    // chain with a map step: such a consumer has no use for a concatenated matrix alone. Nor is
+    // one whose effect is connected to another input too, which reads that effect's own output
+    // over a region of interest the redirection would move upstream.
+    std::vector<int> chainOnlyInputs;
+    const int nInputs = getNInputs();
+    for (int i = 0; i < nInputs; ++i) {
+        if ((std::find(inputHoldingTransforms.begin(), inputHoldingTransforms.end(), i) != inputHoldingTransforms.end()) || !acceptsInverseWarpChain(i, time, view)) {
+            continue;
+        }
+        const EffectInstancePtr input = getInput(i);
+        bool shared = false;
+        for (int j = 0; input && (j < nInputs) && !shared; ++j) {
+            shared = (j != i) && (getInput(j) == input);
+        }
+        if (input && !shared) {
+            inputHoldingTransforms.push_back(i);
+            chainOnlyInputs.push_back(i);
+        }
+    }
+    canApplyTransform = canApplyTransform || !chainOnlyInputs.empty();
+
     Transform::Matrix3x3 thisNodeTransform;
     EffectInstancePtr inputToTransform;
     bool getTransformSucceeded = false;
@@ -2833,6 +3169,33 @@ EffectInstance::tryConcatenateTransforms(double time,
         }
     }
 
+    const auto outputPar = [time, view](const EffectInstancePtr& effect) {
+        const NodeMetadataConstPtr metadata = effect ? effect->getRenderMetadata(time, view) : NodeMetadataConstPtr();
+
+        return metadata ? metadata->getPixelAspectRatio(-1) : 1.;
+    };
+    // The input effect shows unchanged over its whole output, -1 when there is none at this time
+    // and view; stepped over as a disabled node is, so that it leaves a chain of matrices one.
+    const auto identityInputOf = [&](const EffectInstancePtr& effect) {
+        const U64 hash = effect->getRenderHash();
+        RectD rod;
+        bool isProjectFormat = false;
+        if ((effect->getRegionOfDefinition_public(hash, time, scale, view, &rod, &isProjectFormat) != eStatusOK) || rod.isInfinite()) {
+            return -1;
+        }
+        double identityTime = time;
+        ViewIdx identityView = view;
+        int identityNb = -1;
+        const RectI pixelRod = rod.toPixelEnclosing(scale, outputPar(effect));
+        if (!effect->isIdentity_public(true, hash, time, scale, pixelRod, view, &identityTime, &identityView, &identityNb)) {
+            return -1;
+        }
+        if ((identityNb < 0) || (identityTime != time) || (identityView != view) || !effect->getInput(identityNb)) {
+            return -1;
+        }
+
+        return identityNb;
+    };
 
     if ( (canTransform && getTransformSucceeded) || ( !canTransform && canApplyTransform && !inputHoldingTransforms.empty() ) ) {
         for (std::list<int>::iterator it = inputHoldingTransforms.begin(); it != inputHoldingTransforms.end(); ++it) {
@@ -2840,23 +3203,28 @@ EffectInstance::tryConcatenateTransforms(double time,
             if (!input) {
                 continue;
             }
-            std::list<Transform::Matrix3x3> matricesByOrder; // from downstream to upstream
+            // From downstream to upstream; an entry without a provider is a matrix.
+            std::vector<ConcatenatedStep> steps;
             InputMatrix im;
             im.newInputEffect = input;
             im.newInputNbToFetchFrom = *it;
 
+            const bool consumerAcceptsWarps = acceptsInverseWarpChain(*it, time, view);
 
             // recursion upstream
             bool inputCanTransform = false;
+            bool inputOffersWarp = false;
+            bool inputCanWarp = false;
             bool inputIsDisabled = input->getNode()->isNodeDisabled(time);
 
             if (!inputIsDisabled) {
                 inputCanTransform = input->getNode()->getCurrentCanTransform();
+                inputOffersWarp = input->getNode()->getCurrentCanInverseWarp();
+                inputCanWarp = consumerAcceptsWarps && inputOffersWarp;
             }
 
-
-            while ( input && (inputCanTransform || inputIsDisabled) ) {
-                //input is either disabled, or identity or can concatenate a transform too
+            while (input && (inputCanTransform || inputOffersWarp || inputIsDisabled)) {
+                // input is either disabled, or identity or can concatenate a transform or a warp too
                 if (inputIsDisabled) {
                     int prefInput;
                     input = input->getNearestNonDisabled(time);
@@ -2869,47 +3237,136 @@ EffectInstance::tryConcatenateTransforms(double time,
                         im.newInputNbToFetchFrom = prefInput;
                         im.newInputEffect = input;
                     }
-                } else if (inputCanTransform) {
+                } else if (const int identityNb = inputOffersWarp ? identityInputOf(input) : -1; identityNb >= 0) {
+                    im.newInputNbToFetchFrom = identityNb;
+                    im.newInputEffect = input;
+                    input = input->getInput(identityNb);
+                } else {
                     const std::optional<EdgeMode> inputEdgeMode = input->getConcatenationEdgeMode(time, view);
                     if (edgeMode && inputEdgeMode && (*edgeMode != *inputEdgeMode)) {
                         break;
                     }
-                    Transform::Matrix3x3 m;
-                    inputToTransform.reset();
-                    StatusEnum stat = input->getTransform_public(time, scale, draftRender, view, &inputToTransform, &m);
-                    if (stat == eStatusOK) {
-                        matricesByOrder.push_back(m);
-                        if (inputToTransform) {
-                            im.newInputNbToFetchFrom = input->getInputNumber( inputToTransform.get() );
-                            im.newInputEffect = input;
-                            input = inputToTransform;
+                    bool concatenated = false;
+                    if (inputCanTransform) {
+                        Transform::Matrix3x3 m;
+                        inputToTransform.reset();
+                        StatusEnum stat = input->getTransform_public(time, scale, draftRender, view, &inputToTransform, &m);
+                        if (stat == eStatusOK) {
+                            ConcatenatedStep step;
+                            step.matrix = m;
+                            step.node = input;
+                            step.previousEffect = im.newInputEffect;
+                            step.previousInputNb = im.newInputNbToFetchFrom;
+                            steps.push_back(step);
+                            if (inputToTransform) {
+                                im.newInputNbToFetchFrom = input->getInputNumber(inputToTransform.get());
+                                im.newInputEffect = input;
+                                input = inputToTransform;
+                            }
+                            concatenated = true;
                         }
-                    } else {
+                    }
+                    if (!concatenated && inputCanWarp) {
+                        int sourceNb = -1;
+                        EffectInstancePtr source;
+                        if (input->canOfferInverseWarp(time, view, draftRender, &sourceNb) && (sourceNb >= 0)) {
+                            source = input->getInput(sourceNb);
+                        }
+                        if (source) {
+                            ConcatenatedStep step;
+                            step.provider = input;
+                            step.node = input;
+                            step.previousEffect = im.newInputEffect;
+                            step.previousInputNb = im.newInputNbToFetchFrom;
+                            steps.push_back(step);
+                            im.newInputNbToFetchFrom = sourceNb;
+                            im.newInputEffect = input;
+                            input = source;
+                            concatenated = true;
+                        }
+                    }
+                    if (!concatenated) {
                         break;
                     }
-                } else {
-                    assert(false);
                 }
 
                 if (input) {
                     inputIsDisabled = input->getNode()->isNodeDisabled(time);
                     if (!inputIsDisabled) {
                         inputCanTransform = input->getNode()->getCurrentCanTransform();
+                        inputOffersWarp = input->getNode()->getCurrentCanInverseWarp();
+                        inputCanWarp = consumerAcceptsWarps && inputOffersWarp;
                     }
                 }
             }
 
-            if ( input && !matricesByOrder.empty() ) {
+            if (input && !steps.empty()) {
                 assert(im.newInputEffect);
 
-                ///Now actually concatenate matrices together
-                im.cat= std::make_shared<Transform::Matrix3x3>();
-                std::list<Transform::Matrix3x3>::iterator it2 = matricesByOrder.begin();
-                *im.cat = *it2;
-                ++it2;
-                while ( it2 != matricesByOrder.end() ) {
-                    *im.cat = Transform::matMul(*im.cat, *it2);
+                bool hasProvider = false;
+                for (const ConcatenatedStep& step : steps) {
+                    hasProvider = hasProvider || bool(step.provider);
+                }
+                // A chain converts every entry with the consumer's pixel aspect ratio, so one
+                // through a node with another ends before its first map, as matrices alone.
+                if (hasProvider) {
+                    const double par = outputPar(shared_from_this());
+                    bool samePar = (outputPar(input) == par);
+                    for (const ConcatenatedStep& step : steps) {
+                        samePar = samePar && (outputPar(step.node) == par);
+                    }
+                    if (!samePar) {
+                        std::size_t firstMap = 0;
+                        while (!steps[firstMap].provider) {
+                            ++firstMap;
+                        }
+                        im.newInputEffect = steps[firstMap].previousEffect;
+                        im.newInputNbToFetchFrom = steps[firstMap].previousInputNb;
+                        steps.resize(firstMap);
+                        hasProvider = false;
+                        if (steps.empty()) {
+                            continue;
+                        }
+                    }
+                }
+                if (!hasProvider && (std::find(chainOnlyInputs.begin(), chainOnlyInputs.end(), *it) != chainOnlyInputs.end())) {
+                    continue;
+                }
+                if (!hasProvider) {
+                    /// Now actually concatenate matrices together
+                    im.cat = std::make_shared<Transform::Matrix3x3>();
+                    std::vector<ConcatenatedStep>::iterator it2 = steps.begin();
+                    *im.cat = it2->matrix;
                     ++it2;
+                    while (it2 != steps.end()) {
+                        *im.cat = Transform::matMul(*im.cat, it2->matrix);
+                        ++it2;
+                    }
+                } else {
+                    // Matrix entries convert regions with the consumer's aspect ratio, as transformInputRois() does.
+                    const NodeMetadataConstPtr metadata = getRenderMetadata(time, view);
+                    const double par = metadata ? metadata->getPixelAspectRatio(-1) : 1.;
+                    std::shared_ptr<InverseWarpChain> chain = std::make_shared<InverseWarpChain>(scale, par);
+                    for (const ConcatenatedStep& step : steps) {
+                        if (!step.provider) {
+                            chain->appendMatrix(step.matrix);
+                            continue;
+                        }
+                        // Weak, so a chain held by a render does not keep a deleted provider alive.
+                        const EffectInstanceWPtr provider = step.provider;
+                        const unsigned gpuStep = step.provider->getInverseWarpGpuStep();
+                        const NativeEffectBase* native = dynamic_cast<const NativeEffectBase*>(step.provider.get());
+                        const std::optional<GpuWeight> gpuWeight = native ? std::optional<GpuWeight>(native->gpuWeight(time, view, scale.toMipmapLevel())) : std::nullopt;
+                        chain->appendMap(InverseWarpChain::MapFactory([provider, time, view, scale, draftRender](const RectD& window) {
+                                             const EffectInstancePtr effect = provider.lock();
+
+                                             return effect ? effect->getInverseWarpMap(time, view, scale, draftRender, window) : InverseWarpMapConstPtr();
+                                         }),
+                                         gpuStep, gpuWeight);
+                    }
+                    const EffectInstancePtr chainSource = im.newInputEffect->getInput(im.newInputNbToFetchFrom);
+                    chain->setSourceInfinite(chainSource && chainSource->isRegionOfDefinitionInfinite(time, view));
+                    im.warpChain = chain;
                 }
 
                 inputTransforms->insert( std::make_pair(*it, im) );
@@ -2917,6 +3374,83 @@ EffectInstance::tryConcatenateTransforms(double time,
         } //  for (std::list<int>::iterator it = inputHoldingTransforms.begin(); it != inputHoldingTransforms.end(); ++it)
     } // if ((canTransform && getTransformSucceeded) || (canApplyTransform && !inputHoldingTransforms.empty()))
 } // EffectInstance::tryConcatenateTransforms
+
+InverseWarpChainConstPtr
+EffectInstance::getConcatenatedWarpChain(int inputNb) const
+{
+    EffectTLSDataPtr tls = _imp->tlsData->getTLSData();
+
+    if (!tls || !tls->currentRenderArgs.validArgs || !tls->currentRenderArgs.transformRedirections) {
+        return InverseWarpChainConstPtr();
+    }
+    InputMatrixMap::const_iterator found = tls->currentRenderArgs.transformRedirections->find(inputNb);
+    if (found == tls->currentRenderArgs.transformRedirections->end()) {
+        return InverseWarpChainConstPtr();
+    }
+
+    return found->second.warpChain;
+}
+
+void
+EffectInstance::postWarpChainError(const InverseWarpChainConstPtr& chain)
+{
+    if (chain && chain->hasError()) {
+        _imp->warpChainErrorPosted = true;
+        setPersistentMessage(eMessageTypeError, chain->getError());
+
+        return;
+    }
+    if (!_imp->warpChainErrorPosted.exchange(false)) {
+        return;
+    }
+    NodePtr node = getNode();
+    if (!node) {
+        return;
+    }
+    QString current;
+    int type = 0;
+    node->getPersistentMessage(&current, &type, false);
+    if (current == QString::fromUtf8(InverseWarpChain::getInfiniteWindowError().c_str())) {
+        node->clearPersistentMessage(false);
+    }
+}
+
+InverseWarpChainConstPtr
+EffectInstance::getPreparedWarpChain(int inputNb,
+                                     double time,
+                                     ViewIdx view,
+                                     const RenderScale& scale,
+                                     const RectD& renderWindow)
+{
+    return getPreparedWarpChain(getConcatenatedWarpChain(inputNb), inputNb, time, view, scale, renderWindow);
+}
+
+InverseWarpChainConstPtr
+EffectInstance::getPreparedWarpChain(const InverseWarpChainConstPtr& chain,
+                                     int inputNb,
+                                     double time,
+                                     ViewIdx view,
+                                     const RenderScale& scale,
+                                     const RectD& renderWindow)
+{
+    const EffectInstancePtr input = getInput(inputNb);
+
+    if (!chain || !chain->hasMapStep() || !input) {
+        postWarpChainError(InverseWarpChainConstPtr());
+
+        return InverseWarpChainConstPtr();
+    }
+    // The output region of definition is unused by the regions of interest a chain consumer gives.
+    RoIMap rois;
+    getRegionsOfInterest(time, scale, renderWindow, renderWindow, view, &rois);
+    RoIMap::const_iterator found = rois.find(input);
+    const RectD window = (found != rois.end()) ? found->second : RectD();
+    const double filterSupport = getInverseWarpChainFilterSupport(inputNb, time, view);
+    const InverseWarpChainConstPtr result = chain->prepareShared(window, filterSupport);
+    postWarpChainError(result);
+
+    return result;
+}
 
 bool
 EffectInstance::allocateImageLayer(const ImageKey& key,
@@ -2989,9 +3523,11 @@ EffectInstance::allocateImageLayer(const ImageKey& key,
 
 void
 EffectInstance::transformInputRois(const EffectInstance* self,
-                                   const InputMatrixMapPtr & inputTransforms,
+                                   const InputMatrixMapPtr& inputTransforms,
+                                   double time,
+                                   ViewIdx view,
                                    double par,
-                                   const RenderScale & scale,
+                                   const RenderScale& scale,
                                    RoIMap* inputsRoi,
                                    std::map<int, EffectInstancePtr>* reroutesMap)
 {
@@ -3011,21 +3547,28 @@ EffectInstance::transformInputRois(const EffectInstance* self,
             continue;
         }
 
-        // invert it
-        Transform::Matrix3x3 invertTransform;
-        double det = Transform::matDeterminant(*it->second.cat);
-        if (det != 0.) {
-            invertTransform = Transform::matInverse(*it->second.cat, det);
+        if (it->second.warpChain) {
+            const double support = self->getInverseWarpChainFilterSupport(it->first, time, view);
+            // Shared with the render's own preparation over the same region, so the request pass
+            // and every tile build a provider's map once.
+            transformedRenderWindow = it->second.warpChain->prepareShared(foundRoI->second, support)->getSourceRegion();
+        } else {
+            // invert it
+            Transform::Matrix3x3 invertTransform;
+            double det = Transform::matDeterminant(*it->second.cat);
+            if (det != 0.) {
+                invertTransform = Transform::matInverse(*it->second.cat, det);
+            }
+
+            const auto scalePt = scale.toOfxPointD();
+            Transform::Matrix3x3 canonicalToPixel = Transform::matCanonicalToPixel(par, scalePt.x,
+                                                                                   scalePt.y, false);
+            Transform::Matrix3x3 pixelToCanonical = Transform::matPixelToCanonical(par, scalePt.x,
+                                                                                   scalePt.y, false);
+
+            invertTransform = Transform::matMul(Transform::matMul(pixelToCanonical, invertTransform), canonicalToPixel);
+            Transform::transformRegionFromRoD(foundRoI->second, invertTransform, transformedRenderWindow);
         }
-
-        const auto scalePt = scale.toOfxPointD();
-        Transform::Matrix3x3 canonicalToPixel = Transform::matCanonicalToPixel(par, scalePt.x,
-                                                                               scalePt.y, false);
-        Transform::Matrix3x3 pixelToCanonical = Transform::matPixelToCanonical(par,  scalePt.x,
-                                                                               scalePt.y, false);
-
-        invertTransform = Transform::matMul(Transform::matMul(pixelToCanonical, invertTransform), canonicalToPixel);
-        Transform::transformRegionFromRoD(foundRoI->second, invertTransform, transformedRenderWindow);
 
         //Replace the original RoI by the transformed RoI
         inputsRoi->erase(foundRoI);
@@ -3206,7 +3749,7 @@ EffectInstance::Implementation::tiledRenderingFunctor(const RectToRender& rectTo
     EffectInstance::InputImagesMap::const_iterator foundMaskInput = rectToRender.imgs.end();
 
     if ( _publicInterface->isHostMaskingEnabled() ) {
-        foundMaskInput = rectToRender.imgs.find(_publicInterface->getNInputs() - 1);
+        foundMaskInput = rectToRender.imgs.find(_publicInterface->getHostMaskInputNb());
     }
 
     if ( ( foundMaskInput != rectToRender.imgs.end() ) && !foundMaskInput->second.empty() ) {
@@ -3506,7 +4049,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                 it->second.renderMappedImage->fillZero(renderMappedRectToRender);
 
                 if ( frameArgs->stats && frameArgs->stats->isInDepthProfilingEnabled() ) {
-                    frameArgs->stats->addRenderInfosForNode( _publicInterface->getNode(),  NodePtr(), it->first.getChannelsLabel(), renderMappedRectToRender, timeRecorder->getTimeSinceCreation() );
+                    frameArgs->stats->addRenderInfosForNode(_publicInterface->getNode(), NodePtr(), it->first.getUserFacingLabel(), renderMappedRectToRender, timeRecorder->getTimeSinceCreation());
                 }
             }
 
@@ -3532,7 +4075,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                     it->second.renderMappedImage->fillZero(renderMappedRectToRender);
 
                     if ( frameArgs->stats && frameArgs->stats->isInDepthProfilingEnabled() ) {
-                        frameArgs->stats->addRenderInfosForNode( _publicInterface->getNode(),  tls->currentRenderArgs.identityInput->getNode(), it->first.getChannelsLabel(), renderMappedRectToRender, timeRecorder->getTimeSinceCreation() );
+                        frameArgs->stats->addRenderInfosForNode(_publicInterface->getNode(), tls->currentRenderArgs.identityInput->getNode(), it->first.getUserFacingLabel(), renderMappedRectToRender, timeRecorder->getTimeSinceCreation());
                     }
                 }
 
@@ -3597,7 +4140,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                     }
 
                     if ( frameArgs->stats && frameArgs->stats->isInDepthProfilingEnabled() ) {
-                        frameArgs->stats->addRenderInfosForNode( _publicInterface->getNode(),  tls->currentRenderArgs.identityInput->getNode(), it->first.getChannelsLabel(), renderMappedRectToRender, timeRecorder->getTimeSinceCreation() );
+                        frameArgs->stats->addRenderInfosForNode(_publicInterface->getNode(), tls->currentRenderArgs.identityInput->getNode(), it->first.getUserFacingLabel(), renderMappedRectToRender, timeRecorder->getTimeSinceCreation());
                     }
                 }
 
@@ -3623,8 +4166,8 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
         const bool mappedMatchesOutput = (prefComp == it->second.renderMappedImage->getComponents()) && (outputClipPrefDepth == it->second.renderMappedImage->getBitDepth());
         // Rendering straight into the cached image is safe: the trimap marks the render window as
         // being rendered so readers wait for it, the effect's Image::WriteAccess holds the image's
-        // write lock so a concurrent ensureBounds() cannot reallocate the buffer under the kernel,
-        // and renderRoI() marks the window rendered only after the render succeeded, so what a
+        // write lock so a concurrent grown copy of it never reads half-written pixels, a cached
+        // image is never reallocated in place, and renderRoI() marks the window rendered only after the render succeeded, so what a
         // failed, aborted or throwing kernel left there is rendered again. Host-tiled renders keep
         // the temporary because tiles writing into one image would serialise on its write lock.
         const bool rendersIntoMappedImage = mappedMatchesOutput && !layers.useOpenGL && (it->second.renderMappedImage->getStorageMode() == eStorageModeRAM) && (layers.rectsToRender.size() == 1) && _publicInterface->rendersOnlyInsideRenderWindow();
@@ -3804,7 +4347,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
 
     bool useMaskMix = _publicInterface->isHostMaskingEnabled() || _publicInterface->isHostMixingEnabled();
     double mix = useMaskMix ? _publicInterface->getNode()->getHostMixingValue(time, view) : 1.;
-    bool doMask = useMaskMix ? _publicInterface->getNode()->isMaskEnabled(_publicInterface->getNInputs() - 1) : false;
+    bool doMask = useMaskMix ? _publicInterface->getNode()->isMaskEnabled(_publicInterface->getHostMaskInputNb()) : false;
     const bool rendersUnprocessed = _publicInterface->rendersUnprocessedChannels();
 
     for (std::map<ImageLayerDesc, EffectInstance::LayerToRender>::const_iterator it = outputLayers.begin(); it != outputLayers.end(); ++it) {
@@ -3964,7 +4507,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
         } // if (it->second.isAllocatedOnTheFly) {
 
         if ( frameArgs->stats && frameArgs->stats->isInDepthProfilingEnabled() ) {
-            frameArgs->stats->addRenderInfosForNode( _publicInterface->getNode(),  NodePtr(), it->first.getChannelsLabel(), renderMappedRectToRender, timeRecorder->getTimeSinceCreation() );
+            frameArgs->stats->addRenderInfosForNode(_publicInterface->getNode(), NodePtr(), it->first.getUserFacingLabel(), renderMappedRectToRender, timeRecorder->getTimeSinceCreation());
         }
     } // for (std::map<ImageLayerDesc,LayerToRender>::const_iterator it = outputLayers.begin(); it != outputLayers.end(); ++it) {
 
@@ -4168,6 +4711,9 @@ EffectInstance::evaluate(bool isSignificant,
     }
     if (isSignificant) {
         node->refreshPreviewsRecursivelyDownstream(time);
+        if (AppInstancePtr app = getApp()) {
+            Q_EMIT app->nodeEvaluated();
+        }
     }
 } // evaluate
 
@@ -4194,8 +4740,8 @@ EffectInstance::setPersistentMessage(MessageTypeEnum type,
     if (isCheckingIdentityForMetadata(this)) {
         return;
     }
+    // No node once it is destroyed while a scene worker's job still evaluates this effect.
     NodePtr node = getNode();
-    assert(node);
     if (node) {
         node->setPersistentMessage(type, content);
     }
@@ -4205,7 +4751,6 @@ bool
 EffectInstance::hasPersistentMessage()
 {
     NodePtr node = getNode();
-    assert(node);
     return node ? node->hasPersistentMessage() : false;
 }
 
@@ -4213,11 +4758,10 @@ void
 EffectInstance::clearPersistentMessage(bool recurse)
 {
     NodePtr node = getNode();
-    assert(node);
     if (node) {
         node->clearPersistentMessage(recurse);
+        assert(!node->hasPersistentMessage());
     }
-    assert( !hasPersistentMessage() );
 }
 
 int
@@ -4626,8 +5170,6 @@ EffectInstance::renderOverlayImages(const OverlayImageRequest& request,
     const std::uint64_t generation = node->getOverlayImageGeneration();
     const OverlayImagePassPtr pass = std::make_shared<OverlayImagePass>(request.mipmapLevel, generation);
 
-    getParallelRenderArgsTLS()->overlayImagePass = pass;
-
     U64 hash = 0;
     double par = 1.;
     const auto publish = [&](std::vector<OverlayImagePlane>&& planes) {
@@ -4642,6 +5184,15 @@ EffectInstance::renderOverlayImages(const OverlayImageRequest& request,
 
     // A failed pass must not stop the viewer's own render, which reports the error if it has it too.
     try {
+        // A render under a pass runs its action beside any cached image, which a pass that only reads
+        // planes must not do: it would cost a render for what the cache already holds.
+        std::list<ImageLayerDesc> components = overlayImageSourcePlanes(request.time, request.view);
+        const bool readsPlanes = !components.empty();
+        if (!readsPlanes) {
+            getParallelRenderArgsTLS()->overlayImagePass = pass;
+            components.push_back(ImageLayerDesc::getRGBAComponents());
+        }
+
         hash = getRenderHash();
         const RenderScale scale = RenderScale::fromMipmapLevel(request.mipmapLevel);
         RectD rod;
@@ -4665,8 +5216,6 @@ EffectInstance::renderOverlayImages(const OverlayImageRequest& request,
             }
             frameArgs.updateNodesRequest(*requestPass);
 
-            std::list<ImageLayerDesc> components;
-            components.push_back(ImageLayerDesc::getRGBAComponents());
             RenderRoIArgs args(request.time,
                                scale,
                                request.mipmapLevel,
@@ -4692,6 +5241,10 @@ EffectInstance::renderOverlayImages(const OverlayImageRequest& request,
                 publish({});
 
                 return false;
+            }
+            if (readsPlanes) {
+                getParallelRenderArgsTLS()->overlayImagePass = pass;
+                addOverlayImagesFromPlanes(planes, request.time, request.view, canonicalRoI);
             }
         }
 
@@ -5331,6 +5884,128 @@ EffectInstance::getTransform_public(double time,
     return getTransform(time, renderScale, draftRender, view, inputToTransform, transform);
 }
 
+StatusEnum
+EffectInstance::getOverlayTransform_public(double time,
+                                           const RenderScale& renderScale,
+                                           bool draftRender,
+                                           ViewIdx view,
+                                           EffectInstancePtr* inputToTransform,
+                                           Transform::Matrix3x3* transform)
+{
+    RECURSIVE_ACTION();
+
+    return getOverlayTransform(time, renderScale, draftRender, view, inputToTransform, transform);
+}
+
+bool
+EffectInstance::getOverlayCanonicalMatrix(double time,
+                                          ViewIdx view,
+                                          int inputNb,
+                                          Transform::Matrix3x3* forward)
+{
+    EffectInstancePtr input;
+    Transform::Matrix3x3 pixel;
+
+    // Draft mode answers the matrix even where a full render would motion blur.
+    const StatusEnum stat = getOverlayTransform_public(time, RenderScale::identity, /*draftRender=*/true, view, &input, &pixel);
+    if ((stat != eStatusOK) || !input || (input != getInput(inputNb))) {
+        return false;
+    }
+    const NodeMetadataConstPtr metadata = getMetadata(time, view);
+    const double sourcePar = metadata ? metadata->getPixelAspectRatio(inputNb) : 1.;
+    const double outputPar = metadata ? metadata->getPixelAspectRatio(-1) : 1.;
+    Transform::Matrix3x3 mat = Transform::matMul(Transform::matPixelToCanonical(outputPar, 1., 1., false), pixel);
+    mat = Transform::matMul(mat, Transform::matCanonicalToPixel(sourcePar, 1., 1., false));
+    *forward = mat;
+
+    return true;
+}
+
+OverlayPointMap::Result
+EffectInstance::mapOverlayPoint(double time,
+                                ViewIdx view,
+                                int inputNb,
+                                OverlayPointMap::Direction direction,
+                                const Point& in,
+                                Point* out)
+{
+    Transform::Matrix3x3 forward;
+
+    if (!getOverlayCanonicalMatrix(time, view, inputNb, &forward)) {
+        return OverlayPointMap::eIdentity;
+    }
+    if (forward.isIdentity()) {
+        return OverlayPointMap::eIdentity;
+    }
+    if (direction == OverlayPointMap::eDirectionForward) {
+        return OverlayPointMap::applyMatrix(forward, in, out);
+    }
+    const double det = Transform::matDeterminant(forward);
+    if (!std::isfinite(det) || (std::fabs(det) < 1e-12)) {
+        return OverlayPointMap::eUnmappable;
+    }
+
+    return OverlayPointMap::applyMatrix(Transform::matInverse(forward, det), in, out);
+}
+
+OverlayPointMap::Kind
+EffectInstance::overlayMapKind(double time,
+                               ViewIdx view)
+{
+    for (int i = 0; i < getNInputs(); ++i) {
+        Transform::Matrix3x3 forward;
+        if (getInput(i) && getOverlayCanonicalMatrix(time, view, i, &forward)) {
+            return OverlayPointMap::eKindMatrix;
+        }
+    }
+
+    return OverlayPointMap::eKindNone;
+}
+
+OverlayPointMap::Result
+EffectInstance::mapOverlayPoint_public(double time,
+                                       ViewIdx view,
+                                       int inputNb,
+                                       OverlayPointMap::Direction direction,
+                                       const Point& in,
+                                       Point* out,
+                                       const Point* seed)
+{
+    RECURSIVE_ACTION();
+    if (getNode()->isNodeDisabled(time)) {
+        *out = in;
+
+        return OverlayPointMap::eIdentity;
+    }
+    Point result = seed ? *seed : in;
+    const OverlayPointMap::Result answer = mapOverlayPoint(time, view, inputNb, direction, in, &result);
+    switch (answer) {
+    case OverlayPointMap::eMapped:
+        *out = result;
+        break;
+    case OverlayPointMap::eIdentity:
+        *out = in;
+        break;
+    case OverlayPointMap::eUnmappable:
+    case OverlayPointMap::ePending:
+        break;
+    }
+
+    return answer;
+}
+
+OverlayPointMap::Kind
+EffectInstance::overlayMapKind_public(double time,
+                                      ViewIdx view)
+{
+    RECURSIVE_ACTION();
+    if (getNode()->isNodeDisabled(time)) {
+        return OverlayPointMap::eKindNone;
+    }
+
+    return overlayMapKind(time, view);
+}
+
 bool
 EffectInstance::isIdentity_public(bool useIdentityCache, // only set to true when calling for the whole image (not for a subrect)
                                   U64 hash,
@@ -5580,7 +6255,7 @@ EffectInstance::getRegionsOfInterest_public(double time,
     getRegionsOfInterest(time, scale, outputRoD, renderWindow, view, ret);
     const bool transformed = transforms && reroutesMap;
     if (transformed) {
-        transformInputRois(this, transforms, par, scale, ret, reroutesMap);
+        transformInputRois(this, transforms, time, view, par, scale, ret, reroutesMap);
     }
     adjustInputRegionsOfInterest(time, scale, view, transformed ? transforms.get() : nullptr, ret);
 }
@@ -7617,20 +8292,25 @@ EffectInstance::getInputMetadataAt(int inputNb,
 
 static void
 metadataComponentsToLayers(int nComps,
-                           const std::string& componentsType,
+                           ImageComponentsTypeEnum componentsType,
                            ImageLayerDesc* layer,
                            ImageLayerDesc* pairedLayer)
 {
-    if (componentsType == kNatronColorLayerID) {
+    switch (componentsType) {
+    case eImageComponentsTypeColor:
         *layer = ImageLayerDesc::mapNCompsToColorLayer(nComps);
-    } else if (componentsType == kNatronDisparityComponentsLabel) {
+        break;
+    case eImageComponentsTypeDisparity:
         *layer = ImageLayerDesc::getDisparityLeftComponents();
         *pairedLayer = ImageLayerDesc::getDisparityRightComponents();
-    } else if (componentsType == kNatronMotionComponentsLabel) {
+        break;
+    case eImageComponentsTypeMotion:
         *layer = ImageLayerDesc::getBackwardMotionComponents();
         *pairedLayer = ImageLayerDesc::getForwardMotionComponents();
-    } else {
+        break;
+    case eImageComponentsTypeNone:
         *layer = ImageLayerDesc::getNoneComponents();
+        break;
     }
 }
 
@@ -7638,7 +8318,7 @@ static int
 metadataNComps(const NodeMetadata& metadata,
                int inputNb)
 {
-    if ((inputNb == -1) && (metadata.getOutputStorageNComps() > 0) && (metadata.getComponentsType(-1) == kNatronColorLayerID)) {
+    if ((inputNb == -1) && (metadata.getOutputStorageNComps() > 0) && (metadata.getComponentsType(-1) == eImageComponentsTypeColor)) {
         return metadata.getOutputStorageNComps();
     }
 
@@ -7885,7 +8565,7 @@ EffectInstance::getDefaultMetadataFromInputs(const std::vector<EffectInstancePtr
                 metadata.setOutputStorageNComps(remappedComps);
             }
             metadata.setNComps(i, remappedComps);
-            metadata.setComponentsType(i, kNatronColorLayerID);
+            metadata.setComponentsType(i, eImageComponentsTypeColor);
             metadata.setBitDepth(i, depth);
         } else {
 
@@ -7896,7 +8576,7 @@ EffectInstance::getDefaultMetadataFromInputs(const std::vector<EffectInstancePtr
             metadata.setBitDepth(i, depth);
 
             metadata.setNComps(i, rawComps);
-            metadata.setComponentsType(i, kNatronColorLayerID);
+            metadata.setComponentsType(i, eImageComponentsTypeColor);
         }
     }
 
@@ -8222,7 +8902,7 @@ void
 widenOutputMetadata(const NodeMetadata& metadata,
                     NodeMetadata* widened)
 {
-    if ((metadata.getComponentsType(-1) == kNatronColorLayerID) && (widened->getComponentsType(-1) == kNatronColorLayerID)) {
+    if ((metadata.getComponentsType(-1) == eImageComponentsTypeColor) && (widened->getComponentsType(-1) == eImageComponentsTypeColor)) {
         const int nComps = metadataNComps(metadata, -1);
         if (nComps > metadataNComps(*widened, -1)) {
             widened->setNComps(-1, std::max(widened->getNComps(-1), metadata.getNComps(-1)));
@@ -8725,13 +9405,13 @@ EffectInstance::Implementation::clampMetadata(const std::vector<EffectInstancePt
     }
     int nInputs = (int)inputs.size();
 
-    const bool outputKeptInputsStorage = (md.getComponentsType(-1) == kNatronColorLayerID) && (md.getOutputStorageNComps() > 0) && (md.getNComps(-1) == md.getOutputStorageNComps());
+    const bool outputKeptInputsStorage = (md.getComponentsType(-1) == eImageComponentsTypeColor) && (md.getOutputStorageNComps() > 0) && (md.getNComps(-1) == md.getOutputStorageNComps());
     md.setOutputStorageNComps(0);
 
     for (int i = -1; i < nInputs; ++i) {
         md.setBitDepth( i, node->getClosestSupportedBitDepth( md.getBitDepth(i) ) );
         int nComps = md.getNComps(i);
-        if (md.getComponentsType(i) == kNatronColorLayerID) {
+        if (md.getComponentsType(i) == eImageComponentsTypeColor) {
             md.setNComps(i, node->findClosestSupportedComponents(i, ImageLayerDesc::mapNCompsToColorLayer(nComps)).getNumComponents());
         }
     }
@@ -8755,7 +9435,7 @@ EffectInstance::Implementation::clampMetadata(const std::vector<EffectInstancePt
     // channel, and plug-ins such as Grade reject a source layout that differs from the output's.
     // The widened inputs read the missing channels as zero. A writer's channel set only picks what
     // goes to the file, so it never widens: an RGB image would otherwise gain a zero alpha there.
-    if (!_publicInterface->isWriter() && (md.getComponentsType(-1) == kNatronColorLayerID)) {
+    if (!_publicInterface->isWriter() && (md.getComponentsType(-1) == eImageComponentsTypeColor)) {
         // md.getNComps(-1) may already have been clamped, above and in getDefaultMetadata, to the
         // nearest layout this node's clip preferences support (e.g. Alpha clamped to RGBA, because
         // Grade declares no Alpha clip). That clamp can coincidentally already satisfy the write
@@ -8775,7 +9455,7 @@ EffectInstance::Implementation::clampMetadata(const std::vector<EffectInstancePt
                 bool rgbaSupported = node->findClosestSupportedComponents(-1, rgba) == rgba;
                 std::vector<int> widenedInputs;
                 for (int i = 0; rgbaSupported && i < nInputs; ++i) {
-                    if (!inputs[i] || _publicInterface->isInputMask(i) || node->isInputOnlyAlpha(i) || (md.getComponentsType(i) != kNatronColorLayerID)) {
+                    if (!inputs[i] || _publicInterface->isInputMask(i) || node->isInputOnlyAlpha(i) || (md.getComponentsType(i) != eImageComponentsTypeColor)) {
                         continue;
                     }
                     if (node->findClosestSupportedComponents(i, rgba) == rgba) {

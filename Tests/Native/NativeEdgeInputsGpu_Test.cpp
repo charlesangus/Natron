@@ -27,6 +27,7 @@
 
 #include <cstddef>
 #include <functional>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -247,9 +248,11 @@ protected:
 
     // Renders the graph under Stretch and Black: the node runs on the GPU, matches the CPU frame
     // within tolerance, and the two modes render different frames.
+    // With `poisoned`, under a GpuPoolPoisonScope.
     void expectBothModesMatch(const char* name,
                               const Build& build,
-                              const ParityTolerance& tolerance)
+                              const ParityTolerance& tolerance,
+                              bool poisoned = false)
     {
         std::vector<float> frames[2];
         const char* modes[2] = { "stretch", "black" };
@@ -258,6 +261,7 @@ protected:
             NodePtr node = build(modes[m]);
             ASSERT_TRUE(bool(node)) << name << " " << modes[m];
             const RectI window(0, 0, kParitySourceWidth, kParitySourceHeight);
+            const std::unique_ptr<GpuPoolPoisonScope> poison(poisoned ? new GpuPoolPoisonScope : nullptr);
             const EndToEndResult result = renderEndToEnd(std::vector<NodePtr>(1, node), node, window, kTime);
             if (result.skipped) {
                 return;
@@ -267,7 +271,7 @@ protected:
             ASSERT_EQ(result.cpu.size(), result.gpu.size()) << name << " " << modes[m];
             ASSERT_FALSE(result.cpu.empty()) << name << " " << modes[m];
             const ImageDiff diff = compareImages(result.cpu, result.gpu, tolerance);
-            EXPECT_EQ(0u, diff.mismatches) << name << " " << modes[m] << ": first at float " << diff.firstMismatchIndex << ", worst " << diff.worstAbsolute;
+            EXPECT_EQ(0u, diff.mismatches) << name << " " << modes[m] << ": first at float " << diff.firstMismatchIndex << ", worst " << diff.worstAbsolute << (diff.mismatches ? describeGpuMismatch(result, std::vector<float>(), tolerance) : std::string());
             frames[m] = result.cpu;
         }
         ASSERT_EQ(frames[0].size(), frames[1].size()) << name;
@@ -351,7 +355,7 @@ TEST_F(NativeEdgeInputsGpuTest, KeyMixASmallerThanB)
 
 TEST_F(NativeEdgeInputsGpuTest, DissolveSmallerInput)
 {
-    expectBothModesMatch("Dissolve", [this](const char* edgeMode) -> NodePtr {
+    const Build build = [this](const char* edgeMode) -> NodePtr {
         NodePtr first = makeSource(0, 0);
         NodePtr second = makeSmall(edgeMode);
         NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_DISSOLVE), PLUGIN_MAJOR_NATRON_DISSOLVE);
@@ -361,7 +365,10 @@ TEST_F(NativeEdgeInputsGpuTest, DissolveSmallerInput)
         }
         connectNodes(first, node, dissolveSourceInput(0), true);
         connectNodes(second, node, dissolveSourceInput(1), true);
-        return setKnobValues(node, kDissolveParamWhich, { 0.5 }) ? node : NodePtr(); }, ParityTolerance::arithmetic());
+        return setKnobValues(node, kDissolveParamWhich, { 0.5 }) ? node : NodePtr();
+    };
+    expectBothModesMatch("Dissolve", build, ParityTolerance::arithmetic());
+    expectBothModesMatch("Dissolve, pool poisoned", build, ParityTolerance::arithmetic(), true);
 }
 
 TEST_F(NativeEdgeInputsGpuTest, IBlurMapSmallerThanTheSource)

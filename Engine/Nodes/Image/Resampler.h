@@ -33,6 +33,7 @@
 #include <functional>
 #include <vector>
 
+#include "Engine/EngineFwd.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Image/TransformMath.h"
 #include "Engine/RectD.h"
@@ -323,6 +324,26 @@ void filterWeights(FilterEnum filter, double d, double w[4]);
 // 2-D sampling
 
 /**
+ * @brief bounds cut down to rect: on each axis where they overlap, their overlap, elsewhere the
+ * row or column of bounds nearest to rect. Every point of rect clamps to the same pixel in the
+ * result as in bounds, so a Stretch read of a point of rect, outside the image or not, is
+ * unchanged, as is a Black one. Empty when either is.
+ **/
+inline RectI
+cropToNearest(const RectI& bounds,
+              const RectI& rect)
+{
+    if (bounds.isNull() || rect.isNull()) {
+        return RectI();
+    }
+
+    return RectI(std::min(std::max(rect.x1, bounds.x1), bounds.x2 - 1),
+                 std::min(std::max(rect.y1, bounds.y1), bounds.y2 - 1),
+                 std::max(std::min(rect.x2, bounds.x2), bounds.x1 + 1),
+                 std::max(std::min(rect.y2, bounds.y2), bounds.y1 + 1));
+}
+
+/**
  * @brief A read-only float image as the resampler sees it: `data` points at pixel
  * (bounds.x1, bounds.y1), rows go upwards `rowStride` floats apart, and each pixel holds
  * nComps (1 to 4) interleaved floats. This is the layout of a float Natron Image, whose
@@ -366,6 +387,23 @@ struct SourceImage {
             return 0;
         }
         return data + (std::size_t)(y - bounds.y1) * rowStride + (std::size_t)(x - bounds.x1) * (std::size_t)nComps;
+    }
+
+    /// The part of the image cropToNearest(bounds, rect) keeps, sharing its pixels; a missing
+    /// source when rect or the image is empty.
+    SourceImage cropped(const RectI& rect) const
+    {
+        SourceImage out;
+        out.nComps = nComps;
+        const RectI inside = cropToNearest(bounds, rect);
+        if (!isValid() || inside.isNull()) {
+            return out;
+        }
+        out.data = pixel(inside.x1, inside.y1);
+        out.bounds = inside;
+        out.rowStride = rowStride;
+
+        return out;
     }
 };
 
@@ -441,6 +479,69 @@ void resampleRowFromCoords(const SourceImage& src,
                            float* out,
                            int nComps,
                            const RectI* wrapDomain = 0);
+
+/**
+ * @brief Step 1 and 2 of resampleRowFromCoords() on their own, in place, for a caller that maps
+ * the wrapped coordinates further before sampling them with eWrapNone: each (sx[i], sy[i]) is
+ * wrapped in domain (which must not be empty), a coordinate that is not finite after wrapping
+ * makes both NaN, and where eWrapClamp moved an axis that axis's row of the point's Jacobian
+ * (four doubles per point, Jxx, Jxy, Jyx, Jyy; null for none) is zeroed, the rule
+ * resampleRowFromCoords() applies, so a wrap-then-map-then-sample matches a wrap-then-sample.
+ **/
+void wrapRow(double* sx,
+             double* sy,
+             double* jacobian,
+             int n,
+             WrapMode wrapU,
+             WrapMode wrapV,
+             const RectI& domain);
+
+/**
+ * @brief The rows sampleRowThroughChain() maps and samples, owned by the caller so that a band
+ * or a thread allocates them once rather than per row. x, y and jacobian are the points the
+ * caller fills; jacobian holds four doubles per point in resampleRowFromCoords()'s layout, and
+ * is empty when the points carry none.
+ **/
+struct ChainRowScratch {
+    std::vector<double> x;
+    std::vector<double> y;
+    std::vector<double> jacobian;
+    std::vector<float> fx;
+    std::vector<float> fy;
+    std::vector<float> fjacobian;
+
+    /// Room for n points, with Jacobians when jacobians is true.
+    void resize(std::size_t n,
+                bool jacobians);
+
+    double* jacobianData()
+    {
+        return jacobian.empty() ? NULL : jacobian.data();
+    }
+
+    /// The pixel centres x1 to x1 + n - 1 of row, with identity Jacobians.
+    void loadPixelCentres(std::size_t n,
+                          int x1,
+                          int row);
+
+    /// The Jacobians of the n points from J, four floats per point, or the identity when null.
+    void loadJacobians(std::size_t n,
+                       const float* J);
+};
+
+/**
+ * @brief Maps scratch's first n points, and their Jacobians when it holds them, through chain,
+ * then samples src at them into out as resampleRowFromCoords() does with eWrapNone.
+ **/
+void sampleRowThroughChain(const InverseWarpChain& chain,
+                           std::size_t n,
+                           ChainRowScratch* scratch,
+                           const SourceImage& src,
+                           const FilterSpec& filter,
+                           bool clamp,
+                           EdgeMode edgeMode,
+                           float* out,
+                           int nComps);
 
 /**
  * @brief The Jacobians of a coordinate map from central differences, four floats per pixel into

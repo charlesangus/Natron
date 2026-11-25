@@ -280,6 +280,54 @@ public:
         eParamCount
     };
 
+    virtual bool getCanInverseWarp() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
+    virtual unsigned getInverseWarpGpuStep() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return InverseWarpChain::eGpuStepLens;
+    }
+
+    /**
+     * @brief Offers the lens model on the Source in Image output mode, unless the output is
+     * masked, mixed or limited to some channels, which a consumer sampling through the model
+     * alone would not render, or the Source's pixel aspect ratio is not the output's, which a
+     * chain does not convert between.
+     **/
+    virtual bool canOfferInverseWarp(double time,
+                                     ViewIdx view,
+                                     bool draftRender,
+                                     int* inputNb) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The model in the direction the render samples the Source in, over the whole plane
+     * whatever the window, after the crop to this node's region of definition the consumer would
+     * otherwise read the output with. A point without a solution has no source.
+     **/
+    virtual InverseWarpMapConstPtr getInverseWarpMap(double time,
+                                                     ViewIdx view,
+                                                     const RenderScale& scale,
+                                                     bool draftRender,
+                                                     const RectD& window) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The Source in Image output mode, on the conditions canOfferInverseWarp() has, since
+     * the stages would blend the image upstream of the warps: each Source coordinate the model
+     * gives is taken on through the warps concatenated upstream.
+     **/
+    virtual bool acceptsInverseWarpChain(int inputNb,
+                                         double time,
+                                         ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual double getInverseWarpChainFilterSupport(int inputNb,
+                                                    double time,
+                                                    ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual std::optional<EdgeMode> getConcatenationEdgeMode(double time,
+                                                             ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
 private:
     // The knob values a render reads, at one time and view.
     struct Settings {
@@ -336,7 +384,8 @@ private:
     virtual StatusEnum renderOp(const RenderActionArgs& args,
                                 const StagePlan& plan) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    // Accepts what the stages accept in float.
+    // Accepts what the stages accept in float; with a concatenated Source, only without a mask, a
+    // mix or an unprocessed channel, outside STMap output, and when every step has a GPU form.
     virtual bool canRenderOpOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual StatusEnum renderOpGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -355,12 +404,28 @@ private:
 
     void readSettings(double time, ViewIdx view, Settings* settings) const;
 
+    // Whether a warp chain can stand for the model on the Source, or the Source's chain be
+    // applied after it: Image output, no mask, mix or partial channels, and one aspect ratio.
+    bool canChainSource(double time, ViewIdx view) const WARN_UNUSED_RETURN;
+
     // derivingMetadata: called from getPreferredMetadataAt(), so Source's metadata is the one that
     // derivation reads (getInputMetadataAt()) rather than the render's.
     void getGeometry(double time, ViewIdx view, bool derivingMetadata, Geometry* geometry);
 
     // The model the knobs give at (time, view) over the reference format.
     LensModels::Model buildModel(double time, ViewIdx view, const Geometry& geometry) const WARN_UNUSED_RETURN;
+
+    // The point under the lens model, in the direction the render moves pixels when forward. STMap
+    // output moves no pixels, so it maps every point to itself.
+    virtual OverlayPointMap::Result mapOverlayPoint(double time,
+                                                    ViewIdx view,
+                                                    int inputNb,
+                                                    OverlayPointMap::Direction direction,
+                                                    const Point& in,
+                                                    Point* out) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual OverlayPointMap::Kind overlayMapKind(double time,
+                                                 ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     double paramValue(ModelParam param, double time, ViewIdx view, int dimension = 0) const WARN_UNUSED_RETURN;
 

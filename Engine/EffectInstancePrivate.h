@@ -35,6 +35,7 @@
 #include <map>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <QCoreApplication>
@@ -433,6 +434,10 @@ public:
     std::list<EffectInstancePtr> renderClonesPool;
     bool mustSyncPrivateData; //!< true if the effect's knobs were changed but instanceChanged could not be called (e.g. when loading a PyPlug), so that syncPrivateData should be called before the main-thread time-invariant derivation calls the clip preferences
     mutable QMutex mustSyncPrivateDataMutex; //!< protects mustSyncPrivateData
+
+    // Whether postWarpChainError() last posted an error, so a render without one clears it
+    // once rather than reading the node's message on every tile.
+    std::atomic<bool> warpChainErrorPosted { false };
 
 public:
     void runChangedParamCallback(KnobI* k, bool userEdited, const std::string & callback);

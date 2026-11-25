@@ -271,6 +271,18 @@ private:
     // The model at (time, view); the warning about it is posted, or taken back, on the way.
     Model buildModel(double time, ViewIdx view, const Settings& settings) WARN_UNUSED_RETURN;
 
+    // The green channel's mapping, which the render's geometry follows; chromatic aberration
+    // offsets red and blue from it by a fraction of a pixel.
+    virtual OverlayPointMap::Result mapOverlayPoint(double time,
+                                                    ViewIdx view,
+                                                    int inputNb,
+                                                    OverlayPointMap::Direction direction,
+                                                    const Point& in,
+                                                    Point* out) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual OverlayPointMap::Kind overlayMapKind(double time,
+                                                 ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     // Keeps warning up as the node's persistent message, posting it again if it was cleared, or,
     // when it is empty, takes back the one this node posted last. Any thread.
     void postWarning(const std::string& warning);

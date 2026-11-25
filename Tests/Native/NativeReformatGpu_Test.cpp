@@ -47,6 +47,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/InverseWarpChain.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
@@ -179,7 +180,10 @@ TEST_F(NativeReformatGpuTest, EligibilityFollowsTheSupportedSettings)
     {
         GpuQuery q = eligibleQuery();
         q.hasConcatenatedInput = true;
-        EXPECT_FALSE(effect->canRenderOnGpu(q)) << "a transform concatenated from upstream";
+        q.concatenatedSteps = { InverseWarpChain::eGpuStepMatrix };
+        EXPECT_EQ(supported, effect->canRenderOnGpu(q)) << "a transform concatenated from upstream";
+        q.concatenatedSteps = { InverseWarpChain::eGpuStepUnsupported };
+        EXPECT_FALSE(effect->canRenderOnGpu(q)) << "a warp with no GPU form concatenated from upstream";
     }
 }
 

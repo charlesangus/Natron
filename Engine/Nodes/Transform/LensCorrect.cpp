@@ -933,6 +933,66 @@ LensCorrect::readSettings(double time,
     s->edgeMode = resolvedEdgeMode(time, view);
 } // LensCorrect::readSettings
 
+OverlayPointMap::Result
+LensCorrect::mapOverlayPoint(double time,
+                             ViewIdx view,
+                             int inputNb,
+                             OverlayPointMap::Direction direction,
+                             const Point& in,
+                             Point* out)
+{
+    if ((inputNb != kLensCorrectInputSource) || !getInput(kLensCorrectInputSource) || (getMixValue(time, view) == 0.)) {
+        return OverlayPointMap::eIdentity;
+    }
+    Settings settings;
+    readSettings(time, view, &settings);
+    const Model model = buildModel(time, view, settings);
+    if (!model.profile.movesPixels() || model.format.isNull()) {
+        return OverlayPointMap::eIdentity;
+    }
+    const NodeMetadataConstPtr metadata = getMetadata(time, view);
+    const double par = metadata ? metadata->getPixelAspectRatio(kLensCorrectInputSource) : 1.;
+    const double x1 = model.format.x1;
+    const double y2 = model.format.y2;
+    const LensCorrectProfile::Profile& profile = model.profile;
+    const OverlayPointMap::PointFn toSource = [&](const Point& p, Point* s) {
+        const float xu = (float)(p.x / par - x1 - 0.5);
+        const float yu = (float)(y2 - 0.5 - p.y);
+        float lf[6];
+        profile.map(xu, yu, lf);
+        if (!LensCorrectProfile::answered(lf[2], lf[3])) {
+            return OverlayPointMap::eUnmappable;
+        }
+        s->x = (lf[2] + x1 + 0.5) * par;
+        s->y = y2 - 0.5 - lf[3];
+
+        return OverlayPointMap::eMapped;
+    };
+    if (direction == OverlayPointMap::eDirectionInverse) {
+        return toSource(in, out);
+    }
+    OverlayPointMap::InvertOptions options;
+    // Lensfun maps in single precision.
+    options.tolerance = 1e-3;
+    options.seedRegion = RectD(model.format.x1 * par, model.format.y1, model.format.x2 * par, model.format.y2);
+    options.seedStep = std::max(options.seedRegion.width(), options.seedRegion.height()) / 16.;
+
+    return OverlayPointMap::invertNumerically(toSource, in, *out, out, options);
+} // LensCorrect::mapOverlayPoint
+
+OverlayPointMap::Kind
+LensCorrect::overlayMapKind(double time,
+                            ViewIdx view)
+{
+    if (!getInput(kLensCorrectInputSource) || (getMixValue(time, view) == 0.)) {
+        return OverlayPointMap::eKindNone;
+    }
+    Settings settings;
+    readSettings(time, view, &settings);
+
+    return buildModel(time, view, settings).profile.movesPixels() ? OverlayPointMap::eKindNonLinear : OverlayPointMap::eKindNone;
+}
+
 LensCorrect::Model
 LensCorrect::buildModel(double time,
                         ViewIdx view,

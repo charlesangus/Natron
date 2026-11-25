@@ -102,6 +102,7 @@ RotoCurveInteract::RotoCurveInteract(EffectInstance* host)
     , _curvesOverlaySignedPolygons()
     , _curvesOverlayPolygons()
     , _toolsOverlay()
+    , _toolsViewportOverlay()
     , _cloneSourceOverlay()
     , _dragRender()
     , _dragRenderWatch()
@@ -445,11 +446,11 @@ RotoCurveInteract::buildSelectedCp(OverlayDrawListPen& pen,
     leftDeriv.z = rightDeriv.z = 1.;
     cp->getLeftBezierPointAtTime(true, time, ViewIdx(0), &leftDeriv.x, &leftDeriv.y);
     cp->getRightBezierPointAtTime(true, time, ViewIdx(0), &rightDeriv.x, &rightDeriv.y);
-    leftDeriv = Transform::matApply(transform, leftDeriv);
-    rightDeriv = Transform::matApply(transform, rightDeriv);
+    leftDeriv = Transform::matApplyProjected(transform, leftDeriv);
+    rightDeriv = Transform::matApplyProjected(transform, rightDeriv);
 
     bool drawLeftHandle = leftDeriv.x != x || leftDeriv.y != y;
-    bool drawRightHandle = rightDeriv.y != x || rightDeriv.y != y;
+    bool drawRightHandle = rightDeriv.x != x || rightDeriv.y != y;
     pen.begin(OverlayDrawListPen::eModePoints);
     if (drawLeftHandle) {
         if (colorLeftTangent) {
@@ -906,16 +907,24 @@ RotoCurveInteract::removeItemFromSelection(const RotoDrawableItemPtr& b)
 static void
 handleControlPointMaximum(double time,
                           const BezierCP& p,
+                          const Transform::Matrix3x3& transform,
                           double* l,
                           double* b,
                           double* r,
                           double* t)
 {
-    double x, y, xLeft, yLeft, xRight, yRight;
+    Transform::Point3D pos(0., 0., 1.), left(0., 0., 1.), right(0., 0., 1.);
 
-    p.getPositionAtTime(true, time, ViewIdx(0), &x, &y);
-    p.getLeftBezierPointAtTime(true, time, ViewIdx(0), &xLeft, &yLeft);
-    p.getRightBezierPointAtTime(true, time, ViewIdx(0), &xRight, &yRight);
+    p.getPositionAtTime(true, time, ViewIdx(0), &pos.x, &pos.y);
+    p.getLeftBezierPointAtTime(true, time, ViewIdx(0), &left.x, &left.y);
+    p.getRightBezierPointAtTime(true, time, ViewIdx(0), &right.x, &right.y);
+    pos = Transform::matApplyProjected(transform, pos);
+    left = Transform::matApplyProjected(transform, left);
+    right = Transform::matApplyProjected(transform, right);
+
+    const double x = pos.x, y = pos.y;
+    const double xLeft = left.x, yLeft = left.y;
+    const double xRight = right.x, yRight = right.y;
 
     *r = std::max(x, *r);
     *l = std::min(x, *l);
@@ -2105,10 +2114,18 @@ RotoCurveInteract::computeSelectedCpsBBOX()
 
     double l = std::numeric_limits<int>::max(), r = std::numeric_limits<int>::min();
     double b = std::numeric_limits<int>::max(), t = std::numeric_limits<int>::min();
+    // The box is drawn and dragged where the points are drawn, through their shape's transform.
+    const Bezier* lastCurve = 0;
+    Transform::Matrix3x3 transform;
     for (SelectedCPs::iterator it = selectedCps.begin(); it != selectedCps.end(); ++it) {
-        handleControlPointMaximum(time, *(it->first), &l, &b, &r, &t);
+        const BezierPtr curve = it->first->getBezier();
+        if (curve.get() != lastCurve) {
+            curve->getTransformAtTime(time, &transform);
+            lastCurve = curve.get();
+        }
+        handleControlPointMaximum(time, *(it->first), transform, &l, &b, &r, &t);
         if (it->second) {
-            handleControlPointMaximum(time, *(it->second), &l, &b, &r, &t);
+            handleControlPointMaximum(time, *(it->second), transform, &l, &b, &r, &t);
         }
     }
     selectedCpsBbox.setCoords(l, t, r, b);
@@ -2650,8 +2667,8 @@ RotoCurveInteract::isNearbyFeatherBar(double time,
             (*itCp)->getPositionAtTime(true, time, ViewIdx(0), &controlPoint.x, &controlPoint.y);
             (*itF)->getPositionAtTime(true, time, ViewIdx(0), &featherPoint.x, &featherPoint.y);
 
-            controlPoint = Transform::matApply(transform, controlPoint);
-            featherPoint = Transform::matApply(transform, featherPoint);
+            controlPoint = Transform::matApplyProjected(transform, controlPoint);
+            featherPoint = Transform::matApplyProjected(transform, featherPoint);
             {
                 Point cp, fp;
                 cp.x = controlPoint.x;
@@ -3419,8 +3436,8 @@ RotoCurveInteract::buildCurvesOverlay(double time,
                     (*itF)->getPositionAtTime(true, time, ViewIdx(0), &pF.x, &pF.y);
                     pF.z = 1.;
 
-                    p = Transform::matApply(transform, p);
-                    pF = Transform::matApply(transform, pF);
+                    p = Transform::matApplyProjected(transform, p);
+                    pF = Transform::matApplyProjected(transform, pF);
 
                     x = p.x;
                     y = p.y;
@@ -3590,16 +3607,19 @@ RotoCurveInteract::buildCurvesOverlay(double time,
 
 void
 RotoCurveInteract::buildToolsOverlay(const std::pair<double, double>& pixelScale,
-                                     OverlayDrawList* list)
+                                     OverlayDrawList* list,
+                                     OverlayDrawList* viewportList)
 {
     OverlayDrawListPen pen(list);
+    OverlayDrawListPen viewportPen(viewportList);
 
     pen.lineWidth(1.5);
     pen.setDeformable(false);
+    viewportPen.setDeformable(false);
     if (!_host->isDrawingPassiveOverlay()) {
         buildPaintToolOverlay(pen, pixelScale);
         if (objectSelect && (selectedTool == eRotoToolObjectSelect)) {
-            objectSelect->buildOverlay(pen);
+            objectSelect->buildOverlay(pen, viewportPen);
             pen.setDeformable(false);
         }
     }
@@ -3620,7 +3640,7 @@ RotoCurveInteract::buildToolsOverlay(const std::pair<double, double>& pixelScale
         pen.end();
         pen.setDeformable(false);
     }
-    buildRippleEditBorder(pen, pixelScale);
+    buildRippleEditBorder(viewportPen, pixelScale);
 } // RotoCurveInteract::buildToolsOverlay
 
 void
@@ -3724,13 +3744,28 @@ RotoCurveInteract::drawOverlay(double /*time*/)
         drawPaintToolPreview();
     }
 
+    // A follow, a transform knob or an expression moves the points without passing through the
+    // interact, so the box is taken from where they are drawn now, before the signature reads it.
+    if (!selectedCps.empty()) {
+        computeSelectedCpsBBOX();
+    }
+
     ContentHasher signature;
     appendToolsOverlaySignature(pixelScale, &signature);
-    if (OverlayDrawList* list = _toolsOverlay.rebuildFor(signature.finalize())) {
-        buildToolsOverlay(pixelScale, list);
+    const U64 toolsSignature = signature.finalize();
+    // Both lists are built from the one signature, so they are rebuilt together.
+    OverlayDrawList* list = _toolsOverlay.rebuildFor(toolsSignature);
+    OverlayDrawList* viewportList = _toolsViewportOverlay.rebuildFor(toolsSignature);
+    if (list && viewportList) {
+        buildToolsOverlay(pixelScale, list, viewportList);
     }
     if (!_toolsOverlay.list().empty()) {
         overlay->drawOverlayDrawList(_toolsOverlay.list(), OverlayDrawState());
+    }
+    if (!_toolsViewportOverlay.list().empty()) {
+        overlay->drawInViewportSpace([&]() {
+            overlay->drawOverlayDrawList(_toolsViewportOverlay.list(), OverlayDrawState());
+        });
     }
 } // drawOverlay
 

@@ -29,14 +29,19 @@
 #include <cmath>
 #include <cstring>
 #include <list>
+#include <stdexcept>
 
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpMesh.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpTps.h"
+#include "Engine/PoolParallelFor.h"
 
 NATRON_NAMESPACE_ENTER
 
 namespace {
+// Grid points are a thin-plate evaluation each, far dearer than a pixel copy.
+const qint64 kMinParallelGridPoints = 32 * 32;
+
 struct Bounds {
     double x1, y1, x2, y2;
 
@@ -196,26 +201,72 @@ SplineWarpField::SplineWarpField(const SplineWarpMesh& mesh,
     }
 }
 
-void
-SplineWarpField::build(const SplineWarpTps* map,
-                       const SplineWarpMesh* mesh)
+SplineWarpField::SplineWarpField(const SplineWarpField& from,
+                                 const RectI& window)
+    : _window(window)
+    , _scaleX(from._scaleX)
+    , _scaleY(from._scaleY)
+    , _step(from._step)
+    , _identity(true)
+    , _boundaries(from._boundaries)
+    , _i0(0)
+    , _j0(0)
+    , _nx(0)
+    , _ny(0)
 {
-    const RectI& window = _window;
-
-    if (window.isNull() || (map && map->isIdentity()) || (!map && (!mesh || mesh->isIdentity()))) {
+    if (window.isNull()) {
         return;
     }
+    if (!from._window.contains(window)) {
+        throw std::invalid_argument("SplineWarpField: the window is not within the field's");
+    }
+    // The grid is within from's, none of whose points moved.
+    if (from._identity) {
+        return;
+    }
+    layOutGrid();
+    const int di = _i0 - from._i0;
+    const int dj = _j0 - from._j0;
+    if ((di < 0) || (dj < 0) || (di + _nx > from._nx) || (dj + _ny > from._ny)) {
+        throw std::logic_error("SplineWarpField: the grid is not within the field's");
+    }
+    const std::size_t count = (std::size_t)_nx * (std::size_t)_ny;
+    _sourceX.resize(count);
+    _sourceY.resize(count);
+    _weight.resize(count);
+    for (int j = 0; j < _ny; ++j) {
+        const std::size_t src = (std::size_t)(dj + j) * from._nx + di;
+        const std::size_t dst = (std::size_t)j * _nx;
+        std::copy(from._sourceX.begin() + src, from._sourceX.begin() + src + _nx, _sourceX.begin() + dst);
+        std::copy(from._sourceY.begin() + src, from._sourceY.begin() + src + _nx, _sourceY.begin() + dst);
+        std::copy(from._weight.begin() + src, from._weight.begin() + src + _nx, _weight.begin() + dst);
+    }
+    finish();
+}
 
+void
+SplineWarpField::layOutGrid()
+{
     // Pixel centres of the window, in canonical coordinates; one grid point beyond them on the
     // low side and two on the high side, so every bilinear cell has central differences.
-    const double cx1 = (window.x1 + 0.5) / _scaleX;
-    const double cx2 = (window.x2 - 0.5) / _scaleX;
-    const double cy1 = (window.y1 + 0.5) / _scaleY;
-    const double cy2 = (window.y2 - 0.5) / _scaleY;
+    const double cx1 = (_window.x1 + 0.5) / _scaleX;
+    const double cx2 = (_window.x2 - 0.5) / _scaleX;
+    const double cy1 = (_window.y1 + 0.5) / _scaleY;
+    const double cy2 = (_window.y2 - 0.5) / _scaleY;
     _i0 = (int)std::floor(cx1 / _step) - 1;
     _j0 = (int)std::floor(cy1 / _step) - 1;
     _nx = (int)std::floor(cx2 / _step) + 2 - _i0 + 1;
     _ny = (int)std::floor(cy2 / _step) + 2 - _j0 + 1;
+}
+
+void
+SplineWarpField::build(const SplineWarpTps* map,
+                       const SplineWarpMesh* mesh)
+{
+    if (_window.isNull() || (map && map->isIdentity()) || (!map && (!mesh || mesh->isIdentity()))) {
+        return;
+    }
+    layOutGrid();
 
     const std::size_t count = (std::size_t)_nx * (std::size_t)_ny;
     _sourceX.resize(count);
@@ -230,30 +281,44 @@ SplineWarpField::build(const SplineWarpTps* map,
         mesh->rasterize(_i0, _j0, _nx, _ny, _step, _sourceX.data(), _sourceY.data());
     }
 
-    bool moved = false;
-    for (int j = 0; j < _ny; ++j) {
-        const double y = (_j0 + j) * _step;
-        for (int i = 0; i < _nx; ++i) {
-            const double x = (_i0 + i) * _step;
-            const std::size_t idx = (std::size_t)j * _nx + i;
-            double w = 1.;
-            if (!_boundaries.empty()) {
-                bool near = false;
-                for (std::size_t b = 0; b < featherBounds.size() && !near; ++b) {
-                    near = featherBounds[b].contains(x, y);
+    forEachRowBand(RectI(0, 0, _nx, _ny), kMinParallelGridPoints, [&](int j1, int j2) {
+        for (int j = j1; j < j2; ++j) {
+            const double y = (_j0 + j) * _step;
+            for (int i = 0; i < _nx; ++i) {
+                const double x = (_i0 + i) * _step;
+                const std::size_t idx = (std::size_t)j * _nx + i;
+                double w = 1.;
+                if (!_boundaries.empty()) {
+                    bool near = false;
+                    for (std::size_t b = 0; b < featherBounds.size() && !near; ++b) {
+                        near = featherBounds[b].contains(x, y);
+                    }
+                    w = near ? nodeWeight(x, y) : 0.;
+                    _weight[idx] = w;
                 }
-                w = near ? nodeWeight(x, y) : 0.;
-                _weight[idx] = w;
+                if (w > 0.) {
+                    const Point s = map ? map->evaluate(x, y) : splineWarpPoint(_sourceX[idx], _sourceY[idx]);
+                    _sourceX[idx] = x + w * (s.x - x);
+                    _sourceY[idx] = y + w * (s.y - y);
+                } else {
+                    _sourceX[idx] = x;
+                    _sourceY[idx] = y;
+                }
             }
-            if (w > 0.) {
-                const Point s = map ? map->evaluate(x, y) : splineWarpPoint(_sourceX[idx], _sourceY[idx]);
-                _sourceX[idx] = x + w * (s.x - x);
-                _sourceY[idx] = y + w * (s.y - y);
-                moved = moved || (_sourceX[idx] != x) || (_sourceY[idx] != y);
-            } else {
-                _sourceX[idx] = x;
-                _sourceY[idx] = y;
-            }
+        }
+    });
+    finish();
+}
+
+void
+SplineWarpField::finish()
+{
+    bool moved = false;
+    for (int j = 0; j < _ny && !moved; ++j) {
+        const double y = (_j0 + j) * _step;
+        for (int i = 0; i < _nx && !moved; ++i) {
+            const std::size_t idx = (std::size_t)j * _nx + i;
+            moved = (_sourceX[idx] != (_i0 + i) * _step) || (_sourceY[idx] != y);
         }
     }
     if (!moved) {
@@ -266,6 +331,7 @@ SplineWarpField::build(const SplineWarpTps* map,
     }
     _identity = false;
 
+    const std::size_t count = (std::size_t)_nx * (std::size_t)_ny;
     _jacobian.resize(count * 4);
     for (int j = 0; j < _ny; ++j) {
         const int jm = std::max(0, j - 1);
@@ -482,6 +548,71 @@ SplineWarpField::getRow(int y,
 } // SplineWarpField::getRow
 
 void
+SplineWarpField::mapPoints(std::size_t n,
+                           double* sx,
+                           double* sy,
+                           double* jacobian) const
+{
+    if (_identity) {
+        return;
+    }
+    const bool feathers = !_boundaries.empty();
+    const double ratioXY = _scaleX / _scaleY;
+    const double ratioYX = _scaleY / _scaleX;
+    for (std::size_t k = 0; k < n; ++k) {
+        if (!std::isfinite(sx[k]) || !std::isfinite(sy[k])) {
+            continue;
+        }
+        const double cx = sx[k] / _scaleX;
+        const double cy = sy[k] / _scaleY;
+        if (feathers && !containingPixelInsideFeathers(sx[k], sy[k])) {
+            continue;
+        }
+        int i, j;
+        double fx, fy;
+        cellOf(cx, cy, &i, &j, &fx, &fy);
+        const std::size_t a = (std::size_t)j * _nx + i;
+        const std::size_t b = a + 1;
+        const std::size_t c = a + _nx;
+        const std::size_t d = c + 1;
+        sx[k] = _scaleX * ((1. - fy) * ((1. - fx) * _sourceX[a] + fx * _sourceX[b]) + fy * ((1. - fx) * _sourceX[c] + fx * _sourceX[d]));
+        sy[k] = _scaleY * ((1. - fy) * ((1. - fx) * _sourceY[a] + fx * _sourceY[b]) + fy * ((1. - fx) * _sourceY[c] + fx * _sourceY[d]));
+        if (!jacobian) {
+            continue;
+        }
+        const double* ja = &_jacobian[a * 4];
+        const double* jb = &_jacobian[b * 4];
+        const double* jc = &_jacobian[c * 4];
+        const double* jd = &_jacobian[d * 4];
+        double D[4];
+        for (int m = 0; m < 4; ++m) {
+            D[m] = (1. - fy) * ((1. - fx) * ja[m] + fx * jb[m]) + fy * ((1. - fx) * jc[m] + fx * jd[m]);
+        }
+        D[1] *= ratioXY;
+        D[2] *= ratioYX;
+        double* J = &jacobian[k * 4];
+        const double j0 = J[0], j1 = J[1], j2 = J[2], j3 = J[3];
+        J[0] = D[0] * j0 + D[1] * j2;
+        J[1] = D[0] * j1 + D[1] * j3;
+        J[2] = D[2] * j0 + D[3] * j2;
+        J[3] = D[2] * j1 + D[3] * j3;
+    }
+} // SplineWarpField::mapPoints
+
+bool
+SplineWarpField::containingPixelInsideFeathers(double x,
+                                               double y) const
+{
+    const double px = std::floor(x);
+    const double py = std::floor(y);
+    if (!(px >= _window.x1) || !(px < _window.x2) || !(py >= _window.y1) || !(py < _window.y2)) {
+        return false;
+    }
+
+    return insideAnyFeather((px + 0.5) / _scaleX, (py + 0.5) / _scaleY);
+}
+
+void
 SplineWarpField::rowInsideFeathers(int y,
                                    int x1,
                                    int x2,
@@ -537,6 +668,13 @@ SplineWarpField::getGpuTables(std::vector<uint32_t>* words,
     };
 
     layout->nx = (uint32_t)_nx;
+    layout->ny = (uint32_t)_ny;
+    layout->i0 = _i0;
+    layout->j0 = _j0;
+    layout->step = _step;
+    layout->scaleX = _scaleX;
+    layout->scaleY = _scaleY;
+    layout->window = _window;
     layout->nodes = (uint32_t)words->size();
     const double ratioXY = _scaleX / _scaleY;
     const double ratioYX = _scaleY / _scaleX;
@@ -599,8 +737,25 @@ SplineWarpFieldCache::getResolutions() const
 }
 
 SplineWarpFieldConstPtr
+SplineWarpFieldCache::get(const Key& key,
+                          const std::function<SplineWarpField()>& solve)
+{
+    const std::function<bool(const Key&)> covers = [&key](const Key& cached) {
+        return !key.window.isNull() && key.sameWarp(cached) && cached.window.contains(key.window);
+    };
+
+    return _cache.get(key, covers, [&](const SplineWarpFieldConstPtr& cover) {
+        if (cover) {
+            return SplineWarpField(*cover, key.window);
+        }
+        ++_solves;
+
+        return solve();
+    });
+}
+
+SplineWarpFieldConstPtr
 SplineWarpFieldCache::get(U64 warpHash,
-                          double time,
                           const SplineWarpTps& map,
                           const std::vector<SplineWarpBoundaryShape>& boundaries,
                           const RectI& window,
@@ -612,20 +767,18 @@ SplineWarpFieldCache::get(U64 warpHash,
 
     key.mesh = false;
     key.hash = warpHash;
-    key.time = time;
     key.scaleX = scaleX;
     key.scaleY = scaleY;
     key.resolution = fieldResolution;
     key.window = window;
 
-    return _cache.get(key, [&]() {
+    return get(key, [&]() {
         return SplineWarpField(map, boundaries, window, scaleX, scaleY, fieldResolution);
     });
 }
 
 SplineWarpFieldConstPtr
 SplineWarpFieldCache::get(U64 warpHash,
-                          double time,
                           const SplineWarpMesh& mesh,
                           const std::vector<SplineWarpBoundaryShape>& boundaries,
                           const RectI& window,
@@ -637,13 +790,12 @@ SplineWarpFieldCache::get(U64 warpHash,
 
     key.mesh = true;
     key.hash = warpHash;
-    key.time = time;
     key.scaleX = scaleX;
     key.scaleY = scaleY;
     key.resolution = fieldResolution;
     key.window = window;
 
-    return _cache.get(key, [&]() {
+    return get(key, [&]() {
         return SplineWarpField(mesh, boundaries, window, scaleX, scaleY, fieldResolution);
     });
 }

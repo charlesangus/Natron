@@ -236,6 +236,7 @@ RetouchInteract::buildPaintToolOverlay(OverlayDrawListPen& pen,
         if (!viewport->getViewportRect().contains(x, y)) {
             return;
         }
+        viewport->getCursorPositionInOverlay(x, y);
         centre = QPointF(x, y);
     }
     const double radius = size->getValue() / 2.;

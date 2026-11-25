@@ -289,6 +289,7 @@ public:
         , currentSupportOpenGLRender(ePluginOpenGLRenderSupportNone)
         , currentSupportSequentialRender(eSequentialPreferenceNotSequential)
         , currentCanTransform(false)
+        , currentCanInverseWarp(false)
         , draftModeUsed(false)
         , mustComputeInputRelatedData(true)
         , inputEditStamp(0)
@@ -393,6 +394,17 @@ public:
 
     //to the inputs in a thread-safe manner.
     EffectInstancePtr effect;  //< the effect hosted by this node
+    // Guards only the pointer: hashes are computed on worker threads while destroyNode() takes the
+    // effect away. effectTeardownMutex cannot serve, as it is held across waits on render threads
+    // that hash this node.
+    mutable QMutex effectPointerMutex;
+
+    EffectInstancePtr effectForWorker() const
+    {
+        QMutexLocker l(&effectPointerMutex);
+
+        return effect;
+    }
 
     ///The accepted components in input and in output of the plug-in
     ///These two are also protected by inputsMutex
@@ -629,6 +641,7 @@ public:
     PluginOpenGLRenderSupport currentSupportOpenGLRender;
     SequentialPreferenceEnum currentSupportSequentialRender;
     bool currentCanTransform;
+    bool currentCanInverseWarp;
     bool draftModeUsed, mustComputeInputRelatedData;
     // Main thread only. An edit of this node (its inputs, or the metadata it derives from them)
     // leaves every node below it dirty: a node is dirty while an edit stamp upstream of it is

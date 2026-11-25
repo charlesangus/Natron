@@ -281,6 +281,9 @@ struct Slot {
 
     // For an external input in RAM: the float image uploaded from, and the bytes uploaded of it.
     ImagePtr source;
+    // Held from when the layout takes the source's bounds until the upload, so the pixels uploaded are the ones the
+    // bounds describe.
+    std::shared_ptr<Image::ReadAccess> sourceAccess;
     std::size_t uploadBytes = 0;
 
     // The buffer the upload lands in. A region run whole issues its uploads after recording every member, by which
@@ -373,6 +376,11 @@ struct Member {
     // For a task gpuRendersFullScale(): the level-0 slot the effect renders fullRect of, which is then box-downscaled
     // into outSlot at the task's level. Only that downscale reads it.
     int fullSlot = -1;
+
+    // The transforms the frame's request concatenated into the member's inputs, and, by input number, what
+    // renderGpu() is handed of them.
+    InputMatrixMapPtr transforms;
+    std::vector<GpuInputChain> inputChains;
     RectI fullRect;
 };
 
@@ -421,14 +429,17 @@ public:
     ~RegionRun()
     {
         drain();
+        // Work a stop left running on the device may still write the queries or wait on the timeline.
+        gpu::GpuDevice& device = _runtime.device();
+        const VkDevice vk = device.device();
         if (_queries) {
-            vkDestroyQueryPool(_runtime.device().device(), _queries, nullptr);
+            device.destroyWhenRetired([vk, pool = _queries]() { vkDestroyQueryPool(vk, pool, nullptr); });
         }
         if (_segmentQueries) {
-            vkDestroyQueryPool(_runtime.device().device(), _segmentQueries, nullptr);
+            device.destroyWhenRetired([vk, pool = _segmentQueries]() { vkDestroyQueryPool(vk, pool, nullptr); });
         }
         if (_computeTimeline) {
-            vkDestroySemaphore(_runtime.device().device(), _computeTimeline, nullptr);
+            device.destroyWhenRetired([vk, semaphore = _computeTimeline]() { vkDestroySemaphore(vk, semaphore, nullptr); });
         }
     }
 
@@ -488,7 +499,13 @@ private:
             if (isAborted()) {
                 return EffectInstance::eRenderRoIRetCodeAborted;
             }
-            if (!submitChain() || !finishChain()) {
+            if (!submitChain()) {
+                return failed();
+            }
+            if (isAborted()) {
+                return EffectInstance::eRenderRoIRetCodeAborted;
+            }
+            if (!finishChain()) {
                 return failed();
             }
         } else {
@@ -605,6 +622,10 @@ private:
     {
         if (recorder.ranOutOfMemory()) {
             fail(memberTask, "the node ran out of device memory recording its GPU work", FailureKind::OutOfMemory);
+        } else if (isAborted()) {
+            // Node code that notices the abort while recording reports it as a failure, which must not cost the frame
+            // a CPU fallback.
+            _stoppedByAbort = true;
         } else {
             fail(memberTask, "the node failed to record its GPU work");
         }
@@ -614,12 +635,29 @@ private:
     {
         drain();
 
-        return EffectInstance::eRenderRoIRetCodeFailed;
+        return _stoppedByAbort ? EffectInstance::eRenderRoIRetCodeAborted : EffectInstance::eRenderRoIRetCodeFailed;
     }
 
     bool isAborted() const
     {
         return isContextAborted(_context);
+    }
+
+    std::function<bool()> stopWhenAborted() const
+    {
+        return [this]() { return isAborted(); };
+    }
+
+    // A record context's submit stopped by stopWhenAborted() signals nothing, and the device keeps what any work it
+    // left running uses; it fails only so that the region unwinds.
+    bool noteStopped(const gpu::GpuStatus& status)
+    {
+        if (status.result != VK_INCOMPLETE) {
+            return false;
+        }
+        _stoppedByAbort = true;
+
+        return true;
     }
 
     GpuImageLayout layoutOf(const FrameGraph::Task& task,
@@ -912,6 +950,142 @@ private:
         return copies;
     }
 
+    // inputNb's entry of transforms, null when the input is fetched directly.
+    static const InputMatrix* concatenationOf(const InputMatrixMapPtr& transforms,
+                                              int inputNb)
+    {
+        if (!transforms) {
+            return nullptr;
+        }
+        const InputMatrixMap::const_iterator found = transforms->find(inputNb);
+
+        return ((found != transforms->end()) && found->second.newInputEffect) ? &found->second : nullptr;
+    }
+
+    // What effect reads of input inputNb over rect, in the pixels of the image its edge holds: for an input fetched
+    // through concatenated nodes, the effect's region pulled back through them as transformInputRois() pulls it
+    // back for the CPU, since the edge holds the image upstream of them.
+    static RectI inputRoIOf(NativeEffectBase* effect,
+                            const GpuQuery& q,
+                            const InputMatrixMapPtr& transforms,
+                            int inputNb,
+                            const RectI& rect)
+    {
+        const RectI direct = effect->getGpuInputRoI(inputNb, q.time, q.view, rect, q.mappedScale);
+        const InputMatrix* concatenation = concatenationOf(transforms, inputNb);
+        const EffectInstancePtr input = effect->getInput(inputNb);
+        if (!concatenation || direct.isNull() || !input) {
+            return direct;
+        }
+        const EffectInstancePtr source = concatenation->newInputEffect->getInput(concatenation->newInputNbToFetchFrom);
+        if (!source) {
+            return RectI();
+        }
+        const NodeMetadataConstPtr metadata = effect->getRenderMetadata(q.time, q.view);
+        const double inputPar = metadata ? metadata->getPixelAspectRatio(inputNb) : 1.;
+        const double par = metadata ? metadata->getPixelAspectRatio(-1) : 1.;
+        const InputMatrixMapPtr single = std::make_shared<InputMatrixMap>();
+        single->insert(std::make_pair(inputNb, *concatenation));
+        RoIMap rois;
+        rois[input] = direct.toCanonical_noClipping(q.mappedScale.toMipmapLevel(), inputPar);
+        std::map<int, EffectInstancePtr> reroutes;
+        EffectInstance::transformInputRois(effect, single, q.time, q.view, par, q.mappedScale, &rois, &reroutes);
+        const RoIMap::const_iterator found = rois.find(source);
+        if ((found == rois.end()) || found->second.isNull()) {
+            return RectI();
+        }
+        const NodeMetadataConstPtr sourceMetadata = source->getRenderMetadata(q.time, q.view);
+
+        return found->second.toPixelEnclosing(q.mappedScale, sourceMetadata ? sourceMetadata->getPixelAspectRatio(-1) : 1.);
+    }
+
+    // Fills member's inputChains from its transforms: a map chain prepared over renderRect and packed for
+    // warpchain.slang. False, failing the region so that the CPU renders and reports it, for a chain that cannot
+    // be prepared, has a node with no GPU form or does not fit a scratch buffer.
+    bool planInputChains(Member* member)
+    {
+        member->inputChains.clear();
+        if (!member->transforms) {
+            return true;
+        }
+        NativeEffectBase* effect = member->effect;
+        const GpuQuery& q = member->query;
+        const NodeMetadataConstPtr metadata = effect->getRenderMetadata(q.time, q.view);
+        const double par = metadata ? metadata->getPixelAspectRatio(-1) : 1.;
+        const RectD window = renderRectOf(*member).toCanonical_noClipping(q.mappedScale.toMipmapLevel(), par);
+        for (InputMatrixMap::const_iterator it = member->transforms->begin(); it != member->transforms->end(); ++it) {
+            const InputMatrix* concatenation = concatenationOf(member->transforms, it->first);
+            if (!concatenation || (it->first < 0)) {
+                continue;
+            }
+            if ((int)member->inputChains.size() <= it->first) {
+                member->inputChains.resize(it->first + 1);
+            }
+            GpuInputChain& chain = member->inputChains[it->first];
+            chain.source = concatenation->newInputEffect->getInput(concatenation->newInputNbToFetchFrom);
+            const InputMatrixMapPtr transforms = member->transforms;
+            const int inputNb = it->first;
+            chain.sourceRoI = [effect, q, transforms, inputNb](const RectI& rect) {
+                return inputRoIOf(effect, q, transforms, inputNb, rect);
+            };
+            if (!concatenation->warpChain) {
+                chain.cat = concatenation->cat;
+                if (!chain.cat) {
+                    return fail(member->task, "an input concatenates transforms the GPU path does not have");
+                }
+                continue;
+            }
+            if (!(concatenation->warpChain->getScale() == q.mappedScale)) {
+                return fail(member->task, "a warp concatenated into the node is at another scale than the GPU renders");
+            }
+            const InverseWarpChainConstPtr prepared = effect->getPreparedWarpChain(concatenation->warpChain, it->first, q.time, q.view, q.mappedScale, window);
+            if (!prepared || prepared->hasError()) {
+                return fail(member->task, prepared ? prepared->getError() : std::string("a warp concatenated into the node could not be prepared"));
+            }
+            std::shared_ptr<std::vector<uint32_t>> words = std::make_shared<std::vector<uint32_t>>();
+            if (!prepared->packGpu(words.get())) {
+                return fail(member->task, "a warp concatenated into the node has no GPU form");
+            }
+            if ((uint64_t)words->size() * sizeof(uint32_t) > q.maxScratchBytes) {
+                return fail(member->task, "a warp concatenated into the node does not fit a GPU scratch buffer");
+            }
+            chain.warpChain = prepared;
+            chain.gpuWords = words;
+            if (chain.source) {
+                // Pulling the node's region back again would prepare the chain over a window rounded
+                // otherwise, building its maps a second time, and read another region than the
+                // chain the GPU samples through.
+                const RectI preparedRect = renderRectOf(*member);
+                const NodeMetadataConstPtr sourceMetadata = chain.source->getRenderMetadata(q.time, q.view);
+                const double sourcePar = sourceMetadata ? sourceMetadata->getPixelAspectRatio(-1) : 1.;
+                chain.sourceRoI = [effect, q, transforms, inputNb, prepared, preparedRect, sourcePar](const RectI& rect) {
+                    if (rect == preparedRect) {
+                        return prepared->getSourcePixels(sourcePar);
+                    }
+
+                    return inputRoIOf(effect, q, transforms, inputNb, rect);
+                };
+            }
+        }
+
+        return true;
+    }
+
+    // inputRoIOf() through the chain planInputChains() prepared for inputNb, when it did.
+    static RectI chainInputRoIOf(const std::vector<GpuInputChain>& chains,
+                                 NativeEffectBase* effect,
+                                 const GpuQuery& q,
+                                 const InputMatrixMapPtr& transforms,
+                                 int inputNb,
+                                 const RectI& rect)
+    {
+        if ((inputNb >= 0) && (inputNb < (int)chains.size()) && chains[inputNb].sourceRoI) {
+            return chains[inputNb].sourceRoI(rect);
+        }
+
+        return inputRoIOf(effect, q, transforms, inputNb, rect);
+    }
+
     bool planInputs(const std::vector<std::pair<int, int>>& edges,
                     Member* member)
     {
@@ -982,7 +1156,7 @@ private:
             if (_graph.tasks[edges[e].second].renderedRoI.isNull()) {
                 return fail(member->task, "an input renders an empty window");
             }
-            const RectI needed = effect->getGpuInputRoI(inputNb, member->query.time, member->query.view, renderRect, member->query.mappedScale);
+            const RectI needed = chainInputRoIOf(member->inputChains, effect, member->query, member->transforms, inputNb, renderRect);
             const int slot = readSlot(edges[e].second, layer, needed);
             if (slot < 0) {
                 return fail(member->task, "an input produced in the region is not in the layer the node reads");
@@ -1011,7 +1185,7 @@ private:
             if (!effect->getGpuExtraInputLayers(inputNb, member->plane, task.key.time, task.key.view, &layers)) {
                 return fail(member->task, "the node cannot read an input on the GPU");
             }
-            const RectI needed = effect->getGpuInputRoI(inputNb, member->query.time, member->query.view, renderRect, member->query.mappedScale);
+            const RectI needed = chainInputRoIOf(member->inputChains, effect, member->query, member->transforms, inputNb, renderRect);
             for (const ImageLayerDesc& layer : layers) {
                 const int slot = readSlot(inputTasks[inputNb], layer, needed);
                 if (slot < 0) {
@@ -1165,7 +1339,8 @@ private:
                 } else if (!growFromDeviceTier(&member, &out) && task.servedFromCache) {
                     return fail(taskIndex, (_deviceGrowth != DeviceGrowth::None) ? "the device tier no longer holds the part of the output whose inputs the plan let go" : "a strip records an output grown from the device tier whole only, and the plan let go of inputs the rest of it reads");
                 }
-                if (!planInputs(edges, &member)) {
+                member.transforms = fvRequest ? fvRequest->globalData.transforms : InputMatrixMapPtr();
+                if (!planInputChains(&member) || !planInputs(edges, &member)) {
                     if (out.cachedPart) {
                         out.cachedPart->unpin();
                     }
@@ -1402,6 +1577,7 @@ private:
                 return fail(input.key.node, "its output is not in the frame store");
             }
             ImagePtr image = images.front();
+            std::shared_ptr<Image::ReadAccess> access = std::make_shared<Image::ReadAccess>(image.get());
             const RectI bounds = image->getBounds();
             if ((image->getBitDepth() != eImageBitDepthFloat) || ((int)image->getComponentsCount() != slot.layout.nComps()) || (image->getStorageMode() == eStorageModeGLTex)) {
                 ImagePtr converted;
@@ -1413,6 +1589,7 @@ private:
                 }
                 image->convertToFormat(bounds, 3, false, converted.get());
                 image = converted;
+                access = std::make_shared<Image::ReadAccess>(image.get());
             }
             slot.layout.rod = image->getRoD();
             slot.layout.bounds = bounds;
@@ -1421,6 +1598,7 @@ private:
             slot.layout.fielding = image->getFieldingOrder();
             slot.layout.key = image->getKey();
             slot.source = image;
+            slot.sourceAccess = access;
         }
 
         return true;
@@ -1455,8 +1633,8 @@ private:
                 continue;
             }
             const ImagePtr& image = slot.source;
+            const std::shared_ptr<Image::ReadAccess> access = slot.sourceAccess;
             const RectI bounds = image->getBounds();
-            std::shared_ptr<Image::ReadAccess> access = std::make_shared<Image::ReadAccess>(image.get());
             const unsigned char* data = access->pixelAt(bounds.x1, bounds.y1);
             if (!data) {
                 return fail(_graph.tasks[slot.externalTask].key.node, "its image has no pixels");
@@ -1697,9 +1875,12 @@ private:
             _segmentTimed = false;
             const Clock::time_point waitBegin = Clock::now();
             // The runtime's own entry points report to its state machine; a record context's submission does not.
-            const gpu::GpuStatus status = _runtime.note((*recorder)->submitAndWait());
+            const gpu::GpuStatus status = _runtime.note((*recorder)->submitAndWait(30'000'000'000ull, stopWhenAborted()));
             waitNs = nsBetween(waitBegin, Clock::now());
             recorder->reset();
+            if (noteStopped(status)) {
+                return false;
+            }
             if (!status) {
                 return failGpu(segment.empty() ? -1 : _members[segment.front()].task, "the device work failed", status);
             }
@@ -1750,8 +1931,7 @@ private:
             }
             const std::size_t bytes = gpuHostTransferBytes(*slot.source);
             const RectI bounds = slot.source->getBounds();
-            Image::ReadAccess access(slot.source.get());
-            const unsigned char* data = access.pixelAt(bounds.x1, bounds.y1);
+            const unsigned char* data = slot.sourceAccess->pixelAt(bounds.x1, bounds.y1);
             if (!mayCacheImport(data, bytes)) {
                 continue;
             }
@@ -2052,6 +2232,7 @@ private:
                    GpuRenderArgs* args) const
     {
         args->inputs.assign(member.nInputs, GpuImageView());
+        args->inputChains = member.inputChains;
         args->layerInputs.clear();
         args->contextInputs.clear();
         args->timedInputs.clear();
@@ -2108,6 +2289,9 @@ private:
         std::uint32_t firstQuery = 0;
         bool submitted = false;
         gpu::TimelineValue done;
+
+        // What the host blocked submitting it, which a split segment spends on its work.
+        long long submitNs = 0;
     };
 
     int taskOf(const Segment& segment) const
@@ -2230,6 +2414,7 @@ private:
                 }
 
                 GpuRenderArgs args(recorder);
+                args.recordScope = this;
                 args.query = member.query;
                 args.outputRect = renderRectOf(member);
                 if (!setInputs(member, &args)) {
@@ -2305,7 +2490,13 @@ private:
                 waits = _uploadsDone;
             }
             segment.done = gpu::TimelineValue { _computeTimeline, ++_computeValue };
-            const gpu::GpuStatus status = _runtime.note(segment.recorder->submit(waits, segment.done));
+            const Clock::time_point submitBegin = Clock::now();
+            const gpu::GpuStatus status = _runtime.note(segment.recorder->submit(waits, segment.done, stopWhenAborted()));
+            segment.submitNs = nsBetween(submitBegin, Clock::now());
+            _chainSubmitNs += segment.submitNs;
+            if (noteStopped(status)) {
+                return false;
+            }
             if (!status) {
                 return failGpu(taskOf(segment), "the device work failed", status);
             }
@@ -2353,11 +2544,12 @@ private:
         _uploadsDone.clear();
         _uploadAccesses.clear();
         for (Slot& slot : _slots) {
+            slot.sourceAccess.reset();
             slot.source.reset();
             slot.uploadTarget = gpu::GpuBufferHandle();
         }
         if (_report) {
-            _report->uploadMs = msBetween(_uploadBegin, Clock::now());
+            _report->uploadMs = std::max(0., msBetween(_uploadBegin, Clock::now()) - (double)_chainSubmitNs * 1e-6);
         }
         if (!issueDownloads()) {
             return false;
@@ -2371,7 +2563,7 @@ private:
             if (!status) {
                 return failGpu(taskOf(segment), "the device work failed", status);
             }
-            noteSegmentTimes(segment, nsBetween(waitBegin, Clock::now()));
+            noteSegmentTimes(segment, segment.submitNs + nsBetween(waitBegin, Clock::now()));
         }
         // Done on the device, so no other thread acquiring them from the pool can race the work that used them.
         _segments.clear();
@@ -2446,10 +2638,17 @@ private:
             const double time = member.query.time;
             const ViewIdx view = member.query.view;
             const std::vector<int> inputOfSlot = member.inputSlotInput;
+            const std::vector<double> timeOfSlot = member.inputSlotTime;
             const ParallelRenderArgsPtr contextArgs = member.contextArgs;
             const EffectInstancePtr owner = contextArgs ? effect->shared_from_this() : EffectInstancePtr();
-            stripMember.inputRoI = [effect, owner, contextArgs, time, view, scale, inputOfSlot](int k, const RectI& rect) {
+            const GpuQuery query = member.query;
+            const InputMatrixMapPtr transforms = member.transforms;
+            const std::vector<GpuInputChain> chains = member.inputChains;
+            stripMember.inputRoI = [effect, owner, contextArgs, time, view, scale, inputOfSlot, timeOfSlot, query, transforms, chains](int k, const RectI& rect) {
                 const ContextFrameArgsScope contextScope(owner, contextArgs);
+                if (transforms && (timeOfSlot[k] == time)) {
+                    return chainInputRoIOf(chains, effect, query, transforms, inputOfSlot[k], rect);
+                }
 
                 return effect->getGpuInputRoI(inputOfSlot[k], time, view, rect, scale);
             };
@@ -3316,13 +3515,17 @@ private:
         gpu::GpuStatus resetStatus = _runtime.newRecordContext(reset);
         if (resetStatus) {
             reset->resetQueries(_queries, 0, info.queryCount);
-            resetStatus = _runtime.note(reset->submitAndWait());
+            resetStatus = _runtime.note(reset->submitAndWait(30'000'000'000ull, stopWhenAborted()));
+        }
+        if (noteStopped(resetStatus)) {
+            return false;
         }
         if (!resetStatus) {
             if (_runtime.isLost()) {
                 return failGpu(firstMemberTask(), "cannot reset the strips' timestamps", resetStatus);
             }
-            vkDestroyQueryPool(device.device(), _queries, nullptr);
+            const VkDevice vk = device.device();
+            device.destroyWhenRetired([vk, pool = _queries]() { vkDestroyQueryPool(vk, pool, nullptr); });
             _queries = VK_NULL_HANDLE;
 
             return true;
@@ -3377,9 +3580,12 @@ private:
         }
         const gpu::TimelineValue done { _computeTimeline, ++_computeValue };
         const Clock::time_point submitBegin = Clock::now();
-        const gpu::GpuStatus status = _runtime.note(recorder.submit(uploads, done));
+        const gpu::GpuStatus status = _runtime.note(recorder.submit(uploads, done, stopWhenAborted()));
         if (_report) {
             _report->submitWaitMs += msBetween(submitBegin, Clock::now());
+        }
+        if (noteStopped(status)) {
+            return EffectInstance::eRenderRoIRetCodeFailed;
         }
         if (!status) {
             failGpu(firstMemberTask(), "the device work failed", status);
@@ -3865,6 +4071,7 @@ private:
         _recycled.clear();
         for (Slot& slot : _slots) {
             slot.uploadTarget = gpu::GpuBufferHandle();
+            slot.sourceAccess.reset();
             if (slot.downloadImage) {
                 _runtime.wait(slot.downloadDone);
                 slot.downloadDone = gpu::TimelineValue();
@@ -3940,6 +4147,8 @@ private:
     std::vector<gpu::GpuBufferHandle> _recycled;
     VkSemaphore _computeTimeline = VK_NULL_HANDLE;
     std::uint64_t _computeValue = 0;
+    long long _chainSubmitNs = 0;
+    bool _stoppedByAbort = false;
     Clock::time_point _pipelineBegin;
     std::vector<std::vector<int>> _stripSegments;
 

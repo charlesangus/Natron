@@ -61,8 +61,8 @@
 #include "Engine/Nodes/Scene/USDEditPrim.h"
 #include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/Nodes/Scene/USDLight.h"
-#include "Engine/Nodes/Scene/USDMaterial.h"
 #include "Engine/Nodes/Scene/USDMerge.h"
+#include "Engine/Nodes/Scene/USDPreviewSurface.h"
 #include "Engine/Nodes/Scene/USDPrune.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDReference.h"
@@ -208,7 +208,7 @@ TEST_F(SceneIntegrationTest, ReferenceSceneThroughTheActionComposesWithItsBounds
               dot->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &payload, &error))
         << error;
 
-    SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(payload, &error);
+    SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(payload, SceneLoadSet::everything(), &error);
     ASSERT_TRUE(lease.isValid()) << error;
     PXR_NS::UsdStageRefPtr stage = lease.getStage();
     ASSERT_TRUE(bool(stage));
@@ -285,7 +285,7 @@ TEST_F(SceneIntegrationTest, CreatedPrimsGroupUnderTheRigNextToTheReadScene)
     EXPECT_EQ(SceneMetadata::eUpAxisY, payload.getMetadata().upAxis);
     EXPECT_EQ(std::string("World"), payload.getMetadata().defaultPrim);
 
-    SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(payload, &error);
+    SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(payload, SceneLoadSet::everything(), &error);
     ASSERT_TRUE(lease.isValid()) << error;
     PXR_NS::UsdStageRefPtr stage = lease.getStage();
     ASSERT_TRUE(bool(stage));
@@ -481,13 +481,13 @@ TEST_F(SceneIntegrationTest, USDWriteLayeredKeepsTheStackOrderAndAnchorsRelative
     // them moves the box to y = 7.
     NodePtr box = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
     NodePtr card = createNode(QString::fromUtf8(kTestPluginIDSceneGeometry));
-    NodePtr material = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMATERIAL));
+    NodePtr material = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPREVIEWSURFACE));
     NodePtr reader = createReader(overPath.toStdString());
     NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
     ASSERT_TRUE(box && card && material && reader && merge);
     KnobString* boxPath = getKnob<KnobString>(box, kSceneParamPrimPath);
     KnobDouble* translate = getKnob<KnobDouble>(box, kSceneParamTranslate);
-    KnobFile* texture = getKnob<KnobFile>(material, kUSDMaterialParamDiffuseTexture);
+    KnobFile* texture = getKnob<KnobFile>(material, kUSDPreviewSurfaceParamDiffuseTexture);
     ASSERT_TRUE(boxPath && translate && texture);
     boxPath->setValue(std::string("/World/Box"));
     translate->setValue(5., ViewSpec::all(), 0);
@@ -809,7 +809,7 @@ TEST_F(SceneIntegrationTest, USDWriteRendersOncePerCommandLineRender)
 //                                                        USDMerge -> USDPrune -> USDWrite
 //   USDLight ------------------\
 //                          USDXformPrim ---------------/
-//   USDMaterial -> geometry --/
+//   USDPreviewSurface -> geometry --/
 //
 // Every node's opinions reach the written file: Layered mode flattens what the nodes authored
 // into it, keeps the read file as its sublayer, and writes the layers USDXformPrim and the geometry
@@ -823,7 +823,7 @@ TEST_F(SceneIntegrationTest, SceneVocabularyGraphExportsEveryNodesOpinions)
     NodePtr transform = createNode(QString::fromUtf8(PLUGINID_NATRON_USDEDITTRANSFORM));
     NodePtr props = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
     NodePtr light = createNode(QString::fromUtf8(PLUGINID_NATRON_USDLIGHT));
-    NodePtr material = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMATERIAL));
+    NodePtr material = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPREVIEWSURFACE));
     NodePtr card = createNode(QString::fromUtf8(kTestPluginIDSceneGeometry));
     NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
     NodePtr prune = createNode(QString::fromUtf8(PLUGINID_NATRON_USDPRUNE));
@@ -850,8 +850,8 @@ TEST_F(SceneIntegrationTest, SceneVocabularyGraphExportsEveryNodesOpinions)
     setString(light, kSceneParamPrimPath, "/Key");
     setString(card, kSceneParamPrimPath, "/Card");
     setString(material, kSceneParamPrimPath, "/Red");
-    KnobColor* diffuse = getKnob<KnobColor>(material, kUSDMaterialParamDiffuseColor);
-    KnobFile* texture = getKnob<KnobFile>(material, kUSDMaterialParamDiffuseTexture);
+    KnobColor* diffuse = getKnob<KnobColor>(material, kUSDPreviewSurfaceParamDiffuseColor);
+    KnobFile* texture = getKnob<KnobFile>(material, kUSDPreviewSurfaceParamDiffuseTexture);
     ASSERT_TRUE(diffuse && texture);
     diffuse->setValue(1., ViewSpec::all(), 0);
     diffuse->setValue(0., ViewSpec::all(), 1);
@@ -920,7 +920,7 @@ TEST_F(SceneIntegrationTest, SceneVocabularyGraphExportsEveryNodesOpinions)
     EXPECT_EQ(PXR_NS::TfToken("Xform"), stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Props")).GetTypeName());
     EXPECT_EQ(PXR_NS::TfToken("DistantLight"), stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Props/Key")).GetTypeName());
     EXPECT_EQ(PXR_NS::TfToken("Material"), stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Props/Card/Red")).GetTypeName());
-    // USDMaterial: the texture relative to the written files, which sit side by side.
+    // USDPreviewSurface: the texture relative to the written files, which sit side by side.
     const PXR_NS::UsdAttribute textureFile = stage->GetAttributeAtPath(PXR_NS::SdfPath("/World/Props/Card/Red/diffuseColorTexture.inputs:file"));
     ASSERT_TRUE(static_cast<bool>(textureFile));
     PXR_NS::SdfAssetPath textureAsset;

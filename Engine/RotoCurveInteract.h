@@ -539,6 +539,9 @@ private:
     std::vector<BezierOverlayPolygonsConstPtr> _curvesOverlayPolygons;
     // What follows the pen and the viewport (tools, cursor, selection box).
     OverlayDrawListCache _toolsOverlay;
+    // The tools' parts pinned to the viewport rather than to the image (the ripple border, the
+    // object select message), drawn without the overlay's path transform.
+    OverlayDrawListCache _toolsViewportOverlay;
     OverlayDrawListCache _cloneSourceOverlay;
 
     // Renders requested from pen down to pen up, while a shape is dragged.
@@ -782,7 +785,7 @@ public:
     // Everything buildToolsOverlay() draws from, cheap enough to digest on every redraw.
     void appendToolsOverlaySignature(const std::pair<double, double>& pixelScale, ContentHasher* hasher) const;
 
-    void buildToolsOverlay(const std::pair<double, double>& pixelScale, OverlayDrawList* list);
+    void buildToolsOverlay(const std::pair<double, double>& pixelScale, OverlayDrawList* list, OverlayDrawList* viewportList);
 
     std::pair<BezierCPPtr, BezierCPPtr> isNearbyFeatherBar(double time, const std::pair<double, double>& pixelScale, const QPointF& pos) const;
 

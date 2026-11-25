@@ -35,6 +35,8 @@
 NATRON_NAMESPACE_ENTER
 
 struct RotoPaintPrivate;
+class VectorFollowControls;
+
 class RotoPaint
     : public EffectInstance
 {
@@ -72,7 +74,7 @@ public:
 
     virtual int getNInputs() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        return 11;
+        return 12;
     }
 
     virtual bool getCanTransform() const OVERRIDE FINAL WARN_UNUSED_RETURN { return false; }
@@ -86,7 +88,9 @@ public:
     }
 
     virtual std::string getInputLabel (int inputNb) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual std::string getInputHint(int inputNb) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool isInputMask(int inputNb) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual bool isInputFirstOnSide(int inputNb) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool isInputOptional(int /*inputNb*/) const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         return true;
@@ -124,6 +128,9 @@ public:
     virtual void clearLastRenderedImage() OVERRIDE FINAL;
     virtual bool isHostMaskingEnabled() const OVERRIDE FINAL WARN_UNUSED_RETURN { return true; }
 
+    // The Vectors input follows the mask, so the mask is not the last input.
+    virtual int getHostMaskInputNb() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     virtual bool isHostMixingEnabled() const OVERRIDE FINAL WARN_UNUSED_RETURN  { return true; }
 
     virtual LayerKnobSpec getLayerKnobSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
@@ -147,6 +154,8 @@ public:
      **/
     void abortObjectSelectEncoding(bool wait);
     bool isObjectSelectEncoding() const;
+
+    virtual RotoCurvePanelHook* getCurvePanelHook() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
 public Q_SLOTS:
 
@@ -214,6 +223,7 @@ private:
     virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE WARN_UNUSED_RETURN;
     virtual void refreshExtraStateAfterTimeChanged(bool isPlayback, double time)  OVERRIDE FINAL;
     std::unique_ptr<RotoPaintPrivate> _imp;
+    std::unique_ptr<VectorFollowControls> _vectorFollow;
 };
 
 /**

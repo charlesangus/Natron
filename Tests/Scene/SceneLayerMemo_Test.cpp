@@ -36,6 +36,7 @@
 #include "BaseTest.h"
 #include "SceneTestEffect.h"
 
+#include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -44,6 +45,8 @@
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
+#include "Engine/Project.h"
+#include "Engine/SceneLoadSet.h"
 #include "Engine/ScenePayload.h"
 
 NATRON_NAMESPACE_USING
@@ -227,6 +230,89 @@ TEST(SceneLayerMemoTest, InvalidateForcesAuthoring)
 }
 
 namespace {
+// Produces key's layer as the evaluation context id does.
+bool
+produceIn(SceneLayerMemo* memo,
+          U64 context,
+          U64 key,
+          ScenePayload* output)
+{
+    const SceneEvaluationContext::Scope scope(SceneEvaluationContext(context, context ? std::make_shared<const SceneLoadSet>(SceneLoadSet::none()) : SceneLoadSetPtr()));
+    std::string error;
+    const bool ok = memo->produce(makeKey(key), ScenePayload(), "SceneLayerMemoTest", makeAuthor((int)key), output, &error);
+
+    EXPECT_TRUE(ok) << error;
+
+    return ok;
+}
+} // anonymous namespace
+
+TEST(SceneLayerMemoTest, AlternatingContextsKeepALayerEach)
+{
+    SceneLayerMemo memo;
+    const U64 viewer = SceneEvaluationContext::makeId();
+    ScenePayload viewerFirst, renderFirst, viewerSecond, renderSecond;
+
+    ASSERT_TRUE(produceIn(&memo, viewer, 1, &viewerFirst));
+    ASSERT_TRUE(produceIn(&memo, 0, 2, &renderFirst));
+    ASSERT_TRUE(produceIn(&memo, viewer, 1, &viewerSecond));
+    ASSERT_TRUE(produceIn(&memo, 0, 2, &renderSecond));
+
+    EXPECT_EQ((U64)2, memo.getAuthorCount());
+    EXPECT_EQ(topLayer(viewerFirst), topLayer(viewerSecond));
+    EXPECT_EQ(topLayer(renderFirst), topLayer(renderSecond));
+    EXPECT_NE(topLayer(viewerFirst), topLayer(renderFirst));
+}
+
+TEST(SceneLayerMemoTest, AContextTakesTheLayerAnotherHasForTheSameKey)
+{
+    SceneLayerMemo memo;
+    const U64 viewer = SceneEvaluationContext::makeId();
+    ScenePayload inViewer, inRender;
+
+    ASSERT_TRUE(produceIn(&memo, viewer, 1, &inViewer));
+    ASSERT_TRUE(produceIn(&memo, 0, 1, &inRender));
+
+    EXPECT_EQ((U64)1, memo.getAuthorCount());
+    EXPECT_EQ(topLayer(inViewer), topLayer(inRender));
+}
+
+TEST(SceneLayerMemoTest, TheLeastRecentlyUsedContextIsForgotten)
+{
+    SceneLayerMemo memo;
+    std::vector<U64> contexts;
+    ScenePayload payload;
+
+    for (int i = 0; i < 5; ++i) {
+        contexts.push_back(SceneEvaluationContext::makeId());
+        ASSERT_TRUE(produceIn(&memo, contexts.back(), 10 + i, &payload));
+    }
+    EXPECT_EQ((U64)5, memo.getAuthorCount());
+    // The last four are still kept; the first one is not.
+    for (int i = 1; i < 5; ++i) {
+        ASSERT_TRUE(produceIn(&memo, contexts[i], 10 + i, &payload));
+    }
+    EXPECT_EQ((U64)5, memo.getAuthorCount());
+    ASSERT_TRUE(produceIn(&memo, contexts[0], 10, &payload));
+    EXPECT_EQ((U64)6, memo.getAuthorCount());
+}
+
+TEST(SceneLayerMemoTest, InvalidateForgetsEveryContextsLayer)
+{
+    SceneLayerMemo memo;
+    const U64 viewer = SceneEvaluationContext::makeId();
+    ScenePayload payload;
+
+    ASSERT_TRUE(produceIn(&memo, viewer, 1, &payload));
+    ASSERT_TRUE(produceIn(&memo, 0, 2, &payload));
+    memo.invalidate();
+    ASSERT_TRUE(produceIn(&memo, viewer, 1, &payload));
+    ASSERT_TRUE(produceIn(&memo, 0, 2, &payload));
+
+    EXPECT_EQ((U64)4, memo.getAuthorCount());
+}
+
+namespace {
 int
 sourceValue(const PXR_NS::UsdStageRefPtr& stage)
 {
@@ -250,7 +336,7 @@ TEST(SceneQueryPoolTest, BorrowedStagesComposeThePayloadAndAreReused)
     const U64 opensBefore = SceneOps::getStageOpenCount();
     PXR_NS::UsdStage* stageA = nullptr;
     {
-        SceneQueryPool::Lease lease = pool.borrow(a, &error);
+        SceneQueryPool::Lease lease = pool.borrow(a, SceneLoadSet::everything(), &error);
         ASSERT_TRUE(lease.isValid()) << error;
         EXPECT_EQ(1, sourceValue(lease.getStage()));
         stageA = lease.getStage().operator->();
@@ -260,13 +346,13 @@ TEST(SceneQueryPoolTest, BorrowedStagesComposeThePayloadAndAreReused)
 
     {
         // The idle stage is synced to the new stack rather than a new one opened.
-        SceneQueryPool::Lease lease = pool.borrow(b, &error);
+        SceneQueryPool::Lease lease = pool.borrow(b, SceneLoadSet::everything(), &error);
         ASSERT_TRUE(lease.isValid()) << error;
         EXPECT_EQ(stageA, lease.getStage().operator->());
         EXPECT_EQ(2, sourceValue(lease.getStage()));
 
         // A second borrower at the same time gets a stage of its own.
-        SceneQueryPool::Lease other = pool.borrow(a, &error);
+        SceneQueryPool::Lease other = pool.borrow(a, SceneLoadSet::everything(), &error);
         ASSERT_TRUE(other.isValid()) << error;
         EXPECT_NE(lease.getStage(), other.getStage());
         EXPECT_EQ(1, sourceValue(other.getStage()));
@@ -276,7 +362,7 @@ TEST(SceneQueryPoolTest, BorrowedStagesComposeThePayloadAndAreReused)
 
     {
         // The stage last synced to a stack is the one handed out for it again.
-        SceneQueryPool::Lease lease = pool.borrow(b, &error);
+        SceneQueryPool::Lease lease = pool.borrow(b, SceneLoadSet::everything(), &error);
         EXPECT_EQ(stageA, lease.getStage().operator->());
         EXPECT_EQ(2, sourceValue(lease.getStage()));
     }
@@ -288,9 +374,9 @@ TEST(SceneQueryPoolTest, KeepsAtMostItsCapacityAndReleasesIdleStages)
     SceneQueryPool pool(2);
     std::string error;
     {
-        SceneQueryPool::Lease first = pool.borrow(makePayload(1), &error);
-        SceneQueryPool::Lease second = pool.borrow(makePayload(2), &error);
-        SceneQueryPool::Lease third = pool.borrow(makePayload(3), &error);
+        SceneQueryPool::Lease first = pool.borrow(makePayload(1), SceneLoadSet::everything(), &error);
+        SceneQueryPool::Lease second = pool.borrow(makePayload(2), SceneLoadSet::everything(), &error);
+        SceneQueryPool::Lease third = pool.borrow(makePayload(3), SceneLoadSet::everything(), &error);
         ASSERT_TRUE(first.isValid() && second.isValid() && third.isValid()) << error;
         // Released early: the lease is invalid afterwards and gives nothing back twice.
         third.release();
@@ -306,7 +392,7 @@ TEST(SceneQueryPoolTest, EmptyPayloadGivesAnEmptyStage)
 {
     SceneQueryPool pool(2);
     std::string error;
-    SceneQueryPool::Lease lease = pool.borrow(ScenePayload(), &error);
+    SceneQueryPool::Lease lease = pool.borrow(ScenePayload(), SceneLoadSet::everything(), &error);
 
     ASSERT_TRUE(lease.isValid()) << error;
     EXPECT_EQ(-1, sourceValue(lease.getStage()));
@@ -319,7 +405,7 @@ TEST(SceneQueryPoolTest, ALeaseKeepsLayerWritesOut)
 {
     SceneQueryPool pool(2);
     std::string error;
-    SceneQueryPool::Lease lease = pool.borrow(makePayload(1), &error);
+    SceneQueryPool::Lease lease = pool.borrow(makePayload(1), SceneLoadSet::everything(), &error);
 
     ASSERT_TRUE(lease.isValid()) << error;
     EXPECT_TRUE(SceneWriteBarrier::isReadingOnThisThread());
@@ -439,6 +525,64 @@ TEST_F(SceneLayerChainTest, AKnobEditDuringAuthoringIsNotServedAfterUndo)
     EXPECT_EQ(authored + 1, authorCount(_source));
     ASSERT_TRUE(sceneTestReadSourceValue(payload, &value, &error)) << error;
     EXPECT_EQ(2, value);
+}
+
+namespace {
+class ProjectFrameRateRestorer {
+public:
+    ProjectFrameRateRestorer(KnobDouble* knob,
+                             double original)
+        : _knob(knob)
+        , _original(original)
+    {
+    }
+
+    ~ProjectFrameRateRestorer()
+    {
+        _knob->setValue(_original);
+    }
+
+private:
+    ProjectFrameRateRestorer(const ProjectFrameRateRestorer&);
+    ProjectFrameRateRestorer& operator=(const ProjectFrameRateRestorer&);
+
+    KnobDouble* _knob;
+    double _original;
+};
+} // namespace
+
+// A project rate edit landing while a node reads its knobs leaves the node digest alone but moves
+// the key the layer is emitted under; the layer, read against the old rate, must not be memoized
+// under the new one.
+TEST_F(SceneLayerChainTest, AProjectEditDuringKnobReadsIsNotMemoized)
+{
+    ScenePayload payload;
+    std::string error;
+
+    KnobInt* readKnob = dynamic_cast<KnobInt*>(_last->getKnobByName("upstreamRead").get());
+    ASSERT_TRUE(readKnob != NULL);
+    readKnob->setValue(3);
+    KnobDouble* frameRate = dynamic_cast<KnobDouble*>(getApp()->getProject()->getKnobByName("frameRate").get());
+    ASSERT_TRUE(frameRate != NULL);
+    const double originalFrameRate = getApp()->getProjectFrameRate();
+    ProjectFrameRateRestorer restore(frameRate, originalFrameRate);
+
+    const U64 authoredBefore = authorCount(_last);
+    sceneTestOpReadHook() = [frameRate, originalFrameRate]() {
+        sceneTestOpReadHook() = std::function<void()>();
+        frameRate->setValue(originalFrameRate + 12.);
+    };
+    const EffectInstance::RenderRoIRetCode edited = evaluate(&payload, &error);
+    sceneTestOpReadHook() = std::function<void()>();
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, edited) << error;
+    ASSERT_DOUBLE_EQ(originalFrameRate + 12., getApp()->getProjectFrameRate());
+    EXPECT_EQ(authoredBefore + 1, authorCount(_last));
+
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(&payload, &error)) << error;
+    EXPECT_EQ(authoredBefore + 2, authorCount(_last));
+
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(&payload, &error)) << error;
+    EXPECT_EQ(authoredBefore + 2, authorCount(_last));
 }
 
 TEST_F(SceneLayerChainTest, ChangingTheLastNodeReAuthorsOnlyItsLayer)
@@ -586,7 +730,7 @@ TEST_F(SceneLongChainTest, HeadEditsSyncOneStageWithoutOpeningAnother)
     viewer.sync(payload);
     SceneQueryPool pool(1);
     {
-        SceneQueryPool::Lease lease = pool.borrow(payload, &error);
+        SceneQueryPool::Lease lease = pool.borrow(payload, SceneLoadSet::everything(), &error);
         ASSERT_TRUE(lease.isValid()) << error;
     }
     const U64 opens = SceneOps::getStageOpenCount();
@@ -599,7 +743,7 @@ TEST_F(SceneLongChainTest, HeadEditsSyncOneStageWithoutOpeningAnother)
         EXPECT_EQ(authoredBefore + kChainLength + 1, totalAuthorCount()) << "edit " << edit;
 
         EXPECT_TRUE(viewer.sync(payload));
-        SceneQueryPool::Lease lease = pool.borrow(payload, &error);
+        SceneQueryPool::Lease lease = pool.borrow(payload, SceneLoadSet::everything(), &error);
         ASSERT_TRUE(lease.isValid()) << error;
         int value = 0;
         PXR_NS::UsdPrim prim = viewer.getStage()->GetPrimAtPath(PXR_NS::SdfPath(kSceneTestPrimPath));

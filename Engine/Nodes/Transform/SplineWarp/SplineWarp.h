@@ -45,6 +45,7 @@
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpPanelHook.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpSampling.h"
 #include "Engine/Nodes/Transform/SplineWarp/SplineWarpTps.h"
+#include "Engine/VectorFollowKnobs.h"
 
 #define PLUGINID_NATRON_SPLINEWARP "SplineWarp"
 #define PLUGIN_MAJOR_NATRON_SPLINEWARP 1
@@ -80,12 +81,14 @@
 
 #define kSplineWarpInputSource 0
 #define kSplineWarpInputMask 1
+#define kSplineWarpInputVectors 2
 
 NATRON_NAMESPACE_ENTER
 
 inline constexpr InputSpec kSplineWarpInputs[] = {
     InputSpec { .label = "Source" },
     InputSpec { .label = "Mask", .role = InputRole::Mask, .optional = true },
+    InputSpec { .label = kVectorFollowInputLabel, .role = InputRole::Aux, .optional = true },
 };
 
 inline constexpr NodeSpec kSplineWarpNodeSpec = {
@@ -132,6 +135,7 @@ public:
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual const ImagePipelineSpec& imagePipelineSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual std::string getInputHint(int inputNb) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual bool isInputFirstOnSide(int inputNb) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual CurveContextKindEnum getCurveContextKind() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual RotoCurveContextPtr createGeometryCurveContext(const NodePtr& node) const OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -151,6 +155,54 @@ public:
      * @brief The Source, so a transform upstream of it is applied in this node's resample.
      **/
     virtual bool getInputsHoldingTransform(std::list<int>* inputs) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual bool getCanInverseWarp() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
+    virtual unsigned getInverseWarpGpuStep() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return InverseWarpChain::eGpuStepSplineWarp;
+    }
+
+    /**
+     * @brief Offers the field on the Source unless the output is masked, mixed, limited to some
+     * channels, produces the outputMask layer, or averages motion-blur sub-frames: a consumer
+     * sampling through the field alone would render none of those.
+     **/
+    virtual bool canOfferInverseWarp(double time,
+                                     ViewIdx view,
+                                     bool draftRender,
+                                     int* inputNb) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The field over window followed by the crop to the Source's format, as the render
+     * samples it.
+     **/
+    virtual InverseWarpMapConstPtr getInverseWarpMap(double time,
+                                                     ViewIdx view,
+                                                     const RenderScale& scale,
+                                                     bool draftRender,
+                                                     const RectD& window) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The Source, unless the render averages motion-blur sub-frames, whose fields a chain
+     * has no place for.
+     **/
+    virtual bool acceptsInverseWarpChain(int inputNb,
+                                         double time,
+                                         ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual double getInverseWarpChainFilterSupport(int inputNb,
+                                                    double time,
+                                                    ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The mode the field samples the Source under, so a chain through it samples the same.
+     **/
+    virtual std::optional<EdgeMode> getConcatenationEdgeMode(double time,
+                                                             ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
      * @brief The outputMask layer, while a curve is an active cookie cutter and outputMask names
@@ -315,6 +367,13 @@ private:
                                       ViewIdx view,
                                       RoIMap* ret) OVERRIDE FINAL;
 
+    /**
+     * @brief The frames StagedImageEffect::getFramesNeeded() lists, without the Vectors input,
+     * which only the follow tools read.
+     **/
+    virtual FramesNeededMap getFramesNeeded(double time,
+                                            ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     virtual bool isOpIdentity(double time,
                               const RenderScale& scale,
                               const RectI& roi,
@@ -344,7 +403,8 @@ private:
      **/
     virtual StatusEnum renderOpGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    // The outputMask plane is made from the cookie cutters alone.
+    // The outputMask plane is made from the cookie cutters alone, and only the follow tools read
+    // the Vectors input.
     virtual bool readsGpuInput(int inputNb,
                                const ImageLayerDesc& plane,
                                double time,
@@ -381,6 +441,17 @@ private:
 
     bool computeWarp(double time, ViewIdx view, const Settings& settings, Warp* warp);
 
+    // The field the render samples at full displacement for any mix above 0; the identity at 0.
+    virtual OverlayPointMap::Result mapOverlayPoint(double time,
+                                                    ViewIdx view,
+                                                    int inputNb,
+                                                    OverlayPointMap::Direction direction,
+                                                    const Point& in,
+                                                    Point* out) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual OverlayPointMap::Kind overlayMapKind(double time,
+                                                 ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     /**
      * @brief The cookie mask at time over the cookie cutters' pixels at the scale, inside the
      * Source's format when cropping; null without an active cookie cutter.
@@ -413,9 +484,12 @@ private:
     void growUnionRoD(const Warp& warp, const Settings& settings, const RectD& rod, RectD* extra, bool* any);
 
     // The field over window, from the sub-frame cache when the render averages several.
-    SplineWarpFieldConstPtr computeField(const Warp& warp, double time, const Settings& settings, const RectI& window, double scaleX, double scaleY, bool subFrame);
+    SplineWarpFieldConstPtr computeField(const Warp& warp, const Settings& settings, const RectI& window, double scaleX, double scaleY, bool subFrame);
 
     double getOutputPixelAspectRatio(double time, ViewIdx view) const;
+
+    // Whether the knobs ask for motion-blur sub-frames, whether or not the warp moves through them.
+    bool hasMotionBlur(double time, ViewIdx view) const;
 
     void updateFilterVisibility(double time, ViewIdx view);
 
@@ -467,6 +541,7 @@ private:
 
     SplineWarpInteractPtr _ui;
     std::unique_ptr<SplineWarpPanelHook> _panelHook;
+    std::unique_ptr<VectorFollowControls> _vectorFollow;
     // Whether a drag of the interact turned the viewer's draft render on.
     bool _draftDrag;
 

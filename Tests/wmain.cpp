@@ -21,6 +21,7 @@
 #include "CacheDiskTierWorker.h"
 #include "CacheStressTestEffect.h"
 #include "ContextTestEffects.h"
+#include "ContinuationTestEffects.h"
 #include "CountingTestEffect.h"
 #include "CurveHostTestEffect.h"
 #include "DataKindTestEffect.h"
@@ -41,6 +42,8 @@
 #include "TestOfxPluginPath.h"
 #include "TestPlaneChoiceTakeOvers.h"
 #include "TestRetiredOfxIds.h"
+#include "TwoPlaneTestEffect.h"
+#include "WarpChainTestEffects.h"
 
 using namespace NATRON_NAMESPACE;
 
@@ -121,6 +124,9 @@ registerMultiplanarTestPlugins()
     // Registered so LayerKnobsRender_Test.cpp can exercise a multiplanar effect that never
     // produces Color, which no shipped plugin does today.
     registerTestBuiltInPlugin<MultiplanarDiffuseOnlyTestEffect>();
+    // Registered so TwoPlaneRender_Test.cpp can tell two planes of one layout apart by their values.
+    registerTestBuiltInPlugin<TwoPlaneSourceTestEffect>();
+    registerTestBuiltInPlugin<TwoPlaneReaderTestEffect>();
 }
 
 void
@@ -141,6 +147,7 @@ registerSceneTestPlugins()
     registerTestBuiltInPlugin<SceneTestOp>();
     registerTestBuiltInPlugin<SceneTestGeometry>();
     registerTestBuiltInPlugin<SceneTestAuthored>();
+    registerTestBuiltInPlugin<SceneTestContextProbe>();
 }
 
 void
@@ -166,6 +173,9 @@ registerRenderSchedulerTestPlugins()
     registerTestBuiltInPlugin<ContextUnionTestEffect>();
     registerTestBuiltInPlugin<ContextSetTestEffect>();
     registerTestBuiltInPlugin<ContextLoopFrameShiftTestEffect>();
+    registerTestBuiltInPlugin<ContinuationSourceTestEffect>();
+    registerTestBuiltInPlugin<ProbeTestEffect>();
+    registerTestBuiltInPlugin<RecursiveProbeTestEffect>();
 }
 
 void
@@ -179,6 +189,15 @@ registerIdentityHopTestPlugins()
     registerTestBuiltInPlugin<DeepFrameValueTestEffect>();
     registerTestBuiltInPlugin<DeepViewSelfIdentityTestEffect>();
     registerTestBuiltInPlugin<DeepTimeShiftIdentityTestEffect>();
+}
+
+void
+registerWarpChainTestPlugins()
+{
+    // Registered so WarpChainConcat_Test.cpp can concatenate through map providers before any
+    // shipped node offers its inverse warp.
+    registerTestBuiltInPlugin<WarpChainTestProvider>();
+    registerTestBuiltInPlugin<WarpChainTestConsumer>();
 }
 
 void
@@ -309,6 +328,7 @@ GTEST_API_ int main(int argc, char **argv)
     registerGraphScalingTestPlugins();
     registerRenderSchedulerTestPlugins();
     registerIdentityHopTestPlugins();
+    registerWarpChainTestPlugins();
     registerFrameGraphBuildTestPlugins();
     registerNativeParityTestPlugins();
     registerOverlayTestPlugins();

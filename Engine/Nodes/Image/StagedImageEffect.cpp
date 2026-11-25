@@ -701,6 +701,31 @@ StagedImageEffect::getConcatenationEdgeMode(double time,
     return opResample(time, view, RenderScale::identity).settings.edgeMode;
 }
 
+bool
+StagedImageEffect::acceptsInverseWarpChain(int inputNb,
+                                           double time,
+                                           ViewIdx view) const
+{
+    if (!opHasMatrix() || (inputNb < 0) || (inputNb != getSourceInput())) {
+        return false;
+    }
+    const Resampler::BlurSettings& blur = opResample(time, view, RenderScale::identity).settings.blur;
+
+    return !blur.directionalBlur && ((blur.motionBlur == 0.) || (blur.shutter == 0.));
+}
+
+double
+StagedImageEffect::getInverseWarpChainFilterSupport(int /*inputNb*/,
+                                                    double time,
+                                                    ViewIdx view) const
+{
+    if (!opHasMatrix()) {
+        return 0.;
+    }
+
+    return Resampler::filterRoIExpansion(opResample(time, view, RenderScale::identity).settings.filter) + 0.5;
+}
+
 ResampleRegionStages
 StagedImageEffect::getResampleRegionStages(double time,
                                            ViewIdx view) const
@@ -761,6 +786,48 @@ StagedImageEffect::getTransform(double time,
 {
     if (imagePipelineSpec().op != OpKind::Resample) {
         return NativeEffectBase::getTransform(time, renderScale, draftRender, view, inputToTransform, transform);
+    }
+
+    const ResampleRequest request = opResample(time, view, renderScale);
+    // Masked or mixed, the output is no single translation of the source.
+    if ((request.form == ResampleRequest::Form::Offset) && (isMaskApplied() || (getMixValue(time, view) != 1.))) {
+        return eStatusReplyDefault;
+    }
+
+    return resampleTransform(*this, getSourceInput(), request, time, view, renderScale, draftRender, inputToTransform, transform);
+}
+
+StatusEnum
+StagedImageEffect::getOverlayTransform(double time,
+                                       const RenderScale& renderScale,
+                                       bool draftRender,
+                                       ViewIdx view,
+                                       EffectInstancePtr* inputToTransform,
+                                       Transform::Matrix3x3* transform)
+{
+    if (imagePipelineSpec().op != OpKind::Resample) {
+        return NativeEffectBase::getOverlayTransform(time, renderScale, draftRender, view, inputToTransform, transform);
+    }
+    if (isMaskApplied() || (getMixValue(time, view) == 0.)) {
+        return eStatusReplyDefault;
+    }
+
+    return resampleTransform(*this, getSourceInput(), opResample(time, view, renderScale), time, view, renderScale, draftRender, inputToTransform, transform);
+}
+
+StatusEnum
+StagedImageEffect::getOverlayTransform(double time,
+                                       const RenderScale& renderScale,
+                                       bool draftRender,
+                                       ViewIdx view,
+                                       EffectInstancePtr* inputToTransform,
+                                       Transform::Matrix3x3* transform)
+{
+    if (imagePipelineSpec().op != OpKind::Resample) {
+        return NativeEffectBase::getOverlayTransform(time, renderScale, draftRender, view, inputToTransform, transform);
+    }
+    if (isMaskApplied() || (getMixValue(time, view) == 0.)) {
+        return eStatusReplyDefault;
     }
 
     return resampleTransform(*this, getSourceInput(), opResample(time, view, renderScale), time, view, renderScale, draftRender, inputToTransform, transform);
@@ -828,7 +895,7 @@ StagedImageEffect::getPreferredMetadataAt(double time,
     Format projectFormat;
     getApp()->getProject()->getProjectDefaultFormat(&projectFormat);
     metadata.setNComps(-1, 4);
-    metadata.setComponentsType(-1, kNatronColorLayerID);
+    metadata.setComponentsType(-1, eImageComponentsTypeColor);
     metadata.setBitDepth(-1, eImageBitDepthFloat);
     metadata.setPixelAspectRatio(-1, projectFormat.getPixelAspectRatio());
     metadata.setOutputFormat(projectFormat);

@@ -48,8 +48,10 @@
 #include <QThread>
 
 #include "BaseTest.h"
+#include "Native/SplineWarpTestCurves.h"
 #include "NativeParity.h"
 #include "RenderBothWays.h"
+#include "WarpChainTestEffects.h"
 
 #include "Gpu/GpuTestSelector.h"
 
@@ -65,17 +67,21 @@
 #include "Engine/GpuRegionTask.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/InverseWarpChain.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/Nodes/Keyer/ChromaKeyer.h"
 #include "Engine/Nodes/Keyer/Keyer.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/Transform/SplineWarp/SplineWarp.h"
+#include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
@@ -1695,5 +1701,193 @@ TEST_F(GpuDeviceTierStressTest, OutOfMemoryWithCachedEntriesEvictsThemBeforeStri
     EXPECT_TRUE(run.future->getRegionFallbacks().empty());
     EXPECT_LT(membersInDeviceTier(cachedGraph), cachedMembers) << "the cached entries were not evicted to make room";
     EXPECT_EQ(std::string(), differsFrom(reference, run));
+}
+namespace {
+
+const FrameGraph::Task*
+taskOf(const FrameRun& run,
+       const NodePtr& node)
+{
+    for (const FrameGraph::Task& task : run.graph.tasks) {
+        if (task.key.node == node) {
+            return &task;
+        }
+    }
+
+    return NULL;
+}
+
+} // namespace
+
+// A consumer's query marks the steps concatenated into each input, and only those its GPU path
+// can sample through; a step without a GPU form is marked unsupported.
+TEST_F(GpuRegionFallbackTest, ConcatenatedStepsReachTheConsumerQuery)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    NodePtr source = makeNode(PLUGINID_NATRON_CHECKERBOARD, PLUGIN_MAJOR_NATRON_CHECKERBOARD);
+    NodePtr first = makeNode(PLUGINID_NATRON_TRANSFORM, PLUGIN_MAJOR_NATRON_TRANSFORM);
+    NodePtr warp = makeNode(PLUGINID_NATRON_SPLINEWARP, PLUGIN_MAJOR_NATRON_SPLINEWARP);
+    NodePtr provider = makeNode(kTestPluginIDWarpChainProvider, -1);
+    NodePtr consumer = makeNode(PLUGINID_NATRON_TRANSFORM, PLUGIN_MAJOR_NATRON_TRANSFORM);
+    ASSERT_TRUE(source && first && warp && provider && consumer);
+    ASSERT_TRUE(setKnobValues(first, kTransformNodeParamTranslate, { 3.5, -2.25 }));
+    ASSERT_TRUE(setKnobValues(consumer, kTransformNodeParamRotate, { 7. }));
+    ASSERT_TRUE(setKnobValues(warp, kSplineWarpParamBoundaryBBox, { 0. }));
+    ASSERT_TRUE(bool(SplineWarpTestCurves::linkQuad(SplineWarpTestCurves::contextOf(warp), 40., 28., 16., 3., -2., 1.1)));
+    connectNodes(source, first, 0, true);
+    connectNodes(first, warp, kSplineWarpInputSource, true);
+    connectNodes(warp, consumer, 0, true);
+
+    {
+        FrameRun run;
+        std::string error;
+        ASSERT_TRUE(prepareFrame(consumer, &run, &error)) << error;
+        const FrameGraph::Task* task = taskOf(run, consumer);
+        ASSERT_TRUE(task);
+        GpuQuery query;
+        ASSERT_TRUE(makeGpuQueryForTask(*task, *run.context, &query));
+        EXPECT_TRUE(query.hasConcatenatedInput);
+        EXPECT_EQ(InverseWarpChain::eGpuStepMatrix | InverseWarpChain::eGpuStepSplineWarp, query.concatenatedStepsOf(0));
+        EXPECT_TRUE(query.concatenatedStepsWithin(InverseWarpChain::eGpuStepMatrix | InverseWarpChain::eGpuStepSplineWarp));
+        EXPECT_FALSE(query.concatenatedStepsWithin(InverseWarpChain::eGpuStepMatrix));
+        EXPECT_FALSE(taskOf(run, warp)) << "a concatenated provider is not rendered";
+        EXPECT_FALSE(taskOf(run, first)) << "a concatenated provider is not rendered";
+    }
+
+    disconnectNodes(warp, consumer, true);
+    connectNodes(first, provider, 0, true);
+    connectNodes(provider, consumer, 0, true);
+    {
+        FrameRun run;
+        std::string error;
+        ASSERT_TRUE(prepareFrame(consumer, &run, &error)) << error;
+        const FrameGraph::Task* task = taskOf(run, consumer);
+        ASSERT_TRUE(task);
+        GpuQuery query;
+        ASSERT_TRUE(makeGpuQueryForTask(*task, *run.context, &query));
+        EXPECT_TRUE((query.concatenatedStepsOf(0) & InverseWarpChain::eGpuStepUnsupported) != 0);
+        EXPECT_FALSE(query.concatenatedStepsWithin(InverseWarpChain::eGpuStepMatrix | InverseWarpChain::eGpuStepSplineWarp | InverseWarpChain::eGpuStepLens));
+    }
+}
+
+// A consumer declining a chain it cannot sample through renders on the CPU, with the CPU's image.
+TEST_F(GpuRegionFallbackTest, ChainWithoutAGpuFormRendersOnTheCpu)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    NodePtr source = makeNode(PLUGINID_NATRON_CHECKERBOARD, PLUGIN_MAJOR_NATRON_CHECKERBOARD);
+    NodePtr provider = makeNode(kTestPluginIDWarpChainProvider, -1);
+    NodePtr consumer = makeNode(PLUGINID_NATRON_TRANSFORM, PLUGIN_MAJOR_NATRON_TRANSFORM);
+    ASSERT_TRUE(source && provider && consumer);
+    ASSERT_TRUE(setKnobValues(consumer, kTransformNodeParamTranslate, { 2.5, 1.75 }));
+    connectNodes(source, provider, 0, true);
+    connectNodes(provider, consumer, 0, true);
+
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(consumer, &run, &error)) << error;
+    placeOnGpu(&run, { consumer });
+    EXPECT_TRUE(run.graph.regions.empty()) << "the consumer took a chain it has no GPU form for";
+    ASSERT_TRUE(render(&run)) << "the frame did not complete within " << kFrameTimeoutMs << " ms";
+    expectMatchesCpu(consumer, run);
+}
+
+// A consumer taking a matrix chain on the GPU reads the input the chain was redirected to, and
+// the provider is never rendered.
+TEST_F(GpuRegionFallbackTest, RedirectedInputReachesTheGpuConsumer)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    NodePtr source = makeNode(PLUGINID_NATRON_CHECKERBOARD, PLUGIN_MAJOR_NATRON_CHECKERBOARD);
+    NodePtr first = makeNode(PLUGINID_NATRON_TRANSFORM, PLUGIN_MAJOR_NATRON_TRANSFORM);
+    NodePtr consumer = makeNode(PLUGINID_NATRON_TRANSFORM, PLUGIN_MAJOR_NATRON_TRANSFORM);
+    ASSERT_TRUE(source && first && consumer);
+    ASSERT_TRUE(setKnobValues(first, kTransformNodeParamRotate, { 12. }));
+    ASSERT_TRUE(setKnobValues(consumer, kTransformNodeParamTranslate, { 4.25, -3.5 }));
+    connectNodes(source, first, 0, true);
+    connectNodes(first, consumer, 0, true);
+
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(consumer, &run, &error)) << error;
+    EXPECT_FALSE(taskOf(run, first));
+    placeOnGpu(&run, { consumer });
+    ASSERT_EQ(1u, run.graph.regions.size());
+    ASSERT_TRUE(render(&run)) << "the frame did not complete within " << kFrameTimeoutMs << " ms";
+    EXPECT_TRUE(run.future->getRegionFallbacks().empty());
+    expectMatchesCpu(consumer, run);
+}
+// A motion-blurred Transform resamples its input over several matrices, so nothing is
+// concatenated into it and its input renders; its GPU frame matches the CPU one.
+TEST_F(GpuRegionFallbackTest, BlurredConsumerTakesNoChain)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    NodePtr source = makeNode(PLUGINID_NATRON_CHECKERBOARD, PLUGIN_MAJOR_NATRON_CHECKERBOARD);
+    NodePtr first = makeNode(PLUGINID_NATRON_TRANSFORM, PLUGIN_MAJOR_NATRON_TRANSFORM);
+    NodePtr consumer = makeNode(PLUGINID_NATRON_TRANSFORM, PLUGIN_MAJOR_NATRON_TRANSFORM);
+    ASSERT_TRUE(source && first && consumer);
+    ASSERT_TRUE(setKnobValues(first, kTransformNodeParamTranslate, { -5.5, 2.25 }));
+    ASSERT_TRUE(setKnobValues(first, kTransformNodeParamRotate, { -9. }));
+    ASSERT_TRUE(setKnobValues(consumer, kTransformNodeParamRotate, { 15. }));
+    ASSERT_TRUE(setKnobValues(consumer, kTransformNodeParamDirectionalBlur, { 1. }));
+    ASSERT_TRUE(setKnobValues(consumer, kTransformNodeParamMotionBlur, { 1. }));
+    connectNodes(source, first, 0, true);
+    connectNodes(first, consumer, 0, true);
+
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(consumer, &run, &error)) << error;
+    EXPECT_TRUE(taskOf(run, first)) << "a Transform was concatenated into a blurred one";
+    const FrameGraph::Task* task = taskOf(run, consumer);
+    ASSERT_TRUE(task);
+    GpuQuery query;
+    ASSERT_TRUE(makeGpuQueryForTask(*task, *run.context, &query));
+    EXPECT_FALSE(query.hasConcatenatedInput);
+    placeOnGpu(&run, { consumer });
+    ASSERT_EQ(1u, run.graph.regions.size());
+    ASSERT_TRUE(render(&run)) << "the frame did not complete within " << kFrameTimeoutMs << " ms";
+    EXPECT_TRUE(run.future->getRegionFallbacks().empty());
+    expectMatchesCpu(consumer, run);
+}
+
+// A consumer samples through a chain with a SplineWarp between two matrices on the GPU.
+TEST_F(GpuRegionFallbackTest, ConsumerTakesAChainThroughASplineWarp)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    NodePtr source = makeNode(PLUGINID_NATRON_CHECKERBOARD, PLUGIN_MAJOR_NATRON_CHECKERBOARD);
+    NodePtr first = makeNode(PLUGINID_NATRON_TRANSFORM, PLUGIN_MAJOR_NATRON_TRANSFORM);
+    NodePtr warp = makeNode(PLUGINID_NATRON_SPLINEWARP, PLUGIN_MAJOR_NATRON_SPLINEWARP);
+    NodePtr consumer = makeNode(PLUGINID_NATRON_TRANSFORM, PLUGIN_MAJOR_NATRON_TRANSFORM);
+    ASSERT_TRUE(source && first && warp && consumer);
+    ASSERT_TRUE(setKnobValues(first, kTransformNodeParamTranslate, { 3.5, -2.25 }));
+    ASSERT_TRUE(setKnobValues(consumer, kTransformNodeParamRotate, { 7. }));
+    ASSERT_TRUE(setKnobValues(warp, kSplineWarpParamBoundaryBBox, { 0. }));
+    ASSERT_TRUE(bool(SplineWarpTestCurves::linkQuad(SplineWarpTestCurves::contextOf(warp), 40., 28., 16., 3., -2., 1.1)));
+    connectNodes(source, first, 0, true);
+    connectNodes(first, warp, kSplineWarpInputSource, true);
+    connectNodes(warp, consumer, 0, true);
+
+    for (const char* edge : { "black", "stretch" }) {
+        ASSERT_TRUE(setKnobValue(consumer, kEdgeModeParam, std::string(edge)));
+        ASSERT_TRUE(setKnobValue(warp, kEdgeModeParam, std::string(edge)));
+        ASSERT_TRUE(setKnobValue(first, kEdgeModeParam, std::string(edge)));
+        FrameRun run;
+        std::string error;
+        ASSERT_TRUE(prepareFrame(consumer, &run, &error)) << error;
+        EXPECT_FALSE(taskOf(run, warp)) << edge << ": a concatenated provider is not rendered";
+        placeOnGpu(&run, { consumer });
+        ASSERT_EQ(1u, run.graph.regions.size()) << edge;
+        ASSERT_TRUE(render(&run)) << "the frame did not complete within " << kFrameTimeoutMs << " ms";
+        EXPECT_TRUE(run.future->getRegionFallbacks().empty()) << edge;
+        expectMatchesCpu(consumer, run);
+    }
 }
 #endif // NATRON_HAVE_GPU

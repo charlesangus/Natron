@@ -1236,7 +1236,8 @@ RotoObjectSelect::appendOverlaySignature(ContentHasher* hasher) const
 }
 
 void
-RotoObjectSelect::buildOverlay(OverlayDrawListPen& pen)
+RotoObjectSelect::buildOverlay(OverlayDrawListPen& pen,
+                               OverlayDrawListPen& viewportPen)
 {
     OverlaySupport* overlay = _roto->getHost()->getCurrentViewportForOverlays();
 
@@ -1345,8 +1346,9 @@ RotoObjectSelect::buildOverlay(OverlayDrawListPen& pen)
     }
     if (!text.empty()) {
         const RectD viewport = overlay->getViewportRect();
-        pen.color(1., 0.8, 0.3, 1.);
-        pen.text(viewport.x1 + 12. * psx, viewport.y2 - 40. * psy, text);
+        viewportPen.setShadow(false);
+        viewportPen.color(1., 0.8, 0.3, 1.);
+        viewportPen.text(viewport.x1 + 12. * psx, viewport.y2 - 40. * psy, text);
     }
 } // RotoObjectSelect::buildOverlay
 

@@ -189,6 +189,22 @@ private:
                                 const StagePlan& plan) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
+     * @brief The Source takes warps concatenated upstream, each wrapped coordinate taken on
+     * through them, when the stages never read the Source under the output pixel: no mask, a
+     * mix of 1 and every channel processed, as they would read the image upstream of the warps.
+     **/
+    virtual bool acceptsInverseWarpChain(int inputNb,
+                                         double time,
+                                         ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual double getInverseWarpChainFilterSupport(int inputNb,
+                                                    double time,
+                                                    ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual std::optional<EdgeMode> getConcatenationEdgeMode(double time,
+                                                             ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
      * @brief Accepts what the stages accept in float, when U and V resolve to one layer of 1 to 4
      * channels or to none, and so does the Map's channel.
      **/
@@ -230,6 +246,22 @@ private:
     // The Source rectangle U and V are normalized to and wrap in, in pixels at scale: its
     // format, or its region of definition when it has no format. False when it has neither.
     bool getSourceDomain(double time, ViewIdx view, const RenderScale& scale, RectI* domain);
+
+    /**
+     * @brief Inverse: the U and V of a small copy of the UV input at the point, bilinearly, moved
+     * by the Map and folded by the U and V wrap modes; unmappable where UV Alpha gates the pixel
+     * out. Forward: seeded from that copy scattered onto a grid over the Source, then polished by
+     * Newton.
+     **/
+    virtual OverlayPointMap::Result mapOverlayPoint(double time,
+                                                    ViewIdx view,
+                                                    int inputNb,
+                                                    OverlayPointMap::Direction direction,
+                                                    const Point& in,
+                                                    Point* out) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual OverlayPointMap::Kind overlayMapKind(double time,
+                                                 ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     KnobChannelSelectWPtr _channelU;
     KnobChannelSelectWPtr _channelV;

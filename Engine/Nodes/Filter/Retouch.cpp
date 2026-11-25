@@ -1538,8 +1538,9 @@ Retouch::drawOverlay(double time,
         } else {
             double cx, cy;
             viewport->getCursorPosition(cx, cy);
-            centre = QPointF(cx, cy);
             hasCentre = viewport->getViewportRect().contains(cx, cy);
+            viewport->getCursorPositionInOverlay(cx, cy);
+            centre = QPointF(cx, cy);
         }
         const std::pair<double, double> offset = _ui->cloneOffset;
         if (hasCentre && ((offset.first != 0.) || (offset.second != 0.))) {
@@ -1921,7 +1922,7 @@ Retouch::collectShapes(double time,
         RC::Shape shape;
         BezierPtr bezier = std::dynamic_pointer_cast<Bezier>(*it);
         if (bezier) {
-            const RectD bbox = bezier->getBoundingBox(time);
+            const RectD bbox = bezier->getBoundingBox(time, false);
             if (bbox.isNull()) {
                 continue;
             }

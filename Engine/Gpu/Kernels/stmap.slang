@@ -3,15 +3,25 @@ import coordmap;
 import resamplecore;
 import mapremap;
 import edgesample;
+#ifdef WARP_CHAIN
+import lensmodels;
+import warpchain;
+#endif
+
+// Built twice: with WARP_CHAIN as the stmap_chain and idistort_chain kernels, which sample
+// through a chain, and without as stmap and idistort, which leave the chain code out so a node
+// with no chain compiles a smaller pipeline.
 
 // STMap::renderOp and IDistort::renderOp per pixel. The wrap's push block carries the Source,
 // which is both the image sampled and the image blended under the mask and mix, the destination
 // and the mask; the parameter block in wrapAux carries the settings, the UV view, whose pixels
-// are in uvBuf, and the Map view, whose pixels are in mapBuf. WarpGpuParams in
-// Engine/Nodes/Transform/WarpGpu.h mirrors the block's words.
+// are in uvBuf, and the Map view, whose pixels are in mapBuf. With warps concatenated into the
+// Source, chainBuf holds their chain and the Source is the image upstream of them. WarpGpuParams
+// in Engine/Nodes/Transform/WarpGpu.h mirrors the block's words.
 
 [[vk::binding(4, 0)]] StructuredBuffer<float> uvBuf;
 [[vk::binding(5, 0)]] StructuredBuffer<float> mapBuf;
+[[vk::binding(6, 0)]] StructuredBuffer<uint> chainBuf;
 
 static const uint kWarpClamp = 1;
 static const uint kWarpJacobian = 4;
@@ -22,6 +32,7 @@ static const uint kWarpMapInvert = 64;
 static const uint kWarpMapSmooth = 128;
 static const uint kWarpUVEdgeBlack = 256;
 static const uint kWarpMapEdgeBlack = 512;
+static const uint kWarpChain = 1024;
 
 struct WarpUV
 {
@@ -259,6 +270,39 @@ ResampleSource warpSource(Warp w)
     return src;
 }
 
+// The Source sampled at (s, J), wrapped first when `wrapped` in STMap's wrap modes and domain.
+// With a chain, as the CPU's sampleThroughChain, the coordinate is wrapped, the row of each axis
+// the wrap moved is zeroed in J, and the result is taken through the chain before sampling.
+float4 warpSampleAt(Warp w, float2 s, float4 J, bool jacobian, bool wrapped)
+{
+    const uint wrapU = wrapped ? w.wrapU : kWrapNone;
+    const uint wrapV = wrapped ? w.wrapV : kWrapNone;
+    const int4 domain = wrapped ? w.domain : int4(0, 0, 0, 0);
+    const bool clampOn = (w.flags & kWarpClamp) != 0;
+#ifndef WARP_CHAIN
+    return sampleAt(warpSource(w), s.x, s.y, J, jacobian, w.spec, clampOn, wrapU, wrapV, domain);
+#else
+    if ((w.flags & kWarpChain) == 0)
+        return sampleAt(warpSource(w), s.x, s.y, J, jacobian, w.spec, clampOn, wrapU, wrapV, domain);
+    FF x = ffMake(s.x, 0.0);
+    FF y = ffMake(s.y, 0.0);
+    if (wrapped)
+    {
+        bool movedX;
+        bool movedY;
+        if (!wrapCoord(s.x, domain.x, domain.z, wrapU, x, movedX) || !wrapCoord(s.y, domain.y, domain.w, wrapV, y, movedY))
+            return float4(0.0, 0.0, 0.0, 0.0);
+        if (movedX)
+            J = float4(0.0, 0.0, J.z, J.w);
+        if (movedY)
+            J = float4(J.x, J.y, 0.0, 0.0);
+    }
+    if (!warpChainMap(chainBuf, 0, x, y, J, jacobian))
+        return float4(0.0, 0.0, 0.0, 0.0);
+    return sampleAt(warpSource(w), ffToFloat(x), ffToFloat(y), J, jacobian, w.spec, clampOn, kWrapNone, kWrapNone, int4(0, 0, 0, 0));
+#endif
+}
+
 // The sample in channel-bit order, a one-channel pixel being alpha.
 float4 warpSample(Warp w, int2 p, bool idistort)
 {
@@ -267,16 +311,26 @@ float4 warpSample(Warp w, int2 p, bool idistort)
         return zero;
     // Where the Map is 0 the output is the Source pixel itself, never filtered, which would soften
     // a held pixel; STMap also never resamples it through the wrap, which would move positions
-    // outside the Source format.
+    // outside the Source format. Through a chain it is the Source upstream sampled where the
+    // chain takes the pixel's centre.
+    const bool jacobian = (w.flags & kWarpJacobian) != 0;
     if (warpMapped(w) && warpMap(w, p.x, p.y) == 0.0)
+    {
+#ifdef WARP_CHAIN
+        if ((w.flags & kWarpChain) != 0)
+        {
+            const float4 held = warpSampleAt(w, float2(float(p.x) + 0.5, float(p.y) + 0.5), float4(1.0, 0.0, 0.0, 1.0), jacobian, false);
+            return (wrap.nComps == 1) ? float4(0.0, 0.0, 0.0, held.x) : held;
+        }
+#endif
         return wrapReadSource(p);
+    }
     // With no alpha channel every position is valid; past a Black UV input's bounds its alpha is 0
     // like its U and V. Where the Map is 0 the pixel keeps its own, so the gate does not apply.
     if (!idistort && w.uv.alpha >= 0 && !(uvAt(w.uv, w.flags, w.uv.alpha, p.x, p.y) > 0.0) && warpMap(w, p.x, p.y) > 0.0)
         return zero;
     const float2 s = idistort ? idistortCoord(w, p.x, p.y) : stmapCoord(w, p.x, p.y);
     float4 J = zero;
-    const bool jacobian = (w.flags & kWarpJacobian) != 0;
     if (jacobian)
     {
         const float2 l = idistort ? idistortCoord(w, p.x - 1, p.y) : stmapCoord(w, p.x - 1, p.y);
@@ -288,10 +342,7 @@ float4 warpSample(Warp w, int2 p, bool idistort)
         const float2 dsy = differences(w.uv, w.flags, w.uv.v, p, s.y, l.y, r.y, b.y, above.y, float2(0.0, step));
         J = float4(dsx.x, dsx.y, dsy.x, dsy.y);
     }
-    const uint wrapU = idistort ? kWrapNone : w.wrapU;
-    const uint wrapV = idistort ? kWrapNone : w.wrapV;
-    const int4 domain = idistort ? int4(0, 0, 0, 0) : w.domain;
-    const float4 v = sampleAt(warpSource(w), s.x, s.y, J, jacobian, w.spec, (w.flags & kWarpClamp) != 0, wrapU, wrapV, domain);
+    const float4 v = warpSampleAt(w, s, J, jacobian, !idistort);
     if (wrap.nComps == 1)
         return float4(0.0, 0.0, 0.0, v.x);
     return v;

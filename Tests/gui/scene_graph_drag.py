@@ -1,7 +1,7 @@
 """Dropping Scene Graph rows on prim path and pattern knobs.
 
 Graph: USDRead(scene-reference.usda) -> USDPrune -> Viewer1, with the USDPrune's settings panel
-open. The script takes the mime data the Scene Graph panel's tree makes for the /World/Box and
+open and the Scene Graph panel docked in a pane split off the viewer's. The script takes the mime data the Scene Graph panel's tree makes for the /World/Box and
 /World/Ball rows (read through the model with QModelIndex alone) and sends drag-enter, drag-move
 and drop events carrying it to the USDPrune's Prim Pattern field (synthesized window-system drags
 do not reach Natron's widgets under Xvfb).
@@ -55,6 +55,7 @@ try:
 
     usd = app.createNode("USDRead")
     require(usd is not None, "create USDRead", plugin_problem("USDRead"))
+    usd.getParam("initialDraw").setValue(3)
     usd.getParam("filename").setValue(scene_path)
     props = {"CreateNodeArgsPropSettingsOpened": NatronEngine.BoolNodeCreationProperty(True)}
     prune = app.createNode("USDPrune", -1, None, props)
@@ -130,6 +131,14 @@ try:
         world = row_of(WORLD)
         return sorted(path_of(i) for i in rows(world)) if world.isValid() else []
 
+    def ancestor_of_class(widget, name):
+        w = widget
+        while w is not None:
+            if w.metaObject().className().split("::")[-1] == name:
+                return w
+            w = w.parentWidget()
+        return None
+
     def field_showing(text):
         """The line edit showing text in an open settings panel.
 
@@ -182,7 +191,14 @@ try:
         ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)
         require(ok, "the scene view shows the scene")
         require(panel() is not None, "the Scene Graph panel exists")
-        ok = yield ("until", lambda: world_children() == sorted([BOX, BALL, CAM]), POLL_TIMEOUT_S)
+        # The panel reads no rows until it is on screen.
+        home = ancestor_of_class(view(), "TabWidget")
+        require(home is not None, "the scene view is in a pane")
+        split = app.getTabWidget(home.objectName()).splitHorizontally()
+        require(split is not None, "split the viewer's pane")
+        require(app.moveTab("sceneGraph", split), "move the Scene Graph panel beside the viewer")
+        split = None
+        ok = yield ("until", lambda: panel().isVisible() and world_children() == sorted([BOX, BALL, CAM]), POLL_TIMEOUT_S)
         require(ok, "the tree lists Box, Ball and Cam under /World (got %r)" % (world_children(),))
 
         world = row_of(WORLD)

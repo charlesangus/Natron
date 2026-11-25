@@ -25,6 +25,9 @@ namespace {
 
     std::atomic<uint64_t> gNextRegistrySerial { 1 };
 
+    // Expires when the thread exits, which hands its command pools' retired buffers to whichever thread sweeps next.
+    thread_local const std::shared_ptr<int> tThreadAlive = std::make_shared<int>(0);
+
 } // namespace
 
 GpuKernelRegistry::GpuKernelRegistry(GpuDevice& device)
@@ -36,6 +39,8 @@ GpuKernelRegistry::GpuKernelRegistry(GpuDevice& device)
 
 GpuKernelRegistry::~GpuKernelRegistry()
 {
+    // Retiring work runs out of the command pools and ends its recording here once reaped.
+    device_.finishRetiring();
     std::lock_guard<std::mutex> lock(mutex_);
     slots_.clear();
     destroyPoolsLocked();
@@ -142,6 +147,8 @@ void
 GpuKernelRegistry::destroyPoolsLocked()
 {
     // A command buffer of work that never finished may still be executing out of one of these pools.
+    retiredCommandBuffers_.clear();
+    poolOwners_.clear();
     if (device_.hasAbandonedWork()) {
         pools_.clear();
         return;
@@ -155,6 +162,7 @@ GpuKernelRegistry::destroyPoolsLocked()
 void
 GpuKernelRegistry::invalidate()
 {
+    device_.finishRetiring();
     std::lock_guard<std::mutex> lock(mutex_);
     for (Slot& slot : slots_) {
         slot.kernel.reset();
@@ -183,7 +191,52 @@ GpuKernelRegistry::commandPoolForThisThread(VkCommandPool& out, QueueKind queue)
         it = pools_.emplace(key, pool).first;
     }
     out = it->second;
+    // Set before the sweep, under the lock, so that a pool its exited owner left to a new thread of the same id is
+    // not swept while that thread records into it.
+    poolOwners_[out] = tThreadAlive;
+    sweepRetiredLocked(out);
     return {};
+}
+
+void
+GpuKernelRegistry::sweepRetiredLocked(VkCommandPool mine)
+{
+    for (auto r = retiredCommandBuffers_.begin(); r != retiredCommandBuffers_.end();) {
+        bool ownerExited = false;
+        if (r->pool != mine) {
+            const auto owner = poolOwners_.find(r->pool);
+            ownerExited = (owner == poolOwners_.end()) || owner->second.expired();
+        }
+        if (((r->pool != mine) && !ownerExited) || !r->done->load(std::memory_order_acquire)) {
+            ++r;
+            continue;
+        }
+        vkFreeCommandBuffers(device_.device(), r->pool, static_cast<uint32_t>(r->buffers.size()), r->buffers.data());
+        r = retiredCommandBuffers_.erase(r);
+    }
+}
+
+size_t
+GpuKernelRegistry::retiredCommandBufferCountForTests() const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    size_t count = 0;
+    for (const RetiredCommandBuffers& r : retiredCommandBuffers_) {
+        count += r.buffers.size();
+    }
+    return count;
+}
+
+void
+GpuKernelRegistry::retireCommandBuffers(VkCommandPool pool, std::vector<VkCommandBuffer> buffers,
+                                        std::shared_ptr<std::atomic<bool>> done)
+{
+    if (buffers.empty()) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    retiredCommandBuffers_.push_back({ pool, std::move(buffers), std::move(done) });
+    sweepRetiredLocked(pool);
 }
 
 void

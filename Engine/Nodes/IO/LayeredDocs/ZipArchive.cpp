@@ -26,7 +26,9 @@
 #include "ZipArchive.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <new>
 #include <span>
@@ -66,31 +68,67 @@ namespace {
         return size == 0 || (bool)file.read(reinterpret_cast<char*>(bytes->data()), size);
     }
 
+    std::uint64_t
+    be32At(std::span<const std::byte> data,
+           std::size_t offset)
+    {
+        std::uint64_t value = 0;
+
+        for (std::size_t i = 0; i < 4; ++i) {
+            value = (value << 8) | (std::uint64_t)std::to_integer<unsigned char>(data[offset + i]);
+        }
+
+        return value;
+    }
+
+    // A PNG opens with its signature and then its IHDR chunk, whose first fields are the width
+    // and the height. They are checked against the member's size before OIIO decodes anything,
+    // so that the refusal is the same whatever limits OIIO applies.
+    bool
+    checkPngHeader(const std::string& member,
+                   std::span<const std::byte> data,
+                   std::string* error)
+    {
+        static const unsigned char signature[] = { 0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n', 0, 0, 0, 13, 'I', 'H', 'D', 'R' };
+
+        if (data.size() < sizeof(signature) + 8 || std::memcmp(data.data(), signature, sizeof(signature)) != 0) {
+            *error = "Could not decode " + member + ": it is not a PNG";
+
+            return false;
+        }
+        const std::uint64_t width = be32At(data, sizeof(signature));
+        const std::uint64_t height = be32At(data, sizeof(signature) + 4);
+        if (width > (std::uint64_t)kMaxPngSide || height > (std::uint64_t)kMaxPngSide) {
+            *error = member + " is " + std::to_string(width) + " by " + std::to_string(height) + " pixels, larger than " + std::to_string(kMaxPngSide) + " on a side";
+
+            return false;
+        }
+        if (height * (width / 8 + 1) > (std::uint64_t)data.size() * kMaxDeflateRatio + kDeflateSlack) {
+            *error = member + " is too small to hold the " + std::to_string(width) + " by " + std::to_string(height) + " pixels it claims";
+
+            return false;
+        }
+
+        return true;
+    }
+
     // Members are always decoded as PNG, whatever their names. OIIO keeps a PNG's alpha
     // associated, as when it reads a PNG file, unless asked otherwise.
     OIIO::ImageInput::unique_ptr
     openPng(const std::string& member,
+            std::span<const std::byte> data,
             OIIO::Filesystem::IOMemReader* reader,
             std::string* error)
     {
+        if (!checkPngHeader(member, data, error)) {
+            return OIIO::ImageInput::unique_ptr();
+        }
         OIIO::ImageInput::unique_ptr input = OIIO::ImageInput::create("png", false, nullptr, reader);
         OIIO::ImageSpec spec;
 
         if (!input || !input->set_ioproxy(reader) || !input->open(member, spec)) {
             const std::string detail = input ? input->geterror() : OIIO::geterror();
             *error = "Could not decode " + member + (detail.empty() ? std::string() : ": " + detail);
-
-            return OIIO::ImageInput::unique_ptr();
-        }
-        const std::uint64_t width = (std::uint64_t)std::max(spec.width, 0);
-        const std::uint64_t height = (std::uint64_t)std::max(spec.height, 0);
-        if (spec.width > kMaxPngSide || spec.height > kMaxPngSide) {
-            *error = member + " is " + std::to_string(spec.width) + " by " + std::to_string(spec.height) + " pixels, larger than " + std::to_string(kMaxPngSide) + " on a side";
-
-            return OIIO::ImageInput::unique_ptr();
-        }
-        if (height * (width / 8 + 1) > (std::uint64_t)reader->size() * kMaxDeflateRatio + kDeflateSlack) {
-            *error = member + " is too small to hold the " + std::to_string(spec.width) + " by " + std::to_string(spec.height) + " pixels it claims";
 
             return OIIO::ImageInput::unique_ptr();
         }
@@ -130,7 +168,7 @@ pngInfoOf(const Archive& archive,
     try {
         const std::span<const std::byte> data = archive.zip->data(member);
         OIIO::Filesystem::IOMemReader reader(data.data(), data.size());
-        OIIO::ImageInput::unique_ptr input = openPng(member, &reader, error);
+        OIIO::ImageInput::unique_ptr input = openPng(member, data, &reader, error);
         if (!input) {
             return false;
         }
@@ -164,7 +202,7 @@ decodePng(const Archive& archive,
     try {
         const std::span<const std::byte> data = archive.zip->data(member);
         OIIO::Filesystem::IOMemReader reader(data.data(), data.size());
-        OIIO::ImageInput::unique_ptr input = openPng(member, &reader, error);
+        OIIO::ImageInput::unique_ptr input = openPng(member, data, &reader, error);
         if (!input) {
             return false;
         }

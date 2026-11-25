@@ -785,8 +785,8 @@ TEST_F(NativeReadPsdTest, ThreadsReadingOneDocumentAtOnceAllGetItsPixels)
                 if (!OiioReadSupport::decode(path, 0, 0, 3, RectI(x, i % 4, x + 4, i % 4 + 1), composite.data(), 4 * 3, &error) || composite[0] != 0.f) {
                     ++failures[(std::size_t)t];
                 }
-                std::vector<float> strip(4 * 4);
-                if (!OiioReadSupport::decode(path, 1, 0, 4, RectI(299996, 2, 300000, 4), strip.data(), 4 * 4, &error) || strip[0] != 1.f) {
+                std::vector<float> strip(4 * 4 * 2);
+                if (!OiioReadSupport::decode(path, 1, 0, 4, RectI(299996, 2, 300000, 4), strip.data(), 4 * 4, &error) || strip[0] != 1.f || strip[4 * 4] != 1.f) {
                     ++failures[(std::size_t)t];
                 }
             }

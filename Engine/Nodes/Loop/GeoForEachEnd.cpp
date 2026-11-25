@@ -40,6 +40,8 @@
 #include <QtCore/QString>
 #include <QtCore/QThread>
 
+#include "Engine/AbortableRenderInfo.h"
+#include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/ContentHasher.h"
 #include "Engine/IsolatedJob.h"
@@ -157,14 +159,23 @@ feedbackRegistry()
 
 // A helper of the merge's parallel cooks sets up its own frame instead of inheriting the calling
 // thread's TLS: the calling thread cooks iterations too, pushing and popping each body effect's
-// frame args while a helper's inherited copy would be reading them.
+// frame args while a helper's inherited copy would be reading them. It borrows the render's abort
+// state, so a body node polling aborted() stops mid-iteration on the helper as on the caller.
+struct LoopAbortState {
+    bool isRenderResponseToUserInteraction = false;
+    AbortableRenderInfoPtr abortInfo;
+    EffectInstancePtr treeRoot;
+};
+
 class HelperIterationScope {
 public:
     HelperIterationScope(const FrameRenderContext* frameContext,
                          const IsolatedJob* job,
-                         int runnablePriority)
+                         int runnablePriority,
+                         const LoopAbortState& abort)
         : _frame(frameContext, 1, runnablePriority)
         , _previousJob(IsolatedJob::exchangeCurrent(job))
+        , _abort(abort.isRenderResponseToUserInteraction, abort.abortInfo, abort.treeRoot)
     {
     }
 
@@ -179,6 +190,7 @@ public:
 private:
     AppTLS::FrameContextScope _frame;
     const IsolatedJob* _previousJob;
+    EffectInstance::InheritedAbortScope _abort;
 };
 
 } // anonymous namespace
@@ -891,11 +903,95 @@ GeoForEachEnd::evaluateStop(const std::vector<Iteration>& iterations,
     return stopAt;
 } // GeoForEachEnd::evaluateStop
 
+class GeoForEachEnd::RunningCookScope {
+public:
+    explicit RunningCookScope(GeoForEachEnd* end)
+        : _end(end)
+    {
+        bool userInteraction = false;
+        AbortableRenderInfoPtr abortInfo;
+        EffectInstancePtr treeRoot;
+        if (!end->getAbortState(&userInteraction, &abortInfo, &treeRoot) || !userInteraction || !abortInfo || !abortInfo->canAbort()) {
+            return;
+        }
+        _cook.startHash = end->getHash();
+        _cook.abortInfo = abortInfo;
+        QMutexLocker k(&end->_runningMutex);
+        _entry = end->_running.insert(end->_running.end(), _cook);
+        _registered = true;
+    }
+
+    ~RunningCookScope()
+    {
+        if (_registered) {
+            QMutexLocker k(&_end->_runningMutex);
+            _end->_running.erase(_entry);
+        }
+    }
+
+    RunningCookScope(const RunningCookScope&) = delete;
+    RunningCookScope& operator=(const RunningCookScope&) = delete;
+
+    // onNodeHashChanged() only hears of an edit once something rehashes the node.
+    bool editedSinceStart() const
+    {
+        return _registered && _end->abortIfEditedSince(_cook);
+    }
+
+private:
+    GeoForEachEnd* _end;
+    RunningCook _cook;
+    std::list<RunningCook>::iterator _entry;
+    bool _registered = false;
+};
+
+bool
+GeoForEachEnd::abortIfEditedSince(const RunningCook& cook) const
+{
+    // A drag keeps its oldest render, as it keeps any render.
+    const AppInstancePtr app = getApp();
+    if (app && app->isDraftRenderEnabled()) {
+        return false;
+    }
+    const NodePtr node = getNode();
+    U64 current = 0;
+    if (!node || (node->getHashValueIfUpToDate(&current) && (current == cook.startHash))) {
+        return false;
+    }
+    cook.abortInfo->setAborted();
+
+    return true;
+}
+
+void
+GeoForEachEnd::onNodeHashChanged(U64 hash)
+{
+    NativeEffectBase::onNodeHashChanged(hash);
+
+    const AppInstancePtr app = getApp();
+    if (app && app->isDraftRenderEnabled()) {
+        return;
+    }
+    std::vector<AbortableRenderInfoPtr> stale;
+    {
+        QMutexLocker k(&_runningMutex);
+        for (const RunningCook& cook : _running) {
+            if (cook.startHash != hash) {
+                stale.push_back(cook.abortInfo);
+            }
+        }
+    }
+    for (const AbortableRenderInfoPtr& abortInfo : stale) {
+        abortInfo->setAborted();
+    }
+}
+
 StatusEnum
 GeoForEachEnd::renderGeometry(const GeoRenderActionArgs& args,
                               GeoDetailConstPtr* outputDetail,
                               std::string* errorMessage)
 {
+    const RunningCookScope running(this);
     const Settings s = readSettings();
     const std::string loopName = getLoopName();
     const bool pieces = (s.iteration == eGeoForEachIteratePieces);
@@ -1029,7 +1125,7 @@ GeoForEachEnd::renderGeometry(const GeoRenderActionArgs& args,
                 return fail(tr("iteration %1 failed: %2").arg(k).arg(QString::fromUtf8(iterationError.c_str())).toStdString(), errorMessage);
             }
             previous = result;
-            if (aborted()) {
+            if (running.editedSinceStart() || aborted()) {
                 return eStatusFailed;
             }
         }
@@ -1058,11 +1154,15 @@ GeoForEachEnd::renderGeometry(const GeoRenderActionArgs& args,
         const FrameRenderContext* const frameContext = AppTLS::currentFrameContext();
         const IsolatedJob* const job = IsolatedJob::current();
         const int runnablePriority = AppTLS::currentRunnablePriority();
-        RenderCancellation cancel(this);
+        LoopAbortState abort;
+        if (!getAbortState(&abort.isRenderResponseToUserInteraction, &abort.abortInfo, &abort.treeRoot)) {
+            abort = LoopAbortState();
+        }
+        RenderCancellation cancel([this, &running]() { return running.editedSinceStart() || aborted(); });
         parallelForCancellable((int)run.size() - 1, appPTR->getNCPUsAvailableForEffect(), cancel, [&](int i) {
             std::optional<HelperIterationScope> helperScope;
             if (QThread::currentThread() != callingThread) {
-                helperScope.emplace(frameContext, job, runnablePriority);
+                helperScope.emplace(frameContext, job, runnablePriority, abort);
             }
             const std::size_t j = (std::size_t)i + 1;
             if (cancel.check()) {

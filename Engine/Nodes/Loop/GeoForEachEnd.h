@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <cstdint>
+#include <list>
 #include <memory>
 #include <string>
 #include <vector>
@@ -190,6 +191,7 @@ private:
                                     ViewIdx view,
                                     const RenderContextPtr& context) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void appendExtraHashDependents(std::vector<NodePtr>* dependents) const OVERRIDE FINAL;
+    virtual void onNodeHashChanged(U64 hash) OVERRIDE FINAL;
     virtual StatusEnum renderGeometry(const GeoRenderActionArgs& args,
                                       GeoDetailConstPtr* outputDetail,
                                       std::string* errorMessage) OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -241,6 +243,19 @@ private:
 
     QMutex _messageMutex;
     std::string _posted;
+
+    // A viewer cook of this node and the hash it started under. An edit keeps the oldest viewer
+    // render running, and a loop can cook for minutes, so the cook is aborted once the hash moves.
+    struct RunningCook {
+        U64 startHash = 0;
+        AbortableRenderInfoPtr abortInfo;
+    };
+    class RunningCookScope;
+
+    bool abortIfEditedSince(const RunningCook& cook) const WARN_UNUSED_RETURN;
+
+    QMutex _runningMutex;
+    std::list<RunningCook> _running;
 };
 
 NATRON_NAMESPACE_EXIT

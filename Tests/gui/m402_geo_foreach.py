@@ -203,9 +203,10 @@ try:
         heartbeat.stop()
         report("NOTE short loop shown %.2f s after the edit; longest heartbeat gap %.1f ms over %d ticks"
                % (took, gaps["max_ms"], gaps["ticks"]))
-        check(ok, "the long loop is cancelled and the short one shown within %g s" % CANCEL_TIMEOUT_S)
         check(gaps["max_ms"] < MAX_GAP_MS,
               "the GUI thread never stalls for %g ms or more (%.1f ms)" % (MAX_GAP_MS, gaps["max_ms"]))
+        # The probe below renders on the main thread with no timeout, behind a long loop that may still be cooking.
+        require(ok, "the long loop is cancelled and the short one shown within %g s" % CANCEL_TIMEOUT_S)
         yield ("sleep", SETTLE_MS)
         shot("m402_geo_foreach_cancelled.png")
 

@@ -2064,6 +2064,37 @@ public:
     bool aborted() const WARN_UNUSED_RETURN;
 
     /**
+     * @brief The render state aborted() decides from on this thread: the AbortableThread's, else
+     * this effect's frame args, else what an InheritedAbortScope lent the thread. False when
+     * none of those exists.
+     **/
+    bool getAbortState(bool* isRenderResponseToUserInteraction,
+                       AbortableRenderInfoPtr* abortInfo,
+                       EffectInstancePtr* treeRoot) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Lends a pool thread the abort state of the render it works for, read with
+     * getAbortState() on the thread running that render. A pool thread is no AbortableThread
+     * and the effects it evaluates have no frame args of that render on it, so without this
+     * aborted() there is false until the work returns, however long it runs.
+     **/
+    class InheritedAbortScope {
+    public:
+        InheritedAbortScope(bool isRenderResponseToUserInteraction,
+                            const AbortableRenderInfoPtr& abortInfo,
+                            const EffectInstancePtr& treeRoot);
+        ~InheritedAbortScope();
+
+        InheritedAbortScope(const InheritedAbortScope&) = delete;
+        InheritedAbortScope& operator=(const InheritedAbortScope&) = delete;
+
+    private:
+        bool _previousUserInteraction;
+        AbortableRenderInfoPtr _previousAbortInfo;
+        EffectInstancePtr _previousTreeRoot;
+    };
+
+    /**
      * @brief When the render running on this thread can be aborted and a newer request has
      * replaced it (AbortableRenderInfo::isSuperseded()), aborts it and returns true. For a wait
      * the render would spend on a result that the newer request asks for itself: the render

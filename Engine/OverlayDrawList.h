@@ -92,7 +92,7 @@ public:
         ePrimitiveTypeHandle,
         ePrimitiveTypeText,
         // A shape sized in screen pixels about the canonical point points()[first]. A glyph keeps its
-        // own points in points() after the anchor, in screen pixels relative to it.
+        // own points, in screen pixels relative to the anchor, in glyphPoints().
         ePrimitiveTypeAnchoredShape
     };
 
@@ -144,9 +144,12 @@ public:
         float width = 1.f;
         // A closed polyline joins its last point to its first.
         bool closed = false;
-        // The primitive's range in points().
+        // The primitive's range in points(), all canonical.
         std::size_t first = 0;
         std::size_t count = 0;
+        // A glyph's range in glyphPoints().
+        std::size_t glyphFirst = 0;
+        std::size_t glyphCount = 0;
         int handleId = -1;
         HandleShapeEnum handleShape = eHandleShapeSquare;
         std::string text;
@@ -154,7 +157,8 @@ public:
         double textOffsetY = 0.;
         // Lines and polylines: dashes dashOn pixels long with dashOff-pixel gaps; dashOn <= 0 draws a
         // solid line. A polyline's dashes run on across its vertices; each segment of a Lines
-        // primitive starts a new dash.
+        // primitive starts a new dash. A primitive longer than kMaxDashes periods on screen draws
+        // solid.
         double dashOn = 0.;
         double dashOff = 0.;
         // Lines and polylines: arrowheads at the ends. A Lines primitive gets them on every segment.
@@ -203,7 +207,55 @@ public:
         static AnchoredShape glyphOf(const std::vector<Point>& points, GlyphModeEnum mode);
     };
 
+    /**
+     * @brief Refers to a primitive of a list by index, so that it stays valid when later adds
+     * reallocate the list's storage. Null when the add added nothing; valid until clear().
+     **/
+    class PrimitiveRef {
+    public:
+        PrimitiveRef() = default;
+
+        PrimitiveRef(OverlayDrawList* list,
+                     std::size_t index)
+            : _list(list)
+            , _index(index)
+        {
+        }
+
+        Primitive* get() const
+        {
+            return _list ? &_list->_primitives[_index] : nullptr;
+        }
+
+        Primitive* operator->() const
+        {
+            return get();
+        }
+
+        Primitive& operator*() const
+        {
+            return *get();
+        }
+
+        explicit operator bool() const
+        {
+            return _list != nullptr;
+        }
+
+        std::size_t index() const
+        {
+            return _index;
+        }
+
+    private:
+        OverlayDrawList* _list = nullptr;
+        std::size_t _index = 0;
+    };
+
     static constexpr int kNoHandle = -1;
+    // Past this many dash periods a dashed line draws solid, bounding the segments a long line
+    // expands to at high zoom.
+    static constexpr int kMaxDashes = 500;
     static constexpr float kDefaultLineWidth = 1.5f;
     static constexpr float kDefaultPointSize = 5.f;
     static constexpr float kDefaultHandleSize = 7.f;
@@ -234,52 +286,64 @@ public:
         return _primitives;
     }
 
+    /**
+     * @brief The canonical points every primitive's [first, first + count) range indexes.
+     **/
     const std::vector<Point>& points() const
     {
         return _points;
     }
 
-    Primitive* addLine(double x0, double y0, double x1, double y1, const OverlayColor& color = OverlayColor(), float width = kDefaultLineWidth);
+    /**
+     * @brief The glyphs' points, in screen pixels relative to their anchors, indexed by
+     * [glyphFirst, glyphFirst + glyphCount).
+     **/
+    const std::vector<Point>& glyphPoints() const
+    {
+        return _glyphPoints;
+    }
+
+    PrimitiveRef addLine(double x0, double y0, double x1, double y1, const OverlayColor& color = OverlayColor(), float width = kDefaultLineWidth);
 
     /**
-     * @brief The add functions return the primitive they added, to set its other fields, or nullptr
-     * when the input adds nothing. The pointer is valid until the next add or clear().
+     * @brief The add functions return the primitive they added, to set its other fields, or a null
+     * reference when the input adds nothing.
      **/
-    Primitive* addPoint(double x, double y, const OverlayColor& color = OverlayColor(), float size = kDefaultPointSize);
-    Primitive* addPoints(const std::vector<Point>& points, const OverlayColor& color = OverlayColor(), float size = kDefaultPointSize);
+    PrimitiveRef addPoint(double x, double y, const OverlayColor& color = OverlayColor(), float size = kDefaultPointSize);
+    PrimitiveRef addPoints(const std::vector<Point>& points, const OverlayColor& color = OverlayColor(), float size = kDefaultPointSize);
 
     /**
      * @brief Adds independent segments, taking the points in pairs. An odd last point is dropped.
      **/
-    Primitive* addLines(const std::vector<Point>& endpoints, const OverlayColor& color = OverlayColor(), float width = kDefaultLineWidth);
+    PrimitiveRef addLines(const std::vector<Point>& endpoints, const OverlayColor& color = OverlayColor(), float width = kDefaultLineWidth);
 
-    Primitive* addPolyline(const std::vector<Point>& points, bool closed, const OverlayColor& color = OverlayColor(), float width = kDefaultLineWidth);
+    PrimitiveRef addPolyline(const std::vector<Point>& points, bool closed, const OverlayColor& color = OverlayColor(), float width = kDefaultLineWidth);
 
     /**
      * @brief Adds a filled simple polygon (convex or concave, not self-intersecting). It has no
      * outline: add a closed polyline over it for one.
      **/
-    Primitive* addPolygon(const std::vector<Point>& points, const OverlayColor& color);
+    PrimitiveRef addPolygon(const std::vector<Point>& points, const OverlayColor& color);
 
-    Primitive* addStroke(const std::vector<Point>& points, const OverlayColor& color = OverlayColor(), float width = kDefaultLineWidth);
+    PrimitiveRef addStroke(const std::vector<Point>& points, const OverlayColor& color = OverlayColor(), float width = kDefaultLineWidth);
 
     /**
      * @brief Adds a handle the pen can grab, reported to the node by id. Ids must be >= 0; a
      * negative id adds nothing. When handles overlap the pen gets the nearest, then the last added.
      **/
-    Primitive* addHandle(int id, double x, double y, const OverlayColor& color = OverlayColor(), float size = kDefaultHandleSize, HandleShapeEnum shape = eHandleShapeSquare);
+    PrimitiveRef addHandle(int id, double x, double y, const OverlayColor& color = OverlayColor(), float size = kDefaultHandleSize, HandleShapeEnum shape = eHandleShapeSquare);
 
     /**
      * @brief Adds text whose baseline starts offsetX, offsetY screen pixels from (x, y).
      **/
-    Primitive* addText(double x, double y, const std::string& text, const OverlayColor& color = OverlayColor(), double offsetX = 0., double offsetY = 0.);
+    PrimitiveRef addText(double x, double y, const std::string& text, const OverlayColor& color = OverlayColor(), double offsetX = 0., double offsetY = 0.);
 
     /**
      * @brief Adds shape about the canonical anchor (x, y), upright or turned to follow the canonical
      * direction (directionX, directionY). width is the outline width in pixels.
      **/
-    Primitive* addAnchoredShape(double x, double y, const AnchoredShape& shape, const OverlayColor& color = OverlayColor(), float width = kDefaultLineWidth);
-    Primitive* addAnchoredShape(double x, double y, double directionX, double directionY, const AnchoredShape& shape, const OverlayColor& color = OverlayColor(), float width = kDefaultLineWidth);
+    PrimitiveRef addAnchoredShape(double x, double y, const AnchoredShape& shape, const OverlayColor& color = OverlayColor(), float width = kDefaultLineWidth);
+    PrimitiveRef addAnchoredShape(double x, double y, double directionX, double directionY, const AnchoredShape& shape, const OverlayColor& color = OverlayColor(), float width = kDefaultLineWidth);
 
     /**
      * @brief Returns the id of the handle under (x, y), or kNoHandle. pixelScaleX and pixelScaleY
@@ -304,11 +368,23 @@ public:
      * Appends segments in pairs and filled triangles in threes; other types append nothing.
      **/
     static void expandGeometry(const Primitive& primitive,
-                               const std::vector<Point>& points,
+                               const OverlayDrawList& list,
                                double pixelScaleX,
                                double pixelScaleY,
                                std::vector<Point>* segments,
                                std::vector<Point>* triangles);
+
+    /**
+     * @brief Whether expandGeometry() turns primitive into geometry that depends on the pixel
+     * scale: dashes, arrowheads and anchored shapes.
+     **/
+    static bool dependsOnPixelScale(const Primitive& primitive);
+
+    /**
+     * @brief The zoom bucket of a pixel scale: scales that differ by less than an eighth of an
+     * octave share a bucket.
+     **/
+    static int zoomBucket(double pixelScale);
 
     /**
      * @brief The order the primitives draw in: by layer, then in the order added.
@@ -330,10 +406,11 @@ public:
     void markRebuilt();
 
 private:
-    Primitive& append(PrimitiveTypeEnum type, const OverlayColor& color, float width);
+    PrimitiveRef append(PrimitiveTypeEnum type, const OverlayColor& color, float width);
 
     std::vector<Primitive> _primitives;
     std::vector<Point> _points;
+    std::vector<Point> _glyphPoints;
     int _layer = 0;
     unsigned long long _buildId = 0;
 };

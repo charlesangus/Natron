@@ -25,9 +25,12 @@
 
 #include "TrackerNode.h"
 
+#include <cstdint>
+
 #include "Global/MathUtils.h"
 
 #include "Engine/AppInstance.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/Curve.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Lut.h"
@@ -718,6 +721,27 @@ struct CenterPointDisplayInfo
 
 typedef std::map<double, CenterPointDisplayInfo> CenterPointsMap;
 
+static void
+appendKnobValues(ContentHasher* h,
+                 const KnobDoublePtr& knob,
+                 double time)
+{
+    h->appendDouble(knob->getValueAtTime(time, 0));
+    h->appendDouble(knob->getValueAtTime(time, 1));
+}
+
+static void
+appendCurveKeyFrames(ContentHasher* h,
+                     const CurvePtr& curve)
+{
+    const KeyFrameSet keys = curve->getKeyFrames_mt_safe();
+    h->appendU64(keys.size());
+    for (KeyFrameSet::const_iterator it = keys.begin(); it != keys.end(); ++it) {
+        h->appendDouble(it->getTime());
+        h->appendDouble(it->getValue());
+    }
+}
+
 void
 TrackerNode::drawOverlay(double time,
                          const RenderScale & /*renderScale*/,
@@ -753,354 +777,406 @@ TrackerNode::drawOverlay(double time,
     Point selectedSearchBtmLeft;
     Point selectedSearchTopRight;
 
-    OverlayDrawList& markersList = _imp->ui->markersOverlayScratch;
-    markersList.clear();
-    OverlayDrawListPen pen(&markersList);
-
+    // Everything the markers list is built from, so that a paint that would build the same list
+    // skips the build. The selected marker's corners feed its texture, drawn even when the list holds.
+    ContentHasher signature;
+    signature.appendU64((U64)(std::uintptr_t)overlay);
+    signature.appendDouble(pixelScaleX);
+    signature.appendDouble(pixelScaleY);
+    for (int i = 0; i < 3; ++i) {
+        signature.appendDouble(markerColor[i]);
+    }
+    signature.appendBool(trackingPageSecret);
+    signature.appendBool(showErrorColor);
+    signature.appendI64((int)_imp->ui->hoverState);
+    signature.appendI64((int)_imp->ui->eventState);
+    signature.appendU64(allMarkers.size());
     for (std::vector<TrackMarkerPtr>::iterator it = allMarkers.begin(); it != allMarkers.end(); ++it) {
-        bool isEnabled = (*it)->isEnabled(time);
-
-        double thisMarkerColor[3];
-        if (!isEnabled) {
-            for (int i = 0; i < 3; ++i) {
-                thisMarkerColor[i] = markerColor[i] / 2.;
-            }
-        } else {
-            for (int i = 0; i < 3; ++i) {
-                thisMarkerColor[i] = markerColor[i];
-            }
-        }
-
-        bool isHoverMarker = *it == _imp->ui->hoverMarker;
-        bool isDraggedMarker = *it == _imp->ui->interactMarker;
-        bool isHoverOrDraggedMarker = isHoverMarker || isDraggedMarker;
-        std::list<TrackMarkerPtr>::iterator foundSelected = std::find(selectedMarkers.begin(), selectedMarkers.end(), *it);
-        bool isSelected = foundSelected != selectedMarkers.end();
+        signature.appendU64((U64)(std::uintptr_t)it->get());
+        signature.appendBool((*it)->isEnabled(time));
+        signature.appendBool(*it == _imp->ui->hoverMarker);
+        signature.appendBool(*it == _imp->ui->interactMarker);
+        const bool isSelected = std::find(selectedMarkers.begin(), selectedMarkers.end(), *it) != selectedMarkers.end();
+        const bool drawnSelected = isSelected && !trackingPageSecret;
+        signature.appendBool(drawnSelected);
         KnobDoublePtr centerKnob = (*it)->getCenterKnob();
+        appendKnobValues(&signature, centerKnob, time);
+        if (!drawnSelected) {
+            continue;
+        }
         KnobDoublePtr offsetKnob = (*it)->getOffsetKnob();
-        KnobDoublePtr errorKnob = (*it)->getErrorKnob();
         KnobDoublePtr ptnTopLeft = (*it)->getPatternTopLeftKnob();
         KnobDoublePtr ptnTopRight = (*it)->getPatternTopRightKnob();
         KnobDoublePtr ptnBtmRight = (*it)->getPatternBtmRightKnob();
         KnobDoublePtr ptnBtmLeft = (*it)->getPatternBtmLeftKnob();
         KnobDoublePtr searchWndBtmLeft = (*it)->getSearchWindowBottomLeftKnob();
         KnobDoublePtr searchWndTopRight = (*it)->getSearchWindowTopRightKnob();
+        appendKnobValues(&signature, offsetKnob, time);
+        appendKnobValues(&signature, ptnTopLeft, time);
+        appendKnobValues(&signature, ptnTopRight, time);
+        appendKnobValues(&signature, ptnBtmRight, time);
+        appendKnobValues(&signature, ptnBtmLeft, time);
+        appendKnobValues(&signature, searchWndBtmLeft, time);
+        appendKnobValues(&signature, searchWndTopRight, time);
+        signature.appendString((*it)->getLabel());
+        appendCurveKeyFrames(&signature, centerKnob->getCurve(ViewSpec::current(), 0));
+        appendCurveKeyFrames(&signature, centerKnob->getCurve(ViewSpec::current(), 1));
+        if (showErrorColor) {
+            appendCurveKeyFrames(&signature, (*it)->getErrorKnob()->getCurve(ViewSpec::current(), 0));
+        }
 
-        // When the tracking page is secret, still show markers, but as if deselected
-        if (!isSelected || trackingPageSecret) {
-            double x = centerKnob->getValueAtTime(time, 0);
-            double y = centerKnob->getValueAtTime(time, 1);
+        if (selectedMarker == *it) {
+            const double cx = centerKnob->getValueAtTime(time, 0);
+            const double cy = centerKnob->getValueAtTime(time, 1);
+            const double ox = offsetKnob->getValueAtTime(time, 0);
+            const double oy = offsetKnob->getValueAtTime(time, 1);
+            selectedCenter.x = cx;
+            selectedCenter.y = cy;
+            selectedOffset.x = ox;
+            selectedOffset.y = oy;
+            selectedPtnBtmLeft.x = ptnBtmLeft->getValueAtTime(time, 0) + ox + cx;
+            selectedPtnBtmLeft.y = ptnBtmLeft->getValueAtTime(time, 1) + oy + cy;
+            selectedPtnBtmRight.x = ptnBtmRight->getValueAtTime(time, 0) + ox + cx;
+            selectedPtnBtmRight.y = ptnBtmRight->getValueAtTime(time, 1) + oy + cy;
+            selectedPtnTopRight.x = ptnTopRight->getValueAtTime(time, 0) + ox + cx;
+            selectedPtnTopRight.y = ptnTopRight->getValueAtTime(time, 1) + oy + cy;
+            selectedPtnTopLeft.x = ptnTopLeft->getValueAtTime(time, 0) + ox + cx;
+            selectedPtnTopLeft.y = ptnTopLeft->getValueAtTime(time, 1) + oy + cy;
+            selectedSearchBtmLeft.x = searchWndBtmLeft->getValueAtTime(time, 0) + ox + cx;
+            selectedSearchBtmLeft.y = searchWndBtmLeft->getValueAtTime(time, 1) + oy + cy;
+            selectedSearchTopRight.x = searchWndTopRight->getValueAtTime(time, 0) + ox + cx;
+            selectedSearchTopRight.y = searchWndTopRight->getValueAtTime(time, 1) + oy + cy;
+            selectedFound = true;
+        }
+    }
 
-            // A black copy under the coloured one, in place of a shadow.
-            pen.setShadow(false);
-            pen.setSmoothLines(true);
-            pen.setSmoothPoints(false);
-            pen.pointSize(POINT_SIZE);
-            pen.lineWidth(1.5);
-            for (int l = 0; l < 2; ++l) {
-                if (l == 0) {
-                    pen.color(0., 0., 0., 1.);
-                } else {
-                    pen.color(thisMarkerColor[0], thisMarkerColor[1], thisMarkerColor[2], 1.);
-                }
-                pen.point(x, y);
-                pen.anchoredShape(x, y, OverlayDrawList::AnchoredShape::cross(CROSS_SIZE));
-            }
-        } else {
-            const QPointF center(centerKnob->getValueAtTime(time, 0),
-                                 centerKnob->getValueAtTime(time, 1));
-            const QPointF offset(offsetKnob->getValueAtTime(time, 0),
-                                 offsetKnob->getValueAtTime(time, 1));
-            const QPointF topLeft(ptnTopLeft->getValueAtTime(time, 0) + offset.x() + center.x(),
-                                  ptnTopLeft->getValueAtTime(time, 1) + offset.y() + center.y());
-            const QPointF topRight(ptnTopRight->getValueAtTime(time, 0) + offset.x() + center.x(),
-                                   ptnTopRight->getValueAtTime(time, 1) + offset.y() + center.y());
-            const QPointF btmRight(ptnBtmRight->getValueAtTime(time, 0) + offset.x() + center.x(),
-                                   ptnBtmRight->getValueAtTime(time, 1) + offset.y() + center.y());
-            const QPointF btmLeft(ptnBtmLeft->getValueAtTime(time, 0) + offset.x() + center.x(),
-                                  ptnBtmLeft->getValueAtTime(time, 1) + offset.y() + center.y());
-            const double searchLeft = searchWndBtmLeft->getValueAtTime(time, 0) + offset.x() + center.x();
-            const double searchBottom = searchWndBtmLeft->getValueAtTime(time, 1) + offset.y() + center.y();
-            const double searchRight = searchWndTopRight->getValueAtTime(time, 0) + offset.x() + center.x();
-            const double searchTop = searchWndTopRight->getValueAtTime(time, 1) + offset.y() + center.y();
-            const double searchMidX = (searchLeft + searchRight) / 2;
-            const double searchMidY = (searchTop + searchBottom) / 2;
+    OverlayDrawList* markersList = _imp->ui->markersOverlay.rebuildFor(signature.finalize());
+    if (markersList) {
+        OverlayDrawListPen pen(markersList);
 
-            if (selectedMarker == *it) {
-                selectedCenter.x = center.x();
-                selectedCenter.y = center.y();
-                selectedOffset.x = offset.x();
-                selectedOffset.y = offset.y();
-                selectedPtnBtmLeft.x = btmLeft.x();
-                selectedPtnBtmLeft.y = btmLeft.y();
-                selectedPtnBtmRight.x = btmRight.x();
-                selectedPtnBtmRight.y = btmRight.y();
-                selectedPtnTopRight.x = topRight.x();
-                selectedPtnTopRight.y = topRight.y();
-                selectedPtnTopLeft.x = topLeft.x();
-                selectedPtnTopLeft.y = topLeft.y();
-                selectedSearchBtmLeft.x = searchLeft;
-                selectedSearchBtmLeft.y = searchBottom;
+        for (std::vector<TrackMarkerPtr>::iterator it = allMarkers.begin(); it != allMarkers.end(); ++it) {
+            bool isEnabled = (*it)->isEnabled(time);
 
-                selectedSearchTopRight.x = searchRight;
-                selectedSearchTopRight.y = searchTop;
-                selectedFound = true;
-            }
-
-            const QPointF innerMidLeft((btmLeft + topLeft) / 2);
-            const QPointF innerMidTop((topLeft + topRight) / 2);
-            const QPointF innerMidRight((btmRight + topRight) / 2);
-            const QPointF innerMidBtm((btmLeft + btmRight) / 2);
-            const QPointF outterMidLeft(searchLeft, searchMidY);
-            const QPointF outterMidTop(searchMidX, searchTop);
-            const QPointF outterMidRight(searchRight, searchMidY);
-            const QPointF outterMidBtm(searchMidX, searchBottom);
-            const QPointF handleSize(HANDLE_SIZE * pixelScaleX, HANDLE_SIZE * pixelScaleY);
-            const QPointF innerMidLeftExt = TrackerNodeInteract::computeMidPointExtent(topLeft, btmLeft, innerMidLeft, handleSize);
-            const QPointF innerMidRightExt = TrackerNodeInteract::computeMidPointExtent(btmRight, topRight, innerMidRight, handleSize);
-            const QPointF innerMidTopExt = TrackerNodeInteract::computeMidPointExtent(topRight, topLeft, innerMidTop, handleSize);
-            const QPointF innerMidBtmExt = TrackerNodeInteract::computeMidPointExtent(btmLeft, btmRight, innerMidBtm, handleSize);
-            const QPointF searchTopLeft(searchLeft, searchTop);
-            const QPointF searchTopRight(searchRight, searchTop);
-            const QPointF searchBtmRight(searchRight, searchBottom);
-            const QPointF searchBtmLeft(searchLeft, searchBottom);
-            const QPointF outterMidLeftExt = TrackerNodeInteract::computeMidPointExtent(searchTopLeft, searchBtmLeft, outterMidLeft, handleSize);
-            const QPointF outterMidRightExt = TrackerNodeInteract::computeMidPointExtent(searchBtmRight, searchTopRight, outterMidRight, handleSize);
-            const QPointF outterMidTopExt = TrackerNodeInteract::computeMidPointExtent(searchTopRight, searchTopLeft, outterMidTop, handleSize);
-            const QPointF outterMidBtmExt = TrackerNodeInteract::computeMidPointExtent(searchBtmLeft, searchBtmRight, outterMidBtm, handleSize);
-            std::string name = (*it)->getLabel();
+            double thisMarkerColor[3];
             if (!isEnabled) {
-                name += ' ';
-                name += tr("(disabled)").toStdString();
-            }
-            CenterPointsMap centerPoints;
-            CurvePtr xCurve = centerKnob->getCurve(ViewSpec::current(), 0);
-            CurvePtr yCurve = centerKnob->getCurve(ViewSpec::current(), 1);
-            CurvePtr errorCurve = errorKnob->getCurve(ViewSpec::current(), 0);
-
-            {
-                KeyFrameSet xKeyframes = xCurve->getKeyFrames_mt_safe();
-                KeyFrameSet yKeyframes = yCurve->getKeyFrames_mt_safe();
-                KeyFrameSet errKeyframes;
-                if (showErrorColor) {
-                    errKeyframes = errorCurve->getKeyFrames_mt_safe();
+                for (int i = 0; i < 3; ++i) {
+                    thisMarkerColor[i] = markerColor[i] / 2.;
                 }
+            } else {
+                for (int i = 0; i < 3; ++i) {
+                    thisMarkerColor[i] = markerColor[i];
+                }
+            }
 
-                // Try first to do an optimized case in O(N) where we assume that all 3 curves have the same keyframes
-                // at the same time
-                KeyFrameSet remainingXKeys, remainingYKeys, remainingErrKeys;
-                if (xKeyframes.size() == yKeyframes.size() && (!showErrorColor || xKeyframes.size() == errKeyframes.size())) {
-                    KeyFrameSet::iterator errIt = errKeyframes.begin();
-                    KeyFrameSet::iterator xIt = xKeyframes.begin();
-                    KeyFrameSet::iterator yIt = yKeyframes.begin();
+            bool isHoverMarker = *it == _imp->ui->hoverMarker;
+            bool isDraggedMarker = *it == _imp->ui->interactMarker;
+            bool isHoverOrDraggedMarker = isHoverMarker || isDraggedMarker;
+            std::list<TrackMarkerPtr>::iterator foundSelected = std::find(selectedMarkers.begin(), selectedMarkers.end(), *it);
+            bool isSelected = foundSelected != selectedMarkers.end();
+            KnobDoublePtr centerKnob = (*it)->getCenterKnob();
+            KnobDoublePtr offsetKnob = (*it)->getOffsetKnob();
+            KnobDoublePtr errorKnob = (*it)->getErrorKnob();
+            KnobDoublePtr ptnTopLeft = (*it)->getPatternTopLeftKnob();
+            KnobDoublePtr ptnTopRight = (*it)->getPatternTopRightKnob();
+            KnobDoublePtr ptnBtmRight = (*it)->getPatternBtmRightKnob();
+            KnobDoublePtr ptnBtmLeft = (*it)->getPatternBtmLeftKnob();
+            KnobDoublePtr searchWndBtmLeft = (*it)->getSearchWindowBottomLeftKnob();
+            KnobDoublePtr searchWndTopRight = (*it)->getSearchWindowTopRightKnob();
 
-                    bool setsHaveDifferentKeyTimes = false;
-                    while (xIt != xKeyframes.end()) {
-                        if (xIt->getTime() != yIt->getTime() || (showErrorColor && xIt->getTime() != errIt->getTime())) {
-                            setsHaveDifferentKeyTimes = true;
-                            break;
+            // When the tracking page is secret, still show markers, but as if deselected
+            if (!isSelected || trackingPageSecret) {
+                double x = centerKnob->getValueAtTime(time, 0);
+                double y = centerKnob->getValueAtTime(time, 1);
+
+                // A black copy under the coloured one, in place of a shadow.
+                pen.setShadow(false);
+                pen.setSmoothLines(true);
+                pen.setSmoothPoints(false);
+                pen.pointSize(POINT_SIZE);
+                pen.lineWidth(1.5);
+                for (int l = 0; l < 2; ++l) {
+                    if (l == 0) {
+                        pen.color(0., 0., 0., 1.);
+                    } else {
+                        pen.color(thisMarkerColor[0], thisMarkerColor[1], thisMarkerColor[2], 1.);
+                    }
+                    pen.point(x, y);
+                    pen.anchoredShape(x, y, OverlayDrawList::AnchoredShape::cross(CROSS_SIZE));
+                }
+            } else {
+                const QPointF center(centerKnob->getValueAtTime(time, 0),
+                                     centerKnob->getValueAtTime(time, 1));
+                const QPointF offset(offsetKnob->getValueAtTime(time, 0),
+                                     offsetKnob->getValueAtTime(time, 1));
+                const QPointF topLeft(ptnTopLeft->getValueAtTime(time, 0) + offset.x() + center.x(),
+                                      ptnTopLeft->getValueAtTime(time, 1) + offset.y() + center.y());
+                const QPointF topRight(ptnTopRight->getValueAtTime(time, 0) + offset.x() + center.x(),
+                                       ptnTopRight->getValueAtTime(time, 1) + offset.y() + center.y());
+                const QPointF btmRight(ptnBtmRight->getValueAtTime(time, 0) + offset.x() + center.x(),
+                                       ptnBtmRight->getValueAtTime(time, 1) + offset.y() + center.y());
+                const QPointF btmLeft(ptnBtmLeft->getValueAtTime(time, 0) + offset.x() + center.x(),
+                                      ptnBtmLeft->getValueAtTime(time, 1) + offset.y() + center.y());
+                const double searchLeft = searchWndBtmLeft->getValueAtTime(time, 0) + offset.x() + center.x();
+                const double searchBottom = searchWndBtmLeft->getValueAtTime(time, 1) + offset.y() + center.y();
+                const double searchRight = searchWndTopRight->getValueAtTime(time, 0) + offset.x() + center.x();
+                const double searchTop = searchWndTopRight->getValueAtTime(time, 1) + offset.y() + center.y();
+                const double searchMidX = (searchLeft + searchRight) / 2;
+                const double searchMidY = (searchTop + searchBottom) / 2;
+
+                const QPointF innerMidLeft((btmLeft + topLeft) / 2);
+                const QPointF innerMidTop((topLeft + topRight) / 2);
+                const QPointF innerMidRight((btmRight + topRight) / 2);
+                const QPointF innerMidBtm((btmLeft + btmRight) / 2);
+                const QPointF outterMidLeft(searchLeft, searchMidY);
+                const QPointF outterMidTop(searchMidX, searchTop);
+                const QPointF outterMidRight(searchRight, searchMidY);
+                const QPointF outterMidBtm(searchMidX, searchBottom);
+                const QPointF handleSize(HANDLE_SIZE * pixelScaleX, HANDLE_SIZE * pixelScaleY);
+                const QPointF innerMidLeftExt = TrackerNodeInteract::computeMidPointExtent(topLeft, btmLeft, innerMidLeft, handleSize);
+                const QPointF innerMidRightExt = TrackerNodeInteract::computeMidPointExtent(btmRight, topRight, innerMidRight, handleSize);
+                const QPointF innerMidTopExt = TrackerNodeInteract::computeMidPointExtent(topRight, topLeft, innerMidTop, handleSize);
+                const QPointF innerMidBtmExt = TrackerNodeInteract::computeMidPointExtent(btmLeft, btmRight, innerMidBtm, handleSize);
+                const QPointF searchTopLeft(searchLeft, searchTop);
+                const QPointF searchTopRight(searchRight, searchTop);
+                const QPointF searchBtmRight(searchRight, searchBottom);
+                const QPointF searchBtmLeft(searchLeft, searchBottom);
+                const QPointF outterMidLeftExt = TrackerNodeInteract::computeMidPointExtent(searchTopLeft, searchBtmLeft, outterMidLeft, handleSize);
+                const QPointF outterMidRightExt = TrackerNodeInteract::computeMidPointExtent(searchBtmRight, searchTopRight, outterMidRight, handleSize);
+                const QPointF outterMidTopExt = TrackerNodeInteract::computeMidPointExtent(searchTopRight, searchTopLeft, outterMidTop, handleSize);
+                const QPointF outterMidBtmExt = TrackerNodeInteract::computeMidPointExtent(searchBtmLeft, searchBtmRight, outterMidBtm, handleSize);
+                std::string name = (*it)->getLabel();
+                if (!isEnabled) {
+                    name += ' ';
+                    name += tr("(disabled)").toStdString();
+                }
+                CenterPointsMap centerPoints;
+                CurvePtr xCurve = centerKnob->getCurve(ViewSpec::current(), 0);
+                CurvePtr yCurve = centerKnob->getCurve(ViewSpec::current(), 1);
+                CurvePtr errorCurve = errorKnob->getCurve(ViewSpec::current(), 0);
+
+                {
+                    KeyFrameSet xKeyframes = xCurve->getKeyFrames_mt_safe();
+                    KeyFrameSet yKeyframes = yCurve->getKeyFrames_mt_safe();
+                    KeyFrameSet errKeyframes;
+                    if (showErrorColor) {
+                        errKeyframes = errorCurve->getKeyFrames_mt_safe();
+                    }
+
+                    // Try first to do an optimized case in O(N) where we assume that all 3 curves have the same keyframes
+                    // at the same time
+                    KeyFrameSet remainingXKeys, remainingYKeys, remainingErrKeys;
+                    if (xKeyframes.size() == yKeyframes.size() && (!showErrorColor || xKeyframes.size() == errKeyframes.size())) {
+                        KeyFrameSet::iterator errIt = errKeyframes.begin();
+                        KeyFrameSet::iterator xIt = xKeyframes.begin();
+                        KeyFrameSet::iterator yIt = yKeyframes.begin();
+
+                        bool setsHaveDifferentKeyTimes = false;
+                        while (xIt != xKeyframes.end()) {
+                            if (xIt->getTime() != yIt->getTime() || (showErrorColor && xIt->getTime() != errIt->getTime())) {
+                                setsHaveDifferentKeyTimes = true;
+                                break;
+                            }
+                            CenterPointDisplayInfo& p = centerPoints[xIt->getTime()];
+                            p.x = xIt->getValue();
+                            p.y = yIt->getValue();
+                            if (showErrorColor) {
+                                p.err = errIt->getValue();
+                            }
+                            p.isValid = true;
+
+                            ++xIt;
+                            ++yIt;
+                            if (showErrorColor) {
+                                ++errIt;
+                            }
                         }
+                        if (setsHaveDifferentKeyTimes) {
+                            remainingXKeys.insert(xIt, xKeyframes.end());
+                            remainingYKeys.insert(yIt, yKeyframes.end());
+                            if (showErrorColor) {
+                                remainingErrKeys.insert(errIt, errKeyframes.end());
+                            }
+                        }
+                    } else {
+                        remainingXKeys = xKeyframes;
+                        remainingYKeys = yKeyframes;
+                        if (showErrorColor) {
+                            remainingErrKeys = errKeyframes;
+                        }
+                    }
+                    for (KeyFrameSet::iterator xIt = remainingXKeys.begin(); xIt != remainingXKeys.end(); ++xIt) {
                         CenterPointDisplayInfo& p = centerPoints[xIt->getTime()];
                         p.x = xIt->getValue();
-                        p.y = yIt->getValue();
-                        if (showErrorColor) {
-                            p.err = errIt->getValue();
-                        }
-                        p.isValid = true;
-
-                        ++xIt;
-                        ++yIt;
-                        if (showErrorColor) {
-                            ++errIt;
-                        }
+                        p.isValid = false;
                     }
-                    if (setsHaveDifferentKeyTimes) {
-                        remainingXKeys.insert(xIt, xKeyframes.end());
-                        remainingYKeys.insert(yIt, yKeyframes.end());
-                        if (showErrorColor) {
-                            remainingErrKeys.insert(errIt, errKeyframes.end());
+                    for (KeyFrameSet::iterator yIt = remainingYKeys.begin(); yIt != remainingYKeys.end(); ++yIt) {
+                        CenterPointsMap::iterator foundPoint = centerPoints.find(yIt->getTime());
+                        if (foundPoint == centerPoints.end()) {
+                            continue;
+                        }
+                        foundPoint->second.y = yIt->getValue();
+                        if (!showErrorColor) {
+                            foundPoint->second.isValid = true;
                         }
                     }
-                } else {
-                    remainingXKeys = xKeyframes;
-                    remainingYKeys = yKeyframes;
-                    if (showErrorColor) {
-                        remainingErrKeys = errKeyframes;
-                    }
-                }
-                for (KeyFrameSet::iterator xIt = remainingXKeys.begin(); xIt != remainingXKeys.end(); ++xIt) {
-                    CenterPointDisplayInfo& p = centerPoints[xIt->getTime()];
-                    p.x = xIt->getValue();
-                    p.isValid = false;
-                }
-                for (KeyFrameSet::iterator yIt = remainingYKeys.begin(); yIt != remainingYKeys.end(); ++yIt) {
-                    CenterPointsMap::iterator foundPoint = centerPoints.find(yIt->getTime());
-                    if (foundPoint == centerPoints.end()) {
-                        continue;
-                    }
-                    foundPoint->second.y = yIt->getValue();
-                    if (!showErrorColor) {
+                    for (KeyFrameSet::iterator errIt = remainingErrKeys.begin(); errIt != remainingErrKeys.end(); ++errIt) {
+                        CenterPointsMap::iterator foundPoint = centerPoints.find(errIt->getTime());
+                        if (foundPoint == centerPoints.end()) {
+                            continue;
+                        }
+                        foundPoint->second.err = errIt->getValue();
                         foundPoint->second.isValid = true;
                     }
                 }
-                for (KeyFrameSet::iterator errIt = remainingErrKeys.begin(); errIt != remainingErrKeys.end(); ++errIt) {
-                    CenterPointsMap::iterator foundPoint = centerPoints.find(errIt->getTime());
-                    if (foundPoint == centerPoints.end()) {
+
+                const TrackerDrawStateEnum hoverState = _imp->ui->hoverState;
+                const TrackerMouseStateEnum eventState = _imp->ui->eventState;
+                auto isActive = [&](TrackerDrawStateEnum hovering, TrackerMouseStateEnum dragging) {
+                    return isHoverOrDraggedMarker && ((hoverState == hovering) || (eventState == dragging));
+                };
+                auto markerOrActiveColor = [&](bool active) {
+                    if (active) {
+                        pen.color(0., 1., 0.);
+                    } else {
+                        pen.color(thisMarkerColor[0], thisMarkerColor[1], thisMarkerColor[2]);
+                    }
+                };
+
+                pen.setShadow(true);
+
+                /// Draw center position
+                pen.setSmoothLines(true);
+                pen.lineWidth(1.5);
+                pen.color(0.5, 0.5, 0.5);
+                pen.begin(OverlayDrawListPen::eModeLineStrip);
+                for (CenterPointsMap::iterator it2 = centerPoints.begin(); it2 != centerPoints.end(); ++it2) {
+                    if (it2->second.isValid) {
+                        pen.vertex(it2->second.x, it2->second.y);
+                    }
+                }
+                pen.end();
+
+                pen.setSmoothPoints(true);
+                pen.pointSize(POINT_SIZE);
+                pen.begin(OverlayDrawListPen::eModePoints);
+                for (CenterPointsMap::iterator it2 = centerPoints.begin(); it2 != centerPoints.end(); ++it2) {
+                    if (!it2->second.isValid) {
                         continue;
                     }
-                    foundPoint->second.err = errIt->getValue();
-                    foundPoint->second.isValid = true;
-                }
-            }
+                    if (showErrorColor) {
+                        /*
+                           Clamp the correlation to [CORRELATION_ERROR_MIN, 1] then
+                           Map the correlation to [0, 0.33] since 0 is Red for HSV and 0.33 is Green.
+                           Also clamp to the interval if the correlation is higher, and reverse.
+                         */
 
-            const TrackerDrawStateEnum hoverState = _imp->ui->hoverState;
-            const TrackerMouseStateEnum eventState = _imp->ui->eventState;
-            auto isActive = [&](TrackerDrawStateEnum hovering, TrackerMouseStateEnum dragging) {
-                return isHoverOrDraggedMarker && ((hoverState == hovering) || (eventState == dragging));
-            };
-            auto markerOrActiveColor = [&](bool active) {
-                if (active) {
-                    pen.color(0., 1., 0.);
-                } else {
-                    pen.color(thisMarkerColor[0], thisMarkerColor[1], thisMarkerColor[2]);
-                }
-            };
-
-            pen.setShadow(true);
-
-            /// Draw center position
-            pen.setSmoothLines(true);
-            pen.lineWidth(1.5);
-            pen.color(0.5, 0.5, 0.5);
-            pen.begin(OverlayDrawListPen::eModeLineStrip);
-            for (CenterPointsMap::iterator it2 = centerPoints.begin(); it2 != centerPoints.end(); ++it2) {
-                if (it2->second.isValid) {
+                        double error = MathUtils::clamp(it2->second.err, 0., CORRELATION_ERROR_MAX_DISPLAY);
+                        double mappedError = 0.33 - 0.33 * error / CORRELATION_ERROR_MAX_DISPLAY;
+                        float r, g, b;
+                        Color::hsv_to_rgb(mappedError, 1, 1, &r, &g, &b);
+                        pen.color(r, g, b);
+                    }
                     pen.vertex(it2->second.x, it2->second.y);
                 }
-            }
-            pen.end();
+                pen.end();
+                pen.setSmoothPoints(false);
 
-            pen.setSmoothPoints(true);
-            pen.pointSize(POINT_SIZE);
-            pen.begin(OverlayDrawListPen::eModePoints);
-            for (CenterPointsMap::iterator it2 = centerPoints.begin(); it2 != centerPoints.end(); ++it2) {
-                if (!it2->second.isValid) {
-                    continue;
+                pen.setSmoothLines(false);
+                pen.color(thisMarkerColor[0], thisMarkerColor[1], thisMarkerColor[2]);
+                pen.lineWidth(1.5);
+                pen.begin(OverlayDrawListPen::eModeLineLoop);
+                pen.vertex(topLeft.x(), topLeft.y());
+                pen.vertex(topRight.x(), topRight.y());
+                pen.vertex(btmRight.x(), btmRight.y());
+                pen.vertex(btmLeft.x(), btmLeft.y());
+                pen.end();
+
+                pen.begin(OverlayDrawListPen::eModeLineLoop);
+                pen.vertex(searchTopLeft.x(), searchTopLeft.y());
+                pen.vertex(searchTopRight.x(), searchTopRight.y());
+                pen.vertex(searchBtmRight.x(), searchBtmRight.y());
+                pen.vertex(searchBtmLeft.x(), searchBtmLeft.y());
+                pen.end();
+
+                pen.pointSize(POINT_SIZE);
+                pen.begin(OverlayDrawListPen::eModePoints);
+
+                /// draw center
+                markerOrActiveColor(isActive(eDrawStateHoveringCenter, eMouseStateDraggingCenter));
+                pen.vertex(center.x(), center.y());
+
+                if ((offset.x() != 0) || (offset.y() != 0)) {
+                    pen.vertex(center.x() + offset.x(), center.y() + offset.y());
                 }
-                if (showErrorColor) {
-                    /*
-                       Clamp the correlation to [CORRELATION_ERROR_MIN, 1] then
-                       Map the correlation to [0, 0.33] since 0 is Red for HSV and 0.33 is Green.
-                       Also clamp to the interval if the correlation is higher, and reverse.
-                     */
 
-                    double error = MathUtils::clamp(it2->second.err, 0., CORRELATION_ERROR_MAX_DISPLAY);
-                    double mappedError = 0.33 - 0.33 * error / CORRELATION_ERROR_MAX_DISPLAY;
-                    float r, g, b;
-                    Color::hsv_to_rgb(mappedError, 1, 1, &r, &g, &b);
-                    pen.color(r, g, b);
+                const struct {
+                    TrackerDrawStateEnum hovering;
+                    TrackerMouseStateEnum dragging;
+                    QPointF pos;
+                } handlePoints[] = {
+                    { eDrawStateHoveringInnerBtmLeft, eMouseStateDraggingInnerBtmLeft, btmLeft },
+                    { eDrawStateHoveringInnerBtmMid, eMouseStateDraggingInnerBtmMid, innerMidBtm },
+                    { eDrawStateHoveringInnerBtmRight, eMouseStateDraggingInnerBtmRight, btmRight },
+                    { eDrawStateHoveringInnerMidLeft, eMouseStateDraggingInnerMidLeft, innerMidLeft },
+                    { eDrawStateHoveringInnerMidRight, eMouseStateDraggingInnerMidRight, innerMidRight },
+                    { eDrawStateHoveringInnerTopLeft, eMouseStateDraggingInnerTopLeft, topLeft },
+                    { eDrawStateHoveringInnerTopMid, eMouseStateDraggingInnerTopMid, innerMidTop },
+                    { eDrawStateHoveringInnerTopRight, eMouseStateDraggingInnerTopRight, topRight },
+                    { eDrawStateHoveringOuterBtmLeft, eMouseStateDraggingOuterBtmLeft, searchBtmLeft },
+                    { eDrawStateHoveringOuterBtmMid, eMouseStateDraggingOuterBtmMid, outterMidBtm },
+                    { eDrawStateHoveringOuterBtmRight, eMouseStateDraggingOuterBtmRight, searchBtmRight },
+                    { eDrawStateHoveringOuterMidLeft, eMouseStateDraggingOuterMidLeft, outterMidLeft },
+                    { eDrawStateHoveringOuterMidRight, eMouseStateDraggingOuterMidRight, outterMidRight },
+                    { eDrawStateHoveringOuterTopLeft, eMouseStateDraggingOuterTopLeft, searchTopLeft },
+                    { eDrawStateHoveringOuterTopMid, eMouseStateDraggingOuterTopMid, outterMidTop },
+                    { eDrawStateHoveringOuterTopRight, eMouseStateDraggingOuterTopRight, searchTopRight },
+                };
+                for (const auto& h : handlePoints) {
+                    if (isActive(h.hovering, h.dragging)) {
+                        pen.color(0., 1., 0.);
+                        pen.vertex(h.pos.x(), h.pos.y());
+                    }
                 }
-                pen.vertex(it2->second.x, it2->second.y);
-            }
-            pen.end();
-            pen.setSmoothPoints(false);
+                pen.end();
 
-            pen.setSmoothLines(false);
-            pen.color(thisMarkerColor[0], thisMarkerColor[1], thisMarkerColor[2]);
-            pen.lineWidth(1.5);
-            pen.begin(OverlayDrawListPen::eModeLineLoop);
-            pen.vertex(topLeft.x(), topLeft.y());
-            pen.vertex(topRight.x(), topRight.y());
-            pen.vertex(btmRight.x(), btmRight.y());
-            pen.vertex(btmLeft.x(), btmLeft.y());
-            pen.end();
-
-            pen.begin(OverlayDrawListPen::eModeLineLoop);
-            pen.vertex(searchTopLeft.x(), searchTopLeft.y());
-            pen.vertex(searchTopRight.x(), searchTopRight.y());
-            pen.vertex(searchBtmRight.x(), searchBtmRight.y());
-            pen.vertex(searchBtmLeft.x(), searchBtmLeft.y());
-            pen.end();
-
-            pen.pointSize(POINT_SIZE);
-            pen.begin(OverlayDrawListPen::eModePoints);
-
-            /// draw center
-            markerOrActiveColor(isActive(eDrawStateHoveringCenter, eMouseStateDraggingCenter));
-            pen.vertex(center.x(), center.y());
-
-            if ((offset.x() != 0) || (offset.y() != 0)) {
-                pen.vertex(center.x() + offset.x(), center.y() + offset.y());
-            }
-
-            const struct {
-                TrackerDrawStateEnum hovering;
-                TrackerMouseStateEnum dragging;
-                QPointF pos;
-            } handlePoints[] = {
-                { eDrawStateHoveringInnerBtmLeft, eMouseStateDraggingInnerBtmLeft, btmLeft },
-                { eDrawStateHoveringInnerBtmMid, eMouseStateDraggingInnerBtmMid, innerMidBtm },
-                { eDrawStateHoveringInnerBtmRight, eMouseStateDraggingInnerBtmRight, btmRight },
-                { eDrawStateHoveringInnerMidLeft, eMouseStateDraggingInnerMidLeft, innerMidLeft },
-                { eDrawStateHoveringInnerMidRight, eMouseStateDraggingInnerMidRight, innerMidRight },
-                { eDrawStateHoveringInnerTopLeft, eMouseStateDraggingInnerTopLeft, topLeft },
-                { eDrawStateHoveringInnerTopMid, eMouseStateDraggingInnerTopMid, innerMidTop },
-                { eDrawStateHoveringInnerTopRight, eMouseStateDraggingInnerTopRight, topRight },
-                { eDrawStateHoveringOuterBtmLeft, eMouseStateDraggingOuterBtmLeft, searchBtmLeft },
-                { eDrawStateHoveringOuterBtmMid, eMouseStateDraggingOuterBtmMid, outterMidBtm },
-                { eDrawStateHoveringOuterBtmRight, eMouseStateDraggingOuterBtmRight, searchBtmRight },
-                { eDrawStateHoveringOuterMidLeft, eMouseStateDraggingOuterMidLeft, outterMidLeft },
-                { eDrawStateHoveringOuterMidRight, eMouseStateDraggingOuterMidRight, outterMidRight },
-                { eDrawStateHoveringOuterTopLeft, eMouseStateDraggingOuterTopLeft, searchTopLeft },
-                { eDrawStateHoveringOuterTopMid, eMouseStateDraggingOuterTopMid, outterMidTop },
-                { eDrawStateHoveringOuterTopRight, eMouseStateDraggingOuterTopRight, searchTopRight },
-            };
-            for (const auto& h : handlePoints) {
-                if (isActive(h.hovering, h.dragging)) {
-                    pen.color(0., 1., 0.);
-                    pen.vertex(h.pos.x(), h.pos.y());
+                if ((offset.x() != 0) || (offset.y() != 0)) {
+                    pen.color(thisMarkerColor[0] * 0.5, thisMarkerColor[1] * 0.5, thisMarkerColor[2] * 0.5);
+                    pen.line(center.x(), center.y(), center.x() + offset.x(), center.y() + offset.y());
                 }
+
+                /// now show small lines at handle positions
+                const struct {
+                    TrackerDrawStateEnum hovering;
+                    TrackerMouseStateEnum dragging;
+                    QPointF from;
+                    QPointF to;
+                } handleTicks[] = {
+                    { eDrawStateHoveringInnerMidLeft, eMouseStateDraggingInnerMidLeft, innerMidLeft, innerMidLeftExt },
+                    { eDrawStateHoveringInnerTopMid, eMouseStateDraggingInnerTopMid, innerMidTop, innerMidTopExt },
+                    { eDrawStateHoveringInnerMidRight, eMouseStateDraggingInnerMidRight, innerMidRight, innerMidRightExt },
+                    { eDrawStateHoveringInnerBtmMid, eMouseStateDraggingInnerBtmMid, innerMidBtm, innerMidBtmExt },
+                    { eDrawStateHoveringOuterMidLeft, eMouseStateDraggingOuterMidLeft, outterMidLeft, outterMidLeftExt },
+                    { eDrawStateHoveringOuterTopMid, eMouseStateDraggingOuterTopMid, outterMidTop, outterMidTopExt },
+                    { eDrawStateHoveringOuterMidRight, eMouseStateDraggingOuterMidRight, outterMidRight, outterMidRightExt },
+                    { eDrawStateHoveringOuterBtmMid, eMouseStateDraggingOuterBtmMid, outterMidBtm, outterMidBtmExt },
+                };
+                for (const auto& t : handleTicks) {
+                    markerOrActiveColor(isActive(t.hovering, t.dragging));
+                    pen.line(t.from.x(), t.from.y(), t.to.x(), t.to.y());
+                }
+
+                // The name is drawn twice in the marker colour, the first copy one pixel off.
+                pen.setShadow(false);
+                pen.color(markerColor[0], markerColor[1], markerColor[2]);
+                pen.text(center.x(), center.y(), name, 1., -1.);
+                pen.text(center.x(), center.y(), name);
+                pen.setSmoothLines(true);
             }
-            pen.end();
+        } // for (std::vector<TrackMarkerPtr>::iterator it = allMarkers.begin(); it!=allMarkers.end(); ++it) {
+    }
 
-            if ((offset.x() != 0) || (offset.y() != 0)) {
-                pen.color(thisMarkerColor[0] * 0.5, thisMarkerColor[1] * 0.5, thisMarkerColor[2] * 0.5);
-                pen.line(center.x(), center.y(), center.x() + offset.x(), center.y() + offset.y());
-            }
-
-            /// now show small lines at handle positions
-            const struct {
-                TrackerDrawStateEnum hovering;
-                TrackerMouseStateEnum dragging;
-                QPointF from;
-                QPointF to;
-            } handleTicks[] = {
-                { eDrawStateHoveringInnerMidLeft, eMouseStateDraggingInnerMidLeft, innerMidLeft, innerMidLeftExt },
-                { eDrawStateHoveringInnerTopMid, eMouseStateDraggingInnerTopMid, innerMidTop, innerMidTopExt },
-                { eDrawStateHoveringInnerMidRight, eMouseStateDraggingInnerMidRight, innerMidRight, innerMidRightExt },
-                { eDrawStateHoveringInnerBtmMid, eMouseStateDraggingInnerBtmMid, innerMidBtm, innerMidBtmExt },
-                { eDrawStateHoveringOuterMidLeft, eMouseStateDraggingOuterMidLeft, outterMidLeft, outterMidLeftExt },
-                { eDrawStateHoveringOuterTopMid, eMouseStateDraggingOuterTopMid, outterMidTop, outterMidTopExt },
-                { eDrawStateHoveringOuterMidRight, eMouseStateDraggingOuterMidRight, outterMidRight, outterMidRightExt },
-                { eDrawStateHoveringOuterBtmMid, eMouseStateDraggingOuterBtmMid, outterMidBtm, outterMidBtmExt },
-            };
-            for (const auto& t : handleTicks) {
-                markerOrActiveColor(isActive(t.hovering, t.dragging));
-                pen.line(t.from.x(), t.from.y(), t.to.x(), t.to.y());
-            }
-
-            // The name is drawn twice in the marker colour, the first copy one pixel off.
-            pen.setShadow(false);
-            pen.color(markerColor[0], markerColor[1], markerColor[2]);
-            pen.text(center.x(), center.y(), name, 1., -1.);
-            pen.text(center.x(), center.y(), name);
-            pen.setSmoothLines(true);
-        }
-    } // for (std::vector<TrackMarkerPtr>::iterator it = allMarkers.begin(); it!=allMarkers.end(); ++it) {
-
-    OverlayDrawListPen::keepIfUnchanged(&_imp->ui->markersOverlay, &markersList, &_imp->ui->markersOverlayHash);
-    if (!_imp->ui->markersOverlay.empty()) {
-        overlay->drawOverlayDrawList(_imp->ui->markersOverlay, OverlayDrawState());
+    if (!_imp->ui->markersOverlay.list().empty()) {
+        overlay->drawOverlayDrawList(_imp->ui->markersOverlay.list(), OverlayDrawState());
     }
 
     if (_imp->ui->showMarkerTexture && selectedFound) {
@@ -1110,26 +1186,30 @@ TrackerNode::drawOverlay(double time,
 
     if (_imp->ui->clickToAddTrackEnabled) {
         /// draw a square of 20px around the mouse cursor
-        OverlayDrawList& addTrackList = _imp->ui->addTrackOverlay;
-        addTrackList.clear();
-        OverlayDrawListPen addTrackPen(&addTrackList);
         const double addTrackSize = TO_DPIX(ADDTRACK_SIZE);
         const double x = _imp->ui->lastMousePos.x();
         const double y = _imp->ui->lastMousePos.y();
+        ContentHasher addTrackSignature;
+        addTrackSignature.appendDouble(addTrackSize);
+        addTrackSignature.appendDouble(x);
+        addTrackSignature.appendDouble(y);
+        if (OverlayDrawList* addTrackList = _imp->ui->addTrackOverlay.rebuildFor(addTrackSignature.finalize())) {
+            OverlayDrawListPen addTrackPen(addTrackList);
 
-        // A black copy under the green one, in place of a shadow.
-        addTrackPen.setSmoothLines(true);
-        addTrackPen.lineWidth(1.5);
-        for (int l = 0; l < 2; ++l) {
-            if (l == 0) {
-                addTrackPen.color(0., 0., 0., 0.8);
-            } else {
-                addTrackPen.color(0., 1., 0., 0.8);
+            // A black copy under the green one, in place of a shadow.
+            addTrackPen.setSmoothLines(true);
+            addTrackPen.lineWidth(1.5);
+            for (int l = 0; l < 2; ++l) {
+                if (l == 0) {
+                    addTrackPen.color(0., 0., 0., 0.8);
+                } else {
+                    addTrackPen.color(0., 1., 0., 0.8);
+                }
+                addTrackPen.anchoredShape(x, y, OverlayDrawList::AnchoredShape::box(addTrackSize * 2, addTrackSize * 2));
+                addTrackPen.anchoredShape(x, y, OverlayDrawList::AnchoredShape::cross(addTrackSize));
             }
-            addTrackPen.anchoredShape(x, y, OverlayDrawList::AnchoredShape::box(addTrackSize * 2, addTrackSize * 2));
-            addTrackPen.anchoredShape(x, y, OverlayDrawList::AnchoredShape::cross(addTrackSize));
         }
-        overlay->drawOverlayDrawList(addTrackList, OverlayDrawState());
+        overlay->drawOverlayDrawList(_imp->ui->addTrackOverlay.list(), OverlayDrawState());
     }
 } // drawOverlay
 

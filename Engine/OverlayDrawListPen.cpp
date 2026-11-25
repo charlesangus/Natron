@@ -108,7 +108,7 @@ OverlayDrawListPen::vertex(double x,
 }
 
 void
-OverlayDrawListPen::style(OverlayDrawList::Primitive* p,
+OverlayDrawListPen::style(const OverlayDrawList::PrimitiveRef& p,
                           bool isGeometry) const
 {
     if (!p) {
@@ -131,20 +131,20 @@ void
 OverlayDrawListPen::flushPoints()
 {
     if (!_run.empty()) {
-        OverlayDrawList::Primitive* p = _list->addPoints(_run, _color, _pointSize);
+        OverlayDrawList::PrimitiveRef p = _list->addPoints(_run, _color, _pointSize);
         style(p, false);
         _run.clear();
     }
 }
 
-OverlayDrawList::Primitive*
+OverlayDrawList::PrimitiveRef
 OverlayDrawListPen::end()
 {
     if (!_inRun) {
-        return nullptr;
+        return OverlayDrawList::PrimitiveRef();
     }
     _inRun = false;
-    OverlayDrawList::Primitive* p = nullptr;
+    OverlayDrawList::PrimitiveRef p;
     if (_glyph) {
         OverlayDrawList::GlyphModeEnum mode = OverlayDrawList::eGlyphModeLines;
         switch (_mode) {
@@ -194,36 +194,36 @@ OverlayDrawListPen::end()
     return p;
 } // OverlayDrawListPen::end
 
-OverlayDrawList::Primitive*
+OverlayDrawList::PrimitiveRef
 OverlayDrawListPen::point(double x,
                           double y)
 {
-    OverlayDrawList::Primitive* p = _list->addPoint(x, y, _color, _pointSize);
+    OverlayDrawList::PrimitiveRef p = _list->addPoint(x, y, _color, _pointSize);
     style(p, false);
 
     return p;
 }
 
-OverlayDrawList::Primitive*
+OverlayDrawList::PrimitiveRef
 OverlayDrawListPen::line(double x0,
                          double y0,
                          double x1,
                          double y1)
 {
-    OverlayDrawList::Primitive* p = _list->addLine(x0, y0, x1, y1, _color, _lineWidth);
+    OverlayDrawList::PrimitiveRef p = _list->addLine(x0, y0, x1, y1, _color, _lineWidth);
     style(p, true);
 
     return p;
 }
 
-OverlayDrawList::Primitive*
+OverlayDrawList::PrimitiveRef
 OverlayDrawListPen::text(double x,
                          double y,
                          const std::string& text,
                          double offsetX,
                          double offsetY)
 {
-    OverlayDrawList::Primitive* p = _list->addText(x, y, text, _color, offsetX, offsetY);
+    OverlayDrawList::PrimitiveRef p = _list->addText(x, y, text, _color, offsetX, offsetY);
     if (p) {
         p->shadow = _shadow;
     }
@@ -231,14 +231,14 @@ OverlayDrawListPen::text(double x,
     return p;
 }
 
-OverlayDrawList::Primitive*
+OverlayDrawList::PrimitiveRef
 OverlayDrawListPen::anchoredShape(double x,
                                   double y,
                                   const OverlayDrawList::AnchoredShape& shape,
                                   double dirX,
                                   double dirY)
 {
-    OverlayDrawList::Primitive* p = _list->addAnchoredShape(x, y, dirX, dirY, shape, _color, _lineWidth);
+    OverlayDrawList::PrimitiveRef p = _list->addAnchoredShape(x, y, dirX, dirY, shape, _color, _lineWidth);
     style(p, false);
 
     return p;
@@ -264,6 +264,12 @@ OverlayDrawListPen::contentHash(const OverlayDrawList& list)
         h.appendDouble(p.x);
         h.appendDouble(p.y);
     }
+    const std::vector<OverlayDrawList::Point>& glyphPoints = list.glyphPoints();
+    h.appendU64(glyphPoints.size());
+    for (const OverlayDrawList::Point& p : glyphPoints) {
+        h.appendDouble(p.x);
+        h.appendDouble(p.y);
+    }
     const std::vector<OverlayDrawList::Primitive>& primitives = list.primitives();
     h.appendU64(primitives.size());
     for (const OverlayDrawList::Primitive& p : primitives) {
@@ -277,6 +283,8 @@ OverlayDrawListPen::contentHash(const OverlayDrawList& list)
         h.appendBool(p.closed);
         h.appendU64(p.first);
         h.appendU64(p.count);
+        h.appendU64(p.glyphFirst);
+        h.appendU64(p.glyphCount);
         h.appendI64(p.handleId);
         h.appendI64(p.handleShape);
         h.appendString(p.text);

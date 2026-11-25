@@ -4456,7 +4456,7 @@ EffectInstance::buildOverlay_public(double time,
     const int zoomX = overlayZoomBucket(pixelScaleX);
     const int zoomY = overlayZoomBucket(pixelScaleY);
     const bool cached = hasOverlayDrawList() && isOverlayDrawListCached();
-    const bool reuse = cached && _imp->overlayCacheValid && (_imp->overlayCachedVersion == version) && (_imp->overlayCachedTime == time) && (_imp->overlayCachedView == (int)view) && (_imp->overlayCachedMipmapLevel == renderScale.toMipmapLevel()) && (_imp->overlayCachedZoomX == zoomX) && (_imp->overlayCachedZoomY == zoomY);
+    const bool reuse = cached && _imp->overlayCacheValid && (_imp->overlayCachedVersion == version) && (_imp->overlayCachedTime == time) && (_imp->overlayCachedView == (int)view) && (_imp->overlayCachedMipmapLevel == renderScale.toMipmapLevel()) && (_imp->overlayCachedZoomX == zoomX) && (_imp->overlayCachedZoomY == zoomY) && (_imp->overlayCachedViewport == _imp->overlaysViewport);
     if (!reuse) {
         _imp->overlayDrawList.clear();
         if (hasOverlayDrawList()) {
@@ -4470,6 +4470,7 @@ EffectInstance::buildOverlay_public(double time,
         _imp->overlayCachedMipmapLevel = renderScale.toMipmapLevel();
         _imp->overlayCachedZoomX = zoomX;
         _imp->overlayCachedZoomY = zoomY;
+        _imp->overlayCachedViewport = _imp->overlaysViewport;
     }
     double x, y;
     if ((_imp->overlayHoveredHandle != OverlayDrawList::kNoHandle) && !_imp->overlayDrawList.getHandlePosition(_imp->overlayHoveredHandle, &x, &y)) {
@@ -4520,11 +4521,7 @@ EffectInstance::getOverlayBuildCount() const
 int
 EffectInstance::overlayZoomBucket(double pixelScale)
 {
-    if (!(pixelScale > 0.) || !std::isfinite(pixelScale)) {
-        return 0;
-    }
-
-    return (int)std::floor(std::log2(pixelScale) * 8.);
+    return OverlayDrawList::zoomBucket(pixelScale);
 }
 
 OverlayDrawState

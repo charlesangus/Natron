@@ -411,6 +411,8 @@ public:
     unsigned int overlayCachedMipmapLevel = 0;
     int overlayCachedZoomX = 0;
     int overlayCachedZoomY = 0;
+    // The list holds anchored geometry placed for one viewer's pixel scale and viewport.
+    const OverlaySupport* overlayCachedViewport = nullptr;
     int overlayHoveredHandle = OverlayDrawList::kNoHandle;
     int overlayPressedHandle = OverlayDrawList::kNoHandle;
     QPointF overlayLastPenPos;

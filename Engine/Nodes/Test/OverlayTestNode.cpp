@@ -139,16 +139,16 @@ OverlayTestNode::buildInteractPrimitives(double cx,
     const OverlayColor red = OverlayColor::fromRGBA(1.f, 0.2f, 0.2f, 1.f);
     const double x0 = cx + 120.;
 
-    OverlayDrawList::Primitive* dashed = list->addPolyline({ P { x0, cy - 60. }, P { x0 + 100., cy - 60. }, P { x0 + 100., cy + 60. }, P { x0, cy + 60. } }, true, yellow);
+    OverlayDrawList::PrimitiveRef dashed = list->addPolyline({ P { x0, cy - 60. }, P { x0 + 100., cy - 60. }, P { x0 + 100., cy + 60. }, P { x0, cy + 60. } }, true, yellow);
     dashed->dashOn = 6.;
     dashed->dashOff = 4.;
 
-    OverlayDrawList::Primitive* openArrow = list->addLine(x0 + 10., cy - 40., x0 + 60., cy - 40., cyan);
+    OverlayDrawList::PrimitiveRef openArrow = list->addLine(x0 + 10., cy - 40., x0 + 60., cy - 40., cyan);
     openArrow->arrow = OverlayDrawList::eArrowEnd;
-    OverlayDrawList::Primitive* filledArrows = list->addLine(x0 + 10., cy - 20., x0 + 60., cy - 20., cyan, 1.f);
+    OverlayDrawList::PrimitiveRef filledArrows = list->addLine(x0 + 10., cy - 20., x0 + 60., cy - 20., cyan, 1.f);
     filledArrows->arrow = OverlayDrawList::eArrowBoth;
     filledArrows->arrowFilled = true;
-    OverlayDrawList::Primitive* bent = list->addPolyline({ P { x0 + 70., cy - 50. }, P { x0 + 90., cy - 40. }, P { x0 + 90., cy - 20. } }, false, cyan);
+    OverlayDrawList::PrimitiveRef bent = list->addPolyline({ P { x0 + 70., cy - 50. }, P { x0 + 90., cy - 40. }, P { x0 + 90., cy - 20. } }, false, cyan);
     bent->arrow = OverlayDrawList::eArrowEnd;
 
     list->addAnchoredShape(x0 + 20., cy + 10., S::cross(6.), OverlayColor());
@@ -163,9 +163,9 @@ OverlayTestNode::buildInteractPrimitives(double cx,
     list->setLayer(0);
     list->addPolygon({ P { x0 + 115., cy - 20. }, P { x0 + 145., cy - 20. }, P { x0 + 145., cy + 20. }, P { x0 + 115., cy + 20. } }, OverlayColor::fromRGBA(0.6f, 0.6f, 0.6f, 1.f));
 
-    OverlayDrawList::Primitive* square = list->addPoint(x0 + 130., cy + 45., OverlayColor(), 7.f);
+    OverlayDrawList::PrimitiveRef square = list->addPoint(x0 + 130., cy + 45., OverlayColor(), 7.f);
     square->smooth = false;
-    OverlayDrawList::Primitive* flat = list->addLine(x0 + 110., cy + 55., x0 + 150., cy + 55., OverlayColor(), 1.f);
+    OverlayDrawList::PrimitiveRef flat = list->addLine(x0 + 110., cy + 55., x0 + 150., cy + 55., OverlayColor(), 1.f);
     flat->shadow = false;
     flat->smooth = false;
 }

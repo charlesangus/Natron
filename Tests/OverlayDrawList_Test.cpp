@@ -230,14 +230,28 @@ TEST(OverlayDrawList, AddReturnsThePrimitiveOrNull)
 {
     OverlayDrawList list;
 
-    OverlayDrawList::Primitive* line = list.addLine(0., 0., 1., 1.);
-    ASSERT_NE(nullptr, line);
-    EXPECT_EQ(&list.primitives().back(), line);
-    EXPECT_EQ(nullptr, list.addPolyline({ P { 0., 0. } }, false));
-    EXPECT_EQ(nullptr, list.addHandle(-1, 0., 0.));
-    EXPECT_EQ(nullptr, list.addAnchoredShape(0., 0., OverlayDrawList::AnchoredShape::glyphOf({ P { 0., 0. } }, OverlayDrawList::eGlyphModeLines)));
-    EXPECT_EQ(nullptr, list.addAnchoredShape(0., 0., OverlayDrawList::AnchoredShape::glyphOf({ P { 0., 0. }, P { 1., 0. } }, OverlayDrawList::eGlyphModePolygon)));
+    OverlayDrawList::PrimitiveRef line = list.addLine(0., 0., 1., 1.);
+    ASSERT_NE(nullptr, line.get());
+    EXPECT_EQ(&list.primitives().back(), line.get());
+    EXPECT_FALSE(list.addPolyline({ P { 0., 0. } }, false));
+    EXPECT_FALSE(list.addHandle(-1, 0., 0.));
+    EXPECT_FALSE(list.addAnchoredShape(0., 0., OverlayDrawList::AnchoredShape::glyphOf({ P { 0., 0. } }, OverlayDrawList::eGlyphModeLines)));
+    EXPECT_FALSE(list.addAnchoredShape(0., 0., OverlayDrawList::AnchoredShape::glyphOf({ P { 0., 0. }, P { 1., 0. } }, OverlayDrawList::eGlyphModePolygon)));
     EXPECT_EQ(1u, list.primitives().size());
+}
+
+TEST(OverlayDrawList, PrimitiveRefSurvivesLaterAdds)
+{
+    OverlayDrawList list;
+
+    OverlayDrawList::PrimitiveRef first = list.addLine(0., 0., 1., 1.);
+    for (int i = 0; i < 1000; ++i) {
+        list.addPoint(i, i);
+    }
+    first->width = 5.f;
+    EXPECT_EQ(0u, first.index());
+    EXPECT_EQ(&list.primitives().front(), first.get());
+    EXPECT_FLOAT_EQ(5.f, list.primitives().front().width);
 }
 
 TEST(OverlayDrawList, FlagsDefaultByType)
@@ -271,8 +285,8 @@ TEST(OverlayDrawList, AnchoredShapeKeepsAnchorAndGlyph)
     OverlayDrawList list;
 
     list.addPoint(9., 9.);
-    OverlayDrawList::Primitive* arc = list.addAnchoredShape(1., 2., 3., 4., OverlayDrawList::AnchoredShape::arc(10., 0.5, 2.), OverlayColor(), 2.f);
-    ASSERT_NE(nullptr, arc);
+    OverlayDrawList::PrimitiveRef arc = list.addAnchoredShape(1., 2., 3., 4., OverlayDrawList::AnchoredShape::arc(10., 0.5, 2.), OverlayColor(), 2.f);
+    ASSERT_NE(nullptr, arc.get());
     EXPECT_EQ(OverlayDrawList::ePrimitiveTypeAnchoredShape, arc->type);
     EXPECT_EQ(OverlayDrawList::eAnchoredShapeArc, arc->anchoredShape);
     EXPECT_EQ(1u, arc->first);
@@ -284,12 +298,16 @@ TEST(OverlayDrawList, AnchoredShapeKeepsAnchorAndGlyph)
     EXPECT_DOUBLE_EQ(4., arc->directionY);
     EXPECT_FLOAT_EQ(2.f, arc->width);
 
-    OverlayDrawList::Primitive* glyph = list.addAnchoredShape(5., 6., OverlayDrawList::AnchoredShape::glyphOf({ P { 0., 0. }, P { 3., 0. }, P { 0., 3. } }, OverlayDrawList::eGlyphModeLineLoop));
-    ASSERT_NE(nullptr, glyph);
+    OverlayDrawList::PrimitiveRef glyph = list.addAnchoredShape(5., 6., OverlayDrawList::AnchoredShape::glyphOf({ P { 0., 0. }, P { 3., 0. }, P { 0., 3. } }, OverlayDrawList::eGlyphModeLineLoop));
+    ASSERT_NE(nullptr, glyph.get());
     EXPECT_EQ(2u, glyph->first);
-    EXPECT_EQ(4u, glyph->count);
+    EXPECT_EQ(1u, glyph->count);
+    EXPECT_EQ(3u, list.points().size());
     EXPECT_TRUE(nearPoint(list.points()[2], 5., 6.));
-    EXPECT_TRUE(nearPoint(list.points()[4], 3., 0.));
+    EXPECT_EQ(0u, glyph->glyphFirst);
+    EXPECT_EQ(3u, glyph->glyphCount);
+    ASSERT_EQ(3u, list.glyphPoints().size());
+    EXPECT_TRUE(nearPoint(list.glyphPoints()[1], 3., 0.));
     EXPECT_EQ(OverlayDrawList::eGlyphModeLineLoop, glyph->glyphMode);
 }
 
@@ -339,27 +357,27 @@ TEST(OverlayDrawList, SolidLinesExpandToTheirSegments)
     OverlayDrawList list;
     list.addPolyline({ P { 0., 0. }, P { 10., 0. }, P { 10., 10. } }, true);
     std::vector<P> segments, triangles;
-    OverlayDrawList::expandGeometry(list.primitives()[0], list.points(), 1., 1., &segments, &triangles);
+    OverlayDrawList::expandGeometry(list.primitives()[0], list, 1., 1., &segments, &triangles);
     ASSERT_EQ(6u, segments.size());
     EXPECT_TRUE(nearPoint(segments[4], 10., 10.));
     EXPECT_TRUE(nearPoint(segments[5], 0., 0.));
     EXPECT_TRUE(triangles.empty());
 
     std::vector<P> none;
-    OverlayDrawList::expandGeometry(list.primitives()[0], list.points(), 0., 1., &none, &triangles);
+    OverlayDrawList::expandGeometry(list.primitives()[0], list, 0., 1., &none, &triangles);
     EXPECT_TRUE(none.empty());
 }
 
 TEST(OverlayDrawList, DashesAreInScreenPixels)
 {
     OverlayDrawList list;
-    OverlayDrawList::Primitive* p = list.addLine(0., 0., 20., 0.);
+    OverlayDrawList::PrimitiveRef p = list.addLine(0., 0., 20., 0.);
     p->dashOn = 4.;
     p->dashOff = 1.;
 
     // Two canonical units per pixel: the 10-pixel line holds two whole dashes.
     std::vector<P> segments, triangles;
-    OverlayDrawList::expandGeometry(list.primitives()[0], list.points(), 2., 2., &segments, &triangles);
+    OverlayDrawList::expandGeometry(list.primitives()[0], list, 2., 2., &segments, &triangles);
     ASSERT_EQ(4u, segments.size());
     EXPECT_TRUE(nearPoint(segments[0], 0., 0.));
     EXPECT_TRUE(nearPoint(segments[1], 8., 0.));
@@ -367,9 +385,28 @@ TEST(OverlayDrawList, DashesAreInScreenPixels)
     EXPECT_TRUE(nearPoint(segments[3], 18., 0.));
 
     segments.clear();
-    OverlayDrawList::expandGeometry(list.primitives()[0], list.points(), 1., 1., &segments, &triangles);
+    OverlayDrawList::expandGeometry(list.primitives()[0], list, 1., 1., &segments, &triangles);
     EXPECT_EQ(8u, segments.size());
     EXPECT_DOUBLE_EQ(16., segmentsLength(segments));
+}
+
+TEST(OverlayDrawList, DashesPastTheCapDrawSolid)
+{
+    OverlayDrawList list;
+    const double period = 5.;
+    OverlayDrawList::PrimitiveRef p = list.addLine(0., 0., period * OverlayDrawList::kMaxDashes, 0.);
+    p->dashOn = 4.;
+    p->dashOff = 1.;
+
+    std::vector<P> segments, triangles;
+    OverlayDrawList::expandGeometry(list.primitives()[0], list, 1., 1., &segments, &triangles);
+    EXPECT_EQ(2u * OverlayDrawList::kMaxDashes, segments.size());
+
+    segments.clear();
+    OverlayDrawList::expandGeometry(list.primitives()[0], list, 0.5, 0.5, &segments, &triangles);
+    ASSERT_EQ(2u, segments.size());
+    EXPECT_TRUE(nearPoint(segments[0], 0., 0.));
+    EXPECT_TRUE(nearPoint(segments[1], period * OverlayDrawList::kMaxDashes, 0.));
 }
 
 TEST(OverlayDrawList, PolylineDashesRunOnAcrossVertices)
@@ -379,12 +416,12 @@ TEST(OverlayDrawList, PolylineDashesRunOnAcrossVertices)
     for (int i = 0; i <= 12; ++i) {
         pts.push_back(P { (double)i, 0. });
     }
-    OverlayDrawList::Primitive* p = list.addPolyline(pts, false);
+    OverlayDrawList::PrimitiveRef p = list.addPolyline(pts, false);
     p->dashOn = 2.;
     p->dashOff = 2.;
 
     std::vector<P> segments, triangles;
-    OverlayDrawList::expandGeometry(list.primitives()[0], list.points(), 1., 1., &segments, &triangles);
+    OverlayDrawList::expandGeometry(list.primitives()[0], list, 1., 1., &segments, &triangles);
     EXPECT_DOUBLE_EQ(6., segmentsLength(segments));
     for (std::size_t i = 0; i < segments.size(); ++i) {
         const double x = segments[i].x;
@@ -396,13 +433,13 @@ TEST(OverlayDrawList, PolylineDashesRunOnAcrossVertices)
 TEST(OverlayDrawList, ArrowheadsFollowTheLineEnds)
 {
     OverlayDrawList list;
-    OverlayDrawList::Primitive* p = list.addLine(0., 0., 100., 0.);
+    OverlayDrawList::PrimitiveRef p = list.addLine(0., 0., 100., 0.);
     p->arrow = OverlayDrawList::eArrowEnd;
     p->arrowLength = 8.;
     p->arrowWidth = 6.;
 
     std::vector<P> segments, triangles;
-    OverlayDrawList::expandGeometry(list.primitives()[0], list.points(), 0.5, 0.5, &segments, &triangles);
+    OverlayDrawList::expandGeometry(list.primitives()[0], list, 0.5, 0.5, &segments, &triangles);
     ASSERT_EQ(6u, segments.size());
     EXPECT_TRUE(nearPoint(segments[2], 96., 1.5));
     EXPECT_TRUE(nearPoint(segments[3], 100., 0.));
@@ -415,7 +452,7 @@ TEST(OverlayDrawList, ArrowheadsFollowTheLineEnds)
     p->arrow = OverlayDrawList::eArrowBoth;
     p->arrowFilled = true;
     segments.clear();
-    OverlayDrawList::expandGeometry(list.primitives()[0], list.points(), 1., 1., &segments, &triangles);
+    OverlayDrawList::expandGeometry(list.primitives()[0], list, 1., 1., &segments, &triangles);
     EXPECT_EQ(4u, segments.size());
     ASSERT_EQ(6u, triangles.size());
     EXPECT_TRUE(nearPoint(triangles[0], 10., 10.));
@@ -428,7 +465,7 @@ TEST(OverlayDrawList, ArrowheadsFollowTheLineEnds)
     p->arrow = OverlayDrawList::eArrowBoth;
     segments.clear();
     triangles.clear();
-    OverlayDrawList::expandGeometry(list.primitives()[0], list.points(), 1., 1., &segments, &triangles);
+    OverlayDrawList::expandGeometry(list.primitives()[0], list, 1., 1., &segments, &triangles);
     EXPECT_EQ(6u, segments.size());
 }
 
@@ -442,7 +479,7 @@ TEST(OverlayDrawList, AnchoredShapesKeepTheirPixelSize)
     list.addAnchoredShape(10., 20., OverlayDrawList::AnchoredShape::arc(3., 0., M_PI / 2.));
 
     std::vector<P> segments, triangles;
-    OverlayDrawList::expandGeometry(list.primitives()[0], list.points(), 2., 3., &segments, &triangles);
+    OverlayDrawList::expandGeometry(list.primitives()[0], list, 2., 3., &segments, &triangles);
     ASSERT_EQ(4u, segments.size());
     EXPECT_TRUE(nearPoint(segments[0], 0., 20.));
     EXPECT_TRUE(nearPoint(segments[1], 20., 20.));
@@ -450,25 +487,25 @@ TEST(OverlayDrawList, AnchoredShapesKeepTheirPixelSize)
     EXPECT_TRUE(nearPoint(segments[3], 10., 35.));
 
     segments.clear();
-    OverlayDrawList::expandGeometry(list.primitives()[1], list.points(), 1., 1., &segments, &triangles);
+    OverlayDrawList::expandGeometry(list.primitives()[1], list, 1., 1., &segments, &triangles);
     ASSERT_EQ(8u, segments.size());
     EXPECT_TRUE(nearPoint(segments[0], 6., 18.));
     EXPECT_TRUE(nearPoint(segments[2], 14., 18.));
     EXPECT_TRUE(triangles.empty());
 
-    OverlayDrawList::expandGeometry(list.primitives()[2], list.points(), 1., 1., &segments, &triangles);
+    OverlayDrawList::expandGeometry(list.primitives()[2], list, 1., 1., &segments, &triangles);
     EXPECT_EQ(8u, segments.size());
     ASSERT_EQ(6u, triangles.size());
 
     segments.clear();
-    OverlayDrawList::expandGeometry(list.primitives()[3], list.points(), 1., 1., &segments, &triangles);
+    OverlayDrawList::expandGeometry(list.primitives()[3], list, 1., 1., &segments, &triangles);
     EXPECT_EQ(80u, segments.size());
     for (const P& v : segments) {
         EXPECT_NEAR(3., std::hypot(v.x - 10., v.y - 20.), 1e-9);
     }
 
     segments.clear();
-    OverlayDrawList::expandGeometry(list.primitives()[4], list.points(), 1., 1., &segments, &triangles);
+    OverlayDrawList::expandGeometry(list.primitives()[4], list, 1., 1., &segments, &triangles);
     ASSERT_EQ(20u, segments.size());
     EXPECT_TRUE(nearPoint(segments.front(), 13., 20.));
     EXPECT_TRUE(nearPoint(segments.back(), 10., 23.));
@@ -482,13 +519,13 @@ TEST(OverlayDrawList, DirectionTurnsAnchoredShapesOnScreen)
     list.addAnchoredShape(0., 0., 0., 1., OverlayDrawList::AnchoredShape::glyphOf({ P { 0., 0. }, P { 4., 0. }, P { 0., 4. } }, OverlayDrawList::eGlyphModePolygon));
 
     std::vector<P> segments, triangles;
-    OverlayDrawList::expandGeometry(list.primitives()[0], list.points(), 2., 1., &segments, &triangles);
+    OverlayDrawList::expandGeometry(list.primitives()[0], list, 2., 1., &segments, &triangles);
     ASSERT_EQ(2u, segments.size());
     const double d = 10. / std::sqrt(2.);
     EXPECT_TRUE(nearPoint(segments[1], 2. * d, d));
 
     segments.clear();
-    OverlayDrawList::expandGeometry(list.primitives()[1], list.points(), 1., 1., &segments, &triangles);
+    OverlayDrawList::expandGeometry(list.primitives()[1], list, 1., 1., &segments, &triangles);
     EXPECT_TRUE(segments.empty());
     ASSERT_EQ(3u, triangles.size());
     bool turned = false;

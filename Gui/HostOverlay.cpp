@@ -26,6 +26,7 @@
 #include "HostOverlay.h"
 
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <list>
 #include <stdexcept>
@@ -124,25 +125,36 @@ setOverlayKnobValues(const KnobDoublePtr& knob,
 
 DefaultInteractI::DefaultInteractI(HostOverlay* overlay)
     : _overlay(overlay)
-    , _shownOverlayHash(0)
 {
 }
 
-OverlayDrawList&
-DefaultInteractI::beginOverlayList()
+ContentHasher
+DefaultInteractI::beginOverlaySignature(const OfxPointD& pscale,
+                                        const OfxRGBColourD& color) const
 {
-    _builtOverlay.clear();
+    ContentHasher h;
+    h.appendU64((U64)(std::uintptr_t)_overlay->getLastCallingViewport());
+    h.appendDouble(pscale.x);
+    h.appendDouble(pscale.y);
+    h.appendDouble(color.r);
+    h.appendDouble(color.g);
+    h.appendDouble(color.b);
 
-    return _builtOverlay;
+    return h;
+}
+
+OverlayDrawList*
+DefaultInteractI::beginOverlayList(const ContentHasher& signature)
+{
+    return _overlayCache.rebuildFor(signature.finalize());
 }
 
 void
 DefaultInteractI::showOverlayList()
 {
-    OverlayDrawListPen::keepIfUnchanged(&_shownOverlay, &_builtOverlay, &_shownOverlayHash);
     OverlaySupport* viewport = _overlay->getLastCallingViewport();
-    if (viewport && !_shownOverlay.empty()) {
-        viewport->drawOverlayDrawList(_shownOverlay, OverlayDrawState());
+    if (viewport && !_overlayCache.list().empty()) {
+        viewport->drawOverlayDrawList(_overlayCache.list(), OverlayDrawState());
     }
 }
 
@@ -1095,7 +1107,7 @@ public:
     virtual void draw(double time,
                       const RenderScale& /*renderScale*/,
                       ViewIdx view,
-                      const OfxPointD& /*pscale*/,
+                      const OfxPointD& pscale,
                       const QPointF& /*lastPenPos*/,
                       const OfxRGBColourD& color,
                       const QFontMetrics& /*fm*/) OVERRIDE FINAL
@@ -1119,7 +1131,27 @@ public:
             hasLine[i] = clipLineToRect(p[i], ortho, rod, &lineStart[i], &lineEnd[i]);
         }
 
-        OverlayDrawListPen pen(&beginOverlayList());
+        ContentHasher signature = beginOverlaySignature(pscale, color);
+        signature.appendI64(_state);
+        for (int i = 0; i < 2; ++i) {
+            signature.appendDouble(p[i].x);
+            signature.appendDouble(p[i].y);
+            signature.appendBool(hasLine[i]);
+            if (hasLine[i]) {
+                signature.appendDouble(lineStart[i].x);
+                signature.appendDouble(lineStart[i].y);
+                signature.appendDouble(lineEnd[i].x);
+                signature.appendDouble(lineEnd[i].y);
+            }
+            signature.appendString(_point[i].lock()->getLabel());
+        }
+        OverlayDrawList* list = beginOverlayList(signature);
+        if (!list) {
+            showOverlayList();
+
+            return;
+        }
+        OverlayDrawListPen pen(list);
         pen.setShadow(true);
         pen.setSmoothLines(true);
         pen.setSmoothPoints(false);
@@ -1441,7 +1473,7 @@ void
 PositionInteract::draw(double time,
                        const RenderScale& /*renderScale*/,
                        ViewIdx /*view*/,
-                       const OfxPointD& /*pscale*/,
+                       const OfxPointD& pscale,
                        const QPointF& lastPenPos,
                        const OfxRGBColourD& color,
                        const QFontMetrics& fm)
@@ -1480,7 +1512,20 @@ PositionInteract::draw(double time,
         pos.setX(p[0]);
         pos.setY(p[1]);
     }
-    OverlayDrawListPen pen(&beginOverlayList());
+    ContentHasher signature = beginOverlaySignature(pscale, color);
+    signature.appendI64(_state);
+    signature.appendDouble(pos.x());
+    signature.appendDouble(pos.y());
+    signature.appendString(knob->getOriginalName());
+    signature.appendI64(fm.height());
+    signature.appendDouble(pointSize());
+    OverlayDrawList* list = beginOverlayList(signature);
+    if (!list) {
+        showOverlayList();
+
+        return;
+    }
+    OverlayDrawListPen pen(list);
     pen.setShadow(true);
     pen.color(pR, pG, pB);
     pen.pointSize(pointSize());
@@ -1576,7 +1621,7 @@ void
 RectangleInteract::draw(double time,
                         const RenderScale& /*renderScale*/,
                         ViewIdx /*view*/,
-                        const OfxPointD& /*pscale*/,
+                        const OfxPointD& pscale,
                         const QPointF& /*lastPenPos*/,
                         const OfxRGBColourD& color,
                         const QFontMetrics& /*fm*/)
@@ -1594,7 +1639,23 @@ RectangleInteract::draw(double time,
     const bool keepAR = _modifierStateShift > 0;
     const bool centered = _modifierStateCtrl > 0;
 
-    OverlayDrawListPen pen(&beginOverlayList());
+    ContentHasher signature = beginOverlaySignature(pscale, color);
+    signature.appendDouble(x1);
+    signature.appendDouble(y1);
+    signature.appendDouble(w);
+    signature.appendDouble(h);
+    signature.appendBool(keepAR);
+    signature.appendBool(centered);
+    signature.appendI64(_drawState);
+    signature.appendDouble(pointSize());
+    signature.appendDouble(crossSize());
+    OverlayDrawList* list = beginOverlayList(signature);
+    if (!list) {
+        showOverlayList();
+
+        return;
+    }
+    OverlayDrawListPen pen(list);
     pen.setShadow(true);
     pen.setSmoothLines(true);
     pen.setSmoothPoints(false);
@@ -2519,20 +2580,6 @@ TransformInteract::draw(double time,
     OfxPointD left, right, bottom, top;
     getTargetPoints(targetCenter, targetRadius, &left, &bottom, &top, &right);
 
-    OverlayDrawListPen pen(&beginOverlayList());
-    pen.setShadow(true);
-    pen.setSmoothLines(true);
-    pen.lineWidth(1.5);
-
-    GlyphFrame frame(targetCenter, pscale);
-    frame.translate(targetCenter.x, targetCenter.y);
-    frame.rotate(rotate);
-    drawRotationBar(pen, frame, color, pscale, targetRadius.x, _mouseState == TransformInteract::eDraggingRotationBar || _drawState == TransformInteract::eRotationBarHovered, inverted);
-    frame.multiply(skewOrder ? 1. : (1. + skewX * skewY), skewY, skewX, skewOrder ? (1. + skewX * skewY) : 1., 0., 0.);
-    frame.translate(-targetCenter.x, -targetCenter.y);
-
-    drawEllipse(pen, frame, color, targetCenter, targetRadius, _mouseState == TransformInteract::eDraggingCircle || _drawState == TransformInteract::eCircleHovered);
-
     // add 180 to the angle to draw the arrows on the other side. unfortunately, this requires knowing
     // the mouse position in the ellipse frame
     double flip = 0.;
@@ -2554,6 +2601,42 @@ TransformInteract::draw(double time,
             flip = 180.;
         }
     }
+    ContentHasher signature = beginOverlaySignature(pscale, color);
+    signature.appendDouble(center.x);
+    signature.appendDouble(center.y);
+    signature.appendDouble(translate.x);
+    signature.appendDouble(translate.y);
+    signature.appendDouble(scale.x);
+    signature.appendDouble(scale.y);
+    signature.appendDouble(rotate);
+    signature.appendDouble(skewX);
+    signature.appendDouble(skewY);
+    signature.appendI64(skewOrder);
+    signature.appendBool(inverted);
+    signature.appendI64(_mouseState);
+    signature.appendI64(_drawState);
+    signature.appendI64(_modifierStateCtrl);
+    signature.appendDouble(flip);
+    OverlayDrawList* list = beginOverlayList(signature);
+    if (!list) {
+        showOverlayList();
+
+        return;
+    }
+    OverlayDrawListPen pen(list);
+    pen.setShadow(true);
+    pen.setSmoothLines(true);
+    pen.lineWidth(1.5);
+
+    GlyphFrame frame(targetCenter, pscale);
+    frame.translate(targetCenter.x, targetCenter.y);
+    frame.rotate(rotate);
+    drawRotationBar(pen, frame, color, pscale, targetRadius.x, _mouseState == TransformInteract::eDraggingRotationBar || _drawState == TransformInteract::eRotationBarHovered, inverted);
+    frame.multiply(skewOrder ? 1. : (1. + skewX * skewY), skewY, skewX, skewOrder ? (1. + skewX * skewY) : 1., 0., 0.);
+    frame.translate(-targetCenter.x, -targetCenter.y);
+
+    drawEllipse(pen, frame, color, targetCenter, targetRadius, _mouseState == TransformInteract::eDraggingCircle || _drawState == TransformInteract::eCircleHovered);
+
     drawSkewBar(pen, frame, color, targetCenter, pscale, targetRadius.y, _mouseState == TransformInteract::eDraggingSkewXBar || _drawState == TransformInteract::eSkewXBarHoverered, flip);
     drawSkewBar(pen, frame, color, targetCenter, pscale, targetRadius.x, _mouseState == TransformInteract::eDraggingSkewYBar || _drawState == TransformInteract::eSkewYBarHoverered, flip - 90.);
 
@@ -2570,7 +2653,7 @@ void
 CornerPinInteract::draw(double time,
                         const RenderScale& /*renderScale*/,
                         ViewIdx /*view*/,
-                        const OfxPointD& /*pscale*/,
+                        const OfxPointD& pscale,
                         const QPointF& /*lastPenPos*/,
                         const OfxRGBColourD& color,
                         const QFontMetrics& /*fm*/)
@@ -2626,7 +2709,25 @@ CornerPinInteract::draw(double time,
         }
     }
 
-    OverlayDrawListPen pen(&beginOverlayList());
+    ContentHasher signature = beginOverlaySignature(pscale, color);
+    signature.appendBool(useFrom);
+    signature.appendI64(_hovering);
+    signature.appendI64(_dragging);
+    for (int i = 0; i < 4; ++i) {
+        signature.appendBool(enable[i]);
+        signature.appendDouble(from[i].x);
+        signature.appendDouble(from[i].y);
+        signature.appendDouble(to[i].x);
+        signature.appendDouble(to[i].y);
+        signature.appendString(useFrom ? _from[i].lock()->getName() : _to[i].lock()->getName());
+    }
+    OverlayDrawList* list = beginOverlayList(signature);
+    if (!list) {
+        showOverlayList();
+
+        return;
+    }
+    OverlayDrawListPen pen(list);
     pen.setShadow(true);
     pen.setSmoothLines(true);
     pen.setSmoothPoints(false);

@@ -25,6 +25,7 @@
 
 #include "NodeOverlayRenderer.h"
 
+#include <algorithm>
 #include <cstdint>
 
 #include "Global/GLIncludes.h"
@@ -110,8 +111,9 @@ NodeOverlayRenderer::NodeOverlayRenderer()
     , _uploaded(false)
     , _uploadedBuildId(0)
     , _uploadedState()
-    , _uploadedPixelScaleX(0.)
-    , _uploadedPixelScaleY(0.)
+    , _uploadedScaleDependent(false)
+    , _uploadedZoomX(0)
+    , _uploadedZoomY(0)
     , _uploadedPositionBytes(0)
     , _uploadedColorBytes(0)
 {
@@ -170,7 +172,7 @@ NodeOverlayRenderer::tessellate(const OverlayDrawList& list,
         case OverlayDrawList::ePrimitiveTypeAnchoredShape:
             segments.clear();
             filled.clear();
-            OverlayDrawList::expandGeometry(p, pts, pixelScaleX, pixelScaleY, &segments, &filled);
+            OverlayDrawList::expandGeometry(p, list, pixelScaleX, pixelScaleY, &segments, &filled);
             if (!segments.empty()) {
                 t.begin(GL_LINES, p.width, p.smooth, p.shadow);
                 for (const OverlayDrawList::Point& v : segments) {
@@ -224,7 +226,9 @@ NodeOverlayRenderer::isUploaded(const OverlayDrawList& list,
                                 double pixelScaleX,
                                 double pixelScaleY) const
 {
-    return _uploaded && _vbo && (_uploadedBuildId == list.buildId()) && (_uploadedPixelScaleX == pixelScaleX) && (_uploadedPixelScaleY == pixelScaleY) && (_uploadedState.hoveredHandle == state.hoveredHandle) && (_uploadedState.pressedHandle == state.pressedHandle) && (_uploadedState.nodeR == state.nodeR) && (_uploadedState.nodeG == state.nodeG) && (_uploadedState.nodeB == state.nodeB);
+    const bool sameZoom = !_uploadedScaleDependent || ((_uploadedZoomX == OverlayDrawList::zoomBucket(pixelScaleX)) && (_uploadedZoomY == OverlayDrawList::zoomBucket(pixelScaleY)));
+
+    return _uploaded && _vbo && (_uploadedBuildId == list.buildId()) && sameZoom && (_uploadedState.hoveredHandle == state.hoveredHandle) && (_uploadedState.pressedHandle == state.pressedHandle) && (_uploadedState.nodeR == state.nodeR) && (_uploadedState.nodeG == state.nodeG) && (_uploadedState.nodeB == state.nodeB);
 }
 
 void
@@ -281,8 +285,9 @@ NodeOverlayRenderer::draw(const OverlayDrawList& list,
         _uploaded = true;
         _uploadedBuildId = list.buildId();
         _uploadedState = state;
-        _uploadedPixelScaleX = pixelScaleX;
-        _uploadedPixelScaleY = pixelScaleY;
+        _uploadedScaleDependent = std::any_of(list.primitives().begin(), list.primitives().end(), OverlayDrawList::dependsOnPixelScale);
+        _uploadedZoomX = OverlayDrawList::zoomBucket(pixelScaleX);
+        _uploadedZoomY = OverlayDrawList::zoomBucket(pixelScaleY);
     }
 
     const bool hasVertices = (_uploadedPositionBytes > 0) && _vbo;

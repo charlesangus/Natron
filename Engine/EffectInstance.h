@@ -2863,8 +2863,8 @@ public:
 
     /**
      * @brief Returns the overlay draw list, rebuilding it with buildOverlay() unless the node caches
-     * its list (isOverlayDrawListCached()) and the content version, time, view, render scale and
-     * zoom bucket are those of the last build. The list is kept for the pen's handle hit-tests
+     * its list (isOverlayDrawListCached()) and the content version, time, view, render scale,
+     * viewer and zoom bucket are those of the last build. The list is kept for the pen's handle hit-tests
      * until the next rebuild. Main thread only.
      **/
     const OverlayDrawList& buildOverlay_public(double time, const RenderScale& renderScale, ViewIdx view);

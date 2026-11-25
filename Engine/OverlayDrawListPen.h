@@ -139,14 +139,14 @@ public:
 
     void vertex(double x, double y);
 
-    // Adds the run started by begin() or beginGlyph() and returns its primitive, or nullptr when
-    // it added nothing. The pointer is valid until the next primitive is added.
-    OverlayDrawList::Primitive* end();
+    // Adds the run started by begin() or beginGlyph() and returns its primitive, or a null
+    // reference when it added nothing.
+    OverlayDrawList::PrimitiveRef end();
 
-    OverlayDrawList::Primitive* point(double x, double y);
-    OverlayDrawList::Primitive* line(double x0, double y0, double x1, double y1);
-    OverlayDrawList::Primitive* text(double x, double y, const std::string& text, double offsetX = 0., double offsetY = 0.);
-    OverlayDrawList::Primitive* anchoredShape(double x, double y, const OverlayDrawList::AnchoredShape& shape, double dirX = 0., double dirY = 0.);
+    OverlayDrawList::PrimitiveRef point(double x, double y);
+    OverlayDrawList::PrimitiveRef line(double x0, double y0, double x1, double y1);
+    OverlayDrawList::PrimitiveRef text(double x, double y, const std::string& text, double offsetX = 0., double offsetY = 0.);
+    OverlayDrawList::PrimitiveRef anchoredShape(double x, double y, const OverlayDrawList::AnchoredShape& shape, double dirX = 0., double dirY = 0.);
 
     // Turns a canonical angle in degrees, as glRotate takes it, into a direction for beginGlyph().
     static void directionOfDegrees(double degrees, double* dirX, double* dirY);
@@ -155,12 +155,13 @@ public:
     static U64 contentHash(const OverlayDrawList& list);
 
     // Moves built into shown unless it draws the same as shown, whose hash is *shownHash. An
-    // unchanged shown list keeps its build id, so the viewer keeps its uploaded geometry.
+    // unchanged shown list keeps its build id, so the viewer keeps its uploaded geometry. For lists
+    // whose inputs have no cheap signature; OverlayDrawListCache skips the build as well.
     static void keepIfUnchanged(OverlayDrawList* shown, OverlayDrawList* built, U64* shownHash);
 
 private:
     void flushPoints();
-    void style(OverlayDrawList::Primitive* p, bool isGeometry) const;
+    void style(const OverlayDrawList::PrimitiveRef& p, bool isGeometry) const;
 
     OverlayDrawList* _list;
     OverlayColor _color;
@@ -180,6 +181,46 @@ private:
     double _dirX;
     double _dirY;
     std::vector<OverlayDrawList::Point> _run;
+};
+
+/**
+ * @brief An interact's overlay list with the signature of the inputs it was built from. The
+ * signature digests whatever the build reads, so an unchanged one means the list still holds: it
+ * is neither rebuilt nor re-uploaded, since an untouched list keeps its build id.
+ **/
+class OverlayDrawListCache {
+public:
+    /**
+     * @brief Returns the list, cleared, to rebuild from inputs whose signature is signature, or
+     * nullptr when the list was last built from the same signature and still holds.
+     **/
+    OverlayDrawList* rebuildFor(U64 signature)
+    {
+        if (_valid && (signature == _signature)) {
+            return nullptr;
+        }
+        _list.clear();
+        _signature = signature;
+        _valid = true;
+
+        return &_list;
+    }
+
+    const OverlayDrawList& list() const
+    {
+        return _list;
+    }
+
+    // Forces the next rebuildFor() to rebuild.
+    void invalidate()
+    {
+        _valid = false;
+    }
+
+private:
+    OverlayDrawList _list;
+    U64 _signature = 0;
+    bool _valid = false;
 };
 
 NATRON_NAMESPACE_EXIT

@@ -38,6 +38,7 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/OverlayDrawList.h"
+#include "Engine/OverlayDrawListPen.h"
 #include "Engine/RectI.h"
 #include "Engine/Texture.h"
 #include "Engine/TrackerUndoCommand.h"
@@ -379,12 +380,8 @@ public:
     double selectedMarkerScale;
     ImageWPtr selectedMarkerImg;
     bool isTracking;
-    // The markers list is replaced only when a rebuild changes its content, so the viewer keeps
-    // its uploaded geometry across redraws that draw the same thing.
-    OverlayDrawList markersOverlay;
-    OverlayDrawList markersOverlayScratch;
-    U64 markersOverlayHash;
-    OverlayDrawList addTrackOverlay;
+    OverlayDrawListCache markersOverlay;
+    OverlayDrawListCache addTrackOverlay;
 
     TrackerNodeInteract(TrackerNodePrivate* p);
 

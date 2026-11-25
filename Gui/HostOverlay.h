@@ -30,8 +30,10 @@
 
 #include "Global/GlobalDefines.h"
 
+#include "Engine/ContentHasher.h"
 #include "Engine/OfxOverlayInteract.h"
 #include "Engine/OverlayDrawList.h"
+#include "Engine/OverlayDrawListPen.h"
 #include "Gui/GuiFwd.h"
 
 NATRON_NAMESPACE_ENTER
@@ -45,15 +47,18 @@ protected:
 
     HostOverlay* _overlay;
 
-    // A cleared list for draw() to fill, then showOverlayList() draws it. The list drawn last time
-    // stays when the new one draws the same, so the viewer keeps its uploaded geometry.
-    OverlayDrawList& beginOverlayList();
+    // A hasher seeded with what every interact's list depends on: the viewer, its pixel scale and
+    // the overlay colour. draw() adds the rest of what it reads.
+    ContentHasher beginOverlaySignature(const OfxPointD& pscale, const OfxRGBColourD& color) const;
+
+    // The cleared list for draw() to fill when signature differs from the one the shown list was
+    // built from, else nullptr: the shown list still holds and the viewer keeps its uploaded
+    // geometry. showOverlayList() then draws the shown list.
+    OverlayDrawList* beginOverlayList(const ContentHasher& signature);
     void showOverlayList();
 
 private:
-    OverlayDrawList _shownOverlay;
-    OverlayDrawList _builtOverlay;
-    U64 _shownOverlayHash;
+    OverlayDrawListCache _overlayCache;
 
 public:
 

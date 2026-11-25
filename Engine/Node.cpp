@@ -106,6 +106,7 @@
 #include "Engine/Project.h"
 #include "Engine/RenderContext.h"
 #include "Engine/RotoContext.h"
+#include "Engine/RotoCurvePanelHook.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoPaint.h"
 #include "Engine/RotoStrokeItem.h"
@@ -117,6 +118,7 @@
 #include "Engine/TrackerContext.h"
 #include "Engine/UndoCommand.h"
 #include "Engine/Utils.h" // convertFromPlainText
+#include "Engine/VectorFollowKnobs.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
 
@@ -691,7 +693,7 @@ Node::getPaintStrokeRoD(double time,
         if (!stroke) {
             throw std::logic_error("");
         }
-        *bbox = stroke->getBoundingBox(time);
+        *bbox = stroke->getBoundingBox(time, false);
     }
 }
 
@@ -1086,7 +1088,7 @@ Node::computeHashInternal(U64 projectDigest,
                           U64* newContentHash)
 {
     *newContentHash = 0;
-    if (!_imp->effect) {
+    if (!_imp->effectForWorker()) {
         return false;
     }
     if (!_imp->inputsInitialized) {
@@ -1143,8 +1145,14 @@ Node::getKnobsContentDigest(bool* hasExpression) const
 {
     // Read before any knob: an edit made meanwhile invalidates after it lands, so it moves the
     // generation past the one stored here and the next call rebuilds.
-    const U64 generation = _imp->effect->getKnobsContentGeneration();
-    const KnobHolder* holder = _imp->effect.get();
+    const EffectInstancePtr effect = _imp->effectForWorker();
+    if (!effect) {
+        *hasExpression = false;
+
+        return 0;
+    }
+    const U64 generation = effect->getKnobsContentGeneration();
+    const KnobHolder* holder = effect.get();
 
     QMutexLocker l(&_imp->knobsDigestMutex);
     if (!_imp->knobsDigestValid || (_imp->knobsDigestGeneration != generation)) {
@@ -1153,7 +1161,7 @@ Node::getKnobsContentDigest(bool* hasExpression) const
         bool anyExpression = false;
         bool anyLive = false;
         // Hashes are recomputed on render threads too, while the main thread may add or remove knobs.
-        const KnobsVec knobs = _imp->effect->getKnobs_mt_safe();
+        const KnobsVec knobs = effect->getKnobs_mt_safe();
         for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
             const KnobIPtr& knob = *it;
             if (!knob || !knob->isRenderHashed()) {
@@ -1203,7 +1211,7 @@ Node::getKnobsNamespaceDigests() const
 {
     std::map<std::string, U64> digests;
 
-    if (!_imp->effect) {
+    if (!_imp->effectForWorker()) {
         return digests;
     }
     // Brings the entries up to date.
@@ -1288,7 +1296,10 @@ Node::computeContentHash(U64 projectDigest,
 
     bool hasExpression = false;
     h.appendU64(getKnobsContentDigest(&hasExpression));
-    _imp->effect->appendNodeContentHash(h);
+    const EffectInstancePtr effect = _imp->effectForWorker();
+    if (effect) {
+        effect->appendNodeContentHash(h);
+    }
 
     // Expressions resolve thisNode/thisGroup and other nodes by name, so the same expression
     // under another name can evaluate differently.
@@ -1357,7 +1368,7 @@ Node::computeContentHash(U64 projectDigest,
     ProjectPtr project = getApp()->getProject();
     // The project digest leaves the frame range out, so only the nodes that can read it re-key
     // when it changes. An expression may read it through the project's parameters.
-    const bool usesProjectFrameRange = hasExpression || _imp->effect->dependsOnProjectFrameRange();
+    const bool usesProjectFrameRange = hasExpression || (effect && effect->dependsOnProjectFrameRange());
     h.appendBool(usesProjectFrameRange);
     if (usesProjectFrameRange) {
         double first = 0., last = 0.;
@@ -1383,7 +1394,7 @@ Node::computeContentHash(U64 projectDigest,
         }
     };
     // An effect that folds what it reads of the namespaces itself has them in its base hash.
-    const bool consumesNamespaces = _imp->effect->consumesHashNamespaces();
+    const bool consumesNamespaces = effect && effect->consumesHashNamespaces();
     if (consumesNamespaces) {
         noteNamespaceSalt();
     }
@@ -1397,7 +1408,7 @@ Node::computeContentHash(U64 projectDigest,
     // folded last and kept out of the base hash: the inputs' base hashes are what a node folds, so
     // a consumer is not moved by the namespaces it leaves out.
     HashNamespacesConstPtr table;
-    if (!consumesNamespaces) {
+    if (effect && !consumesNamespaces) {
         table = mergeHashNamespaces(inputs);
     }
     if (namespaces) {
@@ -1465,13 +1476,14 @@ Node::mergeHashNamespaces(const HashInputs& inputs) const
     }
 
     // A file read may author render settings prims, naming another renderer or active prim.
-    if (_imp->effect && _imp->effect->mayAuthorUntrackedRenderSettings()) {
+    const EffectInstancePtr effect = _imp->effectForWorker();
+    if (effect && effect->mayAuthorUntrackedRenderSettings()) {
         unsettled = true;
     }
 
     std::string path, defaultRenderer;
     bool active = false;
-    const bool authors = _imp->effect && _imp->effect->getHashNamespaceScope(&path, &defaultRenderer, &active);
+    const bool authors = effect && effect->getHashNamespaceScope(&path, &defaultRenderer, &active);
     if (!authors && !unsettled) {
         return merged ? HashNamespacesConstPtr(merged) : only;
     }
@@ -1643,10 +1655,11 @@ Node::walkLoopBody(const std::vector<NodePtr>& begins,
 bool
 Node::dependsOnProjectFrameRange() const
 {
-    if (!_imp->effect) {
+    const EffectInstancePtr effect = _imp->effectForWorker();
+    if (!effect) {
         return false;
     }
-    if (_imp->effect->dependsOnProjectFrameRange()) {
+    if (effect->dependsOnProjectFrameRange()) {
         return true;
     }
     // The predicate computeContentHash() folds the range under: an expression on a knob that
@@ -1661,10 +1674,11 @@ void
 Node::getHashDependents(std::vector<NodePtr>* dependents,
                         std::vector<NodePtr>* leaves) const
 {
-    if (!_imp->effect) {
+    const EffectInstancePtr effect = _imp->effectForWorker();
+    if (!effect) {
         return;
     }
-    const bool isRotoPaint = _imp->effect->isRotoPaintNode();
+    const bool isRotoPaint = effect->isRotoPaintNode();
     // The appended range doubles as the queue of outputs still to look at; entries it drops are
     // compacted away behind the read position.
     std::size_t write = dependents->size();
@@ -1690,8 +1704,8 @@ Node::getHashDependents(std::vector<NodePtr>* dependents,
         if (redirects && (std::find(passedThrough.begin(), passedThrough.end(), output.get()) == passedThrough.end())) {
             passedThrough.push_back(output.get());
             output->appendOutputsThroughOneRedirection(dependents);
-            if (output->_imp->effect) {
-                output->_imp->effect->appendHashLeafDependents(leaves);
+            if (const EffectInstancePtr outputEffect = output->_imp->effectForWorker()) {
+                outputEffect->appendHashLeafDependents(leaves);
             }
         }
         (*dependents)[write++] = std::move(output);
@@ -1703,7 +1717,7 @@ Node::getHashDependents(std::vector<NodePtr>* dependents,
         _imp->rotoContext->getRotoPaintTreeNodes(&paintTree);
         dependents->insert(dependents->end(), paintTree.begin(), paintTree.end());
     }
-    _imp->effect->appendExtraHashDependents(dependents);
+    effect->appendExtraHashDependents(dependents);
     getHashLeafDependents(dependents, leaves);
 }
 
@@ -1711,10 +1725,11 @@ void
 Node::getHashLeafDependents(std::vector<NodePtr>* dependents,
                             std::vector<NodePtr>* leaves) const
 {
-    if (!_imp->effect) {
+    const EffectInstancePtr effect = _imp->effectForWorker();
+    if (!effect) {
         return;
     }
-    _imp->effect->appendHashLeafDependents(leaves);
+    effect->appendHashLeafDependents(leaves);
 
     std::list<std::pair<KnobIPtr, int>> readers;
     getMetadataReaders(&readers);
@@ -1743,10 +1758,11 @@ Node::getHashInputs(HashInputs* inputs) const
     inputs->bySlot.clear();
     inputs->metadataSources.clear();
     inputs->extraSources.clear();
-    if (!_imp->effect) {
+    const EffectInstancePtr effect = _imp->effectForWorker();
+    if (!effect) {
         return;
     }
-    ViewerInstance* isViewer = dynamic_cast<ViewerInstance*>(_imp->effect.get());
+    ViewerInstance* isViewer = dynamic_cast<ViewerInstance*>(effect.get());
     if (isViewer) {
         inputs->isViewer = true;
         int activeInput[2];
@@ -1775,7 +1791,7 @@ Node::getHashInputs(HashInputs* inputs) const
         inputs->bySlot.push_back(std::make_pair((int)i, std::move(input)));
     }
     appendMetadataSources(&inputs->metadataSources, NULL);
-    _imp->effect->appendExtraHashSources(&inputs->extraSources);
+    effect->appendExtraHashSources(&inputs->extraSources);
 }
 
 bool
@@ -1783,7 +1799,7 @@ Node::knobMetadataReadsFoldIntoHash(const KnobI& knob) const
 {
     // A hash-exempt knob is refreshed through its metadata reader registration instead, and may
     // read a node downstream, which as a hash input would make the hash order cyclic.
-    return knob.isRenderHashed() || dynamic_cast<const ViewerInstance*>(_imp->effect.get());
+    return knob.isRenderHashed() || dynamic_cast<const ViewerInstance*>(_imp->effectForWorker().get());
 }
 
 void
@@ -1791,7 +1807,11 @@ Node::appendMetadataSources(std::vector<NodePtr>* sources,
                             std::set<std::pair<const KnobI*, int>>* reached) const
 {
     // A walk looking for a knob must pass through every expression, metadata reads or not.
-    if (!_imp->effect || (!reached && !KnobHelper::anyExpressionReadsMetadata())) {
+    if (!reached && !KnobHelper::anyExpressionReadsMetadata()) {
+        return;
+    }
+    const EffectInstancePtr effect = _imp->effectForWorker();
+    if (!effect) {
         return;
     }
     std::vector<NodePtr> read;
@@ -1813,7 +1833,7 @@ Node::appendMetadataSources(std::vector<NodePtr>* sources,
     if (!cached) {
         std::set<std::pair<const KnobI*, int>> visited;
         std::set<std::pair<const KnobI*, int>>* walked = reached ? reached : &visited;
-        const KnobsVec knobs = _imp->effect->getKnobs_mt_safe();
+        const KnobsVec knobs = effect->getKnobs_mt_safe();
         for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
             const KnobHelper* knob = dynamic_cast<const KnobHelper*>(it->get());
             if (!knob || !knobMetadataReadsFoldIntoHash(*knob)) {
@@ -2239,7 +2259,8 @@ Node::flushHashDirtyMarks()
                 toExpand.push_back(root);
             }
             if (batch[i].includeGroupContents) {
-                NodeGroup* isGroup = dynamic_cast<NodeGroup*>(root->_imp->effect.get());
+                const EffectInstancePtr rootEffect = root->_imp->effectForWorker();
+                NodeGroup* isGroup = dynamic_cast<NodeGroup*>(rootEffect.get());
                 if (isGroup) {
                     NodesList inner;
                     isGroup->getNodes_recursive(inner, false);
@@ -2267,8 +2288,8 @@ Node::flushHashDirtyMarks()
                     }
                     feedbackBegins->appendFeedbackBeginsOf(node, &dependents);
                     // A LoopEnd is not in its own body, but its LoopBegin folds its knobs in.
-                    if (node->_imp->effect) {
-                        node->_imp->effect->appendExtraHashDependents(&dependents);
+                    if (const EffectInstancePtr nodeEffect = node->_imp->effectForWorker()) {
+                        nodeEffect->appendExtraHashDependents(&dependents);
                     }
                 }
                 for (std::size_t d = 0; d < dependents.size(); ++d) {
@@ -2347,7 +2368,8 @@ bool
 Node::recomputeHashIfDirty(bool requireCleanInputs,
                            HashWalk* walk)
 {
-    if (!_imp->effect) {
+    const EffectInstancePtr effect = _imp->effectForWorker();
+    if (!effect) {
         return true;
     }
     bool changed = false;
@@ -2397,7 +2419,7 @@ Node::recomputeHashIfDirty(bool requireCleanInputs,
     // Run outside the recompute lock, since they take the effect's and knobs' locks. The cache entries
     // made under the node's other keys are left to the caches' LRU: a content key names one state only, so they stay valid for a return to it.
     if (changed) {
-        _imp->effect->onNodeHashChanged(contentHash);
+        effect->onNodeHashChanged(contentHash);
     }
 
     return true;
@@ -3668,6 +3690,16 @@ Node::Implementation::checkForExitPreview()
     }
 }
 
+namespace {
+VectorFollowControls*
+vectorFollowOf(EffectInstance* effect)
+{
+    RotoCurvePanelHook* hook = effect ? effect->getCurvePanelHook() : nullptr;
+
+    return hook ? hook->getVectorFollowControls() : nullptr;
+}
+} // anonymous namespace
+
 bool
 Node::areAllProcessingThreadsQuit() const
 {
@@ -3700,6 +3732,10 @@ Node::areAllProcessingThreadsQuit() const
             return false;
         }
     }
+    const VectorFollowControls* follow = vectorFollowOf(_imp->effect.get());
+    if (follow && follow->isFollowing()) {
+        return false;
+    }
 
     if (OverlayMapFetch::hasFetches(_imp->effect.get())) {
         return false;
@@ -3729,6 +3765,10 @@ Node::quitAnyProcessing_non_blocking()
     TrackerContextPtr trackerContext = getTrackerContext();
     if (trackerContext) {
         trackerContext->quitTrackerThread_non_blocking();
+    }
+
+    if (VectorFollowControls* follow = vectorFollowOf(_imp->effect.get())) {
+        follow->abortFollow(false);
     }
 
     if ( isRotoPaintingNode() ) {
@@ -3782,6 +3822,10 @@ Node::quitAnyProcessing_blocking(bool allowThreadsToRestart)
         trackerContext->quitTrackerThread_blocking(allowThreadsToRestart);
     }
 
+    if (VectorFollowControls* follow = vectorFollowOf(_imp->effect.get())) {
+        follow->abortFollow(true);
+    }
+
     if ( isRotoPaintingNode() ) {
         if (RotoPaint* rotoPaint = dynamic_cast<RotoPaint*>(_imp->effect.get())) {
             rotoPaint->abortObjectSelectEncoding(true);
@@ -3806,6 +3850,10 @@ Node::abortAnyProcessing_non_blocking()
     TrackerContextPtr trackerContext = getTrackerContext();
     if (trackerContext) {
         trackerContext->abortTracking();
+    }
+
+    if (VectorFollowControls* follow = vectorFollowOf(_imp->effect.get())) {
+        follow->abortFollow(false);
     }
 
     _imp->abortPreview_non_blocking();
@@ -3855,6 +3903,14 @@ Node::isActivated() const
     QMutexLocker l(&_imp->activatedMutex);
 
     return _imp->activated;
+}
+
+bool
+Node::isBeingDestroyed() const
+{
+    QMutexLocker l(&_imp->isBeingDestroyedMutex);
+
+    return _imp->isBeingDestroyed;
 }
 
 std::string
@@ -3913,7 +3969,7 @@ Node::makeInfoForInput(int inputNumber) const
         }
         for (std::list<ImageLayerDesc>::iterator it = availableLayers.begin(); it != availableLayers.end(); ++it) {
 
-            ss << " " << it->getUserFacingLabel() << '.' << it->getChannelsLabel();
+            ss << " " << it->getUserFacingLabel();
             if ( next != availableLayers.end() ) {
                 ss << ", ";
                 ++next;
@@ -7093,6 +7149,17 @@ Node::setPersistentMessage(MessageTypeEnum type,
 }
 
 void
+Node::setQuietInfoMessage(const std::string& content)
+{
+    if (appPTR->isBackground()) {
+        std::cout << "Persistent message: " << content << std::endl;
+    }
+    if (storePersistentMessage(eMessageTypeInfo, content, false, 0, NULL) && !appPTR->isBackground()) {
+        Q_EMIT persistentMessageChanged();
+    }
+}
+
+void
 Node::setChannelSelectorMessage(const std::string& content,
                                 U64 renderSequence)
 {
@@ -7147,6 +7214,11 @@ Node::postPersistentMessage(MessageTypeEnum type,
                             U64 renderSequence,
                             const AbortableRenderInfo* render)
 {
+    // Late messages from detached jobs would otherwise reach a node whose GUI is already gone.
+    if (isBeingDestroyed()) {
+        return;
+    }
+
     if (!_imp->nodeCreated && _imp->wasCreatedSilently) {
         std::cerr << getScriptName_mt_safe() << " message: " << content << std::endl;
         return;

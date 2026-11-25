@@ -11,7 +11,7 @@
 #
 # Usage:
 #   [NATRON_RENDER_SCHEDULER=legacy|taskgraph] tools/ci/local/test.sh <ctest|smoke|startup> [debug|release|fast] [--gdb]
-#   tools/ci/local/test.sh repeat <ctest-name-or-regex> <N> [--parallel P] [--gdb] [debug|release|fast]
+#   [NATRON_REPEAT_TIMEOUT=<s>] tools/ci/local/test.sh repeat <ctest-name-or-regex> <N> [--parallel P] [--timeout S] [--gdb] [debug|release|fast]
 #   [NATRON_CTEST_JOBS=<n>] tools/ci/local/test.sh ctest ...
 #   [GTEST_SHUFFLE=1] [GTEST_RANDOM_SEED=<n>] [GTEST_REPEAT=<n>] tools/ci/local/test.sh ctest ...
 #   [NATRON_SMOKE_OUTPUT_DIR=<dir>|NATRON_SMOKE_REFERENCE_DIR=<dir>] tools/ci/local/test.sh smoke ...
@@ -69,8 +69,11 @@
 #                              (the SIGSEGV handler's instruction pointer is enough
 #                              for addr2line) and exits non-zero. Every iteration's
 #                              output stays in <build dir>/Testing/repeat/<name>/.
-#                              An iteration still running 20 s before the test's
-#                              TIMEOUT gets its thread stacks written to iter-N.stacks
+#                              Each iteration may run S seconds (--timeout S, else
+#                              NATRON_REPEAT_TIMEOUT, else 900) rather than the test's
+#                              ctest TIMEOUT, which is sized for an unloaded machine.
+#                              An iteration still running 20 s before that limit
+#                              gets its thread stacks written to iter-N.stacks
 #                              (eu-stack, else gdb -p; "stacks unavailable" when ptrace
 #                              is refused) and its process group killed.
 #                              With --gdb each run is wrapped in `gdb -batch -ex
@@ -130,9 +133,10 @@ USE_GDB=0
 REPEAT_NAME=""
 REPEAT_COUNT=""
 REPEAT_PARALLEL=4
+REPEAT_TIMEOUT_OVERRIDE="${NATRON_REPEAT_TIMEOUT:-900}"
 ORIG_ARGS=("$@")
 USAGE="usage: test.sh <ctest|smoke|startup> [debug|release|fast] [--gdb]
-       test.sh repeat <ctest-name-or-regex> <N> [--parallel P] [--gdb] [debug|release|fast]"
+       test.sh repeat <ctest-name-or-regex> <N> [--parallel P] [--timeout S] [--gdb] [debug|release|fast]"
 
 while [[ $# -gt 0 ]]; do
     arg="$1"
@@ -155,6 +159,14 @@ while [[ $# -gt 0 ]]; do
             REPEAT_PARALLEL="$1"
             shift
             ;;
+        --timeout)
+            if [[ $# -eq 0 || ! "$1" =~ ^[1-9][0-9]*$ ]]; then
+                echo "test.sh: --timeout needs a positive number of seconds, got '${1:-}'" >&2
+                exit 1
+            fi
+            REPEAT_TIMEOUT_OVERRIDE="$1"
+            shift
+            ;;
         *)
             if [[ "${SUBCOMMAND}" == "repeat" && -z "${REPEAT_NAME}" ]]; then
                 REPEAT_NAME="${arg}"
@@ -172,6 +184,11 @@ done
 if [[ -z "${SUBCOMMAND}" ]]; then
     echo "test.sh: missing subcommand" >&2
     echo "${USAGE}" >&2
+    exit 1
+fi
+
+if [[ ! "${REPEAT_TIMEOUT_OVERRIDE}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "test.sh: NATRON_REPEAT_TIMEOUT needs a positive number of seconds, got '${REPEAT_TIMEOUT_OVERRIDE}'" >&2
     exit 1
 fi
 
@@ -353,12 +370,12 @@ print("REPEAT_EXCLUDE=%s" % shlex.quote("^" + re.sub(r"([][\\^$.|?*+()])", r"\\\
 print("REPEAT_CMD=(%s)" % " ".join(shlex.quote(a) for a in test["command"]))
 print("REPEAT_ENV=(%s)" % " ".join(shlex.quote(e) for e in props.get("ENVIRONMENT", [])))
 print("REPEAT_CWD=%s" % shlex.quote(props.get("WORKING_DIRECTORY", ".")))
-print("REPEAT_TIMEOUT=%d" % int(props.get("TIMEOUT", 300)))
 PY
         # shellcheck disable=SC1090
         source "${SELECTION}"
         rm -f "${SELECTION}"
-        echo "== test.sh: repeat ${REPEAT_TEST} x ${REPEAT_COUNT}, ${REPEAT_PARALLEL} at a time (${BUILD_TYPE}) =="
+        REPEAT_TIMEOUT="${REPEAT_TIMEOUT_OVERRIDE}"
+        echo "== test.sh: repeat ${REPEAT_TEST} x ${REPEAT_COUNT}, ${REPEAT_PARALLEL} at a time, ${REPEAT_TIMEOUT} s each (${BUILD_TYPE}) =="
         echo "+ cd ${REPEAT_CWD} && env ${REPEAT_ENV[*]} ${REPEAT_CMD[*]}"
 
         LOG_DIR="${BUILD_DIR}/Testing/repeat/${REPEAT_TEST//[^A-Za-z0-9_.-]/_}"

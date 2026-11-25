@@ -517,7 +517,7 @@ TEST_F(WriteAllLayersTest, WriteAllWithOneChannelUserLayerNamesItAndReadsBackAsT
 
     std::string error;
     const std::vector<std::string> alpha(1, "A");
-    ASSERT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("mask", "mask", "", alpha), LayerRegistryEntry::eOriginUser, &error)) << error;
+    ASSERT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("mask", alpha), LayerRegistryEntry::eOriginUser, &error)) << error;
 
     NodePtr reader;
     createFixtureReader(&reader);

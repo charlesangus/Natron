@@ -1375,6 +1375,11 @@ public:
      **/
     bool isActivated() const;
 
+    /**
+     * @brief Whether destroyNode() started on the node, after which its effect may be gone while
+     * work that holds the node, such as a scene worker's job, still runs. MT-safe
+     **/
+    bool isBeingDestroyed() const;
 
     /**
      * @brief Use this function to post a transient message to the user. It will be displayed using
@@ -1398,6 +1403,13 @@ public:
      * @param content The message you want to pass.
      **/
     void setPersistentMessage(MessageTypeEnum type, const std::string & content);
+
+    /**
+     * @brief Keeps content as an information message the user can read on the node, with no dialog
+     * and no warning or error marking in the node graph or on a viewer. A later message of any
+     * kind, or a clear, replaces it.
+     **/
+    void setQuietInfoMessage(const std::string& content);
 
     /**
      * @brief Clears any message posted previously by setPersistentMessage.

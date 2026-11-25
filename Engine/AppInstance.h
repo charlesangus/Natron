@@ -29,8 +29,10 @@
 #include "Global/Macros.h"
 
 #include <cstddef> // for NULL
+#include <functional>
 #include <limits>
 #include <list>
+#include <memory>
 #include <set>
 #include <string>
 #include <utility>
@@ -311,6 +313,14 @@ public:
     {
     }
 
+    /**
+     * @brief Called before a project reset or close destroys the nodes, while they are all still
+     * alive: work running off the main thread on them must have stopped when it returns.
+     **/
+    virtual void aboutToDestroyProjectNodes()
+    {
+    }
+
     virtual void setupViewersForViews(const std::vector<std::string>& /*viewNames*/)
     {
     }
@@ -356,6 +366,20 @@ public:
                                 double /*t*/)
     {
         return true;
+    }
+
+    /**
+     * @brief Shows an application-modal dialog over the interface that follows node's progress
+     * task, started by progressStart(), with Cancel as its only button, so that nothing can edit
+     * what the job reads. onCancel is called when the user cancels. The dialog stays open until the
+     * returned holder is dropped, for a job that outlives its progress task. Null without an
+     * interface.
+     **/
+    virtual std::shared_ptr<void> showProgressModal(const NodePtr& /*node*/,
+                                                    const std::string& /*title*/,
+                                                    const std::function<void()>& /*onCancel*/)
+    {
+        return std::shared_ptr<void>();
     }
 
     /**
@@ -509,6 +533,12 @@ public:
      * in. Main thread.
      **/
     virtual NodePtr getActiveViewerNode() const;
+
+    /**
+     * @brief The viewers the user has worked in, the most recently active first. Without a GUI,
+     * just getActiveViewerNode(). Main thread.
+     **/
+    virtual std::list<NodePtr> getViewerNodesByRecentActivity() const;
 
     /**
      * @brief For a render thread, which cannot ask the GUI which viewer is active. With no active viewer recorded, as
@@ -666,6 +696,13 @@ public Q_SLOTS:
 Q_SIGNALS:
 
     void pluginsPopulated();
+
+    /**
+     * @brief Emitted by EffectInstance::evaluate() for a change that calls for a new render of a
+     * node and of what is downstream of it, made by the user, a script or the node itself. From
+     * whichever thread evaluates, usually the main thread.
+     **/
+    void nodeEvaluated();
 
 protected:
     virtual void onGroupCreationFinished(const NodePtr& node, const Serialization::NodeSerializationPtr& serialization, bool autoConnect);

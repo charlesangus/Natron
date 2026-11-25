@@ -379,7 +379,7 @@ ChannelCopy::metadataColorStorage(const EffectInstance& effect,
 {
     NodeMetadataConstPtr metadata = effect.getInputMetadataAt(inputNb, time, view);
 
-    if (!metadata || (metadata->getComponentsType(-1) != kNatronColorLayerID)) {
+    if (!metadata || (metadata->getComponentsType(-1) != eImageComponentsTypeColor)) {
         return ImageLayerDesc();
     }
     // The stream's own layout, which a colour output may carry narrower than its clip's.

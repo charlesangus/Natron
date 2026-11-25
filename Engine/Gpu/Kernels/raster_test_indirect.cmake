@@ -1,0 +1,1 @@
+slang_add_kernel(raster_test_indirect Kernels/raster_test_indirect.slang ENTRY rasterTestIndirect REGISTRY NatronGpu)

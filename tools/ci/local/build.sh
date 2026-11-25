@@ -216,6 +216,12 @@ print_build_banner() {
         *" -g"*|"-g"*) echo "   debug info: yes" ;;
         *)             echo "   debug info: no" ;;
     esac
+    # Only whether one is set: the URL carries the cache password.
+    if [[ -n "${CCACHE_REMOTE_STORAGE:-}" ]]; then
+        echo "   remote cache: yes"
+    else
+        echo "   remote cache: no"
+    fi
 }
 
 # Returns success if we're already running inside a dev/CI container (see

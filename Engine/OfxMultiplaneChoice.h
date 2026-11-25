@@ -44,9 +44,8 @@ NATRON_NAMESPACE_ENTER
  * layer/channel knobs are meant to replace.
  *
  * The plugin never sees Natron's colour views: every colour view (rgba/rgb/alpha/xy) shares the
- * single colour storage plane on the plugin side, so every colour option carries the storage
- * plane ID (kNatronColorLayerID). The reverse direction folds that ID, and the retired "Color"
- * label, back to the rgba view: it never hands the storage ID back to a caller.
+ * single colour plane on the plugin side, and the built-in layers carry their OFX plane IDs
+ * there (see OfxLayerMapping).
  **/
 namespace OfxMultiplaneChoice {
 
@@ -67,10 +66,8 @@ std::string noneChannelOption(const std::string& paramName);
 
 /**
  * @brief The inverse of channelValueToPluginOption(): a plugin channel option ID to a
- * KnobChannelSelect value. Accepts both the storage plane ID and the retired "Color" label for
- * the colour channels it is handed, but never returns the storage ID itself: colour channels
- * come back as rgba.<C>. An option naming no channel, such as the plugin's "0" and "1"
- * constants, comes back as None.
+ * KnobChannelSelect value. Colour channels come back as rgba.<C>, or xy.x and xy.y. An option
+ * naming no channel, such as the plugin's "0" and "1" constants, comes back as None.
  **/
 std::string pluginOptionToChannelValue(const std::string& optionID);
 
@@ -82,15 +79,14 @@ std::string layerValueToPluginPlaneOption(const std::string& value);
 
 /**
  * @brief The inverse of layerValueToPluginPlaneOption(): a plugin plane option ID to a
- * KnobLayerSelect layer value. Accepts both the storage plane ID and the retired "Color" label,
- * but never returns the storage ID itself: the colour plane comes back as rgba.
+ * KnobLayerSelect layer value. The colour plane comes back as rgba.
  **/
 std::string pluginPlaneOptionToLayerValue(const std::string& optionID);
 
 /**
  * @brief Whether entries is the option list of a multiplane channel choice, as
  * ofxsMultiPlane.cpp's addInputChannelOptionsRGBA()/buildChannelMenus() build it (plane.channel
- * entries, e.g. "uk.co.thefoundry.OfxImagePlaneColour.R" or "diffuse.R", optionally with the
+ * entries, e.g. the colour plane's "<plane>.R" or "diffuse.R", optionally with the
  * plugin's "0"/"1" constant options, and, when the choice depends on more than one clip, a "<clip>." prefix) --
  * as opposed to a plain fixed channel choice such as ofxsMaskMix.h's "unPremultByChannel"
  * (option IDs "r", "g", "b", "a": no plane, no constants). When true and a clip prefix was

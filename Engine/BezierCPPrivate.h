@@ -94,6 +94,7 @@ struct BezierCPPrivate
     double guiX, guiY;
     // Atomic because the mesh and Coons paths of a render read it without any lock.
     std::atomic<bool> broken; //< true if both tangents are independent
+    std::atomic<bool> guiBroken;
 
     ///the animation curves for the derivatives
     ///They do not need to be protected as Curve is a thread-safe class.
@@ -119,6 +120,7 @@ struct BezierCPPrivate
         , guiX(0)
         , guiY(0)
         , broken(false)
+        , guiBroken(false)
         , curveLeftBezierX()
         , curveRightBezierX()
         , curveLeftBezierY()

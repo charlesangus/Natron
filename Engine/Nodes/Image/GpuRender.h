@@ -386,6 +386,10 @@ struct GpuRenderArgs {
     GpuImageView output;
     gpu::GpuRecordContext& context;
 
+    // Contexts recorded under one scope run in order and all live until the last has finished, so what one records
+    // may be read by what a later one records, without a barrier. Each is its own scope unless the engine says otherwise.
+    const void* recordScope;
+
     explicit GpuRenderArgs(gpu::GpuRecordContext& ctx)
         : query()
         , outputRect()
@@ -396,6 +400,7 @@ struct GpuRenderArgs {
         , inputChains()
         , output()
         , context(ctx)
+        , recordScope(&ctx)
     {
     }
 

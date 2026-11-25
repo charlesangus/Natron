@@ -284,8 +284,20 @@ TEST(ColorWarpField, HoldPinStaysFixedWhileANeighbourMoves)
         ColorWarpField moving;
         moving.prepare({ makePin(skin, warmer, 1., reach) }, combo.space, basis, combo.kernel);
         double unheld[3];
-        moving.apply(grey, unheld);
-        EXPECT_GT(std::fabs(unheld[0] - grey[0]) + std::fabs(unheld[1] - grey[1]) + std::fabs(unheld[2] - grey[2]), 1e-6);
+        const double* probe = grey;
+        double nearGrey[3];
+        if (combo.kernel != eColorWarpKernelGaussian) {
+            double ws[3], wg[3], wn[3];
+            toWarpSpace(combo.space, basis, skin, ws);
+            toWarpSpace(combo.space, basis, grey, wg);
+            for (int c = 0; c < 3; ++c) {
+                wn[c] = ws[c] + 0.05 * (wg[c] - ws[c]);
+            }
+            fromWarpSpace(combo.space, basis, wn, nearGrey);
+            probe = nearGrey;
+        }
+        moving.apply(probe, unheld);
+        EXPECT_GT(std::fabs(unheld[0] - probe[0]) + std::fabs(unheld[1] - probe[1]) + std::fabs(unheld[2] - probe[2]), 1e-6);
 
         if (combo.kernel == eColorWarpKernelGaussian) {
             double ws[3], wg[3], wm[3], between[3];

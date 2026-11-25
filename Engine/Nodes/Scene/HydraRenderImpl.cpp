@@ -2775,8 +2775,13 @@ releaseAllCpuEnginesAndWait(int timeoutMs)
     std::future<void> done = released->get_future();
 
     const auto job = [&thread, released]() {
+        // Set however the release ends, a throw included, so the wait reports it rather than
+        // running out.
+        struct SetOnExit {
+            std::promise<void>& promise;
+            ~SetOnExit() { promise.set_value(); }
+        } setOnExit { *released };
         thread.releaseAllEngines();
-        released->set_value();
     };
 
     // A thread that never started holds no engine.

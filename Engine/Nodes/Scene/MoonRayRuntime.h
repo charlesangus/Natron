@@ -54,13 +54,13 @@ bool cpuRunsMoonRay();
 std::string setUp(const std::string& applicationDirPath);
 
 /**
- * @brief Waits up to graceMs for this process's execComp render processes to exit, then kills the
- * ones still running. For the end of the process, once no MoonRay engine is left: Arras stops a
- * session's execComp from a thread of its own and does not wait for it, and one that outlives the
- * process keeps running, holding the standard output and error it inherited. Returns how many were
- * killed.
+ * @brief Waits for this process's execComp render processes to exit, then terminates the process
+ * groups of the ones still running and, after a short grace, kills them; all within timeoutMs. For
+ * the end of the process, once no MoonRay engine is left: Arras stops a session's execComp from a
+ * thread of its own and does not wait for it, and one that outlives the process keeps running,
+ * holding the standard output and error it inherited. Returns how many had to be signalled.
  **/
-int endRenderProcesses(int graceMs);
+int endRenderProcesses(int timeoutMs);
 } // namespace MoonRayRuntime
 
 NATRON_NAMESPACE_EXIT

@@ -27,6 +27,7 @@
 
 #include <cpuid.h>
 #include <dirent.h>
+#include <errno.h>
 #include <signal.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
@@ -153,23 +154,63 @@ runningRenderProcesses()
     return pids;
 }
 
-void
-killRenderProcess(pid_t pid)
+// How long execComp's group gets to exit after a SIGTERM before it is killed. Arras stops a session
+// by asking execComp to stop, waiting STOP_WAIT (5 s) for it, then SIGTERMs the group and waits
+// another 5 s before its SIGKILL. The grace before the SIGTERM covers Arras's STOP_WAIT; this final
+// grace is kept short so a render process that ignores SIGTERM cannot hold up the exit.
+const int kTermGraceMs = 500;
+
+// Signals pid's process group, which Arras makes execComp lead, if pid is still an unreaped
+// execComp child of this process. Arras reaps its processes on a thread of its own, after which the
+// pid may be reused by an unrelated process: one is never signalled. False if pid was not signalled.
+bool
+signalRenderProcessGroup(pid_t pid,
+                         int signum)
 {
 #if defined(SYS_pidfd_open) && defined(SYS_pidfd_send_signal)
-    // Arras reaps its processes on a thread of its own, after which the pid may be reused: checked
-    // through a pidfd, the process killed is the one checked.
     const int pidfd = (int)::syscall(SYS_pidfd_open, pid, 0);
     if (pidfd >= 0) {
+        // The pidfd pins the process checked: until it is reaped its pid, the group's id, cannot be
+        // reused, and pidfd_send_signal fails once it has been.
+        bool signalled = false;
         if (isRunningRenderProcess(std::to_string(pid))) {
-            (void)::syscall(SYS_pidfd_send_signal, pidfd, SIGKILL, nullptr, 0);
+            signalled = (::syscall(SYS_pidfd_send_signal, pidfd, signum, nullptr, 0) == 0);
+            if (signalled) {
+                (void)::kill(-pid, signum);
+            }
         }
         ::close(pidfd);
 
-        return;
+        return signalled;
+    }
+    if (errno != ENOSYS) {
+        // ESRCH among them: the process is gone and its pid may already be another's.
+        return false;
     }
 #endif
-    (void)::kill(pid, SIGKILL);
+    // No pidfd on this kernel: rechecked right before the signal, which leaves the narrowest window.
+    if (!isRunningRenderProcess(std::to_string(pid))) {
+        return false;
+    }
+    (void)::kill(-pid, signum);
+
+    return true;
+}
+
+// Waits until deadline for every pid in *running to have exited, keeping those still running.
+void
+waitForRenderProcesses(std::vector<pid_t>* running,
+                       std::chrono::steady_clock::time_point deadline)
+{
+    for (;;) {
+        running->erase(std::remove_if(running->begin(), running->end(),
+                                      [](pid_t pid) { return !isRunningRenderProcess(std::to_string(pid)); }),
+                       running->end());
+        if (running->empty() || (std::chrono::steady_clock::now() >= deadline)) {
+            return;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
 }
 } // anon namespace
 
@@ -244,21 +285,30 @@ setUp(const std::string& applicationDirPath)
 }
 
 int
-endRenderProcesses(int graceMs)
+endRenderProcesses(int timeoutMs)
 {
-    const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(std::max(0, graceMs));
+    using Clock = std::chrono::steady_clock;
+    const int totalMs = std::max(0, timeoutMs);
+    const int termGraceMs = std::min(kTermGraceMs, totalMs / 4);
+    const Clock::time_point start = Clock::now();
     std::vector<pid_t> running = runningRenderProcesses();
 
-    while (!running.empty() && (std::chrono::steady_clock::now() < deadline)) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
-        running = runningRenderProcesses();
+    waitForRenderProcesses(&running, start + std::chrono::milliseconds(totalMs - termGraceMs));
+    if (running.empty()) {
+        return 0;
     }
+    const int stopped = (int)running.size();
     for (pid_t pid : running) {
-        std::cerr << "MoonRay's render process " << pid << " did not exit; killing it" << std::endl;
-        killRenderProcess(pid);
+        std::cerr << "MoonRay's render process " << pid << " did not exit; terminating it" << std::endl;
+        (void)signalRenderProcessGroup(pid, SIGTERM);
+    }
+    waitForRenderProcesses(&running, start + std::chrono::milliseconds(totalMs));
+    for (pid_t pid : running) {
+        std::cerr << "MoonRay's render process " << pid << " did not terminate; killing it" << std::endl;
+        (void)signalRenderProcessGroup(pid, SIGKILL);
     }
 
-    return (int)running.size();
+    return stopped;
 }
 } // namespace MoonRayRuntime
 

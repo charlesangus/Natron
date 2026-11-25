@@ -107,6 +107,8 @@ public:
 
     // SceneStage::requestLoadToKind() and requestUnloadBelowKind() on the worker, which services
     // a load to a kind level after level, each level's batch followed by a setLoadsChanged() call.
+    // The next level starts only once context's thread has made that call, so a cancel it makes
+    // before then stops the walk at the level being serviced.
     void requestLoadToKind(const QStringList& roots, const std::string& kind);
 
     void requestUnloadBelowKind(const QStringList& roots, const std::string& kind);
@@ -194,6 +196,10 @@ private:
     // Under _queueMutex: whether the worker holds requests it has taken, no cancel has dropped
     // since, and it has not yet serviced.
     bool _loadsTaken = false;
+    // Under _queueMutex: the serial of the batch whose next level waits for context's thread to
+    // release it, or 0.
+    U64 _heldLevel = 0;
+    U64 _levelSerial = 0;
     std::thread _worker;
 };
 

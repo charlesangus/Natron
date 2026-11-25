@@ -464,6 +464,12 @@ SceneNodeStageSource::serviceLoads(const std::vector<LoadRequest>& requests,
     if (!_stage || (requests.empty() && !_stage->hasPendingLoads())) {
         return;
     }
+    if (requests.empty()) {
+        std::lock_guard<std::mutex> lock(_queueMutex);
+        if (_heldLevel != 0) {
+            return;
+        }
+    }
     const auto toSdfPaths = [](const QStringList& strings) {
         PXR_NS::SdfPathVector paths;
         for (const QString& path : strings) {
@@ -565,25 +571,42 @@ SceneNodeStageSource::serviceLoads(const std::vector<LoadRequest>& requests,
         }
     }
     // A load to a kind asks for its next level once this batch has composed this one. That level
+    // is held until the context's thread has run what it had queued, the notice of this batch
+    // among it: nothing else would make a Cancel Loads clicked there right after Load To land
+    // before levels the worker, which no renderer slows, walks in a few milliseconds. Released, it
     // waits for the next turn of run(), so that an evaluation or a newer request queued meanwhile
     // is taken first and a kind request it replaces is not walked further.
+    U64 held = 0;
     if (lastServiced && _stage->hasPendingLoads()) {
-        {
-            std::lock_guard<std::mutex> lock(_queueMutex);
-            _loadsReady = true;
-        }
-        _queueChanged.notify_one();
+        std::lock_guard<std::mutex> lock(_queueMutex);
+        held = ++_levelSerial;
+        _heldLevel = held;
     }
     // A batch that asked for nothing loadable is still answered, so that whoever asked is not left waiting.
     if (!serviced && requests.empty()) {
         return;
     }
     std::weak_ptr<SceneNodeStageSource> self = weak_from_this();
-    postToContext([self]() {
+    postToContext([self, held]() {
         std::shared_ptr<SceneNodeStageSource> source = self.lock();
-        if (source && !source->_stopRequested && source->_loadsChanged) {
+        if (!source || source->_stopRequested) {
+            return;
+        }
+        if (source->_loadsChanged) {
             source->_loadsChanged();
         }
+        if (held == 0) {
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(source->_queueMutex);
+            if (source->_heldLevel != held) {
+                return;
+            }
+            source->_heldLevel = 0;
+            source->_loadsReady = true;
+        }
+        source->_queueChanged.notify_one();
     });
 }
 

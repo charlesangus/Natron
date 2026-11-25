@@ -435,6 +435,36 @@ isWorldSpace(const GeoDetail& d)
     return a && (a->storage() == eGeoStorageInt32) && !a->isArray() && (a->get<std::int32_t>(0) != 0);
 }
 
+// The field names recorded on primitives read from a USD volume, when the attribute has that shape.
+const GeoAttribute*
+recordedFieldAttribute(const GeoDetail& d)
+{
+    const GeoAttribute* a = d.findAttribute(eGeoAttribClassPrimitive, kGeoUsdFieldAttr);
+
+    return (a && (a->storage() == eGeoStorageString) && (a->tupleSize() == 1) && !a->isArray()) ? a : nullptr;
+}
+
+// The name a VDB primitive's grid is stored under in its file and named by its field's fieldName:
+// its own, else the field it was read through, else "field".
+std::string
+volumeStoredName(const GeoDetail& d,
+                 const GeoAttribute* recorded,
+                 GeoOffset off)
+{
+    std::string name(geoVDBName(d, off));
+    if (name.empty() && recorded) {
+        name = std::string(recorded->getString(std::size_t(off)));
+    }
+
+    return name.empty() ? std::string("field") : name;
+}
+
+std::string
+volumeDirectoryOf(const GeoUsdConvertOptions& options)
+{
+    return options.volumeDirectory.empty() ? geoVDBCacheDirectory() : options.volumeDirectory;
+}
+
 const GeoAttribute*
 usdSourceAttribute(const GeoDetail& d,
                    GeoAttribClassEnum cls)
@@ -632,6 +662,36 @@ geoUsdMatrix(const GeoMatrix4& m)
     }
 
     return out;
+}
+
+bool
+geoUsdEnsureVolumeFiles(const GeoDetail& detail,
+                        const GeoUsdConvertOptions& options,
+                        const GeoVDBAbortFunc& aborted)
+{
+    std::vector<GeoOffset> volumes;
+    detail.primitiveMap().forEachLive([&](GeoIndex, GeoOffset off) {
+        if (detail.primitiveType(off) == eGeoPrimitiveVDB) {
+            volumes.push_back(off);
+        }
+    });
+    if (volumes.empty()) {
+        return true;
+    }
+    const std::string directory = volumeDirectoryOf(options);
+    const GeoAttribute* recorded = recordedFieldAttribute(detail);
+    for (GeoOffset off : volumes) {
+        if (aborted && aborted()) {
+            return false;
+        }
+        std::string file;
+        std::string error;
+        if (!geoEnsureVDBFile(*geoVDB(detail, off), volumeStoredName(detail, recorded, off), directory, &file, &error, aborted) && aborted && aborted()) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 GeoMatrix4
@@ -1219,20 +1279,25 @@ GeoUsdConvert::planProperties(Partition& p)
     }
     case eGeoUsdPrimVolume: {
         builtin(UsdGeomTokens->extent, n->Float3Array);
-        builtin(tokens().xformOpTransform, n->Matrix4d);
-        PropertyPlan order;
-        order.name = UsdGeomTokens->xformOpOrder;
-        order.typeName = n->TokenArray;
-        order.variability = SdfVariabilityUniform;
-        order.source = eGeoUsdSourceStatic;
-        order.staticDefault = VtValue(VtTokenArray { tokens().xformOpTransform });
-        p.properties.push_back(std::move(order));
-        const std::string directory = _options.volumeDirectory.empty() ? geoVDBCacheDirectory() : _options.volumeDirectory;
         const GeoUsdInputPrim* input = inputPrim(p.path);
-        const GeoAttribute* recorded = d.findAttribute(eGeoAttribClassPrimitive, kGeoUsdFieldAttr);
-        if (recorded && (recorded->storage() != eGeoStorageString || recorded->tupleSize() != 1 || recorded->isArray())) {
-            recorded = nullptr;
+        // As a mesh's points are: in world space the prim's transform cancels its parents', and
+        // otherwise an over keeps the input's transform.
+        if (isWorldSpace(d) || !p.onInput) {
+            builtin(tokens().xformOpTransform, n->Matrix4d);
+            PropertyPlan order;
+            order.name = UsdGeomTokens->xformOpOrder;
+            order.typeName = n->TokenArray;
+            order.variability = SdfVariabilityUniform;
+            order.source = eGeoUsdSourceStatic;
+            if (input && input->resetsXformStack) {
+                order.staticDefault = VtValue(VtTokenArray { UsdGeomXformOpTypes->resetXformStack, tokens().xformOpTransform });
+            } else {
+                order.staticDefault = VtValue(VtTokenArray { tokens().xformOpTransform });
+            }
+            p.properties.push_back(std::move(order));
         }
+        const std::string directory = volumeDirectoryOf(_options);
+        const GeoAttribute* recorded = recordedFieldAttribute(d);
         std::set<TfToken> taken;
         std::set<SdfPath> takenPrims;
         p.fields.assign(p.primitives.size(), TfToken());
@@ -1283,7 +1348,7 @@ GeoUsdConvert::planProperties(Partition& p)
         }
         for (std::size_t i = 0; i < p.primitives.size(); ++i) {
             const GeoOffset off = GeoOffset(p.primitives[i]);
-            const std::string grid(geoVDBName(d, off));
+            const std::string grid = volumeStoredName(d, recorded, off);
             std::string file;
             std::string error;
             if (!geoEnsureVDBFile(*geoVDB(d, off), grid, directory, &file, &error)) {
@@ -1591,7 +1656,14 @@ GeoUsdConvert::addPartitionSpecs(std::size_t index)
             addProperty(fieldPath, plan).partition = pi;
         };
         const GeoVDBFieldInfo info = geoVDBFieldInfo(*geoVDBGrid(*_detail, off));
-        token(UsdVolTokens->fieldName, std::string(geoVDBName(*_detail, off)));
+        token(UsdVolTokens->fieldName, volumeStoredName(*_detail, recordedFieldAttribute(*_detail), off));
+        // The file holds this grid alone, so an input field's index into its own file is wrong.
+        PropertyPlan index;
+        index.name = UsdVolTokens->fieldIndex;
+        index.typeName = SdfValueTypeNames->Int;
+        index.source = eGeoUsdSourceStatic;
+        index.staticDefault = VtValue(0);
+        addProperty(fieldPath, index).partition = pi;
         if (!info.dataType.empty()) {
             token(UsdVolTokens->fieldDataType, info.dataType);
         }
@@ -1893,8 +1965,12 @@ GeoUsdConvert::buildValues(const Partition& p,
 
     if (p.kind == eGeoUsdPrimVolume) {
         const GeoUsdInputPrim* input = inputPrim(p.path);
-        const GfMatrix4d parent = input ? input->parentWorld : frameOf(p.path);
-        values[p.path.AppendProperty(tk.xformOpTransform)] = VtValue(relativeTo(GfMatrix4d(1.), parent));
+        if (isWorldSpace(d)) {
+            const GfMatrix4d parent = input ? input->parentWorld : frameOf(p.path);
+            values[p.path.AppendProperty(tk.xformOpTransform)] = VtValue(relativeTo(GfMatrix4d(1.), parent));
+        } else if (!p.onInput) {
+            values[p.path.AppendProperty(tk.xformOpTransform)] = VtValue(GfMatrix4d(1.));
+        }
         GfRange3d range;
         for (std::size_t off : p.primitives) {
             const GeoBounds b = geoVDBBounds(d, GeoOffset(off));

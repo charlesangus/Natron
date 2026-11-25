@@ -26,10 +26,16 @@
 #include "Global/Macros.h"
 
 #include <cmath>
+#include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
 #include <gtest/gtest.h>
+
+#include <QTemporaryDir>
 
 #include "Engine/Geo/GeoOpenVDB.h"
 
@@ -204,4 +210,88 @@ TEST(GeoVDBTest, NonVDBPrimitiveThrows)
     GeoDetailBuilder fresh;
     EXPECT_THROW(geoAppendVDB(fresh, GeoVDBGridBaseConstPtr(), "x"), std::invalid_argument);
     EXPECT_THROW(geoAppendVDB(fresh, fresh.appendPoints(1), GeoVDBGridConstPtr(), "x"), std::invalid_argument);
+}
+
+TEST(GeoVDBTest, InactiveTilesThatAreNotTheBackgroundEnterTheHash)
+{
+    geoInitializeOpenVDB();
+    const auto withTile = [](float value) {
+        openvdb::FloatGrid::Ptr grid = openvdb::FloatGrid::create(0.f);
+        // A tile of the lower internal level, 8^3 voxels, left inactive.
+        grid->tree().addTile(1, openvdb::Coord(0, 0, 0), value, false);
+
+        return std::make_shared<const GeoVDBGrid>(GeoVDBGridBaseConstPtr(grid));
+    };
+    EXPECT_NE(withTile(1.f)->treeHash(), withTile(2.f)->treeHash());
+    EXPECT_EQ(withTile(1.f)->treeHash(), withTile(1.f)->treeHash());
+
+    openvdb::FloatGrid::Ptr active = openvdb::FloatGrid::create(0.f);
+    active->tree().addTile(1, openvdb::Coord(0, 0, 0), 1.f, true);
+    EXPECT_NE(std::make_shared<const GeoVDBGrid>(GeoVDBGridBaseConstPtr(active))->treeHash(), withTile(1.f)->treeHash());
+}
+
+TEST(GeoVDBTest, AbortedHashingCachesNothing)
+{
+    const GeoVDBGrid grid(makeSphere());
+    EXPECT_FALSE(grid.computeHashes([]() { return true; }));
+    EXPECT_TRUE(grid.computeHashes(GeoVDBAbortFunc()));
+    const U64 h = grid.contentHash();
+    EXPECT_NE(h, U64(0));
+    EXPECT_EQ(GeoVDBGrid(makeSphere()).contentHash(), h);
+}
+
+TEST(GeoVDBTest, AbortedWriteLeavesNoFile)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = dir.path().toStdString() + "/sphere.vdb";
+    std::string error;
+    EXPECT_FALSE(geoWriteVDBFile(*makeSphere(), "density", path, &error, []() { return true; }));
+    EXPECT_FALSE(error.empty());
+
+    // About 16 MB of voxels that do not compress, so the write asks again after it started.
+    const openvdb::FloatGrid::Ptr big = openvdb::FloatGrid::create(0.f);
+    big->tree().fill(openvdb::CoordBBox(openvdb::Coord(0), openvdb::Coord(159)), 0.f, true);
+    big->tree().voxelizeActiveTiles();
+    std::uint32_t state = 12345u;
+    for (openvdb::FloatTree::LeafIter leaf = big->tree().beginLeaf(); leaf; ++leaf) {
+        for (openvdb::FloatTree::LeafNodeType::ValueOnIter it = leaf->beginValueOn(); it; ++it) {
+            state = state * 1664525u + 1013904223u;
+            it.setValue(float(state >> 8));
+        }
+    }
+    int asked = 0;
+    EXPECT_FALSE(geoWriteVDBFile(*big, "density", path, &error, [&asked]() { return ++asked > 1; }));
+    EXPECT_GT(asked, 1);
+    std::size_t entries = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(dir.path().toStdString())) {
+        (void)entry;
+        ++entries;
+    }
+    EXPECT_EQ(entries, 0u);
+
+    ASSERT_TRUE(geoWriteVDBFile(*makeSphere(), "density", path, &error)) << error;
+    std::vector<GeoVDBGridBaseConstPtr> grids;
+    ASSERT_TRUE(geoReadVDBFile(path, "*", &grids, &error)) << error;
+    ASSERT_EQ(grids.size(), 1u);
+    EXPECT_EQ(GeoVDBGrid(grids.front()).contentHash(), GeoVDBGrid(makeSphere()).contentHash());
+    EXPECT_FALSE(geoReadVDBFile(path, "*", &grids, &error, []() { return true; }));
+    EXPECT_TRUE(grids.empty());
+}
+
+TEST(GeoVDBTest, EnsuredFileIsWrittenOnceAndAgainWhenGone)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const GeoVDBGrid grid(makeSphere());
+    std::string path;
+    std::string error;
+    EXPECT_FALSE(geoEnsureVDBFile(grid, "density", dir.path().toStdString(), &path, &error, []() { return true; }));
+    ASSERT_TRUE(geoEnsureVDBFile(grid, "density", dir.path().toStdString(), &path, &error)) << error;
+    ASSERT_TRUE(std::filesystem::exists(path));
+    std::filesystem::remove(path);
+    std::string again;
+    ASSERT_TRUE(geoEnsureVDBFile(grid, "density", dir.path().toStdString(), &again, &error)) << error;
+    EXPECT_EQ(again, path);
+    EXPECT_TRUE(std::filesystem::exists(path));
 }

@@ -25,11 +25,14 @@
 
 #include "GeoVDB.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <mutex>
 #include <sstream>
 #include <stdexcept>
@@ -53,6 +56,8 @@ NATRON_NAMESPACE_ENTER
 namespace {
 
 constexpr std::size_t kMinLeavesForParallelHash = 64;
+// About 16 MB of float voxels between two abort checks.
+constexpr std::size_t kNodesPerAbortCheck = 8192;
 
 using HashedGridTypes = openvdb::TypeList<openvdb::FloatGrid,
                                           openvdb::DoubleGrid,
@@ -113,42 +118,125 @@ hashLeaf(const LeafT& leaf)
     return hasher.finalize();
 }
 
-template <typename TreeT>
-U64
-hashTree(const TreeT& tree)
+// Values tested equal by their bytes, so a NaN tile equals itself.
+template <typename ValueT>
+bool
+sameValue(const ValueT& a,
+          const ValueT& b)
 {
-    using LeafT = typename TreeT::LeafNodeType;
+    if constexpr (std::is_same_v<ValueT, bool>) {
+        return a == b;
+    } else if constexpr (std::is_same_v<ValueT, openvdb::ValueMask>) {
+        (void)a;
+        (void)b;
+
+        return true;
+    } else {
+        return std::memcmp(&a, &b, sizeof(ValueT)) == 0;
+    }
+}
+
+template <typename MaskT>
+void
+appendMask(ContentHasher& hasher,
+           const MaskT& mask)
+{
+    for (openvdb::Index n = 0; n < MaskT::WORD_COUNT; ++n) {
+        hasher.appendU64(mask.template getWord<openvdb::Index64>(n));
+    }
+}
+
+// An internal node's masks, and its tiles that are active or differ from the background by slot.
+template <typename NodeT>
+U64
+hashInternalNode(const NodeT& node,
+                 const typename NodeT::ValueType& background)
+{
+    ContentHasher hasher;
+    appendCoord(hasher, node.origin());
+    appendMask(hasher, node.getChildMask());
+    appendMask(hasher, node.getValueMask());
+    for (typename NodeT::ValueAllCIter it = node.cbeginValueAll(); it; ++it) {
+        if (it.isValueOn() || !sameValue(*it, background)) {
+            hasher.appendU64(it.pos());
+            appendValue(hasher, *it);
+        }
+    }
+
+    return hasher.finalize();
+}
+
+// Hashes count nodes in blocks run in parallel, asking aborted between blocks.
+template <typename HashFn>
+bool
+hashNodes(std::size_t count,
+          const HashFn& hashOne,
+          const GeoVDBAbortFunc& aborted,
+          ContentHasher& hasher)
+{
+    std::vector<U64> hashes(count);
+    for (std::size_t start = 0; start < count; start += kNodesPerAbortCheck) {
+        if (aborted && aborted()) {
+            return false;
+        }
+        const std::size_t n = std::min(kNodesPerAbortCheck, count - start);
+        geoParallelFor(n, [&](std::size_t i) { hashes[start + i] = hashOne(start + i); }, kMinLeavesForParallelHash);
+    }
+    hasher.appendU64(count);
+    hasher.appendBytes(hashes.data(), hashes.size() * sizeof(U64));
+
+    return true;
+}
+
+template <typename TreeT>
+bool
+hashTree(const TreeT& tree,
+         const GeoVDBAbortFunc& aborted,
+         U64* out)
+{
+    using RootT = typename TreeT::RootNodeType;
+    using UpperT = typename RootT::ChildNodeType;
+    using LowerT = typename UpperT::ChildNodeType;
+    using LeafT = typename LowerT::ChildNodeType;
+    static_assert(std::is_same_v<LeafT, typename TreeT::LeafNodeType>, "a tree of a root, two internal levels and leaves");
 
     ContentHasher hasher;
     appendValue(hasher, tree.background());
-
-    // Tiles of the root and internal nodes only; the leaves' voxels are hashed below.
-    typename TreeT::ValueAllCIter tile = tree.cbeginValueAll();
-    tile.setMaxDepth(TreeT::ValueAllCIter::LEAF_DEPTH - 1);
-    for (; tile; ++tile) {
-        hasher.appendU64(tile.getLevel());
+    for (typename RootT::ValueAllCIter tile = tree.root().cbeginValueAll(); tile; ++tile) {
         appendCoord(hasher, tile.getCoord());
         hasher.appendBool(tile.isValueOn());
         appendValue(hasher, tile.getValue());
     }
 
+    std::vector<const UpperT*> uppers;
+    tree.getNodes(uppers);
+    if (!hashNodes(uppers.size(), [&](std::size_t i) { return hashInternalNode(*uppers[i], tree.background()); }, aborted, hasher)) {
+        return false;
+    }
+    std::vector<const LowerT*> lowers;
+    tree.getNodes(lowers);
+    if (!hashNodes(lowers.size(), [&](std::size_t i) { return hashInternalNode(*lowers[i], tree.background()); }, aborted, hasher)) {
+        return false;
+    }
     std::vector<const LeafT*> leaves;
     tree.getNodes(leaves);
-    std::vector<U64> leafHashes(leaves.size());
-    geoParallelFor(leaves.size(), [&](std::size_t i) { leafHashes[i] = hashLeaf(*leaves[i]); }, kMinLeavesForParallelHash);
-    hasher.appendU64(leafHashes.size());
-    hasher.appendBytes(leafHashes.data(), leafHashes.size() * sizeof(U64));
+    if (!hashNodes(leaves.size(), [&](std::size_t i) { return hashLeaf(*leaves[i]); }, aborted, hasher)) {
+        return false;
+    }
+    *out = hasher.finalize();
 
-    return hasher.finalize();
+    return true;
 }
 
 struct TreeHashOp {
+    const GeoVDBAbortFunc* aborted;
     U64* out;
+    bool* finished;
 
     template <typename GridT>
     void operator()(const GridT& grid) const
     {
-        *out = hashTree(grid.tree());
+        *finished = hashTree(grid.tree(), *aborted, out);
     }
 };
 
@@ -175,15 +263,27 @@ hashSerializedTree(const openvdb::GridBase& grid)
     return hasher.finalize();
 }
 
-U64
-computeTreeHash(const openvdb::GridBase& grid)
+// False when aborted, with *out untouched.
+bool
+hashGridTree(const openvdb::GridBase& grid,
+             const GeoVDBAbortFunc& aborted,
+             U64* out)
 {
     U64 h = 0;
-    if (!grid.apply<HashedGridTypes>(TreeHashOp { &h })) {
+    bool finished = false;
+    if (!grid.apply<HashedGridTypes>(TreeHashOp { &aborted, &h, &finished })) {
+        if (aborted && aborted()) {
+            return false;
+        }
         h = hashSerializedTree(grid);
+        finished = true;
     }
+    if (!finished) {
+        return false;
+    }
+    *out = h == 0 ? 1 : h;
 
-    return h == 0 ? 1 : h;
+    return true;
 }
 
 void
@@ -299,13 +399,38 @@ GeoVDBGrid::treeIdentity() const
 U64
 GeoVDBGrid::treeHash() const
 {
-    U64 h = _tree->hash.load(std::memory_order_acquire);
-    if (h == 0) {
-        h = computeTreeHash(*_grid);
-        _tree->hash.store(h, std::memory_order_release);
-    }
+    U64 h = 0;
+    (void)computeTreeHash(GeoVDBAbortFunc(), &h);
 
     return h;
+}
+
+bool
+GeoVDBGrid::computeTreeHash(const GeoVDBAbortFunc& aborted,
+                            U64* hash) const
+{
+    U64 h = _tree->hash.load(std::memory_order_acquire);
+    if (h == 0) {
+        if (!hashGridTree(*_grid, aborted, &h)) {
+            return false;
+        }
+        _tree->hash.store(h, std::memory_order_release);
+    }
+    *hash = h;
+
+    return true;
+}
+
+bool
+GeoVDBGrid::computeHashes(const GeoVDBAbortFunc& aborted) const
+{
+    U64 tree = 0;
+    if (!computeTreeHash(aborted, &tree)) {
+        return false;
+    }
+    (void)contentHash();
+
+    return true;
 }
 
 U64
@@ -615,12 +740,17 @@ bool
 geoReadVDBFile(const std::string& path,
                std::string_view pattern,
                std::vector<GeoVDBGridBaseConstPtr>* grids,
-               std::string* errorMessage)
+               std::string* errorMessage,
+               const GeoVDBAbortFunc& aborted)
 {
     grids->clear();
 
     return withVDBFile(path, errorMessage, [&](openvdb::io::File& file) {
         for (auto it = file.beginName(); it != file.endName(); ++it) {
+            if (aborted && aborted()) {
+                grids->clear();
+                throw std::runtime_error("aborted");
+            }
             const std::string unique = it.gridName();
             const std::string name = plainGridName(file, unique);
             if (!geoNameMatchesPattern(pattern, name)) {
@@ -654,17 +784,104 @@ geoReadVDBGrid(const std::string& path,
     return opened && found;
 }
 
+namespace {
+
+struct WriteAborted : std::runtime_error {
+    WriteAborted()
+        : std::runtime_error("aborted")
+    {
+    }
+};
+
+// Passes writes and seeks through to a file, asking aborted every few megabytes and throwing
+// WriteAborted once it says so.
+class AbortableFileBuf : public std::streambuf {
+public:
+    AbortableFileBuf(std::filebuf& file,
+                     const GeoVDBAbortFunc& aborted)
+        : _file(file)
+        , _aborted(aborted)
+    {
+    }
+
+protected:
+    std::streamsize xsputn(const char* s,
+                           std::streamsize n) override
+    {
+        _unchecked += std::size_t(n);
+        if (_unchecked >= kBytesPerCheck) {
+            _unchecked = 0;
+            if (_aborted && _aborted()) {
+                throw WriteAborted();
+            }
+        }
+
+        return _file.sputn(s, n);
+    }
+
+    int_type overflow(int_type c) override
+    {
+        if (traits_type::eq_int_type(c, traits_type::eof())) {
+            return traits_type::not_eof(c);
+        }
+        const char ch = traits_type::to_char_type(c);
+
+        return xsputn(&ch, 1) == 1 ? c : traits_type::eof();
+    }
+
+    pos_type seekoff(off_type off,
+                     std::ios_base::seekdir dir,
+                     std::ios_base::openmode which) override
+    {
+        return _file.pubseekoff(off, dir, which);
+    }
+
+    pos_type seekpos(pos_type pos,
+                     std::ios_base::openmode which) override
+    {
+        return _file.pubseekpos(pos, which);
+    }
+
+    int sync() override
+    {
+        return _file.pubsync();
+    }
+
+private:
+    static constexpr std::size_t kBytesPerCheck = std::size_t(4) << 20;
+
+    std::filebuf& _file;
+    const GeoVDBAbortFunc& _aborted;
+    std::size_t _unchecked = 0;
+};
+
+// The seekable archive writing openvdb::io::File::write() does, to any stream.
+class StreamArchive : public openvdb::io::Archive {
+public:
+    void writeSeekable(std::ostream& os,
+                       const openvdb::GridCPtrVec& grids) const
+    {
+        Archive::write(os, grids, true);
+    }
+};
+
+} // namespace
+
 bool
 geoWriteVDBFile(const openvdb::GridBase& grid,
                 std::string_view name,
                 const std::string& path,
-                std::string* errorMessage)
+                std::string* errorMessage,
+                const GeoVDBAbortFunc& aborted)
 {
     geoInitializeOpenVDB();
     static std::atomic<std::uint64_t> counter { 0 };
     const std::filesystem::path target(path);
     const std::string partial = (target.parent_path() / ("." + target.filename().string() + ".partial-" + std::to_string(::getpid()) + "-" + std::to_string(counter.fetch_add(1)))).string();
     try {
+        if (aborted && aborted()) {
+            throw WriteAborted();
+        }
         std::error_code ec;
         const std::filesystem::path parent = target.parent_path();
         if (!parent.empty()) {
@@ -675,9 +892,20 @@ geoWriteVDBFile(const openvdb::GridBase& grid,
         meta.removeMeta(openvdb::GridBase::META_GRID_NAME);
         meta.insertMeta(openvdb::GridBase::META_GRID_NAME, openvdb::StringMetadata(std::string(name)));
         openvdb::GridCPtrVec out { grid.copyGridReplacingMetadata(meta) };
-        openvdb::io::File file(partial);
-        file.write(out);
-        file.close();
+        std::filebuf file;
+        if (!file.open(partial, std::ios_base::out | std::ios_base::binary | std::ios_base::trunc)) {
+            throw std::runtime_error("the file could not be created");
+        }
+        {
+            AbortableFileBuf through(file, aborted);
+            std::ostream os(&through);
+            os.exceptions(std::ios_base::badbit | std::ios_base::failbit);
+            StreamArchive().writeSeekable(os, out);
+            os.flush();
+        }
+        if (!file.close()) {
+            throw std::runtime_error("the file could not be written");
+        }
         std::filesystem::rename(partial, path);
     } catch (const std::exception& e) {
         std::error_code ignored;
@@ -718,8 +946,17 @@ geoEnsureVDBFile(const GeoVDBGrid& grid,
                  std::string_view name,
                  const std::string& directory,
                  std::string* path,
-                 std::string* errorMessage)
+                 std::string* errorMessage,
+                 const GeoVDBAbortFunc& aborted)
 {
+    if (!grid.computeHashes(aborted)) {
+        path->clear();
+        if (errorMessage) {
+            *errorMessage = "aborted";
+        }
+
+        return false;
+    }
     ContentHasher hasher;
     hasher.appendU64(grid.contentHash());
     hasher.appendString(std::string(name));
@@ -735,7 +972,7 @@ geoEnsureVDBFile(const GeoVDBGrid& grid,
 
         return true;
     }
-    if (!geoWriteVDBFile(*grid.grid(), name, *path, errorMessage)) {
+    if (!geoWriteVDBFile(*grid.grid(), name, *path, errorMessage, aborted)) {
         return false;
     }
     if (tier) {
@@ -760,9 +997,21 @@ geoClearVDBCacheDirectory()
 {
     if (const CacheDiskTierPtr tier = vdbDiskTier()) {
         tier->clearFiles();
+
+        return;
     }
-    std::error_code ignored;
-    std::filesystem::remove_all(fallbackVDBCacheDirectory(), ignored);
+    // Only the names geoEnsureVDBFile() writes: <16 hex digits>.vdb, and dot-prefixed partial writes.
+    std::error_code error;
+    for (std::filesystem::directory_iterator it(fallbackVDBCacheDirectory(), error), end; !error && (it != end); it.increment(error)) {
+        const std::string name = it->path().filename().string();
+        const bool written = (name.size() == 20) && (name.compare(16, 4, ".vdb") == 0) && (name.find_first_not_of("0123456789abcdef") == 16);
+        const bool partial = !name.empty() && (name[0] == '.') && (name.find(".vdb.partial-") != std::string::npos);
+        std::error_code typeError;
+        if ((written || partial) && it->is_regular_file(typeError) && !typeError) {
+            std::error_code ignored;
+            std::filesystem::remove(it->path(), ignored);
+        }
+    }
 }
 
 NATRON_NAMESPACE_EXIT

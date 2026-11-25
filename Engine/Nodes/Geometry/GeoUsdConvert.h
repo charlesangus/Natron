@@ -36,6 +36,7 @@
 #include <vector>
 
 #include "Engine/Geo/GeoPacked.h"
+#include "Engine/Geo/GeoVDB.h"
 #include "Engine/GeoDetail.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
@@ -190,9 +191,13 @@ GeoUsdInputSceneConstPtr geoUsdCaptureInputScene(const PXR_NS::UsdStageRefPtr& s
  * VDB primitives sharing a `path` (the `name` attribute names their grids, not their prim)
  * become one UsdVolVolume, unpathed ones volume_0 under the root. Each grid is written once to a
  * content-addressed file under the volume directory (geoEnsureVDBFile()) and becomes an
- * OpenVDBAsset child prim named after the grid, bound by a field:<name> relationship. A second
+ * OpenVDBAsset child prim named after the grid, bound by a field:<name> relationship. The file
+ * stores the grid under, and the field's fieldName names it by, the grid's name, else the field
+ * it was read through, else "field"; fieldIndex is 0. A second
  * grid of the same name in one volume gets a suffixed field name, noted in volumeNotes(). Grid
- * transforms are in the detail's space, so the volume prim's transform cancels its parents'.
+ * transforms are in the space of the volume prim, as points are: a new prim gets an identity
+ * transform and an over keeps the input's, unless the detail is in world space, when the volume
+ * prim's transform cancels its parents'.
  *
  * With an input scene, a partition read from USD (kGeoUsdSourceAttr) whose prim the input holds
  * becomes an over of it. Meshes, curves and points of the input's type then carry points, plus
@@ -360,6 +365,17 @@ private:
 
 /** @brief GeoMatrix4 (column vectors) as a GfMatrix4d (row vectors), and back. */
 PXR_NS::GfMatrix4d geoUsdMatrix(const GeoMatrix4& m);
+
+/**
+ * @brief Ensures the file of every VDB primitive of @p detail is in place as GeoUsdConvert writes
+ * it, under @p options' volume directory: marks a file found as used, and writes one that is gone,
+ * such as after the disk cache was cleared or evicted it. Asks @p aborted between and within
+ * grids (geoEnsureVDBFile()) and returns false once it says so; a write that fails is left for
+ * GeoUsdConvert to report.
+ **/
+bool geoUsdEnsureVolumeFiles(const GeoDetail& detail,
+                             const GeoUsdConvertOptions& options,
+                             const GeoVDBAbortFunc& aborted);
 GeoMatrix4 geoMatrixFromUsd(const PXR_NS::GfMatrix4d& m);
 
 /**

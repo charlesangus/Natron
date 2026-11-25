@@ -32,6 +32,7 @@
 #include <string_view>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/Geo/GeoVDB.h"
 #include "Engine/GeoDetail.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
@@ -55,7 +56,7 @@ public:
         .description = "Read volumes from an OpenVDB (.vdb) file or a sequence of them: each selected grid "
                        "becomes one VDB primitive on one point at the grid's origin, its name in the primitive "
                        "attribute name.",
-        .grouping = PLUGIN_GROUP_3D,
+        .grouping = PLUGIN_GROUP_GEOMETRY,
         .majorVersion = 1,
         .minorVersion = 0,
         .isWriter = false,
@@ -73,12 +74,13 @@ public:
     /**
      * @brief Appends the grids of @p path whose names match @p grids (space-separated globs, ^ to
      * exclude) to @p builder. Empty geometry for an empty @p path; false with @p error set when the
-     * file cannot be read.
+     * file cannot be read, or once @p aborted says so, which is asked before each grid is read.
      **/
     static bool readFile(const std::string& path,
                          std::string_view grids,
                          GeoDetailBuilder& builder,
-                         std::string* error);
+                         std::string* error,
+                         const GeoVDBAbortFunc& aborted = GeoVDBAbortFunc());
 
 private:
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;

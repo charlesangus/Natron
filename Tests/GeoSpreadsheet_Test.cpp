@@ -41,8 +41,11 @@
 
 #include <gtest/gtest.h>
 
+#include "Engine/Geo/GeoOpenVDB.h"
+
 #include "Engine/Geo/GeoPacked.h"
 #include "Engine/Geo/GeoSpreadsheet.h"
+#include "Engine/Geo/GeoVDB.h"
 
 NATRON_NAMESPACE_USING
 
@@ -546,4 +549,16 @@ TEST(GeoSpreadsheetTest, PackedPrimitivesKeepUserAttributesNamedLikePacked)
     for (const char* internal : { kGeoPackedXformAttr, kGeoPackedBoundsAttr, kGeoPackedUSDPathAttr, kGeoPackedUSDParentXformAttr }) {
         EXPECT_EQ(std::find(names.begin(), names.end(), internal), names.end()) << internal;
     }
+}
+
+TEST(GeoSpreadsheetTest, VDBPrimitivesNameTheirKind)
+{
+    geoInitializeOpenVDB();
+    GeoDetailBuilder b;
+    const GeoOffset p = b.appendPoints(1);
+    geoAppendPackedUSD(b, p, "/World/Chair", translation(0., 0., 0.), translation(0., 0., 0.), GeoBounds { { -1., -1., -1. }, { 1., 1., 1. } });
+    geoAppendVDB(b, GeoVDBGridBaseConstPtr(openvdb::FloatGrid::create(0.f)), "density");
+    const GeoDetailSpreadsheetSource src(std::make_shared<const GeoDetail>(b.finish()));
+
+    EXPECT_EQ(cell(src, eGeoAttribClassPrimitive, 1, "intrinsic:kind"), "vdb");
 }

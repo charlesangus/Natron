@@ -39,6 +39,7 @@
 #include <QString>
 
 #include "Engine/Geo/GeoPacked.h"
+#include "Engine/Geo/GeoVDB.h"
 #include "Engine/GeoDetail.h"
 #include "Engine/Nodes/Geometry/GeoSdfFileFormat.h"
 #include "Engine/Nodes/Geometry/GeoUsdConvert.h"
@@ -213,6 +214,14 @@ collectGuides(const GeoDetail& detail,
                 const GeoPrimitiveTypeEnum type = detail.primitiveType(primitive);
                 if (geoPrimitiveIsPacked(type)) {
                     addBox(&guides->highlightEdges, geoPackedWorldBounds(detail, primitive));
+
+                    return;
+                }
+                if (type == eGeoPrimitiveVDB) {
+                    const GeoBounds bounds = geoVDBBounds(detail, primitive);
+                    if (!(bounds == GeoBounds())) {
+                        addBox(&guides->highlightEdges, bounds);
+                    }
 
                     return;
                 }

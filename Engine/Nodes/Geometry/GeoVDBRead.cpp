@@ -48,13 +48,14 @@ bool
 GeoVDBRead::readFile(const std::string& path,
                      std::string_view grids,
                      GeoDetailBuilder& builder,
-                     std::string* error)
+                     std::string* error,
+                     const GeoVDBAbortFunc& aborted)
 {
     if (path.empty()) {
         return true;
     }
     std::vector<GeoVDBGridBaseConstPtr> read;
-    if (!geoReadVDBFile(path, grids, &read, error)) {
+    if (!geoReadVDBFile(path, grids, &read, error, aborted)) {
         return false;
     }
     for (const GeoVDBGridBaseConstPtr& grid : read) {
@@ -140,9 +141,16 @@ GeoVDBRead::renderGeometry(const GeoRenderActionArgs& args,
         grids = knob->getValue();
     }
 
-    return renderGeometryGenerator([&path, &grids](GeoDetailBuilder& detail, std::string* error) {
+    return renderGeometryGenerator([this, &path, &grids](GeoDetailBuilder& detail, std::string* error) {
         try {
-            return readFile(path, grids, detail, error) ? eStatusOK : eStatusFailed;
+            if (readFile(path, grids, detail, error, [this]() { return aborted(); })) {
+                return eStatusOK;
+            }
+            if (error && aborted()) {
+                *error = "aborted";
+            }
+
+            return eStatusFailed;
         } catch (const std::exception& e) {
             if (error) {
                 *error = e.what();

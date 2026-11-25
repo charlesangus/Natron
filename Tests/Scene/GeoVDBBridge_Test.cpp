@@ -42,6 +42,8 @@
 
 #include <pxr/usd/sdf/assetPath.h>
 #include <pxr/usd/usd/stage.h>
+#include <pxr/usd/usdGeom/xform.h>
+#include <pxr/usd/usdGeom/xformCache.h>
 #include <pxr/usd/usdVol/openVDBAsset.h>
 #include <pxr/usd/usdVol/volume.h>
 
@@ -349,4 +351,163 @@ TEST(GeoVDBBridge, OverridingAnInputVolumeReauthorsItsFieldsAndBlocksDroppedOnes
     ASSERT_EQ(fields.size(), 1u);
     EXPECT_EQ(fields.begin()->first, TfToken("dens"));
     EXPECT_EQ(fields.begin()->second, SdfPath("/scene/vol/densityGrid"));
+}
+
+namespace {
+
+// /scene/vol, a volume under a translated parent and translated itself, bound to one density grid.
+UsdStageRefPtr
+transformedVolumeStage(const QTemporaryDir& dir)
+{
+    const std::string file = dir.path().toStdString() + "/moved-density.vdb";
+    EXPECT_TRUE(geoWriteVDBFile(*makeSphere(1.f), "density", file, nullptr));
+    const UsdStageRefPtr stage = UsdStage::CreateInMemory("moved.usda");
+    UsdGeomXform::Define(stage, SdfPath("/scene")).AddTranslateOp().Set(GfVec3d(10., 0., 0.));
+    const UsdVolVolume volume = UsdVolVolume::Define(stage, SdfPath("/scene/vol"));
+    volume.AddTranslateOp().Set(GfVec3d(0., 5., 0.));
+    const UsdVolOpenVDBAsset asset = UsdVolOpenVDBAsset::Define(stage, SdfPath("/scene/vol/densityGrid"));
+    asset.CreateFilePathAttr().Set(SdfAssetPath(file));
+    asset.CreateFieldNameAttr().Set(TfToken("density"));
+    volume.CreateFieldRelationship(TfToken("density"), asset.GetPath());
+
+    return stage;
+}
+
+// The prim's grids read in world space, as their world-space bounds.
+GeoBounds
+worldBoundsOf(const UsdStageRefPtr& stage,
+              const SdfPath& path)
+{
+    const UsdPrim prim = stage->GetPrimAtPath(path);
+    UsdGeomXformCache xforms;
+    const GfMatrix4d world = xforms.GetLocalToWorldTransform(prim);
+    GeoDetailBuilder b;
+    std::vector<std::string> warnings;
+    std::string err;
+    EXPECT_TRUE(geoUsdReadPrim(prim, UsdTimeCode::Default(), &world, b, &warnings, &err)) << err;
+    const GeoDetail detail = b.finish();
+    EXPECT_EQ(detail.primitiveCount(), GeoIndex(1));
+
+    return detail.primitiveCount() > 0 ? geoVDBBounds(detail, 0) : GeoBounds();
+}
+
+void
+expectSameBounds(const GeoBounds& a,
+                 const GeoBounds& b)
+{
+    for (int i = 0; i < 3; ++i) {
+        EXPECT_NEAR(a.min[i], b.min[i], 1e-6);
+        EXPECT_NEAR(a.max[i], b.max[i], 1e-6);
+    }
+}
+
+} // namespace
+
+TEST(GeoVDBBridge, AVolumeKeepsItsPlaceUnderTransformedPrims)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const UsdStageRefPtr input = transformedVolumeStage(dir);
+    const GeoBounds expected = worldBoundsOf(input, SdfPath("/scene/vol"));
+    EXPECT_NEAR(expected.min[0] + expected.max[0], 20., 1e-3);
+    EXPECT_NEAR(expected.min[1] + expected.max[1], 10., 1e-3);
+
+    for (const bool worldSpace : { false, true }) {
+        const UsdPrim prim = input->GetPrimAtPath(SdfPath("/scene/vol"));
+        UsdGeomXformCache xforms;
+        const GfMatrix4d world = xforms.GetLocalToWorldTransform(prim);
+        GeoDetailBuilder b;
+        std::vector<std::string> warnings;
+        std::string err;
+        ASSERT_TRUE(geoUsdReadPrim(prim, UsdTimeCode::Default(), worldSpace ? &world : nullptr, b, &warnings, &err)) << err;
+        if (worldSpace) {
+            GeoAttributeDesc desc;
+            desc.name = kGeoUsdWorldSpaceAttr;
+            desc.storage = eGeoStorageInt32;
+            b.addAttribute(eGeoAttribClassDetail, desc).set<std::int32_t>(0, 1);
+        }
+        const GeoDetailConstPtr detail = std::make_shared<const GeoDetail>(b.finish());
+
+        SdfLayerRefPtr converted;
+        const UsdStageRefPtr composed = composedOver(input, detail, dir, &converted);
+        ASSERT_TRUE(static_cast<bool>(composed));
+        expectSameBounds(worldBoundsOf(composed, SdfPath("/scene/vol")), expected);
+        // Out of world space the over leaves the input's transform alone.
+        EXPECT_EQ(static_cast<bool>(converted->GetAttributeAtPath(SdfPath("/scene/vol.xformOpOrder"))), worldSpace) << "world space " << worldSpace;
+    }
+}
+
+TEST(GeoVDBBridge, ANewVolumeOutOfWorldSpaceSitsInItsParentsFrame)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const GeoDetailConstPtr detail = makeVolume({ { makeSphere(1.f), "density" } });
+    const GeoUsdConvert convert(detail, optionsIn(dir));
+    const SdfPath path = volumePath(convert);
+    const UsdStageRefPtr stage = UsdStage::Open(authored(convert));
+    ASSERT_TRUE(static_cast<bool>(stage));
+    UsdGeomXformCache xforms;
+    EXPECT_EQ(xforms.GetLocalToWorldTransform(stage->GetPrimAtPath(path)), GfMatrix4d(1.));
+}
+
+TEST(GeoVDBBridge, AnUnnamedGridIsStoredAndNamedAsItsField)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const GeoDetailConstPtr detail = makeVolume({ { makeSphere(1.f), "" } });
+    const GeoUsdConvert convert(detail, optionsIn(dir));
+    const UsdStageRefPtr stage = UsdStage::Open(authored(convert));
+    ASSERT_TRUE(static_cast<bool>(stage));
+    const UsdVolVolume::FieldMap fields = UsdVolVolume(stage->GetPrimAtPath(volumePath(convert))).GetFieldPaths();
+    ASSERT_EQ(fields.size(), 1u);
+    EXPECT_EQ(fields.begin()->first, TfToken("field"));
+    TfToken fieldName;
+    UsdVolOpenVDBAsset(stage->GetPrimAtPath(fields.begin()->second)).GetFieldNameAttr().Get(&fieldName);
+    EXPECT_EQ(fieldName, TfToken("field"));
+    std::vector<std::string> names;
+    std::string err;
+    ASSERT_TRUE(geoVDBFileGridNames(fieldFile(stage, fields.begin()->second), &names, &err)) << err;
+    EXPECT_EQ(names, std::vector<std::string> { "field" });
+}
+
+TEST(GeoVDBBridge, ReauthoredFieldsIndexTheirOwnFile)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const UsdStageRefPtr input = inputVolumeStage(dir);
+    UsdVolOpenVDBAsset(input->GetPrimAtPath(SdfPath("/scene/vol/densityGrid"))).CreateFieldIndexAttr().Set(1);
+
+    GeoDetailBuilder read;
+    std::vector<std::string> warnings;
+    std::string err;
+    ASSERT_TRUE(geoUsdReadPrim(input->GetPrimAtPath(SdfPath("/scene/vol")), UsdTimeCode::Default(), nullptr, read, &warnings, &err)) << err;
+    const GeoDetailConstPtr both = std::make_shared<const GeoDetail>(read.finish());
+
+    SdfLayerRefPtr converted;
+    const UsdStageRefPtr composed = composedOver(input, both, dir, &converted);
+    ASSERT_TRUE(static_cast<bool>(composed));
+    int index = -1;
+    UsdVolOpenVDBAsset(composed->GetPrimAtPath(SdfPath("/scene/vol/densityGrid"))).GetFieldIndexAttr().Get(&index);
+    EXPECT_EQ(index, 0);
+}
+
+TEST(GeoVDBBridge, EnsuringVolumeFilesPutsBackOneThatIsGone)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const GeoDetailConstPtr detail = makeVolume({ { makeSphere(1.f), "density" } });
+    const GeoUsdConvertOptions options = optionsIn(dir);
+    EXPECT_FALSE(geoUsdEnsureVolumeFiles(*detail, options, []() { return true; }));
+    ASSERT_TRUE(geoUsdEnsureVolumeFiles(*detail, options, GeoVDBAbortFunc()));
+
+    const GeoUsdConvert convert(detail, options);
+    const UsdStageRefPtr stage = UsdStage::Open(authored(convert));
+    ASSERT_TRUE(static_cast<bool>(stage));
+    const UsdVolVolume::FieldMap fields = UsdVolVolume(stage->GetPrimAtPath(volumePath(convert))).GetFieldPaths();
+    ASSERT_EQ(fields.size(), 1u);
+    const std::string file = fieldFile(stage, fields.begin()->second);
+    ASSERT_TRUE(std::filesystem::exists(file));
+    std::filesystem::remove(file);
+    ASSERT_TRUE(geoUsdEnsureVolumeFiles(*detail, options, GeoVDBAbortFunc()));
+    EXPECT_TRUE(std::filesystem::exists(file));
 }

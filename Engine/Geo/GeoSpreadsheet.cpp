@@ -238,6 +238,8 @@ kindName(GeoPrimitiveTypeEnum type)
         return "packedGeometry";
     case eGeoPrimitivePackedUSD:
         return "packedUSD";
+    case eGeoPrimitiveVDB:
+        return "vdb";
     }
 
     return "";

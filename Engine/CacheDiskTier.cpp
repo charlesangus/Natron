@@ -1319,7 +1319,14 @@ struct CacheDiskTier::Imp {
                     std::uint64_t base,
                     int deadRank,
                     std::vector<EvictionSample>* sample) const;
-    void samplePlainFiles(const std::string& build,
+    // The regular files under <build>/files, in walk order.
+    std::vector<std::string> listPlainFiles(const std::string& build) const;
+    // Samples files[*next...] cyclically from *next until the sample holds limit entries or every
+    // file was looked at; *next counts the files looked at.
+    void samplePlainFiles(const std::vector<std::string>& files,
+                          std::size_t first,
+                          std::size_t* next,
+                          std::size_t limit,
                           int deadRank,
                           std::uint64_t now,
                           std::vector<EvictionSample>* sample) const;
@@ -2068,42 +2075,61 @@ CacheDiskTier::Imp::sampleFile(const std::string& path,
     sample->push_back(std::move(sampled));
 }
 
+std::vector<std::string>
+CacheDiskTier::Imp::listPlainFiles(const std::string& build) const
+{
+    std::vector<std::string> files;
+    std::error_code error;
+    fs::recursive_directory_iterator it(config.root + '/' + build + "/files", fs::directory_options::skip_permission_denied, error);
+    const fs::recursive_directory_iterator end;
+    while (!error && (it != end)) {
+        if (stopping.load()) {
+            break;
+        }
+        std::error_code typeError;
+        if (it->is_regular_file(typeError) && !typeError) {
+            files.push_back(it->path().string());
+        }
+        it.increment(error);
+    }
+
+    return files;
+}
+
 void
-CacheDiskTier::Imp::samplePlainFiles(const std::string& build,
+CacheDiskTier::Imp::samplePlainFiles(const std::vector<std::string>& files,
+                                     std::size_t first,
+                                     std::size_t* next,
+                                     std::size_t limit,
                                      int deadRank,
                                      std::uint64_t now,
                                      std::vector<EvictionSample>* sample) const
 {
-    std::error_code error;
-    fs::recursive_directory_iterator it(config.root + '/' + build + "/files", fs::directory_options::skip_permission_denied, error);
-    const fs::recursive_directory_iterator end;
-
-    while (!error && (it != end) && (sample->size() < CacheEviction::kSample)) {
+    for (; (*next < files.size()) && (sample->size() < limit); ++*next) {
         if (stopping.load()) {
             return;
         }
-        const std::string path = it->path().string();
-        const std::string name = it->path().filename().string();
+        const std::string& path = files[(first + *next) % files.size()];
+        const std::string name = fs::path(path).filename().string();
         struct stat st;
-        std::error_code statError;
-        if (it->is_regular_file(statError) && !statError && (::stat(path.c_str(), &st) == 0)) {
-            const std::uint64_t lastUse = (std::uint64_t)st.st_mtim.tv_sec * 1000000000ULL + (std::uint64_t)st.st_mtim.tv_nsec;
-            const bool inProgress = !name.empty() && (name[0] == '.');
-            if (!inProgress || ((now > lastUse) && (now - lastUse > kAbandonedPlainFileNs))) {
-                EvictionSample sampled;
-                sampled.path = path;
-                sampled.name = name;
-                sampled.base = 0;
-                sampled.bytes = (std::uint64_t)st.st_size;
-                sampled.stats.lastUse = lastUse;
-                sampled.stats.recomputeCostNs = CacheEviction::kUnmeasuredCostNs;
-                sampled.deadRank = deadRank;
-                sampled.score = 0.;
-                sampled.plainFile = true;
-                sample->push_back(std::move(sampled));
-            }
+        if (::stat(path.c_str(), &st) != 0) {
+            continue;
         }
-        it.increment(error);
+        const std::uint64_t lastUse = (std::uint64_t)st.st_mtim.tv_sec * 1000000000ULL + (std::uint64_t)st.st_mtim.tv_nsec;
+        const bool inProgress = !name.empty() && (name[0] == '.');
+        if (!inProgress || ((now > lastUse) && (now - lastUse > kAbandonedPlainFileNs))) {
+            EvictionSample sampled;
+            sampled.path = path;
+            sampled.name = name;
+            sampled.base = 0;
+            sampled.bytes = (std::uint64_t)st.st_size;
+            sampled.stats.lastUse = lastUse;
+            sampled.stats.recomputeCostNs = CacheEviction::kUnmeasuredCostNs;
+            sampled.deadRank = deadRank;
+            sampled.score = 0.;
+            sampled.plainFile = true;
+            sample->push_back(std::move(sampled));
+        }
     }
 }
 
@@ -2156,6 +2182,13 @@ CacheDiskTier::Imp::evictPass(const std::map<std::string, LedgerRecord>& ledgers
             break;
         }
 
+        // Plain files take up to a quarter of the sample before the entries walk, so a build
+        // with many entries still ranks them; the rest is theirs if the entries leave room.
+        const std::vector<std::string> plainFiles = listPlainFiles(build);
+        const std::size_t plainFirst = plainFiles.empty() ? 0 : std::size_t(random() % plainFiles.size());
+        std::size_t plainNext = 0;
+        samplePlainFiles(plainFiles, plainFirst, &plainNext, std::min(CacheEviction::kSample, sample.size() + CacheEviction::kSample / 4), rank, now, &sample);
+
         const unsigned first = random() % kShards;
         for (unsigned i = 0; (i < kShards) && (sample.size() < CacheEviction::kSample); ++i) {
             if (stopping.load()) {
@@ -2197,10 +2230,8 @@ CacheDiskTier::Imp::evictPass(const std::map<std::string, LedgerRecord>& ledgers
             }
             walkedEverything = walkedEverything && (sample.size() < CacheEviction::kSample);
         }
-        if (sample.size() < CacheEviction::kSample) {
-            samplePlainFiles(build, rank, now, &sample);
-            walkedEverything = walkedEverything && (sample.size() < CacheEviction::kSample);
-        }
+        samplePlainFiles(plainFiles, plainFirst, &plainNext, CacheEviction::kSample, rank, now, &sample);
+        walkedEverything = walkedEverything && (plainNext == plainFiles.size());
         if (deadBuild) {
             deadSampled += sample.size() - sampledBefore;
             if (walkedEverything && (sample.size() == sampledBefore)) {

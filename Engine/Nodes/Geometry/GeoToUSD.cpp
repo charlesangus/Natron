@@ -718,12 +718,27 @@ GeoToUSD::prepareSceneSources(const EvaluateSceneArgs& args,
     const NodePtr node = getNode();
     NodeSettings settings;
     std::string error;
-    if (!node || node->isNodeDisabled() || !_imp->readSettings(this, &settings, &error) || settings.copy) {
+    if (!node || node->isNodeDisabled() || !_imp->readSettings(this, &settings, &error)) {
         return eRenderRoIRetCodeOk;
     }
 
-    Gathered gathered;
     RenderCancellation cancel(this);
+    const GeoVDBAbortFunc aborted = [&cancel]() { return cancel.check(); };
+    // Every evaluation, a memoized one too, marks its volume files used and puts back those the
+    // disk cache dropped, so the layer never names a file that is gone.
+    if (settings.copy) {
+        const EffectInstancePtr geometry = getInput(kGeoToUSDInputGeometry);
+        GeoDetailConstPtr detail;
+        std::string ignored;
+        if (geometry && geometry->producesGeometryData() && (geometry->evaluateGeometry(EvaluateGeometryArgs(args.time, args.view), &detail, &ignored) == eRenderRoIRetCodeOk) && detail
+            && selectGeometry(detail, settings.group, settings.groupType, &detail, &ignored) && !geoUsdEnsureVolumeFiles(*detail, settings.options, aborted)) {
+            return eRenderRoIRetCodeAborted;
+        }
+
+        return cancel.check() ? eRenderRoIRetCodeAborted : eRenderRoIRetCodeOk;
+    }
+
+    Gathered gathered;
     const RenderRoIRetCode code = _imp->gather(this, args.time, args.view, nullptr, getSceneInputContext_public(kGeoToUSDInputScene, args.context, args.time, args.view), settings, cancel, &gathered, &error);
     if (code == eRenderRoIRetCodeAborted) {
         return code;
@@ -731,6 +746,9 @@ GeoToUSD::prepareSceneSources(const EvaluateSceneArgs& args,
     // renderScene() reports what failed here, and copies a layer this could not refresh.
     if ((code != eRenderRoIRetCodeOk) || isEmptyDetail(gathered.detail)) {
         return eRenderRoIRetCodeOk;
+    }
+    if (!geoUsdEnsureVolumeFiles(*gathered.detail, settings.options, aborted)) {
+        return eRenderRoIRetCodeAborted;
     }
     const bool timeKeyed = isFrameVaryingOrAnimated_Recursive();
     PXR_NS::SdfLayerRefPtr layer;
@@ -908,6 +926,14 @@ GeoToUSD::renderScene(const SceneRenderActionArgs& args,
             }
 
             return eStatusFailed;
+        }
+    }
+    {
+        const GeoVDBAbortFunc aborted = [&cancel]() { return cancel.check(); };
+        for (const Gathered& g : gathered) {
+            if (!isEmptyDetail(g.detail) && !geoUsdEnsureVolumeFiles(*g.detail, settings.options, aborted)) {
+                return eStatusFailed;
+            }
         }
     }
     for (std::size_t i = 0; i < frames.size(); ++i) {

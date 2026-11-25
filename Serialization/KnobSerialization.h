@@ -298,6 +298,47 @@ typedef std::variant<std::monostate,
     KnobExtraSerialization;
 
 /**
+ * @brief The properties of a user knob that are not part of its type-specific data and that
+ * most knobs leave at their type's default. Each member holds that default unless the knob
+ * differs from it.
+ **/
+struct KnobUserPropertiesSerialization {
+    // Int and Double: the value is edited without a slider.
+    bool sliderDisabled;
+    // Int and Double of 4 dimensions: the value is a rectangle, x, y, width and height.
+    bool isRectangle;
+    // Double: the value is in canvas coordinates, scaled with the render scale.
+    bool spatial;
+    // Double: one ValueIsNormalizedEnum value per dimension, or none when no dimension holds a
+    // normalized value.
+    std::vector<int> valueIsNormalized;
+    // String: how many text lines tall a multi-line field is at least, 0 to leave it to the layout.
+    int preferredRows;
+    // LayerSelect: whether None and All can be selected, and the name All shows, empty for "All".
+    bool allowNone;
+    bool allowAll;
+    std::string allLabel;
+    // Every type but Parametric, whose curve labels are its dimension names: one name per
+    // dimension, or none when every dimension has the name its type gives it.
+    std::vector<std::string> dimensionNames;
+
+    KnobUserPropertiesSerialization()
+        : sliderDisabled(false)
+        , isRectangle(false)
+        , spatial(false)
+        , valueIsNormalized()
+        , preferredRows(0)
+        , allowNone(false)
+        , allowAll(false)
+        , allLabel()
+        , dimensionNames()
+    {
+    }
+
+    bool operator==(const KnobUserPropertiesSerialization&) const = default;
+};
+
+/**
  * @brief Plain-data equivalent of everything a project file saves for one knob.
  **/
 struct KnobSerialization {
@@ -338,6 +379,9 @@ struct KnobSerialization {
     // Present for two-dimensional Double user knobs only.
     std::optional<bool> useHostOverlayHandle;
 
+    // Filled for user knobs only.
+    KnobUserPropertiesSerialization userProperties;
+
     KnobSerialization()
         : name()
         , typeName()
@@ -357,6 +401,7 @@ struct KnobSerialization {
         , isPersistent(false)
         , extraData()
         , useHostOverlayHandle()
+        , userProperties()
     {
     }
 

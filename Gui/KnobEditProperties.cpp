@@ -54,14 +54,10 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Knob.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
-#include "Engine/Project.h"
-#include "Engine/ProjectPathVariableCommands.h"
 #include "Engine/UserKnobEdit.h"
 
-#include "Gui/DockablePanel.h"
 #include "Gui/KnobEditMode.h"
 #include "Gui/KnobEditPalette.h"
-#include "Gui/PathVariableUndo.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -701,15 +697,6 @@ KnobEditProperties::addTypeFields(const UserKnobSpec& spec)
                          b->script = edit->toPlainText().toStdString();
                      }
                  });
-    } else if (spec.typeName == KnobButton::typeNameStatic()) {
-        addLines(tr("Script"), QString::fromUtf8("KnobEditPropertiesScript"), QString(), true,
-                 [](UserKnobSpec* s, const QPlainTextEdit* edit) {
-                     Serialization::KnobButtonExtraSerialization b;
-                     b.script = edit->toPlainText().toStdString();
-                     if (!b.script.empty()) {
-                         s->extra = b;
-                     }
-                 });
     }
 } // addTypeFields
 
@@ -783,9 +770,6 @@ KnobEditProperties::applyField(const Field& field)
         return false;
     }
     setError(QString());
-    if (spec.name != before.name) {
-        renamePathVariable(before.name, before.label);
-    }
     scheduleRebuild();
 
     return true;
@@ -797,27 +781,6 @@ KnobEditProperties::commitPending()
     const std::vector<Field> fields = _fields;
     for (std::size_t i = 0; i < fields.size(); ++i) {
         applyField(fields[i]);
-    }
-}
-
-void
-KnobEditProperties::renamePathVariable(const std::string& oldName,
-                                       const std::string& oldLabel)
-{
-    KnobIPtr knob = _knob.lock();
-    Project* isProject = dynamic_cast<Project*>(_mode->getHolder());
-    DockablePanel* panel = _mode->getPanel();
-    if (!knob || !isProject || !panel || !dynamic_cast<KnobString*>(knob.get()) || !isProject->getApp()) {
-        return;
-    }
-    KnobGroupPtr variables = isProject->getRFVGroup();
-    if (!variables || (knob->getParentKnob() != variables)) {
-        return;
-    }
-    ProjectPtr project = isProject->getApp()->getProject();
-    std::shared_ptr<RenamePathVariableCommand> command = std::make_shared<RenamePathVariableCommand>(project, oldName, knob->getName(), oldLabel, knob->getLabel());
-    if (command->hasValueEdits()) {
-        ignore_result(pushPathVariableCommand(panel->getGui(), project, command));
     }
 }
 
@@ -860,53 +823,44 @@ KnobEditProperties::changeType(const std::string& typeName,
     if (!knob || !holder) {
         return;
     }
-    KnobIPtr current = knob;
-    if ((typeName != knob->typeName()) || (dimension != knob->getDimension())) {
-        KnobIPtr newKnob;
-        std::string error;
-        UserKnobTypeChangeEnum result = changeUserKnobType(holder, knob, typeName, dimension, false, &newKnob, &error);
-        if (result == eUserKnobTypeChangeNeedsReset) {
-            const KnobEditTypeEntry* entry = findKnobEditTypeEntry(typeName, isLabel);
-            StandardButtonEnum rep = Dialogs::questionDialog(tr("Change type").toStdString(),
-                                                             tr("Changing %1 to %2 resets its value, animation and links. Continue?")
-                                                                 .arg(QString::fromUtf8(knob->getName().c_str()),
-                                                                      entry ? entry->label : QString::fromUtf8(typeName.c_str()))
-                                                                 .toStdString(),
-                                                             false);
-            if (rep == eStandardButtonYes) {
-                result = changeUserKnobType(holder, knob, typeName, dimension, true, &newKnob, &error);
-            }
-        }
-        if ((result == eUserKnobTypeChangeFailed) || !newKnob) {
-            setError(QString::fromUtf8(error.c_str()));
-            scheduleRebuild();
-
-            return;
-        }
-        if (result == eUserKnobTypeChangeNeedsReset) {
-            scheduleRebuild();
-
-            return;
-        }
-        current = newKnob;
-    }
+    Serialization::KnobExtraSerialization extra;
     if (typeName == KnobString::typeNameStatic()) {
-        UserKnobSpec spec = specFromKnob(current);
+        const UserKnobSpec spec = specFromKnob(knob);
         Serialization::KnobTextExtraSerialization text;
         if (const Serialization::KnobTextExtraSerialization* t = std::get_if<Serialization::KnobTextExtraSerialization>(&spec.extra)) {
             text = *t;
         }
-        if (text.isLabel != isLabel) {
-            text.isLabel = isLabel;
-            if (isLabel) {
-                text.isMultiLine = false;
-            }
-            spec.extra = text;
-            std::string error;
-            if (!applySpec(holder, current, spec, &error)) {
-                setError(QString::fromUtf8(error.c_str()));
-            }
+        text.isLabel = isLabel;
+        if (isLabel) {
+            text.isMultiLine = false;
         }
+        extra = text;
+    }
+    KnobIPtr current;
+    std::string error;
+    UserKnobTypeChangeEnum result = changeUserKnobType(holder, knob, typeName, dimension, false, &current, &error, extra);
+    if (result == eUserKnobTypeChangeNeedsReset) {
+        const KnobEditTypeEntry* entry = findKnobEditTypeEntry(typeName, isLabel);
+        StandardButtonEnum rep = Dialogs::questionDialog(tr("Change type").toStdString(),
+                                                         tr("Changing %1 to %2 resets its value, animation and links. Continue?")
+                                                             .arg(QString::fromUtf8(knob->getName().c_str()),
+                                                                  entry ? entry->label : QString::fromUtf8(typeName.c_str()))
+                                                             .toStdString(),
+                                                         false);
+        if (rep == eStandardButtonYes) {
+            result = changeUserKnobType(holder, knob, typeName, dimension, true, &current, &error, extra);
+        }
+    }
+    if ((result == eUserKnobTypeChangeFailed) || !current) {
+        setError(QString::fromUtf8(error.c_str()));
+        scheduleRebuild();
+
+        return;
+    }
+    if (result == eUserKnobTypeChangeNeedsReset) {
+        scheduleRebuild();
+
+        return;
     }
     setError(QString());
     _knob = current;

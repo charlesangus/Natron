@@ -1129,45 +1129,23 @@ KnobHelper::populate()
             _imp->curves[i] = std::make_shared<Curve>(this, i);
         }
         _imp->animationLevel[i] = eAnimationLevelNone;
-
-
-        if (!isColor) {
-            switch (i) {
-            case 0:
-                _imp->dimensionNames[i] = "x";
-                break;
-            case 1:
-                _imp->dimensionNames[i] = "y";
-                break;
-            case 2:
-                _imp->dimensionNames[i] = "z";
-                break;
-            case 3:
-                _imp->dimensionNames[i] = "w";
-                break;
-            default:
-                break;
-            }
-        } else {
-            switch (i) {
-            case 0:
-                _imp->dimensionNames[i] = "r";
-                break;
-            case 1:
-                _imp->dimensionNames[i] = "g";
-                break;
-            case 2:
-                _imp->dimensionNames[i] = "b";
-                break;
-            case 3:
-                _imp->dimensionNames[i] = "a";
-                break;
-            default:
-                break;
-            }
-        }
+        _imp->dimensionNames[i] = defaultKnobDimensionName(isColor != NULL, i);
     }
 } // KnobHelper::populate
+
+std::string
+defaultKnobDimensionName(bool isColor,
+                         int dimension)
+{
+    static const char* const kXYZW[] = { "x", "y", "z", "w" };
+    static const char* const kRGBA[] = { "r", "g", "b", "a" };
+
+    if ((dimension < 0) || (dimension > 3)) {
+        return std::string();
+    }
+
+    return isColor ? kRGBA[dimension] : kXYZW[dimension];
+}
 
 std::string
 KnobHelper::getDimensionName(int dimension) const

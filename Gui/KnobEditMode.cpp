@@ -1354,23 +1354,20 @@ KnobEditMode::addKnobFrom(const KnobIPtr& source,
     if (group && !group->isUserKnob()) {
         group.reset();
     }
-    const std::string name = uniqueKnobName(holder, source->getName(), false);
-
-    // A copy is made as an expression link from the source, which is then given its own
-    // expressions back.
-    std::vector<std::pair<std::string, bool>> sourceExpressions;
-    if (copy) {
-        for (int i = 0; i < source->getDimension(); ++i) {
-            sourceExpressions.push_back(std::make_pair(source->getExpression(i), source->isExpressionUsingRetVariable(i)));
-        }
-    }
     KnobIPtr knob;
     QStringList messages;
-    {
-        UserKnobsUndoScope undo(holder, (copy ? "Copy parameter " : "Link parameter ") + name);
+    if (copy) {
+        std::string error;
+        knob = copyKnobToHolder(holder, source, page ? KnobIPtr(page) : KnobIPtr(group), (page || group) ? index : -1, &error);
+        if (!knob) {
+            messages.push_back(QString::fromUtf8(error.c_str()));
+        }
+    } else {
+        const std::string name = uniqueKnobName(holder, source->getName(), false);
+        UserKnobsUndoScope undo(holder, "Link parameter " + name);
         bool reported = false;
         try {
-            knob = source->createDuplicateOnHolder(holder, page, group, (page || group) ? index : -1, !copy, name,
+            knob = source->createDuplicateOnHolder(holder, page, group, (page || group) ? index : -1, true, name,
                                                    source->getLabel(), source->getHintToolTip(), true, true);
         } catch (const std::exception& e) {
             Dialogs::errorDialog(tr("Add parameter").toStdString(), e.what());
@@ -1378,25 +1375,6 @@ KnobEditMode::addKnobFrom(const KnobIPtr& source,
         }
         if (!knob && !reported) {
             messages.push_back(tr("Cannot add a parameter of this type."));
-        }
-        QStringList restoreErrors;
-        if (copy) {
-            for (std::size_t i = 0; i < sourceExpressions.size(); ++i) {
-                try {
-                    source->clearExpression(i, true);
-                    if (!sourceExpressions[i].first.empty()) {
-                        source->setExpression(i, sourceExpressions[i].first, sourceExpressions[i].second, false);
-                    }
-                } catch (const std::exception& e) {
-                    restoreErrors.push_back(tr("dimension %1: %2").arg(i).arg(QString::fromUtf8(e.what())));
-                } catch (...) {
-                    restoreErrors.push_back(tr("dimension %1").arg(i));
-                }
-            }
-        }
-        if (!restoreErrors.isEmpty()) {
-            messages.push_back(tr("The expression of %1 could not be restored after copying it (%2).")
-                                   .arg(QString::fromUtf8(source->getName().c_str()), restoreErrors.join(QString::fromUtf8("; "))));
         }
         if (knob) {
             undo.markChanged();

@@ -424,6 +424,109 @@ namespace YamlDetail {
             em << YAML::EndSeq;
         }
 
+        const char* const kNormalizedNames[] = { "none", "x", "y" };
+
+        void
+        emitUserProperties(YAML::Emitter& em,
+                           const KnobUserPropertiesSerialization& properties)
+        {
+            if (properties.sliderDisabled) {
+                emitKey(em, "noSlider");
+                em << YAML::Value;
+                emitBool(em, true);
+            }
+            if (properties.isRectangle) {
+                emitKey(em, "rectangle");
+                em << YAML::Value;
+                emitBool(em, true);
+            }
+            if (properties.spatial) {
+                emitKey(em, "spatial");
+                em << YAML::Value;
+                emitBool(em, true);
+            }
+            if (!properties.valueIsNormalized.empty()) {
+                std::vector<std::string> names;
+                for (int state : properties.valueIsNormalized) {
+                    names.push_back(((state >= 0) && (state < 3)) ? kNormalizedNames[state] : kNormalizedNames[0]);
+                }
+                emitKey(em, "normalized");
+                em << YAML::Value;
+                emitStringList(em, names);
+            }
+            if (properties.preferredRows != 0) {
+                emitKey(em, "rows");
+                em << YAML::Value;
+                emitInt(em, properties.preferredRows);
+            }
+            if (properties.allowNone) {
+                emitKey(em, "allowNone");
+                em << YAML::Value;
+                emitBool(em, true);
+            }
+            if (properties.allowAll) {
+                emitKey(em, "allowAll");
+                em << YAML::Value;
+                emitBool(em, true);
+            }
+            if (!properties.allLabel.empty()) {
+                emitKey(em, "allLabel");
+                em << YAML::Value;
+                emitString(em, properties.allLabel);
+            }
+            if (!properties.dimensionNames.empty()) {
+                emitKey(em, "dimensionNames");
+                em << YAML::Value;
+                emitStringList(em, properties.dimensionNames);
+            }
+        }
+
+        void
+        readUserProperties(MapReader& reader,
+                           KnobUserPropertiesSerialization* properties,
+                           const std::string& context)
+        {
+            if (YAML::Node noSlider = reader.get("noSlider")) {
+                properties->sliderDisabled = readBool(noSlider, context + ".noSlider");
+            }
+            if (YAML::Node rectangle = reader.get("rectangle")) {
+                properties->isRectangle = readBool(rectangle, context + ".rectangle");
+            }
+            if (YAML::Node spatial = reader.get("spatial")) {
+                properties->spatial = readBool(spatial, context + ".spatial");
+            }
+            if (YAML::Node normalized = reader.get("normalized")) {
+                const std::vector<std::string> names = readStringVector(normalized, context + ".normalized");
+                for (const std::string& name : names) {
+                    int state = -1;
+                    for (int i = 0; i < 3; ++i) {
+                        if (name == kNormalizedNames[i]) {
+                            state = i;
+                        }
+                    }
+                    if (state < 0) {
+                        fail(normalized, context + ".normalized", "expected none, x or y, not " + name);
+                    }
+                    properties->valueIsNormalized.push_back(state);
+                }
+            }
+            if (YAML::Node rows = reader.get("rows")) {
+                properties->preferredRows = readInt(rows, context + ".rows");
+            }
+            if (YAML::Node allowNone = reader.get("allowNone")) {
+                properties->allowNone = readBool(allowNone, context + ".allowNone");
+            }
+            if (YAML::Node allowAll = reader.get("allowAll")) {
+                properties->allowAll = readBool(allowAll, context + ".allowAll");
+            }
+            if (YAML::Node allLabel = reader.get("allLabel")) {
+                properties->allLabel = readString(allLabel, context + ".allLabel");
+            }
+            if (YAML::Node dimensionNames = reader.get("dimensionNames")) {
+                properties->dimensionNames = readStringVector(dimensionNames, context + ".dimensionNames");
+            }
+        }
+
         void
         emitUserDefinition(YAML::Emitter& em,
                            const KnobSerialization& knob)
@@ -550,6 +653,7 @@ namespace YamlDetail {
                 em << YAML::Value;
                 emitBool(em, *knob.useHostOverlayHandle);
             }
+            emitUserProperties(em, knob.userProperties);
             em << YAML::EndMap;
         }
 
@@ -667,6 +771,7 @@ namespace YamlDetail {
             if (YAML::Node overlayHandle = reader.get("overlayHandle")) {
                 knob->useHostOverlayHandle = readBool(overlayHandle, context + ".overlayHandle");
             }
+            readUserProperties(reader, &knob->userProperties, context);
             reader.finish();
         }
 

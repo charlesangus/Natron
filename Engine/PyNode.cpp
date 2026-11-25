@@ -1334,6 +1334,7 @@ UserParamHolder::changeParamType(Param* param,
         { "Boolean", { KnobBool::typeNameStatic(), 1 } },
         { "Choice", { KnobChoice::typeNameStatic(), 1 } },
         { "String", { KnobString::typeNameStatic(), 1 } },
+        { "Label", { KnobString::typeNameStatic(), 1 } },
         { "File", { KnobFile::typeNameStatic(), 1 } },
         { "OutputFile", { KnobOutputFile::typeNameStatic(), 1 } },
         { "Path", { KnobPath::typeNameStatic(), 1 } },
@@ -1358,9 +1359,19 @@ UserParamHolder::changeParamType(Param* param,
         return 0;
     }
 
+    // A Label is a String shown as text; a label made a String again becomes a plain line.
+    Serialization::KnobExtraSerialization extra;
+    KnobString* isString = dynamic_cast<KnobString*>(knob.get());
+    if (name == "Label") {
+        Serialization::KnobTextExtraSerialization text;
+        text.isLabel = true;
+        extra = text;
+    } else if ((name == "String") && isString && isString->isLabel()) {
+        extra = Serialization::KnobTextExtraSerialization();
+    }
     KnobIPtr newKnob;
     std::string error;
-    const UserKnobTypeChangeEnum result = changeUserKnobType(_holder, knob, target->first, target->second, allowReset, &newKnob, &error);
+    const UserKnobTypeChangeEnum result = changeUserKnobType(_holder, knob, target->first, target->second, allowReset, &newKnob, &error, extra);
     if (result == eUserKnobTypeChangeFailed) {
         PyErr_SetString(PyExc_ValueError, error.c_str());
 

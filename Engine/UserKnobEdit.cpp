@@ -839,18 +839,85 @@ effectiveSpec(KnobHolder* holder,
     return ret;
 }
 
+void
+renameInOwnExpressions(KnobHolder* holder,
+                       const KnobIPtr& knob,
+                       const std::vector<DimensionExpression>& expressions,
+                       const std::string& oldName,
+                       const std::string& newName)
+{
+    for (int i = 0; i < (int)expressions.size() && i < knob->getDimension(); ++i) {
+        const DimensionExpression& expression = expressions[i];
+        if (expression.expression.empty()) {
+            continue;
+        }
+        const std::string renamed = renameUserKnobInExpression(holder, knob, expression.expression, oldName, newName);
+        if (renamed != expression.expression) {
+            setExpressionNoThrow(knob, i, renamed, expression.hasRet);
+        }
+    }
+}
+
+// Button scripts run with thisNode declared, as expressions of the node do.
+void
+renameInButtonScripts(KnobHolder* holder,
+                      const std::string& oldName,
+                      const std::string& newName)
+{
+    const std::vector<KnobIPtr> knobs = holder->getKnobs_mt_safe();
+    for (std::size_t i = 0; i < knobs.size(); ++i) {
+        KnobButton* isButton = dynamic_cast<KnobButton*>(knobs[i].get());
+        if (!isButton || !isButton->isUserKnob() || isButton->getScript().empty()) {
+            continue;
+        }
+        const std::string script = isButton->getScript();
+        const std::string renamed = renameUserKnobInExpression(holder, knobs[i], script, oldName, newName);
+        if (renamed != script) {
+            isButton->setScript(renamed);
+        }
+    }
+}
+
+// Either all of spec is applied or, returning false, nothing is.
 bool
 applySpecInPlace(KnobHolder* holder,
                  const KnobIPtr& knob,
                  const UserKnobSpec& spec,
                  std::string* error)
 {
+    const auto fail = [&]() {
+        if (error) {
+            *error = "The parameter " + knob->getName() + " could not be moved to " + (spec.parentName.empty() ? std::string("the User page") : spec.parentName) + ".";
+        }
+
+        return false;
+    };
+    const bool moves = (spec.typeName != KnobPage::typeNameStatic()) && !isPlacedAt(holder, knob, spec.parentName, spec.index);
+    const KnobIPtr oldParent = knob->getParentKnob();
+    const int oldIndex = indexInParent(knob);
+    // placeKnob() leaves the knob where it was when it fails.
+    if (moves && !placeKnob(holder, knob, spec.parentName, spec.index)) {
+        return fail();
+    }
+
     const std::string oldName = knob->getName();
     if (spec.name != oldName) {
         const std::map<KnobIPtr, std::vector<DimensionExpression>> listeners = listenerExpressions(knob);
+        std::vector<DimensionExpression> ownExpressions;
+        for (int i = 0; i < knob->getDimension(); ++i) {
+            DimensionExpression expression = { knob->getExpression(i), knob->isExpressionUsingRetVariable(i) };
+            ownExpressions.push_back(expression);
+        }
         try {
             knob->setName(spec.name, true);
         } catch (const std::exception& e) {
+            if (moves) {
+                knob->resetParent();
+                if (oldParent) {
+                    insertInContainer(oldParent, knob, oldIndex);
+                }
+                refreshHolder(holder);
+            }
             if (error) {
                 *error = e.what();
             }
@@ -863,6 +930,7 @@ applySpecInPlace(KnobHolder* holder,
         }
         declareToPython(holder);
         renameInListeners(holder, listeners, oldName, spec.name);
+        renameInOwnExpressions(holder, knob, ownExpressions, oldName, spec.name);
     }
 
     knob->setLabel(spec.label);
@@ -885,16 +953,13 @@ applySpecInPlace(KnobHolder* holder,
             isDouble->setHasHostOverlayHandle(spec.useHostOverlayHandle);
         }
     }
-    bool placed = true;
-    if (spec.typeName != KnobPage::typeNameStatic()) {
-        placed = placeKnob(holder, knob, spec.parentName, spec.index);
-        if (!placed && error) {
-            *error = "The parameter " + knob->getName() + " could not be moved to " + (spec.parentName.empty() ? std::string("the User page") : spec.parentName) + ".";
-        }
+    // After applyExtra(), which sets the knob's own script when it is a button.
+    if (spec.name != oldName) {
+        renameInButtonScripts(holder, oldName, spec.name);
     }
     refreshHolder(holder);
 
-    return placed;
+    return true;
 } // applySpecInPlace
 
 void
@@ -1094,7 +1159,10 @@ specFromKnob(const KnobIPtr& knob)
     if (KnobChoice* isChoice = dynamic_cast<KnobChoice*>(knob.get())) {
         const std::vector<ChoiceOption> entries = isChoice->getEntries_mt_safe();
         const int index = isChoice->getDefaultValue(0);
-        spec.defaults.push_back(Serialization::KnobValueSerialization(std::in_place_type<std::string>, ((index >= 0) && (index < (int)entries.size())) ? entries[index].id : std::string()));
+        // A menu without entries, or a default outside them, has no default to name.
+        if ((index >= 0) && (index < (int)entries.size())) {
+            spec.defaults.push_back(Serialization::KnobValueSerialization(std::in_place_type<std::string>, entries[index].id));
+        }
     } else if (Serialization::getKnobTypeTraits(spec.typeName).hasValue) {
         KnobIntBase* isInt = dynamic_cast<KnobIntBase*>(knob.get());
         KnobBoolBase* isBool = dynamic_cast<KnobBoolBase*>(knob.get());
@@ -1266,10 +1334,12 @@ applySpec(KnobHolder* holder,
     // Creating the missing User page adds a knob, which only a snapshot undoes.
     const bool createsUserPage = (spec.typeName != KnobPage::typeNameStatic()) && spec.parentName.empty() && !holder->getUserPageKnob();
     UserKnobsUndoScope undo(holder, "Edit parameter " + spec.name, createsUserPage);
-    const bool ok = applySpecInPlace(holder, knob, spec, error);
+    if (!applySpecInPlace(holder, knob, spec, error)) {
+        return false;
+    }
     const UserKnobSpec after = specFromKnob(knob);
     if (after == before) {
-        return ok;
+        return true;
     }
     if (createsUserPage) {
         undo.markChanged();
@@ -1277,7 +1347,7 @@ applySpec(KnobHolder* holder,
         undo.record(std::make_shared<UserKnobSpecCommand>(holder, knob, before, after));
     }
 
-    return ok;
+    return true;
 } // applySpec
 
 std::list<KnobIPtr>
@@ -1354,7 +1424,8 @@ changeUserKnobType(KnobHolder* holder,
                    int dimension,
                    bool allowReset,
                    KnobIPtr* newKnob,
-                   std::string* error)
+                   std::string* error,
+                   const Serialization::KnobExtraSerialization& extra)
 {
     if (newKnob) {
         *newKnob = knob;
@@ -1374,7 +1445,18 @@ changeUserKnobType(KnobHolder* holder,
     }
     const std::string oldType = knob->typeName();
     const int oldDimension = knob->getDimension();
+    const bool hasExtra = !std::holds_alternative<std::monostate>(extra);
     if ((oldType == typeName) && (oldDimension == dimension)) {
+        UserKnobSpec spec = specFromKnob(knob);
+        if (!hasExtra || (spec.extra == extra)) {
+            return eUserKnobTypeChangeConverted;
+        }
+        spec.extra = extra;
+        std::string message;
+        if (!applySpec(holder, knob, spec, &message)) {
+            return fail(message);
+        }
+
         return eUserKnobTypeChangeConverted;
     }
     // An alias and its master share one type: no replacement of another type can stay either.
@@ -1401,6 +1483,13 @@ changeUserKnobType(KnobHolder* holder,
     serialization.dimensions.clear();
     serialization.dimensions.resize(dimension);
     serialization.useHostOverlayHandle.reset();
+    if (typeName == oldType) {
+        serialization.userProperties.isRectangle = false;
+        serialization.userProperties.valueIsNormalized.clear();
+        serialization.userProperties.dimensionNames.clear();
+    } else {
+        serialization.userProperties = Serialization::KnobUserPropertiesSerialization();
+    }
     serialization.parametricCurves.reset();
     serialization.stringAnimation.reset();
     serialization.choiceOptionID.reset();
@@ -1437,6 +1526,9 @@ changeUserKnobType(KnobHolder* holder,
         for (int i = 0; i < dimension; ++i) {
             serialization.dimensions[i].enabled = true;
         }
+    }
+    if (hasExtra) {
+        serialization.extraData = extra;
     }
 
     std::vector<DimensionExpression> ownExpressions;
@@ -1677,6 +1769,72 @@ pasteUserKnobs(KnobHolder* holder,
 
     return created;
 } // pasteUserKnobs
+
+KnobIPtr
+copyKnobToHolder(KnobHolder* holder,
+                 const KnobIPtr& source,
+                 const KnobIPtr& parent,
+                 int index,
+                 std::string* error)
+{
+    const auto fail = [&](const std::string& message) {
+        if (error) {
+            *error = message;
+        }
+
+        return KnobIPtr();
+    };
+    if (!holder || !source || (source->getHolder() == holder)) {
+        return fail("Only a parameter of another node can be copied.");
+    }
+    if (parent && (!parent->isUserKnob() || (parent->getHolder() != holder) || (!dynamic_cast<KnobPage*>(parent.get()) && !dynamic_cast<KnobGroup*>(parent.get())))) {
+        return fail("A parameter can only be copied into a user page or group of this node.");
+    }
+
+    Serialization::KnobSerialization serialization;
+    source->toSerialization(&serialization);
+    if (!source->isUserKnob()) {
+        userKnobExtraToSerialization(*source, &serialization);
+    }
+    // A copy is independent of the source's link groups.
+    for (std::size_t d = 0; d < serialization.dimensions.size(); ++d) {
+        serialization.dimensions[d].linkGroup.reset();
+    }
+    serialization.isUserKnob = true;
+    serialization.isPersistent = true;
+    serialization.masterIsAlias = false;
+    const std::string name = uniqueKnobName(holder, source->getName());
+    serialization.name = name;
+
+    UserKnobsUndoScope undo(holder, "Copy parameter " + name);
+    KnobIPtr container = parent;
+    if (!container) {
+        std::list<KnobPage*> pages;
+        holder->getUserPages(pages);
+        container = pages.empty() ? KnobIPtr(holder->getOrCreateUserPageKnob()) : pages.front()->shared_from_this();
+    }
+    KnobIPtr knob = createUserKnobFromSerialization(holder, serialization);
+    if (!knob) {
+        refreshHolder(holder);
+
+        return fail("A parameter of type " + serialization.typeName + " cannot be copied.");
+    }
+    if (!insertInContainer(container, knob, index)) {
+        holder->deleteKnob(knob.get(), false);
+        refreshHolder(holder);
+
+        return fail("The parameter " + name + " cannot be added to " + container->getName() + ".");
+    }
+    declareToPython(holder);
+    const PastedKnob entry = { knob, serialization };
+    std::map<std::string, std::string> renamed;
+    renamed[source->getName()] = name;
+    restorePastedExpressionsAndLinks(holder, std::list<PastedKnob>(1, entry), renamed);
+    refreshHolder(holder);
+    undo.markChanged();
+
+    return knob;
+} // copyKnobToHolder
 
 std::string
 renameUserKnobInExpression(KnobHolder* holder,

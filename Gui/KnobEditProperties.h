@@ -129,8 +129,6 @@ private:
 
     void setError(const QString& error);
 
-    void renamePathVariable(const std::string& oldName, const std::string& oldLabel);
-
     QString title() const;
 
     KnobEditMode* _mode;

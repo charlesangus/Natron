@@ -45,7 +45,7 @@ NATRON_NAMESPACE_ENTER
  * curves of a Parametric knob. parentName is the script name of the page or group holding the
  * knob, and index its position among that parent's children; for a page both are empty and -1.
  * defaults holds one value per dimension, in the knob's own storage type, except for a Choice,
- * whose single default is the ID of a menu entry. extra holds the type-specific properties in the
+ * whose single default is the ID of a menu entry, and which has none while its menu is empty. extra holds the type-specific properties in the
  * form a saved user knob has them: a Choice's entries, a numeric knob's range, a file's sequence
  * flag, a path's multi-path flag, the channel buttons of a LayerSelect or ChannelSet, a String's
  * display, a Parametric's curves and a Button's script.
@@ -170,6 +170,11 @@ bool isUserKnobTypeChangeConvertible(const std::string& fromType, int fromDimens
  * expressions and links follow it. Any other change is a reset to the new type's defaults, made
  * only when allowReset is set, otherwise nothing changes and eUserKnobTypeChangeNeedsReset is
  * returned. newKnob is set to the knob now in place.
+ *
+ * A non-empty extra gives the new knob's type-specific properties, in the form
+ * UserKnobSpec::extra has them, such as a String's label flag, in place of the ones it would
+ * carry over or reset to. With the type and dimension unchanged, a different extra is applied to
+ * knob in place, as applySpec() does.
  **/
 UserKnobTypeChangeEnum changeUserKnobType(KnobHolder* holder,
                                           const KnobIPtr& knob,
@@ -177,7 +182,8 @@ UserKnobTypeChangeEnum changeUserKnobType(KnobHolder* holder,
                                           int dimension,
                                           bool allowReset,
                                           KnobIPtr* newKnob = nullptr,
-                                          std::string* error = nullptr);
+                                          std::string* error = nullptr,
+                                          const Serialization::KnobExtraSerialization& extra = Serialization::KnobExtraSerialization());
 
 /**
  * @brief The given user knobs, groups and pages, with their children, as YAML text in the form
@@ -198,6 +204,20 @@ std::list<KnobIPtr> pasteUserKnobs(KnobHolder* holder,
                                    const KnobIPtr& parent = KnobIPtr(),
                                    int index = -1,
                                    std::string* error = nullptr);
+
+/**
+ * @brief Adds to holder, as one undo entry, a user knob that copies source, a knob of another
+ * holder: its type, properties, values, curves, expressions and links, as a paste of it would
+ * have them. source itself is left as it is. The copy takes source's name, with a numeric suffix
+ * when it is taken, and goes in parent (a user page or group of holder) at index, -1 for the end;
+ * with no parent, on holder's first user page, created when there is none. Returns null and sets
+ * error when source cannot be copied.
+ **/
+KnobIPtr copyKnobToHolder(KnobHolder* holder,
+                          const KnobIPtr& source,
+                          const KnobIPtr& parent = KnobIPtr(),
+                          int index = -1,
+                          std::string* error = nullptr);
 
 /**
  * @brief expression, an expression of listener, with its references to the knob of holder that

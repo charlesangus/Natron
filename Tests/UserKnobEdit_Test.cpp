@@ -1571,3 +1571,366 @@ TEST_F(UserKnobEdit, AKnobNamedLikeAnInnerNodeCanStillBeEdited)
     EXPECT_EQ("Shared Box", box->getLabel());
     EXPECT_EQ(box, group->getKnobByName("shared"));
 }
+
+TEST_F(UserKnobEdit, ChangingATypeToALabelIsOneUndoEntry)
+{
+    NodePtr blur = createBlur();
+    ASSERT_TRUE(bool(blur));
+    KnobIntPtr count = addTyped<KnobInt>(blur, "count");
+    ASSERT_TRUE(bool(count));
+    count->setValue(3, ViewSpec::all(), 0);
+    const std::string before = userKnobState(blur);
+    recorder->commands.clear();
+    const std::uint64_t serial = recorder->serial;
+
+    Serialization::KnobTextExtraSerialization label;
+    label.isLabel = true;
+    KnobIPtr changed;
+    std::string error;
+    ASSERT_EQ(eUserKnobTypeChangeReset, changeUserKnobType(holderOf(blur), count, KnobString::typeNameStatic(), 1, true, &changed, &error, label)) << error;
+    KnobStringPtr asLabel = std::dynamic_pointer_cast<KnobString>(changed);
+    ASSERT_TRUE(bool(asLabel));
+    EXPECT_TRUE(asLabel->isLabel());
+    EXPECT_EQ(asLabel, blur->getKnobByName("count"));
+    EXPECT_EQ(serial + 1, recorder->serial);
+    EXPECT_EQ(1, recorder->userKnobCommands());
+
+    undoAll();
+    KnobIntPtr restored = std::dynamic_pointer_cast<KnobInt>(blur->getKnobByName("count"));
+    ASSERT_TRUE(bool(restored));
+    EXPECT_EQ(3, restored->getValue(0));
+    EXPECT_EQ(before, userKnobState(blur));
+
+    KnobStringPtr words = addTyped<KnobString>(blur, "words");
+    ASSERT_TRUE(bool(words));
+    recorder->commands.clear();
+    const std::uint64_t wordsSerial = recorder->serial;
+    ASSERT_EQ(eUserKnobTypeChangeConverted, changeUserKnobType(holderOf(blur), words, KnobString::typeNameStatic(), 1, false, &changed, &error, label)) << error;
+    EXPECT_EQ(KnobIPtr(words), changed);
+    EXPECT_TRUE(words->isLabel());
+    EXPECT_EQ(wordsSerial + 1, recorder->serial);
+    undoAll();
+    EXPECT_FALSE(words->isLabel());
+
+    const std::string node = getApp()->getAppIDString() + "." + blur->getFullyQualifiedName();
+    ASSERT_TRUE(run("thisNode = " + node + "\n"
+                                           "assert thisNode.changeParamType(thisNode.count, 'Label') is None\n"
+                                           "assert type(thisNode.changeParamType(thisNode.count, 'Label', True)).__name__ == 'StringParam'\n"
+                                           "assert type(thisNode.changeParamType(thisNode.words, 'Label')).__name__ == 'StringParam'\n"));
+    KnobStringPtr countLabel = std::dynamic_pointer_cast<KnobString>(blur->getKnobByName("count"));
+    ASSERT_TRUE(bool(countLabel));
+    EXPECT_TRUE(countLabel->isLabel());
+    EXPECT_TRUE(words->isLabel());
+    ASSERT_TRUE(run("thisNode = " + node + "\n"
+                                           "assert type(thisNode.changeParamType(thisNode.words, 'String')).__name__ == 'StringParam'\n"));
+    EXPECT_FALSE(words->isLabel());
+}
+
+TEST_F(UserKnobEdit, CopyingAKnobOfAnotherNodeLeavesTheSourceAsItIs)
+{
+    NodePtr source = createBlur();
+    NodePtr target = createBlur();
+    ASSERT_TRUE(bool(source && target));
+    KnobDoublePtr size = std::dynamic_pointer_cast<KnobDouble>(source->getKnobByName(kBlurParamSize));
+    ASSERT_TRUE(bool(size));
+    ASSERT_FALSE(size->isUserKnob());
+    size->setValue(3., ViewSpec::all(), 0);
+    size->setValue(4., ViewSpec::all(), 1);
+    ASSERT_NO_THROW(size->setExpression(1, "2 + 3", false, true));
+    Serialization::KnobSerialization sourceBefore;
+    size->toSerialization(&sourceBefore);
+    const std::string targetBefore = userKnobState(target);
+    recorder->commands.clear();
+    const std::uint64_t serial = recorder->serial;
+
+    std::string error;
+    KnobIPtr copy = copyKnobToHolder(holderOf(target), size, KnobIPtr(), -1, &error);
+    ASSERT_TRUE(copy != nullptr) << error;
+    EXPECT_EQ(serial + 1, recorder->serial);
+    ASSERT_FALSE(recorder->stepTexts.empty());
+    EXPECT_EQ("Copy parameter size2", recorder->stepTexts.back());
+    EXPECT_EQ(1, recorder->userKnobCommands());
+
+    Serialization::KnobSerialization sourceAfter;
+    size->toSerialization(&sourceAfter);
+    EXPECT_TRUE(sourceBefore == sourceAfter);
+    EXPECT_EQ(std::string(), size->getExpression(0));
+    EXPECT_EQ("2 + 3", size->getExpression(1));
+    KnobI::ListenerDimsMap listeners;
+    size->getListeners(listeners);
+    EXPECT_TRUE(listeners.empty());
+
+    KnobDoublePtr copied = std::dynamic_pointer_cast<KnobDouble>(copy);
+    ASSERT_TRUE(bool(copied));
+    EXPECT_EQ(copy, target->getKnobByName("size2"));
+    EXPECT_TRUE(copied->isUserKnob());
+    EXPECT_EQ(2, copied->getDimension());
+    EXPECT_DOUBLE_EQ(3., copied->getValue(0));
+    EXPECT_EQ("2 + 3", copied->getExpression(1));
+    EXPECT_DOUBLE_EQ(5., copied->getValue(1));
+    EXPECT_DOUBLE_EQ(1000., copied->getMaximum(0));
+    EXPECT_DOUBLE_EQ(100., copied->getDisplayMaximum(0));
+    EXPECT_FALSE(isLinkedTo(copy, size));
+    EXPECT_FALSE(isLinkedTo(size, copy));
+
+    undoAll();
+    EXPECT_FALSE(bool(target->getKnobByName("size2")));
+    EXPECT_EQ(targetBefore, userKnobState(target));
+    Serialization::KnobSerialization sourceUndone;
+    size->toSerialization(&sourceUndone);
+    EXPECT_TRUE(sourceBefore == sourceUndone);
+}
+
+TEST_F(UserKnobEdit, AChoiceWithoutEntriesCanBeEdited)
+{
+    NodePtr blur = createBlur();
+    ASSERT_TRUE(bool(blur));
+    KnobChoicePtr menu = addTyped<KnobChoice>(blur, "menu");
+    ASSERT_TRUE(bool(menu));
+    ASSERT_TRUE(menu->getEntries_mt_safe().empty());
+
+    UserKnobSpec spec = specFromKnob(menu);
+    EXPECT_TRUE(spec.defaults.empty());
+    EXPECT_EQ(std::string(), validateSpec(holderOf(blur), menu, spec));
+    spec.label = "Menu";
+    std::string error;
+    ASSERT_TRUE(applySpec(holderOf(blur), menu, spec, &error)) << error;
+    EXPECT_EQ("Menu", menu->getLabel());
+
+    Serialization::KnobChoiceExtraSerialization entries;
+    entries.entries.push_back("first");
+    entries.entries.push_back("second");
+    entries.helpStrings.resize(2);
+    spec.extra = entries;
+    ASSERT_TRUE(applySpec(holderOf(blur), menu, spec, &error)) << error;
+    EXPECT_EQ(2u, menu->getEntries_mt_safe().size());
+    const UserKnobSpec withEntries = specFromKnob(menu);
+    ASSERT_EQ(1u, withEntries.defaults.size());
+    const std::string* id = std::get_if<std::string>(&withEntries.defaults[0]);
+    ASSERT_TRUE(id != nullptr);
+    EXPECT_EQ("first", *id);
+}
+
+TEST_F(UserKnobEdit, AnEditWhosePlacementFailsChangesNothing)
+{
+    NodePtr blur = createBlur();
+    ASSERT_TRUE(bool(blur));
+    ASSERT_TRUE(bool(add(blur, makeSpec(KnobPage::typeNameStatic(), "tools"))));
+    KnobGroupPtr vars = std::dynamic_pointer_cast<KnobGroup>(add(blur, makeSpec(KnobGroup::typeNameStatic(), "vars", 1, "tools")));
+    KnobIPtr press = add(blur, makeSpec(KnobButton::typeNameStatic(), "press", 1, "vars"));
+    ASSERT_TRUE(bool(vars && press));
+    ASSERT_EQ(KnobIPtr(vars), press->getParentKnob());
+
+    UserKnobSpec spec = specFromKnob(press);
+    spec.name = "push";
+    spec.label = "Push";
+    spec.parentName = "tools";
+    spec.index = -1;
+    std::string error;
+    recorder->commands.clear();
+    ASSERT_TRUE(applySpec(holderOf(blur), press, spec, &error)) << error;
+    ASSERT_EQ(1, recorder->userKnobCommands());
+    ASSERT_EQ(blur->getKnobByName("tools"), press->getParentKnob());
+
+    // The group now refuses the button, so undoing the edit cannot put it back there.
+    vars->setAsRFVGroup(true);
+    const std::string state = userKnobState(blur);
+    undoAll();
+    EXPECT_EQ(press, blur->getKnobByName("push"));
+    EXPECT_FALSE(bool(blur->getKnobByName("press")));
+    EXPECT_EQ("Push", press->getLabel());
+    EXPECT_EQ(blur->getKnobByName("tools"), press->getParentKnob());
+    EXPECT_TRUE(vars->getChildren().empty());
+    EXPECT_EQ(state, userKnobState(blur));
+}
+
+TEST_F(UserKnobEdit, ARenameRewritesTheKnobsOwnExpressionsAndButtonScripts)
+{
+    NodePtr blur = createBlur();
+    ASSERT_TRUE(bool(blur));
+    KnobDoublePtr pos = addTyped<KnobDouble>(blur, "pos", 2);
+    ASSERT_TRUE(bool(pos));
+    ASSERT_NO_THROW(pos->setExpression(1, "thisNode.pos.getValue(0) * 2", false, true));
+    UserKnobSpec buttonSpec = makeSpec(KnobButton::typeNameStatic(), "press");
+    Serialization::KnobButtonExtraSerialization script;
+    script.script = "thisNode.pos.setValue(4.5, 0)\npressed = thisNode.press\nlabel = 'thisNode.pos'\n";
+    buttonSpec.extra = script;
+    KnobButtonPtr press = std::dynamic_pointer_cast<KnobButton>(add(blur, buttonSpec));
+    ASSERT_TRUE(bool(press));
+    recorder->commands.clear();
+
+    UserKnobSpec spec = specFromKnob(pos);
+    spec.name = "position";
+    std::string error;
+    ASSERT_TRUE(applySpec(holderOf(blur), pos, spec, &error)) << error;
+    EXPECT_EQ("thisNode.position.getValue(0) * 2", pos->getExpression(1));
+    EXPECT_EQ("thisNode.position.setValue(4.5, 0)\npressed = thisNode.press\nlabel = 'thisNode.pos'\n", press->getScript());
+
+    UserKnobSpec pressSpec = specFromKnob(press);
+    pressSpec.name = "push";
+    ASSERT_TRUE(applySpec(holderOf(blur), press, pressSpec, &error)) << error;
+    EXPECT_EQ("thisNode.position.setValue(4.5, 0)\npressed = thisNode.push\nlabel = 'thisNode.pos'\n", press->getScript());
+
+    EXPECT_TRUE(press->runScript());
+    EXPECT_DOUBLE_EQ(4.5, pos->getValue(0));
+    EXPECT_DOUBLE_EQ(9., pos->getValue(1));
+
+    undoAll();
+    EXPECT_EQ(KnobIPtr(pos), blur->getKnobByName("pos"));
+    EXPECT_EQ(KnobIPtr(press), blur->getKnobByName("press"));
+    EXPECT_EQ("thisNode.pos.getValue(0) * 2", pos->getExpression(1));
+    EXPECT_EQ(script.script, press->getScript());
+}
+
+namespace {
+
+// The properties of knob a user knob keeps beyond its spec, as text.
+std::string
+userProperties(const KnobIPtr& knob)
+{
+    std::string ret = std::string("newLine=") + (knob->isNewLineActivated() ? "1" : "0");
+    for (int i = 0; i < knob->getDimension(); ++i) {
+        ret += " name" + std::to_string(i) + "=" + knob->getDimensionName(i);
+    }
+    if (KnobInt* isInt = dynamic_cast<KnobInt*>(knob.get())) {
+        ret += std::string(" noSlider=") + (isInt->isSliderDisabled() ? "1" : "0");
+        ret += std::string(" rectangle=") + (isInt->isRectangle() ? "1" : "0");
+    } else if (KnobDouble* isDouble = dynamic_cast<KnobDouble*>(knob.get())) {
+        ret += std::string(" noSlider=") + (isDouble->isSliderDisabled() ? "1" : "0");
+        ret += std::string(" rectangle=") + (isDouble->isRectangle() ? "1" : "0");
+        ret += std::string(" spatial=") + (isDouble->getIsSpatial() ? "1" : "0");
+        for (int i = 0; i < knob->getDimension(); ++i) {
+            ret += " normalized" + std::to_string(i) + "=" + std::to_string((int)isDouble->getValueIsNormalized(i));
+        }
+    } else if (KnobString* isString = dynamic_cast<KnobString*>(knob.get())) {
+        ret += " rows=" + std::to_string(isString->getPreferredRows());
+    } else if (KnobLayerSelect* isLayerSelect = dynamic_cast<KnobLayerSelect*>(knob.get())) {
+        ret += std::string(" allowNone=") + (isLayerSelect->getAllowNone() ? "1" : "0");
+        ret += std::string(" allowAll=") + (isLayerSelect->getAllowAll() ? "1" : "0");
+        ret += " allLabel=" + isLayerSelect->getAllLabel();
+    }
+
+    return ret;
+}
+} // anon namespace
+
+TEST_F(UserKnobEdit, KnobPropertiesSurviveCopyPasteAndSaveAndLoad)
+{
+    NodePtr source = createBlur();
+    NodePtr copies = createBlur();
+    NodePtr pastes = createBlur();
+    ASSERT_TRUE(bool(source && copies && pastes));
+    KnobHolder* sourceHolder = holderOf(source);
+
+    KnobIntPtr area = AppManager::createKnob<KnobInt>(sourceHolder, std::string("Area"), 4, false);
+    area->setName("propArea");
+    area->setAsRectangle();
+    area->setAddNewLine(false);
+    KnobDoublePtr box = AppManager::createKnob<KnobDouble>(sourceHolder, std::string("Box"), 4, false);
+    box->setName("propBox");
+    box->setAsRectangle();
+    box->setSpatial(true);
+    box->setValueIsNormalized(0, eValueIsNormalizedX);
+    box->setValueIsNormalized(1, eValueIsNormalizedY);
+    box->setValueIsNormalized(2, eValueIsNormalizedX);
+    box->setValueIsNormalized(3, eValueIsNormalizedY);
+    ASSERT_FALSE(area->isUserKnob());
+    ASSERT_FALSE(box->isUserKnob());
+
+    KnobIntPtr count = addTyped<KnobInt>(source, "propCount");
+    KnobDoublePtr extent = addTyped<KnobDouble>(source, "propExtent", 2);
+    KnobStringPtr notes = addTyped<KnobString>(source, "propNotes");
+    KnobLayerSelectPtr pick = addTyped<KnobLayerSelect>(source, "propPick");
+    ASSERT_TRUE(bool(count && extent && notes && pick));
+    count->disableSlider();
+    extent->disableSlider();
+    extent->setSpatial(true);
+    extent->setValueIsNormalized(1, eValueIsNormalizedY);
+    extent->setDimensionName(0, "w");
+    extent->setDimensionName(1, "h");
+    extent->setAddNewLine(false);
+    notes->setAsMultiLine();
+    notes->setPreferredRows(7);
+    pick->setAllowNone(true);
+    pick->setAllowAll(true);
+    pick->setAllLabel("Matching");
+
+    const std::vector<KnobIPtr> sources = { area, box, count, extent, notes, pick };
+    std::map<std::string, std::string> before;
+    for (const KnobIPtr& knob : sources) {
+        before[knob->getName()] = userProperties(knob);
+    }
+    EXPECT_EQ("newLine=0 name0=x name1=y name2=z name3=w noSlider=1 rectangle=1", before["propArea"]);
+    EXPECT_EQ("newLine=1 name0=x name1=y name2=z name3=w noSlider=0 rectangle=1 spatial=1 normalized0=1 normalized1=2 normalized2=1 normalized3=2", before["propBox"]);
+    EXPECT_EQ("newLine=1 name0=x noSlider=1 rectangle=0", before["propCount"]);
+    EXPECT_EQ("newLine=0 name0=w name1=h noSlider=1 rectangle=0 spatial=1 normalized0=0 normalized1=2", before["propExtent"]);
+    EXPECT_EQ("newLine=1 name0=x rows=7", before["propNotes"]);
+    EXPECT_EQ("newLine=1 name0=x allowNone=1 allowAll=1 allLabel=Matching", before["propPick"]);
+
+    for (const KnobIPtr& knob : sources) {
+        std::string error;
+        KnobIPtr copy = copyKnobToHolder(holderOf(copies), knob, KnobIPtr(), -1, &error);
+        ASSERT_TRUE(copy != nullptr) << knob->getName() << ": " << error;
+        EXPECT_EQ(knob->getName(), copy->getName());
+        EXPECT_TRUE(copy->isUserKnob());
+        EXPECT_EQ(before[knob->getName()], userProperties(copy)) << "copied " << knob->getName();
+    }
+
+    std::list<KnobPage*> copyPages;
+    holderOf(copies)->getUserPages(copyPages);
+    ASSERT_EQ(1u, copyPages.size());
+    const std::string text = copyUserKnobs(holderOf(copies), { holderOf(copies)->getKnobByName(copyPages.front()->getName()) });
+    std::string error;
+    const std::list<KnobIPtr> created = pasteUserKnobs(holderOf(pastes), text, KnobIPtr(), -1, &error);
+    ASSERT_EQ(1u, created.size()) << error;
+    for (const std::pair<const std::string, std::string>& entry : before) {
+        KnobIPtr pasted = pastes->getKnobByName(entry.first);
+        ASSERT_TRUE(bool(pasted)) << entry.first;
+        EXPECT_EQ(entry.second, userProperties(pasted)) << "pasted " << entry.first;
+    }
+
+    const std::string copiesName = copies->getScriptName();
+    const std::string pastesName = pastes->getScriptName();
+    ProjectPtr project = getApp()->getProject();
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("user-knob-properties.ntpz");
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
+    project->reset(false, true);
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+    for (const std::string& nodeName : { copiesName, pastesName }) {
+        NodePtr loaded = project->getNodeByName(nodeName);
+        ASSERT_TRUE(bool(loaded)) << nodeName;
+        for (const std::pair<const std::string, std::string>& entry : before) {
+            KnobIPtr knob = loaded->getKnobByName(entry.first);
+            ASSERT_TRUE(bool(knob)) << nodeName << "." << entry.first;
+            EXPECT_TRUE(knob->isUserKnob()) << nodeName << "." << entry.first;
+            EXPECT_EQ(entry.second, userProperties(knob)) << "loaded " << nodeName << "." << entry.first;
+        }
+    }
+}
+
+TEST_F(UserKnobEdit, ATypeChangeKeepsOnlyThePropertiesTheNewTypeAndDimensionHave)
+{
+    NodePtr blur = createBlur();
+    ASSERT_TRUE(bool(blur));
+    KnobDoublePtr extent = addTyped<KnobDouble>(blur, "propExtent", 2);
+    ASSERT_TRUE(bool(extent));
+    extent->disableSlider();
+    extent->setSpatial(true);
+    extent->setValueIsNormalized(0, eValueIsNormalizedX);
+    extent->setDimensionName(0, "w");
+
+    KnobIPtr widened;
+    std::string error;
+    ASSERT_EQ(eUserKnobTypeChangeConverted, changeUserKnobType(holderOf(blur), extent, KnobDouble::typeNameStatic(), 3, false, &widened, &error)) << error;
+    ASSERT_TRUE(bool(widened));
+    EXPECT_EQ("newLine=1 name0=x name1=y name2=z noSlider=1 rectangle=0 spatial=1 normalized0=0 normalized1=0 normalized2=0", userProperties(widened));
+
+    KnobIPtr retyped;
+    ASSERT_EQ(eUserKnobTypeChangeConverted, changeUserKnobType(holderOf(blur), widened, KnobInt::typeNameStatic(), 3, false, &retyped, &error)) << error;
+    ASSERT_TRUE(bool(retyped));
+    EXPECT_EQ("newLine=1 name0=x name1=y name2=z noSlider=0 rectangle=0", userProperties(retyped));
+}

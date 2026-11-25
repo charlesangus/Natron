@@ -3909,6 +3909,20 @@ KnobIPtr createUserKnobFromSerialization(KnobHolder* holder,
                                          const KnobIPtr& existingKnob = KnobIPtr());
 
 /**
+ * @brief Sets serialization's extraData, useHostOverlayHandle and userProperties to the
+ * type-specific properties knob has, in the form a saved user knob has them.
+ * KnobI::toSerialization() writes them for a user knob only; this gives them for any knob, such
+ * as a plug-in knob copied as a user knob.
+ **/
+void userKnobExtraToSerialization(KnobI& knob, Serialization::KnobSerialization* serialization);
+
+/**
+ * @brief The name a knob gets for the given dimension when it is created: x, y, z and w, or r, g, b
+ * and a for a Color knob, and an empty name past the fourth dimension.
+ **/
+std::string defaultKnobDimensionName(bool isColor, int dimension);
+
+/**
  * @brief The user page or group knob, with the user knobs and groups below it, in the form a node
  * saves its user pages.
  **/

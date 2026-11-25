@@ -127,6 +127,12 @@ Code facts, read at `origin/main` on 2026-10-27. Re-check line numbers before st
   - verify: Build. Then pass a new Xvfb GUI test (Tests/gui/m247_project_user_params.py, run through Tests/gui/run-gui-test.sh). It opens Project Settings, enters edit mode, adds an Int "Shot Number" from the palette, checks it shows on a user page, sets it, gives a Blur the expression `root.shotNumber.get()`, checks the Blur follows, and undoes the add with one Ctrl+Z.
   - size: L
 
+- [ ] M247.P3.T2 — Make a path-variable rename one undo step, with a GUI check
+  - files: Gui/KnobEditProperties.cpp (`applySpec` undo entry, ~:793), the `RenamePathVariableCommand` it pushes, Tests/gui/m247_project_user_params.py
+  - approach: from the M373 - In-Panel Knob Editor review (#376, finding 8). When the project editor renames a path variable, push `RenamePathVariableCommand` as a child of the `applySpec` undo command (or merge it into that entry) instead of as a separate undo entry, so one Ctrl+Z reverts both the knob edit and the path-variable rename.
+  - verify: the m247 GUI script also renames a path variable through the editor, checks a Read whose path uses it follows, presses Ctrl+Z once and checks both the name and the Read's path are back.
+  - size: M
+
 **Verification gate:** run a full build and ctest, green, including the new ProjectSerialization
 and ProjectUserParamsPython tests. Pass the m247 Xvfb GUI test, and send its screenshots to the
 user for an OK before sign-off. Build a release AppImage for the user to test: add a project user

@@ -881,3 +881,7 @@ Reference: Nuke 17's EdgeExtend (`.local/docs/nuke/html/content/reference_guide/
 ### 2026-11-25T04:23:46Z — change-request
 - refs: none
 - New small fix milestone (E10): **Curve Editor Expanded Knob Rows** — Tests/gui/m69_cleanup.py section [expanded-curve] fails on main (checked on a 2026-11-20 main AppImage and on M521): after expanding Blur size and bringing the Curve Editor tab to the front, the size row is found with 8 component rows (expected 2) and the curve widget is not found visible. Suspects since the script last passed (3b71764db, 11-12): 5031f097c (M421 - Stroke Keyframe Indicators, tree blockSignals around context removal in Gui/CurveEditor.cpp) and 125e085eb (M399 - Node Creation Keys And Speed, KnobGuiContainerHelper rewrite). Decide whether the curve editor duplicates component rows (a product bug) or the check reads the tree wrongly, fix it, and add m69_cleanup to a gate.
+
+### 2026-11-25T04:24:00Z — change-request
+- refs: M247
+- From M373 - In-Panel Knob Editor review (#376, finding 8): when M247 - Project User Knobs And Root enables the in-panel editor on Project Settings, fold RenamePathVariableCommand into the applySpec undo entry (Gui/KnobEditProperties.cpp ~793) so a path-variable rename is one Ctrl+Z, and add a GUI check that renames a path variable through the editor.

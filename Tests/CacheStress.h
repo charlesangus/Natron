@@ -189,19 +189,21 @@ struct Step {
 struct Options {
     OpMask ops = 0;
     int steps = 24;
-    bool legacy = true;
-    bool taskGraph = true;
+    // The reference and cached passes render the probe by a direct renderRoI pull, and as a frame
+    // run by the RenderScheduler.
+    bool direct = true;
+    bool scheduled = true;
     // Applied before the seeded steps, in order, each as one step.
     std::vector<Step> scripted;
     // Seeded steps after the scripted ones; 0 with a script runs the script alone.
     bool seeded = true;
-    // When set, the cached pass renders through it instead of the two modes and checks the result
-    // against the Legacy reference with compare (compareExact when unset).
+    // When set, the cached pass renders through it instead of the two pulls and checks the result
+    // against the direct reference with compare (compareExact when unset).
     std::function<bool(const NodePtr& node, double time, unsigned mipmapLevel, const RectI& window, RenderedPlane* out, std::string* error)> cachedRender;
     std::function<std::string(const RenderedPlane& reference, const RenderedPlane& got)> compare;
     // When set with cachedRender, the reference pass also renders every step through
     // cachedRender from empty caches, and the cached pass must match that render exactly before
-    // compare checks it against the Legacy reference.
+    // compare checks it against the direct reference.
     bool cachedRenderReference = false;
     std::string cachedRenderName = "custom";
 };
@@ -213,7 +215,7 @@ struct Result {
     std::string report;
 };
 
-// One seed, both passes. The report names the seed, the failing step, the mode and the op log.
+// One seed, both passes. The report names the seed, the failing step, the pull and the op log.
 Result run(const AppInstancePtr& app, const GraphBuilder& builder, std::uint32_t seed, const Options& options);
 
 // Runs each seed (or NATRON_CACHE_STRESS_SEED alone) and adds a gtest failure per failing seed.
@@ -229,7 +231,27 @@ std::vector<std::uint32_t> seedsToRun(const std::vector<std::uint32_t>& defaults
 // Empties every cache, then the actions cache of every node of app's project.
 void clearEverything(const AppInstancePtr& app);
 
-// The colour plane of a render in the given mode from a node, with byPassCache as given.
+// The colour plane of node's render by a direct renderRoI pull, with byPassCache as given.
+bool renderProbeDirect(const NodePtr& node,
+                       double time,
+                       unsigned mipmapLevel,
+                       const RectI& window,
+                       bool byPassCache,
+                       RenderedPlane* out,
+                       std::string* error);
+
+// The colour plane of node's render as a frame run by the RenderScheduler, with byPassCache as
+// renderNodePlanesScheduled() takes it.
+bool renderProbeScheduled(const NodePtr& node,
+                          double time,
+                          unsigned mipmapLevel,
+                          const RectI& window,
+                          bool byPassCache,
+                          RenderedPlane* out,
+                          std::string* error);
+
+// renderProbeScheduled() for the Task graph mode, renderProbeDirect() otherwise. The mode is not
+// switched.
 bool renderProbe(const NodePtr& node,
                  double time,
                  unsigned mipmapLevel,

@@ -170,7 +170,7 @@ compareImages(const FlatExrImage& legacy,
             m.x = legacy.x1 + static_cast<int>(pixel % legacy.width);
             m.y = legacy.y1 + static_cast<int>(pixel / legacy.width);
             m.channel = legacy.channels[i % nComps];
-            m.legacy = legacy.pixels[i];
+            m.reference = legacy.pixels[i];
             m.taskGraph = taskGraph.pixels[i];
 
             return m;

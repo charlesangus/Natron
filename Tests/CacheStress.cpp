@@ -1217,8 +1217,8 @@ namespace {
         // succeed. The reference pass does not render such a step, since emptying the caches
         // purges the Reads, which reloads their files.
         int pinnedTo = -1;
-        Probe legacy;
-        Probe taskGraph;
+        Probe direct;
+        Probe scheduled;
         Probe custom;
     };
 
@@ -1248,7 +1248,7 @@ namespace {
     Probe
     renderOnce(const Runtime& rt,
                int probe,
-               RenderSchedulerModeEnum mode,
+               bool scheduled,
                bool byPassCache)
     {
         Probe out;
@@ -1256,7 +1256,12 @@ namespace {
         if (probe < 0) {
             return out;
         }
-        setOutcome(&out, renderProbe(rt.graph.nodes[probe], currentTime(rt), rt.mipmap, windowAt(rt), mode, byPassCache, &out.plane, &out.error));
+        const NodePtr& node = rt.graph.nodes[probe];
+        if (scheduled) {
+            setOutcome(&out, renderProbeScheduled(node, currentTime(rt), rt.mipmap, windowAt(rt), byPassCache, &out.plane, &out.error));
+        } else {
+            setOutcome(&out, renderProbeDirect(node, currentTime(rt), rt.mipmap, windowAt(rt), byPassCache, &out.plane, &out.error));
+        }
 
         return out;
     }
@@ -1703,28 +1708,13 @@ clearEverything(const AppInstancePtr& app)
     }
 }
 
-bool
-renderProbe(const NodePtr& node,
-            double time,
-            unsigned mipmapLevel,
-            const RectI& window,
-            RenderSchedulerModeEnum mode,
-            bool byPassCache,
-            RenderedPlane* out,
-            std::string* error)
+// The task-graph path returns every plane of the root; the colour plane comes first unless RGBA is
+// named.
+static bool
+pickColourPlane(const std::vector<RenderedPlane>& planes,
+                RenderedPlane* out,
+                std::string* error)
 {
-    std::vector<RenderedPlane> planes;
-    const std::list<ImageLayerDesc> rgba(1, ImageLayerDesc::getRGBAComponents());
-    bool ok;
-
-    if (mode == eRenderSchedulerModeLegacy) {
-        ok = renderNodePlanesDirect(node, time, ViewIdx(0), mipmapLevel, window, rgba, &planes, error, byPassCache);
-    } else {
-        ok = renderNodePlanesInMode(node, time, ViewIdx(0), mipmapLevel, window, rgba, mode, byPassCache, &planes, error);
-    }
-    if (!ok) {
-        return false;
-    }
     if (planes.empty()) {
         if (error) {
             *error = "the render returned no plane";
@@ -1732,8 +1722,6 @@ renderProbe(const NodePtr& node,
 
         return false;
     }
-    // The task-graph path returns every plane of the root; the colour plane comes first unless
-    // RGBA is named.
     for (std::size_t i = 0; i < planes.size(); ++i) {
         if (planes[i].layer == ImageLayerDesc::getRGBAComponents()) {
             *out = planes[i];
@@ -1744,7 +1732,61 @@ renderProbe(const NodePtr& node,
     *out = planes.front();
 
     return true;
-} // renderProbe
+}
+
+bool
+renderProbeDirect(const NodePtr& node,
+                  double time,
+                  unsigned mipmapLevel,
+                  const RectI& window,
+                  bool byPassCache,
+                  RenderedPlane* out,
+                  std::string* error)
+{
+    std::vector<RenderedPlane> planes;
+    const std::list<ImageLayerDesc> rgba(1, ImageLayerDesc::getRGBAComponents());
+
+    if (!renderNodePlanesDirect(node, time, ViewIdx(0), mipmapLevel, window, rgba, &planes, error, byPassCache)) {
+        return false;
+    }
+
+    return pickColourPlane(planes, out, error);
+}
+
+bool
+renderProbeScheduled(const NodePtr& node,
+                     double time,
+                     unsigned mipmapLevel,
+                     const RectI& window,
+                     bool byPassCache,
+                     RenderedPlane* out,
+                     std::string* error)
+{
+    std::vector<RenderedPlane> planes;
+
+    if (!renderNodePlanesScheduled(node, time, ViewIdx(0), mipmapLevel, window, byPassCache, &planes, error)) {
+        return false;
+    }
+
+    return pickColourPlane(planes, out, error);
+}
+
+bool
+renderProbe(const NodePtr& node,
+            double time,
+            unsigned mipmapLevel,
+            const RectI& window,
+            RenderSchedulerModeEnum mode,
+            bool byPassCache,
+            RenderedPlane* out,
+            std::string* error)
+{
+    if (mode == eRenderSchedulerModeTaskGraph) {
+        return renderProbeScheduled(node, time, mipmapLevel, window, byPassCache, out, error);
+    }
+
+    return renderProbeDirect(node, time, mipmapLevel, window, byPassCache, out, error);
+}
 
 std::string
 compareExact(const RenderedPlane& reference,
@@ -1901,13 +1943,13 @@ run(const AppInstancePtr& app,
                 continue;
             }
             pinned = i;
-            if (options.legacy) {
+            if (options.direct) {
                 clearEverything(app);
-                record.legacy = renderOnce(rt, record.probe, eRenderSchedulerModeLegacy, true);
+                record.direct = renderOnce(rt, record.probe, false /*scheduled*/, true);
             }
-            if (options.taskGraph) {
+            if (options.scheduled) {
                 clearEverything(app);
-                record.taskGraph = renderOnce(rt, record.probe, eRenderSchedulerModeTaskGraph, true);
+                record.scheduled = renderOnce(rt, record.probe, true /*scheduled*/, true);
             }
             if (options.cachedRender && options.cachedRenderReference && (record.probe >= 0)) {
                 clearEverything(app);
@@ -1918,12 +1960,12 @@ run(const AppInstancePtr& app,
             // render fails the same way.
             const Probe* failed = 0;
             const char* failedMode = "";
-            if (record.legacy.rendered && !record.legacy.ok) {
-                failed = &record.legacy;
-                failedMode = "legacy";
-            } else if (record.taskGraph.rendered && !record.taskGraph.ok) {
-                failed = &record.taskGraph;
-                failedMode = "task graph";
+            if (record.direct.rendered && !record.direct.ok) {
+                failed = &record.direct;
+                failedMode = "direct";
+            } else if (record.scheduled.rendered && !record.scheduled.ok) {
+                failed = &record.scheduled;
+                failedMode = "scheduled";
             } else if (record.custom.rendered && !record.custom.ok) {
                 failed = &record.custom;
                 failedMode = options.cachedRenderName.c_str();
@@ -1979,14 +2021,14 @@ run(const AppInstancePtr& app,
             // image than the one before the rewrite mixes in the new file.
             const StepRecord& pinnedRecord = records[record.pinnedTo];
             for (int m = 0; (m < 2) && mismatch.empty(); ++m) {
-                const bool legacy = (m == 0);
-                if (legacy ? !options.legacy : !options.taskGraph) {
+                const bool scheduled = (m == 1);
+                if (scheduled ? !options.scheduled : !options.direct) {
                     continue;
                 }
-                const Probe got = renderOnce(rt, probe, legacy ? eRenderSchedulerModeLegacy : eRenderSchedulerModeTaskGraph, false);
+                const Probe got = renderOnce(rt, probe, scheduled, false);
                 if (got.ok && !got.empty) {
-                    mismatch = compareProbes(legacy ? pinnedRecord.legacy : pinnedRecord.taskGraph, got);
-                    mode = legacy ? "legacy, stale file" : "task graph, stale file";
+                    mismatch = compareProbes(scheduled ? pinnedRecord.scheduled : pinnedRecord.direct, got);
+                    mode = scheduled ? "scheduled, stale file" : "direct, stale file";
                 }
             }
             if (!mismatch.empty()) {
@@ -2002,8 +2044,8 @@ run(const AppInstancePtr& app,
             }
             continue;
         }
-        // Alternate which mode renders first, so each also runs against the other's entries.
-        const bool legacyFirst = (i % 2) == 0;
+        // Alternate which pull renders first, so each also runs against the other's entries.
+        const bool directFirst = (i % 2) == 0;
         if (mismatch.empty() && options.cachedRender) {
             Probe got;
             if (probe >= 0) {
@@ -2016,28 +2058,28 @@ run(const AppInstancePtr& app,
                 }
             }
             if (mismatch.empty()) {
-                mismatch = compareProbes(record.legacy, got, options.compare);
+                mismatch = compareProbes(record.direct, got, options.compare);
             }
             mode = options.cachedRenderName;
         }
         for (int pass = 0; (pass < 2) && mismatch.empty() && !options.cachedRender; ++pass) {
-            const bool doLegacy = (pass == 0) == legacyFirst;
-            if (doLegacy && options.legacy) {
-                const Probe got = renderOnce(rt, probe, eRenderSchedulerModeLegacy, false);
-                mismatch = compareProbes(record.legacy, got);
-                mode = "legacy";
-            } else if (!doLegacy && options.taskGraph) {
-                const Probe got = renderOnce(rt, probe, eRenderSchedulerModeTaskGraph, false);
-                mismatch = compareProbes(record.taskGraph, got);
-                mode = "task graph";
+            const bool doDirect = (pass == 0) == directFirst;
+            if (doDirect && options.direct) {
+                const Probe got = renderOnce(rt, probe, false /*scheduled*/, false);
+                mismatch = compareProbes(record.direct, got);
+                mode = "direct";
+            } else if (!doDirect && options.scheduled) {
+                const Probe got = renderOnce(rt, probe, true /*scheduled*/, false);
+                mismatch = compareProbes(record.scheduled, got);
+                mode = "scheduled";
             }
         }
         if (mismatch.empty() && (rt.graph.viewer >= 0) && (probe >= 0)) {
-            const Probe& ref = options.legacy ? record.legacy : record.taskGraph;
+            const Probe& ref = options.direct ? record.direct : record.scheduled;
             const std::tuple<int, U64, double, unsigned> key(probe, rt.graph.nodes[rt.graph.viewer]->getHashValue(), record.time, record.mipmap);
             std::map<std::tuple<int, U64, double, unsigned>, std::size_t>::const_iterator seen = viewerKeys.find(key);
             if (seen != viewerKeys.end()) {
-                const Probe& earlier = options.legacy ? records[seen->second].legacy : records[seen->second].taskGraph;
+                const Probe& earlier = options.direct ? records[seen->second].direct : records[seen->second].scheduled;
                 const std::string diff = compareProbes(earlier, ref);
                 if (!diff.empty()) {
                     std::ostringstream os;

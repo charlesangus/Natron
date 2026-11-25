@@ -149,10 +149,10 @@ TEST_F(CacheStressSelfTest, APlantedMemberCacheHoleIsCaught)
     options.scripted[0].prims.push_back(setValuePrim(0, 0, 2.));
 
     for (int mode = 0; mode < 2; ++mode) {
-        options.legacy = mode == 0;
-        options.taskGraph = mode == 1;
+        options.direct = mode == 0;
+        options.scheduled = mode == 1;
         const Result r = run(getApp(), buildPlantedHole, 7u, options);
-        EXPECT_FALSE(r.ok) << (mode == 0 ? "legacy" : "task graph");
+        EXPECT_FALSE(r.ok) << (mode == 0 ? "direct" : "scheduled");
         EXPECT_EQ(1, r.failedStep) << r.report;
         EXPECT_NE(std::string::npos, r.report.find("NATRON_CACHE_STRESS_SEED=7")) << r.report;
         EXPECT_NE(std::string::npos, r.report.find("setValue")) << r.report;

@@ -421,7 +421,7 @@ gpuOptions(GpuTaskCounts* counts)
 
     options.ops = defaultOps();
     options.steps = stepBudget(kSteps);
-    options.taskGraph = false;
+    options.scheduled = false;
     options.cachedRender = [counts](const NodePtr& node, double time, unsigned mipmapLevel, const RectI& window, RenderedPlane* out, std::string* error) {
         return renderOnGpu(node, time, mipmapLevel, window, counts, out, error);
     };

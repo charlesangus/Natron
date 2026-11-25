@@ -625,6 +625,11 @@ ViewerTab::onCurrentTimeSpinBoxChanged(double time)
 void
 ViewerTab::centerViewer()
 {
+    if (_imp->viewer->isColorSpaceViewActive()) {
+        _imp->viewer->frameColorSpaceView();
+
+        return;
+    }
     _imp->viewer->fitImageToFormat();
     if ( _imp->viewer->displayingImage() ) {
         _imp->viewerNode->renderCurrentFrame(true);

@@ -37,6 +37,7 @@
 
 #include <QSize>
 #include <QVariantList>
+#include <QVariantMap>
 
 #include <QOpenGLWidget>
 
@@ -346,6 +347,46 @@ public:
     void getProjection(double *zoomLeft, double *zoomBottom, double *zoomFactor, double *zoomAspectRatio) const;
 
     void setProjection(double zoomLeft, double zoomBottom, double zoomFactor, double zoomAspectRatio);
+
+    /**
+     * @brief The ColorWarp node the colour space view shows, or null when none can be shown; null
+     * also turns the view off.
+     **/
+    void setColorSpaceViewNode(const NodePtr& node);
+
+    /**
+     * @brief Swaps the image for the 3D view of colour space, or back. Turning it on remembers the 2D
+     * pan and zoom, and turning it off restores them. It stays off while there is no node to show.
+     **/
+    void setColorSpaceViewActive(bool active);
+    bool isColorSpaceViewActive() const WARN_UNUSED_RETURN;
+
+    void setColorSpaceViewShowsOutput(bool output);
+
+    /**
+     * @brief Frames the colour space view's cloud and pins.
+     **/
+    void frameColorSpaceView();
+
+    /**
+     * @brief A read-only summary of the colour space view for scripts (see ColorSpaceView::state()),
+     * empty while the view is off.
+     **/
+    Q_INVOKABLE QVariantMap colorSpaceViewState() const;
+
+    /**
+     * @brief Where working-space colour (r, g, b) sits in the colour space view (see
+     * ColorSpaceView::probe()), empty while the view is off.
+     **/
+    Q_INVOKABLE QVariantMap colorSpaceViewProbe(double r,
+                                                double g,
+                                                double b) const;
+
+    /**
+     * @brief The 2D pan and zoom as getProjection() gives them: left, bottom, factor and aspect
+     * ratio, for scripts.
+     **/
+    Q_INVOKABLE QVariantList viewProjection() const;
 
     // Shows or hides the RoI the viewer node's knobs enable; rendering follows the knobs.
     void setUserRoIEnabled(bool b);

@@ -545,21 +545,9 @@ ColorWarp::sampleSource(double x,
     }
     std::array<double, 3> rgb { (*sample)[0], (*sample)[1], (*sample)[2] };
 
-    const KnobChannelSelectPtr unPremultBy = node ? node->getUnPremultBySelector() : KnobChannelSelectPtr();
-    if (!unPremultBy || unPremultBy->isNone() || !getInput(0)) {
-        return rgb;
-    }
-    std::list<ImageLayerDesc> availableLayers;
-    getAvailableLayers(time, view, 0, &availableLayers);
     ImageLayerDesc divisorLayer;
-    const int divisorChannel = node->getUnPremultChannel(availableLayers, &divisorLayer);
-    const std::vector<std::string>& channels = divisorLayer.getChannels();
-    if ((divisorChannel < 0) || (divisorChannel >= (int)channels.size())) {
-        return rgb;
-    }
-    // sampleNodeColor() puts a layer's "A" channel in rgba[3] and the others in order.
-    const int slot = (channels[divisorChannel] == "A") ? 3 : divisorChannel;
-    if (slot > 3) {
+    int slot = -1;
+    if (!unPremultDivisor(time, view, &divisorLayer, &slot)) {
         return rgb;
     }
     float divisor = (*sample)[slot];
@@ -577,6 +565,97 @@ ColorWarp::sampleSource(double x,
     }
 
     return rgb;
+}
+
+bool
+ColorWarp::unPremultDivisor(double time,
+                            ViewIdx view,
+                            ImageLayerDesc* layer,
+                            int* slot)
+{
+    const NodePtr node = getNode();
+    const KnobChannelSelectPtr unPremultBy = node ? node->getUnPremultBySelector() : KnobChannelSelectPtr();
+
+    if (!unPremultBy || unPremultBy->isNone() || !getInput(0)) {
+        return false;
+    }
+    std::list<ImageLayerDesc> availableLayers;
+    getAvailableLayers(time, view, 0, &availableLayers);
+    const int divisorChannel = node->getUnPremultChannel(availableLayers, layer);
+    const std::vector<std::string>& channels = layer->getChannels();
+    if ((divisorChannel < 0) || (divisorChannel >= (int)channels.size())) {
+        return false;
+    }
+    // sampleNodeColor() puts a layer's "A" channel in rgba[3] and the others in order.
+    *slot = (channels[divisorChannel] == "A") ? 3 : divisorChannel;
+
+    return *slot <= 3;
+}
+
+int
+ColorWarp::getUnPremultRgbaSlot(double time,
+                                ViewIdx view)
+{
+    ImageLayerDesc layer;
+    int slot = -1;
+
+    if (!unPremultDivisor(time, view, &layer, &slot) || !(layer == ImageLayerDesc::getRGBAComponents())) {
+        return -1;
+    }
+
+    return slot;
+}
+
+ColorWarpSpaceEnum
+ColorWarp::getWarpSpace() const
+{
+    const KnobChoicePtr knob = op().warpSpace.lock();
+
+    return spaceFromIndex(knob ? knob->getValue() : 0);
+}
+
+ColorWarpKernelEnum
+ColorWarp::getWarpKernel() const
+{
+    const KnobChoicePtr knob = op().kernel.lock();
+
+    return kernelFromIndex(knob ? knob->getValue() : 0);
+}
+
+double
+ColorWarp::getLightnessFalloff(double time) const
+{
+    const KnobDoublePtr knob = op().lightnessFalloff.lock();
+
+    return knob ? knob->getValueAtTime(time) : kColorWarpDefaultLightnessFalloff;
+}
+
+ColorWarpSpaceBasis
+ColorWarp::getWarpSpaceBasis() const
+{
+    double workingToXYZ[9];
+
+    ColorMath::workingToXYZ(this, workingToXYZ);
+
+    return ColorWarpSpaceBasis(workingToXYZ);
+}
+
+std::vector<KnobIPtr>
+ColorWarp::getFieldKnobs() const
+{
+    std::vector<KnobIPtr> knobs;
+
+    if (KnobIPtr k = op().warpSpace.lock()) {
+        knobs.push_back(k);
+    }
+    if (KnobIPtr k = op().kernel.lock()) {
+        knobs.push_back(k);
+    }
+    if (KnobIPtr k = op().lightnessFalloff.lock()) {
+        knobs.push_back(k);
+    }
+
+    return knobs;
 }
 
 void

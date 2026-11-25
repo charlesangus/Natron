@@ -1074,6 +1074,7 @@ ViewerTab::onActiveInputsChanged()
 {
     refreshInputMenusFromKnobs();
     _imp->viewer->updatePersistentMessage();
+    refreshColorSpaceView();
 }
 
 void

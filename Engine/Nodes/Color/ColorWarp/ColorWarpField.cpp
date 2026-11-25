@@ -32,6 +32,7 @@ NATRON_NAMESPACE_ENTER
 
 namespace {
 const double kIdentityMatrix[9] = { 1., 0., 0., 0., 1., 0., 0., 0., 1. };
+const double kZero3[3] = { 0., 0., 0. };
 
 // t = 2 r^2 / falloff^2 >= 32 is r >= 4 falloffs, where a pin's weight exp(-t) / (2t) is below
 // 2e-16 of the identity weight, so it is dropped.
@@ -47,6 +48,16 @@ dist2(const double* a, const double* b)
     const double dx = a[0] - b[0], dy = a[1] - b[1], dz = a[2] - b[2];
 
     return dx * dx + dy * dy + dz * dz;
+}
+
+// stretch >= -1, so the result is never negative short of rounding, which the clamp removes.
+double
+lightnessDist2(const double* a, const double* b, const double* axis, double stretch)
+{
+    const double dx = a[0] - b[0], dy = a[1] - b[1], dz = a[2] - b[2];
+    const double along = dx * axis[0] + dy * axis[1] + dz * axis[2];
+
+    return std::max(0., dx * dx + dy * dy + dz * dz + stretch * along * along);
 }
 
 bool
@@ -172,6 +183,25 @@ solveDense(std::vector<double>& a, std::vector<double>& b, int n, std::vector<do
 }
 } // anon namespace
 
+double
+colorWarpFade(double distance,
+              double radius,
+              double invWidth)
+{
+    if (!(distance > radius)) {
+        return 1.;
+    }
+    if (invWidth <= 0.) {
+        return 0.;
+    }
+    const double t = (distance - radius) * invWidth;
+    if (!(t < 1.)) {
+        return 0.;
+    }
+
+    return 1. - t * t * (3. - 2. * t);
+}
+
 const char*
 colorWarpKernelName(ColorWarpKernelEnum kernel)
 {
@@ -192,9 +222,13 @@ ColorWarpField::ColorWarpField()
     , _kernel(eColorWarpKernelGaussian)
     , _basis(kIdentityMatrix)
     , _pinCount(0)
+    , _lightnessAxis()
+    , _lightnessStretch(0.)
     , _affine()
     , _origin()
     , _invScale(1.)
+    , _fadeRadius(0.)
+    , _fadeInvWidth(0.)
 {
 }
 
@@ -203,7 +237,8 @@ ColorWarpField::prepare(const std::vector<ColorWarpPin>& pins,
                         ColorWarpSpaceEnum space,
                         const ColorWarpSpaceBasis& basis,
                         ColorWarpKernelEnum kernel,
-                        double regularisation)
+                        double regularisation,
+                        double lightnessFalloff)
 {
     _space = space;
     _kernel = kernel;
@@ -215,7 +250,13 @@ ColorWarpField::prepare(const std::vector<ColorWarpPin>& pins,
     std::fill(_affine, _affine + 12, 0.);
     std::fill(_origin, _origin + 3, 0.);
     _invScale = 1.;
+    _fadeRadius = 0.;
+    _fadeInvWidth = 0.;
+    colorWarpLightnessAxis(space, basis, _lightnessAxis);
+    const double k = (std::isfinite(lightnessFalloff) && (lightnessFalloff > 0.)) ? lightnessFalloff : 1.;
+    _lightnessStretch = (kernel == eColorWarpKernelGaussian) ? (1. / (k * k) - 1.) : 0.;
 
+    const double falloffScale = colorWarpFalloffScale(space);
     std::vector<double> sources, displacements, falloffs;
     for (const ColorWarpPin& pin : pins) {
         if (!pin.enabled) {
@@ -235,7 +276,7 @@ ColorWarpField::prepare(const std::vector<ColorWarpPin>& pins,
         }
         sources.insert(sources.end(), s, s + 3);
         displacements.insert(displacements.end(), d, d + 3);
-        falloffs.push_back(pin.falloff);
+        falloffs.push_back(pin.falloff * falloffScale);
     }
 
     const int n = static_cast<int>(falloffs.size());
@@ -332,6 +373,16 @@ ColorWarpField::prepareRbf(const std::vector<double>& centres,
         }
     }
 
+    // The fade starts at the sphere around the centroid that holds every pin, and is wide
+    // enough not to fold colours moved by up to the largest pin displacement.
+    double maxDisplacement = 0.;
+    for (int i = 0; i < n; ++i) {
+        _fadeRadius = std::max(_fadeRadius, std::sqrt(dist2(&_centres[i * 3], kZero3)));
+        maxDisplacement = std::max(maxDisplacement, std::sqrt(dist2(&displacements[i * 3], kZero3)));
+    }
+    const double fadeWidth = std::max(_fadeRadius, kColorWarpFadeDisplacementWidth * maxDisplacement * _invScale);
+    _fadeInvWidth = (fadeWidth > 0.) ? 1. / fadeWidth : 0.;
+
     // The affine part only spans the directions the pins themselves span: along any other
     // direction its slope is unconstrained, and zero is the least surprising choice.
     double cov[3][3] = {};
@@ -410,7 +461,7 @@ ColorWarpField::displacementAt(const double warp[3], double d[3]) const
         for (int i = 0; i < _pinCount; ++i) {
             const double* ci = &_centres[i * 3];
             const double* di = &_coefficients[i * 3];
-            const double r2 = dist2(warp, ci);
+            const double r2 = lightnessDist2(warp, ci, _lightnessAxis, _lightnessStretch);
             const double t = r2 * _invTwoSigma2[i];
             if ((r2 == 0.) || ((_invTwoSigma2[i] > 0.) && (t < kGaussianExactHit))) {
                 d[0] = di[0];
@@ -440,6 +491,10 @@ ColorWarpField::displacementAt(const double warp[3], double d[3]) const
     for (int c = 0; c < 3; ++c) {
         x[c] = (warp[c] - _origin[c]) * _invScale;
     }
+    const double fade = colorWarpFade(std::sqrt(dist2(x, kZero3)), _fadeRadius, _fadeInvWidth);
+    if (fade <= 0.) {
+        return;
+    }
     for (int c = 0; c < 3; ++c) {
         d[c] = _affine[c] + _affine[3 + c * 3] * x[0] + _affine[4 + c * 3] * x[1] + _affine[5 + c * 3] * x[2];
     }
@@ -447,6 +502,11 @@ ColorWarpField::displacementAt(const double warp[3], double d[3]) const
         const double phi = rbfPhi(_kernel, std::sqrt(dist2(x, &_centres[i * 3])));
         for (int c = 0; c < 3; ++c) {
             d[c] += _coefficients[i * 3 + c] * phi;
+        }
+    }
+    if (fade < 1.) {
+        for (int c = 0; c < 3; ++c) {
+            d[c] *= fade;
         }
     }
 }

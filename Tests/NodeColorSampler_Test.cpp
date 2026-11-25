@@ -25,8 +25,12 @@
 
 #include "Global/Macros.h"
 
+#include <array>
 #include <atomic>
+#include <cmath>
+#include <optional>
 #include <thread>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -43,12 +47,15 @@
 #include "Engine/AppManager.h"
 #include "Engine/Format.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeColorSampler.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Project.h"
+#include "Engine/RectD.h"
 #include "Engine/RectI.h"
 #include "Engine/ViewIdx.h"
 
@@ -98,6 +105,29 @@ protected:
                        float rgba[4])
     {
         return sampleNodeColor(node, kTime, ViewIdx(0), 0, rect, ImageLayerDesc::getRGBAComponents(), rgba);
+    }
+
+    // A Constant of colour rgba over box only, so the region of definition ends at box.
+    NodePtr makeBoxConstant(const RectD& box,
+                            const std::vector<double>& rgba)
+    {
+        NodePtr node = makeNode(PLUGINID_NATRON_CONSTANT, PLUGIN_MAJOR_NATRON_CONSTANT);
+        KnobChoice* extent = node ? dynamic_cast<KnobChoice*>(node->getKnobByName(kNativeGeneratorParamExtent).get()) : NULL;
+        EXPECT_TRUE(extent != NULL);
+        if (!extent) {
+            return NodePtr();
+        }
+        const std::vector<ChoiceOption> entries = extent->getEntries_mt_safe();
+        for (std::size_t i = 0; i < entries.size(); ++i) {
+            if (entries[i].id == kNativeGeneratorExtentSize) {
+                extent->setValue((int)i, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
+            }
+        }
+        if (!setKnobValues(node, kNativeGeneratorParamBottomLeft, { box.x1, box.y1 }) || !setKnobValues(node, kNativeGeneratorParamSize, { box.width(), box.height() }) || !setKnobValues(node, kConstantParamColor, rgba)) {
+            return NodePtr();
+        }
+
+        return node;
     }
 };
 
@@ -220,4 +250,83 @@ TEST_F(NodeColorSamplerTest, AnAbortedRenderReturnsPromptly)
     EXPECT_FALSE(bool(image)) << "an aborted render hands back no image";
 
     CountingTestRegistry::reset();
+}
+
+TEST_F(NodeColorSamplerTest, SampleInputAtReadsTheInputNotTheNode)
+{
+    NodePtr constant = makeBoxConstant(RectD(8., 8., 24., 24.), { 0.25, 0.5, 0.75, 1. });
+    NodePtr grade = makeNode(PLUGINID_NATRON_GRADE, PLUGIN_MAJOR_NATRON_GRADE);
+    ASSERT_TRUE(bool(constant) && bool(grade));
+    ASSERT_TRUE(setKnobValues(grade, kGradeParamMultiply, { 2. }));
+    connectNodes(constant, grade, 0, true);
+
+    const std::optional<std::array<float, 4>> rgba = sampleNodeInputAt(grade, 0, kTime, ViewIdx(0), 10.5, 20.9);
+    ASSERT_TRUE(rgba.has_value());
+    const float expected[4] = { 0.25f, 0.5f, 0.75f, 1.f };
+    for (int c = 0; c < 4; ++c) {
+        EXPECT_NEAR(expected[c], (*rgba)[c], 1e-5f) << "channel " << c;
+    }
+}
+
+TEST_F(NodeColorSamplerTest, SampleInputAtOutsideTheRegionOfDefinitionIsNone)
+{
+    NodePtr constant = makeBoxConstant(RectD(8., 8., 24., 24.), { 0.25, 0.5, 0.75, 1. });
+    NodePtr grade = makeNode(PLUGINID_NATRON_GRADE, PLUGIN_MAJOR_NATRON_GRADE);
+    ASSERT_TRUE(bool(constant) && bool(grade));
+    connectNodes(constant, grade, 0, true);
+
+    EXPECT_TRUE(sampleNodeInputAt(grade, 0, kTime, ViewIdx(0), 23.5, 23.5).has_value());
+    EXPECT_FALSE(sampleNodeInputAt(grade, 0, kTime, ViewIdx(0), 24.5, 12.).has_value());
+    EXPECT_FALSE(sampleNodeInputAt(grade, 0, kTime, ViewIdx(0), 12., 7.5).has_value());
+    EXPECT_FALSE(sampleNodeInputAt(grade, 0, kTime, ViewIdx(0), 40., 40.).has_value());
+    EXPECT_FALSE(sampleNodeInputAt(grade, 0, kTime, ViewIdx(0), -1e300, 12.).has_value());
+    EXPECT_FALSE(sampleNodeInputAt(grade, 0, kTime, ViewIdx(0), std::nan(""), 12.).has_value());
+}
+
+TEST_F(NodeColorSamplerTest, SampleInputAtMatchesTheInputPixelByPixel)
+{
+    NodePtr checker = makeNode(PLUGINID_NATRON_CHECKERBOARD, PLUGIN_MAJOR_NATRON_CHECKERBOARD);
+    NodePtr grade = makeNode(PLUGINID_NATRON_GRADE, PLUGIN_MAJOR_NATRON_GRADE);
+    ASSERT_TRUE(bool(checker) && bool(grade));
+    ASSERT_TRUE(setKnobValues(checker, kCheckerBoardParamBoxSize, { 8. }));
+    ASSERT_TRUE(setKnobValues(grade, kGradeParamMultiply, { 3. }));
+    connectNodes(checker, grade, 0, true);
+
+    for (int y = 26; y < 38; y += 3) {
+        for (int x = 26; x < 38; x += 3) {
+            float pixel[4];
+            ASSERT_TRUE(sample(checker, RectI(x, y, x + 1, y + 1), pixel)) << x << "," << y;
+            const std::optional<std::array<float, 4>> rgba = sampleNodeInputAt(grade, 0, kTime, ViewIdx(0), x + 0.75, y + 0.25);
+            ASSERT_TRUE(rgba.has_value()) << x << "," << y;
+            for (int c = 0; c < 4; ++c) {
+                EXPECT_EQ(pixel[c], (*rgba)[c]) << x << "," << y << " channel " << c;
+            }
+        }
+    }
+}
+
+TEST_F(NodeColorSamplerTest, SampleInputAtLooksThroughADisabledInput)
+{
+    NodePtr constant = makeBoxConstant(RectD(0., 0., 32., 32.), { 0.25, 0.25, 0.25, 1. });
+    NodePtr disabled = makeNode(PLUGINID_NATRON_GRADE, PLUGIN_MAJOR_NATRON_GRADE);
+    NodePtr grade = makeNode(PLUGINID_NATRON_GRADE, PLUGIN_MAJOR_NATRON_GRADE);
+    ASSERT_TRUE(bool(constant) && bool(disabled) && bool(grade));
+    ASSERT_TRUE(setKnobValues(disabled, kGradeParamMultiply, { 2. }));
+    connectNodes(constant, disabled, 0, true);
+    connectNodes(disabled, grade, 0, true);
+    disabled->setNodeDisabled(true);
+
+    const std::optional<std::array<float, 4>> rgba = sampleNodeInputAt(grade, 0, kTime, ViewIdx(0), 5., 5.);
+    ASSERT_TRUE(rgba.has_value());
+    EXPECT_NEAR(0.25f, (*rgba)[0], 1e-5f);
+}
+
+TEST_F(NodeColorSamplerTest, SampleInputAtWithoutAnInputIsNone)
+{
+    NodePtr grade = makeNode(PLUGINID_NATRON_GRADE, PLUGIN_MAJOR_NATRON_GRADE);
+    ASSERT_TRUE(bool(grade));
+
+    EXPECT_FALSE(sampleNodeInputAt(grade, 0, kTime, ViewIdx(0), 5., 5.).has_value());
+    EXPECT_FALSE(sampleNodeInputAt(grade, 7, kTime, ViewIdx(0), 5., 5.).has_value());
+    EXPECT_FALSE(sampleNodeInputAt(NodePtr(), 0, kTime, ViewIdx(0), 5., 5.).has_value());
 }

@@ -126,6 +126,64 @@ wrapHueOffsetDegrees(double dh)
 }
 } // anon namespace
 
+double
+colorWarpFalloffScale(ColorWarpSpaceEnum space)
+{
+    // Measured by the comparison harness's calibrateReach() on its single-hue pin.
+    switch (space) {
+    case eColorWarpSpaceOklabLog:
+        return 0.927;
+    case eColorWarpSpaceOklab:
+        return 0.121;
+    case eColorWarpSpaceXyz:
+        return 0.111;
+    case eColorWarpSpaceLogRgb:
+        return 1.81;
+    case eColorWarpSpaceLinearRgb:
+        return 0.221;
+    }
+
+    return 1.;
+}
+
+void
+colorWarpLightnessAxis(ColorWarpSpaceEnum space,
+                       const ColorWarpSpaceBasis& basis,
+                       double axis[3])
+{
+    switch (space) {
+    case eColorWarpSpaceOklabLog:
+    case eColorWarpSpaceOklab:
+        axis[0] = 1.;
+        axis[1] = 0.;
+        axis[2] = 0.;
+
+        return;
+    case eColorWarpSpaceXyz: {
+        if (!basis.valid) {
+            break;
+        }
+        const double white[3] = { 1., 1., 1. };
+        double w[3];
+        mul3(basis.rgbToXyz, white, w);
+        const double len = std::sqrt(w[0] * w[0] + w[1] * w[1] + w[2] * w[2]);
+        if (std::isfinite(len) && (len > 0.)) {
+            axis[0] = w[0] / len;
+            axis[1] = w[1] / len;
+            axis[2] = w[2] / len;
+
+            return;
+        }
+        break;
+    }
+    case eColorWarpSpaceLogRgb:
+    case eColorWarpSpaceLinearRgb:
+        break;
+    }
+    const double third = 1. / std::sqrt(3.);
+    axis[0] = axis[1] = axis[2] = third;
+}
+
 const char*
 colorWarpSpaceName(ColorWarpSpaceEnum space)
 {

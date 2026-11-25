@@ -68,6 +68,7 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Gui/Button.h"
 #include "Gui/ClickableLabel.h"
+#include "Gui/ColorGlobalModeHook.h"
 #include "Gui/ColorKnobEditSession.h"
 #include "Gui/ColorTrackballGlobalMode.h"
 #include "Gui/ComboBox.h"
@@ -94,12 +95,11 @@ CLANG_DIAG_ON(uninitialized)
 
 NATRON_NAMESPACE_ENTER
 
-namespace {
-ColorAdjustPanel::DisplayConverter
-makeDisplayConverter(const ProjectColorManagementPtr& colorManagement)
+ColorGlobalModeHook::DisplayConverter
+makeColorPickingDisplayConverter(const ProjectColorManagementPtr& colorManagement)
 {
     if (!colorManagement) {
-        return ColorAdjustPanel::DisplayConverter();
+        return ColorGlobalModeHook::DisplayConverter();
     }
 
     std::weak_ptr<ProjectColorManagement> weak = colorManagement;
@@ -114,6 +114,13 @@ makeDisplayConverter(const ProjectColorManagementPtr& colorManagement)
             cm->workingToColorPicking(&rgb[3 * i], &rgb[3 * i + 1], &rgb[3 * i + 2]);
         }
     };
+}
+
+namespace {
+ColorAdjustPanel::DisplayConverter
+makeDisplayConverter(const ProjectColorManagementPtr& colorManagement)
+{
+    return makeColorPickingDisplayConverter(colorManagement);
 }
 
 KnobColorValue

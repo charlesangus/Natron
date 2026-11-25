@@ -77,7 +77,7 @@ getKnobTypeTraits(const std::string& typeName)
         traits.storageType = eKnobStorageTypeString;
         traits.hasValue = true;
         traits.isLayerSelect = true;
-    } else if ((typeName == "Layers") || (typeName == "ChannelSet") || (typeName == "ChannelSelect") || (typeName == "ShuffleMap")) {
+    } else if ((typeName == "Layers") || (typeName == "ChannelSet") || (typeName == "ChannelSelect") || (typeName == "ShuffleMap") || (typeName == "ColorWarpPins")) {
         traits.storageType = eKnobStorageTypeString;
         traits.hasValue = true;
     } else {

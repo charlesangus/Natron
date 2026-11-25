@@ -19,17 +19,17 @@ Cut GitHub runner slot use. The 20-concurrent-job cap is the bottleneck, not bui
 
 ## Phase 599.1: Fewer jobs
 
-- [ ] M599.P1.T1 — Run PR CI only for non-draft PRs
+- [x] M599.P1.T1 — Run PR CI only for non-draft PRs
   - files: `.github/workflows/ci.yml` (`on.pull_request` :8, every job's `if:`), `tools/ci/remote/README.md`
   - approach: set `pull_request.types: [opened, synchronize, reopened, ready_for_review]`, and give each top-level job `if: github.event_name != 'pull_request' || !github.event.pull_request.draft`. Leave push and dispatch runs unchanged. Document in the README that a draft PR gets no CI until it is marked ready.
   - verify: actionlint/`yq` parse `ci.yml`; on a test PR, a draft push starts no jobs and `gh pr ready` starts the full run.
   - size: M
-- [ ] M599.P1.T2 — Shard the GUI scripts into at most 4 jobs per gate
+- [x] M599.P1.T2 — Shard the GUI scripts into at most 4 jobs per gate
   - files: `.github/workflows/remote-build.yml` (`gui-matrix` :662, the GUI job ~:755), `Tests/gui/run-gui-test.sh`, `tools/ci/remote/build.sh` (result collection for `--gui`)
   - approach: `gui-matrix` emits up to 4 groups, balanced by count. Each job loops over its group's scripts through `run-gui-test.sh`, with a per-script timeout, keeps going after a failure, and uploads per-script logs and screenshots under the same artifact names as now. The job fails if any script failed. `build.sh` reports per-script results from those logs.
   - verify: a gate with `--gui` on 21 scripts runs 4 GUI jobs; a deliberately failing script is reported by name while the others in its group still run; artifact names are unchanged.
   - size: L
-- [ ] M599.P1.T3 — `build.sh --ctest-regex <re>` for intermediate gates
+- [x] M599.P1.T3 — `build.sh --ctest-regex <re>` for intermediate gates
   - files: `tools/ci/remote/build.sh` (option parsing near `--repeat-test` :223, help text :9–55), `.github/workflows/remote-build.yml` (new `ctest_regex` input passed to the ctest step), `tools/ci/local/test.sh`, `tools/ci/remote/README.md`
   - approach: the option implies `--tests` and passes `-R <re>` to the ctest run. The smoke test still runs. The README says a milestone's final gate must not use it.
   - verify: `build.sh --help` lists it; a gate with `--ctest-regex NativeBlur` runs only the matching cases (check the ctest log count); without it, the full suite runs.
@@ -37,17 +37,17 @@ Cut GitHub runner slot use. The 20-concurrent-job cap is the bottleneck, not bui
 
 ## Phase 599.2: Cache and image
 
-- [ ] M599.P2.T1 — Build an identical dev image only once
+- [x] ~~M599.P2.T1 — Build an identical dev image only once~~ (struck, see Decisions)
   - files: `.github/workflows/dev-image.yml`, `.github/workflows/ci.yml` (:25), `.github/workflows/remote-build.yml` (:104)
   - approach: add a `concurrency` group keyed on the image's input hash (the tag dev-image already computes), with `cancel-in-progress: false`, so concurrent callers queue behind one build and then find the tag already published. If a job-level group can't be keyed on a computed hash, compute the hash in a cheap first job and gate the build job on "tag missing".
   - verify: two gates dispatched together after a Dockerfile change run one image build between them; with an unchanged image, both skip the build.
   - size: M
-- [ ] M599.P2.T2 — Prefer main's ccache entry right after a main merge
+- [x] M599.P2.T2 — Prefer main's ccache entry right after a main merge
   - files: `.github/workflows/remote-build.yml` (Restore ccache :184–192), `.github/workflows/ci.yml` (its ccache restore)
   - approach: when the branch's newest ccache entry predates the latest merge of main into the branch, restore `ccache-linux-<preset>-main-` first. Check the merge commit's date against the cache entry's date (`gh api` cache list or `actions/cache/restore` lookup-only), and fall back to the current order otherwise.
   - verify: on a branch just merged with main, the log shows the main entry restored and a higher hit rate than the prior run of that branch.
   - size: M
-- [ ] M599.P2.T3 — Make remote ccache stats readable (no hit-rate fault exists)
+- [x] M599.P2.T3 — Make remote ccache stats readable (no hit-rate fault exists)
   - files: `tools/ci/ccache-remote-setup.sh`, `tools/ci/ccache-remote-layout.sh`, `.github/workflows/remote-build.yml` (ccache env), `CMakePresets.json` (fast preset)
   - approach: fast builds hit 19/1313 and 0/23 remotely while debug hits 55/60. Compare `ccache -p` and the remote layout key for fast and debug: compiler flags that differ per run (`-ffile-prefix-map`, absolute paths, timestamps), `CCACHE_BASEDIR`, `hash_dir`, and a layout key that includes the preset or run id. Fix the cause in the setup script or preset.
   - verify: on a branch gate right after a main merge, remote hits are at least 90% of the local misses outside the TUs the branch changed; the "Show ccache stats" step prints a one-line summary (remote hits / local misses; true compiles = remote misses) and the masked remote_storage/base_dir/hash_dir/compiler_check config.
@@ -58,3 +58,4 @@ Cut GitHub runner slot use. The 20-concurrent-job cap is the bottleneck, not bui
 ## Decisions
 - 2026-11-25 (PM, opus consultant over 62 Build jobs) — Remote ccache works: the 'Remote storage: Hits x/y' denominator is local misses, so misses are TUs nobody compiled yet. Runs restoring main's entry hit 97-99% remotely (796/801, 906/928, 1738/1744); runs restoring their own branch entry miss only the TUs they changed. "19/1313" was F15 right after a main merge (main+F15 combos never built); "0/23" was 15 new .cpp files; debug "55/60" was a same-SHA re-run. The only avoidable cost is branches whose workflow predates M493 (no remote at all) — fixed by merging main. P2.T3 becomes a readability change (stats summary + masked config) with a rewritten verify; no ccache config fix.
 - 2026-11-25 (PM) — Draft PR #379 live check: on a draft, Build·debug/release, Dev image and Test were skipped; only Format, Lint CI, Code rules and the deliberately failing Build and test ran.
+- 2026-11-25 (PM) — P2.T1 struck: a GitHub concurrency group keeps one running and one pending job, and a newer pending job cancels the older one, so with 3+ gates after a Dockerfile change all but the last caller would be cancelled (we dispatch up to ~12 at once). A builder election through the Actions API is a bigger design than the saving. PM practice instead: after a Dockerfile change, dispatch one gate first and the rest once its image is published. Phase 1 in 260128be6, P2.T2/T3 in 188a18336; gate2 queued (14 GUI scripts → 4 GUI jobs).

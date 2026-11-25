@@ -139,6 +139,39 @@ unsupportedOutputKindMessage(const NodePtr& writer)
     return std::string("No scheduler support for the output data kind of ") + writer->getScriptName_mt_safe() + " yet";
 }
 
+bool
+evaluateAndWriteGeometryFrame(const OutputEffectInstancePtr& writer,
+                              double time,
+                              ViewIdx view,
+                              EffectInstance::RenderRoIRetCode* retCode,
+                              std::string* error)
+{
+    GeoDetailConstPtr detail;
+    std::string evaluationError;
+    *retCode = writer->evaluateGeometry(EffectInstance::EvaluateGeometryArgs(time, view, false /*byPassCache*/), &detail, &evaluationError);
+    if (*retCode == EffectInstance::eRenderRoIRetCodeFailed) {
+        *error = evaluationError.empty() ? std::string("Error caught while rendering") : evaluationError;
+
+        return false;
+    }
+    if (*retCode != EffectInstance::eRenderRoIRetCodeOk) {
+        return true;
+    }
+    if (!detail) {
+        *error = writer->getScriptName_mt_safe() + ": Nothing to write at frame " + QString::number(time).toStdString();
+
+        return false;
+    }
+    std::string writeError;
+    if (writer->writeGeometryFrame(time, view, detail, &writeError) == eStatusFailed) {
+        *error = writeError.empty() ? std::string("Error caught while writing") : writeError;
+
+        return false;
+    }
+
+    return true;
+}
+
 NATRON_NAMESPACE_ANONYMOUS_EXIT
 
 
@@ -1646,6 +1679,12 @@ OutputSchedulerThread::adjustNumberOfThreads(int* newNThreads,
 {
     ///How many parallel renders the user wants
     int userSettingParallelThreads = appPTR->getCurrentSettings()->getNumberOfParallelRenders();
+    {
+        const OutputEffectInstancePtr output = _imp->outputEffect.lock();
+        if (output && output->rendersFramesInOrder()) {
+            userSettingParallelThreads = 1;
+        }
+    }
 
     // The load is read before renderThreadsMutex is taken so that this lock is never held while the
     // RenderScheduler's is. Counting and creating or flagging under one lock keeps two finishing frame
@@ -2535,6 +2574,25 @@ private:
                         int type = 0;
                         activeInputNode->getPersistentMessage(&message, &type, false);
                         _imp->scheduler->notifyRenderFailure(message.isEmpty() ? std::string("Error caught while writing") : message.toStdString());
+
+                        return;
+                    }
+                    notifyFrameStatsObserver(time, viewsToRender[view], stats);
+                    _imp->scheduler->notifyFrameRendered(time, viewsToRender[view], viewsToRender, stats, eSchedulingPolicyFFA);
+                    continue;
+                }
+                if (outputKind == eDataKindGeometry) {
+                    // Geometry has no region or planes to request: the frame is the writer's
+                    // whole output, which it then writes.
+                    EffectInstance::RenderRoIRetCode geometryRetCode = EffectInstance::eRenderRoIRetCodeOk;
+                    std::string error;
+                    if (!evaluateAndWriteGeometryFrame(output, time, viewsToRender[view], &geometryRetCode, &error)) {
+                        _imp->scheduler->notifyRenderFailure(error);
+
+                        return;
+                    }
+                    if (geometryRetCode != EffectInstance::eRenderRoIRetCodeOk) {
+                        _imp->scheduler->notifyRenderFailure(geometryRetCode == EffectInstance::eRenderRoIRetCodeAborted ? "Render aborted" : "Error caught while rendering");
 
                         return;
                     }

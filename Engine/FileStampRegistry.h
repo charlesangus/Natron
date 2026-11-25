@@ -31,8 +31,10 @@
 #include <atomic>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include "Global/GlobalDefines.h"
 
@@ -70,6 +72,16 @@ struct FileIdentity {
 enum class FilePin {
     eStamp,
     eDisk
+};
+
+/**
+ * @brief One file of a frame sequence as its stamp recorded it.
+ **/
+struct SequenceFile {
+    int frame = 0;
+    int view = 0;
+    std::string path;
+    FileIdentity identity;
 };
 
 /**
@@ -121,6 +133,13 @@ public:
     U64 sequenceStamp(const std::string& pattern);
 
     /**
+     * @brief The files the stamp of the sequence pattern names covers, in frame then view order,
+     * each with the identity hashed into it: the membership a reader pinned to the stamp reads
+     * from until invalidate(). Records the stamp first if none is.
+     **/
+    std::shared_ptr<const std::vector<SequenceFile>> sequenceFiles(const std::string& pattern);
+
+    /**
      * @brief Drops the stamp and identity of the file or sequence pattern at path, so that the
      * next request looks at the disk again. Also drops every sequence in the directory holding path and, for a
      * pattern, every single file in that directory, since those stamps cover the same files.
@@ -156,9 +175,11 @@ private:
     struct SequenceEntry {
         U64 stamp;
         std::string directory;
+        std::shared_ptr<const std::vector<SequenceFile>> files;
     };
 
     Entry entry(const std::string& path);
+    SequenceEntry sequenceEntry(const std::string& pattern);
 
     std::mutex _mutex;
     std::map<std::string, Entry> _entries;

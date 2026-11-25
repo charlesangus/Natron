@@ -25,6 +25,9 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
+#include <cstring>
+#include <iostream>
 #include <list>
 #include <ostream>
 #include <sstream>
@@ -70,6 +73,58 @@ void
 PrintTo(const DirectCase& c, std::ostream* os)
 {
     *os << c.name;
+}
+
+// Bounding box of the samples that differ bit for bit, over the planes' shared window.
+void
+printDiffExtent(const RenderedPlane& a,
+                const RenderedPlane& b,
+                const std::string& where)
+{
+    std::cout << "DIAG " << where << " windows a=" << a.window.x1 << ',' << a.window.y1 << ' ' << a.window.x2 << ',' << a.window.y2
+              << " b=" << b.window.x1 << ',' << b.window.y1 << ' ' << b.window.x2 << ',' << b.window.y2
+              << " source bounds assumed " << kWindow.x1 << ',' << kWindow.y1 << ' ' << kWindow.x2 << ',' << kWindow.y2 << std::endl;
+    const std::size_t ca = a.channels.size();
+    const std::size_t cb = b.channels.size();
+    if ((ca == 0) || (ca != cb) || (a.window.width() <= 0) || (a.window.x1 != b.window.x1) || (a.window.y1 != b.window.y1) || (a.window.x2 != b.window.x2) || (a.window.y2 != b.window.y2)) {
+        return;
+    }
+    const std::size_t w = (std::size_t)a.window.width();
+    const std::size_t n = w * (std::size_t)a.window.height();
+    if ((a.pixels.size() != n * ca) || (b.pixels.size() != n * cb)) {
+        return;
+    }
+    int minX = 0, minY = 0, maxX = 0, maxY = 0;
+    std::size_t count = 0;
+    std::size_t insideSource = 0;
+    for (std::size_t p = 0; p < n; ++p) {
+        bool differs = false;
+        for (std::size_t c = 0; c < ca; ++c) {
+            if (std::memcmp(&a.pixels[p * ca + c], &b.pixels[p * cb + c], sizeof(float)) != 0) {
+                differs = true;
+                break;
+            }
+        }
+        if (!differs) {
+            continue;
+        }
+        const int x = a.window.x1 + (int)(p % w);
+        const int y = a.window.y1 + (int)(p / w);
+        if (count == 0) {
+            minX = maxX = x;
+            minY = maxY = y;
+            std::cout << "DIAG " << where << " first differing pixel (" << x << ',' << y << ") relative to roi origin (" << (x - a.window.x1) << ',' << (y - a.window.y1) << ')' << std::endl;
+        }
+        minX = std::min(minX, x);
+        maxX = std::max(maxX, x);
+        minY = std::min(minY, y);
+        maxY = std::max(maxY, y);
+        if (kWindow.contains(x, y)) {
+            ++insideSource;
+        }
+        ++count;
+    }
+    std::cout << "DIAG " << where << " differing pixels=" << count << " inside source bounds=" << insideSource << " bbox=" << minX << ',' << minY << ' ' << maxX << ',' << maxY << std::endl;
 }
 
 class RotoPaintDirectCompositeTest
@@ -156,20 +211,46 @@ protected:
     // Both paths over roi, sample for sample; returns how many direct composites the direct pass ran.
     unsigned long long expectPathsMatch(unsigned mipmapLevel,
                                         const RectI& roi,
-                                        const std::list<ImageLayerDesc>& layers)
+                                        const std::list<ImageLayerDesc>& layers,
+                                        bool diag = false)
     {
         std::ostringstream where;
         where << "mipmap " << mipmapLevel << " roi " << roi.x1 << ',' << roi.y1 << ' ' << roi.x2 << ',' << roi.y2;
         std::string error;
         std::vector<RenderedPlane> nodePath;
         EXPECT_TRUE(render(false, mipmapLevel, roi, layers, &nodePath, &error)) << where.str() << ": " << error;
+        if (diag) {
+            std::vector<RenderedPlane> again;
+            std::string againError;
+            EXPECT_TRUE(render(false, mipmapLevel, roi, layers, &again, &againError)) << where.str() << ": " << againError;
+            bool consistent = (again.size() == nodePath.size());
+            for (std::size_t i = 0; consistent && i < nodePath.size(); ++i) {
+                const std::string msg = compareExact(nodePath[i], again[i]);
+                if (!msg.empty()) {
+                    consistent = false;
+                    ADD_FAILURE() << "DIAG node path not self-consistent: " << where.str() << " plane " << i << ": " << msg;
+                    printDiffExtent(nodePath[i], again[i], where.str() + " nodepath-vs-nodepath plane " + std::to_string(i));
+                }
+            }
+            if (consistent) {
+                std::cout << "DIAG node path self-consistent (" << where.str() << ")" << std::endl;
+            }
+        }
         const unsigned long long before = RotoPaint::getDirectCompositeRenderCount();
         std::vector<RenderedPlane> direct;
         EXPECT_TRUE(render(true, mipmapLevel, roi, layers, &direct, &error)) << where.str() << ": " << error;
-        const unsigned long long ran = RotoPaint::getDirectCompositeRenderCount() - before;
+        const unsigned long long after = RotoPaint::getDirectCompositeRenderCount();
+        const unsigned long long ran = after - before;
+        if (diag) {
+            std::cout << "DIAG direct count before=" << before << " after=" << after << " (" << where.str() << ")" << std::endl;
+        }
         EXPECT_EQ(nodePath.size(), direct.size()) << where.str();
         for (std::size_t i = 0; i < nodePath.size() && i < direct.size(); ++i) {
-            EXPECT_EQ(std::string(), compareExact(nodePath[i], direct[i])) << where.str() << " plane " << i;
+            const std::string msg = compareExact(nodePath[i], direct[i]);
+            EXPECT_EQ(std::string(), msg) << where.str() << " plane " << i;
+            if (diag && !msg.empty()) {
+                printDiffExtent(nodePath[i], direct[i], where.str() + " plane " + std::to_string(i));
+            }
         }
 
         return ran;
@@ -251,8 +332,9 @@ TEST_F(RotoPaintDirectCompositeTest, InputDepthsAndComponentsMatchTheNodePath)
             SCOPED_TRACE(std::string(depth) + " " + comps);
             setParitySourceBitDepth(_source, depth);
             setParitySourceComponents(_source, comps);
-            expectPathsMatch(0, kWindow, rgba);
-            expectPathsMatch(1, RectI(0, 0, 128, 128), rgba);
+            const bool integerDepth = (std::string(depth) != "float");
+            expectPathsMatch(0, kWindow, rgba, integerDepth);
+            expectPathsMatch(1, RectI(0, 0, 128, 128), rgba, integerDepth);
         }
     }
 }

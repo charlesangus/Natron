@@ -2476,7 +2476,7 @@ public:
      * scheduler the requests are planned by an incremental request pass, rendered as tasks in parallel under the
      * frame's budget, and continuation runs on the thread that then renders the effect, where it and the render
      * read the requested outputs with pullRenderContinuationRequest() as store hits. A request for an output the
-     * frame already holds over the region is served from it without a task. Under the legacy scheduler, on a frame
+     * frame already holds over the region is served from it without a task. On a frame
      * the task graph does not take, and for an effect pulled unplanned, the requests are rendered one after the
      * other on the probing thread, then continuation runs inline.
      *

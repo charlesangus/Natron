@@ -28,9 +28,14 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cerrno>
 #include <climits>
 #include <cstring>
 #include <set>
+
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <OpenImageIO/ustring.h>
 
@@ -38,6 +43,8 @@ NATRON_NAMESPACE_ENTER
 
 namespace LayeredDocs {
 namespace {
+    const int kFlattenedTileSide = 64;
+
     bool
     fail(std::string* error,
          const std::string& message)
@@ -283,6 +290,54 @@ deeperType(OIIO::TypeDesc a,
     return byRank[std::max(typeRank(a), typeRank(b))];
 }
 
+File::File(const std::string& path)
+{
+    _fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (_fd < 0) {
+        return;
+    }
+    struct stat status;
+    if (::fstat(_fd, &status) != 0 || !S_ISREG(status.st_mode)) {
+        ::close(_fd);
+        _fd = -1;
+
+        return;
+    }
+    _size = (std::uint64_t)status.st_size;
+}
+
+File::~File()
+{
+    if (_fd >= 0) {
+        ::close(_fd);
+    }
+}
+
+bool
+File::readAt(std::uint64_t offset,
+             void* dst,
+             std::size_t count) const
+{
+    if (_fd < 0 || offset > _size || count > _size - offset) {
+        return false;
+    }
+    unsigned char* out = static_cast<unsigned char*>(dst);
+    while (count > 0) {
+        const ssize_t n = ::pread(_fd, out, count, (off_t)offset);
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+        if (n <= 0) {
+            return false;
+        }
+        out += n;
+        offset += (std::uint64_t)n;
+        count -= (std::size_t)n;
+    }
+
+    return true;
+}
+
 bool
 LayeredDocument::finalise(std::string* error)
 {
@@ -325,6 +380,8 @@ LayeredDocument::finalise(std::string* error)
         composite.height = height;
         composite.channels = { "R", "G", "B", "A" };
         composite.type = type;
+        composite.tileWidth = kFlattenedTileSide;
+        composite.tileHeight = kFlattenedTileSide;
         _compositeX = 0;
         _compositeY = 0;
         _compositeWidth = width;
@@ -384,7 +441,9 @@ LayeredDocument::specOf(int subimage) const
     spec.full_width = width;
     spec.full_height = height;
     spec.channelnames = plane.channels;
-    if (plane.tiled()) {
+    const bool flattenedComposite = subimage == 0 && _flattened;
+    const bool alignedTiles = plane.tiled() && ((long long)x - plane.x) % plane.tileWidth == 0 && ((long long)y - plane.y) % plane.tileHeight == 0;
+    if (flattenedComposite || alignedTiles) {
         spec.tile_width = plane.tileWidth;
         spec.tile_height = plane.tileHeight;
         spec.tile_depth = 1;
@@ -394,6 +453,9 @@ LayeredDocument::specOf(int subimage) const
         if (plane.channels[c] == "A") {
             spec.alpha_channel = (int)c;
         }
+    }
+    if (!colorSpace.empty()) {
+        spec.attribute("oiio:ColorSpace", colorSpace);
     }
     if (subimage > 0) {
         spec.attribute("oiio:subimagename", layers[(std::size_t)subimage - 1].id);
@@ -426,6 +488,7 @@ LayeredDocument::pixelsOf(int subimage,
         }
         cache.pixels = std::move(loaded);
         cache.loaded = true;
+        _cachedBytes += cache.pixels.size();
     }
     *pixels = &cache.pixels;
 
@@ -543,6 +606,12 @@ LayeredDocument::flatten(int x1,
     }
 
     return true;
+}
+
+std::size_t
+LayeredDocument::residentBytes() const
+{
+    return _cachedBytes.load() + (readerBytes ? readerBytes() : 0);
 }
 
 void

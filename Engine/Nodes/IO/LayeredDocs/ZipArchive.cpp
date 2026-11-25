@@ -25,8 +25,13 @@
 
 #include "ZipArchive.h"
 
+#include <algorithm>
+#include <cstdint>
 #include <fstream>
+#include <new>
 #include <span>
+#include <stdexcept>
+#include <string>
 
 #include <OpenImageIO/filesystem.h>
 
@@ -36,6 +41,12 @@ NATRON_NAMESPACE_ENTER
 
 namespace LayeredDocs {
 namespace {
+    const int kMaxPngSide = 300000;
+    // Deflate expands a byte to at most 1032; a PNG holds at least a bit per pixel and a filter
+    // byte per row, so one whose member is too small for its dimensions is refused unread.
+    const std::uint64_t kMaxDeflateRatio = 1032;
+    const std::uint64_t kDeflateSlack = 4096;
+
     bool
     readWholeFile(const std::string& path,
                   std::vector<std::byte>* bytes)
@@ -55,18 +66,35 @@ namespace {
         return size == 0 || (bool)file.read(reinterpret_cast<char*>(bytes->data()), size);
     }
 
-    // OIIO keeps a PNG's alpha associated, as when it reads a PNG file, unless asked otherwise.
+    // Members are always decoded as PNG, whatever their names. OIIO keeps a PNG's alpha
+    // associated, as when it reads a PNG file, unless asked otherwise.
     OIIO::ImageInput::unique_ptr
     openPng(const std::string& member,
             OIIO::Filesystem::IOMemReader* reader,
             std::string* error)
     {
-        OIIO::ImageInput::unique_ptr input = OIIO::ImageInput::open(member, nullptr, reader);
+        OIIO::ImageInput::unique_ptr input = OIIO::ImageInput::create("png", false, nullptr, reader);
+        OIIO::ImageSpec spec;
 
-        if (!input) {
-            const std::string detail = OIIO::geterror();
+        if (!input || !input->set_ioproxy(reader) || !input->open(member, spec)) {
+            const std::string detail = input ? input->geterror() : OIIO::geterror();
             *error = "Could not decode " + member + (detail.empty() ? std::string() : ": " + detail);
+
+            return OIIO::ImageInput::unique_ptr();
         }
+        const std::uint64_t width = (std::uint64_t)std::max(spec.width, 0);
+        const std::uint64_t height = (std::uint64_t)std::max(spec.height, 0);
+        if (spec.width > kMaxPngSide || spec.height > kMaxPngSide) {
+            *error = member + " is " + std::to_string(spec.width) + " by " + std::to_string(spec.height) + " pixels, larger than " + std::to_string(kMaxPngSide) + " on a side";
+
+            return OIIO::ImageInput::unique_ptr();
+        }
+        if (height * (width / 8 + 1) > (std::uint64_t)reader->size() * kMaxDeflateRatio + kDeflateSlack) {
+            *error = member + " is too small to hold the " + std::to_string(spec.width) + " by " + std::to_string(spec.height) + " pixels it claims";
+
+            return OIIO::ImageInput::unique_ptr();
+        }
+
         return input;
     }
 } // anonymous namespace
@@ -114,6 +142,10 @@ pngInfoOf(const Archive& archive,
         input->close();
     } catch (const Serialization::ZipError& e) {
         *error = e.what();
+
+        return false;
+    } catch (const std::bad_alloc&) {
+        *error = "Out of memory reading " + member;
 
         return false;
     }
@@ -166,6 +198,14 @@ decodePng(const Archive& archive,
         }
     } catch (const Serialization::ZipError& e) {
         *error = e.what();
+
+        return false;
+    } catch (const std::bad_alloc&) {
+        *error = "Out of memory decoding " + member;
+
+        return false;
+    } catch (const std::length_error&) {
+        *error = "Out of memory decoding " + member;
 
         return false;
     }

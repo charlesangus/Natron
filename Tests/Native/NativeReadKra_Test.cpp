@@ -29,6 +29,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <memory>
 #include <optional>
@@ -53,6 +54,74 @@
 NATRON_NAMESPACE_USING
 
 namespace {
+const std::size_t kLzfMaxLiteralRun = 32;
+const std::size_t kLzfMaxDistance = 8192;
+const std::size_t kLzfMinMatch = 3;
+const std::size_t kLzfMaxMatch = 2 + 7 + 255;
+const int kLzfHashBits = 14;
+
+std::size_t
+lzfHashOf(const unsigned char* p)
+{
+    const std::uint32_t v = ((std::uint32_t)p[0] << 16) | ((std::uint32_t)p[1] << 8) | p[2];
+
+    return (std::size_t)((v * 2654435761u) >> (32 - kLzfHashBits));
+}
+
+// An LZF stream of `size` bytes of `in` as Krita writes its tiles, for building fixtures that
+// LayeredDocs::lzfDecompress reads back.
+std::vector<unsigned char>
+lzfCompress(const unsigned char* in,
+            std::size_t size)
+{
+    std::vector<unsigned char> out;
+    std::vector<std::size_t> table((std::size_t)1 << kLzfHashBits, SIZE_MAX);
+    std::size_t literalStart = 0;
+    std::size_t i = 0;
+
+    const auto flushLiterals = [&](std::size_t end) {
+        while (literalStart < end) {
+            const std::size_t run = std::min(kLzfMaxLiteralRun, end - literalStart);
+            out.push_back((unsigned char)(run - 1));
+            out.insert(out.end(), in + literalStart, in + literalStart + run);
+            literalStart += run;
+        }
+    };
+
+    while (i + kLzfMinMatch <= size) {
+        const std::size_t h = lzfHashOf(in + i);
+        const std::size_t candidate = table[h];
+        table[h] = i;
+        if (candidate != SIZE_MAX && i - candidate <= kLzfMaxDistance && std::memcmp(in + candidate, in + i, kLzfMinMatch) == 0) {
+            const std::size_t limit = std::min(kLzfMaxMatch, size - i);
+            std::size_t length = kLzfMinMatch;
+            while (length < limit && in[candidate + length] == in[i + length]) {
+                ++length;
+            }
+            flushLiterals(i);
+            const std::size_t code = length - 2;
+            const std::size_t distance = i - candidate - 1;
+            if (code < 7) {
+                out.push_back((unsigned char)((code << 5) | (distance >> 8)));
+            } else {
+                out.push_back((unsigned char)((7 << 5) | (distance >> 8)));
+                out.push_back((unsigned char)(code - 7));
+            }
+            out.push_back((unsigned char)(distance & 0xff));
+            for (std::size_t k = i + 1; k < i + length && k + kLzfMinMatch <= size; ++k) {
+                table[lzfHashOf(in + k)] = k;
+            }
+            i += length;
+            literalStart = i;
+            continue;
+        }
+        ++i;
+    }
+    flushLiterals(size);
+
+    return out;
+}
+
 const std::vector<std::string> kRgba = { "R", "G", "B", "A" };
 const char* const kKritaMimeType = "application/x-krita";
 
@@ -158,6 +227,44 @@ maindocOf(const std::string& colorSpace,
         + colorSpace + "\" name=\"doc\">\n  <layers>\n" + layers + "  </layers>\n </IMAGE>\n</DOC>\n";
 }
 
+std::uint32_t
+crcOf(const std::string& bytes)
+{
+    std::uint32_t crc = 0xFFFFFFFFu;
+    for (const char c : bytes) {
+        crc ^= (std::uint32_t)(unsigned char)c;
+        for (int bit = 0; bit < 8; ++bit) {
+            crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
+        }
+    }
+
+    return crc ^ 0xFFFFFFFFu;
+}
+
+std::string
+pngBe32(std::uint32_t value)
+{
+    return std::string { (char)(value >> 24), (char)((value >> 16) & 0xFF), (char)((value >> 8) & 0xFF), (char)(value & 0xFF) };
+}
+
+std::string
+pngChunk(const std::string& type,
+         const std::string& data)
+{
+    return pngBe32((std::uint32_t)data.size()) + type + data + pngBe32(crcOf(type + data));
+}
+
+// A PNG that claims to be `width` by `height` 8-bit RGBA pixels but holds only a few bytes.
+std::string
+claimingPng(std::uint32_t width,
+            std::uint32_t height)
+{
+    const std::string signature = std::string { (char)0x89, 'P', 'N', 'G', '\r', '\n', (char)0x1A, '\n' };
+    const std::string header = pngBe32(width) + pngBe32(height) + std::string { 8, 6, 0, 0, 0 };
+
+    return signature + pngChunk("IHDR", header) + pngChunk("IDAT", std::string { 0x78, 0x01, 0x03, 0x00 }) + pngChunk("IEND", std::string());
+}
+
 // A Krita archive of `members` (name, contents) behind a `mimetype` member holding `mimeType`.
 std::string
 writeKra(const QTemporaryDir& dir,
@@ -221,7 +328,7 @@ TEST(NativeLzfTest, AKnownStreamDecodes)
 
     ASSERT_TRUE(LayeredDocs::lzfDecompress(stream, sizeof(stream), out, sizeof(out), &written));
     EXPECT_EQ(std::string("abcabcabcabcX"), std::string(reinterpret_cast<const char*>(out), written));
-    EXPECT_EQ(std::vector<unsigned char>(stream, stream + sizeof(stream)), LayeredDocs::lzfCompress(reinterpret_cast<const unsigned char*>("abcabcabcabcX"), 13));
+    EXPECT_EQ(std::vector<unsigned char>(stream, stream + sizeof(stream)), lzfCompress(reinterpret_cast<const unsigned char*>("abcabcabcabcX"), 13));
 }
 
 TEST(NativeLzfTest, CompressedDataRoundTrips)
@@ -231,7 +338,7 @@ TEST(NativeLzfTest, CompressedDataRoundTrips)
     for (std::size_t i = 0; i < data.size(); ++i) {
         data[i] = i % 3000 < 1500 ? (unsigned char)(i % 7) : (unsigned char)random();
     }
-    const std::vector<unsigned char> compressed = LayeredDocs::lzfCompress(data.data(), data.size());
+    const std::vector<unsigned char> compressed = lzfCompress(data.data(), data.size());
     EXPECT_LT(compressed.size(), data.size());
 
     std::vector<unsigned char> back(data.size());
@@ -240,7 +347,7 @@ TEST(NativeLzfTest, CompressedDataRoundTrips)
     EXPECT_EQ(data.size(), written);
     EXPECT_TRUE(back == data);
 
-    EXPECT_TRUE(LayeredDocs::lzfCompress(data.data(), 0).empty());
+    EXPECT_TRUE(lzfCompress(data.data(), 0).empty());
     ASSERT_TRUE(LayeredDocs::lzfDecompress(compressed.data(), 0, back.data(), back.size(), &written));
     EXPECT_EQ(0u, written);
 }
@@ -592,4 +699,48 @@ TEST_F(NativeReadKraTest, AFileThatIsNotAnArchiveIsRefused)
 TEST_F(NativeReadKraTest, AMissingFileIsAnError)
 {
     EXPECT_FALSE(refusal(fixture("missing.kra")).empty());
+}
+
+TEST_F(NativeReadKraTest, GroupsNestedTooDeepAreRefused)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    std::string layers;
+    for (int depth = 0; depth < 300; ++depth) {
+        layers += "<layer name=\"g\" nodetype=\"grouplayer\" opacity=\"255\" visible=\"1\"><layers>";
+    }
+    for (int depth = 0; depth < 300; ++depth) {
+        layers += "</layers></layer>";
+    }
+    layers += "\n";
+    const std::string error = refusal(writeKra(dir, "deep.kra", kKritaMimeType, { { "maindoc.xml", maindocOf("RGBA", layers) } }));
+    EXPECT_NE(std::string::npos, error.find("nests groups")) << error;
+}
+
+TEST_F(NativeReadKraTest, AttributesThatAreNotFiniteNumbersAreRefused)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const char* const layers[] = {
+        "   <layer name=\"Paint\" nodetype=\"paintlayer\" filename=\"layer1\" x=\"nan\" y=\"0\" opacity=\"255\" visible=\"1\" compositeop=\"normal\" colorspacename=\"RGBA\"/>\n",
+        "   <layer name=\"Paint\" nodetype=\"paintlayer\" filename=\"layer1\" x=\"0\" y=\"-inf\" opacity=\"255\" visible=\"1\" compositeop=\"normal\" colorspacename=\"RGBA\"/>\n",
+        "   <layer name=\"Paint\" nodetype=\"paintlayer\" filename=\"layer1\" x=\"0\" y=\"0\" opacity=\"nan\" visible=\"1\" compositeop=\"normal\" colorspacename=\"RGBA\"/>\n",
+        "   <layer name=\"Group\" nodetype=\"grouplayer\" opacity=\"inf\" visible=\"1\"><layers/></layer>\n",
+    };
+    for (std::size_t i = 0; i < sizeof(layers) / sizeof(layers[0]); ++i) {
+        SCOPED_TRACE(layers[i]);
+        const std::string error = refusal(writeKra(dir, "nan" + std::to_string(i) + ".kra", kKritaMimeType, { { "maindoc.xml", maindocOf("RGBA", layers[i]) } }));
+        EXPECT_NE(std::string::npos, error.find("not a finite number")) << error;
+    }
+}
+
+TEST_F(NativeReadKraTest, APngClaimingMorePixelsThanItCanHoldIsRefused)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string tooWide = refusal(writeKra(dir, "wide.kra", kKritaMimeType, { { "maindoc.xml", maindocOf("RGBA", std::string()) }, { "mergedimage.png", claimingPng(400000, 1) } }));
+    EXPECT_NE(std::string::npos, tooWide.find("on a side")) << tooWide;
+
+    const std::string tooBig = refusal(writeKra(dir, "big.kra", kKritaMimeType, { { "maindoc.xml", maindocOf("RGBA", std::string()) }, { "mergedimage.png", claimingPng(100000, 100000) } }));
+    EXPECT_NE(std::string::npos, tooBig.find("too small to hold")) << tooBig;
 }

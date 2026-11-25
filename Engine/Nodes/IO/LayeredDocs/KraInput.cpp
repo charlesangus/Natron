@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <cctype>
 #include <charconv>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -56,6 +57,7 @@ namespace {
     // extent derived from them well inside an int.
     const long long kMaxCoordinate = 1LL << 28;
     const int kMaxTileSide = 4096;
+    const std::size_t kMaxGroupDepth = 256;
 
     const unsigned char kRawTile = 0;
     const unsigned char kLzfTile = 1;
@@ -250,7 +252,7 @@ namespace {
                 long long x,
                 long long y)
     {
-        if (std::abs(x) > kMaxCoordinate || std::abs(y) > kMaxCoordinate) {
+        if (x < -kMaxCoordinate || x > kMaxCoordinate || y < -kMaxCoordinate || y > kMaxCoordinate) {
             throw KraError(member + " is offset too far from the canvas");
         }
         const std::shared_ptr<Device> device = std::make_shared<Device>();
@@ -321,7 +323,7 @@ namespace {
             if (fields[2] != "LZF") {
                 throw KraError(member + " has a tile compressed with " + std::string(fields[2]) + "; only LZF is read");
             }
-            if (std::abs(left) > kMaxCoordinate || std::abs(top) > kMaxCoordinate || left % tileWidth != 0 || top % tileHeight != 0) {
+            if (left < -kMaxCoordinate || left > kMaxCoordinate || top < -kMaxCoordinate || top > kMaxCoordinate || left % tileWidth != 0 || top % tileHeight != 0) {
                 throw KraError(member + " has a tile at " + std::to_string(left) + "," + std::to_string(top) + ", off its tile grid");
             }
             if (size < 1 || (unsigned long long)size > text.size() - pos) {
@@ -505,6 +507,10 @@ namespace {
         bool ok = false;
         const double value = xml.attributes().value(QString::fromUtf8(name)).toString().toDouble(&ok);
 
+        if (ok && !std::isfinite(value)) {
+            throw KraError(std::string("maindoc.xml has a ") + name + " that is not a finite number");
+        }
+
         return ok ? (long long)std::clamp(value, -1e12, 1e12) : 0;
     }
 
@@ -513,6 +519,10 @@ namespace {
     {
         bool ok = false;
         const double value = xml.attributes().value(QString::fromUtf8("opacity")).toString().toDouble(&ok);
+
+        if (ok && !std::isfinite(value)) {
+            throw KraError("maindoc.xml has an opacity that is not a finite number");
+        }
 
         return ok ? std::clamp(value / 255., 0., 1.) : 1.;
     }
@@ -703,6 +713,9 @@ namespace {
             path.push_back(name);
 
             if (nodeType == "grouplayer") {
+                if (_groups.size() >= kMaxGroupDepth) {
+                    throw KraError("maindoc.xml nests groups more than " + std::to_string(kMaxGroupDepth) + " deep");
+                }
                 _groups.push_back(Group { name, opacityOf(xml), visibleOf(xml) });
                 std::vector<MaskRef> ignored;
                 while (xml.readNextStartElement()) {
@@ -864,6 +877,8 @@ readKra(const std::string& path,
     }
 
     const std::shared_ptr<LayeredDocument> document = std::make_shared<LayeredDocument>();
+    const std::size_t archiveBytes = archive->bytes.size();
+    document->readerBytes = [archiveBytes]() { return archiveBytes; };
     try {
         if (archive->zip->contains("mimetype")) {
             const std::span<const std::byte> mime = archive->zip->data("mimetype");

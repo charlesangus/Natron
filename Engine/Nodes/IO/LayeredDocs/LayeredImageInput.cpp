@@ -69,13 +69,46 @@ namespace {
         FileIdentity identity;
         std::string format;
         std::shared_ptr<const LayeredDocument> document;
+        std::uint64_t lastUse = 0;
     };
 
-    // Each holds its decoded layers, so only a few are kept.
+    // Documents hold their decoded planes and their readers' buffers, so the cache keeps at most
+    // this many of them and, beyond the most recently used one, at most this many bytes.
     const std::size_t kMaxCachedDocuments = 8;
+    const std::size_t kMaxCachedDocumentBytes = (std::size_t)512 << 20;
 
     std::mutex g_documentsMutex;
     std::map<std::string, CachedDocument> g_documents;
+    std::uint64_t g_documentUses = 0;
+
+    // Drops the least recently used documents until the cache fits its bounds. Inputs still
+    // reading a dropped document keep it. Call with g_documentsMutex held.
+    void
+    trimDocumentsLocked()
+    {
+        while (g_documents.size() > 1) {
+            std::size_t bytes = 0;
+            std::map<std::string, CachedDocument>::iterator oldest = g_documents.begin();
+            for (std::map<std::string, CachedDocument>::iterator it = g_documents.begin(); it != g_documents.end(); ++it) {
+                bytes += it->second.document->residentBytes();
+                if (it->second.lastUse < oldest->second.lastUse) {
+                    oldest = it;
+                }
+            }
+            if (g_documents.size() <= kMaxCachedDocuments && bytes <= kMaxCachedDocumentBytes) {
+                return;
+            }
+            g_documents.erase(oldest);
+        }
+    }
+
+    void
+    trimDocuments()
+    {
+        std::lock_guard<std::mutex> lock(g_documentsMutex);
+
+        trimDocumentsLocked();
+    }
 
     std::shared_ptr<const LayeredDocument>
     documentOf(const std::string& path,
@@ -91,8 +124,10 @@ namespace {
         }
         {
             std::lock_guard<std::mutex> lock(g_documentsMutex);
-            const std::map<std::string, CachedDocument>::const_iterator it = g_documents.find(path);
+            const std::map<std::string, CachedDocument>::iterator it = g_documents.find(path);
             if (it != g_documents.end() && it->second.identity == identity && it->second.format == format.name) {
+                it->second.lastUse = ++g_documentUses;
+
                 return it->second.document;
             }
         }
@@ -107,13 +142,12 @@ namespace {
         }
         if (FileStampRegistry::statNow(path) == identity) {
             std::lock_guard<std::mutex> lock(g_documentsMutex);
-            if (g_documents.size() >= kMaxCachedDocuments && g_documents.find(path) == g_documents.end()) {
-                g_documents.clear();
-            }
             CachedDocument& entry = g_documents[path];
             entry.identity = identity;
             entry.format = format.name;
             entry.document = document;
+            entry.lastUse = ++g_documentUses;
+            trimDocumentsLocked();
         }
 
         return document;
@@ -169,7 +203,10 @@ namespace {
 
         bool close() override
         {
-            _document.reset();
+            if (_document) {
+                _document.reset();
+                trimDocuments();
+            }
             _subimage = -1;
 
             return true;

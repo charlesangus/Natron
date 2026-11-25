@@ -566,6 +566,8 @@ TEST_F(NativeReadXcfTest, ReadingTheHeaderDecodesNoTiles)
     expectWindow(strip, { 0, 0, 256, 64 });
     EXPECT_EQ(64, strip.tile_width);
     EXPECT_EQ(64, strip.tile_height);
+    EXPECT_EQ(64, header->subimages[0].tile_width) << "the flattened composite";
+    EXPECT_EQ(64, header->subimages[0].tile_height) << "the flattened composite";
 }
 
 TEST_F(NativeReadXcfTest, AWindowDecodesOnlyTheTilesItCovers)
@@ -620,7 +622,7 @@ TEST_F(NativeReadXcfTest, EveryRowWindowMatchesTheWholeRead)
     }
 }
 
-TEST_F(NativeReadXcfTest, EveryPrecisionOfEveryVersionDecodes)
+TEST_F(NativeReadXcfTest, EveryPrecisionOfEveryVersionDecodesAndNamesItsTransfer)
 {
     struct Case {
         int version;
@@ -630,6 +632,7 @@ TEST_F(NativeReadXcfTest, EveryPrecisionOfEveryVersionDecodes)
         std::uint64_t one;
         OIIO::TypeDesc::BASETYPE type;
         float want;
+        bool linear;
     };
     const std::uint64_t u8[] = { 64, 255 };
     const std::uint64_t u16[] = { 0x4000, 0xFFFF };
@@ -641,37 +644,37 @@ TEST_F(NativeReadXcfTest, EveryPrecisionOfEveryVersionDecodes)
     const float u16Quarter = (float)0x4000 / 65535.f;
     const float u32Quarter = (float)(0x40000000 / 4294967295.);
     const Case cases[] = {
-        { 0, 0, 1, u8[0], u8[1], OIIO::TypeDesc::UINT8, u8Quarter },
-        { 3, 0, 1, u8[0], u8[1], OIIO::TypeDesc::UINT8, u8Quarter },
-        { 4, 0, 1, u8[0], u8[1], OIIO::TypeDesc::UINT8, u8Quarter },
-        { 4, 1, 2, u16[0], u16[1], OIIO::TypeDesc::UINT16, u16Quarter },
-        { 4, 2, 4, u32[0], u32[1], OIIO::TypeDesc::FLOAT, u32Quarter },
-        { 4, 3, 2, f16[0], f16[1], OIIO::TypeDesc::HALF, 0.25f },
-        { 4, 4, 4, f32[0], f32[1], OIIO::TypeDesc::FLOAT, 0.25f },
-        { 5, 100, 1, u8[0], u8[1], OIIO::TypeDesc::UINT8, u8Quarter },
-        { 6, 150, 1, u8[0], u8[1], OIIO::TypeDesc::UINT8, u8Quarter },
-        { 5, 250, 2, u16[0], u16[1], OIIO::TypeDesc::UINT16, u16Quarter },
-        { 5, 300, 4, u32[0], u32[1], OIIO::TypeDesc::FLOAT, u32Quarter },
-        { 5, 450, 2, f16[0], f16[1], OIIO::TypeDesc::HALF, 0.25f },
-        { 6, 500, 4, f32[0], f32[1], OIIO::TypeDesc::FLOAT, 0.25f },
-        { 12, 100, 1, u8[0], u8[1], OIIO::TypeDesc::UINT8, u8Quarter },
-        { 12, 150, 1, u8[0], u8[1], OIIO::TypeDesc::UINT8, u8Quarter },
-        { 12, 200, 2, u16[0], u16[1], OIIO::TypeDesc::UINT16, u16Quarter },
-        { 12, 250, 2, u16[0], u16[1], OIIO::TypeDesc::UINT16, u16Quarter },
-        { 12, 300, 4, u32[0], u32[1], OIIO::TypeDesc::FLOAT, u32Quarter },
-        { 12, 350, 4, u32[0], u32[1], OIIO::TypeDesc::FLOAT, u32Quarter },
-        { 12, 500, 2, f16[0], f16[1], OIIO::TypeDesc::HALF, 0.25f },
-        { 12, 550, 2, f16[0], f16[1], OIIO::TypeDesc::HALF, 0.25f },
-        { 12, 600, 4, f32[0], f32[1], OIIO::TypeDesc::FLOAT, 0.25f },
-        { 12, 650, 4, f32[0], f32[1], OIIO::TypeDesc::FLOAT, 0.25f },
-        { 12, 700, 8, f64[0], f64[1], OIIO::TypeDesc::FLOAT, 0.25f },
-        { 12, 750, 8, f64[0], f64[1], OIIO::TypeDesc::FLOAT, 0.25f },
-        { 22, 175, 1, u8[0], u8[1], OIIO::TypeDesc::UINT8, u8Quarter },
-        { 22, 275, 2, u16[0], u16[1], OIIO::TypeDesc::UINT16, u16Quarter },
-        { 22, 375, 4, u32[0], u32[1], OIIO::TypeDesc::FLOAT, u32Quarter },
-        { 22, 575, 2, f16[0], f16[1], OIIO::TypeDesc::HALF, 0.25f },
-        { 22, 675, 4, f32[0], f32[1], OIIO::TypeDesc::FLOAT, 0.25f },
-        { 22, 775, 8, f64[0], f64[1], OIIO::TypeDesc::FLOAT, 0.25f },
+        { 0, 0, 1, u8[0], u8[1], OIIO::TypeDesc::UINT8, u8Quarter, false },
+        { 3, 0, 1, u8[0], u8[1], OIIO::TypeDesc::UINT8, u8Quarter, false },
+        { 4, 0, 1, u8[0], u8[1], OIIO::TypeDesc::UINT8, u8Quarter, false },
+        { 4, 1, 2, u16[0], u16[1], OIIO::TypeDesc::UINT16, u16Quarter, false },
+        { 4, 2, 4, u32[0], u32[1], OIIO::TypeDesc::FLOAT, u32Quarter, true },
+        { 4, 3, 2, f16[0], f16[1], OIIO::TypeDesc::HALF, 0.25f, true },
+        { 4, 4, 4, f32[0], f32[1], OIIO::TypeDesc::FLOAT, 0.25f, true },
+        { 5, 100, 1, u8[0], u8[1], OIIO::TypeDesc::UINT8, u8Quarter, true },
+        { 6, 150, 1, u8[0], u8[1], OIIO::TypeDesc::UINT8, u8Quarter, false },
+        { 5, 250, 2, u16[0], u16[1], OIIO::TypeDesc::UINT16, u16Quarter, false },
+        { 5, 300, 4, u32[0], u32[1], OIIO::TypeDesc::FLOAT, u32Quarter, true },
+        { 5, 450, 2, f16[0], f16[1], OIIO::TypeDesc::HALF, 0.25f, false },
+        { 6, 500, 4, f32[0], f32[1], OIIO::TypeDesc::FLOAT, 0.25f, true },
+        { 12, 100, 1, u8[0], u8[1], OIIO::TypeDesc::UINT8, u8Quarter, true },
+        { 12, 150, 1, u8[0], u8[1], OIIO::TypeDesc::UINT8, u8Quarter, false },
+        { 12, 200, 2, u16[0], u16[1], OIIO::TypeDesc::UINT16, u16Quarter, true },
+        { 12, 250, 2, u16[0], u16[1], OIIO::TypeDesc::UINT16, u16Quarter, false },
+        { 12, 300, 4, u32[0], u32[1], OIIO::TypeDesc::FLOAT, u32Quarter, true },
+        { 12, 350, 4, u32[0], u32[1], OIIO::TypeDesc::FLOAT, u32Quarter, false },
+        { 12, 500, 2, f16[0], f16[1], OIIO::TypeDesc::HALF, 0.25f, true },
+        { 12, 550, 2, f16[0], f16[1], OIIO::TypeDesc::HALF, 0.25f, false },
+        { 12, 600, 4, f32[0], f32[1], OIIO::TypeDesc::FLOAT, 0.25f, true },
+        { 12, 650, 4, f32[0], f32[1], OIIO::TypeDesc::FLOAT, 0.25f, false },
+        { 12, 700, 8, f64[0], f64[1], OIIO::TypeDesc::FLOAT, 0.25f, true },
+        { 12, 750, 8, f64[0], f64[1], OIIO::TypeDesc::FLOAT, 0.25f, false },
+        { 22, 175, 1, u8[0], u8[1], OIIO::TypeDesc::UINT8, u8Quarter, false },
+        { 22, 275, 2, u16[0], u16[1], OIIO::TypeDesc::UINT16, u16Quarter, false },
+        { 22, 375, 4, u32[0], u32[1], OIIO::TypeDesc::FLOAT, u32Quarter, false },
+        { 22, 575, 2, f16[0], f16[1], OIIO::TypeDesc::HALF, 0.25f, false },
+        { 22, 675, 4, f32[0], f32[1], OIIO::TypeDesc::FLOAT, 0.25f, false },
+        { 22, 775, 8, f64[0], f64[1], OIIO::TypeDesc::FLOAT, 0.25f, false },
     };
 
     QTemporaryDir dir;
@@ -688,6 +691,10 @@ TEST_F(NativeReadXcfTest, EveryPrecisionOfEveryVersionDecodes)
         ASSERT_TRUE(bool(header));
         ASSERT_EQ(2u, header->subimages.size());
         EXPECT_EQ(OIIO::TypeDesc(c.type), header->subimages[1].format);
+        const std::string colorSpace = c.linear ? "lin_rec709_scene" : "srgb_rec709_scene";
+        for (const OIIO::ImageSpec& subimage : header->subimages) {
+            EXPECT_EQ(colorSpace, subimage.get_string_attribute("oiio:ColorSpace"));
+        }
         expectConstant(pixelsOf(path, *header, 1), { c.want, c.want, c.want, 1.f });
     }
 }

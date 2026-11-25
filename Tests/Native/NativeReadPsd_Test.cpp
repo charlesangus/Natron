@@ -33,6 +33,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -165,6 +166,113 @@ writeHeaderOnly(const QTemporaryDir& dir,
     return path;
 }
 
+std::string
+be16(unsigned value)
+{
+    return std::string { (char)((value >> 8) & 0xFF), (char)(value & 0xFF) };
+}
+
+std::string
+be32(std::uint32_t value)
+{
+    return be16(value >> 16) + be16(value & 0xFFFF);
+}
+
+// A stored channel: its ID and its data, the compression word first. `length`, when set, is the
+// length the record claims instead of the data's.
+struct PsdChannel {
+    int id = 0;
+    std::string data;
+    std::optional<std::uint32_t> length;
+};
+
+struct PsdLayer {
+    int top = 0;
+    int left = 0;
+    int bottom = 0;
+    int right = 0;
+    std::vector<PsdChannel> channels;
+    // The layer mask data, its length first; empty for none.
+    std::string mask;
+};
+
+// Raw (uncompressed) channel data of `count` bytes of `value`.
+std::string
+rawChannel(std::size_t count,
+           char value)
+{
+    return be16(0) + std::string(count, value);
+}
+
+// An 8-bit RGB PSD of `layers` and the merged image data `image`, the compression word first.
+std::string
+psdOf(int width,
+      int height,
+      const std::vector<PsdLayer>& layers,
+      const std::string& image)
+{
+    std::string out = "8BPS" + be16(1) + std::string(6, '\0') + be16(3) + be32((std::uint32_t)height) + be32((std::uint32_t)width) + be16(8) + be16(3);
+    out += be32(0);
+    out += be32(0);
+
+    std::string info;
+    if (!layers.empty()) {
+        info += be16((unsigned)layers.size());
+        for (const PsdLayer& layer : layers) {
+            info += be32((std::uint32_t)layer.top) + be32((std::uint32_t)layer.left) + be32((std::uint32_t)layer.bottom) + be32((std::uint32_t)layer.right);
+            info += be16((unsigned)layer.channels.size());
+            for (const PsdChannel& channel : layer.channels) {
+                info += be16((unsigned)(channel.id & 0xFFFF)) + be32(channel.length ? *channel.length : (std::uint32_t)channel.data.size());
+            }
+            info += "8BIMnorm";
+            info += std::string { (char)255, 0, 0, 0 };
+            const std::string mask = layer.mask.empty() ? be32(0) : layer.mask;
+            const std::string name = std::string { 1, 'L', 0, 0 };
+            const std::string extra = mask + be32(0) + name;
+            info += be32((std::uint32_t)extra.size()) + extra;
+        }
+        for (const PsdLayer& layer : layers) {
+            for (const PsdChannel& channel : layer.channels) {
+                info += channel.data;
+            }
+        }
+    }
+    const std::string section = info.empty() ? std::string() : be32((std::uint32_t)info.size()) + info;
+    out += be32((std::uint32_t)section.size()) + section;
+    out += image;
+
+    return out;
+}
+
+std::string
+writeBytes(const QTemporaryDir& dir,
+           const std::string& name,
+           const std::string& bytes)
+{
+    const std::string path = (dir.path() + QString::fromUtf8("/")).toStdString() + name;
+    std::ofstream file(path, std::ios::binary);
+    file.write(bytes.data(), (std::streamsize)bytes.size());
+
+    return path;
+}
+
+// A 2x2 layer whose three colour channels are raw.
+PsdLayer
+smallLayer()
+{
+    PsdLayer layer;
+    layer.bottom = 2;
+    layer.right = 2;
+    for (int id = 0; id < 3; ++id) {
+        PsdChannel channel;
+        channel.id = id;
+        channel.data = rawChannel(4, (char)(40 * (id + 1)));
+        layer.channels.push_back(channel);
+    }
+
+    return layer;
+}
+
 class NativeReadPsdTest
     : public ::testing::Test {
 protected:
@@ -194,6 +302,26 @@ protected:
     {
         std::string error;
         EXPECT_FALSE(OiioReadSupport::readHeader(path, &error)) << path;
+
+        return error;
+    }
+
+    // The error of a decode of the whole of `subimage` of `path`, whose header reads.
+    std::string decodeFailure(const std::string& path,
+                              int subimage)
+    {
+        const std::shared_ptr<const OiioReadSupport::Header> header = headerOf(path);
+        if (!header || (std::size_t)subimage >= header->subimages.size()) {
+            ADD_FAILURE() << path << " has no subimage " << subimage;
+
+            return std::string();
+        }
+        const OIIO::ImageSpec& spec = header->subimages[(std::size_t)subimage];
+        const RectI window = OiioReadSupport::dataWindowOf(spec);
+        std::vector<float> pixels((std::size_t)window.width() * (std::size_t)window.height() * (std::size_t)spec.nchannels);
+        std::string error;
+        EXPECT_FALSE(OiioReadSupport::decode(path, subimage, 0, spec.nchannels, window, pixels.data(), (std::size_t)window.width() * (std::size_t)spec.nchannels, &error)) << path;
+        EXPECT_FALSE(error.empty());
 
         return error;
     }
@@ -553,4 +681,121 @@ TEST_F(NativeReadPsdTest, AFileThatIsNotPhotoshopIsRefused)
 TEST_F(NativeReadPsdTest, AMissingFileIsAnError)
 {
     EXPECT_FALSE(refusal(fixture("missing.psd")).empty());
+}
+
+TEST_F(NativeReadPsdTest, ATruncatedRleRowTableFailsTheRead)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = writeBytes(dir, "rowtable.psd", psdOf(2, 2, {}, be16(1) + be16(1) + be16(1)));
+    const std::string error = decodeFailure(path, 0);
+    EXPECT_NE(std::string::npos, error.find("row table")) << error;
+}
+
+TEST_F(NativeReadPsdTest, AnRleRowPastTheEndFailsTheRead)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    std::string image = be16(1) + be16(0x7FFF);
+    for (int row = 1; row < 6; ++row) {
+        image += be16(2);
+    }
+    for (int row = 0; row < 6; ++row) {
+        image += std::string { 1, 0, 0 };
+    }
+    const std::string path = writeBytes(dir, "rowpastend.psd", psdOf(2, 2, {}, image));
+    const std::string error = decodeFailure(path, 0);
+    EXPECT_NE(std::string::npos, error.find("truncated")) << error;
+}
+
+TEST_F(NativeReadPsdTest, AChannelLengthPastTheEndIsRefused)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    PsdLayer layer = smallLayer();
+    layer.channels[1].length = 0xFFFFFFFFu;
+    const std::string path = writeBytes(dir, "channellength.psd", psdOf(2, 2, { layer }, rawChannel(12, 0)));
+    const std::string error = refusal(path);
+    EXPECT_NE(std::string::npos, error.find("truncated")) << error;
+}
+
+TEST_F(NativeReadPsdTest, ZipDataTooShortForItsDimensionsFailsWithoutAllocatingThem)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string junk = be16(2) + std::string(8, '\x55');
+
+    PsdLayer layer;
+    layer.bottom = 100000;
+    layer.right = 100000;
+    for (int id = 0; id < 3; ++id) {
+        PsdChannel channel;
+        channel.id = id;
+        channel.data = junk;
+        layer.channels.push_back(channel);
+    }
+    const std::string layerPath = writeBytes(dir, "layerbomb.psd", psdOf(2, 2, { layer }, rawChannel(12, 0)));
+    std::string error = decodeFailure(layerPath, 1);
+    EXPECT_NE(std::string::npos, error.find("ZIP channel")) << error;
+
+    const std::string mergedPath = writeBytes(dir, "mergedbomb.psd", psdOf(300000, 4, {}, junk));
+    const std::shared_ptr<const OiioReadSupport::Header> header = headerOf(mergedPath);
+    ASSERT_TRUE(bool(header));
+    std::vector<float> pixels(4 * 3);
+    error.clear();
+    EXPECT_FALSE(OiioReadSupport::decode(mergedPath, 0, 0, 3, RectI(0, 0, 4, 1), pixels.data(), 4 * 3, &error));
+    EXPECT_NE(std::string::npos, error.find("ZIP channel")) << error;
+}
+
+TEST_F(NativeReadPsdTest, AMaskLargerThanItsDataFailsTheRead)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    PsdLayer layer = smallLayer();
+    PsdChannel mask;
+    mask.id = -2;
+    mask.data = rawChannel(4, (char)255);
+    layer.channels.push_back(mask);
+    layer.mask = be32(20) + be32(0) + be32(0) + be32(1000) + be32(1000) + std::string(4, '\0');
+    const std::string path = writeBytes(dir, "bigmask.psd", psdOf(2, 2, { layer }, rawChannel(12, 0)));
+    const std::string error = decodeFailure(path, 1);
+    EXPECT_NE(std::string::npos, error.find("truncated")) << error;
+}
+
+TEST_F(NativeReadPsdTest, ThreadsReadingOneDocumentAtOnceAllGetItsPixels)
+{
+    const std::string path = fixture("wide.psb");
+    const std::shared_ptr<const OiioReadSupport::Header> header = headerOf(path);
+    ASSERT_TRUE(bool(header));
+    ASSERT_EQ(3u, header->subimages.size());
+
+    const int threadCount = 8;
+    std::vector<int> failures(threadCount, 0);
+    std::vector<std::thread> threads;
+    for (int t = 0; t < threadCount; ++t) {
+        threads.emplace_back([&, t]() {
+            for (int i = 0; i < 4; ++i) {
+                const int x = (t * 37000 + i * 9000) % 299990;
+                std::string error;
+                std::vector<float> band(4 * 4);
+                if (!OiioReadSupport::decode(path, 2, 0, 4, RectI(x, 3, x + 4, 4), band.data(), 4 * 4, &error) || std::abs(band[0] - 40.f / 255.f) > 1e-6f) {
+                    ++failures[(std::size_t)t];
+                }
+                std::vector<float> composite(4 * 3);
+                if (!OiioReadSupport::decode(path, 0, 0, 3, RectI(x, i % 4, x + 4, i % 4 + 1), composite.data(), 4 * 3, &error) || composite[0] != 0.f) {
+                    ++failures[(std::size_t)t];
+                }
+                std::vector<float> strip(4 * 4);
+                if (!OiioReadSupport::decode(path, 1, 0, 4, RectI(299996, 2, 300000, 4), strip.data(), 4 * 4, &error) || strip[0] != 1.f) {
+                    ++failures[(std::size_t)t];
+                }
+            }
+        });
+    }
+    for (std::thread& thread : threads) {
+        thread.join();
+    }
+    for (int t = 0; t < threadCount; ++t) {
+        EXPECT_EQ(0, failures[(std::size_t)t]) << "thread " << t;
+    }
 }

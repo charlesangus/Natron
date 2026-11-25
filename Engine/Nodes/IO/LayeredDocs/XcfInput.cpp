@@ -29,11 +29,11 @@
 #include <bit>
 #include <cctype>
 #include <climits>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <fstream>
 #include <map>
 #include <new>
 #include <stdexcept>
@@ -134,7 +134,7 @@ namespace {
     {
         static const char* const names[] = {
             "Normal (legacy)",
-            "Dissolve (legacy)",
+            "Dissolve",
             "Behind (legacy)",
             "Multiply (legacy)",
             "Screen (legacy)",
@@ -206,11 +206,14 @@ namespace {
 
     /**
      * How the image's precision stores a component, and the type its planes are handed out as:
-     * 32-bit integers and doubles become floats, the deepest type the seam carries.
+     * 32-bit integers and doubles become floats, the deepest type the seam carries. `linear` is
+     * the precision's transfer: linear light, or the sRGB curve (GIMP's "non-linear" and
+     * "perceptual").
      **/
     struct Storage {
         OIIO::TypeDesc stored = OIIO::TypeDesc::UINT8;
         OIIO::TypeDesc plane = OIIO::TypeDesc::UINT8;
+        bool linear = false;
     };
 
     bool
@@ -219,22 +222,28 @@ namespace {
               Storage* storage)
     {
         OIIO::TypeDesc::BASETYPE type = OIIO::TypeDesc::UNKNOWN;
+        bool linear = false;
 
         if (version < 4) {
             type = OIIO::TypeDesc::UINT8;
         } else if (version == 4) {
+            // 8 and 16-bit integers are gamma-encoded, the deeper codes linear.
             const OIIO::TypeDesc::BASETYPE byCode[] = { OIIO::TypeDesc::UINT8, OIIO::TypeDesc::UINT16, OIIO::TypeDesc::UINT32, OIIO::TypeDesc::HALF, OIIO::TypeDesc::FLOAT };
             if (precision < 5) {
                 type = byCode[precision];
+                linear = precision >= 2;
             }
         } else if (version < 7) {
+            // The hundreds give the type, an extra 50 the gamma-encoded variant.
             if (precision % 50 == 0 && precision >= 100 && precision <= 550) {
                 const OIIO::TypeDesc::BASETYPE byHundred[] = { OIIO::TypeDesc::UINT8, OIIO::TypeDesc::UINT16, OIIO::TypeDesc::UINT32, OIIO::TypeDesc::HALF, OIIO::TypeDesc::FLOAT };
                 type = byHundred[precision / 100 - 1];
+                linear = precision % 100 == 0;
             }
         } else {
             // The tens give the transfer: 0 linear, 50 non-linear, 75 perceptual.
             const std::uint32_t transfer = precision % 100;
+            linear = transfer == 0;
             if (transfer == 0 || transfer == 50 || transfer == 75) {
                 switch (precision / 100) {
                 case 1:
@@ -264,6 +273,7 @@ namespace {
             return false;
         }
         storage->stored = OIIO::TypeDesc(type);
+        storage->linear = linear;
         storage->plane = (type == OIIO::TypeDesc::UINT32 || type == OIIO::TypeDesc::DOUBLE) ? OIIO::TypeDesc(OIIO::TypeDesc::FLOAT) : OIIO::TypeDesc(type);
 
         return true;
@@ -275,21 +285,13 @@ namespace {
         return ((std::uint32_t)p[0] << 24) | ((std::uint32_t)p[1] << 16) | ((std::uint32_t)p[2] << 8) | (std::uint32_t)p[3];
     }
 
+    // A position in a shared file; each thread reads through a Reader of its own.
     class Reader {
     public:
-        explicit Reader(const std::string& path)
-            : _in(path, std::ios::binary)
+        explicit Reader(const std::shared_ptr<const File>& file)
+            : _file(file)
+            , _size(file->size())
         {
-            if (!_in) {
-                throw XcfError("Could not open the file");
-            }
-            _in.seekg(0, std::ios::end);
-            const std::streamoff end = _in.tellg();
-            if (end < 0) {
-                throw XcfError("Could not open the file");
-            }
-            _size = (std::uint64_t)end;
-            _in.seekg(0);
         }
 
         std::uint64_t size() const
@@ -307,8 +309,6 @@ namespace {
             if (pos > _size) {
                 throw XcfError("The file is truncated");
             }
-            _in.clear();
-            _in.seekg((std::streamoff)pos);
             _pos = pos;
         }
 
@@ -318,7 +318,7 @@ namespace {
             if (n > _size - _pos) {
                 throw XcfError("The file is truncated");
             }
-            if (n > 0 && !_in.read(static_cast<char*>(dst), (std::streamsize)n)) {
+            if (n > 0 && !_file->readAt(_pos, dst, (std::size_t)n)) {
                 throw XcfError("The file could not be read");
             }
             _pos += n;
@@ -380,7 +380,7 @@ namespace {
         }
 
     private:
-        std::ifstream _in;
+        std::shared_ptr<const File> _file;
         std::uint64_t _size = 0;
         std::uint64_t _pos = 0;
     };
@@ -418,6 +418,7 @@ namespace {
 
     struct Source {
         std::string path;
+        std::shared_ptr<const File> file;
         int compression = kCompressionNone;
         Storage storage;
     };
@@ -578,11 +579,12 @@ namespace {
 
         // Tiles of a drawable follow each other, so the next one bounds this one; the last is
         // bounded by the most an encoder could reasonably need.
-        std::uint64_t available = in.size() - start;
+        if (start > in.size()) {
+            throw XcfError(subject + " has a tile past the end of the file");
+        }
+        std::uint64_t available = std::min<std::uint64_t>(in.size() - start, (std::uint64_t)bytes * 2 + 1024);
         if (index + 1 < drawable.tiles.size() && drawable.tiles[index + 1] > start) {
             available = std::min(available, drawable.tiles[index + 1] - start);
-        } else {
-            available = std::min<std::uint64_t>(available, (std::uint64_t)bytes * 2 + 1024);
         }
         if (source.compression == kCompressionNone) {
             available = std::min<std::uint64_t>(available, bytes);
@@ -691,7 +693,7 @@ namespace {
         const Source& source = *layer.source;
 
         try {
-            Reader in(source.path);
+            Reader in(source.file);
             const std::size_t count = (std::size_t)region.width() * (std::size_t)region.height();
             const std::vector<unsigned char> stored = readDrawable(in, source, layer.pixels, region, "Layer " + layer.name);
             std::vector<float> values(count * (std::size_t)layer.channels);
@@ -796,7 +798,11 @@ namespace {
                 break;
             case kPropFloatOpacity:
                 if (length >= 4) {
-                    h.opacity = std::clamp((double)in.f32(), 0., 1.);
+                    const double opacity = in.f32();
+                    if (!std::isfinite(opacity)) {
+                        throw XcfError("A layer has an opacity that is not a number");
+                    }
+                    h.opacity = std::clamp(opacity, 0., 1.);
                     floatOpacity = true;
                 }
                 break;
@@ -870,7 +876,11 @@ namespace {
     std::shared_ptr<LayeredDocument>
     parse(const std::string& path)
     {
-        Reader in(path);
+        const std::shared_ptr<const File> file = std::make_shared<File>(path);
+        if (!file->isOpen()) {
+            throw XcfError("Could not open " + path);
+        }
+        Reader in(file);
 
         char magic[9];
         if (in.size() < 14) {
@@ -905,6 +915,7 @@ namespace {
         const std::uint32_t precision = version >= 4 ? in.u32() : 150;
         const std::shared_ptr<Source> source = std::make_shared<Source>();
         source->path = path;
+        source->file = file;
         if (!storageOf(version, precision, &source->storage)) {
             throw XcfError(path + " has an unknown precision (" + std::to_string(precision) + ")");
         }
@@ -938,6 +949,7 @@ namespace {
         }
 
         const std::shared_ptr<LayeredDocument> document = std::make_shared<LayeredDocument>();
+        document->colorSpace = source->storage.linear ? "lin_rec709_scene" : "srgb_rec709_scene";
         document->width = (int)width;
         document->height = (int)height;
 

@@ -26,8 +26,13 @@
 #include "LayeredImageInput.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <span>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include <QByteArray>
 #include <QString>
@@ -40,6 +45,17 @@ NATRON_NAMESPACE_ENTER
 namespace LayeredDocs {
 namespace {
     const char* const kMimeType = "image/openraster";
+    // Offsets of nested stacks add up; they are kept within this, well inside an int.
+    const long long kMaxOffset = 1LL << 30;
+
+    class OraError
+        : public std::runtime_error {
+    public:
+        explicit OraError(const std::string& message)
+            : std::runtime_error(message)
+        {
+        }
+    };
 
     std::shared_ptr<LayeredDocument>
     failed(std::string* error,
@@ -66,6 +82,10 @@ namespace {
         bool ok = false;
         const double value = xml.attributes().value(QString::fromUtf8(name)).toString().toDouble(&ok);
 
+        if (ok && !std::isfinite(value)) {
+            throw OraError(std::string("stack.xml has a ") + name + " that is not a finite number");
+        }
+
         return ok ? (int)std::clamp(value, -1e9, 1e9) : 0;
     }
 
@@ -74,6 +94,10 @@ namespace {
     {
         bool ok = false;
         const double value = xml.attributes().value(QString::fromUtf8("opacity")).toString().toDouble(&ok);
+
+        if (ok && !std::isfinite(value)) {
+            throw OraError("stack.xml has an opacity that is not a finite number");
+        }
 
         return ok ? std::clamp(value, 0., 1.) : 1.;
     }
@@ -84,14 +108,23 @@ namespace {
         return attributeOf(xml, "visibility") != "hidden";
     }
 
+    // An open stack with what it and the stacks around it contribute to the elements inside it:
+    // the group names, outermost first and without the root stack's, the summed offset, and the
+    // product of the opacities and visibilities.
     struct Stack {
-        std::string name;
-        bool root = false;
-        int x = 0;
-        int y = 0;
+        std::vector<std::string> groups;
+        long long offsetX = 0;
+        long long offsetY = 0;
         double opacity = 1.;
         bool visible = true;
     };
+
+    long long
+    offsetBy(long long offset,
+             int by)
+    {
+        return std::clamp(offset + by, -kMaxOffset, kMaxOffset);
+    }
 } // anonymous namespace
 
 std::shared_ptr<LayeredDocument>
@@ -125,91 +158,87 @@ readOra(const std::string& path,
     }
 
     const std::shared_ptr<LayeredDocument> document = std::make_shared<LayeredDocument>();
+    const std::size_t archiveBytes = archive->bytes.size();
+    document->readerBytes = [archiveBytes]() { return archiveBytes; };
     std::vector<Layer> topFirst;
     std::vector<Stack> stacks;
     bool sawImage = false;
 
     QXmlStreamReader xml(QByteArray::fromRawData(reinterpret_cast<const char*>(stackXml.data()), (qsizetype)stackXml.size()));
-    while (!xml.atEnd()) {
-        xml.readNext();
-        if (xml.isEndElement() && xml.name() == QLatin1String("stack") && !stacks.empty()) {
-            stacks.pop_back();
-            continue;
-        }
-        if (!xml.isStartElement()) {
-            continue;
-        }
-
-        std::vector<std::string> groups;
-        int offsetX = 0;
-        int offsetY = 0;
-        double groupOpacity = 1.;
-        bool groupVisible = true;
-        for (const Stack& stack : stacks) {
-            if (!stack.root) {
-                groups.push_back(stack.name);
+    try {
+        while (!xml.atEnd()) {
+            xml.readNext();
+            if (xml.isEndElement() && xml.name() == QLatin1String("stack") && !stacks.empty()) {
+                stacks.pop_back();
+                continue;
             }
-            offsetX += stack.x;
-            offsetY += stack.y;
-            groupOpacity *= stack.opacity;
-            groupVisible = groupVisible && stack.visible;
-        }
-
-        const QStringView element = xml.name();
-        if (element == QLatin1String("image")) {
-            sawImage = true;
-            document->width = intAttributeOf(xml, "w");
-            document->height = intAttributeOf(xml, "h");
-        } else if (element == QLatin1String("stack")) {
-            Stack stack;
-            stack.root = stacks.empty();
-            stack.name = attributeOf(xml, "name");
-            stack.x = intAttributeOf(xml, "x");
-            stack.y = intAttributeOf(xml, "y");
-            stack.opacity = opacityOf(xml);
-            stack.visible = visibleOf(xml);
-            stacks.push_back(stack);
-        } else if (element == QLatin1String("layer") && !stacks.empty()) {
-            Layer layer;
-            layer.name = attributeOf(xml, "name");
-            layer.groups = groups;
-            layer.blendMode = attributeOf(xml, "composite-op");
-            if (layer.blendMode.empty()) {
-                layer.blendMode = "svg:src-over";
+            if (!xml.isStartElement()) {
+                continue;
             }
-            layer.opacity = opacityOf(xml);
-            layer.visible = visibleOf(xml);
-            layer.groupOpacity = groupOpacity;
-            layer.groupVisible = groupVisible;
 
-            const std::string src = attributeOf(xml, "src");
-            if (!src.empty() && archive->zip->contains(src)) {
-                PngInfo info;
-                if (!pngInfoOf(*archive, src, &info, error)) {
-                    return std::shared_ptr<LayeredDocument>();
+            static const Stack outside;
+            const Stack& parent = stacks.empty() ? outside : stacks.back();
+
+            const QStringView element = xml.name();
+            if (element == QLatin1String("image")) {
+                sawImage = true;
+                document->width = intAttributeOf(xml, "w");
+                document->height = intAttributeOf(xml, "h");
+            } else if (element == QLatin1String("stack")) {
+                Stack stack;
+                stack.groups = parent.groups;
+                if (!stacks.empty()) {
+                    stack.groups.push_back(attributeOf(xml, "name"));
                 }
-                layer.plane.x = offsetX + intAttributeOf(xml, "x");
-                layer.plane.y = offsetY + intAttributeOf(xml, "y");
-                layer.plane.width = info.width;
-                layer.plane.height = info.height;
-                layer.plane.channels = { "R", "G", "B", "A" };
-                layer.plane.type = info.type;
-                layer.plane.load = [archive, src, info](std::vector<unsigned char>* pixels, std::string* loadError) {
-                    return decodePng(*archive, src, info, true, pixels, loadError);
-                };
+                stack.offsetX = offsetBy(parent.offsetX, intAttributeOf(xml, "x"));
+                stack.offsetY = offsetBy(parent.offsetY, intAttributeOf(xml, "y"));
+                stack.opacity = parent.opacity * opacityOf(xml);
+                stack.visible = parent.visible && visibleOf(xml);
+                stacks.push_back(std::move(stack));
+            } else if (element == QLatin1String("layer") && !stacks.empty()) {
+                Layer layer;
+                layer.name = attributeOf(xml, "name");
+                layer.groups = parent.groups;
+                layer.blendMode = attributeOf(xml, "composite-op");
+                if (layer.blendMode.empty()) {
+                    layer.blendMode = "svg:src-over";
+                }
+                layer.opacity = opacityOf(xml);
+                layer.visible = visibleOf(xml);
+                layer.groupOpacity = parent.opacity;
+                layer.groupVisible = parent.visible;
+
+                const std::string src = attributeOf(xml, "src");
+                if (!src.empty() && archive->zip->contains(src)) {
+                    PngInfo info;
+                    if (!pngInfoOf(*archive, src, &info, error)) {
+                        return std::shared_ptr<LayeredDocument>();
+                    }
+                    layer.plane.x = (int)offsetBy(parent.offsetX, intAttributeOf(xml, "x"));
+                    layer.plane.y = (int)offsetBy(parent.offsetY, intAttributeOf(xml, "y"));
+                    layer.plane.width = info.width;
+                    layer.plane.height = info.height;
+                    layer.plane.channels = { "R", "G", "B", "A" };
+                    layer.plane.type = info.type;
+                    layer.plane.load = [archive, src, info](std::vector<unsigned char>* pixels, std::string* loadError) {
+                        return decodePng(*archive, src, info, true, pixels, loadError);
+                    };
+                }
+                topFirst.push_back(std::move(layer));
+                xml.skipCurrentElement();
+            } else if (!stacks.empty()) {
+                std::vector<std::string> path = parent.groups;
+                path.push_back(attributeOf(xml, "name"));
+                std::string joinedPath;
+                for (std::size_t i = 0; i < path.size(); ++i) {
+                    joinedPath += (i > 0 ? "/" : "") + path[i];
+                }
+                document->skipped.push_back(joinedPath + " (" + element.toString().toStdString() + " element)");
+                xml.skipCurrentElement();
             }
-            topFirst.push_back(std::move(layer));
-            xml.skipCurrentElement();
-        } else if (!stacks.empty()) {
-            std::vector<std::string> path = groups;
-            path.push_back(attributeOf(xml, "name"));
-            std::string joinedPath;
-            for (std::size_t i = 0; i < path.size(); ++i) {
-                joinedPath += (i > 0 ? "/" : "") + path[i];
-            }
-            document->skipped.push_back(joinedPath + " (" + element.toString().toStdString() + " element)");
-            xml.skipCurrentElement();
         }
+    } catch (const OraError& e) {
+        return failed(error, path + ": " + e.what());
     }
     if (xml.hasError()) {
         return failed(error, path + ": stack.xml is malformed: " + xml.errorString().toStdString());

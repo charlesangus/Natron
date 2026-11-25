@@ -110,7 +110,9 @@ OIIO::ImageInput::unique_ptr open(const std::string& path,
 
 /**
  * @brief Drops every cached document. Documents are cached on the path and the file's identity,
- * so that each decode does not parse the file again.
+ * so that each decode does not parse the file again. The cache keeps at most 8 documents and,
+ * beyond the most recently used one, at most 512 MiB of decoded planes and reader buffers; it
+ * drops the least recently used ones when a document is cached or an input closes.
  **/
 void clearDocumentCache();
 } // namespace LayeredDocs

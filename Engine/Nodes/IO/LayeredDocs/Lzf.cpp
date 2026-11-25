@@ -25,8 +25,6 @@
 
 #include "Lzf.h"
 
-#include <algorithm>
-#include <cstdint>
 #include <cstring>
 
 NATRON_NAMESPACE_ENTER
@@ -34,18 +32,6 @@ NATRON_NAMESPACE_ENTER
 namespace LayeredDocs {
 namespace {
     const std::size_t kMaxLiteralRun = 32;
-    const std::size_t kMaxDistance = 8192;
-    const std::size_t kMinMatch = 3;
-    const std::size_t kMaxMatch = 2 + 7 + 255;
-    const int kHashBits = 14;
-
-    std::size_t
-    hashOf(const unsigned char* p)
-    {
-        const std::uint32_t v = ((std::uint32_t)p[0] << 16) | ((std::uint32_t)p[1] << 8) | p[2];
-
-        return (std::size_t)((v * 2654435761u) >> (32 - kHashBits));
-    }
 } // anonymous namespace
 
 bool
@@ -95,57 +81,6 @@ lzfDecompress(const unsigned char* in,
     return true;
 }
 
-std::vector<unsigned char>
-lzfCompress(const unsigned char* in,
-            std::size_t size)
-{
-    std::vector<unsigned char> out;
-    std::vector<std::size_t> table((std::size_t)1 << kHashBits, SIZE_MAX);
-    std::size_t literalStart = 0;
-    std::size_t i = 0;
-
-    const auto flushLiterals = [&](std::size_t end) {
-        while (literalStart < end) {
-            const std::size_t run = std::min(kMaxLiteralRun, end - literalStart);
-            out.push_back((unsigned char)(run - 1));
-            out.insert(out.end(), in + literalStart, in + literalStart + run);
-            literalStart += run;
-        }
-    };
-
-    while (i + kMinMatch <= size) {
-        const std::size_t h = hashOf(in + i);
-        const std::size_t candidate = table[h];
-        table[h] = i;
-        if (candidate != SIZE_MAX && i - candidate <= kMaxDistance && std::memcmp(in + candidate, in + i, kMinMatch) == 0) {
-            const std::size_t limit = std::min(kMaxMatch, size - i);
-            std::size_t length = kMinMatch;
-            while (length < limit && in[candidate + length] == in[i + length]) {
-                ++length;
-            }
-            flushLiterals(i);
-            const std::size_t code = length - 2;
-            const std::size_t distance = i - candidate - 1;
-            if (code < 7) {
-                out.push_back((unsigned char)((code << 5) | (distance >> 8)));
-            } else {
-                out.push_back((unsigned char)((7 << 5) | (distance >> 8)));
-                out.push_back((unsigned char)(code - 7));
-            }
-            out.push_back((unsigned char)(distance & 0xff));
-            for (std::size_t k = i + 1; k < i + length && k + kMinMatch <= size; ++k) {
-                table[hashOf(in + k)] = k;
-            }
-            i += length;
-            literalStart = i;
-            continue;
-        }
-        ++i;
-    }
-    flushLiterals(size);
-
-    return out;
-}
 } // namespace LayeredDocs
 
 NATRON_NAMESPACE_EXIT

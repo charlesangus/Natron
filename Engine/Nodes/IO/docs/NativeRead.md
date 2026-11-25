@@ -15,7 +15,8 @@ script-name prefix so the Write can share it.
 
 - **Formats.** `OiioReadSupport::readableExtensions()` is OIIO's
   `extension_list` attribute minus the formats named in `kExcludedOiioFormats`
-  (`raw`, `null`, `term`, `ffmpeg`), lower case and sorted. There is no
+  (`raw`, `null`, `term`, `ffmpeg`, and `psd`, whose extensions the in-tree
+  `natron_psd` reader claims), lower case and sorted. There is no
   hand-written list, so a build with more OIIO plug-ins reads more. A path with
   any other extension gets an "Unsupported format" error from
   `NativeRead::rejectUnsupportedFormat()`. A camera raw extension
@@ -132,7 +133,9 @@ script-name prefix so the Write can share it.
     image) and always for XCF, which stores none, the composite is flattened
     from the layers: visible layers, in order, with Normal "over" at the layer
     and group opacity, whatever the blend mode (other blend modes are not
-    re-composited; they are listed in the metadata). Every layer that has
+    re-composited; they are listed in the metadata). Clipping is not applied
+    either: a clipped layer (PSD clipping, Krita inherit-alpha) is composited
+    as an unclipped one, and the flag is only in `layered/<id>/clipping`. Every layer that has
     pixels becomes a Natron layer, so a layer's pixels appear in the layer
     menu next to the colour plane. A layer is a picture in the composite's
     encoding, so its colour is converted from the `colorspace` input space to
@@ -179,12 +182,27 @@ script-name prefix so the Write can share it.
     Krita tile format other than version 2 or tiles not compressed with LZF, an
     XCF written by CinePaint, or by a development GIMP at more than 8 bits
     (byte order unknown), or an unknown tile compression. A document with an
-    empty canvas is refused too.
+    empty canvas is refused too, as are a PSD ZIP channel too short to hold the
+    rows it claims (deflate expands at most 1032 times), a Krita or OpenRaster
+    PNG member over 300 000 px on a side or too short for its dimensions,
+    Krita groups nested over 256 deep, and a number attribute (offset, size,
+    opacity) that is NaN or infinite.
   - **Decode per window.** Headers parse without reading pixels, so a PSB of up
     to 300 000 px opens at once. A region of a layer or of the composite
     decodes only the rows or tiles it covers (PSD and PSB through the RLE row
     offsets or raw row strides, Krita and XCF per tile); a ZIP-compressed PSD
     channel decodes whole, once, and is cached. An OpenRaster PNG cannot be
-    windowed and decodes whole, once per plane.
+    windowed and decodes whole, once per plane. A Krita or XCF layer is read
+    as OIIO tiles of its stored tile size when its cropped data window starts
+    on its stored tile grid, and as scanlines otherwise; a flattened composite
+    is read as 64 by 64 tiles. Parsed documents are cached on the path and file
+    identity: at most 8, and beyond the most recently used one at most 512 MiB
+    of decoded planes and reader buffers, the least recently used dropped
+    first.
+  - **Colour space.** XCF records its precision's transfer, so every XCF
+    subimage carries `oiio:ColorSpace`: `lin_rec709_scene` for a linear
+    precision, `srgb_rec709_scene` for a non-linear or perceptual one (and for
+    files from before GIMP 2.10). The other formats set none, so their
+    `colorspace` default comes from the file rules or the project default.
 - **Not read.** Writing layered documents; re-compositing blend modes. OIIO's
   `raw` plug-in is excluded: camera raw files go to rawspeed.

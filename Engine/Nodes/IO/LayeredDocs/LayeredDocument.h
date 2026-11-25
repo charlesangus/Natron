@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -129,6 +130,39 @@ void countDecodedRows(std::uint64_t rows);
 std::uint64_t decodedRows();
 
 /**
+ * @brief A file opened once for reading at offsets, by any number of threads at once.
+ **/
+class File {
+public:
+    explicit File(const std::string& path);
+    ~File();
+    File(const File&) = delete;
+    File& operator=(const File&) = delete;
+
+    bool isOpen() const
+    {
+        return _fd >= 0;
+    }
+
+    std::uint64_t size() const
+    {
+        return _size;
+    }
+
+    /**
+     * @brief Reads exactly `count` bytes at `offset` into `dst`. False if the file ends first or
+     * cannot be read.
+     **/
+    bool readAt(std::uint64_t offset,
+                void* dst,
+                std::size_t count) const;
+
+private:
+    int _fd = -1;
+    std::uint64_t _size = 0;
+};
+
+/**
  * @brief A raster layer. `plane` always has the channels R, G, B and A, so that a mask folds into
  * the alpha and a Gray layer fills R, G and B.
  *
@@ -180,11 +214,20 @@ public:
     // as "<group path>/<name> (<reason>)".
     std::vector<std::string> skipped;
 
+    // The OIIO colour space name every subimage publishes as `oiio:ColorSpace`, when the format
+    // records how its values are encoded; empty otherwise.
+    std::string colorSpace;
+
+    // The bytes the reader keeps for the document besides the planes it caches, such as the
+    // archive it reads members from. May be called from any thread.
+    std::function<std::size_t()> readerBytes;
+
     /**
      * @brief Crops every layer to the canvas and moves those left empty to `skipped`, gives each
      * remaining layer its ID (sanitisedLayerIds) and, when there is no stored composite, makes one
      * that flattens the visible layers bottom to top with the Normal mode, at the deepest of their
-     * depths. Returns false and fills `error` if the canvas is empty.
+     * depths, read in 64 by 64 tiles. Clipping is not applied: a clipped layer is composited as if
+     * it were not. Returns false and fills `error` if the canvas is empty.
      **/
     bool finalise(std::string* error);
 
@@ -200,7 +243,9 @@ public:
 
     /**
      * @brief The header of `subimage`: its data window within the full window, which is the
-     * canvas, its channels and type, its tile size for a tiled plane, `oiio:subimagename` set to
+     * canvas, its channels and type, a tile size (that of a tiled plane whose stored tiles line
+     * up with the data window, or 64 by 64 for a flattened composite), `oiio:ColorSpace` set to
+     * `colorSpace` when that is known, `oiio:subimagename` set to
      * the layer ID and kLayeredColourLayerAttribute for a layer, and the document's metadata
      * (describe) on the composite.
      **/
@@ -227,6 +272,12 @@ public:
      * `<id>/clipping` and `<id>/group` (the group names joined by "/").
      **/
     void describe(OIIO::ImageSpec* spec) const;
+
+    /**
+     * @brief The bytes the document holds: the planes decoded whole and kept, and readerBytes.
+     * Thread-safe.
+     **/
+    std::size_t residentBytes() const;
 
 private:
     struct Cache {
@@ -260,6 +311,7 @@ private:
     int _compositeWidth = 0;
     int _compositeHeight = 0;
     mutable std::vector<std::unique_ptr<Cache>> _caches;
+    mutable std::atomic<std::size_t> _cachedBytes { 0 };
 };
 
 /**

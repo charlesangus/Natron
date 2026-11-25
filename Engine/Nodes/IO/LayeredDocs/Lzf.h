@@ -29,7 +29,6 @@
 #include "Global/Macros.h"
 
 #include <cstddef>
-#include <vector>
 
 NATRON_NAMESPACE_ENTER
 
@@ -49,12 +48,6 @@ bool lzfDecompress(const unsigned char* in,
                    unsigned char* out,
                    std::size_t outSize,
                    std::size_t* written);
-
-/**
- * @brief `size` bytes of `in` as an LZF stream that lzfDecompress, and Krita, read back.
- **/
-std::vector<unsigned char> lzfCompress(const unsigned char* in,
-                                       std::size_t size);
 } // namespace LayeredDocs
 
 NATRON_NAMESPACE_EXIT

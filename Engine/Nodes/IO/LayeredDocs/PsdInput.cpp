@@ -26,6 +26,7 @@
 #include "LayeredImageInput.h"
 
 #include <algorithm>
+#include <atomic>
 #include <climits>
 #include <cstdint>
 #include <cstdlib>
@@ -47,6 +48,10 @@ namespace LayeredDocs {
 namespace {
     const int kMaxCanvasSide = 300000;
     const int kMaxLayerSide = 1 << 24;
+    // Deflate expands a byte to at most 1032, so ZIP data claiming more is refused before its
+    // output is allocated.
+    const std::uint64_t kMaxDeflateRatio = 1032;
+    const std::uint64_t kDeflateSlack = 64;
 
     enum ColourMode {
         kModeBitmap = 0,
@@ -292,6 +297,9 @@ namespace {
 
     struct Source {
         std::string path;
+        std::shared_ptr<const File> file;
+        // The bytes of ZIP data kept decompressed.
+        mutable std::atomic<std::size_t> inflatedBytes { 0 };
         bool psb = false;
         int depth = 8;
         int colourChannels = 3;
@@ -549,33 +557,31 @@ namespace {
     }
 
     void
-    readExactly(const std::string& path,
+    readExactly(const Source& source,
                 std::uint64_t offset,
                 unsigned char* dst,
                 std::uint64_t length)
     {
-        Reader in(path);
-
-        if (offset > in.size()) {
+        if (offset > source.file->size() || length > source.file->size() - offset) {
             throw PsdError("The file is truncated");
         }
-        in.seek(offset);
-        in.read(dst, length);
+        if (!source.file->readAt(offset, dst, (std::size_t)length)) {
+            throw PsdError("The file could not be read");
+        }
     }
 
     std::vector<unsigned char>
-    bytesAt(const std::string& path,
+    bytesAt(const Source& source,
             std::uint64_t offset,
             std::uint64_t length)
     {
-        Reader in(path);
-
-        if (offset > in.size()) {
+        if (offset > source.file->size() || length > source.file->size() - offset) {
             throw PsdError("The file is truncated");
         }
-        in.seek(offset);
+        std::vector<unsigned char> data((std::size_t)length);
+        readExactly(source, offset, data.data(), length);
 
-        return in.bytes(length);
+        return data;
     }
 
     void
@@ -759,11 +765,11 @@ namespace {
             const std::size_t last = plane * _height + y2;
             switch (_compression) {
             case 0:
-                readExactly(_source->path, _offset + 2 + (std::uint64_t)first * rb, dst, (std::uint64_t)(last - first) * rb);
+                readExactly(*_source, _offset + 2 + (std::uint64_t)first * rb, dst, (std::uint64_t)(last - first) * rb);
                 countDecodedRows(last - first);
                 break;
             case 1: {
-                const std::vector<unsigned char> packed = bytesAt(_source->path, _rowStarts[first], _rowStarts[last] - _rowStarts[first]);
+                const std::vector<unsigned char> packed = bytesAt(*_source, _rowStarts[first], _rowStarts[last] - _rowStarts[first]);
                 for (std::size_t r = first; r < last; ++r) {
                     unpackBits(packed.data() + (_rowStarts[r] - _rowStarts[first]), (std::size_t)(_rowStarts[r + 1] - _rowStarts[r]), dst + (r - first) * rb, rb);
                 }
@@ -783,7 +789,7 @@ namespace {
                 throw PsdError("A channel is truncated");
             }
             unsigned char word[2];
-            readExactly(_source->path, _offset, word, 2);
+            readExactly(*_source, _offset, word, 2);
             _compression = be16(word);
             const std::uint64_t size = _length - 2;
             const std::size_t rb = rowBytes();
@@ -799,7 +805,7 @@ namespace {
                 if (size / countBytes < (std::uint64_t)_storedPlanes * _height) {
                     throw PsdError("The RLE row table is truncated");
                 }
-                const std::vector<unsigned char> table = bytesAt(_source->path, _offset + 2, (std::uint64_t)rows * countBytes);
+                const std::vector<unsigned char> table = bytesAt(*_source, _offset + 2, (std::uint64_t)rows * countBytes);
                 const std::uint64_t end = _offset + _length;
                 _rowStarts.resize(rows + 1);
                 _rowStarts[0] = _offset + 2 + (std::uint64_t)_storedPlanes * _height * countBytes;
@@ -815,13 +821,17 @@ namespace {
             }
             case 2:
             case 3: {
-                const std::vector<unsigned char> data = bytesAt(_source->path, _offset + 2, size);
+                if (rb > 0 && rows > (size * kMaxDeflateRatio + kDeflateSlack) / rb) {
+                    throw PsdError("A ZIP channel of " + std::to_string(size) + " bytes cannot hold the " + std::to_string(rows) + " rows of " + std::to_string(rb) + " bytes it claims");
+                }
+                const std::vector<unsigned char> data = bytesAt(*_source, _offset + 2, size);
                 _inflated.resize(rows * rb);
                 inflateInto(data.data(), data.size(), _inflated.data(), _inflated.size());
                 if (_compression == 3) {
                     unpredict(_inflated.data(), _width, rows, _source->depth);
                 }
                 countDecodedRows(rows);
+                _source->inflatedBytes += _inflated.size();
                 break;
             }
             default:
@@ -1063,6 +1073,11 @@ namespace {
         }
         const std::shared_ptr<Source> source = std::make_shared<Source>();
         source->path = path;
+        const std::shared_ptr<const File> file = std::make_shared<File>(path);
+        if (!file->isOpen()) {
+            throw PsdError("Could not read " + path);
+        }
+        source->file = file;
         source->psb = version == 2;
         in.skip(6);
         const int channels = in.u16();
@@ -1144,6 +1159,7 @@ namespace {
         }
 
         const std::shared_ptr<LayeredDocument> document = std::make_shared<LayeredDocument>();
+        document->readerBytes = [source]() { return source->inflatedBytes.load(); };
         document->width = (int)width;
         document->height = (int)height;
 

@@ -147,6 +147,8 @@ readSeamDocument(const std::string& path,
 
 const char kTiledFormat[] = "natron_seamtiles";
 const char kTiledExtension[] = "nltiles";
+const char kMisalignedFormat[] = "natron_seammisaligned";
+const char kMisalignedExtension[] = "nlmisaligned";
 
 // The R of the tiled layer and of the windowed composite at `col`, `row` of their planes.
 unsigned char
@@ -198,11 +200,12 @@ fillRegion(const LayeredDocs::Region& region,
     return true;
 }
 
-// A 5x3 canvas whose composite decodes by region as scanlines, and one layer, 6x3 at -1,0 so
-// cropped to the canvas on its left, that decodes by region in 2x2 tiles.
+// A 5x3 canvas whose composite decodes by region as scanlines, and one layer, `layerWidth` x 3 at
+// `layerX`,0 so cropped to the canvas on its left, that decodes by region in 2x2 tiles.
 std::shared_ptr<LayeredDocs::LayeredDocument>
-readTiledDocument(const std::string& /*path*/,
-                  std::string* error)
+tiledDocument(int layerX,
+              int layerWidth,
+              std::string* error)
 {
     const std::shared_ptr<LayeredDocs::LayeredDocument> document = std::make_shared<LayeredDocs::LayeredDocument>();
     document->width = 5;
@@ -219,9 +222,9 @@ readTiledDocument(const std::string& /*path*/,
 
     LayeredDocs::Layer tiles;
     tiles.name = "Tiles";
-    tiles.plane.x = -1;
+    tiles.plane.x = layerX;
     tiles.plane.y = 0;
-    tiles.plane.width = 6;
+    tiles.plane.width = layerWidth;
     tiles.plane.height = 3;
     tiles.plane.channels = { "R", "G", "B", "A" };
     tiles.plane.type = OIIO::TypeDesc::UINT8;
@@ -237,6 +240,22 @@ readTiledDocument(const std::string& /*path*/,
     }
 
     return document;
+}
+
+// The layer's stored tiles line up with the canvas: its cropped data window starts on a tile.
+std::shared_ptr<LayeredDocs::LayeredDocument>
+readTiledDocument(const std::string& /*path*/,
+                  std::string* error)
+{
+    return tiledDocument(-2, 7, error);
+}
+
+// The layer's stored tiles straddle the canvas's left edge.
+std::shared_ptr<LayeredDocs::LayeredDocument>
+readMisalignedDocument(const std::string& /*path*/,
+                       std::string* error)
+{
+    return tiledDocument(-1, 6, error);
 }
 
 bool
@@ -313,6 +332,7 @@ protected:
         LayeredDocs::unregisterFormat(kSeamFormat);
         LayeredDocs::unregisterFormat(kPsdFormat);
         LayeredDocs::unregisterFormat(kTiledFormat);
+        LayeredDocs::unregisterFormat(kMisalignedFormat);
         restoreBuiltinPsd();
         OiioReadSupport::clearHeaderCache();
     }
@@ -529,29 +549,29 @@ TEST_F(LayeredDocsSeamTest, AWindowedPlaneIsAskedForOnlyTheRowsOrTilesAReadCover
     for (int y = 0; y < 3; ++y) {
         for (int x = 0; x < 5; ++x) {
             const float* pixel = &whole[(std::size_t)(y * 5 + x) * 4];
-            EXPECT_FLOAT_EQ(regionValue(x + 1, 2 - y) / 255.f, pixel[0]) << x << "," << y;
+            EXPECT_FLOAT_EQ(regionValue(x + 2, 2 - y) / 255.f, pixel[0]) << x << "," << y;
             EXPECT_FLOAT_EQ(1.f, pixel[3]) << x << "," << y;
         }
     }
     for (const LayeredDocs::Region& region : requests().layer) {
-        EXPECT_GE(region.x1, 1);
-        EXPECT_LE(region.x2, 6);
+        EXPECT_GE(region.x1, 2);
+        EXPECT_LE(region.x2, 7);
         EXPECT_GE(region.y1, 0);
         EXPECT_LE(region.y2, 3);
         EXPECT_GT(region.width(), 0);
         EXPECT_GT(region.height(), 0);
-        EXPECT_LE(region.width(), 2);
-        EXPECT_LE(region.height(), 2);
+        EXPECT_EQ(region.x1 / 2, (region.x2 - 1) / 2) << "a request stays within one stored tile";
+        EXPECT_EQ(region.y1 / 2, (region.y2 - 1) / 2) << "a request stays within one stored tile";
     }
 
     requests().clear();
     std::vector<float> corner(4);
     ASSERT_TRUE(OiioReadSupport::decode(path, 1, 0, 4, RectI(4, 0, 5, 1), corner.data(), 4, &error)) << error;
-    EXPECT_FLOAT_EQ(regionValue(5, 2) / 255.f, corner[0]);
+    EXPECT_FLOAT_EQ(regionValue(6, 2) / 255.f, corner[0]);
     LayeredDocs::Region cornerTile;
-    cornerTile.x1 = 5;
+    cornerTile.x1 = 6;
     cornerTile.y1 = 2;
-    cornerTile.x2 = 6;
+    cornerTile.x2 = 7;
     cornerTile.y2 = 3;
     ASSERT_EQ(1u, requests().layer.size());
     EXPECT_TRUE(sameRegion(cornerTile, requests().layer[0]));
@@ -567,4 +587,36 @@ TEST_F(LayeredDocsSeamTest, AWindowedPlaneIsAskedForOnlyTheRowsOrTilesAReadCover
     compositeRow.y2 = 2;
     ASSERT_EQ(1u, requests().composite.size());
     EXPECT_TRUE(sameRegion(compositeRow, requests().composite[0]));
+}
+
+TEST_F(LayeredDocsSeamTest, APlaneWhoseTilesStraddleTheDataWindowIsReadAsScanlines)
+{
+    LayeredDocs::Format format;
+    format.name = kMisalignedFormat;
+    format.extensions = { kMisalignedExtension };
+    format.read = readMisalignedDocument;
+    std::string error;
+    ASSERT_TRUE(LayeredDocs::registerFormat(format, &error)) << error;
+    requests().clear();
+
+    const std::string path = writeFile(dir, "tiles.nlmisaligned", "good");
+    const std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(path, &error);
+    ASSERT_TRUE(bool(header)) << error;
+    ASSERT_EQ(2u, header->subimages.size());
+    const OIIO::ImageSpec& layer = header->subimages[1];
+    EXPECT_EQ(0, layer.tile_width);
+    EXPECT_EQ(0, layer.tile_height);
+    EXPECT_EQ(0, layer.x);
+    EXPECT_EQ(5, layer.width);
+
+    const RectI layerWindow = OiioReadSupport::dataWindowOf(layer);
+    std::vector<float> whole(5 * 3 * 4);
+    ASSERT_TRUE(OiioReadSupport::decode(path, 1, 0, 4, layerWindow, whole.data(), 5 * 4, &error)) << error;
+    for (int y = 0; y < 3; ++y) {
+        for (int x = 0; x < 5; ++x) {
+            const float* pixel = &whole[(std::size_t)(y * 5 + x) * 4];
+            EXPECT_FLOAT_EQ(regionValue(x + 1, 2 - y) / 255.f, pixel[0]) << x << "," << y;
+            EXPECT_FLOAT_EQ(1.f, pixel[3]) << x << "," << y;
+        }
+    }
 }

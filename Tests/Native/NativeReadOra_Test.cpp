@@ -28,10 +28,13 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <fstream>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -43,6 +46,7 @@
 #include "Engine/Nodes/IO/LayeredDocs/LayeredImageInput.h"
 #include "Engine/Nodes/IO/OiioReadSupport.h"
 #include "Engine/RectI.h"
+#include "Serialization/Bundle/ZipStore.h"
 
 NATRON_NAMESPACE_USING
 
@@ -99,6 +103,64 @@ expectConstant(const std::vector<float>& pixels,
         }
     }
     EXPECT_EQ(0u, mismatches);
+}
+
+std::uint32_t
+crcOf(const std::string& bytes)
+{
+    std::uint32_t crc = 0xFFFFFFFFu;
+    for (const char c : bytes) {
+        crc ^= (std::uint32_t)(unsigned char)c;
+        for (int bit = 0; bit < 8; ++bit) {
+            crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
+        }
+    }
+
+    return crc ^ 0xFFFFFFFFu;
+}
+
+std::string
+pngBe32(std::uint32_t value)
+{
+    return std::string { (char)(value >> 24), (char)((value >> 16) & 0xFF), (char)((value >> 8) & 0xFF), (char)(value & 0xFF) };
+}
+
+std::string
+pngChunk(const std::string& type,
+         const std::string& data)
+{
+    return pngBe32((std::uint32_t)data.size()) + type + data + pngBe32(crcOf(type + data));
+}
+
+// A PNG that claims to be `width` by `height` 8-bit RGBA pixels but holds only a few bytes.
+std::string
+claimingPng(std::uint32_t width,
+            std::uint32_t height)
+{
+    const std::string signature = std::string { (char)0x89, 'P', 'N', 'G', '\r', '\n', (char)0x1A, '\n' };
+    const std::string header = pngBe32(width) + pngBe32(height) + std::string { 8, 6, 0, 0, 0 };
+
+    return signature + pngChunk("IHDR", header) + pngChunk("IDAT", std::string { 0x78, 0x01, 0x03, 0x00 }) + pngChunk("IEND", std::string());
+}
+
+// An OpenRaster archive whose stack.xml is `stack` inside a 2 by 2 image, with `members` besides.
+std::string
+writeOra(const QTemporaryDir& dir,
+         const std::string& name,
+         const std::string& stack,
+         const std::vector<std::pair<std::string, std::string>>& members)
+{
+    const std::string path = (dir.path() + QString::fromUtf8("/")).toStdString() + name;
+    Serialization::ZipWriter writer(path, "image/openraster");
+    const std::string stackXml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<image w=\"2\" h=\"2\"><stack>" + stack + "</stack></image>\n";
+
+    writer.addMember("stack.xml", std::as_bytes(std::span<const char>(stackXml.data(), stackXml.size())));
+    for (const std::pair<std::string, std::string>& member : members) {
+        writer.addMember(member.first, std::as_bytes(std::span<const char>(member.second.data(), member.second.size())));
+    }
+    writer.finish();
+
+    return path;
 }
 
 class NativeReadOraTest
@@ -317,4 +379,36 @@ TEST_F(NativeReadOraTest, AMissingFileIsAnError)
 
     EXPECT_FALSE(OiioReadSupport::readHeader(fixture("missing.ora"), &error));
     EXPECT_FALSE(error.empty());
+}
+
+TEST_F(NativeReadOraTest, AttributesThatAreNotFiniteNumbersAreRefused)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const char* const stacks[] = {
+        "<layer name=\"L\" src=\"data/l.png\" x=\"nan\" y=\"0\"/>",
+        "<layer name=\"L\" src=\"data/l.png\" x=\"0\" y=\"inf\"/>",
+        "<layer name=\"L\" src=\"data/l.png\" x=\"0\" y=\"0\" opacity=\"nan\"/>",
+        "<stack name=\"G\" opacity=\"-inf\"><layer name=\"L\" src=\"data/l.png\"/></stack>",
+    };
+    for (std::size_t i = 0; i < sizeof(stacks) / sizeof(stacks[0]); ++i) {
+        SCOPED_TRACE(stacks[i]);
+        std::string error;
+        EXPECT_FALSE(OiioReadSupport::readHeader(writeOra(dir, "nan" + std::to_string(i) + ".ora", stacks[i], { { "data/l.png", claimingPng(2, 2) } }), &error));
+        EXPECT_NE(std::string::npos, error.find("not a finite number")) << error;
+    }
+}
+
+TEST_F(NativeReadOraTest, APngClaimingMorePixelsThanItCanHoldIsRefused)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string stack = "<layer name=\"L\" src=\"data/l.png\" x=\"0\" y=\"0\"/>";
+    std::string error;
+    EXPECT_FALSE(OiioReadSupport::readHeader(writeOra(dir, "wide.ora", stack, { { "data/l.png", claimingPng(400000, 1) } }), &error));
+    EXPECT_NE(std::string::npos, error.find("on a side")) << error;
+
+    error.clear();
+    EXPECT_FALSE(OiioReadSupport::readHeader(writeOra(dir, "big.ora", stack, { { "data/l.png", claimingPng(100000, 100000) } }), &error));
+    EXPECT_NE(std::string::npos, error.find("too small to hold")) << error;
 }

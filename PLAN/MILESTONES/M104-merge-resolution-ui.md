@@ -99,7 +99,7 @@ M103's P1.T4 decision before starting.
 
 ## Phase 104.4: Close-out
 
-- [ ] M104.P4.T1 — GUI test of the template workflow
+- [x] M104.P4.T1 — GUI test of the template workflow
   - files: new `Tests/gui/m97_template_merge.py`
   - approach: on the `Tests/gui/guitest.py` harness:
     1. import a template;
@@ -128,3 +128,4 @@ Template is a single undo step. Conflicts survive save and reopen. The user sign
 - 2026-11-23 — No modal pop-up when a project with unresolved merge conflicts loads; report it non-modally (user: pop-ups are to be avoided).
 
 - 2026-11-24 (PM, review #358 in 80cf994e2): known limits closed — op batches apply all or nothing; Base for a deleted-and-modified node restores inputs, label, layout, pages, roto/tracker data and group; restored roto items/tracks return to their own layer after the nearest earlier survivor; project-level user-knob conflicts resolve by side. Still open, taken into Phase 104.3: choosing one side of a two-sided structural insert must remove the unchosen side's inserted nodes (the user decision of 2026-11-22 makes inserts resolvable Mine/Theirs/Base). PR #358 opened early (after Phase 104.2), now draft until P4.
+- 2026-11-24 (PM) — gate14 on 54c1f9d07: every GUI check (m97_template_merge, m104_diff_overlay, m104_merge_conflicts) and every other test passed; the one failure is USDRenderMoonRayTest's 300 s timeout, the known MoonRay teardown flake M496 - MoonRay Test Stability is fixing, so it does not hold the merge. P4.T2's UAT moves to F33 - Graph Diff And Merge's UAT. Review round 2 (Codex) covers Phase 104.3 and P4.T1.

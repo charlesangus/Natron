@@ -25,12 +25,12 @@ Fix the product races in our code or the MoonRay fork (M325 - MoonRay Fork: char
 
 ## Phase 496.1: Evidence
 
-- [ ] M496.P1.T1 — Watchdog and phase reporting for the MoonRay suites
+- [x] M496.P1.T1 — Watchdog and phase reporting for the MoonRay suites
   - files: `Tests/Scene/USDRenderMoonRay_Test.cpp` (`USDRenderMoonRayTest`, `USDRenderMoonRayLiveTextureTest` fixtures), `Tests/TestWatchdog.h` (reuse, no change expected)
   - approach: start the M378 watchdog in each fixture's `SetUp` (150 s, as `ProgressiveRender_Test.cpp` does) and report phases around render, abort and teardown; extend the watchdog to cover fixture `TearDown` and static/process teardown if it doesn't already (arm it again in `TearDown`, and from an `atexit` or test-environment `TearDown` so an exit hang dumps stacks instead of running into ctest's timeout).
   - verify: the suites pass at the phase build; the watchdog death test still passes
   - size: M
-- [ ] M496.P1.T2 — Repeat the MoonRay suites under load to capture stacks (PM runs)
+- [x] M496.P1.T2 — Repeat the MoonRay suites under load to capture stacks (PM runs)
   - files: none
   - approach: `tools/ci/remote/build.sh debug --tests --repeat-test <suite>:20` for `ProgressiveRenderTest`, `USDRenderMoonRayTest` and `USDRenderMoonRayLiveTextureTest`, both schedulers; collect watchdog stacks and any core/segfault backtrace from the logs. Record which failures reproduced, with stacks, as a milestone decision.
   - verify: logs collected and summarised in `## Decisions`

@@ -152,3 +152,4 @@
 - 2026-11-22 — usd-toolbar-submenus: USD nodes get a top-level USD category with functional submenus; PLUGIN_GROUP_3D_USD removed → DECISIONS/2026-11-22-usd-toolbar-submenus.md
 - 2026-11-24 — feature-gap-survey-triage: survey items adopted as E27 (M562–M589), declined/kept-out list, survey stubs wait for approval → DECISIONS/2026-11-24-feature-gap-survey-triage.md
 - 2026-11-24 — edge-extend-node-family: EdgePush/Clamp/Smear/PushVector/Distort + separate EdgeDetail on a shared EdgeFillKit; straight in/out defaults; edge mask to a named layer (user) → DECISIONS/2026-11-24-edge-extend-node-family.md
+- 2026-11-25 — f30-merged-without-uat: F30 merged with no UAT (no user-facing surface); browser screenshots and aperture PNGs go to F31/F13's UAT (user) → DECISIONS/2026-11-25-f30-merged-without-uat.md

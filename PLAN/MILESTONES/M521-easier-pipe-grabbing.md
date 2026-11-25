@@ -58,3 +58,4 @@ Make unconnected inputs and outputs easy to grab: fatter pipes, a longer output 
 
 **Verification gate:** release gate green per `.local/build-mode`; `Tests/gui/pipe_grab.py` passes under Xvfb at 1920x1080; GUI bench rule (`tools/bench/gui/run.sh --xvfb`, compared to `baselines/xvfb.jsonl`) with no regression, recorded in `## Decisions`; screenshots OK'd at F36 - UI Polish Batch II's UAT.
 - 2026-11-24 — **Default grab (user):** grab radii `max(10, 4 × width)` / `max(18, 8 × width)` and default Pipe Width 4. Explore an output nub (a half circle about the stub's size) and hover highlighting of whatever a click would pick up; screenshots to the user.
+- 2026-11-24 (PM) — m69_cleanup's [expanded-curve] checks (size knob's two component rows; curve widget visible) fail identically on a pre-M521 main AppImage (build/m434-base, run locally in the published image), so they are pre-existing, not M521's; filed to the inbox. M521's gate is judged without them.

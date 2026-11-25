@@ -216,7 +216,6 @@ set(Tests_SOURCES
     RenderRange_Test.cpp
     RenderScheduler_Test.cpp
     RenderSchedulerAbort_Test.cpp
-    RenderSchedulerMode_Test.cpp
     RotoFeatherBanding_Test.cpp
     RotoFeatherDrag_Test.cpp
     RotoLayer_Test.cpp

@@ -447,9 +447,6 @@ LoopBegin::render(const RenderActionArgs& args)
 bool
 LoopBegin::canRenderOnGpu(const GpuQuery& query) const
 {
-    if (appPTR->getRenderSchedulerMode() != eRenderSchedulerModeTaskGraph) {
-        return false;
-    }
     if ((query.bitDepth != eImageBitDepthFloat) || query.hasMask || (query.mix != 1.) || query.hasConcatenatedInput) {
         return false;
     }

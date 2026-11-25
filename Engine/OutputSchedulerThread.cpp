@@ -1654,16 +1654,16 @@ OutputSchedulerThread::adjustNumberOfThreads(int* newNThreads,
     const int poolActive = pool->activeThreadCount();
     bool stoppedOne = false;
 
-    if (appPTR->getRenderSchedulerMode() == eRenderSchedulerModeTaskGraph) {
-        // The frame threads only wait for the scheduler, which runs the frames' work on the global pool, so another
-        // frame is opened only while the work already queued cannot keep every pool thread busy.
-        const int poolMax = std::max(1, pool->maxThreadCount());
-        const int cap = (userSettingParallelThreads > 0) ? userSettingParallelThreads : poolMax;
-        int schedulerRunning = 0;
-        int schedulerReady = 0;
-        appPTR->getRenderScheduler()->getLoad(&schedulerRunning, &schedulerReady);
-        const bool loadAllowsMore = (schedulerRunning + schedulerReady < poolMax) && (poolActive < poolMax);
+    // The frame threads only wait for the scheduler, which runs the frames' work on the global pool, so another
+    // frame is opened only while the work already queued cannot keep every pool thread busy.
+    const int poolMax = std::max(1, pool->maxThreadCount());
+    const int cap = (userSettingParallelThreads > 0) ? userSettingParallelThreads : poolMax;
+    int schedulerRunning = 0;
+    int schedulerReady = 0;
+    appPTR->getRenderScheduler()->getLoad(&schedulerRunning, &schedulerReady);
+    const bool loadAllowsMore = (schedulerRunning + schedulerReady < poolMax) && (poolActive < poolMax);
 
+    {
         QMutexLocker l(&_imp->renderThreadsMutex);
         const int live = _imp->getNLiveRenderThreads();
         *lastNThreads = live;
@@ -1677,34 +1677,6 @@ OutputSchedulerThread::adjustNumberOfThreads(int* newNThreads,
             stoppedOne = true;
         } else {
             *newNThreads = live;
-        }
-    } else {
-        /// How many threads are running in the application
-        const int runningThreads = appPTR->getNRunningThreads() + poolActive;
-
-        int optimalNThreads;
-        if (userSettingParallelThreads == 0) {
-            /// User wants it to be automatically computed, do a simple heuristic: launch as many parallel renders
-            /// as there are cores
-            optimalNThreads = appPTR->getHardwareIdealThreadCount();
-        } else {
-            optimalNThreads = userSettingParallelThreads;
-        }
-        optimalNThreads = std::max(1, optimalNThreads);
-
-        QMutexLocker l(&_imp->renderThreadsMutex);
-        const int live = _imp->getNLiveRenderThreads();
-        *lastNThreads = live;
-        if (((runningThreads < optimalNThreads) && (live < optimalNThreads)) || (live == 0)) {
-            _imp->appendRunnable(createRunnable());
-            *newNThreads = live + 1;
-        } else if ((runningThreads > optimalNThreads) && (live > optimalNThreads)) {
-            _imp->flagRenderThreadsToQuit(1);
-            _imp->removeAllQuitRenderThreads();
-            *newNThreads = live - 1;
-            stoppedOne = true;
-        } else {
-            *newNThreads = std::max(1, live);
         }
     }
 
@@ -2590,7 +2562,6 @@ private:
                 }
                 frameRenderArgs.updateNodesRequest(*request);
 
-                const bool taskGraphMode = appPTR->getRenderSchedulerMode() == eRenderSchedulerModeTaskGraph;
                 RenderingFlagSetter flagIsRendering(activeInputToRender->getNode());
                 EffectInstance::RenderRoIRetCode retCode;
                 switch (outputKind) {
@@ -2599,7 +2570,7 @@ private:
                 case eDataKindImage: {
                     std::map<ImageLayerDesc, ImagePtr> layers;
                     FrameFuturePtr future;
-                    if (taskGraphMode) {
+                    {
                         const char* fallbackReason = taskGraphIneligibility(frameRenderArgs);
                         if (!fallbackReason) {
                             FrameRenderContextPtr context = FrameRenderContext::createFromSetter(frameRenderArgs, abortInfo, stats, time, viewsToRender[view]);
@@ -2639,7 +2610,7 @@ private:
                     break;
                 }
                 case eDataKindDeep: {
-                    if (taskGraphMode && stats) {
+                    if (stats) {
                         stats->incLegacyFallbacks("deep output");
                     }
                     DeepImagePtr deepImage;
@@ -4326,27 +4297,20 @@ ViewerCurrentFrameRequestScheduler::renderCurrentFrame(bool enableRenderStats,
         stats.reset( new RenderStats(enableRenderStats) );
     }
 
-    bool isTracking = _imp->viewer->isDoingPartialUpdates();
     NodePtr rotoPaintNode;
     RotoStrokeItemPtr curStroke;
     bool isDrawing = false;
     _imp->viewer->getApp()->getActiveRotoDrawingStroke(&rotoPaintNode, &curStroke, &isDrawing);
 
-    // Stroke renders accumulate into the stroke's image, so they run one at a time and in order. Each one still splits
-    // its tiles over the thread pool wherever the nodes allow it.
-    bool serializeRotoRenders = false;
     bool isRotoNeatRender = false;
     if (!isDrawing) {
         isRotoNeatRender = rotoPaintNode ? rotoPaintNode->getRotoContext()->mustDoNeatRender() : false;
-        if (rotoPaintNode && isRotoNeatRender) {
-            serializeRotoRenders = true;
-        } else {
+        if (!(rotoPaintNode && isRotoNeatRender)) {
             rotoPaintNode.reset();
             curStroke.reset();
         }
     } else {
         assert(rotoPaintNode);
-        serializeRotoRenders = true;
         if (!_imp->strokeGate->coalescer.request()) {
             return;
         }
@@ -4486,24 +4450,8 @@ ViewerCurrentFrameRequestScheduler::renderCurrentFrame(bool enableRenderStats,
         startTask(request);
         functorArgs->request = request;
 
-        /*
-         * Let at least 1 free thread in the thread-pool to allow the renderer to use the thread pool if we use the thread-pool
-         */
-        int maxThreads = _imp->threadPool->maxThreadCount();
-
-        if (serializeRotoRenders || isTracking) {
-            maxThreads = 1;
-        }
-        // In Task graph mode the render thread waits for the RenderScheduler, which a pool thread must never do; the
-        // frame's work runs on the pool anyway.
-        const bool taskGraphMode = appPTR->getRenderSchedulerMode() == eRenderSchedulerModeTaskGraph;
-        if (taskGraphMode || (maxThreads == 1) || (_imp->threadPool->activeThreadCount() >= maxThreads - 1)) {
-            _imp->backupThread.startTask(functorArgs);
-        } else {
-            RenderCurrentFrameFunctorRunnable* task = new RenderCurrentFrameFunctorRunnable(functorArgs);
-            _imp->appendRunnableTask(task);
-            _imp->threadPool->start(task);
-        }
+        // The render thread waits for the RenderScheduler, which a pool thread must never do.
+        _imp->backupThread.startTask(functorArgs);
     }
 } // ViewerCurrentFrameRequestScheduler::renderCurrentFrame
 

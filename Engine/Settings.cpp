@@ -393,25 +393,6 @@ Settings::initializeKnobsThreading()
     _nThreadsPerEffect->disableSlider();
     _threadingPage->addKnob(_nThreadsPerEffect);
 
-    _renderSchedulerMode = AppManager::createKnob<KnobChoice>(this, tr("Render scheduler"));
-    _renderSchedulerMode->setName("renderSchedulerMode");
-    {
-        std::vector<ChoiceOption> entries;
-        assert(entries.size() == (int)eRenderSchedulerModeLegacy);
-        entries.push_back(ChoiceOption("legacy",
-                                       tr("Legacy pull").toStdString(),
-                                       tr("Render the nodes of a frame recursively, each node pulling its inputs.").toStdString()));
-        assert(entries.size() == (int)eRenderSchedulerModeTaskGraph);
-        entries.push_back(ChoiceOption("taskgraph",
-                                       tr("Task graph").toStdString(),
-                                       tr("Schedule the nodes of a frame as tasks on the shared thread pool.").toStdString()));
-        _renderSchedulerMode->populateChoices(entries);
-    }
-    _renderSchedulerMode->setHintToolTip(tr("How the nodes of a frame are scheduled. \"Task graph\" (the default) schedules them on the shared thread pool, "
-                                            "while \"Legacy pull\" renders them recursively and is the fallback. "
-                                            "The NATRON_RENDER_SCHEDULER environment variable (legacy or taskgraph) takes precedence over this setting."));
-    _threadingPage->addKnob(_renderSchedulerMode);
-
     _queueRenders = AppManager::createKnob<KnobBool>( this, tr("Append new renders to queue") );
     _queueRenders->setHintToolTip( tr("When checked, renders will be queued in the Progress Panel and will start only when all "
                                       "other prior tasks are done.") );
@@ -1944,7 +1925,6 @@ Settings::setDefaultValues()
 #endif
     _useThreadPool->setDefaultValue(true);
     _nThreadsPerEffect->setDefaultValue(0);
-    _renderSchedulerMode->setDefaultValue((int)eRenderSchedulerModeTaskGraph);
     _queueRenders->setDefaultValue(false);
 
     // General/Rendering
@@ -2759,8 +2739,6 @@ Settings::onKnobValueChanged(KnobI* k,
         }
         // The nodes fold the trait into their hash, which must not be read back from before it changed.
         Node::invalidateAllHashes("the Zoomed-Out Demosaic preference changed", k);
-    } else if (k == _renderSchedulerMode.get()) {
-        appPTR->onRenderSchedulerModeSettingChanged(getRenderSchedulerMode());
     } else if (k == _cacheAdmissionPolicy.get()) {
         CacheRetention::setAdmissionPolicySetting((CacheRetention::AdmissionPolicyEnum)_cacheAdmissionPolicy->getValue());
     } else if ((k == _ocioConfigKnob.get()) || (k == _customOcioConfigFile.get())) {
@@ -3025,12 +3003,6 @@ Settings::getGpuTextureBudgetMB() const
 }
 
 ///////////////////////////////////////////////////////
-RenderSchedulerModeEnum
-Settings::getRenderSchedulerMode() const
-{
-    return (RenderSchedulerModeEnum)_renderSchedulerMode->getValue();
-}
-
 // "Caching" pane
 
 double

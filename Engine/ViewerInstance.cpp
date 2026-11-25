@@ -2852,7 +2852,7 @@ ViewerInstance::runGpuPlacementDryRun(const AbortableRenderInfoPtr& abortInfo)
     }
     const ViewerInstancePrivate::GpuPlacementStamp stamp = _imp->currentGpuPlacementStamp();
     GpuPlacementSnapshotBuilder builder;
-    if ((appPTR->getRenderSchedulerMode() != eRenderSchedulerModeTaskGraph) || !isGpuPlacementAvailable()) {
+    if (!isGpuPlacementAvailable()) {
         builder.addUnplacedGraph();
     } else {
         const SequenceTime time = (SequenceTime)getTimeline()->currentFrame();
@@ -4136,7 +4136,6 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
 
         frameArgs->updateNodesRequest(*requestPassData);
     }
-    const bool taskGraphMode = appPTR->getRenderSchedulerMode() == eRenderSchedulerModeTaskGraph;
 
     // Under frame args this is the snapshot the frame's request pass and hashes were taken with.
     const NodeMetadataConstPtr renderMetadata = inArgs.activeInputToRender->getRenderMetadata(inArgs.params->time, view);
@@ -4224,7 +4223,7 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
             std::map<ImageLayerDesc, ImagePtr> layers;
             EffectInstance::RenderRoIRetCode retCode;
             if (inArgs.deepUpstream) {
-                if (taskGraphMode && stats) {
+                if (stats) {
                     stats->incLegacyFallbacks("viewer: deep input");
                 }
                 // Only isDoingPartialUpdates (RotoPaint) ever splits the RoI, and deep has no
@@ -4265,9 +4264,7 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
             } else {
                 FrameFuturePtr future;
                 FrameRenderContextPtr frameContext;
-                if (taskGraphMode) {
-                    future = submitViewerFrameToRenderScheduler(frameArgs.get(), requestPassData, inArgs, bool(rotoPaintNode), view, splitRoi[rectIndex], requestedComponents, imageDepth, stats, _imp->uiContext, placementBuilder, &frameContext);
-                }
+                future = submitViewerFrameToRenderScheduler(frameArgs.get(), requestPassData, inArgs, bool(rotoPaintNode), view, splitRoi[rectIndex], requestedComponents, imageDepth, stats, _imp->uiContext, placementBuilder, &frameContext);
                 if (future) {
                     retCode = future->wait();
                     if (placementBuilder) {

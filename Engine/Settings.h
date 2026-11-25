@@ -469,8 +469,6 @@ public:
      **/
     std::string getDefaultOCIOConfigSourceForNewProjects() const;
 
-    RenderSchedulerModeEnum getRenderSchedulerMode() const;
-
     GpuComputeModeEnum getGpuComputeMode() const;
     // The UUID id of the chosen GPU device, or "" for automatic.
     std::string getGpuDevice() const;
@@ -631,7 +629,6 @@ private:
     KnobIntPtr _numberOfParallelRenders;
     KnobBoolPtr _useThreadPool;
     KnobIntPtr _nThreadsPerEffect;
-    KnobChoicePtr _renderSchedulerMode;
     KnobBoolPtr _queueRenders;
 
     // General/Rendering

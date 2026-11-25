@@ -1,15 +1,22 @@
 """Template import, artist edit, template update and its merge conflicts, end to end in the real application.
 
+Every import, comparison and update goes through the application's own actions: File > Import
+Template..., File > Compare with File..., File > Update from Template, and the node graph's
+context-menu Compare with Template Base and Update from Template on a selected template node. File
+dialogs and menus are driven from QTimer callbacks (see run() in guitest.py), since their slots block
+in a modal loop.
+
 A template (Blur1 -> Blur2) is saved as version 1. Version 2 of the clean scenario sets Blur1's size
-to 4 and adds Blur3 fed by Blur2. The template is imported, the artist sets Blur2's size to 2, the
-comparison with the template's base tints Blur2 as changed, and the template file is replaced by
-version 2. Update from Template raises no conflict, takes Blur1's size and Blur3 from the template and
-keeps the artist's Blur2 size. Edit > Undo once restores exactly the graph before the update, so the
-update is one undo step.
+to 4 and adds Blur3 fed by Blur2. The template is imported, the artist sets Blur2's size to 2, and
+Compare with Template Base tints Blur2 as changed; Escape in the node graph clears it. Compare with
+File against version 1 tints Blur2 again, and Escape in the Node Diff panel clears that. The template
+file is replaced by version 2. File > Update from Template raises no conflict, takes Blur1's size and
+Blur3 from the template and keeps the artist's Blur2 size. Edit > Undo once restores exactly the
+graph before the update, so the update is one undo step.
 
 The conflicted scenario has a version 2 that sets both sizes (Blur1 to 4, Blur2 to 6) while the artist
-set them to 2 and 3. The update keeps the artist's values and raises two conflicts, listed in the Merge
-Conflicts panel. Theirs resolves the first from the panel. The project is saved with the other still
+set them to 2 and 3. Update from Template on Blur1's context menu keeps the artist's values and raises
+two conflicts, listed in the Merge Conflicts panel. Theirs resolves the first from the panel. The project is saved with the other still
 unresolved, reset and reopened: the panel lists the one conflict again, with the badge on its node and
 the artist's value kept, and resolving it from the reopened panel clears the badge.
 
@@ -23,6 +30,7 @@ sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd
 
 STARTUP_TIMEOUT_S = 60.0
 POLL_TIMEOUT_S = 20.0
+DIALOG_TIMEOUT_S = 20.0
 SETTLE_MS = 400
 BLUR = "Blur"
 SIZE = "size"
@@ -32,7 +40,10 @@ CONFLICT_V2 = {"Blur1": 4.0, "Blur2": 6.0}
 CONFLICT_ARTIST = {"Blur1": 2.0, "Blur2": 3.0}
 
 try:
-    from PySide6.QtWidgets import QApplication, QMainWindow, QPushButton, QTabBar, QTreeWidget
+    from PySide6.QtCore import QEvent, QPoint, QPointF, Qt, QTimer
+    from PySide6.QtGui import QAction, QKeyEvent, QMouseEvent
+    from PySide6.QtWidgets import (QAbstractButton, QApplication, QLineEdit, QMainWindow, QMenu, QPushButton, QTabBar,
+                                   QTreeWidget)
 
     import guitest as gt
     from guitest import check, report, require
@@ -159,6 +170,124 @@ try:
         source = node.getInput(0)
         return source.getScriptName() if source is not None else None
 
+    def modal_class():
+        w = QApplication.activeModalWidget()
+        return gt.class_name(w) if w is not None else None
+
+    def later(fn, flag):
+        """Runs fn from a timer, so this generator keeps running while fn blocks in a modal loop."""
+        flag["done"] = False
+
+        def fire():
+            try:
+                fn()
+            finally:
+                flag["done"] = True
+
+        QTimer.singleShot(0, fire)
+
+    def submit_open_dialog(path):
+        dialog = QApplication.activeModalWidget()
+        if dialog is None or gt.class_name(dialog) != "SequenceFileDialog":
+            return False
+        # The selection edit is created before the filter edit.
+        edits = [w for w in dialog.findChildren(QLineEdit) if gt.class_name(w) == "LineEdit"]
+        buttons = [b for b in dialog.findChildren(QAbstractButton) if b.text().replace("&", "") == "Open"]
+        if not edits or not buttons:
+            report("NOTE open dialog edits %r, buttons %r" % ([gt.class_name(w) for w in dialog.findChildren(QLineEdit)],
+                                                          [b.text() for b in dialog.findChildren(QAbstractButton)]))
+            return False
+        edits[0].setText(path)
+        buttons[0].click()
+        return True
+
+    def wait_returned(flag, label):
+        ok = yield ("until", lambda: flag["done"], DIALOG_TIMEOUT_S)
+        require(ok, label + " returned", "modal is %r" % modal_class())
+        yield ("sleep", SETTLE_MS)
+        check(modal_class() is None, label + " leaves no dialog open (modal is %r)" % modal_class())
+
+    def file_action(name):
+        win = main_window()
+        return win.findChild(QAction, name) if win is not None else None
+
+    def through_file_dialog(name, path, label):
+        """Triggers the File menu action called name and chooses path in its open dialog."""
+        action = file_action(name)
+        require(action is not None and action.isEnabled(), "the File menu has an enabled " + label)
+        flag = {}
+        later(action.trigger, flag)
+        ok = yield ("until", lambda: modal_class() == "SequenceFileDialog", DIALOG_TIMEOUT_S)
+        require(ok, label + " opens a file dialog", "modal is %r" % modal_class())
+        require(submit_open_dialog(path), label + ": chose " + os.path.basename(path))
+        yield from wait_returned(flag, label)
+
+    def activate(menu, action, label):
+        """Activates action in the open menu with Return, as a keyboard user would, so a blocking
+        exec() returns it."""
+        flag = {}
+
+        def fire():
+            menu.setActiveAction(action)
+            QApplication.sendEvent(menu, QKeyEvent(QEvent.KeyPress, Qt.Key_Return, Qt.NoModifier))
+
+        later(fire, flag)
+        yield from wait_returned(flag, label)
+
+    def update_from_file_menu():
+        win = main_window()
+        menu = win.findChild(QMenu, "menuUpdateFromTemplate") if win is not None else None
+        require(menu is not None, "the File menu has Update from Template")
+        menu.popup(win.mapToGlobal(QPoint(40, 40)))
+        ok = yield ("until", menu.isVisible, DIALOG_TIMEOUT_S)
+        require(ok, "File > Update from Template opens")
+        entries = [a for a in menu.actions() if a.isEnabled() and a.data()]
+        require(len(entries) == 1, "File > Update from Template lists the one import (%r)" % [a.text() for a in menu.actions()])
+        yield from activate(menu, entries[0], "File > Update from Template > " + entries[0].text())
+
+    def graph_view():
+        views = [v for v in gt.widgets_of("NodeGraph") if v.isVisible()]
+        return views[0] if views else None
+
+    def graph_menu(name, action_name, label):
+        """Right-clicks node name in the node graph and picks the context-menu action action_name."""
+        node = app.getNode(name)
+        require(node is not None, label + ": " + name + " exists")
+        app.selectNode(node, True)
+        view = graph_view()
+        require(view is not None, label + ": the node graph is up")
+        x, y = node.getPosition()
+        w, h = node.getSize()
+        centre = QPointF(x + w / 2.0, y + h / 2.0)
+        view.centerOn(centre)
+        QApplication.processEvents()
+        pos = QPointF(view.mapFromScene(centre))
+        port = view.viewport()
+        flag = {}
+
+        def press():
+            QApplication.sendEvent(port, QMouseEvent(QEvent.MouseButtonPress, pos, QPointF(port.mapToGlobal(pos)),
+                                                     Qt.RightButton, Qt.RightButton, Qt.NoModifier))
+            QApplication.sendEvent(port, QMouseEvent(QEvent.MouseButtonRelease, pos, QPointF(port.mapToGlobal(pos)),
+                                                     Qt.RightButton, Qt.NoButton, Qt.NoModifier))
+
+        later(press, flag)
+        ok = yield ("until", lambda: isinstance(QApplication.activePopupWidget(), QMenu), DIALOG_TIMEOUT_S)
+        require(ok, label + ": right-clicking " + name + " opens the node graph's menu")
+        menu = QApplication.activePopupWidget()
+        found = [a for a in menu.actions() if a.objectName() == action_name]
+        if not found:
+            menu.close()
+        require(len(found) == 1, label + ": the menu has " + action_name, "items %r" % [a.text() for a in menu.actions()])
+        menu.setActiveAction(found[0])
+        QApplication.sendEvent(menu, QKeyEvent(QEvent.KeyPress, Qt.Key_Return, Qt.NoModifier))
+        yield from wait_returned(flag, label)
+
+    def escape(widget):
+        QApplication.sendEvent(widget, QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier))
+        QApplication.sendEvent(widget, QKeyEvent(QEvent.KeyRelease, Qt.Key_Escape, Qt.NoModifier))
+        QApplication.processEvents()
+
     def snapshot(names):
         """name -> (size, input's script name) for each node, None for a node that is not there."""
         state = {}
@@ -204,9 +333,7 @@ try:
 
         gt.section("import and edit")
         shutil.copyfile(clean_v1, live)
-        key = app.importTemplate(live)
-        require(bool(key), "import template version 1")
-        yield ("sleep", SETTLE_MS)
+        yield from through_file_dialog("actionImportTemplate", live, "File > Import Template...")
         blur1 = app.getNode("Blur1")
         blur2 = app.getNode("Blur2")
         require(blur1 is not None and blur2 is not None, "the import created Blur1 and Blur2")
@@ -215,24 +342,34 @@ try:
         blur2.getParam(SIZE).set(CLEAN_ARTIST_SIZE, CLEAN_ARTIST_SIZE)
         yield ("sleep", SETTLE_MS)
 
-        require(app.compareWithTemplateBase(key), "compare with the template's base")
+        yield from graph_menu("Blur2", "actionGraphCompareWithTemplateBase", "Compare with Template Base")
         ok = yield ("until", lambda: app.getDiffTint(app.getNode("Blur2")) != "", POLL_TIMEOUT_S)
         check(ok, "the comparison with the template's base tints the edited Blur2")
         check(app.getDiffTint(app.getNode("Blur2")) == "changed", "Blur2 is tinted as changed (%r)" % app.getDiffTint(app.getNode("Blur2")))
         check(app.getDiffTint(app.getNode("Blur1")) == "", "the untouched Blur1 is not tinted (%r)" % app.getDiffTint(app.getNode("Blur1")))
-        app.clearGraphComparison()
-        QApplication.processEvents()
+        view = graph_view()
+        require(view is not None, "the node graph is up for Escape")
+        escape(view)
         yield ("sleep", SETTLE_MS)
+        check(app.getDiffTint(app.getNode("Blur2")) == "", "Escape in the node graph clears the comparison")
         check(app.getDiffGhostCount() == 0, "no ghost is drawn after clearing the comparison")
+
+        yield from through_file_dialog("actionCompareWithFile", clean_v1, "File > Compare with File...")
+        ok = yield ("until", lambda: app.getDiffTint(app.getNode("Blur2")) == "changed", POLL_TIMEOUT_S)
+        check(ok, "comparing with version 1's file tints the edited Blur2 as changed (%r)" % app.getDiffTint(app.getNode("Blur2")))
+        check(app.getDiffTint(app.getNode("Blur1")) == "", "the file comparison leaves Blur1 untinted (%r)" % app.getDiffTint(app.getNode("Blur1")))
+        panels = gt.widgets_of("NodeDiffPanel")
+        require(len(panels) == 1, "the Gui has its Node Diff panel")
+        escape(panels[0])
+        yield ("sleep", SETTLE_MS)
+        check(app.getDiffTint(app.getNode("Blur2")) == "", "Escape in the Node Diff panel clears the comparison")
 
         gt.section("clean update")
         shutil.copyfile(clean_v2, live)
         before = snapshot(names)
         report("NOTE before the update %r" % (before,))
         check(before["Blur3"] is None, "Blur3 is absent before the update")
-        count = app.updateFromTemplate(key)
-        require(count == 0, "the update to version 2 raises no conflict (got %d)" % count)
-        yield ("sleep", SETTLE_MS)
+        yield from update_from_file_menu()
         blur1 = app.getNode("Blur1")
         blur2 = app.getNode("Blur2")
         blur3 = app.getNode("Blur3")
@@ -266,16 +403,14 @@ try:
         require(app.resetProject(), "reset the project for the conflicted scenario")
         yield ("sleep", SETTLE_MS)
         shutil.copyfile(conflict_v1, live)
-        key = app.importTemplate(live)
-        require(bool(key), "import the conflicted scenario's template version 1")
-        yield ("sleep", SETTLE_MS)
+        yield from through_file_dialog("actionImportTemplate", live, "File > Import Template... (conflicted scenario)")
         for name in ("Blur1", "Blur2"):
             node = app.getNode(name)
             require(node is not None, "the import created " + name)
             node.getParam(SIZE).set(CONFLICT_ARTIST[name], CONFLICT_ARTIST[name])
         shutil.copyfile(conflict_v2, live)
-        count = app.updateFromTemplate(key)
-        require(count == 2, "the update raises one conflict per edited size (got %d)" % count)
+        count = 2
+        yield from graph_menu("Blur1", "actionGraphUpdateFromTemplate", "Update from Template")
         ok = yield ("until", lambda: panel_shown() and len(rows()) == count, POLL_TIMEOUT_S)
         require(ok, "the Merge Conflicts panel lists the conflicts")
         yield ("sleep", SETTLE_MS)

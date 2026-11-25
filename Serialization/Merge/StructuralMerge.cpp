@@ -520,12 +520,15 @@ namespace MergeDetail {
                         const std::string& id = node->node->id;
                         const std::vector<std::string> mineNodes = chainNodes(*context, m, b, mineChain);
                         const std::vector<std::string> theirsNodes = chainNodes(*context, t, b, theirsChain);
-                        conflict.base.connections = { MergeConflictConnection { id, label, b } };
+                        // Every side puts mine's tail back on base: a mine node another artist
+                        // node reads survives the pruning and must keep mine's wiring.
+                        const MergeConflictConnection mineTailToBase { mineTail.first, mineTail.second, b };
+                        conflict.base.connections = { MergeConflictConnection { id, label, b }, mineTailToBase };
                         conflict.base.removedNodes = mineNodes;
                         conflict.base.removedNodes.insert(conflict.base.removedNodes.end(), theirsNodes.begin(), theirsNodes.end());
-                        conflict.mine.connections = { MergeConflictConnection { id, label, m }, MergeConflictConnection { mineTail.first, mineTail.second, b } };
+                        conflict.mine.connections = { MergeConflictConnection { id, label, m }, mineTailToBase };
                         conflict.mine.removedNodes = theirsNodes;
-                        conflict.theirs.connections = { MergeConflictConnection { id, label, t } };
+                        conflict.theirs.connections = { MergeConflictConnection { id, label, t }, mineTailToBase };
                         conflict.theirs.removedNodes = mineNodes;
                         context->conflicts.push_back(conflict);
                     } else if (reparent != context->reparentConflicts.end()) {

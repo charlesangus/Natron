@@ -521,6 +521,12 @@ NodeDiffPanel::leaveEvent(QEvent* e)
 void
 NodeDiffPanel::keyPressEvent(QKeyEvent* e)
 {
+    if ((e->key() == Qt::Key_Escape) && (e->modifiers() == Qt::NoModifier) && _imp->gui->getGraphComparison()) {
+        _imp->gui->clearGraphComparison();
+        e->accept();
+
+        return;
+    }
     handleUnCaughtKeyPressEvent(e);
     QWidget::keyPressEvent(e);
 }

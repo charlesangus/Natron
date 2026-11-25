@@ -394,6 +394,21 @@ TEST(ConflictResolution, AStructuralInsertKeepsAnInsertedNodeReadElsewhere)
     EXPECT_EQ(inputOf(project, "Blur1", "Source"), "TplTransform");
     EXPECT_TRUE(nodeAt(project, "ArtistBlur") != nullptr);
     EXPECT_EQ(inputOf(project, "ArtistView", ""), "ArtistBlur");
+    EXPECT_EQ(inputOf(project, "ArtistBlur", "Source"), "Grade1");
+}
+
+TEST(ConflictResolution, AStructuralInsertOnBaseKeepsTheRetainedNodesWiring)
+{
+    Scenario scenario = scenarios().at("both-insert-input0");
+    scenario.mine.add("ArtistView", "Dot", "m:view", { { "", "ArtistBlur" } });
+    const Serialization::MergeResult result = Projects(scenario).merge();
+    const MergeConflict* conflict = conflictOn(result, MergeConflictKind::eStructuralInsert, "Blur1");
+    ASSERT_TRUE(conflict != nullptr);
+    const ProjectSerialization project = resolved(result.merged, side(*conflict, ResolutionSide::eBase));
+    EXPECT_EQ(inputOf(project, "Blur1", "Source"), "Grade1");
+    EXPECT_TRUE(nodeAt(project, "TplTransform") == nullptr);
+    EXPECT_TRUE(nodeAt(project, "ArtistBlur") != nullptr);
+    EXPECT_EQ(inputOf(project, "ArtistBlur", "Source"), "Grade1");
 }
 
 TEST(ConflictResolution, AReparentPutsTheNodeInTheChosenSidesGroup)

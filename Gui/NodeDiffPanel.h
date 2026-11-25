@@ -57,13 +57,10 @@ public:
 
     ~NodeDiffPanel() override;
 
-    // Lists graph's selection once control returns to the event loop.
     void scheduleRefresh(NodeGraph* graph);
 
-    // The rows as listed, one string per row.
     QStringList getRows() const;
 
-    // The rows of one node's change, without its heading row.
     static QStringList describe(const ProjectMerge::NodeChange& change);
 
 public Q_SLOTS:

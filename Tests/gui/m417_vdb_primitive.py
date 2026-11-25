@@ -5,10 +5,11 @@ at the origin, into USDRender. The fixture is a fog volume sphere of radius 1 at
 float grid named "density"; $NATRON_M417_VDB overrides its path. The script checks:
   - with Viewer1 on the merge, the scene view draws the stage and lists a "volume" guide, the
     volume's bounding box, and the pixels near it are the guide colour;
-  - the volume is drawn: the centre of the framed view differs from the empty view's background;
+  - the volume is drawn: with the grid hidden and the Viewer's gain at 3 f-stops, the centre of the
+    framed view differs from the empty view's background;
   - with Viewer1 on the USDRender (Storm), the render's centre differs from its corner.
 
-Screenshots for sign-off: m417-volume-scene, m417-volume-empty, m417-volume-render.
+Screenshots for sign-off: m417-volume-scene, m417-volume-drawn, m417-volume-empty, m417-volume-render.
 
 Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go to $NATRON_GUI_TEST_OUT
 (default build/gui-test-out/). Exit status 0 only if every check passed.
@@ -25,6 +26,8 @@ STARTUP_TIMEOUT_S = 60.0
 SEARCH_RADIUS = 4
 # How far apart two colours must be, summed over the channels, to count as different.
 COLOUR_DIFFERENCE = 24
+PATCH_RADIUS = 4
+VOLUME_GAIN_STOPS = 3.0
 
 try:
     import NatronEngine
@@ -64,6 +67,9 @@ try:
         viewer = app.createNode("Viewer")
     require(viewer is not None, "a Viewer exists")
     viewer.setPosition(250, 360)
+    enable_gain = viewer.getParam("enableGain")
+    gain = viewer.getParam("gain")
+    require(enable_gain is not None and gain is not None, "the Viewer has enableGain and gain parameters")
 
     def view():
         views = [w for w in widgets_of("SceneViewport") if w.isVisible()]
@@ -112,6 +118,13 @@ try:
         c = image.pixelColor(x, y)
         return (c.red(), c.green(), c.blue())
 
+    def median_around(image):
+        """Per channel, the median over a patch at the centre, so a guide line through it does not count."""
+        cx, cy = image.width() // 2, image.height() // 2
+        samples = [rgb(image, cx + dx, cy + dy) for dy in range(-PATCH_RADIUS, PATCH_RADIUS + 1)
+                   for dx in range(-PATCH_RADIUS, PATCH_RADIUS + 1)]
+        return tuple(sorted(c[i] for c in samples)[len(samples) // 2] for i in range(3))
+
     def differs(a, b):
         return sum(abs(p - q) for p, q in zip(a, b)) > COLOUR_DIFFERENCE
 
@@ -136,6 +149,11 @@ try:
         require(ok, "the scene view shows the stage (%r)" % (v.property("natronSceneError") if v else None,))
         v.activateWindow()
         v.setFocus()
+        # The grid's ground axes cross at the framed origin, the volume's centre, and are drawn over it.
+        if v.property("natronSceneShowGrid"):
+            QTest.keyClick(v, Qt.Key_G, Qt.ControlModifier)
+        ok = yield ("until", lambda: v.property("natronSceneShowGrid") is False, POLL_TIMEOUT_S)
+        require(ok, "Ctrl+G hides the grid")
         QTest.keyClick(v, Qt.Key_A)
         yield settle()
 
@@ -147,22 +165,30 @@ try:
         image = save(v, "m417-volume-scene")
         point = list(guides.values())[0]
         check(colour_near(image, point, is_guide_colour), "the volume guide is drawn in the guide colour")
-        centre = rgb(image, image.width() // 2, image.height() // 2)
 
         section("volume drawn")
+        # Storm's unlit-by-scene fog is close to the background grey; the gain brightens what Storm
+        # rendered and leaves the background as it is.
+        enable_gain.setValue(True)
+        gain.setValue(VOLUME_GAIN_STOPS)
+        yield settle()
+        centre = median_around(save(v, "m417-volume-drawn"))
         read.getParam("grids").setValue("^*")
         ok = yield ("until", lambda: scene_drawn() and len(volume_guides()) == 0, POLL_TIMEOUT_S)
         check(ok, "no grid selected leaves no volume guide (%r)" % (list(volume_guides().keys()),))
         yield settle()
         empty = save(v, "m417-volume-empty")
-        background = rgb(empty, empty.width() // 2, empty.height() // 2)
+        background = median_around(empty)
         report("NOTE centre with the volume %r, without %r" % (centre, background))
         check(differs(centre, background), "the volume changes the centre of the view")
         read.getParam("grids").setValue("*")
         ok = yield ("until", lambda: scene_drawn() and len(volume_guides()) == 1, POLL_TIMEOUT_S)
         check(ok, "selecting every grid again brings the volume back")
+        gain.setValue(0.0)
+        enable_gain.setValue(False)
 
         section("Storm render")
+        viewer.disconnectInput(0)
         require(viewer.connectInput(0, render), "connect the Viewer to the USDRender")
         ok = yield ("until", lambda: any(w.isVisible() for w in widgets_of("ViewerGL")), POLL_TIMEOUT_S)
         require(ok, "the image viewer is up")

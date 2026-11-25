@@ -46,6 +46,10 @@ tools/ci/remote/build.sh --mode    # prints the resolved mode
   packages an AppImage: llvmpipe raises SIGFPE under the `-DDEBUG` traps in
   the container, so `debug` takes neither `--appimage` nor `--gui`. Use it with
   `--tests` to reproduce a PR CI failure.
+  PR CI (`ci.yml`) runs only for a PR that is ready for review: a draft gets
+  no CI until it is marked ready (`gh pr ready`), which starts the full run.
+  On a draft only the `Build and test` check runs, and it fails on purpose,
+  because a skipped required check would count as passing.
 - Performance: a `release` AppImage (-O2), measured on the target host. Never take performance numbers from a GitHub runner.
 
 `stage-bundle.sh` strips the ELF files of every preset's bundle, `fast`
@@ -54,7 +58,7 @@ included, not only `release`. Set `NATRON_STAGE_NO_STRIP=1` to opt out.
 ## Usage
 
 ```
-tools/ci/remote/build.sh <fast|release|debug> [--tests] [--record-goldens] [--shuffle-seeds <n,n,...>] [--appimage] [--no-remote-ccache] [--debug-symbols] [--cmake-arg <arg>]... [--gui "<script> ..."]
+tools/ci/remote/build.sh <fast|release|debug> [--tests] [--ctest-regex <re>] [--record-goldens] [--shuffle-seeds <n,n,...>] [--appimage] [--no-remote-ccache] [--debug-symbols] [--cmake-arg <arg>]... [--gui "<script> ..."]
 tools/ci/remote/build.sh <fast|release> --from-run <run-id> --gui "<script> ..."
 ```
 
@@ -71,6 +75,13 @@ tools/ci/remote/build.sh <fast|release> --from-run <run-id> --gui "<script> ..."
   did, and an unknown name exits with the usage line before dispatching.
   The workflow takes it as the `schedulers` input, a comma-separated list
   that defaults to `legacy,taskgraph`.
+- `--ctest-regex <re>` implies `--tests` and makes each ctest leg run only the
+  ctest entries matching `<re>` (`ctest -R`, through `test.sh`'s
+  `NATRON_CTEST_REGEX`; entries are whole suites, e.g. `'^NativeBlurTest$'`).
+  A regex matching no entry fails the leg, and the smoke test still runs.
+  It is for intermediate fix builds only: a milestone's final verification
+  gate must not use it, so the full suite is green. The workflow takes it as
+  the `ctest_regex` input, sent only when given.
 - `--record-goldens` implies `--tests`. It also records the native golden
   renders of `NativeGoldenTest`, `NativeIDistortAmountTest` and
   `NativeIWarpTest` on the runner and downloads them into
@@ -201,21 +212,26 @@ Merging main into the branch fixes it. Presets differ too: most gates build
 
 ## GUI checks in remote mode
 
-`--gui "<script> ..."` runs `Tests/gui/` scripts on GitHub Actions, one job
-per script in parallel, against the run's AppImage. It implies `--appimage`,
-so not with `debug`:
+`--gui "<script> ..."` runs `Tests/gui/` scripts on GitHub Actions against the
+run's AppImage, in at most 4 parallel jobs (`GUI · group <i> of <n>`) that each
+run a round-robin share of the scripts one after another, so a gate leaves
+runner slots free for others. It implies `--appimage`, so not with `debug`:
 
 ```
 tools/ci/remote/build.sh fast --gui "Tests/gui/m55_node_graph.py Tests/gui/m45_tab_menu.py"
 tools/ci/remote/build.sh release --from-run 12345678901 --gui "Tests/gui/m55_node_graph.py"
 ```
 
-Each job runs `Tests/gui/run-gui-test.sh` in the dev image with a 1920x1080
-screen and a 900 s script timeout, and uploads its `NATRON_GUI_TEST_OUT`
-(screenshots, `results.txt`, `natron.log`) as `gui-<name>-<preset>-<sha>`,
-even when the script fails. A failing or timed-out script fails only its own
-job. Git LFS fixtures are fetched only when the script names them (by file
-name), so most scripts download none.
+Each job runs `Tests/gui/run-gui-test.sh` per script in the dev image with a
+1920x1080 screen, a 900 s Natron timeout and a 25-minute limit on the whole
+script, each on its own Xvfb display, and uploads each script's
+`NATRON_GUI_TEST_OUT` (screenshots, `results.txt`, `natron.log`, plus the
+runner's output in `run.log` and its exit code in `exit-status`) as
+`gui-<name>-<preset>-<sha>`, even when the script fails. A failing or
+timed-out script does not stop the rest of its group; the job fails if any of
+its scripts did. A job has 16 upload steps, so a list of more than 64 scripts
+is spread over more than 4 jobs. Git LFS fixtures are fetched only when a
+script of the group names them (by file name), so most groups download few.
 
 `--from-run <run-id>` skips the build and uses the `natron-<preset>-<sha>`
 AppImage of an earlier `remote-build` run (artifacts last 7 days). Only a run
@@ -232,7 +248,7 @@ testing the run's AppImage under the dev image of the run's commit.
 
 The outputs land in `build/remote/<preset>/gui/<name>/`. The script prints a
 `gui: PASS|FAIL <script> (<n> passed, <n> failed): <dir>` line per script,
-judged by the job's conclusion with the counts from `results.txt`, and exits
+judged by its `exit-status` with the counts from `results.txt`, and exits
 non-zero if any script failed.
 
 To run a script locally instead, run it inside the natron-dev container

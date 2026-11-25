@@ -5,7 +5,9 @@ on:
   push:
     branches:
     - main
+  # A draft PR gets no CI; marking it ready (ready_for_review) starts the full run.
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     branches:
     - main
     - 'feature/**'
@@ -24,6 +26,7 @@ permissions:
 jobs:
   dev-image:
     name: Dev image
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     permissions:
       contents: read
       packages: write
@@ -33,6 +36,7 @@ jobs:
   build:
     name: Build · debug
     needs: dev-image
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     container:
       image: ${{ needs.dev-image.outputs.image }}
@@ -244,6 +248,7 @@ jobs:
   build-release:
     name: Build · release
     needs: dev-image
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     container:
       image: ${{ needs.dev-image.outputs.image }}
@@ -339,6 +344,7 @@ jobs:
   ctest:
     name: Test · ${{ matrix.label }} scheduler
     needs: [dev-image, build]
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -462,6 +468,14 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
+      # A skipped required check reads as passing, so on a draft, where every leg is skipped,
+      # this job runs and fails instead. Marking the PR ready starts a run that replaces it.
+      - name: Refuse to pass a draft PR
+        if: github.event_name == 'pull_request' && github.event.pull_request.draft
+        run: |
+          echo "::error::draft PR: CI runs once the PR is marked ready for review" >&2
+          exit 1
+
       - name: Require the release build to pass
         env:
           RESULT: ${{ needs.build-release.result }}

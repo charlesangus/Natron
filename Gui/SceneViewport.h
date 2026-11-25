@@ -478,6 +478,14 @@ public:
 
     void requestStageUnload(const std::vector<std::string>& paths);
 
+    /**
+     * @brief SceneStage::requestLoadToKind() or requestUnloadBelowKind() on the stage. False, asking
+     * nothing, before the first sync has made the stage: a walk to a kind needs one to walk.
+     **/
+    bool requestStageLoadToKind(const std::vector<std::string>& roots, const std::string& kind);
+
+    bool requestStageUnloadBelowKind(const std::vector<std::string>& roots, const std::string& kind);
+
     void cancelStageLoads();
 
     // Drops the load requests at paths that no batch has taken yet.
@@ -1284,8 +1292,8 @@ public Q_SLOTS:
     void cancelPendingLoads();
 
     /**
-     * @brief This viewer's draw state on a prim path, by script name: bbox, children, full, loadAll
-     * or hidden. False if the path or the name is not one. Never edits a stage or waits on Hydra.
+     * @brief This viewer's draw state on a prim path, by script name: bbox, expand, geometry, loadAndDraw
+     * or hide. False if the path or the name is not one. Never edits a stage or waits on Hydra.
      **/
     bool setDrawState(const QString& path, const QString& state);
     void clearDrawState(const QString& path);
@@ -1301,6 +1309,25 @@ public Q_SLOTS:
     bool setDrawStateOnRows(const QStringList& paths, const QString& state);
     void clearDrawStatesBelowRows(const QStringList& paths);
     void resetDrawStatesToGraphOnRows(const QStringList& paths);
+    /**
+     * @brief Scoped load, unload and draw state edits on rows, for the scene graph's bulk commands.
+     * scope is "selected", the rows themselves; "below", the rows and everything below them; or a
+     * kind token (assembly, component, subcomponent or a registered custom kind), the prims of that
+     * kind under the rows as walkToKind() finds them. Each returns what it did as one line for a
+     * status line, or an empty string, having done nothing, if a path, the scope or the state is
+     * not one, or the scope does not apply.
+     *
+     * loadRows() with a kind loads down to and including that kind, level by level, and unloadRows()
+     * with one unloads the payloads below each prim of that kind; "below" does not apply to
+     * unloadRows(), which unloads everything below already. setDrawStateOnRowsScoped() takes a
+     * draw state's script name, or "clearBelow" to clear the states below; "below" sets the state on
+     * the rows and clears every state below them, in one edit, and does not apply to clearBelow. A
+     * kind scope edits the loaded prims of that kind only, and the line counts the unloaded
+     * payloads the walk could not look inside.
+     **/
+    QString loadRows(const QStringList& paths, const QString& scope);
+    QString unloadRows(const QStringList& paths, const QString& scope);
+    QString setDrawStateOnRowsScoped(const QStringList& paths, const QString& state, const QString& scope);
     void clearDrawStates();
     // The state a path resolves to, effective or inherited. Waits for an edit under way.
     QString resolvedDrawState(const QString& path) const;

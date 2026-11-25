@@ -62,9 +62,9 @@ TEST(SceneDrawStates, StateNamesReadAsScriptNames)
         ASSERT_TRUE(sceneDrawStateFromName(sceneDrawStateName(state), &parsed));
         EXPECT_EQ(state, parsed);
     }
-    EXPECT_STREQ("loadAll", sceneDrawStateName(eSceneDrawStateLoadAll));
+    EXPECT_STREQ("loadAndDraw", sceneDrawStateName(eSceneDrawStateLoadAll));
     SceneDrawStateEnum parsed = eSceneDrawStateFull;
-    EXPECT_FALSE(sceneDrawStateFromName("Load All", &parsed));
+    EXPECT_FALSE(sceneDrawStateFromName("Load + Draw", &parsed));
 }
 
 TEST(SceneDrawStates, NothingSetResolvesToFull)
@@ -735,9 +735,9 @@ TEST(SceneDrawStates, SavedViewRestoresEveryStateIncludingMissingAndSwitchedRows
 
     Serialization::SceneViewSerialization serialization;
     sceneViewToSerialization(saved, rules, &serialization);
-    EXPECT_EQ("children", serialization.drawStates["/World"]);
-    EXPECT_EQ((std::list<std::string> { "/World", "/World/a" }), serialization.impliedChildren);
-    EXPECT_EQ("hidden", serialization.drawStates["/not/in/this/scene"]);
+    EXPECT_EQ("expand", serialization.drawStates["/World"]);
+    EXPECT_EQ((std::list<std::string> { "/World", "/World/a" }), serialization.impliedExpand);
+    EXPECT_EQ("hide", serialization.drawStates["/not/in/this/scene"]);
 
     SetStates readStates;
     SceneLoadRules readRules;
@@ -800,13 +800,13 @@ TEST(SceneDrawStates, SavedViewLeavesOutWhatIsNotAPathOrAName)
     Serialization::SceneViewSerialization serialization;
     serialization.drawStates["/ok"] = "bbox";
     serialization.drawStates["relative/path"] = "bbox";
-    serialization.drawStates["/trailing/"] = "full";
-    serialization.drawStates["/double//slash"] = "full";
+    serialization.drawStates["/trailing/"] = "geometry";
+    serialization.drawStates["/double//slash"] = "geometry";
     serialization.drawStates["/unknown"] = "open";
     serialization.loadRules["/ok"] = "all";
     serialization.loadRules["/bad"] = "some";
     serialization.loadRules["nope"] = "only";
-    serialization.impliedChildren.push_back("/ok");
+    serialization.impliedExpand.push_back("/ok");
 
     SetStates states;
     SceneLoadRules rules;

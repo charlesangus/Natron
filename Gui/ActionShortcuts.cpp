@@ -497,6 +497,66 @@ resetMouseActionBindings(MouseAction* action,
     action->buttons = action->defaultButtons;
 }
 
+const std::vector<SceneGraphBulkKeyBinding>&
+getSceneGraphBulkKeyBindings()
+{
+    static const std::vector<SceneGraphBulkKeyBinding> bindings = []() {
+        struct Named {
+            const char* id;
+            const char* label;
+        };
+        const Named actions[] = {
+            { "load", "Load" },
+            { "unload", "Unload" },
+            { "bbox", "Draw BBox" },
+            { "expand", "Draw Expand" },
+            { "geometry", "Draw Geometry" },
+            { "loadAndDraw", "Load + Draw" },
+            { "hide", "Hide" },
+            { "clearBelow", "Clear Below" },
+        };
+        const Named scopes[] = {
+            { "selected", "Selected" },
+            { "below", "Below" },
+            { "assembly", "Assembly" },
+            { "component", "Component" },
+            { "subcomponent", "Subcomponent" },
+        };
+        std::vector<SceneGraphBulkKeyBinding> all;
+        for (const Named& action : actions) {
+            const std::string id = action.id;
+            const bool loads = (id == "load") || (id == "unload");
+            for (const Named& scope : scopes) {
+                const std::string where = scope.id;
+                if ((where == "below") && ((id == "unload") || (id == "clearBelow"))) {
+                    continue;
+                }
+                // Worded as the row menu's path, where Load has a Selected entry and Draw State's
+                // own entries act on the selection.
+                std::string description = std::string("Scene Graph: ") + action.label;
+                if (where == "selected") {
+                    if (loads) {
+                        description += " Selected";
+                    }
+                } else if (where == "below") {
+                    description += " Below";
+                } else if (id == "unload") {
+                    description += std::string(" Below ") + scope.label;
+                } else if (id == "clearBelow") {
+                    description += std::string(" Each ") + scope.label;
+                } else {
+                    description += std::string(" To ") + scope.label;
+                }
+                all.push_back(SceneGraphBulkKeyBinding { "sceneGraphBulk_" + id + "_" + where, description, id, where });
+            }
+        }
+
+        return all;
+    }();
+
+    return bindings;
+}
+
 const std::vector<Viewer3DKeyBinding>&
 getViewer3DDefaultKeyBindings()
 {
@@ -530,9 +590,9 @@ getViewer3DDefaultKeyBindings()
         { kShortcutIDActionViewer3DSetSelectionOnNode, kShortcutDescActionViewer3DSetSelectionOnNode, Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_E, Qt::NoModifier, Qt::Key(0) },
         { kShortcutIDActionViewer3DCreateFromSelection, kShortcutDescActionViewer3DCreateFromSelection, Qt::NoModifier, Qt::Key_Tab, Qt::NoModifier, Qt::Key(0) },
         // Draw states of the picked box or the selection: down opens rows up, up boxes their parents.
-        { kShortcutIDActionViewer3DDrawChildren, kShortcutDescActionViewer3DDrawChildren, Qt::NoModifier, Qt::Key_Down, Qt::NoModifier, Qt::Key(0) },
-        { kShortcutIDActionViewer3DDrawFull, kShortcutDescActionViewer3DDrawFull, Qt::ShiftModifier, Qt::Key_Down, Qt::NoModifier, Qt::Key(0) },
-        { kShortcutIDActionViewer3DDrawLoadAll, kShortcutDescActionViewer3DDrawLoadAll, Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_Down, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DDrawExpand, kShortcutDescActionViewer3DDrawExpand, Qt::NoModifier, Qt::Key_Down, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DDrawGeometry, kShortcutDescActionViewer3DDrawGeometry, Qt::ShiftModifier, Qt::Key_Down, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DDrawLoadAndDraw, kShortcutDescActionViewer3DDrawLoadAndDraw, Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_Down, Qt::NoModifier, Qt::Key(0) },
         { kShortcutIDActionViewer3DDrawParentBBox, kShortcutDescActionViewer3DDrawParentBBox, Qt::NoModifier, Qt::Key_Up, Qt::NoModifier, Qt::Key(0) },
         // Maya's pickwalk, on Alt: the plain arrows step frames and set draw states.
         { kShortcutIDActionViewer3DPickwalkParent, kShortcutDescActionViewer3DPickwalkParent, Qt::AltModifier, Qt::Key_Left, Qt::NoModifier, Qt::Key(0) },

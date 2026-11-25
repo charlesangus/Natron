@@ -1,0 +1,19 @@
+{
+    "Plugins": [
+        {
+            "Info": {
+                "Kinds": {
+                    "natronTestTree": {
+                        "baseKind": "component"
+                    },
+                    "natronTestSet": {
+                        "baseKind": "group"
+                    }
+                }
+            },
+            "Name": "natronTestKinds",
+            "Root": ".",
+            "Type": "resource"
+        }
+    ]
+}

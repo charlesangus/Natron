@@ -70,7 +70,7 @@ rowPredicate()
     return UsdTraverseInstanceProxies(UsdPrimIsActive && UsdPrimIsDefined && !UsdPrimIsAbstract);
 }
 
-// Mirrors the filter: the rule nearest a prim, its own included, decides it, and a Children row
+// Mirrors the filter: the rule nearest a prim, its own included, decides it, and an Expand row
 // shows itself alone.
 bool
 parentShown(const SceneDrawFilter::Rules& rules,

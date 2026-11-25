@@ -299,16 +299,16 @@ try:
         check(opened_payloads() == [], "no payload file is open before any draw state (%r)" % (opened_payloads(),))
 
         section("one asset loaded, the rest boxed, under Storm")
-        ok = QMetaObject.invokeMethod(view(), "setDrawState", Q_ARG("QString", LOADED), Q_ARG("QString", "loadAll"))
-        require(ok, "Load All on %s" % LOADED)
+        ok = QMetaObject.invokeMethod(view(), "setDrawState", Q_ARG("QString", LOADED), Q_ARG("QString", "loadAndDraw"))
+        require(ok, "Load + Draw on %s" % LOADED)
         ok = QMetaObject.invokeMethod(view(), "setDrawStateOnRows", Q_ARG("QStringList", BOXED), Q_ARG("QString", "bbox"))
         require(ok, "BBox on %r" % (BOXED,))
-        # Load All under the drawn root draws nothing new, so it holds no rule: only the boxes do.
+        # Load + Draw under the drawn root draws nothing new, so it holds no rule: only the boxes do.
         ok = yield ("until", lambda: int(draw_stats().get("ruleCount", 0)) == len(BOXED), POLL_TIMEOUT_S)
         check(ok, "the view holds a rule for each boxed building (%r)" % (draw_stats().get("ruleCount"),))
         ok = yield ("until", lambda: payload_of(LOADED) in opened_payloads() and not num("natronSceneLoadsPending", 0),
                     LOAD_TIMEOUT_S)
-        check(ok, "Load All opens %s's payload (%r)" % (LOADED, opened_payloads()))
+        check(ok, "Load + Draw opens %s's payload (%r)" % (LOADED, opened_payloads()))
         yield from frame_all()
 
         section("Cycles")

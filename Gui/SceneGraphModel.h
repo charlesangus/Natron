@@ -239,8 +239,23 @@ public:
     // and the rows below it to the graph.
     typedef std::function<void(const QString& path, int state)> DrawStateWriter;
 
-    // "BBox", "Children", "Full", "Load All" or "Hidden".
+    // "BBox", "Expand", "Geometry", "Load + Draw" or "Hide".
     static QString drawStateLabel(int state);
+
+    // Status line phrases of the scene graph's bulk commands, for the panel and the viewer alike.
+    // "1 row", "3 rows".
+    static QString rowsText(int count);
+
+    // "components", or "natronTree prims" for a custom kind.
+    static QString kindPluralText(const QString& kind);
+
+    // "1 component", "2 natronTree prims".
+    static QString kindCountText(const QString& kind, int count);
+
+    // What a load or an unload of rows in scope ("selected", "below" or a kind) was asked to do.
+    static QString loadingText(int rows, const QString& scope);
+
+    static QString unloadingText(int rows, const QString& scope);
 
     // The draw state column's tooltip for a SceneDrawOriginEnum, naming node for a graph-set row.
     static QString drawOriginTip(int origin, const QString& node);

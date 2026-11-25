@@ -5,23 +5,23 @@ into Viewer1, and a second USDRead, Other, of a copy at scene_draw_column_other.
 shows. Rows: /World holding /World/A (holding /World/A/Deep/Leaf, a Cube), /World/B and /World/C,
 each an Xform holding a Cube. No row has a payload, so twirling one loads nothing.
 The column is found by its header, "Draw State". The script checks:
-  - with nothing set in the viewer, /World reads Full set by the USDRead's Initial Draw, and every
-    row below it reads Full, inherited: italic and dimmed;
+  - with nothing set in the viewer, /World reads Geometry set by the USDRead's Initial Draw, and every
+    row below it reads Geometry, inherited: italic and dimmed;
   - each of the five states, picked in the cell's editor on /World/B, reads back in the cell as
-    set, reaches the viewer, and a BBox row is boxed there; Load All, picked after Full, draws
+    set, reaches the viewer, and a BBox row is boxed there; Load + Draw, picked after Geometry, draws
     the same and posts nothing;
   - a row that inherits BBox looks unlike a row set to BBox;
-  - with /World boxed, Full on /World/A/Deep/Leaf from the row menu switches /World, /World/A and
-    /World/A/Deep to Children, and leaves /World/B and /World/C boxed;
+  - with /World boxed, Geometry on /World/A/Deep/Leaf from the row menu switches /World, /World/A and
+    /World/A/Deep to Expand, and leaves /World/B and /World/C boxed;
   - collapsing and expanding /World/A changes no state and posts nothing to the viewer;
   - Clear Below on /World keeps its own state and clears the rows under it;
   - Reset to Graph in a cell's editor clears the row and the rows below, and the panel's Reset to
     Graph button clears every row;
   - showing Other, by following the node selection, the column still edits Viewer1.
 
-Screenshots for sign-off: scene-column-default, scene-column-bbox, scene-column-children,
-scene-column-full, scene-column-loadAll, scene-column-hidden, scene-column-inherited,
-scene-column-deep-full, scene-column-clear-below, scene-column-reset, scene-column-other-node.
+Screenshots for sign-off: scene-column-default, scene-column-bbox, scene-column-expand,
+scene-column-geometry, scene-column-loadAndDraw, scene-column-hide, scene-column-inherited,
+scene-column-deep-geometry, scene-column-clear-below, scene-column-reset, scene-column-other-node.
 
 Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go to $NATRON_GUI_TEST_OUT
 (default build/gui-test-out/). Exit status 0 only if every check passed.
@@ -45,7 +45,7 @@ B = "/World/B"
 C = "/World/C"
 ROWS = [WORLD, A, DEEP, LEAF, B, C]
 # Script name and the label the column shows, in the editor's order.
-STATES = [("bbox", "BBox"), ("children", "Children"), ("full", "Full"), ("loadAll", "Load All"), ("hidden", "Hidden")]
+STATES = [("bbox", "BBox"), ("expand", "Expand"), ("geometry", "Geometry"), ("loadAndDraw", "Load + Draw"), ("hide", "Hide")]
 
 SCENE = """#usda 1.0
 (
@@ -366,22 +366,22 @@ try:
 
         section("defaults")
         label, inherited, italic = shown(WORLD)
-        check(label == "Full" and not inherited and not italic, "/World reads Full, set by the USDRead's Initial Draw (%r)" % (shown(WORLD),))
+        check(label == "Geometry" and not inherited and not italic, "/World reads Geometry, set by the USDRead's Initial Draw (%r)" % (shown(WORLD),))
         check(int(cell(WORLD).data(ORIGIN_ROLE)) == ORIGIN_GRAPH, "/World's state comes from the graph (%r)" % (cell(WORLD).data(ORIGIN_ROLE),))
         for path in ROWS[1:]:
             label, inherited, italic = shown(path)
-            check(label == "Full" and inherited and italic, "%s reads Full, inherited and in italics (%r)" % (path, shown(path)))
+            check(label == "Geometry" and inherited and italic, "%s reads Geometry, inherited and in italics (%r)" % (path, shown(path)))
         save("scene-column-default")
 
         section("the five states")
         for name, label in STATES:
             before = posted()
             check(pick_in_editor(B, label), "the editor of /World/B offers %s" % label)
-            if name == "loadAll":
-                # It follows Full, and with no payload to load both draw alike, so the viewer has
+            if name == "loadAndDraw":
+                # It follows Geometry, and with no payload to load both draw alike, so the viewer has
                 # nothing to post; the column below reads the state back from the viewer itself.
                 yield ("sleep", SETTLE_MS)
-                check(posted() == before, "Load All after Full on /World/B posts nothing (%d, was %d)" % (posted(), before))
+                check(posted() == before, "Load + Draw after Geometry on /World/B posts nothing (%d, was %d)" % (posted(), before))
             else:
                 ok = yield from reached(before)
                 check(ok, "%s on /World/B reaches the viewer" % label)
@@ -398,18 +398,18 @@ try:
         check(pick_in_editor(B, "BBox"), "BBox on /World/B")
         yield from reached(before)
         before = posted()
-        check(pick_in_editor(WORLD, "Children"), "Children on /World")
+        check(pick_in_editor(WORLD, "Expand"), "Expand on /World")
         yield from reached(before)
         tree().clearSelection()
         tree().selectionModel().setCurrentIndex(find(WORLD), QItemSelectionModel.NoUpdate)
         QApplication.processEvents()
         label, inherited, italic = shown(C)
-        check(label == "BBox" and inherited and italic, "/World/C inherits BBox from /World's Children (%r)" % (shown(C),))
+        check(label == "BBox" and inherited and italic, "/World/C inherits BBox from /World's Expand (%r)" % (shown(C),))
         check(shown(B)[0] == "BBox" and not shown(B)[1], "/World/B keeps the BBox set on it (%r)" % (shown(B),))
         check(cell_image(B) != cell_image(C), "an inherited BBox looks unlike a set one")
         save("scene-column-inherited")
 
-        section("Full deep down")
+        section("Geometry deep down")
         check(pick_in_editor(B, "Reset to Graph"), "Reset to Graph on /World/B")
         ok = yield ("until", lambda: shown(B)[1], POLL_TIMEOUT_S)
         check(ok, "/World/B inherits again (%r)" % (shown(B),))
@@ -417,17 +417,17 @@ try:
         check(pick_in_editor(WORLD, "BBox"), "BBox on /World")
         yield from reached(before)
         before = posted()
-        check(pick_in_menu(LEAF, "sceneGraphDrawState_full"), "the row menu of the leaf offers Full")
+        check(pick_in_menu(LEAF, "sceneGraphDrawState_geometry"), "the row menu of the leaf offers Geometry")
         ok = yield from reached(before)
-        check(ok, "Full on the leaf reaches the viewer")
+        check(ok, "Geometry on the leaf reaches the viewer")
         for path in (WORLD, A, DEEP):
-            check(shown(path)[0] == "Children" and not shown(path)[1], "%s switches to Children (%r)" % (path, shown(path)))
-        check(shown(LEAF)[0] == "Full" and not shown(LEAF)[1], "the leaf reads Full, set (%r)" % (shown(LEAF),))
+            check(shown(path)[0] == "Expand" and not shown(path)[1], "%s switches to Expand (%r)" % (path, shown(path)))
+        check(shown(LEAF)[0] == "Geometry" and not shown(LEAF)[1], "the leaf reads Geometry, set (%r)" % (shown(LEAF),))
         for path in (B, C):
             check(shown(path)[0] == "BBox" and shown(path)[1], "%s stays boxed, inherited (%r)" % (path, shown(path)))
         ok = yield ("until", lambda: set([B, C]) <= set(boxed()), POLL_TIMEOUT_S)
         check(ok, "the viewer boxes the siblings (%r)" % boxed())
-        save("scene-column-deep-full")
+        save("scene-column-deep-geometry")
 
         section("twirling")
         states = labels()
@@ -444,22 +444,22 @@ try:
         before = posted()
         check(pick_in_menu(WORLD, "sceneGraphDrawStateClearBelow"), "the row menu of /World offers Clear Below")
         yield from reached(before)
-        check(shown(WORLD)[0] == "Children" and not shown(WORLD)[1], "/World keeps its own state (%r)" % (shown(WORLD),))
+        check(shown(WORLD)[0] == "Expand" and not shown(WORLD)[1], "/World keeps its own state (%r)" % (shown(WORLD),))
         for path in (A, B, C):
             check(shown(path)[0] == "BBox" and shown(path)[1], "%s is cleared and inherits BBox (%r)" % (path, shown(path)))
         save("scene-column-clear-below")
         before = posted()
-        check(pick_in_editor(A, "Load All"), "Load All on /World/A")
+        check(pick_in_editor(A, "Load + Draw"), "Load + Draw on /World/A")
         yield from reached(before)
         before = posted()
         check(pick_in_editor(WORLD, "Reset to Graph"), "Reset to Graph on /World")
         yield from reached(before)
-        check(shown(WORLD)[0] == "Full" and int(cell(WORLD).data(ORIGIN_ROLE)) == ORIGIN_GRAPH,
-              "/World is back to the USDRead's Full (%r)" % (shown(WORLD),))
+        check(shown(WORLD)[0] == "Geometry" and int(cell(WORLD).data(ORIGIN_ROLE)) == ORIGIN_GRAPH,
+              "/World is back to the USDRead's Geometry (%r)" % (shown(WORLD),))
         for path in ROWS[1:]:
-            check(shown(path)[0] == "Full" and shown(path)[1], "%s is back to the graph (%r)" % (path, shown(path)))
+            check(shown(path)[0] == "Geometry" and shown(path)[1], "%s is back to the graph (%r)" % (path, shown(path)))
         before = posted()
-        check(pick_in_editor(C, "Hidden"), "Hidden on /World/C")
+        check(pick_in_editor(C, "Hide"), "Hide on /World/C")
         yield from reached(before)
         button = panel().findChild(QToolButton, "sceneGraphResetDrawStates")
         require(button is not None and button.isEnabled(), "the panel has a Reset to Graph button")
@@ -467,7 +467,7 @@ try:
         QTest.mouseClick(button, Qt.LeftButton)
         button = None
         yield from reached(before)
-        check(shown(C)[0] == "Full" and shown(C)[1], "the panel's Reset to Graph clears every row (%r)" % (shown(C),))
+        check(shown(C)[0] == "Geometry" and shown(C)[1], "the panel's Reset to Graph clears every row (%r)" % (shown(C),))
         save("scene-column-reset")
 
         section("another node shown")

@@ -53,8 +53,8 @@
 #define kUSDReadInitialDrawBBox "bbox"
 #define kUSDReadInitialDrawLevels "levels"
 #define kUSDReadInitialDrawToKind "toKind"
-#define kUSDReadInitialDrawFull "full"
-#define kUSDReadInitialDrawFullLoad "fullLoad"
+#define kUSDReadInitialDrawGeometry "geometry"
+#define kUSDReadInitialDrawLoadAndDraw "loadAndDraw"
 
 NATRON_NAMESPACE_ENTER
 

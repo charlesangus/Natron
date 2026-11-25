@@ -44,6 +44,7 @@
 #include <pxr/usd/usd/primRange.h>
 
 #include "Engine/FileStampRegistry.h"
+#include "Engine/Nodes/Scene/SceneKindWalk.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneTeardown.h"
 
@@ -578,12 +579,44 @@ SceneStage::requestUnload(const PXR_NS::SdfPathVector& paths)
 }
 
 void
+SceneStage::requestLoadToKind(const PXR_NS::SdfPathVector& roots,
+                              const PXR_NS::TfToken& kind)
+{
+    std::lock_guard<std::mutex> lock(_loadMutex);
+
+    for (const PXR_NS::SdfPath& root : roots) {
+        if (root.IsAbsoluteRootOrPrimPath() && !kind.IsEmpty()) {
+            KindRequest& request = _kindRequests[root];
+            request = KindRequest();
+            request.kind = kind;
+        }
+    }
+}
+
+void
+SceneStage::requestUnloadBelowKind(const PXR_NS::SdfPathVector& roots,
+                                   const PXR_NS::TfToken& kind)
+{
+    std::lock_guard<std::mutex> lock(_loadMutex);
+
+    for (const PXR_NS::SdfPath& root : roots) {
+        if (root.IsAbsoluteRootOrPrimPath() && !kind.IsEmpty()) {
+            KindRequest& request = _kindRequests[root];
+            request = KindRequest();
+            request.kind = kind;
+            request.unload = true;
+        }
+    }
+}
+
+void
 SceneStage::cancelPendingLoads()
 {
     std::lock_guard<std::mutex> lock(_loadMutex);
 
     _pendingLoads.clear();
     _pendingExclusions.clear();
+    _kindRequests.clear();
     _deferredLoads.clear();
     _deferredExclusions.clear();
     if (_servicingLoads) {
@@ -604,6 +637,10 @@ SceneStage::cancelPendingLoads(const PXR_NS::SdfPathVector& paths)
         }
         _deferredLoads.erase(path);
         _deferredExclusions.erase(path);
+        const std::map<PXR_NS::SdfPath, KindRequest>::iterator kindFound = _kindRequests.find(path);
+        if ((kindFound != _kindRequests.end()) && !kindFound->second.unload) {
+            _kindRequests.erase(kindFound);
+        }
         if (_servicingLoads) {
             _cancelledWhileServicing.insert(path);
         }
@@ -615,7 +652,7 @@ SceneStage::hasPendingLoads() const
 {
     std::lock_guard<std::mutex> lock(_loadMutex);
 
-    return !_pendingLoads.empty() || (!_deferredLoads.empty() && _deferredWake->ready);
+    return !_pendingLoads.empty() || !_kindRequests.empty() || (!_deferredLoads.empty() && _deferredWake->ready);
 }
 
 bool
@@ -623,7 +660,7 @@ SceneStage::hasOutstandingLoads() const
 {
     std::lock_guard<std::mutex> lock(_loadMutex);
 
-    return !_pendingLoads.empty() || !_deferredLoads.empty() || _servicingLoads;
+    return !_pendingLoads.empty() || !_kindRequests.empty() || !_deferredLoads.empty() || _servicingLoads;
 }
 
 void
@@ -669,14 +706,16 @@ SceneStage::serviceLoads(const LockedSection& readLocked,
 {
     std::map<PXR_NS::SdfPath, PendingLoadEnum> batch;
     std::map<PXR_NS::SdfPath, PXR_NS::SdfPathSet> exclusions;
+    std::map<PXR_NS::SdfPath, KindRequest> kindRequests;
     {
         std::lock_guard<std::mutex> lock(_loadMutex);
         takeReadyDeferredLoads();
-        if (_pendingLoads.empty()) {
+        if (_pendingLoads.empty() && _kindRequests.empty()) {
             return false;
         }
         batch.swap(_pendingLoads);
         exclusions.swap(_pendingExclusions);
+        kindRequests.swap(_kindRequests);
         _cancelledWhileServicing.clear();
         _allCancelledWhileServicing = false;
         _servicingLoads = true;
@@ -712,6 +751,11 @@ SceneStage::serviceLoads(const LockedSection& readLocked,
     std::map<PXR_NS::SdfPath, SplitLoad> splitLoads;
     // The request whose walk found each payload a load with descendants names.
     std::map<PXR_NS::SdfPath, PXR_NS::SdfPath> foundBy;
+    // The root of the kind request whose walk found each payload it loads, which walks again once
+    // they are loaded.
+    std::map<PXR_NS::SdfPath, PXR_NS::SdfPath> kindLoads;
+    // The kind requests as they were taken, put back as they were if the batch is.
+    const std::map<PXR_NS::SdfPath, KindRequest> takenKindRequests = kindRequests;
     U64 composition = 0;
     bool walkCancelled = false;
     PXR_NS::UsdStageLoadRules rules;
@@ -770,6 +814,40 @@ SceneStage::serviceLoads(const LockedSection& readLocked,
                 }
                 break;
             }
+            }
+        }
+        for (std::pair<const PXR_NS::SdfPath, KindRequest>& request : kindRequests) {
+            const SceneKindWalkResult walk = walkToKind(_stage, PXR_NS::SdfPathVector(1, request.first), request.second.kind, isCancelled);
+            if (walk.cancelled) {
+                walkCancelled = true;
+
+                return;
+            }
+            if (request.second.unload) {
+                for (const PXR_NS::SdfPath& match : walk.matches) {
+                    for (const PXR_NS::SdfPath& payload : payloadsBelow(_stage->GetPrimAtPath(match))) {
+                        if (_stage->GetPrimAtPath(payload).IsLoaded()) {
+                            unloads.insert(payload);
+                        }
+                    }
+                }
+                continue;
+            }
+            PXR_NS::SdfPathVector found = walk.unloadedPassThrough;
+            for (const PXR_NS::SdfPath& match : walk.matches) {
+                if (isUnloadedPayload(_stage->GetPrimAtPath(match))) {
+                    found.push_back(match);
+                }
+            }
+            for (const PXR_NS::SdfPath& path : found) {
+                if ((request.second.asked.count(path) != 0) || (opened.descendantLoads.count(path) != 0)) {
+                    continue;
+                }
+                request.second.asked.insert(path);
+                kindLoads[path] = request.first;
+                if (opened.ownLoads.count(path) == 0) {
+                    opened.ownLoads[path] = getPayloadAssets(_stage->GetPrimAtPath(path));
+                }
             }
         }
     });
@@ -932,8 +1010,26 @@ SceneStage::serviceLoads(const LockedSection& readLocked,
                     _pendingExclusions[request.first] = excluded->second;
                 }
             }
+            for (const std::pair<const PXR_NS::SdfPath, KindRequest>& request : takenKindRequests) {
+                if (request.second.unload || (_cancelledWhileServicing.count(request.first) == 0)) {
+                    _kindRequests.insert(request);
+                }
+            }
         }
-    } else if (!splitLoads.empty()) {
+    } else if (!kindLoads.empty()) {
+        std::lock_guard<std::mutex> lock(_loadMutex);
+        if (!_allCancelledWhileServicing) {
+            for (const std::pair<const PXR_NS::SdfPath, PXR_NS::SdfPath>& load : kindLoads) {
+                // A cancel of the request or a newer one at its root says otherwise.
+                const std::map<PXR_NS::SdfPath, KindRequest>::const_iterator request = kindRequests.find(load.second);
+                if ((request == kindRequests.end()) || (_cancelledWhileServicing.count(load.second) != 0)) {
+                    continue;
+                }
+                _kindRequests.insert(*request);
+            }
+        }
+    }
+    if (!requeue && !splitLoads.empty()) {
         std::lock_guard<std::mutex> lock(_loadMutex);
         if (!_allCancelledWhileServicing) {
             for (std::pair<const PXR_NS::SdfPath, SplitLoad>& split : splitLoads) {

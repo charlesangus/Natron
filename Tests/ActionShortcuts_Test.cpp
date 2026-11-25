@@ -363,9 +363,9 @@ TEST(Viewer3DNavigationPresetTest, DefaultKeyBindingsAreUnambiguous)
         Qt::Key key;
     };
     const DrawKey drawKeys[] = {
-        { kShortcutIDActionViewer3DDrawChildren, Qt::NoModifier, Qt::Key_Down },
-        { kShortcutIDActionViewer3DDrawFull, Qt::ShiftModifier, Qt::Key_Down },
-        { kShortcutIDActionViewer3DDrawLoadAll, Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_Down },
+        { kShortcutIDActionViewer3DDrawExpand, Qt::NoModifier, Qt::Key_Down },
+        { kShortcutIDActionViewer3DDrawGeometry, Qt::ShiftModifier, Qt::Key_Down },
+        { kShortcutIDActionViewer3DDrawLoadAndDraw, Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_Down },
         { kShortcutIDActionViewer3DDrawParentBBox, Qt::NoModifier, Qt::Key_Up },
     };
     for (const DrawKey& drawKey : drawKeys) {

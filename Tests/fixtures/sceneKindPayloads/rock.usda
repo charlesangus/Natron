@@ -1,0 +1,18 @@
+#usda 1.0
+(
+    defaultPrim = "Rock"
+)
+
+def Xform "Rock"
+{
+    def Sphere "Stone"
+    {
+        double radius = 0.5
+    }
+
+    def Xform "Moss" (
+        prepend payload = @./leaves.usda@
+    )
+    {
+    }
+}

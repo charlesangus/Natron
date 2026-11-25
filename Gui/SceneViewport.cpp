@@ -89,6 +89,7 @@
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/RenderSettingsPrim.h"
 #include "Engine/Nodes/Scene/SceneDrawStates.h"
+#include "Engine/Nodes/Scene/SceneKindWalk.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
@@ -4428,6 +4429,34 @@ SceneViewportRenderer::requestStageUnload(const std::vector<std::string>& paths)
     if (stage) {
         stage->requestUnload(toSdfPaths(paths));
     }
+}
+
+bool
+SceneViewportRenderer::requestStageLoadToKind(const std::vector<std::string>& roots,
+                                              const std::string& kind)
+{
+    SceneStage* stage = _imp->loadStage;
+
+    if (!stage) {
+        return false;
+    }
+    stage->requestLoadToKind(toSdfPaths(roots), TfToken(kind));
+
+    return true;
+}
+
+bool
+SceneViewportRenderer::requestStageUnloadBelowKind(const std::vector<std::string>& roots,
+                                                   const std::string& kind)
+{
+    SceneStage* stage = _imp->loadStage;
+
+    if (!stage) {
+        return false;
+    }
+    stage->requestUnloadBelowKind(toSdfPaths(roots), TfToken(kind));
+
+    return true;
 }
 
 void
@@ -9251,9 +9280,9 @@ struct DrawKey {
 };
 
 const DrawKey kDrawKeys[] = {
-    { kShortcutIDActionViewer3DDrawChildren, eSceneDrawStateChildren, false },
-    { kShortcutIDActionViewer3DDrawFull, eSceneDrawStateFull, false },
-    { kShortcutIDActionViewer3DDrawLoadAll, eSceneDrawStateLoadAll, false },
+    { kShortcutIDActionViewer3DDrawExpand, eSceneDrawStateChildren, false },
+    { kShortcutIDActionViewer3DDrawGeometry, eSceneDrawStateFull, false },
+    { kShortcutIDActionViewer3DDrawLoadAndDraw, eSceneDrawStateLoadAll, false },
     { kShortcutIDActionViewer3DDrawParentBBox, eSceneDrawStateBBox, true },
 };
 
@@ -9389,6 +9418,157 @@ SceneViewport::resetDrawStatesToGraphOnRows(const QStringList& paths)
         edits.push_back(SceneDrawRowEdit { SceneDrawRowEdit::eKindClear, row, eSceneDrawStateFull });
     }
     editDrawStateRows(edits);
+}
+
+namespace {
+enum RowScopeEnum {
+    eRowScopeNone,
+    eRowScopeSelected,
+    eRowScopeBelow,
+    eRowScopeKind
+};
+
+RowScopeEnum
+parseRowScope(const QString& scope,
+              TfToken* kind)
+{
+    if (scope == QString::fromUtf8("selected")) {
+        return eRowScopeSelected;
+    }
+    if (scope == QString::fromUtf8("below")) {
+        return eRowScopeBelow;
+    }
+    const TfToken token(scope.toStdString());
+    if (isKindScope(token)) {
+        *kind = token;
+
+        return eRowScopeKind;
+    }
+
+    return eRowScopeNone;
+}
+} // anonymous namespace
+
+QString
+SceneViewport::loadRows(const QStringList& paths,
+                        const QString& scope)
+{
+    TfToken kind;
+    const RowScopeEnum parsed = parseRowScope(scope, &kind);
+    const std::vector<std::string> rows = drawStatePaths(paths);
+
+    if ((parsed == eRowScopeNone) || rows.empty() || (rows.size() != std::size_t(paths.size()))) {
+        return QString();
+    }
+    if (parsed != eRowScopeKind) {
+        requestLoad(paths, parsed == eRowScopeBelow);
+
+        return SceneGraphModel::loadingText(rows.size(), scope);
+    }
+    if (!_imp->renderer.requestStageLoadToKind(rows, kind.GetString())) {
+        return tr("No scene to load into yet");
+    }
+    {
+        std::lock_guard<std::mutex> lock(_imp->loadWakeMutex);
+    }
+    _imp->loadWake.notify_one();
+    publishState();
+
+    return SceneGraphModel::loadingText(rows.size(), scope);
+}
+
+QString
+SceneViewport::unloadRows(const QStringList& paths,
+                          const QString& scope)
+{
+    TfToken kind;
+    const RowScopeEnum parsed = parseRowScope(scope, &kind);
+    const std::vector<std::string> rows = drawStatePaths(paths);
+
+    if ((parsed == eRowScopeNone) || (parsed == eRowScopeBelow) || rows.empty() || (rows.size() != std::size_t(paths.size()))) {
+        return QString();
+    }
+    if (parsed == eRowScopeSelected) {
+        requestUnload(paths);
+
+        return SceneGraphModel::unloadingText(rows.size(), scope);
+    }
+    forgetRestoredLoads();
+    if (!_imp->renderer.requestStageUnloadBelowKind(rows, kind.GetString())) {
+        return tr("No scene to unload from yet");
+    }
+    {
+        std::lock_guard<std::mutex> lock(_imp->loadWakeMutex);
+    }
+    _imp->loadWake.notify_one();
+    publishState();
+
+    return SceneGraphModel::unloadingText(rows.size(), scope);
+}
+
+QString
+SceneViewport::setDrawStateOnRowsScoped(const QStringList& paths,
+                                        const QString& state,
+                                        const QString& scope)
+{
+    TfToken kind;
+    const RowScopeEnum parsed = parseRowScope(scope, &kind);
+    const bool clearBelow = (state == QString::fromUtf8("clearBelow"));
+    SceneDrawStateEnum drawState = eSceneDrawStateFull;
+    const std::vector<std::string> rows = drawStatePaths(paths);
+
+    if ((parsed == eRowScopeNone) || (!clearBelow && !sceneDrawStateFromName(state.toStdString(), &drawState)) || (clearBelow && (parsed == eRowScopeBelow))
+        || rows.empty() || (rows.size() != std::size_t(paths.size()))) {
+        return QString();
+    }
+    std::vector<std::string> targets = rows;
+    QString targetsText = SceneGraphModel::rowsText(rows.size());
+    QString skippedText;
+    if (parsed == eRowScopeKind) {
+        SceneKindWalkResult walk;
+        const bool read = _imp->renderer.tryReadStage([&](const SceneStage* stage) {
+            if (stage) {
+                walk = walkToKind(stage->getStage(), toSdfPaths(rows), kind);
+            }
+        });
+        if (!read) {
+            return tr("The scene is busy loading: nothing was changed, try again");
+        }
+        targets.clear();
+        for (const SdfPath& match : walk.matches) {
+            targets.push_back(match.GetString());
+        }
+        targetsText = tr("%1 under %2").arg(SceneGraphModel::kindCountText(scope, targets.size()), SceneGraphModel::rowsText(rows.size()));
+        const std::size_t skipped = walk.unloadedPassThrough.size();
+        if (skipped == 1) {
+            skippedText = tr("; 1 unloaded payload skipped");
+        } else if (skipped > 1) {
+            skippedText = tr("; %1 unloaded payloads skipped").arg(skipped);
+        }
+        if (targets.empty()) {
+            return tr("No loaded %1 under %2%3").arg(SceneGraphModel::kindPluralText(scope), SceneGraphModel::rowsText(rows.size()), skippedText);
+        }
+    }
+    std::vector<SceneDrawRowEdit> edits;
+    for (const std::string& target : targets) {
+        if (clearBelow) {
+            edits.push_back(SceneDrawRowEdit { SceneDrawRowEdit::eKindClearBelow, target, eSceneDrawStateFull });
+            continue;
+        }
+        edits.push_back(SceneDrawRowEdit { SceneDrawRowEdit::eKindSet, target, drawState });
+        if (parsed == eRowScopeBelow) {
+            edits.push_back(SceneDrawRowEdit { SceneDrawRowEdit::eKindClearBelow, target, eSceneDrawStateFull });
+        }
+    }
+    editDrawStateRows(edits);
+    if (clearBelow) {
+        return tr("States cleared below %1%2").arg(targetsText, skippedText);
+    }
+    if (parsed == eRowScopeBelow) {
+        return tr("%1 set on %2, states below cleared").arg(SceneGraphModel::drawStateLabel(drawState), targetsText);
+    }
+
+    return tr("%1 set on %2%3").arg(SceneGraphModel::drawStateLabel(drawState), targetsText, skippedText);
 }
 
 bool

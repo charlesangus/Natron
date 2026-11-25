@@ -49,6 +49,7 @@
 #include <QtGui/QIcon>
 
 #include "Engine/Nodes/Scene/SceneDrawStates.h"
+#include "Engine/Nodes/Scene/SceneKindWalk.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/SceneTeardown.h"
@@ -2441,16 +2442,74 @@ SceneGraphModel::drawStateLabel(int state)
     case eSceneDrawStateBBox:
         return tr("BBox");
     case eSceneDrawStateChildren:
-        return tr("Children");
+        return tr("Expand");
     case eSceneDrawStateFull:
-        return tr("Full");
+        return tr("Geometry");
     case eSceneDrawStateLoadAll:
-        return tr("Load All");
+        return tr("Load + Draw");
     case eSceneDrawStateHidden:
-        return tr("Hidden");
+        return tr("Hide");
     default:
         return QString();
     }
+}
+
+QString
+SceneGraphModel::rowsText(int count)
+{
+    return (count == 1) ? tr("1 row") : tr("%1 rows").arg(count);
+}
+
+QString
+SceneGraphModel::kindPluralText(const QString& kind)
+{
+    if (kind == QString::fromUtf8("assembly")) {
+        return tr("assemblies");
+    }
+    if (kind == QString::fromUtf8("component")) {
+        return tr("components");
+    }
+    if (kind == QString::fromUtf8("subcomponent")) {
+        return tr("subcomponents");
+    }
+
+    return tr("%1 prims").arg(kind);
+}
+
+QString
+SceneGraphModel::kindCountText(const QString& kind,
+                               int count)
+{
+    if (count != 1) {
+        return tr("%1 %2").arg(count).arg(kindPluralText(kind));
+    }
+
+    return isBuiltInKindScope(PXR_NS::TfToken(kind.toStdString())) ? tr("1 %1").arg(kind) : tr("1 %1 prim").arg(kind);
+}
+
+QString
+SceneGraphModel::loadingText(int rows,
+                             const QString& scope)
+{
+    if (scope == QString::fromUtf8("selected")) {
+        return tr("Loading %1").arg(rowsText(rows));
+    }
+    if (scope == QString::fromUtf8("below")) {
+        return tr("Loading %1 and every payload below them").arg(rowsText(rows));
+    }
+
+    return tr("Loading down to %1 under %2").arg(kindPluralText(scope), rowsText(rows));
+}
+
+QString
+SceneGraphModel::unloadingText(int rows,
+                               const QString& scope)
+{
+    if (scope == QString::fromUtf8("selected")) {
+        return tr("Unloading %1").arg(rowsText(rows));
+    }
+
+    return tr("Unloading below %1 under %2").arg(kindPluralText(scope), rowsText(rows));
 }
 
 QString

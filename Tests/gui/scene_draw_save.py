@@ -1,8 +1,8 @@
 """A viewer's draw states and payload loads are saved with the project and restored on reopening.
 
 Graph: USDRead of a four-block heavy_city.usda (tools/bench/heavy_scene_make.py) into Viewer1, every
-payload unloaded, with the file of /World/Block3/B3 deleted. The script sets Load All on Block0,
-Children on Block1/B1, BBox on Block2, Full on Block2/B3 (which switches Block2 to Children), Hidden on
+payload unloaded, with the file of /World/Block3/B3 deleted. The script sets Load + Draw on Block0,
+Expand on Block1/B1, BBox on Block2, Geometry on Block2/B3 (which switches Block2 to Expand), Hide on
 Block3/B0, and asks for the payloads of Block3/B2 and Block3/B3 as a twirl does. Then it checks:
   - the saved project holds the viewer's sceneView, with the missing payload's path in the load set;
   - reopening restores every draw state cell and loads the same buildings, with no request from
@@ -37,11 +37,11 @@ CITY_FLOORS = 16
 CITY_PRIMS = len(BLOCKS) * BUILDINGS_PER_BLOCK * 400 + len(BLOCKS) + 1
 BUILDINGS = ["%s/B%d" % (block, i) for block in BLOCKS for i in range(BUILDINGS_PER_BLOCK)]
 STATES = [
-    ("/World/Block0", "loadAll"),
-    ("/World/Block1/B1", "children"),
+    ("/World/Block0", "loadAndDraw"),
+    ("/World/Block1/B1", "expand"),
     ("/World/Block2", "bbox"),
-    ("/World/Block2/B3", "full"),
-    ("/World/Block3/B0", "hidden"),
+    ("/World/Block2/B3", "geometry"),
+    ("/World/Block3/B0", "hide"),
 ]
 TWIRLED = "/World/Block3/B2"
 BROKEN = "/World/Block3/B3"
@@ -192,8 +192,8 @@ try:
         require(QMetaObject.invokeMethod(view(), "setDrawState", Q_ARG("QString", row), Q_ARG("QString", state)),
                 "%s %s: the scene view has setDrawState" % (state, row))
         posted = int(draw_stats().get("posted", 0))
-        if state == "loadAll":
-            # Load All under Full rows draws what Full draws, so with the reveal off it posts no draw
+        if state == "loadAndDraw":
+            # Load + Draw under Geometry rows draws what Geometry draws, so with the reveal off it posts no draw
             # change: what it changes is the loads of the payloads below it.
             below = [p for p in BUILDINGS if p.startswith(row + "/")]
             ok = yield ("until", lambda: all(payload_state(p) in (STATE_LOADING, STATE_LOADED) for p in below), LOAD_TIMEOUT_S)
@@ -323,7 +323,7 @@ try:
         text = saved_project_yaml()
         check("sceneView:" in text, "the project holds the viewer's sceneView")
         check(BROKEN in text.split("sceneView:", 1)[-1], "the missing payload stays in the saved load set")
-        check("impliedChildren" in text, "Block2's switch to Children is saved as one made for a row below")
+        check("impliedExpand" in text, "Block2's switch to Expand is saved as one made for a row below")
 
         section("reopen restores")
         yield from reopen("restore")

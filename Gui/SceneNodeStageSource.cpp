@@ -176,6 +176,7 @@ SceneNodeStageSource::~SceneNodeStageSource()
     }
     liveSources().changed.notify_all();
     EffectInstance::retireSceneContextId(_contextId);
+    _loadStage = nullptr;
     std::unique_ptr<SceneStage> stage;
     {
         SceneWriteBarrier::ReadScope readScope;
@@ -371,6 +372,69 @@ SceneNodeStageSource::requestUnload(const QStringList& paths)
 }
 
 void
+SceneNodeStageSource::requestLoadToKind(const QStringList& roots,
+                                        const std::string& kind)
+{
+    LoadRequest request;
+
+    request.paths = roots;
+    request.kind = kind;
+    {
+        std::lock_guard<std::mutex> lock(_queueMutex);
+        _loadRequests.push_back(request);
+    }
+    _queueChanged.notify_one();
+}
+
+void
+SceneNodeStageSource::requestUnloadBelowKind(const QStringList& roots,
+                                             const std::string& kind)
+{
+    LoadRequest request;
+
+    request.paths = roots;
+    request.load = false;
+    request.kind = kind;
+    {
+        std::lock_guard<std::mutex> lock(_queueMutex);
+        _loadRequests.push_back(request);
+    }
+    _queueChanged.notify_one();
+}
+
+void
+SceneNodeStageSource::cancelPendingLoads()
+{
+    {
+        std::lock_guard<std::mutex> handOff(_handOffMutex);
+        {
+            std::lock_guard<std::mutex> lock(_queueMutex);
+            _loadRequests.clear();
+            _loadsTaken = false;
+            ++_cancelCount;
+        }
+        if (SceneStage* stage = _loadStage.load()) {
+            stage->cancelPendingLoads();
+        }
+    }
+    _queueChanged.notify_one();
+}
+
+bool
+SceneNodeStageSource::hasPendingLoads() const
+{
+    {
+        std::lock_guard<std::mutex> lock(_queueMutex);
+        if (!_loadRequests.empty() || _loadsTaken) {
+            return true;
+        }
+    }
+    const SceneStage* stage = _loadStage.load();
+
+    return stage && stage->hasOutstandingLoads();
+}
+
+void
 SceneNodeStageSource::requestLoadRules(const SceneLoadRules& rules)
 {
     std::vector<LoadRequest> requests;
@@ -393,11 +457,18 @@ SceneNodeStageSource::requestLoadRules(const SceneLoadRules& rules)
 }
 
 void
-SceneNodeStageSource::serviceLoads(const std::vector<LoadRequest>& requests)
+SceneNodeStageSource::serviceLoads(const std::vector<LoadRequest>& requests,
+                                   U64 cancelCount)
 {
     // Only this worker creates the stage, so reading the pointer needs no lock.
     if (!_stage || (requests.empty() && !_stage->hasPendingLoads())) {
         return;
+    }
+    if (requests.empty()) {
+        std::lock_guard<std::mutex> lock(_queueMutex);
+        if (_heldLevel != 0) {
+            return;
+        }
     }
     const auto toSdfPaths = [](const QStringList& strings) {
         PXR_NS::SdfPathVector paths;
@@ -462,11 +533,25 @@ SceneNodeStageSource::serviceLoads(const std::vector<LoadRequest>& requests)
         };
     };
     bool serviced = false;
+    bool lastServiced = false;
     for (const std::pair<const std::size_t, std::vector<std::size_t>>& pass : passes) {
+        std::unique_lock<std::mutex> handOff(_handOffMutex);
+        {
+            std::lock_guard<std::mutex> lock(_queueMutex);
+            if (_cancelCount != cancelCount) {
+                break;
+            }
+        }
         for (std::size_t i : pass.second) {
             const LoadRequest& request = requests[i];
             const PXR_NS::SdfPathVector paths = toSdfPaths(request.paths);
-            if (request.load) {
+            if (!request.kind.empty()) {
+                if (request.load) {
+                    _stage->requestLoadToKind(paths, PXR_NS::TfToken(request.kind));
+                } else {
+                    _stage->requestUnloadBelowKind(paths, PXR_NS::TfToken(request.kind));
+                }
+            } else if (request.load) {
                 PXR_NS::SdfPathVector excluded;
                 for (const std::string& path : request.excluded) {
                     if (PXR_NS::SdfPath::IsValidPathString(path)) {
@@ -478,23 +563,50 @@ SceneNodeStageSource::serviceLoads(const std::vector<LoadRequest>& requests)
                 _stage->requestUnload(paths);
             }
         }
-        if (_stage->serviceLoads(locked, committing, [this]() { return _stopRequested.load(); }, prepare)) {
-            serviced = true;
-        }
+        handOff.unlock();
+        lastServiced = _stage->serviceLoads(locked, committing, [this]() { return _stopRequested.load(); }, prepare);
+        serviced = serviced || lastServiced;
         if (_stopRequested) {
             return;
         }
     }
+    // A load to a kind asks for its next level once this batch has composed this one. That level
+    // is held until the context's thread has run what it had queued, the notice of this batch
+    // among it: nothing else would make a Cancel Loads clicked there right after Load To land
+    // before levels the worker, which no renderer slows, walks in a few milliseconds. Released, it
+    // waits for the next turn of run(), so that an evaluation or a newer request queued meanwhile
+    // is taken first and a kind request it replaces is not walked further.
+    U64 held = 0;
+    if (lastServiced && _stage->hasPendingLoads()) {
+        std::lock_guard<std::mutex> lock(_queueMutex);
+        held = ++_levelSerial;
+        _heldLevel = held;
+    }
     // A batch that asked for nothing loadable is still answered, so that whoever asked is not left waiting.
-    if (_stopRequested || (!serviced && requests.empty())) {
+    if (!serviced && requests.empty()) {
         return;
     }
     std::weak_ptr<SceneNodeStageSource> self = weak_from_this();
-    postToContext([self]() {
+    postToContext([self, held]() {
         std::shared_ptr<SceneNodeStageSource> source = self.lock();
-        if (source && !source->_stopRequested && source->_loadsChanged) {
+        if (!source || source->_stopRequested) {
+            return;
+        }
+        if (source->_loadsChanged) {
             source->_loadsChanged();
         }
+        if (held == 0) {
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(source->_queueMutex);
+            if (source->_heldLevel != held) {
+                return;
+            }
+            source->_heldLevel = 0;
+            source->_loadsReady = true;
+        }
+        source->_queueChanged.notify_one();
     });
 }
 
@@ -505,6 +617,7 @@ SceneNodeStageSource::run()
         double time = 0.;
         bool evaluate = false;
         std::vector<LoadRequest> loads;
+        U64 cancelCount = 0;
         {
             std::unique_lock<std::mutex> lock(_queueMutex);
             _queueChanged.wait(lock, [this]() { return _quit || _pending || _loadsReady || !_loadRequests.empty(); });
@@ -524,9 +637,16 @@ SceneNodeStageSource::run()
             _loadsReady = false;
             time = _pendingTime;
             loads.swap(_loadRequests);
+            _loadsTaken = !loads.empty();
+            cancelCount = _cancelCount;
         }
+        const auto service = [this, &loads, cancelCount]() {
+            serviceLoads(loads, cancelCount);
+            std::lock_guard<std::mutex> lock(_queueMutex);
+            _loadsTaken = false;
+        };
         if (!evaluate) {
-            serviceLoads(loads);
+            service();
             continue;
         }
         _time = time;
@@ -534,6 +654,8 @@ SceneNodeStageSource::run()
         std::string error;
         const bool ok = evaluateNode(_node, SceneEvaluationContext(_contextId, _loadSet), time, _abortInfo, &payload, &error);
         if (_stopRequested) {
+            std::lock_guard<std::mutex> lock(_queueMutex);
+            _loadsTaken = false;
             continue;
         }
         {
@@ -553,6 +675,7 @@ SceneNodeStageSource::run()
                     }
                     source->_queueChanged.notify_one();
                 });
+                _loadStage = _stage.get();
             }
             _stage->sync(ok ? payload : ScenePayload());
             _shown = ok && !payload.isEmpty();
@@ -568,7 +691,7 @@ SceneNodeStageSource::run()
             }
         });
         // Asked for against the composition just synced.
-        serviceLoads(loads);
+        service();
     }
 }
 

@@ -80,8 +80,11 @@ struct GeoFileWriteOptions {
 };
 
 struct GeoFileReadOptions {
-    /** @brief Recompute the read detail's content hash and fail when it differs from the header's. */
-    bool verifyContentHash = false;
+    /**
+     * @brief Recompute the read detail's content hash and fail when it differs from the header's.
+     * Page checksums do not cover names, defaults, counts or the header; this does.
+     **/
+    bool verifyContentHash = true;
 };
 
 struct GeoFileInfo {

@@ -28,7 +28,9 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
 #include <cstdint>
+#include <list>
 #include <memory>
 #include <string>
 #include <vector>
@@ -190,6 +192,8 @@ private:
                                     ViewIdx view,
                                     const RenderContextPtr& context) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void appendExtraHashDependents(std::vector<NodePtr>* dependents) const OVERRIDE FINAL;
+    virtual void onNodeHashChanged(U64 hash) OVERRIDE FINAL;
+    virtual void abortCooksStaleAfterEdit() OVERRIDE FINAL;
     virtual StatusEnum renderGeometry(const GeoRenderActionArgs& args,
                                       GeoDetailConstPtr* outputDetail,
                                       std::string* errorMessage) OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -202,7 +206,11 @@ private:
     StatusEnum fail(const std::string& message,
                     std::string* errorMessage);
 
-    // The iterations before the first the stop condition is true for, or -1 with error set.
+    static constexpr int kStopFailed = -1;
+    static constexpr int kStopAborted = -2;
+
+    // The iterations before the first the stop condition is true for, kStopFailed with error
+    // set, or kStopAborted when the render is aborted while evaluating.
     int evaluateStop(const std::vector<Iteration>& iterations,
                      const std::string& loopName,
                      double time,
@@ -237,6 +245,24 @@ private:
 
     QMutex _messageMutex;
     std::string _posted;
+
+    // A viewer cook of this node and the hash it started under. An edit keeps the oldest viewer
+    // render running, and a loop can cook for minutes, so the cook is aborted once the hash moves
+    // or an edit of this node or its body is held back by the render it cooks in.
+    struct RunningCook {
+        U64 startHash = 0;
+        AbortableRenderInfoPtr abortInfo;
+    };
+    class RunningCookScope;
+
+    bool abortIfEditedSince(const RunningCook& cook) const WARN_UNUSED_RETURN;
+    // Aborts the running cooks, but those started under keepHash when one is given; not during a drag.
+    void abortRunningCooks(const U64* keepHash);
+
+    QMutex _runningMutex;
+    std::list<RunningCook> _running;
+    // See noteEditAtLatestRenderSequence().
+    std::atomic<U64> _editedAtRenderSequence { 0 };
 };
 
 NATRON_NAMESPACE_EXIT

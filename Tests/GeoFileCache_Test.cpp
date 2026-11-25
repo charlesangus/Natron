@@ -34,9 +34,14 @@
 #include <gtest/gtest.h>
 
 #include <QCoreApplication>
+#include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QObject>
+#include <QProcess>
+#include <QProcessEnvironment>
 #include <QString>
+#include <QStringList>
 #include <QTemporaryDir>
 
 #include "BaseTest.h"
@@ -57,6 +62,7 @@
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/ParallelRenderArgs.h"
+#include "Engine/Project.h"
 #include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
@@ -222,6 +228,7 @@ TEST_F(GeoFileCacheNodeTest, SavesTheRangeAndLoadsItBackExactly)
         EXPECT_TRUE(QFile::exists(QString::fromStdString(path(name)))) << name;
     }
     EXPECT_FALSE(QFile::exists(QString::fromStdString(path("v001/cache.0006.ngeo"))));
+    EXPECT_FALSE(QFileInfo::exists(QString::fromStdString(path("v$VER3"))));
 
     // Moving the input afterwards shows Load reads the files, not the chain.
     KnobDoublePtr translate = std::dynamic_pointer_cast<KnobDouble>(_transform->getKnobByName(kGeoTransformParamTranslate));
@@ -233,6 +240,67 @@ TEST_F(GeoFileCacheNodeTest, SavesTheRangeAndLoadsItBackExactly)
         EXPECT_EQ(saved[frame - 1], hashAt(_cache, frame)) << "frame " << frame;
     }
     EXPECT_EQ(saved[2], geoFileRead(path("v001/cache.0003.ngeo")).contentHash());
+}
+
+TEST_F(GeoFileCacheNodeTest, TheRenderPreflightSeesTheResolvedPattern)
+{
+    OutputEffectInstance* writer = dynamic_cast<OutputEffectInstance*>(_cache->getEffectInstance().get());
+    ASSERT_TRUE(writer != NULL);
+    EXPECT_EQ(path("v001/cache.%04d.ngeo"), writer->outputFilePattern());
+}
+
+TEST_F(GeoFileCacheNodeTest, NatronRendererWritesTheRange)
+{
+    const QString renderer = QCoreApplication::applicationDirPath() + QString::fromUtf8("/../Renderer/NatronRenderer");
+    ASSERT_TRUE(QFileInfo::exists(renderer)) << "NatronRenderer not found at " << QFileInfo(renderer).absoluteFilePath().toStdString();
+
+    std::vector<U64> saved;
+    for (int frame = 1; frame <= 5; ++frame) {
+        GeoDetailConstPtr detail;
+        std::string error;
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, pull(_transform, frame, &detail, &error)) << error;
+        ASSERT_TRUE(detail != nullptr);
+        saved.push_back(geoFileNormalized(*detail).contentHash());
+    }
+
+    const QString dirPath = _tmp.path() + QLatin1Char('/');
+    QString project;
+    ASSERT_TRUE(getApp()->getProject()->saveProject(dirPath, QString::fromUtf8("geocache.ntpz"), &project));
+    ASSERT_FALSE(project.isEmpty());
+
+    // Its own settings and caches, so the run depends on nothing but the project.
+    const QString home = dirPath + QString::fromUtf8("home");
+    ASSERT_TRUE(QDir().mkpath(home));
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    env.insert(QString::fromUtf8("HOME"), home);
+    env.insert(QString::fromUtf8("XDG_CONFIG_HOME"), home + QString::fromUtf8("/config"));
+    env.insert(QString::fromUtf8("XDG_DATA_HOME"), home + QString::fromUtf8("/data"));
+    env.insert(QString::fromUtf8("NATRON_DISK_CACHE_PATH"), home + QString::fromUtf8("/cache"));
+
+    QProcess process;
+    process.setProcessChannelMode(QProcess::MergedChannels);
+    process.setProcessEnvironment(env);
+    process.start(renderer, QStringList() << QString::fromUtf8("-w") << QString::fromStdString(_cache->getScriptName()) << QString::fromUtf8("1-5") << project);
+    ASSERT_TRUE(process.waitForStarted(30000)) << process.errorString().toStdString();
+    const bool finished = process.waitForFinished(300000);
+    if (!finished) {
+        process.kill();
+        process.waitForFinished(30000);
+    }
+    const std::string output = QString::fromUtf8(process.readAll()).toStdString();
+    ASSERT_TRUE(finished) << output;
+    ASSERT_EQ(QProcess::NormalExit, process.exitStatus()) << output;
+    ASSERT_EQ(0, process.exitCode()) << output;
+
+    const char* const files[] = { "v001/cache.0001.ngeo", "v001/cache.0002.ngeo", "v001/cache.0003.ngeo",
+                                  "v001/cache.0004.ngeo", "v001/cache.0005.ngeo" };
+    for (int i = 0; i < 5; ++i) {
+        ASSERT_TRUE(QFile::exists(QString::fromStdString(path(files[i])))) << files[i] << "\n"
+                                                                           << output;
+        EXPECT_EQ(saved[i], geoFileRead(path(files[i])).contentHash()) << files[i];
+    }
+    EXPECT_FALSE(QFile::exists(QString::fromStdString(path("v001/cache.0006.ngeo"))));
+    EXPECT_FALSE(QFileInfo::exists(QString::fromStdString(path("v$VER3"))));
 }
 
 TEST_F(GeoFileCacheNodeTest, AnotherVersionWritesBesideThePrevious)

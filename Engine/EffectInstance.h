@@ -1244,6 +1244,13 @@ public:
     ParallelRenderArgsPtr getParallelRenderArgsTLS() const;
 
     /**
+     * @brief The hash of the frame args the calling thread renders this effect under that carry no
+     * render context: the one evaluateGeometry() mixes a context's key into for the cache key, and
+     * the one onNodeHashChanged() reports in. getHash() when the thread has no frame args.
+     **/
+    U64 getContextFreeRenderHash() const WARN_UNUSED_RETURN;
+
+    /**
      * @brief Whether the calling thread renders this node: its frame args are installed and are not
      * the ones the instance-changed action installs around knobChanged, which renders nothing.
      * Outside a render, expressions read the enclosing loops' preview iterations.
@@ -2199,6 +2206,37 @@ public:
     bool aborted() const WARN_UNUSED_RETURN;
 
     /**
+     * @brief The render state aborted() decides from on this thread: the AbortableThread's, else
+     * this effect's frame args, else what an InheritedAbortScope lent the thread. False when
+     * none of those exists.
+     **/
+    bool getAbortState(bool* isRenderResponseToUserInteraction,
+                       AbortableRenderInfoPtr* abortInfo,
+                       EffectInstancePtr* treeRoot) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Lends a pool thread the abort state of the render it works for, read with
+     * getAbortState() on the thread running that render. A pool thread is no AbortableThread
+     * and the effects it evaluates have no frame args of that render on it, so without this
+     * aborted() there is false until the work returns, however long it runs.
+     **/
+    class InheritedAbortScope {
+    public:
+        InheritedAbortScope(bool isRenderResponseToUserInteraction,
+                            const AbortableRenderInfoPtr& abortInfo,
+                            const EffectInstancePtr& treeRoot);
+        ~InheritedAbortScope();
+
+        InheritedAbortScope(const InheritedAbortScope&) = delete;
+        InheritedAbortScope& operator=(const InheritedAbortScope&) = delete;
+
+    private:
+        bool _previousUserInteraction;
+        AbortableRenderInfoPtr _previousAbortInfo;
+        EffectInstancePtr _previousTreeRoot;
+    };
+
+    /**
      * @brief When the render running on this thread can be aborted and a newer request has
      * replaced it (AbortableRenderInfo::isSuperseded()), aborts it and returns true. For a wait
      * the render would spend on a result that the newer request asks for itself: the render
@@ -3097,6 +3135,15 @@ public:
      * it, after the hashes of its inputs and with no node lock held.
      **/
     virtual void onNodeHashChanged(U64 hash);
+
+    /**
+     * @brief Called for an edit of this node or of any node upstream of it made while that node
+     * renders (Node::abortCooksStaleAfterEditDownstream()). Such an edit is queued until the
+     * renders reading the edited node end, so it moves no hash while they run and
+     * onNodeHashChanged() does not hear of it. An effect whose own cooks outlast edits aborts the
+     * ones the edit leaves stale. Called on the editing thread, possibly while cooks run. MT-safe.
+     **/
+    virtual void abortCooksStaleAfterEdit() { }
 
     /**
      * @brief Drops every output metadata result this effect cached, its inputs' included, with no

@@ -205,9 +205,12 @@ Route
 GeoForEachBegin::route(double time,
                        ViewIdx /*view*/)
 {
-    if (computes(pairedEnd(), getCurrentRenderContext())) {
+    const std::shared_ptr<GeoForEachEnd> end = pairedEnd();
+
+    if (computes(end, getCurrentRenderContext())) {
         return Route::none();
     }
+    refreshPairingMessage(end);
 
     return Route::input(0, time);
 }
@@ -285,6 +288,16 @@ GeoForEachBegin::postMessage(MessageTypeEnum type,
     refreshLoopMessage(getNode(), type, message, &_posted);
 }
 
+void
+GeoForEachBegin::refreshPairingMessage(const std::shared_ptr<GeoForEachEnd>& end)
+{
+    if (!end) {
+        postMessage(eMessageTypeWarning, getScriptName_mt_safe() + ": " + tr("no GeoForEachEnd closes this loop, or several do.").toStdString());
+    } else {
+        postMessage(eMessageTypeInfo, std::string());
+    }
+}
+
 StatusEnum
 GeoForEachBegin::renderGeometry(const GeoRenderActionArgs& args,
                                 GeoDetailConstPtr* outputDetail,
@@ -294,11 +307,7 @@ GeoForEachBegin::renderGeometry(const GeoRenderActionArgs& args,
     const RenderContextPtr context = getCurrentRenderContext();
     const GeoForEachBeginMethodEnum method = getMethod();
 
-    if (!end) {
-        postMessage(eMessageTypeWarning, getScriptName_mt_safe() + ": " + tr("no GeoForEachEnd closes this loop, or several do.").toStdString());
-    } else {
-        postMessage(eMessageTypeInfo, std::string());
-    }
+    refreshPairingMessage(end);
 
     if (method == eGeoForEachBeginFetchMetadata) {
         std::int64_t iteration = 0;

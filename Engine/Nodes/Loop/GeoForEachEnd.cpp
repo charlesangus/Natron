@@ -40,6 +40,8 @@
 #include <QtCore/QString>
 #include <QtCore/QThread>
 
+#include "Engine/AbortableRenderInfo.h"
+#include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/ContentHasher.h"
 #include "Engine/IsolatedJob.h"
@@ -157,14 +159,23 @@ feedbackRegistry()
 
 // A helper of the merge's parallel cooks sets up its own frame instead of inheriting the calling
 // thread's TLS: the calling thread cooks iterations too, pushing and popping each body effect's
-// frame args while a helper's inherited copy would be reading them.
+// frame args while a helper's inherited copy would be reading them. It borrows the render's abort
+// state, so a body node polling aborted() stops mid-iteration on the helper as on the caller.
+struct LoopAbortState {
+    bool isRenderResponseToUserInteraction = false;
+    AbortableRenderInfoPtr abortInfo;
+    EffectInstancePtr treeRoot;
+};
+
 class HelperIterationScope {
 public:
     HelperIterationScope(const FrameRenderContext* frameContext,
                          const IsolatedJob* job,
-                         int runnablePriority)
+                         int runnablePriority,
+                         const LoopAbortState& abort)
         : _frame(frameContext, 1, runnablePriority)
         , _previousJob(IsolatedJob::exchangeCurrent(job))
+        , _abort(abort.isRenderResponseToUserInteraction, abort.abortInfo, abort.treeRoot)
     {
     }
 
@@ -179,6 +190,7 @@ public:
 private:
     AppTLS::FrameContextScope _frame;
     const IsolatedJob* _previousJob;
+    EffectInstance::InheritedAbortScope _abort;
 };
 
 } // anonymous namespace
@@ -464,7 +476,7 @@ GeoForEachEnd::initializeKnobs()
     {
         std::vector<ChoiceOption> options;
         options.push_back(ChoiceOption("attribute", tr("Attribute").toStdString(),
-                                       tr("Elements with the same value of Piece Attribute, an integer or string attribute of the Piece Elements.").toStdString()));
+                                       tr("Elements with the same value of Piece Attribute, an integer or string attribute of the Piece Elements. Pieces are in ascending value order, numeric or lexical.").toStdString()));
         options.push_back(ChoiceOption("connectivity", tr("Connectivity").toStdString(),
                                        tr("Elements connected through shared points. Pieces are numbered in the order of their first element.").toStdString()));
         options.push_back(ChoiceOption("each", tr("Each Element").toStdString(),
@@ -514,7 +526,7 @@ GeoForEachEnd::initializeKnobs()
     KnobIntPtr maxIterations = createKnob<KnobInt>(tr("Max Iterations").toStdString());
     maxIterations->setName(kGeoForEachEndParamMaxIterations);
     maxIterations->setAnimationEnabled(false);
-    maxIterations->setHintToolTip(tr("A safety cap: more iterations than this, from Iterations or from the pieces, is an error."));
+    maxIterations->setHintToolTip(tr("A safety cap on the iterations cooked: more than this, from Iterations or from the pieces, is an error, except under Single Pass, which cooks one."));
     maxIterations->setMinimum(1);
     maxIterations->setDisplayMinimum(1);
     maxIterations->setDisplayMaximum(kGeoForEachEndDefaultMaxIterations);
@@ -819,8 +831,19 @@ GeoForEachEnd::evaluateStop(const std::vector<Iteration>& iterations,
         }
     }
 
+    // Between calls of the expression the GIL is given up now and then, so that the GUI thread
+    // is not kept from running Python by a loop of many iterations.
+    static constexpr int kGILYieldIterations = 256;
+    bool wasAborted = false;
     int k = 0;
     for (; ok && (k < count); ++k) {
+        if (aborted()) {
+            wasAborted = true;
+            break;
+        }
+        if ((k > 0) && ((k % kGILYieldIterations) == 0)) {
+            const PythonUnlockedWhileWaiting yield;
+        }
         const Iteration& iteration = iterations[(std::size_t)k];
         const double t = (count > 1) ? (double)k / (double)(count - 1) : 0.;
         PyObject* variables = PyDict_New();
@@ -866,13 +889,16 @@ GeoForEachEnd::evaluateStop(const std::vector<Iteration>& iterations,
         }
     }
     stopAt = std::min(k, count);
-    if (!function || !ok) {
+    if (wasAborted) {
+        PyErr_Clear();
+        stopAt = kStopAborted;
+    } else if (!function || !ok) {
         if (failure.empty()) {
             failure = "the expression could not be evaluated";
         }
         PyErr_Clear();
         *error = tr("Stop Condition failed at iteration %1: %2").arg(stopAt).arg(QString::fromUtf8(failure.c_str())).toStdString();
-        stopAt = -1;
+        stopAt = kStopFailed;
     }
     Py_XDECREF(enclosing);
     Py_XDECREF(noArgs);
@@ -883,11 +909,109 @@ GeoForEachEnd::evaluateStop(const std::vector<Iteration>& iterations,
     return stopAt;
 } // GeoForEachEnd::evaluateStop
 
+class GeoForEachEnd::RunningCookScope {
+public:
+    explicit RunningCookScope(GeoForEachEnd* end)
+        : _end(end)
+    {
+        bool userInteraction = false;
+        AbortableRenderInfoPtr abortInfo;
+        EffectInstancePtr treeRoot;
+        if (!end->getAbortState(&userInteraction, &abortInfo, &treeRoot) || !userInteraction || !abortInfo || !abortInfo->canAbort()) {
+            return;
+        }
+        _cook.startHash = end->getContextFreeRenderHash();
+        _cook.abortInfo = abortInfo;
+        QMutexLocker k(&end->_runningMutex);
+        _entry = end->_running.insert(end->_running.end(), _cook);
+        _registered = true;
+    }
+
+    ~RunningCookScope()
+    {
+        if (_registered) {
+            QMutexLocker k(&_end->_runningMutex);
+            _end->_running.erase(_entry);
+        }
+    }
+
+    RunningCookScope(const RunningCookScope&) = delete;
+    RunningCookScope& operator=(const RunningCookScope&) = delete;
+
+    // onNodeHashChanged() only hears of an edit once something rehashes the node.
+    bool editedSinceStart() const
+    {
+        return _registered && _end->abortIfEditedSince(_cook);
+    }
+
+private:
+    GeoForEachEnd* _end;
+    RunningCook _cook;
+    std::list<RunningCook>::iterator _entry;
+    bool _registered = false;
+};
+
+bool
+GeoForEachEnd::abortIfEditedSince(const RunningCook& cook) const
+{
+    // A drag keeps its oldest render, as it keeps any render.
+    const AppInstancePtr app = getApp();
+    if (app && app->isDraftRenderEnabled()) {
+        return false;
+    }
+    const NodePtr node = getNode();
+    U64 current = 0;
+    const bool madeBeforeEdit = cook.abortInfo->getRenderSequence() <= _editedAtRenderSequence.load();
+    if (!node || (!madeBeforeEdit && node->getHashValueIfUpToDate(&current) && (current == cook.startHash))) {
+        return false;
+    }
+    cook.abortInfo->setAborted();
+
+    return true;
+}
+
+void
+GeoForEachEnd::onNodeHashChanged(U64 hash)
+{
+    NativeEffectBase::onNodeHashChanged(hash);
+
+    abortRunningCooks(&hash);
+}
+
+void
+GeoForEachEnd::abortCooksStaleAfterEdit()
+{
+    noteEditAtLatestRenderSequence(&_editedAtRenderSequence);
+    abortRunningCooks(nullptr);
+}
+
+void
+GeoForEachEnd::abortRunningCooks(const U64* keepHash)
+{
+    const AppInstancePtr app = getApp();
+    if (app && app->isDraftRenderEnabled()) {
+        return;
+    }
+    std::vector<AbortableRenderInfoPtr> stale;
+    {
+        QMutexLocker k(&_runningMutex);
+        for (const RunningCook& cook : _running) {
+            if (!keepHash || (cook.startHash != *keepHash)) {
+                stale.push_back(cook.abortInfo);
+            }
+        }
+    }
+    for (const AbortableRenderInfoPtr& abortInfo : stale) {
+        abortInfo->setAborted();
+    }
+}
+
 StatusEnum
 GeoForEachEnd::renderGeometry(const GeoRenderActionArgs& args,
                               GeoDetailConstPtr* outputDetail,
                               std::string* errorMessage)
 {
+    const RunningCookScope running(this);
     const Settings s = readSettings();
     const std::string loopName = getLoopName();
     const bool pieces = (s.iteration == eGeoForEachIteratePieces);
@@ -931,6 +1055,9 @@ GeoForEachEnd::renderGeometry(const GeoRenderActionArgs& args,
         if (!partition) {
             return fail(partitionError, errorMessage);
         }
+        if (!s.singlePass && (partition->size() > (std::size_t)s.maxIterations)) {
+            return fail(tr("%1 iterations is more than Max Iterations (%2).").arg(partition->size()).arg(s.maxIterations).toStdString(), errorMessage);
+        }
         iterations.resize(partition->size());
         for (std::size_t k = 0; k < partition->size(); ++k) {
             Iteration& it = iterations[k];
@@ -947,6 +1074,9 @@ GeoForEachEnd::renderGeometry(const GeoRenderActionArgs& args,
             }
         }
     } else {
+        if (!s.singlePass && (s.iterations > s.maxIterations)) {
+            return fail(tr("%1 iterations is more than Max Iterations (%2).").arg(s.iterations).arg(s.maxIterations).toStdString(), errorMessage);
+        }
         iterations.resize((std::size_t)s.iterations);
         for (int k = 0; k < s.iterations; ++k) {
             Iteration& it = iterations[(std::size_t)k];
@@ -957,15 +1087,15 @@ GeoForEachEnd::renderGeometry(const GeoRenderActionArgs& args,
         }
     }
 
-    if ((int)iterations.size() > s.maxIterations) {
-        return fail(tr("%1 iterations is more than Max Iterations (%2).").arg(iterations.size()).arg(s.maxIterations).toStdString(), errorMessage);
-    }
     const std::int64_t numIterations = (std::int64_t)iterations.size();
 
     int runCount = (int)iterations.size();
     if (!s.stopCondition.empty()) {
         std::string stopError;
         runCount = evaluateStop(iterations, loopName, args.time, &stopError);
+        if (runCount == kStopAborted) {
+            return eStatusFailed;
+        }
         if (runCount < 0) {
             return fail(stopError, errorMessage);
         }
@@ -1015,7 +1145,7 @@ GeoForEachEnd::renderGeometry(const GeoRenderActionArgs& args,
                 return fail(tr("iteration %1 failed: %2").arg(k).arg(QString::fromUtf8(iterationError.c_str())).toStdString(), errorMessage);
             }
             previous = result;
-            if (aborted()) {
+            if (running.editedSinceStart() || aborted()) {
                 return eStatusFailed;
             }
         }
@@ -1044,14 +1174,20 @@ GeoForEachEnd::renderGeometry(const GeoRenderActionArgs& args,
         const FrameRenderContext* const frameContext = AppTLS::currentFrameContext();
         const IsolatedJob* const job = IsolatedJob::current();
         const int runnablePriority = AppTLS::currentRunnablePriority();
-        RenderCancellation cancel(this);
+        LoopAbortState abort;
+        if (!getAbortState(&abort.isRenderResponseToUserInteraction, &abort.abortInfo, &abort.treeRoot)) {
+            abort = LoopAbortState();
+        }
+        RenderCancellation cancel([this, &running]() { return running.editedSinceStart() || aborted(); });
         parallelForCancellable((int)run.size() - 1, appPTR->getNCPUsAvailableForEffect(), cancel, [&](int i) {
             std::optional<HelperIterationScope> helperScope;
             if (QThread::currentThread() != callingThread) {
-                helperScope.emplace(frameContext, job, runnablePriority);
+                helperScope.emplace(frameContext, job, runnablePriority, abort);
             }
             const std::size_t j = (std::size_t)i + 1;
-            if (cancel.check()) {
+            // On a helper, cancel.check() only sees the abort once the calling thread has polled
+            // for it, which may be after this helper claimed another iteration.
+            if (cancel.check() || (abort.abortInfo && abort.abortInfo->isAborted())) {
                 codes[j] = eRenderRoIRetCodeAborted;
 
                 return;

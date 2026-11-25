@@ -3007,8 +3007,14 @@ LoopEnd::evaluateStop(const Resolved& resolved,
                 Py_XDECREF(it->second);
             }
         }
+        // Between calls of the expression the GIL is given up now and then, so that the GUI
+        // thread is not kept from running Python by a loop of many iterations.
+        static constexpr int kGILYieldIterations = 256;
         int k = 0;
         for (; ok && (k < resolved.count); ++k) {
+            if ((k > 0) && ((k % kGILYieldIterations) == 0)) {
+                const PythonUnlockedWhileWaiting yield;
+            }
             const double t = (resolved.count > 1) ? (double)k / (double)(resolved.count - 1) : 0.;
             const double iterationTime = time + resolved.offset(k);
             PyObject* variables = PyDict_New();
@@ -3599,6 +3605,60 @@ LoopEnd::takePreviousStep(const RenderActionArgs& args,
     return true;
 }
 
+class LoopEnd::RunningRenderScope {
+public:
+    explicit RunningRenderScope(LoopEnd* end)
+        : _end(end)
+    {
+        const ParallelRenderArgsPtr frameArgs = end->getParallelRenderArgsTLS();
+        if (!frameArgs || !frameArgs->isRenderResponseToUserInteraction) {
+            return;
+        }
+        AbortableRenderInfoPtr abortInfo = frameArgs->abortInfo.lock();
+        if (!abortInfo || !abortInfo->canAbort()) {
+            return;
+        }
+        QMutexLocker k(&end->_runningRendersMutex);
+        _entry = end->_runningRenders.insert(end->_runningRenders.end(), std::move(abortInfo));
+        _registered = true;
+    }
+
+    ~RunningRenderScope()
+    {
+        if (_registered) {
+            QMutexLocker k(&_end->_runningRendersMutex);
+            _end->_runningRenders.erase(_entry);
+        }
+    }
+
+    RunningRenderScope(const RunningRenderScope&) = delete;
+    RunningRenderScope& operator=(const RunningRenderScope&) = delete;
+
+private:
+    LoopEnd* _end;
+    std::list<AbortableRenderInfoPtr>::iterator _entry;
+    bool _registered = false;
+};
+
+void
+LoopEnd::abortCooksStaleAfterEdit()
+{
+    noteEditAtLatestRenderSequence(&_editedAtRenderSequence);
+    // A drag keeps its oldest render, as it keeps any render.
+    const AppInstancePtr app = getApp();
+    if (app && app->isDraftRenderEnabled()) {
+        return;
+    }
+    std::vector<AbortableRenderInfoPtr> stale;
+    {
+        QMutexLocker k(&_runningRendersMutex);
+        stale.assign(_runningRenders.begin(), _runningRenders.end());
+    }
+    for (const AbortableRenderInfoPtr& abortInfo : stale) {
+        abortInfo->setAborted();
+    }
+}
+
 bool
 LoopEnd::abortIfEditedSinceFrameStart() const
 {
@@ -3619,10 +3679,12 @@ LoopEnd::abortIfEditedSinceFrameStart() const
         return false;
     }
     // Every edit upstream (a body knob, a driver, the wiring, LoopBegin) or on this node moves its
-    // hash, which the frame folded its context key into when it was set up.
+    // hash, which the frame folded its context key into when it was set up, unless the render
+    // holds it back: abortCooksStaleAfterEdit() then hears of it.
     NodePtr node = getNode();
     U64 current = 0;
-    if (node && node->getHashValueIfUpToDate(&current) && (mixRenderContextKey(current, frameArgs->contextKey) == frameArgs->nodeHash)) {
+    const bool madeBeforeEdit = abortInfo->getRenderSequence() <= _editedAtRenderSequence.load();
+    if (!madeBeforeEdit && node && node->getHashValueIfUpToDate(&current) && (mixRenderContextKey(current, frameArgs->contextKey) == frameArgs->nodeHash)) {
         return false;
     }
     abortInfo->setAborted();
@@ -3739,6 +3801,7 @@ LoopEnd::renderGpu(const GpuRenderArgs& args)
 StatusEnum
 LoopEnd::render(const RenderActionArgs& args)
 {
+    const RunningRenderScope running(this);
     if (abortIfEditedSinceFrameStart()) {
         return eStatusOK;
     }

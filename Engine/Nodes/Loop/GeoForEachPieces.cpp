@@ -101,6 +101,63 @@ positionIn(const std::vector<std::size_t>& sorted,
     return std::size_t(std::lower_bound(sorted.begin(), sorted.end(), std::size_t(offset)) - sorted.begin());
 }
 
+// Each point a piece keeps with that piece, ascending by point then piece: a primitive piece keeps
+// the points of its primitives, a point piece its points.
+std::vector<std::pair<std::size_t, std::size_t>>
+keptPointPieces(const GeoDetail& detail,
+                const GeoPiecePartition& partition)
+{
+    std::vector<std::pair<std::size_t, std::size_t>> out;
+    for (std::size_t piece = 0; piece < partition.size(); ++piece) {
+        for (GeoOffset member : partition.elements(piece)) {
+            if (partition.elementClass() == eGeoPieceElementsPoints) {
+                out.emplace_back(std::size_t(member), piece);
+                continue;
+            }
+            const GeoVertexRange range = detail.primitiveVertices(member);
+            for (GeoOffset v = range.start; v < range.start + range.count; ++v) {
+                out.emplace_back(std::size_t(detail.vertexPoint(v)), piece);
+            }
+        }
+    }
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+
+    return out;
+}
+
+// Renumbers pieces so values are in ascending order, numeric for integers and lexical
+// for strings, and rewrites the value lookup and every element's piece to match.
+template <typename Value, typename Lookup>
+void
+sortPieces(std::vector<Value>* values,
+           Lookup* byValue,
+           std::vector<std::size_t>* pieceOf)
+{
+    std::vector<std::size_t> order(values->size());
+    for (std::size_t k = 0; k < order.size(); ++k) {
+        order[k] = k;
+    }
+    std::sort(order.begin(), order.end(), [values](std::size_t a, std::size_t b) {
+        return (*values)[a] < (*values)[b];
+    });
+    std::vector<std::size_t> renumbered(order.size());
+    std::vector<Value> sorted;
+    sorted.reserve(order.size());
+    for (std::size_t k = 0; k < order.size(); ++k) {
+        renumbered[order[k]] = k;
+        sorted.push_back(std::move((*values)[order[k]]));
+    }
+    *values = std::move(sorted);
+    byValue->clear();
+    for (std::size_t k = 0; k < values->size(); ++k) {
+        byValue->emplace((*values)[k], k);
+    }
+    for (std::size_t& piece : *pieceOf) {
+        piece = renumbered[piece];
+    }
+}
+
 } // anonymous namespace
 
 const std::string&
@@ -191,6 +248,7 @@ GeoForEachPieces::partition(const GeoDetail& detail,
                 }
                 pieceOf[i] = inserted.first->second;
             }
+            sortPieces(&out->_stringValues, &out->_byString, &pieceOf);
             count = out->_stringValues.size();
         } else {
             for (std::size_t i = 0; i < live.size(); ++i) {
@@ -201,6 +259,7 @@ GeoForEachPieces::partition(const GeoDetail& detail,
                 }
                 pieceOf[i] = inserted.first->second;
             }
+            sortPieces(&out->_intValues, &out->_byInt, &pieceOf);
             count = out->_intValues.size();
         }
         break;
@@ -234,6 +293,60 @@ GeoForEachPieces::partition(const GeoDetail& detail,
     std::vector<std::size_t> next(out->_starts.begin(), out->_starts.end() - 1);
     for (std::size_t i = 0; i < live.size(); ++i) {
         out->_elements[next[pieceOf[i]]++] = GeoOffset(live[i]);
+    }
+
+    const std::vector<std::string> edgeGroupNames = detail.edgeGroupNames();
+    if (!edgeGroupNames.empty()) {
+        const std::vector<std::pair<std::size_t, std::size_t>> pointPieces = keptPointPieces(detail, *out);
+        const auto piecesOf = [&pointPieces](GeoOffset point) {
+            const std::pair<std::size_t, std::size_t> first(std::size_t(point), 0);
+            const auto begin = std::lower_bound(pointPieces.begin(), pointPieces.end(), first);
+            auto end = begin;
+            while ((end != pointPieces.end()) && (end->first == std::size_t(point))) {
+                ++end;
+            }
+
+            return std::make_pair(begin, end);
+        };
+        std::vector<std::pair<std::size_t, std::size_t>> edgePieces;
+        for (const std::string& name : edgeGroupNames) {
+            const GeoEdgeGroup* group = detail.findEdgeGroup(name);
+            if (!group) {
+                continue;
+            }
+            const std::span<const GeoEdge> edges = group->edges();
+            edgePieces.clear();
+            for (std::size_t e = 0; e < edges.size(); ++e) {
+                auto [a, aEnd] = piecesOf(edges[e].p0);
+                auto [b, bEnd] = piecesOf(edges[e].p1);
+                while ((a != aEnd) && (b != bEnd)) {
+                    if (a->second < b->second) {
+                        ++a;
+                    } else if (b->second < a->second) {
+                        ++b;
+                    } else {
+                        edgePieces.emplace_back(a->second, e);
+                        ++a;
+                        ++b;
+                    }
+                }
+            }
+            GeoPiecePartition::EdgeGroupPieces bucketed;
+            bucketed.name = name;
+            bucketed.starts.assign(count + 1, 0);
+            for (const std::pair<std::size_t, std::size_t>& edgePiece : edgePieces) {
+                ++bucketed.starts[edgePiece.first + 1];
+            }
+            for (std::size_t piece = 0; piece < count; ++piece) {
+                bucketed.starts[piece + 1] += bucketed.starts[piece];
+            }
+            bucketed.edges.resize(edgePieces.size());
+            std::vector<std::size_t> nextEdge(bucketed.starts.begin(), bucketed.starts.end() - 1);
+            for (const std::pair<std::size_t, std::size_t>& edgePiece : edgePieces) {
+                bucketed.edges[nextEdge[edgePiece.first]++] = edges[edgePiece.second];
+            }
+            out->_edgeGroups.push_back(std::move(bucketed));
+        }
     }
 
     {
@@ -368,18 +481,13 @@ GeoForEachPieces::extract(const GeoDetail& detail,
             builder.addGroup(cls, name).add(inPiece);
         }
     }
-    for (const std::string& name : detail.edgeGroupNames()) {
-        const GeoEdgeGroup* group = detail.findEdgeGroup(name);
-        if (!group) {
-            continue;
-        }
+    for (const GeoPiecePartition::EdgeGroupPieces& group : partition._edgeGroups) {
         std::vector<GeoEdge> edges;
-        for (const GeoEdge& e : group->edges()) {
-            if (holds(points, e.p0) && holds(points, e.p1)) {
-                edges.emplace_back(GeoOffset(positionIn(points, e.p0)), GeoOffset(positionIn(points, e.p1)));
-            }
+        edges.reserve(group.starts[piece + 1] - group.starts[piece]);
+        for (std::size_t e = group.starts[piece]; e < group.starts[piece + 1]; ++e) {
+            edges.emplace_back(GeoOffset(positionIn(points, group.edges[e].p0)), GeoOffset(positionIn(points, group.edges[e].p1)));
         }
-        builder.addEdgeGroup(name).add(edges);
+        builder.addEdgeGroup(group.name).add(edges);
     }
 
     const GeoAttribute* packedSource = detail.findAttribute(eGeoAttribClassPrimitive, kGeoPackedDetailAttr);

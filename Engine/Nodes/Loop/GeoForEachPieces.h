@@ -64,9 +64,10 @@ struct GeoPieceSettings {
 };
 
 /**
- * @brief A detail's elements split into pieces, in the order of each piece's first element.
- * A piece is named by its value: the attribute's value under eGeoPieceMethodAttribute, its
- * position in that order otherwise. Immutable once built.
+ * @brief A detail's elements split into pieces. Under eGeoPieceMethodAttribute, pieces are in
+ * ascending value order (numeric for integers, lexical for strings) and named by their value;
+ * otherwise they are in the order of each piece's first element and named by their position in
+ * that order. Immutable once built.
  **/
 class GeoPiecePartition {
 public:
@@ -116,6 +117,16 @@ private:
     std::unordered_map<std::string, std::size_t> _byString;
     std::vector<std::size_t> _starts;
     std::vector<GeoOffset> _elements;
+
+    // An edge group of the detail split by piece: the group's edges both points of which a piece
+    // keeps, so that extracting a piece visits its own edges only.
+    struct EdgeGroupPieces {
+        std::string name;
+        // The edges of piece k are edges[starts[k], starts[k + 1]), ascending.
+        std::vector<std::size_t> starts;
+        std::vector<GeoEdge> edges;
+    };
+    std::vector<EdgeGroupPieces> _edgeGroups;
 };
 
 typedef std::shared_ptr<const GeoPiecePartition> GeoPiecePartitionConstPtr;

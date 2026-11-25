@@ -34,8 +34,6 @@
 #include <string>
 #include <vector>
 
-#include <sys/stat.h>
-
 #include <SequenceParsing.h>
 
 #include "Engine/AppInstance.h"
@@ -57,12 +55,85 @@ isDigit(char c)
     return c >= '0' && c <= '9';
 }
 
-bool
-fileExists(const std::string& path)
+const SequenceFile*
+recordedFile(const std::vector<SequenceFile>& files,
+             const std::string& path)
 {
-    struct stat st;
+    for (const SequenceFile& file : files) {
+        if (file.path == path) {
+            return &file;
+        }
+    }
 
-    return ::stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode);
+    return nullptr;
+}
+
+const SequenceFile*
+nearestRecordedFile(const std::vector<SequenceFile>& files,
+                    int frame,
+                    ViewIdx view)
+{
+    const SequenceFile* best = nullptr;
+    long long bestDistance = LLONG_MAX;
+    for (std::size_t i = 0; i < files.size();) {
+        std::size_t end = i;
+        while ((end < files.size()) && (files[end].frame == files[i].frame)) {
+            ++end;
+        }
+        // Without a view token in the name every file sits under one view index.
+        const SequenceFile* candidate = &files[i];
+        for (std::size_t j = i; j < end; ++j) {
+            if (files[j].view == view.value()) {
+                candidate = &files[j];
+                break;
+            }
+        }
+        const long long distance = std::llabs((long long)files[i].frame - (long long)frame);
+        i = end;
+        if ((distance >= bestDistance) || !candidate->identity.exists) {
+            continue;
+        }
+        best = candidate;
+        bestDistance = distance;
+    }
+
+    return best;
+}
+
+bool
+readPinnedFile(const std::string& path,
+               const FileIdentity& pinned,
+               GeoDetailConstPtr* detail,
+               std::string* error)
+{
+    if (FileStampRegistry::statNow(path) != pinned) {
+        if (error) {
+            *error = FileStampRegistry::changedOnDiskMessage(path);
+        }
+
+        return false;
+    }
+    GeoDetailConstPtr read;
+    try {
+        read = std::make_shared<const GeoDetail>(geoFileRead(path));
+    } catch (const std::exception& e) {
+        if (error) {
+            *error = e.what();
+        }
+
+        return false;
+    }
+    // A file rewritten in place while it was mapped may have decoded as either version.
+    if (FileStampRegistry::statNow(path) != pinned) {
+        if (error) {
+            *error = FileStampRegistry::changedOnDiskMessage(path);
+        }
+
+        return false;
+    }
+    *detail = read;
+
+    return true;
 }
 
 std::vector<std::string>
@@ -166,32 +237,10 @@ GeoFile::nearestExistingFrame(const std::string& pattern,
     if (!isFrameSequencePattern(pattern)) {
         return std::string();
     }
-    SequenceParsing::SequenceFromPattern sequence;
-    if (!SequenceParsing::filesListFromPattern_slow(pattern, &sequence)) {
-        return std::string();
-    }
+    const std::shared_ptr<const std::vector<SequenceFile>> files = FileStampRegistry::instance().sequenceFiles(pattern);
+    const SequenceFile* nearest = files ? nearestRecordedFile(*files, frame, view) : nullptr;
 
-    std::string best;
-    long long bestDistance = LLONG_MAX;
-    for (const auto& entry : sequence) {
-        if (entry.second.empty()) {
-            continue;
-        }
-        const long long distance = std::llabs((long long)entry.first - (long long)frame);
-        if (distance >= bestDistance) {
-            continue;
-        }
-        // Without a view token in the name every file sits under one view index.
-        const auto forView = entry.second.find(view.value());
-        const std::string& path = forView != entry.second.end() ? forView->second : entry.second.begin()->second;
-        if (!fileExists(path)) {
-            continue;
-        }
-        best = path;
-        bestDistance = distance;
-    }
-
-    return best;
+    return nearest ? nearest->path : std::string();
 }
 
 U64
@@ -238,16 +287,38 @@ GeoFile::readFrame(EffectInstance* effect,
 
         return true;
     }
-    if (!fileExists(path)) {
+
+    FileStampRegistry& registry = FileStampRegistry::instance();
+    std::shared_ptr<const std::vector<SequenceFile>> files;
+    FileIdentity pinned;
+    if (isFrameSequencePattern(pattern)) {
+        files = registry.sequenceFiles(pattern);
+        const SequenceFile* recorded = files ? recordedFile(*files, path) : nullptr;
+        if (recorded) {
+            pinned = recorded->identity;
+        }
+    } else {
+        pinned = registry.identity(path);
+    }
+
+    if (!pinned.exists) {
+        if (FileStampRegistry::statNow(path).exists) {
+            if (error) {
+                *error = FileStampRegistry::changedOnDiskMessage(path);
+            }
+
+            return false;
+        }
         switch (missing) {
         case eGeoFileMissingFrameEmpty:
             *detail = std::make_shared<const GeoDetail>(GeoDetailBuilder().finish());
 
             return true;
         case eGeoFileMissingFrameHoldNearest: {
-            const std::string nearest = nearestExistingFrame(pattern, frame, view);
-            if (!nearest.empty()) {
-                path = nearest;
+            const SequenceFile* nearest = files ? nearestRecordedFile(*files, frame, view) : nullptr;
+            if (nearest) {
+                path = nearest->path;
+                pinned = nearest->identity;
                 break;
             }
             if (error) {
@@ -266,17 +337,7 @@ GeoFile::readFrame(EffectInstance* effect,
         }
     }
 
-    try {
-        *detail = std::make_shared<const GeoDetail>(geoFileRead(path));
-    } catch (const std::exception& e) {
-        if (error) {
-            *error = e.what();
-        }
-
-        return false;
-    }
-
-    return true;
+    return readPinnedFile(path, pinned, detail, error);
 }
 
 GeoFile::GeoFile(NodePtr node)

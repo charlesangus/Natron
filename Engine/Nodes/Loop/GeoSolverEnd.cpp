@@ -36,6 +36,7 @@
 #include <QtCore/QString>
 #include <QtCore/QThread>
 
+#include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/ContentHasher.h"
@@ -520,8 +521,106 @@ GeoSolverEnd::substepContext(const RenderContextPtr& base,
     return builder.build();
 }
 
+class GeoSolverEnd::RunningCookScope {
+public:
+    explicit RunningCookScope(GeoSolverEnd* end)
+        : _end(end)
+    {
+        bool userInteraction = false;
+        AbortableRenderInfoPtr abortInfo;
+        EffectInstancePtr treeRoot;
+        if (!end->getAbortState(&userInteraction, &abortInfo, &treeRoot) || !userInteraction || !abortInfo || !abortInfo->canAbort()) {
+            return;
+        }
+        _cook.startHash = end->getContextFreeRenderHash();
+        _cook.abortInfo = abortInfo;
+        QMutexLocker k(&end->_runningMutex);
+        _entry = end->_running.insert(end->_running.end(), _cook);
+        _registered = true;
+    }
+
+    ~RunningCookScope()
+    {
+        if (_registered) {
+            QMutexLocker k(&_end->_runningMutex);
+            _end->_running.erase(_entry);
+        }
+    }
+
+    RunningCookScope(const RunningCookScope&) = delete;
+    RunningCookScope& operator=(const RunningCookScope&) = delete;
+
+    // onNodeHashChanged() only hears of an edit once something rehashes the node.
+    bool editedSinceStart() const
+    {
+        return _registered && _end->abortIfEditedSince(_cook);
+    }
+
+private:
+    GeoSolverEnd* _end;
+    RunningCook _cook;
+    std::list<RunningCook>::iterator _entry;
+    bool _registered = false;
+};
+
+bool
+GeoSolverEnd::abortIfEditedSince(const RunningCook& cook) const
+{
+    // A drag keeps its oldest render, as it keeps any render.
+    const AppInstancePtr app = getApp();
+    if (app && app->isDraftRenderEnabled()) {
+        return false;
+    }
+    const NodePtr node = getNode();
+    U64 current = 0;
+    const bool madeBeforeEdit = cook.abortInfo->getRenderSequence() <= _editedAtRenderSequence.load();
+    if (!node || (!madeBeforeEdit && node->getHashValueIfUpToDate(&current) && (current == cook.startHash))) {
+        return false;
+    }
+    cook.abortInfo->setAborted();
+
+    return true;
+}
+
+void
+GeoSolverEnd::onNodeHashChanged(U64 hash)
+{
+    NativeEffectBase::onNodeHashChanged(hash);
+
+    abortRunningCooks(&hash);
+}
+
+void
+GeoSolverEnd::abortCooksStaleAfterEdit()
+{
+    noteEditAtLatestRenderSequence(&_editedAtRenderSequence);
+    abortRunningCooks(nullptr);
+}
+
+void
+GeoSolverEnd::abortRunningCooks(const U64* keepHash)
+{
+    const AppInstancePtr app = getApp();
+    if (app && app->isDraftRenderEnabled()) {
+        return;
+    }
+    std::vector<AbortableRenderInfoPtr> stale;
+    {
+        QMutexLocker k(&_runningMutex);
+        for (const RunningCook& cook : _running) {
+            if (!keepHash || (cook.startHash != *keepHash)) {
+                stale.push_back(cook.abortInfo);
+            }
+        }
+    }
+    for (const AbortableRenderInfoPtr& abortInfo : stale) {
+        abortInfo->setAborted();
+    }
+}
+
 StatusEnum
-GeoSolverEnd::solveFrame(const EffectInstancePtr& body,
+GeoSolverEnd::solveFrame(const RunningCookScope& running,
+                         const EffectInstancePtr& body,
                          const GeoRenderActionArgs& args,
                          const RenderContextPtr& base,
                          const std::string& loopName,
@@ -550,7 +649,7 @@ GeoSolverEnd::solveFrame(const EffectInstancePtr& body,
             return fail(what.toStdString(), errorMessage);
         }
         current = next;
-        if (aborted()) {
+        if (running.editedSinceStart() || aborted()) {
             return eStatusFailed;
         }
     }
@@ -581,6 +680,7 @@ GeoSolverEnd::renderGeometry(const GeoRenderActionArgs& args,
                              GeoDetailConstPtr* outputDetail,
                              std::string* errorMessage)
 {
+    const RunningCookScope running(this);
     const Settings s = readSettings();
     const std::string loopName = getLoopName();
     const RenderContextPtr base = getCurrentRenderContext();
@@ -629,7 +729,7 @@ GeoSolverEnd::renderGeometry(const GeoRenderActionArgs& args,
     _simCache->setSpillParent(s.spillToDisk ? spillParent() : std::string());
 
     GeoSimSeries series;
-    series.hash = getHash();
+    series.hash = getContextFreeRenderHash();
     series.contextKey = getCurrentRenderContextKey();
     series.view = (int)args.view;
     // An edit anywhere above makes a new series; what the old one solved is of no further use.
@@ -638,7 +738,7 @@ GeoSolverEnd::renderGeometry(const GeoRenderActionArgs& args,
     const std::shared_ptr<std::timed_mutex> walk = walkMutex(series);
     std::unique_lock<std::timed_mutex> walking(*walk, std::defer_lock);
     while (!walking.try_lock_for(std::chrono::milliseconds(50))) {
-        if (aborted()) {
+        if (running.editedSinceStart() || aborted()) {
             return eStatusFailed;
         }
     }
@@ -668,7 +768,7 @@ GeoSolverEnd::renderGeometry(const GeoRenderActionArgs& args,
 
     for (int h = from + 1; h <= frame; ++h) {
         GeoDetailConstPtr result;
-        const StatusEnum status = solveFrame(body, args, base, loopName, s, h, previous, &result, errorMessage);
+        const StatusEnum status = solveFrame(running, body, args, base, loopName, s, h, previous, &result, errorMessage);
         if (status != eStatusOK) {
             return status;
         }

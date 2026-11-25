@@ -59,6 +59,7 @@
 #include "Engine/Nodes/Geometry/GeoWrangle.h"
 #include "Engine/Nodes/Loop/GeoForEachBegin.h"
 #include "Engine/Nodes/Loop/GeoForEachEnd.h"
+#include "Engine/Nodes/Loop/GeoForEachPieces.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/TLSHolder.h"
 #include "Engine/TimeLine.h"
@@ -92,6 +93,13 @@ centroid(const std::vector<float>& p,
     for (int d = 0; d < 3; ++d) {
         c[d] = n ? c[d] / (double)n : 0.;
     }
+}
+
+std::int64_t
+intAt(const GeoAttribute& attribute,
+      std::size_t offset)
+{
+    return (attribute.storage() == eGeoStorageInt64) ? attribute.get<std::int64_t>(offset) : (std::int64_t)attribute.get<std::int32_t>(offset);
 }
 
 // NATRON_GEOFOREACH_BENCH=1 runs PiecesBench over 10,000 pieces; normal runs use 100 so they
@@ -473,9 +481,8 @@ TEST_F(GeoForEachTest, OneAndEightThreadsGiveTheSameResult)
     EXPECT_EQ(one->contentHash(), eight->contentHash());
 }
 
-// The merge's helper threads used to copy the calling thread's frame args of the body effects
-// while the calling thread, cooking iterations of its own, pushed and popped them: thousands of
-// iterations over several threads read a freed list node sooner or later.
+// Helper threads need independent frame args because the calling thread pushes and pops
+// body-effect args while cooking its own iterations.
 TEST_F(GeoForEachTest, ManyIterationsMergeOverSeveralThreads)
 {
     const int iterations = 20000;
@@ -555,6 +562,113 @@ TEST_F(GeoForEachTest, AbortingTheMaximumIterationCountReturnsPromptly)
     }
 }
 
+// An edit made while a viewer cooks the loop is held back until the renders reading the edited
+// node end, so no hash moves while the cook runs. Whether of the loop's own knobs or of its body,
+// it still aborts the cook within moments.
+TEST_F(GeoForEachTest, AnEditHeldBackByALongCookAbortsIt)
+{
+    struct QueueWritesScope {
+        QueueWritesScope() { EffectInstance::setQueuesWritesDuringBackgroundRendersForTesting(true); }
+        ~QueueWritesScope() { EffectInstance::setQueuesWritesDuringBackgroundRendersForTesting(false); }
+    };
+
+    for (int editBody = 0; editBody < 2; ++editBody) {
+        SCOPED_TRACE(editBody ? "body" : "loop");
+        NodePtr input = begin(_cube, eGeoForEachBeginFetchFeedback);
+        NodePtr move = transform(input);
+        drive(move, kGeoTransformParamTranslate, 0, "loop.iteration", 0., 1.);
+        NodePtr loop = end(move, eGeoForEachIterateCount, eGeoForEachGatherFeedback);
+        setInt(loop, kGeoForEachEndParamIterations, kGeoForEachEndDefaultMaxIterations);
+        ASSERT_TRUE(loop != NULL);
+        KnobIntPtr iterations = std::dynamic_pointer_cast<KnobInt>(loop->getKnobByName(kGeoForEachEndParamIterations));
+        KnobDoublePtr translate = std::dynamic_pointer_cast<KnobDouble>(move->getKnobByName(kGeoTransformParamTranslate));
+        ASSERT_TRUE(iterations != NULL);
+        ASSERT_TRUE(translate != NULL);
+
+        const QueueWritesScope queueWrites;
+        std::unique_ptr<RenderingFlagSetter> rendering(new RenderingFlagSetter(loop));
+        AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
+        EffectInstance::RenderRoIRetCode code = EffectInstance::eRenderRoIRetCodeFailed;
+        std::string error;
+        std::chrono::steady_clock::time_point returnedAt;
+        std::thread cook([&]() {
+            GeoDetailConstPtr result;
+            code = pull(loop, &result, &error, true, abortInfo);
+            returnedAt = std::chrono::steady_clock::now();
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        const std::chrono::steady_clock::time_point editedAt = std::chrono::steady_clock::now();
+        if (editBody) {
+            translate->setValue(1., ViewSpec::all(), 1);
+        } else {
+            iterations->setValue(kGeoForEachEndDefaultMaxIterations - 1);
+        }
+        const bool heldBack = editBody ? (translate->getRawValue(1) == 0.) : (iterations->getRawValue(0) == kGeoForEachEndDefaultMaxIterations);
+        cook.join();
+        rendering.reset();
+
+        EXPECT_TRUE(heldBack) << "the edit applied while the loop rendered";
+        if ((code == EffectInstance::eRenderRoIRetCodeOk) && (returnedAt <= editedAt)) {
+            // A machine fast enough to finish before the edit has nothing left to abort.
+            continue;
+        }
+        EXPECT_EQ(EffectInstance::eRenderRoIRetCodeAborted, code) << error;
+        EXPECT_TRUE(abortInfo->isAborted());
+        const double ms = std::chrono::duration<double, std::milli>(returnedAt - editedAt).count();
+        EXPECT_LT(ms, 2000.) << "the loop went on for " << ms << " ms after the edit";
+    }
+}
+
+// Setting a knob to the value it has while a viewer cooks the loop changes nothing, so no render
+// follows it: the cook goes on.
+TEST_F(GeoForEachTest, ASameValueEditDuringALongCookLeavesItRunning)
+{
+    struct QueueWritesScope {
+        QueueWritesScope() { EffectInstance::setQueuesWritesDuringBackgroundRendersForTesting(true); }
+        ~QueueWritesScope() { EffectInstance::setQueuesWritesDuringBackgroundRendersForTesting(false); }
+    };
+
+    for (int editBody = 0; editBody < 2; ++editBody) {
+        SCOPED_TRACE(editBody ? "body" : "loop");
+        NodePtr input = begin(_cube, eGeoForEachBeginFetchFeedback);
+        NodePtr move = transform(input);
+        drive(move, kGeoTransformParamTranslate, 0, "loop.iteration", 0., 1.);
+        NodePtr loop = end(move, eGeoForEachIterateCount, eGeoForEachGatherFeedback);
+        setInt(loop, kGeoForEachEndParamIterations, kGeoForEachEndDefaultMaxIterations);
+        ASSERT_TRUE(loop != NULL);
+        KnobIntPtr iterations = std::dynamic_pointer_cast<KnobInt>(loop->getKnobByName(kGeoForEachEndParamIterations));
+        KnobDoublePtr translate = std::dynamic_pointer_cast<KnobDouble>(move->getKnobByName(kGeoTransformParamTranslate));
+        ASSERT_TRUE(iterations != NULL);
+        ASSERT_TRUE(translate != NULL);
+
+        const QueueWritesScope queueWrites;
+        std::unique_ptr<RenderingFlagSetter> rendering(new RenderingFlagSetter(loop));
+        AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
+        EffectInstance::RenderRoIRetCode code = EffectInstance::eRenderRoIRetCodeFailed;
+        std::string error;
+        std::thread cook([&]() {
+            GeoDetailConstPtr result;
+            code = pull(loop, &result, &error, true, abortInfo);
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        if (editBody) {
+            translate->setValue(0., ViewSpec::all(), 1);
+        } else {
+            iterations->setValue(kGeoForEachEndDefaultMaxIterations);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        const bool abortedByTheEdit = abortInfo->isAborted();
+        abortInfo->setAborted();
+        cook.join();
+        rendering.reset();
+
+        EXPECT_FALSE(abortedByTheEdit) << "setting the value the knob has aborted the cook";
+        EXPECT_TRUE((code == EffectInstance::eRenderRoIRetCodeOk) || (code == EffectInstance::eRenderRoIRetCodeAborted)) << error;
+        EXPECT_EQ(0., translate->getRawValue(1));
+        EXPECT_EQ(kGeoForEachEndDefaultMaxIterations, iterations->getRawValue(0));
+    }
+}
+
 TEST_F(GeoForEachTest, PiecesByNameAreScaledAboutTheirOwnCentroids)
 {
     expectBoxesScaledAboutTheirCentroids(eGeoPieceMethodAttribute);
@@ -563,6 +677,191 @@ TEST_F(GeoForEachTest, PiecesByNameAreScaledAboutTheirOwnCentroids)
 TEST_F(GeoForEachTest, PiecesByConnectivityAreScaledAboutTheirOwnCentroids)
 {
     expectBoxesScaledAboutTheirCentroids(eGeoPieceMethodConnectivity);
+}
+
+// Boxes 0, 1 and 2 named c, a and b, with ids 7, -2 and 3: pieces run a, b, c and -2, 3, 7.
+TEST_F(GeoForEachTest, AttributePiecesAreInAscendingValueOrder)
+{
+    NodePtr merge = add(PLUGINID_NATRON_GEOMERGE);
+    const char* const names[] = { "c", "a", "b" };
+    const int ids[] = { 7, -2, 3 };
+    for (int k = 0; k < 3; ++k) {
+        NodePtr moved = transform(_cube);
+        setDouble(moved, kGeoTransformParamTranslate, 10. * k, 0);
+        NodePtr named = wrangle(moved, std::string("s@name = \"") + names[k] + "\"; i@id = " + std::to_string(ids[k]) + ";", 1);
+        connectNodes(named, merge, k, true);
+    }
+    GeoDetailConstPtr boxes;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, pull(merge, &boxes, &error)) << error;
+    ASSERT_TRUE(boxes != NULL);
+    ASSERT_EQ(18, boxes->primitiveCount());
+
+    GeoPieceSettings settings;
+    settings.elements = eGeoPieceElementsPrimitives;
+    settings.method = eGeoPieceMethodAttribute;
+    settings.attribute = "name";
+    const GeoPiecePartitionConstPtr byName = GeoForEachPieces::partition(*boxes, settings, &error);
+    ASSERT_TRUE(byName.get() != NULL) << error;
+    ASSERT_EQ(3u, byName->size());
+    const char* const sortedNames[] = { "a", "b", "c" };
+    const GeoOffset firstOfBox[] = { GeoOffset(6), GeoOffset(12), GeoOffset(0) };
+    for (std::size_t piece = 0; piece < 3; ++piece) {
+        EXPECT_EQ(std::string(sortedNames[piece]), byName->stringValue(piece)) << piece;
+        EXPECT_EQ((std::ptrdiff_t)piece, byName->find(std::string(sortedNames[piece]))) << piece;
+        ASSERT_EQ(6u, byName->elements(piece).size()) << piece;
+        EXPECT_EQ(firstOfBox[piece], byName->elements(piece).front()) << piece;
+    }
+
+    settings.attribute = "id";
+    const GeoPiecePartitionConstPtr byId = GeoForEachPieces::partition(*boxes, settings, &error);
+    ASSERT_TRUE(byId.get() != NULL) << error;
+    ASSERT_EQ(3u, byId->size());
+    const std::int64_t sortedIds[] = { -2, 3, 7 };
+    for (std::size_t piece = 0; piece < 3; ++piece) {
+        EXPECT_EQ(sortedIds[piece], byId->intValue(piece)) << piece;
+        EXPECT_EQ((std::ptrdiff_t)piece, byId->find(sortedIds[piece])) << piece;
+        ASSERT_EQ(6u, byId->elements(piece).size()) << piece;
+        EXPECT_EQ(firstOfBox[piece], byId->elements(piece).front()) << piece;
+    }
+}
+
+// Primitives 0 (points 0, 1, 2) and 1 (points 2, 3, 4) share point 2. Each piece keeps the
+// edges between its own points, renumbered as its points are.
+TEST_F(GeoForEachTest, EachPieceKeepsTheEdgesBetweenItsPoints)
+{
+    GeoDetailBuilder builder;
+    builder.appendPoints(5);
+    const std::int32_t counts[] = { 3, 3 };
+    const GeoOffset corners[] = { 0, 1, 2, 2, 3, 4 };
+    builder.appendPrimitives(eGeoPrimitivePolygon, counts, corners);
+    GeoEdgeGroup& group = builder.addEdgeGroup("e");
+    group.add(0, 1);
+    group.add(1, 2);
+    group.add(2, 3);
+    group.add(3, 4);
+    group.add(0, 4);
+    const GeoDetail detail = builder.finish();
+
+    GeoPieceSettings settings;
+    settings.elements = eGeoPieceElementsPrimitives;
+    settings.method = eGeoPieceMethodEachElement;
+    std::string error;
+    const GeoPiecePartitionConstPtr byPrimitive = GeoForEachPieces::partition(detail, settings, &error);
+    ASSERT_TRUE(byPrimitive.get() != NULL) << error;
+    ASSERT_EQ(2u, byPrimitive->size());
+    for (std::size_t piece = 0; piece < 2; ++piece) {
+        SCOPED_TRACE(piece);
+        const GeoDetail extracted = GeoForEachPieces::extract(detail, *byPrimitive, piece);
+        const GeoEdgeGroup* edges = extracted.findEdgeGroup("e");
+        ASSERT_TRUE(edges != NULL);
+        ASSERT_EQ(2u, edges->size());
+        EXPECT_EQ(GeoOffset(0), edges->edges()[0].p0);
+        EXPECT_EQ(GeoOffset(1), edges->edges()[0].p1);
+        EXPECT_EQ(GeoOffset(1), edges->edges()[1].p0);
+        EXPECT_EQ(GeoOffset(2), edges->edges()[1].p1);
+    }
+
+    settings.elements = eGeoPieceElementsPoints;
+    settings.method = eGeoPieceMethodConnectivity;
+    const GeoPiecePartitionConstPtr connected = GeoForEachPieces::partition(detail, settings, &error);
+    ASSERT_TRUE(connected.get() != NULL) << error;
+    ASSERT_EQ(1u, connected->size());
+    const GeoDetail whole = GeoForEachPieces::extract(detail, *connected, 0);
+    const GeoEdgeGroup* allEdges = whole.findEdgeGroup("e");
+    ASSERT_TRUE(allEdges != NULL);
+    EXPECT_EQ(5u, allEdges->size());
+
+    settings.method = eGeoPieceMethodEachElement;
+    const GeoPiecePartitionConstPtr byPoint = GeoForEachPieces::partition(detail, settings, &error);
+    ASSERT_TRUE(byPoint.get() != NULL) << error;
+    ASSERT_EQ(5u, byPoint->size());
+    const GeoDetail lone = GeoForEachPieces::extract(detail, *byPoint, 2);
+    const GeoEdgeGroup* noEdges = lone.findEdgeGroup("e");
+    ASSERT_TRUE(noEdges != NULL);
+    EXPECT_EQ(0u, noEdges->size());
+}
+
+// Boxes 0, 1 and 2 named c, a and b, with ids 7, -2 and 3, iterated by name and then by id. In
+// each iteration the body reads iteration, ivalue and svalue from a Fetch Metadata GeoForEachBegin
+// into primitive attributes, and moves the piece by loop.iteration along y and by loop.ivalue
+// along z. The Stop Condition fails an iteration whose loop.svalue or loop.ivalue is not the
+// piece's, which would end the loop early.
+TEST_F(GeoForEachTest, PieceValuesReachTheBodyAsVariablesAndMetadata)
+{
+    NodePtr merge = add(PLUGINID_NATRON_GEOMERGE);
+    const char* const names[] = { "c", "a", "b" };
+    const int ids[] = { 7, -2, 3 };
+    for (int k = 0; k < 3; ++k) {
+        NodePtr moved = transform(_cube);
+        setDouble(moved, kGeoTransformParamTranslate, 10. * k, 0);
+        NodePtr named = wrangle(moved, std::string("s@name = \"") + names[k] + "\"; i@id = " + std::to_string(ids[k]) + ";", 1);
+        connectNodes(named, merge, k, true);
+    }
+    const std::vector<float> cube = cubePositions();
+    ASSERT_FALSE(cube.empty());
+    double c[3];
+    centroid(cube, c);
+    const std::size_t pointsPerBox = cube.size() / 3;
+
+    for (int byId = 0; byId < 2; ++byId) {
+        SCOPED_TRACE(byId ? "id" : "name");
+        NodePtr piece = begin(merge, eGeoForEachBeginExtractPiece);
+        NodePtr metadata = begin(merge, eGeoForEachBeginFetchMetadata);
+        NodePtr read = wrangle(piece,
+                               "int it = detail(1, \"iteration\"); int iv = detail(1, \"ivalue\"); string sv = detail(1, \"svalue\"); "
+                               "i@gotIteration = it; i@gotIvalue = iv; s@gotSvalue = sv;",
+                               1);
+        connectNodes(metadata, read, 1, true);
+        NodePtr move = transform(read);
+        drive(move, kGeoTransformParamTranslate, 1, "loop.iteration", 0., 100.);
+        drive(move, kGeoTransformParamTranslate, 2, "loop.ivalue", 0., 1.);
+        NodePtr loop = end(move, eGeoForEachIteratePieces, eGeoForEachGatherMerge);
+        setChoice(loop, kGeoForEachEndParamPieceMethod, (int)eGeoPieceMethodAttribute);
+        setString(loop, kGeoForEachEndParamPieceAttribute, byId ? "id" : "name");
+        setString(loop, kGeoForEachEndParamStopCondition,
+                  byId ? "loop.ivalue != [-2, 3, 7][loop.iteration] or loop.svalue != ''"
+                       : "loop.svalue != ['a', 'b', 'c'][loop.iteration] or loop.ivalue != loop.iteration");
+
+        GeoDetailConstPtr result;
+        std::string error;
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, pull(loop, &result, &error)) << error;
+        ASSERT_TRUE(result != NULL);
+        ASSERT_EQ(18, result->primitiveCount());
+        const GeoAttribute* gotIteration = result->findAttribute(eGeoAttribClassPrimitive, "gotIteration");
+        const GeoAttribute* gotIvalue = result->findAttribute(eGeoAttribClassPrimitive, "gotIvalue");
+        const GeoAttribute* gotSvalue = result->findAttribute(eGeoAttribClassPrimitive, "gotSvalue");
+        const GeoAttribute* name = result->findAttribute(eGeoAttribClassPrimitive, "name");
+        const GeoAttribute* id = result->findAttribute(eGeoAttribClassPrimitive, "id");
+        ASSERT_TRUE(gotIteration != NULL);
+        ASSERT_TRUE(gotIvalue != NULL);
+        ASSERT_TRUE(gotSvalue != NULL);
+        ASSERT_TRUE(name != NULL);
+        ASSERT_TRUE(id != NULL);
+        const char* const sortedNames[] = { "a", "b", "c" };
+        const int sortedIds[] = { -2, 3, 7 };
+        for (std::size_t prim = 0; prim < 18; ++prim) {
+            const int k = (int)(prim / 6);
+            const int expectedIvalue = byId ? sortedIds[k] : k;
+            EXPECT_EQ((std::int64_t)k, intAt(*gotIteration, prim)) << "primitive " << prim;
+            EXPECT_EQ((std::int64_t)expectedIvalue, intAt(*gotIvalue, prim)) << "primitive " << prim;
+            EXPECT_EQ(std::string(byId ? "" : sortedNames[k]), std::string(gotSvalue->getString(prim))) << "primitive " << prim;
+            EXPECT_EQ(std::string(sortedNames[k]), std::string(name->getString(prim))) << "primitive " << prim;
+            EXPECT_EQ((std::int64_t)sortedIds[k], intAt(*id, prim)) << "primitive " << prim;
+        }
+
+        const std::vector<float> after = positions(*result);
+        ASSERT_EQ(cube.size() * 3, after.size());
+        for (int k = 0; k < 3; ++k) {
+            const std::vector<float> box(after.begin() + (std::ptrdiff_t)(k * cube.size()), after.begin() + (std::ptrdiff_t)((k + 1) * cube.size()));
+            double b[3];
+            centroid(box, b);
+            const int expectedIvalue = byId ? sortedIds[k] : k;
+            EXPECT_NEAR(c[1] + 100. * k, b[1], 1e-4) << "piece " << k;
+            EXPECT_NEAR(c[2] + (double)expectedIvalue, b[2], 1e-4) << "piece " << k;
+        }
+        EXPECT_EQ(pointsPerBox * 3, (std::size_t)result->pointCount());
+    }
 }
 
 TEST_F(GeoForEachTest, AMissingPieceAttributeIsAnErrorNamingIt)
@@ -647,6 +946,44 @@ TEST_F(GeoForEachTest, MetadataDetailHoldsEveryVariable)
     EXPECT_EQ(0, detail.pointCount());
 }
 
+// An outer Count loop of three iterations around an inner one of two. The inner body moves the
+// cube by 10 along x per outer iteration, read as loops.outer.iteration, and by 100 along y per
+// inner iteration, read as loop.iteration. The output is the six copies, outer iteration first.
+TEST_F(GeoForEachTest, NestedLoopsReadBothIterations)
+{
+    NodePtr outerBegin = begin(_cube, eGeoForEachBeginFetchInput);
+    NodePtr innerBegin = begin(outerBegin, eGeoForEachBeginFetchInput);
+    NodePtr move = transform(innerBegin);
+    drive(move, kGeoTransformParamTranslate, 0, "loops.outer.iteration", 0., 10.);
+    drive(move, kGeoTransformParamTranslate, 1, "loop.iteration", 0., 100.);
+    NodePtr inner = end(move, eGeoForEachIterateCount, eGeoForEachGatherMerge);
+    setString(inner, kGeoForEachEndParamLoopName, "inner");
+    setInt(inner, kGeoForEachEndParamIterations, 2);
+    NodePtr outer = end(inner, eGeoForEachIterateCount, eGeoForEachGatherMerge);
+    setString(outer, kGeoForEachEndParamLoopName, "outer");
+    setInt(outer, kGeoForEachEndParamIterations, 3);
+
+    GeoDetailConstPtr result;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, pull(outer, &result, &error)) << error;
+    ASSERT_TRUE(result != NULL);
+    const std::vector<float> cube = cubePositions();
+    ASSERT_FALSE(cube.empty());
+    const std::vector<float> after = positions(*result);
+    ASSERT_EQ(cube.size() * 6, after.size());
+    for (int o = 0; o < 3; ++o) {
+        for (int i = 0; i < 2; ++i) {
+            const std::size_t copy = (std::size_t)(2 * o + i);
+            for (std::size_t p = 0; p < cube.size(); p += 3) {
+                const std::size_t j = copy * cube.size() + p;
+                EXPECT_NEAR(cube[p] + 10. * o, after[j], 1e-5) << "outer " << o << " inner " << i << " point " << p / 3;
+                EXPECT_NEAR(cube[p + 1] + 100. * i, after[j + 1], 1e-5) << "outer " << o << " inner " << i << " point " << p / 3;
+                EXPECT_NEAR(cube[p + 2], after[j + 2], 1e-5) << "outer " << o << " inner " << i << " point " << p / 3;
+            }
+        }
+    }
+}
+
 TEST_F(GeoForEachTest, PiecesBench)
 {
     // A cube copied onto every point of a grid: one connectivity piece per point.
@@ -662,23 +999,29 @@ TEST_F(GeoForEachTest, PiecesBench)
     ASSERT_TRUE(field != NULL);
     connectNodes(_cube, field, 0, true);
     connectNodes(grid, field, 1, true);
-
-    NodePtr piece = begin(field, eGeoForEachBeginExtractPiece);
-    NodePtr move = transform(piece);
-    drive(move, kGeoTransformParamTranslate, 1, "loop.t", 0., 10.);
-    drive(move, kGeoTransformParamRotate, 1, "loop.t", 0., 360.);
-    NodePtr loop = end(move, eGeoForEachIteratePieces, eGeoForEachGatherMerge);
-    setChoice(loop, kGeoForEachEndParamPieceMethod, (int)eGeoPieceMethodConnectivity);
+    {
+        GeoDetailConstPtr points;
+        std::string error;
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, pull(field, &points, &error)) << error;
+    }
 
     const int pieces = side * side;
     const int allThreads = std::max(1, (int)std::thread::hardware_concurrency());
     const int threadCounts[] = { 1, allThreads };
     for (int threads : threadCounts) {
+        // A fresh loop per run, so only the field upstream is served from the cache.
+        NodePtr piece = begin(field, eGeoForEachBeginExtractPiece);
+        NodePtr move = transform(piece);
+        drive(move, kGeoTransformParamTranslate, 1, "loop.t", 0., 10.);
+        drive(move, kGeoTransformParamRotate, 1, "loop.t", 0., 360.);
+        NodePtr loop = end(move, eGeoForEachIteratePieces, eGeoForEachGatherMerge);
+        setChoice(loop, kGeoForEachEndParamPieceMethod, (int)eGeoPieceMethodConnectivity);
+
         AppTLS::ThreadBudgetScope budget(threads);
         GeoDetailConstPtr result;
         std::string error;
         const auto start = std::chrono::steady_clock::now();
-        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, pull(loop, &result, &error, true)) << error;
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, pull(loop, &result, &error)) << error;
         const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
         ASSERT_TRUE(result != NULL);
         EXPECT_EQ((GeoIndex)pieces * 6, result->primitiveCount());

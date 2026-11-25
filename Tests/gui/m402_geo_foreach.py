@@ -10,8 +10,11 @@ Sections:
   - pieces: the stage holds every piece, 6 faces of 4 points each, spread along x by the driver,
     and the scene view shows it with no error;
   - cancel: with a heartbeat running (a 5 ms Qt timer on the main thread, recording the wall-clock
-    gap between ticks), the End is switched to Iteration Method Count with LONG_ITERATIONS
-    iterations. While that loop cooks, Iterations is set to SHORT_ITERATIONS. The scene view must
+    gap between ticks), a GeoWrangle running HEAVY_STEPS steps per point is put between the
+    GeoTransform and the End, and the End is switched to Iteration Method Count with LONG_ITERATIONS
+    iterations and Max Iterations set to match. After LONG_COOK_MS the End and the GeoWrangle must
+    report no error and no scene may have synced, so the long loop is still cooking. Iterations is
+    then set to SHORT_ITERATIONS. The scene view must
     show the short loop within CANCEL_TIMEOUT_S, and the longest heartbeat gap must stay under
     MAX_GAP_MS. After the heartbeat stops, the stage must hold SHORT_ITERATIONS cubes.
 Screenshots: m402_geo_foreach_pieces.png and m402_geo_foreach_cancelled.png in $NATRON_GUI_TEST_OUT.
@@ -20,6 +23,7 @@ Usage: Tests/gui/run-gui-test.sh Tests/gui/m402_geo_foreach.py
 """
 import os
 import sys
+import threading
 import time
 import traceback
 
@@ -35,7 +39,8 @@ LONG_SETTLE_MS = 750
 PIECE_SPACING = 3.0
 CUBE_FACES = 6
 CUBE_POINTS = 8
-LONG_ITERATIONS = 5000000
+LONG_ITERATIONS = 100000
+HEAVY_STEPS = 2000000
 SHORT_ITERATIONS = 3
 # GeoPrimitive's Type, GeoForEachBegin's Method, GeoForEachEnd's choices.
 SHAPE_CUBE = 2
@@ -137,15 +142,45 @@ try:
                 hi = p[0] if hi is None else max(hi, p[0])
         return faces, points, lo, hi
 
-    gaps = {"last": None, "max_ms": 0.0, "ticks": 0}
+    gaps = {"last": None, "max_ms": 0.0, "ticks": 0, "last_wall_ms": 0.0, "sched": None, "worst": ""}
     heartbeat = QTimer()
     heartbeat.setInterval(5)
+    # Run time against run-queue wait of the GUI thread (/proc schedstat): a stall that is mostly
+    # wait is the thread starved of a CPU, one that is mostly run is work done on it.
+    schedstat = "/proc/self/task/%d/schedstat" % threading.get_native_id()
+
+    def sched():
+        try:
+            with open(schedstat) as f:
+                run_ns, wait_ns = f.read().split()[:2]
+            return int(run_ns) / 1e6, int(wait_ns) / 1e6
+        except (OSError, ValueError):
+            return None
+
+    def storm_ms_since(wall_ms):
+        v = view()
+        frames = (v.property("natronSceneStormFrames") or []) if v is not None else []
+        return sum(float(f[1]) for f in frames if float(f[0]) >= wall_ms)
 
     def tick():
         now = time.monotonic()
+        now_wall_ms = time.time() * 1000.0
+        stat = sched()
         if gaps["last"] is not None:
-            gaps["max_ms"] = max(gaps["max_ms"], (now - gaps["last"]) * 1000.0)
+            gap = (now - gaps["last"]) * 1000.0
+            if gap > gaps["max_ms"]:
+                gaps["max_ms"] = gap
+                split = ""
+                if stat is not None and gaps["sched"] is not None:
+                    split = ", GUI thread ran %.1f ms and waited for a CPU %.1f ms" % (
+                        stat[0] - gaps["sched"][0], stat[1] - gaps["sched"][1])
+                gaps["worst"] = "%.1f ms at +%.2f s: Storm drew %.1f ms in it%s" % (
+                    gap, now - gaps["started"], storm_ms_since(gaps["last_wall_ms"]), split)
+        else:
+            gaps["started"] = now
         gaps["last"] = now
+        gaps["last_wall_ms"] = now_wall_ms
+        gaps["sched"] = stat
         gaps["ticks"] += 1
 
     heartbeat.timeout.connect(tick)
@@ -172,7 +207,13 @@ try:
 
         # cancel
         heartbeat.start()
+        param(end, "maxIterations").setValue(LONG_ITERATIONS)
         param(end, "iterations").setValue(LONG_ITERATIONS)
+        heavy = make("GeoWrangle", 150, 250)
+        param(heavy, "snippet").setValue("for (int k = 0; k < %d; k++) f@heavy += k * 0.5;\n" % HEAVY_STEPS)
+        require(heavy.connectInput(0, move), "connect the GeoTransform into the GeoWrangle")
+        end.disconnectInput(0)
+        require(end.connectInput(0, heavy), "connect the GeoWrangle into the GeoForEachEnd")
         param(end, "iterationMethod").setValue(ITERATE_COUNT)
         # Each edit above can sync a quick intermediate scene (the pieces loop, or the old iteration count)
         # before the long loop starts cooking, so the baseline is taken once those have landed.
@@ -182,6 +223,9 @@ try:
         # scene_drawn() stays true on the previous scene while a new one cooks, so it cannot show a cook running.
         check(synced_at_ms() == baseline_ms,
               "the long loop is still cooking after %d ms (no scene synced since its edit)" % LONG_COOK_MS)
+        for node in (end, heavy):
+            message = str(node.getPersistentMessage() or "")
+            require(not message, "%s reports no error while the long loop cooks (%r)" % (node.getScriptName(), message))
         started = time.monotonic()
         short_edit_ms = now_ms()
         param(end, "iterations").setValue(SHORT_ITERATIONS)
@@ -190,9 +234,11 @@ try:
         heartbeat.stop()
         report("NOTE short loop shown %.2f s after the edit; longest heartbeat gap %.1f ms over %d ticks"
                % (took, gaps["max_ms"], gaps["ticks"]))
-        check(ok, "the long loop is cancelled and the short one shown within %g s" % CANCEL_TIMEOUT_S)
+        report("NOTE longest heartbeat gap %s" % gaps["worst"])
         check(gaps["max_ms"] < MAX_GAP_MS,
               "the GUI thread never stalls for %g ms or more (%.1f ms)" % (MAX_GAP_MS, gaps["max_ms"]))
+        # The probe below renders on the main thread with no timeout, behind a long loop that may still be cooking.
+        require(ok, "the long loop is cancelled and the short one shown within %g s" % CANCEL_TIMEOUT_S)
         yield ("sleep", SETTLE_MS)
         shot("m402_geo_foreach_cancelled.png")
 

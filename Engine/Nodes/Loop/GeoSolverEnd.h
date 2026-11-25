@@ -30,6 +30,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <list>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -162,6 +163,8 @@ private:
                                     const RenderContextPtr& context) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void appendNodeContentHash(ContentHasher& h) const OVERRIDE FINAL;
     virtual void appendExtraHashDependents(std::vector<NodePtr>* dependents) const OVERRIDE FINAL;
+    virtual void onNodeHashChanged(U64 hash) OVERRIDE FINAL;
+    virtual void abortCooksStaleAfterEdit() OVERRIDE FINAL;
     virtual StatusEnum renderGeometry(const GeoRenderActionArgs& args,
                                       GeoDetailConstPtr* outputDetail,
                                       std::string* errorMessage) OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -177,8 +180,22 @@ private:
                                     int substeps,
                                     const GeoDetailConstPtr& previous) const;
 
+    // A viewer cook of this node and the hash it started under. An edit keeps the oldest viewer
+    // render running, and a solve can walk many frames for minutes, so the cook is aborted once
+    // the hash moves or an edit of this node or its body is held back by the render it cooks in.
+    struct RunningCook {
+        U64 startHash = 0;
+        AbortableRenderInfoPtr abortInfo;
+    };
+    class RunningCookScope;
+
+    bool abortIfEditedSince(const RunningCook& cook) const WARN_UNUSED_RETURN;
+    // Aborts the running cooks, but those started under keepHash when one is given; not during a drag.
+    void abortRunningCooks(const U64* keepHash);
+
     // Solves frame from previous, the result of the frame before, into *result.
-    StatusEnum solveFrame(const EffectInstancePtr& body,
+    StatusEnum solveFrame(const RunningCookScope& running,
+                          const EffectInstancePtr& body,
                           const GeoRenderActionArgs& args,
                           const RenderContextPtr& base,
                           const std::string& loopName,
@@ -212,6 +229,11 @@ private:
 
     std::mutex _walksMutex;
     std::map<GeoSimSeries, std::shared_ptr<std::timed_mutex>> _walks;
+
+    QMutex _runningMutex;
+    std::list<RunningCook> _running;
+    // See noteEditAtLatestRenderSequence().
+    std::atomic<U64> _editedAtRenderSequence { 0 };
 };
 
 NATRON_NAMESPACE_EXIT

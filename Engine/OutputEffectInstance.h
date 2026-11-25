@@ -184,6 +184,13 @@ public:
     bool getRunningRenderRequestedRange(int* firstFrame,
                                         int* lastFrame) const;
 
+    /**
+     * @brief The pattern of the files a render of this node writes, the value of its
+     * kOfxImageEffectFileParamName knob by default. Missing directories of it are created and its
+     * frame and view tokens checked before a render starts.
+     **/
+    virtual std::string outputFilePattern();
+
     virtual void initializeData() OVERRIDE FINAL;
     virtual void reportStats(int time, ViewIdx view, double wallTime, const std::map<NodePtr, NodeRenderStats>& stats, const RenderStatsPtr& renderStats);
 

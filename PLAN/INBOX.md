@@ -124,3 +124,7 @@ Reference: Nuke 17's EdgeExtend (`.local/docs/nuke/html/content/reference_guide/
 ### 2026-11-25T04:24:00Z — change-request
 - refs: M247
 - From M373 - In-Panel Knob Editor review (#376, finding 8): when M247 - Project User Knobs And Root enables the in-panel editor on Project Settings, fold RenamePathVariableCommand into the applySpec undo entry (Gui/KnobEditProperties.cpp ~793) so a path-variable rename is one Ctrl+Z, and add a GUI check that renames a path variable through the editor.
+
+### 2026-11-25T13:43:28Z — change-request
+- refs: none
+- Flaky test from M504 - GIL Lock Order Fix (#341): ProgressiveRenderTest.RegisteringAParticipantDuringAWriteReleasesTheGilWhileWaiting (Tests/Scene/ProgressiveRender_Test.cpp:1836) gave up after its 10 s deadline ("the threads deadlocked waiting for the registrant to wait for the writer lock") on the legacy leg of M256 gate2 (run 45529586619), passing on the task-graph leg of the same commit. It polls /proc until the registrant thread is asleep, which can miss the deadline on a loaded ctest runner, or never see the sleep if the registrant finishes and its tid vanishes. File as an E14 flake fix (or fold into M496 - MoonRay Test Stability's flake list): make the wait condition robust without loosening what it proves.

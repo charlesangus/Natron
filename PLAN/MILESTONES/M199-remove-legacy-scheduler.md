@@ -64,7 +64,7 @@ Delete the Legacy render scheduler mode (`renderSchedulerMode`, `Engine/Settings
 
 ## Phase 199.2: Frame args from FrameRenderContext
 
-- [ ] M199.P2.T1 — Separate "frame context installed" from "running a scheduler task"
+- [x] M199.P2.T1 — Separate "frame context installed" from "running a scheduler task"
   - files: `Engine/TLSHolder.h`, `Engine/TLSHolder.cpp` (`FrameContextScope` :256), `Engine/FrameRenderContext.h`, and the sites that test for a context as "on a task": `Engine/EffectInstance.cpp:1343,1453,1538,1868-1885,3358`, `Engine/EffectInstanceRenderRoI.cpp:847,1530,2177`, `Engine/Nodes/Loop/LoopEnd.cpp:3636,3758`, `Engine/Nodes/NativeEffectBase.cpp:686`, `Engine/OfxHost.cpp:1375`, `Engine/RenderScheduler.cpp:1735`
   - approach: Add a scheduled-task marker `RenderScheduler` sets around task execution (e.g. `AppTLS::currentScheduledFrame()` or a flag on the scope). Sites meaning "inside a task" read the marker; sites that only want the frame's args keep `currentFrameContext()`. No behaviour change yet.
   - verify: whole ctest green; `FrameRenderContext_Test` gains a case: a context installed without the marker reports no scheduled frame.

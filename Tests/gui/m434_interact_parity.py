@@ -47,6 +47,11 @@ PARITY_TOLERANCE = int(os.environ.get("M434_PARITY_TOLERANCE", "40"))
 PARITY_RADIUS = int(os.environ.get("M434_PARITY_RADIUS", "0"))
 PARITY_MAX_BAD = float(os.environ.get("M434_PARITY_MAX_BAD", "0.03"))
 RECORD = os.environ.get("M434_PARITY_RECORD", "") == "1"
+# The draw list cuts dashes as geometry where the old renderer used GL line stipple: same period, phase off by under a
+# pixel and a different shade. That is an accepted renderer difference, so dashed scenes search one pixel wider.
+DASHED_SCENES = ("roto", "rotodrag", "ramp")
+DASH_RADIUS = 1
+DASH_MASK_PX = 2.5
 ALL_SCENES = ("roto", "rotodrag", "rotopaint", "tracker", "trackerselected", "splinewarp", "transform",
               "transformhover", "transformdrag", "cornerpin", "position", "rectangle", "ramp")
 SCENES = [s.strip() for s in os.environ.get("M434_PARITY_SCENES", ",".join(ALL_SCENES)).split(",") if s.strip()]
@@ -248,8 +253,32 @@ try:
     def close(p, q, tol):
         return abs(p[0] - q[0]) <= tol and abs(p[1] - q[1]) <= tol and abs(p[2] - q[2]) <= tol
 
-    def compare(actual, reference):
+    def dash_mask(scene):
+        """Crop pixels within DASH_MASK_PX of the ramp's two dashed lines, whose shade differs between renderers."""
+        if scene != "ramp":
+            return None
+        ax, ay = held["anchor"]
+        wx, wy = to_widget(ax, ay)
+        x0, y0 = int(round(wx)) - CROP // 2, int(round(wy)) - CROP // 2
+        (px, py), (qx, qy) = [to_widget(*anchored(dx, dy)) for dx, dy in ((-80.0, -50.0), (80.0, 50.0))]
+        px, py, qx, qy = px - x0, py - y0, qx - x0, qy - y0
+        length = math.hypot(qx - px, qy - py)
+        if length == 0.0:
+            return None
+        ux, uy = (qx - px) / length, (qy - py) / length
+        masked = set()
+        for y in range(CROP):
+            for x in range(CROP):
+                # Each line crosses one point at a right angle to the line between the two points.
+                along0 = (x + 0.5 - px) * ux + (y + 0.5 - py) * uy
+                along1 = (x + 0.5 - qx) * ux + (y + 0.5 - qy) * uy
+                if min(abs(along0), abs(along1)) <= DASH_MASK_PX:
+                    masked.add(y * CROP + x)
+        return masked
+
+    def compare(actual, reference, radius=None, skip=None):
         """(bad pixel count, diff image): red where a pixel has no close reference pixel nearby."""
+        radius = PARITY_RADIUS if radius is None else radius
         w, h = actual.width(), actual.height()
         a, r = pixels(actual), pixels(reference)
         diff = QImage(w, h, QImage.Format_RGB32)
@@ -259,9 +288,11 @@ try:
         for y in range(h):
             for x in range(w):
                 p = a[y * w + x]
-                ok = False
-                for ny in range(max(0, y - PARITY_RADIUS), min(h, y + PARITY_RADIUS + 1)):
-                    for nx in range(max(0, x - PARITY_RADIUS), min(w, x + PARITY_RADIUS + 1)):
+                ok = skip is not None and y * w + x in skip
+                for ny in range(max(0, y - radius), min(h, y + radius + 1)):
+                    if ok:
+                        break
+                    for nx in range(max(0, x - radius), min(w, x + radius + 1)):
                         if close(p, r[ny * w + nx], tol):
                             ok = True
                             break
@@ -309,14 +340,15 @@ try:
         if reference.width() != CROP or reference.height() != CROP:
             check(False, "%s: the reference is %d x %d, not %d px" % (scene, reference.width(), reference.height(), CROP))
             return
-        bad, diff = compare(img, reference)
+        radius = max(PARITY_RADIUS, DASH_RADIUS) if scene in DASHED_SCENES else PARITY_RADIUS
+        bad, diff = compare(img, reference, radius, dash_mask(scene))
         allowed = int(PARITY_MAX_BAD * drawn)
         ok = bad <= allowed
         if not ok:
             img.save(os.path.join(gt.OUT, "m434-%s-actual.png" % scene))
             diff.save(os.path.join(gt.OUT, "m434-%s-diff.png" % scene))
         check(ok, "%s: %d pixels differ from the reference, at most %d allowed (%g of the %d overlay pixels;"
-              " tolerance %d within %d px)" % (scene, bad, allowed, PARITY_MAX_BAD, drawn, PARITY_TOLERANCE, PARITY_RADIUS))
+              " tolerance %d within %d px)" % (scene, bad, allowed, PARITY_MAX_BAD, drawn, PARITY_TOLERANCE, radius))
 
     # ---- scenes ----------------------------------------------------------------------------
 

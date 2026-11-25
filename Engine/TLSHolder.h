@@ -46,6 +46,8 @@
 
 NATRON_NAMESPACE_ENTER
 
+class FrameArgsOverlay;
+
 ///This must be stored as a shared_ptr
 class TLSHolderBase
     : public std::enable_shared_from_this<TLSHolderBase>
@@ -148,9 +150,10 @@ public:
 
     /**
      * @brief Unless the current thread is fromThread itself: calls softCopy() from the current thread and installs
-     * frameContext as the current thread's frame, job as its IsolatedJob context, a thread budget of 1 and an OpenMP
-     * nthreads ICV of 1 on construction, then restores the previous frame, job context, budget and ICV and calls
-     * cleanupTLSForThread() on destruction. frameContext and job must be the spawner's currentFrameContext() and
+     * frameContext as the current thread's frame, frameArgsHead as the head of its frame-args chain, job as its
+     * IsolatedJob context, a thread budget of 1 and an OpenMP nthreads ICV of 1 on construction, then restores the
+     * previous frame, chain, job context, budget and ICV and calls cleanupTLSForThread() on destruction. frameContext,
+     * frameArgsHead and job must be the spawner's currentFrameContext(), FrameArgsOverlay::currentHead() and
      * IsolatedJob::current(), read on the spawner before it hands the work out, since another thread cannot read the
      * spawner's.
      *
@@ -162,6 +165,7 @@ public:
     public:
         SpawnedThreadScope(QThread* fromThread,
                            const FrameRenderContext* frameContext,
+                           const std::shared_ptr<const FrameArgsOverlay>& frameArgsHead,
                            const IsolatedJob* job,
                            SpawnKindEnum kind = eSpawnKindMultiThreadSuite,
                            bool scheduledTask = false);
@@ -174,6 +178,7 @@ public:
     private:
         bool _spawned;
         const FrameRenderContext* _previousFrameContext;
+        std::shared_ptr<const FrameArgsOverlay> _previousFrameArgsHead;
         const IsolatedJob* _previousJob;
         int _previousBudget;
         int _previousOpenMPThreads;
@@ -184,7 +189,9 @@ public:
      * @brief Installs a frame, the task's thread budget and its pool priority on the current thread for the time of
      * a task, and puts the thread in the context of the frame's IsolatedJob, or in none if the frame has none. A
      * null context leaves the thread's job context as it is. scheduledTask marks the thread as running a scheduler
-     * task (see isRunningScheduledTask()). The outermost scope cleans up the thread's TLS on destruction.
+     * task (see isRunningScheduledTask()) and makes the frame the base of a frame-args chain of its own, so that the
+     * task reads no args pushed by whatever ran it inline. The outermost scope cleans up the thread's TLS on
+     * destruction.
      **/
     class FrameContextScope {
     public:
@@ -200,10 +207,12 @@ public:
 
     private:
         const FrameRenderContext* _previous;
+        std::shared_ptr<const FrameArgsOverlay> _previousFrameArgsHead;
         const IsolatedJob* _previousJob;
         int _previousBudget;
         int _previousPriority;
         bool _previousScheduledTask;
+        bool _installedFrameArgsBase;
     };
 
     /**

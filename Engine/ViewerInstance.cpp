@@ -1478,17 +1478,24 @@ isRotoPaintNodeInputRecursive(Node* node,
     return false;
 }
 
+// strokeArgs receives the frame args to push on each node set as drawing the stroke; null when invalidating.
 static void
 updateLastStrokeDataRecursively(Node* node,
                                 const NodePtr& rotoPaintNode,
                                 const RectD& lastStrokeBbox,
-                                bool invalidate)
+                                bool invalidate,
+                                FrameArgsToken::Pushes* strokeArgs)
 {
     if ( isRotoPaintNodeInputRecursive(node, rotoPaintNode) ) {
         if (invalidate) {
             node->invalidateLastPaintStrokeDataNoRotopaint();
         } else {
             node->setLastPaintStrokeDataNoRotopaint();
+            const EffectInstancePtr effect = node->getEffectInstance();
+            const ParallelRenderArgsPtr args = effect ? effect->copyFrameArgsDuringPaintStroke(true) : ParallelRenderArgsPtr();
+            if (args && strokeArgs) {
+                strokeArgs->push_back(std::make_pair(effect.get(), args));
+            }
         }
 
         if ( node == rotoPaintNode.get() ) {
@@ -1498,7 +1505,7 @@ updateLastStrokeDataRecursively(Node* node,
         for (int i = 0; i < maxInputs; ++i) {
             NodePtr input = node->getInput(i);
             if (input) {
-                updateLastStrokeDataRecursively(input.get(), rotoPaintNode, lastStrokeBbox, invalidate);
+                updateLastStrokeDataRecursively(input.get(), rotoPaintNode, lastStrokeBbox, invalidate, strokeArgs);
             }
         }
     }
@@ -1509,10 +1516,8 @@ class ViewerParallelRenderArgsSetter
 {
     NodePtr rotoNode;
     NodePtr viewerNode;
-    NodePtr viewerInputNode;
 
 public:
-
     ViewerParallelRenderArgsSetter(double time,
                                    ViewIdx view,
                                    bool isRenderUserInteraction,
@@ -1529,25 +1534,21 @@ public:
         : ParallelRenderArgsSetter(time, view, isRenderUserInteraction, isSequential, abortInfo, treeRoot, textureIndex, timeline, rotoPaintNode, isAnalysis, draftMode, stats)
         , rotoNode(rotoPaintNode)
         , viewerNode(treeRoot)
-        , viewerInputNode()
     {
         ///There can be a case where the viewer input tree does not belong to the project, for example
         ///for the File Dialog preview.
-        if ( viewerInput && !viewerInput->getGroup() ) {
-            viewerInputNode = viewerInput;
+        if (viewerInput && !viewerInput->getGroup()) {
             U64 nodeHash = viewerInput->getHashValue();
 
-            viewerInput->getEffectInstance()->setParallelRenderArgsTLS(time, view, isRenderUserInteraction, isSequential, nodeHash, abortInfo, treeRoot, 1, NodeFrameRequestPtr(), _openGLContext.lock(), textureIndex, timeline, isAnalysis, false, NodesList(), viewerInput->getCurrentRenderThreadSafety(), viewerInput->getCurrentOpenGLRenderSupport(), draftMode, stats);
+            const EffectInstancePtr effect = viewerInput->getEffectInstance();
+            pushArgs(effect.get(), effect->createParallelRenderArgs(time, view, isRenderUserInteraction, isSequential, nodeHash, abortInfo, treeRoot, 1, NodeFrameRequestPtr(), _openGLContext.lock(), textureIndex, timeline, isAnalysis, false, NodesList(), viewerInput->getCurrentRenderThreadSafety(), viewerInput->getCurrentOpenGLRenderSupport(), draftMode, stats));
         }
     }
 
     virtual ~ViewerParallelRenderArgsSetter()
     {
         if (rotoNode) {
-            updateLastStrokeDataRecursively(viewerNode.get(), rotoNode, RectD(), true);
-        }
-        if (viewerInputNode) {
-            viewerInputNode->getEffectInstance()->invalidateParallelRenderArgsTLS();
+            updateLastStrokeDataRecursively(viewerNode.get(), rotoNode, RectD(), true, NULL);
         }
     }
 };
@@ -2938,6 +2939,7 @@ ViewerInstance::getViewerArgsAndRenderViewer(SequenceTime time,
                                            false,
                                            stats);
         noteActiveViewerBranch(tls, thisNode);
+        FrameArgsToken strokeArgs;
         NodesList rotoPaintNodes;
         if (rotoPaintNode) {
             if (activeStroke) {
@@ -2989,7 +2991,9 @@ ViewerInstance::getViewerArgsAndRenderViewer(SequenceTime time,
                     for (NodesList::iterator it = rotoPaintNodes.begin(); it != rotoPaintNodes.end(); ++it) {
                         (*it)->prepareForNextPaintStrokeRender();
                     }
-                    updateLastStrokeDataRecursively(thisNode.get(), rotoPaintNode, lastStrokeBbox, false);
+                    FrameArgsToken::Pushes strokePushes;
+                    updateLastStrokeDataRecursively(thisNode.get(), rotoPaintNode, lastStrokeBbox, false, &strokePushes);
+                    strokeArgs = FrameArgsToken(strokePushes);
                 } else {
                     ///The drawing is already up to date: all changes have been taken into account for this event
                     args[i].reset();

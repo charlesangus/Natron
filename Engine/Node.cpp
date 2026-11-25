@@ -643,7 +643,6 @@ Node::setLastPaintStrokeDataNoRotopaint()
         _imp->strokeBitmapCleared = false;
         _imp->duringPaintStrokeCreation = true;
     }
-    _imp->effect->setDuringPaintStrokeCreationThreadLocal(true);
 }
 
 void

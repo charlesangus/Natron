@@ -1116,31 +1116,7 @@ public:
     typedef std::shared_ptr<NotifyRenderingStarted_RAII> NotifyRenderingStarted_RAIIPtr;
 
     /**
-     * @brief Sets render preferences for the rendering of a frame for the current thread.
-     * This is thread-local storage. This is NOT local to a call to renderRoI
-     **/
-    void setParallelRenderArgsTLS(double time,
-                                  ViewIdx view,
-                                  bool isRenderUserInteraction,
-                                  bool isSequential,
-                                  U64 nodeHash,
-                                  const AbortableRenderInfoPtr& abortInfo,
-                                  const NodePtr& treeRoot,
-                                  int visitsCount,
-                                  const NodeFrameRequestPtr& nodeRequest,
-                                  const OSGLContextPtr& glContext,
-                                  int textureIndex,
-                                  const TimeLine* timeline,
-                                  bool isAnalysis,
-                                  bool isDuringPaintStrokeCreation,
-                                  const NodesList& rotoPaintNodes,
-                                  RenderSafetyEnum currentThreadSafety,
-                                  PluginOpenGLRenderSupport currentOpenGLSupport,
-                                  bool draftMode,
-                                  const RenderStatsPtr& stats);
-
-    /**
-     * @brief The frame args setParallelRenderArgsTLS() would install, without installing them.
+     * @brief Frame args for the rendering of a frame, to install on the effect with a FrameArgsToken.
      **/
     ParallelRenderArgsPtr createParallelRenderArgs(double time,
                                                    ViewIdx view,
@@ -1167,21 +1143,17 @@ public:
      **/
     const TLSHolderBase* getTLSHolder() const;
 
-    void setDuringPaintStrokeCreationThreadLocal(bool duringPaintStroke);
-
-    void setNodeRequestThreadLocal(const NodeFrameRequestPtr & nodeRequest);
-
-    void setParallelRenderArgsTLS(const ParallelRenderArgsPtr & args);
+    /**
+     * @brief A copy of the current thread's frame args of the effect with isDuringPaintStrokeCreation set to
+     * duringPaintStroke; null when the thread has none.
+     **/
+    ParallelRenderArgsPtr copyFrameArgsDuringPaintStroke(bool duringPaintStroke) const;
 
     /**
-     *@returns whether the effect was flagged with canSetValue = true or false
+     * @brief Pushes copyFrameArgsDuringPaintStroke() for the token's lifetime; the token is empty when the thread
+     * has no frame args for the effect.
      **/
-    void invalidateParallelRenderArgsTLS();
-
-    /**
-     * @brief Pops the frame args setParallelRenderArgsTLS() pushed last, leaving the rotopaint tree's alone.
-     **/
-    void popParallelRenderArgsTLS();
+    FrameArgsToken setDuringPaintStrokeCreationThreadLocal(bool duringPaintStroke) WARN_UNUSED_RETURN;
 
     ParallelRenderArgsPtr getParallelRenderArgsTLS() const;
 
@@ -1374,6 +1346,7 @@ protected:
     virtual void onCurrentFrameMetadataChanged(const NodeMetadata& /*metadata*/) { }
 
     friend class ClipPreferencesRunning_RAII;
+    friend class FrameArgsToken;
     // Returns the previous state, so that the scopes nest.
     bool setClipPreferencesRunning(bool running);
 

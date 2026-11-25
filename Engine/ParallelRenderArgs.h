@@ -40,6 +40,7 @@
 #include "Global/GlobalDefines.h"
 
 #include "Engine/EngineFwd.h"
+#include "Engine/FrameArgsOverlay.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/RectD.h"
@@ -285,6 +286,12 @@ public:
 
     bool isCurrentFrameRenderNotAbortable() const;
 };
+
+/**
+ * @brief A copy of args to push in their place, keeping the metadata answers they retained so far, which a plain
+ * copy drops.
+ **/
+ParallelRenderArgsPtr copyFrameArgs(const ParallelRenderArgsPtr& args);
 
 struct FrameViewPair
 {
@@ -544,6 +551,56 @@ private:
 };
 
 /**
+ * @brief Frame args pushed on effects' thread-local frame args for the token's lifetime and popped in the reverse
+ * order on destruction; every push and pop of frame args goes through one. The args are pushed on the thread's
+ * FrameArgsOverlay chain too, all of a token's as one link.
+ **/
+class FrameArgsToken {
+public:
+    typedef std::vector<std::pair<const EffectInstance*, ParallelRenderArgsPtr>> Pushes;
+
+    FrameArgsToken();
+
+    FrameArgsToken(const EffectInstance* effect,
+                   const ParallelRenderArgsPtr& args);
+
+    explicit FrameArgsToken(const Pushes& pushes);
+
+    ~FrameArgsToken();
+
+    FrameArgsToken(FrameArgsToken&& other) noexcept;
+    FrameArgsToken& operator=(FrameArgsToken&& other) noexcept;
+
+    FrameArgsToken(const FrameArgsToken&) = delete;
+    FrameArgsToken& operator=(const FrameArgsToken&) = delete;
+
+    bool isInstalled() const
+    {
+        return bool(_first);
+    }
+
+    /**
+     * @brief Leaves the args pushed once the token is gone, for the render that installs args it never pops.
+     **/
+    void leaveInstalled();
+
+    /**
+     * @brief Gives the thread-local frame args of a thread that has none their first args, without a token to pop
+     * them: they live as long as the thread's data.
+     **/
+    static void seed(std::list<ParallelRenderArgsPtr>* frameArgs,
+                     const ParallelRenderArgsPtr& args);
+
+private:
+    void pop();
+
+    // EffectInstance's thread-local data, which this header cannot name since EffectInstance.h includes it.
+    std::shared_ptr<void> _first;
+    std::vector<std::shared_ptr<void>> _rest;
+    FrameArgsScope _chain;
+};
+
+/**
  * @brief Pushes args on effect's frame args for its lifetime when args is not null, so the effect
  * renders under args' context, and opens an ActionContextScope for that context; pops them on
  * destruction.
@@ -562,8 +619,9 @@ public:
                  const ParallelRenderArgsPtr& args);
 
 private:
-    EffectInstancePtr _effect;
+    // Declared after _actions so that the args are popped before the action context closes.
     ActionContextScope _actions;
+    FrameArgsToken _token;
 };
 
 /**
@@ -684,6 +742,10 @@ public:
                              ArgsInstallSequence* installSequence = 0,
                              NodesList* collectedNodes = 0);
 
+    /**
+     * @brief Gives the nodes found in request their entry of it, by pushing a copy of their args that carries it.
+     * The copies replace the args getInstalledArgs() maps the nodes to.
+     **/
     void updateNodesRequest(const FrameRequestMap& request);
 
     /**
@@ -704,8 +766,16 @@ public:
 
     virtual ~ParallelRenderArgsSetter();
 
+protected:
+    /**
+     * @brief Pushes args on effect until the setter is destroyed, popping them before the setter's own.
+     **/
+    void pushArgs(const EffectInstance* effect,
+                  const ParallelRenderArgsPtr& args);
+
 private:
     std::map<NodePtr, ParallelRenderArgsPtr> _installedArgs;
+    std::vector<FrameArgsToken> _tokens;
 };
 
 NATRON_NAMESPACE_EXIT

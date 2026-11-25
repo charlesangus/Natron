@@ -54,6 +54,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
+#include "Engine/FrameArgsOverlay.h"
 #include "Engine/FrameRenderContext.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
@@ -835,7 +836,7 @@ TEST_F(PoolSharing, SpawnedThreadScopeInstallsTheSpawnersFrame)
     QThread* spawner = QThread::currentThread();
     ASSERT_TRUE(AppTLS::currentFrameContext() == NULL);
     {
-        AppTLS::SpawnedThreadScope sameThread(spawner, context.get(), NULL);
+        AppTLS::SpawnedThreadScope sameThread(spawner, context.get(), FrameArgsOverlayPtr(), NULL);
         EXPECT_TRUE(AppTLS::currentFrameContext() == NULL) << "the spawner's own frame must not change";
     }
 
@@ -848,7 +849,7 @@ TEST_F(PoolSharing, SpawnedThreadScopeInstallsTheSpawnersFrame)
     QThread* worker = QThread::create([&]() {
         before = AppTLS::currentFrameContext();
         {
-            AppTLS::SpawnedThreadScope scope(spawner, context.get(), NULL);
+            AppTLS::SpawnedThreadScope scope(spawner, context.get(), FrameArgsOverlayPtr(), NULL);
             inside = AppTLS::currentFrameContext();
             budgetInside = AppTLS::currentThreadBudget();
             nCPUsInside = appPTR->getNCPUsAvailableForEffect();

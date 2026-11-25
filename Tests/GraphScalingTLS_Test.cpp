@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <cstddef>
+#include <cstdio>
 #include <cstring>
 #include <list>
 #include <map>
@@ -45,6 +46,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/FrameArgsOverlay.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/Knob.h"
@@ -101,6 +103,40 @@ protected:
         args->timeline = getApp()->getTimeLine().get();
 
         return args;
+    }
+
+    void makeExpressionGradeChain(int numGrades,
+                                  std::vector<NodePtr>* grades)
+    {
+        NodePtr checker = createNode(QString::fromUtf8(kCheckerBoardPluginID));
+        ASSERT_TRUE(bool(checker));
+
+        NodePtr previous = checker;
+        for (int i = 0; i < numGrades; ++i) {
+            NodePtr grade = createNode(QString::fromUtf8(kGradePluginID));
+            ASSERT_TRUE(bool(grade));
+            connectNodes(previous, grade, 0, true);
+            grades->push_back(grade);
+            previous = grade;
+        }
+
+        KnobColor* firstMultiply = dynamic_cast<KnobColor*>(grades->front()->getKnobByName("multiply").get());
+        ASSERT_TRUE(firstMultiply != NULL);
+        const int nDims = firstMultiply->getDimension();
+        ASSERT_GE(nDims, 3);
+        for (int d = 0; d < nDims; ++d) {
+            firstMultiply->setValueAtTime(1., 0.5, ViewSpec::all(), d);
+            firstMultiply->setValueAtTime(20., 1.5, ViewSpec::all(), d);
+        }
+        const std::string firstName = grades->front()->getScriptName();
+        for (std::size_t i = 1; i < grades->size(); ++i) {
+            KnobIPtr multiply = (*grades)[i]->getKnobByName("multiply");
+            ASSERT_TRUE(bool(multiply));
+            for (int d = 0; d < nDims; ++d) {
+                const std::string expr = firstName + ".multiply.getValue(" + std::to_string(d) + ")";
+                ASSERT_NO_THROW(multiply->setExpression(d, expr, false, true));
+            }
+        }
     }
 
     bool renderWindow(const NodePtr& node,
@@ -203,10 +239,12 @@ TEST_F(GraphScalingTLS, InheritsOnlyTouchedHolders)
     AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(false, 0);
     ParallelRenderArgsPtr argsA = makeFrameArgs(7., abortInfo, nodeA);
     ParallelRenderArgsPtr argsOthers = makeFrameArgs(3., abortInfo, nodeA);
-    effectA->setParallelRenderArgsTLS(argsA);
+    FrameArgsToken tokenA(effectA.get(), argsA);
+    FrameArgsToken::Pushes othersPushes;
     for (std::size_t i = 0; i < others.size(); ++i) {
-        others[i]->setParallelRenderArgsTLS(argsOthers);
+        othersPushes.push_back(std::make_pair(others[i].get(), argsOthers));
     }
+    FrameArgsToken tokenOthers(othersPushes);
     ASSERT_EQ(argsA.get(), effectA->getParallelRenderArgsTLS().get());
 
     QThread* mainThread = QThread::currentThread();
@@ -239,10 +277,8 @@ TEST_F(GraphScalingTLS, InheritsOnlyTouchedHolders)
     EXPECT_EQ(argsA.get(), nestedArgsA.get());
     EXPECT_EQ(1u, nestedCopies);
 
-    effectA->invalidateParallelRenderArgsTLS();
-    for (std::size_t i = 0; i < others.size(); ++i) {
-        others[i]->invalidateParallelRenderArgsTLS();
-    }
+    tokenOthers = FrameArgsToken();
+    tokenA = FrameArgsToken();
     ASSERT_FALSE(bool(effectA->getParallelRenderArgsTLS()));
 
     ParallelRenderArgsPtr freshArgsA;
@@ -262,36 +298,8 @@ TEST_F(GraphScalingTLS, MultithreadedPixelsMatchSingleThreaded)
     const int kSize = 512;
     const int kNumGrades = 50;
 
-    NodePtr checker = createNode(QString::fromUtf8(kCheckerBoardPluginID));
-    ASSERT_TRUE(bool(checker));
-
     std::vector<NodePtr> grades;
-    NodePtr previous = checker;
-    for (int i = 0; i < kNumGrades; ++i) {
-        NodePtr grade = createNode(QString::fromUtf8(kGradePluginID));
-        ASSERT_TRUE(bool(grade));
-        connectNodes(previous, grade, 0, true);
-        grades.push_back(grade);
-        previous = grade;
-    }
-
-    KnobColor* firstMultiply = dynamic_cast<KnobColor*>(grades.front()->getKnobByName("multiply").get());
-    ASSERT_TRUE(firstMultiply != NULL);
-    const int nDims = firstMultiply->getDimension();
-    ASSERT_GE(nDims, 3);
-    for (int d = 0; d < nDims; ++d) {
-        firstMultiply->setValueAtTime(1., 0.5, ViewSpec::all(), d);
-        firstMultiply->setValueAtTime(20., 1.5, ViewSpec::all(), d);
-    }
-    const std::string firstName = grades.front()->getScriptName();
-    for (std::size_t i = 1; i < grades.size(); ++i) {
-        KnobIPtr multiply = grades[i]->getKnobByName("multiply");
-        ASSERT_TRUE(bool(multiply));
-        for (int d = 0; d < nDims; ++d) {
-            const std::string expr = firstName + ".multiply.getValue(" + std::to_string(d) + ")";
-            ASSERT_NO_THROW(multiply->setExpression(d, expr, false, true));
-        }
-    }
+    ASSERT_NO_FATAL_FAILURE(makeExpressionGradeChain(kNumGrades, &grades));
 
     // A thread that lost the first Grade's frame args would evaluate the expressions at the timeline frame.
     getApp()->getTimeLine()->seekFrame(1, false, NULL, eTimelineChangeReasonOtherSeek);
@@ -329,4 +337,35 @@ TEST_F(GraphScalingTLS, MultithreadedPixelsMatchSingleThreaded)
     EXPECT_EQ(0u, numMismatches) << "first mismatch at float " << firstMismatch << ": "
                                  << singleThreaded[firstMismatch < singleThreaded.size() ? firstMismatch : 0] << " vs "
                                  << multiThreaded[firstMismatch < multiThreaded.size() ? firstMismatch : 0];
+}
+
+TEST_F(GraphScalingTLS, FrameArgsChainShadowsTheThreadLocalList)
+{
+    const int kSize = 512;
+    const int kNumGrades = 50;
+
+    std::vector<NodePtr> grades;
+    ASSERT_NO_FATAL_FAILURE(makeExpressionGradeChain(kNumGrades, &grades));
+    getApp()->getTimeLine()->seekFrame(1, false, NULL, eTimelineChangeReasonOtherSeek);
+
+    const int savedMaxThreads = QThreadPool::globalInstance()->maxThreadCount();
+    appPTR->setNumberOfThreads(0);
+    QThreadPool::globalInstance()->setMaxThreadCount(4);
+    appPTR->clearAllCaches();
+
+    FrameArgsOverlay::resetStats();
+    std::vector<float> pixels;
+    std::string error;
+    const bool ok = renderWindow(grades.back(), 10., kSize, kSize, &pixels, &error);
+    const FrameArgsOverlay::Stats stats = FrameArgsOverlay::stats();
+
+    QThreadPool::globalInstance()->setMaxThreadCount(savedMaxThreads);
+
+    std::printf("FRAMEARGS_SHADOW mismatches=%llu maxDepth=%llu\n", (unsigned long long)stats.mismatches, (unsigned long long)stats.maxDepth);
+    std::printf("FRAMEARGS_SHADOW outOfOrderPops=%llu\n", (unsigned long long)stats.outOfOrderPops);
+    std::fflush(stdout);
+
+    ASSERT_TRUE(ok) << error;
+    EXPECT_EQ(0u, stats.mismatches);
+    EXPECT_EQ(0u, stats.outOfOrderPops);
 }

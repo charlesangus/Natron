@@ -51,6 +51,7 @@
 #include "Engine/Cache.h"
 #include "Engine/CacheTier.h"
 #include "Engine/DiskCacheNode.h"
+#include "Engine/FrameArgsOverlay.h"
 #include "Engine/FrameRenderContext.h"
 #include "Engine/GPUContextPool.h"
 #include "Engine/Image.h"
@@ -572,7 +573,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
         frameArgs->view = args.view;
         frameArgs->isSequentialRender = false;
         frameArgs->isRenderResponseToUserInteraction = true;
-        tls->frameArgs.push_back(frameArgs);
+        FrameArgsToken(this, frameArgs).leaveInstalled();
     } else {
         //The hash must not have changed if we did a pre-pass.
         frameArgs = tls->frameArgs.back();
@@ -2175,6 +2176,7 @@ EffectInstance::renderRoIInternal(EffectInstance* self,
             tiledArgs->layers = layersToRender;
             tiledArgs->compsNeeded = compsNeeded;
             tiledArgs->frameContext = AppTLS::currentFrameContext();
+            tiledArgs->frameArgsHead = FrameArgsOverlay::currentHead();
             tiledArgs->scheduledTask = AppTLS::isRunningScheduledTask();
             tiledArgs->isolatedJob = IsolatedJob::current();
 

@@ -44,6 +44,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/DeviceImage.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/FrameArgsOverlay.h"
 #include "Engine/FrameRenderContext.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
@@ -147,6 +148,24 @@ protected:
         BaseTest::SetUp();
         getApp()->getProject()->reset(false, true);
     }
+
+    FrameRenderContextPtr makeContext(const NodePtr& root)
+    {
+        AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(false, 0);
+
+        return FrameRenderContext::create(1.,
+                                          ViewIdx(0),
+                                          false /*isRenderUserInteraction*/,
+                                          false /*isSequential*/,
+                                          abortInfo,
+                                          root,
+                                          0 /*textureIndex*/,
+                                          getApp()->getTimeLine().get(),
+                                          NodePtr(),
+                                          false /*isAnalysis*/,
+                                          false /*draftMode*/,
+                                          RenderStatsPtr());
+    }
 };
 
 TEST_F(FrameRenderContextTest, TaskThreadGetsFrameArgsFromContext)
@@ -241,6 +260,197 @@ TEST_F(FrameRenderContextTest, ContextWithoutSchedulerMarkerReportsNoScheduledTa
         EXPECT_FALSE(AppTLS::isRunningScheduledTask());
     }
     EXPECT_EQ(nullptr, AppTLS::currentFrameContext());
+}
+
+TEST_F(FrameRenderContextTest, FrameArgsChainRestoresNestedScopes)
+{
+    NodePtr constant = createNode(QString::fromUtf8(kConstantPluginID));
+    NodePtr grade = createNode(QString::fromUtf8(kGradePluginID));
+    ASSERT_TRUE(bool(constant) && bool(grade));
+    const TLSHolderBase* a = constant->getEffectInstance()->getTLSHolder();
+    const TLSHolderBase* b = grade->getEffectInstance()->getTLSHolder();
+    ASSERT_NE(a, b);
+    ParallelRenderArgsPtr outer = std::make_shared<ParallelRenderArgs>();
+    ParallelRenderArgsPtr inner = std::make_shared<ParallelRenderArgs>();
+    ParallelRenderArgsPtr other = std::make_shared<ParallelRenderArgs>();
+
+    ASSERT_FALSE(bool(FrameArgsOverlay::currentHead()));
+    {
+        FrameArgsScope outerScope(a, outer);
+        EXPECT_EQ(outer.get(), FrameArgsOverlay::lookup(a).get());
+        EXPECT_FALSE(bool(FrameArgsOverlay::lookup(b)));
+        {
+            FrameArgsScope innerScope(a, inner);
+            EXPECT_EQ(inner.get(), FrameArgsOverlay::lookup(a).get());
+            {
+                FrameArgsScope otherScope(b, other);
+                EXPECT_EQ(other.get(), FrameArgsOverlay::lookup(b).get());
+                EXPECT_EQ(inner.get(), FrameArgsOverlay::lookup(a).get());
+                EXPECT_EQ(3u, FrameArgsOverlay::currentHead()->depth());
+            }
+            EXPECT_FALSE(bool(FrameArgsOverlay::lookup(b)));
+            EXPECT_EQ(inner.get(), FrameArgsOverlay::lookup(a).get());
+        }
+        EXPECT_EQ(outer.get(), FrameArgsOverlay::lookup(a).get());
+    }
+    EXPECT_FALSE(bool(FrameArgsOverlay::currentHead()));
+    EXPECT_FALSE(bool(FrameArgsOverlay::lookup(a)));
+}
+
+TEST_F(FrameRenderContextTest, FrameArgsChainShadowsPerEffect)
+{
+    NodePtr constant = createNode(QString::fromUtf8(kConstantPluginID));
+    NodePtr grade = createNode(QString::fromUtf8(kGradePluginID));
+    ASSERT_TRUE(bool(constant) && bool(grade));
+    const TLSHolderBase* a = constant->getEffectInstance()->getTLSHolder();
+    const TLSHolderBase* b = grade->getEffectInstance()->getTLSHolder();
+    ParallelRenderArgsPtr firstA = std::make_shared<ParallelRenderArgs>();
+    ParallelRenderArgsPtr lastA = std::make_shared<ParallelRenderArgs>();
+    ParallelRenderArgsPtr batchB = std::make_shared<ParallelRenderArgs>();
+    ParallelRenderArgsPtr innerB = std::make_shared<ParallelRenderArgs>();
+
+    FrameArgsOverlay::Entries entries;
+    entries.push_back(FrameArgsOverlay::Entry(a, firstA));
+    entries.push_back(FrameArgsOverlay::Entry(b, batchB));
+    entries.push_back(FrameArgsOverlay::Entry(a, lastA));
+    {
+        FrameArgsScope batch(entries);
+        EXPECT_EQ(1u, FrameArgsOverlay::currentHead()->depth()) << "a batch is one link";
+        EXPECT_EQ(lastA.get(), FrameArgsOverlay::lookup(a).get()) << "the last of several entries for an effect wins";
+        EXPECT_EQ(batchB.get(), FrameArgsOverlay::lookup(b).get());
+        {
+            FrameArgsScope innerScope(b, innerB);
+            EXPECT_EQ(innerB.get(), FrameArgsOverlay::lookup(b).get());
+            EXPECT_EQ(lastA.get(), FrameArgsOverlay::lookup(a).get()) << "shadowing one effect leaves the others visible";
+        }
+        EXPECT_EQ(batchB.get(), FrameArgsOverlay::lookup(b).get());
+    }
+    EXPECT_FALSE(bool(FrameArgsOverlay::lookup(a)));
+    EXPECT_FALSE(bool(FrameArgsOverlay::lookup(b)));
+}
+
+TEST_F(FrameRenderContextTest, FrameArgsSpawnedThreadSeesTheCapturedChain)
+{
+    NodePtr constant = createNode(QString::fromUtf8(kConstantPluginID));
+    NodePtr grade = createNode(QString::fromUtf8(kGradePluginID));
+    ASSERT_TRUE(bool(constant) && bool(grade));
+    const TLSHolderBase* a = constant->getEffectInstance()->getTLSHolder();
+    const TLSHolderBase* b = grade->getEffectInstance()->getTLSHolder();
+    ParallelRenderArgsPtr captured = std::make_shared<ParallelRenderArgs>();
+    ParallelRenderArgsPtr later = std::make_shared<ParallelRenderArgs>();
+    ParallelRenderArgsPtr laterB = std::make_shared<ParallelRenderArgs>();
+
+    QThread* spawner = QThread::currentThread();
+    FrameArgsScope capturedScope(a, captured);
+    const FrameArgsOverlayPtr head = FrameArgsOverlay::currentHead();
+    FrameArgsScope laterScope(a, later);
+    FrameArgsScope laterBScope(b, laterB);
+
+    ParallelRenderArgsPtr beforeScope, insideA, insideB, afterScope;
+    bool headAfterScope = true;
+    runOnNewThread([&]() {
+        beforeScope = FrameArgsOverlay::lookup(a);
+        {
+            AppTLS::SpawnedThreadScope scope(spawner, NULL, head, NULL);
+            insideA = FrameArgsOverlay::lookup(a);
+            insideB = FrameArgsOverlay::lookup(b);
+        }
+        headAfterScope = bool(FrameArgsOverlay::currentHead());
+        afterScope = FrameArgsOverlay::lookup(a);
+    });
+
+    EXPECT_FALSE(bool(beforeScope));
+    EXPECT_EQ(captured.get(), insideA.get()) << "the spawned thread must read the chain captured when it was created";
+    EXPECT_FALSE(bool(insideB)) << "pushes made after the capture must stay invisible to the spawned thread";
+    EXPECT_FALSE(headAfterScope);
+    EXPECT_FALSE(bool(afterScope));
+    EXPECT_EQ(later.get(), FrameArgsOverlay::lookup(a).get());
+    EXPECT_EQ(laterB.get(), FrameArgsOverlay::lookup(b).get());
+}
+
+TEST_F(FrameRenderContextTest, FrameArgsChainFallsBackToTheContext)
+{
+    NodePtr constant = createNode(QString::fromUtf8(kConstantPluginID));
+    NodePtr grade = createNode(QString::fromUtf8(kGradePluginID));
+    NodePtr stray = createNode(QString::fromUtf8(kGradePluginID));
+    ASSERT_TRUE(bool(constant) && bool(grade) && bool(stray));
+    connectNodes(constant, grade, 0, true);
+    const TLSHolderBase* a = constant->getEffectInstance()->getTLSHolder();
+    const TLSHolderBase* b = grade->getEffectInstance()->getTLSHolder();
+    const TLSHolderBase* s = stray->getEffectInstance()->getTLSHolder();
+
+    FrameRenderContextPtr context = makeContext(grade);
+    ASSERT_TRUE(bool(context));
+    ParallelRenderArgsPtr constantArgs = context->getArgs(constant);
+    ParallelRenderArgsPtr gradeArgs = context->getArgs(grade);
+    ASSERT_TRUE(bool(constantArgs) && bool(gradeArgs));
+    ASSERT_FALSE(bool(context->getArgs(stray)));
+    ParallelRenderArgsPtr pushed = std::make_shared<ParallelRenderArgs>();
+    ParallelRenderArgsPtr outerGrade = std::make_shared<ParallelRenderArgs>();
+    ParallelRenderArgsPtr outerStray = std::make_shared<ParallelRenderArgs>();
+
+    {
+        AppTLS::FrameContextScope plain(context.get());
+        EXPECT_EQ(constantArgs.get(), FrameArgsOverlay::lookup(a).get()) << "a chain with no base answers from the thread's frame";
+        {
+            FrameArgsScope scope(a, pushed);
+            EXPECT_EQ(pushed.get(), FrameArgsOverlay::lookup(a).get());
+            EXPECT_EQ(gradeArgs.get(), FrameArgsOverlay::lookup(b).get());
+        }
+        EXPECT_EQ(constantArgs.get(), FrameArgsOverlay::lookup(a).get());
+    }
+
+    {
+        FrameArgsScope gradeScope(b, outerGrade);
+        FrameArgsScope strayScope(s, outerStray);
+        {
+            AppTLS::FrameContextScope task(context.get(), 1, 0, true);
+            EXPECT_EQ(1u, FrameArgsOverlay::currentHead()->depth()) << "a scheduler task starts a chain of its own";
+            EXPECT_EQ(gradeArgs.get(), FrameArgsOverlay::lookup(b).get()) << "a scheduler task must not read args pushed by what ran it inline";
+            EXPECT_FALSE(bool(FrameArgsOverlay::lookup(s))) << "the base answers from its frame alone";
+            {
+                FrameArgsScope scope(a, pushed);
+                EXPECT_EQ(pushed.get(), FrameArgsOverlay::lookup(a).get());
+            }
+            EXPECT_EQ(constantArgs.get(), FrameArgsOverlay::lookup(a).get());
+        }
+        EXPECT_EQ(outerGrade.get(), FrameArgsOverlay::lookup(b).get());
+        EXPECT_EQ(outerStray.get(), FrameArgsOverlay::lookup(s).get());
+    }
+    EXPECT_FALSE(bool(FrameArgsOverlay::currentHead()));
+}
+
+TEST_F(FrameRenderContextTest, FrameArgsChainIsEmptyWithoutAContext)
+{
+    NodePtr constant = createNode(QString::fromUtf8(kConstantPluginID));
+    ASSERT_TRUE(bool(constant));
+    const TLSHolderBase* a = constant->getEffectInstance()->getTLSHolder();
+
+    ASSERT_EQ(nullptr, AppTLS::currentFrameContext());
+    EXPECT_FALSE(bool(FrameArgsOverlay::currentHead()));
+    EXPECT_FALSE(bool(FrameArgsOverlay::lookup(a)));
+    EXPECT_FALSE(bool(FrameArgsOverlay::lookup(NULL, a, NULL)));
+
+    const FrameArgsOverlayPtr emptyBase = FrameArgsOverlay::makeBase(NULL);
+    EXPECT_FALSE(bool(FrameArgsOverlay::lookup(emptyBase.get(), a, NULL)));
+}
+
+TEST_F(FrameRenderContextTest, FrameArgsChainRecordsItsDepth)
+{
+    NodePtr constant = createNode(QString::fromUtf8(kConstantPluginID));
+    ASSERT_TRUE(bool(constant));
+    const TLSHolderBase* a = constant->getEffectInstance()->getTLSHolder();
+    ParallelRenderArgsPtr args = std::make_shared<ParallelRenderArgs>();
+
+    FrameArgsOverlay::resetStats();
+    {
+        FrameArgsScope first(a, args);
+        FrameArgsScope second(a, args);
+        FrameArgsScope third(a, args);
+    }
+    const FrameArgsOverlay::Stats stats = FrameArgsOverlay::stats();
+    EXPECT_GE(stats.maxDepth, 3u);
+    EXPECT_EQ(0u, stats.outOfOrderPops);
 }
 
 TEST_F(FrameRenderContextTest, FrameStorePutFindRelease)

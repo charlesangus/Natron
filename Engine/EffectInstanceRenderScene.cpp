@@ -62,25 +62,6 @@ EffectInstance::SceneRenderActionArgs::getInputContext(int inputNb) const
 }
 
 namespace {
-// Pops the fallback frame args evaluateScene() pushes when it is called outside of a render set
-// up by the scheduler, so a later direct call does not find this call's hash on the thread.
-class ScopedSceneFallbackFrameArgs {
-public:
-    explicit ScopedSceneFallbackFrameArgs(const EffectInstance::EffectTLSDataPtr& tls)
-        : _tls(tls)
-    {
-    }
-
-    ~ScopedSceneFallbackFrameArgs()
-    {
-        if (_tls && !_tls->frameArgs.empty()) {
-            _tls->frameArgs.pop_back();
-        }
-    }
-
-private:
-    EffectInstance::EffectTLSDataPtr _tls;
-};
 
 void
 setSceneError(std::string* errorMessage,
@@ -183,7 +164,8 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
     EffectTLSDataPtr tls = _imp->tlsData->getOrCreateTLSData();
     assert(tls);
     ParallelRenderArgsPtr frameArgs;
-    std::unique_ptr<ScopedSceneFallbackFrameArgs> fallbackFrameArgs;
+    // Popped when the call returns, so a later direct call does not find this call's hash on the thread.
+    FrameArgsToken fallbackFrameArgs;
     if (tls->frameArgs.empty()) {
         // A direct call (a test, a script, the viewer asking for a stage): give the hash the
         // identity cache keys on and the abort flag somewhere to live, as renderDeepRoI() does.
@@ -199,8 +181,7 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
         frameArgs->isSequentialRender = false;
         frameArgs->isRenderResponseToUserInteraction = true;
         frameArgs->abortInfo = args.abortInfo;
-        tls->frameArgs.push_back(frameArgs);
-        fallbackFrameArgs.reset(new ScopedSceneFallbackFrameArgs(tls));
+        fallbackFrameArgs = FrameArgsToken(this, frameArgs);
     } else {
         frameArgs = tls->frameArgs.back();
     }

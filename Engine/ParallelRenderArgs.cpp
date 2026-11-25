@@ -1845,28 +1845,33 @@ InputContextScope::current(const EffectInstance* consumer,
     return false;
 }
 
+ParallelRenderArgsPtr
+copyFrameArgs(const ParallelRenderArgsPtr& args)
+{
+    ParallelRenderArgsPtr copy = std::make_shared<ParallelRenderArgs>(*args);
+    std::lock_guard<std::mutex> l(args->retainedMetadata.mutex);
+
+    copy->retainedMetadata.answers = args->retainedMetadata.answers;
+
+    return copy;
+}
+
 ContextFrameArgsScope::ContextFrameArgsScope(const EffectInstancePtr& effect,
                                              const ParallelRenderArgsPtr& args)
 {
     install(effect, args);
 }
 
-ContextFrameArgsScope::~ContextFrameArgsScope()
-{
-    if (_effect) {
-        _effect->popParallelRenderArgsTLS();
-    }
-}
+ContextFrameArgsScope::~ContextFrameArgsScope() = default;
 
 void
 ContextFrameArgsScope::install(const EffectInstancePtr& effect,
                                const ParallelRenderArgsPtr& args)
 {
-    if (_effect || !effect || !args) {
+    if (_token.isInstalled() || !effect || !args) {
         return;
     }
-    effect->setParallelRenderArgsTLS(args);
-    _effect = effect;
+    _token = FrameArgsToken(effect.get(), args);
     _actions.open(args->context);
 }
 
@@ -2161,9 +2166,12 @@ ParallelRenderArgsSetter::ParallelRenderArgsSetter(double time,
     ArgsInstallSequence installSequence;
     buildArgsMap(time, view, isRenderUserInteraction, isSequential, abortInfo, treeRoot, textureIndex, timeline,
                  activeRotoPaintNode, isAnalysis, draftMode, stats, setUpstreamArgs, glContext, &_installedArgs, &installSequence, &nodes);
+    FrameArgsToken::Pushes pushes;
+    pushes.reserve(installSequence.size());
     for (ArgsInstallSequence::const_iterator it = installSequence.begin(); it != installSequence.end(); ++it) {
-        it->first->getEffectInstance()->setParallelRenderArgsTLS(it->second);
+        pushes.push_back(std::make_pair(it->first->getEffectInstance().get(), it->second));
     }
+    _tokens.push_back(FrameArgsToken(pushes));
 }
 
 void
@@ -2299,25 +2307,39 @@ ParallelRenderArgsSetter::buildArgsMap(double time,
 void
 ParallelRenderArgsSetter::updateNodesRequest(const FrameRequestMap& request)
 {
-    for (NodesList::iterator it = nodes.begin(); it != nodes.end(); ++it) {
-        {
-            FrameRequestMap::const_iterator foundRequest = request.find(*it);
-            if ( foundRequest != request.end() ) {
-                (*it)->getEffectInstance()->setNodeRequestThreadLocal(foundRequest->second);
-            }
+    std::set<NodePtr> updated;
+    FrameArgsToken::Pushes pushes;
+    const auto update = [&](const NodePtr& node) {
+        FrameRequestMap::const_iterator foundRequest = request.find(node);
+        if ((foundRequest == request.end()) || !updated.insert(node).second) {
+            return;
         }
+        const EffectInstancePtr effect = node->getEffectInstance();
+        const ParallelRenderArgsPtr current = effect ? effect->getParallelRenderArgsTLS() : ParallelRenderArgsPtr();
+        if (!current) {
+            return;
+        }
+        ParallelRenderArgsPtr copy = copyFrameArgs(current);
+        copy->request = foundRequest->second;
+        // The map holds the args the constructor installed: args pushed over them since, like the viewer input's,
+        // take the request without entering it.
+        std::map<NodePtr, ParallelRenderArgsPtr>::iterator installed = _installedArgs.find(node);
+        if ((installed != _installedArgs.end()) && (installed->second == current)) {
+            installed->second = copy;
+        }
+        pushes.push_back(std::make_pair(effect.get(), copy));
+    };
+
+    for (NodesList::iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        update(*it);
 
         NodesList rotoPaintNodes;
         RotoContextPtr roto = (*it)->getRotoContext();
         if (roto) {
             roto->getRotoPaintTreeNodes(&rotoPaintNodes);
         }
-
         for (NodesList::iterator it2 = rotoPaintNodes.begin(); it2 != rotoPaintNodes.end(); ++it2) {
-            FrameRequestMap::const_iterator foundRequest = request.find(*it2);
-            if ( foundRequest != request.end() ) {
-                (*it2)->getEffectInstance()->setNodeRequestThreadLocal(foundRequest->second);
-            }
+            update(*it2);
         }
 
         if ( (*it)->isMultiInstance() ) {
@@ -2326,12 +2348,12 @@ ParallelRenderArgsSetter::updateNodesRequest(const FrameRequestMap& request)
             NodesList children;
             (*it)->getChildrenMultiInstance(&children);
             for (NodesList::iterator it2 = children.begin(); it2 != children.end(); ++it2) {
-                FrameRequestMap::const_iterator foundRequest = request.find(*it2);
-                if ( foundRequest != request.end() ) {
-                    (*it2)->getEffectInstance()->setNodeRequestThreadLocal(foundRequest->second);
-                }
+                update(*it2);
             }
         }
+    }
+    if (!pushes.empty()) {
+        _tokens.push_back(FrameArgsToken(pushes));
     }
 
     request.installContextArgs([](const NodePtr& node) {
@@ -2354,41 +2376,27 @@ ParallelRenderArgsSetter::ParallelRenderArgsSetter(const std::shared_ptr<std::ma
     }
 
     if (args) {
+        FrameArgsToken::Pushes pushes;
+        pushes.reserve(argsMap->size());
         for (std::map<NodePtr, ParallelRenderArgsPtr>::iterator it = argsMap->begin(); it != argsMap->end(); ++it) {
             it->second->openGLContext = glContext;
-            it->first->getEffectInstance()->setParallelRenderArgsTLS(it->second);
+            pushes.push_back(std::make_pair(it->first->getEffectInstance().get(), it->second));
         }
+        _tokens.push_back(FrameArgsToken(pushes));
     }
+}
+
+void
+ParallelRenderArgsSetter::pushArgs(const EffectInstance* effect,
+                                   const ParallelRenderArgsPtr& args)
+{
+    _tokens.push_back(FrameArgsToken(effect, args));
 }
 
 ParallelRenderArgsSetter::~ParallelRenderArgsSetter()
 {
-    for (NodesList::iterator it = nodes.begin(); it != nodes.end(); ++it) {
-        if ( !(*it) || !(*it)->getEffectInstance() ) {
-            continue;
-        }
-        (*it)->getEffectInstance()->invalidateParallelRenderArgsTLS();
-
-        if ( (*it)->isMultiInstance() ) {
-            ///If the node has children, set the thread-local storage on them too, even if they do not render, it can be useful for expressions
-            ///on parameters.
-            NodesList children;
-            (*it)->getChildrenMultiInstance(&children);
-            for (NodesList::iterator it2 = children.begin(); it2 != children.end(); ++it2) {
-                (*it2)->getEffectInstance()->invalidateParallelRenderArgsTLS();
-            }
-        }
-
-        /* NodeGroup* isGrp = (*it)->isEffectGroup();
-           if (isGrp) {
-             isGrp->invalidateParallelRenderArgs();
-           }*/
-    }
-
-    if (argsMap) {
-        for (std::map<NodePtr, ParallelRenderArgsPtr>::iterator it = argsMap->begin(); it != argsMap->end(); ++it) {
-            it->first->getEffectInstance()->invalidateParallelRenderArgsTLS();
-        }
+    while (!_tokens.empty()) {
+        _tokens.pop_back();
     }
 
     OSGLContextPtr glContext = _openGLContext.lock();

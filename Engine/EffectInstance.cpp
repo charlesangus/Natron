@@ -31,6 +31,7 @@
 #include <bitset>
 #include <cassert>
 #include <cmath>
+#include <cstdint>
 #include <fstream>
 #include <limits>
 #include <map>
@@ -41,8 +42,10 @@
 #include <unordered_set>
 
 #include <QCoreApplication>
+#include <QDebug>
 #include <QMutex>
 #include <QReadWriteLock>
+#include <QThread>
 #include <QtConcurrentMap> // QtCore on Qt4, QtConcurrent on Qt5
 #include <QtConcurrentRun> // QtCore on Qt4, QtConcurrent on Qt5
 
@@ -53,6 +56,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/BlockingBackgroundRender.h"
 #include "Engine/DiskCacheNode.h"
+#include "Engine/FrameArgsOverlay.h"
 #include "Engine/FrameRenderContext.h"
 #include "Engine/GPUContextPool.h"
 #include "Engine/Image.h"
@@ -426,51 +430,6 @@ EffectInstance::isDuringActionThatCanSetValue() const
 
 #endif //DEBUG
 
-void
-EffectInstance::setNodeRequestThreadLocal(const NodeFrameRequestPtr & nodeRequest)
-{
-    EffectTLSDataPtr tls = _imp->tlsData->getTLSData();
-
-    if (!tls) {
-        assert(false);
-
-        return;
-    }
-    std::list<ParallelRenderArgsPtr>& argsList = tls->frameArgs;
-    if ( argsList.empty() ) {
-        return;
-    }
-    argsList.back()->request = nodeRequest;
-}
-
-void
-EffectInstance::setParallelRenderArgsTLS(double time,
-                                         ViewIdx view,
-                                         bool isRenderUserInteraction,
-                                         bool isSequential,
-                                         U64 nodeHash,
-                                         const AbortableRenderInfoPtr& abortInfo,
-                                         const NodePtr& treeRoot,
-                                         int visitsCount,
-                                         const NodeFrameRequestPtr& nodeRequest,
-                                         const OSGLContextPtr& glContext,
-                                         int textureIndex,
-                                         const TimeLine* timeline,
-                                         bool isAnalysis,
-                                         bool isDuringPaintStrokeCreation,
-                                         const NodesList& rotoPaintNodes,
-                                         RenderSafetyEnum currentThreadSafety,
-                                         PluginOpenGLRenderSupport currentOpenGLSupport,
-                                         bool draftMode,
-                                         const RenderStatsPtr& stats)
-{
-    EffectTLSDataPtr tls = _imp->tlsData->getOrCreateTLSData();
-    std::list<ParallelRenderArgsPtr>& argsList = tls->frameArgs;
-    ParallelRenderArgsPtr args = createParallelRenderArgs(time, view, isRenderUserInteraction, isSequential, nodeHash, abortInfo, treeRoot, visitsCount, nodeRequest, glContext, textureIndex, timeline, isAnalysis, isDuringPaintStrokeCreation, rotoPaintNodes, currentThreadSafety, currentOpenGLSupport, draftMode, stats);
-
-    argsList.push_back(args);
-}
-
 ParallelRenderArgsPtr
 EffectInstance::createParallelRenderArgs(double time,
                                          ViewIdx view,
@@ -545,61 +504,178 @@ EffectInstance::getThreadLocalRotoPaintTreeNodes(NodesList* nodes) const
     return true;
 }
 
-void
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+// Enough to tell the sources of mismatches apart without flooding a render's log.
+const std::uint64_t kMaxLoggedFrameArgsMismatches = 16;
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+
+ParallelRenderArgsPtr
+EffectInstance::copyFrameArgsDuringPaintStroke(bool duringPaintStroke) const
+{
+    EffectTLSDataPtr tls = _imp->tlsData->getTLSData();
+
+    if (!tls || tls->frameArgs.empty()) {
+        return ParallelRenderArgsPtr();
+    }
+    ParallelRenderArgsPtr copy = copyFrameArgs(tls->frameArgs.back());
+    copy->isDuringPaintStrokeCreation = duringPaintStroke;
+
+    return copy;
+}
+
+FrameArgsToken
 EffectInstance::setDuringPaintStrokeCreationThreadLocal(bool duringPaintStroke)
 {
-    EffectTLSDataPtr tls = _imp->tlsData->getOrCreateTLSData();
+    ParallelRenderArgsPtr copy = copyFrameArgsDuringPaintStroke(duringPaintStroke);
 
-    tls->frameArgs.back()->isDuringPaintStrokeCreation = duringPaintStroke;
+    if (!copy) {
+        return FrameArgsToken();
+    }
+
+    return FrameArgsToken(this, copy);
 }
 
-void
-EffectInstance::setParallelRenderArgsTLS(const ParallelRenderArgsPtr & args)
+FrameArgsToken::FrameArgsToken()
+    : _first()
+    , _rest()
+    , _chain()
 {
-    EffectTLSDataPtr tls = _imp->tlsData->getOrCreateTLSData();
-
-    assert( args->abortInfo.lock() );
-    tls->frameArgs.push_back(args);
 }
 
-void
-EffectInstance::invalidateParallelRenderArgsTLS()
+FrameArgsToken::FrameArgsToken(const EffectInstance* effect,
+                               const ParallelRenderArgsPtr& args)
+    : _first()
+    , _rest()
+    , _chain()
 {
-    EffectTLSDataPtr tls = _imp->tlsData->getTLSData();
-
-    if (!tls) {
+    if (!effect || !args) {
         return;
     }
+    EffectInstance::EffectTLSDataPtr tls = effect->_imp->tlsData->getOrCreateTLSData();
+    tls->frameArgs.push_back(args);
+    _first = tls;
+    _chain = FrameArgsScope(effect->getTLSHolder(), args);
+}
 
-    assert( !tls->frameArgs.empty() );
-    const ParallelRenderArgsPtr& back = tls->frameArgs.back();
-    for (NodesList::iterator it = back->rotoPaintNodes.begin(); it != back->rotoPaintNodes.end(); ++it) {
-        (*it)->getEffectInstance()->invalidateParallelRenderArgsTLS();
+FrameArgsToken::FrameArgsToken(const Pushes& pushes)
+    : _first()
+    , _rest()
+    , _chain()
+{
+    FrameArgsOverlay::Entries entries;
+
+    entries.reserve(pushes.size());
+    if (pushes.size() > 1) {
+        _rest.reserve(pushes.size() - 1);
     }
-    tls->frameArgs.pop_back();
+    for (Pushes::const_iterator it = pushes.begin(); it != pushes.end(); ++it) {
+        if (!it->first || !it->second) {
+            continue;
+        }
+        EffectInstance::EffectTLSDataPtr tls = it->first->_imp->tlsData->getOrCreateTLSData();
+        tls->frameArgs.push_back(it->second);
+        if (_first) {
+            _rest.push_back(tls);
+        } else {
+            _first = tls;
+        }
+        entries.push_back(FrameArgsOverlay::Entry(it->first->getTLSHolder(), it->second));
+    }
+    _chain = FrameArgsScope(std::move(entries));
+}
+
+FrameArgsToken::~FrameArgsToken()
+{
+    pop();
+}
+
+FrameArgsToken::FrameArgsToken(FrameArgsToken&& other) noexcept
+    : _first(std::move(other._first))
+    , _rest(std::move(other._rest))
+    , _chain(std::move(other._chain))
+{
+    other._first.reset();
+    other._rest.clear();
+}
+
+FrameArgsToken&
+FrameArgsToken::operator=(FrameArgsToken&& other) noexcept
+{
+    if (this != &other) {
+        pop();
+        _first = std::move(other._first);
+        _rest = std::move(other._rest);
+        _chain = std::move(other._chain);
+        other._first.reset();
+        other._rest.clear();
+    }
+
+    return *this;
 }
 
 void
-EffectInstance::popParallelRenderArgsTLS()
+FrameArgsToken::pop()
 {
-    EffectTLSDataPtr tls = _imp->tlsData->getTLSData();
-
-    assert(tls && !tls->frameArgs.empty());
-    if (tls && !tls->frameArgs.empty()) {
-        tls->frameArgs.pop_back();
+    if (!_first) {
+        return;
     }
+    for (std::vector<std::shared_ptr<void>>::reverse_iterator it = _rest.rbegin(); it != _rest.rend(); ++it) {
+        std::list<ParallelRenderArgsPtr>& frameArgs = static_cast<EffectInstance::EffectTLSData*>(it->get())->frameArgs;
+        if (!frameArgs.empty()) {
+            frameArgs.pop_back();
+        }
+    }
+    std::list<ParallelRenderArgsPtr>& frameArgs = static_cast<EffectInstance::EffectTLSData*>(_first.get())->frameArgs;
+    if (!frameArgs.empty()) {
+        frameArgs.pop_back();
+    }
+    _first.reset();
+    _rest.clear();
+    _chain = FrameArgsScope();
+}
+
+void
+FrameArgsToken::leaveInstalled()
+{
+    _first.reset();
+    _rest.clear();
+    _chain.leaveInstalled();
+}
+
+void
+FrameArgsToken::seed(std::list<ParallelRenderArgsPtr>* frameArgs,
+                     const ParallelRenderArgsPtr& args)
+{
+    frameArgs->push_back(args);
 }
 
 ParallelRenderArgsPtr
 EffectInstance::getParallelRenderArgsTLS() const
 {
     EffectTLSDataPtr tls = _imp->tlsData->getTLSData();
+    ParallelRenderArgsPtr ret;
 
-    if ( !tls || tls->frameArgs.empty() ) {
-        return ParallelRenderArgsPtr();
+    if (tls && !tls->frameArgs.empty()) {
+        ret = tls->frameArgs.back();
+    }
+    const ParallelRenderArgsPtr chain = FrameArgsOverlay::lookup(getTLSHolder());
+    if (chain != ret) {
+        const std::uint64_t mismatches = FrameArgsOverlay::noteMismatch();
+        if (mismatches <= kMaxLoggedFrameArgsMismatches) {
+            qDebug() << "FRAMEARGS_SHADOW mismatch" << mismatches << "on" << QThread::currentThread()
+                     << getScriptName_mt_safe().c_str()
+                     << "list:" << (ret ? ret->time : -1.) << (ret ? (qulonglong)ret->contextKey : 0ull)
+                     << (tls ? (int)tls->frameArgs.size() : -1)
+                     << "chain:" << (chain ? chain->time : -1.) << (chain ? (qulonglong)chain->contextKey : 0ull)
+                     << (FrameArgsOverlay::currentHead() ? (int)FrameArgsOverlay::currentHead()->depth() : 0)
+                     << "frame:" << (const void*)AppTLS::currentFrameContext()
+                     << "scheduled:" << AppTLS::isRunningScheduledTask();
+        }
     }
 
-    return tls->frameArgs.back();
+    return ret;
 }
 
 bool
@@ -3386,7 +3462,7 @@ EffectInstance::Implementation::tiledRenderingFunctor(EffectInstance::Implementa
                                                       QThread* callingThread)
 {
     ///Make the thread-storage live as long as the render action is called if we're in a newly launched thread in eRenderSafetyFullySafeFrame mode
-    AppTLS::SpawnedThreadScope spawnedThreadTLS(callingThread, args.frameContext, args.isolatedJob, AppTLS::eSpawnKindHostFrameThreading, args.scheduledTask);
+    AppTLS::SpawnedThreadScope spawnedThreadTLS(callingThread, args.frameContext, args.frameArgsHead, args.isolatedJob, AppTLS::eSpawnKindHostFrameThreading, args.scheduledTask);
 
     EffectInstance::RenderingFunctorRetEnum ret = tiledRenderingFunctor(specificData,
                                                                         args.renderFullScaleThenDownscale,

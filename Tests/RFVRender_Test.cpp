@@ -1016,7 +1016,7 @@ TEST_F(RFVRender, TiledIdentityWalksThroughTheSet)
     frameRenderArgs.updateNodesRequest(request);
     EffectInstancePtr effect = tiled->getEffectInstance();
     // The identity tiles are taken only while a paint stroke is being drawn.
-    effect->setDuringPaintStrokeCreationThreadLocal(true);
+    const FrameArgsToken strokeArgs = effect->setDuringPaintStrokeCreationThreadLocal(true);
     EffectInstance::RenderRoIArgs args(time,
                                        RenderScale::identity,
                                        0 /*mipmapLevel*/,

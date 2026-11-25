@@ -115,27 +115,6 @@ collectFramesNeededForInput(const FramesNeededMap& framesNeeded,
     }
 }
 
-// Pops the fallback frame args renderDeepRoI() pushes when it is called outside of a render
-// set up by the scheduler. Without this, a second direct call would find the first call's
-// stale hash and time still on the thread and key its cache lookup with them.
-class ScopedFallbackFrameArgs {
-public:
-    explicit ScopedFallbackFrameArgs(const EffectInstance::EffectTLSDataPtr& tls)
-        : _tls(tls)
-    {
-    }
-
-    ~ScopedFallbackFrameArgs()
-    {
-        if (_tls && !_tls->frameArgs.empty()) {
-            _tls->frameArgs.pop_back();
-        }
-    }
-
-private:
-    EffectInstance::EffectTLSDataPtr _tls;
-};
-
 bool
 lookupCachedDeepImage(const DeepImageKey& key,
                       const RectI& roi,
@@ -262,7 +241,9 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
     EffectTLSDataPtr tls = _imp->tlsData->getOrCreateTLSData();
     assert(tls);
     ParallelRenderArgsPtr frameArgs;
-    std::unique_ptr<ScopedFallbackFrameArgs> fallbackFrameArgs;
+    // Popped when the call returns: a second direct call would otherwise find this call's stale
+    // hash and time still on the thread and key its cache lookup with them.
+    FrameArgsToken fallbackFrameArgs;
     if (tls->frameArgs.empty()) {
         // No pre-pass set this render up (a direct call, e.g. from a test or a script). Build the
         // minimal frame args renderRoI() builds in the same situation so that the hash used for
@@ -278,8 +259,7 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
         frameArgs->view = args.view;
         frameArgs->isSequentialRender = false;
         frameArgs->isRenderResponseToUserInteraction = true;
-        tls->frameArgs.push_back(frameArgs);
-        fallbackFrameArgs.reset(new ScopedFallbackFrameArgs(tls));
+        fallbackFrameArgs = FrameArgsToken(this, frameArgs);
     } else {
         frameArgs = tls->frameArgs.back();
     }

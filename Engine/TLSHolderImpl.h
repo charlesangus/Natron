@@ -178,7 +178,7 @@ TLSHolder<T>::createFromFrameContext([[maybe_unused]] const QThread* curThread) 
         }
 
         std::shared_ptr<T> data = std::make_shared<T>();
-        data->frameArgs.push_back(args);
+        FrameArgsToken::seed(&data->frameArgs, args);
 
         return insertForThread(curThread, data);
     }

@@ -283,7 +283,7 @@ future core work has solid ground to build on.
 | M103 | Graph Diff And Merge | done | M102 |  | E12 | F33 | | [M103-graph-diff-and-merge.md](PLAN/MILESTONES/M103-graph-diff-and-merge.md) |
 | M104 | Merge Resolution UI | doing | M103 | bosley-executor | E12 | F33 | | [M104-merge-resolution-ui.md](PLAN/MILESTONES/M104-merge-resolution-ui.md) |
 | M105 | Live Session Core | done | M102 | | E11 | F5 | | [M105-live-session-core.md](PLAN/MILESTONES/M105-live-session-core.md) |
-| M106 | Live Session Presence And Undo | doing | M105 | bosley-executor | E11 | F5 | | [M106-live-session-presence-and-undo.md](PLAN/MILESTONES/M106-live-session-presence-and-undo.md) |
+| M106 | Live Session Presence And Undo | done | M105 | | E11 | F5 | | [M106-live-session-presence-and-undo.md](PLAN/MILESTONES/M106-live-session-presence-and-undo.md) |
 | M70 | RFV Declaration And Storage | done |  |  | E13 | | | [M70-rfv-declaration-and-storage.md](PLAN/MILESTONES/M70-rfv-declaration-and-storage.md) |
 | M71 | RFV Render Context | done | M70, M178 |  | E13 | | | [M71-rfv-render-context.md](PLAN/MILESTONES/M71-rfv-render-context.md) |
 | M72 | RFV Integration And UAT | done |  | bosley-native-nodes | E13 | | | [M72-rfv-integration-and-uat.md](PLAN/MILESTONES/M72-rfv-integration-and-uat.md) |

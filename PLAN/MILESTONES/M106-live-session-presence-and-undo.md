@@ -23,25 +23,25 @@ Session Core.
 
 ## Phase 106.1: Presence
 
-- [ ] M106.P1.T1 — Presence messages and relay
+- [x] M106.P1.T1 — Presence messages and relay
   - files: `Serialization/Session/SessionProtocol.h/.cpp`, `Engine/LiveSession/SessionHost.cpp`, `Engine/LiveSession/SessionClient.cpp`, `Tests/Serialization/SessionProtocol_Test.cpp`
   - approach: add the `presence` message, the 10 Hz client throttle, host relay, and a per-user presence table on each client that emits a Qt signal when it changes. A user's entry is cleared on disconnect.
   - verify: compiled at P1.T4. Protocol round-trip; in a loopback test, client A's selection reaches client B within 200 ms and is cleared when A disconnects.
   - size: M
 
-- [ ] M106.P1.T2 — Remote selection and open panels in the node graph
+- [x] M106.P1.T2 — Remote selection and open panels in the node graph
   - files: `Gui/NodeGui.h`, `Gui/NodeGui.cpp`, `Gui/NodeGraph.cpp`, `Gui/DockablePanel.cpp`
   - approach: a node selected by a remote user gets a coloured outline in that user's colour, plus a small name tag; several users stack their outlines. A node whose panel a remote user has open shows a coloured dot in its settings-panel header. Local selection and open panels feed the presence sender.
   - verify: compiled at P1.T4. The P3.T3 GUI test checks the outline and dot on B after A selects a node and opens its panel.
   - size: M
 
-- [ ] M106.P1.T3 — Connected-users panel
+- [x] M106.P1.T3 — Connected-users panel
   - files: new `Gui/LiveSessionUsersPanel.h`, new `Gui/LiveSessionUsersPanel.cpp`, `Gui/CMakeLists.txt`, the Gui pane registration
   - approach: a dock listing users with their colour swatch and name, a "you" marker, the host marker, and a Follow toggle used by P3. Double-clicking a user frames their selection.
   - verify: compiled at P1.T4, and exercised by the P3.T3 GUI test.
   - size: M
 
-- [ ] M106.P1.T4 — Phase 106.1 build and test checkpoint
+- [x] M106.P1.T4 — Phase 106.1 build and test checkpoint
   - files: none
   - approach: `NATRON_BUILD_JOBS=4 tools/ci/local/build.sh debug`, then `tools/ci/local/test.sh ctest debug`.
   - verify: green. The build is required.
@@ -49,13 +49,13 @@ Session Core.
 
 ## Phase 106.2: Per-user undo
 
-- [ ] M106.P2.T1 — Make local undo safe under remote edits
+- [x] M106.P2.T1 — Make local undo safe under remote edits
   - files: `Gui/NodeGraphUndoRedo.h`, `Gui/NodeGraphUndoRedo.cpp`, `Gui/KnobUndoCommand.h`, `Gui/KnobUndoCommand.cpp`, `Engine/LiveSession/SessionClient.cpp`
   - approach: commands record the node IDs they touch. When a remote `DeleteNode` arrives, every local command touching that ID is marked obsolete, and the stack drops it. Commands keep their nodes by ID, not by `NodeGuiPtr`, wherever the stale pointer would otherwise crash. Remote applies never call `pushUndoCommand`, which is asserted in debug builds. An undo whose target changed remotely restores the local old value and posts the status-bar note.
   - verify: compiled at P2.T2, and exercised by P2.T2.
   - size: L
 
-- [ ] M106.P2.T2 — Per-user undo GUI test
+- [x] M106.P2.T2 — Per-user undo GUI test
   - files: new `Tests/gui/m99_live_undo.py`
   - approach: two processes, A and B:
     - A edits knob k1 and B edits k2; A undoes, and only k1 reverts on both sides;
@@ -67,19 +67,19 @@ Session Core.
 
 ## Phase 106.3: Follow a user's viewer
 
-- [ ] M106.P3.T1 — Viewer state in presence
+- [x] M106.P3.T1 — Viewer state in presence
   - files: `Serialization/Session/SessionProtocol.h/.cpp`, `Gui/ViewerTab.cpp`, `Gui/ViewerGL.cpp`
   - approach: viewer state is the current frame, the active viewer node ID with its input index, zoom and pan, and the displayed channels. It is captured on change and sent in presence, throttled. A follower applies it without recording it and without moving its own timeline cursor when it is not following.
   - verify: compiled at P3.T3, and exercised by P3.T3.
   - size: M
 
-- [ ] M106.P3.T2 — Follow toggle and auto-stop
+- [x] M106.P3.T2 — Follow toggle and auto-stop
   - files: `Gui/LiveSessionUsersPanel.cpp`, `Gui/ViewerTab.cpp`
   - approach: Follow on a user mirrors their viewer state, and only one leader can be followed at a time. Local scrubbing, zoom, pan or a viewer-input change stops following, with a status-bar note. The leader's name is shown in the viewer corner while following.
   - verify: compiled at P3.T3, and exercised by P3.T3.
   - size: M
 
-- [ ] M106.P3.T3 — Presence and follow GUI test, full ctest and smoke
+- [x] M106.P3.T3 — Presence and follow GUI test, full ctest and smoke
   - files: new `Tests/gui/m99_presence_follow.py`
   - approach: two processes. A selects a node and opens its panel, and B sees the outline and dot. B follows A, A scrubs to frame 20 and zooms, and B matches. B scrubs, and following stops. Then build and run `tools/ci/local/test.sh ctest debug` and `smoke debug`.
   - verify: everything green. The build is required.
@@ -102,3 +102,4 @@ and CI are green, and the user signs off the UAT.
 - 2026-10-11 — Per-user undo replays the user's own inverse as new operations (last-writer-wins). Commands invalidated by remote deletes are dropped, not transformed.
 
 - 2026-11-24 (user): viewers stay shared graph nodes (input/channel edits are ordinary shared edits); each user gets a personal viewer on join, shown in their default viewer pane — M561 - Live Session Personal Viewers. M106 keeps following local to the follower.
+- 2026-11-24 — P4.T1's AppImage UAT moves to F5 - Live Sessions V1's UAT (members get no uat flag). Review round (Codex) closed; gate8 green on d95d0e4d4; merged into F5 as 02d534a88 (#357).

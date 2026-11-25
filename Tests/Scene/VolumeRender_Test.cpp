@@ -35,6 +35,7 @@
 #include <functional>
 #include <map>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -47,6 +48,7 @@
 
 #include "CyclesTestUtils.h"
 #include "Engine/Nodes/Scene/CyclesAovs.h"
+#include "Engine/Nodes/Scene/DelegateSupport.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/MoonRayAovs.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
@@ -419,7 +421,15 @@ rightOf(const Render& render)
 bool
 hasVolumeWarning(const Render& render)
 {
-    return render.warning.find("volume fields") != std::string::npos;
+    std::istringstream lines(render.warning);
+    std::string line;
+    while (std::getline(lines, line)) {
+        if (DelegateSupport::isVolumeWarningLine(line)) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 // The typed read of an empty VtValue, which a delegate's volume sync once hit for every volume.

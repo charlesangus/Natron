@@ -149,7 +149,8 @@ struct Request {
 };
 
 // How a path tracer's render ended: what its delegate reported when the render stopped waiting on
-// it. A count is -1 where the delegate reports none, as every delegate but Cycles.
+// it. A count is -1 where the delegate reports none, as every delegate but Cycles. Diagnostics
+// only: tests read it to tell how a render converged, and no node or viewer acts on it.
 struct RenderTrace {
     bool freshEngine = false;
     bool watched = false; // the render waited on the delegate's reset counts
@@ -176,7 +177,7 @@ struct Result {
     std::string warning;
     // The errors the delegate logged that name no prim of the scene, one per line; empty if none.
     std::string errors;
-    // Default for Storm, which renders on the render thread.
+    // Diagnostics for tests, as RenderTrace; default for Storm, which renders on the render thread.
     RenderTrace trace;
 };
 

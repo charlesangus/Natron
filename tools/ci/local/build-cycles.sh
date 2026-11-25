@@ -69,13 +69,6 @@ tar -xzf "${work}/openvdb.tar.gz" -C "${helpers}/nanovdb/include" --strip-compon
 test -f "${helpers}/nanovdb/include/nanovdb/NanoVDB.h"
 test -f "${helpers}/nanovdb/include/nanovdb/tools/CreateNanoGrid.h"
 
-# FindUSDPixar.cmake turns WITH_CYCLES_NANOVDB off whenever Cycles builds against an external USD,
-# on the grounds that USD ships no NanoVDB, overriding the -D below. The headers are supplied here,
-# so the override goes. Applied only when present, so a source that has dropped it builds unpatched.
-find_usd="${src}/src/cmake/Modules/FindUSDPixar.cmake"
-sed -i '/^ *set(WITH_CYCLES_NANOVDB OFF)$/d' "$find_usd"
-sed -i '/NanoVDB is not part of the USD package/d' "$find_usd"
-
 # OpenUSD 26.08 (hd API 103, pxr/imaging/hd/version.h) dropped HdRendererPlugin::IsSupported(bool),
 # which Cycles v5.2.0 still marks override; the method is never called, so it just loses the
 # keyword. Applied only when present, so a source that has caught up builds unpatched.

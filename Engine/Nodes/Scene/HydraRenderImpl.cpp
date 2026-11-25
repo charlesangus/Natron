@@ -576,11 +576,13 @@ struct EngineEntry {
     // found since the stage or the delegate last changed.
     std::string supportWarning;
     bool supportChecked = false;
-    // The stage's volumes, found once per stage edit, and what their fields at volumeTime lack;
-    // a field's file can change in time, so that is checked again at each new time.
+    // The stage's volumes, found once per stage edit, and what their fields at volumeTime and the
+    // write count volumeWrites lack; a field's file can change in time, so on a stage that may vary
+    // in time that is checked again at each new time.
     std::vector<SdfPath> volumes;
     std::string volumeWarning;
     UsdTimeCode volumeTime = UsdTimeCode::Default();
+    U64 volumeWrites = 0;
     bool volumeChecked = false;
     bool volumesFound = false;
     // Whether the stage authors values that change in time, found at the stage edit and write
@@ -1615,20 +1617,37 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     if (entry.rendered && !edited && (entry.writeCount == writeCount) && (entry.time == request.time) && (entry.view == view) && (entry.projection == projection) && (entry.width == width) && (entry.height == height)) {
         return &entry;
     }
+    if (!entry.volumesFound) {
+        std::vector<SdfPath> volumes = DelegateSupport::volumePrims(stage, cancel);
+        if (cancel && cancel->load()) {
+            *error = "The " + entry.rendererName + " render was cancelled.";
+            // The stage may have been edited since that render.
+            entry.rendered = false;
+
+            return nullptr;
+        }
+        entry.volumes.swap(volumes);
+        entry.volumesFound = true;
+        entry.volumeChecked = false;
+    }
+    const auto timeVarying = [&]() {
+        const U64 edits = entry.stage->getEditCount();
+        if (!entry.timeVaryingKnown || (entry.timeVaryingEdits != edits) || (entry.timeVaryingWrites != writeCount)) {
+            entry.timeVarying = mayVaryInTime(stage);
+            entry.timeVaryingKnown = true;
+            entry.timeVaryingEdits = edits;
+            entry.timeVaryingWrites = writeCount;
+        }
+
+        return entry.timeVarying;
+    };
     // Cycles shows a restart in its progress only once a change reaches it: a request changing
     // nothing it sees would wait out kRestartUnseen for one, then make the engine again.
     bool watchRestart = false;
     if (!freshEngine && RestartWatch::watches(renderer)) {
         watchRestart = !entry.rendered || edited || (entry.writeCount != writeCount) || (entry.view != view) || (entry.projection != projection) || (entry.width != width) || (entry.height != height);
         if (!watchRestart && (entry.time != request.time)) {
-            const U64 edits = entry.stage->getEditCount();
-            if (!entry.timeVaryingKnown || (entry.timeVaryingEdits != edits) || (entry.timeVaryingWrites != writeCount)) {
-                entry.timeVarying = mayVaryInTime(stage);
-                entry.timeVaryingKnown = true;
-                entry.timeVaryingEdits = edits;
-                entry.timeVaryingWrites = writeCount;
-            }
-            watchRestart = entry.timeVarying;
+            watchRestart = timeVarying();
         }
     }
     entry.rendered = false;
@@ -1654,23 +1673,24 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     params.colorCorrectionMode = HdxColorCorrectionTokens->disabled;
     params.highlight = false;
     std::string renderFailure;
-    if (!entry.volumesFound) {
-        entry.volumes = DelegateSupport::volumePrims(stage);
-        entry.volumesFound = true;
-        entry.volumeChecked = false;
-    }
     // Reading the fields' files initialises OpenVDB for the whole process, so it waits until the
     // delegate has read them: one that does not initialise the library itself then fails its own
-    // first read instead of passing on Natron's.
-    const auto volumeWarning = [&]() -> const std::string& {
-        if (!entry.volumeChecked || (entry.volumeTime != request.time)) {
+    // first read instead of passing on Natron's. False when cancelled.
+    const auto checkVolumes = [&]() {
+        if (!entry.volumeChecked || (entry.volumeWrites != writeCount) || ((entry.volumeTime != request.time) && !entry.volumes.empty() && timeVarying())) {
             const DelegateSupport::VolumeLimits limits = MoonRayAovs::isMoonRay(renderer) ? DelegateSupport::VolumeLimits::moonRay() : DelegateSupport::VolumeLimits();
-            entry.volumeWarning = DelegateSupport::volumeWarningText(stage, entry.volumes, request.time, limits, entry.rendererName);
+            std::string warning = DelegateSupport::volumeWarningText(stage, entry.volumes, request.time, limits, entry.rendererName, cancel);
+            if (cancel && cancel->load()) {
+                return false;
+            }
+            entry.volumeWarning.swap(warning);
             entry.volumeTime = request.time;
+            entry.volumeWrites = writeCount;
             entry.volumeChecked = true;
         }
+        entry.warning = entry.volumeWarning;
 
-        return entry.volumeWarning;
+        return true;
     };
     entry.warning.clear();
     entry.errors.clear();
@@ -1694,7 +1714,11 @@ RenderThread::renderEngine(const HydraRender::Request& request,
             // live texture through shared memory, so the next render goes on with it.
             return nullptr;
         }
-        entry.warning = volumeWarning();
+        if (!checkVolumes()) {
+            *error = "The " + entry.rendererName + " render was cancelled.";
+
+            return nullptr;
+        }
     } else {
         // A path tracer renders on threads of its own and converges when it is done; each Render()
         // syncs the stage's changes into it. MoonRay's log is taken off the console for the
@@ -1807,7 +1831,11 @@ RenderThread::renderEngine(const HydraRender::Request& request,
             yieldToBarrier();
             std::this_thread::sleep_for(kConvergencePoll);
         }
-        entry.warning = volumeWarning();
+        if (!checkVolumes()) {
+            cancelled();
+
+            return nullptr;
+        }
         // Only Cycles is probed: making a delegate to ask it its types may start a render.
         if (!entry.supportChecked) {
             entry.supportWarning = CyclesAovs::isCycles(renderer) ? DelegateSupport::warningText(stage, CyclesAovs::support(), entry.rendererName) : std::string();

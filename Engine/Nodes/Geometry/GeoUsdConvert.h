@@ -105,6 +105,8 @@ struct GeoUsdConvertOptions {
     // Unpathed primitives and relative path values go under this prim.
     PXR_NS::SdfPath rootPath { "/geo" };
     GeoUsdPackedModeEnum packedMode = eGeoUsdPackedPointInstancer;
+    // The width authored on UsdGeomPoints that carry no pscale; USD's own fallback is 1.0.
+    double defaultPointWidth = 0.01;
     // When set, prims the input already holds are authored as overs and transforms are written
     // relative to the input's parents, so that the composed result lands where the detail puts it.
     GeoUsdInputSceneConstPtr inputScene;
@@ -225,6 +227,9 @@ public:
     std::size_t partitionCount() const;
     const PXR_NS::SdfPath& partitionPath(std::size_t partition) const;
     GeoUsdPrimKindEnum partitionKind(std::size_t partition) const;
+
+    /** @brief The offsets of the primitives the partition's prim is made of, in prim order. */
+    const std::vector<std::size_t>& partitionPrimitives(std::size_t partition) const;
 
     /** @brief Whether the partition's attribute values have been built or adopted. */
     bool isPartitionBuilt(std::size_t partition) const;

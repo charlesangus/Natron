@@ -53,7 +53,7 @@ public:
         .description = "Read geometry from a Wavefront OBJ file: its points, polygons and polylines, "
                        "with texture coordinates (uv) and normals (N) on the vertices, its groups "
                        "as primitive groups and its object names in the primitive attribute name.",
-        .grouping = PLUGIN_GROUP_3D,
+        .grouping = PLUGIN_GROUP_GEOMETRY,
         .majorVersion = 1,
         .minorVersion = 0,
         .isWriter = false,

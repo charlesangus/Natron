@@ -30,6 +30,7 @@
 
 #include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -42,8 +43,10 @@
 #include "Engine/OverlayImage.h"
 #include "Engine/ProjectColorManagement.h"
 #include "Engine/RenderScheduler.h"
+#include "Engine/SceneLoadSet.h"
 #include "Engine/SchedulerEligibility.h"
 #include "Engine/ViewIdx.h"
+#include "Serialization/SerializationFwd.h"
 
 // Script names of the Viewer node's knobs.
 #define kViewerParamEnableGain "enableGain"
@@ -81,7 +84,15 @@
 #define kViewerParamEnableDownscale "enableDownscale"
 #define kViewerParamDownscaleLevel "downscaleLevel"
 #define kViewerParamMaxSamples "maxSamples"
+#define kViewerParamRenderEverything "renderEverything"
 #define kViewerParamRefinementPaused "refinementPaused"
+#define kViewerParamMapSiblingOverlays "mapSiblingOverlays"
+#define kViewerParamPointMarkers "pointMarkers"
+#define kViewerParamPointNumbers "pointNumbers"
+#define kViewerParamPrimitiveNumbers "primitiveNumbers"
+#define kViewerParamNormals "normals"
+#define kViewerParamNormalScale "normalScale"
+#define kViewerParamHighlightGroup "highlightGroup"
 
 NATRON_NAMESPACE_ENTER
 
@@ -261,6 +272,9 @@ public:
     // The input is a scene: renderViewer_internal() evaluates it through the scene action and
     // renders no texture for it.
     bool sceneUpstream = false;
+    // The input is geometry, which the 3D view shows through the viewer's own geometry layer;
+    // sceneUpstream is set along with it.
+    bool geometryUpstream = false;
     std::optional<RawDisplay::Normalisation> rawNormalisation;
     bool forceRender;
     int activeInputIndex;
@@ -313,6 +327,24 @@ public:
      * when that input is not raw.
      **/
     std::string getRawDisplayLabel(int textureIndex) const WARN_UNUSED_RETURN;
+
+    typedef std::function<void(Serialization::SceneViewSerialization*)> SceneViewSaver;
+
+    /**
+     * @brief The draw states and loads of the 3D view as the project was opened with them, or once
+     * setSceneViewSaver() is called, as the saver saves them. Main thread.
+     **/
+    Serialization::SceneViewSerialization getLoadedSceneView() const;
+
+    /**
+     * @brief Hands saving the 3D view to saver, which any thread that saves the project runs, and
+     * forgets the view the project was opened with. An empty saver saves nothing; this returns
+     * once a saver running has.
+     **/
+    void setSceneViewSaver(const SceneViewSaver& saver);
+
+    // What the project saves of the 3D view. Any thread.
+    void sceneViewToSerialization(Serialization::SceneViewSerialization* serialization) const;
 
     ///Called upon node creation and then never changed
     void setUiContext(OpenGLViewerI* viewer);
@@ -732,9 +764,64 @@ public:
     /**
      * @brief What the last evaluation of a scene on the given texture's input produced. Returns
      * false when that input is not a scene or has not been evaluated yet, or when the evaluation
-     * failed, in which case *error carries the message. Either pointer may be null. MT-safe.
+     * failed, in which case *error carries the message. *loadSet and *reach get the load set it
+     * was evaluated with and the reach of the patterns it matched. Any pointer may be null.
+     * MT-safe.
      **/
-    bool getLastEvaluatedScene(int textureIndex, ScenePayload* scene, std::string* error) const;
+    bool getLastEvaluatedScene(int textureIndex,
+                               ScenePayload* scene,
+                               std::string* error,
+                               SceneLoadSetPtr* loadSet = nullptr,
+                               SceneLoadReachPtr* reach = nullptr) const;
+
+    /**
+     * @brief The payloads the viewer's scene evaluations include, which follow what its 3D view's
+     * stage loads: pattern nodes match only those. None until set. A change queues the knob
+     * menus filled from the scene to follow it (SceneMenuRefresh::followLoadChanges()). MT-safe.
+     **/
+    void setSceneLoadSet(const SceneLoadSetPtr& loadSet);
+
+    SceneLoadSetPtr getSceneLoadSet() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Who the viewer's scene evaluations are for: its id, which keeps the nodes' memoized
+     * layers and matches for it apart from other evaluators', and its current load set. Without
+     * a reach. MT-safe.
+     **/
+    SceneEvaluationContext getSceneEvaluationContext() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Evaluates the scene of the A input as the viewer would with loadSet in its place, for
+     * what a load about to be committed shows, at the current frame. getLastEvaluatedScene() is
+     * left as it is. *reach, when given, is set to the reach of the patterns the evaluation
+     * matched. Returns false when that input is not a scene or its evaluation fails, with *error
+     * set for a failure. For a thread other than the main one. MT-safe.
+     **/
+    bool evaluateSceneForLoadSet(const SceneLoadSetPtr& loadSet,
+                                 ScenePayload* scene,
+                                 SceneLoadReachPtr* reach,
+                                 std::string* error);
+
+    /**
+     * @brief Shows in the 3D view the geometry the given texture's input evaluated at @p frame, as
+     * evaluated. Playback evaluates frames ahead of the timeline, so each waits until the timeline
+     * reaches it. True when the geometry shown changed; false when the input is not geometry or
+     * nothing was evaluated at @p frame since it was last shown. MT-safe.
+     **/
+    bool showGeometryFrame(int textureIndex, int frame);
+
+    /**
+     * @brief The geometry the viewer's copy for the given texture's input is served from, so element
+     * numbers match what the 3D view picks, in *frame the frame the 3D view last read it at, and in
+     * *sourceNode and *sourceHash the node it was evaluated from and that node's hash before the
+     * evaluation. False when that input shows no geometry or the 3D view has not read any yet. Any
+     * pointer may be null. MT-safe.
+     **/
+    bool getShownGeometry(int textureIndex,
+                          GeoDetailConstPtr* detail,
+                          int* frame,
+                          NodePtr* sourceNode = nullptr,
+                          U64* sourceHash = nullptr) const;
 
     /**
      * @brief Every node upstream of the A and B inputs that has a persistent message, nearest
@@ -815,8 +902,8 @@ public Q_SLOTS:
     void executeDisconnectTextureRequestOnMainThread(int index, bool clearRoD);
 
     /**
-     * @brief Re-reads the active input's data kind and whether wipe is disabled, and emits
-     * activeInputDataKindChanged() when either changed. Callable from any thread; the work runs
+     * @brief Re-reads the active input's data kind, whether it is connected and whether wipe is
+     * disabled, and emits activeInputDataKindChanged() when any of them changed. Callable from any thread; the work runs
      * on the main thread.
      **/
     void refreshActiveInputDataKind();
@@ -851,7 +938,8 @@ Q_SIGNALS:
     void viewerRenderingStarted();
     void viewerRenderingEnded();
 
-    // getActiveInputDataKind() or isWipeDisabledByDataKind() changed. Emitted on the main thread.
+    // Emitted on the main thread when getActiveInputDataKind(), whether input A is connected,
+    // or isWipeDisabledByDataKind() now reads differently.
     void activeInputDataKindChanged();
 
     // A scene was evaluated for the input of textureIndex; getLastEvaluatedScene() has the
@@ -938,18 +1026,24 @@ private:
     virtual void addAcceptedComponents(int inputNb, std::list<ImageLayerDesc>* comps) OVERRIDE FINAL;
     virtual void addSupportedBitDepth(std::list<ImageBitDepthEnum>* depths) const OVERRIDE FINAL;
 
-    // The Viewer is the one place a deep, raw or scene edge may land on an image input: it
-    // flattens deep, shows raw values as they are (RawDisplay), and shows a scene in its 3D view.
+    // The Viewer is the one place a deep, raw, scene or geometry edge may land on an image input:
+    // it flattens deep, shows raw values as they are (RawDisplay), and shows a scene or geometry
+    // in its 3D view.
     // Listing the kinds rather than declaring eDataKindPolymorphic keeps a kind the Viewer cannot
     // show (a future one) an error instead of a silent connection.
     virtual bool inputAcceptsDataKindViaAdapter(int /*inputNb*/,
                                                 DataKindEnum kind) const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        return (kind == eDataKindDeep) || (kind == eDataKindRaw) || (kind == eDataKindScene);
+        return (kind == eDataKindDeep) || (kind == eDataKindRaw) || (kind == eDataKindScene) || (kind == eDataKindGeometry);
     }
     /*******************************************/
 
     ViewerRenderRetCode evaluateSceneInput(ViewerArgs& inArgs) WARN_UNUSED_RETURN;
+
+    bool evaluateGeometryInput(ViewerArgs& inArgs,
+                               ScenePayload* scene,
+                               std::string* error,
+                               bool* aborted);
 
     ViewerRenderRetCode renderViewer_internal(ViewIdx view,
                                               bool singleThreaded,
@@ -980,6 +1074,7 @@ private:
                              double time,
                              bool originatedFromMainThread) OVERRIDE FINAL;
     virtual void onKnobsLoaded() OVERRIDE FINAL;
+    virtual void onKnobsAboutToBeLoaded(const Serialization::NodeSerializationPtr& serialization) OVERRIDE FINAL;
 
     // Re-resolves the layer and alpha knobs against what the A input carries; a value that
     // resolves to nothing keeps the previous description. Returns whether a description changed.
@@ -997,6 +1092,9 @@ private:
     std::unique_ptr<ViewerInstancePrivate> _imp;
     mutable std::mutex _rawDisplayLabelMutex;
     std::string _rawDisplayLabel[2];
+    mutable std::mutex _sceneViewMutex;
+    std::unique_ptr<Serialization::SceneViewSerialization> _loadedSceneView;
+    SceneViewSaver _sceneViewSaver;
 };
 
 enum ViewerDisplayOutputEnum {

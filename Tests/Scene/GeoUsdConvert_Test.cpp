@@ -322,3 +322,61 @@ TEST(GeoUsdConvert, ShearedPackedGeometryBecomesNativeInstances)
     expectMatrixNear(GfMatrix4d(1.), worlds[0], 1e-9);
     expectMatrixNear(sheared, worlds[1], 1e-9);
 }
+
+namespace {
+
+// Two loose points; pscale is added in the storage asked for, or left out when @p storage is nullptr.
+VtFloatArray
+pointWidths(const GeoStorageEnum* storage,
+            double pscaleValue,
+            double defaultWidth)
+{
+    GeoDetailBuilder b;
+    const GeoOffset loose = b.appendPoints(2);
+    b.setPointPosition(loose, 0., 0., 0.);
+    b.setPointPosition(loose + 1, 1., 0., 0.);
+    if (storage) {
+        GeoAttributeDesc desc;
+        desc.name = "pscale";
+        desc.storage = *storage;
+        GeoAttribute& pscale = b.addAttribute(eGeoAttribClassPoint, desc);
+        if (*storage == eGeoStorageFloat64) {
+            pscale.set<double>(0, pscaleValue);
+            pscale.set<double>(1, pscaleValue * 2.);
+        } else {
+            pscale.set<float>(0, float(pscaleValue));
+            pscale.set<float>(1, float(pscaleValue * 2.));
+        }
+    }
+    GeoUsdConvertOptions options;
+    options.defaultPointWidth = defaultWidth;
+    const GeoUsdConvert convert(std::make_shared<const GeoDetail>(b.finish()), options);
+    const UsdStageRefPtr stage = UsdStage::Open(authored(convert));
+    VtFloatArray widths;
+    if (stage) {
+        const UsdGeomPoints points(stage->GetPrimAtPath(SdfPath("/geo/points_0")));
+        EXPECT_TRUE(points.GetWidthsAttr().Get(&widths));
+    }
+
+    return widths;
+}
+
+} // anonymous namespace
+
+TEST(GeoUsdConvert, Float32PscaleBecomesWidths)
+{
+    const GeoStorageEnum storage = eGeoStorageFloat32;
+    EXPECT_EQ(VtFloatArray({ 0.5f, 1.f }), pointWidths(&storage, 0.5, 0.01));
+}
+
+TEST(GeoUsdConvert, Float64PscaleBecomesWidths)
+{
+    const GeoStorageEnum storage = eGeoStorageFloat64;
+    EXPECT_EQ(VtFloatArray({ 0.5f, 1.f }), pointWidths(&storage, 0.5, 0.01));
+}
+
+TEST(GeoUsdConvert, MissingPscaleUsesTheDefaultPointWidth)
+{
+    EXPECT_EQ(VtFloatArray({ 0.03f }), pointWidths(nullptr, 0., 0.03));
+    EXPECT_EQ(VtFloatArray({ 0.01f }), pointWidths(nullptr, 0., GeoUsdConvertOptions().defaultPointWidth));
+}

@@ -40,6 +40,7 @@
 #include <pxr/imaging/hd/renderBufferSchema.h>
 #include <pxr/imaging/hd/renderer.h>
 #include <pxr/imaging/hdSt/tokens.h>
+#include <pxr/imaging/hdx/selectionTracker.h>
 #include <pxr/imaging/hdx/taskControllerSceneIndex.h>
 #ifdef NATRON_SELECTIONENGINE_CPP_RESTORE_EMIT
 #undef NATRON_SELECTIONENGINE_CPP_RESTORE_EMIT
@@ -221,6 +222,49 @@ HgiTextureHandle
 SelectionEngine::depthTexture() const
 {
     return _tasks ? bufferTexture(_tasks->getDepthBufferPath()) : HgiTextureHandle();
+}
+
+bool
+SelectionEngine::testComponentIntersection(const TfToken& pickTarget,
+                                           const TfToken& resolveMode,
+                                           const GfVec2i& resolution,
+                                           const GfMatrix4d& viewMatrix,
+                                           const GfMatrix4d& projectionMatrix,
+                                           const UsdPrim& root,
+                                           const UsdImagingGLRenderParams& params,
+                                           HdxPickHitVector* hits)
+{
+    if (!_renderer || !_taskControllerSceneIndex) {
+        return false;
+    }
+    HdLegacyRenderControlInterface* const renderControl = _renderer->GetLegacyRenderControl();
+    if (!renderControl) {
+        return false;
+    }
+    PrepareBatch(root, params);
+    _UpdateHydraCollection(&_intersectCollection, { root.GetPath().ReplacePrefix(SdfPath::AbsoluteRootPath(), _sceneDelegateId) }, params);
+    _PrepareRender(params);
+    HdxPickTaskContextParams context;
+    context.pickTarget = pickTarget;
+    context.resolveMode = resolveMode;
+    context.resolution = resolution;
+    context.viewMatrix = viewMatrix;
+    context.projectionMatrix = projectionMatrix;
+    context.clipPlanes = params.clipPlanes;
+    context.collection = _intersectCollection;
+    context.outHits = hits;
+    renderControl->SetTaskContextData(HdxPickTokens->pickParams, VtValue(context));
+    _Execute(params, _taskControllerSceneIndex->GetPickingTaskPaths());
+
+    return !hits->empty();
+}
+
+void
+SelectionEngine::setComponentSelection(const HdSelectionSharedPtr& selection)
+{
+    if (_selTracker) {
+        _selTracker->SetSelection(selection);
+    }
 }
 
 NATRON_NAMESPACE_EXIT

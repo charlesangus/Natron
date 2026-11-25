@@ -67,6 +67,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/TabWidget.h"
 #include "Gui/TimeLineGui.h"
 #include "Gui/ViewerGL.h"
+#include "Serialization/NodeSerialization.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -608,6 +609,10 @@ ViewerTab::onTimeLineTimeChanged(SequenceTime time,
 
     if (isShowingScene()) {
         _imp->sceneViewport->setFrame(time, app->getProjectFrameRate());
+        // Playback evaluated this frame's geometry ahead of the timeline.
+        if (_imp->viewerNode && (_imp->viewerNode->getActiveInputDataKind() == eDataKindGeometry)) {
+            showEvaluatedScene(time, true);
+        }
     }
 
     if ( _imp->timeLineGui->getTimeline() != app->getTimeLine() ) {
@@ -634,6 +639,12 @@ ViewerTab::centerViewer()
 
 ViewerTab::~ViewerTab()
 {
+    if (_imp->viewerNode && _imp->sceneViewport) {
+        // The node may outlive this tab and its 3D view, and saves the view as it was last.
+        Serialization::SceneViewSerialization last;
+        _imp->sceneViewport->saveSceneView(&last);
+        _imp->viewerNode->setSceneViewSaver([last](Serialization::SceneViewSerialization* serialization) { *serialization = last; });
+    }
     Gui* gui = getGui();
     if (gui) {
         NodeGraph* graph = nullptr;
@@ -946,6 +957,8 @@ ViewerTab::keyPressEvent(QKeyEvent* e)
         connectToBInput(9);
     } else if (isKeybind(kShortcutGroupViewer, kShortcutIDActionHideOverlays, modifiers, key)) {
         _imp->viewer->toggleOverlays();
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDActionMapSiblingOverlays, modifiers, key)) {
+        onMapSiblingOverlaysButtonClicked(!_imp->viewerValue<bool>(kViewerParamMapSiblingOverlays, true));
     } else if (isKeybind(kShortcutGroupViewer, kShortcutIDToggleWipe, modifiers, key)) {
         _imp->viewer->toggleWipe();
     } else if (isKeybind(kShortcutGroupViewer, kShortcutIDCenterWipe, modifiers, key)) {

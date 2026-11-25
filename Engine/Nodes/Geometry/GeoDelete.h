@@ -47,7 +47,7 @@ NATRON_NAMESPACE_ENTER
 /** @brief What GeoDelete removes; the defaults are the knobs' defaults. */
 struct GeoDeleteParams {
     std::string group;
-    GeoGroupTypeEnum groupType = eGeoGroupTypePrimitives;
+    GeoGroupTypeEnum groupType = eGeoGroupTypeGuess;
     bool deleteNonSelected = false;
     bool deleteUnusedPoints = true;
 };
@@ -58,7 +58,8 @@ struct GeoDeleteParams {
  * Deleted elements are tombstoned, so element numbers of what remains stay in order and the
  * attribute pages are not rewritten. Deleting points also deletes the primitives using them
  * and their vertices. Deleting primitives deletes their vertices, and the points no remaining
- * vertex uses when deleteUnusedPoints is on. A blank pattern selects every element.
+ * vertex uses when deleteUnusedPoints is on. Deleting edges deletes the points they use,
+ * exactly as deleting those points does. A blank pattern selects every element.
  **/
 class GeoDelete
     : public NativeEffectBase {
@@ -70,13 +71,16 @@ public:
     static constexpr NodeSpec kNodeSpec = {
         .id = PLUGINID_NATRON_GEODELETE,
         .label = "GeoDelete",
-        .description = "Delete the points or primitives a group pattern selects, or keep only them.",
-        .grouping = PLUGIN_GROUP_3D,
+        .description = "Delete the points, edges or primitives a group pattern selects, or keep only them.",
+        .grouping = PLUGIN_GROUP_GEOMETRY,
         .majorVersion = 1,
         .minorVersion = 0,
         .isWriter = false,
         .outputKind = eDataKindGeometry,
         .inputs = kInputs,
+        .geoGroupKnob = kGeoDeleteParamGroup,
+        .geoGroupClasses = eGeoGroupClassPoints | eGeoGroupClassPrimitives | eGeoGroupClassEdges,
+        .geoGroupTypeKnob = kGeoDeleteParamGroupType,
     };
 
     static EffectInstance* BuildEffect(NodePtr node)

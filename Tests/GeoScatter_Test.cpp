@@ -288,3 +288,22 @@ TEST(GeoScatter, SourcePrimUVIsTheParametricUVOfTrianglesAndQuads)
     EXPECT_GT(onQuad, 0);
     EXPECT_GT(onTriangle, 0);
 }
+
+TEST(GeoScatter, WritesPscaleOnEveryPoint)
+{
+    const GeoDetail grid = xyGrid(2);
+    GeoScatterParams params;
+    params.count = 50;
+    params.pscale = 0.25;
+    const GeoDetail points = scatter(grid, params);
+
+    const GeoAttribute* pscale = points.findAttribute(eGeoAttribClassPoint, "pscale");
+    ASSERT_NE(nullptr, pscale);
+    EXPECT_EQ(eGeoStorageFloat32, pscale->storage());
+    int seen = 0;
+    points.pointMap().forEachLive([&](GeoIndex, GeoOffset offset) {
+        EXPECT_FLOAT_EQ(0.25f, pscale->get<float>((std::size_t)offset));
+        ++seen;
+    });
+    EXPECT_EQ(50, seen);
+}

@@ -46,6 +46,9 @@
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/Bezier.h"
+#include "Engine/EffectInstance.h"
+#include "Engine/Image.h"
+#include "Engine/ImageKey.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -337,6 +340,41 @@ TEST_F(RotoPaintDirectCompositeTest, InputDepthsAndComponentsMatchTheNodePath)
             expectPathsMatch(1, RectI(0, 0, 128, 128), rgba, integerDepth);
         }
     }
+}
+
+// An image without a bitmap claims every pixel of its bounds, so it answers only a request it covers at its
+// own level, never a wider one nor, through a downscale, a coarser one.
+TEST_F(RotoPaintDirectCompositeTest, UnmarkedImagesServeOnlyWhatTheirBoundsHold)
+{
+    buildScene(1, eMergeOver, false, true);
+    if (HasFatalFailure()) {
+        return;
+    }
+    const EffectInstancePtr effect = _source->getEffectInstance();
+    ASSERT_NE(effect, nullptr);
+    const ImageLayerDesc& rgba = ImageLayerDesc::getRGBAComponents();
+    const RectD rod(0., 0., 64., 64.);
+    const RectI fullBounds(0, 0, 64, 64);
+    const RectI held(0, 0, 64, 16);
+    const ImageKey key(_source.get(), 0x5eedULL, false, 0., ViewIdx(0), 1., false, false);
+    const ImagePtr partial = std::make_shared<Image>(key, Image::makeParams(rod, held, 1., 0, false, rgba, eImageBitDepthFloat, eImageFieldingOrderNone));
+    ASSERT_FALSE(partial->usesBitMap());
+    EffectInstance::InputImagesMap inputImages;
+    inputImages[0].push_back(partial);
+
+    const auto lookup = [&](unsigned int mipmapLevel, const RectI& bounds, const RectI& roi) {
+        ImagePtr found;
+        effect->getImageFromCacheAndConvertIfNeeded(false, eStorageModeRAM, eStorageModeRAM, key, mipmapLevel, &bounds, &rod, roi,
+                                                    eImageBitDepthFloat, rgba, inputImages, RenderStatsPtr(), OSGLContextAttacherPtr(), &found);
+
+        return found;
+    };
+
+    EXPECT_TRUE(lookup(0, fullBounds, RectI(0, 0, 32, 16)) == partial);
+    EXPECT_TRUE(lookup(0, held, RectI(0, 0, 64, 40)) == partial);
+    EXPECT_TRUE(lookup(0, fullBounds, fullBounds) == ImagePtr());
+    EXPECT_TRUE(lookup(0, fullBounds, RectI(0, 8, 64, 24)) == ImagePtr());
+    EXPECT_TRUE(lookup(1, RectI(0, 0, 32, 32), RectI(0, 0, 32, 8)) == ImagePtr());
 }
 
 TEST_F(RotoPaintDirectCompositeTest, MixedOperatorsKeepTheNodePath)

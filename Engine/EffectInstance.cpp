@@ -2966,6 +2966,18 @@ EffectInstance::getImageFromCacheAndConvertIfNeeded(bool /*useCache*/,
                 continue;
             }
 
+            // Without a bitmap nothing records which pixels were written: such an image holds its whole bounds
+            // and can only serve a request it covers at its own level.
+            if ((*it)->getStorageMode() == eStorageModeRAM && !(*it)->usesBitMap()) {
+                if (candidate._mipmapLevel != mipmapLevel) {
+                    continue;
+                }
+                const RectI needed = boundsParam ? roi.intersect(*boundsParam) : roi;
+                if (!needed.isNull() && !(*it)->getBounds().contains(needed)) {
+                    continue;
+                }
+            }
+
             if (candidate._mipmapLevel == mipmapLevel) {
                 *image = *it;
 

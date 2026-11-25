@@ -64,12 +64,12 @@ Acceptance sketch:
 
 ## Phase 79.3: GIMP, GUI check and docs
 
-- [ ] M79.P3.T1 — XCF reader
+- [x] M79.P3.T1 — XCF reader
   - files: `Engine/Nodes/IO/LayeredDocs/XcfInput.cpp`, `Tests/Native/NativeReadXcf_Test.cpp`, `Tests/fixtures/layered/*.xcf`
   - approach: spec only; versions up to current incl. 64-bit offsets; every precision; RLE and zlib tiles; groups and masks; composite per Q2.
   - verify: 8-bit legacy, 32-bit float, groups, masks.
   - size: L
-- [ ] M79.P3.T2 — Docs and licence notes
+- [x] M79.P3.T2 — Docs and licence notes
   - files: `Engine/Nodes/IO/docs/NativeRead.md`, third-party licence list (LZF)
   - approach: formats, layer model, metadata keys, what's refused.
   - verify: every key in the code documented.

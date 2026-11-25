@@ -1313,6 +1313,9 @@ TEST_F(USDRenderAovTest, TheLayersAndHashFollowTheRenderVarsOfTheRenderer)
     KnobFile* file = dynamic_cast<KnobFile*>(settingsNode->getInput(0)->getKnobByName(kUSDReadParamFile).get());
     ASSERT_TRUE(file);
     file->setValue(withVars);
+    // A USDRead's hash is a placeholder until an evaluation walks the file it now names.
+    std::string error;
+    ASSERT_FALSE(activeRendererOf(node, &error).empty()) << error;
     const U64 varsHash = node->getHashValue();
     EXPECT_NE(plainHash, varsHash);
     std::list<ImageLayerDesc> present = presentLayers(node);

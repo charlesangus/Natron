@@ -450,8 +450,9 @@ include(NatronGtestSuites)
 # TIMEOUT 300 turns a scheduler wait that never returns (OutputSchedulerThread.cpp's
 # bufEmptyCondition wait has no predicate, loop or timeout) into a failed suite instead of a process
 # that never exits; SuiteProperties.cmake raises it for the suites that run longer than that.
-natron_add_gtest_suites(Tests PROPERTIES TIMEOUT 300)
-natron_add_gtest_suites(GuiTests PROPERTIES TIMEOUT 300)
+set(NATRON_TEST_DEFAULT_TIMEOUT_S 300)
+natron_add_gtest_suites(Tests PROPERTIES TIMEOUT ${NATRON_TEST_DEFAULT_TIMEOUT_S})
+natron_add_gtest_suites(GuiTests PROPERTIES TIMEOUT ${NATRON_TEST_DEFAULT_TIMEOUT_S})
 # Per-suite properties go in an include that ctest runs after the includes registered above, once
 # their add_test() calls have run.
 # SuiteProperties.cmake runs at ctest time and cannot see configure-time variables, so what it needs
@@ -470,7 +471,7 @@ if(EXISTS "${NATRON_USD_PREFIX}/plugin/usd/hdCycles.so")
 else()
     set(NATRON_CYCLES_BUNDLED OFF)
 endif()
-file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/SuiteConfigure.cmake "set(NATRON_CYCLES_BUNDLED ${NATRON_CYCLES_BUNDLED})\nset(NATRON_MOONRAY_BUNDLED ${NATRON_MOONRAY_BUNDLED})\n")
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/SuiteConfigure.cmake "set(NATRON_CYCLES_BUNDLED ${NATRON_CYCLES_BUNDLED})\nset(NATRON_MOONRAY_BUNDLED ${NATRON_MOONRAY_BUNDLED})\nset(NATRON_TEST_DEFAULT_TIMEOUT_S ${NATRON_TEST_DEFAULT_TIMEOUT_S})\n")
 set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES ${CMAKE_CURRENT_BINARY_DIR}/SuiteConfigure.cmake)
 set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES ${CMAKE_CURRENT_SOURCE_DIR}/SuiteProperties.cmake)
 

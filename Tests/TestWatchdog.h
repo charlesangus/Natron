@@ -26,6 +26,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -35,6 +36,7 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <sys/prctl.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -47,19 +49,24 @@
 // - a handler that prints the phase and every thread's stack on a fatal signal, then dies of that
 //   signal, so the exit status ctest sees is unchanged;
 // - one stack dump, the process left running, when it is still going shortly before ctest's
-//   timeout (NATRON_TEST_CTEST_TIMEOUT_S, default 300, 0 disables), since ctest kills a stuck
-//   suite without a word;
-// - a limit for the process to finish exiting once the last test is done, so a hang in process
-//   teardown dumps stacks too (NATRON_TEST_EXIT_WATCHDOG_S, default 60, 0 disables).
+//   timeout (NATRON_TEST_CTEST_TIMEOUT_S, which every registered suite gets from its TIMEOUT;
+//   0 disables), since ctest kills a stuck suite without a word;
+// - one stack dump, the process left running, when it has not finished exiting some time after
+//   the last test, for a hang in process teardown (NATRON_TEST_EXIT_WATCHDOG_S, default 60,
+//   0 disables).
+// In a gtest death-test child only the crashing thread's backtrace is printed: the dump tools take
+// seconds each, and the suites' death tests crash on purpose.
 class TestWatchdog {
 public:
     static constexpr int kDefaultLimitSeconds = 150;
-    // Matches the TIMEOUT every suite is registered with; SuiteProperties.cmake passes the longer
-    // ones down.
+    // For a binary run outside ctest, which sets NATRON_TEST_CTEST_TIMEOUT_S for every suite.
     static constexpr int kDefaultCtestTimeoutSeconds = 300;
-    // Room for eu-stack, then gdb, to finish before ctest's kill: each gets up to 30 s in run(),
-    // and eu-stack takes a few seconds on a large process.
-    static constexpr int kStallDumpLeadSeconds = 45;
+    // One deadline for the whole dump: eu-stack, then gdb with whatever time eu-stack left.
+    static constexpr int kDumpBudgetSeconds = 60;
+    // The dump budget plus room for its output to reach ctest's log before the kill.
+    static constexpr int kStallDumpLeadSeconds = kDumpBudgetSeconds + 15 > 75 ? kDumpBudgetSeconds + 15 : 75;
+    // Past the dump budget, for a dump that deadlocks in fork inside a crashed malloc.
+    static constexpr int kCrashDumpAlarmSeconds = kDumpBudgetSeconds + 30;
     static constexpr int kDefaultExitLimitSeconds = 60;
 
     TestWatchdog() = default;
@@ -126,6 +133,9 @@ public:
         if (installed.exchange(true)) {
             return;
         }
+        // The handler cannot search PATH or allocate, so the tools are looked up now.
+        findTool("eu-stack", toolPaths.euStack, sizeof(toolPaths.euStack));
+        findTool("gdb", toolPaths.gdb, sizeof(toolPaths.gdb));
         // backtrace() loads libgcc on its first call, which allocates; the handler must not.
         void* frame = nullptr;
         backtrace(&frame, 1);
@@ -133,8 +143,11 @@ public:
         std::memset(&action, 0, sizeof(action));
         action.sa_handler = &onFatalSignal;
         sigemptyset(&action.sa_mask);
-        // SA_ONSTACK uses the alternate stack AppManager gives the main thread, for a stack overflow.
-        action.sa_flags = SA_RESETHAND | SA_NODEFER | SA_ONSTACK;
+        // No SA_RESETHAND: a second thread faulting with the same signal during the dump has to
+        // reach the handler and wait for it, not die of the default action. SA_NODEFER lets the
+        // handler re-raise its own signal; SA_ONSTACK uses the alternate stack AppManager gives
+        // the main thread, for a stack overflow.
+        action.sa_flags = SA_NODEFER | SA_ONSTACK;
         for (const int sig : { SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGABRT }) {
             sigaction(sig, &action, nullptr);
         }
@@ -178,7 +191,7 @@ public:
         return w.stallDumped;
     }
 
-    // Arms a limit for the process to finish exiting, for a hang in static or atexit teardown.
+    // Arms one stack dump, the process left running, for a hang in static or atexit teardown.
     static void armExitWatchdog(int limitSeconds)
     {
         ProcessWatch& w = processWatch();
@@ -218,6 +231,28 @@ public:
         return processStartTime;
     }
 
+    // Lets the fatal-signal handler find the running test without taking gtest's mutex.
+    class CurrentTestListener : public ::testing::EmptyTestEventListener {
+    public:
+        virtual void OnTestStart(const ::testing::TestInfo& info) override
+        {
+            currentTest().store(&info);
+        }
+
+        virtual void OnTestEnd(const ::testing::TestInfo&) override
+        {
+            currentTest().store(nullptr);
+        }
+    };
+
+    static void listenForCurrentTest()
+    {
+        static std::atomic<bool> listening { false };
+        if (!listening.exchange(true)) {
+            ::testing::UnitTest::GetInstance()->listeners().Append(new CurrentTestListener);
+        }
+    }
+
 private:
     struct ProcessWatch {
         std::mutex mutex;
@@ -230,6 +265,56 @@ private:
         bool exitArmed = false;
         int exitSeconds = 0;
         std::chrono::steady_clock::time_point exitAt;
+    };
+
+    struct ToolPaths {
+        char euStack[4096];
+        char gdb[4096];
+    };
+
+    // Text built in a fixed buffer, with no stdio and no allocation, for the fatal-signal handler.
+    class Line {
+    public:
+        void addText(const char* text)
+        {
+            while (text && *text && _length < kCapacity) {
+                _text[_length++] = *text++;
+            }
+        }
+
+        void addNumber(long value)
+        {
+            char digits[24];
+            int count = 0;
+            unsigned long magnitude = value < 0 ? 0UL - static_cast<unsigned long>(value) : static_cast<unsigned long>(value);
+            do {
+                digits[count++] = static_cast<char>('0' + magnitude % 10);
+                magnitude /= 10;
+            } while (magnitude != 0);
+            if (value < 0) {
+                addText("-");
+            }
+            while (count > 0 && _length < kCapacity) {
+                _text[_length++] = digits[--count];
+            }
+        }
+
+        const char* c_str()
+        {
+            _text[_length] = '\0';
+
+            return _text;
+        }
+
+        int length() const
+        {
+            return _length;
+        }
+
+    private:
+        static constexpr int kCapacity = 511;
+        char _text[kCapacity + 1];
+        int _length = 0;
     };
 
     // Never destroyed: the monitor thread is detached and may still be waiting during static teardown.
@@ -265,9 +350,12 @@ private:
                 continue;
             }
             if (w.exitArmed && now >= w.exitAt) {
+                w.exitArmed = false;
                 const int seconds = w.exitSeconds;
                 lock.unlock();
-                expire("process exit", seconds);
+                reportSlowExit(seconds);
+                lock.lock();
+                continue;
             }
             if (w.stallArmed && w.exitArmed) {
                 w.cv.wait_until(lock, w.stallAt < w.exitAt ? w.stallAt : w.exitAt);
@@ -290,7 +378,17 @@ private:
         writeStderr("watchdog: stall dump done\n");
     }
 
+    static void reportSlowExit(int seconds)
+    {
+        char line[512];
+        const int n = std::snprintf(line, sizeof(line), "watchdog: process exit still running %d s after the last test, phase '%s'; stack dump follows, then the process goes on\n", seconds, phase().load());
+        writeStderr(line, n);
+        dumpStacks();
+        writeStderr("watchdog: exit dump done\n");
+    }
+
     static inline const std::chrono::steady_clock::time_point processStartTime = std::chrono::steady_clock::now();
+    static inline ToolPaths toolPaths = {};
 
     static std::atomic<const char*>& phase()
     {
@@ -299,7 +397,22 @@ private:
         return p;
     }
 
-    static std::atomic<bool>& dumped()
+    static std::atomic<const ::testing::TestInfo*>& currentTest()
+    {
+        static std::atomic<const ::testing::TestInfo*> t { nullptr };
+
+        return t;
+    }
+
+    // The thread taking the one fatal dump, 0 while none has started.
+    static std::atomic<pid_t>& dumpingThread()
+    {
+        static std::atomic<pid_t> t { 0 };
+
+        return t;
+    }
+
+    static std::atomic<bool>& dumpDone()
     {
         static std::atomic<bool> d { false };
 
@@ -336,17 +449,66 @@ private:
         }
     }
 
-    // Allocates nothing, as it also runs in the fatal-signal handler.
+    static void findTool(const char* name,
+                         char* out,
+                         size_t size)
+    {
+        out[0] = '\0';
+        const char* env = std::getenv("PATH");
+        const std::string dirs = env && *env ? env : "/usr/local/bin:/usr/bin:/bin";
+        size_t begin = 0;
+        while (begin <= dirs.size()) {
+            size_t end = dirs.find(':', begin);
+            if (end == std::string::npos) {
+                end = dirs.size();
+            }
+            const std::string dir = end > begin ? dirs.substr(begin, end - begin) : std::string(".");
+            const std::string candidate = dir + "/" + name;
+            if (candidate.size() < size && access(candidate.c_str(), X_OK) == 0) {
+                std::memcpy(out, candidate.c_str(), candidate.size() + 1);
+
+                return;
+            }
+            begin = end + 1;
+        }
+    }
+
+    static long monotonicMilliseconds()
+    {
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+
+        return static_cast<long>(now.tv_sec) * 1000L + now.tv_nsec / 1000000L;
+    }
+
+    static void sleepMilliseconds(long milliseconds)
+    {
+        struct timespec delay;
+        delay.tv_sec = milliseconds / 1000;
+        delay.tv_nsec = (milliseconds % 1000) * 1000000L;
+        nanosleep(&delay, nullptr);
+    }
+
+    // Also runs in the fatal-signal handler, so it formats by hand and only calls write, fork,
+    // execve, waitpid, kill, nanosleep and clock_gettime. All but fork are async-signal-safe; fork
+    // runs glibc's atfork handlers, which take the malloc lock, so a crash inside malloc can still
+    // hang the dump until kCrashDumpAlarmSeconds ends it.
     static void dumpStacks()
     {
-        std::fflush(stderr);
-        char pid[24];
-        std::snprintf(pid, sizeof(pid), "%d", static_cast<int>(getpid()));
-        const char* const euStack[] = { "eu-stack", "-p", pid, nullptr };
-        if (!run(euStack)) {
+        if (::testing::internal::InDeathTestChild()) {
+            writeStderr("watchdog: gtest death-test child, stack dump tools skipped\n");
+
+            return;
+        }
+        Line pid;
+        pid.addNumber(static_cast<long>(getpid()));
+        const char* const pidText = pid.c_str();
+        const long deadline = monotonicMilliseconds() + kDumpBudgetSeconds * 1000L;
+        const char* const euStack[] = { "eu-stack", "-p", pidText, nullptr };
+        if (!run(toolPaths.euStack, euStack, deadline)) {
             writeStderr("watchdog: eu-stack unavailable or failed, trying gdb\n");
-            const char* const gdb[] = { "gdb", "-p", pid, "-batch", "-ex", "thread apply all bt", nullptr };
-            if (!run(gdb)) {
+            const char* const gdb[] = { "gdb", "-p", pidText, "-batch", "-ex", "thread apply all bt", nullptr };
+            if (!run(toolPaths.gdb, gdb, deadline)) {
                 writeStderr("watchdog: no stack dump tool worked\n");
             }
         }
@@ -355,35 +517,89 @@ private:
     // A crash inside malloc or stdio would deadlock the dump; the signal then ends the process anyway.
     static void onDumpTimeout(int)
     {
-        const int sig = fatalSignal();
-        signal(sig, SIG_DFL);
+        dieOf(fatalSignal());
+    }
+
+    static void dieOf(int sig)
+    {
+        struct sigaction fallback;
+        std::memset(&fallback, 0, sizeof(fallback));
+        fallback.sa_handler = SIG_DFL;
+        sigemptyset(&fallback.sa_mask);
+        sigaction(sig, &fallback, nullptr);
         raise(sig);
+    }
+
+    // True if this thread is the one to take the dump; false if another thread took it or is
+    // taking it, or if this thread is already taking it and faulted again.
+    static bool claimDump()
+    {
+        pid_t expected = 0;
+        const pid_t self = static_cast<pid_t>(syscall(SYS_gettid));
+        if (dumpingThread().compare_exchange_strong(expected, self)) {
+            return true;
+        }
+        if (expected != self) {
+            const long deadline = monotonicMilliseconds() + (kCrashDumpAlarmSeconds + 5) * 1000L;
+            while (!dumpDone().load() && monotonicMilliseconds() < deadline) {
+                sleepMilliseconds(50);
+            }
+        }
+
+        return false;
     }
 
     static void onFatalSignal(int sig)
     {
-        if (!dumped().exchange(true)) {
+        if (claimDump()) {
             fatalSignal() = sig;
             struct sigaction guard;
             std::memset(&guard, 0, sizeof(guard));
             guard.sa_handler = &onDumpTimeout;
             sigemptyset(&guard.sa_mask);
-            sigaction(SIGALRM, &guard, nullptr);
-            alarm(90);
+            struct sigaction previousAlarm;
+            sigaction(SIGALRM, &guard, &previousAlarm);
+            const unsigned previousRemaining = alarm(kCrashDumpAlarmSeconds);
+            const long startedAt = monotonicMilliseconds();
 
-            const ::testing::TestInfo* info = ::testing::UnitTest::GetInstance()->current_test_info();
-            char line[512];
-            const int n = std::snprintf(line, sizeof(line), "watchdog: fatal signal %d in %s%s%s, phase '%s'; crashing thread then every thread follows\n", sig, info ? info->test_case_name() : "(no test)", info ? "." : "", info ? info->name() : "", phase().load());
-            writeStderr(line, n);
+            const ::testing::TestInfo* info = currentTest().load();
+            if (!info) {
+                // gtest forwards no test events in a death-test child. Asking it takes its mutex,
+                // which it holds only around its own bookkeeping.
+                info = ::testing::UnitTest::GetInstance()->current_test_info();
+            }
+            Line line;
+            line.addText("watchdog: fatal signal ");
+            line.addNumber(sig);
+            line.addText(" in ");
+            if (info) {
+                line.addText(info->test_case_name());
+                line.addText(".");
+                line.addText(info->name());
+            } else {
+                line.addText("(no test)");
+            }
+            line.addText(", phase '");
+            line.addText(phase().load());
+            line.addText("'; crashing thread then every thread follows\n");
+            writeStderr(line.c_str(), line.length());
+            // Not async-signal-safe, but installCrashHandler() has already loaded what it needs.
             void* frames[128];
             const int count = backtrace(frames, 128);
             backtrace_symbols_fd(frames, count, STDERR_FILENO);
             dumpStacks();
+
             alarm(0);
+            sigaction(SIGALRM, &previousAlarm, nullptr);
+            if (previousRemaining > 0) {
+                const long elapsed = (monotonicMilliseconds() - startedAt) / 1000L;
+                alarm(static_cast<long>(previousRemaining) > elapsed ? previousRemaining - static_cast<unsigned>(elapsed) : 1);
+            }
+            dumpDone().store(true);
         }
-        // SA_RESETHAND restored the default action and SA_NODEFER left the signal unblocked, so the
-        // process dies of it here, with the status ctest would have seen without the handler.
-        raise(sig);
+        // SA_NODEFER left the signal unblocked, so the process dies of it here, with the status
+        // ctest would have seen without the handler.
+        dieOf(sig);
     }
 
     void watch()
@@ -400,28 +616,36 @@ private:
         expire(currentTestName().c_str(), _limit);
     }
 
+    // Claims the dump first, so the abort that follows does not dump a second time.
     [[noreturn]] static void expire(const char* what, int limit)
     {
         std::fprintf(stderr, "watchdog: %s stalled for %d s in phase '%s'; stack dump follows\n", what, limit, phase().load());
-        std::fflush(stderr);
-        dumped().store(true);
-        dumpStacks();
+        if (claimDump()) {
+            dumpStacks();
+            dumpDone().store(true);
+        }
         std::abort();
     }
 
-    // True if the tool ran to completion and exited 0 within 30 s; its output goes to stderr.
-    static bool run(const char* const* argv)
+    // True if the tool ran to completion and exited 0 before deadline, a monotonicMilliseconds()
+    // time; its output goes to stderr.
+    static bool run(const char* path,
+                    const char* const* argv,
+                    long deadline)
     {
+        if (!path[0]) {
+            return false;
+        }
         const pid_t child = fork();
         if (child < 0) {
             return false;
         }
         if (child == 0) {
             dup2(STDERR_FILENO, STDOUT_FILENO);
-            execvp(argv[0], const_cast<char* const*>(argv));
+            execve(path, const_cast<char* const*>(argv), environ);
             _exit(127);
         }
-        for (int i = 0; i < 600; ++i) {
+        while (monotonicMilliseconds() < deadline) {
             int status = 0;
             const pid_t done = waitpid(child, &status, WNOHANG);
             if (done == child) {
@@ -430,7 +654,7 @@ private:
             if (done < 0) {
                 return false;
             }
-            usleep(50 * 1000);
+            sleepMilliseconds(50);
         }
         kill(child, SIGKILL);
         waitpid(child, nullptr, 0);
@@ -453,6 +677,7 @@ public:
         TestWatchdog::disarmExitWatchdog();
         TestWatchdog::allowStackDumpers();
         TestWatchdog::installCrashHandler();
+        TestWatchdog::listenForCurrentTest();
         TestWatchdog::armStallDump(TestWatchdog::stallDumpSeconds());
     }
 

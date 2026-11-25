@@ -803,17 +803,106 @@ compare(const ProjectPtr& project,
     return summary;
 }
 
+namespace {
+    void
+    collectNodeIds(const std::list<Serialization::NodeSerializationPtr>& nodes,
+                   std::set<std::string>* ids)
+    {
+        for (const Serialization::NodeSerializationPtr& node : nodes) {
+            if (node) {
+                ids->insert(node->id);
+                collectNodeIds(node->children, ids);
+            }
+        }
+    }
+
+    void
+    countMatches(const std::list<Serialization::NodeSerializationPtr>& nodes,
+                 const std::set<std::string>& otherIds,
+                 int* byId,
+                 std::map<std::string, int>* byOrigin)
+    {
+        for (const Serialization::NodeSerializationPtr& node : nodes) {
+            if (!node) {
+                continue;
+            }
+            if (otherIds.count(node->id)) {
+                ++*byId;
+            }
+            if (node->origin.isSet() && otherIds.count(node->origin.nodeId)) {
+                ++(*byOrigin)[node->origin.templateKey];
+            }
+            countMatches(node->children, otherIds, byId, byOrigin);
+        }
+    }
+
+    // An import's nodes get fresh IDs, so a version of the template file shares none with them;
+    // they name the file's nodes through their origins instead.
+    std::string
+    templateVersionKey(const Serialization::ProjectSerialization& mine,
+                       const Serialization::ProjectSerialization& other,
+                       const std::list<Serialization::TemplateImportSerialization>& imports)
+    {
+        std::set<std::string> otherIds;
+        collectNodeIds(other.nodes.nodes, &otherIds);
+        int byId = 0;
+        std::map<std::string, int> byOrigin;
+        countMatches(mine.nodes.nodes, otherIds, &byId, &byOrigin);
+        std::string best;
+        int bestCount = byId;
+        for (const Serialization::TemplateImportSerialization& entry : imports) {
+            std::map<std::string, int>::const_iterator found = byOrigin.find(entry.key);
+            if ((found != byOrigin.end()) && (found->second > bestCount)) {
+                best = entry.key;
+                bestCount = found->second;
+            }
+        }
+
+        return best;
+    }
+
+    ChangeSummary
+    compareWithTemplateVersion(const ProjectPtr& project,
+                               const Serialization::ProjectSerialization& mine,
+                               const Serialization::ProjectSerialization& version,
+                               const std::string& templateKey)
+    {
+        const Serialization::MergePlan plan = Serialization::planMerge(version, mine, version, templateKey);
+        Serialization::ProjectSerialization other = Serialization::editableState(version);
+        remapNodeIds(other.nodes.nodes, plan.baseToMine);
+
+        ChangeSummary all = compare(project, other);
+        ChangeSummary summary;
+        for (NodeChange& change : all.nodes) {
+            if ((change.kind == NodeChange::eRemoved) || (plan.scope.find(change.nodeId) != plan.scope.end())) {
+                summary.nodes.push_back(std::move(change));
+            }
+        }
+
+        return summary;
+    }
+} // anon namespace
+
 bool
 compareWithFile(const ProjectPtr& project,
                 const QString& path,
                 ChangeSummary* summary,
                 QString* error)
 {
+    assert(QThread::currentThread() == qApp->thread());
     Serialization::ProjectSerialization other;
     if (!readSnapshot(path, &other, error)) {
         return false;
     }
-    *summary = compare(project, other);
+    Serialization::ProjectSerialization mine;
+    project->toSerialization(&mine);
+    const std::string templateKey = templateVersionKey(mine, other, project->getTemplateImports());
+    if (templateKey.empty()) {
+        *summary = compare(project, other);
+    } else {
+        other.templates.clear();
+        *summary = compareWithTemplateVersion(project, mine, other, templateKey);
+    }
 
     return true;
 }
@@ -842,20 +931,7 @@ compareWithTemplateBase(const ProjectPtr& project,
 
     Serialization::ProjectSerialization mine;
     project->toSerialization(&mine);
-    const Serialization::ProjectSerialization& base = *found->base;
-    const Serialization::MergePlan plan = Serialization::planMerge(base, mine, base, templateKey);
-    Serialization::ProjectSerialization other = Serialization::editableState(base);
-    remapNodeIds(other.nodes.nodes, plan.baseToMine);
-
-    ChangeSummary all = compare(project, other);
-    summary->nodes.clear();
-    summary->projectKnobs.clear();
-    summary->projectData = false;
-    for (NodeChange& change : all.nodes) {
-        if ((change.kind == NodeChange::eRemoved) || (plan.scope.find(change.nodeId) != plan.scope.end())) {
-            summary->nodes.push_back(std::move(change));
-        }
-    }
+    *summary = compareWithTemplateVersion(project, mine, *found->base, templateKey);
 
     return true;
 }

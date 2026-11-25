@@ -160,8 +160,9 @@ ChangeSummary compare(const ProjectPtr& project,
                       const Serialization::ProjectSerialization& other);
 
 /**
- * @brief compare() against the project file at path. Returns false with error set when it cannot
- * be read.
+ * @brief compare() against the project file at path. When the live nodes' origins name the file's
+ * nodes more often than the live nodes' own IDs do, the file is a version of that template import
+ * and is compared as compareWithTemplateBase() compares the import with its base. Returns false with error set when it cannot be read.
  **/
 bool compareWithFile(const ProjectPtr& project,
                      const QString& path,

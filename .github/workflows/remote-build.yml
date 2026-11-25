@@ -185,17 +185,24 @@ jobs:
 
       # The primary key ends in run_id so every run saves a fresh entry
       # (a save under an existing exact key is a silent no-op); hits come
-      # from the restore-keys prefixes.
+      # from the restore-keys prefixes, ordered by the step before.
+      - name: Order ccache restore keys
+        id: ccache_keys
+        env:
+          FAMILY: ccache-linux-${{ env.PRESET }}
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          EXTRA_KEYS: ${{ env.PRESET == 'debug' && 'ccache-linux-main-' || '' }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: tools/ci/ccache-restore-keys.sh
+
       - name: Restore ccache
         id: restore_ccache
         uses: actions/cache/restore@v6.1.0
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-linux-${{ env.PRESET }}-${{ github.head_ref || github.ref_name }}-${{ github.run_id }}
-          restore-keys: |
-            ccache-linux-${{ env.PRESET }}-${{ github.head_ref || github.ref_name }}-
-            ccache-linux-${{ env.PRESET }}-main-
-            ${{ env.PRESET == 'debug' && 'ccache-linux-main-' || '' }}
+          restore-keys: ${{ steps.ccache_keys.outputs.keys }}
 
       - name: Reset ccache statistics
         run: ccache -z
@@ -362,7 +369,7 @@ jobs:
 
       - name: Show ccache stats
         if: always()
-        run: ccache -s
+        run: tools/ci/ccache-stats-summary.sh
 
       - name: Job summary
         if: always()

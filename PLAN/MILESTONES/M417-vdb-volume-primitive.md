@@ -62,3 +62,15 @@ Member of F22 - Native VDB: branches off and merges into `feature/f22-native-vdb
 - 2026-11-12 — **Ships as F22 - Native VDB with M418 - VDB Conversion Ops and M419 - VDB SDF Ops And Wrangle (user).**
 
 Shared design: `PLAN/DECISIONS/2026-11-12-geometry-simulation-expansion.md`.
+
+- 2026-11-25 (user + PM research): volume export follows Solaris SOP Import.
+  - **Grouping:** fields gather under one Volume prim. A repeated field name starts a new Volume (`volume_1`) rather than taking a `_1` suffix, and a path attribute can place a Volume.
+  - **Files:** all of a Volume's grids go into one .vdb, named by the content hash of its grid set. MoonRay needs one file per volume. Fields are referenced by `filePath` + `fieldName`, with `fieldIndex` only for same-named grids.
+  - **Copies:** CopyToPoints/packed volume copies export as one Volume prototype under a UsdGeomPointInstancer, so there is one file per prototype. User: "prefer instancing, fall back to a Volume prim per copy if not feasible or extensive upstream work". The research found that Storm (shader), Cycles (`geometry.inl` instancer path) and hdMoonray (`Volume.cc` `_UpdateInstancer`) all apply instancer transforms to volumes. MoonRay gives instanced volumes no transform motion blur; document that.
+  - **Task:** M417.P9.T1 below.
+
+- [ ] M417.P9.T1 — Solaris-style volume export: grouping, one file per Volume, instanced copies
+  - files: Engine/Nodes/Geometry/GeoUsdConvert.cpp, GeoCopyToPoints.cpp, Engine/Geo/GeoVDB.cpp, Tests/Scene/GeoVDBBridge_Test.cpp
+  - approach: per the decision above; a multi-copy fixture rendered in Storm, Cycles and MoonRay, plus a 500-copy case writing one file
+  - verify: ctest GeoVDBBridge + GeoVDB; GUI or headless render check that every copy draws
+  - size: L

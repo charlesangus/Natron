@@ -1029,6 +1029,7 @@ NodeGraph::mouseMoveEvent(QMouseEvent* e)
     QRectF sceneR = visibleSceneRect();
 
     bool mustUpdateNavigator = false;
+    Edge* hoverEdge = 0;
     ///Apply actions
     switch (_imp->_evtState) {
     case eEventStateDraggingArrow: {
@@ -1142,6 +1143,9 @@ NodeGraph::mouseMoveEvent(QMouseEvent* e)
             NodeGui* nearbyNode = NULL;
             Edge* nearbyEdge = NULL;
             NearbyItemEnum nearbyItemCode = hasItemNearbyMouse(e->pos(), &nearbyNode, &nearbyEdge);
+            if (nearbyItemCode == eNearbyItemNodeEdge) {
+                hoverEdge = nearbyEdge;
+            }
 
             switch (nearbyItemCode) {
             case eNearbyItemNode:
@@ -1177,6 +1181,9 @@ NodeGraph::mouseMoveEvent(QMouseEvent* e)
 
 
     _imp->_lastMousePos = e->pos();
+
+    // A held arrow follows the cursor, so the search would find the arrow itself.
+    setHoverEdge((e->buttons() == Qt::NoButton && !hasPickedUpArrow()) ? hoverEdge : 0);
 
     // Runs after the switch so that a pan or zoom done by this same move is already applied.
     dragPickedUpArrowToCursor();

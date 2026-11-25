@@ -56,16 +56,31 @@
 #endif
 
 #define EDGE_LENGTH_MIN 0.1
-#define EDGE_PEN_WIDTH 2
 #define ARROW_OFFSET 3 // offset of the arrow tip from the object border
 #define ARROW_SIZE_CONNECTED 14
 #define ARROW_SIZE_DISCONNECTED 10
+// The arrow sizes above are for a pipe this wide; arrow heads scale with the Pipe Width preference.
+#define ARROW_SIZE_PEN_WIDTH 2.
 #define ARROW_HEAD_ANGLE ( (2 * M_PI) / 15 ) // 24 degrees opening angle is a nice thin arrow
 
-// number of offset pixels from the arrow that determine if a click is contained in the arrow or not
-#define kGraphicalContainerOffset 10
+// Grab radii in viewport pixels. The minimums are the fixed radii used before the radius followed
+// the pipe width, so a thin pipe is never harder to grab than it was.
+#define GRAB_RADIUS_MIN 10.
+#define GRAB_RADIUS_PER_WIDTH 4.
+#define DANGLING_GRAB_RADIUS_MIN 18.
+#define DANGLING_GRAB_RADIUS_PER_WIDTH 8.
+// The nub's radius as a fraction of the Output Stub Length, so that it reaches about as far below
+// the node as the arrow stub's shaft without its head.
+#define OUTPUT_NUB_RADIUS_PER_STUB_LENGTH 0.6
 
 NATRON_NAMESPACE_ENTER
+
+static int
+pipeWidthPreference()
+{
+    // Knob::setValue does not enforce the knob minimum, so a Python script can still store 0 or less.
+    return std::max(1, appPTR->getCurrentSettings()->getPipeWidth());
+}
 
 struct EdgePrivate
 {
@@ -84,6 +99,7 @@ struct EdgePrivate
     bool useRenderingColor;
     bool useHighlight;
     bool useSelected;
+    bool hoverHighlight;
     bool paintWithDash;
     bool optional;
     bool paintBendPoint;
@@ -95,6 +111,9 @@ struct EdgePrivate
     bool hasKindTint;
     QColor kindTint;
     QPointF middlePoint; //updated only when dest && source are valid
+    // The full circle of the output nub, drawn as its lower half; null unless this is an output
+    // stub laid out in the Nub style and not being dragged.
+    QRectF nubRect;
 
     EdgePrivate(Edge* publicInterface,
                 int inputNb,
@@ -113,6 +132,7 @@ struct EdgePrivate
         , useRenderingColor(false)
         , useHighlight(false)
         , useSelected(false)
+        , hoverHighlight(false)
         , paintWithDash(false)
         , optional(false)
         , paintBendPoint(false)
@@ -124,6 +144,7 @@ struct EdgePrivate
         , hasKindTint(false)
         , kindTint()
         , middlePoint()
+        , nubRect()
     {
     }
 
@@ -139,7 +160,7 @@ Edge::Edge(int inputNb_,
 {
     _imp->dest = dest_;
 
-    setPen(QPen(Qt::black, EDGE_PEN_WIDTH, Qt::SolidLine, Qt::SquareCap, Qt::BevelJoin));
+    setPen(QPen(Qt::black, pipeWidthPreference(), Qt::SolidLine, Qt::SquareCap, Qt::BevelJoin));
     _imp->initLabel();
     setAcceptedMouseButtons(Qt::LeftButton);
     initLine();
@@ -179,7 +200,7 @@ Edge::Edge(const NodeGuiPtr & src,
 {
     _imp->source = src;
     assert(src);
-    setPen(QPen(Qt::black, EDGE_PEN_WIDTH, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    setPen(QPen(Qt::black, pipeWidthPreference(), Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
     setAcceptedMouseButtons(Qt::LeftButton);
     initLine();
     //setFlag(QGraphicsItem::ItemStacksBehindParent);
@@ -449,6 +470,23 @@ Edge::setUseHighlight(bool highlight)
 }
 
 void
+Edge::setHoverHighlight(bool hover)
+{
+    if (_imp->hoverHighlight == hover) {
+        return;
+    }
+    _imp->hoverHighlight = hover;
+    setData(kHoverHighlightDataKey, hover);
+    appearanceChanged();
+}
+
+bool
+Edge::isHoverHighlighted() const
+{
+    return _imp->hoverHighlight;
+}
+
+void
 Edge::setUseSelected(bool val)
 {
     if (_imp->useSelected == val) {
@@ -521,11 +559,20 @@ Edge::initLineNow()
     }
 
     QPointF dst;
+    QRectF nubRect;
 
     if (dest) {
         dst = destBBOX.center();
     } else if (source && !dest) {
-        dst = QPointF( sourceBBOX.x(), sourceBBOX.y() ) + QPointF(srcNodeSize.width() / 2., srcNodeSize.height() + 10);
+        const QPointF bottomCentre = QPointF(sourceBBOX.x(), sourceBBOX.y()) + QPointF(srcNodeSize.width() / 2., srcNodeSize.height());
+        const double stubLength = TO_DPIY(appPTR->getCurrentSettings()->getOutputStubLength());
+        if (appPTR->getCurrentSettings()->getOutputStyle() == Settings::eOutputStyleNub) {
+            const double radius = stubLength * OUTPUT_NUB_RADIUS_PER_STUB_LENGTH;
+            nubRect = QRectF(bottomCentre.x() - radius, bottomCentre.y() - radius, 2. * radius, 2. * radius);
+            dst = bottomCentre + QPointF(0., radius);
+        } else {
+            dst = bottomCentre + QPointF(0., stubLength);
+        }
     }
 
     std::vector<QLineF> dstEdges;
@@ -685,6 +732,7 @@ Edge::initLineNow()
     } else {
         arrowSize = TO_DPIX(ARROW_SIZE_DISCONNECTED) * sc;
     }
+    arrowSize *= pen().widthF() / ARROW_SIZE_PEN_WIDTH;
     QPointF arrowP1 = arrowIntersect + QPointF(std::cos(a + ARROW_HEAD_ANGLE / 2) * arrowSize,
                                                std::sin(a + ARROW_HEAD_ANGLE / 2) * arrowSize);
     QPointF arrowP2 = arrowIntersect + QPointF(std::cos(a - ARROW_HEAD_ANGLE / 2) * arrowSize,
@@ -695,7 +743,10 @@ Edge::initLineNow()
     // announced the geometry change the line itself makes.
     prepareGeometryChange();
     _imp->arrowHead.clear();
-    _imp->arrowHead << arrowIntersect << arrowP1 << arrowP2;
+    _imp->nubRect = nubRect;
+    if (nubRect.isNull()) {
+        _imp->arrowHead << arrowIntersect << arrowP1 << arrowP2;
+    }
     reportGeometryToGraph(this);
 } // initLine
 
@@ -718,11 +769,30 @@ Edge::boundingRect() const
     QRectF headRect = _imp->arrowHead.boundingRect();
 
     if (!headRect.isNull()) {
-        const qreal margin = pen().widthF() / 2.;
+        // The head is stroked with a miter join, which pokes out up to miterLimit pen widths.
+        const qreal margin = pen().widthF() * pen().miterLimit();
         rect = rect.united(headRect.adjusted(-margin, -margin, margin, margin));
+    }
+    if (!_imp->nubRect.isNull()) {
+        // The lower half only, padded a pixel for antialiasing.
+        QRectF lowerHalf = _imp->nubRect;
+        lowerHalf.setTop(_imp->nubRect.center().y());
+        rect = rect.united(lowerHalf.adjusted(-1., -1., 1., 1.));
     }
 
     return rect;
+}
+
+static QPainterPath
+nubPath(const QRectF& circle)
+{
+    QPainterPath path;
+
+    path.moveTo(circle.center());
+    path.arcTo(circle, 180., 180.);
+    path.closeSubpath();
+
+    return path;
 }
 
 QPainterPath
@@ -731,7 +801,9 @@ Edge::shape() const
     QPainterPath path = QGraphicsLineItem::shape();
 
     path.addPolygon(_imp->arrowHead);
-
+    if (!_imp->nubRect.isNull()) {
+        path.addPath(nubPath(_imp->nubRect));
+    }
 
     return path;
 }
@@ -775,25 +847,48 @@ Edge::dist2ToSegment(const QLineF& line,
                               p1.y() + t * ( p2.y() - p1.y() ) ) );
 }
 
-bool
-Edge::contains(const QPointF &point) const
+double
+Edge::grabRadiusPixels(bool dangling)
 {
-    double d2 = dist2ToSegment(line(), point);
+    const double width = pipeWidthPreference();
 
-    return d2 <= kGraphicalContainerOffset * kGraphicalContainerOffset;
+    if (dangling) {
+        return TO_DPIX(std::max(DANGLING_GRAB_RADIUS_MIN, DANGLING_GRAB_RADIUS_PER_WIDTH * width));
+    }
+
+    return TO_DPIX(std::max(GRAB_RADIUS_MIN, GRAB_RADIUS_PER_WIDTH * width));
+}
+
+bool
+Edge::isDangling() const
+{
+    return !_imp->source.lock() || !_imp->dest.lock();
+}
+
+void
+Edge::refreshPipeWidth()
+{
+    const int width = pipeWidthPreference();
+
+    if (pen().width() == width) {
+        return;
+    }
+    QPen p = pen();
+    p.setWidth(width);
+    setPen(p);
 }
 
 int
 pickNearestEdgeCandidate(const QPointF& scenePos,
                          const std::vector<EdgeNearbyCandidate>& candidates,
                          double grabRadius,
-                         double unconnectedInputGrabRadius)
+                         double danglingGrabRadius)
 {
     int nearestIndex = -1;
     double nearestDist2 = 0.;
 
     for (std::size_t i = 0; i < candidates.size(); ++i) {
-        double radius = candidates[i].isUnconnectedInput ? unconnectedInputGrabRadius : grabRadius;
+        double radius = candidates[i].isDangling ? danglingGrabRadius : grabRadius;
         double d2 = Edge::dist2ToSegment(candidates[i].line, scenePos);
         if (d2 > radius * radius) {
             continue;
@@ -817,12 +912,13 @@ Edge::dragSource(const QPointF & src)
         a = 2 * M_PI - a;
     }
 
-    double arrowSize = TO_DPIX(ARROW_SIZE_DISCONNECTED);
+    double arrowSize = TO_DPIX(ARROW_SIZE_DISCONNECTED) * pen().widthF() / ARROW_SIZE_PEN_WIDTH;
     QPointF arrowP1 = line().p1() + QPointF(std::cos(a + ARROW_HEAD_ANGLE / 2) * arrowSize,
                                             std::sin(a + ARROW_HEAD_ANGLE / 2) * arrowSize);
     QPointF arrowP2 = line().p1() + QPointF(std::cos(a - ARROW_HEAD_ANGLE / 2) * arrowSize,
                                             std::sin(a - ARROW_HEAD_ANGLE / 2) * arrowSize);
     prepareGeometryChange();
+    _imp->nubRect = QRectF();
     _imp->arrowHead.clear();
     _imp->arrowHead << line().p1() << arrowP1 << arrowP2;
 
@@ -845,12 +941,13 @@ Edge::dragDest(const QPointF & dst)
         a = 2 * M_PI - a;
     }
 
-    double arrowSize = TO_DPIX(ARROW_SIZE_DISCONNECTED);
+    double arrowSize = TO_DPIX(ARROW_SIZE_DISCONNECTED) * pen().widthF() / ARROW_SIZE_PEN_WIDTH;
     QPointF arrowP1 = line().p1() + QPointF(std::cos(a + ARROW_HEAD_ANGLE / 2) * arrowSize,
                                             std::sin(a + ARROW_HEAD_ANGLE / 2) * arrowSize);
     QPointF arrowP2 = line().p1() + QPointF(std::cos(a - ARROW_HEAD_ANGLE / 2) * arrowSize,
                                             std::sin(a - ARROW_HEAD_ANGLE / 2) * arrowSize);
     prepareGeometryChange();
+    _imp->nubRect = QRectF();
     _imp->arrowHead.clear();
     _imp->arrowHead << line().p1() << arrowP1 << arrowP2;
 
@@ -951,8 +1048,9 @@ Edge::getDrawnPen() const
     QPen myPen = pen();
     if (_imp->paintWithDash) {
         QVector<qreal> dashStyle;
-        qreal space = 4;
-        dashStyle << 3 << space;
+        // Dash lengths are in pen widths; scale so they stay the pixel lengths of a 2-pixel pipe.
+        const qreal unit = ARROW_SIZE_PEN_WIDTH / std::max(myPen.widthF(), 1.);
+        dashStyle << 3 * unit << 4 * unit;
         myPen.setDashPattern(dashStyle);
     } else {
         myPen.setStyle(Qt::SolidLine);
@@ -963,7 +1061,7 @@ Edge::getDrawnPen() const
     // selection of its node.
     if (_imp->isSpliceHint) {
         color = selectionColorWithAlpha(100);
-    } else if (_imp->useHighlight) {
+    } else if (_imp->useHighlight || _imp->hoverHighlight) {
         color = selectionColorWithAlpha();
     } else if (_imp->useSelected) {
         color = Qt::white;
@@ -999,6 +1097,13 @@ Edge::paint(QPainter* painter,
 
     QPen myPen = getDrawnPen();
     const QColor color = myPen.color();
+
+    if (!_imp->nubRect.isNull()) {
+        painter->fillPath(nubPath(_imp->nubRect), color);
+
+        return;
+    }
+
     painter->setPen(myPen);
 
 

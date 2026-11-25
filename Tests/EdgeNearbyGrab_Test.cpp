@@ -35,12 +35,12 @@ namespace {
 EdgeNearbyCandidate
 makeCandidate(const QPointF& p1,
               const QPointF& p2,
-              bool isUnconnectedInput)
+              bool isDangling)
 {
     EdgeNearbyCandidate candidate;
 
     candidate.line = QLineF(p1, p2);
-    candidate.isUnconnectedInput = isUnconnectedInput;
+    candidate.isDangling = isDangling;
 
     return candidate;
 }
@@ -84,11 +84,11 @@ TEST(EdgeNearbyGrab, SkipsAnEdgeOutsideItsOwnRadius)
     EXPECT_EQ(-1, nearest);
 }
 
-TEST(EdgeNearbyGrab, AnUnconnectedInputGetsTheLargerRadius)
+TEST(EdgeNearbyGrab, ADanglingEdgeGetsTheLargerRadius)
 {
     std::vector<EdgeNearbyCandidate> candidates;
 
-    // 15 away: beyond a connected pipe's radius, but within an unconnected input's.
+    // 15 away: beyond a connected pipe's radius, but within a dangling edge's (no source or no destination, output stubs included).
     candidates.push_back(makeCandidate(QPointF(0, 15), QPointF(10, 15), true));
 
     EXPECT_EQ(-1, pickNearestEdgeCandidate(QPointF(5, 0), candidates, 10., 10.));

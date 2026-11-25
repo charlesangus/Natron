@@ -80,6 +80,7 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/KnobFile.h"
 #include "Engine/LiveSession/SessionClient.h"
 #include "Engine/LiveSession/SessionHost.h"
+#include "Engine/LiveSession/SessionPresence.h"
 #include "Engine/Node.h"
 #include "Engine/NodeCreationStageLog.h"
 #include "Engine/Nodes/IO/NativeRead.h"
@@ -2966,6 +2967,8 @@ AppInstance::hostLiveSession(const QString& bindAddress,
     _imp->sessionAddress = QString::fromUtf8("%1:%2").arg(bindAddress.isEmpty() ? QString::fromUtf8("0.0.0.0") : bindAddress).arg(host->serverPort());
     QObject::connect(host, &SessionHost::peerCountChanged, this, [this](int) { Q_EMIT liveSessionChanged(); });
     QObject::connect(host, &SessionHost::sessionMessage, this, &AppInstance::liveSessionMessage);
+    QObject::connect(host, &SessionHost::remoteNodesEdited, this, &AppInstance::liveSessionRemoteEdit);
+    forwardPresence(host->presence());
     _imp->_currentProject->setLiveSessionRole(Project::LiveSessionRole::eHost, QString());
     Q_EMIT liveSessionChanged();
 
@@ -2989,6 +2992,8 @@ AppInstance::joinLiveSession(const QString& host,
         Q_EMIT liveSessionChanged();
     });
     QObject::connect(client, &SessionClient::sessionMessage, this, &AppInstance::liveSessionMessage);
+    QObject::connect(client, &SessionClient::remoteNodesEdited, this, &AppInstance::liveSessionRemoteEdit);
+    forwardPresence(client->presence());
     QObject::connect(client, &SessionClient::left, this, [this, client](const QString& reason) { _imp->onClientLeft(client, reason); });
     client->connectToHost(host, port, displayName);
     Q_EMIT liveSessionChanged();
@@ -3027,6 +3032,27 @@ AppInstance::requestLiveSessionSave()
     _imp->sessionClient->requestSave();
 
     return true;
+}
+
+void
+AppInstance::forwardPresence(SessionPresence* presence)
+{
+    QObject::connect(presence, &SessionPresence::usersChanged, this, &AppInstance::liveSessionUsersChanged);
+    QObject::connect(presence, &SessionPresence::userChanged, this, &AppInstance::liveSessionPresenceChanged);
+    QObject::connect(presence, &SessionPresence::viewerChanged, this, &AppInstance::liveSessionViewerChanged);
+}
+
+SessionPresence*
+AppInstance::getLiveSessionPresence() const
+{
+    if (_imp->sessionHost) {
+        return _imp->sessionHost->presence();
+    }
+    if (_imp->sessionClient) {
+        return _imp->sessionClient->presence();
+    }
+
+    return nullptr;
 }
 
 AppInstance::LiveSessionState

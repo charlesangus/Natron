@@ -57,6 +57,8 @@ CLANG_DIAG_ON(uninitialized)
 NATRON_NAMESPACE_ENTER
 
 class LiveSessionStatus;
+class LiveSessionPresenceTracker;
+class LiveSessionUsersPanel;
 
 #define NATRON_CONNECT_INPUT_NB (2 * 10)
 
@@ -193,6 +195,8 @@ public:
     ProgressPanel* _progressPanel;
     SceneGraphPanel* _sceneGraphPanel;
     std::list<SceneGraphPanel*> _extraSceneGraphPanels;
+    LiveSessionPresenceTracker* _liveSessionPresence;
+    LiveSessionUsersPanel* _liveSessionUsersPanel;
 
     // The dope sheet
     DopeSheetEditor *_dopeSheetEditor;
@@ -308,6 +312,8 @@ public:
     void createProgressPanelGui();
 
     void createSceneGraphPanelGui();
+
+    void createLiveSessionUsersPanelGui();
 
     ///If there's only 1 non-floating pane in the main window, return it, otherwise returns NULL
     TabWidget* getOnly1NonFloatingPane(int & count) const;

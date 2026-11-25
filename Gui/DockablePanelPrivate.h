@@ -108,6 +108,9 @@ struct DockablePanelPrivate
     TrackerPanel* _trackerPanel;
     Label* _iconLabel;
 
+    // One dot per other live session user with this panel open, created with the first of them.
+    QWidget* _remoteUsersDots = nullptr;
+
     DockablePanelPrivate(DockablePanel* publicI,
                          Gui* gui,
                          KnobHolder* holder,

@@ -33,10 +33,13 @@
 
 #include <QtCore/QObject>
 #include <QtCore/QString>
+#include <QtCore/QStringList>
 
 #include "Engine/EngineFwd.h"
 
 NATRON_NAMESPACE_ENTER
+
+class SessionPresence;
 
 /**
  * @brief The host of a live session: shares the project of one app with every client that joins
@@ -115,6 +118,11 @@ public:
      **/
     int rejectCount() const;
 
+    /**
+     * @brief Who is in the session, the host user first, as user 0.
+     **/
+    SessionPresence* presence() const;
+
 Q_SIGNALS:
 
     void peerCountChanged(int count);
@@ -129,6 +137,12 @@ Q_SIGNALS:
      * file and unsaved changes.
      **/
     void saveRequested(quint32 userId);
+
+    /**
+     * @brief A client's edit, applied here, deleted the nodes with the IDs in deleted and changed
+     * those in edited.
+     **/
+    void remoteNodesEdited(const QStringList& deleted, const QStringList& edited);
 
 private:
     struct Implementation;

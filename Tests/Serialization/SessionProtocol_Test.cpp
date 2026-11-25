@@ -30,6 +30,7 @@
 #include <cstdint>
 #include <list>
 #include <memory>
+#include <optional>
 #include <random>
 #include <span>
 #include <string>
@@ -93,6 +94,30 @@ sampleSnapshot()
     return bytes;
 }
 
+PresenceMessage
+samplePresence()
+{
+    PresenceMessage presence;
+    presence.userId = 4;
+    presence.name = "Bea";
+    presence.colour = NodeUiColor { 0.3f, 0.65f, 0.95f };
+    presence.host = false;
+    presence.selection = { nid(7), nid(3) };
+    presence.openPanels = { nid(7) };
+    PresenceViewerState viewer;
+    viewer.frame = 20;
+    viewer.viewerNodeId = nid(9);
+    viewer.inputIndex = 1;
+    viewer.zoomFactor = 2.5;
+    viewer.zoomAspectRatio = 1.;
+    viewer.centerX = 960.5;
+    viewer.centerY = -540.25;
+    viewer.channels = "Luminance";
+    presence.viewer = viewer;
+
+    return presence;
+}
+
 std::vector<SessionMessage>
 everyMessage()
 {
@@ -111,6 +136,9 @@ everyMessage()
     messages.push_back(SaveRequestMessage {});
     messages.push_back(ResyncRequestMessage {});
     messages.push_back(ByeMessage { "The host closed the session." });
+    messages.push_back(samplePresence());
+    messages.push_back(PresenceMessage { 0, "host", NodeUiColor { 1.f, 0.5f, 0.f }, true, {}, {}, std::nullopt });
+    messages.push_back(PresenceLeftMessage { 4 });
 
     return messages;
 }
@@ -189,6 +217,32 @@ TEST(SessionProtocol, FieldsSurviveTheRoundTrip)
     EXPECT_EQ(deleted.nodeId, nid(8));
     EXPECT_TRUE(deleted.deleted);
     EXPECT_TRUE(deleted.ops.empty());
+}
+
+TEST(SessionProtocol, PresenceFieldsSurviveTheRoundTrip)
+{
+    const PresenceMessage presence = std::get<PresenceMessage>(decodeSessionMessage(encodeSessionMessage(samplePresence())));
+    EXPECT_EQ(presence, samplePresence());
+    ASSERT_TRUE(presence.viewer.has_value());
+    EXPECT_EQ(presence.viewer->frame, 20);
+    EXPECT_EQ(presence.viewer->centerY, -540.25);
+
+    const PresenceMessage bare { 0, "host", NodeUiColor { 1.f, 0.5f, 0.f }, true, {}, {}, std::nullopt };
+    const PresenceMessage decodedBare = std::get<PresenceMessage>(decodeSessionMessage(encodeSessionMessage(bare)));
+    EXPECT_EQ(decodedBare, bare);
+    EXPECT_FALSE(decodedBare.viewer.has_value());
+
+    const PresenceLeftMessage left = std::get<PresenceLeftMessage>(decodeSessionMessage(encodeSessionMessage(PresenceLeftMessage { 4 })));
+    EXPECT_EQ(left.userId, 4u);
+}
+
+TEST(SessionProtocol, APresenceWithoutItsSelectionIsAnError)
+{
+    std::string text = encodeSessionMessage(samplePresence());
+    const std::string::size_type at = text.find("selection");
+    ASSERT_NE(at, std::string::npos);
+    text.replace(at, 9, "elsewhere");
+    EXPECT_THROW(decodeSessionMessage(text), SessionProtocolError);
 }
 
 TEST(SessionProtocol, SplitAndCoalescedStreamsDecodeIdentically)

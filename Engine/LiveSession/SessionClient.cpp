@@ -36,12 +36,15 @@
 #include <vector>
 
 #include <QtCore/QByteArray>
+#include <QtCore/QStringList>
 #include <QtNetwork/QTcpSocket>
 
 #include "Engine/AppInstance.h"
 #include "Engine/GraphEditRecorder.h"
 #include "Engine/GraphOpApply.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/LiveSession/SessionPresence.h"
+#include "Engine/LiveSession/SessionRemoteEdits.h"
 #include "Engine/LiveSession/SessionShared.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
@@ -91,6 +94,7 @@ struct SessionClient::Implementation {
     int mismatches = 0;
     int rejects = 0;
     int loads = 0;
+    SessionPresence presence;
 
     Implementation(SessionClient* publicInterface,
                    const AppInstancePtr& app)
@@ -537,6 +541,16 @@ struct SessionClient::Implementation {
         }
     }
 
+    void notifyRemoteEdits(const std::vector<Serialization::GraphOp>& ops)
+    {
+        QStringList deleted;
+        QStringList edited;
+        LiveSession::remoteEditedNodes(ops, &deleted, &edited);
+        if (!deleted.isEmpty() || !edited.isEmpty()) {
+            Q_EMIT publicInterface->remoteNodesEdited(deleted, edited);
+        }
+    }
+
     void handleBroadcast(const BroadcastMessage& broadcast)
     {
         ProjectPtr p = project();
@@ -552,6 +566,7 @@ struct SessionClient::Implementation {
             retryDeferred(p);
         } else if (broadcast.seq > seq) {
             applyHostOps(p, broadcast.ops);
+            notifyRemoteEdits(broadcast.ops);
         }
         if (broadcast.seq > seq) {
             seq = broadcast.seq;
@@ -577,6 +592,8 @@ struct SessionClient::Implementation {
         // others are still in place.
         if (!message.deleted) {
             applyHostOps(p, message.ops);
+        } else {
+            notifyRemoteEdits({ Serialization::GraphOp(Serialization::DeleteNodeOp { message.nodeId }) });
         }
         reapplyPending(p, message.nodeId);
         retryDeferred(p);
@@ -630,6 +647,8 @@ struct SessionClient::Implementation {
             subscribedProject = project();
         }
         state = State::eJoined;
+        presence.setSender([this](const PresenceMessage& entry) { send(entry); });
+        presence.setLocalUser(welcome.userId, displayName.toStdString(), welcome.colour, false);
         Q_EMIT publicInterface->joined();
     }
 
@@ -659,6 +678,7 @@ struct SessionClient::Implementation {
 
     void handle(const SessionMessage& message)
     {
+        LiveSession::RemoteApply remote;
         if (const ByeMessage* bye = std::get_if<ByeMessage>(&message)) {
             end(QString::fromUtf8(bye->reason.c_str()));
 
@@ -683,6 +703,10 @@ struct SessionClient::Implementation {
             handleResyncNode(*resync);
         } else if (const ChecksumMessage* checksum = std::get_if<ChecksumMessage>(&message)) {
             handleChecksum(*checksum);
+        } else if (const PresenceMessage* entry = std::get_if<PresenceMessage>(&message)) {
+            presence.updateUser(*entry);
+        } else if (const PresenceLeftMessage* gone = std::get_if<PresenceLeftMessage>(&message)) {
+            presence.removeUser(gone->userId);
         } else {
             end(QString::fromUtf8("Protocol error: unexpected %1 message.").arg(QString::fromUtf8(std::string(sessionMessageName(message)).c_str())));
         }
@@ -743,6 +767,7 @@ struct SessionClient::Implementation {
         }
         state = State::eDisconnected;
         clearPending();
+        presence.clear();
         if (socket) {
             socket->disconnect(publicInterface);
             socket->disconnectFromHost();
@@ -915,6 +940,12 @@ int
 SessionClient::projectLoadCount() const
 {
     return _imp->loads;
+}
+
+SessionPresence*
+SessionClient::presence() const
+{
+    return &_imp->presence;
 }
 
 NATRON_NAMESPACE_EXIT

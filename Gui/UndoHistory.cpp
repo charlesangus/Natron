@@ -28,12 +28,14 @@
 #include <algorithm>
 #include <cassert>
 #include <deque>
+#include <string>
 
 #include <QPointer>
 #include <QUndoCommand>
 
 #include "Engine/EffectInstance.h"
 #include "Engine/Knob.h"
+#include "Engine/LiveSession/SessionRemoteEdits.h"
 #include "Engine/Node.h"
 #include "Engine/TrackMarker.h"
 #include "Engine/TrackerContext.h"
@@ -261,12 +263,32 @@ struct CaptureFrame {
     }
 };
 
+// The ID of the node keyed by holder, empty for other holders.
+std::string
+nodeIdOf(KnobHolder* holder)
+{
+    EffectInstance* effect = dynamic_cast<EffectInstance*>(holder);
+    NodePtr node = effect ? effect->getNode() : NodePtr();
+
+    return node ? node->getNodeId() : std::string();
+}
+
 struct UndoEntry {
     QUndoCommand* cmd;
     bool hasOwner;
     QPointer<KnobHolder> owner;
     std::vector<QPointer<KnobHolder>> touched;
+
+    // The touched nodes by ID, which another user's edits name them by.
+    std::vector<std::string> nodeIds;
     bool done;
+
+    // Another user deleted a touched node: a node created again from their edits under the same
+    // ID is not the one the command knows, so it is not replayed.
+    bool removedRemotely = false;
+
+    // Another user changed a touched node since this entry was last done or undone.
+    bool editedRemotely = false;
 
     // Order in which undone entries were undone; global redo replays the highest.
     quint64 undoSeq;
@@ -287,10 +309,38 @@ struct UndoEntry {
         return hasOwner && !owner.isNull() && (owner.data() == holder);
     }
 
+    void touch(KnobHolder* holder)
+    {
+        if (touches(holder)) {
+            return;
+        }
+        touched.push_back(QPointer<KnobHolder>(holder));
+        const std::string id = nodeIdOf(holder);
+        if (!id.empty() && !touchesNode(id)) {
+            nodeIds.push_back(id);
+        }
+    }
+
+    bool touchesNode(const std::string& id) const
+    {
+        return std::find(nodeIds.begin(), nodeIds.end(), id) != nodeIds.end();
+    }
+
+    bool touchesAnyNode(const QStringList& ids) const
+    {
+        for (const QString& id : ids) {
+            if (touchesNode(id.toStdString())) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     // A command cannot be replayed once any holder whose state it changes is gone, owned or not.
     bool isObsolete() const
     {
-        if (cmd->isObsolete() || (hasOwner && owner.isNull())) {
+        if (removedRemotely || cmd->isObsolete() || (hasOwner && owner.isNull())) {
             return true;
         }
         for (std::size_t i = 0; i < touched.size(); ++i) {
@@ -411,9 +461,7 @@ struct UndoHistoryPrivate {
                 }
                 const std::vector<KnobHolder*>& touched = scope.getTouched();
                 for (std::size_t i = 0; i < touched.size(); ++i) {
-                    if (!last.touches(touched[i])) {
-                        last.touched.push_back(QPointer<KnobHolder>(touched[i]));
-                    }
+                    last.touch(touched[i]);
                 }
                 if (last.cmd->isObsolete()) {
                     eraseAt((int)entries.size() - 1);
@@ -430,7 +478,7 @@ struct UndoHistoryPrivate {
         e.owner = owner;
         const std::vector<KnobHolder*>& touched = scope.getTouched();
         for (std::size_t i = 0; i < touched.size(); ++i) {
-            e.touched.push_back(QPointer<KnobHolder>(touched[i]));
+            e.touch(touched[i]);
         }
         e.done = true;
         e.undoSeq = 0;
@@ -567,6 +615,8 @@ struct UndoHistoryPrivate {
                  bool isUndo)
     {
         QUndoCommand* cmd = entries[i].cmd;
+        const bool overRemoteEdit = entries[i].editedRemotely;
+        const QString text = cmd->actionText();
         executing = true;
         replaying = true;
         if (isUndo) {
@@ -586,11 +636,15 @@ struct UndoHistoryPrivate {
         UndoEntry& e = entries[i];
         assert(e.cmd == cmd);
         e.done = !isUndo;
+        e.editedRemotely = false;
         if (isUndo) {
             e.undoSeq = ++undoSeq;
         }
         if (cmd->isObsolete()) {
             eraseAt(i);
+        }
+        if (overRemoteEdit) {
+            Q_EMIT _publicInterface->replayedOverRemoteEdit(text, isUndo);
         }
     }
 
@@ -633,6 +687,7 @@ UndoHistory::push(QUndoCommand* cmd,
     if (!cmd) {
         return;
     }
+    assert(!LiveSession::RemoteApply::isApplying());
     if (_imp->executing) {
         cmd->redo();
         delete cmd;
@@ -788,6 +843,33 @@ int
 UndoHistory::count() const
 {
     return (int)_imp->entries.size();
+}
+
+void
+UndoHistory::dropEntriesTouchingNodes(const QStringList& nodeIds)
+{
+    bool any = false;
+    for (UndoEntry& e : _imp->entries) {
+        if (e.touchesAnyNode(nodeIds)) {
+            e.removedRemotely = true;
+            any = true;
+        }
+    }
+    if (!any || _imp->executing) {
+        return;
+    }
+    _imp->dropObsolete();
+    Q_EMIT changed();
+}
+
+void
+UndoHistory::noteRemoteEditOfNodes(const QStringList& nodeIds)
+{
+    for (UndoEntry& e : _imp->entries) {
+        if (e.touchesAnyNode(nodeIds)) {
+            e.editedRemotely = true;
+        }
+    }
 }
 
 void

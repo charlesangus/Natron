@@ -144,6 +144,7 @@ AddMultipleNodesCommand::AddMultipleNodesCommand(NodeGraph* graph,
     for (std::list<NodeGuiPtr> ::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
         _nodes.push_back(*it);
     }
+    setText(tr("Add node"));
 }
 
 AddMultipleNodesCommand::AddMultipleNodesCommand(NodeGraph* graph,
@@ -157,6 +158,7 @@ AddMultipleNodesCommand::AddMultipleNodesCommand(NodeGraph* graph,
     , _creationAutoSaves(false)
 {
     _nodes.push_back(node);
+    setText(tr("Add node"));
 }
 
 namespace {
@@ -210,7 +212,6 @@ AddMultipleNodesCommand::~AddMultipleNodesCommand()
             }
         }
     }
-    setText( tr("Add node") );
 }
 
 void

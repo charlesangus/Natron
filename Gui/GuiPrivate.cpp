@@ -94,6 +94,8 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/GuiDensity.h"
 #include "Gui/Histogram.h"
+#include "Gui/LiveSessionPresenceTracker.h"
+#include "Gui/LiveSessionUsersPanel.h"
 #include "Gui/Menu.h"
 #include "Gui/MessageBox.h"
 #include "Gui/MultiInstancePanel.h"
@@ -207,6 +209,8 @@ GuiPrivate::GuiPrivate(const GuiAppInstancePtr& app,
     , _curveEditor(0)
     , _progressPanel(0)
     , _sceneGraphPanel(0)
+    , _liveSessionPresence(0)
+    , _liveSessionUsersPanel(0)
     , _dopeSheetEditor(0)
     , _toolBox(0)
     , _propertiesBin(0)
@@ -459,6 +463,17 @@ GuiPrivate::createSceneGraphPanelGui()
     _sceneGraphPanel->setLabel(tr("Scene Graph").toStdString());
     _sceneGraphPanel->setVisible(false);
     _gui->registerTab(_sceneGraphPanel, _sceneGraphPanel);
+}
+
+void
+GuiPrivate::createLiveSessionUsersPanelGui()
+{
+    _liveSessionPresence = new LiveSessionPresenceTracker(_gui);
+    _liveSessionUsersPanel = new LiveSessionUsersPanel(_gui, _liveSessionPresence);
+    _liveSessionUsersPanel->setScriptName("liveSessionUsersPanel");
+    _liveSessionUsersPanel->setLabel(tr("Session Users").toStdString());
+    _liveSessionUsersPanel->setVisible(false);
+    _gui->registerTab(_liveSessionUsersPanel, _liveSessionUsersPanel);
 }
 
 TabWidget*

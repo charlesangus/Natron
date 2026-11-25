@@ -106,6 +106,7 @@ set(Tests_SOURCES
     GraphOpApply_Test.cpp
     LiveSessionConvergence_Test.cpp
     LiveSessionProject_Test.cpp
+    LiveSessionPresence_Test.cpp
     GraphEditRecorder_Test.cpp
     GraphEditReplay_Test.cpp
     GenericSchedulerAbortWait_Test.cpp

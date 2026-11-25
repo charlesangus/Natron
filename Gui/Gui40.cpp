@@ -60,6 +60,7 @@
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h" // appPTR
 #include "Gui/GuiPrivate.h"
+#include "Gui/LiveSessionPresenceTracker.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
@@ -544,6 +545,26 @@ SceneGraphPanel*
 Gui::getSceneGraphPanel() const
 {
     return _imp->_sceneGraphPanel;
+}
+
+LiveSessionUsersPanel*
+Gui::getLiveSessionUsersPanel() const
+{
+    return _imp->_liveSessionUsersPanel;
+}
+
+LiveSessionPresenceTracker*
+Gui::getLiveSessionPresenceTracker() const
+{
+    return _imp->_liveSessionPresence;
+}
+
+void
+Gui::notifyLocalPresenceChanged()
+{
+    if (_imp && _imp->_liveSessionPresence) {
+        _imp->_liveSessionPresence->scheduleLocalUpdate();
+    }
 }
 
 PropertiesBinWrapper*

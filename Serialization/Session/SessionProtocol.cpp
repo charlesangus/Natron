@@ -76,6 +76,14 @@ namespace Session {
         struct MessageName<ByeMessage> {
             static constexpr std::string_view value = "bye";
         };
+        template <>
+        struct MessageName<PresenceMessage> {
+            static constexpr std::string_view value = "presence";
+        };
+        template <>
+        struct MessageName<PresenceLeftMessage> {
+            static constexpr std::string_view value = "presenceLeft";
+        };
 
         void
         emitStringField(YAML::Emitter& em,
@@ -95,6 +103,36 @@ namespace Session {
             emitKey(em, key);
             em << YAML::Value;
             emitInt(em, value);
+        }
+
+        void
+        emitDoubleField(YAML::Emitter& em,
+                        std::string_view key,
+                        double value)
+        {
+            emitKey(em, key);
+            em << YAML::Value;
+            emitDouble(em, value);
+        }
+
+        void
+        emitBoolField(YAML::Emitter& em,
+                      std::string_view key,
+                      bool value)
+        {
+            emitKey(em, key);
+            em << YAML::Value;
+            emitBool(em, value);
+        }
+
+        void
+        emitStringListField(YAML::Emitter& em,
+                            std::string_view key,
+                            const std::vector<std::string>& values)
+        {
+            emitKey(em, key);
+            em << YAML::Value;
+            emitStringList(em, values);
         }
 
         void
@@ -134,6 +172,46 @@ namespace Session {
             }
 
             return readString(node, context);
+        }
+
+        YAML::Node
+        requiredField(MapReader& reader,
+                      std::string_view key)
+        {
+            const YAML::Node node = reader.get(key);
+            if (!node) {
+                fail(node, reader.context() + "." + std::string(key), "missing");
+            }
+
+            return node;
+        }
+
+        double
+        readDoubleField(MapReader& reader,
+                        std::string_view key)
+        {
+            return readDouble(requiredField(reader, key), reader.context() + "." + std::string(key));
+        }
+
+        int
+        readIntField(MapReader& reader,
+                     std::string_view key)
+        {
+            return readInt(requiredField(reader, key), reader.context() + "." + std::string(key));
+        }
+
+        bool
+        readBoolField(MapReader& reader,
+                      std::string_view key)
+        {
+            return readBool(requiredField(reader, key), reader.context() + "." + std::string(key));
+        }
+
+        std::vector<std::string>
+        readStringListField(MapReader& reader,
+                            std::string_view key)
+        {
+            return readStringVector(requiredField(reader, key), reader.context() + "." + std::string(key));
         }
 
         std::vector<GraphOp>
@@ -238,6 +316,40 @@ namespace Session {
                    const ByeMessage& message)
         {
             emitStringField(em, "reason", message.reason);
+        }
+
+        void
+        emitFields(YAML::Emitter& em,
+                   const PresenceMessage& message)
+        {
+            emitIntField(em, "userId", message.userId);
+            emitStringField(em, "name", message.name);
+            emitFloatTriple(em, "colour", message.colour.r, message.colour.g, message.colour.b);
+            emitBoolField(em, "host", message.host);
+            emitStringListField(em, "selection", message.selection);
+            emitStringListField(em, "openPanels", message.openPanels);
+            if (!message.viewer) {
+                return;
+            }
+            const PresenceViewerState& viewer = *message.viewer;
+            emitKey(em, "viewer");
+            em << YAML::Value << YAML::BeginMap;
+            emitIntField(em, "frame", viewer.frame);
+            emitStringField(em, "viewerNodeId", viewer.viewerNodeId);
+            emitIntField(em, "inputIndex", viewer.inputIndex);
+            emitDoubleField(em, "zoomFactor", viewer.zoomFactor);
+            emitDoubleField(em, "zoomAspectRatio", viewer.zoomAspectRatio);
+            emitDoubleField(em, "centerX", viewer.centerX);
+            emitDoubleField(em, "centerY", viewer.centerY);
+            emitStringField(em, "channels", viewer.channels);
+            em << YAML::EndMap;
+        }
+
+        void
+        emitFields(YAML::Emitter& em,
+                   const PresenceLeftMessage& message)
+        {
+            emitIntField(em, "userId", message.userId);
         }
 
         void
@@ -352,6 +464,47 @@ namespace Session {
                    ByeMessage* message)
         {
             message->reason = readStringField(reader, "reason");
+        }
+
+        void
+        readFields(MapReader& reader,
+                   PresenceMessage* message)
+        {
+            message->userId = readUInt(requiredField(reader, "userId"), reader.context() + ".userId");
+            message->name = readStringField(reader, "name");
+            const std::vector<float> rgb = readFloatTriple(requiredField(reader, "colour"), reader.context() + ".colour");
+            message->colour = NodeUiColor { rgb[0], rgb[1], rgb[2] };
+            message->host = readBoolField(reader, "host");
+            message->selection = readStringListField(reader, "selection");
+            message->openPanels = readStringListField(reader, "openPanels");
+            const YAML::Node viewer = reader.get("viewer");
+            if (!viewer) {
+                message->viewer.reset();
+
+                return;
+            }
+            const std::string viewerContext = reader.context() + ".viewer";
+            if (!viewer.IsMap()) {
+                fail(viewer, viewerContext, "expected a map");
+            }
+            MapReader viewerReader(viewer, viewerContext, nullptr);
+            PresenceViewerState state;
+            state.frame = readIntField(viewerReader, "frame");
+            state.viewerNodeId = readStringField(viewerReader, "viewerNodeId");
+            state.inputIndex = readIntField(viewerReader, "inputIndex");
+            state.zoomFactor = readDoubleField(viewerReader, "zoomFactor");
+            state.zoomAspectRatio = readDoubleField(viewerReader, "zoomAspectRatio");
+            state.centerX = readDoubleField(viewerReader, "centerX");
+            state.centerY = readDoubleField(viewerReader, "centerY");
+            state.channels = readStringField(viewerReader, "channels");
+            message->viewer = state;
+        }
+
+        void
+        readFields(MapReader& reader,
+                   PresenceLeftMessage* message)
+        {
+            message->userId = readUInt(requiredField(reader, "userId"), reader.context() + ".userId");
         }
 
         template <std::size_t I = 0>

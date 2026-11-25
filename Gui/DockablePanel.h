@@ -45,6 +45,7 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Gui/GuiFwd.h"
 #include "Gui/KnobGuiContainerHelper.h"
+#include "Gui/LiveSessionUserMark.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -99,6 +100,12 @@ public:
     void appendHeaderWidget(QWidget* widget);
 
     QWidget* getHeaderWidget() const;
+
+    /**
+     * @brief Shows a dot in the header in the colour of each other live session user who has
+     * this panel open.
+     **/
+    void setRemoteUsers(const LiveSessionUserMarks& users);
 
     ///MT-safe
     virtual QColor getCurrentColor() const

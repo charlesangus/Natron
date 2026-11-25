@@ -62,6 +62,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/EngineFwd.h"
 
 #include "Gui/GuiFwd.h"
+#include "Gui/LiveSessionUserMark.h"
 
 #include "Serialization/SerializationFwd.h"
 
@@ -377,6 +378,17 @@ public:
 
     /* @brief Is the node selected ? MT-Safe */
     bool getIsSelected() const;
+
+    /**
+     * @brief Outlines the node in the colour of each other live session user selecting it, one
+     * ring outside the other, with their names above it.
+     **/
+    void setRemoteUsers(const LiveSessionUserMarks& users);
+
+    const LiveSessionUserMarks& getRemoteUsers() const
+    {
+        return _remoteUsers;
+    }
 
     virtual bool isUserSelected() const OVERRIDE FINAL
     {
@@ -875,6 +887,8 @@ private:
 
     void refreshUserColorBorderGeometry();
 
+    void refreshRemoteUsersGeometry();
+
     void refreshNameItemTextColor();
 
     void refreshPanelColorIndicator();
@@ -915,6 +929,10 @@ private:
     // instead of eating into it, and kept above those items in z-order so it is never painted
     // over by them.
     NodeGraphRectItem* _userColorBorder;
+
+    LiveSessionUserMarks _remoteUsers;
+    std::vector<QGraphicsRectItem*> _remoteUserOutlines;
+    std::vector<QGraphicsSimpleTextItem*> _remoteUserTags;
 
     /*A pointer to the channels pixmap displayed*/
     QGraphicsPixmapItem* _channelsPixmap;

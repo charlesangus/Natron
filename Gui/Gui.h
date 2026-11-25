@@ -55,6 +55,9 @@ CLANG_DIAG_ON(uninitialized)
 
 NATRON_NAMESPACE_ENTER
 
+class LiveSessionPresenceTracker;
+class LiveSessionUsersPanel;
+
 struct GuiPrivate;
 
 class Gui
@@ -384,6 +387,14 @@ public:
     // Destroys the panels addNewSceneGraphPanel made that are in no pane.
     void removeSceneGraphPanelsOutsidePanes();
 
+    LiveSessionUsersPanel* getLiveSessionUsersPanel() const;
+
+    LiveSessionPresenceTracker* getLiveSessionPresenceTracker() const;
+
+    /**
+     * @brief Tells the live session, if any, that this user's selection or open panels may differ.
+     **/
+    void notifyLocalPresenceChanged();
     QVBoxLayout* getPropertiesLayout() const;
     PropertiesBinWrapper* getPropertiesBin() const;
     const RegisteredTabs & getRegisteredTabs() const;

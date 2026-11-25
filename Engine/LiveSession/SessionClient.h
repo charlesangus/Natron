@@ -33,10 +33,13 @@
 
 #include <QtCore/QObject>
 #include <QtCore/QString>
+#include <QtCore/QStringList>
 
 #include "Engine/EngineFwd.h"
 
 NATRON_NAMESPACE_ENTER
+
+class SessionPresence;
 
 /**
  * @brief A client of a live session: replaces the project of one app with the host's, then keeps
@@ -131,6 +134,11 @@ public:
      **/
     int projectLoadCount() const;
 
+    /**
+     * @brief Who is in the session, as the host relays it. This user is part of it once joined.
+     **/
+    SessionPresence* presence() const;
+
 Q_SIGNALS:
 
     void joined();
@@ -145,6 +153,12 @@ Q_SIGNALS:
      * @brief A line for the user about the session.
      **/
     void sessionMessage(const QString& message);
+
+    /**
+     * @brief Another user's edit, applied here, deleted the nodes with the IDs in deleted and
+     * changed those in edited.
+     **/
+    void remoteNodesEdited(const QStringList& deleted, const QStringList& edited);
 
 private:
     struct Implementation;

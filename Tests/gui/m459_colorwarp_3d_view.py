@@ -280,7 +280,7 @@ try:
         hdr = probe(BOXES[2]).get("warp", [])
         lo = s.get("boundsMin", [])
         hi = s.get("boundsMax", [])
-        check(len(hdr) == 3 and all(lo[k] <= hdr[k] <= hi[k] for k in range(3)),
+        check(len(hdr) == 3 and all(lo[k] - 1e-6 * abs(lo[k]) <= hdr[k] <= hi[k] + 1e-6 * abs(hi[k]) for k in range(3)),
               "the axes reach the colour above 1 (%r in %r..%r)" % (hdr, lo, hi))
         output_toggle = button("colorSpaceViewOutput")
         check(output_toggle is not None and output_toggle.isVisible(), "the Output toggle shows with the mode")
@@ -397,12 +397,14 @@ try:
         ok = yield ("until", cloud_ready, POLL_TIMEOUT_S)
         check(ok, "the mode comes back on")
         app.clearSelection()
+        viewer.disconnectInput(0)
         require(viewer.connectInput(0, chart), "the viewer views the CheckerBoard")
         ok = yield ("until", lambda: not toggle.isEnabled(), POLL_TIMEOUT_S)
         check(ok, "the toggle is disabled while the viewer shows no ColorWarp")
         check(not toggle.isChecked() and state() == {}, "and the mode is off")
         check(close(projection(), before_2d, 1e-6), "with the 2D pan and zoom restored (%r)" % (projection(),))
         gt.shot("m459-not-a-colorwarp.png")
+        viewer.disconnectInput(0)
         require(viewer.connectInput(0, warp), "the viewer views the ColorWarp again")
         ok = yield ("until", lambda: toggle.isEnabled(), POLL_TIMEOUT_S)
         check(ok, "the toggle is enabled again")

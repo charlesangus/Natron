@@ -324,7 +324,10 @@ DockablePanel::DockablePanel(Gui* gui,
             _imp->_editButton->setFocusPolicy(Qt::NoFocus);
             _imp->_editButton->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tr("Edit the user parameters of this node in the panel: "
                                                                                     "add them from the palette, select one to change its "
-                                                                                    "properties, drag to reorder."),
+                                                                                    "properties, drag to reorder. Drag a parameter in from "
+                                                                                    "another panel to link to it, or Ctrl-drag it for an "
+                                                                                    "independent copy; a drag from one dimension adds the "
+                                                                                    "whole parameter."),
                                                                                  NATRON_NAMESPACE::WhiteSpaceNormal));
             QObject::connect(_imp->_editButton, SIGNAL(clicked(bool)), this, SLOT(onEditButtonClicked(bool)));
         }

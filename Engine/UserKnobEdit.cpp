@@ -63,12 +63,6 @@ nodeOfHolder(KnobHolder* holder)
     return effect ? effect->getNode() : NodePtr();
 }
 
-bool
-isPageOrGroupType(const std::string& typeName)
-{
-    return (typeName == KnobPage::typeNameStatic()) || (typeName == KnobGroup::typeNameStatic());
-}
-
 // The types and dimensions UserParamHolder's create*Param functions make.
 bool
 isCreatableUserKnobType(const std::string& typeName,
@@ -105,12 +99,6 @@ isCreatableUserKnobType(const std::string& typeName,
     }
 
     return false;
-}
-
-bool
-isNumericType(const std::string& typeName)
-{
-    return (typeName == KnobInt::typeNameStatic()) || (typeName == KnobDouble::typeNameStatic()) || (typeName == KnobColor::typeNameStatic());
 }
 
 bool
@@ -616,25 +604,6 @@ renameInListeners(KnobHolder* holder,
     }
 }
 
-std::string
-uniqueKnobName(KnobHolder* holder,
-               const std::string& wanted)
-{
-    const std::string base = NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(wanted);
-    NodeCollection* isCollection = dynamic_cast<NodeCollection*>(holder);
-    for (int no = 1;; ++no) {
-        const std::string name = (no == 1) ? base : base + std::to_string(no);
-        if (holder->getKnobByName(name) || NATRON_PYTHON_NAMESPACE::isKeyword(name)) {
-            continue;
-        }
-        if (isCollection && isCollection->getNodeByName(name)) {
-            continue;
-        }
-
-        return name;
-    }
-}
-
 void
 countLinkGroupIds(const Serialization::GroupKnobSerialization& group,
                   std::map<std::string, int>* counts)
@@ -1057,6 +1026,38 @@ private:
 };
 
 NATRON_NAMESPACE_ANONYMOUS_EXIT
+
+bool
+isPageOrGroupType(const std::string& typeName)
+{
+    return (typeName == KnobPage::typeNameStatic()) || (typeName == KnobGroup::typeNameStatic());
+}
+
+bool
+isNumericType(const std::string& typeName)
+{
+    return (typeName == KnobInt::typeNameStatic()) || (typeName == KnobDouble::typeNameStatic()) || (typeName == KnobColor::typeNameStatic());
+}
+
+std::string
+uniqueKnobName(KnobHolder* holder,
+               const std::string& wanted,
+               bool numbered)
+{
+    const std::string base = NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(wanted);
+    NodeCollection* isCollection = dynamic_cast<NodeCollection*>(holder);
+    for (int no = 1;; ++no) {
+        const std::string name = (no == 1 && !numbered) ? base : base + std::to_string(no);
+        if (holder->getKnobByName(name) || NATRON_PYTHON_NAMESPACE::isKeyword(name)) {
+            continue;
+        }
+        if (isCollection && isCollection->getNodeByName(name)) {
+            continue;
+        }
+
+        return name;
+    }
+}
 
 UserKnobSpec
 specFromKnob(const KnobIPtr& knob)

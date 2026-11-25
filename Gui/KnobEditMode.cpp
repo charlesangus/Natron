@@ -71,6 +71,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/PythonUndoCommands.h"
 #include "Engine/RFV.h"
 #include "Engine/UserKnobEdit.h"
+#include "Serialization/Yaml/KnobYaml.h"
 
 #include "Gui/DockablePanel.h"
 #include "Gui/Gui.h"
@@ -173,26 +174,6 @@ displayName(const KnobIPtr& knob)
     const std::string label = knob->getLabel();
 
     return QString::fromUtf8(label.empty() ? knob->getName().c_str() : label.c_str());
-}
-
-std::string
-uniqueKnobName(KnobHolder* holder,
-               const std::string& base,
-               bool numbered)
-{
-    NodeGroup* isGroup = dynamic_cast<NodeGroup*>(holder);
-    const auto taken = [&](const std::string& name) {
-        return holder->getKnobByName(name) || (isGroup && isGroup->getNodeByName(name));
-    };
-    if (!numbered && !taken(base)) {
-        return base;
-    }
-    for (int i = 1;; ++i) {
-        const std::string name = base + std::to_string(i);
-        if (!taken(name)) {
-            return name;
-        }
-    }
 }
 
 std::vector<KnobPagePtr>
@@ -473,28 +454,25 @@ private:
     {
         setFocus(Qt::MouseFocusReason);
         _pressed.reset();
-        if (!isUserPage()) {
-            e->accept();
-
-            return;
-        }
-        const std::vector<Row> rs = rows();
+        const bool userPage = isUserPage();
+        const std::vector<Row> rs = userPage ? rows() : std::vector<Row>();
         const Row* row = rowAt(rs, e->pos());
-        if (e->button() == Qt::LeftButton) {
-            if (row) {
-                _mode->setSelectedKnob(row->knob);
-                _pressed = row->knob;
+        const KnobIPtr editable = (row && _mode->isEditable(row->knob)) ? row->knob : KnobIPtr();
+        if ((e->button() == Qt::LeftButton) && userPage) {
+            if (editable) {
+                _mode->setSelectedKnob(editable);
+                _pressed = editable;
                 _pressPos = e->pos();
-            } else {
+            } else if (!row) {
                 _mode->setSelectedKnob(KnobIPtr());
             }
         } else if (e->button() == Qt::RightButton) {
-            if (row) {
-                _mode->setSelectedKnob(row->knob);
+            if (editable) {
+                _mode->setSelectedKnob(editable);
             }
             KnobEditMode* mode = _mode;
             const QPoint globalPos = e->globalPosition().toPoint();
-            QTimer::singleShot(0, mode, [mode, globalPos]() { mode->showContextMenu(globalPos); });
+            QTimer::singleShot(0, mode, [mode, globalPos, userPage]() { mode->showContextMenu(globalPos, userPage); });
         }
         update();
         e->accept();
@@ -603,7 +581,7 @@ private:
             if (kind == QString::fromUtf8("move")) {
                 KnobHolder* holder = _mode->getHolder();
                 KnobIPtr knob = holder ? holder->getKnobByName(value->toStdString()) : KnobIPtr();
-                if (!knob || !knob->isUserKnob() || dynamic_cast<KnobPage*>(knob.get())) {
+                if (!_mode->isEditable(knob) || dynamic_cast<KnobPage*>(knob.get())) {
                     return eDragKindNone;
                 }
                 *source = knob;
@@ -865,6 +843,7 @@ struct KnobEditModePrivate {
     std::list<QPointer<KnobEditOverlay>> overlays;
     QPointer<QTabBar> tabBar;
     KnobPageWPtr pressedPage;
+    int pressedTab;
 
     explicit KnobEditModePrivate(DockablePanel* panel)
         : panel(panel)
@@ -880,6 +859,7 @@ struct KnobEditModePrivate {
         , overlays()
         , tabBar()
         , pressedPage()
+        , pressedTab(-1)
     {
     }
 
@@ -1122,6 +1102,12 @@ KnobEditMode::detach()
     }
     _imp->overlays.clear();
     _imp->panel = 0;
+}
+
+bool
+KnobEditMode::isEditable(const KnobIPtr& knob) const
+{
+    return _imp->isEditable(knob);
 }
 
 KnobIPtr
@@ -1379,14 +1365,21 @@ KnobEditMode::addKnobFrom(const KnobIPtr& source,
         }
     }
     KnobIPtr knob;
+    QStringList messages;
     {
         UserKnobsUndoScope undo(holder, (copy ? "Copy parameter " : "Link parameter ") + name);
+        bool reported = false;
         try {
             knob = source->createDuplicateOnHolder(holder, page, group, (page || group) ? index : -1, !copy, name,
                                                    source->getLabel(), source->getHintToolTip(), true, true);
         } catch (const std::exception& e) {
             Dialogs::errorDialog(tr("Add parameter").toStdString(), e.what());
+            reported = true;
         }
+        if (!knob && !reported) {
+            messages.push_back(tr("Cannot add a parameter of this type."));
+        }
+        QStringList restoreErrors;
         if (copy) {
             for (std::size_t i = 0; i < sourceExpressions.size(); ++i) {
                 try {
@@ -1394,13 +1387,24 @@ KnobEditMode::addKnobFrom(const KnobIPtr& source,
                     if (!sourceExpressions[i].first.empty()) {
                         source->setExpression(i, sourceExpressions[i].first, sourceExpressions[i].second, false);
                     }
+                } catch (const std::exception& e) {
+                    restoreErrors.push_back(tr("dimension %1: %2").arg(i).arg(QString::fromUtf8(e.what())));
                 } catch (...) {
+                    restoreErrors.push_back(tr("dimension %1").arg(i));
                 }
             }
+        }
+        if (!restoreErrors.isEmpty()) {
+            messages.push_back(tr("The expression of %1 could not be restored after copying it (%2).")
+                                   .arg(QString::fromUtf8(source->getName().c_str()), restoreErrors.join(QString::fromUtf8("; "))));
         }
         if (knob) {
             undo.markChanged();
         }
+    }
+    AppInstancePtr app = messages.isEmpty() ? AppInstancePtr() : holder->getApp();
+    if (app) {
+        app->showStatusMessage(messages.join(QLatin1Char(' ')));
     }
     if (knob) {
         _imp->showPageOf(knob);
@@ -1482,6 +1486,9 @@ KnobEditMode::copySelection()
     }
     QMimeData* mimeData = new QMimeData;
     mimeData->setData(QString::fromUtf8(NATRON_USER_KNOBS_MIME_TYPE), QByteArray(text.c_str(), (int)text.size()));
+    if (std::dynamic_pointer_cast<KnobPage>(knob)) {
+        mimeData->setData(QString::fromUtf8(NATRON_USER_PAGES_MIME_TYPE), QByteArray());
+    }
     mimeData->setText(QString::fromUtf8(text.c_str()));
     QApplication::clipboard()->setMimeData(mimeData);
 }
@@ -1489,12 +1496,18 @@ KnobEditMode::copySelection()
 namespace {
 void
 pasteParent(const KnobIPtr& selected,
+            bool wholePages,
             KnobIPtr* parent,
             int* index)
 {
     *parent = KnobIPtr();
     *index = -1;
-    if (!selected || std::dynamic_pointer_cast<KnobPage>(selected)) {
+    if (!selected || wholePages) {
+        return;
+    }
+    if (std::dynamic_pointer_cast<KnobPage>(selected)) {
+        *parent = selected;
+
         return;
     }
     KnobIPtr selectedParent = selected->getParentKnob();
@@ -1503,6 +1516,35 @@ pasteParent(const KnobIPtr& selected,
         *parent = selectedParent;
         *index = selectedIndex + 1;
     }
+}
+
+// The user knobs YAML on the clipboard, or an empty string when it holds none.
+std::string
+clipboardUserKnobs(bool* wholePages)
+{
+    *wholePages = false;
+    const QMimeData* mimeData = QApplication::clipboard()->mimeData();
+    if (!mimeData) {
+        return std::string();
+    }
+    if (mimeData->hasFormat(QString::fromUtf8(NATRON_USER_KNOBS_MIME_TYPE))) {
+        const QByteArray data = mimeData->data(QString::fromUtf8(NATRON_USER_KNOBS_MIME_TYPE));
+        *wholePages = mimeData->hasFormat(QString::fromUtf8(NATRON_USER_PAGES_MIME_TYPE));
+
+        return std::string(data.constData(), data.size());
+    }
+    if (!mimeData->hasText()) {
+        return std::string();
+    }
+    const std::string text = mimeData->text().toStdString();
+    try {
+        if (!Serialization::decodeUserPagesYaml(text).empty()) {
+            return text;
+        }
+    } catch (const std::exception&) {
+    }
+
+    return std::string();
 }
 } // anon namespace
 
@@ -1513,23 +1555,14 @@ KnobEditMode::pasteClipboard()
     if (!holder || !_imp->active) {
         return;
     }
-    const QMimeData* mimeData = QApplication::clipboard()->mimeData();
-    if (!mimeData) {
-        return;
-    }
-    std::string text;
-    if (mimeData->hasFormat(QString::fromUtf8(NATRON_USER_KNOBS_MIME_TYPE))) {
-        const QByteArray data = mimeData->data(QString::fromUtf8(NATRON_USER_KNOBS_MIME_TYPE));
-        text.assign(data.constData(), data.size());
-    } else {
-        text = mimeData->text().toStdString();
-    }
+    bool wholePages = false;
+    const std::string text = clipboardUserKnobs(&wholePages);
     if (text.empty()) {
         return;
     }
     KnobIPtr parent;
     int index = -1;
-    pasteParent(getSelectedKnob(), &parent, &index);
+    pasteParent(getSelectedKnob(), wholePages, &parent, &index);
     std::string error;
     const std::list<KnobIPtr> created = pasteUserKnobs(holder, text, parent, index, &error);
     if (created.empty()) {
@@ -1554,7 +1587,7 @@ KnobEditMode::duplicateSelection()
     const std::string text = copyUserKnobs(holder, std::list<KnobIPtr>(1, knob));
     KnobIPtr parent;
     int index = -1;
-    pasteParent(knob, &parent, &index);
+    pasteParent(knob, (bool)std::dynamic_pointer_cast<KnobPage>(knob), &parent, &index);
     std::string error;
     const std::list<KnobIPtr> created = pasteUserKnobs(holder, text, parent, index, &error);
     if (created.empty()) {
@@ -1569,15 +1602,16 @@ KnobEditMode::duplicateSelection()
 }
 
 void
-KnobEditMode::showContextMenu(const QPoint& globalPos)
+KnobEditMode::showContextMenu(const QPoint& globalPos,
+                              bool onUserPage)
 {
     DockablePanel* panel = _imp->panel;
     if (!panel || !_imp->active) {
         return;
     }
-    const bool hasSelection = (bool)getSelectedKnob();
-    const QMimeData* clipboard = QApplication::clipboard()->mimeData();
-    const bool canPaste = clipboard && (clipboard->hasFormat(QString::fromUtf8(NATRON_USER_KNOBS_MIME_TYPE)) || clipboard->hasText());
+    const bool hasSelection = onUserPage && (bool)getSelectedKnob();
+    bool wholePages = false;
+    const bool canPaste = !clipboardUserKnobs(&wholePages).empty();
 
     QMenu menu(panel);
     menu.setObjectName(QString::fromUtf8("KnobEditContextMenu"));
@@ -1661,18 +1695,22 @@ KnobEditMode::eventFilter(QObject* watched,
     }
     if (event->type() == QEvent::MouseButtonPress) {
         QMouseEvent* e = static_cast<QMouseEvent*>(event);
-        KnobPagePtr page = _imp->pageAtTab(_imp->tabBar->tabAt(e->pos()));
+        const int tab = _imp->tabBar->tabAt(e->pos());
+        KnobPagePtr page = _imp->pageAtTab(tab);
         const bool movable = page && page->isUserKnob() && !isPinnedKnob(page);
         _imp->pressedPage = movable ? page : KnobPagePtr();
+        _imp->pressedTab = movable ? tab : -1;
         _imp->tabBar->setMovable(movable);
     } else if (event->type() == QEvent::MouseButtonRelease) {
         if (_imp->pressedPage.lock()) {
             QTimer::singleShot(0, this, [this]() {
                 KnobPagePtr page = _imp->pressedPage.lock();
+                const int pressedTab = _imp->pressedTab;
                 _imp->pressedPage.reset();
+                _imp->pressedTab = -1;
                 KnobHolder* holder = _imp->holder();
                 const int tab = _imp->tabOfPage(page);
-                if (!holder || !page || (tab == -1)) {
+                if (!holder || !page || (tab == -1) || (tab == pressedTab)) {
                     return;
                 }
                 KnobPagePtr left = _imp->pageAtTab(tab - 1);

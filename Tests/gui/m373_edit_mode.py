@@ -13,6 +13,7 @@ Blur, renames the Blur's plug-in ID in the file and loads it back.
 import os
 import re
 import sys
+import traceback
 import zipfile
 import zlib
 
@@ -23,12 +24,103 @@ from guitest import check
 
 import knob_edit_common as cm
 
-from PySide6.QtCore import QMetaObject
-from PySide6.QtWidgets import QWidget
+from PySide6.QtCore import QMetaObject, QPoint, Qt, QTimer
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication, QWidget
+
+EDIT_ITEM = "Edit parameters"
+
+# Wrappers of the clicked widgets and of the popups are kept for the run: PySide marks a widget's
+# child wrappers deleted once a temporary wrapper of the widget is collected.
+_held = []
 
 
 def palette_visible(name):
     return cm.visible_child(name, QWidget, "KnobEditPalette") is not None
+
+
+def bare_point(widget):
+    """A point of widget that no child widget covers; the panel only opens its menu when the widget
+    under the cursor is the right-clicked row or page itself."""
+    for fy in (0.5, 0.25, 0.75, 0.1, 0.9):
+        for x in range(widget.width() - 3, 2, -4):
+            pt = QPoint(x, int(widget.height() * fy))
+            if QApplication.widgetAt(widget.mapToGlobal(pt)) is widget:
+                return pt
+    return None
+
+
+def menu_target(name):
+    """The widget and point a user right-clicks for the panel's menu: the editor overlay in edit
+    mode, otherwise a bare spot of a row or page of the panel."""
+    ov = cm.overlay(name)
+    if ov is not None:
+        return ov, QPoint(ov.width() // 2, max(1, ov.height() - 4))
+    p = cm.panel_of(name)
+    if p is None:
+        return None, None
+    for w in p.findChildren(QWidget):
+        try:
+            if gt.class_name(w) != "RightClickableWidget" or not w.isVisible():
+                continue
+        except RuntimeError:
+            continue
+        pt = bare_point(w)
+        if pt is not None:
+            return w, pt
+    return None, None
+
+
+def right_click_menu(name, choose=None):
+    """Right-clicks the panel with a real mouse press, records the text, enabled and checked state
+    of every entry of the menu that opens, then chooses the entry labelled choose or closes the
+    menu. The panel's own menu runs inside the press, so the press is sent from a timer."""
+    seen = {"entries": None, "chosen": False, "failed": False}
+    widget, pt = menu_target(name)
+    if widget is None:
+        check(False, "found a spot of %s's panel to right-click" % name)
+        seen["failed"] = True
+        return seen
+    _held.append(widget)
+
+    def inspect():
+        popup = QApplication.activePopupWidget()
+        if popup is None:
+            seen["failed"] = True
+            return
+        _held.append(popup)
+        entries = dict((a.text(), (a.isEnabled(), a.isChecked())) for a in popup.actions() if a.text())
+        action = next((a for a in popup.actions() if choose is not None and a.text() == choose), None)
+        if action is None or not action.isEnabled():
+            seen["entries"] = entries
+            popup.close()
+            return
+        seen["chosen"] = True
+        seen["entries"] = entries
+        popup.setActiveAction(action)
+        QTest.keyClick(popup, Qt.Key_Return)
+
+    def press():
+        try:
+            QTest.mouseClick(widget, Qt.RightButton, Qt.NoModifier, pt)
+        except RuntimeError:
+            check(False, "the right click completed: " + traceback.format_exc())
+
+    QTimer.singleShot(800, inspect)
+    QTimer.singleShot(0, press)
+    return seen
+
+
+def open_menu(name, choose=None):
+    seen = right_click_menu(name, choose)
+    ok = yield ("until", lambda: seen["entries"] is not None or seen["failed"], 5.0)
+    gt.require(ok and not seen["failed"], "%s's right-click menu opened" % name)
+    return seen
+
+
+def entry_state(seen, text):
+    """(enabled, checked) of the menu entry labelled text, or None when the menu lacks it."""
+    return seen["entries"].get(text)
 
 
 def steps():
@@ -45,6 +137,13 @@ def steps():
     check(cm.properties(blur) is not None, "the property section is shown")
     check(cm.pencil(blur).isChecked(), "the pencil is checked in edit mode")
     gt.shot("m373_edit_on.png")
+    seen = yield from open_menu(blur)
+    check(entry_state(seen, EDIT_ITEM) == (True, True),
+          "a built-in page's menu has %r enabled and checked (entries %r)" % (EDIT_ITEM, seen["entries"]))
+    check(entry_state(seen, "Copy") == (False, False), "Copy is disabled on a built-in page (entries %r)" % (seen["entries"],))
+    check(entry_state(seen, "Delete") == (False, False), "Delete is disabled on a built-in page")
+    check(entry_state(seen, "Paste") is not None, "a built-in page's menu has Paste")
+    yield ("sleep", 300)
 
     gt.section("selection")
     cm.add(blur, "Float")
@@ -62,13 +161,20 @@ def steps():
     gt.shot("m373_edit_selected.png")
 
     gt.section("menu")
-    gt.require(cm.toggle_from_menu(blur), "ran Edit parameters")
+    seen = yield from open_menu(blur, EDIT_ITEM)
+    check(entry_state(seen, EDIT_ITEM) == (True, True),
+          "the editor's menu has %r enabled and checked (entries %r)" % (EDIT_ITEM, seen["entries"]))
+    gt.require(seen["chosen"], "chose %r from the editor's menu" % EDIT_ITEM)
     ok = yield ("until", lambda: not cm.is_editing(blur), 5.0)
     check(ok, "Edit parameters turns edit mode off")
     check(not cm.pencil(blur).isChecked(), "the pencil follows the menu entry")
     check(not palette_visible(blur), "the palette is gone after leaving edit mode")
     check(cm.param(blur, "float1") is not None, "the user float survives leaving edit mode")
-    cm.toggle_from_menu(blur)
+    yield ("sleep", 300)
+    seen = yield from open_menu(blur, EDIT_ITEM)
+    check(entry_state(seen, EDIT_ITEM) == (True, False),
+          "the panel's menu has %r enabled and unchecked outside edit mode (entries %r)" % (EDIT_ITEM, seen["entries"]))
+    gt.require(seen["chosen"], "chose %r from the panel's menu" % EDIT_ITEM)
     ok = yield ("until", lambda: cm.is_editing(blur), 5.0)
     check(ok, "Edit parameters turns edit mode back on")
     cm.set_editing(blur, False)
@@ -137,6 +243,11 @@ def steps():
     gt.require(ok, "opened the missing-plugin node's panel")
     b = cm.pencil(blur)
     check(b is None or not b.isEnabled(), "the pencil is disabled on a node whose plug-in is missing")
+    seen = yield from open_menu(blur)
+    state = entry_state(seen, EDIT_ITEM)
+    check(state is not None and not state[0],
+          "the panel's menu has %r disabled on that node (entries %r)" % (EDIT_ITEM, seen["entries"]))
+    yield ("sleep", 300)
     cm.toggle_from_menu(blur)
     yield ("sleep", 300)
     check(not cm.is_editing(blur), "Edit parameters does nothing on that node")

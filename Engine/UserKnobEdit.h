@@ -89,6 +89,20 @@ struct UserKnobSpec {
     bool operator==(const UserKnobSpec&) const = default;
 };
 
+bool isPageOrGroupType(const std::string& typeName);
+
+/**
+ * @brief Int, Double or Color.
+ **/
+bool isNumericType(const std::string& typeName);
+
+/**
+ * @brief wanted made script-friendly, with a number appended when it is taken by a knob of
+ * holder, a node of a Group holder or a Python keyword. With numbered set a number is always
+ * appended, from 1; otherwise the free name itself comes first, then from 2.
+ **/
+std::string uniqueKnobName(KnobHolder* holder, const std::string& wanted, bool numbered = false);
+
 /**
  * @brief The spec of a knob as it is now.
  **/

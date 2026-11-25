@@ -114,16 +114,16 @@ def steps():
     yield ("sleep", 300)
     result = []
     drag_label_onto(blur, overlay_end(group), Qt.NoModifier, Qt.ControlModifier, result)
-    ok = yield ("until", lambda: cm.param(group, "size1") is not None, 5.0)
-    check(ok, "the Ctrl-drop made size1 on %s" % group)
+    ok = yield ("until", lambda: cm.param(group, "size2") is not None, 5.0)
+    check(ok, "the Ctrl-drop made size2 on %s" % group)
     if ok:
-        copy = cm.param(group, "size1")
+        copy = cm.param(group, "size2")
         check(abs(value(copy) - value(src)) < 1e-9, "the copy starts with %s.size's value" % blur)
         set_value(src, 11.0)
         yield ("sleep", 300)
-        check(abs(value(cm.param(group, "size1")) - 11.0) > 1e-9, "the copy doesn't follow %s.size" % blur)
+        check(abs(value(cm.param(group, "size2")) - 11.0) > 1e-9, "the copy doesn't follow %s.size" % blur)
     gt.require(cm.undo(), "undo")
-    ok = yield ("until", lambda: cm.param(group, "size1") is None, 5.0)
+    ok = yield ("until", lambda: cm.param(group, "size2") is None, 5.0)
     check(ok, "one undo removed the copy")
 
     gt.section("Link knob...")
@@ -155,12 +155,12 @@ def steps():
     gt.require(button is not None, "the chooser has a Link button")
     button.click()
     QApplication.processEvents()
-    ok = yield ("until", lambda: cm.param(group, "size1") is not None, 5.0)
-    check(ok, "Link knob... made size1 (params %r)" % user_params(group))
+    ok = yield ("until", lambda: cm.param(group, "size2") is not None, 5.0)
+    check(ok, "Link knob... made size2 (params %r)" % user_params(group))
     if ok:
         set_value(inner.getParam("size"), 5.0)
         yield ("sleep", 300)
-        check(abs(value(cm.param(group, "size1")) - 5.0) < 1e-9, "size1 follows the inner node's size")
+        check(abs(value(cm.param(group, "size2")) - 5.0) < 1e-9, "size2 follows the inner node's size")
 
     gt.section("link drag outside edit mode")
     gt.require(cm.set_editing(group, False), "left edit mode")
@@ -184,7 +184,7 @@ def steps():
     set_value(src, 13.0)
     yield ("sleep", 300)
     check(abs(value(cm.param(other, "size")) - 13.0) < 1e-9, "a Ctrl-drag between panels outside edit mode still links")
-    check(cm.param(other, "size1") is None and not cm.is_editing(other), "and adds no user knob")
+    check(cm.param(other, "size2") is None and not cm.is_editing(other), "and adds no user knob")
 
 
 cm.start(steps())

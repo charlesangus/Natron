@@ -251,13 +251,18 @@ KnobWidgetDnD::startDrag()
     QFontMetrics fmetrics(font, 0);
     Qt::KeyboardModifiers mods = QApplication::keyboardModifiers();
     bool isExprMult = ( mods & (Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier) ) == (Qt::ControlModifier | Qt::ShiftModifier);
+    const bool editing = !isExprMult && KnobEditMode::isAnyPanelEditing();
+    const bool plainDrag = (mods & (Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier)) == Qt::NoModifier;
     QString textFirstLine;
-    if (isExprMult) {
+    if (editing && plainDrag) {
+        textFirstLine = tr("Adding a linked parameter from:");
+    } else if (editing) {
+        textFirstLine = tr("Linking (hard-link), or adding a copy, from:");
+    } else if (isExprMult) {
         textFirstLine = tr("Linking (expression):");
     } else {
         textFirstLine = tr("Linking (hard-link) from:");
     }
-
 
     QString knobLine;
     EffectInstance* isEffect = dynamic_cast<EffectInstance*>( internalKnob->getHolder() );
@@ -285,7 +290,11 @@ KnobWidgetDnD::startDrag()
     }
 
     QString textThirdLine;
-    if (dragDim == -1) {
+    if (editing && plainDrag) {
+        textThirdLine = tr("Drop it on a panel in edit mode");
+    } else if (editing) {
+        textThirdLine = tr("Drop it on a parameter's label, or on a panel in edit mode for a copy of the whole parameter");
+    } else if (dragDim == -1) {
         textThirdLine = tr("Drag it to the label of another parameter of the same type");
     } else {
         textThirdLine = tr("Drag it to a dimension of another parameter of the same type");

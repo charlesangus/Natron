@@ -35,6 +35,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QComboBox>
 #include <QDoubleValidator>
 #include <QEvent>
+#include <QFocusEvent>
 #include <QFontDatabase>
 #include <QFormLayout>
 #include <QHBoxLayout>
@@ -65,18 +66,6 @@ CLANG_DIAG_ON(uninitialized)
 NATRON_NAMESPACE_ENTER
 
 namespace {
-bool
-isPageOrGroup(const std::string& typeName)
-{
-    return (typeName == KnobPage::typeNameStatic()) || (typeName == KnobGroup::typeNameStatic());
-}
-
-bool
-isNumeric(const std::string& typeName)
-{
-    return (typeName == KnobInt::typeNameStatic()) || (typeName == KnobDouble::typeNameStatic()) || (typeName == KnobColor::typeNameStatic());
-}
-
 bool
 specIsLabel(const UserKnobSpec& spec)
 {
@@ -390,7 +379,7 @@ KnobEditProperties::addField(const QString& label,
 void
 KnobEditProperties::addCommonFields(const UserKnobSpec& spec)
 {
-    const bool isPageOrGroupKnob = isPageOrGroup(spec.typeName);
+    const bool isPageOrGroupKnob = isPageOrGroupType(spec.typeName);
     const bool isSeparator = spec.typeName == KnobSeparator::typeNameStatic();
     const bool isButton = spec.typeName == KnobButton::typeNameStatic();
     const bool isParametric = spec.typeName == KnobParametric::typeNameStatic();
@@ -409,7 +398,7 @@ KnobEditProperties::addCommonFields(const UserKnobSpec& spec)
                             "and asks before resetting them otherwise."));
         const std::vector<KnobEditTypeEntry>& entries = knobEditTypeEntries();
         for (std::size_t i = 0; i < entries.size(); ++i) {
-            if (isPageOrGroup(entries[i].typeName) || (entries[i].typeName == KnobSeparator::typeNameStatic())) {
+            if (isPageOrGroupType(entries[i].typeName) || (entries[i].typeName == KnobSeparator::typeNameStatic())) {
                 continue;
             }
             type->addItem(entries[i].label, entries[i].id);
@@ -436,7 +425,6 @@ KnobEditProperties::addCommonFields(const UserKnobSpec& spec)
     tooltip->setObjectName(QString::fromUtf8("KnobEditPropertiesTooltip"));
     addField(tr("Tooltip"), tooltip, [tooltip](UserKnobSpec* s) { s->tooltip = tooltip->text().toStdString(); });
 
-    // Defaults, one per dimension.
     const Serialization::KnobChoiceExtraSerialization* choice = std::get_if<Serialization::KnobChoiceExtraSerialization>(&spec.extra);
     if (traits.isChoice && choice) {
         QComboBox* def = new QComboBox(_form);
@@ -730,6 +718,12 @@ KnobEditProperties::eventFilter(QObject* watched,
                                 QEvent* event)
 {
     if (event->type() == QEvent::FocusOut) {
+        // A context menu or a window switch takes focus mid-edit; committing then would apply
+        // half-typed text and the rebuild would delete the editor under its open menu.
+        const Qt::FocusReason reason = static_cast<QFocusEvent*>(event)->reason();
+        if ((reason == Qt::PopupFocusReason) || (reason == Qt::ActiveWindowFocusReason)) {
+            return QWidget::eventFilter(watched, event);
+        }
         for (std::size_t i = 0; i < _fields.size(); ++i) {
             if (_fields[i].widget.data() == watched) {
                 const Field field = _fields[i];
@@ -839,7 +833,7 @@ KnobEditProperties::onTypeChanged(int index)
         return;
     }
     int dimension = entry->dimension;
-    if (isNumeric(knob->typeName()) && isNumeric(entry->typeName)) {
+    if (isNumericType(knob->typeName()) && isNumericType(entry->typeName)) {
         const std::vector<int> choices = dimensionChoices(entry->typeName);
         dimension = std::max(choices.front(), std::min(choices.back(), knob->getDimension()));
     }

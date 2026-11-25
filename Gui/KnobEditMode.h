@@ -46,6 +46,8 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/GuiFwd.h"
 
 #define NATRON_USER_KNOBS_MIME_TYPE "application/x-natron-user-knobs"
+// Present when the clipboard holds whole pages, which paste as new pages wherever they go.
+#define NATRON_USER_PAGES_MIME_TYPE "application/x-natron-user-pages"
 
 NATRON_NAMESPACE_ENTER
 
@@ -93,6 +95,12 @@ public:
      **/
     static bool isAnyPanelEditing();
 
+    /**
+     * @brief Whether knob is a user knob, group or page of the holder that the editor may select,
+     * move or delete: not a built-in or pinned knob.
+     **/
+    bool isEditable(const KnobIPtr& knob) const;
+
     KnobIPtr getSelectedKnob() const;
 
     /**
@@ -137,7 +145,11 @@ public:
      **/
     bool deleteKnob(const KnobIPtr& knob);
 
-    void showContextMenu(const QPoint& globalPos);
+    /**
+     * @brief Shows the editor's context menu. Off a user page, Copy, Duplicate and Delete are
+     * disabled.
+     **/
+    void showContextMenu(const QPoint& globalPos, bool onUserPage = true);
 
     /**
      * @brief The data of an editor drag started from this mode's panel: kind is "new" for a

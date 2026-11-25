@@ -44,6 +44,7 @@
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Geometry/GeoInterpolate.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
+#include "Engine/Nodes/InputConnectSwitch.h"
 #include "Engine/Nodes/Scene/GeoCameraProjection.h"
 #include "Engine/Project.h"
 #include "Engine/ScenePayload.h"
@@ -249,6 +250,19 @@ projectGeoUVs(GeoDetailBuilder& detail,
                 uvs.emplace_back(onPoints ? point : vertex, params.projection == eGeoUVProjectionCamera ? cameraUV(p, params.cameraWorldToFrame) : planarUV(p, params));
             }
         });
+        if (onPoints && geoSplitPattern(params.group).empty()) {
+            GeoElementMask used((std::size_t)d.pointMap().offsetSize(), 0);
+            d.vertexMap().forEachLive([&](GeoIndex, GeoOffset vertex) {
+                used[(std::size_t)d.vertexPoint(vertex)] = 1;
+            });
+            d.pointMap().forEachLive([&](GeoIndex, GeoOffset point) {
+                if (used[(std::size_t)point]) {
+                    return;
+                }
+                const Vec3 p = d.pointPosition(point);
+                uvs.emplace_back(point, params.projection == eGeoUVProjectionCamera ? cameraUV(p, params.cameraWorldToFrame) : planarUV(p, params));
+            });
+        }
     }
     if (uvs.empty()) {
         return true;
@@ -347,12 +361,12 @@ GeoUVProject::initializeKnobs()
 
     _group = createString(tr("Group"), kGeoUVProjectParamGroup,
                           tr("The primitives whose vertices get texture coordinates, as a group pattern: group names, "
-                             "element numbers, @attribute comparisons, ! and ^. Empty projects onto every primitive."),
+                             "element numbers, @attribute comparisons, ! and ^. Empty projects onto every primitive, and with Attribute Class Point onto every point."),
                           std::string());
 
     KnobChoicePtr projection = createKnob<KnobChoice>(tr("Projection").toStdString());
     projection->setName(kGeoUVProjectParamProjection);
-    projection->setHintToolTip(tr("How points are mapped to texture coordinates.").toStdString());
+    projection->setHintToolTip(tr("How points are mapped to texture coordinates. Connecting the Camera input switches it to Camera.").toStdString());
     {
         std::vector<ChoiceOption> options;
         options.push_back(ChoiceOption("planar", tr("Planar").toStdString(),
@@ -456,9 +470,10 @@ GeoUVProject::initializeKnobs()
                                           "name is removed, its values kept on the vertices outside the Group.")
                                            .toStdString()));
         options.push_back(ChoiceOption("point", tr("Point").toStdString(),
-                                       tr("On the points the primitives in the Group use, once per point. A vertex "
-                                          "attribute of the same name is removed; when the point attribute is new, "
-                                          "the points not written take the value of their first vertex.")
+                                       tr("On the points the primitives in the Group use, once per point, and with "
+                                          "an empty Group on the points no primitive uses too, such as a scattered "
+                                          "point cloud. A vertex attribute of the same name is removed; when the point "
+                                          "attribute is new, the points not written take the value of their first vertex.")
                                            .toStdString()));
         attributeClass->populateChoices(options);
     }
@@ -499,6 +514,13 @@ void
 GeoUVProject::onKnobsLoaded()
 {
     updateEnabled();
+}
+
+void
+GeoUVProject::onInputChanged(int inputNo)
+{
+    NativeEffectBase::onInputChanged(inputNo);
+    switchChoiceOnInputConnected(*this, inputNo, 1, _projection.lock(), (int)eGeoUVProjectionCamera);
 }
 
 bool

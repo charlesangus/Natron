@@ -34,6 +34,8 @@
 #include <gtest/gtest.h>
 
 #include "Engine/GeoDetail.h"
+#include "Engine/Nodes/Geometry/GeoDisplace.h"
+#include "Engine/Nodes/Geometry/GeoScatter.h"
 #include "Engine/Nodes/Geometry/GeoUVProject.h"
 
 NATRON_NAMESPACE_USING
@@ -280,4 +282,60 @@ TEST(GeoUVProject, VertexClassReplacesThePointAttribute)
         EXPECT_NEAR(0.5 + p[0], u, 1e-6);
         EXPECT_NEAR(0.5 + p[1], v, 1e-6);
     });
+}
+
+TEST(GeoUVProject, PointClassWritesScatteredPointsADisplaceCanSample)
+{
+    GeoScatterParams scatterParams;
+    scatterParams.count = 200;
+    scatterParams.transferN = true;
+    GeoDetailBuilder scattered;
+    std::string error;
+    ASSERT_TRUE(scatterGeometry(xyGrid(2, 0., 1., 0., 1.), scatterParams, scattered, &error)) << error;
+    const GeoDetail points = scattered.finish();
+    ASSERT_EQ(200, points.pointCount());
+    ASSERT_EQ(0, points.primitiveCount());
+
+    GeoUVProjectParams params;
+    params.attributeClass = eGeoAttribClassPoint;
+    const GeoDetail out = project(points, params);
+    const GeoAttribute* uv = out.findAttribute(eGeoAttribClassPoint, "uv");
+    ASSERT_NE(nullptr, uv);
+    out.pointMap().forEachLive([&](GeoIndex, GeoOffset point) {
+        const std::array<double, 3> p = out.pointPosition(point);
+        EXPECT_NEAR(0.5 + p[0], uv->get<float>((std::size_t)point, 0), 1e-6);
+        EXPECT_NEAR(0.5 + p[1], uv->get<float>((std::size_t)point, 1), 1e-6);
+    });
+
+    GeoDisplaceParams displaceParams;
+    displaceParams.displaceBy = eGeoDisplaceByImage;
+    GeoDisplaceImage image;
+    image.width = 4;
+    image.height = 4;
+    image.values.assign(16, 0.5f);
+    GeoDetailBuilder displaced { GeoDetail(out) };
+    EXPECT_TRUE(displaceGeometry(displaced, displaceParams, &image, &error)) << error;
+}
+
+TEST(GeoUVProject, PointClassWritesFreePointsOnlyWithAnEmptyGroup)
+{
+    GeoDetailBuilder b { xyGrid(1, 0., 1., 0., 1.) };
+    const GeoOffset free = b.appendPoints(1);
+    b.setPointPosition(free, 0.25, -0.25, 0.);
+    const GeoDetail input = b.finish();
+
+    GeoUVProjectParams params;
+    params.attributeClass = eGeoAttribClassPoint;
+    const GeoDetail all = project(input, params);
+    const GeoAttribute* uv = all.findAttribute(eGeoAttribClassPoint, "uv");
+    ASSERT_NE(nullptr, uv);
+    EXPECT_NEAR(0.75, uv->get<float>((std::size_t)free, 0), 1e-6);
+    EXPECT_NEAR(0.25, uv->get<float>((std::size_t)free, 1), 1e-6);
+
+    params.group = "left";
+    params.invertU = true;
+    const GeoDetail grouped = project(all, params);
+    const GeoAttribute* kept = grouped.findAttribute(eGeoAttribClassPoint, "uv");
+    ASSERT_NE(nullptr, kept);
+    EXPECT_NEAR(0.75, kept->get<float>((std::size_t)free, 0), 1e-6);
 }

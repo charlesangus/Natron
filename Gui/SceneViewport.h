@@ -50,6 +50,8 @@
 #include "Engine/SceneLoadSet.h"
 #include "Engine/ScenePayload.h"
 
+#include "Gui/StaleCueLook.h"
+
 // Free of USD: the viewer tab includes it, and USD's headers need the full Python API. Everything
 // that touches pxr lives in SceneViewport.cpp.
 
@@ -57,6 +59,7 @@ class QContextMenuEvent;
 class QKeyEvent;
 class QMouseEvent;
 class QOpenGLContextGroup;
+class QPainter;
 class QResizeEvent;
 class QWheelEvent;
 
@@ -1120,6 +1123,15 @@ public:
     // Shows message instead of a scene.
     void setError(const QString& message);
 
+    // The 2D viewer's stale cue, drawn over the view the same way.
+    void setStaleCue(StaleCueStyleEnum style, bool visible);
+
+    bool isStaleCueVisible() const;
+
+    // Whether what is drawn is behind the latest scene asked for: a sync, its take-in or the frame
+    // after an edit is still to come. Navigation alone never makes the view out of date.
+    bool isOutOfDate() const;
+
     void clearScene();
 
     const QString& getError() const;
@@ -1207,6 +1219,21 @@ public:
 
     // Whether the view shows geometry, where components can be picked, rather than a scene.
     void setGeometryContext(bool geometry);
+
+    bool isGeometryContext() const;
+
+    /**
+     * @brief Creates a node from the selection, through the selection actions: from the prims at
+     * paths, or in the geometry context from the picked components, or with prims picked (Objects)
+     * from the primitives the prims at paths are made of.
+     **/
+    void createFromSelection(const QStringList& paths);
+
+    /**
+     * @brief createFromSelection() from the prims at paths whatever is picked, as from a list of
+     * prims: in the geometry context, the primitives they are made of.
+     **/
+    void createFromPrims(const QStringList& paths);
 
     bool componentsPickable() const;
 
@@ -1514,6 +1541,9 @@ Q_SIGNALS:
     // First thing in the destructor, with the renderer still whole (main thread).
     void closing();
 
+    // isOutOfDate() changed (main thread).
+    void outOfDateChanged(bool outOfDate);
+
 protected:
     void initializeGL() override;
     void resizeGL(int w, int h) override;
@@ -1553,9 +1583,6 @@ private:
      * group pattern, empty for none) and natronGeoSelectionCount.
      **/
     void refreshComponentState();
-
-    // Hands paths, or in the geometry context the component selection, to the selection actions.
-    void createFromSelection(const QStringList& paths);
 
     // Maps the component selection onto the geometry last synced, for the engine to highlight.
     void refreshComponentHighlight();
@@ -1705,6 +1732,13 @@ private:
 
     // Draws the composing status over what the framebuffer has, or the background if it has no scene.
     void paintComposingStatus();
+
+    void paintStaleCue(QPainter& painter);
+
+    void publishGeoBounds();
+
+    // Emits outOfDateChanged() when isOutOfDate() has changed since the last call.
+    void publishOutOfDate();
 
     bool isComposing() const;
 

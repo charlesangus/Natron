@@ -51,6 +51,7 @@
 #include "Engine/Nodes/Generator/NoiseCore.h"
 #include "Engine/Nodes/Geometry/GeoInterpolate.h"
 #include "Engine/Nodes/Geometry/GeoNormals.h"
+#include "Engine/Nodes/InputConnectSwitch.h"
 #include "Engine/RectI.h"
 
 NATRON_NAMESPACE_ENTER
@@ -456,7 +457,7 @@ GeoDisplace::initializeKnobs()
         options.push_back(ChoiceOption("image", tr("Image").toStdString(),
                                        tr("The Image input, sampled at each point's texture coordinates over its format.").toStdString()));
         _displaceBy = createChoice(tr("Displace By"), kGeoDisplaceParamDisplaceBy,
-                                   tr("What sets how far each point moves."), options, (int)eGeoDisplaceByNoise);
+                                   tr("What sets how far each point moves. Connecting the Image input switches it to Image."), options, (int)eGeoDisplaceByNoise);
     }
     _amplitude = createDouble(tr("Amplitude"), kGeoDisplaceParamAmplitude,
                               tr("The distance a value of 1 moves a point along its normal; negative values push inwards."),
@@ -593,6 +594,13 @@ void
 GeoDisplace::onKnobsLoaded()
 {
     updateEnabled();
+}
+
+void
+GeoDisplace::onInputChanged(int inputNo)
+{
+    NativeEffectBase::onInputChanged(inputNo);
+    switchChoiceOnInputConnected(*this, inputNo, 1, _displaceBy.lock(), (int)eGeoDisplaceByImage);
 }
 
 bool

@@ -89,7 +89,8 @@ struct GeoUVProjectParams {
  * @brief Writes the attribute params.uvAttribute (float32 x3, w = 0, unless one with two or more
  * numeric components exists, whose first two are overwritten) of class params.attributeClass on
  * the vertices of the primitives params.group selects (a group pattern, see geoSelectElements()),
- * or on the points those vertices use.
+ * or on the points those vertices use. Writing points with a blank group also writes the points no
+ * primitive uses, so a point cloud gets uv too.
  *
  * Both projections map a position to one uv, so every vertex of a point gets the same uv and the
  * point class loses nothing: a point shared by several selected vertices is written once, with the
@@ -153,6 +154,7 @@ private:
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void initializeKnobs() OVERRIDE FINAL;
     virtual void onKnobsLoaded() OVERRIDE FINAL;
+    virtual void onInputChanged(int inputNo) OVERRIDE FINAL;
     virtual bool knobChanged(KnobI* k,
                              ValueChangedReasonEnum reason,
                              ViewSpec view,

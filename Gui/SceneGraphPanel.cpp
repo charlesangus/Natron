@@ -73,6 +73,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Geometry/GeoViewerLayer.h"
 #include "Engine/Nodes/Scene/SceneDrawStates.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
@@ -618,7 +619,15 @@ struct SceneGraphPanel::Implementation {
         if (action == 1) {
             SceneSelectionActions::setOnCurrentNode(gui, paths);
         } else if (action == 2) {
-            SceneSelectionActions::createFromSelection(gui, panel->getShownNode(), paths);
+            const NodePtr shown = panel->getShownNode();
+            if (shown && viewer && viewport && viewport->isGeometryContext() && (shown == viewer->getSceneViewedNode())) {
+                // The rows are the prims the viewer made of the geometry.
+                viewport->createFromPrims(paths);
+            } else if (shown && (shown->getEffectiveOutputDataKind() == eDataKindGeometry)) {
+                SceneSelectionActions::createFromComponents(gui, shown, GeoDetailConstPtr(), GeoComponentSelection());
+            } else {
+                SceneSelectionActions::createFromSelection(gui, shown, paths);
+            }
         }
     }
 

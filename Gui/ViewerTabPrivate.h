@@ -181,6 +181,10 @@ struct ViewerTabPrivate
     QTimer mustSetUpPlaybackButtonsTimer;
 
     ViewerStaleCueTiming staleCueTiming;
+    // The inputs applyStaleCueInput() combines: the viewer node's last staleChanged() and the 3D
+    // view's last outOfDateChanged().
+    bool viewerNodeStale = false;
+    bool sceneOutOfDate = false;
     // Fires at the timing's next deadline; never runs while the stale cue style is Off.
     QTimer staleCueTimer;
     QElapsedTimer staleCueClock;

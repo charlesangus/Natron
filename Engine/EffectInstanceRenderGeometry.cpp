@@ -322,6 +322,9 @@ EffectInstance::evaluateGeometry(const EvaluateGeometryArgs& args,
         frameArgs->isSequentialRender = false;
         frameArgs->isRenderResponseToUserInteraction = true;
         frameArgs->isFrameVaryingOrAnimated = isFrameVaryingOrAnimated_Recursive();
+        // The viewer's scene path sets up no frame args, but its render is on the thread, and is
+        // the one an edit aborts: nodes reading the abort flag from these args must see it.
+        adoptThreadAbortState(frameArgs.get());
         tls->frameArgs.push_back(frameArgs);
         fallbackFrameArgs.reset(new ScopedGeometryFallbackFrameArgs(tls));
     } else {

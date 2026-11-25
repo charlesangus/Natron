@@ -23,6 +23,7 @@ Usage: Tests/gui/run-gui-test.sh Tests/gui/m402_geo_foreach.py
 """
 import os
 import sys
+import threading
 import time
 import traceback
 
@@ -141,15 +142,45 @@ try:
                 hi = p[0] if hi is None else max(hi, p[0])
         return faces, points, lo, hi
 
-    gaps = {"last": None, "max_ms": 0.0, "ticks": 0}
+    gaps = {"last": None, "max_ms": 0.0, "ticks": 0, "last_wall_ms": 0.0, "sched": None, "worst": ""}
     heartbeat = QTimer()
     heartbeat.setInterval(5)
+    # Run time against run-queue wait of the GUI thread (/proc schedstat): a stall that is mostly
+    # wait is the thread starved of a CPU, one that is mostly run is work done on it.
+    schedstat = "/proc/self/task/%d/schedstat" % threading.get_native_id()
+
+    def sched():
+        try:
+            with open(schedstat) as f:
+                run_ns, wait_ns = f.read().split()[:2]
+            return int(run_ns) / 1e6, int(wait_ns) / 1e6
+        except (OSError, ValueError):
+            return None
+
+    def storm_ms_since(wall_ms):
+        v = view()
+        frames = (v.property("natronSceneStormFrames") or []) if v is not None else []
+        return sum(float(f[1]) for f in frames if float(f[0]) >= wall_ms)
 
     def tick():
         now = time.monotonic()
+        now_wall_ms = time.time() * 1000.0
+        stat = sched()
         if gaps["last"] is not None:
-            gaps["max_ms"] = max(gaps["max_ms"], (now - gaps["last"]) * 1000.0)
+            gap = (now - gaps["last"]) * 1000.0
+            if gap > gaps["max_ms"]:
+                gaps["max_ms"] = gap
+                split = ""
+                if stat is not None and gaps["sched"] is not None:
+                    split = ", GUI thread ran %.1f ms and waited for a CPU %.1f ms" % (
+                        stat[0] - gaps["sched"][0], stat[1] - gaps["sched"][1])
+                gaps["worst"] = "%.1f ms at +%.2f s: Storm drew %.1f ms in it%s" % (
+                    gap, now - gaps["started"], storm_ms_since(gaps["last_wall_ms"]), split)
+        else:
+            gaps["started"] = now
         gaps["last"] = now
+        gaps["last_wall_ms"] = now_wall_ms
+        gaps["sched"] = stat
         gaps["ticks"] += 1
 
     heartbeat.timeout.connect(tick)
@@ -203,6 +234,7 @@ try:
         heartbeat.stop()
         report("NOTE short loop shown %.2f s after the edit; longest heartbeat gap %.1f ms over %d ticks"
                % (took, gaps["max_ms"], gaps["ticks"]))
+        report("NOTE longest heartbeat gap %s" % gaps["worst"])
         check(gaps["max_ms"] < MAX_GAP_MS,
               "the GUI thread never stalls for %g ms or more (%.1f ms)" % (MAX_GAP_MS, gaps["max_ms"]))
         # The probe below renders on the main thread with no timeout, behind a long loop that may still be cooking.

@@ -909,6 +909,22 @@ EffectInstance::aborted() const
                                    treeRoot);
 } // EffectInstance::aborted
 
+void
+adoptThreadAbortState(ParallelRenderArgs* args)
+{
+    AbortableThread* isAbortableThread = dynamic_cast<AbortableThread*>(QThread::currentThread());
+    bool isRenderUserInteraction = false;
+    AbortableRenderInfoPtr abortInfo;
+    EffectInstancePtr treeRoot;
+
+    if (!args || !isAbortableThread || !isAbortableThread->getAbortInfo(&isRenderUserInteraction, &abortInfo, &treeRoot) || !abortInfo) {
+        return;
+    }
+    args->isRenderResponseToUserInteraction = isRenderUserInteraction;
+    args->abortInfo = abortInfo;
+    args->treeRoot = treeRoot ? treeRoot->getNode() : NodePtr();
+}
+
 bool
 EffectInstance::abortIfSuperseded() const
 {

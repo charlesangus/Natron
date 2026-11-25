@@ -654,6 +654,7 @@ future core work has solid ground to build on.
 | M595 | Native EdgeDetail | todo | M238 |  | E3 | F39 | | [M595-native-edgedetail.md](PLAN/MILESTONES/M595-native-edgedetail.md) |
 | M596 | Remove Old User Knob Dialogs | todo | M247 |  | E10 | | | [M596-remove-old-user-knob-dialogs.md](PLAN/MILESTONES/M596-remove-old-user-knob-dialogs.md) |
 | M597 | Curve Editor Expanded Knob Rows | todo | - |  | E10 | | | [M597-curve-editor-expanded-knob-rows.md](PLAN/MILESTONES/M597-curve-editor-expanded-knob-rows.md) |
+| M598 | Progressive Render GIL Flake | todo | - |  | E14 | | | [M598-progressive-render-gil-flake.md](PLAN/MILESTONES/M598-progressive-render-gil-flake.md) |
 
 # Epics
 

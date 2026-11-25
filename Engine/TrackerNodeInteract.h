@@ -380,7 +380,6 @@ public:
     double selectedMarkerScale;
     ImageWPtr selectedMarkerImg;
     bool isTracking;
-    OverlayDrawListCache markersOverlay;
     OverlayDrawListCache addTrackOverlay;
 
     TrackerNodeInteract(TrackerNodePrivate* p);

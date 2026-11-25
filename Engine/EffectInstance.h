@@ -86,6 +86,8 @@
 
 NATRON_NAMESPACE_ENTER
 
+class ContentHasher;
+
 /**
  * @brief Which layer/channel knob, if any, the host creates on a node's main page, and
  * where that knob's layer list comes from.
@@ -2864,7 +2866,8 @@ public:
     /**
      * @brief Returns the overlay draw list, rebuilding it with buildOverlay() unless the node caches
      * its list (isOverlayDrawListCached()) and the content version, time, view, render scale,
-     * viewer and zoom bucket are those of the last build. The list is kept for the pen's handle hit-tests
+     * viewer, passive state, zoom bucket and appendOverlayDrawListSignature() are those of the last
+     * build. The list is kept for the pen's handle hit-tests
      * until the next rebuild. Main thread only.
      **/
     const OverlayDrawList& buildOverlay_public(double time, const RenderScale& renderScale, ViewIdx view);
@@ -3026,8 +3029,8 @@ public:
 
     /**
      * @brief Return true when buildOverlay() draws only from the knobs, the time, the view, the
-     * render scale and state the node reports through invalidateOverlayDrawList(), so that the
-     * list can be reused until one of them changes. Sizes in screen pixels belong in the list's
+     * render scale, what appendOverlayDrawListSignature() digests and state the node reports
+     * through invalidateOverlayDrawList(), so that the list can be reused until one of them changes. Sizes in screen pixels belong in the list's
      * screen-sized primitives, since the list is reused across zooms within a bucket.
      **/
     virtual bool isOverlayDrawListCached() const
@@ -3604,12 +3607,25 @@ protected:
     /**
      * @brief Fills list, which arrives empty, with what to draw over the viewer. Called on the
      * main thread for each viewer redraw while the overlay shows; it must not render or change
-     * knobs. Only called when hasOverlayDrawList() returns true.
+     * knobs. Only called when hasOverlayDrawList() returns true. The list is drawn before
+     * drawOverlay(), so that raw OpenGL drawing there lands over it.
      **/
     virtual void buildOverlay(double /*time*/,
                               const RenderScale& /*renderScale*/,
                               ViewIdx /*view*/,
                               OverlayDrawList* /*list*/)
+    {
+    }
+
+    /**
+     * @brief Appends to hasher what a cached buildOverlay() reads that neither a knob of this
+     * node nor invalidateOverlayDrawList() reports, such as items owned outside the knobs or
+     * the interact's own state. Called right before each buildOverlay(), on every redraw of a
+     * cached list, so it must cost far less than the build.
+     **/
+    virtual void appendOverlayDrawListSignature(double /*time*/,
+                                                ViewIdx /*view*/,
+                                                ContentHasher* /*hasher*/)
     {
     }
 

@@ -3,19 +3,27 @@ interact, each a 256 x 256 crop of the viewer at 100% around a fixed canonical a
 with a reference crop under Tests/gui/references/m434/.
 
 Scenes (M434_PARITY_SCENES picks a comma-separated subset):
-    roto        a feathered Roto Bezier with one point selected, so its tangents draw
-    rotopaint   a RotoPaint brush stroke with the brush cursor beside it
-    tracker     a Tracker with two tracks
-    splinewarp  a SplineWarp source curve linked to a destination curve
-    transform   a Transform's centre, rotation and scale handles
-    cornerpin   a CornerPin's four "to" corners
-    position    a Position's translate handle
-    rectangle   a Rectangle's box and its handles
+    roto              a feathered Roto Bezier with one point selected, so its tangents draw
+    rotodrag          the same Bezier with a point held mid-drag
+    rotopaint         a RotoPaint brush stroke with the brush cursor beside it
+    tracker           a Tracker with two tracks
+    trackerselected   the same Tracker with one track clicked, so its pattern and search boxes draw
+    splinewarp        a SplineWarp source curve linked to a destination curve
+    transform         a Transform's centre, rotation and scale handles
+    transformhover    the same Transform with the cursor over its centre
+    transformdrag     the same Transform with its centre held mid-drag
+    cornerpin         a CornerPin's four "to" corners
+    position          a Position's translate handle
+    rectangle         a Rectangle's box and its handles
+    ramp              a Ramp's two points over its own gradient
 
-With M434_PARITY_RECORD=1 the crops are written as the references instead of compared. A pixel
-passes when some reference pixel within PARITY_RADIUS of it is within PARITY_TOLERANCE on every
-channel, which absorbs line antialiasing that lands one pixel over; a scene passes when at most
-PARITY_MAX_BAD of its pixels fail. A failing scene leaves its crop and a diff image in the output.
+Every scene but the ramp sits on a mid-grey Constant, so the black shadows under the interacts
+show. With M434_PARITY_RECORD=1 the crops are written as the references instead of compared. A
+pixel passes when some reference pixel within PARITY_RADIUS of it (0 by default: the same pixel)
+is within PARITY_TOLERANCE on every channel. The overlay's own pixels are those that change when
+the node's panel closes, and a scene passes when at most PARITY_MAX_BAD of that count fail, so a
+thin interact gets no more slack than a large one. A failing scene leaves its crop and a diff
+image in the output.
 
 Run in the natron-dev container:
     docker exec natron-dev bash -c 'cd /home/bosley/git/Natron && \\
@@ -36,10 +44,11 @@ SETTLE_MS = 500
 RENDER_MS = 1500
 CROP = 256
 PARITY_TOLERANCE = int(os.environ.get("M434_PARITY_TOLERANCE", "40"))
-PARITY_RADIUS = 1
-PARITY_MAX_BAD = float(os.environ.get("M434_PARITY_MAX_BAD", "0.005"))
+PARITY_RADIUS = int(os.environ.get("M434_PARITY_RADIUS", "0"))
+PARITY_MAX_BAD = float(os.environ.get("M434_PARITY_MAX_BAD", "0.03"))
 RECORD = os.environ.get("M434_PARITY_RECORD", "") == "1"
-ALL_SCENES = ("roto", "rotopaint", "tracker", "splinewarp", "transform", "cornerpin", "position", "rectangle")
+ALL_SCENES = ("roto", "rotodrag", "rotopaint", "tracker", "trackerselected", "splinewarp", "transform",
+              "transformhover", "transformdrag", "cornerpin", "position", "rectangle", "ramp")
 SCENES = [s.strip() for s in os.environ.get("M434_PARITY_SCENES", ",".join(ALL_SCENES)).split(",") if s.strip()]
 
 try:
@@ -126,6 +135,24 @@ try:
         mouse(QEvent.MouseButtonPress, wx, wy, Qt.LeftButton, Qt.LeftButton)
         mouse(QEvent.MouseButtonRelease, wx, wy, Qt.LeftButton, Qt.NoButton)
 
+    def hover_canonical(x, y):
+        wx, wy = to_widget(x, y)
+        mouse(QEvent.MouseMove, wx, wy, Qt.NoButton, Qt.NoButton)
+        held["keep_cursor"] = True
+
+    def drag_canonical(x, y, dx, dy):
+        """Presses at (x, y) and moves by (dx, dy) without releasing; the release runs after the crop."""
+        wx, wy = to_widget(x, y)
+        ex, ey = to_widget(x + dx, y + dy)
+        mouse(QEvent.MouseMove, wx, wy, Qt.NoButton, Qt.NoButton)
+        mouse(QEvent.MouseButtonPress, wx, wy, Qt.LeftButton, Qt.LeftButton)
+        moves = 8
+        for i in range(1, moves + 1):
+            f = i / float(moves)
+            mouse(QEvent.MouseMove, wx + (ex - wx) * f, wy + (ey - wy) * f, Qt.NoButton, Qt.LeftButton)
+        held["keep_cursor"] = True
+        held["after_crop"] = lambda: mouse(QEvent.MouseButtonRelease, ex, ey, Qt.LeftButton, Qt.NoButton)
+
     def park_cursor():
         """Off the crop, so no handle is hovered."""
         gl = held["gl"]
@@ -148,9 +175,11 @@ try:
         gt.require(p is not None, "%s has a parameter %r" % (owner, name))
         return p
 
+    GREY = 0.5
+
     def background():
         constant = create("Constant", 0, -200, panel=False)
-        param(constant, "color").set(0.0, 0.0, 0.0, 1.0)
+        param(constant, "color").set(GREY, GREY, GREY, 1.0)
         return constant
 
     def show(node):
@@ -216,6 +245,9 @@ try:
                 out.append((raw[i + 2], raw[i + 1], raw[i]))
         return out
 
+    def close(p, q, tol):
+        return abs(p[0] - q[0]) <= tol and abs(p[1] - q[1]) <= tol and abs(p[2] - q[2]) <= tol
+
     def compare(actual, reference):
         """(bad pixel count, diff image): red where a pixel has no close reference pixel nearby."""
         w, h = actual.width(), actual.height()
@@ -230,8 +262,7 @@ try:
                 ok = False
                 for ny in range(max(0, y - PARITY_RADIUS), min(h, y + PARITY_RADIUS + 1)):
                     for nx in range(max(0, x - PARITY_RADIUS), min(w, x + PARITY_RADIUS + 1)):
-                        q = r[ny * w + nx]
-                        if abs(p[0] - q[0]) <= tol and abs(p[1] - q[1]) <= tol and abs(p[2] - q[2]) <= tol:
+                        if close(p, r[ny * w + nx], tol):
                             ok = True
                             break
                     if ok:
@@ -244,10 +275,25 @@ try:
                     diff.setPixelColor(x, y, QColor(level, level, level))
         return bad, diff
 
+    def overlay_pixels(with_overlay, without_overlay):
+        a, b = pixels(with_overlay), pixels(without_overlay)
+        return sum(1 for p, q in zip(a, b) if not close(p, q, PARITY_TOLERANCE))
+
     def judge(scene):
         img = crop()
         gt.require(not img.isNull() and img.width() == CROP and img.height() == CROP,
                    "%s: read a %d px crop from the screen" % (scene, CROP))
+        after_crop = held.pop("after_crop", None)
+        if after_crop is not None:
+            after_crop()
+            yield ("sleep", SETTLE_MS)
+        # The overlays draw only for nodes with an open panel, so this crop is the image alone.
+        gt.close_all_panels()
+        park_cursor()
+        yield ("sleep", SETTLE_MS)
+        base = crop()
+        drawn = overlay_pixels(img, base)
+        check(drawn > 0, "%s: the overlay draws over the image (%d pixels)" % (scene, drawn))
         path = os.path.join(REFERENCES, scene + ".png")
         if RECORD:
             if not os.path.isdir(REFERENCES):
@@ -264,17 +310,17 @@ try:
             check(False, "%s: the reference is %d x %d, not %d px" % (scene, reference.width(), reference.height(), CROP))
             return
         bad, diff = compare(img, reference)
-        allowed = int(PARITY_MAX_BAD * CROP * CROP)
+        allowed = int(PARITY_MAX_BAD * drawn)
         ok = bad <= allowed
         if not ok:
             img.save(os.path.join(gt.OUT, "m434-%s-actual.png" % scene))
             diff.save(os.path.join(gt.OUT, "m434-%s-diff.png" % scene))
-        check(ok, "%s: %d of %d pixels differ from the reference (at most %d; tolerance %d within %d px)"
-              % (scene, bad, CROP * CROP, allowed, PARITY_TOLERANCE, PARITY_RADIUS))
+        check(ok, "%s: %d pixels differ from the reference, at most %d allowed (%g of the %d overlay pixels;"
+              " tolerance %d within %d px)" % (scene, bad, allowed, PARITY_MAX_BAD, drawn, PARITY_TOLERANCE, PARITY_RADIUS))
 
     # ---- scenes ----------------------------------------------------------------------------
 
-    def scene_roto(t):
+    def roto_curve(t):
         bg = background()
         node = create("Roto", 0, 0)
         gt.require(node.connectInput(0, bg), "the Constant feeds the Roto")
@@ -289,10 +335,24 @@ try:
         QApplication.sendEvent(held["gl"], QKeyEvent(QEvent.KeyPress, Qt.Key_Q, Qt.NoModifier))
         QApplication.sendEvent(held["gl"], QKeyEvent(QEvent.KeyRelease, Qt.Key_Q, Qt.NoModifier))
         click_canonical(pts[1][0], pts[1][1])
+        held["roto_points"] = pts
         yield ("sleep", SETTLE_MS)
 
+    def scene_roto(t):
+        for cmd in roto_curve(t):
+            yield cmd
+
+    def scene_rotodrag(t):
+        for cmd in roto_curve(t):
+            yield cmd
+        pts = held.pop("roto_points")
+        drag_canonical(pts[1][0], pts[1][1], 18.0, 12.0)
+        yield ("sleep", RENDER_MS)
+
     def scene_rotopaint(t):
+        bg = background()
         node = create("RotoPaint", 0, 0)
+        gt.require(node.connectInput(0, bg), "the Constant feeds the RotoPaint")
         gt.require(node.getRotoContext() is not None, "the RotoPaint node has a roto context")
         param(node, "sizeSpinbox").setValue(12.0)
         show(node)
@@ -311,6 +371,7 @@ try:
         yield ("sleep", RENDER_MS)
         cx, cy = to_widget(*anchored(40.0, -70.0))
         mouse(QEvent.MouseMove, cx, cy, Qt.NoButton, Qt.NoButton)
+        held["keep_cursor"] = True
         yield ("sleep", SETTLE_MS)
 
     def scene_tracker(t):
@@ -328,6 +389,12 @@ try:
             items.extend((track, centre))
         show(node)
         yield ("sleep", RENDER_MS)
+
+    def scene_trackerselected(t):
+        for cmd in scene_tracker(t):
+            yield cmd
+        click_canonical(*anchored(-60.0, 0.0))
+        yield ("sleep", SETTLE_MS)
 
     def scene_splinewarp(t):
         bg = background()
@@ -355,6 +422,18 @@ try:
         show(node)
         yield ("sleep", RENDER_MS)
 
+    def scene_transformhover(t):
+        for cmd in scene_transform(t):
+            yield cmd
+        hover_canonical(*held["anchor"])
+        yield ("sleep", SETTLE_MS)
+
+    def scene_transformdrag(t):
+        for cmd in scene_transform(t):
+            yield cmd
+        drag_canonical(held["anchor"][0], held["anchor"][1], 25.0, 15.0)
+        yield ("sleep", RENDER_MS)
+
     def scene_cornerpin(t):
         bg = background()
         node = create("CornerPin", 0, 0)
@@ -375,8 +454,8 @@ try:
 
     def scene_rectangle(t):
         node = create("Rectangle", 0, 0)
-        param(node, "color0").set(0.0, 0.0, 0.0, 1.0)
-        param(node, "color1").set(0.0, 0.0, 0.0, 1.0)
+        param(node, "color0").set(GREY, GREY, GREY, 1.0)
+        param(node, "color1").set(GREY, GREY, GREY, 1.0)
         extent = param(node, "extent")
         options = [str(o).lower().replace(" ", "") for o in extent.getOptions()]
         index = next((i for i, o in enumerate(options) if o == "size"), -1)
@@ -387,10 +466,19 @@ try:
         show(node)
         yield ("sleep", RENDER_MS)
 
+    def scene_ramp(t):
+        node = create("Ramp", 0, 0)
+        param(node, "point0").set(*anchored(-80.0, -50.0))
+        param(node, "point1").set(*anchored(80.0, 50.0))
+        show(node)
+        yield ("sleep", RENDER_MS)
+
     SCENE_STEPS = {
-        "roto": scene_roto, "rotopaint": scene_rotopaint, "tracker": scene_tracker,
-        "splinewarp": scene_splinewarp, "transform": scene_transform, "cornerpin": scene_cornerpin,
-        "position": scene_position, "rectangle": scene_rectangle,
+        "roto": scene_roto, "rotodrag": scene_rotodrag, "rotopaint": scene_rotopaint,
+        "tracker": scene_tracker, "trackerselected": scene_trackerselected, "splinewarp": scene_splinewarp,
+        "transform": scene_transform, "transformhover": scene_transformhover,
+        "transformdrag": scene_transformdrag, "cornerpin": scene_cornerpin, "position": scene_position,
+        "rectangle": scene_rectangle, "ramp": scene_ramp,
     }
 
     # ---- steps -----------------------------------------------------------------------------
@@ -445,11 +533,13 @@ try:
             park_cursor()
             for cmd in SCENE_STEPS[scene](t):
                 yield cmd
-            if scene != "rotopaint":
+            if not held.pop("keep_cursor", False):
                 park_cursor()
             yield ("sleep", SETTLE_MS)
             gt.shot("m434-parity-%s.png" % scene)
-            judge(scene)
+            for cmd in judge(scene):
+                yield cmd
+            held.pop("roto_points", None)
             clear_scene()
             yield ("sleep", SETTLE_MS)
 

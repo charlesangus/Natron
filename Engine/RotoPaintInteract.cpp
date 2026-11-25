@@ -34,6 +34,7 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/Bezier.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/MergingEnum.h"
 #include "Engine/Node.h"
@@ -846,6 +847,31 @@ void
 RotoPaintInteract::drawPaintToolPreview()
 {
     drawStrokePreviews();
+}
+
+void
+RotoPaintInteract::appendPaintToolOverlaySignature(ContentHasher* hasher) const
+{
+    const bool brushCursor = p->isPaintByDefault && ((selectedRole == eRotoRoleMergeBrush) || (selectedRole == eRotoRolePaintBrush) || (selectedRole == eRotoRoleEffectBrush) || (selectedRole == eRotoRoleCloneBrush)) && (selectedTool != eRotoToolOpenBezier);
+    hasher->appendBool(brushCursor);
+    if (!brushCursor) {
+        return;
+    }
+    OverlaySupport* overlay = getHost()->getCurrentViewportForOverlays();
+    Point cursorPos;
+    overlay->getCursorPosition(cursorPos.x, cursorPos.y);
+    const bool inside = overlay->getViewportRect().contains(cursorPos.x, cursorPos.y);
+    hasher->appendBool(inside);
+    if (!inside) {
+        return;
+    }
+    hasher->appendDouble(sizeSpinbox.lock()->getValue());
+    hasher->appendDouble(opacitySpinbox.lock()->getValue());
+    const QPointF& ellipsePos = ((state == eEventStateDraggingBrushSize) || (state == eEventStateDraggingBrushOpacity)) ? mouseCenterOnSizeChange : lastMousePos;
+    hasher->appendDouble(ellipsePos.x());
+    hasher->appendDouble(ellipsePos.y());
+    hasher->appendDouble(cloneOffset.first);
+    hasher->appendDouble(cloneOffset.second);
 }
 
 void

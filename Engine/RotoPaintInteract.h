@@ -437,6 +437,7 @@ private:
     virtual void onToolSelected(const KnobButtonPtr& actionButton, RotoToolEnum tool) OVERRIDE FINAL;
     virtual void drawPaintToolPreview() OVERRIDE FINAL;
     virtual void buildPaintToolOverlay(OverlayDrawListPen& pen, const std::pair<double, double>& pixelScale) OVERRIDE FINAL;
+    virtual void appendPaintToolOverlaySignature(ContentHasher* hasher) const OVERRIDE FINAL;
     virtual void onPenDownStarted(PenType pen) OVERRIDE FINAL;
     virtual bool onPaintToolPenDown(double time, const QPointF& pos, double pressure, double timestamp) OVERRIDE FINAL;
     virtual bool setPaintToolCursor(bool* redraw) OVERRIDE FINAL;

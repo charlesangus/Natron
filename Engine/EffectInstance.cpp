@@ -52,6 +52,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/BlockingBackgroundRender.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/DiskCacheNode.h"
 #include "Engine/FrameRenderContext.h"
 #include "Engine/GPUContextPool.h"
@@ -4424,7 +4425,6 @@ EffectInstance::drawOverlay_public(double time,
 
     _imp->setDuringInteractAction(true);
     bool drawHostOverlay = shouldDrawHostOverlay();
-    drawOverlay(time, actualScale, view);
     if (hasOverlayDrawList() && _imp->overlaysViewport) {
         const OverlayDrawList& list = buildOverlay_public(time, actualScale, view);
         const OverlayDrawState state = getOverlayDrawState();
@@ -4436,6 +4436,7 @@ EffectInstance::drawOverlay_public(double time,
             _imp->overlaysViewport->drawOverlayDrawList(hover, state);
         }
     }
+    drawOverlay(time, actualScale, view);
     if (drawHostOverlay) {
         getNode()->drawHostOverlay(time, actualScale, view);
     }
@@ -4456,7 +4457,14 @@ EffectInstance::buildOverlay_public(double time,
     const int zoomX = overlayZoomBucket(pixelScaleX);
     const int zoomY = overlayZoomBucket(pixelScaleY);
     const bool cached = hasOverlayDrawList() && isOverlayDrawListCached();
-    const bool reuse = cached && _imp->overlayCacheValid && (_imp->overlayCachedVersion == version) && (_imp->overlayCachedTime == time) && (_imp->overlayCachedView == (int)view) && (_imp->overlayCachedMipmapLevel == renderScale.toMipmapLevel()) && (_imp->overlayCachedZoomX == zoomX) && (_imp->overlayCachedZoomY == zoomY) && (_imp->overlayCachedViewport == _imp->overlaysViewport);
+    U64 signature = 0;
+    if (cached) {
+        ContentHasher hasher;
+        appendOverlayDrawListSignature(time, view, &hasher);
+        signature = hasher.finalize();
+    }
+    const bool passive = _imp->drawingPassiveOverlay;
+    const bool reuse = cached && _imp->overlayCacheValid && (_imp->overlayCachedVersion == version) && (_imp->overlayCachedTime == time) && (_imp->overlayCachedView == (int)view) && (_imp->overlayCachedMipmapLevel == renderScale.toMipmapLevel()) && (_imp->overlayCachedZoomX == zoomX) && (_imp->overlayCachedZoomY == zoomY) && (_imp->overlayCachedViewport == _imp->overlaysViewport) && (_imp->overlayCachedPassive == passive) && (_imp->overlayCachedSignature == signature);
     if (!reuse) {
         _imp->overlayDrawList.clear();
         if (hasOverlayDrawList()) {
@@ -4471,6 +4479,8 @@ EffectInstance::buildOverlay_public(double time,
         _imp->overlayCachedZoomX = zoomX;
         _imp->overlayCachedZoomY = zoomY;
         _imp->overlayCachedViewport = _imp->overlaysViewport;
+        _imp->overlayCachedPassive = passive;
+        _imp->overlayCachedSignature = signature;
     }
     double x, y;
     if ((_imp->overlayHoveredHandle != OverlayDrawList::kNoHandle) && !_imp->overlayDrawList.getHandlePosition(_imp->overlayHoveredHandle, &x, &y)) {

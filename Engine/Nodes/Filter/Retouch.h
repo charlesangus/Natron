@@ -283,6 +283,18 @@ private:
                              bool originatedFromMainThread) OVERRIDE FINAL;
 
     virtual void drawOverlay(double time, const RenderScale& renderScale, ViewIdx view) OVERRIDE FINAL;
+    virtual bool hasOverlayDrawList() const OVERRIDE FINAL
+    {
+        return true;
+    }
+
+    virtual bool isOverlayDrawListCached() const OVERRIDE FINAL
+    {
+        return true;
+    }
+
+    virtual void appendOverlayDrawListSignature(double time, ViewIdx view, ContentHasher* hasher) OVERRIDE FINAL;
+    virtual void buildOverlay(double time, const RenderScale& renderScale, ViewIdx view, OverlayDrawList* list) OVERRIDE FINAL;
     virtual bool onOverlayPenDown(double time,
                                   const RenderScale& renderScale,
                                   ViewIdx view,

@@ -26,6 +26,7 @@
 #include "RetouchInteract.h"
 
 #include "Engine/AppManager.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/Filter/Retouch.h"
@@ -172,6 +173,41 @@ RetouchInteract::removeCurve(const RotoDrawableItemPtr& curve)
         _stroke.reset();
     }
     RotoCurveInteract::removeCurve(curve);
+}
+
+void
+RetouchInteract::appendPaintToolOverlaySignature(ContentHasher* hasher) const
+{
+    OverlaySupport* viewport = getHost()->getCurrentViewportForOverlays();
+    KnobDoublePtr size = brushSizeKnob.lock();
+    const bool shown = (selectedTool == eRotoToolSolidBrush) && viewport && size;
+    hasher->appendBool(shown);
+    if (!shown) {
+        return;
+    }
+    hasher->appendDouble(size->getValue());
+    double x, y;
+    viewport->getCursorPosition(x, y);
+    hasher->appendDouble(x);
+    hasher->appendDouble(y);
+    hasher->appendBool(viewport->getViewportRect().contains(x, y));
+    hasher->appendDouble(mouseCenterOnSizeChange.x());
+    hasher->appendDouble(mouseCenterOnSizeChange.y());
+    hasher->appendDouble(lastMousePos.x());
+    hasher->appendDouble(lastMousePos.y());
+    const bool building = (state == eEventStateBuildingStroke) && _stroke;
+    hasher->appendBool(building);
+    if (building) {
+        const double time = getCurveContext()->getTimelineCurrentTime();
+        hasher->appendDouble(time);
+        hasher->appendU64(_stroke->getGeometryGeneration());
+        Transform::Matrix3x3 transform;
+        _stroke->getTransformAtTime(time, &transform);
+        const double m[9] = { transform.a, transform.b, transform.c, transform.d, transform.e, transform.f, transform.g, transform.h, transform.i };
+        for (int i = 0; i < 9; ++i) {
+            hasher->appendDouble(m[i]);
+        }
+    }
 }
 
 void

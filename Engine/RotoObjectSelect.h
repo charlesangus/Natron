@@ -44,9 +44,11 @@
 #include "Engine/Ai/Segmentation.h"
 #include "Engine/EngineFwd.h"
 #include "Engine/RectD.h"
+#include "Global/GlobalDefines.h"
 
 NATRON_NAMESPACE_ENTER
 
+class ContentHasher;
 class OverlayDrawListPen;
 class RotoCurveInteract;
 // What a commit leaves behind: its prompts, the mask they gave at the inference resolution and where it sits.
@@ -151,6 +153,8 @@ public:
     void onTimeChanged(double time);
 
     void buildOverlay(OverlayDrawListPen& pen);
+    // Appends to hasher everything buildOverlay() draws from.
+    void appendOverlaySignature(ContentHasher* hasher) const;
     bool penDown(double time, const QPointF& pos, bool negative);
     bool penMotion(const QPointF& pos);
     bool penUp();
@@ -267,6 +271,8 @@ private:
     std::vector<float> _mask;
     // Canonical coordinates.
     std::vector<MaskTrace::Contour> _contours;
+    // Advanced on every change to _contours.
+    U64 _contoursGeneration = 0;
     std::string _message;
     // An encoding that failed is not retried until the prompts change.
     bool _hasFailed = false;

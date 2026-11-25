@@ -32,7 +32,7 @@
 
 NATRON_NAMESPACE_ENTER
 
-std::atomic<OverlayDrawProbe*> OverlayDrawProbe::s_instance(nullptr);
+OverlayDrawProbe* OverlayDrawProbe::s_instance = nullptr;
 
 double
 OverlayDrawProbe::nowMs()
@@ -63,7 +63,7 @@ OverlayDrawProbe::start(const QString& logPath)
 
         return false;
     }
-    s_instance.store(new OverlayDrawProbe(log), std::memory_order_release);
+    s_instance = new OverlayDrawProbe(log);
 
     return true;
 }
@@ -71,7 +71,8 @@ OverlayDrawProbe::start(const QString& logPath)
 void
 OverlayDrawProbe::stop()
 {
-    OverlayDrawProbe* probe = s_instance.exchange(nullptr, std::memory_order_acq_rel);
+    OverlayDrawProbe* probe = s_instance;
+    s_instance = nullptr;
 
     delete probe;
 }

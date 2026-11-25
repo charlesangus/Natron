@@ -96,15 +96,13 @@ RotoCurveInteract::RotoCurveInteract(EffectInstance* host)
     , cloneOffset(0., 0.)
     , mouseCenterOnSizeChange()
     , _host(host)
-    , _curvesOverlay()
-    , _toolsOverlay()
-    , _toolsOverlayBuilt()
-    , _toolsOverlayHash(0)
-    , _cloneSourceOverlay()
-    , _curvesOverlayValid(false)
-    , _curvesOverlaySignature(0)
-    , _curvesOverlayLineWidth(1.f)
+    , _curvesOverlayDrawables()
+    , _curvesOverlayFeatherVisible(false)
+    , _curvesOverlayPixelScale(1., 1.)
+    , _curvesOverlaySignedPolygons()
     , _curvesOverlayPolygons()
+    , _toolsOverlay()
+    , _cloneSourceOverlay()
     , _dragRender()
     , _dragRenderWatch()
     , _dragRenderGesture(0)
@@ -618,11 +616,20 @@ RotoCurveInteract::drawCloneSource(const QPointF& centre,
     if (!overlay) {
         return;
     }
-    _cloneSourceOverlay.clear();
-    OverlayDrawListPen pen(&_cloneSourceOverlay);
-    pen.setDeformable(false);
-    buildCloneSource(pen, centre, offset, radius, opacity);
-    overlay->drawOverlayDrawList(_cloneSourceOverlay, OverlayDrawState());
+    ContentHasher signature;
+    signature.appendDouble(centre.x());
+    signature.appendDouble(centre.y());
+    signature.appendDouble(offset.first);
+    signature.appendDouble(offset.second);
+    signature.appendDouble(radius);
+    signature.appendDouble(opacity);
+    signature.appendBool(state == eEventStateDraggingCloneOffset);
+    if (OverlayDrawList* list = _cloneSourceOverlay.rebuildFor(signature.finalize())) {
+        OverlayDrawListPen pen(list);
+        pen.setDeformable(false);
+        buildCloneSource(pen, centre, offset, radius, opacity);
+    }
+    overlay->drawOverlayDrawList(_cloneSourceOverlay.list(), OverlayDrawState());
 }
 
 void
@@ -3190,17 +3197,16 @@ appendPointer(ContentHasher& hasher,
 
 } // anonymous namespace
 
-U64
-RotoCurveInteract::computeCurvesOverlaySignature(double time,
-                                                 bool featherVisible,
-                                                 const std::list<RotoDrawableItemPtr>& drawables,
-                                                 const std::pair<double, double>& pixelScale,
-                                                 std::vector<BezierOverlayPolygonsConstPtr>* polygons,
-                                                 bool* volatileContent)
+void
+RotoCurveInteract::appendCurvesSignature(double time,
+                                         bool featherVisible,
+                                         const std::list<RotoDrawableItemPtr>& drawables,
+                                         const std::pair<double, double>& pixelScale,
+                                         std::vector<BezierOverlayPolygonsConstPtr>* polygons,
+                                         ContentHasher* hasherOut)
 {
-    ContentHasher hasher;
+    ContentHasher& hasher = *hasherOut;
 
-    *volatileContent = false;
     polygons->clear();
     hasher.appendDouble(time);
     // The feather hint lines are as long on screen as the canonical direction they follow.
@@ -3241,9 +3247,16 @@ RotoCurveInteract::computeCurvesOverlaySignature(double time,
         Bezier* isBezier = dynamic_cast<Bezier*>(it->get());
         RotoStrokeItem* isStroke = dynamic_cast<RotoStrokeItem*>(it->get());
         if (isStroke) {
-            // A stroke has no version to key on: one that is drawn makes the list volatile.
             if ((selectedTool == eRotoToolSelectAll) && isItemSelected(selectedItems, isStroke)) {
-                *volatileContent = true;
+                // The stroke's points move only with its geometry generation; its knobs move them
+                // only through the transform.
+                hasher.appendU64(isStroke->getGeometryGeneration());
+                Transform::Matrix3x3 transform;
+                isStroke->getTransformAtTime(time, &transform);
+                const double m[9] = { transform.a, transform.b, transform.c, transform.d, transform.e, transform.f, transform.g, transform.h, transform.i };
+                for (int i = 0; i < 9; ++i) {
+                    hasher.appendDouble(m[i]);
+                }
             }
         } else if (isBezier) {
             const bool shown = isCurveShown(std::static_pointer_cast<Bezier>(*it));
@@ -3271,9 +3284,7 @@ RotoCurveInteract::computeCurvesOverlaySignature(double time,
         }
     }
     appendOverlayExtrasSignature(time, &hasher);
-
-    return hasher.finalize();
-} // RotoCurveInteract::computeCurvesOverlaySignature
+} // RotoCurveInteract::appendCurvesSignature
 
 void
 RotoCurveInteract::buildCurvesOverlay(double time,
@@ -3575,7 +3586,6 @@ RotoCurveInteract::buildCurvesOverlay(double time,
 
     pen.setSmoothPoints(false);
     buildOverlayExtras(time, pen);
-    _curvesOverlayLineWidth = pen.currentLineWidth();
 } // RotoCurveInteract::buildCurvesOverlay
 
 void
@@ -3584,8 +3594,7 @@ RotoCurveInteract::buildToolsOverlay(const std::pair<double, double>& pixelScale
 {
     OverlayDrawListPen pen(list);
 
-    // The brush cursor is drawn as wide as the curves were last drawn.
-    pen.lineWidth(_curvesOverlayLineWidth);
+    pen.lineWidth(1.5);
     pen.setDeformable(false);
     if (!_host->isDrawingPassiveOverlay()) {
         buildPaintToolOverlay(pen, pixelScale);
@@ -3615,40 +3624,113 @@ RotoCurveInteract::buildToolsOverlay(const std::pair<double, double>& pixelScale
 } // RotoCurveInteract::buildToolsOverlay
 
 void
-RotoCurveInteract::drawOverlay(double time)
+RotoCurveInteract::appendToolsOverlaySignature(const std::pair<double, double>& pixelScale,
+                                               ContentHasher* hasher) const
+{
+    OverlaySupport* overlay = _host->getCurrentViewportForOverlays();
+    const bool passive = _host->isDrawingPassiveOverlay();
+    hasher->appendBool(passive);
+    hasher->appendDouble(pixelScale.first);
+    hasher->appendDouble(pixelScale.second);
+    hasher->appendI64((int)selectedRole);
+    hasher->appendI64((int)selectedTool);
+    hasher->appendI64((int)state);
+    if (!passive) {
+        appendPaintToolOverlaySignature(hasher);
+        const bool objectSelectShown = objectSelect && (selectedTool == eRotoToolObjectSelect);
+        hasher->appendBool(objectSelectShown);
+        if (objectSelectShown) {
+            objectSelect->appendOverlaySignature(hasher);
+        }
+    }
+
+    hasher->appendBool(showCpsBbox);
+    if (showCpsBbox) {
+        hasher->appendDouble(selectedCpsBbox.left());
+        hasher->appendDouble(selectedCpsBbox.top());
+        hasher->appendDouble(selectedCpsBbox.right());
+        hasher->appendDouble(selectedCpsBbox.bottom());
+        const QPointF pivot = getSelectedCpsPivot();
+        hasher->appendDouble(pivot.x());
+        hasher->appendDouble(pivot.y());
+        hasher->appendI64((int)hoverState);
+        hasher->appendI64((int)transformMode);
+    }
+
+    // Samples are only ever appended to, or all cleared.
+    const bool sketching = (state == eEventStateSketchingBezier) && !sketchSamples.empty();
+    hasher->appendBool(sketching);
+    if (sketching) {
+        hasher->appendU64(sketchSamples.size());
+        hasher->appendDouble(sketchSamples.front().first);
+        hasher->appendDouble(sketchSamples.front().second);
+        hasher->appendDouble(sketchSamples.back().first);
+        hasher->appendDouble(sketchSamples.back().second);
+        hasher->appendDouble(lastMousePos.x());
+        hasher->appendDouble(lastMousePos.y());
+    }
+
+    const bool rippleBorder = !passive && overlay && getCurveContext()->isRippleEditEnabled();
+    hasher->appendBool(rippleBorder);
+    if (rippleBorder) {
+        const RectD view = overlay->getViewportRect();
+        hasher->appendDouble(view.x1);
+        hasher->appendDouble(view.y1);
+        hasher->appendDouble(view.x2);
+        hasher->appendDouble(view.y2);
+        hasher->appendDouble(overlay->getScreenPixelRatio());
+    }
+} // RotoCurveInteract::appendToolsOverlaySignature
+
+void
+RotoCurveInteract::appendCurvesOverlaySignature(double time,
+                                                ContentHasher* hasher)
+{
+    OverlaySupport* overlay = _host->getCurrentViewportForOverlays();
+    std::pair<double, double> pixelScale(1., 1.);
+    if (overlay) {
+        overlay->getPixelScale(pixelScale.first, pixelScale.second);
+    }
+    _curvesOverlayDrawables = getCurveContext()->getCurvesByRenderOrder();
+    _curvesOverlayFeatherVisible = isFeatherVisible();
+    _curvesOverlayPixelScale = pixelScale;
+    appendCurvesSignature(time, _curvesOverlayFeatherVisible, _curvesOverlayDrawables, pixelScale, &_curvesOverlaySignedPolygons, hasher);
+}
+
+void
+RotoCurveInteract::buildCurvesOverlayList(double time,
+                                          OverlayDrawList* list)
+{
+    buildCurvesOverlay(time, _curvesOverlayFeatherVisible, _curvesOverlayDrawables, _curvesOverlayPixelScale, list);
+    _curvesOverlayPolygons.swap(_curvesOverlaySignedPolygons);
+    _curvesOverlaySignedPolygons.clear();
+    _curvesOverlayDrawables.clear();
+}
+
+void
+RotoCurveInteract::drawOverlay(double /*time*/)
 {
     OverlaySupport* overlay = _host->getCurrentViewportForOverlays();
     if (!overlay) {
         return;
     }
-    std::list<RotoDrawableItemPtr> drawables = getCurveContext()->getCurvesByRenderOrder();
+    // Held only from the signature to the build, so that removed items are not kept alive.
+    _curvesOverlayDrawables.clear();
     std::pair<double, double> pixelScale;
 
     overlay->getPixelScale(pixelScale.first, pixelScale.second);
-
-    bool featherVisible = isFeatherVisible();
-
-    std::vector<BezierOverlayPolygonsConstPtr> polygons;
-    bool volatileContent = false;
-    const U64 signature = computeCurvesOverlaySignature(time, featherVisible, drawables, pixelScale, &polygons, &volatileContent);
-    if (!_curvesOverlayValid || volatileContent || (signature != _curvesOverlaySignature)) {
-        _curvesOverlay.clear();
-        buildCurvesOverlay(time, featherVisible, drawables, pixelScale, &_curvesOverlay);
-        _curvesOverlaySignature = signature;
-        _curvesOverlayValid = !volatileContent;
-        _curvesOverlayPolygons.swap(polygons);
-    }
-    overlay->drawOverlayDrawList(_curvesOverlay, OverlayDrawState());
 
     if (!_host->isDrawingPassiveOverlay()) {
         drawPaintToolPreview();
     }
 
-    _toolsOverlayBuilt.clear();
-    buildToolsOverlay(pixelScale, &_toolsOverlayBuilt);
-    OverlayDrawListPen::keepIfUnchanged(&_toolsOverlay, &_toolsOverlayBuilt, &_toolsOverlayHash);
-    if (!_toolsOverlay.empty()) {
-        overlay->drawOverlayDrawList(_toolsOverlay, OverlayDrawState());
+    ContentHasher signature;
+    appendToolsOverlaySignature(pixelScale, &signature);
+    if (OverlayDrawList* list = _toolsOverlay.rebuildFor(signature.finalize())) {
+        buildToolsOverlay(pixelScale, list);
+    }
+    if (!_toolsOverlay.list().empty()) {
+        overlay->drawOverlayDrawList(_toolsOverlay.list(), OverlayDrawState());
     }
 } // drawOverlay
 

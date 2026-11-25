@@ -28,7 +28,6 @@
 
 #include "Global/Macros.h"
 
-#include <atomic>
 #include <cstdio>
 
 #include <QString>
@@ -44,7 +43,7 @@ class OverlayDrawProbe {
 public:
     static OverlayDrawProbe* instance()
     {
-        return s_instance.load(std::memory_order_acquire);
+        return s_instance;
     }
 
     /**
@@ -68,7 +67,7 @@ private:
 
     ~OverlayDrawProbe();
 
-    static std::atomic<OverlayDrawProbe*> s_instance;
+    static OverlayDrawProbe* s_instance;
 
     std::FILE* _log;
 };

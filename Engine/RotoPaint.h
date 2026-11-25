@@ -160,6 +160,18 @@ private:
 
     virtual void getPluginShortcuts(std::list<PluginActionShortcut>* shortcuts) OVERRIDE FINAL;
     virtual void drawOverlay(double time, const RenderScale & renderScale, ViewIdx view) OVERRIDE FINAL;
+    virtual bool hasOverlayDrawList() const OVERRIDE FINAL
+    {
+        return true;
+    }
+
+    virtual bool isOverlayDrawListCached() const OVERRIDE FINAL
+    {
+        return true;
+    }
+
+    virtual void appendOverlayDrawListSignature(double time, ViewIdx view, ContentHasher* hasher) OVERRIDE FINAL;
+    virtual void buildOverlay(double time, const RenderScale& renderScale, ViewIdx view, OverlayDrawList* list) OVERRIDE FINAL;
     virtual bool onOverlayPenDown(double time, const RenderScale & renderScale, ViewIdx view, const QPointF & viewportPos, const QPointF & pos, double pressure, double timestamp, PenType pen) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual bool onOverlayClaimsAltPenDown(double time, const QPointF& pos) OVERRIDE FINAL WARN_UNUSED_RETURN;

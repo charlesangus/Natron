@@ -85,6 +85,7 @@ public:
 
 protected:
     virtual void buildPaintToolOverlay(OverlayDrawListPen& pen, const std::pair<double, double>& pixelScale) OVERRIDE;
+    virtual void appendPaintToolOverlaySignature(ContentHasher* hasher) const OVERRIDE;
     virtual bool onPaintToolPenDown(double time, const QPointF& pos, double pressure, double timestamp) OVERRIDE;
     virtual bool setPaintToolCursor(bool* redraw) OVERRIDE;
     virtual bool onPaintStatePenMotion(const QPointF& pos, double pressure, double timestamp, double dx, double dy) OVERRIDE;

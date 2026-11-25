@@ -39,6 +39,7 @@
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
@@ -744,6 +745,7 @@ void
 RotoObjectSelect::retrace()
 {
     _contours.clear();
+    ++_contoursGeneration;
     if (_mask.empty() || (_mask.size() != (std::size_t)_frame.width * _frame.height)) {
         redraw();
 
@@ -761,6 +763,7 @@ RotoObjectSelect::retrace()
         contour.area *= sx * sy;
     }
     _contours.swap(traced);
+    ++_contoursGeneration;
     if (_contours.empty()) {
         setMessage("The selection is empty: click on the object, or lower Object Min Area.");
     } else if (!_message.empty()) {
@@ -1012,6 +1015,7 @@ RotoObjectSelect::clearMask()
     std::vector<float>().swap(_inferenceMask);
     std::vector<float>().swap(_mask);
     _contours.clear();
+    ++_contoursGeneration;
 }
 
 void
@@ -1197,6 +1201,41 @@ RotoObjectSelect::endSession()
 }
 
 void
+RotoObjectSelect::appendOverlaySignature(ContentHasher* hasher) const
+{
+    OverlaySupport* overlay = _roto->getHost()->getCurrentViewportForOverlays();
+    hasher->appendBool(overlay != nullptr);
+    if (!overlay) {
+        return;
+    }
+    double psx = 1., psy = 1.;
+    overlay->getPixelScale(psx, psy);
+    hasher->appendDouble(psx);
+    hasher->appendDouble(psy);
+    const RectD viewport = overlay->getViewportRect();
+    hasher->appendDouble(viewport.x1);
+    hasher->appendDouble(viewport.y2);
+    hasher->appendU64(_contoursGeneration);
+    hasher->appendU64(_prompts.size());
+    for (const Prompt& prompt : _prompts) {
+        hasher->appendI64((int)prompt.kind);
+        hasher->appendDouble(prompt.a.x());
+        hasher->appendDouble(prompt.a.y());
+        hasher->appendDouble(prompt.b.x());
+        hasher->appendDouble(prompt.b.y());
+    }
+    const bool rubberBand = _pressed && _dragging;
+    hasher->appendBool(rubberBand);
+    if (rubberBand) {
+        hasher->appendDouble(_pressPos.x());
+        hasher->appendDouble(_pressPos.y());
+        hasher->appendDouble(_dragPos.x());
+        hasher->appendDouble(_dragPos.y());
+    }
+    hasher->appendString(_message);
+}
+
+void
 RotoObjectSelect::buildOverlay(OverlayDrawListPen& pen)
 {
     OverlaySupport* overlay = _roto->getHost()->getCurrentViewportForOverlays();
@@ -1210,6 +1249,7 @@ RotoObjectSelect::buildOverlay(OverlayDrawListPen& pen)
     pen.setSmoothLines(true);
     pen.setSmoothPoints(true);
     pen.setShadow(false);
+    pen.setDeformable(true);
 
     pen.lineWidth(2.);
     for (const MaskTrace::Contour& contour : _contours) {
@@ -1249,7 +1289,6 @@ RotoObjectSelect::buildOverlay(OverlayDrawListPen& pen)
     }
 
     pen.lineWidth(1.5);
-    pen.setDeformable(false);
     for (const Prompt& prompt : _prompts) {
         if (prompt.kind != Prompt::eBox) {
             continue;
@@ -1263,6 +1302,8 @@ RotoObjectSelect::buildOverlay(OverlayDrawListPen& pen)
         pen.end();
     }
     if (_pressed && _dragging) {
+        // The rubber band follows the pen on screen, unlike the prompts already placed.
+        pen.setDeformable(false);
         pen.color(1., 1., 1., 0.8);
         pen.begin(OverlayDrawListPen::eModeLineLoop);
         pen.vertex(_pressPos.x(), _pressPos.y());

@@ -1442,7 +1442,8 @@ consumerDevices(const FrameGraph& graph,
 /**
  * @brief For a task the device tier holds layer of only at a finer level: that entry box-downscaled on the device to
  * the task's level, over its renderedRoI, and cached in the tier under exact, the key the task's level is looked up by.
- * Null when no finer entry holds all of what the downscale reads, or the downscale cannot be made.
+ * Null when no finer entry holds all of what the downscale reads, or the downscale cannot be made; also when the render
+ * was aborted while the device ran it, which sets *aborted.
  **/
 CacheDeviceEntryPtr
 downscaleFinerDeviceEntry(CacheDeviceTier& tier,
@@ -1450,7 +1451,9 @@ downscaleFinerDeviceEntry(CacheDeviceTier& tier,
                           const ImageKey& exact,
                           const FrameGraph::Task& task,
                           const ImageLayerDesc& layer,
-                          const RenderStatsPtr& stats)
+                          const RenderStatsPtr& stats,
+                          const AbortableRenderInfoPtr& abortInfo,
+                          bool* aborted)
 {
     gpu::GpuRuntime* runtime = tier.runtime();
     const unsigned int level = task.key.mipmapLevel;
@@ -1510,11 +1513,16 @@ downscaleFinerDeviceEntry(CacheDeviceTier& tier,
         dst.nComps = (std::uint32_t)layout.nComps();
         gpu::GpuStatus status = gpu::recordMipDownscale(*recorder, src, dst, dst.bounds, levels);
         if (status) {
-            status = recorder->submitAndWait();
+            const std::function<bool()> stop = [&abortInfo]() { return abortInfo && abortInfo->isAborted(); };
+            status = recorder->submitAndWait(30'000'000'000ull, stop);
         }
         image->unpin();
         if (!status) {
-            runtime->note(status);
+            if (status.result == VK_INCOMPLETE) {
+                *aborted = true;
+            } else {
+                runtime->note(status);
+            }
 
             return CacheDeviceEntryPtr();
         }
@@ -1541,7 +1549,8 @@ downscaleFinerDeviceEntry(CacheDeviceTier& tier,
  * @brief Gives the task the device tier's entries of its layers without rendering it: as device layers when a region
  * reads them, which it then does in place, and otherwise moved to the host tier as planes. A layer the tier holds only
  * at a finer level is downscaled on the device first. False, with both maps left empty, when an entry left the tier or
- * the device was lost since the plan, so that the task renders instead.
+ * the device was lost since the plan, so that the task renders instead, or when the render was aborted during a
+ * downscale, which sets *aborted.
  **/
 bool
 serveFromDeviceTier(const FrameRenderContext& context,
@@ -1550,7 +1559,8 @@ serveFromDeviceTier(const FrameRenderContext& context,
                     const EffectInstancePtr& effect,
                     std::map<ImageLayerDesc, ImagePtr>* planes,
                     std::map<ImageLayerDesc, DeviceImagePtr>* deviceLayers,
-                    std::vector<CacheDeviceEntryPtr>* inPlace)
+                    std::vector<CacheDeviceEntryPtr>* inPlace,
+                    bool* aborted)
 {
 #ifdef NATRON_HAVE_GPU
     GpuContext* gpu = appPTR ? appPTR->getGpuContext() : nullptr;
@@ -1568,7 +1578,7 @@ serveFromDeviceTier(const FrameRenderContext& context,
         const ImageKey exact = base.forEntry(task.key.mipmapLevel, layer, eImageBitDepthFloat);
         CacheDeviceEntryPtr entry = tier->findServing(exact);
         if (!entry) {
-            entry = downscaleFinerDeviceEntry(*tier, base, exact, task, layer, context.getStats());
+            entry = downscaleFinerDeviceEntry(*tier, base, exact, task, layer, context.getStats(), context.getAbortInfo(), aborted);
         }
         if (!entry) {
             return false;
@@ -1613,6 +1623,7 @@ serveFromDeviceTier(const FrameRenderContext& context,
     (void)planes;
     (void)deviceLayers;
     (void)inPlace;
+    (void)aborted;
 
     return false;
 #endif
@@ -1782,12 +1793,16 @@ RenderScheduler::executeTask(const FramePtr& frame,
     std::map<ImageLayerDesc, DeviceImagePtr> deviceLayers;
     EffectInstancePtr effect = task.key.node ? task.key.node->getEffectInstance() : EffectInstancePtr();
     bool servedInPlace = false;
+    bool serveAborted = false;
     std::vector<CacheDeviceEntryPtr> inPlace;
 
     if (effect && task.servedFromCache && (task.servedTier == EffectInstance::OutputCacheTier::Device) && task.deviceMissingRoI.isNull()) {
         ProfileSink& sink = profileSink();
         const std::chrono::steady_clock::time_point serveStart = sink.isEnabled() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
-        servedInPlace = serveFromDeviceTier(*frame->context, frame->graph, task, effect, &planes, &deviceLayers, &inPlace);
+        servedInPlace = serveFromDeviceTier(*frame->context, frame->graph, task, effect, &planes, &deviceLayers, &inPlace, &serveAborted);
+        if (serveAborted) {
+            retCode = EffectInstance::eRenderRoIRetCodeAborted;
+        }
         if (servedInPlace) {
             retCode = EffectInstance::eRenderRoIRetCodeOk;
             if (sink.isEnabled()) {
@@ -1798,7 +1813,7 @@ RenderScheduler::executeTask(const FramePtr& frame,
     }
 
     std::unique_ptr<Continuation> continuation;
-    bool renders = effect && !servedInPlace;
+    bool renders = effect && !servedInPlace && !serveAborted;
     if (renders && task.reusesStore) {
         renders = false;
         retCode = EffectInstance::eRenderRoIRetCodeOk;

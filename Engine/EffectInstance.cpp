@@ -2825,9 +2825,7 @@ getOrCreateFromCacheInternal(const ImageKey& key,
          * Another thread might have allocated the same image in the cache but with another RoI, make sure
          * it is big enough for us, or resize it to our needs.
          */
-
-
-        (*image)->ensureBounds( params->getBounds() );
+        Image::ensureBoundsByCopy(image, params->getBounds());
     }
 }
 
@@ -3925,8 +3923,8 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
         const bool mappedMatchesOutput = (prefComp == it->second.renderMappedImage->getComponents()) && (outputClipPrefDepth == it->second.renderMappedImage->getBitDepth());
         // Rendering straight into the cached image is safe: the trimap marks the render window as
         // being rendered so readers wait for it, the effect's Image::WriteAccess holds the image's
-        // write lock so a concurrent ensureBounds() cannot reallocate the buffer under the kernel,
-        // and renderRoI() marks the window rendered only after the render succeeded, so what a
+        // write lock so a concurrent grown copy of it never reads half-written pixels, a cached
+        // image is never reallocated in place, and renderRoI() marks the window rendered only after the render succeeded, so what a
         // failed, aborted or throwing kernel left there is rendered again. Host-tiled renders keep
         // the temporary because tiles writing into one image would serialise on its write lock.
         const bool rendersIntoMappedImage = mappedMatchesOutput && !layers.useOpenGL && (it->second.renderMappedImage->getStorageMode() == eStorageModeRAM) && (layers.rectsToRender.size() == 1) && _publicInterface->rendersOnlyInsideRenderWindow();

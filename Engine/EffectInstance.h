@@ -2880,7 +2880,6 @@ public:
            In the event where the fullScaleImage is in the cache but we must resize it to render a portion unallocated yet and
            if the render is issues directly from getImage() we swap image in cache instead of taking the write lock of fullScaleImage
          */
-        ImagePtr cacheSwapImage;
         void* originalCachedImage;
 
         /**
@@ -2893,7 +2892,6 @@ public:
             , downscaleImage()
             , renderMappedImage()
             , tmpImage()
-            , cacheSwapImage()
             , originalCachedImage(0)
             , isAllocatedOnTheFly(false)
         {

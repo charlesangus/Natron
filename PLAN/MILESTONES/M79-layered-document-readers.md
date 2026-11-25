@@ -45,7 +45,7 @@ Acceptance sketch:
 
 ## Phase 79.2: Photoshop and Krita
 
-- [ ] M79.P2.T1 — PSD/PSB/PDD reader
+- [x] M79.P2.T1 — PSD/PSB/PDD reader
   - files: `Engine/Nodes/IO/LayeredDocs/PsdInput.cpp`, `Tests/Native/NativeReadPsd_Test.cpp`, `Tests/fixtures/layered/*.{psd,psb}`
   - approach: Adobe's spec: header, image resources, layer and mask info (lsct dividers, luni names, user masks into alpha; raw/RLE/ZIP/ZIP-predicted channels); PSB 8-byte lengths; merged image data = composite; PDD read as PSD.
   - verify: 8/16/32 bit, groups with empty layers, masks, a PSB, a CMYK file refused.
@@ -54,6 +54,12 @@ Acceptance sketch:
   - files: `Engine/Nodes/IO/LayeredDocs/KraInput.cpp`, `Lzf.{h,cpp}`, `Tests/Native/NativeReadKra_Test.cpp`, `Tests/fixtures/layered/*.kra`
   - approach: maindoc.xml (paint, group, transparency masks), KRA tiles with LZF, RGBA/GrayA 8/16/F16/F32, mergedimage.png composite; other layer kinds skipped and listed.
   - verify: `ctest -R NativeReadKra` incl. an LZF round trip on a known vector.
+  - size: L
+
+- [ ] M79.P2.T3 — Per-window decode through the seam
+  - files: the layered-document seam from P1.T1 (`Engine/Nodes/IO/LayeredDocs/LayeredImageInput.{h,cpp}`, `LayeredDocument.{h,cpp}`), `PsdInput.cpp`, `OraInput` as needed, `Tests/Native/NativeReadPsd_Test.cpp`
+  - approach: the seam decodes a layer or composite as one whole plane, so a 300 000 px PSB layer decodes in full on first read, against the Scope edge case. Let a reader decode only the rows (or tiles) a requested window needs: PSD/PSB via the RLE row-offset table and raw row strides (ZIP channels may still decode whole, cached per channel); keep the whole-plane path for formats that can't window. Krita (P2.T2) and XCF (P3.T1) tiles should fit the same interface.
+  - verify: `ctest -R "NativeReadPsd|LayeredDocsSeam|NativeReadOra"`; a test reads a small window of `wide.psb` and asserts the decoder touched only that window's rows
   - size: L
 
 ## Phase 79.3: GIMP, GUI check and docs
@@ -81,3 +87,4 @@ Acceptance sketch:
 - 2026-10-10 — **Library choice (user):** when M79 comes up, a consultant scouts decoding libraries per format and the PM puts the recommendation to the user before elaborating.
 - 2026-10-21 — Library scout (consultant, not yet put to a decision): no existing library fits. OIIO 3.1.16's psd reader aborts on any empty layer, and every PSD group is stored as one. OIIO #5562 skips them, dropping the group structure, and exposes no layer attributes either way. ImageMagick's xcf reader is 8-bit only, has no zlib tiles and no groups. Recommended: in-tree readers registered as OIIO `ImageInput` plugins (one subimage per layer plus the composite; full window = canvas). PSD to the Adobe spec; ORA with minizip-ng + pugixml + OIIO PNG (all already linked); KRA the same plus Krita's LZF tile format (port from Krita, GPL-2+); XCF from the spec only (GIMP code is GPL-3). Proposed layer model: stored composite as the colour plane; raw layers with mode, opacity, visibility and clipping in metadata; groups flattened into sanitised names (`LayerRegistry::validate` refuses spaces and dots); masks folded into alpha; RGB and Gray only. Claimed and released the same day: the user paused new milestones before deciding.
 - 2026-11-24 — Q1–Q3 settled (user): in-tree OIIO ImageInputs on the zip store and QXmlStreamReader; the scout's layer model, XCF flattening visible layers with Normal over and listing other blend modes in metadata; tiny (≤32 px) GIMP- and Krita-saved fixtures plus hand-built edge cases.
+- 2026-11-24 (PM) — P2.T1 in 13a4e4ff1 (opus): masks in 16/32-bit documents are read at the document depth (unconfirmed against a Photoshop-saved file); smart objects stay raster layers (their pixels are the rendered result); layer fill opacity (iOpa) is ignored. Fixtures are hand-built to the spec; OIIO's own psd plugin matches on the raw/RLE 8/16/32 variants. Per-window decode, required by the Scope's PSB edge case, needs a seam change: added as P2.T3, done before P2.T2 so Krita tiles use it.

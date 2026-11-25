@@ -32,12 +32,14 @@
 #include <string>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/Geo/GeoOpUtils.h"
 #include "Engine/GeoDetail.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
 #define PLUGINID_NATRON_GEOUVPROJECT "GeoUVProject"
 
 #define kGeoUVProjectParamGroup "group"
+#define kGeoUVProjectParamGroupType "groupType"
 #define kGeoUVProjectParamProjection "projection"
 #define kGeoUVProjectParamAxis "axis"
 #define kGeoUVProjectParamTranslate "translate"
@@ -67,7 +69,9 @@ enum GeoUVAxisEnum {
 };
 
 struct GeoUVProjectParams {
+    // A group pattern over groupType's class; empty selects every element of attributeClass.
     std::string group;
+    GeoGroupTypeEnum groupType = eGeoGroupTypeGuess;
     GeoUVProjectionEnum projection = eGeoUVProjectionPlanar;
     GeoUVAxisEnum axis = eGeoUVAxisZ;
     std::array<double, 3> translate = { 0., 0., 0. };
@@ -87,10 +91,13 @@ struct GeoUVProjectParams {
 
 /**
  * @brief Writes the attribute params.uvAttribute (float32 x3, w = 0, unless one with two or more
- * numeric components exists, whose first two are overwritten) of class params.attributeClass on
- * the vertices of the primitives params.group selects (a group pattern, see geoSelectElements()),
- * or on the points those vertices use. Writing points with a blank group also writes the points no
- * primitive uses, so a point cloud gets uv too.
+ * numeric components exists, whose first two are overwritten) of class params.attributeClass on the
+ * elements params.group selects (a group pattern, see geoSelectElements(), over the class
+ * params.groupType names; points or primitives). An empty group selects every element of the
+ * attribute class: every live point, including those no primitive uses, or every live vertex.
+ * Point group: the selected points, or for the vertex class the vertices on them. Primitive group:
+ * the points those primitives use, or their vertices; points no primitive uses are never selected.
+ * Elements outside the selection keep their uv.
  *
  * Both projections map a position to one uv, so every vertex of a point gets the same uv and the
  * point class loses nothing: a point shared by several selected vertices is written once, with the
@@ -130,7 +137,7 @@ public:
                        "through a camera taken from the scene on the Camera input. The camera projection maps its "
                        "frame to 0 to 1, so an image the camera sees lands where it saw it. The uv depends only on "
                        "a point's position, so writing points gives the same texture coordinates as writing "
-                       "vertices; a point shared with primitives outside the group changes their uv too.",
+                       "vertices; a point shared with elements outside the group changes their uv too.",
         .grouping = PLUGIN_GROUP_GEOMETRY,
         .majorVersion = 1,
         .minorVersion = 0,
@@ -138,7 +145,8 @@ public:
         .outputKind = eDataKindGeometry,
         .inputs = kInputs,
         .geoGroupKnob = kGeoUVProjectParamGroup,
-        .geoGroupClasses = eGeoGroupClassPrimitives,
+        .geoGroupClasses = eGeoGroupClassPoints | eGeoGroupClassPrimitives,
+        .geoGroupTypeKnob = kGeoUVProjectParamGroupType,
     };
 
     static EffectInstance* BuildEffect(NodePtr node)
@@ -173,6 +181,7 @@ private:
     void updateEnabled();
 
     KnobStringWPtr _group;
+    KnobChoiceWPtr _groupType;
     KnobChoiceWPtr _projection;
     KnobChoiceWPtr _axis;
     KnobDoubleWPtr _translate;

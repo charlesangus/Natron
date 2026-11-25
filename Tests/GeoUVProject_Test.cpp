@@ -339,3 +339,86 @@ TEST(GeoUVProject, PointClassWritesFreePointsOnlyWithAnEmptyGroup)
     ASSERT_NE(nullptr, kept);
     EXPECT_NEAR(0.75, kept->get<float>((std::size_t)free, 0), 1e-6);
 }
+
+TEST(GeoUVProject, PointGroupOnScatteredPointsWritesOnlyThosePoints)
+{
+    GeoDetailBuilder b;
+    const GeoOffset first = b.appendPoints(4);
+    for (int i = 0; i < 4; ++i) {
+        b.setPointPosition(first + i, 0.1 * i, 0.2 * i, 0.);
+    }
+    GeoElementGroup& chosen = b.addGroup(eGeoAttribClassPoint, "chosen");
+    chosen.add(first + 1);
+    chosen.add(first + 3);
+    const GeoDetail input = b.finish();
+
+    GeoUVProjectParams params;
+    params.attributeClass = eGeoAttribClassPoint;
+    params.group = "chosen";
+    const GeoDetail out = project(input, params);
+    const GeoAttribute* uv = out.findAttribute(eGeoAttribClassPoint, "uv");
+    ASSERT_NE(nullptr, uv);
+    for (int i = 0; i < 4; ++i) {
+        const std::size_t point = (std::size_t)(first + i);
+        if (i == 1 || i == 3) {
+            EXPECT_NEAR(0.5 + 0.1 * i, uv->get<float>(point, 0), 1e-6);
+            EXPECT_NEAR(0.5 + 0.2 * i, uv->get<float>(point, 1), 1e-6);
+        } else {
+            EXPECT_EQ(0.f, uv->get<float>(point, 0));
+            EXPECT_EQ(0.f, uv->get<float>(point, 1));
+        }
+    }
+
+    params.group = "1-2";
+    params.groupType = eGeoGroupTypePoints;
+    const GeoDetail numbered = project(input, params);
+    const GeoAttribute* numberedUV = numbered.findAttribute(eGeoAttribClassPoint, "uv");
+    ASSERT_NE(nullptr, numberedUV);
+    EXPECT_EQ(0.f, numberedUV->get<float>((std::size_t)first, 0));
+    EXPECT_NEAR(0.6, numberedUV->get<float>((std::size_t)(first + 2), 0), 1e-6);
+}
+
+TEST(GeoUVProject, PrimitiveGroupSkipsFreePoints)
+{
+    GeoDetailBuilder b { xyGrid(4, 0., 1., 0., 1.) };
+    const GeoOffset free = b.appendPoints(1);
+    b.setPointPosition(free, 0.25, -0.25, 0.);
+    const GeoDetail input = b.finish();
+
+    GeoUVProjectParams params;
+    params.attributeClass = eGeoAttribClassPoint;
+    params.group = "left";
+    params.groupType = eGeoGroupTypePrimitives;
+    const GeoDetail out = project(input, params);
+    const GeoAttribute* uv = out.findAttribute(eGeoAttribClassPoint, "uv");
+    ASSERT_NE(nullptr, uv);
+    EXPECT_EQ(0.f, uv->get<float>((std::size_t)free, 0));
+    EXPECT_EQ(0.f, uv->get<float>((std::size_t)free, 1));
+    EXPECT_NEAR(0.5, uv->get<float>(0, 0), 1e-6);
+    EXPECT_NEAR(0.5, uv->get<float>(0, 1), 1e-6);
+}
+
+TEST(GeoUVProject, PointGroupWritesTheVerticesOnThosePointsForTheVertexClass)
+{
+    GeoDetailBuilder b { xyGrid(1, 0., 1., 0., 1.) };
+    GeoElementGroup& chosen = b.addGroup(eGeoAttribClassPoint, "chosen");
+    chosen.add(0);
+    const GeoDetail input = b.finish();
+
+    GeoUVProjectParams params;
+    params.group = "chosen";
+    params.groupType = eGeoGroupTypePoints;
+    const GeoDetail out = project(input, params);
+    const GeoAttribute* uv = out.findAttribute(eGeoAttribClassVertex, "uv");
+    ASSERT_NE(nullptr, uv);
+    int written = 0;
+    out.vertexMap().forEachLive([&](GeoIndex, GeoOffset vertex) {
+        if (out.vertexPoint(vertex) == 0) {
+            ++written;
+            EXPECT_NEAR(0.5, uv->get<float>((std::size_t)vertex, 0), 1e-6);
+        } else {
+            EXPECT_EQ(0.f, uv->get<float>((std::size_t)vertex, 0));
+        }
+    });
+    EXPECT_EQ(1, written);
+}

@@ -26,15 +26,25 @@
 #include "SceneNodeAuthoring.h"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <list>
 #include <map>
+#include <mutex>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
+#include <QCoreApplication>
+#include <QMetaObject>
+#include <QThread>
+
+#include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
@@ -47,10 +57,12 @@
 #include "Engine/Nodes/KnobReader.h"
 #include "Engine/Nodes/NonTrappingMath.h"
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
+#include "Engine/Nodes/Scene/PrimSelector.h"
 #include "Engine/Nodes/Scene/SceneProjectionCameras.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDProject3D.h"
 #include "Engine/Project.h"
+#include "Engine/ViewerInstance.h"
 
 #include <pxr/usd/usd/collectionAPI.h>
 #include <pxr/usd/usd/primRange.h>
@@ -214,7 +226,9 @@ SceneCameraPathKnobs::getPath() const
 
 void
 SceneCameraPathKnobs::refreshMenu(const std::vector<std::string>& cameras,
-                                  bool readDownstream) const
+                                  bool readDownstream,
+                                  std::size_t unsearched,
+                                  bool noViewer) const
 {
     KnobChoicePtr menuKnob = menu.lock();
     if (!menuKnob) {
@@ -239,6 +253,9 @@ SceneCameraPathKnobs::refreshMenu(const std::vector<std::string>& cameras,
                                            EffectInstance::tr("%1 (missing)").arg(QString::fromStdString(chosen)).toStdString(),
                                            EffectInstance::tr("No camera upstream has this path yet: nothing projects until one does.").toStdString()));
         }
+    }
+    if (unsearched > 0) {
+        options.push_back(makeSceneUnsearchedOption(unsearched, noViewer));
     }
     // Repopulating an unchanged menu would move the node's hash and come back here.
     const std::vector<ChoiceOption> current = menuKnob->getEntries_mt_safe();
@@ -269,7 +286,11 @@ SceneCameraPathKnobs::knobChanged(KnobI* k,
         const int index = menuKnob->getValue();
         if (((reason == eValueChangedReasonUserEdited) || (reason == eValueChangedReasonNatronGuiEdited))
             && (index >= 0) && (index < menuKnob->getNumEntries())) {
-            pathKnob->setValue(menuKnob->getEntry(index).id);
+            const ChoiceOption picked = menuKnob->getEntry(index);
+            // A script can still set a disabled note row, which names no camera.
+            if (!picked.disabled) {
+                pathKnob->setValue(picked.id);
+            }
         }
 
         return true;
@@ -281,6 +302,494 @@ SceneCameraPathKnobs::knobChanged(KnobI* k,
     }
 
     return false;
+}
+
+ChoiceOption
+makeSceneUnsearchedOption(std::size_t unsearched,
+                          bool noViewer)
+{
+    const QString tip = noViewer ? EffectInstance::tr("No viewer shows this node, so nothing inside a payload was searched. Show the node in a viewer and load these branches there to list what they hold.")
+                                 : EffectInstance::tr("The viewer showing this node leaves these branches unloaded. Load them there to list what they hold.");
+
+    ChoiceOption option(kSceneMenuUnsearchedId,
+                        EffectInstance::tr("%1 unloaded branches not searched").arg((qulonglong)unsearched).toStdString(),
+                        tip.toStdString());
+    option.disabled = true;
+
+    return option;
+}
+
+bool
+isSceneUnsearchedOption(const std::string& id)
+{
+    return id == kSceneMenuUnsearchedId;
+}
+
+SceneMenuJob::SceneMenuJob(bool noViewer)
+    : _noViewer(noViewer)
+    , _abortInfo(AbortableRenderInfo::create(true, 0))
+{
+}
+
+void
+SceneMenuJob::cancel()
+{
+    _abortInfo->setAborted();
+}
+
+bool
+SceneMenuJob::isCancelled() const
+{
+    return _abortInfo->isAborted();
+}
+
+void
+SceneMenuJob::wait() const
+{
+    std::unique_lock<std::mutex> l(_lock);
+
+    _done.wait(l, [this]() { return _finished; });
+}
+
+bool
+SceneMenuJob::isDone() const
+{
+    std::lock_guard<std::mutex> l(_lock);
+
+    return _finished;
+}
+
+SceneMenuJob::Result
+SceneMenuJob::getResult() const
+{
+    std::lock_guard<std::mutex> l(_lock);
+
+    return _result;
+}
+
+void
+SceneMenuJob::finish(const Result& result)
+{
+    {
+        std::lock_guard<std::mutex> l(_lock);
+        _result = result;
+        _finished = true;
+    }
+    _done.notify_all();
+}
+
+struct SceneWorker::Implementation {
+    std::mutex lock;
+    std::condition_variable wake;
+    bool stopping = false;
+    bool started = false;
+    bool pending = false;
+    Task pendingRun;
+    Task pendingDropped;
+
+    void loop();
+};
+
+namespace {
+// The threads of every worker, for joinAll(). Never destroyed: a thread joinAll() gave up on may
+// still reach it while the process exits.
+struct SceneWorkerThreads {
+    std::mutex lock;
+    std::condition_variable ended;
+    std::size_t running = 0;
+    bool shutDown = false;
+    std::vector<std::weak_ptr<SceneWorker::Implementation>> workers;
+};
+
+SceneWorkerThreads&
+sceneWorkerThreads()
+{
+    static SceneWorkerThreads* threads = new SceneWorkerThreads;
+
+    return *threads;
+}
+
+// Releases the Python GIL while the calling thread waits, if it holds it: a job may need the GIL
+// (expressions) to finish.
+class PythonUnlockedWhileJoining {
+public:
+    PythonUnlockedWhileJoining()
+        : _state(nullptr)
+    {
+        if (Py_IsInitialized() && PyGILState_Check()) {
+            _state = PyEval_SaveThread();
+        }
+    }
+
+    ~PythonUnlockedWhileJoining()
+    {
+        if (_state) {
+            PyEval_RestoreThread(_state);
+        }
+    }
+
+    PythonUnlockedWhileJoining(const PythonUnlockedWhileJoining&) = delete;
+    PythonUnlockedWhileJoining& operator=(const PythonUnlockedWhileJoining&) = delete;
+
+private:
+    PyThreadState* _state;
+};
+
+void
+callDropped(const SceneWorker::Task& dropped)
+{
+    if (!dropped) {
+        return;
+    }
+    try {
+        dropped();
+    } catch (...) {
+    }
+}
+
+// Sets imp stopping and returns its waiting job's dropped callback, for the caller to call unlocked.
+SceneWorker::Task
+stopWorker(SceneWorker::Implementation* imp)
+{
+    SceneWorker::Task dropped;
+    {
+        std::lock_guard<std::mutex> l(imp->lock);
+        imp->stopping = true;
+        if (imp->pending) {
+            dropped.swap(imp->pendingDropped);
+            imp->pendingRun = SceneWorker::Task();
+            imp->pending = false;
+        }
+    }
+    imp->wake.notify_one();
+
+    return dropped;
+}
+} // anonymous namespace
+
+void
+SceneWorker::Implementation::loop()
+{
+    for (;;) {
+        Task run;
+        {
+            std::unique_lock<std::mutex> l(lock);
+            wake.wait(l, [this]() { return stopping || pending; });
+            if (stopping) {
+                break;
+            }
+            run.swap(pendingRun);
+            pendingDropped = Task();
+            pending = false;
+        }
+        try {
+            run();
+        } catch (...) {
+        }
+    }
+    SceneWorkerThreads& threads = sceneWorkerThreads();
+    {
+        std::lock_guard<std::mutex> l(threads.lock);
+        --threads.running;
+    }
+    threads.ended.notify_all();
+}
+
+SceneWorker::SceneWorker()
+    : _imp(std::make_shared<Implementation>())
+{
+}
+
+SceneWorker::~SceneWorker()
+{
+    stop();
+}
+
+void
+SceneWorker::post(const Task& run,
+                  const Task& dropped)
+{
+    Task replaced;
+    bool start = false;
+    {
+        std::lock_guard<std::mutex> l(_imp->lock);
+        if (_imp->stopping) {
+            replaced = dropped;
+        } else {
+            if (_imp->pending) {
+                replaced.swap(_imp->pendingDropped);
+            }
+            _imp->pendingRun = run;
+            _imp->pendingDropped = dropped;
+            _imp->pending = true;
+            start = !_imp->started;
+            _imp->started = true;
+        }
+    }
+    if (start) {
+        SceneWorkerThreads& threads = sceneWorkerThreads();
+        bool refused = false;
+        {
+            std::lock_guard<std::mutex> l(threads.lock);
+            refused = threads.shutDown;
+            if (!refused) {
+                ++threads.running;
+                threads.workers.erase(std::remove_if(threads.workers.begin(), threads.workers.end(), [](const std::weak_ptr<Implementation>& worker) { return worker.expired(); }), threads.workers.end());
+                threads.workers.push_back(_imp);
+            }
+        }
+        if (refused) {
+            callDropped(stopWorker(_imp.get()));
+        } else {
+            std::shared_ptr<Implementation> imp = _imp;
+            std::thread([imp]() { imp->loop(); }).detach();
+        }
+    }
+    _imp->wake.notify_one();
+    callDropped(replaced);
+}
+
+void
+SceneWorker::stop()
+{
+    callDropped(stopWorker(_imp.get()));
+}
+
+bool
+SceneWorker::joinAll(int timeoutMs)
+{
+    SceneWorkerThreads& threads = sceneWorkerThreads();
+    std::vector<std::shared_ptr<Implementation>> workers;
+    {
+        std::lock_guard<std::mutex> l(threads.lock);
+        threads.shutDown = true;
+        for (const std::weak_ptr<Implementation>& weak : threads.workers) {
+            if (const std::shared_ptr<Implementation> worker = weak.lock()) {
+                workers.push_back(worker);
+            }
+        }
+        threads.workers.clear();
+    }
+    for (const std::shared_ptr<Implementation>& worker : workers) {
+        callDropped(stopWorker(worker.get()));
+    }
+    workers.clear();
+    PythonUnlockedWhileJoining unlocked;
+    std::unique_lock<std::mutex> l(threads.lock);
+
+    return threads.ended.wait_for(l, std::chrono::milliseconds(timeoutMs), [&threads]() { return threads.running == 0; });
+}
+
+struct SceneMenuRefresh::State {
+    std::mutex lock;
+    std::shared_ptr<SceneMenuJob> current;
+    SceneWorker worker;
+    const U64 noViewerId = SceneEvaluationContext::makeId();
+    const U64 mappedId = SceneEvaluationContext::makeId();
+    // The rest is main thread only.
+    RerunFunc rerun;
+    std::weak_ptr<EffectInstance> effect;
+    // What the latest refresh searched on, and its job.
+    bool searched = false;
+    SceneLoadSetPtr searchedLoadSet;
+    SceneLoadReachPtr searchedReach;
+    bool searchedNoViewer = false;
+    std::shared_ptr<SceneMenuJob> latest;
+    // Set while followLoadChanges() reruns the refresh.
+    bool followingLoad = false;
+
+    ~State()
+    {
+        EffectInstance::retireSceneContextId(noViewerId);
+        EffectInstance::retireSceneContextId(mappedId);
+    }
+};
+
+namespace {
+std::mutex menuRefreshRegistryLock;
+std::vector<std::weak_ptr<SceneMenuRefresh::State>> menuRefreshRegistry;
+std::atomic<bool> followLoadChangesPending(false);
+
+// Whether a refresh searching on loadSet, with no viewer when noViewer, may find other entries than the last one did.
+bool
+loadChangeReachesSearch(const SceneMenuRefresh::State& state,
+                        const SceneLoadSetPtr& loadSet,
+                        bool noViewer)
+{
+    if (noViewer != state.searchedNoViewer) {
+        return true;
+    }
+    const bool sameLoadSet = state.searchedLoadSet ? (loadSet && (*state.searchedLoadSet == *loadSet)) : !loadSet;
+    if (sameLoadSet) {
+        return false;
+    }
+    // A search still running, or cut short, has not gathered its whole reach.
+    if (!state.searchedReach || !state.latest || !state.latest->isDone() || state.latest->isCancelled()) {
+        return true;
+    }
+
+    return SceneOps::loadChangeReaches(state.searchedLoadSet.get(), loadSet.get(), state.searchedReach->getPrefixes());
+}
+} // anonymous namespace
+
+SceneMenuRefresh::SceneMenuRefresh()
+    : _state(std::make_shared<State>())
+{
+    std::lock_guard<std::mutex> l(menuRefreshRegistryLock);
+
+    menuRefreshRegistry.erase(std::remove_if(menuRefreshRegistry.begin(), menuRefreshRegistry.end(), [](const std::weak_ptr<State>& state) { return state.expired(); }), menuRefreshRegistry.end());
+    menuRefreshRegistry.push_back(_state);
+}
+
+void
+SceneMenuRefresh::setRerun(const RerunFunc& rerun)
+{
+    _state->rerun = rerun;
+}
+
+SceneMenuRefresh::~SceneMenuRefresh()
+{
+    {
+        std::lock_guard<std::mutex> l(_state->lock);
+        if (_state->current) {
+            _state->current->cancel();
+        }
+    }
+    _state->worker.stop();
+}
+
+SceneEvaluationContext
+SceneMenuRefresh::getContext(EffectInstance* effect,
+                             bool* noViewer) const
+{
+    SceneEvaluationContext context;
+    SceneEvaluationContext viewerContext;
+
+    bool ownSet = false;
+    *noViewer = !SceneNodeAuthoring::getShowingViewerContext(effect, &context, &viewerContext, &ownSet);
+    if (*noViewer) {
+        context = SceneEvaluationContext(_state->noViewerId, std::make_shared<const SceneLoadSet>(SceneLoadSet::none()));
+    } else if (ownSet || !context.hasSameLoadSet(viewerContext)) {
+        // A set mapped through the graph must not share the memos the viewer's own id keys.
+        context.id = _state->mappedId;
+    }
+    context.reach = std::make_shared<SceneLoadReach>();
+
+    return context;
+}
+
+U64
+SceneMenuRefresh::getMappedContextId() const
+{
+    return _state->mappedId;
+}
+
+std::shared_ptr<SceneMenuJob>
+SceneMenuRefresh::start(EffectInstance* effect,
+                        const SceneEvaluationContext& context,
+                        bool noViewer,
+                        const WorkFunc& work,
+                        const ApplyFunc& apply)
+{
+    if (_state->followingLoad && _state->searched && !loadChangeReachesSearch(*_state, context.loadSet, noViewer)) {
+        return std::shared_ptr<SceneMenuJob>();
+    }
+    std::shared_ptr<SceneMenuJob> job = std::make_shared<SceneMenuJob>(noViewer);
+    _state->effect = effect ? effect->weak_from_this() : std::weak_ptr<EffectInstance>();
+    _state->searched = true;
+    _state->searchedLoadSet = context.loadSet;
+    _state->searchedReach = context.reach;
+    _state->searchedNoViewer = noViewer;
+    _state->latest = job;
+    {
+        std::lock_guard<std::mutex> l(_state->lock);
+        if (_state->current) {
+            _state->current->cancel();
+        }
+        _state->current = job;
+    }
+    std::weak_ptr<State> weakState = _state;
+    std::weak_ptr<EffectInstance> weakEffect = effect ? effect->weak_from_this() : std::weak_ptr<EffectInstance>();
+    _state->worker.post([job, work, apply, weakState, weakEffect]() {
+        SceneMenuJob::Result result;
+        if (!job->isCancelled()) {
+            try {
+                work(*job, &result);
+            } catch (...) {
+                result = SceneMenuJob::Result();
+            }
+        }
+        job->finish(result);
+        if (job->isCancelled() || !QCoreApplication::instance()) {
+            return;
+        }
+        QMetaObject::invokeMethod(QCoreApplication::instance(), [job, apply, weakState, weakEffect]() {
+            const std::shared_ptr<State> state = weakState.lock();
+            const EffectInstancePtr effect = weakEffect.lock();
+            if (state && effect && effect->getNode()) {
+                apply(job);
+            } }, Qt::QueuedConnection); }, [job]() { job->finish(SceneMenuJob::Result()); });
+
+    return job;
+}
+
+bool
+SceneMenuRefresh::take(const std::shared_ptr<SceneMenuJob>& job)
+{
+    if (!job || !job->isDone() || job->isCancelled()) {
+        return false;
+    }
+    std::lock_guard<std::mutex> l(_state->lock);
+    if (_state->current != job) {
+        return false;
+    }
+    _state->current.reset();
+
+    return true;
+}
+
+std::vector<std::shared_ptr<SceneMenuJob>>
+SceneMenuRefresh::followLoadChanges()
+{
+    followLoadChangesPending = false;
+    std::vector<std::shared_ptr<State>> states;
+    {
+        std::lock_guard<std::mutex> l(menuRefreshRegistryLock);
+        for (const std::weak_ptr<State>& weak : menuRefreshRegistry) {
+            if (const std::shared_ptr<State> state = weak.lock()) {
+                states.push_back(state);
+            }
+        }
+    }
+    std::vector<std::shared_ptr<SceneMenuJob>> jobs;
+    for (const std::shared_ptr<State>& state : states) {
+        // A refresh never run has nothing to follow; one whose node is gone has no one to rerun it.
+        if (!state->searched || !state->rerun || state->effect.expired()) {
+            continue;
+        }
+        state->followingLoad = true;
+        std::shared_ptr<SceneMenuJob> job;
+        try {
+            job = state->rerun();
+        } catch (...) {
+            job.reset();
+        }
+        state->followingLoad = false;
+        if (job) {
+            jobs.push_back(job);
+        }
+    }
+
+    return jobs;
+}
+
+void
+SceneMenuRefresh::scheduleFollowLoadChanges()
+{
+    if (!QCoreApplication::instance() || followLoadChangesPending.exchange(true)) {
+        return;
+    }
+    QMetaObject::invokeMethod(QCoreApplication::instance(), []() { followLoadChanges(); }, Qt::QueuedConnection);
 }
 
 std::string
@@ -310,7 +819,248 @@ followSceneNodeRename(const KnobStringPtr& knob,
     }
 }
 
+namespace {
+// Evaluation contexts a pattern's matches are kept for at once.
+const std::size_t kPatternCacheEntries = 4;
+} // anonymous namespace
+
+struct PrimPatternCache::State {
+    struct Entry {
+        U64 context = 0;
+        ScenePayload upstream;
+        std::string pattern;
+        U64 filterKey = 0;
+        SceneLoadSetPtr loadSet;
+        // SceneOps::getLoadReach() of the pattern's prefixes on the stage the matches came from.
+        std::vector<std::string> loadReach;
+        SceneNodeAuthoring::PatternMatches matches;
+    };
+
+    mutable std::mutex mutex;
+    // Most recently used first.
+    std::list<Entry> entries;
+    U64 queryCount = 0;
+};
+
+PrimPatternCache::PrimPatternCache()
+    : _state(new State)
+{
+}
+
+PrimPatternCache::~PrimPatternCache()
+{
+}
+
+void
+PrimPatternCache::invalidate()
+{
+    std::lock_guard<std::mutex> lock(_state->mutex);
+
+    _state->entries.clear();
+}
+
+U64
+PrimPatternCache::getQueryCount() const
+{
+    std::lock_guard<std::mutex> lock(_state->mutex);
+
+    return _state->queryCount;
+}
+
+PrimPatternCache::State&
+PrimPatternCache::getState()
+{
+    return *_state;
+}
+
+namespace {
+bool
+borrowFor(const ScenePayload& upstream,
+          const SceneEvaluationContext& context,
+          SceneQueryPool::Lease* lease,
+          std::string* errorMessage)
+{
+    if (!lease->isValid()) {
+        *lease = SceneQueryPool::instance().borrow(upstream, context.loadSet, errorMessage);
+    }
+    if (!lease->getStage()) {
+        if (errorMessage->empty()) {
+            *errorMessage = EffectInstance::tr("USD could not compose the input scene.").toStdString();
+        }
+
+        return false;
+    }
+
+    return true;
+}
+
+bool
+isUnloadedPayload(const PXR_NS::UsdPrim& prim)
+{
+    return prim.HasAuthoredPayloads() && !prim.IsLoaded();
+}
+} // anonymous namespace
+
 namespace SceneNodeAuthoring {
+bool
+matchPattern(PrimPatternCache* cache,
+             const ScenePayload& upstream,
+             const std::string& pattern,
+             const SceneEvaluationContext& context,
+             U64 filterKey,
+             const PatternFilter& filter,
+             SceneQueryPool::Lease* lease,
+             PatternMatches* matches,
+             std::string* errorMessage,
+             bool traverseInstanceProxies)
+{
+    *matches = PatternMatches();
+    if (traverseInstanceProxies) {
+        // The cache tells the two searches apart by the key alone.
+        ContentHasher key;
+        key.appendU64(filterKey);
+        key.appendBool(true);
+        filterKey = key.finalize();
+    }
+    PrimSelector::Reach reach;
+    if (!PrimSelector::getReach(pattern, &reach, errorMessage)) {
+        return false;
+    }
+    if (upstream.isEmpty() || PrimSelector::isBlank(pattern)) {
+        return true;
+    }
+    PrimPatternCache::State& state = cache->getState();
+    {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        for (std::list<PrimPatternCache::State::Entry>::iterator it = state.entries.begin(); it != state.entries.end(); ++it) {
+            if ((it->pattern != pattern) || (it->filterKey != filterKey) || !it->upstream.isSameStack(upstream)
+                || (it->upstream.getStackHash() != upstream.getStackHash())) {
+                continue;
+            }
+            const bool sameLoadSet = it->loadSet ? (context.loadSet && (*it->loadSet == *context.loadSet)) : !context.loadSet;
+            // Literal paths in a partial load set match by what is loaded above them.
+            if (!sameLoadSet && (reach.literalOnly || SceneOps::loadChangeReaches(it->loadSet.get(), context.loadSet.get(), it->loadReach))) {
+                continue;
+            }
+            *matches = it->matches;
+            if (context.reach) {
+                context.reach->add(it->loadReach);
+            }
+            PrimPatternCache::State::Entry entry = *it;
+            entry.context = context.id;
+            entry.upstream = upstream;
+            entry.loadSet = context.loadSet;
+            state.entries.erase(it);
+            for (std::list<PrimPatternCache::State::Entry>::iterator own = state.entries.begin(); own != state.entries.end(); ++own) {
+                if (own->context == context.id) {
+                    state.entries.erase(own);
+                    break;
+                }
+            }
+            state.entries.push_front(entry);
+
+            return true;
+        }
+        ++state.queryCount;
+    }
+
+    if (!borrowFor(upstream, context, lease, errorMessage)) {
+        if (context.reach) {
+            context.reach->add(reach.prefixes);
+        }
+
+        return false;
+    }
+    const PXR_NS::UsdStageRefPtr stage = lease->getStage();
+    const std::vector<std::string> loadReach = SceneOps::getLoadReach(stage, reach.prefixes);
+    if (context.reach) {
+        context.reach->add(loadReach);
+    }
+    const bool partial = !context.includesEverything();
+    std::vector<PXR_NS::SdfPath> found;
+    if (partial && reach.literalOnly) {
+        for (const std::string& literal : reach.literals) {
+            const PXR_NS::SdfPath path(literal);
+            const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(path);
+            if (prim) {
+                if (prim.IsActive() && prim.IsDefined() && !prim.IsAbstract() && (!filter || filter(prim))) {
+                    found.push_back(path);
+                }
+                continue;
+            }
+            if (filter) {
+                continue;
+            }
+            for (PXR_NS::SdfPath ancestor = path.GetParentPath(); !ancestor.IsEmpty() && !ancestor.IsAbsoluteRootPath(); ancestor = ancestor.GetParentPath()) {
+                const PXR_NS::UsdPrim above = stage->GetPrimAtPath(ancestor);
+                if (above) {
+                    if (above.IsActive() && isUnloadedPayload(above)) {
+                        found.push_back(path);
+                    }
+                    break;
+                }
+            }
+        }
+        std::sort(found.begin(), found.end());
+        found.erase(std::unique(found.begin(), found.end()), found.end());
+    } else {
+        std::vector<PXR_NS::SdfPath> selected;
+        if (!SceneOps::selectPrims(stage, pattern, &selected, errorMessage, traverseInstanceProxies)) {
+            return false;
+        }
+        for (const PXR_NS::SdfPath& path : selected) {
+            if (!filter || filter(stage->GetPrimAtPath(path))) {
+                found.push_back(path);
+            }
+        }
+    }
+    matches->paths = found;
+    if (partial && found.empty()) {
+        matches->unsearched = SceneOps::countUnloadedPayloads(stage, reach.prefixes);
+    }
+
+    std::lock_guard<std::mutex> lock(state.mutex);
+    for (std::list<PrimPatternCache::State::Entry>::iterator it = state.entries.begin(); it != state.entries.end(); ++it) {
+        if (it->context == context.id) {
+            state.entries.erase(it);
+            break;
+        }
+    }
+    PrimPatternCache::State::Entry entry;
+    entry.context = context.id;
+    entry.upstream = upstream;
+    entry.pattern = pattern;
+    entry.filterKey = filterKey;
+    entry.loadSet = context.loadSet;
+    entry.loadReach = loadReach;
+    entry.matches = *matches;
+    state.entries.push_front(entry);
+    if (state.entries.size() > kPatternCacheEntries) {
+        state.entries.pop_back();
+    }
+
+    return true;
+} // matchPattern
+
+std::string
+describeNoMatch(const std::string& pattern,
+                const PatternMatches& matches,
+                const std::string& consequence)
+{
+    if (matches.unsearched > 0) {
+        return EffectInstance::tr("The prim pattern \"%1\" found 0 matches, %2 unloaded branches not searched; %3.")
+            .arg(QString::fromStdString(pattern))
+            .arg((qulonglong)matches.unsearched)
+            .arg(QString::fromStdString(consequence))
+            .toStdString();
+    }
+
+    return EffectInstance::tr("The prim pattern \"%1\" matches no prim; %2.")
+        .arg(QString::fromStdString(pattern))
+        .arg(QString::fromStdString(consequence))
+        .toStdString();
+}
+
 double
 getTimeCodesPerSecond(const SceneLayerEdit& edit)
 {
@@ -403,24 +1153,42 @@ openLayerStage(const SceneLayerEdit& edit,
     return stage;
 }
 
+namespace {
+    bool
+    getPrimPathFrom(const std::string& value,
+                    PXR_NS::SdfPath* path,
+                    std::string* errorMessage)
+    {
+        if (PXR_NS::SdfPath::IsValidPathString(value)) {
+            const PXR_NS::SdfPath candidate(value);
+            if (candidate.IsAbsolutePath() && candidate.IsPrimPath()) {
+                *path = candidate;
+
+                return true;
+            }
+        }
+        *errorMessage = EffectInstance::tr("\"%1\" is not an absolute prim path such as /World/Prim.").arg(QString::fromStdString(value)).toStdString();
+
+        return false;
+    }
+} // anonymous namespace
+
 bool
 getPrimPath(const KnobStringPtr& knob,
             PXR_NS::SdfPath* path,
             std::string* errorMessage)
 {
-    const std::string value = knob ? knob->getValue() : std::string();
+    return getPrimPathFrom(knob ? knob->getValue() : std::string(), path, errorMessage);
+}
 
-    if (PXR_NS::SdfPath::IsValidPathString(value)) {
-        const PXR_NS::SdfPath candidate(value);
-        if (candidate.IsAbsolutePath() && candidate.IsPrimPath()) {
-            *path = candidate;
-
-            return true;
-        }
-    }
-    *errorMessage = EffectInstance::tr("\"%1\" is not an absolute prim path such as /World/Prim.").arg(QString::fromStdString(value)).toStdString();
-
-    return false;
+bool
+getPrimPath(const KnobStringPtr& knob,
+            double time,
+            ViewIdx view,
+            PXR_NS::SdfPath* path,
+            std::string* errorMessage)
+{
+    return getPrimPathFrom(knob ? knob->getValueAtTime(time, 0, view) : std::string(), path, errorMessage);
 }
 
 bool
@@ -533,7 +1301,17 @@ namespace {
                 return false;
             }
 
-            SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(material, errorMessage);
+            // Only the roots grafted are searched for the material, so a load under one of them
+            // is all that can change what is found.
+            const SceneEvaluationContext& materialContext = args.inputContexts.empty() ? SceneEvaluationContext::current() : args.inputContexts.front();
+            if (materialContext.reach) {
+                std::vector<std::string> rootPaths;
+                for (const SceneRootGraft& root : grafts) {
+                    rootPaths.push_back(root.sourcePath);
+                }
+                materialContext.reach->add(rootPaths);
+            }
+            SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(material, materialContext.loadSet, errorMessage);
             const PXR_NS::UsdStageRefPtr stage = lease.getStage();
             if (!stage) {
                 if (errorMessage->empty()) {
@@ -574,6 +1352,7 @@ namespace {
 
 bool
 graftMaterialInput(const ScenePayload& material,
+                   const SceneEvaluationContext& materialContext,
                    const std::string& primPath,
                    const std::string& layerTag,
                    SceneGraftMemo* memo,
@@ -585,12 +1364,30 @@ graftMaterialInput(const ScenePayload& material,
     args.inputs.push_back(material);
     args.destinationPath = primPath;
     args.layerTag = layerTag;
+    args.inputContexts.push_back(materialContext);
 
     return graftMaterial(material, args, memo, graft, errorMessage);
 }
 
+SceneEvaluationContext
+getMaterialInputContext(const SceneEvaluationContext& ctx,
+                        const std::string& primPath)
+{
+    return SceneEvaluationContext(ctx.id, SceneOps::mapGraftLoadSet(ctx.loadSet, primPath, std::string(), false));
+}
+
+void
+mapMaterialInputReach(SceneGraftMemo* memo,
+                      const std::string& primPath,
+                      const std::vector<std::string>& in,
+                      std::vector<std::string>* out)
+{
+    SceneOps::mapGraftReach(memo, 0, primPath, std::string(), in, out);
+}
+
 bool
 graftSharedMaterial(const ScenePayload& material,
+                    const SceneEvaluationContext& materialContext,
                     const std::string& scope,
                     const std::string& layerTag,
                     SceneGraftMemo* memo,
@@ -610,8 +1407,263 @@ graftSharedMaterial(const ScenePayload& material,
     args.ancestorType = "Scope";
     args.passThroughRoot = scope;
     args.layerTag = layerTag;
+    args.inputContexts.push_back(materialContext);
 
     return graftMaterial(material, args, memo, graft, errorMessage);
+}
+
+namespace {
+    bool
+    reachesTarget(const EffectInstance* consumer,
+                  const EffectInstance* target,
+                  std::map<const EffectInstance*, bool>* memo)
+    {
+        if (consumer == target) {
+            return true;
+        }
+        const std::map<const EffectInstance*, bool>::const_iterator known = memo->find(consumer);
+        if (known != memo->end()) {
+            return known->second;
+        }
+        bool reaches = false;
+        const int nInputs = consumer->getNInputs();
+        for (int i = 0; (i < nInputs) && !reaches; ++i) {
+            const EffectInstancePtr input = consumer->getInput(i);
+            reaches = input && input->producesSceneData() && reachesTarget(input.get(), target, memo);
+        }
+        (*memo)[consumer] = reaches;
+
+        return reaches;
+    }
+
+    // Unites into *united the sets target would evaluate on through every route from consumer.
+    void
+    mapThroughRoutes(const EffectInstance* consumer,
+                     const EffectInstance* target,
+                     const SceneEvaluationContext& ctx,
+                     double time,
+                     ViewIdx view,
+                     std::map<const EffectInstance*, bool>* memo,
+                     bool* hasRoute,
+                     SceneLoadSetPtr* united,
+                     U64* firstRouteId,
+                     SceneEvaluationContext* firstRoute)
+    {
+        if (consumer == target) {
+            if (!*hasRoute) {
+                *firstRouteId = ctx.id;
+                *firstRoute = ctx;
+            }
+            *united = *hasRoute ? SceneLoadSet::unite(*united, ctx.loadSet) : ctx.loadSet;
+            *hasRoute = true;
+
+            return;
+        }
+        // As evaluateScene() does, a node passing a scene through evaluates only that one, on ctx.
+        double identityTime = time;
+        ViewIdx identityView = view;
+        int identityInputNb = -1;
+        if (consumer->getSceneIdentity(time, view, &identityTime, &identityView, &identityInputNb)) {
+            if (identityInputNb == -2) {
+                if (identityTime != time) {
+                    mapThroughRoutes(consumer, target, ctx, identityTime, identityView, memo, hasRoute, united, firstRouteId, firstRoute);
+                }
+
+                return;
+            }
+            const EffectInstancePtr source = consumer->getIdentitySource(identityInputNb);
+            if (source && source->producesSceneData() && reachesTarget(source.get(), target, memo)) {
+                mapThroughRoutes(source.get(), target, ctx, identityTime, identityView, memo, hasRoute, united, firstRouteId, firstRoute);
+            }
+
+            return;
+        }
+        const int nInputs = consumer->getNInputs();
+        for (int i = 0; i < nInputs; ++i) {
+            const EffectInstancePtr input = consumer->getInput(i);
+            if (!input || !input->producesSceneData() || !reachesTarget(input.get(), target, memo)) {
+                continue;
+            }
+            SceneEvaluationContext inputContext;
+            try {
+                inputContext = consumer->getEvaluatedSceneInputContext(i, ctx, time, view);
+            } catch (...) {
+                // A mapping that fails is one nothing is known about, which is every payload.
+                inputContext = SceneEvaluationContext(ctx.id, SceneLoadSetPtr());
+            }
+            mapThroughRoutes(input.get(), target, inputContext, time, view, memo, hasRoute, united, firstRouteId, firstRoute);
+        }
+    }
+} // anonymous namespace
+
+bool
+mapContextDownToNode(const EffectInstance* consumer,
+                     const EffectInstance* target,
+                     const SceneEvaluationContext& ctx,
+                     double time,
+                     ViewIdx view,
+                     SceneEvaluationContext* mapped,
+                     bool* ownSet)
+{
+    std::map<const EffectInstance*, bool> memo;
+    if (!consumer || !target || !reachesTarget(consumer, target, &memo)) {
+        return false;
+    }
+    bool hasRoute = false;
+    SceneLoadSetPtr united;
+    U64 firstRouteId = ctx.id;
+    SceneEvaluationContext firstRoute;
+    mapThroughRoutes(consumer, target, ctx, time, view, &memo, &hasRoute, &united, &firstRouteId, &firstRoute);
+    *mapped = SceneEvaluationContext(firstRouteId, united);
+    if (ownSet) {
+        *ownSet = hasRoute && !mapped->hasSameLoadSet(firstRoute);
+    }
+
+    return hasRoute;
+}
+
+bool
+getShowingViewerContext(EffectInstance* effect,
+                        SceneEvaluationContext* context,
+                        SceneEvaluationContext* viewerContext,
+                        bool* ownSet)
+{
+    const NodePtr node = effect ? effect->getNode() : NodePtr();
+    if (!node) {
+        return false;
+    }
+    std::list<ViewerInstance*> downstream;
+    Node::getViewersDownstreamOf(std::list<NodePtr>(1, node), &downstream);
+    if (downstream.empty()) {
+        return false;
+    }
+    std::vector<ViewerInstance*> candidates;
+    const AppInstancePtr app = effect->getApp();
+    const std::list<NodePtr> recent = app ? app->getViewerNodesByRecentActivity() : std::list<NodePtr>();
+    for (const NodePtr& viewerNode : recent) {
+        for (ViewerInstance* viewer : downstream) {
+            if ((viewer->getNode() == viewerNode) && (std::find(candidates.begin(), candidates.end(), viewer) == candidates.end())) {
+                candidates.push_back(viewer);
+            }
+        }
+    }
+    for (ViewerInstance* viewer : downstream) {
+        if (std::find(candidates.begin(), candidates.end(), viewer) == candidates.end()) {
+            candidates.push_back(viewer);
+        }
+    }
+    const double time = effect->getCurrentTime();
+    for (ViewerInstance* viewer : candidates) {
+        const SceneEvaluationContext shown = viewer->getSceneEvaluationContext();
+        if (mapContextDownToNode(viewer, effect, shown, time, ViewIdx(0), context, ownSet)) {
+            if (viewerContext) {
+                *viewerContext = shown;
+            }
+
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool
+borrowMenuScene(const EffectInstanceWPtr& input,
+                double time,
+                const SceneEvaluationContext& context,
+                const SceneMenuJob& job,
+                ScenePayload* scene,
+                SceneQueryPool::Lease* lease)
+{
+    if (job.isCancelled()) {
+        return false;
+    }
+    EffectInstancePtr effect = input.lock();
+    if (!effect) {
+        return false;
+    }
+    std::string error;
+    const EffectInstance::RenderRoIRetCode code = effect->evaluateScene(EffectInstance::EvaluateSceneArgs(time, ViewIdx(0), context, job.getAbortInfo()), scene, &error);
+    std::shared_ptr<const EffectInstance> held = std::move(effect);
+    releaseOnMainThread(&held);
+    if ((code != EffectInstance::eRenderRoIRetCodeOk) || scene->isEmpty() || job.isCancelled()) {
+        return false;
+    }
+    *lease = SceneQueryPool::instance().borrow(*scene, context.loadSet, &error);
+
+    return lease->isValid();
+}
+
+void
+releaseOnMainThread(std::shared_ptr<const EffectInstance>* effect)
+{
+    QCoreApplication* app = QCoreApplication::instance();
+    if (!*effect || !app || (QThread::currentThread() == app->thread())) {
+        effect->reset();
+
+        return;
+    }
+    // A copy left on this thread would drop the last reference here, off the main thread.
+    auto release = [held = std::move(*effect)]() mutable { held.reset(); };
+    QMetaObject::invokeMethod(app, std::move(release), Qt::QueuedConnection);
+}
+
+std::size_t
+countMenuUnsearched(const PXR_NS::UsdStageRefPtr& stage,
+                    const SceneEvaluationContext& context)
+{
+    if (!stage || context.includesEverything()) {
+        return 0;
+    }
+
+    return SceneOps::countUnloadedPayloads(stage, std::vector<std::string>(1, std::string("/")));
+}
+
+SceneEvaluationContext
+getCameraInputContext(const SceneEvaluationContext& ctx,
+                      const std::string& cameraPath)
+{
+    if (!PXR_NS::SdfPath::IsValidPathString(cameraPath) || !PXR_NS::SdfPath(cameraPath).IsAbsolutePath() || !PXR_NS::SdfPath(cameraPath).IsPrimPath()) {
+        return ctx;
+    }
+
+    return SceneEvaluationContext(ctx.id, SceneLoadSet::withPaths(std::make_shared<const SceneLoadSet>(SceneLoadSet::none()), std::vector<std::string>(1, cameraPath)));
+}
+
+SceneEvaluationContext
+getCameraMenuContext(const SceneEvaluationContext& ctx,
+                     const std::string& cameraPath)
+{
+    if (!PXR_NS::SdfPath::IsValidPathString(cameraPath) || !PXR_NS::SdfPath(cameraPath).IsAbsolutePath() || !PXR_NS::SdfPath(cameraPath).IsPrimPath()) {
+        return ctx;
+    }
+
+    return SceneEvaluationContext(ctx.id, SceneLoadSet::withPaths(ctx.loadSet, std::vector<std::string>(1, cameraPath)), ctx.reach);
+}
+
+SceneEvaluationContext
+getSharedMaterialContext(const SceneEvaluationContext& ctx,
+                         const std::string& scope)
+{
+    if (scope.empty()) {
+        return ctx;
+    }
+
+    return SceneEvaluationContext(ctx.id, SceneOps::mapGraftLoadSet(ctx.loadSet, "/" + scope, scope, false));
+}
+
+void
+mapSharedMaterialReach(SceneGraftMemo* memo,
+                       const std::string& scope,
+                       const std::vector<std::string>& in,
+                       std::vector<std::string>* out)
+{
+    if (scope.empty()) {
+        *out = in;
+
+        return;
+    }
+    SceneOps::mapGraftReach(memo, 0, "/" + scope, scope, in, out);
 }
 
 std::vector<PXR_NS::TfToken>
@@ -1243,12 +2295,8 @@ getLiveTextureSource(const EffectInstance& consumer,
 
         return true;
     }
-    NodePtr node = connected->getNode();
-    const double time = consumer.getCurrentTime();
     // A disabled node renders as its preferred input, so the texture shows what the render would.
-    while (node && node->isNodeDisabled(time)) {
-        node = node->getPreferredInputNode();
-    }
+    const NodePtr node = resolveDisabledNode(connected->getNode(), consumer.getCurrentTime());
     const EffectInstancePtr input = node ? node->getEffectInstance() : EffectInstancePtr();
     if (!input) {
         return false;

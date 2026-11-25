@@ -27,8 +27,14 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <functional>
+#include <limits>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -37,6 +43,7 @@
 
 #include "BaseTest.h"
 
+#include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/GeoDetail.h"
@@ -45,11 +52,17 @@
 #include "Engine/Nodes/Geometry/GeoCopyToPoints.h"
 #include "Engine/Nodes/Geometry/GeoPrimitive.h"
 #include "Engine/Nodes/Geometry/GeoToUSD.h"
+#include "Engine/Nodes/Geometry/GeoUsdConvert.h"
 #include "Engine/Nodes/Scene/ScenePayloadImpl.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
+#include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
 #include "Engine/ScenePayload.h"
+#include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
+
+#include <pxr/usd/usdGeom/basisCurves.h>
+#include <pxr/usd/usdGeom/points.h>
 
 NATRON_NAMESPACE_USING
 
@@ -67,6 +80,83 @@ geometryLayer(const ScenePayload& payload)
     return imp->top.dependencies->layers.front();
 }
 
+GeoOffset
+addQuad(GeoDetailBuilder& b,
+        double x)
+{
+    const GeoOffset first = b.appendPoints(4);
+    b.setPointPosition(first, x, 0., 0.);
+    b.setPointPosition(first + 1, x + 1., 0., 0.);
+    b.setPointPosition(first + 2, x + 1., 1., 0.);
+    b.setPointPosition(first + 3, x, 1., 0.);
+    const GeoOffset corners[] = { first, first + 1, first + 2, first + 3 };
+    b.appendPrimitive(eGeoPrimitivePolygon, corners);
+
+    return first;
+}
+
+// Quads at /geo/a, /geo/b and /geo/c; the second is in the primitive group "sel".
+GeoDetailConstPtr
+makeThreePathedQuads()
+{
+    GeoDetailBuilder b;
+    addQuad(b, 0.);
+    addQuad(b, 5.);
+    addQuad(b, 10.);
+    GeoAttributeDesc pathDesc;
+    pathDesc.name = "path";
+    pathDesc.storage = eGeoStorageString;
+    GeoAttribute& path = b.addAttribute(eGeoAttribClassPrimitive, pathDesc);
+    path.setString(0, "/geo/a");
+    path.setString(1, "/geo/b");
+    path.setString(2, "/geo/c");
+    b.addGroup(eGeoAttribClassPrimitive, "sel").add(GeoOffset(1));
+
+    return std::make_shared<const GeoDetail>(b.finish());
+}
+
+// Unpathed: a quad on points 0-3, a polyline on points 4-6, and loose points 7 and 8.
+GeoDetailConstPtr
+makeMixedUnpathed()
+{
+    GeoDetailBuilder b;
+    addQuad(b, 0.);
+    const GeoOffset line = b.appendPoints(3);
+    for (int i = 0; i < 3; ++i) {
+        b.setPointPosition(line + i, double(i), 2., 0.);
+    }
+    const GeoOffset linePoints[] = { line, line + 1, line + 2 };
+    b.appendPrimitive(eGeoPrimitivePolyline, linePoints);
+    const GeoOffset loose = b.appendPoints(2);
+    b.setPointPosition(loose, 0., 0., 4.);
+    b.setPointPosition(loose + 1, 1., 0., 4.);
+
+    return std::make_shared<const GeoDetail>(b.finish());
+}
+
+PXR_NS::UsdStageRefPtr
+convertedStage(const GeoDetailConstPtr& detail)
+{
+    const GeoUsdConvert convert(detail, GeoUsdConvertOptions());
+    PXR_NS::SdfLayerRefPtr layer = PXR_NS::SdfLayer::CreateAnonymous("geo.usda");
+    std::string error;
+    EXPECT_TRUE(convert.author(layer, PXR_NS::UsdTimeCode::Default(), &error)) << error;
+
+    return PXR_NS::UsdStage::Open(layer);
+}
+
+GeoDetailConstPtr
+selected(const GeoDetailConstPtr& detail,
+         const std::string& group,
+         GeoGroupTypeEnum type)
+{
+    GeoDetailConstPtr out;
+    std::string error;
+    EXPECT_TRUE(GeoToUSD::selectGeometry(detail, group, type, &out, &error)) << error;
+
+    return out;
+}
+
 } // anonymous namespace
 
 class GeoToSceneTest
@@ -80,6 +170,7 @@ protected:
             }
         }
         _nodes.clear();
+        GeoToUSD::setFrameGatheredHookForTests(std::function<void(double)>());
         SceneQueryPool::instance().releaseIdle();
 
         BaseTest::TearDown();
@@ -170,10 +261,60 @@ protected:
                                           SceneQueryPool::Lease* lease)
     {
         std::string error;
-        *lease = SceneQueryPool::instance().borrow(payload, &error);
+        *lease = SceneQueryPool::instance().borrow(payload, SceneLoadSet::everything(), &error);
         EXPECT_TRUE(lease->isValid()) << error;
 
         return lease->getStage();
+    }
+
+    // A 9x9-segment grid, its size keyed from 1 at frame first to last at frame last, into a
+    // GeoToUSD that copies every frame of the project range into its layer.
+    void buildTimeSampledGrid(double first,
+                              double last)
+    {
+        _grid = make(PLUGINID_NATRON_GEOPRIMITIVE);
+        _toUSD = make(PLUGINID_NATRON_GEOTOUSD);
+        ASSERT_TRUE(_grid && _toUSD);
+        KnobChoice* type = knob<KnobChoice>(_grid, kGeoPrimitiveParamType);
+        ASSERT_TRUE(type != NULL);
+        type->setValueFromID("grid", 0);
+        KnobDouble* size = knob<KnobDouble>(_grid, kGeoPrimitiveParamGridSize);
+        ASSERT_TRUE(size != NULL);
+        size->setValueAtTime(first, 1., ViewSpec::all(), 0);
+        size->setValueAtTime(last, last, ViewSpec::all(), 0);
+        KnobBool* copy = knob<KnobBool>(_toUSD, kGeoToUSDParamCopyIntoLayer);
+        KnobBool* samples = knob<KnobBool>(_toUSD, kGeoToUSDParamAuthorTimeSamples);
+        ASSERT_TRUE(copy && samples);
+        copy->setValue(true);
+        samples->setValue(true);
+        KnobInt* range = dynamic_cast<KnobInt*>(getApp()->getProject()->getKnobByName("frameRange").get());
+        ASSERT_TRUE(range != NULL);
+        range->setValue((int)first, ViewSpec::all(), 0);
+        range->setValue((int)last, ViewSpec::all(), 1);
+        connectNodes(_grid, _toUSD, kGeoToUSDInputGeometry, true);
+    }
+
+    // Evaluates node at frame 1 inside a render that abortInfo aborts.
+    EffectInstance::RenderRoIRetCode evaluateInRender(const NodePtr& node,
+                                                      const AbortableRenderInfoPtr& abortInfo,
+                                                      ScenePayload* payload,
+                                                      std::string* error)
+    {
+        const double time = 1.;
+        ParallelRenderArgsSetter frameRenderArgs(time,
+                                                 ViewIdx(0),
+                                                 true /*isRenderUserInteraction*/,
+                                                 false /*isSequential*/,
+                                                 abortInfo,
+                                                 node,
+                                                 0 /*textureIndex*/,
+                                                 getApp()->getTimeLine().get(),
+                                                 NodePtr(),
+                                                 false /*isAnalysis*/,
+                                                 false /*draftMode*/,
+                                                 RenderStatsPtr());
+
+        return node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(time, ViewIdx(0)), payload, error);
     }
 
     NodePtr _card;
@@ -392,4 +533,187 @@ TEST_F(GeoToSceneTest, CloseSubframesOfAnimatedGeometryGetLayersOfTheirOwn)
     ASSERT_FALSE(second.empty());
     EXPECT_NE(first, second);
     EXPECT_EQ(first, layerIdentifier(_toUSD, a));
+}
+
+TEST_F(GeoToSceneTest, ATimeSampledCopyHasEverySampleInOrder)
+{
+    const double first = 1.;
+    const double last = 24.;
+    buildTimeSampledGrid(first, last);
+    std::atomic<int> gathered(0);
+    GeoToUSD::setFrameGatheredHookForTests([&gathered](double) { ++gathered; });
+
+    const ScenePayload payload = evaluate(_toUSD);
+    EXPECT_EQ((int)(last - first) + 1, gathered.load());
+    SceneQueryPool::Lease lease;
+    const PXR_NS::UsdStageRefPtr stage = stageOf(payload, &lease);
+    ASSERT_TRUE(stage);
+    PXR_NS::UsdGeomMesh mesh;
+    for (const PXR_NS::UsdPrim& prim : stage->Traverse()) {
+        if (prim.IsA<PXR_NS::UsdGeomMesh>()) {
+            mesh = PXR_NS::UsdGeomMesh(prim);
+            break;
+        }
+    }
+    ASSERT_TRUE(static_cast<bool>(mesh));
+    std::vector<double> times;
+    ASSERT_TRUE(mesh.GetPointsAttr().GetTimeSamples(&times));
+    ASSERT_EQ((std::size_t)(last - first) + 1, times.size());
+
+    // Each sample is its own frame's grid: the keyed size grows frame after frame.
+    double previousTime = -std::numeric_limits<double>::infinity();
+    double previousWidth = 0.;
+    for (double time : times) {
+        EXPECT_LT(previousTime, time);
+        PXR_NS::VtVec3fArray points;
+        ASSERT_TRUE(mesh.GetPointsAttr().Get(&points, time));
+        ASSERT_FALSE(points.empty());
+        float low = points[0][0];
+        float high = points[0][0];
+        for (const PXR_NS::GfVec3f& point : points) {
+            low = std::min(low, point[0]);
+            high = std::max(high, point[0]);
+        }
+        const double width = high - low;
+        EXPECT_LT(previousWidth, width) << "at time " << time;
+        previousTime = time;
+        previousWidth = width;
+    }
+}
+
+TEST_F(GeoToSceneTest, AnAbortStopsTheTimeSampleGatherEarly)
+{
+    const double frames = 1000.;
+    buildTimeSampledGrid(1., frames);
+    AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
+    std::atomic<int> gathered(0);
+    GeoToUSD::setFrameGatheredHookForTests([&gathered, abortInfo](double) {
+        if (++gathered == 1) {
+            abortInfo->setAborted();
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    });
+
+    ScenePayload payload;
+    std::string error;
+    EXPECT_NE(EffectInstance::eRenderRoIRetCodeOk, evaluateInRender(_toUSD, abortInfo, &payload, &error));
+    EXPECT_LT(gathered.load(), (int)frames / 2);
+    GeoToUSD::setFrameGatheredHookForTests(std::function<void(double)>());
+
+    ScenePayload complete;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluateInRender(_toUSD, AbortableRenderInfo::create(true, 0), &complete, &error)) << error;
+    EXPECT_FALSE(complete.isEmpty());
+}
+
+TEST(GeoToUSDGroup, ABlankGroupConvertsEverything)
+{
+    const GeoDetailConstPtr detail = makeThreePathedQuads();
+    EXPECT_EQ(detail.get(), selected(detail, std::string(), eGeoGroupTypeGuess).get());
+    EXPECT_EQ(detail.get(), selected(detail, std::string("  "), eGeoGroupTypePoints).get());
+    EXPECT_EQ(detail.get(), selected(detail, std::string("*"), eGeoGroupTypePrimitives).get());
+}
+
+TEST(GeoToUSDGroup, APrimitiveGroupConvertsOnlyItsPrimitivesAtTheirOwnPaths)
+{
+    const GeoDetailConstPtr detail = makeThreePathedQuads();
+    const GeoDetailConstPtr kept = selected(detail, std::string("sel"), eGeoGroupTypeGuess);
+    ASSERT_TRUE(kept != nullptr);
+    EXPECT_EQ(1, kept->primitiveCount());
+    EXPECT_EQ(4, kept->pointCount());
+    const PXR_NS::UsdStageRefPtr stage = convertedStage(kept);
+    ASSERT_TRUE(stage);
+    EXPECT_FALSE(stage->GetPrimAtPath(PXR_NS::SdfPath("/geo/a")).IsValid());
+    EXPECT_FALSE(stage->GetPrimAtPath(PXR_NS::SdfPath("/geo/c")).IsValid());
+    const PXR_NS::UsdGeomMesh mesh(stage->GetPrimAtPath(PXR_NS::SdfPath("/geo/b")));
+    ASSERT_TRUE(static_cast<bool>(mesh));
+    PXR_NS::VtVec3fArray points;
+    ASSERT_TRUE(mesh.GetPointsAttr().Get(&points));
+    ASSERT_EQ(4u, points.size());
+    EXPECT_EQ(PXR_NS::GfVec3f(5.f, 0.f, 0.f), points[0]);
+
+    const PXR_NS::UsdStageRefPtr both = convertedStage(selected(detail, std::string("0 2"), eGeoGroupTypePrimitives));
+    ASSERT_TRUE(both);
+    EXPECT_TRUE(static_cast<bool>(PXR_NS::UsdGeomMesh(both->GetPrimAtPath(PXR_NS::SdfPath("/geo/a")))));
+    EXPECT_TRUE(static_cast<bool>(PXR_NS::UsdGeomMesh(both->GetPrimAtPath(PXR_NS::SdfPath("/geo/c")))));
+    EXPECT_FALSE(both->GetPrimAtPath(PXR_NS::SdfPath("/geo/b")).IsValid());
+}
+
+TEST(GeoToUSDGroup, APrimitiveGroupLeavesOutTheLoosePointsAndUnpathedPrimsKeepTheirNames)
+{
+    const PXR_NS::UsdStageRefPtr stage = convertedStage(selected(makeMixedUnpathed(), std::string("1"), eGeoGroupTypePrimitives));
+    ASSERT_TRUE(stage);
+    const PXR_NS::UsdGeomBasisCurves curves(stage->GetPrimAtPath(PXR_NS::SdfPath("/geo/curves_0")));
+    ASSERT_TRUE(static_cast<bool>(curves));
+    PXR_NS::VtIntArray counts;
+    curves.GetCurveVertexCountsAttr().Get(&counts);
+    EXPECT_EQ(PXR_NS::VtIntArray({ 3 }), counts);
+    EXPECT_FALSE(stage->GetPrimAtPath(PXR_NS::SdfPath("/geo/mesh_0")).IsValid());
+    EXPECT_FALSE(stage->GetPrimAtPath(PXR_NS::SdfPath("/geo/points_0")).IsValid());
+}
+
+TEST(GeoToUSDGroup, APointGroupConvertsThePrimitivesItHoldsWholeAndItsLoosePoints)
+{
+    // The polyline has two of its three points selected: it is left out, and so are those two.
+    const PXR_NS::UsdStageRefPtr stage = convertedStage(selected(makeMixedUnpathed(), std::string("0-5 7"), eGeoGroupTypePoints));
+    ASSERT_TRUE(stage);
+    const PXR_NS::UsdGeomMesh mesh(stage->GetPrimAtPath(PXR_NS::SdfPath("/geo/mesh_0")));
+    ASSERT_TRUE(static_cast<bool>(mesh));
+    PXR_NS::VtVec3fArray meshPoints;
+    ASSERT_TRUE(mesh.GetPointsAttr().Get(&meshPoints));
+    EXPECT_EQ(4u, meshPoints.size());
+    EXPECT_FALSE(stage->GetPrimAtPath(PXR_NS::SdfPath("/geo/curves_0")).IsValid());
+    const PXR_NS::UsdGeomPoints points(stage->GetPrimAtPath(PXR_NS::SdfPath("/geo/points_0")));
+    ASSERT_TRUE(static_cast<bool>(points));
+    PXR_NS::VtVec3fArray positions;
+    ASSERT_TRUE(points.GetPointsAttr().Get(&positions));
+    ASSERT_EQ(1u, positions.size());
+    EXPECT_EQ(PXR_NS::GfVec3f(0.f, 0.f, 4.f), positions[0]);
+}
+
+TEST(GeoToUSDGroup, AMalformedOrEdgePatternIsAnError)
+{
+    const GeoDetailConstPtr detail = makeMixedUnpathed();
+    for (const char* pattern : { "3-x", "p0-1" }) {
+        GeoDetailConstPtr out;
+        std::string error;
+        EXPECT_FALSE(GeoToUSD::selectGeometry(detail, pattern, eGeoGroupTypeGuess, &out, &error)) << pattern;
+        EXPECT_FALSE(error.empty()) << pattern;
+    }
+}
+
+TEST_F(GeoToSceneTest, TheGroupConvertsOnlyTheSelectedPackedCopies)
+{
+    buildScatter();
+    KnobString* group = knob<KnobString>(_toUSD, kGeoToUSDParamGroup);
+    ASSERT_TRUE(group != NULL);
+    group->setValue(std::string("0-49"));
+
+    const ScenePayload payload = evaluate(_toUSD);
+    SceneQueryPool::Lease lease;
+    const PXR_NS::UsdStageRefPtr stage = stageOf(payload, &lease);
+    ASSERT_TRUE(stage);
+    const PXR_NS::UsdGeomPointInstancer instancer(stage->GetPrimAtPath(PXR_NS::SdfPath("/geo/instancer_0")));
+    ASSERT_TRUE(static_cast<bool>(instancer));
+    PXR_NS::VtIntArray indices;
+    ASSERT_TRUE(instancer.GetProtoIndicesAttr().Get(&indices, PXR_NS::UsdTimeCode::Default()));
+    EXPECT_EQ(50u, indices.size());
+}
+
+TEST_F(GeoToSceneTest, AMalformedGroupFailsWithAnError)
+{
+    buildScatter();
+    KnobString* group = knob<KnobString>(_toUSD, kGeoToUSDParamGroup);
+    ASSERT_TRUE(group != NULL);
+    group->setValue(std::string("3-x"));
+
+    ScenePayload payload;
+    std::string error;
+    EXPECT_NE(EffectInstance::eRenderRoIRetCodeOk,
+              _toUSD->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &payload, &error));
+    ASSERT_TRUE(_toUSD->hasPersistentMessage());
+    QString message;
+    int type = -1;
+    _toUSD->getPersistentMessage(&message, &type, false);
+    EXPECT_EQ((int)eMessageTypeError, type);
+    EXPECT_TRUE(message.contains(QString::fromUtf8("malformed"))) << message.toStdString();
 }

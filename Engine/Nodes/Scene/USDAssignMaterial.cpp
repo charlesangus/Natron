@@ -503,6 +503,37 @@ USDAssignMaterial::onInputChanged(int inputNo)
     refreshMaterialPathEnabled();
 }
 
+SceneEvaluationContext
+USDAssignMaterial::getSceneInputContext(int inputNb,
+                                        const SceneEvaluationContext& ctx,
+                                        double time,
+                                        ViewIdx view) const
+{
+    if (inputNb != kUSDAssignMaterialInputMaterial) {
+        return ctx;
+    }
+    AppInstancePtr app = getApp();
+
+    return SceneNodeAuthoring::getSharedMaterialContext(ctx, app ? app->getProject()->getProjectMaterialsScope(time, view) : std::string());
+}
+
+void
+USDAssignMaterial::mapSceneInputReach(int inputNb,
+                                      double time,
+                                      ViewIdx view,
+                                      const std::vector<std::string>& in,
+                                      std::vector<std::string>* out) const
+{
+    if (inputNb != kUSDAssignMaterialInputMaterial) {
+        *out = in;
+
+        return;
+    }
+    AppInstancePtr app = getApp();
+
+    SceneNodeAuthoring::mapSharedMaterialReach(&_graftMemo, app ? app->getProject()->getProjectMaterialsScope(time, view) : std::string(), in, out);
+}
+
 void
 USDAssignMaterial::refreshMaterialPathEnabled()
 {
@@ -553,7 +584,7 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
     std::shared_ptr<const ProjectionPlacement> placement = std::make_shared<ProjectionPlacement>();
     if (materialConnected) {
         SceneMaterialGraft graft;
-        if (!SceneNodeAuthoring::graftSharedMaterial(args.getInputScene(kUSDAssignMaterialInputMaterial), scope, getScriptName_mt_safe(), &_graftMemo, &graft, errorMessage)) {
+        if (!SceneNodeAuthoring::graftSharedMaterial(args.getInputScene(kUSDAssignMaterialInputMaterial), args.getInputContext(kUSDAssignMaterialInputMaterial), scope, getScriptName_mt_safe(), &_graftMemo, &graft, errorMessage)) {
             setPersistentMessage(eMessageTypeError, *errorMessage);
 
             return eStatusFailed;
@@ -608,9 +639,19 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
     std::vector<InstanceBinding> instances;
     if (!isBlank(pattern)) {
         SceneQueryPool::Lease lease;
+        SceneNodeAuthoring::PatternMatches matched;
+        if (!SceneNodeAuthoring::matchPattern(&_patternMatches, upstream, pattern, args.context, 0, SceneNodeAuthoring::PatternFilter(), &lease, &matched, errorMessage, true)) {
+            setPersistentMessage(eMessageTypeError, *errorMessage);
+
+            return eStatusFailed;
+        }
+        const std::vector<PXR_NS::SdfPath>& found = matched.paths;
         PXR_NS::UsdStageRefPtr stage;
         if (!upstream.isEmpty()) {
-            lease = SceneQueryPool::instance().borrow(upstream, errorMessage);
+            // The bindings already on the matches' roots and the material are read on the stage.
+            if (!lease.isValid()) {
+                lease = SceneQueryPool::instance().borrow(upstream, args.context.loadSet, errorMessage);
+            }
             stage = lease.getStage();
             if (!stage) {
                 if (errorMessage->empty()) {
@@ -620,12 +661,6 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
 
                 return eStatusFailed;
             }
-        }
-        std::vector<PXR_NS::SdfPath> found;
-        if (!SceneOps::selectPrims(stage, pattern, &found, errorMessage, true)) {
-            setPersistentMessage(eMessageTypeError, *errorMessage);
-
-            return eStatusFailed;
         }
         std::unordered_map<PXR_NS::SdfPath, std::size_t, PXR_NS::SdfPath::Hash> rootIndices;
         std::unordered_map<PXR_NS::SdfPath, std::size_t, PXR_NS::SdfPath::Hash> instanceIndices;
@@ -720,9 +755,9 @@ USDAssignMaterial::renderScene(const SceneRenderActionArgs& args,
                             .arg(skipped.join(QLatin1String(", ")));
         }
         if (roots.empty() && instances.empty()) {
-            warnings += tr("The prim pattern \"%1\" matches no prim to bind the material to; the scene is passed through "
-                           "unchanged.")
-                            .arg(QString::fromStdString(pattern));
+            warnings += QString::fromStdString(SceneNodeAuthoring::describeNoMatch(pattern, matched,
+                                                                                   tr("the scene is passed through unchanged")
+                                                                                       .toStdString()));
         } else if (isBlank(materialPath)) {
             warnings += tr("There is no material to bind: connect the Material input or set Material Path. The scene is "
                            "passed through unchanged.");

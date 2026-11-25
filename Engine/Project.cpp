@@ -3562,6 +3562,7 @@ Project::reset(bool aboutToQuit, bool blocking)
         QMutexLocker k(&_imp->projectClosingMutex);
         _imp->projectClosing = true;
     }
+    getApp()->aboutToDestroyProjectNodes();
 
     if (!blocking) {
         ResetWatcherArgsPtr args = std::make_shared<ResetWatcherArgs>();
@@ -3589,6 +3590,7 @@ Project::closeProject_blocking(bool aboutToQuit)
         QMutexLocker k(&_imp->projectClosingMutex);
         _imp->projectClosing = true;
     }
+    getApp()->aboutToDestroyProjectNodes();
     NodesList nodesToWatch;
     getNodes_recursive(nodesToWatch, false);
     for (NodesList::iterator it = nodesToWatch.begin(); it != nodesToWatch.end(); ++it) {
@@ -4828,6 +4830,13 @@ std::string
 Project::getProjectMaterialsScope() const
 {
     return validateMaterialsScope(_imp->materialsScope->getValue());
+}
+
+std::string
+Project::getProjectMaterialsScope(double time,
+                                  ViewIdx view) const
+{
+    return validateMaterialsScope(_imp->materialsScope->getValueAtTime(time, 0, view));
 }
 
 KnobPathPtr

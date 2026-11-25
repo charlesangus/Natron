@@ -439,3 +439,11 @@ TEST_F(GeoPythonNodeTest, ABlankScriptPassesTheInputThrough)
     EXPECT_EQ(source->pointCount(), detail->pointCount());
     EXPECT_EQ(source->primitiveCount(), detail->primitiveCount());
 }
+
+TEST_F(GeoPythonNodeTest, TheHelpPageCarriesTheBundledReference)
+{
+    const QString page = _python->makeDocumentation(false);
+    EXPECT_TRUE(page.contains(QString::fromUtf8("## Element classes"))) << page.toStdString();
+    EXPECT_TRUE(page.contains(QString::fromUtf8("geo.add_prims(counts, points")));
+    EXPECT_FALSE(page.contains(QString::fromUtf8("Tolerance:")));
+}

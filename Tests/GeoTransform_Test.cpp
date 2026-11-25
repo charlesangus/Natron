@@ -25,8 +25,10 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <string>
@@ -193,4 +195,47 @@ TEST(GeoTransformTest, PackedTransformIsMultipliedAndBoundsMove)
     for (int c = 0; c < 3; ++c) {
         EXPECT_NEAR(pivotExpected[c], pivotOut[c], 1e-6);
     }
+}
+
+TEST(GeoTransformTest, AnEdgeGroupMovesExactlyTheEdgesPoints)
+{
+    const GeoDetail input = shape(eGeoShapeCube);
+    for (GeoGroupTypeEnum type : { eGeoGroupTypeEdges, eGeoGroupTypeGuess }) {
+        GeoTransformParams params;
+        params.group = "p0-1 p2-3";
+        params.groupType = type;
+        params.translate = { 5., 0., 0. };
+        const GeoDetail out = transformed(input, params);
+        const GeoOffset selected[] = { input.pointMap().offsetFromIndex(0), input.pointMap().offsetFromIndex(1), input.pointMap().offsetFromIndex(2), input.pointMap().offsetFromIndex(3) };
+        input.pointMap().forEachLive([&](GeoIndex /*index*/, GeoOffset p) {
+            const bool moved = std::find(std::begin(selected), std::end(selected), p) != std::end(selected);
+            EXPECT_NEAR(input.pointPosition(p)[0] + (moved ? 5. : 0.), out.pointPosition(p)[0], 1e-6) << "point " << p;
+        });
+    }
+}
+
+TEST(GeoTransformTest, GuessWithAnEmptyGroupTransformsEverything)
+{
+    const GeoDetail input = shape(eGeoShapeCube);
+    GeoTransformParams params;
+    params.groupType = eGeoGroupTypeGuess;
+    params.translate = { 0., 1., 0. };
+    const GeoDetail out = transformed(input, params);
+    input.pointMap().forEachLive([&](GeoIndex /*index*/, GeoOffset p) {
+        EXPECT_NEAR(input.pointPosition(p)[1] + 1., out.pointPosition(p)[1], 1e-6);
+    });
+}
+
+TEST(GeoTransformTest, GuessWithMixedClassesFailsNamingTheTerms)
+{
+    GeoDetailBuilder source { shape(eGeoShapeCube) };
+    source.addGroup(eGeoAttribClassPrimitive, "top").add(source.detail().primitiveMap().offsetFromIndex(0));
+    const GeoDetail input = source.finish();
+    GeoTransformParams params;
+    params.group = "p0-1 top";
+    GeoDetailBuilder builder(input);
+    std::string error;
+    EXPECT_FALSE(GeoTransform::apply(builder, params, &error));
+    EXPECT_NE(std::string::npos, error.find("p0-1"));
+    EXPECT_NE(std::string::npos, error.find("top"));
 }

@@ -48,6 +48,12 @@
 #define kGeoGroupParamCentre "centre"
 #define kGeoGroupParamSize "size"
 #define kGeoGroupParamIncludePartlyInside "includePartlyInside"
+#define kGeoGroupParamExpand "expand"
+#define kGeoGroupParamExpandSteps "expandSteps"
+#define kGeoGroupParamPromote "promote"
+#define kGeoGroupParamPromoteTo "promoteTo"
+#define kGeoGroupParamEntirelyContained "entirelyContained"
+#define kGeoGroupParamKeepOriginal "keepOriginal"
 
 NATRON_NAMESPACE_ENTER
 
@@ -70,6 +76,12 @@ enum GeoBoundingTypeEnum {
     eGeoBoundingTypeSphere,
 };
 
+enum GeoGroupPromoteEnum {
+    eGeoGroupPromotePoints = 0,
+    eGeoGroupPromoteEdges,
+    eGeoGroupPromotePrimitives,
+};
+
 /** @brief What GeoGroup creates; the defaults are the knobs' defaults. */
 struct GeoGroupParams {
     std::string name = "group1";
@@ -82,6 +94,12 @@ struct GeoGroupParams {
     std::array<double, 3> centre = { 0., 0., 0. };
     std::array<double, 3> size = { 1., 1., 1. };
     bool includePartlyInside = false;
+    bool expand = false;
+    int expandSteps = 1;
+    bool promote = false;
+    GeoGroupPromoteEnum promoteTo = eGeoGroupPromotePoints;
+    bool entirelyContained = false;
+    bool keepOriginal = false;
 };
 
 /**
@@ -96,7 +114,10 @@ struct GeoGroupParams {
  * them with includePartlyInside). With no test enabled the selection is empty.
  *
  * The selection then replaces the group's members, or is unioned with, intersected with or
- * subtracted from them. Nothing but the group is written.
+ * subtracted from them. Expand then grows the group by Expand Steps rings of neighbours (a
+ * negative count shrinks it), and Promote turns it into a group of the same name holding points,
+ * edges or primitives, dropping the original group unless Keep Original is on. Both need a group
+ * type of points, edges or primitives. Nothing but groups is written.
  **/
 class GeoGroup
     : public NativeEffectBase {
@@ -111,12 +132,15 @@ public:
         .description = "Create or edit a named group of points, primitives, vertices or edges: "
                        "by element numbers, existing groups and attribute comparisons, by a "
                        "bounding box or sphere, or both.",
-        .grouping = PLUGIN_GROUP_3D,
+        .grouping = PLUGIN_GROUP_GEOMETRY,
         .majorVersion = 1,
         .minorVersion = 0,
         .isWriter = false,
         .outputKind = eDataKindGeometry,
         .inputs = kInputs,
+        .geoGroupKnob = kGeoGroupParamPattern,
+        .geoGroupClasses = eGeoGroupClassPoints | eGeoGroupClassPrimitives | eGeoGroupClassEdges,
+        .geoGroupTypeKnob = kGeoGroupParamGroupType,
     };
 
     static EffectInstance* BuildEffect(NodePtr node)
@@ -130,12 +154,6 @@ public:
     /** @brief False with @p error set for an empty name or a malformed pattern. */
     static bool createGroup(GeoDetailBuilder& builder,
                             const GeoGroupParams& params,
-                            std::string* error);
-
-    /** @brief The edges of the live polygons and polylines that @p pattern selects. */
-    static bool selectEdges(const GeoDetail& detail,
-                            const std::string& pattern,
-                            std::set<GeoEdge>* edges,
                             std::string* error);
 
 private:
@@ -163,6 +181,12 @@ private:
     KnobDoubleWPtr _centre;
     KnobDoubleWPtr _size;
     KnobBoolWPtr _includePartlyInside;
+    KnobBoolWPtr _expand;
+    KnobIntWPtr _expandSteps;
+    KnobBoolWPtr _promote;
+    KnobChoiceWPtr _promoteTo;
+    KnobBoolWPtr _entirelyContained;
+    KnobBoolWPtr _keepOriginal;
 };
 
 NATRON_NAMESPACE_EXIT

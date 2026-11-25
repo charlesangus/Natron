@@ -159,6 +159,53 @@ uvAttributeForWriting(GeoDetailBuilder& detail,
 
     return &uv;
 }
+
+// The point attribute to write uv into, the point counterpart of uvAttributeForWriting. A vertex
+// attribute of that name would shadow it, so it is removed, a point attribute made here taking
+// from it the value of each point's lowest-numbered vertex.
+GeoAttribute*
+pointUVAttributeForWriting(GeoDetailBuilder& detail,
+                           const std::string& name)
+{
+    const GeoAttribute* existing = detail.detail().findAttribute(eGeoAttribClassPoint, name);
+    const bool keep = existing && geoIsNumeric(*existing) && !existing->desc().isArray && (existing->desc().tupleSize >= 2);
+    const GeoAttribute* vertexUV = detail.detail().findAttribute(eGeoAttribClassVertex, name);
+    std::vector<std::pair<std::size_t, std::array<double, 3>>> seeded;
+    if (!keep && vertexUV && geoIsNumeric(*vertexUV) && !vertexUV->desc().isArray) {
+        const GeoDetail& d = detail.detail();
+        const int components = std::min(3, (int)vertexUV->desc().tupleSize);
+        std::vector<double> value((std::size_t)vertexUV->desc().tupleSize);
+        GeoElementMask seen((std::size_t)d.pointMap().offsetSize(), 0);
+        d.vertexMap().forEachLive([&](GeoIndex, GeoOffset vertex) {
+            const GeoOffset point = d.vertexPoint(vertex);
+            if (seen[(std::size_t)point]) {
+                return;
+            }
+            seen[(std::size_t)point] = 1;
+            geoReadNumeric(*vertexUV, (std::size_t)vertex, std::span<double>(value));
+            std::array<double, 3> uvw = { 0., 0., 0. };
+            for (int k = 0; k < components; ++k) {
+                uvw[(std::size_t)k] = value[(std::size_t)k];
+            }
+            seeded.emplace_back((std::size_t)point, uvw);
+        });
+    }
+    if (vertexUV) {
+        detail.removeAttribute(eGeoAttribClassVertex, name);
+    }
+    if (keep) {
+        return detail.attributeForWriting(eGeoAttribClassPoint, name);
+    }
+    if (existing) {
+        detail.removeAttribute(eGeoAttribClassPoint, name);
+    }
+    GeoAttribute& uv = detail.addAttribute(eGeoAttribClassPoint, GeoAttributeDesc { name, eGeoStorageFloat32, 3, eGeoTypeInfoNone, false });
+    for (const std::pair<std::size_t, std::array<double, 3>>& s : seeded) {
+        geoWriteNumeric(uv, s.first, std::span<const double>(s.second));
+    }
+
+    return &uv;
+}
 } // anonymous namespace
 
 bool
@@ -176,9 +223,14 @@ projectGeoUVs(GeoDetailBuilder& detail,
         return false;
     }
 
+    const bool onPoints = (params.attributeClass == eGeoAttribClassPoint);
     std::vector<std::pair<GeoOffset, std::array<double, 2>>> uvs;
     {
         const GeoDetail& d = detail.detail();
+        GeoElementMask written;
+        if (onPoints) {
+            written.assign((std::size_t)d.pointMap().offsetSize(), 0);
+        }
         d.primitiveMap().forEachLive([&](GeoIndex, GeoOffset primitive) {
             if (!primitives[(std::size_t)primitive]) {
                 return;
@@ -186,8 +238,15 @@ projectGeoUVs(GeoDetailBuilder& detail,
             const GeoVertexRange range = d.primitiveVertices(primitive);
             for (GeoOffset i = 0; i < range.count; ++i) {
                 const GeoOffset vertex = range.start + i;
-                const Vec3 p = d.pointPosition(d.vertexPoint(vertex));
-                uvs.emplace_back(vertex, params.projection == eGeoUVProjectionCamera ? cameraUV(p, params.cameraWorldToFrame) : planarUV(p, params));
+                const GeoOffset point = d.vertexPoint(vertex);
+                if (onPoints) {
+                    if (written[(std::size_t)point]) {
+                        continue;
+                    }
+                    written[(std::size_t)point] = 1;
+                }
+                const Vec3 p = d.pointPosition(point);
+                uvs.emplace_back(onPoints ? point : vertex, params.projection == eGeoUVProjectionCamera ? cameraUV(p, params.cameraWorldToFrame) : planarUV(p, params));
             }
         });
     }
@@ -212,7 +271,7 @@ projectGeoUVs(GeoDetailBuilder& detail,
         }
     }
 
-    GeoAttribute* attribute = uvAttributeForWriting(detail, params.uvAttribute);
+    GeoAttribute* attribute = onPoints ? pointUVAttributeForWriting(detail, params.uvAttribute) : uvAttributeForWriting(detail, params.uvAttribute);
     std::vector<double> value(attribute->desc().tupleSize);
     for (const std::pair<GeoOffset, std::array<double, 2>>& uv : uvs) {
         const std::size_t offset = (std::size_t)uv.first;
@@ -379,9 +438,34 @@ GeoUVProject::initializeKnobs()
     _invertU = createToggle(tr("Invert U"), kGeoUVProjectParamInvertU, tr("Writes 1 - u instead of u."), false);
     _invertV = createToggle(tr("Invert V"), kGeoUVProjectParamInvertV, tr("Writes 1 - v instead of v."), false);
     _uvAttribute = createString(tr("UV Attribute"), kGeoUVProjectParamUVAttribute,
-                                tr("The vertex attribute the texture coordinates are written to. An existing one keeps "
-                                   "its other components; a point attribute of that name is replaced by it."),
+                                tr("The attribute the texture coordinates are written to, of the Attribute Class. An "
+                                   "existing one keeps its other components; one of that name of the other class is "
+                                   "replaced by it."),
                                 "uv");
+
+    KnobChoicePtr attributeClass = createKnob<KnobChoice>(tr("Attribute Class").toStdString());
+    attributeClass->setName(kGeoUVProjectParamAttributeClass);
+    attributeClass->setHintToolTip(tr("Whether the texture coordinates are written on vertices or on points. The uv "
+                                      "depends only on a point's position, so both give the same texture coordinates; "
+                                      "a point shared with primitives outside the Group changes their uv too.")
+                                       .toStdString());
+    {
+        std::vector<ChoiceOption> options;
+        options.push_back(ChoiceOption("vertex", tr("Vertex").toStdString(),
+                                       tr("On the vertices of the primitives in the Group. A point attribute of the same "
+                                          "name is removed, its values kept on the vertices outside the Group.")
+                                           .toStdString()));
+        options.push_back(ChoiceOption("point", tr("Point").toStdString(),
+                                       tr("On the points the primitives in the Group use, once per point. A vertex "
+                                          "attribute of the same name is removed; when the point attribute is new, "
+                                          "the points not written take the value of their first vertex.")
+                                           .toStdString()));
+        attributeClass->populateChoices(options);
+    }
+    attributeClass->setDefaultValue(0);
+    attributeClass->setAnimationEnabled(false);
+    page->addKnob(attributeClass);
+    _attributeClass = attributeClass;
 
     updateEnabled();
 } // GeoUVProject::initializeKnobs
@@ -514,6 +598,9 @@ GeoUVProject::readParams(double time,
     p.invertU = toggle(_invertU, p.invertU);
     p.invertV = toggle(_invertV, p.invertV);
     p.uvAttribute = text(_uvAttribute, p.uvAttribute);
+    if (const KnobChoicePtr attributeClass = _attributeClass.lock()) {
+        p.attributeClass = (attributeClass->getValueAtTime(time, 0, view) == 1) ? eGeoAttribClassPoint : eGeoAttribClassVertex;
+    }
 
     return p;
 }

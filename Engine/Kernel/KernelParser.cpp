@@ -129,7 +129,6 @@ isUnsupportedFunction(std::string_view s)
         "addpoint",
         "addprim",
         "addvertex",
-        "anoise",
         "argsort",
         "attribsize",
         "attribtype",
@@ -145,7 +144,6 @@ isUnsupportedFunction(std::string_view s)
         "chu",
         "chv",
         "cracktransform",
-        "curlnoise",
         "curlnoise2d",
         "detail",
         "dihedral",
@@ -191,7 +189,6 @@ isUnsupportedFunction(std::string_view s)
         "npoints",
         "nprimitives",
         "nvertices",
-        "onoise",
         "pcclose",
         "pcfilter",
         "pcfind",
@@ -199,7 +196,6 @@ isUnsupportedFunction(std::string_view s)
         "pciterate",
         "pcnumfound",
         "pcopen",
-        "pnoise",
         "point",
         "pointprims",
         "pointvertices",
@@ -264,8 +260,6 @@ isUnsupportedFunction(std::string_view s)
         "volumesample",
         "volumesamplev",
         "warning",
-        "wnoise",
-        "xnoise",
         "xyzdist",
     };
     return names.count(s) != 0;
@@ -3179,6 +3173,79 @@ private:
         return emitCall(KernelFunctionProvider::eCore, sig, args, argLocs(e));
     }
 
+    // A float or vector position becomes a vector4 whose missing components are 0. The fractal forms
+    // take optional octaves, lacunarity and gain, which are always passed.
+    Value noise4Call(const Expr& e, KernelType expected)
+    {
+        using F = KernelCoreFunction;
+        const std::string& n = e.text;
+        const bool fractal = n == "onoise" || n == "anoise" || n == "curlnoise";
+        arity(e, 1, fractal ? 4 : 1);
+        const std::vector<Loc> given = argLocs(e);
+        const KernelType v4(B::eVector4);
+        Value p = expr(*e.args[0]);
+        if (isScalar(p.type)) {
+            const Value x = convert(p, KernelType(B::eFloat), given[0]);
+            const std::int32_t zero = constF(0.f);
+            p = Value {};
+            p.type = v4;
+            p.r[0] = x.r[0];
+            p.r[1] = zero;
+            p.r[2] = zero;
+            p.r[3] = zero;
+        } else if (!p.type.array && kernelIsVector(p.type.base)) {
+            p = cast(p, v4, given[0]);
+        } else {
+            fail(given[0], "'" + n + "' takes a float or a vector, not " + article(p.type));
+        }
+
+        const KernelType f(B::eFloat);
+        const KernelType i(B::eInt);
+        std::vector<Value> args { p };
+        std::vector<Loc> locs { given[0] };
+        std::vector<KernelType> params { v4 };
+        if (fractal) {
+            const double defaults[3] = { 4., 2., 0.5 };
+            for (std::size_t k = 1; k <= 3; ++k) {
+                const KernelType t = k == 1 ? i : f;
+                if (k < e.args.size()) {
+                    const Value v = expr(*e.args[k]);
+                    args.push_back(k == 1 ? toInt(v, given[k]) : v);
+                    locs.push_back(given[k]);
+                } else {
+                    args.push_back(k == 1 ? intLiteral(static_cast<std::int64_t>(defaults[k - 1])) : floatLiteral(defaults[k - 1]));
+                    locs.push_back(e.loc);
+                }
+                params.push_back(t);
+            }
+        }
+
+        const bool toVector = n == "curlnoise" || expected.is(B::eVector);
+        F id = F::eCurlNoise4;
+        if (n == "pnoise") {
+            id = toVector ? F::ePerlinNoise4ToVector : F::ePerlinNoise4;
+        } else if (n == "xnoise") {
+            id = toVector ? F::eSimplexNoise4ToVector : F::eSimplexNoise4;
+        } else if (n == "valuenoise") {
+            id = toVector ? F::eValueNoise4ToVector : F::eValueNoise4;
+        } else if (n == "wnoise") {
+            id = toVector ? F::eWorleyNoise4ToVector : F::eWorleyNoise4;
+        } else if (n == "onoise") {
+            id = toVector ? F::eFbmNoise4ToVector : F::eFbmNoise4;
+        } else if (n == "anoise") {
+            id = toVector ? F::eTurbulenceNoise4ToVector : F::eTurbulenceNoise4;
+        }
+
+        KernelFunctionSignature sig;
+        sig.name = n;
+        sig.result = KernelType(toVector ? B::eVector : B::eFloat);
+        for (KernelType t : params) {
+            sig.params.push_back(KernelParameter { t, false });
+        }
+        sig.id = static_cast<std::int32_t>(id);
+        return emitCall(KernelFunctionProvider::eCore, sig, args, locs);
+    }
+
     template <class Signature>
     const Signature* resolve(const std::vector<Signature>& overloads, const std::vector<Value>& args,
                              KernelType expected, const Expr& e)
@@ -3556,6 +3623,10 @@ private:
                 ? (wantsVector ? KernelCoreFunction::eNoiseVectorToVector : KernelCoreFunction::eNoiseVector)
                 : (wantsVector ? KernelCoreFunction::eRandVectorToVector : KernelCoreFunction::eRandVector);
             return coreCall(id, isNoise ? "noise" : "rand", result, { v.type }, { v }, e);
+        }
+        if (n == "pnoise" || n == "xnoise" || n == "valuenoise" || n == "wnoise" || n == "onoise" || n == "anoise"
+            || n == "curlnoise") {
+            return noise4Call(e, expected);
         }
         const KernelType s(B::eString);
         const KernelType i(B::eInt);

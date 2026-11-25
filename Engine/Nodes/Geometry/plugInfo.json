@@ -4,13 +4,21 @@
             "Info": {
                 "Types": {
                     "Natron::GeoLayerResolver": {
-                        "bases": ["ArResolver"],
-                        "uriSchemes": ["natrongeo"]
+                        "bases": [
+                            "ArResolver"
+                        ],
+                        "uriSchemes": [
+                            "natrongeo"
+                        ]
                     },
                     "Natron::GeoSdfFileFormat": {
-                        "bases": ["SdfFileFormat"],
+                        "bases": [
+                            "SdfFileFormat"
+                        ],
                         "formatId": "natrongeo",
-                        "extensions": ["natrongeo"],
+                        "extensions": [
+                            "natrongeo"
+                        ],
                         "target": "usd",
                         "primary": true,
                         "supportsWriting": false

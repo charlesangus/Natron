@@ -33,10 +33,10 @@ on:
         type: boolean
         default: false
       appimage:
-        description: 'Package and upload an AppImage (ignored for debug, which cannot be packaged in the container)'
+        description: 'Package and upload an AppImage, as gui_scripts need (ignored for debug, which cannot be packaged in the container)'
         required: true
         type: boolean
-        default: true
+        default: false
       shuffle_seeds:
         description: 'Comma-separated gtest shuffle seeds (needs tests): each ctest leg runs once unshuffled, then once per seed'
         required: false
@@ -44,6 +44,16 @@ on:
         default: ''
       repeat_test:
         description: 'Name-regex:N (needs tests): after the ctest run, each ctest leg runs that one case N times under ctest load'
+        required: false
+        type: string
+        default: ''
+      repeat_parallel:
+        description: 'With repeat_test: copies of the case run at once (empty: test.sh default, 4)'
+        required: false
+        type: string
+        default: ''
+      repeat_timeout:
+        description: 'With repeat_test: seconds each copy may run before its stacks are dumped and it is killed (empty: test.sh default, 900)'
         required: false
         type: string
         default: ''
@@ -87,6 +97,11 @@ on:
         required: false
         type: string
         default: ''
+      debug_symbols:
+        description: 'With appimage: also upload the symbol tables strip removes from the bundle (natron-symbols-<preset>-<sha>), for stack samples of that AppImage; the AppImage itself is unchanged'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -108,9 +123,9 @@ jobs:
       packages: write
     uses: ./.github/workflows/dev-image.yml
 
-  # Builds once; the ctest legs below run off the build tree it uploads.
+  # Builds once; the ctest legs and the package job below run off the build tree it uploads.
   remote-build:
-    name: Build · ${{ inputs.preset || 'fast' }}${{ inputs.appimage && inputs.preset != 'debug' && ' + AppImage' || '' }}
+    name: Build · ${{ inputs.preset || 'fast' }}
     needs: dev-image
     if: ${{ !inputs.from_run }}
     runs-on: ubuntu-latest
@@ -137,7 +152,6 @@ jobs:
       NATRON_LINK_JOBS: ${{ inputs.preset == 'debug' && '1' || '' }}
     outputs:
       tree: ${{ steps.upload_tree.outcome }}
-      appimage: ${{ steps.upload_appimage.outcome }}
 
     steps:
       - name: Checkout branch
@@ -307,7 +321,9 @@ jobs:
       # only build inputs, and Testing/ holds this job's golden-recording run. An extra-argument
       # build packs its real tree next to the build/<preset> link, which tar stores as a link.
       - name: Pack build tree
-        if: inputs.tests && !cancelled() && steps.build.outcome == 'success'
+        if: >-
+          (inputs.tests || (inputs.appimage && inputs.preset != 'debug'))
+          && !cancelled() && steps.build.outcome == 'success'
         env:
           BUILD_DIR: ${{ steps.build.outputs.build_dir }}
         run: |
@@ -321,7 +337,9 @@ jobs:
 
       - name: Upload build tree
         id: upload_tree
-        if: inputs.tests && !cancelled() && steps.build.outcome == 'success'
+        if: >-
+          (inputs.tests || (inputs.appimage && inputs.preset != 'debug'))
+          && !cancelled() && steps.build.outcome == 'success'
         uses: actions/upload-artifact@v7.0.1
         with:
           name: build-tree-${{ env.PRESET }}
@@ -329,27 +347,6 @@ jobs:
           if-no-files-found: error
           compression-level: 1
           retention-days: 1
-
-      # Gated on the build rather than on test success: a red test leg
-      # should not withhold the binary someone is trying to inspect.
-      # check-startup.sh runs inside make-appimage.sh.
-      - name: Stage bundle
-        if: inputs.appimage && inputs.preset != 'debug' && !cancelled() && steps.build.outcome == 'success'
-        run: tools/release/stage-bundle.sh "build/$PRESET" /tmp/natron-stage
-
-      - name: Create AppImage
-        if: inputs.appimage && inputs.preset != 'debug' && !cancelled() && steps.build.outcome == 'success'
-        run: tools/release/make-appimage.sh /tmp/natron-stage /tmp/artifacts
-
-      - name: Upload AppImage
-        id: upload_appimage
-        if: inputs.appimage && inputs.preset != 'debug' && !cancelled() && steps.build.outcome == 'success'
-        uses: actions/upload-artifact@v7.0.1
-        with:
-          name: natron-${{ env.PRESET }}-${{ github.sha }}
-          path: /tmp/artifacts/*.AppImage
-          if-no-files-found: error
-          retention-days: 7
 
       - name: Save ccache
         if: always()
@@ -367,14 +364,138 @@ jobs:
         env:
           JOB_STATUS: ${{ job.status }}
           CMAKE_ARGS: ${{ inputs.cmake_args }}
-          APPIMAGE_UPLOAD: ${{ steps.upload_appimage.outcome }}
           TREE_UPLOAD: ${{ steps.upload_tree.outcome }}
         run: |
           artifacts=()
           if [[ "$TREE_UPLOAD" == success ]]; then artifacts+=("build-tree-$PRESET"); fi
-          if [[ "$APPIMAGE_UPLOAD" == success ]]; then artifacts+=("natron-$PRESET-$GITHUB_SHA"); fi
           # shellcheck disable=SC2086
           tools/ci/summary.sh build "$PRESET" "$(IFS=,; echo "${artifacts[*]}")" $CMAKE_ARGS
+
+  # Gated on the build tree rather than on test success:
+  # a red test leg should not withhold the binary someone is trying to inspect.
+  package:
+    name: Package · ${{ inputs.preset || 'fast' }} AppImage
+    needs: [dev-image, remote-build]
+    if: >-
+      !cancelled() && inputs.appimage && inputs.preset != 'debug'
+      && needs.remote-build.outputs.tree == 'success'
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ needs.dev-image.outputs.image }}
+      options: --shm-size=2g
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        shell: bash -l {0}
+    outputs:
+      appimage: ${{ steps.upload_appimage.outcome }}
+
+    steps:
+      # The build tree's CMakeCache.txt and install scripts point into the source checkout.
+      - name: Checkout branch
+        uses: actions/checkout@v5.0.1
+        with:
+          submodules: recursive
+          lfs: false
+
+      # The bundle ships the OFX plugins and ONNX Runtime that fetch-assets.sh puts under
+      # build/assets; the build job saved the entry, so fetch-assets.sh is a stamp check.
+      - name: Restore test assets
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: |
+            build/assets/Plugins
+            build/assets/CImg
+            build/assets/rawspeed
+            build/assets/lensfun
+            build/assets/onnxruntime
+          key: assets-linux-${{ hashFiles('tools/ci/local/fetch-assets.sh') }}
+
+      - name: Fetch test assets
+        run: tools/ci/local/fetch-assets.sh
+
+      - name: Download build tree from the build job
+        uses: actions/download-artifact@v7.0.0
+        with:
+          name: build-tree-${{ env.PRESET }}
+
+      # The tree's absolute paths hold because every job's workspace is mounted at the same path.
+      - name: Unpack build tree from the build job
+        run: |
+          tar -xf build-tree.tar
+          rm build-tree.tar
+
+      # check-startup.sh runs inside make-appimage.sh.
+      - name: Stage bundle
+        id: stage
+        env:
+          NATRON_STAGE_SYMBOLS_DIR: ${{ inputs.debug_symbols && '/tmp/natron-symbols' || '' }}
+        run: tools/release/stage-bundle.sh "build/$PRESET" /tmp/natron-stage
+
+      - name: Stage manifest
+        id: stage_manifest
+        if: >-
+          !cancelled() && steps.stage.outcome == 'success'
+        run: tools/release/stage-manifest.sh /tmp/natron-stage /tmp/stage-manifest.txt
+
+      - name: Upload stage manifest
+        id: upload_manifest
+        if: >-
+          !cancelled() && steps.stage_manifest.outcome == 'success'
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: stage-manifest-${{ env.PRESET }}-${{ github.sha }}
+          path: /tmp/stage-manifest.txt
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Create AppImage
+        id: create_appimage
+        if: >-
+          !cancelled() && steps.stage.outcome == 'success'
+        run: tools/release/make-appimage.sh /tmp/natron-stage /tmp/artifacts
+
+      - name: Upload AppImage
+        id: upload_appimage
+        if: >-
+          !cancelled() && steps.create_appimage.outcome == 'success'
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: natron-${{ env.PRESET }}-${{ github.sha }}
+          path: /tmp/artifacts/*.AppImage
+          if-no-files-found: error
+          retention-days: 7
+
+      # One tarball, so the .build-id tree survives the artifact's handling of hidden files.
+      - name: Pack symbols
+        if: inputs.debug_symbols && steps.upload_appimage.outcome == 'success'
+        run: tar -C /tmp/natron-symbols -czf /tmp/natron-symbols.tar.gz .
+
+      - name: Upload symbols
+        if: inputs.debug_symbols && steps.upload_appimage.outcome == 'success'
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: natron-symbols-${{ env.PRESET }}-${{ github.sha }}
+          path: /tmp/natron-symbols.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+      - name: Job summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+          APPIMAGE_UPLOAD: ${{ steps.upload_appimage.outcome }}
+          MANIFEST_UPLOAD: ${{ steps.upload_manifest.outcome }}
+        run: |
+          artifacts=()
+          if [[ "$APPIMAGE_UPLOAD" == success ]]; then artifacts+=("natron-$PRESET-$GITHUB_SHA"); fi
+          if [[ "$MANIFEST_UPLOAD" == success ]]; then artifacts+=("stage-manifest-$PRESET-$GITHUB_SHA"); fi
+          tools/ci/summary.sh note "Package · $PRESET" \
+            "Result: ${JOB_STATUS:-unknown}" \
+            "Artifacts: ${artifacts[*]:-none}"
 
   # Turns the schedulers input into the ctest matrix, and rejects an unknown name before any build starts.
   ctest-legs:
@@ -547,10 +668,19 @@ jobs:
           GALLIUM_OVERRIDE_CPU_CAPS: avx
           NATRON_RENDER_SCHEDULER: ${{ matrix.scheduler }}
           REPEAT_TEST: ${{ inputs.repeat_test }}
+          REPEAT_PARALLEL: ${{ inputs.repeat_parallel }}
+          REPEAT_TIMEOUT: ${{ inputs.repeat_timeout }}
         run: |
           set -o pipefail
           mkdir -p ctest-logs
-          tools/ci/local/test.sh repeat "${REPEAT_TEST%:*}" "${REPEAT_TEST##*:}" "$PRESET" 2>&1 \
+          extra=()
+          if [[ -n "$REPEAT_PARALLEL" ]]; then
+            extra+=(--parallel "$REPEAT_PARALLEL")
+          fi
+          if [[ -n "$REPEAT_TIMEOUT" ]]; then
+            extra+=(--timeout "$REPEAT_TIMEOUT")
+          fi
+          tools/ci/local/test.sh repeat "${REPEAT_TEST%:*}" "${REPEAT_TEST##*:}" "${extra[@]}" "$PRESET" 2>&1 \
             | tee "ctest-logs/ctest-${{ matrix.scheduler }}-repeat.log"
 
       - name: Run Python bindings smoke test (${{ matrix.scheduler }} scheduler)
@@ -568,6 +698,17 @@ jobs:
           path: ctest-logs/*
           if-no-files-found: ignore
           retention-days: 1
+
+      # Every iteration's log and, for a hung one, its thread stacks: the repeat step's own log only holds the
+      # first failure's output.
+      - name: Upload repeat iteration logs
+        if: always() && inputs.repeat_test != ''
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: ctest-repeat-${{ matrix.scheduler }}-${{ env.PRESET }}-${{ github.sha }}
+          path: build/${{ env.PRESET }}/Testing/repeat/**
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Upload smoke renders
         if: success() || failure()
@@ -752,10 +893,10 @@ jobs:
 
   gui:
     name: GUI · ${{ matrix.name }}
-    needs: [gui-matrix, remote-build]
+    needs: [gui-matrix, package]
     if: >-
       !cancelled() && needs.gui-matrix.result == 'success'
-      && (inputs.from_run != '' || needs.remote-build.outputs.appimage == 'success')
+      && (inputs.from_run != '' || needs.package.outputs.appimage == 'success')
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -816,7 +957,7 @@ jobs:
           git lfs install --local
           git lfs pull --include "$INCLUDE"
 
-      - name: Download AppImage from the build job
+      - name: Download AppImage from the package job
         uses: actions/download-artifact@v7.0.0
         with:
           name: ${{ needs.gui-matrix.outputs.artifact }}

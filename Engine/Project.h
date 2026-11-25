@@ -670,6 +670,10 @@ public:
     // Materials Scope /materials), or empty when shared materials are off.
     std::string getProjectMaterialsScope() const;
 
+    // getProjectMaterialsScope() with the knob read at time and view.
+    std::string getProjectMaterialsScope(double time,
+                                         ViewIdx view) const;
+
     // The root prim name a Materials Scope value names: empty unless it is a single absolute
     // prim name, such as /materials.
     static std::string validateMaterialsScope(const std::string& path);

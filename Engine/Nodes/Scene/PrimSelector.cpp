@@ -83,4 +83,70 @@ PrimSelector::validate(const std::string& expression,
     return SceneOps::parsePrimExpression(expression, &parsed, errorMessage);
 }
 
+bool
+PrimSelector::getReach(const std::string& expression,
+                       Reach* reach,
+                       std::string* errorMessage)
+{
+    *reach = Reach();
+    PXR_NS::SdfPathExpression parsed;
+    if (!SceneOps::parsePrimExpression(expression, &parsed, errorMessage)) {
+        return false;
+    }
+    if (parsed.IsEmpty()) {
+        return true;
+    }
+
+    std::vector<std::pair<PXR_NS::SdfPathExpression::Op, int>> stack;
+    bool complemented = false;
+    bool literalOnly = true;
+    std::vector<std::string> prefixes;
+    std::vector<std::string> literals;
+    auto onLogic = [&](const std::vector<std::pair<PXR_NS::SdfPathExpression::Op, int>>& ops) {
+        stack = ops;
+        if (ops.empty()) {
+            return;
+        }
+        const PXR_NS::SdfPathExpression::Op op = ops.back().first;
+        if (op == PXR_NS::SdfPathExpression::Complement) {
+            complemented = true;
+        }
+        if ((op != PXR_NS::SdfPathExpression::Union) && (op != PXR_NS::SdfPathExpression::ImpliedUnion)) {
+            literalOnly = false;
+        }
+    };
+    auto onReference = [&](const PXR_NS::SdfPathExpression::ExpressionReference&) {
+        complemented = true;
+    };
+    auto onPattern = [&](const PXR_NS::SdfPathExpression::PathPattern& pattern) {
+        const bool literal = pattern.GetComponents().empty() && pattern.GetPredicateExprs().empty() && !pattern.IsProperty()
+            && pattern.GetPrefix().IsAbsoluteRootOrPrimPath() && !pattern.GetPrefix().IsAbsoluteRootPath();
+        if (!literal) {
+            literalOnly = false;
+        } else {
+            literals.push_back(pattern.GetPrefix().GetString());
+        }
+        // Without a complement, what a difference takes away cannot add a match.
+        for (const std::pair<PXR_NS::SdfPathExpression::Op, int>& op : stack) {
+            if ((op.first == PXR_NS::SdfPathExpression::Difference) && (op.second == 1)) {
+                return;
+            }
+        }
+        const PXR_NS::SdfPath prefix = pattern.GetPrefix().GetPrimPath();
+        prefixes.push_back(prefix.IsEmpty() ? std::string("/") : prefix.GetString());
+    };
+    parsed.WalkWithOpStack(onLogic, onReference, onPattern);
+    if (complemented) {
+        prefixes.assign(1, std::string("/"));
+        literalOnly = false;
+    }
+    reach->prefixes = prefixes;
+    reach->literalOnly = literalOnly;
+    if (literalOnly) {
+        reach->literals = literals;
+    }
+
+    return true;
+} // PrimSelector::getReach
+
 NATRON_NAMESPACE_EXIT

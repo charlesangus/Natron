@@ -270,7 +270,6 @@ USDToGeo::renderGeometry(const GeoRenderActionArgs& args,
                          GeoDetailConstPtr* outputDetail,
                          std::string* errorMessage)
 {
-    const U64 hash = getHash();
     const std::string pattern = _primPattern.getExpression();
     const bool unpack = boolAt(_unpack, args.time, args.view);
     const bool flatten = unpack && boolAt(_flatten, args.time, args.view);
@@ -293,6 +292,9 @@ USDToGeo::renderGeometry(const GeoRenderActionArgs& args,
             return eStatusFailed;
         }
     }
+    // Taken after the input's evaluation: a reader's first evaluation walks its file and moves its
+    // hash, and so this node's, and the answer must be kept under the hash the metadata will see.
+    const U64 hash = getHash();
 
     std::vector<std::string> skipped;
     std::vector<std::string> warnings;
@@ -301,7 +303,9 @@ USDToGeo::renderGeometry(const GeoRenderActionArgs& args,
         if (scene.isEmpty()) {
             return eStatusOK;
         }
-        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(scene, error);
+        // A geometry render has no viewer load set, and the detail it makes is cached and shared by
+        // every consumer, so the pattern is matched against the whole scene, payloads included.
+        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(scene, SceneLoadSet::everything(), error);
         const PXR_NS::UsdStageRefPtr stage = lease.getStage();
         if (!stage) {
             if (error->empty()) {

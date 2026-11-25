@@ -38,3 +38,6 @@ Carried from M31.P3.T2 — Collapse `RenderThreadTask` frame feeders into the sc
 ## Decisions
 
 - 2026-10-25 — **Scheduler hand-offs become Legacy removal:** both scheduler modes still ship, and the shim and feeder threads only become removable once Legacy goes (user, at M31 triage).
+
+## Decisions
+- 2026-11-25 — **Go-ahead (user):** the task graph has proven itself; drop the Legacy scheduler. Gates stop running the legacy ctest leg now (PM runs --scheduler taskgraph only), ahead of the removal.

@@ -627,6 +627,8 @@ try:
         fired = []
         select_rows([WIDE])
         set_scope("below")
+        ok = yield ("until", lambda: expand_button().isEnabled(), POLL_TIMEOUT_S)
+        require(ok, "Expand is enabled once the wide stage's root is selected")
         expand_button().click()
         QTimer.singleShot(0, lambda: fired.append((expanding(), slices())))
         ok = yield ("until", lambda: bool(fired), POLL_TIMEOUT_S)

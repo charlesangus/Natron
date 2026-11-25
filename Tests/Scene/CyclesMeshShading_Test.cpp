@@ -65,7 +65,8 @@ primvar(const VtValue& value,
 // point's index and a faceVarying "st".
 HdContainerDataSourceHandle
 meshPrim(const PrimitiveMesh& mesh,
-         const TfToken& normalsInterpolation)
+         const TfToken& normalsInterpolation,
+         const TfToken& scheme = TfToken("none"))
 {
     const HdContainerDataSourceHandle topology = HdMeshTopologySchema::Builder()
                                                      .SetFaceVertexCounts(HdRetainedTypedSampledDataSource<VtIntArray>::New(mesh.faceVertexCounts))
@@ -74,7 +75,7 @@ meshPrim(const PrimitiveMesh& mesh,
                                                      .Build();
     const HdContainerDataSourceHandle meshSchema = HdMeshSchema::Builder()
                                                        .SetTopology(topology)
-                                                       .SetSubdivisionScheme(HdRetainedTypedSampledDataSource<TfToken>::New(TfToken("none")))
+                                                       .SetSubdivisionScheme(HdRetainedTypedSampledDataSource<TfToken>::New(scheme))
                                                        .Build();
     VtFloatArray weights(mesh.points.size());
     for (std::size_t i = 0; i < weights.size(); ++i) {
@@ -98,11 +99,12 @@ meshPrim(const PrimitiveMesh& mesh,
 }
 
 HdSceneIndexPrim
-shaded(const HdContainerDataSourceHandle& prim)
+shaded(const HdContainerDataSourceHandle& prim,
+       bool subdivides = false)
 {
     const HdRetainedSceneIndexRefPtr input = HdRetainedSceneIndex::New();
     input->AddPrims({ { kMeshPath, HdPrimTypeTokens->mesh, prim } });
-    const HdSceneIndexBaseRefPtr shading = CyclesAovs::meshShadingSceneIndex(input);
+    const HdSceneIndexBaseRefPtr shading = CyclesAovs::meshShadingSceneIndex(input, subdivides);
 
     return shading->GetPrim(kMeshPath);
 }
@@ -216,4 +218,28 @@ TEST(CyclesMeshShading, OtherNormalsAsAuthored)
 
     cube.normals.clear();
     EXPECT_TRUE(flat(shaded(meshPrim(cube, HdPrimvarSchemaTokens->faceVarying))));
+}
+
+// A bilinear mesh is shaded as one of scheme none is while Cycles does not subdivide; while it
+// does, the mesh is subdivided whatever its normals, and stays welded.
+TEST(CyclesMeshShading, BilinearFollowsSubdivision)
+{
+    const PrimitiveMesh cylinder = PrimitiveMeshes::buildCylinder(1., 2., 2, 12, true, true, SceneMetadata::eUpAxisY);
+    const HdContainerDataSourceHandle bilinear = meshPrim(cylinder, HdPrimvarSchemaTokens->faceVarying, TfToken("bilinear"));
+    const VtIntArray polygons = faceVertexIndices(shaded(bilinear, false));
+    ASSERT_EQ(cylinder.faceVertexIndices.size(), polygons.size());
+    for (std::size_t corner = 0; corner < polygons.size(); ++corner) {
+        EXPECT_EQ((int)corner, polygons[corner]);
+    }
+
+    const HdSceneIndexPrim subdivided = shaded(bilinear, true);
+    EXPECT_FALSE(flat(subdivided));
+    EXPECT_EQ(cylinder.faceVertexIndices, faceVertexIndices(subdivided));
+    TfToken interpolation;
+    (void)primvarValue<GfVec3f>(subdivided, HdTokens->normals, &interpolation);
+    EXPECT_EQ(HdPrimvarSchemaTokens->faceVarying, interpolation);
+
+    const int segments[3] = { 2, 2, 2 };
+    const PrimitiveMesh cube = PrimitiveMeshes::buildCube(GfVec3d(1., 2., 3.), segments, SceneMetadata::eUpAxisY);
+    EXPECT_TRUE(flat(shaded(meshPrim(cube, HdPrimvarSchemaTokens->faceVarying), true)));
 }

@@ -44,32 +44,6 @@
 NATRON_NAMESPACE_ENTER
 
 namespace {
-// Releases the Python GIL while the calling thread waits for a worker, if it holds it: the worker
-// may be evaluating a Python expression.
-class PythonUnlockedWhileWaiting {
-public:
-    PythonUnlockedWhileWaiting()
-        : _state(nullptr)
-    {
-        if (Py_IsInitialized() && PyGILState_Check()) {
-            _state = PyEval_SaveThread();
-        }
-    }
-
-    ~PythonUnlockedWhileWaiting()
-    {
-        if (_state) {
-            PyEval_RestoreThread(_state);
-        }
-    }
-
-    PythonUnlockedWhileWaiting(const PythonUnlockedWhileWaiting&) = delete;
-    PythonUnlockedWhileWaiting& operator=(const PythonUnlockedWhileWaiting&) = delete;
-
-private:
-    PyThreadState* _state;
-};
-
 bool
 evaluateNode(const NodeWPtr& weakNode,
              const SceneEvaluationContext& context,

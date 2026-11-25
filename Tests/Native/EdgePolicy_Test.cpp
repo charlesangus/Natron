@@ -31,6 +31,7 @@
 #include <functional>
 #include <list>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <utility>
@@ -297,6 +298,9 @@ struct MatrixRow {
     Oracle oracle;
     BuildRow build;
     HandCheck hand;
+    // Also renders the GPU frame under a GpuPoolPoisonScope, for a row whose GPU mismatch has been seen only
+    // intermittently.
+    bool poisonedToo = false;
 };
 
 const std::vector<MatrixRow>& matrixRows();
@@ -495,7 +499,7 @@ sourceRow(const char* name,
           Oracle oracle,
           const BuildRow& build)
 {
-    return MatrixRow { name, pluginID, major, true, Reads::Source, true, true, gpuTolerance, oracle, build, HandCheck() };
+    return MatrixRow { name, pluginID, major, true, Reads::Source, true, true, gpuTolerance, oracle, build, HandCheck(), false };
 }
 
 MatrixRow
@@ -506,7 +510,7 @@ samePositionRow(const char* name,
                 const ParityTolerance& gpuTolerance,
                 const BuildRow& build)
 {
-    return MatrixRow { name, pluginID, major, hasKnob, Reads::SamePosition, true, true, gpuTolerance, Oracle::Materialised, build, HandCheck() };
+    return MatrixRow { name, pluginID, major, hasKnob, Reads::SamePosition, true, true, gpuTolerance, Oracle::Materialised, build, HandCheck(), false };
 }
 
 const ParityTolerance kFilterTolerance = ParityTolerance::make(1e-4, 1e-4);
@@ -688,6 +692,7 @@ buildMatrixRows()
             return orNull(n, n && setKnobValue(n, kNativeMergeParamOperation, std::string("over")));
         });
         merge.oracle = Oracle::Hand;
+        merge.poisonedToo = true;
         // Past A's box, A over B is B under Black, and the nearest A pixel over B under Stretch.
         merge.hand = [](const std::vector<float>& frame, EdgeMode mode, const std::string& what) {
             const int probes[4][2] = { { 2, 2 }, { 61, 3 }, { 4, 45 }, { 60, 44 } };
@@ -711,10 +716,14 @@ buildMatrixRows()
         NodePtr n = t.withInputs(PLUGINID_NATRON_NATIVE_MERGE, PLUGIN_MAJOR_NATRON_NATIVE_MERGE, { { kNativeMergeInputB, t.source(0, 0) }, { kNativeMergeInputA, t.source(4, 2) }, { kNativeMergeInputMask, b } });
         return orNull(n, n && EdgePolicyTest::enableMask(n));
     }));
-    rows.push_back(samePositionRow("KeyMix A smaller than B", PLUGINID_NATRON_KEYMIX, PLUGIN_MAJOR_NATRON_KEYMIX, false, ParityTolerance::arithmetic(), [](EdgePolicyTest& t, const NodePtr& b) -> NodePtr {
-        NodePtr n = t.withInputs(PLUGINID_NATRON_KEYMIX, PLUGIN_MAJOR_NATRON_KEYMIX, { { kKeyMixInputB, t.source(0, 0) }, { kKeyMixInputA, b }, { kKeyMixInputMask, t.source(5, 3) } });
-        return orNull(n, n && EdgePolicyTest::enableMask(n));
-    }));
+    {
+        MatrixRow keyMix = samePositionRow("KeyMix A smaller than B", PLUGINID_NATRON_KEYMIX, PLUGIN_MAJOR_NATRON_KEYMIX, false, ParityTolerance::arithmetic(), [](EdgePolicyTest& t, const NodePtr& b) -> NodePtr {
+            NodePtr n = t.withInputs(PLUGINID_NATRON_KEYMIX, PLUGIN_MAJOR_NATRON_KEYMIX, { { kKeyMixInputB, t.source(0, 0) }, { kKeyMixInputA, b }, { kKeyMixInputMask, t.source(5, 3) } });
+            return orNull(n, n && EdgePolicyTest::enableMask(n));
+        });
+        keyMix.poisonedToo = true;
+        rows.push_back(keyMix);
+    }
     rows.push_back(samePositionRow("KeyMix mask", PLUGINID_NATRON_KEYMIX, PLUGIN_MAJOR_NATRON_KEYMIX, false, ParityTolerance::arithmetic(), [](EdgePolicyTest& t, const NodePtr& b) -> NodePtr {
         NodePtr n = t.withInputs(PLUGINID_NATRON_KEYMIX, PLUGIN_MAJOR_NATRON_KEYMIX, { { kKeyMixInputB, t.source(0, 0) }, { kKeyMixInputA, t.source(4, 2) }, { kKeyMixInputMask, b } });
         return orNull(n, n && EdgePolicyTest::enableMask(n));
@@ -903,16 +912,21 @@ TEST_P(EdgePolicyMatrixTest, ReadsPastTheBoxByItsMode)
                 break;
             }
 
-            const EndToEndResult gpu = renderEndToEnd(std::vector<NodePtr>(1, n), n, kWindow, kTime);
-            if (!gpu.skipped) {
-                ASSERT_TRUE(gpu.ok) << what << ": " << gpu.error;
-                if (row.gpu) {
-                    EXPECT_EQ(1u, gpu.gpuTasksPerNode.count(n->getScriptName_mt_safe())) << what << ": the node fell back to the CPU";
+            for (int poisoned = 0; poisoned < (row.poisonedToo ? 2 : 1); ++poisoned) {
+                const std::string gpuWhat = what + (poisoned ? ", pool poisoned" : "");
+                const std::unique_ptr<GpuPoolPoisonScope> poison(poisoned ? new GpuPoolPoisonScope : nullptr);
+                const EndToEndResult gpu = renderEndToEnd(std::vector<NodePtr>(1, n), n, kWindow, kTime);
+                if (gpu.skipped) {
+                    break;
                 }
-                ASSERT_EQ(gpu.cpu.size(), gpu.gpu.size()) << what;
-                ASSERT_FALSE(gpu.cpu.empty()) << what;
+                ASSERT_TRUE(gpu.ok) << gpuWhat << ": " << gpu.error;
+                if (row.gpu) {
+                    EXPECT_EQ(1u, gpu.gpuTasksPerNode.count(n->getScriptName_mt_safe())) << gpuWhat << ": the node fell back to the CPU";
+                }
+                ASSERT_EQ(gpu.cpu.size(), gpu.gpu.size()) << gpuWhat;
+                ASSERT_FALSE(gpu.cpu.empty()) << gpuWhat;
                 const ImageDiff diff = compareImages(gpu.cpu, gpu.gpu, row.gpuTolerance);
-                EXPECT_EQ(0u, diff.mismatches) << what << ": GPU against CPU, first at float " << diff.firstMismatchIndex << ", worst " << diff.worstAbsolute;
+                EXPECT_EQ(0u, diff.mismatches) << gpuWhat << ": GPU against CPU, first at float " << diff.firstMismatchIndex << ", worst " << diff.worstAbsolute << (diff.mismatches ? describeGpuMismatch(gpu, rendered.frame, row.gpuTolerance) : std::string());
             }
             cases.push_back(rendered);
         }

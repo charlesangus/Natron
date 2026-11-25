@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <atomic>
+#include <list>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -598,6 +599,8 @@ private:
 
     virtual void appendExtraHashDependents(std::vector<NodePtr>* dependents) const OVERRIDE FINAL;
 
+    virtual void abortCooksStaleAfterEdit() OVERRIDE FINAL;
+
     virtual void addSupportedBitDepth(std::list<ImageBitDepthEnum>* depths) const OVERRIDE FINAL;
 
     virtual StatusEnum getPreferredMetadataAt(double time,
@@ -848,8 +851,13 @@ private:
                           float* acc);
 
     // Aborts the viewer render this thread runs when the loop's hash moved since its frame was set
-    // up, and says whether it did.
+    // up, or when an edit of the loop or its body was held back by that render, and says whether
+    // it did.
     bool abortIfEditedSinceFrameStart() const WARN_UNUSED_RETURN;
+
+    // Lists the viewer render this thread runs among those abortCooksStaleAfterEdit() aborts, for
+    // its lifetime.
+    class RunningRenderScope;
 
     // The LoopBegins the walk up from input 0 pairs with, by script name, or why there are none.
     // Walked once per graph generation.
@@ -906,6 +914,12 @@ private:
 
     // A refreshKnobVisibility() queued by refreshLoopsOf() and not run yet.
     std::atomic<bool> _visibilityRefreshQueued;
+
+    // The viewer renders in render() now, one entry per call.
+    QMutex _runningRendersMutex;
+    std::list<AbortableRenderInfoPtr> _runningRenders;
+    // See noteEditAtLatestRenderSequence().
+    std::atomic<U64> _editedAtRenderSequence { 0 };
 
     mutable QMutex _stopMutex;
     mutable std::vector<StopResult> _stopResults;

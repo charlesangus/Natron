@@ -40,6 +40,7 @@
 #include "Engine/GeoDetailKey.h"
 #include "Engine/Node.h"
 #include "Engine/ParallelRenderArgs.h"
+#include "Engine/RenderContext.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -138,6 +139,36 @@ GeoDetailConstPtr
 makeEmptyDetail()
 {
     return std::make_shared<const GeoDetail>();
+}
+
+// An input outside a frame render has no frame args for the context it is pulled under to ride
+// on: it is handed that context through the actions scope instead, where the input's own
+// evaluateGeometry() finds it.
+void
+installGeometryInputContext(InputContextArgs* inputContext,
+                            ActionContextScope* outsideAFrameRender)
+{
+    if (!inputContext->args() && inputContext->context()) {
+        outsideAFrameRender->open(inputContext->context());
+
+        return;
+    }
+    inputContext->install();
+}
+
+// The hash of the frame args of tls that render under no context: the one a context's key is
+// mixed into.
+U64
+contextFreeRenderHash(const EffectInstance::EffectTLSDataPtr& tls,
+                      U64 fallback)
+{
+    for (std::list<ParallelRenderArgsPtr>::const_reverse_iterator it = tls->frameArgs.rbegin(); it != tls->frameArgs.rend(); ++it) {
+        if (*it && ((*it)->contextKey == 0)) {
+            return (*it)->request ? (*it)->request->nodeHash : (*it)->nodeHash;
+        }
+    }
+
+    return fallback;
 }
 
 struct GeometryCacheRequest {
@@ -240,6 +271,14 @@ fetchGeometryThroughCache(const GeometryCacheRequest& request,
 }
 } // anonymous namespace
 
+U64
+EffectInstance::getContextFreeRenderHash() const
+{
+    const EffectTLSDataPtr tls = _imp->tlsData->getTLSData();
+
+    return tls ? contextFreeRenderHash(tls, getHash()) : getHash();
+}
+
 bool
 EffectInstance::producesGeometryData() const
 {
@@ -270,6 +309,8 @@ EffectInstance::evaluateGeometry(const EvaluateGeometryArgs& args,
         return _imp->mainInstance->evaluateGeometry(args, outputDetail, errorMessage);
     }
 
+    ActionContextScope requestedContext(bool(args.context), args.context);
+
     EffectTLSDataPtr tls = _imp->tlsData->getOrCreateTLSData();
     assert(tls);
     ParallelRenderArgsPtr frameArgs;
@@ -289,10 +330,32 @@ EffectInstance::evaluateGeometry(const EvaluateGeometryArgs& args,
         frameArgs->isSequentialRender = false;
         frameArgs->isRenderResponseToUserInteraction = true;
         frameArgs->isFrameVaryingOrAnimated = isFrameVaryingOrAnimated_Recursive();
+        // The viewer's scene path sets up no frame args, but its render is on the thread, and is
+        // the one an edit aborts: nodes reading the abort flag from these args must see it.
+        adoptThreadAbortState(frameArgs.get());
         tls->frameArgs.push_back(frameArgs);
         fallbackFrameArgs.reset(new ScopedGeometryFallbackFrameArgs(tls));
     } else {
         frameArgs = tls->frameArgs.back();
+    }
+
+    // Knobs read the context getCurrentRenderContext() gives, which an open actions scope decides
+    // over the frame args: the detail is rendered and keyed under that one.
+    ContextFrameArgsScope actingContextArgs;
+    if (renderContextsInUse()) {
+        const RenderContextPtr restricted = getCurrentRestrictedRenderContext();
+        const U64 contextKey = restricted ? restricted->hash() : 0;
+        if (contextKey != frameArgs->contextKey) {
+            ParallelRenderArgsPtr derived = std::make_shared<ParallelRenderArgs>(*frameArgs);
+            derived->context = restricted;
+            derived->contextKey = contextKey;
+            derived->nodeHash = mixRenderContextKey(contextFreeRenderHash(tls, getHash()), contextKey);
+            derived->request.reset();
+            // The snapshot is the one of the context the args were set up under.
+            derived->metadata.reset();
+            actingContextArgs.install(shared_from_this(), derived);
+            frameArgs = derived;
+        }
     }
 
     if (aborted()) {
@@ -351,7 +414,8 @@ EffectInstance::evaluateGeometry(const EvaluateGeometryArgs& args,
             // The identity input is evaluated under the context this node requests it under, as
             // on the image path: a node setting context variables may pass its input through.
             InputContextArgs identityContext(this, identityInput, identityInputNb, args.time, args.view);
-            identityContext.install();
+            ActionContextScope identityOutsideAFrameRender;
+            installGeometryInputContext(&identityContext, &identityOutsideAFrameRender);
 
             return identityInput->evaluateGeometry(EvaluateGeometryArgs(identityTime, identityView, args.byPassCache), outputDetail, errorMessage);
         }
@@ -383,12 +447,13 @@ EffectInstance::evaluateGeometry(const EvaluateGeometryArgs& args,
         for (int i = 0; i < nInputs; ++i) {
             EffectInstancePtr input = getInput(i);
 
-            if (!input || !input->producesGeometryData()) {
+            if (!input || !input->producesGeometryData() || pullsInputInRender(i, args.time, args.view, frameArgs->context)) {
                 continue;
             }
 
             InputContextArgs inputContext(this, input, i, args.time, args.view);
-            inputContext.install();
+            ActionContextScope outsideAFrameRender;
+            installGeometryInputContext(&inputContext, &outsideAFrameRender);
 
             std::set<double> inputTimes;
             collectGeometryFramesForInput(framesNeeded, i, args.view, args.time, &inputTimes);

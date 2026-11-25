@@ -594,11 +594,22 @@ public:
         return _args;
     }
 
+    /**
+     * @brief The context input is pulled under restricted to what its output reads, null when
+     * empty. Outside a frame render the input has no args to carry it: contextKey() is then 0 and
+     * args() null, but this still holds the context.
+     **/
+    const RenderContextPtr& context() const
+    {
+        return _context;
+    }
+
     void install();
 
 private:
     EffectInstancePtr _input;
     ParallelRenderArgsPtr _args;
+    RenderContextPtr _context;
     U64 _contextKey = 0;
     ContextFrameArgsScope _scope;
     ActionContextScope _emptyActions;

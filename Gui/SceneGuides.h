@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -99,12 +100,15 @@ std::vector<Guide> buildGuides(const PXR_NS::UsdStageRefPtr& stage,
                                double length);
 
 // The index of the guide nearest pixel within kHitTolerancePixels, or -1; *world is the point hit.
-// Guides at skipPath are ignored.
+// Guides at skipPath are ignored. A segment whose point nearest pixel lies beyond maxDepth, in
+// normalized device depth, is hidden there by what the view drew and is skipped, so where segments
+// meet, the one drawn on top is hit.
 int hitTest(const SceneGizmo::View& view,
             const std::vector<Guide>& guides,
             const PXR_NS::GfVec2d& pixel,
             const std::string& skipPath,
-            PXR_NS::GfVec3d* world);
+            PXR_NS::GfVec3d* world,
+            double maxDepth = std::numeric_limits<double>::infinity());
 
 // The guides with a segment end inside the pixel rectangle [lo, hi], or crossing it.
 std::vector<int> guidesInRect(const SceneGizmo::View& view,

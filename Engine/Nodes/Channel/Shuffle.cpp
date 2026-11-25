@@ -466,38 +466,6 @@ Shuffle::getOutputColorStorage(double time,
 }
 
 std::string
-Shuffle::resolveLayerLabel(const std::string& layerID,
-                           int inputNb,
-                           double time,
-                           ViewIdx view)
-{
-    if (layerID.empty()) {
-        return std::string();
-    }
-    if (ImageLayerDesc::isColorViewID(layerID)) {
-        return layerID;
-    }
-    if (layerID == kNatronColorLayerID) {
-        return kNatronColorViewRGBA;
-    }
-
-    AppInstancePtr app = getApp();
-    ProjectPtr project = app ? app->getProject() : ProjectPtr();
-    ImageLayerDesc desc;
-    if (project && project->findLayer(layerID, &desc)) {
-        return desc.getLayerLabel();
-    }
-
-    std::list<ImageLayerDesc> present;
-    getPresentLayers(time, view, inputNb, &present);
-    if (findLayer(present, layerID, &desc)) {
-        return desc.getLayerLabel();
-    }
-
-    return layerID;
-}
-
-std::string
 Shuffle::buildSubLabel()
 {
     // Escaped rather than a literal glyph so the meaning survives regardless of this file's editor encoding.
@@ -513,7 +481,7 @@ Shuffle::buildSubLabel()
         if (outLayer.empty()) {
             continue;
         }
-        const std::string outLabel = resolveLayerLabel(outLayer, (int)eInputMain, time, view);
+        const std::string& outLabel = outLayer;
 
         // Walk every channel this output actually produces and note which input slots feed
         // it, so a slot the mapping never reads (or that is only ever zero/one) is left out.
@@ -534,10 +502,10 @@ Shuffle::buildSubLabel()
 
         std::vector<std::string> feedingLabels;
         if (usesSlot1) {
-            feedingLabels.push_back(resolveLayerLabel(getSlotLayer(1), getSlotInput(1), time, view));
+            feedingLabels.push_back(getSlotLayer(1));
         }
         if (usesSlot2) {
-            const std::string label2 = resolveLayerLabel(getSlotLayer(2), getSlotInput(2), time, view);
+            const std::string label2 = getSlotLayer(2);
             if (feedingLabels.empty() || feedingLabels.front() != label2) {
                 feedingLabels.push_back(label2);
             }

@@ -31,16 +31,18 @@
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
+#include <QAction>
+#include <QApplication>
+#include <QColorDialog>
 #include <QGridLayout>
 #include <QHBoxLayout>
+#include <QHeaderView>
+#include <QMenu>
+#include <QScrollArea>
 #include <QStyle>
-#include <QColorDialog>
 #include <QToolTip>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
-#include <QHeaderView>
-#include <QApplication>
-#include <QScrollArea>
 GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
 // /opt/local/include/QtGui/qmime.h:119:10: warning: private field 'type' is not used [-Wunused-private-field]
 #include <QDropEvent>
@@ -402,6 +404,8 @@ KnobGuiString::KnobGuiString(KnobIPtr knob,
     : KnobGui(knob, container)
     , _lineEdit(0)
     , _pickPrimsButton(0)
+    , _primToolsButton(0)
+    , _primToolsMenu(0)
     , _label(0)
     , _container(0)
     , _mainLayout(0)
@@ -548,6 +552,46 @@ KnobGuiString::createWidget(QHBoxLayout* layout)
             _pickPrimsButton->setFocusPolicy(Qt::NoFocus); // exclude from tab focus
             QObject::connect(_pickPrimsButton, SIGNAL(clicked()), this, SLOT(onPickPrimsClicked()));
             layout->addWidget(_pickPrimsButton);
+
+            const bool pattern = (knob->getPrimPathHint() == KnobString::ePrimPathHintPattern);
+            _primToolsButton = new Button(layout->parentWidget());
+            _primToolsButton->setObjectName(QString::fromUtf8("knobPrimTools"));
+            _primToolsButton->setText(QString::fromUtf8("..."));
+            _primToolsButton->setFixedSize(NATRON_MEDIUM_BUTTON_SIZE, NATRON_MEDIUM_BUTTON_SIZE);
+            _primToolsButton->setToolTip(pattern ? tr("Replaces, adds to or removes from this pattern the prims selected in the 3D view, or selects the prims it matches. Recursion is written //, as in /World//Light.") : tr("Replaces this path with the prim selected in the 3D view, or selects the prim it names."));
+            _primToolsButton->setFocusPolicy(Qt::NoFocus);
+            _primToolsMenu = new QMenu(_primToolsButton);
+            _primToolsMenu->setObjectName(QString::fromUtf8("knobPrimToolsMenu"));
+            QAction* replaceAction = _primToolsMenu->addAction(tr("Replace with Selection"));
+            replaceAction->setObjectName(QString::fromUtf8("knobPrimReplace"));
+            QObject::connect(replaceAction, &QAction::triggered, this, [this]() { editPrimPaths(SceneSelectionActions::ePrimEditReplace); });
+            if (pattern) {
+                QAction* addAction = _primToolsMenu->addAction(tr("Add Selection"));
+                addAction->setObjectName(QString::fromUtf8("knobPrimAdd"));
+                QObject::connect(addAction, &QAction::triggered, this, [this]() { editPrimPaths(SceneSelectionActions::ePrimEditAdd); });
+                QAction* removeAction = _primToolsMenu->addAction(tr("Remove Selection"));
+                removeAction->setObjectName(QString::fromUtf8("knobPrimRemove"));
+                QObject::connect(removeAction, &QAction::triggered, this, [this]() { editPrimPaths(SceneSelectionActions::ePrimEditRemove); });
+            }
+            _primToolsMenu->addSeparator();
+            QAction* pickAction = _primToolsMenu->addAction(tr("Pick in Viewer"));
+            pickAction->setObjectName(QString::fromUtf8("knobPrimPick"));
+            pickAction->setToolTip(tr("Arms the viewer and the Scene Graph panel: select prims, then Enter writes them to this knob and Esc cancels."));
+            QObject::connect(pickAction, &QAction::triggered, this, [this]() { armPrimPick(); });
+            QAction* matchesAction = _primToolsMenu->addAction(tr("Select Matches"));
+            matchesAction->setObjectName(QString::fromUtf8("knobPrimSelectMatches"));
+            matchesAction->setToolTip(tr("Selects the prims this knob matches among the ones the viewer has loaded. Unloaded branches are reported, and can be loaded from there."));
+            QObject::connect(matchesAction, SIGNAL(triggered()), this, SLOT(onSelectMatches()));
+            QObject::connect(_primToolsButton, SIGNAL(clicked()), this, SLOT(onPrimToolsClicked()));
+            QObject::connect(_primToolsMenu, &QMenu::aboutToShow, this, [this]() {
+                const bool writable = acceptsPrimPaths();
+                for (QAction* action : _primToolsMenu->actions()) {
+                    if (action->objectName() != QLatin1String("knobPrimSelectMatches")) {
+                        action->setEnabled(writable);
+                    }
+                }
+            });
+            layout->addWidget(_primToolsButton);
         }
 
         ///set the copy/link actions in the right click menu
@@ -577,6 +621,9 @@ KnobGuiString::removeSpecificGui()
     if (_pickPrimsButton) {
         _pickPrimsButton->deleteLater();
     }
+    if (_primToolsButton) {
+        _primToolsButton->deleteLater();
+    }
     if (_container) {
         _container->deleteLater();
     }
@@ -600,7 +647,7 @@ KnobGuiString::acceptsPrimPaths() const
 {
     KnobStringPtr knob = _knob.lock();
 
-    return knob && (knob->getPrimPathHint() != KnobString::ePrimPathHintNone) && knob->isEnabled(0) && !knob->isSlave(0);
+    return knob && (knob->getPrimPathHint() != KnobString::ePrimPathHintNone) && knob->isEnabled(0) && !knob->isSlave(0) && knob->getExpression(0).empty();
 }
 
 void
@@ -611,11 +658,71 @@ KnobGuiString::dropPrimPaths(const QStringList& paths)
     if (!knob || paths.isEmpty() || !acceptsPrimPaths()) {
         return;
     }
+    writePrimText(SceneSelectionActions::primPathsText(knob->getPrimPathHint(), paths));
+}
+
+void
+KnobGuiString::writePrimText(const std::string& newText)
+{
+    KnobStringPtr knob = _knob.lock();
+
+    // An armed pick or an open popup can outlive the state that allowed it, so the knob may have
+    // become expression-driven, slaved or disabled since.
+    if (!knob || !acceptsPrimPaths()) {
+        return;
+    }
     const std::string oldText = knob->getValue(0);
-    const std::string newText = SceneSelectionActions::primPathsText(knob->getPrimPathHint(), paths);
     if (oldText != newText) {
         pushUndoCommand(new KnobUndoCommand<std::string>(shared_from_this(), oldText, newText));
     }
+}
+
+void
+KnobGuiString::editPrimPaths(SceneSelectionActions::PrimEditEnum edit)
+{
+    KnobStringPtr knob = _knob.lock();
+
+    if (!knob || !acceptsPrimPaths()) {
+        return;
+    }
+    const QStringList paths = SceneSelectionActions::currentSelection(getGui());
+    if (paths.isEmpty()) {
+        SceneSelectionActions::showHint(getGui(), tr("No prims are selected."));
+
+        return;
+    }
+    writePrimText(SceneSelectionActions::editPrimPathsText(knob->getPrimPathHint(), edit, knob->getValue(0), paths));
+}
+
+void
+KnobGuiString::armPrimPick()
+{
+    KnobStringPtr knob = _knob.lock();
+
+    if (!knob || !acceptsPrimPaths()) {
+        return;
+    }
+    QPointer<KnobGuiString> self(this);
+    const KnobString::PrimPathHintEnum hint = knob->getPrimPathHint();
+    SceneSelectionActions::armPick(getGui(), knob, [self, hint](const QStringList& paths) {
+        if (self) {
+            self->writePrimText(SceneSelectionActions::primPathsText(hint, paths));
+        }
+    });
+}
+
+void
+KnobGuiString::onPrimToolsClicked()
+{
+    if (_primToolsMenu && _primToolsButton) {
+        _primToolsMenu->popup(_primToolsButton->mapToGlobal(QPoint(0, _primToolsButton->height())));
+    }
+}
+
+void
+KnobGuiString::onSelectMatches()
+{
+    SceneSelectionActions::selectMatches(getGui(), _knob.lock());
 }
 
 void
@@ -629,13 +736,11 @@ KnobGuiString::onPickPrimsClicked()
     }
     EffectInstance* effect = dynamic_cast<EffectInstance*>(knob->getHolder());
     NodePtr node = effect ? effect->getNode() : NodePtr();
-    NodePtr input = node ? node->getInput(0) : NodePtr();
     AppInstancePtr app = node ? node->getApp() : AppInstancePtr();
     TimeLinePtr timeline = app ? app->getTimeLine() : TimeLinePtr();
     const double time = timeline ? timeline->currentFrame() : 0.;
-    const QStringList current = QString::fromStdString(knob->getValue(0)).split(QLatin1Char(' '), Qt::SkipEmptyParts);
     const bool multiple = (knob->getPrimPathHint() == KnobString::ePrimPathHintPattern);
-    ScenePrimPickerPopup* popup = new ScenePrimPickerPopup(gui, input, multiple, current, time, _pickPrimsButton->window());
+    ScenePrimPickerPopup* popup = new ScenePrimPickerPopup(gui, node, multiple, QString::fromStdString(knob->getValue(0)), time, _pickPrimsButton->window());
     QPointer<KnobGuiString> self(this);
     QObject::connect(popup, &ScenePrimPickerPopup::primsPicked, this, [self](const QStringList& paths) {
         if (self) {
@@ -1340,6 +1445,9 @@ KnobGuiString::_hide()
         if (_pickPrimsButton) {
             _pickPrimsButton->hide();
         }
+        if (_primToolsButton) {
+            _primToolsButton->hide();
+        }
     }
 }
 
@@ -1360,6 +1468,9 @@ KnobGuiString::_show()
         _lineEdit->show();
         if (_pickPrimsButton) {
             _pickPrimsButton->show();
+        }
+        if (_primToolsButton) {
+            _primToolsButton->show();
         }
     }
 }

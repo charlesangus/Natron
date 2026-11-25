@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
@@ -189,8 +190,43 @@ struct EndToEndResult {
     // Why tasks of the GPU frame were moved back to the CPU, with how many.
     std::map<std::string, int> cpuFallbackReasons;
 
+    // Per region, the nodes of the tasks outside it that its members read: each one rendered either on the CPU and
+    // uploaded, or by another region.
+    std::vector<std::vector<NodePtr>> regionExternalInputs;
+
+    // How the scheduler ran the GPU frame's regions.
+    int gpuRegionsRun = 0;
+    int gpuRegionRetries = 0;
+    int gpuStripHalvings = 0;
+    int gpuStripPipelinesSerialized = 0;
+    int gpuPipelinedRegions = 0;
+    int evictions = 0;
+
+    // Whether the forced context's pool poisoned what it handed out (GpuPoolPoisonScope).
+    bool poolPoisoned = false;
+
     bool ranInRegion(const NodePtr& node) const;
 };
+
+// While one lives, renderEndToEnd() makes its forced context's buffer pool fill every buffer it hands out with a
+// NaN (gpu::kGpuPoolPoisonBits), so a GPU frame that reads memory nothing wrote differs from the CPU one wherever
+// it does, instead of only when a previous user happened to leave different values there. Scopes nest.
+class GpuPoolPoisonScope {
+public:
+    GpuPoolPoisonScope();
+    ~GpuPoolPoisonScope();
+    GpuPoolPoisonScope(const GpuPoolPoisonScope&) = delete;
+    GpuPoolPoisonScope& operator=(const GpuPoolPoisonScope&) = delete;
+};
+
+// For a GPU frame that differs from its CPU frame: where and how many pixels differ, the values at the first of
+// them, how many of the GPU's are the pool's poison, which render is wrong against `reference` (an independent CPU
+// render of the same case; pass an empty vector when there is none), and how the frame was placed and run: its
+// regions, where each region's external inputs came from, strip and retry counts, uploads, downloads and CPU
+// fallbacks. An intermittent mismatch cannot be rerun at will, so the report has to say it all.
+std::string describeGpuMismatch(const EndToEndResult& result,
+                                const std::vector<float>& reference,
+                                const ParityTolerance& tolerance);
 
 // Called once the forced GPU context is installed and before the GPU frame is planned, so a test can
 // register kernels on its runtime (appPTR->getGpuContext()->runtime()). Returning false fails the run
@@ -212,6 +248,75 @@ EndToEndResult renderEndToEnd(const std::vector<NodePtr>& graph,
                               const GpuContextReady& onGpuContext = GpuContextReady(),
                               const GpuFrameDone& onGpuFrame = GpuFrameDone(),
                               unsigned mipmapLevel = 0);
+
+#ifdef NATRON_HAVE_GPU
+// A frame split into command buffers and aborted after some of them had finished.
+struct AbortedFrameResult {
+    bool skipped = false;
+    std::string error;
+
+    bool fired = false;
+    EffectInstance::RenderRoIRetCode code = EffectInstance::eRenderRoIRetCodeOk;
+    bool hasPlanes = false;
+    double abortToEndMs = 0.;
+    int batchesAfterAbort = 0;
+    std::map<std::string, int> fallbacks;
+    // The most work a command buffer of the frame held, which bounds what the device runs once the abort comes.
+    std::uint64_t largestBatchWork = 0;
+
+    // Pool bytes held, with the caches cleared, before the frame and once it has gone; set by renderAbortedFrame() only.
+    unsigned long long liveBefore = 0;
+    unsigned long long liveAfter = 0;
+};
+
+// What renderWithAbortMidSolve() saw of each of its three frames.
+struct AbortedSolveResult {
+    bool skipped = false;
+    std::string error;
+
+    // The clean frame in one command buffer per region part, and its pixels.
+    std::vector<float> unsplit;
+
+    // The frame split at every charge and aborted after `abortAfterBatches` command buffers.
+    AbortedFrameResult aborted;
+
+    // Pool bytes still held, with the caches cleared, once the clean frame has gone, then once the aborted frame and
+    // the one after it have.
+    unsigned long long liveAfterClean = 0;
+    unsigned long long liveAfterAbort = 0;
+
+    // The frame rendered after the abort without clearing the caches, split at every charge.
+    std::vector<float> split;
+    int splitBatches = 0;
+    std::map<std::string, int> splitGpuTasksPerNode;
+};
+
+// Renders `root` over `window` on the GPU three times under a forced GPU context: clean and unsplit; split at every
+// charge and aborted after abortAfterBatches command buffers have finished; and split again, reading whatever the aborted
+// frame left in the caches.
+AbortedSolveResult renderWithAbortMidSolve(const std::vector<NodePtr>& graph,
+                                           const NodePtr& root,
+                                           const RectI& window,
+                                           double time,
+                                           int abortAfterBatches);
+
+// Renders `root` over `window` on the GPU once under a forced GPU context, split into command buffers of batchWork, and
+// aborts it after abortAfterBatches of them have finished. Only those run on the device, so a large frame costs little.
+AbortedFrameResult renderAbortedFrame(const std::vector<NodePtr>& graph,
+                                      const NodePtr& root,
+                                      const RectI& window,
+                                      double time,
+                                      std::uint64_t batchWork,
+                                      int abortAfterBatches);
+
+// The command buffers a frame split at every charge ran beyond each context's last. Negative when there is no device or
+// the frame failed; *error is empty only when there is no device.
+int countBatchesOfFrame(const std::vector<NodePtr>& graph,
+                        const NodePtr& root,
+                        const RectI& window,
+                        double time,
+                        std::string* error);
+#endif // NATRON_HAVE_GPU
 
 NATRON_NAMESPACE_EXIT
 

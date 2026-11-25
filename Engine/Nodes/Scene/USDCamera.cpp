@@ -26,6 +26,7 @@
 #include "USDCamera.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <limits>
 #include <string>
@@ -45,6 +46,7 @@
 #include "Engine/Nodes/Scene/SceneFileSource.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
+#include "Engine/Nodes/Scene/SceneTeardown.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/Project.h"
@@ -331,6 +333,10 @@ struct FileCameraValues {
 // The file a file camera comes from.
 struct USDCamera::FileCamera {
     SceneFileSource source;
+    // Whether a read of the file for the knobs waits for SceneTeardown to be idle, and whether
+    // one of those reads asked to select the first camera.
+    std::atomic<bool> knobReadWaiting { false };
+    std::atomic<bool> selectFirstWaiting { false };
 };
 
 // The knobs an authoring with Read From File reads, read once before it.
@@ -534,7 +540,7 @@ USDCamera::refreshCameraChoices(bool selectFirst)
         return;
     }
     const std::string path = file->getSingleFilePath();
-    if (path.empty()) {
+    if (path.empty() || deferKnobReadWhileTeardownPending(selectFirst)) {
         return;
     }
     std::vector<ChoiceOption> options;
@@ -556,6 +562,55 @@ USDCamera::refreshCameraChoices(bool selectFirst)
         cameraPrim->setValueFromID(options.front().id, 0);
     }
 } // USDCamera::refreshCameraChoices
+
+bool
+USDCamera::deferKnobReadWhileTeardownPending(bool selectFirst)
+{
+    // Stating each file to tell a closed scene's stale layer from a current one would be disk
+    // access on the main thread, so any pending teardown puts the read off.
+    if (SceneTeardown::getPendingCount() == 0) {
+        return false;
+    }
+    if (selectFirst) {
+        _fileCamera->selectFirstWaiting = true;
+    }
+    if (_fileCamera->knobReadWaiting.exchange(true)) {
+        return true;
+    }
+    const std::weak_ptr<EffectInstance> owner = weak_from_this();
+    SceneTeardown::notifyWhenIdle([this, owner]() {
+        const EffectInstancePtr alive = owner.lock();
+        if (!alive) {
+            return;
+        }
+        _fileCamera->knobReadWaiting = false;
+        refreshCameraChoices(_fileCamera->selectFirstWaiting.exchange(false));
+        showFileValues(getCurrentTime());
+    });
+
+    return true;
+}
+
+void
+USDCamera::rekeyAfterTeardown()
+{
+    KnobFilePtr file = _file.lock();
+
+    // Its hash holds the stamp the file had when the closed scene read it.
+    if (file) {
+        file->invalidateContentHash();
+    }
+    invalidateSceneLayer();
+    clearActionsCache();
+    clearPersistentMessage(false);
+    NodePtr node = getNode();
+    if (node) {
+        node->markHashDirty();
+    }
+    refreshCameraChoices(false);
+    showFileValues(getCurrentTime());
+    evaluate(true, true);
+}
 
 void
 USDCamera::showFileValues(double time)
@@ -585,7 +640,7 @@ USDCamera::showFileValues(double time,
         return;
     }
     const std::string path = file->getSingleFilePath();
-    if (path.empty()) {
+    if (path.empty() || deferKnobReadWhileTeardownPending(false)) {
         return;
     }
     AppInstancePtr app = getApp();
@@ -1036,6 +1091,22 @@ USDCamera::renderScene(const SceneRenderActionArgs& /*args*/,
         file.editTransform = editTransform && editTransform->getValue();
         file.editLens = editLens && editLens->getValue();
         file.editClipping = editClipping && editClipping->getValue();
+    }
+
+    const SceneFileSource::WalkResultEnum walked = file.enabled ? _fileCamera->source.walk(file.path) : SceneFileSource::eWalkUnchanged;
+    if (walked == SceneFileSource::eWalkDeferred) {
+        // Nothing memoizes an empty scene under this hash: the layer memo is not reached, and
+        // the digest stays an unwalked one, which the re-key replaces.
+        setPersistentMessage(eMessageTypeWarning, tr("Waiting for the previous scene to close.").toStdString());
+        _fileCamera->source.rekeyWhenTeardownIdle(weak_from_this(), [this]() { rekeyAfterTeardown(); });
+
+        return eStatusOK;
+    }
+    if (walked == SceneFileSource::eWalkDigestMoved) {
+        NodePtr node = getNode();
+        if (node) {
+            node->markHashDirty();
+        }
     }
 
     SceneLayerReads reads;

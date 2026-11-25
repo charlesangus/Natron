@@ -162,6 +162,8 @@ SplineWarpInteract::createDisplayKnobs(const KnobPagePtr& page)
     output->setSecretByDefault(true);
     output->setInViewerContextCanHaveShortcut(true);
     output->setIconLabel(NATRON_ICONS_PATH "lucide/spline.svg");
+    // The follow controls come next and need a row of their own.
+    output->setInViewerContextNewLineActivated(true);
     page->addKnob(output);
     outputWarpedButton = output;
 

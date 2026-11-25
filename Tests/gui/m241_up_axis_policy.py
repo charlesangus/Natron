@@ -76,6 +76,7 @@ try:
     project_meters_per_unit.setValue(1.0)
 
     reader = make("USDRead", 0, 0)
+    reader.getParam("initialDraw").setValue(3)
     reader.getParam("filename").setValue(box_path)
     match_up_axis = reader.getParam("matchUpAxis")
     match_units = reader.getParam("matchUnits")

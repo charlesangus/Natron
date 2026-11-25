@@ -209,15 +209,21 @@ try:
         ok = yield ("until", lambda: panel_of_node(st.node) is None, POLL_TIMEOUT_S)
         require(ok, "closed the settings panel of " + st.node.getLabel())
 
+    def root_graph():
+        """The top-level node graph. A Group's graph is named after the Group, and allWidgets() lists
+        the graphs in no fixed order."""
+        graphs = [w for w in gt.widgets_of("NodeGraph") if not w.objectName()]
+        return graphs[0] if graphs else None
+
     def reopen_panel(st):
         if st.grouped:
             require(st.panel is not None, "the closed panel is held")
             QMetaObject.invokeMethod(st.panel, "setClosed", Q_ARG(bool, False))
         else:
-            graphs = gt.widgets_of("NodeGraph")
-            require(graphs, "found the node graph")
+            graph = root_graph()
+            require(graph is not None, "found the node graph")
             app.setSelection([st.node])
-            QMetaObject.invokeMethod(graphs[0], "showSelectedNodeSettingsPanel")
+            QMetaObject.invokeMethod(graph, "showSelectedNodeSettingsPanel")
         ok = yield ("until", lambda: panel_of_node(st.node) is not None, POLL_TIMEOUT_S)
         require(ok, "reopened the settings panel of " + st.node.getLabel())
         if not st.grouped:
@@ -891,9 +897,9 @@ try:
         # The panel is closed and reopened by core(); the dope sheet needs it open.
         require(panel_of_node(rp) is not None, "the top-level RotoPaint's panel is open")
         yield from dope_sheet_section(st, "top", names)
-        graphs = gt.widgets_of("NodeGraph")
-        if graphs:
-            make_tab_current(graphs[0], "graph")
+        graph = root_graph()
+        if graph is not None:
+            make_tab_current(graph, "graph")
         yield from close_panel(st)
         yield from expect("top level closed: no markers", [], st)
 

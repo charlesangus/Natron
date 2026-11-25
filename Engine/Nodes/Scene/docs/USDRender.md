@@ -94,3 +94,44 @@ it changed. They are released when the node is deleted, by Cache > Clear All
 Caches and Clear Per-Node Cache, by Cache > Free GPU Memory, and, least recently
 rendered first, when the nodes' renderers hold more than 2 GB of GPU memory
 together. A released node rebuilds them at its next render.
+
+## Subdivision surfaces
+
+Cycles and MoonRay render a mesh as a subdivision surface when their
+Subdivision Surfaces setting is on (`cyclesSubdivisionSurfaces`,
+`moonraySubdivisionSurfaces` on USDRenderSettings). It is off by default, and
+every mesh then renders as its polygons. USD's default subdivision scheme is
+Catmull-Clark, so with the setting on, every mesh that does not author a
+`subdivisionScheme` of `none` is smoothed. The viewer's refine level has no
+effect on either renderer.
+
+- `catmullClark`: a Catmull-Clark surface.
+- `loop`: rendered as Catmull-Clark, with a warning that names the mesh.
+- `bilinear`: subdivided linearly, which keeps the mesh's shape.
+- `none`: never subdivided.
+
+A subdivided mesh shades with its limit surface's normals; its authored
+normals are ignored. Creases, corners, holes and the boundary and face-varying
+interpolation rules are passed to the renderer.
+
+How finely a surface is diced into micropolygons:
+
+- Cycles: Dicing Rate (`cyclesDicingRate`, 1 by default) is the size of a
+  micropolygon edge, in pixels with Adaptive Space (`cyclesAdaptiveSpace`) at
+  Pixel, its default, or in scene units at Object. Max Subdivision Level
+  (`cyclesMaxSubdivisionLevel`, 12) caps the splitting. Dicing Camera
+  (`cyclesDicingCamera`) names the camera prim meshes are diced as seen from;
+  empty uses the render camera. A mesh's constant primvars `cycles:dicing_rate`
+  (a multiplier on Dicing Rate) and `cycles:max_level` (in place of Max
+  Subdivision Level) override them for that mesh.
+- MoonRay: Mesh Resolution (`moonrayMeshResolution`, 2) and Adaptive Error
+  (`moonrayAdaptiveError`, 0, which turns adaptive dicing off) set the dicing.
+  Dicing Camera (`moonrayDicingCamera`) names the camera prim meshes are diced
+  as seen from; empty uses the render camera. Faces outside its view get the
+  coarsest dicing and its field of view sets how large a face looks, while the
+  distance to a face is still measured from the render camera. A mesh's primvars
+  `moonray:mesh_resolution` and `moonray:adaptive_error` override them for that
+  mesh.
+
+Changing any of these settings re-dices the meshes, in a running render and in
+the viewer.

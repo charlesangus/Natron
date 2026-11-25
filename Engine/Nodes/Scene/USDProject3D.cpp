@@ -958,6 +958,13 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
 {
     const ScenePayload cameraScene = args.getInputScene(kUSDProject3DInputCamera);
 
+    // Taken before any knob is read, so that an edit landing during the reads moves the key
+    // emitSceneLayer() takes past this one and the values read are not memoized under it.
+    SceneLayerMemo::Key layerKey;
+    if (!getSceneLayerKey(SceneLayerReads(), &layerKey, errorMessage)) {
+        return eStatusFailed;
+    }
+
     KnobChoicePtr projectOnKnob = _projectOn.lock();
     KnobBoolPtr cropKnob = _crop.lock();
     KnobBoolPtr clipKnob = _clipNearFar.lock();
@@ -999,10 +1006,6 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
     const double frameHold = frameHoldKnob->getValue();
     const double aspect = getPlateAspect(args.time);
 
-    SceneLayerMemo::Key layerKey;
-    if (!getSceneLayerKey(SceneLayerReads(), &layerKey, errorMessage)) {
-        return eStatusFailed;
-    }
     ContentHasher keyHasher;
     keyHasher.appendU64(layerKey.nodeDigest);
     keyHasher.appendDouble(layerKey.firstFrame);
@@ -1137,10 +1140,14 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
         }
 
         samples = computed;
-        std::lock_guard<std::mutex> l(_imp->lock);
-        _imp->samplesValid = true;
-        _imp->samplesKey = samplesKey;
-        _imp->samples = samples;
+        // Samples read across a knob or project edit must not serve the new key.
+        SceneLayerMemo::Key keyNow;
+        if (getSceneLayerKey(SceneLayerReads(), &keyNow, 0) && (keyNow == layerKey)) {
+            std::lock_guard<std::mutex> l(_imp->lock);
+            _imp->samplesValid = true;
+            _imp->samplesKey = samplesKey;
+            _imp->samples = samples;
+        }
     }
 
     // The image's identity and hash, without rendering it: the layer reads nothing else of it.
@@ -1168,6 +1175,8 @@ USDProject3D::renderScene(const SceneRenderActionArgs& args,
     reads.upstream = SceneLayerMemo::Key::eUpstreamReadFacts;
     reads.factsDigest = facts.finalize();
     reads.frameRange = !samples->frames.empty() || (hasPlate && plate.varying);
+    reads.valuesRead = true;
+    reads.valuesReadUnder = layerKey;
 
     PXR_NS::SdfPath path;
     if (!SceneNodeAuthoring::getPrimPath(primPathKnob, &path, errorMessage)) {

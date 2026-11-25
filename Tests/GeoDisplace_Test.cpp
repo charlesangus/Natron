@@ -313,3 +313,23 @@ TEST(GeoDisplace, RecomputeNormalsReplacesVertexNormalsOnTheVertices)
         EXPECT_NEAR(1.f, recomputed->get<float>((std::size_t)vertex, 2), 1e-6);
     });
 }
+
+TEST(GeoDisplace, EdgesDisplaceOnlyTheirEndpoints)
+{
+    const GeoDetail grid = flatGrid(2);
+    for (GeoGroupTypeEnum type : { eGeoGroupTypeEdges, eGeoGroupTypeGuess }) {
+        GeoDisplaceParams params;
+        params.group = "p0-1-2";
+        params.groupType = type;
+        params.displaceBy = eGeoDisplaceByImage;
+        params.recomputeNormals = false;
+        const GeoDisplaceImage image = constantImage(1.f);
+        GeoDetailBuilder b { GeoDetail(grid) };
+        std::string error;
+        ASSERT_TRUE(displaceGeometry(b, params, &image, &error)) << error;
+        const GeoDetail out = b.finish();
+        out.pointMap().forEachLive([&](GeoIndex index, GeoOffset point) {
+            EXPECT_NEAR(index <= 2 ? 1. : 0., out.pointPosition(point)[2], 1e-9) << "point " << index;
+        });
+    }
+}

@@ -249,6 +249,7 @@ EffectInstance::~EffectInstance()
     if (qApp && (QThread::currentThread() == qApp->thread())) {
         closeOverlayEditStepOf(this);
     }
+    retireSceneInputContextIds();
 }
 
 EffectInstancePtr
@@ -624,7 +625,7 @@ EffectInstance::getHash() const
 {
     NodePtr n = _node.lock();
 
-    return n->getHashValue();
+    return n ? n->getHashValue() : 0;
 }
 
 namespace {
@@ -1245,7 +1246,9 @@ EffectInstance::hasOutputConnected() const
 EffectInstancePtr
 EffectInstance::getInput(int n) const
 {
-    NodePtr inputNode = getNode()->getInput(n);
+    // No node once it is destroyed while a scene worker's job still holds this effect.
+    const NodePtr node = getNode();
+    NodePtr inputNode = node ? node->getInput(n) : NodePtr();
 
     if (inputNode) {
         return inputNode->getEffectInstance();
@@ -2878,9 +2881,7 @@ getOrCreateFromCacheInternal(const ImageKey& key,
          * Another thread might have allocated the same image in the cache but with another RoI, make sure
          * it is big enough for us, or resize it to our needs.
          */
-
-
-        (*image)->ensureBounds( params->getBounds() );
+        Image::ensureBoundsByCopy(image, params->getBounds());
     }
 }
 
@@ -3978,8 +3979,8 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
         const bool mappedMatchesOutput = (prefComp == it->second.renderMappedImage->getComponents()) && (outputClipPrefDepth == it->second.renderMappedImage->getBitDepth());
         // Rendering straight into the cached image is safe: the trimap marks the render window as
         // being rendered so readers wait for it, the effect's Image::WriteAccess holds the image's
-        // write lock so a concurrent ensureBounds() cannot reallocate the buffer under the kernel,
-        // and renderRoI() marks the window rendered only after the render succeeded, so what a
+        // write lock so a concurrent grown copy of it never reads half-written pixels, a cached
+        // image is never reallocated in place, and renderRoI() marks the window rendered only after the render succeeded, so what a
         // failed, aborted or throwing kernel left there is rendered again. Host-tiled renders keep
         // the temporary because tiles writing into one image would serialise on its write lock.
         const bool rendersIntoMappedImage = mappedMatchesOutput && !layers.useOpenGL && (it->second.renderMappedImage->getStorageMode() == eStorageModeRAM) && (layers.rectsToRender.size() == 1) && _publicInterface->rendersOnlyInsideRenderWindow();
@@ -4523,6 +4524,9 @@ EffectInstance::evaluate(bool isSignificant,
     }
     if (isSignificant) {
         node->refreshPreviewsRecursivelyDownstream(time);
+        if (AppInstancePtr app = getApp()) {
+            Q_EMIT app->nodeEvaluated();
+        }
     }
 } // evaluate
 
@@ -4549,8 +4553,8 @@ EffectInstance::setPersistentMessage(MessageTypeEnum type,
     if (isCheckingIdentityForMetadata(this)) {
         return;
     }
+    // No node once it is destroyed while a scene worker's job still evaluates this effect.
     NodePtr node = getNode();
-    assert(node);
     if (node) {
         node->setPersistentMessage(type, content);
     }
@@ -4560,7 +4564,6 @@ bool
 EffectInstance::hasPersistentMessage()
 {
     NodePtr node = getNode();
-    assert(node);
     return node ? node->hasPersistentMessage() : false;
 }
 
@@ -4568,11 +4571,10 @@ void
 EffectInstance::clearPersistentMessage(bool recurse)
 {
     NodePtr node = getNode();
-    assert(node);
     if (node) {
         node->clearPersistentMessage(recurse);
+        assert(!node->hasPersistentMessage());
     }
-    assert( !hasPersistentMessage() );
 }
 
 int
@@ -5621,6 +5623,19 @@ EffectInstance::getTransform_public(double time,
     //assert( getNode()->getCurrentCanTransform() ); // called in every case for overlays
 
     return getTransform(time, renderScale, draftRender, view, inputToTransform, transform);
+}
+
+StatusEnum
+EffectInstance::getOverlayTransform_public(double time,
+                                           const RenderScale& renderScale,
+                                           bool draftRender,
+                                           ViewIdx view,
+                                           EffectInstancePtr* inputToTransform,
+                                           Transform::Matrix3x3* transform)
+{
+    RECURSIVE_ACTION();
+
+    return getOverlayTransform(time, renderScale, draftRender, view, inputToTransform, transform);
 }
 
 bool

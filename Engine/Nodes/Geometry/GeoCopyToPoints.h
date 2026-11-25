@@ -119,12 +119,14 @@ public:
                        "(rot), scaled (pscale, scale), offset (trans) and pivoted (pivot). The copies are either "
                        "real geometry, or packed primitives that all share the Source, which costs almost "
                        "nothing per copy. Chosen attributes of each target point are copied onto its copy.",
-        .grouping = PLUGIN_GROUP_3D,
+        .grouping = PLUGIN_GROUP_GEOMETRY,
         .majorVersion = 1,
         .minorVersion = 0,
         .isWriter = false,
         .outputKind = eDataKindGeometry,
         .inputs = kInputs,
+        .geoGroupKnob = kGeoCopyToPointsParamSourceGroup,
+        .geoGroupClasses = eGeoGroupClassPrimitives,
     };
 
     static EffectInstance* BuildEffect(NodePtr node)

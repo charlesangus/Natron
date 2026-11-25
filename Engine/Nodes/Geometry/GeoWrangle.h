@@ -80,12 +80,15 @@ public:
                        "and write its attributes and groups and edit its topology. Second reads "
                        "a second geometry. The ch functions read the node's user parameters; "
                        "Create Parameters adds the ones the snippet names.",
-        .grouping = PLUGIN_GROUP_3D,
+        .grouping = PLUGIN_GROUP_GEOMETRY,
         .majorVersion = 1,
         .minorVersion = 0,
         .isWriter = false,
         .outputKind = eDataKindGeometry,
         .inputs = kGeoWrangleInputs,
+        .geoGroupKnob = kGeoWrangleParamGroup,
+        .geoGroupClasses = eGeoGroupClassPoints | eGeoGroupClassPrimitives,
+        .geoGroupTypeKnob = kGeoWrangleParamRunOver,
     };
 
     static EffectInstance* BuildEffect(NodePtr node)

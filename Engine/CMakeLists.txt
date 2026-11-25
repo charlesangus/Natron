@@ -66,7 +66,7 @@ list(APPEND NatronEngine_HEADERS ${NatronEngineFlow_HEADERS})
 list(APPEND NatronEngine_SOURCES ${NatronEngineFlow_SOURCES})
 # OpenUSD's headers (Nodes/Scene/UsdIncludes.h) include its Python bindings' headers, which need
 # the full Python API, and libshiboken puts Py_LIMITED_API on everything that links it.
-file(GLOB NatronEngineScene_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Scene/*.cpp)
+file(GLOB NatronEngineScene_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Scene/*.cpp)
 set_source_files_properties(${NatronEngineScene_SOURCES} PROPERTIES COMPILE_OPTIONS -UPy_LIMITED_API)
 # The geometry nodes translate to and from USD, so they include the same headers.
 file(GLOB NatronEngineGeometry_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Geometry/*.cpp)
@@ -216,6 +216,24 @@ qt_add_resources(NatronEngine AiModelManifest
     PREFIX "/Ai"
     BASE "${CMAKE_CURRENT_SOURCE_DIR}/Ai/data"
     FILES "${CMAKE_CURRENT_SOURCE_DIR}/Ai/data/ai_models.json"
+)
+# The nodes whose docs/<PluginID>.md is a user-facing reference rather than a developer note
+# are bundled as :/Docs/Nodes/<PluginID>.md; Node::makeDocumentation appends it to the node's
+# Help page.
+set(NatronEngine_NODE_DOCS
+    ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Geometry/docs/GeoGroup.md
+    ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Geometry/docs/GeoWrangle.md
+    ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Geometry/docs/GeoPython.md
+    ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Geometry/docs/GeoEdit.md
+    ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Geometry/docs/GeoToUSD.md
+)
+foreach(nodeDoc IN LISTS NatronEngine_NODE_DOCS)
+    get_filename_component(nodeDocName ${nodeDoc} NAME)
+    set_source_files_properties(${nodeDoc} PROPERTIES QT_RESOURCE_ALIAS ${nodeDocName})
+endforeach()
+qt_add_resources(NatronEngine NodeDocs
+    PREFIX "/Docs/Nodes"
+    FILES ${NatronEngine_NODE_DOCS}
 )
 # GeoSubdivide refines through OpenSubdiv's Far library, the one USD's own subdivision uses;
 # pxr's package config usually brings the target in already.

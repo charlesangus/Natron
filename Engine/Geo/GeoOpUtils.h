@@ -30,7 +30,9 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <string_view>
@@ -114,7 +116,39 @@ bool geoEvalAttribCompare(const GeoAttribute& attribute, std::size_t offset, con
 enum GeoGroupTypeEnum {
     eGeoGroupTypePoints = 0,
     eGeoGroupTypePrimitives,
+    eGeoGroupTypeEdges,
+    eGeoGroupTypeGuess,
 };
+
+/** @brief Every distinct edge of the live polygons and polylines. */
+std::set<GeoEdge> geoAllEdges(const GeoDetail& detail);
+
+/**
+ * @brief The edges of the live polygons and polylines that @p pattern selects. Edges are named
+ * by point paths ("p3-4-5"), edge group names and globs and "@attr" comparisons that both
+ * endpoints meet, with "*", "!" and "^" as in geoSelectElements(). A blank pattern selects every
+ * edge. Returns false with @p error set for a malformed term.
+ **/
+bool geoSelectEdges(const GeoDetail& detail,
+                    const std::string& pattern,
+                    std::set<GeoEdge>* edges,
+                    std::string* error);
+
+/**
+ * @brief Resolves "guess from group": the class a group pattern names. An edge point path or
+ * edge group means edges; a group name or glob means the class that has a matching group,
+ * primitives before points before edges; "@attr" means the class of the attribute; numbers,
+ * "*" and unknown names say nothing and a pattern that says nothing resolves to @p fallback
+ * (the first of @p allowed when the fallback is not allowed). Returns false with @p error
+ * naming the conflicting terms when the terms resolve to different classes, or the term whose
+ * class is not in @p allowed.
+ **/
+bool geoGuessGroupType(const GeoDetail& detail,
+                       std::string_view pattern,
+                       std::span<const GeoGroupTypeEnum> allowed,
+                       GeoGroupTypeEnum fallback,
+                       GeoGroupTypeEnum* type,
+                       std::string* error);
 
 /**
  * @brief Selects elements of a point, vertex or primitive class with a group pattern. Tokens
@@ -136,28 +170,79 @@ bool geoSelectElements(const GeoDetail& detail,
                        GeoElementMask* mask,
                        std::string* error);
 
+/** @brief A named group over a dense element domain; elements are row numbers. */
+struct GeoNamedElementGroup {
+    std::string name;
+    std::span<const std::int32_t> elements;
+};
+
+/**
+ * @brief geoSelectElements() over @p count dense elements numbered 0..count-1 whose groups are
+ * @p namedGroups. Attribute terms ("@attr op value") are an error with @p error set unless
+ * @p allowAttributes, and with it select nothing, since the domain carries no attributes.
+ **/
+bool geoSelectElementsInDomain(std::size_t count,
+                               std::span<const GeoNamedElementGroup> namedGroups,
+                               std::string_view pattern,
+                               GeoElementMask* mask,
+                               std::string* error,
+                               bool allowAttributes = false);
+
+/**
+ * @brief The compact pattern that geoSelectElements() reads back as @p mask: ascending
+ * element numbers (not storage offsets, so tombstones are skipped), runs written "A-B", regular
+ * strides "A-B:step", and "*" when every live element is selected. A term is only coalesced
+ * from three elements up. An empty selection is "" when @p emptyMeansEverything (the caller
+ * reads a blank pattern as every element) and "^*" otherwise, which removes everything from a
+ * selection that is already empty.
+ **/
+std::string geoEncodePattern(const GeoDetail& detail,
+                             GeoAttribClassEnum cls,
+                             const GeoElementMask& mask,
+                             bool emptyMeansEverything = false);
+
+/**
+ * @brief The pattern that geoSelectEdges() reads back as @p edges: point paths such as
+ * "p3-4-5" over point element numbers, edges that share endpoints chained into one path and a
+ * closed loop written as one path that returns to its start. Edges with a dead endpoint are
+ * dropped. The empty set follows the same "" / "^*" rule as geoEncodePattern().
+ **/
+std::string geoEncodeEdgePattern(const GeoDetail& detail,
+                                 std::span<const GeoEdge> edges,
+                                 bool emptyMeansEverything = false);
+
+/** @brief Calls f(edge) for each edge of @p prim when it is a polygon or polyline. */
+template <typename F>
+void
+geoForEachPrimitiveEdge(const GeoDetail& detail, GeoOffset prim, F&& f)
+{
+    const GeoPrimitiveTypeEnum type = detail.primitiveType(prim);
+    if (type != eGeoPrimitivePolygon && type != eGeoPrimitivePolyline) {
+        return;
+    }
+    const GeoVertexRange range = detail.primitiveVertices(prim);
+    if (range.count < 2) {
+        return;
+    }
+    const GeoOffset segments = (type == eGeoPrimitivePolygon && range.count > 2) ? range.count : range.count - 1;
+    for (GeoOffset i = 0; i < segments; ++i) {
+        const GeoOffset a = detail.vertexPoint(range.start + i);
+        const GeoOffset b = detail.vertexPoint(range.start + (i + 1) % range.count);
+        if (a != b) {
+            f(GeoEdge(a, b));
+        }
+    }
+}
+
 /** @brief Calls f(edge, primitive) for each edge of each live polygon and polyline, edges repeating where primitives share them. */
 template <typename F>
 void
 geoForEachEdge(const GeoDetail& detail, F&& f)
 {
     detail.primitiveMap().forEachLive([&](GeoIndex /*index*/, GeoOffset prim) {
-        const GeoPrimitiveTypeEnum type = detail.primitiveType(prim);
-        if (type != eGeoPrimitivePolygon && type != eGeoPrimitivePolyline) {
-            return;
-        }
-        const GeoVertexRange range = detail.primitiveVertices(prim);
-        if (range.count < 2) {
-            return;
-        }
-        const GeoOffset segments = (type == eGeoPrimitivePolygon && range.count > 2) ? range.count : range.count - 1;
-        for (GeoOffset i = 0; i < segments; ++i) {
-            const GeoOffset a = detail.vertexPoint(range.start + i);
-            const GeoOffset b = detail.vertexPoint(range.start + (i + 1) % range.count);
-            if (a != b) {
-                f(GeoEdge(a, b), prim);
-            }
-        }
+        geoForEachPrimitiveEdge(detail, prim, [&](const GeoEdge& edge) {
+            f(edge, prim);
+        });
     });
 }
 

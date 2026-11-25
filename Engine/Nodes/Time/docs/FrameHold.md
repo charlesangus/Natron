@@ -16,6 +16,19 @@ a fractional `firstFrame`. `setToCurrentFrame` copies the timeline's current fra
 | `setToCurrentFrame` | (button) | Set `firstFrame` to the current frame |
 | `increment` | 0 | Hold every `increment`-th frame for `increment` frames; 0 holds one frame |
 
+## Overlays
+
+A node's overlay (handles, curves, shapes) is drawn in the viewer for nodes downstream of, or off,
+the viewed node and for sibling nodes on other branches off the render path. The overlay is mapped through
+the transforms between the node and the viewer, so it lines up with the viewed image. The viewer's
+Map Sibling Overlays toggle (`Shift+O`) turns the mapping of sibling overlays off; they are then
+drawn in their own space.
+
+A FrameHold between an overlay's node and the viewer hides that overlay except on the held frame,
+where it is drawn normally and is editable. A node that offsets or retimes time instead makes the
+overlay show another frame of its node than the one being viewed. Such a retimed overlay is drawn
+dimmed and is not editable: handles do not respond to drags, clicks or double-clicks.
+
 Port audit (every OFX and Nuke control):
 
 | OFX (net.sf.openfx.FrameHold) | Nuke (FrameHold) | Natron knob | Default | Status |

@@ -62,7 +62,7 @@ public:
                        "types are widened to a type holding both (integer to float, a longer "
                        "tuple); string against number keeps the first input's and warns. Groups "
                        "of one name are combined.",
-        .grouping = PLUGIN_GROUP_3D,
+        .grouping = PLUGIN_GROUP_GEOMETRY,
         .majorVersion = 1,
         .minorVersion = 0,
         .isWriter = false,

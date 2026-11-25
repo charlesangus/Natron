@@ -31,6 +31,8 @@
 #include <QtCore/QString>
 #include <QtCore/QStringList>
 
+#include <functional>
+#include <memory>
 #include <string>
 
 #include "Engine/EngineFwd.h"
@@ -38,6 +40,9 @@
 #include "Gui/GuiFwd.h"
 
 NATRON_NAMESPACE_ENTER
+
+struct GeoComponentSelection;
+class SceneViewport;
 
 /**
  * @brief What the 3D view and the Scene Graph panel do with the prims selected in a viewer: write
@@ -74,6 +79,45 @@ QStringList keepSelectionOrder(const QStringList& order, const QStringList& sele
  **/
 std::string primPathsText(KnobString::PrimPathHintEnum hint, const QStringList& paths);
 
+enum PrimEditEnum {
+    ePrimEditReplace,
+    ePrimEditAdd,
+    ePrimEditRemove
+};
+
+/**
+ * @brief The text a prim knob with hint holds after edit applies paths to current. Replace is
+ * primPathsText(). For a pattern knob, Add appends the paths that are not entries yet, and Remove
+ * takes out the entries that are exactly one of the paths; current is parsed as a path expression
+ * (PrimSelector::getReach()) to tell a union of plain paths from anything else. Entries are only
+ * removed from a union of whitespace-separated entries without operators; a path that can't be
+ * removed that way is taken away with a difference, as in "(/a - /b) - /c". Adding to an
+ * expression with operators parenthesizes it first. Text that would not change is returned as
+ * current. A path knob only ever replaces.
+ **/
+std::string editPrimPathsText(KnobString::PrimPathHintEnum hint,
+                              PrimEditEnum edit,
+                              const std::string& current,
+                              const QStringList& paths);
+
+/**
+ * @brief The prims selected now: the selection viewer's, else the Scene Graph panel's.
+ **/
+QStringList currentSelection(Gui* gui);
+
+/**
+ * @brief Selects in the viewer the prims the value of knob matches in the scene of its node's
+ * first input, opened with the load rules of the viewer showing a scene that reaches the node, or
+ * with nothing loaded if there is none. The search walks that scene in short slices between UI
+ * events; the selection is set when it ends, and the status bar says what it found or why it did
+ * not. Unloaded branches it could not search are reported with a "Load and select" button in the
+ * status bar: it loads those payloads in the viewer, as the Scene Graph panel's Load does, and
+ * searches again when the viewer has taken the loads in, or reports a payload that fails to load.
+ * Nothing is loaded otherwise.
+ **/
+void selectMatches(Gui* gui,
+                   const KnobStringPtr& knob);
+
 /**
  * @brief Why paths can't be set on the current node now, or empty when they can.
  **/
@@ -85,6 +129,18 @@ QString setOnNodeBlocker(Gui* gui, const QStringList& paths);
  * When it can't, shows why in the status bar and returns false.
  **/
 bool setOnCurrentNode(Gui* gui, const QStringList& paths);
+
+/**
+ * @brief Why an expression can't be applied to the current node now, or empty when it can: the
+ * node needs a prim pattern knob that can be edited.
+ **/
+QString applyPatternBlocker(Gui* gui);
+
+/**
+ * @brief Writes expression, as it is, into the first prim pattern knob of currentNode(gui) as one
+ * undo step. When it can't, shows why in the status bar and returns false.
+ **/
+bool applyPatternToCurrentNode(Gui* gui, const std::string& expression);
 
 /**
  * @brief Why a node can't be created after viewed now, or empty when it can.
@@ -100,6 +156,79 @@ QString createBlocker(Gui* gui, const NodePtr& viewed);
  * unless paths is empty.
  **/
 void createFromSelection(Gui* gui, const NodePtr& viewed, const QStringList& paths);
+
+/**
+ * @brief Puts the selection viewer and the Scene Graph panels into the armed state for knob: the
+ * viewer overlay and the panels say which knob the pick is for, and natronSceneArmedPick on both
+ * holds "node.knob". Enter, with the focus in the viewer or a panel, calls commit with the prims
+ * selected and ends the mode; Esc ends it with nothing written. Only one knob is armed: arming
+ * another ends the first. The mode ends by itself when the node's settings panel closes, the node
+ * goes, or the selection viewer changes. False, with the reason in the status bar, when there is
+ * no viewer to select in.
+ **/
+bool armPick(Gui* gui,
+             const KnobStringPtr& knob,
+             const std::function<void(const QStringList& paths)>& commit);
+
+/**
+ * @brief Ends the armed pick, if any, writing nothing.
+ **/
+void cancelArmedPick();
+
+/**
+ * @brief Why viewer's draw states can't be baked into a node now, or empty when they can.
+ **/
+QString bakeBlocker(ViewerTab* viewer);
+
+/**
+ * @brief Writes every draw state viewer's scene view sets into a USDExpandHierarchy, one rule
+ * naming each path literally, and clears them from the view, as one undo step. The node is the
+ * viewed node when that is a USDExpandHierarchy, else one directly below it, else a new one that
+ * takes the viewed node's place in every input the viewed node fed; the viewer then views it.
+ * Descendants' rules come before their ancestors', so that, as in the view, a box or hidden prim
+ * keeps the states below it without drawing them. When it can't, shows why in the status bar
+ * and returns false.
+ **/
+bool bakeToNode(Gui* gui, ViewerTab* viewer);
+
+/**
+ * @brief Opens the tab menu listing the node types whose first input takes geometry. The node
+ * chosen reads viewed through that input and takes its place in every output of viewed that can
+ * read it, the viewer among them, as the node graph inserts a node after the selected one. When
+ * the node declares a group knob (NodeSpec::geoGroupKnob), selection, picked on detail, is
+ * carried to a class the group selects, written into it, and that class chosen in its group type
+ * knob. Creating, connecting and setting the group are one undo step. An empty selection, or no
+ * detail, leaves the group empty.
+ **/
+void createFromComponents(Gui* gui, const NodePtr& viewed, const GeoDetailConstPtr& detail, const GeoComponentSelection& selection);
+
+/**
+ * @brief Reselect for Current Node for one 3D view. begin() applies when exactly one node with a
+ * group (NodeSpec::geoGroupKnob) is selected in the node graph of the view's viewer: it decodes
+ * the node's group on the geometry of its first geometry input, shown in the view's component
+ * selection in the matching pick mode. The view shows that input meanwhile, so the numbers are
+ * those of the geometry on screen; what it showed is put back when reselecting ends. commit()
+ * writes the selection and its class into the group as Create from Selection does, as one undo
+ * step, and cancel() leaves the node as it is. In any other state begin() says why in the status
+ * bar and does nothing.
+ **/
+class ReselectSession {
+public:
+    ReselectSession(Gui* gui, ViewerTab* tab, SceneViewport* view);
+    ~ReselectSession();
+
+    ReselectSession(const ReselectSession&) = delete;
+    ReselectSession& operator=(const ReselectSession&) = delete;
+
+    void begin();
+    void commit(const GeoComponentSelection& selection);
+    void cancel();
+
+private:
+    struct Implementation;
+
+    const std::unique_ptr<Implementation> _imp;
+};
 
 /**
  * @brief Shows text in gui's status bar for a few seconds.

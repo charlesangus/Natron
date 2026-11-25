@@ -78,9 +78,11 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/MemoryFile.h"
 #include "Engine/MemoryInfo.h" // printAsRAM
 #include "Engine/Node.h"
+#include "Engine/Nodes/Geometry/GeoViewerLayer.h"
 #include "Engine/Nodes/IO/OcioSpaceKnobs.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Raw/RawDisplay.h"
+#include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/OpenGLViewerI.h"
 #include "Engine/OutputSchedulerThread.h"
@@ -100,6 +102,7 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/Utils.h"
 #include "Engine/ViewIdx.h"
 #include "Global/FloatingPointExceptions.h"
+#include "Serialization/NodeSerialization.h"
 
 #ifndef M_LN2
 #define M_LN2       0.693147180559945309417232121458176568  /* loge(2)        */
@@ -386,6 +389,7 @@ ViewerInstance::~ViewerInstance()
         QMutexLocker l(&liveViewersMutex);
         liveViewers.erase(this);
     }
+    EffectInstance::retireSceneContextId(_imp->sceneContextId);
 
     // A plan reads this viewer until its thread has stopped.
     _imp->gpuPlacementPlanner->quitThread(false);
@@ -461,6 +465,53 @@ ViewerInstance::getRawDisplayLabel(int textureIndex) const
     std::lock_guard<std::mutex> lock(_rawDisplayLabelMutex);
 
     return ((textureIndex == 0) || (textureIndex == 1)) ? _rawDisplayLabel[textureIndex] : std::string();
+}
+
+void
+ViewerInstance::onKnobsAboutToBeLoaded(const Serialization::NodeSerializationPtr& serialization)
+{
+    std::lock_guard<std::mutex> lock(_sceneViewMutex);
+
+    if (serialization && !serialization->sceneView.isEmpty()) {
+        _loadedSceneView.reset(new Serialization::SceneViewSerialization(serialization->sceneView));
+    } else {
+        _loadedSceneView.reset();
+    }
+}
+
+Serialization::SceneViewSerialization
+ViewerInstance::getLoadedSceneView() const
+{
+    Serialization::SceneViewSerialization view;
+
+    // A tab that went, or another one, saves the view as it last was: that is the view to restore.
+    sceneViewToSerialization(&view);
+
+    return view;
+}
+
+void
+ViewerInstance::setSceneViewSaver(const SceneViewSaver& saver)
+{
+    std::lock_guard<std::mutex> lock(_sceneViewMutex);
+
+    _sceneViewSaver = saver;
+    _loadedSceneView.reset();
+}
+
+void
+ViewerInstance::sceneViewToSerialization(Serialization::SceneViewSerialization* serialization) const
+{
+    // Held while the saver runs, so that the view it reads cannot be destroyed under it.
+    std::lock_guard<std::mutex> lock(_sceneViewMutex);
+
+    if (_sceneViewSaver) {
+        _sceneViewSaver(serialization);
+    } else if (_loadedSceneView) {
+        *serialization = *_loadedSceneView;
+    } else {
+        *serialization = Serialization::SceneViewSerialization();
+    }
 }
 
 void
@@ -706,7 +757,7 @@ effectsRequestingOverlayImagesUpstream(const NodePtr& viewerNode,
             continue;
         }
         const EffectInstancePtr effect = node->getEffectInstance();
-        if (effect && effect->isOverlayImageRequested() && !node->isNodeDisabled() && !effect->producesDeepData() && !effect->producesSceneData()) {
+        if (effect && effect->isOverlayImageRequested() && !node->isNodeDisabled() && !effect->producesDeepData() && !effect->producesSceneData() && !effect->producesGeometryData()) {
             effects.push_back(effect);
         }
         const int nInputs = node->getNInputs();
@@ -958,10 +1009,40 @@ ViewerInstance::initializeKnobs()
     maxSamples->setDisplayMaximum(4096);
     k.maxSamples = maxSamples;
 
+    KnobBoolPtr renderEverything = createViewerKnob<KnobBool>(this, page, tr("Render Everything"), kViewerParamRenderEverything,
+                                                              tr("Renders the whole scene, ignoring the draw states, and loads every payload. "
+                                                                 "Turning it off brings the draw states back and unloads nothing."));
+    k.renderEverything = renderEverything;
+
     KnobBoolPtr refinementPaused = createViewerKnob<KnobBool>(this, page, tr("Refinement Paused"), kViewerParamRefinementPaused,
                                                               tr("Holds a progressive renderer's refinement of the 3D view at its "
                                                                  "current samples; off continues from them. Edits wait until it is off."));
     k.refinementPaused = refinementPaused;
+
+    KnobBoolPtr mapSiblingOverlays = createViewerKnob<KnobBool>(this, page, tr("Map Sibling Overlays"), kViewerParamMapSiblingOverlays,
+                                                                tr("Draws the overlay of a node on another branch of a shared input "
+                                                                   "through that input, so it lines up with the viewed image. Off draws "
+                                                                   "it in its own space."));
+    mapSiblingOverlays->setDefaultValue(true);
+    createViewerKnob<KnobBool>(this, page, tr("Point Markers"), kViewerParamPointMarkers,
+                               tr("Marks every point of the geometry viewed in the 3D view."));
+    createViewerKnob<KnobBool>(this, page, tr("Point Numbers"), kViewerParamPointNumbers,
+                               tr("Writes the number of each point of the geometry viewed beside it, in the 3D view. "
+                                  "Only points in view are numbered, up to a limit per frame."));
+    createViewerKnob<KnobBool>(this, page, tr("Primitive Numbers"), kViewerParamPrimitiveNumbers,
+                               tr("Writes the number of each primitive of the geometry viewed at its centre, in the 3D view. "
+                                  "Only primitives in view are numbered, up to a limit per frame."));
+    createViewerKnob<KnobBool>(this, page, tr("Normals"), kViewerParamNormals,
+                               tr("Draws the N point attribute of the geometry viewed as a line from each point, in the 3D view."));
+    KnobDoublePtr normalScale = createViewerKnob<KnobDouble>(this, page, tr("Normal Scale"), kViewerParamNormalScale,
+                                                             tr("The length, in scene units, a normal of length 1 is drawn at."));
+    normalScale->setDefaultValue(0.1);
+    normalScale->setMinimum(0.);
+    normalScale->setDisplayMinimum(0.);
+    normalScale->setDisplayMaximum(10.);
+    createViewerKnob<KnobString>(this, page, tr("Highlight Group"), kViewerParamHighlightGroup,
+                                 tr("The point group, else the primitive group, of the geometry viewed to highlight in the 3D view. "
+                                    "Empty highlights nothing."));
 
     if (NodePtr node = getNode()) {
         node->declareLayerKnob(layer, 0, LayerKnobSpec::eRoleInputBound);
@@ -1080,6 +1161,7 @@ ViewerInstance::getColourToSave(bool* hasColour,
 
     return true;
 }
+
 bool
 ViewerInstance::knobChanged(KnobI* k,
                             ValueChangedReasonEnum reason,
@@ -1189,7 +1271,8 @@ ViewerInstance::redrawOrRenderForColorChange()
     // A scene has no 8-bit texture to bake into: Storm's view grades its pixels as it draws them,
     // and a render would only re-evaluate the scene and resync it. A progressive delegate's frames
     // come sRGB-encoded without the display transform, which a render would not change either.
-    const bool bakesDisplay = (_imp->uiContext->getBitDepth() == eImageBitDepthByte) && (getActiveInputDataKind() != eDataKindScene);
+    const DataKindEnum activeKind = getActiveInputDataKind();
+    const bool bakesDisplay = (_imp->uiContext->getBitDepth() == eImageBitDepthByte) && (activeKind != eDataKindScene) && (activeKind != eDataKindGeometry);
     if (bakesDisplay && !getApp()->getProject()->isLoadingProject()) {
         renderCurrentFrame(true);
     } else {
@@ -3850,7 +3933,8 @@ ViewerInstance::getRenderViewerArgsAndCheckCache(SequenceTime time,
     }
     // The scene action resolves disabled nodes itself, so a scene is evaluated from the input
     // as connected rather than from the nearest non-disabled node.
-    outArgs->sceneUpstream = upstreamInput && upstreamInput->producesSceneData();
+    outArgs->geometryUpstream = upstreamInput && upstreamInput->producesGeometryData();
+    outArgs->sceneUpstream = upstreamInput && (outArgs->geometryUpstream || upstreamInput->producesSceneData());
     if (outArgs->sceneUpstream) {
         outArgs->activeInputToRender = upstreamInput;
     }
@@ -3901,27 +3985,38 @@ ViewerInstance::evaluateSceneInput(ViewerArgs& inArgs)
     const int textureIndex = inArgs.params->textureIndex;
     ScenePayload scene;
     std::string error;
-    EffectInstance::RenderRoIRetCode code;
-    EffectInstance::takeLastPullFresh();
-    try {
-        code = inArgs.activeInputToRender->evaluateScene(EffectInstance::EvaluateSceneArgs(inArgs.params->time, inArgs.params->view), &scene, &error);
-    } catch (const std::exception& e) {
-        code = EffectInstance::eRenderRoIRetCodeFailed;
-        error = e.what();
-    } catch (...) {
-        code = EffectInstance::eRenderRoIRetCodeFailed;
-    }
-    if (EffectInstance::takeLastPullFresh() && (code == EffectInstance::eRenderRoIRetCodeOk)) {
-        getNode()->noteInputExecution(inArgs.activeInputIndex);
-    }
+    bool ok = false;
+    const SceneEvaluationContext context(_imp->sceneContextId, getSceneLoadSet(), std::make_shared<SceneLoadReach>());
+    if (inArgs.geometryUpstream) {
+        bool aborted = false;
+        ok = evaluateGeometryInput(inArgs, &scene, &error, &aborted);
+        if (aborted) {
+            renderEndedWithoutImage(textureIndex, inArgs.params->abortInfo->getRenderAge());
 
-    if (code == EffectInstance::eRenderRoIRetCodeAborted) {
-        renderEndedWithoutImage(textureIndex, inArgs.params->abortInfo->getRenderAge());
+            return eViewerRenderRetCodeRedraw;
+        }
+    } else {
+        EffectInstance::RenderRoIRetCode code;
+        EffectInstance::takeLastPullFresh();
+        try {
+            code = inArgs.activeInputToRender->evaluateScene(EffectInstance::EvaluateSceneArgs(inArgs.params->time, inArgs.params->view, context), &scene, &error);
+        } catch (const std::exception& e) {
+            code = EffectInstance::eRenderRoIRetCodeFailed;
+            error = e.what();
+        } catch (...) {
+            code = EffectInstance::eRenderRoIRetCodeFailed;
+        }
+        if (EffectInstance::takeLastPullFresh() && (code == EffectInstance::eRenderRoIRetCodeOk)) {
+            getNode()->noteInputExecution(inArgs.activeInputIndex);
+        }
 
-        return eViewerRenderRetCodeRedraw;
+        if (code == EffectInstance::eRenderRoIRetCodeAborted) {
+            renderEndedWithoutImage(textureIndex, inArgs.params->abortInfo->getRenderAge());
+
+            return eViewerRenderRetCodeRedraw;
+        }
+        ok = (code == EffectInstance::eRenderRoIRetCodeOk);
     }
-
-    const bool ok = (code == EffectInstance::eRenderRoIRetCodeOk);
     if (!ok && error.empty()) {
         error = inArgs.activeInputToRender->getScriptName_mt_safe() + ": scene evaluation failed";
     }
@@ -3931,6 +4026,8 @@ ViewerInstance::evaluateSceneInput(ViewerArgs& inArgs)
             _imp->lastScene[textureIndex] = ok ? scene : ScenePayload();
             _imp->lastSceneError[textureIndex] = ok ? std::string() : error;
             _imp->lastSceneOk[textureIndex] = ok;
+            _imp->lastSceneLoadSet[textureIndex] = context.loadSet;
+            _imp->lastSceneReach[textureIndex] = context.reach;
         }
         Q_EMIT sceneEvaluated(textureIndex);
     }
@@ -3939,6 +4036,43 @@ ViewerInstance::evaluateSceneInput(ViewerArgs& inArgs)
     // itself, and Fail would stop playback and clear the whole viewer for what the 3D view shows.
     return eViewerRenderRetCodeBlack;
 } // ViewerInstance::evaluateSceneInput
+
+bool
+ViewerInstance::evaluateGeometryInput(ViewerArgs& inArgs,
+                                      ScenePayload* scene,
+                                      std::string* error,
+                                      bool* aborted)
+{
+    const int textureIndex = inArgs.params->textureIndex;
+    // Read before evaluating, so an edit made during the evaluation leaves the detail outdated.
+    const NodePtr sourceNode = inArgs.activeInputToRender->getNode();
+    const U64 sourceHash = sourceNode ? sourceNode->getHashValue() : 0;
+    GeoDetailConstPtr detail;
+    EffectInstance::RenderRoIRetCode code;
+    try {
+        code = inArgs.activeInputToRender->evaluateGeometry(EffectInstance::EvaluateGeometryArgs(inArgs.params->time, inArgs.params->view), &detail, error);
+    } catch (const std::exception& e) {
+        code = EffectInstance::eRenderRoIRetCodeFailed;
+        *error = e.what();
+    } catch (...) {
+        code = EffectInstance::eRenderRoIRetCodeFailed;
+    }
+    *aborted = (code == EffectInstance::eRenderRoIRetCodeAborted);
+    if ((code != EffectInstance::eRenderRoIRetCodeOk) || ((textureIndex != 0) && (textureIndex != 1))) {
+        return false;
+    }
+
+    std::shared_ptr<GeoViewerLayer> layer;
+    {
+        std::lock_guard<std::mutex> k(_imp->lastSceneMutex);
+        if (!_imp->geometryLayers[textureIndex]) {
+            _imp->geometryLayers[textureIndex] = std::make_shared<GeoViewerLayer>("viewer-" + getScriptName_mt_safe() + "-" + std::to_string(textureIndex));
+        }
+        layer = _imp->geometryLayers[textureIndex];
+    }
+
+    return layer->serveFrame(detail, inArgs.params->time, inArgs.params->isSequential, scene, error, sourceNode, sourceHash);
+} // ViewerInstance::evaluateGeometryInput
 
 ViewerInstance::ViewerRenderRetCode
 ViewerInstance::renderViewer_internal(ViewIdx view,
@@ -6485,13 +6619,22 @@ ViewerInstance::getActiveInputDataKind() const
 bool
 ViewerInstance::isWipeDisabledByDataKind() const
 {
-    return (getInputDataKindForTexture(0) == eDataKindScene) || (getInputDataKindForTexture(1) == eDataKindScene);
+    for (int i = 0; i < 2; ++i) {
+        const DataKindEnum kind = getInputDataKindForTexture(i);
+        if ((kind == eDataKindScene) || (kind == eDataKindGeometry)) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 bool
 ViewerInstance::getLastEvaluatedScene(int textureIndex,
                                       ScenePayload* scene,
-                                      std::string* error) const
+                                      std::string* error,
+                                      SceneLoadSetPtr* loadSet,
+                                      SceneLoadReachPtr* reach) const
 {
     if ((textureIndex != 0) && (textureIndex != 1)) {
         return false;
@@ -6503,8 +6646,130 @@ ViewerInstance::getLastEvaluatedScene(int textureIndex,
     if (error) {
         *error = _imp->lastSceneError[textureIndex];
     }
+    if (loadSet) {
+        *loadSet = _imp->lastSceneLoadSet[textureIndex];
+    }
+    if (reach) {
+        *reach = _imp->lastSceneReach[textureIndex];
+    }
 
     return _imp->lastSceneOk[textureIndex];
+}
+
+bool
+ViewerInstance::showGeometryFrame(int textureIndex,
+                                  int frame)
+{
+    if ((textureIndex != 0) && (textureIndex != 1)) {
+        return false;
+    }
+    std::shared_ptr<GeoViewerLayer> layer;
+    {
+        std::lock_guard<std::mutex> k(_imp->lastSceneMutex);
+        layer = _imp->geometryLayers[textureIndex];
+    }
+
+    return layer && layer->showFrame(frame);
+}
+
+bool
+ViewerInstance::getShownGeometry(int textureIndex,
+                                 GeoDetailConstPtr* detail,
+                                 int* frame,
+                                 NodePtr* sourceNode,
+                                 U64* sourceHash) const
+{
+    if ((textureIndex != 0) && (textureIndex != 1)) {
+        return false;
+    }
+    std::lock_guard<std::mutex> k(_imp->lastSceneMutex);
+    const std::shared_ptr<GeoViewerLayer>& layer = _imp->geometryLayers[textureIndex];
+    int served = 0;
+    if (!layer || !GeoViewerLayer::getServedFrame(layer->getIdentifier(), &served)) {
+        return false;
+    }
+    NodeWPtr source;
+    const GeoDetailConstPtr shown = layer->getDetail(&source, sourceHash);
+    if (detail) {
+        *detail = shown;
+    }
+    if (sourceNode) {
+        *sourceNode = source.lock();
+    }
+    if (frame) {
+        *frame = served;
+    }
+
+    return true;
+}
+
+void
+ViewerInstance::setSceneLoadSet(const SceneLoadSetPtr& loadSet)
+{
+    bool changed;
+    {
+        std::lock_guard<std::mutex> k(_imp->sceneLoadSetMutex);
+        changed = _imp->sceneLoadSet ? (!loadSet || (*_imp->sceneLoadSet != *loadSet)) : bool(loadSet);
+        _imp->sceneLoadSet = loadSet;
+    }
+    if (changed) {
+        SceneMenuRefresh::scheduleFollowLoadChanges();
+    }
+}
+
+SceneLoadSetPtr
+ViewerInstance::getSceneLoadSet() const
+{
+    std::lock_guard<std::mutex> k(_imp->sceneLoadSetMutex);
+
+    return _imp->sceneLoadSet;
+}
+
+SceneEvaluationContext
+ViewerInstance::getSceneEvaluationContext() const
+{
+    return SceneEvaluationContext(_imp->sceneContextId, getSceneLoadSet());
+}
+
+bool
+ViewerInstance::evaluateSceneForLoadSet(const SceneLoadSetPtr& loadSet,
+                                        ScenePayload* scene,
+                                        SceneLoadReachPtr* reach,
+                                        std::string* error)
+{
+    assert(scene);
+    *scene = ScenePayload();
+    int activeA, activeB;
+    getActiveInputs(activeA, activeB);
+    const EffectInstancePtr input = getInput(activeA);
+    if (!input || !input->producesSceneData()) {
+        return false;
+    }
+    const SceneEvaluationContext context(_imp->sceneContextId, loadSet, std::make_shared<SceneLoadReach>());
+    std::string evaluationError;
+    EffectInstance::RenderRoIRetCode code;
+    try {
+        // The view only decides identities, and the viewer's widget is not read off the main thread.
+        code = input->evaluateScene(EffectInstance::EvaluateSceneArgs(getCurrentTime(), ViewIdx(0), context), scene, &evaluationError);
+    } catch (const std::exception& e) {
+        code = EffectInstance::eRenderRoIRetCodeFailed;
+        evaluationError = e.what();
+    } catch (...) {
+        code = EffectInstance::eRenderRoIRetCodeFailed;
+    }
+    if (code != EffectInstance::eRenderRoIRetCodeOk) {
+        *scene = ScenePayload();
+        if (error) {
+            *error = evaluationError;
+        }
+
+        return false;
+    }
+    if (reach) {
+        *reach = context.reach;
+    }
+
+    return true;
 }
 
 void
@@ -6520,23 +6785,34 @@ ViewerInstance::refreshActiveInputDataKind()
     }
 
     const DataKindEnum kinds[2] = { getInputDataKindForTexture(0), getInputDataKindForTexture(1) };
-    const bool wipeDisabled = (kinds[0] == eDataKindScene) || (kinds[1] == eDataKindScene);
+    int a = -1, b = -1;
+    getActiveInputs(a, b);
+    const EffectInstancePtr inputA = (a >= 0) ? getInput(a) : EffectInstancePtr();
+    const bool hasInputA = inputA && inputA->getNode();
+    const bool shows3D[2] = { (kinds[0] == eDataKindScene) || (kinds[0] == eDataKindGeometry), (kinds[1] == eDataKindScene) || (kinds[1] == eDataKindGeometry) };
+    const bool wipeDisabled = shows3D[0] || shows3D[1];
     {
         std::lock_guard<std::mutex> k(_imp->lastSceneMutex);
         for (int i = 0; i < 2; ++i) {
-            if (kinds[i] != eDataKindScene) {
+            if (kinds[i] != eDataKindGeometry) {
+                _imp->geometryLayers[i].reset();
+            }
+            if (!shows3D[i]) {
                 _imp->lastScene[i] = ScenePayload();
                 _imp->lastSceneError[i].clear();
                 _imp->lastSceneOk[i] = false;
+                _imp->lastSceneLoadSet[i].reset();
+                _imp->lastSceneReach[i].reset();
             }
         }
     }
 
-    if ((kinds[0] == _imp->notifiedInputDataKind) && (wipeDisabled == _imp->notifiedWipeDisabled)) {
+    if ((kinds[0] == _imp->notifiedInputDataKind) && (wipeDisabled == _imp->notifiedWipeDisabled) && (hasInputA == _imp->notifiedHasInputA)) {
         return;
     }
     _imp->notifiedInputDataKind = kinds[0];
     _imp->notifiedWipeDisabled = wipeDisabled;
+    _imp->notifiedHasInputA = hasInputA;
     Q_EMIT activeInputDataKindChanged();
 }
 

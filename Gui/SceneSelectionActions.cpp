@@ -25,31 +25,69 @@
 
 #include "SceneSelectionActions.h"
 
-#include <list>
-#include <string>
+// Before Qt's OpenGL headers.
+#include "Gui/SceneViewport.h"
 
+#include <algorithm>
+#include <climits>
+#include <functional>
+#include <list>
+#include <memory>
+#include <set>
+#include <string>
+#include <vector>
+
+#include <QEvent>
+#include <QFutureWatcher>
+#include <QHBoxLayout>
+#include <QKeyEvent>
+#include <QLabel>
+#include <QLineEdit>
 #include <QPointF>
+#include <QPointer>
+#include <QPushButton>
 #include <QRectF>
+#include <QRegularExpression>
 #include <QSet>
 #include <QStatusBar>
+#include <QTimer>
 #include <QUndoCommand>
+#include <QWidget>
+#include <QtConcurrent/QtConcurrentRun>
 #include <QtCore/QCoreApplication>
 
+#include "Engine/AppInstance.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/Geo/GeoOpUtils.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/Geometry/GeoViewerLayer.h"
+#include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/NodeSpec.h"
+#include "Engine/Nodes/Scene/PrimSelector.h"
+#include "Engine/Nodes/Scene/SceneDrawStates.h"
+#include "Engine/Nodes/Scene/SceneOps.h"
+#include "Engine/Nodes/Scene/SceneStage.h"
+#include "Engine/Nodes/Scene/SceneWriteBarrier.h"
+#include "Engine/Nodes/Scene/USDExpandHierarchy.h"
 #include "Engine/Nodes/Scene/USDXformPrim.h"
 #include "Engine/Plugin.h"
+#include "Engine/PythonUndoCommands.h"
+#include "Engine/TimeLine.h"
 #include "Engine/ViewerInstance.h"
 #include "Gui/DockablePanel.h"
 #include "Gui/Gui.h"
+#include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGraphUndoRedo.h"
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
+#include "Gui/SceneGraphModel.h"
+#include "Gui/SceneGraphPanel.h"
+#include "Gui/SceneNodeStageSource.h"
 #include "Gui/TabMenuBridge.h"
 #include "Gui/UndoHistory.h"
 #include "Gui/ViewerTab.h"
@@ -100,6 +138,174 @@ private:
     std::string _newValue;
 };
 
+// While a pick is armed, the keys that end it are taken from the viewer and the Scene Graph panels,
+// and the mode is dropped when what it was armed for goes away.
+class ArmedPick
+    : public QObject {
+public:
+    ArmedPick(Gui* gui,
+              ViewerTab* viewer,
+              const NodePtr& node,
+              const KnobStringPtr& knob,
+              const std::function<void(const QStringList&)>& commit)
+        : _gui(gui)
+        , _viewer(viewer)
+        , _node(node)
+        , _knob(knob)
+        , _commit(commit)
+        , _label(QString::fromStdString(node->getScriptName_mt_safe() + "." + knob->getName()))
+        , _timer(new QTimer(this))
+    {
+        _timer->setInterval(50);
+        QObject::connect(_timer, &QTimer::timeout, this, [this]() {
+            if (!stillValid()) {
+                end();
+            }
+        });
+        _timer->start();
+        qApp->installEventFilter(this);
+        publish(_label);
+    }
+
+    static QString text(const char* source)
+    {
+        return QCoreApplication::translate("SceneSelectionActions", source);
+    }
+
+    const QString& label() const
+    {
+        return _label;
+    }
+
+    // Stops the mode and clears what it showed; the object is deleted once the event loop is back.
+    void end();
+
+    bool eventFilter(QObject* watched,
+                     QEvent* e) override
+    {
+        if (_ended || ((e->type() != QEvent::KeyPress) && (e->type() != QEvent::ShortcutOverride))) {
+            return false;
+        }
+        QKeyEvent* k = static_cast<QKeyEvent*>(e);
+        const bool enter = (k->key() == Qt::Key_Return) || (k->key() == Qt::Key_Enter);
+        const bool escape = (k->key() == Qt::Key_Escape);
+        if ((!enter && !escape) || (k->modifiers() & ~Qt::KeypadModifier) || !inPickSurface(watched)) {
+            return false;
+        }
+        if (e->type() == QEvent::ShortcutOverride) {
+            e->accept();
+
+            return false;
+        }
+        if (escape) {
+            end();
+            SceneSelectionActions::showHint(_gui, text("Pick cancelled."));
+        } else {
+            commitSelection();
+        }
+        e->accept();
+
+        return true;
+    }
+
+private:
+    // The viewer's scene view and the Scene Graph panels, but not their text fields, which keep
+    // Enter and Esc for themselves.
+    static bool inPickSurface(QObject* watched)
+    {
+        QWidget* widget = qobject_cast<QWidget*>(watched);
+
+        if (!widget || qobject_cast<QLineEdit*>(widget)) {
+            return false;
+        }
+        for (QWidget* w = widget; w; w = w->parentWidget()) {
+            if (dynamic_cast<SceneViewport*>(w) || dynamic_cast<SceneGraphPanel*>(w)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    bool stillValid() const
+    {
+        NodePtr node = _node.lock();
+        if (!_gui || !_viewer || !node || !node->isActivated() || !_knob.lock() || (SceneSelectionActions::selectionViewer(_gui) != _viewer.data())) {
+            return false;
+        }
+        for (DockablePanel* dockable : _gui->getVisiblePanels_mt_safe()) {
+            NodeSettingsPanel* panel = dynamic_cast<NodeSettingsPanel*>(dockable);
+            NodeGuiPtr nodeGui = panel ? panel->getNode() : NodeGuiPtr();
+            if (nodeGui && (nodeGui->getNode() == node)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    void commitSelection()
+    {
+        const QStringList paths = SceneSelectionActions::currentSelection(_gui);
+
+        if (paths.isEmpty()) {
+            SceneSelectionActions::showHint(_gui, text("No prims are selected."));
+
+            return;
+        }
+        const std::function<void(const QStringList&)> commit = _commit;
+        QPointer<Gui> gui = _gui;
+        end();
+        commit(paths);
+        if (gui) {
+            SceneSelectionActions::showHint(gui, text("Picked %1 prims.").arg(paths.size()));
+        }
+    }
+
+    void publish(const QString& label)
+    {
+        if (!_gui) {
+            return;
+        }
+        for (ViewerTab* tab : _gui->getViewersList()) {
+            SceneViewport* viewport = tab ? tab->getSceneViewport() : nullptr;
+            if (viewport) {
+                viewport->setArmedPick((tab == _viewer.data()) ? label : QString());
+            }
+        }
+        for (SceneGraphPanel* panel : _gui->getSceneGraphPanels()) {
+            panel->setArmedPick(label);
+        }
+    }
+
+    QPointer<Gui> _gui;
+    QPointer<ViewerTab> _viewer;
+    NodeWPtr _node;
+    KnobStringWPtr _knob;
+    std::function<void(const QStringList&)> _commit;
+    QString _label;
+    QTimer* _timer;
+    bool _ended = false;
+};
+
+ArmedPick* g_armedPick = nullptr;
+
+void
+ArmedPick::end()
+{
+    if (_ended) {
+        return;
+    }
+    _ended = true;
+    _timer->stop();
+    qApp->removeEventFilter(this);
+    publish(QString());
+    if (g_armedPick == this) {
+        g_armedPick = nullptr;
+    }
+    deleteLater();
+}
+
 // Gives the prim knob of the node args create paths as its initial value, which no paths leave
 // empty so the knob never evaluates with its normal default. A USDXformPrim wraps a selected prim
 // rather than defining one there.
@@ -119,15 +325,14 @@ addInitialPrims(CreateNodeArgs& args,
     }
 }
 
-// Pushes the edit of node's prim knob; false when there is nothing to change.
+// Pushes the edit of node's prim knob to text; false when there is nothing to change.
 bool
-pushSet(Gui* gui,
-        const NodePtr& node,
-        const KnobStringPtr& knob,
-        const QStringList& paths)
+pushText(Gui* gui,
+         const NodePtr& node,
+         const KnobStringPtr& knob,
+         const std::string& text)
 {
     UndoHistory* history = gui ? gui->getUndoHistory() : nullptr;
-    const std::string text = SceneSelectionActions::primPathsText(knob->getPrimPathHint(), paths);
 
     if (!history || (text == knob->getValue(0))) {
         return false;
@@ -138,16 +343,92 @@ pushSet(Gui* gui,
     return true;
 }
 
-// The first input of node that isn't a mask and can take a scene; -1 when it has none.
+bool
+pushSet(Gui* gui,
+        const NodePtr& node,
+        const KnobStringPtr& knob,
+        const QStringList& paths)
+{
+    return pushText(gui, node, knob, SceneSelectionActions::primPathsText(knob->getPrimPathHint(), paths));
+}
+
+KnobStringPtr
+firstPatternKnob(const NodePtr& node)
+{
+    if (!node) {
+        return KnobStringPtr();
+    }
+    for (const KnobIPtr& knob : node->getKnobs()) {
+        KnobStringPtr string = std::dynamic_pointer_cast<KnobString>(knob);
+        if (string && (string->getPrimPathHint() == KnobString::ePrimPathHintPattern)) {
+            return string;
+        }
+    }
+
+    return KnobStringPtr();
+}
+
+// Sets a node's group pattern knob and the choice of the class it selects, as one edit.
+class SetGeoGroupCommand
+    : public QUndoCommand {
+public:
+    SetGeoGroupCommand(const KnobStringPtr& group,
+                       const std::string& pattern,
+                       const KnobChoicePtr& type,
+                       int typeIndex,
+                       const QString& text)
+        : QUndoCommand(text)
+        , _group(group)
+        , _oldPattern(group->getValue(0))
+        , _newPattern(pattern)
+        , _type(type)
+        , _oldTypeIndex(type ? type->getValue(0) : -1)
+        , _newTypeIndex(typeIndex)
+    {
+    }
+
+    void undo() override
+    {
+        set(_oldPattern, _oldTypeIndex);
+    }
+
+    void redo() override
+    {
+        set(_newPattern, _newTypeIndex);
+    }
+
+private:
+    void set(const std::string& pattern,
+             int typeIndex)
+    {
+        KnobChoicePtr type = _type.lock();
+        if (type && (typeIndex >= 0)) {
+            ignore_result(type->setValue(typeIndex, ViewSpec::all(), 0, eValueChangedReasonUserEdited, nullptr));
+        }
+        if (KnobStringPtr group = _group.lock()) {
+            ignore_result(group->setValue(pattern, ViewSpec::all(), 0, eValueChangedReasonUserEdited, nullptr));
+        }
+    }
+
+    KnobStringWPtr _group;
+    std::string _oldPattern;
+    std::string _newPattern;
+    KnobChoiceWPtr _type;
+    int _oldTypeIndex;
+    int _newTypeIndex;
+};
+
+// The first input of node that isn't a mask and can take kind; -1 when it has none.
 int
-sceneInput(const NodePtr& node)
+firstInputTaking(const NodePtr& node,
+                 DataKindEnum kind)
 {
     const EffectInstancePtr effect = node->getEffectInstance();
     const int inputs = node->getNInputs();
 
     for (int i = 0; i < inputs; ++i) {
-        const DataKindEnum kind = effect->getInputDataKind(i);
-        if (!effect->isInputMask(i) && ((kind == eDataKindScene) || (kind == eDataKindPolymorphic))) {
+        const DataKindEnum inputKind = effect->getInputDataKind(i);
+        if (!effect->isInputMask(i) && ((inputKind == kind) || (inputKind == eDataKindPolymorphic))) {
             return i;
         }
     }
@@ -155,15 +436,21 @@ sceneInput(const NodePtr& node)
     return -1;
 }
 
-// Finds the first output of viewed that can read created in place of viewed, and which of its
-// inputs reads viewed. A viewer declares image inputs and takes a scene through an adapter, so
-// the input's declared kind can't decide this.
-bool
-firstSceneOutput(const NodePtr& viewed,
-                 const NodePtr& created,
-                 NodePtr* output,
-                 int* outputInput)
+struct OutputLink {
+    NodePtr node;
+    int input;
+};
+
+// The inputs of viewed's outputs that read viewed and can read created in its place, the first
+// one only unless everyOutput. A viewer declares image inputs and takes a scene or geometry
+// through an adapter, so the input's declared kind can't decide this.
+std::vector<OutputLink>
+outputLinks(const NodePtr& viewed,
+            const NodePtr& created,
+            bool everyOutput)
 {
+    std::vector<OutputLink> links;
+
     for (const NodeWPtr& outputW : viewed->getOutputs()) {
         NodePtr candidate = outputW.lock();
         if (!candidate || (candidate == created) || !candidate->getParentMultiInstanceName().empty()) {
@@ -173,22 +460,22 @@ firstSceneOutput(const NodePtr& viewed,
         const int inputs = candidate->getNInputs();
         for (int i = 0; i < inputs; ++i) {
             if ((candidate->getInput(i) == viewed) && !effect->isInputMask(i) && !candidate->isInputDataKindUnacceptable(created, i)) {
-                *output = candidate;
-                *outputInput = i;
-
-                return true;
+                links.push_back(OutputLink { candidate, i });
+                if (!everyOutput) {
+                    return links;
+                }
             }
         }
     }
 
-    return false;
+    return links;
 }
 
-// Puts created below viewed, moving output down when it is in the way.
+// Puts created below viewed, moving the outputs down when they are in the way.
 void
 placeBelow(const NodePtr& viewed,
            const NodePtr& created,
-           const NodePtr& output)
+           const std::vector<NodePtr>& outputs)
 {
     NodeGuiPtr viewedGui = std::dynamic_pointer_cast<NodeGui>(viewed->getNodeGui());
     NodeGuiPtr createdGui = std::dynamic_pointer_cast<NodeGui>(created->getNodeGui());
@@ -201,21 +488,26 @@ placeBelow(const NodePtr& viewed,
     const QPointF viewedPos = viewedGui->scenePos();
     const QPointF position(viewedPos.x() + (viewedSize.width() - createdSize.width()) / 2.,
                            viewedPos.y() + viewedSize.height() + NodeGui::DEFAULT_OFFSET_BETWEEN_NODES);
-    if (NodeGuiPtr outputGui = output ? std::dynamic_pointer_cast<NodeGui>(output->getNodeGui()) : NodeGuiPtr()) {
-        outputGui->moveBelowPositionRecursively(QRectF(position, createdSize));
+    for (const NodePtr& output : outputs) {
+        if (NodeGuiPtr outputGui = std::dynamic_pointer_cast<NodeGui>(output->getNodeGui())) {
+            outputGui->moveBelowPositionRecursively(QRectF(position, createdSize));
+        }
     }
     const QPointF inParent = createdGui->mapToParent(createdGui->mapFromScene(position));
     createdGui->setPosition(inParent.x(), inParent.y());
 }
 
-// Connects created after viewed and gives it viewed's first scene output only, as an undoable edit.
-// The input is connected first so the output is never left without a scene, and so that a
-// pass-through created resolves to a scene before the output is judged against it.
+// Connects created after viewed through its first input taking kind, and gives it viewed's first
+// output that can read it, or with everyOutput every such output, as an undoable edit. The input
+// is connected first so no output is ever left without data, and so that a pass-through created
+// resolves to a kind before the outputs are judged against it.
 void
 insertAfterViewed(const NodePtr& viewed,
-                  const NodePtr& created)
+                  const NodePtr& created,
+                  DataKindEnum kind,
+                  bool everyOutput)
 {
-    const int input = sceneInput(created);
+    const int input = firstInputTaking(created, kind);
 
     if (input == -1) {
         return;
@@ -227,16 +519,18 @@ insertAfterViewed(const NodePtr& viewed,
     std::vector<ReconnectInputsCommand::InputChange> changes;
     changes.push_back(ReconnectInputsCommand::InputChange { created, input, previousInput, viewed });
 
-    NodePtr output;
-    int outputInput = -1;
-    if (!created->isOutputNode() && firstSceneOutput(viewed, created, &output, &outputInput)) {
-        if (output->replaceInput(created, outputInput)) {
-            changes.push_back(ReconnectInputsCommand::InputChange { output, outputInput, viewed, created });
-        } else {
-            output.reset();
+    std::vector<NodePtr> moved;
+    if (!created->isOutputNode()) {
+        for (const OutputLink& link : outputLinks(viewed, created, everyOutput)) {
+            if (link.node->replaceInput(created, link.input)) {
+                changes.push_back(ReconnectInputsCommand::InputChange { link.node, link.input, viewed, created });
+                if (std::find(moved.begin(), moved.end(), link.node) == moved.end()) {
+                    moved.push_back(link.node);
+                }
+            }
         }
     }
-    placeBelow(viewed, created, output);
+    placeBelow(viewed, created, moved);
 
     NodeCollectionPtr group = viewed->getGroup();
     NodeGraph* graph = group ? dynamic_cast<NodeGraph*>(group->getNodeGraph()) : nullptr;
@@ -244,13 +538,442 @@ insertAfterViewed(const NodePtr& viewed,
         UndoScope scope;
         scope.touchNode(created);
         scope.touchNode(viewed);
-        if (output) {
+        for (const NodePtr& output : moved) {
             scope.touchNode(output);
         }
         // The connections are made, so the command's first redo does nothing.
         graph->pushUndoCommand(new ReconnectInputsCommand(graph, changes), scope);
     }
 }
+
+// Whether text holds an operator, a predicate or an expression reference: whitespace then no
+// longer splits it into the entries of one union, and an entry can't be dropped without changing
+// what the rest means.
+bool
+hasExpressionSyntax(const QString& text)
+{
+    static const QRegularExpression syntax(QStringLiteral("[-+&~()%{}]"));
+
+    return text.contains(syntax);
+}
+
+// The search Select Matches started last; an older one that ends later is dropped.
+int g_matchSearchGeneration = 0;
+
+typedef std::vector<std::pair<std::string, SceneDrawStates::Stored>> SetDrawStates;
+
+// Clears the draw states a bake turned into rules. Undo puts them back over whatever the viewer
+// set since, and leaves the states set elsewhere since as they are.
+class BakeDrawStatesCommand
+    : public QUndoCommand {
+public:
+    BakeDrawStatesCommand(SceneViewport* viewport,
+                          const SetDrawStates& baked,
+                          const QString& text)
+        : QUndoCommand(text)
+        , _viewport(viewport)
+        , _baked(baked)
+    {
+        _paths.reserve(baked.size());
+        for (const SetDrawStates::value_type& state : baked) {
+            _paths.push_back(state.first);
+        }
+    }
+
+    void undo() override
+    {
+        if (_viewport) {
+            SceneViewport* viewport = _viewport;
+            const SetDrawStates baked = _baked;
+            _viewport->editWithGraphPolicy([viewport, baked]() { viewport->mergeSetDrawStates(baked); });
+        }
+    }
+
+    void redo() override
+    {
+        if (_viewport) {
+            // The rules stand in for the states, so the states go with the rules' policy: no frame
+            // shows neither.
+            SceneViewport* viewport = _viewport;
+            const std::vector<std::string> paths = _paths;
+            _viewport->editWithGraphPolicy([viewport, paths]() { viewport->clearSetDrawStates(paths); });
+        }
+    }
+
+private:
+    QPointer<SceneViewport> _viewport;
+    SetDrawStates _baked;
+    std::vector<std::string> _paths;
+};
+
+class StepScope {
+public:
+    StepScope(UndoHistory* history,
+              const QString& text)
+        : _history(history)
+    {
+        _history->openStep(text, true);
+    }
+
+    ~StepScope()
+    {
+        _history->closeStep();
+    }
+
+    StepScope(const StepScope&) = delete;
+    StepScope& operator=(const StepScope&) = delete;
+
+private:
+    UndoHistory* _history;
+};
+
+// A disabled node's rules reach no viewer, so baking into one would change what is drawn.
+bool
+isExpandHierarchy(const NodePtr& node)
+{
+    return node && node->isActivated() && !node->isNodeDisabled() && dynamic_cast<USDExpandHierarchy*>(node->getEffectInstance().get());
+}
+
+NodePtr
+expandHierarchyBelow(const NodePtr& viewed)
+{
+    for (const NodeWPtr& outputW : viewed->getOutputs()) {
+        NodePtr output = outputW.lock();
+        if (isExpandHierarchy(output) && (output->getInput(0) == viewed)) {
+            return output;
+        }
+    }
+
+    return NodePtr();
+}
+
+// Creates a USDExpandHierarchy reading viewed that takes viewed's place in every input viewed fed
+// and that can read it, the viewer's included, as an undoable edit.
+NodePtr
+createExpandHierarchyAfter(const NodePtr& viewed,
+                           NodeGraph* graph)
+{
+    AppInstancePtr app = viewed->getApp();
+    if (!app) {
+        return NodePtr();
+    }
+    CreateNodeArgs args(PLUGINID_NATRON_USDEXPANDHIERARCHY, viewed->getGroup());
+    args.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
+    args.setProperty<bool>(kCreateNodeArgsPropSettingsOpened, false);
+    // Its command goes in only once it reads viewed: a node that cannot is removed unseen.
+    args.setProperty<bool>(kCreateNodeArgsPropAddUndoRedoCommand, false);
+    NodePtr created = app->createNode(args);
+    if (!created) {
+        return NodePtr();
+    }
+
+    std::vector<ReconnectInputsCommand::InputChange> outputs;
+    for (const NodeWPtr& outputW : viewed->getOutputs()) {
+        NodePtr output = outputW.lock();
+        if (!output || (output == created) || !output->getParentMultiInstanceName().empty()) {
+            continue;
+        }
+        const EffectInstancePtr effect = output->getEffectInstance();
+        const int inputs = output->getNInputs();
+        for (int i = 0; i < inputs; ++i) {
+            if ((output->getInput(i) == viewed) && !effect->isInputMask(i) && !output->isInputDataKindUnacceptable(created, i)) {
+                outputs.push_back(ReconnectInputsCommand::InputChange { output, i, viewed, created });
+            }
+        }
+    }
+
+    const NodePtr previousInput = created->getInput(0);
+    const NodeGuiPtr createdGui = std::dynamic_pointer_cast<NodeGui>(created->getNodeGui());
+    if (!createdGui || !created->replaceInput(viewed, 0)) {
+        created->destroyNode(false, false);
+
+        return NodePtr();
+    }
+    AddMultipleNodesCommand* added = new AddMultipleNodesCommand(graph, createdGui);
+    added->setCreationAutoSaves();
+    graph->pushUndoCommand(added, NodesGuiList(1, createdGui));
+    std::vector<ReconnectInputsCommand::InputChange> changes;
+    changes.push_back(ReconnectInputsCommand::InputChange { created, 0, previousInput, viewed });
+    UndoScope scope;
+    scope.touchNode(created);
+    scope.touchNode(viewed);
+    std::vector<NodePtr> moved;
+    for (const ReconnectInputsCommand::InputChange& change : outputs) {
+        NodePtr output = change.node.lock();
+        if (output && output->replaceInput(created, change.inputNb)) {
+            changes.push_back(change);
+            scope.touchNode(output);
+            if (std::find(moved.begin(), moved.end(), output) == moved.end()) {
+                moved.push_back(output);
+            }
+        }
+    }
+    placeBelow(viewed, created, moved);
+    // The connections are made, so the command's first redo does nothing.
+    graph->pushUndoCommand(new ReconnectInputsCommand(graph, changes), scope);
+
+    return created;
+} // createExpandHierarchyAfter
+
+// Connects viewer's active input A to node, as an undoable edit, unless it reads node already.
+void
+viewNode(ViewerTab* viewer,
+         const NodePtr& node)
+{
+    ViewerInstance* instance = viewer->getInternalNode();
+    NodePtr viewerNode = instance ? instance->getNode() : NodePtr();
+    NodeCollectionPtr group = viewerNode ? viewerNode->getGroup() : NodeCollectionPtr();
+    NodeGraph* graph = group ? dynamic_cast<NodeGraph*>(group->getNodeGraph()) : nullptr;
+    if (!graph) {
+        return;
+    }
+    int a = -1, b = -1;
+    instance->getActiveInputs(a, b);
+    if (a < 0) {
+        return;
+    }
+    const NodePtr before = viewerNode->getInput(a);
+    if ((before == node) || !viewerNode->replaceInput(node, a)) {
+        return;
+    }
+    UndoScope scope;
+    scope.touchNode(viewerNode);
+    scope.touchNode(node);
+    std::vector<ReconnectInputsCommand::InputChange> changes;
+    changes.push_back(ReconnectInputsCommand::InputChange { viewerNode, a, before, node });
+    // The connection is made, so the command's first redo does nothing.
+    graph->pushUndoCommand(new ReconnectInputsCommand(graph, changes), scope);
+}
+
+GeoGroupClassFlags
+groupClassOf(GeoComponentEnum type)
+{
+    switch (type) {
+    case eGeoComponentPoints:
+        return eGeoGroupClassPoints;
+    case eGeoComponentEdges:
+        return eGeoGroupClassEdges;
+    case eGeoComponentPrimitives:
+        return eGeoGroupClassPrimitives;
+    case eGeoComponentObjects:
+        break;
+    }
+
+    return eGeoGroupClassNone;
+}
+
+// The class a selection of type is carried to for a group selecting classes: its own when
+// allowed, else the nearest one it converts to. Objects when none is allowed.
+GeoComponentEnum
+carriedComponentType(GeoComponentEnum type,
+                     unsigned classes)
+{
+    if (classes & groupClassOf(type)) {
+        return type;
+    }
+    GeoComponentEnum order[2] = { eGeoComponentObjects, eGeoComponentObjects };
+    if (type == eGeoComponentPoints) {
+        order[0] = eGeoComponentPrimitives;
+        order[1] = eGeoComponentEdges;
+    } else if (type == eGeoComponentPrimitives) {
+        order[0] = eGeoComponentPoints;
+        order[1] = eGeoComponentEdges;
+    } else if (type == eGeoComponentEdges) {
+        order[0] = eGeoComponentPoints;
+        order[1] = eGeoComponentPrimitives;
+    }
+    for (GeoComponentEnum candidate : order) {
+        if (classes & groupClassOf(candidate)) {
+            return candidate;
+        }
+    }
+
+    return eGeoComponentObjects;
+}
+
+const char*
+groupClassId(GeoComponentEnum type)
+{
+    switch (type) {
+    case eGeoComponentPoints:
+        return "points";
+    case eGeoComponentEdges:
+        return "edges";
+    case eGeoComponentPrimitives:
+        return "primitives";
+    case eGeoComponentObjects:
+        break;
+    }
+
+    return "";
+}
+
+// Writes selection, carried to a class node's group can select, into that group, and the class
+// into its group type choice, as an undoable edit. A node with no declared group, an empty
+// selection or no geometry to carry it over leave the group as it is.
+void
+setGroupFromComponents(Gui* gui,
+                       const NodePtr& node,
+                       const GeoDetailConstPtr& detail,
+                       const GeoComponentSelection& selection)
+{
+    UndoHistory* history = gui ? gui->getUndoHistory() : nullptr;
+    const NativeEffectBase* native = dynamic_cast<const NativeEffectBase*>(node->getEffectInstance().get());
+    const NodeSpec* spec = native ? native->nodeSpec() : nullptr;
+
+    if (!history || !spec || spec->geoGroupKnob.empty() || !detail || selection.empty()) {
+        return;
+    }
+    KnobStringPtr group = std::dynamic_pointer_cast<KnobString>(node->getKnobByName(std::string(spec->geoGroupKnob)));
+    const GeoComponentEnum type = carriedComponentType(selection.type, spec->geoGroupClasses);
+    if (!group || (type == eGeoComponentObjects)) {
+        return;
+    }
+    const GeoComponentSelection carried = SceneViewport::convertedComponentSelection(*detail, selection, type);
+    // A selection the class keeps nothing of selects nothing, where an empty pattern would select everything.
+    const std::string pattern = carried.empty() ? std::string("^*") : SceneViewport::componentSelectionPattern(*detail, carried);
+
+    KnobChoicePtr typeKnob;
+    int typeIndex = -1;
+    if (!spec->geoGroupTypeKnob.empty()) {
+        typeKnob = std::dynamic_pointer_cast<KnobChoice>(node->getKnobByName(std::string(spec->geoGroupTypeKnob)));
+        const std::vector<ChoiceOption> options = typeKnob ? typeKnob->getEntries_mt_safe() : std::vector<ChoiceOption>();
+        for (std::size_t i = 0; i < options.size(); ++i) {
+            if (options[i].id == groupClassId(type)) {
+                typeIndex = int(i);
+                break;
+            }
+        }
+        if (typeIndex == -1) {
+            typeKnob.reset();
+        }
+    }
+    const QString label = tr("Set %1 of %2").arg(QString::fromStdString(group->getLabel()), QString::fromStdString(node->getLabel()));
+    history->push(new SetGeoGroupCommand(group, pattern, typeKnob, typeIndex, label), UndoScope(UndoScope::holderForNode(node)));
+}
+
+struct ReselectTarget {
+    NodePtr node;
+    const NodeSpec* spec = nullptr;
+    KnobStringPtr group;
+    KnobChoicePtr type;
+    NodePtr input;
+};
+
+// The node of the graph the viewer is in that Reselect applies to, or why it doesn't apply.
+bool
+findReselectTarget(const NodePtr& viewerNode,
+                   ReselectTarget* target,
+                   QString* problem)
+{
+    NodeCollectionPtr collection = viewerNode ? viewerNode->getGroup() : NodeCollectionPtr();
+    NodeGraph* graph = collection ? dynamic_cast<NodeGraph*>(collection->getNodeGraph()) : nullptr;
+    if (!graph) {
+        *problem = tr("Reselect: there is no node graph to take the node from.");
+
+        return false;
+    }
+    const std::list<NodeGuiPtr>& selected = graph->getSelectedNodes();
+    if (selected.empty()) {
+        *problem = tr("Reselect: select a node with a group first.");
+
+        return false;
+    }
+    if (selected.size() > 1) {
+        *problem = tr("Reselect: select only one node.");
+
+        return false;
+    }
+    target->node = selected.front()->getNode();
+    const QString name = QString::fromStdString(target->node->getLabel());
+    const NativeEffectBase* native = dynamic_cast<const NativeEffectBase*>(target->node->getEffectInstance().get());
+    target->spec = native ? native->nodeSpec() : nullptr;
+    if (!target->spec || target->spec->geoGroupKnob.empty()) {
+        *problem = tr("Reselect: %1 has no group to reselect.").arg(name);
+
+        return false;
+    }
+    target->group = std::dynamic_pointer_cast<KnobString>(target->node->getKnobByName(std::string(target->spec->geoGroupKnob)));
+    if (!target->group) {
+        *problem = tr("Reselect: %1 has no group to reselect.").arg(name);
+
+        return false;
+    }
+    if (!target->spec->geoGroupTypeKnob.empty()) {
+        target->type = std::dynamic_pointer_cast<KnobChoice>(target->node->getKnobByName(std::string(target->spec->geoGroupTypeKnob)));
+    }
+    const int input = firstInputTaking(target->node, eDataKindGeometry);
+    target->input = (input >= 0) ? target->node->getInput(input) : NodePtr();
+    if (!target->input) {
+        *problem = tr("Reselect: %1 has no geometry connected to its input.").arg(name);
+
+        return false;
+    }
+
+    return true;
+}
+
+// The class the node's group type and pattern select in detail.
+bool
+resolveReselectType(const ReselectTarget& target,
+                    const GeoDetail& detail,
+                    GeoComponentEnum* type,
+                    std::string* error)
+{
+    GeoGroupTypeEnum groupType = eGeoGroupTypeGuess;
+    if (target.type) {
+        const std::vector<ChoiceOption> options = target.type->getEntries_mt_safe();
+        const int index = target.type->getValue(0);
+        if ((index >= 0) && (std::size_t(index) < options.size())) {
+            const std::string& id = options[std::size_t(index)].id;
+            if (id == "points") {
+                groupType = eGeoGroupTypePoints;
+            } else if (id == "primitives") {
+                groupType = eGeoGroupTypePrimitives;
+            } else if (id == "edges") {
+                groupType = eGeoGroupTypeEdges;
+            }
+        }
+    }
+    if (groupType == eGeoGroupTypeGuess) {
+        std::vector<GeoGroupTypeEnum> allowed;
+        const unsigned classes = target.spec->geoGroupClasses;
+        if (classes & eGeoGroupClassPoints) {
+            allowed.push_back(eGeoGroupTypePoints);
+        }
+        if (classes & eGeoGroupClassEdges) {
+            allowed.push_back(eGeoGroupTypeEdges);
+        }
+        if (classes & eGeoGroupClassPrimitives) {
+            allowed.push_back(eGeoGroupTypePrimitives);
+        }
+        if (allowed.empty() || !geoGuessGroupType(detail, target.group->getValue(0), allowed, eGeoGroupTypePrimitives, &groupType, error)) {
+            if (allowed.empty() && error) {
+                *error = tr("the node selects no point, edge or primitive group").toStdString();
+            }
+
+            return false;
+        }
+    }
+    switch (groupType) {
+    case eGeoGroupTypePoints:
+        *type = eGeoComponentPoints;
+        break;
+    case eGeoGroupTypeEdges:
+        *type = eGeoComponentEdges;
+        break;
+    default:
+        *type = eGeoComponentPrimitives;
+        break;
+    }
+
+    return true;
+}
+
+struct ReselectEvaluation {
+    GeoDetailConstPtr detail;
+    std::string error;
+};
 
 NATRON_NAMESPACE_ANONYMOUS_EXIT
 
@@ -353,6 +1076,548 @@ primKnob(const NodePtr& node)
     return path;
 }
 
+std::string
+editPrimPathsText(KnobString::PrimPathHintEnum hint,
+                  PrimEditEnum edit,
+                  const std::string& current,
+                  const QStringList& paths)
+{
+    if ((hint != KnobString::ePrimPathHintPattern) || (edit == ePrimEditReplace)) {
+        return primPathsText(hint, paths);
+    }
+    QStringList wanted;
+    for (const QString& path : paths) {
+        const QString trimmed = path.trimmed();
+        if (!trimmed.isEmpty() && !wanted.contains(trimmed)) {
+            wanted << trimmed;
+        }
+    }
+    const QString text = QString::fromStdString(current).trimmed();
+    if (text.isEmpty()) {
+        return (edit == ePrimEditAdd) ? wanted.join(QLatin1Char(' ')).toStdString() : current;
+    }
+
+    PrimSelector::Reach reach;
+    std::string error;
+    if (PrimSelector::getReach(current, &reach, &error) && reach.literalOnly) {
+        QStringList entries;
+        for (const std::string& literal : reach.literals) {
+            const QString entry = QString::fromStdString(literal);
+            if (!entries.contains(entry)) {
+                entries << entry;
+            }
+        }
+        QStringList result = entries;
+        for (const QString& path : wanted) {
+            if (edit == ePrimEditAdd) {
+                if (!result.contains(path)) {
+                    result << path;
+                }
+            } else {
+                result.removeAll(path);
+            }
+        }
+
+        return (result == entries) ? current : result.join(QLatin1Char(' ')).toStdString();
+    }
+
+    // Patterns and predicates without operators are a union of whitespace-separated entries, of
+    // which a literal one can be dropped; anything else is only ever extended or subtracted from.
+    const bool list = !hasExpressionSyntax(text);
+    QStringList kept = list ? text.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts) : QStringList();
+    if (edit == ePrimEditAdd) {
+        QStringList missing;
+        for (const QString& path : wanted) {
+            if (!kept.contains(path)) {
+                missing << path;
+            }
+        }
+        if (missing.isEmpty()) {
+            return current;
+        }
+        const QString base = list ? text : QStringLiteral("(%1)").arg(text);
+
+        return (base + QLatin1Char(' ') + missing.join(QLatin1Char(' '))).toStdString();
+    }
+
+    QStringList subtract;
+    for (const QString& path : wanted) {
+        if (!list || (kept.removeAll(path) == 0)) {
+            subtract << path;
+        }
+    }
+    if (list && kept.isEmpty()) {
+        return std::string();
+    }
+    QString result = list ? kept.join(QLatin1Char(' ')) : text;
+    if (!subtract.isEmpty()) {
+        if (!list || (kept.size() > 1)) {
+            result = QStringLiteral("(%1)").arg(result);
+        }
+        result += QStringLiteral(" - ") + subtract.join(QStringLiteral(" - "));
+    }
+
+    return (result == text) ? current : result.toStdString();
+}
+
+QStringList
+currentSelection(Gui* gui)
+{
+    ViewerTab* viewer = selectionViewer(gui);
+    SceneViewport* viewport = viewer ? viewer->getSceneViewport() : nullptr;
+    if (viewport) {
+        return viewport->getSelection();
+    }
+    SceneGraphPanel* panel = gui ? gui->getSceneGraphPanel() : nullptr;
+
+    return panel ? panel->getSelection() : QStringList();
+}
+
+namespace {
+    constexpr int kMatchStepMs = 8;
+    constexpr int kOfferMs = 60000;
+
+    // The "Load and select" report in the status bar, if one is up.
+    QPointer<QWidget> g_loadOffer;
+
+    void
+    dropLoadOffer()
+    {
+        QWidget* offer = g_loadOffer.data();
+        if (!offer) {
+            return;
+        }
+        if (QStatusBar* bar = qobject_cast<QStatusBar*>(offer->parentWidget())) {
+            bar->removeWidget(offer);
+        }
+        offer->hide();
+        offer->deleteLater();
+        g_loadOffer.clear();
+    }
+
+    bool
+    sceneReaches(const NodePtr& from,
+                 const NodePtr& target)
+    {
+        std::vector<NodePtr> pending(1, from);
+        std::set<const Node*> seen;
+        while (!pending.empty()) {
+            NodePtr node = pending.back();
+            pending.pop_back();
+            if (!node || !seen.insert(node.get()).second) {
+                continue;
+            }
+            if (node == target) {
+                return true;
+            }
+            for (std::size_t i = 0; i < node->getInputs().size(); ++i) {
+                pending.push_back(node->getInput(i));
+            }
+        }
+
+        return false;
+    }
+
+    // The viewer whose load rules the node's scene is opened with: the active one if its scene
+    // reaches the node, else the first other showing a scene that does. A scene the node's input
+    // holds is searched with whatever that viewer has loaded, as the viewer shows it.
+    SceneViewport*
+    loadRulesViewport(Gui* gui,
+                      const NodePtr& node)
+    {
+        std::vector<ViewerTab*> tabs;
+        if (ViewerTab* active = selectionViewer(gui)) {
+            tabs.push_back(active);
+        }
+        for (ViewerTab* tab : gui->getViewersList()) {
+            if (tab && (std::find(tabs.begin(), tabs.end(), tab) == tabs.end())) {
+                tabs.push_back(tab);
+            }
+        }
+        for (ViewerTab* tab : tabs) {
+            if (tab->isShowingScene() && sceneReaches(tab->getSceneViewedNode(), node)) {
+                return tab->getSceneViewport();
+            }
+        }
+
+        return nullptr;
+    }
+
+    bool
+    underPath(const std::string& path,
+              const QStringList& roots)
+    {
+        for (const QString& root : roots) {
+            const std::string prefix = root.toStdString();
+            if ((path == prefix) || (path.compare(0, prefix.size() + 1, prefix + "/") == 0)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    void startMatchSearch(Gui* gui, const NodePtr& node, const std::string& expression, const QString& label);
+
+    bool
+    isPolicySettled(SceneViewport* viewport)
+    {
+        return !viewport->isDrawPolicyPending() && !viewport->getRenderer().hasOutstandingStageLoads();
+    }
+
+    /**
+     * Runs run once the viewer has no load outstanding and no graph policy match pending, unless a
+     * newer search starts first. The search copies the viewer's load rules, and a policy still to
+     * match or a Full + Load rule matching again after each batch may yet add loads to them.
+     **/
+    void
+    whenPolicySettled(SceneViewport* viewport,
+                      int generation,
+                      const std::function<void()>& run)
+    {
+        if (isPolicySettled(viewport)) {
+            run();
+
+            return;
+        }
+        QObject* waiter = new QObject(viewport);
+        QObject::connect(viewport, &SceneViewport::drawPolicySettled, waiter, [viewport, generation, run, waiter]() {
+            if (generation != g_matchSearchGeneration) {
+                waiter->deleteLater();
+
+                return;
+            }
+            if (!isPolicySettled(viewport)) {
+                return;
+            }
+            // run may lead the viewer to emit again before the deferred delete.
+            QObject::disconnect(viewport, nullptr, waiter, nullptr);
+            waiter->deleteLater();
+            run();
+        });
+    }
+
+    // Loads paths in the viewer as the Scene Graph panel's Load does, and searches again once the
+    // viewer has taken the batches in, the graph policy's own among them. A payload that fails to
+    // load ends it with a report.
+    void
+    loadAndSearch(Gui* gui,
+                  const NodePtr& node,
+                  const QStringList& paths,
+                  const std::string& expression,
+                  const QString& label)
+    {
+        QPointer<SceneViewport> viewport(loadRulesViewport(gui, node));
+        if (!viewport) {
+            showHint(gui, tr("Select Matches: there is no viewer to load in."));
+
+            return;
+        }
+        const int generation = ++g_matchSearchGeneration;
+        viewport->requestLoad(paths, true);
+        showHint(gui, tr("Select Matches: loading %1 unloaded branches.").arg(paths.size()));
+        whenPolicySettled(viewport.data(), generation, [gui, node, paths, expression, label, viewport]() {
+            for (const std::pair<std::string, std::string>& failure : viewport->getRenderer().getStageLoadFailures()) {
+                if (underPath(failure.first, paths)) {
+                    showHint(gui, tr("Select Matches: %1 did not load: %2").arg(QString::fromStdString(failure.first), QString::fromStdString(failure.second)));
+
+                    return;
+                }
+            }
+            startMatchSearch(gui, node, expression, label);
+        });
+    }
+
+    void
+    showLoadOffer(Gui* gui,
+                  const NodePtr& node,
+                  const QString& report,
+                  const QStringList& paths,
+                  const std::string& expression,
+                  const QString& label)
+    {
+        dropLoadOffer();
+        QStatusBar* bar = gui ? gui->statusBar() : nullptr;
+        if (!bar) {
+            return;
+        }
+        QWidget* offer = new QWidget(bar);
+        offer->setObjectName(QStringLiteral("knobPrimSelectMatchesOffer"));
+        offer->setProperty("natronSelectMatchesUnloaded", paths.size());
+        QHBoxLayout* layout = new QHBoxLayout(offer);
+        layout->setContentsMargins(0, 0, 0, 0);
+        QLabel* text = new QLabel(report, offer);
+        text->setObjectName(QStringLiteral("knobPrimSelectMatchesReport"));
+        QPushButton* button = new QPushButton(tr("Load and select"), offer);
+        button->setObjectName(QStringLiteral("knobPrimSelectMatchesLoad"));
+        button->setToolTip(tr("Loads these payloads in the viewer, then selects the matches inside them. Unload them in the Scene Graph panel."));
+        layout->addWidget(text);
+        layout->addWidget(button);
+        bar->addPermanentWidget(offer);
+        g_loadOffer = offer;
+        QTimer::singleShot(kOfferMs, offer, [offer]() {
+            if (g_loadOffer.data() == offer) {
+                dropLoadOffer();
+            }
+        });
+        QObject::connect(button, &QPushButton::clicked, offer, [gui, node, paths, expression, label]() {
+            dropLoadOffer();
+            loadAndSearch(gui, node, paths, expression, label);
+        });
+    }
+
+    // The node's input scene, opened with nothing loaded and then with the viewer's load rules.
+    struct MatchSearch {
+        SceneGraphPrimWalk walk;
+        QStringList found;
+        std::shared_ptr<SceneNodeStageSource> source;
+        QPointer<SceneViewport> viewport;
+        bool offerLoad = false;
+
+        ~MatchSearch()
+        {
+            if (source) {
+                SceneNodeStageSource::reap({ source });
+            }
+        }
+    };
+
+    // The source's callbacks only hold the search weakly, so something must own it while its
+    // scene is read on the source's thread. A child of the Gui, so it ends before the app does.
+    class MatchSearchOwner
+        : public QObject {
+    public:
+        explicit MatchSearchOwner(QObject* parent)
+            : QObject(parent)
+        {
+        }
+
+        std::shared_ptr<MatchSearch> search;
+    };
+
+    QPointer<MatchSearchOwner> g_matchSearchOwner;
+
+    void
+    ownMatchSearch(Gui* gui,
+                   const std::shared_ptr<MatchSearch>& search)
+    {
+        delete g_matchSearchOwner.data();
+        MatchSearchOwner* owner = new MatchSearchOwner(gui);
+        owner->search = search;
+        g_matchSearchOwner = owner;
+    }
+
+    // Deferred, since a search ends inside its source's callbacks, which the source must outlive.
+    void
+    releaseMatchSearch(const std::shared_ptr<MatchSearch>& search)
+    {
+        MatchSearchOwner* owner = g_matchSearchOwner.data();
+        if (owner && (owner->search == search)) {
+            g_matchSearchOwner.clear();
+            owner->deleteLater();
+        }
+    }
+
+    void
+    reportMatches(Gui* gui,
+                  const NodePtr& node,
+                  const std::shared_ptr<MatchSearch>& search,
+                  const std::string& expression,
+                  const QString& label)
+    {
+        const QStringList matches = search->found;
+        const QStringList unloaded = search->walk.getUnloadedBranchPaths();
+        QString report;
+        if (matches.isEmpty()) {
+            report = tr("Select Matches: nothing loaded matches the %1.").arg(label);
+        } else {
+            report = tr("Select Matches: %1 prims selected.").arg(matches.size());
+        }
+        if (!unloaded.isEmpty()) {
+            report += (unloaded.size() == 1) ? tr(" 1 unloaded branch not searched.")
+                                             : tr(" %1 unloaded branches not searched.").arg(unloaded.size());
+        }
+        SceneViewport* viewport = search->viewport ? search->viewport.data() : nullptr;
+        if (!viewport) {
+            ViewerTab* viewer = selectionViewer(gui);
+            viewport = (viewer && viewer->isShowingScene()) ? viewer->getSceneViewport() : nullptr;
+        }
+        if (viewport) {
+            viewport->setSelection(matches);
+        }
+        showHint(gui, report);
+        releaseMatchSearch(search);
+        if (!unloaded.isEmpty() && search->offerLoad) {
+            showLoadOffer(gui, node, report, unloaded, expression, label);
+        }
+    }
+
+    // Walks the stage in short slices under its read lock, so the UI goes on between them.
+    void
+    stepMatchSearch(Gui* gui,
+                    const NodePtr& node,
+                    const std::shared_ptr<MatchSearch>& search,
+                    const std::string& expression,
+                    const QString& label,
+                    int generation)
+    {
+        std::vector<std::pair<std::string, std::string>> failures;
+        search->source->readStage([&](const SceneStage* stage) {
+            if (stage) {
+                for (const SceneStage::LoadFailure& failure : stage->getLoadFailures()) {
+                    failures.emplace_back(failure.prim.GetString(), failure.error);
+                }
+            }
+        });
+        if (!failures.empty()) {
+            showHint(gui, tr("Select Matches: %1 did not load: %2").arg(QString::fromStdString(failures.front().first), QString::fromStdString(failures.front().second)));
+            releaseMatchSearch(search);
+
+            return;
+        }
+        search->walk.start();
+        QTimer* timer = new QTimer(gui);
+        timer->setInterval(0);
+        QObject::connect(timer, &QTimer::timeout, timer, [gui, node, timer, search, generation, expression, label]() {
+            if (generation != g_matchSearchGeneration) {
+                timer->deleteLater();
+
+                return;
+            }
+            bool shown = false;
+            if (!search->source->tryReadStage([&](const SceneStage* stage) {
+                    shown = (stage != nullptr);
+                    search->walk.step(stage, kMatchStepMs, INT_MAX, [](const QString&) { return false; }, &search->found);
+                })) {
+                return;
+            }
+            if (!shown) {
+                timer->deleteLater();
+                showHint(gui, tr("Select Matches: the node's input shows no scene."));
+                releaseMatchSearch(search);
+
+                return;
+            }
+            if (!search->walk.isOver()) {
+                return;
+            }
+            timer->deleteLater();
+            reportMatches(gui, node, search, expression, label);
+        });
+        timer->start();
+    }
+
+    // Opens the node's input with the load rules the search's viewer has now, and walks it.
+    void
+    readMatchSearch(Gui* gui,
+                    const NodePtr& node,
+                    const std::shared_ptr<MatchSearch>& search,
+                    const std::string& expression,
+                    const QString& label,
+                    int generation)
+    {
+        const NodePtr input = node->getInput(0);
+        if (!input) {
+            showHint(gui, tr("Select Matches: the node has no scene on its input."));
+
+            return;
+        }
+        SceneLoadRules rules;
+        if (search->viewport) {
+            search->viewport->getRenderer().getStageLoadRules(&rules);
+        }
+        const std::weak_ptr<MatchSearch> weak(search);
+        QPointer<Gui> guard(gui);
+        search->source = std::make_shared<SceneNodeStageSource>(input, gui, [guard, node, weak, rules, expression, label, generation](bool ok, const QString& error) {
+            std::shared_ptr<MatchSearch> current = weak.lock();
+            if (!guard || !current || (generation != g_matchSearchGeneration)) {
+                return;
+            }
+            if (!ok) {
+                showHint(guard, tr("Select Matches: %1").arg(error));
+                releaseMatchSearch(current);
+
+                return;
+            }
+            if (sceneLoadRequestsFor(rules).empty()) {
+                stepMatchSearch(guard, node, current, expression, label, generation);
+
+                return;
+            }
+            current->source->requestLoadRules(rules); }, false);
+        search->source->setLoadsChanged([guard, node, weak, expression, label, generation]() {
+            std::shared_ptr<MatchSearch> current = weak.lock();
+            if (guard && current && (generation == g_matchSearchGeneration)) {
+                stepMatchSearch(guard, node, current, expression, label, generation);
+            }
+        });
+        ownMatchSearch(gui, search);
+        const GuiAppInstancePtr app = gui->getApp();
+        search->source->request(app ? app->getTimeLine()->currentFrame() : 0.);
+        showHint(gui, tr("Select Matches: reading the scene of %1...").arg(QString::fromStdString(input->getLabel())));
+    }
+
+    void
+    startMatchSearch(Gui* gui,
+                     const NodePtr& node,
+                     const std::string& expression,
+                     const QString& label)
+    {
+        dropLoadOffer();
+        const NodePtr input = node ? node->getInput(0) : NodePtr();
+        if (!input) {
+            showHint(gui, tr("Select Matches: the node has no scene on its input."));
+
+            return;
+        }
+        std::shared_ptr<MatchSearch> search(new MatchSearch);
+        QString parseError;
+        if (!search->walk.setExpression(QString::fromStdString(expression), &parseError)) {
+            showHint(gui, tr("Select Matches: %1").arg(parseError));
+
+            return;
+        }
+        search->viewport = loadRulesViewport(gui, node);
+        search->offerLoad = !search->viewport.isNull();
+        const int generation = ++g_matchSearchGeneration;
+        if (search->viewport) {
+            if (!isPolicySettled(search->viewport.data())) {
+                showHint(gui, tr("Select Matches: waiting for the viewer's loads..."));
+            }
+            whenPolicySettled(search->viewport.data(), generation, [gui, node, search, expression, label, generation]() {
+                readMatchSearch(gui, node, search, expression, label, generation);
+            });
+
+            return;
+        }
+        readMatchSearch(gui, node, search, expression, label, generation);
+    }
+} // anonymous namespace
+
+void
+selectMatches(Gui* gui,
+              const KnobStringPtr& knob)
+{
+    if (!gui || !knob) {
+        return;
+    }
+    const std::string expression = knob->getValue(0);
+    const QString label = QString::fromStdString(knob->getLabel());
+    if (PrimSelector::isBlank(expression)) {
+        showHint(gui, tr("Select Matches: the %1 is empty.").arg(label));
+
+        return;
+    }
+    std::string error;
+    if (!PrimSelector::validate(expression, &error)) {
+        showHint(gui, tr("Select Matches: the %1 is not valid: %2").arg(label, QString::fromStdString(error)));
+
+        return;
+    }
+    EffectInstance* effect = dynamic_cast<EffectInstance*>(knob->getHolder());
+    startMatchSearch(gui, effect ? effect->getNode() : NodePtr(), expression, label);
+}
+
 QString
 setOnNodeBlocker(Gui* gui,
                  const QStringList& paths)
@@ -390,6 +1655,43 @@ setOnCurrentNode(Gui* gui,
     }
     NodePtr node = currentNode(gui);
     pushSet(gui, node, primKnob(node), paths);
+
+    return true;
+}
+
+QString
+applyPatternBlocker(Gui* gui)
+{
+    NodePtr node = currentNode(gui);
+
+    if (!node) {
+        return tr("Apply To Node: open the settings of the node to apply the expression to.");
+    }
+    KnobStringPtr knob = firstPatternKnob(node);
+    const QString name = QString::fromStdString(node->getLabel());
+    if (!knob) {
+        return tr("Apply To Node: %1 has no prim pattern.").arg(name);
+    }
+    if (!knob->isEnabled(0) || knob->isSlave(0)) {
+        return tr("Apply To Node: the %1 of %2 can't be edited.").arg(QString::fromStdString(knob->getLabel()), name);
+    }
+
+    return QString();
+}
+
+bool
+applyPatternToCurrentNode(Gui* gui,
+                          const std::string& expression)
+{
+    const QString blocker = applyPatternBlocker(gui);
+
+    if (!blocker.isEmpty()) {
+        showHint(gui, blocker);
+
+        return false;
+    }
+    NodePtr node = currentNode(gui);
+    pushText(gui, node, firstPatternKnob(node), expression);
 
     return true;
 }
@@ -433,13 +1735,371 @@ createFromSelection(Gui* gui,
     context.created = [gui, paths, viewedWeak = NodeWPtr(viewed)](const NodePtr& created) {
         NodePtr viewedNode = viewedWeak.lock();
         if (viewedNode && viewedNode->isActivated()) {
-            insertAfterViewed(viewedNode, created);
+            insertAfterViewed(viewedNode, created, eDataKindScene, false);
         }
         if (KnobStringPtr knob = primKnob(created)) {
             pushSet(gui, created, knob, paths);
         }
     };
     TabMenuBridge::launch(graph, context);
+}
+
+bool
+armPick(Gui* gui,
+        const KnobStringPtr& knob,
+        const std::function<void(const QStringList& paths)>& commit)
+{
+    ViewerTab* viewer = selectionViewer(gui);
+    EffectInstance* effect = knob ? dynamic_cast<EffectInstance*>(knob->getHolder()) : nullptr;
+    NodePtr node = effect ? effect->getNode() : NodePtr();
+
+    if (!viewer || !viewer->getSceneViewport() || !node) {
+        showHint(gui, tr("Pick: open a 3D viewer to select prims in."));
+
+        return false;
+    }
+    cancelArmedPick();
+    g_armedPick = new ArmedPick(gui, viewer, node, knob, commit);
+    showHint(gui, tr("Pick for %1: select prims, Enter writes them, Esc cancels.").arg(g_armedPick->label()));
+
+    return true;
+}
+
+void
+cancelArmedPick()
+{
+    if (g_armedPick) {
+        g_armedPick->end();
+    }
+}
+
+QString
+bakeBlocker(ViewerTab* viewer)
+{
+    SceneViewport* viewport = viewer ? viewer->getSceneViewport() : nullptr;
+    const NodePtr viewed = viewer ? viewer->getSceneViewedNode() : NodePtr();
+    NodeCollectionPtr group = viewed ? viewed->getGroup() : NodeCollectionPtr();
+    NodeGraph* graph = group ? dynamic_cast<NodeGraph*>(group->getNodeGraph()) : nullptr;
+
+    if (!viewport || !viewed || !graph) {
+        return tr("Bake to Node: the viewer shows no scene.");
+    }
+    if (!viewport->hasSetDrawStates()) {
+        return tr("Bake to Node: this viewer sets no draw state.");
+    }
+
+    return QString();
+}
+
+bool
+bakeToNode(Gui* gui,
+           ViewerTab* viewer)
+{
+    UndoHistory* history = gui ? gui->getUndoHistory() : nullptr;
+    QString blocker = bakeBlocker(viewer);
+
+    if (blocker.isEmpty() && !history) {
+        blocker = tr("Bake to Node: the viewer shows no scene.");
+    }
+    if (!blocker.isEmpty()) {
+        showHint(gui, blocker);
+
+        return false;
+    }
+    SceneViewport* viewport = viewer->getSceneViewport();
+    const NodePtr viewed = viewer->getSceneViewedNode();
+    NodeGraph* graph = dynamic_cast<NodeGraph*>(viewed->getGroup()->getNodeGraph());
+    const SetDrawStates states = viewport->getSetDrawStates();
+
+    if (states.empty()) {
+        showHint(gui, tr("Bake to Node: this viewer sets no draw state."));
+
+        return false;
+    }
+    std::vector<std::pair<std::string, SceneDrawStateEnum>> stateOf;
+    stateOf.reserve(states.size());
+    for (const SetDrawStates::value_type& state : states) {
+        stateOf.push_back(std::make_pair(state.first, state.second.state));
+    }
+    const std::vector<USDExpandHierarchy::Rule> rules = USDExpandHierarchy::getRulesForStates(stateOf);
+
+    NodePtr target = isExpandHierarchy(viewed) ? viewed : expandHierarchyBelow(viewed);
+    USDExpandHierarchy* expand = target ? dynamic_cast<USDExpandHierarchy*>(target->getEffectInstance().get()) : nullptr;
+    const int room = expand ? expand->getFreeRuleCount() : (int)kUSDExpandHierarchyMaxRules;
+    if ((int)rules.size() > room) {
+        if (target) {
+            showHint(gui, tr("Bake to Node: %1 has room for %2 more rules, and the draw states of this viewer take %3.").arg(QString::fromStdString(target->getLabel())).arg(room).arg(rules.size()));
+        } else {
+            showHint(gui, tr("Bake to Node: a USDExpandHierarchy holds at most %1 rules, and the draw states of this viewer take %2.").arg(room).arg(rules.size()));
+        }
+
+        return false;
+    }
+
+    StepScope step(history, tr("Bake to Node"));
+    if (!target) {
+        target = createExpandHierarchyAfter(viewed, graph);
+        if (!target) {
+            showHint(gui, tr("Bake to Node: the USDExpandHierarchy could not be created."));
+
+            return false;
+        }
+    }
+    if (!expand) {
+        expand = dynamic_cast<USDExpandHierarchy*>(target->getEffectInstance().get());
+    }
+    if (!expand) {
+        showHint(gui, tr("Bake to Node: the USDExpandHierarchy could not be created."));
+
+        return false;
+    }
+    viewNode(viewer, target);
+    expand->appendRules(rules);
+    history->push(new BakeDrawStatesCommand(viewport, states, tr("Clear Draw States")), UndoScope());
+
+    return true;
+} // bakeToNode
+
+void
+createFromComponents(Gui* gui,
+                     const NodePtr& viewed,
+                     const GeoDetailConstPtr& detail,
+                     const GeoComponentSelection& selection)
+{
+    NodeCollectionPtr group = viewed ? viewed->getGroup() : NodeCollectionPtr();
+    NodeGraph* graph = group ? dynamic_cast<NodeGraph*>(group->getNodeGraph()) : nullptr;
+
+    if (!gui || !graph) {
+        showHint(gui, tr("Create Node from Selection: the viewer shows no geometry."));
+
+        return;
+    }
+    TabMenuBridge::LaunchContext context;
+    context.inputKind = eDataKindGeometry;
+    context.decorateArgs = [](CreateNodeArgs& args) {
+        // The graph's auto-connect would only connect the new node to the selected nodes.
+        args.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
+    };
+    context.created = [gui, detail, selection, viewedWeak = NodeWPtr(viewed)](const NodePtr& created) {
+        NodePtr viewedNode = viewedWeak.lock();
+        if (viewedNode && viewedNode->isActivated()) {
+            insertAfterViewed(viewedNode, created, eDataKindGeometry, true);
+        }
+        setGroupFromComponents(gui, created, detail, selection);
+    };
+    TabMenuBridge::launch(graph, context);
+}
+
+struct ReselectSession::Implementation {
+    Gui* gui;
+    ViewerTab* tab;
+    QPointer<SceneViewport> view;
+    // Evaluating the input's geometry, or showing it, is under way.
+    bool pending = false;
+    // Changes whenever a session ends, so an evaluation that finishes later knows it was dropped.
+    U64 generation = 0;
+    NodeWPtr node;
+    GeoDetailConstPtr detail;
+    // Puts back what the viewer showed; empty when it was not changed.
+    std::function<void()> restoreViewer;
+
+    NodePtr viewerNode() const
+    {
+        ViewerInstance* viewer = tab ? tab->getInternalNode() : nullptr;
+
+        return viewer ? viewer->getNode() : NodePtr();
+    }
+
+    // Makes the viewer's input A show input, when it doesn't; false if it can't.
+    bool showInput(const NodePtr& input)
+    {
+        NodePtr viewerNode = this->viewerNode();
+        ViewerInstance* viewer = tab->getInternalNode();
+        InspectorNodePtr inspector = std::dynamic_pointer_cast<InspectorNode>(viewerNode);
+        int a = -1, b = -1;
+        if (!inspector || !viewer) {
+            return false;
+        }
+        viewer->getActiveInputs(a, b);
+        if (a < 0) {
+            return false;
+        }
+        if (viewerNode->getInput(a) == input) {
+            return true;
+        }
+        for (int i = 0; i < viewerNode->getNInputs(); ++i) {
+            if (viewerNode->getInput(i) == input) {
+                inspector->setActiveInputAndRefresh(i, true);
+                restoreViewer = [inspector, a]() { inspector->setActiveInputAndRefresh(a, true); };
+
+                return true;
+            }
+        }
+        const NodePtr previous = viewerNode->getInput(a);
+        if (!inspector->replaceInput(input, a)) {
+            return false;
+        }
+        restoreViewer = [inspector, previous, a]() {
+            if (previous) {
+                ignore_result(inspector->replaceInput(previous, a));
+            } else {
+                ignore_result(inspector->disconnectInput(a));
+            }
+        };
+
+        return true;
+    }
+
+    void finish()
+    {
+        pending = false;
+        ++generation;
+        node.reset();
+        detail.reset();
+        if (view) {
+            view->endReselect();
+        }
+        if (restoreViewer) {
+            restoreViewer();
+            restoreViewer = nullptr;
+        }
+    }
+
+    void load(const ReselectTarget& target,
+              const GeoDetailConstPtr& input)
+    {
+        pending = false;
+        GeoComponentEnum type = eGeoComponentPrimitives;
+        std::string error;
+        GeoComponentSelection selection;
+        if (!input || !resolveReselectType(target, *input, &type, &error)
+            || !SceneViewport::componentSelectionFromPattern(*input, type, target.group->getValue(0), &selection, &error)) {
+            showHint(gui, tr("Reselect: the group of %1 can't be read: %2").arg(QString::fromStdString(target.node->getLabel()), QString::fromStdString(error)));
+            if (restoreViewer) {
+                restoreViewer();
+                restoreViewer = nullptr;
+            }
+
+            return;
+        }
+        node = target.node;
+        detail = input;
+        view->beginReselect(selection);
+        showHint(gui, tr("Reselecting %1: Enter applies the selection, Escape cancels.").arg(QString::fromStdString(target.node->getLabel())));
+    }
+};
+
+ReselectSession::ReselectSession(Gui* gui,
+                                 ViewerTab* tab,
+                                 SceneViewport* view)
+    : _imp(new Implementation)
+{
+    _imp->gui = gui;
+    _imp->tab = tab;
+    _imp->view = view;
+}
+
+ReselectSession::~ReselectSession() = default;
+
+void
+ReselectSession::begin()
+{
+    if (!_imp->view || _imp->pending || _imp->view->isReselecting()) {
+        return;
+    }
+    ReselectTarget target;
+    QString problem;
+    if (!findReselectTarget(_imp->viewerNode(), &target, &problem)) {
+        showHint(_imp->gui, problem);
+
+        return;
+    }
+    const bool shown = _imp->tab->getSceneViewedNode() == target.input;
+    if (!_imp->showInput(target.input)) {
+        showHint(_imp->gui, tr("Reselect: the viewer can't show the input of %1.").arg(QString::fromStdString(target.node->getLabel())));
+
+        return;
+    }
+    if (shown) {
+        if (GeoDetailConstPtr detail = _imp->view->shownDetail()) {
+            _imp->load(target, detail);
+
+            return;
+        }
+    }
+    _imp->pending = true;
+    // Entering the mode now routes Escape to cancel() while the input evaluates.
+    _imp->view->beginReselect(GeoComponentSelection());
+    const U64 generation = _imp->generation;
+    const EffectInstancePtr effect = target.input->getEffectInstance();
+    const double frame = _imp->tab->getTimeLine()->currentFrame();
+    auto* watcher = new QFutureWatcher<ReselectEvaluation>(_imp->view);
+    QObject::connect(watcher, &QFutureWatcher<ReselectEvaluation>::finished, _imp->view, [this, watcher, target, generation]() {
+        const ReselectEvaluation result = watcher->result();
+        watcher->deleteLater();
+        if (generation != _imp->generation) {
+            return;
+        }
+        ReselectTarget current;
+        QString ignored;
+        if (!findReselectTarget(_imp->viewerNode(), &current, &ignored) || (current.node != target.node)) {
+            _imp->finish();
+
+            return;
+        }
+        if (!result.detail) {
+            if (_imp->view) {
+                _imp->view->endReselect();
+            }
+            _imp->pending = false;
+            showHint(_imp->gui, tr("Reselect: the geometry of the input can't be computed: %1").arg(QString::fromStdString(result.error)));
+            if (_imp->restoreViewer) {
+                _imp->restoreViewer();
+                _imp->restoreViewer = nullptr;
+            }
+
+            return;
+        }
+        _imp->load(target, result.detail);
+    });
+    watcher->setFuture(QtConcurrent::run([effect, frame]() {
+        ReselectEvaluation result;
+        if (effect->evaluateGeometry(EffectInstance::EvaluateGeometryArgs(frame, ViewIdx(0)), &result.detail, &result.error) != EffectInstance::eRenderRoIRetCodeOk) {
+            result.detail.reset();
+        }
+
+        return result;
+    }));
+}
+
+void
+ReselectSession::commit(const GeoComponentSelection& selection)
+{
+    if (_imp->pending) {
+        showHint(_imp->gui, tr("Reselect: the geometry is still being computed. Escape cancels."));
+
+        return;
+    }
+    NodePtr node = _imp->node.lock();
+    if (!node || !node->isActivated()) {
+        showHint(_imp->gui, tr("Reselect: the node is gone."));
+        _imp->finish();
+
+        return;
+    }
+    if (selection.empty()) {
+        showHint(_imp->gui, tr("Reselect: nothing is selected. Select something, or Escape to leave the group as it is."));
+
+        return;
+    }
+    setGroupFromComponents(_imp->gui, node, _imp->detail, selection);
+    _imp->finish();
+}
+
+void
+ReselectSession::cancel()
+{
+    _imp->finish();
 }
 
 void

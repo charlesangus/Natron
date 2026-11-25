@@ -615,7 +615,7 @@ try:
         if target_input is None:
             target_input = 0
         for zoom in (1.0, 0.5):
-            for px, want in ((12, True), (16, True), (30, False)):
+            for px, want in ((12, True), (16, True), (30, True), (40, False)):
                 view_at(graph, centre(merge), zoom)
                 yield ("sleep", 100)
                 tip, d, _edge = stub_tip(merge, target_input)

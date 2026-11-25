@@ -1,0 +1,87 @@
+{
+  "schema": 1,
+  "renderer": "moonray",
+  "nodes": {
+    "BaseVolume": {
+      "key_ports": ["diffuse_color", "anisotropy", "attenuation_color", "attenuation_intensity", "attenuation_factor", "emission_intensity", "emission_color"]
+    },
+    "ColorCorrectMap": {
+      "key_ports": ["input", "mix", "hue_shift", "saturation", "contrast", "gamma", "gain", "offset"]
+    },
+    "DwaBaseMaterial": {
+      "key_ports": ["albedo", "diffuse_roughness", "metallic", "metallic_color", "roughness", "specular", "transmission", "transmission_color", "clearcoat", "fuzz", "emission", "presence"]
+    },
+    "DwaFabricMaterial": {
+      "key_ports": ["albedo", "warp_color", "warp_roughness", "weft_color", "weft_roughness", "fuzz", "diffuse_roughness", "diffuse_transmission", "glitter", "emission", "presence"]
+    },
+    "DwaMetalMaterial": {
+      "key_ports": ["metallic_color", "metallic_edge_color", "roughness", "anisotropy", "specular", "clearcoat", "clearcoat_roughness", "fuzz", "iridescence", "glitter", "emission", "presence"]
+    },
+    "DwaMixMaterial": {
+      "key_ports": ["mix"]
+    },
+    "DwaRefractiveMaterial": {
+      "key_ports": ["transmission_color", "roughness", "specular", "independent_transmission_roughness", "anisotropy", "clearcoat", "clearcoat_roughness", "fuzz", "iridescence", "emission", "presence"]
+    },
+    "DwaSkinMaterial": {
+      "key_ports": ["albedo", "scattering_color", "scattering_radius", "diffuse_roughness", "roughness", "specular", "moisture_mask", "moisture_roughness", "fuzz", "emission", "presence"]
+    },
+    "DwaSolidDielectricMaterial": {
+      "key_ports": ["albedo", "scattering_color", "scattering_radius", "roughness", "specular", "anisotropy", "clearcoat", "clearcoat_roughness", "fuzz", "iridescence", "emission", "presence"]
+    },
+    "DwaSwitchMaterial": {
+      "key_ports": []
+    },
+    "DwaToonMaterial": {
+      "key_ports": ["albedo", "diffuse_roughness", "ramp_input_scale", "terminator_shift", "metallic", "metallic_color", "roughness", "specular", "toon_specular_intensity", "toon_specular_tint", "emission", "presence"]
+    },
+    "DwaVelvetMaterial_v2": {
+      "key_ports": ["albedo", "fuzz", "fuzz_coverage", "fuzz_albedo", "diffuse_roughness", "diffuse_transmission", "glitter", "emission", "presence"]
+    },
+    "HairMaterial_v3": {
+      "key_ports": ["hair_color", "presence", "primary_specular_roughness", "primary_specular_tint", "secondary_specular_tint", "transmission_tint", "independent_transmission_roughness", "glint_roughness", "cuticle_layer_thickness", "emission"]
+    },
+    "HairToonMaterial": {
+      "key_ports": ["hair_diffuse", "hair_color", "front_hair_color", "back_hair_color", "specular_1_intensity", "specular_1_tint", "specular_1_roughness", "specular_2_intensity", "specular_2_tint", "scattering_color", "emission", "presence"]
+    },
+    "ListMap": {
+      "key_ports": []
+    },
+    "NoiseMap_v2": {
+      "key_ports": ["color_A", "color_B", "frequency_multiplier", "amplitude", "lacunarity", "persistence", "distortion", "time", "input_texture_coordinates", "translation", "rotation", "scale"]
+    },
+    "NoiseWorleyMap_v2": {
+      "key_ports": ["color_A", "color_B", "frequency", "jitter", "max_level", "minkowski_number", "input_texture_coordinates", "remap", "translation", "scale", "rotation", "F1"]
+    },
+    "NoiseWorleyMap_v3": {
+      "key_ports": ["color_A", "color_B", "frequency", "jitter", "max_level", "minkowski_number", "input_texture_coordinates", "remap", "translation", "scale", "rotation", "F1"]
+    },
+    "SwitchColorMap": {
+      "key_ports": ["choice", "input0", "input1", "input2", "input3", "input4", "input5", "input6", "input7", "input8", "input9", "input10"]
+    },
+    "SwitchDisplacement": {
+      "key_ports": ["choice"]
+    },
+    "SwitchFloatMap": {
+      "key_ports": ["choice", "input0", "input1", "input2", "input3", "input4", "input5", "input6", "input7", "input8", "input9", "input10"]
+    },
+    "SwitchMaterial": {
+      "key_ports": []
+    },
+    "SwitchNormalMap": {
+      "key_ports": ["choice"]
+    },
+    "TestInputsDisplacement": {
+      "key_ports": ["select", "inFloat", "inColor", "inVec3f"]
+    },
+    "TestInputsMaterial": {
+      "key_ports": ["select", "inFloat", "inColor", "inVec3f"]
+    },
+    "TestInputsNormalMap": {
+      "key_ports": ["select", "inFloat", "inColor", "inVec3f"]
+    },
+    "UsdPreviewSurface": {
+      "key_ports": ["diffuseColor", "emissiveColor", "specularColor", "metallic", "roughness", "clearcoat", "clearcoatRoughness", "opacity", "ior", "normal", "displacement", "occlusion"]
+    }
+  }
+}

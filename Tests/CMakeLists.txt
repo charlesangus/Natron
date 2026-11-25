@@ -487,4 +487,6 @@ if(Python3_Interpreter_FOUND)
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/bench/gui/compare.py --self-test)
     add_test(NAME TabTabTabPython
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/Tests/python/run_tabtabtab_tests.py)
+    add_test(NAME ShaderManifestPython
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/Tests/python/test_shader_manifest.py)
 endif()

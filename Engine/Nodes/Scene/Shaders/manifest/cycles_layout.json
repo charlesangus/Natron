@@ -1,0 +1,1054 @@
+{
+  "schema": 1,
+  "renderer": "cycles",
+  "nodes": {
+    "cycles_absorption_volume": {
+      "groups": [
+        {
+          "name": "Inputs",
+          "attributes": ["color", "density"]
+        }
+      ]
+    },
+    "cycles_add_closure": {
+      "groups": [
+        {
+          "name": "Inputs",
+          "attributes": ["closure1", "closure2"]
+        }
+      ]
+    },
+    "cycles_ambient_occlusion": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["samples", "inside", "only_local"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["color", "distance", "normal"]
+        }
+      ]
+    },
+    "cycles_aov_output": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["name"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["color", "value"]
+        }
+      ]
+    },
+    "cycles_attribute": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["attribute"]
+        }
+      ]
+    },
+    "cycles_background_shader": {
+      "groups": [
+        {
+          "name": "Inputs",
+          "attributes": ["color", "strength"]
+        }
+      ]
+    },
+    "cycles_bevel": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["samples"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["radius", "normal"]
+        }
+      ]
+    },
+    "cycles_blackbody": {
+      "groups": [
+        {
+          "name": "Inputs",
+          "attributes": ["temperature"]
+        }
+      ]
+    },
+    "cycles_brick_texture": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["offset", "offset_frequency", "squash", "squash_frequency"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["vector", "color1", "color2", "mortar", "scale", "mortar_size", "mortar_smooth", "bias", "brick_width", "row_height"]
+        },
+        {
+          "name": "Texture Mapping",
+          "attributes": ["tex_mapping.translation", "tex_mapping.rotation", "tex_mapping.scale", "tex_mapping.min", "tex_mapping.max", "tex_mapping.use_minmax", "tex_mapping.x_mapping", "tex_mapping.y_mapping", "tex_mapping.z_mapping", "tex_mapping.type", "tex_mapping.projection"]
+        }
+      ]
+    },
+    "cycles_brightness_contrast": {
+      "groups": [
+        {
+          "name": "Inputs",
+          "attributes": ["color", "bright", "contrast"]
+        }
+      ]
+    },
+    "cycles_bump": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["invert", "use_object_space"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["height", "sample_center", "sample_x", "sample_y", "normal", "strength", "distance", "filter_width"]
+        }
+      ]
+    },
+    "cycles_camera_info": {
+      "groups": []
+    },
+    "cycles_checker_texture": {
+      "groups": [
+        {
+          "name": "Inputs",
+          "attributes": ["vector", "color1", "color2", "scale"]
+        },
+        {
+          "name": "Texture Mapping",
+          "attributes": ["tex_mapping.translation", "tex_mapping.rotation", "tex_mapping.scale", "tex_mapping.min", "tex_mapping.max", "tex_mapping.use_minmax", "tex_mapping.x_mapping", "tex_mapping.y_mapping", "tex_mapping.z_mapping", "tex_mapping.type", "tex_mapping.projection"]
+        }
+      ]
+    },
+    "cycles_clamp": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["clamp_type"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["value", "min", "max"]
+        }
+      ]
+    },
+    "cycles_color": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["value"]
+        }
+      ]
+    },
+    "cycles_combine_color": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["color_type"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["r", "g", "b"]
+        }
+      ]
+    },
+    "cycles_combine_xyz": {
+      "groups": [
+        {
+          "name": "Inputs",
+          "attributes": ["x", "y", "z"]
+        }
+      ]
+    },
+    "cycles_diffuse_bsdf": {
+      "groups": [
+        {
+          "name": "Inputs",
+          "attributes": ["color", "normal", "roughness"]
+        }
+      ]
+    },
+    "cycles_displacement": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["space"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["height", "midlevel", "scale", "normal"]
+        }
+      ]
+    },
+    "cycles_emission": {
+      "groups": [
+        {
+          "name": "Inputs",
+          "attributes": ["color", "strength"]
+        }
+      ]
+    },
+    "cycles_environment_texture": {
+      "groups": [
+        {
+          "name": "Image",
+          "attributes": ["filename", "colorspace", "alpha_type", "interpolation", "animated"]
+        },
+        {
+          "name": "Projection",
+          "attributes": ["projection"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["vector"]
+        },
+        {
+          "name": "Texture Mapping",
+          "attributes": ["tex_mapping.translation", "tex_mapping.rotation", "tex_mapping.scale", "tex_mapping.min", "tex_mapping.max", "tex_mapping.use_minmax", "tex_mapping.x_mapping", "tex_mapping.y_mapping", "tex_mapping.z_mapping", "tex_mapping.type", "tex_mapping.projection"]
+        }
+      ]
+    },
+    "cycles_float_curve": {
+      "groups": [
+        {
+          "name": "Curve",
+          "attributes": ["curve", "min_x", "max_x", "extrapolate"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["fac", "value"]
+        }
+      ]
+    },
+    "cycles_fresnel": {
+      "groups": [
+        {
+          "name": "Inputs",
+          "attributes": ["IOR"]
+        }
+      ]
+    },
+    "cycles_gabor_texture": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["type"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["vector", "scale", "frequency", "anisotropy", "orientation_2d", "orientation_3d"]
+        },
+        {
+          "name": "Texture Mapping",
+          "attributes": ["tex_mapping.translation", "tex_mapping.rotation", "tex_mapping.scale", "tex_mapping.min", "tex_mapping.max", "tex_mapping.use_minmax", "tex_mapping.x_mapping", "tex_mapping.y_mapping", "tex_mapping.z_mapping", "tex_mapping.type", "tex_mapping.projection"]
+        }
+      ]
+    },
+    "cycles_gamma": {
+      "groups": [
+        {
+          "name": "Inputs",
+          "attributes": ["color", "gamma"]
+        }
+      ]
+    },
+    "cycles_geometry": {
+      "groups": []
+    },
+    "cycles_glass_bsdf": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["distribution"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["color", "roughness", "IOR", "normal"]
+        },
+        {
+          "name": "Thin Film",
+          "attributes": ["thin_film_thickness", "thin_film_ior"]
+        }
+      ]
+    },
+    "cycles_glossy_bsdf": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["distribution"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["color", "normal", "tangent", "roughness", "anisotropy", "rotation"]
+        }
+      ]
+    },
+    "cycles_gradient_texture": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["gradient_type"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["vector"]
+        },
+        {
+          "name": "Texture Mapping",
+          "attributes": ["tex_mapping.translation", "tex_mapping.rotation", "tex_mapping.scale", "tex_mapping.min", "tex_mapping.max", "tex_mapping.use_minmax", "tex_mapping.x_mapping", "tex_mapping.y_mapping", "tex_mapping.z_mapping", "tex_mapping.type", "tex_mapping.projection"]
+        }
+      ]
+    },
+    "cycles_hair_bsdf": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["component"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["color", "offset", "roughness_u", "roughness_v", "tangent"]
+        }
+      ]
+    },
+    "cycles_hair_info": {
+      "groups": []
+    },
+    "cycles_holdout": {
+      "groups": []
+    },
+    "cycles_hsv": {
+      "groups": [
+        {
+          "name": "Inputs",
+          "attributes": ["hue", "saturation", "value", "fac", "color"]
+        }
+      ]
+    },
+    "cycles_ies_light": {
+      "groups": [
+        {
+          "name": "Profile",
+          "attributes": ["ies", "filename"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["strength", "vector"]
+        },
+        {
+          "name": "Texture Mapping",
+          "attributes": ["tex_mapping.translation", "tex_mapping.rotation", "tex_mapping.scale", "tex_mapping.min", "tex_mapping.max", "tex_mapping.use_minmax", "tex_mapping.x_mapping", "tex_mapping.y_mapping", "tex_mapping.z_mapping", "tex_mapping.type", "tex_mapping.projection"]
+        }
+      ]
+    },
+    "cycles_image_texture": {
+      "groups": [
+        {
+          "name": "Image",
+          "attributes": ["filename", "colorspace", "alpha_type", "interpolation", "extension", "tiles", "animated"]
+        },
+        {
+          "name": "Projection",
+          "attributes": ["projection", "projection_blend"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["vector"]
+        },
+        {
+          "name": "Texture Mapping",
+          "attributes": ["tex_mapping.translation", "tex_mapping.rotation", "tex_mapping.scale", "tex_mapping.min", "tex_mapping.max", "tex_mapping.use_minmax", "tex_mapping.x_mapping", "tex_mapping.y_mapping", "tex_mapping.z_mapping", "tex_mapping.type", "tex_mapping.projection"]
+        }
+      ]
+    },
+    "cycles_invert": {
+      "groups": [
+        {
+          "name": "Inputs",
+          "attributes": ["fac", "color"]
+        }
+      ]
+    },
+    "cycles_layer_weight": {
+      "groups": [
+        {
+          "name": "Inputs",
+          "attributes": ["blend"]
+        }
+      ]
+    },
+    "cycles_light_falloff": {
+      "groups": [
+        {
+          "name": "Inputs",
+          "attributes": ["strength", "smooth"]
+        }
+      ]
+    },
+    "cycles_light_path": {
+      "groups": []
+    },
+    "cycles_magic_texture": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["depth"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["vector", "scale", "distortion"]
+        },
+        {
+          "name": "Texture Mapping",
+          "attributes": ["tex_mapping.translation", "tex_mapping.rotation", "tex_mapping.scale", "tex_mapping.min", "tex_mapping.max", "tex_mapping.use_minmax", "tex_mapping.x_mapping", "tex_mapping.y_mapping", "tex_mapping.z_mapping", "tex_mapping.type", "tex_mapping.projection"]
+        }
+      ]
+    },
+    "cycles_map_range": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["range_type"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["value", "from_min", "from_max", "to_min", "to_max", "steps", "clamp"]
+        }
+      ]
+    },
+    "cycles_mapping": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["mapping_type"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["vector", "location", "rotation", "scale"]
+        }
+      ]
+    },
+    "cycles_math": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["math_type", "use_clamp"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["value1", "value2", "value3"]
+        }
+      ]
+    },
+    "cycles_metallic_bsdf": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["distribution", "fresnel_type"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["color", "edge_tint", "ior", "k", "roughness", "anisotropy", "rotation", "normal", "tangent"]
+        },
+        {
+          "name": "Thin Film",
+          "attributes": ["thin_film_thickness", "thin_film_ior"]
+        }
+      ]
+    },
+    "cycles_mix": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["mix_type", "use_clamp"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["fac", "color1", "color2"]
+        }
+      ]
+    },
+    "cycles_mix_closure": {
+      "groups": [
+        {
+          "name": "Inputs",
+          "attributes": ["fac", "closure1", "closure2"]
+        }
+      ]
+    },
+    "cycles_mix_color": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["blend_type", "use_clamp_result", "use_clamp"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["fac", "a", "b"]
+        }
+      ]
+    },
+    "cycles_mix_float": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["use_clamp"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["fac", "a", "b"]
+        }
+      ]
+    },
+    "cycles_mix_vector": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["use_clamp"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["fac", "a", "b"]
+        }
+      ]
+    },
+    "cycles_mix_vector_non_uniform": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["use_clamp"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["fac", "a", "b"]
+        }
+      ]
+    },
+    "cycles_noise_texture": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["dimensions", "type", "use_normalize"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["vector", "w", "scale", "detail", "roughness", "lacunarity", "offset", "gain", "distortion"]
+        },
+        {
+          "name": "Texture Mapping",
+          "attributes": ["tex_mapping.translation", "tex_mapping.rotation", "tex_mapping.scale", "tex_mapping.min", "tex_mapping.max", "tex_mapping.use_minmax", "tex_mapping.x_mapping", "tex_mapping.y_mapping", "tex_mapping.z_mapping", "tex_mapping.type", "tex_mapping.projection"]
+        }
+      ]
+    },
+    "cycles_normal": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["direction"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["normal"]
+        }
+      ]
+    },
+    "cycles_normal_map": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["space", "convention", "base", "attribute"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["strength", "color"]
+        }
+      ]
+    },
+    "cycles_object_info": {
+      "groups": []
+    },
+    "cycles_particle_info": {
+      "groups": []
+    },
+    "cycles_point_info": {
+      "groups": []
+    },
+    "cycles_principled_bsdf": {
+      "groups": [
+        {
+          "name": "Base",
+          "attributes": ["base_color", "metallic", "roughness", "ior", "alpha", "normal"]
+        },
+        {
+          "name": "Diffuse",
+          "attributes": ["diffuse_roughness"]
+        },
+        {
+          "name": "Subsurface",
+          "attributes": ["subsurface_method", "subsurface_weight", "subsurface_scale", "subsurface_radius", "subsurface_ior", "subsurface_anisotropy"]
+        },
+        {
+          "name": "Specular",
+          "attributes": ["distribution", "specular_ior_level", "specular_tint", "anisotropic", "anisotropic_rotation", "tangent"]
+        },
+        {
+          "name": "Transmission",
+          "attributes": ["transmission_weight", "thin_wall"]
+        },
+        {
+          "name": "Coat",
+          "attributes": ["coat_weight", "coat_roughness", "coat_ior", "coat_tint", "coat_normal"]
+        },
+        {
+          "name": "Sheen",
+          "attributes": ["sheen_weight", "sheen_roughness", "sheen_tint"]
+        },
+        {
+          "name": "Emission",
+          "attributes": ["emission_color", "emission_strength"]
+        },
+        {
+          "name": "Thin Film",
+          "attributes": ["thin_film_thickness", "thin_film_ior"]
+        }
+      ],
+      "key_ports": ["base_color", "metallic", "roughness", "ior", "alpha", "normal", "subsurface_weight", "specular_ior_level", "transmission_weight", "coat_weight", "sheen_weight", "emission_color"]
+    },
+    "cycles_principled_hair_bsdf": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["model", "parametrization"]
+        },
+        {
+          "name": "Color",
+          "attributes": ["color", "melanin", "melanin_redness", "tint", "absorption_coefficient", "random_color"]
+        },
+        {
+          "name": "Roughness",
+          "attributes": ["roughness", "radial_roughness", "coat", "random_roughness"]
+        },
+        {
+          "name": "Geometry",
+          "attributes": ["aspect_ratio", "ior", "offset"]
+        },
+        {
+          "name": "Lobes",
+          "attributes": ["R", "TT", "TRT"]
+        },
+        {
+          "name": "Random",
+          "attributes": ["random"]
+        }
+      ],
+      "key_ports": ["color", "melanin", "melanin_redness", "tint", "absorption_coefficient", "roughness", "radial_roughness", "coat", "ior", "offset", "random_color", "random_roughness"]
+    },
+    "cycles_principled_volume": {
+      "groups": [
+        {
+          "name": "Volume",
+          "attributes": ["color", "density", "anisotropy", "absorption_color"]
+        },
+        {
+          "name": "Emission",
+          "attributes": ["emission_strength", "emission_color"]
+        },
+        {
+          "name": "Blackbody",
+          "attributes": ["blackbody_intensity", "blackbody_tint", "temperature"]
+        },
+        {
+          "name": "Attributes",
+          "attributes": ["density_attribute", "color_attribute", "temperature_attribute"]
+        }
+      ]
+    },
+    "cycles_radial_tiling": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["use_normalize"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["vector", "r_gon_sides", "r_gon_roundness"]
+        }
+      ]
+    },
+    "cycles_ray_portal_bsdf": {
+      "groups": [
+        {
+          "name": "Inputs",
+          "attributes": ["color", "position", "direction"]
+        }
+      ]
+    },
+    "cycles_raycast": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["only_local"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["position", "direction", "length"]
+        }
+      ]
+    },
+    "cycles_refraction_bsdf": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["distribution"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["color", "normal", "roughness", "IOR"]
+        }
+      ]
+    },
+    "cycles_rgb_curves": {
+      "groups": [
+        {
+          "name": "Curve",
+          "attributes": ["curves", "min_x", "max_x", "extrapolate"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["fac", "value"]
+        }
+      ]
+    },
+    "cycles_rgb_ramp": {
+      "groups": [
+        {
+          "name": "Ramp",
+          "attributes": ["ramp", "ramp_alpha", "interpolate"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["fac"]
+        }
+      ]
+    },
+    "cycles_rgb_to_bw": {
+      "groups": [
+        {
+          "name": "Inputs",
+          "attributes": ["color"]
+        }
+      ]
+    },
+    "cycles_scatter_volume": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["phase"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["color", "density", "anisotropy", "IOR", "backscatter", "alpha", "diameter"]
+        }
+      ]
+    },
+    "cycles_scene_time": {
+      "groups": []
+    },
+    "cycles_separate_color": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["color_type"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["color"]
+        }
+      ]
+    },
+    "cycles_separate_xyz": {
+      "groups": [
+        {
+          "name": "Inputs",
+          "attributes": ["vector"]
+        }
+      ]
+    },
+    "cycles_sheen_bsdf": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["distribution"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["color", "normal", "roughness"]
+        }
+      ]
+    },
+    "cycles_sky_texture": {
+      "groups": [
+        {
+          "name": "Sky",
+          "attributes": ["sky_type", "turbidity", "ground_albedo", "altitude", "air_density", "aerosol_density", "ozone_density"]
+        },
+        {
+          "name": "Sun",
+          "attributes": ["sun_disc", "sun_size", "sun_intensity", "sun_elevation", "sun_rotation", "sun_direction"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["vector"]
+        },
+        {
+          "name": "Texture Mapping",
+          "attributes": ["tex_mapping.translation", "tex_mapping.rotation", "tex_mapping.scale", "tex_mapping.min", "tex_mapping.max", "tex_mapping.use_minmax", "tex_mapping.x_mapping", "tex_mapping.y_mapping", "tex_mapping.z_mapping", "tex_mapping.type", "tex_mapping.projection"]
+        }
+      ]
+    },
+    "cycles_subsurface_scattering": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["method"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["color", "normal", "scale", "radius", "subsurface_ior", "subsurface_roughness", "subsurface_anisotropy"]
+        }
+      ]
+    },
+    "cycles_tangent": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["direction_type", "axis", "attribute"]
+        }
+      ]
+    },
+    "cycles_texture_coordinate": {
+      "groups": [
+        {
+          "name": "Object",
+          "attributes": ["use_transform", "ob_tfm", "from_dupli"]
+        }
+      ]
+    },
+    "cycles_toon_bsdf": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["component"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["color", "normal", "size", "smooth"]
+        }
+      ]
+    },
+    "cycles_translucent_bsdf": {
+      "groups": [
+        {
+          "name": "Inputs",
+          "attributes": ["color", "normal"]
+        }
+      ]
+    },
+    "cycles_transparent_bsdf": {
+      "groups": [
+        {
+          "name": "Inputs",
+          "attributes": ["color"]
+        }
+      ]
+    },
+    "cycles_uvmap": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["attribute"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["from_dupli"]
+        }
+      ]
+    },
+    "cycles_value": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["value"]
+        }
+      ]
+    },
+    "cycles_vector_curves": {
+      "groups": [
+        {
+          "name": "Curve",
+          "attributes": ["curves", "min_x", "max_x", "extrapolate"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["fac", "value"]
+        }
+      ]
+    },
+    "cycles_vector_displacement": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["space", "attribute"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["vector", "midlevel", "scale"]
+        }
+      ]
+    },
+    "cycles_vector_map_range": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["range_type", "use_clamp"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["vector", "from_min", "from_max", "to_min", "to_max", "steps"]
+        }
+      ]
+    },
+    "cycles_vector_math": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["math_type"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["vector1", "vector2", "vector3", "scale"]
+        }
+      ]
+    },
+    "cycles_vector_rotate": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["rotate_type", "invert"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["vector", "rotation", "center", "axis", "angle"]
+        }
+      ]
+    },
+    "cycles_vector_transform": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["transform_type", "convert_from", "convert_to"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["vector"]
+        }
+      ]
+    },
+    "cycles_vertex_color": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["layer_name"]
+        }
+      ]
+    },
+    "cycles_volume_coefficients": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["phase"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["scatter_coeffs", "absorption_coeffs", "anisotropy", "IOR", "backscatter", "alpha", "diameter", "emission_coeffs"]
+        }
+      ]
+    },
+    "cycles_volume_info": {
+      "groups": []
+    },
+    "cycles_voronoi_texture": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["dimensions", "metric", "feature", "use_normalize"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["vector", "w", "scale", "detail", "roughness", "lacunarity", "smoothness", "exponent", "randomness"]
+        },
+        {
+          "name": "Texture Mapping",
+          "attributes": ["tex_mapping.translation", "tex_mapping.rotation", "tex_mapping.scale", "tex_mapping.min", "tex_mapping.max", "tex_mapping.use_minmax", "tex_mapping.x_mapping", "tex_mapping.y_mapping", "tex_mapping.z_mapping", "tex_mapping.type", "tex_mapping.projection"]
+        }
+      ]
+    },
+    "cycles_wave_texture": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["wave_type", "bands_direction", "rings_direction", "profile"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["vector", "scale", "distortion", "detail", "detail_scale", "detail_roughness", "phase"]
+        },
+        {
+          "name": "Texture Mapping",
+          "attributes": ["tex_mapping.translation", "tex_mapping.rotation", "tex_mapping.scale", "tex_mapping.min", "tex_mapping.max", "tex_mapping.use_minmax", "tex_mapping.x_mapping", "tex_mapping.y_mapping", "tex_mapping.z_mapping", "tex_mapping.type", "tex_mapping.projection"]
+        }
+      ]
+    },
+    "cycles_wavelength": {
+      "groups": [
+        {
+          "name": "Inputs",
+          "attributes": ["wavelength"]
+        }
+      ]
+    },
+    "cycles_white_noise_texture": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["dimensions"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["vector", "w"]
+        }
+      ]
+    },
+    "cycles_wireframe": {
+      "groups": [
+        {
+          "name": "Settings",
+          "attributes": ["use_pixel_size"]
+        },
+        {
+          "name": "Inputs",
+          "attributes": ["size"]
+        }
+      ]
+    }
+  }
+}

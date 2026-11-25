@@ -47,10 +47,12 @@ add_library(NatronGpu STATIC
     GpuTexture.cpp
     GpuTransfer.cpp
     GpuBlur.cpp
+    GpuAperture.cpp
     GpuDownscale.cpp
     GpuMorphology.cpp
     GpuResample.cpp
     GpuWrap.cpp
+    GpuFlow.cpp
     GlInterop.cpp
     Vma.cpp
     ${NATRON_SPIRV_REFLECT_DIR}/spirv_reflect.c

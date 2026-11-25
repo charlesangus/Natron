@@ -96,6 +96,7 @@ with no settings says only that.
   - Fast GI: the approximation of distant indirect light.
 - Lights: Use Light Tree and Light Sampling Threshold.
 - Volumes: ray marching and its steps.
+- Subdivision: Subdivision Surfaces, and how finely the meshes are diced.
 - Path Guiding: this build of Cycles has no path guiding, so these controls
   have no effect.
 - Light Contributions: switches for kinds of light, to break down or debug an
@@ -121,6 +122,7 @@ with no settings says only that.
   it lacks, so expect the image to stay noisy.
 - Scene Toggles: motion blur, lighting and how geometry and normals are read.
   - Prune: removing kinds of geometry from the render.
+- Subdivision: Subdivision Surfaces, and how finely the meshes are tessellated.
 - Performance: Execution Mode and Max FPS.
 - Remote: rendering on other machines, which stays disabled because Natron
   renders MoonRay on this machine only.

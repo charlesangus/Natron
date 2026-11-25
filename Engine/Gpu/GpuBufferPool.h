@@ -23,7 +23,13 @@ struct GpuBufferPoolOptions {
     uint64_t overrideBudgetBytes = 0;
     // Share of the device-local heap budget the pool may use; the rest is left to other allocations.
     double heapBudgetFraction = 0.8;
+    // Tests only: acquire() fills every buffer it hands out with kGpuPoolPoisonBits before returning it, so a
+    // read of memory nothing wrote shows as that NaN rather than as whatever an earlier user left there.
+    bool poisonOnAcquire = false;
 };
+
+// A quiet NaN with a payload no arithmetic produces, so it is told apart from a NaN a kernel computed.
+inline constexpr uint32_t kGpuPoolPoisonBits = 0x7FC00001u;
 
 struct GpuBufferPoolStats {
     uint64_t liveBytes = 0;
@@ -32,6 +38,9 @@ struct GpuBufferPoolStats {
     uint64_t peakBytes = 0;
     uint64_t evictions = 0;
     uint64_t budgetBytes = 0;
+    // Released while retiring device work that uses them was pending, and kept out of reuse until it is reaped.
+    // They count against the budget like pooled bytes.
+    uint64_t quarantinedBytes = 0;
 };
 
 namespace detail {
@@ -106,6 +115,8 @@ public:
     GpuStatus acquire(VkDeviceSize size, GpuBufferHandle& out);
 
     void setUserBudget(uint64_t bytes);
+    // Sets GpuBufferPoolOptions::poisonOnAcquire for the acquires that start from now on.
+    void setPoisonOnAcquire(bool poison) { poison_.store(poison, std::memory_order_relaxed); }
     uint64_t budget();
     GpuBufferPoolStats stats() const;
     // Device allocations the pool has made so far, each a request no pooled buffer could serve.
@@ -135,8 +146,10 @@ private:
     void linkLocked(detail::BufferLease* lease);
     detail::BufferLease* takeVictimLocked(std::function<void()>& cb);
     uint64_t computeBudget();
-    uint64_t usageLocked() const { return stats_.liveBytes + stats_.pooledBytes; }
+    uint64_t usageLocked() const { return stats_.liveBytes + stats_.pooledBytes + stats_.quarantinedBytes; }
     void reserveLocked(uint64_t bytes);
+    GpuStatus fillWithPoison(const GpuBuffer& buffer);
+    void returnQuarantined();
 
     GpuDevice& dev_;
     GpuBufferPoolOptions options_;
@@ -144,7 +157,14 @@ private:
     GpuBufferPoolStats stats_;
     uint64_t clock_ = 0;
     std::atomic<uint64_t> allocations_ { 0 };
+    std::atomic<bool> poison_ { false };
     std::map<VkDeviceSize, std::vector<GpuBuffer>> free_;
+    struct Quarantined {
+        GpuBuffer buffer;
+        // GpuDevice::retiringMark() of the buffer when it was released.
+        uint64_t mark = 0;
+    };
+    std::vector<Quarantined> quarantine_;
     // Evictable live buffers that must be downloaded on eviction, ordered by last use, oldest first.
     std::map<uint64_t, detail::BufferLease*> lru_;
     // Evictable live buffers that may be dropped, ordered by score then last use.

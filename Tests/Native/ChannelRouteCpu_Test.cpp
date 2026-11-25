@@ -89,7 +89,7 @@ public:
 const ImageLayerDesc&
 extraLayer()
 {
-    static const ImageLayerDesc layer("extra", "extra", "XYZ", std::vector<std::string>({ "X", "Y", "Z" }));
+    static const ImageLayerDesc layer("extra", std::vector<std::string>({ "X", "Y", "Z" }));
 
     return layer;
 }

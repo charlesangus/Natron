@@ -34,6 +34,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <future>
 #include <iostream>
 #include <limits>
 #include <list>
@@ -639,11 +640,11 @@ protected:
         return node ? dynamic_cast<USDRender*>(node->getEffectInstance().get()) : nullptr;
     }
 
-    // The renderer node renders frame 1 with, empty with *error set if it cannot tell.
+    // The renderer node renders frame 1 with, empty with *error set if it cannot tell. Asked off
+    // the main thread, which is given a provisional answer until a worker read the settings.
     static std::string activeRendererOf(const NodePtr& node,
                                         std::string* error)
     {
-        std::string id;
         USDRender* render = renderOf(node);
         if (!render) {
             *error = "not a USDRender";
@@ -651,17 +652,35 @@ protected:
             return std::string();
         }
 
-        return render->activeRenderer(1., ViewIdx(0), &id, error) ? id : std::string();
+        return std::async(std::launch::async, [render, error]() {
+            std::string id;
+
+            return render->activeRenderer(1., ViewIdx(0), &id, error) ? id : std::string(); }).get();
     }
 
-    // The node's output format as its region of definition at frame 1.
+    // Refreshes effect's Settings Prim menu and waits for its entries.
+    static void refreshSettingsPrimMenuOf(USDRender* effect)
+    {
+        const std::shared_ptr<SceneMenuJob> job = effect->refreshSettingsPrimMenu();
+        ASSERT_TRUE(job != nullptr);
+        job->wait();
+        EXPECT_TRUE(effect->applySettingsPrimMenu(job));
+    }
+
+    // The node's output format as its region of definition at frame 1, asked off the main thread
+    // as activeRendererOf() is.
     static RectD rodOf(const NodePtr& node)
     {
         RectD rod;
         USDRender* render = renderOf(node);
         EXPECT_TRUE(render != nullptr);
         if (render) {
-            EXPECT_EQ(eStatusOK, render->getRegionOfDefinition(node->getHashValue(), 1., RenderScale::identity, ViewIdx(0), &rod));
+            const U64 hash = node->getHashValue();
+            rod = std::async(std::launch::async, [render, hash]() {
+                RectD r;
+                EXPECT_EQ(eStatusOK, render->getRegionOfDefinition(hash, 1., RenderScale::identity, ViewIdx(0), &r));
+
+                return r; }).get();
         }
 
         return rod;
@@ -671,8 +690,8 @@ protected:
     {
         std::list<ImageLayerDesc> layers;
         layers.push_back(ImageLayerDesc::getRGBAComponents());
-        layers.push_back(ImageLayerDesc("depth", "depth", "", std::vector<std::string>(1, "Z")));
-        layers.push_back(ImageLayerDesc("primId", "primId", "", std::vector<std::string>(1, "id")));
+        layers.push_back(ImageLayerDesc("depth", std::vector<std::string>(1, "Z")));
+        layers.push_back(ImageLayerDesc("primId", std::vector<std::string>(1, "id")));
 
         return layers;
     }
@@ -684,7 +703,7 @@ TEST_F(USDRenderNodeTest, TheSettingsPrimMenuListsTheScenesRenderSettingsPrims)
     ASSERT_TRUE(node != nullptr);
     USDRender* effect = renderOf(node);
     ASSERT_TRUE(effect);
-    effect->refreshSettingsPrimMenu();
+    refreshSettingsPrimMenuOf(effect);
     KnobChoice* settingsPrim = dynamic_cast<KnobChoice*>(node->getKnobByName(kUSDRenderParamSettingsPrim).get());
     ASSERT_TRUE(settingsPrim);
     const std::vector<ChoiceOption> entries = settingsPrim->getEntries_mt_safe();
@@ -711,13 +730,23 @@ TEST_F(USDRenderNodeTest, ThePrimsResolutionIsTheFormat)
     EXPECT_EQ(32., rod.y2);
 }
 
+namespace {
+// The output metadata as a reader off the main thread derives it: the main thread is only served
+// the primId table a render or such a reader stored.
+ImageMetadata
+outputMetadataOffTheMainThread(NativeEffectBase* effect)
+{
+    return std::async(std::launch::async, [effect]() { return effect->getOutputMetadata(1., ViewIdx(0)); }).get();
+}
+} // anonymous namespace
+
 TEST_F(USDRenderNodeTest, MetadataMapsEveryPrimIdToItsPath)
 {
     NodePtr node = createRender();
     ASSERT_TRUE(node != nullptr);
     NativeEffectBase* effect = dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get());
     ASSERT_TRUE(effect);
-    const ImageMetadata metadata = effect->getOutputMetadata(1., ViewIdx(0));
+    const ImageMetadata metadata = outputMetadataOffTheMainThread(effect);
     for (const char* path : { "/World/Box", "/World/Ball" }) {
         char key[32];
         std::snprintf(key, sizeof(key), kUSDRenderMetadataPrimIdPrefix "%08x", HydraRender::primPathHash(path));
@@ -733,7 +762,7 @@ TEST_F(USDRenderNodeTest, MetadataNamesInstancerPrototypesAndSkipsGuides)
     ASSERT_TRUE(node != nullptr);
     NativeEffectBase* effect = dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get());
     ASSERT_TRUE(effect);
-    const ImageMetadata metadata = effect->getOutputMetadata(1., ViewIdx(0));
+    const ImageMetadata metadata = outputMetadataOffTheMainThread(effect);
     auto lookup = [&metadata](const char* path) {
         char key[32];
         std::snprintf(key, sizeof(key), kUSDRenderMetadataPrimIdPrefix "%08x", HydraRender::primPathHash(path));
@@ -1091,7 +1120,7 @@ TEST_F(USDRenderRendererTest, TheSettingsPrimKnobBeatsTheStageMetadata)
 
     USDRender* effect = renderOf(node);
     ASSERT_TRUE(effect);
-    effect->refreshSettingsPrimMenu();
+    refreshSettingsPrimMenuOf(effect);
     KnobChoice* settingsPrim = dynamic_cast<KnobChoice*>(node->getKnobByName(kUSDRenderParamSettingsPrim).get());
     ASSERT_TRUE(settingsPrim);
     const std::vector<ChoiceOption> entries = settingsPrim->getEntries_mt_safe();
@@ -1220,7 +1249,7 @@ TEST_F(USDRenderRendererTest, AHandWrittenRenderSettingsPrimIsHonoured)
 
     USDRender* effect = renderOf(node);
     ASSERT_TRUE(effect);
-    effect->refreshSettingsPrimMenu();
+    refreshSettingsPrimMenuOf(effect);
     KnobChoice* settingsPrim = dynamic_cast<KnobChoice*>(node->getKnobByName(kUSDRenderParamSettingsPrim).get());
     ASSERT_TRUE(settingsPrim);
     const std::vector<ChoiceOption> entries = settingsPrim->getEntries_mt_safe();
@@ -1351,6 +1380,10 @@ TEST_F(USDRenderRendererTest, ChangingTheRendererChangesTheHash)
     ASSERT_TRUE(bool(node));
     KnobChoice* renderer = rendererKnob(node);
     ASSERT_TRUE(renderer);
+    // A USDRead's hash is a placeholder until its first evaluation walks the file; settle it so the
+    // hashes below are not taken across that change.
+    std::string error;
+    ASSERT_FALSE(activeRendererOf(node, &error).empty()) << error;
     const U64 stormHash = node->getHashValue();
     ASSERT_TRUE(selectRenderer(renderer, kStubRendererId));
     const U64 stubHash = node->getHashValue();

@@ -2148,12 +2148,12 @@ ParallelRenderArgsSetter::ParallelRenderArgsSetter(double time,
 {
     assert(treeRoot);
 
-    // Ensure this thread gets an OpenGL context for the render of the frame
     OSGLContextPtr glContext;
-    try {
-        glContext = appPTR->getGPUContextPool()->attachGLContextToRender();
-    } catch (const std::exception& /*e*/) {
-
+    if (setUpstreamArgs) {
+        try {
+            glContext = appPTR->getGPUContextPool()->attachGLContextToRender();
+        } catch (const std::exception& /*e*/) {
+        }
     }
 
     _openGLContext = glContext;

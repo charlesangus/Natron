@@ -584,6 +584,23 @@ RenderSettingsKnobs::curatedFor(const std::string& rendererId)
     return nullptr;
 }
 
+RenderSettingsKnobs::Values
+RenderSettingsKnobs::engineDefaults(const std::string& rendererId)
+{
+    Values out;
+    const Curated* curated = curatedFor(rendererId);
+
+    if (curated) {
+        for (const CuratedSetting& c : curated->settings) {
+            if (c.engineDefault) {
+                out[c.key] = c.defaultValue;
+            }
+        }
+    }
+
+    return out;
+}
+
 std::vector<std::string>
 RenderSettingsKnobs::declaredNamespaces(const std::string& rendererId)
 {
@@ -889,6 +906,7 @@ struct RenderSettingsKnobs::Impl {
         std::vector<Choice> choices;
         std::string follows;
         std::vector<EnabledBy> enabledBy;
+        bool inverted = false;
         KnobIWPtr knob;
     };
 
@@ -945,7 +963,7 @@ struct RenderSettingsKnobs::Impl {
         case eKindBool: {
             KnobBool* b = dynamic_cast<KnobBool*>(k.get());
 
-            return b ? VtValue(b->getValue()) : VtValue();
+            return b ? VtValue(b->getValue() != s.inverted) : VtValue();
         }
         case eKindInt:
         case eKindUInt: {
@@ -1032,7 +1050,7 @@ struct RenderSettingsKnobs::Impl {
         case eKindBool: {
             KnobBool* b = dynamic_cast<KnobBool*>(k.get());
             if (b) {
-                (void)b->setValue(value.UncheckedGet<bool>());
+                (void)b->setValue(value.UncheckedGet<bool>() != s.inverted);
             }
 
             return b != nullptr;
@@ -1095,8 +1113,8 @@ struct RenderSettingsKnobs::Impl {
         }
     } // setKnobValue
 
-    // Whether the knob of the setting named key, a bool or a number, satisfies the condition; a
-    // setting that is missing or neither leaves its dependents enabled.
+    // Whether the knob of the setting named key satisfies the condition; a setting that is
+    // missing, or neither a bool nor a number without equals, leaves its dependents enabled.
     bool conditionHolds(const std::string& renderer,
                         const EnabledBy& condition) const
     {
@@ -1106,7 +1124,9 @@ struct RenderSettingsKnobs::Impl {
         }
         const VtValue v = knobValue(*controller);
         bool on = true;
-        if (v.IsHolding<bool>()) {
+        if (!condition.equals.IsEmpty()) {
+            on = (v == condition.equals);
+        } else if (v.IsHolding<bool>()) {
             on = v.UncheckedGet<bool>();
         } else if (v.IsHolding<int>()) {
             on = v.UncheckedGet<int>() > 0;
@@ -1291,7 +1311,9 @@ RenderSettingsKnobs::addRenderer(const std::string& rendererId,
             scriptName = prefix + capitalized(camelCaseFromKey(key, true)) + std::to_string(n);
         }
         names.insert(scriptName);
-        KnobIPtr k = _imp->makeKnob(labelFromScriptName(scriptName, prefix), knobDefault, choices);
+        const bool inverted = range && range->inverted && knobDefault.IsHolding<bool>();
+        KnobIPtr k = _imp->makeKnob(labelFromScriptName(scriptName, prefix),
+                                    inverted ? VtValue(!knobDefault.UncheckedGet<bool>()) : knobDefault, choices);
         if (!k) {
             return;
         }
@@ -1343,6 +1365,7 @@ RenderSettingsKnobs::addRenderer(const std::string& rendererId,
         setting.delegateDefault = delegateDefault;
         setting.choices = choices;
         setting.follows = follows;
+        setting.inverted = inverted;
         if (range && disabledReason.empty()) {
             setting.enabledBy = range->enabledBy;
         }
@@ -1405,6 +1428,9 @@ RenderSettingsKnobs::addRenderer(const std::string& rendererId,
                 if ((d.key == c.key) && (kindOf(d.defaultValue) == kindOf(c.defaultValue))) {
                     delegateDefault = d.defaultValue;
                 }
+            }
+            if (c.engineDefault) {
+                delegateDefault = c.defaultValue;
             }
             VtValue knobDefault = c.overrideDefault ? c.defaultValue : delegateDefault;
             // A follower starts where its leader, listed before it, does.

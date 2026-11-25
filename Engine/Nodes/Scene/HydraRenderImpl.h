@@ -39,6 +39,7 @@
 #include <vector>
 
 #include "Engine/Nodes/Scene/RenderDelegates.h"
+#include "Engine/Nodes/Scene/SceneDrawFilter.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/ScenePayload.h"
 #include <pxr/base/gf/vec2d.h>
@@ -403,6 +404,13 @@ std::uint64_t getEngineBuildCount();
 std::uint64_t getEngineRenderCount();
 
 /**
+ * @brief Whether Storm renders write the ids of translucent prims into their primId plane, as
+ * they do unless turned off; for tests, to compare against Storm's own ids. Read when a render's
+ * ids are first decoded.
+ **/
+void setStormTranslucentIds(bool enabled);
+
+/**
  * @brief The thread count every Cycles session is made under, 0 for any: Cycles' task scheduler is
  * process-wide, and the first live session fixes it for all. It is the count asked for last, by a
  * USDRender render whose Request::threads changed or by a ProgressiveRender whose setThreads()
@@ -525,9 +533,29 @@ public:
         // is made again when the delegate does not show it restarted within a bound, as a loaded
         // machine may not.
         std::uint64_t engines = 0;
+        // Of those, the ones made again for that bound alone, which no edit asked for.
+        std::uint64_t unseenRemakes = 0;
         std::uint64_t frames = 0;
         // Why the delegate cannot render, empty if it can.
         std::string error;
+    };
+
+    // The lock that guards the stage's edits, as a pair of functions, so that its owner may hand
+    // out a shared hold of a reader-writer lock, or learn when the hold ends. The worker only
+    // tries it, polling, so tryAcquire must not block.
+    struct StageLock {
+        std::function<bool()> tryAcquire;
+        std::function<void()> release;
+
+        bool try_lock()
+        {
+            return tryAcquire();
+        }
+
+        void unlock()
+        {
+            release();
+        }
     };
 
     /**
@@ -541,6 +569,11 @@ public:
      * *stageLock is used once the destructor returns.
      **/
     ProgressiveRender(std::mutex* stageLock,
+                      const std::function<bool(SceneStageSnapshot*)>& snapshot,
+                      const std::function<void()>& listener,
+                      float background);
+
+    ProgressiveRender(const StageLock& stageLock,
                       const std::function<bool(SceneStageSnapshot*)>& snapshot,
                       const std::function<void()>& listener,
                       float background);
@@ -585,6 +618,21 @@ public:
 
     // The cap in force: the one set, or the delegate's default once its engine is made, else 0.
     int getMaxSamples() const;
+
+    /**
+     * @brief The viewer's draw rules, which the engine draws by from its next restart: what they
+     * hide leaves the frame. An engine made later starts from them. Different rules restart, the
+     * same ones change nothing.
+     **/
+    void setDrawRules(const SceneDrawFilter::Rules& rules);
+
+    void applyDrawDeltas(const std::vector<SceneDrawDelta>& deltas);
+
+    /**
+     * @brief Draws everything regardless of the draw rules while on, keeping them for when it is
+     * off again. Neither way makes the engine again.
+     **/
+    void setRenderEverything(bool on);
 
     // Pauses the delegate where it is, keeping its samples; resume() continues from them.
     void stop();

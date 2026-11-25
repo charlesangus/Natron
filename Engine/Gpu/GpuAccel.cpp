@@ -295,6 +295,24 @@ class GpuAccelRecorder {
 public:
     static VkCommandBuffer commandBuffer(GpuRecordContext& ctx) { return ctx.open_ ? ctx.cmd_ : VK_NULL_HANDLE; }
 
+    // Keeps what a recorded build reads or writes from being reused before the device retires the work.
+    static void touch(GpuRecordContext& ctx, const GpuBuffer& buffer) { ctx.touched_.push_back(buffer.buffer()); }
+
+    static void touch(GpuRecordContext& ctx, const GpuAccelStructure& structure)
+    {
+        if (structure) {
+            ctx.touched_.push_back(structure.storage_.vkBuffer());
+        }
+    }
+
+    static void touch(GpuRecordContext& ctx, const GpuTriangles& triangles)
+    {
+        touch(ctx, *triangles.vertices);
+        touch(ctx, *triangles.indices);
+    }
+
+    static void touch(GpuRecordContext& ctx, const GpuAabbs& boxes) { touch(ctx, *boxes.boxes); }
+
     static GpuStatus fail(GpuRecordContext& ctx, GpuStatus s)
     {
         if (s.result == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
@@ -369,6 +387,7 @@ public:
             ctx.accelScratch_ = scratch;
         }
         desc.info.scratchData.deviceAddress = alignUp(bufferAddress(dev, *scratch), alignment);
+        touch(ctx, *scratch);
         const VkAccelerationStructureBuildRangeInfoKHR* ranges = &desc.range;
         beforeBuild(cmd);
         fns.cmdBuild(cmd, 1, &desc.info, &ranges);
@@ -528,6 +547,7 @@ GpuBlas::buildWith(GpuRecordContext& ctx, GpuBufferPool& pool, const char* where
     if (GpuStatus s = GpuAccelRecorder::recordBuild(ctx, cmd, fns, desc, sizes.buildScratchBytes); !s) {
         return GpuAccelRecorder::fail(ctx, std::move(s));
     }
+    GpuAccelRecorder::touch(ctx, blas.structure_);
     if (options.allowCompaction) {
         GpuAccelRecorder::recordCompactedSizeQuery(cmd, fns, blas.structure_, blas.query_.handle());
         blas.sizeQueried_ = true;
@@ -543,7 +563,14 @@ GpuBlas::build(GpuRecordContext& ctx, GpuBufferPool& pool, const GpuTriangles& t
     const char* where = "GpuBlas::build";
     return buildWith(
         ctx, pool, where, options, triangles.vertexCount, triangles.triangleCount,
-        [&](GpuDevice& dev, BuildDesc& desc) { return describeTriangles(dev, where, triangles, options, desc); }, out);
+        [&](GpuDevice& dev, BuildDesc& desc) {
+            if (GpuStatus s = describeTriangles(dev, where, triangles, options, desc); !s) {
+                return s;
+            }
+            GpuAccelRecorder::touch(ctx, triangles);
+            return GpuStatus {};
+        },
+        out);
 }
 
 GpuStatus
@@ -556,7 +583,14 @@ GpuBlas::build(GpuRecordContext& ctx, GpuBufferPool& pool, const GpuAabbs& boxes
     fixed.allowUpdate = false;
     return buildWith(
         ctx, pool, where, fixed, 0, boxes.count,
-        [&](GpuDevice& dev, BuildDesc& desc) { return describeAabbs(dev, where, boxes, fixed, desc); }, out);
+        [&](GpuDevice& dev, BuildDesc& desc) {
+            if (GpuStatus s = describeAabbs(dev, where, boxes, fixed, desc); !s) {
+                return s;
+            }
+            GpuAccelRecorder::touch(ctx, boxes);
+            return GpuStatus {};
+        },
+        out);
 }
 
 GpuStatus
@@ -590,6 +624,8 @@ GpuBlas::refit(GpuRecordContext& ctx, const GpuTriangles& triangles)
     if (GpuStatus s = GpuAccelRecorder::recordBuild(ctx, cmd, fns, desc, updateScratchBytes_); !s) {
         return GpuAccelRecorder::fail(ctx, std::move(s));
     }
+    GpuAccelRecorder::touch(ctx, triangles);
+    GpuAccelRecorder::touch(ctx, structure_);
     // An update counts as a build: the compacting copy's destination has to be as large as the size queried after
     // the source's latest build, and an update may change it, so the size the build queried no longer holds.
     if (options_.allowCompaction && query_.handle() != VK_NULL_HANDLE) {
@@ -656,6 +692,8 @@ GpuBlas::compact(GpuRecordContext& ctx, GpuBufferPool& pool)
     beforeBuild(cmd);
     fns.cmdCopy(cmd, &ci);
     afterBuild(cmd);
+    GpuAccelRecorder::touch(ctx, structure_);
+    GpuAccelRecorder::touch(ctx, compacted);
     GpuAccelRecorder::retire(ctx, structure_);
     structure_ = std::move(compacted);
     GpuAccelRecorder::retire(ctx, query_);
@@ -766,6 +804,11 @@ namespace {
         desc.info.dstAccelerationStructure = structure.handle();
         if (GpuStatus s = GpuAccelRecorder::recordBuild(ctx, cmd, fns, desc, sizes.buildScratchBytes); !s) {
             return GpuAccelRecorder::fail(ctx, std::move(s));
+        }
+        GpuAccelRecorder::touch(ctx, *instanceBuffer);
+        GpuAccelRecorder::touch(ctx, structure);
+        for (const GpuAccelInstance& in : instances) {
+            GpuAccelRecorder::touch(ctx, in.blas->structure());
         }
         ctx.hold(std::move(instanceBuffer));
         out = std::move(structure);

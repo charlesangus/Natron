@@ -36,6 +36,8 @@
 
 NATRON_NAMESPACE_ENTER
 
+class VectorFollowControls;
+
 /**
  * @brief What a curve host adds to the curve list of its settings panel (RotoPanel): columns after
  * the built-in ones, and actions at the end of an item's context menu. An effect returns one from
@@ -75,6 +77,12 @@ public:
     virtual void onItemMenuActionTriggered(const std::string& /*actionId*/,
                                            const std::list<RotoItemPtr>& /*items*/)
     {
+    }
+
+    // The host's Follow Vectors group, for those that have one.
+    virtual VectorFollowControls* getVectorFollowControls() const
+    {
+        return nullptr;
     }
 };
 

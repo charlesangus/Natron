@@ -694,7 +694,7 @@ namespace {
 ImageLayerDesc
 outputMaskLayer()
 {
-    return ImageLayerDesc(kSplineWarpOutputMaskLayer, kSplineWarpOutputMaskLayer, "", std::vector<std::string>(1, kSplineWarpOutputMaskChannel));
+    return ImageLayerDesc(kSplineWarpOutputMaskLayer, std::vector<std::string>(1, kSplineWarpOutputMaskChannel));
 }
 
 bool

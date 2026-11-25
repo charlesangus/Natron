@@ -30,19 +30,19 @@ Generate one Natron shader node for each shader the bundled Cycles and MoonRay o
 
 ## Phase 350.1: Manifest
 
-- [ ] M350.P1.T1 — Define the manifest and generate MoonRay's
+- [x] M350.P1.T1 — Define the manifest and generate MoonRay's (06094ec78b)
   - files: `tools/shaders/generate_moonray_manifest.py`, `Engine/Nodes/Scene/Shaders/manifest/moonray.json`, `Engine/Nodes/docs/shader-manifest.md`
   - approach: define the schema: renderer, shader ID (`info:id`, the rdl2 class name), kind, attributes (name, type, default, enum values, linkable, group, comment), outputs, and `targets` (the targets a node supports, `cycles` or `moonray` here; generic kernel nodes later declare `kernel`). Nothing in the schema is shader-only: a kernel node's code template and a channel node's cook entry are later optional fields. Generate from the MoonRay source's class JSON including its includes. Skip `dso/displayfilter`. The manifest is committed, so builds need no renderer.
   - verify: a Python check run from `Tests/` loads the output; `DwaBaseMaterial` has about 170 attributes with its groups; no display filter is present; regeneration is byte-stable.
   - size: M
 
-- [ ] M350.P1.T2 — Generate Cycles' manifest
+- [x] M350.P1.T2 — Generate Cycles' manifest (06094ec78b)
   - files: `tools/shaders/dump_cycles_manifest.cpp`, `tools/shaders/CMakeLists.txt`, `Engine/Nodes/Scene/Shaders/manifest/cycles.json`
   - approach: a small program linked against the bundled Cycles walks the `NodeType` registry, keeps shader nodes and drops OSL, and writes the same schema with `cycles_<type>` IDs as hdCycles expects (`src/hydra/material.cpp`). It records every output socket.
   - verify: run in the image; Principled BSDF has about 33 inputs; an image texture lists Color and Alpha outputs; no OSL node is present; regeneration is byte-stable.
   - size: M
 
-- [ ] M350.P1.T3 — Curate Cycles groups and key ports
+- [x] M350.P1.T3 — Curate Cycles groups and key ports (06094ec78b)
   - files: `Engine/Nodes/Scene/Shaders/manifest/cycles_layout.json`, `Engine/Nodes/Scene/Shaders/manifest/moonray_layout.json`, `tools/shaders/check_manifest.py`
   - approach: a hand-written group table for every Cycles shader, and a key-port list for each shader of either renderer with more than 12 ports. `check_manifest.py` fails on a stale name in either table, and reports attributes that fall into "Other".
   - verify: `check_manifest.py` passes; removing an attribute from a test copy of the manifest makes it fail; the Principled BSDF's groups cover all its attributes.
@@ -104,3 +104,11 @@ Generate one Natron shader node for each shader the bundled Cycles and MoonRay o
 - 2026-11-17 — **One network data kind; targets, then port types (user):** `eDataKindNetwork` replaces `eDataKindShader`; contexts add no new kinds. Generic ops such as Add are one node usable in any container whose target it supports.
 - 2026-11-17 — **Houdini's target model, no lowering (user):** nodes declare supported targets; renderer builders show only renderer-native nodes (Cycles Math, not a generic Add), and nothing translates generic nodes into renderer nodes.
 - 2026-11-22 — **Port descriptor in the runtime spec (user, via M349 - Shader Node Spike):** ports are the single connection model; each input carries type, page and promoted state, and each output its name and type, so the graph needs no connection store of its own. Added as M350.P2.T6 (cat-plan).
+- 2026-11-25 (PM) — P1.T1-T3 in 06094ec78b, generated in the published image fea31bf10eb9466e (Cycles 18a83a2, openmoonray ee4955e).
+  - **MoonRay:** 125 shaders and 2628 attributes. DwaBaseMaterial has 106 attributes in 12 groups. The "about 170" in T1's verify was wrong; M349 found about 101.
+  - **Cycles:** 94 shaders and 575 attributes. The dump tool loads hdCycles.so's node registry and compiles against the same Cycles source.
+  - **Checks:** `check_manifest.py` passes and `ShaderManifestPython` is registered.
+  - **Decisions:**
+    - MoonRay's Test* classes are dropped from the manifest, since they aren't user shaders.
+    - The Cycles kinds stay shader/texture/displacement/utility.
+    - T4's drift check runs at image build: build-cycles.sh keeps the Cycles source the dump tool needs, and dev-image.yml runs check_manifest_drift.sh in the built image before pushing (option a).

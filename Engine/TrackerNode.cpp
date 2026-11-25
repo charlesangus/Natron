@@ -893,10 +893,13 @@ TrackerNode::buildOverlay(double time,
             // A black copy drawn at the same position, not a pen shadow: the shadow offset by a pixel
             // would show as a second outline.
             pen.setShadow(false);
-            pen.setSmoothLines(true);
             pen.setSmoothPoints(false);
             pen.pointSize(POINT_SIZE);
-            pen.lineWidth(1.5);
+            // The cross was an antialiased 1.5 px line drawn without blending, so every pixel the
+            // antialiased line touched came out opaque: a solid bar half a pixel wider on each side
+            // and half a pixel longer at each end. Filled boxes keep that weight.
+            const double crossHalfLength = CROSS_SIZE + 0.5;
+            const double crossHalfWidth = (1.5 + 1.) / 2.;
             for (int l = 0; l < 2; ++l) {
                 if (l == 0) {
                     pen.color(0., 0., 0., 1.);
@@ -904,7 +907,8 @@ TrackerNode::buildOverlay(double time,
                     pen.color(thisMarkerColor[0], thisMarkerColor[1], thisMarkerColor[2], 1.);
                 }
                 pen.point(x, y);
-                pen.anchoredShape(x, y, OverlayDrawList::AnchoredShape::cross(CROSS_SIZE));
+                pen.anchoredShape(x, y, OverlayDrawList::AnchoredShape::filledBox(crossHalfLength, crossHalfWidth));
+                pen.anchoredShape(x, y, OverlayDrawList::AnchoredShape::filledBox(crossHalfWidth, crossHalfLength));
             }
         } else {
             const QPointF center(centerKnob->getValueAtTime(time, 0),

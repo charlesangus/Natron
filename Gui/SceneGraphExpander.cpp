@@ -76,6 +76,19 @@ depthOf(const QString& path)
 {
     return (int)path.count(QLatin1Char('/'));
 }
+
+// QTreeView::expand() and collapse() with no relayout pending lay out the opened or closed row at
+// once and then run any relayout the model's row changes post (a fetch adds a loading row), every
+// expanded row and the header's sizes to contents included. With one pending they only record the
+// row, and the relayout runs once, after the slice.
+class LayoutDeferral
+    : public QTreeView {
+public:
+    static void schedule(QTreeView* tree)
+    {
+        (tree->*(&LayoutDeferral::scheduleDelayedItemsLayout))();
+    }
+};
 } // anonymous namespace
 
 struct SceneGraphExpander::Implementation {
@@ -142,6 +155,7 @@ struct SceneGraphExpander::Implementation {
             return false;
         }
         applying = true;
+        LayoutDeferral::schedule(tree);
         tree->expand(index);
         applying = false;
 
@@ -154,6 +168,7 @@ struct SceneGraphExpander::Implementation {
             return false;
         }
         applying = true;
+        LayoutDeferral::schedule(tree);
         tree->collapse(index);
         applying = false;
 

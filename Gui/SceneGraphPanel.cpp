@@ -1436,6 +1436,9 @@ struct SceneGraphPanel::Implementation {
     {
         bulkStatus->setText(SceneGraphExpander::progressText(progress));
         bulkStatus->setVisible(true);
+        if (!progress.running && (holdTopPath || restoreAll || !insertedUnder.isEmpty())) {
+            viewRestore.start();
+        }
         publishState();
     }
 
@@ -2533,6 +2536,11 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
         _imp->viewRestore.start();
     });
     QObject::connect(&_imp->viewRestore, &QTimer::timeout, this, [this]() {
+        // Each of the expander's reads adds and takes away a loading row; reopening every
+        // remembered row after each would make a wide run quadratic. Its end restores once.
+        if (_imp->expander && _imp->expander->isRunning()) {
+            return;
+        }
         _imp->restorePendingExpansion();
         _imp->restoreScroll();
     });

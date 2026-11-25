@@ -86,7 +86,7 @@ public:
     };
 
     // How long one slice may run for, in milliseconds; at least one row is handled per slice.
-    static constexpr int kSliceMs = 8;
+    static constexpr int kSliceMs = 12;
 
     /**
      * @brief Works on tree, whose model is model. expanded is the set of paths the panel remembers

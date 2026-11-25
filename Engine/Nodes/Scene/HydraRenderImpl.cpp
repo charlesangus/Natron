@@ -118,8 +118,8 @@
 #include "Engine/Nodes/Scene/Utility/WavefrontGpu.h"
 #include "Engine/RectI.h"
 #endif
-#include "Engine/TLSHolder.h"
 #include "Engine/Nodes/Scene/StormTextureBudget.h"
+#include "Engine/TLSHolder.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
 

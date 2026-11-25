@@ -286,6 +286,12 @@ void releaseAll();
 void releaseAllCpuEngines();
 
 /**
+ * @brief Drops every owner's stage and engine of a delegate other than Storm, waiting up to
+ * timeoutMs for their thread to have done so. False if it had not by then.
+ **/
+bool releaseAllCpuEnginesAndWait(int timeoutMs);
+
+/**
  * @brief The GPU memory, in bytes, the engines may hold together before the least recently used
  * ones other than the one rendering are dropped. Checked after each render.
  **/

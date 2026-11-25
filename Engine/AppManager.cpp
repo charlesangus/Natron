@@ -219,6 +219,8 @@ struct ShutdownState {
 
     std::mutex watchdogMutex;
     bool watchdogArmed = false;
+    // Unset while the watchdog is not armed, or is turned off.
+    std::optional<std::chrono::steady_clock::time_point> watchdogDeadline;
     std::atomic<const char*> stage { "quitting" };
 };
 
@@ -272,8 +274,10 @@ armShutdownWatchdog(const char* stage)
     if (seconds <= 0.) {
         return;
     }
-    std::thread([seconds]() {
-        std::this_thread::sleep_for(std::chrono::duration<double>(seconds));
+    const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(seconds));
+    state.watchdogDeadline = deadline;
+    std::thread([seconds, deadline]() {
+        std::this_thread::sleep_until(deadline);
         char line[512];
         int n = std::snprintf(line, sizeof(line), "Natron: shutdown stalled for %g s while %s; exiting with 124 (" kNatronShutdownWatchdogEnv " sets the limit)\n",
                               seconds, shutdownState().stage.load());
@@ -283,6 +287,22 @@ armShutdownWatchdog(const char* stage)
         }
         _exit(124);
     }).detach();
+}
+
+// The time left before the shutdown watchdog ends the process, at most capMs. capMs if it is not
+// armed or is turned off.
+int
+shutdownWatchdogRemainingMs(int capMs)
+{
+    ShutdownState& state = shutdownState();
+    std::lock_guard<std::mutex> k(state.watchdogMutex);
+
+    if (!state.watchdogDeadline) {
+        return capMs;
+    }
+    const long long remaining = std::chrono::duration_cast<std::chrono::milliseconds>(*state.watchdogDeadline - std::chrono::steady_clock::now()).count();
+
+    return (int)std::clamp<long long>(remaining, 0, capMs);
 }
 
 void
@@ -858,6 +878,25 @@ AppManager::~AppManager()
         // and the delegates' libraries unload at exit: the process ends here instead, the
         // caches already saved, without running static destructors or atexit handlers.
         qWarning("A viewer's render delegate did not stop; exiting without the rest of the teardown.");
+        std::fflush(nullptr);
+        std::_Exit(EXIT_FAILURE);
+    }
+
+    // The engines' delegates run threads and child processes of their own, which exit would cut
+    // short or leave running. Both waits fit in what the shutdown watchdog has left, less a margin,
+    // so the render processes are always ended before it fires and leaves them orphaned.
+    constexpr int kWatchdogMarginMs = 1000;
+    const auto teardownBudgetMs = [](int capMs) {
+        return std::max(0, shutdownWatchdogRemainingMs(capMs + kWatchdogMarginMs) - kWatchdogMarginMs);
+    };
+    setTeardownStage("releasing the render delegates' engines");
+    const bool enginesReleased = SceneCaches::releaseCpuRenderEnginesAndWait(teardownBudgetMs(10000));
+    setTeardownStage("waiting for MoonRay's render processes");
+    (void)MoonRayRuntime::endRenderProcesses(teardownBudgetMs(5500));
+    if (!enginesReleased) {
+        // The render thread is still releasing them, in OpenUSD and the delegates' libraries, which
+        // the rest of the teardown frees: as for a viewer's delegate above, the process ends here.
+        qWarning("A render delegate's engine was not released; exiting without the rest of the teardown.");
         std::fflush(nullptr);
         std::_Exit(EXIT_FAILURE);
     }

@@ -94,3 +94,4 @@ Today (origin/main): the row menu has Load, Load With Descendants and Unload ove
 
 - 2026-11-24 (user): button icons set aside; the bulk row keeps text buttons. Section headers keep the package-open (Load) and eye (Display) icons. Icon pitches are in .local/tmp/m556-icons/ (rounds 1-3) for a later pass.
 - 2026-11-24 — **Icon gaps (user):** the gate7 screenshot is approved: frameless section icons drawn on the background, with an even 8 px gap on each side.
+- 2026-11-24 (PM) — gate8/9 pinned-cancel failure: the pinned walk ran a second level before the cancel reached it (no renderer, cached payloads, so levels take milliseconds while the GUI thread sits in the script). Fix: the pinned worker holds each next level until the GUI thread has handled the last (serial released by the _loadsChanged callback); 6b977ac62's taken-not-serviced cancel is kept as a separate real gap. The viewer's walk has the same shape and passes only because its levels are slow; left as is.

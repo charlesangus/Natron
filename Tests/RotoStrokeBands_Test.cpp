@@ -155,6 +155,8 @@ protected:
             _stroke->appendPoint(i == 0, RotoPoint(x, y, pressure, 1. + 0.01 * i));
         }
         _stroke->setStrokeFinished();
+        // A RotoPaint stroke lives on its lifetime frame alone, which the paint interact sets.
+        _stroke->getLifeTimeFrameKnob()->setValue((int)kTime, ViewSpec::all(), 0);
         _stroke->getBrushSizeKnob()->setValue(48., ViewSpec::all(), 0);
         _stroke->getBrushSpacingKnob()->setValue(0.1, ViewSpec::all(), 0);
         _stroke->getOpacityKnob()->setValue(0.8, ViewSpec::all(), 0);

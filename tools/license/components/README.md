@@ -37,6 +37,8 @@ Natron binaries include components from the following libraries:
 * yaml-cpp (MIT) https://github.com/jbeder/yaml-cpp
 * FastNoise2 (MIT) https://github.com/Auburn/FastNoise2 -- the noise generators in libs/noise (CPU) and Engine/Gpu/Kernels/noisecore.slang (GPU) are ported from FastNoise2 at commit 721400f9560831be2fc9790be9b72c44bee7d33f
 * ONNX Runtime (MIT) https://github.com/microsoft/onnxruntime -- the official Linux x64 CPU release 1.31.1, shipped unmodified under lib/onnxruntime and loaded at run time by the AI nodes; its ThirdPartyNotices.txt, listing the components ONNX Runtime itself includes and their licences, ships beside it
+* LZF stream format (liblzf, BSD-2-Clause or GPL-2.0-or-later, Copyright Marc Alexander Lehmann) http://oldhome.schmorp.de/marc/liblzf.html -- Engine/Nodes/IO/LayeredDocs/Lzf.* is an independent implementation written from the liblzf stream format, to read Krita's compressed tiles; no liblzf code is copied
+* OpenRaster (specification, https://www.openraster.org), Adobe Photoshop File Format Specification, and GIMP's XCF specification (devel-docs/xcf.txt) -- the ORA, PSD/PSB and XCF readers in Engine/Nodes/IO/LayeredDocs are written from these format descriptions; no code from GIMP, Krita or Photoshop-related libraries is used
 
 Natron itself is GPL 2.0 or later. Because the raw nodes ported from darktable are GPL 3.0 or
 later, the Natron binaries as a whole are distributed under the terms of the GPL 3.0

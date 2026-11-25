@@ -50,6 +50,7 @@ namespace {
 const char kSeamFormat[] = "natron_seamtest";
 const char kSeamExtension[] = "nlseam";
 const char kPsdFormat[] = "natron_seampsd";
+const char kBuiltinPsdFormat[] = "natron_psd";
 
 const float kComposite[4] = { 0.25f, 0.5f, 0.75f, 1.f };
 
@@ -155,6 +156,18 @@ registerSeamFormat(const std::string& name,
     ASSERT_TRUE(LayeredDocs::registerFormat(format, &error)) << error;
 }
 
+// Re-registering keeps the format's slot, so it claims its extensions ahead of later formats again.
+void
+restoreBuiltinPsd()
+{
+    LayeredDocs::Format format;
+    format.name = kBuiltinPsdFormat;
+    format.extensions = { "psd", "psb", "pdd" };
+    format.read = LayeredDocs::readPsd;
+    std::string error;
+    EXPECT_TRUE(LayeredDocs::registerFormat(format, &error)) << error;
+}
+
 bool
 contains(const std::vector<std::string>& values,
          const std::string& value)
@@ -197,6 +210,7 @@ protected:
     {
         LayeredDocs::unregisterFormat(kSeamFormat);
         LayeredDocs::unregisterFormat(kPsdFormat);
+        restoreBuiltinPsd();
         OiioReadSupport::clearHeaderCache();
     }
 
@@ -352,6 +366,8 @@ TEST_F(LayeredDocsSeamTest, AFailedReadReportsTheFormatsError)
 
 TEST_F(LayeredDocsSeamTest, PsdResolvesToTheInTreeFormatThatClaimsIt)
 {
+    EXPECT_EQ(kBuiltinPsdFormat, OiioReadSupport::formatNameForExtension("psd"));
+    LayeredDocs::unregisterFormat(kBuiltinPsdFormat);
     EXPECT_TRUE(OiioReadSupport::formatNameForExtension("psd").empty());
     EXPECT_FALSE(contains(OiioReadSupport::readableExtensions(), "psd"));
 

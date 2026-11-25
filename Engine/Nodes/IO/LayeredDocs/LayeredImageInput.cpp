@@ -319,6 +319,12 @@ registerBuiltinFormats()
         ora.extensions = { "ora" };
         ora.read = readOra;
         registerFormat(ora, nullptr);
+
+        Format psd;
+        psd.name = "natron_psd";
+        psd.extensions = { "psd", "psb", "pdd" };
+        psd.read = readPsd;
+        registerFormat(psd, nullptr);
     });
 }
 

@@ -24,7 +24,7 @@
  *
  *   g++ -std=c++17 -O1 -I. tools/optics/check_lenses.cpp Engine/Optics/LensDatabase.cpp \
  *       Engine/Optics/ZemaxParser.cpp Engine/Optics/DatParser.cpp Engine/Optics/Prescription.cpp \
- *       Engine/Optics/BuiltinLenses.cpp Engine/Optics/Paraxial.cpp -lz -o <output>
+ *       Engine/Optics/BuiltinLenses.cpp Engine/Optics/Paraxial.cpp Engine/Optics/Glass.cpp -lz -o <output>
  *
  * usage: check_lenses <lenses.zmx.gz> <OpticsDatabase checkout>
  */

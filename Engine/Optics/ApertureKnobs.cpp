@@ -232,10 +232,8 @@ ApertureKnobs::create(KnobHolder* holder,
 } // ApertureKnobs::create
 
 ApertureParams
-ApertureKnobs::params(double time,
-                      ViewIdx view) const
+ApertureKnobs::params(const KnobReader& reader) const
 {
-    const KnobReader reader(time, view);
     ApertureParams p;
 
     p.sizeX = read(reader, _size, p.sizeX, 0);

@@ -251,6 +251,19 @@ bool rasteriseAperture(const ApertureParams& params,
                        int maxThreads,
                        const std::function<bool()>& aborted = std::function<bool()>());
 
+/**
+ * @brief The mask's transmission where a ray crossed the aperture stop, for stopX and stopY as
+ * TraceResult gives them (divided by the stop's semi-diameter). The mask's [-1, 1] square spans the
+ * stop's clear aperture, so a shape of size 1 reaches the stop's rim and the default 0.75 stops it
+ * down; +y is up in both, the mask's first row lying at stopY -1, with no flip. Bilinear between pixel
+ * centres, clamped to the edge pixels; 0 outside the square, where the stop itself blocks the ray, and
+ * for an empty mask.
+ **/
+float sampleApertureAtStop(const float* mask,
+                           const ApertureFrame& frame,
+                           double stopX,
+                           double stopY);
+
 } // namespace Optics
 
 NATRON_NAMESPACE_EXIT

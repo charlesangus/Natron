@@ -190,6 +190,20 @@ TEST(OpticsTrace, UseAsphericOffTracesTheVertexSphere)
     EXPECT_GT(std::fabs(aspheric.position.z - spherical.position.z), 1e-3);
 }
 
+// A CylinderX surface curves in y only, so a ray offset in x meets it at its vertex plane.
+TEST(OpticsTrace, UseAsphericOffKeepsCylinders)
+{
+    Prescription lens;
+    lens.surfaces.push_back(surface(SurfaceType::CylinderX, 50., 2., 20., 1.5, 60.));
+    lens.surfaces.push_back(surface(SurfaceType::Standard, 0., 50., 20.));
+    TraceSystem system(lens, kNoCatalogue, std::string(), 0., { kWavelengthDNm });
+    system.setUseAspheric(false);
+    const Ray ray { Vec3 { 10., 0., -2. }, Vec3 { 0., 0., 1. } };
+    SurfaceHit hit;
+    ASSERT_TRUE(system.intersect(0, ray, &hit));
+    EXPECT_NEAR(hit.position.z, 0., 1e-9);
+}
+
 TEST(OpticsTrace, TenSurfaceLensGhostPairs)
 {
     // Glass after surfaces 0, 2, 5, 7 and 8 (a different glass), so every surface but the stop

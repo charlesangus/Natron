@@ -31,8 +31,8 @@
 #include <string>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/Nodes/KnobReader.h"
 #include "Engine/Optics/Aperture.h"
-#include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -60,8 +60,7 @@ public:
                                 const std::string& labelPrefix,
                                 const ApertureKnobOptions& options = ApertureKnobOptions());
 
-    ApertureParams params(double time,
-                          ViewIdx view = ViewIdx(0)) const WARN_UNUSED_RETURN;
+    ApertureParams params(const KnobReader& reader) const WARN_UNUSED_RETURN;
 
 private:
     KnobDoubleWPtr _size;

@@ -40,6 +40,7 @@ CLANG_DIAG_OFF(uninitialized)
 CLANG_DIAG_ON(uninitialized)
 
 #include "Engine/EngineFwd.h"
+#include "Engine/Optics/LensKnobs.h"
 #include "Engine/Optics/Prescription.h"
 #include "Gui/GuiFwd.h"
 
@@ -58,10 +59,12 @@ class LensBrowser
 
 public:
     /**
-     * @brief Renders a preview of lens at size, on a worker thread. It returns early with any image once
-     * cancelled reads true, which happens when the selection changes or the browser closes.
+     * @brief Renders a preview of lens at size with the owning node's settings, on a worker thread. It
+     * returns early with any image once cancelled reads true, which happens when the selection or the
+     * context changes or the browser closes.
      **/
     using PreviewProvider = std::function<QImage(const Optics::Prescription& lens,
+                                                 const Optics::LensPreviewContext& context,
                                                  const QSize& size,
                                                  const std::atomic<bool>& cancelled)>;
 
@@ -69,15 +72,20 @@ public:
     static void addPreviewProvider(const QString& name,
                                    const PreviewProvider& provider);
 
-    // Opens a browser for lens, or raises the one already open for it.
-    static LensBrowser* open(const KnobStringPtr& lens);
+    // Opens a browser for lens, or raises the one already open for it and gives it context.
+    static LensBrowser* open(const KnobStringPtr& lens,
+                             const Optics::LensPreviewContext& context = Optics::LensPreviewContext());
 
     explicit LensBrowser(const KnobStringPtr& lens,
+                         const Optics::LensPreviewContext& context = Optics::LensPreviewContext(),
                          QWidget* parent = 0);
     virtual ~LensBrowser() OVERRIDE;
 
     // The id of the selected lens, or empty when none is.
     QString selectedId() const;
+
+    // Redraws the cross section and restarts every preview with context.
+    void setContext(const Optics::LensPreviewContext& context);
 
 public Q_SLOTS:
     void onSelectionChanged();

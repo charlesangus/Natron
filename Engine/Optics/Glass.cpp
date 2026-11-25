@@ -31,6 +31,7 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <mutex>
 #include <system_error>
 
 namespace Natron {
@@ -339,8 +340,16 @@ namespace Optics {
         return n2 > 0. ? std::sqrt(n2) : nd;
     }
 
+    const std::vector<std::string>&
+    bundledGlassVendors()
+    {
+        static const std::vector<std::string> vendors = { "Schott", "Ohara", "Hoya", "CDGM", "Hikari", "Sumita" };
+
+        return vendors;
+    }
+
     std::string
-    GlassCatalogue::defaultPath()
+    opticsResourcePath(const std::string& name)
     {
         std::error_code ec;
         const std::filesystem::path exe = std::filesystem::read_symlink("/proc/self/exe", ec);
@@ -348,7 +357,71 @@ namespace Optics {
             return std::string();
         }
 
-        return (exe.parent_path() / ".." / "Resources" / "optics" / "glass.json").lexically_normal().string();
+        return (exe.parent_path() / ".." / "Resources" / "optics" / name).lexically_normal().string();
+    }
+
+    std::string
+    GlassCatalogue::defaultPath()
+    {
+        return opticsResourcePath("glass.json");
+    }
+
+    namespace {
+
+        struct SharedCatalogue {
+            std::mutex mutex;
+            std::string path;
+            bool created = false;
+            std::once_flag loaded;
+            GlassCatalogue catalogue;
+            std::string error;
+        };
+
+        SharedCatalogue&
+        sharedCatalogue()
+        {
+            static SharedCatalogue shared;
+
+            return shared;
+        }
+
+    } // namespace
+
+    const GlassCatalogue&
+    GlassCatalogue::shared(std::string* error)
+    {
+        SharedCatalogue& s = sharedCatalogue();
+        std::call_once(s.loaded, [&s] {
+            std::string path;
+            {
+                std::lock_guard<std::mutex> lock(s.mutex);
+                s.created = true;
+                path = s.path.empty() ? defaultPath() : s.path;
+            }
+            if (path.empty()) {
+                s.error = "cannot locate the glass catalogue: the executable's path is unknown";
+            } else {
+                s.catalogue.load(path, &s.error);
+            }
+        });
+        if (error && !s.error.empty()) {
+            *error = s.error;
+        }
+
+        return s.catalogue;
+    }
+
+    bool
+    GlassCatalogue::setSharedPath(const std::string& path)
+    {
+        SharedCatalogue& s = sharedCatalogue();
+        std::lock_guard<std::mutex> lock(s.mutex);
+        if (s.created) {
+            return false;
+        }
+        s.path = path;
+
+        return true;
     }
 
     bool
@@ -431,6 +504,18 @@ namespace Optics {
     {
         for (const Glass& g : _glasses) {
             if (g.vendor == vendor && g.name == name) {
+                return &g;
+            }
+        }
+
+        return nullptr;
+    }
+
+    const Glass*
+    GlassCatalogue::findAnyVendor(const std::string& name) const
+    {
+        for (const Glass& g : _glasses) {
+            if (g.name == name) {
                 return &g;
             }
         }

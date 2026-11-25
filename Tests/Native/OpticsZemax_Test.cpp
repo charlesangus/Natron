@@ -30,6 +30,7 @@
 
 #include <gtest/gtest.h>
 
+#include "Engine/Optics/Glass.h"
 #include "Engine/Optics/Prescription.h"
 #include "Engine/Optics/ZemaxParser.h"
 
@@ -39,6 +40,7 @@ namespace {
 
 const char* const kTriplet = NATRON_TESTS_FIXTURES_DIR "/optics/cooke-triplet-50mm-f4.zmx";
 const char* const kZoom = NATRON_TESTS_FIXTURES_DIR "/optics/aspheric-zoom-position2.zmx";
+const char* const kGlassJson = NATRON_TESTS_FIXTURES_DIR "/../../Gui/Resources/Optics/glass.json";
 
 std::string
 readBytes(const char* path)
@@ -387,4 +389,31 @@ TEST(OpticsZemax, StopWithoutSemiDiameterIsAnError)
     zero.insert(zero.find("SURF 3"), "  DIAM 0\n");
     EXPECT_FALSE(parseZemax(zero, &lens, &error));
     EXPECT_EQ(error.line, 11);
+}
+
+TEST(OpticsZemax, NamedGlassIsLookedUpInTheCatalogue)
+{
+    // False once another test has loaded the shared catalogue; it is the bundled file either way.
+    GlassCatalogue::setSharedPath(kGlassJson);
+    std::string catalogueError;
+    ASSERT_FALSE(GlassCatalogue::shared(&catalogueError).glasses().empty()) << catalogueError;
+    const Glass* bk7 = GlassCatalogue::shared().find("Schott", "N-BK7");
+    ASSERT_NE(bk7, nullptr);
+
+    const std::string text = "SURF 0\n  DISZ INFINITY\n"
+                             "SURF 1\n  CURV 0.1\n  DISZ 2\n  GLAS N-BK7\n  DIAM 5\n"
+                             "SURF 2\n  STOP\n  DISZ 10\n  DIAM 4\n"
+                             "SURF 3\n  DISZ 0\n";
+    Prescription lens;
+    LensFileError error;
+    ASSERT_TRUE(parseZemax(text, &lens, &error)) << error.text();
+    ASSERT_EQ(lens.surfaces.size(), 2u);
+    EXPECT_DOUBLE_EQ(lens.surfaces[0].nd, bk7->nd);
+    EXPECT_DOUBLE_EQ(lens.surfaces[0].vd, bk7->vd);
+
+    std::string unknown = text;
+    unknown.replace(unknown.find("N-BK7"), 5, "NO-SUCH-GLASS");
+    EXPECT_FALSE(parseZemax(unknown, &lens, &error));
+    EXPECT_EQ(error.line, 6);
+    EXPECT_NE(error.message.find("NO-SUCH-GLASS"), std::string::npos) << error.message;
 }

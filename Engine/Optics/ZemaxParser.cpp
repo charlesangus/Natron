@@ -43,6 +43,7 @@
 #include <vector>
 
 #include "Engine/Optics/DatParser.h"
+#include "Engine/Optics/Glass.h"
 
 namespace Natron {
 namespace Optics {
@@ -429,8 +430,20 @@ namespace Optics {
                     return fail(error, lineNumber, "mirror surfaces are not supported");
                 }
                 if (parts.size() < 4) {
-                    return fail(error, lineNumber,
-                                "glass \"" + rest + "\" is a catalogue name; only \"___BLANK 1 0 nd Vd\" glasses are read");
+                    std::string catalogueError;
+                    const GlassCatalogue& catalogue = GlassCatalogue::shared(&catalogueError);
+                    const Glass* glass = parts.empty() ? nullptr : catalogue.findAnyVendor(parts[0]);
+                    if (!glass) {
+                        std::string message = "glass \"" + rest + "\" gives no nd and Vd and is not in the glass catalogue";
+                        if (!catalogueError.empty()) {
+                            message += " (" + catalogueError + ")";
+                        }
+
+                        return fail(error, lineNumber, message);
+                    }
+                    s.nd = glass->nd;
+                    s.vd = glass->vd;
+                    continue;
                 }
                 if (!number(3, "GLAS index", &s.nd)) {
                     return false;

@@ -9,12 +9,12 @@ StructuredBuffer<uint> tables;
 StructuredBuffer<float> imageBuf;
 RWStructuredBuffer<float> dstBuf;
 
-struct ApertureParams
+struct AperturePush
 {
     uint dstOffset;
     uint dstStride;
 };
-[[vk::push_constant]] ConstantBuffer<ApertureParams> pc;
+[[vk::push_constant]] ConstantBuffer<AperturePush> pc;
 
 // Optics::ApertureWord; GpuAperture.cpp asserts the two agree.
 static const uint kWidth = 0;

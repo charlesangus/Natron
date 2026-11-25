@@ -20,7 +20,7 @@
 #define NATRON_ENGINE_OPTICS_LENSDATABASE_H
 
 /*
- * The bundled lens database: the photographic lenses of OpticsDatabase (MIT, see
+ * The bundled lens database: 986 of the 1,041 photographic lenses of OpticsDatabase (MIT, see
  * Gui/Resources/Optics/LICENSE-OpticsDatabase.txt), stripped and gzipped into lenses.zmx.gz by
  * tools/optics/convert_lenses.py, plus the built-in prescriptions as the "Classic Designs" vendor.
  *

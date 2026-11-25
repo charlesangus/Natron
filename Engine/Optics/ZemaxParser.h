@@ -26,7 +26,8 @@
  *
  * Read: UNIT (MM, CM, IN or METER; lengths are converted to mm), NAME, NOTE and FNUM, and per
  * surface TYPE (STANDARD, EVENASPH, XASPHERE, XOSPHERE and the custom STOP, CYLINDER_X, CYLINDER_Y),
- * STOP, CURV, DISZ, GLAS ("<name> <a> <b> nd Vd ...", Vd defaulting to 60), DIAM (the clear
+ * STOP, CURV, DISZ, GLAS ("<name> <a> <b> nd Vd ...", Vd defaulting to 60, or a bare name looked up
+ * in GlassCatalogue::shared() under any vendor), DIAM (the clear
  * semi-diameter, required above 0 on the stop), CONI, PARM n (the coefficient of r^2n on EVENASPH)
  * and XDAT (1: the term count, 2: the normalisation radius, 3 onwards: the coefficients of rho^2,
  * rho^4, ... for XASPHERE and of rho, rho^2, ... for XOSPHERE), with no limit on the term count. An

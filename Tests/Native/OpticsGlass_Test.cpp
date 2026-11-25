@@ -22,10 +22,12 @@
 #include <Python.h>
 // ***** END PYTHON BLOCK *****
 
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -84,6 +86,21 @@ TEST_F(OpticsGlass, CatalogueLoadsAllSixVendors)
     const std::vector<std::string> expected = { "CDGM", "Hikari", "Hoya", "Ohara", "Schott", "Sumita" };
     EXPECT_EQ(vendors, expected);
     EXPECT_GT(c.glasses().size(), 1000u);
+}
+
+TEST_F(OpticsGlass, BundledVendorListMatchesTheCatalogue)
+{
+    std::vector<std::string> bundled = bundledGlassVendors();
+    std::sort(bundled.begin(), bundled.end());
+    EXPECT_EQ(catalogue().vendors(), bundled);
+}
+
+TEST_F(OpticsGlass, FindAnyVendorFindsTheGlassByName)
+{
+    const Glass* g = catalogue().findAnyVendor("N-BK7");
+    ASSERT_NE(g, nullptr);
+    EXPECT_EQ(std::string("Schott"), g->vendor);
+    EXPECT_EQ(catalogue().findAnyVendor("NO-SUCH-GLASS"), nullptr);
 }
 
 TEST_F(OpticsGlass, CommittedJsonIsUnderOneMegabyte)

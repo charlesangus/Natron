@@ -1313,11 +1313,11 @@ same controls with the same script names:
 | --- | --- | --- |
 | `lensModel` | choice | The node's own entries first (`LensKnobOptions::leadingModels`, such as a procedural lens), then Database and From File. |
 | `lens` | string | A `LensDatabase` id, `<vendor>/<file stem>`; the default is the caller's. Shown for Database. |
-| `lensBrowse` | button, "Browse…" | Opens the lens browser. Shown for Database. |
+| `lensBrowse` | button, "Lens Browse" | Opens the lens browser. Shown for Database. |
 | `lensFile` | file | A `.zmx` or `.dat` prescription. Shown for From File. |
 | `glassVendor` | choice | Schott, Ohara, Hoya, CDGM, Hikari, Sumita: the `glass.json` catalogue to match glasses in. |
 | `abbeOffset` | double, ±20 | Added to each Abbe number before matching. |
-| `useAspheric` | bool, on | Off traces aspheres as spheres. |
+| `useAspheric` | bool, on | Off traces aspheres as spheres; cylinders stay cylinders. |
 
 The node calls `LensKnobs::create()` in `initializeKnobs()`, forwards its
 `knobChanged()` to `LensKnobs::knobChanged()` (which keeps the visibility above
@@ -1327,10 +1327,13 @@ reports as its error: a lens file's parse error with its line, or a lens id the
 database lacks, named, with the knob keeping its value so the project still
 opens. The lens browser is a GUI dialog that the GUI installs through
 `LensKnobs::setBrowseHandler()`, so the engine and background renders never
-depend on it.
+depend on it. The browser's previews render with the node's glass vendor, Abbe
+offset and Use Aspheric, and with its aperture once the node passes its
+`ApertureKnobs` to `LensKnobs::setApertureKnobs()`; a node reads both sets of
+knobs through one `KnobReader` (`ApertureKnobs::params(reader)`).
 
-The database itself is `Optics::LensDatabase::shared()`: the photographic
-lenses of OpticsDatabase, bundled as `Gui/Resources/Optics/lenses.zmx.gz`
+The database itself is `Optics::LensDatabase::shared()`: 986 of the 1,041
+photographic lenses of OpticsDatabase, bundled as `Gui/Resources/Optics/lenses.zmx.gz`
 (see `Gui/Resources/Optics/README.md`), and the built-in prescriptions as "Classic Designs".
 
 ### AI nodes

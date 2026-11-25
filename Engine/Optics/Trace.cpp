@@ -384,10 +384,10 @@ namespace Optics {
             return intersectPlane(ray, l.vertexZ, hit);
         }
         const double radius = 1. / s.curvature;
-        if (_useAspheric && s.type == SurfaceType::CylinderX) {
+        if (s.type == SurfaceType::CylinderX) {
             return intersectQuadric(ray, l.centreZ, radius, 0., 1., hit);
         }
-        if (_useAspheric && s.type == SurfaceType::CylinderY) {
+        if (s.type == SurfaceType::CylinderY) {
             return intersectQuadric(ray, l.centreZ, radius, 1., 0., hit);
         }
 

@@ -1207,7 +1207,7 @@ GuiApplicationManager::initGui(const CLArgs& args)
     RotoLatencyProbe::startFromEnvironment();
     NodeCreationStageLog::startFromEnvironment();
 
-    Optics::LensKnobs::setBrowseHandler([](const KnobStringPtr& lens) { LensBrowser::open(lens); });
+    Optics::LensKnobs::setBrowseHandler([](const KnobStringPtr& lens, const Optics::LensPreviewContext& context) { LensBrowser::open(lens, context); });
 
     return exec();
 } // GuiApplicationManager::initGui

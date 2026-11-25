@@ -55,10 +55,23 @@ namespace Optics {
         double ior(double wavelengthNm) const;
     };
 
+    // The vendors of the bundled glass.json, in the order the glassVendor knob lists them.
+    const std::vector<std::string>& bundledGlassVendors();
+
+    // <directory of the running executable>/../Resources/optics/<name>, empty when the executable's
+    // path is unknown.
+    std::string opticsResourcePath(const std::string& name);
+
     class GlassCatalogue {
     public:
-        // <directory of the running executable>/../Resources/optics/glass.json.
+        // opticsResourcePath("glass.json").
         static std::string defaultPath();
+
+        // The catalogue nodes use, loaded once from defaultPath() unless setSharedPath() came first.
+        // Empty when that load failed; *error then gets the load's message.
+        static const GlassCatalogue& shared(std::string* error = nullptr);
+        // False, changing nothing, once shared() has been called.
+        static bool setSharedPath(const std::string& path);
 
         bool load(const std::string& path, std::string* error);
         // text is glass.json's content.
@@ -68,6 +81,8 @@ namespace Optics {
         // Sorted, without duplicates.
         std::vector<std::string> vendors() const;
         const Glass* find(const std::string& vendor, const std::string& name) const;
+        // The first glass of that name in vendor order.
+        const Glass* findAnyVendor(const std::string& name) const;
 
         // The vendor's glass with the least realflare score, sqrt(sum (1 - glass / target)^2) over
         // (nd, Vd); ties go to the first by name. Null when the vendor has no glasses.

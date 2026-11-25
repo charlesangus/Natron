@@ -70,6 +70,7 @@ namespace Optics {
         double rrel = 0.;
         // Where the ray crossed the stop, divided by the stop's semi-diameter. The parsers reject a
         // stop without one; a Prescription built in code with none reports the position in mm.
+        // sampleApertureAtStop() (Aperture.h) reads an aperture mask here.
         double stopX = 0.;
         double stopY = 0.;
         // The product of the reflectances at the two bounces; 1 for a sequential trace.
@@ -114,7 +115,7 @@ namespace Optics {
         double imagePlaneZ() const { return _imagePlaneZ; }
         void setImagePlaneZ(double z) { _imagePlaneZ = z; }
 
-        // Off traces aspheres as spheres of their vertex curvature and cylinders as spheres.
+        // Off traces aspheres as spheres of their vertex curvature; cylinders stay cylinders.
         bool useAspheric() const { return _useAspheric; }
         void setUseAspheric(bool use) { _useAspheric = use; }
 

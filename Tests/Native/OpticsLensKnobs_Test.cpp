@@ -45,6 +45,7 @@ NATRON_NAMESPACE_USING
 using Optics::LensKnobOptions;
 using Optics::LensKnobs;
 using Optics::LensModelOption;
+using Optics::LensPreviewContext;
 using Optics::Prescription;
 
 namespace {
@@ -111,7 +112,9 @@ TEST_F(OpticsLensKnobsTest, KnobsHaveTheirNamesAndDefaults)
     ASSERT_TRUE(bool(lens));
     EXPECT_EQ(std::string("Lens"), lens->getLabel());
     EXPECT_EQ(std::string("Classic Designs/dgauss50"), lens->getDefaultValue(0));
-    EXPECT_TRUE(bool(std::dynamic_pointer_cast<KnobButton>(effect->getKnobByName("lensBrowse"))));
+    KnobButtonPtr browse = std::dynamic_pointer_cast<KnobButton>(effect->getKnobByName("lensBrowse"));
+    ASSERT_TRUE(bool(browse));
+    EXPECT_EQ(std::string("Lens Browse"), browse->getLabel());
     KnobFilePtr file = std::dynamic_pointer_cast<KnobFile>(effect->getKnobByName("lensFile"));
     ASSERT_TRUE(bool(file));
     EXPECT_EQ(std::string("Lens File"), file->getLabel());
@@ -128,6 +131,7 @@ TEST_F(OpticsLensKnobsTest, KnobsHaveTheirNamesAndDefaults)
     EXPECT_EQ(0., abbe->getDefaultValue(0));
     EXPECT_EQ(-20., abbe->getMinimum(0));
     EXPECT_EQ(20., abbe->getMaximum(0));
+    EXPECT_FALSE(abbe->isAnimationEnabled());
 
     KnobBoolPtr aspheric = std::dynamic_pointer_cast<KnobBool>(effect->getKnobByName("useAspheric"));
     ASSERT_TRUE(bool(aspheric));
@@ -195,7 +199,7 @@ TEST_F(OpticsLensKnobsTest, BrowseCallsTheHandlerWithTheLensKnob)
     const LensKnobs knobs = LensKnobs::create(effect, addPage(effect));
 
     KnobStringPtr seen;
-    LensKnobs::setBrowseHandler([&seen](const KnobStringPtr& lens) {
+    LensKnobs::setBrowseHandler([&seen](const KnobStringPtr& lens, const LensPreviewContext&) {
         seen = lens;
         lens->setValue(std::string("Classic Designs/planar50"));
     });
@@ -204,4 +208,49 @@ TEST_F(OpticsLensKnobsTest, BrowseCallsTheHandlerWithTheLensKnob)
 
     EXPECT_EQ(knobs.lensKnob(), seen);
     EXPECT_EQ(std::string("Classic Designs/planar50"), knobs.lensKnob()->getValue());
+}
+
+TEST_F(OpticsLensKnobsTest, BrowsePassesTheNodeSettings)
+{
+    NodePtr node = createNode(_generatorPluginID);
+    ASSERT_TRUE(bool(node));
+    EffectInstance* effect = node->getEffectInstance().get();
+    const KnobPagePtr page = addPage(effect);
+    LensKnobs knobs = LensKnobs::create(effect, page);
+    knobs.setApertureKnobs(Optics::ApertureKnobs::create(effect, page, "aperture", "Aperture"));
+
+    KnobChoicePtr vendor = std::dynamic_pointer_cast<KnobChoice>(effect->getKnobByName("glassVendor"));
+    KnobDoublePtr abbe = std::dynamic_pointer_cast<KnobDouble>(effect->getKnobByName("abbeOffset"));
+    KnobBoolPtr aspheric = std::dynamic_pointer_cast<KnobBool>(effect->getKnobByName("useAspheric"));
+    KnobIntPtr blades = std::dynamic_pointer_cast<KnobInt>(effect->getKnobByName("apertureBlades"));
+    ASSERT_TRUE(bool(vendor));
+    ASSERT_TRUE(bool(abbe));
+    ASSERT_TRUE(bool(aspheric));
+    ASSERT_TRUE(bool(blades));
+    vendor->setValue(1);
+    abbe->setValue(-5.);
+    aspheric->setValue(false);
+    blades->setValue(7);
+
+    LensPreviewContext seen;
+    LensKnobs::setBrowseHandler([&seen](const KnobStringPtr&, const LensPreviewContext& context) { seen = context; });
+    EXPECT_TRUE(knobs.knobChanged(knobs.lensBrowseKnob().get()));
+    LensKnobs::setBrowseHandler(LensKnobs::BrowseHandler());
+
+    EXPECT_EQ(std::string("Ohara"), seen.glassVendor);
+    EXPECT_EQ(-5., seen.abbeOffset);
+    EXPECT_FALSE(seen.useAspheric);
+    ASSERT_TRUE(seen.aperture.has_value());
+    EXPECT_EQ(7, seen.aperture->blades);
+}
+
+TEST_F(OpticsLensKnobsTest, PreviewContextHasNoApertureWithoutApertureKnobs)
+{
+    NodePtr node = createNode(_generatorPluginID);
+    ASSERT_TRUE(bool(node));
+    EffectInstance* effect = node->getEffectInstance().get();
+    const LensKnobs knobs = LensKnobs::create(effect, addPage(effect));
+    const LensPreviewContext context = knobs.previewContext(KnobReader(0., ViewIdx(0)));
+    EXPECT_EQ(std::string("Schott"), context.glassVendor);
+    EXPECT_FALSE(context.aperture.has_value());
 }

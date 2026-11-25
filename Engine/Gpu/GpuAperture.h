@@ -16,7 +16,7 @@ struct GpuApertureView {
     uint32_t strideFloats = 0;
 };
 
-// Mirrors ApertureParams in Kernels/aperture.slang.
+// Mirrors AperturePush in Kernels/aperture.slang.
 struct GpuAperturePush {
     uint32_t dstOffset;
     uint32_t dstStride;

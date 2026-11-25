@@ -135,6 +135,38 @@ TEST(OpticsAperture, HexagonHasTheAnalyticArea)
     writeContact("default", mask, 512, 512);
 }
 
+// Rows are packed from the bottom: row 0 is { 0, 1 }, row 1 { 2, 3 }.
+TEST(OpticsAperture, StopSampleMapsTheStopOntoTheMask)
+{
+    const float mask[4] = { 0.f, 1.f, 2.f, 3.f };
+    ApertureFrame frame;
+    frame.width = 2;
+    frame.height = 2;
+    EXPECT_FLOAT_EQ(0.f, sampleApertureAtStop(mask, frame, -1., -1.));
+    EXPECT_FLOAT_EQ(1.f, sampleApertureAtStop(mask, frame, 1., -1.));
+    EXPECT_FLOAT_EQ(2.f, sampleApertureAtStop(mask, frame, -1., 1.));
+    EXPECT_FLOAT_EQ(3.f, sampleApertureAtStop(mask, frame, 1., 1.));
+    EXPECT_FLOAT_EQ(1.5f, sampleApertureAtStop(mask, frame, 0., 0.));
+    EXPECT_FLOAT_EQ(0.5f, sampleApertureAtStop(mask, frame, 0., -1.));
+    EXPECT_FLOAT_EQ(0.f, sampleApertureAtStop(mask, frame, 1.01, 0.));
+    EXPECT_FLOAT_EQ(0.f, sampleApertureAtStop(mask, frame, 0., -1.01));
+    EXPECT_FLOAT_EQ(0.f, sampleApertureAtStop(nullptr, frame, 0., 0.));
+}
+
+// The default hexagon has inradius 0.75 of the stop's semi-diameter and circumradius 0.866.
+TEST(OpticsAperture, StopSampleOfTheDefaultHexagon)
+{
+    const std::vector<float> mask = rasterise(ApertureParams(), 128, 128);
+    ApertureFrame frame;
+    frame.width = 128;
+    frame.height = 128;
+    EXPECT_NEAR(1., sampleApertureAtStop(mask.data(), frame, 0., 0.), 1e-6);
+    EXPECT_NEAR(1., sampleApertureAtStop(mask.data(), frame, 0.5, 0.), 1e-6);
+    EXPECT_NEAR(1., sampleApertureAtStop(mask.data(), frame, 0., -0.5), 1e-6);
+    EXPECT_NEAR(0., sampleApertureAtStop(mask.data(), frame, 0.95, 0.), 1e-6);
+    EXPECT_NEAR(0., sampleApertureAtStop(mask.data(), frame, 0., 0.95), 1e-6);
+}
+
 TEST(OpticsAperture, RotationKeepsTheArea)
 {
     ApertureParams params;
@@ -496,7 +528,7 @@ TEST_F(OpticsApertureKnobsTest, ParamsReflectEdits)
     EffectInstance* effect = node->getEffectInstance().get();
     const ApertureKnobs knobs = ApertureKnobs::create(effect, addPage(effect), "aperture", "Aperture");
 
-    const ApertureParams defaults = knobs.params(0.);
+    const ApertureParams defaults = knobs.params(KnobReader(0., ViewIdx(0)));
     const ApertureParams expected;
     EXPECT_EQ(expected.sizeX, defaults.sizeX);
     EXPECT_EQ(expected.blades, defaults.blades);
@@ -542,7 +574,7 @@ TEST_F(OpticsApertureKnobsTest, ParamsReflectEdits)
     ASSERT_TRUE(bool(blades));
     blades->setValue(9, ViewSpec::all(), 0);
 
-    const ApertureParams p = knobs.params(0.);
+    const ApertureParams p = knobs.params(KnobReader(0., ViewIdx(0)));
     EXPECT_EQ(0.5, p.sizeX);
     EXPECT_EQ(0.25, p.sizeY);
     EXPECT_EQ(9, p.blades);
@@ -591,7 +623,10 @@ TEST_F(OpticsApertureKnobsTest, OmittedKnobsAreLeftToTheCaller)
     EXPECT_TRUE(bool(effect->getKnobByName("irisSize")));
     EXPECT_TRUE(bool(effect->getKnobByName("irisRoundness")));
 
-    const ApertureParams p = knobs.params(0.);
+    const KnobReader reader(0., ViewIdx(0));
+    const ApertureParams p = knobs.params(reader);
+    // The caller's reader counts every value read: 31 controls less the two omitted.
+    EXPECT_EQ(29, reader.readCount());
     EXPECT_EQ(ApertureParams().blades, p.blades);
     EXPECT_EQ(ApertureParams().rotation, p.rotation);
 }

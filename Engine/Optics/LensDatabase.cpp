@@ -20,7 +20,6 @@
 
 #include <algorithm>
 #include <cctype>
-#include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <sstream>
@@ -28,6 +27,7 @@
 
 #include <zlib.h>
 
+#include "Engine/Optics/Glass.h"
 #include "Engine/Optics/Paraxial.h"
 #include "Engine/Optics/ZemaxParser.h"
 
@@ -145,13 +145,7 @@ namespace Optics {
     std::string
     LensDatabase::defaultPath()
     {
-        std::error_code ec;
-        const std::filesystem::path exe = std::filesystem::read_symlink("/proc/self/exe", ec);
-        if (ec) {
-            return std::string();
-        }
-
-        return (exe.parent_path() / ".." / "Resources" / "optics" / "lenses.zmx.gz").lexically_normal().string();
+        return opticsResourcePath("lenses.zmx.gz");
     }
 
     LensDatabase&

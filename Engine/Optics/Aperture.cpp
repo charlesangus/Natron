@@ -722,6 +722,27 @@ rasteriseAperture(const ApertureParams& params,
     return !stopped.load();
 }
 
+float
+sampleApertureAtStop(const float* mask,
+                     const ApertureFrame& frame,
+                     double stopX,
+                     double stopY)
+{
+    if (!mask || frame.width <= 0 || frame.height <= 0 || !(std::fabs(stopX) <= 1.) || !(std::fabs(stopY) <= 1.)) {
+        return 0.f;
+    }
+    const double px = std::clamp((stopX + 1.) * 0.5 * frame.width - 0.5, 0., (double)(frame.width - 1));
+    const double py = std::clamp((stopY + 1.) * 0.5 * frame.height - 0.5, 0., (double)(frame.height - 1));
+    const int x0 = (int)px, y0 = (int)py;
+    const int x1 = std::min(x0 + 1, frame.width - 1), y1 = std::min(y0 + 1, frame.height - 1);
+    const double fx = px - x0, fy = py - y0;
+    const auto at = [&](int x, int y) { return (double)mask[(std::size_t)y * frame.width + x]; };
+    const double bottom = at(x0, y0) + (at(x1, y0) - at(x0, y0)) * fx;
+    const double top = at(x0, y1) + (at(x1, y1) - at(x0, y1)) * fx;
+
+    return (float)(bottom + (top - bottom) * fy);
+}
+
 } // namespace Optics
 
 NATRON_NAMESPACE_EXIT

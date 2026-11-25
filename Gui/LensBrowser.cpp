@@ -233,8 +233,10 @@ public:
         setMinimumSize(480, 260);
     }
 
-    void setLens(const Prescription* lens)
+    void setLens(const Prescription* lens,
+                 const Optics::LensPreviewContext& context)
     {
+        _context = context;
         _elements.clear();
         _stops.clear();
         _rays.clear();
@@ -297,8 +299,9 @@ protected:
 private:
     void build(const Prescription& lens)
     {
-        const Optics::GlassCatalogue noCatalogue;
-        Optics::TraceSystem system(lens, noCatalogue, std::string(), 0., std::vector<double>(1, Optics::kWavelengthDNm));
+        Optics::TraceSystem system(lens, Optics::GlassCatalogue::shared(), _context.glassVendor, _context.abbeOffset,
+                                   std::vector<double>(1, Optics::kWavelengthDNm));
+        system.setUseAspheric(_context.useAspheric);
         const std::vector<Optics::SurfaceLayout> layout = lens.layout();
         const int n = (int)lens.surfaces.size();
         _minZ = 0.;
@@ -359,6 +362,7 @@ private:
     std::vector<QPolygonF> _elements;
     std::vector<std::pair<double, double>> _stops;
     std::vector<RayPath> _rays;
+    Optics::LensPreviewContext _context;
     double _minZ = 0.;
     double _maxZ = 1.;
     double _imageZ = 1.;
@@ -392,6 +396,7 @@ formatted(double value,
 
 struct LensBrowserPrivate {
     KnobStringWPtr lens;
+    Optics::LensPreviewContext context;
     LensDatabase* database = 0;
     QStandardItemModel* model = 0;
     LensFilterModel* filter = 0;
@@ -421,13 +426,15 @@ LensBrowser::addPreviewProvider(const QString& name,
 }
 
 LensBrowser*
-LensBrowser::open(const KnobStringPtr& lens)
+LensBrowser::open(const KnobStringPtr& lens,
+                  const Optics::LensPreviewContext& context)
 {
     std::vector<QPointer<LensBrowser>>& browsers = openBrowsers();
     browsers.erase(std::remove_if(browsers.begin(), browsers.end(), [](const QPointer<LensBrowser>& b) { return b.isNull(); }),
                    browsers.end());
     for (const QPointer<LensBrowser>& b : browsers) {
         if (b->_imp->lens.lock() == lens) {
+            b->setContext(context);
             b->show();
             b->raise();
             b->activateWindow();
@@ -441,7 +448,7 @@ LensBrowser::open(const KnobStringPtr& lens)
             parent = app->getGui();
         }
     }
-    LensBrowser* browser = new LensBrowser(lens, parent);
+    LensBrowser* browser = new LensBrowser(lens, context, parent);
     browser->setAttribute(Qt::WA_DeleteOnClose);
     browsers.push_back(browser);
     browser->show();
@@ -450,11 +457,13 @@ LensBrowser::open(const KnobStringPtr& lens)
 }
 
 LensBrowser::LensBrowser(const KnobStringPtr& lens,
+                         const Optics::LensPreviewContext& context,
                          QWidget* parent)
     : QDialog(parent)
     , _imp(new LensBrowserPrivate)
 {
     _imp->lens = lens;
+    _imp->context = context;
     _imp->database = &LensDatabase::shared();
     setObjectName(QString::fromUtf8("LensBrowser"));
     setWindowTitle(tr("Lens Browser"));
@@ -690,6 +699,16 @@ LensBrowser::selectedId() const
 }
 
 void
+LensBrowser::setContext(const Optics::LensPreviewContext& context)
+{
+    _imp->context = context;
+    for (PreviewTab& tab : _imp->previews) {
+        tab.lensId.clear();
+    }
+    onSelectionChanged();
+}
+
+void
 LensBrowser::onVendorChanged()
 {
     QTreeWidgetItem* item = _imp->vendors->currentItem();
@@ -741,17 +760,18 @@ LensBrowser::onSelectionChanged()
         tab.cancelled = std::make_shared<std::atomic<bool>>(false);
         const std::shared_ptr<std::atomic<bool>> cancelled = tab.cancelled;
         const PreviewProvider provider = tab.provider;
+        const Optics::LensPreviewContext context = _imp->context;
         const QSize size = tab.label->size().expandedTo(QSize(256, 256));
-        tab.watcher->setFuture(QtConcurrent::run([provider, lens, size, cancelled]() { return provider(lens, size, *cancelled); }));
+        tab.watcher->setFuture(QtConcurrent::run([provider, lens, context, size, cancelled]() { return provider(lens, context, size, *cancelled); }));
     }
 
     if (!info) {
-        _imp->diagram->setLens(0);
+        _imp->diagram->setLens(0, _imp->context);
         _imp->details->clear();
 
         return;
     }
-    _imp->diagram->setLens(loaded ? &lens : 0);
+    _imp->diagram->setLens(loaded ? &lens : 0, _imp->context);
 
     QString text;
     text += QString::fromUtf8("<b>%1</b><br/>").arg(QString::fromStdString(info->name).toHtmlEscaped());

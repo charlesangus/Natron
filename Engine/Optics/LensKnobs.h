@@ -28,11 +28,14 @@
 #include "Global/Macros.h"
 
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/KnobReader.h"
+#include "Engine/Optics/Aperture.h"
+#include "Engine/Optics/ApertureKnobs.h"
 #include "Engine/Optics/Prescription.h"
 
 NATRON_NAMESPACE_ENTER
@@ -58,6 +61,16 @@ struct LensKnobOptions {
     std::string defaultLens = "Classic Designs/dgauss50";
 };
 
+// The owning node's trace settings, which the lens browser's previews render with.
+struct LensPreviewContext {
+    // A GlassCatalogue vendor name.
+    std::string glassVendor = "Schott";
+    double abbeOffset = 0.;
+    bool useAspheric = true;
+    // Unset when the node has no aperture controls.
+    std::optional<ApertureParams> aperture;
+};
+
 /**
  * @brief The lens selection knobs nodes share: lensModel, lens with its lensBrowse button, lensFile,
  * glassVendor, abbeOffset and useAspheric, added to the page in that order. lens and lensBrowse show
@@ -69,8 +82,9 @@ struct LensKnobOptions {
  **/
 class LensKnobs {
 public:
-    // Called on the main thread with the node's lens knob; writes the chosen id into it.
-    using BrowseHandler = std::function<void(const KnobStringPtr& lens)>;
+    // Called on the main thread with the node's lens knob and its settings at the current time; writes
+    // the chosen id into the lens knob.
+    using BrowseHandler = std::function<void(const KnobStringPtr& lens, const LensPreviewContext& context)>;
 
     static LensKnobs create(KnobHolder* holder,
                             const KnobPagePtr& page,
@@ -96,6 +110,10 @@ public:
     double abbeOffset(const KnobReader& reader) const WARN_UNUSED_RETURN;
     bool useAspheric(const KnobReader& reader) const WARN_UNUSED_RETURN;
 
+    // Lets previewContext() include the node's aperture.
+    void setApertureKnobs(const ApertureKnobs& aperture) { _aperture = aperture; }
+    LensPreviewContext previewContext(const KnobReader& reader) const WARN_UNUSED_RETURN;
+
     // Refreshes visibility for lensModel and runs the browse handler for lensBrowse; true when k is one of these knobs.
     bool knobChanged(KnobI* k) const;
     // Shows lens, lensBrowse and lensFile for the active model; knobChanged() calls it.
@@ -114,6 +132,7 @@ private:
     KnobChoiceWPtr _glassVendor;
     KnobDoubleWPtr _abbeOffset;
     KnobBoolWPtr _useAspheric;
+    std::optional<ApertureKnobs> _aperture;
 };
 
 } // namespace Optics

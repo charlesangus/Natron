@@ -33,6 +33,7 @@
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/KnobReader.h"
+#include "Engine/Optics/Glass.h"
 #include "Engine/Optics/LensDatabase.h"
 #include "Engine/Optics/ZemaxParser.h"
 #include "Engine/Project.h"
@@ -42,8 +43,6 @@ NATRON_NAMESPACE_ENTER
 namespace Optics {
 
 namespace {
-
-    const char* const kGlassVendors[] = { "Schott", "Ohara", "Hoya", "CDGM", "Hikari", "Sumita" };
 
     LensKnobs::BrowseHandler&
     browseHandler()
@@ -74,7 +73,7 @@ LensKnobs::create(KnobHolder* holder,
             entries.push_back(ChoiceOption(o.id, o.label, o.hint));
         }
         entries.push_back(ChoiceOption(kLensModelDatabase, tr("Database"),
-                                       tr("A lens from the bundled lens database, chosen with Browse…")));
+                                       tr("A lens from the bundled lens database, chosen with Lens Browse.")));
         entries.push_back(ChoiceOption(kLensModelFromFile, tr("From File"),
                                        tr("A Zemax (.zmx) or pbrt (.dat) lens prescription file.")));
         int defaultIndex = 0;
@@ -95,14 +94,14 @@ LensKnobs::create(KnobHolder* holder,
     {
         KnobStringPtr lens = AppManager::createKnob<KnobString>(holder, tr("Lens"));
         lens->setName("lens");
-        lens->setHintToolTip(tr("The id of the database lens, \"<vendor>/<name>\". Browse… picks one from the lens browser."));
+        lens->setHintToolTip(tr("The id of the database lens, \"<vendor>/<name>\". Lens Browse picks one from the lens browser."));
         lens->setDefaultValue(options.defaultLens);
         lens->setAnimationEnabled(false);
         lens->setAddNewLine(false);
         page->addKnob(lens);
         knobs._lens = lens;
 
-        KnobButtonPtr browse = AppManager::createKnob<KnobButton>(holder, tr("Browse…"));
+        KnobButtonPtr browse = AppManager::createKnob<KnobButton>(holder, tr("Lens Browse"));
         browse->setName("lensBrowse");
         browse->setHintToolTip(tr("Opens the lens browser to pick a database lens."));
         browse->setEvaluateOnChange(false);
@@ -121,7 +120,7 @@ LensKnobs::create(KnobHolder* holder,
     }
     {
         std::vector<ChoiceOption> entries;
-        for (const char* vendor : kGlassVendors) {
+        for (const std::string& vendor : bundledGlassVendors()) {
             entries.push_back(ChoiceOption(vendor, vendor, std::string()));
         }
         KnobChoicePtr vendor = AppManager::createKnob<KnobChoice>(holder, tr("Glass Vendor"));
@@ -144,13 +143,15 @@ LensKnobs::create(KnobHolder* holder,
         abbe->setDisplayMinimum(-20.);
         abbe->setDisplayMaximum(20.);
         abbe->setDefaultValue(0.);
+        abbe->setAnimationEnabled(false);
         page->addKnob(abbe);
         knobs._abbeOffset = abbe;
     }
     {
         KnobBoolPtr aspheric = AppManager::createKnob<KnobBool>(holder, tr("Use Aspheric"));
         aspheric->setName("useAspheric");
-        aspheric->setHintToolTip(tr("When off, aspheric surfaces are traced as spheres of the same curvature."));
+        aspheric->setHintToolTip(tr("When off, aspheric surfaces are traced as spheres of the same curvature. Cylindrical surfaces stay "
+                                    "cylindrical either way."));
         aspheric->setDefaultValue(true);
         aspheric->setAnimationEnabled(false);
         page->addKnob(aspheric);
@@ -191,7 +192,7 @@ LensKnobs::resolve(const KnobReader& reader,
     if (which == kLensModelDatabase) {
         const std::string id = reader.value(_lens);
         if (id.empty()) {
-            *error = tr("No lens is chosen: pick one with Browse…");
+            *error = tr("No lens is chosen: pick one with Lens Browse.");
 
             return false;
         }
@@ -248,6 +249,20 @@ LensKnobs::useAspheric(const KnobReader& reader) const
     return reader.value(_useAspheric);
 }
 
+LensPreviewContext
+LensKnobs::previewContext(const KnobReader& reader) const
+{
+    LensPreviewContext context;
+    context.glassVendor = glassVendor(reader);
+    context.abbeOffset = abbeOffset(reader);
+    context.useAspheric = useAspheric(reader);
+    if (_aperture) {
+        context.aperture = _aperture->params(reader);
+    }
+
+    return context;
+}
+
 bool
 LensKnobs::knobChanged(KnobI* k) const
 {
@@ -262,7 +277,8 @@ LensKnobs::knobChanged(KnobI* k) const
     if (k == _browse.lock().get()) {
         KnobStringPtr lens = _lens.lock();
         if (lens && browseHandler()) {
-            browseHandler()(lens);
+            const KnobReader reader(lens->getCurrentTime(), lens->getCurrentView());
+            browseHandler()(lens, previewContext(reader));
         }
 
         return true;

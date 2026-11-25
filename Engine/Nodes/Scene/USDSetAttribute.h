@@ -98,6 +98,7 @@ private:
                              bool originatedFromMainThread) OVERRIDE FINAL;
     virtual void onKnobsAboutToBeLoaded(const Serialization::NodeSerializationPtr& serialization) OVERRIDE FINAL;
     virtual void onKnobsLoaded() OVERRIDE FINAL;
+    virtual void onInputChanged(int inputNo) OVERRIDE FINAL;
     virtual StatusEnum renderScene(const SceneRenderActionArgs& args,
                                    ScenePayload* outputScene,
                                    std::string* errorMessage) OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -107,16 +108,22 @@ private:
     // Replaces the Value knob with one for the selected type, when it is not the one built.
     void rebuildValueKnob();
 
+    // Looks the attribute up on the input's stage on a worker; a found, supported type becomes the Value Type.
+    void startTypeLookup();
+
     PrimSelector _primPattern;
     KnobStringWPtr _attributeName;
     KnobChoiceWPtr _valueType;
     KnobBoolWPtr _primvar;
     KnobPageWPtr _page;
+    PrimPatternCache _matches;
     mutable std::mutex _lock;
     // Under _lock: renders read them while the main thread rebuilds.
     std::string _builtType;
     KnobIPtr _value;
     std::atomic<bool> _guiRefreshPending;
+    // Drops the result of a lookup an edit has since superseded.
+    std::atomic<int> _lookupGeneration;
 };
 
 NATRON_NAMESPACE_EXIT

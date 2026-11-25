@@ -314,6 +314,14 @@ public:
     {
     }
 
+    /**
+     * @brief Called before a project reset or close destroys the nodes, while they are all still
+     * alive: work running off the main thread on them must have stopped when it returns.
+     **/
+    virtual void aboutToDestroyProjectNodes()
+    {
+    }
+
     virtual void setupViewersForViews(const std::vector<std::string>& /*viewNames*/)
     {
     }
@@ -532,6 +540,12 @@ public:
     virtual NodePtr getActiveViewerNode() const;
 
     /**
+     * @brief The viewers the user has worked in, the most recently active first. Without a GUI,
+     * just getActiveViewerNode(). Main thread.
+     **/
+    virtual std::list<NodePtr> getViewerNodesByRecentActivity() const;
+
+    /**
      * @brief For a render thread, which cannot ask the GUI which viewer is active. With no active viewer recorded, as
      * in background mode, every viewer counts. The node is only compared, never dereferenced, so it may be stale.
      **/
@@ -687,6 +701,13 @@ public Q_SLOTS:
 Q_SIGNALS:
 
     void pluginsPopulated();
+
+    /**
+     * @brief Emitted by EffectInstance::evaluate() for a change that calls for a new render of a
+     * node and of what is downstream of it, made by the user, a script or the node itself. From
+     * whichever thread evaluates, usually the main thread.
+     **/
+    void nodeEvaluated();
 
 protected:
     virtual void onGroupCreationFinished(const NodePtr& node, const Serialization::NodeSerializationPtr& serialization, bool autoConnect);

@@ -168,6 +168,8 @@
 #include "Engine/Nodes/NodeSpec.h"
 #include "Engine/Nodes/Scene/MoonRayRuntime.h"
 #include "Engine/Nodes/Scene/SceneCaches.h"
+#include "Engine/Nodes/Scene/SceneNodeKnobs.h"
+#include "Engine/Nodes/Scene/SceneTeardown.h"
 #include "Engine/Nodes/Test/OverlayImageGuiTestNode.h"
 #include "Engine/Nodes/Test/OverlayTestNode.h"
 
@@ -819,6 +821,15 @@ AppManager::~AppManager()
             appsEmpty = _imp->_appInstances.empty();
         }
     }
+
+    // The nodes are gone, so every scene job is cancelled; they read the caches, Python and the
+    // QApplication torn down below. Bounded: a job stuck past it is left to the process exit.
+    setTeardownStage("waiting for the scene workers");
+    SceneWorker::joinAll(5000);
+
+    // What the closed projects let go of still uses OpenUSD, the caches and the plug-ins' libraries.
+    setTeardownStage("closing the released scenes");
+    SceneTeardown::shutdown();
 
     for (PluginsMap::iterator it = _imp->_plugins.begin(); it != _imp->_plugins.end(); ++it) {
         for (PluginVersionsOrdered::reverse_iterator itver = it->second.rbegin(); itver != it->second.rend(); ++itver) {
@@ -4791,6 +4802,21 @@ PythonGILUnlocker::~PythonGILUnlocker()
 #if PY_VERSION_HEX >= 0x030400F0
     assert(PyGILState_Check()); // Not available prior to Python 3.4
 #endif
+}
+
+PythonUnlockedWhileWaiting::PythonUnlockedWhileWaiting()
+    : _state(nullptr)
+{
+    if (Py_IsInitialized() && PyGILState_Check()) {
+        _state = PyEval_SaveThread();
+    }
+}
+
+PythonUnlockedWhileWaiting::~PythonUnlockedWhileWaiting()
+{
+    if (_state) {
+        PyEval_RestoreThread(_state);
+    }
 }
 
 static bool

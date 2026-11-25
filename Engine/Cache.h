@@ -1287,7 +1287,11 @@ private:
     } // createInternal
 
 public:
-
+    /**
+     * @brief Puts newEntry, a grown copy of entryToBeEvicted, in its place. When entryToBeEvicted is gone and another
+     * entry with its key and params took its place, that entry stays and newEntry is not cached: two copies would cost
+     * twice the memory and lookups would only find the first.
+     **/
     void swapOrInsert(const EntryTypePtr& entryToBeEvicted,
                       const EntryTypePtr& newEntry)
     {
@@ -1299,23 +1303,34 @@ public:
         QMutexLocker locker(&_lock);
 
         const typename EntryType::key_type& key = entryToBeEvicted->getKey();
-        const auto isEntryToBeEvicted = [&key, &entryToBeEvicted](const StoredEntryPtr& stored) {
+        const auto isEntryToBeEvicted = [&entryToBeEvicted](const StoredEntryPtr& stored) {
+            return stored == entryToBeEvicted;
+        };
+        const auto isSuccessor = [&key, &entryToBeEvicted](const StoredEntryPtr& stored) {
             const EntryTypePtr typed = std::dynamic_pointer_cast<EntryType>(stored);
 
-            return typed && (typed->getKey() == key) && (typed->getParams() == entryToBeEvicted->getParams());
+            return typed && (typed->getKey() == key) && (*typed->getParams() == *entryToBeEvicted->getParams());
         };
         typename EntryType::hash_type hash = entryToBeEvicted->getHashKey();
+        if (_scoredEviction) {
+            markUsed(*newEntry);
+        }
         ///find a matching value in the internal memory container
         CacheIterator memoryCached = _memoryCache(hash);
         if ( memoryCached != _memoryCache.end() ) {
             std::list<StoredEntryPtr>& ret = getValueFromIterator(memoryCached);
             for (typename std::list<StoredEntryPtr>::iterator it = ret.begin(); it != ret.end(); ++it) {
                 if (isEntryToBeEvicted(*it)) {
-                    ret.erase(it);
-                    break;
+                    *it = newEntry;
+
+                    return;
                 }
             }
-            ///Append it
+            for (typename std::list<StoredEntryPtr>::iterator it = ret.begin(); it != ret.end(); ++it) {
+                if (isSuccessor(*it)) {
+                    return;
+                }
+            }
             ret.push_back(newEntry);
         } else {
             ///Look in disk cache

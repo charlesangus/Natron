@@ -69,6 +69,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Engine/Settings.h"
 #include "Engine/Texture.h"
 #include "Engine/Timer.h" // for gettimeofday
+#include "Engine/Transform.h"
 #include "Engine/Utils.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
@@ -1370,6 +1371,8 @@ ViewerGL::drawPersistentMessage()
 void
 ViewerGL::initializeGL()
 {
+    // How many contexts the widget was initialised in: a dock or split that recreates it adds one.
+    setProperty("natronGlInitCount", property("natronGlInitCount").toInt() + 1);
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
     appPTR->initializeOpenGLFunctionsOnce();
@@ -1387,10 +1390,10 @@ ViewerGL::initializeGL()
         });
         QObject::disconnect(_imp->handoffContextConnection);
         _imp->handoffContextConnection = QObject::connect(glContext, &QOpenGLContext::aboutToBeDestroyed, this, [this]() {
+            // Left current: the slots after this one need the dying context current (see GLContextLoss).
             if (_imp->handoff) {
                 makeCurrent();
                 _imp->handoff->release();
-                doneCurrent();
             }
         });
         prepareHandoffAhead();
@@ -3913,6 +3916,56 @@ ViewerGL::renderText(double x,
     renderText(x, y, QString::fromUtf8( string.c_str() ), c, font(), flags);
 
     return true;
+}
+
+bool
+ViewerGL::renderViewportText(double x,
+                             double y,
+                             const std::string& string,
+                             double r,
+                             double g,
+                             double b,
+                             int flags)
+{
+    // An off-path overlay is drawn through its path's matrix on the modelview; the viewport's
+    // own coordinates are the identity modelview paintGL sets up.
+    GLProtectMatrix p(GL_MODELVIEW);
+    glLoadIdentity();
+
+    return renderText(x, y, string, r, g, b, flags);
+}
+
+void
+ViewerGL::drawInViewportSpace(const std::function<void()>& draw)
+{
+    GLProtectMatrix p(GL_MODELVIEW);
+    glLoadIdentity();
+    draw();
+}
+
+void
+ViewerGL::getCursorPositionInOverlay(double& x,
+                                     double& y) const
+{
+    getCursorPosition(x, y);
+
+    // The modelview is the overlay path's matrix on top of the identity paintGL sets up.
+    GLdouble m[16];
+    glGetDoublev(GL_MODELVIEW_MATRIX, m);
+    const Transform::Matrix3x3 path(m[0], m[4], m[12], m[1], m[5], m[13], m[3], m[7], m[15]);
+    const double det = Transform::matDeterminant(path);
+    if (det == 0.) {
+        return;
+    }
+    const Transform::Matrix3x3 inv = Transform::matInverse(path, det);
+    const double w = inv.g * x + inv.h * y + inv.i;
+    if (w == 0.) {
+        return;
+    }
+    const double ox = (inv.a * x + inv.b * y + inv.c) / w;
+    const double oy = (inv.d * x + inv.e * y + inv.f) / w;
+    x = ox;
+    y = oy;
 }
 
 void

@@ -5540,6 +5540,67 @@ Node::abortCooksStaleAfterEditDownstream()
     });
 }
 
+namespace {
+void
+abortCooksStaleAfterEditAt(const Node* node)
+{
+    const EffectInstancePtr effect = node->getEffectInstance();
+    if (effect) {
+        effect->abortCooksStaleAfterEdit();
+    }
+}
+
+// Completes a walk that stopped at the stops: what is below them and was not visited hears of the
+// edit too.
+void
+abortCooksStaleAfterEditBelow(const std::vector<const Node*>& stops,
+                              std::unordered_set<const Node*>* visited)
+{
+    std::vector<NodePtr> below;
+    for (const Node* stop : stops) {
+        below.clear();
+        stop->appendOutputsWithGroupRedirection(&below);
+        for (const NodePtr& node : below) {
+            walkDownstreamUntil(node.get(), visited, [](const Node* reached) {
+                abortCooksStaleAfterEditAt(reached);
+
+                return false;
+            });
+        }
+    }
+}
+} // anonymous namespace
+
+bool
+Node::abortCooksStaleAfterEditFindingOutputs(std::list<OutputEffectInstance*>* outputs)
+{
+    if ((removalBatchDepth > 0) || isEffectGroup() || getAttachedRotoItem()) {
+        return false;
+    }
+    const bool rendering = isNodeRendering();
+    std::unordered_set<const Node*> visited;
+    std::vector<const Node*> found;
+    walkDownstreamUntil(this, &visited, [rendering, outputs, &found](const Node* node) {
+        if (rendering) {
+            abortCooksStaleAfterEditAt(node);
+        }
+        OutputEffectInstance* writer = dynamic_cast<OutputEffectInstance*>(node->getEffectInstance().get());
+        if (writer && writer->isOutput() && !dynamic_cast<GroupOutput*>(writer)) {
+            outputs->push_back(writer);
+            found.push_back(node);
+
+            return true;
+        }
+
+        return false;
+    });
+    if (rendering) {
+        abortCooksStaleAfterEditBelow(found, &visited);
+    }
+
+    return true;
+}
+
 bool
 Node::couldReachConnectedViewer() const
 {
@@ -5573,18 +5634,25 @@ Node::abortViewerRendersForInputEdit(std::list<ViewerInstance*>* viewersDownstre
     if (deferViewerAbortToCascade(shared_from_this())) {
         return false;
     }
-    abortCooksStaleAfterEditDownstream();
     if (!couldReachConnectedViewer()) {
+        abortCooksStaleAfterEditDownstream();
+
         return true;
     }
 
     // The renders to abort are those of the viewers hasOutputNodesConnected() reaches, which stops
     // at every output node; hasViewersConnected() also goes on past the other output nodes, so
-    // carrying on from them under the same visited set completes it.
+    // carrying on from them under the same visited set completes it. These walks, with the one on
+    // from the viewers, reach every node abortCooksStaleAfterEditDownstream() does.
+    const bool rendering = isNodeRendering();
     std::unordered_set<const Node*> visited;
     std::list<ViewerInstance*> toAbort;
     std::vector<const Node*> otherOutputs;
-    walkDownstreamUntil(this, &visited, [&toAbort, &otherOutputs](const Node* node) {
+    std::vector<const Node*> viewerNodes;
+    walkDownstreamUntil(this, &visited, [rendering, &toAbort, &otherOutputs, &viewerNodes](const Node* node) {
+        if (rendering) {
+            abortCooksStaleAfterEditAt(node);
+        }
         OutputEffectInstance* output = dynamic_cast<OutputEffectInstance*>(node->getEffectInstance().get());
         if (!output || !output->isOutput() || dynamic_cast<GroupOutput*>(output)) {
             return false;
@@ -5592,6 +5660,7 @@ Node::abortViewerRendersForInputEdit(std::list<ViewerInstance*>* viewersDownstre
         ViewerInstance* viewer = dynamic_cast<ViewerInstance*>(output);
         if (viewer) {
             toAbort.push_back(viewer);
+            viewerNodes.push_back(node);
         } else {
             otherOutputs.push_back(node);
         }
@@ -5604,10 +5673,22 @@ Node::abortViewerRendersForInputEdit(std::list<ViewerInstance*>* viewersDownstre
         below.clear();
         output->appendOutputsWithGroupRedirection(&below);
         for (const NodePtr& node : below) {
-            walkDownstreamUntil(node.get(), &visited, [viewersDownstream](const Node* reached) {
-                return collectViewer(viewersDownstream, reached);
+            walkDownstreamUntil(node.get(), &visited, [rendering, viewersDownstream, &viewerNodes](const Node* reached) {
+                if (rendering) {
+                    abortCooksStaleAfterEditAt(reached);
+                }
+                if (collectViewer(viewersDownstream, reached)) {
+                    viewerNodes.push_back(reached);
+
+                    return true;
+                }
+
+                return false;
             });
         }
+    }
+    if (rendering) {
+        abortCooksStaleAfterEditBelow(viewerNodes, &visited);
     }
 
     for (ViewerInstance* viewer : toAbort) {

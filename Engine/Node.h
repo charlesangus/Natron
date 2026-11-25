@@ -1114,6 +1114,14 @@ public:
      **/
     void abortCooksStaleAfterEditDownstream();
 
+    /**
+     * @brief Does what abortCooksStaleAfterEditDownstream() does and appends to outputs what
+     * hasOutputNodesConnected() would, in one walk. Returns false, doing nothing, for a group, a
+     * paint tree's node or within a removal batch, as those walk from other nodes or share what
+     * they visited with other walks.
+     **/
+    bool abortCooksStaleAfterEditFindingOutputs(std::list<OutputEffectInstance*>* outputs);
+
 private:
     int disconnectInputInternal(Node* input, bool queueWhileRendering);
 

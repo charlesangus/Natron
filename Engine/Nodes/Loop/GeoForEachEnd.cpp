@@ -476,7 +476,7 @@ GeoForEachEnd::initializeKnobs()
     {
         std::vector<ChoiceOption> options;
         options.push_back(ChoiceOption("attribute", tr("Attribute").toStdString(),
-                                       tr("Elements with the same value of Piece Attribute, an integer or string attribute of the Piece Elements.").toStdString()));
+                                       tr("Elements with the same value of Piece Attribute, an integer or string attribute of the Piece Elements. Pieces are in ascending value order, numeric or lexical.").toStdString()));
         options.push_back(ChoiceOption("connectivity", tr("Connectivity").toStdString(),
                                        tr("Elements connected through shared points. Pieces are numbered in the order of their first element.").toStdString()));
         options.push_back(ChoiceOption("each", tr("Each Element").toStdString(),
@@ -526,7 +526,7 @@ GeoForEachEnd::initializeKnobs()
     KnobIntPtr maxIterations = createKnob<KnobInt>(tr("Max Iterations").toStdString());
     maxIterations->setName(kGeoForEachEndParamMaxIterations);
     maxIterations->setAnimationEnabled(false);
-    maxIterations->setHintToolTip(tr("A safety cap: more iterations than this, from Iterations or from the pieces, is an error."));
+    maxIterations->setHintToolTip(tr("A safety cap on the iterations cooked: more than this, from Iterations or from the pieces, is an error, except under Single Pass, which cooks one."));
     maxIterations->setMinimum(1);
     maxIterations->setDisplayMinimum(1);
     maxIterations->setDisplayMaximum(kGeoForEachEndDefaultMaxIterations);
@@ -831,12 +831,18 @@ GeoForEachEnd::evaluateStop(const std::vector<Iteration>& iterations,
         }
     }
 
+    // Between calls of the expression the GIL is given up now and then, so that the GUI thread
+    // is not kept from running Python by a loop of many iterations.
+    static constexpr int kGILYieldIterations = 256;
     bool wasAborted = false;
     int k = 0;
     for (; ok && (k < count); ++k) {
         if (aborted()) {
             wasAborted = true;
             break;
+        }
+        if ((k > 0) && ((k % kGILYieldIterations) == 0)) {
+            const PythonUnlockedWhileWaiting yield;
         }
         const Iteration& iteration = iterations[(std::size_t)k];
         const double t = (count > 1) ? (double)k / (double)(count - 1) : 0.;
@@ -914,7 +920,7 @@ public:
         if (!end->getAbortState(&userInteraction, &abortInfo, &treeRoot) || !userInteraction || !abortInfo || !abortInfo->canAbort()) {
             return;
         }
-        _cook.startHash = end->getHash();
+        _cook.startHash = end->getContextFreeRenderHash();
         _cook.abortInfo = abortInfo;
         QMutexLocker k(&end->_runningMutex);
         _entry = end->_running.insert(end->_running.end(), _cook);
@@ -1049,7 +1055,7 @@ GeoForEachEnd::renderGeometry(const GeoRenderActionArgs& args,
         if (!partition) {
             return fail(partitionError, errorMessage);
         }
-        if (partition->size() > (std::size_t)s.maxIterations) {
+        if (!s.singlePass && (partition->size() > (std::size_t)s.maxIterations)) {
             return fail(tr("%1 iterations is more than Max Iterations (%2).").arg(partition->size()).arg(s.maxIterations).toStdString(), errorMessage);
         }
         iterations.resize(partition->size());
@@ -1068,7 +1074,7 @@ GeoForEachEnd::renderGeometry(const GeoRenderActionArgs& args,
             }
         }
     } else {
-        if (s.iterations > s.maxIterations) {
+        if (!s.singlePass && (s.iterations > s.maxIterations)) {
             return fail(tr("%1 iterations is more than Max Iterations (%2).").arg(s.iterations).arg(s.maxIterations).toStdString(), errorMessage);
         }
         iterations.resize((std::size_t)s.iterations);
@@ -1179,7 +1185,9 @@ GeoForEachEnd::renderGeometry(const GeoRenderActionArgs& args,
                 helperScope.emplace(frameContext, job, runnablePriority, abort);
             }
             const std::size_t j = (std::size_t)i + 1;
-            if (cancel.check()) {
+            // On a helper, cancel.check() only sees the abort once the calling thread has polled
+            // for it, which may be after this helper claimed another iteration.
+            if (cancel.check() || (abort.abortInfo && abort.abortInfo->isAborted())) {
                 codes[j] = eRenderRoIRetCodeAborted;
 
                 return;

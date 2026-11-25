@@ -7657,11 +7657,11 @@ EffectInstance::abortViewerRendersForEdit()
         return;
     }
     const NodePtr node = getNode();
-    if (node) {
-        node->abortCooksStaleAfterEditDownstream();
-    }
     std::list<OutputEffectInstance*> outputNodes;
-    getDownstreamOutputs(&outputNodes);
+    if (node && !node->abortCooksStaleAfterEditFindingOutputs(&outputNodes)) {
+        node->abortCooksStaleAfterEditDownstream();
+        getDownstreamOutputs(&outputNodes);
+    }
     for (std::list<OutputEffectInstance*>::const_iterator it = outputNodes.begin(); it != outputNodes.end(); ++it) {
         // Only a viewer reads knob values while the user edits them. Any other render keeps going
         // on the values it started with, as nothing in the GUI can edit while it runs.

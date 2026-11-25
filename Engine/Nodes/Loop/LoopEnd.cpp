@@ -3007,8 +3007,14 @@ LoopEnd::evaluateStop(const Resolved& resolved,
                 Py_XDECREF(it->second);
             }
         }
+        // Between calls of the expression the GIL is given up now and then, so that the GUI
+        // thread is not kept from running Python by a loop of many iterations.
+        static constexpr int kGILYieldIterations = 256;
         int k = 0;
         for (; ok && (k < resolved.count); ++k) {
+            if ((k > 0) && ((k % kGILYieldIterations) == 0)) {
+                const PythonUnlockedWhileWaiting yield;
+            }
             const double t = (resolved.count > 1) ? (double)k / (double)(resolved.count - 1) : 0.;
             const double iterationTime = time + resolved.offset(k);
             PyObject* variables = PyDict_New();

@@ -271,6 +271,14 @@ fetchGeometryThroughCache(const GeometryCacheRequest& request,
 }
 } // anonymous namespace
 
+U64
+EffectInstance::getContextFreeRenderHash() const
+{
+    const EffectTLSDataPtr tls = _imp->tlsData->getTLSData();
+
+    return tls ? contextFreeRenderHash(tls, getHash()) : getHash();
+}
+
 bool
 EffectInstance::producesGeometryData() const
 {

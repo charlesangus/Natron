@@ -1244,6 +1244,13 @@ public:
     ParallelRenderArgsPtr getParallelRenderArgsTLS() const;
 
     /**
+     * @brief The hash of the frame args the calling thread renders this effect under that carry no
+     * render context: the one evaluateGeometry() mixes a context's key into for the cache key, and
+     * the one onNodeHashChanged() reports in. getHash() when the thread has no frame args.
+     **/
+    U64 getContextFreeRenderHash() const WARN_UNUSED_RETURN;
+
+    /**
      * @brief Whether the calling thread renders this node: its frame args are installed and are not
      * the ones the instance-changed action installs around knobChanged, which renders nothing.
      * Outside a render, expressions read the enclosing loops' preview iterations.

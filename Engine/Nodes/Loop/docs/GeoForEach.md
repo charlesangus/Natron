@@ -58,12 +58,15 @@ Parameters:
   - Connectivity groups elements joined through shared points.
   - Each Element makes every element its own piece.
 
-  Pieces are numbered in the order their first element appears.
+  Attribute pieces are in ascending value order: numeric for an integer attribute, lexical for a
+  string one. Connectivity and Each Element pieces are numbered in the order their first element
+  appears.
 - **Piece Attribute**: an integer or string attribute of the Piece Elements class, `name` by
   default. If the attribute is missing, the node shows an error naming it.
 - **Iterations**, **Start Value** and **Increment** set up Count: iteration *k* has value
   Start Value + *k* × Increment.
-- **Max Iterations** is a safety cap. More iterations than this is an error.
+- **Max Iterations** is a safety cap on the iterations cooked. More iterations than this is an
+  error, except under Single Pass, which cooks one.
 - **Single Pass** cooks only the iteration **Single Pass Iteration** names, counted from 0. Under
   Feedback that iteration starts from the GeoForEachBegin's Source. Naming an iteration past the
   last is an error.

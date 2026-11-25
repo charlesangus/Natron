@@ -521,7 +521,7 @@ future core work has solid ground to build on.
 | M370 | Roto Point List Render Isolation | done | M304 | | E6 |  | | [M370-roto-point-list-render-isolation.md](PLAN/MILESTONES/M370-roto-point-list-render-isolation.md) |
 | M371 | Cycles Abort Test Thread Count | done | - | bosley-native-nodes | E9 |  | | [M371-cycles-abort-test-thread-count.md](PLAN/MILESTONES/M371-cycles-abort-test-thread-count.md) |
 | M372 | User Knob Engine Edits | done | - | | E10 | F16 | | [M372-user-knob-engine-edits.md](PLAN/MILESTONES/M372-user-knob-engine-edits.md) |
-| M373 | In-Panel Knob Editor | doing | M372 | bosley-executor | E10 | F16 | | [M373-in-panel-knob-editor.md](PLAN/MILESTONES/M373-in-panel-knob-editor.md) |
+| M373 | In-Panel Knob Editor | done | M372 | | E10 | F16 | | [M373-in-panel-knob-editor.md](PLAN/MILESTONES/M373-in-panel-knob-editor.md) |
 | M374 | Remove Node Magnify On Ctrl-Scroll | done | - | | E10 |  | | [M374-remove-node-magnify-on-ctrl-scroll.md](PLAN/MILESTONES/M374-remove-node-magnify-on-ctrl-scroll.md) |
 | M375 | No CPU Vulkan Auto-Select | done | - | bosley-native-nodes | E5 |  | | [M375-no-cpu-vulkan-auto-select.md](PLAN/MILESTONES/M375-no-cpu-vulkan-auto-select.md) |
 | M400 | Pointer Direction Badges | done | - | | E10 |  | | [M400-pointer-direction-badges.md](PLAN/MILESTONES/M400-pointer-direction-badges.md) |
@@ -581,7 +581,7 @@ future core work has solid ground to build on.
 | M507 | Lock-Free Knob Holder Lifetime | todo | - |  | E14 |  | | [M507-lock-free-knob-holder-lifetime.md](PLAN/MILESTONES/M507-lock-free-knob-holder-lifetime.md) |
 | M508 | Incremental Roto Dope Sheet Rows | todo | - |  | E6 |  | | [M508-incremental-roto-dope-sheet-rows.md](PLAN/MILESTONES/M508-incremental-roto-dope-sheet-rows.md) |
 | M509 | Cancel-Aware GPU Fence Wait | done | - | | E5 |  | | [M509-cancel-aware-gpu-fence-wait.md](PLAN/MILESTONES/M509-cancel-aware-gpu-fence-wait.md) |
-| M510 | MoonRay Warning Text | doing | - | bosley-executor | E9 |  | | [M510-moonray-warning-text.md](PLAN/MILESTONES/M510-moonray-warning-text.md) |
+| M510 | MoonRay Warning Text | done | - | | E9 |  | | [M510-moonray-warning-text.md](PLAN/MILESTONES/M510-moonray-warning-text.md) |
 | M511 | Viewer Toolbar Fits 1920x1080 | done | - | | E10 |  | | [M511-viewer-toolbar-fits-1920x1080.md](PLAN/MILESTONES/M511-viewer-toolbar-fits-1920x1080.md) |
 | M512 | Python importTemplate Binding | done | M103 | | E12 | F33 | | [M512-python-importtemplate-binding.md](PLAN/MILESTONES/M512-python-importtemplate-binding.md) |
 | M513 | MoonRay OIDN Denoiser | todo | - |  | E9 |  | | [M513-moonray-oidn-denoiser.md](PLAN/MILESTONES/M513-moonray-oidn-denoiser.md) |

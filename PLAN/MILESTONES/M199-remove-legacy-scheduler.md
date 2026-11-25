@@ -56,7 +56,7 @@ Delete the Legacy render scheduler mode (`renderSchedulerMode`, `Engine/Settings
   - verify: `rg -i 'renderSchedulerMode|NATRON_RENDER_SCHEDULER|SchedulerModeLegacy|SchedulerModeTaskGraph' Engine Global Gui Tests` is empty; whole ctest green, including `SchedulerWriters.*` and `RenderSchedulerAbortTiming.WriterRangeStopsSoonAfterEngineAbort`.
   - size: M
 
-- [ ] M199.P1.T5 — Sweep live docs and bench scripts
+- [x] M199.P1.T5 — Sweep live docs and bench scripts
   - files: `docs/decisions/2026-10-04-task-graph-render-scheduler.md:17` (add a superseded note, keep the record), `docs/cache/tiered-cache.md:842`, `Engine/Nodes/README.md:1526`, `Engine/Nodes/Loop/docs/LoopEnd.md:279`, `Engine/EffectInstance.h:2479` (comment), `tools/bench/README.md:155-158,202,358`, `tools/bench/run_matrix.sh:10,52`, `tools/bench/edit_latency.sh:62`, `tools/bench/raw_gpu_bench.sh:244`, `tools/bench/gpu_region_bench.sh:202`
   - approach: Remove the mention, or reword "Legacy scheduler" to "direct pull" where the fallback path is meant. Drop the env var from bench run lines.
   - verify: `rg -i 'renderSchedulerMode|NATRON_RENDER_SCHEDULER|legacy scheduler' --glob '!tools/bench/BASELINE.md' --glob '!docs/perf/**' --glob '!.plan/**'` is empty; `bash -n` passes on the four scripts.

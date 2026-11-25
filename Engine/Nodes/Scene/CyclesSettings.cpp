@@ -105,7 +105,7 @@ make()
 
     c.tooltip = "The settings Cycles declares.";
     c.groups.push_back(groupSpec("sampling", "", true, "How long the render runs and how clean it gets. More samples mean less noise and more time."));
-    c.groups.push_back(groupSpec("denoise", "", true, "Removes leftover noise after sampling, so fewer samples are needed, at some risk to fine detail."));
+    c.groups.push_back(groupSpec("denoise", "", false, "Removes leftover noise after sampling, so fewer samples are needed, at some risk to fine detail."));
     c.groups.push_back(groupSpec("lightPaths", "", true, "How far light travels through the scene, and shortcuts that trade accuracy for less noise or time."));
     c.groups.push_back(groupSpec("bounces", "lightPaths", false, "How many times light may bounce. More bounces give fuller, brighter light and take longer."));
     c.groups.push_back(groupSpec("clamping", "lightPaths", false, "Limits very bright samples to remove fireflies, at the cost of some light energy."));
@@ -113,6 +113,7 @@ make()
     c.groups.push_back(groupSpec("fastGi", "lightPaths", false, "Replaces distant indirect light with a cheap approximation. Faster and cleaner, but less accurate."));
     c.groups.push_back(groupSpec("lights", "", false, "How the render chooses which lights to sample. It affects noise in scenes with many lights."));
     c.groups.push_back(groupSpec("volumes", "", false, "How rays travel through smoke, fog and other volumes, trading accuracy against noise and time."));
+    c.groups.push_back(groupSpec("subdivision", "", false, "Renders meshes as smooth subdivision surfaces, by the subdivision scheme each mesh authors, diced finer where they cover more of the image."));
     c.groups.push_back(groupSpec("pathGuiding", "", false, "Learns where light comes from and steers rays towards it. This build of Cycles has no path guiding, so nothing in this group has any effect."));
     c.groups.push_back(groupSpec("lightContributions", "", false, "Switches kinds of light on and off to break down or debug an image. Leave them all on for a correct render."));
     c.groups.push_back(groupSpec("film", "", false, "How the image is exposed and filtered, and whether the background is transparent."));
@@ -193,6 +194,12 @@ make()
     add("volumes", setting("cycles:integrator:volume_step_rate", "volumeStepRate", "Scales the step size worked out for each volume. Lower shows finer detail and takes longer, and higher is faster and coarser. 1 is a good start; try 0.1 to 0.5 for fine wisps.", VtValue(1.f)));
 
     const std::string noGuiding = " This build of Cycles has no path guiding, so it has no effect.";
+    add("subdivision", setting("natron:subdivisionSurfaces", "subdivisionSurfaces", "Renders each mesh whose subdivision scheme is Catmull-Clark, Loop or bilinear as a subdivision surface, diced into micropolygons at render time; a mesh whose scheme is none stays as it is. USD's default scheme is Catmull-Clark, so with this on every mesh that does not author none is smoothed. Loop meshes are rendered as Catmull-Clark, with a warning. A subdivided mesh shades with its limit surface's normals and ignores authored ones. Off, the default, renders every mesh as its polygons. The viewer's refine level has no effect on this renderer.", VtValue(false)));
+    add("subdivision", ranged(setting("natron:dicingRate", "dicingRate", "The size of a micropolygon edge, in pixels with Adaptive Space at Pixel and in scene units with it at Object. Lower is smoother and takes more time and memory; 1 is a good start, and 2 to 4 suit previews. A mesh's constant primvar cycles:dicing_rate multiplies it for that mesh.", VtValue(1.0f)), 0.1, 8));
+    add("subdivision", ranged(setting("natron:maxSubdivisionLevel", "maxSubdivisionLevel", "The most times a face may be split in half along each side however close it comes, which caps the time and memory a mesh near the camera takes. A mesh's constant primvar cycles:max_level replaces it for that mesh.", VtValue(12)), 0, 16));
+    add("subdivision", menu(setting("natron:adaptiveSpace", "adaptiveSpace", "What Dicing Rate is measured in. Pixel dices finer where a mesh covers more of the image, as seen from the dicing camera. Object dices evenly in scene units, whatever the camera sees.", VtValue(TfToken("pixel"))), { { "pixel", "Pixel", VtValue(TfToken("pixel")) }, { "object", "Object", VtValue(TfToken("object")) } }));
+    add("subdivision", setting("natron:dicingCamera", "dicingCamera", "The path of the camera prim meshes are diced as seen from, with Adaptive Space at Pixel. Empty uses the render camera. Name another camera to dice as a wider or closer shot sees the meshes, for example so that what lies outside the render camera's view is not left coarse.", VtValue(std::string())));
+
     add("pathGuiding", setting("cycles:integrator:use_guiding", "useGuiding", "Learns where light comes from during the render and steers rays towards it, which helps difficult indirect light at some cost in memory and time." + noGuiding, VtValue(false)));
     add("pathGuiding", setting("cycles:integrator:deterministic_guiding", "deterministicGuiding", "Makes repeat renders give the same pixel values, at the cost of slower training. Leave it on when frames must match." + noGuiding, VtValue(true)));
     add("pathGuiding", setting("cycles:integrator:use_surface_guiding", "useSurfaceGuiding", "Steers rays that bounce off surfaces. It is usually worth leaving on." + noGuiding, VtValue(true)));
@@ -282,6 +289,21 @@ make()
     enabledBy("custom_pixel_jitter_sample", "use_custom_pixel_jitter_sample");
     enabledBy("sample_subset_offset", "use_sample_subset");
     enabledBy("sample_subset_length", "use_sample_subset");
+    for (RenderSettingsKnobs::CuratedSetting& s : c.settings) {
+        if ((s.group == "subdivision") && (s.key != "natron:subdivisionSurfaces")) {
+            RenderSettingsKnobs::EnabledBy condition;
+            condition.key = "natron:subdivisionSurfaces";
+            s.enabledBy.push_back(condition);
+        }
+    }
+    for (RenderSettingsKnobs::CuratedSetting& s : c.settings) {
+        if (s.key == "natron:dicingCamera") {
+            RenderSettingsKnobs::EnabledBy condition;
+            condition.key = "natron:adaptiveSpace";
+            condition.equals = VtValue(TfToken("pixel"));
+            s.enabledBy.push_back(condition);
+        }
+    }
 
     // Cycles sets this from its tile count on every sync, so a value sent here is overwritten.
     c.excludedKeys.push_back("cycles:film:use_sample_count");

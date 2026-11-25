@@ -93,7 +93,7 @@ const RectI kSquare(24, 16, 40, 32);
 ImageLayerDesc
 depthLayer()
 {
-    return ImageLayerDesc("depth", "depth", "Z", std::vector<std::string> { "Z" });
+    return ImageLayerDesc("depth", std::vector<std::string> { "Z" });
 }
 
 // The RGBA of each scene at pixel (x, y), black outside the 64x48 source.

@@ -2,7 +2,8 @@
 
 Graph: USDRead(scene-reference.usda) and a USDCamera (LockCam, at z 8 looking down -Z) into a
 USDMerge, into Viewer1. The fixture has a red 2-unit cube at the origin, a blue ball of radius 0.5
-at x 3, and a camera /World/Cam read from the file.
+at x 3, and a camera /World/Cam read from the file. The view draws unshaded, so the cube and the
+ball show their display colours flat.
 
 - Views: Z, Shift+Z, X, Shift+X, C, Shift+C and V set the natronSceneViewMode property. In the
   Right view (looking down -X) the ball is in front of the cube; orthographic, the ball's height
@@ -66,6 +67,7 @@ try:
         return node
 
     usd = make("USDRead", 0, 0)
+    usd.getParam("initialDraw").setValue(3)
     usd.getParam("filename").setValue(scene_path)
     lock_cam = make("USDCamera", 200, 0)
     lock_cam.setScriptName("LockCam")
@@ -328,6 +330,10 @@ try:
         key(v, Qt.Key_G, CTRL | SHIFT)
         yield settle()
         require(v.property("natronSceneShowGuides") is False, "Ctrl+Shift+G hides the guides")
+        # The fixture has no lights, and the default Scene Lights draws a lightless stage black.
+        key(v, Qt.Key_6, CTRL)
+        yield settle()
+        require(v.property("natronSceneDrawMode") == "unshaded", "Ctrl+6 draws unshaded (%r)" % (v.property("natronSceneDrawMode"),))
         key(v, Qt.Key_A)
         yield settle()
 

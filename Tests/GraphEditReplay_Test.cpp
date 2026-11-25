@@ -223,7 +223,7 @@ TEST_F(GraphEditReplayTest, ReplayingRecordedEditsOnTheSavedProjectGivesTheEdite
 
     std::string error;
     ASSERT_EQ(LayerRegistry::eAddResultAdded,
-              project()->addLayer(ImageLayerDesc("mask", "mask", "", std::vector<std::string>(1, "A")), LayerRegistryEntry::eOriginUser, &error))
+              project()->addLayer(ImageLayerDesc("mask", std::vector<std::string>(1, "A")), LayerRegistryEntry::eOriginUser, &error))
         << error;
     recorder->flush();
 

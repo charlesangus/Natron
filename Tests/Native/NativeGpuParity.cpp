@@ -28,13 +28,17 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <list>
+#include <map>
 #include <mutex>
 #include <set>
 #include <string>
@@ -70,6 +74,8 @@
 #include "Engine/ViewIdx.h"
 
 #ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuBufferPool.h"
+#include "Engine/Gpu/GpuRecord.h"
 #include "Engine/Gpu/GpuRuntime.h"
 #endif
 
@@ -583,7 +589,394 @@ placeOnGpu(FrameRun* run,
     placeGraph(run->graph, inputs);
 }
 
+#ifdef NATRON_HAVE_GPU
+class BatchOverride {
+public:
+    BatchOverride(std::uint64_t work,
+                  const std::function<void()>& hook)
+    {
+        gpu::GpuRecordContext::setBatchWorkForTests(work);
+        gpu::GpuRecordContext::setBatchFinishedHookForTests(hook);
+    }
+
+    ~BatchOverride()
+    {
+        gpu::GpuRecordContext::setBatchWorkForTests(0);
+        gpu::GpuRecordContext::setBatchFinishedHookForTests(std::function<void()>());
+    }
+
+    BatchOverride(const BatchOverride&) = delete;
+    BatchOverride& operator=(const BatchOverride&) = delete;
+};
+
+struct GpuFrame {
+    EffectInstance::RenderRoIRetCode code = EffectInstance::eRenderRoIRetCodeFailed;
+    bool hasPlanes = false;
+    std::vector<float> pixels;
+    std::chrono::steady_clock::time_point finishedAt;
+    std::map<std::string, int> gpuTasksPerNode;
+    std::map<std::string, int> fallbacks;
+};
+
+bool
+runGpuFrame(const std::vector<NodePtr>& graph,
+            const NodePtr& root,
+            const RectI& window,
+            double time,
+            const std::function<void(const FrameRenderContextPtr&)>& beforeSubmit,
+            GpuFrame* frame,
+            std::string* error)
+{
+    RenderScheduler* scheduler = appPTR->getRenderScheduler();
+    FrameRun run;
+    if (!prepareFrame(root, time, window, 0, &run, error)) {
+        return false;
+    }
+    placeOnGpu(&run, graph);
+    if (beforeSubmit) {
+        beforeSubmit(run.context);
+    }
+    run.future = scheduler->submit(run.context, std::move(run.graph), RenderScheduler::Priority::Interactive);
+    QElapsedTimer timer;
+    timer.start();
+    while (!run.future->isFinished()) {
+        if (timer.elapsed() > kFrameTimeoutMs) {
+            scheduler->abort(run.context);
+            run.future->wait();
+            *error = "the GPU frame timed out";
+
+            return false;
+        }
+        QThread::msleep(1);
+    }
+    frame->finishedAt = std::chrono::steady_clock::now();
+    frame->code = run.future->wait();
+    const std::map<ImageLayerDesc, ImagePtr> rootPlanes = run.future->getRootPlanes();
+    frame->hasPlanes = !rootPlanes.empty();
+    for (std::map<ImageLayerDesc, ImagePtr>::const_iterator it = rootPlanes.begin(); it != rootPlanes.end(); ++it) {
+        if (it->first.isColorLayer()) {
+            frame->pixels = readRgba(it->second, window);
+        }
+    }
+    frame->gpuTasksPerNode = run.stats->getGpuTasksPerNode();
+    frame->fallbacks = run.stats->getCpuFallbackReasons();
+
+    return true;
+}
+
+// Waits for the tasks of a finished frame, which hand what they hold back after its future reports it finished, to end.
+void
+waitForOutstandingRunnables()
+{
+    RenderScheduler* scheduler = appPTR->getRenderScheduler();
+    QElapsedTimer timer;
+    timer.start();
+    while ((scheduler->getOutstandingRunnables() > 0) && (timer.elapsed() < 5000)) {
+        QThread::msleep(1);
+    }
+}
+
+// Clears the caches and waits for what a finished frame's tasks hold to go back to the pool, which happens after its
+// future reports it finished, for as long as a frame that leaked nothing can take.
+unsigned long long
+settledLiveBytes(unsigned long long ceiling)
+{
+    RenderScheduler* scheduler = appPTR->getRenderScheduler();
+    gpu::GpuBufferPool& pool = appPTR->getGpuContext()->runtime()->pool();
+    appPTR->clearAllCaches();
+    QElapsedTimer timer;
+    timer.start();
+    while (((scheduler->getOutstandingRunnables() > 0) || (pool.stats().liveBytes > ceiling)) && (timer.elapsed() < 5000)) {
+        QThread::msleep(1);
+    }
+
+    return pool.stats().liveBytes;
+}
+
+// Renders a frame split into command buffers of batchWork and aborts it once abortAfterBatches have finished. False with
+// *error set when the frame could not be run.
+bool
+runAbortedFrame(const std::vector<NodePtr>& graph,
+                const NodePtr& root,
+                const RectI& window,
+                double time,
+                std::uint64_t batchWork,
+                int abortAfterBatches,
+                AbortedFrameResult* result,
+                std::string* error)
+{
+    std::atomic<int> batches { 0 };
+    std::atomic<bool> fired { false };
+    std::chrono::steady_clock::time_point firedAt;
+    FrameRenderContextPtr context;
+    const BatchOverride split(batchWork, [&]() {
+        if (++batches == abortAfterBatches) {
+            firedAt = std::chrono::steady_clock::now();
+            context->getAbortInfo()->setAborted();
+            fired = true;
+        }
+    });
+    GpuFrame frame;
+    if (!runGpuFrame(graph, root, window, time, [&context](const FrameRenderContextPtr& c) { context = c; }, &frame, error)) {
+        return false;
+    }
+    result->fired = fired;
+    result->code = frame.code;
+    result->hasPlanes = frame.hasPlanes;
+    result->fallbacks = frame.fallbacks;
+    result->batchesAfterAbort = batches - abortAfterBatches;
+    result->largestBatchWork = gpu::GpuRecordContext::largestBatchWorkForTests();
+    if (fired) {
+        result->abortToEndMs = std::chrono::duration<double, std::milli>(frame.finishedAt - firedAt).count();
+    }
+
+    return true;
+}
+#endif // NATRON_HAVE_GPU
 } // namespace
+
+#ifdef NATRON_HAVE_GPU
+AbortedSolveResult
+renderWithAbortMidSolve(const std::vector<NodePtr>& graph,
+                        const NodePtr& root,
+                        const RectI& window,
+                        double time,
+                        int abortAfterBatches)
+{
+    AbortedSolveResult result;
+    ForcedGpuContext forced;
+    if (!forced.installed()) {
+        reportNoGpu(forced.reason());
+        result.skipped = true;
+
+        return result;
+    }
+    RegionBodyScope body(appPTR->getRenderScheduler());
+    appPTR->clearAllCaches();
+    {
+        const BatchOverride never(UINT64_MAX, std::function<void()>());
+        GpuFrame frame;
+        if (!runGpuFrame(graph, root, window, time, nullptr, &frame, &result.error)) {
+            return result;
+        }
+        if (frame.code != EffectInstance::eRenderRoIRetCodeOk) {
+            result.error = "the clean GPU frame failed";
+
+            return result;
+        }
+        result.unsplit = frame.pixels;
+    }
+    result.liveAfterClean = settledLiveBytes(0);
+
+    if (!runAbortedFrame(graph, root, window, time, 1, abortAfterBatches, &result.aborted, &result.error)) {
+        return result;
+    }
+    // The caches stay as the aborted frame left them, so the next frame reads anything it stored.
+    waitForOutstandingRunnables();
+
+    {
+        std::atomic<int> batches { 0 };
+        const BatchOverride split(1, [&batches]() { ++batches; });
+        GpuFrame frame;
+        if (!runGpuFrame(graph, root, window, time, nullptr, &frame, &result.error)) {
+            return result;
+        }
+        if (frame.code != EffectInstance::eRenderRoIRetCodeOk) {
+            result.error = "the GPU frame after the abort failed";
+
+            return result;
+        }
+        result.split = frame.pixels;
+        result.splitBatches = batches;
+        result.splitGpuTasksPerNode = frame.gpuTasksPerNode;
+    }
+    result.liveAfterAbort = settledLiveBytes(result.liveAfterClean);
+
+    return result;
+} // renderWithAbortMidSolve
+
+AbortedFrameResult
+renderAbortedFrame(const std::vector<NodePtr>& graph,
+                   const NodePtr& root,
+                   const RectI& window,
+                   double time,
+                   std::uint64_t batchWork,
+                   int abortAfterBatches)
+{
+    AbortedFrameResult result;
+    ForcedGpuContext forced;
+    if (!forced.installed()) {
+        reportNoGpu(forced.reason());
+        result.skipped = true;
+
+        return result;
+    }
+    RegionBodyScope body(appPTR->getRenderScheduler());
+    result.liveBefore = settledLiveBytes(0);
+    if (runAbortedFrame(graph, root, window, time, batchWork, abortAfterBatches, &result, &result.error)) {
+        result.liveAfter = settledLiveBytes(result.liveBefore);
+    }
+
+    return result;
+}
+
+int
+countBatchesOfFrame(const std::vector<NodePtr>& graph,
+                    const NodePtr& root,
+                    const RectI& window,
+                    double time,
+                    std::string* error)
+{
+    ForcedGpuContext forced;
+    if (!forced.installed()) {
+        reportNoGpu(forced.reason());
+
+        return -1;
+    }
+    RegionBodyScope body(appPTR->getRenderScheduler());
+    appPTR->clearAllCaches();
+    std::atomic<int> batches { 0 };
+    const BatchOverride split(1, [&batches]() { ++batches; });
+    GpuFrame frame;
+    if (!runGpuFrame(graph, root, window, time, nullptr, &frame, error)) {
+        return -1;
+    }
+    if (frame.code != EffectInstance::eRenderRoIRetCodeOk) {
+        *error = "the GPU frame failed";
+
+        return -1;
+    }
+
+    return batches;
+}
+#endif // NATRON_HAVE_GPU
+
+namespace {
+
+std::atomic<int> gPoolPoisonScopes { 0 };
+
+void
+appendPixel(std::string* out,
+            const char* label,
+            const std::vector<float>& frame,
+            std::size_t pixel)
+{
+    *out += std::string(" ") + label + "=(";
+    for (int c = 0; c < 4; ++c) {
+        const std::size_t i = pixel * 4 + (std::size_t)c;
+        *out += (c ? "," : "") + ((i < frame.size()) ? std::to_string(frame[i]) : std::string("?"));
+    }
+    *out += ")";
+}
+
+int
+regionOf(const EndToEndResult& result,
+         const NodePtr& node)
+{
+    for (std::size_t r = 0; r < result.regionNodes.size(); ++r) {
+        const std::vector<NodePtr>& nodes = result.regionNodes[r];
+        if (std::find(nodes.begin(), nodes.end(), node) != nodes.end()) {
+            return (int)r;
+        }
+    }
+
+    return -1;
+}
+
+} // namespace
+
+GpuPoolPoisonScope::GpuPoolPoisonScope()
+{
+    ++gPoolPoisonScopes;
+}
+
+GpuPoolPoisonScope::~GpuPoolPoisonScope()
+{
+    --gPoolPoisonScopes;
+}
+
+std::string
+describeGpuMismatch(const EndToEndResult& result,
+                    const std::vector<float>& reference,
+                    const ParityTolerance& tolerance)
+{
+    const int width = result.window.width();
+    std::size_t pixels = 0;
+    std::size_t poisonFloats = 0;
+    RectI bbox;
+    std::map<int, int> perRow;
+    std::vector<std::size_t> firsts;
+    for (std::size_t p = 0; (p * 4 + 3) < result.cpu.size() && (p * 4 + 3) < result.gpu.size(); ++p) {
+        bool differs = false;
+        for (int c = 0; c < 4; ++c) {
+            const float got = result.gpu[p * 4 + c];
+            if (!tolerance.accepts(result.cpu[p * 4 + c], got)) {
+                differs = true;
+#ifdef NATRON_HAVE_GPU
+                std::uint32_t bits = 0;
+                std::memcpy(&bits, &got, sizeof(bits));
+                poisonFloats += (bits == gpu::kGpuPoolPoisonBits) ? 1 : 0;
+#endif
+            }
+        }
+        if (!differs) {
+            continue;
+        }
+        const int x = result.window.x1 + (int)(p % (std::size_t)width);
+        const int y = result.window.y1 + (int)(p / (std::size_t)width);
+        bbox = pixels ? RectI(std::min(bbox.x1, x), std::min(bbox.y1, y), std::max(bbox.x2, x + 1), std::max(bbox.y2, y + 1)) : RectI(x, y, x + 1, y + 1);
+        ++pixels;
+        ++perRow[y];
+        if (firsts.size() < 4) {
+            firsts.push_back(p);
+        }
+    }
+
+    std::string out = "\n  " + std::to_string(pixels) + " pixels differ, within " + std::to_string(bbox.x1) + "," + std::to_string(bbox.y1) + "-" + std::to_string(bbox.x2) + "," + std::to_string(bbox.y2) + "; per row:";
+    for (const std::pair<const int, int>& row : perRow) {
+        out += " y" + std::to_string(row.first) + "=" + std::to_string(row.second);
+    }
+    out += "\n  pool poisoned: " + std::string(result.poolPoisoned ? "yes" : "no") + "; differing GPU floats holding the poison: " + std::to_string(poisonFloats);
+    if (!reference.empty() && (reference.size() == result.cpu.size())) {
+        out += "\n  against the independent CPU render: the CPU frame differs at " + std::to_string(compareImages(reference, result.cpu, tolerance).mismatches) + " floats, the GPU frame at " + std::to_string(compareImages(reference, result.gpu, tolerance).mismatches);
+    }
+    for (std::size_t p : firsts) {
+        out += "\n  at " + std::to_string(result.window.x1 + (int)(p % (std::size_t)width)) + "," + std::to_string(result.window.y1 + (int)(p / (std::size_t)width)) + ":";
+        appendPixel(&out, "cpu", result.cpu, p);
+        appendPixel(&out, "gpu", result.gpu, p);
+        if (!reference.empty()) {
+            appendPixel(&out, "independent", reference, p);
+        }
+    }
+    out += "\n  regions:";
+    for (std::size_t r = 0; r < result.regionNodes.size(); ++r) {
+        const std::vector<NodePtr>& nodes = result.regionNodes[r];
+        out += " " + std::to_string(r) + "=[";
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            out += (i ? " " : "") + (nodes[i] ? nodes[i]->getScriptName_mt_safe() : std::string("?"));
+        }
+        out += "]";
+        if (r < result.regionExternalInputs.size()) {
+            out += " reading";
+            for (const NodePtr& input : result.regionExternalInputs[r]) {
+                const int from = regionOf(result, input);
+                out += " " + (input ? input->getScriptName_mt_safe() : std::string("?"));
+                out += (from < 0) ? std::string(" (CPU render, uploaded from RAM)") : " (GPU render of region " + std::to_string(from) + ")";
+            }
+        }
+    }
+    out += "\n  regions run " + std::to_string(result.gpuRegionsRun) + ", retries " + std::to_string(result.gpuRegionRetries) + ", strip halvings " + std::to_string(result.gpuStripHalvings) + ", strip pipelines serialized " + std::to_string(result.gpuStripPipelinesSerialized) + ", pipelined regions " + std::to_string(result.gpuPipelinedRegions) + ", evictions " + std::to_string(result.evictions);
+    out += "; GPU tasks:";
+    for (const std::pair<const std::string, int>& t : result.gpuTasksPerNode) {
+        out += " " + t.first + "=" + std::to_string(t.second);
+    }
+    out += "; uploads " + std::to_string(result.uploads) + ", downloads " + std::to_string(result.downloads) + "; CPU fallbacks:";
+    for (const std::pair<const std::string, int>& f : result.cpuFallbackReasons) {
+        out += " '" + f.first + "'=" + std::to_string(f.second);
+    }
+
+    return out;
+}
 
 bool
 EndToEndResult::ranInRegion(const NodePtr& node) const
@@ -723,6 +1116,10 @@ renderEndToEnd(const std::vector<NodePtr>& graph,
 
         return result;
     }
+#ifdef NATRON_HAVE_GPU
+    result.poolPoisoned = gPoolPoisonScopes.load() > 0;
+    appPTR->getGpuContext()->runtime()->pool().setPoisonOnAcquire(result.poolPoisoned);
+#endif
     if (onGpuContext && !onGpuContext(&result.error)) {
         return result;
     }
@@ -735,6 +1132,15 @@ renderEndToEnd(const std::vector<NodePtr>& graph,
         if (!prepareFrame(root, time, window, mipmapLevel, &run, &result.error)) {
             return result;
         }
+        // A root's default planes are the ones it renders, which leaves out the colour of a root that only passes it
+        // through. A viewer on such a root asks for colour explicitly, as the CPU render below does.
+        FrameGraph::Task& rootTask = run.graph.tasks.front();
+        const bool asksForColour = std::any_of(rootTask.components.begin(), rootTask.components.end(), [](const ImageLayerDesc& layer) {
+            return layer.isColorLayer();
+        });
+        if (!asksForColour) {
+            rootTask.components.assign(1, ImageLayerDesc::getRGBAComponents());
+        }
         placeOnGpu(&run, graph);
         result.regions = run.graph.regions;
         for (const FrameGraph::Region& region : run.graph.regions) {
@@ -743,6 +1149,11 @@ renderEndToEnd(const std::vector<NodePtr>& graph,
                 nodes.push_back(run.graph.tasks[member].key.node);
             }
             result.regionNodes.push_back(nodes);
+            std::vector<NodePtr> inputs;
+            for (int input : region.externalInputs) {
+                inputs.push_back(run.graph.tasks[input].key.node);
+            }
+            result.regionExternalInputs.push_back(inputs);
         }
         run.future = scheduler->submit(run.context, std::move(run.graph), RenderScheduler::Priority::Interactive);
         QElapsedTimer timer;
@@ -768,18 +1179,29 @@ renderEndToEnd(const std::vector<NodePtr>& graph,
         }
         // The colour plane, which the CPU render below asks for. A root that passes its input's other layers
         // through also returns them, and a layer ID such as "spec" sorts before the colour plane's.
-        std::map<ImageLayerDesc, ImagePtr>::const_iterator colour = rootPlanes.begin();
+        std::map<ImageLayerDesc, ImagePtr>::const_iterator colour = rootPlanes.end();
         for (std::map<ImageLayerDesc, ImagePtr>::const_iterator it = rootPlanes.begin(); it != rootPlanes.end(); ++it) {
             if (it->first.isColorLayer()) {
                 colour = it;
                 break;
             }
         }
+        if (colour == rootPlanes.end()) {
+            result.error = "the GPU frame has no colour plane";
+
+            return result;
+        }
         result.gpu = readRgba(colour->second, window);
         result.gpuTasksPerNode = run.stats->getGpuTasksPerNode();
         result.uploads = run.stats->getUploadCount();
         result.downloads = run.stats->getDownloadCount();
         result.cpuFallbackReasons = run.stats->getCpuFallbackReasons();
+        result.gpuRegionsRun = run.stats->getGpuRegionsRun();
+        result.gpuRegionRetries = run.stats->getGpuRegionRetries();
+        result.gpuStripHalvings = run.stats->getGpuStripHalvings();
+        result.gpuStripPipelinesSerialized = run.stats->getGpuStripPipelinesSerialized();
+        result.gpuPipelinedRegions = run.stats->getGpuPipelinedRegions();
+        result.evictions = run.stats->getEvictions();
 #ifdef NATRON_HAVE_GPU
         result.poolPeakBytes = appPTR->getGpuContext()->runtime()->pool().stats().peakBytes;
 #endif

@@ -335,7 +335,7 @@ paritySourceExtraLayer()
     rgb.push_back("G");
     rgb.push_back("B");
 
-    return ImageLayerDesc(kParitySourceExtraLayerID, kParitySourceExtraLayerID, "RGB", rgb);
+    return ImageLayerDesc(kParitySourceExtraLayerID, rgb);
 }
 
 ParitySourceTestEffect::ParitySourceTestEffect(NodePtr n)

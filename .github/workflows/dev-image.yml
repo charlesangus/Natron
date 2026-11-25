@@ -63,7 +63,10 @@ jobs:
         env:
           IMAGE: ${{ steps.tag.outputs.image }}
         run: |
-          docker build -f tools/ci/local/Dockerfile -t "$IMAGE" tools/ci/local
+          DOCKER_BUILDKIT=1 docker build \
+            --build-arg BUILDKIT_INLINE_CACHE=1 \
+            --cache-from "${IMAGE%:*}:latest" \
+            -f tools/ci/local/Dockerfile -t "$IMAGE" tools/ci/local
           docker push "$IMAGE"
 
       # The hash tag may already exist from a branch run, so main points

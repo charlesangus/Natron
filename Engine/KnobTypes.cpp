@@ -793,9 +793,12 @@ KnobChoice::cloneExtraData(KnobI* other,
         return;
     }
 
+    const ChoiceOption otherEntry = isChoice->getActiveEntry();
     {
         QMutexLocker k(&_entriesMutex);
-        _currentEntry = isChoice->getActiveEntry();
+        if (!otherEntry.disabled) {
+            _currentEntry = otherEntry;
+        }
     }
     invalidateContentHash();
 }
@@ -814,7 +817,7 @@ KnobChoice::cloneExtraDataAndCheckIfChanged(KnobI* other,
     ChoiceOption otherEntry = isChoice->getActiveEntry();
     {
         QMutexLocker k(&_entriesMutex);
-        if (_currentEntry.id == otherEntry.id) {
+        if (otherEntry.disabled || (_currentEntry.id == otherEntry.id)) {
             return false;
         }
         _currentEntry = otherEntry;
@@ -838,9 +841,12 @@ KnobChoice::cloneExtraData(KnobI* other,
         return;
     }
 
+    const ChoiceOption otherEntry = isChoice->getActiveEntry();
     {
         QMutexLocker k(&_entriesMutex);
-        _currentEntry = isChoice->getActiveEntry();
+        if (!otherEntry.disabled) {
+            _currentEntry = otherEntry;
+        }
     }
     invalidateContentHash();
 }
@@ -849,7 +855,7 @@ static bool
 sameChoiceOption(const ChoiceOption& a,
                  const ChoiceOption& b)
 {
-    return (a.id == b.id) && (a.label == b.label) && (a.tooltip == b.tooltip);
+    return (a.id == b.id) && (a.label == b.label) && (a.tooltip == b.tooltip) && (a.disabled == b.disabled);
 }
 
 void
@@ -857,8 +863,10 @@ KnobChoice::onInternalValueChanged(int dimension,
                                    double time,
                                    ViewSpec /*view*/)
 {
+    // -1 means every dimension, and a choice has only the first: read as -1 the index would be
+    // the out-of-range default 0, caching the first entry over the real one.
     // by-pass any master/slave link here
-    int index = getValueAtTime(time, dimension, ViewSpec::current(), true, true);
+    int index = getValueAtTime(time, (dimension < 0) ? 0 : dimension, ViewSpec::current(), true, true);
     {
         QMutexLocker k(&_entriesMutex);
 
@@ -867,7 +875,9 @@ KnobChoice::onInternalValueChanged(int dimension,
 
             return;
         }
-        if ((index < 0) || (index >= (int)_entries.size()) || sameChoiceOption(_currentEntry, _entries[index])) {
+        // setValue() refuses a disabled row, which names nothing to choose; this one may still be
+        // reached through an expression, a link or a keyframe, and the entry chosen before it stays saved.
+        if ((index < 0) || (index >= (int)_entries.size()) || _entries[index].disabled || sameChoiceOption(_currentEntry, _entries[index])) {
             return;
         }
         _currentEntry = _entries[index];
@@ -940,7 +950,7 @@ KnobChoice::findAndSetOldChoice()
         if ( !_currentEntry.id.empty() ) {
             ChoiceOption matched;
             found = matchEntry(_currentEntry.id, _entries, &matched);
-            if (found != -1) {
+            if ((found != -1) && !matched.disabled) {
                 _currentEntry = matched;
             }
         }
@@ -1116,12 +1126,20 @@ KnobChoice::getNumEntries() const
     return (int)_entries.size();
 }
 
+bool
+KnobChoice::isEntryDisabled(int index) const
+{
+    QMutexLocker l(&_entriesMutex);
+
+    return (index >= 0) && (index < (int)_entries.size()) && _entries[index].disabled;
+}
+
 void
 KnobChoice::setActiveEntry(const ChoiceOption& opt)
 {
     {
         QMutexLocker l(&_entriesMutex);
-        if (sameChoiceOption(_currentEntry, opt)) {
+        if (opt.disabled || sameChoiceOption(_currentEntry, opt)) {
             return;
         }
         _currentEntry = opt;
@@ -1135,7 +1153,9 @@ KnobChoice::setActiveEntryAndNotify(const ChoiceOption& opt,
 {
     {
         QMutexLocker l(&_entriesMutex);
-        _currentEntry = opt;
+        if (!opt.disabled) {
+            _currentEntry = opt;
+        }
         // evaluateValueChange() first runs onInternalValueChanged(), before any callback.
         _keepActiveEntryOnValueChange = true;
     }
@@ -1192,8 +1212,10 @@ KnobChoice::getActiveEntry()
         return _currentEntry;
     }
     int activeIndex = getValue();
-    if ( activeIndex < (int)_entries.size() ) {
-        _currentEntry = _entries[activeIndex];
+    if ((activeIndex >= 0) && (activeIndex < (int)_entries.size())) {
+        if (!_entries[activeIndex].disabled) {
+            _currentEntry = _entries[activeIndex];
+        }
         return _entries[activeIndex];
     }
 
@@ -1290,6 +1312,15 @@ KnobChoice::getHintToolTipFull() const
     return ss.str();
 } // KnobChoice::getHintToolTipFull
 
+bool
+KnobChoice::refusesValue(const int& v,
+                         int /*dimension*/) const
+{
+    QMutexLocker k(&_entriesMutex);
+
+    return (v >= 0) && (v < (int)_entries.size()) && _entries[v].disabled;
+}
+
 KnobHelper::ValueChangedReturnCodeEnum
 KnobChoice::setValueFromID(const std::string & value,
                               int dimension,
@@ -1301,6 +1332,11 @@ KnobChoice::setValueFromID(const std::string & value,
         QMutexLocker k(&_entriesMutex);
         const ChoiceOption previous = _currentEntry;
         i = matchEntry(value, _entries, &_currentEntry);
+        if (_currentEntry.disabled) {
+            _currentEntry = previous;
+
+            return eValueChangedReturnCodeNothingChanged;
+        }
         entryChanged = !sameChoiceOption(previous, _currentEntry);
     }
     if (entryChanged) {
@@ -3164,7 +3200,7 @@ KnobLayers::makeRow(const ImageLayerDesc& layer, int usersCount)
 {
     std::vector<std::string> row(3);
 
-    row[0] = layer.getLayerLabel();
+    row[0] = layer.getLayerID();
     const std::vector<std::string>& channels = layer.getChannels();
     for (std::size_t c = 0; c < channels.size(); ++c) {
         if (c > 0) {

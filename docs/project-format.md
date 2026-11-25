@@ -117,7 +117,7 @@ The graph. Top-level keys, in the order they are written:
 | `id` | The project's identity, a random UUID made with a new project (File > New or a reset makes a new one). Loading restores it and Save As keeps it, so every save of one project, under any name, carries the same id. A paste uses it to tell whether nodes come from the open project. Omitted when empty; a file without one gets a new id when loaded. |
 | `knobs` | Project knobs, sparse (see below), then the project's Reverse-Flow Variables in declaration order, each with its definition under `user:`. Omitted when empty. |
 | `formats` | The project's additional formats: a list of `{name, rect: [x1, y1, x2, y2], par}`. Omitted when empty. |
-| `layers` | The layer registry: a map from layer ID to `{label, channelsLabel, channels, origin}`, sorted by ID. Omitted when empty. |
+| `layers` | The layer registry: a map from layer ID to `{channels, origin}`, sorted by ID. Omitted when empty. |
 | `timeline` | `{current: <frame>}`. |
 | `nodes` | The nodes, a map keyed by script name and sorted by it. |
 
@@ -142,7 +142,23 @@ holds its default.
 | `userPages` | User-created knobs, nested as pages, groups and knobs, with their definitions under `user:`. A page or group's `group:` map holds its `label` and, when set, `tooltip`, `secret`, `tab`, `opened` and `rfv` (the group declares Reverse-Flow Variables). |
 | `roto` | The roto context (layers, beziers, strokes). |
 | `tracker` | The tracker context. |
+| `sceneView` | A viewer's 3D view: what it draws and which payloads it loads. See below. |
 | `children` | For a group, a map of its nodes, in this same schema. |
+
+A viewer's `sceneView` holds what the viewer set and never what the graph's nodes set, which
+their knobs carry. It has three keys, each left out when empty:
+
+- `drawStates`: a map from prim path to the draw state set on that row, by script name: `bbox`,
+  `children`, `full`, `loadAll` or `hidden`. A path the scene no longer has is kept.
+- `impliedChildren`: the `drawStates` paths whose `children` the viewer set itself, to show a
+  row below it, rather than the user setting it.
+- `loadRules`: the viewer stage's payload load rules, a map from prim path to `all` (the prim
+  and its descendants), `only` (the prim alone) or `none`. The pseudo-root's `none` is left out.
+  A payload whose load failed is kept as `only`, so it loads once its file is back.
+
+On reopening, the viewer puts the states in place and asks for the loads, and both work the same
+way as the ones the user asks for: cancelling the loads stops them, a load that fails badges its
+row, and the rest restores.
 
 `pos`, `size`, `color` and `overlay` are the node's layout. A node that has no saved layout
 writes none of them. Backdrops are nodes, so they use the same fields.
@@ -199,8 +215,8 @@ knobs:
 formats:
   - {name: "Anamorphic", rect: [0, 0, 2048, 858], par: 2}
 layers:
-  diffuse: {label: "diffuse", channelsLabel: "RGB", channels: ["R", "G", "B"], origin: 2}
-  zdepth: {label: "Depth", channelsLabel: "Z", channels: ["Z"], origin: 1}
+  diffuse: {channels: ["R", "G", "B"], origin: 2}
+  zdepth: {channels: ["Z"], origin: 1}
 timeline: {current: 12}
 nodes:
   Blur1:

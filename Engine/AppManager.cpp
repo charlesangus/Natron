@@ -64,6 +64,7 @@
 #include <sstream> // stringstream
 #include <stdexcept>
 #include <thread>
+#include <vector>
 
 #include <QtGlobal> // for Q_OS_*
 #if defined(Q_OS_LINUX)
@@ -167,6 +168,8 @@
 #include "Engine/Nodes/NodeSpec.h"
 #include "Engine/Nodes/Scene/MoonRayRuntime.h"
 #include "Engine/Nodes/Scene/SceneCaches.h"
+#include "Engine/Nodes/Scene/SceneNodeKnobs.h"
+#include "Engine/Nodes/Scene/SceneTeardown.h"
 #include "Engine/Nodes/Test/OverlayImageGuiTestNode.h"
 #include "Engine/Nodes/Test/OverlayTestNode.h"
 
@@ -216,6 +219,8 @@ struct ShutdownState {
 
     std::mutex watchdogMutex;
     bool watchdogArmed = false;
+    // Unset while the watchdog is not armed, or is turned off.
+    std::optional<std::chrono::steady_clock::time_point> watchdogDeadline;
     std::atomic<const char*> stage { "quitting" };
 };
 
@@ -269,8 +274,10 @@ armShutdownWatchdog(const char* stage)
     if (seconds <= 0.) {
         return;
     }
-    std::thread([seconds]() {
-        std::this_thread::sleep_for(std::chrono::duration<double>(seconds));
+    const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(seconds));
+    state.watchdogDeadline = deadline;
+    std::thread([seconds, deadline]() {
+        std::this_thread::sleep_until(deadline);
         char line[512];
         int n = std::snprintf(line, sizeof(line), "Natron: shutdown stalled for %g s while %s; exiting with 124 (" kNatronShutdownWatchdogEnv " sets the limit)\n",
                               seconds, shutdownState().stage.load());
@@ -280,6 +287,22 @@ armShutdownWatchdog(const char* stage)
         }
         _exit(124);
     }).detach();
+}
+
+// The time left before the shutdown watchdog ends the process, at most capMs. capMs if it is not
+// armed or is turned off.
+int
+shutdownWatchdogRemainingMs(int capMs)
+{
+    ShutdownState& state = shutdownState();
+    std::lock_guard<std::mutex> k(state.watchdogMutex);
+
+    if (!state.watchdogDeadline) {
+        return capMs;
+    }
+    const long long remaining = std::chrono::duration_cast<std::chrono::milliseconds>(*state.watchdogDeadline - std::chrono::steady_clock::now()).count();
+
+    return (int)std::clamp<long long>(remaining, 0, capMs);
 }
 
 void
@@ -553,10 +576,19 @@ backTraceSigSegvHandler(int sig,
 static void
 setSigSegvSignal()
 {
+    // A stack overflow leaves no stack for the handler, so the crash would end without a backtrace.
+    // The alternate stack only covers the thread that installs it, the main thread.
+    static std::vector<char> altStack(256 * 1024);
+    stack_t ss;
+    ss.ss_sp = altStack.data();
+    ss.ss_size = altStack.size();
+    ss.ss_flags = 0;
+    const bool hasAltStack = sigaltstack(&ss, NULL) == 0;
+
     struct sigaction sa;
 
     sigemptyset (&sa.sa_mask);
-    sa.sa_flags = SA_RESTART | SA_SIGINFO;
+    sa.sa_flags = SA_RESTART | SA_SIGINFO | (hasAltStack ? SA_ONSTACK : 0);
     /* if SA_SIGINFO is set, sa_sigaction is to be used instead of sa_handler. */
     sa.sa_sigaction = backTraceSigSegvHandler;
 
@@ -810,6 +842,15 @@ AppManager::~AppManager()
         }
     }
 
+    // The nodes are gone, so every scene job is cancelled; they read the caches, Python and the
+    // QApplication torn down below. Bounded: a job stuck past it is left to the process exit.
+    setTeardownStage("waiting for the scene workers");
+    SceneWorker::joinAll(5000);
+
+    // What the closed projects let go of still uses OpenUSD, the caches and the plug-ins' libraries.
+    setTeardownStage("closing the released scenes");
+    SceneTeardown::shutdown();
+
     for (PluginsMap::iterator it = _imp->_plugins.begin(); it != _imp->_plugins.end(); ++it) {
         for (PluginVersionsOrdered::reverse_iterator itver = it->second.rbegin(); itver != it->second.rend(); ++itver) {
             delete *itver;
@@ -837,6 +878,25 @@ AppManager::~AppManager()
         // and the delegates' libraries unload at exit: the process ends here instead, the
         // caches already saved, without running static destructors or atexit handlers.
         qWarning("A viewer's render delegate did not stop; exiting without the rest of the teardown.");
+        std::fflush(nullptr);
+        std::_Exit(EXIT_FAILURE);
+    }
+
+    // The engines' delegates run threads and child processes of their own, which exit would cut
+    // short or leave running. Both waits fit in what the shutdown watchdog has left, less a margin,
+    // so the render processes are always ended before it fires and leaves them orphaned.
+    constexpr int kWatchdogMarginMs = 1000;
+    const auto teardownBudgetMs = [](int capMs) {
+        return std::max(0, shutdownWatchdogRemainingMs(capMs + kWatchdogMarginMs) - kWatchdogMarginMs);
+    };
+    setTeardownStage("releasing the render delegates' engines");
+    const bool enginesReleased = SceneCaches::releaseCpuRenderEnginesAndWait(teardownBudgetMs(10000));
+    setTeardownStage("waiting for MoonRay's render processes");
+    (void)MoonRayRuntime::endRenderProcesses(teardownBudgetMs(5500));
+    if (!enginesReleased) {
+        // The render thread is still releasing them, in OpenUSD and the delegates' libraries, which
+        // the rest of the teardown frees: as for a viewer's delegate above, the process ends here.
+        qWarning("A render delegate's engine was not released; exiting without the rest of the teardown.");
         std::fflush(nullptr);
         std::_Exit(EXIT_FAILURE);
     }
@@ -4781,6 +4841,21 @@ PythonGILUnlocker::~PythonGILUnlocker()
 #if PY_VERSION_HEX >= 0x030400F0
     assert(PyGILState_Check()); // Not available prior to Python 3.4
 #endif
+}
+
+PythonUnlockedWhileWaiting::PythonUnlockedWhileWaiting()
+    : _state(nullptr)
+{
+    if (Py_IsInitialized() && PyGILState_Check()) {
+        _state = PyEval_SaveThread();
+    }
+}
+
+PythonUnlockedWhileWaiting::~PythonUnlockedWhileWaiting()
+{
+    if (_state) {
+        PyEval_RestoreThread(_state);
+    }
 }
 
 static bool

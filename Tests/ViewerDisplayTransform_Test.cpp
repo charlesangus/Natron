@@ -68,7 +68,7 @@ makeKey(U64 displayTransformHash,
     channels.push_back("G");
     channels.push_back("B");
     channels.push_back("A");
-    ImageLayerDesc layer("Color", "Color", "RGBA", channels);
+    ImageLayerDesc layer(kNatronColorLayerID, channels);
 
     return FrameKey(NULL,
                     10,
@@ -83,7 +83,7 @@ makeKey(U64 displayTransformHash,
                     0,
                     "Source",
                     layer,
-                    "Color.A",
+                    "rgba.A",
                     useShaders,
                     false);
 }

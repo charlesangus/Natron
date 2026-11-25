@@ -64,7 +64,7 @@ ImageLayerDesc
 makeLayer(const std::string& name,
           const std::vector<std::string>& channels)
 {
-    return ImageLayerDesc(name, name, "", channels);
+    return ImageLayerDesc(name, channels);
 }
 
 std::vector<std::string>
@@ -191,18 +191,6 @@ TEST(KnobChannelSet, RgbAndAlphaRowsResolveToOneColorEntry)
     EXPECT_EQ(std::string("depth"), resolved[1].desc.getLayerID());
 }
 
-TEST(KnobChannelSet, StorageIDRowResolvesToNothing)
-{
-    KnobChannelSetPtr knob = makeKnob();
-
-    knob->setLayer(0, kNatronColorLayerID, 0);
-    EXPECT_TRUE(knob->resolve(presentLayers()).empty());
-
-    std::vector<std::string> red = channels("R");
-    knob->setLayer(0, kNatronColorLayerID, &red);
-    EXPECT_TRUE(knob->resolve(presentLayers()).empty());
-}
-
 TEST(KnobChannelSet, ViewRowWithoutColorStorageResolvesToNothing)
 {
     KnobChannelSetPtr knob = makeKnob();
@@ -288,7 +276,7 @@ TEST(KnobChannelSet, RegexMatchingSeveralViewsYieldsOneColorEntry)
     EXPECT_EQ(std::string("rgb"), knob->getSummary(presentLayers()));
 }
 
-TEST(KnobChannelSet, RegexMatchesViewLabelsNotTheStorageLabel)
+TEST(KnobChannelSet, RegexMatchesLayerIDs)
 {
     KnobChannelSetPtr knob = makeKnob();
 

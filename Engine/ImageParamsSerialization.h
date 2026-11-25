@@ -78,9 +78,8 @@ ImageLayerDesc::save(Archive& ar,
                      const unsigned int /*version*/) const
 {
     ar& boost::serialization::make_nvp("LayerID", _layerID);
-    ar& boost::serialization::make_nvp("LayerLabel", _layerLabel);
-    ar &  boost::serialization::make_nvp("ChannelsLabel", _channelsLabel);
-    ar &  boost::serialization::make_nvp("Channels", _channels);
+    ar& boost::serialization::make_nvp("Channels", _channels);
+    ar& boost::serialization::make_nvp("ColorStorage", _colorStorage);
 }
 
 template <class Archive>
@@ -89,9 +88,8 @@ ImageLayerDesc::load(Archive& ar,
                      const unsigned int /*version*/)
 {
     ar& boost::serialization::make_nvp("LayerID", _layerID);
-    ar& boost::serialization::make_nvp("LayerLabel", _layerLabel);
-    ar& boost::serialization::make_nvp("ChannelsLabel", _channelsLabel);
     ar& boost::serialization::make_nvp("Channels", _channels);
+    ar& boost::serialization::make_nvp("ColorStorage", _colorStorage);
 }
 
 template<class Archive>

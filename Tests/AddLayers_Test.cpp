@@ -110,7 +110,7 @@ protected:
 
         std::vector<std::string> a(1, "A");
         std::string error;
-        ASSERT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("mask", "mask", "", a), LayerRegistryEntry::eOriginUser, &error)) << error;
+        ASSERT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("mask", a), LayerRegistryEntry::eOriginUser, &error)) << error;
     }
 
     virtual void TearDown() OVERRIDE

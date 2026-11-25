@@ -66,10 +66,8 @@ NATRON_NAMESPACE_ENTER
 NATRON_PYTHON_NAMESPACE_ENTER
 
 ImageLayer::ImageLayer(const QString& layerName,
-                       const QString& componentsPrettyName,
                        const QStringList& componentsName)
     : _layerName(layerName)
-    , _componentsPrettyName(componentsPrettyName)
     , _componentsName(componentsName)
     , _comps()
 {
@@ -79,12 +77,17 @@ ImageLayer::ImageLayer(const QString& layerName,
     for (QStringList::const_iterator it = componentsName.begin(); it != componentsName.end(); ++it, ++i) {
         channels[i] = it->toStdString();
     }
-    _comps.reset(new ImageLayerDesc(layerName.toStdString(), layerName.toStdString(), componentsPrettyName.toStdString(), channels));
+    const std::string name = layerName.toStdString();
+    const ImageLayerDesc& view = ImageLayerDesc::getColorView(name);
+    if (view && (view.getChannels() == channels)) {
+        _comps.reset(new ImageLayerDesc(view));
+    } else {
+        _comps.reset(new ImageLayerDesc(name, channels));
+    }
 }
 
 ImageLayer::ImageLayer(const ImageLayerDesc& comps)
-    : _layerName(QString::fromUtf8(comps.getLayerLabel().c_str()))
-    , _componentsPrettyName(QString::fromUtf8(comps.getChannelsLabel().c_str()))
+    : _layerName(QString::fromUtf8(comps.getUserFacingLabel().c_str()))
 {
     const std::vector<std::string>& channels = comps.getChannels();
 
@@ -99,7 +102,7 @@ ImageLayer::getHash(const ImageLayer& layer)
 {
     Hash64 h;
 
-    Hash64_appendQString( &h, QString::fromUtf8( layer._comps->getChannelsLabel().c_str() ) );
+    Hash64_appendQString(&h, QString::fromUtf8(layer._comps->getLayerID().c_str()));
     const std::vector<std::string>& comps = layer._comps->getChannels();
     for (std::size_t i = 0; i < comps.size(); ++i) {
         Hash64_appendQString( &h, QString::fromUtf8( comps[i].c_str() ) );
@@ -130,12 +133,6 @@ const QStringList&
 ImageLayer::getComponentsNames() const
 {
     return _componentsName;
-}
-
-const QString&
-ImageLayer::getComponentsPrettyName() const
-{
-    return _componentsPrettyName;
 }
 
 bool
@@ -799,7 +796,11 @@ Effect::getPersistentMessage() const
 {
     QString message;
     int type = 0;
-    getInternalNode()->getPersistentMessage(&message, &type, false);
+    const NodePtr node = getInternalNode();
+    if (!node) {
+        return message;
+    }
+    node->getPersistentMessage(&message, &type, false);
 
     return message;
 }

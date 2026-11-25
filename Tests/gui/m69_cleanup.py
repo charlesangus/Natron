@@ -2007,9 +2007,6 @@ try:
             check(make_tab_current(editors[0]), "brought the curve editor's tab to the front")
             yield ("sleep", SETTLE_MS)
             tree, knob_index = size_knob_index()
-            report("NOTE expanded-curve: after the tab switch the size row is %s, component rows %r, visible rows %r"
-                   % ("missing" if knob_index is None else "found",
-                      None if knob_index is None else tree.model().rowCount(knob_index), size_rows()))
             if check(knob_index is not None and tree.model().rowCount(knob_index) == 2, "found the size knob's two component rows"):
                 # Only X is selected, so the curve widget shows X's curve alone and the drag cannot
                 # land on Y's key, which sits on the same spot.

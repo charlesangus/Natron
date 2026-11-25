@@ -1990,7 +1990,7 @@ Settings::setDefaultValues()
     _pipeWidth->setDefaultValue(4);
     _disconnectedArrowLength->setDefaultValue(40);
     _outputStubLength->setDefaultValue(20);
-    _outputStyle->setDefaultValue((int)eOutputStyleNub);
+    _outputStyle->setDefaultValue((int)eOutputStyleArrow);
     _useInputAForMergeAutoConnect->setDefaultValue(true);
     _showLinkLines->setDefaultValue(true);
     _showExpressionLines->setDefaultValue(true);

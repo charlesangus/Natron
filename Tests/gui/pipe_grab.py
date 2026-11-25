@@ -7,7 +7,7 @@ like the stub. With no button down, the pipe a click would pick up is highlighte
 
 Usage (natron-dev container; see Tests/gui/run-gui-test.sh):
     NATRON_GUI_TEST_OUT=build/pipe-grab/out Tests/gui/run-gui-test.sh Tests/gui/pipe_grab.py build/fast/App/Natron
-Shots (the node graph viewport): pipe-grab-defaults.png, pipe-grab-nub.png and pipe-grab-arrow.png
+Shots (the node graph viewport): pipe-grab-nub-geometry.png, pipe-grab-nub.png and pipe-grab-arrow.png
 (the two output styles), pipe-grab-hover.png (a dangling input highlighted under the cursor).
 """
 import os
@@ -258,7 +258,7 @@ try:
             set_pref(name, value)
         style = settings.getParam("outputStyle")
         require(style is not None, "Preferences have a parameter named outputStyle")
-        check(style.getDefaultValue() == OUTPUT_STYLE_NUB, "outputStyle defaults to Nub (got %r)" % style.getDefaultValue())
+        check(style.getDefaultValue() == OUTPUT_STYLE_ARROW, "outputStyle defaults to Arrow (got %r)" % style.getDefaultValue())
         check(style.getLabel() == LABELS["outputStyle"], "outputStyle is labelled %r (got %r)"
               % (LABELS["outputStyle"], style.getLabel()))
         options = [str(o) for o in style.getOptions()]
@@ -294,7 +294,7 @@ try:
               % (NUB_RADIUS, stub[0][1], ly + lh))
         connected = [w for p1, p2, w in pipes() if near(p2, centre(src), lh) and near(p1, centre(dst), lh)]
         require(connected, "the Constant to Blur pipe is in view")
-        shoot("pipe-grab-defaults.png")
+        shoot("pipe-grab-nub-geometry.png")
 
         set_pref("outputStyle", OUTPUT_STYLE_ARROW)
         yield ("sleep", SETTLE_MS)

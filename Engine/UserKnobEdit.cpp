@@ -1796,8 +1796,9 @@ copyKnobToHolder(KnobHolder* holder,
     if (!source->isUserKnob()) {
         userKnobExtraToSerialization(*source, &serialization);
     }
-    // A copy is independent of the source's link groups.
+    // A copy is independent of whatever the source is linked to: its links, link groups and alias.
     for (std::size_t d = 0; d < serialization.dimensions.size(); ++d) {
+        serialization.dimensions[d].master.reset();
         serialization.dimensions[d].linkGroup.reset();
     }
     serialization.isUserKnob = true;
@@ -1830,6 +1831,22 @@ copyKnobToHolder(KnobHolder* holder,
     std::map<std::string, std::string> renamed;
     renamed[source->getName()] = name;
     restorePastedExpressionsAndLinks(holder, std::list<PastedKnob>(1, entry), renamed);
+    // Only expressions reading nothing but the copy itself are kept: any other one would tie the
+    // copy to the source node or to knobs this node may not have.
+    for (int d = 0; d < knob->getDimension(); ++d) {
+        if (knob->getExpression(d).empty()) {
+            continue;
+        }
+        bool independent = knob->isExpressionValid(d, nullptr);
+        std::list<std::pair<KnobIWPtr, int>> dependencies;
+        knob->getExpressionDependencies(d, dependencies);
+        for (std::list<std::pair<KnobIWPtr, int>>::const_iterator it = dependencies.begin(); independent && it != dependencies.end(); ++it) {
+            independent = it->first.lock() == knob;
+        }
+        if (!independent) {
+            knob->clearExpression(d, false);
+        }
+    }
     refreshHolder(holder);
     undo.markChanged();
 

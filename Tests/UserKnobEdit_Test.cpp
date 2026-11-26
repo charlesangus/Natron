@@ -1681,6 +1681,93 @@ TEST_F(UserKnobEdit, CopyingAKnobOfAnotherNodeLeavesTheSourceAsItIs)
     EXPECT_TRUE(sourceBefore == sourceUndone);
 }
 
+TEST_F(UserKnobEdit, ACopyDoesNotFollowTheSourceOrWhatItIsLinkedTo)
+{
+    NodePtr source = createBlur();
+    NodePtr target = createBlur();
+    ASSERT_TRUE(bool(source && target));
+    KnobDoublePtr size = std::dynamic_pointer_cast<KnobDouble>(source->getKnobByName(kBlurParamSize));
+    ASSERT_TRUE(bool(size));
+    KnobIPtr linked = size->createDuplicateOnHolder(holderOf(target), KnobPagePtr(), KnobGroupPtr(), -1, true, "size",
+                                                    size->getLabel(), size->getHintToolTip(), true, true);
+    ASSERT_TRUE(bool(linked));
+    ASSERT_EQ(linked, size->getAliasMaster());
+    size->setValue(3., ViewSpec::all(), 0);
+    size->setValue(4., ViewSpec::all(), 1);
+    KnobDoublePtr linkedSize = std::dynamic_pointer_cast<KnobDouble>(linked);
+    ASSERT_TRUE(bool(linkedSize));
+    ASSERT_DOUBLE_EQ(3., linkedSize->getValue(0));
+
+    std::string error;
+    KnobIPtr copy = copyKnobToHolder(holderOf(target), size, KnobIPtr(), -1, &error);
+    ASSERT_TRUE(copy != nullptr) << error;
+    KnobDoublePtr copied = std::dynamic_pointer_cast<KnobDouble>(copy);
+    ASSERT_TRUE(bool(copied));
+    EXPECT_EQ(copy, target->getKnobByName("size2"));
+    EXPECT_DOUBLE_EQ(3., copied->getValue(0));
+    EXPECT_DOUBLE_EQ(4., copied->getValue(1));
+    EXPECT_FALSE(bool(copied->getAliasMaster()));
+    for (int d = 0; d < copied->getDimension(); ++d) {
+        EXPECT_FALSE(bool(copied->getMaster(d).second));
+        EXPECT_EQ(std::string(), copied->getExpression(d));
+    }
+    EXPECT_FALSE(isLinkedTo(copy, size));
+    EXPECT_FALSE(isLinkedTo(copy, linked));
+    EXPECT_FALSE(isLinkedTo(size, copy));
+    EXPECT_FALSE(isLinkedTo(linked, copy));
+
+    size->setValue(11., ViewSpec::all(), 0);
+    EXPECT_DOUBLE_EQ(11., linkedSize->getValue(0));
+    EXPECT_DOUBLE_EQ(3., copied->getValue(0));
+    linkedSize->setValue(13., ViewSpec::all(), 1);
+    EXPECT_DOUBLE_EQ(13., size->getValue(1));
+    EXPECT_DOUBLE_EQ(4., copied->getValue(1));
+}
+
+TEST_F(UserKnobEdit, ACopyKeepsOnlyTheExpressionsReadingItself)
+{
+    NodePtr source = createBlur();
+    NodePtr target = createBlur();
+    ASSERT_TRUE(bool(source && target));
+    KnobDoublePtr size = std::dynamic_pointer_cast<KnobDouble>(source->getKnobByName(kBlurParamSize));
+    KnobDoublePtr amount = addTyped<KnobDouble>(source, "amount", 3);
+    KnobDoublePtr other = addTyped<KnobDouble>(source, "other");
+    ASSERT_TRUE(bool(size && amount && other));
+    size->setValue(6., ViewSpec::all(), 0);
+    amount->setValue(2., ViewSpec::all(), 0);
+    ASSERT_NO_THROW(amount->setExpression(1, "thisNode.amount.getValue(0) * 2", false, true));
+    ASSERT_NO_THROW(amount->setExpression(2, source->getScriptName_mt_safe() + ".amount.getValue(0) + 1", false, true));
+    ASSERT_NO_THROW(other->setExpression(0, "thisNode.size.getValue(0)", false, true));
+    ASSERT_DOUBLE_EQ(6., other->getValue(0));
+
+    std::string error;
+    KnobDoublePtr amountCopy = std::dynamic_pointer_cast<KnobDouble>(copyKnobToHolder(holderOf(target), amount, KnobIPtr(), -1, &error));
+    ASSERT_TRUE(bool(amountCopy)) << error;
+    KnobDoublePtr otherCopy = std::dynamic_pointer_cast<KnobDouble>(copyKnobToHolder(holderOf(target), other, KnobIPtr(), -1, &error));
+    ASSERT_TRUE(bool(otherCopy)) << error;
+
+    EXPECT_EQ(std::string(), amountCopy->getExpression(0));
+    EXPECT_EQ("thisNode.amount.getValue(0) * 2", amountCopy->getExpression(1));
+    EXPECT_EQ(std::string(), amountCopy->getExpression(2));
+    EXPECT_EQ(std::string(), otherCopy->getExpression(0));
+    EXPECT_DOUBLE_EQ(2., amountCopy->getValue(0));
+    EXPECT_DOUBLE_EQ(4., amountCopy->getValue(1));
+    EXPECT_DOUBLE_EQ(3., amountCopy->getValue(2));
+    EXPECT_DOUBLE_EQ(6., otherCopy->getValue(0));
+
+    amount->setValue(10., ViewSpec::all(), 0);
+    size->setValue(9., ViewSpec::all(), 0);
+    KnobDoublePtr targetSize = std::dynamic_pointer_cast<KnobDouble>(target->getKnobByName(kBlurParamSize));
+    ASSERT_TRUE(bool(targetSize));
+    targetSize->setValue(8., ViewSpec::all(), 0);
+    EXPECT_DOUBLE_EQ(2., amountCopy->getValue(0));
+    EXPECT_DOUBLE_EQ(4., amountCopy->getValue(1));
+    EXPECT_DOUBLE_EQ(3., amountCopy->getValue(2));
+    EXPECT_DOUBLE_EQ(6., otherCopy->getValue(0));
+    amountCopy->setValue(5., ViewSpec::all(), 0);
+    EXPECT_DOUBLE_EQ(10., amountCopy->getValue(1));
+}
+
 TEST_F(UserKnobEdit, AChoiceWithoutEntriesCanBeEdited)
 {
     NodePtr blur = createBlur();

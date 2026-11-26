@@ -207,6 +207,14 @@ private:
     StatusEnum fail(const std::string& message,
                     std::string* errorMessage);
 
+    /**
+     * @brief Ends the render that asked for the frame whose solve the user cancelled as aborted,
+     * so that no caller asks for that frame again in the same render. A render that cannot be
+     * aborted fails instead, and asks for no walk of its own again (wasCancelledInThisRender()).
+     **/
+    StatusEnum endCancelledRender(std::string* errorMessage);
+    bool wasCancelledInThisRender() const WARN_UNUSED_RETURN;
+
     RenderContextPtr substepContext(const RenderContextPtr& base,
                                     const std::string& loopName,
                                     int startFrame,
@@ -263,6 +271,8 @@ private:
 
     // One walk at a time shows its progress.
     std::atomic<bool> _progressShown { false };
+    // The render sequence of the last render whose walk the user cancelled, 0 if none.
+    std::atomic<U64> _cancelledRender { 0 };
 
     std::mutex _walksMutex;
     std::map<GeoSimSeries, std::shared_ptr<std::timed_mutex>> _walks;

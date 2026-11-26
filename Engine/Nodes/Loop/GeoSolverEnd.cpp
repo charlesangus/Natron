@@ -532,6 +532,39 @@ GeoSolverEnd::fail(const std::string& message,
     return eStatusFailed;
 }
 
+StatusEnum
+GeoSolverEnd::endCancelledRender(std::string* errorMessage)
+{
+    bool userInteraction = false;
+    AbortableRenderInfoPtr abortInfo;
+    EffectInstancePtr treeRoot;
+
+    // Reported as a failure, the cancel would send a caller that pulls the frame twice in one
+    // render, such as GeoToUSD's source preparation and then its render, into a walk again.
+    if (getAbortState(&userInteraction, &abortInfo, &treeRoot) && abortInfo) {
+        _cancelledRender = abortInfo->getRenderSequence();
+        abortInfo->setAborted();
+    }
+    if (aborted()) {
+        return eStatusFailed;
+    }
+    if (errorMessage) {
+        *errorMessage = getScriptName_mt_safe() + ": " + tr("the solve was cancelled.").toStdString();
+    }
+
+    return eStatusFailed;
+}
+
+bool
+GeoSolverEnd::wasCancelledInThisRender() const
+{
+    bool userInteraction = false;
+    AbortableRenderInfoPtr abortInfo;
+    EffectInstancePtr treeRoot;
+
+    return getAbortState(&userInteraction, &abortInfo, &treeRoot) && abortInfo && (abortInfo->getRenderSequence() == _cancelledRender);
+}
+
 RenderContextPtr
 GeoSolverEnd::substepContext(const RenderContextPtr& base,
                              const std::string& loopName,
@@ -870,6 +903,10 @@ GeoSolverEnd::renderGeometry(const GeoRenderActionArgs& args,
         return eStatusOK;
     }
 
+    if (wasCancelledInThisRender()) {
+        return endCancelledRender(errorMessage);
+    }
+
     GeoDetailConstPtr previous;
     int from = s.startFrame;
     int kept = 0;
@@ -906,7 +943,7 @@ GeoSolverEnd::renderGeometry(const GeoRenderActionArgs& args,
         previous = result;
         if (!progress.solved(h, (double)(h - from) / (double)total)) {
             // Cancelled: the frames solved so far are kept, the one asked for is not output.
-            return eStatusFailed;
+            return endCancelledRender(errorMessage);
         }
     }
     postMessage(eMessageTypeInfo, std::string());

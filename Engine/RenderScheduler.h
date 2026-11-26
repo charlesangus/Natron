@@ -280,7 +280,8 @@ public:
 private:
     friend class RenderScheduler;
 
-    void finish(EffectInstance::RenderRoIRetCode retCode,
+    // A frame finishes once: a second finish is a scheduler bug, logged and dropped, and returns false.
+    bool finish(EffectInstance::RenderRoIRetCode retCode,
                 std::map<ImageLayerDesc, ImagePtr> rootPlanes,
                 std::vector<RegionFallback> fallbacks = std::vector<RegionFallback>());
 

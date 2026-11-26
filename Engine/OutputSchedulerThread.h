@@ -374,7 +374,10 @@ protected:
                                 ViewIdx view,
                                 const RenderStatsPtr& stats);
 
-    void endAdmittedFrame();
+    /**
+     * @brief Ends a frame admitFrame() started for time. Call from the scheduler thread only.
+     **/
+    void endAdmittedFrame(int time);
 
     /**
      * @brief True while stopRender() collects the frames still in flight: their steps must not start further work.
@@ -388,12 +391,16 @@ private:
     void adjustFrameConcurrency();
     void admitFrames();
     void runFinishedFrameSteps();
+    void serviceAdmittedFrames();
+    void waitUntilNextFrameIsDue();
+    void reseedAdmission(int fromTime, RenderDirectionEnum direction);
     void abortPendingFrameSteps();
     void stopAdmittedFrames();
     void postFinishedFrameStep(const FrameStepDone& done);
 
     virtual void onAbortRequested(bool keepOldestRender) OVERRIDE FINAL;
     virtual void executeOnMainThread(const GenericThreadExecOnMainThreadArgsPtr& inArgs) OVERRIDE FINAL;
+    virtual void serviceWhileWaitingForMainThread() OVERRIDE FINAL;
 
     /**
      * @brief How to pick the task to process from the consumer thread

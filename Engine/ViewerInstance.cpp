@@ -95,6 +95,7 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/RotoStrokeItem.h"
 #include "Engine/Settings.h"
 #include "Engine/TLSHolder.h"
+#include "Engine/ThreadPool.h"
 #include "Engine/TimeLine.h"
 #include "Engine/Timer.h"
 #include "Engine/UpdateViewerParams.h"
@@ -4010,6 +4011,10 @@ ViewerInstance::evaluateSceneInput(ViewerArgs& inArgs)
 } // ViewerInstance::evaluateSceneInput
 
 struct ViewerInstance::PendingViewerRender {
+    // The frame args are thread-local, so a driven render drops them on the preparing thread right after
+    // preparation. Declared first so that, otherwise, they outlive everything rendered under them.
+    ViewerParallelRenderArgsSetterPtr frameArgs;
+
     // Set by the caller when the scheduler thread prepares the render and another thread completes it: nothing may
     // then pull synchronously or bind the render to the preparing thread.
     bool driven = false;
@@ -4027,9 +4032,6 @@ struct ViewerInstance::PendingViewerRender {
     GpuPlacementSnapshotBuilder* placementBuilder = nullptr;
     ViewerArgs* inArgs = nullptr;
 
-    // The frame args are thread-local, so a driven render drops them on the preparing thread right after
-    // preparation. Declared first so that, otherwise, they outlive everything rendered under them.
-    ViewerParallelRenderArgsSetterPtr frameArgs;
     std::shared_ptr<FrameRequestMap> requestPassData;
     std::unique_ptr<EffectInstance::NotifyRenderingStarted_RAII> renderingNotifier;
 
@@ -5012,6 +5014,7 @@ ViewerInstance::preparePlaybackFrame(PlaybackFrame* frame)
 
             std::shared_ptr<PendingViewerRender> pending = std::make_shared<PendingViewerRender>();
             pending->driven = true;
+            ScopedThreadAbortInfo abortScope(false, args[i]->params->abortInfo, getNode()->getEffectInstance());
             frame->ret[i] = prepareViewerRender(view, false, true, frame->viewerHash, NodePtr(), true, ViewerCurrentFrameRequestSchedulerStartArgsPtr(),
                                                 i == 0 ? stats : RenderStatsPtr(), nullptr, *args[i], pending.get());
             // Before the other input installs its own.
@@ -5053,6 +5056,8 @@ ViewerInstance::finishPlaybackInput(PlaybackFrame& frame,
 {
     ViewerArgsPtr& args = frame.args[i];
     ViewerRenderRetCode ret = frame.ret[i];
+    // The fallback worker and the pool threads finish one frame after another.
+    ScopedThreadAbortInfo abortScope(false, args->params ? args->params->abortInfo : AbortableRenderInfoPtr(), getNode()->getEffectInstance());
 
     if (frame.deferred[i]) {
         for (const EffectInstancePtr& effect : args->staleOverlayImageEffects) {

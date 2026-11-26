@@ -42,6 +42,7 @@
 #include <utility>
 
 #include <QDateTime>
+#include <QDebug>
 #include <QMutexLocker>
 #include <QRunnable>
 #include <QString>
@@ -133,7 +134,7 @@ FrameFuture::getRegionFallbacks() const
     return _fallbacks;
 }
 
-void
+bool
 FrameFuture::finish(EffectInstance::RenderRoIRetCode retCode,
                     std::map<ImageLayerDesc, ImagePtr> rootPlanes,
                     std::vector<RegionFallback> fallbacks)
@@ -143,7 +144,9 @@ FrameFuture::finish(EffectInstance::RenderRoIRetCode retCode,
         QMutexLocker k(&_mutex);
 
         if (_finished) {
-            return;
+            qWarning("RenderScheduler: a frame was finished twice; the second result (%d) is dropped", (int)retCode);
+
+            return false;
         }
         _retCode = retCode;
         _rootPlanes = std::move(rootPlanes);
@@ -156,6 +159,8 @@ FrameFuture::finish(EffectInstance::RenderRoIRetCode retCode,
     if (callback) {
         callback(retCode);
     }
+
+    return true;
 }
 
 void

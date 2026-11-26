@@ -28,6 +28,7 @@
 #include <algorithm> // min, max
 #include <atomic>
 #include <cassert>
+#include <cmath>
 #include <functional>
 #include <iostream>
 #include <limits>
@@ -321,6 +322,12 @@ struct OutputSchedulerThreadPrivate
     // The mode admission and display both step with, so that they follow one sequence.
     PlaybackModeEnum playbackMode;
     bool stoppingAdmittedFrames;
+    // The time of every frame in nAdmittedFrames.
+    std::multiset<int> admittedTimes;
+    // Times admission passes over once each, since a frame for them is already buffered or in flight.
+    std::multiset<int> admissionSkips;
+    // Lets the next admission past a full buffer, when nothing in it or in flight is the frame the display waits for.
+    bool forceNextAdmission;
 
     std::unique_ptr<FrameFallbackWorker> fallbackWorker;
 
@@ -364,6 +371,9 @@ struct OutputSchedulerThreadPrivate
         , admissionExhausted(true)
         , playbackMode(ePlaybackModeOnce)
         , stoppingAdmittedFrames(false)
+        , admittedTimes()
+        , admissionSkips()
+        , forceNextAdmission(false)
         , fallbackWorker()
     {
     }
@@ -403,6 +413,43 @@ struct OutputSchedulerThreadPrivate
         value.frame = image;
         value.stats = stats;
         buf.insert( std::make_pair(key, value) );
+    }
+
+    bool isFrameReachable(int time,
+                          int fromTime,
+                          RenderDirectionEnum direction,
+                          int firstFrame,
+                          int lastFrame) const
+    {
+        if ((time < firstFrame) || (time > lastFrame)) {
+            return false;
+        }
+        if (playbackMode != ePlaybackModeOnce) {
+            return true;
+        }
+
+        return (direction == eRenderDirectionForward) ? (time >= fromTime) : (time <= fromTime);
+    }
+
+    // A frame the display will not reach again would hold its image and a buffer slot until the playback ends.
+    void eraseUnreachableBufferedFrames(int fromTime,
+                                        RenderDirectionEnum direction,
+                                        int firstFrame,
+                                        int lastFrame)
+    {
+        assert(!bufMutex.tryLock());
+        for (FrameBuffer::iterator it = buf.begin(); it != buf.end();) {
+            if (isFrameReachable(roundTime(it->first.time), fromTime, direction, firstFrame, lastFrame)) {
+                ++it;
+            } else {
+                buf.erase(it++);
+            }
+        }
+    }
+
+    static int roundTime(double time)
+    {
+        return (int)std::floor(time + 0.5);
     }
 
     struct ViewUniqueIDPair
@@ -748,6 +795,9 @@ OutputSchedulerThread::startRender()
         _imp->expectFrameToRender = startingFrame;
     }
     assert(_imp->nAdmittedFrames == 0);
+    _imp->admittedTimes.clear();
+    _imp->admissionSkips.clear();
+    _imp->forceNextAdmission = false;
     _imp->stoppingAdmittedFrames = false;
     _imp->admissionExhausted = (frameStep <= 0) || (firstFrame > lastFrame);
     _imp->playbackMode = _imp->engine->getPlaybackMode();
@@ -828,9 +878,11 @@ OutputSchedulerThread::threadLoopOnce(const GenericThreadStartArgsPtr &inArgs)
 
     startRender();
 
+    // The frame the display last re-admitted for when nothing could bring it, so that it does so only once per frame.
+    int stalledAdmissionReseededAt = std::numeric_limits<int>::min();
+
     for (;; ) {
-        runFinishedFrameSteps();
-        admitFrames();
+        serviceAdmittedFrames();
 
         ///When set to true, we don't sleep in the bufEmptyCondition but in the startCondition instead, indicating
         ///we finished a render
@@ -946,17 +998,13 @@ OutputSchedulerThread::threadLoopOnce(const GenericThreadStartArgsPtr &inArgs)
                         _imp->expectFrameToRender = nextFrameToRender;
                     }
                     if (sequenceChanged) {
-                        // The frames admitted ahead followed the old sequence, which the display no longer does:
-                        // admission resumes from the frame the display now waits for.
-                        _imp->nextFrameToAdmit = nextFrameToRender;
-                        args->pushTimelineDirection = newDirection;
-                        _imp->admissionExhausted = false;
+                        reseedAdmission(nextFrameToRender, newDirection);
                     }
                 }
             } // if (!renderFinished) {
 
             if (_imp->timer.playState == ePlayStateRunning) {
-                _imp->timer.waitUntilNextFrameIsDue(); // timer synchronizing with the requested fps
+                waitUntilNextFrameIsDue();
             }
 
 
@@ -1000,6 +1048,10 @@ OutputSchedulerThread::threadLoopOnce(const GenericThreadStartArgsPtr &inArgs)
                 views[0] = frame.view;
                 notifyFrameRendered(expectedTimeToRender, frame.view, views, frame.stats, eSchedulingPolicyOrdered);
             }
+            stalledAdmissionReseededAt = std::numeric_limits<int>::min();
+
+            // The display may go through the whole buffer without returning to the outer loop.
+            serviceAdmittedFrames();
 
             ///////////
             /// End of the loop, refresh bufferEmpty
@@ -1020,6 +1072,27 @@ OutputSchedulerThread::threadLoopOnce(const GenericThreadStartArgsPtr &inArgs)
 
         if (!renderFinished) {
             assert(state == eThreadStateActive);
+            int expected;
+            {
+                QMutexLocker k(&_imp->framesToRenderMutex);
+                expected = _imp->expectFrameToRender;
+            }
+            bool admissionStalled;
+            {
+                QMutexLocker l(&_imp->bufMutex);
+                BufferedFrameKey key;
+                key.time = expected;
+                admissionStalled = !_imp->buf.empty() && (_imp->buf.find(key) == _imp->buf.end()) && (_imp->nAdmittedFrames == 0) && (_imp->nFrameStepsOutstanding == 0) && _imp->finishedFrameSteps.empty();
+            }
+            if (admissionStalled) {
+                if (expected != stalledAdmissionReseededAt) {
+                    // Nothing buffered or in flight is the frame the display waits for, so no wake-up would ever come.
+                    stalledAdmissionReseededAt = expected;
+                    reseedAdmission(expected, args->processTimelineDirection);
+                    _imp->forceNextAdmission = true;
+                    continue;
+                }
+            }
             QMutexLocker bufLocker (&_imp->bufMutex);
             // An abort or quit raised since resolveState() wakes this condition under bufMutex only after flagging,
             // so re-checking the flags here means that wake-up is either seen now or arrives once waiting.
@@ -1081,11 +1154,15 @@ OutputSchedulerThread::abortPendingFrameSteps()
 void
 OutputSchedulerThread::postFinishedFrameStep(const FrameStepDone& done)
 {
-    QMutexLocker l(&_imp->bufMutex);
+    {
+        QMutexLocker l(&_imp->bufMutex);
 
-    _imp->finishedFrameSteps.push_back(done);
-    --_imp->nFrameStepsOutstanding;
-    _imp->wakeBufEmptyCondition();
+        _imp->finishedFrameSteps.push_back(done);
+        --_imp->nFrameStepsOutstanding;
+        _imp->wakeBufEmptyCondition();
+    }
+    // The display of a frame can keep this thread waiting for the main thread for longer than a frame takes.
+    requestServiceWhileWaitingForMainThread();
 }
 
 void
@@ -1221,9 +1298,108 @@ OutputSchedulerThread::runFinishedFrameSteps()
 }
 
 void
-OutputSchedulerThread::endAdmittedFrame()
+OutputSchedulerThread::serviceAdmittedFrames()
 {
+    runFinishedFrameSteps();
+    OutputSchedulerThreadStartArgsPtr args = _imp->runArgs.lock();
+    if (args) {
+        int expected;
+        {
+            QMutexLocker k(&_imp->framesToRenderMutex);
+            expected = _imp->expectFrameToRender;
+        }
+        // Frames in flight when the range changed arrive afterwards.
+        QMutexLocker l(&_imp->bufMutex);
+        _imp->eraseUnreachableBufferedFrames(expected, args->processTimelineDirection, args->firstFrame, args->lastFrame);
+    }
+    admitFrames();
+}
+
+void
+OutputSchedulerThread::serviceWhileWaitingForMainThread()
+{
+    serviceAdmittedFrames();
+}
+
+void
+OutputSchedulerThread::waitUntilNextFrameIsDue()
+{
+    for (;;) {
+        serviceAdmittedFrames();
+        const double secondsLeft = _imp->timer.getSecondsUntilNextFrameIsDue();
+        if (secondsLeft <= 0.) {
+            break;
+        }
+        QMutexLocker l(&_imp->bufMutex);
+        if (isBeingAborted() || mustQuitThread()) {
+            return;
+        }
+        if (_imp->finishedFrameSteps.empty()) {
+            _imp->bufEmptyCondition.wait(&_imp->bufMutex, (unsigned long)std::ceil(secondsLeft * 1000.));
+        }
+    }
+    // Keeps the timer's frame rate accounting; it returns at once when the frame is due.
+    _imp->timer.waitUntilNextFrameIsDue();
+}
+
+void
+OutputSchedulerThread::reseedAdmission(int fromTime,
+                                       RenderDirectionEnum direction)
+{
+    OutputSchedulerThreadStartArgsPtr args = _imp->runArgs.lock();
+    if (!args) {
+        return;
+    }
+    _imp->admissionSkips.clear();
+    {
+        QMutexLocker l(&_imp->bufMutex);
+        _imp->eraseUnreachableBufferedFrames(fromTime, direction, args->firstFrame, args->lastFrame);
+
+        // The display takes one entry per view and input of a time at once, and a nothing-to-display entry on its own.
+        std::map<int, int> nothingEntries;
+        std::map<std::pair<int, std::pair<int, int>>, int> imageEntries;
+        std::map<int, int> maxImageEntries;
+        for (FrameBuffer::const_iterator it = _imp->buf.begin(); it != _imp->buf.end(); ++it) {
+            const int time = OutputSchedulerThreadPrivate::roundTime(it->first.time);
+            if (it->second.displaysNothing) {
+                ++nothingEntries[time];
+            } else if (it->second.frame) {
+                const int n = ++imageEntries[std::make_pair(time, std::make_pair((int)it->second.view, it->second.frame->getUniqueID()))];
+                int& maxN = maxImageEntries[time];
+                maxN = std::max(maxN, n);
+            }
+        }
+        for (std::map<int, int>::const_iterator it = nothingEntries.begin(); it != nothingEntries.end(); ++it) {
+            for (int i = 0; i < it->second; ++i) {
+                _imp->admissionSkips.insert(it->first);
+            }
+        }
+        for (std::map<int, int>::const_iterator it = maxImageEntries.begin(); it != maxImageEntries.end(); ++it) {
+            for (int i = 0; i < it->second; ++i) {
+                _imp->admissionSkips.insert(it->first);
+            }
+        }
+    }
+    for (std::multiset<int>::const_iterator it = _imp->admittedTimes.begin(); it != _imp->admittedTimes.end(); ++it) {
+        if (_imp->isFrameReachable(*it, fromTime, direction, args->firstFrame, args->lastFrame)) {
+            _imp->admissionSkips.insert(*it);
+        }
+    }
+    // The frames admitted ahead followed the old sequence: admission resumes from the frame the display now waits for.
+    _imp->nextFrameToAdmit = fromTime;
+    args->pushTimelineDirection = direction;
+    _imp->admissionExhausted = false;
+}
+
+void
+OutputSchedulerThread::endAdmittedFrame(int time)
+{
+    assert(QThread::currentThread() == this);
     assert(_imp->nAdmittedFrames > 0);
+    std::multiset<int>::iterator it = _imp->admittedTimes.find(time);
+    if (it != _imp->admittedTimes.end()) {
+        _imp->admittedTimes.erase(it);
+    }
     --_imp->nAdmittedFrames;
 }
 
@@ -1244,7 +1420,7 @@ OutputSchedulerThread::admitFrames()
         {
             // Frames the output has not taken yet hold their images, so a slow output stops admission before RAM runs out.
             QMutexLocker l(&_imp->bufMutex);
-            if (isBufferFull((int)_imp->buf.size() + _imp->nAdmittedFrames, appPTR->getHardwareIdealThreadCount())) {
+            if (!_imp->forceNextAdmission && isBufferFull((int)_imp->buf.size() + _imp->nAdmittedFrames, appPTR->getHardwareIdealThreadCount())) {
                 return;
             }
         }
@@ -1272,8 +1448,19 @@ OutputSchedulerThread::admitFrames()
                                                                                      time, args->firstFrame, args->lastFrame, args->frameStep,
                                                                                      &_imp->nextFrameToAdmit, &newDirection);
         args->pushTimelineDirection = newDirection;
+        std::multiset<int>::iterator skip = _imp->admissionSkips.find(time);
+        if (skip != _imp->admissionSkips.end()) {
+            _imp->admissionSkips.erase(skip);
+            continue;
+        }
+        _imp->forceNextAdmission = false;
         ++_imp->nAdmittedFrames;
-        admitFrame(time, args->viewsToRender, args->enableRenderStats);
+        _imp->admittedTimes.insert(time);
+        {
+            // Without it, aborted() on this thread keeps the abort info of the first frame it prepared for good.
+            ScopedThreadAbortInfo abortScope(false, AbortableRenderInfoPtr(), _imp->outputEffect.lock());
+            admitFrame(time, args->viewsToRender, args->enableRenderStats);
+        }
     }
 }
 
@@ -1797,7 +1984,7 @@ DefaultScheduler::admitFrame(int time,
 
     if (!output || viewsToRender.empty()) {
         notifyRenderFailure("");
-        endAdmittedFrame();
+        endAdmittedFrame(time);
 
         return;
     }
@@ -1814,8 +2001,10 @@ DefaultScheduler::admitFrame(int time,
         }
 
         if (!error.empty()) {
-            output->getApp()->appendToScriptEditor("Failed to get signature of beforeFrameRendered callback: " + error);
-            endAdmittedFrame();
+            const std::string message = "Failed to get signature of beforeFrameRendered callback: " + error;
+            output->getApp()->appendToScriptEditor(message);
+            notifyRenderFailure(message);
+            endAdmittedFrame(time);
 
             return;
         }
@@ -1824,8 +2013,10 @@ DefaultScheduler::admitFrame(int time,
         signatureError.append("The before frame render callback supports the following signature(s):\n");
         signatureError.append("- callback(frame, thisNode, app)");
         if ((args.size() != 3) || (args[0] != "frame") || (args[1] != "thisNode") || (args[2] != "app")) {
-            output->getApp()->appendToScriptEditor("Wrong signature of beforeFrameRendered callback: " + signatureError);
-            endAdmittedFrame();
+            const std::string message = "Wrong signature of beforeFrameRendered callback: " + signatureError;
+            output->getApp()->appendToScriptEditor(message);
+            notifyRenderFailure(message);
+            endAdmittedFrame(time);
 
             return;
         }
@@ -1839,7 +2030,7 @@ DefaultScheduler::admitFrame(int time,
             runCallbackWithVariables(QString::fromUtf8(script.c_str()));
         } catch (const std::exception& e) {
             notifyRenderFailure(e.what());
-            endAdmittedFrame();
+            endAdmittedFrame(time);
 
             return;
         }
@@ -1924,12 +2115,8 @@ DefaultScheduler::runWriterView(WriterFrame& frame,
         const bool isSequentialRender = true;
         const DataKindEnum outputKind = activeInputToRender->getOutputDataKind();
 
-        if (onFallbackWorker) {
-            AbortableThread* isAbortableThread = dynamic_cast<AbortableThread*>(QThread::currentThread());
-            if (isAbortableThread) {
-                isAbortableThread->setAbortInfo(isRenderDueToRenderInteraction, abortInfo, activeInputToRender);
-            }
-        }
+        // Both threads that run this prepare frame after frame, so each frame's abort info must go when it ends.
+        ScopedThreadAbortInfo abortScope(isRenderDueToRenderInteraction, abortInfo, activeInputToRender);
 
         ParallelRenderArgsSetter frameRenderArgs(time,
                                                  view,
@@ -2114,7 +2301,7 @@ DefaultScheduler::finishWriterView(const std::shared_ptr<WriterFrame>& frame)
 
         return;
     }
-    endAdmittedFrame();
+    endAdmittedFrame(frame->time);
 }
 
 void
@@ -2414,7 +2601,7 @@ ViewerDisplayScheduler::admitFrame(int time,
     frame->viewer = _viewer.lock();
     if (!frame->viewer || viewsToRender.empty()) {
         notifyRenderFailure(std::string());
-        endAdmittedFrame();
+        endAdmittedFrame(time);
 
         return;
     }
@@ -2501,7 +2688,7 @@ ViewerDisplayScheduler::finishViewerFrame(const std::shared_ptr<ViewerFrame>& fr
     for (int i = 0; i < 2; ++i) {
         playback.pending[i].reset();
     }
-    endAdmittedFrame();
+    endAdmittedFrame(playback.time);
 }
 
 void

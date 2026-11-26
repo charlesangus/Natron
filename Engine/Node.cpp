@@ -9780,7 +9780,8 @@ Node::setNodeIsRenderingInternal(std::list<NodeWPtr>& markedNodes)
         QMutexLocker k(&_imp->nodeIsDequeuingMutex);
         if (QThread::currentThread() != qApp->thread()) {
             while ((_imp->nodeIsDequeuing || (_imp->renderStartsHeldByEdits > 0)) && !aborted()) {
-                _imp->nodeIsDequeuingCond.wait(k.mutex());
+                // Nothing wakes this condition on an abort, so the wait must time out to notice one.
+                _imp->nodeIsDequeuingCond.wait(k.mutex(), 10);
             }
         }
         QMutexLocker nrLocker(&_imp->nodeIsRenderingMutex);

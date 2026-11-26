@@ -36,7 +36,6 @@ try:
 
     from PySide6.QtCore import QEvent, QPointF, Qt
     from PySide6.QtGui import QCursor, QMouseEvent
-    from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
 
     import guitest as gt
@@ -112,7 +111,7 @@ try:
         if not check(row >= 0, "the menu filtered by %r offers %s" % (text, plugin_id)):
             return False
         list_view.setCurrentIndex(model.index(row, 0))
-        QTest.keyClick(line_edit, Qt.Key_Return)
+        sg.key_click(line_edit, Qt.Key_Return)
         QApplication.processEvents()
         return True
 
@@ -190,7 +189,7 @@ try:
         check(lit["closure1"] == "halo" and lit["closure2"] == "halo", "both closure inputs have a halo (got %r)" % lit)
         check(lit["fac"] == "dimmed", "fac, a float, is dimmed (got %r)" % lit)
 
-        QTest.keyClick(graph, Qt.Key_Down)
+        sg.key_click(graph, Qt.Key_Down)
         QApplication.processEvents()
         yield ("sleep", SETTLE_MS)
         check(sg.input_source(mix, "closure2") == bsdf.getScriptName(),
@@ -199,7 +198,7 @@ try:
         check(highlight_of(graph, builder, mix, "input", "closure1") == "halo", "the highlight stays mid-cycle")
         gt.shot("shader_graph_shift_drop_cycle.png")
 
-        QTest.keyClick(graph, Qt.Key_Return)
+        sg.key_click(graph, Qt.Key_Return)
         QApplication.processEvents()
         yield ("sleep", SETTLE_MS)
         check(highlight_of(graph, builder, mix, "input", "closure2") == "", "Enter clears the highlights")
@@ -228,7 +227,7 @@ try:
         mix = yield from shift_drop_create(graph, start, end, builder)
         require(mix is not None, "the second shift-drop created a mix closure")
         mix = None
-        QTest.keyClick(graph, Qt.Key_Escape)
+        sg.key_click(graph, Qt.Key_Escape)
         QApplication.processEvents()
         ok = yield ("until", lambda: not children_of(builder, MIX), sg.POLL_TIMEOUT_S)
         check(ok, "Escape removes the node")

@@ -582,7 +582,7 @@ TEST_F(ShaderPromoteTest, AConnectionWhoseTypesDoNotConvertIsRefused)
                                                                      "    if down.connectInput("
         + std::to_string(baseColor) + ", up):\n"
                                       "        raise RuntimeError('closure connected to a colour')\n"
-                                      "    if not [w for w in caught if 'convert' in str(w.message)]:\n"
+                                      "    if not [w for w in caught if 'cannot feed' in str(w.message)]:\n"
                                       "        raise RuntimeError('no reason given')\n";
     std::string error;
     std::string output;

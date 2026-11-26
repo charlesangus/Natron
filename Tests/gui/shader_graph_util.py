@@ -9,8 +9,7 @@ import os
 
 import NatronEngine
 from PySide6.QtCore import QEvent, QPointF, Qt, QTimer
-from PySide6.QtGui import QCursor, QFocusEvent, QMouseEvent
-from PySide6.QtTest import QTest
+from PySide6.QtGui import QCursor, QFocusEvent, QKeyEvent, QMouseEvent
 from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QListView, QMainWindow, QMessageBox
 
 import guitest as gt
@@ -157,18 +156,24 @@ def wait_for_popup():
     return popup, popup.findChildren(QLineEdit)[0], popup.findChildren(QListView)[0]
 
 
+def key_click(widget, key, modifiers=Qt.NoModifier):
+    """Sends a key press and release to widget (PySide6.QtTest is not bundled in the AppImage)."""
+    for kind in (QEvent.KeyPress, QEvent.KeyRelease):
+        QApplication.sendEvent(widget, QKeyEvent(kind, key, modifiers))
+
+
 def open_tab_menu(view):
     """Presses Tab over view and returns what wait_for_popup() does."""
     focused = yield from focus_graph(view)
     if not focused:
         return None, None, None
-    QTest.keyClick(view, Qt.Key_Tab)
+    key_click(view, Qt.Key_Tab)
     found = yield from wait_for_popup()
     return found
 
 
 def close_tab_menu(popup):
-    QTest.keyClick(popup.findChildren(QLineEdit)[0], Qt.Key_Escape)
+    key_click(popup.findChildren(QLineEdit)[0], Qt.Key_Escape)
     QApplication.processEvents()
 
 

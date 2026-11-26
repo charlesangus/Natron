@@ -26,7 +26,6 @@ try:
     import faulthandler
 
     from PySide6.QtCore import Qt
-    from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
 
     import guitest as gt
@@ -79,7 +78,7 @@ try:
         check_target_list(sg.listed_plugin_ids(tabtabtab_natron), shaders, first, "the first target's menu")
         gt.shot("shader_graph_tab_first.png")
 
-        QTest.keyClick(line_edit, Qt.Key_Backtab, Qt.ShiftModifier)
+        sg.key_click(line_edit, Qt.Key_Backtab, Qt.ShiftModifier)
         QApplication.processEvents()
         check(popup.isVisible(), "Shift+Tab leaves the menu open")
         second = tabtabtab_natron._network_target(context)

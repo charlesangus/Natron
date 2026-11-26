@@ -6,7 +6,7 @@ Usage (natron-dev container; see Tests/gui/run-gui-test.sh):
         NATRON_GUI_TEST_OUT=build/m351-gui/promote GUI_TEST_TIMEOUT=300 \
         Tests/gui/run-gui-test.sh Tests/gui/shader_graph_promote.py <AppImage or build/fast/App/Natron>'
 
-The port toggle beside a BSDF's roughness promotes it; a math node is connected to the new port,
+The port toggle beside a BSDF's diffuse roughness (not a default port) promotes it; a math node is connected to the new port,
 which greys the roughness fields out; the toggle then asks before demoting the connected port, the
 question is answered Yes, and the port goes with its connection, leaving the fields editable.
 """
@@ -25,7 +25,7 @@ QUESTION_POLLS = 100
 BUILDER = "USDMaterialBuilder"
 MATH = "cycles_math"
 BSDF = "cycles_principled_bsdf"
-PORT = "roughness"
+PORT = "diffuse_roughness"
 
 try:
     import NatronEngine

@@ -101,8 +101,18 @@ try:
         action.trigger()
         QApplication.processEvents()
 
-    def choose(line_edit, list_view, text, plugin_id):
-        """Filters the open menu by text and picks plugin_id's row; False when it is not listed."""
+    def take_python_errors():
+        """What Python wrote to stderr since the last call: the GUI session's stderr catcher, which
+        also takes exceptions raised in Qt slots such as the menu's choice."""
+        catcher = getattr(sys.modules.get("__main__"), "catchErr", None)
+        text = getattr(catcher, "value", "") if catcher is not None else ""
+        if text:
+            catcher.value = ""
+        return text or ""
+
+    def choose(popup, line_edit, list_view, text, plugin_id):
+        """Filters the open menu by text and picks plugin_id's row with Enter; False when it is not
+        listed."""
         line_edit.setText(text)
         QApplication.processEvents()
         model = list_view.model()
@@ -111,8 +121,21 @@ try:
         if not check(row >= 0, "the menu filtered by %r offers %s" % (text, plugin_id)):
             return False
         list_view.setCurrentIndex(model.index(row, 0))
+        selected = sorted(i.row() for i in list_view.selectionModel().selectedIndexes())
+        check(selected == [row], "%s's row %d is the selected one (got %r)" % (plugin_id, row, selected))
+        take_python_errors()
         sg.key_click(line_edit, Qt.Key_Return)
         QApplication.processEvents()
+        # A posted key press is not spontaneous, so Qt first offers it to the shortcut map, which
+        # may take it before the line edit; the menu's choice then never ran, and the menu is
+        # still open. Choosing closes the menu unless the choice raised.
+        if popup.isVisible():
+            report("NOTE Enter left the menu open (Python errors: %r); choosing through returnPressed" % take_python_errors())
+            line_edit.returnPressed.emit()
+            QApplication.processEvents()
+        errors = take_python_errors()
+        check(not errors, "choosing %s raises no Python error (got %r)" % (plugin_id, errors))
+        check(not popup.isVisible(), "choosing %s closes the menu" % plugin_id)
         return True
 
     def shift_drop_create(graph, start, end, builder):
@@ -126,10 +149,13 @@ try:
         require(popup is not None, "a shift-drop on empty space opens the tab menu")
         context = tabtabtab_natron._plugin.context() or {}
         report("NOTE shift-drop menu targets %r" % (tuple(context.get("networkTargets") or ()),))
-        if not choose(line_edit, list_view, "mix", MIX):
+        if not choose(popup, line_edit, list_view, "mix", MIX):
             sg.close_tab_menu(popup)
             return None
         ok = yield ("until", lambda: len(children_of(builder, MIX)) > before, sg.POLL_TIMEOUT_S)
+        if not ok:
+            report("NOTE builder children %r, root children %r" % (
+                sorted(n.getPluginID() for n in builder.getChildren()), sorted(n.getPluginID() for n in app.getChildren())))
         require(ok, "choosing %s creates it in the builder" % MIX)
         yield ("sleep", SETTLE_MS)
         return children_of(builder, MIX)[-1]

@@ -154,8 +154,10 @@ reportAdapterCall(const char* function,
     if (app && !output.empty()) {
         app->appendToScriptEditor(output);
     }
+    // Text on stderr without an exception, such as a warning, may predate the call: it is passed on
+    // as is, not as a failure.
     if (failed || !err.empty()) {
-        const std::string message = std::string("tabtabtab_natron.") + function + "() failed:\n" + err;
+        const std::string message = failed ? std::string("tabtabtab_natron.") + function + "() failed:\n" + err : err;
         if (app) {
             app->appendToScriptEditor(message);
         }

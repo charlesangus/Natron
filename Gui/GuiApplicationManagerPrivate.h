@@ -167,7 +167,8 @@ struct GuiApplicationManagerPrivate
 
     void addNodesMenuPluginAction(QMenu* menu, const PluginGroupNode& leaf);
 
-    void createNodeFromNodesMenu(const QString& pluginID, int major, int minor);
+    // internalPlugin allows a plug-in registered for internal use only, such as a network node type.
+    void createNodeFromNodesMenu(const QString& pluginID, int major, int minor, bool internalPlugin = false);
 
     void clearNodesMenuTarget();
 };

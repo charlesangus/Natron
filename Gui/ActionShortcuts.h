@@ -1087,6 +1087,9 @@ bool mouseGesturesOverlap(MouseGestureEnum a, MouseGestureEnum b);
 // kShortcutModifierSpace when spaceHeld.
 Qt::KeyboardModifiers mouseBindingModifiers(Qt::KeyboardModifiers modifiers, bool spaceHeld);
 
+// Whether a mouse binding of the 3D viewer needs Space held.
+bool viewer3DMouseBindingsUseSpace();
+
 // A binding as the shortcut editor shows it, such as "Alt+LeftButton", "Space+MiddleButton" or
 // "Ctrl+Wheel".
 QString mouseBindingToString(const MouseBinding& binding, bool wheel);

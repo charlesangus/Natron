@@ -138,6 +138,31 @@ public:
 
     KnobColorWarpPinsPtr getPinsKnob() const WARN_UNUSED_RETURN;
 
+    ColorWarpSpaceEnum getWarpSpace() const WARN_UNUSED_RETURN;
+    ColorWarpKernelEnum getWarpKernel() const WARN_UNUSED_RETURN;
+    double getLightnessFalloff(double time) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The basis toWarpSpace() and fromWarpSpace() take for the project's working space,
+     * the one the field is prepared with.
+     **/
+    ColorWarpSpaceBasis getWarpSpaceBasis() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The knobs other than the pins whose values change the field: warp space, kernel and
+     * lightness falloff.
+     **/
+    std::vector<KnobIPtr> getFieldKnobs() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The layer and the index in it of the channel the warp divides colours by before
+     * warping them, as the (Un)premult By selector picks it, or false when it divides by nothing.
+     **/
+    bool getUnPremultChannel(double time,
+                             ViewIdx view,
+                             ImageLayerDesc* layer,
+                             int* channelIndex) WARN_UNUSED_RETURN;
+
     /**
      * @brief Adds a pin on the source input's colour at canonical (x, y) and time, as one undo
      * step, and selects it. Returns the new pin's id, or 0 when (x, y) is outside the input.
@@ -199,6 +224,15 @@ private:
 
     bool pixelScale(double* scaleX,
                     double* scaleY) const;
+
+    /**
+     * @brief The layer and the channel slot in it (as sampleNodeColor() places it) the warp
+     * divides by, or false when the (Un)premult By selector divides by nothing.
+     **/
+    bool unPremultDivisor(double time,
+                          ViewIdx view,
+                          ImageLayerDesc* layer,
+                          int* slot);
 
     /**
      * @brief The source input's colour at canonical (x, y), unpremultiplied by the (Un)premult By

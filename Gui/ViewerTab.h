@@ -83,6 +83,13 @@ public:
     // The node whose scene the scene view shows, the viewer's input A; null when none.
     NodePtr getSceneViewedNode() const;
 
+    /**
+     * @brief Offers the Colour Space mode for the ColorWarp the viewer shows on input A, else for
+     * the one ColorWarp selected in the node graph last focused (the root graph when none is), and
+     * turns the mode off when there is neither.
+     **/
+    void refreshColorSpaceView();
+
     void setCurrentView(ViewIdx view);
 
     ViewIdx getCurrentView() const;

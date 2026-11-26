@@ -75,6 +75,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Engine/ViewerInstance.h"
 
 #include "Gui/ActionShortcuts.h" // kShortcutGroupViewer ...
+#include "Gui/ColorSpaceView.h"
 #include "Gui/CurveWidget.h"
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
@@ -83,10 +84,10 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/GuiMacros.h" // buttonDownIsLeft...
 #include "Gui/Histogram.h"
 #include "Gui/InfoViewerWidget.h"
+#include "Gui/KnobGuiParametric.h"
 #include "Gui/Menu.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGui.h"
-#include "Gui/KnobGuiParametric.h"
 #include "Gui/NodeSettingsPanel.h"
 #include "Gui/Shaders.h"
 #include "Gui/TabWidget.h"
@@ -372,6 +373,13 @@ ViewerGL::paintGL()
         }
     }
     assert(_imp->_textFont);
+
+    if (_imp->colorSpaceViewActive && _imp->colorSpaceView) {
+        _imp->colorSpaceView->paint(_imp->clearColor, *_imp->_textFont, _imp->textRenderer);
+        glCheckError();
+
+        return;
+    }
 
     GLint viewport[4] = { 0, 0, 0, 0 };
     glGetIntegerv(GL_VIEWPORT, viewport);
@@ -2279,6 +2287,12 @@ ViewerGL::mousePressEvent(QMouseEvent* e)
 
     _imp->viewerTab->onMousePressCalledInViewer();
 
+    if (_imp->colorSpaceViewActive && _imp->colorSpaceView) {
+        _imp->colorSpaceView->mousePress(e);
+
+        return;
+    }
+
     _imp->hasMovedSincePress = false;
     _imp->pressureOnRelease = 1.;
     if ( (e->buttons() == Qt::LeftButton) && !(e->modifiers() &  Qt::MetaModifier) ) {
@@ -2570,6 +2584,12 @@ ViewerGL::mouseReleaseEvent(QMouseEvent* e)
         return;
     }
 
+    if (_imp->colorSpaceViewActive && _imp->colorSpaceView) {
+        _imp->colorSpaceView->mouseRelease(e);
+
+        return;
+    }
+
     _imp->pressureOnPress = 1;
     _imp->pointerTypeOnPress = ePenTypeLMB;
 
@@ -2660,6 +2680,13 @@ ViewerGL::mouseMoveEvent(QMouseEvent* e)
     if (RotoLatencyProbe* probe = RotoLatencyProbe::instance()) {
         probe->noteInputEvent();
     }
+    if (_imp->colorSpaceViewActive && _imp->colorSpaceView) {
+        if (!_imp->colorSpaceView->mouseMove(e)) {
+            QOpenGLWidget::mouseMoveEvent(e);
+        }
+
+        return;
+    }
     if ( !penMotionInternal(e->position().x(), e->position().y(), /*pressure=*/ 1., currentTimeForEvent(e), e) ) {
         QOpenGLWidget::mouseMoveEvent(e);
     }
@@ -2670,6 +2697,12 @@ ViewerGL::tabletEvent(QTabletEvent* e)
 {
     if (RotoLatencyProbe* probe = RotoLatencyProbe::instance()) {
         probe->noteInputEvent();
+    }
+    if (_imp->colorSpaceViewActive) {
+        // Ignored, the event comes back as a mouse event, which the colour space view handles.
+        e->ignore();
+
+        return;
     }
     qreal pressure = e->pressure();
     if (pressure <= 0.) {
@@ -3097,6 +3130,11 @@ ViewerGL::penMotionInternal(int x,
 void
 ViewerGL::mouseDoubleClickEvent(QMouseEvent* e)
 {
+    if (_imp->colorSpaceViewActive) {
+        e->accept();
+
+        return;
+    }
     QPointF pos_opengl;
     {
         QMutexLocker l(&_imp->zoomCtxMutex);
@@ -3330,6 +3368,13 @@ ViewerGL::wheelEvent(QWheelEvent* e)
 
     if (!_imp->viewerTab) {
         return QOpenGLWidget::wheelEvent(e);
+    }
+    if (_imp->colorSpaceViewActive && _imp->colorSpaceView) {
+        if (!_imp->colorSpaceView->wheel(e)) {
+            e->ignore();
+        }
+
+        return;
     }
 
     // delta=120 is a standard wheel mouse click, but mice may be more accurate
@@ -3735,6 +3780,9 @@ ViewerGL::enterEvent(QEnterEvent* e)
 bool
 ViewerGL::event(QEvent* e)
 {
+    if (_imp->colorSpaceView && _imp->colorSpaceView->event(e)) {
+        return true;
+    }
     if ((e->type() == QEvent::ShortcutOverride) && _imp->viewerTab && _imp->viewerTab->claimShortcutOverride(static_cast<QKeyEvent*>(e))) {
         return true;
     }
@@ -4058,6 +4106,107 @@ ViewerGL::setProjection(double zoomLeft,
     QMutexLocker l(&_imp->zoomCtxMutex);
     _imp->zoomCtx.setZoom(zoomLeft, zoomBottom, zoomFactor, zoomAspectRatio);
     Q_EMIT zoomChanged(100 * zoomFactor);
+}
+
+void
+ViewerGL::setColorSpaceViewNode(const NodePtr& node)
+{
+    // always running in the main thread
+    assert(qApp && qApp->thread() == QThread::currentThread());
+    if (!node) {
+        setColorSpaceViewActive(false);
+        if (_imp->colorSpaceView) {
+            _imp->colorSpaceView->setNode(NodePtr());
+        }
+
+        return;
+    }
+    if (!_imp->colorSpaceView) {
+        _imp->colorSpaceView.reset(new ColorSpaceView(this, [this]() -> ColorSpaceView::DisplayConverter {
+            const ProjectColorManagement::DisplayProcessorPtr processor = _imp->getDisplayProcessor();
+            if (!processor || !processor->cpu) {
+                return ColorSpaceView::DisplayConverter();
+            }
+
+            return [processor](float* rgba, int count) {
+                processor->applyForEightBitOutput(rgba, count);
+            }; }, [this]() { return getCurrentView(); }));
+        _imp->colorSpaceView->setActive(_imp->colorSpaceViewActive);
+    }
+    _imp->colorSpaceView->setNode(node);
+}
+
+void
+ViewerGL::setColorSpaceViewActive(bool active)
+{
+    // always running in the main thread
+    assert(qApp && qApp->thread() == QThread::currentThread());
+    if (active && (!_imp->colorSpaceView || !_imp->colorSpaceView->getNode())) {
+        active = false;
+    }
+    if (active == _imp->colorSpaceViewActive) {
+        return;
+    }
+    if (active) {
+        getProjection(&_imp->savedProjection[0], &_imp->savedProjection[1], &_imp->savedProjection[2], &_imp->savedProjection[3]);
+        _imp->savedProjectionValid = true;
+    }
+    _imp->colorSpaceViewActive = active;
+    if (_imp->colorSpaceView) {
+        _imp->colorSpaceView->setActive(active);
+    }
+    if (!active && _imp->savedProjectionValid) {
+        _imp->savedProjectionValid = false;
+        setProjection(_imp->savedProjection[0], _imp->savedProjection[1], _imp->savedProjection[2], _imp->savedProjection[3]);
+    }
+    update();
+}
+
+bool
+ViewerGL::isColorSpaceViewActive() const
+{
+    return _imp->colorSpaceViewActive;
+}
+
+void
+ViewerGL::setColorSpaceViewShowsOutput(bool output)
+{
+    if (!_imp->colorSpaceView) {
+        return;
+    }
+    _imp->colorSpaceView->setShowOutput(output);
+}
+
+void
+ViewerGL::frameColorSpaceView()
+{
+    if (_imp->colorSpaceView) {
+        _imp->colorSpaceView->frameAll();
+    }
+}
+
+QVariantMap
+ViewerGL::colorSpaceViewState() const
+{
+    return (_imp->colorSpaceViewActive && _imp->colorSpaceView) ? _imp->colorSpaceView->state() : QVariantMap();
+}
+
+QVariantMap
+ViewerGL::colorSpaceViewProbe(double r,
+                              double g,
+                              double b) const
+{
+    return (_imp->colorSpaceViewActive && _imp->colorSpaceView) ? _imp->colorSpaceView->probe(r, g, b) : QVariantMap();
+}
+
+QVariantList
+ViewerGL::viewProjection() const
+{
+    double left, bottom, factor, aspect;
+
+    getProjection(&left, &bottom, &factor, &aspect);
+
+    return QVariantList { left, bottom, factor, aspect };
 }
 
 RectD

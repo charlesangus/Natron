@@ -109,6 +109,9 @@ KnobGuiFile::createWidget(QHBoxLayout* layout)
 
 
     _openFileButton = new Button( layout->parentWidget() );
+    if (knob) {
+        _openFileButton->setObjectName(QString::fromUtf8(knob->getName().c_str()) + QString::fromUtf8("OpenFileButton"));
+    }
     _openFileButton->setFixedSize(NATRON_MEDIUM_BUTTON_SIZE, NATRON_MEDIUM_BUTTON_SIZE);
     QIcon pix;
     appPTR->getIcon(NATRON_PIXMAP_OPEN_FILE, TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), &pix);
@@ -440,6 +443,9 @@ KnobGuiOutputFile::createWidget(QHBoxLayout* layout)
 
 
     _openFileButton = new Button( layout->parentWidget() );
+    if (knob) {
+        _openFileButton->setObjectName(QString::fromUtf8(knob->getName().c_str()) + QString::fromUtf8("OpenFileButton"));
+    }
     _openFileButton->setFixedSize(NATRON_MEDIUM_BUTTON_SIZE, NATRON_MEDIUM_BUTTON_SIZE);
     QIcon pix;
     appPTR->getIcon(NATRON_PIXMAP_OPEN_FILE, TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), &pix);

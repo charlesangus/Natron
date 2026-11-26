@@ -60,6 +60,7 @@
 #include "Engine/Nodes/Loop/GeoForEachBegin.h"
 #include "Engine/Nodes/Loop/GeoForEachEnd.h"
 #include "Engine/Nodes/Loop/GeoForEachPieces.h"
+#include "Engine/Nodes/Loop/LoopEnd.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/TLSHolder.h"
 #include "Engine/TimeLine.h"
@@ -431,6 +432,15 @@ TEST_F(GeoForEachTest, StopConditionEndsTheLoopEarly)
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, pull(loop, &result, &error)) << error;
     ASSERT_TRUE(result != NULL);
     expectOffsetCopies(cubePositions(), positions(*result), 3, 10.);
+}
+
+TEST_F(GeoForEachTest, TheLoopPublishesTheImageLoopVariables)
+{
+    const std::vector<std::string>& variables = GeoForEachEnd::loopVariables();
+
+    for (const std::string& name : LoopEnd::loopVariables()) {
+        EXPECT_TRUE(std::find(variables.begin(), variables.end(), name) != variables.end()) << name;
+    }
 }
 
 TEST_F(GeoForEachTest, SinglePassCooksOneIteration)

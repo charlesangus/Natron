@@ -29,6 +29,7 @@
 #include <chrono>
 #include <cmath>
 #include <iterator>
+#include <optional>
 #include <set>
 #include <utility>
 
@@ -657,7 +658,10 @@ GeoSolverEnd::walkMutex(const GeoSimSeries& series)
 
 /**
  * @brief Shows a walk's progress in the progress panel, cancellable, while no other walk of the
- * node shows its own.
+ * node shows its own, and tells the timelines of the frames it keeps. Off the main thread both are
+ * reported at most once per kReportInterval, so a walk of many quick frames does not flood the GUI
+ * thread with progress-bar repaints and cache-line rebuilds. On it, each report is also where the
+ * GUI gets to process its events, so every frame reports.
  **/
 class GeoSolverEnd::SolveProgress {
 public:
@@ -665,11 +669,15 @@ public:
         : _effect(effect)
         , _app(effect->getApp())
         , _node(effect->getNode())
+        , _mainThread(!qApp || (QThread::currentThread() == qApp->thread()))
     {
     }
 
     ~SolveProgress()
     {
+        if (_unreportedFrame) {
+            _effect->notifyKeptFramesChanged(*_unreportedFrame);
+        }
         if (!_held) {
             return;
         }
@@ -696,11 +704,31 @@ public:
         _held = true;
         // From another thread the task is registered later, when the main thread gets to it:
         // until then an update finds none, which is no cancel.
-        _registered = !qApp || (QThread::currentThread() == qApp->thread());
+        _registered = _mainThread;
         app->progressStart(node, message, std::string(), true);
     }
 
-    // False once the user cancelled.
+    // After each solved frame. False once the user cancelled, which is seen at the next report.
+    bool solved(int frame,
+                double progress)
+    {
+        const Clock::time_point now = Clock::now();
+
+        _unreportedFrame = frame;
+        if (!_mainThread && ((now - _lastReport) < kReportInterval)) {
+            return true;
+        }
+        _lastReport = now;
+        _effect->notifyKeptFramesChanged(frame);
+        _unreportedFrame.reset();
+
+        return update(progress);
+    }
+
+private:
+    using Clock = std::chrono::steady_clock;
+    static constexpr std::chrono::milliseconds kReportInterval { 100 };
+
     bool update(double progress)
     {
         const AppInstancePtr app = _app.lock();
@@ -718,12 +746,14 @@ public:
         return !_registered;
     }
 
-private:
     GeoSolverEnd* _effect;
     AppInstanceWPtr _app;
     NodeWPtr _node;
+    const bool _mainThread;
     bool _held = false;
     bool _registered = false;
+    Clock::time_point _lastReport = Clock::now();
+    std::optional<int> _unreportedFrame;
 };
 
 StatusEnum
@@ -873,9 +903,8 @@ GeoSolverEnd::renderGeometry(const GeoRenderActionArgs& args,
             _simCache->retainOnly(series, h);
         }
         recordOutput(series, h, false);
-        notifyKeptFramesChanged(h);
         previous = result;
-        if (!progress.update((double)(h - from) / (double)total)) {
+        if (!progress.solved(h, (double)(h - from) / (double)total)) {
             // Cancelled: the frames solved so far are kept, the one asked for is not output.
             return eStatusFailed;
         }

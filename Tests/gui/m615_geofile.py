@@ -129,14 +129,13 @@ try:
         QTimer.singleShot(0, go)
 
     def file_button(panel, script_name):
-        """The open-file button of the knob named script_name: a QPushButton whose tool tip opens
-        with the script name in bold."""
-        tag = "<b>%s</b>" % script_name
+        """The open-file button of the knob named script_name, named <script_name>OpenFileButton."""
         if panel is None:
             return None
+        name = script_name + "OpenFileButton"
         for w in panel.findChildren(QPushButton):
             try:
-                if w.isVisible() and tag in w.toolTip()[:60]:
+                if w.objectName() == name and w.isVisible():
                     return hold(w)
             except RuntimeError:
                 continue
@@ -207,8 +206,13 @@ try:
         gt.section("cache")
         ok = yield from open_panel(cache)
         require(ok, "open the GeoFileCache's settings panel")
+        ok = yield ("until", lambda: file_button(panel_of(cache), "filename") is not None, POLL_TIMEOUT_S)
+        if not ok:
+            panel = panel_of(cache)
+            report("NOTE buttons in the panel: %r" % ([(b.objectName(), b.isVisible()) for b in panel.findChildren(QPushButton)]
+                                                     if panel is not None else None,))
+        require(ok, "found the Filename parameter's open-file button")
         button = file_button(panel_of(cache), "filename")
-        require(button is not None, "found the Filename parameter's open-file button")
         click_file_button(button)
         ok = yield ("until", lambda: modal_dialog() is not None, POLL_TIMEOUT_S)
         require(ok, "the Filename parameter opens a save dialog")

@@ -10,15 +10,17 @@ Sections:
     end created after them takes loop3;
   - hulls: the graph's loop block item covers both blocks' begin, body and end nodes;
   - drive: in each block, Drive from loop (all dimensions) on the body GeoTransform's Translate x
-    field drives its three dimensions, the driver row offers the block's variables (the solver's substep, dt and frame
-    among them, the for-each's not), and the End's driven-knob table lists translate.x, .y and .z;
+    field drives its three dimensions, the driver row offers the block's variables (both offer
+    iteration and frame; the solver's substep, numsubsteps and dt, the for-each's not), and the
+    End's driven-knob table lists translate.x, .y and .z;
   - cache: with one substep, frames 1 to CACHE_FRAMES are shown; the timeline's cached line marks
     them, and seeking back to KEPT_FRAME shows the viewer's "cached sim frame" label;
   - progress: with a heartbeat running (a 5 ms Qt timer on the main thread, recording the
     wall-clock gap between ticks), the solver gets SLOW_SUBSTEPS substeps and the timeline jumps to
     JUMP_FRAME. The Progress panel must show a cancellable task within PROGRESS_TIMEOUT_S;
     clicking its cancel button must remove it within CANCEL_TIMEOUT_S and it must not come back,
-    and the longest heartbeat gap must stay under MAX_GAP_MS.
+    and the longest heartbeat gap must stay under MAX_GAP_MS. The screenshot taken meanwhile is the
+    script's own work on the GUI thread, so the gap across it is left out.
 Screenshots: m615_loops_hulls.png, m615_loops_drive_menu_foreach.png,
 m615_loops_drive_menu_solver.png, m615_loops_table_foreach.png, m615_loops_table_solver.png,
 m615_loops_cache.png, m615_loops_progress.png and m615_loops_cancelled.png in $NATRON_GUI_TEST_OUT.
@@ -27,6 +29,7 @@ Usage: Tests/gui/run-gui-test.sh Tests/gui/m615_loops.py
 """
 import os
 import sys
+import threading
 import time
 import traceback
 
@@ -260,16 +263,45 @@ try:
     def now_ms():
         return int(time.time() * 1000)
 
-    gaps = {"last": None, "max_ms": 0.0, "ticks": 0}
+    gaps = {"last": None, "max_ms": 0.0, "ticks": 0, "sched": None, "started": None, "phase": "", "worst": ""}
     heartbeat = QTimer()
     heartbeat.setInterval(5)
+    # Run time against run-queue wait of the GUI thread (/proc schedstat): a stall that is mostly
+    # wait is the thread starved of a CPU, one that is mostly run is work done on it.
+    schedstat = "/proc/self/task/%d/schedstat" % threading.get_native_id()
+
+    def sched():
+        try:
+            with open(schedstat) as f:
+                run_ns, wait_ns = f.read().split()[:2]
+            return int(run_ns) / 1e6, int(wait_ns) / 1e6
+        except (OSError, ValueError):
+            return None
 
     def tick():
         now = time.monotonic()
+        stat = sched()
         if gaps["last"] is not None:
-            gaps["max_ms"] = max(gaps["max_ms"], (now - gaps["last"]) * 1000.0)
+            gap = (now - gaps["last"]) * 1000.0
+            if gap > gaps["max_ms"]:
+                gaps["max_ms"] = gap
+                split = ""
+                if stat is not None and gaps["sched"] is not None:
+                    split = ", GUI thread ran %.1f ms and waited for a CPU %.1f ms" % (
+                        stat[0] - gaps["sched"][0], stat[1] - gaps["sched"][1])
+                gaps["worst"] = "%.1f ms at +%.2f s, %s%s" % (gap, now - gaps["started"], gaps["phase"], split)
+        if gaps["started"] is None:
+            gaps["started"] = now
         gaps["last"] = now
+        gaps["sched"] = stat
         gaps["ticks"] += 1
+
+    def unmeasured_shot(name):
+        started = time.monotonic()
+        shot(name)
+        report("NOTE screenshot %s took %.1f ms, left out of the heartbeat" % (name, (time.monotonic() - started) * 1000.0))
+        gaps["last"] = None
+        gaps["sched"] = None
 
     heartbeat.timeout.connect(tick)
 
@@ -403,22 +435,31 @@ try:
         gaps["last"] = None
         gaps["max_ms"] = 0.0
         gaps["ticks"] = 0
+        gaps["started"] = None
+        gaps["worst"] = ""
+        gaps["phase"] = "while setting the substeps and jumping ahead"
         heartbeat.start()
         param(solve_end, "substeps").setValue(SLOW_SUBSTEPS)
         py_viewer.seek(JUMP_FRAME)
+        gaps["phase"] = "while waiting for the progress task"
         ok = yield ("until", lambda: cancel_button() is not None, PROGRESS_TIMEOUT_S)
         require(ok, "the Progress panel shows the solve with a cancel button within %g s" % PROGRESS_TIMEOUT_S)
+        gaps["phase"] = "while the solve runs"
         yield ("sleep", SETTLE_MS)
-        shot("m615_loops_progress.png")
+        unmeasured_shot("m615_loops_progress.png")
         started = time.monotonic()
+        gaps["phase"] = "while cancelling"
         cancel_button().click()
         ok = yield ("until", lambda: cancel_button() is None, CANCEL_TIMEOUT_S)
         took = time.monotonic() - started
         check(ok, "cancelling removes the task within %g s (%.2f s)" % (CANCEL_TIMEOUT_S, took))
+        gaps["phase"] = "after the cancel"
         yield ("sleep", NO_RESTART_MS)
         check(cancel_button() is None, "the cancelled solve does not start again")
         heartbeat.stop()
         report("NOTE longest heartbeat gap %.1f ms over %d ticks" % (gaps["max_ms"], gaps["ticks"]))
+        if gaps["worst"]:
+            report("NOTE longest heartbeat gap " + gaps["worst"])
         check(gaps["max_ms"] < MAX_GAP_MS,
               "the GUI thread never stalls for %g ms or more (%.1f ms)" % (MAX_GAP_MS, gaps["max_ms"]))
         shot("m615_loops_cancelled.png")

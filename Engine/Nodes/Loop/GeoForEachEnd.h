@@ -107,7 +107,8 @@ public:
         .description = "Closes a geometry loop. The nodes between the GeoForEachBegin nodes above it and "
                        "this node cook once per iteration: once per piece of the geometry, or a number of "
                        "times. Each iteration sets the loop variables loop.iteration, loop.numiterations, "
-                       "loop.value, loop.ivalue and loop.svalue (also as loops.<name>.*), which knob "
+                       "loop.value, loop.ivalue, loop.svalue and loop.frame (the frame being rendered; also as "
+                       "loops.<name>.*), which knob "
                        "drivers in the body read. The iterations are merged together, or, under Feedback, "
                        "each starts from the result of the one before and the last is output. The Piece "
                        "input, when connected, gives the geometry whose pieces are iterated over; "
@@ -237,6 +238,7 @@ private:
                                       const std::string& loopName,
                                       const Iteration& iteration,
                                       std::int64_t count,
+                                      double frame,
                                       bool pieces,
                                       const GeoDetailConstPtr& feedback) const;
 

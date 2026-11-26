@@ -33,11 +33,11 @@
 
 #include "Engine/EngineFwd.h"
 #include "Engine/GeoDetail.h"
+#include "Engine/Nodes/IO/ReadTimeDomainKnobs.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
 #define PLUGINID_NATRON_GEOFILE "GeoFile"
 #define kGeoFileParamFile "file"
-#define kGeoFileParamMissingFrames "missingFrames"
 #define kGeoFileParamReload "reload"
 
 NATRON_NAMESPACE_ENTER
@@ -51,9 +51,10 @@ enum GeoFileMissingFrameEnum {
 /**
  * @brief Reads native geometry files (.ngeo), one file or one file per frame. A frame number
  * in the name is written as #### (one # per digit), %04d, $F or $F4 (padded to 4 digits).
- * A frame whose file is absent is an error, holds the nearest frame on disk or reads as empty
- * geometry, per the Missing Frames knob; a file that exists but cannot be read is always an
- * error. An empty file name gives empty geometry.
+ * Which file a frame reads follows the time domain knobs Read has, with the same names and
+ * behaviour: the first and last frame, what comes before and after them, the frame offset, and
+ * what a missing frame gives, black being empty geometry. A file that exists but cannot be read
+ * is always an error. An empty file name gives empty geometry.
  *
  * The files are stamped (FileStampRegistry) into the node hash, so geometry cached from them is
  * served until Reload or a GeoFileCache writing them re-stamps them.
@@ -154,12 +155,21 @@ private:
     virtual StatusEnum renderGeometry(const GeoRenderActionArgs& args,
                                       GeoDetailConstPtr* outputDetail,
                                       std::string* errorMessage) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual void getFrameRange(double* first, double* last) OVERRIDE FINAL;
+    virtual void onEffectCreated(bool mayCreateFileDialog,
+                                 const CreateNodeArgs& args) OVERRIDE FINAL;
+    virtual void onKnobsLoaded() OVERRIDE FINAL;
+    virtual void onFilesReloaded() OVERRIDE FINAL;
 
     std::string currentPattern() const;
 
+    /** @brief Records the frames of the files on disk in the hidden original frame range. */
+    void refreshOriginalFrameRange();
+
     KnobFileWPtr _file;
     KnobButtonWPtr _reload;
-    KnobChoiceWPtr _missingFrames;
+    KnobIntWPtr _originalFrameRange;
+    ReadTimeDomainKnobs _timeDomain;
 };
 
 NATRON_NAMESPACE_EXIT

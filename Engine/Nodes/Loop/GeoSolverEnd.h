@@ -42,6 +42,7 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/GeoDetail.h"
 #include "Engine/Nodes/Loop/GeoSimCache.h"
+#include "Engine/Nodes/Loop/LoopBlock.h"
 #include "Engine/Nodes/Loop/LoopEndCooks.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/RenderContext.h"
@@ -77,7 +78,8 @@ NATRON_NAMESPACE_ENTER
  * but for a frame already kept, which it is given at once.
  **/
 class GeoSolverEnd
-    : public NativeEffectBase {
+    : public NativeEffectBase,
+      public LoopBlockEnd {
 public:
     static constexpr InputSpec kInputs[] = {
         InputSpec { .label = "Source", .kind = eDataKindGeometry, .optional = false },
@@ -90,7 +92,10 @@ public:
                        "this node cook once per frame, or Substeps times per frame, each time starting from "
                        "the result before, which a GeoSolverBegin set to Prev Frame outputs: any chain of "
                        "geometry nodes becomes a simulation. Up to Start Frame the output is the Prev Frame "
-                       "GeoSolverBegin's input. Each substep sets loop.substep, loop.numsubsteps and loop.dt "
+                       "GeoSolverBegin's input. Each substep sets loop.iteration (the substeps solved before "
+                       "it since Start Frame), loop.numiterations and loop.count (those up to the end of its "
+                       "frame), loop.t (the part of its frame solved once it is), loop.value (the time it solves "
+                       "to), loop.frame (the frame it belongs to), loop.substep, loop.numsubsteps and loop.dt "
                        "(the frames a substep covers), also as loops.<name>.*, and @TimeInc in a GeoWrangle "
                        "is that step in seconds. Solved frames are kept, in RAM and then on disk, so playing "
                        "back or scrubbing does not solve them again; an edit above this node or in the body "
@@ -145,6 +150,30 @@ public:
 
     const GeoSimCache& getSimCache() const WARN_UNUSED_RETURN;
 
+    /**
+     * @brief The frames kept of the series last rendered, true for those in RAM, false for those
+     * spilled to disk.
+     **/
+    std::map<int, bool> getKeptFrames() const WARN_UNUSED_RETURN;
+
+    /** @brief The GeoSolverEnds node reads, itself included, through every input. */
+    static std::vector<std::shared_ptr<GeoSolverEnd>> upstreamOf(const NodePtr& node) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Whether frame, shown now, is one solved before rather than by the render that
+     * output it: output from the frames kept, or kept and output again from elsewhere.
+     **/
+    bool outputKeptFrame(int frame) const WARN_UNUSED_RETURN;
+
+    virtual std::string getBlockLoopName() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual std::vector<NodePtr> getBlockBegins() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual KnobStringPtr getBlockNameKnob() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual const std::vector<std::string>& getBlockVariables() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /** @brief base with the variables of the last substep of the frame at time, or of the first frame solved. */
+    virtual RenderContextPtr getBlockPreviewContext(const RenderContextPtr& base,
+                                                    double time) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
 private:
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void initializeKnobs() OVERRIDE FINAL;
@@ -154,6 +183,8 @@ private:
                              double time,
                              bool originatedFromMainThread) OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void onScriptNameChanged(const std::string& fullyQualifiedName) OVERRIDE FINAL;
+    virtual void onEffectCreated(bool mayCreateFileDialog,
+                                 const CreateNodeArgs& args) OVERRIDE FINAL;
     virtual bool needsOrderedFrames() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual StatusEnum getPreferredMetadataAt(double time,
                                               ViewIdx view,
@@ -178,9 +209,20 @@ private:
 
     RenderContextPtr substepContext(const RenderContextPtr& base,
                                     const std::string& loopName,
+                                    int startFrame,
+                                    int frame,
                                     int substep,
                                     int substeps,
                                     const GeoDetailConstPtr& previous) const;
+
+    // Tells the timelines the frames kept changed.
+    void notifyKeptFramesChanged(int frame) const;
+
+    void recordOutput(const GeoSimSeries& series,
+                      int frame,
+                      bool kept);
+
+    class SolveProgress;
 
     // Solves frame from previous, the result of the frame before, into *result.
     StatusEnum solveFrame(const LoopEndCooks::Scope& running,
@@ -212,6 +254,15 @@ private:
     std::unique_ptr<GeoSimCache> _simCache;
     std::atomic<U64> _resetGeneration { 0 };
     std::atomic<std::uint64_t> _solvedFrames { 0 };
+
+    mutable QMutex _outputMutex;
+    GeoSimSeries _outputSeries;
+    int _outputFrame = 0;
+    bool _outputKept = false;
+    bool _hasOutput = false;
+
+    // One walk at a time shows its progress.
+    std::atomic<bool> _progressShown { false };
 
     std::mutex _walksMutex;
     std::map<GeoSimSeries, std::shared_ptr<std::timed_mutex>> _walks;

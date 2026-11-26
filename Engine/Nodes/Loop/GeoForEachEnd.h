@@ -40,6 +40,7 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/GeoDetail.h"
 #include "Engine/Nodes/Loop/GeoForEachPieces.h"
+#include "Engine/Nodes/Loop/LoopBlock.h"
 #include "Engine/Nodes/Loop/LoopEndCooks.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/RenderContext.h"
@@ -92,7 +93,8 @@ enum GeoForEachGatherEnum {
  * loop cooks (findFeedback()).
  **/
 class GeoForEachEnd
-    : public NativeEffectBase {
+    : public NativeEffectBase,
+      public LoopBlockEnd {
 public:
     static constexpr InputSpec kInputs[] = {
         InputSpec { .label = "Source", .kind = eDataKindGeometry, .optional = false },
@@ -166,6 +168,18 @@ public:
     /** @brief The loop.* variables each iteration sets, and loops.<name>.* the same. */
     static const std::vector<std::string>& loopVariables() WARN_UNUSED_RETURN;
 
+    virtual std::string getBlockLoopName() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual std::vector<NodePtr> getBlockBegins() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual KnobStringPtr getBlockNameKnob() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual const std::vector<std::string>& getBlockVariables() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief base with the variables of iteration Single Pass Iteration. Pieces are those of the
+     * last cook; before any, the iteration's index stands for its value.
+     **/
+    virtual RenderContextPtr getBlockPreviewContext(const RenderContextPtr& base,
+                                                    double time) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
 private:
     struct Iteration {
         std::int64_t index = 0;
@@ -184,6 +198,8 @@ private:
                              bool originatedFromMainThread) OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void onScriptNameChanged(const std::string& fullyQualifiedName) OVERRIDE FINAL;
     virtual void onKnobsLoaded() OVERRIDE FINAL;
+    virtual void onEffectCreated(bool mayCreateFileDialog,
+                                 const CreateNodeArgs& args) OVERRIDE FINAL;
     virtual StatusEnum getPreferredMetadataAt(double time,
                                               ViewIdx view,
                                               NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -240,6 +256,9 @@ private:
     KnobStringWPtr _stopAttribute;
 
     LoopEndPairing _pairing;
+
+    mutable QMutex _cookedMutex;
+    std::vector<Iteration> _cookedPieces;
 
     QMutex _messageMutex;
     std::string _posted;

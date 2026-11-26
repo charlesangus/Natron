@@ -43,7 +43,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/KnobDriver.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
-#include "Engine/Nodes/Loop/LoopEnd.h"
+#include "Engine/Nodes/Loop/LoopBlock.h"
 
 #include "Gui/ComboBox.h"
 #include "Gui/GuiMacros.h"
@@ -69,10 +69,13 @@ const char* const kRowProperty = "loopDriverRow";
 
 const KnobDriver::EasingEnum kEasings[] = { KnobDriver::eEasingLinear, KnobDriver::eEasingSmooth, KnobDriver::eEasingCurve };
 
-LoopEnd*
+// The effect of the block end knob is on, or null.
+EffectInstance*
 loopEndOf(const KnobIPtr& knob)
 {
-    return knob ? dynamic_cast<LoopEnd*>(knob->getHolder()) : 0;
+    EffectInstance* effect = knob ? dynamic_cast<EffectInstance*>(knob->getHolder()) : 0;
+
+    return dynamic_cast<LoopBlockEnd*>(effect) ? effect : 0;
 }
 
 QTableWidgetItem*
@@ -89,7 +92,7 @@ readOnlyItem(const QString& text)
 bool
 LoopDriverTable::isTableKnob(const KnobIPtr& knob)
 {
-    return loopEndOf(knob) && (knob->getName() == kLoopEndParamDrivenKnobs);
+    return loopEndOf(knob) && (knob->getName() == kLoopBlockParamDrivenKnobs);
 }
 
 LoopDriverTable::LoopDriverTable(KnobIPtr knob,
@@ -150,7 +153,7 @@ LoopDriverTable::watchGraph()
     if (_graph) {
         return;
     }
-    LoopEnd* end = loopEndOf(_knob.lock());
+    EffectInstance* end = loopEndOf(_knob.lock());
     const NodePtr node = end ? end->getNode() : NodePtr();
     const NodeCollectionPtr group = node ? node->getGroup() : NodeCollectionPtr();
     _graph = group ? dynamic_cast<NodeGraph*>(group->getNodeGraph()) : 0;
@@ -226,7 +229,7 @@ LoopDriverTable::rebuild()
     const std::vector<Entry> previous = _entries;
     _entries.clear();
 
-    LoopEnd* end = loopEndOf(_knob.lock());
+    EffectInstance* end = loopEndOf(_knob.lock());
     if (!end) {
         _table->setRowCount(0);
 
@@ -242,13 +245,13 @@ LoopDriverTable::rebuild()
         }
     }
 
-    const std::vector<NodePtr> body = end->bodyNodes();
+    const std::vector<NodePtr> body = LoopBlocks::bodyNodes(end->getNode());
     // A rename of this loop, of one around it or of one nested in its body changes the
     // variables the rows offer.
-    std::vector<NodePtr> loops = LoopEnd::enclosingLoopEnds(end->getNode());
+    std::vector<NodePtr> loops = LoopBlocks::enclosingEnds(end->getNode());
     loops.push_back(end->getNode());
     for (const NodePtr& node : body) {
-        if (LoopEnd::isLoopEnd(node)) {
+        if (LoopBlocks::isEnd(node)) {
             loops.push_back(node);
         }
     }

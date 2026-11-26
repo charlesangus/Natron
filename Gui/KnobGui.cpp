@@ -875,7 +875,7 @@ KnobGui::createAnimationMenu(QMenu* menu,
             driveAction->setData(dimension);
             if (LoopDriverEdit::loopVariables(LoopDriverEdit::nodeOf(knob)).empty()) {
                 driveAction->setEnabled(false);
-                driveAction->setToolTip(tr("The node is not inside a loop: no LoopEnd below it pairs with a LoopBegin above it."));
+                driveAction->setToolTip(tr("The node is not inside a loop: no loop, for-each or solver end below it pairs with a begin above it."));
                 menu->setToolTipsVisible(true);
             }
             QObject::connect(driveAction, SIGNAL(triggered()), this, SLOT(onDriveFromLoopActionTriggered()));

@@ -31,10 +31,12 @@
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <span>
 #include <string>
 #include <thread>
+#include <variant>
 #include <vector>
 
 #include <unistd.h>
@@ -63,8 +65,10 @@
 #include "Engine/Nodes/Loop/GeoSimCache.h"
 #include "Engine/Nodes/Loop/GeoSolverBegin.h"
 #include "Engine/Nodes/Loop/GeoSolverEnd.h"
+#include "Engine/Nodes/Loop/LoopEnd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/ParallelRenderArgs.h"
+#include "Engine/RenderContext.h"
 #include "Engine/TLSHolder.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
@@ -487,10 +491,12 @@ TEST_F(GeoSolverTest, ASolverInsideAForEachSimulatesEachIteration)
     setChoice(input, kGeoForEachBeginParamMethod, (int)eGeoForEachBeginFetchInput);
     NodePtr previous = begin(input);
     NodePtr move = transform(previous);
-    drive(move, kGeoTransformParamTranslate, 1, "loop.iteration", 1., 2.);
+    // loop.iteration is the solver's own: the for-each's is read by its name.
+    drive(move, kGeoTransformParamTranslate, 1, "loops.pieces.iteration", 1., 2.);
     NodePtr sim = end(move);
     NodePtr loop = add(PLUGINID_NATRON_GEOFOREACHEND);
     ASSERT_TRUE(loop != NULL);
+    setString(loop, kGeoForEachEndParamLoopName, "pieces");
     connectNodes(sim, loop, 0, true);
     setChoice(loop, kGeoForEachEndParamIterationMethod, (int)eGeoForEachIterateCount);
     setInt(loop, kGeoForEachEndParamIterations, 2);
@@ -504,6 +510,148 @@ TEST_F(GeoSolverTest, ASolverInsideAForEachSimulatesEachIteration)
     ASSERT_EQ(2 * n * 3, p.size());
     EXPECT_NEAR(4., meanY(p, 0, n) - meanY(cube()), 1e-4);
     EXPECT_NEAR(8., meanY(p, n, n) - meanY(cube()), 1e-4);
+}
+
+// A body moving y by variable each substep, start 0 and end 1 mapping the variable to itself.
+TEST_F(GeoSolverTest, LoopFrameIsTheFrameEachSubstepSolves)
+{
+    NodePtr previous = begin(_cube);
+    NodePtr move = transform(previous);
+    drive(move, kGeoTransformParamTranslate, 1, "loop.frame", 0., 1.);
+    NodePtr sim = end(move);
+
+    EXPECT_NEAR(2. + 3. + 4. + 5., rise(sim, 5.), 1e-4);
+}
+
+TEST_F(GeoSolverTest, LoopIterationCountsTheSubstepsSinceTheStartFrame)
+{
+    NodePtr previous = begin(_cube);
+    NodePtr move = transform(previous);
+    drive(move, kGeoTransformParamTranslate, 1, "loop.iteration", 0., 1.);
+    NodePtr sim = end(move);
+    setInt(sim, kGeoSolverEndParamSubsteps, 2);
+
+    EXPECT_NEAR(0. + 1. + 2. + 3., rise(sim, 3.), 1e-4);
+}
+
+// A walk resuming from a kept frame counts on from the start frame, not from where it resumed.
+TEST_F(GeoSolverTest, LoopIterationIsTheSameWhicheverFrameWasAskedFirst)
+{
+    NodePtr previous = begin(_cube);
+    NodePtr move = transform(previous);
+    drive(move, kGeoTransformParamTranslate, 1, "loop.iteration", 0., 1.);
+    NodePtr sim = end(move);
+
+    EXPECT_NEAR(0. + 1., rise(sim, 3.), 1e-4);
+    EXPECT_NEAR(0. + 1. + 2. + 3., rise(sim, 5.), 1e-4);
+}
+
+TEST_F(GeoSolverTest, LoopCountAndNumIterationsAreTheSubstepsToTheEndOfTheFrame)
+{
+    for (const char* variable : { "loop.count", "loop.numiterations" }) {
+        NodePtr previous = begin(_cube);
+        NodePtr move = transform(previous);
+        drive(move, kGeoTransformParamTranslate, 1, variable, 0., 1.);
+        NodePtr sim = end(move);
+        setInt(sim, kGeoSolverEndParamSubsteps, 2);
+
+        EXPECT_NEAR(2. + 2. + 4. + 4., rise(sim, 3.), 1e-4) << variable;
+    }
+}
+
+TEST_F(GeoSolverTest, LoopTIsThePartOfTheFrameSolved)
+{
+    NodePtr previous = begin(_cube);
+    NodePtr move = transform(previous);
+    drive(move, kGeoTransformParamTranslate, 1, "loop.t", 0., 1.);
+    NodePtr sim = end(move);
+    setInt(sim, kGeoSolverEndParamSubsteps, 4);
+
+    EXPECT_NEAR(0.25 + 0.5 + 0.75 + 1., rise(sim, 2.), 1e-4);
+}
+
+TEST_F(GeoSolverTest, LoopValueIsTheTimeASubstepSolvesTo)
+{
+    NodePtr previous = begin(_cube);
+    NodePtr move = transform(previous);
+    drive(move, kGeoTransformParamTranslate, 1, "loop.value", 0., 1.);
+    NodePtr sim = end(move);
+    setInt(sim, kGeoSolverEndParamSubsteps, 2);
+
+    EXPECT_NEAR(1.5 + 2. + 2.5 + 3., rise(sim, 3.), 1e-4);
+}
+
+TEST_F(GeoSolverTest, TheSolverSetsItsVariablesUnderItsName)
+{
+    NodePtr previous = begin(_cube);
+    NodePtr move = transform(previous);
+    drive(move, kGeoTransformParamTranslate, 1, "loops.sim.substep", 0., 1.);
+    NodePtr sim = end(move);
+    setString(sim, kGeoSolverEndParamLoopName, "sim");
+    setInt(sim, kGeoSolverEndParamSubsteps, 3);
+
+    EXPECT_NEAR(0. + 1. + 2., rise(sim, 2.), 1e-4);
+}
+
+TEST_F(GeoSolverTest, TheSolverPublishesTheImageLoopVariables)
+{
+    const std::vector<std::string>& variables = GeoSolverEnd::loopVariables();
+
+    for (const char* name : { "iteration", "numiterations", "count", "t", "value", "frame", "substep", "numsubsteps", "dt" }) {
+        EXPECT_TRUE(std::find(variables.begin(), variables.end(), name) != variables.end()) << name;
+    }
+    for (const std::string& name : LoopEnd::loopVariables()) {
+        EXPECT_TRUE(std::find(variables.begin(), variables.end(), name) != variables.end()) << name;
+    }
+}
+
+TEST_F(GeoSolverTest, NewSolversAndForEachLoopsTakeTheFirstFreeLoopName)
+{
+    NodePtr first = risingSolver(1.);
+    NodePtr second = risingSolver(1.);
+    NodePtr loop = add(PLUGINID_NATRON_GEOFOREACHEND);
+    ASSERT_TRUE(first != NULL);
+    ASSERT_TRUE(second != NULL);
+    ASSERT_TRUE(loop != NULL);
+
+    EXPECT_EQ(std::string("loop1"), solver(first)->getLoopName());
+    EXPECT_EQ(std::string("loop2"), solver(second)->getLoopName());
+    const std::shared_ptr<GeoForEachEnd> forEach = std::dynamic_pointer_cast<GeoForEachEnd>(loop->getEffectInstance());
+    ASSERT_TRUE(forEach != NULL);
+    EXPECT_EQ(std::string("loop3"), forEach->getLoopName());
+}
+
+TEST_F(GeoSolverTest, TheSolverPreviewsTheLastSubstepOfTheFrame)
+{
+    NodePtr sim = risingSolver(1.);
+    setInt(sim, kGeoSolverEndParamSubsteps, 4);
+    setString(sim, kGeoSolverEndParamLoopName, "sim");
+
+    const RenderContextPtr context = solver(sim)->getBlockPreviewContext(RenderContextPtr(), 7.);
+    ASSERT_TRUE(context != NULL);
+    const RenderContextValue* frame = context->find(RenderContextName::loops("sim", "frame"));
+    const RenderContextValue* substep = context->find(RenderContextName::loop("substep"));
+    ASSERT_TRUE(frame != NULL);
+    ASSERT_TRUE(substep != NULL);
+    EXPECT_EQ((std::int64_t)7, std::get<std::int64_t>(*frame));
+    EXPECT_EQ((std::int64_t)3, std::get<std::int64_t>(*substep));
+}
+
+TEST_F(GeoSolverTest, TheKeptFramesAreThoseOfTheSeriesLastRendered)
+{
+    NodePtr sim = risingSolver(1.);
+
+    EXPECT_TRUE(solver(sim)->getKeptFrames().empty());
+    EXPECT_NEAR(4., rise(sim, 5.), 1e-4);
+    const std::map<int, bool> kept = solver(sim)->getKeptFrames();
+    for (int frame = 1; frame <= 5; ++frame) {
+        EXPECT_EQ(1u, kept.count(frame)) << frame;
+    }
+    EXPECT_FALSE(solver(sim)->outputKeptFrame(5));
+    EXPECT_NEAR(2., rise(sim, 3.), 1e-4);
+    EXPECT_TRUE(solver(sim)->outputKeptFrame(3));
+    solver(sim)->resetSimulation();
+    EXPECT_TRUE(solver(sim)->getKeptFrames().empty());
 }
 
 TEST_F(GeoSolverTest, AnEarlierFrameAfterALaterOneIsNotSolvedAgain)

@@ -182,6 +182,65 @@ GeoForEachEnd::loopVariables()
     return names;
 }
 
+std::string
+GeoForEachEnd::getBlockLoopName() const
+{
+    return getLoopName();
+}
+
+std::vector<NodePtr>
+GeoForEachEnd::getBlockBegins() const
+{
+    return getBegins();
+}
+
+KnobStringPtr
+GeoForEachEnd::getBlockNameKnob() const
+{
+    return _loopName.lock();
+}
+
+const std::vector<std::string>&
+GeoForEachEnd::getBlockVariables() const
+{
+    return loopVariables();
+}
+
+RenderContextPtr
+GeoForEachEnd::getBlockPreviewContext(const RenderContextPtr& base,
+                                      double /*time*/) const
+{
+    const Settings s = readSettings();
+    const bool pieces = (s.iteration == eGeoForEachIteratePieces);
+    const int wanted = std::max(0, s.singlePassIteration);
+    Iteration iteration;
+    std::int64_t count = 0;
+
+    if (pieces) {
+        QMutexLocker locker(&_cookedMutex);
+        count = (std::int64_t)_cookedPieces.size();
+        if (count > 0) {
+            iteration = _cookedPieces[(std::size_t)std::min<std::int64_t>(count - 1, wanted)];
+        }
+    } else {
+        count = s.iterations;
+        if (count > 0) {
+            iteration.index = std::min<std::int64_t>(count - 1, wanted);
+            iteration.value = s.startValue + (double)iteration.index * s.increment;
+            iteration.ivalue = (std::int64_t)std::llround(iteration.value);
+        }
+    }
+    if (count <= 0) {
+        iteration = Iteration();
+        iteration.index = wanted;
+        iteration.value = (double)wanted;
+        iteration.ivalue = wanted;
+        count = wanted + 1;
+    }
+
+    return iterationContext(base ? base : RenderContext::empty(), getLoopName(), iteration, count, false, GeoDetailConstPtr());
+}
+
 GeoForEachEnd::Settings
 GeoForEachEnd::readSettings() const
 {
@@ -459,9 +518,20 @@ GeoForEachEnd::initializeKnobs()
     loopName->setAnimationEnabled(false);
     loopName->setHintToolTip(tr("The name of the loops.<name>.* variables this loop sets, so a loop inside it can still "
                                 "read this one's. Empty uses the node's script name."));
-    loopName->setDefaultValue(std::string());
+    loopName->setDefaultValue(kLoopBlockDefaultName);
     page->addKnob(loopName);
     _loopName = loopName;
+
+    KnobStringPtr drivenKnobs = createKnob<KnobString>(tr("Driven Knobs").toStdString());
+    drivenKnobs->setName(kLoopBlockParamDrivenKnobs);
+    drivenKnobs->setAnimationEnabled(false);
+    drivenKnobs->setIsPersistent(false);
+    drivenKnobs->setHashExempt(true);
+    drivenKnobs->setHintToolTip(tr("The parameters of the loop's body that a loop variable drives: each row's "
+                                   "variable, Start, End and Easing can be edited in place. Right-click a "
+                                   "parameter in the body and choose Drive from loop to add one.")
+                                    .toStdString());
+    page->addKnob(drivenKnobs);
 
     refreshKnobVisibility();
 } // GeoForEachEnd::initializeKnobs
@@ -540,6 +610,13 @@ GeoForEachEnd::onScriptNameChanged(const std::string& /*fullyQualifiedName*/)
 {
     // An empty Loop Name follows the script name.
     invalidateRenderContextReads();
+}
+
+void
+GeoForEachEnd::onEffectCreated(bool /*mayCreateFileDialog*/,
+                               const CreateNodeArgs& /*args*/)
+{
+    LoopBlocks::assignFreeName(this);
 }
 
 void
@@ -879,6 +956,11 @@ GeoForEachEnd::renderGeometry(const GeoRenderActionArgs& args,
             it.ivalue = (std::int64_t)std::llround(it.value);
             it.piece = it.ivalue;
         }
+    }
+
+    if (pieces) {
+        QMutexLocker locker(&_cookedMutex);
+        _cookedPieces = iterations;
     }
 
     const std::int64_t numIterations = (std::int64_t)iterations.size();

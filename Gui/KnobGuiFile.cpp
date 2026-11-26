@@ -173,8 +173,8 @@ KnobGuiFile::open_file()
         pathWhereToOpen = QString::fromUtf8( path.c_str() );
     }
 
-    SequenceFileDialog dialog( _lineEdit->parentWidget(), filters, knob->isInputImageFile(),
-                               SequenceFileDialog::eFileDialogModeOpen, pathWhereToOpen.toStdString(), getGui(), true);
+    SequenceFileDialog dialog(_lineEdit->parentWidget(), filters, knob->opensSequences(),
+                              SequenceFileDialog::eFileDialogModeOpen, pathWhereToOpen.toStdString(), getGui(), true);
 
     if ( dialog.exec() ) {
         std::string selectedFile = dialog.selectedFiles();
@@ -494,10 +494,12 @@ KnobGuiOutputFile::open_file(bool openSequence)
     }
     std::vector<std::string> filters;
 
-    if ( !knob->isOutputImageFile() ) {
-        filters.push_back("*");
-    } else {
+    if (knob->isOutputImageFile()) {
         appPTR->getSupportedWriterFileFormats(&filters);
+    } else if (!knob->getFileExtensions().empty()) {
+        filters = knob->getFileExtensions();
+    } else {
+        filters.push_back("*");
     }
 
     SequenceFileDialog dialog( _lineEdit->parentWidget(), filters, openSequence, SequenceFileDialog::eFileDialogModeSave, _lastOpened.toStdString(), getGui(), true);

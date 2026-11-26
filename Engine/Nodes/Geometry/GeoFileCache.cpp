@@ -160,6 +160,7 @@ GeoFileCache::initializeKnobs()
                             "$F (unpadded) or $F4 (padded to 4 digits), and the Version as $VER, or $VER3 padded to 3 "
                             "digits. Missing directories are created when the cache is written.")
                              .toStdString());
+    file->setFileExtensions({ kGeoFileExtension });
     file->setAnimationEnabled(false);
     page->addKnob(file);
     _file = file;

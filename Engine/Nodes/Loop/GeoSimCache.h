@@ -119,6 +119,9 @@ public:
                 int last,
                 int* frame) const WARN_UNUSED_RETURN;
 
+    /** @brief The frames of series kept, each true when it is in RAM, false when on disk. */
+    std::map<int, bool> frames(const GeoSimSeries& series) const WARN_UNUSED_RETURN;
+
     /** @brief Forgets every frame of series but frame. */
     void retainOnly(const GeoSimSeries& series,
                     int frame);

@@ -41,6 +41,7 @@
 #include <QtCore/QMutex>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/Nodes/Loop/LoopBlock.h"
 #include "Engine/Nodes/Loop/LoopFold.h"
 #include "Engine/Nodes/Loop/LoopFrameCache.h"
 #include "Engine/Nodes/NativeEffectBase.h"
@@ -75,7 +76,7 @@
 #define kLoopEndParamOperationUnder "under"
 #define kLoopEndParamReverseOrder "reverseOrder"
 #define kLoopEndParamMaxIterations "maxIterations"
-#define kLoopEndParamDrivenKnobs "drivenKnobs"
+#define kLoopEndParamDrivenKnobs kLoopBlockParamDrivenKnobs
 #define kLoopEndParamCrossFrame "crossFrame"
 #define kLoopEndParamStartFrame "startFrame"
 #define kLoopEndParamSubframes "subframes"
@@ -109,7 +110,8 @@ inline constexpr InputSpec kLoopEndInputs[] = {
  * not yet folded stay resident. The output under no fold step is the last step.
  **/
 class LoopEnd
-    : public NativeEffectBase {
+    : public NativeEffectBase,
+      public LoopBlockEnd {
 public:
     static EffectInstance* BuildEffect(NodePtr node)
     {
@@ -464,6 +466,16 @@ public:
      **/
     static RenderContextPtr previewContextOf(const NodePtr& node,
                                              double time) WARN_UNUSED_RETURN;
+
+    /** @brief The loop.* variables each iteration sets, and loops.<name>.* the same. */
+    static const std::vector<std::string>& loopVariables() WARN_UNUSED_RETURN;
+
+    virtual std::string getBlockLoopName() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual std::vector<NodePtr> getBlockBegins() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual KnobStringPtr getBlockNameKnob() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual const std::vector<std::string>& getBlockVariables() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual RenderContextPtr getBlockPreviewContext(const RenderContextPtr& base,
+                                                    double time) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
 private:
     struct Resolved {

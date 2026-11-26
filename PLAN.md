@@ -659,6 +659,8 @@ future core work has solid ground to build on.
 | M598 | Progressive Render GIL Flake | todo | - |  | E14 | | | [M598-progressive-render-gil-flake.md](PLAN/MILESTONES/M598-progressive-render-gil-flake.md) |
 | M599 | Runner Efficiency | doing | - | bosley-executor | E2 | | | [M599-runner-efficiency.md](PLAN/MILESTONES/M599-runner-efficiency.md) |
 | M600 | Native Geometry UAT Round 2 | doing | - | bosley-executor | E9 | F15 | | [M600-native-geometry-uat-round-2.md](PLAN/MILESTONES/M600-native-geometry-uat-round-2.md) |
+| M616 | Packed Instances In Viewer Cycles | todo | M600 |  | E9 | | | [M616-packed-instances-in-viewer-cycles.md](PLAN/MILESTONES/M616-packed-instances-in-viewer-cycles.md) |
+| M617 | Native Geometry Viewer Architecture Spike | doing | - | bosley-executor | E9 | | | [M617-native-geometry-viewer-architecture-spike.md](PLAN/MILESTONES/M617-native-geometry-viewer-architecture-spike.md) |
 | M601 | Every Render A Scheduler Task | todo | M199 |  | E14 | | | [M601-every-render-a-scheduler-task.md](PLAN/MILESTONES/M601-every-render-a-scheduler-task.md) |
 | M602 | 3D Viewer Toolbars | todo | M376, M361 |  | E28 | F40 | | [M602-3d-viewer-toolbars.md](PLAN/MILESTONES/M602-3d-viewer-toolbars.md) |
 | M603 | Combined Transform Handle | todo | M602 |  | E28 | F40 | | [M603-combined-transform-handle.md](PLAN/MILESTONES/M603-combined-transform-handle.md) |

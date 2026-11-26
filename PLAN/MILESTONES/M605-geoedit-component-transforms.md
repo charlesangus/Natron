@@ -55,3 +55,4 @@ Member of F40 - 3D Viewer Tools.
 ## Decisions
 - 2026-11-25 — Takes the reference Edit node's transform spaces, soft falloff and Peak; Slide on Surface and the reference input stay out (user, grill).
 - 2026-11-25 — Rotate/scale bake into GeoEdit's offsets, matching the reference node's cumulative, non-animatable model (code finding: `GeoEditData` already stores baked offsets).
+- 2026-11-26 — **User UAT (F15):** GeoEdit shows a handle in the viewer but it can't be manipulated; fold the fix into this milestone's viewer handle work (user).

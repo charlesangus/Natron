@@ -534,8 +534,10 @@ SceneDrawBoxes::solveBudget()
         budget->units = _units;
         previous = _budget;
     }
-    // Hysteresis holds only against a result for the same settings.
-    const bool comparable = previous && (previous->settings.limit == budget->settings.limit)
+    // Hysteresis holds only against a result for the same settings and draw states: a unit a draw
+    // state or load brings back has no decision of its own in the previous result to hold.
+    const bool comparable = previous && previous->units && (previous->units->contentGeneration == budget->units->contentGeneration)
+        && (previous->settings.limit == budget->settings.limit)
         && (previous->settings.countWholeScene == budget->settings.countWholeScene)
         && (previous->settings.cullDistance == budget->settings.cullDistance)
         && (previous->settings.fractionDistance == budget->settings.fractionDistance)
@@ -1948,6 +1950,7 @@ SceneDrawBoxes::publishUnits(const Request& request,
         }
         std::shared_ptr<Units> published = std::make_shared<Units>();
         published->generation = request.generation;
+        published->contentGeneration = request.contentGeneration;
         published->time = request.time;
         published->units = std::move(units);
         _units = published;

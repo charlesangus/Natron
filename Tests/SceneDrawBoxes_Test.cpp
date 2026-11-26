@@ -900,12 +900,12 @@ TEST(SceneDrawBoxes, DemotedInstancesTooSmallToSeeApartShareABudgetBox)
     prototype.bounded = true;
     prototype.faces = 6;
     instances->prototypes.push_back(prototype);
-    // One in front of the eye, then a hundred a thousand units away within a unit of each other.
+    // One in front of the eye, then a hundred three thousand units away within a unit of each other.
     instances->protoIndices.push_back(0);
     instances->positions.push_back(GfVec3f(0, 0, 0));
     for (int i = 0; i < 100; ++i) {
         instances->protoIndices.push_back(0);
-        instances->positions.push_back(GfVec3f(0.01f * float(i), 0, -1000));
+        instances->positions.push_back(GfVec3f(0.01f * float(i), 0, -3000));
     }
     SceneDrawBoxes::Unit unit;
     unit.path = SdfPath("/World/Instancer");

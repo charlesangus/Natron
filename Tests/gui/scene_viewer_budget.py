@@ -432,8 +432,13 @@ try:
             check(int(budget().get("drawn", TOTAL_FACES)) <= limit, "at most the limit is drawn (%r)" % budget().get("drawn"))
             consistent("Full on %s" % target)
 
-            yield from redrawn("Load All on /World",
-                               lambda: QMetaObject.invokeMethod(view(), "setDrawState", Q_ARG("QString", "/World"), Q_ARG("QString", "loadAll")))
+            # The USDRead draws /World in full and the scene has no payload, so Load All changes no unit
+            # and needs no new solve; the budget on screen must still answer the latest request.
+            QMetaObject.invokeMethod(view(), "setDrawState", Q_ARG("QString", "/World"), Q_ARG("QString", "loadAll"))
+            yield settle()
+            ok = yield ("until", solved, POLL_TIMEOUT_S)
+            check(ok, "Load All on /World: the applied budget answers the latest request (%r)" % budget().get("serial"))
+            yield settle()
             check(int(budget().get("counted", 0)) == counted, "Load All counts what Full did (%r, was %r)" %
                   (budget().get("counted"), counted))
             consistent("Load All on /World")
@@ -453,9 +458,11 @@ try:
             yield from resolve("Polygon Limit %d" % limit, set_knob("polygonLimit", limit))
 
         section("budget boxes")
+        # The draw states section leaves Polygon Limit at limit, so each look also moves it off limit to
+        # bring a new solve.
         for label, value in BUDGET_BOXES:
             yield from resolve("Budget Boxes %s" % label, lambda value=value: (
-                viewer.getParam("budgetBoxes").setValue(value), viewer.getParam("polygonLimit").setValue(limit + value)))
+                viewer.getParam("budgetBoxes").setValue(value), viewer.getParam("polygonLimit").setValue(limit + 1 + value)))
             b = budget()
             boxes_drawn, instances, markers = (int(b.get("budgetBoxCount", 0)), int(b.get("budgetBoxInstances", 0)),
                                                int(b.get("budgetBoxMarkers", 0)))

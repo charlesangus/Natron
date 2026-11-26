@@ -136,6 +136,8 @@ public:
     struct Units {
         // Of the request it answers, as List's.
         U64 generation = 0;
+        // Bumped by a rules, stage or relist change, not by time.
+        U64 contentGeneration = 0;
         double time = 0.;
         std::vector<Unit> units;
     };

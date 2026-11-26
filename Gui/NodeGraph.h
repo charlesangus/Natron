@@ -542,7 +542,29 @@ private:
 
     bool handlePortPipePress(QMouseEvent* e);
 
-    void dropPortPipe(const QPoint& viewportPos);
+    // A shift-drop away from any port or node opens the tab menu instead; see launchShiftDropMenu().
+    void dropPortPipe(const QPoint& viewportPos, bool shiftDrop);
+
+    /**
+     * @brief Ends the pipe and opens the tab menu listing the node types with a target in common
+     * with the pipe's fixed end and a port that can take it. The node chosen lands at the cursor,
+     * connected by its first such port, and starts a port cycle. False, leaving the pipe as is,
+     * when no node type qualifies.
+     **/
+    bool launchShiftDropMenu();
+
+    void beginPortCycle(const NodeGuiPtr& created);
+
+    // Whether the port cycle is still the history's newest entry and its node is alive; ends it otherwise.
+    bool isPortCycleLive();
+
+    void stepPortCycle(int step);
+
+    // Keeps the node and its connection, or undoes and forgets both and disconnects the lifted pipe.
+    void endPortCycle(bool keep);
+
+    // Whether e was the port cycle's to take.
+    bool handlePortCycleKey(QKeyEvent* e);
 
     void cancelPortPipe();
 

@@ -758,6 +758,97 @@ PortConnectCommand::apply(const NodeGuiWPtr& src,
     _graph->update();
 }
 
+PortWireCommand::PortWireCommand(NodeGraph* graph,
+                                 const NodeGuiPtr& fixed,
+                                 const ConnectorHit& fixedEnd,
+                                 const NodeGuiPtr& other,
+                                 const ConnectorHit& port,
+                                 QUndoCommand* parent)
+    : QUndoCommand(parent)
+    , _graph(graph)
+    , _fixed(fixed)
+    , _fixedEnd(fixedEnd)
+    , _other(other)
+    , _port(port)
+    , _connect()
+    , _done(false)
+{
+    assert(fixed && other);
+    const QString fixedLabel = QString::fromUtf8(fixed->getNode()->getLabel().c_str());
+    const QString otherLabel = QString::fromUtf8(other->getNode()->getLabel().c_str());
+    if (fixedEnd.kind == eConnectorKindOutput) {
+        setText(tr("Connect %1 to %2").arg(otherLabel).arg(fixedLabel));
+    } else {
+        setText(tr("Connect %1 to %2").arg(fixedLabel).arg(otherLabel));
+    }
+}
+
+PortWireCommand::~PortWireCommand()
+{
+}
+
+PortConnectCommand*
+PortWireCommand::makeConnect() const
+{
+    NodeGuiPtr fixed = _fixed.lock();
+    NodeGuiPtr other = _other.lock();
+
+    if (!fixed || !other) {
+        return NULL;
+    }
+    if (_fixedEnd.kind == eConnectorKindOutput) {
+        return new PortConnectCommand(_graph, other, _port.inputNb, fixed, _fixedEnd.outputName);
+    }
+
+    return new PortConnectCommand(_graph, fixed, _fixedEnd.inputNb, other, _port.outputName);
+}
+
+void
+PortWireCommand::undo()
+{
+    if (_connect) {
+        _connect->undo();
+        if (_connect->isObsolete()) {
+            setObsolete(true);
+        }
+    }
+    _done = false;
+}
+
+void
+PortWireCommand::redo()
+{
+    // The connection's previous state is read when it is first made.
+    if (!_connect) {
+        _connect.reset(makeConnect());
+    }
+    if (!_connect) {
+        setObsolete(true);
+
+        return;
+    }
+    _connect->redo();
+    if (_connect->isObsolete()) {
+        setObsolete(true);
+    }
+    _done = true;
+}
+
+void
+PortWireCommand::setPort(const ConnectorHit& port)
+{
+    if (!_done) {
+        _port = port;
+        _connect.reset();
+
+        return;
+    }
+    undo();
+    _port = port;
+    _connect.reset();
+    redo();
+}
+
 KissConnectCommand::KissConnectCommand(NodeGraph* graph,
                                        Edge* edge,
                                        const NodeGuiPtr& oldSrc,

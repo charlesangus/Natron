@@ -74,6 +74,9 @@ struct LaunchContext {
     std::function<void(CreateNodeArgs& args)> decorateArgs;
     // Called with the node created, in the undo step that creates it.
     std::function<void(const NodePtr& created)> created;
+    // Called with the node created once that undo step is closed, when it is the history's newest
+    // entry.
+    std::function<void(const NodePtr& created)> stepClosed;
     // When set, inputKind and needsPrimPathKnob are ignored.
     std::optional<NetworkFilter> network;
 };

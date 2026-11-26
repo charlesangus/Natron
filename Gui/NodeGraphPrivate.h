@@ -402,6 +402,20 @@ public:
     std::optional<PortPipe> _portPipe;
     QGraphicsPathItem* _portPipePreview = nullptr;
 
+    // After a shift-drop created a node, the connection moves among the ports of that node that can
+    // take it until the user confirms or cancels. The wire is a part of entry, which must stay the
+    // undo history's newest entry while the cycle lasts.
+    struct PortCycle {
+        NodeGuiWPtr created;
+        std::vector<ConnectorHit> ports;
+        std::size_t current = 0;
+        PortWireCommand* wire = nullptr;
+        const QUndoCommand* entry = nullptr;
+        NodeGuiWPtr liftedNode;
+        int liftedInput = -1;
+    };
+    std::optional<PortCycle> _portCycle;
+
     NodeGuiPtr _backdropResized; //< the backdrop being resized
     UndoGesture _dragGesture; //< from a press to its release, so one resize drag is one undo step
     IndexedNodeGuiList _selection; //< in the order the nodes were selected

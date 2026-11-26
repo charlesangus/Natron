@@ -30,6 +30,7 @@
 
 #include <cstddef>
 #include <string>
+#include <vector>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
@@ -141,6 +142,14 @@ public:
                             double grabRadius,
                             double unconnectedInputGrabRadius,
                             double* dist2);
+
+    /**
+     * @brief Marks connectors as those a gesture offers, until clearConnectorHighlights(). A
+     * layout that draws no such marks ignores it.
+     **/
+    virtual void highlightConnectors(const std::vector<ConnectorHit>& connectors);
+
+    virtual void clearConnectorHighlights();
 
 protected:
     NodeGui* const _node;

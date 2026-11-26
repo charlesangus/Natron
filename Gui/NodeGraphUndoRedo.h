@@ -30,6 +30,7 @@
 
 #include <list>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -41,6 +42,7 @@
 
 #include "Engine/EngineFwd.h"
 
+#include "Gui/ConnectorLayout.h"
 #include "Gui/GuiFwd.h"
 #include "Gui/UndoGesture.h"
 
@@ -218,6 +220,49 @@ private:
     int _inputNb;
     NodeGuiWPtr _oldSrc, _newSrc;
     std::string _oldOutput, _newOutput;
+};
+
+/*
+ * @brief Connects a fixed end, an output or an input of one node, to a port of another node, the
+ * other side of the connection, through PortConnectCommand. setPort() moves the connection to
+ * another port of that node in place, so that the command still undoes to the state from before
+ * it first connected.
+ */
+class PortWireCommand
+    : public QUndoCommand {
+    Q_DECLARE_TR_FUNCTIONS(PortWireCommand)
+
+public:
+    PortWireCommand(NodeGraph* graph,
+                    const NodeGuiPtr& fixed,
+                    const ConnectorHit& fixedEnd,
+                    const NodeGuiPtr& other,
+                    const ConnectorHit& port,
+                    QUndoCommand* parent = 0);
+
+    virtual ~PortWireCommand() OVERRIDE;
+
+    virtual void undo() OVERRIDE;
+    virtual void redo() OVERRIDE;
+
+    void setPort(const ConnectorHit& port);
+
+    const ConnectorHit& getPort() const
+    {
+        return _port;
+    }
+
+private:
+    // Null once either node is gone.
+    PortConnectCommand* makeConnect() const;
+
+    NodeGraph* _graph;
+    NodeGuiWPtr _fixed;
+    ConnectorHit _fixedEnd;
+    NodeGuiWPtr _other;
+    ConnectorHit _port;
+    std::unique_ptr<PortConnectCommand> _connect;
+    bool _done;
 };
 
 /*

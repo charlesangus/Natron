@@ -803,6 +803,16 @@ UndoHistory::clear()
 }
 
 void
+UndoHistory::discardUndone()
+{
+    if (_imp->executing || _imp->replaying) {
+        return;
+    }
+    _imp->dropUndone();
+    Q_EMIT changed();
+}
+
+void
 UndoHistory::openStep(const QString& text,
                       bool keepsText)
 {

@@ -36,6 +36,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QApplication>
 #include <QCursor>
 #include <QHelpEvent>
+#include <QKeyEvent>
 #include <QMenu>
 #include <QMouseEvent>
 #include <QPainterPath>
@@ -204,6 +205,13 @@ NodeGraph::event(QEvent* e)
         return false;
     }
     if (e->type() == QEvent::ShortcutOverride) {
+        QKeyEvent* cycleKey = static_cast<QKeyEvent*>(e);
+        const int key = cycleKey->key();
+        if (_imp->_portCycle && ((key == Qt::Key_Up) || (key == Qt::Key_Down) || (key == Qt::Key_Return) || (key == Qt::Key_Enter) || (key == Qt::Key_Escape))) {
+            cycleKey->accept();
+
+            return true;
+        }
         // A create-node key rebound to one a global action also uses (F2 opens render
         // statistics) must reach the KeyPress below instead of triggering that action.
         QKeyEvent* ke = static_cast<QKeyEvent*>(e);
@@ -439,6 +447,12 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
     }
 
     if (!groupEdited) {
+        return;
+    }
+
+    if (handlePortCycleKey(e)) {
+        e->accept();
+
         return;
     }
 

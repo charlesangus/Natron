@@ -303,4 +303,38 @@ PortListLayout::hitEdge(const Edge* edge,
     return !(*dist2 > grabRadius * grabRadius);
 }
 
+void
+PortListLayout::highlightConnectors(const std::vector<ConnectorHit>& connectors)
+{
+    PortNodeGui* ports = dynamic_cast<PortNodeGui*>(_node);
+
+    if (!ports) {
+        return;
+    }
+    const std::size_t inputCount = ports->getInputRows().size();
+    for (std::size_t i = 0; i < inputCount; ++i) {
+        const bool offered = std::any_of(connectors.begin(), connectors.end(), [i](const ConnectorHit& hit) {
+            return (hit.kind == eConnectorKindInput) && (hit.inputNb == (int)i);
+        });
+        ports->setInputPortHighlight((int)i, offered ? ePortHighlightHalo : ePortHighlightDimmed);
+    }
+    const std::size_t outputCount = ports->getOutputRows().size();
+    for (std::size_t i = 0; i < outputCount; ++i) {
+        const bool offered = std::any_of(connectors.begin(), connectors.end(), [this, i](const ConnectorHit& hit) {
+            return (hit.kind == eConnectorKindOutput) && (outputIndexOf(hit.outputName) == (int)i);
+        });
+        ports->setOutputPortHighlight((int)i, offered ? ePortHighlightHalo : ePortHighlightDimmed);
+    }
+}
+
+void
+PortListLayout::clearConnectorHighlights()
+{
+    PortNodeGui* ports = dynamic_cast<PortNodeGui*>(_node);
+
+    if (ports) {
+        ports->clearPortHighlights();
+    }
+}
+
 NATRON_NAMESPACE_EXIT

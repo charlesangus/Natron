@@ -422,18 +422,24 @@ triggerInContext(QAction* action,
 
     QString text = action->text();
     text.remove(QLatin1Char('&'));
-    UndoStepScope step(gui->getUndoHistory(), QCoreApplication::translate("TabMenuBridge", "Create %1").arg(text));
-
-    graph->clearSelection();
-    const NodesList before = collection->getNodes();
+    NodePtr created;
     {
-        NodeCreationContextScope scope(app, collection, scenePos);
-        NodesMenuArgsDecoratorScope decorator(context.decorateArgs);
-        action->trigger();
+        UndoStepScope step(gui->getUndoHistory(), QCoreApplication::translate("TabMenuBridge", "Create %1").arg(text));
+
+        graph->clearSelection();
+        const NodesList before = collection->getNodes();
+        {
+            NodeCreationContextScope scope(app, collection, scenePos);
+            NodesMenuArgsDecoratorScope decorator(context.decorateArgs);
+            action->trigger();
+        }
+        created = firstAddedNode(before, collection->getNodes());
+        if (created && context.created) {
+            context.created(created);
+        }
     }
-    const NodePtr created = firstAddedNode(before, collection->getNodes());
-    if (created && context.created) {
-        context.created(created);
+    if (created && context.stepClosed) {
+        context.stepClosed(created);
     }
 }
 } // anonymous namespace

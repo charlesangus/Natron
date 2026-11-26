@@ -108,6 +108,11 @@ public:
                          double unconnectedInputGrabRadius,
                          double* dist2) const OVERRIDE;
 
+    // Gives the connectors a halo and dims the node's other ports.
+    virtual void highlightConnectors(const std::vector<ConnectorHit>& connectors) OVERRIDE;
+
+    virtual void clearConnectorHighlights() OVERRIDE;
+
 private:
     ConnectorAnchor anchorAt(const QPointF& nodePoint,
                              const QPointF& tangent,

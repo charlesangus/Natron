@@ -384,6 +384,15 @@ NodeGraph::wheelEventInternal(double delta,
 void
 NodeGraph::wheelEvent(QWheelEvent* e)
 {
+    if (_imp->_portCycle && isPortCycleLive()) {
+        const int delta = e->angleDelta().y();
+        if (delta != 0) {
+            stepPortCycle((delta < 0) ? 1 : -1);
+        }
+        e->accept();
+
+        return;
+    }
     if (e->angleDelta().x() != 0) {
         return;
     }

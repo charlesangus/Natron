@@ -28,14 +28,18 @@
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
+#include <set>
 #include <stdexcept>
 
 GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
-#include <QMouseEvent>
-#include <QCursor>
 #include <QApplication>
+#include <QCursor>
+#include <QKeyEvent>
+#include <QMouseEvent>
+#include <QWheelEvent>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
@@ -46,6 +50,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Network/NetworkBuilder.h"
 #include "Engine/Nodes/Network/NetworkNode.h"
+#include "Engine/Nodes/Network/PortTypes.h"
 #include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
 
@@ -60,6 +65,8 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/NodeGui.h"
 #include "Gui/PortListLayout.h"
 #include "Gui/PortNodeGui.h"
+#include "Gui/TabMenuBridge.h"
+#include "Gui/UndoHistory.h"
 
 #include "Global/QtCompat.h"
 
@@ -457,6 +464,131 @@ outputReadByInput(const NodeGuiPtr& dst,
     return source->getOutputPorts().front().name;
 }
 
+// The attributes a new node of layout has as its inputs, in input order, as NetworkNode makes them.
+std::vector<const NetworkAttribute*>
+initialPortsOf(const NetworkNodeLayout& layout)
+{
+    std::vector<const NetworkAttribute*> ports;
+    std::set<std::string> seen;
+    const auto find = [&layout](const std::string& name) -> const NetworkAttribute* {
+        for (const NetworkAttribute& attribute : layout.attributes) {
+            if (attribute.name == name) {
+                return &attribute;
+            }
+        }
+
+        return NULL;
+    };
+
+    for (const std::string& name : layout.defaultPorts) {
+        const NetworkAttribute* attribute = find(name);
+        if (attribute && NetworkNode::canPromote(*attribute) && seen.insert(name).second) {
+            ports.push_back(attribute);
+        }
+    }
+    for (const NetworkAttribute& attribute : layout.attributes) {
+        if (attribute.portOnly && seen.insert(attribute.name).second) {
+            ports.push_back(&attribute);
+        }
+    }
+
+    return ports;
+}
+
+// Whether a new node of layout has a port the fixed end of a pipe can connect to: an input for the
+// output fixedOutput of fixed, when fromOutput, else an output for the input fixedInput of fixed.
+bool
+layoutTakesPipe(const NetworkNodeLayout& layout,
+                const NetworkNode& fixed,
+                bool fromOutput,
+                const std::string& fixedOutput,
+                int fixedInput)
+{
+    const std::vector<std::string>& fixedTargets = fixed.layout().targets;
+
+    if (!portTargetsShared(layout.targets, fixedTargets)) {
+        return false;
+    }
+    if (fromOutput) {
+        const OutputPortDescriptor* output = fixed.findOutput(fixedOutput);
+        if (!output) {
+            return false;
+        }
+        for (const NetworkAttribute* attribute : initialPortsOf(layout)) {
+            if (canConnectPorts(fixedTargets, *output, layout.targets, attribute->port)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+    const std::optional<PortDescriptor> input = fixed.getInputPortDescriptor(fixedInput);
+    if (!input) {
+        return false;
+    }
+    for (const OutputPortDescriptor& output : layout.outputs) {
+        if (canConnectPorts(layout.targets, output, fixedTargets, *input)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// The connectors of node that can take the fixed end of a pipe, as for layoutTakesPipe().
+std::vector<ConnectorHit>
+connectorsTakingPipe(const NodeGuiPtr& node,
+                     const NodeGuiPtr& fixed,
+                     bool fromOutput,
+                     const std::string& fixedOutput,
+                     int fixedInput)
+{
+    std::vector<ConnectorHit> found;
+    NetworkNode* network = networkOf(node);
+    NetworkNode* fixedNetwork = networkOf(fixed);
+
+    if (!network || !fixedNetwork) {
+        return found;
+    }
+    if (fromOutput) {
+        const int inputCount = node->getNode()->getNInputs();
+        for (int i = 0; i < inputCount; ++i) {
+            if (network->canConnectPort(i, fixed->getNode(), fixedOutput)) {
+                ConnectorHit hit;
+                hit.kind = eConnectorKindInput;
+                hit.inputNb = i;
+                found.push_back(hit);
+            }
+        }
+    } else {
+        for (const OutputPortDescriptor& output : network->getOutputPorts()) {
+            if (fixedNetwork->canConnectPort(fixedInput, node->getNode(), output.name)) {
+                ConnectorHit hit;
+                hit.kind = eConnectorKindOutput;
+                hit.outputName = output.name;
+                found.push_back(hit);
+            }
+        }
+    }
+
+    return found;
+}
+
+// Whether the connection hit names, between node and the fixed end of a pipe, is made.
+bool
+isWired(const NodeGuiPtr& node,
+        const NodeGuiPtr& fixed,
+        bool fromOutput,
+        int fixedInput,
+        const ConnectorHit& hit)
+{
+    if (fromOutput) {
+        return node->getNode()->getInput(hit.inputNb) == fixed->getNode();
+    }
+
+    return (fixed->getNode()->getInput(fixedInput) == node->getNode()) && (outputReadByInput(fixed, fixedInput, node) == hit.outputName);
+}
+
 QPointF
 inputPortScenePos(const NodeGuiPtr& gui,
                   int inputNb)
@@ -556,7 +688,7 @@ NodeGraph::releasePortPipe(QMouseEvent* e,
         return;
     }
     if (dragged) {
-        dropPortPipe(e->pos());
+        dropPortPipe(e->pos(), modCASIsShift(e));
     } else {
         _imp->_portPipe->held = true;
     }
@@ -569,7 +701,7 @@ NodeGraph::handlePortPipePress(QMouseEvent* e)
         return false;
     }
     if (buttonDownIsLeft(e)) {
-        dropPortPipe(e->pos());
+        dropPortPipe(e->pos(), modCASIsShift(e));
     } else {
         cancelPortPipe();
     }
@@ -578,10 +710,21 @@ NodeGraph::handlePortPipePress(QMouseEvent* e)
 }
 
 void
-NodeGraph::dropPortPipe(const QPoint& viewportPos)
+NodeGraph::dropPortPipe(const QPoint& viewportPos,
+                        bool shiftDrop)
 {
     if (!_imp->_portPipe) {
         return;
+    }
+    if (shiftDrop) {
+        NodeGuiPtr port;
+        int portInput = -1;
+        std::string portOutput;
+        NodeGui* nearbyNode = NULL;
+        Edge* nearbyEdge = NULL;
+        if (!portNearbyMouse(viewportPos, &port, &portInput, &portOutput) && (hasItemNearbyMouse(viewportPos, &nearbyNode, &nearbyEdge) != eNearbyItemNode) && launchShiftDropMenu()) {
+            return;
+        }
     }
     const NodeGraphPrivate::PortPipe pipe = *_imp->_portPipe;
     cancelPortPipe();
@@ -765,6 +908,233 @@ NodeGraph::setPortPipeHighlights(bool highlighted)
         }
     }
 } // NodeGraph::setPortPipeHighlights
+
+bool
+NodeGraph::launchShiftDropMenu()
+{
+    if (!_imp->_portPipe) {
+        return false;
+    }
+    const NodeGraphPrivate::PortPipe pipe = *_imp->_portPipe;
+    NodeGuiPtr anchor = pipe.anchorNode.lock();
+    NetworkNode* fixed = networkOf(anchor);
+    std::optional<TabMenuBridge::NetworkFilter> filter = TabMenuBridge::networkFilterOf(this);
+    if (!fixed || !filter) {
+        return false;
+    }
+    const std::vector<std::string>& fixedTargets = fixed->layout().targets;
+    std::vector<std::string> targets;
+    if (filter->targets.empty()) {
+        targets = fixedTargets;
+    } else {
+        for (const std::string& target : filter->targets) {
+            if (std::find(fixedTargets.begin(), fixedTargets.end(), target) != fixedTargets.end()) {
+                targets.push_back(target);
+            }
+        }
+    }
+    std::vector<std::string> pluginIds;
+    for (const std::pair<std::string, std::vector<std::string>>& registered : NetworkNode::registeredPlugins()) {
+        if (!portTargetsShared(registered.second, targets)) {
+            continue;
+        }
+        const NetworkNodeLayout* layout = NetworkNode::findLayout(registered.first);
+        if (layout && layoutTakesPipe(*layout, *fixed, pipe.anchorIsOutput, pipe.anchorOutput, pipe.anchorInput)) {
+            pluginIds.push_back(registered.first);
+        }
+    }
+    cancelPortPipe();
+    if (pluginIds.empty()) {
+        getGui()->getApp()->showStatusMessage(tr("No node type can connect to %1.").arg(QString::fromUtf8(anchor->getNode()->getLabel().c_str())));
+
+        return true;
+    }
+    filter->targets = targets;
+    filter->pluginIds = pluginIds;
+    filter->withBackdrop = false;
+
+    TabMenuBridge::LaunchContext context;
+    context.network = filter;
+    context.created = [this, pipe](const NodePtr& node) {
+        NodeGuiPtr gui = std::dynamic_pointer_cast<NodeGui>(node->getNodeGui());
+        NodeGuiPtr fixedGui = pipe.anchorNode.lock();
+        NodeGuiPtr lifted = pipe.liftedNode.lock();
+        _imp->_portCycle.reset();
+        if (!gui || !fixedGui) {
+            return;
+        }
+        const std::vector<ConnectorHit> ports = connectorsTakingPipe(gui, fixedGui, pipe.anchorIsOutput, pipe.anchorOutput, pipe.anchorInput);
+        if (ports.empty()) {
+            return;
+        }
+        // The lifted input of a pipe held by its input end is that end, which the wire reconnects.
+        if (lifted && pipe.anchorIsOutput && lifted->getNode()->getInput(pipe.liftedInput)) {
+            pushUndoCommand(new PortConnectCommand(this, lifted, pipe.liftedInput, NodeGuiPtr(), outputNamedForInput(lifted, pipe.liftedInput)),
+                            NodesGuiList { lifted });
+        }
+        ConnectorHit fixedEnd;
+        fixedEnd.kind = pipe.anchorIsOutput ? eConnectorKindOutput : eConnectorKindInput;
+        fixedEnd.inputNb = pipe.anchorInput;
+        fixedEnd.outputName = pipe.anchorOutput;
+        PortWireCommand* wire = new PortWireCommand(this, fixedGui, fixedEnd, gui, ports.front());
+        pushUndoCommand(wire, NodesGuiList { gui, fixedGui });
+        // A wire that failed is deleted by the history instead of joining the step.
+        if (!isWired(gui, fixedGui, pipe.anchorIsOutput, pipe.anchorInput, ports.front())) {
+            return;
+        }
+        NodeGraphPrivate::PortCycle cycle;
+        cycle.created = gui;
+        cycle.ports = ports;
+        cycle.wire = wire;
+        cycle.liftedNode = lifted;
+        cycle.liftedInput = pipe.liftedInput;
+        _imp->_portCycle = cycle;
+    };
+    context.stepClosed = [this](const NodePtr& node) {
+        beginPortCycle(std::dynamic_pointer_cast<NodeGui>(node->getNodeGui()));
+    };
+    TabMenuBridge::launch(this, context);
+
+    return true;
+} // NodeGraph::launchShiftDropMenu
+
+void
+NodeGraph::beginPortCycle(const NodeGuiPtr& created)
+{
+    if (!_imp->_portCycle) {
+        return;
+    }
+    UndoHistory* history = getGui() ? getGui()->getUndoHistory() : NULL;
+    const QUndoCommand* entry = history ? history->getLastCommand() : NULL;
+    if (!created || (_imp->_portCycle->created.lock() != created) || !entry) {
+        _imp->_portCycle.reset();
+
+        return;
+    }
+    _imp->_portCycle->entry = entry;
+    ConnectorLayout* layout = created->getConnectorLayout();
+    if (layout) {
+        layout->highlightConnectors(_imp->_portCycle->ports);
+    }
+    setFocus(Qt::OtherFocusReason);
+    update();
+}
+
+bool
+NodeGraph::isPortCycleLive()
+{
+    if (!_imp->_portCycle) {
+        return false;
+    }
+    const NodeGraphPrivate::PortCycle& cycle = *_imp->_portCycle;
+    UndoHistory* history = getGui() ? getGui()->getUndoHistory() : NULL;
+    NodeGuiPtr created = cycle.created.lock();
+    if (history && created && cycle.wire && cycle.entry && !history->isReplaying() && (history->getLastCommand() == cycle.entry)) {
+        return true;
+    }
+    ConnectorLayout* layout = created ? created->getConnectorLayout() : NULL;
+    if (layout) {
+        layout->clearConnectorHighlights();
+    }
+    _imp->_portCycle.reset();
+    update();
+
+    return false;
+}
+
+void
+NodeGraph::stepPortCycle(int step)
+{
+    if (!isPortCycleLive()) {
+        return;
+    }
+    NodeGraphPrivate::PortCycle& cycle = *_imp->_portCycle;
+    const int count = (int)cycle.ports.size();
+    if (count < 2) {
+        return;
+    }
+    int next = ((int)cycle.current + step) % count;
+    if (next < 0) {
+        next += count;
+    }
+    cycle.current = (std::size_t)next;
+    cycle.wire->setPort(cycle.ports[cycle.current]);
+    NodeGuiPtr created = cycle.created.lock();
+    ConnectorLayout* layout = created ? created->getConnectorLayout() : NULL;
+    if (layout) {
+        layout->highlightConnectors(cycle.ports);
+    }
+    update();
+}
+
+void
+NodeGraph::endPortCycle(bool keep)
+{
+    if (!_imp->_portCycle) {
+        return;
+    }
+    const NodeGraphPrivate::PortCycle cycle = *_imp->_portCycle;
+    const bool live = isPortCycleLive();
+    NodeGuiPtr created = cycle.created.lock();
+    ConnectorLayout* layout = created ? created->getConnectorLayout() : NULL;
+    if (layout) {
+        layout->clearConnectorHighlights();
+    }
+    created.reset();
+    _imp->_portCycle.reset();
+    if (keep || !live) {
+        update();
+
+        return;
+    }
+    // Undone and then discarded, the node is destroyed, and no redo brings it back.
+    UndoHistory* history = getGui()->getUndoHistory();
+    history->undo();
+    history->discardUndone();
+    NodeGuiPtr lifted = cycle.liftedNode.lock();
+    if (lifted && lifted->getNode()->getInput(cycle.liftedInput)) {
+        pushUndoCommand(new PortConnectCommand(this, lifted, cycle.liftedInput, NodeGuiPtr(), outputNamedForInput(lifted, cycle.liftedInput)),
+                        NodesGuiList { lifted });
+    }
+    update();
+} // NodeGraph::endPortCycle
+
+bool
+NodeGraph::handlePortCycleKey(QKeyEvent* e)
+{
+    if (!isPortCycleLive()) {
+        return false;
+    }
+    switch (e->key()) {
+    case Qt::Key_Down:
+        stepPortCycle(1);
+
+        return true;
+    case Qt::Key_Up:
+        stepPortCycle(-1);
+
+        return true;
+    case Qt::Key_Return:
+    case Qt::Key_Enter:
+        endPortCycle(true);
+
+        return true;
+    case Qt::Key_Escape:
+        endPortCycle(false);
+
+        return true;
+    case Qt::Key_Shift:
+    case Qt::Key_Control:
+    case Qt::Key_Alt:
+    case Qt::Key_Meta:
+
+        return false;
+    default:
+        endPortCycle(true);
+
+        return false;
+    }
+} // NodeGraph::handlePortCycleKey
 
 void
 NodeGraph::mouseReleaseEvent(QMouseEvent* e)

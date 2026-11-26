@@ -169,6 +169,12 @@ public:
     void clear();
 
     /**
+     * @brief Deletes every undone entry, as a push does, so that what was undone can no longer be
+     * redone. Does nothing while a command executes or an entry is undone or redone.
+     **/
+    void discardUndone();
+
+    /**
      * @brief Opens a step that gathers what is pushed and recorded until the matching closeStep()
      * into one entry, labelled text unless it ends up holding a single command, which keeps its
      * own text when keepsText is false. A step opened inside an open step or an executing pushed

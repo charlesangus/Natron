@@ -75,4 +75,14 @@ ConnectorLayout::hitEdgeLine(const Edge* edge,
     return isEdgeCandidateWithinReach(scenePos, candidate, grabRadius, unconnectedInputGrabRadius, dist2);
 }
 
+void
+ConnectorLayout::highlightConnectors(const std::vector<ConnectorHit>& /*connectors*/)
+{
+}
+
+void
+ConnectorLayout::clearConnectorHighlights()
+{
+}
+
 NATRON_NAMESPACE_EXIT

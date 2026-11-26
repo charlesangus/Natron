@@ -25,6 +25,8 @@
 
 #include "ShaderManifest.h"
 
+#include "Global/FloatingPointExceptions.h"
+
 #include <algorithm>
 #include <cctype>
 #include <map>
@@ -780,6 +782,9 @@ readManifest(const QByteArray& manifest,
              ManifestDocument* document,
              std::string* error)
 {
+    // Qt's number parser raises overflow on the cycles manifest's 3.4028235e+38 limits, and debug
+    // builds trap that on the calling thread.
+    const boost_adaptbx::floating_point::FpTrapGuard noTraps;
     QJsonParseError parseError;
     const QJsonDocument manifestDocument = QJsonDocument::fromJson(manifest, &parseError);
 

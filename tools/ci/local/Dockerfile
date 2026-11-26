@@ -67,7 +67,7 @@ RUN NATRON_CYCLES_REPO="$NATRON_CYCLES_REPO" \
 # is fetched for the build only. Right after Cycles: the other slow layer,
 # changed more often than Cycles, so its rebuilds leave the Cycles layer cached.
 ARG NATRON_MOONRAY_REPO=https://github.com/charlesangus/openmoonray.git
-ARG NATRON_MOONRAY_COMMIT=f57c136d3ef2f521b8be6d16a275cf92447ec080
+ARG NATRON_MOONRAY_COMMIT=d169038bc95a8908abb64025a306413213dca36e
 ARG NATRON_MOONRAY_ISPC_VERSION=v1.21.0
 ARG NATRON_MOONRAY_ISPC_SHA256=fe658893799af46c9cac0153f0bdc9a2ff93541fff9b17cf6b09ffc7576cfdcc
 COPY build-moonray.sh /tmp/build-moonray.sh

@@ -307,8 +307,8 @@ std::size_t getCpuEngineCount();
 // How many engines, of every delegate, have been made in this process.
 std::uint64_t getEngineBuildCount();
 
-// How many times, in this process, a USDRender MoonRay render read its session's progress past
-// zero: the session is connected and its render process is rendering.
+// How many times, in this process, a MoonRay render, USDRender's or a progressive one, read its
+// session's progress past zero: the session is connected and its render process is rendering.
 std::uint64_t getMoonRayProgressReads();
 
 /**

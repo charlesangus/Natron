@@ -156,13 +156,21 @@ const std::chrono::milliseconds kRestartUnseen(2000);
 // How long a MoonRay session may hold its progress still, mid-render, before it is taken to have
 // stopped answering: its engine is made once again, and a second such silence fails the render.
 // Any change in what it reports, its progress, clock or status, starts the wait over, so a slow
-// render that moves on never meets it. NATRON_DELEGATE_STALL_S overrides it, in seconds.
+// render that moves on never meets it. It applies once the session has sent a frame;
+// NATRON_DELEGATE_STALL_S overrides it, in seconds.
 const std::chrono::seconds kDelegateStall(30);
 
+// The same, for a session that has sent no frame yet. Until its first, its stats can hold still
+// through execComp's start, the scene's load and its render prep, which on a heavy scene and a
+// modest machine take minutes, while a session whose engine never comes ready must still fail.
+// NATRON_DELEGATE_STARTUP_STALL_S overrides it, in seconds.
+const std::chrono::seconds kDelegateStartupStall(300);
+
 std::chrono::milliseconds
-delegateStallBound()
+stallBoundOf(const char* variable,
+             std::chrono::milliseconds fallback)
 {
-    const char* env = std::getenv("NATRON_DELEGATE_STALL_S");
+    const char* env = std::getenv(variable);
     if (env && *env) {
         char* end = nullptr;
         const double seconds = std::strtod(env, &end);
@@ -171,7 +179,7 @@ delegateStallBound()
         }
     }
 
-    return kDelegateStall;
+    return fallback;
 }
 
 std::string
@@ -180,18 +188,39 @@ delegateStallError(std::chrono::milliseconds bound)
     char seconds[32];
     std::snprintf(seconds, sizeof(seconds), "%g", std::chrono::duration<double>(bound).count());
 
-    return std::string("MoonRay's render session stopped answering: its progress held still for ") + seconds + " s, then again for as long once its session was made again.";
+    return std::string("MoonRay's render session stopped answering: its progress held still, and once its session was made again held still for ") + seconds + " s.";
+}
+
+// Whether MoonRay's stats show a frame from its render process: hdMoonray's percentDone stays 0 until
+// the first one arrives.
+bool
+moonRayProgressed(const VtDictionary& stats)
+{
+    const VtDictionary::const_iterator percent = stats.find("percentDone");
+    if (percent == stats.end()) {
+        return false;
+    }
+    if (percent->second.IsHolding<float>()) {
+        return percent->second.UncheckedGet<float>() > 0.f;
+    }
+    if (percent->second.IsHolding<double>()) {
+        return percent->second.UncheckedGet<double>() > 0.;
+    }
+
+    return false;
 }
 
 /**
- * Whether a delegate's progress has held still for delegateStallBound(): its render stats, read
- * after every pass, the same all along. The wait starts at the first read after a reset.
+ * Whether a MoonRay session's progress has held still for its bound: its render stats, read after
+ * every pass, the same all along. The wait starts at the first read after a reset, and its bound is
+ * the startup one until a read shows a frame, the mid-render one from then on.
  **/
 class ProgressStall {
 public:
     void reset()
     {
         _known = false;
+        _framed = false;
     }
 
     bool stalled(const VtDictionary& stats,
@@ -201,7 +230,8 @@ public:
             _known = true;
             _stats = stats;
             _since = now;
-            _bound = delegateStallBound();
+            _framed = _framed || moonRayProgressed(stats);
+            _bound = _framed ? stallBoundOf("NATRON_DELEGATE_STALL_S", kDelegateStall) : stallBoundOf("NATRON_DELEGATE_STARTUP_STALL_S", kDelegateStartupStall);
 
             return false;
         }
@@ -216,9 +246,10 @@ public:
 
 private:
     bool _known = false;
+    bool _framed = false;
     VtDictionary _stats;
     std::chrono::steady_clock::time_point _since;
-    std::chrono::milliseconds _bound = kDelegateStall;
+    std::chrono::milliseconds _bound = kDelegateStartupStall;
 };
 
 // How long a render waits, before restarting a converged Cycles session, for it to say it is idle:
@@ -248,25 +279,6 @@ samplesOf(const VtDictionary& stats,
     }
 
     return -1;
-}
-
-// Whether MoonRay's stats show a frame from its render process: hdMoonray's percentDone stays 0 until
-// the first one arrives.
-bool
-moonRayProgressed(const VtDictionary& stats)
-{
-    const VtDictionary::const_iterator percent = stats.find("percentDone");
-    if (percent == stats.end()) {
-        return false;
-    }
-    if (percent->second.IsHolding<float>()) {
-        return percent->second.UncheckedGet<float>() > 0.f;
-    }
-    if (percent->second.IsHolding<double>()) {
-        return percent->second.UncheckedGet<double>() > 0.;
-    }
-
-    return false;
 }
 
 std::int64_t
@@ -3670,8 +3682,8 @@ namespace {
 } // anon namespace
 
 // Returns with lock held. Its record of the render's progress dies with a failure, as the engine does.
-// Each wait reads quit first: a step that lets go of mutex, as asking for the Cycles thread
-// count does, may miss the destructor's notify.
+// Each untimed wait reads quit first: a step that lets go of mutex, as asking for the Cycles
+// thread count does, may miss the destructor's notify.
 void
 ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
 {
@@ -4010,6 +4022,9 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
                     rendered = true;
                     converged = engine->IsConverged();
                     stats = engine->GetRenderStats();
+                    if (MoonRayAovs::isMoonRay(engineRenderer) && moonRayProgressed(stats)) {
+                        ++gMoonRayProgressReads;
+                    }
                     if (log && !converged) {
                         // A MoonRay session that could not start or broke never converges.
                         sessionFailure = MoonRayAovs::sessionFailure(stats, log->notices());

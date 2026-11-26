@@ -108,10 +108,15 @@
 #include "RenderBothWays.h"
 #include "RenderSettingsTestUtils.h"
 #include "Tests/Native/NativeGolden.h"
+#include "Tests/Scene/MoonRayTestProcesses.h"
 #include "Tests/TestWatchdog.h"
 #include "ofxNatron.h"
 
 NATRON_NAMESPACE_USING
+
+using MoonRayTestProcesses::execCompChildren;
+using MoonRayTestProcesses::RenderProcessStopper;
+using MoonRayTestProcesses::ScopedEnv;
 
 /*
  * Renders of Tests/fixtures/scene-moonray.usda through a USDRender set to MoonRay, headless,
@@ -248,46 +253,6 @@ pixelSamples(int samples)
     settings["moonray:sceneVariable:pixel_samples"] = PXR_NS::VtValue(samples);
 
     return settings;
-}
-
-// The ids of this process's children named execComp: the processes Arras renders in.
-std::vector<int>
-execCompChildren()
-{
-    std::vector<int> children;
-    DIR* proc = ::opendir("/proc");
-    if (!proc) {
-        return children;
-    }
-    const int self = (int)::getpid();
-    while (struct dirent* entry = ::readdir(proc)) {
-        const int pid = std::atoi(entry->d_name);
-        if (pid <= 0) {
-            continue;
-        }
-        std::ifstream stat(std::string("/proc/") + entry->d_name + "/stat");
-        std::string line;
-        if (!std::getline(stat, line)) {
-            continue;
-        }
-        // pid (comm) state ppid ...
-        const std::string::size_type open = line.find('(');
-        const std::string::size_type close = line.rfind(')');
-        if ((open == std::string::npos) || (close == std::string::npos)) {
-            continue;
-        }
-        const std::string comm = line.substr(open + 1, close - open - 1);
-        std::istringstream rest(line.substr(close + 1));
-        std::string state;
-        int ppid = 0;
-        rest >> state >> ppid;
-        if ((ppid == self) && (comm == "execComp") && (state != "Z")) {
-            children.push_back(pid);
-        }
-    }
-    ::closedir(proc);
-
-    return children;
 }
 
 int
@@ -626,157 +591,12 @@ TEST_F(USDRenderMoonRayTest, AbortEndsTheRenderProcessPromptly)
     HydraRender::release(&owner);
 }
 
-namespace {
-// Sets an environment variable for its lifetime, and puts back what it held before.
-class ScopedEnv {
-public:
-    ScopedEnv(const char* name,
-              const char* value)
-        : _name(name)
-    {
-        const char* previous = std::getenv(name);
-        _had = (previous != nullptr);
-        if (_had) {
-            _previous = previous;
-        }
-        ::setenv(name, value, 1);
-    }
-
-    ~ScopedEnv()
-    {
-        if (_had) {
-            ::setenv(_name.c_str(), _previous.c_str(), 1);
-        } else {
-            ::unsetenv(_name.c_str());
-        }
-    }
-
-private:
-    std::string _name;
-    std::string _previous;
-    bool _had = false;
-};
-
-// Whether pid is a child of this process that Arras has not reaped yet, exited or not.
-bool
-isUnreapedChild(int pid)
-{
-    std::ifstream stat("/proc/" + std::to_string(pid) + "/stat");
-    std::string line;
-    if (!std::getline(stat, line)) {
-        return false;
-    }
-    const std::string::size_type close = line.rfind(')');
-    if (close == std::string::npos) {
-        return false;
-    }
-    std::istringstream rest(line.substr(close + 1));
-    std::string state;
-    int ppid = 0;
-    rest >> state >> ppid;
-
-    return ppid == (int)::getpid();
-}
-
-/**
- * Stops each execComp this process starts once a render has read its session's progress past
- * zero, so never before its session is connected: one stopped while it connects fails the session's
- * making instead, and leaves Arras a process whose exit reaches a client already gone. On going it
- * continues the ones it stopped and waits for Arras to reap them, so that none ends its session
- * inside a later test.
- **/
-class RenderProcessStopper {
-public:
-    explicit RenderProcessStopper(std::chrono::milliseconds reapBound)
-        : _before(execCompChildren())
-        , _reapBound(reapBound)
-        , _thread([this]() { run(); })
-    {
-    }
-
-    ~RenderProcessStopper()
-    {
-        (void)stopNoMore();
-        (void)continueAndReap();
-    }
-
-    RenderProcessStopper(const RenderProcessStopper&) = delete;
-    RenderProcessStopper& operator=(const RenderProcessStopper&) = delete;
-
-    // The processes stopped, in the order they were.
-    std::vector<int> stopNoMore()
-    {
-        _running = false;
-        if (_thread.joinable()) {
-            _thread.join();
-        }
-        std::lock_guard<std::mutex> lock(_mutex);
-
-        return _stopped;
-    }
-
-    // False if one of the stopped processes was not reaped within the bound.
-    bool continueAndReap()
-    {
-        const std::vector<int> stopped = stopNoMore();
-        for (int pid : stopped) {
-            if (isUnreapedChild(pid)) {
-                (void)::kill(pid, SIGCONT);
-            }
-        }
-        typedef std::chrono::steady_clock Clock;
-        const Clock::time_point start = Clock::now();
-        for (;;) {
-            const bool anyLeft = std::any_of(stopped.begin(), stopped.end(), isUnreapedChild);
-            if (!anyLeft) {
-                return true;
-            }
-            if (Clock::now() - start >= _reapBound) {
-                return false;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(20));
-        }
-    }
-
-private:
-    void run()
-    {
-        std::map<int, std::uint64_t> readsWhenSeen;
-        while (_running.load()) {
-            const std::vector<int> children = execCompChildren();
-            // Read after the listing: every read counted by then is of a session older than the
-            // processes listed, whose own reads can only come after.
-            const std::uint64_t reads = HydraRender::getMoonRayProgressReads();
-            for (int pid : children) {
-                if (std::find(_before.begin(), _before.end(), pid) != _before.end()) {
-                    continue;
-                }
-                const std::map<int, std::uint64_t>::iterator it = readsWhenSeen.insert(std::make_pair(pid, reads)).first;
-                std::lock_guard<std::mutex> lock(_mutex);
-                if ((reads > it->second) && (std::find(_stopped.begin(), _stopped.end(), pid) == _stopped.end())) {
-                    if (::kill(pid, SIGSTOP) == 0) {
-                        _stopped.push_back(pid);
-                    }
-                }
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        }
-    }
-
-    const std::vector<int> _before;
-    const std::chrono::milliseconds _reapBound;
-    std::atomic<bool> _running { true };
-    std::mutex _mutex;
-    std::vector<int> _stopped;
-    std::thread _thread;
-};
-} // anon namespace
-
 // A MoonRay session whose render process stops answering mid-render cannot hold the render: once
 // its progress has held still for NATRON_DELEGATE_STALL_S the engine is made again, and when the
 // next session's progress holds still as long, the render fails and says why. Each execComp the
 // render starts is stopped once its session is rendering, and continued once the render has
-// returned, so that its session's shutdown can end it.
+// returned, so that its session's shutdown can end it. The startup bound stays long: a session
+// slow to start on a loaded runner must not meet it before its process is stopped.
 TEST_F(USDRenderMoonRayTest, ARenderProcessThatStopsAnsweringFailsTheRender)
 {
     if (!moonRayOrSkip()) {
@@ -786,7 +606,9 @@ TEST_F(USDRenderMoonRayTest, ARenderProcessThatStopsAnsweringFailsTheRender)
     // Two sessions' start and first frame on a loaded runner, and the engine's remaking.
     const std::chrono::seconds kSlack(60);
     const std::chrono::seconds kReapBound(15);
+    const int kStartupStallSeconds = 120;
     const ScopedEnv stallBound("NATRON_DELEGATE_STALL_S", std::to_string(kStallSeconds).c_str());
+    const ScopedEnv startupStallBound("NATRON_DELEGATE_STARTUP_STALL_S", std::to_string(kStartupStallSeconds).c_str());
     // Enough samples that the frame is still rendering when its process is stopped.
     HydraRender::setRendererSettings(kMoonRayRendererId, pixelSamples(4096));
     NodePtr reader;

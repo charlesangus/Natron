@@ -268,6 +268,15 @@ public:
      **/
     std::vector<RegionFallback> getRegionFallbacks() const;
 
+    typedef std::function<void(EffectInstance::RenderRoIRetCode)> CompletionCallback;
+
+    /**
+     * @brief Calls callback once when the frame finishes or aborts, on the thread that ends it, which may be a thread
+     * of the global pool: the callback must not wait on the scheduler. A frame already finished calls it at once on
+     * this thread. At most one callback is held; registering another replaces one not yet called.
+     **/
+    void onFinished(CompletionCallback callback);
+
 private:
     friend class RenderScheduler;
 
@@ -281,6 +290,7 @@ private:
     EffectInstance::RenderRoIRetCode _retCode;
     std::map<ImageLayerDesc, ImagePtr> _rootPlanes;
     std::vector<RegionFallback> _fallbacks;
+    CompletionCallback _callback;
 };
 
 /**

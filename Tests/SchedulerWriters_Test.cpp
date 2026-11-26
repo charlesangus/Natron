@@ -201,8 +201,11 @@ protected:
     {
         ASSERT_TRUE(bool(writer));
         const std::vector<int> poolSizes { 1, 4 };
+        const int threadsBefore = OutputSchedulerThread::getFrameThreadsStartedForTests();
         const RenderMismatch m = renderBothWays(writer, kFirstFrame, kLastFrame, poolSizes);
         EXPECT_FALSE(m.any) << describe(m);
+        // Frames the RenderScheduler can run need no thread of their own.
+        EXPECT_EQ(0, OutputSchedulerThread::getFrameThreadsStartedForTests() - threadsBefore);
 
         std::lock_guard<std::mutex> k(_observed->mutex);
         EXPECT_EQ(poolSizes.size() * (std::size_t)(kLastFrame - kFirstFrame + 1), _observed->frames.size());
@@ -343,9 +346,12 @@ TEST_F(SchedulerWriters, DeepOutputFramesFallBackToLegacyAndNameTheReason)
         QMetaObject::Connection connection = QObject::connect(engine.get(), &RenderEngine::renderFinished, engine.get(), [&finishedCode](int retCode) { finishedCode = retCode; }, Qt::DirectConnection);
         std::list<AppInstance::RenderWork> works;
         works.push_back(AppInstance::RenderWork(writerEffect, firstFrame, lastFrame, 1, false));
+        const int threadsBefore = OutputSchedulerThread::getFrameThreadsStartedForTests();
         getApp()->startWritersRendering(eRenderModeBlocking, works);
         QObject::disconnect(connection);
         EXPECT_EQ(0, finishedCode);
+        // Every fallback frame of the render shares the one worker of the writer's scheduler.
+        EXPECT_LE(OutputSchedulerThread::getFrameThreadsStartedForTests() - threadsBefore, 1);
     }
 
     const std::vector<ObservedFrame> frames = observedFrames();

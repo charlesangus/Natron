@@ -138,13 +138,43 @@ FrameFuture::finish(EffectInstance::RenderRoIRetCode retCode,
                     std::map<ImageLayerDesc, ImagePtr> rootPlanes,
                     std::vector<RegionFallback> fallbacks)
 {
-    QMutexLocker k(&_mutex);
+    CompletionCallback callback;
+    {
+        QMutexLocker k(&_mutex);
 
-    _retCode = retCode;
-    _rootPlanes = std::move(rootPlanes);
-    _fallbacks = std::move(fallbacks);
-    _finished = true;
-    _finishedCond.wakeAll();
+        if (_finished) {
+            return;
+        }
+        _retCode = retCode;
+        _rootPlanes = std::move(rootPlanes);
+        _fallbacks = std::move(fallbacks);
+        _finished = true;
+        callback.swap(_callback);
+        _finishedCond.wakeAll();
+    }
+    // Outside the lock: the callback may read the planes back through this future.
+    if (callback) {
+        callback(retCode);
+    }
+}
+
+void
+FrameFuture::onFinished(CompletionCallback callback)
+{
+    EffectInstance::RenderRoIRetCode retCode;
+    {
+        QMutexLocker k(&_mutex);
+
+        if (!_finished) {
+            _callback = std::move(callback);
+
+            return;
+        }
+        retCode = _retCode;
+    }
+    if (callback) {
+        callback(retCode);
+    }
 }
 
 struct RenderScheduler::Continuation {

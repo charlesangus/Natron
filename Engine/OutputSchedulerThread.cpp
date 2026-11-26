@@ -28,9 +28,11 @@
 #include <algorithm> // min, max
 #include <atomic>
 #include <cassert>
+#include <functional>
 #include <iostream>
 #include <limits>
 #include <list>
+#include <map>
 #include <set>
 #include <sstream> // stringstream
 #include <stdexcept>
@@ -205,6 +207,83 @@ public:
 
 typedef std::shared_ptr<OutputSchedulerThreadExecMTArgs> OutputSchedulerThreadExecMTArgsPtr;
 
+namespace {
+
+std::atomic<int> gFrameThreadsStarted { 0 };
+
+} // namespace
+
+/**
+ * @brief The one thread of an OutputSchedulerThread that runs the frames the RenderScheduler cannot, one after the
+ * other: those frames pull their inputs and wait for them, which a thread of the global pool must never do.
+ **/
+class FrameFallbackWorker
+    : public QThread,
+      public AbortableThread {
+public:
+    FrameFallbackWorker()
+        : QThread()
+        , AbortableThread(this)
+        , _mutex()
+        , _cond()
+        , _jobs()
+        , _mustQuit(false)
+    {
+        setThreadName("Frame fallback thread");
+    }
+
+    virtual ~FrameFallbackWorker()
+    {
+        {
+            QMutexLocker k(&_mutex);
+            _mustQuit = true;
+            _cond.wakeAll();
+        }
+        wait();
+    }
+
+    void push(const std::function<void()>& job)
+    {
+        if (!isRunning()) {
+            ++gFrameThreadsStarted;
+            start();
+        }
+        QMutexLocker k(&_mutex);
+        _jobs.push_back(job);
+        _cond.wakeOne();
+    }
+
+private:
+    virtual void run() OVERRIDE FINAL
+    {
+#ifdef DEBUG
+        boost_adaptbx::floating_point::exception_trapping trap(boost_adaptbx::floating_point::exception_trapping::division_by_zero | boost_adaptbx::floating_point::exception_trapping::invalid | boost_adaptbx::floating_point::exception_trapping::overflow);
+#endif
+        for (;;) {
+            std::function<void()> job;
+            {
+                QMutexLocker k(&_mutex);
+                while (_jobs.empty() && !_mustQuit) {
+                    _cond.wait(&_mutex);
+                }
+                if (_jobs.empty()) {
+                    return;
+                }
+                job = _jobs.front();
+                _jobs.pop_front();
+            }
+            boost_adaptbx::floating_point::follow_software_renderer();
+            job();
+            appPTR->getAppTLS()->cleanupTLSForThread();
+        }
+    }
+
+    QMutex _mutex;
+    QWaitCondition _cond;
+    std::list<std::function<void()>> _jobs;
+    bool _mustQuit;
+};
+
 #ifndef NATRON_PLAYBACK_USES_THREAD_POOL
 static bool
 isBufferFull(int nbBufferedElement,
@@ -279,6 +358,24 @@ struct OutputSchedulerThreadPrivate
     QMutex bufferedOutputMutex;
     int lastBufferedOutputSize;
 
+    // The steps of admitted frames that ended and wait for the scheduler thread to call their done, and how many
+    // steps have not ended yet. Both under bufMutex.
+    std::list<std::function<void()>> finishedFrameSteps;
+    int nFrameStepsOutstanding;
+
+    // The abort info of each step that has not ended, for onAbortRequested(), which may run on any thread.
+    QMutex pendingStepsMutex;
+    std::map<U64, AbortableRenderInfoPtr> pendingSteps;
+    U64 nextStepId;
+
+    // Admission state, written by the scheduler thread only.
+    std::atomic<int> nAdmittedFrames;
+    int nextFrameToAdmit;
+    bool admissionExhausted;
+    bool stoppingAdmittedFrames;
+
+    std::unique_ptr<FrameFallbackWorker> fallbackWorker;
+
     // From startRender() to stopRender() of a render that is not a viewer's: what the render reads
     // refuses writes from outside it. The scheduler thread is in its context for as long.
     std::unique_ptr<IsolatedJob> isolatedJob;
@@ -325,6 +422,16 @@ struct OutputSchedulerThreadPrivate
 #endif
         , bufferedOutputMutex()
         , lastBufferedOutputSize(0)
+        , finishedFrameSteps()
+        , nFrameStepsOutstanding(0)
+        , pendingStepsMutex()
+        , pendingSteps()
+        , nextStepId(0)
+        , nAdmittedFrames(0)
+        , nextFrameToAdmit(0)
+        , admissionExhausted(true)
+        , stoppingAdmittedFrames(false)
+        , fallbackWorker()
     {
     }
 
@@ -450,6 +557,7 @@ struct OutputSchedulerThreadPrivate
         r.active = true;
         renderThreads.push_back(r);
 #ifndef NATRON_PLAYBACK_USES_THREAD_POOL
+        ++gFrameThreadsStarted;
         runnable->start();
 #else
         threadPool->start(runnable);
@@ -1190,18 +1298,21 @@ OutputSchedulerThread::startRender()
     ///Notify everyone that the render is started
     _imp->engine->s_renderStarted(forward);
 
+    const bool admitsItself = admitsFramesItself();
 #ifndef NATRON_PLAYBACK_USES_THREAD_POOL
-    int nThreads;
-    {
-        QMutexLocker l(&_imp->renderThreadsMutex);
-        _imp->removeAllQuitRenderThreads();
-        nThreads = (int)_imp->renderThreads.size();
-    }
+    int nThreads = 0;
+    if (!admitsItself) {
+        {
+            QMutexLocker l(&_imp->renderThreadsMutex);
+            _imp->removeAllQuitRenderThreads();
+            nThreads = (int)_imp->renderThreads.size();
+        }
 
-    ///Start with one thread if it doesn't exist
-    if (nThreads == 0) {
-        int lastNThreads;
-        adjustNumberOfThreads(&nThreads, &lastNThreads);
+        /// Start with one thread if it doesn't exist
+        if (nThreads == 0) {
+            int lastNThreads;
+            adjustNumberOfThreads(&nThreads, &lastNThreads);
+        }
     }
 #endif
 
@@ -1235,7 +1346,12 @@ OutputSchedulerThread::startRender()
         _imp->expectFrameToRender = startingFrame;
     }
     SchedulingPolicyEnum policy = getSchedulingPolicy();
-    if (policy == eSchedulingPolicyFFA) {
+    if (admitsItself) {
+        assert(_imp->nAdmittedFrames == 0);
+        _imp->stoppingAdmittedFrames = false;
+        _imp->nextFrameToAdmit = forward ? firstFrame : lastFrame;
+        _imp->admissionExhausted = (frameStep <= 0) || (firstFrame > lastFrame);
+    } else if (policy == eSchedulingPolicyFFA) {
 #ifndef NATRON_PLAYBACK_USES_THREAD_POOL
         ///push all frame range and let the threads deal with it
         pushAllFrameRange();
@@ -1246,7 +1362,6 @@ OutputSchedulerThread::startRender()
         pushFramesToRender(startingFrame, nThreads);
 #endif
     }
-
 
 #ifdef NATRON_PLAYBACK_USES_THREAD_POOL
     startTasks(startingFrame);
@@ -1269,6 +1384,10 @@ OutputSchedulerThread::stopRender()
     _imp->lastRecordedFPS = _imp->timer.getActualFrameRate();
     _imp->threadSpawnsTimer.stop();
 #endif
+
+    if (admitsFramesItself()) {
+        stopAdmittedFrames();
+    }
 
     ///Wait for all render threads to be done
 
@@ -1348,7 +1467,13 @@ OutputSchedulerThread::threadLoopOnce(const GenericThreadStartArgsPtr &inArgs)
 
     startRender();
 
+    const bool admitsItself = admitsFramesItself();
     for (;; ) {
+        if (admitsItself) {
+            runFinishedFrameSteps();
+            admitFrames();
+        }
+
         ///When set to true, we don't sleep in the bufEmptyCondition but in the startCondition instead, indicating
         ///we finished a render
         bool renderFinished = false;
@@ -1567,7 +1692,7 @@ OutputSchedulerThread::threadLoopOnce(const GenericThreadStartArgsPtr &inArgs)
             QMutexLocker bufLocker (&_imp->bufMutex);
             // An abort or quit raised since resolveState() wakes this condition under bufMutex only after flagging,
             // so re-checking the flags here means that wake-up is either seen now or arrives once waiting.
-            if (!isBeingAborted() && !mustQuitThread() && (_imp->bufWakeGeneration == bufWakeGenerationSeen)) {
+            if (!isBeingAborted() && !mustQuitThread() && (_imp->bufWakeGeneration == bufWakeGenerationSeen) && _imp->finishedFrameSteps.empty()) {
                 // Wait here for more frames to be rendered, we will be woken up once appendToBuffer(...) is called
                 _imp->bufEmptyCondition.wait(bufLocker.mutex());
             }
@@ -1622,12 +1747,200 @@ OutputSchedulerThread::onAbortRequested(bool /*keepOldestRender*/)
         }
     }
 
+    abortPendingFrameSteps();
+
     ///If the scheduler is asleep waiting for the buffer to be filling up, we post a fake request
     ///that will not be processed anyway because the first thing it does is checking for abort
     {
         QMutexLocker l2(&_imp->bufMutex);
         _imp->wakeBufEmptyCondition();
     }
+}
+
+void
+OutputSchedulerThread::abortPendingFrameSteps()
+{
+    std::vector<AbortableRenderInfoPtr> pending;
+    {
+        QMutexLocker l(&_imp->pendingStepsMutex);
+        for (std::map<U64, AbortableRenderInfoPtr>::const_iterator it = _imp->pendingSteps.begin(); it != _imp->pendingSteps.end(); ++it) {
+            if (it->second) {
+                pending.push_back(it->second);
+            }
+        }
+    }
+    // No lock held: RenderScheduler::abort() may finish the frames, whose callbacks take pendingStepsMutex and bufMutex.
+    const bool hasScheduler = appPTR->hasRenderScheduler();
+    for (std::vector<AbortableRenderInfoPtr>::const_iterator it = pending.begin(); it != pending.end(); ++it) {
+        (*it)->setAborted();
+        if (hasScheduler) {
+            appPTR->getRenderScheduler()->abort(*it);
+        }
+    }
+}
+
+void
+OutputSchedulerThread::postFinishedFrameStep(const FrameStepDone& done)
+{
+    QMutexLocker l(&_imp->bufMutex);
+
+    _imp->finishedFrameSteps.push_back(done);
+    --_imp->nFrameStepsOutstanding;
+    _imp->wakeBufEmptyCondition();
+}
+
+void
+OutputSchedulerThread::awaitFrameFuture(const FrameFuturePtr& future,
+                                        const AbortableRenderInfoPtr& abortInfo,
+                                        const FrameStepDone& done)
+{
+    assert(QThread::currentThread() == this);
+    U64 stepId;
+    {
+        QMutexLocker l(&_imp->pendingStepsMutex);
+        stepId = _imp->nextStepId++;
+        _imp->pendingSteps[stepId] = abortInfo;
+    }
+    {
+        QMutexLocker l(&_imp->bufMutex);
+        ++_imp->nFrameStepsOutstanding;
+    }
+    // The callback may run on a pool thread, so it only hands done over to this thread.
+    future->onFinished([this, stepId, done](EffectInstance::RenderRoIRetCode /*retCode*/) {
+        {
+            QMutexLocker l(&_imp->pendingStepsMutex);
+            _imp->pendingSteps.erase(stepId);
+        }
+        postFinishedFrameStep(done);
+    });
+}
+
+void
+OutputSchedulerThread::runOnFallbackWorker(const AbortableRenderInfoPtr& abortInfo,
+                                           const std::function<void(bool skipped)>& work,
+                                           const FrameStepDone& done)
+{
+    assert(QThread::currentThread() == this);
+    U64 stepId;
+    {
+        QMutexLocker l(&_imp->pendingStepsMutex);
+        stepId = _imp->nextStepId++;
+        _imp->pendingSteps[stepId] = abortInfo;
+    }
+    {
+        QMutexLocker l(&_imp->bufMutex);
+        ++_imp->nFrameStepsOutstanding;
+    }
+    if (!_imp->fallbackWorker) {
+        _imp->fallbackWorker.reset(new FrameFallbackWorker);
+    }
+    const IsolatedJob* job = getRunningIsolatedJob();
+    _imp->fallbackWorker->push([this, stepId, abortInfo, work, done, job]() {
+        try {
+            IsolatedJob::ThreadScope inJob(job);
+            work(abortInfo && abortInfo->isAborted());
+        } catch (...) {
+            // done must run on every path, or stopRender() waits for this step forever.
+        }
+        {
+            QMutexLocker l(&_imp->pendingStepsMutex);
+            _imp->pendingSteps.erase(stepId);
+        }
+        postFinishedFrameStep(done);
+    });
+}
+
+void
+OutputSchedulerThread::runFinishedFrameSteps()
+{
+    for (;;) {
+        FrameStepDone done;
+        {
+            QMutexLocker l(&_imp->bufMutex);
+            if (_imp->finishedFrameSteps.empty()) {
+                return;
+            }
+            done = _imp->finishedFrameSteps.front();
+            _imp->finishedFrameSteps.pop_front();
+        }
+        done();
+    }
+}
+
+void
+OutputSchedulerThread::endAdmittedFrame()
+{
+    assert(_imp->nAdmittedFrames > 0);
+    --_imp->nAdmittedFrames;
+}
+
+bool
+OutputSchedulerThread::isStoppingAdmittedFrames() const
+{
+    return _imp->stoppingAdmittedFrames;
+}
+
+void
+OutputSchedulerThread::admitFrames()
+{
+    OutputSchedulerThreadStartArgsPtr args = _imp->runArgs.lock();
+    if (!args) {
+        return;
+    }
+    while (!_imp->admissionExhausted && !_imp->stoppingAdmittedFrames && !isBeingAborted() && !mustQuitThread()) {
+        if (_imp->nAdmittedFrames > 0) {
+            // The frames only wait for the RenderScheduler, which runs their work on the global pool, so another frame
+            // is admitted only while the work already queued cannot keep every pool thread busy.
+            QThreadPool* pool = QThreadPool::globalInstance();
+            const int poolMax = std::max(1, pool->maxThreadCount());
+            const int userSettingParallelRenders = appPTR->getCurrentSettings()->getNumberOfParallelRenders();
+            const int cap = (userSettingParallelRenders > 0) ? userSettingParallelRenders : poolMax;
+            if (_imp->nAdmittedFrames >= cap) {
+                return;
+            }
+            int schedulerRunning = 0;
+            int schedulerReady = 0;
+            appPTR->getRenderScheduler()->getLoad(&schedulerRunning, &schedulerReady);
+            if ((schedulerRunning + schedulerReady >= poolMax) || (pool->activeThreadCount() >= poolMax)) {
+                return;
+            }
+        }
+
+        const int time = _imp->nextFrameToAdmit;
+        if (args->pushTimelineDirection == eRenderDirectionForward) {
+            _imp->nextFrameToAdmit += args->frameStep;
+            _imp->admissionExhausted = _imp->nextFrameToAdmit > args->lastFrame;
+        } else {
+            _imp->nextFrameToAdmit -= args->frameStep;
+            _imp->admissionExhausted = _imp->nextFrameToAdmit < args->firstFrame;
+        }
+        ++_imp->nAdmittedFrames;
+        admitFrame(time, args->viewsToRender, args->enableRenderStats);
+    }
+}
+
+void
+OutputSchedulerThread::stopAdmittedFrames()
+{
+    _imp->stoppingAdmittedFrames = true;
+    _imp->admissionExhausted = true;
+    abortPendingFrameSteps();
+    for (;;) {
+        runFinishedFrameSteps();
+        QMutexLocker l(&_imp->bufMutex);
+        if (_imp->finishedFrameSteps.empty()) {
+            if (_imp->nFrameStepsOutstanding == 0) {
+                break;
+            }
+            _imp->bufEmptyCondition.wait(&_imp->bufMutex);
+        }
+    }
+}
+
+int
+OutputSchedulerThread::getFrameThreadsStartedForTests()
+{
+    return gFrameThreadsStarted.load();
 }
 
 void
@@ -1744,10 +2057,10 @@ OutputSchedulerThread::notifyFrameRendered(int frame,
 #ifndef NATRON_SCHEDULER_SPAWN_THREADS_WITH_TIMER
 
 #ifndef NATRON_PLAYBACK_USES_THREAD_POOL
-            ///////////
-            /////Now set the appropriate number of threads to render.
-            int newNThreads, nbCurParallelRenders;
-            adjustNumberOfThreads(&newNThreads, &nbCurParallelRenders);
+            if (!admitsFramesItself()) {
+                int newNThreads, nbCurParallelRenders;
+                adjustNumberOfThreads(&newNThreads, &nbCurParallelRenders);
+            }
 #else
             startTasksFromLastStartedFrame();
 #endif
@@ -2023,6 +2336,9 @@ OutputSchedulerThread::getCurrentRunArgs() const
 int
 OutputSchedulerThread::getNRenderThreads() const
 {
+    if (admitsFramesItself()) {
+        return _imp->nAdmittedFrames.load();
+    }
     QMutexLocker l(&_imp->renderThreadsMutex);
 
 #ifndef NATRON_PLAYBACK_USES_THREAD_POOL
@@ -2354,440 +2670,392 @@ DefaultScheduler::setFrameStatsObserverForTests(const FrameStatsObserver& observ
     slot.observer = observer;
 }
 
-class DefaultRenderFrameRunnable
-    : public RenderThreadTask
-{
-public:
+struct DefaultScheduler::WriterFrame {
+    int time;
+    std::vector<ViewIdx> views;
+    std::size_t view;
+    RenderStatsPtr stats;
+    AbortableRenderInfoPtr abortInfo;
+    FrameFuturePtr future;
+    std::unique_ptr<RenderingFlagSetter> renderingFlag;
+    // Set when the view cannot go to the RenderScheduler and must render on the fallback worker.
+    const char* fallbackReason;
+    bool failed;
+    std::string failureMessage;
+    EffectInstance::RenderRoIRetCode retCode;
 
-
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
-    DefaultRenderFrameRunnable(const OutputEffectInstancePtr& writer,
-                               OutputSchedulerThread* scheduler)
-        : RenderThreadTask(writer, scheduler)
+    WriterFrame(int time,
+                const std::vector<ViewIdx>& views,
+                bool enableRenderStats)
+        : time(time)
+        , views(views)
+        , view(0)
+        // Even without render stats, writers profile the time spent rendering the frame.
+        , stats(std::make_shared<RenderStats>(enableRenderStats))
+        , abortInfo()
+        , future()
+        , renderingFlag()
+        , fallbackReason(0)
+        , failed(false)
+        , failureMessage()
+        , retCode(EffectInstance::eRenderRoIRetCodeOk)
     {
     }
 
-#else
-    DefaultRenderFrameRunnable(const OutputEffectInstancePtr& writer,
-                               OutputSchedulerThread* scheduler,
-                               const int time,
-                               const bool useRenderStats,
-                               const std::vector<int>& viewsToRender)
-        : RenderThreadTask(writer, scheduler, time, useRenderStats, viewsToRender)
+    void fail(const std::string& message)
     {
+        failed = true;
+        failureMessage = message;
     }
+};
 
-#endif
-
-
-    virtual ~DefaultRenderFrameRunnable()
-    {
-    }
-
-private:
-
-
-    virtual void renderFrame(int time,
+void
+DefaultScheduler::admitFrame(int time,
                              const std::vector<ViewIdx>& viewsToRender,
                              bool enableRenderStats)
-    {
-        OutputEffectInstancePtr output = _imp->output.lock();
+{
+    OutputEffectInstancePtr output = _effect.lock();
 
-        if (!output) {
-            _imp->scheduler->notifyRenderFailure("");
+    if (!output || viewsToRender.empty()) {
+        notifyRenderFailure("");
+        endAdmittedFrame();
+
+        return;
+    }
+
+    NodePtr outputNode = output->getNode();
+    std::string cb = outputNode->getBeforeFrameRenderCallback();
+    if (!cb.empty()) {
+        std::vector<std::string> args;
+        std::string error;
+        try {
+            NATRON_PYTHON_NAMESPACE::getFunctionArguments(cb, &error, &args);
+        } catch (const std::exception& e) {
+            error = e.what();
+        }
+
+        if (!error.empty()) {
+            output->getApp()->appendToScriptEditor("Failed to get signature of beforeFrameRendered callback: " + error);
+            endAdmittedFrame();
 
             return;
         }
 
-        AbortableThread* isAbortableThread = dynamic_cast<AbortableThread*>( QThread::currentThread() );
+        std::string signatureError;
+        signatureError.append("The before frame render callback supports the following signature(s):\n");
+        signatureError.append("- callback(frame, thisNode, app)");
+        if ((args.size() != 3) || (args[0] != "frame") || (args[1] != "thisNode") || (args[2] != "app")) {
+            output->getApp()->appendToScriptEditor("Wrong signature of beforeFrameRendered callback: " + signatureError);
+            endAdmittedFrame();
 
-        ///Even if enableRenderStats is false, we at least profile the time spent rendering the frame when rendering with a Write node.
-        ///Though we don't enable render stats for sequential renders (e.g: WriteFFMPEG) since this is 1 file.
-        RenderStatsPtr stats = std::make_shared<RenderStats>(enableRenderStats);
-        IsolatedJob::ThreadScope inJob(_imp->scheduler->getRunningIsolatedJob());
-        NodePtr outputNode = output->getNode();
-        std::string cb = outputNode->getBeforeFrameRenderCallback();
-        if ( !cb.empty() ) {
-            std::vector<std::string> args;
-            std::string error;
-            try {
-                NATRON_PYTHON_NAMESPACE::getFunctionArguments(cb, &error, &args);
-            } catch (const std::exception& e) {
-                output->getApp()->appendToScriptEditor( std::string("Failed to get signature of beforeFrameRendered callback: ")
-                                                        + e.what() );
-
-                return;
-            }
-
-            if ( !error.empty() ) {
-                output->getApp()->appendToScriptEditor("Failed to get signature of beforeFrameRendered callback: " + error);
-
-                return;
-            }
-
-            std::string signatureError;
-            signatureError.append("The before frame render callback supports the following signature(s):\n");
-            signatureError.append("- callback(frame, thisNode, app)");
-            if ( (args.size() != 3) || (args[0] != "frame") || (args[1] != "thisNode") || (args[2] != "app") ) {
-                output->getApp()->appendToScriptEditor("Wrong signature of beforeFrameRendered callback: " + signatureError);
-
-                return;
-            }
-
-            std::stringstream ss;
-            std::string appStr = outputNode->getApp()->getAppIDString();
-            std::string outputNodeName = appStr + "." + outputNode->getFullyQualifiedName();
-            ss << cb << "(" << time << ", " << outputNodeName << ", " << appStr << ")";
-            std::string script = ss.str();
-            try {
-                _imp->scheduler->runCallbackWithVariables( QString::fromUtf8( script.c_str() ) );
-            } catch (const std::exception &e) {
-                _imp->scheduler->notifyRenderFailure( e.what() );
-
-                return;
-            }
+            return;
         }
 
+        std::stringstream ss;
+        std::string appStr = outputNode->getApp()->getAppIDString();
+        std::string outputNodeName = appStr + "." + outputNode->getFullyQualifiedName();
+        ss << cb << "(" << time << ", " << outputNodeName << ", " << appStr << ")";
+        std::string script = ss.str();
         try {
-            ////Writers always render at scale 1.
-            const int mipmapLevel = 0;
-            const RenderScale scale = RenderScale::fromMipmapLevel(mipmapLevel);
-            RectD rod;
-            bool isProjectFormat;
-
-            // Do not catch exceptions: if an exception occurs here it is probably fatal, since
-            // it comes from Natron itself. All exceptions from plugins are already caught
-            // by the HostSupport library.
-            EffectInstancePtr activeInputToRender;
-            //if (renderDirectly) {
-            activeInputToRender = output;
-            assert(activeInputToRender);
-            NodePtr activeInputNode = activeInputToRender->getNode();
-            const bool isRenderDueToRenderInteraction = false;
-            const bool isSequentialRender = true;
-            const DataKindEnum outputKind = activeInputToRender->getOutputDataKind();
-
-            for (std::size_t view = 0; view < viewsToRender.size(); ++view) {
-                AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
-                if (isAbortableThread) {
-                    isAbortableThread->setAbortInfo(isRenderDueToRenderInteraction, abortInfo, activeInputToRender);
-                }
-
-                ParallelRenderArgsSetter frameRenderArgs(time,
-                                                         viewsToRender[view],
-                                                         isRenderDueToRenderInteraction, // is this render due to user interaction ?
-                                                         isSequentialRender,
-                                                         abortInfo, // abortInfo
-                                                         activeInputNode, // viewer requester
-                                                         0, // texture index
-                                                         output->getApp()->getTimeLine().get(),
-                                                         NodePtr(),
-                                                         false,
-                                                         false,
-                                                         stats);
-
-                // After the frame's snapshot is taken, so the check reads it rather than deriving
-                // the graph's metadata on its own.
-                if (output->checkFrameToWrite(time, viewsToRender[view]) == eStatusFailed) {
-                    QString message;
-                    int type = 0;
-                    activeInputNode->getPersistentMessage(&message, &type, false);
-                    _imp->scheduler->notifyRenderFailure(message.isEmpty() ? std::string("Error caught while rendering") : message.toStdString());
-
-                    return;
-                }
-                if (output->writesFrameRangeAtOnce()) {
-                    // The render was narrowed to this one frame; the node writes the whole range
-                    // it was asked for here, rather than rendering an output of its own.
-                    int firstFrame = time;
-                    int lastFrame = time;
-                    output->getRunningRenderRequestedRange(&firstFrame, &lastFrame);
-                    if (output->writeFrameRange(firstFrame, lastFrame, viewsToRender[view]) == eStatusFailed) {
-                        QString message;
-                        int type = 0;
-                        activeInputNode->getPersistentMessage(&message, &type, false);
-                        _imp->scheduler->notifyRenderFailure(message.isEmpty() ? std::string("Error caught while writing") : message.toStdString());
-
-                        return;
-                    }
-                    notifyFrameStatsObserver(time, viewsToRender[view], stats);
-                    _imp->scheduler->notifyFrameRendered(time, viewsToRender[view], viewsToRender, stats, eSchedulingPolicyFFA);
-                    continue;
-                }
-
-                // The frame's region, layers and layout all come from the snapshot its args took,
-                // so an edit made while the sequence renders cannot pair one state's region with
-                // another's layout.
-                const U64 activeInputToRenderHash = activeInputToRender->getRenderHash();
-                const NodeMetadataConstPtr renderMetadata = activeInputToRender->getRenderMetadata(time, viewsToRender[view]);
-                StatusEnum stat = activeInputToRender->getRegionOfDefinition_public(activeInputToRenderHash, time, scale, viewsToRender[view], &rod, &isProjectFormat);
-                if (stat == eStatusFailed) {
-                    _imp->scheduler->notifyRenderFailure("Error caught while rendering");
-
-                    return;
-                }
-                std::list<ImageLayerDesc> components;
-                ImageBitDepthEnum imageDepth = eImageBitDepthNone;
-
-                if ((outputKind == eDataKindImage) || (outputKind == eDataKindRaw)) {
-                    // Use needed components to figure out what we need to render
-                    EffectInstance::ComponentsNeededMap neededComps;
-                    std::list<ImageLayerDesc> passThroughLayers;
-                    double ptTime;
-                    int ptView;
-                    std::bitset<4> processChannels;
-                    EffectInstance::ProcessChannelsPerPlaneMap processChannelsPerPlane;
-                    int ptInput;
-                    activeInputToRender->getComponentsNeededAndProduced_public(activeInputToRenderHash, time, viewsToRender[view], &neededComps, &passThroughLayers, &ptTime, &ptView, &processChannels, &processChannelsPerPlane, &ptInput);
-
-                    // Retrieve bitdepth only
-                    imageDepth = renderMetadata->getBitDepth(-1);
-                    components.clear();
-
-                    EffectInstance::ComponentsNeededMap::iterator foundOutput = neededComps.find(-1);
-                    if (foundOutput != neededComps.end()) {
-                        for (std::list<ImageLayerDesc>::const_iterator it2 = foundOutput->second.begin(); it2 != foundOutput->second.end(); ++it2) {
-                            components.push_back(*it2);
-                        }
-                    }
-                }
-                const RectI renderWindow = rod.toPixelEnclosing(scale, renderMetadata->getPixelAspectRatio(-1));
-
-                std::shared_ptr<FrameRequestMap> request = std::make_shared<FrameRequestMap>();
-                stat = EffectInstance::computeRequestPass(time, viewsToRender[view], mipmapLevel, rod, activeInputNode, *request);
-                if (stat == eStatusFailed) {
-                    _imp->scheduler->notifyRenderFailure("Error caught while rendering");
-
-                    return;
-                }
-                frameRenderArgs.updateNodesRequest(*request);
-
-                RenderingFlagSetter flagIsRendering(activeInputToRender->getNode());
-                EffectInstance::RenderRoIRetCode retCode;
-                switch (outputKind) {
-                // A raw payload is a float Image in the image cache, so it renders like an image.
-                case eDataKindRaw:
-                case eDataKindImage: {
-                    std::map<ImageLayerDesc, ImagePtr> layers;
-                    FrameFuturePtr future;
-                    {
-                        const char* fallbackReason = taskGraphIneligibility(frameRenderArgs);
-                        if (!fallbackReason) {
-                            FrameRenderContextPtr context = FrameRenderContext::createFromSetter(frameRenderArgs, abortInfo, stats, time, viewsToRender[view]);
-                            context->setRequest(request);
-                            FrameGraph graph = RenderScheduler::buildGraph(context, activeInputNode, time, viewsToRender[view], mipmapLevel);
-                            if (graph.tasks.empty()) {
-                                fallbackReason = "request does not reach the writer";
-                            } else {
-                                RenderScheduler::pruneBehindCacheHits(graph, context);
-                                placeRenderGraph(graph, context);
-                                future = appPTR->getRenderScheduler()->submit(context, std::move(graph), RenderScheduler::Priority::Background);
-                            }
-                        }
-                        if (fallbackReason && stats) {
-                            stats->incLegacyFallbacks(fallbackReason);
-                        }
-                    }
-                    if (future) {
-                        retCode = future->wait();
-                        layers = future->getRootPlanes();
-                        break;
-                    }
-                    std::unique_ptr<EffectInstance::RenderRoIArgs> renderArgs(new EffectInstance::RenderRoIArgs(time, //< the time at which to render
-                                                                                                                scale, //< the scale at which to render
-                                                                                                                mipmapLevel, //< the mipmap level (redundant with the scale)
-                                                                                                                viewsToRender[view], //< the view to render
-                                                                                                                false,
-                                                                                                                renderWindow, //< the region of interest (in pixel coordinates)
-                                                                                                                rod, // < any precomputed rod ? in canonical coordinates
-                                                                                                                components,
-                                                                                                                imageDepth,
-                                                                                                                false,
-                                                                                                                activeInputToRender.get(),
-                                                                                                                eStorageModeRAM,
-                                                                                                                time));
-                    retCode = activeInputToRender->renderRoI(*renderArgs, &layers);
-                    break;
-                }
-                case eDataKindDeep: {
-                    if (stats) {
-                        stats->incLegacyFallbacks("deep output");
-                    }
-                    DeepImagePtr deepImage;
-                    EffectInstance::RenderDeepRoIArgs renderArgs(time,
-                                                                 scale,
-                                                                 mipmapLevel,
-                                                                 viewsToRender[view],
-                                                                 false, //< byPassCache
-                                                                 renderWindow,
-                                                                 rod,
-                                                                 activeInputToRender.get(),
-                                                                 time);
-                    retCode = activeInputToRender->renderDeepRoI(renderArgs, &deepImage);
-                    break;
-                }
-                default:
-                    _imp->scheduler->notifyRenderFailure(unsupportedOutputKindMessage(activeInputNode));
-
-                    return;
-                }
-                if (retCode != EffectInstance::eRenderRoIRetCodeOk) {
-                    if (retCode == EffectInstance::eRenderRoIRetCodeAborted) {
-                        _imp->scheduler->notifyRenderFailure("Render aborted");
-                    } else {
-                        _imp->scheduler->notifyRenderFailure("Error caught while rendering");
-                    }
-
-                    return;
-                }
-
-                ///If we need sequential rendering, pass the image to the output scheduler that will ensure the sequential ordering
-                /*if (!renderDirectly) {
-                    for (std::map<ImageLayerDesc,ImagePtr>::iterator it = layers.begin(); it != layers.end(); ++it) {
-                        _imp->scheduler->appendToBuffer(time, viewsToRender[view], stats, std::dynamic_pointer_cast<BufferableObject>(it->second));
-                    }
-                   } else {*/
-                notifyFrameStatsObserver(time, viewsToRender[view], stats);
-                _imp->scheduler->notifyFrameRendered(time, viewsToRender[view], viewsToRender, stats, eSchedulingPolicyFFA);
-                //}
-            }
+            runCallbackWithVariables(QString::fromUtf8(script.c_str()));
         } catch (const std::exception& e) {
-            _imp->scheduler->notifyRenderFailure( std::string("Error while rendering: ") + e.what() );
+            notifyRenderFailure(e.what());
+            endAdmittedFrame();
+
+            return;
         }
-    } // renderFrame
-};
+    }
+
+    startWriterView(std::make_shared<WriterFrame>(time, viewsToRender, enableRenderStats));
+}
+
+void
+DefaultScheduler::startWriterView(const std::shared_ptr<WriterFrame>& frame)
+{
+    frame->abortInfo = AbortableRenderInfo::create(true, 0);
+    frame->future.reset();
+    frame->fallbackReason = 0;
+
+    OutputEffectInstancePtr output = _effect.lock();
+    bool onWorker = false;
+    if (output) {
+        // These pull their inputs and wait for them, which only the worker may do. Deciding before the frame's args
+        // are installed keeps the scheduler thread from building a request the worker would build again.
+        if (output->writesFrameRangeAtOnce()) {
+            onWorker = true;
+        } else if (output->getOutputDataKind() == eDataKindDeep) {
+            frame->fallbackReason = "deep output";
+            onWorker = true;
+        }
+    }
+
+    if (!onWorker && runWriterView(*frame, false)) {
+        awaitFrameFuture(frame->future, frame->abortInfo, [this, frame]() {
+            frame->retCode = frame->future->wait();
+            frame->renderingFlag.reset();
+            frame->future.reset();
+            finishWriterView(frame);
+        });
+
+        return;
+    }
+    if (onWorker || frame->fallbackReason) {
+        runOnFallbackWorker(frame->abortInfo, [this, frame](bool skipped) {
+            if (skipped) {
+                frame->retCode = EffectInstance::eRenderRoIRetCodeAborted;
+            } else {
+                ignore_result( runWriterView(*frame, true) );
+            } }, [this, frame]() { finishWriterView(frame); });
+
+        return;
+    }
+    finishWriterView(frame);
+}
+
+bool
+DefaultScheduler::runWriterView(WriterFrame& frame,
+                                bool onFallbackWorker)
+{
+    OutputEffectInstancePtr output = _effect.lock();
+
+    if (!output) {
+        frame.fail("");
+
+        return false;
+    }
+
+    const int time = frame.time;
+    const ViewIdx view = frame.views[frame.view];
+    const RenderStatsPtr& stats = frame.stats;
+    const AbortableRenderInfoPtr& abortInfo = frame.abortInfo;
+
+    try {
+        ////Writers always render at scale 1.
+        const int mipmapLevel = 0;
+        const RenderScale scale = RenderScale::fromMipmapLevel(mipmapLevel);
+        RectD rod;
+        bool isProjectFormat;
+
+        // Do not catch exceptions: if an exception occurs here it is probably fatal, since
+        // it comes from Natron itself. All exceptions from plugins are already caught
+        // by the HostSupport library.
+        EffectInstancePtr activeInputToRender = output;
+        NodePtr activeInputNode = activeInputToRender->getNode();
+        const bool isRenderDueToRenderInteraction = false;
+        const bool isSequentialRender = true;
+        const DataKindEnum outputKind = activeInputToRender->getOutputDataKind();
+
+        if (onFallbackWorker) {
+            AbortableThread* isAbortableThread = dynamic_cast<AbortableThread*>(QThread::currentThread());
+            if (isAbortableThread) {
+                isAbortableThread->setAbortInfo(isRenderDueToRenderInteraction, abortInfo, activeInputToRender);
+            }
+        }
+
+        ParallelRenderArgsSetter frameRenderArgs(time,
+                                                 view,
+                                                 isRenderDueToRenderInteraction, // is this render due to user interaction ?
+                                                 isSequentialRender,
+                                                 abortInfo, // abortInfo
+                                                 activeInputNode, // viewer requester
+                                                 0, // texture index
+                                                 output->getApp()->getTimeLine().get(),
+                                                 NodePtr(),
+                                                 false,
+                                                 false,
+                                                 stats);
+
+        // After the frame's snapshot is taken, so the check reads it rather than deriving
+        // the graph's metadata on its own.
+        if (output->checkFrameToWrite(time, view) == eStatusFailed) {
+            QString message;
+            int type = 0;
+            activeInputNode->getPersistentMessage(&message, &type, false);
+            frame.fail(message.isEmpty() ? std::string("Error caught while rendering") : message.toStdString());
+
+            return false;
+        }
+        if (output->writesFrameRangeAtOnce()) {
+            // The render was narrowed to this one frame; the node writes the whole range
+            // it was asked for here, rather than rendering an output of its own.
+            int firstFrame = time;
+            int lastFrame = time;
+            output->getRunningRenderRequestedRange(&firstFrame, &lastFrame);
+            if (output->writeFrameRange(firstFrame, lastFrame, view) == eStatusFailed) {
+                QString message;
+                int type = 0;
+                activeInputNode->getPersistentMessage(&message, &type, false);
+                frame.fail(message.isEmpty() ? std::string("Error caught while writing") : message.toStdString());
+            }
+
+            return false;
+        }
+
+        // The frame's region, layers and layout all come from the snapshot its args took,
+        // so an edit made while the sequence renders cannot pair one state's region with
+        // another's layout.
+        const U64 activeInputToRenderHash = activeInputToRender->getRenderHash();
+        const NodeMetadataConstPtr renderMetadata = activeInputToRender->getRenderMetadata(time, view);
+        StatusEnum stat = activeInputToRender->getRegionOfDefinition_public(activeInputToRenderHash, time, scale, view, &rod, &isProjectFormat);
+        if (stat == eStatusFailed) {
+            frame.fail("Error caught while rendering");
+
+            return false;
+        }
+        std::list<ImageLayerDesc> components;
+        ImageBitDepthEnum imageDepth = eImageBitDepthNone;
+
+        if ((outputKind == eDataKindImage) || (outputKind == eDataKindRaw)) {
+            // Use needed components to figure out what we need to render
+            EffectInstance::ComponentsNeededMap neededComps;
+            std::list<ImageLayerDesc> passThroughLayers;
+            double ptTime;
+            int ptView;
+            std::bitset<4> processChannels;
+            EffectInstance::ProcessChannelsPerPlaneMap processChannelsPerPlane;
+            int ptInput;
+            activeInputToRender->getComponentsNeededAndProduced_public(activeInputToRenderHash, time, view, &neededComps, &passThroughLayers, &ptTime, &ptView, &processChannels, &processChannelsPerPlane, &ptInput);
+
+            // Retrieve bitdepth only
+            imageDepth = renderMetadata->getBitDepth(-1);
+            components.clear();
+
+            EffectInstance::ComponentsNeededMap::iterator foundOutput = neededComps.find(-1);
+            if (foundOutput != neededComps.end()) {
+                for (std::list<ImageLayerDesc>::const_iterator it2 = foundOutput->second.begin(); it2 != foundOutput->second.end(); ++it2) {
+                    components.push_back(*it2);
+                }
+            }
+        }
+        const RectI renderWindow = rod.toPixelEnclosing(scale, renderMetadata->getPixelAspectRatio(-1));
+
+        std::shared_ptr<FrameRequestMap> request = std::make_shared<FrameRequestMap>();
+        stat = EffectInstance::computeRequestPass(time, view, mipmapLevel, rod, activeInputNode, *request);
+        if (stat == eStatusFailed) {
+            frame.fail("Error caught while rendering");
+
+            return false;
+        }
+        frameRenderArgs.updateNodesRequest(*request);
+
+        std::unique_ptr<RenderingFlagSetter> flagIsRendering(new RenderingFlagSetter(activeInputToRender->getNode()));
+        switch (outputKind) {
+        // A raw payload is a float Image in the image cache, so it renders like an image.
+        case eDataKindRaw:
+        case eDataKindImage: {
+            if (!onFallbackWorker) {
+                const char* fallbackReason = taskGraphIneligibility(frameRenderArgs);
+                if (!fallbackReason) {
+                    FrameRenderContextPtr context = FrameRenderContext::createFromSetter(frameRenderArgs, abortInfo, stats, time, view);
+                    context->setRequest(request);
+                    FrameGraph graph = RenderScheduler::buildGraph(context, activeInputNode, time, view, mipmapLevel);
+                    if (graph.tasks.empty()) {
+                        fallbackReason = "request does not reach the writer";
+                    } else {
+                        RenderScheduler::pruneBehindCacheHits(graph, context);
+                        placeRenderGraph(graph, context);
+                        frame.future = appPTR->getRenderScheduler()->submit(context, std::move(graph), RenderScheduler::Priority::Background);
+                        frame.renderingFlag = std::move(flagIsRendering);
+
+                        return true;
+                    }
+                }
+                frame.fallbackReason = fallbackReason;
+
+                return false;
+            }
+            if (frame.fallbackReason && stats) {
+                stats->incLegacyFallbacks(frame.fallbackReason);
+            }
+            std::map<ImageLayerDesc, ImagePtr> layers;
+            EffectInstance::RenderRoIArgs renderArgs(time, //< the time at which to render
+                                                     scale, //< the scale at which to render
+                                                     mipmapLevel, //< the mipmap level (redundant with the scale)
+                                                     view, //< the view to render
+                                                     false,
+                                                     renderWindow, //< the region of interest (in pixel coordinates)
+                                                     rod, // < any precomputed rod ? in canonical coordinates
+                                                     components,
+                                                     imageDepth,
+                                                     false,
+                                                     activeInputToRender.get(),
+                                                     eStorageModeRAM,
+                                                     time);
+            frame.retCode = activeInputToRender->renderRoI(renderArgs, &layers);
+            break;
+        }
+        case eDataKindDeep: {
+            if (stats) {
+                stats->incLegacyFallbacks("deep output");
+            }
+            DeepImagePtr deepImage;
+            EffectInstance::RenderDeepRoIArgs renderArgs(time,
+                                                         scale,
+                                                         mipmapLevel,
+                                                         view,
+                                                         false, //< byPassCache
+                                                         renderWindow,
+                                                         rod,
+                                                         activeInputToRender.get(),
+                                                         time);
+            frame.retCode = activeInputToRender->renderDeepRoI(renderArgs, &deepImage);
+            break;
+        }
+        default:
+            frame.fail(unsupportedOutputKindMessage(activeInputNode));
+            break;
+        }
+    } catch (const std::exception& e) {
+        frame.fail(std::string("Error while rendering: ") + e.what());
+    }
+
+    return false;
+} // DefaultScheduler::runWriterView
+
+void
+DefaultScheduler::finishWriterView(const std::shared_ptr<WriterFrame>& frame)
+{
+    bool ok = false;
+    if (frame->failed) {
+        notifyRenderFailure(frame->failureMessage);
+    } else if (frame->retCode == EffectInstance::eRenderRoIRetCodeAborted) {
+        notifyRenderFailure("Render aborted");
+    } else if (frame->retCode != EffectInstance::eRenderRoIRetCodeOk) {
+        notifyRenderFailure("Error caught while rendering");
+    } else {
+        ok = true;
+        const ViewIdx view = frame->views[frame->view];
+        notifyFrameStatsObserver(frame->time, view, frame->stats);
+        notifyFrameRendered(frame->time, view, frame->views, frame->stats, eSchedulingPolicyFFA);
+    }
+
+    ++frame->view;
+    if (ok && (frame->view < frame->views.size()) && !isStoppingAdmittedFrames() && !isBeingAborted()) {
+        startWriterView(frame);
+
+        return;
+    }
+    endAdmittedFrame();
+}
 
 #ifndef NATRON_PLAYBACK_USES_THREAD_POOL
 RenderThreadTask*
 DefaultScheduler::createRunnable()
 {
-    return new DefaultRenderFrameRunnable(_effect.lock(), this);
+    // Writers admit their frames themselves and never ask for render threads.
+    return NULL;
 }
 
 #else
 RenderThreadTask*
-DefaultScheduler::createRunnable(int frame,
-                                 bool useRenderStarts,
-                                 const std::vector<int>& viewsToRender)
+DefaultScheduler::createRunnable(int /*frame*/,
+                                 bool /*useRenderStarts*/,
+                                 const std::vector<int>& /*viewsToRender*/)
 {
-    return new DefaultRenderFrameRunnable(_effect.lock(), this, frame, useRenderStarts, viewsToRender);
+    return NULL;
 }
 
 #endif
-
-
-/**
- * @brief Called whenever there are images available to process in the buffer.
- * Once processed, the frame will be removed from the buffer.
- *
- * According to the ProcessFrameModeEnum given to the scheduler this function will be called either by the scheduler thread (this)
- * or by the application's main-thread (typically to do OpenGL rendering).
- **/
-void
-DefaultScheduler::processFrame(const BufferedFrames& frames)
-{
-    assert( !frames.empty() );
-    //Only consider the first frame, we shouldn't have multiple view here anyway.
-    const BufferedFrame& frame = frames.front();
-
-    OutputEffectInstancePtr effect = _effect.lock();
-    bool isProjectFormat;
-    const DataKindEnum outputKind = effect->getOutputDataKind();
-    const bool isRenderDueToRenderInteraction = false;
-    const bool isSequentialRender = true;
-
-    for (BufferedFrames::const_iterator it = frames.begin(); it != frames.end(); ++it) {
-        AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
-
-        setAbortInfo(isRenderDueToRenderInteraction, abortInfo, effect);
-
-        ParallelRenderArgsSetter frameRenderArgs(it->time,
-                                                 it->view,
-                                                 isRenderDueToRenderInteraction,  // is this render due to user interaction ?
-                                                 isSequentialRender, // is this sequential ?
-                                                 abortInfo, //abortInfo
-                                                 effect->getNode(), //tree root
-                                                 0, //texture index
-                                                 effect->getApp()->getTimeLine().get(),
-                                                 NodePtr(),
-                                                 false,
-                                                 false,
-                                                 it->stats);
-        // Each buffered frame is written with the layout its own args snapshotted.
-        const NodeMetadataConstPtr renderMetadata = effect->getRenderMetadata(it->time, it->view);
-        std::list<ImageLayerDesc> components;
-        ImageBitDepthEnum imageDepth = eImageBitDepthNone;
-        if ((outputKind == eDataKindImage) || (outputKind == eDataKindRaw)) {
-            ImageLayerDesc metadataLayer, metadataPairedLayer;
-            EffectInstance::getLayersFromMetadata(*renderMetadata, -1, &metadataLayer, &metadataPairedLayer);
-            if (metadataLayer.getNumComponents() > 0) {
-                components.push_back(metadataLayer);
-            }
-            imageDepth = renderMetadata->getBitDepth(-1);
-        }
-        RectD rod;
-        ///Writers render to scale 1 always
-        const RenderScale scale;
-        ignore_result(effect->getRegionOfDefinition_public(effect->getRenderHash(), it->time, scale, it->view, &rod, &isProjectFormat));
-        const RectI roi = rod.toPixelEnclosing(0, renderMetadata->getPixelAspectRatio(-1));
-
-        RenderingFlagSetter flagIsRendering(effect->getNode());
-        try {
-            EffectInstance::RenderRoIRetCode retCode;
-            switch (outputKind) {
-            case eDataKindRaw:
-            case eDataKindImage: {
-                ImagePtr inputImage = std::dynamic_pointer_cast<Image>(it->frame);
-                assert(inputImage);
-
-                EffectInstance::InputImagesMap inputImages;
-                inputImages[0].push_back(inputImage);
-                std::unique_ptr<EffectInstance::RenderRoIArgs> renderArgs(new EffectInstance::RenderRoIArgs(frame.time,
-                                                                                                            scale, 0,
-                                                                                                            it->view,
-                                                                                                            true, // for writers, always by-pass cache for the write node only @see renderRoiInternal
-                                                                                                            roi,
-                                                                                                            rod,
-                                                                                                            components,
-                                                                                                            imageDepth,
-                                                                                                            false,
-                                                                                                            effect.get(),
-                                                                                                            eStorageModeRAM,
-                                                                                                            frame.time,
-                                                                                                            inputImages));
-                std::map<ImageLayerDesc, ImagePtr> layers;
-                retCode = effect->renderRoI(*renderArgs, &layers);
-                break;
-            }
-            case eDataKindDeep: {
-                // A DeepImage is no BufferableObject, so nothing a render thread rendered can be
-                // handed over here: the writer pulls its input again, through the deep cache.
-                DeepImagePtr deepImage;
-                EffectInstance::RenderDeepRoIArgs renderArgs(frame.time,
-                                                             scale,
-                                                             0,
-                                                             it->view,
-                                                             true, //< byPassCache
-                                                             roi,
-                                                             rod,
-                                                             effect.get(),
-                                                             frame.time);
-                retCode = effect->renderDeepRoI(renderArgs, &deepImage);
-                break;
-            }
-            default:
-                notifyRenderFailure(unsupportedOutputKindMessage(effect->getNode()));
-
-                return;
-            }
-            if (retCode != EffectInstance::eRenderRoIRetCodeOk) {
-                notifyRenderFailure("");
-            }
-        } catch (const std::exception& e) {
-            notifyRenderFailure( e.what() );
-        }
-    }
-} // DefaultScheduler::processFrame
 
 void
 DefaultScheduler::timelineStepOne(RenderDirectionEnum direction)

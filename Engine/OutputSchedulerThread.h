@@ -287,6 +287,12 @@ public:
     int getNRenderThreads() const;
 
     /**
+     * @brief How many threads every OutputSchedulerThread has started besides itself, render and fallback threads
+     * alike, since the process started.
+     **/
+    static int getFrameThreadsStartedForTests();
+
+    /**
      * @brief Returns the current number of render threads doing work
      **/
     int getNActiveRenderThreads() const;
@@ -343,7 +349,7 @@ protected:
      * According to the ProcessFrameModeEnum given to the scheduler this function will be called either by the scheduler thread (this)
      * or by the application's main-thread (typically to do OpenGL rendering).
      **/
-    virtual void processFrame(const BufferedFrames& frames) = 0;
+    virtual void processFrame(const BufferedFrames& /*frames*/) { }
 
     /**
      * @brief Must be implemented to increment/decrement the timeline by one frame.
@@ -412,7 +418,53 @@ protected:
 
     RenderEngine* getEngine() const;
 
+    /**
+     * @brief Whether the scheduler thread admits the frames itself, starting each through admitFrame(), rather than
+     * feeding them to render threads.
+     **/
+    virtual bool admitsFramesItself() const { return false; }
+
+    /**
+     * @brief Starts rendering the views of time, on the scheduler thread. The frame counts as in flight for admission
+     * until endAdmittedFrame() is called for it, which must happen on every path, failures included.
+     **/
+    virtual void admitFrame(int /*time*/,
+                            const std::vector<ViewIdx>& /*viewsToRender*/,
+                            bool /*enableRenderStats*/) { }
+
+    typedef std::function<void()> FrameStepDone;
+
+    /**
+     * @brief Calls done on the scheduler thread once future finishes. An abort of the render aborts abortInfo and the
+     * frame. Call from the scheduler thread only.
+     **/
+    void awaitFrameFuture(const FrameFuturePtr& future,
+                          const AbortableRenderInfoPtr& abortInfo,
+                          const FrameStepDone& done);
+
+    /**
+     * @brief Runs work on the scheduler's fallback worker, a thread of its own outside the global pool, then calls
+     * done on the scheduler thread. Work queued behind an aborted one is skipped once abortInfo is aborted, and done
+     * is called all the same. Call from the scheduler thread only.
+     **/
+    void runOnFallbackWorker(const AbortableRenderInfoPtr& abortInfo,
+                             const std::function<void(bool skipped)>& work,
+                             const FrameStepDone& done);
+
+    void endAdmittedFrame();
+
+    /**
+     * @brief True while stopRender() collects the frames still in flight: their steps must not start further work.
+     **/
+    bool isStoppingAdmittedFrames() const;
+
 private:
+    void adjustFrameConcurrency();
+    void admitFrames();
+    void runFinishedFrameSteps();
+    void abortPendingFrameSteps();
+    void stopAdmittedFrames();
+    void postFinishedFrameStep(const FrameStepDone& done);
 
     virtual void onAbortRequested(bool keepOldestRender) OVERRIDE FINAL;
     virtual void executeOnMainThread(const GenericThreadExecOnMainThreadArgsPtr& inArgs) OVERRIDE FINAL;
@@ -489,14 +541,12 @@ public:
     typedef std::function<void(int time, ViewIdx view, const RenderStatsPtr& stats)> FrameStatsObserver;
 
     /**
-     * @brief Calls observer with the stats of each frame view a writer rendered, on the thread that rendered it,
-     * before the frame is reported. An empty function stops observing.
+     * @brief Calls observer with the stats of each frame view a writer rendered, on the scheduler thread, before the
+     * frame is reported. An empty function stops observing.
      **/
     static void setFrameStatsObserverForTests(const FrameStatsObserver& observer);
 
 private:
-
-    virtual void processFrame(const BufferedFrames& frames) OVERRIDE FINAL;
     virtual void timelineStepOne(RenderDirectionEnum direction) OVERRIDE FINAL;
     virtual void timelineGoTo(int time) OVERRIDE FINAL;
     virtual void getFrameRangeToRender(int& first, int& last) const OVERRIDE FINAL;
@@ -513,6 +563,22 @@ private:
     virtual void aboutToStartRender() OVERRIDE FINAL;
     virtual void onRenderStopped(bool aborted) OVERRIDE FINAL;
     void runAfterRenderCallback(const OutputEffectInstancePtr& effect, bool aborted);
+
+    virtual bool admitsFramesItself() const OVERRIDE FINAL { return true; }
+
+    virtual void admitFrame(int time, const std::vector<ViewIdx>& viewsToRender, bool enableRenderStats) OVERRIDE FINAL;
+
+    struct WriterFrame;
+    void startWriterView(const std::shared_ptr<WriterFrame>& frame);
+
+    /**
+     * @brief Renders the current view of frame. Off the fallback worker it stops at submitting the frame to the
+     * RenderScheduler, returning true, or returns false with the outcome in frame, which may be that the view must
+     * run on the worker.
+     **/
+    bool runWriterView(WriterFrame& frame, bool onFallbackWorker);
+    void finishWriterView(const std::shared_ptr<WriterFrame>& frame);
+
     OutputEffectInstanceWPtr _effect;
     mutable QMutex _currentTimeMutex;
     int _currentTime;

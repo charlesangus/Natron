@@ -123,7 +123,7 @@ endif()
 # These suites skip when the Cycles plug-in is missing, which would hide a bundling or plug-in
 # discovery regression in a build that does carry Cycles.
 if(NATRON_CYCLES_BUNDLED)
-    foreach(_suite CyclesDelegate USDRenderCyclesMaterialTest)
+    foreach(_suite CyclesDelegate USDRenderCyclesMaterialTest USDRenderCyclesInstancerTest)
         if(NOT "${_suite}" IN_LIST NATRON_GTEST_SUITE_TESTS)
             message(FATAL_ERROR "SuiteProperties.cmake: '${_suite}' is not a registered test; "
                                 "update the suite name or it would silently lose its properties.")

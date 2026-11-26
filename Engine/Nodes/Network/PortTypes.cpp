@@ -19,6 +19,7 @@
 
 #include "PortTypes.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <map>
@@ -186,6 +187,139 @@ networkTargetColor(const std::string& target,
     *color = it->second;
 
     return true;
+}
+
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+std::mutex&
+conversionsMutex()
+{
+    static std::mutex mutex;
+
+    return mutex;
+}
+
+std::map<std::string, PortConversions>&
+targetConversions()
+{
+    static std::map<std::string, PortConversions> conversions;
+
+    return conversions;
+}
+
+bool
+convertsByClass(const OutputPortDescriptor& output,
+                const PortDescriptor& input)
+{
+    if (output.type == input.type) {
+        return true;
+    }
+    if ((output.typeClass == PortTypeClass::Custom) || (output.typeClass == PortTypeClass::String)) {
+        return false;
+    }
+
+    return output.typeClass == input.typeClass;
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+
+std::vector<std::pair<PortTypeClass, PortTypeClass>>
+numericPortConversions()
+{
+    static const PortTypeClass numeric[] = {
+        PortTypeClass::Float,
+        PortTypeClass::Int,
+        PortTypeClass::Vector3,
+        PortTypeClass::Normal,
+        PortTypeClass::Point,
+        PortTypeClass::Color,
+    };
+    std::vector<std::pair<PortTypeClass, PortTypeClass>> ret;
+
+    for (PortTypeClass from : numeric) {
+        for (PortTypeClass to : numeric) {
+            if (from != to) {
+                ret.push_back(std::make_pair(from, to));
+            }
+        }
+    }
+
+    return ret;
+}
+
+void
+registerPortConversions(const std::string& target,
+                        const PortConversions& conversions)
+{
+    std::lock_guard<std::mutex> lock(conversionsMutex());
+
+    targetConversions()[target] = conversions;
+}
+
+bool
+portConvertsOn(const std::string& target,
+               const OutputPortDescriptor& output,
+               const PortDescriptor& input)
+{
+    if (convertsByClass(output, input)) {
+        return true;
+    }
+    std::lock_guard<std::mutex> lock(conversionsMutex());
+    const std::map<std::string, PortConversions>& all = targetConversions();
+    const auto it = all.find(target);
+    if (it == all.end()) {
+        return false;
+    }
+    const PortConversions& conversions = it->second;
+    if (conversions.textureFeedsVarying && (output.typeClass == PortTypeClass::Texture) && input.varying) {
+        return true;
+    }
+
+    return std::find(conversions.classes.begin(), conversions.classes.end(), std::make_pair(output.typeClass, input.typeClass)) != conversions.classes.end();
+}
+
+bool
+portTargetsShared(const std::vector<std::string>& a,
+                  const std::vector<std::string>& b)
+{
+    for (const std::string& target : a) {
+        if (std::find(b.begin(), b.end(), target) != b.end()) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+std::string
+portNoSharedTargetReason()
+{
+    return "no shared target";
+}
+
+bool
+canConnectPorts(const std::vector<std::string>& outputTargets,
+                const OutputPortDescriptor& output,
+                const std::vector<std::string>& inputTargets,
+                const PortDescriptor& input,
+                std::string* reason)
+{
+    bool shared = false;
+
+    for (const std::string& target : outputTargets) {
+        if (std::find(inputTargets.begin(), inputTargets.end(), target) == inputTargets.end()) {
+            continue;
+        }
+        shared = true;
+        if (portConvertsOn(target, output, input)) {
+            return true;
+        }
+    }
+    if (reason) {
+        *reason = shared ? (output.type + " cannot feed " + input.type) : portNoSharedTargetReason();
+    }
+
+    return false;
 }
 
 NATRON_NAMESPACE_EXIT

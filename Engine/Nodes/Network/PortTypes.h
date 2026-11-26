@@ -23,6 +23,8 @@
 #include "Global/Macros.h"
 
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "Engine/Nodes/Network/PortDescriptor.h"
 
@@ -101,6 +103,60 @@ void registerNetworkTargetColor(const std::string& target,
  **/
 bool networkTargetColor(const std::string& target,
                         PortColor* color);
+
+/**
+ * @brief The implicit conversions a target allows between ports of different type classes. Ports
+ * of the same type always connect, and so do ports of the same class other than custom and
+ * string, whatever the target.
+ **/
+struct PortConversions {
+    // (from, to): an output of class from may feed a port of class to.
+    std::vector<std::pair<PortTypeClass, PortTypeClass>> classes;
+    // A texture output feeds any varying port: it evaluates to a value at every point.
+    bool textureFeedsVarying = false;
+};
+
+/**
+ * @brief Every conversion among float, int, vector3, normal, point and color, both ways.
+ **/
+std::vector<std::pair<PortTypeClass, PortTypeClass>> numericPortConversions();
+
+/**
+ * @brief Makes conversions the ones target allows, replacing any it had. A target with none
+ * registered connects only the ports the class rules above allow.
+ **/
+void registerPortConversions(const std::string& target,
+                             const PortConversions& conversions);
+
+/**
+ * @brief Whether output may feed input on target.
+ **/
+bool portConvertsOn(const std::string& target,
+                    const OutputPortDescriptor& output,
+                    const PortDescriptor& input);
+
+/**
+ * @brief Whether two target lists have a target in common.
+ **/
+bool portTargetsShared(const std::vector<std::string>& a,
+                       const std::vector<std::string>& b);
+
+/**
+ * @brief The reason canConnectPorts() gives for nodes that share no target.
+ **/
+std::string portNoSharedTargetReason();
+
+/**
+ * @brief Whether output, of a node built for outputTargets, may feed input, of a node built for
+ * inputTargets: the nodes must share a target, and on at least one shared target output must
+ * convert to input. When it may not, *reason, if given, says why: "no shared target", or
+ * "<output type> cannot feed <input type>".
+ **/
+bool canConnectPorts(const std::vector<std::string>& outputTargets,
+                     const OutputPortDescriptor& output,
+                     const std::vector<std::string>& inputTargets,
+                     const PortDescriptor& input,
+                     std::string* reason = nullptr);
 
 NATRON_NAMESPACE_EXIT
 

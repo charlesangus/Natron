@@ -44,6 +44,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Engine/EffectInstance.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/Network/NetworkBuilder.h"
 #include "Engine/Nodes/Network/NetworkNode.h"
 #include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
@@ -55,7 +56,10 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/GuiMacros.h"
 #include "Gui/NodeGraphPickUp.h"
+#include "Gui/NodeGraphUndoRedo.h"
 #include "Gui/NodeGui.h"
+#include "Gui/PortListLayout.h"
+#include "Gui/PortNodeGui.h"
 
 #include "Global/QtCompat.h"
 
@@ -126,11 +130,12 @@ handleConnectionError(const NodeGuiPtr& outputNode,
             Dialogs::errorDialog(QCoreApplication::translate("NodeGraph", "Incompatible data kind").toStdString(),
                                  error.toStdString());
         } else if (linkRetCode == Node::eCanConnectInput_incompatiblePorts) {
-            const NetworkNode::ConnectionCheckEnum check = NetworkNode::checkInputConnection(inputNode->getNode(), *outputNode->getNode(), inputNb);
+            std::string reason;
+            (void)NetworkNode::checkInputConnection(inputNode->getNode(), *outputNode->getNode(), inputNb, &reason);
             QString error = QCoreApplication::translate("NodeGraph", "You cannot connect %1 to %2: %3.")
                                 .arg(QString::fromUtf8(inputNode->getNode()->getLabel().c_str()))
                                 .arg(QString::fromUtf8(outputNode->getNode()->getLabel().c_str()))
-                                .arg(QString::fromUtf8(NetworkNode::connectionCheckReason(check).c_str()));
+                                .arg(QString::fromUtf8(reason.c_str()));
             Dialogs::errorDialog(QCoreApplication::translate("NodeGraph", "Incompatible ports").toStdString(),
                                  error.toStdString());
         }
@@ -225,6 +230,10 @@ NodeGraph::connectOutputArrowToNode(Edge* arrow,
 bool
 NodeGraph::hasPickedUpArrow() const
 {
+    if (_imp->_portPipe && _imp->_portPipe->held) {
+        return true;
+    }
+
     return _imp->_pickedUpArrowIsOutput || (_imp->_pickedUpArrowInput >= 0);
 }
 
@@ -277,6 +286,11 @@ NodeGraph::forgetPickedUpArrow()
 void
 NodeGraph::dragPickedUpArrowToCursor()
 {
+    if (_imp->_portPipe) {
+        updatePortPipePreview();
+
+        return;
+    }
     Edge* arrow = getPickedUpArrow();
     if (!arrow) {
         return;
@@ -296,6 +310,7 @@ NodeGraph::dragPickedUpArrowToCursor()
 void
 NodeGraph::dropPickedUpArrow()
 {
+    cancelPortPipe();
     Edge* arrow = getPickedUpArrow();
     forgetPickedUpArrow();
     if (arrow) {
@@ -307,6 +322,9 @@ NodeGraph::dropPickedUpArrow()
 bool
 NodeGraph::handlePickUpPress(QMouseEvent* e)
 {
+    if (_imp->_portPipe) {
+        return handlePortPipePress(e);
+    }
     Edge* arrow = getPickedUpArrow();
     if (!arrow) {
         dropPickedUpArrow();
@@ -392,6 +410,362 @@ NodeGraph::handlePickUpPress(QMouseEvent* e)
     return true;
 }
 
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+NetworkNode*
+networkOf(const NodeGuiPtr& gui)
+{
+    NodePtr node = gui ? gui->getNode() : NodePtr();
+
+    return node ? dynamic_cast<NetworkNode*>(node->getEffectInstance().get()) : NULL;
+}
+
+PortListLayout*
+portLayoutOf(const NodeGuiPtr& gui)
+{
+    return gui ? dynamic_cast<PortListLayout*>(gui->getConnectorLayout()) : NULL;
+}
+
+std::string
+outputNamedForInput(const NodeGuiPtr& dst,
+                    int inputNb)
+{
+    NetworkNode* network = networkOf(dst);
+    NodePtr node = dst ? dst->getNode() : NodePtr();
+
+    if (!network || (inputNb < 0) || (inputNb >= node->getNInputs())) {
+        return std::string();
+    }
+
+    return network->getOutputForInput(node->getInputLabel(inputNb));
+}
+
+// The output a connected input reads: the one it names, or the source's first when the source
+// lacks it, as the engine resolves it.
+std::string
+outputReadByInput(const NodeGuiPtr& dst,
+                  int inputNb,
+                  const NodeGuiPtr& src)
+{
+    NetworkNode* source = networkOf(src);
+    const std::string named = outputNamedForInput(dst, inputNb);
+
+    if (!source || source->findOutput(named) || source->getOutputPorts().empty()) {
+        return named;
+    }
+
+    return source->getOutputPorts().front().name;
+}
+
+QPointF
+inputPortScenePos(const NodeGuiPtr& gui,
+                  int inputNb)
+{
+    PortListLayout* layout = portLayoutOf(gui);
+
+    return layout ? gui->mapToScene(layout->inputPortPosition(inputNb)) : QPointF();
+}
+
+QPointF
+outputPortScenePos(const NodeGuiPtr& gui,
+                   const std::string& outputName)
+{
+    PortListLayout* layout = portLayoutOf(gui);
+
+    return layout ? gui->mapToScene(layout->outputPortPosition(std::max(0, layout->outputIndexOf(outputName)))) : QPointF();
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+
+bool
+NodeGraph::isPortGraph() const
+{
+    return dynamic_cast<NetworkBuilder*>(getGroup().get()) != NULL;
+}
+
+bool
+NodeGraph::beginPortPipe(QMouseEvent* e)
+{
+    NodeGraphPrivate::PortPipe pipe;
+    NodeGuiPtr node;
+    int inputNb = -1;
+    std::string outputName;
+
+    if (portNearbyMouse(e->pos(), &node, &inputNb, &outputName)) {
+        Edge* edge = (inputNb >= 0) ? node->getInputArrow(inputNb) : NULL;
+        NodeGuiPtr source = edge ? edge->getSource() : NodeGuiPtr();
+        if (inputNb < 0) {
+            pipe.anchorNode = node;
+            pipe.anchorIsOutput = true;
+            pipe.anchorOutput = outputName;
+        } else if (source && portLayoutOf(source)) {
+            pipe.anchorNode = source;
+            pipe.anchorIsOutput = true;
+            pipe.anchorOutput = outputReadByInput(node, inputNb, source);
+            pipe.liftedNode = node;
+            pipe.liftedInput = inputNb;
+        } else if (source) {
+            return false;
+        } else {
+            pipe.anchorNode = node;
+            pipe.anchorInput = inputNb;
+        }
+    } else {
+        NodeGui* nearbyNode = NULL;
+        Edge* nearbyEdge = NULL;
+        if ((hasItemNearbyMouse(e->pos(), &nearbyNode, &nearbyEdge) != eNearbyItemNodeEdge) || !nearbyEdge || nearbyEdge->isOutputEdge()) {
+            return false;
+        }
+        NodeGuiPtr dst = nearbyEdge->getDest();
+        NodeGuiPtr src = nearbyEdge->getSource();
+        if (!src || !portLayoutOf(dst) || !portLayoutOf(src)) {
+            return false;
+        }
+        const int dstInput = nearbyEdge->getInputNumber();
+        const std::string output = outputReadByInput(dst, dstInput, src);
+        const PickUpEndEnum end = pickedUpEnd(mapToScene(e->pos()), inputPortScenePos(dst, dstInput), outputPortScenePos(src, output));
+        if (end == ePickUpEndDestination) {
+            pipe.anchorNode = src;
+            pipe.anchorIsOutput = true;
+            pipe.anchorOutput = output;
+        } else {
+            pipe.anchorNode = dst;
+            pipe.anchorInput = dstInput;
+        }
+        pipe.liftedNode = dst;
+        pipe.liftedInput = dstInput;
+    }
+
+    _imp->_portPipe = pipe;
+    NodeGuiPtr lifted = pipe.liftedNode.lock();
+    Edge* liftedEdge = lifted ? lifted->getInputArrow(pipe.liftedInput) : NULL;
+    if (liftedEdge) {
+        liftedEdge->setVisible(false);
+    }
+    setPortPipeHighlights(true);
+    updatePortPipePreview();
+
+    return true;
+} // NodeGraph::beginPortPipe
+
+void
+NodeGraph::releasePortPipe(QMouseEvent* e,
+                           bool dragged)
+{
+    if (!_imp->_portPipe) {
+        return;
+    }
+    if (dragged) {
+        dropPortPipe(e->pos());
+    } else {
+        _imp->_portPipe->held = true;
+    }
+}
+
+bool
+NodeGraph::handlePortPipePress(QMouseEvent* e)
+{
+    if (!_imp->_portPipe || !_imp->_portPipe->held) {
+        return false;
+    }
+    if (buttonDownIsLeft(e)) {
+        dropPortPipe(e->pos());
+    } else {
+        cancelPortPipe();
+    }
+
+    return true;
+}
+
+void
+NodeGraph::dropPortPipe(const QPoint& viewportPos)
+{
+    if (!_imp->_portPipe) {
+        return;
+    }
+    const NodeGraphPrivate::PortPipe pipe = *_imp->_portPipe;
+    cancelPortPipe();
+
+    NodeGuiPtr anchor = pipe.anchorNode.lock();
+    NodeGuiPtr lifted = pipe.liftedNode.lock();
+    if (!anchor) {
+        return;
+    }
+    NodeGuiPtr target;
+    int targetInput = -1;
+    std::string targetOutput;
+    if (!portNearbyMouse(viewportPos, &target, &targetInput, &targetOutput)) {
+        if (lifted && lifted->getNode()->getInput(pipe.liftedInput)) {
+            pushUndoCommand(new PortConnectCommand(this, lifted, pipe.liftedInput, NodeGuiPtr(), outputNamedForInput(lifted, pipe.liftedInput)),
+                            NodesGuiList { lifted });
+        }
+
+        return;
+    }
+
+    // An output is dropped on an input, an input on an output; the wrong side is no target.
+    NodeGuiPtr dst, src;
+    int inputNb = -1;
+    std::string output;
+    if (pipe.anchorIsOutput) {
+        if (targetInput < 0) {
+            return;
+        }
+        dst = target;
+        inputNb = targetInput;
+        src = anchor;
+        output = pipe.anchorOutput;
+    } else {
+        if (targetInput >= 0) {
+            return;
+        }
+        dst = anchor;
+        inputNb = pipe.anchorInput;
+        src = target;
+        output = targetOutput;
+    }
+    NetworkNode* network = networkOf(dst);
+    if (!network) {
+        return;
+    }
+    NodePtr current = dst->getNode()->getInput(inputNb);
+    const bool liftedElsewhere = lifted && ((lifted != dst) || (pipe.liftedInput != inputNb));
+    if (!liftedElsewhere && (current == src->getNode()) && (outputReadByInput(dst, inputNb, src) == output)) {
+        return;
+    }
+    std::string reason;
+    if (!network->canConnectPort(inputNb, src->getNode(), output, &reason)) {
+        getGui()->getApp()->showStatusMessage(tr("Cannot connect %1 to %2: %3.")
+                                                  .arg(QString::fromUtf8(src->getNode()->getLabel().c_str()))
+                                                  .arg(QString::fromUtf8(dst->getNode()->getLabel().c_str()))
+                                                  .arg(QString::fromUtf8(reason.c_str())));
+
+        return;
+    }
+
+    NodesGuiList touched { dst, src };
+    if (liftedElsewhere && lifted->getNode()->getInput(pipe.liftedInput)) {
+        QUndoCommand* move = new QUndoCommand(tr("Move connection"));
+        new PortConnectCommand(this, lifted, pipe.liftedInput, NodeGuiPtr(), outputNamedForInput(lifted, pipe.liftedInput), move);
+        new PortConnectCommand(this, dst, inputNb, src, output, move);
+        touched.push_back(lifted);
+        pushUndoCommand(move, touched);
+    } else {
+        pushUndoCommand(new PortConnectCommand(this, dst, inputNb, src, output), touched);
+    }
+} // NodeGraph::dropPortPipe
+
+void
+NodeGraph::cancelPortPipe()
+{
+    if (!_imp->_portPipe) {
+        return;
+    }
+    NodeGuiPtr lifted = _imp->_portPipe->liftedNode.lock();
+    setPortPipeHighlights(false);
+    _imp->_portPipe.reset();
+    if (_imp->_portPipePreview) {
+        _imp->_portPipePreview->hide();
+    }
+    if (lifted) {
+        lifted->refreshEdgesVisility();
+    }
+    update();
+}
+
+void
+NodeGraph::updatePortPipePreview()
+{
+    if (!_imp->_portPipe) {
+        return;
+    }
+    NodeGuiPtr anchor = _imp->_portPipe->anchorNode.lock();
+    PortNodeGui* anchorGui = dynamic_cast<PortNodeGui*>(anchor.get());
+    PortListLayout* layout = portLayoutOf(anchor);
+    if (!anchorGui || !layout) {
+        cancelPortPipe();
+
+        return;
+    }
+    const bool fromOutput = _imp->_portPipe->anchorIsOutput;
+    PortColor color;
+    QPointF anchorPos;
+    if (fromOutput) {
+        const int index = layout->outputIndexOf(_imp->_portPipe->anchorOutput);
+        const std::vector<PortNodeRow>& rows = anchorGui->getOutputRows();
+        if ((index >= 0) && (index < (int)rows.size())) {
+            color = rows[index].look.fill;
+        }
+        anchorPos = outputPortScenePos(anchor, _imp->_portPipe->anchorOutput);
+    } else {
+        const int index = _imp->_portPipe->anchorInput;
+        const std::vector<PortNodeRow>& rows = anchorGui->getInputRows();
+        if ((index >= 0) && (index < (int)rows.size())) {
+            color = rows[index].look.fill;
+        }
+        anchorPos = inputPortScenePos(anchor, index);
+    }
+    if (!_imp->_portPipePreview) {
+        _imp->_portPipePreview = new QGraphicsPathItem(_imp->_nodeRoot);
+        // Above the pipes, under the nodes, as the kiss preview.
+        _imp->_portPipePreview->setZValue(16);
+    }
+    QGraphicsPathItem* preview = _imp->_portPipePreview;
+    const QPointF cursor = preview->mapFromScene(mapToScene(_imp->_lastMousePos));
+    const QPointF anchorPoint = preview->mapFromScene(anchorPos);
+    const QPointF start = fromOutput ? anchorPoint : cursor;
+    const QPointF end = fromOutput ? cursor : anchorPoint;
+    const double reach = std::max(std::abs(end.x() - start.x()) / 2., (double)TO_DPIX(40));
+    QPainterPath path(start);
+    path.cubicTo(start + QPointF(reach, 0.), end - QPointF(reach, 0.), end);
+    QPen pen(QColor(color.r, color.g, color.b));
+    pen.setWidthF(2.);
+    preview->setPen(pen);
+    preview->setPath(path);
+    preview->show();
+    update();
+} // NodeGraph::updatePortPipePreview
+
+void
+NodeGraph::setPortPipeHighlights(bool highlighted)
+{
+    const NodeGraphPrivate::PortPipe* pipe = _imp->_portPipe ? &*_imp->_portPipe : NULL;
+    NodeGuiPtr anchor = pipe ? pipe->anchorNode.lock() : NodeGuiPtr();
+    NetworkNode* anchorNetwork = networkOf(anchor);
+
+    for (const NodeGuiPtr& gui : getAllActiveNodes()) {
+        PortNodeGui* ports = dynamic_cast<PortNodeGui*>(gui.get());
+        if (!ports) {
+            continue;
+        }
+        if (!highlighted || !anchorNetwork) {
+            ports->clearPortHighlights();
+            continue;
+        }
+        NetworkNode* network = networkOf(gui);
+        const std::size_t inputCount = ports->getInputRows().size();
+        for (std::size_t i = 0; i < inputCount; ++i) {
+            PortHighlightEnum highlight = ePortHighlightDimmed;
+            if (pipe->anchorIsOutput) {
+                highlight = (network && network->canConnectPort((int)i, anchor->getNode(), pipe->anchorOutput)) ? ePortHighlightHalo : ePortHighlightDimmed;
+            } else if ((gui == anchor) && ((int)i == pipe->anchorInput)) {
+                highlight = ePortHighlightNone;
+            }
+            ports->setInputPortHighlight((int)i, highlight);
+        }
+        const std::vector<PortNodeRow>& outputs = ports->getOutputRows();
+        for (std::size_t i = 0; i < outputs.size(); ++i) {
+            PortHighlightEnum highlight = ePortHighlightDimmed;
+            if (!pipe->anchorIsOutput) {
+                highlight = anchorNetwork->canConnectPort(pipe->anchorInput, gui->getNode(), outputs[i].name) ? ePortHighlightHalo : ePortHighlightDimmed;
+            } else if ((gui == anchor) && (outputs[i].name == pipe->anchorOutput)) {
+                highlight = ePortHighlightNone;
+            }
+            ports->setOutputPortHighlight((int)i, highlight);
+        }
+    }
+} // NodeGraph::setPortPipeHighlights
+
 void
 NodeGraph::mouseReleaseEvent(QMouseEvent* e)
 {
@@ -442,6 +816,8 @@ NodeGraph::mouseReleaseEvent(QMouseEvent* e)
 
         nodeHoldingEdge->refreshEdges();
         scene()->update();
+    } else if (state == eEventStateDraggingPortPipe) {
+        releasePortPipe(e, arrowDragged);
     } else if ((state == eEventStateDraggingArrow) && _imp->_arrowSelected) {
         Edge* arrow = _imp->_arrowSelected;
         // Moves short of the drag distance still dragged the drawn line; put it back first.

@@ -527,6 +527,29 @@ private:
 
     bool handlePickUpPress(QMouseEvent* e);
 
+    // Whether the graph shows the inside of a network builder, whose nodes connect port to port.
+    bool isPortGraph() const;
+
+    /**
+     * @brief The port of a port node nearest viewportPos, within the reach a connector has. For an
+     * output, *outputName receives its name and *inputNb -1; for an input, *inputNb its number.
+     **/
+    bool portNearbyMouse(const QPoint& viewportPos, NodeGuiPtr* node, int* inputNb, std::string* outputName);
+
+    bool beginPortPipe(QMouseEvent* e);
+
+    void releasePortPipe(QMouseEvent* e, bool dragged);
+
+    bool handlePortPipePress(QMouseEvent* e);
+
+    void dropPortPipe(const QPoint& viewportPos);
+
+    void cancelPortPipe();
+
+    void updatePortPipePreview();
+
+    void setPortPipeHighlights(bool highlighted);
+
     void moveSelectedNodesBy(bool shiftdown, bool controlDown, const QPointF& lastMousePosScene, const QPointF& newPos, const QRectF& visibleSceneR, bool userEdit);
 
     void scrollViewIfNeeded(const QPointF& scenePos);

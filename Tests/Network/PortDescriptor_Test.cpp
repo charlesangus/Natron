@@ -43,6 +43,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Network/NetworkNode.h"
+#include "Engine/Nodes/Network/PortTypes.h"
 #include "Engine/Project.h"
 
 #include "Serialization/ProjectBundleTestHelpers.h"
@@ -124,6 +125,9 @@ registerPortDescriptorTestPluginOnce()
         const NetworkNodeLayout* layout = NetworkNode::addLayout(portDescriptorTestLayout());
         testRegisteredPluginIds().insert(layout->pluginId);
         (void)NetworkNode::registerPlugin(*layout);
+        PortConversions conversions;
+        conversions.classes = numericPortConversions();
+        registerPortConversions("test", conversions);
     });
 }
 

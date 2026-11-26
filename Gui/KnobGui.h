@@ -577,6 +577,13 @@ private:
 
     void setInterpolationForDimensions(QAction* action, KeyframeTypeEnum interp);
 
+    void createNetworkPortButton(QHBoxLayout* layout,
+                                 QWidget* parent);
+
+    void refreshNetworkPortButton();
+
+    void toggleNetworkPort();
+
 private:
 
     std::unique_ptr<KnobGuiPrivate> _imp;

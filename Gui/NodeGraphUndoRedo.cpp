@@ -44,6 +44,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/GroupOutput.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Network/NetworkNode.h"
 #include "Engine/Project.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/TimeLine.h"
@@ -681,6 +682,81 @@ ConnectCommand::doConnect(const NodeGuiPtr &oldSrc,
         oldSrc->refreshEdgesVisility();
     }
 } // ConnectCommand::doConnect
+
+PortConnectCommand::PortConnectCommand(NodeGraph* graph,
+                                       const NodeGuiPtr& dst,
+                                       int inputNb,
+                                       const NodeGuiPtr& newSrc,
+                                       const std::string& newOutput,
+                                       QUndoCommand* parent)
+    : QUndoCommand(parent)
+    , _graph(graph)
+    , _dst(dst)
+    , _inputNb(inputNb)
+    , _oldSrc()
+    , _newSrc(newSrc)
+    , _oldOutput()
+    , _newOutput(newOutput)
+{
+    assert(dst);
+    NodePtr node = dst->getNode();
+    NodePtr oldSrc = node->getInput(inputNb);
+    if (oldSrc) {
+        _oldSrc = std::dynamic_pointer_cast<NodeGui>(oldSrc->getNodeGui());
+    }
+    NetworkNode* network = dynamic_cast<NetworkNode*>(node->getEffectInstance().get());
+    if (network && (inputNb >= 0) && (inputNb < node->getNInputs())) {
+        _oldOutput = network->getOutputForInput(node->getInputLabel(inputNb));
+    }
+    const QString dstLabel = QString::fromUtf8(node->getLabel().c_str());
+    if (newSrc) {
+        setText(tr("Connect %1 to %2").arg(dstLabel).arg(QString::fromUtf8(newSrc->getNode()->getLabel().c_str())));
+    } else {
+        setText(tr("Disconnect %1").arg(dstLabel));
+    }
+}
+
+void
+PortConnectCommand::undo()
+{
+    apply(_oldSrc, _oldOutput);
+}
+
+void
+PortConnectCommand::redo()
+{
+    apply(_newSrc, _newOutput);
+}
+
+void
+PortConnectCommand::apply(const NodeGuiWPtr& src,
+                          const std::string& output)
+{
+    NodeGuiPtr dst = _dst.lock();
+    NetworkNode* network = dst ? dynamic_cast<NetworkNode*>(dst->getNode()->getEffectInstance().get()) : NULL;
+
+    if (!network || lostNode(_oldSrc) || lostNode(_newSrc)) {
+        setObsolete(true);
+
+        return;
+    }
+    NodeGuiPtr source = src.lock();
+    if (!network->connectPort(_inputNb, source ? source->getNode() : NodePtr(), output)) {
+        setObsolete(true);
+
+        return;
+    }
+    dst->refreshEdges();
+    dst->refreshEdgesVisility();
+    for (const NodeGuiWPtr& end : { _oldSrc, _newSrc }) {
+        NodeGuiPtr gui = end.lock();
+        if (gui) {
+            gui->refreshEdgesVisility();
+        }
+    }
+    _graph->getGui()->getApp()->triggerAutoSave();
+    _graph->update();
+}
 
 KissConnectCommand::KissConnectCommand(NodeGraph* graph,
                                        Edge* edge,

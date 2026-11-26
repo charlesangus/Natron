@@ -46,6 +46,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/LibraryBinary.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Network/PortTypes.h"
 #include "Engine/Plugin.h"
 #include "Engine/Project.h"
 
@@ -99,22 +100,6 @@ knobScriptName(const std::string& text)
     }
 
     return ret;
-}
-
-bool
-isNumericClass(PortTypeClass typeClass)
-{
-    switch (typeClass) {
-    case PortTypeClass::Float:
-    case PortTypeClass::Int:
-    case PortTypeClass::Vector3:
-    case PortTypeClass::Normal:
-    case PortTypeClass::Point:
-    case PortTypeClass::Color:
-        return true;
-    default:
-        return false;
-    }
 }
 
 KnobIPtr
@@ -971,62 +956,40 @@ NetworkNode::onInputChanged(int inputNb)
     }
 }
 
-bool
-NetworkNode::portTypesConvert(const OutputPortDescriptor& from,
-                              const PortDescriptor& to)
-{
-    if (from.type == to.type) {
-        return true;
-    }
-    if (isNumericClass(from.typeClass) && isNumericClass(to.typeClass)) {
-        return true;
-    }
-    // A texture evaluates to a value at every point, so it feeds any port whose value varies.
-    if ((from.typeClass == PortTypeClass::Texture) && to.varying) {
-        return true;
-    }
-    if ((from.typeClass == PortTypeClass::Custom) || (from.typeClass == PortTypeClass::String)) {
-        return false;
-    }
-
-    return from.typeClass == to.typeClass;
-}
-
 NetworkNode::ConnectionCheckEnum
 NetworkNode::checkConnection(const NetworkNode& upstream,
                              const std::string& outputName,
                              const NetworkNode& downstream,
-                             const std::string& inputLabel)
+                             const std::string& inputLabel,
+                             std::string* reason)
 {
-    bool sharesTarget = false;
+    ConnectionCheckEnum check = eConnectionOk;
+    std::string why;
 
-    for (const std::string& target : upstream.layout().targets) {
-        const std::vector<std::string>& theirs = downstream.layout().targets;
-        if (std::find(theirs.begin(), theirs.end(), target) != theirs.end()) {
-            sharesTarget = true;
-            break;
-        }
-    }
-    if (!sharesTarget) {
-        return eConnectionNoCommonTarget;
-    }
     const OutputPortDescriptor* output = upstream.findOutput(outputName);
-    if (!output) {
-        return eConnectionNoSuchOutput;
-    }
     const std::vector<std::string> ports = downstream.getPorts();
     const NetworkAttribute* attribute = downstream.findAttribute(inputLabel);
-    if (!attribute || (std::find(ports.begin(), ports.end(), inputLabel) == ports.end())) {
-        return eConnectionNoSuchInput;
+    if (!portTargetsShared(upstream.layout().targets, downstream.layout().targets)) {
+        check = eConnectionNoCommonTarget;
+    } else if (!output) {
+        check = eConnectionNoSuchOutput;
+    } else if (!attribute || (std::find(ports.begin(), ports.end(), inputLabel) == ports.end())) {
+        check = eConnectionNoSuchInput;
+    } else if (!canConnectPorts(upstream.layout().targets, *output, downstream.layout().targets, attribute->port, &why)) {
+        check = eConnectionTypeMismatch;
+    }
+    if (reason) {
+        *reason = (check == eConnectionTypeMismatch) ? why : connectionCheckReason(check);
     }
 
-    return portTypesConvert(*output, attribute->port) ? eConnectionOk : eConnectionTypeMismatch;
+    return check;
 }
 
 NetworkNode::ConnectionCheckEnum
 NetworkNode::checkInputConnection(const NodePtr& upstream,
                                   const Node& downstream,
-                                  int inputNb)
+                                  int inputNb,
+                                  std::string* reason)
 {
     const NodePtr source = throughDots(upstream);
     const NetworkNode* from = source ? dynamic_cast<const NetworkNode*>(source->getEffectInstance().get()) : nullptr;
@@ -1037,6 +1000,10 @@ NetworkNode::checkInputConnection(const NodePtr& upstream,
     }
     const std::vector<std::string> ports = to->getPorts();
     if ((inputNb < 0) || (inputNb >= (int)ports.size())) {
+        if (reason) {
+            *reason = connectionCheckReason(eConnectionNoSuchInput);
+        }
+
         return eConnectionNoSuchInput;
     }
     // The output onInputChanged() leaves in place once the connection is made.
@@ -1048,7 +1015,89 @@ NetworkNode::checkInputConnection(const NodePtr& upstream,
         output.clear();
     }
 
-    return checkConnection(*from, output, *to, ports[inputNb]);
+    return checkConnection(*from, output, *to, ports[inputNb], reason);
+}
+
+bool
+NetworkNode::canConnectPort(int inputNb,
+                            const NodePtr& upstream,
+                            const std::string& outputName,
+                            std::string* reason) const
+{
+    NodePtr node = getNode();
+    const std::vector<std::string> ports = getPorts();
+
+    if (!node || (inputNb < 0) || (inputNb >= (int)ports.size())) {
+        if (reason) {
+            *reason = connectionCheckReason(eConnectionNoSuchInput);
+        }
+
+        return false;
+    }
+    if (!upstream) {
+        return true;
+    }
+    const NodePtr source = throughDots(upstream);
+    const NetworkNode* from = source ? dynamic_cast<const NetworkNode*>(source->getEffectInstance().get()) : nullptr;
+    if (from && (checkConnection(*from, outputName, *this, ports[inputNb], reason) != eConnectionOk)) {
+        return false;
+    }
+    if (!node->checkIfConnectingInputIsOk(upstream.get())) {
+        if (reason) {
+            *reason = tr("it would make a cycle").toStdString();
+        }
+
+        return false;
+    }
+
+    return true;
+}
+
+bool
+NetworkNode::connectPort(int inputNb,
+                         const NodePtr& upstream,
+                         const std::string& outputName,
+                         std::string* reason)
+{
+    if (!canConnectPort(inputNb, upstream, outputName, reason)) {
+        return false;
+    }
+    NodePtr node = getNode();
+    const std::string label = getPorts()[inputNb];
+    const NodePtr current = node->getInput(inputNb);
+
+    if (!upstream) {
+        if (current) {
+            node->disconnectInput(inputNb);
+        }
+        setOutputForInput(label, outputName);
+
+        return true;
+    }
+    // Recorded first so that neither the check connecting makes nor onInputChanged() takes
+    // upstream for a new node and drops the name.
+    const std::map<std::string, NodeWPtr>::const_iterator previous = _portUpstreams.find(label);
+    const bool hadPrevious = (previous != _portUpstreams.end());
+    const NodeWPtr previousUpstream = hadPrevious ? previous->second : NodeWPtr();
+    const std::string previousOutput = getOutputForInput(label);
+    _portUpstreams[label] = throughDots(upstream);
+    setOutputForInput(label, outputName);
+    const bool connected = current ? node->replaceInput(upstream, inputNb) : node->connectInput(upstream, inputNb);
+    if (!connected) {
+        if (hadPrevious) {
+            _portUpstreams[label] = previousUpstream;
+        } else {
+            _portUpstreams.erase(label);
+        }
+        setOutputForInput(label, previousOutput);
+        if (reason) {
+            *reason = tr("the input refused the connection").toStdString();
+        }
+
+        return false;
+    }
+
+    return true;
 }
 
 std::string
@@ -1058,7 +1107,7 @@ NetworkNode::connectionCheckReason(ConnectionCheckEnum check)
     case eConnectionOk:
         break;
     case eConnectionNoCommonTarget:
-        return tr("the nodes have no renderer in common").toStdString();
+        return portNoSharedTargetReason();
     case eConnectionNoSuchOutput:
         return tr("the upstream node has no such output").toStdString();
     case eConnectionNoSuchInput:

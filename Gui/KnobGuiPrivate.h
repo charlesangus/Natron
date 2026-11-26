@@ -32,8 +32,9 @@
 
 #include <cassert>
 #include <cfloat>
-#include <stdexcept>
 #include <map>
+#include <stdexcept>
+#include <string>
 
 #include <QFileDialog>
 #include <QFormLayout>
@@ -125,6 +126,9 @@ struct KnobGuiPrivate
     bool isInViewerUIKnob;
     // The row standing in for the knob's widgets while it is driven; null for a knob that cannot be.
     KnobDriverRow* driverRow;
+    // The promote/demote toggle of a knob that is the value of one promotable shader-node attribute.
+    QPointer<QPushButton> networkPortButton;
+    std::string networkPortAttribute;
 
     KnobGuiPrivate(KnobGuiContainerI* container);
 

@@ -17,12 +17,22 @@
  * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
  * ***** END LICENSE BLOCK ***** */
 
-#include <gtest/gtest.h>
+// ***** BEGIN PYTHON BLOCK *****
+// from <https://docs.python.org/3/c-api/intro.html#include-files>:
+// "Since Python may define some pre-processor definitions which affect the standard headers on some systems, you must include Python.h before any standard headers are included."
+#include <Python.h>
+// ***** END PYTHON BLOCK *****
 
 #include "Global/Macros.h"
 
+#include <string>
+#include <vector>
+
+#include <gtest/gtest.h>
+
 #include "Engine/Nodes/Network/PortDescriptor.h"
 #include "Engine/Nodes/Network/PortTypes.h"
+#include "Engine/Nodes/Scene/Shaders/ShaderManifest.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -42,6 +52,33 @@ const PortTypeClass kAllClasses[] = {
     PortTypeClass::Channel,
     PortTypeClass::Custom,
 };
+
+OutputPortDescriptor
+outputOf(const std::string& type,
+         PortTypeClass typeClass)
+{
+    OutputPortDescriptor output;
+    output.name = "out";
+    output.type = type;
+    output.typeClass = typeClass;
+
+    return output;
+}
+
+PortDescriptor
+portOf(const std::string& type,
+       PortTypeClass typeClass)
+{
+    PortDescriptor port;
+    port.attribute = "in";
+    port.type = type;
+    port.typeClass = typeClass;
+
+    return port;
+}
+
+const std::vector<std::string> kCycles = { kShaderTargetCycles };
+const std::vector<std::string> kMoonRay = { kShaderTargetMoonRay };
 
 } // namespace
 
@@ -92,6 +129,38 @@ TEST(PortTypes, descriptorOverloadUsesItsFlags)
     const PortLook look = portLookFor(port);
     EXPECT_EQ(PortShape::Diamond, look.shape);
     EXPECT_TRUE(look.fill == portTypeColor(PortTypeClass::Float));
+}
+
+TEST(PortTypes, floatFeedsColorOnCycles)
+{
+    registerShaderPortTypeTables();
+    std::string reason;
+    EXPECT_TRUE(canConnectPorts(kCycles, outputOf("float", PortTypeClass::Float), kCycles, portOf("color", PortTypeClass::Color), &reason));
+    EXPECT_TRUE(reason.empty());
+}
+
+TEST(PortTypes, closureCannotFeedFloat)
+{
+    registerShaderPortTypeTables();
+    std::string reason;
+    EXPECT_FALSE(canConnectPorts(kCycles, outputOf("closure", PortTypeClass::Closure), kCycles, portOf("float", PortTypeClass::Float), &reason));
+    EXPECT_EQ(std::string("closure cannot feed float"), reason);
+}
+
+TEST(PortTypes, nodesWithoutASharedTargetNeverConnect)
+{
+    registerShaderPortTypeTables();
+    std::string reason;
+    EXPECT_FALSE(canConnectPorts(kCycles, outputOf("float", PortTypeClass::Float), kMoonRay, portOf("float", PortTypeClass::Float), &reason));
+    EXPECT_EQ(std::string("no shared target"), reason);
+}
+
+TEST(PortTypes, unregisteredTargetConnectsOnlyItsOwnClass)
+{
+    const std::vector<std::string> bare = { "unregistered" };
+    EXPECT_TRUE(canConnectPorts(bare, outputOf("color", PortTypeClass::Color), bare, portOf("color", PortTypeClass::Color)));
+    EXPECT_FALSE(canConnectPorts(bare, outputOf("float", PortTypeClass::Float), bare, portOf("color", PortTypeClass::Color)));
+    EXPECT_FALSE(canConnectPorts(bare, outputOf("typeA", PortTypeClass::Custom), bare, portOf("typeB", PortTypeClass::Custom)));
 }
 
 NATRON_NAMESPACE_EXIT

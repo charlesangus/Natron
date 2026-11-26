@@ -423,7 +423,7 @@ kissConnectionIsOk(Node::CanConnectInputReturnValue ret)
 void
 NodeGraph::setKissAiming(bool aiming)
 {
-    if (_imp->_evtState != eEventStateDraggingNode) {
+    if ((_imp->_evtState != eEventStateDraggingNode) || isPortGraph()) {
         return;
     }
     if (aiming) {
@@ -970,6 +970,12 @@ NodeGraph::moveSelectedNodesBy(bool /*shiftdown*/,
 
     //Start auto-scolling if nearby the edges
     checkAndStartAutoScrollTimer(newPos);
+
+    // Kisses, shakes and splices join nodes through a main input and output, which the nodes of a
+    // port graph do not have.
+    if (isPortGraph()) {
+        return;
+    }
 
     // A move without Ctrl after one with it means Ctrl was let go, even if its key release went
     // to another widget.

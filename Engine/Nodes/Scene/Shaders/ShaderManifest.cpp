@@ -862,6 +862,12 @@ registerShaderPortTypeTables()
     moonRay.g = 140;
     moonRay.b = 224;
     registerNetworkTargetColor(kRendererMoonRay, moonRay);
+
+    PortConversions conversions;
+    conversions.classes = numericPortConversions();
+    conversions.textureFeedsVarying = true;
+    registerPortConversions(kRendererCycles, conversions);
+    registerPortConversions(kRendererMoonRay, conversions);
 }
 
 std::size_t

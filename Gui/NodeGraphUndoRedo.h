@@ -29,8 +29,9 @@
 #include "Global/Macros.h"
 
 #include <list>
-#include <vector>
 #include <map>
+#include <string>
+#include <vector>
 
 #include <QPointF>
 #include <QCoreApplication>
@@ -186,6 +187,37 @@ protected:
     NodeGuiWPtr _dst;
     NodeGraph* _graph;
     int _inputNb;
+};
+
+/*
+ * @brief Connects input inputNb of a network node to output newOutput of newSrc, or disconnects
+ * it for a null newSrc, through NetworkNode::connectPort(), so that the input reads the chosen
+ * output. Undo restores the source and output it had.
+ */
+class PortConnectCommand
+    : public QUndoCommand {
+    Q_DECLARE_TR_FUNCTIONS(PortConnectCommand)
+
+public:
+    PortConnectCommand(NodeGraph* graph,
+                       const NodeGuiPtr& dst,
+                       int inputNb,
+                       const NodeGuiPtr& newSrc,
+                       const std::string& newOutput,
+                       QUndoCommand* parent = 0);
+
+    virtual void undo() OVERRIDE;
+    virtual void redo() OVERRIDE;
+
+private:
+    void apply(const NodeGuiWPtr& src,
+               const std::string& output);
+
+    NodeGraph* _graph;
+    NodeGuiWPtr _dst;
+    int _inputNb;
+    NodeGuiWPtr _oldSrc, _newSrc;
+    std::string _oldOutput, _newOutput;
 };
 
 /*

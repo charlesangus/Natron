@@ -56,6 +56,16 @@ class PortItem;
 #define kPortItemDataSide 0
 #define kPortItemDataName 1
 #define kPortItemDataNode 2
+// "dimmed", "halo" or empty: how the port is highlighted while a pipe is dragged.
+#define kPortItemDataHighlight 3
+
+enum PortHighlightEnum {
+    ePortHighlightNone,
+    // A dragged pipe cannot connect to the port.
+    ePortHighlightDimmed,
+    // A dragged pipe can connect to the port.
+    ePortHighlightHalo,
+};
 
 /**
  * @brief One port row of a port node.
@@ -101,6 +111,12 @@ public:
     {
         return _outputs;
     }
+
+    void setInputPortHighlight(int inputNb, PortHighlightEnum highlight);
+
+    void setOutputPortHighlight(int outputIndex, PortHighlightEnum highlight);
+
+    void clearPortHighlights();
 
     const std::vector<QColor>& getTargetColors() const
     {

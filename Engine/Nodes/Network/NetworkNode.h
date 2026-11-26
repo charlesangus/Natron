@@ -278,20 +278,14 @@ public:
     /**
      * @brief Whether input inputLabel of downstream may read output outputName of upstream: the
      * nodes must share a target, the output must exist, the input must be a promoted port, and
-     * the output's type must convert to the port's.
+     * canConnectPorts() must accept the two. *reason, if given, receives why a refused
+     * connection is refused.
      **/
     static ConnectionCheckEnum checkConnection(const NetworkNode& upstream,
                                                const std::string& outputName,
                                                const NetworkNode& downstream,
-                                               const std::string& inputLabel);
-
-    /**
-     * @brief Whether an output of type from may feed port to: the same type always; among
-     * float, int, vector3, normal, point and color, any of them; a texture, any varying port;
-     * otherwise the same class, except custom and string, which need the same type.
-     **/
-    static bool portTypesConvert(const OutputPortDescriptor& from,
-                                 const PortDescriptor& to);
+                                               const std::string& inputLabel,
+                                               std::string* reason = nullptr);
 
     /**
      * @brief checkConnection() for connecting upstream, or the node it passes on through Dots,
@@ -301,7 +295,28 @@ public:
      **/
     static ConnectionCheckEnum checkInputConnection(const NodePtr& upstream,
                                                     const Node& downstream,
-                                                    int inputNb);
+                                                    int inputNb,
+                                                    std::string* reason = nullptr);
+
+    /**
+     * @brief Whether connectPort(inputNb, upstream, outputName) would connect: checkConnection()
+     * accepts it and it makes no cycle. *reason, if given, receives why not.
+     **/
+    bool canConnectPort(int inputNb,
+                        const NodePtr& upstream,
+                        const std::string& outputName,
+                        std::string* reason = nullptr) const;
+
+    /**
+     * @brief Connects input inputNb to output outputName of upstream, replacing what the input
+     * had, so that it reads that output from the start. A null upstream disconnects the input and
+     * leaves it naming outputName. False, changing nothing, when canConnectPort() refuses it.
+     * Main thread.
+     **/
+    bool connectPort(int inputNb,
+                     const NodePtr& upstream,
+                     const std::string& outputName,
+                     std::string* reason = nullptr);
 
     /**
      * @brief Why a connection checkConnection() refused is refused, empty for eConnectionOk.

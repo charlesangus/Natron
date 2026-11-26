@@ -26,6 +26,7 @@
 
 #include "KnobGui.h"
 
+#include <algorithm>
 #include <cassert>
 #include <memory>
 #include <stdexcept>
@@ -36,6 +37,8 @@
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
+#include "Engine/Nodes/Network/NetworkNode.h"
 #include "Engine/Project.h"
 #include "Engine/RFV.h"
 #include "Engine/TrackMarker.h"
@@ -277,6 +280,9 @@ KnobGui::createGUI(QWidget* fieldContainer,
             layout->addWidget(_imp->driverRow);
             _imp->driverRow->refresh();
         }
+        if (!_imp->isInViewerUIKnob) {
+            createNetworkPortButton(layout, fieldContainer);
+        }
     }
 
     // A linked knob's name takes the link colour, and its tool tip says what it is linked to.
@@ -297,6 +303,124 @@ KnobGui::createGUI(QWidget* fieldContainer,
            }*/
     }
 } // KnobGui::createGUI
+
+namespace {
+NetworkNode*
+networkNodeOf(const KnobIPtr& knob)
+{
+    return knob ? dynamic_cast<NetworkNode*>(knob->getHolder()) : nullptr;
+}
+
+// Ramp attributes share one knob, so a knob holding several attributes has no single port to toggle.
+std::string
+promotableAttributeOf(const NetworkNode& network,
+                      const KnobIPtr& knob)
+{
+    std::string found;
+
+    for (const NetworkAttribute& attribute : network.layout().attributes) {
+        if ((network.getAttributeKnob(attribute.name) != knob)) {
+            continue;
+        }
+        if (!found.empty() || !NetworkNode::canDemote(attribute)) {
+            return std::string();
+        }
+        found = attribute.name;
+    }
+
+    return found;
+}
+
+int
+portIndexOf(const NetworkNode& network,
+            const std::string& attribute)
+{
+    const std::vector<std::string> ports = network.getPorts();
+    const std::vector<std::string>::const_iterator it = std::find(ports.begin(), ports.end(), attribute);
+
+    return (it == ports.end()) ? -1 : (int)(it - ports.begin());
+}
+} // anonymous namespace
+
+void
+KnobGui::createNetworkPortButton(QHBoxLayout* layout,
+                                 QWidget* parent)
+{
+    KnobIPtr knob = getKnob();
+    NetworkNode* network = networkNodeOf(knob);
+
+    if (!network) {
+        return;
+    }
+    const std::string attribute = promotableAttributeOf(*network, knob);
+    NodePtr node = network->getNode();
+    if (attribute.empty() || !node) {
+        return;
+    }
+    _imp->networkPortAttribute = attribute;
+    QPushButton* button = new QPushButton(parent);
+    button->setObjectName(QString::fromUtf8("networkPort:%1.%2").arg(QString::fromUtf8(node->getFullyQualifiedName().c_str()), QString::fromUtf8(knob->getName().c_str())));
+    button->setCheckable(true);
+    button->setFocusPolicy(Qt::NoFocus);
+    button->setFixedSize(TO_DPIX(NATRON_SMALL_BUTTON_SIZE), TO_DPIY(NATRON_SMALL_BUTTON_SIZE));
+    _imp->networkPortButton = button;
+    layout->addWidget(button);
+    QObject::connect(button, &QPushButton::clicked, this, [this]() { toggleNetworkPort(); });
+    // Promoting, demoting and their undo all rebuild the node's inputs.
+    QObject::connect(node.get(), &Node::inputsInitialized, this, [this]() { refreshNetworkPortButton(); });
+    refreshNetworkPortButton();
+}
+
+void
+KnobGui::refreshNetworkPortButton()
+{
+    QPushButton* button = _imp->networkPortButton.data();
+    NetworkNode* network = networkNodeOf(getKnob());
+
+    if (!button || !network) {
+        return;
+    }
+    const bool promoted = portIndexOf(*network, _imp->networkPortAttribute) >= 0;
+    button->blockSignals(true);
+    button->setChecked(promoted);
+    button->blockSignals(false);
+    button->setText(promoted ? QString(QChar(0x25CF)) : QString(QChar(0x25CB)));
+    button->setToolTip(promoted ? tr("Demote: the parameter is no longer an input of the node.")
+                                : tr("Promote: the parameter becomes an input of the node, which a connection can drive."));
+}
+
+void
+KnobGui::toggleNetworkPort()
+{
+    KnobIPtr knob = getKnob();
+    NetworkNode* network = networkNodeOf(knob);
+    NodePtr node = network ? network->getNode() : NodePtr();
+
+    if (!node || _imp->networkPortAttribute.empty()) {
+        refreshNetworkPortButton();
+
+        return;
+    }
+    const int index = portIndexOf(*network, _imp->networkPortAttribute);
+    if (index < 0) {
+        promoteNetworkPort(node, _imp->networkPortAttribute);
+    } else {
+        if (node->getInput(index)) {
+            const StandardButtonEnum reply = Dialogs::questionDialog(tr("Demote %1").arg(QString::fromUtf8(knob->getLabel().c_str())).toStdString(),
+                                                                     tr("%1 is connected. Demoting it removes the connection.").arg(QString::fromUtf8(knob->getLabel().c_str())).toStdString(),
+                                                                     false,
+                                                                     StandardButtons(eStandardButtonYes | eStandardButtonNo),
+                                                                     eStandardButtonNo);
+            if (reply != eStandardButtonYes) {
+                refreshNetworkPortButton();
+
+                return;
+            }
+        }
+        demoteNetworkPort(node, _imp->networkPortAttribute);
+    }
+    refreshNetworkPortButton();
+}
 
 void
 KnobGui::updateGuiInternal(int dimension)

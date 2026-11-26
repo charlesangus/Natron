@@ -32,6 +32,7 @@
 #include <list>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -45,6 +46,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QElapsedTimer>
 #include <QGraphicsItem>
 #include <QGraphicsLineItem>
+#include <QGraphicsPathItem>
 #include <QGraphicsPixmapItem>
 #include <QImage>
 #include <QMutex>
@@ -93,6 +95,7 @@ enum EventStateEnum {
     eEventStateResizingBackdrop,
     eEventStateSelectionRect,
     eEventStateCutting,
+    eEventStateDraggingPortPipe,
 };
 
 // A list of nodes in insertion order that finds and removes a node in constant time. A node is
@@ -383,6 +386,21 @@ public:
     int _pickedUpArrowInput = -1;
     bool _pickedUpArrowIsOutput = false;
     PickUpEndEnum _pickedUpArrowEnd = ePickUpEndSource;
+
+    // A pipe dragged, or held after a click, from a port of a port graph. It hangs from its
+    // anchor, an output or an input, and its other end follows the cursor. The lifted input is the
+    // one whose connection was picked up; it stays connected, its own pipe hidden, until the drop.
+    struct PortPipe {
+        NodeGuiWPtr anchorNode;
+        bool anchorIsOutput = false;
+        std::string anchorOutput;
+        int anchorInput = -1;
+        NodeGuiWPtr liftedNode;
+        int liftedInput = -1;
+        bool held = false;
+    };
+    std::optional<PortPipe> _portPipe;
+    QGraphicsPathItem* _portPipePreview = nullptr;
 
     NodeGuiPtr _backdropResized; //< the backdrop being resized
     UndoGesture _dragGesture; //< from a press to its release, so one resize drag is one undo step

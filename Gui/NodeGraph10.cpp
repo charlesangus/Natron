@@ -59,6 +59,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/NodeGraphLowDetailLayer.h"
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
+#include "Gui/PortListLayout.h"
 
 #include "Global/QtCompat.h"
 
@@ -657,6 +658,52 @@ NodeGraph::hasItemNearbyMouse(const QPoint& mousePosViewport,
     return eNearbyItemNone;
 } // NodeGraph::hasItemNearbyMouse
 
+bool
+NodeGraph::portNearbyMouse(const QPoint& viewportPos,
+                           NodeGuiPtr* node,
+                           int* inputNb,
+                           std::string* outputName)
+{
+    // The same reach hasItemNearbyMouse() gives connectors.
+    const double tolerance = TO_DPIX(18.);
+    const QRect toleranceRect(viewportPos.x() - tolerance, viewportPos.y() - tolerance, 2. * tolerance, 2. * tolerance);
+    std::vector<QGraphicsItem*> candidates;
+    _imp->getGridCandidatesForViewportRect(toleranceRect, &candidates);
+    const double zoomFactor = transform().mapRect(QRectF(0, 0, 1, 1)).width();
+    assert(zoomFactor != 0);
+    const double grabRadius = TO_DPIX(10.) / zoomFactor;
+    const double unconnectedInputGrabRadius = TO_DPIX(18.) / zoomFactor;
+    const QPointF scenePos = mapToScene(viewportPos);
+
+    std::set<NodeGui*> seen;
+    NodeGui* nearest = NULL;
+    ConnectorHit best;
+    for (QGraphicsItem* item : candidates) {
+        NodeGui* gui = isNodeGuiChild(item);
+        if (!gui || !gui->isVisible() || !seen.insert(gui).second) {
+            continue;
+        }
+        const PortListLayout* layout = dynamic_cast<const PortListLayout*>(gui->getConnectorLayout());
+        if (!layout) {
+            continue;
+        }
+        const ConnectorHit hit = layout->hitTest(scenePos, grabRadius, unconnectedInputGrabRadius);
+        if ((hit.kind == eConnectorKindNone) || (nearest && (hit.dist2 >= best.dist2))) {
+            continue;
+        }
+        nearest = gui;
+        best = hit;
+    }
+    if (!nearest) {
+        return false;
+    }
+    *node = nearest->shared_from_this();
+    *inputNb = (best.kind == eConnectorKindInput) ? best.inputNb : -1;
+    *outputName = (best.kind == eConnectorKindOutput) ? best.outputName : std::string();
+
+    return true;
+}
+
 void
 NodeGraph::mousePressEvent(QMouseEvent* e)
 {
@@ -736,6 +783,12 @@ NodeGraph::mousePressEvent(QMouseEvent* e)
             getGui()->getApp()->triggerAutoSave();
             update();
         }
+    }
+
+    if (groupEdited && buttonDownIsLeft(e) && !modCASIsControl(e) && isPortGraph() && beginPortPipe(e)) {
+        _imp->_evtState = eEventStateDraggingPortPipe;
+
+        return;
     }
 
     NodeGui* nearbyNode = NULL;

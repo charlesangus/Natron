@@ -263,12 +263,26 @@ public:
              const PortLook& look)
         : QGraphicsItem(parent)
         , _look(look)
+        , _highlight(ePortHighlightNone)
     {
+    }
+
+    void setHighlight(PortHighlightEnum highlight)
+    {
+        if (highlight == _highlight) {
+            return;
+        }
+        _highlight = highlight;
+        setOpacity((highlight == ePortHighlightDimmed) ? 0.3 : 1.);
+        const char* name = (highlight == ePortHighlightDimmed) ? "dimmed" : (highlight == ePortHighlightHalo) ? "halo"
+                                                                                                              : "";
+        setData(kPortItemDataHighlight, QString::fromUtf8(name));
+        update();
     }
 
     virtual QRectF boundingRect() const OVERRIDE FINAL
     {
-        const double r = PortListLayout::portRadius() * 1.6 + 2.;
+        const double r = PortListLayout::portRadius() * 1.6 + 6.;
 
         return QRectF(-r, -r, 2 * r, 2 * r);
     }
@@ -279,6 +293,7 @@ public:
 
 private:
     PortLook _look;
+    PortHighlightEnum _highlight;
 };
 
 void
@@ -305,6 +320,14 @@ PortItem::paint(QPainter* painter,
     }
     }
     painter->setRenderHint(QPainter::Antialiasing, true);
+    if (_highlight == ePortHighlightHalo) {
+        const double haloRadius = ((_look.shape == PortShape::Circle) ? r : r * 1.6) + 3.;
+        QPen halo(QColor(255, 230, 140, 200));
+        halo.setWidthF(2.5);
+        painter->setPen(halo);
+        painter->setBrush(Qt::NoBrush);
+        painter->drawEllipse(QPointF(0., 0.), haloRadius, haloRadius);
+    }
     painter->fillPath(path, toQColor(_look.fill));
     QPen pen(_look.hasRing ? toQColor(_look.ring) : QColor(20, 20, 20));
     pen.setWidthF(_look.hasRing ? 2. : 1.);
@@ -453,6 +476,34 @@ PortNodeGui::rebuildPortItems()
         }
     }
     placePortItems();
+}
+
+void
+PortNodeGui::setInputPortHighlight(int inputNb,
+                                   PortHighlightEnum highlight)
+{
+    if ((inputNb >= 0) && (inputNb < (int)_inputs.size()) && (inputNb < (int)_portItems.size())) {
+        _portItems[inputNb]->setHighlight(highlight);
+    }
+}
+
+void
+PortNodeGui::setOutputPortHighlight(int outputIndex,
+                                    PortHighlightEnum highlight)
+{
+    const std::size_t index = _inputs.size() + (std::size_t)outputIndex;
+
+    if ((outputIndex >= 0) && (outputIndex < (int)_outputs.size()) && (index < _portItems.size())) {
+        _portItems[index]->setHighlight(highlight);
+    }
+}
+
+void
+PortNodeGui::clearPortHighlights()
+{
+    for (PortItem* item : _portItems) {
+        item->setHighlight(ePortHighlightNone);
+    }
 }
 
 void

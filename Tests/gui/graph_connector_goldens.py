@@ -178,12 +178,10 @@ try:
         return srcs + [switch], None
 
     def build_output_edge():
-        src = create("Constant", "src", 0, 0)
-        grade = create("Grade", "grade", 0, ROW_STEP)
-        blur = create("Blur", "blur", 0, 2 * ROW_STEP)
-        connect(grade, 0, src)
+        grade = create("Grade", "grade", 0, 0)
+        blur = create("Blur", "blur", 0, ROW_STEP)
         connect(blur, 0, grade)
-        return [src, grade, blur], None
+        return [grade, blur], None
 
     def build_bend_point():
         src = create("Constant", "src", 0, 0)

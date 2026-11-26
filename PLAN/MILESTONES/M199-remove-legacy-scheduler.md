@@ -102,19 +102,19 @@ Delete the Legacy render scheduler mode (`renderSchedulerMode`, `Engine/Settings
 
 ## Phase 199.3: Scheduler owns frame admission
 
-- [ ] M199.P3.T1 — Delete the dead `DefaultScheduler::processFrame` path
+- [x] M199.P3.T1 — Delete the dead `DefaultScheduler::processFrame` path
   - files: `Engine/OutputSchedulerThread.h:346,499`, `Engine/OutputSchedulerThread.cpp:2706-2819` and the commented `appendToBuffer` block (:2676-2685)
   - approach: Writers always notify `eSchedulingPolicyFFA` (:2542,2686), so nothing calls `DefaultScheduler::processFrame`. Give `processFrame` a default empty body, keep `ViewerDisplayScheduler`'s override (:3041), keep `appendToBuffer` for the viewer.
   - verify: whole ctest green, including `SchedulerWriters.*` and `Tests/Native/NativeWriteRange_Test.cpp`.
   - size: M
 
-- [ ] M199.P3.T2 — Give `FrameFuture` a completion notification
+- [x] M199.P3.T2 — Give `FrameFuture` a completion notification
   - files: `Engine/RenderScheduler.h` (`FrameFuture`, `wait()` :257), `Engine/RenderScheduler.cpp`, `Tests/RenderScheduler_Test.cpp`
   - approach: A one-shot callback, called once on whichever thread finishes or aborts the frame, or immediately when registered after completion. It must never run on a pool thread that then waits on the scheduler.
   - verify: new `RenderScheduler_Test` cases: callback after success, after abort, registered late; exactly one call under a parallel stress.
   - size: M
 
-- [ ] M199.P3.T3 — Writers: the OutputSchedulerThread admits frames itself
+- [x] M199.P3.T3 — Writers: the OutputSchedulerThread admits frames itself
   - files: `Engine/OutputSchedulerThread.h`, `Engine/OutputSchedulerThread.cpp` (`startTasks` :1037-1090, `adjustNumberOfThreads` :1644, `DefaultRenderFrameRunnable` :2385-2690, `notifyThreadAboutToQuit` :1135)
   - approach: Use the load test from `adjustNumberOfThreads` (`getLoad` against pool max, capped by `noRenderThreads`). The scheduler thread builds, places and submits frames; the P3.T2 callback calls `notifyFrameRendered`. `writesFrameRangeAtOnce` and fallback frames (deep, ineligible) run on one dedicated fallback worker owned by the OutputSchedulerThread, never a pool thread. Abort cancels in-flight futures.
   - verify: whole ctest green; `RenderSchedulerAbortTiming.WriterRangeStopsSoonAfterEngineAbort`, `SchedulerAbortLatency.WriterAbortReturnsWithinBudget` and `SchedulerWriters.DeepOutputFramesFallBackToLegacyAndNameTheReason` green; a writer range creates no `RenderThreadTask` (counter or assert in the test).
@@ -145,3 +145,4 @@ Delete the Legacy render scheduler mode (`renderSchedulerMode`, `Engine/Settings
 - 2026-11-25 (PM) — Phase 1 + P2.T1 green: m199-gate4b (debug, full ctest, 59e99c805) after fixing the inverted render-helper ternaries from P1.T3 and the SchedulerEquivalence reference count. Starting P2.T2-T4 as one unit.
 - 2026-11-26 (PM) — P2.T2-T4 done (c9a3e359d, 1bf470ed3). m199-gate6 (debug, full ctest, 978/978) ran with 0 shadow mismatches and 0 out-of-order pops; maxDepth=2 on the Grade chain. The 19 mismatches on gate5 were real: the old list kept the outer frame's args in nested task frames (now follows them), and three tests used softCopy without the chain (softCopy is now private). Starting P2.T5-T6. The max depth on deep Loop/Group graphs is recorded with T5.
 - 2026-11-25 (PM) — P2.T5-T6 done (6e44299bc3); m199-gate7 (debug --tests, task-graph) 978/978. The remaining `frameArgs` hits in EffectInstance.h are parameter names, not the TLS list. Chain depth: nested loops 2x3 maxDepth=5 direct / 3 scheduled, nested groups (8) 2 / 2, Grade chain (50) 2; no out-of-order pops. Phase 199.3 dispatched as one unit.
+- 2026-11-25 (PM) — P3.T1-T3 in e1701bbb68 (gate m199-gate8, debug --tests, queued). Writers: `admitFrames` on the scheduler thread with the old load test capped by the parallel-render count; views of a frame run in order; `FrameFuture::onFinished` callbacks only queue the follow-up and wake the scheduler thread, so no pool thread waits on it; `writesFrameRangeAtOnce`, deep, ineligible and empty-graph frames run on one `FrameFallbackWorker`; abort aborts every pending step and future without holding a lock; aborted frames still report "Render aborted". A temporary `admitsFramesItself()` keeps the viewer on its render threads. **P3.T4 blocked on a design call:** `renderViewer_internal` holds the frame-args token and other scoped state across its per-rect `future->wait()`s, so a completion-driven viewer needs renderViewer split into resumable steps. A consultant is weighing that against scheduler-owned viewer workers.

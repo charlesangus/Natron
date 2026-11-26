@@ -120,3 +120,4 @@ Generate one Natron shader node for each shader the bundled Cycles and MoonRay o
   - **Other fixes:** the port spec is published as an atomic shared_ptr; type checks see through Dots (rewiring a Dot later doesn't re-run the check); ramp docs and audit compare interpolation.
   - **New public Python method:** `ParametricParam.getNthControlPointInterpolation`.
   - **Startup parse (round-1 #15):** still parses both manifests at startup. A generated id index is the fix if P2.T3's startup bench shows the parse matters.
+- 2026-11-26 (PM) — ShaderPromoteTest's one-way-link round trip failed because `slaveTo` links are internal and unsaved by design (M92: user links are link groups, saved). The test now stays in session (b06af9b1b1), and 00e56a4f7a adds `ALinkedShaderKnobSurvivesASaveAndLoadAlongsideItsPort` (a link group on a shader knob survives save/load; the port disables and re-enables it). m350-gate7 queued.

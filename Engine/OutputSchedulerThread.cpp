@@ -57,6 +57,7 @@
 #include "Engine/IsolatedJob.h"
 #include "Engine/KnobFile.h"
 #include "Engine/Node.h"
+#include "Engine/NodeCreationStageLog.h"
 #include "Engine/OpenGLViewerI.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
@@ -3394,6 +3395,7 @@ RenderEngine::renderFromCurrentFrame(bool enableRenderStats,
 void
 RenderEngine::onCurrentFrameRenderRequestPosted()
 {
+    NodeCreationStageLog::Scope creationStage("viewerRenderStart");
     assert( QThread::currentThread() == qApp->thread() );
 
     //Okay we are at the end of the event loop, concatenate all similar events
@@ -3468,6 +3470,7 @@ RenderEngine::renderCurrentFrame(bool enableRenderStats,
     r.enableStats = enableRenderStats;
     r.enableAbort = canAbort;
     _imp->refreshQueue.push_back(r);
+    NodeCreationStageLog::mark("viewerRenderRequested");
     Q_EMIT currentFrameRenderRequestPosted();
 }
 

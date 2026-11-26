@@ -49,6 +49,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/Dot.h"
 #include "Engine/Node.h"
+#include "Engine/NodeCreationStageLog.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/Project.h"
 #include "Engine/Settings.h"
@@ -471,6 +472,7 @@ NodeGraph::isDrawingLockedVeil() const
 void
 NodeGraph::paintEvent(QPaintEvent* e)
 {
+    NodeCreationStageLog::Scope creationStage("nodeGraphPaint");
     AppInstancePtr app;
 
     if (getGui()) {
@@ -542,6 +544,7 @@ NodeGraph::paintEvent(QPaintEvent* e)
     }
 
     if (!_imp->panelBuildsPending.empty()) {
+        NodeCreationStageLog::mark("panelFlushPostedByPaint");
         postPanelBuildFlush();
     }
 } // NodeGraph::paintEvent
@@ -560,6 +563,7 @@ NodeGraph::schedulePanelBuild(const NodeGuiPtr& node)
         }
     }
     _imp->panelBuildsPending.push_back(node);
+    NodeCreationStageLog::mark("panelScheduled");
     if (_imp->panelBuildsPending.size() == 1) {
         armPanelBuildWait();
     }
@@ -592,6 +596,7 @@ void
 NodeGraph::armPanelBuildWait()
 {
     if (!viewport()->isVisible()) {
+        NodeCreationStageLog::mark("panelFlushPostedHiddenGraph");
         postPanelBuildFlush();
 
         return;
@@ -602,6 +607,7 @@ NodeGraph::armPanelBuildWait()
     QTimer::singleShot(0, this, [this, generation]() {
         QTimer::singleShot(kPanelBuildPaintWaitMs, this, [this, generation]() {
             if (generation == _imp->panelBuildGeneration) {
+                NodeCreationStageLog::mark("panelFlushPostedByTimeout");
                 postPanelBuildFlush();
             }
         });
@@ -625,6 +631,7 @@ NodeGraph::postPanelBuildFlush()
 void
 NodeGraph::flushPanelBuilds()
 {
+    NodeCreationStageLog::Scope creationStage("panelFlush");
     _imp->panelBuildFlushPosted = false;
     std::vector<NodeGuiWPtr> posted;
     posted.swap(_imp->panelBuildsPosted);
@@ -729,6 +736,7 @@ NodeGraph::createNodeGUI(const NodePtr & node,
 
     bool addUndoRedo = args.getProperty<bool>(kCreateNodeArgsPropAddUndoRedoCommand);
     if (addUndoRedo) {
+        NodeCreationStageLog::Scope stage("undoPush");
         AddMultipleNodesCommand* command = new AddMultipleNodesCommand(this, node_ui);
         // GuiAppInstance::createNode() triggers the autosave for such a node once it is set up.
         if (!serialization && !isViewer) {

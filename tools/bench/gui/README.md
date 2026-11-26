@@ -185,6 +185,22 @@ plug-ins and is not the figure to read.
 | `panelFirstPaint` | The panel's first paint, from its paint event until the event loop is back: every widget of that frame plus the flush. |
 | `panelBuildTail` | What the panel build runs after the rows and the dock: the viewer interface, curve and dope sheet editors. |
 
+## Panel floor
+
+```
+Natron tools/bench/gui/panel_floor.py
+```
+
+`panel_floor.py` runs without the harness, on a real display or under Xvfb. For each plug-in of
+`PANEL_FLOOR_PLUGINS` (default Blur, Grade, Merge, Transform) it opens the real panel
+`PANEL_FLOOR_REPS` times (default 10), then copies the panel's widget tree into plain Qt widgets
+(each Natron widget as the first standard class it derives from, with its texts, sizes, size
+policies, layouts, dynamic properties and object name) and builds, shows and paints the copy in the
+panel's place, first under the app stylesheet and then with none. It prints the medians, 90th
+percentiles and maxima of each, with the widget counts, and writes them to `PANEL_FLOOR_OUT`
+(default `~/natron-panel-floor.txt`). Natron quits afterwards unless `PANEL_FLOOR_EXIT=0`. The copy
+is made from Python, so its times bound from above what Qt alone needs.
+
 ## The two modes
 
 **`--xvfb`: regressions only.** This runs `build/release/App/Natron`, or `--appimage PATH`, in the

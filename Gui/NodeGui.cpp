@@ -891,16 +891,22 @@ NodeGui::runPanelTail(bool all)
         switch (_panelTailStep++) {
         case 0:
             if (_settingsPanel) {
+                NodeCreationStageLog::Scope tailStage("panelTailViewerInterface");
                 _graph->getGui()->setNodeViewerInterface(thisShared);
             }
             break;
-        case 1:
+        case 1: {
+            NodeCreationStageLog::Scope tailStage("panelTailCurveEditor");
             gui->addNodeGuiToCurveEditor(thisShared);
             break;
-        case 2:
+        }
+        case 2: {
+            NodeCreationStageLog::Scope tailStage("panelTailDopeSheet");
             gui->addNodeGuiToDopeSheetEditor(thisShared);
             break;
+        }
         default: {
+            NodeCreationStageLog::Scope tailStage("panelTailFinish");
             // Ensure panel for all children if multi-instance
             MultiInstancePanelPtr panel = getMultiInstancePanel();
             if (_mainInstancePanel && panel) {

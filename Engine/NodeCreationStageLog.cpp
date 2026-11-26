@@ -36,6 +36,7 @@
 NATRON_NAMESPACE_ENTER
 
 std::atomic<bool> NodeCreationStageLog::s_enabled(false);
+std::atomic<NodeCreationStageLog::Sink> NodeCreationStageLog::s_sink(nullptr);
 
 namespace {
 std::mutex s_mutex;
@@ -71,16 +72,27 @@ NodeCreationStageLog::startFromEnvironment()
 }
 
 void
+NodeCreationStageLog::setSink(Sink sink)
+{
+    s_sink.store(sink, std::memory_order_release);
+    s_enabled.store(true, std::memory_order_relaxed);
+}
+
+void
 NodeCreationStageLog::write(const char* stage,
                             double startMs,
                             double endMs)
 {
-    std::lock_guard<std::mutex> lock(s_mutex);
-    if (!s_log) {
-        return;
+    {
+        std::lock_guard<std::mutex> lock(s_mutex);
+        if (s_log) {
+            std::fprintf(s_log, "{\"stage\": \"%s\", \"start_ms\": %.3f, \"end_ms\": %.3f}\n", stage, startMs, endMs);
+            std::fflush(s_log);
+        }
     }
-    std::fprintf(s_log, "{\"stage\": \"%s\", \"start_ms\": %.3f, \"end_ms\": %.3f}\n", stage, startMs, endMs);
-    std::fflush(s_log);
+    if (Sink sink = s_sink.load(std::memory_order_acquire)) {
+        sink(stage, startMs, endMs);
+    }
 }
 
 NATRON_NAMESPACE_EXIT

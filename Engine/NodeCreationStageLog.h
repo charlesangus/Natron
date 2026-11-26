@@ -35,7 +35,8 @@ NATRON_NAMESPACE_ENTER
 
 /**
  * @brief Opt-in stage timing of interactive node creation. When NATRON_NODE_CREATION_STAGE_LOG names
- * a file, each Scope appends one JSON line {"stage", "start_ms", "end_ms"} when it ends.
+ * a file, each Scope appends one JSON line {"stage", "start_ms", "end_ms"} when it ends; an installed
+ * Sink (the node creation trace) gets each stage too.
  *
  * Times are milliseconds on std::chrono::steady_clock, the clock of StallMonitor and of Python's
  * time.monotonic(). Scopes nest: a stage's span includes the stages inside it.
@@ -55,6 +56,27 @@ public:
     static bool startFromEnvironment();
 
     static double nowMs();
+
+    /**
+     * @brief Receives every stage as it ends, from the thread it ran on, along with the log file.
+     **/
+    typedef void (*Sink)(const char* stage, double startMs, double endMs);
+
+    /**
+     * @brief Installs the one sink and turns stage timing on. Called once, before any stage runs.
+     **/
+    static void setSink(Sink sink);
+
+    /**
+     * @brief A stage of no duration, for a moment such as a request being posted.
+     **/
+    static void mark(const char* stage)
+    {
+        if (enabled()) {
+            const double t = nowMs();
+            write(stage, t, t);
+        }
+    }
 
     class Scope {
     public:
@@ -99,6 +121,7 @@ private:
     static void write(const char* stage, double startMs, double endMs);
 
     static std::atomic<bool> s_enabled;
+    static std::atomic<Sink> s_sink;
 };
 
 NATRON_NAMESPACE_EXIT

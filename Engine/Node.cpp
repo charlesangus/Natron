@@ -94,6 +94,7 @@
 #include "Engine/Log.h"
 #include "Engine/Lut.h"
 #include "Engine/MemoryInfo.h" // printAsRAM
+#include "Engine/NodeCreationStageLog.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/NodeGuiI.h"
 #include "Engine/OfxEffectInstance.h"
@@ -4966,7 +4967,7 @@ void
 Node::initializeKnobs(bool loadingSerialization)
 {
     ////Only called by the main-thread
-
+    NodeCreationStageLog::Scope stage("initializeKnobs");
 
     _imp->effect->beginChanges();
 

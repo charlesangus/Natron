@@ -39,6 +39,7 @@
 #include <QtCore/QSet>
 #include <QtGui/QIcon>
 
+#include "Engine/NodeCreationStageLog.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
@@ -642,6 +643,7 @@ SceneGraphModel::getSource() const
 void
 SceneGraphModel::refresh()
 {
+    NodeCreationStageLog::Scope creationStage("sceneGraphRefresh");
     if (!_imp->source) {
         return;
     }

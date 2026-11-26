@@ -76,6 +76,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/GuiGLRequirements.h"
 #include "Gui/HydraGLContextQt.h"
 #include "Gui/KnobGuiFactory.h"
+#include "Gui/NodeCreationTrace.h"
 #include "Gui/SceneViewport.h"
 #include "Gui/SplashScreen.h"
 #include "Gui/TabMenuBridge.h"
@@ -243,6 +244,13 @@ public:
         }
 #  endif
 #endif
+    }
+
+    bool notify(QObject* receiver, QEvent* e) OVERRIDE
+    {
+        NodeCreationTrace::EventScope trace(receiver, e);
+
+        return QApplication::notify(receiver, e);
     }
 
 protected:

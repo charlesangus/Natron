@@ -44,6 +44,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/Knob.h"
 #include "Engine/Node.h"
+#include "Engine/NodeCreationStageLog.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/Settings.h"
 
@@ -407,6 +408,7 @@ triggerActionInGraph(QAction* action,
 void
 triggerAction(QAction* action)
 {
+    NodeCreationStageLog::Scope stage("tabMenuTrigger");
     // One choice per launch, and a nested trigger from inside the action is a plain one.
     std::shared_ptr<LaunchContext> context;
     context.swap(g_context);

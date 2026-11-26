@@ -77,6 +77,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/ManageUserParamsDialog.h"
 #include "Gui/Menu.h"
 #include "Gui/MultiInstancePanel.h"
+#include "Gui/NodeCreationTrace.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGraphUndoRedo.h" // RenameNodeUndoRedoCommand
 #include "Gui/NodeGui.h"
@@ -443,8 +444,12 @@ DockablePanel::event(QEvent* e)
         NodeCreationStageLog::Scope stage("panelLayout");
         return QFrame::event(e);
     }
+    if (e->type() == QEvent::Show) {
+        NodeCreationStageLog::mark("panelShow");
+    }
     if ((e->type() == QEvent::Paint) && !_firstPaintLogged) {
         _firstPaintLogged = true;
+        NodeCreationTrace::notePanelPainted();
         // Rows paint after the panel in the same repaint pass, so the span runs until the event loop is
         // back: every widget of the first frame plus the flush.
         NodeCreationStageLog::Scope* paint = new NodeCreationStageLog::Scope("panelFirstPaint");

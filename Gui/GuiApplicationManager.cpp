@@ -77,6 +77,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/GuiDefines.h"
 #include "Gui/KnobGuiFactory.h"
 #include "Gui/Menu.h"
+#include "Gui/NodeCreationTrace.h"
 #include "Gui/PreviewThread.h"
 #include "Gui/QtEnumConvert.h"
 #include "Gui/SplashScreen.h"
@@ -1102,6 +1103,7 @@ GuiApplicationManager::initGui(const CLArgs& args)
     // Never stopped: render threads may still hold it at exit, and each line is flushed as written.
     RotoLatencyProbe::startFromEnvironment();
     NodeCreationStageLog::startFromEnvironment();
+    NodeCreationTrace::startFromEnvironment();
 
     return exec();
 } // GuiApplicationManager::initGui
@@ -1702,6 +1704,7 @@ GuiApplicationManagerPrivate::createNodeFromNodesMenu(const QString& pluginID,
     if (!app || !group) {
         return;
     }
+    NodeCreationTrace::begin(app->getNodeCreationContextCollection() ? "the Tab menu" : "a nodes menu or the toolbar", pluginID);
     CreateNodeArgs args(pluginID.toStdString(), group);
     args.setProperty<int>(kCreateNodeArgsPropPluginVersion, major, 0);
     args.setProperty<int>(kCreateNodeArgsPropPluginVersion, minor, 1);

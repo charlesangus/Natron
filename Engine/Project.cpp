@@ -99,6 +99,7 @@
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeCreationStageLog.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/Nodes/IO/OcioSpaceKnobs.h"
 #include "Engine/Nodes/Scene/SceneCaches.h"
@@ -1329,6 +1330,7 @@ Project::reportLoadWarnings()
 void
 Project::autoSave()
 {
+    NodeCreationStageLog::Scope creationStage("autosaveWrite");
     ///don't autosave in background mode...
     if ( getApp()->isBackground() ) {
         return;

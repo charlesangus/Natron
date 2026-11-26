@@ -1736,7 +1736,17 @@ AppInstance::createNode(CreateNodeArgs & args)
         step.reset(new UndoStepGuard(shared_from_this(), std::string()));
     }
 
-    return createNodeInternal(args);
+    NodePtr node;
+    {
+        NodeCreationStageLog::Scope stage("createNode");
+        node = createNodeInternal(args);
+    }
+    if (step) {
+        NodeCreationStageLog::Scope stage("undoStepCommit");
+        step.reset();
+    }
+
+    return node;
 }
 
 NodePtr

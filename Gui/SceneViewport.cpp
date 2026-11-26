@@ -66,6 +66,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeCreationStageLog.h"
 #include "Engine/Nodes/Scene/CyclesAovs.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/LiveTextureSceneIndex.h"
@@ -5101,6 +5102,7 @@ SceneViewport::resizeGL(int /*w*/,
 void
 SceneViewport::paintGL()
 {
+    NodeCreationStageLog::Scope creationStage("sceneViewportPaint");
     if (_imp->syncedSerial < _imp->paintHeldUntilSerial) {
         // onSynced asks for the repaint.
         return;

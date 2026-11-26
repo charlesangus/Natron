@@ -61,6 +61,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Engine/Lut.h"
 #include "Engine/Node.h"
 #include "Engine/NodeColorSampler.h"
+#include "Engine/NodeCreationStageLog.h"
 #include "Engine/NodeGuiI.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/OfxOverlayInteract.h"
@@ -275,6 +276,7 @@ public:
 void
 ViewerGL::paintGL()
 {
+    NodeCreationStageLog::Scope creationStage("viewerPaint");
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
 

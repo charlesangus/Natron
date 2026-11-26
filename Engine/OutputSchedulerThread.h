@@ -145,32 +145,32 @@ GCC_DIAG_SUGGEST_OVERRIDE_OFF
 GCC_DIAG_SUGGEST_OVERRIDE_ON
 
 public:
-enum ProcessFrameModeEnum {
-    eProcessFrameBySchedulerThread = 0, //< the processFrame function will be called by the OutputSchedulerThread thread.
-    eProcessFrameByMainThread //< the processFrame function will be called by the application's main-thread.
-};
+    enum ProcessFrameModeEnum {
+        eProcessFrameBySchedulerThread = 0, //< the processFrame function will be called by the OutputSchedulerThread thread.
+        eProcessFrameByMainThread //< the processFrame function will be called by the application's main-thread.
+    };
 
-OutputSchedulerThread(RenderEngine* engine,
-                      const OutputEffectInstancePtr& effect,
-                      ProcessFrameModeEnum mode);
+    OutputSchedulerThread(RenderEngine* engine,
+                          const OutputEffectInstancePtr& effect,
+                          ProcessFrameModeEnum mode);
 
-virtual ~OutputSchedulerThread();
+    virtual ~OutputSchedulerThread();
 
-/**
- * @brief When a render thread has finished rendering a frame, it must
- * append it here for buffering to make sure the output device (Viewer, Writer, etc...) will proceed the frames
- * in respect to the time parameter.
- * This wakes up the scheduler thread waiting on the bufCondition. If you need to append several frames
- * use the other version of this function.
- **/
-void appendToBuffer(double time,
-                    ViewIdx view,
-                    const RenderStatsPtr& stats,
-                    const BufferableObjectPtr& frame);
-void appendToBuffer(double time,
-                    ViewIdx view,
-                    const RenderStatsPtr& stats,
-                    const BufferableObjectPtrList& frames);
+    /**
+     * @brief When a render thread has finished rendering a frame, it must
+     * append it here for buffering to make sure the output device (Viewer, Writer, etc...) will proceed the frames
+     * in respect to the time parameter.
+     * This wakes up the scheduler thread waiting on the bufCondition. If you need to append several frames
+     * use the other version of this function.
+     **/
+    void appendToBuffer(double time,
+                        ViewIdx view,
+                        const RenderStatsPtr& stats,
+                        const BufferableObjectPtr& frame);
+    void appendToBuffer(double time,
+                        ViewIdx view,
+                        const RenderStatsPtr& stats,
+                        const BufferableObjectPtrList& frames);
 
 private:
 

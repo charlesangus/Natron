@@ -1135,8 +1135,8 @@ OutputSchedulerThread::onAbortRequested(bool /*keepOldestRender*/)
     // its future finishes late.
     abortPendingFrameSteps();
 
-    ///If the scheduler is asleep waiting for the buffer to be filling up, we post a fake request
-    ///that will not be processed anyway because the first thing it does is checking for abort
+    /// If the scheduler is asleep waiting for the buffer to be filling up, we post a fake request
+    /// that will not be processed anyway because the first thing it does is checking for abort
     {
         QMutexLocker l2(&_imp->bufMutex);
         _imp->wakeBufEmptyCondition();
@@ -1553,7 +1553,7 @@ OutputSchedulerThread::getFrameThreadsStartedForTests()
 void
 OutputSchedulerThread::executeOnMainThread(const GenericThreadExecOnMainThreadArgsPtr& inArgs)
 {
-    OutputSchedulerThreadExecMTArgs* args = dynamic_cast<OutputSchedulerThreadExecMTArgs*>( inArgs.get() );
+    OutputSchedulerThreadExecMTArgs* args = dynamic_cast<OutputSchedulerThreadExecMTArgs*>(inArgs.get());
 
     assert(args);
     processFrame(args->frames);

@@ -27,6 +27,7 @@ Screenshots go to $NATRON_GUI_TEST_OUT (default build/gui-test-out/) for sign-of
 Run through Tests/gui/run-gui-test.sh. Exit status 0 only if every check passed.
 """
 import os
+import re
 import sys
 import traceback
 
@@ -649,20 +650,45 @@ try:
 
         # Esc stops a long expansion. The rows are read by now and a slice lays nothing out, so a
         # few slices open the whole stage: Esc goes in after the click's own slice, before the
-        # event loop runs another, rather than after a sleep the run can outlast.
+        # event loop runs another, rather than after a sleep the run can outlast. That one slice
+        # can open every row and leave only leaf visits, so the check is that the run stops with
+        # work left and that the rows open, the rows remembered and the rows reported agree.
         select_rows([WIDE])
         focus_tree()
+        remembered_before = int(panel().property("natronSceneGraphExpandedCount") or 0)
         expand_button().click()
         running = expanding()
+        at_esc = slices()
         check(running, "the wide expansion is still running after its first slice (status %r)" % status())
         QTest.keyClick(tree(), Qt.Key_Escape)
         ok = yield ("until", lambda: not expanding(), POLL_TIMEOUT_S)
         check(ok, "Esc stops the expansion")
         if running:
-            check(status().startswith("Stopped. Expanded "), "the status line says the expansion stopped (got %r)" % status())
-            check(is_open(WIDE) and not is_open(last), "the rows opened before Esc stay open and the rest stay closed")
+            yield ("sleep", SETTLE_MS)
+            stopped = status()
+            match = re.match(r"Stopped\. Expanded ([\d,]+) rows?(;|$)", stopped)
+            check(match is not None, "the status line says the expansion stopped (got %r)" % stopped)
+            check(not expanding() and slices() == at_esc,
+                  "no slice runs after Esc (%d slices at Esc, %d after)" % (at_esc, slices()))
+            reported = int(match.group(1).replace(",", "")) if match else -1
+            open_rows = []
+            pending = [find(WIDE)]
+            while pending:
+                index = pending.pop()
+                if not index.isValid():
+                    continue
+                # Only open rows are read into: a payload row is never fetched, and an open row
+                # under a closed one goes uncounted here while it is still remembered.
+                if tree().isExpanded(index):
+                    open_rows.append(path_of(index))
+                    pending.extend(rows(index))
+            check(0 < reported <= WIDE_OPENED and len(open_rows) == reported,
+                  "the rows open after Esc are the %d the run reported opening (%d open)" % (reported, len(open_rows)))
+            check(not opened(payloads), "the wide stage's payload rows stay closed after Esc (open %r)" % opened(payloads))
             count = int(panel().property("natronSceneGraphExpandedCount") or 0)
-            check(0 < count < WIDE_OPENED, "the remembered open rows are the ones opened before Esc (%d)" % count)
+            check(count - remembered_before == len(open_rows),
+                  "the remembered open rows are the rows open after Esc (%d remembered, %d before the run, %d open)"
+                  % (count, remembered_before, len(open_rows)))
 
         # Showing another node stops an expansion under way.
         select_rows([WIDE])

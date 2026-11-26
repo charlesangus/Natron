@@ -375,7 +375,7 @@ future core work has solid ground to build on.
 | M196 | Copy-Compute Contention | done | M156 | gpu | E5 | | | [M196-copy-compute-contention.md](PLAN/MILESTONES/M196-copy-compute-contention.md) |
 | M197 | Python Undo Step API | done | M114 | bosley-native-nodes | E7 | | | [M197-python-undo-step-api.md](PLAN/MILESTONES/M197-python-undo-step-api.md) |
 | M198 | RenderEngine On Node | todo | M177 |  | E14 | | | [M198-renderengine-on-node.md](PLAN/MILESTONES/M198-renderengine-on-node.md) |
-| M199 | Remove Legacy Scheduler | doing | - | bosley-executor | E14 | | | [M199-remove-legacy-scheduler.md](PLAN/MILESTONES/M199-remove-legacy-scheduler.md) |
+| M199 | Remove Legacy Scheduler | done | - | | E14 | | | [M199-remove-legacy-scheduler.md](PLAN/MILESTONES/M199-remove-legacy-scheduler.md) |
 | M200 | Folded Knob Shared Storage | todo | - |  | E14 | | | [M200-folded-knob-shared-storage.md](PLAN/MILESTONES/M200-folded-knob-shared-storage.md) |
 | M201 | Trimap Removal | todo | M199 |  | E14 | | | [M201-trimap-removal.md](PLAN/MILESTONES/M201-trimap-removal.md) |
 | M202 | Clean-Hash Cache Stores | done | M167 | bosley-native-nodes | E14 | | | [M202-clean-hash-cache-stores.md](PLAN/MILESTONES/M202-clean-hash-cache-stores.md) |

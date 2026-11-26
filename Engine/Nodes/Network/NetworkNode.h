@@ -293,6 +293,8 @@ private:
 
     virtual void onInputChanged(int inputNb) OVERRIDE FINAL;
 
+    virtual void onInputConnectionChanged(int inputNb) OVERRIDE FINAL;
+
     std::vector<std::string> sanitizePorts(const std::vector<std::string>& ports) const;
 
     void publishSpec(const std::vector<std::string>& ports);

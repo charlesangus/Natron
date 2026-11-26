@@ -773,12 +773,19 @@ NetworkNode::pruneInputOutputs()
 }
 
 void
+NetworkNode::onInputConnectionChanged(int /*inputNb*/)
+{
+    if (!_applyingPorts) {
+        refreshKnobsEnabled();
+    }
+}
+
+void
 NetworkNode::onInputChanged(int inputNb)
 {
     if (_applyingPorts) {
         return;
     }
-    refreshKnobsEnabled();
     const std::vector<std::string> ports = getPorts();
     if ((inputNb < 0) || (inputNb >= (int)ports.size())) {
         return;

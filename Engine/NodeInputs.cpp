@@ -1992,6 +1992,7 @@ Node::onInputChanged(int inputNb,
     }
 
     refreshMaskEnabledNess(inputNb);
+    _imp->effect->onInputConnectionChanged(inputNb);
 
     InspectorNode* isInspector = dynamic_cast<InspectorNode*>(this);
     if (isInspector) {

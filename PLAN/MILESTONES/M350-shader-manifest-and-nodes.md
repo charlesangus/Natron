@@ -48,7 +48,7 @@ Generate one Natron shader node for each shader the bundled Cycles and MoonRay o
   - verify: `check_manifest.py` passes; removing an attribute from a test copy of the manifest makes it fail; the Principled BSDF's groups cover all its attributes.
   - size: M
 
-- [ ] M350.P1.T4 — Check manifests against the bundled renderers
+- [x] M350.P1.T4 — Check manifests against the bundled renderers
   - files: `tools/shaders/check_manifest_drift.sh`, the image's renderer build scripts
   - approach: at image build, regenerate both manifests and compare them with the committed files, so a renderer upgrade can't change shaders silently.
   - verify: running the script against a deliberately edited manifest fails naming the attribute; against the committed one it passes.
@@ -56,19 +56,19 @@ Generate one Natron shader node for each shader the bundled Cycles and MoonRay o
 
 ## Phase 350.2: Nodes
 
-- [ ] M350.P2.T1 — Add the Shader data kind
+- [x] M350.P2.T1 — Add the Shader data kind
   - files: `Global/Enums.h`, `Engine/Node.cpp`, `Engine/Settings.cpp`, `Gui/Edge.cpp`, `Gui/TabMenuBridge.cpp`
   - approach: add `eDataKindNetwork`, following the `eDataKindRaw` precedent at each site (about 21 in `Node.cpp`). Connection checks accept network to network only; which network ports may join is left to `PortTypes`. Output scheduling, viewers and caches never touch it. Tab menu kind filtering (`Gui/TabMenuBridge.cpp:127`) excludes it everywhere except shader graphs.
   - verify: gtest following `Tests/Native/RawKindFramework_Test.cpp` — shader output refused by image and scene inputs and by a Viewer; a shader node never reaches `render`; the existing kind tests pass.
   - size: M
 
-- [ ] M350.P2.T6 — Carry a port descriptor in the runtime spec
+- [x] M350.P2.T6 — Carry a port descriptor in the runtime spec
   - files: `Engine/Nodes/NodeSpec.h`, `Engine/Nodes/Network/PortDescriptor.{h,cpp}`, `Engine/Node.{h,cpp}`, `Engine/Nodes/Network/NetworkNode.{h,cpp}`, `Tests/Network/PortDescriptor_Test.cpp`
   - approach: add a runtime `PortDescriptor` (attribute name, renderer type name, core type class, page, promoted, array, varying) for each input, and an output descriptor list (name, type, type class, array) for each node. `InputSpec` is static (`std::string_view` fields, `NodeSpec.h:88-97`), so runtime-built network nodes hold their descriptors on the node and `Node` exposes `getInputPortDescriptor(i)` and `getOutputPorts()`; classic nodes return none. The core type classes are float, int, vector3, normal, point, color, string, closure, displacement, texture, channel and custom; each target maps its renderer's types onto them in one table. Promoted is live state (M350.P2.T4 flips it), and saves with the node. The downstream node stores the chosen output name per input, as `PortTestNode` does (`Engine/Nodes/Test/PortTestNode.h:118-131,187-188`). Nothing here draws.
   - verify: gtest — a network node built from a two-input, two-output test spec reports each descriptor's type class, page, array and varying flags; a classic node reports none; promoted state and a connected output name survive a save and load.
   - size: M
 
-- [ ] M350.P2.T2 — Build a shader node from the manifest
+- [x] M350.P2.T2 — Build a shader node from the manifest
   - files: `Engine/Nodes/Network/NetworkNode.{h,cpp}`, `Engine/Nodes/Scene/Shaders/ShaderManifest.{h,cpp}`, `Tests/Scene/ShaderNode_Test.cpp`
   - approach: load the manifest once into network node specs. `NetworkNode` is the one generic class: nothing in it names shaders or renderers. For one entry, create knobs by type (part of M253 - Delegate Render Settings' `RenderSettingsKnobs` type mapping applies, plus enums, assets and parametric arrays), pages by group, and inputs for key ports, each with its port descriptor (M350.P2.T6), using M349 - Shader Node Spike's mechanism. Named outputs come from the same results. Hash covers knobs and connections only.
   - verify: gtest — Principled BSDF and `DwaBaseMaterial` have every manifest attribute as a knob with the right default and type; a save and load round trip restores edited values; animation and expressions work on a shader knob.
@@ -80,13 +80,13 @@ Generate one Natron shader node for each shader the bundled Cycles and MoonRay o
   - verify: gtest — every manifest entry creates a node by ID; none appears in the main-graph menu listing; startup time compared with `tools/bench` is unchanged within noise.
   - size: M
 
-- [ ] M350.P2.T4 — Promote attributes to ports in the engine
+- [x] M350.P2.T4 — Promote attributes to ports in the engine
   - files: `Engine/Nodes/Network/NetworkNode.{h,cpp}`, `Tests/Scene/ShaderPromote_Test.cpp`, Python bindings for the shader node
   - approach: promote and demote an attribute by script name, creating or removing its input. A connected port disables its knob. Demoting a connected port disconnects it. Promotions save with the node and are scriptable. Port-only attributes can't be demoted, and knob-only ones can't be promoted.
   - verify: gtest — promote, connect, save, load restores port and connection; demoting disconnects and re-enables the knob; a non-linkable attribute refuses promotion; undo restores the state.
   - size: M
 
-- [ ] M350.P2.T5 — Handle missing shaders and audit coverage
+- [x] M350.P2.T5 — Handle missing shaders and audit coverage
   - files: `Tests/Serialization/ShaderMissing_Test.cpp`, `tools/shaders/audit_shader_nodes.py`, generated docs under `Engine/Nodes/Scene/docs/shaders/`
   - approach: confirm a removed shader loads as `MissingPluginNode`, keeping inputs, values and connections, and saves unchanged. Audit each manifest entry against its created node's knobs, ports and defaults. Generate per-shader docs.
   - verify: gtest — a project with an unknown shader ID round-trips byte-equivalent in its node's stored data, with its connections intact; the audit reports zero missing attributes across both renderers.
@@ -112,3 +112,4 @@ Generate one Natron shader node for each shader the bundled Cycles and MoonRay o
     - MoonRay's Test* classes are dropped from the manifest, since they aren't user shaders.
     - The Cycles kinds stay shader/texture/displacement/utility.
     - T4's drift check runs at image build: build-cycles.sh keeps the Cycles source the dump tool needs, and dev-image.yml runs check_manifest_drift.sh in the built image before pushing (option a).
+- 2026-11-25 (PM) — Phase 350.2 and P1.T4 in ee621bda9f + 0391193ff3; m350-gate2 green (run 45729402808). F2's branch had only M349 on an old main, so main (83241b6529) was merged into it (d6ff04dfde). PR #386 into F2 is in review. Still owed: P2.T3's startup-time comparison (needs an AppImage against a main AppImage), and the drift check's first real run when dev-image.yml next builds the image.

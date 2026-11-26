@@ -52,6 +52,7 @@ try:
         if app.getNode("Viewer1") is None:
             app.createNode("Viewer")
         ok = yield ("until", gt.viewer_up, STARTUP_TIMEOUT_S)
+        sg.park_viewer(app)
         require(ok, "the main window is up")
         shaders = sg.shader_targets()
         require(len(shaders) > 100, "the manifests list the shader nodes (%d)" % len(shaders))

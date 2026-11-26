@@ -91,6 +91,7 @@ try:
         if app.getNode("Viewer1") is None:
             app.createNode("Viewer")
         ok = yield ("until", gt.viewer_up, STARTUP_TIMEOUT_S)
+        sg.park_viewer(app)
         require(ok, "the main window is up")
 
         gt.section("build")

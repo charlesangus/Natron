@@ -26,12 +26,13 @@ BUILDER = "USDMaterialBuilder"
 MATH = "cycles_math"
 BSDF = "cycles_principled_bsdf"
 PORT = "diffuse_roughness"
+PORT_PAGE = "Diffuse"
 
 try:
     import NatronEngine
     from PySide6.QtCore import QEvent, QMetaObject, QPointF, Qt, QTimer
     from PySide6.QtGui import QFocusEvent, QMouseEvent
-    from PySide6.QtWidgets import QApplication, QDialogButtonBox, QPushButton
+    from PySide6.QtWidgets import QApplication, QDialogButtonBox, QPushButton, QTabWidget
 
     import guitest as gt
     from guitest import check
@@ -104,6 +105,21 @@ try:
                 continue
         return None
 
+    def show_page(label):
+        """Clicks the settings panel's page tab named label; False while no panel has one."""
+        for tabs in QApplication.allWidgets():
+            try:
+                if not isinstance(tabs, QTabWidget) or not tabs.isVisible():
+                    continue
+                for i in range(tabs.count()):
+                    if tabs.tabText(i) == label:
+                        tabs.setCurrentIndex(i)
+                        QApplication.processEvents()
+                        return True
+            except RuntimeError:
+                continue
+        return False
+
     def fields_of(knob):
         """The visible spin boxes of knob, found by its script name in their tool tips."""
         tag = "<b>%s</b>" % knob
@@ -165,6 +181,8 @@ try:
         gt.close_all_panels()
         app.selectNode(bsdf, True)
         QMetaObject.invokeMethod(graph_of(builder), "showSelectedNodeSettingsPanel")
+        ok = yield ("until", lambda: show_page(PORT_PAGE), POLL_TIMEOUT_S)
+        gt.require(ok, "the BSDF's panel has a %s page" % PORT_PAGE)
         ok = yield ("until", lambda: port_button(builder, bsdf, PORT) is not None, POLL_TIMEOUT_S)
         gt.require(ok, "the BSDF's panel shows a port toggle beside %s" % PORT)
         button = port_button(builder, bsdf, PORT)

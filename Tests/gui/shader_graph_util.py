@@ -95,8 +95,14 @@ def show_root_graph(app):
 def open_graph(app, group):
     """Shows group's graph tab, diving into the group from the root graph (Shift+double-click)
     when it has none."""
-    if show_graph_tab(app, group.getLabel()):
-        return True
+    names = [group.getLabel(), group.getScriptName()]
+    names += [n.replace(" ", "_") for n in names]
+    for name in names:
+        if show_graph_tab(app, name):
+            return True
+    for view in gt.widgets_of("NodeGraph"):
+        if view.objectName() in names and show_view(app, view):
+            return True
     root = root_graph()
     if root is None:
         return False
@@ -111,7 +117,15 @@ def open_graph(app, group):
     event = QMouseEvent(QEvent.MouseButtonDblClick, pos, Qt.LeftButton, Qt.LeftButton, Qt.ShiftModifier)
     QApplication.sendEvent(root.viewport(), event)
     QApplication.processEvents()
-    return show_graph_tab(app, group.getLabel())
+    return any(show_graph_tab(app, name) for name in names)
+
+
+def park_viewer(app):
+    """Moves Viewer1 far from the origin, where the builder under test is placed, so a click on
+    the builder cannot land on the viewer."""
+    viewer = app.getNode("Viewer1")
+    if viewer is not None:
+        viewer.setPosition(4000, 4000)
 
 
 def main_window():

@@ -4,7 +4,7 @@ Node, each asserting the node lands inside the builder. The right-click menu's n
 no shader, and a shader action of the network nodes menu triggered over the main graph creates
 nothing there. Inside the builder the right-click menu's and the toolbar's node menus offer no
 compositing node (Backdrop and Dot stay), and a Python createNode of Blur into the builder is refused
-with a message and creates nothing. It is driven by Tests/gui/run-gui-test.sh (1920x1080), not ctest.
+without a message box (a script call is silent) and creates nothing. It is driven by Tests/gui/run-gui-test.sh (1920x1080), not ctest.
 
 Usage (natron-dev container; see Tests/gui/run-gui-test.sh):
     docker exec natron-dev bash -c 'cd /home/bosley/git/Natron && \\
@@ -298,7 +298,7 @@ try:
         before = sorted(n.getPluginID() for n in builder.getChildren())
         created, asked = sg.answering(lambda: app.createNode("Blur", -1, builder))
         check(created is None, "a Python createNode of Blur into the builder returns None")
-        check(any("Blur" in text for text in asked), "the refusal names the node (message boxes answered: %r)" % asked)
+        check(not asked, "the refusal of a silent script createNode shows no message box (answered: %r)" % asked)
         check(sorted(n.getPluginID() for n in builder.getChildren()) == before, "the refused node is not in the builder")
         check(not root_children_of("Blur"), "nor in the main graph")
         backdrop = app.createNode("Backdrop", -1, builder)

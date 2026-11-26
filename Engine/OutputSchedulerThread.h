@@ -234,6 +234,11 @@ public:
     int getNFramesInFlight() const;
 
     /**
+     * @brief Returns the most frames in flight at once since the last render started. Readable from any thread.
+     **/
+    int getMaxFramesInFlight() const;
+
+    /**
      * @brief How many fallback workers every OutputSchedulerThread has started since the process started.
      **/
     static int getFrameThreadsStartedForTests();
@@ -714,6 +719,11 @@ public:
      * @brief Returns the number of frames the scheduler admitted that have not ended yet, 0 if it has none.
      **/
     int getNFramesInFlight() const;
+
+    /**
+     * @brief Returns the most frames the scheduler had in flight at once since its last render started, 0 if it has none.
+     **/
+    int getMaxFramesInFlight() const;
 
     /**
      * @brief Returns true if the scheduler is active and some render threads are doing work.

@@ -42,7 +42,9 @@
 #include <gtest/gtest.h>
 
 #include <QCoreApplication>
+#include <QDir>
 #include <QElapsedTimer>
+#include <QStringList>
 #include <QTemporaryDir>
 #include <QThread>
 #include <QThreadPool>
@@ -587,6 +589,72 @@ TEST_F(SchedulerAbortLatency, WriterAbortReturnsWithinBudget)
 
     ASSERT_TRUE(_probe.done());
     EXPECT_LT(_probe.latencyMs(), kAbortBudgetMs);
+}
+
+// A frame of this graph queues more source renders than the pool runs at once, which fails the load test straight after
+// every admission: the frame that replaces an ended one must still be admitted, with the next frames rendering alongside.
+TEST_F(SchedulerAbortLatency, WriterRangeOfAWideGraphRendersFramesInParallel)
+{
+    const int kLeaves = 16;
+    const int kLeafRenderMs = 20;
+    const int kPoolThreads = 4;
+    const int kFrames = 6;
+
+    std::vector<NodePtr> level;
+    level.push_back(_slow);
+    for (int i = 1; i < kLeaves; ++i) {
+        NodePtr leaf = createNode(QString::fromUtf8(kTestPluginIDCounting));
+        ASSERT_TRUE(bool(leaf));
+        level.push_back(leaf);
+    }
+    for (std::size_t i = 0; i < level.size(); ++i) {
+        KnobInt* delay = dynamic_cast<KnobInt*>(level[i]->getKnobByName("delayMs").get());
+        KnobBool* frameVarying = dynamic_cast<KnobBool*>(level[i]->getKnobByName("frameVarying").get());
+        ASSERT_TRUE(delay != NULL);
+        ASSERT_TRUE(frameVarying != NULL);
+        delay->setValue(kLeafRenderMs);
+        frameVarying->setValue(true);
+    }
+    while (level.size() > 1) {
+        std::vector<NodePtr> next;
+        for (std::size_t i = 0; i + 1 < level.size(); i += 2) {
+            NodePtr merge = createNode(QString::fromUtf8(kTestPluginIDCountingMerge));
+            ASSERT_TRUE(bool(merge));
+            connectNodes(level[i], merge, 0, true);
+            connectNodes(level[i + 1], merge, 1, true);
+            next.push_back(merge);
+        }
+        level.swap(next);
+    }
+
+    NodePtr writer = createNativeWriter();
+    ASSERT_TRUE(bool(writer));
+    connectNodes(level.front(), writer, 0, true);
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    writer->setOutputFilesForWriter((tmp.path() + QString::fromUtf8("/wide.####.exr")).toStdString());
+    OutputEffectInstance* writerEffect = dynamic_cast<OutputEffectInstance*>(writer->getEffectInstance().get());
+    ASSERT_TRUE(writerEffect != NULL);
+    RenderEnginePtr engine = writerEffect->getRenderEngine();
+    ASSERT_TRUE(bool(engine));
+
+    const int savedPoolThreads = QThreadPool::globalInstance()->maxThreadCount();
+    const int savedParallelRenders = appPTR->getCurrentSettings()->getNumberOfParallelRenders();
+    QThreadPool::globalInstance()->setMaxThreadCount(kPoolThreads);
+    appPTR->getCurrentSettings()->setNumberOfParallelRenders(kPoolThreads);
+
+    std::list<AppInstance::RenderWork> works;
+    works.push_back(AppInstance::RenderWork(writerEffect, 1, kFrames, 1, false));
+    {
+        Watchdog watchdog("the blocking writer render");
+        getApp()->startWritersRendering(eRenderModeBlocking, works);
+    }
+
+    appPTR->getCurrentSettings()->setNumberOfParallelRenders(savedParallelRenders);
+    QThreadPool::globalInstance()->setMaxThreadCount(savedPoolThreads);
+
+    EXPECT_EQ(kFrames, (int)QDir(tmp.path()).entryList(QStringList(QString::fromUtf8("wide.*.exr")), QDir::Files).size());
+    EXPECT_GT(engine->getMaxFramesInFlight(), 1) << "the frames rendered one at a time";
 }
 
 // Playback of the viewer's display scheduler, aborted while its frame renders are in progress.

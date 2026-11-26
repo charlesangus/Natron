@@ -317,6 +317,11 @@ struct OutputSchedulerThreadPrivate
 
     // Admission state, written by the scheduler thread only.
     std::atomic<int> nAdmittedFrames;
+    // How many frames may be in flight without asking the RenderScheduler's load. Only a passing load check adds one,
+    // so a frame ending frees its slot for the next frame even while the frames left keep the pool busy.
+    int admissionSlots;
+    // The most frames in flight at once since startRender(), for tests.
+    std::atomic<int> maxAdmittedFrames;
     int nextFrameToAdmit;
     bool admissionExhausted;
     // The mode admission and display both step with, so that they follow one sequence.
@@ -367,6 +372,8 @@ struct OutputSchedulerThreadPrivate
         , pendingSteps()
         , nextStepId(0)
         , nAdmittedFrames(0)
+        , admissionSlots(1)
+        , maxAdmittedFrames(0)
         , nextFrameToAdmit(0)
         , admissionExhausted(true)
         , playbackMode(ePlaybackModeOnce)
@@ -795,6 +802,8 @@ OutputSchedulerThread::startRender()
         _imp->expectFrameToRender = startingFrame;
     }
     assert(_imp->nAdmittedFrames == 0);
+    _imp->admissionSlots = 1;
+    _imp->maxAdmittedFrames = 0;
     _imp->admittedTimes.clear();
     _imp->admissionSkips.clear();
     _imp->forceNextAdmission = false;
@@ -1308,6 +1317,12 @@ OutputSchedulerThread::getNFramesInFlight() const
     return _imp->nAdmittedFrames.load();
 }
 
+int
+OutputSchedulerThread::getMaxFramesInFlight() const
+{
+    return _imp->maxAdmittedFrames.load();
+}
+
 void
 OutputSchedulerThread::runFinishedFrameSteps()
 {
@@ -1452,22 +1467,27 @@ OutputSchedulerThread::admitFrames()
                 return;
             }
         }
-        if (_imp->nAdmittedFrames > 0) {
-            // The frames only wait for the RenderScheduler, which runs their work on the global pool, so another frame
-            // is admitted only while the work already queued cannot keep every pool thread busy.
-            QThreadPool* pool = QThreadPool::globalInstance();
-            const int poolMax = std::max(1, pool->maxThreadCount());
-            const int userSettingParallelRenders = appPTR->getCurrentSettings()->getNumberOfParallelRenders();
-            const int cap = (userSettingParallelRenders > 0) ? userSettingParallelRenders : poolMax;
-            if (_imp->nAdmittedFrames >= cap) {
-                return;
-            }
+        QThreadPool* pool = QThreadPool::globalInstance();
+        const int poolMax = std::max(1, pool->maxThreadCount());
+        const int userSettingParallelRenders = appPTR->getCurrentSettings()->getNumberOfParallelRenders();
+        const int cap = (userSettingParallelRenders > 0) ? userSettingParallelRenders : poolMax;
+        _imp->admissionSlots = std::min(_imp->admissionSlots, cap);
+        if (_imp->nAdmittedFrames >= cap) {
+            return;
+        }
+        bool addsSlot = false;
+        if (_imp->admissionSlots < cap) {
+            // The frames only wait for the RenderScheduler, which runs their work on the global pool, so another slot
+            // opens only while the work already queued cannot keep every pool thread busy. This is asked before the
+            // frame that replaces an ended one is admitted: a frame that queues more work than the pool runs at once
+            // would fail it straight after, and the scheduler thread wakes only when a frame step ends.
             int schedulerRunning = 0;
             int schedulerReady = 0;
             appPTR->getRenderScheduler()->getLoad(&schedulerRunning, &schedulerReady);
-            if ((schedulerRunning + schedulerReady >= poolMax) || (pool->activeThreadCount() >= poolMax)) {
-                return;
-            }
+            addsSlot = (schedulerRunning + schedulerReady < poolMax) && (pool->activeThreadCount() < poolMax);
+        }
+        if (!addsSlot && (_imp->nAdmittedFrames >= _imp->admissionSlots)) {
+            return;
         }
 
         const int time = _imp->nextFrameToAdmit;
@@ -1482,7 +1502,13 @@ OutputSchedulerThread::admitFrames()
             continue;
         }
         _imp->forceNextAdmission = false;
-        ++_imp->nAdmittedFrames;
+        if (addsSlot) {
+            ++_imp->admissionSlots;
+        }
+        const int nAdmitted = ++_imp->nAdmittedFrames;
+        if (nAdmitted > _imp->maxAdmittedFrames) {
+            _imp->maxAdmittedFrames = nAdmitted;
+        }
         _imp->admittedTimes.insert(time);
         {
             // Without it, aborted() on this thread keeps the abort info of the first frame it prepared for good.
@@ -3069,6 +3095,12 @@ int
 RenderEngine::getNFramesInFlight() const
 {
     return _imp->scheduler ? _imp->scheduler->getNFramesInFlight() : 0;
+}
+
+int
+RenderEngine::getMaxFramesInFlight() const
+{
+    return _imp->scheduler ? _imp->scheduler->getMaxFramesInFlight() : 0;
 }
 
 bool

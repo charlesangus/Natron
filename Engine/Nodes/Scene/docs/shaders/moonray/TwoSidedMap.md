@@ -1,4 +1,4 @@
-# TwoSidedMap
+# Two Sided Map
 
 MoonRay map `TwoSidedMap`, for the moonray target.
 

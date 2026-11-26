@@ -1,4 +1,4 @@
-# CombineDisplacement
+# Combine Displacement
 
 MoonRay displacement `CombineDisplacement`, for the moonray target.
 

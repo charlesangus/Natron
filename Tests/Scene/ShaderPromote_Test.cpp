@@ -26,6 +26,8 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -39,7 +41,10 @@
 #include "Engine/AppInstance.h"
 #include "Engine/Knob.h"
 #include "Engine/Node.h"
+#include "Engine/NodeGroup.h"
 #include "Engine/Project.h"
+#include "Engine/UndoCommand.h"
+#include "Engine/UndoRecorder.h"
 
 #include "Scene/ShaderManifestTestUtils.h"
 #include "Serialization/ProjectBundleTestHelpers.h"
@@ -66,6 +71,53 @@ hasPort(const NodePtr& node,
 
     return std::find(ports.begin(), ports.end(), attribute) != ports.end();
 }
+
+// Keeps what a step records, the way the window's history would.
+class CollectingRecorder
+    : public UndoRecorderI {
+public:
+    CollectingRecorder()
+        : UndoRecorderI()
+        , depth(0)
+        , serial(0)
+        , commands()
+    {
+    }
+
+    virtual void openStep(const std::string& /*text*/) OVERRIDE FINAL
+    {
+        if (depth++ == 0) {
+            ++serial;
+        }
+    }
+
+    virtual void closeStep() OVERRIDE FINAL
+    {
+        if (depth > 0) {
+            --depth;
+        }
+    }
+
+    virtual bool isCapturing() const OVERRIDE FINAL
+    {
+        return depth > 0;
+    }
+
+    virtual std::uint64_t getCaptureSerial() const OVERRIDE FINAL
+    {
+        return serial;
+    }
+
+    virtual void record(const UndoCommandPtr& command,
+                        const UndoTouched& /*touched*/) OVERRIDE FINAL
+    {
+        commands.push_back(command);
+    }
+
+    int depth;
+    std::uint64_t serial;
+    std::vector<UndoCommandPtr> commands;
+};
 
 class ShaderPromoteTest
     : public BaseTest {
@@ -249,4 +301,183 @@ TEST_F(ShaderPromoteTest, PythonPromotesAndDemotesByScriptName)
     EXPECT_TRUE(error.empty()) << error;
     EXPECT_TRUE(hasPort(bsdf, "specular_tint"));
     EXPECT_FALSE(hasPort(bsdf, "base_color"));
+}
+
+// Promoting and demoting through Python, with the demoted port connected, records one step whose
+// undo brings back the ports, the connection and the output the input read, and whose redo
+// removes them again.
+TEST_F(ShaderPromoteTest, PythonPortEditsUndoThroughTheUndoHistory)
+{
+    NodePtr bsdf = create(kPrincipledBsdf);
+    NodePtr texture = create(kImageTexture);
+
+    ASSERT_TRUE(bsdf && texture);
+    NetworkNode* effect = shaderEffect(bsdf);
+    ASSERT_TRUE(effect);
+    const int input = bsdf->getInputNumberFromLabel("base_color");
+    ASSERT_GE(input, 0);
+    ASSERT_TRUE(bsdf->connectInput(texture, input));
+    effect->setOutputForInput("base_color", "alpha");
+    const std::vector<std::string> before = effect->getPorts();
+
+    std::shared_ptr<CollectingRecorder> recorder = std::make_shared<CollectingRecorder>();
+    getApp()->setUndoRecorder(recorder);
+    const std::string node = getApp()->getAppIDString() + "." + bsdf->getScriptName();
+    std::string error;
+    std::string output;
+    {
+        UndoStepGuard step(getApp(), "test");
+        ASSERT_TRUE(interpretPythonScript("node = " + node + "\n"
+                                                             "if not node.promotePort('specular_tint'):\n"
+                                                             "    raise RuntimeError('promote refused')\n"
+                                                             "if not node.demotePort('base_color'):\n"
+                                                             "    raise RuntimeError('demote refused')\n",
+                                          &error, &output))
+            << error;
+    }
+    EXPECT_TRUE(error.empty()) << error;
+    ASSERT_EQ(2u, recorder->commands.size());
+    const std::vector<std::string> after = effect->getPorts();
+    EXPECT_FALSE(hasPort(bsdf, "base_color"));
+    EXPECT_TRUE(hasPort(bsdf, "specular_tint"));
+    EXPECT_TRUE(texture->getOutputs().empty());
+    EXPECT_EQ(std::string(), effect->getOutputForInput("base_color"));
+
+    {
+        UndoReplayGuard replaying(getApp());
+        for (std::vector<UndoCommandPtr>::reverse_iterator it = recorder->commands.rbegin(); it != recorder->commands.rend(); ++it) {
+            (*it)->undo();
+        }
+    }
+    EXPECT_EQ(before, effect->getPorts());
+    const int restored = bsdf->getInputNumberFromLabel("base_color");
+    ASSERT_GE(restored, 0);
+    EXPECT_EQ(texture, bsdf->getInput(restored));
+    EXPECT_EQ(std::string("alpha"), effect->getOutputForInput("base_color"));
+    EXPECT_FALSE(bsdf->getKnobByName("base_color")->isEnabled(0));
+    EXPECT_FALSE(hasPort(bsdf, "specular_tint"));
+
+    {
+        UndoReplayGuard replaying(getApp());
+        for (std::vector<UndoCommandPtr>::iterator it = recorder->commands.begin(); it != recorder->commands.end(); ++it) {
+            (*it)->redo();
+        }
+    }
+    EXPECT_EQ(after, effect->getPorts());
+    EXPECT_TRUE(texture->getOutputs().empty());
+    EXPECT_TRUE(bsdf->getKnobByName("base_color")->isEnabled(0));
+
+    recorder->commands.clear();
+    getApp()->setUndoRecorder(UndoRecorderPtr());
+}
+
+// What promoteNetworkPort() and demoteNetworkPort() push on the node; with no window there is no
+// history, so the test undoes the pushed command itself.
+TEST_F(ShaderPromoteTest, AConnectedDemoteAndPromoteUndoThroughTheirCommand)
+{
+    NodePtr bsdf = create(kPrincipledBsdf);
+    NodePtr texture = create(kImageTexture);
+
+    ASSERT_TRUE(bsdf && texture);
+    NetworkNode* effect = shaderEffect(bsdf);
+    ASSERT_TRUE(effect);
+    ASSERT_TRUE(bsdf->connectInput(texture, bsdf->getInputNumberFromLabel("base_color")));
+    effect->setOutputForInput("base_color", "alpha");
+    const std::vector<std::string> before = effect->getPorts();
+
+    UndoCommandPtr demote;
+    ASSERT_TRUE(makeNetworkPortCommand(bsdf, "base_color", false, &demote));
+    ASSERT_TRUE(bool(demote));
+    bsdf->pushUndoCommand(demote);
+    EXPECT_FALSE(hasPort(bsdf, "base_color"));
+    EXPECT_TRUE(texture->getOutputs().empty());
+    EXPECT_TRUE(bsdf->getKnobByName("base_color")->isEnabled(0));
+    demote->undo();
+    EXPECT_EQ(before, effect->getPorts());
+    EXPECT_EQ(texture, bsdf->getInput(bsdf->getInputNumberFromLabel("base_color")));
+    EXPECT_EQ(std::string("alpha"), effect->getOutputForInput("base_color"));
+    EXPECT_FALSE(bsdf->getKnobByName("base_color")->isEnabled(0));
+
+    UndoCommandPtr promote;
+    ASSERT_TRUE(makeNetworkPortCommand(bsdf, "specular_tint", true, &promote));
+    ASSERT_TRUE(bool(promote));
+    bsdf->pushUndoCommand(promote);
+    const int specularTint = bsdf->getInputNumberFromLabel("specular_tint");
+    ASSERT_GE(specularTint, 0);
+    ASSERT_TRUE(bsdf->connectInput(texture, specularTint));
+    EXPECT_FALSE(bsdf->getKnobByName("specular_tint")->isEnabled(0));
+    promote->undo();
+    EXPECT_EQ(before, effect->getPorts());
+    EXPECT_EQ(-1, bsdf->getInputNumberFromLabel("specular_tint"));
+    EXPECT_TRUE(bsdf->getKnobByName("specular_tint")->isEnabled(0));
+    EXPECT_EQ(texture, bsdf->getInput(bsdf->getInputNumberFromLabel("base_color")));
+    EXPECT_EQ(std::string("alpha"), effect->getOutputForInput("base_color"));
+
+    UndoCommandPtr none;
+    EXPECT_TRUE(makeNetworkPortCommand(bsdf, "base_color", true, &none));
+    EXPECT_FALSE(bool(none));
+    EXPECT_FALSE(makeNetworkPortCommand(bsdf, "distribution", true, &none));
+}
+
+// Python refuses an output name the connected node lacks or whose type does not convert, and a
+// label that is not a port, changing nothing.
+TEST_F(ShaderPromoteTest, PythonRefusesABadOutputOrInput)
+{
+    NodePtr bsdf = create(kPrincipledBsdf);
+    NodePtr texture = create(kImageTexture);
+
+    ASSERT_TRUE(bsdf && texture);
+    ASSERT_TRUE(bsdf->connectInput(texture, bsdf->getInputNumberFromLabel("base_color")));
+    const std::string node = getApp()->getAppIDString() + "." + bsdf->getScriptName();
+    std::string error;
+    std::string output;
+    ASSERT_TRUE(interpretPythonScript("node = " + node + "\n"
+                                                         "if node.setOutputForInput('base_color', 'no_such_output'):\n"
+                                                         "    raise RuntimeError('unknown output taken')\n"
+                                                         "if node.setOutputForInput('distribution', ''):\n"
+                                                         "    raise RuntimeError('knob-only attribute taken')\n"
+                                                         "if node.setOutputForInput('no_such_port', 'alpha'):\n"
+                                                         "    raise RuntimeError('unknown input taken')\n"
+                                                         "if not node.setOutputForInput('base_color', 'alpha'):\n"
+                                                         "    raise RuntimeError('alpha refused')\n",
+                                      &error, &output))
+        << error;
+    EXPECT_TRUE(error.empty()) << error;
+    EXPECT_EQ(std::string("alpha"), shaderEffect(bsdf)->getOutputForInput("base_color"));
+}
+
+// A closure does not convert to a colour, so the connection is refused, from C++ and from Python,
+// with the reason.
+TEST_F(ShaderPromoteTest, AConnectionWhoseTypesDoNotConvertIsRefused)
+{
+    NodePtr upstream = create(kPrincipledBsdf);
+    NodePtr bsdf = create(kPrincipledBsdf);
+    NodePtr mix = create(kMixClosure);
+
+    ASSERT_TRUE(upstream && bsdf && mix);
+    const int baseColor = bsdf->getInputNumberFromLabel("base_color");
+    ASSERT_GE(baseColor, 0);
+    EXPECT_EQ(Node::eCanConnectInput_incompatiblePorts, bsdf->canConnectInput(upstream, baseColor));
+    EXPECT_EQ(NetworkNode::eConnectionTypeMismatch, NetworkNode::checkInputConnection(upstream, *bsdf, baseColor));
+    EXPECT_FALSE(NetworkNode::connectionCheckReason(NetworkNode::eConnectionTypeMismatch).empty());
+    EXPECT_FALSE(NodeCollection::connectNodes(baseColor, upstream, bsdf));
+    EXPECT_FALSE(bool(bsdf->getInput(baseColor)));
+    EXPECT_EQ(Node::eCanConnectInput_ok, mix->canConnectInput(upstream, mix->getInputNumberFromLabel("closure1")));
+
+    const std::string script = "up = " + getApp()->getAppIDString() + "." + upstream->getScriptName() + "\n"
+                                                                                                        "down = "
+        + getApp()->getAppIDString() + "." + bsdf->getScriptName() + "\n"
+                                                                     "import warnings\n"
+                                                                     "with warnings.catch_warnings(record=True) as caught:\n"
+                                                                     "    warnings.simplefilter('always')\n"
+                                                                     "    if down.connectInput("
+        + std::to_string(baseColor) + ", up):\n"
+                                      "        raise RuntimeError('closure connected to a colour')\n"
+                                      "    if not [w for w in caught if 'convert' in str(w.message)]:\n"
+                                      "        raise RuntimeError('no reason given')\n";
+    std::string error;
+    std::string output;
+    ASSERT_TRUE(interpretPythonScript(script, &error, &output)) << error;
+    EXPECT_TRUE(error.empty()) << error;
+    EXPECT_FALSE(bool(bsdf->getInput(baseColor)));
 }

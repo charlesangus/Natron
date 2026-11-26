@@ -1,4 +1,4 @@
-# ProjectCameraMap
+# Project Camera Map
 
 MoonRay map `ProjectCameraMap`, for the moonray target.
 

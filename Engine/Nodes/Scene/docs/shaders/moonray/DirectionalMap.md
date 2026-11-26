@@ -1,4 +1,4 @@
-# DirectionalMap
+# Directional Map
 
 MoonRay map `DirectionalMap`, for the moonray target.
 

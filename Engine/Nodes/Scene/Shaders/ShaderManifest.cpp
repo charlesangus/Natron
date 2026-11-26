@@ -234,6 +234,52 @@ defaultDescription(const QJsonValue& value)
     return ret;
 }
 
+// An array default as curves: its elements, each a number or one per dimension, spaced evenly
+// over [0, 1]. An empty array leaves the identity curves.
+std::vector<std::vector<NetworkCurvePoint>>
+sampledCurves(const QJsonValue& value,
+              int dimensions)
+{
+    const QJsonArray samples = value.toArray();
+    std::vector<std::vector<NetworkCurvePoint>> ret;
+
+    if (samples.isEmpty()) {
+        return ret;
+    }
+    ret.resize(dimensions);
+    for (int i = 0; i < samples.size(); ++i) {
+        std::vector<double> values = numbers(samples[i]);
+        values.resize(dimensions, values.empty() ? 0. : values.back());
+        for (int d = 0; d < dimensions; ++d) {
+            NetworkCurvePoint point;
+            point.x = (samples.size() == 1) ? 0. : (double)i / (samples.size() - 1);
+            point.y = values[d];
+            ret[d].push_back(point);
+        }
+    }
+
+    return ret;
+}
+
+// A ramp's interpolation code as a control point's. The two exponential codes (2 and 3) have no
+// curve interpolation; the nearest, linear, stands in.
+KeyframeTypeEnum
+rampInterpolation(int code)
+{
+    switch (code) {
+    case 0:
+        return eKeyframeTypeConstant;
+    case 4:
+        return eKeyframeTypeSmooth;
+    case 5:
+        return eKeyframeTypeCatmullRom;
+    case 6:
+        return eKeyframeTypeCubic;
+    default:
+        return eKeyframeTypeLinear;
+    }
+}
+
 void
 setDimensions(NetworkAttribute* attribute,
               NetworkKnobKind knob,
@@ -304,14 +350,17 @@ mapCyclesAttribute(const QJsonObject& json,
     } else if (type == "array_float") {
         attribute->knob = NetworkKnobKind::Parametric;
         attribute->dimensions = 1;
+        attribute->curves = sampledCurves(value, 1);
     } else if (type == "array_color") {
         attribute->knob = NetworkKnobKind::Parametric;
         attribute->dimensions = 3;
         attribute->dimensionNames = rgb();
+        attribute->curves = sampledCurves(value, 3);
     } else if (type == "array_vector") {
         attribute->knob = NetworkKnobKind::Parametric;
         attribute->dimensions = 3;
         attribute->dimensionNames = xyz();
+        attribute->curves = sampledCurves(value, 3);
     } else if (type == "array_int") {
         attribute->knob = NetworkKnobKind::Table;
         attribute->defaultText = tableText(value);
@@ -341,8 +390,25 @@ mapMoonRayAttribute(const QJsonObject& json,
     const std::string type = toStd(json.value(QLatin1String("type")));
     const QJsonValue value = json.value(QLatin1String("default"));
     const QJsonArray choices = json.value(QLatin1String("enum")).toArray();
+    const QJsonObject structure = json.value(QLatin1String("structure")).toObject();
+    const std::string structureType = toStd(structure.value(QLatin1String("type")));
 
-    if (type == "Float") {
+    if ((structureType == "ramp_color") || (structureType == "ramp_float")) {
+        // The ramp's arrays are filled in once all of them are read; see rampCurves().
+        attribute->knob = NetworkKnobKind::Parametric;
+        attribute->ramp = toStd(structure.value(QLatin1String("name")));
+        if (attribute->ramp.empty()) {
+            *error = "attribute " + attribute->name + " belongs to a ramp with no name";
+
+            return false;
+        }
+        if (structureType == "ramp_color") {
+            attribute->dimensions = 3;
+            attribute->dimensionNames = rgb();
+        } else {
+            attribute->dimensions = 1;
+        }
+    } else if (type == "Float") {
         setDimensions(attribute, NetworkKnobKind::Double, 1, value);
     } else if ((type == "Int") && !choices.isEmpty()) {
         attribute->knob = NetworkKnobKind::Choice;
@@ -351,7 +417,7 @@ mapMoonRayAttribute(const QJsonObject& json,
             const QJsonObject option = item.toObject();
             NetworkChoice choice;
             choice.id = toStd(option.value(QLatin1String("name")));
-            choice.label = choice.id;
+            choice.label = shaderLabelFromScriptName(choice.id);
             const double optionValue = option.value(QLatin1String("value")).toDouble();
             choice.value = formatNumber(optionValue);
             if (optionValue == defaultValue) {
@@ -401,6 +467,77 @@ mapMoonRayAttribute(const QJsonObject& json,
     return true;
 }
 
+// Gives every attribute of each ramp the ramp's knob: its label, and curves with one control point
+// per position, from the ramp's positions, values and interpolations arrays.
+void
+rampCurves(const QJsonArray& attributes,
+           NetworkNodeLayout* layout)
+{
+    struct Ramp {
+        std::vector<double> positions;
+        std::vector<std::vector<double>> values;
+        std::vector<double> interpolations;
+        std::string hint;
+    };
+    std::map<std::string, Ramp> ramps;
+
+    for (const QJsonValue& item : attributes) {
+        const QJsonObject json = item.toObject();
+        const QJsonObject structure = json.value(QLatin1String("structure")).toObject();
+        const std::string name = toStd(structure.value(QLatin1String("name")));
+        if (name.empty()) {
+            continue;
+        }
+        Ramp& ramp = ramps[name];
+        const std::string path = toStd(structure.value(QLatin1String("path")));
+        const QJsonValue value = json.value(QLatin1String("default"));
+        if (path == "positions") {
+            ramp.positions = numbers(value);
+        } else if (path == "values") {
+            for (const QJsonValue& row : value.toArray()) {
+                ramp.values.push_back(numbers(row));
+            }
+            ramp.hint = toStd(json.value(QLatin1String("comment")));
+        } else if (path == "interpolation_types") {
+            ramp.interpolations = numbers(value);
+        }
+    }
+    for (NetworkAttribute& attribute : layout->attributes) {
+        const std::map<std::string, Ramp>::const_iterator it = ramps.find(attribute.ramp);
+        if (attribute.ramp.empty() || (it == ramps.end())) {
+            continue;
+        }
+        const Ramp& ramp = it->second;
+        attribute.label = shaderLabelFromScriptName(attribute.ramp);
+        if (!ramp.hint.empty()) {
+            attribute.hint = ramp.hint;
+        }
+        attribute.curves.assign(attribute.dimensions, std::vector<NetworkCurvePoint>());
+        for (std::size_t i = 0; i < ramp.positions.size(); ++i) {
+            const std::vector<double> none;
+            const std::vector<double>& values = (i < ramp.values.size()) ? ramp.values[i] : none;
+            for (int d = 0; d < attribute.dimensions; ++d) {
+                NetworkCurvePoint point;
+                point.x = ramp.positions[i];
+                point.y = (d < (int)values.size()) ? values[d] : 0.;
+                point.interpolation = rampInterpolation((i < ramp.interpolations.size()) ? (int)ramp.interpolations[i] : 1);
+                attribute.curves[d].push_back(point);
+            }
+        }
+    }
+}
+
+// What registering a node's plug-in reads: its plug-in ID, label and grouping.
+void
+setIdentity(const std::string& renderer,
+            const QJsonObject& node,
+            NetworkNodeLayout* layout)
+{
+    layout->pluginId = toStd(node.value(QLatin1String("id")));
+    layout->label = shaderLabelFromScriptName(toStd(node.value(QLatin1String("name"))));
+    layout->grouping = (renderer == kRendererCycles) ? kShaderGroupCycles : kShaderGroupMoonRay;
+}
+
 bool
 buildLayout(const std::string& renderer,
             const QJsonObject& node,
@@ -411,9 +548,7 @@ buildLayout(const std::string& renderer,
     const bool cycles = (renderer == kRendererCycles);
     const std::string name = toStd(node.value(QLatin1String("name")));
 
-    layout->pluginId = toStd(node.value(QLatin1String("id")));
-    layout->label = cycles ? shaderLabelFromScriptName(name) : name;
-    layout->grouping = cycles ? kShaderGroupCycles : kShaderGroupMoonRay;
+    setIdentity(renderer, node, layout);
     layout->description = std::string(cycles ? "Cycles" : "MoonRay") + " " + toStd(node.value(QLatin1String("kind"))) + " " + name + ".";
     for (const QJsonValue& target : node.value(QLatin1String("targets")).toArray()) {
         layout->targets.push_back(toStd(target));
@@ -471,6 +606,9 @@ buildLayout(const std::string& renderer,
             knobPages.insert(attribute.page);
         }
         layout->attributes.push_back(attribute);
+    }
+    if (!cycles) {
+        rampCurves(node.value(QLatin1String("attributes")).toArray(), layout);
     }
     groupOrder.push_back(fallbackPage);
     for (const std::string& page : groupOrder) {
@@ -579,11 +717,20 @@ shaderLabelFromScriptName(const std::string& scriptName)
     return ret;
 }
 
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+// A manifest is read into its renderer, its nodes and the nodes' layout entries keyed by ID.
+struct ManifestDocument {
+    std::string renderer;
+    QJsonArray nodes;
+    QJsonObject nodeLayouts;
+};
+
 bool
-parseShaderManifest(const QByteArray& manifest,
-                    const QByteArray& layout,
-                    std::vector<NetworkNodeLayout>* layouts,
-                    std::string* error)
+readManifest(const QByteArray& manifest,
+             const QByteArray& layout,
+             ManifestDocument* document,
+             std::string* error)
 {
     QJsonParseError parseError;
     const QJsonDocument manifestDocument = QJsonDocument::fromJson(manifest, &parseError);
@@ -600,17 +747,42 @@ parseShaderManifest(const QByteArray& manifest,
         return false;
     }
     const QJsonObject root = manifestDocument.object();
-    const std::string renderer = toStd(root.value(QLatin1String("renderer")));
-    if ((renderer != kRendererCycles) && (renderer != kRendererMoonRay)) {
-        *error = "the manifest's renderer \"" + renderer + "\" is not one this build reads";
+    document->renderer = toStd(root.value(QLatin1String("renderer")));
+    if ((document->renderer != kRendererCycles) && (document->renderer != kRendererMoonRay)) {
+        *error = "the manifest's renderer \"" + document->renderer + "\" is not one this build reads";
 
         return false;
     }
-    const QJsonObject nodeLayouts = layoutDocument.object().value(QLatin1String("nodes")).toObject();
-    for (const QJsonValue& item : root.value(QLatin1String("nodes")).toArray()) {
+    document->nodes = root.value(QLatin1String("nodes")).toArray();
+    document->nodeLayouts = layoutDocument.object().value(QLatin1String("nodes")).toObject();
+
+    return true;
+}
+
+QJsonObject
+nodeLayoutOf(const ManifestDocument& document,
+             const QJsonObject& node)
+{
+    return document.nodeLayouts.value(node.value(QLatin1String("id")).toString()).toObject();
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+
+bool
+parseShaderManifest(const QByteArray& manifest,
+                    const QByteArray& layout,
+                    std::vector<NetworkNodeLayout>* layouts,
+                    std::string* error)
+{
+    ManifestDocument document;
+
+    if (!readManifest(manifest, layout, &document, error)) {
+        return false;
+    }
+    for (const QJsonValue& item : document.nodes) {
         const QJsonObject node = item.toObject();
         NetworkNodeLayout built;
-        if (!buildLayout(renderer, node, nodeLayouts.value(node.value(QLatin1String("id")).toString()).toObject(), &built, error)) {
+        if (!buildLayout(document.renderer, node, nodeLayoutOf(document, node), &built, error)) {
             return false;
         }
         layouts->push_back(built);
@@ -626,40 +798,6 @@ registerShaderPortTypeTables()
     registerPortTypeTable(kRendererMoonRay, moonRayTypeTable());
 }
 
-const std::vector<const NetworkNodeLayout*>&
-builtinShaderLayouts()
-{
-    static std::vector<const NetworkNodeLayout*> layouts;
-    static bool loaded = false;
-
-    if (loaded) {
-        return layouts;
-    }
-    loaded = true;
-    registerShaderPortTypeTables();
-    static const char* const renderers[] = { kRendererCycles, kRendererMoonRay };
-    for (const char* renderer : renderers) {
-        const QString base = QString::fromUtf8(":/Shaders/") + QString::fromUtf8(renderer);
-        QByteArray manifest;
-        QByteArray layout;
-        if (!readResource(base + QString::fromUtf8(".json"), &manifest) || !readResource(base + QString::fromUtf8("_layout.json"), &layout)) {
-            qWarning() << "The shader manifest of" << renderer << "is missing from the build.";
-            continue;
-        }
-        std::vector<NetworkNodeLayout> parsed;
-        std::string error;
-        if (!parseShaderManifest(manifest, layout, &parsed, &error)) {
-            qWarning() << "The shader manifest of" << renderer << "cannot be read:" << QString::fromUtf8(error.c_str());
-            continue;
-        }
-        for (const NetworkNodeLayout& entry : parsed) {
-            layouts.push_back(NetworkNode::addLayout(entry));
-        }
-    }
-
-    return layouts;
-}
-
 std::size_t
 registerBuiltinShaderPlugins()
 {
@@ -670,9 +808,36 @@ registerBuiltinShaderPlugins()
         return registered;
     }
     done = true;
-    for (const NetworkNodeLayout* layout : builtinShaderLayouts()) {
-        if (NetworkNode::registerPlugin(*layout)) {
-            ++registered;
+    registerShaderPortTypeTables();
+    static const char* const renderers[] = { kRendererCycles, kRendererMoonRay };
+    for (const char* renderer : renderers) {
+        const QString base = QString::fromUtf8(":/Shaders/") + QString::fromUtf8(renderer);
+        QByteArray manifest;
+        QByteArray layout;
+        if (!readResource(base + QString::fromUtf8(".json"), &manifest) || !readResource(base + QString::fromUtf8("_layout.json"), &layout)) {
+            qWarning() << "The shader manifest of" << renderer << "is missing from the build.";
+            continue;
+        }
+        ManifestDocument document;
+        std::string error;
+        if (!readManifest(manifest, layout, &document, &error)) {
+            qWarning() << "The shader manifest of" << renderer << "cannot be read:" << QString::fromUtf8(error.c_str());
+            continue;
+        }
+        // Registering needs a node's identity only; its attributes are mapped when the first node
+        // of it is built, so that startup reads the manifests and maps nothing.
+        for (const QJsonValue& item : document.nodes) {
+            const QJsonObject node = item.toObject();
+            const QJsonObject nodeLayout = nodeLayoutOf(document, node);
+            const std::string rendererName = document.renderer;
+            NetworkNodeLayout identity;
+            setIdentity(rendererName, node, &identity);
+            NetworkNode::addLayoutBuilder(identity.pluginId, [rendererName, node, nodeLayout](NetworkNodeLayout* built, std::string* buildError) {
+                return buildLayout(rendererName, node, nodeLayout, built, buildError);
+            });
+            if (NetworkNode::registerPlugin(identity)) {
+                ++registered;
+            }
         }
     }
 

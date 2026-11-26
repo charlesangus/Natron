@@ -1,4 +1,4 @@
-# TransformSpaceMap
+# Transform Space Map
 
 MoonRay map `TransformSpaceMap`, for the moonray target.
 

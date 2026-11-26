@@ -66,14 +66,9 @@ bool parseShaderManifest(const QByteArray& manifest,
 void registerShaderPortTypeTables();
 
 /**
- * @brief The layouts of every built-in manifest, parsed and added to the network layouts on the
- * first call. Main thread.
- **/
-const std::vector<const NetworkNodeLayout*>& builtinShaderLayouts();
-
-/**
- * @brief Registers a plug-in for every built-in shader layout, once. Returns how many are
- * registered. Main thread.
+ * @brief Registers a plug-in for every node of the built-in manifests, once, and returns how many
+ * are registered. A node's layout is built when the first node of it is: a manifest error in one
+ * node is reported then, and that node has no layout. Main thread.
  **/
 std::size_t registerBuiltinShaderPlugins();
 

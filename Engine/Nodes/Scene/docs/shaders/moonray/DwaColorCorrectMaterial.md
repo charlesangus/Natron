@@ -1,4 +1,4 @@
-# DwaColorCorrectMaterial
+# Dwa Color Correct Material
 
 MoonRay material `DwaColorCorrectMaterial`, for the moonray target.
 

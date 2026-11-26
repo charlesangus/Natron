@@ -388,7 +388,9 @@ public:
 
     /**
      * @brief Makes the input of a network node read the named output of the node connected to it.
-     * An empty name reads the first output. Returns false when the node is not a network node.
+     * An empty name reads the first output. Returns false, changing nothing, when the node is not a
+     * network node, the input is not a port, or the connected network node has no such output or
+     * its type does not convert to the port's. Undoable.
      **/
     bool setOutputForInput(const QString& inputLabel,
                            const QString& outputName);

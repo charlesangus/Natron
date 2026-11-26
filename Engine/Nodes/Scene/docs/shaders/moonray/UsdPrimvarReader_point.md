@@ -1,4 +1,4 @@
-# UsdPrimvarReader_point
+# Usd Primvar Reader Point
 
 MoonRay map `UsdPrimvarReader_point`, for the moonray target.
 

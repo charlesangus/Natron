@@ -1,4 +1,4 @@
-# ImageNormalMap
+# Image Normal Map
 
 MoonRay normal_map `ImageNormalMap`, for the moonray target.
 

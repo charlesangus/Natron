@@ -1,4 +1,4 @@
-# VdbVolume
+# Vdb Volume
 
 MoonRay volume `VdbVolume`, for the moonray target.
 

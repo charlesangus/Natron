@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Regenerates the Cycles and MoonRay shader manifests from the renderers installed in the dev image
 # and fails, naming each node and attribute that changed, when they differ from the committed
-# manifests. The dev image's workflow (.github/workflows/dev-image.yml) runs it in every newly built
-# image before pushing it, with this checkout mounted, so a renderer upgrade cannot change shaders
-# unnoticed. It can be run in the image by hand the same way.
+# manifests, or when they fail tools/shaders/check_manifest.py. The dev image's workflow
+# (.github/workflows/dev-image.yml) runs it in every newly built image before pushing it, with this
+# checkout mounted, so a renderer upgrade cannot change shaders unnoticed. It can be run in the
+# image by hand the same way.
 #
 # Usage: check_manifest_drift.sh [options]
 #   --manifest-dir DIR    committed manifests (default: Engine/Nodes/Scene/Shaders/manifest)
@@ -67,6 +68,16 @@ if [[ -z "${only}" || "${only}" == "cycles" ]]; then
     python3 "${root}/tools/shaders/check_manifest.py" \
         --diff "${manifest_dir}/cycles.json" "${work}/cycles.json" || status=1
 fi
+
+# The regenerated manifests must also pass the checks the committed ones do, against the committed
+# layout tables; a renderer not regenerated is checked as committed.
+for renderer in cycles moonray; do
+    cp "${manifest_dir}/${renderer}_layout.json" "${work}/"
+    if [[ ! -f "${work}/${renderer}.json" ]]; then
+        cp "${manifest_dir}/${renderer}.json" "${work}/"
+    fi
+done
+python3 "${root}/tools/shaders/check_manifest.py" --manifest-dir "${work}" || status=1
 
 if [[ "${status}" -ne 0 ]]; then
     echo "check_manifest_drift.sh: the renderers' shaders changed; regenerate the manifests" \

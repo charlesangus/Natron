@@ -1,4 +1,4 @@
-# NoiseMap_v2
+# Noise Map V 2
 
 MoonRay map `NoiseMap_v2`, for the moonray target.
 

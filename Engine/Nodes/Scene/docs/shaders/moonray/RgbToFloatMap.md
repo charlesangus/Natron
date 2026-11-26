@@ -1,4 +1,4 @@
-# RgbToFloatMap
+# RGB To Float Map
 
 MoonRay map `RgbToFloatMap`, for the moonray target.
 

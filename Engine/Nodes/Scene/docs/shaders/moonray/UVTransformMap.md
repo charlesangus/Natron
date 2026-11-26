@@ -1,4 +1,4 @@
-# UVTransformMap
+# UV Transform Map
 
 MoonRay map `UVTransformMap`, for the moonray target.
 

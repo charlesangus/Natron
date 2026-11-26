@@ -1,4 +1,4 @@
-# RemapMap
+# Remap Map
 
 MoonRay map `RemapMap`, for the moonray target.
 

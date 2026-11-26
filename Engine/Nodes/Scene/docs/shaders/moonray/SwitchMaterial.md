@@ -1,4 +1,4 @@
-# SwitchMaterial
+# Switch Material
 
 MoonRay material `SwitchMaterial`, for the moonray target.
 

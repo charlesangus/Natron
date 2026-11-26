@@ -1,4 +1,4 @@
-# UsdUVTexture
+# Usd UV Texture
 
 MoonRay map `UsdUVTexture`, for the moonray target.
 

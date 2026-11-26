@@ -722,6 +722,8 @@ briefConnectFailureReason(Node::CanConnectInputReturnValue ret)
         return QCoreApplication::translate("NodeGraph", "multi-resolution isn't supported");
     case Node::eCanConnectInput_incompatibleDataKind:
         return QCoreApplication::translate("NodeGraph", "incompatible data kind");
+    case Node::eCanConnectInput_incompatiblePorts:
+        return QCoreApplication::translate("NodeGraph", "incompatible ports");
     case Node::eCanConnectInput_givenNodeNotConnectable:
         return QCoreApplication::translate("NodeGraph", "it can't be connected to");
     case Node::eCanConnectInput_indexOutOfRange:

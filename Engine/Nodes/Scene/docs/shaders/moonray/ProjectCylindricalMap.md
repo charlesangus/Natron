@@ -1,4 +1,4 @@
-# ProjectCylindricalMap
+# Project Cylindrical Map
 
 MoonRay map `ProjectCylindricalMap`, for the moonray target.
 

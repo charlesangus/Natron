@@ -1,4 +1,4 @@
-# ConstantScalarMap
+# Constant Scalar Map
 
 MoonRay map `ConstantScalarMap`, for the moonray target.
 

@@ -1,4 +1,4 @@
-# ProjectCameraMap_v2
+# Project Camera Map V 2
 
 MoonRay map `ProjectCameraMap_v2`, for the moonray target.
 

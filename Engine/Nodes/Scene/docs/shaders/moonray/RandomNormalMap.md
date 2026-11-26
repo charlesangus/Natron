@@ -1,4 +1,4 @@
-# RandomNormalMap
+# Random Normal Map
 
 MoonRay normal_map `RandomNormalMap`, for the moonray target.
 

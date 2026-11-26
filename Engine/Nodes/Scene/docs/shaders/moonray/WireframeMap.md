@@ -1,4 +1,4 @@
-# WireframeMap
+# Wireframe Map
 
 MoonRay map `WireframeMap`, for the moonray target.
 

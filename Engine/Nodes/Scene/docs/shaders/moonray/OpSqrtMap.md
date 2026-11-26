@@ -1,4 +1,4 @@
-# OpSqrtMap
+# Op Sqrt Map
 
 MoonRay map `OpSqrtMap`, for the moonray target.
 

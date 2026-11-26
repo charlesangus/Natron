@@ -1,4 +1,4 @@
-# ToonMap
+# Toon Map
 
 MoonRay map `ToonMap`, for the moonray target.
 

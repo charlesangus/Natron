@@ -1,4 +1,4 @@
-# DwaLayerMaterial
+# Dwa Layer Material
 
 MoonRay material `DwaLayerMaterial`, for the moonray target.
 

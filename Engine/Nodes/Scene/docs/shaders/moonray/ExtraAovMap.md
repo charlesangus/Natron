@@ -1,4 +1,4 @@
-# ExtraAovMap
+# Extra AOV Map
 
 MoonRay map `ExtraAovMap`, for the moonray target.
 

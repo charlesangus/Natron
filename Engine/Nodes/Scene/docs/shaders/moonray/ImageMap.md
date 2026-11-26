@@ -1,4 +1,4 @@
-# ImageMap
+# Image Map
 
 MoonRay map `ImageMap`, for the moonray target.
 

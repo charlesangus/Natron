@@ -1,4 +1,4 @@
-# DwaTwoSidedMaterial
+# Dwa Two Sided Material
 
 MoonRay material `DwaTwoSidedMaterial`, for the moonray target.
 

@@ -1,4 +1,4 @@
-# OpMap
+# Op Map
 
 MoonRay map `OpMap`, for the moonray target.
 

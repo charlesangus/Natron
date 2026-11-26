@@ -15,8 +15,8 @@ Generated from the Cycles shader manifest by `tools/shaders/audit_shader_nodes.p
 
 | Label | Script name | Type | Default | Port | Description |
 | --- | --- | --- | --- | --- | --- |
-| Ramp | `ramp` | array_color | empty | knob only | Ramp |
-| Ramp Alpha | `ramp_alpha` | array_float | empty | knob only | Ramp Alpha |
+| Ramp | `ramp` | array_color | identity | knob only | Ramp |
+| Ramp Alpha | `ramp_alpha` | array_float | identity | knob only | Ramp Alpha |
 | Interpolate | `interpolate` | boolean | on | knob only | Interpolate |
 
 ## Inputs

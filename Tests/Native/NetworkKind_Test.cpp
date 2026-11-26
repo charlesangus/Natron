@@ -39,6 +39,7 @@
 
 #include "Tests/BaseTest.h"
 #include "Tests/DataKindTestEffect.h"
+#include "Tests/Scene/ShaderManifestTestUtils.h"
 #include "Tests/TestBuiltInPlugins.h"
 
 #include "Engine/AppManager.h"
@@ -47,9 +48,14 @@
 #include "Engine/LibraryBinary.h"
 #include "Engine/Node.h"
 #include "Engine/NodeColorSampler.h"
+#include "Engine/NodeGroup.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/NodeSpec.h"
 #include "Engine/Plugin.h"
+#include "Engine/Project.h"
+#include "Engine/TimeLine.h"
+#include "Engine/UpdateViewerParams.h"
+#include "Engine/ViewerInstance.h"
 
 #define kNetworkKindTestNodeID "test.natron.built-in.NetworkKindNode"
 #define kNetworkKindTestSceneSinkID "test.natron.built-in.NetworkKindSceneSink"
@@ -258,4 +264,38 @@ TEST_F(NetworkKindTest, ANetworkNodeIsNeverRendered)
     float rgba[4] = { 0.f, 0.f, 0.f, 0.f };
     EXPECT_FALSE(sampleNodeColor(network, 1., ViewIdx(0), 0, RectI(0, 0, 4, 4), ImageLayerDesc::getRGBAComponents(), rgba));
     EXPECT_EQ(0, networkRenders.load());
+}
+
+// A real shader node, wired into a Viewer as a loaded project can wire it (connecting refuses it),
+// shows what a Viewer with nothing connected shows: no image, and no error on either node.
+TEST_F(NetworkKindTest, AViewerWiredToAShaderShowsNothing)
+{
+    NodePtr shader = createShaderNode(getApp(), "cycles_principled_bsdf", getApp()->getProject());
+    CreateNodeArgs viewerArgs(PLUGINID_NATRON_VIEWER, getApp()->getProject());
+    viewerArgs.setProperty<bool>(kCreateNodeArgsPropAllowNonUserCreatablePlugins, true);
+    NodePtr viewerNode = getApp()->createNode(viewerArgs);
+
+    ASSERT_TRUE(shader && viewerNode);
+    ViewerInstance* viewer = viewerNode->isEffectViewer();
+    ASSERT_TRUE(viewer != NULL);
+    EXPECT_EQ(eDataKindNetwork, shader->getEffectiveOutputDataKind());
+    EXPECT_EQ(Node::eCanConnectInput_incompatibleDataKind, viewerNode->canConnectInput(shader, 0));
+    EXPECT_FALSE(NodeCollection::connectNodes(0, shader, viewerNode));
+    ASSERT_TRUE(viewerNode->connectInput(shader, 0));
+
+    const SequenceTime time = (SequenceTime)getApp()->getTimeLine()->currentFrame();
+    ViewerArgs args;
+    const ViewerInstance::ViewerRenderRetCode ret = viewer->getRenderViewerArgsAndCheckCache_public(time, false, ViewIdx(0), 0, viewer->getHash(), true, NodePtr(), RenderStatsPtr(), &args);
+    EXPECT_EQ(ViewerInstance::eViewerRenderRetCodeFail, ret);
+    EXPECT_FALSE(args.params && !args.params->tiles.empty());
+    EXPECT_FALSE(shader->hasPersistentMessage());
+    EXPECT_FALSE(viewerNode->hasPersistentMessage());
+
+    int width = 64;
+    int height = 64;
+    std::vector<unsigned int> buffer(width * height, 0);
+    EXPECT_FALSE(shader->makePreviewImage(1, &width, &height, buffer.data()));
+    float rgba[4] = { 0.f, 0.f, 0.f, 0.f };
+    EXPECT_FALSE(sampleNodeColor(shader, 1., ViewIdx(0), 0, RectI(0, 0, 4, 4), ImageLayerDesc::getRGBAComponents(), rgba));
+    EXPECT_FALSE(shader->hasPersistentMessage());
 }

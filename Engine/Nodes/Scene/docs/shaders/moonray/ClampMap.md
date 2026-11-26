@@ -1,4 +1,4 @@
-# ClampMap
+# Clamp Map
 
 MoonRay map `ClampMap`, for the moonray target.
 

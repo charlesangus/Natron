@@ -1,4 +1,4 @@
-# ListMap
+# List Map
 
 MoonRay map `ListMap`, for the moonray target.
 

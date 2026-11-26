@@ -1,4 +1,4 @@
-# HairColorPresetsMap
+# Hair Color Presets Map
 
 MoonRay map `HairColorPresetsMap`, for the moonray target.
 

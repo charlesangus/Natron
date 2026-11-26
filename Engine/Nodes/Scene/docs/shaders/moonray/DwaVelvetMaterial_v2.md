@@ -1,4 +1,4 @@
-# DwaVelvetMaterial_v2
+# Dwa Velvet Material V 2
 
 MoonRay material `DwaVelvetMaterial_v2`, for the moonray target.
 

@@ -1,4 +1,4 @@
-# CurvatureMap
+# Curvature Map
 
 MoonRay map `CurvatureMap`, for the moonray target.
 

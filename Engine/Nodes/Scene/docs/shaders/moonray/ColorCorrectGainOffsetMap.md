@@ -1,4 +1,4 @@
-# ColorCorrectGainOffsetMap
+# Color Correct Gain Offset Map
 
 MoonRay map `ColorCorrectGainOffsetMap`, for the moonray target.
 

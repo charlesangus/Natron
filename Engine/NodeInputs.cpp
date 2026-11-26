@@ -48,6 +48,7 @@
 #include "Engine/NodeGroup.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Loop/LoopEnd.h"
+#include "Engine/Nodes/Network/NetworkNode.h"
 #include "Engine/OpenGLViewerI.h"
 #include "Engine/PrecompNode.h"
 #include "Engine/Project.h"
@@ -1050,6 +1051,11 @@ Node::canConnectInput(const NodePtr& input,
         if (kindRet != eCanConnectInput_ok) {
             return kindRet;
         }
+    }
+
+    // Unlike kinds, this judges the two nodes alone, so it holds while loading too.
+    if (NetworkNode::checkInputConnection(input, *this, inputNumber) != NetworkNode::eConnectionOk) {
+        return eCanConnectInput_incompatiblePorts;
     }
 
     return eCanConnectInput_ok;

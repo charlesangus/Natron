@@ -1,4 +1,4 @@
-# OpenVdbMap
+# Open Vdb Map
 
 MoonRay map `OpenVdbMap`, for the moonray target.
 

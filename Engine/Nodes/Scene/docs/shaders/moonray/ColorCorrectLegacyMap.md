@@ -1,4 +1,4 @@
-# ColorCorrectLegacyMap
+# Color Correct Legacy Map
 
 MoonRay map `ColorCorrectLegacyMap`, for the moonray target.
 

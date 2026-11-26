@@ -1,4 +1,4 @@
-# ColorCorrectSaturationMap
+# Color Correct Saturation Map
 
 MoonRay map `ColorCorrectSaturationMap`, for the moonray target.
 

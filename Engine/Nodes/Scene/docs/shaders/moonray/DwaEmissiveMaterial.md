@@ -1,4 +1,4 @@
-# DwaEmissiveMaterial
+# Dwa Emissive Material
 
 MoonRay material `DwaEmissiveMaterial`, for the moonray target.
 

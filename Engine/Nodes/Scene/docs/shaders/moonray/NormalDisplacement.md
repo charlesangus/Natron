@@ -1,4 +1,4 @@
-# NormalDisplacement
+# Normal Displacement
 
 MoonRay displacement `NormalDisplacement`, for the moonray target.
 

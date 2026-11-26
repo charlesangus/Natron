@@ -1,4 +1,4 @@
-# UsdPrimvarReader_normal
+# Usd Primvar Reader Normal
 
 MoonRay normal_map `UsdPrimvarReader_normal`, for the moonray target.
 

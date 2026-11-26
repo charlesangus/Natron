@@ -1,4 +1,4 @@
-# ConstantColorMap
+# Constant Color Map
 
 MoonRay map `ConstantColorMap`, for the moonray target.
 

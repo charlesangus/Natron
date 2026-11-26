@@ -1,4 +1,4 @@
-# TransformNormalMap
+# Transform Normal Map
 
 MoonRay map `TransformNormalMap`, for the moonray target.
 

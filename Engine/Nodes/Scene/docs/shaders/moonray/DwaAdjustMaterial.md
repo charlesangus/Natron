@@ -1,4 +1,4 @@
-# DwaAdjustMaterial
+# Dwa Adjust Material
 
 MoonRay material `DwaAdjustMaterial`, for the moonray target.
 

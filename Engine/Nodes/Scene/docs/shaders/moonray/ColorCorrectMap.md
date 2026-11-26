@@ -1,4 +1,4 @@
-# ColorCorrectMap
+# Color Correct Map
 
 MoonRay map `ColorCorrectMap`, for the moonray target.
 

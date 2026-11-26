@@ -1,4 +1,4 @@
-# SwitchNormalMap
+# Switch Normal Map
 
 MoonRay normal_map `SwitchNormalMap`, for the moonray target.
 

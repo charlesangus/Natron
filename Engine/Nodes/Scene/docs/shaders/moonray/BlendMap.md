@@ -1,4 +1,4 @@
-# BlendMap
+# Blend Map
 
 MoonRay map `BlendMap`, for the moonray target.
 

@@ -1,4 +1,4 @@
-# SwitchDisplacement
+# Switch Displacement
 
 MoonRay displacement `SwitchDisplacement`, for the moonray target.
 

@@ -1,4 +1,4 @@
-# DistortNormalMap
+# Distort Normal Map
 
 MoonRay normal_map `DistortNormalMap`, for the moonray target.
 

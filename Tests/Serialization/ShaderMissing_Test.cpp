@@ -29,6 +29,7 @@
 #include <list>
 #include <map>
 #include <string>
+#include <variant>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -71,6 +72,30 @@ findSerializedNodeByName(const std::list<Serialization::NodeSerializationPtr>& n
     }
 
     return Serialization::NodeSerializationPtr();
+}
+
+Serialization::KnobSerialization*
+findSerializedKnob(const Serialization::NodeSerializationPtr& node,
+                   const std::string& name)
+{
+    for (Serialization::KnobSerialization& knob : node->knobs) {
+        if (knob.name == name) {
+            return &knob;
+        }
+    }
+
+    return nullptr;
+}
+
+std::string
+serializedText(const Serialization::KnobSerialization& knob)
+{
+    if (knob.dimensions.empty() || !knob.dimensions[0].value) {
+        return std::string();
+    }
+    const std::string* text = std::get_if<std::string>(&*knob.dimensions[0].value);
+
+    return text ? *text : std::string();
 }
 
 } // anonymous namespace
@@ -235,4 +260,122 @@ TEST_F(ShaderMissingTest, ASavedAttributeTheShaderLacksLoadsWithAWarningNamingIt
     KnobDoublePtr loadedRoughness = std::dynamic_pointer_cast<KnobDouble>(bsdf->getKnobByName("roughness"));
     ASSERT_TRUE(bool(loadedRoughness));
     EXPECT_DOUBLE_EQ(kRoughness, loadedRoughness->getValue());
+}
+
+// A port the shader no longer has, here promoted and connected when saved, loads disconnected with
+// a warning naming it; the other ports keep their connections.
+TEST_F(ShaderMissingTest, ASavedPortTheShaderLacksLoadsDisconnectedWithAWarning)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    ASSERT_NO_FATAL_FAILURE(buildGraph());
+
+    ProjectPtr project = getApp()->getProject();
+    Serialization::ProjectSerialization saved;
+    project->toSerialization(&saved);
+    Serialization::NodeSerializationPtr original = findSerializedNode(saved.nodes.nodes, kPrincipledBsdf);
+    ASSERT_TRUE(bool(original));
+    Serialization::KnobSerialization* ports = findSerializedKnob(original, kNetworkNodeParamPorts);
+    ASSERT_TRUE(ports != nullptr);
+    std::string text = serializedText(*ports);
+    const std::size_t at = text.find("specular_tint");
+    ASSERT_NE(std::string::npos, at) << text;
+    text.replace(at, std::string("specular_tint").size(), "retired_port");
+    ports->dimensions[0].value = text;
+    const std::map<std::string, std::string>::iterator input = original->inputs.find("specular_tint");
+    ASSERT_TRUE(input != original->inputs.end());
+    original->inputs["retired_port"] = input->second;
+    original->inputs.erase(input);
+
+    project->reset(false, true);
+    ASSERT_TRUE(loadProjectBundle(project, tmp, QString::fromUtf8("retired-port.ntpz"), saved));
+
+    std::vector<std::string> portWarnings;
+    for (const QString& warning : project->getLoadWarnings()) {
+        if (warning.contains(QString::fromUtf8("retired_port"))) {
+            portWarnings.push_back(warning.toStdString());
+        }
+    }
+    ASSERT_EQ(1u, portWarnings.size());
+    EXPECT_NE(std::string::npos, portWarnings[0].find(_bsdfName)) << portWarnings[0];
+    EXPECT_NE(std::string::npos, portWarnings[0].find("left disconnected")) << portWarnings[0];
+
+    NodePtr bsdf = project->getNodeByName(_bsdfName);
+    NodePtr texture = project->getNodeByName(_textureName);
+    NodePtr mix = project->getNodeByName(_mixName);
+    ASSERT_TRUE(bsdf && texture && mix);
+    NetworkNode* effect = shaderEffect(bsdf);
+    ASSERT_TRUE(effect);
+    const std::vector<std::string> loadedPorts = effect->getPorts();
+    EXPECT_TRUE(std::find(loadedPorts.begin(), loadedPorts.end(), std::string("retired_port")) == loadedPorts.end());
+    EXPECT_TRUE(std::find(loadedPorts.begin(), loadedPorts.end(), std::string("specular_tint")) == loadedPorts.end());
+    EXPECT_EQ(-1, bsdf->getInputNumberFromLabel("retired_port"));
+    EXPECT_EQ(texture, bsdf->getInput(bsdf->getInputNumberFromLabel("base_color")));
+    EXPECT_EQ(bsdf, mix->getInput(mix->getInputNumberFromLabel("closure1")));
+    KnobStringPtr portsKnob = std::dynamic_pointer_cast<KnobString>(bsdf->getKnobByName(kNetworkNodeParamPorts));
+    ASSERT_TRUE(bool(portsKnob));
+    EXPECT_EQ(std::string::npos, portsKnob->getValue().find("retired_port")) << portsKnob->getValue();
+}
+
+// The saved port list is the node's, whatever the shader's default ports are: a default port the
+// node had demoted stays demoted, its connection is not restored, and no warning is given.
+TEST_F(ShaderMissingTest, ADemotedDefaultPortStaysDemotedAfterLoading)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    ASSERT_NO_FATAL_FAILURE(buildGraph());
+
+    ProjectPtr project = getApp()->getProject();
+    NodePtr bsdf = project->getNodeByName(_bsdfName);
+    ASSERT_TRUE(bool(bsdf));
+    NetworkNode* effect = shaderEffect(bsdf);
+    ASSERT_TRUE(effect);
+    const std::vector<std::string>& defaults = effect->layout().defaultPorts;
+    ASSERT_TRUE(std::find(defaults.begin(), defaults.end(), std::string("base_color")) != defaults.end());
+    ASSERT_TRUE(effect->demotePort("base_color"));
+
+    Serialization::ProjectSerialization saved;
+    project->toSerialization(&saved);
+    Serialization::NodeSerializationPtr original = findSerializedNode(saved.nodes.nodes, kPrincipledBsdf);
+    ASSERT_TRUE(bool(original));
+    Serialization::KnobSerialization* ports = findSerializedKnob(original, kNetworkNodeParamPorts);
+    ASSERT_TRUE(ports != nullptr);
+    EXPECT_EQ(std::string::npos, serializedText(*ports).find("base_color")) << serializedText(*ports);
+    EXPECT_TRUE(original->inputs.find("base_color") == original->inputs.end());
+
+    project->reset(false, true);
+    ASSERT_TRUE(loadProjectBundle(project, tmp, QString::fromUtf8("demoted-default.ntpz"), saved));
+
+    const QString bsdfName = QString::fromUtf8(_bsdfName.c_str());
+    for (const QString& warning : project->getLoadWarnings()) {
+        EXPECT_FALSE(warning.contains(bsdfName)) << warning.toStdString();
+    }
+    bsdf = project->getNodeByName(_bsdfName);
+    NodePtr texture = project->getNodeByName(_textureName);
+    ASSERT_TRUE(bsdf && texture);
+    effect = shaderEffect(bsdf);
+    ASSERT_TRUE(effect);
+    const std::vector<std::string> loadedPorts = effect->getPorts();
+    EXPECT_TRUE(std::find(loadedPorts.begin(), loadedPorts.end(), std::string("base_color")) == loadedPorts.end());
+    EXPECT_EQ(-1, bsdf->getInputNumberFromLabel("base_color"));
+    EXPECT_EQ(texture, bsdf->getInput(bsdf->getInputNumberFromLabel("specular_tint")));
+    EXPECT_EQ(std::string("alpha"), effect->getOutputForInput("specular_tint"));
+}
+
+// A node left at its default ports saves them, so that it keeps them if the default changes.
+TEST_F(ShaderMissingTest, DefaultPortsAreSaved)
+{
+    NodePtr bsdf = createShaderNode(getApp(), kPrincipledBsdf, getApp()->getProject());
+    ASSERT_TRUE(bool(bsdf));
+    NetworkNode* effect = shaderEffect(bsdf);
+    ASSERT_TRUE(effect);
+    ASSERT_FALSE(effect->getPorts().empty());
+
+    Serialization::ProjectSerialization saved;
+    getApp()->getProject()->toSerialization(&saved);
+    Serialization::NodeSerializationPtr serialized = findSerializedNode(saved.nodes.nodes, kPrincipledBsdf);
+    ASSERT_TRUE(bool(serialized));
+    Serialization::KnobSerialization* ports = findSerializedKnob(serialized, kNetworkNodeParamPorts);
+    ASSERT_TRUE(ports != nullptr);
+    EXPECT_EQ(networkJoinPorts(effect->getPorts()), serializedText(*ports));
 }

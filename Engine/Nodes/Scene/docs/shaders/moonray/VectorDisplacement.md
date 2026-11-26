@@ -1,4 +1,4 @@
-# VectorDisplacement
+# Vector Displacement
 
 MoonRay displacement `VectorDisplacement`, for the moonray target.
 

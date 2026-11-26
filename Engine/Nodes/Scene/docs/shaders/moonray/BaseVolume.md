@@ -1,4 +1,4 @@
-# BaseVolume
+# Base Volume
 
 MoonRay volume `BaseVolume`, for the moonray target.
 
@@ -32,9 +32,9 @@ Generated from the MoonRay shader manifest by `tools/shaders/audit_shader_nodes.
 | --- | --- | --- | --- | --- | --- |
 | Diffuse Color | `diffuse_color` | Rgb | 1 1 1 | port | Reflectance color of the volume. Technically this is called scattering albedo, which is the scattering coefficient divided by the extinction coefficient. |
 | Use Diffuse Ramp | `use_diffuse_ramp` | Bool | off | knob only | Use a ramp to define different diffuse colors depending on the depth of the volume. |
-| Diffuse Colors | `diffuse_colors` | RgbVector | 2 rows | knob only |  |
-| Diffuse Distances | `diffuse_distances` | FloatVector | 2 rows | knob only |  |
-| Diffuse Interpolations | `diffuse_interpolations` | IntVector | 2 rows | knob only |  |
+| Diffuse Color Ramp | `diffuse_color_ramp` | RgbVector | 2 points | knob only |  |
+| Diffuse Color Ramp | `diffuse_color_ramp` | FloatVector | 2 points | knob only |  |
+| Diffuse Color Ramp | `diffuse_color_ramp` | IntVector | 2 points | knob only |  |
 | Diffuse Min Depth | `diffuse_min_depth` | Float | 1 | can be a port | Represents the minimum ray depth, or the shortest visible distance a ray has to travel through the volume. This sets the lower bound for the ramp.  |
 | Diffuse Max Depth | `diffuse_max_depth` | Float | 2 | can be a port | Represents the maximum ray depth, or the longest visible distance a ray has to travel through the volume. This sets the upper bound for the ramp.  |
 | Anisotropy | `anisotropy` | Float | 0 | port | Value in the interval [-1,1] that defines how foward (1) or backward (-1) scattering the volume is.  A value of 0.0 indicates an isotropic volume. |
@@ -49,9 +49,9 @@ Generated from the MoonRay shader manifest by `tools/shaders/audit_shader_nodes.
 | Match Diffuse | `match_diffuse` | Bool | off | knob only | Use the same color(s) for attenuation that is/are being used for diffuse. |
 | Invert Attenuation Color | `invert_attenuation_color` | Bool | off | knob only | Invert the input attenuation color(s). |
 | Use Attenuation Ramp | `use_attenuation_ramp` | Bool | off | knob only | Use a ramp to define different attenuation colors depending on the depth of the volume. |
-| Attenuation Colors | `attenuation_colors` | RgbVector | 2 rows | knob only |  |
-| Attenuation Distances | `attenuation_distances` | FloatVector | 2 rows | knob only |  |
-| Attenuation Interpolations | `attenuation_interpolations` | IntVector | 2 rows | knob only |  |
+| Attenuation Ramp | `attenuation_ramp` | RgbVector | 2 points | knob only |  |
+| Attenuation Ramp | `attenuation_ramp` | FloatVector | 2 points | knob only |  |
+| Attenuation Ramp | `attenuation_ramp` | IntVector | 2 points | knob only |  |
 | Attenuation Min Depth | `attenuation_min_depth` | Float | 1 | can be a port | Represents the minimum ray depth, or the shortest visible distance a ray has to travel through the volume. This sets the lower bound for the ramp.  |
 | Attenuation Max Depth | `attenuation_max_depth` | Float | 2 | can be a port | Represents the maximum ray depth, or the longest visible distance a ray has to travel through the volume. This sets the upper bound for the ramp.  |
 
@@ -59,9 +59,9 @@ Generated from the MoonRay shader manifest by `tools/shaders/audit_shader_nodes.
 
 | Label | Script name | Type | Default | Port | Description |
 | --- | --- | --- | --- | --- | --- |
-| Densities | `densities` | FloatVector | 2 rows | knob only |  |
-| Density Distances | `density_distances` | FloatVector | 2 rows | knob only |  |
-| Density Interpolations | `density_interpolations` | IntVector | 2 rows | knob only |  |
+| Density Ramp | `density_ramp` | FloatVector | 2 points | knob only |  |
+| Density Ramp | `density_ramp` | FloatVector | 2 points | knob only |  |
+| Density Ramp | `density_ramp` | IntVector | 2 points | knob only |  |
 | Density Min Depth | `density_min_depth` | Float | 1 | can be a port | Represents the minimum ray depth, or the shortest visible distance a ray has to travel through the volume. This sets the lower bound for the ramp.  |
 | Density Max Depth | `density_max_depth` | Float | 2 | can be a port | Represents the maximum ray depth, or the longest visible distance a ray has to travel through the volume. This sets the upper bound for the ramp.  |
 

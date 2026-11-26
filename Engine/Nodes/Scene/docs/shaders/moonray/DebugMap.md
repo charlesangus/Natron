@@ -1,4 +1,4 @@
-# DebugMap
+# Debug Map
 
 MoonRay map `DebugMap`, for the moonray target.
 

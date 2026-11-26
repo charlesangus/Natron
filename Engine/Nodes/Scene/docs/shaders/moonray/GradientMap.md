@@ -1,4 +1,4 @@
-# GradientMap
+# Gradient Map
 
 MoonRay map `GradientMap`, for the moonray target.
 

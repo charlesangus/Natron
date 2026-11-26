@@ -1,4 +1,4 @@
-# NoiseWorleyMap_v2
+# Noise Worley Map V 2
 
 MoonRay map `NoiseWorleyMap_v2`, for the moonray target.
 

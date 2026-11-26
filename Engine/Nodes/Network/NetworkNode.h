@@ -30,11 +30,15 @@
 
 #include <atomic>
 #include <deque>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
+
+#include "Global/Enums.h"
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
@@ -60,10 +64,16 @@ enum class NetworkKnobKind {
     Color,
     String,
     File,
-    // One curve per dimension over [0, 1].
+    // One curve per dimension over [0, 1]: a ramp, or a lookup the target samples.
     Parametric,
     // A list of rows, one per line, the values of a row space separated.
     Table,
+};
+
+struct NetworkCurvePoint {
+    double x = 0.;
+    double y = 0.;
+    KeyframeTypeEnum interpolation = eKeyframeTypeLinear;
 };
 
 struct NetworkChoice {
@@ -86,6 +96,12 @@ struct NetworkAttribute {
     NetworkKnobKind knob = NetworkKnobKind::None;
     int dimensions = 1;
     std::vector<double> defaults;
+    // A Parametric knob's default control points, one list per dimension; an empty list is the
+    // identity curve.
+    std::vector<std::vector<NetworkCurvePoint>> curves;
+    // The ramp this attribute holds one array of (its positions, values or interpolations). The
+    // attributes of a ramp share one Parametric knob, named after the ramp.
+    std::string ramp;
     // The default of a String, File or Table knob.
     std::string defaultText;
     std::vector<NetworkChoice> choices;
@@ -156,11 +172,25 @@ public:
      **/
     static const NetworkNodeLayout* addLayout(const NetworkNodeLayout& layout);
 
+    // Fills in a layout, or sets the error and returns false.
+    typedef std::function<bool(NetworkNodeLayout* layout, std::string* error)> LayoutBuilder;
+
+    /**
+     * @brief Registers how the layout of pluginId is built: on the first findLayout() of it, so that
+     * a layout no node is built from costs nothing. A layout addLayout() added wins. Main thread.
+     **/
+    static void addLayoutBuilder(const std::string& pluginId, const LayoutBuilder& builder);
+
+    /**
+     * @brief The layout of pluginId, built on the first call when it has a builder. Null when
+     * there is none, or its builder fails, which is reported once.
+     **/
     static const NetworkNodeLayout* findLayout(const std::string& pluginId);
 
     /**
-     * @brief Registers the plug-in of layout, which must have been added. It is for internal use
-     * only: hidden from menus, created by ID. Returns null when registration fails.
+     * @brief Registers the plug-in of layout, which must have been added or have a builder; only
+     * its plug-in ID, label and grouping are read. It is for internal use only: hidden from menus,
+     * created by ID. Returns null when registration fails.
      **/
     static Plugin* registerPlugin(const NetworkNodeLayout& layout);
 
@@ -264,6 +294,20 @@ public:
     static bool portTypesConvert(const OutputPortDescriptor& from,
                                  const PortDescriptor& to);
 
+    /**
+     * @brief checkConnection() for connecting upstream to input inputNb of downstream, reading
+     * the output downstream names for that input when upstream has it and upstream's first
+     * otherwise. eConnectionOk unless both nodes are network nodes.
+     **/
+    static ConnectionCheckEnum checkInputConnection(const NodePtr& upstream,
+                                                    const Node& downstream,
+                                                    int inputNb);
+
+    /**
+     * @brief Why a connection checkConnection() refused is refused, empty for eConnectionOk.
+     **/
+    static std::string connectionCheckReason(ConnectionCheckEnum check);
+
 private:
     struct SpecStorage {
         std::deque<std::string> labels;
@@ -303,6 +347,9 @@ private:
 
     void refreshKnobsEnabled();
 
+    // Writes text to the ports knob without calling knobChanged().
+    void writePortsKnob(const std::string& text);
+
     std::map<std::string, std::string> getInputOutputs() const;
 
     void setInputOutputs(const std::map<std::string, std::string>& outputs);
@@ -310,16 +357,22 @@ private:
     void pruneInputOutputs();
 
     const NetworkNodeLayout* _layout;
-    // Render threads read the spec while the main thread replaces it, so a replaced spec is
-    // retired rather than freed and every pointer handed out stays valid for the node's life.
-    std::vector<std::unique_ptr<SpecStorage>> _specs;
+    // Threads other than the main thread read the spec while the main thread swaps in a new one,
+    // so an old spec stays alive for a while. Such a reader holds the pointer for one call, and
+    // the main thread swaps specs only on a port edit, so keeping the last few covers every
+    // reader; older ones are freed.
+    std::deque<std::unique_ptr<SpecStorage>> _specs;
     std::atomic<const SpecStorage*> _current;
     // applyPorts() disconnects ports that move and reconnects them at their new index; their
     // output names and knob states must survive that.
     bool _applyingPorts;
     // The node each port was last connected to, not saved.
     std::map<std::string, NodeWPtr> _portUpstreams;
+    // Attributes of one ramp share a knob.
     std::map<std::string, KnobIWPtr> _attributeKnobs;
+    // The knobs disabled because a port of theirs is connected; only these are enabled again, so
+    // a knob disabled for any other reason stays disabled.
+    std::set<KnobI*> _disabledKnobs;
     KnobStringWPtr _portsKnob;
     KnobStringWPtr _inputOutputsKnob;
 };
@@ -346,6 +399,16 @@ private:
     std::map<std::string, NodeWPtr> _connections;
     std::map<std::string, std::string> _outputs;
 };
+
+/**
+ * @brief The NetworkEditPortsCommand that promotes (or demotes) attribute of node. False when node
+ * is not a network node or attribute cannot be promoted (or demoted); command is then null, and
+ * also when attribute already is (or is not) a port.
+ **/
+bool makeNetworkPortCommand(const NodePtr& node,
+                            const std::string& attribute,
+                            bool promote,
+                            UndoCommandPtr* command);
 
 /**
  * @brief Promotes attribute of node, a network node, through a NetworkEditPortsCommand pushed on

@@ -1,4 +1,4 @@
-# RampMap
+# Ramp Map
 
 MoonRay map `RampMap`, for the moonray target.
 
@@ -14,9 +14,9 @@ Generated from the MoonRay shader manifest by `tools/shaders/audit_shader_nodes.
 
 | Label | Script name | Type | Default | Port | Description |
 | --- | --- | --- | --- | --- | --- |
-| Positions | `positions` | FloatVector | 4 rows | knob only | Color ramp |
-| Colors | `colors` | RgbVector | 4 rows | knob only | List of colors on the ramp |
-| Interpolations | `interpolations` | IntVector | 4 rows | knob only | None: 0 \| Linear: 1 \| Exponential Up: 2 \| Exponential Down: 3 \| 			Smooth: 4 \| Catmull Rom: 5 \| Monotone Cubic: 6 |
+| Ramp | `ramp` | FloatVector | 4 points | knob only | Color ramp |
+| Ramp | `ramp` | RgbVector | 4 points | knob only | List of colors on the ramp |
+| Ramp | `ramp` | IntVector | 4 points | knob only | None: 0 \| Linear: 1 \| Exponential Up: 2 \| Exponential Down: 3 \| 			Smooth: 4 \| Catmull Rom: 5 \| Monotone Cubic: 6 |
 
 ## Ramp properties
 

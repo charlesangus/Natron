@@ -2655,6 +2655,14 @@ ViewerInstance::quitBackgroundWork(bool blocking)
 
 static bool checkTreeCanRender(Node* node);
 
+// A network is never rendered. A Viewer is refused one, but a loaded project can still wire one
+// in; the Viewer then shows what it shows with nothing connected.
+static bool
+isNetworkInput(const EffectInstancePtr& input)
+{
+    return input->getNode()->getEffectiveOutputDataKind() == eDataKindNetwork;
+}
+
 struct ViewerInstance::GpuPlacementUiState {
     ViewIdx view;
     int inputCount = 1;
@@ -2727,7 +2735,7 @@ ViewerInstance::planGpuPlacementOfInput(int textureIndex,
     if (upstream) {
         args.activeInputToRender = upstream->getNearestNonDisabled(time);
     }
-    if (!args.activeInputToRender || !checkTreeCanRender(args.activeInputToRender->getNode().get())) {
+    if (!args.activeInputToRender || isNetworkInput(args.activeInputToRender) || !checkTreeCanRender(args.activeInputToRender->getNode().get())) {
         builder->addUnplacedGraph();
 
         return;
@@ -3917,7 +3925,7 @@ ViewerInstance::getRenderViewerArgsAndCheckCache(SequenceTime time,
     }
 
     // Before rendering we check that all mandatory inputs in the graph are connected else we fail
-    if ( !outArgs->activeInputToRender || !checkTreeCanRender( outArgs->activeInputToRender->getNode().get() ) ) {
+    if (!outArgs->activeInputToRender || isNetworkInput(outArgs->activeInputToRender) || !checkTreeCanRender(outArgs->activeInputToRender->getNode().get())) {
         return eViewerRenderRetCodeFail;
     }
 

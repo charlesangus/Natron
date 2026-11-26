@@ -1,4 +1,4 @@
-# CutoutVolume
+# Cutout Volume
 
 MoonRay volume `CutoutVolume`, for the moonray target.
 

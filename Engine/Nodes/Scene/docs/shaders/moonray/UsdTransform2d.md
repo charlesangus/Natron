@@ -1,4 +1,4 @@
-# UsdTransform2d
+# Usd Transform 2 D
 
 MoonRay map `UsdTransform2d`, for the moonray target.
 

@@ -14,7 +14,7 @@ Generated from the Cycles shader manifest by `tools/shaders/audit_shader_nodes.p
 
 | Label | Script name | Type | Default | Port | Description |
 | --- | --- | --- | --- | --- | --- |
-| Curves | `curves` | array_vector | empty | knob only | Curves |
+| Curves | `curves` | array_vector | identity | knob only | Curves |
 | Min X | `min_x` | float | 0 | knob only | Min X |
 | Max X | `max_x` | float | 1 | knob only | Max X |
 | Extrapolate | `extrapolate` | boolean | on | knob only | Extrapolate |

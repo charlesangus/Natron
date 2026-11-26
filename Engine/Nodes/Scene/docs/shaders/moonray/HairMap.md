@@ -1,4 +1,4 @@
-# HairMap
+# Hair Map
 
 MoonRay map `HairMap`, for the moonray target.
 

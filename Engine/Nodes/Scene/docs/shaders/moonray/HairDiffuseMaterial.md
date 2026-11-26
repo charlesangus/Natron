@@ -1,4 +1,4 @@
-# HairDiffuseMaterial
+# Hair Diffuse Material
 
 MoonRay material `HairDiffuseMaterial`, for the moonray target.
 

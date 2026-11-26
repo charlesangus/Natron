@@ -1,4 +1,4 @@
-# UsdPreviewSurface
+# Usd Preview Surface
 
 MoonRay material `UsdPreviewSurface`, for the moonray target.
 

@@ -1,4 +1,4 @@
-# HsvToRgbMap
+# HSV To RGB Map
 
 MoonRay map `HsvToRgbMap`, for the moonray target.
 

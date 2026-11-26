@@ -1,4 +1,4 @@
-# RgbToLabMap
+# RGB To Lab Map
 
 MoonRay map `RgbToLabMap`, for the moonray target.
 

@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <map>
 #include <set>
 #include <sstream>
 #include <string>
@@ -39,9 +40,11 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/ChoiceOption.h"
+#include "Engine/Curve.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Scene/Shaders/ShaderManifest.h"
 #include "Engine/Project.h"
 
 #include "Scene/ShaderManifestTestUtils.h"
@@ -117,12 +120,41 @@ expectEveryAttributeIsAKnob(const NodePtr& node,
     const QJsonArray attributes = manifestNode.value(QLatin1String("attributes")).toArray();
 
     ASSERT_FALSE(attributes.isEmpty());
+    std::map<std::string, int> rampPoints;
+    for (const QJsonValue& item : attributes) {
+        const QJsonObject structure = item.toObject().value(QLatin1String("structure")).toObject();
+        if (structure.value(QLatin1String("path")).toString() == QLatin1String("positions")) {
+            rampPoints[structure.value(QLatin1String("name")).toString().toStdString()] = item.toObject().value(QLatin1String("default")).toArray().size();
+        }
+    }
     for (const QJsonValue& item : attributes) {
         const QJsonObject json = item.toObject();
         const std::string name = json.value(QLatin1String("name")).toString().toStdString();
         const std::string type = json.value(QLatin1String("type")).toString().toStdString();
         const QJsonValue value = json.value(QLatin1String("default"));
         const QJsonArray choices = json.value(QLatin1String("enum")).toArray();
+        const QJsonObject structure = json.value(QLatin1String("structure")).toObject();
+
+        // The arrays of a ramp share the ramp's curve knob, one control point per position.
+        if (!structure.isEmpty()) {
+            const std::string ramp = structure.value(QLatin1String("name")).toString().toStdString();
+            NetworkNode* effect = shaderEffect(node);
+            KnobParametricPtr k = std::dynamic_pointer_cast<KnobParametric>(effect ? effect->getAttributeKnob(name) : KnobIPtr());
+            if (!k) {
+                ADD_FAILURE() << name << " has no ramp knob";
+                continue;
+            }
+            EXPECT_EQ(NetworkNode::knobNameOf(ramp), k->getName()) << name;
+            EXPECT_EQ(k, node->getKnobByName(NetworkNode::knobNameOf(ramp))) << name;
+            const int dimensions = (structure.value(QLatin1String("type")).toString() == QLatin1String("ramp_color")) ? 3 : 1;
+            ASSERT_EQ(dimensions, k->getDimension()) << name;
+            for (int d = 0; d < dimensions; ++d) {
+                int points = 0;
+                EXPECT_EQ(eStatusOK, k->getNControlPoints(d, &points)) << name;
+                EXPECT_EQ(rampPoints[ramp], points) << name << " dimension " << d;
+            }
+            continue;
+        }
         KnobIPtr knob = node->getKnobByName(NetworkNode::knobNameOf(name));
 
         if (json.value(QLatin1String("port_only")).toBool()) {
@@ -214,7 +246,15 @@ expectEveryAttributeIsAKnob(const NodePtr& node,
                 ADD_FAILURE() << name << " is not parametric";
                 continue;
             }
-            EXPECT_EQ((type == "array_float") ? 1 : 3, k->getDimension()) << name;
+            const int dimensions = (type == "array_float") ? 1 : 3;
+            ASSERT_EQ(dimensions, k->getDimension()) << name;
+            const QJsonArray samples = value.toArray();
+            for (int d = 0; d < dimensions; ++d) {
+                int points = 0;
+                EXPECT_EQ(eStatusOK, k->getNControlPoints(d, &points)) << name;
+                // An array with no default is the identity curve.
+                EXPECT_EQ(samples.isEmpty() ? 2 : samples.size(), points) << name << " dimension " << d;
+            }
         } else {
             ADD_FAILURE() << name << " has the type " << type << ", which this test does not know";
         }
@@ -287,6 +327,60 @@ TEST_F(ShaderNodeTest, DwaBaseMaterialHasEveryManifestAttribute)
     EXPECT_EQ(std::string("out"), outputs[0].name);
     EXPECT_EQ(std::string("DwaBaseLayerable"), outputs[0].type);
     EXPECT_EQ(PortTypeClass::Closure, outputs[0].typeClass);
+}
+
+TEST_F(ShaderNodeTest, ARampIsOneCurveKnobSeededFromItsArrays)
+{
+    NodePtr node = create("RampMap");
+
+    ASSERT_TRUE(bool(node));
+    NetworkNode* effect = shaderEffect(node);
+    ASSERT_TRUE(effect);
+    EXPECT_EQ(std::string("Ramp Map"), node->getPluginLabel());
+    KnobParametricPtr ramp = std::dynamic_pointer_cast<KnobParametric>(node->getKnobByName("ramp"));
+    ASSERT_TRUE(bool(ramp));
+    EXPECT_EQ(std::string("Ramp"), ramp->getLabel());
+    for (const char* attribute : { "positions", "colors", "interpolations" }) {
+        EXPECT_EQ(KnobIPtr(ramp), effect->getAttributeKnob(attribute)) << attribute;
+        EXPECT_FALSE(bool(node->getKnobByName(attribute))) << attribute;
+    }
+
+    const QJsonArray attributes = shaderManifestNode("moonray", "RampMap").value(QLatin1String("attributes")).toArray();
+    QJsonArray positions;
+    QJsonArray colors;
+    for (const QJsonValue& item : attributes) {
+        const QJsonObject json = item.toObject();
+        if (json.value(QLatin1String("name")).toString() == QLatin1String("positions")) {
+            positions = json.value(QLatin1String("default")).toArray();
+        } else if (json.value(QLatin1String("name")).toString() == QLatin1String("colors")) {
+            colors = json.value(QLatin1String("default")).toArray();
+        }
+    }
+    ASSERT_FALSE(positions.isEmpty());
+    ASSERT_EQ(positions.size(), colors.size());
+    ASSERT_EQ(3, ramp->getDimension());
+    for (int d = 0; d < 3; ++d) {
+        CurvePtr curve = ramp->getDefaultParametricCurve(d);
+        ASSERT_TRUE(bool(curve));
+        ASSERT_EQ(positions.size(), curve->getKeyFramesCount());
+        for (int i = 0; i < positions.size(); ++i) {
+            KeyFrame key;
+            ASSERT_TRUE(curve->getKeyFrameWithIndex(i, &key));
+            EXPECT_DOUBLE_EQ(positions[i].toDouble(), key.getTime()) << d << " " << i;
+            EXPECT_DOUBLE_EQ(colors[i].toArray()[d].toDouble(), key.getValue()) << d << " " << i;
+            // The manifest's interpolation 0 holds each value up to the next position.
+            EXPECT_EQ(eKeyframeTypeConstant, key.getInterpolation()) << d << " " << i;
+        }
+    }
+
+    // MoonRay option labels are readable, as Cycles ones are.
+    KnobChoicePtr rampType = std::dynamic_pointer_cast<KnobChoice>(node->getKnobByName("ramp_type"));
+    ASSERT_TRUE(bool(rampType));
+    const std::vector<ChoiceOption> options = rampType->getEntries_mt_safe();
+    ASSERT_FALSE(options.empty());
+    for (const ChoiceOption& option : options) {
+        EXPECT_EQ(shaderLabelFromScriptName(option.id), option.label) << option.id;
+    }
 }
 
 TEST_F(ShaderNodeTest, ASaveAndLoadRestoresEditedValues)

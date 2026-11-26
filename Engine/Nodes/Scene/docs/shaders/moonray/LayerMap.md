@@ -1,4 +1,4 @@
-# LayerMap
+# Layer Map
 
 MoonRay map `LayerMap`, for the moonray target.
 

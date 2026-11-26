@@ -1,4 +1,4 @@
-# DwaFabricMaterial
+# Dwa Fabric Material
 
 MoonRay material `DwaFabricMaterial`, for the moonray target.
 

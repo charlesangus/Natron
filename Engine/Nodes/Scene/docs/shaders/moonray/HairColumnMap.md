@@ -1,4 +1,4 @@
-# HairColumnMap
+# Hair Column Map
 
 MoonRay map `HairColumnMap`, for the moonray target.
 

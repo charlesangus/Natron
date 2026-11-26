@@ -1,4 +1,4 @@
-# LODMap
+# LOD Map
 
 MoonRay map `LODMap`, for the moonray target.
 

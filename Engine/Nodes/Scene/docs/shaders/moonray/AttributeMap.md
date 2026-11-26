@@ -1,4 +1,4 @@
-# AttributeMap
+# Attribute Map
 
 MoonRay map `AttributeMap`, for the moonray target.
 

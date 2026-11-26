@@ -25,6 +25,7 @@
 
 #include "PyNode.h"
 
+#include <algorithm>
 #include <cassert>
 #include <map>
 #include <stdexcept>
@@ -461,6 +462,14 @@ bool
 Effect::connectInput(int inputNumber,
                      const Effect* input)
 {
+    if (input && input->getInternalNode() && (getInternalNode()->canConnectInput(input->getInternalNode(), inputNumber) == Node::eCanConnectInput_incompatiblePorts)) {
+        const NetworkNode::ConnectionCheckEnum check = NetworkNode::checkInputConnection(input->getInternalNode(), *getInternalNode(), inputNumber);
+        const std::string message = "Cannot connect " + input->getInternalNode()->getScriptName_mt_safe() + " to " + getInternalNode()->getScriptName_mt_safe() + ": " + NetworkNode::connectionCheckReason(check) + ".";
+        // A warning, not an error: a refused connection returns False, as for any other reason.
+        (void)PyErr_WarnEx(PyExc_RuntimeWarning, message.c_str(), 1);
+
+        return false;
+    }
     if ( canConnectInput(inputNumber, input) ) {
         if (IsolatedJob::refusesPythonEdit(getInternalNode()->getEffectInstance().get(), "the inputs")) {
             return false;
@@ -615,16 +624,38 @@ Effect::getPortAttributes() const
     return ret;
 }
 
+static bool
+editNetworkPortFromPython(const NodePtr& node,
+                          const QString& attribute,
+                          bool promote)
+{
+    NetworkNode* effect = networkEffectOf(node);
+
+    if (!effect || !checkHolderIsEditable(effect)) {
+        return false;
+    }
+    if (IsolatedJob::refusesPythonEdit(effect, "the inputs")) {
+        return false;
+    }
+    UndoCommandPtr command;
+    if (!makeNetworkPortCommand(node, attribute.toStdString(), promote, &command)) {
+        return false;
+    }
+    runPythonUndoCommand(node, command);
+
+    return true;
+}
+
 bool
 Effect::promotePort(const QString& attribute)
 {
-    return promoteNetworkPort(getInternalNode(), attribute.toStdString());
+    return editNetworkPortFromPython(getInternalNode(), attribute, true);
 }
 
 bool
 Effect::demotePort(const QString& attribute)
 {
-    return demoteNetworkPort(getInternalNode(), attribute.toStdString());
+    return editNetworkPortFromPython(getInternalNode(), attribute, false);
 }
 
 QString
@@ -639,12 +670,30 @@ bool
 Effect::setOutputForInput(const QString& inputLabel,
                           const QString& outputName)
 {
-    NetworkNode* effect = networkEffectOf(getInternalNode());
+    NodePtr node = getInternalNode();
+    NetworkNode* effect = networkEffectOf(node);
 
-    if (!effect) {
+    if (!effect || !checkHolderIsEditable(effect)) {
         return false;
     }
-    effect->setOutputForInput(inputLabel.toStdString(), outputName.toStdString());
+    const std::string label = inputLabel.toStdString();
+    const std::string output = outputName.toStdString();
+    const std::vector<std::string> ports = effect->getPorts();
+    const std::vector<std::string>::const_iterator port = std::find(ports.begin(), ports.end(), label);
+    if (port == ports.end()) {
+        return false;
+    }
+    // A disconnected input takes any name: the node it is next connected to drops one it lacks.
+    NodePtr upstream = node->getInput((int)(port - ports.begin()));
+    const NetworkNode* upstreamEffect = networkEffectOf(upstream);
+    if (!output.empty() && upstreamEffect && (NetworkNode::checkConnection(*upstreamEffect, output, *effect, label) != NetworkNode::eConnectionOk)) {
+        return false;
+    }
+    KnobIPtr knob = effect->getKnobByName(kNetworkNodeParamInputOutputs);
+    if (knob && !recordPythonKnobEdit(knob)) {
+        return false;
+    }
+    effect->setOutputForInput(label, output);
 
     return true;
 }

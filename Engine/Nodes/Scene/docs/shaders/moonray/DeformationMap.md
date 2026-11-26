@@ -1,4 +1,4 @@
-# DeformationMap
+# Deformation Map
 
 MoonRay map `DeformationMap`, for the moonray target.
 

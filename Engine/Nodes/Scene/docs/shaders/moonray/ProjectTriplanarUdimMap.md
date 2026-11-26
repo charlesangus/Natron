@@ -1,4 +1,4 @@
-# ProjectTriplanarUdimMap
+# Project Triplanar UDIM Map
 
 MoonRay map `ProjectTriplanarUdimMap`, for the moonray target.
 

@@ -1,4 +1,4 @@
-# CombineNormalMap
+# Combine Normal Map
 
 MoonRay normal_map `CombineNormalMap`, for the moonray target.
 

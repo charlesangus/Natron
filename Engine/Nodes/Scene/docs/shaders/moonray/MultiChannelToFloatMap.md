@@ -1,4 +1,4 @@
-# MultiChannelToFloatMap
+# Multi Channel To Float Map
 
 MoonRay map `MultiChannelToFloatMap`, for the moonray target.
 

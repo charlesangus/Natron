@@ -1,4 +1,4 @@
-# NormalToRgbMap
+# Normal To RGB Map
 
 MoonRay map `NormalToRgbMap`, for the moonray target.
 

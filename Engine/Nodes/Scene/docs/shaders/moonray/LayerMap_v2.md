@@ -1,4 +1,4 @@
-# LayerMap_v2
+# Layer Map V 2
 
 MoonRay map `LayerMap_v2`, for the moonray target.
 

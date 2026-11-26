@@ -1,4 +1,4 @@
-# HairMaterial_v3
+# Hair Material V 3
 
 MoonRay material `HairMaterial_v3`, for the moonray target.
 

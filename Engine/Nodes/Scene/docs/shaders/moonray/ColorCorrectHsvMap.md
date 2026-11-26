@@ -1,4 +1,4 @@
-# ColorCorrectHsvMap
+# Color Correct HSV Map
 
 MoonRay map `ColorCorrectHsvMap`, for the moonray target.
 

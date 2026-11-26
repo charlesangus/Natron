@@ -1,4 +1,4 @@
-# ProjectSphericalMap
+# Project Spherical Map
 
 MoonRay map `ProjectSphericalMap`, for the moonray target.
 

@@ -1,4 +1,4 @@
-# SwitchFloatMap
+# Switch Float Map
 
 MoonRay map `SwitchFloatMap`, for the moonray target.
 

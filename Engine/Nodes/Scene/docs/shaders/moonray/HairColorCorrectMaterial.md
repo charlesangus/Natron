@@ -1,4 +1,4 @@
-# HairColorCorrectMaterial
+# Hair Color Correct Material
 
 MoonRay material `HairColorCorrectMaterial`, for the moonray target.
 

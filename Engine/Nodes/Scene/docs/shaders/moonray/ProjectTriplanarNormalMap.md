@@ -1,4 +1,4 @@
-# ProjectTriplanarNormalMap
+# Project Triplanar Normal Map
 
 MoonRay normal_map `ProjectTriplanarNormalMap`, for the moonray target.
 

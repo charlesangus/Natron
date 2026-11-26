@@ -146,6 +146,45 @@ def table_text(value):
     return "\n".join(" ".join(format_number(n) for n in numbers(row)) for row in (value or []))
 
 
+def sampled_curves(value, dims):
+    """An array default as curves, its elements spaced evenly over [0, 1], as sampledCurves() in
+    ShaderManifest.cpp; an empty array is the identity curve."""
+    samples = value or []
+    if not samples:
+        return [[(0.0, 0.0), (1.0, 1.0)] for _ in range(dims)]
+    curves = [[] for _ in range(dims)]
+    for i, sample in enumerate(samples):
+        values = numbers(sample) or [0.0]
+        values = values + [values[-1]] * (dims - len(values))
+        x = 0.0 if len(samples) == 1 else i / (len(samples) - 1)
+        for d in range(dims):
+            curves[d].append((x, values[d]))
+    return curves
+
+
+def ramps_of(node):
+    """{ramp name: curves} of a MoonRay node, one control point per position, as rampCurves() in
+    ShaderManifest.cpp."""
+    arrays = {}
+    for attribute in node["attributes"]:
+        structure = attribute.get("structure") or {}
+        if structure.get("name"):
+            arrays.setdefault(structure["name"], {})[structure.get("path")] = attribute
+    ret = {}
+    for name, paths in arrays.items():
+        values_attribute = paths.get("values") or {}
+        dims = 3 if (values_attribute.get("structure") or {}).get("type") == "ramp_color" else 1
+        positions = numbers((paths.get("positions") or {}).get("default"))
+        rows = (values_attribute.get("default") or [])
+        curves = [[] for _ in range(dims)]
+        for i, x in enumerate(positions):
+            row = numbers(rows[i]) if i < len(rows) else []
+            for d in range(dims):
+                curves[d].append((x, row[d] if d < len(row) else 0.0))
+        ret[name] = curves
+    return ret
+
+
 def load(renderer, manifest_dir=MANIFEST_DIR):
     with open(os.path.join(manifest_dir, renderer + ".json"), encoding="utf-8") as f:
         manifest = json.load(f)
@@ -154,8 +193,9 @@ def load(renderer, manifest_dir=MANIFEST_DIR):
     return manifest, layout
 
 
-def expected_attribute(renderer, attribute):
-    """What Natron builds for one manifest attribute; "error" is set for a type it cannot map."""
+def expected_attribute(renderer, attribute, ramps=None):
+    """What Natron builds for one manifest attribute; "error" is set for a type it cannot map.
+    ramps is ramps_of() the attribute's node."""
     name = attribute["name"]
     kind_type = attribute["type"]
     value = attribute.get("default")
@@ -169,6 +209,18 @@ def expected_attribute(renderer, attribute):
         "port_only": bool(attribute.get("port_only")),
         "error": None,
     }
+    structure = attribute.get("structure") or {}
+    if renderer == "moonray" and structure.get("type") in ("ramp_color", "ramp_float"):
+        ramp = structure.get("name") or ""
+        if not ramp:
+            ret["error"] = "a ramp array with no ramp name"
+            ret["kind"] = None
+            return ret
+        curves = (ramps or {}).get(ramp, [])
+        ret.update({"knob": knob_name(ramp), "label": label_from_script_name(ramp), "kind": "parametric",
+                    "dimensions": 3 if structure["type"] == "ramp_color" else 1, "curves": curves,
+                    "ramp": ramp})
+        return ret
     if kind_type not in types:
         ret["error"] = "unknown type " + kind_type
         ret["kind"] = None
@@ -196,6 +248,8 @@ def expected_attribute(renderer, attribute):
         ret["default_text"] = value if isinstance(value, str) else ""
     elif kind == "table":
         ret["default_text"] = table_text(value)
+    elif kind == "parametric":
+        ret["curves"] = sampled_curves(value, dims)
     return ret
 
 
@@ -252,6 +306,17 @@ def audit_knob(prefix, param, expected):
     elif kind in ("string", "file", "table"):
         if param.getDefaultValue() != expected["default_text"]:
             problems.append(prefix + ": default {!r}, expected {!r}".format(param.getDefaultValue(), expected["default_text"]))
+    elif kind == "parametric":
+        for dim, points in enumerate(expected["curves"]):
+            count = param.getNControlPoints(dim)
+            if count != len(points):
+                problems.append(prefix + ": {} control points in dimension {}, expected {}".format(count, dim, len(points)))
+                continue
+            for i, (x, y) in enumerate(points):
+                point = param.getNthControlPoint(dim, i)
+                if not (_close(point[1], x) and _close(point[2], y)):
+                    problems.append(prefix + ": control point {} of dimension {} at ({}, {}), expected ({}, {})".format(
+                        i, dim, point[1], point[2], x, y))
     return problems
 
 
@@ -261,8 +326,9 @@ def audit_node(effect, renderer, node, node_layout):
     ports = list(effect.getPorts())
     port_attributes = set(effect.getPortAttributes())
     inputs = set(effect.getInputLabel(i) for i in range(effect.getMaxInputCount()))
+    ramps = ramps_of(node)
     for attribute in node["attributes"]:
-        expected = expected_attribute(renderer, attribute)
+        expected = expected_attribute(renderer, attribute, ramps)
         prefix = "{} {}.{}".format(renderer, shader_id, expected["name"])
         if expected["error"]:
             problems.append("missing " + prefix + ": " + expected["error"])
@@ -324,6 +390,10 @@ def _default_cell(expected, attribute):
     if kind == "table":
         rows = [r for r in expected["default_text"].split("\n") if r]
         return "{} rows".format(len(rows)) if rows else "empty"
+    if kind == "parametric":
+        if expected.get("ramp"):
+            return "{} points".format(len(expected["curves"][0]) if expected["curves"] else 0)
+        return "{} samples".format(len(attribute.get("default") or [])) if attribute.get("default") else "identity"
     return "empty"
 
 
@@ -338,7 +408,7 @@ def _role_cell(expected, starts_as_port):
 def node_doc(renderer, node, node_layout):
     """The Markdown page of one shader."""
     renderer_name = RENDERER_NAMES[renderer]
-    label = label_from_script_name(node["name"]) if renderer == "cycles" else node["name"]
+    label = label_from_script_name(node["name"])
     lines = ["# " + label, ""]
     targets = node.get("targets") or [renderer]
     lines.append("{} {} `{}`, for the {} target{}.".format(
@@ -356,6 +426,7 @@ def node_doc(renderer, node, node_layout):
 
     pages = pages_of(renderer, node, node_layout)
     starting = set(default_ports(node, node_layout))
+    ramps = ramps_of(node)
     order = []
     if renderer == "cycles":
         order = [group["name"] for group in node_layout.get("groups") or []]
@@ -372,7 +443,7 @@ def node_doc(renderer, node, node_layout):
                   "| Label | Script name | Type | Default | Port | Description |",
                   "| --- | --- | --- | --- | --- | --- |"]
         for attribute in attributes:
-            expected = expected_attribute(renderer, attribute)
+            expected = expected_attribute(renderer, attribute, ramps)
             description = attribute.get("comment") or attribute.get("ui_name") or ""
             if attribute.get("enum"):
                 description = (description + " " if description else "") + "Options: " + \
@@ -400,8 +471,9 @@ def mapping_problems(manifest_dir=MANIFEST_DIR):
     for renderer in RENDERERS:
         manifest, _ = load(renderer, manifest_dir)
         for node in manifest["nodes"]:
+            ramps = ramps_of(node)
             for attribute in node["attributes"]:
-                expected = expected_attribute(renderer, attribute)
+                expected = expected_attribute(renderer, attribute, ramps)
                 if expected["error"]:
                     problems.append("missing {} {}.{}: {}".format(renderer, node["id"], attribute["name"], expected["error"]))
     return problems

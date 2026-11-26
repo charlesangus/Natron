@@ -1029,6 +1029,8 @@ public:
         eCanConnectInput_differentFPS,
         eCanConnectInput_multiResNotSupported,
         eCanConnectInput_incompatibleDataKind,
+        // Both are network nodes, and NetworkNode::checkInputConnection() refuses the connection.
+        eCanConnectInput_incompatiblePorts,
     };
 
     /**

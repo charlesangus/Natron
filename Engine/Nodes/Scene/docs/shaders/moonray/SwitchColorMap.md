@@ -1,4 +1,4 @@
-# SwitchColorMap
+# Switch Color Map
 
 MoonRay map `SwitchColorMap`, for the moonray target.
 

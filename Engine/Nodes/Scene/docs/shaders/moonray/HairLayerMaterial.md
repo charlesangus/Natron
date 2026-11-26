@@ -1,4 +1,4 @@
-# HairLayerMaterial
+# Hair Layer Material
 
 MoonRay material `HairLayerMaterial`, for the moonray target.
 

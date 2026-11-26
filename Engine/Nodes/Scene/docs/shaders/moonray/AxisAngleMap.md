@@ -1,4 +1,4 @@
-# AxisAngleMap
+# Axis Angle Map
 
 MoonRay map `AxisAngleMap`, for the moonray target.
 

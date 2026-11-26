@@ -1,4 +1,4 @@
-# UsdPrimvarReader_float2
+# Usd Primvar Reader Float 2
 
 MoonRay map `UsdPrimvarReader_float2`, for the moonray target.
 

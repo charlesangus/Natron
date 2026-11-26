@@ -1,4 +1,4 @@
-# ColorCorrectHueShiftMap
+# Color Correct Hue Shift Map
 
 MoonRay map `ColorCorrectHueShiftMap`, for the moonray target.
 

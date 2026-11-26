@@ -1,4 +1,4 @@
-# DwaMixMaterial
+# Dwa Mix Material
 
 MoonRay material `DwaMixMaterial`, for the moonray target.
 

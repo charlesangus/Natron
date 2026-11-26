@@ -1,4 +1,4 @@
-# CheckerboardMap
+# Checkerboard Map
 
 MoonRay map `CheckerboardMap`, for the moonray target.
 

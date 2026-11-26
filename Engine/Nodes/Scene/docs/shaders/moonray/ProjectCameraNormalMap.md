@@ -1,4 +1,4 @@
-# ProjectCameraNormalMap
+# Project Camera Normal Map
 
 MoonRay normal_map `ProjectCameraNormalMap`, for the moonray target.
 

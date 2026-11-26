@@ -1,4 +1,4 @@
-# ProjectPlanarMap
+# Project Planar Map
 
 MoonRay map `ProjectPlanarMap`, for the moonray target.
 

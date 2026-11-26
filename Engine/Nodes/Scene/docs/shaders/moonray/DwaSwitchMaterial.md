@@ -1,4 +1,4 @@
-# DwaSwitchMaterial
+# Dwa Switch Material
 
 MoonRay material `DwaSwitchMaterial`, for the moonray target.
 

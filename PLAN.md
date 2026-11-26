@@ -660,7 +660,7 @@ future core work has solid ground to build on.
 | M598 | Progressive Render GIL Flake | todo | - |  | E14 | | | [M598-progressive-render-gil-flake.md](PLAN/MILESTONES/M598-progressive-render-gil-flake.md) |
 | M599 | Runner Efficiency | doing | - | bosley-executor | E2 | | | [M599-runner-efficiency.md](PLAN/MILESTONES/M599-runner-efficiency.md) |
 | M600 | Native Geometry UAT Round 2 | done | - | bosley-executor | E9 | F15 | | [M600-native-geometry-uat-round-2.md](PLAN/MILESTONES/M600-native-geometry-uat-round-2.md) |
-| M616 | Packed Instances In Viewer Cycles | todo | M600 |  | E9 | | | [M616-packed-instances-in-viewer-cycles.md](PLAN/MILESTONES/M616-packed-instances-in-viewer-cycles.md) |
+| M616 | Packed Instances In Viewer Cycles | doing | M600 | bosley-executor | E9 | | | [M616-packed-instances-in-viewer-cycles.md](PLAN/MILESTONES/M616-packed-instances-in-viewer-cycles.md) |
 | M617 | Native Geometry Viewer Architecture Spike | done | - | | E9 | | | [M617-native-geometry-viewer-architecture-spike.md](PLAN/MILESTONES/M617-native-geometry-viewer-architecture-spike.md) |
 | M618 | ~~Native Geometry Viewer Flash Measurement~~ | cancelled | M617 |  | E9 | | | [M618-native-geometry-viewer-flash-measurement.md](PLAN/MILESTONES/M618-native-geometry-viewer-flash-measurement.md) |
 | M619 | ~~Native Geometry Viewer Flash Fixes~~ | cancelled | M618 |  | E9 | | | [M619-native-geometry-viewer-flash-fixes.md](PLAN/MILESTONES/M619-native-geometry-viewer-flash-fixes.md) |

@@ -2964,13 +2964,9 @@ RenderEngine::renderCurrentFrame(bool enableRenderStats,
     RenderEnginePrivate::RefreshRequest r;
     r.enableStats = enableRenderStats;
     r.enableAbort = canAbort;
-    // One posted call drains the whole queue, so requests made before it runs share it.
-    const bool posted = !_imp->refreshQueue.empty();
     _imp->refreshQueue.push_back(r);
     NodeCreationStageLog::mark("viewerRenderRequested");
-    if (!posted) {
-        Q_EMIT currentFrameRenderRequestPosted();
-    }
+    Q_EMIT currentFrameRenderRequestPosted();
 }
 
 void

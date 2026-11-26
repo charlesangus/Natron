@@ -8538,6 +8538,9 @@ struct SceneViewport::Implementation {
     GeoComponentSelection reselectSelection;
     // The geometry the engine's component highlight was mapped onto.
     std::shared_ptr<const GeoUsdConvert> highlightConvert;
+    // natronGeoPick was published while no geometry was synced, as a selection made on the scene
+    // shown before the geometry's sync landed is.
+    bool geoPickOwed = false;
 
     // The thread requests for payload loads are serviced on. It waits under this mutex's condition
     // for the stage to have requests; a request only needs to wake it.
@@ -9747,6 +9750,9 @@ SceneViewport::onSynced(U64 serial,
             }
         }
         refreshComponentState();
+    }
+    if (_imp->geoPickOwed && _imp->geoDisplay->hasGeometry()) {
+        publishGeoPick();
     }
     serviceDeferredInput();
     if (serial != _imp->requestedSerial) {
@@ -11746,22 +11752,28 @@ SceneViewport::setSelection(const QStringList& paths)
     }
     _imp->renderer.setSelectedPrims(p);
     setProperty("natronSceneSelection", paths);
-    {
-        QVariantList picks;
-        for (const std::string& path : p) {
-            GeoViewerLayer::Pick pick;
-            if (_imp->geoDisplay->pickPrimitives(path, &pick)) {
-                QVariantList primitives;
-                for (GeoIndex index : pick.primitives) {
-                    primitives.push_back(QVariant::fromValue<qlonglong>(index));
-                }
-                picks.push_back(QVariantList { QString::fromStdString(pick.primPath), primitives });
-            }
-        }
-        setProperty("natronGeoPick", picks);
-    }
+    publishGeoPick();
     update();
     Q_EMIT selectionChanged(paths);
+}
+
+void
+SceneViewport::publishGeoPick()
+{
+    const std::vector<std::string> paths = _imp->renderer.getSelectedPrims();
+    QVariantList picks;
+    for (const std::string& path : paths) {
+        GeoViewerLayer::Pick pick;
+        if (_imp->geoDisplay->pickPrimitives(path, &pick)) {
+            QVariantList primitives;
+            for (GeoIndex index : pick.primitives) {
+                primitives.push_back(QVariant::fromValue<qlonglong>(index));
+            }
+            picks.push_back(QVariantList { QString::fromStdString(pick.primPath), primitives });
+        }
+    }
+    setProperty("natronGeoPick", picks);
+    _imp->geoPickOwed = !paths.empty() && !_imp->geoDisplay->hasGeometry();
 }
 
 QStringList

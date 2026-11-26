@@ -1154,7 +1154,7 @@ void
 OutputSchedulerThread::startRender()
 {
     if ( isFPSRegulationNeeded() ) {
-        _imp->timer.playState = ePlayStateRunning;
+        _imp->timer.startPlaying();
     }
 
     // Start measuring

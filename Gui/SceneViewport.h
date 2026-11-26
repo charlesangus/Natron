@@ -1737,6 +1737,9 @@ private:
 
     void publishGeoBounds();
 
+    // Publishes natronGeoPick for the selected prims and the geometry synced last.
+    void publishGeoPick();
+
     // Emits outOfDateChanged() when isOutOfDate() has changed since the last call.
     void publishOutOfDate();
 

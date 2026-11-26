@@ -61,6 +61,10 @@ file(GLOB NatronEngineKernel_HEADERS Kernel/*.h)
 file(GLOB NatronEngineKernel_SOURCES Kernel/*.cpp)
 list(APPEND NatronEngine_HEADERS ${NatronEngineKernel_HEADERS})
 list(APPEND NatronEngine_SOURCES ${NatronEngineKernel_SOURCES})
+file(GLOB NatronEngineOptics_HEADERS Optics/*.h)
+file(GLOB NatronEngineOptics_SOURCES Optics/*.cpp)
+list(APPEND NatronEngine_HEADERS ${NatronEngineOptics_HEADERS})
+list(APPEND NatronEngine_SOURCES ${NatronEngineOptics_SOURCES})
 # Engine/Flow/ is the optical-flow library. It knows nothing of nodes, images or Qt.
 file(GLOB NatronEngineFlow_HEADERS Flow/*.h)
 file(GLOB NatronEngineFlow_SOURCES Flow/*.cpp)
@@ -272,6 +276,7 @@ target_link_libraries(NatronEngine
         tess
         rawspeed::rawspeed
         lensfun::lensfun
+        ZLIB::ZLIB
         ${CMAKE_DL_LIBS}
         ${NATRON_USD_ENGINE_LIBRARIES}
         OpenSubdiv::osdCPU

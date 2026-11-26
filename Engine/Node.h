@@ -1842,9 +1842,11 @@ public:
 
     /**
      * @brief Fills keyframes with all different keyframes time that all parameters of this
-     * node have. Some keyframes might appear several times.
+     * node have. Some keyframes might appear several times. When accept is set, only the knobs it
+     * accepts contribute.
      **/
-    void getAllKnobsKeyframes(std::list<SequenceTime>* keyframes);
+    void getAllKnobsKeyframes(std::list<SequenceTime>* keyframes,
+                              const std::function<bool(const KnobIPtr&)>& accept = std::function<bool(const KnobIPtr&)>());
 
     bool hasAnimatedKnob() const;
 
@@ -2047,7 +2049,8 @@ public:
                               const KnobDoublePtr& skewY,
                               const KnobChoicePtr& skewOrder,
                               const KnobDoublePtr& center,
-                              const KnobBoolPtr& invert);
+                              const KnobBoolPtr& invert,
+                              const std::function<bool(double, Transform::Matrix3x3*)>& frame = std::function<bool(double, Transform::Matrix3x3*)>());
 
     /**
      * @brief The knobs of the transform interact that drives member, or of the first one the

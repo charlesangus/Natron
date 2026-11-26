@@ -594,3 +594,146 @@ TEST_F(RotoTrackerBundleTest, RotoAndTrackerSurviveSaveAndLoad)
         expectSameImage(builtImages[i], reloadedImages[i]);
     }
 }
+
+namespace {
+
+struct LayerTransformState {
+    double nodeCenter[2];
+    double nodeTranslateAt9;
+    double layerCenter[2];
+    double layerTranslateAt1;
+    double layerTranslateAt9;
+    bool layerSelected;
+};
+
+bool
+readLayerTransformState(const NodePtr& rotoPaint,
+                        const std::string& layerName,
+                        LayerTransformState* state)
+{
+    RotoContextPtr context = rotoPaint ? rotoPaint->getRotoContext() : RotoContextPtr();
+    RotoLayerPtr layer = context ? std::dynamic_pointer_cast<RotoLayer>(context->getItemByName(layerName)) : RotoLayerPtr();
+    if (!layer) {
+        return false;
+    }
+    KnobDoublePtr nodeCenter = std::dynamic_pointer_cast<KnobDouble>(rotoPaint->getKnobByName("center"));
+    KnobDoublePtr nodeTranslate = std::dynamic_pointer_cast<KnobDouble>(rotoPaint->getKnobByName("translate"));
+    KnobDoublePtr layerCenter = std::dynamic_pointer_cast<KnobDouble>(layer->getKnobByName("center"));
+    KnobDoublePtr layerTranslate = std::dynamic_pointer_cast<KnobDouble>(layer->getKnobByName("translate"));
+    if (!nodeCenter || !nodeTranslate || !layerCenter || !layerTranslate) {
+        return false;
+    }
+    for (int d = 0; d < 2; ++d) {
+        state->nodeCenter[d] = nodeCenter->getValue(d);
+        state->layerCenter[d] = layerCenter->getValue(d);
+    }
+    state->nodeTranslateAt9 = nodeTranslate->getValueAtTime(9., 0);
+    state->layerTranslateAt1 = layerTranslate->getValueAtTime(1., 0);
+    state->layerTranslateAt9 = layerTranslate->getValueAtTime(9., 0);
+    const std::list<RotoItemPtr>& selected = context->getSelectedItems();
+    state->layerSelected = std::find(selected.begin(), selected.end(), layer) != selected.end();
+
+    return true;
+}
+
+void
+expectSameLayerTransformState(const LayerTransformState& expected,
+                              const LayerTransformState& actual)
+{
+    EXPECT_EQ(expected.nodeCenter[0], actual.nodeCenter[0]);
+    EXPECT_EQ(expected.nodeCenter[1], actual.nodeCenter[1]);
+    EXPECT_EQ(expected.nodeTranslateAt9, actual.nodeTranslateAt9);
+    EXPECT_EQ(expected.layerCenter[0], actual.layerCenter[0]);
+    EXPECT_EQ(expected.layerCenter[1], actual.layerCenter[1]);
+    EXPECT_EQ(expected.layerTranslateAt1, actual.layerTranslateAt1);
+    EXPECT_EQ(expected.layerTranslateAt9, actual.layerTranslateAt9);
+    EXPECT_EQ(expected.layerSelected, actual.layerSelected);
+}
+
+} // anonymous namespace
+
+class RotoLayerTransformBundleTest
+    : public RotoTrackerBundleTest {
+protected:
+    // A RotoPaint on an 8x8 image whose layer holds a square, with the layer's centre and keyed
+    // translation set through the node's knobs while the layer is selected.
+    void expectTwoRoundTripsKeep(bool layerStaysSelected,
+                                 double centerX,
+                                 double centerY)
+    {
+        QTemporaryDir tmp;
+        ASSERT_TRUE(tmp.isValid());
+        ProjectPtr project = getApp()->getProject();
+
+        NodePtr reader = createWorkingSpaceRead(std::string(NATRON_TESTS_FIXTURES_DIR "/flat-rgba-only.exr"));
+        NodePtr built = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTOPAINT));
+        ASSERT_TRUE(reader && built);
+        connectNodes(reader, built, 0, true);
+        RotoContextPtr context = built->getRotoContext();
+        ASSERT_TRUE(bool(context));
+        context->clearSelection(RotoItem::eSelectionReasonOther);
+        RotoLayerPtr layer = context->addLayer();
+        ASSERT_TRUE(bool(layer));
+        BezierPtr square = context->makeSquare(1., 1., 3., 1.);
+        ASSERT_TRUE(bool(square));
+        ASSERT_EQ(layer, square->getParentLayer());
+        context->clearSelection(RotoItem::eSelectionReasonOther);
+        context->select(layer, RotoItem::eSelectionReasonOther);
+
+        KnobDoublePtr center = std::dynamic_pointer_cast<KnobDouble>(built->getKnobByName("center"));
+        KnobDoublePtr translate = std::dynamic_pointer_cast<KnobDouble>(built->getKnobByName("translate"));
+        ASSERT_TRUE(center && translate);
+        center->setValue(centerX, ViewSpec::all(), 0);
+        center->setValue(centerY, ViewSpec::all(), 1);
+        translate->setValueAtTime(1., 1., ViewSpec::all(), 0);
+        translate->setValueAtTime(9., 3., ViewSpec::all(), 0);
+        if (!layerStaysSelected) {
+            context->clearSelection(RotoItem::eSelectionReasonOther);
+        }
+
+        const std::string nodeName = built->getFullyQualifiedName();
+        const std::string layerName = layer->getScriptName();
+        LayerTransformState builtState;
+        ASSERT_TRUE(readLayerTransformState(built, layerName, &builtState));
+        EXPECT_EQ(centerX, builtState.layerCenter[0]);
+        EXPECT_EQ(centerY, builtState.layerCenter[1]);
+        EXPECT_EQ(centerX, builtState.nodeCenter[0]);
+        EXPECT_EQ(centerY, builtState.nodeCenter[1]);
+        EXPECT_EQ(1., builtState.layerTranslateAt1);
+        EXPECT_EQ(3., builtState.layerTranslateAt9);
+        EXPECT_EQ(layerStaysSelected, builtState.layerSelected);
+
+        QString firstPath;
+        ASSERT_TRUE(saveAs(tmp, QString::fromUtf8("layer-transform.ntpz"), &firstPath));
+        ASSERT_TRUE(resetAndLoad(firstPath));
+        LayerTransformState firstState;
+        ASSERT_TRUE(readLayerTransformState(node(nodeName), layerName, &firstState));
+        {
+            SCOPED_TRACE("first load");
+            expectSameLayerTransformState(builtState, firstState);
+        }
+        const ProjectSnapshot firstSnapshot = captureProjectSnapshot(project);
+
+        QString secondPath;
+        ASSERT_TRUE(saveAs(tmp, QString::fromUtf8("layer-transform-again.ntpz"), &secondPath));
+        ASSERT_TRUE(resetAndLoad(secondPath));
+        LayerTransformState secondState;
+        ASSERT_TRUE(readLayerTransformState(node(nodeName), layerName, &secondState));
+        {
+            SCOPED_TRACE("second load");
+            expectSameLayerTransformState(builtState, secondState);
+        }
+        EXPECT_TRUE(projectsAreEquivalent(firstSnapshot, captureProjectSnapshot(project)));
+    }
+};
+
+// The image centre is the node centre's default, which the node does not save.
+TEST_F(RotoLayerTransformBundleTest, ADeselectedLayerTransformSetOnTheNodeSurvivesTwoSaves)
+{
+    expectTwoRoundTripsKeep(false, 4., 4.);
+}
+
+TEST_F(RotoLayerTransformBundleTest, ASelectedLayerTransformSetOnTheNodeSurvivesTwoSaves)
+{
+    expectTwoRoundTripsKeep(true, 2.5, 6.);
+}

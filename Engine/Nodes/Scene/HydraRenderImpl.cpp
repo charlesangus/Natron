@@ -2766,6 +2766,32 @@ releaseAllCpuEngines()
     (void)thread.post([&thread]() { thread.releaseAllEngines(); }, false);
 }
 
+bool
+releaseAllCpuEnginesAndWait(int timeoutMs)
+{
+    RenderThread& thread = RenderThread::cpu();
+    // Shared with the job, which outlives a wait that times out.
+    std::shared_ptr<std::promise<void>> released = std::make_shared<std::promise<void>>();
+    std::future<void> done = released->get_future();
+
+    const auto job = [&thread, released]() {
+        // Set however the release ends, a throw included, so the wait reports it rather than
+        // running out.
+        struct SetOnExit {
+            std::promise<void>& promise;
+            ~SetOnExit() { promise.set_value(); }
+        } setOnExit { *released };
+        thread.releaseAllEngines();
+    };
+
+    // A thread that never started holds no engine.
+    if (!thread.post(job, false)) {
+        return true;
+    }
+
+    return done.wait_for(std::chrono::milliseconds(std::max(0, timeoutMs))) == std::future_status::ready;
+}
+
 void
 setMemoryBudget(std::size_t bytes)
 {
@@ -4324,6 +4350,12 @@ void
 releaseCpuRenderEngines()
 {
     HydraRender::releaseAllCpuEngines();
+}
+
+bool
+releaseCpuRenderEnginesAndWait(int timeoutMs)
+{
+    return HydraRender::releaseAllCpuEnginesAndWait(timeoutMs);
 }
 
 bool

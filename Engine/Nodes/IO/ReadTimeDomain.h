@@ -114,6 +114,11 @@ RangeTime mapIntoRange(double time, int first, int last, BeforeAfter before, Bef
  * @brief What to load at output `time`. `framesOnDisk` holds the file frame numbers that exist.
  **/
 Result resolve(double time, const Settings& settings, const std::set<int>& framesOnDisk);
+
+/**
+ * @brief resolve() for a still image, which answers every frame of [firstFrame, lastFrame].
+ **/
+Result resolveStill(double time, const Settings& settings);
 } // namespace ReadTimeDomain
 
 NATRON_NAMESPACE_EXIT

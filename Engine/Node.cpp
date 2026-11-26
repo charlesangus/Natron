@@ -9784,7 +9784,8 @@ Node::hasAnimatedKnob() const
 }
 
 void
-Node::getAllKnobsKeyframes(std::list<SequenceTime>* keyframes)
+Node::getAllKnobsKeyframes(std::list<SequenceTime>* keyframes,
+                           const std::function<bool(const KnobIPtr&)>& accept)
 {
     assert(keyframes);
     const KnobsVec & knobs = getKnobs();
@@ -9794,6 +9795,9 @@ Node::getAllKnobsKeyframes(std::list<SequenceTime>* keyframes)
             continue;
         }
         if ( !knobs[i]->canAnimate() ) {
+            continue;
+        }
+        if (accept && !accept(knobs[i])) {
             continue;
         }
         int dim = knobs[i]->getDimension();

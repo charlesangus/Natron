@@ -29,6 +29,8 @@
 #include "Global/Macros.h"
 
 #include <map>
+#include <utility>
+#include <vector>
 
 #include <QThread>
 #include <QAbstractItemModel>
@@ -105,6 +107,10 @@ public:
     const QDateTime& getLastModified() const;
 
     quint64 getSize() const;
+
+    bool isSequenceChunk() const;
+    int getChunkFirstFrame() const;
+    int getChunkLastFrame() const;
 
     /**
      * @brief Add a new child, MT-safe
@@ -203,11 +209,11 @@ GCC_DIAG_SUGGEST_OVERRIDE_OFF
 GCC_DIAG_SUGGEST_OVERRIDE_ON
 
 public:
-
-    enum Roles
-    {
+    enum Roles {
         FilePathRole = Qt::UserRole + 1,
         FileNameRole = Qt::UserRole + 2,
+        UserFriendlyNameRole = Qt::UserRole + 3,
+        ChunkRangeRole = Qt::UserRole + 4,
     };
 
     enum Sections
@@ -304,6 +310,16 @@ public:
      * @brief Returns true if sequence mode is enabled
      **/
     bool isSequenceModeEnabled() const;
+
+    void setSplitSequencesOnGaps(bool split);
+
+    bool isSplitSequencesOnGapsEnabled() const;
+
+    void setSequenceSplit(const QString& sequencePath, bool split);
+
+    bool isSequenceSplit(const QString& sequencePath) const;
+
+    static std::vector<std::pair<int, int>> contiguousFrameRuns(const SequenceParsing::SequenceFromFiles& sequence);
 
     /*
      * @brief Make a new directory

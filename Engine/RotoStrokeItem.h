@@ -141,7 +141,7 @@ private:
 
     RectD computeBoundingBox(double time) const;
 
-    RectD computeBoundingBoxInternal(double time) const;
+    RectD computeBoundingBoxInternal(double time, const Transform::Matrix3x3& transform) const;
 
     std::unique_ptr<RotoStrokeItemPrivate> _imp;
 };

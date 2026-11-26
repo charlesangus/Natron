@@ -9,8 +9,8 @@ Sections:
   - names: the GeoForEachEnd's Loop Name is loop1 and the GeoSolverEnd's loop2, and a third block
     end created after them takes loop3;
   - hulls: the graph's loop block item covers both blocks' begin, body and end nodes;
-  - drive: in each block, Drive from loop on the body GeoTransform's Translate drives its three
-    dimensions, the driver row offers the block's variables (the solver's substep, dt and frame
+  - drive: in each block, Drive from loop (all dimensions) on the body GeoTransform's Translate x
+    field drives its three dimensions, the driver row offers the block's variables (the solver's substep, dt and frame
     among them, the for-each's not), and the End's driven-knob table lists translate.x, .y and .z;
   - cache: with one substep, frames 1 to CACHE_FRAMES are shown; the timeline's cached line marks
     them, and seeking back to KEPT_FRAME shows the viewer's "cached sim frame" label;
@@ -43,7 +43,7 @@ CACHE_FRAMES = 5
 KEPT_FRAME = 3
 JUMP_FRAME = 500
 SLOW_SUBSTEPS = 20000
-DRIVE_ITEM = "Drive from loop"
+DRIVE_ITEM = "Drive from loop (all dimensions)"
 CANCEL_TOOLTIP = "Cancel and remove the task from the list"
 TRANSLATE_ROWS = ["translate.x", "translate.y", "translate.z"]
 SOLVER_ONLY = ("loop.substep", "loop.numsubsteps", "loop.dt")

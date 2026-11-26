@@ -570,7 +570,12 @@ GeoSolverEnd::substepContext(const RenderContextPtr& base,
             }
         }
     }
-    builder.set(hiddenVariable(loopName), (std::int64_t)GeoForEachEnd::publishFeedback(previous));
+    // A preview has no state to start from: without the variable, GeoSolverBegin passes its input through.
+    if (previous) {
+        builder.set(hiddenVariable(loopName), (std::int64_t)GeoForEachEnd::publishFeedback(previous));
+    } else {
+        builder.erase(hiddenVariable(loopName));
+    }
 
     return builder.build();
 }

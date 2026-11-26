@@ -137,13 +137,17 @@ enclosingEnds(const NodePtr& node)
         }
         // A walk of one kind passes the ends of the others, so a solver around a for-each is
         // found along with it: the ends another candidate's walk reaches come at a later level.
+        // A lone candidate is never outer to itself, so its walks are skipped: driven knobs ask
+        // for their enclosing ends on each read outside a render.
         std::set<Node*> outer;
-        for (Node* candidate : candidates) {
-            std::set<Node*> above;
-            collectEnds(candidate->shared_from_this(), &above);
-            for (Node* end : above) {
-                if (end != candidate) {
-                    outer.insert(end);
+        if (candidates.size() > 1) {
+            for (Node* candidate : candidates) {
+                std::set<Node*> above;
+                collectEnds(candidate->shared_from_this(), &above);
+                for (Node* end : above) {
+                    if (end != candidate) {
+                        outer.insert(end);
+                    }
                 }
             }
         }

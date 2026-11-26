@@ -8,7 +8,7 @@ the File parameter's openFile(). In the dialog it checks:
   - sequence: the five files are one item, shape.####.ngeo; opening it sets the File to the
     pattern and First Frame and Last Frame to 1 and 5, and GeoFile has every Read frame-handling
     parameter;
-  - cache: a GeoFileCache's Filename save dialog shows the ngeo extension.
+  - cache: a GeoFileCache's Filename save dialog, opened from its button, shows the ngeo extension.
 Screenshots: m615_geofile_dialog.png and m615_geofile_cache_dialog.png in $NATRON_GUI_TEST_OUT.
 
 Usage: Tests/gui/run-gui-test.sh Tests/gui/m615_geofile.py
@@ -29,7 +29,7 @@ FRAME_KNOBS = ("firstFrame", "beforeFirstFrame", "lastFrame", "afterLastFrame", 
 
 try:
     from PySide6.QtCore import QItemSelectionModel, QMetaObject, QTimer
-    from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QLabel, QLineEdit, QTreeView
+    from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QLabel, QLineEdit, QPushButton, QTreeView
 
     import guitest as gt
     from guitest import OUT, check, finish, plugin_problem, report, require, run
@@ -128,6 +128,32 @@ try:
 
         QTimer.singleShot(0, go)
 
+    def file_button(panel, script_name):
+        """The open-file button of the knob named script_name: a QPushButton whose tool tip opens
+        with the script name in bold."""
+        tag = "<b>%s</b>" % script_name
+        if panel is None:
+            return None
+        for w in panel.findChildren(QPushButton):
+            try:
+                if w.isVisible() and tag in w.toolTip()[:60]:
+                    return hold(w)
+            except RuntimeError:
+                continue
+        return None
+
+    def click_file_button(button):
+        # OutputFileParam.openFile() only opens user knobs' dialogs, so the button is clicked.
+        opened["returned"] = False
+
+        def go():
+            try:
+                button.click()
+            finally:
+                opened["returned"] = True
+
+        QTimer.singleShot(0, go)
+
     def open_panel(node):
         app.clearSelection()
         app.selectNode(node, True)
@@ -181,7 +207,9 @@ try:
         gt.section("cache")
         ok = yield from open_panel(cache)
         require(ok, "open the GeoFileCache's settings panel")
-        open_dialog(cache_file)
+        button = file_button(panel_of(cache), "filename")
+        require(button is not None, "found the Filename parameter's open-file button")
+        click_file_button(button)
         ok = yield ("until", lambda: modal_dialog() is not None, POLL_TIMEOUT_S)
         require(ok, "the Filename parameter opens a save dialog")
         dialog = modal_dialog()

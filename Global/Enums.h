@@ -517,6 +517,9 @@ enum DataKindEnum {
     eDataKindScene,
     eDataKindPolymorphic,
     eDataKindRaw,
+    // A node of a port network (shaders, kernels, channels): it joins other network nodes only,
+    // and is never rendered, viewed or cached.
+    eDataKindNetwork,
 };
 
 enum NodeCategoryEnum {

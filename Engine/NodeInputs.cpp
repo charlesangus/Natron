@@ -48,6 +48,7 @@
 #include "Engine/NodeGroup.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Loop/LoopEnd.h"
+#include "Engine/Nodes/Network/NetworkNode.h"
 #include "Engine/OpenGLViewerI.h"
 #include "Engine/PrecompNode.h"
 #include "Engine/Project.h"
@@ -1052,6 +1053,11 @@ Node::canConnectInput(const NodePtr& input,
         }
     }
 
+    // Unlike kinds, this judges the two nodes alone, so it holds while loading too.
+    if (NetworkNode::checkInputConnection(input, *this, inputNumber) != NetworkNode::eConnectionOk) {
+        return eCanConnectInput_incompatiblePorts;
+    }
+
     return eCanConnectInput_ok;
 } // Node::canConnectInput
 
@@ -1992,6 +1998,7 @@ Node::onInputChanged(int inputNb,
     }
 
     refreshMaskEnabledNess(inputNb);
+    _imp->effect->onInputConnectionChanged(inputNb);
 
     InspectorNode* isInspector = dynamic_cast<InspectorNode*>(this);
     if (isInspector) {

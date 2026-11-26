@@ -20,6 +20,10 @@
 # Required environment: NATRON_CYCLES_REPO (the GitHub repository's https URL, no trailing slash),
 # NATRON_CYCLES_COMMIT (a full commit SHA), NATRON_CYCLES_SHA256 (of the GitHub commit archive).
 # Optional: NATRON_CYCLES_OIDN (ON/OFF, default ON) for the OpenImageDenoise denoiser.
+#
+# The headers of src/ stay in the image at /usr/local/share/cycles-src, so Natron's shader manifest
+# dump tool (tools/shaders/dump_cycles_manifest.cpp) can be built against the same Cycles commit as
+# hdCycles; tools/shaders/check_manifest_drift.sh uses them.
 
 set -euo pipefail
 
@@ -145,6 +149,15 @@ Cycles is licensed under the Apache License 2.0 (LICENSE). src/session/IMB_deep_
 src/session/IMB_deep_sample_merge.hh are Blender code under the GNU GPL version 2 or later.
 EOF
 chmod 0644 "${plugin_dir}/hdCycles/SOURCE"
+
+headers=/usr/local/share/cycles-src
+install -d "$headers"
+(cd "$src" && find src -type f \( -name '*.h' -o -name '*.hh' \) -print0 |
+    xargs -0 -I{} install -D -m 0644 {} "${headers}/{}")
+install -m 0644 "${src}/LICENSE" "${headers}/LICENSE"
+install -m 0644 "${plugin_dir}/hdCycles/SOURCE" "${headers}/SOURCE"
+test -f "${headers}/src/graph/node_type.h"
+du -sh "$headers"
 grep -q '"LibraryPath": "../hdCycles.so"' "${plugin_dir}/hdCycles/resources/plugInfo.json"
 grep -q '"HdCyclesPlugin"' "${plugin_dir}/hdCycles/resources/plugInfo.json"
 grep -q '"priority": 99' "${plugin_dir}/hdCycles/resources/plugInfo.json"

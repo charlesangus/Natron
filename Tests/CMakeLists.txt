@@ -255,6 +255,9 @@ list(APPEND Tests_SOURCES ${Tests_NATIVE_SOURCES})
 # Same CONFIGURE_DEPENDS auto-pickup for the serialization-boundary tests.
 file(GLOB Tests_SERIALIZATION_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Serialization/*_Test.cpp)
 list(APPEND Tests_SOURCES ${Tests_SERIALIZATION_SOURCES})
+# Same CONFIGURE_DEPENDS auto-pickup for the port network tests.
+file(GLOB Tests_NETWORK_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Network/*_Test.cpp)
+list(APPEND Tests_SOURCES ${Tests_NETWORK_SOURCES})
 # Same CONFIGURE_DEPENDS auto-pickup for the optical-flow library tests.
 file(GLOB Tests_FLOW_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Flow/*_Test.cpp)
 list(APPEND Tests_SOURCES ${Tests_FLOW_SOURCES})
@@ -487,4 +490,8 @@ if(Python3_Interpreter_FOUND)
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/bench/gui/compare.py --self-test)
     add_test(NAME TabTabTabPython
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/Tests/python/run_tabtabtab_tests.py)
+    add_test(NAME ShaderManifestPython
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/Tests/python/test_shader_manifest.py)
+    add_test(NAME ShaderDocsPython
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/shaders/audit_shader_nodes.py --check-docs)
 endif()

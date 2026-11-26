@@ -355,6 +355,47 @@ public:
     QString getInputLabel(int inputNumber);
 
     /**
+     * @brief Returns the attributes promoted to ports of a network node (a shader, for one), in
+     * input order. Empty for any other node.
+     **/
+    QStringList getPorts() const;
+
+    /**
+     * @brief Returns every attribute of a network node that can be a port, promoted or not, in
+     * the order of its pages. Empty for any other node.
+     **/
+    QStringList getPortAttributes() const;
+
+    /**
+     * @brief Makes the attribute of a network node a port, appended to its inputs; the attribute's
+     * parameter is disabled while the port is connected. Returns false, changing nothing, when the
+     * node is not a network node or the attribute cannot be a port. Undoable.
+     **/
+    bool promotePort(const QString& attribute);
+
+    /**
+     * @brief Removes the port of the attribute of a network node, disconnecting it and enabling
+     * its parameter again. Returns false, changing nothing, when the node is not a network node or
+     * the attribute is always a port. Undoable.
+     **/
+    bool demotePort(const QString& attribute);
+
+    /**
+     * @brief Returns the output of the node connected to the input of a network node that the input
+     * reads. Empty for the upstream node's first output.
+     **/
+    QString getOutputForInput(const QString& inputLabel) const;
+
+    /**
+     * @brief Makes the input of a network node read the named output of the node connected to it.
+     * An empty name reads the first output. Returns false, changing nothing, when the node is not a
+     * network node, the input is not a port, or the connected network node has no such output or
+     * its type does not convert to the port's. Undoable.
+     **/
+    bool setOutputForInput(const QString& inputLabel,
+                           const QString& outputName);
+
+    /**
      * @brief Returns a list of all parameters for the Effect. These are the parameters located in the settings panel
      * on the GUI.
      **/

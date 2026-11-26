@@ -170,6 +170,7 @@
 #include "Engine/Nodes/Scene/SceneCaches.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneTeardown.h"
+#include "Engine/Nodes/Scene/Shaders/ShaderManifest.h"
 #include "Engine/Nodes/Test/OverlayImageGuiTestNode.h"
 #include "Engine/Nodes/Test/OverlayTestNode.h"
 #include "Engine/Nodes/Test/PortTestNode.h"
@@ -2262,6 +2263,9 @@ AppManager::loadBuiltinNodePlugins()
         registerNativePlugin<OverlayImageGuiTestNode>();
         PortTestNode::registerPlugins();
     }
+
+    // One plug-in per shader of each renderer's manifest, created by ID and kept out of menus.
+    (void)registerBuiltinShaderPlugins();
 
     // Registered in the background too, so that a script that loads and saves a project keeps its
     // viewers. Without a viewer widget a viewer never renders.

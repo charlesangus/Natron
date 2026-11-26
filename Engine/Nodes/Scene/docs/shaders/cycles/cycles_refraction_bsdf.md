@@ -1,0 +1,26 @@
+# Refraction BSDF
+
+Cycles shader `cycles_refraction_bsdf`, for the cycles target.
+
+Generated from the Cycles shader manifest by `tools/shaders/audit_shader_nodes.py`.
+
+## Outputs
+
+| Name | Type |
+| --- | --- |
+| BSDF | closure |
+
+## Settings
+
+| Label | Script name | Type | Default | Port | Description |
+| --- | --- | --- | --- | --- | --- |
+| Distribution | `distribution` | enum | ggx | knob only | Distribution Options: beckmann, ggx. |
+
+## Inputs
+
+| Label | Script name | Type | Default | Port | Description |
+| --- | --- | --- | --- | --- | --- |
+| Color | `color` | color | 0.8 0.8 0.8 | port | Color |
+| Normal | `normal` | normal | 0 0 0 | port | Normal |
+| Roughness | `roughness` | float | 0 | port | Roughness |
+| IOR | `IOR` | float | 0.3 | port | IOR |

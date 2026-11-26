@@ -1023,6 +1023,20 @@ destroyNodeFromPython(const NodePtr& node,
     recorder->record(command, touchedNode(node));
 }
 
+void
+runPythonUndoCommand(const NodePtr& node,
+                     const UndoCommandPtr& command)
+{
+    if (!node || !command) {
+        return;
+    }
+    UndoRecorderPtr recorder = recorderForNode(node);
+    command->redo();
+    if (recorder) {
+        recorder->record(command, touchedNode(node));
+    }
+}
+
 //================================================================
 
 PythonInputUndoGuard::PythonInputUndoGuard(const NodePtr& node,

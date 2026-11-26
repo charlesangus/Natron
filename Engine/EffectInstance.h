@@ -2834,6 +2834,12 @@ public:
     virtual void onInputChanged(int inputNo);
 
     /**
+     * @brief Called every time an input connection is changed, including while a project or node
+     * tree is loading, when onInputChanged() is not called.
+     **/
+    virtual void onInputConnectionChanged(int /*inputNo*/) { }
+
+    /**
      * @brief Called when deleting the node named sourceName left input inputNo empty. Disconnecting
      * the input, and deleting a node whose input takes its place, do not call it.
      **/

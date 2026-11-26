@@ -85,6 +85,12 @@ void recordPythonNodeCreated(const NodePtr& node);
 void destroyNodeFromPython(const NodePtr& node, bool autoReconnect);
 
 /**
+ * @brief Runs command's redo() for a Python call that edits node, recording command so that
+ * undoing the step undoes it. When nothing records, it only runs it.
+ **/
+void runPythonUndoCommand(const NodePtr& node, const UndoCommandPtr& command);
+
+/**
  * @brief Records what a Python call changes on one input of a node.
  **/
 class PythonInputUndoGuard {

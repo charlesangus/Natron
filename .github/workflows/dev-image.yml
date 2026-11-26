@@ -58,7 +58,7 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
           df -h /
 
-      - name: Build and push
+      - name: Build
         if: steps.exists.outputs.present != 'true'
         env:
           IMAGE: ${{ steps.tag.outputs.image }}
@@ -67,7 +67,24 @@ jobs:
             --build-arg BUILDKIT_INLINE_CACHE=1 \
             --cache-from "${IMAGE%:*}:latest" \
             -f tools/ci/local/Dockerfile -t "$IMAGE" tools/ci/local
-          docker push "$IMAGE"
+
+      # The image's renderers must still produce the committed shader
+      # manifests; the script and manifests come from this checkout,
+      # mounted read-only, and the Cycles headers from the image.
+      - name: Check shader manifests against the image's renderers
+        if: steps.exists.outputs.present != 'true'
+        env:
+          IMAGE: ${{ steps.tag.outputs.image }}
+        run: |
+          docker run --rm -e PYTHONDONTWRITEBYTECODE=1 \
+            -v "$GITHUB_WORKSPACE:/workspace:ro" -w /workspace \
+            "$IMAGE" tools/shaders/check_manifest_drift.sh
+
+      - name: Push
+        if: steps.exists.outputs.present != 'true'
+        env:
+          IMAGE: ${{ steps.tag.outputs.image }}
+        run: docker push "$IMAGE"
 
       # The hash tag may already exist from a branch run, so main points
       # :latest at it whether or not this run built it.

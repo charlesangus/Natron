@@ -44,6 +44,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Engine/EffectInstance.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/Network/NetworkNode.h"
 #include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
 
@@ -123,6 +124,14 @@ handleConnectionError(const NodeGuiPtr& outputNode,
                                 .arg(QString::fromUtf8(inputNode->getNode()->getLabel().c_str()))
                                 .arg(conflictingNode ? QString::fromUtf8(conflictingNode->getLabel().c_str()) : QString::fromUtf8(outputNode->getNode()->getLabel().c_str()));
             Dialogs::errorDialog(QCoreApplication::translate("NodeGraph", "Incompatible data kind").toStdString(),
+                                 error.toStdString());
+        } else if (linkRetCode == Node::eCanConnectInput_incompatiblePorts) {
+            const NetworkNode::ConnectionCheckEnum check = NetworkNode::checkInputConnection(inputNode->getNode(), *outputNode->getNode(), inputNb);
+            QString error = QCoreApplication::translate("NodeGraph", "You cannot connect %1 to %2: %3.")
+                                .arg(QString::fromUtf8(inputNode->getNode()->getLabel().c_str()))
+                                .arg(QString::fromUtf8(outputNode->getNode()->getLabel().c_str()))
+                                .arg(QString::fromUtf8(NetworkNode::connectionCheckReason(check).c_str()));
+            Dialogs::errorDialog(QCoreApplication::translate("NodeGraph", "Incompatible ports").toStdString(),
                                  error.toStdString());
         }
 

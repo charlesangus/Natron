@@ -125,6 +125,7 @@
 #include "Engine/Nodes/Image/StagedImageEffect.h"
 #include "Engine/Nodes/Loop/LoopEnd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/Network/NetworkNode.h"
 
 #include "Serialization/NodeSerialization.h"
 #include "Serialization/Ops/GraphOp.h"
@@ -2765,7 +2766,8 @@ isRegisteredAdapter(DataKindEnum from,
 // Raw and scene reach an image input only at the Viewer, which feeds nothing downstream: it shows
 // raw values as they are for display (RawDisplay) and hands a scene to its 3D view instead of
 // rendering it as an image. They are kept out of the table above so that no other image input,
-// whatever its virtual answers, can take raw without a RawToImage, or a scene at all.
+// whatever its virtual answers, can take raw without a RawToImage, or a scene at all. Network has
+// a row in neither: a network node joins network inputs only, and a Viewer never shows one.
 static bool
 isViewerOnlyAdapter(const EffectInstancePtr& effect,
                     DataKindEnum from,
@@ -6453,6 +6455,9 @@ Node::makePreviewImage(SequenceTime time,
     }
 
     if (!_imp->effect) {
+        return false;
+    }
+    if (effect->getNode()->getEffectiveOutputDataKind() == eDataKindNetwork) {
         return false;
     }
     // A group's hash does not cover its inner graph, so the output node's own hash must key its
@@ -11971,6 +11976,21 @@ Node::getHostMixingValue(double time,
     return mix ? mix->getValueAtTime(time, 0, view) : 1.;
 }
 
+std::optional<PortDescriptor>
+Node::getInputPortDescriptor(int inputNb) const
+{
+    const NetworkNode* network = dynamic_cast<const NetworkNode*>(_imp->effect.get());
+
+    return network ? network->getInputPortDescriptor(inputNb) : std::nullopt;
+}
+
+std::vector<OutputPortDescriptor>
+Node::getOutputPorts() const
+{
+    const NetworkNode* network = dynamic_cast<const NetworkNode*>(_imp->effect.get());
+
+    return network ? network->getOutputPorts() : std::vector<OutputPortDescriptor>();
+}
 
 NATRON_NAMESPACE_EXIT
 

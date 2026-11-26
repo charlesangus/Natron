@@ -4554,6 +4554,23 @@ ParametricParam::setNthControlPointWithWeights(int dimension,
     return param->setNthControlPoint(eValueChangedReasonNatronInternalEdited, dimension, nthCtl, key, value, tangents);
 }
 
+KeyframeTypeEnum
+ParametricParam::getNthControlPointInterpolation(int dimension,
+                                                 int nthCtl) const
+{
+    KnobParametricPtr param = _parametricKnob.lock();
+    if (!param || (dimension < 0) || (dimension >= param->getDimension())) {
+        return eKeyframeTypeNone;
+    }
+    CurvePtr curve = param->getParametricCurve(dimension);
+    KeyFrame key;
+    if (!curve || !curve->getKeyFrameWithIndex(nthCtl, &key)) {
+        return eKeyframeTypeNone;
+    }
+
+    return key.getInterpolation();
+}
+
 StatusEnum
 ParametricParam::setNthControlPointInterpolation(int dimension,
                                                  int nThCtl,

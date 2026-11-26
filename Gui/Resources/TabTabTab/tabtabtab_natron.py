@@ -105,6 +105,10 @@ _FILE_DIALOG_PLUGIN_IDS = frozenset(("Read", "Write"))
 # An input of this kind takes any kind.
 _ANY_KIND = "polymorphic"
 
+# Network nodes (shaders, kernel and channel nodes) join only other network
+# nodes, so they are listed only where the menu is filtered for that kind.
+_NETWORK_KIND = "network"
+
 _MNEMONIC = re.compile(r"&(&?)")
 
 
@@ -134,6 +138,9 @@ def _filter_info(action):
 
 def _accepts_info(info, context):
     input_kind, has_plugin, input_kinds, has_prim_knob = info
+    if input_kind == _NETWORK_KIND or _NETWORK_KIND in input_kinds:
+        if _NETWORK_KIND not in (context.get('inputKind'), context.get('selectedKind')):
+            return False
     kind = context.get('inputKind')
     if kind and input_kind not in (kind, _ANY_KIND):
         return False
@@ -503,10 +510,7 @@ class NatronPlugin(TabTabTabPlugin):
         if (cached is not None and cached[0] is nodes and cached[1] is commands
                 and cached[2] == key):
             return cached[3]
-        if context:
-            listed = [item for item, info in zip(nodes, infos) if _accepts_info(info, context)]
-        else:
-            listed = nodes
+        listed = [item for item, info in zip(nodes, infos) if _accepts_info(info, context or {})]
         items = _make_menupaths_unique(listed + commands)
         self._items_cache = (nodes, commands, key, items)
         return items

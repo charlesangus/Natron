@@ -507,6 +507,7 @@ future core work has solid ground to build on.
 | M349 | Shader Node Spike | done | - | | E9 | F2 | | [M349-shader-node-spike.md](PLAN/MILESTONES/M349-shader-node-spike.md) |
 | M350 | Shader Manifest And Nodes | done | M349, M253 | | E9 | F2 | | [M350-shader-manifest-and-nodes.md](PLAN/MILESTONES/M350-shader-manifest-and-nodes.md) |
 | M351 | Shader Graph Presentation | doing | M350 | bosley-executor | E9 | F2 | | [M351-shader-graph-presentation.md](PLAN/MILESTONES/M351-shader-graph-presentation.md) |
+| M621 | Shader Constant Nodes Decision | todo | M351 |  | E9 | F2 | | [M621-shader-constant-nodes-decision.md](PLAN/MILESTONES/M621-shader-constant-nodes-decision.md) |
 | M352 | USDMaterialBuilder Node | todo | M350, M351 |  | E9 | F2 | | [M352-usdmaterialbuilder-node.md](PLAN/MILESTONES/M352-usdmaterialbuilder-node.md) |
 | M353 | Cycles Native Shaders | todo | M352, M343 |  | E9 | F2 | | [M353-cycles-native-shaders.md](PLAN/MILESTONES/M353-cycles-native-shaders.md) |
 | M354 | MoonRay Native Shaders | todo | M352, M325, M343 |  | E9 | F2 | | [M354-moonray-native-shaders.md](PLAN/MILESTONES/M354-moonray-native-shaders.md) |

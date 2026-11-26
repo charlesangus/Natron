@@ -123,6 +123,12 @@ Give port networks their presentation inside a builder's graph tab: left-to-righ
   - verify: GUI script: the toolbar/right-click menus inside a builder offer no compositing nodes; a Python createNode of Blur into the builder is refused with a message
   - size: M
 
+- [ ] M351.P3.T5 — Type-name search aliases in the shader Tab menu
+  - files: the shader manifests' layout tables (cycles_layout.json, moonray_layout.json) or the network menu's entry builder, Gui/Resources/TabTabTab/tabtabtab_natron.py
+  - approach: each renderer-native constant/basic-type node gets search aliases so typing a type name finds it: "float"/"scalar"/"value" → Cycles Value and MoonRay ConstantScalarMap; "color"/"colour"/"rgb" → Cycles RGB and MoonRay ConstantColorMap; "vector"/"xyz" → Cycles Combine XYZ (and MoonRay's vector primvar reader); "int"/"integer" → the float constants with a note that the renderer has no int constant. Aliases live with the target registrations (no renderer names in generic code). The menu matches aliases like names and shows the real node name.
+  - verify: GUI script types each alias inside a builder per target and checks the expected entries are offered
+  - size: S
+
 **Verification gate:** release gate green per `.local/build-mode`; `PortTypes_Test` passes; `graph_connector_goldens.py` and every `Tests/gui/shader_graph_*.py` pass under Xvfb at 1920x1080; the user OKs each screenshot.
 
 ## Decisions
@@ -151,3 +157,4 @@ Give port networks their presentation inside a builder's graph tab: left-to-righ
 - 2026-11-26 — **User prelim test:** a builder could be created and entered, but no shader nodes could be created inside it (a Backdrop could); no starter nodes, not even an output. PM: the staged AppImage was replaced at 10:06 with 2619753dad's build, which fixed the network menu refusing internal-only shader plugins; the user may have tested the earlier copy. Treated as live: every creation path in a builder is being audited and allowed for the builder's target plugins, with a new shader_graph_create.py GUI test. The Output node and starter presets are M352 - USDMaterialBuilder Node's P1.T1 scope ('New builder: the Output node only').
 - 2026-11-26 (PM) — Every creation path inside a builder now allows the builder's target network types through one engine rule (`NetworkBuilder::hostsPlugin`, checked in `createNodeInternal`); 2619753dad's per-menu flag removed. New shader_graph_create.py (typed + Enter, row click, right-click Create Node). Found: non-network nodes can be created inside a builder, contrary to the Scope's edge case; filed as P3.T4. m351-gate14 (--appimage) queued.
 - 2026-11-26 — User: the earlier report was on an old AppImage; shader creation inside a builder works on the current one (2619753dad). The engine-rule change (603473b5c7) still goes ahead as the more robust form.
+- 2026-11-26 — **User:** basic float/int/vector constant nodes looked missing (only colour seen). They exist under renderer names (Cycles Value/RGB/Combine XYZ, MoonRay ConstantScalarMap/ConstantColorMap; neither renderer has an int constant), and the Tab menu matches name starts. Decision (user): add type-name search aliases in M351 (P3.T5); per-renderer Natron constant nodes vs generic constants translated per renderer is filed for a later decision (M621).

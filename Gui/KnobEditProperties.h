@@ -47,6 +47,7 @@ CLANG_DIAG_ON(uninitialized)
 class QComboBox;
 class QFormLayout;
 class QLabel;
+class QPushButton;
 class QToolButton;
 
 NATRON_NAMESPACE_ENTER
@@ -134,6 +135,7 @@ private:
     KnobEditMode* _mode;
     KnobIWPtr _knob;
     QToolButton* _header;
+    QPushButton* _deleteButton;
     QWidget* _body;
     QPointer<QWidget> _form;
     QFormLayout* _formLayout;

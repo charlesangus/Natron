@@ -38,7 +38,15 @@ CLANG_DIAG_OFF(uninitialized)
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
+#include "Engine/EngineFwd.h"
 #include "Gui/GuiFwd.h"
+
+class QDragEnterEvent;
+class QDragLeaveEvent;
+class QDragMoveEvent;
+class QDropEvent;
+class QMimeData;
+class QPaintEvent;
 
 #define NATRON_KNOB_EDITOR_MIME_TYPE "application/x-natron-knob-editor"
 #define NATRON_KNOB_EDITOR_LINK_ENTRY "LinkKnob"
@@ -80,13 +88,14 @@ std::string knobEditReadableLabel(const std::string& name);
 /**
  * @brief The strip of buttons at the top of a panel in edit mode, one per kind of user knob plus
  * "Link knob...". A click asks for a knob after the selection; a drag carries the entry to a
- * position in the panel.
+ * position in the panel. A user knob of the panel dropped on the strip is deleted.
  **/
 class KnobEditPalette
     : public QWidget {
     GCC_DIAG_SUGGEST_OVERRIDE_OFF
     Q_OBJECT
     GCC_DIAG_SUGGEST_OVERRIDE_ON
+    Q_PROPERTY(bool dropToDelete READ isDropToDeleteShown)
 
 public:
     explicit KnobEditPalette(KnobEditMode* mode, QWidget* parent);
@@ -98,12 +107,32 @@ public:
      **/
     static QByteArray dragPayload(const KnobEditMode* mode, const QString& entryId);
 
+    /**
+     * @brief Whether a user knob is being dragged over the strip, which then shows that dropping
+     * it deletes it.
+     **/
+    bool isDropToDeleteShown() const;
+
 Q_SIGNALS:
 
     void entryClicked(QString entryId);
 
 private:
+    virtual void paintEvent(QPaintEvent* e) OVERRIDE FINAL;
+    virtual void dragEnterEvent(QDragEnterEvent* e) OVERRIDE FINAL;
+    virtual void dragMoveEvent(QDragMoveEvent* e) OVERRIDE FINAL;
+    virtual void dragLeaveEvent(QDragLeaveEvent* e) OVERRIDE FINAL;
+    virtual void dropEvent(QDropEvent* e) OVERRIDE FINAL;
+
+    // The user knob of the panel a drag carries, or null for any other drag.
+    KnobIPtr draggedKnob(const QMimeData* mimeData) const;
+
+    void setDropToDelete(const KnobIPtr& knob);
+
     KnobEditMode* _mode;
+    Label* _title;
+    QString _titleText;
+    bool _dropToDelete;
 };
 
 NATRON_NAMESPACE_EXIT

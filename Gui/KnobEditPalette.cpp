@@ -32,10 +32,18 @@ CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QApplication>
 #include <QDrag>
+#include <QDragEnterEvent>
+#include <QDragLeaveEvent>
+#include <QDragMoveEvent>
+#include <QDropEvent>
 #include <QLayout>
 #include <QMimeData>
 #include <QMouseEvent>
+#include <QPaintEvent>
+#include <QPainter>
+#include <QPointer>
 #include <QPushButton>
+#include <QTimer>
 #include <QVBoxLayout>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
@@ -306,14 +314,20 @@ KnobEditPalette::KnobEditPalette(KnobEditMode* mode,
                                  QWidget* parent)
     : QWidget(parent)
     , _mode(mode)
+    , _title(0)
+    , _titleText(tr("ADD PARAMETER  (click to add after the selection, or drag into the panel)"))
+    , _dropToDelete(false)
 {
     setObjectName(QString::fromUtf8("KnobEditPalette"));
+    setAcceptDrops(true);
+    setToolTip(NATRON_NAMESPACE::convertFromPlainText(tr("Drop a parameter of this panel here to delete it."), NATRON_NAMESPACE::WhiteSpaceNormal));
     QVBoxLayout* mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(TO_DPIX(4), TO_DPIY(4), TO_DPIX(4), TO_DPIY(4));
     mainLayout->setSpacing(TO_DPIY(3));
 
-    Label* title = new Label(tr("ADD PARAMETER  (click to add after the selection, or drag into the panel)"), this);
-    mainLayout->addWidget(title);
+    _title = new Label(_titleText, this);
+    _title->setObjectName(QString::fromUtf8("KnobEditPaletteTitle"));
+    mainLayout->addWidget(_title);
 
     QWidget* buttons = new QWidget(this);
     PaletteFlowLayout* flow = new PaletteFlowLayout(buttons);
@@ -352,6 +366,119 @@ KnobEditPalette::dragPayload(const KnobEditMode* mode,
                              const QString& entryId)
 {
     return KnobEditMode::dragPayload(mode, QString::fromUtf8("new"), entryId);
+}
+
+bool
+KnobEditPalette::isDropToDeleteShown() const
+{
+    return _dropToDelete;
+}
+
+KnobIPtr
+KnobEditPalette::draggedKnob(const QMimeData* mimeData) const
+{
+    const QString format = QString::fromUtf8(NATRON_KNOB_EDITOR_MIME_TYPE);
+    if (!_mode || !mimeData || !mimeData->hasFormat(format)) {
+        return KnobIPtr();
+    }
+    QString kind;
+    QString value;
+    if (!_mode->parseDragPayload(mimeData->data(format), &kind, &value) || (kind != QString::fromUtf8("move"))) {
+        return KnobIPtr();
+    }
+    KnobHolder* holder = _mode->getHolder();
+    KnobIPtr knob = holder ? holder->getKnobByName(value.toStdString()) : KnobIPtr();
+
+    return _mode->isEditable(knob) ? knob : KnobIPtr();
+}
+
+void
+KnobEditPalette::setDropToDelete(const KnobIPtr& knob)
+{
+    const bool show = (bool)knob;
+    if (show) {
+        const std::string label = knob->getLabel().empty() ? knob->getName() : knob->getLabel();
+        _title->setText(tr("DROP TO DELETE %1").arg(QString::fromUtf8(label.c_str())));
+    } else {
+        _title->setText(_titleText);
+    }
+    if (show != _dropToDelete) {
+        _dropToDelete = show;
+        update();
+    }
+}
+
+void
+KnobEditPalette::paintEvent(QPaintEvent* e)
+{
+    QWidget::paintEvent(e);
+    if (!_dropToDelete) {
+        return;
+    }
+    const QColor deleteColor(230, 70, 70);
+    QColor fill = deleteColor;
+    fill.setAlpha(50);
+    const qreal penWidth = 2;
+    const qreal radius = TO_DPIX(4);
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setPen(QPen(deleteColor, penWidth));
+    p.setBrush(fill);
+    p.drawRoundedRect(QRectF(rect()).adjusted(penWidth / 2, penWidth / 2, -penWidth / 2, -penWidth / 2), radius, radius);
+}
+
+void
+KnobEditPalette::dragEnterEvent(QDragEnterEvent* e)
+{
+    KnobIPtr knob = draggedKnob(e->mimeData());
+    setDropToDelete(knob);
+    if (knob) {
+        e->acceptProposedAction();
+    } else {
+        e->ignore();
+    }
+}
+
+void
+KnobEditPalette::dragMoveEvent(QDragMoveEvent* e)
+{
+    KnobIPtr knob = draggedKnob(e->mimeData());
+    setDropToDelete(knob);
+    if (knob) {
+        e->acceptProposedAction();
+    } else {
+        e->ignore();
+    }
+}
+
+void
+KnobEditPalette::dragLeaveEvent(QDragLeaveEvent* e)
+{
+    setDropToDelete(KnobIPtr());
+    e->accept();
+}
+
+void
+KnobEditPalette::dropEvent(QDropEvent* e)
+{
+    KnobIPtr knob = draggedKnob(e->mimeData());
+    setDropToDelete(KnobIPtr());
+    if (!knob) {
+        e->ignore();
+
+        return;
+    }
+    e->acceptProposedAction();
+    QPointer<KnobEditMode> mode(_mode);
+    const KnobIWPtr knobW = knob;
+    // The drag that brought the knob is still running from the knob's overlay, which the deletion
+    // rebuilds.
+    QTimer::singleShot(0, _mode, [mode, knobW]() {
+        KnobIPtr toDelete = knobW.lock();
+        if (mode && toDelete) {
+            mode->deleteKnob(toDelete);
+        }
+    });
 }
 
 NATRON_NAMESPACE_EXIT

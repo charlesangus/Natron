@@ -45,6 +45,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QKeySequence>
+#include <QLayout>
 #include <QMenu>
 #include <QMimeData>
 #include <QMouseEvent>
@@ -89,6 +90,9 @@ namespace {
 int gActiveEditModes = 0;
 
 const QColor kSelectionColor(255, 140, 0);
+const int kSelectionPenWidth = 1;
+const int kSelectionPadding = 2;
+const int kSelectionRadius = 3;
 
 KnobPagePtr
 topPageOf(const KnobIPtr& knob)
@@ -271,6 +275,8 @@ private:
         KnobIPtr knob;
         KnobGuiPtr gui;
         QRect rect;
+        // The widgets of the row less their layouts' margins, which hold the gap to the next row.
+        QRect content;
         // A knob sharing its line with an earlier one only covers its own label.
         bool partial;
     };
@@ -278,6 +284,13 @@ private:
     QRect mapRect(QWidget* w) const
     {
         return QRect(mapFromGlobal(w->mapToGlobal(QPoint(0, 0))), w->size());
+    }
+
+    QRect mapContentRect(QWidget* w) const
+    {
+        const QMargins margins = w->layout() ? w->layout()->contentsMargins() : QMargins();
+
+        return mapRect(w).marginsRemoved(margins);
     }
 
     std::vector<Row> rows() const
@@ -312,11 +325,14 @@ private:
                     continue;
                 }
                 row.rect = mapRect(label);
+                row.content = mapContentRect(label);
                 row.partial = true;
             } else {
                 row.rect = fieldShown ? mapRect(field) : mapRect(label);
+                row.content = fieldShown ? mapContentRect(field) : mapContentRect(label);
                 if (labelShown && (label != field)) {
                     row.rect |= mapRect(label);
+                    row.content |= mapContentRect(label);
                 }
                 row.rect.setLeft(0);
                 row.rect.setRight(width() - 1);
@@ -402,8 +418,7 @@ private:
         const std::vector<Row> rs = rows();
         KnobIPtr selected = _mode->getSelectedKnob();
         if (selected == page) {
-            p.setPen(QPen(kSelectionColor, 2));
-            p.drawRect(rect().adjusted(1, 1, -1, -1));
+            paintSelectionFrame(p, rect(), false);
         }
         for (std::size_t i = 0; i < rs.size(); ++i) {
             if (!rs[i].knob->isUserKnob() || isPinnedKnob(rs[i].knob)) {
@@ -411,11 +426,7 @@ private:
             }
         }
         if (const Row* row = rowOf(rs, selected)) {
-            QColor fill = kSelectionColor;
-            fill.setAlpha(60);
-            p.fillRect(row->rect, fill);
-            p.setPen(QPen(kSelectionColor, 1));
-            p.drawRect(row->rect.adjusted(0, 0, -1, -1));
+            paintSelectionFrame(p, selectionFrame(rs, *row), true);
         }
         if (rs.empty()) {
             p.setPen(palette().color(QPalette::Disabled, QPalette::Text));
@@ -424,6 +435,60 @@ private:
         }
         paintDrop(p);
     } // paintEvent
+
+    // The frame around a selected row: kSelectionPadding clear of its widgets on every side, less
+    // where a neighbouring row or the page edge leaves no room for it, and a pixel short of any
+    // other row's widgets.
+    QRect selectionFrame(const std::vector<Row>& rs,
+                         const Row& row) const
+    {
+        const QRect content = row.content.isValid() ? row.content : row.rect;
+        QRect frame;
+        for (int padding = TO_DPIY(kSelectionPadding); padding >= 0; --padding) {
+            const int outset = padding + kSelectionPenWidth;
+            frame = content.adjusted(-outset, -outset, outset, outset);
+            frame.setLeft(std::max(frame.left(), 0));
+            frame.setRight(std::min(frame.right(), width() - 1));
+            if ((frame.top() < 0) || (frame.bottom() > height() - 1)) {
+                continue;
+            }
+            const QRect clearance = frame.adjusted(-1, -1, 1, 1);
+            bool clear = true;
+            for (std::size_t i = 0; clear && (i < rs.size()); ++i) {
+                const QRect other = rs[i].content.isValid() ? rs[i].content : rs[i].rect;
+                // A row on the same line shares its widgets' container with this one.
+                if ((&rs[i] != &row) && !other.intersects(content) && other.intersects(clearance)) {
+                    clear = false;
+                }
+            }
+            if (clear) {
+                break;
+            }
+        }
+
+        return frame;
+    }
+
+    void paintSelectionFrame(QPainter& p,
+                             const QRect& frame,
+                             bool filled)
+    {
+        const qreal half = kSelectionPenWidth / 2.0;
+        const QRectF stroke = QRectF(frame).adjusted(half, half, -half, -half);
+        const qreal radius = TO_DPIX(kSelectionRadius);
+        p.save();
+        p.setRenderHint(QPainter::Antialiasing);
+        p.setPen(QPen(kSelectionColor, kSelectionPenWidth));
+        if (filled) {
+            QColor fill = kSelectionColor;
+            fill.setAlpha(50);
+            p.setBrush(fill);
+        } else {
+            p.setBrush(Qt::NoBrush);
+        }
+        p.drawRoundedRect(stroke, radius, radius);
+        p.restore();
+    }
 
     void paintDrop(QPainter& p)
     {

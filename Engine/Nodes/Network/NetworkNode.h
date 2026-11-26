@@ -29,7 +29,6 @@
 #include "Global/Macros.h"
 
 #include <atomic>
-#include <deque>
 #include <functional>
 #include <map>
 #include <memory>
@@ -295,9 +294,10 @@ public:
                                  const PortDescriptor& to);
 
     /**
-     * @brief checkConnection() for connecting upstream to input inputNb of downstream, reading
-     * the output downstream names for that input when upstream has it and upstream's first
-     * otherwise. eConnectionOk unless both nodes are network nodes.
+     * @brief checkConnection() for connecting upstream, or the node it passes on through Dots,
+     * to input inputNb of downstream. It reads the output downstream names for that input when
+     * upstream has it and is the node that input last had, if any; upstream's first otherwise.
+     * eConnectionOk unless both nodes are network nodes.
      **/
     static ConnectionCheckEnum checkInputConnection(const NodePtr& upstream,
                                                     const Node& downstream,
@@ -310,15 +310,26 @@ public:
 
 private:
     struct SpecStorage {
-        std::deque<std::string> labels;
-        std::vector<InputSpec> inputs;
+        std::vector<std::string> labels;
         std::vector<PortDescriptor> ports;
-        NodeSpec spec;
     };
 
+    // The inputs follow the ports, which change at run time, so the spec has none: the input
+    // readers below read the published ports instead, which a reader on another thread can hold.
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        return &_current.load(std::memory_order_acquire)->spec;
+        return &_spec;
+    }
+
+    virtual int getNInputs() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual std::string getInputLabel(int inputNb) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual bool isInputOptional(int inputNb) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual bool isInputMask(int inputNb) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual DataKindEnum getInputDataKind(int inputNb) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    std::shared_ptr<const SpecStorage> currentSpec() const
+    {
+        return _current.load(std::memory_order_acquire);
     }
 
     virtual void initializeKnobs() OVERRIDE FINAL;
@@ -347,6 +358,8 @@ private:
 
     void refreshKnobsEnabled();
 
+    static void enableUnlinkedDimensions(KnobI* knob);
+
     // Writes text to the ports knob without calling knobChanged().
     void writePortsKnob(const std::string& text);
 
@@ -357,12 +370,8 @@ private:
     void pruneInputOutputs();
 
     const NetworkNodeLayout* _layout;
-    // Threads other than the main thread read the spec while the main thread swaps in a new one,
-    // so an old spec stays alive for a while. Such a reader holds the pointer for one call, and
-    // the main thread swaps specs only on a port edit, so keeping the last few covers every
-    // reader; older ones are freed.
-    std::deque<std::unique_ptr<SpecStorage>> _specs;
-    std::atomic<const SpecStorage*> _current;
+    NodeSpec _spec;
+    std::atomic<std::shared_ptr<const SpecStorage>> _current;
     // applyPorts() disconnects ports that move and reconnects them at their new index; their
     // output names and knob states must survive that.
     bool _applyingPorts;

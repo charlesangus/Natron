@@ -14,9 +14,7 @@ Generated from the MoonRay shader manifest by `tools/shaders/audit_shader_nodes.
 
 | Label | Script name | Type | Default | Port | Description |
 | --- | --- | --- | --- | --- | --- |
-| Ramp | `ramp` | FloatVector | 4 points | knob only | Color ramp |
-| Ramp | `ramp` | RgbVector | 4 points | knob only | List of colors on the ramp |
-| Ramp | `ramp` | IntVector | 4 points | knob only | None: 0 \| Linear: 1 \| Exponential Up: 2 \| Exponential Down: 3 \| 			Smooth: 4 \| Catmull Rom: 5 \| Monotone Cubic: 6 |
+| Ramp | `ramp` | ramp_color | 4 points, constant | knob only | List of colors on the ramp |
 
 ## Ramp properties
 

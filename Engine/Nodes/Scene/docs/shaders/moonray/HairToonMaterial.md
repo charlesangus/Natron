@@ -33,9 +33,7 @@ Generated from the MoonRay shader manifest by `tools/shaders/audit_shader_nodes.
 | Specular 1 Use Input Vectors For Stretch | `specular_1_use_input_vectors_for_stretch` | Bool | off | knob only | when checked, use input_U and V. otherwise use geometry dPds/t |
 | Specular 1 Input U | `specular_1_input_U` | Vec3f | 0 0 0 | can be a port | input U / tangent for specular stretch |
 | Specular 1 Input V | `specular_1_input_V` | Vec3f | 0 0 0 | can be a port | input V / bitangent for specular stretch |
-| Specular 1 Ramp | `specular_1_ramp` | FloatVector | 4 points | knob only | ramp positions, maximum 10 allowed |
-| Specular 1 Ramp | `specular_1_ramp` | FloatVector | 4 points | knob only | List of colors on the ramp |
-| Specular 1 Ramp | `specular_1_ramp` | IntVector | 4 points | knob only | None: 0 \| Linear: 1 \| Exponential Up: 2 \| Exponential Down: 3 \| 			Smooth: 4 \| Catmull Rom: 5 \| Monotone Cubic: 6 |
+| Specular 1 Ramp | `specular_1_ramp` | ramp_float | 4 points, constant | knob only | List of colors on the ramp |
 | Specular 1 Mult 0 | `specular_1_mult0` | Float | 1 | can be a port | Bindable multiplier on the toon specular ramp value |
 | Specular 1 Mult 1 | `specular_1_mult1` | Float | 1 | can be a port | Bindable multiplier on the toon specular ramp value |
 | Specular 1 Mult 2 | `specular_1_mult2` | Float | 1 | can be a port | Bindable multiplier on the toon specular ramp value |
@@ -89,9 +87,7 @@ Generated from the MoonRay shader manifest by `tools/shaders/audit_shader_nodes.
 | Specular 2 Use Input Vectors For Stretch | `specular_2_use_input_vectors_for_stretch` | Bool | off | knob only | when checked, use input_U and V. otherwise use geometry dPds/t |
 | Specular 2 Input U | `specular_2_input_U` | Vec3f | 0 0 0 | can be a port | input U / tangent for specular stretch |
 | Specular 2 Input V | `specular_2_input_V` | Vec3f | 0 0 0 | can be a port | input V / bitangent for specular stretch |
-| Specular 2 Ramp | `specular_2_ramp` | FloatVector | 4 points | knob only | ramp positions, maximum 10 allowed |
-| Specular 2 Ramp | `specular_2_ramp` | FloatVector | 4 points | knob only | List of colors on the ramp |
-| Specular 2 Ramp | `specular_2_ramp` | IntVector | 4 points | knob only | None: 0 \| Linear: 1 \| Exponential Up: 2 \| Exponential Down: 3 \| 			Smooth: 4 \| Catmull Rom: 5 \| Monotone Cubic: 6 |
+| Specular 2 Ramp | `specular_2_ramp` | ramp_float | 4 points, constant | knob only | List of colors on the ramp |
 | Specular 2 Mult 0 | `specular_2_mult0` | Float | 1 | can be a port | Bindable multiplier on the toon specular ramp value |
 | Specular 2 Mult 1 | `specular_2_mult1` | Float | 1 | can be a port | Bindable multiplier on the toon specular ramp value |
 | Specular 2 Mult 2 | `specular_2_mult2` | Float | 1 | can be a port | Bindable multiplier on the toon specular ramp value |
@@ -133,9 +129,7 @@ Generated from the MoonRay shader manifest by `tools/shaders/audit_shader_nodes.
 | Specular 3 Use Input Vectors For Stretch | `specular_3_use_input_vectors_for_stretch` | Bool | off | knob only | when checked, use input_U and V. otherwise use geometry dPds/t |
 | Specular 3 Input U | `specular_3_input_U` | Vec3f | 0 0 0 | can be a port | input U / tangent for specular stretch |
 | Specular 3 Input V | `specular_3_input_V` | Vec3f | 0 0 0 | can be a port | input V / bitangent for specular stretch |
-| Specular 3 Ramp | `specular_3_ramp` | FloatVector | 4 points | knob only | ramp positions, maximum 10 allowed |
-| Specular 3 Ramp | `specular_3_ramp` | FloatVector | 4 points | knob only | List of colors on the ramp |
-| Specular 3 Ramp | `specular_3_ramp` | IntVector | 4 points | knob only | None: 0 \| Linear: 1 \| Exponential Up: 2 \| Exponential Down: 3 \| 			Smooth: 4 \| Catmull Rom: 5 \| Monotone Cubic: 6 |
+| Specular 3 Ramp | `specular_3_ramp` | ramp_float | 4 points, constant | knob only | List of colors on the ramp |
 | Specular 3 Mult 0 | `specular_3_mult0` | Float | 1 | can be a port | Bindable multiplier on the toon specular ramp value |
 | Specular 3 Mult 1 | `specular_3_mult1` | Float | 1 | can be a port | Bindable multiplier on the toon specular ramp value |
 | Specular 3 Mult 2 | `specular_3_mult2` | Float | 1 | can be a port | Bindable multiplier on the toon specular ramp value |

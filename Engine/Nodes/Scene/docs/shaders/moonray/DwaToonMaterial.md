@@ -91,9 +91,7 @@ Generated from the MoonRay shader manifest by `tools/shaders/audit_shader_nodes.
 | Toon Specular Input U | `toon_specular_input_U` | Vec3f | 0 0 0 | can be a port | input U / tangent for specular stretch |
 | Toon Specular Input V | `toon_specular_input_V` | Vec3f | 0 0 0 | can be a port | input V / bitangent for specular stretch |
 | Toon Specular Ramp Input Scale | `toon_specular_ramp_input_scale` | Float | 1 | can be a port | Scales the input value x to the ramp lookup y, where x is based on the angle between the sample direction and normal.  This has the effect of squashing or stretching the ramp point positions towards/away from 0. |
-| Toon Specular Ramp | `toon_specular_ramp` | FloatVector | 4 points | knob only | ramp positions, maximum 10 allowed |
-| Toon Specular Ramp | `toon_specular_ramp` | FloatVector | 4 points | knob only | List of colors on the ramp |
-| Toon Specular Ramp | `toon_specular_ramp` | IntVector | 4 points | knob only | None: 0 \| Linear: 1 \| Exponential Up: 2 \| Exponential Down: 3 \| 			Smooth: 4 \| Catmull Rom: 5 \| Monotone Cubic: 6 |
+| Toon Specular Ramp | `toon_specular_ramp` | ramp_float | 4 points, constant | knob only | List of colors on the ramp |
 | Toon Specular Mult 0 | `toon_specular_mult0` | Float | 1 | can be a port | Bindable multiplier on the toon specular ramp value |
 | Toon Specular Mult 1 | `toon_specular_mult1` | Float | 1 | can be a port | Bindable multiplier on the toon specular ramp value |
 | Toon Specular Mult 2 | `toon_specular_mult2` | Float | 1 | can be a port | Bindable multiplier on the toon specular ramp value |
@@ -133,9 +131,7 @@ Generated from the MoonRay shader manifest by `tools/shaders/audit_shader_nodes.
 | Iridescence Secondary Color | `iridescence_secondary_color` | Rgb | 1 0 0 | can be a port | Second color to interpolate to around the hue wheel |
 | Iridescence Flip Hue Direction | `iridescence_flip_hue_direction` | Bool | off | knob only | flip interpolation around the hue wheel to counter-clockwise direction |
 | Iridescence Ramp Interpolation Mode | `iridescence_ramp_interpolation_mode` | Int | RGB | knob only | RGB: lerp in RGB space which matches UI preview but can lose saturation, HSV: lerp in HSV space which preserves saturation Options: RGB, HSV. |
-| Iridescence Ramp | `iridescence_ramp` | FloatVector | 7 points | knob only | ramp positions |
-| Iridescence Ramp | `iridescence_ramp` | RgbVector | 7 points | knob only | List of colors on the ramp |
-| Iridescence Ramp | `iridescence_ramp` | IntVector | 7 points | knob only | None: 0 \| Linear: 1 \| Exponential Up: 2 \| Exponential Down: 3 \| 			Smooth: 4 \| Catmull Rom: 5 \| Monotone Cubic: 6 |
+| Iridescence Ramp | `iridescence_ramp` | ramp_color | 7 points, smooth | knob only | List of colors on the ramp |
 | Iridescence Thickness | `iridescence_thickness` | Float | 1 | can be a port | Controls how much the color spectrum is repeated |
 | Iridescence Exponent | `iridescence_exponent` | Float | 1 | can be a port | Tightens or broadens the distribution of colors |
 | Iridescence At 0 Incidence | `iridescence_at_0_incidence` | Float | 1 | can be a port | Iridescence effect at 0 degree viewing angle |
@@ -155,9 +151,7 @@ Generated from the MoonRay shader manifest by `tools/shaders/audit_shader_nodes.
 | Diffuse Flatness Falloff | `diffuse_flatness_falloff` | Float | 0 | can be a port | Fades out flatness with respect to light direction |
 | Extend Ramp | `extend_ramp` | Bool | off | knob only | Extends the last ramp color to unlit portions. IMPORTANT: Only works in conjuction with prevent_light_culling ON and visible_shadows OFF |
 | Ramp Input Scale | `ramp_input_scale` | Float | 1 | port | Factor to apply to the input diffuse reflectance before using it as the input to the ramp |
-| Ramp | `ramp` | FloatVector | 4 points | knob only | ramp positions, maximum 10 allowed |
-| Ramp | `ramp` | RgbVector | 4 points | knob only | List of colors on the ramp |
-| Ramp | `ramp` | IntVector | 4 points | knob only | None: 0 \| Linear: 1 \| Exponential Up: 2 \| Exponential Down: 3 \| 			Smooth: 4 \| Catmull Rom: 5 \| Monotone Cubic: 6 |
+| Ramp | `ramp` | ramp_color | 4 points, constant | knob only | List of colors on the ramp |
 | Ramp Color Multiplier 0 | `ramp_color_multiplier0` | Rgb | 1 1 1 | can be a port | Bindable multiplier on the ramp color |
 | Ramp Color Multiplier 1 | `ramp_color_multiplier1` | Rgb | 1 1 1 | can be a port | Bindable multiplier on the ramp color |
 | Ramp Color Multiplier 2 | `ramp_color_multiplier2` | Rgb | 1 1 1 | can be a port | Bindable multiplier on the ramp color |

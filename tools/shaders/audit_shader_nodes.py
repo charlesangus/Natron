@@ -146,25 +146,36 @@ def table_text(value):
     return "\n".join(" ".join(format_number(n) for n in numbers(row)) for row in (value or []))
 
 
+# A MoonRay ramp's interpolation code as the control point's interpolation, as
+# rampInterpolation() in ShaderManifest.cpp; any other code is linear.
+RAMP_INTERPOLATIONS = {0: "eKeyframeTypeConstant", 4: "eKeyframeTypeSmooth", 5: "eKeyframeTypeCatmullRom",
+                       6: "eKeyframeTypeCubic"}
+LINEAR = "eKeyframeTypeLinear"
+INTERPOLATION_WORDS = {"eKeyframeTypeConstant": "constant", "eKeyframeTypeLinear": "linear",
+                       "eKeyframeTypeSmooth": "smooth", "eKeyframeTypeCatmullRom": "Catmull-Rom",
+                       "eKeyframeTypeCubic": "cubic"}
+
+
 def sampled_curves(value, dims):
-    """An array default as curves, its elements spaced evenly over [0, 1], as sampledCurves() in
-    ShaderManifest.cpp; an empty array is the identity curve."""
+    """An array default as curves of (x, y, interpolation) points, its elements spaced evenly over
+    [0, 1] and linear, as sampledCurves() in ShaderManifest.cpp; an empty array is the cubic
+    identity curve createAttributeKnob() in NetworkNode.cpp makes."""
     samples = value or []
     if not samples:
-        return [[(0.0, 0.0), (1.0, 1.0)] for _ in range(dims)]
+        return [[(0.0, 0.0, "eKeyframeTypeCubic"), (1.0, 1.0, "eKeyframeTypeCubic")] for _ in range(dims)]
     curves = [[] for _ in range(dims)]
     for i, sample in enumerate(samples):
         values = numbers(sample) or [0.0]
         values = values + [values[-1]] * (dims - len(values))
         x = 0.0 if len(samples) == 1 else i / (len(samples) - 1)
         for d in range(dims):
-            curves[d].append((x, values[d]))
+            curves[d].append((x, values[d], LINEAR))
     return curves
 
 
 def ramps_of(node):
-    """{ramp name: curves} of a MoonRay node, one control point per position, as rampCurves() in
-    ShaderManifest.cpp."""
+    """{ramp name: curves} of a MoonRay node, one (x, y, interpolation) control point per
+    position, as rampCurves() in ShaderManifest.cpp."""
     arrays = {}
     for attribute in node["attributes"]:
         structure = attribute.get("structure") or {}
@@ -176,12 +187,27 @@ def ramps_of(node):
         dims = 3 if (values_attribute.get("structure") or {}).get("type") == "ramp_color" else 1
         positions = numbers((paths.get("positions") or {}).get("default"))
         rows = (values_attribute.get("default") or [])
+        codes = numbers((paths.get("interpolation_types") or {}).get("default"))
         curves = [[] for _ in range(dims)]
         for i, x in enumerate(positions):
             row = numbers(rows[i]) if i < len(rows) else []
+            interpolation = RAMP_INTERPOLATIONS.get(int(codes[i]), LINEAR) if i < len(codes) else LINEAR
             for d in range(dims):
-                curves[d].append((x, row[d] if d < len(row) else 0.0))
+                curves[d].append((x, row[d] if d < len(row) else 0.0, interpolation))
         ret[name] = curves
+    return ret
+
+
+def ramp_descriptions(node):
+    """{ramp name: description} of a MoonRay node: its values array's, which the ramp knob's hint
+    is, as rampCurves() in ShaderManifest.cpp."""
+    ret = {}
+    for attribute in node["attributes"]:
+        structure = attribute.get("structure") or {}
+        if structure.get("name") and structure.get("path") == "values":
+            description = attribute.get("comment") or attribute.get("ui_name") or ""
+            if description:
+                ret[structure["name"]] = description
     return ret
 
 
@@ -312,12 +338,20 @@ def audit_knob(prefix, param, expected):
             if count != len(points):
                 problems.append(prefix + ": {} control points in dimension {}, expected {}".format(count, dim, len(points)))
                 continue
-            for i, (x, y) in enumerate(points):
+            for i, (x, y, interpolation) in enumerate(points):
                 point = param.getNthControlPoint(dim, i)
                 if not (_close(point[1], x) and _close(point[2], y)):
                     problems.append(prefix + ": control point {} of dimension {} at ({}, {}), expected ({}, {})".format(
                         i, dim, point[1], point[2], x, y))
+                got = _enum_name(param.getNthControlPointInterpolation(dim, i))
+                if got != interpolation:
+                    problems.append(prefix + ": control point {} of dimension {} is {}, expected {}".format(
+                        i, dim, got, interpolation))
     return problems
+
+
+def _enum_name(value):
+    return getattr(value, "name", None) or str(value).rsplit(".", 1)[-1]
 
 
 def audit_node(effect, renderer, node, node_layout):
@@ -392,7 +426,9 @@ def _default_cell(expected, attribute):
         return "{} rows".format(len(rows)) if rows else "empty"
     if kind == "parametric":
         if expected.get("ramp"):
-            return "{} points".format(len(expected["curves"][0]) if expected["curves"] else 0)
+            points = expected["curves"][0] if expected["curves"] else []
+            interpolations = sorted(set(INTERPOLATION_WORDS[p[2]] for p in points))
+            return "{} points{}".format(len(points), ", " + "/".join(interpolations) if interpolations else "")
         return "{} samples".format(len(attribute.get("default") or [])) if attribute.get("default") else "identity"
     return "empty"
 
@@ -442,14 +478,22 @@ def node_doc(renderer, node, node_layout):
         lines += ["", "## " + page, "",
                   "| Label | Script name | Type | Default | Port | Description |",
                   "| --- | --- | --- | --- | --- | --- |"]
+        listed_ramps = set()
         for attribute in attributes:
             expected = expected_attribute(renderer, attribute, ramps)
             description = attribute.get("comment") or attribute.get("ui_name") or ""
+            kind_type = attribute["type"]
+            if expected.get("ramp"):
+                if expected["ramp"] in listed_ramps:
+                    continue
+                listed_ramps.add(expected["ramp"])
+                kind_type = attribute["structure"]["type"]
+                description = ramp_descriptions(node).get(expected["ramp"], description)
             if attribute.get("enum"):
                 description = (description + " " if description else "") + "Options: " + \
                     ", ".join(option["name"] for option in attribute["enum"]) + "."
             lines.append("| {} | `{}` | {} | {} | {} | {} |".format(
-                _cell(expected["label"]), expected["knob"] if expected["kind"] else attribute["name"], _cell(attribute["type"]),
+                _cell(expected["label"]), expected["knob"] if expected["kind"] else attribute["name"], _cell(kind_type),
                 _cell(_default_cell(expected, attribute)),
                 _role_cell(expected, attribute["name"] in starting), _cell(description)))
     return "\n".join(lines) + "\n"

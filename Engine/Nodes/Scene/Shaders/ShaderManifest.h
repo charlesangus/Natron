@@ -49,6 +49,14 @@ NATRON_NAMESPACE_ENTER
 std::string shaderLabelFromScriptName(const std::string& scriptName);
 
 /**
+ * @brief The label of a choice option from its manifest name. A name with anything but letters,
+ * digits, '_' and ' ' is its own label, as is any word with a capital in it, so signs, ranges
+ * and names such as sRGB survive. Other words, split at '_', ' ' and a capital after two lower
+ * case letters, are capitalised, and known acronyms upper case.
+ **/
+std::string shaderChoiceLabel(const std::string& name);
+
+/**
  * @brief Builds one layout per node of a renderer's manifest and its layout file (the page
  * groups and key ports, keyed like the manifest's nodes). The renderer is the manifest's
  * "renderer". Every attribute with a value is a knob; a node with key ports starts with those

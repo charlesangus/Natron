@@ -89,9 +89,7 @@ Generated from the MoonRay shader manifest by `tools/shaders/audit_shader_nodes.
 | Iridescence Secondary Color | `iridescence_secondary_color` | Rgb | 1 0 0 | can be a port | Second color to interpolate to around the hue wheel |
 | Iridescence Flip Hue Direction | `iridescence_flip_hue_direction` | Bool | off | knob only | flip interpolation around the hue wheel to counter-clockwise direction |
 | Iridescence Ramp Interpolation Mode | `iridescence_ramp_interpolation_mode` | Int | RGB | knob only | RGB: lerp in RGB space which matches UI preview but can lose saturation, HSV: lerp in HSV space which preserves saturation Options: RGB, HSV. |
-| Iridescence Ramp | `iridescence_ramp` | FloatVector | 7 points | knob only | ramp positions |
-| Iridescence Ramp | `iridescence_ramp` | RgbVector | 7 points | knob only | List of colors on the ramp |
-| Iridescence Ramp | `iridescence_ramp` | IntVector | 7 points | knob only | None: 0 \| Linear: 1 \| Exponential Up: 2 \| Exponential Down: 3 \| 			Smooth: 4 \| Catmull Rom: 5 \| Monotone Cubic: 6 |
+| Iridescence Ramp | `iridescence_ramp` | ramp_color | 7 points, smooth | knob only | List of colors on the ramp |
 | Iridescence Thickness | `iridescence_thickness` | Float | 1 | can be a port | Controls how much the color spectrum is repeated |
 | Iridescence Exponent | `iridescence_exponent` | Float | 1 | can be a port | Tightens or broadens the distribution of colors |
 | Iridescence At 0 Incidence | `iridescence_at_0_incidence` | Float | 1 | can be a port | Iridescence effect at 0 degree viewing angle |

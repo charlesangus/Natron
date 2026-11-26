@@ -379,8 +379,52 @@ TEST_F(ShaderNodeTest, ARampIsOneCurveKnobSeededFromItsArrays)
     const std::vector<ChoiceOption> options = rampType->getEntries_mt_safe();
     ASSERT_FALSE(options.empty());
     for (const ChoiceOption& option : options) {
-        EXPECT_EQ(shaderLabelFromScriptName(option.id), option.label) << option.id;
+        EXPECT_EQ(shaderChoiceLabel(option.id), option.label) << option.id;
     }
+}
+
+TEST(ShaderChoiceLabel, KeepsNamesThatAreNotIdentifiersAndWordsWithCapitals)
+{
+    const std::map<std::string, std::string> labels = {
+        { "-X axis", "-X axis" },
+        { "+X axis", "+X axis" },
+        { "[-1,1]", "[-1,1]" },
+        { "dSdx/dSdy", "dSdx/dSdy" },
+        { "Henyey-Greenstein", "Henyey-Greenstein" },
+        { "sRGB", "sRGB" },
+        { "fBM", "fBM" },
+        { "1D", "1D" },
+        { "vec3f", "Vec3f" },
+        { "f1", "F1" },
+        { "smooth_f1", "Smooth F1" },
+        { "color burn", "Color Burn" },
+        { "greater_than_or_equal", "Greater Than Or Equal" },
+        { "averageColor", "Average Color" },
+        { "Toon_Hair", "Toon Hair" },
+        { "hsv", "HSV" },
+        { "GGX", "GGX" },
+    };
+
+    for (const auto& entry : labels) {
+        EXPECT_EQ(entry.second, shaderChoiceLabel(entry.first)) << entry.first;
+    }
+}
+
+TEST_F(ShaderNodeTest, AChoiceLabelKeepsItsSignWhileItsIdStaysTheManifestName)
+{
+    NodePtr node = create("DirectionalMap");
+
+    ASSERT_TRUE(bool(node));
+    KnobChoicePtr axis = std::dynamic_pointer_cast<KnobChoice>(node->getKnobByName(NetworkNode::knobNameOf("object_axis")));
+    ASSERT_TRUE(bool(axis));
+    const std::vector<ChoiceOption> options = axis->getEntries_mt_safe();
+    std::map<std::string, std::string> labels;
+    for (const ChoiceOption& option : options) {
+        labels[option.id] = option.label;
+    }
+    EXPECT_EQ(std::string("+X axis"), labels["+X axis"]);
+    EXPECT_EQ(std::string("-X axis"), labels["-X axis"]);
+    EXPECT_EQ(6, (int)labels.size());
 }
 
 TEST_F(ShaderNodeTest, ASaveAndLoadRestoresEditedValues)

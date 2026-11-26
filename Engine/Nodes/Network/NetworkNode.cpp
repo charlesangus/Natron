@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <deque>
 #include <mutex>
 #include <set>
 #include <sstream>
@@ -61,6 +62,16 @@ struct LayoutRegistry {
     std::map<std::string, NetworkNode::LayoutBuilder> builders;
     std::deque<std::unique_ptr<NetworkNodeLayout>> storage;
 };
+
+NodePtr
+throughDots(NodePtr node)
+{
+    while (node && (node->getPluginID() == PLUGINID_NATRON_DOT)) {
+        node = node->getInput(0);
+    }
+
+    return node;
+}
 
 LayoutRegistry&
 layoutRegistry()
@@ -349,8 +360,8 @@ NetworkNode::registerPlugin(const NetworkNodeLayout& layout)
 NetworkNode::NetworkNode(NodePtr node)
     : NativeEffectBase(node)
     , _layout(nullptr)
-    , _specs()
-    , _current(nullptr)
+    , _spec()
+    , _current()
     , _applyingPorts(false)
     , _portUpstreams()
     , _attributeKnobs()
@@ -363,6 +374,16 @@ NetworkNode::NetworkNode(NodePtr node)
     if (!_layout) {
         _layout = &emptyLayout();
     }
+    _spec = NodeSpec {
+        .id = _layout->pluginId,
+        .label = _layout->label,
+        .description = _layout->description,
+        .grouping = _layout->grouping,
+        .majorVersion = 1,
+        .minorVersion = 0,
+        .internal = true,
+        .outputKind = eDataKindNetwork,
+    };
     publishSpec(sanitizePorts(_layout->defaultPorts));
 }
 
@@ -513,7 +534,7 @@ NetworkNode::sanitizePorts(const std::vector<std::string>& ports) const
 void
 NetworkNode::publishSpec(const std::vector<std::string>& ports)
 {
-    std::unique_ptr<SpecStorage> storage(new SpecStorage);
+    std::shared_ptr<SpecStorage> storage = std::make_shared<SpecStorage>();
 
     for (const std::string& port : ports) {
         storage->labels.push_back(port);
@@ -522,41 +543,55 @@ NetworkNode::publishSpec(const std::vector<std::string>& ports)
         descriptor.promoted = true;
         storage->ports.push_back(descriptor);
     }
-    storage->inputs.reserve(storage->labels.size());
-    for (const std::string& label : storage->labels) {
-        storage->inputs.push_back(InputSpec { .label = label, .kind = eDataKindNetwork, .role = InputRole::Aux, .optional = true });
-    }
-    storage->spec = NodeSpec {
-        .id = _layout->pluginId,
-        .label = _layout->label,
-        .description = _layout->description,
-        .grouping = _layout->grouping,
-        .majorVersion = 1,
-        .minorVersion = 0,
-        .internal = true,
-        .outputKind = eDataKindNetwork,
-        .inputs = storage->inputs,
-    };
-    _current.store(storage.get(), std::memory_order_release);
-    _specs.push_back(std::move(storage));
-    const std::size_t kRetiredSpecsKept = 8;
-    while (_specs.size() > kRetiredSpecsKept + 1) {
-        _specs.pop_front();
-    }
+    _current.store(std::move(storage), std::memory_order_release);
 }
 
 std::vector<std::string>
 NetworkNode::getPorts() const
 {
-    const SpecStorage* current = _current.load(std::memory_order_acquire);
+    return currentSpec()->labels;
+}
 
-    return std::vector<std::string>(current->labels.begin(), current->labels.end());
+int
+NetworkNode::getNInputs() const
+{
+    return (int)currentSpec()->labels.size();
+}
+
+std::string
+NetworkNode::getInputLabel(int inputNb) const
+{
+    const std::shared_ptr<const SpecStorage> current = currentSpec();
+
+    if ((inputNb < 0) || (inputNb >= (int)current->labels.size())) {
+        return EffectInstance::getInputLabel(inputNb);
+    }
+
+    return current->labels[inputNb];
+}
+
+bool
+NetworkNode::isInputOptional(int inputNb) const
+{
+    return (inputNb >= 0) && (inputNb < getNInputs());
+}
+
+bool
+NetworkNode::isInputMask(int /*inputNb*/) const
+{
+    return false;
+}
+
+DataKindEnum
+NetworkNode::getInputDataKind(int inputNb) const
+{
+    return ((inputNb >= 0) && (inputNb < getNInputs())) ? eDataKindNetwork : eDataKindImage;
 }
 
 std::optional<PortDescriptor>
 NetworkNode::getInputPortDescriptor(int inputNb) const
 {
-    const SpecStorage* current = _current.load(std::memory_order_acquire);
+    const std::shared_ptr<const SpecStorage> current = currentSpec();
 
     if ((inputNb < 0) || (inputNb >= (int)current->ports.size())) {
         return std::nullopt;
@@ -713,7 +748,19 @@ NetworkNode::refreshKnobsEnabled()
             }
         } else if (disabledHere) {
             _disabledKnobs.erase(knob);
-            knob->setAllDimensionsEnabled(true);
+            enableUnlinkedDimensions(knob);
+        }
+    }
+}
+
+void
+NetworkNode::enableUnlinkedDimensions(KnobI* knob)
+{
+    // A link disables the dimensions it drives too, and a port can be connected before a link
+    // is made or, in a project load, before links are restored.
+    for (int i = 0; i < knob->getDimension(); ++i) {
+        if (!knob->isEnabled(i) && !knob->getMaster(i).second) {
+            knob->setEnabled(i, true);
         }
     }
 }
@@ -760,6 +807,14 @@ NetworkNode::onKnobsLoaded()
     // The saved text may name ports the layout no longer has.
     writePortsKnob(networkJoinPorts(getPorts()));
     pruneInputOutputs();
+    // The loader restores the saved enabled states, which only record which ports were connected
+    // then; refreshKnobsEnabled() disables the knobs of the ports connected now.
+    for (const auto& entry : _attributeKnobs) {
+        if (KnobIPtr knob = entry.second.lock()) {
+            enableUnlinkedDimensions(knob.get());
+        }
+    }
+    _disabledKnobs.clear();
     refreshKnobsEnabled();
 }
 
@@ -876,7 +931,7 @@ NetworkNode::onInputConnectionChanged(int inputNb)
     // recorded here too: a later connection to another node must then drop the output name.
     const std::vector<std::string> ports = getPorts();
     NodePtr node = getNode();
-    NodePtr input = (node && (inputNb >= 0) && (inputNb < (int)ports.size())) ? node->getInput(inputNb) : NodePtr();
+    NodePtr input = (node && (inputNb >= 0) && (inputNb < (int)ports.size())) ? throughDots(node->getInput(inputNb)) : NodePtr();
     if (input && !_portUpstreams.count(ports[inputNb])) {
         _portUpstreams[ports[inputNb]] = input;
     }
@@ -894,7 +949,7 @@ NetworkNode::onInputChanged(int inputNb)
         return;
     }
     NodePtr node = getNode();
-    NodePtr input = node ? node->getInput(inputNb) : NodePtr();
+    NodePtr input = node ? throughDots(node->getInput(inputNb)) : NodePtr();
     // A disconnect keeps the name: deleting the upstream node disconnects the input, and undoing
     // the delete reconnects the same node, which must read the same output again.
     if (!input) {
@@ -973,7 +1028,8 @@ NetworkNode::checkInputConnection(const NodePtr& upstream,
                                   const Node& downstream,
                                   int inputNb)
 {
-    const NetworkNode* from = upstream ? dynamic_cast<const NetworkNode*>(upstream->getEffectInstance().get()) : nullptr;
+    const NodePtr source = throughDots(upstream);
+    const NetworkNode* from = source ? dynamic_cast<const NetworkNode*>(source->getEffectInstance().get()) : nullptr;
     const NetworkNode* to = dynamic_cast<const NetworkNode*>(downstream.getEffectInstance().get());
 
     if (!from || !to) {
@@ -983,9 +1039,12 @@ NetworkNode::checkInputConnection(const NodePtr& upstream,
     if ((inputNb < 0) || (inputNb >= (int)ports.size())) {
         return eConnectionNoSuchInput;
     }
-    // onInputChanged() drops a name the new upstream node does not have, so it reads the first.
-    std::string output = to->getOutputForInput(ports[inputNb]);
-    if (!output.empty() && !from->findOutput(output)) {
+    // The output onInputChanged() leaves in place once the connection is made.
+    const std::string& label = ports[inputNb];
+    std::string output = to->getOutputForInput(label);
+    const std::map<std::string, NodeWPtr>::const_iterator previous = to->_portUpstreams.find(label);
+    const bool otherUpstream = (previous != to->_portUpstreams.end()) && (previous->second.lock() != source);
+    if (!output.empty() && (otherUpstream || !from->findOutput(output))) {
         output.clear();
     }
 

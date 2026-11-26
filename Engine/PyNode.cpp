@@ -465,8 +465,11 @@ Effect::connectInput(int inputNumber,
     if (input && input->getInternalNode() && (getInternalNode()->canConnectInput(input->getInternalNode(), inputNumber) == Node::eCanConnectInput_incompatiblePorts)) {
         const NetworkNode::ConnectionCheckEnum check = NetworkNode::checkInputConnection(input->getInternalNode(), *getInternalNode(), inputNumber);
         const std::string message = "Cannot connect " + input->getInternalNode()->getScriptName_mt_safe() + " to " + getInternalNode()->getScriptName_mt_safe() + ": " + NetworkNode::connectionCheckReason(check) + ".";
-        // A warning, not an error: a refused connection returns False, as for any other reason.
-        (void)PyErr_WarnEx(PyExc_RuntimeWarning, message.c_str(), 1);
+        // A warning, not an error: a refused connection returns False, as for any other reason,
+        // even when a warnings filter turns the warning into an exception.
+        if (PyErr_WarnEx(PyExc_RuntimeWarning, message.c_str(), 1) < 0) {
+            PyErr_Clear();
+        }
 
         return false;
     }

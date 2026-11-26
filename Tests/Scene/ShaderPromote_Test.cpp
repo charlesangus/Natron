@@ -39,6 +39,7 @@
 #include "BaseTest.h"
 
 #include "Engine/AppInstance.h"
+#include "Engine/EffectInstance.h"
 #include "Engine/Knob.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
@@ -185,6 +186,64 @@ TEST_F(ShaderPromoteTest, APromotedConnectedPortSurvivesASaveAndLoad)
     KnobIPtr knob2 = bsdf2->getKnobByName("specular_tint");
     ASSERT_TRUE(bool(knob2));
     EXPECT_FALSE(knob2->isEnabled(0));
+
+    bsdf2->disconnectInput(input2);
+    for (int i = 0; i < knob2->getDimension(); ++i) {
+        EXPECT_TRUE(knob2->isEnabled(i)) << i;
+    }
+}
+
+TEST_F(ShaderPromoteTest, ALinkedKnobStaysDisabledWhenItsPortIsDisconnected)
+{
+    ProjectPtr project = getApp()->getProject();
+    NodePtr master = create(kPrincipledBsdf);
+    NodePtr bsdf = create(kPrincipledBsdf);
+    NodePtr texture = create(kImageTexture);
+
+    ASSERT_TRUE(master && bsdf && texture);
+    const int input = bsdf->getInputNumberFromLabel("base_color");
+    ASSERT_GE(input, 0);
+    KnobIPtr knob = bsdf->getKnobByName("base_color");
+    KnobIPtr masterKnob = master->getKnobByName("base_color");
+    ASSERT_TRUE(knob && masterKnob);
+
+    // Connected before the link is made, so the port disabled the knob first.
+    ASSERT_TRUE(bsdf->connectInput(texture, input));
+    for (int i = 0; i < knob->getDimension(); ++i) {
+        ASSERT_TRUE(knob->slaveTo(i, masterKnob, i));
+    }
+    bsdf->disconnectInput(input);
+    for (int i = 0; i < knob->getDimension(); ++i) {
+        EXPECT_FALSE(knob->isEnabled(i)) << i;
+    }
+
+    ASSERT_TRUE(bsdf->connectInput(texture, input));
+    const std::string bsdfName = bsdf->getScriptName();
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    std::string yaml;
+    ASSERT_TRUE(saveProjectBundle(project, tmp, QString::fromUtf8("linked.ntpz"), &yaml));
+
+    knob.reset();
+    masterKnob.reset();
+    master.reset();
+    bsdf.reset();
+    texture.reset();
+    project->reset(false, true);
+
+    ASSERT_TRUE(project->loadProject(tmp.path() + QLatin1Char('/'), QString::fromUtf8("linked.ntpz")));
+    NodePtr bsdf2 = getApp()->getNodeByFullySpecifiedName(bsdfName);
+    ASSERT_TRUE(bool(bsdf2));
+    const int input2 = bsdf2->getInputNumberFromLabel("base_color");
+    ASSERT_GE(input2, 0);
+    ASSERT_TRUE(bool(bsdf2->getInput(input2)));
+    KnobIPtr knob2 = bsdf2->getKnobByName("base_color");
+    ASSERT_TRUE(bool(knob2));
+    ASSERT_TRUE(bool(knob2->getMaster(0).second));
+    bsdf2->disconnectInput(input2);
+    for (int i = 0; i < knob2->getDimension(); ++i) {
+        EXPECT_FALSE(knob2->isEnabled(i)) << i;
+    }
 }
 
 TEST_F(ShaderPromoteTest, DemotingAConnectedPortDisconnectsItAndEnablesItsKnob)
@@ -479,5 +538,23 @@ TEST_F(ShaderPromoteTest, AConnectionWhoseTypesDoNotConvertIsRefused)
     std::string output;
     ASSERT_TRUE(interpretPythonScript(script, &error, &output)) << error;
     EXPECT_TRUE(error.empty()) << error;
+    EXPECT_FALSE(bool(bsdf->getInput(baseColor)));
+}
+
+TEST_F(ShaderPromoteTest, TheTypeCheckSeesThroughDots)
+{
+    NodePtr upstream = create(kPrincipledBsdf);
+    NodePtr bsdf = create(kPrincipledBsdf);
+    NodePtr dot = create(PLUGINID_NATRON_DOT);
+    NodePtr secondDot = create(PLUGINID_NATRON_DOT);
+
+    ASSERT_TRUE(upstream && bsdf && dot && secondDot);
+    ASSERT_TRUE(dot->connectInput(upstream, 0));
+    ASSERT_TRUE(secondDot->connectInput(dot, 0));
+    const int baseColor = bsdf->getInputNumberFromLabel("base_color");
+    ASSERT_GE(baseColor, 0);
+    EXPECT_EQ(NetworkNode::eConnectionTypeMismatch, NetworkNode::checkInputConnection(secondDot, *bsdf, baseColor));
+    EXPECT_EQ(Node::eCanConnectInput_incompatiblePorts, bsdf->canConnectInput(secondDot, baseColor));
+    EXPECT_FALSE(NodeCollection::connectNodes(baseColor, secondDot, bsdf));
     EXPECT_FALSE(bool(bsdf->getInput(baseColor)));
 }

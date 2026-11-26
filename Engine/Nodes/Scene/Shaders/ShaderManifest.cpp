@@ -331,7 +331,7 @@ mapCyclesAttribute(const QJsonObject& json,
             const QJsonObject option = item.toObject();
             NetworkChoice choice;
             choice.id = toStd(option.value(QLatin1String("name")));
-            choice.label = shaderLabelFromScriptName(choice.id);
+            choice.label = shaderChoiceLabel(choice.id);
             choice.value = formatNumber(option.value(QLatin1String("value")).toDouble());
             if (choice.id == defaultName) {
                 attribute->defaultChoice = (int)attribute->choices.size();
@@ -417,7 +417,7 @@ mapMoonRayAttribute(const QJsonObject& json,
             const QJsonObject option = item.toObject();
             NetworkChoice choice;
             choice.id = toStd(option.value(QLatin1String("name")));
-            choice.label = shaderLabelFromScriptName(choice.id);
+            choice.label = shaderChoiceLabel(choice.id);
             const double optionValue = option.value(QLatin1String("value")).toDouble();
             choice.value = formatNumber(optionValue);
             if (optionValue == defaultValue) {
@@ -706,6 +706,54 @@ shaderLabelFromScriptName(const std::string& scriptName)
         const std::map<std::string, std::string>::const_iterator acronym = acronyms().find(lower);
         std::string out = (acronym == acronyms().end()) ? w : acronym->second;
         if (acronym == acronyms().end()) {
+            out[0] = (char)std::toupper((unsigned char)out[0]);
+        }
+        if (!ret.empty()) {
+            ret += ' ';
+        }
+        ret += out;
+    }
+
+    return ret;
+}
+
+std::string
+shaderChoiceLabel(const std::string& name)
+{
+    for (const char c : name) {
+        if (!std::isalnum((unsigned char)c) && (c != '_') && (c != ' ')) {
+            return name;
+        }
+    }
+    std::vector<std::string> words;
+    std::string word;
+    for (std::size_t i = 0; i <= name.size(); ++i) {
+        const char c = (i < name.size()) ? name[i] : ' ';
+        if ((c == '_') || (c == ' ')) {
+            if (!word.empty()) {
+                words.push_back(word);
+                word.clear();
+            }
+            continue;
+        }
+        // A capital splits only a word of two lower case letters or more: sRGB and fBM stay whole.
+        const std::size_t n = word.size();
+        if ((n >= 2) && std::isupper((unsigned char)c) && std::islower((unsigned char)word[0]) && std::islower((unsigned char)word[n - 1]) && std::islower((unsigned char)word[n - 2])) {
+            words.push_back(word);
+            word.clear();
+        }
+        word += c;
+    }
+
+    std::string ret;
+    for (const std::string& w : words) {
+        std::string lower = w;
+        std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+        const std::map<std::string, std::string>::const_iterator acronym = acronyms().find(lower);
+        std::string out = w;
+        if (acronym != acronyms().end()) {
+            out = acronym->second;
+        } else if (lower == w) {
             out[0] = (char)std::toupper((unsigned char)out[0]);
         }
         if (!ret.empty()) {

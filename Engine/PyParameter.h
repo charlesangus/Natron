@@ -1475,6 +1475,9 @@ public:
                                                      double rightDerivative,
                                                      double leftWeight,
                                                      double rightWeight);
+    // eKeyframeTypeNone when there is no such control point.
+    Natron::KeyframeTypeEnum getNthControlPointInterpolation(int dimension,
+                                                             int nthCtl) const;
     Natron::StatusEnum setNthControlPointInterpolation(int dimension,
                                                                  int nThCtl,
                                                                  Natron::KeyframeTypeEnum interpolation);

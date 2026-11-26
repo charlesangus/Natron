@@ -724,13 +724,131 @@ struct RotoItemPrivate
 
 typedef std::list<RotoItemPtr> RotoItems;
 
+// The transform knob set shapes and layers share, so the node's proxies reach both by name.
+struct RotoTransformKnobs {
+    Q_DECLARE_TR_FUNCTIONS(RotoDrawableItem)
+
+public:
+    KnobDoublePtr translate;
+    KnobDoublePtr rotate;
+    KnobDoublePtr scale;
+    KnobBoolPtr scaleUniform;
+    KnobDoublePtr skewX;
+    KnobDoublePtr skewY;
+    KnobChoicePtr skewOrder;
+    KnobDoublePtr center;
+    KnobDoublePtr extraMatrix;
+
+    void create(std::list<KnobIPtr>* knobs)
+    {
+        translate = std::make_shared<KnobDouble>((KnobHolder*)NULL, tr(kRotoDrawableItemTranslateParamLabel), 2, true);
+        translate->setName(kRotoDrawableItemTranslateParam);
+        translate->setHintToolTip(tr(kRotoDrawableItemTranslateParamHint));
+        translate->populate();
+        knobs->push_back(translate);
+
+        rotate = std::make_shared<KnobDouble>((KnobHolder*)NULL, tr(kRotoDrawableItemRotateParamLabel), 1, true);
+        rotate->setName(kRotoDrawableItemRotateParam);
+        rotate->setHintToolTip(tr(kRotoDrawableItemRotateParamHint));
+        rotate->populate();
+        knobs->push_back(rotate);
+
+        scale = std::make_shared<KnobDouble>((KnobHolder*)NULL, tr(kRotoDrawableItemScaleParamLabel), 2, true);
+        scale->setName(kRotoDrawableItemScaleParam);
+        scale->setHintToolTip(tr(kRotoDrawableItemScaleParamHint));
+        scale->populate();
+        scale->setDefaultValue(1, 0);
+        scale->setDefaultValue(1, 1);
+        knobs->push_back(scale);
+
+        scaleUniform = std::make_shared<KnobBool>((KnobHolder*)NULL, tr(kRotoDrawableItemScaleUniformParamLabel), 1, true);
+        scaleUniform->setName(kRotoDrawableItemScaleUniformParam);
+        scaleUniform->setHintToolTip(tr(kRotoDrawableItemScaleUniformParamHint));
+        scaleUniform->populate();
+        scaleUniform->setDefaultValue(true);
+        knobs->push_back(scaleUniform);
+
+        skewX = std::make_shared<KnobDouble>((KnobHolder*)NULL, tr(kRotoDrawableItemSkewXParamLabel), 1, true);
+        skewX->setName(kRotoDrawableItemSkewXParam);
+        skewX->setHintToolTip(tr(kRotoDrawableItemSkewXParamHint));
+        skewX->populate();
+        knobs->push_back(skewX);
+
+        skewY = std::make_shared<KnobDouble>((KnobHolder*)NULL, tr(kRotoDrawableItemSkewYParamLabel), 1, true);
+        skewY->setName(kRotoDrawableItemSkewYParam);
+        skewY->setHintToolTip(tr(kRotoDrawableItemSkewYParamHint));
+        skewY->populate();
+        knobs->push_back(skewY);
+
+        skewOrder = std::make_shared<KnobChoice>((KnobHolder*)NULL, tr(kRotoDrawableItemSkewOrderParamLabel), 1, true);
+        skewOrder->setName(kRotoDrawableItemSkewOrderParam);
+        skewOrder->setHintToolTip(tr(kRotoDrawableItemSkewOrderParamHint));
+        skewOrder->populate();
+        knobs->push_back(skewOrder);
+        {
+            std::vector<ChoiceOption> choices;
+            choices.push_back(ChoiceOption("XY"));
+            choices.push_back(ChoiceOption("YX"));
+            skewOrder->populateChoices(choices);
+        }
+
+        center = std::make_shared<KnobDouble>((KnobHolder*)NULL, tr(kRotoDrawableItemCenterParamLabel), 2, true);
+        center->setName(kRotoDrawableItemCenterParam);
+        center->setHintToolTip(tr(kRotoDrawableItemCenterParamHint));
+        center->populate();
+        knobs->push_back(center);
+
+        extraMatrix = std::make_shared<KnobDouble>((KnobHolder*)NULL, tr(kRotoDrawableItemExtraMatrixParamLabel), 9, true);
+        extraMatrix->setName(kRotoDrawableItemExtraMatrixParam);
+        extraMatrix->setHintToolTip(tr(kRotoDrawableItemExtraMatrixParamHint));
+        extraMatrix->populate();
+        extraMatrix->setDefaultValue(1, 0);
+        extraMatrix->setDefaultValue(1, 4);
+        extraMatrix->setDefaultValue(1, 8);
+        knobs->push_back(extraMatrix);
+    }
+
+    void getMatrixAtTime(double time,
+                         Transform::Matrix3x3* matrix) const
+    {
+        double tx = translate->getValueAtTime(time, 0);
+        double ty = translate->getValueAtTime(time, 1);
+        double sx = scale->getValueAtTime(time, 0);
+        double sy = scaleUniform->getValueAtTime(time) ? sx : scale->getValueAtTime(time, 1);
+        double skx = skewX->getValueAtTime(time, 0);
+        double sky = skewY->getValueAtTime(time, 0);
+        double rot = Transform::toRadians(rotate->getValueAtTime(time, 0));
+        double centerX = center->getValueAtTime(time, 0);
+        double centerY = center->getValueAtTime(time, 1);
+        bool skewOrderYX = skewOrder->getValueAtTime(time) == 1;
+        *matrix = Transform::matTransformCanonical(tx, ty, sx, sy, skx, sky, skewOrderYX, rot, centerX, centerY);
+
+        Transform::Matrix3x3 extraMat;
+        extraMat.a = extraMatrix->getValueAtTime(time, 0);
+        extraMat.b = extraMatrix->getValueAtTime(time, 1);
+        extraMat.c = extraMatrix->getValueAtTime(time, 2);
+        extraMat.d = extraMatrix->getValueAtTime(time, 3);
+        extraMat.e = extraMatrix->getValueAtTime(time, 4);
+        extraMat.f = extraMatrix->getValueAtTime(time, 5);
+        extraMat.g = extraMatrix->getValueAtTime(time, 6);
+        extraMat.h = extraMatrix->getValueAtTime(time, 7);
+        extraMat.i = extraMatrix->getValueAtTime(time, 8);
+        *matrix = Transform::matMul(*matrix, extraMat);
+    }
+};
+
 struct RotoLayerPrivate
 {
     RotoItems items;
+    RotoTransformKnobs transform;
+    std::list<KnobIPtr> knobs;
 
     RotoLayerPrivate()
         : items()
+        , transform()
+        , knobs()
     {
+        transform.create(&knobs);
     }
 };
 
@@ -1102,72 +1220,19 @@ public:
         compOperator->populate();
         knobs.push_back(compOperator);
 
-
-        translate = std::make_shared<KnobDouble>((KnobHolder*)NULL, tr(kRotoDrawableItemTranslateParamLabel), 2, true);
-        translate->setName(kRotoDrawableItemTranslateParam);
-        translate->setHintToolTip( tr(kRotoDrawableItemTranslateParamHint) );
-        translate->populate();
-        knobs.push_back(translate);
-
-        rotate = std::make_shared<KnobDouble>((KnobHolder*)NULL, tr(kRotoDrawableItemRotateParamLabel), 1, true);
-        rotate->setName(kRotoDrawableItemRotateParam);
-        rotate->setHintToolTip( tr(kRotoDrawableItemRotateParamHint) );
-        rotate->populate();
-        knobs.push_back(rotate);
-
-        scale = std::make_shared<KnobDouble>((KnobHolder*)NULL, tr(kRotoDrawableItemScaleParamLabel), 2, true);
-        scale->setName(kRotoDrawableItemScaleParam);
-        scale->setHintToolTip( tr(kRotoDrawableItemScaleParamHint) );
-        scale->populate();
-        scale->setDefaultValue(1, 0);
-        scale->setDefaultValue(1, 1);
-        knobs.push_back(scale);
-
-        scaleUniform = std::make_shared<KnobBool>((KnobHolder*)NULL, tr(kRotoDrawableItemScaleUniformParamLabel), 1, true);
-        scaleUniform->setName(kRotoDrawableItemScaleUniformParam);
-        scaleUniform->setHintToolTip( tr(kRotoDrawableItemScaleUniformParamHint) );
-        scaleUniform->populate();
-        scaleUniform->setDefaultValue(true);
-        knobs.push_back(scaleUniform);
-
-        skewX = std::make_shared<KnobDouble>((KnobHolder*)NULL, tr(kRotoDrawableItemSkewXParamLabel), 1, true);
-        skewX->setName(kRotoDrawableItemSkewXParam);
-        skewX->setHintToolTip( tr(kRotoDrawableItemSkewXParamHint) );
-        skewX->populate();
-        knobs.push_back(skewX);
-
-        skewY = std::make_shared<KnobDouble>((KnobHolder*)NULL, tr(kRotoDrawableItemSkewYParamLabel), 1, true);
-        skewY->setName(kRotoDrawableItemSkewYParam);
-        skewY->setHintToolTip( tr(kRotoDrawableItemSkewYParamHint) );
-        skewY->populate();
-        knobs.push_back(skewY);
-
-        skewOrder = std::make_shared<KnobChoice>((KnobHolder*)NULL, tr(kRotoDrawableItemSkewOrderParamLabel), 1, true);
-        skewOrder->setName(kRotoDrawableItemSkewOrderParam);
-        skewOrder->setHintToolTip( tr(kRotoDrawableItemSkewOrderParamHint) );
-        skewOrder->populate();
-        knobs.push_back(skewOrder);
         {
-            std::vector<ChoiceOption> choices;
-            choices.push_back(ChoiceOption("XY"));
-            choices.push_back(ChoiceOption("YX"));
-            skewOrder->populateChoices(choices);
+            RotoTransformKnobs transform;
+            transform.create(&knobs);
+            translate = transform.translate;
+            rotate = transform.rotate;
+            scale = transform.scale;
+            scaleUniform = transform.scaleUniform;
+            skewX = transform.skewX;
+            skewY = transform.skewY;
+            skewOrder = transform.skewOrder;
+            center = transform.center;
+            extraMatrix = transform.extraMatrix;
         }
-
-        center = std::make_shared<KnobDouble>((KnobHolder*)NULL, tr(kRotoDrawableItemCenterParamLabel), 2, true);
-        center->setName(kRotoDrawableItemCenterParam);
-        center->setHintToolTip( tr(kRotoDrawableItemCenterParamHint) );
-        center->populate();
-        knobs.push_back(center);
-
-        extraMatrix = std::make_shared<KnobDouble>((KnobHolder*)NULL, tr(kRotoDrawableItemExtraMatrixParamLabel), 9, true);
-        extraMatrix->setName(kRotoDrawableItemExtraMatrixParam);
-        extraMatrix->setHintToolTip( tr(kRotoDrawableItemExtraMatrixParamHint) );
-        extraMatrix->populate();
-        extraMatrix->setDefaultValue(1, 0);
-        extraMatrix->setDefaultValue(1, 4);
-        extraMatrix->setDefaultValue(1, 8);
-        knobs.push_back(extraMatrix);
 
         brushSize = std::make_shared<KnobDouble>((KnobHolder*)NULL, tr(kRotoBrushSizeParamLabel), 1, true);
         brushSize->setName(kRotoBrushSizeParam);
@@ -1591,6 +1656,9 @@ public:
     std::list<RotoItemPtr> selectedThroughLayer;
     // The selected item the node's item knobs show.
     RotoDrawableItemWPtr mirroredItem;
+    // The selected layer the node's transform knobs show and edit instead, when it is the one
+    // transform tied to them and the layers own transforms.
+    RotoLayerWPtr mirroredLayer;
     // Above zero while the node's item knobs are made to show an item or an edit on them is
     // replayed on the selected items, so that neither echoes back.
     int proxySyncDepth = 0;
@@ -1783,7 +1851,7 @@ public:
      * @brief Creates the Stroke, Clone and Transform pages of a paint context, after the knobs
      * of the constructor. Their order in the node is the one projects are saved in.
      **/
-    void createPaintKnobs()
+    void createPaintKnobs(const std::function<bool(double, Transform::Matrix3x3*)>& transformFrame)
     {
         EffectInstancePtr effect = node.lock()->getEffectInstance();
 
@@ -2137,7 +2205,7 @@ public:
 
         node.lock()->addTransformInteract(translateKnob.lock(), scaleKnob.lock(), scaleUniformKnob.lock(), rotateKnob.lock(),
                                           skewXKnob.lock(), skewYKnob.lock(), skewOrderKnob.lock(), centerKnob.lock(),
-                                          KnobBoolPtr() /*invert*/);
+                                          KnobBoolPtr() /*invert*/, transformFrame);
 
 #ifdef NATRON_ROTO_ENABLE_MOTION_BLUR
         KnobPagePtr mbPage = AppManager::createKnob<KnobPage>(effect.get(), tr("Motion Blur"), 1, true);

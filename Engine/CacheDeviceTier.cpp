@@ -82,19 +82,6 @@ costOf(const CacheEntryHeader& header)
     return cost > 0.f ? cost : CacheEviction::kUnmeasuredCostNs;
 }
 
-// What eviction and lookups read of an entry, for a header that must not be shared with the one it is copied from.
-void
-copyEntryState(const CacheEntryHeader& from,
-               CacheEntryHeader* to)
-{
-    to->lastUse.store(from.lastUse.load());
-    to->priority.store(from.priority.load());
-    to->recomputeCostNs.store(from.recomputeCostNs.load());
-    to->retention.store(from.retention.load());
-    to->reuseCount.store(from.reuseCount.load());
-    to->lastReuseRender.store(from.lastReuseRender.load());
-}
-
 // Copies from's bitmap into to's, whose bounds it may not match.
 void
 copyBitmapInto(const Bitmap& from,

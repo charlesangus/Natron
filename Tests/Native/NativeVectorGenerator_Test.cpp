@@ -518,25 +518,24 @@ TEST_F(NativeVectorGeneratorTest, EmptyMatteMatchesNoMatte)
     EXPECT_EQ(without.pixels, with.pixels);
 }
 
-TEST_F(NativeVectorGeneratorTest, SchedulerModesAgree)
+TEST_F(NativeVectorGeneratorTest, DirectAndScheduledPullsAgree)
 {
     NodePtr node = createGenerator(createMovingTexture());
     ASSERT_TRUE(bool(node));
     const std::list<ImageLayerDesc> layers { forwardLayer(), backwardLayer(), VectorGenerator::confidenceLayer() };
 
-    std::vector<RenderedPlane> legacy;
-    std::vector<RenderedPlane> taskGraph;
+    std::vector<RenderedPlane> direct;
+    std::vector<RenderedPlane> scheduled;
     std::string error;
-    ASSERT_TRUE(renderNodePlanesInMode(node, 3., ViewIdx(0), 0, windowAt(0), layers, eRenderSchedulerModeLegacy, true, &legacy, &error)) << error;
-    ASSERT_TRUE(renderNodePlanesInMode(node, 3., ViewIdx(0), 0, windowAt(0), layers, eRenderSchedulerModeTaskGraph, true, &taskGraph, &error)) << error;
-    ASSERT_EQ(legacy.size(), layers.size());
-    ASSERT_EQ(taskGraph.size(), layers.size());
-    // The task graph returns its planes in layer order, Legacy in the order of `layers`.
-    for (const RenderedPlane& expected : legacy) {
-        const std::vector<RenderedPlane>::const_iterator found = std::find_if(taskGraph.begin(), taskGraph.end(), [&](const RenderedPlane& rendered) {
+    ASSERT_TRUE(renderNodePlanesDirect(node, 3., ViewIdx(0), 0, windowAt(0), layers, &direct, &error)) << error;
+    ASSERT_TRUE(renderNodePlanesScheduled(node, 3., ViewIdx(0), 0, windowAt(0), true, &scheduled, &error)) << error;
+    ASSERT_EQ(direct.size(), layers.size());
+    ASSERT_EQ(scheduled.size(), layers.size());
+    for (const RenderedPlane& expected : direct) {
+        const std::vector<RenderedPlane>::const_iterator found = std::find_if(scheduled.begin(), scheduled.end(), [&](const RenderedPlane& rendered) {
             return rendered.layer.getLayerID() == expected.layer.getLayerID();
         });
-        ASSERT_NE(found, taskGraph.end()) << expected.layer.getLayerID();
+        ASSERT_NE(found, scheduled.end()) << expected.layer.getLayerID();
         EXPECT_EQ(expected.pixels, found->pixels) << expected.layer.getLayerID();
     }
 }

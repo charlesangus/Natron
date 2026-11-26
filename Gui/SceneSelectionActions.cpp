@@ -486,8 +486,9 @@ placeBelow(const NodePtr& viewed,
     const QSize viewedSize = viewedGui->getSize();
     const QSize createdSize = createdGui->getSize();
     const QPointF viewedPos = viewedGui->scenePos();
+    const double captionDrop = viewedGui->messageCaptionDrop();
     const QPointF position(viewedPos.x() + (viewedSize.width() - createdSize.width()) / 2.,
-                           viewedPos.y() + viewedSize.height() + NodeGui::DEFAULT_OFFSET_BETWEEN_NODES);
+                           viewedPos.y() + viewedSize.height() + captionDrop + NodeGui::DEFAULT_OFFSET_BETWEEN_NODES);
     for (const NodePtr& output : outputs) {
         if (NodeGuiPtr outputGui = std::dynamic_pointer_cast<NodeGui>(output->getNodeGui())) {
             outputGui->moveBelowPositionRecursively(QRectF(position, createdSize));

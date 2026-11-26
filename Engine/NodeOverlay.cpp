@@ -432,7 +432,8 @@ Node::addTransformInteract(const KnobDoublePtr& translate,
                            const KnobDoublePtr& skewY,
                            const KnobChoicePtr& skewOrder,
                            const KnobDoublePtr& center,
-                           const KnobBoolPtr& invert)
+                           const KnobBoolPtr& invert,
+                           const std::function<bool(double, Transform::Matrix3x3*)>& frame)
 {
     assert( QThread::currentThread() == qApp->thread() );
 
@@ -477,6 +478,7 @@ Node::addTransformInteract(const KnobDoublePtr& translate,
     if (invert) {
         knobs->addKnob(invert, HostOverlayKnobsTransform::eKnobsEnumerationInvert);
     }
+    knobs->setFrameGetter(frame);
     NodeGuiIPtr nodeGui = getNodeGui();
     if (!nodeGui) {
         _imp->nativeOverlays.push_back(knobs);

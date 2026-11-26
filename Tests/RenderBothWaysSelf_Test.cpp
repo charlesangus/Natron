@@ -123,7 +123,7 @@ TEST_F(RenderBothWaysSelf, DirectRenderMatchesAtMipmapZeroAndOne)
     }
 }
 
-// A comparison that cannot tell the two passes apart would pass whatever the Task graph renders,
+// A comparison that cannot tell the two passes apart would pass whatever the scheduler renders,
 // so changing the last Grade between the passes must be reported as a pixel mismatch.
 TEST_F(RenderBothWaysSelf, WriterSequenceReportsAKnobChangedBeforeTheTaskGraphPass)
 {

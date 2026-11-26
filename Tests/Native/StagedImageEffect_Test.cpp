@@ -568,9 +568,9 @@ TEST_F(StagedImageEffectTest, MixZeroAndAMissedMaskAreIdentities)
     EXPECT_FALSE(effect->isIdentity_public(false, 0, kTime, RenderScale::identity, window, ViewIdx(0), &inputTime, &inputView, &inputNb));
 }
 
-// Legacy and Task graph renders agree bit for bit, and the scheduler plans every image the
+// Direct and Task graph renders agree bit for bit, and the scheduler plans every image the
 // render fetches: the mask layer and the divisor layer, here a layer other than colour.
-TEST_F(StagedImageEffectTest, BothSchedulerModesAgreeWithNoUnplannedPull)
+TEST_F(StagedImageEffectTest, DirectAndScheduledAgreeWithNoUnplannedPull)
 {
     NodePtr source = createSource();
     setParitySourceExtraLayer(source, true);
@@ -710,7 +710,7 @@ TEST_F(StagedImageEffectTest, AWindowSplitIntoBandsIsRenderedWhole)
     EXPECT_EQ(0, differing);
 }
 
-TEST_F(StagedImageEffectTest, BandsAgreeInBothSchedulerModesWithNoUnplannedPull)
+TEST_F(StagedImageEffectTest, BandsAgreeDirectAndScheduledWithNoUnplannedPull)
 {
     const int width = 512;
     const int height = 256;

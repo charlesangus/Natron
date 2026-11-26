@@ -84,6 +84,7 @@
 #include "Gui/TimeLineGui.h"
 #include "Gui/UndoHistory.h"
 #include "Gui/ViewerGL.h"
+#include "Gui/ViewerZoomLadder.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -544,20 +545,13 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     _imp->zoomCombobox->addAction(zoomInAction);
     _imp->zoomCombobox->addAction(zoomOutAction);
     _imp->zoomCombobox->addSeparator();
-    _imp->zoomCombobox->addItem( QString::fromUtf8("10%") );
-    _imp->zoomCombobox->addItem( QString::fromUtf8("25%") );
-    _imp->zoomCombobox->addItem( QString::fromUtf8("50%") );
-    _imp->zoomCombobox->addItem( QString::fromUtf8("75%") );
-    _imp->zoomCombobox->addAction(level100Action);
-    _imp->zoomCombobox->addItem( QString::fromUtf8("125%") );
-    _imp->zoomCombobox->addItem( QString::fromUtf8("150%") );
-    _imp->zoomCombobox->addItem( QString::fromUtf8("200%") );
-    _imp->zoomCombobox->addItem( QString::fromUtf8("400%") );
-    _imp->zoomCombobox->addItem( QString::fromUtf8("800%") );
-    _imp->zoomCombobox->addItem( QString::fromUtf8("1600%") );
-    _imp->zoomCombobox->addItem( QString::fromUtf8("2400%") );
-    _imp->zoomCombobox->addItem( QString::fromUtf8("3200%") );
-    _imp->zoomCombobox->addItem( QString::fromUtf8("6400%") );
+    for (int percent : kViewerZoomPresetsPercent) {
+        if (percent == 100) {
+            _imp->zoomCombobox->addAction(level100Action);
+        } else {
+            _imp->zoomCombobox->addItem(QString::number(percent) + QLatin1Char('%'));
+        }
+    }
     _imp->zoomCombobox->setMaximumWidthFromText( QString::fromUtf8("100000%") );
 
     _imp->firstRowLayout->addWidget(_imp->zoomCombobox);

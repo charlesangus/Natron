@@ -241,7 +241,7 @@ run_one() {
     sleep 2
     t0=$SECONDS
     (cd "$REPO" && with_display env -u LD_LIBRARY_PATH XDG_CACHE_HOME="$cache" NATRON_GPU="$mode" \
-        NATRON_RENDER_SCHEDULER=taskgraph NATRON_RENDER_PROFILE="$OUT/$tag.prof" \
+        NATRON_RENDER_PROFILE="$OUT/$tag.prof" \
         RB_RAW="$file" RB_OUT="$render_dir/out_####.exr" RB_RESULT="$OUT/$tag.marks.jsonl" \
         RB_BAYER="$bayer" RB_XTRANS="$xtrans" \
         timeout 1800 "$APPIMAGE" "${APPIMAGE_ARGV[@]}" -b "$DRIVER") > "$OUT/$tag.log" 2>&1

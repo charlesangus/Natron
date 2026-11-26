@@ -363,7 +363,7 @@ TEST_F(NativeReformatTest, UnversionedRequestsGetTheNativeReformat)
     EXPECT_EQ(kNativeReformatMajor, unversioned->getMajorVersion());
 }
 
-TEST_F(NativeReformatTest, RendersTheSameInBothSchedulerModes)
+TEST_F(NativeReformatTest, RendersTheSameDirectAndScheduled)
 {
     resetProject();
     std::vector<int> poolSizes;

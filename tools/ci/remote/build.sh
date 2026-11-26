@@ -5,7 +5,7 @@
 # build/remote/<preset>/. The remote twin of tools/ci/local/build.sh.
 #
 # Usage:
-#   tools/ci/remote/build.sh <fast|release|debug> [--tests] [--scheduler <legacy|taskgraph>] [--record-goldens]
+#   tools/ci/remote/build.sh <fast|release|debug> [--tests] [--record-goldens]
 #                            [--shuffle-seeds <n,n,...>] [--repeat-test <name>:<N> [--repeat-parallel <P>] [--repeat-timeout <S>]] [--appimage] [--no-remote-ccache] [--debug-symbols] [--cmake-arg <arg>]... [--gui "<script> ..."]
 #   tools/ci/remote/build.sh <fast|release> --from-run <run-id> --gui "<script> ..."
 #   tools/ci/remote/build.sh --mode
@@ -16,12 +16,6 @@
 #                        the -DDEBUG traps, so it takes neither --appimage nor --gui.
 #   --tests           -> also run the ctest suite and smoke tests remotely; the
 #                        ctest logs are downloaded even when the run fails.
-#   --scheduler <legacy|taskgraph> -> implies --tests; runs only that scheduler's
-#                        ctest leg and smoke test instead of both, which halves the
-#                        wait of an intermediate fix build. Without it both legs
-#                        run. A milestone's verification gate must run without it.
-#                        The smoke renders of the two schedulers are compared
-#                        only when both legs ran.
 #   --record-goldens  -> implies --tests; also records the native, Cycles and MoonRay golden
 #                        renders (NativeGoldenTest, NativeIDistortAmountTest,
 #                        NativeIWarpTest, USDRenderCyclesTest,
@@ -36,23 +30,23 @@
 #                        MaskedMixHalf, SkewYX) and NativeReformatTest (FitIntoAFixedBox,
 #                        ToFormatWithAPixelAspectRatio, ToProjectFormatFromTheSourceRoD)
 #                        into Tests/fixtures/native-parity/; no other parity reference changes.
-#   --shuffle-seeds <n,n,...> -> implies --tests; each ctest leg also runs once
+#   --shuffle-seeds <n,n,...> -> implies --tests; the ctest job also runs once
 #                        per seed with GTEST_SHUFFLE=1 GTEST_RANDOM_SEED=<seed>,
 #                        after its unshuffled run, e.g. --shuffle-seeds 1,2,3.
 #                        Every seed runs even if an earlier one failed, and each
-#                        run's log is ctest-<scheduler>-seed<seed>.log next to
-#                        the unshuffled ctest-<scheduler>.log. The ctest step's
+#                        run's log is ctest-seed<seed>.log next to
+#                        the unshuffled ctest.log. The ctest step's
 #                        timeout is a fixed 120 minutes, which fits about five
 #                        seeds on the debug preset, so at most 5 seeds are
 #                        accepted.
-#   --repeat-test <name>:<N> -> implies --tests; after its normal ctest run, each ctest
-#                        leg runs the one ctest case matching the regex <name> N times
+#   --repeat-test <name>:<N> -> implies --tests; after its normal ctest run, the ctest
+#                        job runs the one ctest case matching the regex <name> N times
 #                        under background ctest load (`tools/ci/local/test.sh repeat
 #                        <name> <N>`), stopping at the first failure. The log is
-#                        ctest-<scheduler>-repeat.log next to the ctest log. <name>
+#                        ctest-repeat.log next to the ctest log. <name>
 #                        must not contain a colon or whitespace.
 #                        Every iteration's log and any hung one's thread stacks are
-#                        downloaded into repeat-<scheduler>/ next to it.
+#                        downloaded into repeat/ next to it.
 #   --repeat-parallel <P> -> with --repeat-test: copies of the case run at once
 #                        (test.sh repeat --parallel; default 4).
 #   --repeat-timeout <S> -> with --repeat-test: seconds each copy may run before its
@@ -117,7 +111,7 @@ for interval_var in FIND_INTERVAL_SECS WATCH_INTERVAL_SECS; do
 done
 
 usage() {
-    echo "usage: build.sh <fast|release|debug> [--tests] [--scheduler <legacy|taskgraph>] [--record-goldens] [--shuffle-seeds <n,n,...>] [--repeat-test <name>:<N> [--repeat-parallel <P>] [--repeat-timeout <S>]] [--appimage] [--no-remote-ccache] [--debug-symbols] [--cmake-arg <arg>]... [--gui \"<script> ...\"]" >&2
+    echo "usage: build.sh <fast|release|debug> [--tests] [--record-goldens] [--shuffle-seeds <n,n,...>] [--repeat-test <name>:<N> [--repeat-parallel <P>] [--repeat-timeout <S>]] [--appimage] [--no-remote-ccache] [--debug-symbols] [--cmake-arg <arg>]... [--gui \"<script> ...\"]" >&2
     echo "       build.sh <fast|release> --from-run <run-id> [--gui-ref <ref>] --gui \"<script> ...\"" >&2
     echo "       build.sh --mode" >&2
 }
@@ -160,7 +154,6 @@ SHUFFLE_SEEDS=""
 REPEAT_TEST=""
 REPEAT_PARALLEL=""
 REPEAT_TIMEOUT=""
-SCHEDULERS="legacy,taskgraph"
 CMAKE_ARGS=""
 GUI_SCRIPTS=""
 FROM_RUN=""
@@ -195,17 +188,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         --record-goldens)
             RECORD_GOLDENS=true
-            RUN_TESTS=true
-            BUILD_OPTION=true
-            ;;
-        --scheduler)
-            if [[ $# -eq 0 || ( "$1" != "legacy" && "$1" != "taskgraph" ) ]]; then
-                echo "build.sh: --scheduler needs legacy or taskgraph, got '${1:-}'" >&2
-                usage
-                exit 1
-            fi
-            SCHEDULERS="$1"
-            shift
             RUN_TESTS=true
             BUILD_OPTION=true
             ;;
@@ -481,7 +463,6 @@ gh workflow run "${WORKFLOW}" --ref "${BRANCH}" \
     -f "shuffle_seeds=${SHUFFLE_SEEDS}" \
     ${REPEAT_ARGS[@]+"${REPEAT_ARGS[@]}"} \
     ${REMOTE_CCACHE_ARGS[@]+"${REMOTE_CCACHE_ARGS[@]}"} \
-    -f "schedulers=${SCHEDULERS}" \
     -f "cmake_args=${CMAKE_ARGS}" \
     -f "label=${LABEL}" \
     -f "token=${TOKEN}" \
@@ -665,11 +646,9 @@ fi
 
 REPEAT_DIRS=()
 if [[ -n "${REPEAT_TEST}" ]]; then
-    for scheduler in ${SCHEDULERS//,/ }; do
-        if download_artifact "ctest-repeat-${scheduler}-${PRESET}-${HEAD_SHA}" "${OUT_DIR}/repeat-${scheduler}"; then
-            REPEAT_DIRS+=("${OUT_DIR}/repeat-${scheduler}")
-        fi
-    done
+    if download_artifact "ctest-repeat-${PRESET}-${HEAD_SHA}" "${OUT_DIR}/repeat"; then
+        REPEAT_DIRS+=("${OUT_DIR}/repeat")
+    fi
 fi
 
 GOLDEN_DIR=""

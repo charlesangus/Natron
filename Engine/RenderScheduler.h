@@ -256,7 +256,16 @@ public:
      **/
     EffectInstance::RenderRoIRetCode wait();
 
+    // The calls to wait() made on a thread of the global pool, which debug builds also assert against.
+    static int getPoolThreadWaitsForTests();
+
     bool isFinished() const;
+
+    /**
+     * @brief The outcome of a frame that finished, without blocking, for the threads wait() is forbidden to:
+     * eRenderRoIRetCodeFailed before it finished.
+     **/
+    EffectInstance::RenderRoIRetCode result() const;
 
     /**
      * @brief What the root task rendered; empty unless the frame finished with eRenderRoIRetCodeOk.
@@ -268,10 +277,20 @@ public:
      **/
     std::vector<RegionFallback> getRegionFallbacks() const;
 
+    typedef std::function<void(EffectInstance::RenderRoIRetCode)> CompletionCallback;
+
+    /**
+     * @brief Calls callback once when the frame finishes or aborts, on the thread that ends it, which may be a thread
+     * of the global pool: the callback must not wait on the scheduler. A frame already finished calls it at once on
+     * this thread. At most one callback is held; registering another replaces one not yet called.
+     **/
+    void onFinished(CompletionCallback callback);
+
 private:
     friend class RenderScheduler;
 
-    void finish(EffectInstance::RenderRoIRetCode retCode,
+    // A frame finishes once: a second finish is a scheduler bug, logged and dropped, and returns false.
+    bool finish(EffectInstance::RenderRoIRetCode retCode,
                 std::map<ImageLayerDesc, ImagePtr> rootPlanes,
                 std::vector<RegionFallback> fallbacks = std::vector<RegionFallback>());
 
@@ -281,6 +300,7 @@ private:
     EffectInstance::RenderRoIRetCode _retCode;
     std::map<ImageLayerDesc, ImagePtr> _rootPlanes;
     std::vector<RegionFallback> _fallbacks;
+    CompletionCallback _callback;
 };
 
 /**
@@ -584,6 +604,11 @@ public:
      * perEffect when it is positive. At least 1.
      **/
     static int computeTaskBudget(int poolMax, int running, int ready, int cores, int perEffect);
+
+    /**
+     * @brief The global pool priority the tasks of a frame of this priority run at.
+     **/
+    static int runnablePriority(Priority priority);
 
     struct TaskBudgetInputs {
         int poolMax = 0;

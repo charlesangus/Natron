@@ -202,6 +202,16 @@ public:
         return _zoomFactor;
     }
 
+    double minFactor() const
+    {
+        return _zoomMin;
+    }
+
+    double maxFactor() const
+    {
+        return _zoomMax;
+    }
+
     // the aspect ratio of zoom coordinates. For a Viewer, it should always be 1., since
     // zoom coordinates == canonical coordinates, which are orthonormal
     double aspectRatio() const

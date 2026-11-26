@@ -95,6 +95,9 @@ public:
     // mid-playback, keeps the pacing it had, so the restart does not show two frames back to back.
     void startPlaying();
 
+    // How long waitUntilNextFrameIsDue() would sleep if called now; 0 or less when it would not.
+    double getSecondsUntilNextFrameIsDue() const;
+
     //-------------------------------------------------
     // Set and get the frame rate, in frames per second
     //-------------------------------------------------

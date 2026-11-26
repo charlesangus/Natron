@@ -421,6 +421,7 @@ public:
     std::list<std::pair<double, double>> sketchSamples;
     // The right-tangent drag started by clicking the first point to close the shape.
     bool closingTangentDrag;
+    bool smoothingInsertedPoint;
 
     ////This is by default eSelectedCpsTransformModeTranslateAndScale. When clicking the cross-hair in the center this will toggle the transform mode
     ////like it does in inkscape.
@@ -739,6 +740,14 @@ public:
     void handleItemSelection(const RotoDrawableItemPtr& item);
 
     void handleControlPointSelection(const std::pair<BezierCPPtr, BezierCPPtr>& p);
+
+    void insertPointAndDrag(const BezierPtr& curve, int index, double t);
+
+    void closeDragGesture();
+
+    // Ends an insert drag the pen has not released, keeping the point where it is. Returns true if
+    // there was one.
+    bool abandonInsertedPointDrag();
 
     void drawSelectedCp(double time,
                         const BezierCPPtr& cp,

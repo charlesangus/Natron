@@ -74,7 +74,7 @@ Generate one Natron shader node for each shader the bundled Cycles and MoonRay o
   - verify: gtest — Principled BSDF and `DwaBaseMaterial` have every manifest attribute as a knob with the right default and type; a save and load round trip restores edited values; animation and expressions work on a shader knob.
   - size: L
 
-- [ ] M350.P2.T3 — Register every shader
+- [x] M350.P2.T3 — Register every shader
   - files: `Engine/AppManager.cpp`, `Engine/Nodes/Network/NetworkNode.cpp`, `Tests/Scene/ShaderRegistration_Test.cpp`
   - approach: register per M349 - Shader Node Spike's choice, grouped per renderer and hidden from the Nodes menu, toolbar and main-graph Tab. Python's `createNode` works by ID. Startup stays lazy in the manifest load if the cost shows.
   - verify: gtest — every manifest entry creates a node by ID; none appears in the main-graph menu listing; startup time compared with `tools/bench` is unchanged within noise.
@@ -121,3 +121,4 @@ Generate one Natron shader node for each shader the bundled Cycles and MoonRay o
   - **New public Python method:** `ParametricParam.getNthControlPointInterpolation`.
   - **Startup parse (round-1 #15):** still parses both manifests at startup. A generated id index is the fix if P2.T3's startup bench shows the parse matters.
 - 2026-11-26 (PM) — ShaderPromoteTest's one-way-link round trip failed because `slaveTo` links are internal and unsaved by design (M92: user links are link groups, saved). The test now stays in session (b06af9b1b1), and 00e56a4f7a adds `ALinkedShaderKnobSurvivesASaveAndLoadAlongsideItsPort` (a link group on a shader knob survives save/load; the port disables and re-enables it). m350-gate7 queued.
+- 2026-11-26 (PM) — P2.T3 startup check: NatronRenderer -t on an empty script, 8 interleaved runs each in natron-dev, m350-gate8 AppImage (00e56a4f7a) vs main at the merge base 83241b6529 (first run dropped as warm-up). Median 1.160 s vs 1.098 s, mean 1.163 vs 1.132 s, run-to-run spread about ±0.3 s: unchanged within noise, so the startup manifest parse doesn't justify the id index. m350-gate8 green. PR #386 merging into F2.

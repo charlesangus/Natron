@@ -527,6 +527,30 @@ GeoSimCache::latest(const GeoSimSeries& series,
     return found;
 }
 
+std::map<int, bool>
+GeoSimCache::frames(const GeoSimSeries& series) const
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    std::map<GeoSimSeries, Frames>::const_iterator s = _series.find(series);
+    std::map<int, bool> kept;
+
+    if (s == _series.end()) {
+        return kept;
+    }
+    for (const auto& frame : s->second.spilled) {
+        kept[frame.first] = false;
+    }
+    // A frame being written to disk is still in RAM.
+    for (const auto& frame : s->second.spilling) {
+        kept[frame.first] = true;
+    }
+    for (const auto& frame : s->second.ram) {
+        kept[frame.first] = true;
+    }
+
+    return kept;
+}
+
 void
 GeoSimCache::retainOnly(const GeoSimSeries& series,
                         int frame)

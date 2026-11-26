@@ -40,6 +40,7 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/GeoDetail.h"
 #include "Engine/Nodes/Loop/GeoForEachPieces.h"
+#include "Engine/Nodes/Loop/LoopBlock.h"
 #include "Engine/Nodes/Loop/LoopEndCooks.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/RenderContext.h"
@@ -92,7 +93,8 @@ enum GeoForEachGatherEnum {
  * loop cooks (findFeedback()).
  **/
 class GeoForEachEnd
-    : public NativeEffectBase {
+    : public NativeEffectBase,
+      public LoopBlockEnd {
 public:
     static constexpr InputSpec kInputs[] = {
         InputSpec { .label = "Source", .kind = eDataKindGeometry, .optional = false },
@@ -105,7 +107,8 @@ public:
         .description = "Closes a geometry loop. The nodes between the GeoForEachBegin nodes above it and "
                        "this node cook once per iteration: once per piece of the geometry, or a number of "
                        "times. Each iteration sets the loop variables loop.iteration, loop.numiterations, "
-                       "loop.value, loop.ivalue and loop.svalue (also as loops.<name>.*), which knob "
+                       "loop.value, loop.ivalue, loop.svalue and loop.frame (the frame being rendered; also as "
+                       "loops.<name>.*), which knob "
                        "drivers in the body read. The iterations are merged together, or, under Feedback, "
                        "each starts from the result of the one before and the last is output. The Piece "
                        "input, when connected, gives the geometry whose pieces are iterated over; "
@@ -166,6 +169,18 @@ public:
     /** @brief The loop.* variables each iteration sets, and loops.<name>.* the same. */
     static const std::vector<std::string>& loopVariables() WARN_UNUSED_RETURN;
 
+    virtual std::string getBlockLoopName() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual std::vector<NodePtr> getBlockBegins() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual KnobStringPtr getBlockNameKnob() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual const std::vector<std::string>& getBlockVariables() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief base with the variables of iteration Single Pass Iteration. Pieces are those of the
+     * last cook; before any, the iteration's index stands for its value.
+     **/
+    virtual RenderContextPtr getBlockPreviewContext(const RenderContextPtr& base,
+                                                    double time) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
 private:
     struct Iteration {
         std::int64_t index = 0;
@@ -184,6 +199,8 @@ private:
                              bool originatedFromMainThread) OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void onScriptNameChanged(const std::string& fullyQualifiedName) OVERRIDE FINAL;
     virtual void onKnobsLoaded() OVERRIDE FINAL;
+    virtual void onEffectCreated(bool mayCreateFileDialog,
+                                 const CreateNodeArgs& args) OVERRIDE FINAL;
     virtual StatusEnum getPreferredMetadataAt(double time,
                                               ViewIdx view,
                                               NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -221,6 +238,7 @@ private:
                                       const std::string& loopName,
                                       const Iteration& iteration,
                                       std::int64_t count,
+                                      double frame,
                                       bool pieces,
                                       const GeoDetailConstPtr& feedback) const;
 
@@ -240,6 +258,9 @@ private:
     KnobStringWPtr _stopAttribute;
 
     LoopEndPairing _pairing;
+
+    mutable QMutex _cookedMutex;
+    std::vector<Iteration> _cookedPieces;
 
     QMutex _messageMutex;
     std::string _posted;

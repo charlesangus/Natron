@@ -29,6 +29,7 @@
 #include <chrono>
 #include <cmath>
 #include <iterator>
+#include <optional>
 #include <set>
 #include <utility>
 
@@ -39,6 +40,7 @@
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/Cache.h"
 #include "Engine/ContentHasher.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -125,7 +127,7 @@ GeoSolverEnd::hiddenVariable(const std::string& loopName)
 const std::vector<std::string>&
 GeoSolverEnd::loopVariables()
 {
-    static const std::vector<std::string> names = { "substep", "numsubsteps", "dt" };
+    static const std::vector<std::string> names = { "iteration", "numiterations", "count", "t", "value", "frame", "substep", "numsubsteps", "dt" };
 
     return names;
 }
@@ -232,9 +234,20 @@ GeoSolverEnd::initializeKnobs()
     loopName->setHintToolTip(tr("The name of the loops.<name>.* variables this solver sets, so a loop inside it can still "
                                 "read this one's. Empty uses the node's script name.")
                                  .toStdString());
-    loopName->setDefaultValue(std::string());
+    loopName->setDefaultValue(kLoopBlockDefaultName);
     page->addKnob(loopName);
     _loopName = loopName;
+
+    KnobStringPtr drivenKnobs = createKnob<KnobString>(tr("Driven Knobs").toStdString());
+    drivenKnobs->setName(kLoopBlockParamDrivenKnobs);
+    drivenKnobs->setAnimationEnabled(false);
+    drivenKnobs->setIsPersistent(false);
+    drivenKnobs->setHashExempt(true);
+    drivenKnobs->setHintToolTip(tr("The parameters of the solver's body that a loop variable drives: each row's "
+                                   "variable, Start, End and Easing can be edited in place. Right-click a "
+                                   "parameter in the body and choose Drive from loop to add one.")
+                                    .toStdString());
+    page->addKnob(drivenKnobs);
 } // GeoSolverEnd::initializeKnobs
 
 bool
@@ -279,9 +292,140 @@ GeoSolverEnd::onScriptNameChanged(const std::string& /*fullyQualifiedName*/)
 }
 
 void
+GeoSolverEnd::onEffectCreated(bool /*mayCreateFileDialog*/,
+                              const CreateNodeArgs& /*args*/)
+{
+    LoopBlocks::assignFreeName(this);
+}
+
+std::string
+GeoSolverEnd::getBlockLoopName() const
+{
+    return getLoopName();
+}
+
+std::vector<NodePtr>
+GeoSolverEnd::getBlockBegins() const
+{
+    return getBegins();
+}
+
+KnobStringPtr
+GeoSolverEnd::getBlockNameKnob() const
+{
+    return _loopName.lock();
+}
+
+const std::vector<std::string>&
+GeoSolverEnd::getBlockVariables() const
+{
+    return loopVariables();
+}
+
+RenderContextPtr
+GeoSolverEnd::getBlockPreviewContext(const RenderContextPtr& base,
+                                     double time) const
+{
+    const Settings s = readSettings();
+    const int frame = std::max(s.startFrame + 1, (int)std::floor(time));
+
+    return substepContext(base ? base : RenderContext::empty(), getLoopName(), s.startFrame, frame, s.substeps - 1, s.substeps, GeoDetailConstPtr());
+}
+
+std::map<int, bool>
+GeoSolverEnd::getKeptFrames() const
+{
+    GeoSimSeries series;
+    {
+        QMutexLocker locker(&_outputMutex);
+        if (!_hasOutput) {
+            return std::map<int, bool>();
+        }
+        series = _outputSeries;
+    }
+
+    return _simCache->frames(series);
+}
+
+std::vector<std::shared_ptr<GeoSolverEnd>>
+GeoSolverEnd::upstreamOf(const NodePtr& node)
+{
+    std::vector<std::shared_ptr<GeoSolverEnd>> solvers;
+    std::set<Node*> visited;
+    std::vector<NodePtr> stack;
+
+    if (node) {
+        stack.push_back(node);
+    }
+    while (!stack.empty()) {
+        const NodePtr current = stack.back();
+        stack.pop_back();
+        if (!current || !visited.insert(current.get()).second) {
+            continue;
+        }
+        const std::shared_ptr<GeoSolverEnd> solver = std::dynamic_pointer_cast<GeoSolverEnd>(current->getEffectInstance());
+        if (solver) {
+            solvers.push_back(solver);
+        }
+        for (int i = 0; i < current->getNInputs(); ++i) {
+            stack.push_back(current->getInput(i));
+        }
+    }
+
+    return solvers;
+}
+
+bool
+GeoSolverEnd::outputKeptFrame(int frame) const
+{
+    GeoSimSeries series;
+    {
+        QMutexLocker locker(&_outputMutex);
+        if (!_hasOutput) {
+            return false;
+        }
+        if (_outputFrame == frame) {
+            return _outputKept;
+        }
+        series = _outputSeries;
+    }
+    // Shown again from the geometry cache without asking this node: kept, as it was solved before.
+    const std::map<int, bool> kept = _simCache->frames(series);
+
+    return kept.count(frame) > 0;
+}
+
+void
+GeoSolverEnd::recordOutput(const GeoSimSeries& series,
+                           int frame,
+                           bool kept)
+{
+    QMutexLocker locker(&_outputMutex);
+
+    _outputSeries = series;
+    _outputFrame = frame;
+    _outputKept = kept;
+    _hasOutput = true;
+}
+
+void
+GeoSolverEnd::notifyKeptFramesChanged(int frame) const
+{
+    if (!appPTR || appPTR->isBackground()) {
+        return;
+    }
+    const CacheSignalEmitterPtr emitter = appPTR->getOrActivateViewerCacheSignalEmitter();
+    if (emitter) {
+        // The timelines rebuild their whole cache line on any entry signal.
+        emitter->emitAddedEntry(frame);
+    }
+}
+
+void
 GeoSolverEnd::resetSimulation()
 {
     _simCache->clear();
+    notifyKeptFramesChanged(0);
     // The output at every frame changes, though no knob that is hashed did.
     ++_resetGeneration;
     const NodePtr node = getNode();
@@ -388,23 +532,84 @@ GeoSolverEnd::fail(const std::string& message,
     return eStatusFailed;
 }
 
+StatusEnum
+GeoSolverEnd::endCancelledRender(std::string* errorMessage)
+{
+    bool userInteraction = false;
+    AbortableRenderInfoPtr abortInfo;
+    EffectInstancePtr treeRoot;
+
+    // Reported as a failure, the cancel would send a caller that pulls the frame twice in one
+    // render, such as GeoToUSD's source preparation and then its render, into a walk again.
+    if (getAbortState(&userInteraction, &abortInfo, &treeRoot) && abortInfo) {
+        _cancelledRender = abortInfo->getRenderSequence();
+        abortInfo->setAborted();
+    }
+    if (aborted()) {
+        return eStatusFailed;
+    }
+    if (errorMessage) {
+        *errorMessage = getScriptName_mt_safe() + ": " + tr("the solve was cancelled.").toStdString();
+    }
+
+    return eStatusFailed;
+}
+
+bool
+GeoSolverEnd::wasCancelledInThisRender() const
+{
+    bool userInteraction = false;
+    AbortableRenderInfoPtr abortInfo;
+    EffectInstancePtr treeRoot;
+
+    return getAbortState(&userInteraction, &abortInfo, &treeRoot) && abortInfo && (abortInfo->getRenderSequence() == _cancelledRender);
+}
+
 RenderContextPtr
 GeoSolverEnd::substepContext(const RenderContextPtr& base,
                              const std::string& loopName,
+                             int startFrame,
+                             int frame,
                              int substep,
                              int substeps,
                              const GeoDetailConstPtr& previous) const
 {
+    // Counted from Start Frame, not from where a walk resumes, so a frame solves the same
+    // whichever frame was asked for.
+    const std::int64_t iteration = (std::int64_t)(frame - startFrame - 1) * substeps + substep;
+    const double t = (double)(substep + 1) / (double)substeps;
+    const double value = (double)(frame - 1) + t;
     RenderContext::Builder builder(base);
-    const RenderContextName names[2][3] = {
-        { RenderContextName::loop("substep"), RenderContextName::loop("numsubsteps"), RenderContextName::loop("dt") },
-        { RenderContextName::loops(loopName, "substep"), RenderContextName::loops(loopName, "numsubsteps"), RenderContextName::loops(loopName, "dt") },
-    };
+    const std::vector<std::string>& variables = loopVariables();
 
-    for (const RenderContextName(&set)[3] : names) {
-        builder.set(set[0], (std::int64_t)substep).set(set[1], (std::int64_t)substeps).set(set[2], 1. / (double)substeps);
+    for (const std::string& name : variables) {
+        const RenderContextName names[2] = { RenderContextName::loop(name), RenderContextName::loops(loopName, name) };
+        for (const RenderContextName& variable : names) {
+            if (name == "iteration") {
+                builder.set(variable, iteration);
+            } else if ((name == "numiterations") || (name == "count")) {
+                builder.set(variable, (std::int64_t)(frame - startFrame) * substeps);
+            } else if (name == "t") {
+                builder.set(variable, t);
+            } else if (name == "value") {
+                builder.set(variable, value);
+            } else if (name == "frame") {
+                builder.set(variable, (std::int64_t)frame);
+            } else if (name == "substep") {
+                builder.set(variable, (std::int64_t)substep);
+            } else if (name == "numsubsteps") {
+                builder.set(variable, (std::int64_t)substeps);
+            } else if (name == "dt") {
+                builder.set(variable, 1. / (double)substeps);
+            }
+        }
     }
-    builder.set(hiddenVariable(loopName), (std::int64_t)GeoForEachEnd::publishFeedback(previous));
+    // A preview has no state to start from: without the variable, GeoSolverBegin passes its input through.
+    if (previous) {
+        builder.set(hiddenVariable(loopName), (std::int64_t)GeoForEachEnd::publishFeedback(previous));
+    } else {
+        builder.erase(hiddenVariable(loopName));
+    }
 
     return builder.build();
 }
@@ -441,7 +646,7 @@ GeoSolverEnd::solveFrame(const LoopEndCooks::Scope& running,
     GeoDetailConstPtr current = previous;
 
     for (int k = 0; k < s.substeps; ++k) {
-        const RenderContextPtr context = substepContext(base, loopName, k, s.substeps, current);
+        const RenderContextPtr context = substepContext(base, loopName, s.startFrame, frame, k, s.substeps, current);
         const double time = (double)(frame - 1) + (double)(k + 1) / (double)s.substeps;
         GeoDetailConstPtr next;
         std::string stepError;
@@ -483,6 +688,106 @@ GeoSolverEnd::walkMutex(const GeoSimSeries& series)
 
     return walk;
 }
+
+/**
+ * @brief Shows a walk's progress in the progress panel, cancellable, while no other walk of the
+ * node shows its own, and tells the timelines of the frames it keeps. Off the main thread both are
+ * reported at most once per kReportInterval, so a walk of many quick frames does not flood the GUI
+ * thread with progress-bar repaints and cache-line rebuilds. On it, each report is also where the
+ * GUI gets to process its events, so every frame reports.
+ **/
+class GeoSolverEnd::SolveProgress {
+public:
+    explicit SolveProgress(GeoSolverEnd* effect)
+        : _effect(effect)
+        , _app(effect->getApp())
+        , _node(effect->getNode())
+        , _mainThread(!qApp || (QThread::currentThread() == qApp->thread()))
+    {
+    }
+
+    ~SolveProgress()
+    {
+        if (_unreportedFrame) {
+            _effect->notifyKeptFramesChanged(*_unreportedFrame);
+        }
+        if (!_held) {
+            return;
+        }
+        const AppInstancePtr app = _app.lock();
+        const NodePtr node = _node.lock();
+        if (app && node) {
+            app->progressEnd(node);
+        }
+        _effect->_progressShown = false;
+    }
+
+    SolveProgress(const SolveProgress&) = delete;
+    SolveProgress& operator=(const SolveProgress&) = delete;
+
+    void start(const std::string& message)
+    {
+        const AppInstancePtr app = _app.lock();
+        const NodePtr node = _node.lock();
+        bool expected = false;
+
+        if (!app || !node || !_effect->_progressShown.compare_exchange_strong(expected, true)) {
+            return;
+        }
+        _held = true;
+        // From another thread the task is registered later, when the main thread gets to it:
+        // until then an update finds none, which is no cancel.
+        _registered = _mainThread;
+        app->progressStart(node, message, std::string(), true);
+    }
+
+    // After each solved frame. False once the user cancelled, which is seen at the next report.
+    bool solved(int frame,
+                double progress)
+    {
+        const Clock::time_point now = Clock::now();
+
+        _unreportedFrame = frame;
+        if (!_mainThread && ((now - _lastReport) < kReportInterval)) {
+            return true;
+        }
+        _lastReport = now;
+        _effect->notifyKeptFramesChanged(frame);
+        _unreportedFrame.reset();
+
+        return update(progress);
+    }
+
+private:
+    using Clock = std::chrono::steady_clock;
+    static constexpr std::chrono::milliseconds kReportInterval { 100 };
+
+    bool update(double progress)
+    {
+        const AppInstancePtr app = _app.lock();
+        const NodePtr node = _node.lock();
+
+        if (!_held || !app || !node) {
+            return true;
+        }
+        if (app->progressUpdate(node, progress)) {
+            _registered = true;
+
+            return true;
+        }
+
+        return !_registered;
+    }
+
+    GeoSolverEnd* _effect;
+    AppInstanceWPtr _app;
+    NodeWPtr _node;
+    const bool _mainThread;
+    bool _held = false;
+    bool _registered = false;
+    Clock::time_point _lastReport = Clock::now();
+    std::optional<int> _unreportedFrame;
+};
 
 StatusEnum
 GeoSolverEnd::renderGeometry(const GeoRenderActionArgs& args,
@@ -543,6 +848,11 @@ GeoSolverEnd::renderGeometry(const GeoRenderActionArgs& args,
             return eStatusFailed;
         }
         postMessage(eMessageTypeInfo, std::string());
+        {
+            QMutexLocker locker(&_outputMutex);
+            _outputKept = false;
+            _outputFrame = frame;
+        }
 
         return eStatusOK;
     }
@@ -566,6 +876,7 @@ GeoSolverEnd::renderGeometry(const GeoRenderActionArgs& args,
     *outputDetail = _simCache->find(series, frame);
     if (*outputDetail) {
         postMessage(eMessageTypeInfo, std::string());
+        recordOutput(series, frame, true);
 
         return eStatusOK;
     }
@@ -578,6 +889,7 @@ GeoSolverEnd::renderGeometry(const GeoRenderActionArgs& args,
         *outputDetail = _simCache->find(series, frame);
         if (*outputDetail) {
             postMessage(eMessageTypeInfo, std::string());
+            recordOutput(series, frame, true);
 
             return eStatusOK;
         }
@@ -586,8 +898,13 @@ GeoSolverEnd::renderGeometry(const GeoRenderActionArgs& args,
     *outputDetail = _simCache->find(series, frame);
     if (*outputDetail) {
         postMessage(eMessageTypeInfo, std::string());
+        recordOutput(series, frame, true);
 
         return eStatusOK;
+    }
+
+    if (wasCancelledInThisRender()) {
+        return endCancelledRender(errorMessage);
     }
 
     GeoDetailConstPtr previous;
@@ -606,6 +923,11 @@ GeoSolverEnd::renderGeometry(const GeoRenderActionArgs& args,
         _simCache->insert(series, from, previous);
     }
 
+    SolveProgress progress(this);
+    const int total = frame - from;
+    if (total > 2) {
+        progress.start(tr("Solving frames %1 to %2 of %3").arg(from + 1).arg(frame).arg(QString::fromUtf8(getScriptName_mt_safe().c_str())).toStdString());
+    }
     for (int h = from + 1; h <= frame; ++h) {
         GeoDetailConstPtr result;
         const StatusEnum status = solveFrame(running, body, args, base, loopName, s, h, previous, &result, errorMessage);
@@ -617,7 +939,12 @@ GeoSolverEnd::renderGeometry(const GeoRenderActionArgs& args,
         if (!s.cacheSimulation) {
             _simCache->retainOnly(series, h);
         }
+        recordOutput(series, h, false);
         previous = result;
+        if (!progress.solved(h, (double)(h - from) / (double)total)) {
+            // Cancelled: the frames solved so far are kept, the one asked for is not output.
+            return endCancelledRender(errorMessage);
+        }
     }
     postMessage(eMessageTypeInfo, std::string());
     *outputDetail = previous;

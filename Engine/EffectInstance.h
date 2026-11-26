@@ -2840,6 +2840,15 @@ public:
     {
         return false;
     }
+
+    /**
+     * @brief Called after files one of the effect's file knobs names were reloaded and their stamps
+     * dropped, once its caches are purged: one that lists the files, such as their frame range,
+     * lists them again. Main thread only.
+     **/
+    virtual void onFilesReloaded()
+    {
+    }
     virtual void clearLastRenderedImage();
 
     /**

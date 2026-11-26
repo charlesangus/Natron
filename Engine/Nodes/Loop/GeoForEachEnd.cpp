@@ -177,9 +177,68 @@ GeoForEachEnd::hiddenVariable(const std::string& loopName,
 const std::vector<std::string>&
 GeoForEachEnd::loopVariables()
 {
-    static const std::vector<std::string> names = { "iteration", "numiterations", "count", "t", "value", "ivalue", "svalue" };
+    static const std::vector<std::string> names = { "iteration", "numiterations", "count", "t", "value", "ivalue", "svalue", "frame" };
 
     return names;
+}
+
+std::string
+GeoForEachEnd::getBlockLoopName() const
+{
+    return getLoopName();
+}
+
+std::vector<NodePtr>
+GeoForEachEnd::getBlockBegins() const
+{
+    return getBegins();
+}
+
+KnobStringPtr
+GeoForEachEnd::getBlockNameKnob() const
+{
+    return _loopName.lock();
+}
+
+const std::vector<std::string>&
+GeoForEachEnd::getBlockVariables() const
+{
+    return loopVariables();
+}
+
+RenderContextPtr
+GeoForEachEnd::getBlockPreviewContext(const RenderContextPtr& base,
+                                      double time) const
+{
+    const Settings s = readSettings();
+    const bool pieces = (s.iteration == eGeoForEachIteratePieces);
+    const int wanted = std::max(0, s.singlePassIteration);
+    Iteration iteration;
+    std::int64_t count = 0;
+
+    if (pieces) {
+        QMutexLocker locker(&_cookedMutex);
+        count = (std::int64_t)_cookedPieces.size();
+        if (count > 0) {
+            iteration = _cookedPieces[(std::size_t)std::min<std::int64_t>(count - 1, wanted)];
+        }
+    } else {
+        count = s.iterations;
+        if (count > 0) {
+            iteration.index = std::min<std::int64_t>(count - 1, wanted);
+            iteration.value = s.startValue + (double)iteration.index * s.increment;
+            iteration.ivalue = (std::int64_t)std::llround(iteration.value);
+        }
+    }
+    if (count <= 0) {
+        iteration = Iteration();
+        iteration.index = wanted;
+        iteration.value = (double)wanted;
+        iteration.ivalue = wanted;
+        count = wanted + 1;
+    }
+
+    return iterationContext(base ? base : RenderContext::empty(), getLoopName(), iteration, count, time, false, GeoDetailConstPtr());
 }
 
 GeoForEachEnd::Settings
@@ -436,8 +495,8 @@ GeoForEachEnd::initializeKnobs()
     stopCondition->setName(kGeoForEachEndParamStopCondition);
     stopCondition->setAnimationEnabled(false);
     stopCondition->setHintToolTip(tr("A Python expression, written as a parameter expression is, evaluated before each iteration "
-                                     "with loop.iteration, loop.numiterations, loop.count, loop.t, loop.value, loop.ivalue and "
-                                     "loop.svalue of that iteration, also as loops.<name>.*, and the loops.<name>.* of the loops "
+                                     "with loop.iteration, loop.numiterations, loop.count, loop.t, loop.value, loop.ivalue, "
+                                     "loop.svalue and loop.frame of that iteration, also as loops.<name>.*, and the loops.<name>.* of the loops "
                                      "around this one. The loop ends before the first iteration it is true for. It may read "
                                      "parameters, never geometry: Stop Attribute reads geometry. An exception is an error. Empty "
                                      "runs every iteration."));
@@ -459,9 +518,20 @@ GeoForEachEnd::initializeKnobs()
     loopName->setAnimationEnabled(false);
     loopName->setHintToolTip(tr("The name of the loops.<name>.* variables this loop sets, so a loop inside it can still "
                                 "read this one's. Empty uses the node's script name."));
-    loopName->setDefaultValue(std::string());
+    loopName->setDefaultValue(kLoopBlockDefaultName);
     page->addKnob(loopName);
     _loopName = loopName;
+
+    KnobStringPtr drivenKnobs = createKnob<KnobString>(tr("Driven Knobs").toStdString());
+    drivenKnobs->setName(kLoopBlockParamDrivenKnobs);
+    drivenKnobs->setAnimationEnabled(false);
+    drivenKnobs->setIsPersistent(false);
+    drivenKnobs->setHashExempt(true);
+    drivenKnobs->setHintToolTip(tr("The parameters of the loop's body that a loop variable drives: each row's "
+                                   "variable, Start, End and Easing can be edited in place. Right-click a "
+                                   "parameter in the body and choose Drive from loop to add one.")
+                                    .toStdString());
+    page->addKnob(drivenKnobs);
 
     refreshKnobVisibility();
 } // GeoForEachEnd::initializeKnobs
@@ -540,6 +610,13 @@ GeoForEachEnd::onScriptNameChanged(const std::string& /*fullyQualifiedName*/)
 {
     // An empty Loop Name follows the script name.
     invalidateRenderContextReads();
+}
+
+void
+GeoForEachEnd::onEffectCreated(bool /*mayCreateFileDialog*/,
+                               const CreateNodeArgs& /*args*/)
+{
+    LoopBlocks::assignFreeName(this);
 }
 
 void
@@ -626,27 +703,29 @@ GeoForEachEnd::iterationContext(const RenderContextPtr& base,
                                 const std::string& loopName,
                                 const Iteration& iteration,
                                 std::int64_t count,
+                                double frame,
                                 bool pieces,
                                 const GeoDetailConstPtr& feedback) const
 {
     const double t = (count > 1) ? (double)iteration.index / (double)(count - 1) : 0.;
     RenderContext::Builder builder(base);
-    const RenderContextName names[2][7] = {
+    const RenderContextName names[2][8] = {
         { RenderContextName::loop("iteration"), RenderContextName::loop("numiterations"), RenderContextName::loop("count"), RenderContextName::loop("t"),
-          RenderContextName::loop("value"), RenderContextName::loop("ivalue"), RenderContextName::loop("svalue") },
+          RenderContextName::loop("value"), RenderContextName::loop("ivalue"), RenderContextName::loop("svalue"), RenderContextName::loop("frame") },
         { RenderContextName::loops(loopName, "iteration"), RenderContextName::loops(loopName, "numiterations"), RenderContextName::loops(loopName, "count"),
           RenderContextName::loops(loopName, "t"), RenderContextName::loops(loopName, "value"), RenderContextName::loops(loopName, "ivalue"),
-          RenderContextName::loops(loopName, "svalue") },
+          RenderContextName::loops(loopName, "svalue"), RenderContextName::loops(loopName, "frame") },
     };
 
-    for (const RenderContextName(&set)[7] : names) {
+    for (const RenderContextName(&set)[8] : names) {
         builder.set(set[0], iteration.index)
             .set(set[1], count)
             .set(set[2], count)
             .set(set[3], t)
             .set(set[4], iteration.value)
             .set(set[5], iteration.ivalue)
-            .set(set[6], iteration.svalue);
+            .set(set[6], iteration.svalue)
+            .set(set[7], frame);
     }
     if (pieces) {
         builder.set(hiddenVariable(loopName, kGeoForEachHiddenPiece), iteration.piece);
@@ -732,6 +811,7 @@ GeoForEachEnd::evaluateStop(const std::vector<Iteration>& iterations,
             PyFloat_FromDouble(iteration.value),
             PyLong_FromLongLong((long long)iteration.ivalue),
             PyUnicode_FromStringAndSize(iteration.svalue.data(), (Py_ssize_t)iteration.svalue.size()),
+            PyFloat_FromDouble(time),
         };
         ok = (variables != NULL);
         const std::vector<std::string>& names = loopVariables();
@@ -881,6 +961,11 @@ GeoForEachEnd::renderGeometry(const GeoRenderActionArgs& args,
         }
     }
 
+    if (pieces) {
+        QMutexLocker locker(&_cookedMutex);
+        _cookedPieces = iterations;
+    }
+
     const std::int64_t numIterations = (std::int64_t)iterations.size();
 
     int runCount = (int)iterations.size();
@@ -928,7 +1013,7 @@ GeoForEachEnd::renderGeometry(const GeoRenderActionArgs& args,
                     }
                 }
             }
-            const RenderContextPtr context = iterationContext(base, loopName, iterations[k], numIterations, pieces, previous);
+            const RenderContextPtr context = iterationContext(base, loopName, iterations[k], numIterations, args.time, pieces, previous);
             GeoDetailConstPtr result;
             std::string iterationError;
             const RenderRoIRetCode code = body->evaluateGeometry(EvaluateGeometryArgs(args.time, args.view, args.byPassCache, context), &result, &iterationError);
@@ -955,7 +1040,7 @@ GeoForEachEnd::renderGeometry(const GeoRenderActionArgs& args,
     // Each iteration builds its own context as it starts, so an abort is not held up behind a
     // context for every iteration: at the largest counts that alone takes seconds.
     const auto cook = [&](std::size_t j) {
-        const RenderContextPtr context = iterationContext(base, loopName, iterations[run[j]], numIterations, pieces, GeoDetailConstPtr());
+        const RenderContextPtr context = iterationContext(base, loopName, iterations[run[j]], numIterations, args.time, pieces, GeoDetailConstPtr());
         codes[j] = body->evaluateGeometry(EvaluateGeometryArgs(args.time, args.view, args.byPassCache, context), &results[j], &errors[j]);
     };
 

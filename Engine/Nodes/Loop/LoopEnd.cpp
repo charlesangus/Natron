@@ -3301,30 +3301,50 @@ LoopEnd::onSettingsPanelOpened()
     refreshKnobVisibility();
 }
 
+const std::vector<std::string>&
+LoopEnd::loopVariables()
+{
+    static const std::vector<std::string> names(std::begin(kLoopVariables), std::end(kLoopVariables));
+
+    return names;
+}
+
+std::string
+LoopEnd::getBlockLoopName() const
+{
+    return getLoopName();
+}
+
+std::vector<NodePtr>
+LoopEnd::getBlockBegins() const
+{
+    return getLoopBegins();
+}
+
+KnobStringPtr
+LoopEnd::getBlockNameKnob() const
+{
+    return _name.lock();
+}
+
+const std::vector<std::string>&
+LoopEnd::getBlockVariables() const
+{
+    return loopVariables();
+}
+
+RenderContextPtr
+LoopEnd::getBlockPreviewContext(const RenderContextPtr& base,
+                                double time) const
+{
+    return previewContext(base, time);
+}
+
 void
 LoopEnd::onEffectCreated(bool /*mayCreateFileDialog*/,
                          const CreateNodeArgs& /*args*/)
 {
-    AppInstancePtr app = getApp();
-    KnobStringPtr name = _name.lock();
-
-    // A new or pasted LoopEnd takes the first free loopN; a loaded one keeps its saved name.
-    if (name && app && !app->getProject()->isLoadingProject()) {
-        std::set<std::string> taken;
-        const std::list<NodePtr> others = otherLoopEndsInGroup(getNode());
-        for (std::list<NodePtr>::const_iterator it = others.begin(); it != others.end(); ++it) {
-            taken.insert(loopNameOf(*it));
-        }
-        if (taken.count(name->getValue())) {
-            for (int i = 1;; ++i) {
-                const std::string candidate = "loop" + std::to_string(i);
-                if (!taken.count(candidate)) {
-                    name->setValue(candidate);
-                    break;
-                }
-            }
-        }
-    }
+    LoopBlocks::assignFreeName(this);
     refreshKnobVisibility();
 }
 

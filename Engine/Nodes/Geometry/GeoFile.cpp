@@ -30,7 +30,9 @@
 #include <cmath>
 #include <cstdlib>
 #include <exception>
+#include <limits>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -44,6 +46,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/IO/ReadTimeDomain.h"
 #include "Engine/Project.h"
 
 NATRON_NAMESPACE_ENTER
@@ -68,6 +71,44 @@ recordedFile(const std::vector<SequenceFile>& files,
     return nullptr;
 }
 
+// The file of view among files[begin, *end), the files of one frame, setting *end past them.
+const SequenceFile*
+frameFile(const std::vector<SequenceFile>& files,
+          std::size_t begin,
+          std::size_t* end,
+          ViewIdx view)
+{
+    *end = begin;
+    while ((*end < files.size()) && (files[*end].frame == files[begin].frame)) {
+        ++*end;
+    }
+    // Without a view token in the name every file sits under one view index.
+    for (std::size_t j = begin; j < *end; ++j) {
+        if (files[j].view == view.value()) {
+            return &files[j];
+        }
+    }
+
+    return &files[begin];
+}
+
+std::set<int>
+existingFrames(const std::vector<SequenceFile>& files,
+               ViewIdx view)
+{
+    std::set<int> frames;
+    for (std::size_t i = 0; i < files.size();) {
+        std::size_t end = i;
+        const SequenceFile* file = frameFile(files, i, &end, view);
+        if (file->identity.exists) {
+            frames.insert(frames.end(), file->frame);
+        }
+        i = end;
+    }
+
+    return frames;
+}
+
 const SequenceFile*
 nearestRecordedFile(const std::vector<SequenceFile>& files,
                     int frame,
@@ -77,17 +118,7 @@ nearestRecordedFile(const std::vector<SequenceFile>& files,
     long long bestDistance = LLONG_MAX;
     for (std::size_t i = 0; i < files.size();) {
         std::size_t end = i;
-        while ((end < files.size()) && (files[end].frame == files[i].frame)) {
-            ++end;
-        }
-        // Without a view token in the name every file sits under one view index.
-        const SequenceFile* candidate = &files[i];
-        for (std::size_t j = i; j < end; ++j) {
-            if (files[j].view == view.value()) {
-                candidate = &files[j];
-                break;
-            }
-        }
+        const SequenceFile* candidate = frameFile(files, i, &end, view);
         const long long distance = std::llabs((long long)files[i].frame - (long long)frame);
         i = end;
         if ((distance >= bestDistance) || !candidate->identity.exists) {
@@ -367,6 +398,7 @@ GeoFile::initializeKnobs()
                             "be read is an error; an empty name gives empty geometry.")
                              .toStdString());
     file->setFileExtensions({ kGeoFileExtension });
+    file->setOpensSequences();
     file->setAnimationEnabled(false);
     page->addKnob(file);
     _file = file;
@@ -376,21 +408,8 @@ GeoFile::initializeKnobs()
     page->addKnob(reload);
     _reload = reload;
 
-    KnobChoicePtr missingFrames = createKnob<KnobChoice>(tr("Missing Frames").toStdString());
-    missingFrames->setName(kGeoFileParamMissingFrames);
-    missingFrames->setHintToolTip(tr("What a frame whose file does not exist gives.").toStdString());
-    std::vector<ChoiceOption> options;
-    options.push_back(ChoiceOption("error", tr("Error").toStdString(),
-                                   tr("The frame fails to render.").toStdString()));
-    options.push_back(ChoiceOption("holdNearest", tr("Hold Nearest").toStdString(),
-                                   tr("The closest frame of the sequence on disk, the earlier one on a tie.").toStdString()));
-    options.push_back(ChoiceOption("empty", tr("Empty").toStdString(),
-                                   tr("Empty geometry.").toStdString()));
-    missingFrames->populateChoices(options);
-    missingFrames->setDefaultValue((int)eGeoFileMissingFrameError);
-    missingFrames->setAnimationEnabled(false);
-    page->addKnob(missingFrames);
-    _missingFrames = missingFrames;
+    _timeDomain.create(this, page);
+    _originalFrameRange = getKnobByNameAndType<KnobInt>(kReaderParamNameOriginalFrameRange);
 }
 
 std::string
@@ -402,13 +421,86 @@ GeoFile::currentPattern() const
     return file ? expandPattern(const_cast<GeoFile*>(this), file->getValue()) : std::string();
 }
 
+void
+GeoFile::refreshOriginalFrameRange()
+{
+    const KnobIntPtr range = _originalFrameRange.lock();
+    if (!range) {
+        return;
+    }
+    const std::string pattern = currentPattern();
+    if (pattern.empty()) {
+        return;
+    }
+    // Read's rule: a single file, or a sequence with no frame on disk, is frame 1.
+    int first = 1;
+    int last = 1;
+    if (isFrameSequencePattern(pattern)) {
+        const std::shared_ptr<const std::vector<SequenceFile>> files = FileStampRegistry::instance().sequenceFiles(pattern);
+        const std::set<int> frames = files ? existingFrames(*files, ViewIdx(0)) : std::set<int>();
+        if (!frames.empty()) {
+            first = *frames.begin();
+            last = *frames.rbegin();
+        }
+    }
+    if ((range->getValue(0) != first) || (range->getValue(1) != last)) {
+        range->setValues(first, last, ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
+    }
+}
+
+void
+GeoFile::onEffectCreated(bool /*mayCreateFileDialog*/,
+                         const CreateNodeArgs& /*args*/)
+{
+    _timeDomain.refreshKnobState();
+}
+
+void
+GeoFile::onKnobsLoaded()
+{
+    _timeDomain.refreshKnobState();
+    refreshOriginalFrameRange();
+}
+
+void
+GeoFile::onFilesReloaded()
+{
+    refreshOriginalFrameRange();
+}
+
+void
+GeoFile::getFrameRange(double* first,
+                       double* last)
+{
+    if (currentPattern().empty()) {
+        *first = std::numeric_limits<int>::min();
+        *last = std::numeric_limits<int>::max();
+
+        return;
+    }
+    const ReadTimeDomain::FrameRange range = ReadTimeDomain::outputRange(_timeDomain.settingsAt(0.));
+    *first = range.min;
+    *last = range.max;
+}
+
 bool
 GeoFile::knobChanged(KnobI* k,
-                     ValueChangedReasonEnum /*reason*/,
+                     ValueChangedReasonEnum reason,
                      ViewSpec /*view*/,
                      double /*time*/,
                      bool /*originatedFromMainThread*/)
 {
+    const KnobFilePtr fileKnob = _file.lock();
+    if (fileKnob && (k == fileKnob.get())) {
+        if (reason != eValueChangedReasonTimeChanged) {
+            refreshOriginalFrameRange();
+        }
+
+        return false;
+    }
+    if (_timeDomain.knobChanged(k, reason)) {
+        return true;
+    }
     const KnobButtonPtr reload = _reload.lock();
     if (!reload || (k != reload.get())) {
         return false;
@@ -429,6 +521,7 @@ GeoFile::knobChanged(KnobI* k,
     if (node) {
         node->markHashDirty();
     }
+    refreshOriginalFrameRange();
 
     return true;
 }
@@ -448,18 +541,24 @@ GeoFile::refreshFileDependencies(const std::vector<std::string>& paths)
     purgeCaches();
     clearActionsCache();
     clearPersistentMessage(false);
+    refreshOriginalFrameRange();
 
     return true;
 }
 
 StatusEnum
-GeoFile::getPreferredMetadataAt(double /*time*/,
+GeoFile::getPreferredMetadataAt(double time,
                                 ViewIdx /*view*/,
                                 NodeMetadata& metadata)
 {
     // The geometry cache keys on time only for frame-varying nodes; without this every frame of a
-    // sequence would be served the first frame's geometry.
-    metadata.setIsFrameVarying(isFrameSequencePattern(currentPattern()));
+    // sequence would be served the first frame's geometry. A single file differs across frames
+    // only where the time domain makes frames outside its range empty or errors.
+    const ReadTimeDomain::Settings settings = _timeDomain.settingsAt(time);
+    const auto variesOutside = [](ReadTimeDomain::BeforeAfter mode) {
+        return (mode == ReadTimeDomain::eBeforeAfterBlack) || (mode == ReadTimeDomain::eBeforeAfterError);
+    };
+    metadata.setIsFrameVarying(isFrameSequencePattern(currentPattern()) || variesOutside(settings.before) || variesOutside(settings.after));
 
     return eStatusOK;
 }
@@ -469,16 +568,61 @@ GeoFile::renderGeometry(const GeoRenderActionArgs& args,
                         GeoDetailConstPtr* outputDetail,
                         std::string* errorMessage)
 {
-    const KnobChoicePtr missingKnob = _missingFrames.lock();
-    const GeoFileMissingFrameEnum missing = missingKnob ? (GeoFileMissingFrameEnum)missingKnob->getValue() : eGeoFileMissingFrameError;
-    const int frame = (int)std::floor(args.time + 0.5);
-    std::string error;
-    if (!readFrame(this, currentPattern(), missing, frame, args.view, outputDetail, &error)) {
+    const std::string pattern = currentPattern();
+    const ReadTimeDomain::Settings settings = _timeDomain.settingsAt(args.time);
+    const auto fail = [errorMessage](const std::string& message) {
         if (errorMessage) {
-            *errorMessage = error;
+            *errorMessage = message;
         }
 
         return eStatusFailed;
+    };
+    const auto empty = [outputDetail]() {
+        *outputDetail = std::make_shared<const GeoDetail>(GeoDetailBuilder().finish());
+
+        return eStatusOK;
+    };
+
+    if (pattern.empty()) {
+        return empty();
+    }
+    ReadTimeDomain::Result target;
+    if (isFrameSequencePattern(pattern)) {
+        const ReadTimeDomain::RangeTime mapped = ReadTimeDomain::mapIntoRange(args.time - ReadTimeDomain::effectiveTimeOffset(settings),
+                                                                              settings.firstFrame, settings.lastFrame, settings.before, settings.after);
+        if (mapped.kind == ReadTimeDomain::RangeTime::eWithin) {
+            const int frame = (int)std::floor(mapped.time + 0.5);
+            const std::shared_ptr<const std::vector<SequenceFile>> files = FileStampRegistry::instance().sequenceFiles(pattern);
+            const std::set<int> frames = files ? existingFrames(*files, args.view) : std::set<int>();
+            const std::string path = resolvePath(this, pattern, frame, args.view);
+            // A frame written since the sequence was stamped is not read in place of the nearest.
+            if (!frames.count(frame) && FileStampRegistry::statNow(path).exists) {
+                return fail(FileStampRegistry::changedOnDiskMessage(path));
+            }
+            target = ReadTimeDomain::resolve(args.time, settings, frames);
+            if (target.kind == ReadTimeDomain::Result::eError) {
+                return fail(settings.onMissingFrame == ReadTimeDomain::eMissingError
+                                ? "Geometry file '" + path + "' does not exist"
+                                : "Geometry file '" + path + "' does not exist, and no frame of the sequence near it does either");
+            }
+        } else {
+            target = ReadTimeDomain::resolve(args.time, settings, std::set<int>());
+        }
+    } else {
+        target = ReadTimeDomain::resolveStill(args.time, settings);
+    }
+
+    switch (target.kind) {
+    case ReadTimeDomain::Result::eBlack:
+        return empty();
+    case ReadTimeDomain::Result::eError:
+        return fail(target.message);
+    case ReadTimeDomain::Result::eFile:
+        break;
+    }
+    std::string error;
+    if (!readFrame(this, pattern, eGeoFileMissingFrameError, target.frame, args.view, outputDetail, &error)) {
+        return fail(error);
     }
 
     return eStatusOK;

@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <climits>
 #include <cstdio>
 #include <fstream>
 #include <iterator>
@@ -48,6 +49,7 @@
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Geometry/GeoFile.h"
+#include "Engine/Nodes/IO/ReadTimeDomain.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -115,11 +117,40 @@ protected:
         return std::dynamic_pointer_cast<KnobFile>(_reader->getKnobByName(kGeoFileParamFile));
     }
 
-    void setMissingFrames(GeoFileMissingFrameEnum mode)
+    void setMissingFrames(ReadTimeDomain::MissingFrame mode)
     {
-        const KnobChoicePtr knob = std::dynamic_pointer_cast<KnobChoice>(_reader->getKnobByName(kGeoFileParamMissingFrames));
-        ASSERT_TRUE(knob != NULL);
-        knob->setValue((int)mode);
+        setChoice("onMissingFrame", (int)mode);
+    }
+
+    void setChoice(const char* name,
+                   int value)
+    {
+        const KnobChoicePtr knob = std::dynamic_pointer_cast<KnobChoice>(_reader->getKnobByName(name));
+        ASSERT_TRUE(knob != NULL) << name;
+        knob->setValue(value);
+    }
+
+    // As the user edits it, so the time domain no longer follows the files.
+    void editInt(const char* name,
+                 int value)
+    {
+        const KnobIntPtr knob = std::dynamic_pointer_cast<KnobInt>(_reader->getKnobByName(name));
+        ASSERT_TRUE(knob != NULL) << name;
+        knob->setValue(value, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
+    }
+
+    int intValue(const char* name,
+                 int dimension = 0) const
+    {
+        const KnobIntPtr knob = std::dynamic_pointer_cast<KnobInt>(_reader->getKnobByName(name));
+
+        return knob ? knob->getValue(dimension) : INT_MIN;
+    }
+
+    void frameRange(double* first,
+                    double* last) const
+    {
+        _reader->getEffectInstance()->getFrameRange_public(0, first, last, true);
     }
 
     // Through the geometry cache, so a wrong cache key serves stale geometry. -1 on failure.
@@ -194,13 +225,13 @@ TEST_F(GeoFileNodeTest, MissingFrames)
     EXPECT_EQ(-1, pointCountAt(2., &error));
     EXPECT_NE(std::string::npos, error.find("mesh.0002.ngeo")) << error;
 
-    setMissingFrames(eGeoFileMissingFrameHoldNearest);
+    setMissingFrames(ReadTimeDomain::eMissingNearest);
     EXPECT_EQ(3, pointCountAt(2.));
     EXPECT_EQ(6, pointCountAt(3.));
     EXPECT_EQ(6, pointCountAt(10.));
     EXPECT_EQ(3, pointCountAt(-5.));
 
-    setMissingFrames(eGeoFileMissingFrameEmpty);
+    setMissingFrames(ReadTimeDomain::eMissingBlack);
     EXPECT_EQ(0, pointCountAt(2.));
     EXPECT_EQ(6, pointCountAt(4.));
 }
@@ -216,7 +247,7 @@ TEST_F(GeoFileNodeTest, AnUnreadableFileIsAnErrorWhateverTheMissingFrameRule)
     const KnobFilePtr file = fileKnob();
     ASSERT_TRUE(file != NULL);
     file->setValue(path("bad.####.ngeo"));
-    setMissingFrames(eGeoFileMissingFrameEmpty);
+    setMissingFrames(ReadTimeDomain::eMissingBlack);
 
     std::string error;
     EXPECT_EQ(-1, pointCountAt(1., &error));
@@ -287,7 +318,7 @@ TEST_F(GeoFileNodeTest, ASequenceIsReadAsStampedUntilReload)
     const KnobFilePtr file = fileKnob();
     ASSERT_TRUE(file != NULL);
     file->setValue(path("mesh.####.ngeo"));
-    setMissingFrames(eGeoFileMissingFrameHoldNearest);
+    setMissingFrames(ReadTimeDomain::eMissingNearest);
     EXPECT_EQ(3, pointCountAt(1.));
 
     geoFileWrite(makePoints(7), path("mesh.0001.ngeo"));
@@ -309,4 +340,116 @@ TEST_F(GeoFileNodeTest, ASequenceIsReadAsStampedUntilReload)
     EXPECT_EQ(7, pointCountAt(1.));
     EXPECT_EQ(4, pointCountAt(2.));
     EXPECT_EQ(4, pointCountAt(3.));
+}
+
+TEST_F(GeoFileNodeTest, TheFrameRangeFollowsTheFilesUntilEdited)
+{
+    geoFileWrite(makePoints(3), path("mesh.0002.ngeo"));
+    geoFileWrite(makePoints(4), path("mesh.0005.ngeo"));
+    const KnobFilePtr file = fileKnob();
+    ASSERT_TRUE(file != NULL);
+    file->setValue(path("mesh.####.ngeo"));
+
+    EXPECT_EQ(2, intValue(kReaderParamNameOriginalFrameRange, 0));
+    EXPECT_EQ(5, intValue(kReaderParamNameOriginalFrameRange, 1));
+    EXPECT_EQ(2, intValue("firstFrame"));
+    EXPECT_EQ(5, intValue("lastFrame"));
+    double first = 0.;
+    double last = 0.;
+    frameRange(&first, &last);
+    EXPECT_EQ(2., first);
+    EXPECT_EQ(5., last);
+
+    editInt("lastFrame", 4);
+    geoFileWrite(makePoints(5), path("mesh.0007.ngeo"));
+    KnobButton* reload = dynamic_cast<KnobButton*>(_reader->getKnobByName(kGeoFileParamReload).get());
+    ASSERT_TRUE(reload != NULL);
+    reload->trigger();
+    EXPECT_EQ(7, intValue(kReaderParamNameOriginalFrameRange, 1));
+    EXPECT_EQ(4, intValue("lastFrame"));
+}
+
+TEST_F(GeoFileNodeTest, ASingleFileIsFrameOne)
+{
+    geoFileWrite(makePoints(5), path("mesh.ngeo"));
+    const KnobFilePtr file = fileKnob();
+    ASSERT_TRUE(file != NULL);
+    file->setValue(path("mesh.ngeo"));
+
+    EXPECT_EQ(1, intValue("firstFrame"));
+    EXPECT_EQ(1, intValue("lastFrame"));
+    EXPECT_EQ(5, pointCountAt(-3.));
+    EXPECT_EQ(5, pointCountAt(40.));
+
+    setChoice("afterLastFrame", (int)ReadTimeDomain::eBeforeAfterBlack);
+    EXPECT_TRUE(_reader->getEffectInstance()->getTimeInvariantMetadata()->getIsFrameVarying());
+    EXPECT_EQ(5, pointCountAt(1.));
+    EXPECT_EQ(0, pointCountAt(2.));
+}
+
+TEST_F(GeoFileNodeTest, BeforeAndAfterTheRangeHoldLoopBounceOrAreEmptyOrAnError)
+{
+    for (int frame = 1; frame <= 3; ++frame) {
+        geoFileWrite(makePoints(frame), path(("mesh.000" + std::to_string(frame) + ".ngeo").c_str()));
+    }
+    const KnobFilePtr file = fileKnob();
+    ASSERT_TRUE(file != NULL);
+    file->setValue(path("mesh.####.ngeo"));
+
+    EXPECT_EQ(1, pointCountAt(-4.));
+    EXPECT_EQ(3, pointCountAt(9.));
+
+    setChoice("afterLastFrame", (int)ReadTimeDomain::eBeforeAfterLoop);
+    EXPECT_EQ(1, pointCountAt(4.));
+    EXPECT_EQ(2, pointCountAt(5.));
+
+    setChoice("afterLastFrame", (int)ReadTimeDomain::eBeforeAfterBounce);
+    EXPECT_EQ(2, pointCountAt(4.));
+    EXPECT_EQ(1, pointCountAt(5.));
+
+    setChoice("beforeFirstFrame", (int)ReadTimeDomain::eBeforeAfterBlack);
+    EXPECT_EQ(0, pointCountAt(0.));
+
+    setChoice("beforeFirstFrame", (int)ReadTimeDomain::eBeforeAfterError);
+    std::string error;
+    EXPECT_EQ(-1, pointCountAt(0., &error));
+    EXPECT_FALSE(error.empty());
+}
+
+TEST_F(GeoFileNodeTest, TheFrameOffsetShiftsTheSequence)
+{
+    geoFileWrite(makePoints(3), path("mesh.0001.ngeo"));
+    geoFileWrite(makePoints(4), path("mesh.0002.ngeo"));
+    const KnobFilePtr file = fileKnob();
+    ASSERT_TRUE(file != NULL);
+    file->setValue(path("mesh.####.ngeo"));
+
+    editInt("startAt", 10);
+    EXPECT_EQ(9, intValue("frameOffset"));
+    EXPECT_EQ(3, pointCountAt(10.));
+    EXPECT_EQ(4, pointCountAt(11.));
+    double first = 0.;
+    double last = 0.;
+    frameRange(&first, &last);
+    EXPECT_EQ(10., first);
+    EXPECT_EQ(11., last);
+
+    setChoice("frameOffsetMode", (int)ReadTimeDomain::eFrameModeTimeOffset);
+    editInt("frameOffset", -1);
+    EXPECT_EQ(3, pointCountAt(0.));
+    EXPECT_EQ(4, pointCountAt(1.));
+}
+
+TEST_F(GeoFileNodeTest, AMissingFrameHoldsThePreviousOrLoadsTheNext)
+{
+    geoFileWrite(makePoints(3), path("mesh.0001.ngeo"));
+    geoFileWrite(makePoints(6), path("mesh.0004.ngeo"));
+    const KnobFilePtr file = fileKnob();
+    ASSERT_TRUE(file != NULL);
+    file->setValue(path("mesh.####.ngeo"));
+
+    setMissingFrames(ReadTimeDomain::eMissingPrevious);
+    EXPECT_EQ(3, pointCountAt(3.));
+    setMissingFrames(ReadTimeDomain::eMissingNext);
+    EXPECT_EQ(6, pointCountAt(2.));
 }

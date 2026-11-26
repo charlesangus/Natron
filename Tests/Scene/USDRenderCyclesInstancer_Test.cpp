@@ -497,11 +497,13 @@ TEST_F(USDRenderCyclesInstancerTest, PackedCopiesToPointsLandOnTheirPoints)
     size->setValue(2., ViewSpec::all(), 2);
 
     // The default card's four corners, moved away from the origin; orient (x, y, z, w) is set on
-    // every point so that no copy takes its orientation from the card's normal. Point 1 is scaled
-    // unevenly and turned 30 degrees about Z, point 3 turned -45 degrees.
+    // every point so that no copy takes its orientation from the card's normal, and so is scale,
+    // which a wrangle creates as zero on the points that do not set it. Point 1 is scaled unevenly
+    // and turned 30 degrees about Z, point 3 turned -45 degrees.
     KnobString* snippet = knob<KnobString>(wrangle, kGeoWrangleParamSnippet);
     ASSERT_TRUE(snippet != nullptr);
     snippet->setValue(std::string("f@pscale = 0.5;\n"
+                                  "v@scale = {1, 1, 1};\n"
                                   "p@orient = {0, 0, 0, 1};\n"
                                   "if (@ptnum == 0) { @P = {3, 2, 0}; }\n"
                                   "if (@ptnum == 1) { @P = {-3, 2, 0}; v@scale = {1.6, 0.7, 1}; p@orient = {0, 0, 0.25881905, 0.96592583}; }\n"

@@ -117,6 +117,12 @@ Give port networks their presentation inside a builder's graph tab: left-to-righ
   - verify: an Xvfb script shift-drops a closure pipe, picks a BSDF, cycles with the down key, and asserts the final input; undo removes node and pipe; a screenshot of the highlight goes to the user.
   - size: M
 
+- [ ] M351.P3.T4 — Refuse non-network nodes inside a builder
+  - files: Engine/AppInstance.cpp (createNodeInternal), Engine/Nodes/Network/NetworkBuilder.*, the toolbar and right-click node menus inside a builder's graph
+  - approach: the Scope's edge case "non-network nodes pasted or created by script inside: refused by the kind check" has no check on creation today; ordinary compositing nodes chosen from the toolbar or right-click submenus are created inside a builder. Refuse them with the usual message (Dots and Backdrops allowed), and inside a builder show no compositing nodes in those menus
+  - verify: GUI script: the toolbar/right-click menus inside a builder offer no compositing nodes; a Python createNode of Blur into the builder is refused with a message
+  - size: M
+
 **Verification gate:** release gate green per `.local/build-mode`; `PortTypes_Test` passes; `graph_connector_goldens.py` and every `Tests/gui/shader_graph_*.py` pass under Xvfb at 1920x1080; the user OKs each screenshot.
 
 ## Decisions
@@ -143,3 +149,4 @@ Give port networks their presentation inside a builder's graph tab: left-to-righ
 - 2026-11-26 (PM) — Shift-drop product bug: shader plugins are registered internal-only, and `createNodeFromNodesMenu` didn't allow non-user-creatable plugins, so the creation was refused silently (qDebug compiled out). This broke plain Tab creation inside a builder too; shader_graph_tab.py only lists the menu. Fixed in 2619753dad (only the network menu passes the flag); the bridge no longer reports a warning on stderr as a launch failure. m351-gate12 (--appimage) queued.
 - 2026-11-26 (PM) — m351-gate13 (2619753dad, --appimage) green: all eight shader_graph_* scripts, graph_connector_goldens, m118, m159 and ctest pass; m121 fails only its main-side check. The prelim AppImage in build/appimages is replaced with this build. P1.T1-T2 and the P2/P3 tasks stay unticked until the user OKs the screenshots/look.
 - 2026-11-26 — **User prelim test:** a builder could be created and entered, but no shader nodes could be created inside it (a Backdrop could); no starter nodes, not even an output. PM: the staged AppImage was replaced at 10:06 with 2619753dad's build, which fixed the network menu refusing internal-only shader plugins; the user may have tested the earlier copy. Treated as live: every creation path in a builder is being audited and allowed for the builder's target plugins, with a new shader_graph_create.py GUI test. The Output node and starter presets are M352 - USDMaterialBuilder Node's P1.T1 scope ('New builder: the Output node only').
+- 2026-11-26 (PM) — Every creation path inside a builder now allows the builder's target network types through one engine rule (`NetworkBuilder::hostsPlugin`, checked in `createNodeInternal`); 2619753dad's per-menu flag removed. New shader_graph_create.py (typed + Enter, row click, right-click Create Node). Found: non-network nodes can be created inside a builder, contrary to the Scope's edge case; filed as P3.T4. m351-gate14 (--appimage) queued.

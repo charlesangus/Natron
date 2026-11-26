@@ -579,7 +579,7 @@ future core work has solid ground to build on.
 | M496 | MoonRay Test Stability | done | - | | E9 | | | [M496-moonray-test-stability.md](PLAN/MILESTONES/M496-moonray-test-stability.md) |
 | M504 | GIL Lock Order Fix | done | M336 | | E14 |  | | [M504-gil-lock-order-fix.md](PLAN/MILESTONES/M504-gil-lock-order-fix.md) |
 | M505 | Deleted Knob Listener Dependencies | done | M372 | | E14 | F16 | | [M505-deleted-knob-listener-dependencies.md](PLAN/MILESTONES/M505-deleted-knob-listener-dependencies.md) |
-| M614 | User Knob Editor UAT Round 2 | doing | - | bosley-executor | E10 | F16 | | [M614-user-knob-editor-uat-round-2.md](PLAN/MILESTONES/M614-user-knob-editor-uat-round-2.md) |
+| M614 | User Knob Editor UAT Round 2 | done | - | bosley-executor | E10 | F16 | | [M614-user-knob-editor-uat-round-2.md](PLAN/MILESTONES/M614-user-knob-editor-uat-round-2.md) |
 | M506 | Deep Expression Chain Crash | todo | M262 |  | E14 |  | | [M506-deep-expression-chain-crash.md](PLAN/MILESTONES/M506-deep-expression-chain-crash.md) |
 | M507 | Lock-Free Knob Holder Lifetime | todo | - |  | E14 |  | | [M507-lock-free-knob-holder-lifetime.md](PLAN/MILESTONES/M507-lock-free-knob-holder-lifetime.md) |
 | M508 | Incremental Roto Dope Sheet Rows | todo | - |  | E6 |  | | [M508-incremental-roto-dope-sheet-rows.md](PLAN/MILESTONES/M508-incremental-roto-dope-sheet-rows.md) |

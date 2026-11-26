@@ -229,6 +229,7 @@ future core work has solid ground to build on.
 | M402 | Geometry Loops | done | M180, M181, M190, M359, M360 |  | E22 | F18 | | [M402-geometry-loops.md](PLAN/MILESTONES/M402-geometry-loops.md) |
 | M403 | Geometry File Cache | done | M54, M359 |  | E22 | F18 | | [M403-geometry-file-cache.md](PLAN/MILESTONES/M403-geometry-file-cache.md) |
 | M404 | Geometry Solver | done | M402, M403 | | E22 | F18 | | [M404-geometry-solver.md](PLAN/MILESTONES/M404-geometry-solver.md) |
+| M615 | Geometry Loops UAT Round 1 | doing | - | bosley-executor | E22 | F18 | | [M615-geometry-loops-uat-round-1.md](PLAN/MILESTONES/M615-geometry-loops-uat-round-1.md) |
 | M405 | Particle Solver Core | todo | M404, M359 |  | E22 | F19 | | [M405-particle-solver-core.md](PLAN/MILESTONES/M405-particle-solver-core.md) |
 | M406 | Particle Forces And Wrangle | todo | M405, M360 |  | E22 | F19 | | [M406-particle-forces-and-wrangle.md](PLAN/MILESTONES/M406-particle-forces-and-wrangle.md) |
 | M407 | Particle Collisions | todo | M405, M418 |  | E22 | F19 | | [M407-particle-collisions.md](PLAN/MILESTONES/M407-particle-collisions.md) |
@@ -577,6 +578,7 @@ future core work has solid ground to build on.
 | M496 | MoonRay Test Stability | done | - | | E9 | | | [M496-moonray-test-stability.md](PLAN/MILESTONES/M496-moonray-test-stability.md) |
 | M504 | GIL Lock Order Fix | done | M336 | | E14 |  | | [M504-gil-lock-order-fix.md](PLAN/MILESTONES/M504-gil-lock-order-fix.md) |
 | M505 | Deleted Knob Listener Dependencies | done | M372 | | E14 | F16 | | [M505-deleted-knob-listener-dependencies.md](PLAN/MILESTONES/M505-deleted-knob-listener-dependencies.md) |
+| M614 | User Knob Editor UAT Round 2 | doing | - | bosley-executor | E10 | F16 | | [M614-user-knob-editor-uat-round-2.md](PLAN/MILESTONES/M614-user-knob-editor-uat-round-2.md) |
 | M506 | Deep Expression Chain Crash | todo | M262 |  | E14 |  | | [M506-deep-expression-chain-crash.md](PLAN/MILESTONES/M506-deep-expression-chain-crash.md) |
 | M507 | Lock-Free Knob Holder Lifetime | todo | - |  | E14 |  | | [M507-lock-free-knob-holder-lifetime.md](PLAN/MILESTONES/M507-lock-free-knob-holder-lifetime.md) |
 | M508 | Incremental Roto Dope Sheet Rows | todo | - |  | E6 |  | | [M508-incremental-roto-dope-sheet-rows.md](PLAN/MILESTONES/M508-incremental-roto-dope-sheet-rows.md) |

@@ -32,6 +32,7 @@
 #include <cstdint>
 #include <list>
 #include <map>
+#include <memory>
 #include <set>
 #include <utility>
 #include <vector>
@@ -358,6 +359,12 @@ public:
 
     Edge* getOutputArrow() const;
     Edge* getInputArrow(int inputNb) const;
+
+    // Never null: every node is built with a RadialLayout.
+    ConnectorLayout* getConnectorLayout() const
+    {
+        return _connectorLayout.get();
+    }
 
     /*Returns true if the point is included in the rectangle +10px on all edges.*/
     bool isNearby(QPointF &point);
@@ -788,6 +795,9 @@ Q_SIGNALS:
 protected:
 
     virtual void createGui();
+
+    // Call before the inputs are initialized, which is when a layout places them.
+    void setConnectorLayout(std::unique_ptr<ConnectorLayout> layout);
     // An open panel is added to the properties bin only if dock is set.
     virtual NodeSettingsPanel* createPanel(QVBoxLayout* container, const NodeGuiPtr& thisAsShared, bool dock);
 
@@ -948,6 +958,7 @@ private:
     /*the graphical input arrows*/
     std::vector<Edge*> _inputEdges;
     Edge* _outputEdge;
+    std::unique_ptr<ConnectorLayout> _connectorLayout;
     NodeSettingsPanel* _settingsPanel;
 
     ///This is valid only if the node is a multi-instance and this is the main instance.

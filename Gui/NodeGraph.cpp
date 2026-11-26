@@ -185,15 +185,15 @@ NodeGraph::NodeGraph(Gui* gui,
 
     QObject::connect(appPTR->getCurrentSettings().get(), SIGNAL(settingsSaved()), this, SLOT(onSettingsSaved()));
 
-    _imp->_hintInputEdge = new Edge(0, 0, NodeGuiPtr(), _imp->_nodeRoot);
+    _imp->_hintInputEdge = new Edge(0, NodeGuiPtr(), _imp->_nodeRoot);
     _imp->_hintInputEdge->setIsSpliceHint(true);
     _imp->_hintInputEdge->hide();
 
-    _imp->_hintOutputEdge = new Edge(0, 0, NodeGuiPtr(), _imp->_nodeRoot);
+    _imp->_hintOutputEdge = new Edge(0, NodeGuiPtr(), _imp->_nodeRoot);
     _imp->_hintOutputEdge->setIsSpliceHint(true);
     _imp->_hintOutputEdge->hide();
 
-    _imp->_kissPreviewEdge = new Edge(0, 0, NodeGuiPtr(), _imp->_nodeRoot);
+    _imp->_kissPreviewEdge = new Edge(0, NodeGuiPtr(), _imp->_nodeRoot);
     _imp->_kissPreviewEdge->setUseHighlight(true);
     // Above the other pipes, which share z 15 and would otherwise paint over it in creation order
     // (the dragged node's own free input arrow lies along the preview), but still under the nodes.

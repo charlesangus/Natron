@@ -51,9 +51,8 @@ public:
 
     ///Used to make an input edge
     Edge(int inputNb,
-         double angle,
-         const NodeGuiPtr & dest,
-         QGraphicsItem *parent = 0);
+         const NodeGuiPtr& dest,
+         QGraphicsItem* parent = 0);
 
     ///Used to make an output edge
     Edge(const NodeGuiPtr & src,
@@ -94,8 +93,6 @@ public:
     void initLine();
 
     void initLineNow();
-
-    void setAngle(double a);
 
     void turnOnRenderingColor();
 
@@ -168,6 +165,17 @@ struct EdgeNearbyCandidate {
     QLineF line;
     bool isUnconnectedInput; // an input edge with no source: grabbed with unconnectedInputGrabRadius, not grabRadius
 };
+
+/**
+ * @brief Whether candidate is within its own grab radius of scenePos (unconnectedInputGrabRadius for
+ * an unconnected input stub, grabRadius for everything else); *dist2 receives the squared distance
+ * from scenePos to its line either way.
+ **/
+bool isEdgeCandidateWithinReach(const QPointF& scenePos,
+                                const EdgeNearbyCandidate& candidate,
+                                double grabRadius,
+                                double unconnectedInputGrabRadius,
+                                double* dist2);
 
 /**
  * @brief Returns the index into candidates of the one whose line is closest to scenePos, among

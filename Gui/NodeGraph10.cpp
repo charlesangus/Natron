@@ -49,6 +49,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Engine/CreateNodeArgs.h"
 
 #include "Gui/BackdropGui.h"
+#include "Gui/ConnectorLayout.h"
 #include "Gui/Edge.h"
 #include "Gui/GpuOverlay.h"
 #include "Gui/Gui.h"
@@ -98,6 +99,25 @@ isEdgeChild(QGraphicsItem* item)
     } else {
         return 0;
     }
+}
+
+// An edge is reached through the layout of the node it is a connector of: its destination for an
+// input, its source for an output. The graph's own preview edges may have neither.
+static bool
+isEdgeConnectorWithinReach(const Edge* edge,
+                           const QPointF& scenePos,
+                           double grabRadius,
+                           double unconnectedInputGrabRadius,
+                           double* dist2)
+{
+    NodeGuiPtr owner = edge->isOutputEdge() ? edge->getSource() : edge->getDest();
+    const ConnectorLayout* layout = owner ? owner->getConnectorLayout() : NULL;
+
+    if (layout) {
+        return layout->hitEdge(edge, scenePos, grabRadius, unconnectedInputGrabRadius, dist2);
+    }
+
+    return ConnectorLayout::hitEdgeLine(edge, scenePos, grabRadius, unconnectedInputGrabRadius, dist2);
 }
 
 static void
@@ -610,21 +630,23 @@ NodeGraph::hasItemNearbyMouse(const QPoint& mousePosViewport,
         double grabRadius = TO_DPIX(10.) / zoomFactor;
         double unconnectedInputGrabRadius = TO_DPIX(18.) / zoomFactor;
 
-        std::vector<Edge*> edgeList(edges.begin(), edges.end());
-        std::vector<EdgeNearbyCandidate> candidates;
-        candidates.reserve(edgeList.size());
-        for (std::vector<Edge*>::const_iterator it = edgeList.begin(); it != edgeList.end(); ++it) {
-            EdgeNearbyCandidate candidate;
-            candidate.line = QLineF((*it)->mapToScene((*it)->line().p1()), (*it)->mapToScene((*it)->line().p2()));
-            candidate.isUnconnectedInput = !(*it)->isOutputEdge() && !(*it)->hasSource();
-            candidates.push_back(candidate);
+        // Ties go to the first edge, in the order of the set, as pickNearestEdgeCandidate() does.
+        Edge* nearest = NULL;
+        double nearestDist2 = 0.;
+        for (std::set<Edge*>::const_iterator it = edges.begin(); it != edges.end(); ++it) {
+            double d2 = 0.;
+            if (!isEdgeConnectorWithinReach(*it, scenePos, grabRadius, unconnectedInputGrabRadius, &d2)) {
+                continue;
+            }
+            if (!nearest || (d2 < nearestDist2)) {
+                nearest = *it;
+                nearestDist2 = d2;
+            }
         }
-
-        int nearestIndex = pickNearestEdgeCandidate(scenePos, candidates, grabRadius, unconnectedInputGrabRadius);
-        if (nearestIndex == -1) {
+        if (!nearest) {
             return eNearbyItemNone;
         }
-        *edge = edgeList[nearestIndex];
+        *edge = nearest;
 
         if ( (*edge)->hasSource() && (*edge)->isBendPointVisible() && (*edge)->isNearbyBendPoint(scenePos) ) {
             return eNearbyItemEdgeBendPoint;

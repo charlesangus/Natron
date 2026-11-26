@@ -124,6 +124,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/PreviewThread.h"
 #include "Gui/PythonPanels.h"
 #include "Gui/QtEnumConvert.h"
+#include "Gui/RadialLayout.h"
 #include "Gui/SequenceFileDialog.h"
 #include "Gui/SpinBox.h"
 #include "Gui/ThemedIcon.h"
@@ -399,6 +400,7 @@ NodeGui::NodeGui(QGraphicsItem* parent)
     , _indicatorLayer(NULL)
     , _inputEdges()
     , _outputEdge(NULL)
+    , _connectorLayout(new RadialLayout(this))
     , _settingsPanel(NULL)
     , _mainInstancePanel(NULL)
     , _panelCreated(false)
@@ -2118,30 +2120,11 @@ NodeGui::getOverlayColor(double* r,
     return true;
 }
 
-// Inspectors, such as Merge and Switch, show two inputs and unfold the rest one at a time on the
-// left. A native node with a run of numbered inputs is laid out the same way, however long the
-// run, so that its visible inputs are not spread as if every input of the run were shown.
-static bool
-unfoldsInputs(const NodePtr& node)
+void
+NodeGui::setConnectorLayout(std::unique_ptr<ConnectorLayout> layout)
 {
-    if (!node) {
-        return false;
-    }
-    if (dynamic_cast<InspectorNode*>(node.get())) {
-        return true;
-    }
-    NativeEffectBase* native = dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get());
-    const NodeSpec* spec = native ? native->nodeSpec() : 0;
-    if (!spec) {
-        return false;
-    }
-    for (const InputSpec& input : spec->inputs) {
-        if (input.role == InputRole::Variadic) {
-            return true;
-        }
-    }
-
-    return false;
+    assert(layout);
+    _connectorLayout = std::move(layout);
 }
 
 void
@@ -2153,52 +2136,7 @@ NodeGui::initializeInputsForInspector()
     if (!node) {
         return;
     }
-    // Count mask inputs first
-    std::vector<bool> masksInputs(_inputEdges.size());
-    int nMasksInputs = 0;
-    for (std::size_t i = 0; i < _inputEdges.size(); ++i) {
-        masksInputs[i] = node->getEffectInstance()->isInputMask(i);
-        if (masksInputs[i]) {
-            ++nMasksInputs;
-        }
-    }
-
-
-
-    ///If the node is a viewer, display 1 input and another one aside and hide all others.
-    ///If the node is something else (switch, merge) show 2 inputs and another one aside an hide all others.
-
-    bool isViewer = node->isEffectViewer() != 0;
-    int maxInitiallyOnTopVisibleInputs = isViewer ? 1 : 2;
-    double angleBetweenInputs = M_PI / (maxInitiallyOnTopVisibleInputs + 1);
-    double angle =  angleBetweenInputs;
-
-    double angleBetweenMasks = 0.;
-    double maskAngle = 0.;
-    if (nMasksInputs > 1) {
-        angleBetweenMasks = M_PI / (double)(nMasksInputs + 1);
-        maskAngle = -M_PI_2 + angleBetweenMasks;
-    }
-
-
-    for (std::size_t i = 0; i < _inputEdges.size(); ++i) {
-        if (masksInputs[i]) {
-            _inputEdges[i]->setAngle(maskAngle);
-            maskAngle += angleBetweenMasks;
-        } else {
-            if (((int)i < maxInitiallyOnTopVisibleInputs) && !node->getEffectInstance()->isInputFirstOnSide(i)) {
-                _inputEdges[i]->setAngle(angle);
-                angle += angleBetweenInputs;
-            } else {
-                _inputEdges[i]->setAngle(M_PI);
-            }
-        }
-
-
-        if ( !_inputEdges[i]->hasSource() ) {
-            _inputEdges[i]->initLine();
-        }
-    }
+    _connectorLayout->layoutInputs();
 
     refreshEdgesVisility();
 }
@@ -2222,12 +2160,12 @@ NodeGui::initializeInputs()
     }
     _inputEdges.clear();
 
+    _connectorLayout->resetInputs(inputs.size());
+
     ///Make new edge for all non existing inputs
     NodeGuiPtr thisShared = shared_from_this();
-    int inputsCount = 0;
-    int emptyInputsCount = 0;
     for (U32 i = 0; i < inputs.size(); ++i) {
-        Edge* edge = new Edge(i, 0., thisShared, edgeParent());
+        Edge* edge = new Edge(i, thisShared, edgeParent());
         edge->setUseSelected(getIsSelected());
         if ( ( node && node->getEffectInstance()->isInputRotoBrush(i) ) || !isVisible() ) {
             edge->setActive(false);
@@ -2247,55 +2185,16 @@ NodeGui::initializeInputs()
                 }
             }
         }
-        if (node && !node->getEffectInstance()->isInputMask(i) && !node->getEffectInstance()->isInputRotoBrush(i) && !node->getEffectInstance()->isInputFirstOnSide(i)) {
-            if (!input) {
-                ++emptyInputsCount;
-            }
-            ++inputsCount;
-        }
         _inputEdges.push_back(edge);
     }
 
 
     refreshDashedStateOfEdges();
 
-    if (unfoldsInputs(node)) {
+    if (RadialLayout::unfoldsInputs(node)) {
         initializeInputsForInspector();
     } else {
-        double piDividedbyX = M_PI / (inputsCount + 1);
-        double angle =  piDividedbyX;
-        int maskIndex = 0;
-        for (U32 i = 0; i < _inputEdges.size(); ++i) {
-            if ( node && !node->getEffectInstance()->isInputRotoBrush(i) ) {
-                double edgeAngle;
-                bool incrAngle = true;
-                if (node->getEffectInstance()->isInputFirstOnSide(i)) {
-                    edgeAngle = M_PI;
-                    incrAngle = false;
-                } else if (node->getEffectInstance()->isInputMask(i)) {
-                    if (maskIndex == 0) {
-                        edgeAngle = 0;
-                        incrAngle = false;
-                        ++maskIndex;
-                    } else if (maskIndex == 1) {
-                        edgeAngle = M_PI;
-                        incrAngle = false;
-                        ++maskIndex;
-                    } else {
-                        edgeAngle = angle;
-                    }
-                } else {
-                    edgeAngle = angle;
-                }
-                _inputEdges[i]->setAngle(edgeAngle);
-                if (incrAngle) {
-                    angle += piDividedbyX;
-                }
-                if ( !_inputEdges[i]->hasSource() ) {
-                    _inputEdges[i]->initLine();
-                }
-            }
-        }
+        _connectorLayout->layoutInputs();
     }
 } // initializeInputs
 
@@ -2373,7 +2272,7 @@ NodeGui::refreshEdgesVisility()
     }
 
     NodePtr node = getNode();
-    if (unfoldsInputs(node)) {
+    if (RadialLayout::unfoldsInputs(node)) {
         bool isViewer = node->isEffectViewer() != 0;
         int maxInitiallyOnTopVisibleInputs = isViewer ? 1 : 2;
         bool inputAsideDisplayed = false;
@@ -2690,7 +2589,7 @@ NodeGui::connectEdge(int edgeNumber)
     }
 
     assert(node);
-    if (unfoldsInputs(node)) {
+    if (RadialLayout::unfoldsInputs(node)) {
         initializeInputsForInspector();
     }
 

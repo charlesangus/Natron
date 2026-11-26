@@ -28,6 +28,7 @@
 #include <algorithm> // min, max
 #include <cmath>
 #include <stdexcept>
+#include <string>
 
 #include <QSize>
 #include <QPainter>
@@ -39,6 +40,7 @@
 #include "Engine/Settings.h"
 #include "Engine/ViewerInstance.h"
 #include "Global/Enums.h"
+#include "Gui/ConnectorLayout.h"
 #include "Gui/EdgeLabelMetrics.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/NodeGraph.h"
@@ -72,7 +74,6 @@ struct EdgePrivate
     Edge* _publicInterface;
     bool isOutputEdge;
     int inputNb;
-    double angle;
     NodeGraphSimpleTextItem* label;
     EdgeLabelMetrics labelMetrics;
     QPolygonF arrowHead;
@@ -97,12 +98,10 @@ struct EdgePrivate
     QPointF middlePoint; //updated only when dest && source are valid
 
     EdgePrivate(Edge* publicInterface,
-                int inputNb,
-                double angle)
+                int inputNb)
         : _publicInterface(publicInterface)
         , isOutputEdge(inputNb == -1)
         , inputNb(inputNb)
-        , angle(angle)
         , label(NULL)
         , arrowHead()
         , dest()
@@ -131,11 +130,10 @@ struct EdgePrivate
 };
 
 Edge::Edge(int inputNb_,
-           double angle_,
-           const NodeGuiPtr & dest_,
-           QGraphicsItem *parent)
+           const NodeGuiPtr& dest_,
+           QGraphicsItem* parent)
     : QGraphicsLineItem(parent)
-    , _imp( new EdgePrivate(this, inputNb_, angle_) )
+    , _imp(new EdgePrivate(this, inputNb_))
 {
     _imp->dest = dest_;
 
@@ -172,10 +170,10 @@ EdgePrivate::initLabel()
     }
 }
 
-Edge::Edge(const NodeGuiPtr & src,
-           QGraphicsItem *parent)
+Edge::Edge(const NodeGuiPtr& src,
+           QGraphicsItem* parent)
     : QGraphicsLineItem(parent)
-    , _imp( new EdgePrivate(this, -1, M_PI_2) )
+    , _imp(new EdgePrivate(this, -1))
 {
     _imp->source = src;
     assert(src);
@@ -276,12 +274,6 @@ bool
 Edge::hasSource() const
 {
     return _imp->source.lock().get() != NULL;
-}
-
-void
-Edge::setAngle(double a)
-{
-    _imp->angle = a;
 }
 
 void
@@ -509,8 +501,18 @@ Edge::initLineNow()
     }
 
     double sc = scale();
-    QRectF sourceBBOX = source ? mapFromItem(source.get(), source->outlineBoundingRect()).boundingRect() : QRectF(0, 0, 1, 1);
-    QRectF destBBOX = dest ? mapFromItem(dest.get(), dest->outlineBoundingRect()).boundingRect() : QRectF(0, 0, 1, 1);
+    ConnectorAnchor sourceAnchor;
+    ConnectorAnchor destAnchor;
+    if (source) {
+        assert(source->getConnectorLayout());
+        sourceAnchor = source->getConnectorLayout()->outputAnchor(std::string(), this);
+    }
+    if (dest) {
+        assert(dest->getConnectorLayout());
+        destAnchor = dest->getConnectorLayout()->inputAnchor(_imp->inputNb, this);
+    }
+    QRectF sourceBBOX = source ? sourceAnchor.outline : QRectF(0, 0, 1, 1);
+    QRectF destBBOX = dest ? destAnchor.outline : QRectF(0, 0, 1, 1);
     QSize dstNodeSize;
     QSize srcNodeSize;
     if (dest) {
@@ -523,7 +525,7 @@ Edge::initLineNow()
     QPointF dst;
 
     if (dest) {
-        dst = destBBOX.center();
+        dst = destAnchor.point;
     } else if (source && !dest) {
         dst = QPointF( sourceBBOX.x(), sourceBBOX.y() ) + QPointF(srcNodeSize.width() / 2., srcNodeSize.height() + 10);
     }
@@ -542,12 +544,12 @@ Edge::initLineNow()
 
     if (source && dest) {
         /// This is a connected edge, either input or output
-        srcpt = sourceBBOX.center();
+        srcpt = sourceAnchor.point;
         setLine( dst.x(), dst.y(), srcpt.x(), srcpt.y() );
     } else if (!source && dest) {
         /// The edge is an input edge which is unconnected
-        srcpt = QPointF( dst.x() + (std::cos(_imp->angle) * 100000 * sc),
-                         dst.y() - (std::sin(_imp->angle) * 100000 * sc) );
+        srcpt = QPointF(dst.x() + (destAnchor.tangent.x() * 100000 * sc),
+                        dst.y() + (destAnchor.tangent.y() * 100000 * sc));
         setLine( dst.x(), dst.y(), srcpt.x(), srcpt.y() );
     } else if (source && !dest) {
         /// The edge is an output edge which is unconnected
@@ -635,13 +637,13 @@ Edge::initLineNow()
                                              ( intersection.y() - dst.y() ) * ( intersection.y() - dst.y() ) );
             distToCenter += TO_DPIY( appPTR->getCurrentSettings()->getDisconnectedArrowLength() );
 
-            srcpt = QPointF( dst.x() + (std::cos(_imp->angle) * distToCenter * sc),
-                             dst.y() - (std::sin(_imp->angle) * distToCenter * sc) );
+            srcpt = QPointF(dst.x() + (destAnchor.tangent.x() * distToCenter * sc),
+                            dst.y() + (destAnchor.tangent.y() * distToCenter * sc));
             setLine( dst.x(), dst.y(), srcpt.x(), srcpt.y() );
 
             if (_imp->label) {
                 _imp->labelMetrics.update(_imp->label->text(), _imp->label->font());
-                double cosinus = std::cos(_imp->angle);
+                double cosinus = destAnchor.tangent.x();
                 int yOffset = 0;
                 if (cosinus < 0) {
                     yOffset = -_imp->labelMetrics.width();
@@ -783,6 +785,20 @@ Edge::contains(const QPointF &point) const
     return d2 <= kGraphicalContainerOffset * kGraphicalContainerOffset;
 }
 
+bool
+isEdgeCandidateWithinReach(const QPointF& scenePos,
+                           const EdgeNearbyCandidate& candidate,
+                           double grabRadius,
+                           double unconnectedInputGrabRadius,
+                           double* dist2)
+{
+    double radius = candidate.isUnconnectedInput ? unconnectedInputGrabRadius : grabRadius;
+
+    *dist2 = Edge::dist2ToSegment(candidate.line, scenePos);
+
+    return !(*dist2 > radius * radius);
+}
+
 int
 pickNearestEdgeCandidate(const QPointF& scenePos,
                          const std::vector<EdgeNearbyCandidate>& candidates,
@@ -793,9 +809,8 @@ pickNearestEdgeCandidate(const QPointF& scenePos,
     double nearestDist2 = 0.;
 
     for (std::size_t i = 0; i < candidates.size(); ++i) {
-        double radius = candidates[i].isUnconnectedInput ? unconnectedInputGrabRadius : grabRadius;
-        double d2 = Edge::dist2ToSegment(candidates[i].line, scenePos);
-        if (d2 > radius * radius) {
+        double d2 = 0.;
+        if (!isEdgeCandidateWithinReach(scenePos, candidates[i], grabRadius, unconnectedInputGrabRadius, &d2)) {
             continue;
         }
         if ((nearestIndex == -1) || (d2 < nearestDist2)) {

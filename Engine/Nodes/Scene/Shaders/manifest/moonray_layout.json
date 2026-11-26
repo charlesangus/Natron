@@ -8,6 +8,12 @@
     "ColorCorrectMap": {
       "key_ports": ["input", "mix", "hue_shift", "saturation", "contrast", "gamma", "gain", "offset"]
     },
+    "ConstantColorMap": {
+      "search_aliases": ["color", "colour", "rgb"]
+    },
+    "ConstantScalarMap": {
+      "search_aliases": ["float", "scalar", "value", "int", "integer"]
+    },
     "DwaBaseMaterial": {
       "key_ports": ["albedo", "diffuse_roughness", "metallic", "metallic_color", "roughness", "specular", "transmission", "transmission_color", "clearcoat", "fuzz", "emission", "presence"]
     },
@@ -73,6 +79,9 @@
     },
     "UsdPreviewSurface": {
       "key_ports": ["diffuseColor", "emissiveColor", "specularColor", "metallic", "roughness", "clearcoat", "clearcoatRoughness", "opacity", "ior", "normal", "displacement", "occlusion"]
+    },
+    "UsdPrimvarReader_vector": {
+      "search_aliases": ["vector", "xyz"]
     }
   }
 }

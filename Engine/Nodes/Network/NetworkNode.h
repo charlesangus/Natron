@@ -134,6 +134,8 @@ struct NetworkNodeLayout {
     std::vector<NetworkAttribute> attributes;
     std::vector<OutputPortDescriptor> outputs;
     std::vector<std::string> defaultPorts;
+    // Lowercase words the Tab menu matches like the label, so that a type name finds the node.
+    std::vector<std::string> searchAliases;
 };
 
 /**

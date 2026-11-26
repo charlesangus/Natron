@@ -597,3 +597,25 @@ def test_self_items_consistent_at_end_of_each_pair():
         ("end_insert", 2),
     ]
     assert [i["menupath"] for i in model._items] == ["D", "A"]
+
+
+def test_alias_finds_an_item_and_the_row_keeps_the_real_name():
+    module = _load_core()
+    scalar = {"menupath": "Maps/Scalar Constant", "menuobj": object(), "aliases": ("float", "int")}
+    other = _menu_item("Maps/Noise")
+    model = _make_filtering_model(module, [scalar, other], filtertext="flo")
+
+    model.update()
+
+    assert [i["menupath"] for i in model._items] == ["Maps/Scalar Constant"]
+    assert model._items[0]["text"].startswith("Scalar Constant")
+
+
+def test_alias_matches_only_where_the_name_would_anchored():
+    module = _load_core()
+    scalar = {"menupath": "Maps/Scalar Constant", "menuobj": object(), "aliases": ("float",)}
+    model = _make_filtering_model(module, [scalar], filtertext="loat")
+
+    model.update()
+
+    assert model._items == []

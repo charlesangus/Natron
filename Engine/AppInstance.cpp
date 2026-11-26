@@ -1553,6 +1553,24 @@ AppInstance::createNodeInternal(CreateNodeArgs& args,
         return node;
     }
 
+    {
+        // A network builder's graph holds network nodes only, so a compositing node is refused on
+        // every path: menus, scripts, paste and project load.
+        const NodeCollectionPtr target = _imp->creationCollectionOf(args);
+        const NetworkBuilder* builder = dynamic_cast<const NetworkBuilder*>(target.get());
+        if (builder && !builder->acceptsPlugin(plugin->getPluginID().toStdString())) {
+            *status = eCreateNodeStatusRefused;
+            const std::string title("Cannot create node");
+            const std::string message = tr("A network builder holds network nodes only: %1 cannot be created inside it.").arg(argsPluginID).toStdString();
+            std::cerr << message << std::endl;
+            if (!isSilentCreation) {
+                errorDialog(title, message, false);
+            }
+
+            return node;
+        }
+    }
+
     _imp->applyNodeCreationContext(plugin, args);
 
     /*
@@ -1806,6 +1824,10 @@ AppInstance::createNodeOrMissingPluginPlaceholder(CreateNodeArgs& args,
     NodePtr node = createNodeInternal(args, &status);
 
     if (node) {
+        return node;
+    }
+
+    if (status == eCreateNodeStatusRefused) {
         return node;
     }
 

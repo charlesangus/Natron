@@ -99,6 +99,7 @@ _INPUT_KIND_PROPERTY = "natronInputKind"
 _PRIM_PATH_KNOB_PROPERTY = "natronPrimPathKnob"
 _INPUT_KINDS_PROPERTY = "natronInputKinds"
 _NETWORK_TARGETS_PROPERTY = "natronNetworkTargets"
+_SEARCH_ALIASES_PROPERTY = "natronSearchAliases"
 
 # PLUGINID_NATRON_BACKDROP, listed in a network builder's graph as well.
 _BACKDROP_PLUGIN_ID = "Backdrop"
@@ -324,6 +325,9 @@ def _node_segment(menu, parts):
             shortcut = action.shortcut().toString(QtGui.QKeySequence.NativeText)
         if shortcut:
             item['shortcut'] = shortcut
+        aliases = tuple(a for a in _string_property(action, _SEARCH_ALIASES_PROPERTY).split(",") if a)
+        if aliases:
+            item['aliases'] = aliases
         entries.append((item, _filter_info(action), None, None))
     cacheable = menu_id is not None and _watch(menu, key)
     if cacheable:

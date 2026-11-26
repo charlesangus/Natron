@@ -63,6 +63,13 @@ public:
      **/
     bool hostsPlugin(const std::string& pluginId) const;
 
+    /**
+     * @brief Whether a node of pluginId may live in this builder's graph: any network node type
+     * (see NetworkNode::registerPlugin()), plus Dots, Backdrops and the placeholder of a missing
+     * plug-in. Compositing nodes do not.
+     **/
+    bool acceptsPlugin(const std::string& pluginId) const;
+
     virtual bool isSubGraphUserVisible() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         return true;

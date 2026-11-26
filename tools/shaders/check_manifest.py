@@ -153,6 +153,12 @@ def check_layout(manifest, layout, renderer):
         elif "groups" in entry:
             errors.append("%s: MoonRay groups come from the manifest" % where)
 
+        aliases = entry.get("search_aliases", [])
+        if not isinstance(aliases, list) or not all(isinstance(a, str) and a and a == a.strip().lower() for a in aliases):
+            errors.append("%s: search_aliases must be a list of non-empty lowercase strings" % where)
+        elif len(set(aliases)) != len(aliases):
+            errors.append("%s: repeated search alias" % where)
+
         port_count = len(ports(node))
         if "key_ports" not in entry:
             if port_count > KEY_PORT_THRESHOLD:

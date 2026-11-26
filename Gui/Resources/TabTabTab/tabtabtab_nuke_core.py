@@ -473,10 +473,18 @@ class NodeModel(QtCore.QAbstractListModel):
             if force_non_anchored:
                 search_string = search_string[1:]
 
+            # A host's item may list aliases, searched like the name's start
+            # but never shown: "float" finds a scalar constant.
+            searches = [search_string]
+            group = menupath.rpartition("/")[0]
+            for alias in n.get('aliases', ()):
+                alias_string = ("%s [%s]" % (alias, group)).lower()
+                searches.append(alias_string[1:] if force_non_anchored else alias_string)
+
             shortcut = n.get('shortcut')
             display_text = "%s (%s)" % (uiname, shortcut) if shortcut else uiname
 
-            if consec_find(filtertext, search_string, anchored):
+            if any(consec_find(filtertext, candidate, anchored) for candidate in searches):
                 # Matches, get weighting and add to list of stuff
                 score = self.weights.get(n['menupath'])
 
@@ -487,7 +495,7 @@ class NodeModel(QtCore.QAbstractListModel):
                     'menuobj': n['menuobj'],
                     'score': score})
 
-            elif not force_consecutive and nonconsec_find(filtertext, search_string, anchored):
+            elif not force_consecutive and any(nonconsec_find(filtertext, candidate, anchored) for candidate in searches):
                 # Matches, get weighting and add to list of stuff
                 score = self.weights.get(n['menupath'])
 

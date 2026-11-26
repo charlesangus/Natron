@@ -633,6 +633,10 @@ buildLayout(const std::string& renderer,
         layout->outputs.push_back(output);
     }
 
+    for (const QJsonValue& alias : nodeLayout.value(QLatin1String("search_aliases")).toArray()) {
+        layout->searchAliases.push_back(toStd(alias));
+    }
+
     const QJsonArray keyPorts = nodeLayout.value(QLatin1String("key_ports")).toArray();
     if (keyPorts.isEmpty()) {
         for (const NetworkAttribute& attribute : layout->attributes) {

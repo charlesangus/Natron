@@ -142,6 +142,9 @@ Optional renderer metadata, kept so later milestones need not regenerate:
 - `key_ports` (both renderers): for a node with more than 12 ports (linkable attributes), the
   attributes shown as ports by default, at most 12. Port-only attributes are always ports and are
   not listed. A node with 12 ports or fewer shows every linkable attribute and has no list.
+- `search_aliases` (both renderers, optional): lowercase words the Tab menu matches like the node's
+  label, so that a type name finds it ("float" finds the scalar constant). The menu still shows the
+  node's own name.
 
 `check_manifest.py` fails when a table names a node or attribute the manifest does not have, puts
 an attribute in two groups, misses a node, or lists key ports that are not linkable, and it reports

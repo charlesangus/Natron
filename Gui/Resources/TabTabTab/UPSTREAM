@@ -59,6 +59,11 @@ Local patches:
   set_weights_file() repoints the weights.
   A host whose get_items() builds a new list per call refreshes on every
   open, as before.
+- patches/0005-item-search-aliases.patch — tabtabtab_nuke_core.py's
+  NodeModel.update() also searches an item's optional 'aliases' list like
+  the name ("alias [group]", same anchoring), so a host can let a type name
+  find a node; the row shows the real name. Items without aliases match as
+  before.
 - tests/test_host_hooks.py is a new test file, added by Natron (not from
   upstream), covering set_main_window_finder(), _find_main_window(),
   set_row_metrics(), _row_height() and _visible_rows().

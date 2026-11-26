@@ -2,7 +2,9 @@
 with a typed filter and Enter, the tab menu's row clicked, and the graph's right-click menu's Create
 Node, each asserting the node lands inside the builder. The right-click menu's node submenus offer
 no shader, and a shader action of the network nodes menu triggered over the main graph creates
-nothing there. It is driven by Tests/gui/run-gui-test.sh (1920x1080), not ctest.
+nothing there. Inside the builder the right-click menu's and the toolbar's node menus offer no
+compositing node (Backdrop and Dot stay), and a Python createNode of Blur into the builder is refused
+with a message and creates nothing. It is driven by Tests/gui/run-gui-test.sh (1920x1080), not ctest.
 
 Usage (natron-dev container; see Tests/gui/run-gui-test.sh):
     docker exec natron-dev bash -c 'cd /home/bosley/git/Natron && \\
@@ -26,6 +28,7 @@ BSDF = "cycles_principled_bsdf"
 ADD = "cycles_add_closure"
 MIX = "cycles_mix_closure"
 CREATE_NODE = "Create Node"
+KEPT_IN_BUILDER = ("Backdrop", "Dot")
 
 try:
     import faulthandler
@@ -123,7 +126,10 @@ try:
         return [w for w in QApplication.topLevelWidgets() if isinstance(w, QMenu) and w.isVisible()]
 
     def menu_plugin_ids(menu, found, depth=0):
+        """The plug-in IDs the menu's tree offers: its visible actions only."""
         for action in menu.actions():
+            if not action.isVisible():
+                continue
             value = action.property("natronPluginID")
             if isinstance(value, str) and value:
                 found.add(value)
@@ -159,6 +165,42 @@ try:
             QTimer.singleShot(SETTLE_MS, pick)
             event = QMouseEvent(QEvent.MouseButtonPress, centre, viewport.mapToGlobal(centre), Qt.RightButton, Qt.RightButton, Qt.NoModifier)
             QApplication.sendEvent(viewport, event)
+            outcome["closed"] = True
+
+        QTimer.singleShot(0, press)
+
+    def toolbar_buttons():
+        """The visible toolbar buttons whose menu is a group of the nodes menu."""
+        found = []
+        for button in gt.widgets_of("QToolButton"):
+            if not button.isVisible():
+                continue
+            menu = gt.menu_of(button)
+            if menu is not None and any(a.property("natronPluginOwned") for a in menu.actions()):
+                found.append(button)
+        return found
+
+    def press_toolbar_button(button, outcome):
+        """Presses button on the next event loop turn; its menu's exec() runs there, and outcome
+        gets the plug-in IDs the menu offers while it is shown, none when it never shows."""
+        centre = QPointF(button.rect().center())
+
+        def pick():
+            menus = open_menus()
+            if not menus:
+                if outcome.setdefault("tries", 0) < 6:
+                    outcome["tries"] += 1
+                    QTimer.singleShot(50, pick)
+                return
+            outcome["ids"] = menu_plugin_ids(menus[0], set())
+            menus[0].close()
+
+        def press():
+            QTimer.singleShot(SETTLE_MS // 2, pick)
+            event = QMouseEvent(QEvent.MouseButtonPress, centre, button.mapToGlobal(centre), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+            QApplication.sendEvent(button, event)
+            release = QMouseEvent(QEvent.MouseButtonRelease, centre, button.mapToGlobal(centre), Qt.LeftButton, Qt.NoButton, Qt.NoModifier)
+            QApplication.sendEvent(button, release)
             outcome["closed"] = True
 
         QTimer.singleShot(0, press)
@@ -212,6 +254,9 @@ try:
         require(outcome.get("create"), "the right-click menu offers %s" % CREATE_NODE)
         offered = sorted(pid for pid in outcome.get("ids", ()) if pid in shaders)
         check(not offered, "the right-click menu's node submenus offer no shader (got %r)" % offered[:5])
+        compositing = sorted(pid for pid in outcome.get("ids", ()) if pid not in KEPT_IN_BUILDER)
+        check(not compositing, "the right-click menu's node submenus offer no compositing node (got %r)" % compositing[:5])
+        check("Backdrop" in outcome.get("ids", ()), "the right-click menu's node submenus still offer Backdrop")
         popup, line_edit, list_view = yield from sg.wait_for_popup()
         require(popup is not None, "%s opens the tab menu" % CREATE_NODE)
         check(tabtabtab_natron._is_network_context(tabtabtab_natron._plugin.context()),
@@ -225,6 +270,40 @@ try:
         graph.centerOn(0, 0)
         QApplication.processEvents()
         gt.shot("shader_graph_create.png")
+
+        gt.section("toolbar and Python")
+        buttons = toolbar_buttons()
+        require(len(buttons) > 1, "the toolbar has node group buttons (%d)" % len(buttons))
+        shown = 0
+        kept = set()
+        for button in buttons:
+            focused = yield from sg.focus_graph(graph)
+            require(focused, "the builder's graph has the focus")
+            outcome = {}
+            press_toolbar_button(button, outcome)
+            ok = yield ("until", lambda: outcome.get("closed") and (outcome.get("ids") is not None or outcome.get("tries", 0) >= 6), MENU_TIMEOUT_S)
+            require(ok, "the toolbar button's menu closes")
+            yield ("sleep", SETTLE_MS)
+            ids = outcome.get("ids")
+            if ids is None:
+                continue
+            shown += 1
+            kept.update(ids)
+            compositing = sorted(pid for pid in ids if pid not in KEPT_IN_BUILDER)
+            check(not compositing, "the toolbar group %r offers no compositing node inside the builder (got %r)"
+                  % (button.toolTip(), compositing[:5]))
+        check("Backdrop" in kept, "the toolbar still offers Backdrop inside the builder (offered %r)" % sorted(kept))
+        check(shown >= 1, "a toolbar group menu was shown inside the builder (%d)" % shown)
+
+        before = sorted(n.getPluginID() for n in builder.getChildren())
+        created, asked = sg.answering(lambda: app.createNode("Blur", -1, builder))
+        check(created is None, "a Python createNode of Blur into the builder returns None")
+        check(any("Blur" in text for text in asked), "the refusal names the node (message boxes answered: %r)" % asked)
+        check(sorted(n.getPluginID() for n in builder.getChildren()) == before, "the refused node is not in the builder")
+        check(not root_children_of("Blur"), "nor in the main graph")
+        backdrop = app.createNode("Backdrop", -1, builder)
+        check(backdrop is not None and backdrop.getPluginID() == "Backdrop", "a Python createNode of Backdrop into the builder is allowed")
+        yield ("sleep", SETTLE_MS)
 
         gt.section("main graph")
         root = sg.show_root_graph(app)

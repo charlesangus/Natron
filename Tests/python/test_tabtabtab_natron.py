@@ -482,6 +482,19 @@ class NatronAdapterTests(unittest.TestCase):
         self.assertIs(items[0]["menuobj"], blur)
         self.assertNotIn("shortcut", items[0])
 
+    def test_search_aliases_property_becomes_the_items_aliases(self):
+        h = self._load_adapter()
+        scalar = _plugin_action("Value", "cycles_value")
+        scalar.setProperty("natronSearchAliases", "float,scalar,int")
+        plain = _plugin_action("Blur", "BlurOFX")
+        self._set_nodes_menu(h, [_submenu("Filter", [scalar, plain])])
+        plugin = h.module.NatronPlugin()
+
+        items = {i["menupath"]: i for i in plugin.get_items()}
+
+        self.assertEqual(items["Filter/Value"]["aliases"], ("float", "scalar", "int"))
+        self.assertNotIn("aliases", items["Filter/Blur"])
+
     def test_nested_groupings_and_top_level_leaves(self):
         h = self._load_adapter()
         self._set_nodes_menu(h, [

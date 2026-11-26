@@ -40,6 +40,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QPointer>
 #include <QString>
 #include <QTimer>
+#include <vector>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
@@ -73,6 +74,8 @@ struct GuiApplicationManagerPrivate
     QPointer<QMenu> nodesMenuPopup;
     bool nodesMenuPopupShown;
     quint64 nodesMenuTargetGeneration;
+    // The actions hidden for a network builder's graph while its popup is open.
+    std::vector<QPointer<QAction>> nodesMenuHidden;
     GuiApplicationManager::NodesMenuArgsDecorator nodesMenuArgsDecorator;
     std::unique_ptr<KnobsClipBoard> _knobsClipBoard;
     std::unique_ptr<KnobGuiFactory> _knobGuiFactory;
@@ -170,6 +173,11 @@ struct GuiApplicationManagerPrivate
     void createNodeFromNodesMenu(const QString& pluginID, int major, int minor);
 
     void clearNodesMenuTarget();
+
+    // Hides the compositing nodes of popup's plug-in owned actions, Dots and Backdrops staying; true if one stays.
+    bool hideCompositingNodes(QMenu* popup);
+
+    void restoreHiddenNodes();
 };
 
 NATRON_NAMESPACE_EXIT

@@ -111,7 +111,8 @@ public:
 enum CreateNodeStatusEnum {
     eCreateNodeStatusCreated,
     eCreateNodeStatusPluginNotFound,
-    eCreateNodeStatusFailed
+    eCreateNodeStatusFailed,
+    eCreateNodeStatusRefused
 };
 
 // How AppInstance::startWritersRendering runs its renders. A background (no GUI) app has no event

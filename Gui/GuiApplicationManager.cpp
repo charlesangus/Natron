@@ -67,6 +67,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Merge/Merge.h" // PLUGINID_NATRON_NATIVE_MERGE
+#include "Engine/Nodes/Network/NetworkBuilder.h"
 #include "Engine/Nodes/Network/NetworkNode.h"
 #include "Engine/Nodes/Scene/SceneTeardown.h"
 #include "Engine/Nodes/Transform/Transform.h"
@@ -1753,6 +1754,13 @@ GuiApplicationManager::getNetworkNodesMenu()
         action->setProperty(kNodesMenuPropInputKinds, TabMenuBridge::dataKindKey(eDataKindNetwork));
         action->setProperty(kNodesMenuPropPrimPathKnob, QString());
         action->setProperty(kNodesMenuPropNetworkTargets, targets.join(QLatin1Char(',')));
+        QStringList aliases;
+        if (const NetworkNodeLayout* layout = NetworkNode::findLayout(entry.first)) {
+            for (const std::string& alias : layout->searchAliases) {
+                aliases.push_back(QString::fromStdString(alias));
+            }
+        }
+        action->setProperty(kNodesMenuPropSearchAliases, aliases.join(QLatin1Char(',')));
         refreshPluginActionProperties(action, plugin);
         const int major = plugin->getMajorVersion();
         const int minor = plugin->getMinorVersion();
@@ -1773,9 +1781,13 @@ void
 GuiApplicationManager::setNodesMenuTarget(Gui* gui,
                                           QMenu* popup)
 {
+    _imp->restoreHiddenNodes();
     _imp->nodesMenuTarget = popup ? gui : 0;
     _imp->nodesMenuPopup = popup;
     _imp->nodesMenuPopupShown = false;
+    if (popup && gui && dynamic_cast<NetworkBuilder*>(gui->getLastSelectedNodeCollection().get())) {
+        _imp->hideCompositingNodes(popup);
+    }
     const quint64 generation = ++_imp->nodesMenuTargetGeneration;
     if (!popup) {
         return;
@@ -1804,9 +1816,48 @@ GuiApplicationManager::releaseNodesMenuTargetIfNotShown()
     }
 }
 
+bool
+GuiApplicationManagerPrivate::hideCompositingNodes(QMenu* popup)
+{
+    bool anyStays = false;
+    const QList<QAction*> actions = popup->actions();
+    for (QAction* action : actions) {
+        if (!action->property(kNodesMenuPropPluginOwned).toBool()) {
+            continue;
+        }
+        bool stays;
+        if (QMenu* submenu = action->menu()) {
+            stays = hideCompositingNodes(submenu);
+        } else {
+            const QString pluginID = action->property(kNodesMenuPropPluginID).toString();
+            stays = (pluginID == QString::fromUtf8(PLUGINID_NATRON_DOT)) || (pluginID == QString::fromUtf8(PLUGINID_NATRON_BACKDROP));
+        }
+        if (stays) {
+            anyStays = true;
+        } else if (action->isVisible()) {
+            nodesMenuHidden.push_back(QPointer<QAction>(action));
+            action->setVisible(false);
+        }
+    }
+
+    return anyStays;
+}
+
+void
+GuiApplicationManagerPrivate::restoreHiddenNodes()
+{
+    for (const QPointer<QAction>& action : nodesMenuHidden) {
+        if (action) {
+            action->setVisible(true);
+        }
+    }
+    nodesMenuHidden.clear();
+}
+
 void
 GuiApplicationManagerPrivate::clearNodesMenuTarget()
 {
+    restoreHiddenNodes();
     nodesMenuTarget.clear();
     nodesMenuPopup.clear();
     nodesMenuPopupShown = false;

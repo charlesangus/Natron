@@ -27,6 +27,7 @@
 
 #include <algorithm>
 
+#include "Engine/EffectInstance.h"
 #include "Engine/Nodes/Network/NetworkNode.h"
 
 NATRON_NAMESPACE_ENTER
@@ -62,6 +63,21 @@ NetworkBuilder::hostsPlugin(const std::string& pluginId) const
         }
 
         return false;
+    }
+
+    return false;
+}
+
+bool
+NetworkBuilder::acceptsPlugin(const std::string& pluginId) const
+{
+    if ((pluginId == PLUGINID_NATRON_DOT) || (pluginId == PLUGINID_NATRON_BACKDROP) || (pluginId == PLUGINID_NATRON_MISSING_PLUGIN)) {
+        return true;
+    }
+    for (const std::pair<std::string, std::vector<std::string>>& registered : NetworkNode::registeredPlugins()) {
+        if (registered.first == pluginId) {
+            return true;
+        }
     }
 
     return false;

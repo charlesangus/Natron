@@ -142,6 +142,7 @@
       ]
     },
     "cycles_color": {
+      "search_aliases": ["color", "colour", "rgb"],
       "groups": [
         {
           "name": "Settings",
@@ -162,6 +163,7 @@
       ]
     },
     "cycles_combine_xyz": {
+      "search_aliases": ["vector", "xyz"],
       "groups": [
         {
           "name": "Inputs",
@@ -884,6 +886,7 @@
       ]
     },
     "cycles_value": {
+      "search_aliases": ["float", "scalar", "value", "int", "integer"],
       "groups": [
         {
           "name": "Settings",
